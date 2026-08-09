@@ -1,6 +1,6 @@
 // Package pack loads the reviewable role prompts used by in-process stages
 // and MCP work-order context. Sandbox tool policies retired in Phase 4.7
-// (spec §21.4).
+// (DEC-3).
 package pack
 
 import (
@@ -109,8 +109,7 @@ End your answer with exactly one machine-owned block and nothing after it:
 
 // WithRequirementCitationContract binds implementation and review guidance to
 // the confirmed served requirements reached through canonical lineage. Review
-// findings are structured evidence, not a source-code parser (spec §4.2 item
-// 4).
+// findings are structured evidence, not a source-code parser (REQ-3).
 func WithRequirementCitationContract(role string, stage core.Stage, requirements []core.ServedRequirementContext) string {
 	var contract strings.Builder
 	contract.WriteString(strings.TrimSpace(role))
@@ -119,7 +118,7 @@ func WithRequirementCitationContract(role string, stage core.Stage, requirements
 			contract.WriteString("\n\n# Requirement citation contract\n\nNo confirmed served requirement is linked to this task. Record requirement_citations with applicable=false and all four finding lists empty; an unlinked task remains legal.\n")
 		}
 		if stage == core.StageImplement {
-			contract.WriteString("\n\nWhen an implementation decision follows a confirmed DEC-n authority, cite that stable DEC-n ID in the relevant code comment alongside existing (spec §N) citations. Do not add ornamental citations.\n")
+			contract.WriteString("\n\nWhen an implementation decision follows a confirmed DEC-n authority, cite that stable DEC-n ID in the relevant code comment; cite the governing System Design document ID (for example, (design-task-lifecycle)) when describing a mechanism. Do not add ornamental citations.\n")
 		}
 		return contract.String()
 	}
@@ -138,10 +137,10 @@ func WithRequirementCitationContract(role string, stage core.Stage, requirements
 		}
 	}
 	if stage == core.StageImplement {
-		contract.WriteString("\nFor implementation decisions governed by these statements, cite the applicable stable REQ-n IDs or AC-n.m IDs in code comments; cite applicable confirmed DEC-n decisions the same way alongside existing (spec §N) citations. AC citations are valid only beneath their served parent in the confirmed version above. Do not add ornamental citations where no implementation decision needs explanation.\n")
+		contract.WriteString("\nFor implementation decisions governed by these statements, cite the applicable stable REQ-n IDs or AC-n.m IDs in code comments; cite applicable confirmed DEC-n decisions the same way, and cite the governing System Design document ID (for example, (design-task-lifecycle)) when describing a mechanism. AC citations are valid only beneath their served parent in the confirmed version above. Do not add ornamental citations where no implementation decision needs explanation.\n")
 	}
 	if stage == core.StageReview {
-		contract.WriteString("\nValidate requirement statement REQ-n and requirement acceptance-criterion AC-n.m citations against the pinned versions above and the approved governing spec. Do not put blueprint acceptance-criterion IDs such as AC-1 in cited_ids. A requirement AC citation is served only when its parent REQ and exact AC exist in its pinned version. Record requirement_citations with applicable=true and four disjoint finding lists: cited_ids — citation IDs present in the pinned versions above; unknown_ids — cited IDs that resolve to no requirement statement at all; unserved_ids — cited IDs that name a real requirement statement outside the pinned served versions above; conflicts — citations contradicting the governing spec. An ID present in the pinned versions always belongs in cited_ids and never in unknown_ids or unserved_ids; leave served statements the change does not cite unlisted rather than recording them as unserved. This is a reasoned review assessment, not a claim of exhaustive source parsing.\n")
+		contract.WriteString("\nValidate requirement statement REQ-n and requirement acceptance-criterion AC-n.m citations against the pinned versions above and the approved governing execution plan. Do not put blueprint acceptance-criterion IDs such as AC-1 in cited_ids. A requirement AC citation is served only when its parent REQ and exact AC exist in its pinned version. Record requirement_citations with applicable=true and four disjoint finding lists: cited_ids — citation IDs present in the pinned versions above; unknown_ids — cited IDs that resolve to no requirement statement at all; unserved_ids — cited IDs that name a real requirement statement outside the pinned served versions above; conflicts — citations contradicting the governing execution plan or pinned authority. An ID present in the pinned versions always belongs in cited_ids and never in unknown_ids or unserved_ids; leave served statements the change does not cite unlisted rather than recording them as unserved. This is a reasoned review assessment, not a claim of exhaustive source parsing.\n")
 	}
 	return contract.String()
 }
@@ -297,7 +296,7 @@ continue normally: missing usage must never block a review verdict (DEC-1).`
 
 // DoneCriteriaContract renders the task's statement of done for implement and
 // review. A plan section is authoritative when present; otherwise the task
-// description remains the legal fallback (spec §21.58 change 4).
+// description remains the legal fallback (design-task-lifecycle).
 func HasExecutionPlan(content string) bool {
 	if _, ok := pipeline.PlanDoneCriteria(content); !ok {
 		return false
