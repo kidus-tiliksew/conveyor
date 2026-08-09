@@ -3,7 +3,7 @@ import { X } from 'lucide-react'
 import { cn } from '../../lib/utils'
 
 // Splits pasted or typed text on whitespace outside quotes. Quote characters
-// are kept verbatim: harness argv is executed without a shell (spec §21.14),
+// are kept verbatim: harness argv is executed without a shell,
 // so every character in a token is literal — quotes only group spaces.
 export function splitArgv(text: string): string[] {
   const tokens: string[] = []

@@ -1,7 +1,7 @@
 import { useEffect } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 
-// Live updates (spec §13.3, §17.3): the per-task SSE stream feeds the Query
+// Live updates: the per-task SSE stream feeds the Query
 // cache by invalidation — every `activity` event schedules a debounced
 // refetch of the task detail and the feed. EventSource reconnects itself.
 export function useTaskStream(taskId: string, workspace: string) {

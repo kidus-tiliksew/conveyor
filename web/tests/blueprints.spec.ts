@@ -1,6 +1,6 @@
 import { expect, type Page, type Route, test } from '@playwright/test'
 
-// Blueprint presentation surface (spec §21.49). The anchor is an intent
+// Blueprint presentation surface. The anchor is an intent
 // artifact: it never appears on the board, it lives at its own canonical route
 // rather than borrowing the task view, it reads in blueprint vocabulary, and
 // its detail shows none of the affordances that imply a worker will pick it up.

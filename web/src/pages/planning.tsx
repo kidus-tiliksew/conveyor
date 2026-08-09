@@ -78,7 +78,7 @@ export function PlanningPage() {
 
   const create = useMutation({
     // No title is sent: the server names the session from its goal, and the
-    // artifact it produces renames it (spec §21.57 change 3).
+    // artifact it produces renames it.
     mutationFn: () =>
       createPlanningSession(token, {
         goal,

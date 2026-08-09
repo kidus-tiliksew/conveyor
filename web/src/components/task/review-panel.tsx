@@ -12,7 +12,7 @@ import { Textarea } from '../ui/input'
 import { AttachmentsCard } from './attachments-card'
 import { PlanRevisionDecisionCard } from './plan-revision-decision-card'
 
-// The human gate rendered as a verdict, not an alarm (spec §13.3): the card
+// The human gate rendered as a verdict, not an alarm: the card
 // leads with what the pipeline is waiting for and one context-matched primary
 // action. Amber stays reserved for states that are genuinely stuck; a clean
 // approval reads as good news. Reason codes are auto-derived per action
@@ -82,7 +82,7 @@ function gateFor(task: Task, events: TaskEvent[], readiness?: ActivityItem['merg
   for (let i = events.length - 1; i >= 0; i--) {
     const kind = events[i].kind
     if (kind === 'pipeline.bounce_limit') {
-      // Check-in, not failure (spec §21.17): the loop is alive and feedback
+      // Check-in, not failure: the loop is alive and feedback
       // resumes it with a fresh unsupervised round window.
       return {
         tone: 'alarm',
@@ -180,7 +180,7 @@ function GenericReviewPanel({ item, onDecisionRecorded }: { item: ActivityItem; 
     // the invalidation (TanStack Query v5); otherwise isPending flips false the
     // instant onSuccess returns, and gateFor re-renders the idle label from the
     // still-stale task.state for a frame before the control settles — the
-    // reported merge/approve flash (spec AC-1/AC-2).
+    // reported merge/approve flash.
     onSuccess: async (_result, input) => {
       setExpanded(null)
       setComment('')

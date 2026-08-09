@@ -1,6 +1,6 @@
 import type { InterventionAction, PlanningSessionGoal } from './types'
 
-// The six fixed feed groups (spec §13.3) plus a collapsed archive so merged
+// The six fixed feed groups plus a collapsed archive so merged
 // and closed work stays reachable without cluttering the factory's WIP view.
 export type GroupKey = 'triage' | 'spec' | 'implement' | 'review' | 'verify' | 'human' | 'done'
 
@@ -17,8 +17,8 @@ export const stageGroups: ReadonlyArray<{ key: GroupKey; label: string }> = [
   { key: 'done', label: 'Completed' },
 ]
 
-// The decisions the gate offers. Diverges from spec §13.2 pending amendment
-// (operator decision, 2026-07-15): pull-to-local is retired from the UI in
+// The decisions the gate offers follow the operator decision from 2026-07-15:
+// pull-to-local is retired from the UI in
 // the MCP pull model (agents pull work orders; humans use the checkout
 // helper), and "redirect" surfaces as "Request changes" — the wire action is
 // unchanged.
@@ -90,9 +90,8 @@ export const taskStateLabels: Record<string, string> = {
   parked: 'Parked',
 }
 
-// A planning session's declared goal, rendered for operators rather than as
-// the stored enum (spec §21.57 change 3 introduces the goal; showing labels
-// instead of raw state strings is the §13.3 presentation convention).
+// A planning session's declared goal, rendered for operators as a readable
+// label instead of the stored enum.
 export const sessionGoalLabels: Record<PlanningSessionGoal, string> = {
   requirement: 'Requirement',
   system_design: 'System Design',

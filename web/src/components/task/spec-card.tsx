@@ -20,7 +20,7 @@ const verifyIcons: Record<AcceptanceCriterion['verify'], typeof FlaskConical> = 
   human: Square,
 }
 
-// The spec review card (spec §13.3 element 3): rendered markdown plus the
+// The spec review card: rendered markdown plus the
 // acceptance-criteria checklist. Human-verify criteria surface as explicit
 // checkboxes rather than being pretend-verified (§4.1 rule 2).
 export function SpecCard({

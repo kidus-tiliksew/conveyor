@@ -19,7 +19,7 @@ import { Button } from '../ui/button'
 import { Skeleton } from '../ui/skeleton'
 import { BoardColumn } from './board-column'
 
-// The kanban board (spec §13.3 element 1): the distribution of work across
+// The kanban board: the distribution of work across
 // stages is the factory's health made visible. Read-only on purpose — tasks
 // move between columns via the pipeline, never by hand.
 export function Board() {
@@ -40,7 +40,7 @@ export function Board() {
     for (const item of data ?? []) {
       // The board represents claimable, executable work. A blueprint anchor
       // takes no orders and moves through no stage, so it lives on the
-      // Blueprints surface instead (spec §21.49). The feed already excludes
+      // Blueprints surface instead. The feed already excludes
       // anchors; applying the same predicate here keeps the column counts
       // honest for any caller that hands the board a wider list.
       if (isBlueprintAnchor(item.task)) continue

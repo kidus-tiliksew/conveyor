@@ -266,7 +266,7 @@ export async function streamPlanningMessage(
 export function fetchLifecycleDiagram() {
   return getJSON<{ mermaid: string }>(workspaceURL('/v1/lifecycle-diagram'))
 }
-// The canonical bounded lineage walk (spec §16). It is the only source the
+// The canonical bounded lineage walk. It is the only source the
 // related-records panel reads (AC-3.2): the panel groups what this returns and
 // never derives a relationship of its own, so it inherits the server's
 // traversal budget and its truncation report unchanged.
@@ -306,7 +306,7 @@ export async function updateTaskContext(
   if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
   return response.json() as Promise<import('./types').TaskContext>
 }
-// The Tasks view's read-only projection (spec §21.58): task state, relations,
+// The Tasks view's read-only projection: task state, relations,
 // attached context, and plan status from one durable source.
 // Every member of the shared filter family travels to the server (AC-2.3): the
 // browser asks for one page of what already matches rather than for the
@@ -666,7 +666,7 @@ export async function cancelTask(taskId: string, token: string, reason: string) 
   return response.json() as Promise<Task>
 }
 
-// Toggle the per-task hold (spec §21.31): while held, workers never claim
+// Toggle the per-task hold: while held, workers never claim
 // the task's work orders; operator-attached agents may claim explicitly.
 export async function setTaskHold(taskId: string, token: string, hold: boolean) {
   const response = await fetch(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/hold`), {

@@ -1,6 +1,6 @@
 import { expect, type Page, type Route, test } from '@playwright/test'
 
-// The Knowledge explorer and the parked navigation (spec §21.61 changes 2–3).
+// The Knowledge explorer and the parked navigation.
 // Task, requirement, and System Design detail each open a focused right panel
 // derived only from the canonical lineage read. REQ-4: primary navigation carries exactly the accepted
 // operating surfaces while the parked routes stay reachable by deep link

@@ -20,7 +20,7 @@ export function TaskFullPage() {
   const { taskId } = useParams({ from: '/tasks/$taskId/full' })
   const { data: item, isLoading, error } = useTaskDetail(taskId)
   const { previousId, nextId } = useTaskOrder(taskId)
-  // A blueprint anchor has one home, and it is not this page (spec §21.49).
+  // A blueprint anchor has one home, and it is not this page.
   const redirecting = useCanonicalBlueprintRedirect(item?.task)
 
   return (
@@ -95,7 +95,7 @@ function FullBody({ item }: { item: ActivityItem }) {
         </section>
         {/* The static relationship graph is gone: relationships are read in
             the explorer panel, and one page does not carry two renderings of
-            the same lineage (spec §21.61 change 2). */}
+            the same lineage. */}
         <section aria-label="Activity" className="space-y-4 px-6 py-4">
           <Timeline item={item} routeVariant="full" />
         </section>

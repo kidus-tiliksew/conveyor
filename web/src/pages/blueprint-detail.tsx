@@ -8,7 +8,7 @@ import { Skeleton } from '../components/ui/skeleton'
 import { findBlueprint, isBlueprintAnchor } from '../lib/blueprint'
 import { errorMessage } from '../lib/errors'
 
-// The canonical home of a materialized blueprint (spec §21.49 change 1). The
+// The canonical home of a materialized blueprint. The
 // anchor is an approved delivery contract, so it gets its own route rather than
 // borrowing the task view's costume — and the route header goes back to the
 // Blueprints list, not to the board, because a blueprint was never on it.

@@ -515,7 +515,7 @@ function ExecutionTab({
   // Collapsed by default; expansion is keyed by index so renames keep it open.
   const [expanded, setExpanded] = useState<Record<number, boolean>>({})
   const update = (change: Partial<WorkspaceConfigDocument>) => setDraft({ ...draft, ...change })
-  // Per-setup serviceability is advisory (spec §21.31): it explains whether
+  // Per-setup serviceability is advisory: it explains whether
   // the worker can serve a setup, and never gates anything.
   const workerReadyFor = (name: string) =>
     workerHealth?.setup_serviceability?.[name]?.auto_available ?? workerHealth?.auto_available === true

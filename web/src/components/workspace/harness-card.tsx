@@ -47,7 +47,7 @@ export function HarnessCard({
   const environment = harness.mcp_transport === 'environment'
   const prompts = harness.command.filter((token) => token === '{prompt}').length
   const configs = harness.command.filter((token) => token === '{mcp_config}').length
-  // Placeholder rules per spec §21.14 / §21.20; the server remains authoritative on save.
+  // The server remains authoritative for command placeholder validation on save.
   const commandOk = prompts === 1 && (environment ? configs === 0 : configs === 1)
   const commandNote = environment
     ? 'Command argv requires one {prompt} and forbids {mcp_config}. The named registration must use child-environment URL and authorization references; literal credentials are rejected.'
@@ -88,7 +88,7 @@ export function HarnessCard({
             </Field>
             <Field
               label="MCP transport"
-              hint="How the Conveyor work-order server is handed to the agent: Codex-style CLIs take a TOML --config override; Claude-style CLIs take a JSON file path (spec §21.20)."
+              hint="How the Conveyor work-order server is handed to the agent: Codex-style CLIs take a TOML --config override; Claude-style CLIs take a JSON file path."
             >
               <Select
                 aria-label="MCP transport"

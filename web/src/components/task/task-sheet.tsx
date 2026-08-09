@@ -27,7 +27,7 @@ export interface TaskPanelSurface {
   select: (taskId: string) => void
 }
 
-// The task detail sheet (spec §13.3): the costed event timeline — which
+// The task detail sheet: the costed event timeline — which
 // carries the review actions as its live tail — opened over the board so the
 // reviewer never loses list context. The Tasks list opens the same composition
 // in its own panel rather than forking it (AC-2.2).
@@ -43,7 +43,7 @@ export function TaskSheet({ taskId, panel }: { taskId: string; panel?: TaskPanel
       : undefined
     : boardOrder.nextId
   const close = panel ? panel.close : () => void navigate({ to: '/' })
-  // A blueprint anchor has one home, and it is not this sheet (spec §21.49).
+  // A blueprint anchor has one home, and it is not this sheet.
   const redirecting = useCanonicalBlueprintRedirect(item?.task)
 
   return (
@@ -138,7 +138,7 @@ function SheetBody({ item }: { item: ActivityItem }) {
       )}
       <AttachmentsCard attachments={item.attachments ?? []} />
       {/* Relationships are read in the explorer panel, not inline: the panel
-          is the one rendering of this task's lineage (spec §21.61 change 2). */}
+          is the one rendering of this task's lineage. */}
       <Timeline item={item} routeVariant="sheet" />
     </div>
   )

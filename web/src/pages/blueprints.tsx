@@ -7,9 +7,9 @@ import { childRollup, deliveryLabel, deliveryTone } from '../lib/blueprint'
 import { errorMessage } from '../lib/errors'
 import type { BlueprintView } from '../lib/types'
 
-// Historical Blueprints lens (spec §21.58 change 2): retained records remain
+// Historical Blueprints lens: retained records remain
 // queryable, but this surface offers no creation path. Its navigation entry is
-// now parked (spec §21.61 change 3, AC-4.1) — the route stays mounted for deep
+// now parked — the route stays mounted for deep
 // links and reaches from blueprint-era task detail, and the page says plainly
 // where live delivery is managed instead.
 export function BlueprintsPage() {

@@ -1,7 +1,7 @@
 import { taskStateLabels, type GroupKey } from './contracts'
 import type { ActivityItem, ActivitySummary, Intervention, Job, TaskEvent, TaskRelation, WorkOrder } from './types'
 
-// Feed grouping (spec §13.3): the pipeline stage a task currently occupies.
+// Feed grouping: the pipeline stage a task currently occupies.
 // Human gates, approved tasks awaiting merge, and parked tasks collect under
 // "Awaiting human"; only terminal states archive under "Completed".
 export function groupForSummary(item: ActivitySummary): GroupKey {
@@ -30,7 +30,7 @@ export function groupForSummary(item: ActivitySummary): GroupKey {
   }
 }
 
-// Provenance chip (spec §9): "github:<owner>/<repo>#<n>" links out; every
+// Provenance chip: "github:<owner>/<repo>#<n>" links out; every
 // other source (cli, api, cron, monitor) renders as-is.
 export function parseProvenance(source: string): { label: string; href?: string } {
   const match = /^github:([\w.-]+\/[\w.-]+)#(\d+)$/.exec(source)
@@ -130,7 +130,7 @@ export function isDirtyPrimaryCheckout(order: WorkOrder) {
 }
 
 // Dependency gating suspends the implementation order's queue clock and makes
-// it unclaimable (spec §§6.3, 21.47). Keep this predicate shared by the
+// it unclaimable. Keep this predicate shared by the
 // current-state summary, timeline narration, and queued affordances so they
 // cannot disagree about whether implementation is actually available.
 export function dependencyBlockedImplementationOrder(item: ActivityItem): WorkOrder | undefined {
@@ -403,8 +403,8 @@ export type TimelineEntry =
   | { type: 'intervention'; at: string; intervention: Intervention }
   | { type: 'panel'; at: string; key: string; round: number; seats: PanelSeat[]; resolution?: PanelResolution }
 
-// One review round rendered as a single deliberating body (spec §21.12
-// change 4): seats inside one card instead of N sibling job cards. A seat is
+// One review round is rendered as a single deliberating body: seats appear
+// inside one card instead of N sibling job cards. A seat is
 // a review work order plus whatever exists of its job and verdict.
 export type PanelSeatStatus = 'waiting' | 'deliberating' | 'verdict' | 'stale' | 'timed_out' | 'failed' | 'cancelled'
 
@@ -877,7 +877,7 @@ const genericSummaries = new Set([
   'The job failed before producing a summary.',
 ])
 
-// Work orders fold into the timeline (spec §21.4) instead of a separate
+// Work orders fold into the timeline instead of a separate
 // block: narration and attribution enrich the matching stage entry, and only
 // states a job entry cannot carry — waiting for an agent, stale, timed out —
 // become entries of their own.
@@ -922,7 +922,7 @@ function orderEntry(order: WorkOrder, hasJobEntry: boolean): Extract<TimelineEnt
   }
 }
 
-// The costed event timeline (spec §13.3): one entry per stage execution,
+// The costed event timeline: one entry per stage execution,
 // interleaved with the notable pipeline events and every human/agent
 // decision, in wall-clock order. This is the audit log rendered as a story.
 export function buildTimeline(item: ActivityItem): TimelineEntry[] {

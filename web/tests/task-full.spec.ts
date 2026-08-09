@@ -5,7 +5,7 @@ let emitLiveScrollEvent = () => {}
 const detailRequestCounts = new Map<string, number>()
 
 // The context a task carries. The proposal card is scoped by attachment as well
-// as origin (spec §21.62), so which documents these name is what decides whether
+// as origin, so which documents these name is what decides whether
 // a task's own pending version reaches its detail at all.
 type AttachedDocument = { id: string; title: string; version: number }
 const attachedContext: Record<string, { requirements?: AttachedDocument[]; designs?: AttachedDocument[] }> = {
@@ -985,7 +985,7 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
                                       claimable: false,
                                       last_attempt_outcome: 'released',
                                       last_failure_message:
-                                        'checkout_blocked_dirty_primary: shared primary checkout has pre-existing modifications in CLAUDE.md and conveyor-spec.md; operator changes preserved',
+                                        'checkout_blocked_dirty_primary: shared primary checkout has pre-existing modifications in CLAUDE.md and a repository policy document; operator changes preserved',
                                       automatic_retry_count: 0,
                                       retry_suppressed: true,
                                       queue_entered_at: createdAt,
@@ -1319,7 +1319,7 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
                                                 jobs: [],
                                                 events: [],
                                                 // A delivered implement attempt awaiting review: does not block a setup
-                                                // change; only claimed attempts and in-flight verdicts do (spec §21.36).
+                                                // change; only claimed attempts and in-flight verdicts do.
                                                 work_orders: [
                                                   {
                                                     id: 'setup-submitted-implement-1',
@@ -1878,7 +1878,7 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
   }
 }
 
-// The blueprint projection (spec §21.49): anchors left the activity feed, so
+// The blueprint projection: anchors left the activity feed, so
 // this is where the anchor's delivery, ordered children, and title now come
 // from — including the title a child's parent reference renders.
 function blueprintProjection() {
@@ -2003,8 +2003,8 @@ test('task detail headers show the task name while routes and API lookup keep us
   const fullHeader = page.locator('header').filter({ has: page.getByRole('link', { name: 'Back to board' }) })
   await expect(fullHeader).toContainText('Short task')
   await expect(fullHeader).not.toContainText(fullTaskID)
-  // Relationships live in the explorer panel now, not in a card on the page
-  // (spec §21.61 change 2) — the detail surfaces carry the affordance only.
+  // Relationships live in the explorer panel now, not in a card on the page;
+  // the detail surfaces carry the affordance only.
   await expect(page.getByRole('button', { name: 'Knowledge explorer' })).toBeVisible()
   await expect(page.getByText('Trace planning to delivery evidence')).toHaveCount(0)
   expect(new URL(page.url()).pathname).toBe(`/tasks/${fullTaskID}/full`)
@@ -2185,7 +2185,7 @@ test('task detail exposes the setup change control behind an expandable section'
   await summary.click()
   await expect(page.getByLabel('Named execution setup')).toBeVisible()
   // The implement attempt is submitted (delivered), not claimed: it must not
-  // disable the control (spec §21.36).
+  // disable the control.
   await expect(page.getByLabel('Named execution setup')).toBeEnabled()
   await expect(page.getByLabel('Setup change reason')).toBeEnabled()
 })
@@ -2910,7 +2910,7 @@ test('short side-view specs and full-page specs remain unbounded', async ({ page
 test('review panel replaces duplicate review and bounce activity notes', async ({ page }) => {
   await page.goto('/tasks/reviews/full')
 
-  // One panel card, not one card per seat (spec §21.12 change 4).
+  // One panel card, not one card per seat.
   const panel = page.locator('article').filter({ hasText: 'Panel of 2 · unanimous to pass' })
   await expect(panel).toHaveCount(1)
 
@@ -3724,7 +3724,7 @@ test('unsatisfiable dependency is attention-worthy and can be unlinked with an a
   await expect(page.getByText('Dependency removed')).toBeVisible()
 })
 
-// The origin-task System Design proposal card (spec §21.62). The decision a
+// The origin-task System Design proposal card. The decision a
 // task raised is confirmable from that task, without leaving for the document.
 function designCollection(originTaskId: string, resolved: boolean) {
   const confirmedVersion = {

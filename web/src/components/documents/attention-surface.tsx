@@ -2,7 +2,7 @@ import type { ReactNode } from 'react'
 import { Check, TriangleAlert } from 'lucide-react'
 
 /**
- * One document carries exactly one attention surface (spec §21.61 change 1).
+ * One document carries exactly one attention surface.
  * Every machinery signal the document produces — unreconciled repository
  * changes, code that shipped past confirmed intent, versions and decisions
  * waiting on an operator — is listed here with the action that resolves it,

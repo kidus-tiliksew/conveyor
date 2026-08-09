@@ -28,7 +28,7 @@ export function absoluteTime(value: string) {
   })
 }
 
-// "4m 03s" — the costed-timeline duration format (spec §13.3).
+// "4m 03s" — the costed-timeline duration format.
 export function duration(start: string, end?: string) {
   const from = new Date(start).getTime()
   if (!Number.isFinite(from) || from <= 0) return '—'

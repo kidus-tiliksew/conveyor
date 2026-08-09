@@ -6,7 +6,7 @@ import { Input, Select } from '../ui/input'
 import { cn } from '../../lib/utils'
 import { Field } from './field'
 
-// One named execution setup (spec §21.27): a collapsed pipeline summary that
+// One named execution setup: a collapsed pipeline summary that
 // expands into the §21.18 contextual layout. Edits write into
 // document.setups[index]; the top-level execution_settings/review projection
 // is kept in sync while the setup is the workspace default.

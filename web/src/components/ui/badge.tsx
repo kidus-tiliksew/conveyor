@@ -9,7 +9,7 @@ const badgeVariants = cva(
       variant: {
         default: 'border border-border bg-surface text-muted',
         outline: 'border border-edge bg-background text-foreground',
-        // The single alarm color on the page (spec §13.3).
+        // The single alarm color on the page.
         attention:
           'bg-attention-soft font-semibold text-attention before:size-1.5 before:rounded-full before:bg-attention-dot',
         accent: 'bg-primary-soft text-primary',

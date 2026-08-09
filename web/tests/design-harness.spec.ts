@@ -631,7 +631,7 @@ const gateDetail = {
 // The running-sheet shots want a task mid-flight: a live review job, two
 // review seats, a costed timeline tail. That is ordinary work, so this fixture
 // carries no children — children would make it a blueprint anchor, and an
-// anchor has no sheet to screenshot and takes no work orders (spec §21.49).
+// anchor has no sheet to screenshot and takes no work orders.
 const runningDetail = {
   ...gateDetail,
   task: task({

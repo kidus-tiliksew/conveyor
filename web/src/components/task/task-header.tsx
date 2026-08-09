@@ -27,7 +27,7 @@ import { Dialog } from '../ui/dialog'
 import { Textarea } from '../ui/input'
 import { MarkdownProse } from '../ui/markdown-prose'
 
-// The task-header facts (spec §13.3, amended by §§21.6–21.7): state badges,
+// The task-header facts: state badges,
 // the facts a reviewer actually references — where the work lives, where it
 // came from, where to read it — and the dedicated-worktree checkout command
 // (§21.8). Anything the specification card or the timeline already states is
@@ -38,8 +38,8 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
   const prURL = pullRequestURL(item.events)
   const Heading = variant === 'full' ? 'h1' : 'h2'
   const relatedRoute = relatedTaskRoute(variant)
-  // The parent is a blueprint anchor, which no longer rides the activity feed
-  // (spec §21.49) — the blueprint projection is where its title now lives.
+  // The parent is a blueprint anchor, which no longer rides the activity feed;
+  // the blueprint projection is where its title now lives.
   const { data: blueprints } = useBlueprints()
   const parent = findBlueprint(blueprints, item.task.parent_task_id ?? '')?.task
   const blockingIDs = new Set(item.task.blocking_task_ids ?? [])
@@ -132,8 +132,8 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
             label="Parent blueprint"
             value={
               // The parent is an intent artifact, not work, so this reference
-              // leaves the task routes for the blueprint's canonical home
-              // (spec §21.49) — unlike dependencies below, which are tasks.
+              // leaves the task routes for the blueprint's canonical home,
+              // unlike dependencies below, which are tasks.
               <span className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
                 <Link
                   to="/blueprints/$taskId"
@@ -369,7 +369,7 @@ function UnlinkDependencyControl({ item, dependencyIDs }: { item: ActivityItem; 
 }
 
 // Cancel is lifecycle, not an execution affordance, so the blueprint detail
-// keeps it while suppressing checkout, branch, and hold (spec §21.49). Its
+// keeps it while suppressing checkout, branch, and hold. Its
 // consequences for children are whatever the backend does today.
 export function CancelControl({ item }: { item: ActivityItem }) {
   const token = useOperatorToken()
@@ -500,7 +500,7 @@ function SetupChangeControl({ item }: { item: ActivityItem }) {
   const [selected, setSelected] = useState(item.task.setup)
   const [reason, setReason] = useState('')
   // Submitted spec/implement attempts are delivered, not executing; only
-  // claimed attempts and in-flight review verdicts block (spec §21.36).
+  // claimed attempts and in-flight review verdicts block.
   const claimed = (item.work_orders ?? []).some((order) => order.state === 'claimed')
   const verdictInFlight = (item.work_orders ?? []).some(
     (order) => order.stage === 'review' && order.state === 'submitted',
@@ -621,7 +621,7 @@ function Disclosure({ summary, note, children }: { summary: string; note?: strin
   )
 }
 
-// Per-task hold toggle (spec §21.31): while held, the worker daemon never
+// Per-task hold toggle: while held, the worker daemon never
 // claims this task's work orders — you attach an agent and claim explicitly.
 function HoldControl({ item }: { item: ActivityItem }) {
   const token = useOperatorToken()

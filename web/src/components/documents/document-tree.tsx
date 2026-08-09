@@ -3,7 +3,7 @@ import type { ReactNode } from 'react'
 
 /**
  * The category navigation tree that stands beside the document canvas on
- * Requirements and System Design (spec §21.61 change 1; REQ-2, AC-2.1). It
+ * Requirements and System Design. It
  * carries navigation only: a document's machinery signals belong to its
  * attention surface on the canvas, never to a badge in the tree (AC-1.2).
  */
