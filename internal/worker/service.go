@@ -959,6 +959,25 @@ func (s *Service) Release(ctx context.Context, worker core.Worker, id string, re
 	return s.refreshReleasedHarnessSnapshot(ctx, order), nil
 }
 
+// RequestPlanRevision atomically releases one exact implement attempt and
+// moves its task to the distinct operator gate (REQ-1, AC-1.1–AC-1.3).
+func (s *Service) RequestPlanRevision(ctx context.Context, worker core.Worker, id, sessionID, rationale string) (store.PlanRevisionRequestResult, error) {
+	sessionID, rationale = strings.TrimSpace(sessionID), strings.TrimSpace(rationale)
+	if sessionID == "" {
+		return store.PlanRevisionRequestResult{}, fmt.Errorf("session_id is required")
+	}
+	if rationale == "" {
+		return store.PlanRevisionRequestResult{}, fmt.Errorf("rationale is required")
+	}
+	current, err := s.Store.GetWorkOrder(ctx, id)
+	if err != nil {
+		return store.PlanRevisionRequestResult{}, err
+	}
+	return taskops.ExecuteWorkOrder(ctx, s.Store, current.TaskID, core.WorkOrderCmdRequestPlanRevision, func(taskLease taskops.TaskLease) (store.PlanRevisionRequestResult, error) {
+		return s.Store.RequestPlanRevisionCommand(ctx, taskLease, id, worker.ID, sessionID, rationale)
+	})
+}
+
 func transientConnectivityFailure(detail string) bool {
 	detail = strings.ToLower(detail)
 	for _, marker := range []string{
