@@ -49,6 +49,25 @@ export const defaultReasonCode: Record<InterventionAction, string> = {
   cancel: 'cancelled',
 }
 
+// The plan-revision gate is the one place the operator does not get a derived
+// reason code: the API accepts exactly these three, and rejects anything else
+// (REQ-2 AC-2.4). Approve and decline are both `redirect` on the wire — the
+// reason code, not the action, is what separates them.
+export const planRevisionReasonCodes = {
+  approve: 'plan-revision-approved',
+  decline: 'plan-revision-declined',
+  reject: 'plan-revision-rejected',
+} as const
+
+// The recorded decision read back in plain language. Without this the audit
+// entry renders a redirect approval as "Requested changes" beside a raw
+// reason-code badge — the wire vocabulary leaking into the story (AC-4.1).
+export const planRevisionDecisionLabels: Record<string, string> = {
+  [planRevisionReasonCodes.approve]: 'Plan revision approved — returning to planning',
+  [planRevisionReasonCodes.decline]: 'Plan revision declined — implementation retried with direction',
+  [planRevisionReasonCodes.reject]: 'Plan revision rejected — task closed',
+}
+
 export const stageLabels: Record<string, string> = {
   triage: 'Triage',
   spec: 'Plan',
