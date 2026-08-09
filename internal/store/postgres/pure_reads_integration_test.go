@@ -203,7 +203,7 @@ func TestCheckpointContextCandidatesMatchDirectActiveContextIntegration(t *testi
 
 // A Tasks page pays for its page. The activity-marker projection used to read
 // every work order in the workspace and discard the rest, which is exactly the
-// unbounded read the Tasks list was rewritten to avoid (spec §21.58).
+// unbounded read the Tasks list was rewritten to avoid.
 func TestActivityMarkersForTasksScopeEveryReadToThePageIntegration(t *testing.T) {
 	databaseURL := integrationDatabaseURL(t)
 	cfg, err := pgxpool.ParseConfig(databaseURL)

@@ -1,6 +1,6 @@
 // Package taskops is Conveyor's serialized lifecycle command plane. Callers
 // issue a closed canonical command; only the plane can mint the capability
-// required by lifecycle store mutators (spec §§3.3-3.4, §21.38).
+// required by lifecycle store mutators (design-task-lifecycle).
 package taskops
 
 import (
@@ -13,7 +13,7 @@ import (
 
 // TaskLease proves that a lifecycle write was admitted through Plane.Perform.
 // Its fields and constructor are intentionally private so code outside this
-// package cannot forge permission to mutate a task projection (spec §21.38).
+// package cannot forge permission to mutate a task projection (design-task-lifecycle).
 type TaskLease struct {
 	taskID  string
 	command string
@@ -69,7 +69,7 @@ const WorkOrderMetadataCommand core.WorkOrderCommand = "order.metadata"
 // SetupChangeCommand identifies the atomic setup-change write span. The span
 // may contain canonical order.create and order.cancel transitions, but it is
 // admitted as one transaction so the frozen setup, replacement review seats,
-// projections, and events cannot commit independently (spec §21.35, §21.38).
+// projections, and events cannot commit independently (design-task-lifecycle).
 const SetupChangeCommand = "task.setup.change"
 
 // ExecuteSetupChange admits one store-specific setup-change plan to the

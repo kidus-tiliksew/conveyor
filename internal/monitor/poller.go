@@ -28,7 +28,7 @@ type Poller struct {
 
 // Poll performs startup reconciliation and bounded forge retries. Persisted
 // observation identity, rather than the polling cursor, is authoritative for
-// deduplication across restart and redelivery (spec §21.45).
+// deduplication across restart and redelivery (design-monitor-drift).
 func (p *Poller) Poll(ctx context.Context) error {
 	if p.Service == nil || p.Source == nil || p.Service.Store == nil {
 		return fmt.Errorf("monitor poller is not configured")

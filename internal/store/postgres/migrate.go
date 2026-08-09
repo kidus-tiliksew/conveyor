@@ -26,7 +26,7 @@ var migrationFiles embed.FS
 
 // Migrate applies Conveyor's versioned schema followed by River's bundled
 // queue migrations. Both use Postgres advisory locking, so multiple daemon
-// instances may start safely against the same database (spec §17.0, §18.1).
+// instances may start safely against the same database (design-database).
 func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 	if err := migrateControlPlane(ctx, pool); err != nil {
 		return err
@@ -40,7 +40,7 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 	}
 	// v1.10 adds workspace identity to River payloads. Backfill jobs inserted by
 	// v1.8 so an in-place upgrade does not strand queued dispatch or review
-	// publication work with an empty context (spec §21.10).
+	// publication work with an empty context.
 	if _, err := pool.Exec(ctx, `
 UPDATE river_job r SET args = jsonb_set(r.args, '{workspace_id}', to_jsonb(t.workspace_id), true)
 FROM tasks t
@@ -423,7 +423,7 @@ WHERE NOT EXISTS (
 
 func auditPersistedLifecycles(ctx context.Context, tx pgx.Tx) ([]controlstore.LifecycleAuditViolation, error) {
 	// Workspace-scoped events (worker heartbeats, config updates, pairing)
-	// carry no task and are not lifecycle edges (spec §21.37 change 6).
+	// carry no task and are not lifecycle edges.
 	rows, err := tx.Query(ctx, `SELECT id,task_id,job_id,kind,payload_json,at FROM events WHERE task_id IS NOT NULL ORDER BY at,id`)
 	if err != nil {
 		return nil, err

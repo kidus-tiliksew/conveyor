@@ -25,7 +25,7 @@ import {
   type PanelSeat,
   type TimelineEntry,
 } from '../../lib/activity'
-import { defaultReasonCode, stageLabels } from '../../lib/contracts'
+import { defaultReasonCode, planRevisionDecisionLabels, stageLabels } from '../../lib/contracts'
 import { relatedTaskRoute, type TaskRouteVariant } from '../../lib/task-route'
 import type { ActivityItem, InterventionAction, Job, WorkOrder } from '../../lib/types'
 import { absoluteTime, cn, compactTokens, duration } from '../../lib/utils'
@@ -474,6 +474,12 @@ function TimelineRow({ entry, usageReportedOrderIDs }: { entry: TimelineEntry; u
   }
   if (entry.type === 'intervention') {
     const { intervention } = entry
+    // The plan-revision gate is the one decision whose meaning lives in the
+    // reason code rather than the action — both approve and decline are
+    // `redirect` on the wire. Reading them back through the generic labels
+    // would call an approval "Requested changes" and print the wire code
+    // beside it, so they get their own plain-language line (AC-4.1).
+    const planRevisionLabel = planRevisionDecisionLabels[intervention.reason_code]
     return (
       <li className="relative pl-7">
         <TimelineDot className="bg-foreground" />
@@ -481,9 +487,9 @@ function TimelineRow({ entry, usageReportedOrderIDs }: { entry: TimelineEntry; u
           <div className="flex flex-wrap items-center gap-2 text-sm">
             <UserRound className="size-3.5 text-muted" />
             <strong className="font-semibold">
-              {interventionLabels[intervention.action] ?? intervention.action.replaceAll('_', ' ')}
+              {planRevisionLabel ?? interventionLabels[intervention.action] ?? intervention.action.replaceAll('_', ' ')}
             </strong>
-            {intervention.reason_code !== defaultReasonCode[intervention.action] && (
+            {!planRevisionLabel && intervention.reason_code !== defaultReasonCode[intervention.action] && (
               <Badge variant="mono">{intervention.reason_code}</Badge>
             )}
             <time className="ml-auto text-[11px] text-faint">{absoluteTime(intervention.at)}</time>

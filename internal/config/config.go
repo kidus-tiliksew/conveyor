@@ -1,7 +1,7 @@
 // Package config loads Conveyor's immutable deployment settings and the
 // mutable workspace document. Phase 4.7 deliberately keeps execution
 // credentials out of both documents: conveyord uses CONVEYOR_API_KEY and MCP
-// clients bring their own agent credentials (spec §21.4).
+// clients bring their own agent credentials (design-system-architecture; DEC-3).
 package config
 
 import (
@@ -34,7 +34,7 @@ type Repo struct {
 
 // MonitorConfig is explicit workspace/repository observation scope. It carries
 // no credentials; the GitHub boundary uses the daemon's least-privilege
-// environment and records only stable error categories (spec §21.45).
+// environment and records only stable error categories (design-monitor-drift).
 type MonitorConfig struct {
 	Enabled           bool          `yaml:"enabled" json:"enabled"`
 	Repositories      []string      `yaml:"repositories,omitempty" json:"repositories"`
@@ -115,7 +115,7 @@ type StageRoute struct {
 	TimeoutText string        `yaml:"timeout" json:"timeout"`
 	Execution   ExecutionMode `yaml:"execution" json:"execution"`
 	// EffectiveModel is the normalized worker argument. It is deliberately
-	// absent from persisted compatibility routes (spec §21.18 changes 2-3).
+	// absent from persisted compatibility routes (design-harness-execution).
 	EffectiveModel string `yaml:"-" json:"-"`
 
 	// v1.3 compatibility inputs. They are consumed during normalization and
@@ -141,7 +141,7 @@ type Harness struct {
 
 const (
 	// MCP transport controls the representation substituted for the whole
-	// {mcp_config} argv element (spec §21.20).
+	// {mcp_config} argv element (design-harness-execution).
 	MCPTransportJSONFile     = "json_file"
 	MCPTransportTOMLOverride = "toml_override"
 	MCPTransportEnvironment  = "environment"
@@ -151,7 +151,7 @@ var mcpAttachmentPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$
 
 // ReviewSeat is one immutable assignment in a submitted review round. The
 // model is always pinned; Harness optionally overrides the workspace review
-// route for worker dispatch (spec §21.12 change 4).
+// route for worker dispatch (design-harness-execution).
 type ReviewSeat struct {
 	Model   string `yaml:"model" json:"model"`
 	Harness string `yaml:"harness,omitempty" json:"harness,omitempty"`
@@ -163,7 +163,7 @@ type ReviewPanel struct {
 }
 
 type ExecutionPolicy struct {
-	// DefaultMode is deprecated (spec §21.31): parsed from legacy documents
+	// DefaultMode is deprecated (DEC-5): parsed from legacy documents
 	// and seeds for compatibility, never read for behavior, dropped on save.
 	DefaultMode          string `yaml:"default_mode,omitempty" json:"default_mode,omitempty"`
 	SpecApproval         bool   `yaml:"spec_approval" json:"spec_approval"`
@@ -171,10 +171,10 @@ type ExecutionPolicy struct {
 	ImplementConcurrency int    `yaml:"implement_concurrency" json:"implement_concurrency"`
 	ReviewConcurrency    int    `yaml:"review_concurrency" json:"review_concurrency"`
 	// RequireVerificationEvidence fails review submission closed until the
-	// task owns an eligible screenshot or short recording (spec §21.12 change 6).
+	// task owns an eligible screenshot or short recording.
 	RequireVerificationEvidence bool `yaml:"require_verification_evidence" json:"require_verification_evidence"`
 	// FirstActivityTimeout is worker child-output liveness, independent of
-	// the claim lease and fixed execution deadline (spec §21.42).
+	// the claim lease and fixed execution deadline (design-260805-973cd4).
 	FirstActivityTimeout     time.Duration `yaml:"-" json:"-"`
 	FirstActivityTimeoutText string        `yaml:"first_activity_timeout" json:"first_activity_timeout"`
 }
@@ -240,7 +240,7 @@ type ControlPlaneSettings struct {
 	Triage   ModelTimeoutSettings `yaml:"triage" json:"triage"`
 	Planning PlanningSettings     `yaml:"planning" json:"planning"`
 	// Spec accepts pre-v1.34 documents. Normalization moves it into the
-	// contextual spec execution settings and never emits it again (spec §21.33).
+	// contextual spec execution settings and never emits it again (design-harness-execution).
 	Spec ModelTimeoutSettings `yaml:"spec,omitempty" json:"spec,omitempty"`
 }
 
@@ -270,7 +270,7 @@ type ReviewExecutionSettings struct {
 
 // ContextualExecutionSettings is the v1.18 canonical surface. Routing remains
 // additive compatibility data and is never a second source of truth when this
-// object is present (spec §21.18 changes 1-2).
+// object is present (design-harness-execution).
 type ContextualExecutionSettings struct {
 	ControlPlane   ControlPlaneSettings    `yaml:"control_plane" json:"control_plane"`
 	Spec           ImplementationSettings  `yaml:"spec" json:"spec"`
@@ -280,7 +280,7 @@ type ContextualExecutionSettings struct {
 
 // ExecutionSetup is one named execution contract. Harness definitions remain
 // workspace-scoped; the settings and review panel are frozen onto a task at
-// intake (spec §21.27 changes 1 and 4).
+// intake (design-harness-execution; DEC-7).
 type ExecutionSetup struct {
 	Name              string                      `yaml:"name" json:"name"`
 	ExecutionSettings ContextualExecutionSettings `yaml:"execution_settings" json:"execution_settings"`
@@ -414,7 +414,7 @@ func ParseStoredWorkspaceDocument(data []byte, deployment *Config, source string
 }
 
 // stripLegacyBudgetFields lets an existing v1.5 Postgres workspace document
-// boot once and be rewritten in the v1.6 shape (spec §21.6). New deployment
+// boot once and be rewritten in the v1.6 shape. New deployment
 // files and API writes still reject budget_usd as an unknown field.
 func stripLegacyBudgetFields(data []byte) ([]byte, bool, error) {
 	var root yaml.Node
@@ -614,7 +614,7 @@ func normalizeHarnessModel(route StageRoute, harnesses []Harness) (string, error
 	if selected == nil {
 		// Legacy/manual-only documents may predate the harness registry. They
 		// remain readable; worker health rejects Auto because no route harness
-		// is usable (spec §21.18 changes 2 and 6).
+		// is usable (design-harness-execution).
 		if route.Harness == "" {
 			return "", nil
 		}
@@ -784,7 +784,7 @@ func normalizeLegacy(c *Config, path string) (*Config, error) {
 		c.Execution.MergeApproval = true
 	}
 	if c.Execution.DefaultMode != "" && c.Execution.DefaultMode != "auto" && c.Execution.DefaultMode != "manual" {
-		return nil, fmt.Errorf("execution.default_mode is deprecated (spec §21.31) and must be auto or manual when present")
+		return nil, fmt.Errorf("execution.default_mode is deprecated (DEC-5) and must be auto or manual when present")
 	}
 	// Legacy documents keep their stored value readable, but it is never
 	// re-emitted or consulted; normalization drops it.
@@ -839,7 +839,7 @@ func normalizeLegacy(c *Config, path string) (*Config, error) {
 		if stage == "spec" {
 			// Pre-v1.34 stored routes were fixed in-process. Upgrade them to the
 			// worker context without allowing legacy values to override explicit
-			// contextual spec settings (spec §21.33).
+			// contextual spec settings (design-harness-execution).
 			if route.Execution == "" || route.Execution == ExecutionInProcess {
 				route.Execution = ExecutionMCP
 			}
@@ -899,7 +899,7 @@ func normalizeLegacy(c *Config, path string) (*Config, error) {
 				return nil, fmt.Errorf("execution_settings.control_plane.%s.effort %q must be minimal, low, medium, or high", stage, route.Effort)
 			}
 			// Harness fields on pre-v1.18 control-plane routes are compatibility
-			// noise and never become worker requirements (spec §21.18 change 2).
+			// noise and never become worker requirements (design-harness-execution).
 			route.Harness = ""
 		}
 		if stage == "review" && route.Execution == ExecutionInProcess {
@@ -1011,7 +1011,7 @@ func normalizeLegacy(c *Config, path string) (*Config, error) {
 			}
 		}
 		// A stale fallback is intentionally not validated when every seat is
-		// explicit; it is retained only for compatibility (spec §21.18 change 4).
+		// explicit; it is retained only for compatibility (design-harness-execution).
 		c.Routing.Stages["review"] = reviewRoute
 	}
 	for _, stage := range []string{"spec", "implement", "review"} {
@@ -1077,7 +1077,7 @@ func normalizeLegacy(c *Config, path string) (*Config, error) {
 		}
 		repoNames[repo.Name] = struct{}{}
 		// Repository names become part of the implicit sibling worktree name,
-		// so keep them to the server-generated task ID alphabet (spec §8.2).
+		// so keep them to the server-generated task ID alphabet (design-git-delivery).
 		if !validRepoName(repo.Name) {
 			return nil, fmt.Errorf("repo %d: name %q must use only ASCII letters, digits, '.', '_', or '-' and must not be '.' or '..'", i, repo.Name)
 		}
@@ -1197,7 +1197,7 @@ func (c *Config) WorkspaceDocument() WorkspaceDocument {
 }
 
 // Setup resolves a configured setup by name, defaulting an empty selector to
-// the workspace default. Unknown explicit names never fall back (spec §21.27).
+// the workspace default. Unknown explicit names never fall back (design-harness-execution).
 func (c *Config) Setup(name string) (ExecutionSetup, bool) {
 	name = strings.TrimSpace(name)
 	if name == "" {
@@ -1331,7 +1331,7 @@ func validateHarness(h Harness, index int) error {
 }
 
 // ValidateHarness applies the same transport-aware durable contract to worker
-// snapshots immediately before probing or launch (spec §21.29 changes 2, 5).
+// snapshots immediately before probing or launch (design-harness-execution).
 func ValidateHarness(h Harness) error {
 	return validateHarness(h, 0)
 }

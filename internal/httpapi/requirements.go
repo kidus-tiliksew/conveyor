@@ -21,7 +21,7 @@ import (
 // requirementView is the dashboard read model for one living requirement.
 // It deliberately exposes immutable versions and pipeline-owned lineage
 // together so the UI never has to reconstruct authority from feature-tree
-// assignments (spec §4.2, §13.3).
+// assignments (design-document-corpus; design-web-dashboard).
 type requirementView struct {
 	Requirement          core.Requirement             `json:"requirement"`
 	CurrentVersion       *core.RequirementVersion     `json:"current_version,omitempty"`
@@ -482,7 +482,7 @@ func directServingTaskIDs(links []core.LineageLink, requirementID string) map[st
 }
 
 // deliveryReachableTasks is the single staleness predicate. Staleness walks
-// delivery edges at task level (spec §21.58 change 6), so it follows `serves`
+// delivery edges at task level, so it follows `serves`
 // straight onto the task the requirement is attached to (change 3) as well as
 // the historical blueprint chain that predates it, which stays readable as
 // record. Planning-session and dependency hops remain excluded: they cannot

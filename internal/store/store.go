@@ -1,6 +1,6 @@
 // Package store holds event-sourced control-plane state behind an interface.
 // The memory implementation is for unit tests and explicit local development;
-// Postgres is the durable Phase 2 implementation (spec §16, §19).
+// Postgres is the durable implementation (design-database).
 package store
 
 import (
@@ -51,13 +51,13 @@ var (
 	// ErrWorkOrderClaimLost is the order-scoped counterpart to
 	// ErrWorkerUnauthorized: the caller's credential is valid but the order is
 	// no longer claimed by it, typically because the claim lease expired and
-	// ownership returned to the queue (spec §21.9). Kept distinct so agents do
+	// ownership returned to the queue. Kept distinct so agents do
 	// not misdiagnose a lapsed claim as a revoked credential.
 	ErrWorkOrderClaimLost = errors.New("work order claim is no longer held by this worker (claim expired or order reassigned)")
 )
 
 // WorkspaceControlStore owns durable workspace resources independently of a
-// workspace-scoped Store operation (spec §21.10).
+// workspace-scoped Store operation.
 type WorkspaceControlStore interface {
 	ListWorkspaces(context.Context) ([]core.Workspace, error)
 	GetWorkspace(context.Context, string) (core.Workspace, error)
@@ -85,7 +85,7 @@ type Store interface {
 	ListTasksFiltered(ctx context.Context, filter TaskFilter) ([]core.Task, error)
 	ListTaskOperations(ctx context.Context, query TaskOperationsQuery) (TaskOperationsPage, error)
 	ApplyTaskCommand(ctx context.Context, lease taskops.TaskLease, id string, command taskops.Command) (core.Task, error)
-	// SetTaskHold toggles the §21.31 per-task reservation with an audit
+	// SetTaskHold toggles the per-task worker reservation with an audit
 	// event; setting the current value is an idempotent no-op.
 	SetTaskHold(ctx context.Context, id string, hold bool) (core.Task, error)
 	ChangeTaskSetupCommand(ctx context.Context, lease taskops.TaskLease, request SetupChangeRequest) (SetupChangeResult, error)
@@ -94,7 +94,7 @@ type Store interface {
 	// AdvanceTaskRefreshHead moves a stale approval's refresh target to the
 	// head most recently submitted for review, so the next refresh round
 	// contracts the pushed fix rather than the head recorded when the
-	// approval went stale (spec §21.30). Re-advancing to the current refresh
+	// approval went stale. Re-advancing to the current refresh
 	// head is an idempotent no-op.
 	AdvanceTaskRefreshHead(ctx context.Context, id, newHeadSHA string) error
 	SkipTaskRefresh(ctx context.Context, id, newHeadSHA, reason string) error
@@ -128,14 +128,14 @@ type Store interface {
 	CountEvents(ctx context.Context, taskID, kind string) (int, error)
 	// CountEventsSinceHumanIntervention counts task events of the given kind
 	// recorded after the latest human intervention on the task — the check-in
-	// window of spec §21.17. With no human intervention it counts all events
+	// window since the last human intervention. With no human intervention it counts all events
 	// of that kind.
 	CountEventsSinceHumanIntervention(ctx context.Context, taskID, kind string) (int, error)
 	ListActivityMarkers(ctx context.Context) ([]ActivityMarker, error)
 	ListActivityMarkersForTasks(ctx context.Context, taskIDs []string) ([]ActivityMarker, error)
 	CreateIntervention(ctx context.Context, intervention core.Intervention) error
 	// CancelTask atomically records the human intervention, closes the task,
-	// and cancels every non-terminal work order (spec §21.34).
+	// and cancels every non-terminal work order.
 	CancelTaskCommand(ctx context.Context, lease taskops.TaskLease, intervention core.Intervention) (core.Task, error)
 	ListInterventions(ctx context.Context, taskID string) ([]core.Intervention, error)
 	UpsertTranscript(ctx context.Context, transcript core.Transcript) error
@@ -198,16 +198,20 @@ type Store interface {
 	RevokeWorker(ctx context.Context, id string) error
 	RenewWorkerClaimCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID, workerID, sessionID string, lease time.Duration) (core.WorkOrder, error)
 	ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID, workerID string, release core.WorkOrderRelease) (core.WorkOrder, error)
+	RequestPlanRevisionCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID, workerID, sessionID, rationale string) (PlanRevisionRequestResult, error)
+	// CancelPlanRevisionWorkOrderCommand retires the exact released
+	// implementation order when the operator approves plan re-entry.
+	CancelPlanRevisionWorkOrderCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID, attemptID string) (core.WorkOrder, error)
 	RecordWorkOrderAttemptCheckpoint(ctx context.Context, workOrderID, workerID string, checkpoint core.WorkOrderAttemptCheckpoint) (bool, error)
 
 	// Feature methods remain only for migration and historical conformance.
-	// Live control-plane surfaces retired feature-tree mutation in §21.46.
+	// Live control-plane surfaces do not expose retired feature-tree mutation.
 	CreateFeature(ctx context.Context, feature core.Feature) error
 	ListFeatures(ctx context.Context) ([]core.Feature, error)
 	AssignTaskFeature(ctx context.Context, taskID, featureID string) error
 
 	// Requirements are living intent documents: versioned and confirmed, never
-	// gated (spec §4.2 item 1). CreateRequirement commits the document and its
+	// gated. CreateRequirement commits the document and its
 	// first proposed version together; nothing becomes current intent until
 	// ConfirmRequirementVersion records an operator's confirmation.
 	CreateRequirement(ctx context.Context, requirement core.Requirement, first core.RequirementVersion) (core.Requirement, core.RequirementVersion, error)
@@ -255,7 +259,7 @@ type Store interface {
 	ListDecisions(ctx context.Context) ([]core.Decision, error)
 
 	// Planning sessions are durable chats that produce at most one artifact and
-	// grant no approval authority over it (spec §9, §13.1).
+	// grant no approval authority over it.
 	CreatePlanningSession(ctx context.Context, session core.PlanningSession) (core.PlanningSession, error)
 	GetPlanningSession(ctx context.Context, id string) (core.PlanningSession, error)
 	ListPlanningSessions(ctx context.Context) ([]core.PlanningSession, error)
@@ -285,10 +289,19 @@ type Store interface {
 	ListArtifactsForLineage(ctx context.Context, nodes []core.LineageNode) ([]core.Artifact, error)
 }
 
+// PlanRevisionRequestResult is the atomic projection committed when an
+// implementer contests its approved execution plan (REQ-1, AC-1.1–AC-1.3).
+type PlanRevisionRequestResult struct {
+	WorkOrder   core.WorkOrder `json:"work_order"`
+	Task        core.Task      `json:"task"`
+	PlanVersion int            `json:"plan_version"`
+	Rationale   string         `json:"rationale"`
+}
+
 // ApprovedExecutionDocument resolves the immutable approved document that
 // governs implementation and review. Legacy materialized children inherit the
 // exact parent blueprint version that created them; new task-centric work uses
-// the task's own approved plan (spec §21.58 change 4).
+// the task's own approved plan.
 func ApprovedExecutionDocument(ctx context.Context, st Store, task core.Task) (core.SpecVersion, bool, error) {
 	approved, ok, err := st.GetApprovedSpecVersion(ctx, task.ID)
 	if err != nil || ok || task.ParentTaskID == "" || task.OriginSpecVersion < 1 {
@@ -522,7 +535,7 @@ type TaskOperationsQuery struct {
 // negative bound Postgres rejects, or worse to a small positive one that pages
 // from an unrelated position — where the memory store returns an empty page.
 // Both stores reject the out-of-range query instead, so pagination stays
-// equivalent across them (spec §21.58).
+// equivalent across them.
 const (
 	MaxTaskOperationsLimit  = 200
 	MaxTaskOperationsOffset = math.MaxInt32
@@ -543,7 +556,7 @@ func (q TaskOperationsQuery) Validate() error {
 
 // TaskOperationsPage batches the task rows with only the event and plan data
 // consumed by the Tasks HTTP projection. It deliberately does not carry full
-// task histories (spec §21.58, REQ-1).
+// task histories.
 type TaskOperationsPage struct {
 	Tasks  []core.Task
 	Events map[string][]core.Event
@@ -552,7 +565,7 @@ type TaskOperationsPage struct {
 }
 
 // ForgeFailure is the latest unresolved GitHub projection or merge failure
-// that belongs in the needs-operator surface (spec §11.1, §13.2).
+// that belongs in the needs-operator surface.
 type ForgeFailure struct {
 	Category string    `json:"category"`
 	Detail   string    `json:"detail"`
@@ -659,7 +672,7 @@ type DependencyRemovalResult struct {
 }
 
 // StalledState is derived presentation data for operator-actionable work that
-// cannot make forward progress on its own (spec §21.34).
+// cannot make forward progress on its own.
 type StalledState struct {
 	Needed            bool           `json:"needed"`
 	Reason            string         `json:"reason"`
@@ -705,7 +718,7 @@ func StalledTask(orders []core.WorkOrder) *StalledState {
 
 // InterruptedReviewRecoveryState describes only the latest round's incomplete
 // seats whose worker attempts expired or were retry-suppressed. Completed seats
-// remain authoritative and are never recreated (spec §21.26).
+// remain authoritative and are never recreated.
 type InterruptedReviewRecoveryState struct {
 	Needed         bool             `json:"needed"`
 	ReviewRound    int              `json:"review_round"`
@@ -892,7 +905,7 @@ func NewMemory() Store {
 
 // NewMemoryWithConfig gives the volatile store the same repository contract as
 // the durable store. Blueprint materialization must validate and resolve each
-// SUB repository from workspace configuration (spec §4.1).
+// SUB repository from workspace configuration.
 func NewMemoryWithConfig(cfg *config.Config) Store {
 	repositories := map[string]map[string]string{}
 	if cfg != nil {
@@ -1316,6 +1329,141 @@ func (m *memory) ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskop
 	return order, nil
 }
 
+func (m *memory) RequestPlanRevisionCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID, workerID, sessionID, rationale string) (PlanRevisionRequestResult, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	rationale = strings.TrimSpace(rationale)
+	if rationale == "" {
+		return PlanRevisionRequestResult{}, fmt.Errorf("rationale is required")
+	}
+	order, ok := m.workOrders[workOrderID]
+	if !ok || !taskLease.ValidForCommand(order.TaskID, string(core.WorkOrderCmdRequestPlanRevision)) {
+		return PlanRevisionRequestResult{}, ErrWorkOrderClaimLost
+	}
+	now := time.Now().UTC()
+	if order.WorkerID != workerID || order.SessionID == "" || order.SessionID != sessionID || order.State != core.WorkOrderClaimed ||
+		!order.LeaseExpiresAt.After(now) || (!order.ExecutionDeadline.IsZero() && !order.ExecutionDeadline.After(now)) {
+		return PlanRevisionRequestResult{}, ErrWorkOrderClaimLost
+	}
+	if order.Stage != core.StageImplement {
+		return PlanRevisionRequestResult{}, fmt.Errorf("request_plan_revision requires an implement-stage work order")
+	}
+	task, ok := m.tasks[order.TaskID]
+	if !ok {
+		return PlanRevisionRequestResult{}, fmt.Errorf("task %s not found", order.TaskID)
+	}
+	plan, ok := m.approvedExecutionDocumentLocked(task)
+	if !ok {
+		return PlanRevisionRequestResult{}, fmt.Errorf("request_plan_revision requires an approved execution plan")
+	}
+	nextOrder, err := core.TransitionWorkOrder(order.State, core.WorkOrderCmdRequestPlanRevision)
+	if err != nil {
+		return PlanRevisionRequestResult{}, err
+	}
+	nextTask, err := core.TransitionTask(task.State, core.TaskGatePlanRevision)
+	if err != nil {
+		return PlanRevisionRequestResult{}, err
+	}
+	queueTimeout := order.QueueDeadline.Sub(order.QueueEnteredAt)
+	if queueTimeout <= 0 {
+		queueTimeout = config.DefaultWorkOrderQueueTimeout
+	}
+	attemptID := order.AttemptID
+	order.LastAttemptID = attemptID
+	clearActiveAttempt(&order)
+	order.OperatorDirection = ""
+	order.State = nextOrder
+	order.LastAttemptOutcome = core.WorkOrderOutcomeReleased
+	order.LastFailureCategory = ""
+	order.LastFailureMessage = core.WorkOrderReleaseReasonPlanRevisionRequested
+	order.LastFailureDetail = ""
+	order.LastFailureExitStatus = nil
+	order.LastFailureAt = now
+	order.NextRetryAt = time.Time{}
+	order.RetrySuppressed = true
+	order.RetrySuppressionReason = ""
+	order.QueueEnteredAt, order.QueueDeadline = now, now.Add(queueTimeout)
+	order.UpdatedAt = now
+	order.Claimable = false
+	m.workOrders[workOrderID] = order
+	for taskID, jobs := range m.jobs {
+		for i := range jobs {
+			if jobs[i].ID == order.JobID {
+				jobs[i].State = core.JobPending
+				jobs[i].StartedAt = time.Time{}
+				jobs[i].EndedAt = time.Time{}
+				m.jobs[taskID] = jobs
+			}
+		}
+	}
+	task.State = nextTask
+	m.tasks[task.ID] = task
+	actor := WithActor(ctx, Actor{ID: workerID, Role: core.ActorRunner})
+	m.appendEventLocked(actor, core.Event{TaskID: task.ID, JobID: order.JobID, Kind: "work_order.plan_revision_requested", Payload: core.JSONPayload(map[string]any{"work_order_id": order.ID, "attempt_id": attemptID, "session_id": sessionID, "rationale": rationale, "plan_version": plan.Version}), At: now})
+	m.appendEventLocked(actor, core.Event{TaskID: task.ID, JobID: order.JobID, Kind: "work_order.released", Payload: core.JSONPayload(map[string]any{"attempt_id": attemptID, "session_id": sessionID, "reason": core.WorkOrderReleaseReasonPlanRevisionRequested, "release_cause": core.WorkOrderReleaseCauseOperatorAction, "outcome": core.WorkOrderOutcomeReleased, "automatic_retry_count": order.AutomaticRetryCount, "retry_suppressed": true}), At: now})
+	m.appendEventLocked(actor, core.Event{TaskID: task.ID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": core.TaskRunning, "to": nextTask, "command": core.TaskGatePlanRevision}), At: now})
+	return PlanRevisionRequestResult{WorkOrder: order, Task: task, PlanVersion: plan.Version, Rationale: rationale}, nil
+}
+
+func (m *memory) CancelPlanRevisionWorkOrderCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID, attemptID string) (core.WorkOrder, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	order, ok := m.workOrders[workOrderID]
+	if !ok {
+		return core.WorkOrder{}, fmt.Errorf("work order %s not found", workOrderID)
+	}
+	if !taskLease.ValidForCommand(order.TaskID, string(core.WorkOrderCmdCancel)) {
+		return core.WorkOrder{}, fmt.Errorf("plan-revision cancellation requires a valid taskops lease")
+	}
+	if order.Stage != core.StageImplement || order.LastAttemptID != attemptID || order.LastFailureMessage != core.WorkOrderReleaseReasonPlanRevisionRequested {
+		return core.WorkOrder{}, fmt.Errorf("work order %s is not the contested plan-revision attempt", workOrderID)
+	}
+	if order.State == core.WorkOrderCancelled {
+		return order, nil
+	}
+	next, err := core.TransitionWorkOrder(order.State, core.WorkOrderCmdCancel)
+	if err != nil {
+		return core.WorkOrder{}, err
+	}
+	now := time.Now().UTC()
+	priorState := order.State
+	order.State, order.Claimable, order.UpdatedAt = next, false, now
+	m.workOrders[workOrderID] = order
+	for taskID, jobs := range m.jobs {
+		for i := range jobs {
+			if jobs[i].ID != order.JobID || jobs[i].State == core.JobDone {
+				continue
+			}
+			jobs[i].State, jobs[i].EndedAt = core.JobFailed, now
+			m.jobs[taskID] = jobs
+		}
+	}
+	actor := ActorFromContext(ctx)
+	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.cancelled", ActorID: actor.ID, ActorRole: actor.Role, Payload: core.JSONPayload(map[string]any{
+		"work_order_id": order.ID, "attempt_id": attemptID, "prior_state": priorState, "state": next,
+		"command": core.WorkOrderCmdCancel, "reason": "plan revision approved",
+	}), At: now})
+	return order, nil
+}
+
+func (m *memory) approvedExecutionDocumentLocked(task core.Task) (core.SpecVersion, bool) {
+	versions := m.specs[task.ID]
+	for index := len(versions) - 1; index >= 0; index-- {
+		if versions[index].Approved {
+			return versions[index], true
+		}
+	}
+	if task.ParentTaskID == "" || task.OriginSpecVersion < 1 {
+		return core.SpecVersion{}, false
+	}
+	for _, plan := range m.specs[task.ParentTaskID] {
+		if plan.Version == task.OriginSpecVersion && plan.Approved {
+			return plan, true
+		}
+	}
+	return core.SpecVersion{}, false
+}
+
 func (m *memory) attemptReportedProgressLocked(order core.WorkOrder) bool {
 	for i := len(m.events[order.TaskID]) - 1; i >= 0; i-- {
 		event := m.events[order.TaskID][i]
@@ -1388,7 +1536,7 @@ func (m *memory) RecordWorkOrderAttemptCheckpoint(ctx context.Context, workOrder
 // only from the immutable claim event for the exact worker, session, and
 // attempt that created the preservation commit. This lets an attempt record a
 // successful push after observing authority loss without restoring lifecycle
-// authority or admitting a different task attempt (spec §§21.48, 21.53).
+// authority or admitting a different task attempt.
 func AttemptCheckpointClaimEventMatches(event core.Event, workOrderID, workerID string, checkpoint core.WorkOrderAttemptCheckpoint) bool {
 	if event.Kind != "work_order.claimed" {
 		return false
@@ -1683,7 +1831,7 @@ func (m *memory) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.
 			}
 		}
 		// The check-in comparison uses bounces since the last human
-		// intervention, not the lifetime count (spec §21.17); the recorded
+		// intervention, not the lifetime count; the recorded
 		// count in the event payload stays lifetime for the timeline.
 		window := m.countEventsSinceHumanInterventionLocked(decision.TaskID, "pipeline.bounced")
 		m.nextReviewID++
@@ -1716,7 +1864,7 @@ func (m *memory) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.
 		// Auto-approval currently projects running -> awaiting_human with
 		// gate.merge even though the merge gate is off. The table has no direct
 		// running -> approved edge; keep this explicit gap workaround visible
-		// until a table amendment supplies the intended command (spec §21.37).
+		// until a table amendment supplies the intended command.
 		m.appendEventLocked(ctx, core.Event{TaskID: task.ID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": fromState, "to": state, "command": command})})
 		fromState, state = state, approved
 		command = core.TaskInterventionApproveReview
@@ -1732,7 +1880,7 @@ func (m *memory) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.
 	m.tasks[task.ID] = task
 	// When autoApprove is true, this second projection records an intervention
 	// command without a human intervention. It is the paired gap workaround for
-	// the absent running -> approved table edge (spec §21.37).
+	// the absent running -> approved table edge.
 	m.appendEventLocked(ctx, core.Event{TaskID: task.ID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": fromState, "to": state, "command": command})})
 	m.appendEventLocked(ctx, core.Event{TaskID: task.ID, Kind: "pipeline.transition_decided", Payload: core.JSONPayload(map[string]any{"from_stage": fromStage, "next_stage": next, "recovery_stage": recovery, "state": state, "review_work_order_id": decision.ReviewWorkOrderID})})
 	return nil
@@ -2377,7 +2525,7 @@ func (m *memory) ListCheckpointContextCandidates(ctx context.Context, requiremen
 
 // ProjectWorkOrderAt applies elapsed clock semantics to a copy for
 // observational responses. It performs no store writes; the River order clock
-// persists the same canonical commands asynchronously (spec §21.38).
+// persists the same canonical commands asynchronously.
 func ProjectWorkOrderAt(order core.WorkOrder, now time.Time) core.WorkOrder {
 	if (order.State == core.WorkOrderQueued || order.State == core.WorkOrderClaimed) &&
 		!order.ExecutionDeadline.IsZero() && !order.ExecutionDeadline.After(now) {
@@ -2680,7 +2828,7 @@ func (m *memory) RedispatchWorkOrderCommand(ctx context.Context, lease taskops.T
 }
 
 // RefreshWorkOrderHarnessSnapshot durably replaces the pinned harness snapshot
-// of an unclaimed queued or stale order on queue re-entry (spec §21.32). The
+// of an unclaimed queued or stale order on queue re-entry. The
 // active-attempt snapshot stays immutable: claimed orders are rejected.
 func (m *memory) RefreshWorkOrderHarnessSnapshot(ctx context.Context, id string, snapshot *core.HarnessSnapshot) (core.WorkOrder, error) {
 	if snapshot == nil || snapshot.Name == "" {
@@ -2781,7 +2929,7 @@ func (m *memory) RecoverWorkOrderCommand(ctx context.Context, lease taskops.Task
 	if priorState == core.WorkOrderQueued {
 		// Resetting retry metadata on an already-queued order is not a lifecycle
 		// transition. Keep the historical event kind without mislabeling this
-		// operator action as W14 (spec §3.3, §21.41).
+		// operator action as W14.
 		lifecycleCommand = ""
 		eventKind = "work_order.redispatched"
 	}
@@ -2957,7 +3105,8 @@ func updateRequiresClaim(next, current core.WorkOrderState) bool {
 }
 
 // InferWorkOrderUpdateCommand preserves the legacy whole-record update API
-// while routing every actual state change through a named §21.37 command.
+// while routing every actual state change through a named lifecycle command
+// (design-task-lifecycle).
 func InferWorkOrderUpdateCommand(current, next core.WorkOrder) (core.WorkOrderCommand, bool) {
 	switch {
 	case current.State == core.WorkOrderQueued && next.State == core.WorkOrderClaimed:
@@ -3039,7 +3188,7 @@ func ValidateReviewPublicationTransition(from, to core.ReviewPublicationState) e
 // ValidateReviewPublicationUpdate permits one correcting transition for the
 // impossible pre-v2.3 state that reported a required comment as published
 // without a comment ID. All valid publications retain the canonical terminal
-// transition rules (spec §21.43).
+// transition rules.
 func ValidateReviewPublicationUpdate(current, next core.ReviewPublication) error {
 	repairingMissingComment := current.State == core.ReviewPublicationPublished &&
 		current.CommentID <= 0 && next.State == core.ReviewPublicationRetrying
@@ -3053,7 +3202,6 @@ func ValidateReviewPublicationUpdate(current, next core.ReviewPublication) error
 
 // ValidateReviewPublicationProjection prevents a required Phase 5.3 projection
 // from being recorded as complete without its deterministic aggregate comment
-// (spec §19, §21.43).
 func ValidateReviewPublicationProjection(publication core.ReviewPublication) error {
 	if publication.State == core.ReviewPublicationPublished && publication.CommentID <= 0 {
 		return fmt.Errorf("published review publication %s requires a nonzero comment ID", publication.ReviewWorkOrderID)
@@ -3348,7 +3496,7 @@ func (m *memory) GetSpecVersion(ctx context.Context, taskID string, version int)
 }
 
 // GetApprovedSpecVersion returns the newest approved spec version, which is
-// the one that governs (spec §4.1): approval only ever lands on the newest
+// the one that governs: approval only ever lands on the newest
 // version, so a later unapproved draft is a proposal that has materialized
 // nothing and must not displace the blueprint currently in delivery.
 func (m *memory) GetApprovedSpecVersion(_ context.Context, taskID string) (core.SpecVersion, bool, error) {

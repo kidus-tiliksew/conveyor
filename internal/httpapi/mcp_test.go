@@ -513,7 +513,7 @@ func TestMCPToolsListRequiresAuthAndPublishesLifecycle(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"create_task", "list_work_orders", "claim_work_order", "redispatch_work_order", "renew_work_order", "release_work_order", "get_work_order", "read_artifact", "report_progress", "report_usage", "propose_system_design_revision", "propose_decision", "upload_transcript", "submit_plan", "submit_for_review", "await_review", "submit_review_verdict"}
+	want := []string{"create_task", "list_work_orders", "claim_work_order", "redispatch_work_order", "renew_work_order", "release_work_order", "request_plan_revision", "get_work_order", "read_artifact", "report_progress", "report_usage", "propose_system_design_revision", "propose_decision", "upload_transcript", "submit_plan", "submit_for_review", "await_review", "submit_review_verdict"}
 	if len(envelope.Result.Tools) != len(want) {
 		t.Fatalf("tools = %d, want %d", len(envelope.Result.Tools), len(want))
 	}
@@ -524,6 +524,97 @@ func TestMCPToolsListRequiresAuthAndPublishesLifecycle(t *testing.T) {
 		if strings.Contains(name, "preempt") {
 			t.Fatalf("operator-only preempt leaked into MCP tool %q", name)
 		}
+	}
+}
+
+func TestMCPRequestPlanRevisionEndToEnd(t *testing.T) {
+	t.Parallel()
+	type fixture struct {
+		server  *Server
+		request *http.Request
+		args    map[string]any
+		store   store.Store
+		taskID  string
+	}
+	setup := func(t *testing.T, stage core.Stage, approved, claimed bool) fixture {
+		t.Helper()
+		ctx := store.WithWorkspace(t.Context(), "demo")
+		st := store.NewMemory()
+		taskID := "plan-revision-" + core.NewTaskID()
+		now := time.Now().UTC()
+		if err := st.CreateTask(ctx, core.Task{ID: taskID, Workspace: "demo", Repo: "conveyor", State: core.TaskRunning, NextStage: stage, CreatedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+		if approved {
+			plan, err := st.CreateSpecVersion(ctx, core.SpecVersion{TaskID: taskID, Content: "approved plan"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = st.ApproveSpecVersion(ctx, taskID, plan.Version); err != nil {
+				t.Fatal(err)
+			}
+		}
+		orderID := taskID + "-order"
+		if err := st.CreateJob(ctx, core.Job{ID: orderID, TaskID: taskID, Stage: stage, State: core.JobPending}); err != nil {
+			t.Fatal(err)
+		}
+		if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: orderID, TaskID: taskID, JobID: orderID, Stage: stage, State: core.WorkOrderQueued}); err != nil {
+			t.Fatal(err)
+		}
+		if claimed {
+			if _, err := storetest.For(st).ClaimWorkOrder(ctx, orderID, core.WorkOrderClaim{SessionID: "session-a", ClientToken: "secret", WorkerID: "worker-a", Agent: "codex", Model: "model", Lease: time.Minute, ExecutionTimeout: time.Hour}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		server := NewServer(st)
+		server.Workspace = "demo"
+		server.WorkOrders = &workorder.Service{Store: st}
+		server.Workers = &workerservice.Service{Store: st, WorkOrders: server.WorkOrders}
+		request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+		request = request.WithContext(context.WithValue(request.Context(), workerContextKey{}, core.Worker{ID: "worker-a", Workspace: "demo"}))
+		return fixture{server: server, request: request, args: map[string]any{"workspace_id": "demo", "work_order_id": orderID, "session_id": "session-a", "rationale": "  plan conflicts with the API  "}, store: st, taskID: taskID}
+	}
+
+	t.Run("happy path", func(t *testing.T) {
+		item := setup(t, core.StageImplement, true, true)
+		result, err := item.server.callMCPTool(item.request, "request_plan_revision", item.args)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := result.(store.PlanRevisionRequestResult)
+		if got.Rationale != "plan conflicts with the API" || got.PlanVersion != 1 || got.Task.State != core.TaskAwaiting || got.WorkOrder.State != core.WorkOrderQueued || !got.WorkOrder.RetrySuppressed {
+			t.Fatalf("result=%+v", got)
+		}
+	})
+
+	for _, test := range []struct {
+		name                 string
+		stage                core.Stage
+		approved, claimed    bool
+		sessionID, rationale string
+	}{
+		{name: "blank rationale", stage: core.StageImplement, approved: true, claimed: true, sessionID: "session-a", rationale: " "},
+		{name: "wrong stage", stage: core.StageReview, approved: true, claimed: true, sessionID: "session-a", rationale: "wrong"},
+		{name: "missing approved plan", stage: core.StageImplement, claimed: true, sessionID: "session-a", rationale: "wrong"},
+		{name: "stale session", stage: core.StageImplement, approved: true, claimed: true, sessionID: "stale", rationale: "wrong"},
+		{name: "unclaimed", stage: core.StageImplement, approved: true, sessionID: "session-a", rationale: "wrong"},
+	} {
+		t.Run(test.name+" is in-band and non-mutating", func(t *testing.T) {
+			item := setup(t, test.stage, test.approved, test.claimed)
+			item.args["session_id"], item.args["rationale"] = test.sessionID, test.rationale
+			beforeOrder, _ := item.store.GetWorkOrder(store.WithWorkspace(t.Context(), "demo"), item.args["work_order_id"].(string))
+			beforeTask, _ := item.store.GetTask(store.WithWorkspace(t.Context(), "demo"), item.taskID)
+			beforeEvents, _ := item.store.ListEvents(store.WithWorkspace(t.Context(), "demo"), item.taskID)
+			if _, err := item.server.callMCPTool(item.request, "request_plan_revision", item.args); err == nil {
+				t.Fatal("request unexpectedly succeeded")
+			}
+			afterOrder, _ := item.store.GetWorkOrder(store.WithWorkspace(t.Context(), "demo"), item.args["work_order_id"].(string))
+			afterTask, _ := item.store.GetTask(store.WithWorkspace(t.Context(), "demo"), item.taskID)
+			afterEvents, _ := item.store.ListEvents(store.WithWorkspace(t.Context(), "demo"), item.taskID)
+			if beforeOrder.State != afterOrder.State || beforeOrder.SessionID != afterOrder.SessionID || beforeTask.State != afterTask.State || len(beforeEvents) != len(afterEvents) {
+				t.Fatalf("request mutated rejected projection")
+			}
+		})
 	}
 }
 

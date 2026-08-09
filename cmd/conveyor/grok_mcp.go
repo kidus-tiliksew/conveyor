@@ -54,7 +54,7 @@ type grokConfigDocument struct {
 
 // validateGrokEnvironmentAttachment proves that the effective Grok
 // registration is the intended non-secret config.toml entry and completes a
-// real MCP handshake before any model turn (spec §21.29 changes 4-5).
+// real MCP handshake before any model turn (design-harness-execution).
 func validateGrokEnvironmentAttachment(ctx context.Context, harness config.Harness, env []string, directory string) error {
 	return validateGrokEnvironmentAttachmentWithRunner(ctx, harness, env, directory, runGrokJSON)
 }

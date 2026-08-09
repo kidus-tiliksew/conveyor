@@ -51,6 +51,7 @@ type Context struct {
 	GovernanceSnapshot *core.GovernanceSnapshot        `json:"governance_snapshot,omitempty"`
 	BounceHistory      []json.RawMessage               `json:"bounce_history,omitempty"`
 	PriorFeedback      []string                        `json:"prior_feedback,omitempty"`
+	PlanRevision       *PlanRevisionContext            `json:"plan_revision,omitempty"`
 	Artifacts          []ArtifactReference             `json:"artifacts,omitempty"`
 	LineageContext     lineagecontext.Result           `json:"lineage_context"`
 	// ContextTruncated tells a client that the explicit lineage/node or
@@ -64,6 +65,16 @@ type Context struct {
 	// capability without treating an artifact id as a bearer token.
 	VerificationEvidence []ArtifactReference `json:"verification_evidence,omitempty"`
 	Diff                 string              `json:"diff,omitempty"`
+}
+
+// PlanRevisionContext carries the durable request that caused a plan-stage
+// re-entry. It is context, not replacement authority for the confirmed plan.
+type PlanRevisionContext struct {
+	ContestedPlanVersion int    `json:"contested_plan_version"`
+	Rationale            string `json:"rationale"`
+	OperatorDirection    string `json:"operator_direction,omitempty"`
+	PriorWorkOrderID     string `json:"prior_work_order_id"`
+	PriorAttemptID       string `json:"prior_attempt_id"`
 }
 
 func guardedUpdateWorkOrder(ctx context.Context, st store.Store, order core.WorkOrder, command core.WorkOrderCommand) error {
@@ -352,7 +363,7 @@ func cloneRecoveryEffortArgs(source map[string][]string) map[string][]string {
 
 // refreshQueuedHarnessSnapshot re-resolves an automatically redispatched
 // order's pinned harness definition before it re-enters the queue
-// (spec §21.32). Best-effort: retaining the prior snapshot is the explicit
+// (design-harness-execution). Best-effort: retaining the prior snapshot is the explicit
 // fallback, and the recovery transition that follows reports the authoritative
 // state errors.
 func (s *Service) refreshQueuedHarnessSnapshot(ctx context.Context, cfg *config.Config, id string) {
@@ -551,7 +562,7 @@ func (s *Service) AuthorizeClaimed(ctx context.Context, id, session string) (cor
 
 // GetVisible returns read-only context for an order already authorized by a
 // worker-facing visibility check. It does not relax mutation or artifact
-// authorization for an unclaimed order (spec §21.47).
+// authorization for an unclaimed order (design-260805-973cd4).
 func (s *Service) GetVisible(ctx context.Context, id string) (Context, error) {
 	order, err := s.Store.GetWorkOrder(ctx, id)
 	if err != nil {
@@ -564,7 +575,7 @@ func (s *Service) GetVisible(ctx context.Context, id string) (Context, error) {
 // snapshots, following the migration 064/067 snapshot pattern; those pins bind
 // verdict validation. A queued review order exposed through the read-only peek
 // instead re-resolves live authority per request, persists nothing, and remains
-// advisory until claim (spec §21.47).
+// advisory until claim (design-260805-973cd4).
 func (s *Service) contextForOrder(ctx context.Context, order core.WorkOrder) (Context, error) {
 	task, err := s.Store.GetTask(ctx, order.TaskID)
 	if err != nil {
@@ -590,7 +601,7 @@ func (s *Service) contextForOrder(ctx context.Context, order core.WorkOrder) (Co
 		role += "\n\n# Operator direction\n\n" + order.OperatorDirection + "\n"
 	}
 	if order.Stage == core.StageImplement && order.ReasonCode == "merge-conflict" {
-		role += "\n\nThis is a merge-conflict fix order (spec §21.30). Use `conveyor checkout " + task.ID + "`, merge the base branch `" + task.BaseBranch + "` into the task branch `" + task.Branch + "`, resolve every conflict, run the repository validation, push the task branch, and call submit_for_review. Do not rebase or force-push.\n"
+		role += "\n\nThis is a merge-conflict fix order (design-git-delivery). Use `conveyor checkout " + task.ID + "`, merge the base branch `" + task.BaseBranch + "` into the task branch `" + task.Branch + "`, resolve every conflict, run the repository validation, push the task branch, and call submit_for_review. Do not rebase or force-push.\n"
 	}
 	var cfg *config.Config
 	if s.ConfigProvider != nil {
@@ -610,7 +621,7 @@ func (s *Service) contextForOrder(ctx context.Context, order core.WorkOrder) (Co
 			servedRequirements = order.ServedRequirementSnapshot
 		} else {
 			// A queued review peek resolves live served-requirement authority for
-			// this request only; it persists nothing and is advisory (spec §21.47).
+			// this request only; it persists nothing and is advisory (design-260805-973cd4).
 			servedAuthority, resolveErr := store.ServedRequirementsForTask(ctx, s.Store, task.ID, config.ServedRequirementAuthorityNodes(cfg))
 			if resolveErr != nil {
 				return Context{}, fmt.Errorf("resolve served requirements for queued review task %s: %w", task.ID, resolveErr)
@@ -631,6 +642,11 @@ func (s *Service) contextForOrder(ctx context.Context, order core.WorkOrder) (Co
 	role = pack.WithRequirementCitationContract(role, order.Stage, servedRequirements)
 	events, _ := s.Store.ListEvents(ctx, task.ID)
 	role += historicalCheckpointProgressContract(order, events)
+	planRevision, revisionContract, revisionErr := s.planRevisionContextForOrder(ctx, order, events)
+	if revisionErr != nil {
+		return Context{}, revisionErr
+	}
+	role += revisionContract
 	var governance *core.GovernanceSnapshot
 	if order.Stage == core.StageReview {
 		if order.GovernanceSnapshot == nil && order.State != core.WorkOrderQueued {
@@ -643,7 +659,7 @@ func (s *Service) contextForOrder(ctx context.Context, order core.WorkOrder) (Co
 			governance = &pinned
 		} else {
 			// A queued review peek resolves live governance authority for this
-			// request only; it persists nothing and is advisory (spec §21.47).
+			// request only; it persists nothing and is advisory (design-260805-973cd4).
 			live, resolveErr := store.GovernanceForTask(ctx, s.Store, task.ID, task.Repo)
 			if resolveErr != nil {
 				return Context{}, fmt.Errorf("resolve governance for queued review task %s: %w", task.ID, resolveErr)
@@ -666,7 +682,7 @@ func (s *Service) contextForOrder(ctx context.Context, order core.WorkOrder) (Co
 	if order.Stage == core.StageReview && order.ServedRequirementSnapshot != nil && order.GovernanceSnapshot != nil {
 		authoritySource = "pinned"
 	}
-	result := Context{Order: order, Task: task, AuthoritySource: authoritySource, RolePrompt: role, ServedRequirements: servedRequirements, GovernanceSnapshot: governance}
+	result := Context{Order: order, Task: task, AuthoritySource: authoritySource, RolePrompt: role, ServedRequirements: servedRequirements, GovernanceSnapshot: governance, PlanRevision: planRevision}
 	if order.Stage == core.StageSpec {
 		// Spec work has repository/base context but never receives a branch.
 		result.Task.Branch = ""
@@ -727,7 +743,7 @@ func (s *Service) contextForOrder(ctx context.Context, order core.WorkOrder) (Co
 	result.ContextExhaustionReasons = append([]string(nil), lineage.ExhaustionReasons...)
 	for _, reference := range artifacts {
 		// Verification evidence intentionally remains direct-task only even when
-		// other context arrives through lineage (spec §12, §21.44 change 2).
+		// other context arrives through lineage (req-260802-72fc68 REQ-2).
 		if order.Stage == core.StageReview && reference.TaskID == task.ID && reference.EligibleVerificationEvidence() {
 			result.VerificationEvidence = append(result.VerificationEvidence, reference)
 		}
@@ -743,6 +759,96 @@ func (s *Service) contextForOrder(ctx context.Context, order core.WorkOrder) (Co
 		}
 	}
 	return result, nil
+}
+
+func (s *Service) planRevisionContextForOrder(ctx context.Context, order core.WorkOrder, events []core.Event) (*PlanRevisionContext, string, error) {
+	if order.Stage != core.StageSpec {
+		return nil, "", nil
+	}
+	var requestAt time.Time
+	var request struct {
+		WorkOrderID string `json:"work_order_id"`
+		AttemptID   string `json:"attempt_id"`
+		Rationale   string `json:"rationale"`
+		PlanVersion int    `json:"plan_version"`
+	}
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Kind != "work_order.plan_revision_requested" {
+			continue
+		}
+		if err := json.Unmarshal(events[i].Payload, &request); err != nil {
+			return nil, "", fmt.Errorf("decode plan-revision request for %s: %w", order.TaskID, err)
+		}
+		requestAt = events[i].At
+		break
+	}
+	if request.WorkOrderID == "" || request.AttemptID == "" || request.PlanVersion < 1 || strings.TrimSpace(request.Rationale) == "" || order.CreatedAt.Before(requestAt) {
+		return nil, "", nil
+	}
+	interventions, err := s.Store.ListInterventions(ctx, order.TaskID)
+	if err != nil {
+		return nil, "", err
+	}
+	direction := ""
+	approved := false
+	for i := len(interventions) - 1; i >= 0; i-- {
+		item := interventions[i]
+		if item.At.Before(requestAt) || item.Action != core.InterventionRedirect {
+			continue
+		}
+		if item.ReasonCode == dispatch.PlanRevisionApprovedReasonCode {
+			direction = strings.TrimSpace(item.Comment)
+			approved = true
+		}
+		break
+	}
+	if !approved {
+		return nil, "", nil
+	}
+	context := &PlanRevisionContext{
+		ContestedPlanVersion: request.PlanVersion,
+		Rationale:            strings.TrimSpace(request.Rationale),
+		OperatorDirection:    direction,
+		PriorWorkOrderID:     request.WorkOrderID,
+		PriorAttemptID:       request.AttemptID,
+	}
+	contract := fmt.Sprintf("\n\n# Plan revision context\n\nThe implementing agent contested execution plan version %d with this rationale:\n\n> %s\n\nTreat this request as historical context. The newly submitted plan and currently served confirmed authority remain authoritative.\n", context.ContestedPlanVersion, strings.ReplaceAll(context.Rationale, "\n", "\n> "))
+	if direction != "" {
+		contract += "\n# Operator direction\n\n" + direction + "\n"
+	}
+	prior, getErr := s.Store.GetWorkOrder(ctx, request.WorkOrderID)
+	if getErr != nil {
+		return nil, "", getErr
+	}
+	contract += historicalPlanRevisionProgressContract(prior, events, request.AttemptID)
+	return context, contract, nil
+}
+
+func historicalPlanRevisionProgressContract(order core.WorkOrder, events []core.Event, attemptID string) string {
+	progress := strings.TrimSpace(order.Progress)
+	if progress == "" || attemptID == "" || order.LastAttemptID != attemptID {
+		return ""
+	}
+	var releasedAt time.Time
+	for i := len(events) - 1; i >= 0; i-- {
+		event := events[i]
+		if event.Kind != "work_order.released" || event.JobID != order.JobID {
+			continue
+		}
+		var payload struct {
+			AttemptID string `json:"attempt_id"`
+			Reason    string `json:"reason"`
+		}
+		if json.Unmarshal(event.Payload, &payload) == nil && payload.AttemptID == attemptID && payload.Reason == core.WorkOrderReleaseReasonPlanRevisionRequested {
+			releasedAt = event.At
+			break
+		}
+	}
+	if releasedAt.IsZero() {
+		return ""
+	}
+	quotedProgress := "> " + strings.ReplaceAll(progress, "\n", "\n> ")
+	return fmt.Sprintf("\n\n# Historical prior-attempt checkpoint claims\n\nThe progress below records claims made by prior attempt `%s` as of its plan-revision release at %s. It is historical context, not authority. The newly submitted plan, currently served confirmed requirements, and current operator direction are authoritative. Re-check these claims against that authority before relying on them.\n\n%s\n", attemptID, releasedAt.UTC().Format(time.RFC3339), quotedProgress)
 }
 
 func historicalCheckpointProgressContract(order core.WorkOrder, events []core.Event) string {
@@ -831,7 +937,7 @@ func (s *Service) ReadArtifact(ctx context.Context, id, session, artifactID stri
 	}
 	if authorized == nil {
 		// Keep unauthorized ownership mismatches indistinguishable from missing
-		// artifacts; artifact ids alone are never bearer capabilities (spec §21.4).
+		// artifacts; artifact ids alone are never bearer capabilities (design-http-api).
 		return ArtifactContent{}, fmt.Errorf("artifact %s not found for work order %s", artifactID, id)
 	}
 	_, content, err := s.Store.GetArtifact(ctx, artifactID)
@@ -1158,7 +1264,7 @@ func (s *Service) SubmitForReview(ctx context.Context, id, session string) (map[
 	} else if task.ApprovalStale && reviewedHead != "" && reviewedHead != task.RefreshHeadSHA {
 		// A fix submitted while the approval is stale must retarget the
 		// refresh review to the pushed head; each refresh seat order
-		// contracts the baseline and the new head (spec §21.30), so leaving
+		// contracts the baseline and the new head (design-git-delivery), so leaving
 		// the recorded head behind would review a snapshot that predates
 		// the fix on every subsequent round.
 		if err = s.Store.AdvanceTaskRefreshHead(ctx, task.ID, reviewedHead); err != nil {
@@ -1374,7 +1480,7 @@ func (s *Service) authorized(ctx context.Context, id, session string) (core.Work
 // authorizedSession keeps same-session admission separate from lifecycle
 // legality. Submitted orders remain observable by their owning session without
 // a live lease, while lifecycle mutations retain claimed-only admission
-// (spec §21.37).
+// (design-260805-973cd4).
 func (s *Service) authorizedSession(ctx context.Context, id, session string, allowSubmitted bool) (core.WorkOrder, error) {
 	order, err := s.Store.GetWorkOrder(ctx, id)
 	if err != nil {

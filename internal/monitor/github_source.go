@@ -66,7 +66,7 @@ type failedCheckRun struct {
 
 // RecordedLineage verifies that a branch-shaped pull request is actually the
 // pull request Conveyor recorded for this task in this repository. A task ID
-// embedded in an unrelated external PR is not lineage (spec §21.45).
+// embedded in an unrelated external PR is not lineage (design-monitor-drift).
 func RecordedLineage(task core.Task, events []core.Event, repository, githubSlug, taskID string, pullRequestNumber int, headSHA string) bool {
 	if task.ID != taskID || task.Repo != repository || task.Branch != "conveyor/task-"+taskID ||
 		strings.TrimSpace(headSHA) == "" ||

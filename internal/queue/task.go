@@ -1,6 +1,6 @@
 // Package queue defines durable River job contracts without importing the
 // dispatcher. Keeping args in a neutral package lets the Postgres store insert
-// jobs transactionally while workers remain in internal/dispatch (spec §17.0).
+// jobs transactionally while workers remain in internal/dispatch (design-task-lifecycle).
 package queue
 
 import (
@@ -13,7 +13,7 @@ const ControlQueue = "control"
 
 const (
 	// River counts the initial execution in MaxAttempts, so five scheduled
-	// retries require six total executions (spec §3.3, §21.41).
+	// retries require six total executions (design-task-lifecycle).
 	DispatchTaskRetryLimit    = 5
 	DispatchTaskMaxAttempts   = DispatchTaskRetryLimit + 1
 	DispatchRetryInitialDelay = 10 * time.Second
@@ -21,7 +21,7 @@ const (
 )
 
 // DispatchTaskRetryDelay returns the bounded T12/T13 backoff for the attempt
-// that just failed (spec §3.3, §21.41).
+// that just failed (design-task-lifecycle).
 func DispatchTaskRetryDelay(attempt int) time.Duration {
 	delay := DispatchRetryInitialDelay
 	for step := 1; step < attempt && delay < DispatchRetryMaximumDelay; step++ {

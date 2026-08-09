@@ -335,6 +335,42 @@ export function technicalActivity(item: ActivityItem): TaskEvent[] {
   return [...item.events].sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime())
 }
 
+// The release reason the plan-revision command records, mirrored here so the
+// timeline can tell that one released claim apart from an ordinary one.
+const planRevisionReleaseReason = 'plan revision requested'
+
+export interface PlanRevisionRequest {
+  planVersion: number
+  rationale: string
+}
+
+// The request event is the durable record of what is being contested: the
+// agent's rationale and the plan version it names. A payload missing either is
+// not a decidable request, so nothing is invented from it (REQ-1 AC-1.3).
+export function planRevisionRequestFrom(event: TaskEvent): PlanRevisionRequest | null {
+  const rationale = typeof event.payload?.rationale === 'string' ? event.payload.rationale.trim() : ''
+  const planVersion =
+    typeof event.payload?.plan_version === 'number'
+      ? event.payload.plan_version
+      : Number.parseInt(String(event.payload?.plan_version ?? ''), 10)
+  if (!rationale || !Number.isInteger(planVersion) || planVersion <= 0) return null
+  return { planVersion, rationale }
+}
+
+// A plan-revision request remains the active human decision until an audited
+// intervention supersedes it. Later release/state events are lifecycle detail,
+// so they must not hide the request the operator is being asked to judge
+// (REQ-2 AC-2.1).
+export function pendingPlanRevisionRequest(events: TaskEvent[]): PlanRevisionRequest | null {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const event = events[i]
+    if (event.kind.startsWith('intervention.')) return null
+    if (event.kind !== 'work_order.plan_revision_requested') continue
+    return planRevisionRequestFrom(event)
+  }
+  return null
+}
+
 export type TimelineEntry =
   | {
       type: 'job'
@@ -672,8 +708,19 @@ function noteFor(
         detail: typeof payload.timeout === 'string' ? `Stopped after ${payload.timeout}` : undefined,
         alarm: true,
       }
+    case 'work_order.plan_revision_requested': {
+      // The request opens the decision gate, so the rationale reads inline
+      // rather than behind a disclosure — it is the whole case the operator is
+      // being asked to judge (REQ-4 AC-4.1).
+      const request = planRevisionRequestFrom(event)
+      if (!request) return undefined
+      return {
+        title: `The agent asked to revise plan v${request.planVersion}`,
+        detail: request.rationale,
+      }
+    }
     case 'spec.version_created':
-      return { title: `Spec v${typeof payload.version === 'number' ? payload.version : '?'} drafted` }
+      return { title: `Plan v${typeof payload.version === 'number' ? payload.version : '?'} drafted` }
     case 'spec.version_approved':
       // The approval intervention renders the richer human "Approved" card.
       // Retain the audit event in the API without repeating it in the timeline.
@@ -741,6 +788,10 @@ function noteFor(
         detail: typeof payload.summary === 'string' ? payload.summary : undefined,
       }
     case 'work_order.released':
+      // A plan-revision request releases the claim in the same transaction that
+      // opens the gate. The revision entry above already tells that story, so
+      // the release is not repeated a second later as its own line (AC-4.1).
+      if (payload.reason === planRevisionReleaseReason) return undefined
       return {
         title: 'Work-order claim released',
         detail: typeof payload.reason === 'string' ? payload.reason : undefined,

@@ -10,7 +10,7 @@ import (
 )
 
 // The in-memory half of the requirement and planning-session conformance suite
-// (spec §4.2 item 1, §9). The Postgres half runs the identical suite in
+// . The Postgres half runs the identical suite in
 // internal/store/postgres, which is what proves the two agree.
 func TestMemoryRequirementConformance(t *testing.T) {
 	storetest.RunRequirementConformance(t, func(t *testing.T, repos []config.Repo) storetest.RequirementFixture {

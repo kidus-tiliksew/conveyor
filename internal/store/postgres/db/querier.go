@@ -12,7 +12,7 @@ type Querier interface {
 	ApproveLatestSpecVersion(ctx context.Context, arg ApproveLatestSpecVersionParams) (TaskSpec, error)
 	BindTaskApproval(ctx context.Context, arg BindTaskApprovalParams) (Task, error)
 	CountEvents(ctx context.Context, arg CountEventsParams) (int64, error)
-	// The §21.17 check-in window: events of a kind recorded after the latest
+	// The check-in window: events of a kind recorded after the latest
 	// human intervention on the task (all of them when no human has intervened).
 	CountEventsSinceHumanIntervention(ctx context.Context, arg CountEventsSinceHumanInterventionParams) (int64, error)
 	CountTaskOperationsTasks(ctx context.Context, arg CountTaskOperationsTasksParams) (int64, error)

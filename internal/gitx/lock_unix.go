@@ -9,7 +9,7 @@ import (
 )
 
 // lockRepo takes an exclusive flock on <mirror>.lock, serializing
-// fetches into a bare cache (spec §8.1). flock releases on process
+// fetches into a bare cache (design-git-delivery). flock releases on process
 // exit, so a crashed fetch never wedges the cache.
 func lockRepo(mirrorDir string) (func(), error) {
 	if err := os.MkdirAll(filepath.Dir(mirrorDir), 0o755); err != nil {
