@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { GitMerge, ThumbsUp, TriangleAlert, Undo2, UserRound, type LucideIcon } from 'lucide-react'
+import { pendingPlanRevisionRequest } from '../../lib/activity'
 import { fixMergeConflict, mergeTask, reviewTask } from '../../lib/api'
 import { defaultReasonCode, interventionActions } from '../../lib/contracts'
 import type { ActivityItem, InterventionAction, Task, TaskEvent } from '../../lib/types'
@@ -9,6 +10,7 @@ import { useOperatorToken, useWorkspaceSelection } from '../app-shell'
 import { Button } from '../ui/button'
 import { Textarea } from '../ui/input'
 import { AttachmentsCard } from './attachments-card'
+import { PlanRevisionDecisionCard } from './plan-revision-decision-card'
 
 // The human gate rendered as a verdict, not an alarm (spec §13.3): the card
 // leads with what the pipeline is waiting for and one context-matched primary
@@ -135,193 +137,15 @@ type GateMutation =
   | { kind: 'fix' }
   | { kind: 'review'; action: InterventionAction; comment: string }
 
+// A contested execution plan is a different question from "is this work good",
+// so it gets its own card rather than another branch of the gate's derived
+// actions (REQ-2 AC-2.1).
 export function ReviewPanel({ item, onDecisionRecorded }: { item: ActivityItem; onDecisionRecorded?: () => void }) {
   const revisionRequest = pendingPlanRevisionRequest(item.events)
   if (revisionRequest)
-    return <PlanRevisionReviewPanel item={item} request={revisionRequest} onDecisionRecorded={onDecisionRecorded} />
+    return <PlanRevisionDecisionCard item={item} request={revisionRequest} onDecisionRecorded={onDecisionRecorded} />
 
   return <GenericReviewPanel item={item} onDecisionRecorded={onDecisionRecorded} />
-}
-
-interface PlanRevisionRequest {
-  planVersion: number
-  rationale: string
-}
-
-// A plan-revision request remains the active human decision until an audited
-// intervention supersedes it. Later release/state events are lifecycle detail,
-// so they must not hide the request the operator is being asked to judge
-// (REQ-2 AC-2.1).
-function pendingPlanRevisionRequest(events: TaskEvent[]): PlanRevisionRequest | null {
-  for (let i = events.length - 1; i >= 0; i--) {
-    const event = events[i]
-    if (event.kind.startsWith('intervention.')) return null
-    if (event.kind !== 'work_order.plan_revision_requested') continue
-    const rationale = typeof event.payload?.rationale === 'string' ? event.payload.rationale.trim() : ''
-    const planVersion =
-      typeof event.payload?.plan_version === 'number'
-        ? event.payload.plan_version
-        : Number.parseInt(String(event.payload?.plan_version ?? ''), 10)
-    if (rationale && Number.isInteger(planVersion) && planVersion > 0) return { planVersion, rationale }
-    return null
-  }
-  return null
-}
-
-type PlanRevisionDecision = 'approve' | 'decline' | 'reject'
-
-const planRevisionDecisions: Record<
-  PlanRevisionDecision,
-  { action: InterventionAction; reasonCode: string; label: string; confirmLabel: string }
-> = {
-  approve: {
-    action: 'redirect',
-    reasonCode: 'plan-revision-approved',
-    label: 'Approve revision',
-    confirmLabel: 'Send to planning',
-  },
-  decline: {
-    action: 'redirect',
-    reasonCode: 'plan-revision-declined',
-    label: 'Decline with direction',
-    confirmLabel: 'Retry implementation',
-  },
-  reject: {
-    action: 'reject',
-    reasonCode: 'plan-revision-rejected',
-    label: 'Reject task',
-    confirmLabel: 'Reject task',
-  },
-}
-
-function PlanRevisionReviewPanel({
-  item,
-  request,
-  onDecisionRecorded,
-}: {
-  item: ActivityItem
-  request: PlanRevisionRequest
-  onDecisionRecorded?: () => void
-}) {
-  const token = useOperatorToken()
-  const { workspace } = useWorkspaceSelection()
-  const queryClient = useQueryClient()
-  const [decision, setDecision] = useState<PlanRevisionDecision | null>(null)
-  const [comment, setComment] = useState('')
-
-  const mutation = useMutation({
-    mutationFn: async (selected: PlanRevisionDecision) => {
-      const contract = planRevisionDecisions[selected]
-      await reviewTask(item.task.id, token, {
-        action: contract.action,
-        reasonCode: contract.reasonCode,
-        comment,
-      })
-    },
-    onSuccess: async () => {
-      setDecision(null)
-      setComment('')
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['task', workspace, item.task.id] }),
-        queryClient.invalidateQueries({ queryKey: ['activity'] }),
-      ])
-      onDecisionRecorded?.()
-    },
-  })
-
-  const selectDecision = (selected: PlanRevisionDecision) => {
-    setDecision((current) => (current === selected ? null : selected))
-    setComment('')
-    mutation.reset()
-  }
-  const selected = decision ? planRevisionDecisions[decision] : null
-
-  return (
-    <section className="rounded-lg border border-primary/25 bg-background" aria-label="Human gate">
-      <div className="flex flex-wrap items-center gap-3 rounded-t-lg bg-primary-soft px-4 py-3">
-        <Undo2 className="size-5 shrink-0 text-primary" />
-        <div className="min-w-48 flex-1">
-          <h3 className="text-sm font-semibold text-primary">Plan revision requested</h3>
-          <p className="mt-0.5 text-xs leading-5 text-muted">
-            The implementing agent is contesting plan v{request.planVersion}. Choose whether to revise it, retry the
-            implementation with direction, or reject the task.
-          </p>
-        </div>
-        <Button disabled={!token || mutation.isPending} onClick={() => selectDecision('approve')}>
-          <ThumbsUp />
-          Approve revision
-        </Button>
-      </div>
-      <div className="px-4 py-3">
-        <dl className="grid gap-2 rounded-md bg-surface px-3 py-2.5 text-sm">
-          <div className="flex items-baseline gap-2">
-            <dt className="text-xs font-medium text-faint">Contested plan</dt>
-            <dd className="font-medium text-foreground">v{request.planVersion}</dd>
-          </div>
-          <div>
-            <dt className="text-xs font-medium text-faint">Agent rationale</dt>
-            <dd className="mt-1 whitespace-pre-wrap leading-6 text-foreground/85">{request.rationale}</dd>
-          </div>
-        </dl>
-        <fieldset className="mt-3 flex flex-wrap items-center gap-1">
-          <legend className="float-left mr-1 text-xs text-faint">Decision:</legend>
-          {(['decline', 'reject'] as const).map((entry) => (
-            <button
-              key={entry}
-              type="button"
-              aria-expanded={decision === entry}
-              onClick={() => selectDecision(entry)}
-              className={cn(
-                'rounded-md px-2 py-1 text-xs font-medium transition-colors',
-                decision === entry ? 'bg-raised text-foreground' : 'text-muted hover:bg-surface hover:text-foreground',
-              )}
-            >
-              {planRevisionDecisions[entry].label}
-            </button>
-          ))}
-          {!token && <span className="ml-auto text-xs text-attention">Set the operator token in Settings to act.</span>}
-        </fieldset>
-        {selected && decision && (
-          <div className="mt-2">
-            <Textarea
-              autoFocus
-              className="min-h-16 text-sm"
-              aria-label={
-                decision === 'approve'
-                  ? 'Revision direction'
-                  : decision === 'decline'
-                    ? 'Implementation direction'
-                    : 'Rejection note'
-              }
-              value={comment}
-              onChange={(event) => setComment(event.target.value)}
-              placeholder={
-                decision === 'approve'
-                  ? 'Optional direction for the new plan.'
-                  : decision === 'decline'
-                    ? 'Required direction for the implementation retry.'
-                    : 'Why is this task rejected? Optional.'
-              }
-            />
-            <div className="mt-1.5 flex items-center justify-end gap-2">
-              <Button variant="ghost" size="sm" onClick={() => selectDecision(decision)}>
-                Cancel
-              </Button>
-              <Button
-                variant={decision === 'reject' ? 'destructive' : 'secondary'}
-                size="sm"
-                disabled={!token || mutation.isPending || (decision === 'decline' && !comment.trim())}
-                onClick={() => mutation.mutate(decision)}
-              >
-                {mutation.isPending ? 'Recording…' : selected.confirmLabel}
-              </Button>
-            </div>
-          </div>
-        )}
-        {mutation.error != null && <p className="mt-2 text-sm text-failure">{String(mutation.error)}</p>}
-      </div>
-    </section>
-  )
 }
 
 function GenericReviewPanel({ item, onDecisionRecorded }: { item: ActivityItem; onDecisionRecorded?: () => void }) {
