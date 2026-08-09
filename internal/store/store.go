@@ -199,6 +199,9 @@ type Store interface {
 	RenewWorkerClaimCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID, workerID, sessionID string, lease time.Duration) (core.WorkOrder, error)
 	ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID, workerID string, release core.WorkOrderRelease) (core.WorkOrder, error)
 	RequestPlanRevisionCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID, workerID, sessionID, rationale string) (PlanRevisionRequestResult, error)
+	// CancelPlanRevisionWorkOrderCommand retires the exact released
+	// implementation order when the operator approves plan re-entry.
+	CancelPlanRevisionWorkOrderCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID, attemptID string) (core.WorkOrder, error)
 	RecordWorkOrderAttemptCheckpoint(ctx context.Context, workOrderID, workerID string, checkpoint core.WorkOrderAttemptCheckpoint) (bool, error)
 
 	// Feature methods remain only for migration and historical conformance.
@@ -1400,6 +1403,47 @@ func (m *memory) RequestPlanRevisionCommand(ctx context.Context, taskLease tasko
 	m.appendEventLocked(actor, core.Event{TaskID: task.ID, JobID: order.JobID, Kind: "work_order.released", Payload: core.JSONPayload(map[string]any{"attempt_id": attemptID, "session_id": sessionID, "reason": core.WorkOrderReleaseReasonPlanRevisionRequested, "release_cause": core.WorkOrderReleaseCauseOperatorAction, "outcome": core.WorkOrderOutcomeReleased, "automatic_retry_count": order.AutomaticRetryCount, "retry_suppressed": true}), At: now})
 	m.appendEventLocked(actor, core.Event{TaskID: task.ID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": core.TaskRunning, "to": nextTask, "command": core.TaskGatePlanRevision}), At: now})
 	return PlanRevisionRequestResult{WorkOrder: order, Task: task, PlanVersion: plan.Version, Rationale: rationale}, nil
+}
+
+func (m *memory) CancelPlanRevisionWorkOrderCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID, attemptID string) (core.WorkOrder, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	order, ok := m.workOrders[workOrderID]
+	if !ok {
+		return core.WorkOrder{}, fmt.Errorf("work order %s not found", workOrderID)
+	}
+	if !taskLease.ValidForCommand(order.TaskID, string(core.WorkOrderCmdCancel)) {
+		return core.WorkOrder{}, fmt.Errorf("plan-revision cancellation requires a valid taskops lease")
+	}
+	if order.Stage != core.StageImplement || order.LastAttemptID != attemptID || order.LastFailureMessage != core.WorkOrderReleaseReasonPlanRevisionRequested {
+		return core.WorkOrder{}, fmt.Errorf("work order %s is not the contested plan-revision attempt", workOrderID)
+	}
+	if order.State == core.WorkOrderCancelled {
+		return order, nil
+	}
+	next, err := core.TransitionWorkOrder(order.State, core.WorkOrderCmdCancel)
+	if err != nil {
+		return core.WorkOrder{}, err
+	}
+	now := time.Now().UTC()
+	priorState := order.State
+	order.State, order.Claimable, order.UpdatedAt = next, false, now
+	m.workOrders[workOrderID] = order
+	for taskID, jobs := range m.jobs {
+		for i := range jobs {
+			if jobs[i].ID != order.JobID || jobs[i].State == core.JobDone {
+				continue
+			}
+			jobs[i].State, jobs[i].EndedAt = core.JobFailed, now
+			m.jobs[taskID] = jobs
+		}
+	}
+	actor := ActorFromContext(ctx)
+	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.cancelled", ActorID: actor.ID, ActorRole: actor.Role, Payload: core.JSONPayload(map[string]any{
+		"work_order_id": order.ID, "attempt_id": attemptID, "prior_state": priorState, "state": next,
+		"command": core.WorkOrderCmdCancel, "reason": "plan revision approved",
+	}), At: now})
+	return order, nil
 }
 
 func (m *memory) approvedExecutionDocumentLocked(task core.Task) (core.SpecVersion, bool) {

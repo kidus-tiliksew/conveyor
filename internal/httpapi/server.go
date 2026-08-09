@@ -44,8 +44,9 @@ type Server struct {
 	// GenerateTaskTitle uses the trusted control-plane AI integration for every
 	// task intake. Nil fails closed instead of persisting an untitled task.
 	GenerateTaskTitle func(context.Context, core.Task) (string, error)
-	// OnIntervention validates fresh authoritative state and advances the gate
-	// before the append-only decision is committed (design-task-lifecycle).
+	// OnIntervention validates fresh authoritative state and advances the gate.
+	// Plan-revision decisions are committed first because their dispatched
+	// work-order context is derived from the durable intervention record.
 	OnIntervention func(context.Context, core.Task, core.Job, core.Intervention) error
 	// OnMerge performs and authoritatively confirms the final forge merge.
 	OnMerge          func(context.Context, core.Task) error
@@ -442,6 +443,11 @@ func (s *Server) reviewTask(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "task is not at a human gate", http.StatusConflict)
 		return
 	}
+	_, planRevisionGate, err := dispatch.PendingPlanRevisionGate(r.Context(), s.Store, id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	var request reviewRequest
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -459,6 +465,23 @@ func (s *Server) reviewTask(w http.ResponseWriter, r *http.Request) {
 	if request.ReasonCode == "" || len(request.ReasonCode) > 64 {
 		http.Error(w, "reason_code is required and must be at most 64 characters", http.StatusBadRequest)
 		return
+	}
+	request.Comment = strings.TrimSpace(request.Comment)
+	if planRevisionGate {
+		if request.Action == core.InterventionRedirect {
+			request.Comment, err = core.NormalizeWorkOrderOperatorDirection(request.Comment)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+		}
+		valid := request.Action == core.InterventionReject && request.ReasonCode == dispatch.PlanRevisionRejectedReasonCode
+		valid = valid || request.Action == core.InterventionRedirect && request.ReasonCode == dispatch.PlanRevisionApprovedReasonCode
+		valid = valid || request.Action == core.InterventionRedirect && request.ReasonCode == dispatch.PlanRevisionDeclinedReasonCode && request.Comment != ""
+		if !valid {
+			http.Error(w, "plan-revision decision requires an approved, declined-with-direction, or rejected reason code", http.StatusBadRequest)
+			return
+		}
 	}
 	checkoutCommand, checkoutAvailable, checkoutGuidance, err := s.checkoutState(r.Context(), id)
 	if err != nil {
@@ -495,6 +518,17 @@ func (s *Server) reviewTask(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	interventionRecorded := false
+	if planRevisionGate {
+		// A revision approval can make a plan order claimable immediately. Record
+		// the decision before that transition so context assembly cannot observe
+		// the re-entry order without its approving direction (REQ-2, AC-2.2).
+		if err := s.Store.CreateIntervention(r.Context(), intervention); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		interventionRecorded = true
+	}
 	if s.OnIntervention != nil {
 		if err := s.OnIntervention(r.Context(), task, latestJob, intervention); err != nil {
 			status := http.StatusInternalServerError
@@ -506,9 +540,11 @@ func (s *Server) reviewTask(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := s.Store.CreateIntervention(r.Context(), intervention); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+	if !interventionRecorded {
+		if err := s.Store.CreateIntervention(r.Context(), intervention); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}
 	if s.OnIntervention == nil && request.Action == core.InterventionRedirect && s.OnCreate != nil {
 		s.OnCreate(r.Context(), id)

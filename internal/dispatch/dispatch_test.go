@@ -722,7 +722,7 @@ func TestPipelineArtifactContextFailuresStopBeforeModelExecution(t *testing.T) {
 			if getErr != nil || eventErr != nil || current.State != core.TaskQueued || contextFailures != 1 {
 				t.Fatalf("task=%+v events=%+v errors=%v/%v", current, events, getErr, eventErr)
 			}
-			if diagnostic.Phase != "attachment_preparation" || diagnostic.Provider != "openai_responses" || diagnostic.Model != "gpt" {
+			if diagnostic.Phase != "attachment_preparation" || diagnostic.Provider != "openai_responses" || diagnostic.Model != config.ResolveControlPlaneModel("triage", "gpt") {
 				t.Fatalf("diagnostic = %+v", diagnostic)
 			}
 			if !test.listErr && (diagnostic.AttachmentCount != 1 || len(diagnostic.AttachmentTypes) != 1 || diagnostic.AttachmentTypes[0] != test.contentType) {

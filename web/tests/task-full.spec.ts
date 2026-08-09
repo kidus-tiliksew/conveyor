@@ -3091,6 +3091,92 @@ test('human gate renders as the event timeline tail and the page opens scrolled 
   await expect.poll(() => content.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
 })
 
+for (const decision of [
+  {
+    name: 'approve revision',
+    open: 'Approve revision',
+    input: 'Revision direction',
+    comment: 'Keep the API contract byte-compatible.',
+    confirm: 'Send to planning',
+    action: 'redirect',
+    reasonCode: 'plan-revision-approved',
+  },
+  {
+    name: 'decline with direction',
+    open: 'Decline with direction',
+    input: 'Implementation direction',
+    comment: 'Continue against plan v7 and preserve the handler shape.',
+    confirm: 'Retry implementation',
+    action: 'redirect',
+    reasonCode: 'plan-revision-declined',
+  },
+  {
+    name: 'reject',
+    open: 'Reject task',
+    input: 'Rejection note',
+    comment: 'The requested outcome is no longer wanted.',
+    confirm: 'Reject task',
+    action: 'reject',
+    reasonCode: 'plan-revision-rejected',
+  },
+] as const) {
+  test(`plan revision gate renders request context and submits ${decision.name}`, async ({ page }) => {
+    await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
+    const taskId = `plan-revision-${decision.action}-${decision.reasonCode}`
+    await page.route(`**/v1/tasks/${taskId}/activity*`, async (route) => {
+      const item = activity('gate', false)
+      item.task.id = taskId
+      item.events = [
+        {
+          id: 91,
+          task_id: taskId,
+          job_id: `${taskId}-implement-1`,
+          kind: 'work_order.plan_revision_requested',
+          actor_id: 'worker-1',
+          actor_role: 'agent',
+          payload: {
+            work_order_id: `${taskId}-implement-1`,
+            rationale: 'A dependency changed the public handler contract.',
+            plan_version: 7,
+          },
+          at: '2026-07-15T12:10:00Z',
+        },
+      ]
+      await route.fulfill({ json: item })
+    })
+
+    let requestBody: Record<string, unknown> | undefined
+    await page.route(`**/v1/tasks/${taskId}/review*`, async (route) => {
+      requestBody = route.request().postDataJSON() as Record<string, unknown>
+      await route.fulfill({
+        json: { task: activity('gate', false).task, checkout_available: false, checkout_guidance: '' },
+      })
+    })
+
+    await page.goto(`/tasks/${taskId}/full`)
+    const gate = page.getByRole('region', { name: 'Human gate' })
+    await expect(gate.getByText('Plan revision requested')).toBeVisible()
+    await expect(gate.getByText('v7', { exact: true })).toBeVisible()
+    await expect(gate.getByText('A dependency changed the public handler contract.')).toBeVisible()
+
+    await gate.getByRole('button', { name: decision.open }).first().click()
+    const input = gate.getByLabel(decision.input)
+    if (decision.reasonCode === 'plan-revision-declined') {
+      await expect(gate.getByRole('button', { name: decision.confirm })).toBeDisabled()
+    }
+    await input.fill(decision.comment)
+    await gate.getByRole('button', { name: decision.confirm }).last().click()
+
+    await expect
+      .poll(() => requestBody)
+      .toEqual({
+        action: decision.action,
+        reason_code: decision.reasonCode,
+        comment: decision.comment,
+      })
+  })
+}
+
 test('worker warning is scoped to actionable task-owned work at the human gate', async ({ page }) => {
   await page.goto('/tasks/human-gate-worker-scope/full')
 

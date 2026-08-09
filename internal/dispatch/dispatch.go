@@ -1286,6 +1286,57 @@ func (d *Dispatcher) HandleIntervention(ctx context.Context, task core.Task, lat
 		return err
 	}
 	task = current
+	planRevision, planRevisionGate, err := PendingPlanRevisionGate(ctx, d.Store, task.ID)
+	if err != nil {
+		return err
+	}
+	if planRevisionGate {
+		switch intervention.Action {
+		case core.InterventionReject:
+			return d.transition(ctx, task.ID, core.TaskInterventionReject, "", "")
+		case core.InterventionRedirect:
+			switch intervention.ReasonCode {
+			case PlanRevisionApprovedReasonCode:
+				// A revision approval re-enters the ordinary plan stage and its
+				// unchanged approval gate (REQ-2, AC-2.2; REQ-3, AC-3.1).
+				if err = d.cancelContestedImplementationOrder(ctx, planRevision.WorkOrderID, planRevision.AttemptID); err != nil {
+					return err
+				}
+				return d.transition(ctx, task.ID, core.TaskInterventionRedirect, core.StageSpec, "")
+			case PlanRevisionDeclinedReasonCode:
+				// Restore the released implementation order through the existing
+				// recovery-direction command instead of minting a parallel order
+				// or consuming an automatic retry (REQ-2, AC-2.3).
+				cfg, cfgErr := d.currentConfig(ctx)
+				if cfgErr != nil {
+					return cfgErr
+				}
+				contestedOrder, getErr := d.Store.GetWorkOrder(ctx, planRevision.WorkOrderID)
+				if getErr != nil {
+					return getErr
+				}
+				if contestedOrder.State != core.WorkOrderQueued || !contestedOrder.RetrySuppressed || contestedOrder.LastAttemptID != planRevision.AttemptID {
+					return fmt.Errorf("contested work order %s is not awaiting plan-revision recovery", contestedOrder.ID)
+				}
+				queueTimeout := cfg.WorkOrderQueueTimeout
+				if queueTimeout <= 0 {
+					queueTimeout = config.DefaultWorkOrderQueueTimeout
+				}
+				requestID := "plan-revision-declined/" + planRevision.AttemptID
+				if err = d.transition(ctx, task.ID, core.TaskInterventionRedirect, core.StageImplement, ""); err != nil {
+					return err
+				}
+				_, err = taskops.ExecuteWorkOrder(ctx, d.Store, task.ID, core.WorkOrderCmdRecover, func(lease taskops.TaskLease) (core.WorkOrder, error) {
+					return d.Store.RecoverWorkOrderCommand(ctx, lease, planRevision.WorkOrderID, requestID, intervention.Comment, queueTimeout)
+				})
+				return err
+			default:
+				return fmt.Errorf("plan-revision redirect requires reason_code %q or %q", PlanRevisionApprovedReasonCode, PlanRevisionDeclinedReasonCode)
+			}
+		default:
+			return fmt.Errorf("plan-revision gate requires redirect or reject intervention")
+		}
+	}
 	switch intervention.Action {
 	case core.InterventionCancel:
 		_, err := taskops.New(d.Store).Cancel(ctx, intervention)
@@ -1351,6 +1402,90 @@ func (d *Dispatcher) HandleIntervention(ctx context.Context, task core.Task, lat
 		return nil
 	}
 	return nil
+}
+
+func (d *Dispatcher) cancelContestedImplementationOrder(ctx context.Context, workOrderID, attemptID string) error {
+	order, err := d.Store.GetWorkOrder(ctx, workOrderID)
+	if err != nil {
+		return err
+	}
+	_, err = taskops.ExecuteWorkOrder(ctx, d.Store, order.TaskID, core.WorkOrderCmdCancel, func(lease taskops.TaskLease) (core.WorkOrder, error) {
+		return d.Store.CancelPlanRevisionWorkOrderCommand(ctx, lease, workOrderID, attemptID)
+	})
+	return err
+}
+
+const (
+	// These reason codes distinguish the two plan-revision redirect outcomes
+	// without expanding the canonical persisted intervention action set.
+	PlanRevisionApprovedReasonCode = "plan-revision-approved"
+	PlanRevisionDeclinedReasonCode = "plan-revision-declined"
+	PlanRevisionRejectedReasonCode = "plan-revision-rejected"
+)
+
+// PlanRevisionGateContext is the durable request that controls an awaiting
+// plan-revision decision. The event remains the authority; task state alone is
+// ambiguous because all operator gates share TaskAwaiting (REQ-2, AC-2.1).
+type PlanRevisionGateContext struct {
+	WorkOrderID string
+	AttemptID   string
+	Rationale   string
+	PlanVersion int
+}
+
+// PendingPlanRevisionGate recognizes the latest audited gate command and
+// returns its matching request payload for HTTP validation and dispatch.
+func PendingPlanRevisionGate(ctx context.Context, st store.Store, taskID string) (PlanRevisionGateContext, bool, error) {
+	task, err := st.GetTask(ctx, taskID)
+	if err != nil {
+		return PlanRevisionGateContext{}, false, err
+	}
+	if task.State != core.TaskAwaiting {
+		return PlanRevisionGateContext{}, false, nil
+	}
+	events, err := st.ListEvents(ctx, taskID)
+	if err != nil {
+		return PlanRevisionGateContext{}, false, err
+	}
+	gateAt := -1
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Kind != "task.state_changed" {
+			continue
+		}
+		var transition struct {
+			Command core.TaskCommand `json:"command"`
+		}
+		if err = json.Unmarshal(events[i].Payload, &transition); err != nil {
+			return PlanRevisionGateContext{}, false, fmt.Errorf("decode latest task transition for %s: %w", taskID, err)
+		}
+		if transition.Command != core.TaskGatePlanRevision {
+			return PlanRevisionGateContext{}, false, nil
+		}
+		gateAt = i
+		break
+	}
+	if gateAt < 0 {
+		return PlanRevisionGateContext{}, false, nil
+	}
+	for i := gateAt - 1; i >= 0; i-- {
+		if events[i].Kind != "work_order.plan_revision_requested" {
+			continue
+		}
+		var request struct {
+			WorkOrderID string `json:"work_order_id"`
+			AttemptID   string `json:"attempt_id"`
+			Rationale   string `json:"rationale"`
+			PlanVersion int    `json:"plan_version"`
+		}
+		if err = json.Unmarshal(events[i].Payload, &request); err != nil {
+			return PlanRevisionGateContext{}, false, fmt.Errorf("decode plan-revision request for %s: %w", taskID, err)
+		}
+		if request.WorkOrderID == "" || request.AttemptID == "" || strings.TrimSpace(request.Rationale) == "" || request.PlanVersion < 1 {
+			return PlanRevisionGateContext{}, false, fmt.Errorf("plan-revision request for %s is incomplete", taskID)
+		}
+		return PlanRevisionGateContext{WorkOrderID: request.WorkOrderID, AttemptID: request.AttemptID, Rationale: request.Rationale, PlanVersion: request.PlanVersion}, true, nil
+	}
+	return PlanRevisionGateContext{}, false, fmt.Errorf("plan-revision gate for %s has no request event", taskID)
 }
 
 // pendingSpecGate recognizes the exact lifecycle command that parked the task.

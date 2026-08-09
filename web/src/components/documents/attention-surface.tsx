@@ -39,7 +39,10 @@ export function AttentionSurface({ items }: { items: AttentionItem[] }) {
       </section>
     )
   return (
-    <section aria-label="Needs your attention" className="overflow-hidden rounded-lg border border-attention/25 bg-card">
+    <section
+      aria-label="Needs your attention"
+      className="overflow-hidden rounded-lg border border-attention/25 bg-card"
+    >
       <h2 className="flex items-center gap-1.5 border-b border-attention/20 bg-attention-soft/50 px-4 py-2.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-attention">
         <TriangleAlert className="size-3" />
         Needs your attention
