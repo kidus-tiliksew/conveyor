@@ -55,6 +55,7 @@ const (
 	TaskTriageRouteHuman          TaskCommand = "triage.route_human"
 	TaskTriagePark                TaskCommand = "triage.park"
 	TaskGateSpec                  TaskCommand = "gate.spec"
+	TaskGatePlanRevision          TaskCommand = "gate.plan_revision"
 	TaskGateMerge                 TaskCommand = "gate.merge"
 	TaskDispatchFailRetry         TaskCommand = "dispatch.fail_retry"
 	TaskDispatchFailFinal         TaskCommand = "dispatch.fail_final"
@@ -79,6 +80,7 @@ const (
 	WorkOrderCmdClaim               WorkOrderCommand = "order.claim"
 	WorkOrderCmdRenew               WorkOrderCommand = "claim.renew"
 	WorkOrderCmdRelease             WorkOrderCommand = "claim.release"
+	WorkOrderCmdRequestPlanRevision WorkOrderCommand = "request_plan_revision"
 	WorkOrderCmdExpire              WorkOrderCommand = "claim.expire"
 	WorkOrderCmdSubmitForReview     WorkOrderCommand = "submit_for_review"
 	WorkOrderCmdSubmitSpec          WorkOrderCommand = "submit_spec"
@@ -98,7 +100,7 @@ type lifecycleTable map[string]map[string]string
 var taskLifecycleTable = lifecycleTable{
 	string(TaskClaiming): {string(TaskIntakeFinalize): string(TaskQueued), string(TaskCancel): string(TaskClosed)},
 	string(TaskQueued):   {string(TaskDispatchStart): string(TaskRunning), string(TaskOrderClaim): string(TaskRunning), string(TaskDispatchFailRetry): string(TaskQueued), string(TaskDispatchFailFinal): string(TaskParked), string(TaskRecoverRefresh): string(TaskQueued), string(TaskMergeRecover): string(TaskMerged), string(TaskCancel): string(TaskClosed), string(TaskBlueprintClose): string(TaskClosed)},
-	string(TaskRunning):  {string(TaskStageAdvance): string(TaskQueued), string(TaskStageBounce): string(TaskQueued), string(TaskStageBounceLimit): string(TaskAwaiting), string(TaskJobFail): string(TaskAwaiting), string(TaskTriageRouteHuman): string(TaskAwaiting), string(TaskTriagePark): string(TaskParked), string(TaskGateSpec): string(TaskAwaiting), string(TaskGateMerge): string(TaskAwaiting), string(TaskRecoverRefresh): string(TaskQueued), string(TaskMergeRecover): string(TaskMerged), string(TaskCancel): string(TaskClosed)},
+	string(TaskRunning):  {string(TaskStageAdvance): string(TaskQueued), string(TaskStageBounce): string(TaskQueued), string(TaskStageBounceLimit): string(TaskAwaiting), string(TaskJobFail): string(TaskAwaiting), string(TaskTriageRouteHuman): string(TaskAwaiting), string(TaskTriagePark): string(TaskParked), string(TaskGateSpec): string(TaskAwaiting), string(TaskGatePlanRevision): string(TaskAwaiting), string(TaskGateMerge): string(TaskAwaiting), string(TaskRecoverRefresh): string(TaskQueued), string(TaskMergeRecover): string(TaskMerged), string(TaskCancel): string(TaskClosed)},
 	string(TaskAwaiting): {string(TaskInterventionReject): string(TaskClosed), string(TaskInterventionApproveSpec): string(TaskQueued), string(TaskInterventionApproveReview): string(TaskApproved), string(TaskInterventionRedirect): string(TaskQueued), string(TaskCancel): string(TaskClosed)},
 	string(TaskApproved): {string(TaskMergeConfirm): string(TaskMerged), string(TaskRefreshReview): string(TaskQueued), string(TaskConflictDispatch): string(TaskQueued), string(TaskCancel): string(TaskClosed)},
 	string(TaskParked):   {string(TaskRecover): string(TaskQueued), string(TaskCancel): string(TaskClosed)},
@@ -107,7 +109,7 @@ var taskLifecycleTable = lifecycleTable{
 var workOrderLifecycleTable = lifecycleTable{
 	"":                         {string(WorkOrderCmdCreate): string(WorkOrderQueued)},
 	string(WorkOrderQueued):    {string(WorkOrderCmdClaim): string(WorkOrderClaimed), string(WorkOrderCmdTimeout): string(WorkOrderTimedOut), string(WorkOrderCmdMarkStale): string(WorkOrderStale), string(WorkOrderCmdCancel): string(WorkOrderCancelled)},
-	string(WorkOrderClaimed):   {string(WorkOrderCmdRenew): string(WorkOrderClaimed), string(WorkOrderCmdRelease): string(WorkOrderQueued), string(WorkOrderCmdPreempt): string(WorkOrderQueued), string(WorkOrderCmdExpire): string(WorkOrderQueued), string(WorkOrderCmdSubmitForReview): string(WorkOrderSubmitted), string(WorkOrderCmdSubmitSpec): string(WorkOrderCompleted), string(WorkOrderCmdSubmitReviewVerdict): string(WorkOrderCompleted), string(WorkOrderCmdTimeout): string(WorkOrderTimedOut), string(WorkOrderCmdMarkStale): string(WorkOrderStale), string(WorkOrderCmdCancel): string(WorkOrderCancelled)},
+	string(WorkOrderClaimed):   {string(WorkOrderCmdRenew): string(WorkOrderClaimed), string(WorkOrderCmdRelease): string(WorkOrderQueued), string(WorkOrderCmdRequestPlanRevision): string(WorkOrderQueued), string(WorkOrderCmdPreempt): string(WorkOrderQueued), string(WorkOrderCmdExpire): string(WorkOrderQueued), string(WorkOrderCmdSubmitForReview): string(WorkOrderSubmitted), string(WorkOrderCmdSubmitSpec): string(WorkOrderCompleted), string(WorkOrderCmdSubmitReviewVerdict): string(WorkOrderCompleted), string(WorkOrderCmdTimeout): string(WorkOrderTimedOut), string(WorkOrderCmdMarkStale): string(WorkOrderStale), string(WorkOrderCmdCancel): string(WorkOrderCancelled)},
 	string(WorkOrderSubmitted): {string(WorkOrderCmdReviewTerminal): string(WorkOrderCompleted), string(WorkOrderCmdReviewRevise): string(WorkOrderClaimed), string(WorkOrderCmdMarkStale): string(WorkOrderStale), string(WorkOrderCmdCancel): string(WorkOrderCancelled)},
 	string(WorkOrderTimedOut):  {string(WorkOrderCmdRecover): string(WorkOrderQueued), string(WorkOrderCmdCancel): string(WorkOrderCancelled)},
 	// W14 is intentionally narrower than W13: its handler additionally guards

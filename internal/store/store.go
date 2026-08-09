@@ -198,6 +198,7 @@ type Store interface {
 	RevokeWorker(ctx context.Context, id string) error
 	RenewWorkerClaimCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID, workerID, sessionID string, lease time.Duration) (core.WorkOrder, error)
 	ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID, workerID string, release core.WorkOrderRelease) (core.WorkOrder, error)
+	RequestPlanRevisionCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID, workerID, sessionID, rationale string) (PlanRevisionRequestResult, error)
 	RecordWorkOrderAttemptCheckpoint(ctx context.Context, workOrderID, workerID string, checkpoint core.WorkOrderAttemptCheckpoint) (bool, error)
 
 	// Feature methods remain only for migration and historical conformance.
@@ -283,6 +284,15 @@ type Store interface {
 	GetArtifactForPlanningSession(ctx context.Context, id, sessionID string) (core.Artifact, []byte, error)
 	ListArtifacts(ctx context.Context) ([]core.Artifact, error)
 	ListArtifactsForLineage(ctx context.Context, nodes []core.LineageNode) ([]core.Artifact, error)
+}
+
+// PlanRevisionRequestResult is the atomic projection committed when an
+// implementer contests its approved execution plan (REQ-1, AC-1.1–AC-1.3).
+type PlanRevisionRequestResult struct {
+	WorkOrder   core.WorkOrder `json:"work_order"`
+	Task        core.Task      `json:"task"`
+	PlanVersion int            `json:"plan_version"`
+	Rationale   string         `json:"rationale"`
 }
 
 // ApprovedExecutionDocument resolves the immutable approved document that
@@ -1314,6 +1324,100 @@ func (m *memory) ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskop
 	}
 	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: kind, ActorRole: core.ActorRunner, ActorID: workerID, Payload: core.JSONPayload(map[string]any{"attempt_id": attemptID, "session_id": release.SessionID, "reason": release.Reason, "release_cause": release.Cause, "detail": order.LastFailureDetail, "outcome": release.Outcome, "failure_category": order.LastFailureCategory, "consecutive_transient_failures": core.ConsecutiveTransientFailureCount(order.LastFailureCategory, previousTransientFailures, progressed, previousOutcome == release.Outcome), "exit_status": release.ExitStatus, "automatic_retry_count": order.AutomaticRetryCount, "next_retry_at": order.NextRetryAt, "retry_suppressed": order.RetrySuppressed, "suppression_reason": order.RetrySuppressionReason}), At: now})
 	return order, nil
+}
+
+func (m *memory) RequestPlanRevisionCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID, workerID, sessionID, rationale string) (PlanRevisionRequestResult, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	rationale = strings.TrimSpace(rationale)
+	if rationale == "" {
+		return PlanRevisionRequestResult{}, fmt.Errorf("rationale is required")
+	}
+	order, ok := m.workOrders[workOrderID]
+	if !ok || !taskLease.ValidForCommand(order.TaskID, string(core.WorkOrderCmdRequestPlanRevision)) {
+		return PlanRevisionRequestResult{}, ErrWorkOrderClaimLost
+	}
+	now := time.Now().UTC()
+	if order.WorkerID != workerID || order.SessionID == "" || order.SessionID != sessionID || order.State != core.WorkOrderClaimed ||
+		!order.LeaseExpiresAt.After(now) || (!order.ExecutionDeadline.IsZero() && !order.ExecutionDeadline.After(now)) {
+		return PlanRevisionRequestResult{}, ErrWorkOrderClaimLost
+	}
+	if order.Stage != core.StageImplement {
+		return PlanRevisionRequestResult{}, fmt.Errorf("request_plan_revision requires an implement-stage work order")
+	}
+	task, ok := m.tasks[order.TaskID]
+	if !ok {
+		return PlanRevisionRequestResult{}, fmt.Errorf("task %s not found", order.TaskID)
+	}
+	plan, ok := m.approvedExecutionDocumentLocked(task)
+	if !ok {
+		return PlanRevisionRequestResult{}, fmt.Errorf("request_plan_revision requires an approved execution plan")
+	}
+	nextOrder, err := core.TransitionWorkOrder(order.State, core.WorkOrderCmdRequestPlanRevision)
+	if err != nil {
+		return PlanRevisionRequestResult{}, err
+	}
+	nextTask, err := core.TransitionTask(task.State, core.TaskGatePlanRevision)
+	if err != nil {
+		return PlanRevisionRequestResult{}, err
+	}
+	queueTimeout := order.QueueDeadline.Sub(order.QueueEnteredAt)
+	if queueTimeout <= 0 {
+		queueTimeout = config.DefaultWorkOrderQueueTimeout
+	}
+	attemptID := order.AttemptID
+	order.LastAttemptID = attemptID
+	clearActiveAttempt(&order)
+	order.OperatorDirection = ""
+	order.State = nextOrder
+	order.LastAttemptOutcome = core.WorkOrderOutcomeReleased
+	order.LastFailureCategory = ""
+	order.LastFailureMessage = core.WorkOrderReleaseReasonPlanRevisionRequested
+	order.LastFailureDetail = ""
+	order.LastFailureExitStatus = nil
+	order.LastFailureAt = now
+	order.NextRetryAt = time.Time{}
+	order.RetrySuppressed = true
+	order.RetrySuppressionReason = ""
+	order.QueueEnteredAt, order.QueueDeadline = now, now.Add(queueTimeout)
+	order.UpdatedAt = now
+	order.Claimable = false
+	m.workOrders[workOrderID] = order
+	for taskID, jobs := range m.jobs {
+		for i := range jobs {
+			if jobs[i].ID == order.JobID {
+				jobs[i].State = core.JobPending
+				jobs[i].StartedAt = time.Time{}
+				jobs[i].EndedAt = time.Time{}
+				m.jobs[taskID] = jobs
+			}
+		}
+	}
+	task.State = nextTask
+	m.tasks[task.ID] = task
+	actor := WithActor(ctx, Actor{ID: workerID, Role: core.ActorRunner})
+	m.appendEventLocked(actor, core.Event{TaskID: task.ID, JobID: order.JobID, Kind: "work_order.plan_revision_requested", Payload: core.JSONPayload(map[string]any{"work_order_id": order.ID, "attempt_id": attemptID, "session_id": sessionID, "rationale": rationale, "plan_version": plan.Version}), At: now})
+	m.appendEventLocked(actor, core.Event{TaskID: task.ID, JobID: order.JobID, Kind: "work_order.released", Payload: core.JSONPayload(map[string]any{"attempt_id": attemptID, "session_id": sessionID, "reason": core.WorkOrderReleaseReasonPlanRevisionRequested, "release_cause": core.WorkOrderReleaseCauseOperatorAction, "outcome": core.WorkOrderOutcomeReleased, "automatic_retry_count": order.AutomaticRetryCount, "retry_suppressed": true}), At: now})
+	m.appendEventLocked(actor, core.Event{TaskID: task.ID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": core.TaskRunning, "to": nextTask, "command": core.TaskGatePlanRevision}), At: now})
+	return PlanRevisionRequestResult{WorkOrder: order, Task: task, PlanVersion: plan.Version, Rationale: rationale}, nil
+}
+
+func (m *memory) approvedExecutionDocumentLocked(task core.Task) (core.SpecVersion, bool) {
+	versions := m.specs[task.ID]
+	for index := len(versions) - 1; index >= 0; index-- {
+		if versions[index].Approved {
+			return versions[index], true
+		}
+	}
+	if task.ParentTaskID == "" || task.OriginSpecVersion < 1 {
+		return core.SpecVersion{}, false
+	}
+	for _, plan := range m.specs[task.ParentTaskID] {
+		if plan.Version == task.OriginSpecVersion && plan.Approved {
+			return plan, true
+		}
+	}
+	return core.SpecVersion{}, false
 }
 
 func (m *memory) attemptReportedProgressLocked(order core.WorkOrder) bool {
