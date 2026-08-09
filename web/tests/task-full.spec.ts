@@ -2292,8 +2292,27 @@ test('suppressed worker order exposes failure state and audited recovery action'
   await expect(page.getByText(/harness exited: status 1/)).toBeVisible()
   await expect(page.getByText('No automatic retry is pending.')).toBeVisible()
   await expect(page.getByText('Resolve the primary checkout changes first.')).toHaveCount(0)
+  await expect(page.getByText('You can add an optional instruction for the next attempt.')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Attach context' })).toBeVisible()
+  await page.getByLabel('Operator direction').fill('  Retry with the approved dashboard approach.  ')
   await page.getByRole('button', { name: 'Recover work order' }).click()
-  await expect.poll(() => recoveryRequest).toContain('request_id')
+  await expect.poll(() => JSON.parse(recoveryRequest).direction).toBe('Retry with the approved dashboard approach.')
+})
+
+test('ordinary recovery permits an empty operator direction', async ({ page }) => {
+  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
+  let recoveryRequest = ''
+  await page.route('**/v1/work-orders/*/recover*', async (route) => {
+    recoveryRequest = route.request().postData() ?? ''
+    await route.fulfill({ json: { id: 'recovery-review-1-seat-1', state: 'queued', claimable: true } })
+  })
+  await page.goto('/tasks/recovery/full')
+  await expect(page.getByLabel('Operator direction')).toHaveValue('')
+  const action = page.getByRole('button', { name: 'Recover work order' })
+  await expect(action).toBeEnabled()
+  await action.click()
+  await expect.poll(() => recoveryRequest).not.toBe('')
+  expect(JSON.parse(recoveryRequest)).not.toHaveProperty('direction')
 })
 
 test('checkpoint recovery requires and submits operator direction', async ({ page }) => {
