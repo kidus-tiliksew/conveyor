@@ -1,5 +1,5 @@
 // Package gitx implements the Phase 1 bare-cache + isolated task checkout
-// amendment to spec §8: one shared fetch-only bare mirror per repo seeds
+// delivery design: one shared fetch-only bare mirror per repo seeds
 // self-contained task clones. Sandboxes never mount the cache, so agents can
 // write commits without receiving write access to shared refs or objects.
 package gitx
@@ -15,7 +15,7 @@ import (
 	"strings"
 )
 
-// Manager owns the two host directories from spec §8.1:
+// Manager owns the two host directories defined by design-git-delivery:
 //
 //	<CacheDir>/github.com/acme/api.git   bare, shared, fetch-only
 //	<JobsDir>/task-123/api/              isolated clone on conveyor/task-123
@@ -28,7 +28,7 @@ func NewManager(cacheDir, jobsDir string) *Manager {
 	return &Manager{CacheDir: cacheDir, JobsDir: jobsDir}
 }
 
-// BranchName returns the task branch: conveyor/task-<id> (spec §8.1).
+// BranchName returns the task branch: conveyor/task-<id> (design-git-delivery).
 func BranchName(taskID string) string {
 	return "conveyor/task-" + taskID
 }
@@ -54,7 +54,7 @@ func (m *Manager) mirrorPath(repoURL string) (string, error) {
 // EnsureMirror clones or fetches the bare cache for repoURL. Fetches
 // into a bare cache are serialized with a per-repo lock; concurrent
 // fetches into one bare repo are forbidden — ref corruption risk
-// (spec §8.1).
+// (design-git-delivery).
 //
 // Deliberately NOT `clone --mirror`: a mirror's +refs/*:refs/* refspec
 // makes `fetch --prune` delete local conveyor/task-* branches the
@@ -101,7 +101,7 @@ func (m *Manager) AddWorktree(ctx context.Context, repoURL, repoName, taskID, ba
 		return "", err
 	}
 	wt := filepath.Join(m.JobsDir, "task-"+taskID, repoName)
-	// Re-dispatch resumes the existing worktree untouched (spec §8.2).
+	// Re-dispatch resumes the existing worktree untouched (design-git-delivery).
 	if _, err := os.Stat(wt); err == nil {
 		if err := syncTaskBranch(ctx, wt, BranchName(taskID)); err != nil {
 			return "", err
@@ -113,7 +113,7 @@ func (m *Manager) AddWorktree(ctx context.Context, repoURL, repoName, taskID, ba
 	}
 	// --no-hardlinks makes the task repo self-contained: neither .git nor
 	// object alternates point back to the host cache. The cache therefore
-	// needs no sandbox mount at all (spec §8.1, §8.5).
+	// needs no sandbox mount at all (design-git-delivery).
 	if err := run(ctx, "", "git", "clone", "--no-checkout", "--no-hardlinks", mirror, wt); err != nil {
 		return "", err
 	}
@@ -222,7 +222,7 @@ func CommitsAhead(ctx context.Context, worktreeDir, base string) ([]string, erro
 // BranchDiff returns the unified diff of the pushed task branch against its
 // base, computed inside the shared bare cache — the change-under-review input
 // for the in-process review fallback, which has no checkout of its own
-// (spec §21.4). Both refs resolve from the refs/remotes/origin/* namespace
+// (design-git-delivery). Both refs resolve from the refs/remotes/origin/* namespace
 // EnsureMirror maintains, falling back to local ref names for fully local
 // repositories.
 func (m *Manager) BranchDiff(ctx context.Context, repoURL, branch, base string) (string, error) {
@@ -267,7 +267,7 @@ func revParse(ctx context.Context, repoDir, ref string) (string, error) {
 }
 
 // RemoveWorktree removes a task worktree; called on merge, close, or
-// staleness TTL (default 14 days, spec §8.1).
+// staleness TTL (default 14 days; design-git-delivery).
 func (m *Manager) RemoveWorktree(ctx context.Context, repoURL, repoName, taskID string) error {
 	mirror, err := m.mirrorPath(repoURL)
 	if err != nil {
@@ -281,7 +281,7 @@ func (m *Manager) RemoveWorktree(ctx context.Context, repoURL, repoName, taskID 
 	// Copy task-only objects and the branch ref back into the trusted cache
 	// before eviction, so a later re-dispatch restores committed work. This
 	// mutates the bare cache just like EnsureMirror's upstream fetch, so it must
-	// take the same cross-process repository lock (spec §8.1).
+	// take the same cross-process repository lock (design-git-delivery).
 	unlock, err := lockRepo(mirror)
 	if err != nil {
 		return err

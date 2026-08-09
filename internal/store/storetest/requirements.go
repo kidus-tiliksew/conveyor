@@ -16,7 +16,7 @@ import (
 )
 
 // Cross-implementation conformance for requirement documents and planning
-// sessions (spec §4.2 item 1, §9, §21.46 change 2). Requirements are versioned
+// sessions (design-document-corpus). Requirements are versioned
 // and confirmed, never gated: this suite is what proves the in-memory store and
 // Postgres agree on that, so a behaviour an operator relies on cannot hold in
 // one deployment and quietly fail in the other.
@@ -43,7 +43,7 @@ type planningSessionEventStore interface {
 }
 
 // requirementConformanceActor is the confirming operator. Confirmation records
-// identity (spec §16), so the suite owns the actor rather than depending on
+// identity, so the suite owns the actor rather than depending on
 // whatever each harness happens to install in its context.
 const requirementConformanceActor = "operator-conformance"
 
@@ -59,7 +59,6 @@ var requirementConformanceRepos = []config.Repo{
 
 // RunRequirementConformance exercises the externally visible requirement and
 // planning-session persistence contract against any Store implementation
-// (spec §4.2 item 1 AC-1, §9 AC-2).
 func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 	t.Helper()
 
@@ -404,7 +403,7 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 		}
 		// A new document is never silently authoritative: current_version stays
 		// unset and the high-water mark starts at the first block's largest
-		// REQ-n (spec §4.2 item 1).
+		// REQ-n.
 		if requirement.ID != id || requirement.Workspace != workspace ||
 			requirement.Slug != "planning-intent-corpus" || requirement.Title != "Planning Intent Corpus" ||
 			requirement.CurrentVersion != 0 || requirement.StatementHighWaterMark != 2 ||
@@ -482,7 +481,7 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 		st, ctx, _ := newRequirementFixture(t, factory)
 		statements := []core.RequirementStatement{requirementStatement("REQ-1", "Intent is traceable.")}
 		// A migration seed is produced by neither a session nor a drift record,
-		// so it carries neither identifier (spec §21.46 change 2).
+		// so it carries neither identifier.
 		seed, seedVersion, err := st.CreateRequirement(ctx,
 			core.Requirement{ID: "req-" + core.NewTaskID(), Title: "Migrated Feature Node"},
 			core.RequirementVersion{
@@ -509,7 +508,7 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 		assertRequirementVersionRoundTrip(t, ctx, st, operator)
 
 		// The monitor's requirements_amended outcome proposes a *pending*
-		// version carrying its drift record (spec §4.2 item 2, AC-1).
+		// version carrying its drift record.
 		driftID := "drift-" + core.NewTaskID()
 		amended, err := st.ProposeRequirementVersion(ctx, core.RequirementVersion{
 			RequirementID: seed.ID, Content: "Amended after observed drift.",
@@ -567,7 +566,7 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 			chatVersion("First intent.", requirementStatement("REQ-1", "One.")))
 
 		// Confirmation is a separate audited operator act, so a proposal that
-		// asks to be confirmed is still stored pending (spec §13.1).
+		// asks to be confirmed is still stored pending.
 		forged := chatVersionFor(requirement.ID, "Second intent.",
 			requirementStatement("REQ-1", "One, reworded."), requirementStatement("REQ-2", "Two."))
 		forged.Confirmed = true
@@ -656,7 +655,7 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 
 		// A never-issued identifier at or below the mark would hand a retired
 		// statement's identity to different intent, breaking every REQ-n
-		// citation that outlived it (spec §4.2 items 1 and 4).
+		// citation that outlived it.
 		for _, reused := range []string{"REQ-2", "REQ-4"} {
 			if _, err = st.ProposeRequirementVersion(ctx, chatVersionFor(requirement.ID, "Reuse attempt.",
 				requirementStatement("REQ-1", "One."), requirementStatement(reused, "Different intent."))); err == nil {
@@ -802,7 +801,7 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 
 		// A statement-less version cannot become current intent: a migration
 		// seed carries the retired node's prose verbatim and must be edited
-		// before it is authoritative (spec §21.46 change 2).
+		// before it is authoritative.
 		seed, _, err := st.CreateRequirement(ctx,
 			core.Requirement{ID: "req-" + core.NewTaskID(), Title: "Seed Without Statements"},
 			core.RequirementVersion{
@@ -899,7 +898,7 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 			t.Fatalf("created session=%+v", session)
 		}
 		assertPlanningSessionRoundTrip(t, ctx, st, session)
-		// The goal is declared once (spec §21.57 change 3). Omitting it is
+		// The goal is declared once. Omitting it is
 		// compatible and reads back as `open` — historical rows migrate the
 		// same way — while an unknown goal is refused at the boundary.
 		defaulted, err := st.CreatePlanningSession(ctx, core.PlanningSession{
@@ -949,7 +948,7 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 			t.Fatal("planning session without an id was accepted")
 		}
 		// A session opened "from" a requirement must name a real one — that
-		// link is what auto-proposes serves later (spec §4.2 item 1).
+		// link is what auto-proposes serves later.
 		if _, err = st.CreatePlanningSession(ctx, core.PlanningSession{
 			ID: "session-" + core.NewTaskID(), RequirementContextID: "req-does-not-exist",
 		}); err == nil {
@@ -957,7 +956,7 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 		}
 
 		// Sequence numbers start at 1 and increment, because the transport
-		// restores a session by replaying them in order (spec §9).
+		// restores a session by replaying them in order.
 		appended := []core.PlanningMessage{}
 		for index, message := range []core.PlanningMessage{
 			{SessionID: sessionID, Role: core.PlanningMessageUser, Content: "Rewrite the queue.",
@@ -1040,7 +1039,7 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 				sessions, sessionID, quiet.ID, promotion.ID, defaulted.ID)
 		}
 		// Listing exposes the declared goal, so a session list can label it
-		// without a second read (spec §21.57).
+		// without a second read.
 		if sessions[0].Goal != core.PlanningGoalBlueprint || sessions[3].Goal != core.PlanningGoalOpen {
 			t.Fatalf("listed goals=%q/%q, want blueprint/open", sessions[0].Goal, sessions[3].Goal)
 		}
@@ -1164,7 +1163,7 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 			t.Fatal(err)
 		}
 		// A finalized transcript is the archived record of what produced the
-		// artifact; appending to it would rewrite history (spec §9).
+		// artifact; appending to it would rewrite history.
 		if _, err := st.AppendPlanningMessage(ctx, core.PlanningMessage{
 			SessionID: finalized.ID, Role: core.PlanningMessageUser, Content: "After finalize.",
 		}); err == nil {
@@ -1396,7 +1395,7 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 		}
 
 		// A session produces a requirement or a blueprint task, never both and
-		// never neither — a session that produced nothing is abandoned (§9).
+		// never neither — a session that produced nothing is abandoned.
 		session := createPlanningSession(t, ctx, st)
 		for name, request := range map[string]store.PlanningFinalizeRequest{
 			"both artifacts": {SessionID: session.ID, RequirementID: produced.ID, TaskID: blueprint.ID},
@@ -1434,7 +1433,7 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 			t.Fatalf("finalized session=%+v", requirementRun)
 		}
 		// The produced artifact names the session; the provisional title is
-		// gone (spec §21.57 change 3).
+		// gone.
 		if requirementRun.Title != produced.Title {
 			t.Fatalf("finalized session title=%q, want produced requirement title %q",
 				requirementRun.Title, produced.Title)
@@ -1555,7 +1554,7 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 
 		// A neighbouring workspace sees none of it. The sibling scope needs no
 		// provisioning because only reads are exercised through it — the point
-		// is that identity alone never crosses the boundary (spec §21.10).
+		// is that identity alone never crosses the boundary.
 		sibling := store.WithWorkspace(ctx, workspace+"-sibling")
 		if _, err := st.GetRequirement(sibling, requirement.ID); err == nil {
 			t.Fatal("requirement was readable from another workspace")
@@ -1606,7 +1605,7 @@ func requirementStatement(id, statement string) core.RequirementStatement {
 }
 
 // chatVersion builds a planning-session revision. Chat origin carries the
-// session that revised the document (spec §9).
+// session that revised the document.
 func chatVersion(content string, statements ...core.RequirementStatement) core.RequirementVersion {
 	return core.RequirementVersion{
 		Content: content, Statements: statements,
@@ -1621,7 +1620,7 @@ func chatVersionFor(requirementID, content string, statements ...core.Requiremen
 }
 
 // driftVersionFor builds the monitor's requirements_amended revision, which
-// carries the drift record instead of a session (spec §4.2 item 2).
+// carries the drift record instead of a session.
 func driftVersionFor(requirementID, content string, statements ...core.RequirementStatement) core.RequirementVersion {
 	return core.RequirementVersion{
 		RequirementID: requirementID, Content: content, Statements: statements,

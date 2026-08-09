@@ -9,8 +9,8 @@ import (
 )
 
 // RequirementStatement is the core statement type; requirement documents are
-// validated here so the block contract lives beside the §4.1 spec parser
-// without sharing its rules (spec §4.2 item 1).
+// validated here so the block contract lives beside the legacy spec parser
+// without sharing its rules.
 type RequirementStatement = core.RequirementStatement
 
 // RequirementDocument is a validated requirement version body: free prose plus
@@ -22,7 +22,7 @@ type RequirementDocument struct {
 
 // ParseRequirementDocument validates a requirement document. Unlike ParseSpec
 // it mandates no prose sections: a requirement states intent in the operator's
-// own language (spec §4.2 item 1), so only the machine block is constrained.
+// own language, so only the machine block is constrained (design-document-corpus).
 //
 // The block is required and must appear exactly once. Its statements may be
 // empty only for a migration seed, which never travels through this parser —
@@ -61,7 +61,7 @@ func ParseRequirementDocument(output string) (RequirementDocument, error) {
 }
 
 // RenderRequirementDocument serializes prose plus the canonical machine block.
-// Conveyor owns the fence exactly as it does for §4.1 specs, so callers supply
+// Conveyor owns the fence exactly as it does for legacy specs, so callers supply
 // only prose and statements. The result is re-parsed as the final invariant.
 func RenderRequirementDocument(prose string, statements []RequirementStatement) (RequirementDocument, error) {
 	trimmed := strings.TrimSpace(prose)

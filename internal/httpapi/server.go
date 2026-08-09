@@ -1,5 +1,5 @@
 // Package httpapi is the Phase 2 control-plane REST + SSE surface and embedded
-// activity/review SPA (spec §13.3, §17.3). Mutations are authenticated and
+// activity/review SPA (design-http-api; design-web-dashboard). Mutations are authenticated and
 // recorded with actor identity in the append-only event stream.
 package httpapi
 
@@ -45,7 +45,7 @@ type Server struct {
 	// task intake. Nil fails closed instead of persisting an untitled task.
 	GenerateTaskTitle func(context.Context, core.Task) (string, error)
 	// OnIntervention validates fresh authoritative state and advances the gate
-	// before the append-only decision is committed (spec §13.2).
+	// before the append-only decision is committed (design-task-lifecycle).
 	OnIntervention func(context.Context, core.Task, core.Job, core.Intervention) error
 	// OnMerge performs and authoritatively confirms the final forge merge.
 	OnMerge          func(context.Context, core.Task) error
@@ -53,14 +53,14 @@ type Server struct {
 	OnConflictFix    func(context.Context, core.Task) (core.WorkOrder, error)
 	// Workspace stamps created tasks.
 	Workspace string
-	// BearerToken authenticates mutating requests (spec §17.3). An empty
+	// BearerToken authenticates mutating requests (design-http-api). An empty
 	// token denies all mutations rather than silently disabling auth.
 	BearerToken string
 	// WorkspaceInfo is the static fallback for the unauthenticated display
 	// snapshot; production resolves it dynamically through ConfigProvider.
 	WorkspaceInfo *WorkspaceInfo
 	// ConfigProvider resolves current database-backed workspace scope while
-	// preserving file-backed deployment fields (spec §21.3).
+	// preserving file-backed deployment fields.
 	ConfigProvider        func(context.Context) (*config.Config, error)
 	ConfigStore           WorkspaceConfigStore
 	Workspaces            store.WorkspaceControlStore
@@ -233,7 +233,7 @@ func (s *Server) redispatchTask(w http.ResponseWriter, r *http.Request) {
 		if t.State == core.TaskParked {
 			// A triage park records the stage in RecoveryStage and clears
 			// NextStage. Recovery restores that stage as the next dispatch
-			// target (spec §3.3 T21).
+			// target (design-task-lifecycle).
 			_, transitionErr = taskops.New(s.Store).Perform(r.Context(), id, taskops.Command{Kind: command, NextStage: nextStage, ProjectStages: true})
 		} else {
 			_, transitionErr = taskops.New(s.Store).Perform(r.Context(), id, taskops.Command{Kind: command})
@@ -878,7 +878,7 @@ func (s *Server) listActivityFiltered(w http.ResponseWriter, r *http.Request, fi
 	for _, task := range tasks {
 		// Blueprint anchors are intent artifacts, not claimable work, so they
 		// leave the stage-grouped board and its counts for the Blueprints
-		// surface (spec §21.49). The review inbox projection keeps them: an
+		// surface (design-web-dashboard). The review inbox projection keeps them: an
 		// anchor at its spec gate has not materialized children yet, so it is
 		// not classified here and its approval card is untouched.
 		if !reviewsOnly && core.BlueprintAnchor(task) {
@@ -906,7 +906,7 @@ func (s *Server) listActivityFiltered(w http.ResponseWriter, r *http.Request, fi
 
 // needsAttention is the one derivation the stage-grouped board and the
 // list-first Tasks view share, so the two surfaces cannot disagree about which
-// work is waiting on a human (spec §13.3).
+// work is waiting on a human (design-web-dashboard).
 func needsAttention(task core.Task, marker store.ActivityMarker) bool {
 	return task.State == core.TaskAwaiting || task.State == core.TaskParked ||
 		marker.ForgeFailure != nil || marker.ReviewRecovery != nil ||
@@ -931,7 +931,7 @@ type taskPlanStatus struct {
 	Version int    `json:"version,omitempty"`
 	// Legacy marks an unapproved pre-Phase-8.3 spec version captured by
 	// migration 075, so the row reads as the historical record it is
-	// (spec §21.58 change 3).
+	// by construction.
 	Legacy bool `json:"legacy,omitempty"`
 }
 
@@ -945,7 +945,7 @@ type taskChildRollup struct {
 	Open   int `json:"open"`
 }
 
-// taskOperationsItem is the list-first Tasks view's row (spec §21.58, REQ-1).
+// taskOperationsItem is the list-first Tasks view's row (design-web-dashboard).
 // Every field projects durable task, relationship, context, or plan authority;
 // the view stores nothing and re-derives nothing of its own. No priority,
 // assignee, or declared-phase field appears here, and none may be added
@@ -955,7 +955,7 @@ type taskOperationsItem struct {
 	LatestStage core.Stage `json:"latest_stage,omitempty"`
 	LastEventAt time.Time  `json:"last_event_at"`
 	// Stalled says why a row cannot move on its own, so staleness is legible
-	// from the task-level surface (spec §21.58 change 7). The authority is the
+	// from the task-level surface. The authority is the
 	// same derived §21.34 state the board and task detail read; only the fields
 	// a list row states travel with it.
 	Stalled              *taskStalledSummary `json:"stalled,omitempty"`
@@ -983,7 +983,7 @@ func taskStalledSummaryFor(stalled *store.StalledState) *taskStalledSummary {
 	return &taskStalledSummary{Needed: stalled.Needed, Reason: stalled.Reason, LastFailure: stalled.LastFailure}
 }
 
-// listTaskOperations serves the Phase 8.4 Tasks view (spec §21.58, REQ-1).
+// listTaskOperations serves the list-first Tasks view (design-web-dashboard).
 // Dependencies, blocking edges, and children come from a bounded store page;
 // attached context and plan status fold only the event kinds and latest plan
 // records the projection batches for those returned tasks. The historical
@@ -1019,7 +1019,7 @@ func (s *Server) listTaskOperations(w http.ResponseWriter, r *http.Request) {
 		markerByTask[marker.TaskID] = marker
 	}
 	// Blocked stays a derived predicate owned by the dependency substrate
-	// (spec §21.47); the view reads it, and reads the unsatisfiable edges the
+	// (design-task-lifecycle); the view reads it, and reads the unsatisfiable edges the
 	// task record itself does not carry.
 	blockers, err := s.Store.ListDependencyBlockers(ctx, taskIDs)
 	if err != nil {
@@ -1153,7 +1153,7 @@ func parseTaskOperationsQuery(r *http.Request) (store.TaskOperationsQuery, bool,
 	if value := values.Get("offset"); value != "" {
 		// Bound the offset here, before it reaches a store: past
 		// store.MaxTaskOperationsOffset the two stores disagree, because
-		// Postgres narrows the bind parameter to int32 (spec §21.58).
+		// Postgres narrows the bind parameter to int32.
 		offset, err = strconv.Atoi(value)
 		if err != nil || offset < 0 || offset > store.MaxTaskOperationsOffset {
 			return query, false, fmt.Errorf("offset must be between 0 and %d", store.MaxTaskOperationsOffset)
@@ -1220,7 +1220,7 @@ func taskChildRollupFor(children []core.TaskRelation) *taskChildRollup {
 // still inside the gate loop; the audited task.state_changed command then
 // separates a plan waiting at its gate from one the operator redirected, the
 // same recognition the dispatcher's own spec-gate check performs
-// (spec §13.1, AC-1.4).
+// (design-task-lifecycle).
 func taskPlanStatusFor(latest core.SpecVersion, hasPlan bool, events []core.Event) taskPlanStatus {
 	if !hasPlan {
 		return taskPlanStatus{State: taskPlanNone}
@@ -1315,7 +1315,7 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 	decorateWorkOrderAgentActivity(workOrders, events)
 	checkoutCommand, checkoutAvailable, checkoutGuidance := checkoutStateFromHistory(id, events)
 	// Attachments are the operator-supplied task_context artifacts uploaded at
-	// intake (spec §21.5); the task detail view previews them below the spec.
+	// intake; the task detail view previews them below the execution plan.
 	// Conveyor-generated audit transcripts are deliberately excluded — they are
 	// evidence, not attachments.
 	attachments, err := s.taskAttachments(r.Context(), id)
@@ -1346,7 +1346,7 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 		readiness, readinessErr := s.OnMergeReadiness(r.Context(), task)
 		if readinessErr != nil {
 			// The merge action must never render without a successful gate-facing
-			// readiness read (spec §21.30 change 1).
+			// readiness read (design-git-delivery).
 			http.Error(w, fmt.Sprintf("resolve merge readiness: %v", readinessErr), http.StatusServiceUnavailable)
 			return
 		}
@@ -1484,7 +1484,7 @@ func (s *Server) checkoutState(ctx context.Context, taskID string) (string, bool
 func checkoutStateFromHistory(taskID string, _ []core.Event) (string, bool, string) {
 	// The checkout helper can safely create a missing assigned branch from the
 	// freshly fetched base, so the dedicated-worktree command is available as
-	// soon as the task exists (spec §21.8).
+	// soon as the task exists (design-git-delivery).
 	return "conveyor checkout " + taskID, true, "Creates or reuses the clean, task-dedicated worktree without switching the primary checkout."
 }
 

@@ -1,7 +1,7 @@
 // Package postgres implements the Phase 2 event-sourced store with pgx and
 // sqlc. Every projection mutation and its audit event commit in one
 // transaction; events and interventions are append-only at the database layer
-// (spec §3.1, §16, §17.0).
+// (design-database).
 package postgres
 
 import (
@@ -104,7 +104,7 @@ func (s *Store) WithTaskSideEffectLock(ctx context.Context, taskID string, fn fu
 // WithPlanningSessionFinalization holds a workspace-scoped Postgres advisory
 // lock across the active-state check, produced writes, transcript archival,
 // and session finalization. AbandonPlanningSession takes the same lock, so only
-// one terminal outcome can win across daemon instances (spec §9).
+// one terminal outcome can win across daemon instances.
 func (s *Store) WithPlanningSessionFinalization(ctx context.Context, sessionID string, fn func(context.Context) error) error {
 	return s.withPlanningSessionLock(ctx, sessionID, func(lockedCtx context.Context) error {
 		session, err := scanPlanningSession(s.pool.QueryRow(lockedCtx, planningSessionSelect+
@@ -206,7 +206,6 @@ func (s *Store) BootstrapConfig(ctx context.Context, cfg *config.Config) error {
 // BootstrapWorkspaceConfig imports workspace scope only when the row is
 // empty. Subsequent starts reconcile only the file-owned capacity metadata
 // and report seeded=false so callers can emit the required startup notice
-// (spec §21.3).
 func (s *Store) BootstrapWorkspaceConfig(ctx context.Context, cfg *config.Config) (bool, error) {
 	configYAML, err := config.MarshalWorkspaceDocument(cfg)
 	if err != nil {
@@ -289,7 +288,7 @@ func (s *Store) GetWorkspace(ctx context.Context, id string) (core.Workspace, er
 }
 
 // CreateWorkspace commits identity, configuration, repositories, and the
-// workspace.created audit event atomically (spec §21.10).
+// workspace.created audit event atomically.
 func (s *Store) CreateWorkspace(ctx context.Context, id, name string, cfg *config.Config) (core.Workspace, error) {
 	data, err := config.MarshalWorkspaceDocument(cfg)
 	if err != nil {
@@ -355,7 +354,7 @@ func (s *Store) WorkspaceConfig(ctx context.Context) (config.VersionedDocument, 
 
 // RuntimeConfig overlays the latest database document onto immutable
 // deployment settings. Callers take one value per dispatch so running jobs do
-// not observe mid-flight policy changes (spec §2.1, §21.3).
+// not observe mid-flight policy changes.
 func (s *Store) RuntimeConfig(ctx context.Context, deployment *config.Config) (*config.Config, error) {
 	id := workspace(ctx)
 	row, err := s.queries.GetWorkspaceConfig(ctx, id)
@@ -1173,7 +1172,7 @@ func (s *Store) MarkTaskApprovalStale(ctx context.Context, id, approvedHeadSHA, 
 // AdvanceTaskRefreshHead moves a stale approval's refresh target to the head
 // most recently submitted for review, so the next refresh round contracts the
 // pushed fix rather than the head recorded when the approval went stale
-// (spec §21.30). Re-advancing to the current refresh head is an idempotent
+// . Re-advancing to the current refresh head is an idempotent
 // no-op.
 func (s *Store) AdvanceTaskRefreshHead(ctx context.Context, id, newHeadSHA string) error {
 	newHeadSHA = strings.TrimSpace(newHeadSHA)
@@ -1283,7 +1282,7 @@ func (s *Store) ApplyTaskCommand(ctx context.Context, lease taskops.TaskLease, i
 // closeBlueprintParentTx applies the level-triggered blueprint close edge
 // while holding the same task-operation lock as every ordinary lifecycle
 // command and a row lock shared with human cancellation. State and child
-// eligibility are revalidated after both locks are held (spec §§3.3, 4.1).
+// eligibility are revalidated after both locks are held.
 func (s *Store) closeBlueprintParentTx(ctx context.Context, tx pgx.Tx, q *db.Queries, parentID string) (bool, error) {
 	parentKey := "conveyor:task-operation:" + workspace(ctx) + ":" + parentID
 	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtext($1))", parentKey); err != nil {
@@ -1429,7 +1428,7 @@ ORDER BY t.created_at, t.id`, workspace(ctx))
 // ReconcileBlueprintClosures repairs missed close edges for blueprint parents.
 // Candidate discovery is a pure read; each close revalidates under the
 // parent's lifecycle and row locks so concurrent ticks and commands are
-// exactly-once (spec §§3.3, 4.1).
+// exactly-once.
 func (s *Store) ReconcileBlueprintClosures(ctx context.Context) (int, error) {
 	rows, err := s.pool.Query(ctx, `
 SELECT parent.id
@@ -1604,7 +1603,7 @@ WHERE s.task_id = $1 AND s.version = $2 AND t.workspace_id = $3`, taskID, versio
 }
 
 // GetApprovedSpecVersion returns the newest approved spec version, which is
-// the one that governs (spec §4.1): approval only ever lands on the newest
+// the one that governs: approval only ever lands on the newest
 // version, so a later unapproved draft is a proposal that has materialized
 // nothing and must not displace the blueprint currently in delivery. The
 // query is hand-written rather than generated because sqlc cannot parse this
@@ -2543,7 +2542,7 @@ func (s *Store) listActivityMarkers(ctx context.Context, taskIDs []string) ([]st
 	}
 	// Scope the order read to the requested tasks. The activity feed still
 	// wants the whole workspace, but a Tasks page must not pull every
-	// workspace order in only to discard most of it (spec §21.58).
+	// workspace order in only to discard most of it.
 	orders, err := s.listWorkOrdersForTasks(ctx, taskIDs)
 	if err != nil {
 		return nil, err
@@ -3686,7 +3685,7 @@ func (s *Store) ListCheckpointContextCandidates(ctx context.Context, requirement
 
 // listWorkOrdersForTasks reads the orders of an explicit task set, or the whole
 // workspace when the set is empty. It backs the activity-marker projection so a
-// page-scoped caller pays for its page only (spec §21.58).
+// page-scoped caller pays for its page only.
 func (s *Store) listWorkOrdersForTasks(ctx context.Context, taskIDs []string) ([]core.WorkOrder, error) {
 	if len(taskIDs) == 0 {
 		return s.ListWorkOrders(ctx)
@@ -3754,7 +3753,7 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease taskop
 	// Session and client-token independence spans the implementation order and
 	// every seat in a review round. Serialize all claims for one task before
 	// locking an individual order so concurrent seats cannot both pass the
-	// sibling check against an uncommitted peer (spec §21.12 change 4).
+	// sibling check against an uncommitted peer.
 	lockKey := fmt.Sprintf("conveyor:work-order-claim:%s:%s", workspace(ctx), taskID)
 	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtext($1))", lockKey); err != nil {
 		return core.WorkOrder{}, err
@@ -4032,7 +4031,7 @@ func reviewSeatAcceptedTx(ctx context.Context, tx pgx.Tx, workspaceID, taskID, w
 }
 
 // RefreshWorkOrderHarnessSnapshot durably replaces the pinned harness snapshot
-// of an unclaimed queued or stale order on queue re-entry (spec §21.32). The
+// of an unclaimed queued or stale order on queue re-entry. The
 // active-attempt snapshot stays immutable: claimed orders are rejected.
 func (s *Store) RefreshWorkOrderHarnessSnapshot(ctx context.Context, id string, snapshot *core.HarnessSnapshot) (core.WorkOrder, error) {
 	if snapshot == nil || snapshot.Name == "" {
@@ -4144,7 +4143,7 @@ func (s *Store) RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 	if priorState == core.WorkOrderQueued {
 		// Resetting retry metadata on an already-queued order is not a lifecycle
 		// transition. Keep the historical event kind without mislabeling this
-		// operator action as W14 (spec §3.3, §21.41).
+		// operator action as W14.
 		lifecycleCommand = ""
 		eventKind = "work_order.redispatched"
 	}
@@ -4614,7 +4613,7 @@ func (s *Store) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.T
 				return countErr
 			}
 			// The check-in comparison uses bounces since the last human
-			// intervention, not the lifetime count (spec §21.17); the
+			// intervention, not the lifetime count; the
 			// recorded count in the event payload stays lifetime.
 			window, windowErr := q.CountEventsSinceHumanIntervention(ctx, db.CountEventsSinceHumanInterventionParams{TaskID: nullableText(decision.TaskID), Kind: "pipeline.bounced", WorkspaceID: workspace(ctx)})
 			if windowErr != nil {
@@ -4657,7 +4656,7 @@ func (s *Store) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.T
 			// Auto-approval currently projects running -> awaiting_human with
 			// gate.merge even though the merge gate is off. The table has no direct
 			// running -> approved edge; keep this explicit gap workaround visible
-			// until a table amendment supplies the intended command (spec §21.37).
+			// until a table amendment supplies the intended command.
 			if err = insertEvent(ctx, q, core.Event{TaskID: decision.TaskID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": fromState, "to": state, "command": command})}); err != nil {
 				return err
 			}
@@ -4682,7 +4681,7 @@ func (s *Store) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.T
 		}
 		// When autoApprove is true, this second projection records an intervention
 		// command without a human intervention. It is the paired gap workaround for
-		// the absent running -> approved table edge (spec §21.37).
+		// the absent running -> approved table edge.
 		if err := insertEvent(ctx, q, core.Event{TaskID: decision.TaskID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": fromState, "to": state, "command": command})}); err != nil {
 			return err
 		}

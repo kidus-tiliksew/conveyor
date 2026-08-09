@@ -32,12 +32,12 @@ func (s *Server) listPlanningSessions(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) createPlanningSession(w http.ResponseWriter, r *http.Request) {
 	// No title is accepted: the session is named by its goal and then by the
-	// artifact it produces (spec §21.57 change 3).
+	// artifact it produces.
 	var request struct {
 		RequirementContextID  string `json:"requirement_context_id"`
 		SystemDesignContextID string `json:"system_design_context_id"`
 		Model                 string `json:"model"`
-		// Goal is accepted once at creation and never updated (spec §21.57).
+		// Goal is accepted once at creation and never updated.
 		Goal      string                      `json:"goal"`
 		Promotion *core.RequirementDerivation `json:"promotion"`
 	}

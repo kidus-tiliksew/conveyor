@@ -1,7 +1,7 @@
 // conveyord is the control-plane daemon: orchestrator, task queue, and
-// HTTP API (spec §3.1). Phase 4.7 runs the durable pipeline worker in-process;
+// HTTP API (design-system-architecture). The durable pipeline worker runs in-process;
 // implementation and review execution are claimed over MCP. The
-// dashboard SPA embeds here so API and UI ship as one binary (spec §17.0).
+// dashboard SPA embeds here so API and UI ship as one binary (design-system-architecture).
 package main
 
 import (

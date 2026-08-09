@@ -48,7 +48,7 @@ func writeTaskCreateError(w http.ResponseWriter, err error) {
 
 // createTaskRecord is the single durable intake path for HTTP and MCP. MCP
 // callers provide an idempotency key so transport retries return the original
-// task without enqueueing Luna triage twice (spec §17.4, §21.5).
+// task without enqueueing Luna triage twice (design-260805-973cd4; DEC-8).
 func (s *Server) createTaskRecord(ctx context.Context, req createTaskReq, intakeKey, defaultSource string) (taskCreateResult, error) {
 	return s.createTaskRecordWithState(ctx, req, intakeKey, defaultSource, core.TaskQueued)
 }

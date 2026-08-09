@@ -16,7 +16,7 @@ import (
 // Requirement audit events have no task ID, so the production dashboard must
 // read them through the workspace-scoped event path rather than ListEvents.
 // This guards the PostgreSQL-backed read model that the in-memory HTTP tests
-// cannot exercise (spec §4.2 item 1, §13.3).
+// cannot exercise.
 func TestPhase62RequirementsHTTPIncludesWorkspaceRequirementLineageIntegration(t *testing.T) {
 	st, ctx, workspace := newPhase62IntegrationStore(t)
 	requirementID := "req-" + core.NewTaskID()

@@ -14,7 +14,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
-// Queue re-entry re-resolves pinned harness snapshots (spec §21.32): the
+// Queue re-entry re-resolves pinned harness snapshots: the
 // refresh applies only to unclaimed queued or stale orders, persists the new
 // definition, and appends work_order.harness_refreshed.
 func TestHarnessSnapshotRefreshIntegration(t *testing.T) {

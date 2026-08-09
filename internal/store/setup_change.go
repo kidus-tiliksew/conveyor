@@ -19,7 +19,6 @@ var ErrSetupChangeConflict = fmt.Errorf("setup change conflict")
 // SetupChangeRequest is a fully resolved transition plan. The service resolves
 // the named setup and constructs replacement snapshots; the store commits the
 // frozen contract, queue changes, review transition, and audit event atomically
-// (spec §21.35).
 type SetupChangeRequest struct {
 	TaskID                string
 	RequestID             string
@@ -141,7 +140,7 @@ func (m *memory) ChangeTaskSetupCommand(ctx context.Context, lease taskops.TaskL
 		order = m.refreshWorkOrderLocked(ctx, order, now)
 		m.workOrders[id] = order
 		// Submitted spec/implement attempts are delivered, not executing; only
-		// claimed attempts and in-flight review verdicts block (spec §21.36).
+		// claimed attempts and in-flight review verdicts block.
 		if order.State == core.WorkOrderClaimed {
 			return SetupChangeResult{}, fmt.Errorf("%w: task %s has a claimed attempt", ErrSetupChangeConflict, request.TaskID)
 		}

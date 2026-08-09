@@ -13,7 +13,7 @@ import (
 // NormalizeRepositoryIdentity canonicalizes the configured and local origin
 // forms used by checkout safety checks. Transport and Git user names are not
 // repository identity; GitHub owner/repository case and a trailing .git are
-// likewise normalized (spec §8.2).
+// likewise normalized (design-git-delivery).
 func NormalizeRepositoryIdentity(raw string) (string, error) {
 	value := strings.TrimSpace(raw)
 	if value == "" {

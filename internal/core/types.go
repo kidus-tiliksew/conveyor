@@ -1,7 +1,6 @@
 // Package core defines the shared domain types for Conveyor: tasks, jobs,
-// pipeline stages, and their states. These mirror the data model in
-// conveyor-spec.md §16. Postgres is the Phase 2 source of truth; the memory
-// store remains an explicit test/development implementation.
+// pipeline stages, and their states. Postgres is the durable source of truth;
+// the in-memory store remains an explicit test/development implementation.
 package core
 
 import (
@@ -46,7 +45,7 @@ func TruncateUTF8Bytes(value string, limit int) string {
 	return value
 }
 
-// Stage is a pipeline stage (spec §4). Phase 1 exercises only Implement;
+// Stage is a pipeline stage. Phase 1 exercises only Implement;
 // the rest are declared so task records and routing config are stable
 // from day one.
 type Stage string
@@ -69,7 +68,7 @@ func InitialStage(level EscalationLevel) Stage {
 	return StageTriage
 }
 
-// TaskMode is the retired auto/manual execution mode (spec §21.31). It
+// TaskMode is the retired auto/manual execution mode. It
 // survives only to parse deprecated intake input and render historical
 // records; behavior is governed by Task.Hold.
 type TaskMode string
@@ -82,7 +81,7 @@ const (
 func (m TaskMode) Valid() bool { return m == TaskModeAuto || m == TaskModeManual }
 
 // LegacyPolicy preserves the accepted L0-L3 meaning for historical callers:
-// hold (the §21.31 successor of Manual), spec approval, merge approval.
+// hold (the successor of Manual), spec approval, merge approval.
 func LegacyPolicy(level EscalationLevel) (bool, bool, bool) {
 	switch level {
 	case L0:
@@ -96,7 +95,7 @@ func LegacyPolicy(level EscalationLevel) (bool, bool, bool) {
 	}
 }
 
-// EscalationLevel is the degree of human involvement (spec §13.1).
+// EscalationLevel is the degree of human involvement.
 type EscalationLevel string
 
 const (
@@ -129,18 +128,18 @@ const (
 	JobFailed  JobState = "failed"
 )
 
-// Task is a unit of intended change (spec §2). One task spans many jobs.
+// Task is a unit of intended change. One task spans many jobs.
 type Task struct {
 	ID                 string                `json:"id"`
 	Workspace          string                `json:"workspace"`
-	Source             string                `json:"source"` // provenance: github:<slug>#<n>, cli, cron, monitor (spec §9)
-	IntakeKey          string                `json:"-"`      // workspace-scoped MCP retry key (spec §21.5)
+	Source             string                `json:"source"` // provenance: github:<slug>#<n>, cli, cron, monitor
+	IntakeKey          string                `json:"-"`      // workspace-scoped MCP retry key
 	Title              string                `json:"title"`
 	Body               string                `json:"body"`  // free-form description; becomes part of the prompt
 	Class              string                `json:"class"` // bug | feature | chore
 	Level              EscalationLevel       `json:"level"`
-	Mode               TaskMode              `json:"mode,omitempty"` // legacy historical record (spec §21.31); never read for behavior
-	Hold               bool                  `json:"hold,omitempty"` // reservation from the worker daemon (spec §21.31)
+	Mode               TaskMode              `json:"mode,omitempty"` // legacy historical record; never read for behavior
+	Hold               bool                  `json:"hold,omitempty"` // reservation from the worker daemon
 	SpecApproval       bool                  `json:"spec_approval"`
 	MergeApproval      bool                  `json:"merge_approval"`
 	PolicyVersion      int                   `json:"policy_version"`
@@ -154,11 +153,11 @@ type Task struct {
 	RefreshReviewScope string                `json:"refresh_review_scope,omitempty"`
 	Repo               string                `json:"repo"` // repo name within the workspace; multi-repo sets are Phase 8
 	BaseBranch         string                `json:"base_branch"`
-	Branch             string                `json:"branch"` // assigned conveyor/task-<id> name; the ref may not exist yet (spec §21.7)
+	Branch             string                `json:"branch"` // assigned conveyor/task-<id> name; the ref may not exist yet
 	State              TaskState             `json:"state"`
 	NextStage          Stage                 `json:"next_stage,omitempty"`     // durable pipeline transition selected at the preceding gate
 	RecoveryStage      Stage                 `json:"recovery_stage,omitempty"` // explicit human redirect/pull target while the pipeline is halted
-	ParentTaskID       string                `json:"parent_task_id,omitempty"` // blueprint parent (spec §4.1)
+	ParentTaskID       string                `json:"parent_task_id,omitempty"` // blueprint parent
 	OriginSpecVersion  int                   `json:"origin_spec_version,omitempty"`
 	OriginSubID        string                `json:"origin_sub_id,omitempty"`
 	Dependencies       []TaskRelation        `json:"dependencies,omitempty"`
@@ -166,14 +165,14 @@ type Task struct {
 	Children           []TaskRelation        `json:"children,omitempty"`
 	Context            TaskContext           `json:"context,omitempty"`
 	// FeatureID is deprecated migration history. Live task context and child
-	// materialization use requirement/lineage records instead (spec §21.46).
+	// materialization use requirement/lineage records instead.
 	FeatureID string           `json:"feature_id,omitempty"`
-	GitHub    *GitHubLifecycle `json:"github,omitempty"` // durable forge projection (spec §21.12 change 5)
+	GitHub    *GitHubLifecycle `json:"github,omitempty"` // durable forge projection
 	CreatedAt time.Time        `json:"created_at"`
 }
 
 // TaskContext is the operator-attached desired-state authority carried by a
-// task independently of blueprint ancestry (spec §21.58 change 3).
+// task independently of blueprint ancestry.
 type TaskContext struct {
 	Requirements []TaskRequirementContext `json:"requirements,omitempty"`
 	Designs      []TaskDesignContext      `json:"designs,omitempty"`
@@ -192,7 +191,7 @@ type TaskDesignContext struct {
 }
 
 // TaskRelation is the compact live reference used by dependency and blueprint
-// read models. Blocking remains derived from relation state (spec §§4.1, 6.3).
+// read models. Blocking remains derived from relation state.
 type TaskRelation struct {
 	ID                string    `json:"id"`
 	Title             string    `json:"title"`
@@ -217,7 +216,7 @@ const (
 // GitHubCreateState records whether a remote create may still be attempted.
 // Once reconciling, retries may only look up the exact task marker; this closes
 // the ambiguity window where GitHub accepted a create but its acknowledgement
-// never reached Conveyor (spec §21.12 change 5, amended by §21.15).
+// never reached Conveyor.
 type GitHubCreateState string
 
 const (
@@ -268,7 +267,7 @@ func NewTaskID() string {
 
 // NewWorkOrderAttemptID returns an opaque identity for one successful claim.
 // It is deliberately independent of the worker session, which may remain warm
-// across several attempts (spec §21.53).
+// across several attempts.
 func NewWorkOrderAttemptID() string {
 	b := make([]byte, 16)
 	_, _ = rand.Read(b)
@@ -315,7 +314,7 @@ func (j Job) MarshalJSON() ([]byte, error) {
 
 // ActorRole is recorded on every append-only event and intervention from the
 // beginning of Phase 2 so later RBAC adds enforcement to an existing audit
-// identity model instead of retrofitting attribution (spec §16, §18.1).
+// identity model instead of retrofitting attribution.
 type ActorRole string
 
 const (
@@ -335,7 +334,7 @@ func (action InterventionAction) Valid() bool {
 }
 
 // Event is the append-only source of truth for task state. Tasks and jobs are
-// transactional projections optimized for queries (spec §3.1, §16).
+// transactional projections optimized for queries.
 type Event struct {
 	ID        int64           `json:"id"`
 	TaskID    string          `json:"task_id"`
@@ -370,8 +369,8 @@ func InterventionActions() []InterventionAction {
 	}
 }
 
-// Intervention is a structured human decision from the review queue (spec
-// §13.2). ReasonCode is intentionally data rather than an enum so workspaces
+// Intervention is a structured human decision from the review queue.
+// ReasonCode is intentionally data rather than an enum so workspaces
 // can add taxonomy without a deploy; the API validates the required baseline.
 type Intervention struct {
 	ID         int64              `json:"id"`
@@ -422,7 +421,7 @@ const (
 
 // WorkOrderActiveForConflictDispatch is the single reason-coded admission
 // definition for merge-conflict fix work. Holds reserve queued orders from the
-// worker supervisor; they do not make the order inactive (spec §21.31).
+// worker supervisor; they do not make the order inactive.
 func WorkOrderActiveForConflictDispatch(order WorkOrder) bool {
 	if order.State == WorkOrderClaimed {
 		return true
@@ -436,8 +435,8 @@ func WorkOrderActiveForConflictDispatch(order WorkOrder) bool {
 // HarnessSnapshot is the immutable worker execution contract captured for a
 // spec, implementation, or review order when it is created. Workspace hot reloads
 // must not alter an in-flight command, model arguments, effort arguments, or
-// health probe (spec §21.19); on queue re-entry the server re-resolves the
-// snapshot from the current registry (spec §21.32).
+// health probe; on queue re-entry the server re-resolves the
+// snapshot from the current registry.
 type HarnessSnapshot struct {
 	Name                  string              `json:"name"`
 	MCPTransport          string              `json:"mcp_transport"`
@@ -454,7 +453,7 @@ type HarnessSnapshot struct {
 }
 
 // RefreshedHarnessSnapshot re-resolves a pinned harness snapshot against the
-// current registry for an order re-entering the queue (spec §21.32). The
+// current registry for an order re-entering the queue. The
 // pinned effort is preserved; the refresh is refused — retaining the prior
 // snapshot — when the name is gone, the pinned effort is no longer declared,
 // or the current definition is already identical.
@@ -506,13 +505,11 @@ func cloneEffortArgs(source map[string][]string) map[string][]string {
 }
 
 // DefaultWorkOrderClaimLease is the renewable lease used whenever a claim
-// omits an explicit duration. It is distinct from worker liveness (spec §3.2,
-// §21.41).
+// omits an explicit duration. It is distinct from worker liveness.
 const DefaultWorkOrderClaimLease = 5 * time.Minute
 
 // RateLimitStatus is normalized provider telemetry reported by an agent.
 // It is observational only and must never participate in dispatch decisions
-// (spec §14, §21.41).
 type RateLimitStatus struct {
 	Status    string     `json:"status"`
 	Limit     *float64   `json:"limit,omitempty"`
@@ -530,7 +527,7 @@ type RateLimitHealth struct {
 }
 
 // WorkOrder is the durable protocol boundary between Conveyor and an
-// operator-owned spec, implementation, or review agent (spec §21.33).
+// operator-owned spec, implementation, or review agent.
 type WorkOrder struct {
 	ID                     string           `json:"id"`
 	TaskID                 string           `json:"task_id"`
@@ -759,7 +756,7 @@ type WorkOrderAttemptCheckpoint struct {
 // AuthorizesAttemptCheckpoint permits either the active attempt to preserve
 // its own work or its active successor to preserve the immediately recorded
 // predecessor. It never grants authority to an inactive or different task
-// session (spec §§21.48, 21.53).
+// session.
 func (w WorkOrder) AuthorizesAttemptCheckpoint(workerID string, checkpoint WorkOrderAttemptCheckpoint, now time.Time) bool {
 	if w.Stage != StageImplement || w.State != WorkOrderClaimed || w.WorkerID != workerID ||
 		w.SessionID == "" || w.SessionID != checkpoint.SessionID || !w.LeaseExpiresAt.After(now) {
@@ -843,7 +840,7 @@ type ReviewPublication struct {
 	State                  ReviewPublicationState `json:"state"`
 	Attempts               int                    `json:"attempts"`
 	// CheckRunID is retained for historical v1.22 publications. Portable v1.23
-	// commit-status publications leave it zero (spec §21.22).
+	// commit-status publications leave it zero.
 	CheckRunID         int64     `json:"check_run_id,omitempty"`
 	CommentID          int64     `json:"comment_id,omitempty"`
 	ForgeErrorCategory string    `json:"forge_error_category,omitempty"`
@@ -914,7 +911,6 @@ const (
 	ArtifactRoleGeneratedOutput ArtifactRole = "generated_output"
 	// ArtifactRoleVerificationEvidence is implementer-supplied proof of an
 	// exercised change. It is a review aid, never model input or CI authority
-	// (spec §12, §21.12 change 6).
 	ArtifactRoleVerificationEvidence ArtifactRole = "verification_evidence"
 )
 
@@ -983,8 +979,8 @@ type Artifact struct {
 	// compatibility; live attachment creation targets tasks or requirements.
 	FeatureID string `json:"feature_id,omitempty"`
 	// RequirementID is the attachment target that replaces FeatureID as the
-	// feature tree retires (spec §21.46 change 5). It is how a finalized
-	// planning transcript attaches to the requirement it produced (§9), and
+	// feature tree retires. It is how a finalized
+	// planning transcript attaches to the requirement it produced, and
 	// where migration 046 re-homes feature-scoped attachments. Exactly one of
 	// TaskID, FeatureID, RequirementID, and PlanningSessionID may be set.
 	RequirementID string `json:"requirement_id,omitempty"`
@@ -997,7 +993,7 @@ type Artifact struct {
 
 // ValidateAttachmentTarget keeps the attachment owner exclusive, mirroring the
 // artifact_links CHECK. An artifact may float unattached at workspace scope,
-// but it never claims two owners (spec §21.46 change 5).
+// but it never claims two owners.
 func (a Artifact) ValidateAttachmentTarget() error {
 	targets := 0
 	for _, id := range []string{a.TaskID, a.FeatureID, a.RequirementID, a.PlanningSessionID} {
@@ -1012,7 +1008,7 @@ func (a Artifact) ValidateAttachmentTarget() error {
 }
 
 // SpecVersion is an immutable spec-agent artifact. Approval is recorded on
-// the exact version that becomes the implementation contract (spec §4.1).
+// the exact version that becomes the implementation contract.
 type SpecVersion struct {
 	TaskID               string          `json:"task_id"`
 	Version              int             `json:"version"`

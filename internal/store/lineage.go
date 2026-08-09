@@ -9,7 +9,7 @@ import (
 )
 
 // LineageEventProjection is the single replay contract shared by both stores.
-// Unknown or malformed events project no edges (spec §16).
+// Unknown or malformed events project no edges (design-lineage-graph).
 type LineageEventProjection struct {
 	Links       []core.LineageLink
 	Suppresses  []core.LineageLink

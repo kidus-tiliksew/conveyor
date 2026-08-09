@@ -2188,7 +2188,7 @@ func TestSubmitForReviewAdvancesStaleRefreshHead(t *testing.T) {
 		t.Fatalf("advance events=%d err=%v", n, countErr)
 	}
 	// The next refresh round must contract the newly pushed head, not the
-	// head recorded when the approval went stale (spec §21.30 change 4).
+	// head recorded when the approval went stale (design-git-delivery).
 	_, orders, err := dispatch.BuildReviewRound(cfg, updated, cfg.Routing.Stages["review"], 2)
 	if err != nil || len(orders) == 0 {
 		t.Fatalf("orders=%+v err=%v", orders, err)

@@ -669,7 +669,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 	leaseExpiresAt := claimed.LeaseExpiresAt
 	// Pre-start setup (temp directory, MCP config, spec checkout clone) can
 	// outlast the claim lease, so renewal must begin at claim time rather than
-	// child launch (spec §21.21: renewal keeps the claim alive but never
+	// child launch (design-260805-973cd4: renewal keeps the claim alive but never
 	// extends the fixed execution window). Authority loss cancels setupCtx so
 	// long-running setup steps abort instead of continuing unclaimed.
 	setupCtx, cancelSetup := context.WithCancel(ctx)
@@ -790,7 +790,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 		// The branch assignment travels with the dispatch so `conveyor
 		// checkout` resolves it locally; worker credentials are valid on the
 		// worker and MCP planes only, never on workspace REST reads, so a
-		// child cannot look the task up itself (spec §21.8).
+		// child cannot look the task up itself (design-http-api).
 		"CONVEYOR_TASK_ID":                 item.Task.ID,
 		"CONVEYOR_TASK_BRANCH":             item.Task.Branch,
 		"CONVEYOR_TASK_BASE_BRANCH":        item.Task.BaseBranch,
@@ -843,7 +843,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 	redactedStdout = &redact.Writer{Destination: io.MultiWriter(stdoutDestinations...), Redactor: outputRedactor}
 	redactedStderr = &redact.Writer{Destination: io.MultiWriter(stderr, failureTail), Redactor: outputRedactor}
 	// Both redacted streams share one first-write signal; either stream
-	// permanently disarms output-start liveness (spec §21.42).
+	// permanently disarms output-start liveness (design-260805-973cd4).
 	firstActivity := newFirstActivitySignal()
 	defer flushOutput()
 	// Hand lease authority to the running-child loop: stop pre-start renewal
@@ -1175,7 +1175,7 @@ type harnessProcessGroup struct {
 // leader of a dedicated process group, so TERM and the bounded KILL escalation
 // cover dev servers, watchers, and other descendants as well as the child.
 // A completed child may still have live descendants, so normal-exit cleanup
-// also routes through this method (spec §6.4, §21.41, §21.42).
+// also routes through this method (design-harness-execution).
 func (g harnessProcessGroup) terminate(completed *error) error {
 	if g.pgid <= 0 || g.pgid == syscall.Getpgrp() {
 		if completed != nil {
@@ -1349,7 +1349,7 @@ var workerStallDeadlineTestHook func()
 
 // preStartClaimRenewal keeps a claimed work order's lease renewed between a
 // successful claim and child launch, when pre-start setup can outlast the
-// lease window (spec §21.21: renewal keeps the claim alive but never extends
+// lease window (design-260805-973cd4: renewal keeps the claim alive but never extends
 // the fixed execution window). On authority loss it cancels the setup
 // context so long-running setup steps abort instead of continuing unclaimed.
 type preStartClaimRenewal struct {
@@ -1420,7 +1420,7 @@ func (r *preStartClaimRenewal) Stop() (time.Time, error) {
 }
 
 // materializeSpecCheckout gives a spec agent repository-grounded, immutable
-// base-branch context without creating the task branch (spec §21.33).
+// base-branch context without creating the task branch (design-git-delivery).
 func materializeSpecCheckout(ctx context.Context, root string, item workerservice.DispatchOrder) (string, error) {
 	repository := item.Repository
 	if strings.TrimSpace(repository.Name) == "" || repository.Name != item.Task.Repo {
@@ -1592,7 +1592,7 @@ func renewWorkerClaimUntil(ctx context.Context, c *client, credential, orderID, 
 }
 
 // prepareMCPConfig preserves the JSON-file transport for existing harnesses
-// while keeping scoped credentials out of TOML override argv (spec §21.20).
+// while keeping scoped credentials out of TOML override argv (design-harness-execution).
 func prepareMCPConfig(directory, base, credential, transport string) (string, error) {
 	endpoint := strings.TrimRight(base, "/") + "/mcp"
 	switch transport {

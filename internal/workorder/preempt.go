@@ -9,8 +9,8 @@ import (
 )
 
 // Preempt is the operator command for revoking one active attempt. It is kept
-// outside MCP deliberately: agents cannot preempt one another (spec §§13.2,
-// 21.4).
+// outside MCP deliberately: agents cannot preempt one another
+// (design-260805-973cd4).
 func (s *Service) Preempt(ctx context.Context, id, reason, requestID string) (store.WorkOrderPreemptResult, error) {
 	request, err := store.PrepareWorkOrderPreemptRequest(store.WorkOrderPreemptRequest{
 		WorkOrderID: id, RequestID: requestID, Reason: reason,

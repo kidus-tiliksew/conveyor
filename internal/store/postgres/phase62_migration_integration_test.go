@@ -17,7 +17,7 @@ import (
 )
 
 // Migration 046 retires the curated feature tree into the flat requirement
-// corpus (spec §21.46 changes 2 and 7). The contract is losslessness: a node
+// corpus. The contract is losslessness: a node
 // that carried anything becomes a pending requirement document and every
 // reference to it survives as durable lineage, while a node that carried
 // nothing drops. This exercises the upgrade on real legacy rows because that is
@@ -383,7 +383,7 @@ func TestPhase62FeatureMigrationSeedsPendingRequirementsIntegration(t *testing.T
 	}
 
 	// A seed is visibly pending, never silently authoritative: current_version
-	// stays NULL until an operator confirms (spec §4.2 item 1).
+	// stays NULL until an operator confirms.
 	var (
 		currentVersion *int32
 		slug, title    string
@@ -451,7 +451,7 @@ func TestPhase62FeatureMigrationSeedsPendingRequirementsIntegration(t *testing.T
 		t.Errorf("description-free seed content = %q, want %q", bareContent, "Task Bearing")
 	}
 
-	// tasks.feature_id converted to a durable history link (spec §16).
+	// tasks.feature_id converted to a durable history link.
 	var linkKind, provenance string
 	if err := f.pool.QueryRow(f.ctx,
 		`SELECT kind, legacy_created_by_event FROM links
@@ -468,7 +468,7 @@ func TestPhase62FeatureMigrationSeedsPendingRequirementsIntegration(t *testing.T
 	}
 
 	// The attachment re-homes onto the seeded requirement and claims exactly
-	// one owner (spec §21.46 change 5).
+	// one owner.
 	var requirementID, featureID string
 	if err := f.pool.QueryRow(f.ctx,
 		`SELECT COALESCE(requirement_id,''), COALESCE(feature_id,'') FROM artifact_links
@@ -978,7 +978,7 @@ func TestRequirementServesMigrationBackfillsSuggestionsAsProposalsIntegration(t 
 	}
 }
 
-// Migration 056 declares the session goal (spec §21.57 change 3). Rows written
+// Migration 056 declares the session goal. Rows written
 // before it predate the declaration, so they take `open` — which is exactly
 // their historical behavior — and the CHECK refuses anything outside the three.
 func TestPlanningSessionGoalMigrationDefaultsExistingRowsToOpenIntegration(t *testing.T) {
