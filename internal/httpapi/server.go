@@ -442,6 +442,11 @@ func (s *Server) reviewTask(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "task is not at a human gate", http.StatusConflict)
 		return
 	}
+	_, planRevisionGate, err := dispatch.PendingPlanRevisionGate(r.Context(), s.Store, id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	var request reviewRequest
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -459,6 +464,23 @@ func (s *Server) reviewTask(w http.ResponseWriter, r *http.Request) {
 	if request.ReasonCode == "" || len(request.ReasonCode) > 64 {
 		http.Error(w, "reason_code is required and must be at most 64 characters", http.StatusBadRequest)
 		return
+	}
+	request.Comment = strings.TrimSpace(request.Comment)
+	if planRevisionGate {
+		if request.Action == core.InterventionRedirect {
+			request.Comment, err = core.NormalizeWorkOrderOperatorDirection(request.Comment)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+		}
+		valid := request.Action == core.InterventionReject && request.ReasonCode == dispatch.PlanRevisionRejectedReasonCode
+		valid = valid || request.Action == core.InterventionRedirect && request.ReasonCode == dispatch.PlanRevisionApprovedReasonCode
+		valid = valid || request.Action == core.InterventionRedirect && request.ReasonCode == dispatch.PlanRevisionDeclinedReasonCode && request.Comment != ""
+		if !valid {
+			http.Error(w, "plan-revision decision requires an approved, declined-with-direction, or rejected reason code", http.StatusBadRequest)
+			return
+		}
 	}
 	checkoutCommand, checkoutAvailable, checkoutGuidance, err := s.checkoutState(r.Context(), id)
 	if err != nil {

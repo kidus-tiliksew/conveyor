@@ -1524,6 +1524,94 @@ func TestReviewRedirectRecordsReasonAndRequeues(t *testing.T) {
 	}
 }
 
+func TestPlanRevisionReviewDecisionsUseFixedAuditedContract(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		body       string
+		wantStatus int
+		wantTask   core.TaskState
+		wantOrder  core.WorkOrderState
+		wantReason string
+		wantDirect string
+	}{
+		{name: "approve revision", body: `{"action":"redirect","reason_code":"plan-revision-approved","comment":"Keep compatibility."}`, wantStatus: http.StatusAccepted, wantTask: core.TaskQueued, wantOrder: core.WorkOrderCancelled, wantReason: dispatch.PlanRevisionApprovedReasonCode},
+		{name: "decline with direction", body: `{"action":"redirect","reason_code":"plan-revision-declined","comment":"Continue with plan v1."}`, wantStatus: http.StatusAccepted, wantTask: core.TaskQueued, wantOrder: core.WorkOrderQueued, wantReason: dispatch.PlanRevisionDeclinedReasonCode, wantDirect: "Continue with plan v1."},
+		{name: "reject", body: `{"action":"reject","reason_code":"plan-revision-rejected"}`, wantStatus: http.StatusAccepted, wantTask: core.TaskClosed, wantOrder: core.WorkOrderQueued, wantReason: dispatch.PlanRevisionRejectedReasonCode},
+		{name: "decline requires direction", body: `{"action":"redirect","reason_code":"plan-revision-declined","comment":" "}`, wantStatus: http.StatusBadRequest, wantTask: core.TaskAwaiting, wantOrder: core.WorkOrderQueued},
+		{name: "generic redirect is rejected", body: `{"action":"redirect","reason_code":"spec-wrong"}`, wantStatus: http.StatusBadRequest, wantTask: core.TaskAwaiting, wantOrder: core.WorkOrderQueued},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx, st, server, taskID, orderID := newPlanRevisionReviewServer(t)
+			request := httptest.NewRequest(http.MethodPost, "/v1/tasks/"+taskID+"/review", bytes.NewBufferString(test.body))
+			request.Header.Set("Authorization", "Bearer token")
+			request.Header.Set("X-Conveyor-Actor", "operator")
+			response := httptest.NewRecorder()
+			server.Handler().ServeHTTP(response, request)
+			if response.Code != test.wantStatus {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+			task, _ := st.GetTask(ctx, taskID)
+			order, _ := st.GetWorkOrder(ctx, orderID)
+			if task.State != test.wantTask || order.State != test.wantOrder || order.OperatorDirection != test.wantDirect {
+				t.Fatalf("task=%+v order=%+v", task, order)
+			}
+			interventions, _ := st.ListInterventions(ctx, taskID)
+			if test.wantStatus == http.StatusBadRequest {
+				if len(interventions) != 0 {
+					t.Fatalf("rejected decision recorded interventions=%+v", interventions)
+				}
+				return
+			}
+			if len(interventions) != 1 || interventions[0].ReasonCode != test.wantReason || interventions[0].ActorID != "operator" {
+				t.Fatalf("interventions=%+v", interventions)
+			}
+		})
+	}
+}
+
+func newPlanRevisionReviewServer(t *testing.T) (context.Context, store.Store, *Server, string, string) {
+	t.Helper()
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	taskID := "plan-revision-review-" + core.NewTaskID()
+	now := time.Now().UTC()
+	if err := st.CreateTask(ctx, core.Task{ID: taskID, Workspace: "demo", Repo: "conveyor", PolicyVersion: 1, SpecApproval: true, State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := st.CreateSpecVersion(ctx, core.SpecVersion{TaskID: taskID, Content: "approved v1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = st.ApproveSpecVersion(ctx, taskID, plan.Version); err != nil {
+		t.Fatal(err)
+	}
+	orderID := taskID + "-implement-1"
+	job := core.Job{ID: orderID, TaskID: taskID, Stage: core.StageImplement, State: core.JobPending}
+	order := core.WorkOrder{ID: orderID, TaskID: taskID, JobID: orderID, Stage: core.StageImplement, State: core.WorkOrderQueued, Claimable: true, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour)}
+	if _, err = storetest.For(st).CreateStageWorkOrder(ctx, job, order); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := storetest.For(st).ClaimWorkOrder(ctx, orderID, core.WorkOrderClaim{SessionID: "session", ClientToken: "token", WorkerID: "worker", Agent: "codex", Model: "model", Lease: time.Minute, ExecutionTimeout: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = taskops.ExecuteWorkOrder(ctx, st, taskID, core.WorkOrderCmdRequestPlanRevision, func(lease taskops.TaskLease) (store.PlanRevisionRequestResult, error) {
+		return st.RequestPlanRevisionCommand(ctx, lease, orderID, "worker", claimed.SessionID, "the API changed")
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{Workspace: "demo", WorkOrderQueueTimeout: time.Hour, Routing: config.Routing{Stages: map[string]config.StageRoute{
+		"spec": {Execution: config.ExecutionMCP, Timeout: time.Hour}, "implement": {Execution: config.ExecutionMCP, Timeout: time.Hour},
+	}}}
+	dispatcher := dispatch.New(st, cfg, nil)
+	dispatcher.DisableMemoryQueueForTest()
+	server := NewServer(st)
+	server.Workspace = "demo"
+	server.BearerToken = "token"
+	server.OnIntervention = dispatcher.HandleIntervention
+	return ctx, st, server, taskID, orderID
+}
+
 func TestReviewApprovalWithoutReviewedHeadConflictsBeforeIntervention(t *testing.T) {
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	st := store.NewMemory()

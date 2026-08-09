@@ -456,6 +456,70 @@ func (s *Store) RequestPlanRevisionCommand(ctx context.Context, taskLease taskop
 	return store.PlanRevisionRequestResult{WorkOrder: order, Task: taskFromDB(updatedTask), PlanVersion: planVersion, Rationale: rationale}, nil
 }
 
+func (s *Store) CancelPlanRevisionWorkOrderCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID, attemptID string) (core.WorkOrder, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return core.WorkOrder{}, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	var taskID string
+	if err = tx.QueryRow(ctx, `SELECT task_id FROM work_orders WHERE workspace_id=$1 AND id=$2`, workspace(ctx), workOrderID).Scan(&taskID); errors.Is(err, pgx.ErrNoRows) {
+		return core.WorkOrder{}, fmt.Errorf("work order %s not found", workOrderID)
+	} else if err != nil {
+		return core.WorkOrder{}, err
+	}
+	if !taskLease.ValidForCommand(taskID, string(core.WorkOrderCmdCancel)) {
+		return core.WorkOrder{}, fmt.Errorf("plan-revision cancellation requires a valid taskops lease")
+	}
+	key := "conveyor:task-operation:" + workspace(ctx) + ":" + taskID
+	if _, err = tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtext($1))", key); err != nil {
+		return core.WorkOrder{}, err
+	}
+	current, err := scanWorkOrder(tx.QueryRow(ctx, `SELECT `+workOrderColumns+` FROM work_orders WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspace(ctx), workOrderID))
+	if err != nil {
+		return core.WorkOrder{}, notFound(err, "work order %s", workOrderID)
+	}
+	if current.Stage != core.StageImplement || current.LastAttemptID != attemptID || current.LastFailureMessage != core.WorkOrderReleaseReasonPlanRevisionRequested {
+		return core.WorkOrder{}, fmt.Errorf("work order %s is not the contested plan-revision attempt", workOrderID)
+	}
+	if current.State == core.WorkOrderCancelled {
+		if err = tx.Commit(ctx); err != nil {
+			return core.WorkOrder{}, err
+		}
+		current.Claimable = false
+		return current, nil
+	}
+	next, err := core.TransitionWorkOrder(current.State, core.WorkOrderCmdCancel)
+	if err != nil {
+		return core.WorkOrder{}, err
+	}
+	now := time.Now().UTC()
+	order, err := scanWorkOrder(tx.QueryRow(ctx, `UPDATE work_orders SET state=$1,updated_at=$2 WHERE workspace_id=$3 AND id=$4 AND state=$5 RETURNING `+workOrderColumns,
+		next, now, workspace(ctx), workOrderID, current.State))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return core.WorkOrder{}, fmt.Errorf("work order %s changed during plan-revision cancellation", workOrderID)
+	}
+	if err != nil {
+		return core.WorkOrder{}, err
+	}
+	if _, err = tx.Exec(ctx, `UPDATE jobs SET state='failed',ended_at=$1,updated_at=$1 WHERE id=$2 AND state<>'done'`, now, order.JobID); err != nil {
+		return core.WorkOrder{}, err
+	}
+	actor := store.ActorFromContext(ctx)
+	q := s.queries.WithTx(tx)
+	if err = insertEvent(ctx, q, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.cancelled", ActorID: actor.ID, ActorRole: actor.Role, Payload: core.JSONPayload(map[string]any{
+		"work_order_id": order.ID, "attempt_id": attemptID, "prior_state": current.State, "state": next,
+		"command": core.WorkOrderCmdCancel, "reason": "plan revision approved",
+	}), At: now}); err != nil {
+		return core.WorkOrder{}, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return core.WorkOrder{}, err
+	}
+	order.Claimable = false
+	return order, nil
+}
+
 func (s *Store) RecordWorkOrderAttemptCheckpoint(ctx context.Context, workOrderID, workerID string, checkpoint core.WorkOrderAttemptCheckpoint) (bool, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
