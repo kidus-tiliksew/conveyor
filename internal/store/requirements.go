@@ -14,12 +14,12 @@ import (
 )
 
 // Requirement and planning-session persistence for the in-memory store.
-// Requirements are versioned and confirmed, never gated (spec §4.2 item 1);
-// planning sessions are durable and produce at most one artifact (spec §9).
+// Requirements are versioned and confirmed, never gated (design-document-corpus);
+// planning sessions are durable and produce at most one artifact.
 
 // PlanningFinalizeRequest finalizes a session against exactly one produced
 // artifact. A finalized session never carries approval authority: producing a
-// blueprint parent task leaves the §13.1 spec gate untouched.
+// blueprint parent task leaves the operator approval gate untouched.
 type PlanningFinalizeRequest struct {
 	SessionID string
 	// RequirementID and TaskID are mutually exclusive.
@@ -29,7 +29,7 @@ type PlanningFinalizeRequest struct {
 	BundleID             string
 	TranscriptArtifactID string
 	// Title is the produced artifact's title, which replaces the session's
-	// goal-derived provisional title (spec §21.57 change 3). An empty title
+	// goal-derived provisional title. An empty title
 	// leaves the provisional one in place.
 	Title string
 }
@@ -648,7 +648,7 @@ func (m *memory) FinalizePlanningSession(ctx context.Context, request PlanningFi
 	if session.Status != core.PlanningSessionActive {
 		// Abandonment is terminal. In particular, an in-flight planning run
 		// must not resurrect a session after the abandon request wins this
-		// lock (spec §9).
+		// lock.
 		return core.PlanningSession{}, fmt.Errorf(
 			"planning session %s is %s and cannot be finalized", request.SessionID, session.Status)
 	}

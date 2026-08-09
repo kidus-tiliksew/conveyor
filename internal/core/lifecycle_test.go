@@ -23,6 +23,7 @@ func TestTaskLifecycleT1ThroughT22(t *testing.T) {
 		{"T8", TaskRunning, TaskTriageRouteHuman, TaskAwaiting},
 		{"T9", TaskRunning, TaskTriagePark, TaskParked},
 		{"T10", TaskRunning, TaskGateSpec, TaskAwaiting},
+		{"T10a", TaskRunning, TaskGatePlanRevision, TaskAwaiting},
 		{"T11", TaskRunning, TaskGateMerge, TaskAwaiting},
 		{"T12", TaskQueued, TaskDispatchFailRetry, TaskQueued},
 		{"T13", TaskQueued, TaskDispatchFailFinal, TaskParked},
@@ -34,6 +35,9 @@ func TestTaskLifecycleT1ThroughT22(t *testing.T) {
 		{"T19", TaskApproved, TaskRefreshReview, TaskQueued},
 		{"T20", TaskApproved, TaskConflictDispatch, TaskQueued},
 		{"T21", TaskParked, TaskRecover, TaskQueued},
+	}
+	if _, err := TransitionTask(TaskQueued, TaskGatePlanRevision); err == nil {
+		t.Fatal("gate.plan_revision accepted outside running")
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -81,6 +85,7 @@ func TestWorkOrderLifecycleW1ThroughW15(t *testing.T) {
 		{"W2", WorkOrderQueued, WorkOrderCmdClaim, WorkOrderClaimed},
 		{"W3", WorkOrderClaimed, WorkOrderCmdRenew, WorkOrderClaimed},
 		{"W4", WorkOrderClaimed, WorkOrderCmdRelease, WorkOrderQueued},
+		{"W4a", WorkOrderClaimed, WorkOrderCmdRequestPlanRevision, WorkOrderQueued},
 		{"W5", WorkOrderClaimed, WorkOrderCmdExpire, WorkOrderQueued},
 		{"W6", WorkOrderClaimed, WorkOrderCmdSubmitForReview, WorkOrderSubmitted},
 		{"W7", WorkOrderClaimed, WorkOrderCmdSubmitSpec, WorkOrderCompleted},

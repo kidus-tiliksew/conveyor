@@ -11,8 +11,7 @@ import (
 )
 
 // TestPhase62RequirementConformanceIntegration runs the requirement and
-// planning-session conformance suite against Postgres (spec §4.2 item 1 AC-1,
-// §9 AC-2). Its in-memory twin is TestMemoryRequirementConformance: the two
+// planning-session conformance suite against Postgres. Its in-memory twin is TestMemoryRequirementConformance: the two
 // together are the guarantee that requirement versioning, confirmation, and
 // planning transcripts behave identically whichever store a deployment uses.
 func TestPhase62RequirementConformanceIntegration(t *testing.T) {

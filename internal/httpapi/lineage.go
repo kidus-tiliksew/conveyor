@@ -43,7 +43,7 @@ func (s *Server) rebuildLineage(w http.ResponseWriter, r *http.Request) {
 
 // getLineage exposes the same bounded, deterministic graph walk used for
 // agent context. The graph remains a read-only projection of events; callers
-// cannot volunteer edges through this surface (spec §4.2 item 4, §16).
+// cannot volunteer edges through this surface (req-260802-72fc68 REQ-1).
 func (s *Server) getLineage(w http.ResponseWriter, r *http.Request) {
 	root := core.LineageNode{
 		Type: core.LineageNodeType(strings.TrimSpace(chi.URLParam(r, "type"))),

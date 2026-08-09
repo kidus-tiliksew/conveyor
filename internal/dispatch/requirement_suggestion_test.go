@@ -11,7 +11,7 @@ import (
 )
 
 // Triage proposes a requirement relation instead of the retired feature
-// placement (spec §21.46 change 5; AC-5). The proposal is advisory: it records
+// placement. The proposal is advisory: it records
 // which intent a stray task appears to serve and confirms nothing, and it is
 // only ever recorded against a requirement that actually exists in the corpus
 // the prompt offered — an agent cannot invent a relation.
@@ -123,8 +123,8 @@ func TestRequirementSuggestionIgnoresUnlistedAndEmptyProposals(t *testing.T) {
 }
 
 // A confirmed requirement is not required for a suggestion: triage proposes
-// against the corpus, and confirmation is a separate operator act (spec §4.2
-// item 1). A pending seed is still a listable requirement.
+// against the corpus, and confirmation is a separate operator act. A pending
+// seed is still a listable requirement.
 func TestRequirementSuggestionAcceptsPendingRequirement(t *testing.T) {
 	t.Parallel()
 	d, ctx, task, requirement := newRequirementSuggestionFixture(t)

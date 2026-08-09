@@ -2292,8 +2292,27 @@ test('suppressed worker order exposes failure state and audited recovery action'
   await expect(page.getByText(/harness exited: status 1/)).toBeVisible()
   await expect(page.getByText('No automatic retry is pending.')).toBeVisible()
   await expect(page.getByText('Resolve the primary checkout changes first.')).toHaveCount(0)
+  await expect(page.getByText('You can add an optional instruction for the next attempt.')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Attach context' })).toBeVisible()
+  await page.getByLabel('Operator direction').fill('  Retry with the approved dashboard approach.  ')
   await page.getByRole('button', { name: 'Recover work order' }).click()
-  await expect.poll(() => recoveryRequest).toContain('request_id')
+  await expect.poll(() => JSON.parse(recoveryRequest).direction).toBe('Retry with the approved dashboard approach.')
+})
+
+test('ordinary recovery permits an empty operator direction', async ({ page }) => {
+  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
+  let recoveryRequest = ''
+  await page.route('**/v1/work-orders/*/recover*', async (route) => {
+    recoveryRequest = route.request().postData() ?? ''
+    await route.fulfill({ json: { id: 'recovery-review-1-seat-1', state: 'queued', claimable: true } })
+  })
+  await page.goto('/tasks/recovery/full')
+  await expect(page.getByLabel('Operator direction')).toHaveValue('')
+  const action = page.getByRole('button', { name: 'Recover work order' })
+  await expect(action).toBeEnabled()
+  await action.click()
+  await expect.poll(() => recoveryRequest).not.toBe('')
+  expect(JSON.parse(recoveryRequest)).not.toHaveProperty('direction')
 })
 
 test('checkpoint recovery requires and submits operator direction', async ({ page }) => {
@@ -2975,7 +2994,7 @@ test('spec approval keeps the human marker without a duplicate versioned event',
   const timeline = page.getByRole('region', { name: 'Execution event timeline' })
   const timelineRows = timeline.locator('ol > li')
   await expect(timelineRows).toHaveCount(2)
-  await expect(timelineRows.nth(0)).toContainText('Spec v2 drafted')
+  await expect(timelineRows.nth(0)).toContainText('Plan v2 drafted')
   await expect(timelineRows.nth(1)).toContainText('Approved')
   await expect(timeline.getByText(/Spec v\d+ approved/)).toHaveCount(0)
 })
@@ -3070,6 +3089,216 @@ test('human gate renders as the event timeline tail and the page opens scrolled 
   await expect.poll(() => content.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true)
   await expect(gate).toBeInViewport()
   await expect.poll(() => content.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
+})
+
+for (const decision of [
+  {
+    name: 'approve revision',
+    open: 'Approve revision',
+    input: 'Revision direction',
+    comment: 'Keep the API contract byte-compatible.',
+    confirm: 'Send to planning',
+    action: 'redirect',
+    reasonCode: 'plan-revision-approved',
+  },
+  {
+    name: 'decline with direction',
+    open: 'Decline with direction',
+    input: 'Implementation direction',
+    comment: 'Continue against plan v7 and preserve the handler shape.',
+    confirm: 'Retry implementation',
+    action: 'redirect',
+    reasonCode: 'plan-revision-declined',
+  },
+  {
+    name: 'reject',
+    open: 'Reject task',
+    input: 'Rejection note',
+    comment: 'The requested outcome is no longer wanted.',
+    confirm: 'Reject task',
+    action: 'reject',
+    reasonCode: 'plan-revision-rejected',
+  },
+] as const) {
+  test(`plan revision gate renders request context and submits ${decision.name}`, async ({ page }) => {
+    await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
+    const taskId = `plan-revision-${decision.action}-${decision.reasonCode}`
+    let activityRequests = 0
+    await page.route(`**/v1/tasks/${taskId}/activity*`, async (route) => {
+      activityRequests += 1
+      await route.fulfill({ json: planRevisionGateActivity(taskId) })
+    })
+
+    let requestBody: Record<string, unknown> | undefined
+    await page.route(`**/v1/tasks/${taskId}/review*`, async (route) => {
+      requestBody = route.request().postDataJSON() as Record<string, unknown>
+      await route.fulfill({
+        json: { task: activity('gate', false).task, checkout_available: false, checkout_guidance: '' },
+      })
+    })
+
+    await page.goto(`/tasks/${taskId}/full`)
+    const gate = page.getByRole('region', { name: 'Human gate' })
+    await expect(gate.getByText('Plan revision requested')).toBeVisible()
+    await expect(gate.getByText('v7', { exact: true })).toBeVisible()
+    await expect(gate.getByText('A dependency changed the public handler contract.')).toBeVisible()
+    // Both cards belong to the same tail: deciding the plan is not the same
+    // question as recovering the released order, and neither hides the other.
+    await expect(page.getByRole('button', { name: 'Recover work order' })).toBeVisible()
+    const decided = activityRequests
+
+    await gate.getByRole('button', { name: decision.open }).first().click()
+    const input = gate.getByLabel(decision.input)
+    if (decision.reasonCode === 'plan-revision-declined') {
+      await expect(gate.getByRole('button', { name: decision.confirm })).toBeDisabled()
+    }
+    // The operator's direction reaches the backend trimmed — a textarea's
+    // incidental whitespace is not operator instruction.
+    await input.fill(`  ${decision.comment}\n`)
+    await gate.getByRole('button', { name: decision.confirm }).last().click()
+
+    await expect
+      .poll(() => requestBody)
+      .toEqual({
+        action: decision.action,
+        reason_code: decision.reasonCode,
+        comment: decision.comment,
+      })
+    await expect.poll(() => activityRequests).toBeGreaterThan(decided)
+  })
+}
+
+// The gate as the backend leaves it: the request event, the claim released in
+// the same transaction, and the implement order sitting queued with retry
+// suppressed.
+function planRevisionGateActivity(taskId: string) {
+  const item = activity('gate', false)
+  item.task.id = taskId
+  item.events = [
+    {
+      id: 91,
+      task_id: taskId,
+      job_id: `${taskId}-implement-1`,
+      kind: 'work_order.plan_revision_requested',
+      actor_id: 'worker-1',
+      actor_role: 'agent',
+      payload: {
+        work_order_id: `${taskId}-implement-1`,
+        attempt_id: 'attempt-9',
+        rationale: 'A dependency changed the public handler contract.',
+        plan_version: 7,
+      },
+      at: '2026-07-15T12:10:00Z',
+    },
+    {
+      id: 92,
+      task_id: taskId,
+      job_id: `${taskId}-implement-1`,
+      kind: 'work_order.released',
+      actor_id: 'worker-1',
+      actor_role: 'agent',
+      payload: { attempt_id: 'attempt-9', reason: 'plan revision requested', outcome: 'released' },
+      at: '2026-07-15T12:10:00Z',
+    },
+  ]
+  item.work_orders = [
+    {
+      id: `${taskId}-implement-1`,
+      task_id: taskId,
+      job_id: `${taskId}-implement-1`,
+      stage: 'implement',
+      state: 'queued',
+      claimable: false,
+      last_attempt_id: 'attempt-9',
+      last_attempt_outcome: 'released',
+      last_failure_message: 'plan revision requested',
+      last_failure_at: '2026-07-15T12:10:00Z',
+      automatic_retry_count: 0,
+      retry_suppressed: true,
+      queue_entered_at: '2026-07-15T12:10:00Z',
+      queue_deadline: '2026-07-16T12:10:00Z',
+      updated_at: '2026-07-15T12:10:00Z',
+      redispatch_count: 0,
+      cost_usd: 0,
+      tokens_in: 0,
+      tokens_out: 0,
+      usage_reported: false,
+      self_reported: true,
+    },
+  ]
+  return item
+}
+
+test('the revision chain reads as request, decision, and the plan version it produced', async ({ page }) => {
+  const taskId = 'plan-revision-history'
+  await page.route(`**/v1/tasks/${taskId}/activity*`, async (route) => {
+    const item = planRevisionGateActivity(taskId)
+    // Decided and re-planned: approval cancels the contested implement order,
+    // the task is running again, and only the recorded history remains.
+    item.task.state = 'running'
+    item.work_orders = []
+    item.events = [
+      ...item.events,
+      {
+        id: 93,
+        task_id: taskId,
+        kind: 'intervention.redirect',
+        actor_id: 'operator',
+        actor_role: 'human',
+        payload: { reason_code: 'plan-revision-approved', comment: 'Re-plan around the new handler contract.' },
+        at: '2026-07-15T12:20:00Z',
+      },
+      {
+        id: 94,
+        task_id: taskId,
+        kind: 'spec.version_created',
+        actor_id: 'agent',
+        actor_role: 'agent',
+        payload: { version: 8 },
+        at: '2026-07-15T12:30:00Z',
+      },
+    ]
+    item.interventions = [
+      {
+        id: 7,
+        task_id: taskId,
+        actor_id: 'operator',
+        actor_role: 'human',
+        action: 'redirect',
+        reason_code: 'plan-revision-approved',
+        comment: 'Re-plan around the new handler contract.',
+        at: '2026-07-15T12:20:00Z',
+      },
+    ]
+    // The revised plan re-enters the ordinary approval gate, so the panel
+    // still shows it as the latest version, awaiting approval.
+    item.spec = { ...item.spec, version: 8, approved: false, approved_at: undefined }
+    await route.fulfill({ json: item })
+  })
+
+  await page.goto(`/tasks/${taskId}/full`)
+  const timeline = page.getByRole('region', { name: 'Execution event timeline' })
+  const rows = timeline.locator('ol > li')
+
+  await expect(timeline.getByText('The agent asked to revise plan v7')).toBeVisible()
+  await expect(timeline.getByText('A dependency changed the public handler contract.')).toBeVisible()
+  await expect(timeline.getByText('Plan revision approved — returning to planning')).toBeVisible()
+  await expect(timeline.getByText('Re-plan around the new handler contract.')).toBeVisible()
+  await expect(timeline.getByText('Plan v8 drafted')).toBeVisible()
+
+  // Three distinct entries in the order they happened (AC-4.1) — and the
+  // release the request rode in on is not repeated as a fourth.
+  await expect(rows.nth(0)).toContainText('The agent asked to revise plan v7')
+  await expect(rows.nth(1)).toContainText('Plan revision approved')
+  await expect(rows.nth(2)).toContainText('Plan v8 drafted')
+  await expect(timeline.getByText('Work-order claim released')).toHaveCount(0)
+  // The wire vocabulary stays on the wire.
+  await expect(timeline.getByText('plan-revision-approved')).toHaveCount(0)
+  await expect(timeline.getByText('Requested changes')).toHaveCount(0)
+
+  const plan = page.getByRole('region', { name: 'Execution plan' })
+  await expect(plan.getByText('v8', { exact: true })).toBeVisible()
+  await expect(plan.getByText('Awaiting approval')).toBeVisible()
 })
 
 test('worker warning is scoped to actionable task-owned work at the human gate', async ({ page }) => {
@@ -3189,7 +3418,7 @@ test('new task events preserve the task sheet scroll position', async ({ page })
 
   const timeline = page.getByRole('region', { name: 'Execution event timeline' })
   const container = page.getByRole('dialog', { name: 'Task detail' }).locator('.overflow-y-auto')
-  await expect(timeline.getByText('Spec v18 drafted')).toBeVisible()
+  await expect(timeline.getByText('Plan v18 drafted')).toBeVisible()
   await expect.poll(() => container.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true)
   await container.evaluate((element) => {
     element.scrollTop = 120
@@ -3199,7 +3428,7 @@ test('new task events preserve the task sheet scroll position', async ({ page })
 
   emitLiveScrollEvent()
 
-  const newest = timeline.getByText('Spec v19 drafted')
+  const newest = timeline.getByText('Plan v19 drafted')
   await expect(newest).toBeVisible()
   await expect.poll(() => container.evaluate((element) => element.scrollTop)).toBe(before)
   await expect(newest).not.toBeInViewport()

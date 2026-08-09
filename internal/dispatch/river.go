@@ -335,7 +335,7 @@ func (w *dispatchTaskWorker) Work(ctx context.Context, job *river.Job[queueargs.
 			if isBlueprintAnchor(task) {
 				// Blueprint parents are passive batch anchors. Their children
 				// own implementation delivery, so this River row is complete
-				// rather than a staged pipeline row to snooze (spec §4.1).
+				// rather than a staged pipeline row to snooze.
 				return nil
 			}
 			// The currently running River row owns this task's pipeline. A
@@ -384,7 +384,7 @@ func (w *dispatchTaskWorker) handleFailure(ctx context.Context, job *river.Job[q
 		if task.State == core.TaskRunning {
 			// Return the failed stage to queued before applying T13. This preserves
 			// the canonical queued -> parked edge and records dispatch.fail_final
-			// for operator visibility (spec §3.3, §21.41).
+			// for operator visibility (design-task-lifecycle).
 			if _, stateErr := taskops.New(w.dispatcher.Store).Perform(ctx, job.Args.TaskID, taskops.Command{Kind: core.TaskStageBounce, NextStage: recoveryStage, ProjectStages: true}); stateErr != nil {
 				return fmt.Errorf("dispatch failed: %v; requeue before final River failure: %w", err, stateErr)
 			}
@@ -397,7 +397,7 @@ func (w *dispatchTaskWorker) handleFailure(ctx context.Context, job *river.Job[q
 		if task.State == core.TaskRunning {
 			// There is no running-state dispatch-failure retry edge. Preserve the
 			// existing requeue behavior as an explicit table-gap workaround until
-			// the lifecycle table is amended (spec §21.37).
+			// the lifecycle table is amended (design-task-lifecycle).
 			command = core.TaskStageBounce
 		}
 		if _, stateErr := taskops.New(w.dispatcher.Store).Perform(ctx, job.Args.TaskID, taskops.Command{Kind: command, NextStage: recoveryStage, ProjectStages: true}); stateErr != nil {
@@ -427,7 +427,7 @@ func NewRiverClient(pool *pgxpool.Pool, dispatcher *Dispatcher, workspaces []str
 	return river.NewClient(riverpgxv5.New(pool), &river.Config{
 		// Dispatcher stage contexts enforce the configured per-stage wall-clock
 		// limits. River's one-minute default would cancel long harness runs and
-		// handoff artifact collection before those limits (spec §14).
+		// handoff artifact collection before those limits (DEC-1).
 		JobTimeout:   -1,
 		Queues:       queues,
 		Workers:      workers,

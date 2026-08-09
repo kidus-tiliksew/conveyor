@@ -356,6 +356,170 @@ func (s *Store) ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskops
 	return order, nil
 }
 
+func (s *Store) RequestPlanRevisionCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID, workerID, sessionID, rationale string) (store.PlanRevisionRequestResult, error) {
+	rationale = strings.TrimSpace(rationale)
+	if rationale == "" {
+		return store.PlanRevisionRequestResult{}, fmt.Errorf("rationale is required")
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return store.PlanRevisionRequestResult{}, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	var taskID string
+	if err = tx.QueryRow(ctx, `SELECT task_id FROM work_orders WHERE workspace_id=$1 AND id=$2`, workspace(ctx), workOrderID).Scan(&taskID); errors.Is(err, pgx.ErrNoRows) {
+		return store.PlanRevisionRequestResult{}, store.ErrWorkOrderClaimLost
+	} else if err != nil {
+		return store.PlanRevisionRequestResult{}, err
+	}
+	if !taskLease.ValidForCommand(taskID, string(core.WorkOrderCmdRequestPlanRevision)) {
+		return store.PlanRevisionRequestResult{}, fmt.Errorf("plan revision request requires a valid taskops lease")
+	}
+	key := "conveyor:task-operation:" + workspace(ctx) + ":" + taskID
+	if _, err = tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtext($1))", key); err != nil {
+		return store.PlanRevisionRequestResult{}, err
+	}
+	now := time.Now().UTC()
+	current, err := scanWorkOrder(tx.QueryRow(ctx, `SELECT `+workOrderColumns+` FROM work_orders WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspace(ctx), workOrderID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.PlanRevisionRequestResult{}, store.ErrWorkOrderClaimLost
+	}
+	if err != nil {
+		return store.PlanRevisionRequestResult{}, err
+	}
+	if current.WorkerID != workerID || current.SessionID == "" || current.SessionID != sessionID || current.State != core.WorkOrderClaimed ||
+		!current.LeaseExpiresAt.After(now) || (!current.ExecutionDeadline.IsZero() && !current.ExecutionDeadline.After(now)) {
+		return store.PlanRevisionRequestResult{}, store.ErrWorkOrderClaimLost
+	}
+	if current.Stage != core.StageImplement {
+		return store.PlanRevisionRequestResult{}, fmt.Errorf("request_plan_revision requires an implement-stage work order")
+	}
+	q := s.queries.WithTx(tx)
+	taskRow, err := q.GetTask(ctx, db.GetTaskParams{ID: current.TaskID, WorkspaceID: workspace(ctx)})
+	if err != nil {
+		return store.PlanRevisionRequestResult{}, notFound(err, "task %s", current.TaskID)
+	}
+	planTaskID, planVersion := current.TaskID, 0
+	err = tx.QueryRow(ctx, `SELECT s.version FROM task_specs s JOIN tasks t ON t.id=s.task_id WHERE s.task_id=$1 AND t.workspace_id=$2 AND s.approved ORDER BY s.version DESC LIMIT 1`, planTaskID, workspace(ctx)).Scan(&planVersion)
+	if errors.Is(err, pgx.ErrNoRows) && taskRow.ParentTaskID.Valid && taskRow.OriginSpecVersion > 0 {
+		planTaskID = taskRow.ParentTaskID.String
+		err = tx.QueryRow(ctx, `SELECT s.version FROM task_specs s JOIN tasks t ON t.id=s.task_id WHERE s.task_id=$1 AND s.version=$2 AND t.workspace_id=$3 AND s.approved`, planTaskID, taskRow.OriginSpecVersion, workspace(ctx)).Scan(&planVersion)
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.PlanRevisionRequestResult{}, fmt.Errorf("request_plan_revision requires an approved execution plan")
+	}
+	if err != nil {
+		return store.PlanRevisionRequestResult{}, err
+	}
+	nextOrder, err := core.TransitionWorkOrder(current.State, core.WorkOrderCmdRequestPlanRevision)
+	if err != nil {
+		return store.PlanRevisionRequestResult{}, err
+	}
+	nextTask, err := core.TransitionTask(core.TaskState(taskRow.State), core.TaskGatePlanRevision)
+	if err != nil {
+		return store.PlanRevisionRequestResult{}, err
+	}
+	queueTimeout := current.QueueDeadline.Sub(current.QueueEnteredAt)
+	if queueTimeout <= 0 {
+		queueTimeout = config.DefaultWorkOrderQueueTimeout
+	}
+	attemptID := current.AttemptID
+	order, err := scanWorkOrder(tx.QueryRow(ctx, `UPDATE work_orders SET state=$1,claimant_id='',session_id='',attempt_id='',last_attempt_id=$2,client_token_hash='',agent='',model='',worker_id='',lease_expires_at=NULL,model_enforcement='',execution_started_at=NULL,execution_deadline=NULL,last_attempt_outcome=$3,last_failure_category='',last_failure_message=$4,last_failure_detail='',last_failure_exit_status=NULL,last_failure_at=$5,next_retry_at=NULL,retry_suppressed=true,retry_suppression_reason='',queue_entered_at=$5,queue_deadline=$6,operator_direction='',updated_at=$5 WHERE workspace_id=$7 AND id=$8 AND worker_id=$9 AND session_id=$10 AND state='claimed' RETURNING `+workOrderColumns,
+		nextOrder, attemptID, core.WorkOrderOutcomeReleased, core.WorkOrderReleaseReasonPlanRevisionRequested, now, now.Add(queueTimeout), workspace(ctx), workOrderID, workerID, sessionID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.PlanRevisionRequestResult{}, store.ErrWorkOrderClaimLost
+	}
+	if err != nil {
+		return store.PlanRevisionRequestResult{}, err
+	}
+	if _, err = tx.Exec(ctx, `UPDATE jobs SET state='pending',started_at=NULL,ended_at=NULL,updated_at=$1 WHERE id=$2`, now, order.JobID); err != nil {
+		return store.PlanRevisionRequestResult{}, err
+	}
+	updatedTask, err := q.UpdateTaskState(ctx, db.UpdateTaskStateParams{ID: current.TaskID, WorkspaceID: workspace(ctx), State: string(nextTask)})
+	if err != nil {
+		return store.PlanRevisionRequestResult{}, err
+	}
+	eventCtx := store.WithActor(ctx, store.Actor{ID: workerID, Role: core.ActorRunner})
+	if err = insertEvent(eventCtx, q, core.Event{TaskID: current.TaskID, JobID: current.JobID, Kind: "work_order.plan_revision_requested", Payload: core.JSONPayload(map[string]any{"work_order_id": current.ID, "attempt_id": attemptID, "session_id": sessionID, "rationale": rationale, "plan_version": planVersion}), At: now}); err != nil {
+		return store.PlanRevisionRequestResult{}, err
+	}
+	if err = insertEvent(eventCtx, q, core.Event{TaskID: current.TaskID, JobID: current.JobID, Kind: "work_order.released", Payload: core.JSONPayload(map[string]any{"attempt_id": attemptID, "session_id": sessionID, "reason": core.WorkOrderReleaseReasonPlanRevisionRequested, "release_cause": core.WorkOrderReleaseCauseOperatorAction, "outcome": core.WorkOrderOutcomeReleased, "automatic_retry_count": order.AutomaticRetryCount, "retry_suppressed": true}), At: now}); err != nil {
+		return store.PlanRevisionRequestResult{}, err
+	}
+	if err = insertEvent(eventCtx, q, core.Event{TaskID: current.TaskID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": taskRow.State, "to": nextTask, "command": core.TaskGatePlanRevision}), At: now}); err != nil {
+		return store.PlanRevisionRequestResult{}, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return store.PlanRevisionRequestResult{}, err
+	}
+	order.Claimable = false
+	return store.PlanRevisionRequestResult{WorkOrder: order, Task: taskFromDB(updatedTask), PlanVersion: planVersion, Rationale: rationale}, nil
+}
+
+func (s *Store) CancelPlanRevisionWorkOrderCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID, attemptID string) (core.WorkOrder, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return core.WorkOrder{}, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	var taskID string
+	if err = tx.QueryRow(ctx, `SELECT task_id FROM work_orders WHERE workspace_id=$1 AND id=$2`, workspace(ctx), workOrderID).Scan(&taskID); errors.Is(err, pgx.ErrNoRows) {
+		return core.WorkOrder{}, fmt.Errorf("work order %s not found", workOrderID)
+	} else if err != nil {
+		return core.WorkOrder{}, err
+	}
+	if !taskLease.ValidForCommand(taskID, string(core.WorkOrderCmdCancel)) {
+		return core.WorkOrder{}, fmt.Errorf("plan-revision cancellation requires a valid taskops lease")
+	}
+	key := "conveyor:task-operation:" + workspace(ctx) + ":" + taskID
+	if _, err = tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtext($1))", key); err != nil {
+		return core.WorkOrder{}, err
+	}
+	current, err := scanWorkOrder(tx.QueryRow(ctx, `SELECT `+workOrderColumns+` FROM work_orders WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspace(ctx), workOrderID))
+	if err != nil {
+		return core.WorkOrder{}, notFound(err, "work order %s", workOrderID)
+	}
+	if current.Stage != core.StageImplement || current.LastAttemptID != attemptID || current.LastFailureMessage != core.WorkOrderReleaseReasonPlanRevisionRequested {
+		return core.WorkOrder{}, fmt.Errorf("work order %s is not the contested plan-revision attempt", workOrderID)
+	}
+	if current.State == core.WorkOrderCancelled {
+		if err = tx.Commit(ctx); err != nil {
+			return core.WorkOrder{}, err
+		}
+		current.Claimable = false
+		return current, nil
+	}
+	next, err := core.TransitionWorkOrder(current.State, core.WorkOrderCmdCancel)
+	if err != nil {
+		return core.WorkOrder{}, err
+	}
+	now := time.Now().UTC()
+	order, err := scanWorkOrder(tx.QueryRow(ctx, `UPDATE work_orders SET state=$1,updated_at=$2 WHERE workspace_id=$3 AND id=$4 AND state=$5 RETURNING `+workOrderColumns,
+		next, now, workspace(ctx), workOrderID, current.State))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return core.WorkOrder{}, fmt.Errorf("work order %s changed during plan-revision cancellation", workOrderID)
+	}
+	if err != nil {
+		return core.WorkOrder{}, err
+	}
+	if _, err = tx.Exec(ctx, `UPDATE jobs SET state='failed',ended_at=$1,updated_at=$1 WHERE id=$2 AND state<>'done'`, now, order.JobID); err != nil {
+		return core.WorkOrder{}, err
+	}
+	actor := store.ActorFromContext(ctx)
+	q := s.queries.WithTx(tx)
+	if err = insertEvent(ctx, q, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.cancelled", ActorID: actor.ID, ActorRole: actor.Role, Payload: core.JSONPayload(map[string]any{
+		"work_order_id": order.ID, "attempt_id": attemptID, "prior_state": current.State, "state": next,
+		"command": core.WorkOrderCmdCancel, "reason": "plan revision approved",
+	}), At: now}); err != nil {
+		return core.WorkOrder{}, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return core.WorkOrder{}, err
+	}
+	order.Claimable = false
+	return order, nil
+}
+
 func (s *Store) RecordWorkOrderAttemptCheckpoint(ctx context.Context, workOrderID, workerID string, checkpoint core.WorkOrderAttemptCheckpoint) (bool, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {

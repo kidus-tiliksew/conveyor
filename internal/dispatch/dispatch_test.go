@@ -722,7 +722,7 @@ func TestPipelineArtifactContextFailuresStopBeforeModelExecution(t *testing.T) {
 			if getErr != nil || eventErr != nil || current.State != core.TaskQueued || contextFailures != 1 {
 				t.Fatalf("task=%+v events=%+v errors=%v/%v", current, events, getErr, eventErr)
 			}
-			if diagnostic.Phase != "attachment_preparation" || diagnostic.Provider != "openai_responses" || diagnostic.Model != "gpt" {
+			if diagnostic.Phase != "attachment_preparation" || diagnostic.Provider != "openai_responses" || diagnostic.Model != config.ResolveControlPlaneModel("triage", "gpt") {
 				t.Fatalf("diagnostic = %+v", diagnostic)
 			}
 			if !test.listErr && (diagnostic.AttachmentCount != 1 || len(diagnostic.AttachmentTypes) != 1 || diagnostic.AttachmentTypes[0] != test.contentType) {
@@ -2727,7 +2727,7 @@ func TestBounceWindowResetsAfterHumanIntervention(t *testing.T) {
 		t.Fatalf("bounce_limit events=%d", limits)
 	}
 
-	// A human redirect grants a fresh window (spec §21.17): the next bounce
+	// A human redirect grants a fresh window: the next bounce
 	// re-queues instead of re-parking.
 	if err := st.CreateIntervention(ctx, core.Intervention{TaskID: task.ID, JobID: job.ID, ActorID: "operator", ActorRole: core.ActorHuman, Action: core.InterventionRedirect, ReasonCode: "changes-requested", Comment: "keep going"}); err != nil {
 		t.Fatal(err)

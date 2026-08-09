@@ -1,5 +1,5 @@
 // Package pipeline validates the machine-owned outputs that move a task
-// through the factory pipeline (spec §4, §4.1).
+// through the factory pipeline.
 package pipeline
 
 import (
@@ -19,8 +19,7 @@ type Triage struct {
 	Summary string      `json:"summary"`
 	Brief   TriageBrief `json:"brief"`
 	// RequirementID proposes a requirement relation for a stray task. It
-	// replaces the retired feature suggestion (spec §4.2 item 1, §21.46
-	// change 5): triage proposes, an operator confirms.
+	// replaces the retired feature suggestion: triage proposes, an operator confirms.
 	RequirementID string `json:"requirement_id,omitempty"`
 }
 
@@ -57,7 +56,7 @@ type Spec struct {
 }
 
 // StructuredSpec is the model-owned semantic spec result. Conveyor validates
-// this value and owns the canonical machine-block serialization (spec §4.1).
+// this value and owns the canonical machine-block serialization.
 type StructuredSpec struct {
 	Markdown      string                `json:"markdown"`
 	Acceptance    []AcceptanceCriterion `json:"acceptance"`
@@ -142,7 +141,7 @@ var planHeadingPattern = regexp.MustCompile(`(?im)^#{1,6}[ \t]+([^\r\n#]+?)[ \t]
 
 // ParsePlan validates a Markdown execution plan without introducing a second
 // document lifecycle. Plans are stored as ordinary spec versions until the
-// later retirement slice renames the persistence model (spec §21.58 change 4).
+// later retirement slice renames the persistence model.
 func ParsePlan(markdown string, decomposition []DecompositionItem) (Spec, error) {
 	markdown = strings.TrimSpace(markdown)
 	if markdown == "" {

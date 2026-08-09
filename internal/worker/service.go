@@ -1,6 +1,6 @@
 // Package worker implements the enrolled Phase 5.1 dispatch supervisor
 // control surface. It selects orders the worker can serve — skipping held
-// tasks (spec §21.31) — and reuses the existing MCP work-order lifecycle
+// tasks (DEC-5) — and reuses the existing MCP work-order lifecycle
 // rather than creating a parallel task protocol.
 package worker
 
@@ -80,7 +80,7 @@ type DispatchOrder struct {
 
 // HarnessProbeTarget is one exact harness definition the worker must probe.
 // Fingerprint distinguishes an active round's immutable snapshot from a newer
-// same-name workspace definition (spec §21.12 change 4).
+// same-name workspace definition (design-harness-execution).
 type HarnessProbeTarget struct {
 	Harness     config.Harness `json:"harness"`
 	Fingerprint string         `json:"fingerprint"`
@@ -221,7 +221,7 @@ func (s *Service) Heartbeat(ctx context.Context, worker core.Worker, probes []co
 	// An active worker-dispatched order owns its snapshotted harness definition
 	// even after the workspace registry hot reloads. Keep accepting health probes
 	// for durable implementation and review snapshots until they leave the active
-	// queue (spec §21.18 change 5).
+	// queue (design-harness-execution).
 	active, err := s.ActiveHarnesses(ctx)
 	if err != nil {
 		return core.Worker{}, err
@@ -282,7 +282,7 @@ func (s *Service) ActiveHarnesses(ctx context.Context) ([]HarnessProbeTarget, er
 
 // RateLimitHealth projects the latest self-reported provider status for each
 // harness/model pair. This method is used only by operator health views; no
-// dispatch, claim, retry, or model-selection path consults it (spec §14).
+// dispatch, claim, retry, or model-selection path consults it (DEC-1).
 func (s *Service) RateLimitHealth(ctx context.Context) ([]core.RateLimitHealth, error) {
 	orders, err := s.Store.ListWorkOrders(ctx)
 	if err != nil {
@@ -333,7 +333,7 @@ func (s *Service) AutoAvailable(ctx context.Context, cfg *config.Config) (bool, 
 }
 
 // AutoAvailableForSetup evaluates only the harnesses required by one setup.
-// A broken harness in an unrelated setup must not disable Auto (spec §21.27).
+// A broken harness in an unrelated setup must not disable Auto (design-harness-execution).
 func (s *Service) AutoAvailableForSetup(ctx context.Context, cfg *config.Config, setup config.ExecutionSetup) (bool, string) {
 	if setup.Name == "" {
 		var ok bool
@@ -599,7 +599,7 @@ func (s *Service) ListClaimable(ctx context.Context, worker core.Worker) ([]Disp
 		result = append(result, DispatchOrder{Order: order, Task: task, Repository: repository, Harness: harness, Model: model, Effort: order.RequiredEffort, EffortArgv: effortArgv, HarnessSelection: "enforced", Dispatch: "worker", Confinement: "none", Auth: "byoa"})
 	}
 	// The reserved review slot precedes workspace FIFO; ID breaks equal
-	// queue-entry clocks deterministically (spec §6.3).
+	// queue-entry clocks deterministically (design-260805-973cd4).
 	sort.Slice(result, func(i, j int) bool {
 		iReview := result[i].Order.Stage == core.StageReview
 		jReview := result[j].Order.Stage == core.StageReview
@@ -616,7 +616,7 @@ func (s *Service) ListClaimable(ctx context.Context, worker core.Worker) ([]Disp
 
 // ListVisibleOrders combines compatible claimable work with the authenticated
 // worker's own active claims and durable review waits. It intentionally does
-// not expose another worker's orders or any terminal state (spec §21.38).
+// not expose another worker's orders or any terminal state (design-260805-973cd4).
 func (s *Service) ListVisibleOrders(ctx context.Context, worker core.Worker) ([]core.WorkOrder, error) {
 	claimable, err := s.ListClaimable(ctx, worker)
 	if err != nil {
@@ -959,6 +959,25 @@ func (s *Service) Release(ctx context.Context, worker core.Worker, id string, re
 	return s.refreshReleasedHarnessSnapshot(ctx, order), nil
 }
 
+// RequestPlanRevision atomically releases one exact implement attempt and
+// moves its task to the distinct operator gate (REQ-1, AC-1.1–AC-1.3).
+func (s *Service) RequestPlanRevision(ctx context.Context, worker core.Worker, id, sessionID, rationale string) (store.PlanRevisionRequestResult, error) {
+	sessionID, rationale = strings.TrimSpace(sessionID), strings.TrimSpace(rationale)
+	if sessionID == "" {
+		return store.PlanRevisionRequestResult{}, fmt.Errorf("session_id is required")
+	}
+	if rationale == "" {
+		return store.PlanRevisionRequestResult{}, fmt.Errorf("rationale is required")
+	}
+	current, err := s.Store.GetWorkOrder(ctx, id)
+	if err != nil {
+		return store.PlanRevisionRequestResult{}, err
+	}
+	return taskops.ExecuteWorkOrder(ctx, s.Store, current.TaskID, core.WorkOrderCmdRequestPlanRevision, func(taskLease taskops.TaskLease) (store.PlanRevisionRequestResult, error) {
+		return s.Store.RequestPlanRevisionCommand(ctx, taskLease, id, worker.ID, sessionID, rationale)
+	})
+}
+
 func transientConnectivityFailure(detail string) bool {
 	detail = strings.ToLower(detail)
 	for _, marker := range []string{
@@ -1048,7 +1067,7 @@ func providerUsageLimit(detail string) bool {
 
 // refreshReleasedHarnessSnapshot re-resolves a released order's pinned harness
 // snapshot from the current registry so the next attempt launches the
-// operator's current definition (spec §21.32). Best-effort: the release above
+// operator's current definition (design-harness-execution). Best-effort: the release above
 // already committed, and retaining the prior snapshot is the explicit
 // fallback.
 func (s *Service) refreshReleasedHarnessSnapshot(ctx context.Context, order core.WorkOrder) core.WorkOrder {

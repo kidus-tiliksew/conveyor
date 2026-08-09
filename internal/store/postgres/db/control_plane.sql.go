@@ -200,7 +200,7 @@ type CountEventsSinceHumanInterventionParams struct {
 	WorkspaceID string      `json:"workspace_id"`
 }
 
-// The §21.17 check-in window: events of a kind recorded after the latest
+// The check-in window: events of a kind recorded after the latest
 // human intervention on the task (all of them when no human has intervened).
 func (q *Queries) CountEventsSinceHumanIntervention(ctx context.Context, arg CountEventsSinceHumanInterventionParams) (int64, error) {
 	row := q.db.QueryRow(ctx, countEventsSinceHumanIntervention, arg.TaskID, arg.Kind, arg.WorkspaceID)

@@ -1,6 +1,6 @@
 // Package dispatch advances the durable pipeline. Triage/spec execute inside
 // conveyord; implementation and MCP-first review pause at leased work orders
-// claimed by operator-owned agents (spec §21.4).
+// claimed by operator-owned agents (design-system-architecture; DEC-3).
 package dispatch
 
 import (
@@ -31,7 +31,7 @@ import (
 )
 
 // ErrReviewedHeadUnavailable marks an approval conflict that the operator can
-// resolve by publishing and reviewing a concrete task head (spec §13.2).
+// resolve by publishing and reviewing a concrete task head (design-git-delivery).
 var ErrReviewedHeadUnavailable = errors.New("reviewed head SHA is unavailable")
 
 type Dispatcher struct {
@@ -48,7 +48,7 @@ type Dispatcher struct {
 	ObserveDesignMerge   func(context.Context, monitor.Observation, string) error
 	// ReviewDiff resolves the pushed task branch's diff against its base for
 	// the in-process review fallback, which has no checkout of its own
-	// (spec §21.4). Injectable for tests.
+	// (design-system-architecture). Injectable for tests.
 	ReviewDiff   func(context.Context, *config.Config, core.Task) (string, error)
 	Now          func() time.Time
 	memoryQueue  chan queuedTask
@@ -70,7 +70,7 @@ func New(st store.Store, cfg *config.Config, agent inprocess.Agent) *Dispatcher 
 
 // reviewBranchDiff reads the branch diff from the shared bare cache; the
 // implementing agent has already pushed the task branch to origin by the time
-// review dispatches (spec §21.8).
+// review dispatches (design-git-delivery).
 func reviewBranchDiff(ctx context.Context, cfg *config.Config, task core.Task) (string, error) {
 	repo, ok := cfg.Repo(task.Repo)
 	if !ok {
@@ -94,7 +94,7 @@ const (
 	maxModelFileBytes       = 50 << 20
 	// maxModelDiffBytes caps the branch diff embedded inline in the
 	// in-process review prompt at the same per-input ceiling as a single
-	// model attachment (spec §21.4).
+	// model attachment (design-system-architecture).
 	maxModelDiffBytes = maxModelAttachmentBytes
 )
 
@@ -112,7 +112,7 @@ func (d *Dispatcher) DisableMemoryQueueForTest() { d.durableQueue = true }
 
 // DispatchNow advances one task synchronously. The MCP submit_for_review tool
 // uses this when review is configured in-process so its result includes the
-// completed review instead of a polling instruction (spec §21.4).
+// completed review instead of a polling instruction (design-260805-973cd4).
 func (d *Dispatcher) DispatchNow(ctx context.Context, taskID string) error {
 	return d.runTask(store.WithActor(ctx, store.Actor{ID: "dispatcher", Role: core.ActorSystem}), taskID)
 }
@@ -161,7 +161,7 @@ func (d *Dispatcher) runTask(ctx context.Context, taskID string) error {
 func (d *Dispatcher) runTaskForSnapshot(ctx context.Context, task core.Task) error {
 	if isBlueprintAnchor(task) {
 		// A blueprint parent is a batch anchor, never implementation work
-		// (spec §4.1). Its children own the implement orders.
+		// Its children own the implement orders.
 		return nil
 	}
 	cfg, err := d.currentConfig(ctx)
@@ -184,7 +184,7 @@ func (d *Dispatcher) runTaskForSnapshot(ctx context.Context, task core.Task) err
 	// Newly dispatched specs are always MCP work orders, even when a stale
 	// pre-§21.33 route snapshot still says in_process. The remaining StageSpec
 	// handling in runInProcess is only for completion of calls that were already
-	// in flight when the execution contract changed (spec §21.33).
+	// in flight when the execution contract changed (design-harness-execution).
 	if task.NextStage == core.StageImplement || task.NextStage == core.StageSpec {
 		if _, active, activeErr := d.activeWorkOrder(ctx, task.ID, task.NextStage, ""); activeErr != nil {
 			return activeErr
@@ -247,7 +247,7 @@ func (d *Dispatcher) createReviewRound(ctx context.Context, cfg *config.Config, 
 		}
 	}
 	// Durable queue redelivery must reuse any active snapshotted round. The task
-	// remains queued until the first seat claim issues order.claim (spec §21.37).
+	// remains queued until the first seat claim issues order.claim (design-260805-973cd4).
 	for _, order := range prior {
 		if order.Stage == core.StageReview && order.ReviewRound == latestRound &&
 			(order.State == core.WorkOrderQueued || order.State == core.WorkOrderClaimed || order.State == core.WorkOrderSubmitted) {
@@ -355,7 +355,7 @@ func reviewHarnessSnapshot(cfg *config.Config, name string) (*core.HarnessSnapsh
 // BuildFutureWorkOrderRouting resolves one queued non-review order from the
 // task's frozen setup contract. Setup reassignment uses the same constructor
 // inputs as ordinary dispatch without creating a second routing shape
-// (spec §21.35 changes 3-5).
+// (design-harness-execution; DEC-7).
 func BuildFutureWorkOrderRouting(cfg *config.Config, task core.Task, stage core.Stage) (core.WorkOrder, error) {
 	if cfg == nil || (stage != core.StageSpec && stage != core.StageImplement) {
 		return core.WorkOrder{}, fmt.Errorf("future work routing requires spec or implementation stage")
@@ -626,7 +626,7 @@ func (d *Dispatcher) buildStageInput(ctx context.Context, cfg *config.Config, st
 		// The in-process reviewer has no checkout, so the change under review
 		// must travel in the prompt itself; a missing or oversized diff fails
 		// before model execution instead of degrading to a diff-less review
-		// (spec §21.4).
+		// (design-system-architecture).
 		if d.ReviewDiff == nil {
 			return inprocess.Input{}, fmt.Errorf("in-process review for task %s requires a branch diff resolver", task.ID)
 		}
@@ -749,7 +749,7 @@ func contextArtifactSource(artifact core.Artifact) string {
 // modelAttachmentKind is the provider boundary for in-process pipeline context:
 // text/documents use Responses input_file, images use input_image, and audio is
 // transcribed before the stage request. Anything outside that documented set
-// fails before model execution instead of degrading to metadata (spec §21.4).
+// fails before model execution instead of degrading to metadata (design-system-architecture).
 func modelAttachmentKind(artifact core.Artifact) (inprocess.AttachmentKind, error) {
 	contentType := strings.ToLower(strings.TrimSpace(strings.Split(artifact.ContentType, ";")[0]))
 	ext := strings.ToLower(filepath.Ext(artifact.Name))
@@ -855,7 +855,7 @@ func (d *Dispatcher) ApplyExternalReviewPinned(ctx context.Context, task core.Ta
 
 // ApplyExternalPlan validates an MCP-authored execution plan and enters the
 // exact existing spec-version gate/auto-approval path. Stage identity and
-// lifecycle events intentionally remain unchanged (spec §21.58 change 4).
+// lifecycle events intentionally remain unchanged.
 func (d *Dispatcher) ApplyExternalPlan(ctx context.Context, task core.Task, job core.Job, value pipeline.StructuredPlan, agent, model string) (core.SpecVersion, error) {
 	result, err := pipeline.ParsePlan(value.Markdown, value.Decomposition)
 	if err != nil {
@@ -907,7 +907,7 @@ func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task c
 	// spec versions are immutable, and legacy children pin their exact parent
 	// version on the task. Resolving through the same helper used by prompt
 	// construction therefore has migration-064/067 stability without another
-	// persisted copy (spec §21.58 change 4).
+	// persisted copy.
 	approved, hasApproved, planErr := store.ApprovedExecutionDocument(ctx, d.Store, task)
 	if planErr != nil {
 		return planErr
@@ -1184,7 +1184,7 @@ func (d *Dispatcher) bounce(ctx context.Context, cfg *config.Config, taskID, job
 	count, _ := d.Store.CountEvents(ctx, taskID, "pipeline.bounced")
 	count++
 	// The check-in comparison uses bounces since the last human intervention,
-	// not the lifetime count (spec §21.17).
+	// not the lifetime count.
 	window, _ := d.Store.CountEventsSinceHumanIntervention(ctx, taskID, "pipeline.bounced")
 	window++
 	_ = d.Store.AppendEvent(ctx, core.Event{TaskID: taskID, JobID: jobID, Kind: "pipeline.bounced", Payload: core.JSONPayload(map[string]any{"from": "review", "to": "implement", "reason_code": reason, "feedback": feedback, "count": count, "source": "mcp-review"})})
@@ -1196,8 +1196,8 @@ func (d *Dispatcher) bounce(ctx context.Context, cfg *config.Config, taskID, job
 }
 
 // recordRequirementSuggestion proposes a requirement relation for a stray task.
-// It replaces the retired triage.feature_suggested event (spec §4.2 item 1,
-// §21.46 change 5). The event is the durable proposal — links are projections
+// It replaces the retired triage.feature_suggested event. The event is the
+// durable proposal — links are projections
 // of events, and a requirement relation is machinery-suggested and
 // human-confirmed, never volunteered as a standing edge by an agent.
 func (d *Dispatcher) recordRequirementSuggestion(ctx context.Context, task core.Task, requirementID string, source core.RequirementServesSource) error {
@@ -1286,6 +1286,57 @@ func (d *Dispatcher) HandleIntervention(ctx context.Context, task core.Task, lat
 		return err
 	}
 	task = current
+	planRevision, planRevisionGate, err := PendingPlanRevisionGate(ctx, d.Store, task.ID)
+	if err != nil {
+		return err
+	}
+	if planRevisionGate {
+		switch intervention.Action {
+		case core.InterventionReject:
+			return d.transition(ctx, task.ID, core.TaskInterventionReject, "", "")
+		case core.InterventionRedirect:
+			switch intervention.ReasonCode {
+			case PlanRevisionApprovedReasonCode:
+				// A revision approval re-enters the ordinary plan stage and its
+				// unchanged approval gate (REQ-2, AC-2.2; REQ-3, AC-3.1).
+				if err = d.cancelContestedImplementationOrder(ctx, planRevision.WorkOrderID, planRevision.AttemptID); err != nil {
+					return err
+				}
+				return d.transition(ctx, task.ID, core.TaskInterventionRedirect, core.StageSpec, "")
+			case PlanRevisionDeclinedReasonCode:
+				// Restore the released implementation order through the existing
+				// recovery-direction command instead of minting a parallel order
+				// or consuming an automatic retry (REQ-2, AC-2.3).
+				cfg, cfgErr := d.currentConfig(ctx)
+				if cfgErr != nil {
+					return cfgErr
+				}
+				contestedOrder, getErr := d.Store.GetWorkOrder(ctx, planRevision.WorkOrderID)
+				if getErr != nil {
+					return getErr
+				}
+				if contestedOrder.State != core.WorkOrderQueued || !contestedOrder.RetrySuppressed || contestedOrder.LastAttemptID != planRevision.AttemptID {
+					return fmt.Errorf("contested work order %s is not awaiting plan-revision recovery", contestedOrder.ID)
+				}
+				queueTimeout := cfg.WorkOrderQueueTimeout
+				if queueTimeout <= 0 {
+					queueTimeout = config.DefaultWorkOrderQueueTimeout
+				}
+				requestID := "plan-revision-declined/" + planRevision.AttemptID
+				if err = d.transition(ctx, task.ID, core.TaskInterventionRedirect, core.StageImplement, ""); err != nil {
+					return err
+				}
+				_, err = taskops.ExecuteWorkOrder(ctx, d.Store, task.ID, core.WorkOrderCmdRecover, func(lease taskops.TaskLease) (core.WorkOrder, error) {
+					return d.Store.RecoverWorkOrderCommand(ctx, lease, planRevision.WorkOrderID, requestID, intervention.Comment, queueTimeout)
+				})
+				return err
+			default:
+				return fmt.Errorf("plan-revision redirect requires reason_code %q or %q", PlanRevisionApprovedReasonCode, PlanRevisionDeclinedReasonCode)
+			}
+		default:
+			return fmt.Errorf("plan-revision gate requires redirect or reject intervention")
+		}
+	}
 	switch intervention.Action {
 	case core.InterventionCancel:
 		_, err := taskops.New(d.Store).Cancel(ctx, intervention)
@@ -1353,10 +1404,94 @@ func (d *Dispatcher) HandleIntervention(ctx context.Context, task core.Task, lat
 	return nil
 }
 
+func (d *Dispatcher) cancelContestedImplementationOrder(ctx context.Context, workOrderID, attemptID string) error {
+	order, err := d.Store.GetWorkOrder(ctx, workOrderID)
+	if err != nil {
+		return err
+	}
+	_, err = taskops.ExecuteWorkOrder(ctx, d.Store, order.TaskID, core.WorkOrderCmdCancel, func(lease taskops.TaskLease) (core.WorkOrder, error) {
+		return d.Store.CancelPlanRevisionWorkOrderCommand(ctx, lease, workOrderID, attemptID)
+	})
+	return err
+}
+
+const (
+	// These reason codes distinguish the two plan-revision redirect outcomes
+	// without expanding the canonical persisted intervention action set.
+	PlanRevisionApprovedReasonCode = "plan-revision-approved"
+	PlanRevisionDeclinedReasonCode = "plan-revision-declined"
+	PlanRevisionRejectedReasonCode = "plan-revision-rejected"
+)
+
+// PlanRevisionGateContext is the durable request that controls an awaiting
+// plan-revision decision. The event remains the authority; task state alone is
+// ambiguous because all operator gates share TaskAwaiting (REQ-2, AC-2.1).
+type PlanRevisionGateContext struct {
+	WorkOrderID string
+	AttemptID   string
+	Rationale   string
+	PlanVersion int
+}
+
+// PendingPlanRevisionGate recognizes the latest audited gate command and
+// returns its matching request payload for HTTP validation and dispatch.
+func PendingPlanRevisionGate(ctx context.Context, st store.Store, taskID string) (PlanRevisionGateContext, bool, error) {
+	task, err := st.GetTask(ctx, taskID)
+	if err != nil {
+		return PlanRevisionGateContext{}, false, err
+	}
+	if task.State != core.TaskAwaiting {
+		return PlanRevisionGateContext{}, false, nil
+	}
+	events, err := st.ListEvents(ctx, taskID)
+	if err != nil {
+		return PlanRevisionGateContext{}, false, err
+	}
+	gateAt := -1
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Kind != "task.state_changed" {
+			continue
+		}
+		var transition struct {
+			Command core.TaskCommand `json:"command"`
+		}
+		if err = json.Unmarshal(events[i].Payload, &transition); err != nil {
+			return PlanRevisionGateContext{}, false, fmt.Errorf("decode latest task transition for %s: %w", taskID, err)
+		}
+		if transition.Command != core.TaskGatePlanRevision {
+			return PlanRevisionGateContext{}, false, nil
+		}
+		gateAt = i
+		break
+	}
+	if gateAt < 0 {
+		return PlanRevisionGateContext{}, false, nil
+	}
+	for i := gateAt - 1; i >= 0; i-- {
+		if events[i].Kind != "work_order.plan_revision_requested" {
+			continue
+		}
+		var request struct {
+			WorkOrderID string `json:"work_order_id"`
+			AttemptID   string `json:"attempt_id"`
+			Rationale   string `json:"rationale"`
+			PlanVersion int    `json:"plan_version"`
+		}
+		if err = json.Unmarshal(events[i].Payload, &request); err != nil {
+			return PlanRevisionGateContext{}, false, fmt.Errorf("decode plan-revision request for %s: %w", taskID, err)
+		}
+		if request.WorkOrderID == "" || request.AttemptID == "" || strings.TrimSpace(request.Rationale) == "" || request.PlanVersion < 1 {
+			return PlanRevisionGateContext{}, false, fmt.Errorf("plan-revision request for %s is incomplete", taskID)
+		}
+		return PlanRevisionGateContext{WorkOrderID: request.WorkOrderID, AttemptID: request.AttemptID, Rationale: request.Rationale, PlanVersion: request.PlanVersion}, true, nil
+	}
+	return PlanRevisionGateContext{}, false, fmt.Errorf("plan-revision gate for %s has no request event", taskID)
+}
+
 // pendingSpecGate recognizes the exact lifecycle command that parked the task.
 // Spec, merge, and failure-recovery gates share the same awaiting/recovery
 // projection, while the audited task.state_changed event preserves their
-// distinct commands (spec §3.3, §13.1).
+// distinct commands (design-task-lifecycle).
 func (d *Dispatcher) pendingSpecGate(
 	ctx context.Context,
 	taskID string,
@@ -1876,7 +2011,7 @@ func (d *Dispatcher) dispatchConflictFixLocked(ctx context.Context, current core
 // MergeApprovedTask performs the final human-gate transition. A durable-store
 // task lock serializes browser retries across control-plane instances; the
 // authoritative pre-merge read makes retries after a process restart safe by
-// reconciling a PR that GitHub already merged (spec §4, §13.2).
+// reconciling a PR that GitHub already merged (design-git-delivery).
 func (d *Dispatcher) MergeApprovedTask(ctx context.Context, task core.Task) error {
 	return d.Store.WithTaskSideEffectLock(ctx, task.ID, func(lockedCtx context.Context) error {
 		return d.mergeApprovedTaskLocked(lockedCtx, task)

@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { GitMerge, ThumbsUp, TriangleAlert, Undo2, UserRound, type LucideIcon } from 'lucide-react'
+import { pendingPlanRevisionRequest } from '../../lib/activity'
 import { fixMergeConflict, mergeTask, reviewTask } from '../../lib/api'
 import { defaultReasonCode, interventionActions } from '../../lib/contracts'
 import type { ActivityItem, InterventionAction, Task, TaskEvent } from '../../lib/types'
@@ -9,6 +10,7 @@ import { useOperatorToken, useWorkspaceSelection } from '../app-shell'
 import { Button } from '../ui/button'
 import { Textarea } from '../ui/input'
 import { AttachmentsCard } from './attachments-card'
+import { PlanRevisionDecisionCard } from './plan-revision-decision-card'
 
 // The human gate rendered as a verdict, not an alarm (spec §13.3): the card
 // leads with what the pipeline is waiting for and one context-matched primary
@@ -135,7 +137,18 @@ type GateMutation =
   | { kind: 'fix' }
   | { kind: 'review'; action: InterventionAction; comment: string }
 
+// A contested execution plan is a different question from "is this work good",
+// so it gets its own card rather than another branch of the gate's derived
+// actions (REQ-2 AC-2.1).
 export function ReviewPanel({ item, onDecisionRecorded }: { item: ActivityItem; onDecisionRecorded?: () => void }) {
+  const revisionRequest = pendingPlanRevisionRequest(item.events)
+  if (revisionRequest)
+    return <PlanRevisionDecisionCard item={item} request={revisionRequest} onDecisionRecorded={onDecisionRecorded} />
+
+  return <GenericReviewPanel item={item} onDecisionRecorded={onDecisionRecorded} />
+}
+
+function GenericReviewPanel({ item, onDecisionRecorded }: { item: ActivityItem; onDecisionRecorded?: () => void }) {
   const token = useOperatorToken()
   const { workspace } = useWorkspaceSelection()
   const queryClient = useQueryClient()

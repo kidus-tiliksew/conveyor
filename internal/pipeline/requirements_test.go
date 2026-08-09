@@ -23,7 +23,7 @@ func TestParseRequirementDocumentAcceptsProseWithOneBlock(t *testing.T) {
 		t.Fatalf("statements = %+v", parsed.Statements)
 	}
 	// The markdown is the stored version body, so the block travels with the
-	// prose rather than being stripped out (spec §4.2 item 1).
+	// prose rather than being stripped out.
 	if parsed.Markdown != document {
 		t.Fatalf("markdown = %q, want %q", parsed.Markdown, document)
 	}

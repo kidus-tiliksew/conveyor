@@ -12,7 +12,7 @@ import (
 )
 
 // TestProductionLifecycleWritersEnterTaskOps prevents the command-plane
-// bypasses that §21.38 removed from the production Store surface. Test-only
+// bypasses removed from the production Store surface. Test-only
 // fixture adapters may enter taskops without exposing a production facade.
 func TestProductionLifecycleWritersEnterTaskOps(t *testing.T) {
 	_, file, _, ok := runtime.Caller(0)

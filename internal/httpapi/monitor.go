@@ -14,7 +14,7 @@ import (
 
 // CreateMonitorTask is the only monitor-to-task bridge. It deliberately calls
 // the same durable intake path as REST and MCP, preserving setup freezing,
-// gates, title generation, idempotency, and triage enqueueing (spec §21.45).
+// gates, title generation, idempotency, and triage enqueueing (design-monitor-drift).
 func (s *Server) CreateMonitorTask(ctx context.Context, request monitor.TaskRequest) (monitor.IntakeResult, error) {
 	var result taskCreateResult
 	if request.ReuseExistingByKey {

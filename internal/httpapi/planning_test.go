@@ -326,7 +326,7 @@ func TestPlanningHTTPRedactsInternalRunErrors(t *testing.T) {
 }
 
 // The creation route accepts the goal once and refuses an unknown one; the
-// stored session carries the goal-derived provisional title (spec §21.57).
+// stored session carries the goal-derived provisional title.
 func TestPlanningHTTPCreateDeclaresGoalAndProvisionalTitle(t *testing.T) {
 	st := store.NewMemory()
 	server := NewServer(st)
@@ -354,7 +354,7 @@ func TestPlanningHTTPCreateDeclaresGoalAndProvisionalTitle(t *testing.T) {
 		t.Fatalf("requirement-goal create status=%d session=%+v", code, drafting)
 	}
 	// A caller-supplied title carries no weight: the session is named by its
-	// goal and then by the artifact it produces (spec §21.57 change 3).
+	// goal and then by the artifact it produces.
 	code, planning := create(`{"goal":"blueprint","title":"Bound the retry loop"}`)
 	if code != http.StatusBadRequest {
 		t.Fatalf("blueprint-goal create status=%d session=%+v, want 400", code, planning)

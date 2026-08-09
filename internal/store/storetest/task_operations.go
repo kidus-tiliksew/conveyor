@@ -27,7 +27,7 @@ type TaskOperationsFixture struct {
 // negative bound Postgres rejects outright, or into a small positive one that
 // pages from an unrelated row — while memory returned an empty page. Both
 // stores now reject it, and both serve the boundary offset itself as an
-// ordinary past-the-end page (spec §21.58).
+// ordinary past-the-end page.
 func RunTaskOperationsPaginationConformance(t *testing.T, fixture TaskOperationsFixture) {
 	t.Helper()
 
