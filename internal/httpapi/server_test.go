@@ -19,6 +19,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
+	"github.com/kidus-tiliksew/conveyor/internal/pack"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 	githubtrigger "github.com/kidus-tiliksew/conveyor/internal/trigger/github"
@@ -1566,6 +1567,61 @@ func TestPlanRevisionReviewDecisionsUseFixedAuditedContract(t *testing.T) {
 				t.Fatalf("interventions=%+v", interventions)
 			}
 		})
+	}
+}
+
+func TestPlanRevisionApprovalIsDurableBeforeImmediatePlanClaim(t *testing.T) {
+	_, st, server, taskID, _ := newPlanRevisionReviewServer(t)
+	cfg := &config.Config{Workspace: "demo", WorkOrderQueueTimeout: time.Hour, Routing: config.Routing{Stages: map[string]config.StageRoute{
+		"spec": {Model: "planner", Execution: config.ExecutionMCP, Timeout: time.Hour},
+	}}}
+	dispatcher := dispatch.New(st, cfg, nil)
+	dispatcher.DisableMemoryQueueForTest()
+	bundle, err := pack.Load("../../pack")
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := &workorder.Service{Store: st, Dispatcher: dispatcher, Pack: bundle, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
+
+	var immediate workorder.Context
+	server.OnIntervention = func(ctx context.Context, task core.Task, latest core.Job, intervention core.Intervention) error {
+		interventions, listErr := st.ListInterventions(ctx, task.ID)
+		if listErr != nil || len(interventions) != 1 || interventions[0].ReasonCode != dispatch.PlanRevisionApprovedReasonCode {
+			return fmt.Errorf("approval was not durable before dispatch: interventions=%+v err=%v", interventions, listErr)
+		}
+		if err := dispatcher.HandleIntervention(ctx, task, latest, intervention); err != nil {
+			return err
+		}
+		if err := dispatcher.DispatchNow(ctx, task.ID); err != nil {
+			return err
+		}
+		orders, err := st.ListTaskWorkOrders(ctx, task.ID)
+		if err != nil {
+			return err
+		}
+		planOrder := orders[len(orders)-1]
+		claimed, err := storetest.For(st).ClaimWorkOrder(ctx, planOrder.ID, core.WorkOrderClaim{SessionID: "immediate-plan-session", ClientToken: "plan-token", WorkerID: "plan-worker", Agent: "codex", Model: "planner", Lease: time.Minute, ExecutionTimeout: time.Hour})
+		if err != nil {
+			return err
+		}
+		immediate, err = service.Get(ctx, claimed.ID, claimed.SessionID)
+		return err
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/v1/tasks/"+taskID+"/review", bytes.NewBufferString(`{"action":"redirect","reason_code":"plan-revision-approved","comment":"Keep compatibility."}`))
+	request.Header.Set("Authorization", "Bearer token")
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if immediate.PlanRevision == nil || immediate.PlanRevision.ContestedPlanVersion != 1 || immediate.PlanRevision.Rationale != "the API changed" || immediate.PlanRevision.OperatorDirection != "Keep compatibility." {
+		t.Fatalf("immediate plan-revision context=%+v", immediate.PlanRevision)
+	}
+	for _, required := range []string{"# Plan revision context", "the API changed", "# Operator direction\n\nKeep compatibility."} {
+		if !strings.Contains(immediate.RolePrompt, required) {
+			t.Errorf("immediate plan prompt missing %q: %s", required, immediate.RolePrompt)
+		}
 	}
 }
 
