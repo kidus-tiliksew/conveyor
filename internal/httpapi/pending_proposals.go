@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"net/url"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
@@ -53,14 +55,21 @@ func (s *Server) listPendingProposals(w http.ResponseWriter, r *http.Request) {
 func pendingProposalHref(proposal core.PendingProposal) string {
 	switch proposal.Tier {
 	case "requirement":
-		return "/requirements?requirement=" + url.QueryEscape(proposal.ID)
+		return "/requirements?requirement=" + url.QueryEscape(proposal.ID) + pendingVersionFragment(proposal.Version)
 	case "system_design":
-		return "/system-design?document=" + url.QueryEscape(proposal.ID)
+		return "/system-design?document=" + url.QueryEscape(proposal.ID) + pendingVersionFragment(proposal.Version)
 	case "decision":
-		return "/system-design?decision=" + url.QueryEscape(proposal.ID)
+		return "/system-design#decision-" + url.PathEscape(strings.ToLower(proposal.ID))
 	default:
 		return ""
 	}
+}
+
+func pendingVersionFragment(version int) string {
+	if version < 1 {
+		return ""
+	}
+	return "#pending-" + strconv.Itoa(version)
 }
 
 func (s *Server) taskAttentionCount(ctx context.Context, proposals []core.PendingProposal) (int, error) {

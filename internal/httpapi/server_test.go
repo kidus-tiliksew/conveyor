@@ -1141,6 +1141,16 @@ func TestPendingProposalsProjectionAttentionAndTaskWarning(t *testing.T) {
 			t.Fatalf("incomplete projection item=%+v", item)
 		}
 	}
+	wantHrefs := map[string]string{
+		"requirement":   "/requirements?requirement=req-pending#pending-1",
+		"system_design": "/system-design?document=design-pending#pending-1",
+		"decision":      "/system-design#decision-" + strings.ToLower(decision.ID),
+	}
+	for _, item := range projection.Items {
+		if item.Href != wantHrefs[item.Tier] {
+			t.Errorf("%s href=%q, want %q", item.Tier, item.Href, wantHrefs[item.Tier])
+		}
+	}
 	detail := httptest.NewRecorder()
 	server.Handler().ServeHTTP(detail, httptest.NewRequest(http.MethodGet, "/v1/tasks/"+task.ID+"/activity?workspace_id=demo", nil))
 	if detail.Code != http.StatusOK || !strings.Contains(detail.Body.String(), `"pending_authority":true`) || !strings.Contains(detail.Body.String(), `"needs_attention":true`) {
