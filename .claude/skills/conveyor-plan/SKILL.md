@@ -12,4 +12,7 @@ ID discipline, promotion).
 Non-negotiables, restated: every push is a **proposal** — the operator
 confirms, in the UI or on their explicit word in this conversation, never
 you. No operator-only acts (gate approvals, drift resolution). No
-fabricated lineage or origins.
+fabricated lineage or origins. The confirmed factory document corpus —
+requirements with REQ-n/AC-n.m statements, System Design documents, and DEC-n
+decisions — is the authority; do not direct new work to amend or cite a
+repository-resident specification.
