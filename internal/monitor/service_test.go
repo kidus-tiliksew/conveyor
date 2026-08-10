@@ -10,6 +10,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/monitor"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 )
 
 type sourceFunc func(context.Context, time.Time) ([]monitor.Observation, error)
@@ -42,7 +43,7 @@ func testService(t *testing.T) (*monitor.Service, store.Store, context.Context) 
 	return service, st, ctx
 }
 
-func TestPostMergeAttemptsShareTaskAndKeepDistinctObservations(t *testing.T) {
+func TestPostMergeFailuresShareOpenTaskAcrossCommitsAndKeepDistinctObservations(t *testing.T) {
 	service, st, ctx := testService(t)
 	observation := monitor.Observation{
 		Repository: "conveyor", Kind: monitor.PostMergeFailure, OccurrenceID: "commit:abc:attempt:1",
@@ -59,7 +60,9 @@ func TestPostMergeAttemptsShareTaskAndKeepDistinctObservations(t *testing.T) {
 	if first.TaskID == "" || second.TaskID != first.TaskID || second.DeduplicatedCount != 1 {
 		t.Fatalf("first=%+v second=%+v", first, second)
 	}
-	observation.OccurrenceID = "commit:abc:attempt:2"
+	observation.OccurrenceID = "commit:def:attempt:2"
+	observation.CommitSHA = "def"
+	observation.Attempt = 2
 	third, err := service.Process(ctx, observation)
 	if err != nil {
 		t.Fatal(err)
@@ -82,7 +85,74 @@ func TestPostMergeAttemptsShareTaskAndKeepDistinctObservations(t *testing.T) {
 	}
 }
 
-func TestObservationIntakeKeyGroupsOnlyPostMergeFailuresWithCommit(t *testing.T) {
+func TestPostMergeFailureAfterClosedTaskCreatesFreshTask(t *testing.T) {
+	service, st, ctx := testService(t)
+	first, err := service.Process(ctx, monitor.Observation{
+		Repository: "conveyor", Kind: monitor.PostMergeFailure, OccurrenceID: "commit:abc:attempt:1",
+		SourceURL: "https://github.example/check/1", CommitSHA: "abc", Attempt: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = storetest.For(st).CancelTask(ctx, core.Intervention{TaskID: first.TaskID, Action: core.InterventionCancel, ReasonCode: "operator-resolved"}); err != nil {
+		t.Fatal(err)
+	}
+	second, err := service.Process(ctx, monitor.Observation{
+		Repository: "conveyor", Kind: monitor.PostMergeFailure, OccurrenceID: "commit:def:attempt:1",
+		SourceURL: "https://github.example/check/2", CommitSHA: "def", Attempt: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.TaskID == "" || second.TaskID == first.TaskID {
+		t.Fatalf("closed task was reused: first=%+v second=%+v", first, second)
+	}
+}
+
+func TestPostMergeRecoveryAnnotatesOpenTaskOnceWithoutClosing(t *testing.T) {
+	service, st, ctx := testService(t)
+	failure, err := service.Process(ctx, monitor.Observation{
+		Repository: "conveyor", Kind: monitor.PostMergeFailure, OccurrenceID: "commit:abc:attempt:1",
+		SourceURL: "https://github.example/check/1", CommitSHA: "abc", Attempt: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recovery := monitor.Observation{
+		Repository: "conveyor", Kind: monitor.PostMergeFailure, OccurrenceID: "recovery:commit:def",
+		SourceURL: "https://github.example/commit/def", CommitSHA: "def", RecoveryObserved: true,
+	}
+	first, err := service.Process(ctx, recovery)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := service.Process(ctx, recovery)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.TaskID != failure.TaskID || second.TaskID != failure.TaskID {
+		t.Fatalf("recovery linkage failure=%+v first=%+v second=%+v", failure, first, second)
+	}
+	task, err := st.GetTask(ctx, failure.TaskID)
+	if err != nil || task.State != core.TaskQueued {
+		t.Fatalf("recovery changed task state: task=%+v err=%v", task, err)
+	}
+	events, err := st.ListEvents(ctx, failure.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, event := range events {
+		if event.Kind == "monitor.recovery_observed" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("recovery event count=%d events=%+v", count, events)
+	}
+}
+
+func TestObservationIntakeKeyPreservesOccurrenceIdentity(t *testing.T) {
 	tests := []struct {
 		name string
 		one  monitor.Observation
@@ -90,9 +160,14 @@ func TestObservationIntakeKeyGroupsOnlyPostMergeFailuresWithCommit(t *testing.T)
 		same bool
 	}{
 		{
-			name: "post merge attempts for one commit",
+			name: "post merge attempts remain distinct",
 			one:  monitor.Observation{Repository: "conveyor", Kind: monitor.PostMergeFailure, OccurrenceID: "commit:abc:attempt:1", CommitSHA: "abc"},
 			two:  monitor.Observation{Repository: "conveyor", Kind: monitor.PostMergeFailure, OccurrenceID: "commit:abc:attempt:2", CommitSHA: "abc"},
+		},
+		{
+			name: "exact redelivery",
+			one:  monitor.Observation{Repository: "conveyor", Kind: monitor.PostMergeFailure, OccurrenceID: "commit:abc:attempt:1", CommitSHA: "abc"},
+			two:  monitor.Observation{Repository: "conveyor", Kind: monitor.PostMergeFailure, OccurrenceID: "commit:abc:attempt:1", CommitSHA: "abc"},
 			same: true,
 		},
 		{
@@ -135,7 +210,7 @@ func TestPostMergeFailureTaskNamesAllFailedChecks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	task, found, err := st.GetTaskByIntakeKey(ctx, "monitor:post_merge_failure:conveyor:commit:abc")
+	task, found, err := st.GetTaskByIntakeKey(ctx, "monitor:post_merge_failure:conveyor:commit:abc:attempt:1")
 	if err != nil || !found || task.ID != record.TaskID {
 		t.Fatalf("task=%+v found=%t record=%+v err=%v", task, found, record, err)
 	}

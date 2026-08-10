@@ -33,6 +33,26 @@ func (m *memory) AuditMonitor(ctx context.Context, kind string, payload map[stri
 
 func monitorKey(workspace, identity string) string { return workspace + "\x00" + identity }
 
+func (m *memory) WithMonitorSignalClassLock(ctx context.Context, repository string, kind monitor.SignalKind, fn func(context.Context) error) error {
+	return m.WithTaskSideEffectLock(ctx, "monitor-signal:"+repository+":"+string(kind), fn)
+}
+
+func (m *memory) FindOpenMonitorTask(ctx context.Context, repository string, kind monitor.SignalKind) (string, bool, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	workspace := workspaceOrDefault(ctx, "")
+	var selected core.Task
+	for _, task := range m.tasks {
+		if task.Workspace != workspace || task.Repo != repository || task.Source != "monitor:"+string(kind) || core.TaskTerminal(task.State) {
+			continue
+		}
+		if selected.ID == "" || task.CreatedAt.Before(selected.CreatedAt) || (task.CreatedAt.Equal(selected.CreatedAt) && task.ID < selected.ID) {
+			selected = task
+		}
+	}
+	return selected.ID, selected.ID != "", nil
+}
+
 func (m *memory) RequirementExists(ctx context.Context, id string) (bool, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

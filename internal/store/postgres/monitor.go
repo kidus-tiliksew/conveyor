@@ -31,6 +31,24 @@ VALUES ($1,$2,$3::jsonb)`, workspace(ctx), kind, string(data))
 	return err
 }
 
+func (s *Store) WithMonitorSignalClassLock(ctx context.Context, repository string, kind monitor.SignalKind, fn func(context.Context) error) error {
+	key := "conveyor:monitor-signal:" + workspace(ctx) + ":" + repository + ":" + string(kind)
+	return s.withDetachedAdvisoryLock(ctx, key, fn)
+}
+
+func (s *Store) FindOpenMonitorTask(ctx context.Context, repository string, kind monitor.SignalKind) (string, bool, error) {
+	query := `SELECT id FROM tasks
+		WHERE workspace_id=$1 AND repo_name=$2 AND source=$3 AND state NOT IN ('merged','closed')
+		ORDER BY created_at,id LIMIT 1`
+	var taskID string
+	if err := s.pool.QueryRow(ctx, query, workspace(ctx), repository, "monitor:"+string(kind)).Scan(&taskID); errors.Is(err, pgx.ErrNoRows) {
+		return "", false, nil
+	} else if err != nil {
+		return "", false, err
+	}
+	return taskID, true, nil
+}
+
 func (s *Store) RequirementExists(ctx context.Context, id string) (bool, error) {
 	var exists bool
 	err := s.pool.QueryRow(ctx, `SELECT EXISTS (
