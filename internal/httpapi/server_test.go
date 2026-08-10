@@ -1133,7 +1133,7 @@ func TestPendingProposalsProjectionAttentionAndTaskWarning(t *testing.T) {
 	if err = json.Unmarshal(response.Body.Bytes(), &projection); err != nil {
 		t.Fatal(err)
 	}
-	if len(projection.Items) != 3 || projection.Attention.TaskCount != 1 || projection.Attention.PendingProposalCount != 3 || projection.Attention.Total != 4 {
+	if len(projection.Items) != 3 || projection.Attention.TaskCount != 2 || projection.Attention.PendingProposalCount != 3 || projection.Attention.Total != 5 {
 		t.Fatalf("projection=%+v", projection)
 	}
 	for _, item := range projection.Items {
@@ -1143,8 +1143,23 @@ func TestPendingProposalsProjectionAttentionAndTaskWarning(t *testing.T) {
 	}
 	detail := httptest.NewRecorder()
 	server.Handler().ServeHTTP(detail, httptest.NewRequest(http.MethodGet, "/v1/tasks/"+task.ID+"/activity?workspace_id=demo", nil))
-	if detail.Code != http.StatusOK || !strings.Contains(detail.Body.String(), `"pending_authority":true`) {
+	if detail.Code != http.StatusOK || !strings.Contains(detail.Body.String(), `"pending_authority":true`) || !strings.Contains(detail.Body.String(), `"needs_attention":true`) {
 		t.Fatalf("detail status=%d body=%s", detail.Code, detail.Body.String())
+	}
+	activity := httptest.NewRecorder()
+	server.Handler().ServeHTTP(activity, httptest.NewRequest(http.MethodGet, "/v1/activity?workspace_id=demo", nil))
+	if activity.Code != http.StatusOK || !strings.Contains(activity.Body.String(), `"id":"`+task.ID+`"`) || !strings.Contains(activity.Body.String(), `"needs_attention":true`) {
+		t.Fatalf("activity status=%d body=%s", activity.Code, activity.Body.String())
+	}
+	reviews := httptest.NewRecorder()
+	server.Handler().ServeHTTP(reviews, httptest.NewRequest(http.MethodGet, "/v1/reviews?workspace_id=demo", nil))
+	if reviews.Code != http.StatusOK || !strings.Contains(reviews.Body.String(), `"id":"`+task.ID+`"`) || !strings.Contains(reviews.Body.String(), `"needs_attention":true`) {
+		t.Fatalf("reviews status=%d body=%s", reviews.Code, reviews.Body.String())
+	}
+	operations := httptest.NewRecorder()
+	server.Handler().ServeHTTP(operations, httptest.NewRequest(http.MethodGet, "/v1/task-operations?workspace_id=demo", nil))
+	if operations.Code != http.StatusOK || !strings.Contains(operations.Body.String(), `"id":"`+task.ID+`"`) || !strings.Contains(operations.Body.String(), `"needs_attention":true`) {
+		t.Fatalf("task operations status=%d body=%s", operations.Code, operations.Body.String())
 	}
 
 	if _, _, err = st.ConfirmSystemDesignVersion(ctx, design.ID, designVersion.Version); err != nil {

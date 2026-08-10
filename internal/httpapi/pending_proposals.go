@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"net/http"
 	"net/url"
 	"time"
@@ -32,7 +33,7 @@ func (s *Server) listPendingProposals(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	taskCount, err := s.taskAttentionCount(r)
+	taskCount, err := s.taskAttentionCount(r.Context(), proposals)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -62,12 +63,16 @@ func pendingProposalHref(proposal core.PendingProposal) string {
 	}
 }
 
-func (s *Server) taskAttentionCount(r *http.Request) (int, error) {
-	tasks, err := s.Store.ListTasks(r.Context())
+func (s *Server) taskAttentionCount(ctx context.Context, proposals []core.PendingProposal) (int, error) {
+	tasks, err := s.Store.ListTasks(ctx)
 	if err != nil {
 		return 0, err
 	}
-	markers, err := s.Store.ListActivityMarkers(r.Context())
+	markers, err := s.Store.ListActivityMarkers(ctx)
+	if err != nil {
+		return 0, err
+	}
+	pendingAuthority, err := s.pendingAuthorityTasks(ctx, proposals)
 	if err != nil {
 		return 0, err
 	}
@@ -84,7 +89,7 @@ func (s *Server) taskAttentionCount(r *http.Request) (int, error) {
 		if core.TaskTerminal(task.State) {
 			marker.Stalled = nil
 		}
-		if needsAttention(task, marker) {
+		if needsAttention(task, marker, pendingAuthority[task.ID]) {
 			count++
 		}
 	}
@@ -92,24 +97,36 @@ func (s *Server) taskAttentionCount(r *http.Request) (int, error) {
 }
 
 func pendingAuthorityForTask(taskID string, orders []core.WorkOrder, proposals []core.PendingProposal) bool {
-	underReview := false
+	return pendingAuthorityByTask(orders, proposals)[taskID]
+}
+
+func (s *Server) pendingAuthorityTasks(ctx context.Context, proposals []core.PendingProposal) (map[string]bool, error) {
+	orders, err := s.Store.ListWorkOrders(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return pendingAuthorityByTask(orders, proposals), nil
+}
+
+func pendingAuthorityByTask(orders []core.WorkOrder, proposals []core.PendingProposal) map[string]bool {
+	originTasks := make(map[string]bool)
+	for _, proposal := range proposals {
+		if proposal.OriginType == "task" && proposal.OriginID != "" {
+			originTasks[proposal.OriginID] = true
+		}
+	}
+	result := make(map[string]bool)
 	for _, order := range orders {
+		if !originTasks[order.TaskID] {
+			continue
+		}
 		if order.Stage == core.StageImplement && order.State == core.WorkOrderSubmitted {
-			underReview = true
-			break
+			result[order.TaskID] = true
+			continue
 		}
 		if order.Stage == core.StageReview && (order.State == core.WorkOrderQueued || order.State == core.WorkOrderClaimed || order.State == core.WorkOrderSubmitted) {
-			underReview = true
-			break
+			result[order.TaskID] = true
 		}
 	}
-	if !underReview {
-		return false
-	}
-	for _, proposal := range proposals {
-		if proposal.OriginType == "task" && proposal.OriginID == taskID {
-			return true
-		}
-	}
-	return false
+	return result
 }
