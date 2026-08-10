@@ -279,8 +279,10 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 	// Staleness is an authority decision, not prompt rendering. Keep enough
 	// fixed delivery-chain depth even when operators tune agent context lower.
 	lineageBudget := core.LineageTraversalBudget{MaxDepth: 5, MaxNodes: 256, MaxLinks: 1024, Workspace: workspace}
+	deliveryBudget := core.LineageTraversalBudget{MaxDepth: 3, MaxNodes: 256, MaxLinks: 1024, Workspace: workspace}
 	artifactNodes := map[core.LineageNode]bool{}
 	graphs := make(map[string]core.LineageTraversal, len(requirements))
+	deliveryGraphs := make(map[string]core.LineageTraversal, len(requirements))
 	lineageByRequirement := make(map[string][]core.LineageLink, len(requirements))
 	for _, requirement := range requirements {
 		root := core.LineageNode{Type: core.LineageRequirement, ID: requirement.ID}
@@ -297,6 +299,15 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 		}
 		graphs[root.ID] = graph
 		lineageByRequirement[root.ID] = lineage
+		deliveryLineage, deliveryErr := s.Store.ListRequirementDeliveryLineage(r.Context(), requirement.ID, deliveryBudget)
+		if deliveryErr != nil {
+			return nil, deliveryErr
+		}
+		deliveryGraph, deliveryErr := core.TraverseLineage(deliveryLineage, []core.LineageNode{root}, deliveryBudget)
+		if deliveryErr != nil {
+			return nil, deliveryErr
+		}
+		deliveryGraphs[root.ID] = deliveryGraph
 	}
 	nodes := make([]core.LineageNode, 0, len(artifactNodes))
 	for node := range artifactNodes {
@@ -421,9 +432,10 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 		graph := graphs[requirement.ID]
 		applyLineageLabels(&graph, lineageLabels)
 		view.LineageGraph = graph
-		view.Staleness.PartialEvaluation = graph.Truncated
+		deliveryGraph := deliveryGraphs[requirement.ID]
+		view.Staleness.PartialEvaluation = deliveryGraph.Truncated
 		lineage := lineageByRequirement[requirement.ID]
-		reachableTasks := deliveryReachableTasks(lineage, requirement.ID)
+		reachableTasks := deliveryReachableTasks(deliveryGraph.Links, requirement.ID)
 		servingTaskIDs := directServingTaskIDs(lineage, requirement.ID)
 		for taskID := range servingTaskIDs {
 			task, getErr := s.Store.GetTask(r.Context(), taskID)

@@ -119,6 +119,11 @@ type Store interface {
 	// for all roots. Callers may derive several per-root traversals from it
 	// without repeating a workspace-wide scan.
 	ListLineageNeighborhood(ctx context.Context, roots []core.LineageNode, budget core.LineageTraversalBudget) ([]core.LineageLink, error)
+	// ListRequirementDeliveryLineage returns a bounded, workspace-scoped,
+	// directed delivery closure. Only requirement -> task|blueprint `serves`,
+	// blueprint -> blueprint_version `versions`, and blueprint_version -> task
+	// `materializes` edges are eligible.
+	ListRequirementDeliveryLineage(ctx context.Context, requirementID string, budget core.LineageTraversalBudget) ([]core.LineageLink, error)
 	// ListLineageNodeRecords resolves label data only for the supplied bounded
 	// graph nodes. Implementations must not replace this with workspace-wide
 	// entity scans.
@@ -5022,6 +5027,66 @@ func (m *memory) ListLineageNeighborhood(ctx context.Context, roots []core.Linea
 	}
 	sort.Slice(result, func(i, j int) bool { return lineageLinkKey(result[i]) < lineageLinkKey(result[j]) })
 	return result, nil
+}
+
+func (m *memory) ListRequirementDeliveryLineage(ctx context.Context, requirementID string, budget core.LineageTraversalBudget) ([]core.LineageLink, error) {
+	if strings.TrimSpace(requirementID) == "" || budget.MaxDepth < 0 || budget.MaxNodes <= 0 || budget.MaxLinks <= 0 {
+		return nil, fmt.Errorf("requirement delivery lineage requires a requirement id and bounded depth, nodes, and links")
+	}
+	links, err := m.ListLineageLinks(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return boundedRequirementDeliveryLinks(links, requirementID, budget), nil
+}
+
+func boundedRequirementDeliveryLinks(links []core.LineageLink, requirementID string, budget core.LineageTraversalBudget) []core.LineageLink {
+	workspace := budget.Workspace
+	eligible := make(map[core.LineageNode][]core.LineageLink)
+	for _, link := range links {
+		if workspace != "" && link.Workspace != workspace || !requirementDeliveryLink(link) {
+			continue
+		}
+		src := core.LineageNode{Type: link.SrcType, ID: link.SrcID}
+		eligible[src] = append(eligible[src], link)
+	}
+	for src := range eligible {
+		sort.Slice(eligible[src], func(i, j int) bool { return lineageLinkKey(eligible[src][i]) < lineageLinkKey(eligible[src][j]) })
+	}
+
+	type step struct {
+		node  core.LineageNode
+		depth int
+	}
+	queue := []step{{node: core.LineageNode{Type: core.LineageRequirement, ID: requirementID}}}
+	seen := map[core.LineageNode]bool{queue[0].node: true}
+	result := make([]core.LineageLink, 0, min(budget.MaxLinks+1, len(links)))
+	for len(queue) > 0 && len(result) <= budget.MaxLinks {
+		current := queue[0]
+		queue = queue[1:]
+		if current.depth >= budget.MaxDepth {
+			continue
+		}
+		for _, link := range eligible[current.node] {
+			result = append(result, link)
+			if len(result) > budget.MaxLinks {
+				break
+			}
+			dst := core.LineageNode{Type: link.DstType, ID: link.DstID}
+			if !seen[dst] {
+				seen[dst] = true
+				queue = append(queue, step{node: dst, depth: current.depth + 1})
+			}
+		}
+	}
+	return result
+}
+
+func requirementDeliveryLink(link core.LineageLink) bool {
+	return link.Kind == "serves" && link.SrcType == core.LineageRequirement &&
+		(link.DstType == core.LineageTask || link.DstType == core.LineageBlueprint) ||
+		link.Kind == "versions" && link.SrcType == core.LineageBlueprint && link.DstType == core.LineageBlueprintVersion ||
+		link.Kind == "materializes" && link.SrcType == core.LineageBlueprintVersion && link.DstType == core.LineageTask
 }
 
 func (m *memory) RebuildLineage(ctx context.Context, request core.LineageRebuildRequest) (core.LineageRebuildResult, error) {
