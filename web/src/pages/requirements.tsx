@@ -18,6 +18,7 @@ import {
 } from 'lucide-react'
 import { useOperatorToken, useWorkspaceSelection } from '../components/app-shell'
 import { AttentionSurface, type AttentionItem } from '../components/documents/attention-surface'
+import { DriftResolutionForm } from '../components/documents/drift-resolution-form'
 import {
   DocumentTree,
   DocumentTreeGroup,
@@ -616,16 +617,34 @@ function RequirementCanvas({ seed, token }: { seed: RequirementView; token: stri
           <span className="ml-1 text-faint">· seen {formatDate(entry.detected_at)}</span>
         </>
       ),
-      action: entry.source_url ? (
-        <a
-          className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
-          href={entry.source_url}
-          target="_blank"
-          rel="noreferrer"
-        >
-          Open the change <ExternalLink className="size-3" />
-        </a>
-      ) : undefined,
+      action: (
+        <>
+          {entry.source_url && (
+            <a
+              className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
+              href={entry.source_url}
+              target="_blank"
+              rel="noreferrer"
+            >
+              Open the change <ExternalLink className="size-3" />
+            </a>
+          )}
+          <DriftResolutionForm
+            drift={entry}
+            surface="requirement"
+            token={token}
+            workspace={workspace}
+            requirementID={item.requirement.id}
+            onResolved={() =>
+              Promise.all([
+                client.invalidateQueries({ queryKey: ['requirements', workspace] }),
+                client.invalidateQueries({ queryKey: ['requirement', workspace, item.requirement.id] }),
+                client.invalidateQueries({ queryKey: ['requirement-versions', workspace, item.requirement.id] }),
+              ])
+            }
+          />
+        </>
+      ),
     })),
     ...item.pending_versions.map((version) => ({
       id: `pending-${version.version}`,

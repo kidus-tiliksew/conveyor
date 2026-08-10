@@ -222,6 +222,57 @@ test('a System Design with nothing outstanding says so in one quiet line', async
   await expect(metadata.getByText('Confirmed', { exact: true })).toBeVisible()
 })
 
+test('System Design resolves drift inline, restricts outcomes, and shows the confirmed-version precondition', async ({
+  page,
+}) => {
+  await initialize(page)
+  let resolved = false
+  let resolution: Record<string, string> | undefined
+  const currentDesign = () => ({
+    ...design,
+    pending_versions: [],
+    versions: [first],
+    drift: resolved ? [] : design.drift,
+  })
+  await page.route('**/v1/**', async (route) => {
+    const handled = shell(route)
+    if (handled) return await handled
+    const request = route.request()
+    const url = new URL(request.url())
+    if (url.pathname === '/v1/system-designs') return route.fulfill({ json: [currentDesign()] })
+    if (url.pathname === '/v1/decisions') return route.fulfill({ json: [] })
+    if (url.pathname === '/v1/monitor/drift/design-drift-1/resolve') {
+      resolution = request.postDataJSON() as Record<string, string>
+      if (resolution.outcome === 'design_document_updated') {
+        return route.fulfill({
+          status: 422,
+          body: 'A newer confirmed System Design version is required before resolving this change.',
+        })
+      }
+      resolved = true
+      return route.fulfill({ json: design.drift[0] })
+    }
+    return route.fulfill({ json: [] })
+  })
+
+  await page.goto('/system-design?document=design-dispatch')
+  const attention = page.getByRole('region', { name: 'Needs your attention' })
+  const form = attention.getByRole('form', { name: 'Resolve drift design-drift-1' })
+  const outcomes = form.getByLabel('Resolution outcome for design-drift-1')
+  await expect(outcomes.getByRole('option', { name: 'Requirements amended' })).toHaveCount(0)
+  await expect(outcomes.getByRole('option', { name: 'Design document updated' })).toBeAttached()
+
+  await outcomes.selectOption('design_document_updated')
+  await form.getByRole('button', { name: 'Resolve' }).click()
+  await expect(form).toContainText('A newer confirmed System Design version is required')
+
+  await outcomes.selectOption('conflict_resolved')
+  await form.getByRole('button', { name: 'Resolve' }).click()
+  await expect.poll(() => resolution).toEqual({ outcome: 'conflict_resolved' })
+  await expect(attention).toContainText('Nothing needs your attention on this document.')
+  await expect(attention.getByRole('form')).toHaveCount(0)
+})
+
 test('the System Design surface never starts a planning session on its own', async ({ page }) => {
   await initialize(page)
   let planningRequests = 0
