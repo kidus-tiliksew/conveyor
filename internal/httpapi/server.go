@@ -957,9 +957,7 @@ func (s *Server) listActivityFiltered(w http.ResponseWriter, r *http.Request, fi
 // list-first Tasks view share, so the two surfaces cannot disagree about which
 // work is waiting on a human (design-web-dashboard).
 func needsAttention(task core.Task, marker store.ActivityMarker, pendingAuthority bool) bool {
-	return task.State == core.TaskAwaiting || task.State == core.TaskParked ||
-		marker.ForgeFailure != nil || marker.ReviewRecovery != nil ||
-		marker.InterruptedReviewRecovery != nil || marker.Stalled != nil || pendingAuthority
+	return store.TaskNeedsAttention(task, marker, pendingAuthority)
 }
 
 // Plan status is the four durable outcomes AC-1.4 names. Each is read off the

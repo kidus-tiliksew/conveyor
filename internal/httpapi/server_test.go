@@ -1105,6 +1105,10 @@ func TestPendingProposalsProjectionAttentionAndTaskWarning(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	siblingCtx := store.WithWorkspace(t.Context(), "sibling")
+	if err := st.CreateTask(siblingCtx, core.Task{ID: "sibling-attention", Workspace: "sibling", State: core.TaskParked, CreatedAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
 	design, designVersion, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "design-pending", Title: "Pending design", Category: "Architecture"}, core.SystemDesignVersion{
 		Content: "# Pending design\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/httpapi/**\n```", Origin: core.SystemDesignOriginImplementation, OriginTaskID: task.ID,
 	})
@@ -2053,6 +2057,10 @@ func TestMergeTaskDoesNotReportUnconfirmedSuccess(t *testing.T) {
 
 type observedStore struct {
 	store.Store
+	listTasksCalls           int
+	listWorkOrdersCalls      int
+	listPendingCalls         int
+	pendingProjectionCalls   int
 	listJobsCalls            int
 	listEventsCalls          int
 	listInterventionsCalls   int
@@ -2060,6 +2068,26 @@ type observedStore struct {
 	getLatestJobCalls        int
 	listEventsAfterCalls     int
 	afterHook                func()
+}
+
+func (s *observedStore) ListTasks(ctx context.Context) ([]core.Task, error) {
+	s.listTasksCalls++
+	return s.Store.ListTasks(ctx)
+}
+
+func (s *observedStore) ListWorkOrders(ctx context.Context) ([]core.WorkOrder, error) {
+	s.listWorkOrdersCalls++
+	return s.Store.ListWorkOrders(ctx)
+}
+
+func (s *observedStore) ListPendingProposals(ctx context.Context) ([]core.PendingProposal, error) {
+	s.listPendingCalls++
+	return s.Store.ListPendingProposals(ctx)
+}
+
+func (s *observedStore) PendingProposalsProjection(ctx context.Context) (store.PendingProposalsProjection, error) {
+	s.pendingProjectionCalls++
+	return s.Store.PendingProposalsProjection(ctx)
 }
 
 func (s *observedStore) ListJobs(ctx context.Context, taskID string) ([]core.Job, error) {
@@ -2094,6 +2122,29 @@ func (s *observedStore) ListEventsAfter(ctx context.Context, taskID string, afte
 		s.afterHook()
 	}
 	return events, err
+}
+
+func TestPendingProposalsEndpointUsesOnlyBoundedStoreProjection(t *testing.T) {
+	base := store.NewMemory()
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	if err := base.CreateTask(ctx, core.Task{ID: "attention", Workspace: "demo", State: core.TaskAwaiting, CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	observed := &observedStore{Store: base}
+	server := NewServer(observed)
+	server.Workspace = "demo"
+	server.BearerToken = "token"
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/v1/pending-proposals?workspace_id=demo", nil)
+	request.Header.Set("Authorization", "Bearer token")
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if observed.pendingProjectionCalls != 1 || observed.listTasksCalls != 0 || observed.listActivityMarkersCalls != 0 || observed.listWorkOrdersCalls != 0 || observed.listPendingCalls != 0 {
+		t.Fatalf("projection=%d tasks=%d markers=%d orders=%d proposals=%d", observed.pendingProjectionCalls,
+			observed.listTasksCalls, observed.listActivityMarkersCalls, observed.listWorkOrdersCalls, observed.listPendingCalls)
+	}
 }
 
 func TestActivityIndexAvoidsPerTaskHistoryQueries(t *testing.T) {

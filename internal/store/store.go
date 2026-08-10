@@ -265,6 +265,10 @@ type Store interface {
 	// ListPendingProposals normalizes unresolved proposals across the
 	// requirement, System Design, and decision tiers (REQ-1, AC-1.2).
 	ListPendingProposals(ctx context.Context) ([]core.PendingProposal, error)
+	// PendingProposalsProjection returns the workspace proposal queue together
+	// with the exact task-attention count without materializing the general task,
+	// activity, or work-order list projections (REQ-1, REQ-3).
+	PendingProposalsProjection(ctx context.Context) (PendingProposalsProjection, error)
 
 	// Planning sessions are durable chats that produce at most one artifact and
 	// grant no approval authority over it.
@@ -479,6 +483,23 @@ type ActivityMarker struct {
 	ReviewRecovery            *ReviewRecoveryState
 	InterruptedReviewRecovery *InterruptedReviewRecoveryState
 	Stalled                   *StalledState
+}
+
+// PendingProposalsProjection is the bounded store read used by the workspace
+// attention badge. Age remains an HTTP concern so the store returns durable
+// proposal timestamps unchanged.
+type PendingProposalsProjection struct {
+	Items     []core.PendingProposal
+	TaskCount int
+}
+
+// TaskNeedsAttention is the shared operator-attention truth table. Keeping it
+// at the store boundary lets the memory projection match the HTTP activity
+// surfaces while PostgreSQL computes the same predicates from narrow columns.
+func TaskNeedsAttention(task core.Task, marker ActivityMarker, pendingAuthority bool) bool {
+	return task.State == core.TaskAwaiting || task.State == core.TaskParked ||
+		marker.ForgeFailure != nil || marker.ReviewRecovery != nil ||
+		marker.InterruptedReviewRecovery != nil || marker.Stalled != nil || pendingAuthority
 }
 
 // TaskFilter is the one predicate set the Tasks list and the Board both send

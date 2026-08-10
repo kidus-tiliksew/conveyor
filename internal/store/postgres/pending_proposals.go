@@ -2,9 +2,14 @@ package postgres
 
 import (
 	"context"
+	_ "embed"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
+
+//go:embed pending_proposals_attention.sql
+var pendingProposalsAttentionSQL string
 
 // ListPendingProposals is one workspace-scoped read over the three durable
 // authority tiers. Confirmation/dismissal changes the source rows, so the
@@ -51,4 +56,17 @@ func (s *Store) ListPendingProposals(ctx context.Context) ([]core.PendingProposa
 		out = append(out, item)
 	}
 	return out, rows.Err()
+}
+
+func (s *Store) PendingProposalsProjection(ctx context.Context) (store.PendingProposalsProjection, error) {
+	items, err := s.ListPendingProposals(ctx)
+	if err != nil {
+		return store.PendingProposalsProjection{}, err
+	}
+	var count int64
+	err = s.pool.QueryRow(ctx, pendingProposalsAttentionSQL, workspace(ctx)).Scan(&count)
+	if err != nil {
+		return store.PendingProposalsProjection{}, err
+	}
+	return store.PendingProposalsProjection{Items: items, TaskCount: int(count)}, nil
 }
