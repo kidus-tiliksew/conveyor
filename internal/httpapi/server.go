@@ -102,6 +102,7 @@ func (s *Server) Handler() http.Handler {
 		r.Group(func(r chi.Router) {
 			r.Use(s.requireWorkspaceAuth, s.resolveWorkspaceContext)
 			r.Get("/activity", s.listActivity)
+			r.With(s.requireMutationAuth).Get("/pending-proposals", s.listPendingProposals)
 			r.Get("/tasks", s.listTasks)
 			r.Get("/task-operations", s.listTaskOperations)
 			r.Get("/tasks/{id}", s.getTask)
@@ -850,6 +851,7 @@ type reviewItem struct {
 	CheckoutAvailable         bool                                  `json:"checkout_available"`
 	CheckoutGuidance          string                                `json:"checkout_guidance"`
 	NeedsAttention            bool                                  `json:"needs_attention"`
+	PendingAuthority          bool                                  `json:"pending_authority"`
 	ForgeFailure              *store.ForgeFailure                   `json:"forge_failure,omitempty"`
 	Spec                      *core.SpecVersion                     `json:"spec,omitempty"`
 	WorkOrders                []core.WorkOrder                      `json:"work_orders"`
@@ -1402,10 +1404,16 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 	if core.TaskTerminal(task.State) {
 		stalled = nil
 	}
+	proposals, err := s.Store.ListPendingProposals(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	writeJSON(w, http.StatusOK, reviewItem{
 		Task: task, Jobs: jobs, Events: events, Interventions: interventions,
 		CheckoutCommand: checkoutCommand, CheckoutAvailable: checkoutAvailable, CheckoutGuidance: checkoutGuidance,
 		NeedsAttention:            task.State == core.TaskAwaiting || task.State == core.TaskParked || store.LatestForgeFailure(events) != nil || store.ReviewRecoveryNeeded(workOrders, events) != nil || store.InterruptedReviewRecoveryNeeded(workOrders) != nil || stalled != nil,
+		PendingAuthority:          pendingAuthorityForTask(id, workOrders, proposals),
 		ForgeFailure:              store.LatestForgeFailure(events),
 		Spec:                      specPointer,
 		WorkOrders:                workOrders,

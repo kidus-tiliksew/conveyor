@@ -257,6 +257,9 @@ type Store interface {
 	DismissDecision(ctx context.Context, id string) (core.Decision, error)
 	GetDecision(ctx context.Context, id string) (core.Decision, error)
 	ListDecisions(ctx context.Context) ([]core.Decision, error)
+	// ListPendingProposals normalizes unresolved proposals across the
+	// requirement, System Design, and decision tiers (REQ-1, AC-1.2).
+	ListPendingProposals(ctx context.Context) ([]core.PendingProposal, error)
 
 	// Planning sessions are durable chats that produce at most one artifact and
 	// grant no approval authority over it.

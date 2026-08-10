@@ -1072,6 +1072,111 @@ func TestReadEndpointsDoNotRequireToken(t *testing.T) {
 	}
 }
 
+func TestPendingProposalsProjectionAttentionAndTaskWarning(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	task := core.Task{ID: "proposal-origin", Workspace: "demo", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: time.Now().UTC()}
+	attentionTask := core.Task{ID: "attention-task", Workspace: "demo", State: core.TaskAwaiting, CreatedAt: time.Now().UTC()}
+	for _, candidate := range []core.Task{task, attentionTask} {
+		if err := st.CreateTask(ctx, candidate); err != nil {
+			t.Fatal(err)
+		}
+	}
+	design, designVersion, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "design-pending", Title: "Pending design", Category: "Architecture"}, core.SystemDesignVersion{
+		Content: "# Pending design\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/httpapi/**\n```", Origin: core.SystemDesignOriginImplementation, OriginTaskID: task.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	requirement, requirementVersion, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-pending", Title: "Pending requirement"}, core.RequirementVersion{
+		Content: "Pending requirement", Origin: core.RequirementOriginOperator,
+		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Surface pending authority."}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision, err := st.ProposeDecision(ctx, core.Decision{Statement: "Pending decision", Context: "Operator attention", AlternativesRejected: "Hidden proposals", Origin: core.DecisionOriginImplementation, OriginTaskID: task.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = st.CreateJob(ctx, core.Job{ID: task.ID + "-implement-1", TaskID: task.ID, Stage: core.StageImplement, State: core.JobRunning}); err != nil {
+		t.Fatal(err)
+	}
+	order := core.WorkOrder{ID: task.ID + "-implement-1", TaskID: task.ID, JobID: task.ID + "-implement-1", Stage: core.StageImplement, State: core.WorkOrderQueued}
+	if err = storetest.For(st).CreateWorkOrder(ctx, order); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := storetest.For(st).ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{SessionID: "proposal-session", ClientToken: "token", WorkerID: "worker", Lease: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed.State = core.WorkOrderSubmitted
+	if err = storetest.For(st).UpdateWorkOrder(ctx, claimed, core.WorkOrderCmdSubmitForReview); err != nil {
+		t.Fatal(err)
+	}
+
+	server := NewServer(st)
+	server.BearerToken, server.Workspace = "operator-token", "demo"
+	unauthorized := httptest.NewRecorder()
+	server.Handler().ServeHTTP(unauthorized, httptest.NewRequest(http.MethodGet, "/v1/pending-proposals?workspace_id=demo", nil))
+	if unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized status=%d body=%s", unauthorized.Code, unauthorized.Body.String())
+	}
+	request := httptest.NewRequest(http.MethodGet, "/v1/pending-proposals?workspace_id=demo", nil)
+	request.Header.Set("Authorization", "Bearer operator-token")
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var projection pendingProposalsResponse
+	if err = json.Unmarshal(response.Body.Bytes(), &projection); err != nil {
+		t.Fatal(err)
+	}
+	if len(projection.Items) != 3 || projection.Attention.TaskCount != 1 || projection.Attention.PendingProposalCount != 3 || projection.Attention.Total != 4 {
+		t.Fatalf("projection=%+v", projection)
+	}
+	for _, item := range projection.Items {
+		if item.ID == "" || item.Title == "" || item.Tier == "" || item.OriginType == "" || item.ProposedAt.IsZero() || item.AgeSeconds < 0 || item.Href == "" {
+			t.Fatalf("incomplete projection item=%+v", item)
+		}
+	}
+	detail := httptest.NewRecorder()
+	server.Handler().ServeHTTP(detail, httptest.NewRequest(http.MethodGet, "/v1/tasks/"+task.ID+"/activity?workspace_id=demo", nil))
+	if detail.Code != http.StatusOK || !strings.Contains(detail.Body.String(), `"pending_authority":true`) {
+		t.Fatalf("detail status=%d body=%s", detail.Code, detail.Body.String())
+	}
+
+	if _, _, err = st.ConfirmSystemDesignVersion(ctx, design.ID, designVersion.Version); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmRequirementVersion(ctx, requirement.ID, requirementVersion.Version); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.DismissDecision(store.WithActor(ctx, store.Actor{ID: "operator", Role: "operator"}), decision.ID); err != nil {
+		t.Fatal(err)
+	}
+	detail = httptest.NewRecorder()
+	server.Handler().ServeHTTP(detail, httptest.NewRequest(http.MethodGet, "/v1/tasks/"+task.ID+"/activity?workspace_id=demo", nil))
+	if detail.Code != http.StatusOK || !strings.Contains(detail.Body.String(), `"pending_authority":false`) {
+		t.Fatalf("resolved detail status=%d body=%s", detail.Code, detail.Body.String())
+	}
+	remaining, err := st.ListPendingProposals(ctx)
+	if err != nil || len(remaining) != 0 {
+		t.Fatalf("remaining=%+v err=%v", remaining, err)
+	}
+	request = httptest.NewRequest(http.MethodGet, "/v1/pending-proposals?workspace_id=demo", nil)
+	request.Header.Set("Authorization", "Bearer operator-token")
+	response = httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if err = json.Unmarshal(response.Body.Bytes(), &projection); err != nil {
+		t.Fatal(err)
+	}
+	if len(projection.Items) != 0 || projection.Attention.TaskCount != 1 || projection.Attention.PendingProposalCount != 0 || projection.Attention.Total != 1 {
+		t.Fatalf("zero-proposal attention changed task count: %+v", projection)
+	}
+}
+
 func TestActivityIncludesAllTasksWhileReviewsStayFiltered(t *testing.T) {
 	st := store.NewMemory()
 	for _, task := range []core.Task{
