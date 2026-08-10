@@ -112,6 +112,33 @@ export function Timeline({
   const tail = (
     executionActions
       ? [
+          item.pending_authority === true && {
+            key: 'pending-authority',
+            dot: 'bg-attention-dot',
+            card: (
+              <section
+                aria-label="Review is waiting on a document decision"
+                className="rounded-lg border border-attention/40 bg-attention-soft px-3 py-3"
+              >
+                <div className="flex items-start gap-2">
+                  <AlertTriangle className="mt-0.5 size-4 shrink-0 text-attention" aria-hidden />
+                  <div className="text-xs leading-5 text-muted">
+                    <p className="font-medium text-attention">Review will not include this proposed update yet</p>
+                    <p>
+                      Confirm or dismiss the proposal before review is claimed if reviewers should see that decision.
+                    </p>
+                    <Link
+                      to="/pending-proposals"
+                      search={{ task: item.task.id }}
+                      className="mt-1 inline-block font-medium text-primary hover:underline"
+                    >
+                      Open the proposal
+                    </Link>
+                  </div>
+                </div>
+              </section>
+            ),
+          },
           hasWorkerAlert(item) && {
             key: 'worker-alert',
             dot: 'bg-attention-dot',

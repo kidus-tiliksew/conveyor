@@ -13,6 +13,7 @@ import { TasksPage } from './pages/tasks'
 import { WorkspacePage } from './pages/workspace'
 import { MonitorPage } from './pages/monitor'
 import { PlanningPage } from './pages/planning'
+import { PendingProposalsPage } from './pages/pending-proposals'
 
 // The board is a layout route: the task sheet mounts into its Outlet, so the
 // board (scroll position, search) stays alive while a task is open.
@@ -111,6 +112,14 @@ const systemDesignRoute = createRoute({
   }),
   component: SystemDesignPage,
 })
+const pendingProposalsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/pending-proposals',
+  validateSearch: (search: Record<string, unknown>): { task?: string } => ({
+    task: typeof search.task === 'string' && search.task ? search.task : undefined,
+  }),
+  component: PendingProposalsPage,
+})
 // The planning-side blueprint surface: the list, and the
 // canonical detail route an anchor now owns. The task routes no longer render
 // an anchor — they redirect here once the task loads — so a blueprint has one
@@ -133,6 +142,7 @@ const routeTree = rootRoute.addChildren([
   workspaceRoute,
   requirementsRoute,
   systemDesignRoute,
+  pendingProposalsRoute,
   blueprintsRoute,
   blueprintDetailRoute,
   planningRoute,

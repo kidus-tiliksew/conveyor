@@ -14,6 +14,7 @@ import type {
   PlanningMessagePart,
   PlanningSession,
   PlanningSessionGoal,
+  PendingProposalsResponse,
   RequirementDerivation,
   RequirementVersion,
   RequirementView,
@@ -54,6 +55,10 @@ async function getJSON<T>(url: string): Promise<T> {
 export function fetchActivity(filter?: Record<string, string | string[] | undefined>) {
   const query = filterQuery(filter)
   return getJSON<ActivitySummary[]>(workspaceURL(`/v1/activity${query ? `?${query}` : ''}`))
+}
+
+export function fetchPendingProposals() {
+  return getJSON<PendingProposalsResponse>(workspaceURL('/v1/pending-proposals'))
 }
 
 // List members repeat their parameter (`state=a&state=b`), the spelling the

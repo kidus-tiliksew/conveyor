@@ -603,6 +603,7 @@ export interface ActivityItem {
   checkout_available: boolean
   checkout_guidance: string
   needs_attention: boolean
+  pending_authority?: boolean
   forge_failure?: ForgeFailure
   spec?: SpecVersion
   attachments?: Artifact[]
@@ -619,6 +620,26 @@ export interface ActivityItem {
     head_sha?: string
     url?: string
     number?: number
+  }
+}
+
+export interface PendingProposal {
+  id: string
+  title: string
+  tier: 'requirement' | 'system_design' | 'decision'
+  version?: number
+  origin_type: 'task' | 'session' | 'drift' | 'operator'
+  origin_id?: string
+  proposed_at: string
+  age_seconds: number
+}
+
+export interface PendingProposalsResponse {
+  items: PendingProposal[]
+  attention: {
+    task_count: number
+    pending_proposal_count: number
+    total: number
   }
 }
 
