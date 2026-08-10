@@ -134,6 +134,7 @@ test('pending proposal queue covers every tier, resolves rows, updates the badge
   await expect(page.getByText('System Design', { exact: true }).first()).toBeVisible()
   await expect(page.getByText('Decision', { exact: true })).toBeVisible()
   await expect(page.getByRole('link', { name: /Board/ })).toContainText('6')
+  await expect(page.getByRole('link', { name: /Requirements/ })).toContainText('1')
   await expect(
     page.getByText('Confirming a later version also dismisses earlier pending versions.').first(),
   ).toBeVisible()
@@ -147,6 +148,7 @@ test('pending proposal queue covers every tier, resolves rows, updates the badge
   await later.getByRole('button', { name: 'Confirm' }).click()
   await expect(page.getByText('No document decisions are waiting for you.')).toBeVisible()
   await expect(page.getByRole('link', { name: /Board/ })).toContainText('4')
+  await expect(page.getByRole('link', { name: /Requirements/ })).not.toContainText('1')
 
   await page.goBack()
   await expect(warning).toHaveCount(0)
@@ -155,4 +157,33 @@ test('pending proposal queue covers every tier, resolves rows, updates the badge
   await decision.getByRole('button', { name: 'Dismiss' }).click()
   await expect(page.getByText('Generate dashboard output from web sources.')).toHaveCount(0)
   await expect(page.getByRole('link', { name: /Board/ })).toContainText('3')
+})
+
+test('requirements navigation stays usable when its attention projection fails or is empty', async ({ page }) => {
+  await initialize(page)
+  let failProjection = true
+  let projectionRequests = 0
+  await page.route('**/v1/**', async (route: Route) => {
+    const path = new URL(route.request().url()).pathname
+    if (path === '/v1/workspaces') return route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] })
+    if (path === '/v1/workspace') return route.fulfill({ json: { workspace: 'demo', repos: ['conveyor'] } })
+    if (path === '/v1/activity') return route.fulfill({ json: [] })
+    if (path === '/v1/pending-proposals') {
+      projectionRequests++
+      if (failProjection) return route.fulfill({ status: 500, json: { error: 'projection unavailable' } })
+      return route.fulfill({
+        json: { items: [], attention: { task_count: 0, pending_proposal_count: 0, total: 0 } },
+      })
+    }
+    return route.fulfill({ json: [] })
+  })
+
+  await page.goto('/')
+  await expect.poll(() => projectionRequests).toBeGreaterThan(0)
+  await expect(page.getByRole('link', { name: 'Requirements', exact: true })).toHaveText('Requirements')
+
+  failProjection = false
+  await page.reload()
+  await expect.poll(() => projectionRequests).toBeGreaterThan(1)
+  await expect(page.getByRole('link', { name: 'Requirements', exact: true })).toHaveText('Requirements')
 })

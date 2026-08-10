@@ -12,6 +12,7 @@ import {
   History,
   ListChecks,
   Paperclip,
+  Search,
   Sparkles,
   Trash2,
 } from 'lucide-react'
@@ -54,6 +55,7 @@ import type {
   CheckpointContextCandidate,
 } from '../lib/types'
 import { Dialog } from '../components/ui/dialog'
+import { Input, Select } from '../components/ui/input'
 
 const originLabels: Record<RequirementVersion['origin'], string> = {
   chat: 'Written in a planning conversation',
@@ -63,13 +65,62 @@ const originLabels: Record<RequirementVersion['origin'], string> = {
 }
 
 const referenceAnchor = /^reference-(.+)-v(\d+)$/
+type RequirementSort = 'name' | 'created' | 'updated'
+type SortDirection = 'ascending' | 'descending'
+
+function timestamp(value: string) {
+  const parsed = Date.parse(value)
+  return Number.isNaN(parsed) ? Number.NEGATIVE_INFINITY : parsed
+}
+
+function compareText(left: string, right: string) {
+  return left.localeCompare(right, 'en', { sensitivity: 'base' })
+}
+
+function compareTimestamp(left: string, right: string) {
+  const leftTime = timestamp(left)
+  const rightTime = timestamp(right)
+  return leftTime === rightTime ? 0 : leftTime < rightTime ? -1 : 1
+}
+
+export function visibleRequirements(
+  requirements: RequirementView[],
+  query: string,
+  sort: RequirementSort,
+  direction: SortDirection,
+) {
+  const needle = query.trim().toLocaleLowerCase()
+  const multiplier = direction === 'ascending' ? 1 : -1
+  return requirements
+    .filter((item) => item.requirement.title.toLocaleLowerCase().includes(needle))
+    .sort((left, right) => {
+      const comparison =
+        sort === 'name'
+          ? compareText(left.requirement.title, right.requirement.title)
+          : compareTimestamp(
+              left.requirement[sort === 'created' ? 'created_at' : 'updated_at'],
+              right.requirement[sort === 'created' ? 'created_at' : 'updated_at'],
+            )
+      return comparison === 0 ? compareText(left.requirement.id, right.requirement.id) : comparison * multiplier
+    })
+}
+
+function requirementAttentionCount(item: RequirementView) {
+  return (
+    item.pending_versions.length +
+    Number(Boolean(item.staleness?.delivery_after_intent)) +
+    Number(Boolean(item.staleness?.partial_evaluation)) +
+    (item.staleness?.active_drift?.length ?? 0)
+  )
+}
 
 /**
  * Requirements is a document tree beside a document canvas. The tree groups
  * the product overviews apart from
  * the requirement corpus; whichever document is selected becomes the canvas,
- * with its history and diffs collapsed underneath. Every machinery signal the
- * document produces is voiced once, in its attention surface. The
+ * with its history and diffs collapsed underneath. Detailed machinery signals
+ * and actions remain in the canvas attention surface; the tree may carry the
+ * compact aggregate approved for the Requirements list. The
  * assistant column is withdrawn while in-product planning is parked — nothing
  * about propose→confirm changes: revisions still
  * arrive as proposed versions an operator confirms here.
@@ -95,6 +146,13 @@ export function RequirementsPage() {
     enabled: Boolean(workspace),
   })
   const selectedId = search.requirement ?? ''
+  const [query, setQuery] = useState('')
+  const [sort, setSort] = useState<RequirementSort>('name')
+  const [direction, setDirection] = useState<SortDirection>('ascending')
+  const visible = useMemo(
+    () => visibleRequirements(requirements ?? [], query, sort, direction),
+    [direction, query, requirements, sort],
+  )
 
   // Overviews open on the same canvas as requirements. Their selection lives
   // in the existing `#reference-<id>-v<n>` anchor rather than a new query key,
@@ -190,15 +248,56 @@ export function RequirementsPage() {
           </DocumentTreeGroup>
 
           <DocumentTreeGroup label="Requirements">
-            {requirements?.map((item) => (
+            <div className="mb-2 space-y-2 px-2">
+              <label className="relative block" htmlFor="requirement-search">
+                <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-faint" />
+                <Input
+                  id="requirement-search"
+                  type="search"
+                  aria-label="Search requirements"
+                  placeholder="Search requirements"
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                  className="h-8 pl-8 text-xs"
+                />
+              </label>
+              <div className="grid grid-cols-[1fr_auto] gap-1.5">
+                <Select
+                  aria-label="Sort requirements by"
+                  value={sort}
+                  onChange={(event) => setSort(event.target.value as RequirementSort)}
+                  className="[&_select]:h-8 [&_select]:py-1 [&_select]:text-xs"
+                >
+                  <option value="name">Name</option>
+                  <option value="created">Created</option>
+                  <option value="updated">Updated</option>
+                </Select>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  aria-label={`Sort ${direction}`}
+                  title={`Sort ${direction}`}
+                  onClick={() => setDirection((value) => (value === 'ascending' ? 'descending' : 'ascending'))}
+                  className="h-8 min-w-14 px-2 text-xs"
+                >
+                  {direction === 'ascending' ? 'Asc' : 'Desc'}
+                </Button>
+              </div>
+            </div>
+            {visible.map((item) => (
               <DocumentTreeItem
                 key={item.requirement.id}
                 label={item.requirement.title}
+                attentionCount={requirementAttentionCount(item)}
                 selected={!openOverview && selectedId === item.requirement.id}
                 onClick={() => selectRequirement(item.requirement.id)}
               />
             ))}
             {requirements?.length === 0 && <DocumentTreeNote>No requirements yet.</DocumentTreeNote>}
+            {Boolean(requirements?.length) && visible.length === 0 && (
+              <DocumentTreeNote>No requirements match your search.</DocumentTreeNote>
+            )}
           </DocumentTreeGroup>
         </DocumentTree>
 

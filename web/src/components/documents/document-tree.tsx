@@ -1,11 +1,12 @@
 import { FileText } from 'lucide-react'
 import type { ReactNode } from 'react'
+import { Badge } from '../ui/badge'
 
 /**
  * The category navigation tree that stands beside the document canvas on
- * Requirements and System Design. It
- * carries navigation only: a document's machinery signals belong to its
- * attention surface on the canvas, never to a badge in the tree (AC-1.2).
+ * Requirements and System Design. Detailed machinery signals and actions stay
+ * on the canvas; callers may also supply a compact aggregate when the
+ * governing document contract allows attention in navigation.
  */
 export function DocumentTree({ children }: { children: ReactNode }) {
   return (
@@ -30,12 +31,15 @@ export function DocumentTreeGroup({ label, children }: { label: string; children
 export function DocumentTreeItem({
   label,
   meta,
+  attentionCount,
   selected,
   onClick,
 }: {
   label: string
   /** Quiet document identity — the confirmed version, never a signal. */
   meta?: string
+  /** Compact navigation signal; detailed attention remains on the canvas. */
+  attentionCount?: number
   selected: boolean
   onClick: () => void
 }) {
@@ -61,6 +65,15 @@ export function DocumentTreeItem({
           </span>
         )}
       </span>
+      {Boolean(attentionCount) && (
+        <Badge
+          variant="attention"
+          aria-label={`${attentionCount} attention ${attentionCount === 1 ? 'item' : 'items'}`}
+          className="shrink-0 px-1.5"
+        >
+          {attentionCount}
+        </Badge>
+      )}
     </button>
   )
 }
