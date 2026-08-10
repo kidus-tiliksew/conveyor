@@ -30,7 +30,10 @@ type GitHubSource struct {
 type githubCommit struct {
 	SHA     string `json:"sha"`
 	HTMLURL string `json:"html_url"`
-	Commit  struct {
+	Parents []struct {
+		SHA string `json:"sha"`
+	} `json:"parents"`
+	Commit struct {
 		Message   string `json:"message"`
 		Committer struct {
 			Date time.Time `json:"date"`
@@ -152,8 +155,10 @@ func (s GitHubSource) Observations(ctx context.Context, since time.Time) ([]Obse
 				return nil, checkErr
 			}
 			byAttempt := make(map[int][]failedCheckRun)
+			green := false
 			for _, check := range checks.CheckRuns {
 				if check.Conclusion != "failure" && check.Conclusion != "timed_out" {
+					green = green || check.Conclusion == "success"
 					if s.OnSuppressed != nil {
 						_ = s.OnSuppressed(ctx, map[string]any{
 							"reason": "check_not_actionable", "repository": s.Repository,
@@ -196,8 +201,17 @@ func (s GitHubSource) Observations(ctx context.Context, since time.Time) ([]Obse
 					OccurrenceID: "commit:" + commit.SHA + ":attempt:" + strconv.Itoa(attempt),
 					SourceURL:    failed[0].URL, CommitSHA: commit.SHA,
 					CheckRunID: strings.Join(checkIDs, ","),
+					Attempt:    attempt,
 					ObservedAt: commit.Commit.Committer.Date, Hints: hints,
 					Context: map[string]string{"failed_check_runs": strings.Join(checkDetails, "\n")},
+				})
+			}
+			if len(byAttempt) == 0 && green {
+				appendObservation(Observation{
+					WorkspaceID: s.WorkspaceID, Repository: s.Repository,
+					Kind: PostMergeFailure, OccurrenceID: "recovery:commit:" + commit.SHA,
+					SourceURL: commit.HTMLURL, CommitSHA: commit.SHA,
+					ObservedAt: commit.Commit.Committer.Date, RecoveryObserved: true,
 				})
 			}
 			continue
@@ -214,6 +228,21 @@ func (s GitHubSource) Observations(ctx context.Context, since time.Time) ([]Obse
 				}
 			}
 		}
+		if kind == DirectPush && len(commit.Parents) > 0 {
+			differs, diffErr := s.differsFromFirstParent(ctx, commit.Parents[0].SHA, commit.SHA)
+			if diffErr != nil {
+				return nil, diffErr
+			}
+			if !differs {
+				if s.OnSuppressed != nil {
+					_ = s.OnSuppressed(ctx, map[string]any{
+						"reason": "first_parent_empty", "repository": s.Repository,
+						"commit_sha": commit.SHA, "first_parent_sha": commit.Parents[0].SHA,
+					})
+				}
+				continue
+			}
+		}
 		appendObservation(Observation{
 			WorkspaceID: s.WorkspaceID, Repository: s.Repository, Kind: kind,
 			OccurrenceID: occurrenceID, SourceURL: sourceURL, CommitSHA: commit.SHA,
@@ -221,6 +250,25 @@ func (s GitHubSource) Observations(ctx context.Context, since time.Time) ([]Obse
 		})
 	}
 	return observations, nil
+}
+
+func (s GitHubSource) differsFromFirstParent(ctx context.Context, parentSHA, commitSHA string) (bool, error) {
+	raw, err := s.Run(ctx, "api", "--method", "GET",
+		"repos/"+s.GitHubSlug+"/compare/"+parentSHA+"..."+commitSHA,
+		"-H", "Accept: application/vnd.github+json")
+	if err != nil {
+		return false, githubtrigger.CategorizeError(err)
+	}
+	var comparison struct {
+		Files *[]json.RawMessage `json:"files"`
+	}
+	if err = json.Unmarshal(raw, &comparison); err != nil {
+		return false, &githubtrigger.Error{Category: githubtrigger.ForgeResponse, Err: fmt.Errorf("parse first-parent comparison: %w", err)}
+	}
+	if comparison.Files == nil {
+		return false, &githubtrigger.Error{Category: githubtrigger.ForgeResponse, Err: fmt.Errorf("parse first-parent comparison: files are missing")}
+	}
+	return len(*comparison.Files) > 0, nil
 }
 
 func (s GitHubSource) pulls(ctx context.Context, sha string) ([]githubPull, error) {
