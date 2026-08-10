@@ -27,7 +27,13 @@ const DEPENDENCY_RESULT_LIMIT = 20
 // A sheet instead of a page so intake happens over the board, with room for
 // the rich triage context that saves bounce rounds downstream — structured
 // description, base branch, execution policy, and artifact attachments.
-export function TaskCreateSheet() {
+export function TaskCreateSheet({
+  onClose,
+  onCreated,
+}: {
+  onClose?: () => void
+  onCreated?: (taskId: string) => void
+} = {}) {
   const token = useOperatorToken()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
@@ -76,9 +82,10 @@ export function TaskCreateSheet() {
   const selectedSetup = setups.find((entry) => entry.name === setupName)
   const setupHealth = workerHealth.data?.setup_serviceability?.[setupName]
   const autoAvailable = setupHealth?.auto_available ?? workerHealth.data?.auto_available === true
-  // Intake belongs to the Tasks view now (AC-2.1), so closing it — and the task
-  // it just created — returns to that list rather than to the board.
-  const close = () => void navigate({ to: '/tasks', search: {} })
+  // Hosts may keep their own surface mounted while sharing the complete intake
+  // composition. The Tasks list remains the default for legacy `/new` links
+  // and its own create action.
+  const close = onClose ?? (() => void navigate({ to: '/tasks', search: {} }))
 
   const mutation = useMutation({
     mutationFn: async () => {
@@ -104,9 +111,12 @@ export function TaskCreateSheet() {
     onSuccess: (task) => {
       void queryClient.invalidateQueries({ queryKey: ['activity'] })
       void queryClient.invalidateQueries({ queryKey: ['task-operations'] })
-      // The new task opens in the list's own panel, so intake ends where the
-      // operator can queue the next one (AC-2.1, AC-2.2).
-      void navigate({ to: '/tasks', search: { task: task.id } })
+      if (onCreated) {
+        onCreated(task.id)
+      } else {
+        // The default host opens the new task in the list's own panel.
+        void navigate({ to: '/tasks', search: { task: task.id } })
+      }
     },
     onError: (error) => {
       if (error instanceof TaskIntakeError && error.code === 'invalid_dependencies') setAdvancedOpen(true)

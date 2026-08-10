@@ -197,6 +197,29 @@ async function mockTaskCreateAPIs(
       })
       return
     }
+    if (url.pathname === '/v1/tasks/generated/activity') {
+      await route.fulfill({
+        json: {
+          task: {
+            id: 'generated',
+            workspace: 'demo',
+            title: 'Generated title',
+            body: 'Generate this title from context',
+            repo: 'conveyor',
+            state: 'queued',
+            created_at: '2026-07-18T00:00:00Z',
+          },
+          jobs: [],
+          events: [],
+          interventions: [],
+          work_orders: [],
+          checkout_available: false,
+          checkout_guidance: '',
+          needs_attention: false,
+        },
+      })
+      return
+    }
     await route.fulfill({ json: [] })
   })
   return {
@@ -223,6 +246,7 @@ test('new task removes title input and submits description for AI title generati
 
   await expect.poll(submitted).toContain('Generate this title from context')
   await expect.poll(submitted).toContain('frontend')
+  await expect(page).toHaveURL(/\/tasks\?task=generated$/)
   expect(submitted()).not.toContain('"title"')
   // §21.31: no execution-mode selector; hold defaults off and is omitted.
   expect(submitted()).not.toContain('"mode"')

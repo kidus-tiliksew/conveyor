@@ -101,6 +101,46 @@ async function routeBoard(page: Page, seen: string[]) {
   )
   await page.route('**/v1/requirements**', (route) => route.fulfill({ json: requirementCorpus }))
   await page.route('**/v1/system-designs**', (route) => route.fulfill({ json: designCorpus }))
+  await page.route('**/v1/workers**', (route) =>
+    route.fulfill({ json: { workers: [], auto_available: false, setup_serviceability: {} } }),
+  )
+  await page.route('**/v1/tasks?**', (route) => {
+    if (route.request().method() !== 'POST') return route.fallback()
+    return route.fulfill({
+      status: 201,
+      json: {
+        id: 'task-created-on-board',
+        workspace: 'demo',
+        title: 'Created on Board',
+        body: 'Create this task without leaving the board',
+        repo: 'conveyor',
+        state: 'queued',
+        created_at: '2026-08-10T12:00:00Z',
+      },
+    })
+  })
+  await page.route('**/v1/tasks/task-created-on-board/activity**', (route) =>
+    route.fulfill({
+      json: {
+        task: {
+          id: 'task-created-on-board',
+          workspace: 'demo',
+          title: 'Created on Board',
+          body: 'Create this task without leaving the board',
+          repo: 'conveyor',
+          state: 'queued',
+          created_at: '2026-08-10T12:00:00Z',
+        },
+        jobs: [],
+        events: [],
+        interventions: [],
+        work_orders: [],
+        checkout_available: false,
+        checkout_guidance: '',
+        needs_attention: false,
+      },
+    }),
+  )
   await page.route('**/v1/task-operations?**', (route) => route.fulfill({ json: [] }))
   await page.route('**/v1/activity?**', (route) => {
     const url = route.request().url()
@@ -130,7 +170,7 @@ async function openBoard(page: Page, seen: string[], workspace = 'demo') {
   }, workspace)
   await routeBoard(page, seen)
   await page.goto('/')
-  await expect(page.getByRole('heading', { name: 'Board' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Board', exact: true })).toBeVisible()
 }
 
 function cards(page: Page) {
@@ -240,14 +280,31 @@ test('board sends the shared filter family to the server rather than narrowing i
   await expect(page.getByRole('tab', { name: 'Assignee' })).toHaveCount(0)
 })
 
-test('board opens task creation on the Tasks route', async ({ page }) => {
+test('board opens and closes task creation without leaving the board', async ({ page }) => {
   const seen: string[] = []
   await openBoard(page, seen)
-  const newTask = page.getByRole('link', { name: 'New task' })
-  await expect(newTask).toHaveCount(1)
-  await expect(page.getByRole('button', { name: 'New task' })).toHaveCount(0)
-  await newTask.click()
+  await page.getByRole('button', { name: 'New task' }).click()
   await expect(page.getByRole('dialog', { name: 'New task' })).toBeVisible()
-  expect(new URL(page.url()).pathname).toBe('/tasks')
-  expect(new URL(page.url()).searchParams.get('create')).toBe('true')
+  expect(new URL(page.url()).pathname).toBe('/')
+  await expect(page.getByRole('heading', { name: 'Board' })).toBeVisible()
+
+  await page.getByRole('button', { name: 'Close', exact: true }).click()
+  await expect(page.getByRole('dialog', { name: 'New task' })).toHaveCount(0)
+  expect(new URL(page.url()).pathname).toBe('/')
+})
+
+test('board creation opens the new task in the board detail route', async ({ page }) => {
+  const seen: string[] = []
+  await openBoard(page, seen)
+
+  await page.getByRole('button', { name: 'New task' }).click()
+  await page.locator('textarea').fill('Create this task without leaving the board')
+  await page.getByRole('button', { name: 'Create task' }).click()
+
+  await expect(page).toHaveURL(/\/tasks\/task-created-on-board$/)
+  await expect(page.getByRole('heading', { name: 'Board', exact: true })).toBeVisible()
+  await expect(page.getByRole('dialog', { name: 'New task' })).toHaveCount(0)
+  const detail = page.getByRole('dialog', { name: 'Task detail' })
+  await expect(detail).toBeVisible()
+  await expect(detail.getByRole('heading', { name: 'Created on Board', exact: true })).toBeVisible()
 })

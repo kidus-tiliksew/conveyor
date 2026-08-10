@@ -1,13 +1,14 @@
 import { useQuery } from '@tanstack/react-query'
-import { Link, useParams } from '@tanstack/react-router'
+import { Link, useNavigate, useParams } from '@tanstack/react-router'
 import { Plus } from 'lucide-react'
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { groupForSummary } from '../../lib/activity'
 import { fetchWorkspaces } from '../../lib/api'
 import { isBlueprintAnchor } from '../../lib/blueprint'
 import { type GroupKey, stageGroups } from '../../lib/contracts'
 import type { ActivitySummary } from '../../lib/types'
 import { useActivity, useTokenState, useWorkspaceSelection } from '../app-shell'
+import { TaskCreateSheet } from '../task/task-create-sheet'
 import {
   boardDefaultTaskFilter,
   TaskFilters,
@@ -23,6 +24,8 @@ import { BoardColumn } from './board-column'
 // stages is the factory's health made visible. Read-only on purpose — tasks
 // move between columns via the pipeline, never by hand.
 export function Board() {
+  const navigate = useNavigate()
+  const [creating, setCreating] = useState(false)
   // The board opens on the last month of activity and remembers whatever the
   // operator changes it to, per workspace (AC-2.4).
   const [filter, setFilter] = useTaskFilters('board', boardDefaultTaskFilter)
@@ -63,16 +66,10 @@ export function Board() {
       <header className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b border-border px-6 py-3.5">
         <h1 className="text-lg font-semibold tracking-tight">Board</h1>
         <TaskFilters value={filter} onChange={setFilter} fallback={boardDefaultTaskFilter} className="ml-auto" />
-        {/* Keep intake on the Tasks surface while making it reachable from
-            either daily operating view. */}
-        <Link
-          to="/tasks"
-          search={{ create: true }}
-          className="inline-flex h-8 items-center justify-center gap-1.5 whitespace-nowrap rounded-md bg-primary px-2.5 text-xs font-medium text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary [&_svg]:size-4 [&_svg]:shrink-0"
-        >
+        <Button size="sm" onClick={() => setCreating(true)}>
           <Plus />
           New task
-        </Link>
+        </Button>
       </header>
       {error != null && (
         <p className="mx-6 mt-4 rounded-lg bg-failure-soft p-3 text-sm text-failure">
@@ -92,6 +89,15 @@ export function Board() {
               />
             ))}
       </section>
+      {creating && (
+        <TaskCreateSheet
+          onClose={() => setCreating(false)}
+          onCreated={(taskId) => {
+            setCreating(false)
+            void navigate({ to: '/tasks/$taskId', params: { taskId } })
+          }}
+        />
+      )}
     </div>
   )
 }

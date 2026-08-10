@@ -467,11 +467,13 @@ test('tasks view is where a task is created', async ({ page }) => {
   await expect(page.getByRole('dialog', { name: 'New task' })).toBeVisible()
   expect(new URL(page.url()).pathname).toBe('/tasks')
 
-  // The board links to the same intake route rather than mounting another
-  // creation form.
+  // The board mounts the same intake composition locally instead of handing
+  // off to the Tasks route.
   await page.goto('/')
   await expect(page.getByRole('heading', { name: 'Board' })).toBeVisible()
-  await expect(page.getByRole('link', { name: 'New task' })).toHaveAttribute('href', '/tasks?create=true')
+  await page.getByRole('button', { name: 'New task' }).click()
+  await expect(page.getByRole('dialog', { name: 'New task' })).toBeVisible()
+  expect(new URL(page.url()).pathname).toBe('/')
 })
 
 // AC-2.2: a row opens the task's own detail composition beside the list, at an
