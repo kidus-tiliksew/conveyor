@@ -556,6 +556,14 @@ function TimelineRow({ entry, usageReportedOrderIDs }: { entry: TimelineEntry; u
             </pre>
           </details>
         )}
+        {entry.fullProgress && (
+          <details className="basis-full text-xs text-muted">
+            <summary className="cursor-pointer">Show full progress report</summary>
+            <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap rounded border border-border bg-surface p-2 font-sans text-sm text-foreground">
+              {entry.fullProgress}
+            </pre>
+          </details>
+        )}
       </div>
     </li>
   )

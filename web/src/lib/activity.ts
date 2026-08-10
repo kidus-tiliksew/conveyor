@@ -388,6 +388,7 @@ export type TimelineEntry =
       title: string
       detail?: string
       failureDetail?: string
+      fullProgress?: string
       href?: string
       alarm?: boolean
     }
@@ -950,6 +951,8 @@ export function buildTimeline(item: ActivityItem): TimelineEntry[] {
         at: order.last_agent_activity_at,
         key: `agent-activity-${order.id}`,
         title: `Agent activity — ${order.last_agent_activity_label}`,
+        fullProgress:
+          order.progress && order.last_agent_activity_label.startsWith('Progress:') ? order.progress : undefined,
       })
     }
     if (panels.orderIds.has(order.id)) continue

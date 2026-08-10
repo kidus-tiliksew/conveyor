@@ -15,6 +15,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
@@ -1340,6 +1341,21 @@ func TestTaskActivityExposesLatestAgentProgressWithLabelAndTimestamp(t *testing.
 		!strings.Contains(body, `"last_agent_activity_at":`) ||
 		!strings.Contains(body, `"kind":"work_order.progress_reported"`) {
 		t.Fatalf("latest agent activity missing: %s", body)
+	}
+}
+
+func TestAgentActivityLabelTruncatesProgressOnRuneBoundary(t *testing.T) {
+	message := strings.Repeat("a", 119) + "é" + " after the boundary"
+	label := agentActivityLabel(core.Event{
+		Kind:    "work_order.progress_reported",
+		Payload: core.JSONPayload(map[string]any{"message": message}),
+	})
+	if !utf8.ValidString(label) {
+		t.Fatalf("label is invalid UTF-8: %q", label)
+	}
+	want := "Progress: " + strings.Repeat("a", 119) + "…"
+	if label != want {
+		t.Fatalf("label=%q want=%q", label, want)
 	}
 }
 

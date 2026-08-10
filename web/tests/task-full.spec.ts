@@ -1,6 +1,8 @@
 import { expect, test, type Page, type Route } from '@playwright/test'
 
 const createdAt = '2026-07-15T12:00:00Z'
+const checkpointProgress =
+  'Choose whether the recovery should preserve the existing proposal or replace it with the newly confirmed lifecycle direction before implementation continues.'
 let emitLiveScrollEvent = () => {}
 const detailRequestCounts = new Map<string, number>()
 
@@ -112,6 +114,16 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
               id: 5,
               task_id: taskId,
               job_id: 'attempt-recovery-implement-1',
+              kind: 'work_order.progress_reported',
+              actor_id: 'worker-2',
+              actor_role: 'runner' as const,
+              payload: { message: taskId === 'operator-checkpoint' ? checkpointProgress : 'Final progress report' },
+              at: '2026-07-15T12:03:30Z',
+            },
+            {
+              id: 6,
+              task_id: taskId,
+              job_id: 'attempt-recovery-implement-1',
               kind: 'work_order.released',
               actor_id: 'worker-2',
               actor_role: 'runner' as const,
@@ -157,6 +169,12 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
               tokens_out: 0,
               usage_reported: false,
               self_reported: true,
+              progress: taskId === 'operator-checkpoint' ? checkpointProgress : undefined,
+              last_agent_activity_at: '2026-07-15T12:03:30Z',
+              last_agent_activity_label:
+                taskId === 'operator-checkpoint'
+                  ? `Progress: ${checkpointProgress.slice(0, 120)}…`
+                  : 'Progress: Final progress report',
             },
           ],
         }
@@ -2325,6 +2343,9 @@ test('checkpoint recovery requires and submits operator direction', async ({ pag
   await page.goto('/tasks/operator-checkpoint/full')
   await expect(page.getByText(/A decision is required before this work can continue/)).toBeVisible()
   await expect(page.getByText(/Recovery without direction will repeat the checkpoint/)).toBeVisible()
+  const checkpointMessage = page.getByText('Agent checkpoint message').locator('..')
+  await expect(checkpointMessage).toBeVisible()
+  await expect(checkpointMessage.getByText(checkpointProgress, { exact: true })).toBeVisible()
   await expect(page.getByText('Attached context: None')).toBeVisible()
   await expect(page.getByRole('button', { name: 'Attach context' })).toBeVisible()
   const action = page.getByRole('button', { name: 'Recover work order' })
@@ -2333,6 +2354,25 @@ test('checkpoint recovery requires and submits operator direction', async ({ pag
   await expect(action).toBeEnabled()
   await action.click()
   await expect.poll(() => JSON.parse(recoveryRequest).direction).toBe('Proceed with the accepted amendment.')
+})
+
+test('checkpoint recovery keeps the generic copy when no progress report exists', async ({ page }) => {
+  const item = activity('operator-checkpoint', false)
+  item.work_orders = item.work_orders?.map((order) => ({ ...order, progress: '' }))
+  await page.route('**/v1/tasks/operator-checkpoint/activity*', (route) => route.fulfill({ json: item }))
+  await page.goto('/tasks/operator-checkpoint/full')
+  await expect(page.getByText(/A decision is required before this work can continue/)).toBeVisible()
+  await expect(page.getByText('Agent checkpoint message')).toHaveCount(0)
+})
+
+test('task timeline expands the complete agent progress report', async ({ page }) => {
+  await page.goto('/tasks/operator-checkpoint/full')
+  const timeline = page.getByLabel('Execution event timeline')
+  await expect(timeline.getByText(/Agent activity — Progress:/)).toBeVisible()
+  const disclosure = timeline.getByText('Show full progress report')
+  await expect(disclosure).toBeVisible()
+  await disclosure.click()
+  await expect(disclosure.locator('..').getByText(checkpointProgress, { exact: true })).toBeVisible()
 })
 
 test('checkpoint recovery summarizes attached requirement and design context', async ({ page }) => {

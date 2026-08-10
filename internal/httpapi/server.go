@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -1500,7 +1501,11 @@ func agentActivityLabel(event core.Event) string {
 		message, _ := payload["message"].(string)
 		message = strings.TrimSpace(message)
 		if len(message) > 120 {
-			message = message[:120] + "…"
+			limit := 120
+			for limit > 0 && !utf8.RuneStart(message[limit]) {
+				limit--
+			}
+			message = message[:limit] + "…"
 		}
 		if message != "" {
 			return "Progress: " + message
