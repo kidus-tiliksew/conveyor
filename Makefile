@@ -1,3 +1,8 @@
+# Local integration tests derive a stable identity from the canonical worktree
+# path: POSIX cksum selects port 20000-29999, and the port suffix scopes the
+# Compose project. Hash collisions fail at port binding instead of sharing a
+# database. CONVEYOR_TEST_POSTGRES_PORT or TEST_POSTGRES_PORT pins both values.
+# Run `make test-db-down` in a worktree to remove only that worktree's database.
 BIN := bin
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -ldflags "-X main.version=$(VERSION)"
@@ -5,13 +10,18 @@ ENV_FILE ?= .env
 CONVEYOR_CONFIG ?= conveyor.yaml
 LISTEN_ADDR ?= 127.0.0.1:8080
 POLL_GITHUB ?= 60s
-TEST_POSTGRES_PORT ?= 5433
+TEST_WORKTREE_PATH := $(shell cd "$(dir $(abspath $(lastword $(MAKEFILE_LIST))))" && pwd -P)
+TEST_POSTGRES_PORT_DERIVED := $(shell printf '%s\n' "$(TEST_WORKTREE_PATH)" | cksum | awk '{print 20000 + ($$1 % 10000)}')
+ifeq ($(origin TEST_POSTGRES_PORT),undefined)
+TEST_POSTGRES_PORT := $(if $(strip $(CONVEYOR_TEST_POSTGRES_PORT)),$(CONVEYOR_TEST_POSTGRES_PORT),$(TEST_POSTGRES_PORT_DERIVED))
+endif
+TEST_COMPOSE_PROJECT := conveyor-test-p$(TEST_POSTGRES_PORT)
 TEST_DATABASE_URL ?= postgres://conveyor:conveyor@127.0.0.1:$(TEST_POSTGRES_PORT)/conveyor_test?sslmode=disable
 PLAYWRIGHT_ARGS ?=
 PLAYWRIGHT_INSTALL_ARGS ?=
 DEV_COMPOSE := docker compose --env-file $(ENV_FILE) -f compose.dev.yaml
 
-.PHONY: all build ui dashboard-fresh test test-web test-ui test-ui-evidence compose-check test-integration test-integration-ci test-postgres test-db-up test-db-down vet plugin-check fmt fmt-check tidy clean db-up db-down run build-run dev
+.PHONY: all build ui dashboard-fresh test test-web test-ui test-ui-evidence compose-check test-integration test-integration-ci test-postgres test-db-identity test-db-up test-db-down vet plugin-check fmt fmt-check tidy clean db-up db-down run build-run dev
 
 all: build
 
@@ -53,11 +63,14 @@ test-integration-ci: compose-check
 # integration suite's isolated Postgres lifecycle.
 test-postgres: test-integration
 
+test-db-identity:
+	@printf '%s\t%s\n' '$(TEST_POSTGRES_PORT)' '$(TEST_COMPOSE_PROJECT)'
+
 test-db-up:
-	CONVEYOR_TEST_POSTGRES_PORT=$(TEST_POSTGRES_PORT) docker compose --profile test up -d --wait postgres-test
+	CONVEYOR_TEST_POSTGRES_PORT=$(TEST_POSTGRES_PORT) docker compose -p $(TEST_COMPOSE_PROJECT) --profile test up -d --wait postgres-test
 
 test-db-down:
-	CONVEYOR_TEST_POSTGRES_PORT=$(TEST_POSTGRES_PORT) docker compose --profile test rm -s -f postgres-test
+	CONVEYOR_TEST_POSTGRES_PORT=$(TEST_POSTGRES_PORT) docker compose -p $(TEST_COMPOSE_PROJECT) --profile test rm -s -f postgres-test
 
 vet:
 	go vet ./...
