@@ -62,6 +62,7 @@ func RunLineageConformance(t *testing.T, factory LineageFactory) {
 	assertReferenceDocumentLineage(t, st, ctx)
 	assertSystemDesignEventIsolation(t, st, ctx, fixture.ForeignContext, fixture.Workspace)
 	assertSystemDesignAndDecisionLineage(t, st, ctx, parent.ID)
+	assertRequirementDeliveryLineage(t, st, ctx, fixture.ForeignContext, fixture.Workspace)
 	assertTaskContext := assertTaskContextLineage(t, st, ctx, fixture.Workspace)
 	for _, event := range []core.Event{
 		{TaskID: child.ID, Kind: "work_order.created", Payload: core.JSONPayload(map[string]any{"id": child.ID + "-duplicate"})},
@@ -115,6 +116,99 @@ func RunLineageConformance(t *testing.T, factory LineageFactory) {
 		}
 	}
 	assertTaskContext(t)
+}
+
+func assertRequirementDeliveryLineage(t *testing.T, st store.Store, ctx, foreignCtx context.Context, workspace string) {
+	t.Helper()
+	requirementID := "req-delivery-" + core.NewTaskID()
+	requirement, version, err := st.CreateRequirement(ctx, core.Requirement{ID: requirementID, Title: "Scoped delivery"}, core.RequirementVersion{
+		Content: "Delivery lineage stays causal.", Origin: core.RequirementOriginOperator,
+		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Walk only delivery edges."}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmRequirementVersion(ctx, requirement.ID, version.Version); err != nil {
+		t.Fatal(err)
+	}
+	blueprintID := core.NewTaskID()
+	blueprint := core.Task{ID: blueprintID, Workspace: workspace, Title: "Delivery blueprint", Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-" + blueprintID, State: core.TaskRunning, CreatedAt: time.Now().UTC()}
+	if err = st.CreateTask(ctx, blueprint); err != nil {
+		t.Fatal(err)
+	}
+	if err = st.AppendEvent(ctx, core.Event{TaskID: blueprint.ID, Kind: "requirement.serves_confirmed", Payload: core.JSONPayload(map[string]any{"requirement_id": requirement.ID})}); err != nil {
+		t.Fatal(err)
+	}
+	if err = st.AppendEvent(ctx, core.Event{TaskID: blueprint.ID, Kind: "spec.version_created", Payload: core.JSONPayload(map[string]any{"version": 1})}); err != nil {
+		t.Fatal(err)
+	}
+	childID := core.NewTaskID()
+	child := core.Task{ID: childID, Workspace: workspace, Title: "Materialized delivery", Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-" + childID, ParentTaskID: blueprint.ID, OriginSpecVersion: 1, State: core.TaskRunning, CreatedAt: time.Now().UTC()}
+	if err = st.CreateTask(ctx, child); err != nil {
+		t.Fatal(err)
+	}
+	unrelatedID := core.NewTaskID()
+	unrelated := core.Task{ID: unrelatedID, Workspace: workspace, Title: "Unrelated dependency", Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-" + unrelatedID, State: core.TaskRunning, CreatedAt: time.Now().UTC()}
+	if err = st.CreateTask(ctx, unrelated); err != nil {
+		t.Fatal(err)
+	}
+	if err = st.AppendEvent(ctx, core.Event{TaskID: child.ID, Kind: "task.dependency_added", Payload: core.JSONPayload(map[string]any{"task_id": child.ID, "depends_on_task_id": unrelated.ID})}); err != nil {
+		t.Fatal(err)
+	}
+
+	budget := core.LineageTraversalBudget{MaxDepth: 3, MaxNodes: 16, MaxLinks: 16, Workspace: workspace}
+	links, err := st.ListRequirementDeliveryLineage(ctx, requirement.ID, budget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	graph, err := core.TraverseLineage(links, []core.LineageNode{{Type: core.LineageRequirement, ID: requirement.ID}}, budget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantKinds := map[string]bool{"serves": false, "versions": false, "materializes": false}
+	for _, link := range graph.Links {
+		if _, ok := wantKinds[link.Kind]; !ok {
+			t.Fatalf("delivery read imported non-delivery edge: %+v", link)
+		}
+		wantKinds[link.Kind] = true
+		if link.SrcID == unrelated.ID || link.DstID == unrelated.ID {
+			t.Fatalf("delivery read imported dependency task: %+v", link)
+		}
+	}
+	for kind, found := range wantKinds {
+		if !found {
+			t.Fatalf("delivery read omitted %s: %+v", kind, graph)
+		}
+	}
+	if foreign, foreignErr := st.ListRequirementDeliveryLineage(foreignCtx, requirement.ID, budget); foreignErr != nil || len(foreign) != 0 {
+		t.Fatalf("cross-workspace delivery lineage leaked: links=%v err=%v", foreign, foreignErr)
+	}
+
+	for index := 0; index < 6; index++ {
+		taskID := core.NewTaskID()
+		task := core.Task{ID: taskID, Workspace: workspace, Title: fmt.Sprintf("Delivery fan-out %d", index), Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-" + taskID, State: core.TaskRunning, CreatedAt: time.Now().UTC()}
+		if err = st.CreateTask(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+		if err = st.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: store.TaskContextRequirementAdded, Payload: core.JSONPayload(map[string]any{"id": requirement.ID, "version": version.Version})}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bounded := core.LineageTraversalBudget{MaxDepth: 3, MaxNodes: 4, MaxLinks: 4, Workspace: workspace}
+	links, err = st.ListRequirementDeliveryLineage(ctx, requirement.ID, bounded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(links) > bounded.MaxLinks+1 {
+		t.Fatalf("delivery read exceeded bounded candidate set: got=%d budget=%+v", len(links), bounded)
+	}
+	graph, err = core.TraverseLineage(links, []core.LineageNode{{Type: core.LineageRequirement, ID: requirement.ID}}, bounded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !graph.Truncated {
+		t.Fatalf("over-budget delivery graph was not truncated: %+v", graph)
+	}
 }
 
 func assertTaskContextLineage(t *testing.T, st store.Store, ctx context.Context, workspace string) func(*testing.T) {

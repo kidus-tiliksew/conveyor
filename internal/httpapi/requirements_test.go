@@ -448,9 +448,9 @@ func TestRequirementStalenessFollowsTaskLevelServesChain(t *testing.T) {
 	}
 }
 
-type truncatedRequirementLineageStore struct{ store.Store }
+type truncatedDisplayLineageStore struct{ store.Store }
 
-func (st *truncatedRequirementLineageStore) ListLineageNeighborhood(_ context.Context, roots []core.LineageNode, _ core.LineageTraversalBudget) ([]core.LineageLink, error) {
+func (st *truncatedDisplayLineageStore) ListLineageNeighborhood(_ context.Context, roots []core.LineageNode, _ core.LineageTraversalBudget) ([]core.LineageLink, error) {
 	links := make([]core.LineageLink, 0, 300)
 	root := roots[0]
 	for index := 0; index < 300; index++ {
@@ -462,11 +462,11 @@ func (st *truncatedRequirementLineageStore) ListLineageNeighborhood(_ context.Co
 	return links, nil
 }
 
-func TestRequirementStalenessSurfacesTruncatedEvaluation(t *testing.T) {
+func TestRequirementStalenessIgnoresDisplayTruncation(t *testing.T) {
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	base := store.NewMemory()
-	requirement, proposed, err := base.CreateRequirement(ctx, core.Requirement{ID: "req-partial", Title: "Bounded intent"}, core.RequirementVersion{
-		Content: "Bounded intent.", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Partial evaluation is visible."}},
+	requirement, proposed, err := base.CreateRequirement(ctx, core.Requirement{ID: "req-display-truncated", Title: "Bounded intent"}, core.RequirementVersion{
+		Content: "Bounded intent.", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Display fan-out does not suppress staleness."}},
 		Origin: core.RequirementOriginOperator,
 	})
 	if err != nil {
@@ -475,7 +475,71 @@ func TestRequirementStalenessSurfacesTruncatedEvaluation(t *testing.T) {
 	if _, _, err = base.ConfirmRequirementVersion(ctx, requirement.ID, proposed.Version); err != nil {
 		t.Fatal(err)
 	}
-	server := NewServer(&truncatedRequirementLineageStore{Store: base})
+	task := core.Task{ID: "display-truncated-delivery", Workspace: "demo", Title: "Display-independent delivery", Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-display-truncated-delivery", State: core.TaskMerged, CreatedAt: time.Now().UTC()}
+	if err = base.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err = base.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: store.TaskContextRequirementAdded, Payload: core.JSONPayload(map[string]any{
+		"id": requirement.ID, "version": proposed.Version,
+	})}); err != nil {
+		t.Fatal(err)
+	}
+	mergeAt := time.Now().UTC().Add(time.Minute)
+	if err = base.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "merge.confirmed", At: mergeAt, Payload: core.JSONPayload(map[string]any{
+		"repository": "kidus/conveyor", "base_sha": "base", "head_sha": "head", "task_title": task.Title,
+	})}); err != nil {
+		t.Fatal(err)
+	}
+	drift := monitor.Drift{ID: "direct_push:conveyor:display-independent", WorkspaceID: "demo", Repository: "conveyor", Kind: monitor.DirectPush,
+		SourceURL: "https://example.test/commit/head", CommitSHA: "head", TaskID: task.ID, DetectedAt: mergeAt.Add(time.Minute)}
+	if _, fresh, recordErr := base.(monitor.Store).RecordDrift(ctx, drift); recordErr != nil || !fresh {
+		t.Fatalf("record drift fresh=%t err=%v", fresh, recordErr)
+	}
+	server := NewServer(&truncatedDisplayLineageStore{Store: base})
+	server.Workspace = "demo"
+	server.Monitor = &monitor.Service{Store: base.(monitor.Store), WorkspaceID: "demo", Enabled: true}
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/requirements/"+requirement.ID, nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var view requirementView
+	if err = json.Unmarshal(response.Body.Bytes(), &view); err != nil {
+		t.Fatal(err)
+	}
+	if !view.LineageGraph.Truncated || view.Staleness.PartialEvaluation || !view.Staleness.DeliveryAfterIntent ||
+		view.Staleness.LatestDelivery != task.Title || len(view.Staleness.ActiveDrift) != 1 || view.Staleness.ActiveDrift[0].ID != drift.ID {
+		t.Fatalf("display-independent staleness=%+v graph=%+v", view.Staleness, view.LineageGraph)
+	}
+}
+
+type truncatedDeliveryLineageStore struct{ store.Store }
+
+func (st *truncatedDeliveryLineageStore) ListRequirementDeliveryLineage(_ context.Context, requirementID string, _ core.LineageTraversalBudget) ([]core.LineageLink, error) {
+	links := make([]core.LineageLink, 0, 300)
+	for index := 0; index < 300; index++ {
+		links = append(links, core.LineageLink{
+			Workspace: "demo", SrcType: core.LineageRequirement, SrcID: requirementID,
+			DstType: core.LineageTask, DstID: fmt.Sprintf("delivery-%03d", index), Kind: "serves", CreatedByEventID: int64(index + 1),
+		})
+	}
+	return links, nil
+}
+
+func TestRequirementStalenessSurfacesTruncatedDeliveryEvaluation(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	base := store.NewMemory()
+	requirement, proposed, err := base.CreateRequirement(ctx, core.Requirement{ID: "req-partial", Title: "Bounded delivery"}, core.RequirementVersion{
+		Content: "Bounded delivery.", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Partial delivery evaluation is visible."}},
+		Origin: core.RequirementOriginOperator,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = base.ConfirmRequirementVersion(ctx, requirement.ID, proposed.Version); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(&truncatedDeliveryLineageStore{Store: base})
 	server.Workspace = "demo"
 	response := httptest.NewRecorder()
 	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/requirements/"+requirement.ID, nil))
