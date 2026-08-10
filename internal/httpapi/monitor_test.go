@@ -150,11 +150,17 @@ func TestMonitorPostMergeAttemptsReuseOneTaskAndKeepDistinctObservations(t *test
 	}
 	server.Monitor.Intake = server.CreateMonitorTask
 	handler := server.Handler()
-	post := func(attempt, check string) monitor.ObservationRecord {
+	post := func(commit, attempt, check string) monitor.ObservationRecord {
 		t.Helper()
 		payload, err := json.Marshal(monitor.Observation{
 			Repository: "conveyor", Kind: monitor.PostMergeFailure,
-			OccurrenceID: "commit:abc:attempt:" + attempt, CommitSHA: "abc",
+			OccurrenceID: "commit:" + commit + ":attempt:" + attempt, CommitSHA: commit,
+			Attempt: func() int {
+				if attempt == "2" {
+					return 2
+				}
+				return 1
+			}(),
 			SourceURL: "https://github.com/acme/conveyor/check/" + check,
 			Context:   map[string]string{"failed_check_runs": "- ci (check run " + check + ")"},
 		})
@@ -176,9 +182,9 @@ func TestMonitorPostMergeAttemptsReuseOneTaskAndKeepDistinctObservations(t *test
 		return record
 	}
 
-	first := post("1", "11")
-	second := post("2", "22")
-	redelivered := post("2", "22")
+	first := post("abc", "1", "11")
+	second := post("def", "2", "22")
+	redelivered := post("def", "2", "22")
 	if first.TaskID == "" || second.TaskID != first.TaskID || redelivered.TaskID != first.TaskID ||
 		second.TaskOutcome != "reused" || redelivered.DeduplicatedCount != 1 {
 		t.Fatalf("first=%+v second=%+v redelivered=%+v", first, second, redelivered)
@@ -203,17 +209,19 @@ func TestMonitorPostMergeAttemptsReuseOneTaskAndKeepDistinctObservations(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	created, reused := 0, 0
+	created, reused, occurrences := 0, 0, 0
 	for _, event := range events {
 		switch event.Kind {
 		case "monitor.task_created":
 			created++
 		case "monitor.task_reused":
 			reused++
+		case "monitor.occurrence_observed":
+			occurrences++
 		}
 	}
-	if created != 1 || reused != 1 {
-		t.Fatalf("create/reuse audit counts created=%d reused=%d events=%+v", created, reused, events)
+	if created != 1 || reused != 1 || occurrences != 2 {
+		t.Fatalf("audit counts created=%d reused=%d occurrences=%d events=%+v", created, reused, occurrences, events)
 	}
 }
 

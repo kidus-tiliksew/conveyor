@@ -89,6 +89,12 @@ func TestGitHubSourceSuppressesNonActionableCheckConclusions(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			if conclusion == "success" {
+				if len(observations) != 1 || !observations[0].RecoveryObserved {
+					t.Fatalf("success did not produce recovery observation: %+v", observations)
+				}
+				return
+			}
 			if len(observations) != 0 {
 				t.Fatalf("conclusion %q produced observations %+v", conclusion, observations)
 			}
@@ -121,12 +127,55 @@ func TestGitHubSourceAggregatesFailedChecksPerCommitAttempt(t *testing.T) {
 	if first[0].CheckRunID != "11,22" || first[0].SourceURL != "https://example/check/11" {
 		t.Fatalf("aggregate=%+v", first[0])
 	}
-	if first[0].IntakeKey() != first[1].IntakeKey() || first[0].Identity() == first[1].Identity() {
+	if first[0].IntakeKey() == first[1].IntakeKey() || first[0].Identity() == first[1].Identity() {
 		t.Fatalf("attempt identity/grouping first=%+v", first)
 	}
 	detail := first[0].Context["failed_check_runs"]
 	if !strings.Contains(detail, "unit (check run 11)") || !strings.Contains(detail, "integration (check run 22)") {
 		t.Fatalf("failed check detail=%q", detail)
+	}
+}
+
+func TestGitHubSourceEmitsRecoveryForGreenLineagedMerge(t *testing.T) {
+	source := lineagedCheckSource(`{"check_runs":[{"id":77,"name":"ci","html_url":"https://example/check/77","conclusion":"success","run_attempt":1}]}`)
+	observations, err := source.Observations(context.Background(), time.Now().Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(observations) != 1 || !observations[0].RecoveryObserved ||
+		observations[0].Kind != PostMergeFailure || observations[0].CommitSHA != "known-sha" {
+		t.Fatalf("recovery observations=%+v", observations)
+	}
+}
+
+func TestGitHubSourceSuppressesFirstParentEmptyDirectPush(t *testing.T) {
+	source := GitHubSource{
+		WorkspaceID: "demo", Repository: "conveyor", GitHubSlug: "acme/conveyor",
+		Run: func(_ context.Context, args ...string) ([]byte, error) {
+			path := strings.Join(args, " ")
+			switch {
+			case strings.Contains(path, "/commits -f"):
+				return []byte(`[
+{"sha":"empty-merge","html_url":"https://example/empty","parents":[{"sha":"parent-a"},{"sha":"parent-b"}],"commit":{"message":"Merge main","committer":{"date":"2026-07-28T10:00:00Z"}}},
+{"sha":"content-push","html_url":"https://example/content","parents":[{"sha":"parent-c"}],"commit":{"message":"manual","committer":{"date":"2026-07-28T10:01:00Z"}}}
+]`), nil
+			case strings.Contains(path, "/pulls"):
+				return []byte(`[]`), nil
+			case strings.Contains(path, "compare/parent-a...empty-merge"):
+				return []byte(`{"files":[]}`), nil
+			case strings.Contains(path, "compare/parent-c...content-push"):
+				return []byte(`{"files":[{"filename":"internal/monitor/types.go"}]}`), nil
+			default:
+				return nil, fmt.Errorf("unexpected args %v", args)
+			}
+		},
+	}
+	observations, err := source.Observations(context.Background(), time.Now().Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(observations) != 1 || observations[0].Kind != DirectPush || observations[0].CommitSHA != "content-push" {
+		t.Fatalf("observations=%+v", observations)
 	}
 }
 

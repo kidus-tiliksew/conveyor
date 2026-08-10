@@ -48,6 +48,8 @@ type Observation struct {
 	CommitSHA         string            `json:"commit_sha,omitempty"`
 	PullRequestNumber int               `json:"pull_request_number,omitempty"`
 	CheckRunID        string            `json:"check_run_id,omitempty"`
+	Attempt           int               `json:"attempt,omitempty"`
+	RecoveryObserved  bool              `json:"recovery_observed,omitempty"`
 	RequirementID     string            `json:"requirement_id,omitempty"`
 	ChangedPaths      []string          `json:"changed_paths,omitempty"`
 	CausalEventID     int64             `json:"causal_event_id,omitempty"`
@@ -79,6 +81,9 @@ func (o *Observation) Normalize(workspace string, now time.Time) error {
 	}
 	if o.WorkspaceID == "" || o.WorkspaceID != workspace {
 		return errors.New("observation workspace must match the immutable workspace context")
+	}
+	if o.RecoveryObserved && o.Kind != PostMergeFailure {
+		return errors.New("recovery_observed is only valid for post_merge_failure")
 	}
 	if o.Repository == "" || !o.Kind.Valid() || o.OccurrenceID == "" || o.SourceURL == "" {
 		return errors.New("repository, supported kind, occurrence_id, and source_url are required")
@@ -113,14 +118,15 @@ func (o Observation) Identity() string {
 	return string(o.Kind) + ":" + o.Repository + ":" + o.OccurrenceID
 }
 
-// IntakeKey identifies the ordinary task created for an observation. Post-merge
-// check attempts remain distinct observations, but failures for one landed
-// commit share a task so retries do not create duplicate repair work.
+// IntakeKey preserves occurrence-level idempotency. Reuse across distinct
+// occurrences is derived separately from the open task for the repository and
+// signal class.
 func (o Observation) IntakeKey() string {
-	if o.Kind == PostMergeFailure && o.CommitSHA != "" {
-		return "monitor:" + string(o.Kind) + ":" + o.Repository + ":commit:" + o.CommitSHA
-	}
 	return "monitor:" + o.Identity()
+}
+
+func (k SignalKind) ReusesOpenTask() bool {
+	return k == PostMergeFailure || k == DirectPush || k == ExternalPRMerge
 }
 
 type ObservationRecord struct {
@@ -205,6 +211,8 @@ type Store interface {
 	RecordMonitorFailure(context.Context, string, string, time.Time) error
 	AuditTask(context.Context, string, string, map[string]any) error
 	AuditMonitor(context.Context, string, map[string]any) error
+	WithMonitorSignalClassLock(context.Context, string, SignalKind, func(context.Context) error) error
+	FindOpenMonitorTask(context.Context, string, SignalKind) (string, bool, error)
 	ListSystemDesigns(context.Context) ([]core.SystemDesign, error)
 	GetSystemDesignVersion(context.Context, string, int) (core.SystemDesignVersion, error)
 	// ClaimCausalSystemDesignProposal atomically consumes the latest qualifying
@@ -344,6 +352,36 @@ func (s *Service) Process(ctx context.Context, observation Observation) (Observa
 		"identity": observation.Identity(), "repository": observation.Repository,
 		"kind": observation.Kind, "source_url": observation.SourceURL, "fresh": fresh,
 	})
+	if observation.RecoveryObserved {
+		if !fresh {
+			_ = s.Store.RecordMonitorSuccess(ctx, now)
+			return record, nil
+		}
+		var taskID string
+		err = s.Store.WithMonitorSignalClassLock(ctx, observation.Repository, PostMergeFailure, func(lockedCtx context.Context) error {
+			var found bool
+			taskID, found, err = s.Store.FindOpenMonitorTask(lockedCtx, observation.Repository, PostMergeFailure)
+			if err != nil || !found {
+				return err
+			}
+			record, err = s.Store.LinkTask(lockedCtx, observation.Identity(), taskID, "recovery_observed")
+			return err
+		})
+		if err != nil {
+			return ObservationRecord{}, err
+		}
+		if taskID != "" {
+			_ = s.Store.AuditTask(ctx, taskID, "monitor.recovery_observed", map[string]any{
+				"identity": observation.Identity(), "repository": observation.Repository,
+				"commit_sha": observation.CommitSHA, "source_url": observation.SourceURL,
+			})
+			_ = s.Store.AuditMonitor(ctx, "monitor.recovery_observed", map[string]any{
+				"identity": observation.Identity(), "task_id": taskID, "repository": observation.Repository,
+			})
+		}
+		_ = s.Store.RecordMonitorSuccess(ctx, now)
+		return record, nil
+	}
 	if record.TaskID != "" {
 		_ = s.Store.AuditMonitor(ctx, "monitor.deduplicated", map[string]any{
 			"identity": observation.Identity(), "task_id": record.TaskID,
@@ -362,12 +400,31 @@ func (s *Service) Process(ctx context.Context, observation Observation) (Observa
 		return record, nil
 	}
 	body := taskBody(observation)
-	result, err := s.Intake(ctx, TaskRequest{
+	request := TaskRequest{
 		Body: body, Repository: observation.Repository,
 		Source: "monitor:" + string(observation.Kind), IntakeKey: observation.IntakeKey(),
-		ReuseExistingByKey: observation.Kind == PostMergeFailure && observation.CommitSHA != "",
-		Hints:              observation.Hints,
-	})
+		ReuseExistingByKey: observation.Kind.ReusesOpenTask(), Hints: observation.Hints,
+	}
+	var result IntakeResult
+	reusedOpenTask := false
+	createOrReuse := func(lockedCtx context.Context) error {
+		if observation.Kind.ReusesOpenTask() {
+			if taskID, found, findErr := s.Store.FindOpenMonitorTask(lockedCtx, observation.Repository, observation.Kind); findErr != nil {
+				return findErr
+			} else if found {
+				result.Task.ID = taskID
+				reusedOpenTask = true
+				return nil
+			}
+		}
+		result, err = s.Intake(lockedCtx, request)
+		return err
+	}
+	if observation.Kind.ReusesOpenTask() {
+		err = s.Store.WithMonitorSignalClassLock(ctx, observation.Repository, observation.Kind, createOrReuse)
+	} else {
+		err = createOrReuse(ctx)
+	}
 	if err != nil {
 		return ObservationRecord{}, err
 	}
@@ -383,10 +440,26 @@ func (s *Service) Process(ctx context.Context, observation Observation) (Observa
 		"identity": observation.Identity(), "task_id": result.Task.ID,
 		"repository": observation.Repository,
 	})
+	if reusedOpenTask {
+		_ = s.Store.AuditTask(ctx, result.Task.ID, "monitor.task_reused", map[string]any{
+			"workspace_id": observation.WorkspaceID, "repository": observation.Repository,
+			"source": request.Source, "intake_key": request.IntakeKey,
+		})
+	}
 	_ = s.Store.AuditTask(ctx, result.Task.ID, "monitor.observed", map[string]any{
 		"identity": observation.Identity(), "kind": observation.Kind,
 		"repository": observation.Repository, "source_url": observation.SourceURL,
+		"commit_sha": observation.CommitSHA, "check_run_id": observation.CheckRunID,
+		"attempt": observation.Attempt, "occurrence_id": observation.OccurrenceID,
 	})
+	if observation.Kind.ReusesOpenTask() && fresh {
+		_ = s.Store.AuditTask(ctx, result.Task.ID, "monitor.occurrence_observed", map[string]any{
+			"identity": observation.Identity(), "kind": observation.Kind,
+			"repository": observation.Repository, "source_url": observation.SourceURL,
+			"commit_sha": observation.CommitSHA, "check_run_id": observation.CheckRunID,
+			"attempt": observation.Attempt, "occurrence_id": observation.OccurrenceID,
+		})
+	}
 	_ = s.Store.AuditTask(ctx, result.Task.ID, "monitor.classified", map[string]any{
 		"identity": observation.Identity(), "classification": observation.Kind,
 		"drift": observation.Kind.Drift(),
