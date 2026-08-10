@@ -108,6 +108,14 @@ function RecoveryState({ item, state }: { item: ActivityItem; state: CurrentExec
         ) : (
           <p>You can add an optional instruction for the next attempt.</p>
         )}
+        {checkpointReleased && order.progress?.trim() && (
+          <div className="space-y-1.5">
+            <p className="font-medium text-foreground">Agent checkpoint message</p>
+            <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded border border-attention/30 bg-surface p-2 font-sans text-sm text-foreground">
+              {order.progress}
+            </pre>
+          </div>
+        )}
         <div className="flex flex-wrap items-center justify-between gap-2 rounded border border-attention/30 bg-surface/60 p-2">
           <span>
             <span className="font-medium text-foreground">Attached context: </span>
