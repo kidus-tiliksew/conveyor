@@ -220,6 +220,9 @@ function NavSidebar() {
   // previous empty collection shape; degrade to the task signal instead of
   // taking down the app shell while the projection catches up.
   const attention = proposals?.attention?.total ?? taskAttention
+  const requirementAttention = new Set(
+    (proposals?.items ?? []).filter((item) => item.tier === 'requirement').map((item) => item.id),
+  ).size
 
   const currentName = workspaces?.find((item) => item.id === selected)?.name ?? workspace?.workspace ?? 'Conveyor'
 
@@ -237,7 +240,9 @@ function NavSidebar() {
             a task's own detail route belongs to the Board it opens over. */}
         <NavItem to="/tasks" icon={ListChecks} label="Tasks" exact />
         <NavItem to="/workspace" icon={FolderGit2} label="Workspace" />
-        <NavItem to="/requirements" icon={Workflow} label="Requirements" />
+        <NavItem to="/requirements" icon={Workflow} label="Requirements">
+          {requirementAttention > 0 && <Badge variant="attention">{requirementAttention}</Badge>}
+        </NavItem>
         <NavItem to="/system-design" icon={FileCode2} label="System Design" />
         <NavItem to="/pending-proposals" icon={BellRing} label="Pending proposals" />
         {/* Exactly the operating surfaces §21.61 accepts, and no others

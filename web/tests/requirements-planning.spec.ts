@@ -217,7 +217,8 @@ test('requirements renders a document tree, one attention surface, and confirms 
   )
   await expect(attention).toContainText('Version 1 is waiting for you')
 
-  // AC-1.2: the badges and banners that used to repeat those signals.
+  // Detailed signal labels and actions remain confined to the canvas; the
+  // approved tree affordance carries only a compact aggregate.
   await expect(page.getByText('Needs confirmation')).toHaveCount(0)
   await expect(page.getByText('Revision pending')).toHaveCount(0)
   await expect(page.getByText('Code ahead of intent')).toHaveCount(0)
@@ -244,6 +245,111 @@ test('requirements renders a document tree, one attention surface, and confirms 
   await attention.getByRole('button', { name: 'Confirm version 1' }).click()
   await expect.poll(() => confirmed).toBe(true)
   await expect(page).toHaveURL(/\/requirements/)
+})
+
+test('requirements search and deterministic sorting preserve the selected canvas and show attention counts', async ({
+  page,
+}) => {
+  await initShell(page)
+  const items = [
+    {
+      ...requirement,
+      requirement: {
+        ...requirement.requirement,
+        id: 'req-alpha-a',
+        slug: 'alpha-a',
+        title: 'Alpha',
+        created_at: '2026-07-01T10:00:00Z',
+        updated_at: '2026-07-04T10:00:00Z',
+      },
+      pending_versions: [{ ...requirement.pending_versions[0], requirement_id: 'req-alpha-a' }],
+    },
+    {
+      ...requirement,
+      requirement: {
+        ...requirement.requirement,
+        id: 'req-alpha-b',
+        slug: 'alpha-b',
+        title: 'alpha',
+        created_at: '2026-07-01T10:00:00Z',
+        updated_at: 'not-a-date',
+      },
+      pending_versions: [],
+      staleness: { delivery_after_intent: false, partial_evaluation: false, active_drift: [] },
+    },
+    {
+      ...requirement,
+      requirement: {
+        ...requirement.requirement,
+        id: 'req-beta',
+        slug: 'beta',
+        title: 'Beta',
+        created_at: '2026-07-03T10:00:00Z',
+        updated_at: '2026-07-02T10:00:00Z',
+      },
+      pending_versions: [],
+      staleness: { delivery_after_intent: false, partial_evaluation: false, active_drift: [] },
+    },
+    {
+      ...requirement,
+      requirement: {
+        ...requirement.requirement,
+        id: 'req-gamma',
+        slug: 'gamma',
+        title: 'Gamma',
+        created_at: 'not-a-date',
+        updated_at: '2026-07-03T10:00:00Z',
+      },
+      pending_versions: [],
+      staleness: { delivery_after_intent: false, partial_evaluation: false, active_drift: [] },
+    },
+  ]
+  await page.route('**/v1/**', async (route) => {
+    const shell = shellResponse(route)
+    if (shell) return await shell
+    const path = new URL(route.request().url()).pathname
+    if (path === '/v1/requirements') return route.fulfill({ json: items })
+    const detail = items.find((item) => path === `/v1/requirements/${item.requirement.id}`)
+    if (detail) return route.fulfill({ json: detail })
+    if (path.endsWith('/versions')) return route.fulfill({ json: [] })
+    return route.fulfill({ json: [] })
+  })
+
+  await page.goto('/requirements?requirement=req-alpha-a')
+  const tree = page.getByRole('navigation', { name: 'Document tree' })
+  const group = tree.getByRole('heading', { name: 'Requirements' }).locator('..')
+  const rowOrder = () =>
+    group
+      .getByRole('button')
+      .filter({ hasText: /^(Alpha|alpha|Beta|Gamma)/ })
+      .allTextContents()
+
+  await expect.poll(rowOrder).toEqual(['Alpha2', 'alpha', 'Beta', 'Gamma'])
+  await expect(group.getByRole('button', { name: /Alpha/ }).getByLabel('2 attention items')).toBeVisible()
+
+  const sort = group.getByRole('combobox', { name: 'Sort requirements by' })
+  const direction = group.getByRole('button', { name: 'Sort ascending' })
+  await direction.click()
+  await expect.poll(rowOrder).toEqual(['Gamma', 'Beta', 'Alpha2', 'alpha'])
+
+  await sort.selectOption('created')
+  await expect.poll(rowOrder).toEqual(['Beta', 'Alpha2', 'alpha', 'Gamma'])
+  await group.getByRole('button', { name: 'Sort descending' }).click()
+  await expect.poll(rowOrder).toEqual(['Gamma', 'Alpha2', 'alpha', 'Beta'])
+
+  await sort.selectOption('updated')
+  await expect.poll(rowOrder).toEqual(['alpha', 'Beta', 'Gamma', 'Alpha2'])
+  await group.getByRole('button', { name: 'Sort ascending' }).click()
+  await expect.poll(rowOrder).toEqual(['Alpha2', 'Gamma', 'Beta', 'alpha'])
+
+  const search = group.getByRole('searchbox', { name: 'Search requirements' })
+  await search.fill('bEt')
+  await expect.poll(rowOrder).toEqual(['Beta'])
+  await search.fill('missing')
+  await expect(group.getByText('No requirements match your search.')).toBeVisible()
+  await expect(
+    page.getByRole('region', { name: 'Requirement document' }).getByRole('heading', { name: 'Alpha' }),
+  ).toBeVisible()
 })
 
 test('requirement confirmation offers explicit attachment to eligible checkpoint-paused tasks', async ({ page }) => {
@@ -730,7 +836,8 @@ test('a requirement voices drift once and collapses to a quiet line when nothing
     'href',
     'https://example.test/pr/9',
   )
-  // AC-1.2: exactly once — no drift chip in the tree and no second banner.
+  // Detailed drift copy stays on the canvas; the tree carries only the
+  // approved compact aggregate and no second banner.
   await expect(page.getByText('1 active drift')).toHaveCount(0)
   await expect(page.getByText(/unreconciled repository change/)).toHaveCount(0)
   await expect(page.getByText('internal/dispatch/dispatch.go')).toHaveCount(1)
