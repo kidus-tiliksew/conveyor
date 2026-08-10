@@ -102,6 +102,7 @@ func (s *Server) Handler() http.Handler {
 		r.Group(func(r chi.Router) {
 			r.Use(s.requireWorkspaceAuth, s.resolveWorkspaceContext)
 			r.Get("/activity", s.listActivity)
+			r.With(s.requireMutationAuth).Get("/pending-proposals", s.listPendingProposals)
 			r.Get("/tasks", s.listTasks)
 			r.Get("/task-operations", s.listTaskOperations)
 			r.Get("/tasks/{id}", s.getTask)
@@ -850,6 +851,7 @@ type reviewItem struct {
 	CheckoutAvailable         bool                                  `json:"checkout_available"`
 	CheckoutGuidance          string                                `json:"checkout_guidance"`
 	NeedsAttention            bool                                  `json:"needs_attention"`
+	PendingAuthority          bool                                  `json:"pending_authority"`
 	ForgeFailure              *store.ForgeFailure                   `json:"forge_failure,omitempty"`
 	Spec                      *core.SpecVersion                     `json:"spec,omitempty"`
 	WorkOrders                []core.WorkOrder                      `json:"work_orders"`
@@ -910,6 +912,16 @@ func (s *Server) listActivityFiltered(w http.ResponseWriter, r *http.Request, fi
 	for _, marker := range markers {
 		markerByTask[marker.TaskID] = marker
 	}
+	proposals, err := s.Store.ListPendingProposals(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	pendingAuthority, err := s.pendingAuthorityTasks(r.Context(), proposals)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	items := make([]activityItem, 0, len(tasks))
 	for _, task := range tasks {
 		// Blueprint anchors are intent artifacts, not claimable work, so they
@@ -924,12 +936,12 @@ func (s *Server) listActivityFiltered(w http.ResponseWriter, r *http.Request, fi
 		if core.TaskTerminal(task.State) {
 			marker.Stalled = nil
 		}
-		if reviewsOnly && !reviewable(task.State) && marker.ForgeFailure == nil && marker.ReviewRecovery == nil && marker.InterruptedReviewRecovery == nil && marker.Stalled == nil {
+		if reviewsOnly && !reviewable(task.State) && marker.ForgeFailure == nil && marker.ReviewRecovery == nil && marker.InterruptedReviewRecovery == nil && marker.Stalled == nil && !pendingAuthority[task.ID] {
 			continue
 		}
 		items = append(items, activityItem{
 			Task: task, LatestStage: marker.LatestStage, LastEventAt: marker.LastEventAt,
-			NeedsAttention:            needsAttention(task, marker),
+			NeedsAttention:            needsAttention(task, marker, pendingAuthority[task.ID]),
 			ForgeFailure:              marker.ForgeFailure,
 			ReviewDiagnostics:         marker.ReviewDiagnostics,
 			ReviewRecovery:            marker.ReviewRecovery,
@@ -943,10 +955,10 @@ func (s *Server) listActivityFiltered(w http.ResponseWriter, r *http.Request, fi
 // needsAttention is the one derivation the stage-grouped board and the
 // list-first Tasks view share, so the two surfaces cannot disagree about which
 // work is waiting on a human (design-web-dashboard).
-func needsAttention(task core.Task, marker store.ActivityMarker) bool {
+func needsAttention(task core.Task, marker store.ActivityMarker, pendingAuthority bool) bool {
 	return task.State == core.TaskAwaiting || task.State == core.TaskParked ||
 		marker.ForgeFailure != nil || marker.ReviewRecovery != nil ||
-		marker.InterruptedReviewRecovery != nil || marker.Stalled != nil
+		marker.InterruptedReviewRecovery != nil || marker.Stalled != nil || pendingAuthority
 }
 
 // Plan status is the four durable outcomes AC-1.4 names. Each is read off the
@@ -1054,6 +1066,16 @@ func (s *Server) listTaskOperations(w http.ResponseWriter, r *http.Request) {
 	for _, marker := range markers {
 		markerByTask[marker.TaskID] = marker
 	}
+	proposals, err := s.Store.ListPendingProposals(ctx)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	pendingAuthority, err := s.pendingAuthorityTasks(ctx, proposals)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	// Blocked stays a derived predicate owned by the dependency substrate
 	// (design-task-lifecycle); the view reads it, and reads the unsatisfiable edges the
 	// task record itself does not carry.
@@ -1083,7 +1105,7 @@ func (s *Server) listTaskOperations(w http.ResponseWriter, r *http.Request) {
 			LatestStage:          marker.LatestStage,
 			LastEventAt:          marker.LastEventAt,
 			Stalled:              taskStalledSummaryFor(marker.Stalled),
-			NeedsAttention:       needsAttention(task, marker),
+			NeedsAttention:       needsAttention(task, marker, pendingAuthority[task.ID]),
 			UnsatisfiableTaskIDs: blockers[task.ID].UnsatisfiableTaskIDs,
 			ChildRollup:          taskChildRollupFor(task.Children),
 			Plan:                 taskPlanStatusFor(latest, hasPlan, events),
@@ -1402,10 +1424,17 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 	if core.TaskTerminal(task.State) {
 		stalled = nil
 	}
+	proposals, err := s.Store.ListPendingProposals(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	pendingAuthority := pendingAuthorityForTask(id, workOrders, proposals)
 	writeJSON(w, http.StatusOK, reviewItem{
 		Task: task, Jobs: jobs, Events: events, Interventions: interventions,
 		CheckoutCommand: checkoutCommand, CheckoutAvailable: checkoutAvailable, CheckoutGuidance: checkoutGuidance,
-		NeedsAttention:            task.State == core.TaskAwaiting || task.State == core.TaskParked || store.LatestForgeFailure(events) != nil || store.ReviewRecoveryNeeded(workOrders, events) != nil || store.InterruptedReviewRecoveryNeeded(workOrders) != nil || stalled != nil,
+		NeedsAttention:            task.State == core.TaskAwaiting || task.State == core.TaskParked || store.LatestForgeFailure(events) != nil || store.ReviewRecoveryNeeded(workOrders, events) != nil || store.InterruptedReviewRecoveryNeeded(workOrders) != nil || stalled != nil || pendingAuthority,
+		PendingAuthority:          pendingAuthority,
 		ForgeFailure:              store.LatestForgeFailure(events),
 		Spec:                      specPointer,
 		WorkOrders:                workOrders,
