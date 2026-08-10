@@ -3142,9 +3142,11 @@ for (const decision of [
     await expect(gate.getByText('Plan revision requested')).toBeVisible()
     await expect(gate.getByText('v7', { exact: true })).toBeVisible()
     await expect(gate.getByText('A dependency changed the public handler contract.')).toBeVisible()
-    // Both cards belong to the same tail: deciding the plan is not the same
-    // question as recovering the released order, and neither hides the other.
-    await expect(page.getByRole('button', { name: 'Recover work order' })).toBeVisible()
+    // The decision card is the only actionable pause surface. Its decline
+    // path owns the implementation retry, so generic recovery cannot bypass
+    // the pending operator decision.
+    await expect(page.getByRole('button', { name: 'Recover work order' })).toHaveCount(0)
+    await expect(page.getByLabel('Operator direction')).toHaveCount(0)
     const decided = activityRequests
 
     await gate.getByRole('button', { name: decision.open }).first().click()

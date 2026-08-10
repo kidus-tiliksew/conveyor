@@ -287,6 +287,28 @@ func TestWorkOrderRecoveryHTTPIsAuthorizedFailClosedAndIdempotent(t *testing.T) 
 	}
 }
 
+func TestWorkOrderRecoveryHTTPConflictsWithPendingPlanRevisionDecision(t *testing.T) {
+	ctx, st, server, _, orderID := newPlanRevisionReviewServer(t)
+	provider := func(context.Context) (*config.Config, error) {
+		return &config.Config{Workspace: "demo", WorkOrderQueueTimeout: time.Hour}, nil
+	}
+	server.WorkOrders = &workorder.Service{Store: st, ConfigProvider: provider}
+
+	request := httptest.NewRequest(http.MethodPost, "/v1/work-orders/"+orderID+"/recover?workspace_id=demo", bytes.NewBufferString(`{"request_id":"recover-pending-plan"}`))
+	request = request.WithContext(ctx)
+	request.Header.Set("Authorization", "Bearer token")
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "pending plan-revision decision") {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	order, err := st.GetWorkOrder(ctx, orderID)
+	if err != nil || order.State != core.WorkOrderQueued || !order.RetrySuppressed || order.Claimable {
+		t.Fatalf("pending order changed: %+v err=%v", order, err)
+	}
+}
+
 func TestTaskCloseRequiresReasonAndCancelsOutsideHumanGate(t *testing.T) {
 	st := store.NewMemory()
 	ctx := store.WithWorkspace(t.Context(), "demo")

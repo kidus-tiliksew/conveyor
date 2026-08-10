@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Clock3, Link2, RotateCcw, TriangleAlert } from 'lucide-react'
 import { recoverWorkOrder } from '../../lib/api'
-import { deriveCurrentExecutionState, type CurrentExecutionState } from '../../lib/activity'
+import { deriveCurrentExecutionState, pendingPlanRevisionRequest, type CurrentExecutionState } from '../../lib/activity'
 import type { ActivityItem } from '../../lib/types'
 import { useOperatorToken } from '../app-shell'
 import { Button } from '../ui/button'
@@ -11,6 +11,7 @@ import { TaskContextAttachmentDialog } from './task-context-attachment-dialog'
 export function hasWorkerRecovery(item: ActivityItem) {
   const state = deriveCurrentExecutionState(item)
   return (
+    pendingPlanRevisionRequest(item.events) == null &&
     state != null &&
     state.kind !== 'running' &&
     state.kind !== 'dependency_waiting' &&
@@ -26,6 +27,7 @@ export function WorkOrderRecoveryCard({
   state?: CurrentExecutionState
 }) {
   if (
+    pendingPlanRevisionRequest(item.events) != null ||
     !state ||
     state.kind === 'running' ||
     state.kind === 'dependency_waiting' ||

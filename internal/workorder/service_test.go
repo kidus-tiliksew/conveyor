@@ -1380,6 +1380,34 @@ func TestExpiredAttemptRequiresRecoveryAndStartsFreshExecutionWindow(t *testing.
 	}
 }
 
+func TestRecoverRejectsPendingPlanRevisionDecision(t *testing.T) {
+	t.Parallel()
+	ctx, st, service, order := newLifecycleService(t, "pending-plan-revision")
+	plan, err := st.CreateSpecVersion(ctx, core.SpecVersion{TaskID: order.TaskID, Content: "approved plan"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = st.ApproveSpecVersion(ctx, order.TaskID, plan.Version); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := service.Claim(ctx, order.ID, core.WorkOrderClaim{SessionID: "session", ClientToken: "token", Agent: "codex", Model: "gpt", Lease: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = taskops.ExecuteWorkOrder(ctx, st, order.TaskID, core.WorkOrderCmdRequestPlanRevision, func(lease taskops.TaskLease) (store.PlanRevisionRequestResult, error) {
+		return st.RequestPlanRevisionCommand(ctx, lease, order.ID, "", claimed.SessionID, "the approved plan is no longer valid")
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.Recover(ctx, order.ID, "recover-pending-plan"); err == nil || !strings.Contains(err.Error(), "pending plan-revision decision") {
+		t.Fatalf("recovery error = %v", err)
+	}
+	persisted, getErr := st.GetWorkOrder(ctx, order.ID)
+	if getErr != nil || persisted.State != core.WorkOrderQueued || !persisted.RetrySuppressed || persisted.Claimable {
+		t.Fatalf("pending order changed: %+v err=%v", persisted, getErr)
+	}
+}
+
 func TestOperatorRecoveryDirectionIsTrustedContextAndClearsAtLifecycleBoundaries(t *testing.T) {
 	ctx, st, service, order := newLifecycleService(t, "operator-direction")
 	ctx = store.WithWorkspace(ctx, "test")
