@@ -67,6 +67,68 @@ func (m *memory) ListPendingProposals(ctx context.Context) ([]core.PendingPropos
 	return out, nil
 }
 
+func (m *memory) PendingProposalsProjection(ctx context.Context) (PendingProposalsProjection, error) {
+	proposals, err := m.ListPendingProposals(ctx)
+	if err != nil {
+		return PendingProposalsProjection{}, err
+	}
+	tasks, err := m.ListTasks(ctx)
+	if err != nil {
+		return PendingProposalsProjection{}, err
+	}
+	markers, err := m.ListActivityMarkers(ctx)
+	if err != nil {
+		return PendingProposalsProjection{}, err
+	}
+	orders, err := m.ListWorkOrders(ctx)
+	if err != nil {
+		return PendingProposalsProjection{}, err
+	}
+	pendingAuthority := pendingAuthorityTaskIDs(orders, proposals)
+	byTask := make(map[string]ActivityMarker, len(markers))
+	for _, marker := range markers {
+		byTask[marker.TaskID] = marker
+	}
+	workspace := workspaceOrDefault(ctx, "")
+	count := 0
+	for _, task := range tasks {
+		if task.Workspace != workspace {
+			continue
+		}
+		if core.BlueprintAnchor(task) {
+			continue
+		}
+		marker := byTask[task.ID]
+		if core.TaskTerminal(task.State) {
+			marker.Stalled = nil
+		}
+		if TaskNeedsAttention(task, marker, pendingAuthority[task.ID]) {
+			count++
+		}
+	}
+	return PendingProposalsProjection{Items: proposals, TaskCount: count}, nil
+}
+
+func pendingAuthorityTaskIDs(orders []core.WorkOrder, proposals []core.PendingProposal) map[string]bool {
+	origins := make(map[string]bool)
+	for _, proposal := range proposals {
+		if proposal.OriginType == "task" && proposal.OriginID != "" {
+			origins[proposal.OriginID] = true
+		}
+	}
+	result := make(map[string]bool)
+	for _, order := range orders {
+		if !origins[order.TaskID] {
+			continue
+		}
+		if order.Stage == core.StageImplement && order.State == core.WorkOrderSubmitted ||
+			order.Stage == core.StageReview && (order.State == core.WorkOrderQueued || order.State == core.WorkOrderClaimed || order.State == core.WorkOrderSubmitted) {
+			result[order.TaskID] = true
+		}
+	}
+	return result
+}
+
 func sortPendingProposals(items []core.PendingProposal) {
 	sort.Slice(items, func(i, j int) bool {
 		if !items[i].ProposedAt.Equal(items[j].ProposedAt) {

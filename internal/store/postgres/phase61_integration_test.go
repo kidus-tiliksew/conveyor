@@ -25,6 +25,7 @@ type phase61QueryTracer struct {
 	dependencyBatches   int
 	childBatches        int
 	blockerBatchQueries int
+	lifecycleBatches    int
 }
 
 func (tracer *phase61QueryTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
@@ -40,6 +41,9 @@ func (tracer *phase61QueryTracer) TraceQueryStart(ctx context.Context, _ *pgx.Co
 	if strings.Contains(data.SQL, "parent_task_id=ANY") {
 		tracer.childBatches++
 	}
+	if strings.Contains(data.SQL, "FROM github_lifecycles") && strings.Contains(data.SQL, "task_id=ANY") {
+		tracer.lifecycleBatches++
+	}
 	return ctx
 }
 
@@ -51,6 +55,13 @@ func (tracer *phase61QueryTracer) reset() {
 	tracer.dependencyBatches = 0
 	tracer.childBatches = 0
 	tracer.blockerBatchQueries = 0
+	tracer.lifecycleBatches = 0
+}
+
+func (tracer *phase61QueryTracer) lifecycleCount() int {
+	tracer.mu.Lock()
+	defer tracer.mu.Unlock()
+	return tracer.lifecycleBatches
 }
 
 func (tracer *phase61QueryTracer) relationCounts() (int, int) {
@@ -466,6 +477,11 @@ func TestListTasksBatchesRelationHydrationIntegration(t *testing.T) {
 	if err = st.CreateTaskWithDependencies(ctx, child, []string{dependency.ID}); err != nil {
 		t.Fatal(err)
 	}
+	if _, err = st.pool.Exec(ctx, `INSERT INTO github_lifecycles
+		(workspace_id,task_id,repository,spec_version,state) VALUES ($1,$2,$3,1,'queued')`,
+		workspace, dependency.ID, "acme/conveyor"); err != nil {
+		t.Fatal(err)
+	}
 
 	tracer.reset()
 	tasks, err := st.ListTasks(ctx)
@@ -475,6 +491,9 @@ func TestListTasksBatchesRelationHydrationIntegration(t *testing.T) {
 	dependencyQueries, childQueries := tracer.relationCounts()
 	if dependencyQueries != 1 || childQueries != 1 {
 		t.Fatalf("relation hydration queries dependency=%d child=%d, want 1/1", dependencyQueries, childQueries)
+	}
+	if got := tracer.lifecycleCount(); got != 1 {
+		t.Fatalf("lifecycle hydration queries=%d want 1", got)
 	}
 	byID := make(map[string]core.Task, len(tasks))
 	for _, task := range tasks {
@@ -487,6 +506,9 @@ func TestListTasksBatchesRelationHydrationIntegration(t *testing.T) {
 	}
 	if len(byID[parent.ID].Children) != 1 || byID[parent.ID].Children[0].ID != child.ID {
 		t.Fatalf("parent children=%+v", byID[parent.ID].Children)
+	}
+	if byID[dependency.ID].GitHub == nil || byID[dependency.ID].GitHub.Repository != "acme/conveyor" || byID[parent.ID].GitHub != nil {
+		t.Fatalf("lifecycle hydration dependency=%+v parent=%+v", byID[dependency.ID].GitHub, byID[parent.ID].GitHub)
 	}
 
 	emptyWorkspace := "relation-empty-" + core.NewTaskID()
@@ -511,6 +533,9 @@ func TestListTasksBatchesRelationHydrationIntegration(t *testing.T) {
 	dependencyQueries, childQueries = tracer.relationCounts()
 	if dependencyQueries != 0 || childQueries != 0 {
 		t.Fatalf("empty relation hydration queries dependency=%d child=%d, want 0/0", dependencyQueries, childQueries)
+	}
+	if got := tracer.lifecycleCount(); got != 1 {
+		t.Fatalf("empty-relation lifecycle hydration queries=%d want 1", got)
 	}
 	for _, task := range emptyTasks {
 		if task.Dependencies != nil || task.BlockingTaskIDs != nil || task.Children != nil {

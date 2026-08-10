@@ -187,3 +187,56 @@ test('requirements navigation stays usable when its attention projection fails o
   await expect.poll(() => projectionRequests).toBeGreaterThan(1)
   await expect(page.getByRole('link', { name: 'Requirements', exact: true })).toHaveText('Requirements')
 })
+
+test('pending proposal consumers share one active query and hidden documents stop interval polling', async ({
+  page,
+}) => {
+  await initialize(page)
+  await page.addInitScript(() => {
+    let visibility: DocumentVisibilityState = 'visible'
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      get: () => visibility,
+    })
+    Object.defineProperty(window, '__setTestVisibility', {
+      value: (next: DocumentVisibilityState) => {
+        visibility = next
+        window.dispatchEvent(new Event('visibilitychange'))
+      },
+    })
+  })
+  let projectionRequests = 0
+  await page.route('**/v1/**', async (route: Route) => {
+    const path = new URL(route.request().url()).pathname
+    if (path === '/v1/workspaces') return route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] })
+    if (path === '/v1/workspace') return route.fulfill({ json: { workspace: 'demo', repos: ['conveyor'] } })
+    if (path === '/v1/activity' || path === '/v1/blueprints') return route.fulfill({ json: [] })
+    if (path === '/v1/pending-proposals') {
+      projectionRequests++
+      return route.fulfill({
+        json: { items: [], attention: { task_count: 0, pending_proposal_count: 0, total: 0 } },
+      })
+    }
+    return route.fulfill({ json: [] })
+  })
+
+  // AppShell and the queue page both subscribe to the same workspace key.
+  await page.goto('/pending-proposals')
+  await expect.poll(() => projectionRequests).toBe(1)
+
+  await page.evaluate(() => {
+    ;(window as Window & { __setTestVisibility(next: DocumentVisibilityState): void }).__setTestVisibility('hidden')
+  })
+  await page.waitForTimeout(16_000)
+  expect(projectionRequests).toBe(1)
+
+  await page.evaluate(() => {
+    ;(window as Window & { __setTestVisibility(next: DocumentVisibilityState): void }).__setTestVisibility('visible')
+  })
+  await expect.poll(() => projectionRequests).toBe(2)
+
+  await page.waitForTimeout(5_100)
+  await page.context().setOffline(true)
+  await page.context().setOffline(false)
+  await expect.poll(() => projectionRequests).toBe(3)
+})

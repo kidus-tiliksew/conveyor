@@ -89,7 +89,10 @@ export function usePendingProposals() {
     queryKey: ['pending-proposals', workspace],
     queryFn: fetchPendingProposals,
     enabled: Boolean(workspace),
-    refetchInterval: 15_000,
+    refetchInterval: () => (document.visibilityState === 'visible' ? 15_000 : false),
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: true,
+    refetchOnReconnect: true,
   })
 }
 

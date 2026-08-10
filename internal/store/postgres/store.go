@@ -598,10 +598,8 @@ func (s *Store) ListTasks(ctx context.Context) ([]core.Task, error) {
 	if err = s.hydrateTaskRelationsBatch(ctx, result, dependencyTaskIDs, parentTaskIDs); err != nil {
 		return nil, err
 	}
-	for i := range result {
-		if err = s.hydrateGitHubLifecycle(ctx, &result[i]); err != nil {
-			return nil, err
-		}
+	if err = s.hydrateGitHubLifecyclesBatch(ctx, result); err != nil {
+		return nil, err
 	}
 	return result, nil
 }
@@ -678,10 +676,8 @@ func (s *Store) hydrateTaskRows(ctx context.Context, rows []db.ListTaskOperation
 	if err := s.hydrateTaskRelationsBatch(ctx, result, dependencyTaskIDs, parentTaskIDs); err != nil {
 		return nil, err
 	}
-	for i := range result {
-		if err := s.hydrateGitHubLifecycle(ctx, &result[i]); err != nil {
-			return nil, err
-		}
+	if err := s.hydrateGitHubLifecyclesBatch(ctx, result); err != nil {
+		return nil, err
 	}
 	return result, nil
 }
@@ -722,28 +718,8 @@ func (s *Store) ListTaskOperations(ctx context.Context, query store.TaskOperatio
 	if len(taskIDs) == 0 {
 		return page, nil
 	}
-	lifecycleRows, err := s.pool.Query(ctx, "SELECT "+githubLifecycleColumns+" FROM github_lifecycles WHERE workspace_id=$1 AND task_id=ANY($2::text[])", filter.WorkspaceID, taskIDs)
-	if err != nil {
+	if err = s.hydrateGitHubLifecyclesBatch(ctx, page.Tasks); err != nil {
 		return store.TaskOperationsPage{}, err
-	}
-	lifecycles := make(map[string]core.GitHubLifecycle, len(taskIDs))
-	for lifecycleRows.Next() {
-		lifecycle, scanErr := scanGitHubLifecycle(lifecycleRows)
-		if scanErr != nil {
-			lifecycleRows.Close()
-			return store.TaskOperationsPage{}, scanErr
-		}
-		lifecycles[lifecycle.TaskID] = lifecycle
-	}
-	if err = lifecycleRows.Err(); err != nil {
-		lifecycleRows.Close()
-		return store.TaskOperationsPage{}, err
-	}
-	lifecycleRows.Close()
-	for i := range page.Tasks {
-		if lifecycle, ok := lifecycles[page.Tasks[i].ID]; ok {
-			page.Tasks[i].GitHub = &lifecycle
-		}
 	}
 	events, err := s.queries.ListTaskOperationsEvents(ctx, db.ListTaskOperationsEventsParams{WorkspaceID: filter.WorkspaceID, TaskIds: taskIDs})
 	if err != nil {
@@ -1104,6 +1080,39 @@ func (s *Store) hydrateGitHubLifecycle(ctx context.Context, task *core.Task) err
 	}
 	if ok {
 		task.GitHub = &lifecycle
+	}
+	return nil
+}
+
+func (s *Store) hydrateGitHubLifecyclesBatch(ctx context.Context, tasks []core.Task) error {
+	if len(tasks) == 0 {
+		return nil
+	}
+	taskIDs := make([]string, len(tasks))
+	for i := range tasks {
+		taskIDs[i] = tasks[i].ID
+	}
+	rows, err := s.pool.Query(ctx, "SELECT "+githubLifecycleColumns+" FROM github_lifecycles WHERE workspace_id=$1 AND task_id=ANY($2::text[]) ORDER BY task_id", workspace(ctx), taskIDs)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	byTask := make(map[string]core.GitHubLifecycle, len(tasks))
+	for rows.Next() {
+		lifecycle, scanErr := scanGitHubLifecycle(rows)
+		if scanErr != nil {
+			return scanErr
+		}
+		byTask[lifecycle.TaskID] = lifecycle
+	}
+	if err = rows.Err(); err != nil {
+		return err
+	}
+	for i := range tasks {
+		if lifecycle, ok := byTask[tasks[i].ID]; ok {
+			copy := lifecycle
+			tasks[i].GitHub = &copy
+		}
 	}
 	return nil
 }
