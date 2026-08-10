@@ -2340,6 +2340,51 @@ func (s *Store) ListLineageNeighborhood(ctx context.Context, roots []core.Lineag
 	return result, rows.Err()
 }
 
+func (s *Store) ListRequirementDeliveryLineage(ctx context.Context, requirementID string, budget core.LineageTraversalBudget) ([]core.LineageLink, error) {
+	if strings.TrimSpace(requirementID) == "" || budget.MaxDepth < 0 || budget.MaxNodes <= 0 || budget.MaxLinks <= 0 {
+		return nil, fmt.Errorf("requirement delivery lineage requires a requirement id and bounded depth, nodes, and links")
+	}
+	rows, err := s.pool.Query(ctx, `WITH RECURSIVE walk(node_type,node_id,depth) AS (
+		SELECT 'requirement'::text,$2::text,0
+		UNION
+		SELECT l.dst_type,l.dst_id,w.depth+1
+		FROM walk w JOIN links l ON l.workspace_id=$1 AND l.src_type=w.node_type AND l.src_id=w.node_id
+		WHERE w.depth < $3 AND (
+			(l.kind='serves' AND l.src_type='requirement' AND l.dst_type IN ('task','blueprint')) OR
+			(l.kind='versions' AND l.src_type='blueprint' AND l.dst_type='blueprint_version') OR
+			(l.kind='materializes' AND l.src_type='blueprint_version' AND l.dst_type='task')
+		)
+	), chosen AS (
+		SELECT min(w.depth) AS src_depth,l.workspace_id,l.src_type,l.src_id,l.dst_type,l.dst_id,l.kind,l.legacy_created_by_event,l.created_at,l.created_by_event_id
+		FROM walk w JOIN links l ON l.workspace_id=$1 AND l.src_type=w.node_type AND l.src_id=w.node_id
+		WHERE w.depth < $3 AND (
+			(l.kind='serves' AND l.src_type='requirement' AND l.dst_type IN ('task','blueprint')) OR
+			(l.kind='versions' AND l.src_type='blueprint' AND l.dst_type='blueprint_version') OR
+			(l.kind='materializes' AND l.src_type='blueprint_version' AND l.dst_type='task')
+		)
+		GROUP BY l.workspace_id,l.src_type,l.src_id,l.dst_type,l.dst_id,l.kind,l.legacy_created_by_event,l.created_at,l.created_by_event_id
+	)
+	SELECT workspace_id,src_type,src_id,dst_type,dst_id,kind,legacy_created_by_event,created_at,created_by_event_id
+	FROM chosen ORDER BY src_depth,src_type,src_id,dst_type,dst_id,kind LIMIT $4`, workspace(ctx), requirementID, budget.MaxDepth, budget.MaxLinks+1)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]core.LineageLink, 0, budget.MaxLinks+1)
+	for rows.Next() {
+		var link core.LineageLink
+		var legacy pgtype.Text
+		var createdAt pgtype.Timestamptz
+		var eventID pgtype.Int8
+		if err = rows.Scan(&link.Workspace, &link.SrcType, &link.SrcID, &link.DstType, &link.DstID, &link.Kind, &legacy, &createdAt, &eventID); err != nil {
+			return nil, err
+		}
+		link.LegacyCreatedByEvent, link.CreatedByEventID, link.CreatedAt = legacy.String, eventID.Int64, createdAt.Time
+		result = append(result, link)
+	}
+	return result, rows.Err()
+}
+
 func (s *Store) RebuildLineage(ctx context.Context, request core.LineageRebuildRequest) (core.LineageRebuildResult, error) {
 	var result core.LineageRebuildResult
 	if strings.TrimSpace(request.Reason) == "" || strings.TrimSpace(request.RequestID) == "" {
