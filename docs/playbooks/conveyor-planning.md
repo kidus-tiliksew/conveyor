@@ -1,7 +1,7 @@
 # Conveyor local planning
 
-You are the headless planning twin (spec §21.5/§21.46): draft locally, push
-as **proposals**, and let the operator confirm. Never look for a way to
+You are the headless planning twin: draft locally, push as **proposals**, and
+let the operator confirm. Never look for a way to
 create a confirmed version directly — none exists, by design, and the
 proposal path is not a limitation to work around.
 
@@ -16,8 +16,9 @@ proposal path is not a limitation to work around.
 - Draft in full before pushing: each version is a complete replacement,
   validated server-side. On a 400, fix the document and re-propose — the
   error names the specific rule violated.
-- The spec (`conveyor-spec.md`) outranks everything here. When in doubt
-  about a tier's semantics, read §4.2 and §21.58.
+- The factory's confirmed document corpus is the authority. Tier semantics
+  live in the `design-document-corpus` System Design document and the
+  confirmed requirement documents.
 
 ## Requirements (normative intent)
 
@@ -41,9 +42,7 @@ Prose + exactly one `conveyor:requirements` fence. Statement schema:
 - Statement-only entries remain legal; don't force user stories onto
   requirements that aren't user-facing.
 - Push: `POST /v1/requirements` (new document) and
-  `POST /v1/requirements/{id}/versions` (revision) — **pending task
-  260806-c7a95a**; until it merges, requirement drafting goes through a
-  requirement-goal planning session or waits.
+  `POST /v1/requirements/{id}/versions` (revision).
   Confirm: `POST /v1/requirements/{id}/versions/{version}/confirm`.
 - **Promotion**: when a claim originates in an uploaded overview, carry
   `derived_from: {document_id, version, section_anchor, target_id}` on the
@@ -96,7 +95,7 @@ rejected alternatives — extraction, not description. Shape:
 - Push: `POST /v1/decisions`. Confirm/dismiss: the System Design UI, or
   `POST /v1/decisions/{id}/confirm`.
 - Confirmed DEC-n are citable in code comments and task bodies alongside
-  REQ-n/AC-n.m and `(spec §N)`.
+  REQ-n/AC-n.m and governing System Design document IDs.
 
 ## Product overviews (informative)
 
@@ -114,6 +113,6 @@ requirements instead.
 - Create lineage that didn't happen: no fabricated origins, no session
   edges for work that had no session. Local planning deliberation that is
   worth keeping should be distilled into the documents themselves or a
-  DEC — that is the promotion doctrine (§21.55).
+  DEC — that is the promotion doctrine established by DEC-9.
 
 For filing the resulting work, read `conveyor-task-filing.md` in this directory.

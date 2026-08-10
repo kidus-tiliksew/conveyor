@@ -32,7 +32,7 @@ Structure that has survived contact with the agents:
    spec, and the fix **shape** (constrain the approach only where it
    matters; leave the rest to the spec stage).
 3. `## Boundaries` — what must NOT change. Always include the standing
-   ones that apply: both §13.1 gates untouched; no priority/assignee/
+   ones that apply: both gates untouched; no priority/assignee/
    phase fields; events append-only; propose→confirm authority unchanged;
    drift is a signal never a gate; conformance suites extend, never
    shrink; new edge kinds ship with projector + two-store conformance +
@@ -54,8 +54,8 @@ satisfy.)
 
 ## Citations and context
 
-- Cite the governing spec as `(spec §N)`, confirmed requirements as
-  REQ-n/AC-n.m, confirmed decisions as DEC-n. Name the System Design
+- Cite confirmed REQ-n/AC-n.m, DEC-n, and the governing System Design
+  document ID. Name the System Design
   document governing the task's paths and say whether the change alters
   the documented mechanism (if yes, the agent should propose the design
   revision in-session; if no, say no revision is warranted — this steers
