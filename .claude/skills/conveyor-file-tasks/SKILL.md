@@ -12,4 +12,10 @@ exit criteria, dependency ordering).
 Non-negotiables, restated: phase-sized work is never one task — file a
 dependency-ordered set; siblings declare file ownership and migration-
 number starts; no acceptance criterion may require an operator-only act
-(use checkpoint phrasing instead).
+(use checkpoint phrasing instead). The confirmed factory document corpus is
+the authority: cite confirmed REQ-n/AC-n.m, DEC-n, and governing System Design
+document names or IDs. Every normative document change remains a proposal for
+operator confirmation. For web-only work, allow the DEC-16 generated
+`internal/httpapi/dashboard` bundle rather than banning `internal/**`; if
+implementation discovers an approved-plan conflict, require the operator-gated
+`request_plan_revision` path rather than an acceptance-criteria exception.

@@ -52,10 +52,23 @@ is the success condition" — or scope it out. (Lesson: task 260805-b8b13c
 looped through three doomed recoveries on an AC only an operator could
 satisfy.)
 
+If implementation reveals that the approved execution plan conflicts with
+repository reality, direct the implementer to call the operator-gated
+`request_plan_revision` surface. Never turn the conflict into an acceptance-
+criteria exception or authorize a prose-only departure from the approved plan.
+
+## Source boundaries
+
+For web-only work, state that regenerating `internal/httpapi/dashboard` is
+expected build output of the web change under DEC-16. Never impose a blanket
+"no changes under `internal/**`" boundary; exclude unrelated internal source
+explicitly without excluding the generated dashboard bundle.
+
 ## Citations and context
 
-- Cite confirmed REQ-n/AC-n.m, DEC-n, and the governing System Design
-  document ID. Name the System Design
+- The confirmed factory document corpus is the authority for new work. Cite
+  confirmed REQ-n/AC-n.m, DEC-n, and the governing System Design document name
+  or ID. Name the System Design
   document governing the task's paths and say whether the change alters
   the documented mechanism (if yes, the agent should propose the design
   revision in-session; if no, say no revision is warranted — this steers
