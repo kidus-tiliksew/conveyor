@@ -247,6 +247,77 @@ test('requirements renders a document tree, one attention surface, and confirms 
   await expect(page).toHaveURL(/\/requirements/)
 })
 
+test('requirements resolves attributed drift inline and refreshes its pending amendment', async ({ page }) => {
+  await initShell(page)
+  const confirmedVersion = {
+    ...requirement.pending_versions[0],
+    confirmed: true,
+    origin: 'operator',
+  }
+  const drift = {
+    id: 'requirement-drift-1',
+    workspace_id: 'demo',
+    repository: 'conveyor',
+    kind: 'external_pr_merge',
+    source_url: 'https://example.test/pr/51',
+    task_id: '260810-drift',
+    requirement_id: 'req-retries',
+    matching_paths: ['internal/retry/retry.go'],
+    detected_at: '2026-08-10T12:00:00Z',
+  }
+  const amendment = {
+    ...confirmedVersion,
+    version: 2,
+    content: 'Keep retries bounded and record delivery drift.',
+    statements: [{ id: 'REQ-1', statement: 'Retries stop after a finite limit and record delivery drift.' }],
+    origin: 'drift_amendment',
+    origin_session_id: undefined,
+    confirmed: false,
+    created_at: '2026-08-10T12:01:00Z',
+  }
+  let resolved = false
+  let resolution: Record<string, string> | undefined
+  const view = () => ({
+    ...requirement,
+    current_version: confirmedVersion,
+    pending_versions: resolved ? [amendment] : [],
+    staleness: {
+      delivery_after_intent: false,
+      active_drift: resolved ? [] : [drift],
+    },
+  })
+  await page.route('**/v1/**', async (route) => {
+    const shell = shellResponse(route)
+    if (shell) return await shell
+    const request = route.request()
+    const url = new URL(request.url())
+    if (url.pathname === '/v1/requirements') return route.fulfill({ json: [view()] })
+    if (url.pathname === '/v1/requirements/req-retries') return route.fulfill({ json: view() })
+    if (url.pathname === '/v1/requirements/req-retries/versions')
+      return route.fulfill({ json: resolved ? [confirmedVersion, amendment] : [confirmedVersion] })
+    if (url.pathname === '/v1/monitor/drift/requirement-drift-1/resolve') {
+      resolution = request.postDataJSON() as Record<string, string>
+      resolved = true
+      return route.fulfill({ json: drift })
+    }
+    return route.fulfill({ json: [] })
+  })
+
+  await page.goto('/requirements?requirement=req-retries')
+  const attention = page.getByRole('region', { name: 'Needs your attention' })
+  const form = attention.getByRole('form', { name: 'Resolve drift requirement-drift-1' })
+  const outcomes = form.getByLabel('Resolution outcome for requirement-drift-1')
+  await expect(outcomes.getByRole('option', { name: 'Design document updated' })).toHaveCount(0)
+  await outcomes.selectOption('requirements_amended')
+  await expect(form.getByLabel('Confirmed requirement for requirement-drift-1')).toHaveCount(0)
+  await form.getByRole('button', { name: 'Resolve' }).click()
+
+  await expect.poll(() => resolution).toEqual({ outcome: 'requirements_amended', requirement_id: 'req-retries' })
+  await expect(attention).not.toContainText('Code changed in conveyor without reaching this document')
+  await expect(attention).toContainText('Version 2 is waiting for you')
+  await expect(attention).toContainText('Written from a delivery change')
+})
+
 test('requirements search and deterministic sorting preserve the selected canvas and show attention counts', async ({
   page,
 }) => {

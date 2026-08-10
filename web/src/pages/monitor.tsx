@@ -1,14 +1,11 @@
-import { useState } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { Activity, ExternalLink, GitCommitHorizontal } from 'lucide-react'
 import { useOperatorToken, useWorkspaceSelection } from '../components/app-shell'
+import { DriftResolutionForm } from '../components/documents/drift-resolution-form'
 import { Badge } from '../components/ui/badge'
-import { Button } from '../components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
-import { Select } from '../components/ui/input'
-import { fetchMonitorStatus, fetchRequirements, resolveMonitorDrift } from '../lib/api'
-import type { MonitorDriftOutcome, RepositoryDrift, RequirementView } from '../lib/types'
+import { fetchMonitorStatus, fetchRequirements } from '../lib/api'
 
 export function MonitorPage() {
   const { workspace } = useWorkspaceSelection()
@@ -98,6 +95,7 @@ export function MonitorPage() {
                   <p className="mt-1 text-xs text-muted">Detected {new Date(item.detected_at).toLocaleString()}</p>
                   <DriftResolutionForm
                     drift={item}
+                    surface="monitor"
                     requirements={confirmedRequirements}
                     requirementsPending={requirementsPending}
                     token={token}
@@ -165,91 +163,6 @@ export function MonitorPage() {
         </Card>
       </div>
     </div>
-  )
-}
-
-const driftOutcomes: Array<{ value: MonitorDriftOutcome; label: string }> = [
-  { value: 'conflict_resolved', label: 'Conflict resolved' },
-  { value: 'requirements_amended', label: 'Requirements amended' },
-  { value: 'design_document_updated', label: 'Design document updated' },
-  { value: 'change_reverted', label: 'Change reverted' },
-]
-
-function DriftResolutionForm({
-  drift,
-  requirements,
-  requirementsPending,
-  token,
-  workspace,
-}: {
-  drift: RepositoryDrift
-  requirements: RequirementView[]
-  requirementsPending: boolean
-  token: string
-  workspace: string
-}) {
-  const queryClient = useQueryClient()
-  const [outcome, setOutcome] = useState<MonitorDriftOutcome>('conflict_resolved')
-  const [requirementID, setRequirementID] = useState(drift.requirement_id ?? '')
-  const mutation = useMutation({
-    mutationFn: () =>
-      resolveMonitorDrift(token, drift.id, outcome, outcome === 'requirements_amended' ? requirementID : undefined),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['monitor', workspace] }),
-  })
-  const needsRequirement = outcome === 'requirements_amended'
-  const outcomeSelectID = `resolution-outcome-${drift.id}`
-  const requirementSelectID = `resolution-requirement-${drift.id}`
-  return (
-    <form
-      className="mt-3 flex flex-wrap items-end gap-2"
-      aria-label={`Resolve drift ${drift.id}`}
-      onSubmit={(event) => {
-        event.preventDefault()
-        mutation.mutate()
-      }}
-    >
-      <label className="min-w-48 text-xs text-muted" htmlFor={outcomeSelectID}>
-        Resolution
-        <Select
-          id={outcomeSelectID}
-          aria-label={`Resolution outcome for ${drift.id}`}
-          value={outcome}
-          onChange={(event) => setOutcome(event.target.value as MonitorDriftOutcome)}
-        >
-          {driftOutcomes.map((option) => (
-            <option key={option.value} value={option.value}>
-              {option.label}
-            </option>
-          ))}
-        </Select>
-      </label>
-      {needsRequirement && (
-        <label className="min-w-56 flex-1 text-xs text-muted" htmlFor={requirementSelectID}>
-          Confirmed requirement
-          <Select
-            id={requirementSelectID}
-            aria-label={`Confirmed requirement for ${drift.id}`}
-            value={requirementID}
-            onChange={(event) => setRequirementID(event.target.value)}
-            disabled={requirementsPending}
-          >
-            <option value="">{requirementsPending ? 'Loading confirmed requirements…' : 'Select a requirement'}</option>
-            {requirements.map((item) => (
-              <option key={item.requirement.id} value={item.requirement.id}>
-                {item.requirement.title}
-              </option>
-            ))}
-          </Select>
-          {!requirementsPending && requirements.length === 0 && (
-            <span className="mt-1 block text-faint">No confirmed requirements are available.</span>
-          )}
-        </label>
-      )}
-      <Button type="submit" size="sm" disabled={!token || mutation.isPending || (needsRequirement && !requirementID)}>
-        {mutation.isPending ? 'Resolving…' : 'Resolve'}
-      </Button>
-      {mutation.error && <p className="basis-full text-xs text-failure">{String(mutation.error)}</p>}
-    </form>
   )
 }
 
