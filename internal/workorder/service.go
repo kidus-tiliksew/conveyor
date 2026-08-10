@@ -268,6 +268,16 @@ func (s *Service) Recover(ctx context.Context, id, requestID string, suppliedDir
 	if err != nil {
 		return core.WorkOrder{}, err
 	}
+	_, pendingPlanRevision, err := dispatch.PendingPlanRevisionGate(ctx, s.Store, order.TaskID)
+	if err != nil {
+		return core.WorkOrder{}, err
+	}
+	if pendingPlanRevision {
+		// The plan-revision decision is the exclusive route back to planning or
+		// implementation while a plan is contested (REQ-2, AC-2.1;
+		// design-260805-973cd4). Generic recovery must not bypass that gate.
+		return core.WorkOrder{}, fmt.Errorf("work order %s cannot be recovered while task %s awaits the pending plan-revision decision; use the plan-revision decision gate", id, order.TaskID)
+	}
 	if change := recoveryRefreeze(cfg, task, order); change != nil {
 		return taskops.ExecuteWorkOrder(ctx, s.Store, order.TaskID, core.WorkOrderCmdRecover, func(lease taskops.TaskLease) (core.WorkOrder, error) {
 			return s.Store.RecoverWorkOrderCommand(ctx, lease, id, requestID, direction, timeout, change)

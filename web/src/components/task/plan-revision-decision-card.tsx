@@ -16,8 +16,10 @@ import { Textarea } from '../ui/input'
 // of the generic gate — the question is not "is this work good", it is "should
 // the plan change", and it carries three fixed outcomes instead of the gate's
 // derived ones. It renders as the timeline's live tail like every other
-// decision point, and coexists with the generic work-order recovery card,
-// which stays owned by its own component.
+// decision point. While the request is pending it is the exclusive pause
+// surface: declining with direction already owns the implementation retry, so
+// generic recovery must not offer a route around the operator gate
+// (REQ-2, AC-2.1; design-260805-973cd4).
 
 type PlanRevisionDecision = 'approve' | 'decline' | 'reject'
 
