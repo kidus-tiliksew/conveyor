@@ -1137,18 +1137,13 @@ func TestPendingProposalsProjectionAttentionAndTaskWarning(t *testing.T) {
 		t.Fatalf("projection=%+v", projection)
 	}
 	for _, item := range projection.Items {
-		if item.ID == "" || item.Title == "" || item.Tier == "" || item.OriginType == "" || item.ProposedAt.IsZero() || item.AgeSeconds < 0 || item.Href == "" {
+		if item.ID == "" || item.Title == "" || item.Tier == "" || item.OriginType == "" || item.ProposedAt.IsZero() || item.AgeSeconds < 0 {
 			t.Fatalf("incomplete projection item=%+v", item)
 		}
 	}
-	wantHrefs := map[string]string{
-		"requirement":   "/requirements?requirement=req-pending#pending-1",
-		"system_design": "/system-design?document=design-pending#pending-1",
-		"decision":      "/system-design#decision-" + strings.ToLower(decision.ID),
-	}
-	for _, item := range projection.Items {
-		if item.Href != wantHrefs[item.Tier] {
-			t.Errorf("%s href=%q, want %q", item.Tier, item.Href, wantHrefs[item.Tier])
+	for _, forbidden := range []string{`"href"`, `"route"`, `"hash"`} {
+		if strings.Contains(response.Body.String(), forbidden) {
+			t.Fatalf("projection leaked UI navigation field %s: %s", forbidden, response.Body.String())
 		}
 	}
 	detail := httptest.NewRecorder()

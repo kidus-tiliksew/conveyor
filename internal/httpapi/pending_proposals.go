@@ -3,9 +3,6 @@ package httpapi
 import (
 	"context"
 	"net/http"
-	"net/url"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
@@ -14,8 +11,7 @@ import (
 
 type pendingProposalItem struct {
 	core.PendingProposal
-	AgeSeconds int64  `json:"age_seconds"`
-	Href       string `json:"href"`
+	AgeSeconds int64 `json:"age_seconds"`
 }
 
 type attentionSummary struct {
@@ -47,29 +43,9 @@ func (s *Server) listPendingProposals(w http.ResponseWriter, r *http.Request) {
 		if age < 0 {
 			age = 0
 		}
-		items = append(items, pendingProposalItem{PendingProposal: proposal, AgeSeconds: int64(age / time.Second), Href: pendingProposalHref(proposal)})
+		items = append(items, pendingProposalItem{PendingProposal: proposal, AgeSeconds: int64(age / time.Second)})
 	}
 	writeJSON(w, http.StatusOK, pendingProposalsResponse{Items: items, Attention: attentionSummary{TaskCount: taskCount, PendingProposalCount: len(items), Total: taskCount + len(items)}})
-}
-
-func pendingProposalHref(proposal core.PendingProposal) string {
-	switch proposal.Tier {
-	case "requirement":
-		return "/requirements?requirement=" + url.QueryEscape(proposal.ID) + pendingVersionFragment(proposal.Version)
-	case "system_design":
-		return "/system-design?document=" + url.QueryEscape(proposal.ID) + pendingVersionFragment(proposal.Version)
-	case "decision":
-		return "/system-design#decision-" + url.PathEscape(strings.ToLower(proposal.ID))
-	default:
-		return ""
-	}
-}
-
-func pendingVersionFragment(version int) string {
-	if version < 1 {
-		return ""
-	}
-	return "#pending-" + strconv.Itoa(version)
 }
 
 func (s *Server) taskAttentionCount(ctx context.Context, proposals []core.PendingProposal) (int, error) {
