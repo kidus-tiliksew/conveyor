@@ -2,6 +2,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, Outlet, useNavigate, useRouterState } from '@tanstack/react-router'
 import {
   Activity,
+  BellRing,
   FileCode2,
   FolderGit2,
   Kanban,
@@ -13,7 +14,7 @@ import {
   Workflow,
 } from 'lucide-react'
 import { createContext, type ReactNode, useContext, useEffect, useState } from 'react'
-import { fetchActivity, fetchBlueprints, fetchWorkspace, fetchWorkspaces } from '../lib/api'
+import { fetchActivity, fetchBlueprints, fetchPendingProposals, fetchWorkspace, fetchWorkspaces } from '../lib/api'
 import { isBlueprintAnchor } from '../lib/blueprint'
 import { cn } from '../lib/utils'
 import { ThemeProvider, useTheme } from './theme-provider'
@@ -79,6 +80,16 @@ export function useWorkspace() {
     enabled: !!workspace,
     staleTime: 60_000,
     retry: 1,
+  })
+}
+
+export function usePendingProposals() {
+  const { workspace } = useWorkspaceSelection()
+  return useQuery({
+    queryKey: ['pending-proposals', workspace],
+    queryFn: fetchPendingProposals,
+    enabled: Boolean(workspace),
+    refetchInterval: 15_000,
   })
 }
 
@@ -199,11 +210,16 @@ function NavSidebar() {
   })
   const { data: workspace } = useWorkspace()
   const { data: activity } = useActivity()
-  // This badge counts what the Board will actually show, so it applies the
-  // board's own predicate: an anchor lives on the Blueprints
-  // surface, and counting one here would send the operator to a board with
-  // nothing on it to resolve.
-  const attention = (activity ?? []).filter((item) => !isBlueprintAnchor(item.task) && item.needs_attention).length
+  const { data: proposals } = usePendingProposals()
+  // Until the combined projection arrives, preserve the Board's existing
+  // task-only fallback and keep blueprint anchors out of that count.
+  const taskAttention = (activity ?? []).filter((item) => !isBlueprintAnchor(item.task) && item.needs_attention).length
+  // The server owns the combined derivation (AC-1.1); fall back to the
+  // already-loaded task count only while the protected projection is loading.
+  // Older fixtures and briefly mixed-version deployments can return the
+  // previous empty collection shape; degrade to the task signal instead of
+  // taking down the app shell while the projection catches up.
+  const attention = proposals?.attention?.total ?? taskAttention
 
   const currentName = workspaces?.find((item) => item.id === selected)?.name ?? workspace?.workspace ?? 'Conveyor'
 
@@ -223,6 +239,7 @@ function NavSidebar() {
         <NavItem to="/workspace" icon={FolderGit2} label="Workspace" />
         <NavItem to="/requirements" icon={Workflow} label="Requirements" />
         <NavItem to="/system-design" icon={FileCode2} label="System Design" />
+        <NavItem to="/pending-proposals" icon={BellRing} label="Pending proposals" />
         {/* Exactly the operating surfaces §21.61 accepts, and no others
             (REQ-4, AC-4.1). Planning and Blueprint history are parked, not
             retired: their routes stay mounted for deep links, the §21.49

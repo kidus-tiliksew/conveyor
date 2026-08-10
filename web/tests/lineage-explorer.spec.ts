@@ -417,6 +417,7 @@ test('primary navigation shows exactly the accepted operating surfaces', async (
     'Workspace',
     'Requirements',
     'System Design',
+    'Pending proposals',
     'Monitor',
     'Settings',
   ])
