@@ -2026,3 +2026,139 @@ func (q *Queries) UpsertTranscript(ctx context.Context, arg UpsertTranscriptPara
 	)
 	return i, err
 }
+
+const countUsers = `-- name: CountUsers :one
+SELECT count(*)::bigint FROM users
+`
+
+func (q *Queries) CountUsers(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, countUsers)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const updateDeploymentOrgName = `-- name: UpdateDeploymentOrgName :one
+UPDATE orgs SET name = $1 WHERE singleton = true
+RETURNING id, name, singleton, created_at
+`
+
+func (q *Queries) UpdateDeploymentOrgName(ctx context.Context, name string) (Org, error) {
+	row := q.db.QueryRow(ctx, updateDeploymentOrgName, name)
+	var item Org
+	err := row.Scan(&item.ID, &item.Name, &item.Singleton, &item.CreatedAt)
+	return item, err
+}
+
+type InsertIdentityUserParams struct {
+	ID          string `json:"id"`
+	Email       string `json:"email"`
+	DisplayName string `json:"display_name"`
+}
+
+const getIdentityUser = `-- name: GetIdentityUser :one
+SELECT id, email, display_name, status, created_at FROM users WHERE id = $1
+`
+
+func (q *Queries) GetIdentityUser(ctx context.Context, id string) (User, error) {
+	row := q.db.QueryRow(ctx, getIdentityUser, id)
+	var item User
+	err := row.Scan(&item.ID, &item.Email, &item.DisplayName, &item.Status, &item.CreatedAt)
+	return item, err
+}
+
+const insertIdentityUser = `-- name: InsertIdentityUser :one
+INSERT INTO users (id, email, display_name, status)
+VALUES ($1, $2, $3, 'active')
+RETURNING id, email, display_name, status, created_at
+`
+
+func (q *Queries) InsertIdentityUser(ctx context.Context, arg InsertIdentityUserParams) (User, error) {
+	row := q.db.QueryRow(ctx, insertIdentityUser, arg.ID, arg.Email, arg.DisplayName)
+	var item User
+	err := row.Scan(&item.ID, &item.Email, &item.DisplayName, &item.Status, &item.CreatedAt)
+	return item, err
+}
+
+type InsertUserTokenParams struct {
+	ID        string `json:"id"`
+	UserID    string `json:"user_id"`
+	Label     string `json:"label"`
+	TokenHash []byte `json:"token_hash"`
+}
+
+const insertUserToken = `-- name: InsertUserToken :one
+INSERT INTO user_tokens (id, user_id, label, token_hash)
+VALUES ($1, $2, $3, $4)
+RETURNING id, user_id, label, token_hash, last_used_at, revoked_at, created_at
+`
+
+func (q *Queries) InsertUserToken(ctx context.Context, arg InsertUserTokenParams) (UserToken, error) {
+	row := q.db.QueryRow(ctx, insertUserToken, arg.ID, arg.UserID, arg.Label, arg.TokenHash)
+	var item UserToken
+	err := row.Scan(&item.ID, &item.UserID, &item.Label, &item.TokenHash, &item.LastUsedAt, &item.RevokedAt, &item.CreatedAt)
+	return item, err
+}
+
+type GetUserTokenByHashRow struct {
+	ID          string             `json:"id"`
+	UserID      string             `json:"user_id"`
+	Label       string             `json:"label"`
+	TokenHash   []byte             `json:"token_hash"`
+	LastUsedAt  pgtype.Timestamptz `json:"last_used_at"`
+	RevokedAt   pgtype.Timestamptz `json:"revoked_at"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	Email       string             `json:"email"`
+	DisplayName string             `json:"display_name"`
+	Status      string             `json:"status"`
+}
+
+const getUserTokenByHash = `-- name: GetUserTokenByHash :one
+SELECT t.id, t.user_id, t.label, t.token_hash, t.last_used_at,
+       t.revoked_at, t.created_at, u.email, u.display_name, u.status
+FROM user_tokens t
+JOIN users u ON u.id = t.user_id
+WHERE t.token_hash = $1
+`
+
+func (q *Queries) GetUserTokenByHash(ctx context.Context, tokenHash []byte) (GetUserTokenByHashRow, error) {
+	row := q.db.QueryRow(ctx, getUserTokenByHash, tokenHash)
+	var item GetUserTokenByHashRow
+	err := row.Scan(&item.ID, &item.UserID, &item.Label, &item.TokenHash, &item.LastUsedAt,
+		&item.RevokedAt, &item.CreatedAt, &item.Email, &item.DisplayName, &item.Status)
+	return item, err
+}
+
+const markUserTokenUsed = `-- name: MarkUserTokenUsed :exec
+UPDATE user_tokens SET last_used_at = now() WHERE id = $1
+`
+
+func (q *Queries) MarkUserTokenUsed(ctx context.Context, id string) error {
+	_, err := q.db.Exec(ctx, markUserTokenUsed, id)
+	return err
+}
+
+const revokeUserToken = `-- name: RevokeUserToken :one
+UPDATE user_tokens SET revoked_at = COALESCE(revoked_at, now())
+WHERE id = $1
+RETURNING id, user_id, label, token_hash, last_used_at, revoked_at, created_at
+`
+
+func (q *Queries) RevokeUserToken(ctx context.Context, id string) (UserToken, error) {
+	row := q.db.QueryRow(ctx, revokeUserToken, id)
+	var item UserToken
+	err := row.Scan(&item.ID, &item.UserID, &item.Label, &item.TokenHash, &item.LastUsedAt, &item.RevokedAt, &item.CreatedAt)
+	return item, err
+}
+
+const deactivateIdentityUser = `-- name: DeactivateIdentityUser :one
+UPDATE users SET status = 'deactivated' WHERE id = $1
+RETURNING id, email, display_name, status, created_at
+`
+
+func (q *Queries) DeactivateIdentityUser(ctx context.Context, id string) (User, error) {
+	row := q.db.QueryRow(ctx, deactivateIdentityUser, id)
+	var item User
+	err := row.Scan(&item.ID, &item.Email, &item.DisplayName, &item.Status, &item.CreatedAt)
+	return item, err
+}

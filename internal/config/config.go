@@ -55,10 +55,40 @@ const (
 	ExecutionInProcess ExecutionMode = "in_process"
 	ExecutionMCP       ExecutionMode = "mcp"
 
-	ControlPlaneModelEnv = "CONVEYOR_CONTROL_PLANE_MODEL"
-	TriageModelEnv       = "CONVEYOR_TRIAGE_MODEL"
-	PlanningModelEnv     = "CONVEYOR_PLANNING_MODEL"
+	ControlPlaneModelEnv        = "CONVEYOR_CONTROL_PLANE_MODEL"
+	TriageModelEnv              = "CONVEYOR_TRIAGE_MODEL"
+	PlanningModelEnv            = "CONVEYOR_PLANNING_MODEL"
+	OrganizationNameEnv         = "CONVEYOR_ORGANIZATION_NAME"
+	FirstOperatorEmailEnv       = "CONVEYOR_FIRST_OPERATOR_EMAIL"
+	FirstOperatorDisplayNameEnv = "CONVEYOR_FIRST_OPERATOR_DISPLAY_NAME"
 )
+
+// FirstOperatorIdentity is process-only bootstrap input. It is deliberately
+// absent from Config and WorkspaceDocument so identity never enters persisted
+// deployment or workspace configuration.
+type FirstOperatorIdentity struct {
+	OrganizationName string
+	Email            string
+	DisplayName      string
+}
+
+func FirstOperatorIdentityFromEnvironment() FirstOperatorIdentity {
+	identity := FirstOperatorIdentity{
+		OrganizationName: "Conveyor",
+		Email:            "operator@localhost",
+		DisplayName:      "Local Operator",
+	}
+	if value := strings.TrimSpace(os.Getenv(OrganizationNameEnv)); value != "" {
+		identity.OrganizationName = value
+	}
+	if value := strings.TrimSpace(os.Getenv(FirstOperatorEmailEnv)); value != "" {
+		identity.Email = strings.ToLower(value)
+	}
+	if value := strings.TrimSpace(os.Getenv(FirstOperatorDisplayNameEnv)); value != "" {
+		identity.DisplayName = value
+	}
+	return identity
+}
 
 // ModelEnvironmentOverride is one non-persistent deployment override for an
 // in-process control-plane model. It is deliberately separate from Config so

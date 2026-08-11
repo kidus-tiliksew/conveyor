@@ -321,10 +321,28 @@ type Transcript struct {
 }
 
 type User struct {
-	ID                  string             `json:"id"`
-	IdentityProviderRef string             `json:"identity_provider_ref"`
-	Role                string             `json:"role"`
-	CreatedAt           pgtype.Timestamptz `json:"created_at"`
+	ID          string             `json:"id"`
+	Email       string             `json:"email"`
+	DisplayName string             `json:"display_name"`
+	Status      string             `json:"status"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
+type Org struct {
+	ID        string             `json:"id"`
+	Name      string             `json:"name"`
+	Singleton bool               `json:"singleton"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
+type UserToken struct {
+	ID         string             `json:"id"`
+	UserID     string             `json:"user_id"`
+	Label      string             `json:"label"`
+	TokenHash  []byte             `json:"token_hash"`
+	LastUsedAt pgtype.Timestamptz `json:"last_used_at"`
+	RevokedAt  pgtype.Timestamptz `json:"revoked_at"`
+	CreatedAt  pgtype.Timestamptz `json:"created_at"`
 }
 
 type WorkOrder struct {
@@ -417,4 +435,5 @@ type Workspace struct {
 	ConfigYaml    string             `json:"config_yaml"`
 	CreatedAt     pgtype.Timestamptz `json:"created_at"`
 	ConfigVersion int64              `json:"config_version"`
+	OrgID         string             `json:"org_id"`
 }

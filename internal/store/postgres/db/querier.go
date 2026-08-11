@@ -9,6 +9,15 @@ import (
 )
 
 type Querier interface {
+	CountUsers(ctx context.Context) (int64, error)
+	DeactivateIdentityUser(ctx context.Context, id string) (User, error)
+	GetIdentityUser(ctx context.Context, id string) (User, error)
+	GetUserTokenByHash(ctx context.Context, tokenHash []byte) (GetUserTokenByHashRow, error)
+	InsertIdentityUser(ctx context.Context, arg InsertIdentityUserParams) (User, error)
+	InsertUserToken(ctx context.Context, arg InsertUserTokenParams) (UserToken, error)
+	MarkUserTokenUsed(ctx context.Context, id string) error
+	RevokeUserToken(ctx context.Context, id string) (UserToken, error)
+	UpdateDeploymentOrgName(ctx context.Context, name string) (Org, error)
 	ApproveLatestSpecVersion(ctx context.Context, arg ApproveLatestSpecVersionParams) (TaskSpec, error)
 	BindTaskApproval(ctx context.Context, arg BindTaskApprovalParams) (Task, error)
 	CountEvents(ctx context.Context, arg CountEventsParams) (int64, error)
