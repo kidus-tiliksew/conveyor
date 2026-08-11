@@ -94,6 +94,9 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 		return result
 	}
 	worker, workerAuth := workerFromContext(r.Context())
+	if credential, ok := store.CredentialFromContext(r.Context()); ok && credential.Kind == core.CredentialAgent && humanReservedMCPTool(name) {
+		return nil, fmt.Errorf("%s requires an operator-scoped user credential", name)
+	}
 	explicitWorkspace := stringArg("workspace_id")
 	if workerAuth && explicitWorkspace == "" {
 		explicitWorkspace = worker.Workspace
@@ -292,6 +295,15 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 		return s.WorkOrders.SubmitVerdict(ctx, stringArg("work_order_id"), session, review)
 	default:
 		return nil, fmt.Errorf("unknown tool %q", name)
+	}
+}
+
+func humanReservedMCPTool(name string) bool {
+	switch name {
+	case "create_task", "redispatch_work_order":
+		return true
+	default:
+		return false
 	}
 }
 

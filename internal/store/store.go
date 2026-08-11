@@ -1110,7 +1110,7 @@ func (m *memory) CreateWorker(ctx context.Context, worker core.Worker) error {
 		worker.CreatedAt = time.Now().UTC()
 	}
 	m.workers[worker.ID] = worker
-	m.appendEventLocked(ctx, core.Event{Kind: "worker.enrolled", ActorRole: core.ActorRunner, ActorID: worker.ID, Payload: core.JSONPayload(map[string]string{"worker_id": worker.ID, "name": worker.Name})})
+	m.appendEventLocked(ctx, core.Event{Kind: "worker.enrolled", ActorRole: core.ActorWorker, ActorID: WorkerActorID(worker.ID), Payload: core.JSONPayload(map[string]string{"worker_id": worker.ID, "name": worker.Name})})
 	return nil
 }
 
@@ -1234,7 +1234,7 @@ func (m *memory) RenewWorkerClaimCommand(ctx context.Context, taskLease taskops.
 	order.LeaseExpiresAt = expires
 	order.UpdatedAt = now
 	m.workOrders[workOrderID] = order
-	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.lease_renewed", ActorRole: core.ActorRunner, ActorID: workerID, Payload: core.JSONPayload(map[string]any{"attempt_id": order.AttemptID, "lease_expires_at": expires})})
+	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.lease_renewed", ActorRole: core.ActorWorker, ActorID: WorkerActorID(workerID), Payload: core.JSONPayload(map[string]any{"attempt_id": order.AttemptID, "lease_expires_at": expires})})
 	return order, nil
 }
 
@@ -1354,7 +1354,7 @@ func (m *memory) ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskop
 			kind = "work_order.stalled"
 		}
 	}
-	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: kind, ActorRole: core.ActorRunner, ActorID: workerID, Payload: core.JSONPayload(map[string]any{"attempt_id": attemptID, "session_id": release.SessionID, "reason": release.Reason, "release_cause": release.Cause, "detail": order.LastFailureDetail, "outcome": release.Outcome, "failure_category": order.LastFailureCategory, "consecutive_transient_failures": core.ConsecutiveTransientFailureCount(order.LastFailureCategory, previousTransientFailures, progressed, previousOutcome == release.Outcome), "exit_status": release.ExitStatus, "automatic_retry_count": order.AutomaticRetryCount, "next_retry_at": order.NextRetryAt, "retry_suppressed": order.RetrySuppressed, "suppression_reason": order.RetrySuppressionReason}), At: now})
+	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: kind, ActorRole: core.ActorWorker, ActorID: WorkerActorID(workerID), Payload: core.JSONPayload(map[string]any{"attempt_id": attemptID, "session_id": release.SessionID, "reason": release.Reason, "release_cause": release.Cause, "detail": order.LastFailureDetail, "outcome": release.Outcome, "failure_category": order.LastFailureCategory, "consecutive_transient_failures": core.ConsecutiveTransientFailureCount(order.LastFailureCategory, previousTransientFailures, progressed, previousOutcome == release.Outcome), "exit_status": release.ExitStatus, "automatic_retry_count": order.AutomaticRetryCount, "next_retry_at": order.NextRetryAt, "retry_suppressed": order.RetrySuppressed, "suppression_reason": order.RetrySuppressionReason}), At: now})
 	return order, nil
 }
 
@@ -1427,7 +1427,7 @@ func (m *memory) RequestPlanRevisionCommand(ctx context.Context, taskLease tasko
 	}
 	task.State = nextTask
 	m.tasks[task.ID] = task
-	actor := WithActor(ctx, Actor{ID: workerID, Role: core.ActorRunner})
+	actor := WithActor(ctx, Actor{ID: WorkerActorID(workerID), Role: core.ActorWorker})
 	m.appendEventLocked(actor, core.Event{TaskID: task.ID, JobID: order.JobID, Kind: "work_order.plan_revision_requested", Payload: core.JSONPayload(map[string]any{"work_order_id": order.ID, "attempt_id": attemptID, "session_id": sessionID, "rationale": rationale, "plan_version": plan.Version}), At: now})
 	m.appendEventLocked(actor, core.Event{TaskID: task.ID, JobID: order.JobID, Kind: "work_order.released", Payload: core.JSONPayload(map[string]any{"attempt_id": attemptID, "session_id": sessionID, "reason": core.WorkOrderReleaseReasonPlanRevisionRequested, "release_cause": core.WorkOrderReleaseCauseOperatorAction, "outcome": core.WorkOrderOutcomeReleased, "automatic_retry_count": order.AutomaticRetryCount, "retry_suppressed": true}), At: now})
 	m.appendEventLocked(actor, core.Event{TaskID: task.ID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": core.TaskRunning, "to": nextTask, "command": core.TaskGatePlanRevision}), At: now})
@@ -1555,7 +1555,7 @@ func (m *memory) RecordWorkOrderAttemptCheckpoint(ctx context.Context, workOrder
 	}
 	m.appendEventLocked(ctx, core.Event{
 		TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.attempt_checkpointed",
-		ActorRole: core.ActorRunner, ActorID: workerID,
+		ActorRole: core.ActorWorker, ActorID: WorkerActorID(workerID),
 		Payload: AttemptCheckpointPayload(order, checkpoint), At: time.Now().UTC(),
 	})
 	return true, nil

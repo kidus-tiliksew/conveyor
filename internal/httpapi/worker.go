@@ -39,6 +39,7 @@ func (s *Server) requireWorkerAuth(next http.Handler) http.Handler {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
+		ctx = store.WithActor(ctx, store.Actor{ID: store.WorkerActorID(worker.ID), Role: core.ActorWorker})
 		ctx = context.WithValue(ctx, workerContextKey{}, worker)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})

@@ -83,7 +83,7 @@ func TestWorkOrderPreemptHTTPRequiresOperatorReasonAndIdempotency(t *testing.T) 
 		t.Fatal(err)
 	}
 	for _, event := range events {
-		if event.Kind == "work_order.preempted" && (event.ActorID != "operator-http" || event.ActorRole != core.ActorHuman) {
+		if event.Kind == "work_order.preempted" && (event.ActorID != "user:local-operator" || event.ActorRole != core.ActorUser) {
 			t.Fatalf("preempt actor=%+v", event)
 		}
 	}

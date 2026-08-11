@@ -322,7 +322,36 @@ const (
 	ActorHuman  ActorRole = "human"
 	ActorAgent  ActorRole = "agent"
 	ActorRunner ActorRole = "runner"
+
+	// User and worker are the credential-derived actor classes. The persisted
+	// role labels remain compatible with append-only historical events.
+	ActorUser   = ActorHuman
+	ActorWorker = ActorRunner
 )
+
+type CredentialKind string
+
+const (
+	CredentialUser  CredentialKind = "user"
+	CredentialAgent CredentialKind = "agent"
+)
+
+type CredentialScope string
+
+const (
+	CredentialScopeOperator CredentialScope = "operator"
+	CredentialScopeUser     CredentialScope = "user"
+)
+
+// AuthenticatedCredential is the non-secret identity resolved from a bearer
+// credential. Agent credentials always retain their owning user for later
+// authorization without attributing the agent's event to that user.
+type AuthenticatedCredential struct {
+	ID          string
+	OwnerUserID string
+	Kind        CredentialKind
+	Scope       CredentialScope
+}
 
 func (action InterventionAction) Valid() bool {
 	for _, valid := range InterventionActions() {

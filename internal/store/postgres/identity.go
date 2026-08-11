@@ -14,6 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/kidus-tiliksew/conveyor/internal/config"
+	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 )
 
@@ -39,6 +40,13 @@ type PersonalAccessToken struct {
 type IssuedPersonalAccessToken struct {
 	PersonalAccessToken
 	Value string
+}
+
+type IssuedAgentCredential struct {
+	ID     string
+	UserID string
+	Label  string
+	Value  string
 }
 
 // BootstrapIdentity seeds the singleton organization, first operator, and the
@@ -127,22 +135,74 @@ func (s *Store) IssuePersonalAccessToken(ctx context.Context, userID, label stri
 	return IssuedPersonalAccessToken{PersonalAccessToken: personalAccessToken(row), Value: value}, nil
 }
 
+// IssueAgentCredential creates an execution-only credential under an owning
+// user. It reuses user_tokens so ownership remains enforced by the existing
+// foreign key and no post-083 schema change is required (REQ-2/AC-2.2).
+func (s *Store) IssueAgentCredential(ctx context.Context, userID, label string) (IssuedAgentCredential, error) {
+	user, err := s.queries.GetIdentityUser(ctx, userID)
+	if err != nil {
+		return IssuedAgentCredential{}, notFound(err, "identity user %s", userID)
+	}
+	if user.Status != "active" {
+		return IssuedAgentCredential{}, errors.New("cannot issue a credential for a deactivated user")
+	}
+	id, err := randomIdentityID("agt", 12)
+	if err != nil {
+		return IssuedAgentCredential{}, err
+	}
+	secret := make([]byte, 32)
+	if _, err = rand.Read(secret); err != nil {
+		return IssuedAgentCredential{}, fmt.Errorf("generate agent credential: %w", err)
+	}
+	value := "cv_agent_" + id + "_" + base64.RawURLEncoding.EncodeToString(secret)
+	hash := sha256.Sum256([]byte(value))
+	row, err := s.queries.InsertUserToken(ctx, db.InsertUserTokenParams{ID: id, UserID: userID, Label: strings.TrimSpace(label), TokenHash: hash[:]})
+	if err != nil {
+		return IssuedAgentCredential{}, err
+	}
+	return IssuedAgentCredential{ID: row.ID, UserID: row.UserID, Label: row.Label, Value: value}, nil
+}
+
 func (s *Store) VerifyPersonalAccessToken(ctx context.Context, candidate string) (IdentityUser, error) {
+	credential, user, err := s.verifyCredential(ctx, candidate)
+	if err != nil {
+		return IdentityUser{}, err
+	}
+	if credential.Kind != core.CredentialUser {
+		return IdentityUser{}, ErrInvalidPersonalAccessToken
+	}
+	return user, nil
+}
+
+// VerifyCredential resolves identity and scope solely from the persisted
+// credential record. The presented secret is never returned or logged.
+func (s *Store) VerifyCredential(ctx context.Context, candidate string) (core.AuthenticatedCredential, error) {
+	credential, _, err := s.verifyCredential(ctx, candidate)
+	return credential, err
+}
+
+func (s *Store) verifyCredential(ctx context.Context, candidate string) (core.AuthenticatedCredential, IdentityUser, error) {
 	hash := sha256.Sum256([]byte(candidate))
 	row, err := s.queries.GetUserTokenByHash(ctx, hash[:])
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return IdentityUser{}, ErrInvalidPersonalAccessToken
+			return core.AuthenticatedCredential{}, IdentityUser{}, ErrInvalidPersonalAccessToken
 		}
-		return IdentityUser{}, err
+		return core.AuthenticatedCredential{}, IdentityUser{}, err
 	}
 	if subtle.ConstantTimeCompare(row.TokenHash, hash[:]) != 1 || row.RevokedAt.Valid || row.Status != "active" {
-		return IdentityUser{}, ErrInvalidPersonalAccessToken
+		return core.AuthenticatedCredential{}, IdentityUser{}, ErrInvalidPersonalAccessToken
 	}
 	if err := s.queries.MarkUserTokenUsed(ctx, row.ID); err != nil {
-		return IdentityUser{}, err
+		return core.AuthenticatedCredential{}, IdentityUser{}, err
 	}
-	return IdentityUser{ID: row.UserID, Email: row.Email, DisplayName: row.DisplayName, Status: row.Status}, nil
+	kind, scope := core.CredentialUser, core.CredentialScopeOperator
+	if strings.HasPrefix(row.ID, "agt_") {
+		kind, scope = core.CredentialAgent, core.CredentialScopeUser
+	}
+	credential := core.AuthenticatedCredential{ID: row.ID, OwnerUserID: row.UserID, Kind: kind, Scope: scope}
+	user := IdentityUser{ID: row.UserID, Email: row.Email, DisplayName: row.DisplayName, Status: row.Status}
+	return credential, user, nil
 }
 
 func (s *Store) RevokePersonalAccessToken(ctx context.Context, tokenID string) (PersonalAccessToken, error) {

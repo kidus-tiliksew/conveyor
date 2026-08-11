@@ -35,6 +35,7 @@ import (
 
 type Server struct {
 	Store                    store.Store
+	Credentials              CredentialVerifier
 	planningBundleMu         sync.Mutex
 	planningBundleDispatched map[string]struct{}
 	// Repos is the set of valid repo names; nil skips validation.
@@ -74,7 +75,17 @@ type Server struct {
 	Planning              *planning.Service
 }
 
-func NewServer(s store.Store) *Server { return &Server{Store: s} }
+type CredentialVerifier interface {
+	VerifyCredential(context.Context, string) (core.AuthenticatedCredential, error)
+}
+
+func NewServer(s store.Store) *Server {
+	server := &Server{Store: s}
+	if credentials, ok := s.(CredentialVerifier); ok {
+		server.Credentials = credentials
+	}
+	return server
+}
 
 func (s *Server) Handler() http.Handler {
 	r := chi.NewRouter()
@@ -289,7 +300,17 @@ func (s *Server) setTaskHold(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) requireMutationAuth(next http.Handler) http.Handler {
-	return s.requireBearerRole(core.ActorHuman, "local-operator", next)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		credential, ok := s.authenticateUserCredential(r)
+		if !ok || credential.Kind != core.CredentialUser || credential.Scope != core.CredentialScopeOperator {
+			w.Header().Set("WWW-Authenticate", "Bearer")
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		ctx := store.WithCredential(r.Context(), credential)
+		ctx = store.WithActor(ctx, store.Actor{ID: store.UserActorID(credential.OwnerUserID), Role: core.ActorUser})
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
 }
 
 func (s *Server) requireWorkspaceAuth(next http.Handler) http.Handler {
@@ -309,12 +330,13 @@ func (s *Server) requireMCPAuth(next http.Handler) http.Handler {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		if s.BearerToken != "" && subtle.ConstantTimeCompare([]byte(provided), []byte(s.BearerToken)) == 1 {
-			actorID := strings.TrimSpace(r.Header.Get("X-Conveyor-Actor"))
-			if actorID == "" {
-				actorID = "mcp-agent"
+		if credential, authenticated := s.verifyCredential(r.Context(), provided); authenticated {
+			actor := store.Actor{ID: store.UserActorID(credential.OwnerUserID), Role: core.ActorUser}
+			if credential.Kind == core.CredentialAgent {
+				actor = store.Actor{ID: store.AgentActorID(credential.ID), Role: core.ActorAgent}
 			}
-			ctx := store.WithActor(r.Context(), store.Actor{ID: actorID, Role: core.ActorAgent})
+			ctx := store.WithCredential(r.Context(), credential)
+			ctx = store.WithActor(ctx, actor)
 			next.ServeHTTP(w, r.WithContext(ctx))
 			return
 		}
@@ -331,21 +353,25 @@ func (s *Server) requireMCPAuth(next http.Handler) http.Handler {
 	})
 }
 
-func (s *Server) requireBearerRole(role core.ActorRole, defaultID string, next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		provided, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if !ok || s.BearerToken == "" || subtle.ConstantTimeCompare([]byte(provided), []byte(s.BearerToken)) != 1 {
-			w.Header().Set("WWW-Authenticate", "Bearer")
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-		actorID := strings.TrimSpace(r.Header.Get("X-Conveyor-Actor"))
-		if actorID == "" {
-			actorID = defaultID
-		}
-		ctx := store.WithActor(r.Context(), store.Actor{ID: actorID, Role: role})
-		next.ServeHTTP(w, r.WithContext(ctx))
-	})
+func (s *Server) authenticateUserCredential(r *http.Request) (core.AuthenticatedCredential, bool) {
+	provided, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if !ok {
+		return core.AuthenticatedCredential{}, false
+	}
+	return s.verifyCredential(r.Context(), provided)
+}
+
+func (s *Server) verifyCredential(ctx context.Context, provided string) (core.AuthenticatedCredential, bool) {
+	if s.Credentials != nil {
+		credential, err := s.Credentials.VerifyCredential(ctx, provided)
+		return credential, err == nil
+	}
+	// Memory-only tests and explicit non-durable deployments have no identity
+	// registry. Their configured shared token models the seeded legacy PAT.
+	if s.BearerToken != "" && subtle.ConstantTimeCompare([]byte(provided), []byte(s.BearerToken)) == 1 {
+		return core.AuthenticatedCredential{ID: "legacy", OwnerUserID: "local-operator", Kind: core.CredentialUser, Scope: core.CredentialScopeOperator}, true
+	}
+	return core.AuthenticatedCredential{}, false
 }
 
 type reviewRequest struct {
