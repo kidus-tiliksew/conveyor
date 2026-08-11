@@ -126,6 +126,18 @@ func (s *Service) List(ctx context.Context) ([]core.WorkOrder, error) {
 			return nil, err
 		}
 	}
+	pendingReviewTasks := map[string]bool{}
+	for _, order := range orders {
+		_, checked := pendingReviewTasks[order.TaskID]
+		if order.Stage != core.StageReview || order.State != core.WorkOrderQueued || checked {
+			continue
+		}
+		versions, listErr := s.Store.ListPendingSystemDesignVersionsForTask(ctx, order.TaskID)
+		if listErr != nil {
+			return nil, listErr
+		}
+		pendingReviewTasks[order.TaskID] = len(versions) > 0
+	}
 	out := orders[:0]
 	for _, order := range orders {
 		blockers := blockersByTask[order.TaskID]
@@ -134,6 +146,9 @@ func (s *Service) List(ctx context.Context) ([]core.WorkOrder, error) {
 			order.UnsatisfiableTaskIDs = append([]string(nil), blockers.UnsatisfiableTaskIDs...)
 		}
 		if order.Stage == core.StageImplement && len(order.BlockingTaskIDs) > 0 {
+			order.Claimable = false
+		}
+		if order.Stage == core.StageReview && pendingReviewTasks[order.TaskID] {
 			order.Claimable = false
 		}
 		if order.State == core.WorkOrderQueued || order.State == core.WorkOrderClaimed ||
@@ -160,6 +175,15 @@ func (s *Service) Claim(ctx context.Context, id string, claim core.WorkOrderClai
 	order, err := s.Store.GetWorkOrder(ctx, id)
 	if err != nil {
 		return core.WorkOrder{}, err
+	}
+	if order.Stage == core.StageReview {
+		pending, pendingErr := s.Store.ListPendingSystemDesignVersionsForTask(ctx, order.TaskID)
+		if pendingErr != nil {
+			return core.WorkOrder{}, pendingErr
+		}
+		if len(pending) > 0 {
+			return core.WorkOrder{}, fmt.Errorf("review for task %s is waiting on %d task-authored System Design proposal(s)", order.TaskID, len(pending))
+		}
 	}
 	cfg, err := s.config(ctx)
 	if err != nil {

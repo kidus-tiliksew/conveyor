@@ -2688,6 +2688,19 @@ func (m *memory) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease tasko
 	if order.Stage == core.StageReview && m.reviewSeatAcceptedLocked(order) {
 		return core.WorkOrder{}, fmt.Errorf("accepted review seat %s is terminal and cannot be claimed", id)
 	}
+	if order.Stage == core.StageReview {
+		workspace := workspaceOrDefault(ctx, "")
+		for key, versions := range m.systemDesignVersions {
+			if key.workspace != workspace {
+				continue
+			}
+			for _, version := range versions {
+				if version.Origin == core.SystemDesignOriginImplementation && version.OriginTaskID == order.TaskID && !version.Confirmed && !version.Dismissed {
+					return core.WorkOrder{}, fmt.Errorf("review for task %s is waiting on task-authored System Design proposal %s v%d", order.TaskID, version.DocumentID, version.Version)
+				}
+			}
+		}
+	}
 	if order.State == core.WorkOrderStale {
 		return core.WorkOrder{}, fmt.Errorf("%w: %s", ErrWorkOrderStale, id)
 	}

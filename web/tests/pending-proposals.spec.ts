@@ -141,8 +141,8 @@ test('pending proposal queue covers every tier, resolves rows, updates the badge
 
   await page.goto('/tasks/review-task/full')
   const warning = page.getByRole('region', { name: 'Review is waiting on a document decision' })
-  await expect(warning).toContainText('Review will not include this proposed update yet')
-  await warning.getByRole('link', { name: 'Open the proposal' }).click()
+  await expect(warning).toContainText('This review cannot be claimed until you confirm or dismiss')
+  await warning.getByRole('link', { name: 'Confirm or dismiss the proposal' }).click()
   await expect(page.getByText('Showing proposals from task review-task.')).toBeVisible()
   const later = page.getByRole('listitem').filter({ hasText: 'v3' })
   await later.getByRole('button', { name: 'Confirm' }).click()
