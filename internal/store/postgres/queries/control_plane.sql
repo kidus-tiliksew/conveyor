@@ -252,6 +252,13 @@ WHERE id = sqlc.arg(id)
   AND workspace_id = sqlc.arg(workspace_id)
 RETURNING *;
 
+-- name: UpdateTaskAssignee :one
+UPDATE tasks
+SET assignee_user_id = sqlc.narg(assignee_user_id), updated_at = now()
+WHERE id = sqlc.arg(id)
+  AND workspace_id = sqlc.arg(workspace_id)
+RETURNING *;
+
 -- name: BindTaskApproval :one
 UPDATE tasks
 SET reviewed_head_sha = sqlc.arg(head_sha),

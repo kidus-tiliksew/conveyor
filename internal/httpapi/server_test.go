@@ -2732,14 +2732,16 @@ func TestTaskOperationsDerivesEveryPlanStatusFromDurableAuthority(t *testing.T) 
 	}
 }
 
-// AC-1.5: the projection exposes no priority, assignee, or declared-phase
-// field. This guards the wire contract itself, so no such field can be added
-// to support the view.
-func TestTaskOperationsExposesNoBarredFields(t *testing.T) {
+// AC-1.5: the projection exposes no priority or declared-phase field. Assignee
+// is durable task authority and therefore belongs on the task projection.
+func TestTaskOperationsExposesAssigneeButNoRetiredFields(t *testing.T) {
 	t.Parallel()
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	st := store.NewMemory()
 	if err := st.CreateTask(ctx, core.Task{ID: "solo", Workspace: "demo", Title: "Standalone task", Repo: "conveyor", State: core.TaskQueued}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := taskops.New(st).SetAssignee(ctx, "solo", "usr-assigned"); err != nil {
 		t.Fatal(err)
 	}
 	server := NewServer(st)
@@ -2760,7 +2762,10 @@ func TestTaskOperationsExposesNoBarredFields(t *testing.T) {
 	if err := json.Unmarshal(rows[0]["task"], &task); err != nil {
 		t.Fatal(err)
 	}
-	for _, barred := range []string{"priority", "assignee", "phase", "declared_phase"} {
+	if _, present := task["assignee"]; !present {
+		t.Fatalf("task omits assignee: %s", response.Body.String())
+	}
+	for _, barred := range []string{"priority", "phase", "declared_phase"} {
 		if _, present := rows[0][barred]; present {
 			t.Fatalf("row carries barred field %q: %s", barred, response.Body.String())
 		}

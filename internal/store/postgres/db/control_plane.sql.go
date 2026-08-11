@@ -1773,6 +1773,37 @@ type UpdateTaskHoldParams struct {
 	WorkspaceID string `json:"workspace_id"`
 }
 
+const updateTaskAssignee = `-- name: UpdateTaskAssignee :one
+UPDATE tasks
+SET assignee_user_id = $1, updated_at = now()
+WHERE id = $2
+  AND workspace_id = $3
+RETURNING id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, feature_id, intake_key, mode, spec_approval, merge_approval, policy_version, setup_name, setup_contract, hold, reviewed_head_sha, approved_head_sha, approval_stale, refresh_baseline_sha, refresh_head_sha, refresh_review_scope, origin_spec_version, origin_sub_id, assignee_user_id
+`
+
+type UpdateTaskAssigneeParams struct {
+	AssigneeUserID pgtype.Text `json:"assignee_user_id"`
+	ID             string      `json:"id"`
+	WorkspaceID    string      `json:"workspace_id"`
+}
+
+func (q *Queries) UpdateTaskAssignee(ctx context.Context, arg UpdateTaskAssigneeParams) (Task, error) {
+	row := q.db.QueryRow(ctx, updateTaskAssignee, arg.AssigneeUserID, arg.ID, arg.WorkspaceID)
+	var i Task
+	err := row.Scan(
+		&i.ID, &i.WorkspaceID, &i.Source, &i.Title, &i.Body, &i.Class,
+		&i.EscalationLevel, &i.RepoName, &i.BaseBranch, &i.Branch, &i.State,
+		&i.ParentTaskID, &i.CreatedAt, &i.UpdatedAt, &i.NextStage,
+		&i.RecoveryStage, &i.FeatureID, &i.IntakeKey, &i.Mode,
+		&i.SpecApproval, &i.MergeApproval, &i.PolicyVersion, &i.SetupName,
+		&i.SetupContract, &i.Hold, &i.ReviewedHeadSha, &i.ApprovedHeadSha,
+		&i.ApprovalStale, &i.RefreshBaselineSha, &i.RefreshHeadSha,
+		&i.RefreshReviewScope, &i.OriginSpecVersion, &i.OriginSubID,
+		&i.AssigneeUserID,
+	)
+	return i, err
+}
+
 func (q *Queries) UpdateTaskHold(ctx context.Context, arg UpdateTaskHoldParams) (Task, error) {
 	row := q.db.QueryRow(ctx, updateTaskHold, arg.Hold, arg.ID, arg.WorkspaceID)
 	var i Task

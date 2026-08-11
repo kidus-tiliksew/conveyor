@@ -704,6 +704,16 @@ export async function setTaskHold(taskId: string, token: string, hold: boolean) 
   return response.json() as Promise<Task>
 }
 
+export async function setTaskAssignee(taskId: string, token: string, assigneeUserId: string) {
+  const response = await fetch(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/assignee`), {
+    method: 'PUT',
+    headers: mutationHeaders(token),
+    body: JSON.stringify({ assignee_user_id: assigneeUserId }),
+  })
+  if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
+  return response.json() as Promise<Task>
+}
+
 export async function changeTaskSetup(
   taskId: string,
   token: string,

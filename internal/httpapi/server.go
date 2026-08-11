@@ -184,6 +184,7 @@ func (s *Server) Handler() http.Handler {
 			r.With(s.requireMutationAuth).Post("/monitor/drift/{id}/resolve", s.resolveMonitorDrift)
 			r.With(s.requireMutationAuth).Post("/tasks/{id}/redispatch", s.redispatchTask)
 			r.With(s.requireMutationAuth).Put("/tasks/{id}/hold", s.setTaskHold)
+			r.With(s.requireMutationAuth).Put("/tasks/{id}/assignee", s.setTaskAssignee)
 			r.With(s.requireMutationAuth).Post("/tasks/{id}/context", s.updateTaskContext)
 			r.With(s.requireMutationAuth).Post("/tasks/{id}/setup", s.changeTaskSetup)
 			r.With(s.requireMutationAuth).Delete("/tasks/{id}/dependencies/{dependency_id}", s.removeTaskDependency)
@@ -306,6 +307,22 @@ func (s *Server) setTaskHold(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, task)
 }
 
+func (s *Server) setTaskAssignee(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		AssigneeUserID string `json:"assignee_user_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	task, err := taskops.New(s.Store).SetAssignee(r.Context(), chi.URLParam(r, "id"), request.AssigneeUserID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, http.StatusOK, task)
+}
+
 func (s *Server) requireMutationAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		credential, ok := store.CredentialFromContext(r.Context())
@@ -387,6 +404,8 @@ func (s *Server) requireWorkspaceCapability(capability core.Capability) func(htt
 func mutationCapability(r *http.Request) core.Capability {
 	path := r.URL.Path
 	switch {
+	case strings.Contains(path, "/assignee"):
+		return core.CapabilitySetAssignee
 	case strings.Contains(path, "/versions") && !strings.Contains(path, "/confirm"),
 		strings.HasSuffix(path, "/requirements"), strings.HasSuffix(path, "/system-designs"),
 		strings.HasSuffix(path, "/decisions"), strings.Contains(path, "/planning-sessions"):
@@ -1108,9 +1127,8 @@ type taskChildRollup struct {
 
 // taskOperationsItem is the list-first Tasks view's row (design-web-dashboard).
 // Every field projects durable task, relationship, context, or plan authority;
-// the view stores nothing and re-derives nothing of its own. No priority,
-// assignee, or declared-phase field appears here, and none may be added
-// (AC-1.5).
+// the view stores nothing and re-derives nothing of its own. No priority or
+// declared-phase field appears here; assignee is durable task authority.
 type taskOperationsItem struct {
 	Task        core.Task  `json:"task"`
 	LatestStage core.Stage `json:"latest_stage,omitempty"`

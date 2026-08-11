@@ -88,6 +88,7 @@ type Store interface {
 	// SetTaskHold toggles the per-task worker reservation with an audit
 	// event; setting the current value is an idempotent no-op.
 	SetTaskHold(ctx context.Context, id string, hold bool) (core.Task, error)
+	SetTaskAssigneeCommand(ctx context.Context, lease taskops.TaskLease, id, assigneeUserID string) (core.Task, error)
 	ChangeTaskSetupCommand(ctx context.Context, lease taskops.TaskLease, request SetupChangeRequest) (SetupChangeResult, error)
 	BindTaskApproval(ctx context.Context, id, headSHA string) error
 	MarkTaskApprovalStale(ctx context.Context, id, approvedHeadSHA, newHeadSHA, scope, reason string) (bool, error)
@@ -2504,6 +2505,7 @@ func (m *memory) GetWorkOrder(ctx context.Context, id string) (core.WorkOrder, e
 	if selected, present := WorkspaceFromContext(ctx); present && selected != "" && m.tasks[order.TaskID].Workspace != selected {
 		return core.WorkOrder{}, fmt.Errorf("work order %s not found", id)
 	}
+	order.Assignee = m.tasks[order.TaskID].Assignee
 	return ProjectWorkOrderAt(order, time.Now().UTC()), nil
 }
 
@@ -2513,6 +2515,7 @@ func (m *memory) ListWorkOrders(ctx context.Context) ([]core.WorkOrder, error) {
 	now := time.Now()
 	orders := make([]core.WorkOrder, 0, len(m.workOrders))
 	for _, order := range m.workOrders {
+		order.Assignee = m.tasks[order.TaskID].Assignee
 		orders = append(orders, ProjectWorkOrderAt(order, now))
 	}
 	sort.Slice(orders, func(i, j int) bool { return orders[i].CreatedAt.Before(orders[j].CreatedAt) })
@@ -2677,6 +2680,9 @@ func (m *memory) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease tasko
 	}
 	if !lifecycleLease.ValidForCommand(order.TaskID, string(core.WorkOrderCmdClaim)) {
 		return core.WorkOrder{}, fmt.Errorf("work-order claim requires a valid taskops lease")
+	}
+	if task := m.tasks[order.TaskID]; task.Assignee != nil && task.Assignee.UserID != claim.OwnerUserID {
+		return core.WorkOrder{}, fmt.Errorf("task %s is assigned to %s; only that assignee may claim its work orders", order.TaskID, task.Assignee.UserID)
 	}
 	now := time.Now().UTC()
 	if order.Stage == core.StageImplement && !order.QueueBlockedAt.IsZero() && !m.taskBlockedLocked(order.TaskID) {
@@ -4398,6 +4404,32 @@ func (m *memory) SetTaskHold(ctx context.Context, id string, hold bool) (core.Ta
 	}
 	m.appendEventLocked(ctx, core.Event{TaskID: id, Kind: kind, Payload: core.JSONPayload(map[string]any{"hold": hold})})
 	return t, nil
+}
+
+func (m *memory) SetTaskAssigneeCommand(ctx context.Context, lease taskops.TaskLease, id, assigneeUserID string) (core.Task, error) {
+	if !lease.ValidForCommand(id, taskops.SetAssigneeCommand) {
+		return core.Task{}, fmt.Errorf("task assignment requires a valid taskops lease")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	task, ok := m.tasks[id]
+	if !ok {
+		return core.Task{}, fmt.Errorf("task %s not found", id)
+	}
+	assigneeUserID = strings.TrimSpace(assigneeUserID)
+	if (task.Assignee != nil && task.Assignee.UserID == assigneeUserID) || (task.Assignee == nil && assigneeUserID == "") {
+		return task, nil
+	}
+	kind := "task.assignee.set"
+	if assigneeUserID == "" {
+		task.Assignee = nil
+		kind = "task.assignee.cleared"
+	} else {
+		task.Assignee = &core.TaskAssignee{UserID: assigneeUserID}
+	}
+	m.tasks[id] = task
+	m.appendEventLocked(ctx, core.Event{TaskID: id, Kind: kind, Payload: core.JSONPayload(map[string]any{"assignee_user_id": assigneeUserID})})
+	return task, nil
 }
 
 func (m *memory) BindTaskApproval(ctx context.Context, id, headSHA string) error {

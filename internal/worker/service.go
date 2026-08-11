@@ -701,6 +701,11 @@ func (s *Service) ClaimForWorker(ctx context.Context, worker core.Worker, id str
 	}
 	claim.WorkerID = worker.ID
 	claim.ClaimantID = worker.ID
+	if task.Assignee != nil {
+		// A workspace worker executes assigned work on behalf of the assignee;
+		// the durable claim boundary still verifies the exact user id.
+		claim.OwnerUserID = task.Assignee.UserID
+	}
 	claim.Agent = harness.Name
 	claim.Model = cfg.EffectiveModel(string(order.Stage))
 	if order.RequiredModel != "" {

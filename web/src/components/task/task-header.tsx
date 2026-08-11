@@ -13,7 +13,14 @@ import {
   Trash2,
 } from 'lucide-react'
 import { dependencyRelationLabel, parseProvenance, pullRequestURL } from '../../lib/activity'
-import { cancelTask, changeTaskSetup, fetchWorkspaceConfig, removeTaskDependency, setTaskHold } from '../../lib/api'
+import {
+  cancelTask,
+  changeTaskSetup,
+  fetchWorkspaceConfig,
+  removeTaskDependency,
+  setTaskAssignee,
+  setTaskHold,
+} from '../../lib/api'
 import { findBlueprint } from '../../lib/blueprint'
 import { taskStateLabels } from '../../lib/contracts'
 import { relatedTaskRoute } from '../../lib/task-route'
@@ -98,6 +105,7 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
             never belongs in the row the eye reads for state. */}
         <span className="ml-auto flex items-center gap-1">
           <HoldControl item={item} />
+          <AssigneeControl item={item} />
           <CancelControl item={item} />
         </span>
       </div>
@@ -127,6 +135,12 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
         />
         <Fact label="Created" value={absoluteTime(item.task.created_at)} />
         <Fact label="Human approval" value={approvalLabel(item.task.spec_approval, item.task.merge_approval)} />
+        <Fact
+          label="Assignee"
+          value={
+            item.task.assignee?.display_name || item.task.assignee?.email || item.task.assignee?.user_id || 'Unassigned'
+          }
+        />
         {item.task.parent_task_id && (
           <Fact
             label="Parent blueprint"
@@ -647,6 +661,39 @@ function HoldControl({ item }: { item: ActivityItem }) {
     >
       <Hand />
       {item.task.hold ? 'Release' : 'Hold'}
+    </button>
+  )
+}
+
+function AssigneeControl({ item }: { item: ActivityItem }) {
+  const token = useOperatorToken()
+  const queryClient = useQueryClient()
+  const mutation = useMutation({
+    mutationFn: (userId: string) => setTaskAssignee(item.task.id, token, userId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['activity'] })
+      void queryClient.invalidateQueries({ queryKey: ['task', item.task.workspace, item.task.id] })
+    },
+  })
+  const terminal = item.task.state === 'merged' || item.task.state === 'closed'
+  if (!token || terminal) return null
+  const assign = () => {
+    const value = window.prompt('Workspace member user ID', item.task.assignee?.user_id ?? '')
+    if (value != null) mutation.mutate(value.trim())
+  }
+  return (
+    <button
+      type="button"
+      disabled={mutation.isPending}
+      onClick={assign}
+      title={
+        item.task.assignee
+          ? `Assigned to ${item.task.assignee.display_name || item.task.assignee.user_id}`
+          : 'Assign task'
+      }
+      className="inline-flex items-center rounded-md px-2 py-1 text-xs font-medium leading-4 text-muted transition-colors hover:bg-raised hover:text-foreground disabled:opacity-40"
+    >
+      {item.task.assignee ? 'Reassign' : 'Assign'}
     </button>
   )
 }
