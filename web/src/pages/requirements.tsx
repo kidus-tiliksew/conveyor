@@ -574,28 +574,28 @@ function RequirementCanvas({ seed, token }: { seed: RequirementView; token: stri
   if (detailError)
     return <EmptyMessage tone="failure">{errorMessage(detailError, 'Could not load this requirement.')}</EmptyMessage>
 
-  const shipped = item.staleness?.delivery_after_intent ? item.staleness.latest_delivery : undefined
+  const deliveries = item.staleness?.deliveries ?? []
+  const suspectDeliveries = deliveries.filter((delivery) => delivery.needs_attention)
+  const routineDeliveries = deliveries.filter((delivery) => !delivery.needs_attention)
   // Every entry below already exists as machinery state; this surface only
   // decides where it is voiced, and it is the only place it is voiced (AC-1.2).
   const attention: AttentionItem[] = [
-    ...(shipped
-      ? [
-          {
-            id: 'staleness',
-            title: 'Code shipped past the confirmed intent',
-            detail: <span title={deliveryTitle(item)}>Latest delivery: {shipped}.</span>,
-            action: (
-              <Link
-                to="/tasks/$taskId"
-                params={{ taskId: shipped }}
-                className="text-xs font-medium text-primary hover:underline"
-              >
-                Open the delivery
-              </Link>
-            ),
-          },
-        ]
-      : []),
+    ...suspectDeliveries.map((delivery) => ({
+      id: `staleness-${delivery.task_id}-${delivery.at}`,
+      title: `${delivery.label} may have moved past the confirmed intent`,
+      detail: (
+        <span title={`${delivery.label} delivered ${formatDate(delivery.at)}`}>{delivery.reasons.join(' · ')}</span>
+      ),
+      action: (
+        <Link
+          to="/tasks/$taskId"
+          params={{ taskId: delivery.task_id }}
+          className="text-xs font-medium text-primary hover:underline"
+        >
+          Open the delivery
+        </Link>
+      ),
+    })),
     // A truncated lineage walk cannot prove the absence of newer delivery, so
     // partial evaluation is voiced rather than reported as alignment. It is a
     // machinery signal like any other and belongs here.
@@ -942,7 +942,29 @@ function RequirementCanvas({ seed, token }: { seed: RequirementView; token: stri
               <Badge variant="mono">{item.lineage.length}</Badge>
             </CardHeader>
             <CardContent>
-              {item.lineage.length === 0 && (
+              {routineDeliveries.length > 0 && (
+                <section aria-label="Delivery activity" className="mb-4 space-y-2">
+                  <p className="text-xs font-medium text-muted">Delivery activity</p>
+                  <ul className="space-y-2">
+                    {routineDeliveries.map((delivery) => (
+                      <li key={`${delivery.task_id}-${delivery.at}`} className="flex items-start gap-2 text-xs">
+                        <span className="mt-1.5 size-1.5 shrink-0 rounded-full bg-edge" />
+                        <span className="min-w-0 flex-1">
+                          <Link
+                            to="/tasks/$taskId"
+                            params={{ taskId: delivery.task_id }}
+                            className="font-medium hover:underline"
+                          >
+                            {delivery.label}
+                          </Link>
+                          <span className="block text-[10px] text-faint">Delivered {formatDate(delivery.at)}</span>
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+              )}
+              {item.lineage.length === 0 && routineDeliveries.length === 0 && (
                 <p className="text-sm text-muted">Activity appears as planning and delivery advance.</p>
               )}
               {item.lineage.length > 0 && (
@@ -1197,12 +1219,6 @@ function RequirementDiff({ current, pending }: { current: RequirementVersion; pe
       </div>
     </details>
   )
-}
-
-function deliveryTitle(item: RequirementView) {
-  const label = item.staleness?.latest_delivery
-  const at = item.staleness?.latest_delivery_at
-  return label && at ? `${label} delivered ${formatDate(at)}` : label
 }
 
 function stripStatementsFence(content: string) {

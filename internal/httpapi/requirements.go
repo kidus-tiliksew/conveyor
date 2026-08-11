@@ -39,11 +39,18 @@ type requirementView struct {
 }
 
 type requirementStaleness struct {
-	DeliveryAfterIntent bool            `json:"delivery_after_intent"`
-	PartialEvaluation   bool            `json:"partial_evaluation"`
-	LatestDelivery      string          `json:"latest_delivery,omitempty"`
-	LatestDeliveryAt    *time.Time      `json:"latest_delivery_at,omitempty"`
-	ActiveDrift         []monitor.Drift `json:"active_drift"`
+	DeliveryAfterIntent bool                  `json:"delivery_after_intent"`
+	PartialEvaluation   bool                  `json:"partial_evaluation"`
+	Deliveries          []requirementDelivery `json:"deliveries"`
+	ActiveDrift         []monitor.Drift       `json:"active_drift"`
+}
+
+type requirementDelivery struct {
+	TaskID         string    `json:"task_id"`
+	Label          string    `json:"label"`
+	At             time.Time `json:"at"`
+	NeedsAttention bool      `json:"needs_attention"`
+	Reasons        []string  `json:"reasons"`
 }
 
 type blueprintLineage struct {
@@ -367,7 +374,7 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 			PlanningSessions:  []core.PlanningSession{},
 			Artifacts:         []core.Artifact{},
 			Lineage:           []core.Event{},
-			Staleness:         requirementStaleness{ActiveDrift: []monitor.Drift{}},
+			Staleness:         requirementStaleness{Deliveries: []requirementDelivery{}, ActiveDrift: []monitor.Drift{}},
 		}
 		if view.RequirementLinks == nil {
 			view.RequirementLinks = []core.RequirementServesLink{}
@@ -434,9 +441,9 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 		view.LineageGraph = graph
 		deliveryGraph := deliveryGraphs[requirement.ID]
 		view.Staleness.PartialEvaluation = deliveryGraph.Truncated
-		lineage := lineageByRequirement[requirement.ID]
 		reachableTasks := deliveryReachableTasks(deliveryGraph.Links, requirement.ID)
-		servingTaskIDs := directServingTaskIDs(lineage, requirement.ID)
+		servingTaskIDs := directServingTaskIDs(lineageByRequirement[requirement.ID], requirement.ID)
+		deliveryServingTaskIDs := directServingTaskIDs(deliveryGraph.Links, requirement.ID)
 		for taskID := range servingTaskIDs {
 			task, getErr := s.Store.GetTask(r.Context(), taskID)
 			if getErr != nil {
@@ -453,19 +460,23 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 				if eventsErr != nil {
 					return nil, eventsErr
 				}
-				label, at := mergedAfter(events, confirmedAt)
-				if label != "" && (view.Staleness.LatestDeliveryAt == nil || at.After(*view.Staleness.LatestDeliveryAt)) {
-					atCopy := at
-					view.Staleness.LatestDelivery, view.Staleness.LatestDeliveryAt = label, &atCopy
+				for _, delivery := range classifyRequirementDeliveries(taskID, events, versions, requirement.ID, confirmedAt, deliveryServingTaskIDs[taskID]) {
+					view.Staleness.Deliveries = append(view.Staleness.Deliveries, delivery)
+					view.Staleness.DeliveryAfterIntent = view.Staleness.DeliveryAfterIntent || delivery.NeedsAttention
 				}
 			}
+			sort.Slice(view.Staleness.Deliveries, func(i, j int) bool {
+				if view.Staleness.Deliveries[i].At.Equal(view.Staleness.Deliveries[j].At) {
+					return view.Staleness.Deliveries[i].TaskID < view.Staleness.Deliveries[j].TaskID
+				}
+				return view.Staleness.Deliveries[i].At.After(view.Staleness.Deliveries[j].At)
+			})
 		}
 		for _, drift := range activeDrift {
 			if drift.RequirementID == requirement.ID || reachableTasks[drift.TaskID] {
 				view.Staleness.ActiveDrift = append(view.Staleness.ActiveDrift, drift)
 			}
 		}
-		view.Staleness.DeliveryAfterIntent = !view.Staleness.PartialEvaluation && view.Staleness.LatestDelivery != ""
 		sort.SliceStable(view.Lineage, func(i, j int) bool {
 			if view.Lineage[i].At.Equal(view.Lineage[j].At) {
 				return view.Lineage[i].ID < view.Lineage[j].ID
@@ -493,8 +504,8 @@ func directServingTaskIDs(links []core.LineageLink, requirementID string) map[st
 	return tasks
 }
 
-// deliveryReachableTasks is the single staleness predicate. Staleness walks
-// delivery edges at task level, so it follows `serves`
+// deliveryReachableTasks finds the delivery candidates that classification
+// evaluates. It walks delivery edges at task level, so it follows `serves`
 // straight onto the task the requirement is attached to (change 3) as well as
 // the historical blueprint chain that predates it, which stays readable as
 // record. Planning-session and dependency hops remain excluded: they cannot
@@ -528,27 +539,94 @@ func deliveryReachableTasks(links []core.LineageLink, requirementID string) map[
 	return tasks
 }
 
-func mergedAfter(events []core.Event, at time.Time) (string, time.Time) {
-	var latest core.Event
+func classifyRequirementDeliveries(taskID string, events []core.Event, versions []core.RequirementVersion, requirementID string, after time.Time, directlyServing bool) []requirementDelivery {
+	deliveries := []requirementDelivery{}
 	for _, event := range events {
-		if (event.Kind == "merge.confirmed" || event.Kind == "merge.reconciled") && event.At.After(at) && event.At.After(latest.At) {
-			latest = event
+		if (event.Kind != "merge.confirmed" && event.Kind != "merge.reconciled") || !event.At.After(after) {
+			continue
+		}
+		currentVersion := confirmedRequirementVersionAt(versions, event.At)
+		pinnedVersion := taskRequirementVersionAt(events, versions, requirementID, event.At)
+		reasons := []string{}
+		if pinnedVersion > 0 && currentVersion > pinnedVersion {
+			reasons = append(reasons, fmt.Sprintf("planned against v%d; v%d was current at merge", pinnedVersion, currentVersion))
+		}
+		if event.Kind == "merge.reconciled" {
+			reasons = append(reasons, "merged outside factory review")
+		}
+		if !directlyServing {
+			reasons = append(reasons, "delivered through related work without serving this requirement")
+		}
+		deliveries = append(deliveries, requirementDelivery{
+			TaskID: taskID, Label: deliveryLabel(event), At: event.At,
+			NeedsAttention: len(reasons) > 0, Reasons: reasons,
+		})
+	}
+	return deliveries
+}
+
+func confirmedRequirementVersionAt(versions []core.RequirementVersion, at time.Time) int {
+	current := 0
+	var confirmedAt time.Time
+	for _, version := range versions {
+		if !version.Confirmed || version.ConfirmedAt.IsZero() || version.ConfirmedAt.After(at) {
+			continue
+		}
+		if confirmedAt.IsZero() || version.ConfirmedAt.After(confirmedAt) || (version.ConfirmedAt.Equal(confirmedAt) && version.Version > current) {
+			current, confirmedAt = version.Version, version.ConfirmedAt
 		}
 	}
-	if latest.Kind == "" {
-		return "", time.Time{}
+	return current
+}
+
+func taskRequirementVersionAt(events []core.Event, versions []core.RequirementVersion, requirementID string, at time.Time) int {
+	active, pinned := false, 0
+	for _, event := range events {
+		if event.At.After(at) {
+			continue
+		}
+		var payload struct {
+			ID          string `json:"id"`
+			Version     int    `json:"version"`
+			Unconfirmed bool   `json:"unconfirmed"`
+		}
+		if json.Unmarshal(event.Payload, &payload) != nil || payload.ID != requirementID {
+			continue
+		}
+		switch event.Kind {
+		case store.TaskContextRequirementAdded:
+			if payload.Unconfirmed {
+				active, pinned = false, 0
+				continue
+			}
+			active, pinned = true, payload.Version
+			if pinned == 0 {
+				pinned = confirmedRequirementVersionAt(versions, event.At)
+			}
+		case store.TaskContextRequirementActive:
+			active, pinned = true, payload.Version
+		case store.TaskContextRequirementRemoved:
+			active, pinned = false, 0
+		}
 	}
+	if !active {
+		return 0
+	}
+	return pinned
+}
+
+func deliveryLabel(event core.Event) string {
 	var payload map[string]any
-	_ = json.Unmarshal(latest.Payload, &payload)
+	_ = json.Unmarshal(event.Payload, &payload)
 	for _, key := range []string{"title", "task_title"} {
 		if value, ok := payload[key].(string); ok && strings.TrimSpace(value) != "" {
-			return value, latest.At
+			return value
 		}
 	}
-	if latest.TaskID != "" {
-		return latest.TaskID, latest.At
+	if event.TaskID != "" {
+		return event.TaskID
 	}
-	return "a serving blueprint merge", latest.At
+	return "a serving delivery"
 }
 
 func annotateBackfilledEvents(events []core.Event) []core.Event {

@@ -89,8 +89,22 @@ const requirement = {
   },
   staleness: {
     delivery_after_intent: true,
-    latest_delivery: 'blueprint-task',
-    latest_delivery_at: '2026-07-30T10:05:00Z',
+    deliveries: [
+      {
+        task_id: 'blueprint-task',
+        label: 'Blueprint delivery',
+        at: '2026-07-30T10:05:00Z',
+        needs_attention: true,
+        reasons: ['merged outside factory review'],
+      },
+      {
+        task_id: 'routine-delivery',
+        label: 'Routine delivery',
+        at: '2026-07-30T09:05:00Z',
+        needs_attention: false,
+        reasons: [],
+      },
+    ],
     active_drift: [],
   },
   migrated_seed: false,
@@ -203,19 +217,28 @@ test('requirements renders a document tree, one attention surface, and confirms 
   )
   await expect(page.getByText('Feature tree')).toHaveCount(0)
 
-  // AC-1.1: staleness names its causal delivery and the pending version
-  // carries the confirmation, both inside the one attention surface.
+  // AC-1.3: suspect staleness names its causal delivery and plain-language
+  // reason; the pending version remains inside the one attention surface.
   const attention = page.getByRole('region', { name: 'Needs your attention' })
-  await expect(attention).toContainText('Code shipped past the confirmed intent')
-  await expect(attention.getByText('Latest delivery: blueprint-task.')).toHaveAttribute(
+  await expect(attention).toContainText('Blueprint delivery may have moved past the confirmed intent')
+  await expect(attention.getByText('merged outside factory review')).toHaveAttribute(
     'title',
-    /blueprint-task delivered/,
+    /Blueprint delivery delivered/,
   )
   await expect(attention.getByRole('link', { name: 'Open the delivery' })).toHaveAttribute(
     'href',
     '/tasks/blueprint-task',
   )
   await expect(attention).toContainText('Version 1 is waiting for you')
+
+  // AC-1.2: a routine factory-reviewed delivery remains visible as neutral
+  // activity and is absent from the attention surface.
+  const deliveryActivity = page.getByRole('region', { name: 'Delivery activity' })
+  await expect(deliveryActivity.getByRole('link', { name: 'Routine delivery' })).toHaveAttribute(
+    'href',
+    '/tasks/routine-delivery',
+  )
+  await expect(attention).not.toContainText('Routine delivery')
 
   // Detailed signal labels and actions remain confined to the canvas; the
   // approved tree affordance carries only a compact aggregate.

@@ -915,12 +915,19 @@ export interface RequirementView {
   staleness?: {
     delivery_after_intent: boolean
     partial_evaluation: boolean
-    latest_delivery?: string
-    latest_delivery_at?: string
+    deliveries: RequirementDelivery[]
     active_drift: RepositoryDrift[]
   }
   migrated_seed: boolean
   confirmation_eligible: boolean
+}
+
+export interface RequirementDelivery {
+  task_id: string
+  label: string
+  at: string
+  needs_attention: boolean
+  reasons: string[]
 }
 
 export interface GovernedScope {
