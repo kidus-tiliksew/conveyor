@@ -183,6 +183,12 @@ test('System Design renders a category tree, one attention surface, and authenti
   const diff = comparison.getByRole('region', { name: 'Pending version diff' })
   await expect(diff).toContainText('From version 1')
   await expect(diff).toContainText('To version 2')
+  await expect(diff.getByText('The dispatcher owns durable stage transitions.', { exact: true })).toHaveClass(
+    /bg-failure-soft/,
+  )
+  await expect(
+    diff.getByText('The dispatcher owns durable stage transitions and work-order leases.', { exact: true }),
+  ).toHaveClass(/bg-positive-soft/)
   await page.getByText('Version history').click()
   await page.getByText('Read version').first().click()
   await expect(
@@ -193,6 +199,37 @@ test('System Design renders a category tree, one attention surface, and authenti
   await expect.poll(() => confirmed).toBe(true)
   expect(revisionInput).toEqual({})
   await expect.poll(() => [...new Set(protectedReads)].sort()).toEqual(['/v1/decisions', '/v1/system-designs'])
+})
+
+test('an oversized System Design comparison falls back to plain rendering', async ({ page }) => {
+  await initialize(page)
+  const longCurrent = Array.from({ length: 500 }, (_, index) => `confirmed line ${index}`).join('\n')
+  const longPending = Array.from({ length: 500 }, (_, index) => `proposed line ${index}`).join('\n')
+  const oversized = {
+    ...design,
+    current_version: { ...first, content: longCurrent },
+    pending_versions: [{ ...pending, content: longPending }],
+    versions: [
+      { ...first, content: longCurrent },
+      { ...pending, content: longPending },
+    ],
+    drift: [],
+  }
+  await page.route('**/v1/**', async (route) => {
+    const handled = shell(route)
+    if (handled) return await handled
+    const url = new URL(route.request().url())
+    if (url.pathname === '/v1/system-designs') return route.fulfill({ json: [oversized] })
+    if (url.pathname === '/v1/decisions') return route.fulfill({ json: [] })
+    return route.fulfill({ json: [] })
+  })
+
+  await page.goto('/system-design')
+  const diff = page.getByRole('region', { name: 'Pending version diff' })
+  await expect(diff.getByText('Diff too large; showing both versions without highlighting.')).toBeVisible()
+  await expect(diff.getByText('confirmed line 499', { exact: true })).toBeVisible()
+  await expect(diff.getByText('proposed line 499', { exact: true })).toBeVisible()
+  await expect(diff.locator('span.bg-failure-soft, span.bg-positive-soft')).toHaveCount(0)
 })
 
 test('a System Design with nothing outstanding says so in one quiet line', async ({ page }) => {

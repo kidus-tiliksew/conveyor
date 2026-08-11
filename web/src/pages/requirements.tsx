@@ -19,6 +19,7 @@ import {
 import { useOperatorToken, useWorkspaceSelection } from '../components/app-shell'
 import { AttentionSurface, type AttentionItem } from '../components/documents/attention-surface'
 import { DriftResolutionForm } from '../components/documents/drift-resolution-form'
+import { VersionDiff } from '../components/documents/version-diff'
 import {
   DocumentTree,
   DocumentTreeGroup,
@@ -466,44 +467,26 @@ function OverviewCanvas({
 
 function OverviewDiff({ prior, current }: { prior: ReferenceDocumentVersion; current: ReferenceDocumentVersion }) {
   const [open, setOpen] = useState(false)
-  const comparison = useMemo(
-    () => (open ? boundedLineChanges(prior.content, current.content) : undefined),
-    [open, prior.content, current.content],
-  )
-  const [priorLines, currentLines] = comparison?.lines ?? [[], []]
   return (
     <details
       className="mt-4 rounded-lg border border-border bg-surface/40"
       onToggle={(event) => setOpen(event.currentTarget.open)}
     >
       <summary className="cursor-pointer px-4 py-3 text-sm font-medium">Compared with v{prior.version}</summary>
-      {comparison?.limited && (
-        <p className="border-t border-border px-4 py-2 text-xs text-muted">
-          Diff too large; showing both versions without highlighting.
-        </p>
-      )}
-      <div className="grid gap-px border-t border-border bg-border md:grid-cols-2">
-        <pre className="max-h-72 overflow-auto whitespace-pre-wrap bg-card p-3 text-[11px]">
-          {priorLines.map((line, index) => (
-            <span
-              key={`${index}-${line.text}`}
-              className={line.changed ? 'block bg-failure-soft text-failure' : 'block'}
-            >
-              {line.text || ' '}
-            </span>
-          ))}
-        </pre>
-        <pre className="max-h-72 overflow-auto whitespace-pre-wrap bg-card p-3 text-[11px]">
-          {currentLines.map((line, index) => (
-            <span
-              key={`${index}-${line.text}`}
-              className={line.changed ? 'block bg-positive-soft text-positive' : 'block'}
-            >
-              {line.text || ' '}
-            </span>
-          ))}
-        </pre>
-      </div>
+      <VersionDiff
+        left={{
+          content: prior.content,
+          paneClassName: 'bg-card',
+          preClassName: 'max-h-72 overflow-auto whitespace-pre-wrap p-3 text-[11px]',
+        }}
+        right={{
+          content: current.content,
+          paneClassName: 'bg-card',
+          preClassName: 'max-h-72 overflow-auto whitespace-pre-wrap p-3 text-[11px]',
+        }}
+        bounded
+        enabled={open}
+      />
     </details>
   )
 }
@@ -1254,40 +1237,24 @@ function RequirementDocument({ version }: { version: RequirementVersion }) {
 }
 
 function RequirementDiff({ current, pending }: { current: RequirementVersion; pending: RequirementVersion }) {
-  const [currentLines, pendingLines] = lineChanges(documentText(current), documentText(pending))
   return (
     <details className="mt-6 rounded-lg border border-border bg-surface/40" open>
       <summary className="cursor-pointer px-4 py-3 text-sm font-medium">
         Compared with confirmed v{current.version}
       </summary>
-      <div className="grid gap-px border-t border-border bg-border md:grid-cols-2">
-        <div className="bg-card p-4">
-          <p className="mb-2 text-xs font-medium text-failure">Confirmed today</p>
-          <pre className="whitespace-pre-wrap font-sans text-xs leading-5 text-muted">
-            {currentLines.map((line, index) => (
-              <span
-                key={`${index}-${line.text}`}
-                className={line.changed ? 'block bg-failure-soft text-failure' : 'block'}
-              >
-                {line.text || ' '}
-              </span>
-            ))}
-          </pre>
-        </div>
-        <div className="bg-card p-4">
-          <p className="mb-2 text-xs font-medium text-positive">Proposed</p>
-          <pre className="whitespace-pre-wrap font-sans text-xs leading-5">
-            {pendingLines.map((line, index) => (
-              <span
-                key={`${index}-${line.text}`}
-                className={line.changed ? 'block bg-positive-soft text-positive' : 'block'}
-              >
-                {line.text || ' '}
-              </span>
-            ))}
-          </pre>
-        </div>
-      </div>
+      <VersionDiff
+        left={{
+          content: documentText(current),
+          label: 'Confirmed today',
+          labelClassName: 'mb-2 text-xs font-medium text-failure',
+          preClassName: 'whitespace-pre-wrap font-sans text-xs leading-5 text-muted',
+        }}
+        right={{
+          content: documentText(pending),
+          label: 'Proposed',
+          labelClassName: 'mb-2 text-xs font-medium text-positive',
+        }}
+      />
     </details>
   )
 }
@@ -1310,46 +1277,6 @@ function documentText(version: RequirementVersion) {
     ])
     .join('\n')
   return [prose, statements].filter(Boolean).join('\n\n')
-}
-
-function lineChanges(current: string, pending: string) {
-  const left = current.split('\n')
-  const right = pending.split('\n')
-  const common = Array.from({ length: left.length + 1 }, () => Array<number>(right.length + 1).fill(0))
-  for (let i = left.length - 1; i >= 0; i--) {
-    for (let j = right.length - 1; j >= 0; j--) {
-      common[i][j] = left[i] === right[j] ? common[i + 1][j + 1] + 1 : Math.max(common[i + 1][j], common[i][j + 1])
-    }
-  }
-  const unchangedLeft = new Set<number>()
-  const unchangedRight = new Set<number>()
-  let i = 0
-  let j = 0
-  while (i < left.length && j < right.length) {
-    if (left[i] === right[j]) {
-      unchangedLeft.add(i++)
-      unchangedRight.add(j++)
-    } else if (common[i + 1][j] >= common[i][j + 1]) i++
-    else j++
-  }
-  return [
-    left.map((text, index) => ({ text, changed: !unchangedLeft.has(index) })),
-    right.map((text, index) => ({ text, changed: !unchangedRight.has(index) })),
-  ]
-}
-
-const maxReferenceDiffMatrixCells = 250_000
-
-function boundedLineChanges(current: string, pending: string) {
-  const left = current.split('\n')
-  const right = pending.split('\n')
-  if ((left.length + 1) * (right.length + 1) > maxReferenceDiffMatrixCells) {
-    return {
-      limited: true,
-      lines: [left.map((text) => ({ text, changed: false })), right.map((text) => ({ text, changed: false }))] as const,
-    }
-  }
-  return { limited: false, lines: lineChanges(current, pending) }
 }
 
 function eventLabel(event: TaskEvent) {
