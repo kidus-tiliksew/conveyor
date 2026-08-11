@@ -72,7 +72,10 @@ export function WorkspacePage() {
     queryKey: ['workers', token, workspace],
     queryFn: () => fetchWorkers(token),
     enabled: Boolean(token && workspace),
-    refetchInterval: 5000,
+    refetchInterval: () => (document.visibilityState === 'visible' ? 15_000 : false),
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: true,
+    refetchOnReconnect: true,
   })
   const [tab, setTab] = useState<TabId>('execution')
   const [draft, setDraftState] = useState<WorkspaceConfigDocument | null>(null)
