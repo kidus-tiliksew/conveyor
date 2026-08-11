@@ -805,14 +805,13 @@ func (d *Dispatcher) completeOutput(ctx context.Context, cfg *config.Config, tas
 		if err = d.recordRequirementSuggestion(ctx, task, result.RequirementID, core.RequirementServesTriage); err != nil {
 			return err
 		}
-		if task.Level == core.L3 || result.Route == "human" {
-			return d.transition(ctx, task.ID, core.TaskTriageRouteHuman, "", core.StageTriage)
-		}
 		if result.Route == "parked" {
 			return d.transition(ctx, task.ID, core.TaskTriagePark, "", core.StageTriage)
 		}
 		next := core.StageImplement
-		if (task.PolicyVersion > 0 && task.SpecApproval) || (task.PolicyVersion == 0 && task.Level == core.L2) || result.Route == "spec" {
+		// Triage is code-blind classify-and-frame only. The intake-frozen task
+		// policy alone selects the next stage (REQ-3, AC-3.1; DEC-17).
+		if (task.PolicyVersion > 0 && task.SpecApproval) || (task.PolicyVersion == 0 && (task.Level == core.L2 || task.Level == core.L3)) {
 			next = core.StageSpec
 		}
 		return d.transition(ctx, task.ID, core.TaskStageAdvance, next, "")

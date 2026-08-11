@@ -52,7 +52,6 @@ const (
 	TaskStageBounce               TaskCommand = "stage.bounce"
 	TaskStageBounceLimit          TaskCommand = "stage.bounce_limit"
 	TaskJobFail                   TaskCommand = "job.fail"
-	TaskTriageRouteHuman          TaskCommand = "triage.route_human"
 	TaskTriagePark                TaskCommand = "triage.park"
 	TaskGateSpec                  TaskCommand = "gate.spec"
 	TaskGatePlanRevision          TaskCommand = "gate.plan_revision"
@@ -100,7 +99,7 @@ type lifecycleTable map[string]map[string]string
 var taskLifecycleTable = lifecycleTable{
 	string(TaskClaiming): {string(TaskIntakeFinalize): string(TaskQueued), string(TaskCancel): string(TaskClosed)},
 	string(TaskQueued):   {string(TaskDispatchStart): string(TaskRunning), string(TaskOrderClaim): string(TaskRunning), string(TaskDispatchFailRetry): string(TaskQueued), string(TaskDispatchFailFinal): string(TaskParked), string(TaskRecoverRefresh): string(TaskQueued), string(TaskMergeRecover): string(TaskMerged), string(TaskCancel): string(TaskClosed), string(TaskBlueprintClose): string(TaskClosed)},
-	string(TaskRunning):  {string(TaskStageAdvance): string(TaskQueued), string(TaskStageBounce): string(TaskQueued), string(TaskStageBounceLimit): string(TaskAwaiting), string(TaskJobFail): string(TaskAwaiting), string(TaskTriageRouteHuman): string(TaskAwaiting), string(TaskTriagePark): string(TaskParked), string(TaskGateSpec): string(TaskAwaiting), string(TaskGatePlanRevision): string(TaskAwaiting), string(TaskGateMerge): string(TaskAwaiting), string(TaskRecoverRefresh): string(TaskQueued), string(TaskMergeRecover): string(TaskMerged), string(TaskCancel): string(TaskClosed)},
+	string(TaskRunning):  {string(TaskStageAdvance): string(TaskQueued), string(TaskStageBounce): string(TaskQueued), string(TaskStageBounceLimit): string(TaskAwaiting), string(TaskJobFail): string(TaskAwaiting), string(TaskTriagePark): string(TaskParked), string(TaskGateSpec): string(TaskAwaiting), string(TaskGatePlanRevision): string(TaskAwaiting), string(TaskGateMerge): string(TaskAwaiting), string(TaskRecoverRefresh): string(TaskQueued), string(TaskMergeRecover): string(TaskMerged), string(TaskCancel): string(TaskClosed)},
 	string(TaskAwaiting): {string(TaskInterventionReject): string(TaskClosed), string(TaskInterventionApproveSpec): string(TaskQueued), string(TaskInterventionApproveReview): string(TaskApproved), string(TaskInterventionRedirect): string(TaskQueued), string(TaskCancel): string(TaskClosed)},
 	string(TaskApproved): {string(TaskMergeConfirm): string(TaskMerged), string(TaskRefreshReview): string(TaskQueued), string(TaskConflictDispatch): string(TaskQueued), string(TaskCancel): string(TaskClosed)},
 	string(TaskParked):   {string(TaskRecover): string(TaskQueued), string(TaskCancel): string(TaskClosed)},
