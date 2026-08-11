@@ -307,3 +307,35 @@ func TestResolveDriftAtomicallyProposesRequirementAmendment(t *testing.T) {
 		t.Fatalf("unresolved missing-reference drift=%+v err=%v", status.Drift, err)
 	}
 }
+
+func TestResolveDriftDecodesGeneratedDesignDriftID(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	drift := monitor.Drift{
+		ID:          "design:design-http-api:lineaged_merge:conveyor:pr:390",
+		WorkspaceID: "demo",
+		Repository:  "conveyor",
+		Kind:        monitor.LineagedMerge,
+		SourceURL:   "https://github.com/acme/conveyor/pull/390",
+		DetectedAt:  time.Now().UTC(),
+	}
+	if _, _, err := st.(monitor.Store).RecordDrift(ctx, drift); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(st)
+	server.Workspace, server.BearerToken = "demo", "token"
+	server.Monitor = &monitor.Service{Store: st.(monitor.Store), WorkspaceID: "demo", Enabled: true}
+
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/monitor/drift/design%3Adesign-http-api%3Alineaged_merge%3Aconveyor%3Apr%3A390/resolve",
+		strings.NewReader(`{"outcome":"conflict_resolved"}`),
+	)
+	request.Header.Set("Authorization", "Bearer token")
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("resolve status=%d body=%s", response.Code, response.Body.String())
+	}
+}

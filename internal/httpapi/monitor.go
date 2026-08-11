@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
@@ -114,7 +115,12 @@ func (s *Server) resolveMonitorDrift(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	drift, err := s.Monitor.Resolve(r.Context(), chi.URLParam(r, "id"), request.Outcome, request.RequirementID)
+	driftID, err := url.PathUnescape(chi.URLParam(r, "id"))
+	if err != nil {
+		http.Error(w, "drift id is not valid path encoding", http.StatusBadRequest)
+		return
+	}
+	drift, err := s.Monitor.Resolve(r.Context(), driftID, request.Outcome, request.RequirementID)
 	if err != nil {
 		status := http.StatusConflict
 		if errors.Is(err, monitor.ErrRequirementIDMissing) || errors.Is(err, monitor.ErrUnknownRequirementID) ||

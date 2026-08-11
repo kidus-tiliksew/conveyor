@@ -36,16 +36,74 @@ process as it will go:
   signal, and a monitor watches the default branch and files
   reconciliation tasks when changes land outside the pipeline.
 - Every state transition appends to an event log. The knowledge graph
-  is a projection of that log
+  is a projection of that log.
+
+## The knowledge graph
+
+Everything durable in the factory is a node — requirements and their versions, System Design documents,
+decisions, tasks, work orders, pull requests, commit ranges, review
+verdicts, test evidence — and every relationship between them is a
+typed edge: a task *serves* a requirement, a design *governs* a
+repository path, a decision *supersedes* an earlier one, a work order
+*produced* a verdict, a merge records the commit range it landed.
+Starting from any node you can walk to everything it touched: from a
+requirement down to the commits that satisfied it, or from a merged
+change back up to the intent it serves.
+
+Nobody maintains the graph by hand, and the graph is not itself the
+source of truth. Every edge is asserted by an event in the append-only
+log and carries the ID of the event that created it. The links table
+in PostgreSQL is a rebuildable projection: `conveyor lineage rebuild`
+replays the workspace's events in a single transaction and regenerates
+it, preserving the few historical rows no replay can derive.
+
+The same graph serves every surface that needs context, through one
+bounded, deterministic traversal — depth, node, and link budgets make
+reads fail closed instead of walking an unbounded workspace:
+
+- When an agent claims a work order, its context is assembled by
+  walking the graph from the task: the requirements it serves, the
+  designs governing the code it touches, and the decisions that
+  settled how, ranked by relation and rendered within a byte budget.
+- Drift detection follows the *governs* edges from System Design
+  documents to repository paths to tell governed merges from
+  ungoverned ones.
+- Operators and API clients get the same walk through the lineage
+  explorer in the dashboard and `GET /v1/lineage/{type}/{id}`.
+
+The result is that traceability survives the people who had it in
+their heads. When an agent (or a person) asks why something is the way
+it is, the answer is a query. 
 
 ## The document tiers
 
-| Tier | Nature | IDs | Maintenance |
-|---|---|---|---|
-| Product overviews | Informative | — | Markdown uploads, versioned with diffs; enforceable claims promote into requirements with a section-anchored link |
-| Requirements | Normative intent | `REQ-n` / `AC-n.m` | Drafted by agents or operators, versioned, operator-confirmed; user stories with nested acceptance criteria |
-| System Design | Normative mechanism | — | Factory-resident markdown that declares the code it governs; ungoverned merges raise a drift signal |
-| Decisions | Settled arguments | `DEC-n` | Extracted from real deliberation with the rejected alternatives on record; append-only with supersession |
+Not every document carries the same weight. Conveyor sorts them by
+two questions: does it bind anyone, and does it describe what the
+product should do or how the system does it? That gives four tiers:
+
+- **Product overviews** are background reading: markdown uploads,
+  versioned with diffs, that describe the product without binding
+  anyone to anything. When an overview makes a claim worth enforcing,
+  the claim is promoted into a requirement with a link back to the
+  exact section it came from.
+- **Requirements** say what the product must do, framed as user
+  stories with nested acceptance criteria. Every statement carries a
+  stable ID — `REQ-n` for the requirement, `AC-n.m` for each
+  criterion — so it can be cited on its own.
+- **System Design documents** say how the system works, kept as
+  markdown inside the factory. Each one also declares which code it
+  governs, and that declaration is what arms drift detection — a
+  merge into governed paths without a design revision raises a
+  signal.
+- **Decisions** are settled arguments. Each `DEC-n` records what was
+  decided, the context, and the alternatives that were rejected, so a
+  question argued once — in planning, in implementation, or by an
+  operator — stays settled. A decision is never edited afterward,
+  only superseded by a later one.
+
+Requirements, designs, and decisions all move the same way: agents
+and operators draft and propose, versions never change once written,
+and only an operator confirms.
 
 The IDs are stable and citable in code comments. An implementing agent
 cites the requirements and decisions its code serves, and the reviewer
