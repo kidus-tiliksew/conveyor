@@ -1599,6 +1599,7 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
       created_at: createdAt,
       context: attachedContext[taskId],
     },
+    pending_authority: taskId === 'design-proposal',
     jobs: reviewActivity.jobs,
     events:
       taskId === 'blueprint-parent'
@@ -1652,7 +1653,7 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
         : [],
     checkout_available: false,
     checkout_guidance: 'Use the assigned worktree.',
-    needs_attention: taskId === 'forge-failure' || taskId === 'unsatisfiable',
+    needs_attention: taskId === 'forge-failure' || taskId === 'unsatisfiable' || taskId === 'design-proposal',
     forge_failure:
       taskId === 'forge-failure'
         ? {
@@ -3827,6 +3828,9 @@ test("a task's own System Design proposal is confirmable from its detail and cle
   })
 
   await page.goto('/tasks/design-proposal/full')
+  await expect(page.getByRole('region', { name: 'Review is waiting on a document decision' })).toContainText(
+    'This review cannot be claimed until you confirm or dismiss',
+  )
   const card = page.getByRole('region', { name: 'System Design proposals from this task' })
   await expect(card).toContainText('System Design update proposed')
   await expect(card).toContainText('Version 2 proposed by this task')
