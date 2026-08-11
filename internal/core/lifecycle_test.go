@@ -20,7 +20,6 @@ func TestTaskLifecycleT1ThroughT22(t *testing.T) {
 		{"T5", TaskRunning, TaskStageBounce, TaskQueued},
 		{"T6", TaskRunning, TaskStageBounceLimit, TaskAwaiting},
 		{"T7", TaskRunning, TaskJobFail, TaskAwaiting},
-		{"T8", TaskRunning, TaskTriageRouteHuman, TaskAwaiting},
 		{"T9", TaskRunning, TaskTriagePark, TaskParked},
 		{"T10", TaskRunning, TaskGateSpec, TaskAwaiting},
 		{"T10a", TaskRunning, TaskGatePlanRevision, TaskAwaiting},
@@ -51,6 +50,9 @@ func TestTaskLifecycleT1ThroughT22(t *testing.T) {
 		if got, err := TransitionTask(from, TaskCancel); err != nil || got != TaskClosed {
 			t.Fatalf("T22 from %q = %q, %v", from, got, err)
 		}
+	}
+	if _, err := TransitionTask(TaskRunning, TaskCommand("triage.route_human")); err == nil {
+		t.Fatal("retired triage.route_human command remains in the current lifecycle")
 	}
 }
 
@@ -168,6 +170,9 @@ func TestInvalidTransitionCarriesAllowedAlternatives(t *testing.T) {
 
 func TestLifecycleStateDiagramIsGeneratedFromCanonicalTables(t *testing.T) {
 	diagram := LifecycleStateDiagram()
+	if strings.Contains(diagram, "triage.route_human") {
+		t.Fatalf("diagram contains retired triage route:\n%s", diagram)
+	}
 	for _, edge := range []string{
 		"task_claiming --> task_queued: intake.finalize",
 		"task_approved --> task_merged: merge.confirm",

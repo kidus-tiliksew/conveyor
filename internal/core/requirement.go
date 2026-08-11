@@ -135,6 +135,19 @@ type RequirementVersion struct {
 	CreatedAt       time.Time              `json:"created_at"`
 }
 
+// RequirementStalenessAcknowledgment is an append-only operator judgment over
+// one derived delivery signal. AcknowledgedThrough is the delivery watermark;
+// later deliveries remain eligible to raise a fresh signal.
+type RequirementStalenessAcknowledgment struct {
+	RequirementID       string    `json:"requirement_id"`
+	SignalID            string    `json:"signal_id"`
+	DeliveryTaskID      string    `json:"delivery_task_id"`
+	DeliveryEventID     int64     `json:"delivery_event_id"`
+	AcknowledgedThrough time.Time `json:"acknowledged_through"`
+	AcknowledgedBy      string    `json:"acknowledged_by"`
+	AcknowledgedAt      time.Time `json:"acknowledged_at"`
+}
+
 // RequirementDerivation retains version-scoped informative provenance without
 // granting the upload normative authority or a citation identity.
 type RequirementDerivation struct {

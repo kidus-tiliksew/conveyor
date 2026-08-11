@@ -42,6 +42,15 @@ func TestAuditLifecycleHistoryAcceptsCommandedCancellation(t *testing.T) {
 	}
 }
 
+func TestAuditLifecycleHistoryAcceptsRetiredTriageRouteHumanEvent(t *testing.T) {
+	events := []core.Event{{ID: 1, TaskID: "legacy-route-human", Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{
+		"from": core.TaskRunning, "to": core.TaskAwaiting, "command": "triage.route_human",
+	})}}
+	if violations := AuditLifecycleHistory(events); len(violations) != 0 {
+		t.Fatalf("historical route-human event is no longer auditable: %#v", violations)
+	}
+}
+
 func TestAuditLifecycleHistoryDetectsDisconnectedTaskEdges(t *testing.T) {
 	events := []core.Event{
 		{ID: 1, TaskID: "task", Kind: "task.created", Payload: core.JSONPayload(core.Task{ID: "task", State: core.TaskQueued})},
