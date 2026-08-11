@@ -183,7 +183,7 @@ func (s *Service) Enroll(ctx context.Context, pairingToken, name string) (Enroll
 		return Enrollment{}, err
 	}
 	worker := core.Worker{ID: "worker-" + idSecret, Workspace: pairing.Workspace, Name: name, CredentialHash: hash(credential), CreatedAt: s.now()}
-	workerCtx := store.WithWorkspace(store.WithActor(ctx, store.Actor{ID: worker.ID, Role: core.ActorRunner}), pairing.Workspace)
+	workerCtx := store.WithWorkspace(store.WithActor(ctx, store.Actor{ID: store.WorkerActorID(worker.ID), Role: core.ActorWorker}), pairing.Workspace)
 	if err = s.Store.CreateWorker(workerCtx, worker); err != nil {
 		return Enrollment{}, err
 	}
@@ -206,7 +206,7 @@ func (s *Service) Authenticate(ctx context.Context, credential, requestedWorkspa
 	if requestedWorkspace != "" && worker.Workspace != requestedWorkspace {
 		return ctx, core.Worker{}, store.ErrWorkerUnauthorized
 	}
-	return store.WithActor(store.WithWorkspace(ctx, worker.Workspace), store.Actor{ID: worker.ID, Role: core.ActorRunner}), worker, nil
+	return store.WithActor(store.WithWorkspace(ctx, worker.Workspace), store.Actor{ID: store.WorkerActorID(worker.ID), Role: core.ActorWorker}), worker, nil
 }
 
 func (s *Service) Heartbeat(ctx context.Context, worker core.Worker, probes []core.HarnessProbe) (core.Worker, error) {

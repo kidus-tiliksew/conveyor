@@ -583,7 +583,7 @@ func TestRequirementStalenessAcknowledgmentAndFollowUpLifecycle(t *testing.T) {
 	}
 	foundAck := false
 	for _, event := range ackEvents {
-		foundAck = foundAck || (event.Kind == "requirement.staleness_acknowledged" && event.ActorID == "alice" && event.ActorRole == core.ActorHuman)
+		foundAck = foundAck || (event.Kind == "requirement.staleness_acknowledged" && event.ActorID == "user:local-operator" && event.ActorRole == core.ActorUser)
 	}
 	if !foundAck {
 		t.Fatalf("audited acknowledgment missing from requirement timeline: %+v", ackEvents)

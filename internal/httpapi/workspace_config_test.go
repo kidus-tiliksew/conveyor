@@ -162,7 +162,7 @@ func TestWorkspaceConfigAPIValidatesVersionsAndRecordsActor(t *testing.T) {
 	put.Header.Set("If-Match", "3")
 	putResult := httptest.NewRecorder()
 	h.ServeHTTP(putResult, put)
-	if putResult.Code != http.StatusOK || backend.updates != 1 || !strings.Contains(putResult.Body.String(), `"actor_id":"alice"`) {
+	if putResult.Code != http.StatusOK || backend.updates != 1 || !strings.Contains(putResult.Body.String(), `"actor_id":"user:local-operator"`) {
 		t.Fatalf("PUT status=%d updates=%d body=%s", putResult.Code, backend.updates, putResult.Body)
 	}
 	if backend.record.Document.ExecutionSettings == nil || backend.record.Document.ExecutionSettings.Implementation.TimeoutText != "45m" || backend.record.Document.Review.Seats[1].Effort != "high" || backend.record.Document.Routing.Stages["implement"].Harness != "codex" {

@@ -527,6 +527,18 @@ func TestMCPToolsListRequiresAuthAndPublishesLifecycle(t *testing.T) {
 	}
 }
 
+func TestMCPAgentCredentialCannotInvokeHumanReservedTools(t *testing.T) {
+	server := NewServer(store.NewMemory())
+	request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	credential := core.AuthenticatedCredential{ID: "agt_1", OwnerUserID: "usr_1", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser}
+	request = request.WithContext(store.WithCredential(request.Context(), credential))
+	for _, tool := range []string{"create_task", "redispatch_work_order"} {
+		if _, err := server.callMCPTool(request, tool, map[string]any{"workspace_id": "demo"}); err == nil || !strings.Contains(err.Error(), "operator-scoped user credential") {
+			t.Fatalf("%s error=%v", tool, err)
+		}
+	}
+}
+
 func TestMCPRequestPlanRevisionEndToEnd(t *testing.T) {
 	t.Parallel()
 	type fixture struct {
@@ -802,7 +814,7 @@ func TestMCPCreateTaskEnqueuesTriageIdempotently(t *testing.T) {
 		t.Fatalf("tasks=%+v err=%v", tasks, err)
 	}
 	events, err := st.ListEvents(t.Context(), first.ID)
-	if err != nil || len(events) != 1 || events[0].ActorID != "issue-triage-agent" || events[0].ActorRole != core.ActorAgent {
+	if err != nil || len(events) != 1 || events[0].ActorID != "user:local-operator" || events[0].ActorRole != core.ActorUser {
 		t.Fatalf("events=%+v err=%v", events, err)
 	}
 }

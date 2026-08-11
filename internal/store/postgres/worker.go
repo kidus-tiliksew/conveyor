@@ -68,7 +68,7 @@ func (s *Store) CreateWorker(ctx context.Context, worker core.Worker) error {
 		if _, err := tx.Exec(ctx, `INSERT INTO workers (id,workspace_id,name,credential_hash,lease_expires_at,last_seen_at,probe_results,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`, worker.ID, workspace(ctx), worker.Name, worker.CredentialHash, nullableTimeValue(worker.LeaseExpiresAt), nullableTimeValue(worker.LastSeenAt), probes, worker.CreatedAt); err != nil {
 			return err
 		}
-		_, err := q.InsertWorkspaceEvent(ctx, db.InsertWorkspaceEventParams{WorkspaceID: workspace(ctx), Kind: "worker.enrolled", ActorID: worker.ID, ActorRole: string(core.ActorRunner), PayloadJson: core.JSONPayload(map[string]string{"worker_id": worker.ID, "name": worker.Name}), At: timestamp(time.Now().UTC())})
+		_, err := q.InsertWorkspaceEvent(ctx, db.InsertWorkspaceEventParams{WorkspaceID: workspace(ctx), Kind: "worker.enrolled", ActorID: store.WorkerActorID(worker.ID), ActorRole: string(core.ActorWorker), PayloadJson: core.JSONPayload(map[string]string{"worker_id": worker.ID, "name": worker.Name}), At: timestamp(time.Now().UTC())})
 		return err
 	})
 }
@@ -191,7 +191,7 @@ func (s *Store) RenewWorkerClaimCommand(ctx context.Context, taskLease taskops.T
 	if err != nil {
 		return core.WorkOrder{}, err
 	}
-	_ = s.AppendEvent(store.WithActor(ctx, store.Actor{ID: workerID, Role: core.ActorRunner}), core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.lease_renewed", Payload: core.JSONPayload(map[string]any{"attempt_id": order.AttemptID, "lease_expires_at": order.LeaseExpiresAt})})
+	_ = s.AppendEvent(store.WithActor(ctx, store.Actor{ID: store.WorkerActorID(workerID), Role: core.ActorWorker}), core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.lease_renewed", Payload: core.JSONPayload(map[string]any{"attempt_id": order.AttemptID, "lease_expires_at": order.LeaseExpiresAt})})
 	return order, nil
 }
 
@@ -336,7 +336,7 @@ func (s *Store) ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskops
 		}
 	}
 	q := s.queries.WithTx(tx)
-	eventCtx := store.WithActor(ctx, store.Actor{ID: workerID, Role: core.ActorRunner})
+	eventCtx := store.WithActor(ctx, store.Actor{ID: store.WorkerActorID(workerID), Role: core.ActorWorker})
 	kind := "work_order.released"
 	if core.WorkOrderOutcomeConsumesRetry(release.Outcome) {
 		kind = "work_order.child_failed"
@@ -437,7 +437,7 @@ func (s *Store) RequestPlanRevisionCommand(ctx context.Context, taskLease taskop
 	if err != nil {
 		return store.PlanRevisionRequestResult{}, err
 	}
-	eventCtx := store.WithActor(ctx, store.Actor{ID: workerID, Role: core.ActorRunner})
+	eventCtx := store.WithActor(ctx, store.Actor{ID: store.WorkerActorID(workerID), Role: core.ActorWorker})
 	if err = insertEvent(eventCtx, q, core.Event{TaskID: current.TaskID, JobID: current.JobID, Kind: "work_order.plan_revision_requested", Payload: core.JSONPayload(map[string]any{"work_order_id": current.ID, "attempt_id": attemptID, "session_id": sessionID, "rationale": rationale, "plan_version": planVersion}), At: now}); err != nil {
 		return store.PlanRevisionRequestResult{}, err
 	}
@@ -556,7 +556,7 @@ func (s *Store) RecordWorkOrderAttemptCheckpoint(ctx context.Context, workOrderI
 		return false, tx.Commit(ctx)
 	}
 	q := s.queries.WithTx(tx)
-	eventCtx := store.WithActor(ctx, store.Actor{ID: workerID, Role: core.ActorRunner})
+	eventCtx := store.WithActor(ctx, store.Actor{ID: store.WorkerActorID(workerID), Role: core.ActorWorker})
 	if err = insertEvent(eventCtx, q, core.Event{
 		TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.attempt_checkpointed",
 		Payload: store.AttemptCheckpointPayload(order, checkpoint), At: time.Now().UTC(),

@@ -159,7 +159,7 @@ func TestSystemDesignAndDecisionHTTPConfirmationContracts(t *testing.T) {
 	dismissDecision.Header.Set("X-Conveyor-Actor", "dashboard-operator")
 	dismissedDecision := httptest.NewRecorder()
 	handler.ServeHTTP(dismissedDecision, dismissDecision)
-	if dismissedDecision.Code != http.StatusOK || !strings.Contains(dismissedDecision.Body.String(), `"status":"dismissed"`) || !strings.Contains(dismissedDecision.Body.String(), `"dismissed_by":"dashboard-operator"`) {
+	if dismissedDecision.Code != http.StatusOK || !strings.Contains(dismissedDecision.Body.String(), `"status":"dismissed"`) || !strings.Contains(dismissedDecision.Body.String(), `"dismissed_by":"user:local-operator"`) {
 		t.Fatalf("dismiss decision status=%d body=%s", dismissedDecision.Code, dismissedDecision.Body.String())
 	}
 	confirmDismissed := httptest.NewRequest(http.MethodPost, "/v1/decisions/"+secondDecision.ID+"/confirm", nil)

@@ -49,7 +49,7 @@ func TestClientWorkspaceConfigUpdateSendsIfMatch(t *testing.T) {
 		if r.Method != http.MethodPut || r.URL.Path != "/v1/workspace/config" {
 			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
 		}
-		if r.Header.Get("If-Match") != "7" || r.Header.Get("X-Conveyor-Actor") != "cli-operator" {
+		if r.Header.Get("If-Match") != "7" || r.Header.Get("X-Conveyor-Actor") != "" {
 			t.Fatalf("headers = %#v", r.Header)
 		}
 		_ = json.NewEncoder(w).Encode(config.UpdateReceipt{VersionedDocument: config.VersionedDocument{Version: 8}, EventID: 9})

@@ -230,7 +230,6 @@ func (c *client) doHeaders(method, path string, body []byte, out any, headers ma
 	}
 	if c.token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.token)
-		req.Header.Set("X-Conveyor-Actor", "cli-operator")
 	}
 	if c.workspace != "" {
 		req.Header.Set("X-Workspace-ID", c.workspace)

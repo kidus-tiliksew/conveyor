@@ -4,14 +4,19 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/httpapi"
+	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 )
 
@@ -71,6 +76,17 @@ func TestIdentityBootstrapAndPersonalAccessTokenLifecycleIntegration(t *testing.
 	if verified, err := st.VerifyPersonalAccessToken(t.Context(), issued.Value); err != nil || verified.ID != principal.ID {
 		t.Fatalf("issued token verification principal=%+v err=%v", verified, err)
 	}
+	agent, err := st.IssueAgentCredential(t.Context(), principal.ID, "Codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := st.VerifyCredential(t.Context(), agent.Value)
+	if err != nil || resolved.ID != agent.ID || resolved.OwnerUserID != principal.ID || resolved.Kind != core.CredentialAgent || resolved.Scope != core.CredentialScopeUser {
+		t.Fatalf("resolved agent credential=%+v err=%v", resolved, err)
+	}
+	if _, err = st.VerifyPersonalAccessToken(t.Context(), agent.Value); !errors.Is(err, ErrInvalidPersonalAccessToken) {
+		t.Fatalf("agent credential authenticated as PAT: %v", err)
+	}
 	if revoked, err := st.RevokePersonalAccessToken(t.Context(), issued.ID); err != nil || revoked.RevokedAt == nil {
 		t.Fatalf("revoke token=%+v err=%v", revoked, err)
 	}
@@ -90,6 +106,66 @@ func TestIdentityBootstrapAndPersonalAccessTokenLifecycleIntegration(t *testing.
 	}
 	if _, err := st.IssuePersonalAccessToken(t.Context(), principal.ID, "forbidden"); err == nil {
 		t.Fatal("issued token for deactivated user")
+	}
+}
+
+func TestHTTPMutationDerivesLegacyUserAndRejectsAgentCredentialIntegration(t *testing.T) {
+	st := newIdentityIntegrationStore(t, 0)
+	legacy := "legacy-http-token"
+	if _, err := st.BootstrapIdentity(t.Context(), config.FirstOperatorIdentity{OrganizationName: "HTTP Org", Email: "owner@example.test", DisplayName: "Owner"}, legacy); err != nil {
+		t.Fatal(err)
+	}
+	principal, err := st.VerifyPersonalAccessToken(t.Context(), legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent, err := st.IssueAgentCredential(t.Context(), principal.ID, "integration agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace := "identity-http-" + core.NewTaskID()
+	operatorCtx := store.WithActor(t.Context(), store.Actor{ID: store.UserActorID(principal.ID), Role: core.ActorUser})
+	if _, err = st.CreateWorkspace(operatorCtx, workspace, workspace, &config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "conveyor", URL: "https://example.test/conveyor", Base: "main"}}}); err != nil {
+		t.Fatal(err)
+	}
+	ctx := store.WithWorkspace(operatorCtx, workspace)
+	taskID := "identity-event-" + core.NewTaskID()
+	if err = st.CreateTask(ctx, core.Task{ID: taskID, Workspace: workspace, Source: "test", Title: "Credential actor", Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/" + taskID, State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	server := httpapi.NewServer(st)
+	server.Workspace = workspace
+	handler := server.Handler()
+	call := func(token string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodPost, "/v1/tasks/"+taskID+"/close?workspace_id="+workspace, strings.NewReader(`{"reason":"integration"}`))
+		request.Header.Set("Authorization", "Bearer "+token)
+		request.Header.Set("X-Conveyor-Actor", "attacker")
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
+	}
+	if response := call(agent.Value); response.Code != http.StatusUnauthorized {
+		t.Fatalf("agent mutation status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := call(legacy); response.Code != http.StatusAccepted {
+		t.Fatalf("legacy mutation status=%d body=%s", response.Code, response.Body.String())
+	}
+	events, err := st.ListEvents(ctx, taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, event := range events {
+		if event.Kind == "task.cancelled" {
+			found = event.ActorID == store.UserActorID(principal.ID) && event.ActorRole == core.ActorUser
+			if strings.Contains(string(event.Payload), legacy) || strings.Contains(string(event.Payload), agent.Value) || strings.Contains(string(event.Payload), "attacker") {
+				t.Fatalf("credential or asserted actor leaked into event: %s", event.Payload)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("credential-derived user actor missing from events: %+v", events)
 	}
 }
 

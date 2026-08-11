@@ -72,6 +72,7 @@ func TestRequirementStalenessAcknowledgmentSurvivesRestart(t *testing.T) {
 		return result
 	}
 	server := httpapi.NewServer(st)
+	server.Credentials = nil // exercise the explicit memory-style shared-token fixture
 	server.Workspace, server.BearerToken = workspace, "token"
 	before := read(server)
 	if !before.Staleness.DeliveryAfterIntent || len(before.Staleness.Deliveries) != 1 {
@@ -96,6 +97,7 @@ func TestRequirementStalenessAcknowledgmentSurvivesRestart(t *testing.T) {
 	t.Cleanup(restarted.Close)
 	restartedCtx := store.WithActor(store.WithWorkspace(t.Context(), workspace), store.Actor{ID: "restart-operator", Role: core.ActorHuman})
 	restartedServer := httpapi.NewServer(restarted)
+	restartedServer.Credentials = nil // preserve the fixture's synthetic shared token after restart
 	restartedServer.Workspace, restartedServer.BearerToken = workspace, "token"
 	after := read(restartedServer)
 	if after.Staleness.DeliveryAfterIntent || len(after.Staleness.Deliveries) != 0 {

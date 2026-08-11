@@ -409,13 +409,13 @@ test('operators confirm and dismiss proposed decisions with conflict-safe refres
     if (url.pathname === '/v1/decisions/DEC-1/confirm') {
       expect(request.method()).toBe('POST')
       expect(request.headers().authorization).toBe('Bearer test-token')
-      expect(request.headers()['x-conveyor-actor']).toBe('dashboard-operator')
+      expect(request.headers()['x-conveyor-actor']).toBeUndefined()
       decisions = decisions.map((item) =>
         item.id === 'DEC-1'
           ? {
               ...item,
               status: 'confirmed',
-              confirmed_by: 'dashboard-operator',
+              confirmed_by: 'user:operator-test',
               confirmed_at: '2026-08-06T08:00:00Z',
             }
           : item,
@@ -442,7 +442,7 @@ test('operators confirm and dismiss proposed decisions with conflict-safe refres
   await page.goto('/system-design#decision-dec-2')
   await expect(page.locator('#decision-dec-2')).toBeVisible()
   await page.locator('#decision-dec-1').getByRole('button', { name: 'Confirm' }).click()
-  await expect(page.locator('#decision-dec-1')).toContainText('Confirmed by dashboard-operator')
+  await expect(page.locator('#decision-dec-1')).toContainText('Confirmed by user:operator-test')
   await page.locator('#decision-dec-2').getByRole('button', { name: 'Dismiss' }).click()
   await expect(page.locator('#decision-dec-2')).toContainText('Dismissed by second-operator')
   await expect.poll(() => decisionReads).toBeGreaterThanOrEqual(3)

@@ -378,7 +378,7 @@ export async function uploadArtifact(
   if (role) body.set('role', role)
   const response = await fetch(workspaceURL('/v1/artifacts'), {
     method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'X-Conveyor-Actor': 'dashboard-operator' },
+    headers: { Authorization: `Bearer ${token}` },
     body,
   })
   if (!response.ok) throw new Error(await response.text())
@@ -578,7 +578,6 @@ function mutationHeaders(token: string) {
   return {
     'Content-Type': 'application/json',
     Authorization: `Bearer ${token}`,
-    'X-Conveyor-Actor': 'dashboard-operator',
   }
 }
 
@@ -634,7 +633,7 @@ export async function createTask(token: string, input: CreateTaskInput, attachme
   for (const file of attachments) body.append('attachments', file)
   const response = await fetch(workspaceURL('/v1/tasks'), {
     method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'X-Conveyor-Actor': 'dashboard-operator' },
+    headers: { Authorization: `Bearer ${token}` },
     body,
   })
   if (!response.ok) {
@@ -778,7 +777,6 @@ export async function reviewTask(taskId: string, token: string, input: ReviewInp
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${token}`,
-      'X-Conveyor-Actor': 'dashboard-operator',
     },
     body: JSON.stringify({ action: input.action, reason_code: input.reasonCode, comment: input.comment }),
   })

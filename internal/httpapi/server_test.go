@@ -76,6 +76,54 @@ type failOnceArtifactStore struct {
 	failAt int
 }
 
+type staticCredentialVerifier map[string]core.AuthenticatedCredential
+
+func (v staticCredentialVerifier) VerifyCredential(_ context.Context, token string) (core.AuthenticatedCredential, error) {
+	credential, ok := v[token]
+	if !ok {
+		return core.AuthenticatedCredential{}, fmt.Errorf("invalid credential")
+	}
+	return credential, nil
+}
+
+func TestCredentialAuthDerivesTypedActorsAndIgnoresAssertedHeader(t *testing.T) {
+	server := NewServer(store.NewMemory())
+	server.Credentials = staticCredentialVerifier{
+		"human-secret": {ID: "pat_1", OwnerUserID: "usr_1", Kind: core.CredentialUser, Scope: core.CredentialScopeOperator},
+		"agent-secret": {ID: "agt_1", OwnerUserID: "usr_1", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser},
+	}
+	capture := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(store.ActorFromContext(r.Context()))
+	})
+	call := func(handler http.Handler, token string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodPost, "/", nil)
+		request.Header.Set("Authorization", "Bearer "+token)
+		request.Header.Set("X-Conveyor-Actor", "attacker")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
+	}
+
+	for _, test := range []struct {
+		name, token, actor string
+		role               core.ActorRole
+	}{
+		{name: "user", token: "human-secret", actor: "user:usr_1", role: core.ActorUser},
+		{name: "agent", token: "agent-secret", actor: "agent:agt_1", role: core.ActorAgent},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			response := call(server.requireMCPAuth(capture), test.token)
+			var actor store.Actor
+			if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &actor) != nil || actor.ID != test.actor || actor.Role != test.role {
+				t.Fatalf("status=%d actor=%+v body=%s", response.Code, actor, response.Body.String())
+			}
+		})
+	}
+	if response := call(server.requireMutationAuth(capture), "agent-secret"); response.Code != http.StatusUnauthorized {
+		t.Fatalf("execution credential reached human mutation: status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
 func (st *failOnceArtifactStore) CreateArtifact(ctx context.Context, artifact core.Artifact, content []byte) (core.Artifact, error) {
 	st.calls++
 	if st.calls == st.failAt {
@@ -344,7 +392,7 @@ func TestTaskCloseRequiresReasonAndCancelsOutsideHumanGate(t *testing.T) {
 	}
 	order, _ := st.GetWorkOrder(ctx, job.ID)
 	interventions, _ := st.ListInterventions(ctx, task.ID)
-	if order.State != core.WorkOrderCancelled || len(interventions) != 1 || interventions[0].ActorID != "alice" || interventions[0].Action != core.InterventionCancel {
+	if order.State != core.WorkOrderCancelled || len(interventions) != 1 || interventions[0].ActorID != "user:local-operator" || interventions[0].Action != core.InterventionCancel {
 		t.Fatalf("order=%+v interventions=%+v", order, interventions)
 	}
 	if response := call(task.ID, `{"reason":"again"}`); response.Code != http.StatusConflict {
@@ -846,7 +894,7 @@ func TestRemoveTaskDependencyRESTIsAuditedAndIdempotent(t *testing.T) {
 	found := false
 	for _, event := range events {
 		if event.Kind == "task.dependency_removed" {
-			found = event.ActorID == "operator-1" && strings.Contains(string(event.Payload), `"reason":"manual resolution"`)
+			found = event.ActorID == "user:local-operator" && strings.Contains(string(event.Payload), `"reason":"manual resolution"`)
 		}
 	}
 	if !found {
@@ -1690,7 +1738,7 @@ func TestReviewRedirectRecordsReasonAndRequeues(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(interventions) != 1 || interventions[0].ReasonCode != "spec-wrong" || interventions[0].ActorID != "kidus" {
+	if len(interventions) != 1 || interventions[0].ReasonCode != "spec-wrong" || interventions[0].ActorID != "user:local-operator" {
 		t.Fatalf("interventions = %+v", interventions)
 	}
 	events, err := st.ListEvents(context.Background(), task.ID)
@@ -1740,7 +1788,7 @@ func TestPlanRevisionReviewDecisionsUseFixedAuditedContract(t *testing.T) {
 				}
 				return
 			}
-			if len(interventions) != 1 || interventions[0].ReasonCode != test.wantReason || interventions[0].ActorID != "operator" {
+			if len(interventions) != 1 || interventions[0].ReasonCode != test.wantReason || interventions[0].ActorID != "user:local-operator" {
 				t.Fatalf("interventions=%+v", interventions)
 			}
 		})
