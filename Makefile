@@ -19,9 +19,11 @@ TEST_COMPOSE_PROJECT := conveyor-test-p$(TEST_POSTGRES_PORT)
 TEST_DATABASE_URL ?= postgres://conveyor:conveyor@127.0.0.1:$(TEST_POSTGRES_PORT)/conveyor_test?sslmode=disable
 PLAYWRIGHT_ARGS ?=
 PLAYWRIGHT_INSTALL_ARGS ?=
+PLAYWRIGHT_WORKERS ?= 2
+RUN_WEB_TESTS = cd web && npx playwright install $(PLAYWRIGHT_INSTALL_ARGS) chromium && npm run lint && PLAYWRIGHT_WORKERS=$(PLAYWRIGHT_WORKERS) npm run test:e2e -- $(PLAYWRIGHT_ARGS)
 DEV_COMPOSE := docker compose --env-file $(ENV_FILE) -f compose.dev.yaml
 
-.PHONY: all build ui dashboard-fresh test test-web test-ui test-ui-evidence compose-check test-integration test-integration-ci test-postgres test-db-identity test-db-up test-db-down vet plugin-check fmt fmt-check tidy clean db-up db-down run build-run dev
+.PHONY: all build web-deps web-typecheck ui dashboard-fresh test test-web test-ui test-ui-evidence compose-check test-integration test-integration-ci test-postgres test-db-identity test-db-up test-db-down vet plugin-check fmt fmt-check tidy clean db-up db-down run build-run dev
 
 all: build
 
@@ -29,24 +31,30 @@ build: ui
 	go build $(LDFLAGS) -o $(BIN)/conveyor ./cmd/conveyor
 	go build $(LDFLAGS) -o $(BIN)/conveyord ./cmd/conveyord
 
-ui:
-	cd web && npm ci && npm run build
+web-deps:
+	cd web && npm ci
+
+web-typecheck: web-deps
+	cd web && npm run typecheck
+
+ui: web-deps
+	cd web && npm run build
 
 dashboard-fresh: ui
 	git diff --exit-code -- internal/httpapi/dashboard
 
 test: compose-check dashboard-fresh
 	CONVEYOR_TEST_DATABASE_URL= go test ./...
-	$(MAKE) test-web
+	$(RUN_WEB_TESTS)
 
-test-web:
-	cd web && npm ci && npx playwright install $(PLAYWRIGHT_INSTALL_ARGS) chromium && npm run typecheck && npm run lint && npm run test:e2e -- $(PLAYWRIGHT_ARGS)
+test-web: web-typecheck
+	$(RUN_WEB_TESTS)
 
 test-ui: ui
-	cd web && npm run test:e2e -- $(PLAYWRIGHT_ARGS)
+	cd web && PLAYWRIGHT_WORKERS=$(PLAYWRIGHT_WORKERS) npm run test:e2e -- $(PLAYWRIGHT_ARGS)
 
 test-ui-evidence: ui
-	cd web && npm run test:e2e -- tests/task-full.spec.ts --grep "review card renders authorized verification evidence"
+	cd web && PLAYWRIGHT_WORKERS=$(PLAYWRIGHT_WORKERS) npm run test:e2e -- tests/task-full.spec.ts --grep "review card renders authorized verification evidence"
 
 compose-check:
 	python3 scripts/validate_compose_isolation.py
