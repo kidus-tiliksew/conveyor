@@ -1,7 +1,7 @@
 import { useEffect, useMemo } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useSearch } from '@tanstack/react-router'
-import { Check, Clock, ExternalLink, GitCompare, History, X } from 'lucide-react'
+import { Check, Clock, ExternalLink, GitCompare, History, Layers, X } from 'lucide-react'
 import { useOperatorToken, useWorkspaceSelection } from '../components/app-shell'
 import { AttentionSurface, type AttentionItem } from '../components/documents/attention-surface'
 import { DriftResolutionForm } from '../components/documents/drift-resolution-form'
@@ -14,6 +14,7 @@ import {
 import { LineageExplorer } from '../components/lineage/lineage-explorer'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
+import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import { MarkdownProse } from '../components/ui/markdown-prose'
 import {
   confirmSystemDesignVersion,
@@ -128,9 +129,14 @@ export function SystemDesignPage() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <header className="shrink-0 border-b border-border px-6 py-4">
-        <h1 className="text-lg font-semibold tracking-tight">System Design</h1>
-        <p className="mt-0.5 text-xs text-muted">How this system works today, written down and confirmed.</p>
+      <header className="flex shrink-0 items-center gap-3 border-b border-border px-6 py-4">
+        <span className="flex size-8 items-center justify-center rounded-lg bg-primary-soft text-primary">
+          <Layers className="size-4" />
+        </span>
+        <div className="min-w-0">
+          <h1 className="text-lg font-semibold tracking-tight">System Design</h1>
+          <p className="mt-0.5 text-xs text-muted">How this system works today, written down and confirmed.</p>
+        </div>
       </header>
       <div className="flex min-h-0 flex-1">
         <DocumentTree>
@@ -168,13 +174,18 @@ export function SystemDesignPage() {
             />
           ) : (
             <div className="mx-auto max-w-2xl px-6 py-16">
-              <div className="text-center">
-                <h2 className="text-lg font-semibold">Write down how this system works</h2>
-                <p className="mt-2 text-sm leading-6 text-muted">
-                  Each document describes one part of the system and names the code it covers. Propose a version, then
-                  confirm the one the team should follow.
-                </p>
-              </div>
+              <Card className="rounded-xl border-dashed">
+                <CardContent className="flex min-h-56 flex-col items-center justify-center text-center">
+                  <span className="mb-3 flex size-10 items-center justify-center rounded-full bg-primary-soft text-primary">
+                    <Layers className="size-5" />
+                  </span>
+                  <h2 className="text-base font-semibold">Write down how this system works</h2>
+                  <p className="mt-2 max-w-md text-sm leading-6 text-muted">
+                    Each document describes one part of the system and names the code it covers. Propose a version, then
+                    confirm the one the team should follow.
+                  </p>
+                </CardContent>
+              </Card>
               {decisionItems.length > 0 && (
                 <div className="mt-10">
                   <AttentionSurface items={decisionItems} />
@@ -275,14 +286,19 @@ function DesignCanvas({
 
   return (
     <article className="mx-auto max-w-4xl px-8 py-8">
-      <header className="mb-6 flex items-start gap-4">
+      <header className="mb-8 flex items-start gap-4 border-b border-border pb-6">
         <div className="min-w-0 flex-1">
-          <span title="The group this document belongs to">
-            <Badge>{item.document.category}</Badge>
+          <span
+            className="inline-flex items-center rounded-md border border-border bg-surface px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-faint"
+            title="The group this document belongs to"
+          >
+            {item.document.category}
           </span>
-          <h2 className="mt-2.5 text-2xl font-semibold tracking-tight text-balance">{item.document.title}</h2>
+          <h2 className="mt-3 text-[28px] font-semibold leading-tight tracking-tight text-balance">
+            {item.document.title}
+          </h2>
           {displayed ? (
-            <div className="mt-2 flex flex-wrap items-center gap-1.5">
+            <div className="mt-3 flex flex-wrap items-center gap-1.5">
               <Badge variant="mono">v{displayed.version}</Badge>
               <Badge variant={displayed.confirmed ? 'positive' : 'accent'}>
                 {displayed.confirmed ? 'Confirmed' : 'Proposed'}
@@ -303,7 +319,7 @@ function DesignCanvas({
 
       <AttentionSurface items={attention} />
 
-      <section className="mt-6">
+      <section className="mt-8">
         {displayed && <MarkdownProse>{displayed.content}</MarkdownProse>}
         {displayed && displayed.governs.length > 0 && (
           <div className="mt-8 flex flex-wrap items-center gap-2 border-t border-border pt-4">
@@ -320,7 +336,7 @@ function DesignCanvas({
       </section>
 
       {pending && item.current_version && (
-        <details className="mt-6 rounded-lg border border-border bg-surface/40" open>
+        <details className="mt-8 rounded-lg border border-border bg-surface/40" open>
           <summary className="flex cursor-pointer items-center gap-1.5 px-4 py-3 text-sm font-medium">
             <GitCompare className="size-3.5 text-muted" />
             Compare version {item.current_version.version} with the proposed version {pending.version}
@@ -357,38 +373,46 @@ function DesignCanvas({
       )}
 
       {settledDecisions.length > 0 && (
-        <section className="mt-10 border-t border-border pt-6" aria-label="Settled decisions">
-          <h2 className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-faint">
-            <Check className="size-3" /> Settled decisions
-          </h2>
-          <div className="mt-3 space-y-2">
-            {settledDecisions.map((decision) => (
-              <article
-                id={`decision-${decision.id.toLowerCase()}`}
-                key={decision.id}
-                className="scroll-mt-6 rounded-md border border-border p-3"
-              >
-                <div className="flex gap-2">
-                  <Badge variant="mono">{decision.id}</Badge>
-                  <Badge variant={decision.status === 'confirmed' ? 'positive' : 'default'}>{decision.status}</Badge>
-                </div>
-                <p className="mt-2 text-sm font-medium">{decision.statement}</p>
-                <p className="mt-1 text-xs text-muted">{decision.context}</p>
-                {decision.status === 'confirmed' && decision.confirmed_by && decision.confirmed_at && (
-                  <p className="mt-2 flex items-center gap-1 text-xs text-muted">
-                    <Clock className="size-3" /> Confirmed by {decision.confirmed_by} on{' '}
-                    {formatDate(decision.confirmed_at)}
-                  </p>
-                )}
-                {decision.status === 'dismissed' && decision.dismissed_by && decision.dismissed_at && (
-                  <p className="mt-2 flex items-center gap-1 text-xs text-muted">
-                    <Clock className="size-3" /> Dismissed by {decision.dismissed_by} on{' '}
-                    {formatDate(decision.dismissed_at)}
-                  </p>
-                )}
-              </article>
-            ))}
-          </div>
+        <section className="mt-10 border-t border-border pt-8" aria-label="Settled decisions">
+          <Card className="rounded-lg">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <span className="flex size-5 items-center justify-center rounded-md bg-primary-soft text-primary">
+                  <Check className="size-3" />
+                </span>
+                Settled decisions
+              </CardTitle>
+              <Badge variant="mono">{settledDecisions.length}</Badge>
+            </CardHeader>
+            <CardContent className="space-y-2">
+              {settledDecisions.map((decision) => (
+                <article
+                  id={`decision-${decision.id.toLowerCase()}`}
+                  key={decision.id}
+                  className="scroll-mt-6 rounded-lg border border-border p-3"
+                >
+                  <div className="flex gap-2">
+                    <Badge variant="mono">{decision.id}</Badge>
+                    <Badge variant={decision.status === 'confirmed' ? 'positive' : 'default'}>{decision.status}</Badge>
+                  </div>
+                  <p className="mt-2 text-sm font-medium">{decision.statement}</p>
+                  <p className="mt-1 text-xs text-muted">{decision.context}</p>
+                  {decision.status === 'confirmed' && decision.confirmed_by && decision.confirmed_at && (
+                    <p className="mt-2 flex items-center gap-1 text-xs text-muted">
+                      <Clock className="size-3" /> Confirmed by {decision.confirmed_by} on{' '}
+                      {formatDate(decision.confirmed_at)}
+                    </p>
+                  )}
+                  {decision.status === 'dismissed' && decision.dismissed_by && decision.dismissed_at && (
+                    <p className="mt-2 flex items-center gap-1 text-xs text-muted">
+                      <Clock className="size-3" /> Dismissed by {decision.dismissed_by} on{' '}
+                      {formatDate(decision.dismissed_at)}
+                    </p>
+                  )}
+                </article>
+              ))}
+            </CardContent>
+          </Card>
         </section>
       )}
     </article>
