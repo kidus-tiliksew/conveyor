@@ -32,6 +32,8 @@ import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import { MarkdownProse } from '../components/ui/markdown-prose'
 import {
   confirmRequirementVersion,
+  acknowledgeRequirementStaleness,
+  createRequirementStalenessFollowUp,
   fetchCheckpointContextCandidates,
   downloadArtifact,
   fetchRequirement,
@@ -570,6 +572,21 @@ function RequirementCanvas({ seed, token }: { seed: RequirementView; token: stri
       void client.invalidateQueries({ queryKey: ['artifacts', workspace] })
     },
   })
+  const refreshRequirement = async () => {
+    await Promise.all([
+      client.invalidateQueries({ queryKey: ['requirements', workspace] }),
+      client.invalidateQueries({ queryKey: ['requirement', workspace, item.requirement.id] }),
+      client.invalidateQueries({ queryKey: ['tasks', workspace] }),
+    ])
+  }
+  const acknowledgeStaleness = useMutation({
+    mutationFn: (signalID: string) => acknowledgeRequirementStaleness(token, item.requirement.id, signalID),
+    onSettled: refreshRequirement,
+  })
+  const fileStalenessFollowUp = useMutation({
+    mutationFn: (signalID: string) => createRequirementStalenessFollowUp(token, item.requirement.id, signalID),
+    onSettled: refreshRequirement,
+  })
 
   if (detailError)
     return <EmptyMessage tone="failure">{errorMessage(detailError, 'Could not load this requirement.')}</EmptyMessage>
@@ -584,17 +601,62 @@ function RequirementCanvas({ seed, token }: { seed: RequirementView; token: stri
       id: `staleness-${delivery.task_id}-${delivery.at}`,
       title: `${delivery.label} may have moved past the confirmed intent`,
       detail: (
-        <span title={`${delivery.label} delivered ${formatDate(delivery.at)}`}>{delivery.reasons.join(' · ')}</span>
+        <div title={`${delivery.label} delivered ${formatDate(delivery.at)}`}>
+          <p>{delivery.reasons.join(' · ')}</p>
+          <p className="mt-1 font-mono text-[10px] text-faint">
+            Task {delivery.task_id} · {delivery.event_kind} #{delivery.delivery_event_id}
+          </p>
+          {(delivery.pinned_version || delivery.current_version) && (
+            <p className="text-[10px] text-faint">
+              Served v{delivery.pinned_version || 'unknown'} · current at delivery v
+              {delivery.current_version || 'unknown'}
+            </p>
+          )}
+        </div>
       ),
       action: (
-        <Link
-          to="/tasks/$taskId"
-          params={{ taskId: delivery.task_id }}
-          className="text-xs font-medium text-primary hover:underline"
-        >
-          Open the delivery
-        </Link>
+        <>
+          <Link
+            to="/tasks/$taskId"
+            params={{ taskId: delivery.task_id }}
+            className="text-xs font-medium text-primary hover:underline"
+          >
+            Inspect task
+          </Link>
+          {delivery.url && (
+            <a
+              className="text-xs font-medium text-primary hover:underline"
+              href={delivery.url}
+              target="_blank"
+              rel="noreferrer"
+            >
+              Open PR <ExternalLink className="inline size-3" />
+            </a>
+          )}
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={!token || fileStalenessFollowUp.isPending || acknowledgeStaleness.isPending}
+            onClick={() => fileStalenessFollowUp.mutate(delivery.signal_id)}
+          >
+            File a task
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={!token || acknowledgeStaleness.isPending || fileStalenessFollowUp.isPending}
+            onClick={() => acknowledgeStaleness.mutate(delivery.signal_id)}
+          >
+            Dismiss
+          </Button>
+        </>
       ),
+      error:
+        acknowledgeStaleness.variables === delivery.signal_id && acknowledgeStaleness.error
+          ? errorMessage(acknowledgeStaleness.error, 'Could not dismiss this signal.')
+          : fileStalenessFollowUp.variables === delivery.signal_id && fileStalenessFollowUp.error
+            ? errorMessage(fileStalenessFollowUp.error, 'Could not file a follow-up task.')
+            : undefined,
     })),
     // A truncated lineage walk cannot prove the absence of newer delivery, so
     // partial evaluation is voiced rather than reported as alignment. It is a
@@ -958,6 +1020,15 @@ function RequirementCanvas({ seed, token }: { seed: RequirementView; token: stri
                             {delivery.label}
                           </Link>
                           <span className="block text-[10px] text-faint">Delivered {formatDate(delivery.at)}</span>
+                          {delivery.follow_up && (
+                            <Link
+                              to="/tasks/$taskId"
+                              params={{ taskId: delivery.follow_up.task_id }}
+                              className="block text-[10px] font-medium text-primary hover:underline"
+                            >
+                              Follow-up: {delivery.follow_up.title}
+                            </Link>
+                          )}
                         </span>
                       </li>
                     ))}

@@ -62,6 +62,47 @@ var requirementConformanceRepos = []config.Repo{
 func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 	t.Helper()
 
+	t.Run("requirement staleness acknowledgments are durable audited events", func(t *testing.T) {
+		st, ctx, _ := newRequirementFixture(t, factory)
+		requirement, _, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-staleness-ack", Title: "Staleness acknowledgment"}, core.RequirementVersion{
+			Content: "Audited judgment.", Statements: []core.RequirementStatement{requirementStatement("REQ-1", "Operators can acknowledge a delivery signal.")}, Origin: core.RequirementOriginOperator,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		through := time.Now().UTC().Add(-time.Minute)
+		ack, err := st.AcknowledgeRequirementStaleness(ctx, core.RequirementStalenessAcknowledgment{
+			RequirementID: requirement.ID, SignalID: "signal-1", DeliveryTaskID: "delivery-1",
+			DeliveryEventID: 42, AcknowledgedThrough: through,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ack.AcknowledgedBy != requirementConformanceActor || ack.AcknowledgedAt.IsZero() || !sameInstant(ack.AcknowledgedThrough, through) {
+			t.Fatalf("acknowledgment=%+v", ack)
+		}
+		events, err := st.ListRequirementEvents(ctx, requirement.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, event := range events {
+			if event.Kind != "requirement.staleness_acknowledged" {
+				continue
+			}
+			var payload core.RequirementStalenessAcknowledgment
+			if err = json.Unmarshal(event.Payload, &payload); err != nil {
+				t.Fatal(err)
+			}
+			found = event.ActorID == requirementConformanceActor && event.ActorRole == core.ActorHuman &&
+				payload.SignalID == "signal-1" && payload.DeliveryEventID == 42 && sameInstant(payload.AcknowledgedThrough, through) &&
+				sameInstant(payload.AcknowledgedAt, ack.AcknowledgedAt)
+		}
+		if !found {
+			t.Fatalf("audited acknowledgment missing from events: %+v", events)
+		}
+	})
+
 	t.Run("drift resolution can attach a confirmed requirement", func(t *testing.T) {
 		st, ctx, workspace := newRequirementFixture(t, factory)
 		monitorStore, ok := st.(monitor.Store)
