@@ -132,8 +132,6 @@ func (s *Store) HeartbeatWorker(ctx context.Context, id string, leaseExpires tim
 	if err != nil {
 		return core.Worker{}, err
 	}
-	actor := store.ActorFromContext(ctx)
-	_, _ = s.queries.InsertWorkspaceEvent(ctx, db.InsertWorkspaceEventParams{WorkspaceID: workspace(ctx), Kind: "worker.heartbeat", ActorID: actor.ID, ActorRole: string(core.ActorRunner), PayloadJson: core.JSONPayload(map[string]any{"worker_id": id, "lease_expires_at": leaseExpires, "probes": probes}), At: timestamp(now)})
 	return worker, nil
 }
 

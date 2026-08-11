@@ -1152,7 +1152,6 @@ func (m *memory) HeartbeatWorker(ctx context.Context, id string, leaseExpires ti
 	worker.LeaseExpiresAt = leaseExpires
 	worker.Probes = append([]core.HarnessProbe(nil), probes...)
 	m.workers[id] = worker
-	m.appendEventLocked(ctx, core.Event{Kind: "worker.heartbeat", ActorRole: core.ActorRunner, ActorID: id, Payload: core.JSONPayload(map[string]any{"worker_id": id, "lease_expires_at": leaseExpires, "probes": probes})})
 	return worker, nil
 }
 
