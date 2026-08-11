@@ -44,9 +44,27 @@ func TestPhase51WorkerPersistenceIntegration(t *testing.T) {
 	if err = st.CreateWorker(ctx, worker); err != nil {
 		t.Fatal(err)
 	}
-	worker, err = st.HeartbeatWorker(ctx, worker.ID, now.Add(15*time.Second), []core.HarnessProbe{{Harness: "codex", Healthy: true, CheckedAt: now}})
+	var eventsBefore int
+	if err = st.pool.QueryRow(ctx, `SELECT count(*) FROM events WHERE workspace_id=$1`, workspace).Scan(&eventsBefore); err != nil {
+		t.Fatal(err)
+	}
+	firstLease := now.Add(15 * time.Second)
+	worker, err = st.HeartbeatWorker(ctx, worker.ID, firstLease, []core.HarnessProbe{{Harness: "codex", Healthy: true, CheckedAt: now}})
 	if err != nil || !worker.Live(now) {
 		t.Fatalf("worker=%+v err=%v", worker, err)
+	}
+	firstSeen := worker.LastSeenAt
+	secondLease := now.Add(30 * time.Second)
+	worker, err = st.HeartbeatWorker(ctx, worker.ID, secondLease, []core.HarnessProbe{{Harness: "codex", Healthy: false, Message: "unavailable", CheckedAt: now.Add(time.Second)}})
+	if err != nil || !worker.LeaseExpiresAt.Equal(secondLease) || worker.LastSeenAt.Before(firstSeen) || len(worker.Probes) != 1 || worker.Probes[0].Healthy || worker.Probes[0].Message != "unavailable" {
+		t.Fatalf("second heartbeat worker=%+v err=%v", worker, err)
+	}
+	var eventsAfter, heartbeatEvents int
+	if err = st.pool.QueryRow(ctx, `SELECT count(*), count(*) FILTER (WHERE kind='worker.heartbeat') FROM events WHERE workspace_id=$1`, workspace).Scan(&eventsAfter, &heartbeatEvents); err != nil {
+		t.Fatal(err)
+	}
+	if eventsAfter != eventsBefore || heartbeatEvents != 0 {
+		t.Fatalf("events changed from %d to %d; worker.heartbeat events=%d, want 0", eventsBefore, eventsAfter, heartbeatEvents)
 	}
 	if authenticated, authErr := st.AuthenticateWorker(ctx, worker.CredentialHash); authErr != nil || authenticated.ID != worker.ID {
 		t.Fatalf("auth=%+v err=%v", authenticated, authErr)

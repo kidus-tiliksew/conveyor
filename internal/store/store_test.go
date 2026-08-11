@@ -49,6 +49,52 @@ func eventAttemptIDs(t *testing.T, events []core.Event, kind, jobID string) []st
 	return ids
 }
 
+func TestMemoryWorkerHeartbeatUpdatesLivenessWithoutEvent(t *testing.T) {
+	ctx := WithWorkspace(context.Background(), "demo")
+	st := NewMemory()
+	now := time.Now().UTC()
+	worker := core.Worker{
+		ID:             "worker-heartbeat",
+		Workspace:      "demo",
+		Name:           "heartbeat",
+		CredentialHash: "credential-heartbeat",
+		CreatedAt:      now,
+	}
+	if err := st.CreateWorker(ctx, worker); err != nil {
+		t.Fatal(err)
+	}
+	before, err := st.ListEvents(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	firstLease := now.Add(time.Minute)
+	firstProbes := []core.HarnessProbe{{Harness: "codex", Healthy: true, CheckedAt: now}}
+	first, err := st.HeartbeatWorker(ctx, worker.ID, firstLease, firstProbes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondLease := now.Add(2 * time.Minute)
+	secondProbes := []core.HarnessProbe{{Harness: "codex", Healthy: false, Message: "unavailable", CheckedAt: now.Add(time.Second)}}
+	second, err := st.HeartbeatWorker(ctx, worker.ID, secondLease, secondProbes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !first.LeaseExpiresAt.Equal(firstLease) || first.LastSeenAt.IsZero() || len(first.Probes) != 1 || !first.Probes[0].Healthy {
+		t.Fatalf("first heartbeat worker = %+v", first)
+	}
+	if !second.LeaseExpiresAt.Equal(secondLease) || second.LastSeenAt.Before(first.LastSeenAt) || len(second.Probes) != 1 || second.Probes[0].Healthy || second.Probes[0].Message != "unavailable" {
+		t.Fatalf("second heartbeat worker = %+v", second)
+	}
+	after, err := st.ListEvents(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("heartbeat event count changed from %d to %d: %+v", len(before), len(after), after)
+	}
+}
+
 func TestMemoryAttemptIdentityIsFreshAcrossSameSessionReclaims(t *testing.T) {
 	ctx := WithWorkspace(context.Background(), "demo")
 	st := NewMemory()
