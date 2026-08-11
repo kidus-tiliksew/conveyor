@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -371,7 +372,10 @@ func TestRequirementStalenessFollowsLineageToChildMerge(t *testing.T) {
 	if err = json.Unmarshal(response.Body.Bytes(), &view); err != nil {
 		t.Fatal(err)
 	}
-	if !view.Staleness.DeliveryAfterIntent || view.Staleness.LatestDelivery != child.Title || view.Staleness.LatestDeliveryAt == nil || !view.Staleness.LatestDeliveryAt.Equal(mergeAt) ||
+	if !view.Staleness.DeliveryAfterIntent || len(view.Staleness.Deliveries) != 1 ||
+		view.Staleness.Deliveries[0].TaskID != child.ID || view.Staleness.Deliveries[0].Label != child.Title ||
+		!view.Staleness.Deliveries[0].At.Equal(mergeAt) || !view.Staleness.Deliveries[0].NeedsAttention ||
+		!slices.Contains(view.Staleness.Deliveries[0].Reasons, "delivered through related work without serving this requirement") ||
 		len(view.Staleness.ActiveDrift) != 1 || view.Staleness.ActiveDrift[0].ID != drift.ID {
 		t.Fatalf("link-aware staleness=%+v", view.Staleness)
 	}
@@ -436,8 +440,10 @@ func TestRequirementStalenessFollowsTaskLevelServesChain(t *testing.T) {
 	if err = json.Unmarshal(response.Body.Bytes(), &view); err != nil {
 		t.Fatal(err)
 	}
-	if !view.Staleness.DeliveryAfterIntent || view.Staleness.LatestDelivery != task.Title ||
-		view.Staleness.LatestDeliveryAt == nil || !view.Staleness.LatestDeliveryAt.Equal(mergeAt) {
+	if view.Staleness.DeliveryAfterIntent || len(view.Staleness.Deliveries) != 1 ||
+		view.Staleness.Deliveries[0].TaskID != task.ID || view.Staleness.Deliveries[0].Label != task.Title ||
+		!view.Staleness.Deliveries[0].At.Equal(mergeAt) || view.Staleness.Deliveries[0].NeedsAttention ||
+		len(view.Staleness.Deliveries[0].Reasons) != 0 {
 		t.Fatalf("task-chain staleness=%+v", view.Staleness)
 	}
 	if len(view.ServingBlueprints) != 0 {
@@ -446,6 +452,48 @@ func TestRequirementStalenessFollowsTaskLevelServesChain(t *testing.T) {
 	if len(view.ServingTasks) != 1 || view.ServingTasks[0].ID != task.ID {
 		t.Fatalf("task-centric serving tasks = %+v", view.ServingTasks)
 	}
+}
+
+func TestRequirementDeliveryClassificationNamesSuspectConditions(t *testing.T) {
+	confirmedV1 := time.Date(2026, 8, 1, 10, 0, 0, 0, time.UTC)
+	confirmedV2 := confirmedV1.Add(time.Hour)
+	mergeAt := confirmedV2.Add(time.Hour)
+	versions := []core.RequirementVersion{
+		{RequirementID: "req-versioned", Version: 1, Confirmed: true, ConfirmedAt: confirmedV1},
+		{RequirementID: "req-versioned", Version: 2, Confirmed: true, ConfirmedAt: confirmedV2},
+	}
+	contextEvent := core.Event{TaskID: "delivery", Kind: store.TaskContextRequirementAdded, At: confirmedV1.Add(time.Minute), Payload: core.JSONPayload(map[string]any{
+		"id": "req-versioned", "version": 1,
+	})}
+
+	t.Run("version skew", func(t *testing.T) {
+		deliveries := classifyRequirementDeliveries("delivery", []core.Event{contextEvent, {
+			TaskID: "delivery", Kind: "merge.confirmed", At: mergeAt, Payload: core.JSONPayload(map[string]any{"task_title": "Versioned delivery"}),
+		}}, versions, "req-versioned", confirmedV2, true)
+		if len(deliveries) != 1 || !deliveries[0].NeedsAttention ||
+			!slices.Contains(deliveries[0].Reasons, "planned against v1; v2 was current at merge") {
+			t.Fatalf("version-skew delivery = %+v", deliveries)
+		}
+	})
+
+	t.Run("external reconciliation", func(t *testing.T) {
+		deliveries := classifyRequirementDeliveries("delivery", []core.Event{contextEvent, {
+			TaskID: "delivery", Kind: "merge.reconciled", At: mergeAt,
+		}}, versions[:1], "req-versioned", confirmedV1, true)
+		if len(deliveries) != 1 || !deliveries[0].NeedsAttention ||
+			!slices.Contains(deliveries[0].Reasons, "merged outside factory review") {
+			t.Fatalf("reconciled delivery = %+v", deliveries)
+		}
+	})
+
+	t.Run("routine", func(t *testing.T) {
+		deliveries := classifyRequirementDeliveries("delivery", []core.Event{contextEvent, {
+			TaskID: "delivery", Kind: "merge.confirmed", At: confirmedV1.Add(2 * time.Minute),
+		}}, versions[:1], "req-versioned", confirmedV1, true)
+		if len(deliveries) != 1 || deliveries[0].NeedsAttention || len(deliveries[0].Reasons) != 0 {
+			t.Fatalf("routine delivery = %+v", deliveries)
+		}
+	})
 }
 
 type truncatedDisplayLineageStore struct{ store.Store }
@@ -507,8 +555,9 @@ func TestRequirementStalenessIgnoresDisplayTruncation(t *testing.T) {
 	if err = json.Unmarshal(response.Body.Bytes(), &view); err != nil {
 		t.Fatal(err)
 	}
-	if !view.LineageGraph.Truncated || view.Staleness.PartialEvaluation || !view.Staleness.DeliveryAfterIntent ||
-		view.Staleness.LatestDelivery != task.Title || len(view.Staleness.ActiveDrift) != 1 || view.Staleness.ActiveDrift[0].ID != drift.ID {
+	if !view.LineageGraph.Truncated || view.Staleness.PartialEvaluation || view.Staleness.DeliveryAfterIntent ||
+		len(view.Staleness.Deliveries) != 1 || view.Staleness.Deliveries[0].TaskID != task.ID ||
+		view.Staleness.Deliveries[0].NeedsAttention || len(view.Staleness.ActiveDrift) != 1 || view.Staleness.ActiveDrift[0].ID != drift.ID {
 		t.Fatalf("display-independent staleness=%+v graph=%+v", view.Staleness, view.LineageGraph)
 	}
 }
@@ -550,7 +599,7 @@ func TestRequirementStalenessSurfacesTruncatedDeliveryEvaluation(t *testing.T) {
 	if err = json.Unmarshal(response.Body.Bytes(), &view); err != nil {
 		t.Fatal(err)
 	}
-	if !view.Staleness.PartialEvaluation || view.Staleness.DeliveryAfterIntent || view.Staleness.LatestDelivery != "" {
+	if !view.Staleness.PartialEvaluation || view.Staleness.DeliveryAfterIntent || len(view.Staleness.Deliveries) != 0 {
 		t.Fatalf("partial staleness = %+v", view.Staleness)
 	}
 }
@@ -597,7 +646,7 @@ func TestRequirementStalenessIgnoresDismissedServesProjection(t *testing.T) {
 	if err = json.Unmarshal(response.Body.Bytes(), &view); err != nil {
 		t.Fatal(err)
 	}
-	if view.Staleness.DeliveryAfterIntent || view.Staleness.LatestDelivery != "" {
+	if view.Staleness.DeliveryAfterIntent || len(view.Staleness.Deliveries) != 0 {
 		t.Fatalf("dismissed service created staleness: %+v", view.Staleness)
 	}
 }
@@ -791,8 +840,10 @@ func TestRequirementsHTTPSurfacesBlueprintSpecGateHandoffAndRemovesFeatureMutati
 		view.ServingBlueprints[0].Spec == nil ||
 		view.ServingBlueprints[0].Spec.Version != spec.Version ||
 		view.ServingBlueprints[0].Spec.Approved || !view.Staleness.DeliveryAfterIntent ||
-		view.Staleness.LatestDelivery != "Blueprint delivery" {
-		t.Fatalf("blueprint handoff=%+v", view.ServingBlueprints)
+		len(view.Staleness.Deliveries) != 1 || view.Staleness.Deliveries[0].Label != "Blueprint delivery" ||
+		!view.Staleness.Deliveries[0].NeedsAttention ||
+		!slices.Contains(view.Staleness.Deliveries[0].Reasons, "delivered through related work without serving this requirement") {
+		t.Fatalf("blueprint handoff=%+v staleness=%+v", view.ServingBlueprints, view.Staleness)
 	}
 
 	for _, legacy := range []struct {
