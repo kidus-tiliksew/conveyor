@@ -29,6 +29,13 @@ const parsedPort = configuredPort === undefined ? undefined : Number(configuredP
 if (parsedPort !== undefined && (!Number.isInteger(parsedPort) || parsedPort < 1 || parsedPort > 65535)) {
   throw new Error(`PLAYWRIGHT_PORT must be an integer from 1 to 65535, got ${configuredPort}`)
 }
+
+const configuredWorkers = process.env.PLAYWRIGHT_WORKERS
+const workers = configuredWorkers === undefined ? 2 : Number(configuredWorkers)
+if (!Number.isInteger(workers) || workers < 1) {
+  throw new Error(`PLAYWRIGHT_WORKERS must be a positive integer, got ${configuredWorkers}`)
+}
+
 const port = parsedPort ?? (await selectAvailablePort(49152 + (process.pid % 16384)))
 if (configuredPort === undefined) {
   // Playwright evaluates this config again in each test worker. Export the
@@ -39,6 +46,7 @@ if (configuredPort === undefined) {
 
 export default defineConfig({
   testDir: './tests',
+  workers,
   use: {
     baseURL: `http://127.0.0.1:${port}`,
     ...devices['Desktop Chrome'],
