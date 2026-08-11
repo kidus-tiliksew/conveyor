@@ -58,6 +58,8 @@ operator-only acts.
   DEC-9. Demand-triggered recall may read existing artifacts when justified;
   durable knowledge belongs in requirements, System Design documents,
   decisions, hints, or the pack.
-- Tasks have no priority, assignee, or declared phase fields (DEC-5). Ordering
-  comes from dependencies, blocking is derived, and worker reservation uses
-  hold.
+- Tasks have no priority or declared phase fields (DEC-18, superseding DEC-5).
+  A task may carry an assignee as a claim-eligibility constraint only —
+  assigned tasks are claimable solely by the assignee, unassigned tasks
+  first-come — and assignment never affects queue order. Ordering comes from
+  dependencies, blocking is derived, and worker reservation uses hold.
