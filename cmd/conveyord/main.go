@@ -77,6 +77,10 @@ func main() {
 		if err != nil {
 			log.Fatalf("open Postgres store: %v", err)
 		}
+		if _, bootstrapErr := pgStore.BootstrapIdentity(ctx, config.FirstOperatorIdentityFromEnvironment(), apiToken); bootstrapErr != nil {
+			pgStore.Close()
+			log.Fatalf("bootstrap deployment identity: %v", bootstrapErr)
+		}
 		if deployment.Workspace != "" {
 			bootstrapCtx := store.WithWorkspace(ctx, deployment.Workspace)
 			seeded, bootstrapErr := pgStore.BootstrapWorkspaceConfig(bootstrapCtx, deployment)

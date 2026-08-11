@@ -29,6 +29,25 @@ func TestWorkspaceDocumentEmitsEmptyCollectionsAsArrays(t *testing.T) {
 	}
 }
 
+func TestFirstOperatorIdentityEnvironmentIsProcessOnly(t *testing.T) {
+	t.Setenv(OrganizationNameEnv, "Example Organization")
+	t.Setenv(FirstOperatorEmailEnv, " OWNER@EXAMPLE.TEST ")
+	t.Setenv(FirstOperatorDisplayNameEnv, " Example Owner ")
+	identity := FirstOperatorIdentityFromEnvironment()
+	if identity.OrganizationName != "Example Organization" || identity.Email != "owner@example.test" || identity.DisplayName != "Example Owner" {
+		t.Fatalf("identity=%+v", identity)
+	}
+	document, err := MarshalWorkspaceDocument(&Config{Workspace: "demo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secretOrIdentity := range []string{identity.OrganizationName, identity.Email, identity.DisplayName} {
+		if strings.Contains(string(document), secretOrIdentity) {
+			t.Fatalf("workspace document contains process-only identity value %q", secretOrIdentity)
+		}
+	}
+}
+
 func TestResolveControlPlaneModelEnvironmentPrecedence(t *testing.T) {
 	t.Setenv(ControlPlaneModelEnv, " general ")
 	t.Setenv(TriageModelEnv, " triage ")
