@@ -56,7 +56,7 @@ func TestPhase51WorkerPersistenceIntegration(t *testing.T) {
 	firstSeen := worker.LastSeenAt
 	secondLease := now.Add(30 * time.Second)
 	worker, err = st.HeartbeatWorker(ctx, worker.ID, secondLease, []core.HarnessProbe{{Harness: "codex", Healthy: false, Message: "unavailable", CheckedAt: now.Add(time.Second)}})
-	if err != nil || !worker.LeaseExpiresAt.Equal(secondLease) || worker.LastSeenAt.Before(firstSeen) || len(worker.Probes) != 1 || worker.Probes[0].Healthy || worker.Probes[0].Message != "unavailable" {
+	if err != nil || !worker.LeaseExpiresAt.Equal(secondLease.Truncate(time.Microsecond)) || worker.LastSeenAt.Before(firstSeen) || len(worker.Probes) != 1 || worker.Probes[0].Healthy || worker.Probes[0].Message != "unavailable" {
 		t.Fatalf("second heartbeat worker=%+v err=%v", worker, err)
 	}
 	var eventsAfter, heartbeatEvents int
