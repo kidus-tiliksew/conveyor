@@ -216,6 +216,7 @@ export interface ActivitySummary {
   latest_stage?: Stage
   last_event_at: string
   needs_attention: boolean
+  pending_authority: boolean
   forge_failure?: ForgeFailure
   review_diagnostics?: ReviewVerdictDiagnostic[]
   review_recovery?: ReviewRecoveryState
