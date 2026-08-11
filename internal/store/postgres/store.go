@@ -248,6 +248,21 @@ func (s *Store) BootstrapWorkspaceConfig(ctx context.Context, cfg *config.Config
 				return false, err
 			}
 		}
+		// Startup bootstraps identity before the configured singleton
+		// workspace. Bind that seeded operator without requiring request
+		// credential context so the legacy shared token remains zero-config.
+		// Historical migration tests intentionally stop before migration 084.
+		var membershipSchema bool
+		if err := tx.QueryRow(ctx, `SELECT to_regclass('workspace_role_bindings') IS NOT NULL`).Scan(&membershipSchema); err != nil {
+			return false, err
+		}
+		if membershipSchema {
+			if _, err := tx.Exec(ctx, `INSERT INTO workspace_role_bindings(workspace_id,user_id,role)
+				SELECT $1,id,'operator' FROM users ORDER BY created_at,id LIMIT 1
+				ON CONFLICT(workspace_id,user_id) DO NOTHING`, cfg.Workspace); err != nil {
+				return false, err
+			}
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return false, err
@@ -295,7 +310,7 @@ func (s *Store) CreateWorkspace(ctx context.Context, id, name string, cfg *confi
 		return core.Workspace{}, err
 	}
 	var created core.Workspace
-	err = s.inTx(ctx, func(_ pgx.Tx, q *db.Queries) error {
+	err = s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
 		row, err := q.InsertWorkspace(ctx, db.InsertWorkspaceParams{ID: id, Name: name, ConfigYaml: string(data)})
 		if errors.Is(err, pgx.ErrNoRows) {
 			return store.ErrWorkspaceConflict
@@ -308,6 +323,13 @@ func (s *Store) CreateWorkspace(ctx context.Context, id, name string, cfg *confi
 		}
 		for _, repo := range cfg.Repos {
 			if err := upsertRepo(ctx, q, id, repo); err != nil {
+				return err
+			}
+		}
+		// Workspace creation is instance administration. Its authenticated
+		// creator receives the initial operator binding atomically.
+		if credential, ok := store.CredentialFromContext(ctx); ok {
+			if _, err := tx.Exec(ctx, `INSERT INTO workspace_role_bindings(workspace_id,user_id,role) VALUES($1,$2,'operator')`, id, credential.OwnerUserID); err != nil {
 				return err
 			}
 		}

@@ -104,6 +104,10 @@ func (s *Store) BootstrapIdentity(ctx context.Context, identity config.FirstOper
 	if _, err := q.InsertUserToken(ctx, db.InsertUserTokenParams{ID: tokenID, UserID: user.ID, Label: "legacy API token", TokenHash: hash[:]}); err != nil {
 		return false, fmt.Errorf("map legacy API token: %w", err)
 	}
+	if _, err := tx.Exec(ctx, `INSERT INTO workspace_role_bindings(workspace_id,user_id,role)
+		SELECT id,$1,'operator' FROM workspaces ON CONFLICT(workspace_id,user_id) DO NOTHING`, user.ID); err != nil {
+		return false, fmt.Errorf("seed legacy workspace memberships: %w", err)
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return false, fmt.Errorf("commit identity bootstrap: %w", err)
 	}

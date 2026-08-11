@@ -49,12 +49,62 @@ func (s *Server) listWorkspaces(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, items)
 		return
 	}
-	items, err := s.Workspaces.ListWorkspaces(r.Context())
+	var items []core.Workspace
+	var err error
+	if credential, ok := store.CredentialFromContext(r.Context()); ok && s.Memberships != nil {
+		items, err = s.Memberships.ListWorkspacesForUser(r.Context(), credential.OwnerUserID)
+	} else {
+		items, err = s.Workspaces.ListWorkspaces(r.Context())
+	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	writeJSON(w, http.StatusOK, items)
+}
+
+func (s *Server) listWorkspaceMembers(w http.ResponseWriter, r *http.Request) {
+	if s.Memberships == nil {
+		writeJSON(w, http.StatusOK, []core.WorkspaceMembership{})
+		return
+	}
+	credential, _ := store.CredentialFromContext(r.Context())
+	workspaceID, _ := store.WorkspaceFromContext(r.Context())
+	items, err := s.Memberships.ListWorkspaceMembers(r.Context(), credential.OwnerUserID, workspaceID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+func (s *Server) grantWorkspaceMembership(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		Email string             `json:"email"`
+		Role  core.WorkspaceRole `json:"role"`
+	}
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		writeValidationError(w, "membership", err)
+		return
+	}
+	workspaceID, _ := store.WorkspaceFromContext(r.Context())
+	result, err := s.Memberships.GrantWorkspaceRole(r.Context(), request.Email, workspaceID, request.Role)
+	if err != nil {
+		writeValidationError(w, "membership", err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, result)
+}
+
+func (s *Server) revokeWorkspaceMembership(w http.ResponseWriter, r *http.Request) {
+	workspaceID, _ := store.WorkspaceFromContext(r.Context())
+	if err := s.Memberships.RevokeWorkspaceRole(r.Context(), chi.URLParam(r, "user_id"), workspaceID); err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) getWorkspaceRecord(w http.ResponseWriter, r *http.Request) {
@@ -216,7 +266,11 @@ func (s *Server) resolveWorkspaceContext(next http.Handler) http.Handler {
 		var items []core.Workspace
 		if s.Workspaces != nil {
 			var err error
-			items, err = s.Workspaces.ListWorkspaces(r.Context())
+			if credential, ok := store.CredentialFromContext(r.Context()); ok && s.Memberships != nil {
+				items, err = s.Memberships.ListWorkspacesForUser(r.Context(), credential.OwnerUserID)
+			} else {
+				items, err = s.Workspaces.ListWorkspaces(r.Context())
+			}
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
@@ -251,7 +305,7 @@ func (s *Server) resolveWorkspaceContext(next http.Handler) http.Handler {
 			}
 		}
 		if !found {
-			writeJSON(w, http.StatusNotFound, map[string]string{"error": "workspace_not_found", "message": "workspace not found"})
+			writeWorkspaceNotFound(w)
 			return
 		}
 		next.ServeHTTP(w, r.WithContext(store.WithWorkspace(r.Context(), explicit)))
