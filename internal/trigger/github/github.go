@@ -799,6 +799,20 @@ func DiffForBranch(ctx context.Context, repo, branch string) (string, error) {
 	return string(out), nil
 }
 
+// PullRequestDescriptionForBranch returns the body of the open pull request
+// for branch without mutating the pull request.
+func PullRequestDescriptionForBranch(ctx context.Context, repo, branch string) (string, error) {
+	return pullRequestDescriptionForBranch(ctx, repo, branch, gh)
+}
+
+func pullRequestDescriptionForBranch(ctx context.Context, repo, branch string, run ghRunner) (string, error) {
+	out, err := run(ctx, "pr", "view", branch, "--repo", repo, "--json", "body", "--jq", ".body")
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
+}
+
 // DiffBetween returns only the commits introduced after an approved review
 // baseline. GitHub's compare endpoint is the authoritative delta source for
 // refresh reviews (design-git-delivery).
