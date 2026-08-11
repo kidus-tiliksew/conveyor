@@ -469,7 +469,7 @@ func TestRequirementDeliveryClassificationNamesSuspectConditions(t *testing.T) {
 	t.Run("version skew", func(t *testing.T) {
 		deliveries := classifyRequirementDeliveries("delivery", []core.Event{contextEvent, {
 			TaskID: "delivery", Kind: "merge.confirmed", At: mergeAt, Payload: core.JSONPayload(map[string]any{"task_title": "Versioned delivery"}),
-		}}, versions, "req-versioned", confirmedV2, true)
+		}}, versions, "req-versioned", requirementDeliveryWatermark{At: confirmedV2}, true)
 		if len(deliveries) != 1 || !deliveries[0].NeedsAttention ||
 			!slices.Contains(deliveries[0].Reasons, "planned against v1; v2 was current at merge") {
 			t.Fatalf("version-skew delivery = %+v", deliveries)
@@ -479,7 +479,7 @@ func TestRequirementDeliveryClassificationNamesSuspectConditions(t *testing.T) {
 	t.Run("external reconciliation", func(t *testing.T) {
 		deliveries := classifyRequirementDeliveries("delivery", []core.Event{contextEvent, {
 			TaskID: "delivery", Kind: "merge.reconciled", At: mergeAt,
-		}}, versions[:1], "req-versioned", confirmedV1, true)
+		}}, versions[:1], "req-versioned", requirementDeliveryWatermark{At: confirmedV1}, true)
 		if len(deliveries) != 1 || !deliveries[0].NeedsAttention ||
 			!slices.Contains(deliveries[0].Reasons, "merged outside factory review") {
 			t.Fatalf("reconciled delivery = %+v", deliveries)
@@ -489,11 +489,153 @@ func TestRequirementDeliveryClassificationNamesSuspectConditions(t *testing.T) {
 	t.Run("routine", func(t *testing.T) {
 		deliveries := classifyRequirementDeliveries("delivery", []core.Event{contextEvent, {
 			TaskID: "delivery", Kind: "merge.confirmed", At: confirmedV1.Add(2 * time.Minute),
-		}}, versions[:1], "req-versioned", confirmedV1, true)
+		}}, versions[:1], "req-versioned", requirementDeliveryWatermark{At: confirmedV1}, true)
 		if len(deliveries) != 1 || deliveries[0].NeedsAttention || len(deliveries[0].Reasons) != 0 {
 			t.Fatalf("routine delivery = %+v", deliveries)
 		}
 	})
+}
+
+func TestRequirementStalenessAcknowledgmentAndFollowUpLifecycle(t *testing.T) {
+	ctx := store.WithActor(store.WithWorkspace(t.Context(), "demo"), store.Actor{ID: "alice", Role: core.ActorHuman})
+	st := store.NewMemory()
+	requirement, v1, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-actionable-staleness", Title: "Actionable staleness"}, core.RequirementVersion{
+		Content: "First intent.", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Delivery stays aligned."}}, Origin: core.RequirementOriginOperator,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmRequirementVersion(ctx, requirement.ID, v1.Version); err != nil {
+		t.Fatal(err)
+	}
+	deliveryTask := core.Task{ID: "stale-delivery", Workspace: "demo", Title: "Stale delivery", Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-stale-delivery", State: core.TaskMerged, CreatedAt: time.Now().UTC()}
+	if err = st.CreateTask(ctx, deliveryTask); err != nil {
+		t.Fatal(err)
+	}
+	if err = st.AppendEvent(ctx, core.Event{TaskID: deliveryTask.ID, Kind: store.TaskContextRequirementAdded, Payload: core.JSONPayload(map[string]any{"id": requirement.ID, "version": v1.Version})}); err != nil {
+		t.Fatal(err)
+	}
+	v2, err := st.ProposeRequirementVersion(ctx, core.RequirementVersion{RequirementID: requirement.ID, Content: "Second intent.", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Delivery stays aligned with revisions."}}, Origin: core.RequirementOriginOperator})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmRequirementVersion(ctx, requirement.ID, v2.Version); err != nil {
+		t.Fatal(err)
+	}
+	firstMerge := time.Now().UTC().Add(time.Minute)
+	if err = st.AppendEvent(ctx, core.Event{TaskID: deliveryTask.ID, Kind: "merge.confirmed", At: firstMerge, Payload: core.JSONPayload(map[string]any{
+		"url": "https://example.test/pull/1", "task_title": deliveryTask.Title,
+	})}); err != nil {
+		t.Fatal(err)
+	}
+
+	server := NewServer(st)
+	server.Workspace, server.BearerToken = "demo", "token"
+	server.GenerateTaskTitle = func(context.Context, core.Task) (string, error) { return "Investigate stale delivery", nil }
+	handler := server.Handler()
+	getView := func() requirementView {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/requirements/"+requirement.ID, nil))
+		if response.Code != http.StatusOK {
+			t.Fatalf("requirement status=%d body=%s", response.Code, response.Body.String())
+		}
+		var view requirementView
+		if err := json.Unmarshal(response.Body.Bytes(), &view); err != nil {
+			t.Fatal(err)
+		}
+		return view
+	}
+	mutate := func(path string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodPost, path, nil)
+		request.Header.Set("Authorization", "Bearer token")
+		request.Header.Set("X-Conveyor-Actor", "alice")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
+	}
+
+	view := getView()
+	if !view.Staleness.DeliveryAfterIntent || len(view.Staleness.Deliveries) != 1 || view.Staleness.Deliveries[0].SignalID == "" || view.Staleness.Deliveries[0].URL == "" {
+		t.Fatalf("initial signal=%+v", view.Staleness)
+	}
+	firstSignal := view.Staleness.Deliveries[0]
+	unauthorized := httptest.NewRecorder()
+	handler.ServeHTTP(unauthorized, httptest.NewRequest(http.MethodPost,
+		fmt.Sprintf("/v1/requirements/%s/staleness/%s/acknowledge", requirement.ID, firstSignal.SignalID), nil))
+	if unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized acknowledgment status=%d", unauthorized.Code)
+	}
+	acknowledged := mutate(fmt.Sprintf("/v1/requirements/%s/staleness/%s/acknowledge", requirement.ID, firstSignal.SignalID))
+	if acknowledged.Code != http.StatusCreated {
+		t.Fatalf("acknowledge status=%d body=%s", acknowledged.Code, acknowledged.Body.String())
+	}
+	view = getView()
+	if view.Staleness.DeliveryAfterIntent || len(view.Staleness.Deliveries) != 0 {
+		t.Fatalf("acknowledged signal remained raised: %+v", view.Staleness)
+	}
+	staleRetry := mutate(fmt.Sprintf("/v1/requirements/%s/staleness/%s/acknowledge", requirement.ID, firstSignal.SignalID))
+	if staleRetry.Code != http.StatusConflict {
+		t.Fatalf("stale acknowledgment retry status=%d body=%s", staleRetry.Code, staleRetry.Body.String())
+	}
+	ackEvents, err := st.ListRequirementEvents(ctx, requirement.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundAck := false
+	for _, event := range ackEvents {
+		foundAck = foundAck || (event.Kind == "requirement.staleness_acknowledged" && event.ActorID == "alice" && event.ActorRole == core.ActorHuman)
+	}
+	if !foundAck {
+		t.Fatalf("audited acknowledgment missing from requirement timeline: %+v", ackEvents)
+	}
+
+	// Event ID breaks a timestamp tie, so a later append at the same stored
+	// instant still sits beyond the acknowledged-through watermark.
+	secondMerge := firstMerge
+	if err = st.AppendEvent(ctx, core.Event{TaskID: deliveryTask.ID, Kind: "merge.confirmed", At: secondMerge, Payload: core.JSONPayload(map[string]any{
+		"url": "https://example.test/pull/2", "task_title": deliveryTask.Title,
+	})}); err != nil {
+		t.Fatal(err)
+	}
+	view = getView()
+	if !view.Staleness.DeliveryAfterIntent || len(view.Staleness.Deliveries) != 1 || view.Staleness.Deliveries[0].SignalID == firstSignal.SignalID {
+		t.Fatalf("later delivery did not raise a fresh signal: %+v", view.Staleness)
+	}
+	secondSignal := view.Staleness.Deliveries[0]
+	followUpPath := fmt.Sprintf("/v1/requirements/%s/staleness/%s/follow-up", requirement.ID, secondSignal.SignalID)
+	created := mutate(followUpPath)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("follow-up create status=%d body=%s", created.Code, created.Body.String())
+	}
+	var firstResult struct {
+		Task    core.Task `json:"task"`
+		Created bool      `json:"created"`
+	}
+	if err = json.Unmarshal(created.Body.Bytes(), &firstResult); err != nil {
+		t.Fatal(err)
+	}
+	retried := mutate(followUpPath)
+	if retried.Code != http.StatusOK {
+		t.Fatalf("follow-up retry status=%d body=%s", retried.Code, retried.Body.String())
+	}
+	var retryResult struct {
+		Task    core.Task `json:"task"`
+		Created bool      `json:"created"`
+	}
+	if err = json.Unmarshal(retried.Body.Bytes(), &retryResult); err != nil {
+		t.Fatal(err)
+	}
+	if firstResult.Task.ID == "" || firstResult.Task.ID != retryResult.Task.ID || !firstResult.Created || retryResult.Created {
+		t.Fatalf("follow-up dedup first=%+v retry=%+v", firstResult, retryResult)
+	}
+	context, err := store.TaskContextForTask(ctx, st, firstResult.Task.ID)
+	if err != nil || len(context.Requirements) != 1 || context.Requirements[0].ID != requirement.ID {
+		t.Fatalf("follow-up requirement context=%+v err=%v", context, err)
+	}
+	view = getView()
+	if view.Staleness.DeliveryAfterIntent || len(view.Staleness.Deliveries) != 1 || view.Staleness.Deliveries[0].FollowUp == nil || view.Staleness.Deliveries[0].FollowUp.TaskID != firstResult.Task.ID {
+		t.Fatalf("open follow-up did not replace attention: %+v", view.Staleness)
+	}
 }
 
 type truncatedDisplayLineageStore struct{ store.Store }

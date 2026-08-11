@@ -113,6 +113,7 @@ type Store interface {
 	AppendEvent(ctx context.Context, event core.Event) error
 	ListEvents(ctx context.Context, taskID string) ([]core.Event, error)
 	ListRequirementEvents(ctx context.Context, requirementID string) ([]core.Event, error)
+	AcknowledgeRequirementStaleness(ctx context.Context, acknowledgment core.RequirementStalenessAcknowledgment) (core.RequirementStalenessAcknowledgment, error)
 	ListLineageLinks(ctx context.Context) ([]core.LineageLink, error)
 	LineageNodeExists(ctx context.Context, node core.LineageNode) (bool, error)
 	// ListLineageNeighborhood returns one bounded, workspace-scoped link set

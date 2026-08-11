@@ -129,6 +129,34 @@ func (s *Store) ListRequirements(ctx context.Context) ([]core.Requirement, error
 	return out, rows.Err()
 }
 
+func (s *Store) AcknowledgeRequirementStaleness(ctx context.Context, acknowledgment core.RequirementStalenessAcknowledgment) (core.RequirementStalenessAcknowledgment, error) {
+	actor := store.ActorFromContext(ctx)
+	if actor.Role != core.ActorHuman {
+		return core.RequirementStalenessAcknowledgment{}, fmt.Errorf("requirement staleness acknowledgments require a human operator")
+	}
+	if acknowledgment.SignalID == "" || acknowledgment.DeliveryTaskID == "" || acknowledgment.DeliveryEventID <= 0 || acknowledgment.AcknowledgedThrough.IsZero() {
+		return core.RequirementStalenessAcknowledgment{}, fmt.Errorf("complete requirement staleness acknowledgment is required")
+	}
+	acknowledgment.AcknowledgedBy = actor.ID
+	acknowledgment.AcknowledgedAt = time.Now().UTC()
+	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		var exists bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM requirements WHERE workspace_id=$1 AND id=$2)`, workspace(ctx), acknowledgment.RequirementID).Scan(&exists); err != nil {
+			return err
+		}
+		if !exists {
+			return fmt.Errorf("%w: requirement %s", store.ErrNotFound, acknowledgment.RequirementID)
+		}
+		return insertRequirementEvent(ctx, q, "requirement.staleness_acknowledged", map[string]any{
+			"workspace_id": workspace(ctx), "requirement_id": acknowledgment.RequirementID,
+			"signal_id": acknowledgment.SignalID, "delivery_task_id": acknowledgment.DeliveryTaskID,
+			"delivery_event_id": acknowledgment.DeliveryEventID, "acknowledged_through": acknowledgment.AcknowledgedThrough,
+			"acknowledged_by": acknowledgment.AcknowledgedBy, "acknowledged_at": acknowledgment.AcknowledgedAt,
+		})
+	})
+	return acknowledgment, err
+}
+
 func (s *Store) ProposeRequirementVersion(ctx context.Context, version core.RequirementVersion) (core.RequirementVersion, error) {
 	if err := core.ValidateRequirementOrigin(version); err != nil {
 		return core.RequirementVersion{}, err

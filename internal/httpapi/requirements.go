@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -46,11 +47,29 @@ type requirementStaleness struct {
 }
 
 type requirementDelivery struct {
-	TaskID         string    `json:"task_id"`
-	Label          string    `json:"label"`
-	At             time.Time `json:"at"`
-	NeedsAttention bool      `json:"needs_attention"`
-	Reasons        []string  `json:"reasons"`
+	SignalID        string               `json:"signal_id"`
+	TaskID          string               `json:"task_id"`
+	DeliveryEventID int64                `json:"delivery_event_id"`
+	EventKind       string               `json:"event_kind"`
+	Label           string               `json:"label"`
+	URL             string               `json:"url,omitempty"`
+	At              time.Time            `json:"at"`
+	PinnedVersion   int                  `json:"pinned_version,omitempty"`
+	CurrentVersion  int                  `json:"current_version,omitempty"`
+	NeedsAttention  bool                 `json:"needs_attention"`
+	Reasons         []string             `json:"reasons"`
+	FollowUp        *requirementFollowUp `json:"follow_up,omitempty"`
+}
+
+type requirementFollowUp struct {
+	TaskID string         `json:"task_id"`
+	Title  string         `json:"title"`
+	State  core.TaskState `json:"state"`
+}
+
+type requirementDeliveryWatermark struct {
+	At      time.Time
+	EventID int64
 }
 
 type blueprintLineage struct {
@@ -102,6 +121,77 @@ func (s *Server) listRequirementVersions(w http.ResponseWriter, r *http.Request)
 		versions = []core.RequirementVersion{}
 	}
 	writeJSON(w, http.StatusOK, versions)
+}
+
+func (s *Server) acknowledgeRequirementStaleness(w http.ResponseWriter, r *http.Request) {
+	requirementID, signalID := chi.URLParam(r, "id"), chi.URLParam(r, "signal")
+	delivery, err := s.currentRequirementDelivery(r, requirementID, signalID, false)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	acknowledgment, err := s.Store.AcknowledgeRequirementStaleness(r.Context(), core.RequirementStalenessAcknowledgment{
+		RequirementID: requirementID, SignalID: signalID, DeliveryTaskID: delivery.TaskID,
+		DeliveryEventID: delivery.DeliveryEventID, AcknowledgedThrough: delivery.At,
+	})
+	if err != nil {
+		http.Error(w, err.Error(), requirementMutationStatus(err))
+		return
+	}
+	writeJSON(w, http.StatusCreated, acknowledgment)
+}
+
+func (s *Server) createRequirementStalenessFollowUp(w http.ResponseWriter, r *http.Request) {
+	requirementID, signalID := chi.URLParam(r, "id"), chi.URLParam(r, "signal")
+	delivery, err := s.currentRequirementDelivery(r, requirementID, signalID, true)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	deliveryTask, err := s.Store.GetTask(r.Context(), delivery.TaskID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	comparison := "No served-version skew was recorded."
+	if delivery.PinnedVersion > 0 || delivery.CurrentVersion > 0 {
+		comparison = fmt.Sprintf("Served version: v%d; current at delivery: v%d.", delivery.PinnedVersion, delivery.CurrentVersion)
+	}
+	link := delivery.URL
+	if link == "" {
+		link = "No pull-request URL was recorded."
+	}
+	body := fmt.Sprintf("# Investigate requirement delivery-staleness signal\n\nRequirement: `%s`\nSignal: `%s`\nDelivery task: `%s`\nDelivery event: `%s` (%d) at %s\nDelivery link: %s\n\n## Firing condition\n\n- %s\n\n## Version context\n\n%s\n", requirementID, signalID, delivery.TaskID, delivery.EventKind, delivery.DeliveryEventID, delivery.At.UTC().Format(time.RFC3339Nano), link, strings.Join(delivery.Reasons, "\n- "), comparison)
+	result, err := s.createTaskRecord(r.Context(), createTaskReq{
+		Body: body, Repo: deliveryTask.Repo, BaseBranch: deliveryTask.BaseBranch,
+		Source: "requirement-staleness", RequirementIDs: []string{requirementID},
+	}, requirementStalenessIntakeKey(signalID), "requirement-staleness")
+	if err != nil {
+		writeTaskCreateError(w, err)
+		return
+	}
+	status := http.StatusOK
+	if result.Created {
+		status = http.StatusCreated
+	}
+	writeJSON(w, status, map[string]any{"task": result.Task, "created": result.Created})
+}
+
+func (s *Server) currentRequirementDelivery(r *http.Request, requirementID, signalID string, allowLinked bool) (requirementDelivery, error) {
+	requirement, err := s.Store.GetRequirement(r.Context(), requirementID)
+	if err != nil {
+		return requirementDelivery{}, err
+	}
+	views, err := s.requirementViews(r, []core.Requirement{requirement})
+	if err != nil {
+		return requirementDelivery{}, err
+	}
+	for _, delivery := range views[0].Staleness.Deliveries {
+		if delivery.SignalID == signalID && (delivery.NeedsAttention || (allowLinked && delivery.FollowUp != nil)) {
+			return delivery, nil
+		}
+	}
+	return requirementDelivery{}, fmt.Errorf("staleness signal %s is no longer actionable", signalID)
 }
 
 type requirementMutation struct {
@@ -454,13 +544,22 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 			}
 		}
 		sort.Slice(view.ServingTasks, func(i, j int) bool { return view.ServingTasks[i].ID < view.ServingTasks[j].ID })
-		if !confirmedAt.IsZero() && !view.Staleness.PartialEvaluation {
+		effectiveBoundary := requirementAcknowledgedThrough(requirementEvents, confirmedAt)
+		if !effectiveBoundary.At.IsZero() && !view.Staleness.PartialEvaluation {
 			for taskID := range reachableTasks {
 				events, eventsErr := loadTaskEvents(taskID)
 				if eventsErr != nil {
 					return nil, eventsErr
 				}
-				for _, delivery := range classifyRequirementDeliveries(taskID, events, versions, requirement.ID, confirmedAt, deliveryServingTaskIDs[taskID]) {
+				for _, delivery := range classifyRequirementDeliveries(taskID, events, versions, requirement.ID, effectiveBoundary, deliveryServingTaskIDs[taskID]) {
+					if delivery.NeedsAttention {
+						if followUp, found, lookupErr := s.Store.GetTaskByIntakeKey(r.Context(), requirementStalenessIntakeKey(delivery.SignalID)); lookupErr != nil {
+							return nil, lookupErr
+						} else if found && requirementFollowUpOpen(followUp.State) {
+							delivery.FollowUp = &requirementFollowUp{TaskID: followUp.ID, Title: followUp.Title, State: followUp.State}
+							delivery.NeedsAttention = false
+						}
+					}
 					view.Staleness.Deliveries = append(view.Staleness.Deliveries, delivery)
 					view.Staleness.DeliveryAfterIntent = view.Staleness.DeliveryAfterIntent || delivery.NeedsAttention
 				}
@@ -539,10 +638,10 @@ func deliveryReachableTasks(links []core.LineageLink, requirementID string) map[
 	return tasks
 }
 
-func classifyRequirementDeliveries(taskID string, events []core.Event, versions []core.RequirementVersion, requirementID string, after time.Time, directlyServing bool) []requirementDelivery {
+func classifyRequirementDeliveries(taskID string, events []core.Event, versions []core.RequirementVersion, requirementID string, after requirementDeliveryWatermark, directlyServing bool) []requirementDelivery {
 	deliveries := []requirementDelivery{}
 	for _, event := range events {
-		if (event.Kind != "merge.confirmed" && event.Kind != "merge.reconciled") || !event.At.After(after) {
+		if (event.Kind != "merge.confirmed" && event.Kind != "merge.reconciled") || !deliveryAfterWatermark(event, after) {
 			continue
 		}
 		currentVersion := confirmedRequirementVersionAt(versions, event.At)
@@ -557,12 +656,57 @@ func classifyRequirementDeliveries(taskID string, events []core.Event, versions 
 		if !directlyServing {
 			reasons = append(reasons, "delivered through related work without serving this requirement")
 		}
+		var payload struct {
+			URL string `json:"url"`
+		}
+		_ = json.Unmarshal(event.Payload, &payload)
+		signalMaterial := fmt.Sprintf("%s\x00%s\x00%d\x00%d\x00%d\x00%s", requirementID, taskID, event.ID, pinnedVersion, currentVersion, strings.Join(reasons, "\x00"))
+		signalID := fmt.Sprintf("%x", sha256.Sum256([]byte(signalMaterial)))
 		deliveries = append(deliveries, requirementDelivery{
-			TaskID: taskID, Label: deliveryLabel(event), At: event.At,
+			SignalID: signalID, TaskID: taskID, DeliveryEventID: event.ID, EventKind: event.Kind,
+			Label: deliveryLabel(event), URL: payload.URL, At: event.At,
+			PinnedVersion: pinnedVersion, CurrentVersion: currentVersion,
 			NeedsAttention: len(reasons) > 0, Reasons: reasons,
 		})
 	}
 	return deliveries
+}
+
+func requirementAcknowledgedThrough(events []core.Event, confirmedAt time.Time) requirementDeliveryWatermark {
+	boundary := requirementDeliveryWatermark{At: confirmedAt}
+	for _, event := range events {
+		if event.Kind != "requirement.staleness_acknowledged" {
+			continue
+		}
+		var payload struct {
+			AcknowledgedThrough time.Time `json:"acknowledged_through"`
+			DeliveryEventID     int64     `json:"delivery_event_id"`
+		}
+		if json.Unmarshal(event.Payload, &payload) != nil {
+			continue
+		}
+		candidate := requirementDeliveryWatermark{At: payload.AcknowledgedThrough, EventID: payload.DeliveryEventID}
+		if watermarkAfter(candidate, boundary) {
+			boundary = candidate
+		}
+	}
+	return boundary
+}
+
+func deliveryAfterWatermark(event core.Event, watermark requirementDeliveryWatermark) bool {
+	return event.At.After(watermark.At) || (event.At.Equal(watermark.At) && event.ID > watermark.EventID)
+}
+
+func watermarkAfter(candidate, boundary requirementDeliveryWatermark) bool {
+	return candidate.At.After(boundary.At) || (candidate.At.Equal(boundary.At) && candidate.EventID > boundary.EventID)
+}
+
+func requirementStalenessIntakeKey(signalID string) string {
+	return "requirement-staleness:" + signalID
+}
+
+func requirementFollowUpOpen(state core.TaskState) bool {
+	return state != core.TaskMerged && state != core.TaskClosed
 }
 
 func confirmedRequirementVersionAt(versions []core.RequirementVersion, at time.Time) int {
