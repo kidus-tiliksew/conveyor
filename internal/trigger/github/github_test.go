@@ -33,15 +33,72 @@ func TestMarkIssueDispatchedMovesReadyLabel(t *testing.T) {
 }
 
 func TestReconcilePullRequestBodyUpdatesOneEvidenceSection(t *testing.T) {
-	existing := "Human context."
-	first := "<!-- conveyor:task-link -->\nConveyor task `task-1`\n\n<!-- conveyor:verification-evidence -->\n### Verification evidence\n\n- `old.png`"
-	second := "<!-- conveyor:task-link -->\nConveyor task `task-1`\n\n<!-- conveyor:verification-evidence -->\n### Verification evidence\n\n- `new.png`"
-	updated := reconcilePullRequestBody(reconcilePullRequestBody(existing, first), second)
+	first := "<!-- conveyor:task-link -->\nConveyor task `task-1`\n\nSource: mcp\n\n<!-- conveyor:verification-evidence -->\n### Verification evidence\n\n- `old.png`\n\n" + verificationEvidenceFooter
+	second := "<!-- conveyor:task-link -->\nConveyor task `task-1`\n\nSource: mcp\n\n<!-- conveyor:verification-evidence -->\n### Verification evidence\n\n- `new.png`\n\n" + verificationEvidenceFooter
+	existing := "Human context.\n\n" + first + "\n\n## Benchmark\n\nagent evidence"
+	updated := reconcilePullRequestBody(existing, second)
 	if !strings.Contains(updated, "Human context.") || !strings.Contains(updated, "new.png") ||
+		!strings.Contains(updated, "## Benchmark") || !strings.Contains(updated, "agent evidence") ||
 		strings.Contains(updated, "old.png") ||
 		strings.Count(updated, pullRequestLifecycleMarker) != 1 ||
-		strings.Count(updated, "<!-- conveyor:verification-evidence -->") != 1 {
+		strings.Count(updated, verificationEvidenceMarker) != 1 ||
+		strings.Count(updated, pullRequestLifecycleEndMarker) != 1 {
 		t.Fatalf("reconciled body=%q", updated)
+	}
+	if again := reconcilePullRequestBody(updated, second); again != updated {
+		t.Fatalf("second reconcile changed body:\nfirst=%q\nsecond=%q", updated, again)
+	}
+}
+
+func TestReconcilePullRequestBodyPreservesAgentContentAroundLifecycle(t *testing.T) {
+	lifecycle := "<!-- conveyor:task-link -->\nConveyor task `task-1`\n\nSource: mcp\n\nCloses #42"
+	existing := "## Before\n\nagent-authored context\n\n" + lifecycle + "\n" + pullRequestLifecycleEndMarker + "\n\n## After\n\nbenchmark results"
+	updated := reconcilePullRequestBody(existing, strings.ReplaceAll(lifecycle, "#42", "#43"))
+	if !strings.Contains(updated, "## Before") || !strings.Contains(updated, "agent-authored context") ||
+		!strings.Contains(updated, "## After") || !strings.Contains(updated, "benchmark results") ||
+		!strings.Contains(updated, "Closes #43") || strings.Contains(updated, "Closes #42") {
+		t.Fatalf("reconciled body=%q", updated)
+	}
+}
+
+func TestReconcilePullRequestBodyMigratesLegacyBodies(t *testing.T) {
+	lifecycle := "<!-- conveyor:task-link -->\nConveyor task `task-1`\n\nSource: mcp\n\nCloses #42"
+	tests := []struct {
+		name     string
+		existing string
+		want     []string
+	}{
+		{
+			name:     "marker first with appended agent section",
+			existing: "<!-- conveyor:task-link -->\nConveyor task `old`\n\nSource: mcp\n\nCloses #1\n\n## Explain output\n\nkept",
+			want:     []string{"## Explain output", "kept"},
+		},
+		{
+			name:     "content above marker",
+			existing: "Human context.\n\n<!-- conveyor:task-link -->\nConveyor task `old`\n\nSource: mcp\n\nCloses #1",
+			want:     []string{"Human context."},
+		},
+		{
+			name:     "bare legacy stub",
+			existing: "Conveyor task `old`\n\nSource: mcp",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			updated := reconcilePullRequestBody(tt.existing, lifecycle)
+			for _, want := range tt.want {
+				if !strings.Contains(updated, want) {
+					t.Fatalf("reconciled body=%q, want %q", updated, want)
+				}
+			}
+			if strings.Contains(updated, "task `old`") || strings.Contains(updated, "Closes #1") ||
+				strings.Count(updated, pullRequestLifecycleMarker) != 1 || strings.Count(updated, pullRequestLifecycleEndMarker) != 1 {
+				t.Fatalf("reconciled body=%q", updated)
+			}
+			if again := reconcilePullRequestBody(updated, lifecycle); again != updated {
+				t.Fatalf("second reconcile changed body:\nfirst=%q\nsecond=%q", updated, again)
+			}
+		})
 	}
 }
 
@@ -369,8 +426,8 @@ func TestOpenPRReusesExistingPRAfterRedispatch(t *testing.T) {
 }
 
 func TestReconcilePullRequestBodyPreservesHumanContextAndReplacesFactoryBlock(t *testing.T) {
-	existing := "Human context.\n\n<!-- conveyor:task-link -->\nConveyor task `old`\n\nCloses #1"
-	updated := reconcilePullRequestBody(existing, "<!-- conveyor:task-link -->\nConveyor task `new`\n\nCloses #42")
+	existing := "Human context.\n\n<!-- conveyor:task-link -->\nConveyor task `old`\n\nSource: github\n\nCloses #1"
+	updated := reconcilePullRequestBody(existing, "<!-- conveyor:task-link -->\nConveyor task `new`\n\nSource: github\n\nCloses #42")
 	if !strings.Contains(updated, "Human context.") || !strings.Contains(updated, "Closes #42") || strings.Contains(updated, "Closes #1") || strings.Count(updated, pullRequestLifecycleMarker) != 1 {
 		t.Fatalf("updated=%q", updated)
 	}
