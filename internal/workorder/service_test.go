@@ -96,6 +96,10 @@ func (s *dependencyBatchObservationStore) ListDependencyBlockers(_ context.Conte
 	return s.blockers, nil
 }
 
+func (s *dependencyBatchObservationStore) ListPendingSystemDesignVersionsForTask(context.Context, string) ([]core.SystemDesignVersion, error) {
+	return nil, nil
+}
+
 func TestListBatchesBlockersOnlyForQueuedImplementationOrders(t *testing.T) {
 	st := &dependencyBatchObservationStore{
 		orders: []core.WorkOrder{
@@ -994,7 +998,7 @@ func TestReviewClaimPinsGovernanceVersionsAndDecisionAuthority(t *testing.T) {
 	}
 }
 
-func TestDesignProposalEvidenceRefreshesAtReviewClaimWithoutRefreshingAuthority(t *testing.T) {
+func TestTaskAuthoredDesignProposalWithholdsReviewUntilDecision(t *testing.T) {
 	ctx := store.WithWorkspace(t.Context(), "test")
 	st := store.NewMemory()
 	task := core.Task{ID: "pending-design-context", Workspace: "test", Repo: "app", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: time.Now().UTC()}
@@ -1013,6 +1017,12 @@ func TestDesignProposalEvidenceRefreshesAtReviewClaimWithoutRefreshingAuthority(
 	first, err := st.ProposeSystemDesignVersion(ctx, core.SystemDesignVersion{
 		DocumentID: document.ID, Content: "# Pending one\n\n```conveyor:governs\n- repo: app\n  paths:\n    - internal/workorder/**\n```",
 		Origin: core.SystemDesignOriginImplementation, OriginTaskID: task.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondDocument, secondDocumentProposal, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "DESIGN-pending-second", Title: "Second pending", Category: "Architecture"}, core.SystemDesignVersion{
+		Content: "# Second pending\n\n```conveyor:governs\n- repo: app\n  paths:\n    - internal/worker/**\n```", Origin: core.SystemDesignOriginImplementation, OriginTaskID: task.ID,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1045,7 +1055,7 @@ func TestDesignProposalEvidenceRefreshesAtReviewClaimWithoutRefreshingAuthority(
 	if err != nil {
 		t.Fatal(err)
 	}
-	if implementContext.GovernanceSnapshot == nil || len(implementContext.GovernanceSnapshot.PendingDesignProposals) != 1 ||
+	if implementContext.GovernanceSnapshot == nil || len(implementContext.GovernanceSnapshot.PendingDesignProposals) != 2 ||
 		implementContext.GovernanceSnapshot.PendingDesignProposals[0].Version != first.Version ||
 		!strings.Contains(implementContext.RolePrompt, "report an existing identical proposal identifier") {
 		t.Fatalf("implement pending context=%+v role=%s", implementContext.GovernanceSnapshot, implementContext.RolePrompt)
@@ -1058,20 +1068,36 @@ func TestDesignProposalEvidenceRefreshesAtReviewClaimWithoutRefreshingAuthority(
 	if err = storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: reviewJob.ID, TaskID: task.ID, JobID: reviewJob.ID, Stage: core.StageReview}); err != nil {
 		t.Fatal(err)
 	}
-	claimed, err := service.Claim(ctx, reviewJob.ID, core.WorkOrderClaim{SessionID: "review-session-pending", ClientToken: "review-token-pending", Lease: time.Minute})
-	if err != nil {
-		t.Fatal(err)
+	listed, err := service.List(ctx)
+	if err != nil || len(listed) != 2 || listed[1].Claimable {
+		t.Fatalf("withheld review listing=%+v err=%v", listed, err)
 	}
-	if claimed.GovernanceSnapshot == nil || len(claimed.GovernanceSnapshot.PendingDesignProposals) != 1 || claimed.GovernanceSnapshot.PendingDesignProposals[0].ProposalEventID == 0 {
-		t.Fatalf("pinned pending proposals=%+v", claimed.GovernanceSnapshot)
+	if _, err = service.Claim(ctx, reviewJob.ID, core.WorkOrderClaim{SessionID: "review-session-pending", ClientToken: "review-token-pending", Lease: time.Minute}); err == nil || !strings.Contains(err.Error(), "waiting on") {
+		t.Fatalf("pending review claim error=%v", err)
 	}
-	if len(claimed.GovernanceSnapshot.Designs) != 1 || claimed.GovernanceSnapshot.Designs[0].Version != initial.Version {
-		t.Fatalf("first claim authority=%+v", claimed.GovernanceSnapshot.Designs)
+	if _, err = storetest.For(st).ClaimWorkOrder(ctx, reviewJob.ID, core.WorkOrderClaim{SessionID: "direct-review-session", ClientToken: "direct-review-token", Lease: time.Minute}); err == nil || !strings.Contains(err.Error(), "waiting on") {
+		t.Fatalf("direct pending review claim error=%v", err)
 	}
 	if _, _, err = st.ConfirmSystemDesignVersion(ctx, document.ID, first.Version, initial.Version); err != nil {
 		t.Fatal(err)
 	}
-	second, err := st.ProposeSystemDesignVersion(ctx, core.SystemDesignVersion{
+	if _, err = service.Claim(ctx, reviewJob.ID, core.WorkOrderClaim{SessionID: "review-session-still-pending", ClientToken: "review-token-still-pending", Lease: time.Minute}); err == nil || !strings.Contains(err.Error(), "waiting on") {
+		t.Fatalf("review released before final proposal decision error=%v", err)
+	}
+	if _, _, err = st.ConfirmSystemDesignVersion(ctx, secondDocument.ID, secondDocumentProposal.Version); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := service.Claim(ctx, reviewJob.ID, core.WorkOrderClaim{SessionID: "review-session-pending", ClientToken: "review-token-pending", Lease: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claimed.GovernanceSnapshot == nil || len(claimed.GovernanceSnapshot.PendingDesignProposals) != 2 || !claimed.GovernanceSnapshot.PendingDesignProposals[0].Confirmed || !claimed.GovernanceSnapshot.PendingDesignProposals[1].Confirmed || claimed.GovernanceSnapshot.PendingDesignProposals[0].ProposalEventID == 0 {
+		t.Fatalf("pinned pending proposals=%+v", claimed.GovernanceSnapshot)
+	}
+	if len(claimed.GovernanceSnapshot.Designs) != 2 {
+		t.Fatalf("first claim authority=%+v", claimed.GovernanceSnapshot.Designs)
+	}
+	_, err = st.ProposeSystemDesignVersion(ctx, core.SystemDesignVersion{
 		DocumentID: document.ID, Content: "# Pending two\n\n```conveyor:governs\n- repo: app\n  paths:\n    - internal/httpapi/**\n```",
 		Origin: core.SystemDesignOriginImplementation, OriginTaskID: task.ID,
 	})
@@ -1083,27 +1109,39 @@ func TestDesignProposalEvidenceRefreshesAtReviewClaimWithoutRefreshingAuthority(
 	if err = st.CreateJob(ctx, reviewJob2); err != nil {
 		t.Fatal(err)
 	}
-	stale := *claimed.GovernanceSnapshot
-	if err = storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: reviewJob2.ID, TaskID: task.ID, JobID: reviewJob2.ID, Stage: core.StageReview, ReviewRound: 2, ReviewSeat: 1, ServedRequirementSnapshot: []core.ServedRequirementContext{}, GovernanceSnapshot: &stale}); err != nil {
+	if err = storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: reviewJob2.ID, TaskID: task.ID, JobID: reviewJob2.ID, Stage: core.StageReview, ReviewRound: 2, ReviewSeat: 1, ServedRequirementSnapshot: []core.ServedRequirementContext{}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.Claim(ctx, reviewJob2.ID, core.WorkOrderClaim{SessionID: "review-session-refreshed", ClientToken: "review-token-refreshed", Lease: time.Minute}); err == nil || !strings.Contains(err.Error(), "waiting on") {
+		t.Fatalf("second pending review claim error=%v", err)
+	}
+	replacement, err := st.ProposeSystemDesignVersion(ctx, core.SystemDesignVersion{
+		DocumentID: document.ID, Content: "# Operator replacement\n\n```conveyor:governs\n- repo: app\n  paths:\n    - internal/**\n```",
+		Origin: core.SystemDesignOriginOperator,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmSystemDesignVersion(ctx, document.ID, replacement.Version, first.Version); err != nil {
 		t.Fatal(err)
 	}
 	claimed2, err := service.Claim(ctx, reviewJob2.ID, core.WorkOrderClaim{SessionID: "review-session-refreshed", ClientToken: "review-token-refreshed", Lease: time.Minute})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if claimed2.GovernanceSnapshot == nil || len(claimed2.GovernanceSnapshot.Designs) != 1 || claimed2.GovernanceSnapshot.Designs[0].Version != initial.Version || len(claimed2.GovernanceSnapshot.PendingDesignProposals) != 2 || !claimed2.GovernanceSnapshot.PendingDesignProposals[0].Confirmed || claimed2.GovernanceSnapshot.PendingDesignProposals[1].Version != second.Version {
+	if claimed2.GovernanceSnapshot == nil || len(claimed2.GovernanceSnapshot.Designs) != 2 || len(claimed2.GovernanceSnapshot.PendingDesignProposals) != 2 {
 		t.Fatalf("refreshed claim governance=%+v", claimed2.GovernanceSnapshot)
 	}
 	reviewContext, err := service.Get(ctx, reviewJob2.ID, "review-session-refreshed")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(reviewContext.RolePrompt, "confirmed after proposal") || !strings.Contains(reviewContext.RolePrompt, "matching pending or confirmed proposal") || !strings.Contains(reviewContext.RolePrompt, "Operator confirmation is not a bounce condition") || !strings.Contains(reviewContext.RolePrompt, "confer no authority") {
+	if !strings.Contains(reviewContext.RolePrompt, "confirmed after proposal") || !strings.Contains(reviewContext.RolePrompt, "matching pending or confirmed proposal") {
 		t.Fatalf("review proposal context=%+v role=%s", reviewContext.GovernanceSnapshot, reviewContext.RolePrompt)
 	}
 }
 
-func TestSubmitVerdictUsesParentPlanAndPendingProposalIsTerminalSafe(t *testing.T) {
+func TestSubmitVerdictUsesParentPlanAfterProposalDecision(t *testing.T) {
 	ctx := store.WithWorkspace(t.Context(), "test")
 	st := store.NewMemory()
 	now := time.Now().UTC()
@@ -1132,10 +1170,13 @@ func TestSubmitVerdictUsesParentPlanAndPendingProposalIsTerminalSafe(t *testing.
 	if _, _, err = st.ConfirmSystemDesignVersion(ctx, document.ID, initial.Version); err != nil {
 		t.Fatal(err)
 	}
-	pendingDocument, _, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "DESIGN-pending-terminal-proposal", Title: "Pending terminal proposal", Category: "Architecture"}, core.SystemDesignVersion{
+	_, pendingVersion, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "DESIGN-pending-terminal-proposal", Title: "Pending terminal proposal", Category: "Architecture"}, core.SystemDesignVersion{
 		Content: "# Proposed\n\n```conveyor:governs\n- repo: app\n  paths:\n    - internal/workorder/**\n```", Origin: core.SystemDesignOriginImplementation, OriginTaskID: child.ID,
 	})
 	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmSystemDesignVersion(ctx, pendingVersion.DocumentID, pendingVersion.Version); err != nil {
 		t.Fatal(err)
 	}
 	job := core.Job{ID: child.ID + "-review-1", TaskID: child.ID, Stage: core.StageReview, State: core.JobPending, ModelTier: "reviewer"}
@@ -1165,8 +1206,8 @@ func TestSubmitVerdictUsesParentPlanAndPendingProposalIsTerminalSafe(t *testing.
 	if context.ApprovedSpec == nil || context.ApprovedSpec.TaskID != parent.ID || !strings.Contains(context.RolePrompt, "applicable=true") || !strings.Contains(context.RolePrompt, "Pending design proposal is present") {
 		t.Fatalf("parent plan review context=%+v role=%s", context.ApprovedSpec, context.RolePrompt)
 	}
-	if claimed.GovernanceSnapshot == nil || len(claimed.GovernanceSnapshot.PendingDesignProposals) != 1 {
-		t.Fatalf("pending proposal was not pinned: %+v", claimed.GovernanceSnapshot)
+	if claimed.GovernanceSnapshot == nil || len(claimed.GovernanceSnapshot.PendingDesignProposals) != 1 || !claimed.GovernanceSnapshot.PendingDesignProposals[0].Confirmed {
+		t.Fatalf("decided proposal was not pinned: %+v", claimed.GovernanceSnapshot)
 	}
 	designApplicable, decisionCitable := true, false
 	base := pipeline.Review{
@@ -1174,14 +1215,6 @@ func TestSubmitVerdictUsesParentPlanAndPendingProposalIsTerminalSafe(t *testing.
 		RequirementCitations: &core.RequirementCitationAssessment{CitedIDs: []string{}, UnknownIDs: []string{}, UnservedIDs: []string{}, Conflicts: []string{}},
 		DoneCriteriaCoverage: &core.DoneCriteriaAssessment{Applicable: true, Summary: "proposal criterion satisfied", Satisfied: []string{"Pending design proposal is present."}, Unsatisfied: []string{}, Unverified: []string{}, Conflicts: []string{}},
 		GovernanceAssessment: &core.GovernanceAssessment{DesignApplicable: &designApplicable, DecisionCitable: &decisionCitable, CitedIDs: []string{}, UnknownIDs: []string{}, UngovernedIDs: []string{}, SupersededIDs: []string{}, Conflicts: []string{}},
-	}
-	invalid := base
-	invalid.GovernanceAssessment = &core.GovernanceAssessment{DesignApplicable: &designApplicable, DecisionCitable: &decisionCitable, CitedIDs: []string{pendingDocument.ID}, UnknownIDs: []string{}, UngovernedIDs: []string{}, SupersededIDs: []string{}, Conflicts: []string{}}
-	if _, err = service.SubmitVerdict(ctx, job.ID, session, invalid); err == nil || !strings.Contains(err.Error(), "not confirmed governing authority") {
-		t.Fatalf("pending proposal citation error=%v", err)
-	}
-	if retained, getErr := st.GetWorkOrder(ctx, job.ID); getErr != nil || retained.State != core.WorkOrderClaimed {
-		t.Fatalf("rejected citation changed review order=%+v err=%v", retained, getErr)
 	}
 	if _, err = service.SubmitVerdict(ctx, job.ID, session, base); err != nil {
 		t.Fatal(err)

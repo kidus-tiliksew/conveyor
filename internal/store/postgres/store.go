@@ -3820,6 +3820,17 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease taskop
 		return core.WorkOrder{}, fmt.Errorf("work-order claim requires a valid taskops lease")
 	}
 	if order.Stage == core.StageReview {
+		var pendingDocument string
+		var pendingVersion int
+		pendingErr := tx.QueryRow(ctx, `SELECT document_id,version FROM system_design_versions
+			WHERE workspace_id=$1 AND origin=$2 AND origin_task_id=$3 AND NOT confirmed AND NOT dismissed
+			ORDER BY document_id,version LIMIT 1`, workspace(ctx), string(core.SystemDesignOriginImplementation), order.TaskID).Scan(&pendingDocument, &pendingVersion)
+		if pendingErr == nil {
+			return core.WorkOrder{}, fmt.Errorf("review for task %s is waiting on task-authored System Design proposal %s v%d", order.TaskID, pendingDocument, pendingVersion)
+		}
+		if !errors.Is(pendingErr, pgx.ErrNoRows) {
+			return core.WorkOrder{}, pendingErr
+		}
 		accepted, acceptedErr := reviewSeatAcceptedTx(ctx, tx, workspace(ctx), order.TaskID, order.ID)
 		if acceptedErr != nil {
 			return core.WorkOrder{}, acceptedErr

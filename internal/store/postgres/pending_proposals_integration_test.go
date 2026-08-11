@@ -11,7 +11,54 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
+	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 )
+
+func TestTaskAuthoredDesignProposalWithholdsReviewAcrossRestartIntegration(t *testing.T) {
+	databaseURL := integrationDatabaseURL(t)
+	st, err := Open(t.Context(), databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace := "review-proposal-gate-" + core.NewTaskID()
+	ctx := store.WithWorkspace(t.Context(), workspace)
+	if _, err = st.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "conveyor", Base: "main"}}}); err != nil {
+		t.Fatal(err)
+	}
+	taskID := core.NewTaskID()
+	task := core.Task{ID: taskID, Workspace: workspace, Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-" + taskID, State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: time.Now().UTC()}
+	if err = st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	design, proposal, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "design-" + core.NewTaskID(), Title: "Review gate", Category: "Architecture"}, core.SystemDesignVersion{
+		Content: "# Review gate\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/workorder/**\n```", Origin: core.SystemDesignOriginImplementation, OriginTaskID: task.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: task.ID + "-review-1", TaskID: task.ID, Stage: core.StageReview, State: core.JobPending}
+	if err = st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err = storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageReview}); err != nil {
+		t.Fatal(err)
+	}
+	st.Close()
+	st, err = Open(t.Context(), databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if _, err = storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "blocked", ClientToken: "blocked-token", Lease: time.Minute}); err == nil || !strings.Contains(err.Error(), "waiting on") {
+		t.Fatalf("claim while proposal pending error=%v", err)
+	}
+	if _, _, err = st.ConfirmSystemDesignVersion(ctx, design.ID, proposal.Version); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "released", ClientToken: "released-token", Lease: time.Minute}); err != nil {
+		t.Fatalf("claim after proposal confirmation: %v", err)
+	}
+}
 
 func TestPendingProposalsProjectionIntegration(t *testing.T) {
 	st, err := Open(t.Context(), integrationDatabaseURL(t))

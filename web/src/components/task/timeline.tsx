@@ -123,16 +123,14 @@ export function Timeline({
                 <div className="flex items-start gap-2">
                   <AlertTriangle className="mt-0.5 size-4 shrink-0 text-attention" aria-hidden />
                   <div className="text-xs leading-5 text-muted">
-                    <p className="font-medium text-attention">Review will not include this proposed update yet</p>
-                    <p>
-                      Confirm or dismiss the proposal before review is claimed if reviewers should see that decision.
-                    </p>
+                    <p className="font-medium text-attention">Review is waiting on a System Design decision</p>
+                    <p>This review cannot be claimed until you confirm or dismiss the task&apos;s pending proposal.</p>
                     <Link
                       to="/pending-proposals"
                       search={{ task: item.task.id }}
                       className="mt-1 inline-block font-medium text-primary hover:underline"
                     >
-                      Open the proposal
+                      Confirm or dismiss the proposal
                     </Link>
                   </div>
                 </div>

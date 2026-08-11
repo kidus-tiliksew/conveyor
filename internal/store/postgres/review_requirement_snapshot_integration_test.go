@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -123,25 +124,18 @@ func TestReviewClaimRefreshesProposalEvidenceWithoutRefreshingPinnedAuthorityInt
 	if err != nil {
 		t.Fatal(err)
 	}
-	stale := *firstClaim.GovernanceSnapshot
-	createReview(task.ID+"-review-2", 2, &stale)
-	secondClaim, err := service.Claim(ctx, task.ID+"-review-2", core.WorkOrderClaim{SessionID: "review-refresh-2", ClientToken: "secret-2", Lease: time.Minute})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if secondClaim.GovernanceSnapshot == nil || len(secondClaim.GovernanceSnapshot.Designs) != 1 || secondClaim.GovernanceSnapshot.Designs[0].Version != initial.Version || len(secondClaim.GovernanceSnapshot.PendingDesignProposals) != 1 || secondClaim.GovernanceSnapshot.PendingDesignProposals[0].Version != proposal.Version || secondClaim.GovernanceSnapshot.PendingDesignProposals[0].Confirmed {
-		t.Fatalf("pending proposal refresh=%+v", secondClaim.GovernanceSnapshot)
+	createReview(task.ID+"-review-2", 2, nil)
+	if _, err = service.Claim(ctx, task.ID+"-review-2", core.WorkOrderClaim{SessionID: "review-refresh-2", ClientToken: "secret-2", Lease: time.Minute}); err == nil || !strings.Contains(err.Error(), "waiting on") {
+		t.Fatalf("pending proposal review claim error=%v", err)
 	}
 	if _, _, err = st.ConfirmSystemDesignVersion(ctx, document.ID, proposal.Version, initial.Version); err != nil {
 		t.Fatal(err)
 	}
-	stale = *firstClaim.GovernanceSnapshot
-	createReview(task.ID+"-review-3", 3, &stale)
-	thirdClaim, err := service.Claim(ctx, task.ID+"-review-3", core.WorkOrderClaim{SessionID: "review-refresh-3", ClientToken: "secret-3", Lease: time.Minute})
+	secondClaim, err := service.Claim(ctx, task.ID+"-review-2", core.WorkOrderClaim{SessionID: "review-refresh-2", ClientToken: "secret-2", Lease: time.Minute})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if thirdClaim.GovernanceSnapshot == nil || len(thirdClaim.GovernanceSnapshot.Designs) != 1 || thirdClaim.GovernanceSnapshot.Designs[0].Version != initial.Version || len(thirdClaim.GovernanceSnapshot.PendingDesignProposals) != 1 || !thirdClaim.GovernanceSnapshot.PendingDesignProposals[0].Confirmed {
-		t.Fatalf("confirmed proposal refresh=%+v", thirdClaim.GovernanceSnapshot)
+	if secondClaim.GovernanceSnapshot == nil || len(secondClaim.GovernanceSnapshot.Designs) != 1 || secondClaim.GovernanceSnapshot.Designs[0].Version != proposal.Version || len(secondClaim.GovernanceSnapshot.PendingDesignProposals) != 1 || !secondClaim.GovernanceSnapshot.PendingDesignProposals[0].Confirmed {
+		t.Fatalf("confirmed proposal claim=%+v", secondClaim.GovernanceSnapshot)
 	}
 }
