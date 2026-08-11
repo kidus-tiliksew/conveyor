@@ -91,14 +91,23 @@ const requirement = {
     delivery_after_intent: true,
     deliveries: [
       {
+        signal_id: 'signal-blueprint',
         task_id: 'blueprint-task',
+        delivery_event_id: 42,
+        event_kind: 'merge.reconciled',
         label: 'Blueprint delivery',
+        url: 'https://example.test/pull/42',
         at: '2026-07-30T10:05:00Z',
+        pinned_version: 1,
+        current_version: 2,
         needs_attention: true,
         reasons: ['merged outside factory review'],
       },
       {
+        signal_id: 'signal-routine',
         task_id: 'routine-delivery',
+        delivery_event_id: 41,
+        event_kind: 'merge.confirmed',
         label: 'Routine delivery',
         at: '2026-07-30T09:05:00Z',
         needs_attention: false,
@@ -221,14 +230,12 @@ test('requirements renders a document tree, one attention surface, and confirms 
   // reason; the pending version remains inside the one attention surface.
   const attention = page.getByRole('region', { name: 'Needs your attention' })
   await expect(attention).toContainText('Blueprint delivery may have moved past the confirmed intent')
-  await expect(attention.getByText('merged outside factory review')).toHaveAttribute(
-    'title',
-    /Blueprint delivery delivered/,
-  )
-  await expect(attention.getByRole('link', { name: 'Open the delivery' })).toHaveAttribute(
-    'href',
-    '/tasks/blueprint-task',
-  )
+  await expect(attention.getByTitle(/Blueprint delivery delivered/)).toContainText('merged outside factory review')
+  await expect(attention).toContainText('Served v1 · current at delivery v2')
+  await expect(attention.getByRole('link', { name: 'Inspect task' })).toHaveAttribute('href', '/tasks/blueprint-task')
+  await expect(attention.getByRole('link', { name: /Open PR/ })).toHaveAttribute('href', 'https://example.test/pull/42')
+  await expect(attention.getByRole('button', { name: 'File a task' })).toBeVisible()
+  await expect(attention.getByRole('button', { name: 'Dismiss' })).toBeVisible()
   await expect(attention).toContainText('Version 1 is waiting for you')
 
   // AC-1.2: a routine factory-reviewed delivery remains visible as neutral
@@ -339,6 +346,76 @@ test('requirements resolves attributed drift inline and refreshes its pending am
   await expect(attention).not.toContainText('Code changed in conveyor without reaching this document')
   await expect(attention).toContainText('Version 2 is waiting for you')
   await expect(attention).toContainText('Written from a delivery change')
+})
+
+test('requirement staleness can file one linked follow-up and be dismissed in place', async ({ page }) => {
+  await initShell(page)
+  let state: 'open' | 'linked' | 'dismissed' = 'open'
+  let followUpRequests = 0
+  let dismissRequests = 0
+  const view = () => {
+    const delivery = {
+      ...requirement.staleness.deliveries[0],
+      needs_attention: state === 'open',
+      follow_up:
+        state === 'linked'
+          ? { task_id: 'follow-up-task', title: 'Investigate retry delivery', state: 'queued' }
+          : undefined,
+    }
+    return {
+      ...requirement,
+      pending_versions: [],
+      staleness: {
+        delivery_after_intent: state === 'open',
+        partial_evaluation: false,
+        deliveries: state === 'dismissed' ? [] : [delivery],
+        active_drift: [],
+      },
+    }
+  }
+  await page.route('**/v1/**', async (route) => {
+    const shell = shellResponse(route)
+    if (shell) return await shell
+    const url = new URL(route.request().url())
+    if (url.pathname === '/v1/requirements') return route.fulfill({ json: [view()] })
+    if (url.pathname === '/v1/requirements/req-retries') return route.fulfill({ json: view() })
+    if (url.pathname === '/v1/requirements/req-retries/versions') return route.fulfill({ json: [] })
+    if (url.pathname.endsWith('/staleness/signal-blueprint/follow-up')) {
+      followUpRequests++
+      state = 'linked'
+      return route.fulfill({
+        status: followUpRequests === 1 ? 201 : 200,
+        json: {
+          task: { id: 'follow-up-task', title: 'Investigate retry delivery', state: 'queued' },
+          created: followUpRequests === 1,
+        },
+      })
+    }
+    if (url.pathname.endsWith('/staleness/signal-blueprint/acknowledge')) {
+      dismissRequests++
+      state = 'dismissed'
+      return route.fulfill({ status: 201, json: { signal_id: 'signal-blueprint' } })
+    }
+    return route.fulfill({ json: [] })
+  })
+
+  await page.goto('/requirements?requirement=req-retries')
+  const attention = page.getByRole('region', { name: 'Needs your attention' })
+  await attention.getByRole('button', { name: 'File a task' }).click()
+  await expect.poll(() => followUpRequests).toBe(1)
+  await expect(
+    page
+      .getByRole('region', { name: 'Delivery activity' })
+      .getByRole('link', { name: 'Follow-up: Investigate retry delivery' }),
+  ).toHaveAttribute('href', '/tasks/follow-up-task')
+  await expect(attention).toContainText('Nothing needs your attention')
+
+  state = 'open'
+  await page.reload()
+  await attention.getByRole('button', { name: 'Dismiss' }).click()
+  await expect.poll(() => dismissRequests).toBe(1)
+  await expect(attention).toContainText('Nothing needs your attention')
+  await expect(page.getByText('Blueprint delivery may have moved past the confirmed intent')).toHaveCount(0)
 })
 
 test('requirements search and deterministic sorting preserve the selected canvas and show attention counts', async ({

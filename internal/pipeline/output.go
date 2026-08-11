@@ -84,9 +84,9 @@ func ParseTriage(output string) (Triage, error) {
 		return value, fmt.Errorf("triage class must be bug, feature, or chore")
 	}
 	switch value.Route {
-	case "implement", "spec", "human", "parked":
+	case "proceed", "parked":
 	default:
-		return value, fmt.Errorf("triage route must be implement, spec, human, or parked")
+		return value, fmt.Errorf("triage route must be proceed or parked")
 	}
 	if strings.TrimSpace(value.Summary) == "" {
 		return value, fmt.Errorf("triage summary is required")

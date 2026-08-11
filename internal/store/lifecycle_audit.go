@@ -58,9 +58,11 @@ func AuditLifecycleHistory(events []core.Event) []LifecycleAuditViolation {
 				violations = append(violations, auditViolation(core.TaskLifecycle, event.TaskID, event, string(current), string(payload.Command), string(payload.To), fmt.Sprintf("event records source %q, prior history resolves to %q", payload.From, current)))
 			}
 			if payload.Command != "" {
-				to, err := core.TransitionTask(payload.From, payload.Command)
-				if err != nil || to != payload.To {
-					violations = append(violations, auditViolation(core.TaskLifecycle, event.TaskID, event, string(payload.From), string(payload.Command), string(payload.To), transitionReason(err, string(to), string(payload.To))))
+				if !legacyTaskHistoryEdge(payload.From, payload.Command, payload.To) {
+					to, err := core.TransitionTask(payload.From, payload.Command)
+					if err != nil || to != payload.To {
+						violations = append(violations, auditViolation(core.TaskLifecycle, event.TaskID, event, string(payload.From), string(payload.Command), string(payload.To), transitionReason(err, string(to), string(payload.To))))
+					}
 				}
 			} else if !taskEdgeExists(payload.From, payload.To) {
 				violations = append(violations, auditViolation(core.TaskLifecycle, event.TaskID, event, string(payload.From), "<historical>", string(payload.To), "edge is absent from the canonical table"))
@@ -91,6 +93,12 @@ func AuditLifecycleHistory(events []core.Event) []LifecycleAuditViolation {
 		}
 	}
 	return violations
+}
+
+// legacyTaskHistoryEdge preserves append-only events emitted before DEC-17
+// retired the route-human command from the current lifecycle vocabulary.
+func legacyTaskHistoryEdge(from core.TaskState, command core.TaskCommand, to core.TaskState) bool {
+	return from == core.TaskRunning && command == core.TaskCommand("triage.route_human") && to == core.TaskAwaiting
 }
 
 func taskEdgeExists(from, to core.TaskState) bool {

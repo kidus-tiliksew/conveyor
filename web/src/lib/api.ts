@@ -147,6 +147,28 @@ export async function confirmRequirementVersion(
   }
   return response.json() as Promise<{ requirement: RequirementView['requirement']; version: RequirementVersion }>
 }
+
+export async function acknowledgeRequirementStaleness(token: string, requirementId: string, signalId: string) {
+  const response = await fetch(
+    workspaceURL(
+      `/v1/requirements/${encodeURIComponent(requirementId)}/staleness/${encodeURIComponent(signalId)}/acknowledge`,
+    ),
+    { method: 'POST', headers: mutationHeaders(token) },
+  )
+  if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
+  return response.json()
+}
+
+export async function createRequirementStalenessFollowUp(token: string, requirementId: string, signalId: string) {
+  const response = await fetch(
+    workspaceURL(
+      `/v1/requirements/${encodeURIComponent(requirementId)}/staleness/${encodeURIComponent(signalId)}/follow-up`,
+    ),
+    { method: 'POST', headers: mutationHeaders(token) },
+  )
+  if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
+  return response.json() as Promise<{ task: Task; created: boolean }>
+}
 export function fetchPlanningSessions() {
   return getJSON<PlanningSession[]>(workspaceURL('/v1/planning-sessions'))
 }

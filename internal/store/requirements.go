@@ -305,6 +305,31 @@ func (m *memory) ListRequirementVersions(ctx context.Context, requirementID stri
 	return out, nil
 }
 
+func (m *memory) AcknowledgeRequirementStaleness(ctx context.Context, acknowledgment core.RequirementStalenessAcknowledgment) (core.RequirementStalenessAcknowledgment, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	workspace := workspaceOrDefault(ctx, "")
+	if _, ok := m.requirements[memoryScopedKey{workspace: workspace, id: acknowledgment.RequirementID}]; !ok {
+		return core.RequirementStalenessAcknowledgment{}, fmt.Errorf("%w: requirement %s", ErrNotFound, acknowledgment.RequirementID)
+	}
+	actor := ActorFromContext(ctx)
+	if actor.Role != core.ActorHuman {
+		return core.RequirementStalenessAcknowledgment{}, fmt.Errorf("requirement staleness acknowledgments require a human operator")
+	}
+	if acknowledgment.SignalID == "" || acknowledgment.DeliveryTaskID == "" || acknowledgment.DeliveryEventID <= 0 || acknowledgment.AcknowledgedThrough.IsZero() {
+		return core.RequirementStalenessAcknowledgment{}, fmt.Errorf("complete requirement staleness acknowledgment is required")
+	}
+	acknowledgment.AcknowledgedBy = actor.ID
+	acknowledgment.AcknowledgedAt = time.Now().UTC()
+	m.appendEventLocked(ctx, core.Event{Kind: "requirement.staleness_acknowledged", At: acknowledgment.AcknowledgedAt, Payload: core.JSONPayload(map[string]any{
+		"workspace_id": workspace, "requirement_id": acknowledgment.RequirementID,
+		"signal_id": acknowledgment.SignalID, "delivery_task_id": acknowledgment.DeliveryTaskID,
+		"delivery_event_id": acknowledgment.DeliveryEventID, "acknowledged_through": acknowledgment.AcknowledgedThrough,
+		"acknowledged_by": acknowledgment.AcknowledgedBy, "acknowledged_at": acknowledgment.AcknowledgedAt,
+	})})
+	return acknowledgment, nil
+}
+
 func requirementServesKey(workspace, blueprintTaskID, requirementID string) string {
 	return workspace + "\x00" + blueprintTaskID + "\x00" + requirementID
 }

@@ -923,11 +923,22 @@ export interface RequirementView {
 }
 
 export interface RequirementDelivery {
+  signal_id: string
   task_id: string
+  delivery_event_id: number
+  event_kind: string
   label: string
+  url?: string
   at: string
+  pinned_version?: number
+  current_version?: number
   needs_attention: boolean
   reasons: string[]
+  follow_up?: {
+    task_id: string
+    title: string
+    state: Task['state']
+  }
 }
 
 export interface GovernedScope {
