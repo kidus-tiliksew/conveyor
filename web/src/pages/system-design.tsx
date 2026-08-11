@@ -5,6 +5,7 @@ import { Check, Clock, ExternalLink, GitCompare, History, Layers, X } from 'luci
 import { useOperatorToken, useWorkspaceSelection } from '../components/app-shell'
 import { AttentionSurface, type AttentionItem } from '../components/documents/attention-surface'
 import { DriftResolutionForm } from '../components/documents/drift-resolution-form'
+import { VersionDiff } from '../components/documents/version-diff'
 import {
   DocumentTree,
   DocumentTreeGroup,
@@ -422,20 +423,26 @@ function DesignCanvas({
 function DesignDiff({ from, to }: { from: SystemDesignVersion; to: SystemDesignVersion }) {
   return (
     <section className="border-t border-border p-4" aria-label="Pending version diff">
-      <div className="grid gap-3 lg:grid-cols-2">
-        <DiffSide title={`From version ${from.version}`} content={from.content} />
-        <DiffSide title={`To version ${to.version}`} content={to.content} />
-      </div>
+      <VersionDiff
+        left={{
+          content: from.content,
+          label: `From version ${from.version}`,
+          labelClassName: 'mb-2 text-xs font-semibold text-muted',
+          paneClassName: 'min-w-0 rounded-md border border-border bg-background p-3',
+          preClassName: 'max-h-72 overflow-auto whitespace-pre-wrap text-xs leading-5',
+        }}
+        right={{
+          content: to.content,
+          label: `To version ${to.version}`,
+          labelClassName: 'mb-2 text-xs font-semibold text-muted',
+          paneClassName: 'min-w-0 rounded-md border border-border bg-background p-3',
+          preClassName: 'max-h-72 overflow-auto whitespace-pre-wrap text-xs leading-5',
+        }}
+        bounded
+        className="grid gap-3 lg:grid-cols-2"
+        noticeClassName="mb-3 text-xs text-muted"
+      />
     </section>
-  )
-}
-
-function DiffSide({ title, content }: { title: string; content: string }) {
-  return (
-    <div className="min-w-0 rounded-md border border-border bg-background p-3">
-      <p className="mb-2 text-xs font-semibold text-muted">{title}</p>
-      <pre className="max-h-72 overflow-auto whitespace-pre-wrap text-xs leading-5">{content}</pre>
-    </div>
   )
 }
 
