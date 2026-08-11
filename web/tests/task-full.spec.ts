@@ -2436,6 +2436,45 @@ test('stalled task is labelled in the operator tray with recover and reasoned ca
   await expect(page.getByRole('button', { name: 'Cancel task' })).toHaveCount(0)
 })
 
+test('pending authority moves a live task to Needs operator until the proposal is resolved', async ({ page }) => {
+  const item = activity('design-proposal', false)
+  let pending = true
+  await page.route('**/v1/activity*', async (route) => {
+    await route.fulfill({
+      json: [
+        {
+          task: { ...item.task, title: 'Proposal-gated task' },
+          latest_stage: 'review',
+          last_event_at: createdAt,
+          needs_attention: pending,
+          pending_authority: pending,
+        },
+        {
+          task: { ...item.task, id: 'resolved-terminal', title: 'Completed proposal task', state: 'merged' },
+          latest_stage: 'review',
+          last_event_at: createdAt,
+          needs_attention: true,
+          pending_authority: true,
+        },
+      ],
+    })
+  })
+
+  await page.goto('/')
+  const operator = page.getByRole('region', { name: 'Needs operator' })
+  await expect(operator.getByText('Proposal-gated task')).toBeVisible()
+  await expect(operator.getByText('Awaiting proposal decision')).toBeVisible()
+  await expect(operator.getByText('Completed proposal task')).toHaveCount(0)
+  await expect(page.getByRole('region', { name: 'Completed' }).getByText('Completed proposal task')).toBeVisible()
+
+  pending = false
+  await page.reload()
+  await expect(page.getByRole('region', { name: 'Needs operator' }).getByText('Proposal-gated task')).toHaveCount(0)
+  const reviewing = page.getByRole('region', { name: 'Reviewing' })
+  await expect(reviewing.getByText('Proposal-gated task')).toBeVisible()
+  await expect(reviewing.getByText('Awaiting proposal decision')).toHaveCount(0)
+})
+
 test('forge failure categories render in the needs-operator tray and task activity evidence', async ({ page }) => {
   const item = activity('forge-failure', false)
   await page.route('**/v1/activity*', async (route) => {
