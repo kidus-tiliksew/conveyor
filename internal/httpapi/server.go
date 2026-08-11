@@ -874,6 +874,7 @@ type activityItem struct {
 	LatestStage               core.Stage                            `json:"latest_stage,omitempty"`
 	LastEventAt               time.Time                             `json:"last_event_at"`
 	NeedsAttention            bool                                  `json:"needs_attention"`
+	PendingAuthority          bool                                  `json:"pending_authority"`
 	ForgeFailure              *store.ForgeFailure                   `json:"forge_failure,omitempty"`
 	ReviewDiagnostics         []store.ReviewVerdictDiagnostic       `json:"review_diagnostics,omitempty"`
 	ReviewRecovery            *store.ReviewRecoveryState            `json:"review_recovery,omitempty"`
@@ -942,9 +943,12 @@ func (s *Server) listActivityFiltered(w http.ResponseWriter, r *http.Request, fi
 		if reviewsOnly && !reviewable(task.State) && marker.ForgeFailure == nil && marker.ReviewRecovery == nil && marker.InterruptedReviewRecovery == nil && marker.Stalled == nil && !pendingAuthority[task.ID] {
 			continue
 		}
+		// Project the existing presentation-only authority signal without
+		// changing any lifecycle gate (REQ-2 AC-2.2; REQ-3; design-web-dashboard).
 		items = append(items, activityItem{
 			Task: task, LatestStage: marker.LatestStage, LastEventAt: marker.LastEventAt,
 			NeedsAttention:            needsAttention(task, marker, pendingAuthority[task.ID]),
+			PendingAuthority:          pendingAuthority[task.ID],
 			ForgeFailure:              marker.ForgeFailure,
 			ReviewDiagnostics:         marker.ReviewDiagnostics,
 			ReviewRecovery:            marker.ReviewRecovery,

@@ -2,12 +2,15 @@ import { taskStateLabels, type GroupKey } from './contracts'
 import type { ActivityItem, ActivitySummary, Intervention, Job, TaskEvent, TaskRelation, WorkOrder } from './types'
 
 // Feed grouping: the pipeline stage a task currently occupies.
-// Human gates, approved tasks awaiting merge, and parked tasks collect under
-// "Awaiting human"; only terminal states archive under "Completed".
+// Human gates, approved tasks awaiting merge, parked tasks, and pending
+// authority signals collect under "Awaiting human" without changing pipeline
+// state (REQ-2 AC-2.2; REQ-3; design-web-dashboard); only terminal states
+// archive under "Completed".
 export function groupForSummary(item: ActivitySummary): GroupKey {
   const { state } = item.task
   if (item.stalled?.needed && state !== 'merged' && state !== 'closed') return 'human'
   if (item.forge_failure && state !== 'merged' && state !== 'closed') return 'human'
+  if (item.pending_authority && state !== 'merged' && state !== 'closed') return 'human'
   if (state === 'awaiting_human' || state === 'approved' || state === 'parked') return 'human'
   if (state === 'merged' || state === 'closed') return 'done'
   const stage =
@@ -56,6 +59,7 @@ export function gateBadge(item: ActivitySummary): { label: string; variant: 'att
   if (item.stalled?.needed) return { label: 'Stalled', variant: 'attention' }
   if (item.task.state === 'approved') return { label: 'Ready to merge', variant: 'positive' }
   if (!item.needs_attention) return undefined
+  if (item.pending_authority) return { label: 'Awaiting proposal decision', variant: 'attention' }
   if (item.task.state === 'parked') return { label: 'Needs a route', variant: 'attention' }
   if (item.task.state === 'awaiting_human') return { label: 'Awaiting review', variant: 'attention' }
   return { label: 'Needs attention', variant: 'attention' }

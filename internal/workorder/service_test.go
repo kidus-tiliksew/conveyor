@@ -756,6 +756,82 @@ func TestReviewWorkOrderContextUsesMCPCompletionContract(t *testing.T) {
 	}
 }
 
+func TestReviewWorkOrderContextIncludesPullRequestDescriptionBestEffort(t *testing.T) {
+	tests := []struct {
+		name        string
+		description string
+		fetchErr    error
+	}{
+		{name: "populated", description: "Before and after query plans"},
+		{name: "absent pull request"},
+		{name: "fetch failure", fetchErr: errors.New("github unavailable")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := store.WithWorkspace(t.Context(), "test")
+			st := store.NewMemory()
+			task := core.Task{
+				ID: "pr-description-" + strings.ReplaceAll(tt.name, " ", "-"), Workspace: "test", Repo: "app",
+				Branch: "conveyor/task-pr-description", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: time.Now(),
+			}
+			if err := st.CreateTask(ctx, task); err != nil {
+				t.Fatal(err)
+			}
+			job := core.Job{ID: task.ID + "-review-1", TaskID: task.ID, Stage: core.StageReview, State: core.JobPending}
+			if err := st.CreateJob(ctx, job); err != nil {
+				t.Fatal(err)
+			}
+			emptyGovernance := &core.GovernanceSnapshot{Designs: []core.GovernanceDesignContext{}, Decisions: []core.Decision{}}
+			if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{
+				ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageReview,
+				ServedRequirementSnapshot: []core.ServedRequirementContext{}, GovernanceSnapshot: emptyGovernance,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "review-session", ClientToken: "review-token", Lease: time.Minute}); err != nil {
+				t.Fatal(err)
+			}
+			bundle, err := pack.Load("../../pack")
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg := &config.Config{Repos: []config.Repo{{Name: "app", GitHub: "acme/app"}}}
+			service := &Service{
+				Store: st, Pack: bundle, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil },
+				ReviewDiffForBranch: func(_ context.Context, repo, branch string) (string, error) {
+					if repo != "acme/app" || branch != task.Branch {
+						t.Fatalf("diff repo=%q branch=%q", repo, branch)
+					}
+					return "branch diff", nil
+				},
+				ReviewPRDescription: func(_ context.Context, repo, branch string) (string, error) {
+					if repo != "acme/app" || branch != task.Branch {
+						t.Fatalf("description repo=%q branch=%q", repo, branch)
+					}
+					return tt.description, tt.fetchErr
+				},
+			}
+			result, err := service.Get(ctx, job.ID, "review-session")
+			if err != nil {
+				t.Fatalf("context assembly failed: %v", err)
+			}
+			if result.Diff != "branch diff" || result.PullRequestDescription != tt.description {
+				t.Fatalf("diff=%q description=%q", result.Diff, result.PullRequestDescription)
+			}
+			encoded, err := json.Marshal(result)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(encoded), `"pull_request_description":`) {
+				t.Fatalf("review context does not label the PR description: %s", encoded)
+			}
+			if len(result.VerificationEvidence) != 0 {
+				t.Fatalf("PR description changed verification-evidence eligibility: %+v", result.VerificationEvidence)
+			}
+		})
+	}
+}
+
 func TestReviewWorkOrderContextRejectsLegacyClaimWithoutSnapshot(t *testing.T) {
 	ctx := store.WithWorkspace(t.Context(), "test")
 	st := store.NewMemory()

@@ -1180,12 +1180,12 @@ func TestPendingProposalsProjectionAttentionAndTaskWarning(t *testing.T) {
 	}
 	activity := httptest.NewRecorder()
 	server.Handler().ServeHTTP(activity, httptest.NewRequest(http.MethodGet, "/v1/activity?workspace_id=demo", nil))
-	if activity.Code != http.StatusOK || !strings.Contains(activity.Body.String(), `"id":"`+task.ID+`"`) || !strings.Contains(activity.Body.String(), `"needs_attention":true`) {
+	if activity.Code != http.StatusOK || !strings.Contains(activity.Body.String(), `"id":"`+task.ID+`"`) || !strings.Contains(activity.Body.String(), `"needs_attention":true`) || !strings.Contains(activity.Body.String(), `"pending_authority":true`) {
 		t.Fatalf("activity status=%d body=%s", activity.Code, activity.Body.String())
 	}
 	reviews := httptest.NewRecorder()
 	server.Handler().ServeHTTP(reviews, httptest.NewRequest(http.MethodGet, "/v1/reviews?workspace_id=demo", nil))
-	if reviews.Code != http.StatusOK || !strings.Contains(reviews.Body.String(), `"id":"`+task.ID+`"`) || !strings.Contains(reviews.Body.String(), `"needs_attention":true`) {
+	if reviews.Code != http.StatusOK || !strings.Contains(reviews.Body.String(), `"id":"`+task.ID+`"`) || !strings.Contains(reviews.Body.String(), `"needs_attention":true`) || !strings.Contains(reviews.Body.String(), `"pending_authority":true`) {
 		t.Fatalf("reviews status=%d body=%s", reviews.Code, reviews.Body.String())
 	}
 	operations := httptest.NewRecorder()
@@ -1207,6 +1207,16 @@ func TestPendingProposalsProjectionAttentionAndTaskWarning(t *testing.T) {
 	server.Handler().ServeHTTP(detail, httptest.NewRequest(http.MethodGet, "/v1/tasks/"+task.ID+"/activity?workspace_id=demo", nil))
 	if detail.Code != http.StatusOK || !strings.Contains(detail.Body.String(), `"pending_authority":false`) {
 		t.Fatalf("resolved detail status=%d body=%s", detail.Code, detail.Body.String())
+	}
+	activity = httptest.NewRecorder()
+	server.Handler().ServeHTTP(activity, httptest.NewRequest(http.MethodGet, "/v1/activity?workspace_id=demo", nil))
+	if activity.Code != http.StatusOK || !strings.Contains(activity.Body.String(), `"id":"`+task.ID+`"`) || !strings.Contains(activity.Body.String(), `"pending_authority":false`) {
+		t.Fatalf("resolved activity status=%d body=%s", activity.Code, activity.Body.String())
+	}
+	reviews = httptest.NewRecorder()
+	server.Handler().ServeHTTP(reviews, httptest.NewRequest(http.MethodGet, "/v1/reviews?workspace_id=demo", nil))
+	if reviews.Code != http.StatusOK || strings.Contains(reviews.Body.String(), `"id":"`+task.ID+`"`) {
+		t.Fatalf("resolved reviews status=%d body=%s", reviews.Code, reviews.Body.String())
 	}
 	remaining, err := st.ListPendingProposals(ctx)
 	if err != nil || len(remaining) != 0 {

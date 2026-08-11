@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"net/url"
 	"os/exec"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -37,6 +38,11 @@ const ReviewStatusContext = "Conveyor / Code review"
 const reviewPublicationMarkerPrefix = "<!-- conveyor:review-publication "
 const issueLifecycleMarkerPrefix = "<!-- conveyor:task="
 const pullRequestLifecycleMarker = "<!-- conveyor:task-link -->"
+const pullRequestLifecycleEndMarker = "<!-- conveyor:lifecycle-end -->"
+const verificationEvidenceMarker = "<!-- conveyor:verification-evidence -->"
+const verificationEvidenceFooter = "Evidence media remains in Conveyor's task-scoped artifact store. This PR mirror intentionally publishes durable metadata only—no control-plane credentials or private artifact URLs."
+
+var legacyPullRequestLifecyclePattern = regexp.MustCompile(`^<!-- conveyor:task-link -->\r?\nConveyor task \x60[^\r\n]*\x60\r?\n\r?\nSource: [^\r\n]*(?:\r?\n\r?\nCloses #[0-9]+)?`)
 
 var (
 	ErrPullRequestNotFound        = errors.New("pull request not found")
@@ -770,6 +776,7 @@ func OpenPR(ctx context.Context, worktreeDir, repo, branch, base, title, body st
 // creates or reuses the PR without requiring Conveyor to own a worktree
 // (design-git-delivery).
 func OpenPRForBranch(ctx context.Context, repo, branch, base, title, body string) (string, error) {
+	body = reconcilePullRequestBody("", body)
 	existing, err := gh(ctx, "pr", "list", "--repo", repo, "--head", branch, "--state", "open", "--json", "url", "--jq", ".[0].url")
 	if err != nil {
 		return "", fmt.Errorf("find existing PR: %w", err)
@@ -799,6 +806,20 @@ func DiffForBranch(ctx context.Context, repo, branch string) (string, error) {
 	return string(out), nil
 }
 
+// PullRequestDescriptionForBranch returns the body of the open pull request
+// for branch without mutating the pull request.
+func PullRequestDescriptionForBranch(ctx context.Context, repo, branch string) (string, error) {
+	return pullRequestDescriptionForBranch(ctx, repo, branch, gh)
+}
+
+func pullRequestDescriptionForBranch(ctx context.Context, repo, branch string, run ghRunner) (string, error) {
+	out, err := run(ctx, "pr", "view", branch, "--repo", repo, "--json", "body", "--jq", ".body")
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
+}
+
 // DiffBetween returns only the commits introduced after an approved review
 // baseline. GitHub's compare endpoint is the authoritative delta source for
 // refresh reviews (design-git-delivery).
@@ -813,6 +834,7 @@ func DiffBetween(ctx context.Context, repo, baseline, head string) (string, erro
 type gitRunner func(context.Context, string, string, ...string) error
 
 func openPR(ctx context.Context, worktreeDir, repo, branch, base, title, body string, runGit gitRunner, runGH ghRunner) (string, error) {
+	body = reconcilePullRequestBody("", body)
 	if err := runGit(ctx, worktreeDir, "git", "push", "--set-upstream", "origin", branch); err != nil {
 		return "", err
 	}
@@ -852,15 +874,44 @@ func openPR(ctx context.Context, worktreeDir, repo, branch, base, title, body st
 func reconcilePullRequestBody(existing, lifecycle string) string {
 	existing = strings.TrimSpace(existing)
 	lifecycle = strings.TrimSpace(lifecycle)
-	if index := strings.Index(existing, pullRequestLifecycleMarker); index >= 0 {
-		existing = strings.TrimSpace(existing[:index])
+	before, after := existing, ""
+	if start := strings.Index(existing, pullRequestLifecycleMarker); start >= 0 {
+		end := legacyPullRequestLifecycleEnd(existing[start:]) + start
+		before = strings.TrimSpace(existing[:start])
+		after = strings.TrimSpace(existing[end:])
 	} else if strings.HasPrefix(existing, "Conveyor task `") && strings.Contains(existing, "\n\nSource: ") {
-		existing = ""
+		before = ""
 	}
-	if existing == "" {
-		return lifecycle
+
+	// The explicit end marker makes future resyncs unambiguous: only this
+	// generated region is replaced, while agent-authored Markdown on either
+	// side remains untouched (design-git-delivery).
+	lifecycle = strings.TrimSpace(strings.ReplaceAll(lifecycle, pullRequestLifecycleEndMarker, "")) + "\n" + pullRequestLifecycleEndMarker
+	parts := make([]string, 0, 3)
+	for _, part := range []string{before, lifecycle, after} {
+		if part = strings.TrimSpace(part); part != "" {
+			parts = append(parts, part)
+		}
 	}
-	return existing + "\n\n" + lifecycle
+	return strings.Join(parts, "\n\n")
+}
+
+func legacyPullRequestLifecycleEnd(body string) int {
+	if end := strings.Index(body, pullRequestLifecycleEndMarker); end >= 0 {
+		return end + len(pullRequestLifecycleEndMarker)
+	}
+	if evidence := strings.Index(body, verificationEvidenceMarker); evidence >= 0 {
+		if footer := strings.Index(body[evidence:], verificationEvidenceFooter); footer >= 0 {
+			return evidence + footer + len(verificationEvidenceFooter)
+		}
+		// Malformed legacy evidence has no safe boundary. Retain the old
+		// replacement behavior rather than risk preserving stale generated data.
+		return len(body)
+	}
+	if match := legacyPullRequestLifecyclePattern.FindStringIndex(body); match != nil {
+		return match[1]
+	}
+	return len(body)
 }
 
 func gh(ctx context.Context, args ...string) ([]byte, error) {
