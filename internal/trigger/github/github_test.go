@@ -32,6 +32,31 @@ func TestMarkIssueDispatchedMovesReadyLabel(t *testing.T) {
 	}
 }
 
+func TestPullRequestDescriptionForBranchReadsBody(t *testing.T) {
+	var got []string
+	body, err := pullRequestDescriptionForBranch(t.Context(), "acme/api", "conveyor/task-1", func(_ context.Context, args ...string) ([]byte, error) {
+		got = append([]string(nil), args...)
+		return []byte("Measured query plan\n"), nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"pr", "view", "conveyor/task-1", "--repo", "acme/api", "--json", "body", "--jq", ".body"}
+	if body != "Measured query plan\n" || !reflect.DeepEqual(got, want) {
+		t.Fatalf("body=%q args=%v, want body and args=%v", body, got, want)
+	}
+}
+
+func TestPullRequestDescriptionForBranchReturnsReadError(t *testing.T) {
+	want := errors.New("pull request not found")
+	body, err := pullRequestDescriptionForBranch(t.Context(), "acme/api", "missing", func(context.Context, ...string) ([]byte, error) {
+		return nil, want
+	})
+	if body != "" || !errors.Is(err, want) {
+		t.Fatalf("body=%q err=%v, want empty body and %v", body, err, want)
+	}
+}
+
 func TestReconcilePullRequestBodyUpdatesOneEvidenceSection(t *testing.T) {
 	first := "<!-- conveyor:task-link -->\nConveyor task `task-1`\n\nSource: mcp\n\n<!-- conveyor:verification-evidence -->\n### Verification evidence\n\n- `old.png`\n\n" + verificationEvidenceFooter
 	second := "<!-- conveyor:task-link -->\nConveyor task `task-1`\n\nSource: mcp\n\n<!-- conveyor:verification-evidence -->\n### Verification evidence\n\n- `new.png`\n\n" + verificationEvidenceFooter

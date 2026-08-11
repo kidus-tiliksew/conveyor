@@ -29,14 +29,17 @@ import (
 const MaxTranscriptBytes = 4 << 20
 
 type Service struct {
-	Store          store.Store
-	Dispatcher     *dispatch.Dispatcher
-	Pack           *pack.Bundle
-	ConfigProvider func(context.Context) (*config.Config, error)
-	OpenPR         func(context.Context, string, string, string, string, string) (string, error)
-	ReviewTarget   func(context.Context, string, string) (github.ReviewTarget, error)
-	consultedMu    sync.Mutex
-	consulted      map[string]struct{}
+	Store               store.Store
+	Dispatcher          *dispatch.Dispatcher
+	Pack                *pack.Bundle
+	ConfigProvider      func(context.Context) (*config.Config, error)
+	OpenPR              func(context.Context, string, string, string, string, string) (string, error)
+	ReviewTarget        func(context.Context, string, string) (github.ReviewTarget, error)
+	ReviewDiffForBranch func(context.Context, string, string) (string, error)
+	ReviewDiffBetween   func(context.Context, string, string, string) (string, error)
+	ReviewPRDescription func(context.Context, string, string) (string, error)
+	consultedMu         sync.Mutex
+	consulted           map[string]struct{}
 }
 
 type Context struct {
@@ -63,8 +66,9 @@ type Context struct {
 	// VerificationEvidence is repeated explicitly for review agents so every
 	// seat receives the same task-owned metadata and scoped read_artifact
 	// capability without treating an artifact id as a bearer token.
-	VerificationEvidence []ArtifactReference `json:"verification_evidence,omitempty"`
-	Diff                 string              `json:"diff,omitempty"`
+	VerificationEvidence   []ArtifactReference `json:"verification_evidence,omitempty"`
+	Diff                   string              `json:"diff,omitempty"`
+	PullRequestDescription string              `json:"pull_request_description"`
 }
 
 // PlanRevisionContext carries the durable request that caused a plan-stage
@@ -786,13 +790,35 @@ func (s *Service) contextForOrder(ctx context.Context, order core.WorkOrder) (Co
 		cfg, _ := s.config(ctx)
 		if repo, ok := cfg.Repo(task.Repo); ok && repo.GitHub != "" {
 			if order.ReviewKind == "refresh" && order.ReviewScope == config.RefreshReviewDelta && order.BaselineSHA != "" && order.HeadSHA != "" {
-				result.Diff, _ = github.DiffBetween(ctx, repo.GitHub, order.BaselineSHA, order.HeadSHA)
+				result.Diff, _ = s.reviewDiffBetween(ctx, repo.GitHub, order.BaselineSHA, order.HeadSHA)
 			} else {
-				result.Diff, _ = github.DiffForBranch(ctx, repo.GitHub, task.Branch)
+				result.Diff, _ = s.reviewDiffForBranch(ctx, repo.GitHub, task.Branch)
 			}
+			result.PullRequestDescription, _ = s.reviewPRDescription(ctx, repo.GitHub, task.Branch)
 		}
 	}
 	return result, nil
+}
+
+func (s *Service) reviewDiffForBranch(ctx context.Context, repo, branch string) (string, error) {
+	if s.ReviewDiffForBranch != nil {
+		return s.ReviewDiffForBranch(ctx, repo, branch)
+	}
+	return github.DiffForBranch(ctx, repo, branch)
+}
+
+func (s *Service) reviewDiffBetween(ctx context.Context, repo, baseline, head string) (string, error) {
+	if s.ReviewDiffBetween != nil {
+		return s.ReviewDiffBetween(ctx, repo, baseline, head)
+	}
+	return github.DiffBetween(ctx, repo, baseline, head)
+}
+
+func (s *Service) reviewPRDescription(ctx context.Context, repo, branch string) (string, error) {
+	if s.ReviewPRDescription != nil {
+		return s.ReviewPRDescription(ctx, repo, branch)
+	}
+	return github.PullRequestDescriptionForBranch(ctx, repo, branch)
 }
 
 func (s *Service) planRevisionContextForOrder(ctx context.Context, order core.WorkOrder, events []core.Event) (*PlanRevisionContext, string, error) {
