@@ -67,6 +67,7 @@ type Server struct {
 	ConfigProvider        func(context.Context) (*config.Config, error)
 	ConfigStore           WorkspaceConfigStore
 	Workspaces            store.WorkspaceControlStore
+	Memberships           store.MembershipStore
 	EnsureWorkspaceQueues func(string) error
 	Deployment            *config.Config
 	WorkOrders            *workorder.Service
@@ -83,6 +84,9 @@ func NewServer(s store.Store) *Server {
 	server := &Server{Store: s}
 	if credentials, ok := s.(CredentialVerifier); ok {
 		server.Credentials = credentials
+	}
+	if memberships, ok := s.(store.MembershipStore); ok {
+		server.Memberships = memberships
 	}
 	return server
 }
@@ -105,14 +109,17 @@ func (s *Server) Handler() http.Handler {
 		r.With(s.requireWorkerAuth).Post("/worker/work-orders/{id}/renew", s.renewWorkerOrder)
 		r.With(s.requireWorkerAuth).Post("/worker/work-orders/{id}/attempt-checkpoint", s.checkpointWorkerOrderAttempt)
 		r.With(s.requireWorkerAuth).Post("/worker/work-orders/{id}/release", s.releaseWorkerOrder)
-		r.With(s.requireMutationAuth).Get("/workspaces", s.listWorkspaces)
+		r.With(s.requireWorkspaceAuth).Get("/workspaces", s.listWorkspaces)
 		r.With(s.requireMutationAuth).Post("/workspaces", s.createWorkspace)
 		r.With(s.requireMutationAuth).Get("/harness-templates", s.getHarnessTemplates)
-		r.With(s.requireMutationAuth, s.resolveWorkspaceContext).Get("/workspaces/{workspace_id}", s.getWorkspaceRecord)
-		r.With(s.requireMutationAuth, s.resolveWorkspaceContext).Get("/workspaces/{workspace_id}/config", s.getWorkspaceConfig)
-		r.With(s.requireMutationAuth, s.resolveWorkspaceContext).Put("/workspaces/{workspace_id}/config", s.putWorkspaceConfig)
+		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityViewWorkspace)).Get("/workspaces/{workspace_id}", s.getWorkspaceRecord)
+		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityViewWorkspace)).Get("/workspaces/{workspace_id}/config", s.getWorkspaceConfig)
+		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityManageWorkspace)).Put("/workspaces/{workspace_id}/config", s.putWorkspaceConfig)
+		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityViewWorkspace)).Get("/workspaces/{workspace_id}/members", s.listWorkspaceMembers)
+		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityManageMembership)).Post("/workspaces/{workspace_id}/members", s.grantWorkspaceMembership)
+		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityManageMembership)).Delete("/workspaces/{workspace_id}/members/{user_id}", s.revokeWorkspaceMembership)
 		r.Group(func(r chi.Router) {
-			r.Use(s.requireWorkspaceAuth, s.resolveWorkspaceContext)
+			r.Use(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityViewWorkspace))
 			r.Get("/activity", s.listActivity)
 			r.With(s.requireMutationAuth).Get("/pending-proposals", s.listPendingProposals)
 			r.Get("/tasks", s.listTasks)
@@ -301,14 +308,32 @@ func (s *Server) setTaskHold(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) requireMutationAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		credential, ok := s.authenticateUserCredential(r)
-		if !ok || credential.Kind != core.CredentialUser || credential.Scope != core.CredentialScopeOperator {
+		credential, ok := store.CredentialFromContext(r.Context())
+		if !ok {
+			credential, ok = s.authenticateUserCredential(r)
+		}
+		if !ok || credential.Kind != core.CredentialUser {
 			w.Header().Set("WWW-Authenticate", "Bearer")
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 		ctx := store.WithCredential(r.Context(), credential)
 		ctx = store.WithActor(ctx, store.Actor{ID: store.UserActorID(credential.OwnerUserID), Role: core.ActorUser})
+		if workspaceID, scoped := store.WorkspaceFromContext(ctx); scoped && s.Workspaces != nil && s.Memberships != nil {
+			allowed, err := s.Memberships.AuthorizeWorkspace(ctx, credential.OwnerUserID, workspaceID, mutationCapability(r))
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if !allowed {
+				writeWorkspaceNotFound(w)
+				return
+			}
+		} else if credential.Scope != core.CredentialScopeOperator {
+			w.Header().Set("WWW-Authenticate", "Bearer")
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -319,7 +344,64 @@ func (s *Server) requireWorkspaceAuth(next http.Handler) http.Handler {
 	if s.Workspaces == nil {
 		return next
 	}
-	return s.requireMutationAuth(next)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		credential, ok := s.authenticateUserCredential(r)
+		if !ok || credential.Kind != core.CredentialUser {
+			w.Header().Set("WWW-Authenticate", "Bearer")
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		ctx := store.WithCredential(r.Context(), credential)
+		ctx = store.WithActor(ctx, store.Actor{ID: store.UserActorID(credential.OwnerUserID), Role: core.ActorUser})
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+func (s *Server) requireWorkspaceCapability(capability core.Capability) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if s.Workspaces == nil || s.Memberships == nil {
+				next.ServeHTTP(w, r)
+				return
+			}
+			credential, ok := store.CredentialFromContext(r.Context())
+			workspaceID, scoped := store.WorkspaceFromContext(r.Context())
+			if !ok || !scoped {
+				writeWorkspaceNotFound(w)
+				return
+			}
+			allowed, err := s.Memberships.AuthorizeWorkspace(r.Context(), credential.OwnerUserID, workspaceID, capability)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if !allowed {
+				writeWorkspaceNotFound(w)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+func mutationCapability(r *http.Request) core.Capability {
+	path := r.URL.Path
+	switch {
+	case strings.Contains(path, "/versions") && !strings.Contains(path, "/confirm"),
+		strings.HasSuffix(path, "/requirements"), strings.HasSuffix(path, "/system-designs"),
+		strings.HasSuffix(path, "/decisions"), strings.Contains(path, "/planning-sessions"):
+		return core.CapabilityProposeDocuments
+	case strings.Contains(path, "/confirm"), strings.Contains(path, "/approve"), strings.Contains(path, "/reject"):
+		return core.CapabilityConfirmDocuments
+	case strings.Contains(path, "/recover"), strings.Contains(path, "/redispatch"):
+		return core.CapabilityRecoverWork
+	default:
+		return core.CapabilityOperateGates
+	}
+}
+
+func writeWorkspaceNotFound(w http.ResponseWriter) {
+	writeJSON(w, http.StatusNotFound, map[string]string{"error": "workspace_not_found", "message": "workspace not found"})
 }
 
 func (s *Server) requireMCPAuth(next http.Handler) http.Handler {

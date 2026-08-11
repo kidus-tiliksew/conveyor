@@ -106,6 +106,19 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 		return nil, err
 	}
 	ctx := store.WithWorkspace(r.Context(), workspace)
+	if !workerAuth && s.Workspaces != nil && s.Memberships != nil {
+		credential, ok := store.CredentialFromContext(ctx)
+		if !ok {
+			return nil, fmt.Errorf("workspace_not_found: workspace not found")
+		}
+		allowed, authErr := s.Memberships.AuthorizeWorkspace(ctx, credential.OwnerUserID, workspace, mcpCapability(name))
+		if authErr != nil {
+			return nil, authErr
+		}
+		if !allowed {
+			return nil, fmt.Errorf("workspace_not_found: workspace not found")
+		}
+	}
 	session := stringArg("session_id")
 	switch name {
 	case "create_task":
@@ -307,6 +320,17 @@ func humanReservedMCPTool(name string) bool {
 	}
 }
 
+func mcpCapability(name string) core.Capability {
+	switch name {
+	case "propose_system_design_revision", "propose_decision", "request_plan_revision":
+		return core.CapabilityProposeDocuments
+	case "create_task", "redispatch_work_order":
+		return core.CapabilityOperateGates
+	default:
+		return core.CapabilityClaimWork
+	}
+}
+
 // authorizeWorkerOrder scopes worker-credentialed MCP calls to orders the
 // worker currently holds. A mismatch is a lost or reassigned claim — e.g.
 // the lease expired and ownership returned to the queue (design-260805-973cd4) — not a
@@ -341,7 +365,11 @@ func (s *Server) resolveMCPWorkspace(ctx context.Context, explicit string) (stri
 	var items []core.Workspace
 	if s.Workspaces != nil {
 		var err error
-		items, err = s.Workspaces.ListWorkspaces(ctx)
+		if credential, ok := store.CredentialFromContext(ctx); ok && s.Memberships != nil {
+			items, err = s.Memberships.ListWorkspacesForUser(ctx, credential.OwnerUserID)
+		} else {
+			items, err = s.Workspaces.ListWorkspaces(ctx)
+		}
 		if err != nil {
 			return "", err
 		}
@@ -373,7 +401,7 @@ func (s *Server) resolveMCPWorkspace(ctx context.Context, explicit string) (stri
 			return explicit, nil
 		}
 	}
-	return "", fmt.Errorf("workspace_not_found: %s", explicit)
+	return "", fmt.Errorf("workspace_not_found: workspace not found")
 }
 
 func numberArg(value any) (int64, bool) {
