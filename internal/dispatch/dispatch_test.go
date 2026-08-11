@@ -66,7 +66,7 @@ func (agent *capturingInputAgent) Run(_ context.Context, model string, input inp
 	agent.calls++
 	agent.model = model
 	agent.input = input
-	return inprocess.Result{Output: "```conveyor:triage\n{\"class\":\"feature\",\"route\":\"implement\",\"summary\":\"context received\"}\n```"}, nil
+	return inprocess.Result{Output: "```conveyor:triage\n{\"class\":\"feature\",\"route\":\"proceed\",\"summary\":\"context received\"}\n```"}, nil
 }
 
 func TestInProcessDispatchUsesAndAttributesEnvironmentModelOverride(t *testing.T) {
@@ -2241,7 +2241,7 @@ func TestInProcessUsageRecordsTokensWithoutCost(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	agent := &sequenceAgent{outputs: []string{"```conveyor:triage\n{\"class\":\"chore\",\"route\":\"implement\",\"summary\":\"Ready.\"}\n```"}}
+	agent := &sequenceAgent{outputs: []string{"```conveyor:triage\n{\"class\":\"chore\",\"route\":\"proceed\",\"summary\":\"Ready.\"}\n```"}}
 	cfg := &config.Config{Workspace: "demo", MaxBounces: 2, Routing: config.Routing{Stages: map[string]config.StageRoute{
 		"triage": {Model: "gpt-newly-configured", Execution: config.ExecutionInProcess, Timeout: time.Minute},
 	}}}
@@ -2273,7 +2273,7 @@ func TestInProcessTriageAndSpecAdvanceToImplementWorkOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 	agent := &sequenceAgent{outputs: []string{
-		"```conveyor:triage\n{\"class\":\"feature\",\"route\":\"spec\",\"summary\":\"Needs an accepted contract.\"}\n```",
+		"```conveyor:triage\n{\"class\":\"feature\",\"route\":\"proceed\",\"summary\":\"Needs an accepted contract.\"}\n```",
 		structuredSpecOutput("# Audit export\n\n## Intent\nAdd the export.\n\n## Non-goals\nNo unrelated formats.", "Export tests pass", "./..."),
 	}}
 	cfg := &config.Config{Workspace: "demo", MaxBounces: 2, Routing: config.Routing{Stages: map[string]config.StageRoute{
@@ -2447,7 +2447,7 @@ func implementationModelDocument(policy, model string, sentinels []string) confi
 	}
 }
 
-func TestHumanTriageRouteAlwaysAwaitsInput(t *testing.T) {
+func TestHumanTriageRouteEntersInvalidOutputBounce(t *testing.T) {
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	st := store.NewMemory()
 	task := core.Task{ID: "policy-spec", Workspace: "demo", Repo: "api", Title: "Policy", Hold: true, PolicyVersion: 1, SpecApproval: true, MergeApproval: false, State: core.TaskQueued, NextStage: core.StageTriage, CreatedAt: time.Now()}
@@ -2458,7 +2458,7 @@ func TestHumanTriageRouteAlwaysAwaitsInput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	agent := &sequenceAgent{outputs: []string{"```conveyor:triage\n{\"class\":\"feature\",\"route\":\"human\",\"summary\":\"Needs review.\"}\n```", structuredSpecOutput("# Policy spec\n\n## Intent\nDefine it.\n\n## Non-goals\nNone.", "Works", "./...")}}
+	agent := &sequenceAgent{outputs: []string{"```conveyor:triage\n{\"class\":\"feature\",\"route\":\"human\",\"summary\":\"Needs review.\"}\n```"}}
 	cfg := &config.Config{Workspace: "demo", MaxBounces: 2, Routing: config.Routing{Stages: map[string]config.StageRoute{"triage": {Model: "gpt", Execution: config.ExecutionInProcess, Timeout: time.Minute}, "spec": {Model: "gpt", Execution: config.ExecutionInProcess, Timeout: time.Minute}, "implement": {Model: "operator", Execution: config.ExecutionMCP, Timeout: time.Hour}, "review": {Model: "operator", Execution: config.ExecutionMCP, Timeout: time.Hour}}}}
 	d := New(st, cfg, agent)
 	d.Pack = bundle
@@ -2466,8 +2466,128 @@ func TestHumanTriageRouteAlwaysAwaitsInput(t *testing.T) {
 		t.Fatal(err)
 	}
 	current, _ := st.GetTask(ctx, task.ID)
-	if current.State != core.TaskAwaiting || current.RecoveryStage != core.StageTriage {
+	if current.State != core.TaskQueued || current.NextStage != core.StageTriage {
 		t.Fatalf("after triage=%+v", current)
+	}
+	if count, err := st.CountEvents(ctx, task.ID, "triage.output_invalid"); err != nil || count != 1 {
+		t.Fatalf("invalid-output events=%d err=%v", count, err)
+	}
+}
+
+func TestTriageProceedSelectsNextStageFromPolicyAlone(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		policyVersion int
+		specApproval  bool
+		level         core.EscalationLevel
+		want          core.Stage
+	}{
+		{name: "versioned spec on", policyVersion: 1, specApproval: true, want: core.StageSpec},
+		{name: "versioned spec off", policyVersion: 1, specApproval: false, want: core.StageImplement},
+		{name: "legacy L2", level: core.L2, want: core.StageSpec},
+		{name: "legacy L3", level: core.L3, want: core.StageSpec},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := store.WithWorkspace(t.Context(), "demo")
+			st := store.NewMemory()
+			task := core.Task{ID: "triage-policy", Workspace: "demo", Repo: "api", PolicyVersion: tc.policyVersion, SpecApproval: tc.specApproval, Level: tc.level, State: core.TaskQueued, NextStage: core.StageTriage, CreatedAt: time.Now()}
+			if err := st.CreateTask(ctx, task); err != nil {
+				t.Fatal(err)
+			}
+			bundle, err := pack.Load("../../pack")
+			if err != nil {
+				t.Fatal(err)
+			}
+			agent := &sequenceAgent{outputs: []string{"```conveyor:triage\n{\"class\":\"feature\",\"route\":\"proceed\",\"summary\":\"Ready.\"}\n```"}}
+			d := New(st, &config.Config{Workspace: "demo", MaxBounces: 2, Routing: config.Routing{Stages: map[string]config.StageRoute{"triage": {Model: "gpt", Execution: config.ExecutionInProcess, Timeout: time.Minute}}}}, agent)
+			d.Pack = bundle
+			if err = d.DispatchNow(ctx, task.ID); err != nil {
+				t.Fatal(err)
+			}
+			current, err := st.GetTask(ctx, task.ID)
+			if err != nil || current.State != core.TaskQueued || current.NextStage != tc.want {
+				t.Fatalf("task=%+v err=%v; want queued at %s", current, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestTriageParkRecordsReasonAndRemainsRecoverable(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	task := core.Task{ID: "triage-park", Workspace: "demo", Repo: "api", PolicyVersion: 1, State: core.TaskQueued, NextStage: core.StageTriage, CreatedAt: time.Now()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := pack.Load("../../pack")
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent := &sequenceAgent{outputs: []string{"```conveyor:triage\n{\"class\":\"chore\",\"route\":\"parked\",\"summary\":\"The task targets a different repository.\"}\n```"}}
+	d := New(st, &config.Config{Workspace: "demo", MaxBounces: 2, Routing: config.Routing{Stages: map[string]config.StageRoute{"triage": {Model: "gpt", Execution: config.ExecutionInProcess, Timeout: time.Minute}}}}, agent)
+	d.Pack = bundle
+	if err = d.DispatchNow(ctx, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	current, err := st.GetTask(ctx, task.ID)
+	if err != nil || current.State != core.TaskParked {
+		t.Fatalf("parked task=%+v err=%v", current, err)
+	}
+	events, err := st.ListEvents(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundReason := false
+	for _, event := range events {
+		if event.Kind == "triage.completed" && strings.Contains(string(event.Payload), "different repository") {
+			foundReason = true
+		}
+	}
+	if !foundReason {
+		t.Fatalf("triage completion did not retain parking reason: %+v", events)
+	}
+	outcome, err := taskops.New(st).Perform(ctx, task.ID, taskops.Command{Kind: core.TaskRecover, NextStage: core.StageTriage, ProjectStages: true})
+	if err != nil || outcome.Task.State != core.TaskQueued || outcome.Task.NextStage != core.StageTriage {
+		t.Fatalf("recovery outcome=%+v err=%v", outcome, err)
+	}
+}
+
+func TestHistoricalRouteHumanAwaitingTaskCanRejectOrCancelButNotApprove(t *testing.T) {
+	for _, action := range []core.InterventionAction{core.InterventionReject, core.InterventionCancel, core.InterventionApprove} {
+		t.Run(string(action), func(t *testing.T) {
+			ctx := store.WithWorkspace(t.Context(), "demo")
+			st := store.NewMemory()
+			task := core.Task{ID: "legacy-route-human-" + string(action), Workspace: "demo", Repo: "api", State: core.TaskAwaiting, RecoveryStage: core.StageTriage, CreatedAt: time.Now()}
+			if err := st.CreateTask(ctx, task); err != nil {
+				t.Fatal(err)
+			}
+			job := core.Job{ID: task.ID + "-triage-1", TaskID: task.ID, Stage: core.StageTriage, State: core.JobDone}
+			if err := st.CreateJob(ctx, job); err != nil {
+				t.Fatal(err)
+			}
+			if err := st.AppendEvent(ctx, core.Event{TaskID: task.ID, JobID: job.ID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{
+				"from": core.TaskRunning, "to": core.TaskAwaiting, "command": "triage.route_human",
+			})}); err != nil {
+				t.Fatal(err)
+			}
+			d := New(st, &config.Config{Workspace: "demo"}, nil)
+			intervention := core.Intervention{TaskID: task.ID, JobID: job.ID, Action: action, ReasonCode: "operator-action"}
+			err := d.HandleIntervention(ctx, task, job, intervention)
+			current, getErr := st.GetTask(ctx, task.ID)
+			if getErr != nil {
+				t.Fatal(getErr)
+			}
+			switch action {
+			case core.InterventionReject, core.InterventionCancel:
+				if err != nil || current.State != core.TaskClosed {
+					t.Fatalf("action=%s task=%+v err=%v", action, current, err)
+				}
+			case core.InterventionApprove:
+				if !errors.Is(err, ErrReviewedHeadUnavailable) || current.State != core.TaskAwaiting {
+					t.Fatalf("approve task=%+v err=%v", current, err)
+				}
+			}
+		})
 	}
 }
 

@@ -7,8 +7,8 @@ import (
 )
 
 func TestParseTriageAndReview(t *testing.T) {
-	triage, err := ParseTriage("```conveyor:triage\n{\"class\":\"feature\",\"route\":\"spec\",\"summary\":\"Needs a contract.\"}\n```")
-	if err != nil || triage.Route != "spec" {
+	triage, err := ParseTriage("```conveyor:triage\n{\"class\":\"feature\",\"route\":\"proceed\",\"summary\":\"Ready for policy routing.\"}\n```")
+	if err != nil || triage.Route != "proceed" {
 		t.Fatalf("triage=%+v err=%v", triage, err)
 	}
 	review, err := ParseReview("```conveyor:review\n{\"verdict\":\"changes_requested\",\"reason_code\":\"scope-creep\",\"summary\":\"Extra refactor\",\"feedback\":\"Remove it.\"}\n```")
@@ -58,15 +58,27 @@ func TestParsePlanValidatesShapeAndExtractsDoneCriteria(t *testing.T) {
 
 func TestParseTriageTakesRequirementIDAndRejectsRetiredFeatureID(t *testing.T) {
 	t.Parallel()
-	triage, err := ParseTriage("```conveyor:triage\n{\"class\":\"feature\",\"route\":\"implement\",\"summary\":\"Serves existing intent.\",\"requirement_id\":\"req-1\"}\n```")
+	triage, err := ParseTriage("```conveyor:triage\n{\"class\":\"feature\",\"route\":\"proceed\",\"summary\":\"Serves existing intent.\",\"requirement_id\":\"req-1\"}\n```")
 	if err != nil || triage.RequirementID != "req-1" {
 		t.Fatalf("triage=%+v err=%v", triage, err)
 	}
 	// feature_id retired with the feature tree. The
 	// parser disallows unknown fields precisely so a model still emitting the
 	// old key fails loudly instead of having its proposal silently dropped.
-	if _, err := ParseTriage("```conveyor:triage\n{\"class\":\"feature\",\"route\":\"implement\",\"summary\":\"Serves existing intent.\",\"feature_id\":\"feature-1\"}\n```"); err == nil || !strings.Contains(err.Error(), "feature_id") {
+	if _, err := ParseTriage("```conveyor:triage\n{\"class\":\"feature\",\"route\":\"proceed\",\"summary\":\"Serves existing intent.\",\"feature_id\":\"feature-1\"}\n```"); err == nil || !strings.Contains(err.Error(), "feature_id") {
 		t.Fatalf("retired feature_id error = %v", err)
+	}
+}
+
+func TestParseTriageRejectsRetiredRoutes(t *testing.T) {
+	t.Parallel()
+	for _, route := range []string{"implement", "spec", "human"} {
+		t.Run(route, func(t *testing.T) {
+			input := "```conveyor:triage\n{\"class\":\"feature\",\"route\":\"" + route + "\",\"summary\":\"Retired route.\"}\n```"
+			if _, err := ParseTriage(input); err == nil || !strings.Contains(err.Error(), "proceed or parked") {
+				t.Fatalf("route %q error = %v", route, err)
+			}
+		})
 	}
 }
 
