@@ -138,8 +138,9 @@ type Task struct {
 	Body               string                `json:"body"`  // free-form description; becomes part of the prompt
 	Class              string                `json:"class"` // bug | feature | chore
 	Level              EscalationLevel       `json:"level"`
-	Mode               TaskMode              `json:"mode,omitempty"` // legacy historical record; never read for behavior
-	Hold               bool                  `json:"hold,omitempty"` // reservation from the worker daemon
+	Mode               TaskMode              `json:"mode,omitempty"`     // legacy historical record; never read for behavior
+	Hold               bool                  `json:"hold,omitempty"`     // reservation from the worker daemon
+	Assignee           *TaskAssignee         `json:"assignee,omitempty"` // claim-eligibility identity; never an ordering field
 	SpecApproval       bool                  `json:"spec_approval"`
 	MergeApproval      bool                  `json:"merge_approval"`
 	PolicyVersion      int                   `json:"policy_version"`
@@ -169,6 +170,15 @@ type Task struct {
 	FeatureID string           `json:"feature_id,omitempty"`
 	GitHub    *GitHubLifecycle `json:"github,omitempty"` // durable forge projection
 	CreatedAt time.Time        `json:"created_at"`
+}
+
+// TaskAssignee is the member-safe identity rendered on task and work-order
+// claimability surfaces. Persistence stores only UserID; display fields are
+// projected from the workspace membership join.
+type TaskAssignee struct {
+	UserID      string `json:"user_id"`
+	Email       string `json:"email,omitempty"`
+	DisplayName string `json:"display_name,omitempty"`
 }
 
 // TaskContext is the operator-attached desired-state authority carried by a
@@ -565,6 +575,7 @@ type WorkOrder struct {
 	State                  WorkOrderState   `json:"state"`
 	Claimable              bool             `json:"claimable"`
 	BlockingTaskIDs        []string         `json:"blocking_task_ids,omitempty"`
+	Assignee               *TaskAssignee    `json:"assignee,omitempty"`
 	UnsatisfiableTaskIDs   []string         `json:"unsatisfiable_task_ids,omitempty"`
 	ClaimantID             string           `json:"claimed_by,omitempty"`
 	SessionID              string           `json:"session_id,omitempty"`
@@ -684,6 +695,7 @@ type WorkOrderClaim struct {
 	Lease            time.Duration
 	ExecutionTimeout time.Duration
 	WorkerID         string
+	OwnerUserID      string
 	Requirements     []ServedRequirementContext
 	Governance       *GovernanceSnapshot
 }

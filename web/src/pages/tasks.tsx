@@ -48,7 +48,7 @@ const TASK_COLUMNS = 'grid grid-cols-[minmax(200px,2.2fr)_116px_192px_minmax(150
 // The list-first Tasks view. It reads one
 // paginated projection and renders only what that projection carries: state,
 // repository, dependencies and blockers, child rollups, attached context, and
-// plan status. There is no priority, assignee, or declared-phase control
+// plan status. There is no priority or declared-phase control
 // anywhere on this surface, and none may be added to support it (AC-1.5).
 //
 // This is also where tasks are created and inspected (REQ-2): intake opens over

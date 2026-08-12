@@ -15,6 +15,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
 	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 )
@@ -181,6 +182,56 @@ func TestMCPClaimDefaultsToFiveMinuteLease(t *testing.T) {
 	claimed := result.(core.WorkOrder)
 	if got := claimed.LeaseExpiresAt.Sub(claimed.ExecutionStartedAt); got != core.DefaultWorkOrderClaimLease {
 		t.Fatalf("MCP default claim lease = %s, want %s", got, core.DefaultWorkOrderClaimLease)
+	}
+}
+
+func TestMCPClaimUsesCredentialOwnerForAssigneeEligibility(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	now := time.Now().UTC()
+	task := core.Task{ID: "mcp-assigned", Workspace: "demo", State: core.TaskRunning, CreatedAt: now}
+	job := core.Job{ID: task.ID + "-implement-1", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, Claimable: true, QueueEnteredAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	operatorCtx := store.WithActor(ctx, store.Actor{ID: store.UserActorID("operator"), Role: core.ActorUser})
+	if _, err := taskops.New(st).SetAssignee(operatorCtx, task.ID, "usr-alice"); err != nil {
+		t.Fatal(err)
+	}
+	provider := func(context.Context) (*config.Config, error) {
+		return &config.Config{Workspace: "demo", Routing: config.Routing{Stages: map[string]config.StageRoute{
+			"implement": {Timeout: time.Hour},
+		}}}, nil
+	}
+	server := NewServer(st)
+	server.Workspace = "demo"
+	server.WorkOrders = &workorder.Service{Store: st, ConfigProvider: provider}
+	args := map[string]any{
+		"workspace_id": "demo", "work_order_id": job.ID, "session_id": "session", "client_token": "token", "agent": "codex", "model": "gpt",
+	}
+	bob := core.AuthenticatedCredential{ID: "pat-bob", OwnerUserID: "usr-bob", Kind: core.CredentialUser, Scope: core.CredentialScopeUser}
+	bobRequest := httptest.NewRequest(http.MethodPost, "/mcp", nil).WithContext(store.WithCredential(t.Context(), bob))
+	if _, err := server.callMCPTool(bobRequest, "claim_work_order", args); err == nil || !strings.Contains(err.Error(), "usr-alice") {
+		t.Fatalf("non-assignee MCP claim error=%v", err)
+	}
+	listed, err := server.callMCPTool(bobRequest, "list_work_orders", map[string]any{"workspace_id": "demo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	orders := listed.([]core.WorkOrder)
+	if len(orders) != 1 || orders[0].Claimable || orders[0].Assignee == nil || orders[0].Assignee.UserID != "usr-alice" {
+		t.Fatalf("non-assignee MCP projection=%+v", orders)
+	}
+	alice := core.AuthenticatedCredential{ID: "pat-alice", OwnerUserID: "usr-alice", Kind: core.CredentialUser, Scope: core.CredentialScopeUser}
+	aliceRequest := httptest.NewRequest(http.MethodPost, "/mcp", nil).WithContext(store.WithCredential(t.Context(), alice))
+	if _, err = server.callMCPTool(aliceRequest, "claim_work_order", args); err != nil {
+		t.Fatalf("assignee MCP claim: %v", err)
 	}
 }
 
@@ -513,7 +564,7 @@ func TestMCPToolsListRequiresAuthAndPublishesLifecycle(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"create_task", "list_work_orders", "claim_work_order", "redispatch_work_order", "renew_work_order", "release_work_order", "request_plan_revision", "get_work_order", "read_artifact", "report_progress", "report_usage", "propose_system_design_revision", "propose_decision", "upload_transcript", "submit_plan", "submit_for_review", "await_review", "submit_review_verdict"}
+	want := []string{"create_task", "set_assignee", "list_work_orders", "claim_work_order", "redispatch_work_order", "renew_work_order", "release_work_order", "request_plan_revision", "get_work_order", "read_artifact", "report_progress", "report_usage", "propose_system_design_revision", "propose_decision", "upload_transcript", "submit_plan", "submit_for_review", "await_review", "submit_review_verdict"}
 	if len(envelope.Result.Tools) != len(want) {
 		t.Fatalf("tools = %d, want %d", len(envelope.Result.Tools), len(want))
 	}
@@ -532,7 +583,7 @@ func TestMCPAgentCredentialCannotInvokeHumanReservedTools(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
 	credential := core.AuthenticatedCredential{ID: "agt_1", OwnerUserID: "usr_1", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser}
 	request = request.WithContext(store.WithCredential(request.Context(), credential))
-	for _, tool := range []string{"create_task", "redispatch_work_order"} {
+	for _, tool := range []string{"create_task", "redispatch_work_order", "set_assignee"} {
 		if _, err := server.callMCPTool(request, tool, map[string]any{"workspace_id": "demo"}); err == nil || !strings.Contains(err.Error(), "operator-scoped user credential") {
 			t.Fatalf("%s error=%v", tool, err)
 		}

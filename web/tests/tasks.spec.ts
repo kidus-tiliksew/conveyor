@@ -76,6 +76,11 @@ const operations = [
       branch: 'conveyor/task-stuck',
       state: 'queued',
       next_stage: 'implement',
+      assignee: {
+        user_id: 'usr-assigned',
+        email: 'assigned@example.test',
+        display_name: 'Assigned User',
+      },
       created_at: '2026-08-02T10:00:00Z',
     },
     latest_stage: 'implement',
@@ -439,14 +444,13 @@ test('tasks view reports why a stalled task cannot move on its own', async ({ pa
 
 // AC-1.5: no barred field appears on the surface, and none is offered as a
 // filter or sort control.
-test('tasks view exposes no priority, assignee, or declared-phase field', async ({ page }) => {
+test('tasks view exposes no priority or declared-phase field', async ({ page }) => {
   await openTasks(page)
   const surface = (await page.locator('main').innerText()).toLowerCase()
-  for (const barred of ['priority', 'assignee', 'assigned to', 'phase']) {
+  for (const barred of ['priority', 'phase']) {
     expect(surface).not.toContain(barred)
   }
   await expect(page.getByLabel('Filter by priority')).toHaveCount(0)
-  await expect(page.getByLabel('Filter by assignee')).toHaveCount(0)
 })
 
 // AC-2.1: intake lives on the surface where delivery is managed. The legacy

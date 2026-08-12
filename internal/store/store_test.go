@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -92,6 +93,93 @@ func TestMemoryWorkerHeartbeatUpdatesLivenessWithoutEvent(t *testing.T) {
 	}
 	if len(after) != len(before) {
 		t.Fatalf("heartbeat event count changed from %d to %d: %+v", len(before), len(after), after)
+	}
+}
+
+func TestTaskAssigneeConstrainsClaimsAndClearRestoresEligibility(t *testing.T) {
+	ctx := WithActor(WithWorkspace(t.Context(), "demo"), Actor{ID: UserActorID("operator"), Role: core.ActorUser})
+	st := NewMemory()
+	now := time.Now().UTC()
+	create := func(id string) core.WorkOrder {
+		task := core.Task{ID: id, Workspace: "demo", Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/" + id, State: core.TaskRunning, CreatedAt: now}
+		if err := st.CreateTask(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.CreateJob(ctx, core.Job{ID: id + "-implement", TaskID: id, Stage: core.StageImplement, State: core.JobPending}); err != nil {
+			t.Fatal(err)
+		}
+		order := core.WorkOrder{ID: id + "-implement", TaskID: id, JobID: id + "-implement", Stage: core.StageImplement, State: core.WorkOrderQueued, Claimable: true, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now}
+		if err := storetestFor(st).CreateWorkOrder(ctx, order); err != nil {
+			t.Fatal(err)
+		}
+		return order
+	}
+	assigned := create("assigned")
+	if _, err := taskops.New(st).SetAssignee(ctx, assigned.TaskID, "usr-alice"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storetestFor(st).ClaimWorkOrder(ctx, assigned.ID, core.WorkOrderClaim{SessionID: "bob", ClientToken: "bob", OwnerUserID: "usr-bob"}); err == nil || !strings.Contains(err.Error(), "usr-alice") {
+		t.Fatalf("non-assignee claim error = %v", err)
+	}
+	if _, err := storetestFor(st).ClaimWorkOrder(ctx, assigned.ID, core.WorkOrderClaim{SessionID: "alice", ClientToken: "alice", OwnerUserID: "usr-alice"}); err != nil {
+		t.Fatalf("assignee claim: %v", err)
+	}
+
+	cleared := create("cleared")
+	if _, err := taskops.New(st).SetAssignee(ctx, cleared.TaskID, "usr-alice"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := taskops.New(st).SetAssignee(ctx, cleared.TaskID, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storetestFor(st).ClaimWorkOrder(ctx, cleared.ID, core.WorkOrderClaim{SessionID: "first-come", ClientToken: "first-come", OwnerUserID: "usr-bob"}); err != nil {
+		t.Fatalf("claim after clear: %v", err)
+	}
+
+	events, err := st.ListEvents(ctx, assigned.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var assignmentEvents int
+	for _, event := range events {
+		if event.Kind == "task.assignee.set" {
+			assignmentEvents++
+			if event.ActorID != UserActorID("operator") || event.ActorRole != core.ActorUser {
+				t.Fatalf("assignment actor = %s/%s", event.ActorID, event.ActorRole)
+			}
+		}
+	}
+	if assignmentEvents != 1 {
+		t.Fatalf("assignment events = %d, want 1", assignmentEvents)
+	}
+}
+
+func TestTaskAssignmentDoesNotChangeFIFOOrder(t *testing.T) {
+	ctx := WithWorkspace(t.Context(), "demo")
+	st := NewMemory()
+	now := time.Now().UTC()
+	for i, id := range []string{"old-unassigned", "middle-assigned", "new-unassigned"} {
+		task := core.Task{ID: id, Workspace: "demo", Repo: "conveyor", State: core.TaskRunning, CreatedAt: now.Add(time.Duration(i) * time.Second)}
+		if err := st.CreateTask(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.CreateJob(ctx, core.Job{ID: id + "-implement", TaskID: id, Stage: core.StageImplement, State: core.JobPending}); err != nil {
+			t.Fatal(err)
+		}
+		order := core.WorkOrder{ID: id + "-implement", TaskID: id, JobID: id + "-implement", Stage: core.StageImplement, State: core.WorkOrderQueued, Claimable: true, QueueEnteredAt: now.Add(time.Duration(i) * time.Second), QueueDeadline: now.Add(time.Hour), CreatedAt: now.Add(time.Duration(i) * time.Second)}
+		if err := storetestFor(st).CreateWorkOrder(ctx, order); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := taskops.New(st).SetAssignee(ctx, "middle-assigned", "usr-alice"); err != nil {
+		t.Fatal(err)
+	}
+	orders, err := st.ListWorkOrders(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := []string{orders[0].ID, orders[1].ID, orders[2].ID}; !reflect.DeepEqual(got, []string{"old-unassigned-implement", "middle-assigned-implement", "new-unassigned-implement"}) {
+		t.Fatalf("FIFO order = %v", got)
 	}
 }
 

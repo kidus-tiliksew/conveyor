@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
 const maxArtifactBytes = 25 << 20
@@ -25,7 +27,18 @@ func (s *Server) listWorkOrders(w http.ResponseWriter, r *http.Request) {
 	if orders == nil {
 		orders = []core.WorkOrder{}
 	}
+	orders = projectAssigneeClaimability(r.Context(), orders)
 	writeJSON(w, 200, orders)
+}
+
+func projectAssigneeClaimability(ctx context.Context, orders []core.WorkOrder) []core.WorkOrder {
+	credential, authenticated := store.CredentialFromContext(ctx)
+	for i := range orders {
+		if orders[i].Assignee != nil && (!authenticated || orders[i].Assignee.UserID != credential.OwnerUserID) {
+			orders[i].Claimable = false
+		}
+	}
+	return orders
 }
 
 func (s *Server) recoverWorkOrder(w http.ResponseWriter, r *http.Request) {

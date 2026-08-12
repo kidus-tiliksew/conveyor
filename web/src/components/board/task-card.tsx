@@ -53,6 +53,11 @@ export function TaskCard({ item, selected }: { item: ActivitySummary; selected: 
         <span className="truncate">{item.task.id}</span>
         <span className="ml-auto shrink-0 whitespace-nowrap">{relativeTime(lastAt)}</span>
       </div>
+      {item.task.assignee && (
+        <p className="mt-1 truncate text-[11px] text-muted">
+          Assigned to {item.task.assignee.display_name || item.task.assignee.email || item.task.assignee.user_id}
+        </p>
+      )}
       {chips && (
         <div className="mt-2 flex flex-wrap items-center gap-1.5">
           {gate && <Badge variant={gate.variant}>{gate.label}</Badge>}

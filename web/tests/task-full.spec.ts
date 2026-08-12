@@ -2391,6 +2391,11 @@ test('checkpoint recovery summarizes attached requirement and design context', a
 test('stalled task is labelled in the operator tray with recover and reasoned cancel controls', async ({ page }) => {
   await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
   const item = activity('recovery', false)
+  item.task.assignee = {
+    user_id: 'usr-assigned',
+    email: 'assigned@example.test',
+    display_name: 'Assigned User',
+  }
   let cancelled = false
   await page.route('**/v1/workspaces', async (route) => {
     await route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] })
@@ -2423,6 +2428,7 @@ test('stalled task is labelled in the operator tray with recover and reasoned ca
   await page.goto('/')
   const tray = page.getByRole('region', { name: 'Needs operator' })
   await expect(tray.getByText('Stalled')).toBeVisible()
+  await expect(tray.getByText('Assigned to Assigned User')).toBeVisible()
   await expect(tray.getByText('harness exited: status 1')).toBeVisible()
   await tray.getByText('Short task').click()
   await expect(page.getByRole('button', { name: 'Recover work order' })).toBeVisible()

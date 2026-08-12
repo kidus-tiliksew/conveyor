@@ -33,6 +33,7 @@ func TestProductionLifecycleWritersEnterTaskOps(t *testing.T) {
 		"RetryReviewRoundCommand": true, "RecoverInterruptedReviewRoundCommand": true,
 		"ClaimWorkOrderCommand": true, "RedispatchWorkOrderCommand": true, "RecoverWorkOrderCommand": true, "UpdateWorkOrderCommand": true,
 		"RenewWorkerClaimCommand": true, "ReleaseWorkerClaimCommand": true,
+		"SetTaskAssigneeCommand": true,
 	}
 	fset := token.NewFileSet()
 	for _, rel := range []string{

@@ -15,6 +15,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
 	"github.com/kidus-tiliksew/conveyor/internal/pipeline"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 )
 
@@ -66,6 +67,9 @@ func TestPairingHeartbeatHealthAndAutoClaimLifecycle(t *testing.T) {
 	}
 	createOrder("auto-task", false)
 	createOrder("manual-task", true)
+	if _, err := taskops.New(st).SetAssignee(operatorCtx, "auto-task", "usr-assigned"); err != nil {
+		t.Fatal(err)
+	}
 	listed, err := service.ListClaimable(workerCtx, worker)
 	if err != nil || len(listed) != 1 || listed[0].Task.ID != "auto-task" || listed[0].HarnessSelection != "enforced" || listed[0].Confinement != "none" || listed[0].Auth != "byoa" {
 		t.Fatalf("listed=%+v err=%v", listed, err)

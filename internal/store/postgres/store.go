@@ -1096,6 +1096,9 @@ func (s *Store) hydrateTaskRelationsBatch(ctx context.Context, tasks []core.Task
 }
 
 func (s *Store) hydrateGitHubLifecycle(ctx context.Context, task *core.Task) error {
+	if err := s.hydrateTaskAssignee(ctx, task); err != nil {
+		return err
+	}
 	lifecycle, ok, err := s.GetGitHubLifecycle(ctx, task.ID)
 	if err != nil {
 		return err
@@ -1109,6 +1112,9 @@ func (s *Store) hydrateGitHubLifecycle(ctx context.Context, task *core.Task) err
 func (s *Store) hydrateGitHubLifecyclesBatch(ctx context.Context, tasks []core.Task) error {
 	if len(tasks) == 0 {
 		return nil
+	}
+	if err := s.hydrateTaskAssignees(ctx, tasks); err != nil {
+		return err
 	}
 	taskIDs := make([]string, len(tasks))
 	for i := range tasks {
@@ -1139,6 +1145,51 @@ func (s *Store) hydrateGitHubLifecyclesBatch(ctx context.Context, tasks []core.T
 	return nil
 }
 
+func (s *Store) hydrateTaskAssignee(ctx context.Context, task *core.Task) error {
+	var assignee core.TaskAssignee
+	err := s.pool.QueryRow(ctx, `SELECT u.id,u.email,u.display_name
+		FROM tasks t JOIN workspace_role_bindings b ON b.workspace_id=t.workspace_id AND b.user_id=t.assignee_user_id
+		JOIN users u ON u.id=b.user_id
+		WHERE t.workspace_id=$1 AND t.id=$2`, workspace(ctx), task.ID).
+		Scan(&assignee.UserID, &assignee.Email, &assignee.DisplayName)
+	if errors.Is(err, pgx.ErrNoRows) {
+		task.Assignee = nil
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	task.Assignee = &assignee
+	return nil
+}
+
+func (s *Store) hydrateTaskAssignees(ctx context.Context, tasks []core.Task) error {
+	ids := make([]string, len(tasks))
+	byID := make(map[string]*core.Task, len(tasks))
+	for i := range tasks {
+		ids[i] = tasks[i].ID
+		byID[tasks[i].ID] = &tasks[i]
+	}
+	rows, err := s.pool.Query(ctx, `SELECT t.id,u.id,u.email,u.display_name
+		FROM tasks t JOIN workspace_role_bindings b ON b.workspace_id=t.workspace_id AND b.user_id=t.assignee_user_id
+		JOIN users u ON u.id=b.user_id WHERE t.workspace_id=$1 AND t.id=ANY($2::text[])`, workspace(ctx), ids)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var taskID string
+		var assignee core.TaskAssignee
+		if err = rows.Scan(&taskID, &assignee.UserID, &assignee.Email, &assignee.DisplayName); err != nil {
+			return err
+		}
+		if task := byID[taskID]; task != nil {
+			task.Assignee = &assignee
+		}
+	}
+	return rows.Err()
+}
+
 func (s *Store) SetTaskHold(ctx context.Context, id string, hold bool) (core.Task, error) {
 	var result core.Task
 	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
@@ -1162,6 +1213,45 @@ func (s *Store) SetTaskHold(ctx context.Context, id string, hold bool) (core.Tas
 		return insertEvent(ctx, q, core.Event{TaskID: id, Kind: kind, Payload: core.JSONPayload(map[string]any{"hold": hold})})
 	})
 	return result, err
+}
+
+func (s *Store) SetTaskAssigneeCommand(ctx context.Context, lease taskops.TaskLease, id, assigneeUserID string) (core.Task, error) {
+	if !lease.ValidForCommand(id, taskops.SetAssigneeCommand) {
+		return core.Task{}, fmt.Errorf("task assignment requires a valid taskops lease")
+	}
+	assigneeUserID = strings.TrimSpace(assigneeUserID)
+	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		var current pgtype.Text
+		if err := tx.QueryRow(ctx, `SELECT assignee_user_id FROM tasks WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspace(ctx), id).Scan(&current); err != nil {
+			return notFound(err, "task %s", id)
+		}
+		if assigneeUserID != "" {
+			var active bool
+			err := tx.QueryRow(ctx, `SELECT u.status='active' FROM workspace_role_bindings b JOIN users u ON u.id=b.user_id
+				WHERE b.workspace_id=$1 AND b.user_id=$2`, workspace(ctx), assigneeUserID).Scan(&active)
+			if errors.Is(err, pgx.ErrNoRows) || (err == nil && !active) {
+				return fmt.Errorf("assignee %s is not an active member of workspace %s", assigneeUserID, workspace(ctx))
+			}
+			if err != nil {
+				return err
+			}
+		}
+		if current.String == assigneeUserID && current.Valid == (assigneeUserID != "") {
+			return nil
+		}
+		if _, err := q.UpdateTaskAssignee(ctx, db.UpdateTaskAssigneeParams{ID: id, WorkspaceID: workspace(ctx), AssigneeUserID: nullableText(assigneeUserID)}); err != nil {
+			return err
+		}
+		kind := "task.assignee.set"
+		if assigneeUserID == "" {
+			kind = "task.assignee.cleared"
+		}
+		return insertEvent(ctx, q, core.Event{TaskID: id, Kind: kind, Payload: core.JSONPayload(map[string]any{"assignee_user_id": assigneeUserID})})
+	})
+	if err != nil {
+		return core.Task{}, err
+	}
+	return s.GetTask(ctx, id)
 }
 
 func (s *Store) BindTaskApproval(ctx context.Context, id, headSHA string) error {
@@ -3725,7 +3815,12 @@ func (s *Store) GetWorkOrder(ctx context.Context, id string) (core.WorkOrder, er
 	if err != nil {
 		return core.WorkOrder{}, notFound(err, "work order %s", id)
 	}
-	return store.ProjectWorkOrderAt(order, time.Now().UTC()), nil
+	order = store.ProjectWorkOrderAt(order, time.Now().UTC())
+	items := []core.WorkOrder{order}
+	if err = s.hydrateWorkOrderAssignees(ctx, items); err != nil {
+		return core.WorkOrder{}, err
+	}
+	return items[0], nil
 }
 
 func (s *Store) ListWorkOrders(ctx context.Context) ([]core.WorkOrder, error) {
@@ -3742,7 +3837,46 @@ func (s *Store) ListWorkOrders(ctx context.Context) ([]core.WorkOrder, error) {
 		}
 		orders = append(orders, store.ProjectWorkOrderAt(order, time.Now().UTC()))
 	}
-	return orders, rows.Err()
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	if err = s.hydrateWorkOrderAssignees(ctx, orders); err != nil {
+		return nil, err
+	}
+	return orders, nil
+}
+
+func (s *Store) hydrateWorkOrderAssignees(ctx context.Context, orders []core.WorkOrder) error {
+	if len(orders) == 0 {
+		return nil
+	}
+	taskIDs := make([]string, 0, len(orders))
+	byTask := make(map[string][]int, len(orders))
+	for i := range orders {
+		if _, ok := byTask[orders[i].TaskID]; !ok {
+			taskIDs = append(taskIDs, orders[i].TaskID)
+		}
+		byTask[orders[i].TaskID] = append(byTask[orders[i].TaskID], i)
+	}
+	rows, err := s.pool.Query(ctx, `SELECT t.id,u.id,u.email,u.display_name FROM tasks t
+		JOIN workspace_role_bindings b ON b.workspace_id=t.workspace_id AND b.user_id=t.assignee_user_id
+		JOIN users u ON u.id=b.user_id WHERE t.workspace_id=$1 AND t.id=ANY($2::text[])`, workspace(ctx), taskIDs)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var taskID string
+		var assignee core.TaskAssignee
+		if err = rows.Scan(&taskID, &assignee.UserID, &assignee.Email, &assignee.DisplayName); err != nil {
+			return err
+		}
+		for _, index := range byTask[taskID] {
+			copy := assignee
+			orders[index].Assignee = &copy
+		}
+	}
+	return rows.Err()
 }
 
 func (s *Store) ListCheckpointContextCandidates(ctx context.Context, requirementID string) ([]store.CheckpointContextCandidate, error) {
@@ -3840,6 +3974,18 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease taskop
 	}
 	if !lifecycleLease.ValidForCommand(order.TaskID, string(core.WorkOrderCmdClaim)) {
 		return core.WorkOrder{}, fmt.Errorf("work-order claim requires a valid taskops lease")
+	}
+	var assigneeUserID pgtype.Text
+	if err := tx.QueryRow(ctx, `SELECT assignee_user_id FROM tasks WHERE workspace_id=$1 AND id=$2`, workspace(ctx), order.TaskID).Scan(&assigneeUserID); err != nil {
+		return core.WorkOrder{}, err
+	}
+	if claim.OwnerUserID == "" {
+		if credential, ok := store.CredentialFromContext(ctx); ok {
+			claim.OwnerUserID = credential.OwnerUserID
+		}
+	}
+	if assigneeUserID.Valid && assigneeUserID.String != claim.OwnerUserID {
+		return core.WorkOrder{}, fmt.Errorf("task %s is assigned to %s; only that assignee may claim its work orders", order.TaskID, assigneeUserID.String)
 	}
 	if order.Stage == core.StageReview {
 		var pendingDocument string

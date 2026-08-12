@@ -269,6 +269,7 @@ type Task struct {
 	RefreshReviewScope string             `json:"refresh_review_scope"`
 	OriginSpecVersion  int32              `json:"origin_spec_version"`
 	OriginSubID        string             `json:"origin_sub_id"`
+	AssigneeUserID     pgtype.Text        `json:"assignee_user_id"`
 }
 
 type TaskDependency struct {

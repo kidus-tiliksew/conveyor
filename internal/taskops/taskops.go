@@ -72,6 +72,26 @@ const WorkOrderMetadataCommand core.WorkOrderCommand = "order.metadata"
 // projections, and events cannot commit independently (design-task-lifecycle).
 const SetupChangeCommand = "task.setup.change"
 
+// SetAssigneeCommand is the serialized, capability-protected task assignment
+// write. Assignment affects claim eligibility only and never task state.
+const SetAssigneeCommand = "task.assignee.set"
+
+func (p *Plane) SetAssignee(ctx context.Context, taskID, assigneeUserID string) (core.Task, error) {
+	if p == nil || p.backend == nil {
+		return core.Task{}, fmt.Errorf("taskops plane requires a backend")
+	}
+	if taskID == "" {
+		return core.Task{}, fmt.Errorf("taskops task id is required")
+	}
+	backend, ok := p.backend.(interface {
+		SetTaskAssigneeCommand(context.Context, TaskLease, string, string) (core.Task, error)
+	})
+	if !ok {
+		return core.Task{}, fmt.Errorf("taskops backend does not support assignment")
+	}
+	return backend.SetTaskAssigneeCommand(ctx, TaskLease{taskID: taskID, command: SetAssigneeCommand, seal: &leaseSeal{}}, taskID, assigneeUserID)
+}
+
 // ExecuteSetupChange admits one store-specific setup-change plan to the
 // command plane. The command-bound lease is unforgeable outside this package;
 // durable and memory backends retain their existing atomic write spans.

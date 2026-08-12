@@ -47,6 +47,7 @@ export interface Task {
   // Legacy historical record; behavior is governed by hold.
   mode?: string
   hold?: boolean
+  assignee?: TaskAssignee
   spec_approval: boolean
   merge_approval: boolean
   policy_version: number
@@ -73,6 +74,12 @@ export interface Task {
   context?: TaskContext
   github?: GitHubLifecycle
   created_at: string
+}
+
+export interface TaskAssignee {
+  user_id: string
+  email?: string
+  display_name?: string
 }
 
 export interface TaskContext {
@@ -242,8 +249,8 @@ export interface TaskChildRollup {
 }
 
 // TaskOperationsItem is the list-first Tasks view's row.
-// It carries no priority, assignee, or declared-phase field, and none may be
-// added to support the view (AC-1.5).
+// It carries no priority or declared-phase field. Assignment is part of the
+// task projection because it constrains claim eligibility, never ordering.
 export interface TaskOperationsItem {
   task: Task
   latest_stage?: Stage
@@ -652,6 +659,7 @@ export interface WorkOrder {
   state: 'queued' | 'claimed' | 'submitted' | 'completed' | 'cancelled' | 'stale' | 'timed_out'
   claimable: boolean
   blocking_task_ids?: string[]
+  assignee?: TaskAssignee
   unsatisfiable_task_ids?: string[]
   claimed_by?: string
   session_id?: string
