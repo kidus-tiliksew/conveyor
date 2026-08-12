@@ -84,6 +84,9 @@ func (s *Store) BootstrapIdentity(ctx context.Context, identity config.FirstOper
 	if legacyErr != nil && !errors.Is(legacyErr, pgx.ErrNoRows) {
 		return false, fmt.Errorf("read legacy API token mapping: %w", legacyErr)
 	}
+	if legacyErr == nil && legacy.revoked.Valid && subtle.ConstantTimeCompare(legacy.tokenHash, hash[:]) == 1 {
+		return false, errors.New("legacy token revoked; remove CONVEYOR_API_TOKEN or issue a new PAT")
+	}
 	var legacyCoversWorkspaces bool
 	if legacyErr == nil {
 		if err := tx.QueryRow(ctx, `SELECT NOT EXISTS (
@@ -112,16 +115,27 @@ func (s *Store) BootstrapIdentity(ctx context.Context, identity config.FirstOper
 		return false, nil
 	}
 
-	if legacyErr == nil && legacy.status == "active" {
-		if _, err := tx.Exec(ctx, `UPDATE user_tokens
-			SET token_hash=$1,kind='user',scope='operator',revoked_at=NULL,last_used_at=NULL
-			WHERE id=$2`, hash[:], legacy.id); err != nil {
+	if legacyErr == nil && legacy.status == "active" && !legacy.revoked.Valid {
+		sameHash := subtle.ConstantTimeCompare(legacy.tokenHash, hash[:]) == 1
+		if sameHash {
+			if _, err := tx.Exec(ctx, `UPDATE user_tokens
+				SET kind='user',scope='operator'
+				WHERE id=$1`, legacy.id); err != nil {
+				return false, fmt.Errorf("repair legacy API token mapping: %w", err)
+			}
+		} else if _, err := tx.Exec(ctx, `UPDATE user_tokens
+			SET token_hash=$1,kind='user',scope='operator',last_used_at=NULL
+			WHERE id=$2 AND revoked_at IS NULL`, hash[:], legacy.id); err != nil {
 			return false, fmt.Errorf("rotate legacy API token mapping: %w", err)
 		}
 		if err := seedOperatorBindings(ctx, tx, legacy.userID); err != nil {
 			return false, err
 		}
-		if err := auditLegacyTokenRotation(ctx, tx, q, legacy.id); err != nil {
+		auditKind := "identity.legacy_token_rotated"
+		if sameHash {
+			auditKind = "identity.legacy_bindings_healed"
+		}
+		if err := auditLegacyTokenLifecycle(ctx, q, legacy.id, auditKind); err != nil {
 			return false, err
 		}
 		if err := tx.Commit(ctx); err != nil {
@@ -170,6 +184,11 @@ func (s *Store) BootstrapIdentity(ctx context.Context, identity config.FirstOper
 		Kind: string(core.CredentialUser), Scope: string(core.CredentialScopeOperator),
 	}); err != nil {
 		return false, fmt.Errorf("map legacy API token: %w", err)
+	}
+	if legacyErr == nil {
+		if err := auditLegacyTokenLifecycle(ctx, q, tokenID, "identity.legacy_token_rotated"); err != nil {
+			return false, err
+		}
 	}
 	if err := seedOperatorBindings(ctx, tx, owner.ID); err != nil {
 		return false, err
@@ -306,32 +325,12 @@ func seedOperatorBindings(ctx context.Context, tx pgx.Tx, userID string) error {
 	return nil
 }
 
-func auditLegacyTokenRotation(ctx context.Context, tx pgx.Tx, q *db.Queries, credentialID string) error {
-	rows, err := tx.Query(ctx, `SELECT id FROM workspaces ORDER BY id`)
-	if err != nil {
-		return fmt.Errorf("list workspaces for legacy token rotation audit: %w", err)
-	}
-	var workspaceIDs []string
-	for rows.Next() {
-		var workspaceID string
-		if err := rows.Scan(&workspaceID); err != nil {
-			rows.Close()
-			return err
-		}
-		workspaceIDs = append(workspaceIDs, workspaceID)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return err
-	}
-	rows.Close()
-	for _, workspaceID := range workspaceIDs {
-		if _, err := q.InsertWorkspaceEvent(ctx, db.InsertWorkspaceEventParams{
-			WorkspaceID: workspaceID, Kind: "identity.legacy_token_rotated", ActorID: "system", ActorRole: string(core.ActorSystem),
-			PayloadJson: core.JSONPayload(map[string]any{"credential_id": credentialID}), At: pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true},
-		}); err != nil {
-			return fmt.Errorf("audit legacy API token rotation: %w", err)
-		}
+func auditLegacyTokenLifecycle(ctx context.Context, q *db.Queries, credentialID, kind string) error {
+	if err := q.InsertDeploymentEvent(ctx, db.InsertDeploymentEventParams{
+		Kind: kind, ActorID: "system", ActorRole: string(core.ActorSystem),
+		PayloadJson: core.JSONPayload(map[string]any{"credential_id": credentialID}), At: pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true},
+	}); err != nil {
+		return fmt.Errorf("audit legacy API token lifecycle: %w", err)
 	}
 	return nil
 }
@@ -465,7 +464,16 @@ func (s *Store) RevokePersonalAccessToken(ctx context.Context, tokenID string) (
 }
 
 func (s *Store) DeactivateIdentityUser(ctx context.Context, userID string) (IdentityUser, error) {
-	row, err := s.queries.DeactivateIdentityUser(ctx, userID)
+	var row db.User
+	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		if err := tx.QueryRow(ctx, `UPDATE users SET status='deactivated' WHERE id=$1
+			RETURNING id,email,display_name,status,created_at`, userID).Scan(
+			&row.ID, &row.Email, &row.DisplayName, &row.Status, &row.CreatedAt,
+		); err != nil {
+			return err
+		}
+		return revokeOwnedWorkersTx(ctx, tx, q, userID, "", "identity_user_deactivated")
+	})
 	if err != nil {
 		return IdentityUser{}, notFound(err, "identity user %s", userID)
 	}

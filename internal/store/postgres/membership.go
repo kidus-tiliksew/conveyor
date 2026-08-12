@@ -11,6 +11,23 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 )
 
+// AuthorizeDeployment derives deployment authority from the active account's
+// current operator bindings. Persisted credential scope is only a protocol
+// boundary and never sufficient authority on its own.
+func (s *Store) AuthorizeDeployment(ctx context.Context, userID string, capability core.Capability) (bool, error) {
+	if capability != core.CapabilityOperateGates {
+		return false, nil
+	}
+	var allowed bool
+	err := s.pool.QueryRow(ctx, `SELECT EXISTS (
+		SELECT 1
+		FROM users u
+		JOIN workspace_role_bindings b ON b.user_id=u.id
+		WHERE u.id=$1 AND u.status='active' AND b.role='operator'
+	)`, userID).Scan(&allowed)
+	return allowed, err
+}
+
 func (s *Store) AuthorizeWorkspace(ctx context.Context, userID, workspaceID string, capability core.Capability) (bool, error) {
 	var role core.WorkspaceRole
 	err := s.pool.QueryRow(ctx, `SELECT role FROM workspace_role_bindings WHERE workspace_id=$1 AND user_id=$2`, workspaceID, userID).Scan(&role)
@@ -193,6 +210,9 @@ func (s *Store) RevokeWorkspaceRole(ctx context.Context, userID, workspaceID str
 			return err
 		}
 		rows.Close()
+		if err := revokeOwnedWorkersTx(ctx, tx, q, userID, workspaceID, "workspace_membership_revoked"); err != nil {
+			return err
+		}
 		for _, taskID := range taskIDs {
 			if err = insertEvent(ctx, q, core.Event{TaskID: taskID, Kind: "task.assignee.cleared", Payload: core.JSONPayload(map[string]any{
 				"assignee_user_id": "", "revoked_user_id": userID,

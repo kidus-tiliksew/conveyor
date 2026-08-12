@@ -116,7 +116,13 @@ func (s *Store) ListHarnessModelFailures(ctx context.Context) ([]core.HarnessMod
 
 func (s *Store) AuthenticateWorker(ctx context.Context, credentialHash string) (core.Worker, error) {
 	workspaceID := workspace(ctx)
-	query := `SELECT id,workspace_id,COALESCE(owner_user_id,''),name,credential_hash,lease_expires_at,last_seen_at,revoked_at,probe_results,created_at FROM workers WHERE credential_hash=$1 AND revoked_at IS NULL`
+	query := `SELECT id,workspace_id,COALESCE(owner_user_id,''),name,credential_hash,lease_expires_at,last_seen_at,revoked_at,probe_results,created_at
+		FROM workers WHERE credential_hash=$1 AND revoked_at IS NULL
+		AND (owner_user_id IS NULL OR EXISTS (
+			SELECT 1 FROM users u
+			JOIN workspace_role_bindings b ON b.user_id=u.id AND b.workspace_id=workers.workspace_id
+			WHERE u.id=workers.owner_user_id AND u.status='active'
+		))`
 	args := []any{credentialHash}
 	if workspaceID != "" {
 		query += ` AND workspace_id=$2`
@@ -132,7 +138,14 @@ func (s *Store) AuthenticateWorker(ctx context.Context, credentialHash string) (
 func (s *Store) HeartbeatWorker(ctx context.Context, id string, leaseExpires time.Time, probes []core.HarnessProbe) (core.Worker, error) {
 	data, _ := json.Marshal(probes)
 	now := time.Now().UTC()
-	worker, err := scanWorker(s.pool.QueryRow(ctx, `UPDATE workers SET lease_expires_at=$1,last_seen_at=$2,probe_results=$3 WHERE workspace_id=$4 AND id=$5 AND revoked_at IS NULL RETURNING id,workspace_id,COALESCE(owner_user_id,''),name,credential_hash,lease_expires_at,last_seen_at,revoked_at,probe_results,created_at`, leaseExpires, now, data, workspace(ctx), id))
+	worker, err := scanWorker(s.pool.QueryRow(ctx, `UPDATE workers SET lease_expires_at=$1,last_seen_at=$2,probe_results=$3
+		WHERE workspace_id=$4 AND id=$5 AND revoked_at IS NULL
+		AND (owner_user_id IS NULL OR EXISTS (
+			SELECT 1 FROM users u
+			JOIN workspace_role_bindings b ON b.user_id=u.id AND b.workspace_id=workers.workspace_id
+			WHERE u.id=workers.owner_user_id AND u.status='active'
+		))
+		RETURNING id,workspace_id,COALESCE(owner_user_id,''),name,credential_hash,lease_expires_at,last_seen_at,revoked_at,probe_results,created_at`, leaseExpires, now, data, workspace(ctx), id))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return core.Worker{}, store.ErrWorkerUnauthorized
 	}
@@ -152,8 +165,57 @@ func (s *Store) RevokeWorker(ctx context.Context, id string) error {
 		return fmt.Errorf("worker %s not found", id)
 	}
 	actor := store.ActorFromContext(ctx)
+	if actor.ID == "" {
+		actor = store.Actor{ID: "system", Role: core.ActorSystem}
+	}
 	_, err = s.queries.InsertWorkspaceEvent(ctx, db.InsertWorkspaceEventParams{WorkspaceID: workspace(ctx), Kind: "worker.revoked", ActorID: actor.ID, ActorRole: string(actor.Role), PayloadJson: core.JSONPayload(map[string]string{"worker_id": id}), At: timestamp(now)})
 	return err
+}
+
+func revokeOwnedWorkersTx(ctx context.Context, tx pgx.Tx, q *db.Queries, userID, workspaceID, reason string) error {
+	query := `UPDATE workers SET revoked_at=COALESCE(revoked_at,$1),lease_expires_at=NULL
+		WHERE owner_user_id=$2 AND revoked_at IS NULL`
+	args := []any{time.Now().UTC(), userID}
+	if workspaceID != "" {
+		query += ` AND workspace_id=$3`
+		args = append(args, workspaceID)
+	}
+	query += ` RETURNING id,workspace_id,revoked_at`
+	rows, err := tx.Query(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("revoke owned workers: %w", err)
+	}
+	type revokedWorker struct {
+		id, workspaceID string
+		at              time.Time
+	}
+	var revoked []revokedWorker
+	for rows.Next() {
+		var item revokedWorker
+		if err := rows.Scan(&item.id, &item.workspaceID, &item.at); err != nil {
+			rows.Close()
+			return err
+		}
+		revoked = append(revoked, item)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	actor := store.ActorFromContext(ctx)
+	if actor.ID == "" {
+		actor = store.Actor{ID: "system", Role: core.ActorSystem}
+	}
+	for _, item := range revoked {
+		if _, err := q.InsertWorkspaceEvent(ctx, db.InsertWorkspaceEventParams{
+			WorkspaceID: item.workspaceID, Kind: "worker.revoked", ActorID: actor.ID, ActorRole: string(actor.Role),
+			PayloadJson: core.JSONPayload(map[string]string{"worker_id": item.id, "owner_user_id": userID, "reason": reason}), At: timestamp(item.at),
+		}); err != nil {
+			return fmt.Errorf("audit owned worker revocation: %w", err)
+		}
+	}
+	return nil
 }
 
 func (s *Store) RenewWorkerClaimCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID, workerID, sessionID string, lease time.Duration) (core.WorkOrder, error) {

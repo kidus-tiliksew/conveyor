@@ -48,6 +48,15 @@ func (f *membershipFixture) AuthorizeWorkspace(_ context.Context, userID, worksp
 	f.capabilityCalls = append(f.capabilityCalls, capability)
 	return core.RoleAllows(f.roles[userID][workspaceID], capability), nil
 }
+func (f *membershipFixture) AuthorizeDeployment(_ context.Context, userID string, capability core.Capability) (bool, error) {
+	f.capabilityCalls = append(f.capabilityCalls, capability)
+	for _, role := range f.roles[userID] {
+		if role == core.WorkspaceRoleOperator {
+			return true, nil
+		}
+	}
+	return false, nil
+}
 func (f *membershipFixture) ListWorkspacesForUser(_ context.Context, userID string) ([]core.Workspace, error) {
 	var result []core.Workspace
 	for _, item := range f.workspaces {

@@ -33,6 +33,7 @@ type Querier interface {
 	GetTaskByIntakeKey(ctx context.Context, arg GetTaskByIntakeKeyParams) (Task, error)
 	GetTranscript(ctx context.Context, arg GetTranscriptParams) (Transcript, error)
 	GetWorkspaceConfig(ctx context.Context, id string) (Workspace, error)
+	InsertDeploymentEvent(ctx context.Context, arg InsertDeploymentEventParams) error
 	InsertEvent(ctx context.Context, arg InsertEventParams) (Event, error)
 	InsertIntervention(ctx context.Context, arg InsertInterventionParams) (Intervention, error)
 	InsertJob(ctx context.Context, arg InsertJobParams) (Job, error)

@@ -16,6 +16,7 @@ type IdentityProvisioner interface {
 // MembershipStore is the only workspace authorization boundary. Callers name
 // capabilities and never inspect persisted roles directly (REQ-8/AC-8.1).
 type MembershipStore interface {
+	AuthorizeDeployment(context.Context, string, core.Capability) (bool, error)
 	AuthorizeWorkspace(context.Context, string, string, core.Capability) (bool, error)
 	ListWorkspacesForUser(context.Context, string) ([]core.Workspace, error)
 	ListWorkspaceMembers(context.Context, string, string) ([]core.WorkspaceMembership, error)

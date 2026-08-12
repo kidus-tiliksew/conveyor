@@ -73,8 +73,8 @@ func TestIdentityBootstrapAndPersonalAccessTokenLifecycleIntegration(t *testing.
 		t.Fatalf("replacement token principal=%+v err=%v", rotated, err)
 	}
 	var rotationEvents int
-	if err := st.pool.QueryRow(t.Context(), `SELECT count(*) FROM events WHERE workspace_id=$1 AND kind='identity.legacy_token_rotated'
-		AND payload_json ? 'credential_id' AND payload_json::text NOT LIKE '%replacement-token%'`, workspace).Scan(&rotationEvents); err != nil || rotationEvents != 1 {
+	if err := st.pool.QueryRow(t.Context(), `SELECT count(*) FROM deployment_events WHERE kind='identity.legacy_token_rotated'
+		AND payload_json ? 'credential_id' AND payload_json::text NOT LIKE '%replacement-token%'`).Scan(&rotationEvents); err != nil || rotationEvents != 1 {
 		t.Fatalf("rotation audit count=%d err=%v", rotationEvents, err)
 	}
 	seeded, err = st.BootstrapIdentity(t.Context(), identity, "replacement-token")
@@ -131,6 +131,132 @@ func TestIdentityBootstrapAndPersonalAccessTokenLifecycleIntegration(t *testing.
 	}
 }
 
+func TestIdentityBootstrapRevocationAndDeploymentAuditIntegration(t *testing.T) {
+	st := newIdentityIntegrationStore(t, 0)
+	identity := config.FirstOperatorIdentity{OrganizationName: "Audit Org", Email: "audit-owner@example.test", DisplayName: "Audit Owner"}
+	if _, err := st.BootstrapIdentity(t.Context(), identity, "legacy-one"); err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := st.BootstrapIdentity(t.Context(), identity, "legacy-two"); err != nil || !changed {
+		t.Fatalf("zero-workspace rotation changed=%t err=%v", changed, err)
+	}
+	var rotated int
+	if err := st.pool.QueryRow(t.Context(), `SELECT count(*) FROM deployment_events WHERE kind='identity.legacy_token_rotated'`).Scan(&rotated); err != nil || rotated != 1 {
+		t.Fatalf("zero-workspace rotation events=%d err=%v", rotated, err)
+	}
+
+	principal, err := st.VerifyPersonalAccessToken(t.Context(), "legacy-two")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace := "identity-heal-" + core.NewTaskID()
+	if seeded, err := st.BootstrapWorkspaceConfig(store.WithWorkspace(t.Context(), workspace), isolationConfig(workspace)); err != nil || !seeded {
+		t.Fatalf("workspace bootstrap seeded=%t err=%v", seeded, err)
+	}
+	if _, err := st.pool.Exec(t.Context(), `DELETE FROM workspace_role_bindings WHERE workspace_id=$1 AND user_id=$2`, workspace, principal.ID); err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := st.BootstrapIdentity(t.Context(), identity, "legacy-two"); err != nil || !changed {
+		t.Fatalf("binding healing changed=%t err=%v", changed, err)
+	}
+	var healed int
+	if err := st.pool.QueryRow(t.Context(), `SELECT count(*) FROM deployment_events WHERE kind='identity.legacy_bindings_healed'`).Scan(&healed); err != nil || healed != 1 {
+		t.Fatalf("binding-healing events=%d err=%v", healed, err)
+	}
+	if err := st.pool.QueryRow(t.Context(), `SELECT count(*) FROM deployment_events WHERE kind='identity.legacy_token_rotated'`).Scan(&rotated); err != nil || rotated != 1 {
+		t.Fatalf("binding healing emitted rotation events=%d err=%v", rotated, err)
+	}
+
+	var tokenID string
+	if err := st.pool.QueryRow(t.Context(), `SELECT id FROM user_tokens WHERE label='legacy API token'`).Scan(&tokenID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.RevokePersonalAccessToken(t.Context(), tokenID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.BootstrapIdentity(t.Context(), identity, "legacy-two"); err == nil || !strings.Contains(err.Error(), "legacy token revoked; remove CONVEYOR_API_TOKEN or issue a new PAT") {
+		t.Fatalf("revoked legacy restart error=%v", err)
+	}
+	var revoked bool
+	if err := st.pool.QueryRow(t.Context(), `SELECT revoked_at IS NOT NULL FROM user_tokens WHERE id=$1`, tokenID).Scan(&revoked); err != nil || !revoked {
+		t.Fatalf("revoked legacy mapping resurrected=%t err=%v", !revoked, err)
+	}
+}
+
+func TestDeploymentMutationAuthorizationTracksLiveOperatorBindingsIntegration(t *testing.T) {
+	st := newIdentityIntegrationStore(t, 0)
+	legacy := "live-binding-http-token"
+	if _, err := st.BootstrapIdentity(t.Context(), config.FirstOperatorIdentity{OrganizationName: "Live Org", Email: "live-owner@example.test", DisplayName: "Live Owner"}, legacy); err != nil {
+		t.Fatal(err)
+	}
+	owner, err := st.VerifyPersonalAccessToken(t.Context(), legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace := "live-binding-" + core.NewTaskID()
+	operatorCtx := store.WithCredential(t.Context(), core.AuthenticatedCredential{ID: "legacy", OwnerUserID: owner.ID, Kind: core.CredentialUser, Scope: core.CredentialScopeOperator})
+	operatorCtx = store.WithActor(operatorCtx, store.Actor{ID: store.UserActorID(owner.ID), Role: core.ActorUser})
+	if _, err := st.CreateWorkspace(operatorCtx, workspace, workspace, isolationConfig(workspace)); err != nil {
+		t.Fatal(err)
+	}
+	pat, err := st.IssuePersonalAccessToken(t.Context(), owner.ID, "live binding")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httpapi.NewServer(st)
+	server.Workspaces, server.Workspace = st, workspace
+	handler := server.Handler()
+	callWithToken := func(token, method, path, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, req)
+		return response
+	}
+	call := func(method, path, body string) *httptest.ResponseRecorder {
+		return callWithToken(pat.Value, method, path, body)
+	}
+	if response := call(http.MethodPost, "/v1/users", `{"email":"before@example.test","display_name":"Before"}`); response.Code != http.StatusCreated {
+		t.Fatalf("authorized provisioning status=%d body=%s", response.Code, response.Body.String())
+	}
+	second, err := st.queries.InsertIdentityUser(t.Context(), db.InsertIdentityUserParams{ID: "usr_second_" + core.NewTaskID(), Email: "second-" + core.NewTaskID() + "@example.test", DisplayName: "Second"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.pool.Exec(t.Context(), `INSERT INTO workspace_role_bindings(workspace_id,user_id,role) VALUES($1,$2,'user')`, workspace, second.ID); err != nil {
+		t.Fatal(err)
+	}
+	userScopePAT, err := st.IssuePersonalAccessToken(t.Context(), second.ID, "issued as user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.pool.Exec(t.Context(), `UPDATE workspace_role_bindings SET role='operator' WHERE workspace_id=$1 AND user_id=$2`, workspace, second.ID); err != nil {
+		t.Fatal(err)
+	}
+	if response := callWithToken(userScopePAT.Value, http.MethodPost, "/v1/users", `{"email":"scope-denied@example.test","display_name":"Scope Denied"}`); response.Code != http.StatusUnauthorized {
+		t.Fatalf("user-scope PAT status=%d body=%s", response.Code, response.Body.String())
+	}
+	revokeCtx := store.WithCredential(store.WithWorkspace(operatorCtx, workspace), core.AuthenticatedCredential{ID: pat.ID, OwnerUserID: owner.ID, Kind: core.CredentialUser, Scope: core.CredentialScopeOperator})
+	if err := st.RevokeWorkspaceRole(revokeCtx, owner.ID, workspace); err != nil {
+		t.Fatal(err)
+	}
+	for _, request := range []struct{ method, path, body string }{
+		{http.MethodPost, "/v1/users", `{"email":"denied@example.test","display_name":"Denied"}`},
+		{http.MethodPost, "/v1/workspaces", `{}`},
+	} {
+		if response := call(request.method, request.path, request.body); response.Code != http.StatusUnauthorized {
+			t.Fatalf("revoked %s status=%d body=%s", request.path, response.Code, response.Body.String())
+		}
+	}
+	if _, err := st.pool.Exec(t.Context(), `INSERT INTO workspace_role_bindings(workspace_id,user_id,role) VALUES($1,$2,'operator')`, workspace, owner.ID); err != nil {
+		t.Fatal(err)
+	}
+	if response := call(http.MethodPost, "/v1/users", `{"email":"restored@example.test","display_name":"Restored"}`); response.Code != http.StatusCreated {
+		t.Fatalf("re-granted provisioning status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
 func TestHTTPMutationDerivesLegacyUserAndRejectsAgentCredentialIntegration(t *testing.T) {
 	st := newIdentityIntegrationStore(t, 0)
 	legacy := "legacy-http-token"
@@ -146,7 +272,8 @@ func TestHTTPMutationDerivesLegacyUserAndRejectsAgentCredentialIntegration(t *te
 		t.Fatal(err)
 	}
 	workspace := "identity-http-" + core.NewTaskID()
-	operatorCtx := store.WithActor(t.Context(), store.Actor{ID: store.UserActorID(principal.ID), Role: core.ActorUser})
+	operatorCtx := store.WithCredential(t.Context(), core.AuthenticatedCredential{ID: "legacy", OwnerUserID: principal.ID, Kind: core.CredentialUser, Scope: core.CredentialScopeOperator})
+	operatorCtx = store.WithActor(operatorCtx, store.Actor{ID: store.UserActorID(principal.ID), Role: core.ActorUser})
 	if _, err = st.CreateWorkspace(operatorCtx, workspace, workspace, &config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "conveyor", URL: "https://example.test/conveyor", Base: "main"}}}); err != nil {
 		t.Fatal(err)
 	}
