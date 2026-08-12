@@ -378,6 +378,10 @@ INSERT INTO events (workspace_id, task_id, job_id, kind, actor_id, actor_role, p
 VALUES ($1, NULL, NULL, $2, $3, $4, $5, $6)
 RETURNING *;
 
+-- name: InsertDeploymentEvent :exec
+INSERT INTO deployment_events (kind, actor_id, actor_role, payload_json, at)
+VALUES ($1, $2, $3, $4, $5);
+
 -- name: InsertLineageLink :exec
 INSERT INTO links (
     workspace_id, src_type, src_id, dst_type, dst_id, kind,

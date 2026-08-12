@@ -376,10 +376,27 @@ func (s *Server) requireMutationCapability(capability core.Capability) func(http
 					writeWorkspaceNotFound(w)
 					return
 				}
-			} else if credential.Scope != core.CredentialScopeOperator {
-				w.Header().Set("WWW-Authenticate", "Bearer")
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
-				return
+			} else {
+				if credential.Scope != core.CredentialScopeOperator {
+					w.Header().Set("WWW-Authenticate", "Bearer")
+					http.Error(w, "unauthorized", http.StatusUnauthorized)
+					return
+				}
+				// Memory-only tests and explicit non-durable deployments retain
+				// the configured-token fallback. Durable stores always expose the
+				// live membership authority through NewServer.
+				if s.Credentials != nil && s.Memberships != nil {
+					allowed, err := s.Memberships.AuthorizeDeployment(ctx, credential.OwnerUserID, capability)
+					if err != nil {
+						http.Error(w, err.Error(), http.StatusInternalServerError)
+						return
+					}
+					if !allowed {
+						w.Header().Set("WWW-Authenticate", "Bearer")
+						http.Error(w, "unauthorized", http.StatusUnauthorized)
+						return
+					}
+				}
 			}
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})

@@ -562,6 +562,11 @@ func requiredHarnesses(cfg *config.Config) (map[string]config.Harness, error) {
 // every order whose task is not held and whose frozen setup the worker's
 // healthy harnesses can serve.
 func (s *Service) ListClaimable(ctx context.Context, worker core.Worker) ([]DispatchOrder, error) {
+	if s.Store.IsDurable() {
+		if _, err := s.Store.AuthenticateWorker(ctx, worker.CredentialHash); err != nil {
+			return nil, err
+		}
+	}
 	cfg, err := s.ConfigProvider(ctx)
 	if err != nil {
 		return nil, err
@@ -677,6 +682,11 @@ func (s *Service) ListVisibleOrders(ctx context.Context, worker core.Worker) ([]
 // claim time — the same enforcement layer as the self-review guard — and the
 // claiming worker must probe healthy for every harness the order requires.
 func (s *Service) ClaimForWorker(ctx context.Context, worker core.Worker, id string, claim core.WorkOrderClaim) (core.WorkOrder, error) {
+	if s.Store.IsDurable() {
+		if _, err := s.Store.AuthenticateWorker(ctx, worker.CredentialHash); err != nil {
+			return core.WorkOrder{}, err
+		}
+	}
 	cfg, err := s.ConfigProvider(ctx)
 	if err != nil {
 		return core.WorkOrder{}, err

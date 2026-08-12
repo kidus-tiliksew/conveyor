@@ -499,6 +499,30 @@ func (q *Queries) InsertEvent(ctx context.Context, arg InsertEventParams) (Event
 	return i, err
 }
 
+const insertDeploymentEvent = `-- name: InsertDeploymentEvent :exec
+INSERT INTO deployment_events (kind, actor_id, actor_role, payload_json, at)
+VALUES ($1, $2, $3, $4, $5)
+`
+
+type InsertDeploymentEventParams struct {
+	Kind        string             `json:"kind"`
+	ActorID     string             `json:"actor_id"`
+	ActorRole   string             `json:"actor_role"`
+	PayloadJson []byte             `json:"payload_json"`
+	At          pgtype.Timestamptz `json:"at"`
+}
+
+func (q *Queries) InsertDeploymentEvent(ctx context.Context, arg InsertDeploymentEventParams) error {
+	_, err := q.db.Exec(ctx, insertDeploymentEvent,
+		arg.Kind,
+		arg.ActorID,
+		arg.ActorRole,
+		arg.PayloadJson,
+		arg.At,
+	)
+	return err
+}
+
 const insertIntervention = `-- name: InsertIntervention :one
 INSERT INTO interventions (
     task_id, job_id, actor_id, actor_role, action, reason_code, comment, at
