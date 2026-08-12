@@ -99,15 +99,15 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 		return nil, fmt.Errorf("%s requires an operator-scoped user credential", name)
 	}
 	explicitWorkspace := stringArg("workspace_id")
-	if workerAuth && explicitWorkspace == "" {
-		explicitWorkspace = worker.Workspace
-	}
 	workspace, err := s.resolveMCPWorkspace(r.Context(), explicitWorkspace)
 	if err != nil {
 		return nil, err
 	}
 	ctx := store.WithWorkspace(r.Context(), workspace)
-	if !workerAuth && s.Workspaces != nil && s.Memberships != nil {
+	if !workerAuth && s.Workspaces != nil {
+		if s.Memberships == nil {
+			return nil, fmt.Errorf("workspace_not_found: workspace not found")
+		}
 		credential, ok := store.CredentialFromContext(ctx)
 		if !ok {
 			return nil, fmt.Errorf("workspace_not_found: workspace not found")
@@ -395,13 +395,22 @@ func (s *Server) implementationGovernanceOrder(ctx context.Context, workerAuth b
 
 func (s *Server) resolveMCPWorkspace(ctx context.Context, explicit string) (string, error) {
 	explicit = strings.TrimSpace(explicit)
+	if worker, ok := workerFromContext(ctx); ok {
+		if explicit == "" || explicit == worker.Workspace {
+			return worker.Workspace, nil
+		}
+		return "", fmt.Errorf("workspace_not_found: workspace not found")
+	}
 	var items []core.Workspace
 	if s.Workspaces != nil {
+		if s.Memberships == nil {
+			return "", fmt.Errorf("workspace_not_found: workspace not found")
+		}
 		var err error
-		if credential, ok := store.CredentialFromContext(ctx); ok && s.Memberships != nil {
+		if credential, ok := store.CredentialFromContext(ctx); ok {
 			items, err = s.Memberships.ListWorkspacesForUser(ctx, credential.OwnerUserID)
 		} else {
-			items, err = s.Workspaces.ListWorkspaces(ctx)
+			return "", fmt.Errorf("workspace_not_found: workspace not found")
 		}
 		if err != nil {
 			return "", err

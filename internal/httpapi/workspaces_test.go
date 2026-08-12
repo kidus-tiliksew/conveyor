@@ -53,7 +53,11 @@ func (s workspaceAwareStore) ListActivityMarkers(context.Context) ([]store.Activ
 func TestWorkspaceContextFailsClosedAndIsolatesLists(t *testing.T) {
 	control := &fakeWorkspaceControl{items: []core.Workspace{{ID: "alpha", Name: "Alpha"}, {ID: "beta", Name: "Beta"}}}
 	srv := NewServer(workspaceAwareStore{Store: store.NewMemory(), tasks: map[string][]core.Task{"alpha": {{ID: "a", Workspace: "alpha"}}, "beta": {{ID: "b", Workspace: "beta"}}}})
-	srv.Workspaces, srv.BearerToken = control, "token"
+	memberships := &membershipFixture{
+		workspaces: control.items,
+		roles:      map[string]map[string]core.WorkspaceRole{"local-operator": {"alpha": core.WorkspaceRoleOperator, "beta": core.WorkspaceRoleOperator}},
+	}
+	srv.Workspaces, srv.Memberships, srv.BearerToken = control, memberships, "token"
 	h := srv.Handler()
 
 	ambiguous := httptest.NewRecorder()

@@ -49,12 +49,17 @@ func (s *Server) listWorkspaces(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, items)
 		return
 	}
+	if s.Memberships == nil {
+		writeWorkspaceNotFound(w)
+		return
+	}
 	var items []core.Workspace
 	var err error
-	if credential, ok := store.CredentialFromContext(r.Context()); ok && s.Memberships != nil {
+	if credential, ok := store.CredentialFromContext(r.Context()); ok {
 		items, err = s.Memberships.ListWorkspacesForUser(r.Context(), credential.OwnerUserID)
 	} else {
-		items, err = s.Workspaces.ListWorkspaces(r.Context())
+		writeWorkspaceNotFound(w)
+		return
 	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -101,6 +106,10 @@ func (s *Server) grantWorkspaceMembership(w http.ResponseWriter, r *http.Request
 func (s *Server) revokeWorkspaceMembership(w http.ResponseWriter, r *http.Request) {
 	workspaceID, _ := store.WorkspaceFromContext(r.Context())
 	if err := s.Memberships.RevokeWorkspaceRole(r.Context(), chi.URLParam(r, "user_id"), workspaceID); err != nil {
+		if errors.Is(err, store.ErrLastWorkspaceOperator) {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "last_workspace_operator", "message": err.Error()})
+			return
+		}
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
@@ -115,7 +124,7 @@ func (s *Server) getWorkspaceRecord(w http.ResponseWriter, r *http.Request) {
 	}
 	item, err := s.Workspaces.GetWorkspace(r.Context(), id)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
+		writeWorkspaceNotFound(w)
 		return
 	}
 	writeJSON(w, http.StatusOK, item)
@@ -265,11 +274,16 @@ func (s *Server) resolveWorkspaceContext(next http.Handler) http.Handler {
 		}
 		var items []core.Workspace
 		if s.Workspaces != nil {
+			if s.Memberships == nil {
+				writeWorkspaceNotFound(w)
+				return
+			}
 			var err error
-			if credential, ok := store.CredentialFromContext(r.Context()); ok && s.Memberships != nil {
+			if credential, ok := store.CredentialFromContext(r.Context()); ok {
 				items, err = s.Memberships.ListWorkspacesForUser(r.Context(), credential.OwnerUserID)
 			} else {
-				items, err = s.Workspaces.ListWorkspaces(r.Context())
+				writeWorkspaceNotFound(w)
+				return
 			}
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
