@@ -3494,6 +3494,23 @@ test('failed merge restores the existing error and retry action', async ({ page 
   await expect.poll(() => attempts).toBe(2)
 })
 
+test('merge gate sends user feedback through request changes', async ({ page }) => {
+  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'member-token'))
+  let feedback = ''
+  await page.route('**/v1/tasks/merge-failure/request-changes*', async (route) => {
+    feedback = ((await route.request().postDataJSON()) as { feedback: string }).feedback
+    await route.fulfill({ json: { task: activity('merge-failure', false).task, feedback } })
+  })
+
+  await page.goto('/tasks/merge-failure/full')
+  const gate = page.getByRole('region', { name: 'Human gate' })
+  await gate.getByRole('button', { name: 'Request changes' }).click()
+  await gate.getByLabel('Redirect feedback').fill('Keep this exact feedback.')
+  await gate.getByRole('button', { name: 'Send feedback' }).click()
+
+  await expect.poll(() => feedback).toBe('Keep this exact feedback.')
+})
+
 test('conflicting readiness makes the idempotent fix dispatch primary', async ({ page }) => {
   await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
   let dispatches = 0

@@ -146,6 +146,18 @@ func (c *client) reviewTask(id string, action core.InterventionAction, reasonCod
 	return response.Task, err
 }
 
+func (c *client) requestTaskChanges(id, feedback string) (core.Task, error) {
+	if c.token == "" {
+		return core.Task{}, fmt.Errorf("CONVEYOR_API_TOKEN is required to request changes")
+	}
+	payload, _ := json.Marshal(map[string]string{"feedback": feedback})
+	var response struct {
+		Task core.Task `json:"task"`
+	}
+	err := c.do(http.MethodPost, "/v1/tasks/"+id+"/request-changes", payload, &response)
+	return response.Task, err
+}
+
 func (c *client) closeTask(id, reason string) (core.Task, error) {
 	if c.token == "" {
 		return core.Task{}, fmt.Errorf("CONVEYOR_API_TOKEN is required for task close")

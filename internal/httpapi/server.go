@@ -139,6 +139,7 @@ func (s *Server) Handler() http.Handler {
 			r.With(s.requireTaskRunAuth).Get("/tasks/{id}/run-orders/{order_id}/reconcile", s.reconcileTaskRunOrder)
 			r.With(s.requireTaskRunAuth).Post("/tasks/{id}/run-orders/{order_id}/attempt-checkpoint", s.checkpointTaskRunOrderAttempt)
 			r.With(s.requireTaskRunAuth).Post("/tasks/{id}/run-orders/{order_id}/release", s.releaseTaskRunOrder)
+			r.With(s.requireTaskRunAuth, s.requireWorkspaceCapability(core.CapabilityRequestChanges)).Post("/tasks/{id}/request-changes", s.requestTaskChanges)
 			r.Get("/reviews", s.listReviews)
 			r.Get("/workspace", s.getWorkspace)
 			r.Get("/work-orders", s.listWorkOrders)
@@ -1073,7 +1074,7 @@ func (s *Server) listActivityFiltered(w http.ResponseWriter, r *http.Request, fi
 		if core.TaskTerminal(task.State) {
 			marker.Stalled = nil
 		}
-		if reviewsOnly && !reviewable(task.State) && marker.ForgeFailure == nil && marker.ReviewRecovery == nil && marker.InterruptedReviewRecovery == nil && marker.Stalled == nil && !pendingAuthority[task.ID] {
+		if reviewsOnly && !reviewable(task.State) && marker.ForgeFailure == nil && marker.ReviewRecovery == nil && marker.InterruptedReviewRecovery == nil && marker.Stalled == nil && !marker.UserChangesRequested && !pendingAuthority[task.ID] {
 			continue
 		}
 		// Project the existing presentation-only authority signal without
@@ -1570,7 +1571,7 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, reviewItem{
 		Task: task, Jobs: jobs, Events: events, Interventions: interventions,
 		CheckoutCommand: checkoutCommand, CheckoutAvailable: checkoutAvailable, CheckoutGuidance: checkoutGuidance,
-		NeedsAttention:            task.State == core.TaskAwaiting || task.State == core.TaskParked || store.LatestForgeFailure(events) != nil || store.ReviewRecoveryNeeded(workOrders, events) != nil || store.InterruptedReviewRecoveryNeeded(workOrders) != nil || stalled != nil || pendingAuthority,
+		NeedsAttention:            task.State == core.TaskAwaiting || task.State == core.TaskParked || store.LatestForgeFailure(events) != nil || store.ReviewRecoveryNeeded(workOrders, events) != nil || store.InterruptedReviewRecoveryNeeded(workOrders) != nil || stalled != nil || store.UserRequestChangesPending(events) || pendingAuthority,
 		PendingAuthority:          pendingAuthority,
 		ForgeFailure:              store.LatestForgeFailure(events),
 		Spec:                      specPointer,

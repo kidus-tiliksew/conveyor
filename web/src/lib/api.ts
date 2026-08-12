@@ -799,6 +799,16 @@ export async function reviewTask(taskId: string, token: string, input: ReviewInp
   }>
 }
 
+export async function requestTaskChanges(taskId: string, token: string, feedback: string) {
+  const response = await fetch(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/request-changes`), {
+    method: 'POST',
+    headers: mutationHeaders(token),
+    body: JSON.stringify({ feedback }),
+  })
+  if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
+  return response.json() as Promise<{ task: Task; feedback: string }>
+}
+
 export async function mergeTask(taskId: string, token: string) {
   const response = await fetch(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/merge`), {
     method: 'POST',

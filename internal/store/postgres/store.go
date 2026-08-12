@@ -1400,6 +1400,90 @@ func (s *Store) ApplyTaskCommand(ctx context.Context, lease taskops.TaskLease, i
 	return result, err
 }
 
+func (s *Store) RequestChangesCommand(ctx context.Context, lease taskops.TaskLease, request taskops.RequestChanges) (core.Task, error) {
+	if !lease.ValidForCommand(request.TaskID, taskops.RequestChangesCommand) {
+		return core.Task{}, fmt.Errorf("request changes requires a valid taskops lease")
+	}
+	if strings.TrimSpace(request.Feedback) == "" {
+		return core.Task{}, fmt.Errorf("feedback is required")
+	}
+	actor := store.ActorFromContext(ctx)
+	if actor.Role != core.ActorUser {
+		return core.Task{}, fmt.Errorf("request changes requires a user actor")
+	}
+	var result core.Task
+	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		key := "conveyor:task-operation:" + workspace(ctx) + ":" + request.TaskID
+		if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtext($1))", key); err != nil {
+			return err
+		}
+		row, err := q.GetTask(ctx, db.GetTaskParams{ID: request.TaskID, WorkspaceID: workspace(ctx)})
+		if err != nil {
+			return notFound(err, "task %s", request.TaskID)
+		}
+		before := taskFromDB(row)
+		var latestPayload []byte
+		events := []core.Event{}
+		if err = tx.QueryRow(ctx, `SELECT e.payload_json FROM events e JOIN tasks t ON t.id=e.task_id WHERE t.workspace_id=$1 AND e.task_id=$2 AND e.kind='task.state_changed' ORDER BY e.id DESC LIMIT 1`, workspace(ctx), request.TaskID).Scan(&latestPayload); err != nil {
+			return err
+		}
+		events = append(events, core.Event{Kind: "task.state_changed", Payload: latestPayload})
+		if !store.AtMergeGate(before, events) {
+			return fmt.Errorf("task %s is not at the merge gate", request.TaskID)
+		}
+		if request.JobID != "" {
+			job, jobErr := q.GetJob(ctx, db.GetJobParams{ID: request.JobID, WorkspaceID: workspace(ctx)})
+			if jobErr != nil || job.TaskID != request.TaskID || core.Stage(job.Stage) != core.StageReview {
+				return fmt.Errorf("review job %s does not belong to task %s", request.JobID, request.TaskID)
+			}
+		}
+		count, err := q.CountEvents(ctx, db.CountEventsParams{TaskID: nullableText(request.TaskID), Kind: "pipeline.bounced", WorkspaceID: workspace(ctx)})
+		if err != nil {
+			return err
+		}
+		plan := store.PlanChangesRequested(store.ChangesRequestedInput{
+			TaskID: request.TaskID, JobID: request.JobID, ActorID: actor.ID, ActorRole: actor.Role,
+			ReasonCode: store.UserRequestChangesReason, Feedback: request.Feedback, Source: store.UserRequestChangesSource,
+			Count: int(count) + 1, Window: 1, MaxBounces: request.MaxBounces, Requeue: core.TaskInterventionRedirect,
+		})
+		state, err := core.TransitionTask(before.State, plan.Command)
+		if err != nil {
+			return err
+		}
+		if _, err = q.InsertIntervention(ctx, interventionInsertParams(plan.Intervention)); err != nil {
+			return err
+		}
+		for _, event := range plan.Events {
+			if err = insertEvent(ctx, q, event); err != nil {
+				return err
+			}
+		}
+		updated, err := q.UpdateTaskTransition(ctx, db.UpdateTaskTransitionParams{ID: request.TaskID, WorkspaceID: workspace(ctx), State: string(state), NextStage: string(plan.NextStage), RecoveryStage: string(plan.Recovery)})
+		if err != nil {
+			return err
+		}
+		result = taskFromDB(updated)
+		if request.Hold && !before.Hold {
+			if _, err = tx.Exec(ctx, `UPDATE tasks SET hold=true,updated_at=now() WHERE workspace_id=$1 AND id=$2`, workspace(ctx), request.TaskID); err != nil {
+				return err
+			}
+			result.Hold = true
+			if err = insertEvent(ctx, q, core.Event{TaskID: request.TaskID, Kind: "task.hold_changed", ActorID: actor.ID, ActorRole: actor.Role, Payload: core.JSONPayload(map[string]any{"hold": true, "reason_code": store.UserRequestChangesReason})}); err != nil {
+				return err
+			}
+		}
+		if err = insertEvent(ctx, q, core.Event{TaskID: request.TaskID, Kind: "task.state_changed", ActorID: actor.ID, ActorRole: actor.Role, Payload: core.JSONPayload(map[string]any{"from": before.State, "to": state, "command": plan.Command})}); err != nil {
+			return err
+		}
+		if err = insertEvent(ctx, q, core.Event{TaskID: request.TaskID, Kind: "pipeline.transition_decided", ActorID: actor.ID, ActorRole: actor.Role, Payload: core.JSONPayload(map[string]any{"from_stage": before.NextStage, "next_stage": plan.NextStage, "recovery_stage": plan.Recovery, "state": state})}); err != nil {
+			return err
+		}
+		_, err = s.enqueueTaskTx(ctx, tx, request.TaskID, row.WorkspaceID)
+		return err
+	})
+	return result, err
+}
+
 // closeBlueprintParentTx applies the level-triggered blueprint close edge
 // while holding the same task-operation lock as every ordinary lifecycle
 // command and a row lock shared with human cancellation. State and child
@@ -2770,6 +2854,32 @@ func (s *Store) listActivityMarkers(ctx context.Context, taskIDs []string) ([]st
 		}
 		lifecycleRows.Close()
 	}
+	requestEventsByTask := make(map[string][]core.Event)
+	requestQuery := `SELECT e.id,e.task_id,COALESCE(e.job_id,''),e.kind,e.payload_json,e.at
+		FROM events e JOIN tasks t ON t.id=e.task_id
+		WHERE t.workspace_id=$1 AND e.kind IN ('pipeline.bounced','work_order.claimed') ORDER BY e.at,e.id`
+	requestArgs := []any{workspace(ctx)}
+	if len(taskIDs) > 0 {
+		requestQuery = strings.Replace(requestQuery, " AND e.kind IN", " AND t.id=ANY($2::text[]) AND e.kind IN", 1)
+		requestArgs = append(requestArgs, taskIDs)
+	}
+	requestRows, err := s.pool.Query(ctx, requestQuery, requestArgs...)
+	if err != nil {
+		return nil, err
+	}
+	for requestRows.Next() {
+		var event core.Event
+		if scanErr := requestRows.Scan(&event.ID, &event.TaskID, &event.JobID, &event.Kind, &event.Payload, &event.At); scanErr != nil {
+			requestRows.Close()
+			return nil, scanErr
+		}
+		requestEventsByTask[event.TaskID] = append(requestEventsByTask[event.TaskID], event)
+	}
+	if err = requestRows.Err(); err != nil {
+		requestRows.Close()
+		return nil, err
+	}
+	requestRows.Close()
 	forgeEventsByTask := make(map[string][]core.Event)
 	forgeQuery := `SELECT e.id,e.task_id,COALESCE(e.job_id,''),e.kind,e.payload_json,e.at
 		FROM events e JOIN tasks t ON t.id=e.task_id
@@ -2809,6 +2919,7 @@ func (s *Store) listActivityMarkers(ctx context.Context, taskIDs []string) ([]st
 			ReviewRecovery:            store.ReviewRecoveryNeeded(ordersByTask[row.taskID], eventsByTask[row.taskID]),
 			InterruptedReviewRecovery: store.InterruptedReviewRecoveryNeeded(store.CurrentReviewOrders(ordersByTask[row.taskID], eventsByTask[row.taskID])),
 			Stalled:                   store.StalledTask(ordersByTask[row.taskID]),
+			UserChangesRequested:      store.UserRequestChangesPending(requestEventsByTask[row.taskID]),
 		}
 	}
 	return result, nil
@@ -4855,25 +4966,22 @@ func (s *Store) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.T
 			}
 			count++
 			window++
-			now := time.Now().UTC()
 			actorID := fmt.Sprintf("review:round:%d", decision.ReviewRound)
-			intervention := core.Intervention{TaskID: decision.TaskID, JobID: decision.JobID, ActorID: actorID, ActorRole: core.ActorAgent, Action: core.InterventionRedirect, ReasonCode: aggregate.ReasonCode, Comment: aggregate.Feedback, At: now}
-			if _, err = q.InsertIntervention(ctx, interventionInsertParams(intervention)); err != nil {
+			plan := store.PlanChangesRequested(store.ChangesRequestedInput{
+				TaskID: decision.TaskID, JobID: decision.JobID, ActorID: actorID, ActorRole: core.ActorAgent,
+				ReasonCode: aggregate.ReasonCode, Feedback: aggregate.Feedback, Source: "mcp-review-panel",
+				Count: int(count), Window: int(window), MaxBounces: decision.MaxBounces, ReviewRound: decision.ReviewRound,
+				Reviews: aggregate.Reviews, Requeue: core.TaskStageAdvance, EnforceLimit: true,
+			})
+			if _, err = q.InsertIntervention(ctx, interventionInsertParams(plan.Intervention)); err != nil {
 				return err
 			}
-			if err = insertEvent(ctx, q, core.Event{TaskID: decision.TaskID, JobID: decision.JobID, Kind: "intervention.redirect", ActorID: actorID, ActorRole: core.ActorAgent, At: now, Payload: core.JSONPayload(map[string]any{"reason_code": aggregate.ReasonCode, "comment": aggregate.Feedback, "review_round": decision.ReviewRound, "reviews": aggregate.Reviews})}); err != nil {
-				return err
+			for _, event := range plan.Events {
+				if err = insertEvent(ctx, q, event); err != nil {
+					return err
+				}
 			}
-			if err = insertEvent(ctx, q, core.Event{TaskID: decision.TaskID, JobID: decision.JobID, Kind: "pipeline.bounced", Payload: core.JSONPayload(map[string]any{"from": "review", "to": "implement", "reason_code": aggregate.ReasonCode, "feedback": aggregate.Feedback, "reviews": aggregate.Reviews, "count": count, "source": "mcp-review-panel", "review_round": decision.ReviewRound})}); err != nil {
-				return err
-			}
-			if int(window) < decision.MaxBounces {
-				command, next, recovery = core.TaskStageAdvance, core.StageImplement, ""
-			} else if err := insertEvent(ctx, q, core.Event{TaskID: decision.TaskID, JobID: decision.JobID, Kind: "pipeline.bounce_limit", Payload: core.JSONPayload(map[string]any{"count": count, "window": window, "max_bounces": decision.MaxBounces, "review_round": decision.ReviewRound})}); err != nil {
-				return err
-			} else {
-				command = core.TaskStageBounceLimit
-			}
+			command, next, recovery = plan.Command, plan.NextStage, plan.Recovery
 		} else if decision.ReviewKind == "refresh" || (decision.PolicyVersion > 0 && !decision.MergeApproval) || (decision.PolicyVersion == 0 && decision.Level == core.L0) {
 			autoApprove, recovery = true, ""
 		}
