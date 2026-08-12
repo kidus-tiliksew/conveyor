@@ -73,6 +73,89 @@ func collectRelationRows(node explainPlanNode, relation string, rows *[]float64)
 	}
 }
 
+func TestListLineageNeighborhoodRanksAdjacentParentsAcrossDepths(t *testing.T) {
+	st, ctx, workspace := newPhase61IntegrationStore(t)
+	defer st.Close()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	rootID := "ranking-root"
+	if err := st.CreateTask(ctx, core.Task{ID: rootID, Workspace: workspace, Repo: "conveyor", BaseBranch: "main",
+		Branch: "conveyor/task-" + rootID, State: core.TaskRunning, CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+
+	var lowEventID, highEventID int64
+	for index, destination := range []*int64{&lowEventID, &highEventID} {
+		if err := st.pool.QueryRow(ctx, `INSERT INTO events
+			(workspace_id,task_id,kind,actor_id,actor_role,payload_json,at)
+			VALUES ($1,$2,'lineage.ranking_fixture','test','system',$3,$4) RETURNING id`,
+			workspace, rootID, core.JSONPayload(map[string]any{"index": index}), now.Add(time.Duration(index)*time.Second)).Scan(destination); err != nil {
+			t.Fatal(err)
+		}
+	}
+	insertLink := func(srcID, dstID, kind string, createdAt time.Time, eventID any) {
+		t.Helper()
+		var legacyEvent any
+		if eventID == nil {
+			legacyEvent = "legacy.ranking_fixture"
+		}
+		if _, err := st.pool.Exec(ctx, `INSERT INTO links
+			(workspace_id,src_type,src_id,dst_type,dst_id,kind,created_at,created_by_event_id,legacy_created_by_event)
+			VALUES ($1,'task',$2,'task',$3,$4,$5,$6,$7)`, workspace, srcID, dstID, kind, createdAt, eventID, legacyEvent); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	parents := []struct {
+		id   string
+		kind string
+	}{
+		{id: "ranking-parent-serves", kind: "serves"},
+		{id: "ranking-parent-materializes", kind: "materializes"},
+		{id: "ranking-parent-supports", kind: "supports"},
+	}
+	for index, parent := range parents {
+		insertLink(rootID, parent.id, parent.kind, now.Add(time.Duration(index)*time.Second), lowEventID)
+	}
+
+	candidates := []struct {
+		id        string
+		kind      string
+		createdAt time.Time
+		eventID   any
+		selected  bool
+	}{
+		{id: "ranking-depth2-serves", kind: "serves", createdAt: now.Add(10 * time.Second), eventID: highEventID, selected: true},
+		{id: "ranking-depth2-earlier", kind: "materializes", createdAt: now.Add(20 * time.Second), eventID: highEventID, selected: true},
+		{id: "ranking-depth2-null-event", kind: "materializes", createdAt: now.Add(30 * time.Second), selected: true},
+		{id: "ranking-depth2-low-event", kind: "materializes", createdAt: now.Add(30 * time.Second), eventID: lowEventID, selected: true},
+		{id: "ranking-depth2-high-event", kind: "materializes", createdAt: now.Add(30 * time.Second), eventID: highEventID},
+		{id: "ranking-depth2-depends", kind: "depends_on", createdAt: now, eventID: lowEventID},
+	}
+	for _, candidate := range candidates {
+		for _, parent := range parents {
+			insertLink(parent.id, candidate.id, candidate.kind, candidate.createdAt, candidate.eventID)
+		}
+		insertLink(candidate.id, candidate.id+"-marker", "consulted", now.Add(time.Minute), highEventID)
+	}
+
+	budget := core.LineageTraversalBudget{MaxDepth: 3, MaxNodes: 1 + len(parents) + 4, Workspace: workspace}
+	links, err := st.ListLineageNeighborhood(ctx, []core.LineageNode{{Type: core.LineageTask, ID: rootID}}, budget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	markers := make(map[string]bool)
+	for _, link := range links {
+		if link.Kind == "consulted" && link.SrcID != rootID {
+			markers[link.SrcID] = true
+		}
+	}
+	for _, candidate := range candidates {
+		if markers[candidate.id] != candidate.selected {
+			t.Fatalf("marker selection for %s = %v, want %v; markers=%v", candidate.id, markers[candidate.id], candidate.selected, markers)
+		}
+	}
+}
+
 func TestPostgresLineageRebuildPreservesLiveShapedUnregenerableLinks(t *testing.T) {
 	st, ctx, workspace := newPhase61IntegrationStore(t)
 	defer st.Close()
