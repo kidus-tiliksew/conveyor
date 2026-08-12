@@ -18,6 +18,12 @@ const attachedContext: Record<string, { requirements?: AttachedDocument[]; desig
   'design-proposal': {
     designs: [{ id: 'design-lifecycle', title: 'Work-order lifecycle', version: 1 }],
   },
+  'design-proposal-queued': {
+    designs: [{ id: 'design-lifecycle', title: 'Work-order lifecycle', version: 1 }],
+  },
+  'proposal-only': {
+    designs: [{ id: 'design-lifecycle', title: 'Work-order lifecycle', version: 1 }],
+  },
   // Carries a different document than the one it proposed against, so its own
   // pending version stays on the document's attention surface.
   'unattached-proposal': {
@@ -1503,18 +1509,20 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
       state:
         taskId === 'gate' || taskId === 'evidence' || taskId === 'human-gate-worker-scope'
           ? 'awaiting_human'
-          : taskId === 'parked'
-            ? 'parked'
-            : taskId === 'blueprint-parent' ||
-                taskId === 'blueprint-child' ||
-                taskId === 'blocked-refresh' ||
-                taskId === 'blocked-suppressed' ||
-                taskId === 'spec-while-blocked' ||
-                taskId === 'unsatisfiable'
-              ? 'queued'
-              : taskId.startsWith('merge-')
-                ? 'approved'
-                : 'running',
+          : taskId === 'design-proposal-queued'
+            ? 'queued'
+            : taskId === 'parked'
+              ? 'parked'
+              : taskId === 'blueprint-parent' ||
+                  taskId === 'blueprint-child' ||
+                  taskId === 'blocked-refresh' ||
+                  taskId === 'blocked-suppressed' ||
+                  taskId === 'spec-while-blocked' ||
+                  taskId === 'unsatisfiable'
+                ? 'queued'
+                : taskId.startsWith('merge-')
+                  ? 'approved'
+                  : 'running',
       next_stage: taskId === 'parked' ? '' : 'implement',
       recovery_stage: taskId === 'parked' ? 'triage' : '',
       setup: taskId.startsWith('setup-') ? 'old' : '',
@@ -1599,7 +1607,7 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
       created_at: createdAt,
       context: attachedContext[taskId],
     },
-    pending_authority: taskId === 'design-proposal',
+    pending_authority: taskId === 'design-proposal' || taskId === 'design-proposal-queued',
     jobs: reviewActivity.jobs,
     events:
       taskId === 'blueprint-parent'
@@ -3862,23 +3870,41 @@ test("a task's own System Design proposal is confirmable from its detail and cle
   await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'test-token'))
   await page.route('**/v1/workspaces', (route) => route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] }))
   let confirmed = false
+  let pendingAuthority = true
   let confirmHeaders: Record<string, string> = {}
+  let releaseActivityEvent = () => {}
+  const activityEvent = new Promise<void>((resolve) => {
+    releaseActivityEvent = resolve
+  })
+  await page.route('**/v1/tasks/design-proposal/activity*', (route) => {
+    const item = activity('design-proposal', false)
+    return route.fulfill({ json: { ...item, pending_authority: pendingAuthority } })
+  })
+  await page.route('**/v1/tasks/design-proposal/events/stream*', async (route) => {
+    await activityEvent
+    await route.fulfill({ contentType: 'text/event-stream', body: 'event: activity\ndata: {}\n\n' })
+  })
   await page.route('**/v1/system-designs**', (route) =>
     route.fulfill({ json: designCollection('design-proposal', confirmed) }),
   )
   await page.route('**/v1/system-designs/design-lifecycle/versions/2/confirm**', async (route) => {
     confirmHeaders = route.request().headers()
     confirmed = true
+    pendingAuthority = false
     await route.fulfill({ json: {} })
+    releaseActivityEvent()
   })
 
   await page.goto('/tasks/design-proposal/full')
-  await expect(page.getByRole('region', { name: 'Review is waiting on a document decision' })).toContainText(
-    'This review cannot be claimed until you confirm or dismiss',
-  )
-  const card = page.getByRole('region', { name: 'System Design proposals from this task' })
+  const card = page.getByRole('region', { name: 'Review is waiting on a document decision' })
+  await expect(card).toHaveCount(1)
+  await expect(card).toContainText('This review cannot be claimed until you confirm or dismiss')
   await expect(card).toContainText('System Design update proposed')
   await expect(card).toContainText('Version 2 proposed by this task')
+  await expect(card.getByRole('link', { name: 'Confirm or dismiss the proposal' })).toHaveAttribute(
+    'href',
+    /pending-proposals.*task=design-proposal/,
+  )
   await expect(card.getByRole('link', { name: 'Work-order lifecycle' })).toHaveAttribute(
     'href',
     /system-design.*document=design-lifecycle/,
@@ -3888,15 +3914,17 @@ test("a task's own System Design proposal is confirmable from its detail and cle
   await page.evaluate(() => ((window as unknown as { noReload?: boolean }).noReload = true))
   await card.getByRole('button', { name: 'Confirm version 2' }).click()
   await expect(card).toHaveCount(0)
+  await expect(page.getByText('Review is waiting on a System Design decision')).toHaveCount(0)
   expect(await page.evaluate(() => (window as unknown as { noReload?: boolean }).noReload)).toBe(true)
   expect(confirmHeaders.authorization).toBe('Bearer test-token')
   expect(confirmHeaders['if-match']).toBe('"1"')
 
   // The same composition carries it on the sheet route, not just the full page.
   confirmed = false
+  pendingAuthority = true
   await page.goto('/tasks/design-proposal')
   await expect(
-    page.getByRole('region', { name: 'System Design proposals from this task' }).getByRole('button', {
+    page.getByRole('region', { name: 'Review is waiting on a document decision' }).getByRole('button', {
       name: 'Confirm version 2',
     }),
   ).toBeVisible()
@@ -3909,8 +3937,43 @@ test('task detail renders no proposal card for a pending version another task ra
 
   await page.goto('/tasks/design-proposal/full')
   await expect(page.getByRole('region', { name: 'Activity' })).toBeVisible()
+  await expect(page.getByRole('region', { name: 'Review is waiting on a document decision' })).toContainText(
+    'Confirm or dismiss the proposal',
+  )
   await expect(page.getByRole('region', { name: 'System Design proposals from this task' })).toHaveCount(0)
   await expect(page.getByText('System Design update proposed')).toHaveCount(0)
+})
+
+test('task detail renders a proposal-only card without the review-gate headline', async ({ page }) => {
+  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'test-token'))
+  await page.route('**/v1/workspaces', (route) => route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] }))
+  await page.route('**/v1/system-designs**', (route) =>
+    route.fulfill({ json: designCollection('proposal-only', false) }),
+  )
+
+  await page.goto('/tasks/proposal-only/full')
+  const card = page.getByRole('region', { name: 'System Design proposals from this task' })
+  await expect(card).toContainText('System Design update proposed')
+  await expect(card.getByRole('button', { name: 'Confirm version 2' })).toBeVisible()
+  await expect(card).not.toContainText('Review is waiting on a System Design decision')
+})
+
+test('task detail keeps merged attention ahead of Redispatch in the timeline tail', async ({ page }) => {
+  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'test-token'))
+  await page.route('**/v1/workspaces', (route) => route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] }))
+  await page.route('**/v1/system-designs**', (route) =>
+    route.fulfill({ json: designCollection('design-proposal-queued', false) }),
+  )
+
+  await page.goto('/tasks/design-proposal-queued/full')
+  const merged = page.getByRole('region', { name: 'Review is waiting on a document decision' })
+  await expect(merged).toContainText('System Design update proposed')
+  await expect(page.getByRole('button', { name: 'Redispatch' })).toBeVisible()
+  const rowText = await page.getByRole('region', { name: 'Activity' }).locator('ol > li').allTextContents()
+  const attentionIndex = rowText.findIndex((text) => text.includes('Review is waiting on a System Design decision'))
+  const redispatchIndex = rowText.findIndex((text) => text.includes('Queued — re-enqueue if dispatch stalled'))
+  expect(attentionIndex).toBeGreaterThanOrEqual(0)
+  expect(redispatchIndex).toBeGreaterThan(attentionIndex)
 })
 
 // The read is the workspace-wide collection, so origin alone would carry a

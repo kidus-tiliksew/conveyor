@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { Check, FileText } from 'lucide-react'
+import { AlertTriangle, Check, FileText } from 'lucide-react'
 import { confirmSystemDesignVersion, fetchSystemDesigns, SystemDesignConflictError } from '../../lib/api'
 import { errorMessage } from '../../lib/errors'
 import type { SystemDesignVersion, SystemDesignView, Task } from '../../lib/types'
@@ -78,11 +78,18 @@ export function useSystemDesignProposals(task: Task): Proposal[] {
  * attention surface as the only document-side rendering, and drift and
  * staleness are not rendered here at all.
  */
-export function SystemDesignProposalCard({ task }: { task: Task }) {
+export function SystemDesignProposalCard({
+  task,
+  proposals,
+  reviewWaiting = false,
+}: {
+  task: Task
+  proposals: Proposal[]
+  reviewWaiting?: boolean
+}) {
   const token = useOperatorToken()
   const { workspace } = useWorkspaceSelection()
   const client = useQueryClient()
-  const proposals = useSystemDesignProposals(task)
   const confirm = useMutation({
     mutationFn: (proposal: Proposal) =>
       confirmSystemDesignVersion(token, proposal.document.id, proposal.version.version, proposal.expected),
@@ -100,9 +107,18 @@ export function SystemDesignProposalCard({ task }: { task: Task }) {
 
   return (
     <section
-      aria-label="System Design proposals from this task"
+      aria-label={reviewWaiting ? 'Review is waiting on a document decision' : 'System Design proposals from this task'}
       className="space-y-3 rounded-lg border border-attention/40 bg-attention-soft px-3 py-3"
     >
+      {reviewWaiting && (
+        <div className="flex items-start gap-2">
+          <AlertTriangle className="mt-0.5 size-4 shrink-0 text-attention" aria-hidden />
+          <div className="text-xs leading-5 text-muted">
+            <p className="font-medium text-attention">Review is waiting on a System Design decision</p>
+            <p>This review cannot be claimed until you confirm or dismiss the task&apos;s pending proposal.</p>
+          </div>
+        </div>
+      )}
       {proposals.map((proposal) => {
         const active = confirm.variables != null && identity(confirm.variables) === identity(proposal)
         return (
@@ -134,6 +150,15 @@ export function SystemDesignProposalCard({ task }: { task: Task }) {
           </div>
         )
       })}
+      {reviewWaiting && (
+        <Link
+          to="/pending-proposals"
+          search={{ task: task.id }}
+          className="inline-block text-xs font-medium text-primary hover:underline"
+        >
+          Confirm or dismiss the proposal
+        </Link>
+      )}
     </section>
   )
 }

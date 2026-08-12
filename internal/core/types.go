@@ -363,6 +363,16 @@ type AuthenticatedCredential struct {
 	Scope       CredentialScope
 }
 
+// TaskRunClaimantPrefix distinguishes an explicit user invocation from worker
+// auto-dispatch without storing local execution configuration (REQ-5, AC-5.1).
+const TaskRunClaimantPrefix = "run:"
+
+func TaskRunClaimantID(userID string) string { return TaskRunClaimantPrefix + userID }
+
+func IsTaskRunClaimantID(claimantID string) bool {
+	return strings.HasPrefix(claimantID, TaskRunClaimantPrefix) && len(claimantID) > len(TaskRunClaimantPrefix)
+}
+
 func (action InterventionAction) Valid() bool {
 	for _, valid := range InterventionActions() {
 		if action == valid {

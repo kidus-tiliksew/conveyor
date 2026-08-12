@@ -39,6 +39,7 @@ func main() {
 		monitorCmd(),
 		workerCmd(),
 		initCmd(),
+		runCmd(),
 		checkoutCmd(),
 		lineageCmd(),
 		doneCmd(),
