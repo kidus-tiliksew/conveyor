@@ -13,12 +13,13 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 )
 
-var ErrInvalidPersonalAccessToken = errors.New("invalid personal access token")
+var ErrInvalidPersonalAccessToken = core.ErrInvalidCredential
 
 type IdentityUser struct {
 	ID          string
@@ -49,9 +50,8 @@ type IssuedAgentCredential struct {
 	Value  string
 }
 
-// BootstrapIdentity seeds the singleton organization, first operator, and the
-// legacy shared bearer token exactly once. The transaction lock makes parallel
-// daemon starts converge without replacing any existing identity row.
+// BootstrapIdentity ensures that the configured legacy token maps to a usable
+// operator. The advisory lock makes upgrade recovery and rotation idempotent.
 func (s *Store) BootstrapIdentity(ctx context.Context, identity config.FirstOperatorIdentity, legacyToken string) (bool, error) {
 	identity.Email = strings.ToLower(strings.TrimSpace(identity.Email))
 	identity.DisplayName = strings.TrimSpace(identity.DisplayName)
@@ -75,38 +75,119 @@ func (s *Store) BootstrapIdentity(ctx context.Context, identity config.FirstOper
 		return false, fmt.Errorf("lock identity bootstrap: %w", err)
 	}
 	q := s.queries.WithTx(tx)
-	count, err := q.CountUsers(ctx)
-	if err != nil {
-		return false, fmt.Errorf("count identity users: %w", err)
+	hash := sha256.Sum256([]byte(legacyToken))
+	var legacy struct {
+		id, userID, status, kind, scope string
+		tokenHash                       []byte
+		revoked                         pgtype.Timestamptz
 	}
-	if count != 0 {
+	legacyErr := tx.QueryRow(ctx, `SELECT t.id,t.user_id,t.token_hash,t.kind,t.scope,t.revoked_at,u.status
+		FROM user_tokens t JOIN users u ON u.id=t.user_id
+		WHERE t.label='legacy API token' AND t.kind='user'`).Scan(
+		&legacy.id, &legacy.userID, &legacy.tokenHash, &legacy.kind, &legacy.scope, &legacy.revoked, &legacy.status,
+	)
+	if legacyErr != nil && !errors.Is(legacyErr, pgx.ErrNoRows) {
+		return false, fmt.Errorf("read legacy API token mapping: %w", legacyErr)
+	}
+	var legacyCoversWorkspaces bool
+	if legacyErr == nil {
+		if err := tx.QueryRow(ctx, `SELECT NOT EXISTS (
+			SELECT 1 FROM workspaces w
+			WHERE NOT EXISTS (
+				SELECT 1 FROM workspace_role_bindings b
+				WHERE b.workspace_id=w.id AND b.user_id=$1 AND b.role='operator'
+			)
+		)`, legacy.userID).Scan(&legacyCoversWorkspaces); err != nil {
+			return false, fmt.Errorf("check legacy operator workspace bindings: %w", err)
+		}
+	}
+	var usableOperator bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (
+		SELECT 1 FROM user_tokens t JOIN users u ON u.id=t.user_id
+		WHERE t.kind='user' AND t.scope='operator' AND t.revoked_at IS NULL AND u.status='active'
+		  AND EXISTS (SELECT 1 FROM workspace_role_bindings b WHERE b.user_id=t.user_id AND b.role='operator')
+	)`).Scan(&usableOperator); err != nil {
+		return false, fmt.Errorf("check usable operator credential: %w", err)
+	}
+	if legacyCoversWorkspaces && legacyErr == nil && subtle.ConstantTimeCompare(legacy.tokenHash, hash[:]) == 1 &&
+		legacy.status == "active" && !legacy.revoked.Valid && legacy.scope == string(core.CredentialScopeOperator) {
 		if err := tx.Commit(ctx); err != nil {
 			return false, err
 		}
 		return false, nil
 	}
-	if _, err := q.UpdateDeploymentOrgName(ctx, identity.OrganizationName); err != nil {
-		return false, fmt.Errorf("configure deployment organization: %w", err)
+
+	if legacyErr == nil && legacy.status == "active" {
+		if _, err := tx.Exec(ctx, `UPDATE user_tokens
+			SET token_hash=$1,kind='user',scope='operator',revoked_at=NULL,last_used_at=NULL
+			WHERE id=$2`, hash[:], legacy.id); err != nil {
+			return false, fmt.Errorf("rotate legacy API token mapping: %w", err)
+		}
+		if err := seedOperatorBindings(ctx, tx, legacy.userID); err != nil {
+			return false, err
+		}
+		if err := auditLegacyTokenRotation(ctx, tx, q, legacy.id); err != nil {
+			return false, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return false, fmt.Errorf("commit legacy API token rotation: %w", err)
+		}
+		return true, nil
 	}
-	userID, err := randomIdentityID("usr", 12)
-	if err != nil {
-		return false, err
+
+	var owner IdentityUser
+	if usableOperator {
+		row := tx.QueryRow(ctx, `SELECT u.id,u.email,u.display_name,u.status,u.created_at
+			FROM users u JOIN user_tokens t ON t.user_id=u.id
+			WHERE t.kind='user' AND t.scope='operator' AND t.revoked_at IS NULL AND u.status='active'
+			  AND EXISTS (SELECT 1 FROM workspace_role_bindings b WHERE b.user_id=u.id AND b.role='operator')
+			ORDER BY t.created_at,t.id LIMIT 1 FOR UPDATE OF u`)
+		var createdAt time.Time
+		if err := row.Scan(&owner.ID, &owner.Email, &owner.DisplayName, &owner.Status, &createdAt); err != nil {
+			return false, fmt.Errorf("select usable operator: %w", err)
+		}
+		owner.CreatedAt = createdAt
+	} else {
+		var row db.User
+		err := tx.QueryRow(ctx, `SELECT id,email,display_name,status,created_at FROM users WHERE email=$1 FOR UPDATE`, identity.Email).Scan(
+			&row.ID, &row.Email, &row.DisplayName, &row.Status, &row.CreatedAt,
+		)
+		if errors.Is(err, pgx.ErrNoRows) {
+			userID, idErr := randomIdentityID("usr", 12)
+			if idErr != nil {
+				return false, idErr
+			}
+			row, err = q.InsertIdentityUser(ctx, db.InsertIdentityUserParams{ID: userID, Email: identity.Email, DisplayName: identity.DisplayName})
+		}
+		if err != nil {
+			return false, fmt.Errorf("seed first operator: %w", err)
+		}
+		owner = identityUser(row)
+		if owner.Status != "active" {
+			return false, errors.New("configured first operator account is deactivated")
+		}
+		if _, err := tx.Exec(ctx, `UPDATE orgs SET name=$1 WHERE singleton=true AND name='Conveyor'`, identity.OrganizationName); err != nil {
+			return false, fmt.Errorf("configure deployment organization: %w", err)
+		}
 	}
-	user, err := q.InsertIdentityUser(ctx, db.InsertIdentityUserParams{ID: userID, Email: identity.Email, DisplayName: identity.DisplayName})
-	if err != nil {
-		return false, fmt.Errorf("seed first operator: %w", err)
+
+	if legacyErr == nil {
+		if _, err := tx.Exec(ctx, `UPDATE user_tokens SET label='retired legacy API token' WHERE id=$1`, legacy.id); err != nil {
+			return false, fmt.Errorf("retire unusable legacy API token mapping: %w", err)
+		}
 	}
 	tokenID, err := randomIdentityID("pat", 12)
 	if err != nil {
 		return false, err
 	}
-	hash := sha256.Sum256([]byte(legacyToken))
-	if _, err := q.InsertUserToken(ctx, db.InsertUserTokenParams{ID: tokenID, UserID: user.ID, Label: "legacy API token", TokenHash: hash[:]}); err != nil {
+	if _, err := q.InsertUserToken(ctx, db.InsertUserTokenParams{
+		ID: tokenID, UserID: owner.ID, Label: "legacy API token", TokenHash: hash[:],
+		Kind: string(core.CredentialUser), Scope: string(core.CredentialScopeOperator),
+	}); err != nil {
 		return false, fmt.Errorf("map legacy API token: %w", err)
 	}
-	if _, err := tx.Exec(ctx, `INSERT INTO workspace_role_bindings(workspace_id,user_id,role)
-		SELECT id,$1,'operator' FROM workspaces ON CONFLICT(workspace_id,user_id) DO NOTHING`, user.ID); err != nil {
-		return false, fmt.Errorf("seed legacy workspace memberships: %w", err)
+	if err := seedOperatorBindings(ctx, tx, owner.ID); err != nil {
+		return false, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return false, fmt.Errorf("commit identity bootstrap: %w", err)
@@ -114,14 +195,46 @@ func (s *Store) BootstrapIdentity(ctx context.Context, identity config.FirstOper
 	return true, nil
 }
 
-func (s *Store) IssuePersonalAccessToken(ctx context.Context, userID, label string) (IssuedPersonalAccessToken, error) {
-	user, err := s.queries.GetIdentityUser(ctx, userID)
+func seedOperatorBindings(ctx context.Context, tx pgx.Tx, userID string) error {
+	if _, err := tx.Exec(ctx, `INSERT INTO workspace_role_bindings(workspace_id,user_id,role)
+		SELECT id,$1,'operator' FROM workspaces
+		ON CONFLICT(workspace_id,user_id) DO UPDATE SET role='operator',updated_at=now()`, userID); err != nil {
+		return fmt.Errorf("seed legacy workspace memberships: %w", err)
+	}
+	return nil
+}
+
+func auditLegacyTokenRotation(ctx context.Context, tx pgx.Tx, q *db.Queries, credentialID string) error {
+	rows, err := tx.Query(ctx, `SELECT id FROM workspaces ORDER BY id`)
 	if err != nil {
-		return IssuedPersonalAccessToken{}, notFound(err, "identity user %s", userID)
+		return fmt.Errorf("list workspaces for legacy token rotation audit: %w", err)
 	}
-	if user.Status != "active" {
-		return IssuedPersonalAccessToken{}, errors.New("cannot issue a token for a deactivated user")
+	var workspaceIDs []string
+	for rows.Next() {
+		var workspaceID string
+		if err := rows.Scan(&workspaceID); err != nil {
+			rows.Close()
+			return err
+		}
+		workspaceIDs = append(workspaceIDs, workspaceID)
 	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	for _, workspaceID := range workspaceIDs {
+		if _, err := q.InsertWorkspaceEvent(ctx, db.InsertWorkspaceEventParams{
+			WorkspaceID: workspaceID, Kind: "identity.legacy_token_rotated", ActorID: "system", ActorRole: string(core.ActorSystem),
+			PayloadJson: core.JSONPayload(map[string]any{"credential_id": credentialID}), At: pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true},
+		}); err != nil {
+			return fmt.Errorf("audit legacy API token rotation: %w", err)
+		}
+	}
+	return nil
+}
+
+func (s *Store) IssuePersonalAccessToken(ctx context.Context, userID, label string) (IssuedPersonalAccessToken, error) {
 	tokenID, err := randomIdentityID("pat", 12)
 	if err != nil {
 		return IssuedPersonalAccessToken{}, err
@@ -132,7 +245,30 @@ func (s *Store) IssuePersonalAccessToken(ctx context.Context, userID, label stri
 	}
 	value := "cv_pat_" + tokenID + "_" + base64.RawURLEncoding.EncodeToString(secret)
 	hash := sha256.Sum256([]byte(value))
-	row, err := s.queries.InsertUserToken(ctx, db.InsertUserTokenParams{ID: tokenID, UserID: userID, Label: strings.TrimSpace(label), TokenHash: hash[:]})
+	var row db.UserToken
+	err = s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		var status string
+		if err := tx.QueryRow(ctx, `SELECT status FROM users WHERE id=$1 FOR UPDATE`, userID).Scan(&status); err != nil {
+			return notFound(err, "identity user %s", userID)
+		}
+		if status != "active" {
+			return errors.New("cannot issue a token for a deactivated user")
+		}
+		scope := core.CredentialScopeUser
+		var operator bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM workspace_role_bindings WHERE user_id=$1 AND role='operator')`, userID).Scan(&operator); err != nil {
+			return err
+		}
+		if operator {
+			scope = core.CredentialScopeOperator
+		}
+		var insertErr error
+		row, insertErr = q.InsertUserToken(ctx, db.InsertUserTokenParams{
+			ID: tokenID, UserID: userID, Label: strings.TrimSpace(label), TokenHash: hash[:],
+			Kind: string(core.CredentialUser), Scope: string(scope),
+		})
+		return insertErr
+	})
 	if err != nil {
 		return IssuedPersonalAccessToken{}, err
 	}
@@ -143,13 +279,6 @@ func (s *Store) IssuePersonalAccessToken(ctx context.Context, userID, label stri
 // user. It reuses user_tokens so ownership remains enforced by the existing
 // foreign key and no post-083 schema change is required (REQ-2/AC-2.2).
 func (s *Store) IssueAgentCredential(ctx context.Context, userID, label string) (IssuedAgentCredential, error) {
-	user, err := s.queries.GetIdentityUser(ctx, userID)
-	if err != nil {
-		return IssuedAgentCredential{}, notFound(err, "identity user %s", userID)
-	}
-	if user.Status != "active" {
-		return IssuedAgentCredential{}, errors.New("cannot issue a credential for a deactivated user")
-	}
 	id, err := randomIdentityID("agt", 12)
 	if err != nil {
 		return IssuedAgentCredential{}, err
@@ -160,7 +289,22 @@ func (s *Store) IssueAgentCredential(ctx context.Context, userID, label string) 
 	}
 	value := "cv_agent_" + id + "_" + base64.RawURLEncoding.EncodeToString(secret)
 	hash := sha256.Sum256([]byte(value))
-	row, err := s.queries.InsertUserToken(ctx, db.InsertUserTokenParams{ID: id, UserID: userID, Label: strings.TrimSpace(label), TokenHash: hash[:]})
+	var row db.UserToken
+	err = s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		var status string
+		if err := tx.QueryRow(ctx, `SELECT status FROM users WHERE id=$1 FOR UPDATE`, userID).Scan(&status); err != nil {
+			return notFound(err, "identity user %s", userID)
+		}
+		if status != "active" {
+			return errors.New("cannot issue a credential for a deactivated user")
+		}
+		var insertErr error
+		row, insertErr = q.InsertUserToken(ctx, db.InsertUserTokenParams{
+			ID: id, UserID: userID, Label: strings.TrimSpace(label), TokenHash: hash[:],
+			Kind: string(core.CredentialAgent), Scope: string(core.CredentialScopeUser),
+		})
+		return insertErr
+	})
 	if err != nil {
 		return IssuedAgentCredential{}, err
 	}
@@ -197,13 +341,14 @@ func (s *Store) verifyCredential(ctx context.Context, candidate string) (core.Au
 	if subtle.ConstantTimeCompare(row.TokenHash, hash[:]) != 1 || row.RevokedAt.Valid || row.Status != "active" {
 		return core.AuthenticatedCredential{}, IdentityUser{}, ErrInvalidPersonalAccessToken
 	}
-	if err := s.queries.MarkUserTokenUsed(ctx, row.ID); err != nil {
+	used, err := s.queries.MarkUserTokenUsed(ctx, db.MarkUserTokenUsedParams{ID: row.ID, TokenHash: hash[:]})
+	if err != nil {
 		return core.AuthenticatedCredential{}, IdentityUser{}, err
 	}
-	kind, scope := core.CredentialUser, core.CredentialScopeOperator
-	if strings.HasPrefix(row.ID, "agt_") {
-		kind, scope = core.CredentialAgent, core.CredentialScopeUser
+	if used != 1 {
+		return core.AuthenticatedCredential{}, IdentityUser{}, ErrInvalidPersonalAccessToken
 	}
+	kind, scope := core.CredentialKind(row.Kind), core.CredentialScope(row.Scope)
 	credential := core.AuthenticatedCredential{ID: row.ID, OwnerUserID: row.UserID, Kind: kind, Scope: scope}
 	user := IdentityUser{ID: row.UserID, Email: row.Email, DisplayName: row.DisplayName, Status: row.Status}
 	return credential, user, nil

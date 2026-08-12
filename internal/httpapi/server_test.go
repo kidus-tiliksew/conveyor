@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	"mime/multipart"
@@ -81,9 +82,15 @@ type staticCredentialVerifier map[string]core.AuthenticatedCredential
 func (v staticCredentialVerifier) VerifyCredential(_ context.Context, token string) (core.AuthenticatedCredential, error) {
 	credential, ok := v[token]
 	if !ok {
-		return core.AuthenticatedCredential{}, fmt.Errorf("invalid credential")
+		return core.AuthenticatedCredential{}, core.ErrInvalidCredential
 	}
 	return credential, nil
+}
+
+type failingCredentialVerifier struct{}
+
+func (failingCredentialVerifier) VerifyCredential(context.Context, string) (core.AuthenticatedCredential, error) {
+	return core.AuthenticatedCredential{}, errors.New("credential database unavailable")
 }
 
 func TestCredentialAuthDerivesTypedActorsAndIgnoresAssertedHeader(t *testing.T) {
@@ -121,6 +128,20 @@ func TestCredentialAuthDerivesTypedActorsAndIgnoresAssertedHeader(t *testing.T) 
 	}
 	if response := call(server.requireMutationCapability(core.CapabilityOperateGates)(capture), "agent-secret"); response.Code != http.StatusUnauthorized {
 		t.Fatalf("execution credential reached human mutation: status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestCredentialStoreFailureReturnsInternalServerError(t *testing.T) {
+	server := NewServer(store.NewMemory())
+	server.Credentials = failingCredentialVerifier{}
+	request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	request.Header.Set("Authorization", "Bearer secret-that-must-not-leak")
+	response := httptest.NewRecorder()
+	server.requireMCPAuth(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("request reached handler after credential-store failure")
+	})).ServeHTTP(response, request)
+	if response.Code != http.StatusInternalServerError || strings.Contains(response.Body.String(), "secret-that-must-not-leak") || strings.Contains(response.Body.String(), "database unavailable") {
+		t.Fatalf("status=%d body=%q", response.Code, response.Body.String())
 	}
 }
 

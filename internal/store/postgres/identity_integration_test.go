@@ -39,6 +39,10 @@ func TestIdentityBootstrapAndPersonalAccessTokenLifecycleIntegration(t *testing.
 	if err != nil || principal.Email != identity.Email || principal.Status != "active" {
 		t.Fatalf("legacy verification principal=%+v err=%v", principal, err)
 	}
+	workspace := "identity-rotation-" + core.NewTaskID()
+	if seededWorkspace, err := st.BootstrapWorkspaceConfig(store.WithWorkspace(t.Context(), workspace), isolationConfig(workspace)); err != nil || !seededWorkspace {
+		t.Fatalf("bootstrap rotation workspace seeded=%t err=%v", seededWorkspace, err)
+	}
 	var storedHash []byte
 	if err := st.pool.QueryRow(t.Context(), `SELECT token_hash FROM user_tokens WHERE label='legacy API token'`).Scan(&storedHash); err != nil {
 		t.Fatal(err)
@@ -49,8 +53,8 @@ func TestIdentityBootstrapAndPersonalAccessTokenLifecycleIntegration(t *testing.
 	}
 
 	seeded, err = st.BootstrapIdentity(t.Context(), config.FirstOperatorIdentity{OrganizationName: "Replacement", Email: "other@example.test", DisplayName: "Other"}, "replacement-token")
-	if err != nil || seeded {
-		t.Fatalf("restart bootstrap seeded=%t err=%v, want no-op", seeded, err)
+	if err != nil || !seeded {
+		t.Fatalf("rotation bootstrap changed=%t err=%v, want remap", seeded, err)
 	}
 	var orgName, email string
 	if err := st.pool.QueryRow(t.Context(), `SELECT name FROM orgs`).Scan(&orgName); err != nil {
@@ -62,8 +66,20 @@ func TestIdentityBootstrapAndPersonalAccessTokenLifecycleIntegration(t *testing.
 	if orgName != identity.OrganizationName || email != identity.Email {
 		t.Fatalf("restart overwrote identity: org=%q email=%q", orgName, email)
 	}
-	if _, err := st.VerifyPersonalAccessToken(t.Context(), "replacement-token"); !errors.Is(err, ErrInvalidPersonalAccessToken) {
-		t.Fatalf("replacement token verification err=%v, want invalid", err)
+	if _, err := st.VerifyPersonalAccessToken(t.Context(), legacy); !errors.Is(err, ErrInvalidPersonalAccessToken) {
+		t.Fatalf("old token verification err=%v, want invalid", err)
+	}
+	if rotated, err := st.VerifyPersonalAccessToken(t.Context(), "replacement-token"); err != nil || rotated.ID != principal.ID {
+		t.Fatalf("replacement token principal=%+v err=%v", rotated, err)
+	}
+	var rotationEvents int
+	if err := st.pool.QueryRow(t.Context(), `SELECT count(*) FROM events WHERE workspace_id=$1 AND kind='identity.legacy_token_rotated'
+		AND payload_json ? 'credential_id' AND payload_json::text NOT LIKE '%replacement-token%'`, workspace).Scan(&rotationEvents); err != nil || rotationEvents != 1 {
+		t.Fatalf("rotation audit count=%d err=%v", rotationEvents, err)
+	}
+	seeded, err = st.BootstrapIdentity(t.Context(), identity, "replacement-token")
+	if err != nil || seeded {
+		t.Fatalf("healthy restart bootstrap changed=%t err=%v, want no-op", seeded, err)
 	}
 
 	issued, err := st.IssuePersonalAccessToken(t.Context(), principal.ID, "CLI")
@@ -86,6 +102,12 @@ func TestIdentityBootstrapAndPersonalAccessTokenLifecycleIntegration(t *testing.
 	}
 	if _, err = st.VerifyPersonalAccessToken(t.Context(), agent.Value); !errors.Is(err, ErrInvalidPersonalAccessToken) {
 		t.Fatalf("agent credential authenticated as PAT: %v", err)
+	}
+	if _, err = st.RevokePersonalAccessToken(t.Context(), agent.ID); err == nil {
+		t.Fatal("personal-token revocation accepted an agent credential")
+	}
+	if resolved, err = st.VerifyCredential(t.Context(), agent.Value); err != nil || resolved.Kind != core.CredentialAgent {
+		t.Fatalf("agent credential changed by PAT revocation: credential=%+v err=%v", resolved, err)
 	}
 	if revoked, err := st.RevokePersonalAccessToken(t.Context(), issued.ID); err != nil || revoked.RevokedAt == nil {
 		t.Fatalf("revoke token=%+v err=%v", revoked, err)
@@ -216,8 +238,28 @@ func TestIdentityMigrationsUpgradeExistingWorkspaceIntegration(t *testing.T) {
 	if _, err := st.pool.Exec(t.Context(), `INSERT INTO workspaces (id,name,config_yaml) VALUES ($1,$1,'')`, workspace); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := st.pool.Exec(t.Context(), `INSERT INTO users(id,identity_provider_ref,role) VALUES('phase2-user','legacy-subject','operator')`); err != nil {
+		t.Fatal(err)
+	}
 	if err := migrateControlPlaneToVersion(t.Context(), st.pool, 0); err != nil {
 		t.Fatalf("upgrade from migration 080: %v", err)
+	}
+	identity := config.FirstOperatorIdentity{OrganizationName: "Upgraded Org", Email: "upgrade-owner@example.test", DisplayName: "Upgrade Owner"}
+	if seeded, err := st.BootstrapIdentity(t.Context(), identity, "upgrade-legacy-token"); err != nil || !seeded {
+		t.Fatalf("upgrade bootstrap seeded=%t err=%v", seeded, err)
+	}
+	principal, err := st.VerifyPersonalAccessToken(t.Context(), "upgrade-legacy-token")
+	if err != nil || principal.Email != identity.Email {
+		t.Fatalf("upgrade legacy token principal=%+v err=%v", principal, err)
+	}
+	var legacyUsers, orgs int
+	if err := st.pool.QueryRow(t.Context(), `SELECT
+		(SELECT count(*) FROM users WHERE email LIKE '%@legacy.invalid'),
+		(SELECT count(*) FROM orgs)`).Scan(&legacyUsers, &orgs); err != nil || legacyUsers != 1 || orgs != 1 {
+		t.Fatalf("upgrade preserved users=%d orgs=%d err=%v", legacyUsers, orgs, err)
+	}
+	if seeded, err := st.BootstrapIdentity(t.Context(), identity, "upgrade-legacy-token"); err != nil || seeded {
+		t.Fatalf("upgrade healthy restart seeded=%t err=%v", seeded, err)
 	}
 	var orgID string
 	if err := st.pool.QueryRow(t.Context(), `SELECT org_id FROM workspaces WHERE id=$1`, workspace).Scan(&orgID); err != nil {

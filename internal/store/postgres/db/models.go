@@ -341,6 +341,8 @@ type UserToken struct {
 	UserID     string             `json:"user_id"`
 	Label      string             `json:"label"`
 	TokenHash  []byte             `json:"token_hash"`
+	Kind       string             `json:"kind"`
+	Scope      string             `json:"scope"`
 	LastUsedAt pgtype.Timestamptz `json:"last_used_at"`
 	RevokedAt  pgtype.Timestamptz `json:"revoked_at"`
 	CreatedAt  pgtype.Timestamptz `json:"created_at"`
