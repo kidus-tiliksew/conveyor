@@ -113,6 +113,31 @@ func (s *Store) GrantWorkspaceRole(ctx context.Context, email, workspaceID strin
 
 func (s *Store) RevokeWorkspaceRole(ctx context.Context, userID, workspaceID string) error {
 	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		// Serialize membership revocations per workspace so concurrent operator
+		// removals cannot each observe another operator and leave none behind.
+		var lockedWorkspace string
+		if err := tx.QueryRow(ctx, `SELECT id FROM workspaces WHERE id=$1 FOR UPDATE`, workspaceID).Scan(&lockedWorkspace); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return fmt.Errorf("%w: workspace membership", store.ErrNotFound)
+			}
+			return err
+		}
+		var role core.WorkspaceRole
+		if err := tx.QueryRow(ctx, `SELECT role FROM workspace_role_bindings WHERE workspace_id=$1 AND user_id=$2`, workspaceID, userID).Scan(&role); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return fmt.Errorf("%w: workspace membership", store.ErrNotFound)
+			}
+			return err
+		}
+		if role == core.WorkspaceRoleOperator {
+			var operators int
+			if err := tx.QueryRow(ctx, `SELECT count(*) FROM workspace_role_bindings WHERE workspace_id=$1 AND role=$2`, workspaceID, core.WorkspaceRoleOperator).Scan(&operators); err != nil {
+				return err
+			}
+			if operators <= 1 {
+				return store.ErrLastWorkspaceOperator
+			}
+		}
 		result, err := tx.Exec(ctx, `DELETE FROM workspace_role_bindings WHERE workspace_id=$1 AND user_id=$2`, workspaceID, userID)
 		if err != nil {
 			return err

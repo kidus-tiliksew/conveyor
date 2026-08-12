@@ -116,8 +116,8 @@ func (s *Server) Handler() http.Handler {
 		r.With(s.requireWorkerAuth).Post("/worker/work-orders/{id}/attempt-checkpoint", s.checkpointWorkerOrderAttempt)
 		r.With(s.requireWorkerAuth).Post("/worker/work-orders/{id}/release", s.releaseWorkerOrder)
 		r.With(s.requireWorkspaceAuth).Get("/workspaces", s.listWorkspaces)
-		r.With(s.requireMutationAuth).Post("/workspaces", s.createWorkspace)
-		r.With(s.requireMutationAuth).Get("/harness-templates", s.getHarnessTemplates)
+		r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Post("/workspaces", s.createWorkspace)
+		r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Get("/harness-templates", s.getHarnessTemplates)
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityViewWorkspace)).Get("/workspaces/{workspace_id}", s.getWorkspaceRecord)
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityViewWorkspace)).Get("/workspaces/{workspace_id}/config", s.getWorkspaceConfig)
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityManageWorkspace)).Put("/workspaces/{workspace_id}/config", s.putWorkspaceConfig)
@@ -127,7 +127,7 @@ func (s *Server) Handler() http.Handler {
 		r.Group(func(r chi.Router) {
 			r.Use(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityViewWorkspace))
 			r.Get("/activity", s.listActivity)
-			r.With(s.requireMutationAuth).Get("/pending-proposals", s.listPendingProposals)
+			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Get("/pending-proposals", s.listPendingProposals)
 			r.Get("/tasks", s.listTasks)
 			r.Get("/task-operations", s.listTaskOperations)
 			r.Get("/tasks/{id}", s.getTask)
@@ -136,83 +136,83 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/tasks/{id}/events/stream", s.streamEvents)
 			r.Get("/tasks/{id}/activity", s.getTaskActivity)
 			r.Get("/lineage/{type}/{id}", s.getLineage)
-			r.With(s.requireMutationAuth).Post("/lineage/rebuild", s.rebuildLineage)
+			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Post("/lineage/rebuild", s.rebuildLineage)
 			r.Get("/tasks/{id}/interventions", s.listInterventions)
 			r.Get("/tasks/{id}/spec", s.getLatestSpec)
-			r.With(s.requireTaskRunAuth).Get("/tasks/{id}/run-order", s.getTaskRunOrder)
-			r.With(s.requireTaskRunAuth).Post("/tasks/{id}/run-orders/{order_id}/claim", s.claimTaskRunOrder)
-			r.With(s.requireTaskRunAuth).Post("/tasks/{id}/run-orders/{order_id}/renew", s.renewTaskRunOrder)
-			r.With(s.requireTaskRunAuth).Get("/tasks/{id}/run-orders/{order_id}/reconcile", s.reconcileTaskRunOrder)
-			r.With(s.requireTaskRunAuth).Post("/tasks/{id}/run-orders/{order_id}/attempt-checkpoint", s.checkpointTaskRunOrderAttempt)
-			r.With(s.requireTaskRunAuth).Post("/tasks/{id}/run-orders/{order_id}/release", s.releaseTaskRunOrder)
+			r.With(s.requireTaskRunAuth, s.requireWorkspaceCapability(core.CapabilityClaimWork)).Get("/tasks/{id}/run-order", s.getTaskRunOrder)
+			r.With(s.requireTaskRunAuth, s.requireWorkspaceCapability(core.CapabilityClaimWork)).Post("/tasks/{id}/run-orders/{order_id}/claim", s.claimTaskRunOrder)
+			r.With(s.requireTaskRunAuth, s.requireWorkspaceCapability(core.CapabilityClaimWork)).Post("/tasks/{id}/run-orders/{order_id}/renew", s.renewTaskRunOrder)
+			r.With(s.requireTaskRunAuth, s.requireWorkspaceCapability(core.CapabilityClaimWork)).Get("/tasks/{id}/run-orders/{order_id}/reconcile", s.reconcileTaskRunOrder)
+			r.With(s.requireTaskRunAuth, s.requireWorkspaceCapability(core.CapabilityClaimWork)).Post("/tasks/{id}/run-orders/{order_id}/attempt-checkpoint", s.checkpointTaskRunOrderAttempt)
+			r.With(s.requireTaskRunAuth, s.requireWorkspaceCapability(core.CapabilityClaimWork)).Post("/tasks/{id}/run-orders/{order_id}/release", s.releaseTaskRunOrder)
 			r.With(s.requireTaskRunAuth, s.requireWorkspaceCapability(core.CapabilityRequestChanges)).Post("/tasks/{id}/request-changes", s.requestTaskChanges)
 			r.Get("/reviews", s.listReviews)
 			r.Get("/workspace", s.getWorkspace)
 			r.Get("/work-orders", s.listWorkOrders)
 			r.Get("/monitor", s.getMonitorStatus)
-			r.With(s.requireMutationAuth).Post("/work-orders/{id}/recover", s.recoverWorkOrder)
-			r.With(s.requireMutationAuth).Post("/work-orders/{id}/preempt", s.preemptWorkOrder)
+			r.With(s.requireMutationCapability(core.CapabilityRecoverWork)).Post("/work-orders/{id}/recover", s.recoverWorkOrder)
+			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Post("/work-orders/{id}/preempt", s.preemptWorkOrder)
 			r.Get("/blueprints", s.listBlueprints)
 			r.Get("/requirements", s.listRequirements)
-			r.With(s.requireMutationAuth).Post("/requirements", s.createRequirement)
+			r.With(s.requireMutationCapability(core.CapabilityProposeDocuments)).Post("/requirements", s.createRequirement)
 			r.Get("/requirements/{id}", s.getRequirement)
 			r.Get("/requirements/{id}/versions", s.listRequirementVersions)
 			r.Get("/requirements/{id}/checkpoint-context-candidates", s.listCheckpointContextCandidates)
-			r.With(s.requireMutationAuth).Post("/requirements/{id}/versions", s.proposeRequirementVersion)
-			r.With(s.requireMutationAuth).Post("/requirements/{id}/versions/{version}/confirm", s.confirmRequirementVersion)
-			r.With(s.requireMutationAuth).Post("/requirements/{id}/staleness/{signal}/acknowledge", s.acknowledgeRequirementStaleness)
-			r.With(s.requireMutationAuth).Post("/requirements/{id}/staleness/{signal}/follow-up", s.createRequirementStalenessFollowUp)
+			r.With(s.requireMutationCapability(core.CapabilityProposeDocuments)).Post("/requirements/{id}/versions", s.proposeRequirementVersion)
+			r.With(s.requireMutationCapability(core.CapabilityConfirmDocuments)).Post("/requirements/{id}/versions/{version}/confirm", s.confirmRequirementVersion)
+			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Post("/requirements/{id}/staleness/{signal}/acknowledge", s.acknowledgeRequirementStaleness)
+			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Post("/requirements/{id}/staleness/{signal}/follow-up", s.createRequirementStalenessFollowUp)
 			r.Get("/reference-documents", s.listReferenceDocuments)
-			r.With(s.requireMutationAuth).Post("/reference-documents", s.createReferenceDocument)
+			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Post("/reference-documents", s.createReferenceDocument)
 			r.Get("/reference-documents/{id}/versions", s.listReferenceDocumentVersions)
-			r.With(s.requireMutationAuth).Post("/reference-documents/{id}/versions", s.supersedeReferenceDocument)
-			r.With(s.requireMutationAuth).Delete("/reference-documents/{id}", s.deleteReferenceDocument)
+			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Post("/reference-documents/{id}/versions", s.supersedeReferenceDocument)
+			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Delete("/reference-documents/{id}", s.deleteReferenceDocument)
 			r.Get("/system-designs", s.listSystemDesigns)
-			r.With(s.requireMutationAuth).Post("/system-designs", s.createSystemDesign)
+			r.With(s.requireMutationCapability(core.CapabilityProposeDocuments)).Post("/system-designs", s.createSystemDesign)
 			r.Get("/system-designs/{id}", s.getSystemDesign)
 			r.Get("/system-designs/{id}/versions", s.listSystemDesignVersions)
-			r.With(s.requireMutationAuth).Post("/system-designs/{id}/versions", s.proposeSystemDesignVersion)
-			r.With(s.requireMutationAuth).Post("/system-designs/{id}/versions/{version}/confirm", s.confirmSystemDesignVersion)
+			r.With(s.requireMutationCapability(core.CapabilityProposeDocuments)).Post("/system-designs/{id}/versions", s.proposeSystemDesignVersion)
+			r.With(s.requireMutationCapability(core.CapabilityConfirmDocuments)).Post("/system-designs/{id}/versions/{version}/confirm", s.confirmSystemDesignVersion)
 			r.Get("/decisions", s.listDecisions)
-			r.With(s.requireMutationAuth).Post("/decisions", s.proposeDecision)
+			r.With(s.requireMutationCapability(core.CapabilityProposeDocuments)).Post("/decisions", s.proposeDecision)
 			r.Get("/decisions/{id}", s.getDecision)
-			r.With(s.requireMutationAuth).Post("/decisions/{id}/confirm", s.confirmDecision)
-			r.With(s.requireMutationAuth).Post("/decisions/{id}/dismiss", s.dismissDecision)
+			r.With(s.requireMutationCapability(core.CapabilityConfirmDocuments)).Post("/decisions/{id}/confirm", s.confirmDecision)
+			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Post("/decisions/{id}/dismiss", s.dismissDecision)
 			r.Get("/planning-sessions", s.listPlanningSessions)
-			r.With(s.requireMutationAuth).Post("/planning-sessions", s.createPlanningSession)
+			r.With(s.requireMutationCapability(core.CapabilityProposeDocuments)).Post("/planning-sessions", s.createPlanningSession)
 			r.Get("/planning-sessions/{id}", s.getPlanningSession)
 			r.Get("/planning-sessions/{id}/messages", s.listPlanningMessages)
-			r.With(s.requireMutationAuth).Post("/planning-sessions/{id}/messages", s.streamPlanningMessage)
-			r.With(s.requireMutationAuth).Post("/planning-sessions/{id}/chat", s.streamPlanningMessage)
-			r.With(s.requireMutationAuth).Post("/planning-sessions/{id}/abandon", s.abandonPlanningSession)
+			r.With(s.requireMutationCapability(core.CapabilityProposeDocuments)).Post("/planning-sessions/{id}/messages", s.streamPlanningMessage)
+			r.With(s.requireMutationCapability(core.CapabilityProposeDocuments)).Post("/planning-sessions/{id}/chat", s.streamPlanningMessage)
+			r.With(s.requireMutationCapability(core.CapabilityProposeDocuments)).Post("/planning-sessions/{id}/abandon", s.abandonPlanningSession)
 			r.Get("/planning-bundles", s.listPlanningBundles)
 			r.Get("/planning-bundles/{id}", s.getPlanningBundle)
-			r.With(s.requireMutationAuth).Post("/planning-bundles/{id}/approve", s.approvePlanningBundle)
-			r.With(s.requireMutationAuth).Post("/planning-bundles/{id}/reject", s.rejectPlanningBundle)
+			r.With(s.requireMutationCapability(core.CapabilityConfirmDocuments)).Post("/planning-bundles/{id}/approve", s.approvePlanningBundle)
+			r.With(s.requireMutationCapability(core.CapabilityConfirmDocuments)).Post("/planning-bundles/{id}/reject", s.rejectPlanningBundle)
 			r.Get("/lifecycle-diagram", s.getLifecycleDiagram)
-			r.With(s.requireMutationAuth).Get("/workspace/config", s.getWorkspaceConfig)
-			r.With(s.requireMutationAuth).Put("/workspace/config", s.putWorkspaceConfig)
-			r.With(s.requireMutationAuth).Post("/tasks", s.createTask)
-			r.With(s.requireMutationAuth).Post("/monitor/observations", s.observeMonitorSignal)
-			r.With(s.requireMutationAuth).Post("/monitor/drift/{id}/resolve", s.resolveMonitorDrift)
-			r.With(s.requireMutationAuth).Post("/tasks/{id}/redispatch", s.redispatchTask)
-			r.With(s.requireMutationAuth).Put("/tasks/{id}/hold", s.setTaskHold)
-			r.With(s.requireMutationAuth).Put("/tasks/{id}/assignee", s.setTaskAssignee)
-			r.With(s.requireMutationAuth).Post("/tasks/{id}/context", s.updateTaskContext)
-			r.With(s.requireMutationAuth).Post("/tasks/{id}/setup", s.changeTaskSetup)
-			r.With(s.requireMutationAuth).Delete("/tasks/{id}/dependencies/{dependency_id}", s.removeTaskDependency)
-			r.With(s.requireMutationAuth).Post("/tasks/{id}/review-round/retry", s.retryReviewRound)
-			r.With(s.requireMutationAuth).Post("/tasks/{id}/review-round/recover", s.recoverInterruptedReviewRound)
-			r.With(s.requireMutationAuth).Post("/tasks/{id}/review", s.reviewTask)
-			r.With(s.requireMutationAuth).Post("/tasks/{id}/close", s.closeTask)
-			r.With(s.requireMutationAuth).Post("/tasks/{id}/merge", s.mergeTask)
-			r.With(s.requireMutationAuth).Post("/tasks/{id}/merge-conflict-fix", s.fixMergeConflict)
-			r.With(s.requireMutationAuth).Get("/artifacts", s.listArtifacts)
-			r.With(s.requireMutationAuth).Post("/artifacts", s.uploadArtifact)
-			r.With(s.requireMutationAuth).Get("/artifacts/{id}", s.downloadArtifact)
-			r.With(s.requireMutationAuth).Get("/workers", s.listWorkers)
-			r.With(s.requireMutationAuth).Post("/workers/pairings", s.issueWorkerPairing)
-			r.With(s.requireMutationAuth).Delete("/workers/{id}", s.revokeWorker)
+			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Get("/workspace/config", s.getWorkspaceConfig)
+			r.With(s.requireMutationCapability(core.CapabilityManageWorkspace)).Put("/workspace/config", s.putWorkspaceConfig)
+			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Post("/tasks", s.createTask)
+			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Post("/monitor/observations", s.observeMonitorSignal)
+			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Post("/monitor/drift/{id}/resolve", s.resolveMonitorDrift)
+			r.With(s.requireMutationCapability(core.CapabilityRecoverWork)).Post("/tasks/{id}/redispatch", s.redispatchTask)
+			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Put("/tasks/{id}/hold", s.setTaskHold)
+			r.With(s.requireMutationCapability(core.CapabilitySetAssignee)).Put("/tasks/{id}/assignee", s.setTaskAssignee)
+			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Post("/tasks/{id}/context", s.updateTaskContext)
+			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Post("/tasks/{id}/setup", s.changeTaskSetup)
+			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Delete("/tasks/{id}/dependencies/{dependency_id}", s.removeTaskDependency)
+			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Post("/tasks/{id}/review-round/retry", s.retryReviewRound)
+			r.With(s.requireMutationCapability(core.CapabilityRecoverWork)).Post("/tasks/{id}/review-round/recover", s.recoverInterruptedReviewRound)
+			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Post("/tasks/{id}/review", s.reviewTask)
+			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Post("/tasks/{id}/close", s.closeTask)
+			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Post("/tasks/{id}/merge", s.mergeTask)
+			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Post("/tasks/{id}/merge-conflict-fix", s.fixMergeConflict)
+			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Get("/artifacts", s.listArtifacts)
+			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Post("/artifacts", s.uploadArtifact)
+			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Get("/artifacts/{id}", s.downloadArtifact)
+			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Get("/workers", s.listWorkers)
+			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Post("/workers/pairings", s.issueWorkerPairing)
+			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Delete("/workers/{id}", s.revokeWorker)
 		})
 	})
 	// All methods route to the handler so non-POST gets a spec-correct 405
@@ -336,36 +336,42 @@ func (s *Server) setTaskAssignee(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, task)
 }
 
-func (s *Server) requireMutationAuth(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		credential, ok := store.CredentialFromContext(r.Context())
-		if !ok {
-			credential, ok = s.authenticateUserCredential(r)
-		}
-		if !ok || credential.Kind != core.CredentialUser {
-			w.Header().Set("WWW-Authenticate", "Bearer")
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-		ctx := store.WithCredential(r.Context(), credential)
-		ctx = store.WithActor(ctx, store.Actor{ID: store.UserActorID(credential.OwnerUserID), Role: core.ActorUser})
-		if workspaceID, scoped := store.WorkspaceFromContext(ctx); scoped && s.Workspaces != nil && s.Memberships != nil {
-			allowed, err := s.Memberships.AuthorizeWorkspace(ctx, credential.OwnerUserID, workspaceID, mutationCapability(r))
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
+func (s *Server) requireMutationCapability(capability core.Capability) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			credential, ok := store.CredentialFromContext(r.Context())
+			if !ok {
+				credential, ok = s.authenticateUserCredential(r)
+			}
+			if !ok || credential.Kind != core.CredentialUser {
+				w.Header().Set("WWW-Authenticate", "Bearer")
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}
-			if !allowed {
-				writeWorkspaceNotFound(w)
+			ctx := store.WithCredential(r.Context(), credential)
+			ctx = store.WithActor(ctx, store.Actor{ID: store.UserActorID(credential.OwnerUserID), Role: core.ActorUser})
+			if workspaceID, scoped := store.WorkspaceFromContext(ctx); scoped && s.Workspaces != nil {
+				if s.Memberships == nil {
+					writeWorkspaceNotFound(w)
+					return
+				}
+				allowed, err := s.Memberships.AuthorizeWorkspace(ctx, credential.OwnerUserID, workspaceID, capability)
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+				if !allowed {
+					writeWorkspaceNotFound(w)
+					return
+				}
+			} else if credential.Scope != core.CredentialScopeOperator {
+				w.Header().Set("WWW-Authenticate", "Bearer")
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}
-		} else if credential.Scope != core.CredentialScopeOperator {
-			w.Header().Set("WWW-Authenticate", "Bearer")
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-		next.ServeHTTP(w, r.WithContext(ctx))
-	})
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
 }
 
 func (s *Server) requireWorkspaceAuth(next http.Handler) http.Handler {
@@ -390,8 +396,12 @@ func (s *Server) requireWorkspaceAuth(next http.Handler) http.Handler {
 func (s *Server) requireWorkspaceCapability(capability core.Capability) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if s.Workspaces == nil || s.Memberships == nil {
+			if s.Workspaces == nil {
 				next.ServeHTTP(w, r)
+				return
+			}
+			if s.Memberships == nil {
+				writeWorkspaceNotFound(w)
 				return
 			}
 			credential, ok := store.CredentialFromContext(r.Context())
@@ -411,24 +421,6 @@ func (s *Server) requireWorkspaceCapability(capability core.Capability) func(htt
 			}
 			next.ServeHTTP(w, r)
 		})
-	}
-}
-
-func mutationCapability(r *http.Request) core.Capability {
-	path := r.URL.Path
-	switch {
-	case strings.Contains(path, "/assignee"):
-		return core.CapabilitySetAssignee
-	case strings.Contains(path, "/versions") && !strings.Contains(path, "/confirm"),
-		strings.HasSuffix(path, "/requirements"), strings.HasSuffix(path, "/system-designs"),
-		strings.HasSuffix(path, "/decisions"), strings.Contains(path, "/planning-sessions"):
-		return core.CapabilityProposeDocuments
-	case strings.Contains(path, "/confirm"), strings.Contains(path, "/approve"), strings.Contains(path, "/reject"):
-		return core.CapabilityConfirmDocuments
-	case strings.Contains(path, "/recover"), strings.Contains(path, "/redispatch"):
-		return core.CapabilityRecoverWork
-	default:
-		return core.CapabilityOperateGates
 	}
 }
 

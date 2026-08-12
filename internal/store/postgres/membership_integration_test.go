@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -45,6 +46,20 @@ func TestWorkspaceMembershipAuthorizationIntegration(t *testing.T) {
 		if _, err := st.CreateWorkspace(operatorCtx, workspaceID, workspaceID, isolationConfig(workspaceID)); err != nil {
 			t.Fatal(err)
 		}
+	}
+	workspaceBCtx := store.WithWorkspace(operatorCtx, workspaceB)
+	if err := st.RevokeWorkspaceRole(workspaceBCtx, owner.ID, workspaceB); !errors.Is(err, store.ErrLastWorkspaceOperator) {
+		t.Fatalf("sole operator revocation error=%v", err)
+	}
+	secondOperator, err := st.queries.InsertIdentityUser(t.Context(), db.InsertIdentityUserParams{ID: "usr_operator_" + suffix, Email: "operator-" + suffix + "@example.test", DisplayName: "Second Operator"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if grant, err := st.GrantWorkspaceRole(workspaceBCtx, secondOperator.Email, workspaceB, core.WorkspaceRoleOperator); err != nil || grant.Membership == nil {
+		t.Fatalf("second operator grant=%+v err=%v", grant, err)
+	}
+	if err := st.RevokeWorkspaceRole(workspaceBCtx, owner.ID, workspaceB); err != nil {
+		t.Fatalf("non-sole operator revocation: %v", err)
 	}
 	member, err := st.queries.InsertIdentityUser(t.Context(), db.InsertIdentityUserParams{ID: "usr_member_" + suffix, Email: "member-" + suffix + "@example.test", DisplayName: "Member"})
 	if err != nil {

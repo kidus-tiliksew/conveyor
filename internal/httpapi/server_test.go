@@ -119,7 +119,7 @@ func TestCredentialAuthDerivesTypedActorsAndIgnoresAssertedHeader(t *testing.T) 
 			}
 		})
 	}
-	if response := call(server.requireMutationAuth(capture), "agent-secret"); response.Code != http.StatusUnauthorized {
+	if response := call(server.requireMutationCapability(core.CapabilityOperateGates)(capture), "agent-secret"); response.Code != http.StatusUnauthorized {
 		t.Fatalf("execution credential reached human mutation: status=%d body=%s", response.Code, response.Body.String())
 	}
 }

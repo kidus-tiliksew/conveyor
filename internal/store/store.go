@@ -30,6 +30,7 @@ var (
 	// of the backing store, so callers can distinguish model-supplied bad IDs
 	// from unavailable infrastructure.
 	ErrNotFound                     = errors.New("resource not found")
+	ErrLastWorkspaceOperator        = errors.New("cannot revoke the sole workspace operator; grant another operator first")
 	ErrWorkspaceConflict            = errors.New("workspace id or name already exists")
 	ErrRequirementSlugConflict      = errors.New("requirement slug already exists")
 	ErrSystemDesignIDConflict       = errors.New("system design id already exists")
