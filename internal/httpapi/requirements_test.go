@@ -80,7 +80,7 @@ func TestOperatorRequirementProposalRESTLifecycle(t *testing.T) {
 	}
 	assertNoLineage(0)
 	list := call(http.MethodGet, "/v1/requirements", "")
-	if list.Code != http.StatusOK || !strings.Contains(list.Body.String(), `"pending_versions":[{`) {
+	if list.Code != http.StatusOK || !strings.Contains(list.Body.String(), `"pending_version_count":1`) {
 		t.Fatalf("pending list status=%d body=%s", list.Code, list.Body.String())
 	}
 	confirmed := call(http.MethodPost, "/v1/requirements/req-api/versions/1/confirm", "")
@@ -248,18 +248,21 @@ func TestRequirementsHTTPReplacesFeatureTreeAndConfirmsVersions(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("list status=%d body=%s", response.Code, response.Body.String())
 	}
-	var views []requirementView
-	if err = json.Unmarshal(response.Body.Bytes(), &views); err != nil {
+	var summaries []requirementSummary
+	if err = json.Unmarshal(response.Body.Bytes(), &summaries); err != nil {
 		t.Fatal(err)
 	}
-	if len(views) != 1 || views[0].Requirement.ID != requirement.ID ||
-		views[0].CurrentVersion != nil || len(views[0].PendingVersions) != 1 ||
-		!views[0].ConfirmationEligible || views[0].Staleness.DeliveryAfterIntent || len(views[0].Artifacts) != 1 ||
-		views[0].Artifacts[0].ID != artifact.ID ||
-		len(views[0].PlanningSessions) != 1 || len(views[0].Lineage) != 2 {
-		t.Fatalf("requirement view=%+v", views)
+	if len(summaries) != 1 || summaries[0].Requirement.ID != requirement.ID ||
+		summaries[0].CurrentVersion != nil || summaries[0].PendingVersionCount != 1 ||
+		!summaries[0].ConfirmationEligible || summaries[0].Staleness.DeliveryAfterIntent {
+		t.Fatalf("requirement summary=%+v", summaries)
 	}
-	if guard.fullLineage != 0 || guard.fullArtifacts != 0 || guard.neighborhood != 1 || guard.scopedArtifacts != 1 {
+	for _, detailOnly := range []string{"pending_versions", "serving_blueprints", "planning_sessions", "artifacts", "lineage", "lineage_graph"} {
+		if strings.Contains(response.Body.String(), `"`+detailOnly+`"`) {
+			t.Fatalf("list includes detail-only field %q: %s", detailOnly, response.Body.String())
+		}
+	}
+	if guard.fullLineage != 0 || guard.fullArtifacts != 0 || guard.neighborhood != 0 || guard.scopedArtifacts != 0 {
 		t.Fatalf("requirements queries full_lineage=%d full_artifacts=%d neighborhood=%d scoped_artifacts=%d", guard.fullLineage, guard.fullArtifacts, guard.neighborhood, guard.scopedArtifacts)
 	}
 
@@ -283,6 +286,15 @@ func TestRequirementsHTTPReplacesFeatureTreeAndConfirmsVersions(t *testing.T) {
 	if getErr != nil || current.CurrentVersion != proposed.Version {
 		t.Fatalf("confirmed requirement=%+v err=%v", current, getErr)
 	}
+	confirmedList := httptest.NewRecorder()
+	handler.ServeHTTP(confirmedList, httptest.NewRequest(http.MethodGet, "/v1/requirements", nil))
+	if confirmedList.Code != http.StatusOK || !strings.Contains(confirmedList.Body.String(), `"current_version":{"requirement_id":"req-retries","version":1`) ||
+		strings.Contains(confirmedList.Body.String(), `"content"`) || confirmedList.Body.Len() > 2048 {
+		t.Fatalf("compact confirmed list status=%d bytes=%d body=%s", confirmedList.Code, confirmedList.Body.Len(), confirmedList.Body.String())
+	}
+	if guard.neighborhood != 0 || guard.scopedArtifacts != 0 {
+		t.Fatalf("confirmed list queries neighborhood=%d scoped_artifacts=%d", guard.neighborhood, guard.scopedArtifacts)
+	}
 
 	detail := httptest.NewRecorder()
 	handler.ServeHTTP(detail, httptest.NewRequest(http.MethodGet,
@@ -290,6 +302,17 @@ func TestRequirementsHTTPReplacesFeatureTreeAndConfirmsVersions(t *testing.T) {
 	if detail.Code != http.StatusOK || !strings.Contains(detail.Body.String(), `"current_version"`) ||
 		strings.Contains(detail.Body.String(), `"pending_versions":[{`) {
 		t.Fatalf("detail status=%d body=%s", detail.Code, detail.Body.String())
+	}
+	var view requirementView
+	if err = json.Unmarshal(detail.Body.Bytes(), &view); err != nil {
+		t.Fatal(err)
+	}
+	if len(view.Artifacts) != 1 || view.Artifacts[0].ID != artifact.ID ||
+		len(view.PlanningSessions) != 1 || len(view.Lineage) < 2 || len(view.LineageGraph.Nodes) == 0 {
+		t.Fatalf("detail requirement view=%+v", view)
+	}
+	if guard.neighborhood != 1 || guard.scopedArtifacts != 1 {
+		t.Fatalf("detail queries neighborhood=%d scoped_artifacts=%d", guard.neighborhood, guard.scopedArtifacts)
 	}
 }
 

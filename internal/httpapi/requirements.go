@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -37,6 +38,34 @@ type requirementView struct {
 	Staleness            requirementStaleness         `json:"staleness"`
 	MigratedSeed         bool                         `json:"migrated_seed"`
 	ConfirmationEligible bool                         `json:"confirmation_eligible"`
+}
+
+// requirementSummary is the compact read model used by the document tree.
+// Content, histories, graph data, and action payloads stay on the detail route
+// (design-http-api; design-web-dashboard).
+type requirementSummary struct {
+	Requirement          core.Requirement           `json:"requirement"`
+	CurrentVersion       *requirementVersionSummary `json:"current_version,omitempty"`
+	PendingVersionCount  int                        `json:"pending_version_count"`
+	ServingTasks         []requirementTaskSummary   `json:"serving_tasks"`
+	Staleness            requirementStaleness       `json:"staleness"`
+	ConfirmationEligible bool                       `json:"confirmation_eligible"`
+}
+
+type requirementTaskSummary struct {
+	ID    string         `json:"id"`
+	Title string         `json:"title"`
+	State core.TaskState `json:"state"`
+}
+
+type requirementVersionSummary struct {
+	RequirementID string                 `json:"requirement_id"`
+	Version       int                    `json:"version"`
+	Origin        core.RequirementOrigin `json:"origin"`
+	Confirmed     bool                   `json:"confirmed"`
+	ConfirmedBy   string                 `json:"confirmed_by,omitempty"`
+	ConfirmedAt   time.Time              `json:"confirmed_at,omitempty"`
+	CreatedAt     time.Time              `json:"created_at"`
 }
 
 type requirementStaleness struct {
@@ -84,12 +113,43 @@ func (s *Server) listRequirements(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	views, err := s.requirementViews(r, requirements)
+	views, err := s.requirementViews(r, requirements, false)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, http.StatusOK, views)
+	summaries := make([]requirementSummary, 0, len(views))
+	for _, view := range views {
+		staleness := view.Staleness
+		staleness.Deliveries = slices.DeleteFunc(staleness.Deliveries, func(delivery requirementDelivery) bool {
+			return !delivery.NeedsAttention
+		})
+		var current *requirementVersionSummary
+		if view.CurrentVersion != nil {
+			current = &requirementVersionSummary{
+				RequirementID: view.CurrentVersion.RequirementID,
+				Version:       view.CurrentVersion.Version,
+				Origin:        view.CurrentVersion.Origin,
+				Confirmed:     view.CurrentVersion.Confirmed,
+				ConfirmedBy:   view.CurrentVersion.ConfirmedBy,
+				ConfirmedAt:   view.CurrentVersion.ConfirmedAt,
+				CreatedAt:     view.CurrentVersion.CreatedAt,
+			}
+		}
+		servingTasks := make([]requirementTaskSummary, 0, len(view.ServingTasks))
+		for _, task := range view.ServingTasks {
+			servingTasks = append(servingTasks, requirementTaskSummary{ID: task.ID, Title: task.Title, State: task.State})
+		}
+		summaries = append(summaries, requirementSummary{
+			Requirement:          view.Requirement,
+			CurrentVersion:       current,
+			PendingVersionCount:  len(view.PendingVersions),
+			ServingTasks:         servingTasks,
+			Staleness:            staleness,
+			ConfirmationEligible: view.ConfirmationEligible,
+		})
+	}
+	writeJSON(w, http.StatusOK, summaries)
 }
 
 func (s *Server) getRequirement(w http.ResponseWriter, r *http.Request) {
@@ -98,7 +158,7 @@ func (s *Server) getRequirement(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
-	views, err := s.requirementViews(r, []core.Requirement{requirement})
+	views, err := s.requirementViews(r, []core.Requirement{requirement}, true)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -182,7 +242,7 @@ func (s *Server) currentRequirementDelivery(r *http.Request, requirementID, sign
 	if err != nil {
 		return requirementDelivery{}, err
 	}
-	views, err := s.requirementViews(r, []core.Requirement{requirement})
+	views, err := s.requirementViews(r, []core.Requirement{requirement}, true)
 	if err != nil {
 		return requirementDelivery{}, err
 	}
@@ -367,15 +427,18 @@ func parseRequirementIfMatch(value string) (int64, error) {
 	return version, nil
 }
 
-func (s *Server) requirementViews(r *http.Request, requirements []core.Requirement) ([]requirementView, error) {
-	sessions, err := s.Store.ListPlanningSessions(r.Context())
-	if err != nil {
-		return nil, err
+func (s *Server) requirementViews(r *http.Request, requirements []core.Requirement, includeDetail bool) ([]requirementView, error) {
+	sessions := []core.PlanningSession{}
+	var err error
+	if includeDetail {
+		sessions, err = s.Store.ListPlanningSessions(r.Context())
+		if err != nil {
+			return nil, err
+		}
 	}
 	workspace, _ := store.WorkspaceFromContext(r.Context())
 	// Staleness is an authority decision, not prompt rendering. Keep enough
 	// fixed delivery-chain depth even when operators tune agent context lower.
-	lineageBudget := core.LineageTraversalBudget{MaxDepth: 5, MaxNodes: 256, MaxLinks: 1024, Workspace: workspace}
 	deliveryBudget := core.LineageTraversalBudget{MaxDepth: 3, MaxNodes: 256, MaxLinks: 1024, Workspace: workspace}
 	artifactNodes := map[core.LineageNode]bool{}
 	graphs := make(map[string]core.LineageTraversal, len(requirements))
@@ -383,19 +446,22 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 	lineageByRequirement := make(map[string][]core.LineageLink, len(requirements))
 	for _, requirement := range requirements {
 		root := core.LineageNode{Type: core.LineageRequirement, ID: requirement.ID}
-		lineage, listErr := s.Store.ListLineageNeighborhood(r.Context(), []core.LineageNode{root}, lineageBudget)
-		if listErr != nil {
-			return nil, listErr
+		if includeDetail {
+			lineageBudget := core.LineageTraversalBudget{MaxDepth: 5, MaxNodes: 256, MaxLinks: 1024, Workspace: workspace}
+			lineage, listErr := s.Store.ListLineageNeighborhood(r.Context(), []core.LineageNode{root}, lineageBudget)
+			if listErr != nil {
+				return nil, listErr
+			}
+			graph, graphErr := core.TraverseLineage(lineage, []core.LineageNode{root}, lineageBudget)
+			if graphErr != nil {
+				return nil, graphErr
+			}
+			for _, node := range graph.Nodes {
+				artifactNodes[node] = true
+			}
+			graphs[root.ID] = graph
+			lineageByRequirement[root.ID] = lineage
 		}
-		graph, graphErr := core.TraverseLineage(lineage, []core.LineageNode{root}, lineageBudget)
-		if graphErr != nil {
-			return nil, graphErr
-		}
-		for _, node := range graph.Nodes {
-			artifactNodes[node] = true
-		}
-		graphs[root.ID] = graph
-		lineageByRequirement[root.ID] = lineage
 		deliveryLineage, deliveryErr := s.Store.ListRequirementDeliveryLineage(r.Context(), requirement.ID, deliveryBudget)
 		if deliveryErr != nil {
 			return nil, deliveryErr
@@ -407,20 +473,27 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 		deliveryGraphs[root.ID] = deliveryGraph
 	}
 	nodes := make([]core.LineageNode, 0, len(artifactNodes))
-	for node := range artifactNodes {
-		nodes = append(nodes, node)
+	artifacts := []core.Artifact{}
+	lineageLabels := map[core.LineageNode]string{}
+	if includeDetail {
+		for node := range artifactNodes {
+			nodes = append(nodes, node)
+		}
+		artifacts, err = s.Store.ListArtifactsForLineage(r.Context(), nodes)
+		if err != nil {
+			return nil, err
+		}
+		lineageLabels, err = s.lineageNodeLabels(r, nodes, artifacts, sessions)
+		if err != nil {
+			return nil, err
+		}
 	}
-	artifacts, err := s.Store.ListArtifactsForLineage(r.Context(), nodes)
-	if err != nil {
-		return nil, err
-	}
-	lineageLabels, err := s.lineageNodeLabels(r, nodes, artifacts, sessions)
-	if err != nil {
-		return nil, err
-	}
-	servesLinks, err := s.Store.ListRequirementServes(r.Context())
-	if err != nil {
-		return nil, err
+	servesLinks := []core.RequirementServesLink{}
+	if includeDetail {
+		servesLinks, err = s.Store.ListRequirementServes(r.Context())
+		if err != nil {
+			return nil, err
+		}
 	}
 	linksByRequirement := make(map[string][]core.RequirementServesLink)
 	for _, link := range servesLinks {
@@ -496,7 +569,9 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 				view.Artifacts = append(view.Artifacts, artifact)
 			}
 		}
-		view.Lineage = append(view.Lineage, annotateBackfilledEvents(requirementEvents)...)
+		if includeDetail {
+			view.Lineage = append(view.Lineage, annotateBackfilledEvents(requirementEvents)...)
+		}
 		for _, session := range sessions {
 			if session.RequirementContextID != requirement.ID &&
 				session.ProducedRequirementID != requirement.ID &&
@@ -526,14 +601,19 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 			view.ServingBlueprints = append(view.ServingBlueprints, item)
 			view.Lineage = append(view.Lineage, annotateBackfilledEvents(events)...)
 		}
-		graph := graphs[requirement.ID]
-		applyLineageLabels(&graph, lineageLabels)
-		view.LineageGraph = graph
+		if includeDetail {
+			graph := graphs[requirement.ID]
+			applyLineageLabels(&graph, lineageLabels)
+			view.LineageGraph = graph
+		}
 		deliveryGraph := deliveryGraphs[requirement.ID]
 		view.Staleness.PartialEvaluation = deliveryGraph.Truncated
 		reachableTasks := deliveryReachableTasks(deliveryGraph.Links, requirement.ID)
-		servingTaskIDs := directServingTaskIDs(lineageByRequirement[requirement.ID], requirement.ID)
 		deliveryServingTaskIDs := directServingTaskIDs(deliveryGraph.Links, requirement.ID)
+		servingTaskIDs := deliveryServingTaskIDs
+		if includeDetail {
+			servingTaskIDs = directServingTaskIDs(lineageByRequirement[requirement.ID], requirement.ID)
+		}
 		for taskID := range servingTaskIDs {
 			task, getErr := s.Store.GetTask(r.Context(), taskID)
 			if getErr != nil {

@@ -106,7 +106,7 @@ export function fetchBlueprints() {
   return getJSON<BlueprintView[]>(workspaceURL('/v1/blueprints'))
 }
 export function fetchRequirements() {
-  return getJSON<RequirementView[]>(workspaceURL('/v1/requirements'))
+  return getJSON<import('./types').RequirementSummary[]>(workspaceURL('/v1/requirements'))
 }
 export function fetchRequirement(requirementId: string) {
   return getJSON<RequirementView>(workspaceURL(`/v1/requirements/${encodeURIComponent(requirementId)}`))

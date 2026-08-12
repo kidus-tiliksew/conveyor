@@ -921,14 +921,30 @@ export interface RequirementView {
   artifacts: Artifact[]
   lineage: TaskEvent[]
   lineage_graph?: LineageGraph
-  staleness?: {
-    delivery_after_intent: boolean
-    partial_evaluation: boolean
-    deliveries: RequirementDelivery[]
-    active_drift: RepositoryDrift[]
-  }
+  staleness?: RequirementStaleness
   migrated_seed: boolean
   confirmation_eligible: boolean
+}
+
+export interface RequirementSummary {
+  requirement: Requirement
+  current_version?: RequirementVersionSummary
+  pending_version_count: number
+  serving_tasks: Array<Pick<Task, 'id' | 'title' | 'state'>>
+  staleness: RequirementStaleness
+  confirmation_eligible: boolean
+}
+
+export type RequirementVersionSummary = Pick<
+  RequirementVersion,
+  'requirement_id' | 'version' | 'origin' | 'confirmed' | 'confirmed_by' | 'confirmed_at' | 'created_at'
+>
+
+export interface RequirementStaleness {
+  delivery_after_intent: boolean
+  partial_evaluation: boolean
+  deliveries: RequirementDelivery[]
+  active_drift: RepositoryDrift[]
 }
 
 export interface RequirementDelivery {
