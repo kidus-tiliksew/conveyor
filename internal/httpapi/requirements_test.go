@@ -395,6 +395,92 @@ func TestRequirementStalenessFollowsLineageToChildMerge(t *testing.T) {
 	}
 }
 
+func TestDesignDriftCrossPostsPreserveSubjectAndResolveEverywhere(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	for _, id := range []string{"req-deployment", "req-lifecycle"} {
+		requirement, version, err := st.CreateRequirement(ctx, core.Requirement{ID: id, Title: id}, core.RequirementVersion{
+			Content: "Confirmed intent.", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Delivery stays aligned."}},
+			Origin: core.RequirementOriginOperator,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err = st.ConfirmRequirementVersion(ctx, requirement.ID, version.Version); err != nil {
+			t.Fatal(err)
+		}
+	}
+	task := core.Task{ID: "shared-delivery", Workspace: "demo", Title: "Shared delivery", Repo: "conveyor", State: core.TaskMerged}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"req-deployment", "req-lifecycle"} {
+		if _, err := st.ProposeRequirementServes(ctx, task.ID, id, core.RequirementServesOperator, false); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := st.ConfirmRequirementServes(ctx, task.ID, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	document, version, err := st.CreateSystemDesign(ctx,
+		core.SystemDesign{ID: "design-system-architecture", Title: "System architecture", Category: "Architecture"},
+		core.SystemDesignVersion{Content: "# System architecture\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/store/**\n```", Origin: core.SystemDesignOriginOperator})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmSystemDesignVersion(ctx, document.ID, version.Version); err != nil {
+		t.Fatal(err)
+	}
+	drift := monitor.Drift{
+		ID: "shared-design-drift", WorkspaceID: "demo", Repository: "conveyor", Kind: monitor.LineagedMerge,
+		SourceURL: "https://example.test/pr/488", TaskID: task.ID, SystemDesignID: document.ID,
+		SystemDesignVersion: version.Version, MatchingPaths: []string{"internal/store/storetest/task_operations.go"}, DetectedAt: time.Now().UTC(),
+	}
+	if _, fresh, err := st.(monitor.Store).RecordDrift(ctx, drift); err != nil || !fresh {
+		t.Fatalf("record drift fresh=%t err=%v", fresh, err)
+	}
+
+	server := NewServer(st)
+	server.Workspace, server.BearerToken = "demo", "token"
+	server.Monitor = &monitor.Service{Store: st.(monitor.Store), WorkspaceID: "demo", Enabled: true}
+	handler := server.Handler()
+	list := func() []requirementView {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/requirements", nil))
+		if response.Code != http.StatusOK {
+			t.Fatalf("list status=%d body=%s", response.Code, response.Body.String())
+		}
+		var views []requirementView
+		if err := json.Unmarshal(response.Body.Bytes(), &views); err != nil {
+			t.Fatal(err)
+		}
+		return views
+	}
+	views := list()
+	if len(views) != 2 {
+		t.Fatalf("views=%+v", views)
+	}
+	for _, view := range views {
+		if len(view.Staleness.ActiveDrift) != 1 || view.Staleness.ActiveDrift[0].ID != drift.ID ||
+			view.Staleness.ActiveDrift[0].SystemDesignID != document.ID ||
+			view.Staleness.ActiveDrift[0].SystemDesignVersion != version.Version {
+			t.Fatalf("cross-posted drift for %s=%+v", view.Requirement.ID, view.Staleness.ActiveDrift)
+		}
+	}
+	resolve := httptest.NewRequest(http.MethodPost, "/v1/monitor/drift/"+drift.ID+"/resolve", strings.NewReader(`{"outcome":"conflict_resolved"}`))
+	resolve.Header.Set("Authorization", "Bearer token")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, resolve)
+	if response.Code != http.StatusOK {
+		t.Fatalf("resolve status=%d body=%s", response.Code, response.Body.String())
+	}
+	for _, view := range list() {
+		if len(view.Staleness.ActiveDrift) != 0 {
+			t.Fatalf("resolved drift remained on %s: %+v", view.Requirement.ID, view.Staleness.ActiveDrift)
+		}
+	}
+}
+
 // Staleness walks delivery edges at task level.
 // Task-centric delivery attaches the requirement to the task itself (change 3),
 // so a merge on that task is the requirement's delivery — with no blueprint

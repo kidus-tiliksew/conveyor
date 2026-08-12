@@ -147,6 +147,7 @@ export function SystemDesignPage() {
                 <DocumentTreeItem
                   key={item.document.id}
                   label={item.document.title}
+                  attentionCount={new Set(item.drift.map((entry) => entry.id)).size + item.pending_versions.length}
                   selected={selected?.document.id === item.document.id}
                   onClick={() =>
                     void navigate({ to: '/system-design', search: { document: item.document.id }, replace: true })
@@ -255,7 +256,13 @@ function DesignCanvas({
             surface="system_design"
             token={token}
             workspace={workspace}
-            onResolved={() => client.invalidateQueries({ queryKey: ['system-designs', workspace] })}
+            onResolved={() =>
+              Promise.all([
+                client.invalidateQueries({ queryKey: ['system-designs', workspace] }),
+                client.invalidateQueries({ queryKey: ['requirements', workspace] }),
+                client.invalidateQueries({ queryKey: ['requirement', workspace] }),
+              ])
+            }
           />
         </>
       ),

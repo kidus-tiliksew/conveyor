@@ -23,6 +23,8 @@ export type AttentionItem = {
   action?: ReactNode
   /** Failure text from the resolving action, kept beside the entry it came from. */
   error?: string
+  /** False when this is a contextual rendering of a signal counted on its subject document. */
+  countable?: boolean
 }
 
 export function AttentionSurface({ items }: { items: AttentionItem[] }) {
@@ -38,6 +40,7 @@ export function AttentionSurface({ items }: { items: AttentionItem[] }) {
         Nothing needs your attention on this document.
       </section>
     )
+  const attentionCount = new Set(items.filter((item) => item.countable !== false).map((item) => item.id)).size
   return (
     <section
       aria-label="Needs your attention"
@@ -45,10 +48,12 @@ export function AttentionSurface({ items }: { items: AttentionItem[] }) {
     >
       <h2 className="flex items-center gap-1.5 border-b border-attention/20 bg-attention-soft/50 px-4 py-2.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-attention">
         <TriangleAlert className="size-3" />
-        Needs your attention
-        <span className="ml-0.5 rounded-full bg-attention/15 px-1.5 py-0.5 font-mono text-[10px] leading-none text-attention">
-          {items.length}
-        </span>
+        {attentionCount > 0 ? 'Needs your attention' : 'Related attention context'}
+        {attentionCount > 0 && (
+          <span className="ml-0.5 rounded-full bg-attention/15 px-1.5 py-0.5 font-mono text-[10px] leading-none text-attention">
+            {attentionCount}
+          </span>
+        )}
       </h2>
       <ul className="divide-y divide-border">
         {items.map((item) => (

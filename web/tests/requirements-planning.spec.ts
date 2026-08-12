@@ -523,6 +523,117 @@ test('requirements search and deterministic sorting preserve the selected canvas
   ).toBeVisible()
 })
 
+test('design drift names its subject, counts once, and clears every rendering from a requirement', async ({ page }) => {
+  await initShell(page)
+  let resolved = false
+  const drift = {
+    id: 'shared-design-drift',
+    workspace_id: 'demo',
+    repository: 'conveyor',
+    kind: 'external_pr_merge',
+    source_url: 'https://example.test/pr/488',
+    task_id: '260812-cc4619',
+    system_design_id: 'design-system-architecture',
+    system_design_version: 6,
+    matching_paths: ['internal/store/storetest/task_operations.go'],
+    detected_at: '2026-08-12T08:00:00Z',
+  }
+  const requirementView = (id: string, title: string) => ({
+    ...requirement,
+    requirement: { ...requirement.requirement, id, slug: id, title },
+    pending_versions: [],
+    serving_blueprints: [],
+    planning_sessions: [],
+    staleness: {
+      delivery_after_intent: false,
+      partial_evaluation: false,
+      deliveries: [],
+      active_drift: resolved ? [] : [drift],
+    },
+  })
+  const requirements = () => [
+    requirementView('req-deployment', 'Deployment, identity, and multi-user operation'),
+    requirementView('req-lifecycle', 'Task lifecycle and the work queue'),
+  ]
+  const designView = () => ({
+    document: {
+      id: 'design-system-architecture',
+      slug: 'system-architecture',
+      title: 'System architecture',
+      category: 'Architecture',
+      current_version: 6,
+      workspace: 'demo',
+      created_at: '2026-08-01T08:00:00Z',
+      updated_at: '2026-08-12T08:00:00Z',
+    },
+    current_version: {
+      document_id: 'design-system-architecture',
+      version: 6,
+      content: '# System architecture',
+      governs: [],
+      origin: 'operator',
+      confirmed: true,
+      workspace: 'demo',
+      created_at: '2026-08-01T08:00:00Z',
+    },
+    pending_versions: [],
+    versions: [],
+    lineage: [],
+    drift: resolved ? [] : [drift],
+  })
+
+  await page.route('**/v1/**', async (route) => {
+    const shell = shellResponse(route)
+    if (shell) return await shell
+    const request = route.request()
+    const path = new URL(request.url()).pathname
+    if (path === '/v1/requirements') return route.fulfill({ json: requirements() })
+    const detail = requirements().find((item) => path === `/v1/requirements/${item.requirement.id}`)
+    if (detail) return route.fulfill({ json: detail })
+    if (path.startsWith('/v1/requirements/') && path.endsWith('/versions')) return route.fulfill({ json: [] })
+    if (path === '/v1/system-designs') return route.fulfill({ json: [designView()] })
+    if (path === '/v1/decisions') return route.fulfill({ json: [] })
+    if (path === '/v1/monitor/drift/shared-design-drift/resolve') {
+      resolved = true
+      return route.fulfill({ json: drift })
+    }
+    return route.fulfill({ json: [] })
+  })
+
+  await page.goto('/requirements?requirement=req-deployment')
+  const attention = page.getByRole('region', { name: 'Needs your attention' })
+  await expect(attention).toContainText("Code changed in conveyor and hasn't reached System architecture")
+  await expect(attention).not.toContainText('without reaching this document')
+  await expect(attention.getByRole('link', { name: 'System architecture' })).toHaveAttribute(
+    'href',
+    '/system-design?document=design-system-architecture',
+  )
+  await expect(attention).toContainText('Related attention context')
+  const tree = page.getByRole('navigation', { name: 'Document tree' })
+  await expect(tree.getByLabel(/attention item/)).toHaveCount(0)
+
+  await page.goto('/system-design?document=design-system-architecture')
+  await expect(
+    page
+      .getByRole('navigation', { name: 'Document tree' })
+      .getByRole('button', { name: /System architecture/ })
+      .getByLabel('1 attention item'),
+  ).toBeVisible()
+  await page.goto('/requirements?requirement=req-deployment')
+
+  const form = attention.getByRole('form', { name: 'Resolve drift shared-design-drift' })
+  await form.getByLabel('Resolution outcome for shared-design-drift').selectOption('conflict_resolved')
+  await form.getByRole('button', { name: 'Resolve' }).click()
+  await expect(attention).toContainText('Nothing needs your attention on this document.')
+
+  await tree.getByRole('button', { name: /Task lifecycle and the work queue/ }).click()
+  await expect(attention).toContainText('Nothing needs your attention on this document.')
+  await page.goto('/system-design?document=design-system-architecture')
+  await expect(page.getByRole('region', { name: 'Needs your attention' })).toContainText(
+    'Nothing needs your attention on this document.',
+  )
+})
+
 test('requirement confirmation offers explicit attachment to eligible checkpoint-paused tasks', async ({ page }) => {
   await initShell(page)
   let contextWrites = 0
