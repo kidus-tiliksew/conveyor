@@ -32,6 +32,21 @@ type rpcError struct {
 	Message string `json:"message"`
 }
 
+const (
+	systemDesignProposalGuidance = "This System Design proposal is fire-and-forget and confers no authority. Do not checkpoint, pause, or wait for operator confirmation. Proceed now to commit, push, and `submit_for_review`; review dispatch waits on the operator's decision automatically."
+	decisionProposalGuidance     = "This decision proposal is fire-and-forget and confers no authority. Do not checkpoint, pause, or wait for operator confirmation. Proceed now to commit, push, and `submit_for_review`; review dispatch waits on the operator's decision automatically."
+)
+
+type systemDesignProposalResult struct {
+	core.SystemDesignVersion
+	Guidance string `json:"guidance"`
+}
+
+type decisionProposalResult struct {
+	core.Decision
+	Guidance string `json:"guidance"`
+}
+
 func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", "POST")
@@ -271,19 +286,27 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 		if err != nil {
 			return nil, err
 		}
-		return s.Store.ProposeSystemDesignVersion(ctx, core.SystemDesignVersion{
+		version, err := s.Store.ProposeSystemDesignVersion(ctx, core.SystemDesignVersion{
 			DocumentID: stringArg("document_id"), Content: stringArg("content"),
 			Origin: core.SystemDesignOriginImplementation, OriginTaskID: order.TaskID,
 		})
+		if err != nil {
+			return nil, err
+		}
+		return systemDesignProposalResult{SystemDesignVersion: version, Guidance: systemDesignProposalGuidance}, nil
 	case "propose_decision":
 		order, err := s.implementationGovernanceOrder(ctx, workerAuth, worker, stringArg("work_order_id"), session)
 		if err != nil {
 			return nil, err
 		}
-		return s.Store.ProposeDecision(ctx, core.Decision{
+		decision, err := s.Store.ProposeDecision(ctx, core.Decision{
 			Statement: stringArg("statement"), Context: stringArg("context"), AlternativesRejected: stringArg("alternatives_rejected"),
 			Supersedes: stringArg("supersedes"), Origin: core.DecisionOriginImplementation, OriginTaskID: order.TaskID,
 		})
+		if err != nil {
+			return nil, err
+		}
+		return decisionProposalResult{Decision: decision, Guidance: decisionProposalGuidance}, nil
 	case "upload_transcript":
 		return s.WorkOrders.UploadTranscript(ctx, stringArg("work_order_id"), session, stringArg("transcript"))
 	case "submit_plan":
@@ -539,8 +562,8 @@ func mcpTools() []map[string]any {
 		{"name": "read_artifact", "description": "Read one artifact authorized for the claimed work order. The workspace, work order, session, and artifact ownership must all match; content is returned as base64.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "artifact_id": str}, "workspace_id", "work_order_id", "session_id", "artifact_id")},
 		{"name": "report_progress", "description": "Record self-reported progress for a claimed order.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "message": str}, "work_order_id", "session_id", "message")},
 		{"name": "report_usage", "description": "Record best-effort cumulative self-reported token, cost, and optional provider rate-limit status as observational audit telemetry. Report at natural checkpoints and immediately before the stage's terminal lifecycle tool when figures are available; missing usage never blocks lifecycle progress (DEC-1).", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "tokens_in": num, "tokens_out": num, "cost_usd": num, "rate_limit": rateLimit, "source": map[string]any{"type": "string", "enum": []string{"self_reported", "worker_fallback"}, "description": "Reserved worker provenance; agents omit this or use self_reported."}}, "work_order_id", "session_id", "tokens_in", "tokens_out", "cost_usd")},
-		{"name": "propose_system_design_revision", "description": "Propose a complete immutable System Design revision from the current claimed implementation; the operator remains the only confirmer.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "document_id": str, "content": str}, "work_order_id", "session_id", "document_id", "content")},
-		{"name": "propose_decision", "description": "Propose the next stable DEC-n record from implementation deliberation; the operator remains the only confirmer.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "statement": str, "context": str, "alternatives_rejected": str, "supersedes": str}, "work_order_id", "session_id", "statement", "context", "alternatives_rejected")},
+		{"name": "propose_system_design_revision", "description": "Propose a complete immutable System Design revision from the current claimed implementation. The operator alone confirms after submission; confirmation never blocks implementation.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "document_id": str, "content": str}, "work_order_id", "session_id", "document_id", "content")},
+		{"name": "propose_decision", "description": "Propose the next stable DEC-n record from implementation deliberation. The operator alone confirms after submission; confirmation never blocks implementation.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "statement": str, "context": str, "alternatives_rejected": str, "supersedes": str}, "work_order_id", "session_id", "statement", "context", "alternatives_rejected")},
 		{"name": "upload_transcript", "description": "Upload an optional self-reported transcript through Conveyor redaction.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "transcript": str}, "work_order_id", "session_id", "transcript")},
 		{"name": "submit_plan", "description": "Validate and submit a Markdown execution plan for a claimed plan-stage order. Include Approach, Files touched, Ordering, Risks, and Done criteria headings. Plans never create child tasks; decomposition must be empty. Validation errors leave the order claimed for correction.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "markdown": map[string]any{"type": "string", "description": "Example: ## Approach\\nImplement the shared handler.\\n\\n## Files touched\\n- internal/httpapi/mcp.go\\n\\n## Ordering\\n1. Validate, then persist.\\n\\n## Risks\\n- Preserve gate events.\\n\\n## Done criteria\\n- submit_plan persists the task execution plan."}, "decomposition": map[string]any{"type": "array", "description": "Must be empty; plans cannot fan out tasks.", "items": map[string]any{"type": "object", "properties": map[string]any{"id": str, "repo": str, "summary": str, "depends_on": map[string]any{"type": "array", "items": str}}, "required": []string{"id", "repo", "summary", "depends_on"}, "additionalProperties": false}}}, "work_order_id", "session_id", "markdown", "decomposition")},
 		{"name": "submit_for_review", "description": "Open or reuse the pushed branch PR and dispatch independent review.", "inputSchema": object(identity, "work_order_id", "session_id")},

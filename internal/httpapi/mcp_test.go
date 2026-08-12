@@ -117,20 +117,40 @@ func TestMCPImplementationGovernanceProposalsBindToClaimedTask(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	revision := result.(core.SystemDesignVersion)
+	revisionResult := result.(systemDesignProposalResult)
+	revision := revisionResult.SystemDesignVersion
 	if revision.Origin != core.SystemDesignOriginImplementation || revision.OriginTaskID != task.ID || revision.Confirmed || revision.Deduplicated {
 		t.Fatalf("revision=%+v", revision)
 	}
+	if revisionResult.Guidance != systemDesignProposalGuidance {
+		t.Fatalf("revision guidance=%q", revisionResult.Guidance)
+	}
+	assertProposalResultJSON(t, revisionResult, map[string]any{
+		"document_id": revision.DocumentID,
+		"version":     float64(revision.Version),
+		"origin":      string(core.SystemDesignOriginImplementation),
+		"guidance":    systemDesignProposalGuidance,
+	})
 	repeatedArgs := maps.Clone(revisionArgs)
 	repeatedArgs["content"] = " \r\n" + strings.ReplaceAll(revisionArgs["content"].(string), "\n", "\r\n") + "\r\n"
 	result, err = server.callMCPTool(request, "propose_system_design_revision", repeatedArgs)
 	if err != nil {
 		t.Fatal(err)
 	}
-	reused := result.(core.SystemDesignVersion)
+	reusedResult := result.(systemDesignProposalResult)
+	reused := reusedResult.SystemDesignVersion
 	if !reused.Deduplicated || reused.Version != revision.Version {
 		t.Fatalf("reused revision=%+v original=%+v", reused, revision)
 	}
+	if reusedResult.Guidance != systemDesignProposalGuidance {
+		t.Fatalf("reused revision guidance=%q", reusedResult.Guidance)
+	}
+	assertProposalResultJSON(t, reusedResult, map[string]any{
+		"document_id":  reused.DocumentID,
+		"version":      float64(reused.Version),
+		"deduplicated": true,
+		"guidance":     systemDesignProposalGuidance,
+	})
 	decisionArgs := maps.Clone(identity)
 	decisionArgs["statement"] = "Project governance from events."
 	decisionArgs["context"] = "Lineage must rebuild."
@@ -139,14 +159,41 @@ func TestMCPImplementationGovernanceProposalsBindToClaimedTask(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	decision := result.(core.Decision)
+	decisionResult := result.(decisionProposalResult)
+	decision := decisionResult.Decision
 	if decision.ID != "DEC-1" || decision.Origin != core.DecisionOriginImplementation || decision.OriginTaskID != task.ID || decision.Status != core.DecisionProposed {
 		t.Fatalf("decision=%+v", decision)
 	}
+	if decisionResult.Guidance != decisionProposalGuidance {
+		t.Fatalf("decision guidance=%q", decisionResult.Guidance)
+	}
+	assertProposalResultJSON(t, decisionResult, map[string]any{
+		"id":       decision.ID,
+		"status":   string(core.DecisionProposed),
+		"origin":   string(core.DecisionOriginImplementation),
+		"guidance": decisionProposalGuidance,
+	})
 	wrongSession := maps.Clone(decisionArgs)
 	wrongSession["session_id"] = "stale-session"
 	if _, err = server.callMCPTool(request, "propose_decision", wrongSession); err == nil {
 		t.Fatal("stale implementation session proposed a decision")
+	}
+}
+
+func assertProposalResultJSON(t *testing.T, result any, want map[string]any) {
+	t.Helper()
+	data, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	for field, value := range want {
+		if got[field] != value {
+			t.Errorf("result %s=%v, want %v; JSON=%s", field, got[field], value, data)
+		}
 	}
 }
 
@@ -560,7 +607,8 @@ func TestMCPToolsListRequiresAuthAndPublishesLifecycle(t *testing.T) {
 	var envelope struct {
 		Result struct {
 			Tools []struct {
-				Name string `json:"name"`
+				Name        string `json:"name"`
+				Description string `json:"description"`
 			} `json:"tools"`
 		} `json:"result"`
 	}
@@ -577,6 +625,12 @@ func TestMCPToolsListRequiresAuthAndPublishesLifecycle(t *testing.T) {
 		}
 		if strings.Contains(name, "preempt") {
 			t.Fatalf("operator-only preempt leaked into MCP tool %q", name)
+		}
+		if name == "propose_system_design_revision" || name == "propose_decision" {
+			description := envelope.Result.Tools[i].Description
+			if !strings.Contains(description, "operator alone confirms after submission") || !strings.Contains(description, "confirmation never blocks implementation") {
+				t.Fatalf("%s description=%q", name, description)
+			}
 		}
 	}
 }
