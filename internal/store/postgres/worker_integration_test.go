@@ -9,6 +9,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
+	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 )
 
 func TestOwnedWorkerAuthorizationAndRevocationCascadeIntegration(t *testing.T) {
@@ -51,14 +52,42 @@ func TestOwnedWorkerAuthorizationAndRevocationCascadeIntegration(t *testing.T) {
 	if _, err := st.AuthenticateWorker(ctx, owned.CredentialHash); err != nil {
 		t.Fatalf("owned worker initial authentication: %v", err)
 	}
+	createClaimable := func(prefix string) core.WorkOrder {
+		t.Helper()
+		taskID := prefix + "-" + core.NewTaskID()
+		if err := st.CreateTask(ctx, core.Task{ID: taskID, Workspace: workspace, Source: "test", Title: prefix, Repo: "repo", BaseBranch: "main", Branch: "conveyor/" + taskID, State: core.TaskRunning, CreatedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+		jobID := taskID + "-implement-1"
+		if err := st.CreateJob(ctx, core.Job{ID: jobID, TaskID: taskID, Stage: core.StageImplement, State: core.JobPending}); err != nil {
+			t.Fatal(err)
+		}
+		order := core.WorkOrder{ID: jobID, TaskID: taskID, JobID: jobID, Stage: core.StageImplement, State: core.WorkOrderQueued, Claimable: true, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now}
+		if err := storetest.For(st).CreateWorkOrder(ctx, order); err != nil {
+			t.Fatal(err)
+		}
+		return order
+	}
+	ownedOrder := createClaimable("owned-race")
 	if _, err := st.pool.Exec(t.Context(), `DELETE FROM workspace_role_bindings WHERE workspace_id=$1 AND user_id=$2`, workspace, member.ID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := st.AuthenticateWorker(ctx, owned.CredentialHash); !errors.Is(err, store.ErrWorkerUnauthorized) {
 		t.Fatalf("binding-less owned worker authentication error=%v", err)
 	}
+	if _, err := storetest.For(st).ClaimWorkOrder(ctx, ownedOrder.ID, core.WorkOrderClaim{
+		SessionID: "owned-race", ClientToken: "owned-race", WorkerID: owned.ID, OwnerUserID: member.ID, Lease: time.Minute,
+	}); !errors.Is(err, store.ErrWorkerUnauthorized) {
+		t.Fatalf("durable claim after preliminary auth and binding revocation error=%v", err)
+	}
 	if _, err := st.AuthenticateWorker(ctx, legacyWorker.CredentialHash); err != nil {
 		t.Fatalf("ownerless legacy worker authentication: %v", err)
+	}
+	legacyOrder := createClaimable("legacy-unassigned")
+	if _, err := storetest.For(st).ClaimWorkOrder(ctx, legacyOrder.ID, core.WorkOrderClaim{
+		SessionID: "legacy-unassigned", ClientToken: "legacy-unassigned", WorkerID: legacyWorker.ID, OwnerUserID: "forged", Lease: time.Minute,
+	}); err != nil {
+		t.Fatalf("ownerless legacy worker unassigned claim: %v", err)
 	}
 	if _, err := st.GrantWorkspaceRole(ctx, member.Email, workspace, core.WorkspaceRoleUser); err != nil {
 		t.Fatal(err)

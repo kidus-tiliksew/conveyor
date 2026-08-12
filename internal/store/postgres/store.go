@@ -4103,6 +4103,37 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease taskop
 			claim.OwnerUserID = credential.OwnerUserID
 		}
 	}
+	if claim.WorkerID != "" {
+		var workerOwner pgtype.Text
+		var workerRevoked pgtype.Timestamptz
+		if err := tx.QueryRow(ctx, `SELECT owner_user_id,revoked_at FROM workers
+			WHERE workspace_id=$1 AND id=$2
+			FOR SHARE`, workspace(ctx), claim.WorkerID).Scan(&workerOwner, &workerRevoked); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return core.WorkOrder{}, err
+		} else if err == nil {
+			if workerRevoked.Valid {
+				return core.WorkOrder{}, fmt.Errorf("%w: worker %s", store.ErrWorkerUnauthorized, claim.WorkerID)
+			}
+			// Worker ownership is durable enrollment state, never a client
+			// assertion. Holding the worker, owner, and binding rows through claim
+			// commit serializes against revocation and identity deactivation.
+			claim.OwnerUserID = ""
+			if workerOwner.Valid {
+				claim.OwnerUserID = workerOwner.String
+				var authorized int
+				err := tx.QueryRow(ctx, `SELECT 1 FROM users u
+					JOIN workspace_role_bindings b ON b.user_id=u.id AND b.workspace_id=$1
+					WHERE u.id=$2 AND u.status='active'
+					FOR SHARE OF u,b`, workspace(ctx), workerOwner.String).Scan(&authorized)
+				if errors.Is(err, pgx.ErrNoRows) {
+					return core.WorkOrder{}, fmt.Errorf("%w: worker %s owner has no live workspace binding", store.ErrWorkerUnauthorized, claim.WorkerID)
+				}
+				if err != nil {
+					return core.WorkOrder{}, err
+				}
+			}
+		}
+	}
 	if assigneeUserID.Valid && assigneeUserID.String != claim.OwnerUserID {
 		return core.WorkOrder{}, fmt.Errorf("task %s is assigned to %s; only that assignee may claim its work orders", order.TaskID, assigneeUserID.String)
 	}
