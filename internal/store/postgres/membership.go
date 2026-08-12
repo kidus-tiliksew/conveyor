@@ -4,9 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/mail"
-	"strings"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
@@ -69,10 +66,9 @@ func (s *Store) ListWorkspaceMembers(ctx context.Context, requesterUserID, works
 }
 
 func (s *Store) GrantWorkspaceRole(ctx context.Context, email, workspaceID string, role core.WorkspaceRole) (core.MembershipGrant, error) {
-	email = strings.ToLower(strings.TrimSpace(email))
-	address, err := mail.ParseAddress(email)
-	if err != nil || address.Address != email || !strings.Contains(email, "@") {
-		return core.MembershipGrant{}, errors.New("email must be a valid normalized address")
+	email, err := normalizeIdentityEmail(email)
+	if err != nil {
+		return core.MembershipGrant{}, err
 	}
 	if role != core.WorkspaceRoleUser && role != core.WorkspaceRoleOperator {
 		return core.MembershipGrant{}, errors.New("role must be user or operator")
@@ -81,34 +77,66 @@ func (s *Store) GrantWorkspaceRole(ctx context.Context, email, workspaceID strin
 	if !ok {
 		return core.MembershipGrant{}, errors.New("authenticated user credential is required")
 	}
-	var result core.MembershipGrant
+	result := core.MembershipGrant{Email: email, Role: role}
 	err = s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
-		var userID, displayName string
-		lookupErr := tx.QueryRow(ctx, `SELECT id,display_name FROM users WHERE email=$1 AND status='active'`, email).Scan(&userID, &displayName)
+		if err := lockIdentityEmail(ctx, tx, email); err != nil {
+			return err
+		}
+		var userID string
+		lookupErr := tx.QueryRow(ctx, `SELECT id FROM users WHERE email=$1 AND status='active'`, email).Scan(&userID)
 		if errors.Is(lookupErr, pgx.ErrNoRows) {
 			_, insertErr := tx.Exec(ctx, `INSERT INTO workspace_membership_invitations(workspace_id,email,role,invited_by)
 				VALUES($1,$2,$3,$4) ON CONFLICT(workspace_id,email) DO UPDATE SET role=excluded.role,invited_by=excluded.invited_by,created_at=now()`, workspaceID, email, role, credential.OwnerUserID)
 			if insertErr != nil {
 				return insertErr
 			}
-			result.InvitationEmail = email
 		} else if lookupErr != nil {
 			return lookupErr
 		} else {
-			var createdAt time.Time
-			if err := tx.QueryRow(ctx, `INSERT INTO workspace_role_bindings(workspace_id,user_id,role)
+			if _, err := tx.Exec(ctx, `INSERT INTO workspace_role_bindings(workspace_id,user_id,role)
 				VALUES($1,$2,$3) ON CONFLICT(workspace_id,user_id) DO UPDATE SET role=excluded.role,updated_at=now()
-				RETURNING created_at`, workspaceID, userID, role).Scan(&createdAt); err != nil {
+			`, workspaceID, userID, role); err != nil {
 				return err
 			}
-			_, _ = tx.Exec(ctx, `DELETE FROM workspace_membership_invitations WHERE workspace_id=$1 AND email=$2`, workspaceID, email)
-			result.Membership = &core.WorkspaceMembership{WorkspaceID: workspaceID, UserID: userID, Email: email, DisplayName: displayName, Role: role, CreatedAt: createdAt}
+			if _, err := tx.Exec(ctx, `DELETE FROM workspace_membership_invitations WHERE workspace_id=$1 AND email=$2`, workspaceID, email); err != nil {
+				return err
+			}
 		}
 		return insertWorkspaceEvent(ctx, q, core.Event{Kind: "workspace.membership_granted", Payload: core.JSONPayload(map[string]any{
-			"workspace_id": workspaceID, "email": email, "role": role, "invitation": result.Membership == nil,
+			"workspace_id": workspaceID, "email": email, "role": role, "invitation": errors.Is(lookupErr, pgx.ErrNoRows),
+			"granted_by": credential.OwnerUserID,
 		})})
 	})
 	return result, err
+}
+
+// RevokeWorkspaceInvitation removes only an unredeemed invitation. The caller
+// is authorized at the HTTP capability boundary and still must carry the
+// authenticated operator credential used for the audit record.
+func (s *Store) RevokeWorkspaceInvitation(ctx context.Context, email, workspaceID string) error {
+	email, err := normalizeIdentityEmail(email)
+	if err != nil {
+		return err
+	}
+	credential, ok := store.CredentialFromContext(ctx)
+	if !ok {
+		return errors.New("authenticated user credential is required")
+	}
+	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		if err := lockIdentityEmail(ctx, tx, email); err != nil {
+			return err
+		}
+		result, err := tx.Exec(ctx, `DELETE FROM workspace_membership_invitations WHERE workspace_id=$1 AND email=$2`, workspaceID, email)
+		if err != nil {
+			return err
+		}
+		if result.RowsAffected() == 0 {
+			return fmt.Errorf("%w: workspace membership invitation", store.ErrNotFound)
+		}
+		return insertWorkspaceEvent(ctx, q, core.Event{Kind: "workspace.membership_revoked", Payload: core.JSONPayload(map[string]any{
+			"workspace_id": workspaceID, "email": email, "invitation": true, "revoked_by": credential.OwnerUserID,
+		})})
+	})
 }
 
 func (s *Store) RevokeWorkspaceRole(ctx context.Context, userID, workspaceID string) error {

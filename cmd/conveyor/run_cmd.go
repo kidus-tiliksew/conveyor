@@ -45,9 +45,9 @@ func runTask(ctx context.Context, c *client, taskID, configPath string, output i
 	if err = validateWorkerConfig(workerservice.WorkerConfig{WorkspaceDocument: local.WorkspaceDocument()}); err != nil {
 		return fmt.Errorf("invalid local execution config: %w", err)
 	}
-	firstActivityTimeout := local.Execution.FirstActivityTimeout
-	if firstActivityTimeout <= 0 {
-		firstActivityTimeout, _ = time.ParseDuration(local.Execution.FirstActivityTimeoutText)
+	firstActivityTimeout, err := configuredFirstActivityTimeout(local)
+	if err != nil {
+		return err
 	}
 	for {
 		item, getErr := c.getTaskRunOrderContext(ctx, c.token, taskID)
@@ -66,6 +66,17 @@ func runTask(ctx context.Context, c *client, taskID, configPath string, output i
 			return runErr
 		}
 	}
+}
+
+func configuredFirstActivityTimeout(local *config.Config) (time.Duration, error) {
+	if local.Execution.FirstActivityTimeout > 0 {
+		return local.Execution.FirstActivityTimeout, nil
+	}
+	parsed, err := time.ParseDuration(local.Execution.FirstActivityTimeoutText)
+	if err != nil || parsed <= 0 {
+		return 0, fmt.Errorf("execution.first_activity_timeout must be a positive duration")
+	}
+	return parsed, nil
 }
 
 func selectLocalRunDispatch(item workerservice.DispatchOrder, local *config.Config) (workerservice.DispatchOrder, error) {

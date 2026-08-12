@@ -12,9 +12,21 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
 )
+
+func TestConfiguredFirstActivityTimeoutRejectsInvalidAndNonPositiveText(t *testing.T) {
+	for _, value := range []string{"eventually", "0s", "-1s"} {
+		t.Run(value, func(t *testing.T) {
+			local := &config.Config{Execution: config.ExecutionPolicy{FirstActivityTimeoutText: value}}
+			if _, err := configuredFirstActivityTimeout(local); err == nil || !strings.Contains(err.Error(), "execution.first_activity_timeout") {
+				t.Fatalf("timeout %q error=%v", value, err)
+			}
+		})
+	}
+}
 
 func TestRunTaskExecutesImplementReviewChainThenExitsWithoutPolling(t *testing.T) {
 	t.Setenv("CONVEYOR_FAKE_TASK_RUN_HARNESS", "1")

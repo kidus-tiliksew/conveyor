@@ -40,6 +40,29 @@ type createWorkspaceDocument struct {
 	PlanningModels            *[]string                           `json:"planning_models,omitempty"`
 }
 
+func (s *Server) provisionIdentityUser(w http.ResponseWriter, r *http.Request) {
+	if s.IdentityProvisioner == nil {
+		http.Error(w, "user provisioning unavailable", http.StatusNotFound)
+		return
+	}
+	var request struct {
+		Email       string `json:"email"`
+		DisplayName string `json:"display_name"`
+	}
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		writeValidationError(w, "user", err)
+		return
+	}
+	user, err := s.IdentityProvisioner.ProvisionIdentityUser(r.Context(), request.Email, request.DisplayName)
+	if err != nil {
+		writeValidationError(w, "user", err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, user)
+}
+
 func (s *Server) listWorkspaces(w http.ResponseWriter, r *http.Request) {
 	if s.Workspaces == nil {
 		items := []core.Workspace{}
@@ -110,6 +133,15 @@ func (s *Server) revokeWorkspaceMembership(w http.ResponseWriter, r *http.Reques
 			writeJSON(w, http.StatusConflict, map[string]string{"error": "last_workspace_operator", "message": err.Error()})
 			return
 		}
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) revokeWorkspaceInvitation(w http.ResponseWriter, r *http.Request) {
+	workspaceID, _ := store.WorkspaceFromContext(r.Context())
+	if err := s.Memberships.RevokeWorkspaceInvitation(r.Context(), chi.URLParam(r, "email"), workspaceID); err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}

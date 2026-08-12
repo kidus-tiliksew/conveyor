@@ -71,6 +71,7 @@ type Server struct {
 	ConfigStore           WorkspaceConfigStore
 	Workspaces            store.WorkspaceControlStore
 	Memberships           store.MembershipStore
+	IdentityProvisioner   store.IdentityProvisioner
 	EnsureWorkspaceQueues func(string) error
 	Deployment            *config.Config
 	WorkOrders            *workorder.Service
@@ -90,6 +91,9 @@ func NewServer(s store.Store) *Server {
 	}
 	if memberships, ok := s.(store.MembershipStore); ok {
 		server.Memberships = memberships
+	}
+	if identities, ok := s.(store.IdentityProvisioner); ok {
+		server.IdentityProvisioner = identities
 	}
 	return server
 }
@@ -116,6 +120,7 @@ func (s *Server) Handler() http.Handler {
 		r.With(s.requireWorkerAuth).Post("/worker/work-orders/{id}/attempt-checkpoint", s.checkpointWorkerOrderAttempt)
 		r.With(s.requireWorkerAuth).Post("/worker/work-orders/{id}/release", s.releaseWorkerOrder)
 		r.With(s.requireWorkspaceAuth).Get("/workspaces", s.listWorkspaces)
+		r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Post("/users", s.provisionIdentityUser)
 		r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Post("/workspaces", s.createWorkspace)
 		r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Get("/harness-templates", s.getHarnessTemplates)
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityViewWorkspace)).Get("/workspaces/{workspace_id}", s.getWorkspaceRecord)
@@ -123,6 +128,7 @@ func (s *Server) Handler() http.Handler {
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityManageWorkspace)).Put("/workspaces/{workspace_id}/config", s.putWorkspaceConfig)
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityViewWorkspace)).Get("/workspaces/{workspace_id}/members", s.listWorkspaceMembers)
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityManageMembership)).Post("/workspaces/{workspace_id}/members", s.grantWorkspaceMembership)
+		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityManageMembership)).Delete("/workspaces/{workspace_id}/invitations/{email}", s.revokeWorkspaceInvitation)
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityManageMembership)).Delete("/workspaces/{workspace_id}/members/{user_id}", s.revokeWorkspaceMembership)
 		r.Group(func(r chi.Router) {
 			r.Use(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityViewWorkspace))
