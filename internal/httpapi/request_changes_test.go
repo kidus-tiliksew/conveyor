@@ -100,6 +100,9 @@ func TestRequestChangesRejectsNonAssignee(t *testing.T) {
 	if err := st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
 	}
+	if err := store.SetMemoryWorkspaceMember(st, "demo", "someone-else", true); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := taskops.New(st).SetAssignee(ctx, task.ID, "someone-else"); err != nil {
 		t.Fatal(err)
 	}

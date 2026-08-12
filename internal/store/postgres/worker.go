@@ -44,7 +44,7 @@ func cancelledSessionMatches(ctx context.Context, q workOrderRowQuerier, workspa
 
 func (s *Store) CreateWorkerPairing(ctx context.Context, pairing core.WorkerPairing) error {
 	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
-		if _, err := tx.Exec(ctx, `INSERT INTO worker_pairings (token_hash,workspace_id,expires_at,created_at) VALUES ($1,$2,$3,$4)`, pairing.TokenHash, workspace(ctx), pairing.ExpiresAt, pairing.CreatedAt); err != nil {
+		if _, err := tx.Exec(ctx, `INSERT INTO worker_pairings (token_hash,workspace_id,owner_user_id,expires_at,created_at) VALUES ($1,$2,$3,$4,$5)`, pairing.TokenHash, workspace(ctx), nullableText(pairing.OwnerUserID), pairing.ExpiresAt, pairing.CreatedAt); err != nil {
 			return err
 		}
 		actor := store.ActorFromContext(ctx)
@@ -56,7 +56,7 @@ func (s *Store) CreateWorkerPairing(ctx context.Context, pairing core.WorkerPair
 func (s *Store) ConsumeWorkerPairing(ctx context.Context, tokenHash string, now time.Time) (core.WorkerPairing, error) {
 	var pairing core.WorkerPairing
 	var consumed *time.Time
-	err := s.pool.QueryRow(ctx, `UPDATE worker_pairings SET consumed_at=$2 WHERE token_hash=$1 AND consumed_at IS NULL AND expires_at>$2 RETURNING token_hash,workspace_id,expires_at,consumed_at,created_at`, tokenHash, now).Scan(&pairing.TokenHash, &pairing.Workspace, &pairing.ExpiresAt, &consumed, &pairing.CreatedAt)
+	err := s.pool.QueryRow(ctx, `UPDATE worker_pairings SET consumed_at=$2 WHERE token_hash=$1 AND consumed_at IS NULL AND expires_at>$2 RETURNING token_hash,workspace_id,COALESCE(owner_user_id,''),expires_at,consumed_at,created_at`, tokenHash, now).Scan(&pairing.TokenHash, &pairing.Workspace, &pairing.OwnerUserID, &pairing.ExpiresAt, &consumed, &pairing.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return core.WorkerPairing{}, store.ErrPairingInvalid
 	}
@@ -72,7 +72,7 @@ func (s *Store) ConsumeWorkerPairing(ctx context.Context, tokenHash string, now 
 func (s *Store) CreateWorker(ctx context.Context, worker core.Worker) error {
 	probes, _ := json.Marshal(worker.Probes)
 	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
-		if _, err := tx.Exec(ctx, `INSERT INTO workers (id,workspace_id,name,credential_hash,lease_expires_at,last_seen_at,probe_results,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`, worker.ID, workspace(ctx), worker.Name, worker.CredentialHash, nullableTimeValue(worker.LeaseExpiresAt), nullableTimeValue(worker.LastSeenAt), probes, worker.CreatedAt); err != nil {
+		if _, err := tx.Exec(ctx, `INSERT INTO workers (id,workspace_id,owner_user_id,name,credential_hash,lease_expires_at,last_seen_at,probe_results,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`, worker.ID, workspace(ctx), nullableText(worker.OwnerUserID), worker.Name, worker.CredentialHash, nullableTimeValue(worker.LeaseExpiresAt), nullableTimeValue(worker.LastSeenAt), probes, worker.CreatedAt); err != nil {
 			return err
 		}
 		_, err := q.InsertWorkspaceEvent(ctx, db.InsertWorkspaceEventParams{WorkspaceID: workspace(ctx), Kind: "worker.enrolled", ActorID: store.WorkerActorID(worker.ID), ActorRole: string(core.ActorWorker), PayloadJson: core.JSONPayload(map[string]string{"worker_id": worker.ID, "name": worker.Name}), At: timestamp(time.Now().UTC())})
@@ -81,7 +81,7 @@ func (s *Store) CreateWorker(ctx context.Context, worker core.Worker) error {
 }
 
 func (s *Store) ListWorkers(ctx context.Context) ([]core.Worker, error) {
-	rows, err := s.pool.Query(ctx, `SELECT id,workspace_id,name,credential_hash,lease_expires_at,last_seen_at,revoked_at,probe_results,created_at FROM workers WHERE workspace_id=$1 ORDER BY created_at,id`, workspace(ctx))
+	rows, err := s.pool.Query(ctx, `SELECT id,workspace_id,COALESCE(owner_user_id,''),name,credential_hash,lease_expires_at,last_seen_at,revoked_at,probe_results,created_at FROM workers WHERE workspace_id=$1 ORDER BY created_at,id`, workspace(ctx))
 	if err != nil {
 		return nil, err
 	}
@@ -116,7 +116,7 @@ func (s *Store) ListHarnessModelFailures(ctx context.Context) ([]core.HarnessMod
 
 func (s *Store) AuthenticateWorker(ctx context.Context, credentialHash string) (core.Worker, error) {
 	workspaceID := workspace(ctx)
-	query := `SELECT id,workspace_id,name,credential_hash,lease_expires_at,last_seen_at,revoked_at,probe_results,created_at FROM workers WHERE credential_hash=$1 AND revoked_at IS NULL`
+	query := `SELECT id,workspace_id,COALESCE(owner_user_id,''),name,credential_hash,lease_expires_at,last_seen_at,revoked_at,probe_results,created_at FROM workers WHERE credential_hash=$1 AND revoked_at IS NULL`
 	args := []any{credentialHash}
 	if workspaceID != "" {
 		query += ` AND workspace_id=$2`
@@ -132,7 +132,7 @@ func (s *Store) AuthenticateWorker(ctx context.Context, credentialHash string) (
 func (s *Store) HeartbeatWorker(ctx context.Context, id string, leaseExpires time.Time, probes []core.HarnessProbe) (core.Worker, error) {
 	data, _ := json.Marshal(probes)
 	now := time.Now().UTC()
-	worker, err := scanWorker(s.pool.QueryRow(ctx, `UPDATE workers SET lease_expires_at=$1,last_seen_at=$2,probe_results=$3 WHERE workspace_id=$4 AND id=$5 AND revoked_at IS NULL RETURNING id,workspace_id,name,credential_hash,lease_expires_at,last_seen_at,revoked_at,probe_results,created_at`, leaseExpires, now, data, workspace(ctx), id))
+	worker, err := scanWorker(s.pool.QueryRow(ctx, `UPDATE workers SET lease_expires_at=$1,last_seen_at=$2,probe_results=$3 WHERE workspace_id=$4 AND id=$5 AND revoked_at IS NULL RETURNING id,workspace_id,COALESCE(owner_user_id,''),name,credential_hash,lease_expires_at,last_seen_at,revoked_at,probe_results,created_at`, leaseExpires, now, data, workspace(ctx), id))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return core.Worker{}, store.ErrWorkerUnauthorized
 	}
@@ -599,7 +599,7 @@ func scanWorker(row interface{ Scan(...any) error }) (core.Worker, error) {
 	var worker core.Worker
 	var lease, seen, revoked *time.Time
 	var probes []byte
-	err := row.Scan(&worker.ID, &worker.Workspace, &worker.Name, &worker.CredentialHash, &lease, &seen, &revoked, &probes, &worker.CreatedAt)
+	err := row.Scan(&worker.ID, &worker.Workspace, &worker.OwnerUserID, &worker.Name, &worker.CredentialHash, &lease, &seen, &revoked, &probes, &worker.CreatedAt)
 	if lease != nil {
 		worker.LeaseExpiresAt = *lease
 	}

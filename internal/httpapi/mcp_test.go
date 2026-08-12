@@ -201,6 +201,9 @@ func TestMCPClaimUsesCredentialOwnerForAssigneeEligibility(t *testing.T) {
 		t.Fatal(err)
 	}
 	operatorCtx := store.WithActor(ctx, store.Actor{ID: store.UserActorID("operator"), Role: core.ActorUser})
+	if err := store.SetMemoryWorkspaceMember(st, "demo", "usr-alice", true); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := taskops.New(st).SetAssignee(operatorCtx, task.ID, "usr-alice"); err != nil {
 		t.Fatal(err)
 	}

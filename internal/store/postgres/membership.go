@@ -120,6 +120,33 @@ func (s *Store) RevokeWorkspaceRole(ctx context.Context, userID, workspaceID str
 		if result.RowsAffected() == 0 {
 			return fmt.Errorf("%w: workspace membership", store.ErrNotFound)
 		}
+		rows, err := tx.Query(ctx, `UPDATE tasks SET assignee_user_id=NULL
+			WHERE workspace_id=$1 AND assignee_user_id=$2
+			RETURNING id`, workspaceID, userID)
+		if err != nil {
+			return err
+		}
+		var taskIDs []string
+		for rows.Next() {
+			var taskID string
+			if err = rows.Scan(&taskID); err != nil {
+				rows.Close()
+				return err
+			}
+			taskIDs = append(taskIDs, taskID)
+		}
+		if err = rows.Err(); err != nil {
+			rows.Close()
+			return err
+		}
+		rows.Close()
+		for _, taskID := range taskIDs {
+			if err = insertEvent(ctx, q, core.Event{TaskID: taskID, Kind: "task.assignee.cleared", Payload: core.JSONPayload(map[string]any{
+				"assignee_user_id": "", "revoked_user_id": userID,
+			})}); err != nil {
+				return err
+			}
+		}
 		return insertWorkspaceEvent(ctx, q, core.Event{Kind: "workspace.membership_revoked", Payload: core.JSONPayload(map[string]any{
 			"workspace_id": workspaceID, "user_id": userID,
 		})})

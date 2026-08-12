@@ -156,6 +156,9 @@ func (s *Service) IssuePairing(ctx context.Context, ttl time.Duration) (string, 
 	}
 	now := s.now()
 	pairing := core.WorkerPairing{TokenHash: hash(token), Workspace: workspace, ExpiresAt: now.Add(ttl), CreatedAt: now}
+	if credential, ok := store.CredentialFromContext(ctx); ok {
+		pairing.OwnerUserID = credential.OwnerUserID
+	}
 	if err = s.Store.CreateWorkerPairing(ctx, pairing); err != nil {
 		return "", core.WorkerPairing{}, err
 	}
@@ -182,7 +185,7 @@ func (s *Service) Enroll(ctx context.Context, pairingToken, name string) (Enroll
 	if err != nil {
 		return Enrollment{}, err
 	}
-	worker := core.Worker{ID: "worker-" + idSecret, Workspace: pairing.Workspace, Name: name, CredentialHash: hash(credential), CreatedAt: s.now()}
+	worker := core.Worker{ID: "worker-" + idSecret, Workspace: pairing.Workspace, OwnerUserID: pairing.OwnerUserID, Name: name, CredentialHash: hash(credential), CreatedAt: s.now()}
 	workerCtx := store.WithWorkspace(store.WithActor(ctx, store.Actor{ID: store.WorkerActorID(worker.ID), Role: core.ActorWorker}), pairing.Workspace)
 	if err = s.Store.CreateWorker(workerCtx, worker); err != nil {
 		return Enrollment{}, err
@@ -576,6 +579,9 @@ func (s *Service) ListClaimable(ctx context.Context, worker core.Worker) ([]Disp
 		if getErr != nil || task.Hold {
 			continue
 		}
+		if task.Assignee != nil && task.Assignee.UserID != worker.OwnerUserID {
+			continue
+		}
 		orderCfg := cfg
 		if task.SetupContract.Name != "" {
 			orderCfg = cfg.WithSetup(task.SetupContract)
@@ -638,7 +644,7 @@ func (s *Service) ListVisibleOrders(ctx context.Context, worker core.Worker) ([]
 		if order.State == core.WorkOrderQueued && order.Stage == core.StageImplement &&
 			!order.Claimable && len(order.BlockingTaskIDs) > 0 {
 			task, getErr := s.Store.GetTask(ctx, order.TaskID)
-			if getErr != nil || task.Hold {
+			if getErr != nil || task.Hold || task.Assignee != nil && task.Assignee.UserID != worker.OwnerUserID {
 				continue
 			}
 			orderCfg := cfg
@@ -701,11 +707,9 @@ func (s *Service) ClaimForWorker(ctx context.Context, worker core.Worker, id str
 	}
 	claim.WorkerID = worker.ID
 	claim.ClaimantID = worker.ID
-	if task.Assignee != nil {
-		// A workspace worker executes assigned work on behalf of the assignee;
-		// the durable claim boundary still verifies the exact user id.
-		claim.OwnerUserID = task.Assignee.UserID
-	}
+	// REQ-2: claim ownership is derived from the authenticated worker
+	// enrollment, never from the assigned task or a client assertion.
+	claim.OwnerUserID = worker.OwnerUserID
 	claim.Agent = harness.Name
 	claim.Model = cfg.EffectiveModel(string(order.Stage))
 	if order.RequiredModel != "" {

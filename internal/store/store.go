@@ -975,6 +975,7 @@ func NewMemoryWithConfig(cfg *config.Config) Store {
 		artifacts:                   map[memoryArtifactKey]memoryArtifact{},
 		pairings:                    map[string]core.WorkerPairing{},
 		workers:                     map[string]core.Worker{},
+		workspaceMembers:            map[memoryScopedKey]bool{},
 		harnessModelFailures:        map[string]core.HarnessModelFailure{},
 		recoveries:                  map[string]struct{}{},
 		reviewRetries:               map[string]memoryReviewRoundRetry{},
@@ -1040,6 +1041,7 @@ type memory struct {
 	artifacts                   map[memoryArtifactKey]memoryArtifact
 	pairings                    map[string]core.WorkerPairing
 	workers                     map[string]core.Worker
+	workspaceMembers            map[memoryScopedKey]bool
 	harnessModelFailures        map[string]core.HarnessModelFailure
 	recoveries                  map[string]struct{}
 	reviewRetries               map[string]memoryReviewRoundRetry
@@ -4456,6 +4458,9 @@ func (m *memory) SetTaskAssigneeCommand(ctx context.Context, lease taskops.TaskL
 		return core.Task{}, fmt.Errorf("task %s not found", id)
 	}
 	assigneeUserID = strings.TrimSpace(assigneeUserID)
+	if assigneeUserID != "" && !m.workspaceMembers[memoryScopedKey{workspace: task.Workspace, id: assigneeUserID}] {
+		return core.Task{}, fmt.Errorf("assignee %s is not an active member of workspace %s", assigneeUserID, task.Workspace)
+	}
 	if (task.Assignee != nil && task.Assignee.UserID == assigneeUserID) || (task.Assignee == nil && assigneeUserID == "") {
 		return task, nil
 	}
@@ -4469,6 +4474,24 @@ func (m *memory) SetTaskAssigneeCommand(ctx context.Context, lease taskops.TaskL
 	m.tasks[id] = task
 	m.appendEventLocked(ctx, core.Event{TaskID: id, Kind: kind, Payload: core.JSONPayload(map[string]any{"assignee_user_id": assigneeUserID})})
 	return task, nil
+}
+
+// SetMemoryWorkspaceMember configures the volatile backend's membership
+// projection. Tests and embedded callers use it to exercise the same active
+// membership invariant as PostgreSQL without weakening task assignment.
+func SetMemoryWorkspaceMember(st Store, workspaceID, userID string, active bool) error {
+	memoryStore, ok := st.(*memory)
+	if !ok {
+		return fmt.Errorf("workspace membership setup requires the memory store")
+	}
+	workspaceID, userID = strings.TrimSpace(workspaceID), strings.TrimSpace(userID)
+	if workspaceID == "" || userID == "" {
+		return fmt.Errorf("workspace and user ids are required")
+	}
+	memoryStore.mu.Lock()
+	defer memoryStore.mu.Unlock()
+	memoryStore.workspaceMembers[memoryScopedKey{workspace: workspaceID, id: userID}] = active
+	return nil
 }
 
 func (m *memory) BindTaskApproval(ctx context.Context, id, headSHA string) error {

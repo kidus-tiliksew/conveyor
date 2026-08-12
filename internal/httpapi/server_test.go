@@ -2741,6 +2741,9 @@ func TestTaskOperationsExposesAssigneeButNoRetiredFields(t *testing.T) {
 	if err := st.CreateTask(ctx, core.Task{ID: "solo", Workspace: "demo", Title: "Standalone task", Repo: "conveyor", State: core.TaskQueued}); err != nil {
 		t.Fatal(err)
 	}
+	if err := store.SetMemoryWorkspaceMember(st, "demo", "usr-assigned", true); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := taskops.New(st).SetAssignee(ctx, "solo", "usr-assigned"); err != nil {
 		t.Fatal(err)
 	}

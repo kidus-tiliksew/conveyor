@@ -115,6 +115,9 @@ func TestTaskAssigneeConstrainsClaimsAndClearRestoresEligibility(t *testing.T) {
 		return order
 	}
 	assigned := create("assigned")
+	if err := SetMemoryWorkspaceMember(st, "demo", "usr-alice", true); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := taskops.New(st).SetAssignee(ctx, assigned.TaskID, "usr-alice"); err != nil {
 		t.Fatal(err)
 	}
@@ -170,6 +173,9 @@ func TestTaskAssignmentDoesNotChangeFIFOOrder(t *testing.T) {
 		if err := storetestFor(st).CreateWorkOrder(ctx, order); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if err := SetMemoryWorkspaceMember(st, "demo", "usr-alice", true); err != nil {
+		t.Fatal(err)
 	}
 	if _, err := taskops.New(st).SetAssignee(ctx, "middle-assigned", "usr-alice"); err != nil {
 		t.Fatal(err)
