@@ -2490,21 +2490,26 @@ func (s *Store) ListLineageNeighborhood(ctx context.Context, roots []core.Lineag
 		WHERE w.depth < $4
 	), nearest AS (
 		SELECT root_no,node_type,node_id,min(depth) AS depth FROM walk GROUP BY root_no,node_type,node_id
+	), parent_edges AS (
+		SELECT n.root_no,n.node_type,n.node_id,n.depth,l.kind,l.created_at,l.created_by_event_id
+		FROM nearest n
+		JOIN links l ON l.workspace_id=$1 AND
+			((l.src_type=n.node_type AND l.src_id=n.node_id) OR (l.dst_type=n.node_type AND l.dst_id=n.node_id))
+		JOIN nearest p ON p.root_no=n.root_no AND p.depth=n.depth-1 AND
+			((l.src_type=p.node_type AND l.src_id=p.node_id AND l.dst_type=n.node_type AND l.dst_id=n.node_id) OR
+			 (l.dst_type=p.node_type AND l.dst_id=p.node_id AND l.src_type=n.node_type AND l.src_id=n.node_id))
 	), prioritized AS (
 		SELECT n.root_no,n.node_type,n.node_id,n.depth,
-			COALESCE(min(CASE l.kind
+			COALESCE(min(CASE p.kind
 				WHEN 'serves' THEN 0
 				WHEN 'materializes' THEN 1 WHEN 'supersedes' THEN 1
 				WHEN 'depends_on' THEN 2
 				WHEN 'produced_verdict' THEN 3 WHEN 'merged_range' THEN 3 WHEN 'submitted_range' THEN 3 WHEN 'submitted_as' THEN 3
 				WHEN 'supports' THEN 4 WHEN 'proved_by' THEN 4
 				ELSE 5 END),99) AS relation_rank,
-			min(l.created_at) AS relation_at,min(l.created_by_event_id) AS relation_event
+			min(p.created_at) AS relation_at,min(p.created_by_event_id) AS relation_event
 		FROM nearest n
-		LEFT JOIN nearest p ON p.root_no=n.root_no AND p.depth=n.depth-1
-		LEFT JOIN links l ON l.workspace_id=$1 AND
-			((l.src_type=p.node_type AND l.src_id=p.node_id AND l.dst_type=n.node_type AND l.dst_id=n.node_id) OR
-			 (l.dst_type=p.node_type AND l.dst_id=p.node_id AND l.src_type=n.node_type AND l.src_id=n.node_id))
+		LEFT JOIN parent_edges p ON p.root_no=n.root_no AND p.node_type=n.node_type AND p.node_id=n.node_id AND p.depth=n.depth
 		GROUP BY n.root_no,n.node_type,n.node_id,n.depth
 	), bounded AS (
 		SELECT root_no,node_type,node_id FROM (
