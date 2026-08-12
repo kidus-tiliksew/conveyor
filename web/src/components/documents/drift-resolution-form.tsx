@@ -4,7 +4,7 @@ import { Button } from '../ui/button'
 import { Select } from '../ui/input'
 import { resolveMonitorDrift } from '../../lib/api'
 import { errorMessage } from '../../lib/errors'
-import type { MonitorDriftOutcome, RepositoryDrift, RequirementView } from '../../lib/types'
+import type { MonitorDriftOutcome, RepositoryDrift, RequirementSummary } from '../../lib/types'
 
 type DriftResolutionSurface = 'monitor' | 'requirement' | 'system_design'
 
@@ -42,7 +42,7 @@ export function DriftResolutionForm({
   token: string
   workspace: string
   requirementID?: string
-  requirements?: RequirementView[]
+  requirements?: RequirementSummary[]
   requirementsPending?: boolean
   onResolved?: () => Promise<unknown> | unknown
 }) {

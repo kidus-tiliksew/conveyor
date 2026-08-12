@@ -120,6 +120,44 @@ const requirement = {
   confirmation_eligible: true,
 }
 
+function summarizeRequirement(view: {
+  requirement: Record<string, unknown>
+  current_version?: Record<string, unknown>
+  pending_versions?: unknown[]
+  serving_tasks?: unknown[]
+  staleness?: {
+    delivery_after_intent?: boolean
+    partial_evaluation?: boolean
+    deliveries?: Array<Record<string, unknown> & { needs_attention: boolean }>
+    active_drift?: unknown[]
+  }
+  confirmation_eligible?: boolean
+}) {
+  return {
+    requirement: view.requirement,
+    current_version: view.current_version
+      ? {
+          requirement_id: view.current_version.requirement_id,
+          version: view.current_version.version,
+          origin: view.current_version.origin,
+          confirmed: view.current_version.confirmed,
+          confirmed_by: view.current_version.confirmed_by,
+          confirmed_at: view.current_version.confirmed_at,
+          created_at: view.current_version.created_at,
+        }
+      : undefined,
+    pending_version_count: view.pending_versions?.length ?? 0,
+    serving_tasks: view.serving_tasks ?? [],
+    staleness: {
+      delivery_after_intent: view.staleness?.delivery_after_intent ?? false,
+      partial_evaluation: view.staleness?.partial_evaluation ?? false,
+      deliveries: (view.staleness?.deliveries ?? []).filter((delivery) => delivery.needs_attention),
+      active_drift: view.staleness?.active_drift ?? [],
+    },
+    confirmation_eligible: view.confirmation_eligible,
+  }
+}
+
 const planningConfig = {
   version: 1,
   document: {
@@ -188,12 +226,19 @@ function shellResponse(route: Route) {
 test('requirements renders a document tree, one attention surface, and confirms from the canvas', async ({ page }) => {
   await initShell(page)
   let confirmed = false
+  let releaseDetail: () => void = () => {}
+  const detailReady = new Promise<void>((resolve) => {
+    releaseDetail = resolve
+  })
   await page.route('**/v1/**', async (route) => {
     const shell = shellResponse(route)
     if (shell) return await shell
     const url = new URL(route.request().url())
-    if (url.pathname === '/v1/requirements') return route.fulfill({ json: [requirement] })
-    if (url.pathname === '/v1/requirements/req-retries') return route.fulfill({ json: requirement })
+    if (url.pathname === '/v1/requirements') return route.fulfill({ json: [summarizeRequirement(requirement)] })
+    if (url.pathname === '/v1/requirements/req-retries') {
+      await detailReady
+      return route.fulfill({ json: requirement })
+    }
     if (url.pathname === '/v1/requirements/req-retries/versions')
       return route.fulfill({ json: requirement.pending_versions })
     if (url.pathname === '/v1/requirements/req-retries/versions/1/confirm') {
@@ -211,6 +256,8 @@ test('requirements renders a document tree, one attention surface, and confirms 
 
   await page.goto('/requirements')
   await expect(page.getByRole('heading', { level: 1, name: 'Requirements' })).toBeVisible()
+  await expect(page.getByText('Loading requirement…')).toBeVisible()
+  releaseDetail()
 
   // AC-2.1: the tree groups the corpus beside the canvas, and the selected
   // document is the hero.
@@ -321,7 +368,7 @@ test('requirements resolves attributed drift inline and refreshes its pending am
     if (shell) return await shell
     const request = route.request()
     const url = new URL(request.url())
-    if (url.pathname === '/v1/requirements') return route.fulfill({ json: [view()] })
+    if (url.pathname === '/v1/requirements') return route.fulfill({ json: [summarizeRequirement(view())] })
     if (url.pathname === '/v1/requirements/req-retries') return route.fulfill({ json: view() })
     if (url.pathname === '/v1/requirements/req-retries/versions')
       return route.fulfill({ json: resolved ? [confirmedVersion, amendment] : [confirmedVersion] })
@@ -377,7 +424,7 @@ test('requirement staleness can file one linked follow-up and be dismissed in pl
     const shell = shellResponse(route)
     if (shell) return await shell
     const url = new URL(route.request().url())
-    if (url.pathname === '/v1/requirements') return route.fulfill({ json: [view()] })
+    if (url.pathname === '/v1/requirements') return route.fulfill({ json: [summarizeRequirement(view())] })
     if (url.pathname === '/v1/requirements/req-retries') return route.fulfill({ json: view() })
     if (url.pathname === '/v1/requirements/req-retries/versions') return route.fulfill({ json: [] })
     if (url.pathname.endsWith('/staleness/signal-blueprint/follow-up')) {
@@ -479,7 +526,7 @@ test('requirements search and deterministic sorting preserve the selected canvas
     const shell = shellResponse(route)
     if (shell) return await shell
     const path = new URL(route.request().url()).pathname
-    if (path === '/v1/requirements') return route.fulfill({ json: items })
+    if (path === '/v1/requirements') return route.fulfill({ json: items.map(summarizeRequirement) })
     const detail = items.find((item) => path === `/v1/requirements/${item.requirement.id}`)
     if (detail) return route.fulfill({ json: detail })
     if (path.endsWith('/versions')) return route.fulfill({ json: [] })
@@ -587,7 +634,7 @@ test('design drift names its subject, counts once, and clears every rendering fr
     if (shell) return await shell
     const request = route.request()
     const path = new URL(request.url()).pathname
-    if (path === '/v1/requirements') return route.fulfill({ json: requirements() })
+    if (path === '/v1/requirements') return route.fulfill({ json: requirements().map(summarizeRequirement) })
     const detail = requirements().find((item) => path === `/v1/requirements/${item.requirement.id}`)
     if (detail) return route.fulfill({ json: detail })
     if (path.startsWith('/v1/requirements/') && path.endsWith('/versions')) return route.fulfill({ json: [] })
@@ -641,7 +688,7 @@ test('requirement confirmation offers explicit attachment to eligible checkpoint
     const shell = shellResponse(route)
     if (shell) return await shell
     const path = new URL(route.request().url()).pathname
-    if (path === '/v1/requirements') return route.fulfill({ json: [requirement] })
+    if (path === '/v1/requirements') return route.fulfill({ json: [summarizeRequirement(requirement)] })
     if (path === '/v1/requirements/req-retries') return route.fulfill({ json: requirement })
     if (path === '/v1/requirements/req-retries/versions') return route.fulfill({ json: requirement.pending_versions })
     if (path === '/v1/requirements/req-retries/versions/1/confirm')
@@ -1102,7 +1149,7 @@ test('a requirement voices drift once and collapses to a quiet line when nothing
     const shell = shellResponse(route)
     if (shell) return await shell
     const path = new URL(route.request().url()).pathname
-    if (path === '/v1/requirements') return route.fulfill({ json: [drifting, settled] })
+    if (path === '/v1/requirements') return route.fulfill({ json: [drifting, settled].map(summarizeRequirement) })
     if (path === '/v1/requirements/req-retries') return route.fulfill({ json: drifting })
     if (path === '/v1/requirements/req-calm') return route.fulfill({ json: settled })
     if (path.endsWith('/versions')) return route.fulfill({ json: [drifting.current_version] })
@@ -1152,7 +1199,7 @@ test('partial staleness is voiced and delivery is task-centric with blueprints a
     const shell = shellResponse(route)
     if (shell) return await shell
     const path = new URL(route.request().url()).pathname
-    if (path === '/v1/requirements') return route.fulfill({ json: [partial] })
+    if (path === '/v1/requirements') return route.fulfill({ json: [summarizeRequirement(partial)] })
     if (path === '/v1/requirements/req-retries') return route.fulfill({ json: partial })
     if (path.endsWith('/versions')) return route.fulfill({ json: [partial.current_version] })
     return route.fulfill({ json: [] })
@@ -1220,7 +1267,7 @@ test('requirements deep-link exact versions, render statements, diff pending int
     const shell = shellResponse(route)
     if (shell) return await shell
     const url = new URL(route.request().url())
-    if (url.pathname === '/v1/requirements') return route.fulfill({ json: [view] })
+    if (url.pathname === '/v1/requirements') return route.fulfill({ json: [summarizeRequirement(view)] })
     if (url.pathname === '/v1/requirements/req-retries') return route.fulfill({ json: view })
     if (url.pathname === '/v1/requirements/req-retries/versions')
       return route.fulfill({ json: [confirmed, pending2, pending3] })
@@ -1307,7 +1354,7 @@ test('migrated seeds explain disabled confirmation and requirement switches open
     const shell = shellResponse(route)
     if (shell) return await shell
     const path = new URL(route.request().url()).pathname
-    if (path === '/v1/requirements') return route.fulfill({ json: [migrated, second] })
+    if (path === '/v1/requirements') return route.fulfill({ json: [migrated, second].map(summarizeRequirement) })
     if (path === '/v1/requirements/req-retries') return route.fulfill({ json: migrated })
     if (path === '/v1/requirements/req-retries/versions') return route.fulfill({ json: [seedVersion] })
     if (path === '/v1/requirements/req-second') return route.fulfill({ json: second })
@@ -1880,7 +1927,7 @@ test('pending derivation links to its pinned source and requirement anchors scro
         ],
       })
     }
-    if (url.pathname === '/v1/requirements') return route.fulfill({ json: [derived] })
+    if (url.pathname === '/v1/requirements') return route.fulfill({ json: [summarizeRequirement(derived)] })
     if (url.pathname === '/v1/requirements/req-retries') return route.fulfill({ json: derived })
     if (url.pathname === '/v1/requirements/req-retries/versions')
       return route.fulfill({ json: derived.pending_versions })
@@ -1947,7 +1994,7 @@ test('session lists label goals and the requirements surface has no freehand edi
     const shell = shellResponse(route)
     if (shell) return await shell
     const url = new URL(route.request().url())
-    if (url.pathname === '/v1/requirements') return route.fulfill({ json: [withSession] })
+    if (url.pathname === '/v1/requirements') return route.fulfill({ json: [summarizeRequirement(withSession)] })
     if (url.pathname === '/v1/requirements/req-retries') return route.fulfill({ json: withSession })
     if (url.pathname === '/v1/requirements/req-retries/versions')
       return route.fulfill({ json: requirement.pending_versions })
@@ -2018,7 +2065,8 @@ test('a deep link opens the document the URL asked for, not the first in the cor
     const shell = shellResponse(route)
     if (shell) return await shell
     const url = new URL(route.request().url())
-    if (url.pathname === '/v1/requirements') return route.fulfill({ json: [other, requirement] })
+    if (url.pathname === '/v1/requirements')
+      return route.fulfill({ json: [other, requirement].map(summarizeRequirement) })
     if (url.pathname === '/v1/requirements/req-other') return route.fulfill({ json: other })
     if (url.pathname === '/v1/requirements/req-other/versions')
       return route.fulfill({ json: requirement.pending_versions })

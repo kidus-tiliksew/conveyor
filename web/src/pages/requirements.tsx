@@ -55,6 +55,7 @@ import type {
   ReferenceDocumentVersion,
   RequirementDerivation,
   RequirementVersion,
+  RequirementSummary,
   RequirementView,
   SystemDesignView,
   TaskEvent,
@@ -90,7 +91,7 @@ function compareTimestamp(left: string, right: string) {
 }
 
 export function visibleRequirements(
-  requirements: RequirementView[],
+  requirements: RequirementSummary[],
   query: string,
   sort: RequirementSort,
   direction: SortDirection,
@@ -111,14 +112,14 @@ export function visibleRequirements(
     })
 }
 
-function requirementAttentionCount(item: RequirementView) {
+function requirementAttentionCount(item: RequirementSummary) {
   const countableDrift = new Set(
     (item.staleness?.active_drift ?? [])
       .filter((drift) => drift.requirement_id === item.requirement.id)
       .map((drift) => drift.id),
   ).size
   return (
-    item.pending_versions.length +
+    item.pending_version_count +
     Number(Boolean(item.staleness?.delivery_after_intent)) +
     Number(Boolean(item.staleness?.partial_evaluation)) +
     countableDrift
@@ -345,7 +346,7 @@ export function RequirementsPage() {
                     </CardContent>
                   </Card>
                 )}
-                {selected && <RequirementCanvas key={selected.requirement.id} seed={selected} token={token} />}
+                {selected && <RequirementCanvas key={selected.requirement.id} summary={selected} token={token} />}
               </>
             )}
           </div>
@@ -498,14 +499,28 @@ function OverviewDiff({ prior, current }: { prior: ReferenceDocumentVersion; cur
   )
 }
 
-function RequirementCanvas({ seed, token }: { seed: RequirementView; token: string }) {
+function RequirementCanvas({ summary, token }: { summary: RequirementSummary; token: string }) {
+  const { workspace } = useWorkspaceSelection()
+  const {
+    data: item,
+    error,
+    isLoading,
+  } = useQuery({
+    queryKey: ['requirement', workspace, summary.requirement.id],
+    queryFn: () => fetchRequirement(summary.requirement.id),
+  })
+
+  if (isLoading) return <EmptyMessage>Loading requirement…</EmptyMessage>
+  if (error)
+    return <EmptyMessage tone="failure">{errorMessage(error, 'Could not load this requirement.')}</EmptyMessage>
+  if (!item) return <EmptyMessage tone="failure">Could not load this requirement.</EmptyMessage>
+
+  return <RequirementDetailCanvas item={item} token={token} />
+}
+
+function RequirementDetailCanvas({ item, token }: { item: RequirementView; token: string }) {
   const { workspace } = useWorkspaceSelection()
   const client = useQueryClient()
-  const { data: item = seed, error: detailError } = useQuery({
-    queryKey: ['requirement', workspace, seed.requirement.id],
-    queryFn: () => fetchRequirement(seed.requirement.id),
-    initialData: seed,
-  })
   const servingTasks = item.serving_tasks ?? []
   const { data: versions = [], error: versionsError } = useQuery({
     queryKey: ['requirement-versions', workspace, item.requirement.id],
@@ -582,9 +597,6 @@ function RequirementCanvas({ seed, token }: { seed: RequirementView; token: stri
     mutationFn: (signalID: string) => createRequirementStalenessFollowUp(token, item.requirement.id, signalID),
     onSettled: refreshRequirement,
   })
-
-  if (detailError)
-    return <EmptyMessage tone="failure">{errorMessage(detailError, 'Could not load this requirement.')}</EmptyMessage>
 
   const deliveries = item.staleness?.deliveries ?? []
   const suspectDeliveries = deliveries.filter((delivery) => delivery.needs_attention)
