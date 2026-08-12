@@ -15,7 +15,7 @@ type Querier interface {
 	GetUserTokenByHash(ctx context.Context, tokenHash []byte) (GetUserTokenByHashRow, error)
 	InsertIdentityUser(ctx context.Context, arg InsertIdentityUserParams) (User, error)
 	InsertUserToken(ctx context.Context, arg InsertUserTokenParams) (UserToken, error)
-	MarkUserTokenUsed(ctx context.Context, id string) error
+	MarkUserTokenUsed(ctx context.Context, arg MarkUserTokenUsedParams) (int64, error)
 	RevokeUserToken(ctx context.Context, id string) (UserToken, error)
 	UpdateDeploymentOrgName(ctx context.Context, name string) (Org, error)
 	ApproveLatestSpecVersion(ctx context.Context, arg ApproveLatestSpecVersionParams) (TaskSpec, error)
