@@ -413,6 +413,7 @@ type WorkOrderRecovery struct {
 type Worker struct {
 	ID             string             `json:"id"`
 	WorkspaceID    string             `json:"workspace_id"`
+	OwnerUserID    pgtype.Text        `json:"owner_user_id"`
 	Name           string             `json:"name"`
 	CredentialHash string             `json:"credential_hash"`
 	LeaseExpiresAt pgtype.Timestamptz `json:"lease_expires_at"`
@@ -425,6 +426,7 @@ type Worker struct {
 type WorkerPairing struct {
 	TokenHash   string             `json:"token_hash"`
 	WorkspaceID string             `json:"workspace_id"`
+	OwnerUserID pgtype.Text        `json:"owner_user_id"`
 	ExpiresAt   pgtype.Timestamptz `json:"expires_at"`
 	ConsumedAt  pgtype.Timestamptz `json:"consumed_at"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`

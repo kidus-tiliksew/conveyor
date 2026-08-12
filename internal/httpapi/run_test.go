@@ -115,6 +115,9 @@ func TestTaskRunHTTPReturnsNoWorkAndSurfacesAssigneeRefusal(t *testing.T) {
 	}
 	order := createTaskRunOrder(t, st, "assigned")
 	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.Actor{ID: "user:operator", Role: core.ActorUser}), "demo")
+	if err := store.SetMemoryWorkspaceMember(st, "demo", "usr-alice", true); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := taskops.New(st).SetAssignee(ctx, "assigned", "usr-alice"); err != nil {
 		t.Fatal(err)
 	}

@@ -58,3 +58,23 @@ func TestMemoryTaskFilterConformance(t *testing.T) {
 	storetest.SeedTaskFilterFixture(t, fixture)
 	storetest.RunTaskFilterConformance(t, fixture)
 }
+
+func TestMemoryTaskAssigneeMembershipConformance(t *testing.T) {
+	t.Parallel()
+	workspace := "task-assignee-" + core.NewTaskID()
+	st := store.NewMemoryWithConfig(&config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "conveyor", Base: "main"}}})
+	ctx := store.WithWorkspace(t.Context(), workspace)
+	taskID := "task-" + core.NewTaskID()
+	if err := st.CreateTask(ctx, core.Task{ID: taskID, Workspace: workspace, Repo: "conveyor", State: core.TaskRunning, CreatedAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetMemoryWorkspaceMember(st, workspace, "usr-active", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetMemoryWorkspaceMember(st, workspace, "usr-inactive", false); err != nil {
+		t.Fatal(err)
+	}
+	storetest.RunTaskAssigneeMembershipConformance(t, storetest.TaskAssigneeMembershipFixture{
+		Store: st, Context: ctx, TaskID: taskID, ActiveUserID: "usr-active", InactiveUserID: "usr-inactive", NonMemberID: "usr-missing",
+	})
+}

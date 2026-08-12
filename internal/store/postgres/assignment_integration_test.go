@@ -45,10 +45,41 @@ func TestTaskAssignmentClaimEligibilityIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
+	pairing := core.WorkerPairing{TokenHash: "pair-" + core.NewTaskID(), Workspace: workspace, OwnerUserID: member.ID, ExpiresAt: now.Add(time.Minute), CreatedAt: now}
+	if err = st.CreateWorkerPairing(ctx, pairing); err != nil {
+		t.Fatal(err)
+	}
+	consumed, err := st.ConsumeWorkerPairing(ctx, pairing.TokenHash, now)
+	if err != nil || consumed.OwnerUserID != member.ID {
+		t.Fatalf("consumed pairing owner=%q err=%v", consumed.OwnerUserID, err)
+	}
+	worker := core.Worker{ID: "worker-" + core.NewTaskID(), Workspace: workspace, OwnerUserID: consumed.OwnerUserID, Name: "owned-worker", CredentialHash: "worker-hash-" + core.NewTaskID(), CreatedAt: now}
+	if err = st.CreateWorker(ctx, worker); err != nil {
+		t.Fatal(err)
+	}
+	authenticated, err := st.AuthenticateWorker(ctx, worker.CredentialHash)
+	if err != nil || authenticated.OwnerUserID != member.ID {
+		t.Fatalf("authenticated worker owner=%q err=%v", authenticated.OwnerUserID, err)
+	}
 	task := core.Task{ID: "task-" + core.NewTaskID(), Workspace: workspace, Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/assignment", State: core.TaskRunning, CreatedAt: now}
 	if err = st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
 	}
+	inactive, err := st.queries.InsertIdentityUser(t.Context(), db.InsertIdentityUserParams{
+		ID: "usr_inactive_" + core.NewTaskID(), Email: "inactive-" + core.NewTaskID() + "@example.test", DisplayName: "Inactive User",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.pool.Exec(ctx, `UPDATE users SET status='deactivated' WHERE id=$1`, inactive.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.pool.Exec(ctx, `INSERT INTO workspace_role_bindings(workspace_id,user_id,role) VALUES($1,$2,'user')`, workspace, inactive.ID); err != nil {
+		t.Fatal(err)
+	}
+	storetest.RunTaskAssigneeMembershipConformance(t, storetest.TaskAssigneeMembershipFixture{
+		Store: st, Context: ctx, TaskID: task.ID, ActiveUserID: member.ID, InactiveUserID: inactive.ID, NonMemberID: "usr-not-a-member",
+	})
 	if err = st.CreateJob(ctx, core.Job{ID: task.ID + "-implement", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}); err != nil {
 		t.Fatal(err)
 	}

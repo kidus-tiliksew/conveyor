@@ -837,16 +837,18 @@ type HarnessProbe struct {
 }
 
 type WorkerPairing struct {
-	TokenHash  string    `json:"-"`
-	Workspace  string    `json:"workspace"`
-	ExpiresAt  time.Time `json:"expires_at"`
-	ConsumedAt time.Time `json:"consumed_at,omitempty"`
-	CreatedAt  time.Time `json:"created_at"`
+	TokenHash   string    `json:"-"`
+	Workspace   string    `json:"workspace"`
+	OwnerUserID string    `json:"owner_user_id,omitempty"`
+	ExpiresAt   time.Time `json:"expires_at"`
+	ConsumedAt  time.Time `json:"consumed_at,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 type Worker struct {
 	ID             string         `json:"id"`
 	Workspace      string         `json:"workspace"`
+	OwnerUserID    string         `json:"owner_user_id,omitempty"`
 	Name           string         `json:"name"`
 	CredentialHash string         `json:"-"`
 	LeaseExpiresAt time.Time      `json:"lease_expires_at,omitempty"`

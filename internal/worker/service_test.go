@@ -25,13 +25,14 @@ func TestPairingHeartbeatHealthAndAutoClaimLifecycle(t *testing.T) {
 	cfg := workerTestConfig()
 	workOrders := &workorder.Service{Store: st, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
 	service := &Service{Store: st, WorkOrders: workOrders, ConfigProvider: workOrders.ConfigProvider, Now: func() time.Time { return now }}
-	operatorCtx := store.WithWorkspace(store.WithActor(t.Context(), store.Actor{ID: "operator", Role: core.ActorHuman}), "demo")
+	operatorCtx := store.WithCredential(t.Context(), core.AuthenticatedCredential{ID: "operator-token", OwnerUserID: "usr-assigned", Kind: core.CredentialUser, Scope: core.CredentialScopeOperator})
+	operatorCtx = store.WithWorkspace(store.WithActor(operatorCtx, store.Actor{ID: store.UserActorID("usr-assigned"), Role: core.ActorUser}), "demo")
 	token, pairing, err := service.IssuePairing(operatorCtx, time.Minute)
 	if err != nil || token == "" || pairing.TokenHash == token {
 		t.Fatalf("pairing=%+v token=%q err=%v", pairing, token, err)
 	}
 	enrollment, err := service.Enroll(t.Context(), token, "laptop")
-	if err != nil || enrollment.Credential == "" || enrollment.Worker.CredentialHash == enrollment.Credential {
+	if err != nil || enrollment.Credential == "" || enrollment.Worker.CredentialHash == enrollment.Credential || enrollment.Worker.OwnerUserID != "usr-assigned" {
 		t.Fatalf("enrollment=%+v err=%v", enrollment, err)
 	}
 	if _, err = service.Enroll(t.Context(), token, "again"); !errors.Is(err, store.ErrPairingInvalid) {
@@ -43,6 +44,9 @@ func TestPairingHeartbeatHealthAndAutoClaimLifecycle(t *testing.T) {
 	workerCtx, worker, err := service.Authenticate(t.Context(), enrollment.Credential, "demo")
 	if err != nil {
 		t.Fatal(err)
+	}
+	if worker.OwnerUserID != "usr-assigned" {
+		t.Fatalf("authenticated worker owner=%q", worker.OwnerUserID)
 	}
 	worker, err = service.Heartbeat(workerCtx, worker, []core.HarnessProbe{{Harness: "codex", Healthy: true, CheckedAt: now}})
 	if err != nil || !worker.Live(now) {
@@ -67,6 +71,9 @@ func TestPairingHeartbeatHealthAndAutoClaimLifecycle(t *testing.T) {
 	}
 	createOrder("auto-task", false)
 	createOrder("manual-task", true)
+	if err := store.SetMemoryWorkspaceMember(st, "demo", "usr-assigned", true); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := taskops.New(st).SetAssignee(operatorCtx, "auto-task", "usr-assigned"); err != nil {
 		t.Fatal(err)
 	}
@@ -142,6 +149,53 @@ func TestPairingHeartbeatHealthAndAutoClaimLifecycle(t *testing.T) {
 	}
 	if submitted, renewErr := service.Renew(workerCtx, worker, submittedClaim.ID, "session-b"); renewErr != nil || submitted.State != core.WorkOrderSubmitted || !submitted.ExecutionDeadline.Equal(submittedClaim.ExecutionDeadline) {
 		t.Fatalf("submitted renew=%+v err=%v", submitted, renewErr)
+	}
+}
+
+func TestWorkerClaimUsesEnrollmentOwnerForAssignmentEligibility(t *testing.T) {
+	now := time.Now().UTC()
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	cfg := workerTestConfig()
+	workOrders := &workorder.Service{Store: st, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
+	service := &Service{Store: st, WorkOrders: workOrders, ConfigProvider: workOrders.ConfigProvider, Now: func() time.Time { return now }}
+	createOrder := func(taskID string) core.WorkOrder {
+		if err := st.CreateTask(ctx, core.Task{ID: taskID, Workspace: "demo", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+		job := core.Job{ID: taskID + "-implement-1", TaskID: taskID, Stage: core.StageImplement, State: core.JobPending}
+		if err := st.CreateJob(ctx, job); err != nil {
+			t.Fatal(err)
+		}
+		order := core.WorkOrder{ID: job.ID, TaskID: taskID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, Claimable: true, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now}
+		if err := storetest.For(st).CreateWorkOrder(ctx, order); err != nil {
+			t.Fatal(err)
+		}
+		return order
+	}
+	assigned := createOrder("assigned-worker-owner")
+	unassigned := createOrder("unassigned-legacy-worker")
+	if err := store.SetMemoryWorkspaceMember(st, "demo", "usr-u", true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := taskops.New(st).SetAssignee(ctx, assigned.TaskID, "usr-u"); err != nil {
+		t.Fatal(err)
+	}
+	worker := func(id, owner string) core.Worker {
+		return core.Worker{ID: id, Workspace: "demo", OwnerUserID: owner, LeaseExpiresAt: now.Add(time.Minute), Probes: []core.HarnessProbe{{Harness: "codex", Healthy: true}}}
+	}
+	for name, candidate := range map[string]core.Worker{"different owner": worker("worker-v", "usr-v"), "ownerless legacy": worker("worker-legacy", "")} {
+		if _, err := service.ClaimForWorker(ctx, candidate, assigned.ID, core.WorkOrderClaim{SessionID: name, ClientToken: name}); err == nil || !strings.Contains(err.Error(), "usr-u") {
+			t.Fatalf("%s claim error=%v", name, err)
+		}
+	}
+	claimed, err := service.ClaimForWorker(ctx, worker("worker-u", "usr-u"), assigned.ID, core.WorkOrderClaim{SessionID: "owned", ClientToken: "owned"})
+	if err != nil || claimed.WorkerID != "worker-u" {
+		t.Fatalf("owned claim=%+v err=%v", claimed, err)
+	}
+	legacyClaim, err := service.ClaimForWorker(ctx, worker("worker-legacy", ""), unassigned.ID, core.WorkOrderClaim{SessionID: "legacy", ClientToken: "legacy", OwnerUserID: "forged"})
+	if err != nil || legacyClaim.WorkerID != "worker-legacy" {
+		t.Fatalf("legacy unassigned claim=%+v err=%v", legacyClaim, err)
 	}
 }
 
