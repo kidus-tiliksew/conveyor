@@ -1022,7 +1022,6 @@ type reviewItem struct {
 	MergeReadiness            *dispatch.MergeReadiness              `json:"merge_readiness,omitempty"`
 	Attachments               []core.Artifact                       `json:"attachments"`
 	VerificationEvidence      []core.Artifact                       `json:"verification_evidence"`
-	LineageGraph              core.LineageTraversal                 `json:"lineage_graph"`
 }
 
 type activityItem struct {
@@ -1546,18 +1545,6 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	effectiveLineage, err := s.effectiveLineageBudget(r.Context())
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	lineageGraph, err := s.lineageGraph(r, core.LineageNode{Type: core.LineageTask, ID: id}, core.LineageTraversalBudget{
-		MaxDepth: effectiveLineage.Depth, MaxNodes: effectiveLineage.Nodes, MaxLinks: effectiveLineage.Links,
-	})
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
 	var workerStatus *workerservice.TaskWorkerStatus
 	var mergeReadiness *dispatch.MergeReadiness
 	if task.State == core.TaskApproved && s.OnMergeReadiness != nil {
@@ -1607,7 +1594,6 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 		MergeReadiness:            mergeReadiness,
 		Attachments:               attachments,
 		VerificationEvidence:      verificationEvidence,
-		LineageGraph:              lineageGraph,
 	})
 }
 
