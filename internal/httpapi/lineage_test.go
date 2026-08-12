@@ -127,7 +127,7 @@ func TestLineageHTTPReturnsBoundedTaskGraphAndTaskDetailProjection(t *testing.T)
 
 	activity := httptest.NewRecorder()
 	handler.ServeHTTP(activity, httptest.NewRequest(http.MethodGet, "/v1/tasks/"+task.ID+"/activity", nil))
-	if activity.Code != http.StatusOK || !json.Valid(activity.Body.Bytes()) || !containsJSONField(activity.Body.Bytes(), "lineage_graph") {
+	if activity.Code != http.StatusOK || !json.Valid(activity.Body.Bytes()) || containsJSONField(activity.Body.Bytes(), "lineage_graph") {
 		t.Fatalf("activity status=%d body=%s", activity.Code, activity.Body.String())
 	}
 
