@@ -16,6 +16,7 @@ type Capability string
 const (
 	CapabilityViewWorkspace    Capability = "view_workspace"
 	CapabilityClaimWork        Capability = "claim_work"
+	CapabilityRequestChanges   Capability = "request_changes"
 	CapabilityProposeDocuments Capability = "propose_documents"
 	CapabilityConfirmDocuments Capability = "confirm_documents"
 	CapabilityManageMembership Capability = "manage_membership"
@@ -31,11 +32,13 @@ var roleCapabilities = map[WorkspaceRole]map[Capability]bool{
 	WorkspaceRoleUser: {
 		CapabilityViewWorkspace:    true,
 		CapabilityClaimWork:        true,
+		CapabilityRequestChanges:   true,
 		CapabilityProposeDocuments: true,
 	},
 	WorkspaceRoleOperator: {
 		CapabilityViewWorkspace:    true,
 		CapabilityClaimWork:        true,
+		CapabilityRequestChanges:   true,
 		CapabilityProposeDocuments: true,
 		CapabilityConfirmDocuments: true,
 		CapabilityManageMembership: true,

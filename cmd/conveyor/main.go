@@ -245,11 +245,32 @@ func taskCmd() *cobra.Command {
 		closeTaskCmd(),
 		removeTaskDependencyCmd(),
 		changeTaskSetupCmd(),
+		requestTaskChangesCmd(),
 		reviewTaskCmd(core.InterventionApprove),
 		reviewTaskCmd(core.InterventionReject),
 		reviewTaskCmd(core.InterventionRedirect),
 	)
 	return cmd
+}
+
+func requestTaskChangesCmd() *cobra.Command {
+	var feedback string
+	command := &cobra.Command{
+		Use: "request-changes <id>", Short: "Request changes to work at the merge gate", Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if strings.TrimSpace(feedback) == "" {
+				return fmt.Errorf("--feedback is required")
+			}
+			task, err := newClient().requestTaskChanges(args[0], feedback)
+			if err != nil {
+				return err
+			}
+			_, err = fmt.Fprintf(cmd.OutOrStdout(), "requested changes for task %s; run `conveyor run %s` to continue\n", task.ID, task.ID)
+			return err
+		},
+	}
+	command.Flags().StringVarP(&feedback, "feedback", "f", "", "required feedback passed verbatim to the next implementation order")
+	return command
 }
 
 func removeTaskDependencyCmd() *cobra.Command {

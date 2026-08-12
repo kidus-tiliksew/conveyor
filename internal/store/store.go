@@ -89,6 +89,7 @@ type Store interface {
 	// event; setting the current value is an idempotent no-op.
 	SetTaskHold(ctx context.Context, id string, hold bool) (core.Task, error)
 	SetTaskAssigneeCommand(ctx context.Context, lease taskops.TaskLease, id, assigneeUserID string) (core.Task, error)
+	RequestChangesCommand(ctx context.Context, lease taskops.TaskLease, request taskops.RequestChanges) (core.Task, error)
 	ChangeTaskSetupCommand(ctx context.Context, lease taskops.TaskLease, request SetupChangeRequest) (SetupChangeResult, error)
 	BindTaskApproval(ctx context.Context, id, headSHA string) error
 	MarkTaskApprovalStale(ctx context.Context, id, approvedHeadSHA, newHeadSHA, scope, reason string) (bool, error)
@@ -485,6 +486,7 @@ type ActivityMarker struct {
 	ReviewRecovery            *ReviewRecoveryState
 	InterruptedReviewRecovery *InterruptedReviewRecoveryState
 	Stalled                   *StalledState
+	UserChangesRequested      bool
 }
 
 // PendingProposalsProjection is the bounded store read used by the workspace
@@ -501,7 +503,7 @@ type PendingProposalsProjection struct {
 func TaskNeedsAttention(task core.Task, marker ActivityMarker, pendingAuthority bool) bool {
 	return task.State == core.TaskAwaiting || task.State == core.TaskParked ||
 		marker.ForgeFailure != nil || marker.ReviewRecovery != nil ||
-		marker.InterruptedReviewRecovery != nil || marker.Stalled != nil || pendingAuthority
+		marker.InterruptedReviewRecovery != nil || marker.Stalled != nil || pendingAuthority || marker.UserChangesRequested
 }
 
 // TaskFilter is the one predicate set the Tasks list and the Board both send
@@ -1870,20 +1872,22 @@ func (m *memory) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.
 		// intervention, not the lifetime count; the recorded
 		// count in the event payload stays lifetime for the timeline.
 		window := m.countEventsSinceHumanInterventionLocked(decision.TaskID, "pipeline.bounced")
-		m.nextReviewID++
 		actorID := fmt.Sprintf("review:round:%d", decision.ReviewRound)
-		intervention := core.Intervention{ID: m.nextReviewID, TaskID: decision.TaskID, JobID: decision.JobID, ActorID: actorID, ActorRole: core.ActorAgent, Action: core.InterventionRedirect, ReasonCode: aggregate.ReasonCode, Comment: aggregate.Feedback, At: time.Now().UTC()}
-		m.interventions[decision.TaskID] = append(m.interventions[decision.TaskID], intervention)
-		m.appendEventLocked(ctx, core.Event{TaskID: decision.TaskID, JobID: decision.JobID, Kind: "intervention.redirect", ActorID: intervention.ActorID, ActorRole: intervention.ActorRole, Payload: core.JSONPayload(map[string]any{"reason_code": aggregate.ReasonCode, "comment": aggregate.Feedback, "review_round": decision.ReviewRound, "reviews": aggregate.Reviews}), At: intervention.At})
 		count++
 		window++
-		m.appendEventLocked(ctx, core.Event{TaskID: decision.TaskID, JobID: decision.JobID, Kind: "pipeline.bounced", Payload: core.JSONPayload(map[string]any{"from": "review", "to": "implement", "reason_code": aggregate.ReasonCode, "feedback": aggregate.Feedback, "reviews": aggregate.Reviews, "count": count, "source": "mcp-review-panel", "review_round": decision.ReviewRound})})
-		if window < decision.MaxBounces {
-			command, next, recovery = core.TaskStageAdvance, core.StageImplement, ""
-		} else {
-			command = core.TaskStageBounceLimit
-			m.appendEventLocked(ctx, core.Event{TaskID: decision.TaskID, JobID: decision.JobID, Kind: "pipeline.bounce_limit", Payload: core.JSONPayload(map[string]any{"count": count, "window": window, "max_bounces": decision.MaxBounces, "review_round": decision.ReviewRound})})
+		plan := PlanChangesRequested(ChangesRequestedInput{
+			TaskID: decision.TaskID, JobID: decision.JobID, ActorID: actorID, ActorRole: core.ActorAgent,
+			ReasonCode: aggregate.ReasonCode, Feedback: aggregate.Feedback, Source: "mcp-review-panel",
+			Count: count, Window: window, MaxBounces: decision.MaxBounces, ReviewRound: decision.ReviewRound,
+			Reviews: aggregate.Reviews, Requeue: core.TaskStageAdvance, EnforceLimit: true,
+		})
+		m.nextReviewID++
+		plan.Intervention.ID = m.nextReviewID
+		m.interventions[decision.TaskID] = append(m.interventions[decision.TaskID], plan.Intervention)
+		for _, event := range plan.Events {
+			m.appendEventLocked(ctx, event)
 		}
+		command, next, recovery = plan.Command, plan.NextStage, plan.Recovery
 	} else if decision.ReviewKind == "refresh" || (decision.PolicyVersion > 0 && !decision.MergeApproval) || (decision.PolicyVersion == 0 && decision.Level == core.L0) {
 		autoApprove, recovery = true, ""
 	}
@@ -4829,6 +4833,7 @@ func (m *memory) ListActivityMarkers(ctx context.Context) ([]ActivityMarker, err
 		marker.ReviewRecovery = ReviewRecoveryNeeded(ordersByTask[id], m.events[id])
 		marker.InterruptedReviewRecovery = InterruptedReviewRecoveryNeeded(CurrentReviewOrders(ordersByTask[id], m.events[id]))
 		marker.Stalled = StalledTask(ordersByTask[id])
+		marker.UserChangesRequested = UserRequestChangesPending(m.events[id])
 		markers = append(markers, marker)
 	}
 	sort.Slice(markers, func(i, j int) bool { return markers[i].TaskID < markers[j].TaskID })
@@ -4895,6 +4900,67 @@ func (m *memory) CreateIntervention(ctx context.Context, intervention core.Inter
 		At: intervention.At,
 	})
 	return nil
+}
+
+func (m *memory) RequestChangesCommand(ctx context.Context, lease taskops.TaskLease, request taskops.RequestChanges) (core.Task, error) {
+	if !lease.ValidForCommand(request.TaskID, taskops.RequestChangesCommand) {
+		return core.Task{}, fmt.Errorf("request changes requires a valid taskops lease")
+	}
+	if strings.TrimSpace(request.Feedback) == "" {
+		return core.Task{}, fmt.Errorf("feedback is required")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	task, ok := m.tasks[request.TaskID]
+	if !ok {
+		return core.Task{}, fmt.Errorf("task %s not found", request.TaskID)
+	}
+	if !AtMergeGate(task, m.events[task.ID]) {
+		return core.Task{}, fmt.Errorf("task %s is not at the merge gate", task.ID)
+	}
+	if request.JobID != "" {
+		job, _, found := m.findJobLocked(request.JobID)
+		if !found || job.TaskID != task.ID || job.Stage != core.StageReview {
+			return core.Task{}, fmt.Errorf("review job %s does not belong to task %s", request.JobID, task.ID)
+		}
+	}
+	actor := ActorFromContext(ctx)
+	if actor.Role != core.ActorUser && actor.Role != core.ActorHuman {
+		return core.Task{}, fmt.Errorf("request changes requires a user actor")
+	}
+	count := 1
+	for _, event := range m.events[task.ID] {
+		if event.Kind == "pipeline.bounced" {
+			count++
+		}
+	}
+	plan := PlanChangesRequested(ChangesRequestedInput{
+		TaskID: task.ID, JobID: request.JobID, ActorID: actor.ID, ActorRole: actor.Role,
+		ReasonCode: UserRequestChangesReason, Feedback: request.Feedback, Source: UserRequestChangesSource,
+		Count: count, Window: 1, MaxBounces: request.MaxBounces, Requeue: core.TaskInterventionRedirect,
+	})
+	state, err := core.TransitionTask(task.State, plan.Command)
+	if err != nil {
+		return core.Task{}, err
+	}
+	m.nextReviewID++
+	plan.Intervention.ID = m.nextReviewID
+	m.interventions[task.ID] = append(m.interventions[task.ID], plan.Intervention)
+	for _, event := range plan.Events {
+		m.appendEventLocked(ctx, event)
+	}
+	fromState, fromStage := task.State, task.NextStage
+	task.State, task.NextStage, task.RecoveryStage = state, plan.NextStage, plan.Recovery
+	if request.Hold {
+		task.Hold = true
+	}
+	m.tasks[task.ID] = task
+	m.appendEventLocked(ctx, core.Event{TaskID: task.ID, Kind: "task.state_changed", ActorID: actor.ID, ActorRole: actor.Role, Payload: core.JSONPayload(map[string]any{"from": fromState, "to": state, "command": plan.Command})})
+	m.appendEventLocked(ctx, core.Event{TaskID: task.ID, Kind: "pipeline.transition_decided", ActorID: actor.ID, ActorRole: actor.Role, Payload: core.JSONPayload(map[string]any{"from_stage": fromStage, "next_stage": plan.NextStage, "recovery_stage": plan.Recovery, "state": state})})
+	if request.Hold {
+		m.appendEventLocked(ctx, core.Event{TaskID: task.ID, Kind: "task.hold_changed", ActorID: actor.ID, ActorRole: actor.Role, Payload: core.JSONPayload(map[string]any{"hold": true, "reason_code": UserRequestChangesReason})})
+	}
+	return task, nil
 }
 
 func (m *memory) CancelTaskCommand(ctx context.Context, lease taskops.TaskLease, intervention core.Intervention) (core.Task, error) {

@@ -76,6 +76,35 @@ const SetupChangeCommand = "task.setup.change"
 // write. Assignment affects claim eligibility only and never task state.
 const SetAssigneeCommand = "task.assignee.set"
 
+// RequestChangesCommand is the serialized user-sourced changes-requested
+// bounce. It deliberately reuses the persisted redirect action and canonical
+// awaiting -> queued lifecycle edge (design-task-lifecycle).
+const RequestChangesCommand = "task.request_changes"
+
+type RequestChanges struct {
+	TaskID     string
+	JobID      string
+	Feedback   string
+	MaxBounces int
+	Hold       bool
+}
+
+func (p *Plane) RequestChanges(ctx context.Context, request RequestChanges) (core.Task, error) {
+	if p == nil || p.backend == nil {
+		return core.Task{}, fmt.Errorf("taskops plane requires a backend")
+	}
+	if request.TaskID == "" {
+		return core.Task{}, fmt.Errorf("taskops task id is required")
+	}
+	backend, ok := p.backend.(interface {
+		RequestChangesCommand(context.Context, TaskLease, RequestChanges) (core.Task, error)
+	})
+	if !ok {
+		return core.Task{}, fmt.Errorf("taskops backend does not support request changes")
+	}
+	return backend.RequestChangesCommand(ctx, TaskLease{taskID: request.TaskID, command: RequestChangesCommand, seal: &leaseSeal{}}, request)
+}
+
 func (p *Plane) SetAssignee(ctx context.Context, taskID, assigneeUserID string) (core.Task, error) {
 	if p == nil || p.backend == nil {
 		return core.Task{}, fmt.Errorf("taskops plane requires a backend")

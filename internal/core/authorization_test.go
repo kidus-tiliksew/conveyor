@@ -3,7 +3,7 @@ package core
 import "testing"
 
 func TestRoleCapabilitiesAreBundles(t *testing.T) {
-	if !RoleAllows(WorkspaceRoleUser, CapabilityClaimWork) || RoleAllows(WorkspaceRoleUser, CapabilityManageMembership) {
+	if !RoleAllows(WorkspaceRoleUser, CapabilityClaimWork) || !RoleAllows(WorkspaceRoleUser, CapabilityRequestChanges) || RoleAllows(WorkspaceRoleUser, CapabilityManageMembership) {
 		t.Fatal("user capability bundle is incorrect")
 	}
 	if !RoleAllows(WorkspaceRoleOperator, CapabilityClaimWork) || !RoleAllows(WorkspaceRoleOperator, CapabilityManageMembership) {

@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { GitMerge, ThumbsUp, TriangleAlert, Undo2, UserRound, type LucideIcon } from 'lucide-react'
 import { pendingPlanRevisionRequest } from '../../lib/activity'
-import { fixMergeConflict, mergeTask, reviewTask } from '../../lib/api'
+import { fixMergeConflict, mergeTask, requestTaskChanges, reviewTask } from '../../lib/api'
 import { defaultReasonCode, interventionActions } from '../../lib/contracts'
 import type { ActivityItem, InterventionAction, Task, TaskEvent } from '../../lib/types'
 import { cn } from '../../lib/utils'
@@ -156,6 +156,7 @@ function GenericReviewPanel({ item, onDecisionRecorded }: { item: ActivityItem; 
   const [comment, setComment] = useState('')
 
   const gate = gateFor(item.task, item.events, item.merge_readiness)
+  const mergeGate = item.task.state === 'approved'
   const style = toneStyles[gate.tone]
   const Icon = gate.icon
 
@@ -167,6 +168,10 @@ function GenericReviewPanel({ item, onDecisionRecorded }: { item: ActivityItem; 
       }
       if (input.kind === 'fix') {
         await fixMergeConflict(item.task.id, token)
+        return
+      }
+      if (input.kind === 'review' && input.action === 'redirect' && mergeGate) {
+        await requestTaskChanges(item.task.id, token, input.comment)
         return
       }
       await reviewTask(item.task.id, token, {
