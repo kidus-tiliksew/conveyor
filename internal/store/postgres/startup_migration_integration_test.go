@@ -43,15 +43,19 @@ func TestWorkerOwnershipMigrationPreservesLegacyOwnerlessIntegration(t *testing.
 
 func TestConcurrentStartupMigrationConvergesIntegration(t *testing.T) {
 	store := newIdentityIntegrationStore(t, 85)
+	const migrationCallers = 8
+	start := make(chan struct{})
 	var wait sync.WaitGroup
-	errors := make(chan error, 2)
-	for range 2 {
+	errors := make(chan error, migrationCallers)
+	for range migrationCallers {
 		wait.Add(1)
 		go func() {
 			defer wait.Done()
+			<-start
 			errors <- Migrate(t.Context(), store.pool)
 		}()
 	}
+	close(start)
 	wait.Wait()
 	close(errors)
 	for err := range errors {

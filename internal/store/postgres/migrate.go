@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -25,9 +26,28 @@ import (
 var migrationFiles embed.FS
 
 // Migrate applies Conveyor's versioned schema followed by River's bundled
-// queue migrations. Both use Postgres advisory locking, so multiple daemon
-// instances may start safely against the same database (design-database).
+// queue migrations. A database-wide session lock serializes the complete
+// sequence because River v0.30.2 discovers pending versions before opening the
+// per-version transaction that records them (design-database).
 func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
+	pooled, err := pool.Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire migration lock connection: %w", err)
+	}
+	// Detach the lock connection so a single-connection pool can still execute
+	// the migrations through its ordinary executor while this session waits.
+	lockConn := pooled.Hijack()
+	if _, err := lockConn.Exec(ctx, "SELECT pg_advisory_lock(hashtext('conveyor:startup-migrations'))"); err != nil {
+		_ = lockConn.Close(ctx)
+		return fmt.Errorf("lock startup migrations: %w", err)
+	}
+	defer func() {
+		unlockCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, _ = lockConn.Exec(unlockCtx, "SELECT pg_advisory_unlock(hashtext('conveyor:startup-migrations'))")
+		_ = lockConn.Close(unlockCtx)
+	}()
+
 	if err := migrateControlPlane(ctx, pool); err != nil {
 		return err
 	}
