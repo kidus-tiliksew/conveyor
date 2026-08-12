@@ -341,7 +341,13 @@ func (s *Server) requireMutationCapability(capability core.Capability) func(http
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			credential, ok := store.CredentialFromContext(r.Context())
 			if !ok {
-				credential, ok = s.authenticateUserCredential(r)
+				var err error
+				credential, err = s.authenticateUserCredential(r)
+				if err != nil {
+					writeCredentialVerificationError(w, err)
+					return
+				}
+				ok = true
 			}
 			if !ok || credential.Kind != core.CredentialUser {
 				w.Header().Set("WWW-Authenticate", "Bearer")
@@ -381,8 +387,12 @@ func (s *Server) requireWorkspaceAuth(next http.Handler) http.Handler {
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		credential, ok := s.authenticateUserCredential(r)
-		if !ok || credential.Kind != core.CredentialUser {
+		credential, err := s.authenticateUserCredential(r)
+		if err != nil {
+			writeCredentialVerificationError(w, err)
+			return
+		}
+		if credential.Kind != core.CredentialUser {
 			w.Header().Set("WWW-Authenticate", "Bearer")
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
@@ -436,7 +446,8 @@ func (s *Server) requireMCPAuth(next http.Handler) http.Handler {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		if credential, authenticated := s.verifyCredential(r.Context(), provided); authenticated {
+		credential, verifyErr := s.verifyCredential(r.Context(), provided)
+		if verifyErr == nil {
 			actor := store.Actor{ID: store.UserActorID(credential.OwnerUserID), Role: core.ActorUser}
 			if credential.Kind == core.CredentialAgent {
 				actor = store.Actor{ID: store.AgentActorID(credential.ID), Role: core.ActorAgent}
@@ -444,6 +455,10 @@ func (s *Server) requireMCPAuth(next http.Handler) http.Handler {
 			ctx := store.WithCredential(r.Context(), credential)
 			ctx = store.WithActor(ctx, actor)
 			next.ServeHTTP(w, r.WithContext(ctx))
+			return
+		}
+		if !errors.Is(verifyErr, core.ErrInvalidCredential) {
+			writeCredentialVerificationError(w, verifyErr)
 			return
 		}
 		if s.Workers != nil {
@@ -459,25 +474,33 @@ func (s *Server) requireMCPAuth(next http.Handler) http.Handler {
 	})
 }
 
-func (s *Server) authenticateUserCredential(r *http.Request) (core.AuthenticatedCredential, bool) {
+func (s *Server) authenticateUserCredential(r *http.Request) (core.AuthenticatedCredential, error) {
 	provided, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 	if !ok {
-		return core.AuthenticatedCredential{}, false
+		return core.AuthenticatedCredential{}, core.ErrInvalidCredential
 	}
 	return s.verifyCredential(r.Context(), provided)
 }
 
-func (s *Server) verifyCredential(ctx context.Context, provided string) (core.AuthenticatedCredential, bool) {
+func (s *Server) verifyCredential(ctx context.Context, provided string) (core.AuthenticatedCredential, error) {
 	if s.Credentials != nil {
-		credential, err := s.Credentials.VerifyCredential(ctx, provided)
-		return credential, err == nil
+		return s.Credentials.VerifyCredential(ctx, provided)
 	}
 	// Memory-only tests and explicit non-durable deployments have no identity
 	// registry. Their configured shared token models the seeded legacy PAT.
 	if s.BearerToken != "" && subtle.ConstantTimeCompare([]byte(provided), []byte(s.BearerToken)) == 1 {
-		return core.AuthenticatedCredential{ID: "legacy", OwnerUserID: "local-operator", Kind: core.CredentialUser, Scope: core.CredentialScopeOperator}, true
+		return core.AuthenticatedCredential{ID: "legacy", OwnerUserID: "local-operator", Kind: core.CredentialUser, Scope: core.CredentialScopeOperator}, nil
 	}
-	return core.AuthenticatedCredential{}, false
+	return core.AuthenticatedCredential{}, core.ErrInvalidCredential
+}
+
+func writeCredentialVerificationError(w http.ResponseWriter, err error) {
+	if errors.Is(err, core.ErrInvalidCredential) {
+		w.Header().Set("WWW-Authenticate", "Bearer")
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	http.Error(w, "credential verification failed", http.StatusInternalServerError)
 }
 
 type reviewRequest struct {

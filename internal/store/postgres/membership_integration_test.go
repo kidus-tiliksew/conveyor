@@ -85,6 +85,10 @@ func TestWorkspaceMembershipAuthorizationIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	credential, err := st.VerifyCredential(t.Context(), token.Value)
+	if err != nil || credential.Kind != core.CredentialUser || credential.Scope != core.CredentialScopeUser {
+		t.Fatalf("member credential=%+v err=%v", credential, err)
+	}
 	server := httpapi.NewServer(st)
 	server.Workspaces, server.Workspace = st, workspaceA
 	handler := server.Handler()
@@ -98,6 +102,9 @@ func TestWorkspaceMembershipAuthorizationIntegration(t *testing.T) {
 	listed := call("/v1/workspaces")
 	if listed.Code != http.StatusOK || !strings.Contains(listed.Body.String(), workspaceA) || strings.Contains(listed.Body.String(), workspaceB) {
 		t.Fatalf("list status=%d body=%s", listed.Code, listed.Body.String())
+	}
+	if operatorOnly := call("/v1/pending-proposals?workspace_id=" + workspaceA); operatorOnly.Code != http.StatusNotFound {
+		t.Fatalf("user-role PAT reached operator surface: status=%d body=%s", operatorOnly.Code, operatorOnly.Body.String())
 	}
 	for _, route := range []string{"/v1/tasks", "/v1/activity", "/v1/work-orders", "/v1/monitor", "/v1/pending-proposals", "/v1/tasks/unknown/events/stream"} {
 		unbound := call(route + "?workspace_id=" + workspaceB)

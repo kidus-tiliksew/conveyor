@@ -22,8 +22,12 @@ func (s *Server) requireTaskRunAuth(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		credential, ok := s.authenticateUserCredential(r)
-		if !ok || credential.Kind != core.CredentialUser {
+		credential, err := s.authenticateUserCredential(r)
+		if err != nil {
+			writeCredentialVerificationError(w, err)
+			return
+		}
+		if credential.Kind != core.CredentialUser {
 			w.Header().Set("WWW-Authenticate", "Bearer")
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
