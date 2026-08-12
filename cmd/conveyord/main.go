@@ -7,6 +7,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -22,6 +23,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/monitor"
 	"github.com/kidus-tiliksew/conveyor/internal/pack"
 	"github.com/kidus-tiliksew/conveyor/internal/planning"
+	"github.com/kidus-tiliksew/conveyor/internal/releaseinfo"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	postgresstore "github.com/kidus-tiliksew/conveyor/internal/store/postgres"
 	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
@@ -30,6 +32,13 @@ import (
 )
 
 func main() {
+	if handled, err := runServiceVerb(context.Background(), os.Args[1:], os.Stdout, os.Stderr); handled {
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := envfile.LoadDefault(); err != nil {
 		log.Fatalf("load local environment: %v", err)
 	}
@@ -149,6 +158,7 @@ func main() {
 	}
 
 	srv := httpapi.NewServer(st)
+	srv.Release = releaseinfo.Version
 	srv.Repos = cfg.RepoNames()
 	srv.Workspace = cfg.Workspace
 	srv.WorkspaceInfo = httpapi.NewWorkspaceInfo(cfg)

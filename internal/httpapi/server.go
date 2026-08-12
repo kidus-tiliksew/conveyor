@@ -27,6 +27,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
 	"github.com/kidus-tiliksew/conveyor/internal/monitor"
 	"github.com/kidus-tiliksew/conveyor/internal/planning"
+	"github.com/kidus-tiliksew/conveyor/internal/releaseinfo"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
@@ -34,8 +35,10 @@ import (
 )
 
 type Server struct {
-	Store                    store.Store
-	Credentials              CredentialVerifier
+	Store       store.Store
+	Credentials CredentialVerifier
+	// Release is the build-injected binary identity reported by /v1/version.
+	Release                  string
 	planningBundleMu         sync.Mutex
 	planningBundleDispatched map[string]struct{}
 	// Repos is the set of valid repo names; nil skips validation.
@@ -81,7 +84,7 @@ type CredentialVerifier interface {
 }
 
 func NewServer(s store.Store) *Server {
-	server := &Server{Store: s}
+	server := &Server{Store: s, Release: releaseinfo.Version}
 	if credentials, ok := s.(CredentialVerifier); ok {
 		server.Credentials = credentials
 	}
@@ -100,6 +103,9 @@ func (s *Server) Handler() http.Handler {
 	})
 
 	r.Route("/v1", func(r chi.Router) {
+		r.Get("/version", func(w http.ResponseWriter, _ *http.Request) {
+			writeJSON(w, http.StatusOK, map[string]string{"version": s.Release})
+		})
 		r.Post("/worker/enroll", s.enrollWorker)
 		r.With(s.requireWorkerAuth).Post("/worker/heartbeat", s.heartbeatWorker)
 		r.With(s.requireWorkerAuth).Get("/worker/config", s.getWorkerConfig)

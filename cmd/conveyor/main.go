@@ -13,11 +13,11 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/envfile"
+	"github.com/kidus-tiliksew/conveyor/internal/releaseinfo"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
 
-var version = "dev" // set via -ldflags at build time
 var workspaceFlag string
 
 func main() {
@@ -29,7 +29,7 @@ func main() {
 		Use:           "conveyor",
 		Short:         "Conveyor: a software factory platform",
 		Long:          "Conveyor orchestrates coding-agent pipelines and delegates implementation through MCP.",
-		Version:       version,
+		Version:       releaseinfo.Version,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
@@ -38,6 +38,7 @@ func main() {
 		configCmd(),
 		monitorCmd(),
 		workerCmd(),
+		initCmd(),
 		checkoutCmd(),
 		lineageCmd(),
 		doneCmd(),

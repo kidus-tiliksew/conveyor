@@ -70,6 +70,10 @@ func migrateControlPlaneToVersion(ctx context.Context, pool *pgxpool.Pool, maxVe
 		return err
 	}
 	sort.Strings(files)
+	embeddedVersion, err := latestMigrationVersion(files)
+	if err != nil {
+		return err
+	}
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -89,6 +93,13 @@ CREATE TABLE IF NOT EXISTS conveyor_schema_migrations (
 	}
 	if _, err := tx.Exec(ctx, "ALTER TABLE conveyor_schema_migrations ADD COLUMN IF NOT EXISTS checksum text NOT NULL DEFAULT ''"); err != nil {
 		return fmt.Errorf("upgrade migration ledger: %w", err)
+	}
+	var storeVersion int
+	if err := tx.QueryRow(ctx, "SELECT COALESCE(max(version), 0) FROM conveyor_schema_migrations").Scan(&storeVersion); err != nil {
+		return fmt.Errorf("inspect store schema version: %w", err)
+	}
+	if storeVersion > embeddedVersion {
+		return fmt.Errorf("store schema version %d is newer than this Conveyor binary (latest embedded migration %d); install a Conveyor release at least as new as the one that upgraded this database before restarting", storeVersion, embeddedVersion)
 	}
 	for _, name := range files {
 		version, err := migrationVersion(name)
@@ -169,6 +180,23 @@ CREATE TABLE IF NOT EXISTS conveyor_schema_migrations (
 		return fmt.Errorf("commit control-plane migrations: %w", err)
 	}
 	return nil
+}
+
+func latestMigrationVersion(files []string) (int, error) {
+	if len(files) == 0 {
+		return 0, errors.New("Conveyor binary contains no embedded store migrations")
+	}
+	latest := 0
+	for _, name := range files {
+		version, err := migrationVersion(name)
+		if err != nil {
+			return 0, err
+		}
+		if version > latest {
+			latest = version
+		}
+	}
+	return latest, nil
 }
 
 // recordLineageRepairAudit deliberately lives in application code: schema
