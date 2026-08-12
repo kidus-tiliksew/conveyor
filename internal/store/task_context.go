@@ -134,6 +134,21 @@ func ActiveTaskContextReferences(events []core.Event) (map[string]bool, map[stri
 	return requirements, designs
 }
 
+// AdvancedTaskContextDesignPins returns active design attachments whose
+// current confirmed version is newer than the folded pin. Callers append a
+// TaskContextDesignAdded event for each result at an implement queue-entry
+// boundary; equal pins and pins ahead of confirmed authority are retained.
+func AdvancedTaskContextDesignPins(pinned, confirmed map[string]int) []core.TaskDesignContext {
+	advanced := make([]core.TaskDesignContext, 0)
+	for id, pinnedVersion := range pinned {
+		if confirmedVersion := confirmed[id]; confirmedVersion > pinnedVersion {
+			advanced = append(advanced, core.TaskDesignContext{ID: id, Version: confirmedVersion})
+		}
+	}
+	sort.Slice(advanced, func(i, j int) bool { return advanced[i].ID < advanced[j].ID })
+	return advanced
+}
+
 // PendingTaskContextAttachment reports whether the latest add/remove state for
 // one document is an unconfirmed attachment to the exact proposed version.
 // Confirmation uses this fold before emitting the activation event that owns

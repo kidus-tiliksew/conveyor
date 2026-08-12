@@ -2102,6 +2102,9 @@ func (m *memory) CreateWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 	if order.Stage == core.StageImplement && m.taskBlockedLocked(order.TaskID) {
 		order.QueueBlockedAt = order.QueueEnteredAt
 	}
+	if order.Stage == core.StageImplement {
+		m.repinTaskDesignContextLocked(ctx, order.TaskID, order.QueueEnteredAt)
+	}
 	order.Claimable = order.ClaimableAt(now)
 	if !order.QueueBlockedAt.IsZero() {
 		order.Claimable = false
@@ -2873,6 +2876,9 @@ func (m *memory) RedispatchWorkOrderCommand(ctx context.Context, lease taskops.T
 	order.ExecutionStartedAt, order.ExecutionDeadline = time.Time{}, time.Time{}
 	order.RedispatchCount++
 	order.UpdatedAt = now
+	if order.Stage == core.StageImplement {
+		m.repinTaskDesignContextLocked(ctx, order.TaskID, now)
+	}
 	m.workOrders[id] = order
 	if job, index, exists := m.findJobLocked(order.JobID); exists {
 		job.State, job.StartedAt, job.EndedAt = core.JobPending, time.Time{}, time.Time{}
@@ -3007,6 +3013,9 @@ func (m *memory) RecoverWorkOrderCommand(ctx context.Context, lease taskops.Task
 	order.OperatorDirection = direction
 	order.UpdatedAt = now
 	order.Claimable = true
+	if order.Stage == core.StageImplement {
+		m.repinTaskDesignContextLocked(ctx, order.TaskID, now)
+	}
 	if len(refreeze) != 0 && refreeze[0] != nil {
 		change := refreeze[0]
 		task := m.tasks[order.TaskID]
@@ -3029,6 +3038,24 @@ func (m *memory) RecoverWorkOrderCommand(ctx context.Context, lease taskops.Task
 	m.recoveries[key] = struct{}{}
 	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: eventKind, Payload: core.JSONPayload(map[string]any{"attempt_id": priorAttemptID, "workspace_id": workspace, "work_order_id": id, "request_id": requestID, "prior_state": priorState, "prior_outcome": prior, "new_state": order.State, "command": lifecycleCommand, "reason": "operator recovery", "direction": direction, "failure_category": priorFailureCategory, "consecutive_transient_failures": priorTransientFailures, "next_retry_at": priorNextRetryAt}), At: now})
 	return order, nil
+}
+
+func (m *memory) repinTaskDesignContextLocked(ctx context.Context, taskID string, at time.Time) {
+	task, ok := m.tasks[taskID]
+	if !ok {
+		return
+	}
+	_, pinned := ActiveTaskContextReferences(m.events[taskID])
+	confirmed := make(map[string]int, len(pinned))
+	for id := range pinned {
+		if document, exists := m.systemDesigns[memoryScopedKey{workspace: task.Workspace, id: id}]; exists {
+			confirmed[id] = document.CurrentVersion
+		}
+	}
+	for _, design := range AdvancedTaskContextDesignPins(pinned, confirmed) {
+		m.appendEventLocked(ctx, core.Event{TaskID: taskID, Kind: TaskContextDesignAdded, At: at,
+			Payload: core.JSONPayload(map[string]any{"id": design.ID, "version": design.Version})})
+	}
 }
 
 func (m *memory) refreshWorkOrderLocked(ctx context.Context, order core.WorkOrder, now time.Time) core.WorkOrder {
