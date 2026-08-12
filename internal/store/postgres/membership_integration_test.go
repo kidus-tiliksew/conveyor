@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -55,13 +56,22 @@ func TestProvisionIdentityRedeemsInvitationsAndGrantResponseIsOpaqueIntegration(
 	if invited.Code != http.StatusCreated {
 		t.Fatalf("invitation grant status=%d body=%s", invited.Code, invited.Body.String())
 	}
-	provisioned, err := st.ProvisionIdentityUser(t.Context(), "  REDEEM@example.test ", "Redeemed User")
-	if err != nil {
-		t.Fatal(err)
+	provision := func(email, displayName string) core.IdentityUser {
+		t.Helper()
+		response := call(http.MethodPost, "/v1/users", `{"email":"`+email+`","display_name":"`+displayName+`"}`)
+		if response.Code != http.StatusCreated {
+			t.Fatalf("provision user status=%d body=%s", response.Code, response.Body.String())
+		}
+		var user core.IdentityUser
+		if err := json.Unmarshal(response.Body.Bytes(), &user); err != nil {
+			t.Fatalf("decode provisioned user: %v", err)
+		}
+		return user
 	}
-	repeated, err := st.ProvisionIdentityUser(t.Context(), invitedEmail, "Ignored on retry")
-	if err != nil || repeated.ID != provisioned.ID {
-		t.Fatalf("repeated provisioning user=%+v err=%v", repeated, err)
+	provisioned := provision("  REDEEM@example.test ", "Redeemed User")
+	repeated := provision(invitedEmail, "Ignored on retry")
+	if repeated.ID != provisioned.ID {
+		t.Fatalf("repeated provisioning user=%+v want id=%s", repeated, provisioned.ID)
 	}
 	existing := call(http.MethodPost, "/v1/workspaces/"+workspaceID+"/members", `{"email":"`+invitedEmail+`","role":"user"}`)
 	if existing.Code != http.StatusCreated || !bytes.Equal(invited.Body.Bytes(), existing.Body.Bytes()) {
@@ -92,10 +102,7 @@ func TestProvisionIdentityRedeemsInvitationsAndGrantResponseIsOpaqueIntegration(
 	if response := call(http.MethodDelete, "/v1/workspaces/"+workspaceID+"/invitations/"+revokedEmail, ""); response.Code != http.StatusNoContent {
 		t.Fatalf("invitation revocation status=%d body=%s", response.Code, response.Body.String())
 	}
-	revokedUser, err := st.ProvisionIdentityUser(t.Context(), revokedEmail, "Revoked Invitee")
-	if err != nil {
-		t.Fatal(err)
-	}
+	revokedUser := provision(revokedEmail, "Revoked Invitee")
 	if err = st.pool.QueryRow(t.Context(), `SELECT count(*) FROM workspace_role_bindings WHERE workspace_id=$1 AND user_id=$2`, workspaceID, revokedUser.ID).Scan(&bindings); err != nil || bindings != 0 {
 		t.Fatalf("revoked invitation produced bindings=%d err=%v", bindings, err)
 	}

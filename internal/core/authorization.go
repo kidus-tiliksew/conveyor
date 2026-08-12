@@ -66,6 +66,17 @@ type WorkspaceMembership struct {
 	CreatedAt   time.Time     `json:"created_at"`
 }
 
+// IdentityUser is a deployment-scoped account. Account provisioning is an
+// instance-administration act and is deliberately separate from workspace
+// membership capabilities (REQ-1/AC-1.2-AC-1.3).
+type IdentityUser struct {
+	ID          string    `json:"id"`
+	Email       string    `json:"email"`
+	DisplayName string    `json:"display_name"`
+	Status      string    `json:"status"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
 type MembershipGrant struct {
 	Email string        `json:"email"`
 	Role  WorkspaceRole `json:"role"`

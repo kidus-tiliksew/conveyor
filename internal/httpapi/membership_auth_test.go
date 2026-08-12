@@ -20,6 +20,16 @@ type membershipFixture struct {
 	revokeErr       error
 }
 
+type identityProvisioningFixture struct {
+	store.Store
+	calls int
+}
+
+func (f *identityProvisioningFixture) ProvisionIdentityUser(_ context.Context, email, displayName string) (core.IdentityUser, error) {
+	f.calls++
+	return core.IdentityUser{ID: "usr_provisioned", Email: email, DisplayName: displayName, Status: "active"}, nil
+}
+
 func (f *membershipFixture) ListWorkspaces(context.Context) ([]core.Workspace, error) {
 	return f.workspaces, nil
 }
@@ -58,6 +68,35 @@ func (f *membershipFixture) RevokeWorkspaceInvitation(context.Context, string, s
 }
 func (f *membershipFixture) RevokeWorkspaceRole(context.Context, string, string) error {
 	return f.revokeErr
+}
+
+func TestProvisionIdentityUserRequiresHumanDeploymentOperator(t *testing.T) {
+	fixture := &identityProvisioningFixture{Store: store.NewMemory()}
+	server := NewServer(fixture)
+	server.Credentials = staticCredentialVerifier{
+		"operator-token": {ID: "pat_operator", OwnerUserID: "operator", Kind: core.CredentialUser, Scope: core.CredentialScopeOperator},
+		"agent-token":    {ID: "agt_operator", OwnerUserID: "operator", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser},
+		"user-token":     {ID: "pat_user", OwnerUserID: "user", Kind: core.CredentialUser, Scope: core.CredentialScopeUser},
+	}
+	call := func(token string) *httptest.ResponseRecorder {
+		t.Helper()
+		request := httptest.NewRequest(http.MethodPost, "/v1/users", strings.NewReader(`{"email":"invited@example.test","display_name":"Invited User"}`))
+		if token != "" {
+			request.Header.Set("Authorization", "Bearer "+token)
+		}
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, request)
+		return response
+	}
+	for _, token := range []string{"", "agent-token", "user-token"} {
+		if response := call(token); response.Code != http.StatusUnauthorized {
+			t.Fatalf("token %q status=%d body=%s", token, response.Code, response.Body.String())
+		}
+	}
+	response := call("operator-token")
+	if response.Code != http.StatusCreated || !strings.Contains(response.Body.String(), `"id":"usr_provisioned"`) || fixture.calls != 1 {
+		t.Fatalf("operator status=%d body=%s calls=%d", response.Code, response.Body.String(), fixture.calls)
+	}
 }
 
 func TestMembershipScopesWorkspaceListAndNotFoundSurfaces(t *testing.T) {

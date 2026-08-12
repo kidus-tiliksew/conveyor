@@ -22,13 +22,7 @@ import (
 
 var ErrInvalidPersonalAccessToken = core.ErrInvalidCredential
 
-type IdentityUser struct {
-	ID          string
-	Email       string
-	DisplayName string
-	Status      string
-	CreatedAt   time.Time
-}
+type IdentityUser = core.IdentityUser
 
 type PersonalAccessToken struct {
 	ID         string
