@@ -33,7 +33,12 @@ import { Badge } from '../ui/badge'
 import { MarkdownProse } from '../ui/markdown-prose'
 import { ReviewPanel, gateTone, isReviewable, type GateTone } from './review-panel'
 import { RedispatchCard, canRedispatch } from './redispatch-card'
-import { WorkOrderRecoveryCard, hasWorkerRecovery } from './work-order-recovery-card'
+import {
+  CheckpointProposalRecoveryCard,
+  WorkOrderRecoveryCard,
+  hasWorkerRecovery,
+  isCheckpointReleasedRecovery,
+} from './work-order-recovery-card'
 import { ReviewRoundRetryCard, hasReviewRoundRetry } from './review-round-retry-card'
 import { InterruptedReviewRecoveryCard, hasInterruptedReviewRecovery } from './interrupted-review-recovery-card'
 import { SystemDesignProposalCard, useSystemDesignProposals } from './system-design-proposal-card'
@@ -84,6 +89,8 @@ export function Timeline({
   // §21.62). A blueprint anchor runs no session and proposes nothing, which is
   // why this rides `executionActions` like the rest of the tail.
   const designProposals = useSystemDesignProposals(item.task)
+  const combineCheckpointProposal =
+    hasWorkerRecovery(item) && isCheckpointReleasedRecovery(currentExecution) && designProposals.length > 0
   const priorExecutionStatus = useRef(currentExecution?.status)
   const [executionAnnouncement, setExecutionAnnouncement] = useState('')
 
@@ -158,19 +165,25 @@ export function Timeline({
           hasWorkerRecovery(item) && {
             key: 'order-recovery',
             dot: 'bg-attention-dot',
-            card: <WorkOrderRecoveryCard item={item} />,
+            card:
+              combineCheckpointProposal && currentExecution ? (
+                <CheckpointProposalRecoveryCard item={item} state={currentExecution} proposals={designProposals} />
+              ) : (
+                <WorkOrderRecoveryCard item={item} />
+              ),
           },
-          designProposals.length > 0 && {
-            key: 'design-proposal',
-            dot: 'bg-attention-dot',
-            card: (
-              <SystemDesignProposalCard
-                task={item.task}
-                proposals={designProposals}
-                reviewWaiting={item.pending_authority === true}
-              />
-            ),
-          },
+          designProposals.length > 0 &&
+            !combineCheckpointProposal && {
+              key: 'design-proposal',
+              dot: 'bg-attention-dot',
+              card: (
+                <SystemDesignProposalCard
+                  task={item.task}
+                  proposals={designProposals}
+                  reviewWaiting={item.pending_authority === true}
+                />
+              ),
+            },
           canRedispatch(item) && { key: 'redispatch', dot: 'bg-edge', card: <RedispatchCard item={item} /> },
         ]
       : []

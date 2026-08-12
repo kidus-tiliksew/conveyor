@@ -7,7 +7,7 @@ import type { SystemDesignVersion, SystemDesignView, Task } from '../../lib/type
 import { useOperatorToken, useWorkspaceSelection } from '../app-shell'
 import { Button } from '../ui/button'
 
-interface Proposal {
+export interface Proposal {
   document: SystemDesignView['document']
   version: SystemDesignVersion
   /** The confirmed version the document is on, for the confirm route's If-Match. */
@@ -17,7 +17,7 @@ interface Proposal {
 // Document plus version, not the object reference: a refetch rebuilds these
 // records, and the in-flight and failed states have to keep pointing at the
 // same proposal across it.
-function identity(proposal: Proposal) {
+export function proposalIdentity(proposal: Proposal) {
   return `${proposal.document.id}:${proposal.version.version}`
 }
 
@@ -120,9 +120,9 @@ export function SystemDesignProposalCard({
         </div>
       )}
       {proposals.map((proposal) => {
-        const active = confirm.variables != null && identity(confirm.variables) === identity(proposal)
+        const active = confirm.variables != null && proposalIdentity(confirm.variables) === proposalIdentity(proposal)
         return (
-          <div key={identity(proposal)} className="flex items-start gap-2">
+          <div key={proposalIdentity(proposal)} className="flex items-start gap-2">
             <FileText className="mt-0.5 size-4 shrink-0 text-attention" />
             <div className="min-w-0 flex-1 space-y-2 text-xs leading-5 text-muted">
               <div>
