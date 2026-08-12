@@ -32,9 +32,24 @@ func (s *Server) requestTaskChanges(w http.ResponseWriter, r *http.Request) {
 	}
 	taskID := chi.URLParam(r, "id")
 	task, err := s.Store.GetTask(r.Context(), taskID)
-	if err != nil || task.Assignee != nil && task.Assignee.UserID != credential.OwnerUserID {
+	if err != nil {
 		http.NotFound(w, r)
 		return
+	}
+	if task.Assignee != nil && task.Assignee.UserID != credential.OwnerUserID {
+		operator := credential.Scope == core.CredentialScopeOperator
+		if s.Memberships != nil {
+			workspaceID, _ := store.WorkspaceFromContext(r.Context())
+			operator, err = s.Memberships.AuthorizeWorkspace(r.Context(), credential.OwnerUserID, workspaceID, core.CapabilitySetAssignee)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
+		if !operator {
+			http.NotFound(w, r)
+			return
+		}
 	}
 	latest, found, err := s.Store.GetLatestJob(r.Context(), taskID)
 	if err != nil {
@@ -43,6 +58,11 @@ func (s *Server) requestTaskChanges(w http.ResponseWriter, r *http.Request) {
 	}
 	if !found || latest.Stage != core.StageReview {
 		http.Error(w, "task is not at the merge gate", http.StatusConflict)
+		return
+	}
+	events, err := s.Store.ListEvents(r.Context(), taskID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	maxBounces := 1
@@ -58,7 +78,7 @@ func (s *Server) requestTaskChanges(w http.ResponseWriter, r *http.Request) {
 	}
 	updated, err := taskops.New(s.Store).RequestChanges(r.Context(), taskops.RequestChanges{
 		TaskID: taskID, JobID: latest.ID, Feedback: request.Feedback,
-		MaxBounces: maxBounces, Hold: s.Store.IsDurable(),
+		MaxBounces: maxBounces, Hold: store.UserRequestChangesHold(events),
 	})
 	if err != nil {
 		status := http.StatusInternalServerError

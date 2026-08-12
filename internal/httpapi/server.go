@@ -994,6 +994,7 @@ type reviewItem struct {
 	CheckoutAvailable         bool                                  `json:"checkout_available"`
 	CheckoutGuidance          string                                `json:"checkout_guidance"`
 	NeedsAttention            bool                                  `json:"needs_attention"`
+	AtMergeGate               bool                                  `json:"at_merge_gate"`
 	PendingAuthority          bool                                  `json:"pending_authority"`
 	ForgeFailure              *store.ForgeFailure                   `json:"forge_failure,omitempty"`
 	Spec                      *core.SpecVersion                     `json:"spec,omitempty"`
@@ -1578,6 +1579,7 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 		Task: task, Jobs: jobs, Events: events, Interventions: interventions,
 		CheckoutCommand: checkoutCommand, CheckoutAvailable: checkoutAvailable, CheckoutGuidance: checkoutGuidance,
 		NeedsAttention:            task.State == core.TaskAwaiting || task.State == core.TaskParked || store.LatestForgeFailure(events) != nil || store.ReviewRecoveryNeeded(workOrders, events) != nil || store.InterruptedReviewRecoveryNeeded(workOrders) != nil || stalled != nil || store.UserRequestChangesPending(events) || pendingAuthority,
+		AtMergeGate:               store.AtMergeGate(task, events),
 		PendingAuthority:          pendingAuthority,
 		ForgeFailure:              store.LatestForgeFailure(events),
 		Spec:                      specPointer,

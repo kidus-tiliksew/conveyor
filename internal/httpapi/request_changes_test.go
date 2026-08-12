@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
 	"github.com/kidus-tiliksew/conveyor/internal/pack"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 )
@@ -33,6 +35,9 @@ func TestRequestChangesBouncesThroughSharedContextAndAttention(t *testing.T) {
 	if err := st.CreateJob(ctx, reviewJob); err != nil {
 		t.Fatal(err)
 	}
+	if err := st.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "work_order.claimed", Payload: core.JSONPayload(core.WorkOrder{ID: task.ID + "-implement-1", Stage: core.StageImplement, ClaimantID: "worker-1"})}); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := taskops.New(st).Perform(ctx, task.ID, taskops.Command{Kind: core.TaskGateMerge, RecoveryStage: core.StageImplement, ProjectStages: true}); err != nil {
 		t.Fatal(err)
 	}
@@ -50,6 +55,12 @@ func TestRequestChangesBouncesThroughSharedContextAndAttention(t *testing.T) {
 	server.ConfigProvider = func(context.Context) (*config.Config, error) { return cfg, nil }
 	var dispatchErr error
 	server.OnCreate = func(callCtx context.Context, id string) { dispatchErr = dispatcher.DispatchNow(callCtx, id) }
+	activityRequest := httptest.NewRequest(http.MethodGet, "/v1/tasks/"+task.ID+"/activity", nil)
+	activityResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(activityResponse, activityRequest)
+	if activityResponse.Code != http.StatusOK || !strings.Contains(activityResponse.Body.String(), `"at_merge_gate":true`) {
+		t.Fatalf("activity status=%d body=%s", activityResponse.Code, activityResponse.Body.String())
+	}
 
 	feedback := "Keep this line exactly.\n\n  Preserve the indentation too."
 	body, _ := json.Marshal(map[string]string{"feedback": feedback})
@@ -84,6 +95,20 @@ func TestRequestChangesBouncesThroughSharedContextAndAttention(t *testing.T) {
 	if err != nil || len(assembled.PriorFeedback) != 1 || assembled.PriorFeedback[0] != feedback {
 		t.Fatalf("prior feedback=%q err=%v", assembled.PriorFeedback, err)
 	}
+	claimed, err := storetest.For(st).ClaimWorkOrder(ctx, orders[0].ID, core.WorkOrderClaim{
+		ClaimantID: "worker-1", SessionID: "worker-session", ClientToken: "worker-secret",
+		WorkerID: "worker-1", Agent: "codex", Model: "implementer", Lease: time.Minute,
+	})
+	if err != nil || claimed.State != core.WorkOrderClaimed {
+		t.Fatalf("worker claim=%+v err=%v", claimed, err)
+	}
+	markers, err = st.ListActivityMarkers(ctx)
+	if err != nil || len(markers) != 1 || markers[0].UserChangesRequested {
+		t.Fatalf("markers after worker claim=%+v err=%v", markers, err)
+	}
+	if err = storetest.For(st).UpdateWorkOrder(ctx, claimed, core.WorkOrderCmdSubmitForReview); err != nil {
+		t.Fatal(err)
+	}
 	duplicate := httptest.NewRequest(http.MethodPost, "/v1/tasks/"+task.ID+"/request-changes", bytes.NewReader(body))
 	duplicate.Header.Set("Authorization", "Bearer user-token")
 	duplicateResponse := httptest.NewRecorder()
@@ -93,32 +118,73 @@ func TestRequestChangesBouncesThroughSharedContextAndAttention(t *testing.T) {
 	}
 }
 
-func TestRequestChangesRejectsNonAssignee(t *testing.T) {
+func TestApprovedTaskDetailIsNotAtMergeGate(t *testing.T) {
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	st := store.NewMemory()
-	task := core.Task{ID: "assigned-merge-gate", Workspace: "demo", Repo: "conveyor", State: core.TaskRunning, NextStage: core.StageReview, RecoveryStage: core.StageImplement, CreatedAt: time.Now().UTC()}
+	task := core.Task{ID: "approved-not-merge-gate", Workspace: "demo", Repo: "conveyor", State: core.TaskApproved, CreatedAt: time.Now().UTC()}
 	if err := st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.SetMemoryWorkspaceMember(st, "demo", "someone-else", true); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := taskops.New(st).SetAssignee(ctx, task.ID, "someone-else"); err != nil {
-		t.Fatal(err)
-	}
-	if err := st.CreateJob(ctx, core.Job{ID: task.ID + "-review", TaskID: task.ID, Stage: core.StageReview, State: core.JobDone}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := taskops.New(st).Perform(ctx, task.ID, taskops.Command{Kind: core.TaskGateMerge, RecoveryStage: core.StageImplement, ProjectStages: true}); err != nil {
-		t.Fatal(err)
-	}
 	server := NewServer(st)
-	server.BearerToken = "user-token"
-	request := httptest.NewRequest(http.MethodPost, "/v1/tasks/"+task.ID+"/request-changes", bytes.NewBufferString(`{"feedback":"fix it"}`))
-	request.Header.Set("Authorization", "Bearer user-token")
+	request := httptest.NewRequest(http.MethodGet, "/v1/tasks/"+task.ID+"/activity", nil)
 	response := httptest.NewRecorder()
 	server.Handler().ServeHTTP(response, request)
-	if response.Code != http.StatusNotFound {
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"at_merge_gate":false`) {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestRequestChangesAssignmentAllowsAssigneeAndOperatorOnly(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	if err := store.SetMemoryWorkspaceMember(st, "demo", "usr-assignee", true); err != nil {
+		t.Fatal(err)
+	}
+	fixture := &membershipFixture{
+		workspaces: []core.Workspace{{ID: "demo"}},
+		roles: map[string]map[string]core.WorkspaceRole{
+			"usr-assignee": {"demo": core.WorkspaceRoleUser},
+			"usr-member":   {"demo": core.WorkspaceRoleUser},
+			"usr-operator": {"demo": core.WorkspaceRoleOperator},
+		},
+	}
+	server := NewServer(st)
+	server.Workspaces, server.Memberships = fixture, fixture
+	server.Credentials = staticCredentialVerifier{
+		"assignee-token": {ID: "pat-assignee", OwnerUserID: "usr-assignee", Kind: core.CredentialUser, Scope: core.CredentialScopeUser},
+		"member-token":   {ID: "pat-member", OwnerUserID: "usr-member", Kind: core.CredentialUser, Scope: core.CredentialScopeUser},
+		"operator-token": {ID: "pat-operator", OwnerUserID: "usr-operator", Kind: core.CredentialUser, Scope: core.CredentialScopeUser},
+	}
+
+	for _, test := range []struct {
+		name, slug, token string
+		want              int
+	}{
+		{name: "assignee", slug: "assignee", token: "assignee-token", want: http.StatusAccepted},
+		{name: "operator", slug: "operator", token: "operator-token", want: http.StatusAccepted},
+		{name: "plain non-assignee", slug: "plain-non-assignee", token: "member-token", want: http.StatusNotFound},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			task := core.Task{ID: "assigned-merge-gate-" + test.slug, Workspace: "demo", Repo: "conveyor", State: core.TaskRunning, NextStage: core.StageReview, RecoveryStage: core.StageImplement, CreatedAt: time.Now().UTC()}
+			if err := st.CreateTask(ctx, task); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := taskops.New(st).SetAssignee(ctx, task.ID, "usr-assignee"); err != nil {
+				t.Fatal(err)
+			}
+			if err := st.CreateJob(ctx, core.Job{ID: task.ID + "-review", TaskID: task.ID, Stage: core.StageReview, State: core.JobDone}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := taskops.New(st).Perform(ctx, task.ID, taskops.Command{Kind: core.TaskGateMerge, RecoveryStage: core.StageImplement, ProjectStages: true}); err != nil {
+				t.Fatal(err)
+			}
+			request := httptest.NewRequest(http.MethodPost, "/v1/tasks/"+task.ID+"/request-changes?workspace_id=demo", bytes.NewBufferString(`{"feedback":"fix it"}`))
+			request.Header.Set("Authorization", "Bearer "+test.token)
+			response := httptest.NewRecorder()
+			server.Handler().ServeHTTP(response, request)
+			if response.Code != test.want {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+		})
 	}
 }
