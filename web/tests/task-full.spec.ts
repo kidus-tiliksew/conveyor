@@ -3909,6 +3909,78 @@ function designCollection(originTaskId: string, resolved: boolean) {
   ]
 }
 
+test('checkpoint proposal confirmation completes before recovery with an audited direction', async ({ page }) => {
+  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
+  await page.route('**/v1/workspaces', (route) => route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] }))
+  const item = activity('operator-checkpoint', false)
+  item.task.context = {
+    designs: [{ id: 'design-lifecycle', title: 'Work-order lifecycle', version: 1 }],
+  }
+  const calls: string[] = []
+  let confirmHeaders: Record<string, string> = {}
+  let recoveryBody: Record<string, unknown> | undefined
+  await page.route('**/v1/tasks/operator-checkpoint/activity*', (route) => route.fulfill({ json: item }))
+  await page.route('**/v1/system-designs**', (route) =>
+    route.fulfill({ json: designCollection('operator-checkpoint', false) }),
+  )
+  await page.route('**/v1/system-designs/design-lifecycle/versions/2/confirm**', async (route) => {
+    calls.push('confirm')
+    confirmHeaders = route.request().headers()
+    await route.fulfill({ json: {} })
+  })
+  await page.route('**/v1/work-orders/attempt-recovery-implement-1/recover*', async (route) => {
+    calls.push('recover')
+    recoveryBody = route.request().postDataJSON() as Record<string, unknown>
+    await route.fulfill({ json: { id: 'operator-checkpoint-implement-1', state: 'queued', claimable: true } })
+  })
+
+  await page.goto('/tasks/operator-checkpoint/full')
+  const card = page.getByRole('region', { name: 'Confirm proposals and recover work order' })
+  await expect(card).toHaveCount(1)
+  await expect(card.getByText(checkpointProgress, { exact: true })).toBeVisible()
+  await expect(card.getByText('Version 2 proposed by this task')).toBeVisible()
+  await expect(card.getByRole('link', { name: 'Review or dismiss proposals' })).toHaveAttribute(
+    'href',
+    /pending-proposals.*task=operator-checkpoint/,
+  )
+  await expect(page.getByLabel('Operator direction')).toHaveCount(0)
+  await expect(page.getByRole('region', { name: 'System Design proposals from this task' })).toHaveCount(0)
+
+  await card.getByRole('button', { name: 'Confirm v2 and recover' }).click()
+  await expect.poll(() => calls).toEqual(['confirm', 'recover'])
+  expect(confirmHeaders.authorization).toBe('Bearer operator')
+  expect(confirmHeaders['if-match']).toBe('"1"')
+  expect(recoveryBody?.direction).toBe('Operator confirmed design-lifecycle v2.')
+  expect(recoveryBody?.request_id).toBeTruthy()
+})
+
+test('checkpoint proposal confirmation failure is visible and does not recover', async ({ page }) => {
+  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
+  await page.route('**/v1/workspaces', (route) => route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] }))
+  const item = activity('operator-checkpoint', false)
+  item.task.context = {
+    designs: [{ id: 'design-lifecycle', title: 'Work-order lifecycle', version: 1 }],
+  }
+  let recoveryCalls = 0
+  await page.route('**/v1/tasks/operator-checkpoint/activity*', (route) => route.fulfill({ json: item }))
+  await page.route('**/v1/system-designs**', (route) =>
+    route.fulfill({ json: designCollection('operator-checkpoint', false) }),
+  )
+  await page.route('**/v1/system-designs/design-lifecycle/versions/2/confirm**', (route) =>
+    route.fulfill({ status: 500, json: { message: 'Confirmation rejected by operator policy.' } }),
+  )
+  await page.route('**/v1/work-orders/attempt-recovery-implement-1/recover*', (route) => {
+    recoveryCalls++
+    return route.fulfill({ json: {} })
+  })
+
+  await page.goto('/tasks/operator-checkpoint/full')
+  const card = page.getByRole('region', { name: 'Confirm proposals and recover work order' })
+  await card.getByRole('button', { name: 'Confirm v2 and recover' }).click()
+  await expect(card.getByText('Confirmation rejected by operator policy.')).toBeVisible()
+  expect(recoveryCalls).toBe(0)
+})
+
 test("a task's own System Design proposal is confirmable from its detail and clears in place", async ({ page }) => {
   await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'test-token'))
   await page.route('**/v1/workspaces', (route) => route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] }))

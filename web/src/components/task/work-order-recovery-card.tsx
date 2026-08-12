@@ -1,11 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { Clock3, Link2, RotateCcw, TriangleAlert } from 'lucide-react'
-import { recoverWorkOrder } from '../../lib/api'
+import { Link } from '@tanstack/react-router'
+import { Check, Clock3, FileText, Link2, RotateCcw, TriangleAlert } from 'lucide-react'
+import { confirmSystemDesignVersion, recoverWorkOrder } from '../../lib/api'
 import { deriveCurrentExecutionState, pendingPlanRevisionRequest, type CurrentExecutionState } from '../../lib/activity'
+import { errorMessage } from '../../lib/errors'
 import type { ActivityItem } from '../../lib/types'
-import { useOperatorToken } from '../app-shell'
+import { useOperatorToken, useWorkspaceSelection } from '../app-shell'
 import { Button } from '../ui/button'
+import { type Proposal, proposalIdentity } from './system-design-proposal-card'
 import { TaskContextAttachmentDialog } from './task-context-attachment-dialog'
 
 export function hasWorkerRecovery(item: ActivityItem) {
@@ -16,6 +19,133 @@ export function hasWorkerRecovery(item: ActivityItem) {
     state.kind !== 'running' &&
     state.kind !== 'dependency_waiting' &&
     state.kind !== 'dependency_attention'
+  )
+}
+
+export function isCheckpointReleasedRecovery(state: CurrentExecutionState | undefined) {
+  return (
+    state != null &&
+    state.order.stage === 'implement' &&
+    state.order.last_failure_message === 'operator checkpoint reached' &&
+    state.kind !== 'running' &&
+    state.kind !== 'dependency_waiting' &&
+    state.kind !== 'dependency_attention'
+  )
+}
+
+export function CheckpointProposalRecoveryCard({
+  item,
+  state,
+  proposals,
+}: {
+  item: ActivityItem
+  state: CurrentExecutionState
+  proposals: Proposal[]
+}) {
+  const token = useOperatorToken()
+  const { workspace } = useWorkspaceSelection()
+  const queryClient = useQueryClient()
+  const requestId = useRef(crypto.randomUUID())
+  const orderedProposals = [...proposals].sort(
+    (left, right) => left.document.id.localeCompare(right.document.id) || left.version.version - right.version.version,
+  )
+  const mutation = useMutation({
+    mutationFn: async () => {
+      // Freeze the click's inputs. Query invalidation can replace proposal
+      // records while this sequence is running, but it must not alter which
+      // decisions this operator action confirms or the audit direction it
+      // records. Multiple pending versions for one document advance If-Match
+      // from the version confirmed immediately before them.
+      const snapshot = orderedProposals.map((proposal) => ({ ...proposal }))
+      const expectedByDocument = new Map<string, number>()
+      for (const proposal of snapshot) {
+        const expected = expectedByDocument.get(proposal.document.id) ?? proposal.expected
+        await confirmSystemDesignVersion(token, proposal.document.id, proposal.version.version, expected)
+        expectedByDocument.set(proposal.document.id, proposal.version.version)
+      }
+      const direction = snapshot
+        .map((proposal) => `Operator confirmed ${proposal.document.id} v${proposal.version.version}.`)
+        .join(' ')
+      return recoverWorkOrder(state.order.id, token, requestId.current, direction)
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['task', item.task.id] })
+      void queryClient.invalidateQueries({ queryKey: ['activity'] })
+    },
+    // This also refreshes after a partial multi-proposal sequence: confirmed
+    // rows disappear even when a later confirmation failed and recovery was
+    // correctly withheld.
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: ['system-designs', workspace] })
+    },
+  })
+
+  if (!isCheckpointReleasedRecovery(state) || orderedProposals.length === 0) return null
+
+  const actionLabel =
+    orderedProposals.length === 1
+      ? `Confirm v${orderedProposals[0].version.version} and recover`
+      : `Confirm ${orderedProposals.length} proposals and recover`
+
+  return (
+    <section
+      aria-label="Confirm proposals and recover work order"
+      className="space-y-3 rounded-lg border border-attention/50 bg-attention-soft px-3 py-3"
+    >
+      <div className="flex items-start gap-2">
+        <TriangleAlert className="mt-0.5 size-4 shrink-0 text-attention" aria-hidden />
+        <div className="min-w-0 space-y-1 text-xs leading-5 text-muted">
+          <p className="font-medium text-attention">{state.title}</p>
+          <p>Confirm the task&apos;s pending System Design proposal before recovering this checkpoint.</p>
+        </div>
+      </div>
+      {state.order.progress?.trim() && (
+        <div className="space-y-1.5 text-xs leading-5 text-muted">
+          <p className="font-medium text-foreground">Agent checkpoint message</p>
+          <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded border border-attention/30 bg-surface p-2 font-sans text-sm text-foreground">
+            {state.order.progress}
+          </pre>
+        </div>
+      )}
+      <div className="space-y-3">
+        {orderedProposals.map((proposal) => (
+          <div key={proposalIdentity(proposal)} className="flex items-start gap-2">
+            <FileText className="mt-0.5 size-4 shrink-0 text-attention" aria-hidden />
+            <div className="min-w-0 flex-1 text-xs leading-5 text-muted">
+              <p className="font-medium text-attention">System Design update proposed</p>
+              <p>
+                Version {proposal.version.version} proposed by this task for{' '}
+                <Link
+                  to="/system-design"
+                  search={{ document: proposal.document.id }}
+                  className="text-primary hover:underline"
+                >
+                  {proposal.document.title}
+                </Link>
+                .
+              </p>
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="flex flex-wrap items-center gap-3">
+        <Button size="sm" disabled={!token || mutation.isPending} onClick={() => mutation.mutate()}>
+          <Check aria-hidden />
+          {mutation.isPending ? 'Confirming and recovering…' : actionLabel}
+        </Button>
+        <Link
+          to="/pending-proposals"
+          search={{ task: item.task.id }}
+          className="text-xs font-medium text-primary hover:underline"
+        >
+          Review or dismiss proposals
+        </Link>
+      </div>
+      {!token && <p className="text-xs text-muted">Operator authorization is required to continue.</p>}
+      {mutation.error != null && (
+        <p className="text-xs text-failure">{errorMessage(mutation.error, 'Could not confirm and recover.')}</p>
+      )}
+    </section>
   )
 }
 
