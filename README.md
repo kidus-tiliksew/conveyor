@@ -167,6 +167,30 @@ pull requests.
 You need Go 1.24, Node/npm, PostgreSQL 15+, Docker with Compose, and
 an authenticated `gh` CLI for GitHub-delivery repos.
 
+### Four-step solo quickstart
+
+With a released `conveyor`/`conveyord` installation and PostgreSQL 15 or newer
+already running, the first-run wizard creates the deployment and workspace
+configuration; no hand editing of YAML is required.
+
+1. Export `CONVEYOR_DATABASE_URL`, a generated `CONVEYOR_API_TOKEN`, and
+   `CONVEYOR_API_KEY`, then authenticate the host with `gh auth login`.
+2. Run `conveyor init --config ./conveyor.yaml` and answer the organization,
+   first-operator, workspace, and repository prompts. The repository path must
+   be an existing filesystem clone. Re-running the same answers is a safe
+   no-op.
+3. Start the versioned binary with `conveyord -config ./conveyor.yaml` (or use
+   `conveyord install --config ./conveyor.yaml` and inspect it with
+   `conveyord status`). Startup applies pending embedded migrations before the
+   API or workers start; replacing the binary and restarting is the upgrade
+   procedure.
+4. Create the first task with
+   `conveyor --workspace <workspace-id> task new --repo <repo-name> --message '<work>'`.
+
+On a team server, use a dedicated forge machine account for the host's `gh`
+login. Every forge action performed by the factory is authored as that host
+identity, so a personal account makes ownership and auditing ambiguous.
+
 ```sh
 cp conveyor.example.yaml conveyor.yaml
 cp .env.example .env   # set CONVEYOR_API_KEY; regenerate the operator token: openssl rand -hex 32

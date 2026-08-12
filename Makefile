@@ -5,7 +5,7 @@
 # Run `make test-db-down` in a worktree to remove only that worktree's database.
 BIN := bin
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
-LDFLAGS := -ldflags "-X main.version=$(VERSION)"
+LDFLAGS := -ldflags "-X github.com/kidus-tiliksew/conveyor/internal/releaseinfo.Version=$(VERSION)"
 ENV_FILE ?= .env
 CONVEYOR_CONFIG ?= conveyor.yaml
 LISTEN_ADDR ?= 127.0.0.1:8080
@@ -61,11 +61,11 @@ compose-check:
 
 test-integration: compose-check test-db-up
 	@trap '$(MAKE) test-db-down' EXIT; \
-		CONVEYOR_TEST_DATABASE_URL='$(TEST_DATABASE_URL)' go test -p=1 ./internal/store/postgres ./internal/dispatch -count=1 -timeout=5m
+		CONVEYOR_TEST_DATABASE_URL='$(TEST_DATABASE_URL)' go test -p=1 ./cmd/conveyor ./internal/store/postgres ./internal/dispatch -count=1 -timeout=5m
 
 test-integration-ci: compose-check
 	@test -n "$(CONVEYOR_TEST_DATABASE_URL)" || (echo "CONVEYOR_TEST_DATABASE_URL is required" >&2; exit 1)
-	CONVEYOR_TEST_DATABASE_URL='$(CONVEYOR_TEST_DATABASE_URL)' go test -p=1 ./internal/store/postgres ./internal/dispatch -count=1 -timeout=5m
+	CONVEYOR_TEST_DATABASE_URL='$(CONVEYOR_TEST_DATABASE_URL)' go test -p=1 ./cmd/conveyor ./internal/store/postgres ./internal/dispatch -count=1 -timeout=5m
 
 # Keep the accepted work-order validation command explicit while sharing the
 # integration suite's isolated Postgres lifecycle.
