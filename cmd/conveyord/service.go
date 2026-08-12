@@ -142,18 +142,22 @@ func resolveDaemonService(platform daemonServicePlatform, configPath string) (da
 <!-- %s config=%s -->
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict><key>Label</key><string>%s</string><key>ProgramArguments</key><array><string>%s</string><string>-config</string><string>%s</string></array><key>WorkingDirectory</key><string>%s</string><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>StandardOutPath</key><string>%s</string><key>StandardErrorPath</key><string>%s</string></dict></plist>
-`, daemonServiceOwner, configPath, html.EscapeString(name), html.EscapeString(platform.Executable), html.EscapeString(configPath), html.EscapeString(filepath.Dir(configPath)), html.EscapeString(paths.Stdout), html.EscapeString(paths.Stderr))
+`, daemonServiceOwner, xmlCommentEscape(configPath), html.EscapeString(name), html.EscapeString(platform.Executable), html.EscapeString(configPath), html.EscapeString(filepath.Dir(configPath)), html.EscapeString(paths.Stdout), html.EscapeString(paths.Stderr))
 		return paths, nil
 	}
 	name := "conveyord.service"
 	logDir := filepath.Join(platform.StateDir, "conveyor", "daemon")
 	paths := daemonServicePaths{Name: name, Unit: filepath.Join(platform.ConfigDir, "systemd", "user", name), Stdout: filepath.Join(logDir, "stdout.log"), Stderr: filepath.Join(logDir, "stderr.log"), Config: configPath}
-	paths.Definition = fmt.Sprintf("# %s config=%s\n[Unit]\nDescription=Conveyor control-plane daemon\nAfter=network-online.target\n\n[Service]\nWorkingDirectory=%s\nExecStart=%s -config %s\nRestart=on-failure\nStandardOutput=append:%s\nStandardError=append:%s\n\n[Install]\nWantedBy=default.target\n", daemonServiceOwner, configPath, strconv.Quote(filepath.Dir(configPath)), strconv.Quote(platform.Executable), strconv.Quote(configPath), strconv.Quote(paths.Stdout), strconv.Quote(paths.Stderr))
+	paths.Definition = fmt.Sprintf("# %s config=%s\n[Unit]\nDescription=Conveyor control-plane daemon\nAfter=network-online.target\n\n[Service]\nWorkingDirectory=%s\nExecStart=%s -config %s\nRestart=on-failure\nStandardOutput=append:%s\nStandardError=append:%s\n\n[Install]\nWantedBy=default.target\n", daemonServiceOwner, xmlCommentEscape(configPath), strconv.Quote(filepath.Dir(configPath)), strconv.Quote(platform.Executable), strconv.Quote(configPath), strconv.Quote(paths.Stdout), strconv.Quote(paths.Stderr))
 	return paths, nil
 }
 
 func isOwnedDaemonService(definition, configPath string) bool {
-	return strings.Contains(definition, daemonServiceOwner+" config="+configPath)
+	return strings.Contains(definition, daemonServiceOwner+" config="+xmlCommentEscape(configPath))
+}
+
+func xmlCommentEscape(value string) string {
+	return strings.ReplaceAll(html.EscapeString(value), "--", "&#45;&#45;")
 }
 
 func installDaemonService(ctx context.Context, platform daemonServicePlatform, paths daemonServicePaths) error {

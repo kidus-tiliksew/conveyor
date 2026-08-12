@@ -13,5 +13,6 @@ type MembershipStore interface {
 	ListWorkspacesForUser(context.Context, string) ([]core.Workspace, error)
 	ListWorkspaceMembers(context.Context, string, string) ([]core.WorkspaceMembership, error)
 	GrantWorkspaceRole(context.Context, string, string, core.WorkspaceRole) (core.MembershipGrant, error)
+	RevokeWorkspaceInvitation(context.Context, string, string) error
 	RevokeWorkspaceRole(context.Context, string, string) error
 }

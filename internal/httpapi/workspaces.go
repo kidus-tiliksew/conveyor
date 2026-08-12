@@ -116,6 +116,15 @@ func (s *Server) revokeWorkspaceMembership(w http.ResponseWriter, r *http.Reques
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (s *Server) revokeWorkspaceInvitation(w http.ResponseWriter, r *http.Request) {
+	workspaceID, _ := store.WorkspaceFromContext(r.Context())
+	if err := s.Memberships.RevokeWorkspaceInvitation(r.Context(), chi.URLParam(r, "email"), workspaceID); err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *Server) getWorkspaceRecord(w http.ResponseWriter, r *http.Request) {
 	id, _ := store.WorkspaceFromContext(r.Context())
 	if s.Workspaces == nil {

@@ -123,6 +123,7 @@ func (s *Server) Handler() http.Handler {
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityManageWorkspace)).Put("/workspaces/{workspace_id}/config", s.putWorkspaceConfig)
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityViewWorkspace)).Get("/workspaces/{workspace_id}/members", s.listWorkspaceMembers)
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityManageMembership)).Post("/workspaces/{workspace_id}/members", s.grantWorkspaceMembership)
+		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityManageMembership)).Delete("/workspaces/{workspace_id}/invitations/{email}", s.revokeWorkspaceInvitation)
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityManageMembership)).Delete("/workspaces/{workspace_id}/members/{user_id}", s.revokeWorkspaceMembership)
 		r.Group(func(r chi.Router) {
 			r.Use(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityViewWorkspace))

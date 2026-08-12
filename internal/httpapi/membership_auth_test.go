@@ -53,6 +53,9 @@ func (f *membershipFixture) ListWorkspaceMembers(context.Context, string, string
 func (f *membershipFixture) GrantWorkspaceRole(context.Context, string, string, core.WorkspaceRole) (core.MembershipGrant, error) {
 	return core.MembershipGrant{}, nil
 }
+func (f *membershipFixture) RevokeWorkspaceInvitation(context.Context, string, string) error {
+	return nil
+}
 func (f *membershipFixture) RevokeWorkspaceRole(context.Context, string, string) error {
 	return f.revokeErr
 }

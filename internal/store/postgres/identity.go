@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 )
 
@@ -148,17 +149,7 @@ func (s *Store) BootstrapIdentity(ctx context.Context, identity config.FirstOper
 		}
 		owner.CreatedAt = createdAt
 	} else {
-		var row db.User
-		err := tx.QueryRow(ctx, `SELECT id,email,display_name,status,created_at FROM users WHERE email=$1 FOR UPDATE`, identity.Email).Scan(
-			&row.ID, &row.Email, &row.DisplayName, &row.Status, &row.CreatedAt,
-		)
-		if errors.Is(err, pgx.ErrNoRows) {
-			userID, idErr := randomIdentityID("usr", 12)
-			if idErr != nil {
-				return false, idErr
-			}
-			row, err = q.InsertIdentityUser(ctx, db.InsertIdentityUserParams{ID: userID, Email: identity.Email, DisplayName: identity.DisplayName})
-		}
+		row, err := provisionIdentityUserInTx(ctx, tx, q, identity.Email, identity.DisplayName)
 		if err != nil {
 			return false, fmt.Errorf("seed first operator: %w", err)
 		}
@@ -193,6 +184,123 @@ func (s *Store) BootstrapIdentity(ctx context.Context, identity config.FirstOper
 		return false, fmt.Errorf("commit identity bootstrap: %w", err)
 	}
 	return true, nil
+}
+
+// ProvisionIdentityUser creates or resolves one normalized account and redeems
+// all of its pending workspace invitations in the same transaction. This is an
+// instance-administration seam only; it is intentionally not exposed as a
+// self-registration HTTP route (REQ-1/AC-1.2).
+func (s *Store) ProvisionIdentityUser(ctx context.Context, email, displayName string) (IdentityUser, error) {
+	email, err := normalizeIdentityEmail(email)
+	if err != nil {
+		return IdentityUser{}, err
+	}
+	displayName = strings.TrimSpace(displayName)
+	if displayName == "" {
+		return IdentityUser{}, errors.New("display name is required")
+	}
+	var result db.User
+	err = s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		var provisionErr error
+		result, provisionErr = provisionIdentityUserInTx(ctx, tx, q, email, displayName)
+		return provisionErr
+	})
+	if err != nil {
+		return IdentityUser{}, err
+	}
+	return identityUser(result), nil
+}
+
+func provisionIdentityUserInTx(ctx context.Context, tx pgx.Tx, q *db.Queries, email, displayName string) (db.User, error) {
+	if err := lockIdentityEmail(ctx, tx, email); err != nil {
+		return db.User{}, err
+	}
+	var row db.User
+	err := tx.QueryRow(ctx, `SELECT id,email,display_name,status,created_at FROM users WHERE email=$1 FOR UPDATE`, email).Scan(
+		&row.ID, &row.Email, &row.DisplayName, &row.Status, &row.CreatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		userID, idErr := randomIdentityID("usr", 12)
+		if idErr != nil {
+			return db.User{}, idErr
+		}
+		row, err = q.InsertIdentityUser(ctx, db.InsertIdentityUserParams{ID: userID, Email: email, DisplayName: displayName})
+	}
+	if err != nil {
+		return db.User{}, err
+	}
+	if row.Status != "active" {
+		return db.User{}, errors.New("provisioned account is deactivated")
+	}
+	if err := redeemWorkspaceInvitations(ctx, tx, q, row); err != nil {
+		return db.User{}, err
+	}
+	return row, nil
+}
+
+func redeemWorkspaceInvitations(ctx context.Context, tx pgx.Tx, q *db.Queries, user db.User) error {
+	rows, err := tx.Query(ctx, `SELECT workspace_id,role,invited_by
+		FROM workspace_membership_invitations WHERE email=$1 ORDER BY workspace_id FOR UPDATE`, user.Email)
+	if err != nil {
+		return fmt.Errorf("list pending workspace invitations: %w", err)
+	}
+	type invitation struct {
+		workspaceID string
+		role        core.WorkspaceRole
+		invitedBy   string
+	}
+	var pending []invitation
+	for rows.Next() {
+		var item invitation
+		if err := rows.Scan(&item.workspaceID, &item.role, &item.invitedBy); err != nil {
+			rows.Close()
+			return err
+		}
+		pending = append(pending, item)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	for _, item := range pending {
+		if _, err := tx.Exec(ctx, `INSERT INTO workspace_role_bindings(workspace_id,user_id,role)
+			VALUES($1,$2,$3) ON CONFLICT(workspace_id,user_id) DO UPDATE SET role=excluded.role,updated_at=now()`,
+			item.workspaceID, user.ID, item.role); err != nil {
+			return fmt.Errorf("redeem workspace invitation binding: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM workspace_membership_invitations
+			WHERE workspace_id=$1 AND email=$2`, item.workspaceID, user.Email); err != nil {
+			return fmt.Errorf("consume workspace invitation: %w", err)
+		}
+		eventCtx := store.WithWorkspace(ctx, item.workspaceID)
+		if err := insertWorkspaceEvent(eventCtx, q, core.Event{
+			Kind: "workspace.membership_granted", ActorID: store.UserActorID(item.invitedBy), ActorRole: core.ActorUser,
+			Payload: core.JSONPayload(map[string]any{
+				"workspace_id": item.workspaceID, "user_id": user.ID, "email": user.Email, "role": item.role,
+				"invitation": false, "redemption": true, "granted_by": item.invitedBy,
+			}),
+		}); err != nil {
+			return fmt.Errorf("audit workspace invitation redemption: %w", err)
+		}
+	}
+	return nil
+}
+
+func normalizeIdentityEmail(value string) (string, error) {
+	email := strings.ToLower(strings.TrimSpace(value))
+	address, err := mail.ParseAddress(email)
+	if err != nil || address.Address != email || !strings.Contains(email, "@") {
+		return "", errors.New("email must be a valid normalized address")
+	}
+	return email, nil
+}
+
+func lockIdentityEmail(ctx context.Context, tx pgx.Tx, email string) error {
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('conveyor:identity-email:' || $1))`, email); err != nil {
+		return fmt.Errorf("lock identity email: %w", err)
+	}
+	return nil
 }
 
 func seedOperatorBindings(ctx context.Context, tx pgx.Tx, userID string) error {

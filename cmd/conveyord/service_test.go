@@ -2,12 +2,38 @@ package main
 
 import (
 	"context"
+	"encoding/xml"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestLaunchdServiceEscapesOwnershipCommentAndRemainsValidXML(t *testing.T) {
+	platform := testDaemonPlatform(t)
+	platform.GOOS = "darwin"
+	configPath := "/etc/conveyor/config--blue<&.yaml"
+	paths, err := resolveDaemonService(platform, configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoder := xml.NewDecoder(strings.NewReader(paths.Definition))
+	for {
+		if _, err = decoder.Token(); errors.Is(err, io.EOF) {
+			break
+		} else if err != nil {
+			t.Fatalf("rendered launchd plist is invalid XML: %v\n%s", err, paths.Definition)
+		}
+	}
+	if !isOwnedDaemonService(paths.Definition, configPath) {
+		t.Fatalf("escaped launchd plist was not recognized as Conveyor-owned: %s", paths.Definition)
+	}
+	if isOwnedDaemonService(paths.Definition, configPath+"-other") {
+		t.Fatal("ownership marker matched an unrelated config path")
+	}
+}
 
 func testDaemonPlatform(t *testing.T) daemonServicePlatform {
 	t.Helper()

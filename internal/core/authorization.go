@@ -67,6 +67,6 @@ type WorkspaceMembership struct {
 }
 
 type MembershipGrant struct {
-	Membership      *WorkspaceMembership `json:"membership,omitempty"`
-	InvitationEmail string               `json:"invitation_email,omitempty"`
+	Email string        `json:"email"`
+	Role  WorkspaceRole `json:"role"`
 }

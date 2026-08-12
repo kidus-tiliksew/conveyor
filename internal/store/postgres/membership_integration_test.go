@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"bytes"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +17,89 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
+
+func TestProvisionIdentityRedeemsInvitationsAndGrantResponseIsOpaqueIntegration(t *testing.T) {
+	st := newIdentityIntegrationStore(t, 0)
+	legacy := "membership-redemption-token"
+	if _, err := st.BootstrapIdentity(t.Context(), config.FirstOperatorIdentity{
+		OrganizationName: "Redemption Org", Email: "owner@example.test", DisplayName: "Owner",
+	}, legacy); err != nil {
+		t.Fatal(err)
+	}
+	owner, err := st.VerifyPersonalAccessToken(t.Context(), legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	credential := core.AuthenticatedCredential{ID: "legacy", OwnerUserID: owner.ID, Kind: core.CredentialUser, Scope: core.CredentialScopeOperator}
+	operatorCtx := store.WithCredential(t.Context(), credential)
+	operatorCtx = store.WithActor(operatorCtx, store.Actor{ID: store.UserActorID(owner.ID), Role: core.ActorUser})
+	workspaceID := "redemption-" + core.NewTaskID()
+	if _, err = st.CreateWorkspace(operatorCtx, workspaceID, workspaceID, isolationConfig(workspaceID)); err != nil {
+		t.Fatal(err)
+	}
+
+	server := httpapi.NewServer(st)
+	server.Workspaces, server.Workspace = st, workspaceID
+	handler := server.Handler()
+	call := func(method, path, body string) *httptest.ResponseRecorder {
+		t.Helper()
+		request := httptest.NewRequest(method, path, strings.NewReader(body))
+		request.Header.Set("Authorization", "Bearer "+legacy)
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
+	}
+	invitedEmail := "redeem@example.test"
+	invited := call(http.MethodPost, "/v1/workspaces/"+workspaceID+"/members", `{"email":"`+invitedEmail+`","role":"user"}`)
+	if invited.Code != http.StatusCreated {
+		t.Fatalf("invitation grant status=%d body=%s", invited.Code, invited.Body.String())
+	}
+	provisioned, err := st.ProvisionIdentityUser(t.Context(), "  REDEEM@example.test ", "Redeemed User")
+	if err != nil {
+		t.Fatal(err)
+	}
+	repeated, err := st.ProvisionIdentityUser(t.Context(), invitedEmail, "Ignored on retry")
+	if err != nil || repeated.ID != provisioned.ID {
+		t.Fatalf("repeated provisioning user=%+v err=%v", repeated, err)
+	}
+	existing := call(http.MethodPost, "/v1/workspaces/"+workspaceID+"/members", `{"email":"`+invitedEmail+`","role":"user"}`)
+	if existing.Code != http.StatusCreated || !bytes.Equal(invited.Body.Bytes(), existing.Body.Bytes()) {
+		t.Fatalf("grant response leaked account existence: invited=%q existing=%q", invited.Body.Bytes(), existing.Body.Bytes())
+	}
+	wantResponse := `{"email":"` + invitedEmail + `","role":"user"}` + "\n"
+	if invited.Body.String() != wantResponse {
+		t.Fatalf("opaque response=%q want=%q", invited.Body.String(), wantResponse)
+	}
+	var bindings, invitations, redemptionEvents int
+	if err = st.pool.QueryRow(t.Context(), `SELECT
+		(SELECT count(*) FROM workspace_role_bindings WHERE workspace_id=$1 AND user_id=$2 AND role='user'),
+		(SELECT count(*) FROM workspace_membership_invitations WHERE workspace_id=$1 AND email=$3),
+		(SELECT count(*) FROM events WHERE workspace_id=$1 AND kind='workspace.membership_granted'
+			AND payload_json->>'redemption'='true' AND payload_json->>'granted_by'=$4
+			AND actor_id=$5 AND payload_json->>'user_id'=$2)`,
+		workspaceID, provisioned.ID, invitedEmail, owner.ID, store.UserActorID(owner.ID)).Scan(&bindings, &invitations, &redemptionEvents); err != nil {
+		t.Fatal(err)
+	}
+	if bindings != 1 || invitations != 0 || redemptionEvents != 1 {
+		t.Fatalf("redemption bindings=%d invitations=%d events=%d", bindings, invitations, redemptionEvents)
+	}
+
+	revokedEmail := "revoked@example.test"
+	if response := call(http.MethodPost, "/v1/workspaces/"+workspaceID+"/members", `{"email":"`+revokedEmail+`","role":"user"}`); response.Code != http.StatusCreated {
+		t.Fatalf("revocable invitation status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := call(http.MethodDelete, "/v1/workspaces/"+workspaceID+"/invitations/"+revokedEmail, ""); response.Code != http.StatusNoContent {
+		t.Fatalf("invitation revocation status=%d body=%s", response.Code, response.Body.String())
+	}
+	revokedUser, err := st.ProvisionIdentityUser(t.Context(), revokedEmail, "Revoked Invitee")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = st.pool.QueryRow(t.Context(), `SELECT count(*) FROM workspace_role_bindings WHERE workspace_id=$1 AND user_id=$2`, workspaceID, revokedUser.ID).Scan(&bindings); err != nil || bindings != 0 {
+		t.Fatalf("revoked invitation produced bindings=%d err=%v", bindings, err)
+	}
+}
 
 func TestWorkspaceMembershipAuthorizationIntegration(t *testing.T) {
 	st := newIdentityIntegrationStore(t, 0)
@@ -55,7 +139,7 @@ func TestWorkspaceMembershipAuthorizationIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if grant, err := st.GrantWorkspaceRole(workspaceBCtx, secondOperator.Email, workspaceB, core.WorkspaceRoleOperator); err != nil || grant.Membership == nil {
+	if grant, err := st.GrantWorkspaceRole(workspaceBCtx, secondOperator.Email, workspaceB, core.WorkspaceRoleOperator); err != nil || grant.Email != secondOperator.Email || grant.Role != core.WorkspaceRoleOperator {
 		t.Fatalf("second operator grant=%+v err=%v", grant, err)
 	}
 	if err := st.RevokeWorkspaceRole(workspaceBCtx, owner.ID, workspaceB); err != nil {
@@ -67,7 +151,7 @@ func TestWorkspaceMembershipAuthorizationIntegration(t *testing.T) {
 	}
 	grantCtx := store.WithWorkspace(operatorCtx, workspaceA)
 	grant, err := st.GrantWorkspaceRole(grantCtx, member.Email, workspaceA, core.WorkspaceRoleUser)
-	if err != nil || grant.Membership == nil || grant.Membership.UserID != member.ID {
+	if err != nil || grant.Email != member.Email || grant.Role != core.WorkspaceRoleUser {
 		t.Fatalf("grant=%+v err=%v", grant, err)
 	}
 	visible, err := st.ListWorkspacesForUser(t.Context(), member.ID)

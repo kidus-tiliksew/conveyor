@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
+	"fmt"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +15,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
 	"github.com/kidus-tiliksew/conveyor/internal/workorder"
@@ -640,11 +641,72 @@ func TestMCPAgentCredentialCannotInvokeHumanReservedTools(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
 	credential := core.AuthenticatedCredential{ID: "agt_1", OwnerUserID: "usr_1", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser}
 	request = request.WithContext(store.WithCredential(request.Context(), credential))
-	for _, tool := range []string{"create_task", "redispatch_work_order", "set_assignee"} {
-		if _, err := server.callMCPTool(request, tool, map[string]any{"workspace_id": "demo"}); err == nil || !strings.Contains(err.Error(), "operator-scoped user credential") {
-			t.Fatalf("%s error=%v", tool, err)
+	if err := validateMCPAgentSafety(mcpAgentSafeReasons); err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range mcpTools() {
+		name, _ := tool["name"].(string)
+		if _, agentSafe := mcpAgentSafeReasons[name]; agentSafe {
+			continue
+		}
+		if _, err := server.callMCPTool(request, name, map[string]any{"workspace_id": "demo"}); err == nil || !strings.Contains(err.Error(), "operator-scoped user credential") {
+			t.Fatalf("%s error=%v", name, err)
 		}
 	}
+}
+
+func TestMCPHumanReservedClassificationRejectsOmittedReservedTool(t *testing.T) {
+	mutated := maps.Clone(mcpAgentSafeReasons)
+	// Reclassifying create_task as agent-safe removes it from the reserved set
+	// derived by exclusion. The independent production guard must reject that
+	// mutation, proving this test does not share production's literal list.
+	mutated["create_task"] = "mutation: agent may create durable operator work"
+	if err := validateMCPAgentSafety(mutated); err == nil || !strings.Contains(err.Error(), "create_task") {
+		t.Fatalf("reserved-set mutation error=%v", err)
+	}
+}
+
+var mcpAgentSafeReasons = map[string]string{
+	"list_work_orders":               "read-only discovery of work the caller may claim",
+	"claim_work_order":               "begins only an eligible bounded execution lease",
+	"renew_work_order":               "extends only the caller's exact execution lease",
+	"release_work_order":             "releases only the caller's exact execution lease",
+	"request_plan_revision":          "requests an operator-gated plan decision without deciding it",
+	"get_work_order":                 "reads only context authorized for the caller's claimed order",
+	"read_artifact":                  "reads only an artifact authorized by claimed-order context",
+	"report_progress":                "records self-reported progress on the caller's claimed order",
+	"report_usage":                   "records observational usage on the caller's claimed order",
+	"propose_system_design_revision": "creates an unconfirmed proposal that grants no authority",
+	"propose_decision":               "creates an unconfirmed proposal that grants no authority",
+	"upload_transcript":              "attaches redacted evidence only to the caller's claimed order",
+	"submit_plan":                    "submits only the caller's claimed plan-stage deliverable",
+	"submit_for_review":              "submits only the caller's claimed implementation for an independent gate",
+	"await_review":                   "observes only review state for the caller's submitted implementation",
+	"submit_review_verdict":          "acts only through an independently claimed review-stage order",
+}
+
+func validateMCPAgentSafety(agentSafe map[string]string) error {
+	seen := make(map[string]bool)
+	for _, tool := range mcpTools() {
+		name, _ := tool["name"].(string)
+		seen[name] = true
+		reason, safe := agentSafe[name]
+		reserved := humanReservedMCPTool(name)
+		switch {
+		case safe && strings.TrimSpace(reason) == "":
+			return fmt.Errorf("agent-safe MCP tool %s lacks a security justification", name)
+		case safe && reserved:
+			return fmt.Errorf("human-reserved MCP tool %s was omitted from the reserved set by agent-safe classification", name)
+		case !safe && !reserved:
+			return fmt.Errorf("registered MCP tool %s is neither justified as agent-safe nor guarded as human-reserved", name)
+		}
+	}
+	for name := range agentSafe {
+		if !seen[name] {
+			return fmt.Errorf("agent-safe justification names unregistered MCP tool %s", name)
+		}
+	}
+	return nil
 }
 
 func TestMCPRequestPlanRevisionEndToEnd(t *testing.T) {
