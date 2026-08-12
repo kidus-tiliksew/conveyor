@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -128,6 +129,88 @@ func TestIdentityBootstrapAndPersonalAccessTokenLifecycleIntegration(t *testing.
 	}
 	if _, err := st.IssuePersonalAccessToken(t.Context(), principal.ID, "forbidden"); err == nil {
 		t.Fatal("issued token for deactivated user")
+	}
+}
+
+func TestFailedInvitationRevocationLeavesInvitationRedeemableIntegration(t *testing.T) {
+	st := newIdentityIntegrationStore(t, 0)
+	legacy := "revocation-failure-token"
+	if _, err := st.BootstrapIdentity(t.Context(), config.FirstOperatorIdentity{
+		OrganizationName: "Revocation Org", Email: "owner@example.test", DisplayName: "Owner",
+	}, legacy); err != nil {
+		t.Fatal(err)
+	}
+	owner, err := st.VerifyPersonalAccessToken(t.Context(), legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	credential := core.AuthenticatedCredential{ID: "legacy", OwnerUserID: owner.ID, Kind: core.CredentialUser, Scope: core.CredentialScopeOperator}
+	operatorCtx := store.WithCredential(t.Context(), credential)
+	operatorCtx = store.WithActor(operatorCtx, store.Actor{ID: store.UserActorID(owner.ID), Role: core.ActorUser})
+	workspaceID := "revocation-failure-" + core.NewTaskID()
+	if _, err = st.CreateWorkspace(operatorCtx, workspaceID, workspaceID, isolationConfig(workspaceID)); err != nil {
+		t.Fatal(err)
+	}
+
+	server := httpapi.NewServer(st)
+	server.Workspaces, server.Workspace = st, workspaceID
+	call := func(method, path, body string) *httptest.ResponseRecorder {
+		t.Helper()
+		request := httptest.NewRequest(method, path, strings.NewReader(body))
+		request.Header.Set("Authorization", "Bearer "+legacy)
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, request)
+		return response
+	}
+
+	missing := call(http.MethodDelete, "/v1/workspaces/"+workspaceID+"/invitations/missing@example.test", "")
+	canonicalNotFound := "{\"error\":\"workspace_not_found\",\"message\":\"workspace not found\"}\n"
+	if missing.Code != http.StatusNotFound || missing.Body.String() != canonicalNotFound {
+		t.Fatalf("missing invitation status=%d body=%q", missing.Code, missing.Body.String())
+	}
+
+	invitedEmail := "still-pending@example.test"
+	grant := call(http.MethodPost, "/v1/workspaces/"+workspaceID+"/members", `{"email":"`+invitedEmail+`","role":"user"}`)
+	if grant.Code != http.StatusCreated {
+		t.Fatalf("grant invitation status=%d body=%s", grant.Code, grant.Body.String())
+	}
+	if _, err = st.pool.Exec(t.Context(), `CREATE FUNCTION reject_invitation_delete() RETURNS trigger LANGUAGE plpgsql AS $$
+		BEGIN RAISE EXCEPTION 'injected invitation delete failure with secret detail'; END $$;
+		CREATE TRIGGER reject_invitation_delete BEFORE DELETE ON workspace_membership_invitations
+		FOR EACH ROW EXECUTE FUNCTION reject_invitation_delete()`); err != nil {
+		t.Fatal(err)
+	}
+	failure := call(http.MethodDelete, "/v1/workspaces/"+workspaceID+"/invitations/"+invitedEmail, "")
+	if failure.Code != http.StatusInternalServerError || failure.Body.String() != "internal server error\n" || strings.Contains(failure.Body.String(), "secret detail") {
+		t.Fatalf("failed revocation status=%d body=%q", failure.Code, failure.Body.String())
+	}
+	var invitations int
+	if err = st.pool.QueryRow(t.Context(), `SELECT count(*) FROM workspace_membership_invitations WHERE workspace_id=$1 AND email=$2`, workspaceID, invitedEmail).Scan(&invitations); err != nil || invitations != 1 {
+		t.Fatalf("pending invitation count=%d err=%v", invitations, err)
+	}
+	if _, err = st.pool.Exec(t.Context(), `DROP TRIGGER reject_invitation_delete ON workspace_membership_invitations;
+		DROP FUNCTION reject_invitation_delete()`); err != nil {
+		t.Fatal(err)
+	}
+
+	provision := call(http.MethodPost, "/v1/users", `{"email":"`+invitedEmail+`","display_name":"Still Pending"}`)
+	if provision.Code != http.StatusCreated {
+		t.Fatalf("provision after failed revocation status=%d body=%s", provision.Code, provision.Body.String())
+	}
+	var user core.IdentityUser
+	if err = json.Unmarshal(provision.Body.Bytes(), &user); err != nil {
+		t.Fatal(err)
+	}
+	var bindings int
+	if err = st.pool.QueryRow(t.Context(), `SELECT
+		(SELECT count(*) FROM workspace_role_bindings WHERE workspace_id=$1 AND user_id=$2),
+		(SELECT count(*) FROM workspace_membership_invitations WHERE workspace_id=$1 AND email=$3)`,
+		workspaceID, user.ID, invitedEmail).Scan(&bindings, &invitations); err != nil {
+		t.Fatal(err)
+	}
+	if bindings != 1 || invitations != 0 {
+		t.Fatalf("post-provision bindings=%d invitations=%d", bindings, invitations)
 	}
 }
 

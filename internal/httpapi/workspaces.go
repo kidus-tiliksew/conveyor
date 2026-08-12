@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
+	"net/mail"
 	"regexp"
 	"strings"
 
@@ -17,6 +19,8 @@ import (
 )
 
 var workspaceIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
+
+const provisionedAccountDeactivatedError = "provisioned account is deactivated"
 
 type createWorkspaceRequest struct {
 	ID       string          `json:"id"`
@@ -52,12 +56,30 @@ func (s *Server) provisionIdentityUser(w http.ResponseWriter, r *http.Request) {
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&request); err != nil {
-		writeValidationError(w, "user", err)
+		writeValidationError(w, "user", errors.New("must be valid JSON with only email and display_name fields"))
+		return
+	}
+	normalizedEmail := strings.ToLower(strings.TrimSpace(request.Email))
+	address, err := mail.ParseAddress(normalizedEmail)
+	if err != nil || address.Address != normalizedEmail || !strings.Contains(normalizedEmail, "@") {
+		writeValidationError(w, "email", errors.New("must be a valid email address"))
+		return
+	}
+	if strings.TrimSpace(request.DisplayName) == "" {
+		writeValidationError(w, "display_name", errors.New("is required"))
 		return
 	}
 	user, err := s.IdentityProvisioner.ProvisionIdentityUser(r.Context(), request.Email, request.DisplayName)
 	if err != nil {
-		writeValidationError(w, "user", err)
+		if err.Error() == provisionedAccountDeactivatedError {
+			writeJSON(w, http.StatusConflict, map[string]string{
+				"error":   "account_deactivated",
+				"message": "reactivate the account before provisioning",
+			})
+			return
+		}
+		log.Printf("provision identity user: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	writeJSON(w, http.StatusCreated, user)
@@ -142,7 +164,12 @@ func (s *Server) revokeWorkspaceMembership(w http.ResponseWriter, r *http.Reques
 func (s *Server) revokeWorkspaceInvitation(w http.ResponseWriter, r *http.Request) {
 	workspaceID, _ := store.WorkspaceFromContext(r.Context())
 	if err := s.Memberships.RevokeWorkspaceInvitation(r.Context(), chi.URLParam(r, "email"), workspaceID); err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
+		if errors.Is(err, store.ErrNotFound) {
+			writeWorkspaceNotFound(w)
+			return
+		}
+		log.Printf("revoke workspace invitation: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

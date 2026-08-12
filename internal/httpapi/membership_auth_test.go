@@ -18,15 +18,20 @@ type membershipFixture struct {
 	roles           map[string]map[string]core.WorkspaceRole
 	capabilityCalls []core.Capability
 	revokeErr       error
+	invitationErr   error
 }
 
 type identityProvisioningFixture struct {
 	store.Store
-	calls int
+	calls        int
+	provisionErr error
 }
 
 func (f *identityProvisioningFixture) ProvisionIdentityUser(_ context.Context, email, displayName string) (core.IdentityUser, error) {
 	f.calls++
+	if f.provisionErr != nil {
+		return core.IdentityUser{}, f.provisionErr
+	}
 	return core.IdentityUser{ID: "usr_provisioned", Email: email, DisplayName: displayName, Status: "active"}, nil
 }
 
@@ -73,7 +78,7 @@ func (f *membershipFixture) GrantWorkspaceRole(context.Context, string, string, 
 	return core.MembershipGrant{}, nil
 }
 func (f *membershipFixture) RevokeWorkspaceInvitation(context.Context, string, string) error {
-	return nil
+	return f.invitationErr
 }
 func (f *membershipFixture) RevokeWorkspaceRole(context.Context, string, string) error {
 	return f.revokeErr
@@ -105,6 +110,84 @@ func TestProvisionIdentityUserRequiresHumanDeploymentOperator(t *testing.T) {
 	response := call("operator-token")
 	if response.Code != http.StatusCreated || !strings.Contains(response.Body.String(), `"id":"usr_provisioned"`) || fixture.calls != 1 {
 		t.Fatalf("operator status=%d body=%s calls=%d", response.Code, response.Body.String(), fixture.calls)
+	}
+}
+
+func TestProvisionIdentityUserClassifiesValidationAndStoreFailures(t *testing.T) {
+	fixture := &identityProvisioningFixture{Store: store.NewMemory()}
+	server := NewServer(fixture)
+	server.Credentials = staticCredentialVerifier{
+		"operator-token": {ID: "pat_operator", OwnerUserID: "operator", Kind: core.CredentialUser, Scope: core.CredentialScopeOperator},
+	}
+	call := func(body string) *httptest.ResponseRecorder {
+		t.Helper()
+		request := httptest.NewRequest(http.MethodPost, "/v1/users", strings.NewReader(body))
+		request.Header.Set("Authorization", "Bearer operator-token")
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, request)
+		return response
+	}
+
+	for _, test := range []struct {
+		body  string
+		field string
+	}{
+		{body: `{`, field: "user"},
+		{body: `{"email":"not-an-email","display_name":"User"}`, field: "email"},
+		{body: `{"email":"user@example.test","display_name":" "}`, field: "display_name"},
+	} {
+		response := call(test.body)
+		if response.Code != http.StatusUnprocessableEntity || !strings.Contains(response.Body.String(), `"field":"`+test.field+`"`) {
+			t.Fatalf("body=%q status=%d response=%q", test.body, response.Code, response.Body.String())
+		}
+	}
+	if fixture.calls != 0 {
+		t.Fatalf("invalid requests reached provisioner calls=%d", fixture.calls)
+	}
+
+	fixture.provisionErr = errors.New(provisionedAccountDeactivatedError)
+	response := call(`{"email":"user@example.test","display_name":"User"}`)
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), `"error":"account_deactivated"`) || !strings.Contains(response.Body.String(), "reactivate") {
+		t.Fatalf("deactivated status=%d body=%q", response.Code, response.Body.String())
+	}
+
+	rawError := "database connection failed with secret detail"
+	fixture.provisionErr = errors.New(rawError)
+	response = call(`{"email":"user@example.test","display_name":"User"}`)
+	if response.Code != http.StatusInternalServerError || strings.Contains(response.Body.String(), rawError) || response.Body.String() != "internal server error\n" {
+		t.Fatalf("infrastructure status=%d body=%q", response.Code, response.Body.String())
+	}
+}
+
+func TestRevokeWorkspaceInvitationClassifiesNotFoundAndStoreFailures(t *testing.T) {
+	fixture := &membershipFixture{
+		workspaces: []core.Workspace{{ID: "alpha"}},
+		roles:      map[string]map[string]core.WorkspaceRole{"operator": {"alpha": core.WorkspaceRoleOperator}},
+	}
+	server := NewServer(store.NewMemory())
+	server.Workspaces, server.Memberships = fixture, fixture
+	server.Credentials = staticCredentialVerifier{
+		"operator-token": {ID: "pat_operator", OwnerUserID: "operator", Kind: core.CredentialUser, Scope: core.CredentialScopeOperator},
+	}
+	call := func() *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodDelete, "/v1/workspaces/alpha/invitations/missing@example.test", nil)
+		request.Header.Set("Authorization", "Bearer operator-token")
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, request)
+		return response
+	}
+
+	fixture.invitationErr = store.ErrNotFound
+	response := call()
+	if response.Code != http.StatusNotFound || response.Body.String() != canonicalWorkspaceNotFoundBody() {
+		t.Fatalf("not-found status=%d body=%q", response.Code, response.Body.String())
+	}
+
+	rawError := "delete failed with secret detail"
+	fixture.invitationErr = errors.New(rawError)
+	response = call()
+	if response.Code != http.StatusInternalServerError || strings.Contains(response.Body.String(), rawError) || response.Body.String() != "internal server error\n" {
+		t.Fatalf("infrastructure status=%d body=%q", response.Code, response.Body.String())
 	}
 }
 
