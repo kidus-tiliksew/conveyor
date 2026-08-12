@@ -112,31 +112,34 @@ export function Timeline({
   const tail = (
     executionActions
       ? [
-          item.pending_authority === true && {
-            key: 'pending-authority',
-            dot: 'bg-attention-dot',
-            card: (
-              <section
-                aria-label="Review is waiting on a document decision"
-                className="rounded-lg border border-attention/40 bg-attention-soft px-3 py-3"
-              >
-                <div className="flex items-start gap-2">
-                  <AlertTriangle className="mt-0.5 size-4 shrink-0 text-attention" aria-hidden />
-                  <div className="text-xs leading-5 text-muted">
-                    <p className="font-medium text-attention">Review is waiting on a System Design decision</p>
-                    <p>This review cannot be claimed until you confirm or dismiss the task&apos;s pending proposal.</p>
-                    <Link
-                      to="/pending-proposals"
-                      search={{ task: item.task.id }}
-                      className="mt-1 inline-block font-medium text-primary hover:underline"
-                    >
-                      Confirm or dismiss the proposal
-                    </Link>
+          item.pending_authority === true &&
+            designProposals.length === 0 && {
+              key: 'pending-authority',
+              dot: 'bg-attention-dot',
+              card: (
+                <section
+                  aria-label="Review is waiting on a document decision"
+                  className="rounded-lg border border-attention/40 bg-attention-soft px-3 py-3"
+                >
+                  <div className="flex items-start gap-2">
+                    <AlertTriangle className="mt-0.5 size-4 shrink-0 text-attention" aria-hidden />
+                    <div className="text-xs leading-5 text-muted">
+                      <p className="font-medium text-attention">Review is waiting on a System Design decision</p>
+                      <p>
+                        This review cannot be claimed until you confirm or dismiss the task&apos;s pending proposal.
+                      </p>
+                      <Link
+                        to="/pending-proposals"
+                        search={{ task: item.task.id }}
+                        className="mt-1 inline-block font-medium text-primary hover:underline"
+                      >
+                        Confirm or dismiss the proposal
+                      </Link>
+                    </div>
                   </div>
-                </div>
-              </section>
-            ),
-          },
+                </section>
+              ),
+            },
           hasWorkerAlert(item) && {
             key: 'worker-alert',
             dot: 'bg-attention-dot',
@@ -157,12 +160,18 @@ export function Timeline({
             dot: 'bg-attention-dot',
             card: <WorkOrderRecoveryCard item={item} />,
           },
-          canRedispatch(item) && { key: 'redispatch', dot: 'bg-edge', card: <RedispatchCard item={item} /> },
           designProposals.length > 0 && {
             key: 'design-proposal',
             dot: 'bg-attention-dot',
-            card: <SystemDesignProposalCard task={item.task} />,
+            card: (
+              <SystemDesignProposalCard
+                task={item.task}
+                proposals={designProposals}
+                reviewWaiting={item.pending_authority === true}
+              />
+            ),
           },
+          canRedispatch(item) && { key: 'redispatch', dot: 'bg-edge', card: <RedispatchCard item={item} /> },
         ]
       : []
   ).filter((entry) => entry !== false)
