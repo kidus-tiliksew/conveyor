@@ -52,6 +52,52 @@ func activatePendingTaskContextTx(ctx context.Context, tx pgx.Tx, q *db.Queries,
 	return nil
 }
 
+func repinTaskDesignContextTx(ctx context.Context, tx pgx.Tx, q *db.Queries, workspaceID, taskID string, at time.Time) error {
+	rows, err := tx.Query(ctx, `SELECT kind,payload_json FROM events
+		WHERE workspace_id=$1 AND task_id=$2 AND kind=ANY($3::text[]) ORDER BY id`,
+		workspaceID, taskID, []string{store.TaskContextDesignAdded, store.TaskContextDesignRemoved})
+	if err != nil {
+		return err
+	}
+	events := make([]core.Event, 0)
+	for rows.Next() {
+		var event core.Event
+		if err = rows.Scan(&event.Kind, &event.Payload); err != nil {
+			rows.Close()
+			return err
+		}
+		events = append(events, event)
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	_, pinned := store.ActiveTaskContextReferences(events)
+	confirmed := make(map[string]int, len(pinned))
+	for id := range pinned {
+		var current pgtype.Int4
+		err = tx.QueryRow(ctx, `SELECT current_version FROM system_designs
+			WHERE workspace_id=$1 AND id=$2 FOR SHARE`, workspaceID, id).Scan(&current)
+		if errors.Is(err, pgx.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if current.Valid {
+			confirmed[id] = int(current.Int32)
+		}
+	}
+	for _, design := range store.AdvancedTaskContextDesignPins(pinned, confirmed) {
+		if err = insertEvent(ctx, q, core.Event{TaskID: taskID, Kind: store.TaskContextDesignAdded, At: at,
+			Payload: core.JSONPayload(map[string]any{"id": design.ID, "version": design.Version})}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func validateTaskContextTx(ctx context.Context, tx pgx.Tx, workspaceID string, input store.TaskContextInput) (map[string]int, error) {
 	for _, id := range input.RequirementIDs {
 		var current pgtype.Int4

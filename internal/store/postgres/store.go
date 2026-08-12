@@ -3114,6 +3114,9 @@ func (s *Store) CreateWorkOrderCommand(ctx context.Context, lease taskops.TaskLe
 			if blocked {
 				order.QueueBlockedAt, order.Claimable = order.QueueEnteredAt, false
 			}
+			if err := repinTaskDesignContextTx(ctx, tx, q, workspace(ctx), order.TaskID, order.QueueEnteredAt); err != nil {
+				return err
+			}
 		}
 		_, err := tx.Exec(ctx, `INSERT INTO work_orders (
 			id, workspace_id, task_id, job_id, stage, state, claimant_id,
@@ -4243,6 +4246,11 @@ func (s *Store) RedispatchWorkOrderCommand(ctx context.Context, lease taskops.Ta
 		return core.WorkOrder{}, err
 	}
 	q := s.queries.WithTx(tx)
+	if order.Stage == core.StageImplement {
+		if err = repinTaskDesignContextTx(ctx, tx, q, workspace(ctx), order.TaskID, now); err != nil {
+			return core.WorkOrder{}, err
+		}
+	}
 	if err = insertEvent(ctx, q, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.redispatched", Payload: core.JSONPayload(map[string]any{"work_order_id": id, "prior_state": core.WorkOrderStale, "new_state": order.State, "command": core.WorkOrderCmdRedispatch, "reason": "stale never-claimed queue redispatch"}), At: now}); err != nil {
 		return core.WorkOrder{}, err
 	}
@@ -4417,6 +4425,11 @@ func (s *Store) RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 		return core.WorkOrder{}, err
 	}
 	q := s.queries.WithTx(tx)
+	if order.Stage == core.StageImplement {
+		if err = repinTaskDesignContextTx(ctx, tx, q, workspace(ctx), order.TaskID, now); err != nil {
+			return core.WorkOrder{}, err
+		}
+	}
 	if _, err = tx.Exec(ctx, `UPDATE jobs SET state='pending',started_at=NULL,ended_at=NULL,updated_at=$1 WHERE id=$2`, now, order.JobID); err != nil {
 		return core.WorkOrder{}, err
 	}
