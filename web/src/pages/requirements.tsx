@@ -42,6 +42,7 @@ import {
   fetchRequirementVersions,
   fetchReferenceDocuments,
   fetchReferenceDocumentVersions,
+  fetchSystemDesigns,
   uploadReferenceDocument,
   deleteReferenceDocument,
   uploadArtifact,
@@ -55,6 +56,7 @@ import type {
   RequirementDerivation,
   RequirementVersion,
   RequirementView,
+  SystemDesignView,
   TaskEvent,
   CheckpointContextCandidate,
 } from '../lib/types'
@@ -110,11 +112,16 @@ export function visibleRequirements(
 }
 
 function requirementAttentionCount(item: RequirementView) {
+  const countableDrift = new Set(
+    (item.staleness?.active_drift ?? [])
+      .filter((drift) => drift.requirement_id === item.requirement.id)
+      .map((drift) => drift.id),
+  ).size
   return (
     item.pending_versions.length +
     Number(Boolean(item.staleness?.delivery_after_intent)) +
     Number(Boolean(item.staleness?.partial_evaluation)) +
-    (item.staleness?.active_drift?.length ?? 0)
+    countableDrift
   )
 }
 
@@ -529,6 +536,11 @@ function RequirementCanvas({ seed, token }: { seed: RequirementView; token: stri
     queryFn: fetchReferenceDocuments,
     enabled: Boolean(workspace),
   })
+  const { data: systemDesigns = [] } = useQuery({
+    queryKey: ['system-designs', workspace],
+    queryFn: fetchSystemDesigns,
+    enabled: Boolean(workspace),
+  })
   useEffect(() => {
     if (!displayed || !/^#(?:req|ac)-/i.test(window.location.hash)) return
     const id = window.location.hash.slice(1).toLowerCase()
@@ -653,44 +665,67 @@ function RequirementCanvas({ seed, token }: { seed: RequirementView; token: stri
           },
         ]
       : []),
-    ...(item.staleness?.active_drift ?? []).map((entry) => ({
-      id: `drift-${entry.id}`,
-      title: `Code changed in ${entry.repository} without reaching this document`,
-      detail: (
-        <>
-          {(entry.matching_paths ?? []).join(', ') || 'No file list was recorded for this change.'}
-          <span className="ml-1 text-faint">· seen {formatDate(entry.detected_at)}</span>
-        </>
-      ),
-      action: (
-        <>
-          {entry.source_url && (
-            <a
-              className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
-              href={entry.source_url}
-              target="_blank"
-              rel="noreferrer"
-            >
-              Open the change <ExternalLink className="size-3" />
-            </a>
-          )}
-          <DriftResolutionForm
-            drift={entry}
-            surface="requirement"
-            token={token}
-            workspace={workspace}
-            requirementID={item.requirement.id}
-            onResolved={() =>
-              Promise.all([
-                client.invalidateQueries({ queryKey: ['requirements', workspace] }),
-                client.invalidateQueries({ queryKey: ['requirement', workspace, item.requirement.id] }),
-                client.invalidateQueries({ queryKey: ['requirement-versions', workspace, item.requirement.id] }),
-              ])
-            }
-          />
-        </>
-      ),
-    })),
+    ...(item.staleness?.active_drift ?? []).map((entry) => {
+      const contextual = Boolean(
+        entry.system_design_id || (entry.requirement_id && entry.requirement_id !== item.requirement.id),
+      )
+      const subject = systemDesignSubject(systemDesigns, entry.system_design_id)
+      return {
+        id: `drift-${entry.id}`,
+        countable: !contextual,
+        title: contextual
+          ? `Code changed in ${entry.repository} and hasn't reached ${subject.title}`
+          : `Code changed in ${entry.repository} without reaching this document`,
+        detail: (
+          <>
+            {contextual && entry.system_design_id && (
+              <span className="mr-1">
+                Subject:{' '}
+                <Link
+                  to="/system-design"
+                  search={{ document: entry.system_design_id }}
+                  className="font-medium text-primary hover:underline"
+                >
+                  {subject.title}
+                </Link>
+                {' · '}
+              </span>
+            )}
+            {(entry.matching_paths ?? []).join(', ') || 'No file list was recorded for this change.'}
+            <span className="ml-1 text-faint">· seen {formatDate(entry.detected_at)}</span>
+          </>
+        ),
+        action: (
+          <>
+            {entry.source_url && (
+              <a
+                className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
+                href={entry.source_url}
+                target="_blank"
+                rel="noreferrer"
+              >
+                Open the change <ExternalLink className="size-3" />
+              </a>
+            )}
+            <DriftResolutionForm
+              drift={entry}
+              surface="requirement"
+              token={token}
+              workspace={workspace}
+              requirementID={item.requirement.id}
+              onResolved={() =>
+                Promise.all([
+                  client.invalidateQueries({ queryKey: ['requirements', workspace] }),
+                  client.invalidateQueries({ queryKey: ['requirement', workspace] }),
+                  client.invalidateQueries({ queryKey: ['requirement-versions', workspace, item.requirement.id] }),
+                  client.invalidateQueries({ queryKey: ['system-designs', workspace] }),
+                ])
+              }
+            />
+          </>
+        ),
+      }
+    }),
     ...item.pending_versions.map((version) => ({
       id: `pending-${version.version}`,
       title: `Version ${version.version} is waiting for you`,
@@ -1049,6 +1084,11 @@ function RequirementCanvas({ seed, token }: { seed: RequirementView; token: stri
       </div>
     </div>
   )
+}
+
+function systemDesignSubject(designs: SystemDesignView[], id?: string) {
+  if (!id) return { title: 'its subject design document' }
+  return { title: designs.find((item) => item.document.id === id)?.document.title ?? id }
 }
 
 function CheckpointContextOffer({
