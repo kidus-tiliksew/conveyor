@@ -280,6 +280,31 @@ func TestPhase51WorkerPersistenceIntegration(t *testing.T) {
 		}
 	}
 
+	runTask := task
+	runTask.ID = core.NewTaskID()
+	runTask.Branch = "conveyor/task-" + runTask.ID
+	if err = st.CreateTask(ctx, runTask); err != nil {
+		t.Fatal(err)
+	}
+	runJob := core.Job{ID: runTask.ID + "-implement", TaskID: runTask.ID, Stage: core.StageImplement, State: core.JobPending}
+	if err = st.CreateJob(ctx, runJob); err != nil {
+		t.Fatal(err)
+	}
+	if err = storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: runJob.ID, TaskID: runTask.ID, JobID: runJob.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = storetest.For(st).ClaimWorkOrder(ctx, runJob.ID, core.WorkOrderClaim{SessionID: "abandoned-run", ClientToken: "run-token", ClaimantID: core.TaskRunClaimantID("usr-local"), OwnerUserID: "usr-local", Agent: "codex", Model: "gpt", Lease: time.Nanosecond, ExecutionTimeout: time.Hour}); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(time.Millisecond)
+	if _, err = storetest.For(st).RenewWorkerClaim(ctx, runJob.ID, "", "abandoned-run", time.Minute); !errors.Is(err, store.ErrWorkOrderClaimLost) {
+		t.Fatalf("abandoned run renewed after expiry: %v", err)
+	}
+	reclaimable, err := st.GetWorkOrder(ctx, runJob.ID)
+	if err != nil || reclaimable.State != core.WorkOrderQueued || reclaimable.RetrySuppressed || !reclaimable.Claimable || reclaimable.LastAttemptOutcome != core.WorkOrderOutcomeExpired {
+		t.Fatalf("abandoned run=%+v err=%v", reclaimable, err)
+	}
+
 	submittedTask := task
 	submittedTask.ID = core.NewTaskID()
 	submittedTask.Branch = "conveyor/task-" + submittedTask.ID

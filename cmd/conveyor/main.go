@@ -38,6 +38,7 @@ func main() {
 		configCmd(),
 		monitorCmd(),
 		workerCmd(),
+		runCmd(),
 		checkoutCmd(),
 		lineageCmd(),
 		doneCmd(),
