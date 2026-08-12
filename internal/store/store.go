@@ -1235,7 +1235,7 @@ func (m *memory) RenewWorkerClaimCommand(ctx context.Context, taskLease taskops.
 	order.LeaseExpiresAt = expires
 	order.UpdatedAt = now
 	m.workOrders[workOrderID] = order
-	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.lease_renewed", ActorRole: core.ActorWorker, ActorID: WorkerActorID(workerID), Payload: core.JSONPayload(map[string]any{"attempt_id": order.AttemptID, "lease_expires_at": expires})})
+	m.appendEventLocked(workerClaimActorContext(ctx, workerID), core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.lease_renewed", Payload: core.JSONPayload(map[string]any{"attempt_id": order.AttemptID, "lease_expires_at": expires})})
 	return order, nil
 }
 
@@ -1355,7 +1355,7 @@ func (m *memory) ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskop
 			kind = "work_order.stalled"
 		}
 	}
-	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: kind, ActorRole: core.ActorWorker, ActorID: WorkerActorID(workerID), Payload: core.JSONPayload(map[string]any{"attempt_id": attemptID, "session_id": release.SessionID, "reason": release.Reason, "release_cause": release.Cause, "detail": order.LastFailureDetail, "outcome": release.Outcome, "failure_category": order.LastFailureCategory, "consecutive_transient_failures": core.ConsecutiveTransientFailureCount(order.LastFailureCategory, previousTransientFailures, progressed, previousOutcome == release.Outcome), "exit_status": release.ExitStatus, "automatic_retry_count": order.AutomaticRetryCount, "next_retry_at": order.NextRetryAt, "retry_suppressed": order.RetrySuppressed, "suppression_reason": order.RetrySuppressionReason}), At: now})
+	m.appendEventLocked(workerClaimActorContext(ctx, workerID), core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: kind, Payload: core.JSONPayload(map[string]any{"attempt_id": attemptID, "session_id": release.SessionID, "reason": release.Reason, "release_cause": release.Cause, "detail": order.LastFailureDetail, "outcome": release.Outcome, "failure_category": order.LastFailureCategory, "consecutive_transient_failures": core.ConsecutiveTransientFailureCount(order.LastFailureCategory, previousTransientFailures, progressed, previousOutcome == release.Outcome), "exit_status": release.ExitStatus, "automatic_retry_count": order.AutomaticRetryCount, "next_retry_at": order.NextRetryAt, "retry_suppressed": order.RetrySuppressed, "suppression_reason": order.RetrySuppressionReason}), At: now})
 	return order, nil
 }
 
@@ -1428,7 +1428,7 @@ func (m *memory) RequestPlanRevisionCommand(ctx context.Context, taskLease tasko
 	}
 	task.State = nextTask
 	m.tasks[task.ID] = task
-	actor := WithActor(ctx, Actor{ID: WorkerActorID(workerID), Role: core.ActorWorker})
+	actor := workerClaimActorContext(ctx, workerID)
 	m.appendEventLocked(actor, core.Event{TaskID: task.ID, JobID: order.JobID, Kind: "work_order.plan_revision_requested", Payload: core.JSONPayload(map[string]any{"work_order_id": order.ID, "attempt_id": attemptID, "session_id": sessionID, "rationale": rationale, "plan_version": plan.Version}), At: now})
 	m.appendEventLocked(actor, core.Event{TaskID: task.ID, JobID: order.JobID, Kind: "work_order.released", Payload: core.JSONPayload(map[string]any{"attempt_id": attemptID, "session_id": sessionID, "reason": core.WorkOrderReleaseReasonPlanRevisionRequested, "release_cause": core.WorkOrderReleaseCauseOperatorAction, "outcome": core.WorkOrderOutcomeReleased, "automatic_retry_count": order.AutomaticRetryCount, "retry_suppressed": true}), At: now})
 	m.appendEventLocked(actor, core.Event{TaskID: task.ID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": core.TaskRunning, "to": nextTask, "command": core.TaskGatePlanRevision}), At: now})
@@ -1554,12 +1554,18 @@ func (m *memory) RecordWorkOrderAttemptCheckpoint(ctx context.Context, workOrder
 			return false, nil
 		}
 	}
-	m.appendEventLocked(ctx, core.Event{
+	m.appendEventLocked(workerClaimActorContext(ctx, workerID), core.Event{
 		TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.attempt_checkpointed",
-		ActorRole: core.ActorWorker, ActorID: WorkerActorID(workerID),
 		Payload: AttemptCheckpointPayload(order, checkpoint), At: time.Now().UTC(),
 	})
 	return true, nil
+}
+
+func workerClaimActorContext(ctx context.Context, workerID string) context.Context {
+	if workerID == "" {
+		return ctx
+	}
+	return WithActor(ctx, Actor{ID: WorkerActorID(workerID), Role: core.ActorWorker})
 }
 
 // AttemptCheckpointClaimEventMatches authorizes late audit reconciliation
@@ -2571,13 +2577,14 @@ func ProjectWorkOrderAt(order core.WorkOrder, now time.Time) core.WorkOrder {
 		return order
 	}
 	if order.State == core.WorkOrderClaimed && !order.LeaseExpiresAt.IsZero() && !order.LeaseExpiresAt.After(now) {
+		taskRunClaim := core.IsTaskRunClaimantID(order.ClaimantID)
 		order.LastAttemptID = order.AttemptID
 		clearActiveAttempt(&order)
 		order.State = core.WorkOrderQueued
-		order.Claimable = false
+		order.Claimable = taskRunClaim
 		order.LastAttemptOutcome = core.WorkOrderOutcomeExpired
 		order.NextRetryAt = time.Time{}
-		order.RetrySuppressed = true
+		order.RetrySuppressed = !taskRunClaim
 		return order
 	}
 	if order.State == core.WorkOrderQueued && !order.QueueBlockedAt.IsZero() {
@@ -3056,19 +3063,20 @@ func (m *memory) refreshWorkOrderLocked(ctx context.Context, order core.WorkOrde
 			return order
 		}
 		attemptID := order.AttemptID
+		taskRunClaim := core.IsTaskRunClaimantID(order.ClaimantID)
 		order.LastAttemptID = attemptID
 		clearActiveAttempt(&order)
-		order.State, order.Claimable = next, false
+		order.State, order.Claimable = next, taskRunClaim
 		order.LastAttemptOutcome = core.WorkOrderOutcomeExpired
 		order.NextRetryAt = time.Time{}
-		order.RetrySuppressed = true
+		order.RetrySuppressed = !taskRunClaim
 		order.UpdatedAt = now
 		m.workOrders[order.ID] = order
 		if job, index, exists := m.findJobLocked(order.JobID); exists {
 			job.State, job.StartedAt, job.EndedAt = core.JobPending, time.Time{}, time.Time{}
 			m.jobs[job.TaskID][index] = job
 		}
-		m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.expired", Payload: core.JSONPayload(map[string]any{"attempt_id": attemptID, "outcome": order.LastAttemptOutcome, "release_cause": core.WorkOrderReleaseCauseLeaseLoss, "retry_suppressed": true}), At: now})
+		m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.expired", Payload: core.JSONPayload(map[string]any{"attempt_id": attemptID, "outcome": order.LastAttemptOutcome, "release_cause": core.WorkOrderReleaseCauseLeaseLoss, "retry_suppressed": order.RetrySuppressed}), At: now})
 	}
 	if order.State == core.WorkOrderQueued && order.ExecutionStartedAt.IsZero() &&
 		order.QueueBlockedAt.IsZero() && !order.QueueDeadline.IsZero() && !order.QueueDeadline.After(now) {

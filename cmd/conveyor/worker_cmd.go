@@ -662,7 +662,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 		return fmt.Errorf("generate worker client token: %w", err)
 	}
 	sessionID := "worker-" + session
-	claimed, err := c.claimWorkerOrderContext(ctx, credential, item.Order.ID, sessionID, clientToken)
+	claimed, err := c.claimDispatchOrderContext(ctx, credential, item, sessionID, clientToken)
 	if err != nil {
 		return err
 	}
@@ -674,7 +674,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 	// long-running setup steps abort instead of continuing unclaimed.
 	setupCtx, cancelSetup := context.WithCancel(ctx)
 	defer cancelSetup()
-	renewal := startPreStartClaimRenewal(setupCtx, cancelSetup, c, credential, item.Order.ID, sessionID, leaseExpiresAt)
+	renewal := startPreStartClaimRenewal(setupCtx, cancelSetup, c, credential, item, sessionID, leaseExpiresAt)
 	defer renewal.Stop()
 	var redactedStdout, redactedStderr *redact.Writer
 	var failureTail *boundedTailWriter
@@ -698,7 +698,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 		if strings.HasPrefix(reason, "claim authority lost") {
 			cause = core.WorkOrderReleaseCauseLeaseLoss
 		}
-		return c.releaseWorkerOrderContext(releaseCtx, credential, item.Order.ID, core.WorkOrderRelease{SessionID: sessionID, Outcome: outcome, Reason: reason, Cause: cause, ExitStatus: exitStatus, FailureDetail: detail})
+		return c.releaseDispatchOrderContext(releaseCtx, credential, item, core.WorkOrderRelease{SessionID: sessionID, Outcome: outcome, Reason: reason, Cause: cause, ExitStatus: exitStatus, FailureDetail: detail})
 	}
 	checkpointAttempt := func(reason string) error {
 		if item.Order.Stage != core.StageImplement {
@@ -718,7 +718,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 		if checkpointErr != nil || result == nil {
 			return checkpointErr
 		}
-		if err := c.checkpointWorkerOrderAttemptContext(checkpointCtx, credential, item.Order.ID, core.WorkOrderAttemptCheckpoint{
+		if err := c.checkpointDispatchOrderAttemptContext(checkpointCtx, credential, item, core.WorkOrderAttemptCheckpoint{
 			SessionID: sessionID, AttemptID: claimed.AttemptID, TerminationReason: reason,
 			CommitSHA: result.CommitSHA, PushResult: "pushed",
 		}); err != nil {
@@ -851,7 +851,9 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 	handoffLease, lost := renewal.Stop()
 	if lost != nil {
 		if ctx.Err() != nil {
-			_ = release(core.WorkOrderOutcomeCancelled, "worker shutting down", nil)
+			if item.Dispatch != "run" {
+				_ = release(core.WorkOrderOutcomeCancelled, "worker shutting down", nil)
+			}
 			return ctx.Err()
 		}
 		if workerOrderPreempted(lost) {
@@ -869,7 +871,9 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err = command.Start(); err != nil {
 		if ctx.Err() != nil {
-			_ = release(core.WorkOrderOutcomeCancelled, "worker shutting down", nil)
+			if item.Dispatch != "run" {
+				_ = release(core.WorkOrderOutcomeCancelled, "worker shutting down", nil)
+			}
 			return ctx.Err()
 		}
 		_ = release(core.WorkOrderOutcomeChildFailure, "harness launch failed: "+err.Error(), nil)
@@ -907,7 +911,9 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 		waitErr = processGroup.terminate(&waitErr)
 		flushOutput()
 		if ctx.Err() != nil {
-			_ = release(core.WorkOrderOutcomeCancelled, "worker shutting down", nil)
+			if item.Dispatch != "run" {
+				_ = release(core.WorkOrderOutcomeCancelled, "worker shutting down", nil)
+			}
 			return ctx.Err()
 		}
 		var exitStatus *int
@@ -920,7 +926,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 		}
 		// Reconcile before checkpointing so a terminal handoff that committed
 		// just before child exit cannot receive a later WIP commit.
-		reconciled, reconcileErr := reconcileWorkerClaimUntil(ctx, c, credential, item.Order.ID, sessionID, leaseExpiresAt)
+		reconciled, reconcileErr := reconcileDispatchClaimUntil(ctx, c, credential, item, sessionID, leaseExpiresAt)
 		if reconcileErr != nil {
 			_ = releaseAfterCheckpoint(core.WorkOrderOutcomeChildFailure, "could not confirm work-order completion", exitStatus)
 			return fmt.Errorf("confirm work-order completion: %w", reconcileErr)
@@ -993,7 +999,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 				firstActivityDeadline = nil
 				continue
 			}
-			renewed, renewErr := renewWorkerClaimUntil(ctx, c, credential, item.Order.ID, sessionID, leaseExpiresAt)
+			renewed, renewErr := renewDispatchClaimUntil(ctx, c, credential, item, sessionID, leaseExpiresAt)
 			if renewErr != nil {
 				_ = processGroup.terminate(nil)
 				if workerOrderPreempted(renewErr) {
@@ -1066,7 +1072,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 				stallDeadline = nil
 				continue
 			}
-			renewed, renewErr := renewWorkerClaimUntil(ctx, c, credential, item.Order.ID, sessionID, leaseExpiresAt)
+			renewed, renewErr := renewDispatchClaimUntil(ctx, c, credential, item, sessionID, leaseExpiresAt)
 			if renewErr != nil {
 				_ = processGroup.terminate(nil)
 				if workerOrderPreempted(renewErr) {
@@ -1125,7 +1131,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 			if claimFinalized {
 				continue
 			}
-			renewed, renewErr := renewWorkerClaimUntil(ctx, c, credential, item.Order.ID, sessionID, leaseExpiresAt)
+			renewed, renewErr := renewDispatchClaimUntil(ctx, c, credential, item, sessionID, leaseExpiresAt)
 			if renewErr != nil {
 				_ = processGroup.terminate(nil)
 				if workerOrderPreempted(renewErr) {
@@ -1136,7 +1142,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 				}
 				_ = releaseAfterCheckpoint(core.WorkOrderOutcomeReleased, "claim authority lost: "+renewErr.Error(), nil)
 				reconcileCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				_, _ = c.reconcileWorkerOrderReadOnlyContext(reconcileCtx, credential, item.Order.ID, sessionID)
+				_, _ = c.reconcileDispatchOrderContext(reconcileCtx, credential, item, sessionID)
 				cancel()
 				return renewErr
 			}
@@ -1151,6 +1157,12 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 			leaseExpiresAt = renewed.LeaseExpiresAt
 		case <-ctx.Done():
 			_ = processGroup.terminate(nil)
+			if item.Dispatch == "run" {
+				// The explicit invocation owns renewal only for its own lifetime.
+				// Leaving the claim for normal lease expiry makes a killed local run
+				// claimable again without inventing a daemon or retry policy (AC-5.1).
+				return ctx.Err()
+			}
 			_ = release(core.WorkOrderOutcomeCancelled, "worker shutting down", nil)
 			return ctx.Err()
 		}
@@ -1363,7 +1375,7 @@ type preStartClaimRenewal struct {
 	lost  error
 }
 
-func startPreStartClaimRenewal(ctx context.Context, cancelSetup context.CancelFunc, c *client, credential, orderID, sessionID string, lease time.Time) *preStartClaimRenewal {
+func startPreStartClaimRenewal(ctx context.Context, cancelSetup context.CancelFunc, c *client, credential string, item workerservice.DispatchOrder, sessionID string, lease time.Time) *preStartClaimRenewal {
 	renewal := &preStartClaimRenewal{stop: make(chan struct{}), done: make(chan struct{}), cancel: cancelSetup, lease: lease}
 	go func() {
 		defer close(renewal.done)
@@ -1379,7 +1391,7 @@ func startPreStartClaimRenewal(ctx context.Context, cancelSetup context.CancelFu
 				renewal.mu.Lock()
 				current := renewal.lease
 				renewal.mu.Unlock()
-				renewed, err := renewWorkerClaimUntil(ctx, c, credential, orderID, sessionID, current)
+				renewed, err := renewDispatchClaimUntil(ctx, c, credential, item, sessionID, current)
 				if err == nil && renewed.State != core.WorkOrderClaimed {
 					err = fmt.Errorf("server reports %s", renewed.State)
 				}
@@ -1501,6 +1513,11 @@ func workerOrderPreempted(err error) bool {
 }
 
 func reconcileWorkerClaimUntil(ctx context.Context, c *client, credential, orderID, sessionID string, leaseExpiresAt time.Time) (workerservice.ClaimReconciliation, error) {
+	item := workerservice.DispatchOrder{Order: core.WorkOrder{ID: orderID}, Dispatch: "worker"}
+	return reconcileDispatchClaimUntil(ctx, c, credential, item, sessionID, leaseExpiresAt)
+}
+
+func reconcileDispatchClaimUntil(ctx context.Context, c *client, credential string, item workerservice.DispatchOrder, sessionID string, leaseExpiresAt time.Time) (workerservice.ClaimReconciliation, error) {
 	safetyDeadline := leaseExpiresAt.Add(-2 * time.Second)
 	delay := 250 * time.Millisecond
 	for {
@@ -1512,7 +1529,7 @@ func reconcileWorkerClaimUntil(ctx context.Context, c *client, credential, order
 			requestDeadline = safetyDeadline
 		}
 		requestCtx, cancel := context.WithDeadline(ctx, requestDeadline)
-		result, err := c.reconcileWorkerOrderContext(requestCtx, credential, orderID, sessionID)
+		result, err := c.reconcileDispatchOrderContext(requestCtx, credential, item, sessionID)
 		cancel()
 		if err == nil {
 			return result, nil
@@ -1541,6 +1558,11 @@ func reconcileWorkerClaimUntil(ctx context.Context, c *client, credential, order
 }
 
 func renewWorkerClaimUntil(ctx context.Context, c *client, credential, orderID, sessionID string, leaseExpiresAt time.Time) (core.WorkOrder, error) {
+	item := workerservice.DispatchOrder{Order: core.WorkOrder{ID: orderID}, Dispatch: "worker"}
+	return renewDispatchClaimUntil(ctx, c, credential, item, sessionID, leaseExpiresAt)
+}
+
+func renewDispatchClaimUntil(ctx context.Context, c *client, credential string, item workerservice.DispatchOrder, sessionID string, leaseExpiresAt time.Time) (core.WorkOrder, error) {
 	if leaseExpiresAt.IsZero() {
 		return core.WorkOrder{}, errWorkerClaimAuthorityLost
 	}
@@ -1559,7 +1581,7 @@ func renewWorkerClaimUntil(ctx context.Context, c *client, credential, orderID, 
 			return core.WorkOrder{}, errWorkerClaimAuthorityLost
 		}
 		requestCtx, cancel := context.WithDeadline(ctx, safetyDeadline)
-		renewed, err := c.renewWorkerOrderContext(requestCtx, credential, orderID, sessionID)
+		renewed, err := c.renewDispatchOrderContext(requestCtx, credential, item, sessionID)
 		cancel()
 		if err == nil {
 			return renewed, nil

@@ -4543,7 +4543,8 @@ func (s *Store) expireWorkOrderClaimTx(ctx context.Context, tx pgx.Tx, order cor
 		return core.WorkOrder{}, transitionErr
 	}
 	attemptID := order.AttemptID
-	updated, err := scanWorkOrder(tx.QueryRow(ctx, `UPDATE work_orders SET state='queued',claimant_id='',session_id='',attempt_id='',last_attempt_id=$1,client_token_hash='',agent='',model='',worker_id='',lease_expires_at=NULL,model_enforcement='',execution_started_at=NULL,execution_deadline=NULL,last_attempt_outcome=$2,next_retry_at=NULL,retry_suppressed=true,updated_at=$3 WHERE workspace_id=$4 AND id=$5 AND state='claimed' RETURNING `+workOrderColumns, attemptID, core.WorkOrderOutcomeExpired, now, workspace(ctx), order.ID))
+	taskRunClaim := core.IsTaskRunClaimantID(order.ClaimantID)
+	updated, err := scanWorkOrder(tx.QueryRow(ctx, `UPDATE work_orders SET state='queued',claimant_id='',session_id='',attempt_id='',last_attempt_id=$1,client_token_hash='',agent='',model='',worker_id='',lease_expires_at=NULL,model_enforcement='',execution_started_at=NULL,execution_deadline=NULL,last_attempt_outcome=$2,next_retry_at=NULL,retry_suppressed=$3,updated_at=$4 WHERE workspace_id=$5 AND id=$6 AND state='claimed' RETURNING `+workOrderColumns, attemptID, core.WorkOrderOutcomeExpired, !taskRunClaim, now, workspace(ctx), order.ID))
 	if err != nil {
 		return core.WorkOrder{}, err
 	}
@@ -4551,7 +4552,7 @@ func (s *Store) expireWorkOrderClaimTx(ctx context.Context, tx pgx.Tx, order cor
 		return core.WorkOrder{}, err
 	}
 	q := s.queries.WithTx(tx)
-	if err = insertEvent(ctx, q, core.Event{TaskID: updated.TaskID, JobID: updated.JobID, Kind: "work_order.expired", Payload: core.JSONPayload(map[string]any{"attempt_id": attemptID, "outcome": updated.LastAttemptOutcome, "release_cause": core.WorkOrderReleaseCauseLeaseLoss, "retry_suppressed": true}), At: now}); err != nil {
+	if err = insertEvent(ctx, q, core.Event{TaskID: updated.TaskID, JobID: updated.JobID, Kind: "work_order.expired", Payload: core.JSONPayload(map[string]any{"attempt_id": attemptID, "outcome": updated.LastAttemptOutcome, "release_cause": core.WorkOrderReleaseCauseLeaseLoss, "retry_suppressed": updated.RetrySuppressed}), At: now}); err != nil {
 		return core.WorkOrder{}, err
 	}
 	return updated, nil
