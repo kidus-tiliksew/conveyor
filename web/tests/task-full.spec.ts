@@ -1520,11 +1520,13 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
                   taskId === 'spec-while-blocked' ||
                   taskId === 'unsatisfiable'
                 ? 'queued'
-                : taskId.startsWith('merge-')
-                  ? 'approved'
-                  : 'running',
+                : taskId === 'merge-request-changes'
+                  ? 'awaiting_human'
+                  : taskId.startsWith('merge-')
+                    ? 'approved'
+                    : 'running',
       next_stage: taskId === 'parked' ? '' : 'implement',
-      recovery_stage: taskId === 'parked' ? 'triage' : '',
+      recovery_stage: taskId === 'parked' ? 'triage' : taskId === 'merge-request-changes' ? 'implement' : '',
       setup: taskId.startsWith('setup-') ? 'old' : '',
       setup_contract: taskId.startsWith('setup-')
         ? {
@@ -1662,6 +1664,7 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
     checkout_available: false,
     checkout_guidance: 'Use the assigned worktree.',
     needs_attention: taskId === 'forge-failure' || taskId === 'unsatisfiable' || taskId === 'design-proposal',
+    at_merge_gate: taskId === 'merge-request-changes',
     forge_failure:
       taskId === 'forge-failure'
         ? {
@@ -3497,18 +3500,41 @@ test('failed merge restores the existing error and retry action', async ({ page 
 test('merge gate sends user feedback through request changes', async ({ page }) => {
   await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'member-token'))
   let feedback = ''
-  await page.route('**/v1/tasks/merge-failure/request-changes*', async (route) => {
+  await page.route('**/v1/tasks/merge-request-changes/request-changes*', async (route) => {
     feedback = ((await route.request().postDataJSON()) as { feedback: string }).feedback
-    await route.fulfill({ json: { task: activity('merge-failure', false).task, feedback } })
+    await route.fulfill({ json: { task: activity('merge-request-changes', false).task, feedback } })
   })
 
-  await page.goto('/tasks/merge-failure/full')
+  await page.goto('/tasks/merge-request-changes/full')
   const gate = page.getByRole('region', { name: 'Human gate' })
   await gate.getByRole('button', { name: 'Request changes' }).click()
   await gate.getByLabel('Redirect feedback').fill('Keep this exact feedback.')
   await gate.getByRole('button', { name: 'Send feedback' }).click()
 
   await expect.poll(() => feedback).toBe('Keep this exact feedback.')
+})
+
+test('approved state keeps request changes on the legacy review route', async ({ page }) => {
+  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'member-token'))
+  let legacyFeedback = ''
+  let mergeGateRequests = 0
+  await page.route('**/v1/tasks/merge-delayed/request-changes*', async (route) => {
+    mergeGateRequests++
+    await route.fulfill({ status: 409, body: 'task is not at the merge gate' })
+  })
+  await page.route('**/v1/tasks/merge-delayed/review*', async (route) => {
+    legacyFeedback = ((await route.request().postDataJSON()) as { comment: string }).comment
+    await route.fulfill({ json: activity('merge-delayed', false).task })
+  })
+
+  await page.goto('/tasks/merge-delayed/full')
+  const gate = page.getByRole('region', { name: 'Human gate' })
+  await gate.getByRole('button', { name: 'Request changes' }).click()
+  await gate.getByLabel('Redirect feedback').fill('Use the legacy review redirect.')
+  await gate.getByRole('button', { name: 'Send feedback' }).click()
+
+  await expect.poll(() => legacyFeedback).toBe('Use the legacy review redirect.')
+  expect(mergeGateRequests).toBe(0)
 })
 
 test('conflicting readiness makes the idempotent fix dispatch primary', async ({ page }) => {

@@ -36,12 +36,28 @@ func UserRequestChangesPending(events []core.Event) bool {
 			}
 		case "work_order.claimed":
 			var order core.WorkOrder
-			if json.Unmarshal(event.Payload, &order) == nil && core.IsTaskRunClaimantID(order.ClaimantID) {
+			if json.Unmarshal(event.Payload, &order) == nil && order.Stage == core.StageImplement {
 				pending = false
 			}
 		}
 	}
 	return pending
+}
+
+// UserRequestChangesHold preserves an explicitly user-run implementation for
+// operator resumption. Worker-pipeline implementations remain dispatchable so
+// a request-changes bounce cannot strand them behind an unconditional hold.
+func UserRequestChangesHold(events []core.Event) bool {
+	for index := len(events) - 1; index >= 0; index-- {
+		if events[index].Kind != "work_order.claimed" {
+			continue
+		}
+		var order core.WorkOrder
+		if json.Unmarshal(events[index].Payload, &order) == nil && order.Stage == core.StageImplement {
+			return core.IsTaskRunClaimantID(order.ClaimantID)
+		}
+	}
+	return false
 }
 
 const (

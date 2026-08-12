@@ -156,7 +156,7 @@ function GenericReviewPanel({ item, onDecisionRecorded }: { item: ActivityItem; 
   const [comment, setComment] = useState('')
 
   const gate = gateFor(item.task, item.events, item.merge_readiness)
-  const mergeGate = item.task.state === 'approved'
+  const mergeGate = item.at_merge_gate
   const style = toneStyles[gate.tone]
   const Icon = gate.icon
 

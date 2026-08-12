@@ -611,6 +611,7 @@ export interface ActivityItem {
   checkout_available: boolean
   checkout_guidance: string
   needs_attention: boolean
+  at_merge_gate: boolean
   pending_authority?: boolean
   forge_failure?: ForgeFailure
   spec?: SpecVersion
