@@ -82,10 +82,12 @@ INSERT INTO tasks (
 RETURNING *;
 
 -- name: GetTask :one
-SELECT * FROM tasks WHERE id = $1 AND workspace_id = $2;
+SELECT id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, feature_id, intake_key, mode, spec_approval, merge_approval, policy_version, setup_name, setup_contract, hold, reviewed_head_sha, approved_head_sha, approval_stale, refresh_baseline_sha, refresh_head_sha, refresh_review_scope, origin_spec_version, origin_sub_id
+FROM tasks WHERE id = $1 AND workspace_id = $2;
 
 -- name: GetTaskByIntakeKey :one
-SELECT * FROM tasks WHERE workspace_id = $1 AND intake_key = $2;
+SELECT id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, feature_id, intake_key, mode, spec_approval, merge_approval, policy_version, setup_name, setup_contract, hold, reviewed_head_sha, approved_head_sha, approval_stale, refresh_baseline_sha, refresh_head_sha, refresh_review_scope, origin_spec_version, origin_sub_id
+FROM tasks WHERE workspace_id = $1 AND intake_key = $2;
 
 -- name: ListTasks :many
 SELECT sqlc.embed(t),
@@ -403,7 +405,8 @@ WHERE workspace_id = $1
   AND kind = $6;
 
 -- name: ListLineageLinks :many
-SELECT * FROM links
+SELECT workspace_id, src_type, src_id, dst_type, dst_id, kind, legacy_created_by_event, created_at, created_by_event_id
+FROM links
 WHERE workspace_id = $1
 ORDER BY created_by_event_id, src_type, src_id, dst_type, dst_id, kind;
 
@@ -425,7 +428,8 @@ DELETE FROM links WHERE workspace_id = $1
   ]::text[]);
 
 -- name: ListWorkspaceEvents :many
-SELECT * FROM events
+SELECT id, task_id, job_id, kind, actor_id, actor_role, payload_json, at, workspace_id
+FROM events
 WHERE workspace_id = $1
 ORDER BY id;
 
