@@ -38,9 +38,15 @@ function workspaceURL(path: string) {
   return `${path}${separator}workspace_id=${encodeURIComponent(workspace)}`
 }
 
+export const SESSION_AUTH = '__conveyor_cookie_session__'
+
+function authHeadersFor(token: string): HeadersInit {
+  return token && token !== SESSION_AUTH ? { Authorization: `Bearer ${token}` } : {}
+}
+
 function authHeaders(): HeadersInit {
   const token = sessionStorage.getItem('conveyor-token') ?? ''
-  return token ? { Authorization: `Bearer ${token}` } : {}
+  return authHeadersFor(token)
 }
 
 async function getJSON<T>(url: string): Promise<T> {
@@ -80,10 +86,29 @@ export function fetchWorkspace() {
 }
 
 export async function fetchWorkspaces(token: string) {
-  if (!token) return [] as WorkspaceRecord[]
-  const response = await fetch('/v1/workspaces', { headers: { Authorization: `Bearer ${token}` } })
+  const response = await fetch('/v1/workspaces', { headers: authHeadersFor(token) })
   if (!response.ok) throw new Error(await response.text())
   return response.json() as Promise<WorkspaceRecord[]>
+}
+
+export async function redeemSignInLink(token: string) {
+  const response = await fetch('/v1/sign-in/redeem', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token }),
+  })
+  if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
+  return response.json() as Promise<{ user: import('./types').CallerIdentity; expires_at: string }>
+}
+
+export async function signOutDashboardSession() {
+  const response = await fetch('/v1/sign-out', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Conveyor-CSRF': '1' },
+  })
+  if (!response.ok && response.status !== 400 && response.status !== 401) {
+    throw new Error((await response.text()).trim() || response.statusText)
+  }
 }
 
 export interface CreateWorkspaceInput {
@@ -170,6 +195,15 @@ export async function revokeWorkspaceInvitation(token: string, workspace: string
     headers: mutationHeaders(token),
   })
   if (!response.ok) throw new Error(membershipErrorMessage(await response.text(), response.statusText))
+}
+
+export async function resendWorkspaceInvitation(token: string, workspace: string, email: string) {
+  const response = await fetch(invitationsURL(workspace, `/${encodeURIComponent(email)}/resend`), {
+    method: 'POST',
+    headers: mutationHeaders(token),
+  })
+  if (!response.ok) throw new Error(membershipErrorMessage(await response.text(), response.statusText))
+  return response.json() as Promise<import('./types').MembershipGrant>
 }
 
 // Membership failures arrive either as a JSON envelope or as plain text.
@@ -473,7 +507,7 @@ export async function fetchTaskOperations(input: {
   } satisfies TaskOperationsPage
 }
 export async function fetchArtifacts(token: string) {
-  const response = await fetch(workspaceURL('/v1/artifacts'), { headers: { Authorization: `Bearer ${token}` } })
+  const response = await fetch(workspaceURL('/v1/artifacts'), { headers: authHeadersFor(token) })
   if (!response.ok) throw new Error(await response.text())
   return response.json() as Promise<Artifact[]>
 }
@@ -493,7 +527,7 @@ export async function uploadArtifact(
   if (role) body.set('role', role)
   const response = await fetch(workspaceURL('/v1/artifacts'), {
     method: 'POST',
-    headers: { Authorization: `Bearer ${token}` },
+    headers: mutationAuthHeaders(token),
     body,
   })
   if (!response.ok) throw new Error(await response.text())
@@ -581,7 +615,7 @@ export async function deleteReferenceDocument(token: string, id: string) {
 export async function fetchArtifactObjectURL(token: string, artifact: Artifact) {
   const response = await fetch(
     workspaceURL(artifact.download_url ?? `/v1/artifacts/${encodeURIComponent(artifact.id)}`),
-    { headers: token ? { Authorization: `Bearer ${token}` } : {} },
+    { headers: authHeadersFor(token) },
   )
   if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
   return URL.createObjectURL(await response.blob())
@@ -589,7 +623,7 @@ export async function fetchArtifactObjectURL(token: string, artifact: Artifact) 
 export async function downloadArtifact(token: string, artifact: Artifact) {
   const response = await fetch(
     workspaceURL(artifact.download_url ?? `/v1/artifacts/${encodeURIComponent(artifact.id)}`),
-    { headers: { Authorization: `Bearer ${token}` } },
+    { headers: authHeadersFor(token) },
   )
   if (!response.ok) throw new Error(await response.text())
   const blob = await response.blob()
@@ -692,8 +726,12 @@ export async function updateWorkspaceConfig(token: string, document: WorkspaceCo
 function mutationHeaders(token: string) {
   return {
     'Content-Type': 'application/json',
-    Authorization: `Bearer ${token}`,
+    ...mutationAuthHeaders(token),
   }
+}
+
+function mutationAuthHeaders(token: string) {
+  return token === SESSION_AUTH ? { 'X-Conveyor-CSRF': '1' } : authHeadersFor(token)
 }
 
 export interface CreateTaskInput {
@@ -748,7 +786,7 @@ export async function createTask(token: string, input: CreateTaskInput, attachme
   for (const file of attachments) body.append('attachments', file)
   const response = await fetch(workspaceURL('/v1/tasks'), {
     method: 'POST',
-    headers: { Authorization: `Bearer ${token}` },
+    headers: mutationAuthHeaders(token),
     body,
   })
   if (!response.ok) {
@@ -899,10 +937,7 @@ export interface ReviewInput {
 export async function reviewTask(taskId: string, token: string, input: ReviewInput) {
   const response = await fetch(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/review`), {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
-    },
+    headers: mutationHeaders(token),
     body: JSON.stringify({ action: input.action, reason_code: input.reasonCode, comment: input.comment }),
   })
   if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
