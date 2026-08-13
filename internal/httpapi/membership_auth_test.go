@@ -19,6 +19,7 @@ type membershipFixture struct {
 	capabilityCalls []core.Capability
 	revokeErr       error
 	invitationErr   error
+	authorizeErrs   map[core.Capability]error
 }
 
 type identityProvisioningFixture struct {
@@ -51,10 +52,16 @@ func (f *membershipFixture) CreateWorkspace(context.Context, string, string, *co
 }
 func (f *membershipFixture) AuthorizeWorkspace(_ context.Context, userID, workspaceID string, capability core.Capability) (bool, error) {
 	f.capabilityCalls = append(f.capabilityCalls, capability)
+	if err := f.authorizeErrs[capability]; err != nil {
+		return false, err
+	}
 	return core.RoleAllows(f.roles[userID][workspaceID], capability), nil
 }
 func (f *membershipFixture) AuthorizeDeployment(_ context.Context, userID string, capability core.Capability) (bool, error) {
 	f.capabilityCalls = append(f.capabilityCalls, capability)
+	if err := f.authorizeErrs[capability]; err != nil {
+		return false, err
+	}
 	for _, role := range f.roles[userID] {
 		if role == core.WorkspaceRoleOperator {
 			return true, nil
@@ -189,6 +196,44 @@ func TestRevokeWorkspaceInvitationClassifiesNotFoundAndStoreFailures(t *testing.
 	if response.Code != http.StatusInternalServerError || strings.Contains(response.Body.String(), rawError) || response.Body.String() != "internal server error\n" {
 		t.Fatalf("infrastructure status=%d body=%q", response.Code, response.Body.String())
 	}
+}
+
+func TestAuthorizationStoreFailuresDoNotLeakErrorText(t *testing.T) {
+	rawError := "authorize failed with secret detail"
+	fixture := &membershipFixture{
+		workspaces: []core.Workspace{{ID: "alpha"}},
+		roles:      map[string]map[string]core.WorkspaceRole{"operator": {"alpha": core.WorkspaceRoleOperator}},
+	}
+	server := NewServer(store.NewMemory())
+	server.Workspaces, server.Memberships = fixture, fixture
+	server.Credentials = staticCredentialVerifier{
+		"operator-token": {ID: "pat_operator", OwnerUserID: "operator", Kind: core.CredentialUser, Scope: core.CredentialScopeOperator},
+	}
+	call := func(method, path string) *httptest.ResponseRecorder {
+		t.Helper()
+		request := httptest.NewRequest(method, path, strings.NewReader(`{}`))
+		request.Header.Set("Authorization", "Bearer operator-token")
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, request)
+		return response
+	}
+	assertGeneric := func(site string, response *httptest.ResponseRecorder) {
+		t.Helper()
+		if response.Code != http.StatusInternalServerError || strings.Contains(response.Body.String(), rawError) || response.Body.String() != "internal server error\n" {
+			t.Fatalf("%s status=%d body=%q", site, response.Code, response.Body.String())
+		}
+	}
+
+	// Deployment-scoped mutation: requireMutationCapability's AuthorizeDeployment branch.
+	fixture.authorizeErrs = map[core.Capability]error{core.CapabilityOperateGates: errors.New(rawError)}
+	assertGeneric("deployment mutation", call(http.MethodPost, "/v1/users"))
+
+	// Workspace-scoped mutation: requireMutationCapability's AuthorizeWorkspace branch.
+	assertGeneric("workspace mutation", call(http.MethodPost, "/v1/lineage/rebuild"))
+
+	// Workspace read gate: requireWorkspaceCapability.
+	fixture.authorizeErrs = map[core.Capability]error{core.CapabilityViewWorkspace: errors.New(rawError)}
+	assertGeneric("workspace capability", call(http.MethodGet, "/v1/activity"))
 }
 
 func TestMembershipScopesWorkspaceListAndNotFoundSurfaces(t *testing.T) {

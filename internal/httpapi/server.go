@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"mime/multipart"
 	"net/http"
 	"net/url"
@@ -369,7 +370,8 @@ func (s *Server) requireMutationCapability(capability core.Capability) func(http
 				}
 				allowed, err := s.Memberships.AuthorizeWorkspace(ctx, credential.OwnerUserID, workspaceID, capability)
 				if err != nil {
-					http.Error(w, err.Error(), http.StatusInternalServerError)
+					log.Printf("authorize workspace mutation: %v", err)
+					http.Error(w, "internal server error", http.StatusInternalServerError)
 					return
 				}
 				if !allowed {
@@ -388,7 +390,8 @@ func (s *Server) requireMutationCapability(capability core.Capability) func(http
 				if s.Credentials != nil && s.Memberships != nil {
 					allowed, err := s.Memberships.AuthorizeDeployment(ctx, credential.OwnerUserID, capability)
 					if err != nil {
-						http.Error(w, err.Error(), http.StatusInternalServerError)
+						log.Printf("authorize deployment mutation: %v", err)
+						http.Error(w, "internal server error", http.StatusInternalServerError)
 						return
 					}
 					if !allowed {
@@ -445,7 +448,8 @@ func (s *Server) requireWorkspaceCapability(capability core.Capability) func(htt
 			}
 			allowed, err := s.Memberships.AuthorizeWorkspace(r.Context(), credential.OwnerUserID, workspaceID, capability)
 			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
+				log.Printf("authorize workspace capability: %v", err)
+				http.Error(w, "internal server error", http.StatusInternalServerError)
 				return
 			}
 			if !allowed {
