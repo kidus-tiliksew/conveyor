@@ -18,6 +18,7 @@ import {
 import { sessionGoalLabel } from '../../lib/contracts'
 import { errorMessage } from '../../lib/errors'
 import type { Artifact, PlanningMessage, PlanningMessagePart, PlanningSession } from '../../lib/types'
+import { useWorkspaceCapability } from '../app-shell'
 
 export const sessionStatusLabels: Record<PlanningSession['status'], string> = {
   active: 'Active',
@@ -40,6 +41,7 @@ export function PlanningChat({
   onFinalized?: (session: PlanningSession) => void
 }) {
   const client = useQueryClient()
+  const canPropose = useWorkspaceCapability('propose_documents')
   const [draft, setDraft] = useState('')
   const [streamed, setStreamed] = useState<PlanningMessagePart[]>([])
   const [attachments, setAttachments] = useState<Artifact[]>([])
@@ -219,7 +221,7 @@ export function PlanningChat({
         >
           {sessionStatusLabels[session.status]}
         </Badge>
-        {session.status === 'active' && (
+        {canPropose && session.status === 'active' && (
           <Button
             variant="ghost"
             size="sm"
@@ -307,7 +309,7 @@ export function PlanningChat({
       </MessageScroller>
 
       {session.status === 'finalized' && <FinalizedHandoff session={session} gutter={gutter} sidebar={sidebar} />}
-      {session.status === 'active' && (
+      {canPropose && session.status === 'active' && (
         <form
           className={`shrink-0 border-t border-border bg-background ${gutter} py-4`}
           onSubmit={(event) => {
@@ -373,7 +375,7 @@ export function PlanningChat({
         </form>
       )}
 
-      {showAbandon && (
+      {canPropose && showAbandon && (
         <Dialog
           label="Abandon planning session"
           onClose={() => {

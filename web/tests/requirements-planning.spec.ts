@@ -807,6 +807,7 @@ test('finalize immediately reveals a complete bundle preview, approval, and crea
     if (url.pathname !== '/v1/workspaces') expect(route.request().headers().authorization).toBe('Bearer test-token')
     if (url.pathname === '/v1/workspaces')
       return route.fulfill({ json: [{ id: 'demo', name: 'Demo', config_version: 1 }] })
+    if (url.pathname === '/v1/me') return route.fulfill({ json: { id: 'usr_operator', role: 'operator' } })
     if (url.pathname === '/v1/workspace/config') return route.fulfill({ json: planningConfig })
     if (url.pathname === '/v1/workspace') return route.fulfill({ json: { workspace: 'demo', repos: ['conveyor'] } })
     if (url.pathname === '/v1/requirements' || url.pathname === '/v1/blueprints') return route.fulfill({ json: [] })
@@ -878,6 +879,83 @@ test('finalize immediately reveals a complete bundle preview, approval, and crea
   await expect.poll(() => approved).toBe(true)
   await page.getByRole('navigation', { name: 'Primary' }).getByRole('link', { name: 'Board' }).click()
   await expect(page.getByText('Implement bounded retries')).toBeVisible()
+})
+
+test('a viewer can read planning and a pending bundle without mutation affordances', async ({ page }) => {
+  await initShell(page)
+  let mutationRequests = 0
+  const readOnlySession = {
+    id: 'session-viewer',
+    title: 'Review safe retries',
+    status: 'active' as const,
+    goal: 'bundle' as const,
+    produced_bundle_id: 'bundle-viewer',
+    workspace: 'demo',
+    created_at: '2026-08-06T10:00:00Z',
+    updated_at: '2026-08-06T10:05:00Z',
+  }
+  await page.route('**/v1/**', async (route) => {
+    const request = route.request()
+    const path = new URL(request.url()).pathname
+    if (request.method() !== 'GET') mutationRequests++
+    if (path === '/v1/workspaces') return route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] })
+    if (path === '/v1/me') return route.fulfill({ json: { id: 'usr_viewer', role: 'viewer' } })
+    if (path === '/v1/workspace') return route.fulfill({ json: { workspace: 'demo', repos: ['conveyor'] } })
+    if (path === '/v1/workspace/config') return route.fulfill({ json: planningConfig })
+    if (path === '/v1/activity') return route.fulfill({ json: [] })
+    if (path === '/v1/planning-sessions') return route.fulfill({ json: [readOnlySession] })
+    if (path === '/v1/planning-sessions/session-viewer') return route.fulfill({ json: readOnlySession })
+    if (path === '/v1/planning-sessions/session-viewer/messages')
+      return route.fulfill({
+        json: [
+          {
+            session_id: 'session-viewer',
+            seq: 1,
+            role: 'assistant',
+            content: 'Readable plan',
+            workspace: 'demo',
+            created_at: '2026-08-06T10:01:00Z',
+          },
+        ],
+      })
+    if (path === '/v1/planning-bundles')
+      return route.fulfill({
+        json: [
+          {
+            id: 'bundle-viewer',
+            session_id: 'session-viewer',
+            title: 'Safe retry delivery',
+            status: 'pending',
+            documents: [{ kind: 'requirement', id: 'req-retries', version: 2, title: 'Retry behavior' }],
+            tasks: [
+              {
+                member_id: 'task-a',
+                title: 'Implement retries',
+                body: 'Keep retries finite.',
+                repo: 'conveyor',
+                depends_on: [],
+                context: {},
+              },
+            ],
+            workspace: 'demo',
+            created_at: '2026-08-06T10:05:00Z',
+          },
+        ],
+      })
+    return route.fulfill({ json: [] })
+  })
+
+  await page.goto('/planning')
+  await expect(page.getByRole('heading', { name: 'Planning' })).toBeVisible()
+  await expect(page.getByText('Readable plan')).toBeVisible()
+  const preview = page.getByRole('region', { name: 'Planning bundle preview' })
+  await expect(preview.getByText('Safe retry delivery')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'New session' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Abandon' })).toHaveCount(0)
+  await expect(page.getByLabel('Planning message')).toHaveCount(0)
+  await expect(preview.getByRole('button', { name: 'Reject' })).toHaveCount(0)
+  await expect(preview.getByRole('button', { name: 'Approve task set' })).toHaveCount(0)
+  expect(mutationRequests).toBe(0)
 })
 
 test('planning restores durable messages, tool markers, and streams a new turn', async ({ page }) => {
@@ -1450,6 +1528,7 @@ test('planning explains run conflicts, uses a disabled default model fallback, a
       return route.fulfill({
         json: [{ id: 'demo', name: 'Demo', config_version: 1 }],
       })
+    if (url.pathname === '/v1/me') return route.fulfill({ json: { id: 'usr_operator', role: 'operator' } })
     if (url.pathname === '/v1/workspace/config')
       return route.fulfill({
         json: {

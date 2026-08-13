@@ -199,6 +199,7 @@ async function routeAPI(page: Page, options: Options = {}) {
     const url = new URL(request.url())
     const path = url.pathname
     if (path === '/v1/workspaces') return route.fulfill({ json: [{ id: 'demo', name: 'Demo', config_version: 1 }] })
+    if (path === '/v1/me') return route.fulfill({ json: { id: 'usr_operator', role: 'operator' } })
     if (path === '/v1/workspace')
       return route.fulfill({ json: { workspace: 'demo', repos: [{ name: 'conveyor', base: 'main' }] } })
     if (path === '/v1/activity') return route.fulfill({ json: [] })
