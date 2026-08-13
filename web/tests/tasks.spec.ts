@@ -143,7 +143,7 @@ function matchOperations(url: string) {
   const requirements = params.getAll('serves_requirement')
   const designs = params.getAll('governing_design')
   // Assignee is single-valued: empty is inactive, "unassigned" selects the
-  // tasks nobody holds, anything else is an exact user ID (AC-2.4).
+  // tasks nobody holds, anything else is an exact user ID (REQ-4).
   const assignee = params.get('assignee') ?? ''
   const needle = (params.get('q') ?? '').toLowerCase()
   const from = params.get('created_from') ?? ''
@@ -675,9 +675,11 @@ test('tasks view filters by created-at range, served requirement, and governing 
   await expect(rows(page)).toHaveCount(5)
 })
 
-// REQ-4/AC-2.4: assignee is a member of the same server-applied filter family,
-// single-valued because a task has one holder. Filtering happens on the server,
-// so a browser-side narrowing would return the whole fixture and fail here.
+// REQ-4/AC-3.2: assignee is a member of the same server-applied filter family,
+// single-valued because a task has one holder, and its options come from the
+// workspace co-member read rather than any user directory. Filtering happens on
+// the server, so a browser-side narrowing would return the whole fixture and
+// fail here.
 test('tasks view filters by assignee and by unassigned', async ({ page }) => {
   await openTasks(page)
   await page.getByRole('button', { name: 'Open filters' }).click()
