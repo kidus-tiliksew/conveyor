@@ -60,13 +60,14 @@ func (m *memory) RequirementExists(ctx context.Context, id string) (bool, error)
 	return exists, nil
 }
 
-func (m *memory) ClaimCausalSystemDesignProposal(ctx context.Context, documentID, repository, commitSHA string, causalEventID int64, driftID string, matchingPaths []string) (monitor.ProposalSuppression, bool, error) {
+func (m *memory) ResolveCausalSystemDesignMerge(ctx context.Context, documentID, repository, commitSHA string, causalEventID int64, driftID string, matchingPaths []string, recordConsulted bool) (monitor.SystemDesignMergeJudgment, error) {
 	if causalEventID <= 0 || strings.TrimSpace(commitSHA) == "" {
-		return monitor.ProposalSuppression{}, false, nil
+		return monitor.SystemDesignMergeJudgment{}, nil
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	workspace := workspaceOrDefault(ctx, "")
+	result := monitor.SystemDesignMergeJudgment{}
 	var causal core.Event
 	var causalTask core.Task
 	for taskID, events := range m.events {
@@ -86,14 +87,15 @@ func (m *memory) ClaimCausalSystemDesignProposal(ctx context.Context, documentID
 		}
 	}
 	if causal.TaskID == "" || causalTask.Repo != strings.TrimSpace(repository) || (causal.Kind != "merge.confirmed" && causal.Kind != "merge.reconciled") {
-		return monitor.ProposalSuppression{}, false, nil
+		return result, nil
 	}
 	var merge struct {
 		HeadSHA string `json:"head_sha"`
 	}
 	if json.Unmarshal(causal.Payload, &merge) != nil || merge.HeadSHA != strings.TrimSpace(commitSHA) {
-		return monitor.ProposalSuppression{}, false, nil
+		return result, nil
 	}
+	result.CausalEventValid = true
 	var latest int64
 	var proposalVersion int
 	for _, event := range m.events[""] {
@@ -111,29 +113,66 @@ func (m *memory) ClaimCausalSystemDesignProposal(ctx context.Context, documentID
 			proposalVersion = proposal.Version
 		}
 	}
-	if latest == 0 {
-		return monitor.ProposalSuppression{}, true, nil
+	if latest != 0 {
+		consumed := false
+		for _, activity := range m.monitorActivity[workspace] {
+			if activity.Kind != "system_design.drift_suppressed" || payloadInt64(activity.Payload["proposal_event_id"]) != latest {
+				continue
+			}
+			consumed = true
+			if fmt.Sprint(activity.Payload["drift_id"]) == driftID {
+				result.Proposal = monitor.ProposalSuppression{EventID: latest, Status: fmt.Sprint(activity.Payload["proposal_status"])}
+				return result, nil
+			}
+			break
+		}
+		if !consumed {
+			status := "pending"
+			versions := m.systemDesignVersions[memoryScopedKey{workspace: workspace, id: documentID}]
+			if proposalVersion > 0 && proposalVersion <= len(versions) && versions[proposalVersion-1].Confirmed {
+				status = "confirmed"
+			}
+			m.nextMonitorActivityID++
+			m.monitorActivity[workspace] = append(m.monitorActivity[workspace], monitor.Activity{
+				ID: m.nextMonitorActivityID, WorkspaceID: workspace, Kind: "system_design.drift_suppressed", At: time.Now().UTC(),
+				Payload: map[string]any{"document_id": documentID, "drift_id": driftID, "merge_event_id": causalEventID, "proposal_event_id": latest, "proposal_status": status, "matching_paths": append([]string(nil), matchingPaths...)},
+			})
+			result.Proposal = monitor.ProposalSuppression{EventID: latest, Status: status}
+			return result, nil
+		}
 	}
-	for _, activity := range m.monitorActivity[workspace] {
-		if activity.Kind != "system_design.drift_suppressed" || payloadInt64(activity.Payload["proposal_event_id"]) != latest {
+
+	causalEvents := make([]core.Event, 0, len(m.events[causal.TaskID]))
+	for _, event := range m.events[causal.TaskID] {
+		if event.ID < causalEventID {
+			causalEvents = append(causalEvents, event)
+		}
+	}
+	_, designs := ActiveTaskContextReferences(causalEvents)
+	result.AttachedVersion = designs[documentID]
+	if !recordConsulted || result.AttachedVersion == 0 {
+		return result, nil
+	}
+	for _, event := range m.events[""] {
+		if event.Kind != "system_design.consulted" {
 			continue
 		}
-		if fmt.Sprint(activity.Payload["drift_id"]) == driftID {
-			return monitor.ProposalSuppression{EventID: latest, Status: fmt.Sprint(activity.Payload["proposal_status"])}, true, nil
+		var payload struct {
+			DocumentID   string `json:"document_id"`
+			MergeEventID int64  `json:"merge_event_id"`
 		}
-		return monitor.ProposalSuppression{}, true, nil
+		if json.Unmarshal(event.Payload, &payload) == nil && payload.DocumentID == documentID && payload.MergeEventID == causalEventID {
+			result.Consulted = true
+			return result, nil
+		}
 	}
-	status := "pending"
-	versions := m.systemDesignVersions[memoryScopedKey{workspace: workspace, id: documentID}]
-	if proposalVersion > 0 && proposalVersion <= len(versions) && versions[proposalVersion-1].Confirmed {
-		status = "confirmed"
-	}
-	m.nextMonitorActivityID++
-	m.monitorActivity[workspace] = append(m.monitorActivity[workspace], monitor.Activity{
-		ID: m.nextMonitorActivityID, WorkspaceID: workspace, Kind: "system_design.drift_suppressed", At: time.Now().UTC(),
-		Payload: map[string]any{"document_id": documentID, "drift_id": driftID, "merge_event_id": causalEventID, "proposal_event_id": latest, "proposal_status": status, "matching_paths": append([]string(nil), matchingPaths...)},
-	})
-	return monitor.ProposalSuppression{EventID: latest, Status: status}, true, nil
+	m.appendEventLocked(ctx, core.Event{Kind: "system_design.consulted", At: causal.At, Payload: core.JSONPayload(map[string]any{
+		"workspace_id": workspace, "document_id": documentID, "version": result.AttachedVersion,
+		"delivery_task_id": causal.TaskID, "merge_event_id": causalEventID, "merge_head_sha": strings.TrimSpace(commitSHA),
+		"matching_paths": append([]string(nil), matchingPaths...), "consultation": "delivery_no_revision",
+	})})
+	result.Consulted = true
+	return result, nil
 }
 
 func payloadInt64(value any) int64 {

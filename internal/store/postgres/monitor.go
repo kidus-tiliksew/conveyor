@@ -57,73 +57,106 @@ func (s *Store) RequirementExists(ctx context.Context, id string) (bool, error) 
 	return exists, err
 }
 
-func (s *Store) ClaimCausalSystemDesignProposal(ctx context.Context, documentID, repository, commitSHA string, causalEventID int64, driftID string, matchingPaths []string) (monitor.ProposalSuppression, bool, error) {
+func (s *Store) ResolveCausalSystemDesignMerge(ctx context.Context, documentID, repository, commitSHA string, causalEventID int64, driftID string, matchingPaths []string, recordConsulted bool) (monitor.SystemDesignMergeJudgment, error) {
 	if causalEventID <= 0 || commitSHA == "" {
-		return monitor.ProposalSuppression{}, false, nil
+		return monitor.SystemDesignMergeJudgment{}, nil
 	}
-	var result monitor.ProposalSuppression
-	valid := false
-	err := s.inTx(ctx, func(tx pgx.Tx, _ *db.Queries) error {
+	var result monitor.SystemDesignMergeJudgment
+	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
 		var causalTaskID string
-		if err := tx.QueryRow(ctx, `SELECT causal.task_id FROM events causal
+		var causalAt time.Time
+		if err := tx.QueryRow(ctx, `SELECT causal.task_id,causal.at FROM events causal
 			JOIN tasks causal_task ON causal_task.workspace_id=causal.workspace_id AND causal_task.id=causal.task_id
 			WHERE causal.workspace_id=$1 AND causal.id=$2 AND causal_task.repo_name=$3
 			AND causal.kind IN ('merge.confirmed','merge.reconciled')
-			AND causal.payload_json->>'head_sha'=$4`, workspace(ctx), causalEventID, repository, commitSHA).Scan(&causalTaskID); err != nil {
+			AND causal.payload_json->>'head_sha'=$4`, workspace(ctx), causalEventID, repository, commitSHA).Scan(&causalTaskID, &causalAt); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return nil
 			}
 			return err
 		}
-		valid = true
+		result.CausalEventValid = true
+		lockKey := "conveyor:design-merge-judgment:" + documentID + ":" + strconv.FormatInt(causalEventID, 10)
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, lockKey); err != nil {
+			return err
+		}
 		var eventID int64
 		var version int
 		var confirmed bool
-		if err := tx.QueryRow(ctx, `SELECT proposal.id,(proposal.payload_json->>'version')::integer,version.confirmed
+		proposalErr := tx.QueryRow(ctx, `SELECT proposal.id,(proposal.payload_json->>'version')::integer,version.confirmed
 			FROM events proposal
 			JOIN system_design_versions version ON version.workspace_id=proposal.workspace_id
 			 AND version.document_id=proposal.payload_json->>'document_id'
 			 AND version.version=(proposal.payload_json->>'version')::integer
 			WHERE proposal.workspace_id=$1 AND proposal.id<$2 AND proposal.kind='system_design.version_proposed'
 			 AND proposal.payload_json->>'document_id'=$3 AND proposal.payload_json->>'origin_task_id'=$4
-			ORDER BY proposal.id DESC LIMIT 1`, workspace(ctx), causalEventID, documentID, causalTaskID).Scan(&eventID, &version, &confirmed); err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
+			ORDER BY proposal.id DESC LIMIT 1`, workspace(ctx), causalEventID, documentID, causalTaskID).Scan(&eventID, &version, &confirmed)
+		if proposalErr != nil && !errors.Is(proposalErr, pgx.ErrNoRows) {
+			return proposalErr
+		}
+		if proposalErr == nil {
+			var existingDrift, existingStatus string
+			existingErr := tx.QueryRow(ctx, `SELECT payload_json->>'drift_id',payload_json->>'proposal_status'
+				FROM monitor_activity WHERE workspace_id=$1 AND kind='system_design.drift_suppressed'
+					 AND payload_json->>'proposal_event_id'=$2 ORDER BY id LIMIT 1`, workspace(ctx), strconv.FormatInt(eventID, 10)).Scan(&existingDrift, &existingStatus)
+			if existingErr == nil {
+				if existingDrift == driftID {
+					result.Proposal = monitor.ProposalSuppression{EventID: eventID, Status: existingStatus}
+					return nil
+				}
+			} else if !errors.Is(existingErr, pgx.ErrNoRows) {
+				return existingErr
+			} else {
+				status := "pending"
+				if confirmed {
+					status = "confirmed"
+				}
+				payload, marshalErr := json.Marshal(map[string]any{"document_id": documentID, "drift_id": driftID, "merge_event_id": causalEventID, "proposal_event_id": eventID, "proposal_status": status, "proposal_version": version, "matching_paths": matchingPaths})
+				if marshalErr != nil {
+					return marshalErr
+				}
+				if _, insertErr := tx.Exec(ctx, `INSERT INTO monitor_activity(workspace_id,kind,payload_json) VALUES($1,'system_design.drift_suppressed',$2::jsonb)`, workspace(ctx), string(payload)); insertErr != nil {
+					return insertErr
+				}
+				result.Proposal = monitor.ProposalSuppression{EventID: eventID, Status: status}
 				return nil
 			}
-			return err
 		}
-		lockKey := "conveyor:design-proposal:" + strconv.FormatInt(eventID, 10)
-		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, lockKey); err != nil {
-			return err
+
+		var contextKind string
+		var attachedVersion int
+		contextErr := tx.QueryRow(ctx, `SELECT kind,COALESCE((payload_json->>'version')::integer,0)
+			FROM events WHERE workspace_id=$1 AND task_id=$2 AND id<$3
+				AND kind IN ('task.context_design_added','task.context_design_removed')
+				AND payload_json->>'id'=$4 ORDER BY id DESC LIMIT 1`, workspace(ctx), causalTaskID, causalEventID, documentID).Scan(&contextKind, &attachedVersion)
+		if contextErr != nil && !errors.Is(contextErr, pgx.ErrNoRows) {
+			return contextErr
 		}
-		var existingDrift, existingStatus string
-		err := tx.QueryRow(ctx, `SELECT payload_json->>'drift_id',payload_json->>'proposal_status'
-			FROM monitor_activity WHERE workspace_id=$1 AND kind='system_design.drift_suppressed'
-			 AND payload_json->>'proposal_event_id'=$2 ORDER BY id LIMIT 1`, workspace(ctx), strconv.FormatInt(eventID, 10)).Scan(&existingDrift, &existingStatus)
-		if err == nil {
-			if existingDrift == driftID {
-				result = monitor.ProposalSuppression{EventID: eventID, Status: existingStatus}
-			}
+		if contextErr == nil && contextKind == store.TaskContextDesignAdded {
+			result.AttachedVersion = attachedVersion
+		}
+		if !recordConsulted || result.AttachedVersion == 0 {
 			return nil
 		}
-		if !errors.Is(err, pgx.ErrNoRows) {
+		var exists bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM events WHERE workspace_id=$1
+			AND kind='system_design.consulted' AND payload_json->>'document_id'=$2
+			AND payload_json->>'merge_event_id'=$3)`, workspace(ctx), documentID, strconv.FormatInt(causalEventID, 10)).Scan(&exists); err != nil {
 			return err
 		}
-		status := "pending"
-		if confirmed {
-			status = "confirmed"
+		if !exists {
+			if err := insertWorkspaceEvent(ctx, q, core.Event{Kind: "system_design.consulted", At: causalAt, Payload: core.JSONPayload(map[string]any{
+				"workspace_id": workspace(ctx), "document_id": documentID, "version": result.AttachedVersion,
+				"delivery_task_id": causalTaskID, "merge_event_id": causalEventID, "merge_head_sha": commitSHA,
+				"matching_paths": matchingPaths, "consultation": "delivery_no_revision",
+			})}); err != nil {
+				return err
+			}
 		}
-		payload, err := json.Marshal(map[string]any{"document_id": documentID, "drift_id": driftID, "merge_event_id": causalEventID, "proposal_event_id": eventID, "proposal_status": status, "proposal_version": version, "matching_paths": matchingPaths})
-		if err != nil {
-			return err
-		}
-		if _, err = tx.Exec(ctx, `INSERT INTO monitor_activity(workspace_id,kind,payload_json) VALUES($1,'system_design.drift_suppressed',$2::jsonb)`, workspace(ctx), string(payload)); err != nil {
-			return err
-		}
-		result = monitor.ProposalSuppression{EventID: eventID, Status: status}
+		result.Consulted = true
 		return nil
 	})
-	return result, valid, err
+	return result, err
 }
 
 func (s *Store) Observe(ctx context.Context, observation monitor.Observation) (monitor.ObservationRecord, bool, error) {

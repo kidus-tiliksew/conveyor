@@ -35,7 +35,26 @@ const design = {
   current_version: first,
   pending_versions: [pending],
   versions: [first, pending],
-  lineage: [],
+  lineage: [
+    {
+      id: 73,
+      task_id: '',
+      kind: 'system_design.consulted',
+      actor_id: 'system',
+      actor_role: 'system',
+      payload: {
+        workspace_id: 'demo',
+        document_id: 'design-dispatch',
+        version: 1,
+        delivery_task_id: '260813-delivery',
+        merge_event_id: 72,
+        merge_head_sha: 'reviewed-head',
+        matching_paths: ['internal/dispatch/dispatch.go'],
+        consultation: 'delivery_no_revision',
+      },
+      at: '2026-08-05T09:30:00Z',
+    },
+  ],
   drift: [
     {
       id: 'design-drift-1',
@@ -165,6 +184,14 @@ test('System Design renders a category tree, one attention surface, and authenti
   )
   await expect(attention).toContainText('Version 2 is waiting for you')
   await expect(attention.getByRole('button', { name: 'Confirm version 2' })).toBeVisible()
+
+  // AC-4.2/AC-4.4: the judged merge remains visible as neutral history and
+  // does not enter the document's attention surface or count.
+  const deliveryHistory = page.getByRole('region', { name: 'Delivery history' })
+  await expect(deliveryHistory).toContainText('Consulted at delivery — no revision warranted')
+  await expect(deliveryHistory).toContainText('Pinned version 1 · task 260813-delivery · merge reviewed-head')
+  await expect(attention).not.toContainText('Consulted at delivery')
+  await expect(tree.getByRole('button', { name: /Dispatch ownership/ })).toContainText('2')
 
   // AC-1.2: the retired duplicate renderings of those same signals.
   await expect(page.getByText('Design drift · 1')).toHaveCount(0)

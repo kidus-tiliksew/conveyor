@@ -186,6 +186,13 @@ type ProposalSuppression struct {
 	Status  string
 }
 
+type SystemDesignMergeJudgment struct {
+	CausalEventValid bool
+	Proposal         ProposalSuppression
+	AttachedVersion  int
+	Consulted        bool
+}
+
 type TaskRequest struct {
 	Body               string
 	Repository         string
@@ -215,10 +222,12 @@ type Store interface {
 	FindOpenMonitorTask(context.Context, string, SignalKind) (string, bool, error)
 	ListSystemDesigns(context.Context) ([]core.SystemDesign, error)
 	GetSystemDesignVersion(context.Context, string, int) (core.SystemDesignVersion, error)
-	// ClaimCausalSystemDesignProposal atomically consumes the latest qualifying
-	// same-task proposal for one governed merge. The commit is the PR head SHA
-	// recorded in merge.confirmed, not the landed squash or merge-commit SHA.
-	ClaimCausalSystemDesignProposal(context.Context, string, string, string, int64, string, []string) (ProposalSuppression, bool, error)
+	// ResolveCausalSystemDesignMerge atomically resolves the delivering task's
+	// same-task proposal and merge-time pinned design attachment. When requested,
+	// an attached/no-proposal result appends one retry-safe consulted event. The
+	// commit is the PR head SHA recorded in merge.confirmed, not the landed squash
+	// or merge-commit SHA.
+	ResolveCausalSystemDesignMerge(context.Context, string, string, string, int64, string, []string, bool) (SystemDesignMergeJudgment, error)
 }
 
 var (
@@ -527,15 +536,15 @@ func (s *Service) recordSystemDesignDrift(ctx context.Context, observation Obser
 		sort.Strings(matches)
 		matches = compactStrings(matches)
 		id := "design:" + document.ID + ":" + observation.Identity()
-		suppression, causalEventValid, proposalErr := s.Store.ClaimCausalSystemDesignProposal(ctx, document.ID, observation.Repository, observation.CommitSHA, observation.CausalEventID, id, matches)
-		if proposalErr != nil {
-			return proposalErr
+		judgment, judgmentErr := s.Store.ResolveCausalSystemDesignMerge(ctx, document.ID, observation.Repository, observation.CommitSHA, observation.CausalEventID, id, matches, observation.Kind == LineagedMerge)
+		if judgmentErr != nil {
+			return judgmentErr
 		}
-		if suppression.EventID != 0 {
+		if judgment.Proposal.EventID != 0 || judgment.Consulted {
 			continue
 		}
 		causalEventID := int64(0)
-		if causalEventValid {
+		if judgment.CausalEventValid {
 			causalEventID = observation.CausalEventID
 		}
 		_, fresh, recordErr := s.Store.RecordDrift(ctx, Drift{ID: id, WorkspaceID: observation.WorkspaceID, Repository: observation.Repository, Kind: observation.Kind, SourceURL: observation.SourceURL, CommitSHA: observation.CommitSHA, SystemDesignID: document.ID, SystemDesignVersion: version.Version, CausalEventID: causalEventID, MatchingPaths: matches, TaskID: taskID, DetectedAt: observation.ObservedAt})

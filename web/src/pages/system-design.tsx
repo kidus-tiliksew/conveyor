@@ -226,6 +226,9 @@ function DesignCanvas({
     },
   })
   const pending = item.pending_versions.at(-1)
+  const deliveryConsultations = item.lineage.filter(
+    (event) => event.kind === 'system_design.consulted' && event.payload?.consultation === 'delivery_no_revision',
+  )
 
   // Every signal below is already produced by unchanged machinery; the surface
   // only decides where it is voiced. Nothing here re-derives state (AC-1.1).
@@ -351,6 +354,36 @@ function DesignCanvas({
           </summary>
           <DesignDiff from={item.current_version} to={pending} />
         </details>
+      )}
+
+      {deliveryConsultations.length > 0 && (
+        <section className="mt-8 border-t border-border pt-5" aria-label="Delivery history">
+          <h3 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.12em] text-muted">
+            <History className="size-3.5" /> Delivery history
+          </h3>
+          <ol className="mt-3 divide-y divide-border rounded-md border border-border">
+            {deliveryConsultations.map((event) => {
+              const taskID = String(event.payload?.delivery_task_id ?? '')
+              const mergeSHA = String(event.payload?.merge_head_sha ?? '')
+              const version = Number(event.payload?.version ?? 0)
+              return (
+                <li key={event.id} className="px-3 py-3 text-xs text-muted">
+                  <p className="font-medium text-foreground">Consulted at delivery — no revision warranted</p>
+                  <p className="mt-1">
+                    {version > 0 && <>Pinned version {version} · </>}
+                    task <span className="font-mono">{taskID}</span>
+                    {mergeSHA && (
+                      <>
+                        {' '}
+                        · merge <span className="font-mono">{mergeSHA}</span>
+                      </>
+                    )}
+                  </p>
+                </li>
+              )
+            })}
+          </ol>
+        </section>
       )}
 
       {item.versions.length > 0 && (

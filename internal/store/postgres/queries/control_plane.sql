@@ -429,6 +429,7 @@ ORDER BY created_by_event_id, src_type, src_id, dst_type, dst_id, kind;
 
 -- name: DeleteLineageLinks :execrows
 -- Canonical directions include planning_session -consulted-> reference_document_version,
+-- task/work_order -consulted-> system_design_version,
 -- requirement_version -derived_from-> reference_document_version,
 -- system_design_version -governs-> repository_path,
 -- system_design_version -proposed_by-> task/planning_session, and
