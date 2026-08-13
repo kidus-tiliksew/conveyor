@@ -164,8 +164,41 @@ pull requests.
 
 ## Running it
 
-You need Go 1.24, Node/npm, PostgreSQL 15+, Docker with Compose, and
-an authenticated `gh` CLI for GitHub-delivery repos.
+An installed deployment needs PostgreSQL 15+, Git, an authenticated `gh` CLI
+(`GH_TOKEN` is the headless alternative), an API key for its configured
+OpenAI-compatible model endpoint, and the agent CLIs selected for execution.
+The installer itself needs `curl`, `tar`, and a SHA-256 tool, but not sudo.
+
+### Install a release
+
+The latest release installs both `conveyor` and `conveyord` to
+`~/.local/bin`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/kidus-tiliksew/conveyor/main/install.sh | sh
+```
+
+Pin the reviewed installer and release version when reproducibility matters:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/kidus-tiliksew/conveyor/v1.2.3/install.sh | sh -s -- v1.2.3
+```
+
+Set `CONVEYOR_INSTALL_DIR` to override the destination. The script supports
+Linux and macOS on amd64 and arm64, downloads only the selected GitHub release,
+and verifies its published SHA-256 checksum before unpacking or replacing
+either binary.
+
+To upgrade, re-run the installer with the newer version and restart the
+`conveyord` service. Replacing the two binaries is the entire software upgrade:
+startup applies pending database migrations, while a binary refuses to start
+against a store created by a newer release.
+
+### Build from source
+
+Development requires Go 1.24, Node/npm, Docker with Compose, and the runtime
+prerequisites above. Clone the repository and run `make build`; the binaries
+are written to `bin/`. This source-build path remains the supported devbox flow.
 
 ### Four-step solo quickstart
 
