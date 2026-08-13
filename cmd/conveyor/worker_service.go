@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/serviceunit"
 	"github.com/spf13/cobra"
 )
 
@@ -270,14 +271,14 @@ After=network-online.target
 
 [Service]
 Type=simple
-ExecStart=` + systemdQuote(executable) + ` --workspace ` + systemdQuote(workspace) + ` worker run
+ExecStart=` + serviceunit.QuoteArg(executable) + ` --workspace ` + serviceunit.QuoteArg(workspace) + ` worker run
 Environment="CONVEYOR_ADDR=` + systemdEscape(address) + `"
 Environment="HOME=` + systemdEscape(paths.Home) + `"
 Environment="XDG_CONFIG_HOME=` + systemdEscape(paths.ConfigDir) + `"
 Restart=on-failure
 RestartSec=2
-StandardOutput=append:` + systemdQuote(paths.Stdout) + `
-StandardError=append:` + systemdQuote(paths.Stderr) + `
+StandardOutput=append:` + serviceunit.DirectivePath(paths.Stdout) + `
+StandardError=append:` + serviceunit.DirectivePath(paths.Stderr) + `
 # ConveyorOwner=` + workerServiceOwner + `
 # ConveyorWorkspace=` + workspace + `
 
@@ -289,10 +290,6 @@ WantedBy=default.target
 func xmlEscape(value string) string {
 	replacer := strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", `"`, "&quot;", "'", "&apos;")
 	return replacer.Replace(value)
-}
-
-func systemdQuote(value string) string {
-	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`, `%`, `%%`, `$`, `$$`).Replace(value) + `"`
 }
 
 func systemdEscape(value string) string {

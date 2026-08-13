@@ -55,7 +55,11 @@ func (m *Maintainer) Reconcile(ctx context.Context) (Result, error) {
 		if cached, ok := roots[repo.Name]; ok {
 			return cached.root, cached.err
 		}
-		root, resolveErr := gitx.ResolvePrimaryCheckout(ctx, m.StartDir, repo.Name, repo.URL)
+		startDir := m.StartDir
+		if repo.Checkout != "" {
+			startDir = repo.Checkout
+		}
+		root, resolveErr := gitx.ResolvePrimaryCheckout(ctx, startDir, repo.Name, repo.URL)
 		roots[repo.Name] = resolvedRepository{root: root, err: resolveErr}
 		return root, resolveErr
 	}

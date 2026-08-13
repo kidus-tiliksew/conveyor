@@ -71,13 +71,13 @@ func TestTerminalCleanupRetriesDirtyWorktreesAndRecordsNoOps(t *testing.T) {
 		Workspace: "demo",
 		CacheDir:  filepath.Join(tmp, "cache"),
 		Repos: []config.Repo{
-			{Name: "conveyor", URL: origin, Base: "main"},
+			{Name: "conveyor", URL: origin, Base: "main", Checkout: primary},
 			{Name: "missing", URL: filepath.Join(tmp, "missing-origin.git"), Base: "main"},
 		},
 	}
 	var logs strings.Builder
 	maintainer := &Maintainer{
-		Store: st, StartDir: primary,
+		Store: st, StartDir: filepath.Join(tmp, "deployment-config-outside-clone"),
 		ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil },
 		Logf: func(format string, args ...any) {
 			fmt.Fprintf(&logs, format+"\n", args...)
