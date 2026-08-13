@@ -2,7 +2,9 @@ package storetest
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +18,129 @@ type SystemDesignDriftFactory func(t *testing.T) (store.Store, context.Context, 
 
 func RunSystemDesignDriftConformance(t *testing.T, factory SystemDesignDriftFactory) {
 	t.Helper()
+	for _, test := range []struct {
+		name             string
+		attachBefore     bool
+		attachAfter      bool
+		proposal         bool
+		wantDrift        bool
+		wantConsultation bool
+	}{
+		{name: "attached lineaged merge records consultation", attachBefore: true, wantConsultation: true},
+		{name: "unattached lineaged merge records drift", wantDrift: true},
+		{name: "attachment after merge does not rewrite causal context", attachAfter: true, wantDrift: true},
+		{name: "same task proposal wins over attached consultation", attachBefore: true, proposal: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			st, ctx, workspace := factory(t)
+			now := time.Date(2026, 8, 13, 8, 0, 0, 0, time.UTC)
+			service := driftService(t, st, ctx, workspace, now)
+			delivery := createDriftTask(t, st, ctx, workspace, "lineaged-delivery")
+			document := createConfirmedDesign(t, st, ctx, "DESIGN-lineaged", "internal/dispatch/**")
+			attach := func() {
+				if err := st.AppendEvent(ctx, core.Event{TaskID: delivery.ID, Kind: store.TaskContextDesignAdded, Payload: core.JSONPayload(map[string]any{"id": document.ID, "version": 1})}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.attachBefore {
+				attach()
+			}
+			if test.proposal {
+				proposeDesignRevision(t, st, ctx, document.ID, delivery.ID)
+			}
+			if err := st.AppendEvent(ctx, core.Event{TaskID: delivery.ID, Kind: "merge.confirmed", Payload: core.JSONPayload(map[string]any{"repository": "kidus-tiliksew/conveyor", "head_sha": "lineaged-head"})}); err != nil {
+				t.Fatal(err)
+			}
+			mergeEventID := latestEventID(t, st, ctx, delivery.ID, "merge.confirmed")
+			if test.attachAfter {
+				attach()
+			}
+			observation := monitor.Observation{Repository: "conveyor", Kind: monitor.LineagedMerge, OccurrenceID: "pr:520", SourceURL: "https://example.test/pull/520", CommitSHA: "lineaged-head", ChangedPaths: []string{"internal/dispatch/dispatch.go"}, CausalEventID: mergeEventID}
+			if _, err := service.ProcessDesignMerge(ctx, observation, delivery.ID); err != nil {
+				t.Fatal(err)
+			}
+			// Re-evaluation is expected after recovery and must not duplicate the
+			// append-only delivery judgment.
+			if _, err := service.ProcessDesignMerge(ctx, observation, delivery.ID); err != nil {
+				t.Fatal(err)
+			}
+			status, err := service.Status(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			driftFound := false
+			for _, drift := range status.Drift {
+				driftFound = driftFound || drift.SystemDesignID == document.ID
+			}
+			if driftFound != test.wantDrift {
+				t.Fatalf("design drift found=%t want=%t: %+v", driftFound, test.wantDrift, status.Drift)
+			}
+			events, err := st.ListSystemDesignEvents(ctx, document.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			consultations := 0
+			for _, event := range events {
+				if event.Kind != "system_design.consulted" {
+					continue
+				}
+				var payload struct {
+					Version        int      `json:"version"`
+					DeliveryTaskID string   `json:"delivery_task_id"`
+					MergeEventID   int64    `json:"merge_event_id"`
+					MergeHeadSHA   string   `json:"merge_head_sha"`
+					MatchingPaths  []string `json:"matching_paths"`
+					Consultation   string   `json:"consultation"`
+				}
+				if json.Unmarshal(event.Payload, &payload) == nil && payload.Consultation == "delivery_no_revision" {
+					consultations++
+					if payload.Version != 1 || payload.DeliveryTaskID != delivery.ID || payload.MergeEventID != mergeEventID || payload.MergeHeadSHA != "lineaged-head" || !slices.Equal(payload.MatchingPaths, []string{"internal/dispatch/dispatch.go"}) {
+						t.Fatalf("consulted payload=%+v", payload)
+					}
+				}
+			}
+			if got := consultations == 1; got != test.wantConsultation {
+				t.Fatalf("consultations=%d want_one=%t events=%+v", consultations, test.wantConsultation, events)
+			}
+			if test.wantConsultation {
+				sibling := store.WithWorkspace(ctx, workspace+"-sibling")
+				judgment, err := st.(monitor.Store).ResolveCausalSystemDesignMerge(sibling, document.ID, "conveyor", "lineaged-head", mergeEventID, "sibling-drift", []string{"internal/dispatch/dispatch.go"}, true)
+				if err != nil || judgment.CausalEventValid || judgment.Consulted {
+					t.Fatalf("workspace-isolated judgment=%+v err=%v", judgment, err)
+				}
+			}
+		})
+	}
+	for _, kind := range []monitor.SignalKind{monitor.DirectPush, monitor.ExternalPRMerge, monitor.Revert} {
+		t.Run(string(kind)+" keeps drift behavior for attached designs", func(t *testing.T) {
+			st, ctx, workspace := factory(t)
+			now := time.Date(2026, 8, 13, 9, 0, 0, 0, time.UTC)
+			service := driftService(t, st, ctx, workspace, now)
+			delivery := createDriftTask(t, st, ctx, workspace, "non-lineaged-delivery")
+			document := createConfirmedDesign(t, st, ctx, "DESIGN-"+string(kind), "internal/dispatch/**")
+			if err := st.AppendEvent(ctx, core.Event{TaskID: delivery.ID, Kind: store.TaskContextDesignAdded, Payload: core.JSONPayload(map[string]any{"id": document.ID, "version": 1})}); err != nil {
+				t.Fatal(err)
+			}
+			if err := st.AppendEvent(ctx, core.Event{TaskID: delivery.ID, Kind: "merge.reconciled", Payload: core.JSONPayload(map[string]any{"head_sha": "non-lineaged-head"})}); err != nil {
+				t.Fatal(err)
+			}
+			mergeEventID := latestEventID(t, st, ctx, delivery.ID, "merge.reconciled")
+			if _, err := service.Process(ctx, monitor.Observation{Repository: "conveyor", Kind: kind, OccurrenceID: string(kind) + "-attached", SourceURL: "https://example.test/change", CommitSHA: "non-lineaged-head", ChangedPaths: []string{"internal/dispatch/dispatch.go"}, CausalEventID: mergeEventID}); err != nil {
+				t.Fatal(err)
+			}
+			status, err := service.Status(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			found := false
+			for _, drift := range status.Drift {
+				found = found || drift.SystemDesignID == document.ID
+			}
+			if !found {
+				t.Fatalf("%s design drift missing: %+v", kind, status.Drift)
+			}
+		})
+	}
 	for _, test := range []struct {
 		name               string
 		proposal           string

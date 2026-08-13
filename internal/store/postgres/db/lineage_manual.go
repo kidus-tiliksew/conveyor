@@ -58,6 +58,7 @@ func (q *Queries) InsertLineageLink(ctx context.Context, arg InsertLineageLinkPa
 
 func (q *Queries) DeleteLineageLinks(ctx context.Context, workspaceID string) (int64, error) {
 	// Canonical directions include planning_session -consulted-> reference_document_version,
+	// task/work_order -consulted-> system_design_version,
 	// requirement_version -derived_from-> reference_document_version,
 	// system_design_version -governs-> repository_path,
 	// system_design_version -proposed_by-> task/planning_session, and

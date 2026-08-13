@@ -216,6 +216,9 @@ func projectLineageEvent(workspace string, event core.Event) LineageEventProject
 		if workOrderID := text("work_order_id"); workOrderID != "" {
 			return emit(link(core.LineageWorkOrder, workOrderID, core.LineageSystemDesignVersion, destination, "consulted"))
 		}
+		if taskID := text("delivery_task_id"); taskID != "" {
+			return emit(link(core.LineageTask, taskID, core.LineageSystemDesignVersion, destination, "consulted"))
+		}
 		return emit(link(core.LineagePlanningSession, text("session_id"), core.LineageSystemDesignVersion, destination, "consulted"))
 	case "system_design.version_confirmed":
 		id, version, predecessor := text("document_id"), number("version"), number("supersedes_version")
@@ -361,7 +364,8 @@ var projectorOwnedLineageKinds = map[string]struct{}{
 }
 
 // Direction is part of the vocabulary contract even though ownership is keyed
-// only by kind: planning_session -consulted-> reference_document_version and
+// only by kind: planning_session -consulted-> reference_document_version,
+// task/work_order -consulted-> system_design_version, and
 // requirement_version -derived_from-> reference_document_version,
 // system_design_version -governs-> repository_path/task,
 // requirement -serves-> blueprint/task,
