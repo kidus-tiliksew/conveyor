@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 	"sort"
 
@@ -74,7 +75,8 @@ type blueprintRequirementRef struct {
 func (s *Server) listBlueprints(w http.ResponseWriter, r *http.Request) {
 	tasks, err := s.Store.ListTasks(r.Context())
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("handle blueprint request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	anchors := make([]core.Task, 0)
@@ -88,7 +90,8 @@ func (s *Server) listBlueprints(w http.ResponseWriter, r *http.Request) {
 	})
 	views, err := s.blueprintViews(r, anchors)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("handle blueprint request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	writeJSON(w, http.StatusOK, views)

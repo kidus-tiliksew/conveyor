@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"mime/multipart"
 	"net/http"
 	"strings"
@@ -21,7 +22,8 @@ const maxArtifactBytes = 25 << 20
 func (s *Server) listWorkOrders(w http.ResponseWriter, r *http.Request) {
 	orders, err := s.Store.ListWorkOrders(r.Context())
 	if err != nil {
-		http.Error(w, err.Error(), 500)
+		log.Printf("handle work order request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	if orders == nil {
@@ -131,7 +133,8 @@ func (s *Server) getLifecycleDiagram(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) listArtifacts(w http.ResponseWriter, r *http.Request) {
 	artifacts, err := s.Store.ListArtifacts(r.Context())
 	if err != nil {
-		http.Error(w, err.Error(), 500)
+		log.Printf("handle work order request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	for i := range artifacts {

@@ -3,7 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
-	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,9 +13,70 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
 	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 )
+
+type unauthorizedWorkerStore struct{ store.Store }
+
+func (unauthorizedWorkerStore) IsDurable() bool { return true }
+func (unauthorizedWorkerStore) AuthenticateWorker(context.Context, string) (core.Worker, error) {
+	return core.Worker{}, store.ErrWorkerUnauthorized
+}
+
+type failingWorkerOrderStore struct{ store.Store }
+
+func (failingWorkerOrderStore) ListWorkOrders(context.Context) ([]core.WorkOrder, error) {
+	return nil, fmt.Errorf("raw worker order store failure")
+}
+
+func TestListWorkerOrdersMapsSentinelsAndRedactsInternalFailures(t *testing.T) {
+	tests := []struct {
+		name       string
+		store      store.Store
+		provider   func(context.Context) (*config.Config, error)
+		wantStatus int
+		wantBody   string
+	}{
+		{
+			name:       "unauthorized",
+			store:      unauthorizedWorkerStore{Store: store.NewMemory()},
+			provider:   func(context.Context) (*config.Config, error) { return &config.Config{}, nil },
+			wantStatus: http.StatusUnauthorized,
+			wantBody:   "unauthorized\n",
+		},
+		{
+			name:       "configuration unavailable",
+			store:      store.NewMemory(),
+			provider:   func(context.Context) (*config.Config, error) { return nil, fmt.Errorf("configuration unavailable") },
+			wantStatus: http.StatusServiceUnavailable,
+			wantBody:   "configuration unavailable\n",
+		},
+		{
+			name:       "internal list failure",
+			store:      failingWorkerOrderStore{Store: store.NewMemory()},
+			provider:   func(context.Context) (*config.Config, error) { return &config.Config{}, nil },
+			wantStatus: http.StatusInternalServerError,
+			wantBody:   "internal server error\n",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			orders := &workorder.Service{Store: test.store, ConfigProvider: test.provider}
+			server := NewServer(test.store)
+			server.ConfigProvider = test.provider
+			server.Workers = &workerservice.Service{Store: test.store, WorkOrders: orders, ConfigProvider: test.provider}
+			request := httptest.NewRequest(http.MethodGet, "/v1/worker/orders", nil)
+			request = request.WithContext(context.WithValue(request.Context(), workerContextKey{}, core.Worker{CredentialHash: "hash"}))
+			response := httptest.NewRecorder()
+			server.listWorkerOrders(response, request)
+			if response.Code != test.wantStatus || response.Body.String() != test.wantBody || strings.Contains(response.Body.String(), "raw worker order store failure") {
+				t.Fatalf("status=%d body=%q", response.Code, response.Body.String())
+			}
+		})
+	}
+}
 
 func workerConfigHTTPFixture(t *testing.T) (*Server, workerservice.Enrollment, *config.Config) {
 	t.Helper()

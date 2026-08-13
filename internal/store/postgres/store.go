@@ -398,7 +398,7 @@ func (s *Store) UpdateWorkspaceConfig(ctx context.Context, expectedVersion int64
 	err = s.inTx(ctx, func(_ pgx.Tx, q *db.Queries) error {
 		before, err := q.GetWorkspaceConfig(ctx, workspace(ctx))
 		if err != nil {
-			return err
+			return notFound(err, "workspace %s", workspace(ctx))
 		}
 		updated, err := q.UpdateWorkspaceConfig(ctx, db.UpdateWorkspaceConfigParams{
 			ID: workspace(ctx), ExpectedVersion: expectedVersion, ConfigYaml: string(data),

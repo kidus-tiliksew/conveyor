@@ -3,8 +3,10 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
@@ -16,6 +18,7 @@ type callerIdentityFixture struct {
 	calls       int
 	userID      string
 	workspaceID string
+	err         error
 }
 
 func (f *callerIdentityFixture) GetCallerIdentity(_ context.Context, userID, workspaceID string) (core.CallerIdentity, error) {
@@ -25,7 +28,22 @@ func (f *callerIdentityFixture) GetCallerIdentity(_ context.Context, userID, wor
 	if workspaceID != "" {
 		identity.Role = core.WorkspaceRoleUser
 	}
-	return identity, nil
+	return identity, f.err
+}
+
+func TestCallerIdentityMapsMissingBindingToNotFound(t *testing.T) {
+	t.Parallel()
+	identities := &callerIdentityFixture{Store: store.NewMemory(), err: fmt.Errorf("deactivated user: %w", store.ErrNotFound)}
+	server := NewServer(identities)
+	server.CallerIdentities = identities
+	request := httptest.NewRequest(http.MethodGet, "/v1/me", nil)
+	request = request.WithContext(store.WithCredential(request.Context(), core.AuthenticatedCredential{ID: "pat-missing", OwnerUserID: "usr-missing", Kind: core.CredentialUser}))
+	response := httptest.NewRecorder()
+	server.getCallerIdentity(response, request)
+
+	if response.Code != http.StatusNotFound || response.Body.String() != "caller identity unavailable\n" || strings.Contains(response.Body.String(), identities.err.Error()) {
+		t.Fatalf("status=%d body=%q", response.Code, response.Body.String())
+	}
 }
 
 func TestCallerIdentityIsCredentialDerivedAndWorkspaceScoped(t *testing.T) {

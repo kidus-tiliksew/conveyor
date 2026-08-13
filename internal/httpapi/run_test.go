@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -146,6 +147,37 @@ func TestTaskRunHTTPReturnsNoWorkAndSurfacesAssigneeRefusal(t *testing.T) {
 	}
 	if response := taskRunHTTPCall(handler, http.MethodGet, "/v1/tasks/assigned/run-order", ""); response.Code != http.StatusNoContent {
 		t.Fatalf("no-work status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestTaskRunHTTPMapsConfigurationAndRepositoryConditions(t *testing.T) {
+	for _, endpoint := range []struct {
+		name   string
+		method string
+		path   func(core.WorkOrder) string
+		body   string
+	}{
+		{name: "read", method: http.MethodGet, path: func(core.WorkOrder) string { return "/v1/tasks/target/run-order" }},
+		{name: "claim", method: http.MethodPost, path: func(order core.WorkOrder) string { return "/v1/tasks/target/run-orders/" + order.ID + "/claim" }, body: `{"session_id":"run-session","client_token":"secret","agent":"codex","model":"gpt"}`},
+	} {
+		t.Run(endpoint.name+"/configuration unavailable", func(t *testing.T) {
+			server, st, _ := taskRunHTTPFixture(t)
+			order := createTaskRunOrder(t, st, "target")
+			server.ConfigProvider = func(context.Context) (*config.Config, error) { return nil, fmt.Errorf("configuration exploded") }
+			response := taskRunHTTPCall(server.Handler(), endpoint.method, endpoint.path(order), endpoint.body)
+			if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), "task run configuration unavailable") {
+				t.Fatalf("status=%d body=%q", response.Code, response.Body.String())
+			}
+		})
+		t.Run(endpoint.name+"/repository unconfigured", func(t *testing.T) {
+			server, st, _ := taskRunHTTPFixture(t)
+			order := createTaskRunOrder(t, st, "target")
+			server.ConfigProvider = func(context.Context) (*config.Config, error) { return &config.Config{Workspace: "demo"}, nil }
+			response := taskRunHTTPCall(server.Handler(), endpoint.method, endpoint.path(order), endpoint.body)
+			if response.Code != http.StatusConflict || response.Body.String() != "task repository is not configured\n" {
+				t.Fatalf("status=%d body=%q", response.Code, response.Body.String())
+			}
+		})
 	}
 }
 

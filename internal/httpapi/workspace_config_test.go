@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,8 +14,10 @@ import (
 )
 
 type fakeWorkspaceConfigStore struct {
-	record  config.VersionedDocument
-	updates int
+	record    config.VersionedDocument
+	updates   int
+	readErr   error
+	updateErr error
 }
 
 func TestHarnessTemplatesAPIRequiresAuthAndReturnsCatalog(t *testing.T) {
@@ -77,10 +80,13 @@ func contextualWorkspaceDocument() config.WorkspaceDocument {
 }
 
 func (f *fakeWorkspaceConfigStore) WorkspaceConfig(context.Context) (config.VersionedDocument, error) {
-	return f.record, nil
+	return f.record, f.readErr
 }
 
 func (f *fakeWorkspaceConfigStore) UpdateWorkspaceConfig(ctx context.Context, expected int64, next *config.Config) (config.UpdateReceipt, error) {
+	if f.updateErr != nil {
+		return config.UpdateReceipt{}, f.updateErr
+	}
 	if expected != f.record.Version {
 		return config.UpdateReceipt{}, config.ErrVersionConflict
 	}
@@ -90,6 +96,44 @@ func (f *fakeWorkspaceConfigStore) UpdateWorkspaceConfig(ctx context.Context, ex
 		VersionedDocument: f.record, EventID: 41,
 		ActorID: store.ActorFromContext(ctx).ID, Sections: []string{"routing"},
 	}, nil
+}
+
+func TestWorkspaceConfigAPIMissingConfigReturnsNotFound(t *testing.T) {
+	document := contextualWorkspaceDocument()
+	for _, test := range []struct {
+		name    string
+		method  string
+		backend *fakeWorkspaceConfigStore
+	}{
+		{name: "read", method: http.MethodGet, backend: &fakeWorkspaceConfigStore{readErr: fmt.Errorf("missing row: %w", store.ErrNotFound)}},
+		{name: "update", method: http.MethodPut, backend: &fakeWorkspaceConfigStore{record: config.VersionedDocument{Document: document, Version: 1}, updateErr: fmt.Errorf("missing row: %w", store.ErrNotFound)}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := NewServer(store.NewMemory())
+			server.Deployment = &config.Config{Workspace: "demo", Database: config.Database{Backend: "memory"}}
+			server.ConfigStore = test.backend
+			body := ""
+			if test.method == http.MethodPut {
+				data, err := json.Marshal(map[string]any{"document": document})
+				if err != nil {
+					t.Fatal(err)
+				}
+				body = string(data)
+			}
+			request := httptest.NewRequest(test.method, "/v1/workspace/config", strings.NewReader(body))
+			request = request.WithContext(store.WithWorkspace(request.Context(), "demo"))
+			request.Header.Set("If-Match", "1")
+			response := httptest.NewRecorder()
+			if test.method == http.MethodGet {
+				server.getWorkspaceConfig(response, request)
+			} else {
+				server.putWorkspaceConfig(response, request)
+			}
+			if response.Code != http.StatusNotFound || response.Body.String() != "workspace config unavailable\n" || strings.Contains(response.Body.String(), "missing row") {
+				t.Fatalf("status=%d body=%q", response.Code, response.Body.String())
+			}
+		})
+	}
 }
 
 func TestWorkspaceConfigAPIValidatesVersionsAndRecordsActor(t *testing.T) {

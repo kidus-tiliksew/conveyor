@@ -107,7 +107,8 @@ func (s *Server) listWorkspaces(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("handle workspace request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	writeJSON(w, http.StatusOK, items)
@@ -122,7 +123,8 @@ func (s *Server) listWorkspaceMembers(w http.ResponseWriter, r *http.Request) {
 	workspaceID, _ := store.WorkspaceFromContext(r.Context())
 	items, err := s.Memberships.ListWorkspaceMembers(r.Context(), credential.OwnerUserID, workspaceID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("handle workspace request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	writeJSON(w, http.StatusOK, items)
@@ -317,7 +319,8 @@ func (s *Server) createWorkspace(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.EnsureWorkspaceQueues != nil {
 		if err := s.EnsureWorkspaceQueues(request.ID); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			log.Printf("handle workspace request: %v", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
 	}
@@ -327,7 +330,8 @@ func (s *Server) createWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("handle workspace request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	writeJSON(w, http.StatusCreated, created)
@@ -367,7 +371,8 @@ func (s *Server) resolveWorkspaceContext(next http.Handler) http.Handler {
 				return
 			}
 			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
+				log.Printf("handle workspace request: %v", err)
+				http.Error(w, "internal server error", http.StatusInternalServerError)
 				return
 			}
 		} else {

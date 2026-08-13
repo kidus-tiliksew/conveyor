@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"log"
 	"net/http"
 	"time"
 
@@ -27,7 +28,8 @@ type pendingProposalsResponse struct {
 func (s *Server) listPendingProposals(w http.ResponseWriter, r *http.Request) {
 	projection, err := s.Store.PendingProposalsProjection(r.Context())
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("list pending proposals: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	now := time.Now().UTC()

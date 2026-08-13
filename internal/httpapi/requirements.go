@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"slices"
 	"sort"
@@ -110,12 +111,14 @@ type blueprintLineage struct {
 func (s *Server) listRequirements(w http.ResponseWriter, r *http.Request) {
 	requirements, err := s.Store.ListRequirements(r.Context())
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("handle requirement request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	views, err := s.requirementViews(r, requirements, false)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("handle requirement request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	summaries := make([]requirementSummary, 0, len(views))
@@ -160,7 +163,8 @@ func (s *Server) getRequirement(w http.ResponseWriter, r *http.Request) {
 	}
 	views, err := s.requirementViews(r, []core.Requirement{requirement}, true)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("handle requirement request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	writeJSON(w, http.StatusOK, views[0])
@@ -174,7 +178,8 @@ func (s *Server) listRequirementVersions(w http.ResponseWriter, r *http.Request)
 	}
 	versions, err := s.Store.ListRequirementVersions(r.Context(), id)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("handle requirement request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	if versions == nil {
@@ -410,7 +415,8 @@ func (s *Server) listCheckpointContextCandidates(w http.ResponseWriter, r *http.
 	}
 	candidates, err := s.Store.ListCheckpointContextCandidates(r.Context(), id)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("handle requirement request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	writeJSON(w, http.StatusOK, candidates)

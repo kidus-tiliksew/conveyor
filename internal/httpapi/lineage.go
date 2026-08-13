@@ -80,7 +80,8 @@ func (s *Server) getLineage(w http.ResponseWriter, r *http.Request) {
 	}
 	exists, err := s.lineageNodeExists(r, root)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("handle lineage request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	if !exists {
@@ -89,7 +90,8 @@ func (s *Server) getLineage(w http.ResponseWriter, r *http.Request) {
 	}
 	graph, err := s.lineageGraph(r, root, core.LineageTraversalBudget{MaxDepth: maxDepth, MaxNodes: maxNodes, MaxLinks: maxLinks})
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("handle lineage request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	writeJSON(w, http.StatusOK, graph)

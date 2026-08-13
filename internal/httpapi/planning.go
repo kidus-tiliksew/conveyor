@@ -21,7 +21,8 @@ const maxPlanningRequestBytes = 1 << 20
 func (s *Server) listPlanningSessions(w http.ResponseWriter, r *http.Request) {
 	sessions, err := s.Store.ListPlanningSessions(r.Context())
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("handle planning request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	if sessions == nil {
@@ -106,7 +107,8 @@ func (s *Server) getPlanningSession(w http.ResponseWriter, r *http.Request) {
 func (s *Server) listPlanningBundles(w http.ResponseWriter, r *http.Request) {
 	bundles, err := s.Store.ListPlanningBundles(r.Context())
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("handle planning request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	if bundles == nil {
@@ -188,7 +190,8 @@ func (s *Server) listPlanningMessages(w http.ResponseWriter, r *http.Request) {
 	}
 	messages, err := s.Store.ListPlanningMessages(r.Context(), chi.URLParam(r, "id"))
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("handle planning request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	if messages == nil {

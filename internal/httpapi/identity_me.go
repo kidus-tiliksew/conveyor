@@ -1,6 +1,8 @@
 package httpapi
 
 import (
+	"errors"
+	"log"
 	"net/http"
 	"strings"
 
@@ -36,7 +38,8 @@ func (s *Server) resolveOptionalWorkspaceCapability(capability core.Capability) 
 			}
 			allowed, err := s.Memberships.AuthorizeWorkspace(r.Context(), credential.OwnerUserID, workspaceID, capability)
 			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
+				log.Printf("authorize caller workspace: %v", err)
+				http.Error(w, "internal server error", http.StatusInternalServerError)
 				return
 			}
 			if !allowed {
@@ -61,8 +64,13 @@ func (s *Server) getCallerIdentity(w http.ResponseWriter, r *http.Request) {
 	}
 	workspaceID, _ := store.WorkspaceFromContext(r.Context())
 	identity, err := s.CallerIdentities.GetCallerIdentity(r.Context(), credential.OwnerUserID, workspaceID)
+	if errors.Is(err, store.ErrNotFound) {
+		http.Error(w, "caller identity unavailable", http.StatusNotFound)
+		return
+	}
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("get caller identity: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	writeJSON(w, http.StatusOK, identity)

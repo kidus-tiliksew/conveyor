@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -90,7 +91,8 @@ func (s *Server) listWorkers(w http.ResponseWriter, r *http.Request) {
 	}
 	workers, err := s.Store.ListWorkers(r.Context())
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("handle worker request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	if workers == nil {
@@ -109,7 +111,8 @@ func (s *Server) listWorkers(w http.ResponseWriter, r *http.Request) {
 	available, reason := s.Workers.AutoAvailable(r.Context(), cfg)
 	rateLimits, err := s.Workers.RateLimitHealth(r.Context())
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("handle worker request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	serviceability := make(map[string]any, len(cfg.Setups))
@@ -166,7 +169,8 @@ func (s *Server) getWorkerConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	active, err := s.Workers.ActiveHarnesses(r.Context())
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("handle worker request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	if active == nil {
@@ -182,8 +186,19 @@ func (s *Server) listWorkerOrders(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	orders, err := s.Workers.ListClaimable(r.Context(), worker)
+	if errors.Is(err, store.ErrWorkerUnauthorized) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if err != nil && s.ConfigProvider != nil {
+		if _, configErr := s.ConfigProvider(r.Context()); configErr != nil {
+			http.Error(w, configErr.Error(), http.StatusServiceUnavailable)
+			return
+		}
+	}
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("list claimable worker orders: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	writeJSON(w, http.StatusOK, orders)
