@@ -3,6 +3,7 @@ package httpapi
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -26,7 +27,8 @@ func (s *Server) updateTaskContext(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, store.ErrNotFound):
 			http.Error(w, err.Error(), http.StatusNotFound)
 		default:
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			log.Printf("update task context: %v", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
 		}
 		return
 	}

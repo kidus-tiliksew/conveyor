@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 
@@ -74,7 +75,8 @@ func (s *Server) getMonitorStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	status, err := s.Monitor.Status(r.Context())
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("handle monitor request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	writeJSON(w, http.StatusOK, status)

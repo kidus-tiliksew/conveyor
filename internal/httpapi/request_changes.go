@@ -3,6 +3,7 @@ package httpapi
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"strings"
 
@@ -42,7 +43,8 @@ func (s *Server) requestTaskChanges(w http.ResponseWriter, r *http.Request) {
 			workspaceID, _ := store.WorkspaceFromContext(r.Context())
 			operator, err = s.Memberships.AuthorizeWorkspace(r.Context(), credential.OwnerUserID, workspaceID, core.CapabilitySetAssignee)
 			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
+				log.Printf("handle task change request: %v", err)
+				http.Error(w, "internal server error", http.StatusInternalServerError)
 				return
 			}
 		}
@@ -53,7 +55,8 @@ func (s *Server) requestTaskChanges(w http.ResponseWriter, r *http.Request) {
 	}
 	latest, found, err := s.Store.GetLatestJob(r.Context(), taskID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("handle task change request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	if !found || latest.Stage != core.StageReview {
@@ -62,7 +65,8 @@ func (s *Server) requestTaskChanges(w http.ResponseWriter, r *http.Request) {
 	}
 	events, err := s.Store.ListEvents(r.Context(), taskID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("handle task change request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	maxBounces := 1

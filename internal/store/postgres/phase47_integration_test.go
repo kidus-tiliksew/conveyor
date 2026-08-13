@@ -52,6 +52,20 @@ func integrationEventAttemptIDs(t *testing.T, events []core.Event, kind, jobID s
 	return ids
 }
 
+func TestUpdateWorkspaceConfigMissingRowIsNotFound(t *testing.T) {
+	st, err := Open(t.Context(), integrationDatabaseURL(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	workspace := "missing-config-" + core.NewTaskID()
+	ctx := store.WithWorkspace(t.Context(), workspace)
+	_, err = st.UpdateWorkspaceConfig(ctx, 1, &config.Config{Workspace: workspace})
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("UpdateWorkspaceConfig error=%v, want store.ErrNotFound", err)
+	}
+}
+
 func TestPhase47PersistenceIntegration(t *testing.T) {
 	databaseURL := integrationDatabaseURL(t)
 	ctx := context.Background()

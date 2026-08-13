@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -29,8 +30,13 @@ func (s *Server) getWorkspaceConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	record, err := s.ConfigStore.WorkspaceConfig(r.Context())
+	if errors.Is(err, store.ErrNotFound) {
+		http.Error(w, "workspace config unavailable", http.StatusNotFound)
+		return
+	}
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("get workspace config: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	if s.Deployment != nil {
@@ -113,8 +119,13 @@ func (s *Server) putWorkspaceConfig(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	if errors.Is(err, store.ErrNotFound) {
+		http.Error(w, "workspace config unavailable", http.StatusNotFound)
+		return
+	}
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("update workspace config: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("ETag", fmt.Sprintf("\"%d\"", receipt.Version))

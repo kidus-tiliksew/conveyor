@@ -3,6 +3,7 @@ package httpapi
 import (
 	"errors"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 
@@ -49,7 +50,8 @@ func referenceUpload(w http.ResponseWriter, r *http.Request) (string, string, st
 func (s *Server) listReferenceDocuments(w http.ResponseWriter, r *http.Request) {
 	documents, err := s.Store.ListReferenceDocuments(r.Context(), false)
 	if err != nil {
-		http.Error(w, err.Error(), 500)
+		log.Printf("handle reference document request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	writeJSON(w, 200, documents)

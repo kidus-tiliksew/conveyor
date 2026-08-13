@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -57,18 +58,21 @@ func buildSystemDesignView(document core.SystemDesign, versions []core.SystemDes
 func (s *Server) listSystemDesigns(w http.ResponseWriter, r *http.Request) {
 	items, err := s.Store.ListSystemDesigns(r.Context())
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("handle system design request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	views := make([]systemDesignView, 0, len(items))
 	versions, err := s.Store.ListSystemDesignVersionsByDocument(r.Context())
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("handle system design request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	events, err := s.Store.ListSystemDesignEventsByDocument(r.Context())
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("handle system design request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	var drift []monitor.Drift
@@ -102,7 +106,8 @@ func (s *Server) getSystemDesign(w http.ResponseWriter, r *http.Request) {
 	}
 	view, err := s.systemDesignView(r, item, drift)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("handle system design request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	writeJSON(w, http.StatusOK, view)
@@ -223,7 +228,8 @@ func (s *Server) confirmSystemDesignVersion(w http.ResponseWriter, r *http.Reque
 func (s *Server) listDecisions(w http.ResponseWriter, r *http.Request) {
 	items, err := s.Store.ListDecisions(r.Context())
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("handle system design request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	if items == nil {

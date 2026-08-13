@@ -77,6 +77,26 @@ type failOnceArtifactStore struct {
 	failAt int
 }
 
+type notFoundRaceStore struct {
+	store.Store
+	failEnsure       bool
+	failIntervention bool
+}
+
+func (s notFoundRaceStore) EnsureTaskEnqueued(context.Context, string) error {
+	if s.failEnsure {
+		return fmt.Errorf("enqueue race: %w", store.ErrNotFound)
+	}
+	return nil
+}
+
+func (s notFoundRaceStore) CreateIntervention(context.Context, core.Intervention) error {
+	if s.failIntervention {
+		return fmt.Errorf("intervention race: %w", store.ErrNotFound)
+	}
+	return nil
+}
+
 type staticCredentialVerifier map[string]core.AuthenticatedCredential
 
 func (v staticCredentialVerifier) VerifyCredential(_ context.Context, token string) (core.AuthenticatedCredential, error) {
@@ -1099,6 +1119,23 @@ func TestRedispatchRepairsAlreadyQueuedTask(t *testing.T) {
 	}
 }
 
+func TestRedispatchMapsEnqueueRaceToNotFound(t *testing.T) {
+	t.Parallel()
+	base := store.NewMemory()
+	if err := base.CreateTask(t.Context(), core.Task{ID: "raced-task", State: core.TaskQueued}); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(notFoundRaceStore{Store: base, failEnsure: true})
+	server.BearerToken = "token"
+	request := httptest.NewRequest(http.MethodPost, "/v1/tasks/raced-task/redispatch", bytes.NewReader([]byte(`{}`)))
+	request.Header.Set("Authorization", "Bearer token")
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("status=%d body=%q", response.Code, response.Body.String())
+	}
+}
+
 func TestRedispatchRecoversParkedTaskAtRecordedStage(t *testing.T) {
 	t.Parallel()
 	st := store.NewMemory()
@@ -1705,6 +1742,36 @@ func TestPullToLocalProvidesDedicatedWorktreeCommandBeforePush(t *testing.T) {
 	if len(interventions) != 1 || interventions[0].Action != core.InterventionPull {
 		t.Fatalf("pull-to-local interventions = %+v", interventions)
 	}
+}
+
+func TestReviewMapsInterventionRacesToNotFound(t *testing.T) {
+	t.Run("ordinary intervention", func(t *testing.T) {
+		base := store.NewMemory()
+		if err := base.CreateTask(t.Context(), core.Task{ID: "raced-review", State: core.TaskAwaiting, CreatedAt: time.Now()}); err != nil {
+			t.Fatal(err)
+		}
+		server := NewServer(notFoundRaceStore{Store: base, failIntervention: true})
+		server.BearerToken = "token"
+		request := httptest.NewRequest(http.MethodPost, "/v1/tasks/raced-review/review", bytes.NewBufferString(`{"action":"pull_to_local","reason_code":"race"}`))
+		request.Header.Set("Authorization", "Bearer token")
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, request)
+		if response.Code != http.StatusNotFound {
+			t.Fatalf("status=%d body=%q", response.Code, response.Body.String())
+		}
+	})
+
+	t.Run("plan revision intervention", func(t *testing.T) {
+		_, base, server, taskID, _ := newPlanRevisionReviewServer(t)
+		server.Store = notFoundRaceStore{Store: base, failIntervention: true}
+		request := httptest.NewRequest(http.MethodPost, "/v1/tasks/"+taskID+"/review", bytes.NewBufferString(`{"action":"redirect","reason_code":"plan-revision-approved","comment":"Proceed."}`))
+		request.Header.Set("Authorization", "Bearer token")
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, request)
+		if response.Code != http.StatusNotFound {
+			t.Fatalf("status=%d body=%q", response.Code, response.Body.String())
+		}
+	})
 }
 
 func TestReviewRedirectRecordsReasonAndRequeues(t *testing.T) {

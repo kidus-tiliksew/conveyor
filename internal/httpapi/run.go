@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log"
 	"net/http"
 	"sort"
 	"strings"
@@ -14,6 +16,11 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
+)
+
+var (
+	errTaskRunConfigUnavailable   = errors.New("task run configuration unavailable")
+	errTaskRepositoryUnconfigured = errors.New("task repository is not configured")
 )
 
 func (s *Server) requireTaskRunAuth(next http.Handler) http.Handler {
@@ -54,8 +61,17 @@ func (s *Server) getTaskRunOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	dispatch, found, err := s.nextTaskRunOrder(r.Context(), task)
+	if errors.Is(err, errTaskRunConfigUnavailable) {
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	if errors.Is(err, errTaskRepositoryUnconfigured) {
+		http.Error(w, errTaskRepositoryUnconfigured.Error(), http.StatusConflict)
+		return
+	}
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("get task run order: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	if !found {
@@ -91,11 +107,11 @@ func (s *Server) nextTaskRunOrder(ctx context.Context, task core.Task) (workerse
 	})
 	cfg, err := s.ConfigProvider(ctx)
 	if err != nil {
-		return workerservice.DispatchOrder{}, false, err
+		return workerservice.DispatchOrder{}, false, fmt.Errorf("%w: %v", errTaskRunConfigUnavailable, err)
 	}
 	repository, ok := cfg.Repo(task.Repo)
 	if !ok {
-		return workerservice.DispatchOrder{}, false, errors.New("task repository is not configured")
+		return workerservice.DispatchOrder{}, false, errTaskRepositoryUnconfigured
 	}
 	return workerservice.DispatchOrder{
 		Order: eligible[0], Task: task, Repository: repository,
@@ -138,8 +154,17 @@ func (s *Server) claimTaskRunOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	next, found, err := s.nextTaskRunOrder(r.Context(), task)
+	if errors.Is(err, errTaskRunConfigUnavailable) {
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	if errors.Is(err, errTaskRepositoryUnconfigured) {
+		http.Error(w, errTaskRepositoryUnconfigured.Error(), http.StatusConflict)
+		return
+	}
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("resolve task run claim order: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	if !found || next.Order.ID != orderID {

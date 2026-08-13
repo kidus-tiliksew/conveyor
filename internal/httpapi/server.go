@@ -268,7 +268,12 @@ func (s *Server) redispatchTask(w http.ResponseWriter, r *http.Request) {
 	}
 	if t.State == core.TaskQueued {
 		if err := s.Store.EnsureTaskEnqueued(r.Context(), id); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			if errors.Is(err, store.ErrNotFound) {
+				http.Error(w, err.Error(), http.StatusNotFound)
+				return
+			}
+			log.Printf("ensure task enqueued: %v", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
 	} else {
@@ -629,7 +634,8 @@ func (s *Server) closeTask(w http.ResponseWriter, r *http.Request) {
 	}
 	latest, hasJob, err := s.Store.GetLatestJob(r.Context(), id)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("handle API request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	if !hasJob {
@@ -651,7 +657,8 @@ func (s *Server) closeTask(w http.ResponseWriter, r *http.Request) {
 	}
 	updated, err := s.Store.GetTask(r.Context(), id)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("handle API request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	writeJSON(w, http.StatusAccepted, updated)
@@ -670,7 +677,8 @@ func (s *Server) reviewTask(w http.ResponseWriter, r *http.Request) {
 	}
 	_, planRevisionGate, err := dispatch.PendingPlanRevisionGate(r.Context(), s.Store, id)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("handle API request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	var request reviewRequest
@@ -708,18 +716,15 @@ func (s *Server) reviewTask(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	checkoutCommand, checkoutAvailable, checkoutGuidance, err := s.checkoutState(r.Context(), id)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
+	checkoutCommand, checkoutAvailable, checkoutGuidance := s.checkoutState(id)
 	if request.Action == core.InterventionPull && !checkoutAvailable {
 		http.Error(w, checkoutGuidance, http.StatusConflict)
 		return
 	}
 	latestJob, hasJob, err := s.Store.GetLatestJob(r.Context(), id)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("handle API request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	jobID := ""
@@ -749,7 +754,12 @@ func (s *Server) reviewTask(w http.ResponseWriter, r *http.Request) {
 		// the decision before that transition so context assembly cannot observe
 		// the re-entry order without its approving direction (REQ-2, AC-2.2).
 		if err := s.Store.CreateIntervention(r.Context(), intervention); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			if errors.Is(err, store.ErrNotFound) {
+				http.Error(w, err.Error(), http.StatusNotFound)
+				return
+			}
+			log.Printf("create plan revision intervention: %v", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
 		interventionRecorded = true
@@ -767,7 +777,12 @@ func (s *Server) reviewTask(w http.ResponseWriter, r *http.Request) {
 	}
 	if !interventionRecorded {
 		if err := s.Store.CreateIntervention(r.Context(), intervention); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			if errors.Is(err, store.ErrNotFound) {
+				http.Error(w, err.Error(), http.StatusNotFound)
+				return
+			}
+			log.Printf("create intervention: %v", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
 	}
@@ -776,7 +791,8 @@ func (s *Server) reviewTask(w http.ResponseWriter, r *http.Request) {
 	}
 	updated, err := s.Store.GetTask(r.Context(), id)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("handle API request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{
@@ -808,7 +824,8 @@ func (s *Server) mergeTask(w http.ResponseWriter, r *http.Request) {
 	}
 	updated, err := s.Store.GetTask(r.Context(), id)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("handle API request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	if updated.State != core.TaskMerged {
@@ -948,7 +965,8 @@ func (s *Server) storeTaskAttachment(r *http.Request, task core.Task, header *mu
 func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
 	tasks, err := s.Store.ListTasks(r.Context())
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("handle API request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	writeJSON(w, http.StatusOK, tasks)
@@ -962,7 +980,8 @@ func (s *Server) getTask(w http.ResponseWriter, r *http.Request) {
 	}
 	t.Context, err = store.TaskContextForTask(r.Context(), s.Store, t.ID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("handle API request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	writeJSON(w, http.StatusOK, t)
@@ -971,7 +990,8 @@ func (s *Server) getTask(w http.ResponseWriter, r *http.Request) {
 func (s *Server) listJobs(w http.ResponseWriter, r *http.Request) {
 	jobs, err := s.Store.ListJobs(r.Context(), chi.URLParam(r, "id"))
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("handle API request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	writeJSON(w, http.StatusOK, jobs)
@@ -980,7 +1000,8 @@ func (s *Server) listJobs(w http.ResponseWriter, r *http.Request) {
 func (s *Server) listEvents(w http.ResponseWriter, r *http.Request) {
 	events, err := s.Store.ListEvents(r.Context(), chi.URLParam(r, "id"))
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("handle API request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	writeJSON(w, http.StatusOK, events)
@@ -1034,7 +1055,8 @@ func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
 func (s *Server) listInterventions(w http.ResponseWriter, r *http.Request) {
 	interventions, err := s.Store.ListInterventions(r.Context(), chi.URLParam(r, "id"))
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("handle API request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	writeJSON(w, http.StatusOK, interventions)
@@ -1043,7 +1065,8 @@ func (s *Server) listInterventions(w http.ResponseWriter, r *http.Request) {
 func (s *Server) getLatestSpec(w http.ResponseWriter, r *http.Request) {
 	spec, ok, err := s.Store.GetLatestSpecVersion(r.Context(), chi.URLParam(r, "id"))
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("handle API request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	if !ok {
@@ -1125,12 +1148,14 @@ func (s *Server) listActivity(w http.ResponseWriter, r *http.Request) {
 func (s *Server) listActivityFiltered(w http.ResponseWriter, r *http.Request, filter store.TaskFilter, reviewsOnly bool) {
 	tasks, err := s.Store.ListTasksFiltered(r.Context(), filter)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("handle API request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	markers, err := s.Store.ListActivityMarkers(r.Context())
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("handle API request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	markerByTask := make(map[string]store.ActivityMarker, len(markers))
@@ -1139,12 +1164,14 @@ func (s *Server) listActivityFiltered(w http.ResponseWriter, r *http.Request, fi
 	}
 	proposals, err := s.Store.ListPendingProposals(r.Context())
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("handle API request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	pendingAuthority, err := s.pendingAuthorityTasks(r.Context(), proposals)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("handle API request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	items := make([]activityItem, 0, len(tasks))
@@ -1270,7 +1297,8 @@ func (s *Server) listTaskOperations(w http.ResponseWriter, r *http.Request) {
 	}
 	page, err := s.Store.ListTaskOperations(ctx, query)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("handle API request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	if paginated {
@@ -1284,7 +1312,8 @@ func (s *Server) listTaskOperations(w http.ResponseWriter, r *http.Request) {
 	}
 	markers, err := s.Store.ListActivityMarkersForTasks(ctx, taskIDs)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("handle API request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	markerByTask := make(map[string]store.ActivityMarker, len(markers))
@@ -1293,12 +1322,14 @@ func (s *Server) listTaskOperations(w http.ResponseWriter, r *http.Request) {
 	}
 	proposals, err := s.Store.ListPendingProposals(ctx)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("handle API request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	pendingAuthority, err := s.pendingAuthorityTasks(ctx, proposals)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("handle API request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	// Blocked stays a derived predicate owned by the dependency substrate
@@ -1306,7 +1337,8 @@ func (s *Server) listTaskOperations(w http.ResponseWriter, r *http.Request) {
 	// task record itself does not carry.
 	blockers, err := s.Store.ListDependencyBlockers(ctx, taskIDs)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("handle API request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	// Attached documents repeat across rows; memoizing only the document reads
@@ -1317,7 +1349,8 @@ func (s *Server) listTaskOperations(w http.ResponseWriter, r *http.Request) {
 		events := page.Events[task.ID]
 		task.Context, err = store.TaskContextFromEvents(ctx, documents, events)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			log.Printf("handle API request: %v", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
 		latest, hasPlan := page.Plans[task.ID]
@@ -1546,27 +1579,32 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 	}
 	jobs, err := s.Store.ListJobs(r.Context(), id)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("handle API request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	events, err := s.Store.ListEvents(r.Context(), id)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("handle API request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	task.Context, err = store.TaskContextFromEvents(r.Context(), s.Store, events)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("handle API request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	interventions, err := s.Store.ListInterventions(r.Context(), id)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("handle API request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	spec, hasSpec, err := s.Store.GetLatestSpecVersion(r.Context(), id)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("handle API request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	var specPointer *core.SpecVersion
@@ -1576,7 +1614,8 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 	}
 	workOrders, err := s.Store.ListTaskWorkOrders(r.Context(), id)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("handle API request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	if workOrders == nil {
@@ -1604,12 +1643,14 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 	// evidence, not attachments.
 	attachments, err := s.taskAttachments(r.Context(), id)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("handle API request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	verificationEvidence, err := s.taskVerificationEvidence(r.Context(), id)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("handle API request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	var workerStatus *workerservice.TaskWorkerStatus
@@ -1640,7 +1681,8 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 	}
 	proposals, err := s.Store.ListPendingProposals(r.Context())
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("handle API request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	pendingAuthority := pendingAuthorityForTask(id, workOrders, proposals)
@@ -1759,9 +1801,9 @@ func (s *Server) taskAttachments(ctx context.Context, taskID string) ([]core.Art
 	return attachments, nil
 }
 
-func (s *Server) checkoutState(ctx context.Context, taskID string) (string, bool, string, error) {
+func (s *Server) checkoutState(taskID string) (string, bool, string) {
 	command, available, guidance := checkoutStateFromHistory(taskID, nil)
-	return command, available, guidance, nil
+	return command, available, guidance
 }
 
 func checkoutStateFromHistory(taskID string, _ []core.Event) (string, bool, string) {
