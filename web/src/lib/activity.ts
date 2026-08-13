@@ -1,5 +1,39 @@
-import { taskStateLabels, type GroupKey } from './contracts'
-import type { ActivityItem, ActivitySummary, Intervention, Job, TaskEvent, TaskRelation, WorkOrder } from './types'
+import { type GroupKey, taskStateLabels } from './contracts'
+import type {
+  ActivityItem,
+  ActivitySummary,
+  Intervention,
+  Job,
+  TaskAssignee,
+  TaskEvent,
+  TaskRelation,
+  WorkOrder,
+} from './types'
+
+// The name a person is known by, falling through the identity fields the task
+// projection carries. The raw user ID is the last resort: it identifies an
+// account, it does not name a colleague, so it never displaces a real name
+// (REQ-4, AC-4.3).
+export function assigneeName(assignee: TaskAssignee): string {
+  return assignee.display_name || assignee.email || assignee.user_id
+}
+
+// The store refuses a claim on an assigned task by naming the assignee's raw
+// account ID ("task T is assigned to usr_x; only that assignee may claim its
+// work orders", conveyor:internal/store/store.go). That sentence is written for
+// an agent's error channel, not for a person reading a task, so every surface
+// that would otherwise print it says who holds the task instead (AC-4.1,
+// AC-4.3). The hydrated assignee supplies the name; without one the account ID
+// is still better than the transport sentence around it.
+const claimRefusalPattern = /task \S+ is assigned to (\S+?);\s*only that assignee may claim its work orders/i
+
+export function humanizeClaimRefusal(text: string | undefined, assignee?: TaskAssignee): string | undefined {
+  if (!text) return text
+  const match = claimRefusalPattern.exec(text)
+  if (!match) return text
+  const name = assignee && assignee.user_id === match[1] ? assigneeName(assignee) : match[1]
+  return `Assigned to ${name} — only they can pick this up.`
+}
 
 // Feed grouping: the pipeline stage a task currently occupies.
 // Human gates, approved tasks awaiting merge, parked tasks, and pending
@@ -326,7 +360,9 @@ export function deriveCurrentExecutionState(item: ActivityItem): CurrentExecutio
       order,
       attemptId: order.last_attempt_id,
       title: `${stage} paused — recovery needed`,
-      blocker: order.last_failure_message || 'The latest attempt released the work before completion.',
+      blocker:
+        humanizeClaimRefusal(order.last_failure_message, item.task.assignee) ||
+        'The latest attempt released the work before completion.',
       retry: 'No automatic retry is pending.',
       nextAction: 'Recover the work order to try again.',
       action: 'recover',
@@ -648,9 +684,25 @@ function jobSummary(job: Job, events: TaskEvent[]): string {
 function noteFor(
   event: TaskEvent,
   panels: PanelIndex,
+  assignee?: TaskAssignee,
 ): Omit<Extract<TimelineEntry, { type: 'note' }>, 'type' | 'at' | 'key'> | undefined {
   const payload = event.payload ?? {}
   switch (event.kind) {
+    // Assignment is an audited operator act, so it folds into the timeline
+    // beside the other decisions rather than being legible only as a header
+    // field that silently changed (REQ-4, AC-1.2). The event payload carries
+    // the account ID alone; the task's hydrated assignee is what supplies a
+    // name, so a still-current assignment reads as a person.
+    case 'task.assignee.set': {
+      const userID = typeof payload.assignee_user_id === 'string' ? payload.assignee_user_id : ''
+      const name = assignee && assignee.user_id === userID ? assigneeName(assignee) : userID
+      return { title: name ? `Assigned to ${name}` : 'Assignee set' }
+    }
+    // Revoking a member's workspace binding clears their assignments too, so
+    // this entry is not always a deliberate unassignment; it states what
+    // happened and leaves the cause to the surrounding entries.
+    case 'task.assignee.cleared':
+      return { title: 'Assignee cleared' }
     case 'work_order.child_failed':
       return {
         title:
@@ -965,7 +1017,7 @@ export function buildTimeline(item: ActivityItem): TimelineEntry[] {
   }
   for (const event of item.events) {
     if (attemptEventKinds.has(event.kind)) continue
-    const note = noteFor(event, panels)
+    const note = noteFor(event, panels, item.task.assignee)
     if (note) entries.push({ type: 'note', at: event.at, key: `event-${event.id}`, ...note })
   }
   for (const diagnostic of item.review_diagnostics ?? []) {

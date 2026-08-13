@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test'
+import { expect, type Page, test } from '@playwright/test'
 
 // The Board half of the shared Tasks/Board filter family (AC-2.4). What each
 // member means is asserted against the server in Go; what this covers is that
@@ -101,6 +101,28 @@ async function routeBoard(page: Page, seen: string[]) {
   )
   await page.route('**/v1/requirements**', (route) => route.fulfill({ json: requirementCorpus }))
   await page.route('**/v1/system-designs**', (route) => route.fulfill({ json: designCorpus }))
+  // The assignee member offers workspace co-members, so the shared filter row
+  // needs the membership read on this surface too.
+  await page.route('**/v1/workspaces/*/members**', (route) =>
+    route.fulfill({
+      json: [
+        {
+          workspace_id: 'demo',
+          user_id: 'usr_ada',
+          display_name: 'Ada Owner',
+          role: 'operator',
+          created_at: '2026-08-06T10:00:00Z',
+        },
+        {
+          workspace_id: 'demo',
+          user_id: 'usr_bo',
+          display_name: 'Bo Member',
+          role: 'user',
+          created_at: '2026-08-06T10:00:00Z',
+        },
+      ],
+    }),
+  )
   await page.route('**/v1/workers**', (route) =>
     route.fulfill({ json: { workers: [], auto_available: false, setup_serviceability: {} } }),
   )
@@ -275,9 +297,23 @@ test('board sends the shared filter family to the server rather than narrowing i
   await expect(page.getByRole('tab', { name: 'Requirement' })).toBeVisible()
   await expect(page.getByRole('tab', { name: 'System design' })).toBeVisible()
 
+  // Assignee travels the same way, as one single-valued member: a task has one
+  // holder, so there is no union to express. DEC-18 bars priority and phase and
+  // permits assignee as a claim-eligibility constraint, so it belongs here while
+  // the barred fields still do not.
+  await page.getByRole('tab', { name: 'Assignee' }).click()
+  await page.getByRole('option', { name: 'Bo Member' }).click()
+  await expect.poll(() => seen.some((url) => url.includes('assignee=usr_bo')), { timeout: 5000 }).toBe(true)
+
+  // Unassigned is its own choice, not the absence of one, and it replaces the
+  // member rather than accumulating beside it.
+  await page.getByRole('option', { name: 'Unassigned' }).click()
+  await expect.poll(() => seen.some((url) => url.includes('assignee=unassigned')), { timeout: 5000 }).toBe(true)
+  expect(seen.some((url) => url.includes('assignee=usr_bo') && url.includes('assignee=unassigned'))).toBe(false)
+
   // AC-1.5 stands on this surface too: no barred field is offered as a filter.
   await expect(page.getByRole('tab', { name: 'Priority' })).toHaveCount(0)
-  await expect(page.getByRole('tab', { name: 'Assignee' })).toHaveCount(0)
+  await expect(page.getByRole('tab', { name: 'Phase' })).toHaveCount(0)
 })
 
 test('board opens and closes task creation without leaving the board', async ({ page }) => {
