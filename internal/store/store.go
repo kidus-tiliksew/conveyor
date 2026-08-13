@@ -346,13 +346,28 @@ type LineageNodeRecord struct {
 }
 
 // RequirementVersionConflict is returned when an operator confirmation was
-// based on stale intent or targets a version already superseded by current
-// intent. HTTP handlers use its fields for a non-ambiguous 409 response.
+// based on stale If-Match intent. HTTP handlers use its fields for a
+// non-ambiguous 409 response.
 type RequirementVersionConflict struct {
 	RequirementID string
 	Requested     int
 	Current       int
 	Expected      *int
+}
+
+// RequirementVersionSuperseded is the terminal result of addressing an
+// unconfirmed version retired by a later confirmation. It is intentionally
+// distinct from an optimistic-concurrency mismatch: refreshing cannot make
+// this version actionable again.
+type RequirementVersionSuperseded struct {
+	RequirementID string
+	Requested     int
+	Current       int
+	SupersededBy  int
+}
+
+func (e *RequirementVersionSuperseded) Error() string {
+	return fmt.Sprintf("requirement %s version %d was superseded by newer confirmed version %d", e.RequirementID, e.Requested, e.SupersededBy)
 }
 
 type SystemDesignVersionConflict struct {

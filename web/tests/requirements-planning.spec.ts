@@ -1388,6 +1388,98 @@ test('requirements deep-link exact versions, render statements, diff pending int
   expect(ifMatch).toBe('"1"')
 })
 
+test('requirement confirmation explains superseded versions separately from If-Match races', async ({ page }) => {
+  await initShell(page)
+  const current = {
+    ...requirement.pending_versions[0],
+    confirmed: true,
+    confirmed_at: '2026-07-30T10:06:00Z',
+  }
+  const pending2 = { ...requirement.pending_versions[0], version: 2 }
+  const pending3 = { ...requirement.pending_versions[0], version: 3 }
+  const view = {
+    ...requirement,
+    current_version: current,
+    pending_versions: [pending2, pending3],
+  }
+  await page.route('**/v1/**', async (route) => {
+    const shell = shellResponse(route)
+    if (shell) return await shell
+    const url = new URL(route.request().url())
+    if (url.pathname === '/v1/requirements') return route.fulfill({ json: [summarizeRequirement(view)] })
+    if (url.pathname === '/v1/requirements/req-retries') return route.fulfill({ json: view })
+    if (url.pathname === '/v1/requirements/req-retries/versions')
+      return route.fulfill({ json: [current, pending2, pending3] })
+    if (url.pathname.endsWith('/versions/2/confirm'))
+      return route.fulfill({
+        status: 409,
+        json: {
+          error: 'requirement_version_superseded',
+          message: 'requirement req-retries version 2 was superseded by newer confirmed version 4',
+        },
+      })
+    if (url.pathname.endsWith('/versions/3/confirm'))
+      return route.fulfill({
+        status: 409,
+        json: { error: 'requirement_current_version_mismatch', message: 'stale If-Match' },
+      })
+    return route.fulfill({ json: [] })
+  })
+
+  await page.goto('/requirements?requirement=req-retries')
+  const attention = page.getByRole('region', { name: 'Needs your attention' })
+  await attention.getByRole('button', { name: 'Confirm version 2' }).click()
+  await expect(attention).toContainText(
+    'This requirement version was superseded by a newer confirmed version and can no longer be confirmed.',
+  )
+  await attention.getByRole('button', { name: 'Confirm version 3' }).click()
+  await expect(attention).toContainText(
+    'This requirement changed while you were reviewing it. Refresh and choose the version again.',
+  )
+})
+
+test('retired requirement versions stay in history as superseded and leave attention', async ({ page }) => {
+  await initShell(page)
+  const current = {
+    ...requirement.pending_versions[0],
+    version: 4,
+    confirmed: true,
+    confirmed_at: '2026-07-30T10:10:00Z',
+  }
+  const retired = {
+    ...requirement.pending_versions[0],
+    version: 2,
+    retired: true,
+    retired_by: 'operator',
+    retired_at: '2026-07-30T10:10:00Z',
+    retired_by_version: 4,
+  }
+  const view = {
+    ...requirement,
+    requirement: { ...requirement.requirement, current_version: 4 },
+    current_version: current,
+    pending_versions: [],
+  }
+  await page.route('**/v1/**', async (route) => {
+    const shell = shellResponse(route)
+    if (shell) return await shell
+    const url = new URL(route.request().url())
+    if (url.pathname === '/v1/requirements') return route.fulfill({ json: [summarizeRequirement(view)] })
+    if (url.pathname === '/v1/requirements/req-retries') return route.fulfill({ json: view })
+    if (url.pathname === '/v1/requirements/req-retries/versions') return route.fulfill({ json: [retired, current] })
+    return route.fulfill({ json: [] })
+  })
+
+  await page.goto('/requirements?requirement=req-retries')
+  const attention = page.getByRole('region', { name: 'Needs your attention' })
+  await expect(attention).not.toContainText('Version 2 is waiting for you')
+  const history = page.getByRole('region', { name: 'Requirement versions' })
+  const version2 = history.getByRole('button').filter({ hasText: /^v2/ })
+  await expect(version2).toContainText('Superseded')
+  await version2.click()
+  await expect(page.getByText('Superseded', { exact: true }).first()).toBeVisible()
+})
+
 test('migrated seeds explain disabled confirmation and requirement switches open the latest version', async ({
   page,
 }) => {

@@ -53,6 +53,10 @@ func (s *Store) CreateRequirement(ctx context.Context, requirement core.Requirem
 	first.Confirmed = false
 	first.ConfirmedBy = ""
 	first.ConfirmedAt = time.Time{}
+	first.Retired = false
+	first.RetiredBy = ""
+	first.RetiredAt = time.Time{}
+	first.RetiredByVersion = 0
 	if first.CreatedAt.IsZero() {
 		first.CreatedAt = now
 	}
@@ -168,6 +172,10 @@ func (s *Store) ProposeRequirementVersion(ctx context.Context, version core.Requ
 	version.Confirmed = false
 	version.ConfirmedBy = ""
 	version.ConfirmedAt = time.Time{}
+	version.Retired = false
+	version.RetiredBy = ""
+	version.RetiredAt = time.Time{}
+	version.RetiredByVersion = 0
 	if version.CreatedAt.IsZero() {
 		version.CreatedAt = time.Now().UTC()
 	}
@@ -286,6 +294,12 @@ func (s *Store) ConfirmRequirementVersion(ctx context.Context, requirementID str
 				` WHERE workspace_id=$1 AND id=$2`, workspace(ctx), requirementID), requirementID)
 			return err
 		}
+		if stored.Retired {
+			return &store.RequirementVersionSuperseded{
+				RequirementID: requirementID, Requested: version, Current: current,
+				SupersededBy: stored.RetiredByVersion,
+			}
+		}
 		// Confirmation is where a real statement block becomes mandatory, so a
 		// migration seed cannot become current intent unedited.
 		if err := core.ConfirmableRequirementVersion(stored); err != nil {
@@ -294,12 +308,43 @@ func (s *Store) ConfirmRequirementVersion(ctx context.Context, requirementID str
 		// Confirmation moves forward only: re-confirming a superseded version
 		// would silently revert intent the operator already advanced past.
 		if currentVersion != nil && version < int(*currentVersion) {
-			return &store.RequirementVersionConflict{
+			return &store.RequirementVersionSuperseded{
 				RequirementID: requirementID, Requested: version, Current: int(*currentVersion),
+				SupersededBy: int(*currentVersion),
 			}
 		}
 		actor := store.ActorFromContext(ctx)
 		now := time.Now().UTC()
+		retiredRows, err := tx.Query(ctx, `UPDATE requirement_versions
+			SET retired=true, retired_by=$4, retired_at=$5, retired_by_version=$3
+			WHERE workspace_id=$1 AND requirement_id=$2 AND version<$3
+			  AND NOT confirmed AND NOT retired
+			RETURNING version`, workspace(ctx), requirementID, version, actor.ID, now)
+		if err != nil {
+			return err
+		}
+		var retiredVersions []int
+		for retiredRows.Next() {
+			var retiredVersion int
+			if err = retiredRows.Scan(&retiredVersion); err != nil {
+				retiredRows.Close()
+				return err
+			}
+			retiredVersions = append(retiredVersions, retiredVersion)
+		}
+		if err = retiredRows.Err(); err != nil {
+			retiredRows.Close()
+			return err
+		}
+		retiredRows.Close()
+		for _, retiredVersion := range retiredVersions {
+			if err = insertRequirementEvent(ctx, q, "requirement.version_retired", map[string]any{
+				"workspace_id": workspace(ctx), "requirement_id": requirementID, "version": retiredVersion,
+				"retired_by": actor.ID, "confirmed_version": version,
+			}); err != nil {
+				return err
+			}
+		}
 		if _, err := tx.Exec(ctx,
 			`UPDATE requirement_versions SET confirmed=true, confirmed_by=$4, confirmed_at=$5
 			 WHERE workspace_id=$1 AND requirement_id=$2 AND version=$3`,
@@ -900,7 +945,7 @@ func (s *Store) ListPlanningSessionEvents(ctx context.Context, sessionID string)
 
 const requirementSelect = `SELECT workspace_id,id,slug,title,current_version,statement_high_water_mark,created_at,updated_at FROM requirements`
 
-const requirementVersionSelect = `SELECT workspace_id,requirement_id,version,content,statements_json,origin,origin_session_id,origin_drift_id,confirmed,confirmed_by,confirmed_at,created_at,derived_from FROM requirement_versions`
+const requirementVersionSelect = `SELECT workspace_id,requirement_id,version,content,statements_json,origin,origin_session_id,origin_drift_id,confirmed,confirmed_by,confirmed_at,retired,retired_by,retired_at,retired_by_version,created_at,derived_from FROM requirement_versions`
 
 const planningSessionSelect = `SELECT workspace_id,id,title,status,goal,COALESCE(requirement_context_id,''),
 	COALESCE(system_design_context_id,''),COALESCE(produced_requirement_id,''),COALESCE(produced_task_id,''),COALESCE(produced_system_design_id,''),COALESCE(produced_bundle_id,''),
@@ -938,10 +983,14 @@ func scanRequirementVersionRow(row pgx.Row) (core.RequirementVersion, error) {
 	var statements []byte
 	var confirmedBy string
 	var confirmedAt *time.Time
+	var retiredBy string
+	var retiredAt *time.Time
+	var retiredByVersion *int32
 	var derivedFrom []byte
 	if err := row.Scan(&stored.Workspace, &stored.RequirementID, &stored.Version, &stored.Content,
 		&statements, &origin, &stored.OriginSessionID, &stored.OriginDriftID,
-		&stored.Confirmed, &confirmedBy, &confirmedAt, &stored.CreatedAt, &derivedFrom); err != nil {
+		&stored.Confirmed, &confirmedBy, &confirmedAt, &stored.Retired, &retiredBy, &retiredAt,
+		&retiredByVersion, &stored.CreatedAt, &derivedFrom); err != nil {
 		return core.RequirementVersion{}, err
 	}
 	parsed, err := unmarshalRequirementStatements(statements)
@@ -960,6 +1009,13 @@ func scanRequirementVersionRow(row pgx.Row) (core.RequirementVersion, error) {
 	stored.ConfirmedBy = confirmedBy
 	if confirmedAt != nil {
 		stored.ConfirmedAt = *confirmedAt
+	}
+	stored.RetiredBy = retiredBy
+	if retiredAt != nil {
+		stored.RetiredAt = *retiredAt
+	}
+	if retiredByVersion != nil {
+		stored.RetiredByVersion = int(*retiredByVersion)
 	}
 	return stored, nil
 }

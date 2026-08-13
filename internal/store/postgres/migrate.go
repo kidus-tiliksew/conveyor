@@ -189,6 +189,11 @@ CREATE TABLE IF NOT EXISTS conveyor_schema_migrations (
 				return fmt.Errorf("record pull request identity repair audit: %w", err)
 			}
 		}
+		if version == 94 {
+			if err := recordRequirementVersionRetirementAudit(ctx, tx); err != nil {
+				return fmt.Errorf("record requirement version retirement audit: %w", err)
+			}
+		}
 		if _, err := tx.Exec(ctx,
 			"INSERT INTO conveyor_schema_migrations (version, name, checksum) VALUES ($1, $2, $3)",
 			version, filepath.Base(name), checksum,
@@ -278,6 +283,24 @@ WHERE NOT EXISTS (
   WHERE event.workspace_id=summary.workspace_id
     AND event.kind='lineage.pull_request_identity_repaired'
 )`)
+	return err
+}
+
+// recordRequirementVersionRetirementAudit appends one lifecycle event for
+// each migration-094 repair. The schema migration owns the projection update;
+// application code owns append-only ledger writes (design-database).
+func recordRequirementVersionRetirementAudit(ctx context.Context, tx pgx.Tx) error {
+	_, err := tx.Exec(ctx, `
+INSERT INTO events (workspace_id,kind,actor_id,actor_role,payload_json,at)
+SELECT repair.workspace_id,'requirement.version_retired','migration-094','system',jsonb_build_object(
+  'workspace_id',repair.workspace_id,
+  'requirement_id',repair.requirement_id,
+  'version',repair.version,
+  'retired_by','migration-094',
+  'confirmed_version',repair.confirmed_version,
+  'reason','superseded before migration 094'
+),now()
+FROM migration_094_retired_requirement_versions repair`)
 	return err
 }
 
