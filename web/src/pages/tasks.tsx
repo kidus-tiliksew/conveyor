@@ -12,6 +12,7 @@ import {
 } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useWorkspaceSelection } from '../components/app-shell'
+import { AssigneeChip } from '../components/task/assignee-chip'
 import { TaskCreateSheet } from '../components/task/task-create-sheet'
 import {
   emptyTaskFilter,
@@ -26,6 +27,7 @@ import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { Card, CardContent } from '../components/ui/card'
 import { Skeleton } from '../components/ui/skeleton'
+import { humanizeClaimRefusal } from '../lib/activity'
 import { fetchTaskOperations } from '../lib/api'
 import { stageLabels, taskStateLabels } from '../lib/contracts'
 import { errorMessage } from '../lib/errors'
@@ -274,6 +276,10 @@ function TaskRow({ item, selected }: { item: TaskOperationsItem; selected: boole
                 {task.repo}
               </span>
             )}
+            {/* Assignment is claim-eligibility routing, never ordering, so it
+                rides the row's identity line rather than claiming a column of
+                its own beside State and Stage (REQ-4, DEC-18). */}
+            <AssigneeChip assignee={task.assignee} />
           </div>
         </div>
       </div>
@@ -306,7 +312,7 @@ function TaskRow({ item, selected }: { item: TaskOperationsItem; selected: boole
       {item.stalled?.needed && (
         <p className="col-span-full mt-2 border-t border-failure/20 pt-2 text-xs text-failure">
           Stalled — {item.stalled.reason}
-          {item.stalled.last_failure ? `: ${item.stalled.last_failure}` : ''}
+          {item.stalled.last_failure ? `: ${humanizeClaimRefusal(item.stalled.last_failure, task.assignee)}` : ''}
         </p>
       )}
     </li>

@@ -2439,7 +2439,12 @@ test('stalled task is labelled in the operator tray with recover and reasoned ca
   await page.goto('/')
   const tray = page.getByRole('region', { name: 'Needs operator' })
   await expect(tray.getByText('Stalled')).toBeVisible()
-  await expect(tray.getByText('Assigned to Assigned User')).toBeVisible()
+  // The board card carries the shared assignee chip: the name is what shows,
+  // and the account identifiers behind it stay in the tooltip.
+  const assignee = tray.getByTitle('Assigned to Assigned User — assigned@example.test · usr-assigned')
+  await expect(assignee).toBeVisible()
+  await expect(assignee).toContainText('Assigned User')
+  await expect(assignee).toContainText('AU')
   await expect(tray.getByText('harness exited: status 1')).toBeVisible()
   await tray.getByText('Short task').click()
   await expect(page.getByRole('button', { name: 'Recover work order' })).toBeVisible()
@@ -4107,4 +4112,166 @@ test('task detail renders no proposal card for a document the task does not carr
   await expect(page.getByRole('region', { name: 'Activity' })).toBeVisible()
   await expect(page.getByRole('region', { name: 'System Design proposals from this task' })).toHaveCount(0)
   await expect(page.getByText('System Design update proposed')).toHaveCount(0)
+})
+
+// The workspace's own co-members, which is all the assignment picker may ever
+// offer: there is no user directory to search (AC-3.2).
+const assignmentMembers = [
+  {
+    workspace_id: 'demo',
+    user_id: 'usr_ada',
+    email: 'ada@example.test',
+    display_name: 'Ada Owner',
+    role: 'operator' as const,
+    created_at: createdAt,
+  },
+  {
+    workspace_id: 'demo',
+    user_id: 'usr_bo',
+    email: 'bo@example.test',
+    display_name: 'Bo Member',
+    role: 'user' as const,
+    created_at: createdAt,
+  },
+]
+
+/**
+ * Mount task detail with the reads the assignment control depends on, holding
+ * the assignee server-side so a set or clear comes back through the projection
+ * rather than from browser state.
+ *
+ * `operator` decides only what the operator-gated invitations read answers.
+ * That is the real discriminator: the browser is never told its own role, so a
+ * workspace that refuses that read is how the surface learns to stay read-only.
+ */
+async function routeAssignment(page: Page, options: { operator: boolean }) {
+  const state: { assignee?: (typeof assignmentMembers)[number]; events: TaskEventFixture[] } = { events: [] }
+  // The app shell reconciles the stored selection against this enumeration, and
+  // the membership reads are workspace-scoped, so the selection has to survive.
+  await page.route('**/v1/workspaces', (route) => route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] }))
+  await page.route('**/v1/workspaces/demo/invitations**', (route) =>
+    options.operator
+      ? route.fulfill({ json: [] })
+      : route.fulfill({ status: 404, json: { error: 'workspace_not_found', message: 'workspace not found' } }),
+  )
+  await page.route('**/v1/workspaces/demo/members**', (route) => route.fulfill({ json: assignmentMembers }))
+  await page.route('**/v1/tasks/assignable/assignee**', async (route) => {
+    const body = JSON.parse(route.request().postData() ?? '{}') as { assignee_user_id?: string }
+    const userID = (body.assignee_user_id ?? '').trim()
+    state.assignee = assignmentMembers.find((member) => member.user_id === userID)
+    state.events.push({
+      id: 900 + state.events.length,
+      task_id: 'assignable',
+      kind: state.assignee ? 'task.assignee.set' : 'task.assignee.cleared',
+      actor_id: 'usr_ada',
+      actor_role: 'human',
+      payload: { assignee_user_id: userID },
+      at: '2026-07-15T13:00:00Z',
+    })
+    await route.fulfill({ json: {} })
+  })
+  await page.route('**/v1/tasks/assignable/activity**', async (route) => {
+    const item = activity('assignable', false)
+    item.task.assignee = state.assignee
+      ? {
+          user_id: state.assignee.user_id,
+          email: state.assignee.email,
+          display_name: state.assignee.display_name,
+        }
+      : undefined
+    item.events = [...item.events, ...state.events]
+    await route.fulfill({ json: item })
+  })
+}
+
+type TaskEventFixture = {
+  id: number
+  task_id: string
+  kind: string
+  actor_id: string
+  actor_role: 'human'
+  payload: Record<string, unknown>
+  at: string
+}
+
+// REQ-4/AC-1.2: an operator routes the task by picking a workspace co-member,
+// and the audited outcome reads back in the timeline like every other operator
+// act. Assignment constrains who may claim it and nothing else (DEC-18).
+test('an operator assigns a task from the member picker and the timeline records it', async ({ page }) => {
+  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
+  await routeAssignment(page, { operator: true })
+
+  await page.goto('/tasks/assignable/full')
+  await expect(page.getByRole('button', { name: 'Assign', exact: true })).toBeVisible()
+  // Nothing claims the task yet, so no chip stands in for an assignment.
+  await expect(page.getByTitle(/^Assigned to/)).toHaveCount(0)
+
+  await page.getByRole('button', { name: 'Assign', exact: true }).click()
+  const picker = page.getByRole('listbox', { name: 'Workspace members' })
+  await expect(picker.getByRole('option', { name: 'Ada Owner' })).toBeVisible()
+  await picker.getByRole('option', { name: 'Bo Member' }).click()
+
+  // The header fact and the control both follow the server's answer.
+  await expect(page.getByTitle('Assigned to Bo Member — bo@example.test · usr_bo')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Reassign', exact: true })).toBeVisible()
+  await expect(page.getByRole('region', { name: 'Activity' })).toContainText('Assigned to Bo Member')
+
+  // Clearing restores the unassigned presentation rather than leaving a blank.
+  await page.getByRole('button', { name: 'Reassign', exact: true }).click()
+  await page.getByRole('button', { name: 'Clear assignee' }).click()
+  await expect(page.getByRole('button', { name: 'Assign', exact: true })).toBeVisible()
+  await expect(page.getByTitle(/^Assigned to/)).toHaveCount(0)
+  await expect(page.getByRole('region', { name: 'Activity' })).toContainText('Assignee cleared')
+})
+
+// AC-1.2/AC-2.2: setting an assignee is an operator act. A member reads who
+// holds the task and is offered no way to change it.
+test('a non-operator sees the assignee but no set or clear control', async ({ page }) => {
+  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'member'))
+  await routeAssignment(page, { operator: false })
+  await page.route('**/v1/tasks/assignable/activity**', async (route) => {
+    const item = activity('assignable', false)
+    item.task.assignee = { user_id: 'usr_bo', email: 'bo@example.test', display_name: 'Bo Member' }
+    await route.fulfill({ json: item })
+  })
+
+  await page.goto('/tasks/assignable/full')
+  await expect(page.getByTitle('Assigned to Bo Member — bo@example.test · usr_bo')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Assign' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Reassign' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Clear assignee' })).toHaveCount(0)
+})
+
+// AC-4.1/AC-4.3: the store refuses a claim on an assigned task by naming the
+// assignee's raw account ID. That sentence is written for an agent's error
+// channel, so the surface says who holds the task instead.
+test('a claim refusal names the assignee rather than showing the transport sentence', async ({ page }) => {
+  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
+  await page.route('**/v1/workspaces', (route) => route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] }))
+  await page.route('**/v1/activity*', (route) =>
+    route.fulfill({
+      json: [
+        {
+          task: {
+            ...activity('refused', false).task,
+            assignee: { user_id: 'usr_bo', email: 'bo@example.test', display_name: 'Bo Member' },
+          },
+          latest_stage: 'implement',
+          last_event_at: createdAt,
+          needs_attention: true,
+          stalled: {
+            needed: true,
+            reason: 'dispatch is failing repeatedly',
+            last_failure: 'task refused is assigned to usr_bo; only that assignee may claim its work orders',
+          },
+        },
+      ],
+    }),
+  )
+
+  await page.goto('/')
+  const tray = page.getByRole('region', { name: 'Needs operator' })
+  await expect(tray).toContainText('Assigned to Bo Member — only they can pick this up.')
+  await expect(tray).not.toContainText('only that assignee may claim its work orders')
+  await expect(tray).not.toContainText('usr_bo')
 })

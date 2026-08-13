@@ -442,6 +442,23 @@ test('tasks view reports why a stalled task cannot move on its own', async ({ pa
   await expect(healthy.getByLabel('Needs operator')).toHaveCount(0)
 })
 
+// REQ-4/AC-4.3: assignment is claim-eligibility routing, so the row names who
+// holds the task. An unassigned row is silent about it rather than spending
+// width on an empty label.
+test('tasks rows carry an assignee chip only where someone holds the task', async ({ page }) => {
+  await openTasks(page)
+  const assigned = rows(page).filter({ hasText: 'Stuck conveyor change' })
+  const chip = assigned.getByTitle('Assigned to Assigned User — assigned@example.test · usr-assigned')
+  await expect(chip).toBeVisible()
+  // The name is what the row shows; the account identifiers stay in the tooltip.
+  await expect(chip).toContainText('Assigned User')
+  await expect(assigned).not.toContainText('usr-assigned')
+
+  const unassigned = rows(page).filter({ hasText: 'Shipped web change' })
+  await expect(unassigned.getByTitle(/^Assigned to/)).toHaveCount(0)
+  await expect(unassigned).not.toContainText('Unassigned')
+})
+
 // AC-1.5: no barred field appears on the surface, and none is offered as a
 // filter or sort control.
 test('tasks view exposes no priority or declared-phase field', async ({ page }) => {
