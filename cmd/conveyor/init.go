@@ -142,6 +142,18 @@ func checkInitPrerequisites(ctx context.Context, prerequisites initPrerequisites
 	if output, gitErr := prerequisites.run(ctx, git, "-C", clone, "rev-parse", "--show-toplevel"); gitErr != nil || !sameFilesystemPath(strings.TrimSpace(string(output)), clone) {
 		return fmt.Errorf("repository path %s is not a filesystem clone; run `gh repo clone %s %s`", clone, answers.RepositoryURL, clone)
 	}
+	packDir := filepath.Join(clone, "pack")
+	info, err = prerequisites.stat(packDir)
+	if err != nil || !info.IsDir() {
+		return fmt.Errorf("Conveyor prompt pack is missing at %s; restore the repository pack directory and rerun `conveyor init`", packDir)
+	}
+	for _, role := range []string{"triage", "spec", "implement", "review", "planning"} {
+		rolePath := filepath.Join(packDir, "roles", role+".md")
+		info, err = prerequisites.stat(rolePath)
+		if err != nil || !info.Mode().IsRegular() {
+			return fmt.Errorf("Conveyor prompt pack role is missing at %s; restore the required role and rerun `conveyor init`", rolePath)
+		}
+	}
 	return nil
 }
 
@@ -180,8 +192,17 @@ func initializeDeployment(ctx context.Context, output io.Writer, configPath stri
 		if validated.Workspace != answers.WorkspaceID || len(validated.Repos) != 1 || validated.Repos[0].Name != answers.RepositoryName || validated.Repos[0].URL != answers.RepositoryURL || validated.Database.URL != databaseURL {
 			return fmt.Errorf("deployment config already exists at %s and does not match these initialization answers; refusing to overwrite it", absoluteConfig)
 		}
+		if err = checkInitAPIKey(*validated, os.Getenv("CONVEYOR_API_KEY")); err != nil {
+			return err
+		}
 	} else {
-		candidate := defaultInitConfig(databaseURL, answers)
+		candidate, candidateErr := defaultInitConfig(databaseURL, answers)
+		if candidateErr != nil {
+			return candidateErr
+		}
+		if err = checkInitAPIKey(candidate, os.Getenv("CONVEYOR_API_KEY")); err != nil {
+			return err
+		}
 		data, marshalErr := yaml.Marshal(candidate)
 		if marshalErr != nil {
 			return fmt.Errorf("render deployment config: %w", marshalErr)
@@ -248,7 +269,34 @@ func initializeDeployment(ctx context.Context, output io.Writer, configPath stri
 	return nil
 }
 
-func defaultInitConfig(databaseURL string, answers initAnswers) config.Config {
+func initConfigRoutesInProcess(candidate config.Config) bool {
+	if candidate.ExecutionSettings != nil {
+		// Contextual settings always project control-plane triage as an
+		// in-process route; review retains its explicit execution mode.
+		if strings.TrimSpace(candidate.ExecutionSettings.ControlPlane.Triage.Model) != "" || candidate.ExecutionSettings.Review.Execution == config.ExecutionInProcess {
+			return true
+		}
+	}
+	for _, route := range candidate.Routing.Stages {
+		if route.Execution == config.ExecutionInProcess {
+			return true
+		}
+	}
+	return false
+}
+
+func checkInitAPIKey(candidate config.Config, apiKey string) error {
+	if initConfigRoutesInProcess(candidate) && strings.TrimSpace(apiKey) == "" {
+		return errors.New("CONVEYOR_API_KEY is required for in-process stages; set it to the model-provider API key and rerun `conveyor init`")
+	}
+	return nil
+}
+
+func defaultInitConfig(databaseURL string, answers initAnswers) (config.Config, error) {
+	clone, err := filepath.Abs(answers.ClonePath)
+	if err != nil {
+		return config.Config{}, fmt.Errorf("resolve repository clone path %q: %w", answers.ClonePath, err)
+	}
 	harness := config.HarnessTemplates()[0].Harness
 	settings := config.ContextualExecutionSettings{
 		ControlPlane: config.ControlPlaneSettings{
@@ -261,7 +309,7 @@ func defaultInitConfig(databaseURL string, answers initAnswers) config.Config {
 	}
 	review := config.ReviewPanel{Seats: []config.ReviewSeat{{Model: "gpt-5.6-terra", Harness: harness.Name, Effort: "high"}}}
 	return config.Config{
-		Workspace: answers.WorkspaceID, PackDir: "pack", MaxBounces: 10,
+		Workspace: answers.WorkspaceID, PackDir: filepath.Join(clone, "pack"), MaxBounces: 10,
 		WorkOrderQueueTimeoutText: config.DefaultWorkOrderQueueTimeoutText,
 		Database:                  config.Database{Backend: "postgres", URL: databaseURL},
 		ExecutionSettings:         &settings,
@@ -272,5 +320,5 @@ func defaultInitConfig(databaseURL string, answers initAnswers) config.Config {
 		Execution:                 config.ExecutionPolicy{SpecApproval: true, MergeApproval: true, ImplementConcurrency: 1, ReviewConcurrency: 1, FirstActivityTimeoutText: config.DefaultFirstActivityTimeoutText},
 		Repos:                     []config.Repo{{Name: answers.RepositoryName, URL: answers.RepositoryURL, Base: answers.BaseBranch}},
 		Monitor:                   config.MonitorConfig{PollIntervalText: "1m", StartupWindowText: "24h"},
-	}
+	}, nil
 }

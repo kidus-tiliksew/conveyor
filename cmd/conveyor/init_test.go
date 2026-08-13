@@ -3,12 +3,14 @@ package main
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
+	"github.com/kidus-tiliksew/conveyor/internal/pack"
 	"gopkg.in/yaml.v3"
 )
 
@@ -51,6 +53,55 @@ func TestInitPrerequisitesNameEveryMissingRequirement(t *testing.T) {
 	}
 }
 
+func TestInitPrerequisitesRequirePackAndEveryRole(t *testing.T) {
+	clone := t.TempDir()
+	roles := []string{"triage", "spec", "implement", "review", "planning"}
+	makePack := func(t *testing.T) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Join(clone, "pack", "roles"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		for _, role := range roles {
+			if err := os.WriteFile(filepath.Join(clone, "pack", "roles", role+".md"), []byte(role), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	prerequisites := initPrerequisites{
+		lookPath: func(name string) (string, error) { return "/" + name, nil },
+		run: func(_ context.Context, name string, _ ...string) ([]byte, error) {
+			if name == "/git" {
+				return []byte(clone), nil
+			}
+			return nil, nil
+		},
+		stat: os.Stat,
+	}
+	answers := initAnswers{RepositoryName: "app", RepositoryURL: "https://github.com/example/app", ClonePath: clone}
+
+	err := checkInitPrerequisites(t.Context(), prerequisites, answers)
+	if err == nil || !strings.Contains(err.Error(), filepath.Join(clone, "pack")) {
+		t.Fatalf("missing pack error=%v", err)
+	}
+
+	makePack(t)
+	missingRole := filepath.Join(clone, "pack", "roles", "review.md")
+	if err = os.Remove(missingRole); err != nil {
+		t.Fatal(err)
+	}
+	err = checkInitPrerequisites(t.Context(), prerequisites, answers)
+	if err == nil || !strings.Contains(err.Error(), missingRole) {
+		t.Fatalf("missing role error=%v", err)
+	}
+
+	if err = os.WriteFile(missingRole, []byte("review"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err = checkInitPrerequisites(t.Context(), prerequisites, answers); err != nil {
+		t.Fatalf("complete pack: %v", err)
+	}
+}
+
 func TestReadInitAnswersUsesDefaultsAndRequiresRepositoryURL(t *testing.T) {
 	t.Setenv(config.OrganizationNameEnv, "Example Org")
 	input := strings.NewReader("\nOwner\nowner@example.test\ndemo\nDemo\napp\nhttps://github.com/example/app\nmain\n/tmp/app\n")
@@ -68,8 +119,21 @@ func TestReadInitAnswersUsesDefaultsAndRequiresRepositoryURL(t *testing.T) {
 }
 
 func TestDefaultInitConfigValidatesWithoutHandEditing(t *testing.T) {
-	answers := initAnswers{WorkspaceID: "demo", RepositoryName: "app", RepositoryURL: "https://github.com/example/app", BaseBranch: "main"}
-	data, err := yaml.Marshal(defaultInitConfig("postgres://example", answers))
+	clone := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(clone, "pack", "roles"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, role := range []string{"triage", "spec", "implement", "review", "planning"} {
+		if err := os.WriteFile(filepath.Join(clone, "pack", "roles", role+".md"), []byte(role), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	answers := initAnswers{WorkspaceID: "demo", RepositoryName: "app", RepositoryURL: "https://github.com/example/app", BaseBranch: "main", ClonePath: clone}
+	candidate, err := defaultInitConfig("postgres://example", answers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := yaml.Marshal(candidate)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +145,47 @@ func TestDefaultInitConfigValidatesWithoutHandEditing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.Workspace != "demo" || len(loaded.Repos) != 1 || loaded.Repos[0].Name != "app" || loaded.DefaultSetup != "default" {
+	if loaded.Workspace != "demo" || len(loaded.Repos) != 1 || loaded.Repos[0].Name != "app" || loaded.DefaultSetup != "default" || loaded.PackDir != filepath.Join(clone, "pack") {
 		t.Fatalf("config=%+v", loaded)
+	}
+	t.Chdir(t.TempDir())
+	if _, err = pack.Load(loaded.PackDir); err != nil {
+		t.Fatalf("load generated absolute pack path from non-clone cwd: %v", err)
+	}
+}
+
+func TestInitAPIKeyFollowsEmittedInProcessRouting(t *testing.T) {
+	candidate, err := defaultInitConfig("postgres://example", initAnswers{ClonePath: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = checkInitAPIKey(candidate, ""); err == nil || !strings.Contains(err.Error(), "CONVEYOR_API_KEY") {
+		t.Fatalf("missing key error=%v", err)
+	}
+	if err = checkInitAPIKey(candidate, "provider-key"); err != nil {
+		t.Fatalf("present key: %v", err)
+	}
+
+	allMCP := config.Config{Routing: config.Routing{Stages: map[string]config.StageRoute{
+		"triage": {Execution: config.ExecutionMCP},
+		"spec":   {Execution: config.ExecutionMCP},
+		"review": {Execution: config.ExecutionMCP},
+	}}}
+	if err = checkInitAPIKey(allMCP, ""); err != nil {
+		t.Fatalf("config without in-process routing: %v", err)
+	}
+}
+
+func TestInitializeDeploymentRejectsMissingAPIKeyBeforeWritingConfig(t *testing.T) {
+	t.Setenv("CONVEYOR_DATABASE_URL", "postgres://example")
+	t.Setenv("CONVEYOR_API_TOKEN", "operator-token")
+	t.Setenv("CONVEYOR_API_KEY", "")
+	configPath := filepath.Join(t.TempDir(), "nested", "conveyor.yaml")
+	err := initializeDeployment(t.Context(), io.Discard, configPath, initAnswers{ClonePath: t.TempDir()})
+	if err == nil || !strings.Contains(err.Error(), "CONVEYOR_API_KEY") {
+		t.Fatalf("error=%v", err)
+	}
+	if _, statErr := os.Stat(configPath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("config was written before API-key validation: %v", statErr)
 	}
 }

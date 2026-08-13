@@ -27,7 +27,7 @@ type daemonServicePlatform struct {
 }
 
 type daemonServicePaths struct {
-	Name, Unit, Stdout, Stderr, Config, Definition string
+	Name, Unit, Stdout, Stderr, Config, Environment, Definition string
 }
 
 type daemonServiceStatus struct {
@@ -52,6 +52,7 @@ func runServiceVerb(ctx context.Context, args []string, stdout, stderr io.Writer
 	flags := flag.NewFlagSet("conveyord "+args[0], flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	configPath := flags.String("config", "conveyor.yaml", "path to deployment config")
+	environmentPath := flags.String("env-file", "", "path to owner-only service environment file (defaults to .env beside the config)")
 	if err := flags.Parse(args[1:]); err != nil {
 		return true, err
 	}
@@ -66,7 +67,11 @@ func runServiceVerb(ctx context.Context, args []string, stdout, stderr io.Writer
 	if err != nil {
 		return true, fmt.Errorf("resolve config path: %w", err)
 	}
-	paths, err := resolveDaemonService(platform, absConfig)
+	absEnvironment, err := resolveDaemonEnvironmentPath(*environmentPath, absConfig)
+	if err != nil {
+		return true, err
+	}
+	paths, err := resolveDaemonService(platform, absConfig, absEnvironment)
 	if err != nil {
 		return true, err
 	}
@@ -74,6 +79,9 @@ func runServiceVerb(ctx context.Context, args []string, stdout, stderr io.Writer
 	case "install":
 		if _, err = os.Stat(absConfig); err != nil {
 			return true, fmt.Errorf("deployment config is unavailable at %s: %w", absConfig, err)
+		}
+		if err = validateDaemonEnvironmentFile(paths.Environment); err != nil {
+			return true, err
 		}
 		if err = installDaemonService(ctx, platform, paths); err != nil {
 			return true, err
@@ -127,33 +135,60 @@ func currentDaemonServicePlatform() (daemonServicePlatform, error) {
 	}}, nil
 }
 
-func resolveDaemonService(platform daemonServicePlatform, configPath string) (daemonServicePaths, error) {
+func resolveDaemonEnvironmentPath(environmentPath, configPath string) (string, error) {
+	if strings.TrimSpace(environmentPath) == "" {
+		return filepath.Join(filepath.Dir(configPath), ".env"), nil
+	}
+	absolute, err := filepath.Abs(environmentPath)
+	if err != nil {
+		return "", fmt.Errorf("resolve environment file path: %w", err)
+	}
+	return absolute, nil
+}
+
+func validateDaemonEnvironmentFile(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("service environment file is unavailable at %s: %w", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("service environment file at %s must be a regular owner-only file", path)
+	}
+	if permissions := info.Mode().Perm(); permissions&0o077 != 0 {
+		return fmt.Errorf("service environment file at %s must be owner-only (mode 0600 or stricter), got %04o", path, permissions)
+	} else if permissions&0o400 == 0 {
+		return fmt.Errorf("service environment file at %s must be readable by its owner, got %04o", path, permissions)
+	}
+	return nil
+}
+
+func resolveDaemonService(platform daemonServicePlatform, configPath, environmentPath string) (daemonServicePaths, error) {
 	if platform.GOOS != "darwin" && platform.GOOS != "linux" {
 		return daemonServicePaths{}, fmt.Errorf("conveyord service management is unsupported on %s", platform.GOOS)
 	}
-	if !filepath.IsAbs(platform.Executable) || !filepath.IsAbs(configPath) {
-		return daemonServicePaths{}, errors.New("conveyord executable and config paths must be absolute")
+	if !filepath.IsAbs(platform.Executable) || !filepath.IsAbs(configPath) || !filepath.IsAbs(environmentPath) {
+		return daemonServicePaths{}, errors.New("conveyord executable, config, and environment file paths must be absolute")
 	}
 	if platform.GOOS == "darwin" {
 		name := "com.conveyor.daemon"
 		logDir := filepath.Join(platform.Home, "Library", "Logs", "Conveyor", "daemon")
-		paths := daemonServicePaths{Name: name, Unit: filepath.Join(platform.Home, "Library", "LaunchAgents", name+".plist"), Stdout: filepath.Join(logDir, "stdout.log"), Stderr: filepath.Join(logDir, "stderr.log"), Config: configPath}
+		paths := daemonServicePaths{Name: name, Unit: filepath.Join(platform.Home, "Library", "LaunchAgents", name+".plist"), Stdout: filepath.Join(logDir, "stdout.log"), Stderr: filepath.Join(logDir, "stderr.log"), Config: configPath, Environment: environmentPath}
 		paths.Definition = fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
-<!-- %s config=%s -->
+<!-- %s config=%s environment=%s -->
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict><key>Label</key><string>%s</string><key>ProgramArguments</key><array><string>%s</string><string>-config</string><string>%s</string></array><key>WorkingDirectory</key><string>%s</string><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>StandardOutPath</key><string>%s</string><key>StandardErrorPath</key><string>%s</string></dict></plist>
-`, daemonServiceOwner, xmlCommentEscape(configPath), html.EscapeString(name), html.EscapeString(platform.Executable), html.EscapeString(configPath), html.EscapeString(filepath.Dir(configPath)), html.EscapeString(paths.Stdout), html.EscapeString(paths.Stderr))
+<plist version="1.0"><dict><key>Label</key><string>%s</string><key>ProgramArguments</key><array><string>%s</string><string>-config</string><string>%s</string></array><key>EnvironmentVariables</key><dict><key>CONVEYOR_ENV_FILE</key><string>%s</string></dict><key>WorkingDirectory</key><string>%s</string><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>StandardOutPath</key><string>%s</string><key>StandardErrorPath</key><string>%s</string></dict></plist>
+`, daemonServiceOwner, xmlCommentEscape(configPath), xmlCommentEscape(environmentPath), html.EscapeString(name), html.EscapeString(platform.Executable), html.EscapeString(configPath), html.EscapeString(environmentPath), html.EscapeString(filepath.Dir(configPath)), html.EscapeString(paths.Stdout), html.EscapeString(paths.Stderr))
 		return paths, nil
 	}
 	name := "conveyord.service"
 	logDir := filepath.Join(platform.StateDir, "conveyor", "daemon")
-	paths := daemonServicePaths{Name: name, Unit: filepath.Join(platform.ConfigDir, "systemd", "user", name), Stdout: filepath.Join(logDir, "stdout.log"), Stderr: filepath.Join(logDir, "stderr.log"), Config: configPath}
-	paths.Definition = fmt.Sprintf("# %s config=%s\n[Unit]\nDescription=Conveyor control-plane daemon\nAfter=network-online.target\n\n[Service]\nWorkingDirectory=%s\nExecStart=%s -config %s\nRestart=on-failure\nStandardOutput=append:%s\nStandardError=append:%s\n\n[Install]\nWantedBy=default.target\n", daemonServiceOwner, xmlCommentEscape(configPath), strconv.Quote(filepath.Dir(configPath)), strconv.Quote(platform.Executable), strconv.Quote(configPath), strconv.Quote(paths.Stdout), strconv.Quote(paths.Stderr))
+	paths := daemonServicePaths{Name: name, Unit: filepath.Join(platform.ConfigDir, "systemd", "user", name), Stdout: filepath.Join(logDir, "stdout.log"), Stderr: filepath.Join(logDir, "stderr.log"), Config: configPath, Environment: environmentPath}
+	paths.Definition = fmt.Sprintf("# %s config=%s environment=%s\n[Unit]\nDescription=Conveyor control-plane daemon\nAfter=network-online.target\n\n[Service]\nWorkingDirectory=%s\nEnvironmentFile=%s\nExecStart=%s -config %s\nRestart=on-failure\nStandardOutput=append:%s\nStandardError=append:%s\n\n[Install]\nWantedBy=default.target\n", daemonServiceOwner, xmlCommentEscape(configPath), xmlCommentEscape(environmentPath), strconv.Quote(filepath.Dir(configPath)), strconv.Quote(environmentPath), strconv.Quote(platform.Executable), strconv.Quote(configPath), strconv.Quote(paths.Stdout), strconv.Quote(paths.Stderr))
 	return paths, nil
 }
 
-func isOwnedDaemonService(definition, configPath string) bool {
-	return strings.Contains(definition, daemonServiceOwner+" config="+xmlCommentEscape(configPath))
+func isOwnedDaemonService(definition, configPath, environmentPath string) bool {
+	return strings.Contains(definition, daemonServiceOwner+" config="+xmlCommentEscape(configPath)+" environment="+xmlCommentEscape(environmentPath))
 }
 
 func xmlCommentEscape(value string) string {
@@ -161,7 +196,7 @@ func xmlCommentEscape(value string) string {
 }
 
 func installDaemonService(ctx context.Context, platform daemonServicePlatform, paths daemonServicePaths) error {
-	if data, err := os.ReadFile(paths.Unit); err == nil && !isOwnedDaemonService(string(data), paths.Config) {
+	if data, err := os.ReadFile(paths.Unit); err == nil && !isOwnedDaemonService(string(data), paths.Config, paths.Environment) {
 		return fmt.Errorf("refusing to overwrite non-Conveyor service definition %s", paths.Unit)
 	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("inspect service definition: %w", err)
@@ -220,7 +255,7 @@ func uninstallDaemonService(ctx context.Context, platform daemonServicePlatform,
 	if err != nil {
 		return false, err
 	}
-	if !isOwnedDaemonService(string(data), paths.Config) {
+	if !isOwnedDaemonService(string(data), paths.Config, paths.Environment) {
 		return false, fmt.Errorf("refusing to remove non-Conveyor service definition %s", paths.Unit)
 	}
 	if platform.GOOS == "darwin" {
@@ -248,7 +283,7 @@ func inspectDaemonService(ctx context.Context, platform daemonServicePlatform, p
 	if err != nil {
 		return status, err
 	}
-	if !isOwnedDaemonService(string(data), paths.Config) {
+	if !isOwnedDaemonService(string(data), paths.Config, paths.Environment) {
 		return status, fmt.Errorf("service definition at %s is not owned by Conveyor", paths.Unit)
 	}
 	status.Installed = true
