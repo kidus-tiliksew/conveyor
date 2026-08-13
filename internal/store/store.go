@@ -1926,9 +1926,16 @@ func (m *memory) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.
 		fromState, state = state, approved
 		command = core.TaskInterventionApproveReview
 	}
+	nonAdvancingRefresh := NonAdvancingRefreshBinding(decision, aggregate.ApprovedHeadSHA)
+	if nonAdvancingRefresh {
+		m.appendEventLocked(ctx, core.Event{TaskID: task.ID, JobID: decision.JobID, Kind: "review.refresh_binding_not_advanced", Payload: core.JSONPayload(map[string]any{
+			"review_work_order_id": decision.ReviewWorkOrderID, "review_round": decision.ReviewRound,
+			"baseline_sha": decision.BaselineSHA, "head_sha": decision.HeadSHA, "bound_sha": aggregate.ApprovedHeadSHA,
+		})})
+	}
 	if aggregate.Verdict == "approve" && aggregate.ApprovedHeadSHA != "" {
 		task.ReviewedHeadSHA = aggregate.ApprovedHeadSHA
-		if state == core.TaskApproved {
+		if state == core.TaskApproved && !nonAdvancingRefresh {
 			task.ApprovedHeadSHA, task.ApprovalStale = aggregate.ApprovedHeadSHA, false
 			task.RefreshBaselineSHA, task.RefreshHeadSHA, task.RefreshReviewScope = "", "", ""
 		}
@@ -1941,6 +1948,15 @@ func (m *memory) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.
 	m.appendEventLocked(ctx, core.Event{TaskID: task.ID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": fromState, "to": state, "command": command})})
 	m.appendEventLocked(ctx, core.Event{TaskID: task.ID, Kind: "pipeline.transition_decided", Payload: core.JSONPayload(map[string]any{"from_stage": fromStage, "next_stage": next, "recovery_stage": recovery, "state": state, "review_work_order_id": decision.ReviewWorkOrderID})})
 	return nil
+}
+
+// NonAdvancingRefreshBinding detects an approved refresh verdict that still
+// binds the baseline instead of the distinct head carried by the review order.
+// Settlement leaves the stale episode intact so readiness polling cannot
+// silently create another review round for the same baseline/head/scope.
+func NonAdvancingRefreshBinding(decision core.ReviewDecision, approvedHeadSHA string) bool {
+	return decision.ReviewKind == "refresh" && decision.BaselineSHA != "" && decision.HeadSHA != "" &&
+		decision.BaselineSHA != decision.HeadSHA && approvedHeadSHA == decision.BaselineSHA
 }
 
 type completedReview struct {

@@ -87,6 +87,81 @@ export function pullRequestURL(events: TaskEvent[]): string | undefined {
   return undefined
 }
 
+// What the merge gate is actually approving, read back off the durable record
+// the pipeline already wrote: the reviewed head the branch was judged at, the
+// pull request it was pushed to, the commit range that head covers, and the
+// factory's own verdict. Every field is optional because every field is
+// evidence — a repository delivered without GitHub has no pull request, and a
+// task that reached the gate through a path that recorded no round verdict
+// shows none rather than an invented one (REQ-6).
+export interface MergeGateReview {
+  headSHA?: string
+  baseSHA?: string
+  pullRequest?: { url: string; number?: number; repository?: string }
+  verdict?: { verdict: 'approve' | 'changes_requested'; summary?: string; seats: number }
+}
+
+export function mergeGateReview(item: ActivityItem): MergeGateReview {
+  const review: MergeGateReview = { headSHA: item.task.reviewed_head_sha || undefined }
+  for (let i = item.events.length - 1; i >= 0; i--) {
+    const event = item.events[i]
+    const payload = event.payload ?? {}
+    if (event.kind !== 'pull_request.opened') continue
+    review.headSHA = review.headSHA ?? (typeof payload.head_sha === 'string' ? payload.head_sha : undefined)
+    review.baseSHA = typeof payload.base_sha === 'string' ? payload.base_sha : undefined
+    if (typeof payload.url === 'string' && payload.url) {
+      review.pullRequest = {
+        url: payload.url,
+        number: typeof payload.number === 'number' ? payload.number : undefined,
+        repository: typeof payload.repository === 'string' ? payload.repository : undefined,
+      }
+    }
+    break
+  }
+  // The last completed round is the verdict the gate opened on; the seats that
+  // reported into it say how many independent reviewers stand behind it.
+  for (let i = item.events.length - 1; i >= 0; i--) {
+    const event = item.events[i]
+    if (event.kind !== 'review.round_completed') continue
+    const payload = event.payload ?? {}
+    review.verdict = {
+      verdict: payload.verdict === 'changes_requested' ? 'changes_requested' : 'approve',
+      summary: typeof payload.summary === 'string' && payload.summary.trim() ? payload.summary.trim() : undefined,
+      seats: (Array.isArray(payload.reviews) ? payload.reviews : []).length,
+    }
+    break
+  }
+  return review
+}
+
+// The reason code and bounce source the merge-gate request-changes command
+// records (conveyor:internal/store/changes_requested.go). The dashboard reads
+// them; it never writes them, and neither string is ever shown to a person.
+export const userRequestChangesReason = 'user-request-changes'
+
+export interface ReturnedForChanges {
+  feedback: string
+  at: string
+}
+
+// The server's user-request-changes attention marker, re-derived from the same
+// durable events it reads (store.UserRequestChangesPending): a bounce a person
+// asked for stays outstanding until an implementation run claims the work it
+// created. The marker itself reaches the dashboard only folded into
+// needs_attention, so this predicate is what tells that signal apart from the
+// other reasons a task wants a human — and it carries the feedback with it.
+export function pendingUserRequestChanges(events: TaskEvent[]): ReturnedForChanges | null {
+  let pending: ReturnedForChanges | null = null
+  for (const event of events) {
+    const payload = event.payload ?? {}
+    if (event.kind === 'pipeline.bounced' && payload.source === userRequestChangesReason) {
+      pending = { feedback: typeof payload.feedback === 'string' ? payload.feedback.trim() : '', at: event.at }
+    }
+    if (event.kind === 'work_order.claimed' && payload.stage === 'implement') pending = null
+  }
+  return pending
+}
+
 // Board-card gate chip: says what the gate is waiting for instead of a
 // generic alarm, with tone to match ("Ready to merge" is good news).
 export function gateBadge(item: ActivitySummary): { label: string; variant: 'attention' | 'positive' } | undefined {
