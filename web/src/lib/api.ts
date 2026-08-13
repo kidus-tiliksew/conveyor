@@ -284,13 +284,17 @@ export async function confirmRequirementVersion(
   if (!response.ok) {
     const body = await response.text()
     let message = body.trim() || response.statusText
+    let code = ''
     try {
-      const parsed = JSON.parse(body) as { message?: string }
+      const parsed = JSON.parse(body) as { error?: string; message?: string }
+      code = parsed.error ?? ''
       message = parsed.message ?? message
     } catch {
       /* plain-text API error */
     }
-    if (response.status === 409)
+    if (response.status === 409 && code === 'requirement_version_superseded')
+      message = 'This requirement version was superseded by a newer confirmed version and can no longer be confirmed.'
+    else if (response.status === 409)
       message = 'This requirement changed while you were reviewing it. Refresh and choose the version again.'
     throw new Error(message)
   }

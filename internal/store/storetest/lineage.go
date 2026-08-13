@@ -715,9 +715,9 @@ func assertAbandonedDraftSupersession(t *testing.T, st store.Store, ctx context.
 	if _, _, err = st.ConfirmRequirementVersion(ctx, requirementID, 2); err == nil {
 		t.Fatal("late confirmation of superseded version 2 succeeded after version 3")
 	} else {
-		var conflict *store.RequirementVersionConflict
-		if !errors.As(err, &conflict) {
-			t.Fatalf("late confirmation error=%v, want RequirementVersionConflict", err)
+		var superseded *store.RequirementVersionSuperseded
+		if !errors.As(err, &superseded) {
+			t.Fatalf("late confirmation error=%v, want RequirementVersionSuperseded", err)
 		}
 	}
 	assertNoLineageLink(t, st, ctx, "supersedes", core.RequirementVersionLineageID(requirementID, 2), core.RequirementVersionLineageID(requirementID, 3))

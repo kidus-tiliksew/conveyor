@@ -384,14 +384,21 @@ func (s *Server) confirmRequirementVersion(w http.ResponseWriter, r *http.Reques
 		r.Context(), chi.URLParam(r, "id"), version, expected...,
 	)
 	if err != nil {
+		var superseded *store.RequirementVersionSuperseded
+		if errors.As(err, &superseded) {
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"error": "requirement_version_superseded", "message": superseded.Error(),
+				"requirement_id":        superseded.RequirementID,
+				"requested_version":     superseded.Requested,
+				"current_version":       superseded.Current,
+				"superseded_by_version": superseded.SupersededBy,
+			})
+			return
+		}
 		var conflict *store.RequirementVersionConflict
 		if errors.As(err, &conflict) {
-			code := "requirement_version_superseded"
-			if conflict.Expected != nil {
-				code = "requirement_current_version_mismatch"
-			}
 			writeJSON(w, http.StatusConflict, map[string]any{
-				"error": code, "message": conflict.Error(),
+				"error": "requirement_current_version_mismatch", "message": conflict.Error(),
 				"requirement_id":    conflict.RequirementID,
 				"requested_version": conflict.Requested,
 				"current_version":   conflict.Current,
@@ -560,7 +567,7 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 				view.CurrentVersion = &current
 				confirmedAt = version.ConfirmedAt
 			}
-			if !version.Confirmed {
+			if !version.Confirmed && !version.Retired {
 				view.PendingVersions = append(view.PendingVersions, version)
 			}
 		}

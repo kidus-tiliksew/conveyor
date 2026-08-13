@@ -126,6 +126,10 @@ func (m *memory) CreateRequirement(ctx context.Context, requirement core.Require
 	first.Confirmed = false
 	first.ConfirmedBy = ""
 	first.ConfirmedAt = time.Time{}
+	first.Retired = false
+	first.RetiredBy = ""
+	first.RetiredAt = time.Time{}
+	first.RetiredByVersion = 0
 	if first.CreatedAt.IsZero() {
 		first.CreatedAt = now
 	}
@@ -207,6 +211,10 @@ func (m *memory) ProposeRequirementVersion(ctx context.Context, version core.Req
 	version.Confirmed = false
 	version.ConfirmedBy = ""
 	version.ConfirmedAt = time.Time{}
+	version.Retired = false
+	version.RetiredBy = ""
+	version.RetiredAt = time.Time{}
+	version.RetiredByVersion = 0
 	if version.CreatedAt.IsZero() {
 		version.CreatedAt = now
 	}
@@ -251,6 +259,12 @@ func (m *memory) ConfirmRequirementVersion(ctx context.Context, requirementID st
 	if confirmed.Confirmed && version == requirement.CurrentVersion {
 		return requirement, confirmed, nil
 	}
+	if confirmed.Retired {
+		return core.Requirement{}, core.RequirementVersion{}, &RequirementVersionSuperseded{
+			RequirementID: requirementID, Requested: version, Current: requirement.CurrentVersion,
+			SupersededBy: confirmed.RetiredByVersion,
+		}
+	}
 	// Confirmation is where a real statement block becomes mandatory, so a
 	// migration seed cannot become current intent unedited.
 	if err := core.ConfirmableRequirementVersion(confirmed); err != nil {
@@ -259,12 +273,25 @@ func (m *memory) ConfirmRequirementVersion(ctx context.Context, requirementID st
 	// Confirmation moves forward only. Re-confirming a superseded version would
 	// silently revert intent the operator already advanced past.
 	if version < requirement.CurrentVersion {
-		return core.Requirement{}, core.RequirementVersion{}, &RequirementVersionConflict{
+		return core.Requirement{}, core.RequirementVersion{}, &RequirementVersionSuperseded{
 			RequirementID: requirementID, Requested: version, Current: requirement.CurrentVersion,
+			SupersededBy: requirement.CurrentVersion,
 		}
 	}
 	actor := ActorFromContext(ctx)
 	now := time.Now().UTC()
+	for retiredIndex := range versions {
+		retired := versions[retiredIndex]
+		if retired.Version >= version || retired.Confirmed || retired.Retired {
+			continue
+		}
+		retired.Retired, retired.RetiredBy, retired.RetiredAt, retired.RetiredByVersion = true, actor.ID, now, version
+		versions[retiredIndex] = retired
+		m.appendEventLocked(ctx, core.Event{Kind: "requirement.version_retired", Payload: core.JSONPayload(map[string]any{
+			"workspace_id": workspace, "requirement_id": requirementID, "version": retired.Version,
+			"retired_by": actor.ID, "confirmed_version": version,
+		})})
+	}
 	confirmed.Confirmed = true
 	confirmed.ConfirmedBy = actor.ID
 	confirmed.ConfirmedAt = now

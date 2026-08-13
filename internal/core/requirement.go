@@ -131,8 +131,14 @@ type RequirementVersion struct {
 	Confirmed       bool                   `json:"confirmed"`
 	ConfirmedBy     string                 `json:"confirmed_by,omitempty"`
 	ConfirmedAt     time.Time              `json:"confirmed_at,omitempty"`
-	Workspace       string                 `json:"workspace"`
-	CreatedAt       time.Time              `json:"created_at"`
+	// Retired marks an unconfirmed proposal that a later confirmation made
+	// permanently unactionable. Content and statement identity remain intact.
+	Retired          bool      `json:"retired"`
+	RetiredBy        string    `json:"retired_by,omitempty"`
+	RetiredAt        time.Time `json:"retired_at,omitempty"`
+	RetiredByVersion int       `json:"retired_by_version,omitempty"`
+	Workspace        string    `json:"workspace"`
+	CreatedAt        time.Time `json:"created_at"`
 }
 
 // RequirementStalenessAcknowledgment is an append-only operator judgment over

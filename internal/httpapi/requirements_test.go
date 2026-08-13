@@ -136,6 +136,53 @@ func TestOperatorRequirementProposalRESTLifecycle(t *testing.T) {
 	}
 }
 
+func TestRequirementConfirmationDistinguishesSupersededFromIfMatchConflict(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	requirement, _, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-confirm-errors", Title: "Confirmation errors"}, core.RequirementVersion{
+		Content: "First.", Origin: core.RequirementOriginOperator,
+		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Errors are honest."}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, content := range []string{"Second.", "Third."} {
+		if _, err = st.ProposeRequirementVersion(ctx, core.RequirementVersion{
+			RequirementID: requirement.ID, Content: content, Origin: core.RequirementOriginOperator,
+			Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Errors remain honest."}},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, _, err = st.ConfirmRequirementVersion(ctx, requirement.ID, 3); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(st)
+	server.Workspace, server.BearerToken = "demo", "token"
+	call := func(version int, expected string) (int, map[string]any) {
+		request := httptest.NewRequest(http.MethodPost,
+			fmt.Sprintf("/v1/requirements/%s/versions/%d/confirm", requirement.ID, version), nil)
+		request.Header.Set("Authorization", "Bearer token")
+		request.Header.Set("X-Conveyor-Actor", "operator")
+		request.Header.Set("If-Match", expected)
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, request)
+		var body map[string]any
+		if err = json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decode response %q: %v", response.Body.String(), err)
+		}
+		return response.Code, body
+	}
+	status, superseded := call(2, `"3"`)
+	if status != http.StatusConflict || superseded["error"] != "requirement_version_superseded" || superseded["superseded_by_version"] != float64(3) {
+		t.Fatalf("superseded status=%d body=%+v", status, superseded)
+	}
+	status, mismatch := call(3, `"1"`)
+	if status != http.StatusConflict || mismatch["error"] != "requirement_current_version_mismatch" {
+		t.Fatalf("mismatch status=%d body=%+v", status, mismatch)
+	}
+}
+
 func TestCheckpointContextCandidatesREST(t *testing.T) {
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	st := store.NewMemory()
