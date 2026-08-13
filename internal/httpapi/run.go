@@ -237,7 +237,8 @@ func (s *Server) releaseTaskRunOrder(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, store.ErrWorkOrderClaimLost.Error(), http.StatusConflict)
 		return
 	}
-	released, err := s.Workers.Release(r.Context(), core.Worker{}, order.ID, core.WorkOrderRelease{
+	claim := core.WorkOrderClaimIdentity{WorkerID: order.WorkerID, ClaimantID: order.ClaimantID, SessionID: order.SessionID}
+	released, err := s.Workers.ReleaseClaim(r.Context(), claim, order.ID, core.WorkOrderRelease{
 		SessionID: request.SessionID, Reason: request.Reason, Cause: request.Cause,
 		Outcome: request.Outcome, ExitStatus: request.ExitStatus, FailureDetail: request.FailureDetail,
 	})

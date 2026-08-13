@@ -106,6 +106,17 @@ func TestTaskRunHTTPIsExplicitlyTaskScopedAndUsesUserLeaseLifecycle(t *testing.T
 	if crossTask := taskRunHTTPCall(handler, http.MethodPost, "/v1/tasks/other/run-orders/"+target.ID+"/renew", `{"session_id":"run-session"}`); crossTask.Code != http.StatusConflict {
 		t.Fatalf("cross-task renewal status=%d body=%s", crossTask.Code, crossTask.Body.String())
 	}
+	release := taskRunHTTPCall(handler, http.MethodPost, "/v1/tasks/target/run-orders/"+target.ID+"/release", `{"session_id":"run-session","reason":"local run ended","outcome":"released"}`)
+	if release.Code != http.StatusOK {
+		t.Fatalf("release status=%d body=%s", release.Code, release.Body.String())
+	}
+	var released core.WorkOrder
+	if err = json.Unmarshal(release.Body.Bytes(), &released); err != nil {
+		t.Fatal(err)
+	}
+	if released.State != core.WorkOrderQueued || released.SessionID != "" || released.ClaimantID != "" {
+		t.Fatalf("released=%+v", released)
+	}
 }
 
 func TestTaskRunHTTPReturnsNoWorkAndSurfacesAssigneeRefusal(t *testing.T) {
