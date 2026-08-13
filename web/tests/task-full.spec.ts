@@ -2017,6 +2017,10 @@ async function mockTaskAPIs(page: Page) {
   await page.addInitScript(() => localStorage.setItem('conveyor-workspace', 'demo'))
   await page.route('**/v1/**', async (route: Route) => {
     const url = new URL(route.request().url())
+    if (url.pathname === '/v1/workspaces') {
+      await route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] })
+      return
+    }
     const taskMatch = url.pathname.match(/^\/v1\/tasks\/([^/]+)\/activity$/)
     if (taskMatch) {
       const taskId = decodeURIComponent(taskMatch[1])
@@ -3617,7 +3621,7 @@ test('merge gate sends user feedback through request changes', async ({ page }) 
 test('the recorded return reads back in the timeline with its feedback', async ({ page }) => {
   await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'member-token'))
   let returned = false
-  await page.route('**/v1/tasks/merge-request-changes/activity', async (route) => {
+  await page.route('**/v1/tasks/merge-request-changes/activity*', async (route) => {
     const item = activity('merge-request-changes', false)
     if (returned) {
       item.interventions = [

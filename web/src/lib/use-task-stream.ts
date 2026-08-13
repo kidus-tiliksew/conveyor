@@ -18,8 +18,9 @@ export function useTaskStream(taskId: string, workspace: string) {
         void queryClient.invalidateQueries({ queryKey: ['activity'] })
       }, 250)
     }
+    const token = sessionStorage.getItem('conveyor-token') ?? ''
     void fetch(`/v1/tasks/${encodeURIComponent(taskId)}/events/stream?workspace_id=${encodeURIComponent(workspace)}`, {
-      headers: { Authorization: `Bearer ${sessionStorage.getItem('conveyor-token') ?? ''}` },
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
       signal: controller.signal,
     })
       .then(async (response) => {

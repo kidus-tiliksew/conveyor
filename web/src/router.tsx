@@ -8,6 +8,7 @@ import { BlueprintsPage } from './pages/blueprints'
 import { RequirementsPage } from './pages/requirements'
 import { SystemDesignPage } from './pages/system-design'
 import { SettingsPage } from './pages/settings'
+import { SignInPage } from './pages/sign-in'
 import { TaskFullPage } from './pages/task-full'
 import { TasksPage } from './pages/tasks'
 import { WorkspacePage } from './pages/workspace'
@@ -91,7 +92,22 @@ const activityRedirectRoute = createRoute({
   component: () => null,
 })
 const workspaceRoute = createRoute({ getParentRoute: () => rootRoute, path: '/workspace', component: WorkspacePage })
-const settingsRoute = createRoute({ getParentRoute: () => rootRoute, path: '/settings', component: SettingsPage })
+const settingsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/settings',
+  validateSearch: (search: Record<string, unknown>): { welcome?: boolean } => ({
+    welcome: search.welcome === true || search.welcome === 'true' ? true : undefined,
+  }),
+  component: SettingsPage,
+})
+const signInRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/sign-in',
+  validateSearch: (search: Record<string, unknown>): { token?: string } => ({
+    token: typeof search.token === 'string' && search.token ? search.token : undefined,
+  }),
+  component: SignInPage,
+})
 const requirementsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/requirements',
@@ -148,6 +164,7 @@ const routeTree = rootRoute.addChildren([
   planningRoute,
   monitorRoute,
   settingsRoute,
+  signInRoute,
 ])
 export const router = createRouter({ routeTree })
 
