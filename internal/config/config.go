@@ -20,10 +20,11 @@ import (
 )
 
 type Repo struct {
-	Name   string `yaml:"name" json:"name"`
-	URL    string `yaml:"url" json:"url"`
-	GitHub string `yaml:"github,omitempty" json:"github,omitempty"`
-	Base   string `yaml:"base" json:"base"`
+	Name     string `yaml:"name" json:"name"`
+	URL      string `yaml:"url" json:"url"`
+	GitHub   string `yaml:"github,omitempty" json:"github,omitempty"`
+	Base     string `yaml:"base" json:"base"`
+	Checkout string `yaml:"checkout,omitempty" json:"checkout,omitempty"`
 
 	// Accepted only while canonicalizing pre-4.7 stored rows. These fields
 	// are cleared by normalize and never cross the workspace API boundary.
@@ -1113,6 +1114,12 @@ func normalizeLegacy(c *Config, path string) (*Config, error) {
 		}
 		if repo.Base == "" {
 			repo.Base = "main"
+		}
+		if repo.Checkout != "" {
+			if !filepath.IsAbs(repo.Checkout) {
+				return nil, fmt.Errorf("repo %d: checkout must be an absolute path", i)
+			}
+			repo.Checkout = filepath.Clean(repo.Checkout)
 		}
 		repo.LegacyImage = ""
 		repo.LegacySecretRefs = nil

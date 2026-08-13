@@ -293,6 +293,23 @@ func TestRepositoryNamesUseCheckoutSafeAlphabet(t *testing.T) {
 	}
 }
 
+func TestRepositoryCheckoutMustBeAbsoluteAndRoundTrips(t *testing.T) {
+	cfg := validConfig()
+	cfg.Repos[0].Checkout = "/opt/conveyor"
+	normalized, err := normalize(cfg, "repository checkout test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := normalized.WorkspaceDocument().Repos[0].Checkout; got != "/opt/conveyor" {
+		t.Fatalf("checkout=%q", got)
+	}
+	cfg = validConfig()
+	cfg.Repos[0].Checkout = "relative/repo"
+	if _, err = normalize(cfg, "repository checkout test"); err == nil || !strings.Contains(err.Error(), "checkout must be an absolute path") {
+		t.Fatalf("relative checkout error=%v", err)
+	}
+}
+
 func TestRepositoryNameValidationIsSharedByLoadAndWorkspaceWrites(t *testing.T) {
 	cfg := validConfig()
 	cfg.Repos[0].Name = "../outside"

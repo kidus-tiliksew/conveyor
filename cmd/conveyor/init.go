@@ -13,6 +13,7 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/gitx"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	postgresstore "github.com/kidus-tiliksew/conveyor/internal/store/postgres"
 	"github.com/spf13/cobra"
@@ -30,6 +31,7 @@ type initPrerequisites struct {
 	lookPath func(string) (string, error)
 	run      func(context.Context, string, ...string) ([]byte, error)
 	stat     func(string) (os.FileInfo, error)
+	getenv   func(string) string
 }
 
 func initCmd() *cobra.Command {
@@ -48,7 +50,8 @@ func initCmd() *cobra.Command {
 				run: func(ctx context.Context, name string, args ...string) ([]byte, error) {
 					return exec.CommandContext(ctx, name, args...).CombinedOutput()
 				},
-				stat: os.Stat,
+				stat:   os.Stat,
+				getenv: os.Getenv,
 			}
 			if err = checkInitPrerequisites(cmd.Context(), prerequisites, answers); err != nil {
 				return err
@@ -131,7 +134,7 @@ func checkInitPrerequisites(ctx context.Context, prerequisites initPrerequisites
 		}
 		return errors.New("GitHub CLI is not authenticated; run `gh auth login` and retry")
 	}
-	clone, err := filepath.Abs(answers.ClonePath)
+	clone, err := resolvedInitClonePath(answers.ClonePath)
 	if err != nil {
 		return fmt.Errorf("resolve repository clone path %q: %w", answers.ClonePath, err)
 	}
@@ -143,18 +146,48 @@ func checkInitPrerequisites(ctx context.Context, prerequisites initPrerequisites
 		return fmt.Errorf("repository path %s is not a filesystem clone; run `gh repo clone %s %s`", clone, answers.RepositoryURL, clone)
 	}
 	packDir := filepath.Join(clone, "pack")
-	info, err = prerequisites.stat(packDir)
-	if err != nil || !info.IsDir() {
-		return fmt.Errorf("Conveyor prompt pack is missing at %s; restore the repository pack directory and rerun `conveyor init`", packDir)
-	}
-	for _, role := range []string{"triage", "spec", "implement", "review", "planning"} {
+	for _, role := range []string{"triage", "planning", "spec", "implement", "review"} {
 		rolePath := filepath.Join(packDir, "roles", role+".md")
-		info, err = prerequisites.stat(rolePath)
-		if err != nil || !info.Mode().IsRegular() {
-			return fmt.Errorf("Conveyor prompt pack role is missing at %s; restore the required role and rerun `conveyor init`", rolePath)
+		roleInfo, roleErr := prerequisites.stat(rolePath)
+		if roleErr != nil || !roleInfo.Mode().IsRegular() {
+			return fmt.Errorf("Conveyor prompt pack is missing required role %s", rolePath)
 		}
 	}
+	generated, err := defaultInitConfig("postgres://init-prerequisite", answers)
+	if err != nil {
+		return err
+	}
+	getenv := prerequisites.getenv
+	if getenv == nil {
+		getenv = os.Getenv
+	}
+	if configUsesInProcessExecution(generated) && strings.TrimSpace(getenv("CONVEYOR_API_KEY")) == "" {
+		return errors.New("CONVEYOR_API_KEY is required for in-process triage and spec stages; set it and rerun `conveyor init`")
+	}
 	return nil
+}
+
+func resolvedInitClonePath(path string) (string, error) {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("resolve repository clone path %q: %w", path, err)
+	}
+	if resolved, resolveErr := filepath.EvalSymlinks(absolute); resolveErr == nil {
+		absolute = resolved
+	}
+	return filepath.Clean(absolute), nil
+}
+
+func configUsesInProcessExecution(candidate config.Config) bool {
+	if candidate.ExecutionSettings != nil {
+		return true
+	}
+	for _, route := range candidate.Routing.Stages {
+		if route.Execution == "" || route.Execution == config.ExecutionInProcess {
+			return true
+		}
+	}
+	return false
 }
 
 func sameFilesystemPath(left, right string) bool {
@@ -189,18 +222,18 @@ func initializeDeployment(ctx context.Context, output io.Writer, configPath stri
 		if err != nil {
 			return fmt.Errorf("load existing deployment config: %w", err)
 		}
+		if err = requireInitAPIKey(*validated); err != nil {
+			return err
+		}
 		if validated.Workspace != answers.WorkspaceID || len(validated.Repos) != 1 || validated.Repos[0].Name != answers.RepositoryName || validated.Repos[0].URL != answers.RepositoryURL || validated.Database.URL != databaseURL {
 			return fmt.Errorf("deployment config already exists at %s and does not match these initialization answers; refusing to overwrite it", absoluteConfig)
-		}
-		if err = checkInitAPIKey(*validated, os.Getenv("CONVEYOR_API_KEY")); err != nil {
-			return err
 		}
 	} else {
 		candidate, candidateErr := defaultInitConfig(databaseURL, answers)
 		if candidateErr != nil {
 			return candidateErr
 		}
-		if err = checkInitAPIKey(candidate, os.Getenv("CONVEYOR_API_KEY")); err != nil {
+		if err = requireInitAPIKey(candidate); err != nil {
 			return err
 		}
 		data, marshalErr := yaml.Marshal(candidate)
@@ -269,33 +302,17 @@ func initializeDeployment(ctx context.Context, output io.Writer, configPath stri
 	return nil
 }
 
-func initConfigRoutesInProcess(candidate config.Config) bool {
-	if candidate.ExecutionSettings != nil {
-		// Contextual settings always project control-plane triage as an
-		// in-process route; review retains its explicit execution mode.
-		if strings.TrimSpace(candidate.ExecutionSettings.ControlPlane.Triage.Model) != "" || candidate.ExecutionSettings.Review.Execution == config.ExecutionInProcess {
-			return true
-		}
-	}
-	for _, route := range candidate.Routing.Stages {
-		if route.Execution == config.ExecutionInProcess {
-			return true
-		}
-	}
-	return false
-}
-
-func checkInitAPIKey(candidate config.Config, apiKey string) error {
-	if initConfigRoutesInProcess(candidate) && strings.TrimSpace(apiKey) == "" {
-		return errors.New("CONVEYOR_API_KEY is required for in-process stages; set it to the model-provider API key and rerun `conveyor init`")
+func requireInitAPIKey(candidate config.Config) error {
+	if configUsesInProcessExecution(candidate) && strings.TrimSpace(os.Getenv("CONVEYOR_API_KEY")) == "" {
+		return errors.New("CONVEYOR_API_KEY is required for in-process triage and spec stages; set it and rerun `conveyor init`")
 	}
 	return nil
 }
 
 func defaultInitConfig(databaseURL string, answers initAnswers) (config.Config, error) {
-	clone, err := filepath.Abs(answers.ClonePath)
+	clone, err := resolvedInitClonePath(answers.ClonePath)
 	if err != nil {
-		return config.Config{}, fmt.Errorf("resolve repository clone path %q: %w", answers.ClonePath, err)
+		return config.Config{}, err
 	}
 	harness := config.HarnessTemplates()[0].Harness
 	settings := config.ContextualExecutionSettings{
@@ -318,7 +335,15 @@ func defaultInitConfig(databaseURL string, answers initAnswers) (config.Config, 
 		Setups:                    []config.ExecutionSetup{{Name: "default", ExecutionSettings: settings, Review: review, RefreshReview: config.RefreshReviewDelta}},
 		DefaultSetup:              "default",
 		Execution:                 config.ExecutionPolicy{SpecApproval: true, MergeApproval: true, ImplementConcurrency: 1, ReviewConcurrency: 1, FirstActivityTimeoutText: config.DefaultFirstActivityTimeoutText},
-		Repos:                     []config.Repo{{Name: answers.RepositoryName, URL: answers.RepositoryURL, Base: answers.BaseBranch}},
+		Repos:                     []config.Repo{{Name: answers.RepositoryName, URL: answers.RepositoryURL, GitHub: initGitHubSlug(answers.RepositoryURL), Base: answers.BaseBranch, Checkout: clone}},
 		Monitor:                   config.MonitorConfig{PollIntervalText: "1m", StartupWindowText: "24h"},
 	}, nil
+}
+
+func initGitHubSlug(repositoryURL string) string {
+	identity, err := gitx.NormalizeRepositoryIdentity(repositoryURL)
+	if err != nil || !strings.HasPrefix(identity, "github.com/") {
+		return ""
+	}
+	return strings.TrimPrefix(identity, "github.com/")
 }

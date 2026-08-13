@@ -84,6 +84,22 @@ func TestWorkerServiceDefinitionsAreWorkspaceSpecificAndSecretFree(t *testing.T)
 	}
 }
 
+func TestLinuxWorkerServicePathDirectivesAreUnquoted(t *testing.T) {
+	platform := testWorkerServicePlatform(t, "linux", nil)
+	paths, err := resolveWorkerService(platform, "demo", "https://control.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{
+		"StandardOutput=append:" + paths.Stdout + "\n",
+		"StandardError=append:" + paths.Stderr + "\n",
+	} {
+		if !strings.Contains(paths.Definition, required) {
+			t.Fatalf("definition missing unquoted directive %q:\n%s", required, paths.Definition)
+		}
+	}
+}
+
 func TestWorkerServiceInstallRequiresSavedEnrollmentBeforeMutation(t *testing.T) {
 	var commands []recordedServiceCommand
 	platform := testWorkerServicePlatform(t, "linux", func(_ context.Context, name string, args ...string) (string, error) {
