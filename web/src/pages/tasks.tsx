@@ -14,6 +14,7 @@ import {
 import { useEffect, useState } from 'react'
 import { useOperatorToken, useWorkspaceSelection } from '../components/app-shell'
 import { AssigneeChip } from '../components/task/assignee-chip'
+import { ReturnedForChangesAttention } from '../components/task/returned-for-changes'
 import { TaskCreateSheet } from '../components/task/task-create-sheet'
 import type { TaskFilterState } from '../components/task/task-filters'
 import {
@@ -128,6 +129,13 @@ export function TasksPage() {
             Every task in this workspace with its ordering, attached context, and plan status.
           </p>
         </header>
+
+        {/* What is waiting on me personally leads the surface, above the list
+            it is drawn from and above the filters — a return that only showed
+            up once the right filter was chosen would not be attention (REQ-6).
+            Without an identity there is no "me" to scope it to, so it is
+            absent rather than guessed at. */}
+        {me && <ReturnedForChangesAttention me={me.id} />}
 
         <div className="mt-6 flex flex-wrap items-center gap-2">
           <TaskFilters value={filter} onChange={setFilter} fallback={emptyTaskFilter} />
