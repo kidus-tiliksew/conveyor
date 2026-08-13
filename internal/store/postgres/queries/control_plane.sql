@@ -44,6 +44,17 @@ UPDATE user_tokens SET revoked_at = COALESCE(revoked_at, now())
 WHERE id = $1 AND kind = 'user'
 RETURNING id, user_id, label, token_hash, kind, scope, last_used_at, revoked_at, created_at;
 
+-- name: ListOwnUserTokens :many
+SELECT id, user_id, label, last_used_at, revoked_at, created_at
+FROM user_tokens
+WHERE user_id = $1 AND kind = 'user'
+ORDER BY created_at DESC, id;
+
+-- name: RevokeOwnUserToken :one
+UPDATE user_tokens SET revoked_at = COALESCE(revoked_at, now())
+WHERE id = $1 AND user_id = $2 AND kind = 'user'
+RETURNING id, user_id, label, token_hash, kind, scope, last_used_at, revoked_at, created_at;
+
 -- name: DeactivateIdentityUser :one
 UPDATE users SET status = 'deactivated' WHERE id = $1
 RETURNING id, email, display_name, status, created_at;

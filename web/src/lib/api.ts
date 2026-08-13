@@ -102,6 +102,112 @@ export async function createWorkspace(token: string, input: CreateWorkspaceInput
   return response.json() as Promise<WorkspaceRecord>
 }
 
+// Membership routes carry the workspace in the path. resolveWorkspaceContext
+// rejects a request whose path and query name different workspaces, so these
+// URLs are built explicitly instead of going through workspaceURL().
+function membersURL(workspace: string, suffix = '') {
+  return `/v1/workspaces/${encodeURIComponent(workspace)}/members${suffix}`
+}
+function invitationsURL(workspace: string, suffix = '') {
+  return `/v1/workspaces/${encodeURIComponent(workspace)}/invitations${suffix}`
+}
+
+export async function fetchWorkspaceMembers(token: string, workspace: string) {
+  const response = await fetch(membersURL(workspace), { headers: mutationHeaders(token) })
+  if (!response.ok) throw new Error(membershipErrorMessage(await response.text(), response.statusText))
+  return ((await response.json()) as import('./types').WorkspaceMembership[]) ?? []
+}
+
+// A caller without the membership-management capability is answered exactly
+// like one addressing a workspace that does not exist. That is the deliberate
+// server contract, so the distinct error type lets the surface fall back to a
+// read-only member list instead of reporting a failure.
+export class WorkspaceNotVisibleError extends Error {}
+
+export async function fetchWorkspaceInvitations(token: string, workspace: string) {
+  const response = await fetch(invitationsURL(workspace), { headers: mutationHeaders(token) })
+  if (!response.ok) {
+    const message = membershipErrorMessage(await response.text(), response.statusText)
+    if (response.status === 404) throw new WorkspaceNotVisibleError(message)
+    throw new Error(message)
+  }
+  return ((await response.json()) as import('./types').WorkspaceInvitation[]) ?? []
+}
+
+// The workspace refuses to lose its last operator. That conflict is the one
+// membership failure a person can act on, so it gets its own error type.
+export class LastWorkspaceOperatorError extends Error {}
+
+export async function inviteWorkspaceMember(
+  token: string,
+  workspace: string,
+  input: { email: string; role: import('./types').WorkspaceRole },
+) {
+  const response = await fetch(membersURL(workspace), {
+    method: 'POST',
+    headers: mutationHeaders(token),
+    body: JSON.stringify(input),
+  })
+  if (!response.ok) throw new Error(membershipErrorMessage(await response.text(), response.statusText))
+  return response.json() as Promise<import('./types').MembershipGrant>
+}
+
+export async function revokeWorkspaceMember(token: string, workspace: string, userID: string) {
+  const response = await fetch(membersURL(workspace, `/${encodeURIComponent(userID)}`), {
+    method: 'DELETE',
+    headers: mutationHeaders(token),
+  })
+  if (!response.ok) {
+    const message = membershipErrorMessage(await response.text(), response.statusText)
+    if (response.status === 409) throw new LastWorkspaceOperatorError(message)
+    throw new Error(message)
+  }
+}
+
+export async function revokeWorkspaceInvitation(token: string, workspace: string, email: string) {
+  const response = await fetch(invitationsURL(workspace, `/${encodeURIComponent(email)}`), {
+    method: 'DELETE',
+    headers: mutationHeaders(token),
+  })
+  if (!response.ok) throw new Error(membershipErrorMessage(await response.text(), response.statusText))
+}
+
+// Membership failures arrive either as a JSON envelope or as plain text.
+function membershipErrorMessage(body: string, fallback: string) {
+  const text = body.trim()
+  try {
+    const parsed = JSON.parse(text) as { message?: string; fields?: Array<{ message?: string }> }
+    return parsed.message || parsed.fields?.[0]?.message || text || fallback
+  } catch {
+    return text || fallback
+  }
+}
+
+export async function fetchPersonalAccessTokens(token: string) {
+  const response = await fetch('/v1/tokens', { headers: mutationHeaders(token) })
+  if (!response.ok) throw new Error(membershipErrorMessage(await response.text(), response.statusText))
+  return ((await response.json()) as import('./types').PersonalAccessToken[]) ?? []
+}
+
+// The response of this call is the only place the token value ever exists.
+export async function issuePersonalAccessToken(token: string, label: string) {
+  const response = await fetch('/v1/tokens', {
+    method: 'POST',
+    headers: mutationHeaders(token),
+    body: JSON.stringify({ label }),
+  })
+  if (!response.ok) throw new Error(membershipErrorMessage(await response.text(), response.statusText))
+  return response.json() as Promise<import('./types').IssuedPersonalAccessToken>
+}
+
+export async function revokePersonalAccessToken(token: string, id: string) {
+  const response = await fetch(`/v1/tokens/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+    headers: mutationHeaders(token),
+  })
+  if (!response.ok) throw new Error(membershipErrorMessage(await response.text(), response.statusText))
+}
+
 export function fetchBlueprints() {
   return getJSON<BlueprintView[]>(workspaceURL('/v1/blueprints'))
 }
