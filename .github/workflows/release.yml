@@ -1,0 +1,43 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-package-publish:
+    name: Build, verify, and publish release
+    runs-on: ubuntu-latest
+    steps:
+      # Pinned action commits keep a tagged release reproducible and auditable.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.ref }}
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Build four release archives and checksums
+        run: make release VERSION="$GITHUB_REF_NAME"
+      - name: Verify linux amd64 release identity
+        run: |
+          set -eu
+          mkdir verify
+          tar -C verify -xzf "dist/conveyor_${GITHUB_REF_NAME}_linux_amd64.tar.gz"
+          test "$(verify/conveyor_${GITHUB_REF_NAME}_linux_amd64/conveyor --version)" = "conveyor version ${GITHUB_REF_NAME}"
+          test "$(verify/conveyor_${GITHUB_REF_NAME}_linux_amd64/conveyord version)" = "conveyord ${GITHUB_REF_NAME}"
+          (cd dist && sha256sum --check checksums.txt)
+      - name: Publish artifacts from this tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          case "$GITHUB_REF_NAME" in
+            *-*) gh release create "$GITHUB_REF_NAME" dist/*.tar.gz dist/checksums.txt --verify-tag --generate-notes --prerelease ;;
+            *) gh release create "$GITHUB_REF_NAME" dist/*.tar.gz dist/checksums.txt --verify-tag --generate-notes ;;
+          esac

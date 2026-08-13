@@ -23,13 +23,43 @@ PLAYWRIGHT_WORKERS ?= 2
 RUN_WEB_TESTS = cd web && npx playwright install $(PLAYWRIGHT_INSTALL_ARGS) chromium && npm run lint && PLAYWRIGHT_WORKERS=$(PLAYWRIGHT_WORKERS) npm run test:e2e -- $(PLAYWRIGHT_ARGS)
 DEV_COMPOSE := docker compose --env-file $(ENV_FILE) -f compose.dev.yaml
 
-.PHONY: all build web-deps web-typecheck ui dashboard-fresh test test-web test-ui test-ui-evidence compose-check test-integration test-integration-ci test-postgres test-db-identity test-db-up test-db-down vet plugin-check fmt fmt-check tidy clean db-up db-down run build-run dev
+.PHONY: all build release release-archives test-release web-deps web-typecheck ui dashboard-fresh test test-web test-ui test-ui-evidence compose-check test-integration test-integration-ci test-postgres test-db-identity test-db-up test-db-down vet plugin-check fmt fmt-check tidy clean db-up db-down run build-run dev
 
 all: build
 
 build: ui
 	go build $(LDFLAGS) -o $(BIN)/conveyor ./cmd/conveyor
 	go build $(LDFLAGS) -o $(BIN)/conveyord ./cmd/conveyord
+
+RELEASE_DIR ?= dist
+RELEASE_TARGETS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64
+
+# REQ-11 / AC-11.1: release archives use the same build-injected identity as
+# ordinary builds. VERSION must be the pushed tag when invoked by release.yml.
+release: release-archives
+
+release-archives:
+	@test -n "$(VERSION)" || (echo "VERSION is required" >&2; exit 1)
+	@set -eu; \
+		case "$(VERSION)" in *[!A-Za-z0-9._+-]*) echo "VERSION contains unsafe filename characters: $(VERSION)" >&2; exit 1;; esac; \
+		if test -e "$(RELEASE_DIR)" && test -n "$$(ls -A "$(RELEASE_DIR)")"; then echo "RELEASE_DIR must be empty: $(RELEASE_DIR)" >&2; exit 1; fi; \
+		mkdir -p "$(RELEASE_DIR)"; \
+		for target in $(RELEASE_TARGETS); do \
+			goos=$${target%/*}; goarch=$${target#*/}; \
+			name="conveyor_$(VERSION)_$${goos}_$${goarch}"; \
+			stage="$(RELEASE_DIR)/$$name"; \
+			test ! -e "$$stage" || (echo "release staging path already exists: $$stage" >&2; exit 1); \
+			mkdir "$$stage"; \
+			CGO_ENABLED=0 GOOS="$$goos" GOARCH="$$goarch" go build $(LDFLAGS) -o "$$stage/conveyor" ./cmd/conveyor; \
+			CGO_ENABLED=0 GOOS="$$goos" GOARCH="$$goarch" go build $(LDFLAGS) -o "$$stage/conveyord" ./cmd/conveyord; \
+			tar -C "$(RELEASE_DIR)" -czf "$(RELEASE_DIR)/$$name.tar.gz" "$$name"; \
+			rm "$$stage/conveyor" "$$stage/conveyord"; rmdir "$$stage"; \
+		done; \
+		cd "$(RELEASE_DIR)"; \
+		if command -v sha256sum >/dev/null 2>&1; then sha256sum *.tar.gz > checksums.txt; else shasum -a 256 *.tar.gz > checksums.txt; fi
+
+test-release:
+	sh scripts/test-install.sh
 
 web-deps:
 	cd web && npm ci
@@ -43,7 +73,7 @@ ui: web-deps
 dashboard-fresh: ui
 	git diff --exit-code -- internal/httpapi/dashboard
 
-test: compose-check dashboard-fresh
+test: compose-check dashboard-fresh test-release
 	CONVEYOR_TEST_DATABASE_URL= go test ./...
 	$(RUN_WEB_TESTS)
 
