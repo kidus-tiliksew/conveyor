@@ -53,7 +53,7 @@ func TestInvitationLinkSessionAndFirstPATIntegration(t *testing.T) {
 		return w
 	}
 	email := "new-user@example.test"
-	invite := call(http.MethodPost, "/v1/workspaces/"+workspace+"/members", legacy, `{"email":"`+email+`","role":"user"}`, nil, false)
+	invite := call(http.MethodPost, "/v1/workspaces/"+workspace+"/members", legacy, `{"email":"`+email+`","role":"operator"}`, nil, false)
 	if invite.Code != http.StatusCreated {
 		t.Fatalf("invite status=%d body=%s", invite.Code, invite.Body.String())
 	}
@@ -89,6 +89,13 @@ func TestInvitationLinkSessionAndFirstPATIntegration(t *testing.T) {
 	}
 	if repeated := call(http.MethodPost, "/v1/sign-in/redeem", "", `{"token":"`+token+`"}`, nil, false); repeated.Code != http.StatusUnauthorized {
 		t.Fatalf("repeat status=%d", repeated.Code)
+	}
+	workspaceMutation := `{"email":"second-user@example.test","role":"user"}`
+	if refused := call(http.MethodPost, "/v1/workspaces/"+workspace+"/members", "", workspaceMutation, cookies[0], false); refused.Code != http.StatusForbidden {
+		t.Fatalf("workspace mutation without CSRF status=%d body=%s", refused.Code, refused.Body.String())
+	}
+	if accepted := call(http.MethodPost, "/v1/workspaces/"+workspace+"/members", "", workspaceMutation, cookies[0], true); accepted.Code != http.StatusCreated {
+		t.Fatalf("workspace mutation with CSRF status=%d body=%s", accepted.Code, accepted.Body.String())
 	}
 	if refused := call(http.MethodPost, "/v1/tokens", "", `{"label":"first"}`, cookies[0], false); refused.Code != http.StatusForbidden {
 		t.Fatalf("missing CSRF status=%d body=%s", refused.Code, refused.Body.String())

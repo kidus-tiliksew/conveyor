@@ -455,6 +455,9 @@ func (s *Server) requireWorkspaceAuth(next http.Handler) http.Handler {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
+		if !s.requireSessionMutationProof(w, r, credential) {
+			return
+		}
 		ctx := store.WithCredential(r.Context(), credential)
 		ctx = store.WithActor(ctx, store.Actor{ID: store.UserActorID(credential.OwnerUserID), Role: core.ActorUser})
 		next.ServeHTTP(w, r.WithContext(ctx))
