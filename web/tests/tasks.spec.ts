@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test'
+import { expect, type Page, test } from '@playwright/test'
 
 // UI coverage for the list-first Tasks view. The projection is mocked so each
 // assertion reads the rendering of durable authority rather than a live pipeline.
@@ -60,6 +60,11 @@ const operations = [
       repo: 'web',
       branch: 'web/task-shipped',
       state: 'merged',
+      assignee: {
+        user_id: 'usr-assigned',
+        email: 'assigned@example.test',
+        display_name: 'Assigned User',
+      },
       created_at: '2026-08-04T10:00:00Z',
     },
     last_event_at: '2026-08-05T09:00:00Z',
@@ -137,6 +142,9 @@ function matchOperations(url: string) {
   const repositories = params.getAll('repository')
   const requirements = params.getAll('serves_requirement')
   const designs = params.getAll('governing_design')
+  // Assignee is single-valued: empty is inactive, "unassigned" selects the
+  // tasks nobody holds, anything else is an exact user ID (AC-2.4).
+  const assignee = params.get('assignee') ?? ''
   const needle = (params.get('q') ?? '').toLowerCase()
   const from = params.get('created_from') ?? ''
   const to = params.get('created_to') ?? ''
@@ -144,6 +152,8 @@ function matchOperations(url: string) {
     .filter((item) => {
       if (states.length && !states.includes(item.task.state)) return false
       if (repositories.length && !repositories.includes(item.task.repo)) return false
+      if (assignee === 'unassigned' && item.task.assignee) return false
+      if (assignee && assignee !== 'unassigned' && item.task.assignee?.user_id !== assignee) return false
       if (
         needle &&
         ![item.task.title, item.task.id, item.task.source, item.task.branch]
@@ -193,6 +203,32 @@ async function routeTasksSurface(page: Page) {
   )
   await page.route('**/v1/requirements**', (route) => route.fulfill({ json: requirementCorpus }))
   await page.route('**/v1/system-designs**', (route) => route.fulfill({ json: designCorpus }))
+  // The signed-in user, which is what "My tasks" resolves "my" against.
+  await page.route('**/v1/me**', (route) =>
+    route.fulfill({
+      json: { id: 'usr-assigned', email: 'assigned@example.test', display_name: 'Assigned User', role: 'user' },
+    }),
+  )
+  await page.route('**/v1/workspaces/*/members**', (route) =>
+    route.fulfill({
+      json: [
+        {
+          workspace_id: 'demo',
+          user_id: 'usr-assigned',
+          display_name: 'Assigned User',
+          role: 'user',
+          created_at: '2026-08-02T10:00:00Z',
+        },
+        {
+          workspace_id: 'demo',
+          user_id: 'usr-other',
+          display_name: 'Other Member',
+          role: 'user',
+          created_at: '2026-08-02T10:00:00Z',
+        },
+      ],
+    }),
+  )
   await page.route('**/v1/activity?**', (route) => route.fulfill({ json: [] }))
   await page.route('**/v1/tasks/*/activity**', (route) => {
     const taskId = /\/v1\/tasks\/([^/]+)\/activity/.exec(new URL(route.request().url()).pathname)?.[1] ?? ''
@@ -454,7 +490,7 @@ test('tasks rows carry an assignee chip only where someone holds the task', asyn
   await expect(chip).toContainText('Assigned User')
   await expect(assigned).not.toContainText('usr-assigned')
 
-  const unassigned = rows(page).filter({ hasText: 'Shipped web change' })
+  const unassigned = rows(page).filter({ hasText: 'Bounced web plan' })
   await expect(unassigned.getByTitle(/^Assigned to/)).toHaveCount(0)
   await expect(unassigned).not.toContainText('Unassigned')
 })
@@ -637,4 +673,50 @@ test('tasks view filters by created-at range, served requirement, and governing 
 
   await page.getByRole('button', { name: 'Reset filters' }).click()
   await expect(rows(page)).toHaveCount(5)
+})
+
+// REQ-4/AC-2.4: assignee is a member of the same server-applied filter family,
+// single-valued because a task has one holder. Filtering happens on the server,
+// so a browser-side narrowing would return the whole fixture and fail here.
+test('tasks view filters by assignee and by unassigned', async ({ page }) => {
+  await openTasks(page)
+  await page.getByRole('button', { name: 'Open filters' }).click()
+  await page.getByRole('tab', { name: 'Assignee' }).click()
+
+  await page.getByRole('option', { name: 'Assigned User' }).click()
+  await expect(rows(page)).toContainText(['Shipped web change', 'Stuck conveyor change'])
+  await expect(rows(page)).toHaveCount(2)
+
+  // Unassigned is a distinct choice, and it replaces the member rather than
+  // accumulating beside it.
+  await page.getByRole('option', { name: 'Unassigned' }).click()
+  await expect(rows(page).filter({ hasText: 'Stuck conveyor change' })).toHaveCount(0)
+  await expect(rows(page).filter({ hasText: 'Bounced web plan' })).toHaveCount(1)
+
+  // "Any assignee" hands the whole workspace back.
+  await page.getByRole('option', { name: 'Any assignee' }).click()
+  await expect(rows(page)).toHaveCount(operations.length)
+})
+
+// REQ-4: one click onto the work that is mine and still moving. It is a preset
+// over the existing row, not a separate view — the filter row shows exactly
+// what it selected — and it narrows by state, so an assignment that is already
+// merged does not come back.
+test('My tasks shows only the signed-in user assignments that still need them', async ({ page }) => {
+  await openTasks(page)
+  const preset = page.getByRole('button', { name: 'My tasks' })
+  await expect(preset).toHaveAttribute('aria-pressed', 'false')
+
+  await preset.click()
+  await expect(preset).toHaveAttribute('aria-pressed', 'true')
+  // Stuck is queued and mine; Shipped is mine but merged, so it is done being
+  // routed and stays out.
+  await expect(rows(page)).toContainText(['Stuck conveyor change'])
+  await expect(rows(page)).toHaveCount(1)
+
+  // Pressing it again hands the surface back rather than stranding the operator
+  // inside a view with no way out.
+  await preset.click()
+  await expect(preset).toHaveAttribute('aria-pressed', 'false')
+  await expect(rows(page)).toHaveCount(operations.length)
 })

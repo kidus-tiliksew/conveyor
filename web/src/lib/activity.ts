@@ -1,4 +1,4 @@
-import { taskStateLabels, type GroupKey } from './contracts'
+import { type GroupKey, taskStateLabels } from './contracts'
 import type {
   ActivityItem,
   ActivitySummary,

@@ -1,4 +1,3 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import {
@@ -13,12 +12,13 @@ import {
   Link2Off,
   Trash2,
 } from 'lucide-react'
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import { assigneeName, dependencyRelationLabel, parseProvenance, pullRequestURL } from '../../lib/activity'
 import {
   cancelTask,
   changeTaskSetup,
+  fetchCallerIdentity,
   fetchWorkspaceConfig,
-  fetchWorkspaceInvitations,
   fetchWorkspaceMembers,
   removeTaskDependency,
   setTaskAssignee,
@@ -31,13 +31,13 @@ import { relatedTaskRoute } from '../../lib/task-route'
 import type { ActivityItem } from '../../lib/types'
 import { absoluteTime, cn } from '../../lib/utils'
 import { useBlueprints, useOperatorToken, useWorkspaceSelection } from '../app-shell'
-import { AssigneeChip } from './assignee-chip'
 import { Badge } from '../ui/badge'
 import { Button } from '../ui/button'
 import { CopyButton } from '../ui/copy-button'
 import { Dialog } from '../ui/dialog'
 import { Textarea } from '../ui/input'
 import { MarkdownProse } from '../ui/markdown-prose'
+import { AssigneeChip } from './assignee-chip'
 
 // The task-header facts: state badges,
 // the facts a reviewer actually references — where the work lives, where it
@@ -676,13 +676,11 @@ function HoldControl({ item }: { item: ActivityItem }) {
  * list (REQ-4). Assigning constrains who may claim the task's work orders; it
  * never touches queue order (DEC-18).
  *
- * Assignment is an operator act, carried by the `set_assignee` capability, and
- * the browser is never told its own role. So, exactly as the workspace members
- * surface does, whether the reader may assign is answered by the server rather
- * than guessed: the operator-gated invitations read succeeds only for an
- * operator, and a workspace that refuses it leaves this control absent. Every
- * member still reads the assignee wherever it is rendered — the members list
- * itself is a co-member read, never a user directory (AC-3.2).
+ * Assignment is an operator act, carried by the `set_assignee` capability. The
+ * caller's role for this workspace comes from the server's own self-identity
+ * read rather than being guessed in the browser, so a member simply has no
+ * control. Every member still reads the assignee wherever it is rendered — the
+ * members list itself is a co-member read, never a user directory (AC-3.2).
  */
 function AssigneeControl({ item }: { item: ActivityItem }) {
   const token = useOperatorToken()
@@ -692,16 +690,17 @@ function AssigneeControl({ item }: { item: ActivityItem }) {
   const ref = useRef<HTMLDivElement>(null)
   const terminal = item.task.state === 'merged' || item.task.state === 'closed'
   const enabled = Boolean(token && workspace) && !terminal
-  const operatorProbe = useQuery({
-    queryKey: ['workspace-invitations', token, workspace],
-    queryFn: () => fetchWorkspaceInvitations(token, workspace),
+  const identity = useQuery({
+    queryKey: ['caller-identity', token, workspace],
+    queryFn: () => fetchCallerIdentity(token),
     enabled,
     retry: false,
   })
+  const isOperator = identity.data?.role === 'operator'
   const members = useQuery({
     queryKey: ['workspace-members', token, workspace],
     queryFn: () => fetchWorkspaceMembers(token, workspace),
-    enabled: enabled && operatorProbe.isSuccess,
+    enabled: enabled && isOperator,
     retry: false,
   })
   const mutation = useMutation({
@@ -722,7 +721,7 @@ function AssigneeControl({ item }: { item: ActivityItem }) {
     document.addEventListener('mousedown', close)
     return () => document.removeEventListener('mousedown', close)
   }, [])
-  if (!enabled || !operatorProbe.isSuccess) return null
+  if (!enabled || !isOperator) return null
   const roster = members.data ?? []
   return (
     <div className="relative" ref={ref}>

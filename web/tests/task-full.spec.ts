@@ -1,4 +1,4 @@
-import { expect, test, type Page, type Route } from '@playwright/test'
+import { expect, type Page, type Route, test } from '@playwright/test'
 
 const createdAt = '2026-07-15T12:00:00Z'
 const checkpointProgress =
@@ -4140,19 +4140,23 @@ const assignmentMembers = [
  * the assignee server-side so a set or clear comes back through the projection
  * rather than from browser state.
  *
- * `operator` decides only what the operator-gated invitations read answers.
- * That is the real discriminator: the browser is never told its own role, so a
- * workspace that refuses that read is how the surface learns to stay read-only.
+ * `operator` decides only the role the server reports for the caller, which is
+ * the real discriminator: the surface asks who it is rather than guessing.
  */
 async function routeAssignment(page: Page, options: { operator: boolean }) {
   const state: { assignee?: (typeof assignmentMembers)[number]; events: TaskEventFixture[] } = { events: [] }
   // The app shell reconciles the stored selection against this enumeration, and
   // the membership reads are workspace-scoped, so the selection has to survive.
   await page.route('**/v1/workspaces', (route) => route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] }))
-  await page.route('**/v1/workspaces/demo/invitations**', (route) =>
-    options.operator
-      ? route.fulfill({ json: [] })
-      : route.fulfill({ status: 404, json: { error: 'workspace_not_found', message: 'workspace not found' } }),
+  await page.route('**/v1/me**', (route) =>
+    route.fulfill({
+      json: {
+        id: 'usr_ada',
+        email: 'ada@example.test',
+        display_name: 'Ada Owner',
+        role: options.operator ? 'operator' : 'user',
+      },
+    }),
   )
   await page.route('**/v1/workspaces/demo/members**', (route) => route.fulfill({ json: assignmentMembers }))
   await page.route('**/v1/tasks/assignable/assignee**', async (route) => {

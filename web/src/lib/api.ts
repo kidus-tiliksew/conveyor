@@ -9,16 +9,16 @@ import type {
   LineageNodeType,
   MonitorDriftOutcome,
   MonitorStatus,
+  PendingProposalsResponse,
   PlanningBundle,
   PlanningMessage,
   PlanningMessagePart,
   PlanningSession,
   PlanningSessionGoal,
-  PendingProposalsResponse,
+  RepositoryDrift,
   RequirementDerivation,
   RequirementVersion,
   RequirementView,
-  RepositoryDrift,
   Task,
   TaskOperationsItem,
   TaskOperationsPage,
@@ -181,6 +181,15 @@ function membershipErrorMessage(body: string, fallback: string) {
   } catch {
     return text || fallback
   }
+}
+
+// Who the caller is. The workspace travels with the request so the response
+// carries the caller's role in it — the one surface that answers "may I do
+// operator things here?" without the browser guessing (REQ-2, DEC-19).
+export async function fetchCallerIdentity(token: string) {
+  const response = await fetch(workspaceURL('/v1/me'), { headers: mutationHeaders(token) })
+  if (!response.ok) throw new Error(membershipErrorMessage(await response.text(), response.statusText))
+  return (await response.json()) as import('./types').CallerIdentity
 }
 
 export async function fetchPersonalAccessTokens(token: string) {
