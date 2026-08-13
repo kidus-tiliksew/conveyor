@@ -1,4 +1,4 @@
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, Outlet, useNavigate, useRouterState } from '@tanstack/react-router'
 import {
   Activity,
@@ -6,7 +6,9 @@ import {
   FileCode2,
   FolderGit2,
   Kanban,
+  KeyRound,
   ListChecks,
+  LogOut,
   type LucideIcon,
   Plus,
   Settings,
@@ -14,16 +16,27 @@ import {
   Workflow,
 } from 'lucide-react'
 import { createContext, type ReactNode, useContext, useEffect, useState } from 'react'
-import { fetchActivity, fetchBlueprints, fetchPendingProposals, fetchWorkspace, fetchWorkspaces } from '../lib/api'
+import {
+  fetchActivity,
+  fetchBlueprints,
+  fetchPendingProposals,
+  fetchWorkspace,
+  fetchWorkspaces,
+  SESSION_AUTH,
+  signOutDashboardSession,
+} from '../lib/api'
 import { isBlueprintAnchor } from '../lib/blueprint'
 import { cn } from '../lib/utils'
 import { ThemeProvider, useTheme } from './theme-provider'
 import { Badge } from './ui/badge'
+import { Button } from './ui/button'
+import { Input } from './ui/input'
 
-// The operator bearer token authenticates mutations.
-// Session-scoped on purpose: closing the tab forgets it.
-const TokenContext = createContext<{ token: string; setToken: (value: string) => void }>({
+// The context carries either a tab-scoped operator bearer token or an opaque
+// marker indicating that the browser's HttpOnly session cookie is active.
+const TokenContext = createContext<{ token: string; operatorToken: string; setToken: (value: string) => void }>({
   token: '',
+  operatorToken: '',
   setToken: () => {},
 })
 
@@ -41,7 +54,8 @@ export function useOperatorToken() {
 }
 
 export function useTokenState() {
-  return useContext(TokenContext)
+  const { operatorToken, setToken } = useContext(TokenContext)
+  return { token: operatorToken, setToken }
 }
 
 // The Board passes the shared filter family so the server returns what it will
@@ -97,37 +111,106 @@ export function usePendingProposals() {
 }
 
 export function AppShell() {
+  const pathname = useRouterState({ select: (state) => state.location.pathname })
+  if (pathname === '/sign-in') {
+    return (
+      <ThemeProvider>
+        <Outlet />
+      </ThemeProvider>
+    )
+  }
+  return <AuthenticatedAppShell />
+}
+
+function AuthenticatedAppShell() {
   const [token, setToken] = useState(() => sessionStorage.getItem('conveyor-token') ?? '')
   const saveToken = (value: string) => {
     setToken(value)
-    sessionStorage.setItem('conveyor-token', value)
+    if (value) sessionStorage.setItem('conveyor-token', value)
+    else sessionStorage.removeItem('conveyor-token')
   }
+  const workspaces = useQuery({
+    queryKey: ['workspaces', token],
+    queryFn: () => fetchWorkspaces(token),
+    retry: false,
+  })
+  const credential = token || (workspaces.isSuccess ? SESSION_AUTH : '')
 
   return (
     <ThemeProvider>
-      <TokenContext.Provider value={{ token, setToken: saveToken }}>
-        <WorkspaceProvider token={token}>
-          <div className="flex h-screen overflow-hidden">
-            <IconRail />
-            <NavSidebar />
-            <main className="min-w-0 flex-1 overflow-hidden bg-background">
-              <Outlet />
-            </main>
-          </div>
-        </WorkspaceProvider>
+      <TokenContext.Provider value={{ token: credential, operatorToken: token, setToken: saveToken }}>
+        {workspaces.isPending ? (
+          <div className="grid h-screen place-items-center bg-background text-sm text-muted">Opening Conveyor…</div>
+        ) : workspaces.isError ? (
+          <SignInRequired token={token} setToken={saveToken} />
+        ) : (
+          <WorkspaceProvider workspaces={workspaces.data}>
+            <div className="flex h-screen overflow-hidden">
+              <IconRail />
+              <NavSidebar />
+              <main className="min-w-0 flex-1 overflow-hidden bg-background">
+                <Outlet />
+              </main>
+            </div>
+          </WorkspaceProvider>
+        )}
       </TokenContext.Provider>
     </ThemeProvider>
   )
 }
 
-function WorkspaceProvider({ token, children }: { token: string; children: ReactNode }) {
+function SignInRequired({ token, setToken }: { token: string; setToken: (value: string) => void }) {
+  const [value, setValue] = useState(token)
+  const queryClient = useQueryClient()
+  return (
+    <main className="grid min-h-screen place-items-center bg-background px-6 py-12">
+      <div className="w-full max-w-md rounded-xl border border-border bg-card p-7 shadow-sm">
+        <div className="mb-5 grid size-10 place-items-center rounded-lg bg-primary-soft text-primary">
+          <KeyRound className="size-5" />
+        </div>
+        <h1 className="text-xl font-semibold tracking-tight">Sign in to Conveyor</h1>
+        <p className="mt-2 text-sm leading-6 text-muted">
+          Open the invitation link sent by your operator. Each link can be used once.
+        </p>
+        <div className="my-6 flex items-center gap-3 text-xs text-faint">
+          <span className="h-px flex-1 bg-border" />
+          Operator fallback
+          <span className="h-px flex-1 bg-border" />
+        </div>
+        <form
+          className="space-y-3"
+          onSubmit={(event) => {
+            event.preventDefault()
+            setToken(value.trim())
+            void queryClient.invalidateQueries({ queryKey: ['workspaces'] })
+          }}
+        >
+          <Input
+            type="password"
+            aria-label="Operator token"
+            placeholder="Paste the operator token"
+            value={value}
+            onChange={(event) => setValue(event.target.value)}
+          />
+          <Button type="submit" className="w-full" disabled={!value.trim()}>
+            Continue as operator
+          </Button>
+        </form>
+        {token && <p className="mt-3 text-xs text-failure">That operator token was not accepted.</p>}
+      </div>
+    </main>
+  )
+}
+
+function WorkspaceProvider({
+  workspaces,
+  children,
+}: {
+  workspaces: import('../lib/types').WorkspaceRecord[]
+  children: ReactNode
+}) {
   const queryClient = useQueryClient()
   const [workspace, setWorkspaceState] = useState(() => localStorage.getItem('conveyor-workspace') ?? '')
-  const { data: workspaces } = useQuery({
-    queryKey: ['workspaces', token],
-    queryFn: () => fetchWorkspaces(token),
-    enabled: !!token,
-  })
   const setWorkspace = (value: string) => {
     void queryClient.cancelQueries()
     if (value) localStorage.setItem('conveyor-workspace', value)
@@ -136,7 +219,6 @@ function WorkspaceProvider({ token, children }: { token: string; children: React
     queryClient.removeQueries({ predicate: (query) => query.queryKey[0] !== 'workspaces' })
   }
   useEffect(() => {
-    if (!workspaces) return
     if (workspaces.length === 1 && !workspaces.some((item) => item.id === workspace)) setWorkspace(workspaces[0].id)
     else if (!workspaces.some((item) => item.id === workspace) && workspace) setWorkspace('')
   }, [workspaces, workspace])
@@ -205,6 +287,9 @@ function initials(name: string) {
 
 function NavSidebar() {
   const token = useOperatorToken()
+  const { setToken } = useTokenState()
+  const queryClient = useQueryClient()
+  const navigate = useNavigate()
   const { workspace: selected } = useWorkspaceSelection()
   const { data: workspaces } = useQuery({
     queryKey: ['workspaces', token],
@@ -228,6 +313,15 @@ function NavSidebar() {
   ).size
 
   const currentName = workspaces?.find((item) => item.id === selected)?.name ?? workspace?.workspace ?? 'Conveyor'
+  const signOut = useMutation({
+    mutationFn: signOutDashboardSession,
+    onSettled: () => {
+      setToken('')
+      localStorage.removeItem('conveyor-workspace')
+      queryClient.clear()
+      void navigate({ to: '/' })
+    },
+  })
 
   return (
     <nav className="flex w-56 shrink-0 flex-col border-r border-border bg-rail" aria-label="Primary">
@@ -256,6 +350,15 @@ function NavSidebar() {
         <NavItem to="/monitor" icon={Activity} label="Monitor" />
         <NavItem to="/settings" icon={Settings} label="Settings" />
       </div>
+      <Button
+        variant="ghost"
+        className="mx-2 justify-start text-muted"
+        disabled={signOut.isPending}
+        onClick={() => signOut.mutate()}
+      >
+        <LogOut />
+        {signOut.isPending ? 'Signing out…' : 'Sign out'}
+      </Button>
       <ThemeSwitcher />
     </nav>
   )

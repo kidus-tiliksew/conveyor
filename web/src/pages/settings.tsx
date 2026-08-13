@@ -1,27 +1,68 @@
-import { KeyRound, PlugZap } from 'lucide-react'
+import { useSearch } from '@tanstack/react-router'
+import { CheckCircle2, KeyRound, PlugZap, Terminal } from 'lucide-react'
 import { useTokenState } from '../components/app-shell'
 import { PersonalTokensCard } from '../components/settings/personal-tokens-card'
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
+import { CopyButton } from '../components/ui/copy-button'
 import { Input } from '../components/ui/input'
 
 export function SettingsPage() {
   const { token, setToken } = useTokenState()
+  const { welcome } = useSearch({ from: '/settings' })
+  const cliCommand = 'export CONVEYOR_API_TOKEN="<paste-your-token>"'
+  const mcpConfig = `{
+  "mcpServers": {
+    "conveyor": {
+      "url": "${location.origin}/mcp",
+      "headers": { "Authorization": "Bearer <paste-your-token>" }
+    }
+  }
+}`
   return (
     <div className="h-full overflow-y-auto">
       <div className="mx-auto max-w-2xl px-6 py-8">
         <h1 className="text-xl font-semibold tracking-tight">Settings</h1>
-        <p className="mt-1 text-sm text-muted">Operator-local preferences for this browser session.</p>
+        <p className="mt-1 text-sm text-muted">Your access and connection settings.</p>
 
-        <Card className="mt-6">
+        {welcome && (
+          <Card className="mt-6 border-primary/30 bg-primary-soft/30">
+            <CardHeader>
+              <CardTitle>Welcome to Conveyor</CardTitle>
+              <CheckCircle2 className="size-4 text-positive" />
+            </CardHeader>
+            <CardContent className="space-y-4 text-sm leading-6 text-muted">
+              <p>
+                You’re signed in. Create your first access token below, copy it when it appears, then use these details
+                to connect your command line or coding agent.
+              </p>
+              <div className="space-y-2">
+                <p className="font-medium text-foreground">Command line</p>
+                <div className="flex items-center gap-2 rounded-md border border-border bg-card p-2">
+                  <code className="min-w-0 flex-1 overflow-x-auto font-mono text-xs text-foreground">{cliCommand}</code>
+                  <CopyButton value={cliCommand} label="Copy command" />
+                </div>
+              </div>
+              <div className="space-y-2">
+                <p className="font-medium text-foreground">Coding-agent connection</p>
+                <div className="flex items-start gap-2 rounded-md border border-border bg-card p-2">
+                  <pre className="min-w-0 flex-1 overflow-x-auto font-mono text-xs text-foreground">{mcpConfig}</pre>
+                  <CopyButton value={mcpConfig} label="Copy connection settings" />
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        <Card className={welcome ? 'mt-4' : 'mt-6'}>
           <CardHeader>
-            <CardTitle>Operator token</CardTitle>
+            <CardTitle>Operator fallback</CardTitle>
             <KeyRound className="size-4 text-faint" />
           </CardHeader>
           <CardContent className="space-y-2.5">
             <p className="text-sm leading-6 text-muted">
-              Mutations — creating tasks, review decisions, redispatch — authenticate with the control plane's{' '}
+              Operators and non-durable deployments can use the control plane's{' '}
               <code className="font-mono text-xs">CONVEYOR_API_TOKEN</code>. Multi-workspace reads and writes both
-              require it. The token is kept in session storage and forgotten when the tab closes.
+              accept it. The token is kept in session storage and forgotten when the tab closes.
             </p>
             <Input
               type="password"
@@ -42,7 +83,7 @@ export function SettingsPage() {
         <Card className="mt-4">
           <CardHeader>
             <CardTitle>MCP work-order server</CardTitle>
-            <PlugZap className="size-4 text-primary" />
+            {welcome ? <Terminal className="size-4 text-primary" /> : <PlugZap className="size-4 text-primary" />}
           </CardHeader>
           <CardContent className="space-y-2 text-sm leading-6 text-muted">
             <p>

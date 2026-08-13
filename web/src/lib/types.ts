@@ -401,6 +401,8 @@ export interface WorkspaceInvitation {
 export interface MembershipGrant {
   email: string
   role: WorkspaceRole
+  delivery?: 'sent' | 'fallback' | 'failed'
+  sign_in_url?: string
 }
 
 export interface PersonalAccessToken {

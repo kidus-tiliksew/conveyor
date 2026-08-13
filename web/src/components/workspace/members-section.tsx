@@ -1,10 +1,11 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { MailPlus, Trash2 } from 'lucide-react'
+import { MailPlus, RotateCw, Trash2 } from 'lucide-react'
 import { useOperatorToken, useWorkspaceSelection } from '../app-shell'
 import { Badge } from '../ui/badge'
 import { Button } from '../ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
+import { CopyButton } from '../ui/copy-button'
 import { Input, Select } from '../ui/input'
 import {
   fetchWorkspaceInvitations,
@@ -13,10 +14,11 @@ import {
   LastWorkspaceOperatorError,
   revokeWorkspaceInvitation,
   revokeWorkspaceMember,
+  resendWorkspaceInvitation,
   WorkspaceNotVisibleError,
 } from '../../lib/api'
 import { errorMessage } from '../../lib/errors'
-import type { WorkspaceRole } from '../../lib/types'
+import type { MembershipGrant, WorkspaceRole } from '../../lib/types'
 
 function formatTimestamp(value: string) {
   return new Date(value).toLocaleString()
@@ -59,9 +61,11 @@ export function MembersSection() {
 
   const [email, setEmail] = useState('')
   const [role, setRole] = useState<WorkspaceRole>('user')
+  const [delivery, setDelivery] = useState<MembershipGrant | null>(null)
   const invite = useMutation({
     mutationFn: () => inviteWorkspaceMember(token, workspace, { email: email.trim(), role }),
-    onSuccess: async () => {
+    onSuccess: async (result) => {
+      setDelivery(result)
       setEmail('')
       setRole('user')
       await refresh()
@@ -74,6 +78,10 @@ export function MembersSection() {
   const removeInvitation = useMutation({
     mutationFn: (invitedEmail: string) => revokeWorkspaceInvitation(token, workspace, invitedEmail),
     onSuccess: refresh,
+  })
+  const resendInvitation = useMutation({
+    mutationFn: (invitedEmail: string) => resendWorkspaceInvitation(token, workspace, invitedEmail),
+    onSuccess: (result) => setDelivery(result),
   })
 
   return (
@@ -116,7 +124,7 @@ export function MembersSection() {
                 {invite.isPending ? 'Inviting…' : 'Invite'}
               </Button>
               <p className="basis-full text-xs leading-5 text-muted">
-                An invitation goes to the address. It becomes a membership when that person's account is created.
+                The person receives a one-time sign-in link. Opening it creates their account and workspace membership.
                 Operators can invite, remove, and change who else is an operator.
               </p>
               {invite.error && (
@@ -125,6 +133,35 @@ export function MembersSection() {
                 </p>
               )}
             </form>
+          )}
+          {delivery && (
+            <div className="space-y-2 rounded-lg border border-primary/25 bg-primary-soft/40 p-3" role="status">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-sm font-medium text-foreground">
+                    {delivery.delivery === 'sent' ? 'Invitation sent' : 'Invitation ready to share'}
+                  </p>
+                  <p className="mt-1 text-xs leading-5 text-muted">
+                    {delivery.delivery === 'sent'
+                      ? 'We sent a sign-in link by email.'
+                      : delivery.sign_in_url
+                        ? 'Email delivery is unavailable. Copy this link and send it yourself.'
+                        : 'The invitation was created. Use resend to create a new sign-in link.'}
+                  </p>
+                </div>
+                <Button size="sm" variant="ghost" onClick={() => setDelivery(null)}>
+                  Dismiss
+                </Button>
+              </div>
+              {delivery.sign_in_url && (
+                <div className="flex items-center gap-2 rounded-md border border-border bg-card p-2">
+                  <p className="min-w-0 flex-1 truncate font-mono text-xs" title={delivery.sign_in_url}>
+                    {delivery.sign_in_url}
+                  </p>
+                  <CopyButton value={delivery.sign_in_url} label="Copy invitation link" />
+                </div>
+              )}
+            </div>
           )}
           {members.error && (
             <p className="text-sm text-failure">{errorMessage(members.error, 'Could not load the member list.')}</p>
@@ -203,6 +240,17 @@ export function MembersSection() {
                   </Badge>
                   <Button
                     size="sm"
+                    variant="secondary"
+                    disabled={resendInvitation.isPending}
+                    onClick={() => resendInvitation.mutate(invitation.email)}
+                  >
+                    <RotateCw />
+                    {resendInvitation.isPending && resendInvitation.variables === invitation.email
+                      ? 'Resending…'
+                      : 'Resend'}
+                  </Button>
+                  <Button
+                    size="sm"
                     variant="destructive"
                     disabled={removeInvitation.isPending}
                     onClick={() => removeInvitation.mutate(invitation.email)}
@@ -215,6 +263,11 @@ export function MembersSection() {
             {removeInvitation.error && (
               <p className="text-sm text-failure">
                 {errorMessage(removeInvitation.error, 'Could not revoke that invitation.')}
+              </p>
+            )}
+            {resendInvitation.error && (
+              <p className="text-sm text-failure">
+                {errorMessage(resendInvitation.error, 'Could not resend that invitation.')}
               </p>
             )}
           </CardContent>
