@@ -72,6 +72,7 @@ type Server struct {
 	Workspaces            store.WorkspaceControlStore
 	Memberships           store.MembershipStore
 	IdentityProvisioner   store.IdentityProvisioner
+	CallerIdentities      store.CallerIdentityStore
 	PersonalTokens        store.PersonalAccessTokenStore
 	EnsureWorkspaceQueues func(string) error
 	Deployment            *config.Config
@@ -95,6 +96,9 @@ func NewServer(s store.Store) *Server {
 	}
 	if identities, ok := s.(store.IdentityProvisioner); ok {
 		server.IdentityProvisioner = identities
+	}
+	if identities, ok := s.(store.CallerIdentityStore); ok {
+		server.CallerIdentities = identities
 	}
 	if tokens, ok := s.(store.PersonalAccessTokenStore); ok {
 		server.PersonalTokens = tokens
@@ -124,6 +128,7 @@ func (s *Server) Handler() http.Handler {
 		r.With(s.requireWorkerAuth).Post("/worker/work-orders/{id}/attempt-checkpoint", s.checkpointWorkerOrderAttempt)
 		r.With(s.requireWorkerAuth).Post("/worker/work-orders/{id}/release", s.releaseWorkerOrder)
 		r.With(s.requireWorkspaceAuth).Get("/workspaces", s.listWorkspaces)
+		r.With(s.requireSelfServiceCredential, s.resolveOptionalWorkspaceCapability(core.CapabilityViewWorkspace)).Get("/me", s.getCallerIdentity)
 		r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Post("/users", s.provisionIdentityUser)
 		// Self-service credential routes carry no subject in the path: the owner
 		// is the presented credential, so no capability applies and no request
@@ -1344,6 +1349,7 @@ func parseTaskFilter(values url.Values) (store.TaskFilter, error) {
 	}
 	filter := store.TaskFilter{
 		Repositories:         repositories,
+		Assignee:             strings.TrimSpace(values.Get("assignee")),
 		Query:                strings.TrimSpace(values.Get("q")),
 		ServesRequirementIDs: parseTaskFilterList(values["serves_requirement"]),
 		GoverningDesignIDs:   parseTaskFilterList(values["governing_design"]),

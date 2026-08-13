@@ -16,6 +16,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
+	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
 type queryRecorder struct {
@@ -154,8 +155,25 @@ func TestTaskOperationsPaginationBoundsMatchTheMemoryStoreIntegration(t *testing
 func TestTaskFilterMatchesTheMemoryStoreIntegration(t *testing.T) {
 	st, ctx, workspace := newPhase61IntegrationStore(t)
 	defer st.Close()
+	assigneeID := "usr_filter_" + core.NewTaskID()
+	user, err := st.queries.InsertIdentityUser(t.Context(), db.InsertIdentityUserParams{
+		ID: assigneeID, Email: assigneeID + "@example.test", DisplayName: "Filter Assignee",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.pool.Exec(ctx, `INSERT INTO workspace_role_bindings(workspace_id,user_id,role) VALUES($1,$2,'user')`, workspace, user.ID); err != nil {
+		t.Fatal(err)
+	}
 	fixture := storetest.TaskFilterFixture{
 		Store: st, Context: ctx, Workspace: workspace, Repo: "conveyor", Suffix: core.NewTaskID(),
+		AssigneeUserID: assigneeID,
+		Assign: func(t *testing.T, taskID, userID string) {
+			t.Helper()
+			if _, err = taskops.New(st).SetAssignee(ctx, taskID, userID); err != nil {
+				t.Fatal(err)
+			}
+		},
 	}
 	storetest.SeedTaskFilterFixture(t, fixture)
 	storetest.RunTaskFilterConformance(t, fixture)
