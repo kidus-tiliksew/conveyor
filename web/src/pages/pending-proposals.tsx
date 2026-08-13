@@ -1,7 +1,12 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link, useSearch } from '@tanstack/react-router'
 import { Check, Clock, FileDiff, X } from 'lucide-react'
-import { useOperatorToken, usePendingProposals, useWorkspaceSelection } from '../components/app-shell'
+import {
+  useOperatorToken,
+  usePendingProposals,
+  useWorkspaceCapability,
+  useWorkspaceSelection,
+} from '../components/app-shell'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import {
@@ -22,6 +27,7 @@ const tierLabels: Record<PendingProposal['tier'], string> = {
 
 export function PendingProposalsPage() {
   const token = useOperatorToken()
+  const canConfirm = useWorkspaceCapability('confirm_documents')
   const { workspace } = useWorkspaceSelection()
   const search = useSearch({ from: '/pending-proposals' })
   const client = useQueryClient()
@@ -120,17 +126,19 @@ export function PendingProposalsPage() {
                   </div>
                   <div className="flex flex-wrap items-center gap-2 self-center">
                     {detailLink(proposal)}
-                    <Button
-                      size="sm"
-                      disabled={!token || resolve.isPending}
-                      onClick={() => resolve.mutate({ proposal, action: 'confirm' })}
-                    >
-                      <Check />
-                      {active && resolve.isPending && resolve.variables?.action === 'confirm'
-                        ? 'Confirming…'
-                        : 'Confirm'}
-                    </Button>
-                    {proposal.tier === 'decision' && (
+                    {canConfirm && (
+                      <Button
+                        size="sm"
+                        disabled={!token || resolve.isPending}
+                        onClick={() => resolve.mutate({ proposal, action: 'confirm' })}
+                      >
+                        <Check />
+                        {active && resolve.isPending && resolve.variables?.action === 'confirm'
+                          ? 'Confirming…'
+                          : 'Confirm'}
+                      </Button>
+                    )}
+                    {canConfirm && proposal.tier === 'decision' && (
                       <Button
                         size="sm"
                         variant="destructive"

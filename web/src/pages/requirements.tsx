@@ -16,7 +16,7 @@ import {
   Sparkles,
   Trash2,
 } from 'lucide-react'
-import { useOperatorToken, useWorkspaceSelection } from '../components/app-shell'
+import { useOperatorToken, useWorkspaceCapability, useWorkspaceSelection } from '../components/app-shell'
 import { AttentionSurface, type AttentionItem } from '../components/documents/attention-surface'
 import { DriftResolutionForm } from '../components/documents/drift-resolution-form'
 import { VersionDiff } from '../components/documents/version-diff'
@@ -139,6 +139,7 @@ function requirementAttentionCount(item: RequirementSummary) {
  */
 export function RequirementsPage() {
   const token = useOperatorToken()
+  const canOperate = useWorkspaceCapability('operate_gates')
   const { workspace } = useWorkspaceSelection()
   const navigate = useNavigate()
   const client = useQueryClient()
@@ -236,27 +237,29 @@ export function RequirementsPage() {
             {overviews.length === 0 && (
               <DocumentTreeNote>Add a product overview, personas, or a glossary.</DocumentTreeNote>
             )}
-            <div className="px-2 pt-2">
-              <label className="flex cursor-pointer items-center justify-center gap-2 rounded-md border border-dashed border-edge px-2 py-2 text-xs font-medium text-muted transition-colors hover:border-primary/40 hover:bg-surface hover:text-primary">
-                <FileUp className="size-3.5" /> {upload.isPending ? 'Uploading…' : 'Add Markdown'}
-                <input
-                  className="hidden"
-                  type="file"
-                  accept=".md,.markdown,text/markdown"
-                  disabled={!token || upload.isPending}
-                  onChange={(event) => {
-                    const file = event.target.files?.[0]
-                    if (file) upload.mutate({ file })
-                    event.currentTarget.value = ''
-                  }}
-                />
-              </label>
-              {upload.error && (
-                <p className="mt-2 text-xs text-failure">
-                  {errorMessage(upload.error, 'Could not add that overview.')}
-                </p>
-              )}
-            </div>
+            {canOperate && (
+              <div className="px-2 pt-2">
+                <label className="flex cursor-pointer items-center justify-center gap-2 rounded-md border border-dashed border-edge px-2 py-2 text-xs font-medium text-muted transition-colors hover:border-primary/40 hover:bg-surface hover:text-primary">
+                  <FileUp className="size-3.5" /> {upload.isPending ? 'Uploading…' : 'Add Markdown'}
+                  <input
+                    className="hidden"
+                    type="file"
+                    accept=".md,.markdown,text/markdown"
+                    disabled={!token || upload.isPending}
+                    onChange={(event) => {
+                      const file = event.target.files?.[0]
+                      if (file) upload.mutate({ file })
+                      event.currentTarget.value = ''
+                    }}
+                  />
+                </label>
+                {upload.error && (
+                  <p className="mt-2 text-xs text-failure">
+                    {errorMessage(upload.error, 'Could not add that overview.')}
+                  </p>
+                )}
+              </div>
+            )}
           </DocumentTreeGroup>
 
           <DocumentTreeGroup label="Requirements">
@@ -386,6 +389,7 @@ function OverviewCanvas({
   remove: () => void
   removing: boolean
 }) {
+  const canOperate = useWorkspaceCapability('operate_gates')
   const [selectedVersion, setSelectedVersion] = useState(initialVersion ?? document.current_version)
   useEffect(
     () => setSelectedVersion(initialVersion ?? document.current_version),
@@ -416,34 +420,36 @@ function OverviewCanvas({
             <Badge variant="outline">Reference material</Badge>
           </div>
         </div>
-        <div className="flex shrink-0 items-center gap-2">
-          <label
-            className={`inline-flex h-8 cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-md border border-edge bg-background px-2.5 text-xs font-medium text-foreground transition-colors hover:bg-surface ${!token || uploading ? 'pointer-events-none opacity-40' : ''}`}
-          >
-            <FileUp className="size-3.5" /> {uploading ? 'Uploading…' : 'Re-upload'}
-            <input
-              className="hidden"
-              type="file"
-              accept=".md,.markdown,text/markdown"
-              disabled={!token || uploading}
-              onChange={(event) => {
-                const file = event.target.files?.[0]
-                if (file) upload(file)
-                event.currentTarget.value = ''
+        {canOperate && (
+          <div className="flex shrink-0 items-center gap-2">
+            <label
+              className={`inline-flex h-8 cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-md border border-edge bg-background px-2.5 text-xs font-medium text-foreground transition-colors hover:bg-surface ${!token || uploading ? 'pointer-events-none opacity-40' : ''}`}
+            >
+              <FileUp className="size-3.5" /> {uploading ? 'Uploading…' : 'Re-upload'}
+              <input
+                className="hidden"
+                type="file"
+                accept=".md,.markdown,text/markdown"
+                disabled={!token || uploading}
+                onChange={(event) => {
+                  const file = event.target.files?.[0]
+                  if (file) upload(file)
+                  event.currentTarget.value = ''
+                }}
+              />
+            </label>
+            <Button
+              variant="destructive"
+              size="sm"
+              disabled={!token || removing}
+              onClick={() => {
+                if (window.confirm(`Delete ${document.name}? Its saved versions will no longer appear here.`)) remove()
               }}
-            />
-          </label>
-          <Button
-            variant="destructive"
-            size="sm"
-            disabled={!token || removing}
-            onClick={() => {
-              if (window.confirm(`Delete ${document.name}? Its saved versions will no longer appear here.`)) remove()
-            }}
-          >
-            <Trash2 className="size-3.5" /> Delete
-          </Button>
-        </div>
+            >
+              <Trash2 className="size-3.5" /> Delete
+            </Button>
+          </div>
+        )}
       </header>
       {isLoading && <p className="text-sm text-muted">Loading version history…</p>}
       {error && <p className="text-sm text-failure">{errorMessage(error, 'Could not load version history.')}</p>}
@@ -520,6 +526,8 @@ function RequirementCanvas({ summary, token }: { summary: RequirementSummary; to
 
 function RequirementDetailCanvas({ item, token }: { item: RequirementView; token: string }) {
   const { workspace } = useWorkspaceSelection()
+  const canOperate = useWorkspaceCapability('operate_gates')
+  const canConfirm = useWorkspaceCapability('confirm_documents')
   const client = useQueryClient()
   const servingTasks = item.serving_tasks ?? []
   const { data: versions = [], error: versionsError } = useQuery({
@@ -640,22 +648,26 @@ function RequirementDetailCanvas({ item, token }: { item: RequirementView; token
               Open PR <ExternalLink className="inline size-3" />
             </a>
           )}
-          <Button
-            size="sm"
-            variant="secondary"
-            disabled={!token || fileStalenessFollowUp.isPending || acknowledgeStaleness.isPending}
-            onClick={() => fileStalenessFollowUp.mutate(delivery.signal_id)}
-          >
-            File a task
-          </Button>
-          <Button
-            size="sm"
-            variant="ghost"
-            disabled={!token || acknowledgeStaleness.isPending || fileStalenessFollowUp.isPending}
-            onClick={() => acknowledgeStaleness.mutate(delivery.signal_id)}
-          >
-            Dismiss
-          </Button>
+          {canOperate && (
+            <>
+              <Button
+                size="sm"
+                variant="secondary"
+                disabled={!token || fileStalenessFollowUp.isPending || acknowledgeStaleness.isPending}
+                onClick={() => fileStalenessFollowUp.mutate(delivery.signal_id)}
+              >
+                File a task
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                disabled={!token || acknowledgeStaleness.isPending || fileStalenessFollowUp.isPending}
+                onClick={() => acknowledgeStaleness.mutate(delivery.signal_id)}
+              >
+                Dismiss
+              </Button>
+            </>
+          )}
         </>
       ),
       error:
@@ -719,21 +731,23 @@ function RequirementDetailCanvas({ item, token }: { item: RequirementView; token
                 Open the change <ExternalLink className="size-3" />
               </a>
             )}
-            <DriftResolutionForm
-              drift={entry}
-              surface="requirement"
-              token={token}
-              workspace={workspace}
-              requirementID={item.requirement.id}
-              onResolved={() =>
-                Promise.all([
-                  client.invalidateQueries({ queryKey: ['requirements', workspace] }),
-                  client.invalidateQueries({ queryKey: ['requirement', workspace] }),
-                  client.invalidateQueries({ queryKey: ['requirement-versions', workspace, item.requirement.id] }),
-                  client.invalidateQueries({ queryKey: ['system-designs', workspace] }),
-                ])
-              }
-            />
+            {canOperate && (
+              <DriftResolutionForm
+                drift={entry}
+                surface="requirement"
+                token={token}
+                workspace={workspace}
+                requirementID={item.requirement.id}
+                onResolved={() =>
+                  Promise.all([
+                    client.invalidateQueries({ queryKey: ['requirements', workspace] }),
+                    client.invalidateQueries({ queryKey: ['requirement', workspace] }),
+                    client.invalidateQueries({ queryKey: ['requirement-versions', workspace, item.requirement.id] }),
+                    client.invalidateQueries({ queryKey: ['system-designs', workspace] }),
+                  ])
+                }
+              />
+            )}
           </>
         ),
       }
@@ -754,7 +768,7 @@ function RequirementDetailCanvas({ item, token }: { item: RequirementView; token
           )}
         </>
       ),
-      action: (
+      action: canConfirm ? (
         <Button
           disabled={!token || confirm.isPending || !item.confirmation_eligible}
           title={!item.confirmation_eligible ? 'Revise this migrated seed before confirming it.' : undefined}
@@ -765,7 +779,7 @@ function RequirementDetailCanvas({ item, token }: { item: RequirementView; token
             ? 'Confirming…'
             : `Confirm version ${version.version}`}
         </Button>
-      ),
+      ) : undefined,
       error:
         confirm.error && confirm.variables === version.version
           ? errorMessage(confirm.error, 'Could not confirm this version.')
@@ -775,7 +789,7 @@ function RequirementDetailCanvas({ item, token }: { item: RequirementView; token
 
   return (
     <div className="min-w-0">
-      {attachmentOffer != null && (
+      {canOperate && attachmentOffer != null && (
         <CheckpointContextOffer
           requirementId={item.requirement.id}
           requirementTitle={item.requirement.title}

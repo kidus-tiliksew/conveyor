@@ -77,8 +77,17 @@ func TestTaskAssignmentClaimEligibilityIntegration(t *testing.T) {
 	if _, err = st.pool.Exec(ctx, `INSERT INTO workspace_role_bindings(workspace_id,user_id,role) VALUES($1,$2,'user')`, workspace, inactive.ID); err != nil {
 		t.Fatal(err)
 	}
+	viewer, err := st.queries.InsertIdentityUser(t.Context(), db.InsertIdentityUserParams{
+		ID: "usr_viewer_" + core.NewTaskID(), Email: "viewer-" + core.NewTaskID() + "@example.test", DisplayName: "Viewer",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.GrantWorkspaceRole(ctx, viewer.Email, workspace, core.WorkspaceRoleViewer); err != nil {
+		t.Fatal(err)
+	}
 	storetest.RunTaskAssigneeMembershipConformance(t, storetest.TaskAssigneeMembershipFixture{
-		Store: st, Context: ctx, TaskID: task.ID, ActiveUserID: member.ID, InactiveUserID: inactive.ID, NonMemberID: "usr-not-a-member",
+		Store: st, Context: ctx, TaskID: task.ID, ActiveUserID: member.ID, InactiveUserID: inactive.ID, NonMemberID: "usr-not-a-member", ViewerUserID: viewer.ID,
 	})
 	if err = st.CreateJob(ctx, core.Job{ID: task.ID + "-implement", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}); err != nil {
 		t.Fatal(err)

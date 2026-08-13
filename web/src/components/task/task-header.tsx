@@ -30,7 +30,7 @@ import { errorMessage } from '../../lib/errors'
 import { relatedTaskRoute } from '../../lib/task-route'
 import type { ActivityItem } from '../../lib/types'
 import { absoluteTime, cn } from '../../lib/utils'
-import { useBlueprints, useOperatorToken, useWorkspaceSelection } from '../app-shell'
+import { useBlueprints, useOperatorToken, useWorkspaceCapability, useWorkspaceSelection } from '../app-shell'
 import { Badge } from '../ui/badge'
 import { Button } from '../ui/button'
 import { CopyButton } from '../ui/copy-button'
@@ -46,6 +46,7 @@ import { AssigneeChip } from './assignee-chip'
 // deliberately absent: the header introduces the task, it does not summarize
 // the whole page.
 export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sheet' | 'full' }) {
+  const canOperate = useWorkspaceCapability('operate_gates')
   const provenance = parseProvenance(item.task.source)
   const prURL = pullRequestURL(item.events)
   const Heading = variant === 'full' ? 'h1' : 'h2'
@@ -108,11 +109,13 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
         {item.task.class && <Badge>{item.task.class}</Badge>}
         {/* Controls sit apart from the status chips: a destructive action
             never belongs in the row the eye reads for state. */}
-        <span className="ml-auto flex items-center gap-1">
-          <HoldControl item={item} />
-          <AssigneeControl item={item} />
-          <CancelControl item={item} />
-        </span>
+        {canOperate && (
+          <span className="ml-auto flex items-center gap-1">
+            <HoldControl item={item} />
+            <AssigneeControl item={item} />
+            <CancelControl item={item} />
+          </span>
+        )}
       </div>
       <Heading
         className={cn('font-semibold leading-snug tracking-tight', variant === 'full' ? 'text-xl' : 'text-base')}
@@ -257,7 +260,9 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
         )}
       </dl>
 
-      {unsatisfiableIDs.size > 0 && <UnlinkDependencyControl item={item} dependencyIDs={[...unsatisfiableIDs]} />}
+      {canOperate && unsatisfiableIDs.size > 0 && (
+        <UnlinkDependencyControl item={item} dependencyIDs={[...unsatisfiableIDs]} />
+      )}
 
       {(item.task.children?.length ?? 0) > 0 && (
         <section className="mt-4 rounded-md border border-border p-3">
@@ -288,7 +293,7 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
           rather than on configuration. */}
       <div className="mt-3 flex flex-wrap gap-x-6 gap-y-2">
         <Checkout item={item} />
-        <SetupChangeControl item={item} />
+        {canOperate && <SetupChangeControl item={item} />}
       </div>
     </div>
   )

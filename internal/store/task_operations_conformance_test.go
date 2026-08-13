@@ -85,7 +85,10 @@ func TestMemoryTaskAssigneeMembershipConformance(t *testing.T) {
 	if err := store.SetMemoryWorkspaceMember(st, workspace, "usr-inactive", false); err != nil {
 		t.Fatal(err)
 	}
+	if err := store.SetMemoryWorkspaceMemberRole(st, workspace, "usr-viewer", core.WorkspaceRoleViewer); err != nil {
+		t.Fatal(err)
+	}
 	storetest.RunTaskAssigneeMembershipConformance(t, storetest.TaskAssigneeMembershipFixture{
-		Store: st, Context: ctx, TaskID: taskID, ActiveUserID: "usr-active", InactiveUserID: "usr-inactive", NonMemberID: "usr-missing",
+		Store: st, Context: ctx, TaskID: taskID, ActiveUserID: "usr-active", InactiveUserID: "usr-inactive", NonMemberID: "usr-missing", ViewerUserID: "usr-viewer",
 	})
 }

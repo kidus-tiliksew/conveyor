@@ -11,6 +11,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 )
 
 type membershipFixture struct {
@@ -350,6 +351,85 @@ func TestTaskRunRoutesAlsoRequireClaimWork(t *testing.T) {
 		handler.ServeHTTP(response, request)
 		if len(fixture.capabilityCalls) < 2 || fixture.capabilityCalls[len(fixture.capabilityCalls)-1] != core.CapabilityClaimWork {
 			t.Fatalf("%s %s capability calls=%v", route.method, route.path, fixture.capabilityCalls)
+		}
+	}
+}
+
+func TestViewerReadsWorkspaceAndAllMutationsUseCapabilityRefusal(t *testing.T) {
+	fixture := &membershipFixture{
+		workspaces: []core.Workspace{{ID: "alpha"}},
+		roles:      map[string]map[string]core.WorkspaceRole{"viewer": {"alpha": core.WorkspaceRoleViewer}},
+	}
+	server := NewServer(store.NewMemory())
+	server.Workspaces, server.Memberships = fixture, fixture
+	server.Credentials = staticCredentialVerifier{"viewer-token": {ID: "pat_viewer", OwnerUserID: "viewer", Kind: core.CredentialUser, Scope: core.CredentialScopeUser}}
+	handler := server.Handler()
+	call := func(method, path string) *httptest.ResponseRecorder {
+		t.Helper()
+		fixture.capabilityCalls = nil
+		request := httptest.NewRequest(method, path+"?workspace_id=alpha", strings.NewReader(`{}`))
+		request.Header.Set("Authorization", "Bearer viewer-token")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
+	}
+
+	for _, path := range []string{"/v1/activity", "/v1/tasks", "/v1/work-orders", "/v1/monitor", "/v1/pending-proposals", "/v1/workspace/config", "/v1/artifacts", "/v1/workers", "/v1/workspaces/alpha/members"} {
+		response := call(http.MethodGet, path)
+		if response.Code == http.StatusNotFound && response.Body.String() == canonicalWorkspaceNotFoundBody() {
+			t.Fatalf("viewer read %s was capability-refused", path)
+		}
+		for _, capability := range fixture.capabilityCalls {
+			if capability != core.CapabilityViewWorkspace {
+				t.Fatalf("viewer read %s requested capability %q (calls=%v)", path, capability, fixture.capabilityCalls)
+			}
+		}
+	}
+
+	for _, route := range []struct{ method, path string }{
+		{http.MethodPost, "/v1/tasks"},
+		{http.MethodPut, "/v1/tasks/task/assignee"},
+		{http.MethodPost, "/v1/tasks/task/request-changes"},
+		{http.MethodPost, "/v1/requirements"},
+		{http.MethodPost, "/v1/system-designs"},
+		{http.MethodPost, "/v1/decisions"},
+		{http.MethodPost, "/v1/work-orders/order/recover"},
+		{http.MethodPost, "/v1/workers/pairings"},
+	} {
+		response := call(route.method, route.path)
+		if response.Code != http.StatusNotFound || response.Body.String() != canonicalWorkspaceNotFoundBody() {
+			t.Fatalf("viewer mutation %s %s status=%d body=%q", route.method, route.path, response.Code, response.Body.String())
+		}
+	}
+}
+
+func TestViewerMCPToolsRefuseNamedCapabilities(t *testing.T) {
+	st := store.NewMemory()
+	fixture := &membershipFixture{
+		workspaces: []core.Workspace{{ID: "alpha"}},
+		roles:      map[string]map[string]core.WorkspaceRole{"viewer": {"alpha": core.WorkspaceRoleViewer}},
+	}
+	server := NewServer(st)
+	server.Workspaces, server.Memberships = fixture, fixture
+	server.WorkOrders = &workorder.Service{Store: st}
+	request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	request = request.WithContext(store.WithCredential(request.Context(), core.AuthenticatedCredential{ID: "pat_viewer", OwnerUserID: "viewer", Kind: core.CredentialUser, Scope: core.CredentialScopeUser}))
+	fixture.capabilityCalls = nil
+	if _, err := server.callMCPTool(request, "list_work_orders", map[string]any{"workspace_id": "alpha"}); err != nil {
+		t.Fatalf("viewer list_work_orders: %v", err)
+	}
+	if len(fixture.capabilityCalls) == 0 || fixture.capabilityCalls[len(fixture.capabilityCalls)-1] != core.CapabilityViewWorkspace {
+		t.Fatalf("viewer list_work_orders calls=%v", fixture.capabilityCalls)
+	}
+	for _, tool := range []string{"claim_work_order", "request_plan_revision", "propose_system_design_revision", "propose_decision", "set_assignee", "create_task"} {
+		fixture.capabilityCalls = nil
+		_, err := server.callMCPTool(request, tool, map[string]any{"workspace_id": "alpha"})
+		if err == nil {
+			t.Fatalf("viewer MCP tool %s was allowed", tool)
+		}
+		want := mcpCapability(tool)
+		if len(fixture.capabilityCalls) == 0 || fixture.capabilityCalls[len(fixture.capabilityCalls)-1] != want {
+			t.Fatalf("viewer MCP tool %s calls=%v want %q", tool, fixture.capabilityCalls, want)
 		}
 	}
 }

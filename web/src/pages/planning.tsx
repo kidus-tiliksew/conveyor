@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { MessageSquarePlus } from 'lucide-react'
-import { useOperatorToken, useWorkspaceSelection } from '../components/app-shell'
+import { useOperatorToken, useWorkspaceCapability, useWorkspaceSelection } from '../components/app-shell'
 import { PlanningChat, relativeDate, sessionStatusLabels } from '../components/planning/planning-chat'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
@@ -24,6 +24,8 @@ const standaloneGoals: PlanningSessionGoal[] = ['open', 'bundle']
 export function PlanningPage() {
   const token = useOperatorToken()
   const { workspace } = useWorkspaceSelection()
+  const canPropose = useWorkspaceCapability('propose_documents')
+  const canConfirm = useWorkspaceCapability('confirm_documents')
   const client = useQueryClient()
   const [selectedId, setSelectedId] = useState('')
   const restoredWorkspace = useRef('')
@@ -109,43 +111,45 @@ export function PlanningPage() {
             Explore freely or propose a delivery bundle. Requirement drafting lives beside the document in Requirements.
           </p>
         </div>
-        <form
-          className="flex flex-wrap items-center gap-2"
-          onSubmit={(event) => {
-            event.preventDefault()
-            if (token) create.mutate()
-          }}
-        >
-          <Select
-            aria-label="Planning goal"
-            className="w-44"
-            value={goal}
-            onChange={(event) => setGoal(event.target.value as PlanningSessionGoal)}
+        {canPropose && (
+          <form
+            className="flex flex-wrap items-center gap-2"
+            onSubmit={(event) => {
+              event.preventDefault()
+              if (token) create.mutate()
+            }}
           >
-            {standaloneGoals.map((option) => (
-              <option key={option} value={option}>
-                {sessionGoalLabels[option]}
-              </option>
-            ))}
-          </Select>
-          <Select
-            aria-label="Planning model"
-            className="w-52 font-mono"
-            value={model}
-            onChange={(event) => setModel(event.target.value)}
-            disabled={!workspaceConfig || configuredModels.length === 0}
-          >
-            {modelOptions.map((candidate) => (
-              <option key={candidate} value={candidate}>
-                {candidate}
-              </option>
-            ))}
-          </Select>
-          <Button type="submit" disabled={!token || create.isPending}>
-            <MessageSquarePlus /> {create.isPending ? 'Starting…' : 'New session'}
-          </Button>
-        </form>
-        {create.error && (
+            <Select
+              aria-label="Planning goal"
+              className="w-44"
+              value={goal}
+              onChange={(event) => setGoal(event.target.value as PlanningSessionGoal)}
+            >
+              {standaloneGoals.map((option) => (
+                <option key={option} value={option}>
+                  {sessionGoalLabels[option]}
+                </option>
+              ))}
+            </Select>
+            <Select
+              aria-label="Planning model"
+              className="w-52 font-mono"
+              value={model}
+              onChange={(event) => setModel(event.target.value)}
+              disabled={!workspaceConfig || configuredModels.length === 0}
+            >
+              {modelOptions.map((candidate) => (
+                <option key={candidate} value={candidate}>
+                  {candidate}
+                </option>
+              ))}
+            </Select>
+            <Button type="submit" disabled={!token || create.isPending}>
+              <MessageSquarePlus /> {create.isPending ? 'Starting…' : 'New session'}
+            </Button>
+          </form>
+        )}
+        {canPropose && create.error && (
           <p className="basis-full text-xs text-failure">
             {errorMessage(create.error, 'Could not start this planning session.')}
           </p>
@@ -218,7 +222,7 @@ export function PlanningPage() {
                         Approving creates the task set. Document revisions remain pending their own confirmation.
                       </p>
                     </div>
-                    {selectedBundle.status === 'pending' && (
+                    {canConfirm && selectedBundle.status === 'pending' && (
                       <div className="flex gap-2">
                         <Button
                           variant="secondary"

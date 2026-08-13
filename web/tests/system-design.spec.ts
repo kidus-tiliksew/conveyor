@@ -82,6 +82,7 @@ async function initialize(page: Page) {
 function shell(route: Route) {
   const path = new URL(route.request().url()).pathname
   if (path === '/v1/workspaces') return route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] })
+  if (path === '/v1/me') return route.fulfill({ json: { id: 'usr_operator', role: 'operator' } })
   if (path === '/v1/workspace') return route.fulfill({ json: { workspace: 'demo', repos: ['conveyor'] } })
   if (path === '/v1/activity') return route.fulfill({ json: [] })
 }

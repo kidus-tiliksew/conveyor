@@ -103,6 +103,10 @@ async function mockAPIs(page: Page) {
       })
       return
     }
+    if (url.pathname === '/v1/me') {
+      await route.fulfill({ json: { id: 'usr_operator', role: 'operator' } })
+      return
+    }
     if (url.pathname === '/v1/workspace/config') {
       await route.fulfill({ json: { document: baseDocument, version: 1 } })
       return

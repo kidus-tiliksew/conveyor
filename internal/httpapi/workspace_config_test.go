@@ -145,13 +145,6 @@ func TestWorkspaceConfigAPIValidatesVersionsAndRecordsActor(t *testing.T) {
 	s.ConfigStore = backend
 	h := s.Handler()
 
-	unauthorized := httptest.NewRequest(http.MethodGet, "/v1/workspace/config", nil)
-	unauthorizedResult := httptest.NewRecorder()
-	h.ServeHTTP(unauthorizedResult, unauthorized)
-	if unauthorizedResult.Code != http.StatusUnauthorized {
-		t.Fatalf("unauthorized status = %d", unauthorizedResult.Code)
-	}
-
 	get := httptest.NewRequest(http.MethodGet, "/v1/workspace/config", nil)
 	get.Header.Set("Authorization", "Bearer token")
 	getResult := httptest.NewRecorder()

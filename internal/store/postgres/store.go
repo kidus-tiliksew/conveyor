@@ -1228,13 +1228,17 @@ func (s *Store) SetTaskAssigneeCommand(ctx context.Context, lease taskops.TaskLe
 		}
 		if assigneeUserID != "" {
 			var active bool
-			err := tx.QueryRow(ctx, `SELECT u.status='active' FROM workspace_role_bindings b JOIN users u ON u.id=b.user_id
-				WHERE b.workspace_id=$1 AND b.user_id=$2`, workspace(ctx), assigneeUserID).Scan(&active)
+			var role core.WorkspaceRole
+			err := tx.QueryRow(ctx, `SELECT u.status='active',b.role FROM workspace_role_bindings b JOIN users u ON u.id=b.user_id
+				WHERE b.workspace_id=$1 AND b.user_id=$2`, workspace(ctx), assigneeUserID).Scan(&active, &role)
 			if errors.Is(err, pgx.ErrNoRows) || (err == nil && !active) {
 				return fmt.Errorf("assignee %s is not an active member of workspace %s", assigneeUserID, workspace(ctx))
 			}
 			if err != nil {
 				return err
+			}
+			if !core.RoleAllows(role, core.CapabilityClaimWork) {
+				return fmt.Errorf("assignee %s role %s lacks %s capability in workspace %s", assigneeUserID, role, core.CapabilityClaimWork, workspace(ctx))
 			}
 		}
 		if current.String == assigneeUserID && current.Valid == (assigneeUserID != "") {

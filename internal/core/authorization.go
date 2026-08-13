@@ -7,6 +7,7 @@ import "time"
 type WorkspaceRole string
 
 const (
+	WorkspaceRoleViewer   WorkspaceRole = "viewer"
 	WorkspaceRoleUser     WorkspaceRole = "user"
 	WorkspaceRoleOperator WorkspaceRole = "operator"
 )
@@ -29,6 +30,9 @@ const (
 // roleCapabilities is the single role-to-capability decision table (REQ-8,
 // AC-8.1). Operator explicitly subsumes the user bundle.
 var roleCapabilities = map[WorkspaceRole]map[Capability]bool{
+	WorkspaceRoleViewer: {
+		CapabilityViewWorkspace: true,
+	},
 	WorkspaceRoleUser: {
 		CapabilityViewWorkspace:    true,
 		CapabilityClaimWork:        true,

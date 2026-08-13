@@ -29,6 +29,7 @@ type TaskAssigneeMembershipFixture struct {
 	ActiveUserID   string
 	InactiveUserID string
 	NonMemberID    string
+	ViewerUserID   string
 }
 
 // RunTaskAssigneeMembershipConformance keeps the volatile and durable stores
@@ -48,6 +49,13 @@ func RunTaskAssigneeMembershipConformance(t *testing.T, fixture TaskAssigneeMemb
 		if getErr != nil || current.Assignee == nil || current.Assignee.UserID != fixture.ActiveUserID {
 			t.Fatalf("%s changed assignee=%+v err=%v", name, current.Assignee, getErr)
 		}
+	}
+	if _, err = taskops.New(fixture.Store).SetAssignee(fixture.Context, fixture.TaskID, fixture.ViewerUserID); err == nil || !strings.Contains(err.Error(), "viewer lacks claim_work capability") {
+		t.Fatalf("viewer assignment error=%v", err)
+	}
+	current, getErr := fixture.Store.GetTask(fixture.Context, fixture.TaskID)
+	if getErr != nil || current.Assignee == nil || current.Assignee.UserID != fixture.ActiveUserID {
+		t.Fatalf("viewer replacement changed assignee=%+v err=%v", current.Assignee, getErr)
 	}
 }
 

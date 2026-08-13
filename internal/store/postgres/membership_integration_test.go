@@ -199,8 +199,8 @@ func TestWorkspaceMembershipAuthorizationIntegration(t *testing.T) {
 	if listed.Code != http.StatusOK || !strings.Contains(listed.Body.String(), workspaceA) || strings.Contains(listed.Body.String(), workspaceB) {
 		t.Fatalf("list status=%d body=%s", listed.Code, listed.Body.String())
 	}
-	if operatorOnly := call("/v1/pending-proposals?workspace_id=" + workspaceA); operatorOnly.Code != http.StatusNotFound {
-		t.Fatalf("user-role PAT reached operator surface: status=%d body=%s", operatorOnly.Code, operatorOnly.Body.String())
+	if readable := call("/v1/pending-proposals?workspace_id=" + workspaceA); readable.Code != http.StatusOK {
+		t.Fatalf("member pending-proposals read status=%d body=%s", readable.Code, readable.Body.String())
 	}
 	for _, route := range []string{"/v1/tasks", "/v1/activity", "/v1/work-orders", "/v1/monitor", "/v1/pending-proposals", "/v1/tasks/unknown/events/stream"} {
 		unbound := call(route + "?workspace_id=" + workspaceB)

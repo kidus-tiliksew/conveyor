@@ -116,6 +116,7 @@ export function MembersSection() {
                 value={role}
                 onChange={(event) => setRole(event.target.value as WorkspaceRole)}
               >
+                <option value="viewer">Viewer</option>
                 <option value="user">User</option>
                 <option value="operator">Operator</option>
               </Select>
@@ -177,7 +178,7 @@ export function MembersSection() {
               </div>
               <div className="flex shrink-0 items-center gap-2">
                 <Badge variant={member.role === 'operator' ? 'accent' : 'default'}>
-                  {member.role === 'operator' ? 'Operator' : 'User'}
+                  {member.role === 'operator' ? 'Operator' : member.role === 'viewer' ? 'Viewer' : 'User'}
                 </Badge>
                 {canManage && (
                   <Button
@@ -236,7 +237,7 @@ export function MembersSection() {
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
                   <Badge variant={invitation.role === 'operator' ? 'accent' : 'default'}>
-                    {invitation.role === 'operator' ? 'Operator' : 'User'}
+                    {invitation.role === 'operator' ? 'Operator' : invitation.role === 'viewer' ? 'Viewer' : 'User'}
                   </Badge>
                   <Button
                     size="sm"

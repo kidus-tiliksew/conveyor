@@ -21,6 +21,7 @@ test('pending proposal queue covers every tier, resolves rows, updates the badge
     const url = new URL(request.url())
     const path = url.pathname
     if (path === '/v1/workspaces') return route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] })
+    if (path === '/v1/me') return route.fulfill({ json: { id: 'usr_operator', role: 'operator' } })
     if (path === '/v1/workspace') return route.fulfill({ json: { workspace: 'demo', repos: ['conveyor'] } })
     if (path === '/v1/activity')
       return route.fulfill({
@@ -166,6 +167,7 @@ test('requirements navigation stays usable when its attention projection fails o
   await page.route('**/v1/**', async (route: Route) => {
     const path = new URL(route.request().url()).pathname
     if (path === '/v1/workspaces') return route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] })
+    if (path === '/v1/me') return route.fulfill({ json: { id: 'usr_operator', role: 'operator' } })
     if (path === '/v1/workspace') return route.fulfill({ json: { workspace: 'demo', repos: ['conveyor'] } })
     if (path === '/v1/activity') return route.fulfill({ json: [] })
     if (path === '/v1/pending-proposals') {
@@ -209,6 +211,7 @@ test('pending proposal consumers share one active query and hidden documents sto
   await page.route('**/v1/**', async (route: Route) => {
     const path = new URL(route.request().url()).pathname
     if (path === '/v1/workspaces') return route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] })
+    if (path === '/v1/me') return route.fulfill({ json: { id: 'usr_operator', role: 'operator' } })
     if (path === '/v1/workspace') return route.fulfill({ json: { workspace: 'demo', repos: ['conveyor'] } })
     if (path === '/v1/activity' || path === '/v1/blueprints') return route.fulfill({ json: [] })
     if (path === '/v1/pending-proposals') {

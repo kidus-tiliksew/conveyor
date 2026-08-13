@@ -363,6 +363,8 @@ func humanReservedMCPTool(name string) bool {
 
 func mcpCapability(name string) core.Capability {
 	switch name {
+	case "list_work_orders":
+		return core.CapabilityViewWorkspace
 	case "set_assignee":
 		return core.CapabilitySetAssignee
 	case "propose_system_design_revision", "propose_decision", "request_plan_revision":

@@ -2,7 +2,7 @@ import { useEffect, useMemo } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useSearch } from '@tanstack/react-router'
 import { Check, Clock, ExternalLink, GitCompare, History, Layers, X } from 'lucide-react'
-import { useOperatorToken, useWorkspaceSelection } from '../components/app-shell'
+import { useOperatorToken, useWorkspaceCapability, useWorkspaceSelection } from '../components/app-shell'
 import { AttentionSurface, type AttentionItem } from '../components/documents/attention-surface'
 import { DriftResolutionForm } from '../components/documents/drift-resolution-form'
 import { VersionDiff } from '../components/documents/version-diff'
@@ -44,6 +44,7 @@ const originLabels: Record<SystemDesignVersion['origin'], string> = {
  */
 export function SystemDesignPage() {
   const token = useOperatorToken()
+  const canConfirm = useWorkspaceCapability('confirm_documents')
   const { workspace } = useWorkspaceSelection()
   const navigate = useNavigate()
   const client = useQueryClient()
@@ -100,7 +101,7 @@ export function SystemDesignPage() {
           {decision.context}
         </>
       ),
-      action: (
+      action: canConfirm ? (
         <>
           <Button
             size="sm"
@@ -124,7 +125,7 @@ export function SystemDesignPage() {
               : 'Dismiss'}
           </Button>
         </>
-      ),
+      ) : undefined,
       error: resolve.error ? errorMessage(resolve.error, 'Could not resolve this decision.') : undefined,
     }))
 
@@ -215,6 +216,8 @@ function DesignCanvas({
   settledDecisions: Decision[]
 }) {
   const client = useQueryClient()
+  const canOperate = useWorkspaceCapability('operate_gates')
+  const canConfirm = useWorkspaceCapability('confirm_documents')
   const displayed = item.current_version ?? item.pending_versions[0] ?? item.versions[item.versions.length - 1]
   const confirm = useMutation({
     mutationFn: (version: number) =>
@@ -254,19 +257,21 @@ function DesignCanvas({
               Open the change <ExternalLink className="size-3" />
             </a>
           )}
-          <DriftResolutionForm
-            drift={entry}
-            surface="system_design"
-            token={token}
-            workspace={workspace}
-            onResolved={() =>
-              Promise.all([
-                client.invalidateQueries({ queryKey: ['system-designs', workspace] }),
-                client.invalidateQueries({ queryKey: ['requirements', workspace] }),
-                client.invalidateQueries({ queryKey: ['requirement', workspace] }),
-              ])
-            }
-          />
+          {canOperate && (
+            <DriftResolutionForm
+              drift={entry}
+              surface="system_design"
+              token={token}
+              workspace={workspace}
+              onResolved={() =>
+                Promise.all([
+                  client.invalidateQueries({ queryKey: ['system-designs', workspace] }),
+                  client.invalidateQueries({ queryKey: ['requirements', workspace] }),
+                  client.invalidateQueries({ queryKey: ['requirement', workspace] }),
+                ])
+              }
+            />
+          )}
         </>
       ),
     })),
@@ -279,14 +284,14 @@ function DesignCanvas({
           {item.pending_versions.length > 1 && '. Confirming a later version drops the earlier ones.'}
         </>
       ),
-      action: (
+      action: canConfirm ? (
         <Button disabled={!token || confirm.isPending} onClick={() => confirm.mutate(version.version)}>
           <Check />
           {confirm.isPending && confirm.variables === version.version
             ? 'Confirming…'
             : `Confirm version ${version.version}`}
         </Button>
-      ),
+      ) : undefined,
       error:
         confirm.error && confirm.variables === version.version
           ? errorMessage(confirm.error, 'Could not confirm this version.')
