@@ -528,6 +528,10 @@ func TaskNeedsAttention(task core.Task, marker ActivityMarker, pendingAuthority 
 type TaskFilter struct {
 	States       []core.TaskState
 	Repositories []string
+	// Assignee is one single-valued selector. Empty leaves the member inactive,
+	// "unassigned" selects tasks without an assignee, and every other value is
+	// matched as an exact user ID. An unknown ID therefore matches no tasks.
+	Assignee string
 	// Query narrows on the row's own identifying text — title, ID, source, and
 	// assigned branch — case-insensitively.
 	Query                string
@@ -540,7 +544,7 @@ type TaskFilter struct {
 // Active reports whether any predicate would narrow the workspace. Callers that
 // have a cheaper unfiltered read path use it to keep that path byte-identical.
 func (f TaskFilter) Active() bool {
-	return len(f.States) > 0 || len(f.Repositories) > 0 || f.Query != "" || !f.CreatedFrom.IsZero() ||
+	return len(f.States) > 0 || len(f.Repositories) > 0 || f.Assignee != "" || f.Query != "" || !f.CreatedFrom.IsZero() ||
 		!f.CreatedTo.IsZero() || len(f.ServesRequirementIDs) > 0 || len(f.GoverningDesignIDs) > 0
 }
 
@@ -4273,6 +4277,15 @@ func (m *memory) taskMatchesFilterLocked(task core.Task, filter TaskFilter) bool
 	}
 	if len(filter.Repositories) > 0 && !slices.Contains(filter.Repositories, task.Repo) {
 		return false
+	}
+	if filter.Assignee != "" {
+		if filter.Assignee == "unassigned" {
+			if task.Assignee != nil {
+				return false
+			}
+		} else if task.Assignee == nil || task.Assignee.UserID != filter.Assignee {
+			return false
+		}
 	}
 	if needle := strings.ToLower(filter.Query); needle != "" {
 		matched := false

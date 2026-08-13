@@ -1189,6 +1189,9 @@ WHERE t.workspace_id = $1
                ORDER BY e.id DESC LIMIT 1
            ) = 'task.context_design_added'
        ))
+  AND ($9::text = '' OR
+       ($9 = 'unassigned' AND t.assignee_user_id IS NULL) OR
+       ($9 <> 'unassigned' AND t.assignee_user_id = $9))
 `
 
 type CountTaskOperationsTasksParams struct {
@@ -1200,6 +1203,7 @@ type CountTaskOperationsTasksParams struct {
 	CreatedTo          pgtype.Timestamptz `json:"created_to"`
 	ServesRequirements []string           `json:"serves_requirements"`
 	GoverningDesigns   []string           `json:"governing_designs"`
+	Assignee           string             `json:"assignee"`
 }
 
 func (q *Queries) CountTaskOperationsTasks(ctx context.Context, arg CountTaskOperationsTasksParams) (int64, error) {
@@ -1212,6 +1216,7 @@ func (q *Queries) CountTaskOperationsTasks(ctx context.Context, arg CountTaskOpe
 		arg.CreatedTo,
 		arg.ServesRequirements,
 		arg.GoverningDesigns,
+		arg.Assignee,
 	)
 	var column_1 int64
 	err := row.Scan(&column_1)
@@ -1354,9 +1359,12 @@ WHERE t.workspace_id = $1
                ORDER BY e.id DESC LIMIT 1
            ) = 'task.context_design_added'
        ))
+  AND ($9::text = '' OR
+       ($9 = 'unassigned' AND t.assignee_user_id IS NULL) OR
+       ($9 <> 'unassigned' AND t.assignee_user_id = $9))
 ORDER BY t.created_at DESC, t.id
-LIMIT NULLIF($10::int, 0)
-OFFSET $9::int
+LIMIT NULLIF($11::int, 0)
+OFFSET $10::int
 `
 
 type ListTaskOperationsTasksParams struct {
@@ -1368,6 +1376,7 @@ type ListTaskOperationsTasksParams struct {
 	CreatedTo          pgtype.Timestamptz `json:"created_to"`
 	ServesRequirements []string           `json:"serves_requirements"`
 	GoverningDesigns   []string           `json:"governing_designs"`
+	Assignee           string             `json:"assignee"`
 	PageOffset         int32              `json:"page_offset"`
 	PageLimit          int32              `json:"page_limit"`
 }
@@ -1388,6 +1397,7 @@ func (q *Queries) ListTaskOperationsTasks(ctx context.Context, arg ListTaskOpera
 		arg.CreatedTo,
 		arg.ServesRequirements,
 		arg.GoverningDesigns,
+		arg.Assignee,
 		arg.PageOffset,
 		arg.PageLimit,
 	)
