@@ -55,6 +55,9 @@ var (
 	// ownership returned to the queue. Kept distinct so agents do
 	// not misdiagnose a lapsed claim as a revoked credential.
 	ErrWorkOrderClaimLost = errors.New("work order claim is no longer held by this worker (claim expired or order reassigned)")
+	// ErrWorkOrderClaimUnauthorized distinguishes a live claim owned by a
+	// different authenticated claimant from an expired or reassigned lease.
+	ErrWorkOrderClaimUnauthorized = errors.New("authenticated caller does not hold this live work order claim")
 )
 
 // WorkspaceControlStore owns durable workspace resources independently of a
@@ -206,8 +209,8 @@ type Store interface {
 	HeartbeatWorker(ctx context.Context, id string, leaseExpires time.Time, probes []core.HarnessProbe) (core.Worker, error)
 	RevokeWorker(ctx context.Context, id string) error
 	RenewWorkerClaimCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID, workerID, sessionID string, lease time.Duration) (core.WorkOrder, error)
-	ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID, workerID string, release core.WorkOrderRelease) (core.WorkOrder, error)
-	RequestPlanRevisionCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID, workerID, sessionID, rationale string) (PlanRevisionRequestResult, error)
+	ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID string, claim core.WorkOrderClaimIdentity, release core.WorkOrderRelease) (core.WorkOrder, error)
+	RequestPlanRevisionCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID string, claim core.WorkOrderClaimIdentity, rationale string) (PlanRevisionRequestResult, error)
 	// CancelPlanRevisionWorkOrderCommand retires the exact released
 	// implementation order when the operator approves plan re-entry.
 	CancelPlanRevisionWorkOrderCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID, attemptID string) (core.WorkOrder, error)
@@ -1248,7 +1251,7 @@ func (m *memory) RenewWorkerClaimCommand(ctx context.Context, taskLease taskops.
 	return order, nil
 }
 
-func (m *memory) ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID, workerID string, release core.WorkOrderRelease) (core.WorkOrder, error) {
+func (m *memory) ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID string, claim core.WorkOrderClaimIdentity, release core.WorkOrderRelease) (core.WorkOrder, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	order, ok := m.workOrders[workOrderID]
@@ -1265,11 +1268,15 @@ func (m *memory) ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskop
 	if ok && order.State == core.WorkOrderCancelled &&
 		((order.LastAttemptID != "" && order.LastAttemptID == release.SessionID) ||
 			m.cancelledSessionMatchesLocked(order, release.SessionID) ||
-			(order.WorkerID == workerID && order.SessionID == release.SessionID)) {
+			(order.WorkerID == claim.WorkerID && order.SessionID == release.SessionID)) {
 		return core.WorkOrder{}, ErrWorkOrderCancelled
 	}
-	if !ok || order.WorkerID != workerID || order.SessionID == "" || order.SessionID != release.SessionID || order.State != core.WorkOrderClaimed {
+	if !ok || order.SessionID == "" || order.SessionID != release.SessionID || order.State != core.WorkOrderClaimed ||
+		!order.LeaseExpiresAt.After(now) || (!order.ExecutionDeadline.IsZero() && !order.ExecutionDeadline.After(now)) {
 		return core.WorkOrder{}, ErrWorkOrderClaimLost
+	}
+	if order.WorkerID != claim.WorkerID || order.ClaimantID != claim.ClaimantID {
+		return core.WorkOrder{}, ErrWorkOrderClaimUnauthorized
 	}
 	queueTimeout := order.QueueDeadline.Sub(order.QueueEnteredAt)
 	if queueTimeout <= 0 {
@@ -1364,11 +1371,11 @@ func (m *memory) ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskop
 			kind = "work_order.stalled"
 		}
 	}
-	m.appendEventLocked(workerClaimActorContext(ctx, workerID), core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: kind, Payload: core.JSONPayload(map[string]any{"attempt_id": attemptID, "session_id": release.SessionID, "reason": release.Reason, "release_cause": release.Cause, "detail": order.LastFailureDetail, "outcome": release.Outcome, "failure_category": order.LastFailureCategory, "consecutive_transient_failures": core.ConsecutiveTransientFailureCount(order.LastFailureCategory, previousTransientFailures, progressed, previousOutcome == release.Outcome), "exit_status": release.ExitStatus, "automatic_retry_count": order.AutomaticRetryCount, "next_retry_at": order.NextRetryAt, "retry_suppressed": order.RetrySuppressed, "suppression_reason": order.RetrySuppressionReason}), At: now})
+	m.appendEventLocked(workerClaimActorContext(ctx, claim.WorkerID), core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: kind, Payload: core.JSONPayload(map[string]any{"attempt_id": attemptID, "session_id": release.SessionID, "reason": release.Reason, "release_cause": release.Cause, "detail": order.LastFailureDetail, "outcome": release.Outcome, "failure_category": order.LastFailureCategory, "consecutive_transient_failures": core.ConsecutiveTransientFailureCount(order.LastFailureCategory, previousTransientFailures, progressed, previousOutcome == release.Outcome), "exit_status": release.ExitStatus, "automatic_retry_count": order.AutomaticRetryCount, "next_retry_at": order.NextRetryAt, "retry_suppressed": order.RetrySuppressed, "suppression_reason": order.RetrySuppressionReason}), At: now})
 	return order, nil
 }
 
-func (m *memory) RequestPlanRevisionCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID, workerID, sessionID, rationale string) (PlanRevisionRequestResult, error) {
+func (m *memory) RequestPlanRevisionCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID string, claim core.WorkOrderClaimIdentity, rationale string) (PlanRevisionRequestResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	rationale = strings.TrimSpace(rationale)
@@ -1380,9 +1387,12 @@ func (m *memory) RequestPlanRevisionCommand(ctx context.Context, taskLease tasko
 		return PlanRevisionRequestResult{}, ErrWorkOrderClaimLost
 	}
 	now := time.Now().UTC()
-	if order.WorkerID != workerID || order.SessionID == "" || order.SessionID != sessionID || order.State != core.WorkOrderClaimed ||
+	if order.SessionID == "" || order.SessionID != claim.SessionID || order.State != core.WorkOrderClaimed ||
 		!order.LeaseExpiresAt.After(now) || (!order.ExecutionDeadline.IsZero() && !order.ExecutionDeadline.After(now)) {
 		return PlanRevisionRequestResult{}, ErrWorkOrderClaimLost
+	}
+	if order.WorkerID != claim.WorkerID || order.ClaimantID != claim.ClaimantID {
+		return PlanRevisionRequestResult{}, ErrWorkOrderClaimUnauthorized
 	}
 	if order.Stage != core.StageImplement {
 		return PlanRevisionRequestResult{}, fmt.Errorf("request_plan_revision requires an implement-stage work order")
@@ -1437,9 +1447,9 @@ func (m *memory) RequestPlanRevisionCommand(ctx context.Context, taskLease tasko
 	}
 	task.State = nextTask
 	m.tasks[task.ID] = task
-	actor := workerClaimActorContext(ctx, workerID)
-	m.appendEventLocked(actor, core.Event{TaskID: task.ID, JobID: order.JobID, Kind: "work_order.plan_revision_requested", Payload: core.JSONPayload(map[string]any{"work_order_id": order.ID, "attempt_id": attemptID, "session_id": sessionID, "rationale": rationale, "plan_version": plan.Version}), At: now})
-	m.appendEventLocked(actor, core.Event{TaskID: task.ID, JobID: order.JobID, Kind: "work_order.released", Payload: core.JSONPayload(map[string]any{"attempt_id": attemptID, "session_id": sessionID, "reason": core.WorkOrderReleaseReasonPlanRevisionRequested, "release_cause": core.WorkOrderReleaseCauseOperatorAction, "outcome": core.WorkOrderOutcomeReleased, "automatic_retry_count": order.AutomaticRetryCount, "retry_suppressed": true}), At: now})
+	actor := workerClaimActorContext(ctx, claim.WorkerID)
+	m.appendEventLocked(actor, core.Event{TaskID: task.ID, JobID: order.JobID, Kind: "work_order.plan_revision_requested", Payload: core.JSONPayload(map[string]any{"work_order_id": order.ID, "attempt_id": attemptID, "session_id": claim.SessionID, "rationale": rationale, "plan_version": plan.Version}), At: now})
+	m.appendEventLocked(actor, core.Event{TaskID: task.ID, JobID: order.JobID, Kind: "work_order.released", Payload: core.JSONPayload(map[string]any{"attempt_id": attemptID, "session_id": claim.SessionID, "reason": core.WorkOrderReleaseReasonPlanRevisionRequested, "release_cause": core.WorkOrderReleaseCauseOperatorAction, "outcome": core.WorkOrderOutcomeReleased, "automatic_retry_count": order.AutomaticRetryCount, "retry_suppressed": true}), At: now})
 	m.appendEventLocked(actor, core.Event{TaskID: task.ID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": core.TaskRunning, "to": nextTask, "command": core.TaskGatePlanRevision}), At: now})
 	return PlanRevisionRequestResult{WorkOrder: order, Task: task, PlanVersion: plan.Version, Rationale: rationale}, nil
 }

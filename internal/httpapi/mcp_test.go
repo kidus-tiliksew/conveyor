@@ -800,6 +800,140 @@ func TestMCPRequestPlanRevisionEndToEnd(t *testing.T) {
 	}
 }
 
+func TestMCPWorkerDispatchedAgentClaimMutations(t *testing.T) {
+	t.Parallel()
+	setup := func(t *testing.T) (*Server, *http.Request, string, string) {
+		t.Helper()
+		ctx := store.WithWorkspace(t.Context(), "demo")
+		st := store.NewMemory()
+		for _, worker := range []core.Worker{
+			{ID: "worker-a", Workspace: "demo", OwnerUserID: "owner-a", Name: "Worker A", CredentialHash: "hash-a", CreatedAt: time.Now()},
+			{ID: "worker-b", Workspace: "demo", OwnerUserID: "owner-b", Name: "Worker B", CredentialHash: "hash-b", CreatedAt: time.Now()},
+		} {
+			if err := st.CreateWorker(ctx, worker); err != nil {
+				t.Fatal(err)
+			}
+		}
+		var orderIDs []string
+		for _, suffix := range []string{"a", "b"} {
+			taskID, orderID := "agent-claim-task-"+suffix, "agent-claim-order-"+suffix
+			if err := st.CreateTask(ctx, core.Task{ID: taskID, Workspace: "demo", Repo: "conveyor", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: time.Now()}); err != nil {
+				t.Fatal(err)
+			}
+			plan, err := st.CreateSpecVersion(ctx, core.SpecVersion{TaskID: taskID, Content: "approved plan"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = st.ApproveSpecVersion(ctx, taskID, plan.Version); err != nil {
+				t.Fatal(err)
+			}
+			if err = st.CreateJob(ctx, core.Job{ID: orderID, TaskID: taskID, Stage: core.StageImplement, State: core.JobPending}); err != nil {
+				t.Fatal(err)
+			}
+			if err = storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: orderID, TaskID: taskID, JobID: orderID, Stage: core.StageImplement, State: core.WorkOrderQueued}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err = storetest.For(st).ClaimWorkOrder(ctx, orderID, core.WorkOrderClaim{SessionID: "session-" + suffix, ClientToken: "secret-" + suffix, ClaimantID: "worker-" + suffix, WorkerID: "worker-" + suffix, Agent: "codex", Model: "model", Lease: time.Minute, ExecutionTimeout: time.Hour}); err != nil {
+				t.Fatal(err)
+			}
+			orderIDs = append(orderIDs, orderID)
+		}
+		server := NewServer(st)
+		server.Workspace = "demo"
+		server.WorkOrders = &workorder.Service{Store: st}
+		server.Workers = &workerservice.Service{Store: st, WorkOrders: server.WorkOrders}
+		request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+		request = request.WithContext(store.WithCredential(request.Context(), core.AuthenticatedCredential{ID: "agent-a", OwnerUserID: "owner-a", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser}))
+		return server, request, orderIDs[0], orderIDs[1]
+	}
+
+	t.Run("cross-order access is authorization failure", func(t *testing.T) {
+		server, request, _, otherOrder := setup(t)
+		args := map[string]any{"workspace_id": "demo", "work_order_id": otherOrder, "session_id": "session-a", "rationale": "wrong target"}
+		if _, err := server.callMCPTool(request, "request_plan_revision", args); !errors.Is(err, store.ErrWorkOrderClaimUnauthorized) {
+			t.Fatalf("cross-order plan revision error=%v", err)
+		}
+		delete(args, "rationale")
+		if _, err := server.callMCPTool(request, "release_work_order", args); !errors.Is(err, store.ErrWorkOrderClaimUnauthorized) {
+			t.Fatalf("cross-order release error=%v", err)
+		}
+	})
+
+	t.Run("wrong credential class is authorization failure", func(t *testing.T) {
+		server, request, ownOrder, _ := setup(t)
+		request = request.WithContext(store.WithCredential(request.Context(), core.AuthenticatedCredential{ID: "user-a", OwnerUserID: "owner-a", Kind: core.CredentialUser, Scope: core.CredentialScopeOperator}))
+		args := map[string]any{"workspace_id": "demo", "work_order_id": ownOrder, "session_id": "session-a", "rationale": "wrong credential"}
+		if _, err := server.callMCPTool(request, "request_plan_revision", args); !errors.Is(err, store.ErrWorkOrderClaimUnauthorized) {
+			t.Fatalf("wrong-credential error=%v", err)
+		}
+	})
+
+	t.Run("wrong agent owner is authorization failure", func(t *testing.T) {
+		server, request, ownOrder, _ := setup(t)
+		request = request.WithContext(store.WithCredential(request.Context(), core.AuthenticatedCredential{ID: "agent-b", OwnerUserID: "owner-b", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser}))
+		args := map[string]any{"workspace_id": "demo", "work_order_id": ownOrder, "session_id": "session-a", "rationale": "wrong owner"}
+		if _, err := server.callMCPTool(request, "request_plan_revision", args); !errors.Is(err, store.ErrWorkOrderClaimUnauthorized) {
+			t.Fatalf("wrong-agent-owner error=%v", err)
+		}
+	})
+
+	t.Run("own plan revision succeeds", func(t *testing.T) {
+		server, request, ownOrder, _ := setup(t)
+		args := map[string]any{"workspace_id": "demo", "work_order_id": ownOrder, "session_id": "session-a", "rationale": "the approved plan conflicts with the API"}
+		if _, err := server.callMCPTool(request, "request_plan_revision", args); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("own release succeeds", func(t *testing.T) {
+		server, request, ownOrder, _ := setup(t)
+		args := map[string]any{"workspace_id": "demo", "work_order_id": ownOrder, "session_id": "session-a", "reason": "agent handoff"}
+		if _, err := server.callMCPTool(request, "release_work_order", args); err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
+func TestMCPUserRunClaimMutationsRemainAuthorized(t *testing.T) {
+	t.Parallel()
+	for _, tool := range []string{"request_plan_revision", "release_work_order"} {
+		t.Run(tool, func(t *testing.T) {
+			ctx := store.WithWorkspace(t.Context(), "demo")
+			st := store.NewMemory()
+			taskID, orderID := "user-run-task-"+tool, "user-run-order-"+tool
+			if err := st.CreateTask(ctx, core.Task{ID: taskID, Workspace: "demo", Repo: "conveyor", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: time.Now()}); err != nil {
+				t.Fatal(err)
+			}
+			plan, err := st.CreateSpecVersion(ctx, core.SpecVersion{TaskID: taskID, Content: "approved plan"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = st.ApproveSpecVersion(ctx, taskID, plan.Version); err != nil {
+				t.Fatal(err)
+			}
+			if err = st.CreateJob(ctx, core.Job{ID: orderID, TaskID: taskID, Stage: core.StageImplement, State: core.JobPending}); err != nil {
+				t.Fatal(err)
+			}
+			if err = storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: orderID, TaskID: taskID, JobID: orderID, Stage: core.StageImplement, State: core.WorkOrderQueued}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err = storetest.For(st).ClaimWorkOrder(ctx, orderID, core.WorkOrderClaim{SessionID: "run-session", ClientToken: "run-secret", ClaimantID: core.TaskRunClaimantID("user-a"), OwnerUserID: "user-a", Agent: "codex", Model: "model", Lease: time.Minute, ExecutionTimeout: time.Hour}); err != nil {
+				t.Fatal(err)
+			}
+			server := NewServer(st)
+			server.Workspace = "demo"
+			server.WorkOrders = &workorder.Service{Store: st}
+			server.Workers = &workerservice.Service{Store: st, WorkOrders: server.WorkOrders}
+			request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+			request = request.WithContext(store.WithCredential(request.Context(), core.AuthenticatedCredential{ID: "user-token", OwnerUserID: "user-a", Kind: core.CredentialUser, Scope: core.CredentialScopeOperator}))
+			args := map[string]any{"workspace_id": "demo", "work_order_id": orderID, "session_id": "run-session", "rationale": "plan changed", "reason": "run ended"}
+			if _, err = server.callMCPTool(request, tool, args); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
 func TestMCPSubmitSpecNameIsRetiredWithPlanRedirect(t *testing.T) {
 	st := store.NewMemory()
 	server := NewServer(st)

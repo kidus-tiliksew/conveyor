@@ -1898,7 +1898,7 @@ func newPlanRevisionReviewServer(t *testing.T) (context.Context, store.Store, *S
 		t.Fatal(err)
 	}
 	if _, err = taskops.ExecuteWorkOrder(ctx, st, taskID, core.WorkOrderCmdRequestPlanRevision, func(lease taskops.TaskLease) (store.PlanRevisionRequestResult, error) {
-		return st.RequestPlanRevisionCommand(ctx, lease, orderID, "worker", claimed.SessionID, "the API changed")
+		return st.RequestPlanRevisionCommand(ctx, lease, orderID, core.WorkOrderClaimIdentity{WorkerID: "worker", ClaimantID: claimed.ClaimantID, SessionID: claimed.SessionID}, "the API changed")
 	}); err != nil {
 		t.Fatal(err)
 	}
