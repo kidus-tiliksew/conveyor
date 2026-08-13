@@ -235,8 +235,12 @@ func validateDaemonEnvironmentFile(path string) error {
 	if !info.Mode().IsRegular() {
 		return fmt.Errorf("daemon environment file %s must be a regular file", path)
 	}
-	if info.Mode().Perm()&0o077 != 0 {
-		return fmt.Errorf("daemon environment file %s must be owner-only (mode 0600 or stricter), got %04o", path, info.Mode().Perm())
+	permissions := info.Mode().Perm()
+	if permissions&0o077 != 0 {
+		return fmt.Errorf("daemon environment file %s must be owner-only (mode 0600 or stricter), got %04o", path, permissions)
+	}
+	if permissions&0o400 == 0 {
+		return fmt.Errorf("daemon environment file %s must be readable by its owner, got %04o", path, permissions)
 	}
 	return nil
 }

@@ -103,6 +103,12 @@ func TestDaemonServiceEnvironmentFileAndLinuxDirectives(t *testing.T) {
 	if _, statErr := os.Stat(paths.Unit); !errors.Is(statErr, os.ErrNotExist) {
 		t.Fatalf("unit mutated before environment validation: %v", statErr)
 	}
+	if err = os.Chmod(envFile, 0o200); err != nil {
+		t.Fatal(err)
+	}
+	if err = installDaemonService(t.Context(), platform, paths); err == nil || !strings.Contains(err.Error(), "readable by its owner") {
+		t.Fatalf("unreadable environment file error=%v", err)
+	}
 	if err = os.Chmod(envFile, 0o600); err != nil {
 		t.Fatal(err)
 	}

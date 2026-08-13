@@ -149,7 +149,7 @@ func checkInitPrerequisites(ctx context.Context, prerequisites initPrerequisites
 	for _, role := range []string{"triage", "planning", "spec", "implement", "review"} {
 		rolePath := filepath.Join(packDir, "roles", role+".md")
 		roleInfo, roleErr := prerequisites.stat(rolePath)
-		if roleErr != nil || roleInfo.IsDir() {
+		if roleErr != nil || !roleInfo.Mode().IsRegular() {
 			return fmt.Errorf("Conveyor prompt pack is missing required role %s", rolePath)
 		}
 	}
