@@ -1450,11 +1450,56 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
                                                     ],
                                                     work_orders: [],
                                                   }
-                                                : {
-                                                    jobs: [],
-                                                    events: [],
-                                                    work_orders: taskId === 'no-orders' ? null : [],
-                                                  }
+                                                : // A task actually holding at the merge gate: the pipeline
+                                                  // has pushed a reviewed head to a pull request and the
+                                                  // review panel has resolved, which is the record the gate
+                                                  // card reads to say what is being approved (REQ-6).
+                                                  taskId === 'merge-request-changes'
+                                                  ? {
+                                                      jobs: [],
+                                                      events: [
+                                                        {
+                                                          id: 1,
+                                                          task_id: taskId,
+                                                          job_id: 'implement-1',
+                                                          kind: 'pull_request.opened',
+                                                          actor_id: 'system',
+                                                          actor_role: 'system' as const,
+                                                          payload: {
+                                                            url: 'https://github.test/acme/conveyor/pull/482',
+                                                            number: 482,
+                                                            repository: 'acme/conveyor',
+                                                            base_sha: 'b1a5e0000000000000000000000000000000feed',
+                                                            head_sha: 'ca7ca7000000000000000000000000000000beef',
+                                                          },
+                                                          at: '2026-07-15T12:01:00Z',
+                                                        },
+                                                        {
+                                                          id: 2,
+                                                          task_id: taskId,
+                                                          job_id: 'review-1',
+                                                          kind: 'review.round_completed',
+                                                          actor_id: 'system',
+                                                          actor_role: 'system' as const,
+                                                          payload: {
+                                                            review_round: 1,
+                                                            verdict: 'approve',
+                                                            summary: 'Both reviewers accepted the pushed branch.',
+                                                            reviews: [
+                                                              { review_work_order_id: 'review-1-seat-1' },
+                                                              { review_work_order_id: 'review-1-seat-2' },
+                                                            ],
+                                                          },
+                                                          at: '2026-07-15T12:02:00Z',
+                                                        },
+                                                      ],
+                                                      work_orders: [],
+                                                    }
+                                                  : {
+                                                      jobs: [],
+                                                      events: [],
+                                                      work_orders: taskId === 'no-orders' ? null : [],
+                                                    }
   const reviewDiagnostics =
     taskId === 'diagnostics'
       ? [
@@ -1527,6 +1572,9 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
                     : 'running',
       next_stage: taskId === 'parked' ? '' : 'implement',
       recovery_stage: taskId === 'parked' ? 'triage' : taskId === 'merge-request-changes' ? 'implement' : '',
+      // The head the factory judged, durable on the task itself once review
+      // resolves — what the gate card names as the thing being approved.
+      reviewed_head_sha: taskId === 'merge-request-changes' ? 'ca7ca7000000000000000000000000000000beef' : undefined,
       setup: taskId.startsWith('setup-') ? 'old' : '',
       setup_contract: taskId.startsWith('setup-')
         ? {
@@ -3502,6 +3550,33 @@ test('failed merge restores the existing error and retry action', async ({ page 
   await expect.poll(() => attempts).toBe(2)
 })
 
+// REQ-6: the gate is where a person reviews what their run produced, so it
+// states what is being approved — the head the factory judged, the pull request
+// it was pushed to, and the verdict that resolved — from the record the
+// pipeline already wrote.
+test('the merge gate names the reviewed head, pull request, and factory verdict', async ({ page }) => {
+  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'member-token'))
+  await page.goto('/tasks/merge-request-changes/full')
+
+  const card = page.getByRole('region', { name: 'What you are approving' })
+  await expect(card.getByText('ca7ca700', { exact: true })).toBeVisible()
+  // The full SHA stays available without spending a line on it.
+  await expect(card.getByText('ca7ca700', { exact: true })).toHaveAttribute(
+    'title',
+    'ca7ca7000000000000000000000000000000beef',
+  )
+  await expect(card.getByText('everything since b1a5e000')).toBeVisible()
+  const pullRequest = card.getByRole('link', { name: /acme\/conveyor#482/ })
+  await expect(pullRequest).toHaveAttribute('href', 'https://github.test/acme/conveyor/pull/482')
+  await expect(card.getByText('2 factory reviewers approved this')).toBeVisible()
+  await expect(card.getByText('Both reviewers accepted the pushed branch.')).toBeVisible()
+  await expect(card.getByText('conveyor/task-merge-request-changes')).toBeVisible()
+
+  // Presentation only: the approve affordance the gate already offered is
+  // untouched beside it.
+  await expect(page.getByRole('region', { name: 'Human gate' }).getByRole('button', { name: 'Approve' })).toBeEnabled()
+})
+
 test('merge gate sends user feedback through request changes', async ({ page }) => {
   await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'member-token'))
   let feedback = ''
@@ -3513,10 +3588,59 @@ test('merge gate sends user feedback through request changes', async ({ page }) 
   await page.goto('/tasks/merge-request-changes/full')
   const gate = page.getByRole('region', { name: 'Human gate' })
   await gate.getByRole('button', { name: 'Request changes' }).click()
-  await gate.getByLabel('Redirect feedback').fill('Keep this exact feedback.')
+  // The composer says where the feedback goes before it is written, and will
+  // not send until something is written.
+  await expect(gate.getByText('This feedback goes to the next implementation run word for word.')).toBeVisible()
+  await expect(gate.getByText('Feedback is required to send this back.')).toBeVisible()
+  await expect(gate.getByRole('button', { name: 'Send feedback' })).toBeDisabled()
+
+  await gate.getByLabel('Changes you want').fill('Keep this exact feedback.')
+  await expect(gate.getByRole('button', { name: 'Send feedback' })).toBeEnabled()
   await gate.getByRole('button', { name: 'Send feedback' }).click()
 
   await expect.poll(() => feedback).toBe('Keep this exact feedback.')
+})
+
+// The return is a recorded decision, so it reads back in the timeline in the
+// same plain language it was sent in — never as the wire reason code (REQ-6).
+test('the recorded return reads back in the timeline with its feedback', async ({ page }) => {
+  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'member-token'))
+  let returned = false
+  await page.route('**/v1/tasks/merge-request-changes/activity', async (route) => {
+    const item = activity('merge-request-changes', false)
+    if (returned) {
+      item.interventions = [
+        {
+          id: 7,
+          task_id: 'merge-request-changes',
+          actor_id: 'usr-member',
+          actor_role: 'user' as const,
+          action: 'redirect' as const,
+          reason_code: 'user-request-changes',
+          comment: 'Keep this exact feedback.',
+          at: '2026-07-15T12:05:00Z',
+        },
+      ]
+    }
+    await route.fulfill({ json: item })
+  })
+  await page.route('**/v1/tasks/merge-request-changes/request-changes*', async (route) => {
+    returned = true
+    await route.fulfill({ json: { task: activity('merge-request-changes', false).task, feedback: 'ok' } })
+  })
+
+  await page.goto('/tasks/merge-request-changes/full')
+  const gate = page.getByRole('region', { name: 'Human gate' })
+  await gate.getByRole('button', { name: 'Request changes' }).click()
+  await gate.getByLabel('Changes you want').fill('Keep this exact feedback.')
+  await gate.getByRole('button', { name: 'Send feedback' }).click()
+
+  const timeline = page.getByRole('region', { name: 'Execution event timeline' })
+  await expect(timeline.getByText('Sent back with your feedback')).toBeVisible()
+  await expect(timeline.getByText('Keep this exact feedback.')).toBeVisible()
+  await expect(timeline.getByText('This feedback goes to the next implementation run word for word.')).toBeVisible()
+  // The wire reason code never reaches the story.
+  await expect(timeline.getByText('user-request-changes')).toHaveCount(0)
 })
 
 test('approved state keeps request changes on the legacy review route', async ({ page }) => {

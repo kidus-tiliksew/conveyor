@@ -722,3 +722,109 @@ test('My tasks shows only the signed-in user assignments that still need them', 
   await expect(preset).toHaveAttribute('aria-pressed', 'false')
   await expect(rows(page)).toHaveCount(operations.length)
 })
+
+// The task that came back to the signed-in person, and what it carries: the
+// framing, the feedback they wrote, and a link to the task itself. The marker
+// reaches the dashboard only folded into needs_attention, so the entry is
+// decided from the task's own durable events rather than inferred from state
+// (REQ-6).
+const returnedFeedback = 'The retry path still swallows the provider error — surface it before merging.'
+
+function returnedSummary(hold: boolean) {
+  return {
+    task: {
+      id: 'task-returned',
+      workspace: 'demo',
+      source: 'cli',
+      title: 'Returned conveyor change',
+      repo: 'conveyor',
+      branch: 'conveyor/task-returned',
+      state: 'queued',
+      next_stage: 'implement',
+      hold,
+      assignee: { user_id: 'usr-assigned', email: 'assigned@example.test', display_name: 'Assigned User' },
+      created_at: '2026-08-06T10:00:00Z',
+    },
+    latest_stage: 'implement',
+    last_event_at: '2026-08-06T11:00:00Z',
+    needs_attention: true,
+  }
+}
+
+function returnedDetail(hold: boolean, claimedAfter = false) {
+  const events = [
+    {
+      id: 1,
+      task_id: 'task-returned',
+      kind: 'pipeline.bounced',
+      actor_id: 'usr-assigned',
+      actor_role: 'user',
+      payload: { source: 'user-request-changes', feedback: returnedFeedback, from: 'review', to: 'implement' },
+      at: '2026-08-06T11:00:00Z',
+    },
+  ]
+  if (claimedAfter) {
+    events.push({
+      id: 2,
+      task_id: 'task-returned',
+      kind: 'work_order.claimed',
+      actor_id: 'worker-1',
+      actor_role: 'runner',
+      payload: { id: 'task-returned-implement-2', stage: 'implement' },
+      at: '2026-08-06T11:05:00Z',
+    })
+  }
+  return {
+    task: returnedSummary(hold).task,
+    jobs: [],
+    events,
+    interventions: [],
+    work_orders: [],
+    checkout_available: false,
+    checkout_guidance: '',
+    needs_attention: true,
+    at_merge_gate: false,
+  }
+}
+
+async function openTasksWithReturn(page: Page, options: { hold: boolean; claimedAfter?: boolean }) {
+  await routeTasksSurface(page)
+  // Registered after the surface defaults, so these win.
+  await page.route('**/v1/activity?**', (route) => route.fulfill({ json: [returnedSummary(options.hold)] }))
+  await page.route('**/v1/tasks/task-returned/activity**', (route) =>
+    route.fulfill({ json: returnedDetail(options.hold, options.claimedAfter) }),
+  )
+  await page.goto('/tasks')
+  await expect(page.getByRole('heading', { name: 'Tasks' })).toBeVisible()
+}
+
+test('work that came back with feedback reaches the signed-in user’s attention', async ({ page }) => {
+  await openTasksWithReturn(page, { hold: true })
+  const attention = page.getByRole('region', { name: 'Needs your attention' })
+  await expect(attention.getByText('Returned conveyor change came back to you with feedback')).toBeVisible()
+  await expect(attention.getByText(returnedFeedback, { exact: false })).toBeVisible()
+  await expect(attention.getByRole('link', { name: 'Open task' })).toHaveAttribute('href', '/tasks?task=task-returned')
+
+  // Held work was run from someone's own machine, so nothing picks the feedback
+  // up until they run it again.
+  await expect(attention.getByText('running the task again from your machine', { exact: false })).toBeVisible()
+  await expect(attention.getByText('conveyor run task-returned', { exact: false })).toBeVisible()
+})
+
+test('worker-pipeline work that came back says the factory is already continuing it', async ({ page }) => {
+  await openTasksWithReturn(page, { hold: false })
+  const attention = page.getByRole('region', { name: 'Needs your attention' })
+  await expect(attention.getByText('Returned conveyor change came back to you with feedback')).toBeVisible()
+  await expect(attention.getByText('The factory is already on it', { exact: false })).toBeVisible()
+  await expect(attention.getByText('from your machine', { exact: false })).toHaveCount(0)
+})
+
+// The signal clears exactly where the server clears its own marker: once an
+// implementation run has claimed the work the return created. Presentation of
+// an existing marker, with no derivation of its own.
+test('the returned-with-feedback entry clears once implementation picks it up', async ({ page }) => {
+  await openTasksWithReturn(page, { hold: false, claimedAfter: true })
+  await expect(page.getByRole('region', { name: 'Needs your attention' })).toHaveCount(0)
+  // The list itself is untouched by the band above it.
+  await expect(rows(page)).toHaveCount(operations.length)
+})

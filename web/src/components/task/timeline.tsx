@@ -21,17 +21,23 @@ import {
   dependencyRelationLabel,
   deriveCurrentExecutionState,
   technicalActivity,
+  userRequestChangesReason,
   type CurrentExecutionState,
   type PanelSeat,
   type TimelineEntry,
 } from '../../lib/activity'
-import { defaultReasonCode, planRevisionDecisionLabels, stageLabels } from '../../lib/contracts'
+import {
+  defaultReasonCode,
+  interventionReasonLabels,
+  planRevisionDecisionLabels,
+  stageLabels,
+} from '../../lib/contracts'
 import { relatedTaskRoute, type TaskRouteVariant } from '../../lib/task-route'
 import type { ActivityItem, InterventionAction, Job, WorkOrder } from '../../lib/types'
 import { absoluteTime, cn, compactTokens, duration } from '../../lib/utils'
 import { Badge } from '../ui/badge'
 import { MarkdownProse } from '../ui/markdown-prose'
-import { ReviewPanel, gateTone, isReviewable, type GateTone } from './review-panel'
+import { ReviewPanel, changesComposerHint, gateTone, isReviewable, type GateTone } from './review-panel'
 import { RedispatchCard, canRedispatch } from './redispatch-card'
 import {
   CheckpointProposalRecoveryCard,
@@ -526,7 +532,12 @@ function TimelineRow({ entry, usageReportedOrderIDs }: { entry: TimelineEntry; u
     // `redirect` on the wire. Reading them back through the generic labels
     // would call an approval "Requested changes" and print the wire code
     // beside it, so they get their own plain-language line (AC-4.1).
-    const planRevisionLabel = planRevisionDecisionLabels[intervention.reason_code]
+    // A merge-gate return reads the same way: its reason code is the meaning,
+    // and the entry is where the person's own feedback is kept verbatim, so it
+    // repeats the promise the composer made when they sent it (REQ-6).
+    const plainLabel =
+      planRevisionDecisionLabels[intervention.reason_code] ?? interventionReasonLabels[intervention.reason_code]
+    const returnedForChanges = intervention.reason_code === userRequestChangesReason
     return (
       <li className="relative pl-7">
         <TimelineDot className="bg-foreground" />
@@ -534,14 +545,15 @@ function TimelineRow({ entry, usageReportedOrderIDs }: { entry: TimelineEntry; u
           <div className="flex flex-wrap items-center gap-2 text-sm">
             <UserRound className="size-3.5 text-muted" />
             <strong className="font-semibold">
-              {planRevisionLabel ?? interventionLabels[intervention.action] ?? intervention.action.replaceAll('_', ' ')}
+              {plainLabel ?? interventionLabels[intervention.action] ?? intervention.action.replaceAll('_', ' ')}
             </strong>
-            {!planRevisionLabel && intervention.reason_code !== defaultReasonCode[intervention.action] && (
+            {!plainLabel && intervention.reason_code !== defaultReasonCode[intervention.action] && (
               <Badge variant="mono">{intervention.reason_code}</Badge>
             )}
             <time className="ml-auto text-[11px] text-faint">{absoluteTime(intervention.at)}</time>
           </div>
           {intervention.comment && <p className="mt-2 text-sm leading-6 text-foreground/85">{intervention.comment}</p>}
+          {returnedForChanges && <p className="mt-1.5 text-xs text-muted">{changesComposerHint}</p>}
         </div>
       </li>
     )
