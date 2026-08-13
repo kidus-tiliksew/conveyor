@@ -128,6 +128,28 @@ func (s *Server) listWorkspaceMembers(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, items)
 }
 
+// listWorkspaceInvitations reads the pending invitations of the resolved
+// workspace behind the named manage-membership capability. Invitation rows exist
+// only while unredeemed, so the response says nothing about whether any address
+// has an account (REQ-1/AC-1.3, REQ-3/AC-3.2).
+func (s *Server) listWorkspaceInvitations(w http.ResponseWriter, r *http.Request) {
+	if s.Memberships == nil {
+		writeJSON(w, http.StatusOK, []core.WorkspaceInvitation{})
+		return
+	}
+	workspaceID, _ := store.WorkspaceFromContext(r.Context())
+	items, err := s.Memberships.ListWorkspaceInvitations(r.Context(), workspaceID)
+	if err != nil {
+		log.Printf("list workspace invitations: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	if items == nil {
+		items = []core.WorkspaceInvitation{}
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
 func (s *Server) grantWorkspaceMembership(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		Email string             `json:"email"`

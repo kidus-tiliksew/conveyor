@@ -2220,6 +2220,67 @@ func (q *Queries) RevokeUserToken(ctx context.Context, id string) (UserToken, er
 	return item, err
 }
 
+const listOwnUserTokens = `-- name: ListOwnUserTokens :many
+SELECT id, user_id, label, last_used_at, revoked_at, created_at
+FROM user_tokens
+WHERE user_id = $1 AND kind = 'user'
+ORDER BY created_at DESC, id
+`
+
+type ListOwnUserTokensRow struct {
+	ID         string             `json:"id"`
+	UserID     string             `json:"user_id"`
+	Label      string             `json:"label"`
+	LastUsedAt pgtype.Timestamptz `json:"last_used_at"`
+	RevokedAt  pgtype.Timestamptz `json:"revoked_at"`
+	CreatedAt  pgtype.Timestamptz `json:"created_at"`
+}
+
+func (q *Queries) ListOwnUserTokens(ctx context.Context, userID string) ([]ListOwnUserTokensRow, error) {
+	rows, err := q.db.Query(ctx, listOwnUserTokens, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListOwnUserTokensRow{}
+	for rows.Next() {
+		var i ListOwnUserTokensRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.Label,
+			&i.LastUsedAt,
+			&i.RevokedAt,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const revokeOwnUserToken = `-- name: RevokeOwnUserToken :one
+UPDATE user_tokens SET revoked_at = COALESCE(revoked_at, now())
+WHERE id = $1 AND user_id = $2 AND kind = 'user'
+RETURNING id, user_id, label, token_hash, kind, scope, last_used_at, revoked_at, created_at
+`
+
+type RevokeOwnUserTokenParams struct {
+	ID     string `json:"id"`
+	UserID string `json:"user_id"`
+}
+
+func (q *Queries) RevokeOwnUserToken(ctx context.Context, arg RevokeOwnUserTokenParams) (UserToken, error) {
+	row := q.db.QueryRow(ctx, revokeOwnUserToken, arg.ID, arg.UserID)
+	var item UserToken
+	err := row.Scan(&item.ID, &item.UserID, &item.Label, &item.TokenHash, &item.Kind, &item.Scope, &item.LastUsedAt, &item.RevokedAt, &item.CreatedAt)
+	return item, err
+}
+
 const deactivateIdentityUser = `-- name: DeactivateIdentityUser :one
 UPDATE users SET status = 'deactivated' WHERE id = $1
 RETURNING id, email, display_name, status, created_at

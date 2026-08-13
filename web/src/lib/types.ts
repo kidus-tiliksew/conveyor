@@ -369,6 +369,46 @@ export interface WorkspaceRecord {
   created_at: string
 }
 
+export type WorkspaceRole = 'user' | 'operator'
+
+export interface WorkspaceMembership {
+  workspace_id: string
+  user_id: string
+  email?: string
+  display_name?: string
+  role: WorkspaceRole
+  created_at: string
+}
+
+export interface WorkspaceInvitation {
+  workspace_id: string
+  email: string
+  role: WorkspaceRole
+  invited_by: string
+  invited_by_display_name?: string
+  created_at: string
+}
+
+export interface MembershipGrant {
+  email: string
+  role: WorkspaceRole
+}
+
+export interface PersonalAccessToken {
+  id: string
+  user_id: string
+  label: string
+  last_used_at?: string
+  revoked_at?: string
+  created_at: string
+}
+
+// The value field belongs to this shape alone: issuance returns it once, and no
+// listing response can be assigned to a type that carries it.
+export interface IssuedPersonalAccessToken extends PersonalAccessToken {
+  value: string
+}
+
 export interface WorkspaceConfigRepo {
   name: string
   url: string

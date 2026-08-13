@@ -240,3 +240,100 @@ func TestWorkspaceMembershipAuthorizationIntegration(t *testing.T) {
 		t.Fatalf("membership audit count=%d err=%v", audited, err)
 	}
 }
+
+func TestPendingInvitationListingIsOperatorScopedAndPendingOnlyIntegration(t *testing.T) {
+	st := newIdentityIntegrationStore(t, 0)
+	legacy := "invitation-listing-token"
+	if _, err := st.BootstrapIdentity(t.Context(), config.FirstOperatorIdentity{
+		OrganizationName: "Invitation Org", Email: "owner@example.test", DisplayName: "Owner",
+	}, legacy); err != nil {
+		t.Fatal(err)
+	}
+	owner, err := st.VerifyPersonalAccessToken(t.Context(), legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	operatorCtx := store.WithCredential(t.Context(), core.AuthenticatedCredential{ID: "legacy", OwnerUserID: owner.ID, Kind: core.CredentialUser, Scope: core.CredentialScopeOperator})
+	operatorCtx = store.WithActor(operatorCtx, store.Actor{ID: store.UserActorID(owner.ID), Role: core.ActorUser})
+	suffix := core.NewTaskID()
+	workspaceID := "invitations-" + suffix
+	if _, err := st.CreateWorkspace(operatorCtx, workspaceID, workspaceID, isolationConfig(workspaceID)); err != nil {
+		t.Fatal(err)
+	}
+
+	server := httpapi.NewServer(st)
+	server.Workspaces, server.Workspace = st, workspaceID
+	handler := server.Handler()
+	call := func(method, path, bearer, body string) *httptest.ResponseRecorder {
+		t.Helper()
+		request := httptest.NewRequest(method, path, strings.NewReader(body))
+		request.Header.Set("Authorization", "Bearer "+bearer)
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
+	}
+	invitationsPath := "/v1/workspaces/" + workspaceID + "/invitations"
+
+	if empty := call(http.MethodGet, invitationsPath, legacy, ""); empty.Code != http.StatusOK || empty.Body.String() != "[]\n" {
+		t.Fatalf("empty listing status=%d body=%q", empty.Code, empty.Body.String())
+	}
+
+	redeemed, revoked := "redeemed-"+suffix+"@example.test", "revoked-"+suffix+"@example.test"
+	for _, invite := range []struct{ email, role string }{{redeemed, "user"}, {revoked, "operator"}} {
+		if response := call(http.MethodPost, "/v1/workspaces/"+workspaceID+"/members", legacy, `{"email":"`+invite.email+`","role":"`+invite.role+`"}`); response.Code != http.StatusCreated {
+			t.Fatalf("invite %s status=%d body=%s", invite.email, response.Code, response.Body.String())
+		}
+	}
+	listed := call(http.MethodGet, invitationsPath, legacy, "")
+	if listed.Code != http.StatusOK {
+		t.Fatalf("listing status=%d body=%s", listed.Code, listed.Body.String())
+	}
+	var invitations []core.WorkspaceInvitation
+	if err := json.Unmarshal(listed.Body.Bytes(), &invitations); err != nil {
+		t.Fatal(err)
+	}
+	if len(invitations) != 2 {
+		t.Fatalf("invitations=%+v", invitations)
+	}
+	byEmail := map[string]core.WorkspaceInvitation{}
+	for _, item := range invitations {
+		byEmail[item.Email] = item
+	}
+	if item := byEmail[revoked]; item.Role != core.WorkspaceRoleOperator || item.InvitedBy != owner.ID || item.InvitedByDisplayName != "Owner" || item.CreatedAt.IsZero() || item.WorkspaceID != workspaceID {
+		t.Fatalf("invitation metadata=%+v", item)
+	}
+
+	// Redemption and revocation both remove the row, so the listing is pending
+	// by construction rather than by a status filter.
+	if response := call(http.MethodPost, "/v1/users", legacy, `{"email":"`+redeemed+`","display_name":"Redeemed"}`); response.Code != http.StatusCreated {
+		t.Fatalf("provision status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := call(http.MethodDelete, "/v1/workspaces/"+workspaceID+"/invitations/"+revoked, legacy, ""); response.Code != http.StatusNoContent {
+		t.Fatalf("invitation revocation status=%d body=%s", response.Code, response.Body.String())
+	}
+	if remaining := call(http.MethodGet, invitationsPath, legacy, ""); remaining.Code != http.StatusOK || remaining.Body.String() != "[]\n" {
+		t.Fatalf("post-redemption listing status=%d body=%q", remaining.Code, remaining.Body.String())
+	}
+
+	// An ordinary member of the same workspace cannot read the listing, and the
+	// refusal is the canonical not-found body a non-member would receive.
+	memberToken, err := st.IssuePersonalAccessToken(t.Context(), redeemedMemberID(t, st, redeemed), "member")
+	if err != nil {
+		t.Fatal(err)
+	}
+	member := call(http.MethodGet, invitationsPath, memberToken.Value, "")
+	stranger := call(http.MethodGet, "/v1/workspaces/missing-"+suffix+"/invitations", memberToken.Value, "")
+	if member.Code != http.StatusNotFound || member.Body.String() != stranger.Body.String() {
+		t.Fatalf("member listing status=%d body=%q stranger=%d/%q", member.Code, member.Body.String(), stranger.Code, stranger.Body.String())
+	}
+}
+
+func redeemedMemberID(t *testing.T, st *Store, email string) string {
+	t.Helper()
+	var id string
+	if err := st.pool.QueryRow(t.Context(), `SELECT id FROM users WHERE email=$1`, email).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	return id
+}

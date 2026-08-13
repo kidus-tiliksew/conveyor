@@ -20,7 +20,19 @@ type MembershipStore interface {
 	AuthorizeWorkspace(context.Context, string, string, core.Capability) (bool, error)
 	ListWorkspacesForUser(context.Context, string) ([]core.Workspace, error)
 	ListWorkspaceMembers(context.Context, string, string) ([]core.WorkspaceMembership, error)
+	ListWorkspaceInvitations(context.Context, string) ([]core.WorkspaceInvitation, error)
 	GrantWorkspaceRole(context.Context, string, string, core.WorkspaceRole) (core.MembershipGrant, error)
 	RevokeWorkspaceInvitation(context.Context, string, string) error
 	RevokeWorkspaceRole(context.Context, string, string) error
+}
+
+// PersonalAccessTokenStore is the self-service human-credential boundary. Every
+// method takes the owning user resolved from the presented credential, so a
+// caller cannot name another user's tokens: cross-user reads and revocations
+// are unrepresentable here rather than merely rejected (REQ-2/AC-2.1).
+// Administrative revocation by token ID alone stays outside this interface.
+type PersonalAccessTokenStore interface {
+	ListOwnPersonalAccessTokens(context.Context, string) ([]core.PersonalAccessToken, error)
+	IssueOwnPersonalAccessToken(context.Context, string, string) (core.IssuedPersonalAccessToken, error)
+	RevokeOwnPersonalAccessToken(context.Context, string, string) (core.PersonalAccessToken, error)
 }
