@@ -28,8 +28,8 @@ const workspaceConfig = {
 const notFound = { status: 404, json: { error: 'workspace_not_found', message: 'workspace not found' } }
 
 type MembershipState = {
-  members: Array<{ user_id: string; email: string; display_name: string; role: 'user' | 'operator' }>
-  invitations: Array<{ email: string; role: 'user' | 'operator'; invited_by_display_name: string }>
+  members: Array<{ user_id: string; email: string; display_name: string; role: 'viewer' | 'user' | 'operator' }>
+  invitations: Array<{ email: string; role: 'viewer' | 'user' | 'operator'; invited_by_display_name: string }>
   soleOperator: boolean
 }
 
@@ -49,12 +49,12 @@ function membershipDefaults(): MembershipState {
  * member case reproduces the server contract exactly: the operator-only reads
  * answer 404, which is how the surface learns it must stay read-only.
  */
-async function mockWorkspace(page: Page, role: 'operator' | 'member', state: MembershipState) {
-  await page.addInitScript(() => {
+async function mockWorkspace(page: Page, role: 'operator' | 'member' | 'viewer', state: MembershipState) {
+  await page.addInitScript((sessionOnly) => {
     localStorage.setItem('conveyor-theme', 'dark')
     localStorage.setItem('conveyor-workspace', 'demo')
-    sessionStorage.setItem('conveyor-token', 'caller-token')
-  })
+    if (!sessionOnly) sessionStorage.setItem('conveyor-token', 'caller-token')
+  }, role === 'viewer')
   await page.route('**/v1/**', async (route: Route) => {
     const request = route.request()
     const url = new URL(request.url())
@@ -62,14 +62,21 @@ async function mockWorkspace(page: Page, role: 'operator' | 'member', state: Mem
     const operatorOnly = role === 'operator'
 
     if (path === '/v1/workspaces') return route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] })
+    if (path === '/v1/me') {
+      const workspaceRole = role === 'operator' ? 'operator' : role === 'viewer' ? 'viewer' : 'user'
+      return route.fulfill({
+        json: { id: `usr_${role}`, email: `${role}@example.test`, display_name: role, role: workspaceRole },
+      })
+    }
+    if (path === '/v1/activity') return route.fulfill({ json: [] })
+    if (path === '/v1/pending-proposals') return route.fulfill({ json: { items: [], attention: { total: 0 } } })
+    if (path === '/v1/task-operations') return route.fulfill({ json: { items: [], total: 0, limit: 50, offset: 0 } })
     if (path === '/v1/workspace')
       return route.fulfill({ json: { workspace: 'demo', max_bounces: 2, database: 'postgres', repos: [] } })
-    if (path === '/v1/workspace/config')
-      return operatorOnly ? route.fulfill({ json: { document: workspaceConfig, version: 1 } }) : route.fulfill(notFound)
+    if (path === '/v1/workspace/config') return route.fulfill({ json: { document: workspaceConfig, version: 1 } })
     if (path === '/v1/harness-templates')
       return operatorOnly ? route.fulfill({ json: { templates: [] } }) : route.fulfill(notFound)
-    if (path === '/v1/workers')
-      return operatorOnly ? route.fulfill({ json: { workers: [], auto_available: false } }) : route.fulfill(notFound)
+    if (path === '/v1/workers') return route.fulfill({ json: { workers: [], auto_available: false } })
 
     if (path === '/v1/workspaces/demo/members' && request.method() === 'GET') {
       return route.fulfill({
@@ -77,7 +84,7 @@ async function mockWorkspace(page: Page, role: 'operator' | 'member', state: Mem
       })
     }
     if (path === '/v1/workspaces/demo/members' && request.method() === 'POST') {
-      const body = request.postDataJSON() as { email: string; role: 'user' | 'operator' }
+      const body = request.postDataJSON() as { email: string; role: 'viewer' | 'user' | 'operator' }
       state.invitations.push({ email: body.email, role: body.role, invited_by_display_name: 'Ada Owner' })
       return route.fulfill({ status: 201, json: { email: body.email, role: body.role } })
     }
@@ -115,7 +122,7 @@ async function mockWorkspace(page: Page, role: 'operator' | 'member', state: Mem
   })
 }
 
-async function openMembers(page: Page, role: 'operator' | 'member') {
+async function openMembers(page: Page, role: 'operator' | 'member' | 'viewer') {
   await page.goto('/workspace')
   if (role === 'operator') await page.getByRole('tab', { name: 'Members' }).click()
 }
@@ -131,7 +138,7 @@ test('an operator invites a member, sees the pending invitation, and revokes it'
 
   const form = page.getByRole('form', { name: 'Invite a member' })
   await form.getByLabel('Email address').fill('invited@example.test')
-  await form.getByLabel('Role').selectOption('operator')
+  await form.getByLabel('Role').selectOption('viewer')
   await form.getByRole('button', { name: 'Invite' }).click()
 
   await expect(page.getByText('invited@example.test')).toBeVisible()
@@ -140,6 +147,30 @@ test('an operator invites a member, sees the pending invitation, and revokes it'
   await page.getByRole('button', { name: 'Revoke' }).click()
   await expect(page.getByText('No pending invitations.')).toBeVisible()
   await expect(page.getByText('invited@example.test')).toHaveCount(0)
+})
+
+test('a signed-in viewer sees the workspace and role but no mutation affordances', async ({ page }) => {
+  const state = membershipDefaults()
+  state.members.push({
+    user_id: 'usr_viewer',
+    email: 'viewer@example.test',
+    display_name: 'Vi Viewer',
+    role: 'viewer',
+  })
+  await mockWorkspace(page, 'viewer', state)
+  await openMembers(page, 'viewer')
+
+  await expect(page.getByText('Vi Viewer')).toBeVisible()
+  await expect(page.getByText('Viewer', { exact: true })).toBeVisible()
+  await expect(page.getByText('View only')).toBeVisible()
+  await expect(page.getByRole('form', { name: 'Invite a member' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: /Remove Vi Viewer/ })).toHaveCount(0)
+
+  await page.goto('/tasks')
+  await expect(page.getByRole('heading', { name: 'Tasks' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'New task' })).toHaveCount(0)
+  await page.goto('/pending-proposals')
+  await expect(page.getByRole('button', { name: 'Confirm' })).toHaveCount(0)
 })
 
 test('revoking the last operator explains what to do instead', async ({ page }) => {

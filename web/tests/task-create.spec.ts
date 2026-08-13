@@ -28,6 +28,10 @@ async function mockTaskCreateAPIs(
       })
       return
     }
+    if (url.pathname === '/v1/me') {
+      await route.fulfill({ json: { id: 'usr_operator', role: 'operator' } })
+      return
+    }
     if (url.pathname === '/v1/workspace') {
       await route.fulfill({
         json: {

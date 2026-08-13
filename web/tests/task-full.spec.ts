@@ -2021,6 +2021,10 @@ async function mockTaskAPIs(page: Page) {
       await route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] })
       return
     }
+    if (url.pathname === '/v1/me') {
+      await route.fulfill({ json: { id: 'usr_operator', role: 'operator' } })
+      return
+    }
     const taskMatch = url.pathname.match(/^\/v1\/tasks\/([^/]+)\/activity$/)
     if (taskMatch) {
       const taskId = decodeURIComponent(taskMatch[1])

@@ -12,7 +12,7 @@ import {
   Workflow,
 } from 'lucide-react'
 import { useEffect, useState } from 'react'
-import { useOperatorToken, useWorkspaceSelection } from '../components/app-shell'
+import { useOperatorToken, useWorkspaceCapability, useWorkspaceSelection } from '../components/app-shell'
 import { AssigneeChip } from '../components/task/assignee-chip'
 import { ReturnedForChangesAttention } from '../components/task/returned-for-changes'
 import { TaskCreateSheet } from '../components/task/task-create-sheet'
@@ -73,6 +73,7 @@ export function TasksPage() {
   const [filter, setFilter] = useTaskFilters('tasks')
   const [offset, setOffset] = useState(0)
   const token = useOperatorToken()
+  const canOperate = useWorkspaceCapability('operate_gates')
   // Who "my" is. Without an identity the preset has no referent, so it is not
   // offered rather than guessing (REQ-2).
   const { data: me } = useQuery({
@@ -124,12 +125,14 @@ export function TasksPage() {
             <Badge variant="mono">{page?.total ?? 0}</Badge>
             {/* Intake belongs to the surface where delivery is managed
                 (AC-2.1); it opens over this list, which stays behind it. */}
-            <Link to="/tasks" search={{ create: true }} className="ml-auto">
-              <Button size="sm" tabIndex={-1}>
-                <Plus />
-                New task
-              </Button>
-            </Link>
+            {canOperate && (
+              <Link to="/tasks" search={{ create: true }} className="ml-auto">
+                <Button size="sm" tabIndex={-1}>
+                  <Plus />
+                  New task
+                </Button>
+              </Link>
+            )}
           </div>
           <p className="mt-1 max-w-2xl text-sm text-muted">
             Every task in this workspace with its ordering, attached context, and plan status.
@@ -241,13 +244,13 @@ export function TasksPage() {
       </div>
 
       {/* Task intake, opened over the list it files into (AC-2.1). */}
-      {create && <TaskCreateSheet />}
+      {create && canOperate && <TaskCreateSheet />}
 
       {/* The task's own detail composition, mounted as this surface's panel
           rather than reimplemented on it (AC-2.2). A blueprint anchor opened
           here still redirects to its canonical route — that rule belongs to the
           composition, so hosting it here inherits it. */}
-      {!create && selectedId && (
+      {(!create || !canOperate) && selectedId && (
         <TaskSheet
           taskId={selectedId}
           panel={{

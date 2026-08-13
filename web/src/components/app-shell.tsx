@@ -19,6 +19,7 @@ import { createContext, type ReactNode, useContext, useEffect, useState } from '
 import {
   fetchActivity,
   fetchBlueprints,
+  fetchCallerIdentity,
   fetchPendingProposals,
   fetchWorkspace,
   fetchWorkspaces,
@@ -31,6 +32,35 @@ import { ThemeProvider, useTheme } from './theme-provider'
 import { Badge } from './ui/badge'
 import { Button } from './ui/button'
 import { Input } from './ui/input'
+
+export type WorkspaceCapability =
+  | 'view_workspace'
+  | 'claim_work'
+  | 'request_changes'
+  | 'propose_documents'
+  | 'confirm_documents'
+  | 'manage_membership'
+  | 'set_assignee'
+  | 'operate_gates'
+  | 'recover_work'
+  | 'manage_workspace'
+
+const roleCapabilities: Record<import('../lib/types').WorkspaceRole, readonly WorkspaceCapability[]> = {
+  viewer: ['view_workspace'],
+  user: ['view_workspace', 'claim_work', 'request_changes', 'propose_documents'],
+  operator: [
+    'view_workspace',
+    'claim_work',
+    'request_changes',
+    'propose_documents',
+    'confirm_documents',
+    'manage_membership',
+    'set_assignee',
+    'operate_gates',
+    'recover_work',
+    'manage_workspace',
+  ],
+}
 
 // The context carries either a tab-scoped operator bearer token or an opaque
 // marker indicating that the browser's HttpOnly session cookie is active.
@@ -56,6 +86,21 @@ export function useOperatorToken() {
 export function useTokenState() {
   const { operatorToken, setToken } = useContext(TokenContext)
   return { token: operatorToken, setToken }
+}
+
+// Dashboard affordances consume the same fixed role bundles as the server.
+// This is presentation only: every request still crosses the server capability
+// boundary, while a viewer never sees a control that can only be refused.
+export function useWorkspaceCapability(capability: WorkspaceCapability) {
+  const token = useOperatorToken()
+  const { workspace } = useWorkspaceSelection()
+  const identity = useQuery({
+    queryKey: ['caller-identity', token, workspace],
+    queryFn: () => fetchCallerIdentity(token),
+    enabled: Boolean(token && workspace),
+    retry: false,
+  })
+  return Boolean(identity.data?.role && roleCapabilities[identity.data.role].includes(capability))
 }
 
 // The Board passes the shared filter family so the server returns what it will
@@ -229,6 +274,7 @@ function WorkspaceProvider({
 // everywhere): one initials tile per workspace, "+" creates a new one.
 function IconRail() {
   const token = useOperatorToken()
+  const { token: operatorToken } = useTokenState()
   const navigate = useNavigate()
   const { workspace: selected, setWorkspace } = useWorkspaceSelection()
   const { data: workspaces } = useQuery({
@@ -266,14 +312,16 @@ function IconRail() {
             {initials(item.name || item.id)}
           </button>
         ))}
-        <Link
-          to="/workspaces/new"
-          title="Add workspace"
-          aria-label="Add workspace"
-          className="grid size-8 shrink-0 place-items-center rounded-[9px] text-workspace-tile-foreground transition-colors hover:bg-workspace-tile hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-[5px] focus-visible:outline-primary"
-        >
-          <Plus className="size-5" aria-hidden="true" />
-        </Link>
+        {operatorToken && (
+          <Link
+            to="/workspaces/new"
+            title="Add workspace"
+            aria-label="Add workspace"
+            className="grid size-8 shrink-0 place-items-center rounded-[9px] text-workspace-tile-foreground transition-colors hover:bg-workspace-tile hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-[5px] focus-visible:outline-primary"
+          >
+            <Plus className="size-5" aria-hidden="true" />
+          </Link>
+        )}
       </div>
     </nav>
   )

@@ -80,6 +80,7 @@ async function mockAPIs(page: Page, templatesFail = false) {
   await page.route('**/v1/**', async (route: Route) => {
     const path = new URL(route.request().url()).pathname
     if (path === '/v1/workspaces') return route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] })
+    if (path === '/v1/me') return route.fulfill({ json: { id: 'usr_operator', role: 'operator' } })
     if (path === '/v1/workspace/config') return route.fulfill({ json: { document, version: 1 } })
     if (path === '/v1/harness-templates') {
       if (templatesFail) return route.fulfill({ status: 500, body: 'catalog unavailable' })

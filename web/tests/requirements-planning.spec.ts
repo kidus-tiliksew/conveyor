@@ -218,6 +218,7 @@ function shellResponse(route: Route) {
     return route.fulfill({
       json: [{ id: 'demo', name: 'Demo', config_version: 1 }],
     })
+  if (path === '/v1/me') return route.fulfill({ json: { id: 'usr_operator', role: 'operator' } })
   if (path === '/v1/workspace/config') return route.fulfill({ json: planningConfig })
   if (path === '/v1/workspace') return route.fulfill({ json: { workspace: 'demo', repos: ['conveyor'] } })
   if (path === '/v1/activity') return route.fulfill({ json: [] })

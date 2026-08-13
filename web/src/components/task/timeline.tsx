@@ -38,7 +38,7 @@ import { relatedTaskRoute, type TaskRouteVariant } from '../../lib/task-route'
 import type { ActivityItem, InterventionAction, Job, WorkOrder } from '../../lib/types'
 import { absoluteTime, cn, compactTokens, duration } from '../../lib/utils'
 import { Badge } from '../ui/badge'
-import { useOperatorToken, useWorkspaceSelection } from '../app-shell'
+import { useOperatorToken, useWorkspaceCapability, useWorkspaceSelection } from '../app-shell'
 import { MarkdownProse } from '../ui/markdown-prose'
 import { ReviewPanel, changesComposerHint, gateTone, isReviewable, type GateTone } from './review-panel'
 import { RedispatchCard, canRedispatch } from './redispatch-card'
@@ -83,6 +83,7 @@ export function Timeline({
   routeVariant?: TaskRouteVariant
 }) {
   const token = useOperatorToken()
+  const canOperate = useWorkspaceCapability('operate_gates')
   const { workspace } = useWorkspaceSelection()
   const members = useQuery({
     queryKey: ['workspace-members', token, workspace],
@@ -100,7 +101,7 @@ export function Timeline({
   const [decisionScrollRequest, setDecisionScrollRequest] = useState(0)
   // Preemption is an execution affordance: a blueprint anchor takes no work
   // orders, so it never offers one.
-  const preemptOrder = executionActions ? claimedWorkOrder(item) : undefined
+  const preemptOrder = executionActions && canOperate ? claimedWorkOrder(item) : undefined
   // A System Design revision this task proposed is a decision waiting on the
   // operator, so it belongs in the live tail beside the other ones (spec
   // §21.62). A blueprint anchor runs no session and proposes nothing, which is
@@ -130,11 +131,11 @@ export function Timeline({
   // Reviewable tasks open scrolled to the gate — the decision point — not
   // the top of a story the reviewer has often already read.
   useEffect(() => {
-    if (showGate) gateRef.current?.scrollIntoView({ block: 'end' })
-  }, [item.task.id, showGate])
+    if (showGate && canOperate) gateRef.current?.scrollIntoView({ block: 'end' })
+  }, [item.task.id, showGate, canOperate])
 
   const tail = (
-    executionActions
+    executionActions && canOperate
       ? [
           item.pending_authority === true &&
             designProposals.length === 0 && {
@@ -239,7 +240,7 @@ export function Timeline({
               {card}
             </li>
           ))}
-          {showGate && (
+          {showGate && canOperate && (
             <li ref={gateRef} className="relative pl-7">
               <TimelineDot
                 className={cn('animate-pulse', gateDots[gateTone(item.task, item.events, item.merge_readiness)])}

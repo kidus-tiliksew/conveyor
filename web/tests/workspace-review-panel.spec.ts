@@ -69,6 +69,10 @@ async function mockWorkspaceAPIs(page: Page, initialDocument = baseDocument) {
       })
       return
     }
+    if (url.pathname === '/v1/me') {
+      await route.fulfill({ json: { id: 'usr_operator', role: 'operator' } })
+      return
+    }
     if (url.pathname === '/v1/workspace/config') {
       if (route.request().method() === 'PUT') {
         const body = route.request().postDataJSON() as { document: typeof document }

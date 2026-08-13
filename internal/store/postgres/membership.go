@@ -110,8 +110,8 @@ func (s *Store) GrantWorkspaceRole(ctx context.Context, email, workspaceID strin
 	if err != nil {
 		return core.MembershipGrant{}, err
 	}
-	if role != core.WorkspaceRoleUser && role != core.WorkspaceRoleOperator {
-		return core.MembershipGrant{}, errors.New("role must be user or operator")
+	if role != core.WorkspaceRoleViewer && role != core.WorkspaceRoleUser && role != core.WorkspaceRoleOperator {
+		return core.MembershipGrant{}, errors.New("role must be viewer, user, or operator")
 	}
 	credential, ok := store.CredentialFromContext(ctx)
 	if !ok {

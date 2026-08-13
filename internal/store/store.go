@@ -984,6 +984,7 @@ func NewMemoryWithConfig(cfg *config.Config) Store {
 		pairings:                    map[string]core.WorkerPairing{},
 		workers:                     map[string]core.Worker{},
 		workspaceMembers:            map[memoryScopedKey]bool{},
+		workspaceMemberRoles:        map[memoryScopedKey]core.WorkspaceRole{},
 		harnessModelFailures:        map[string]core.HarnessModelFailure{},
 		recoveries:                  map[string]struct{}{},
 		reviewRetries:               map[string]memoryReviewRoundRetry{},
@@ -1050,6 +1051,7 @@ type memory struct {
 	pairings                    map[string]core.WorkerPairing
 	workers                     map[string]core.Worker
 	workspaceMembers            map[memoryScopedKey]bool
+	workspaceMemberRoles        map[memoryScopedKey]core.WorkspaceRole
 	harnessModelFailures        map[string]core.HarnessModelFailure
 	recoveries                  map[string]struct{}
 	reviewRetries               map[string]memoryReviewRoundRetry
@@ -4498,8 +4500,18 @@ func (m *memory) SetTaskAssigneeCommand(ctx context.Context, lease taskops.TaskL
 		return core.Task{}, fmt.Errorf("task %s not found", id)
 	}
 	assigneeUserID = strings.TrimSpace(assigneeUserID)
-	if assigneeUserID != "" && !m.workspaceMembers[memoryScopedKey{workspace: task.Workspace, id: assigneeUserID}] {
-		return core.Task{}, fmt.Errorf("assignee %s is not an active member of workspace %s", assigneeUserID, task.Workspace)
+	if assigneeUserID != "" {
+		key := memoryScopedKey{workspace: task.Workspace, id: assigneeUserID}
+		if !m.workspaceMembers[key] {
+			return core.Task{}, fmt.Errorf("assignee %s is not an active member of workspace %s", assigneeUserID, task.Workspace)
+		}
+		role := m.workspaceMemberRoles[key]
+		if role == "" {
+			role = core.WorkspaceRoleUser
+		}
+		if !core.RoleAllows(role, core.CapabilityClaimWork) {
+			return core.Task{}, fmt.Errorf("assignee %s role %s lacks %s capability in workspace %s", assigneeUserID, role, core.CapabilityClaimWork, task.Workspace)
+		}
 	}
 	if (task.Assignee != nil && task.Assignee.UserID == assigneeUserID) || (task.Assignee == nil && assigneeUserID == "") {
 		return task, nil
@@ -4531,6 +4543,22 @@ func SetMemoryWorkspaceMember(st Store, workspaceID, userID string, active bool)
 	memoryStore.mu.Lock()
 	defer memoryStore.mu.Unlock()
 	memoryStore.workspaceMembers[memoryScopedKey{workspace: workspaceID, id: userID}] = active
+	if active {
+		memoryStore.workspaceMemberRoles[memoryScopedKey{workspace: workspaceID, id: userID}] = core.WorkspaceRoleUser
+	}
+	return nil
+}
+
+// SetMemoryWorkspaceMemberRole configures an active volatile membership with
+// its fixed role so assignment conformance can exercise capability eligibility.
+func SetMemoryWorkspaceMemberRole(st Store, workspaceID, userID string, role core.WorkspaceRole) error {
+	if err := SetMemoryWorkspaceMember(st, workspaceID, userID, true); err != nil {
+		return err
+	}
+	memoryStore := st.(*memory)
+	memoryStore.mu.Lock()
+	defer memoryStore.mu.Unlock()
+	memoryStore.workspaceMemberRoles[memoryScopedKey{workspace: strings.TrimSpace(workspaceID), id: strings.TrimSpace(userID)}] = role
 	return nil
 }
 

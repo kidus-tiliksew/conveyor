@@ -2,7 +2,13 @@ import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { CheckCircle2, Plus, Save, Trash2 } from 'lucide-react'
-import { useOperatorToken, useWorkspace, useWorkspaceSelection } from '../components/app-shell'
+import {
+  useOperatorToken,
+  useTokenState,
+  useWorkspace,
+  useWorkspaceCapability,
+  useWorkspaceSelection,
+} from '../components/app-shell'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
@@ -56,6 +62,8 @@ function tabForField(field: string): TabId {
 
 export function WorkspacePage() {
   const token = useOperatorToken()
+  const { token: operatorToken } = useTokenState()
+  const canManageWorkspace = useWorkspaceCapability('manage_workspace')
   const queryClient = useQueryClient()
   const { workspace } = useWorkspaceSelection()
   const { data: snapshot } = useWorkspace()
@@ -129,7 +137,7 @@ export function WorkspacePage() {
             <h1 className="text-xl font-semibold">Workspace</h1>
             {draft && <Badge variant="mono">{draft.workspace}</Badge>}
           </div>
-          {token && (
+          {operatorToken && (
             <Link to="/workspaces/new">
               <Button variant="secondary" tabIndex={-1}>
                 <Plus />
@@ -160,7 +168,7 @@ export function WorkspacePage() {
           </Card>
         )}
 
-        {draft ? (
+        {draft && canManageWorkspace ? (
           <>
             <div role="tablist" className="mt-6 flex gap-1 border-b border-border">
               {TABS.map((entry) => {

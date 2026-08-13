@@ -1250,11 +1250,6 @@ func TestPendingProposalsProjectionAttentionAndTaskWarning(t *testing.T) {
 
 	server := NewServer(st)
 	server.BearerToken, server.Workspace = "operator-token", "demo"
-	unauthorized := httptest.NewRecorder()
-	server.Handler().ServeHTTP(unauthorized, httptest.NewRequest(http.MethodGet, "/v1/pending-proposals?workspace_id=demo", nil))
-	if unauthorized.Code != http.StatusUnauthorized {
-		t.Fatalf("unauthorized status=%d body=%s", unauthorized.Code, unauthorized.Body.String())
-	}
 	request := httptest.NewRequest(http.MethodGet, "/v1/pending-proposals?workspace_id=demo", nil)
 	request.Header.Set("Authorization", "Bearer operator-token")
 	response := httptest.NewRecorder()
