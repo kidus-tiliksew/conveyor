@@ -8,11 +8,14 @@ import {
   GitBranch,
   ListChecks,
   Plus,
+  UserRound,
   Workflow,
 } from 'lucide-react'
 import { useEffect, useState } from 'react'
-import { useWorkspaceSelection } from '../components/app-shell'
+import { useOperatorToken, useWorkspaceSelection } from '../components/app-shell'
+import { AssigneeChip } from '../components/task/assignee-chip'
 import { TaskCreateSheet } from '../components/task/task-create-sheet'
+import type { TaskFilterState } from '../components/task/task-filters'
 import {
   emptyTaskFilter,
   TaskFilters,
@@ -26,13 +29,19 @@ import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { Card, CardContent } from '../components/ui/card'
 import { Skeleton } from '../components/ui/skeleton'
-import { fetchTaskOperations } from '../lib/api'
+import { humanizeClaimRefusal } from '../lib/activity'
+import { fetchCallerIdentity, fetchTaskOperations } from '../lib/api'
 import { stageLabels, taskStateLabels } from '../lib/contracts'
 import { errorMessage } from '../lib/errors'
 import type { TaskOperationsItem, TaskPlanStatus } from '../lib/types'
 import { relativeTime } from '../lib/utils'
 
 const PAGE_SIZE = 25
+
+// The states an assignment is still asking something of its holder. Terminal
+// and approved work is done being routed, so My tasks leaves it out; a
+// bounced-back review lands in awaiting_human, which is why it is here.
+const MY_TASK_STATES = ['queued', 'running', 'awaiting_human']
 
 // Every row is its own grid, so the header and the rows line up only because
 // they read one track definition — hence the shared constant rather than a
@@ -62,6 +71,15 @@ export function TasksPage() {
   const { task: selectedId, create } = useSearch({ strict: false }) as { task?: string; create?: boolean }
   const [filter, setFilter] = useTaskFilters('tasks')
   const [offset, setOffset] = useState(0)
+  const token = useOperatorToken()
+  // Who "my" is. Without an identity the preset has no referent, so it is not
+  // offered rather than guessing (REQ-2).
+  const { data: me } = useQuery({
+    queryKey: ['caller-identity', token, workspace],
+    queryFn: () => fetchCallerIdentity(token),
+    enabled: Boolean(workspace && token),
+    retry: false,
+  })
   const params = taskFilterParams(filter)
   // A range no task can satisfy is a half-typed date, not a question worth
   // asking the server: the filter says so in place and the last good page stays.
@@ -111,7 +129,10 @@ export function TasksPage() {
           </p>
         </header>
 
-        <TaskFilters value={filter} onChange={setFilter} fallback={emptyTaskFilter} className="mt-6" />
+        <div className="mt-6 flex flex-wrap items-center gap-2">
+          <TaskFilters value={filter} onChange={setFilter} fallback={emptyTaskFilter} />
+          {me && <MyTasksPreset me={me.id} value={filter} onChange={setFilter} />}
+        </div>
 
         {!workspace && <EmptyMessage>Choose a workspace to open its tasks.</EmptyMessage>}
         {isLoading && workspace && (
@@ -227,6 +248,37 @@ export function TasksPage() {
   )
 }
 
+// One click onto the work that is actually mine and still moving. It is a
+// preset over the existing filter row, not a view of its own: the row shows
+// exactly what it selected, and pressing it again hands the surface back
+// (REQ-4, DEC-18 — routing, never ordering).
+function MyTasksPreset({
+  me,
+  value,
+  onChange,
+}: {
+  me: string
+  value: TaskFilterState
+  onChange: (next: TaskFilterState) => void
+}) {
+  const active =
+    value.assignee === me &&
+    value.states.length === MY_TASK_STATES.length &&
+    MY_TASK_STATES.every((state) => value.states.includes(state))
+  return (
+    <Button
+      type="button"
+      variant={active ? 'secondary' : 'outline'}
+      size="sm"
+      aria-pressed={active}
+      onClick={() => onChange(active ? emptyTaskFilter : { ...value, assignee: me, states: [...MY_TASK_STATES] })}
+    >
+      <UserRound />
+      My tasks
+    </Button>
+  )
+}
+
 // The panel's address, absolute so it survives being pasted somewhere else.
 function taskPermalink(taskId: string) {
   const path = `/tasks?task=${encodeURIComponent(taskId)}`
@@ -274,6 +326,10 @@ function TaskRow({ item, selected }: { item: TaskOperationsItem; selected: boole
                 {task.repo}
               </span>
             )}
+            {/* Assignment is claim-eligibility routing, never ordering, so it
+                rides the row's identity line rather than claiming a column of
+                its own beside State and Stage (REQ-4, DEC-18). */}
+            <AssigneeChip assignee={task.assignee} />
           </div>
         </div>
       </div>
@@ -306,7 +362,7 @@ function TaskRow({ item, selected }: { item: TaskOperationsItem; selected: boole
       {item.stalled?.needed && (
         <p className="col-span-full mt-2 border-t border-failure/20 pt-2 text-xs text-failure">
           Stalled — {item.stalled.reason}
-          {item.stalled.last_failure ? `: ${item.stalled.last_failure}` : ''}
+          {item.stalled.last_failure ? `: ${humanizeClaimRefusal(item.stalled.last_failure, task.assignee)}` : ''}
         </p>
       )}
     </li>

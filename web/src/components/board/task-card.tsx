@@ -1,7 +1,8 @@
 import { Link } from '@tanstack/react-router'
-import { gateBadge, reviewDiagnosticBadge } from '../../lib/activity'
+import { gateBadge, humanizeClaimRefusal, reviewDiagnosticBadge } from '../../lib/activity'
 import type { ActivitySummary } from '../../lib/types'
 import { cn, relativeTime } from '../../lib/utils'
+import { AssigneeChip } from '../task/assignee-chip'
 import { Badge } from '../ui/badge'
 
 // Deterministic repo hue so a repo reads consistently across the board.
@@ -53,11 +54,9 @@ export function TaskCard({ item, selected }: { item: ActivitySummary; selected: 
         <span className="truncate">{item.task.id}</span>
         <span className="ml-auto shrink-0 whitespace-nowrap">{relativeTime(lastAt)}</span>
       </div>
-      {item.task.assignee && (
-        <p className="mt-1 truncate text-[11px] text-muted">
-          Assigned to {item.task.assignee.display_name || item.task.assignee.email || item.task.assignee.user_id}
-        </p>
-      )}
+      {/* The same chip the Tasks rows carry, so a colleague's assignment reads
+          identically on both surfaces (REQ-4, AC-4.3). */}
+      {item.task.assignee && <AssigneeChip assignee={item.task.assignee} className="mt-1 text-[11px] text-muted" />}
       {chips && (
         <div className="mt-2 flex flex-wrap items-center gap-1.5">
           {gate && <Badge variant={gate.variant}>{gate.label}</Badge>}
@@ -79,7 +78,9 @@ export function TaskCard({ item, selected }: { item: ActivitySummary; selected: 
         </div>
       )}
       {item.stalled?.last_failure && (
-        <p className="mt-2 line-clamp-2 text-[11px] leading-4 text-failure">{item.stalled.last_failure}</p>
+        <p className="mt-2 line-clamp-2 text-[11px] leading-4 text-failure">
+          {humanizeClaimRefusal(item.stalled.last_failure, item.task.assignee)}
+        </p>
       )}
       {item.forge_failure && (
         <p className="mt-2 line-clamp-2 text-[11px] leading-4 text-failure">

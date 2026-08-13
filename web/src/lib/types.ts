@@ -371,6 +371,15 @@ export interface WorkspaceRecord {
 
 export type WorkspaceRole = 'user' | 'operator'
 
+// The self-identity projection behind GET /v1/me: deliberately narrow, and
+// carrying a role only when the request supplied authorized workspace context.
+export interface CallerIdentity {
+  id: string
+  email: string
+  display_name: string
+  role?: WorkspaceRole
+}
+
 export interface WorkspaceMembership {
   workspace_id: string
   user_id: string

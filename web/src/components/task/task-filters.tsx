@@ -9,12 +9,13 @@ import {
   GitBranch,
   Search,
   SlidersHorizontal,
+  UserRound,
   X,
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { fetchRequirements, fetchSystemDesigns } from '../../lib/api'
+import { fetchRequirements, fetchSystemDesigns, fetchWorkspaceMembers } from '../../lib/api'
 import { taskStateLabels } from '../../lib/contracts'
-import { useWorkspace, useWorkspaceSelection } from '../app-shell'
+import { useOperatorToken, useWorkspace, useWorkspaceSelection } from '../app-shell'
 import { Button } from '../ui/button'
 import { Input } from '../ui/input'
 
@@ -32,7 +33,16 @@ export interface TaskFilterState {
   createdTo: string
   requirements: string[]
   designs: string[]
+  // Assignee is single-valued, unlike the list members: a task has one
+  // assignee, so a union of two people is a question nobody asks. Empty means
+  // anyone, UNASSIGNED_ASSIGNEE selects tasks nobody holds, and any other
+  // value is a workspace member's user ID (REQ-4, DEC-18).
+  assignee: string
 }
+
+// The server's sentinel for "nobody holds this", distinct from the empty
+// default that leaves the member inactive (conveyor:internal/store/store.go).
+export const UNASSIGNED_ASSIGNEE = 'unassigned'
 
 export const emptyTaskFilter: TaskFilterState = {
   query: '',
@@ -43,6 +53,7 @@ export const emptyTaskFilter: TaskFilterState = {
   createdTo: '',
   requirements: [],
   designs: [],
+  assignee: '',
 }
 export const boardDefaultTaskFilter: TaskFilterState = { ...emptyTaskFilter, created: '30d' }
 
@@ -66,6 +77,7 @@ export interface TaskFilterParams {
   created_to?: string
   serves_requirement?: string[]
   governing_design?: string[]
+  assignee?: string
 }
 
 function startOfLocalDay(date: Date): Date {
@@ -91,6 +103,7 @@ export function taskFilterParams(filter: TaskFilterState): TaskFilterParams {
   if (filter.repositories.length) params.repository = filter.repositories
   if (filter.requirements.length) params.serves_requirement = filter.requirements
   if (filter.designs.length) params.governing_design = filter.designs
+  if (filter.assignee) params.assignee = filter.assignee
   if (filter.created === 'custom') {
     const from = localDayStartInstant(filter.createdFrom)
     const to = localDayStartInstant(filter.createdTo, 1)
@@ -145,6 +158,7 @@ function readStoredFilter(key: string, fallback: TaskFilterState): TaskFilterSta
       createdTo: storedText(stored.createdTo) ?? storedText(stored.updatedTo) ?? fallback.createdTo,
       requirements: storedList(stored.requirements, stored.requirement) ?? fallback.requirements,
       designs: storedList(stored.designs, stored.design) ?? fallback.designs,
+      assignee: storedText(stored.assignee) ?? fallback.assignee,
     }
   } catch {
     return fallback
@@ -344,7 +358,7 @@ function CustomRangeEditor({ value, set }: { value: TaskFilterState; set: (patch
   )
 }
 
-type FilterCategory = 'state' | 'repository' | 'created' | 'requirement' | 'design'
+type FilterCategory = 'state' | 'repository' | 'created' | 'requirement' | 'design' | 'assignee'
 
 const filterCategoryIcons = {
   state: CircleDot,
@@ -352,6 +366,7 @@ const filterCategoryIcons = {
   created: CalendarDays,
   requirement: Code2,
   design: SlidersHorizontal,
+  assignee: UserRound,
 } as const
 
 const listCategoryKeys = {
@@ -368,6 +383,7 @@ function FilterMenu({
   repos,
   requirements,
   designs,
+  assignees,
   fallback,
   changed,
   activeCount,
@@ -379,6 +395,7 @@ function FilterMenu({
   repos: string[]
   requirements: Option[]
   designs: Option[]
+  assignees: Option[]
   fallback: TaskFilterState
   changed: boolean
   activeCount: number
@@ -405,12 +422,21 @@ function FilterMenu({
     { id: 'created', label: 'Created', active: value.created !== fallback.created },
     { id: 'requirement', label: 'Requirement', active: value.requirements.length > 0 },
     { id: 'design', label: 'System design', active: value.designs.length > 0 },
+    { id: 'assignee', label: 'Assignee', active: value.assignee !== '' },
   ]
   const activeLabel = categories.find((item) => item.id === category)?.label ?? ''
   // The Created member is a single window — overlapping spans have no union an
   // operator would ask for — so its rows check exclusively. Every other
   // category checks cumulatively and the menu stays open for the next check.
-  const selected: string[] = category === 'created' ? [value.created] : value[listCategoryKeys[category]]
+  // Created and Assignee each hold one value; the rest are cumulative lists.
+  const selected: string[] =
+    category === 'created'
+      ? [value.created]
+      : category === 'assignee'
+        ? value.assignee
+          ? [value.assignee]
+          : []
+        : value[listCategoryKeys[category]]
   const options: Option[] =
     category === 'state'
       ? states.map((id) => ({ id, title: taskStateLabels[id] ?? id }))
@@ -420,15 +446,23 @@ function FilterMenu({
           ? requirements
           : category === 'design'
             ? designs
-            : (Object.keys(createdWindowLabels) as CreatedWindow[]).map((id) => ({
-                id,
-                title: createdWindowLabels[id],
-              }))
+            : category === 'assignee'
+              ? assignees
+              : (Object.keys(createdWindowLabels) as CreatedWindow[]).map((id) => ({
+                  id,
+                  title: createdWindowLabels[id],
+                }))
   const filtered = options.filter((option) => option.title.toLowerCase().includes(search.toLowerCase()))
   const ValueIcon = filterCategoryIcons[category]
   const toggleSelection = (id: string) => {
     if (category === 'created') {
       set({ created: id as CreatedWindow })
+      return
+    }
+    // One assignee at a time: choosing the current one again clears it, which
+    // is how the row returns to "anyone" without reaching for the Any option.
+    if (category === 'assignee') {
+      set({ assignee: value.assignee === id ? '' : id })
       return
     }
     const key = listCategoryKeys[category]
@@ -437,6 +471,7 @@ function FilterMenu({
   }
   const clearCategory = () => {
     if (category === 'created') set({ created: fallback.created, createdFrom: '', createdTo: '' })
+    else if (category === 'assignee') set({ assignee: '' })
     else set({ [listCategoryKeys[category]]: [] })
   }
   return (
@@ -527,7 +562,7 @@ function FilterMenu({
               className="max-h-60 overflow-y-auto"
               role="listbox"
               aria-label={activeLabel}
-              aria-multiselectable={category !== 'created'}
+              aria-multiselectable={category !== 'created' && category !== 'assignee'}
             >
               {category !== 'created' && (
                 <button
@@ -593,6 +628,7 @@ export function TaskFilters({
   className?: string
 }) {
   const { workspace } = useWorkspaceSelection()
+  const token = useOperatorToken()
   const { data: workspaceInfo } = useWorkspace()
   const states = useMemo(() => Object.keys(taskStateLabels).sort(), [])
   const repos = useMemo(() => (workspaceInfo?.repos ?? []).map((entry) => entry.name).sort(), [workspaceInfo])
@@ -606,12 +642,29 @@ export function TaskFilters({
     queryFn: fetchSystemDesigns,
     enabled: Boolean(workspace),
   })
+  // Co-members, never a user directory: this read is workspace-scoped and the
+  // server answers it for any member (AC-3.2).
+  const members = useQuery({
+    queryKey: ['workspace-members', token, workspace],
+    queryFn: () => fetchWorkspaceMembers(token, workspace),
+    enabled: Boolean(workspace && token),
+    retry: false,
+  })
   const requirementOptions = (requirements.data ?? [])
     .filter((item) => item.current_version != null)
     .map((item) => ({ id: item.requirement.id, title: item.requirement.title }))
   const designOptions = (designs.data ?? [])
     .filter((item) => item.current_version != null)
     .map((item) => ({ id: item.document.id, title: item.document.title }))
+  // "Unassigned" is a choice of its own, not the absence of one: it selects the
+  // tasks nobody holds, which the "Any assignee" default does not.
+  const assigneeOptions: Option[] = [
+    { id: UNASSIGNED_ASSIGNEE, title: 'Unassigned' },
+    ...(members.data ?? []).map((member) => ({
+      id: member.user_id,
+      title: member.display_name || member.email || member.user_id,
+    })),
+  ]
   const set = (patch: Partial<TaskFilterState>) => onChange({ ...value, ...patch })
   const rangeError = taskFilterRangeError(value)
   const changed = JSON.stringify(value) !== JSON.stringify(fallback)
@@ -622,6 +675,7 @@ export function TaskFilters({
     value.created !== fallback.created,
     value.requirements.length > 0,
     value.designs.length > 0,
+    value.assignee !== '',
   ].filter(Boolean).length
   return (
     <div className={`flex items-center gap-2 ${className}`}>
@@ -644,6 +698,7 @@ export function TaskFilters({
         repos={repos}
         requirements={requirementOptions}
         designs={designOptions}
+        assignees={assigneeOptions}
         fallback={fallback}
         changed={changed}
         activeCount={activeCount}
