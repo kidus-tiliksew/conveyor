@@ -826,6 +826,10 @@ export interface RequirementVersion {
   confirmed: boolean
   confirmed_by?: string
   confirmed_at?: string
+  retired: boolean
+  retired_by?: string
+  retired_at?: string
+  retired_by_version?: number
   workspace: string
   created_at: string
 }

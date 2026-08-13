@@ -793,15 +793,29 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 		}
 		assertRequirementRoundTrip(t, ctx, st, confirmedDoc)
 		assertRequirementVersionRoundTrip(t, ctx, st, confirmedVersion)
-		// Exactly that version is current: neighbours stay pending.
-		for _, neighbour := range []int{1, 3} {
-			stored, getErr := st.GetRequirementVersion(ctx, requirement.ID, neighbour)
-			if getErr != nil {
-				t.Fatal(getErr)
+		// The earlier unconfirmed proposal is retired and audited; the later
+		// proposal remains independently actionable.
+		retired, getErr := st.GetRequirementVersion(ctx, requirement.ID, 1)
+		if getErr != nil || !retired.Retired || retired.Confirmed || retired.RetiredBy != requirementConformanceActor ||
+			retired.RetiredAt.IsZero() || retired.RetiredByVersion != 2 {
+			t.Fatalf("retired version=%+v err=%v", retired, getErr)
+		}
+		pending, getErr := st.GetRequirementVersion(ctx, requirement.ID, 3)
+		if getErr != nil || pending.Confirmed || pending.Retired {
+			t.Fatalf("later pending version=%+v err=%v", pending, getErr)
+		}
+		events, eventErr := st.ListRequirementEvents(ctx, requirement.ID)
+		if eventErr != nil {
+			t.Fatal(eventErr)
+		}
+		retirementEvents := 0
+		for _, event := range events {
+			if event.Kind == "requirement.version_retired" {
+				retirementEvents++
 			}
-			if stored.Confirmed || stored.ConfirmedBy != "" || !stored.ConfirmedAt.IsZero() {
-				t.Fatalf("neighbour version %d=%+v, want untouched", neighbour, stored)
-			}
+		}
+		if retirementEvents != 1 {
+			t.Fatalf("retirement events=%d, want 1", retirementEvents)
 		}
 
 		// Re-confirming the current version is a no-op retry, not an error.
@@ -819,6 +833,11 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 		// already advanced past.
 		if _, _, err = st.ConfirmRequirementVersion(ctx, requirement.ID, 1); err == nil {
 			t.Fatal("confirming a superseded version was accepted")
+		} else {
+			var superseded *store.RequirementVersionSuperseded
+			if !errors.As(err, &superseded) || superseded.SupersededBy != 2 {
+				t.Fatalf("backward confirmation error=%v, want typed superseded condition", err)
+			}
 		}
 		if reread, getErr := st.GetRequirement(ctx, requirement.ID); getErr != nil || reread.CurrentVersion != 2 {
 			t.Fatalf("document after rejected backward confirm=%+v err=%v, want current version 2", reread, getErr)
@@ -1724,6 +1743,8 @@ func assertRequirementVersionRoundTrip(t *testing.T, ctx context.Context, st sto
 		got.Origin != want.Origin || got.OriginSessionID != want.OriginSessionID ||
 		got.OriginDriftID != want.OriginDriftID || got.Confirmed != want.Confirmed ||
 		got.ConfirmedBy != want.ConfirmedBy || !sameInstant(got.ConfirmedAt, want.ConfirmedAt) ||
+		got.Retired != want.Retired || got.RetiredBy != want.RetiredBy ||
+		!sameInstant(got.RetiredAt, want.RetiredAt) || got.RetiredByVersion != want.RetiredByVersion ||
 		!sameInstant(got.CreatedAt, want.CreatedAt) {
 		t.Fatalf("read back version=%+v, want %+v", got, want)
 	}

@@ -794,8 +794,8 @@ function RequirementDetailCanvas({ item, token }: { item: RequirementView; token
           {displayed && (
             <div className="mt-3 flex flex-wrap items-center gap-1.5">
               <Badge variant="mono">v{displayed.version}</Badge>
-              <Badge variant={displayed.confirmed ? 'positive' : 'accent'}>
-                {displayed.confirmed ? 'Confirmed' : 'Proposed'}
+              <Badge variant={displayed.confirmed ? 'positive' : displayed.retired ? 'default' : 'accent'}>
+                {displayed.confirmed ? 'Confirmed' : displayed.retired ? 'Superseded' : 'Proposed'}
               </Badge>
               <span className="inline-flex items-center gap-1 text-xs text-faint">
                 <Clock className="size-3" />
@@ -825,7 +825,7 @@ function RequirementDetailCanvas({ item, token }: { item: RequirementView; token
         </p>
       )}
 
-      {displayed && !displayed.confirmed && item.current_version && (
+      {displayed && !displayed.confirmed && !displayed.retired && item.current_version && (
         <RequirementDiff current={item.current_version} pending={displayed} />
       )}
 
@@ -848,7 +848,8 @@ function RequirementDetailCanvas({ item, token }: { item: RequirementView; token
                 >
                   <span className="font-medium">v{version.version}</span>
                   <span className={`ml-1.5 text-[11px] ${active ? 'text-primary-foreground/75' : 'text-faint'}`}>
-                    {version.confirmed ? 'Confirmed' : 'Proposed'} · {originLabels[version.origin]}
+                    {version.confirmed ? 'Confirmed' : version.retired ? 'Superseded' : 'Proposed'} ·{' '}
+                    {originLabels[version.origin]}
                   </span>
                 </button>
               )
@@ -1336,6 +1337,7 @@ function eventLabel(event: TaskEvent) {
     'requirement.created': 'Requirement created',
     'requirement.version_proposed': 'Revision proposed',
     'requirement.version_confirmed': 'Revision confirmed',
+    'requirement.version_retired': 'Revision superseded',
     'merge.confirmed': 'Delivery merged',
     'merge.reconciled': 'Merged delivery reconciled',
   }

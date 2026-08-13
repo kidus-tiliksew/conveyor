@@ -39,7 +39,7 @@ func (m *memory) ListPendingProposals(ctx context.Context) ([]core.PendingPropos
 			// Older unconfirmed revisions become unactionable once intent moves
 			// past them; a newer still-pending revision remains independently
 			// visible (AC-1.3).
-			if version.Confirmed || version.Version <= document.CurrentVersion {
+			if version.Confirmed || version.Retired || version.Version <= document.CurrentVersion {
 				continue
 			}
 			originType, originID := string(version.Origin), ""
