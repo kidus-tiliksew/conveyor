@@ -33,6 +33,17 @@ type MembershipStore interface {
 	RevokeWorkspaceRole(context.Context, string, string) error
 }
 
+// InvitationSessionStore owns the opaque, hashed browser bootstrap
+// credentials. Issuance is restricted to an existing invitation or account;
+// there is deliberately no registration operation.
+type InvitationSessionStore interface {
+	IssueSignInLink(context.Context, string) (core.IssuedSignInLink, error)
+	RedeemSignInLink(context.Context, string) (core.DashboardSession, core.IdentityUser, error)
+	VerifyDashboardSession(context.Context, string) (core.AuthenticatedCredential, error)
+	RevokeDashboardSession(context.Context, string, string) error
+	RecordInvitationDelivery(context.Context, string, string) error
+}
+
 // PersonalAccessTokenStore is the self-service human-credential boundary. Every
 // method takes the owning user resolved from the presented credential, so a
 // caller cannot name another user's tokens: cross-user reads and revocations

@@ -163,6 +163,7 @@ func main() {
 	srv.Workspace = cfg.Workspace
 	srv.WorkspaceInfo = httpapi.NewWorkspaceInfo(cfg)
 	srv.Deployment = deployment
+	srv.InvitationDelivery = config.InvitationDeliveryFromEnvironment()
 	srv.BearerToken = apiToken
 	srv.OnCreate = d.Enqueue
 	srv.GenerateTaskTitle = d.GenerateTaskTitle

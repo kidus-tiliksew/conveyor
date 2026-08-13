@@ -361,7 +361,17 @@ type AuthenticatedCredential struct {
 	OwnerUserID string
 	Kind        CredentialKind
 	Scope       CredentialScope
+	// Method distinguishes browser sessions from bearer credentials without
+	// changing the user actor or live capability model.
+	Method CredentialMethod
 }
+
+type CredentialMethod string
+
+const (
+	CredentialMethodBearer  CredentialMethod = "bearer"
+	CredentialMethodSession CredentialMethod = "session"
+)
 
 // TaskRunClaimantPrefix distinguishes an explicit user invocation from worker
 // auto-dispatch without storing local execution configuration (REQ-5, AC-5.1).

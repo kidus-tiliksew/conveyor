@@ -87,8 +87,25 @@ type CallerIdentity struct {
 }
 
 type MembershipGrant struct {
-	Email string        `json:"email"`
-	Role  WorkspaceRole `json:"role"`
+	Email     string        `json:"email"`
+	Role      WorkspaceRole `json:"role"`
+	SignInURL string        `json:"sign_in_url,omitempty"`
+	Delivery  string        `json:"delivery,omitempty"`
+}
+
+// IssuedSignInLink is secret-bearing and may only cross the operator response
+// or outbound email boundary. Only TokenHash is persisted.
+type IssuedSignInLink struct {
+	Email     string    `json:"email"`
+	Value     string    `json:"-"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+type DashboardSession struct {
+	ID        string
+	UserID    string
+	Value     string
+	ExpiresAt time.Time
 }
 
 // WorkspaceInvitation is an unredeemed membership grant addressed to an email.
