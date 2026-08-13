@@ -127,6 +127,12 @@ export const changesComposerHint = 'This feedback goes to the next implementatio
 // filled in: a repository delivered without GitHub shows no pull request.
 // Secondary identity — commit SHAs — is muted and mono, with the full value in
 // the tooltip, per the surface's visual economy.
+//
+// The base and head the pipeline recorded bound a commit range and nothing
+// more: the browser contract carries no diff stat or changed-file list, so the
+// range is labelled as the range it is. Naming it anything that implies a
+// summary of the change would tell a person the card weighed something it never
+// saw, and the pull request beside it is where the diff actually lives (REQ-6).
 function MergeGateReviewCard({ item }: { item: ActivityItem }) {
   const review = mergeGateReview(item)
   const { branch, base_branch: baseBranch } = item.task
@@ -161,12 +167,16 @@ function MergeGateReviewCard({ item }: { item: ActivityItem }) {
               <span className="font-mono text-foreground/90" title={review.headSHA}>
                 {review.headSHA.slice(0, 8)}
               </span>
-              {review.baseSHA && (
-                <span className="text-muted" title={`${review.baseSHA} … ${review.headSHA}`}>
-                  {' '}
-                  · everything since {review.baseSHA.slice(0, 8)}
-                </span>
-              )}
+            </dd>
+          </>
+        )}
+        {review.headSHA && review.baseSHA && (
+          <>
+            <dt className="text-muted">Commit range</dt>
+            <dd className="min-w-0">
+              <span className="font-mono text-foreground/90" title={`${review.baseSHA} … ${review.headSHA}`}>
+                {review.baseSHA.slice(0, 8)} … {review.headSHA.slice(0, 8)}
+              </span>
             </dd>
           </>
         )}

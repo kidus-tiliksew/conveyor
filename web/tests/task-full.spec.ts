@@ -3565,7 +3565,18 @@ test('the merge gate names the reviewed head, pull request, and factory verdict'
     'title',
     'ca7ca7000000000000000000000000000000beef',
   )
-  await expect(card.getByText('everything since b1a5e000')).toBeVisible()
+  // The base and head bound a commit range, and the card says exactly that.
+  // Nothing in the browser contract carries a diff stat or changed-file list,
+  // so no wording here may imply the card summarises the change itself (REQ-6).
+  const range = card.getByText('b1a5e000 … ca7ca700')
+  await expect(range).toBeVisible()
+  await expect(range).toHaveAttribute(
+    'title',
+    'b1a5e0000000000000000000000000000000feed … ca7ca7000000000000000000000000000000beef',
+  )
+  await expect(card.getByText('Commit range')).toBeVisible()
+  await expect(card.getByText(/diff|files changed|insertions|deletions|everything since/i)).toHaveCount(0)
+
   const pullRequest = card.getByRole('link', { name: /acme\/conveyor#482/ })
   await expect(pullRequest).toHaveAttribute('href', 'https://github.test/acme/conveyor/pull/482')
   await expect(card.getByText('2 factory reviewers approved this')).toBeVisible()
