@@ -1189,6 +1189,9 @@ WHERE t.workspace_id = $1
                ORDER BY e.id DESC LIMIT 1
            ) = 'task.context_design_added'
        ))
+  AND ($9::text = '' OR
+       ($9 = 'unassigned' AND t.assignee_user_id IS NULL) OR
+       ($9 <> 'unassigned' AND t.assignee_user_id = $9))
 `
 
 type CountTaskOperationsTasksParams struct {
@@ -1200,6 +1203,7 @@ type CountTaskOperationsTasksParams struct {
 	CreatedTo          pgtype.Timestamptz `json:"created_to"`
 	ServesRequirements []string           `json:"serves_requirements"`
 	GoverningDesigns   []string           `json:"governing_designs"`
+	Assignee           string             `json:"assignee"`
 }
 
 func (q *Queries) CountTaskOperationsTasks(ctx context.Context, arg CountTaskOperationsTasksParams) (int64, error) {
@@ -1212,6 +1216,7 @@ func (q *Queries) CountTaskOperationsTasks(ctx context.Context, arg CountTaskOpe
 		arg.CreatedTo,
 		arg.ServesRequirements,
 		arg.GoverningDesigns,
+		arg.Assignee,
 	)
 	var column_1 int64
 	err := row.Scan(&column_1)
@@ -1354,9 +1359,12 @@ WHERE t.workspace_id = $1
                ORDER BY e.id DESC LIMIT 1
            ) = 'task.context_design_added'
        ))
+  AND ($9::text = '' OR
+       ($9 = 'unassigned' AND t.assignee_user_id IS NULL) OR
+       ($9 <> 'unassigned' AND t.assignee_user_id = $9))
 ORDER BY t.created_at DESC, t.id
-LIMIT NULLIF($10::int, 0)
-OFFSET $9::int
+LIMIT NULLIF($11::int, 0)
+OFFSET $10::int
 `
 
 type ListTaskOperationsTasksParams struct {
@@ -1368,6 +1376,7 @@ type ListTaskOperationsTasksParams struct {
 	CreatedTo          pgtype.Timestamptz `json:"created_to"`
 	ServesRequirements []string           `json:"serves_requirements"`
 	GoverningDesigns   []string           `json:"governing_designs"`
+	Assignee           string             `json:"assignee"`
 	PageOffset         int32              `json:"page_offset"`
 	PageLimit          int32              `json:"page_limit"`
 }
@@ -1388,6 +1397,7 @@ func (q *Queries) ListTaskOperationsTasks(ctx context.Context, arg ListTaskOpera
 		arg.CreatedTo,
 		arg.ServesRequirements,
 		arg.GoverningDesigns,
+		arg.Assignee,
 		arg.PageOffset,
 		arg.PageLimit,
 	)
@@ -2215,6 +2225,67 @@ RETURNING id, user_id, label, token_hash, kind, scope, last_used_at, revoked_at,
 
 func (q *Queries) RevokeUserToken(ctx context.Context, id string) (UserToken, error) {
 	row := q.db.QueryRow(ctx, revokeUserToken, id)
+	var item UserToken
+	err := row.Scan(&item.ID, &item.UserID, &item.Label, &item.TokenHash, &item.Kind, &item.Scope, &item.LastUsedAt, &item.RevokedAt, &item.CreatedAt)
+	return item, err
+}
+
+const listOwnUserTokens = `-- name: ListOwnUserTokens :many
+SELECT id, user_id, label, last_used_at, revoked_at, created_at
+FROM user_tokens
+WHERE user_id = $1 AND kind = 'user'
+ORDER BY created_at DESC, id
+`
+
+type ListOwnUserTokensRow struct {
+	ID         string             `json:"id"`
+	UserID     string             `json:"user_id"`
+	Label      string             `json:"label"`
+	LastUsedAt pgtype.Timestamptz `json:"last_used_at"`
+	RevokedAt  pgtype.Timestamptz `json:"revoked_at"`
+	CreatedAt  pgtype.Timestamptz `json:"created_at"`
+}
+
+func (q *Queries) ListOwnUserTokens(ctx context.Context, userID string) ([]ListOwnUserTokensRow, error) {
+	rows, err := q.db.Query(ctx, listOwnUserTokens, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListOwnUserTokensRow{}
+	for rows.Next() {
+		var i ListOwnUserTokensRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.Label,
+			&i.LastUsedAt,
+			&i.RevokedAt,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const revokeOwnUserToken = `-- name: RevokeOwnUserToken :one
+UPDATE user_tokens SET revoked_at = COALESCE(revoked_at, now())
+WHERE id = $1 AND user_id = $2 AND kind = 'user'
+RETURNING id, user_id, label, token_hash, kind, scope, last_used_at, revoked_at, created_at
+`
+
+type RevokeOwnUserTokenParams struct {
+	ID     string `json:"id"`
+	UserID string `json:"user_id"`
+}
+
+func (q *Queries) RevokeOwnUserToken(ctx context.Context, arg RevokeOwnUserTokenParams) (UserToken, error) {
+	row := q.db.QueryRow(ctx, revokeOwnUserToken, arg.ID, arg.UserID)
 	var item UserToken
 	err := row.Scan(&item.ID, &item.UserID, &item.Label, &item.TokenHash, &item.Kind, &item.Scope, &item.LastUsedAt, &item.RevokedAt, &item.CreatedAt)
 	return item, err

@@ -20,6 +20,9 @@ type membershipFixture struct {
 	revokeErr       error
 	invitationErr   error
 	authorizeErrs   map[core.Capability]error
+	invitations     []core.WorkspaceInvitation
+	invitationList  []string
+	invitationsErr  error
 }
 
 type identityProvisioningFixture struct {
@@ -80,6 +83,10 @@ func (f *membershipFixture) ListWorkspacesForUser(_ context.Context, userID stri
 }
 func (f *membershipFixture) ListWorkspaceMembers(context.Context, string, string) ([]core.WorkspaceMembership, error) {
 	return nil, nil
+}
+func (f *membershipFixture) ListWorkspaceInvitations(_ context.Context, workspaceID string) ([]core.WorkspaceInvitation, error) {
+	f.invitationList = append(f.invitationList, workspaceID)
+	return f.invitations, f.invitationsErr
 }
 func (f *membershipFixture) GrantWorkspaceRole(context.Context, string, string, core.WorkspaceRole) (core.MembershipGrant, error) {
 	return core.MembershipGrant{}, nil
@@ -438,6 +445,83 @@ func TestSoleOperatorRevocationIsActionable(t *testing.T) {
 	server.Handler().ServeHTTP(response, request)
 	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "grant another operator first") {
 		t.Fatalf("status=%d body=%q", response.Code, response.Body.String())
+	}
+}
+
+func TestPendingInvitationListingIsGatedOnManageMembership(t *testing.T) {
+	fixture := &membershipFixture{
+		workspaces: []core.Workspace{{ID: "alpha"}},
+		roles: map[string]map[string]core.WorkspaceRole{
+			"operator": {"alpha": core.WorkspaceRoleOperator},
+			"member":   {"alpha": core.WorkspaceRoleUser},
+		},
+		invitations: []core.WorkspaceInvitation{
+			{WorkspaceID: "alpha", Email: "invited@example.test", Role: core.WorkspaceRoleUser, InvitedBy: "operator", InvitedByDisplayName: "Ops"},
+		},
+	}
+	server := NewServer(store.NewMemory())
+	server.Workspaces, server.Memberships = fixture, fixture
+	server.Credentials = staticCredentialVerifier{
+		"operator-token": {ID: "pat_operator", OwnerUserID: "operator", Kind: core.CredentialUser, Scope: core.CredentialScopeOperator},
+		"member-token":   {ID: "pat_member", OwnerUserID: "member", Kind: core.CredentialUser, Scope: core.CredentialScopeUser},
+	}
+	call := func(token string) *httptest.ResponseRecorder {
+		t.Helper()
+		request := httptest.NewRequest(http.MethodGet, "/v1/workspaces/alpha/invitations", nil)
+		request.Header.Set("Authorization", "Bearer "+token)
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, request)
+		return response
+	}
+
+	fixture.capabilityCalls = nil
+	operator := call("operator-token")
+	if operator.Code != http.StatusOK || !strings.Contains(operator.Body.String(), "invited@example.test") {
+		t.Fatalf("operator listing status=%d body=%q", operator.Code, operator.Body.String())
+	}
+	if last := fixture.capabilityCalls[len(fixture.capabilityCalls)-1]; last != core.CapabilityManageMembership {
+		t.Fatalf("invitation listing capability calls=%v", fixture.capabilityCalls)
+	}
+	if len(fixture.invitationList) != 1 || fixture.invitationList[0] != "alpha" {
+		t.Fatalf("invitation listing workspaces=%v", fixture.invitationList)
+	}
+
+	member := call("member-token")
+	if member.Code != http.StatusNotFound || member.Body.String() != canonicalWorkspaceNotFoundBody() {
+		t.Fatalf("member listing status=%d body=%q", member.Code, member.Body.String())
+	}
+	if len(fixture.invitationList) != 1 {
+		t.Fatalf("member reached the invitation store: %v", fixture.invitationList)
+	}
+}
+
+func TestPendingInvitationListingEmitsAnArrayAndHidesStoreFailures(t *testing.T) {
+	fixture := &membershipFixture{
+		workspaces: []core.Workspace{{ID: "alpha"}},
+		roles:      map[string]map[string]core.WorkspaceRole{"operator": {"alpha": core.WorkspaceRoleOperator}},
+	}
+	server := NewServer(store.NewMemory())
+	server.Workspaces, server.Memberships = fixture, fixture
+	server.Credentials = staticCredentialVerifier{"operator-token": {ID: "pat_operator", OwnerUserID: "operator", Kind: core.CredentialUser, Scope: core.CredentialScopeOperator}}
+	call := func() *httptest.ResponseRecorder {
+		t.Helper()
+		request := httptest.NewRequest(http.MethodGet, "/v1/workspaces/alpha/invitations", nil)
+		request.Header.Set("Authorization", "Bearer operator-token")
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, request)
+		return response
+	}
+
+	empty := call()
+	if empty.Code != http.StatusOK || empty.Body.String() != "[]\n" {
+		t.Fatalf("empty listing status=%d body=%q", empty.Code, empty.Body.String())
+	}
+
+	rawError := "invitation query failed with secret detail"
+	fixture.invitationsErr = errors.New(rawError)
+	failed := call()
+	if failed.Code != http.StatusInternalServerError || strings.Contains(failed.Body.String(), rawError) || failed.Body.String() != "internal server error\n" {
+		t.Fatalf("infrastructure status=%d body=%q", failed.Code, failed.Body.String())
 	}
 }
 

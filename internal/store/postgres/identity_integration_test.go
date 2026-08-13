@@ -401,6 +401,65 @@ func TestHTTPMutationDerivesLegacyUserAndRejectsAgentCredentialIntegration(t *te
 	}
 }
 
+func TestCallerIdentityHTTPUsesHumanCredentialAndOptionalWorkspaceRoleIntegration(t *testing.T) {
+	st := newIdentityIntegrationStore(t, 0)
+	legacy := "caller-identity-legacy"
+	if _, err := st.BootstrapIdentity(t.Context(), config.FirstOperatorIdentity{
+		OrganizationName: "Caller Identity Org", Email: "caller@example.test", DisplayName: "Caller",
+	}, legacy); err != nil {
+		t.Fatal(err)
+	}
+	principal, err := st.VerifyPersonalAccessToken(t.Context(), legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent, err := st.IssueAgentCredential(t.Context(), principal.ID, "caller identity agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace := "caller-identity-" + core.NewTaskID()
+	operatorCtx := store.WithCredential(t.Context(), core.AuthenticatedCredential{ID: "legacy", OwnerUserID: principal.ID, Kind: core.CredentialUser, Scope: core.CredentialScopeOperator})
+	operatorCtx = store.WithActor(operatorCtx, store.Actor{ID: store.UserActorID(principal.ID), Role: core.ActorUser})
+	if _, err = st.CreateWorkspace(operatorCtx, workspace, workspace, isolationConfig(workspace)); err != nil {
+		t.Fatal(err)
+	}
+	workerCredential := "caller-worker-" + core.NewTaskID()
+	if err = st.CreateWorker(store.WithWorkspace(operatorCtx, workspace), core.Worker{
+		ID: "worker-" + core.NewTaskID(), Workspace: workspace, OwnerUserID: principal.ID,
+		Name: "caller worker", CredentialHash: workerCredential, CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	handler := httpapi.NewServer(st).Handler()
+	call := func(token, target string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodGet, target, nil)
+		request.Header.Set("Authorization", "Bearer "+token)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
+	}
+	unscoped := call(legacy, "/v1/me?user_id=usr-attacker")
+	if unscoped.Code != http.StatusOK || !strings.Contains(unscoped.Body.String(), `"id":"`+principal.ID+`"`) ||
+		!strings.Contains(unscoped.Body.String(), `"email":"caller@example.test"`) || strings.Contains(unscoped.Body.String(), `"role"`) {
+		t.Fatalf("unscoped status=%d body=%s", unscoped.Code, unscoped.Body.String())
+	}
+	scoped := call(legacy, "/v1/me?workspace_id="+workspace+"&user_id=usr-attacker")
+	if scoped.Code != http.StatusOK || !strings.Contains(scoped.Body.String(), `"id":"`+principal.ID+`"`) || !strings.Contains(scoped.Body.String(), `"role":"operator"`) {
+		t.Fatalf("scoped status=%d body=%s", scoped.Code, scoped.Body.String())
+	}
+	for name, token := range map[string]string{"agent": agent.Value, "worker": workerCredential} {
+		response := call(token, "/v1/me?workspace_id="+workspace)
+		if response.Code != http.StatusUnauthorized || strings.Contains(response.Body.String(), principal.Email) {
+			t.Fatalf("%s status=%d body=%s", name, response.Code, response.Body.String())
+		}
+	}
+	hidden := call(legacy, "/v1/me?workspace_id=absent")
+	if hidden.Code != http.StatusNotFound || strings.Contains(hidden.Body.String(), principal.Email) {
+		t.Fatalf("hidden status=%d body=%s", hidden.Code, hidden.Body.String())
+	}
+}
+
 func TestIdentityBootstrapConcurrentStartsConvergeIntegration(t *testing.T) {
 	st := newIdentityIntegrationStore(t, 0)
 	identity := config.FirstOperatorIdentity{OrganizationName: "Concurrent Org", Email: "owner@example.test", DisplayName: "Owner"}
@@ -486,6 +545,135 @@ func TestIdentityMigrationsUpgradeExistingWorkspaceIntegration(t *testing.T) {
 	}
 	if _, err := st.pool.Exec(t.Context(), `UPDATE workspaces SET org_id='missing' WHERE id=$1`, workspace); err == nil {
 		t.Fatal("workspace organization foreign key accepted a missing organization")
+	}
+}
+
+func TestSelfServicePersonalAccessTokensAreOwnerScopedIntegration(t *testing.T) {
+	st := newIdentityIntegrationStore(t, 0)
+	legacy := "self-service-legacy-token"
+	if _, err := st.BootstrapIdentity(t.Context(), config.FirstOperatorIdentity{
+		OrganizationName: "Self Service Org", Email: "owner@example.test", DisplayName: "Owner",
+	}, legacy); err != nil {
+		t.Fatal(err)
+	}
+	suffix := core.NewTaskID()
+	alice, err := st.queries.InsertIdentityUser(t.Context(), db.InsertIdentityUserParams{ID: "usr_alice_" + suffix, Email: "alice-" + suffix + "@example.test", DisplayName: "Alice"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bob, err := st.queries.InsertIdentityUser(t.Context(), db.InsertIdentityUserParams{ID: "usr_bob_" + suffix, Email: "bob-" + suffix + "@example.test", DisplayName: "Bob"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Each account's first credential is seeded the way provisioning hands one
+	// out; from there the surface under test is the only way to mint more.
+	aliceSeed, err := st.IssuePersonalAccessToken(t.Context(), alice.ID, "seed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bobSeed, err := st.IssuePersonalAccessToken(t.Context(), bob.ID, "seed")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	handler := httpapi.NewServer(st).Handler()
+	call := func(method, path, bearer, body string) *httptest.ResponseRecorder {
+		t.Helper()
+		request := httptest.NewRequest(method, path, strings.NewReader(body))
+		request.Header.Set("Authorization", "Bearer "+bearer)
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
+	}
+
+	created := call(http.MethodPost, "/v1/tokens", aliceSeed.Value, `{"label":"laptop"}`)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("issue status=%d body=%s", created.Code, created.Body.String())
+	}
+	var issued core.IssuedPersonalAccessToken
+	if err := json.Unmarshal(created.Body.Bytes(), &issued); err != nil {
+		t.Fatal(err)
+	}
+	if issued.Value == "" || issued.UserID != alice.ID {
+		t.Fatalf("issued token=%+v", issued)
+	}
+	var storedValues int
+	if err := st.pool.QueryRow(t.Context(), `SELECT count(*) FROM user_tokens WHERE id=$1 AND encode(token_hash,'escape')=$2`, issued.ID, issued.Value).Scan(&storedValues); err != nil {
+		t.Fatal(err)
+	}
+	if storedValues != 0 {
+		t.Fatal("issued token value was persisted in cleartext")
+	}
+
+	// The new credential authenticates, and listing never reproduces its value.
+	listed := call(http.MethodGet, "/v1/tokens", issued.Value, "")
+	if listed.Code != http.StatusOK || strings.Contains(listed.Body.String(), issued.Value) {
+		t.Fatalf("list status=%d body=%s", listed.Code, listed.Body.String())
+	}
+	var aliceTokens []core.PersonalAccessToken
+	if err := json.Unmarshal(listed.Body.Bytes(), &aliceTokens); err != nil {
+		t.Fatal(err)
+	}
+	if len(aliceTokens) != 2 {
+		t.Fatalf("alice tokens=%+v", aliceTokens)
+	}
+	for _, item := range aliceTokens {
+		if item.UserID != alice.ID || item.RevokedAt != nil {
+			t.Fatalf("alice token=%+v", item)
+		}
+	}
+
+	// Bob sees only his own, and cannot revoke one of Alice's.
+	bobListed := call(http.MethodGet, "/v1/tokens", bobSeed.Value, "")
+	if bobListed.Code != http.StatusOK || strings.Contains(bobListed.Body.String(), issued.ID) {
+		t.Fatalf("bob list status=%d body=%s", bobListed.Code, bobListed.Body.String())
+	}
+	if crossUser := call(http.MethodDelete, "/v1/tokens/"+issued.ID, bobSeed.Value, ""); crossUser.Code != http.StatusNotFound {
+		t.Fatalf("cross-user revocation status=%d body=%s", crossUser.Code, crossUser.Body.String())
+	}
+	if survived := call(http.MethodGet, "/v1/tokens", issued.Value, ""); survived.Code != http.StatusOK {
+		t.Fatalf("alice token stopped working after another user's revocation attempt: status=%d", survived.Code)
+	}
+
+	// Self-revocation fails the credential closed and is still listed as revoked.
+	if revoked := call(http.MethodDelete, "/v1/tokens/"+issued.ID, aliceSeed.Value, ""); revoked.Code != http.StatusNoContent {
+		t.Fatalf("self revocation status=%d body=%s", revoked.Code, revoked.Body.String())
+	}
+	if closed := call(http.MethodGet, "/v1/tokens", issued.Value, ""); closed.Code != http.StatusUnauthorized {
+		t.Fatalf("revoked credential status=%d body=%s", closed.Code, closed.Body.String())
+	}
+	if _, err := st.VerifyCredential(t.Context(), issued.Value); !errors.Is(err, ErrInvalidPersonalAccessToken) {
+		t.Fatalf("revoked credential verification err=%v", err)
+	}
+	after := call(http.MethodGet, "/v1/tokens", aliceSeed.Value, "")
+	if err := json.Unmarshal(after.Body.Bytes(), &aliceTokens); err != nil {
+		t.Fatal(err)
+	}
+	var revokedRows int
+	for _, item := range aliceTokens {
+		if item.ID == issued.ID && item.RevokedAt != nil {
+			revokedRows++
+		}
+	}
+	if revokedRows != 1 || strings.Contains(after.Body.String(), issued.Value) {
+		t.Fatalf("post-revocation list=%s", after.Body.String())
+	}
+
+	// Agent credentials share the user_tokens table but are not human
+	// credentials: they can neither enumerate nor mint their owner's tokens.
+	agent, err := st.IssueAgentCredential(t.Context(), alice.ID, "execution")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, route := range [][3]string{
+		{http.MethodGet, "/v1/tokens", ""},
+		{http.MethodPost, "/v1/tokens", `{"label":"smuggled"}`},
+		{http.MethodDelete, "/v1/tokens/" + aliceSeed.ID, ""},
+	} {
+		if response := call(route[0], route[1], agent.Value, route[2]); response.Code != http.StatusUnauthorized {
+			t.Fatalf("agent credential %s %s status=%d body=%s", route[0], route[1], response.Code, response.Body.String())
+		}
 	}
 }
 

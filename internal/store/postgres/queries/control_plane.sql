@@ -44,6 +44,17 @@ UPDATE user_tokens SET revoked_at = COALESCE(revoked_at, now())
 WHERE id = $1 AND kind = 'user'
 RETURNING id, user_id, label, token_hash, kind, scope, last_used_at, revoked_at, created_at;
 
+-- name: ListOwnUserTokens :many
+SELECT id, user_id, label, last_used_at, revoked_at, created_at
+FROM user_tokens
+WHERE user_id = $1 AND kind = 'user'
+ORDER BY created_at DESC, id;
+
+-- name: RevokeOwnUserToken :one
+UPDATE user_tokens SET revoked_at = COALESCE(revoked_at, now())
+WHERE id = $1 AND user_id = $2 AND kind = 'user'
+RETURNING id, user_id, label, token_hash, kind, scope, last_used_at, revoked_at, created_at;
+
 -- name: DeactivateIdentityUser :one
 UPDATE users SET status = 'deactivated' WHERE id = $1
 RETURNING id, email, display_name, status, created_at;
@@ -185,6 +196,9 @@ WHERE t.workspace_id = sqlc.arg(workspace_id)
                ORDER BY e.id DESC LIMIT 1
            ) = 'task.context_design_added'
        ))
+  AND (sqlc.arg(assignee)::text = '' OR
+       (sqlc.arg(assignee) = 'unassigned' AND t.assignee_user_id IS NULL) OR
+       (sqlc.arg(assignee) <> 'unassigned' AND t.assignee_user_id = sqlc.arg(assignee)))
 ORDER BY t.created_at DESC, t.id
 LIMIT NULLIF(sqlc.arg(page_limit)::int, 0)
 OFFSET sqlc.arg(page_offset)::int;
@@ -221,7 +235,10 @@ WHERE t.workspace_id = sqlc.arg(workspace_id)
                  AND e.payload_json ->> 'id' = wanted.document_id
                ORDER BY e.id DESC LIMIT 1
            ) = 'task.context_design_added'
-       ));
+       ))
+  AND (sqlc.arg(assignee)::text = '' OR
+       (sqlc.arg(assignee) = 'unassigned' AND t.assignee_user_id IS NULL) OR
+       (sqlc.arg(assignee) <> 'unassigned' AND t.assignee_user_id = sqlc.arg(assignee)));
 
 -- name: ListTaskOperationsEvents :many
 SELECT e.id, e.task_id, e.job_id, e.kind, e.actor_id, e.actor_role, e.payload_json, e.at, e.workspace_id

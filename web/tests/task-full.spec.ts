@@ -1,4 +1,4 @@
-import { expect, test, type Page, type Route } from '@playwright/test'
+import { expect, type Page, type Route, test } from '@playwright/test'
 
 const createdAt = '2026-07-15T12:00:00Z'
 const checkpointProgress =
@@ -1450,11 +1450,56 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
                                                     ],
                                                     work_orders: [],
                                                   }
-                                                : {
-                                                    jobs: [],
-                                                    events: [],
-                                                    work_orders: taskId === 'no-orders' ? null : [],
-                                                  }
+                                                : // A task actually holding at the merge gate: the pipeline
+                                                  // has pushed a reviewed head to a pull request and the
+                                                  // review panel has resolved, which is the record the gate
+                                                  // card reads to say what is being approved (REQ-6).
+                                                  taskId === 'merge-request-changes'
+                                                  ? {
+                                                      jobs: [],
+                                                      events: [
+                                                        {
+                                                          id: 1,
+                                                          task_id: taskId,
+                                                          job_id: 'implement-1',
+                                                          kind: 'pull_request.opened',
+                                                          actor_id: 'system',
+                                                          actor_role: 'system' as const,
+                                                          payload: {
+                                                            url: 'https://github.test/acme/conveyor/pull/482',
+                                                            number: 482,
+                                                            repository: 'acme/conveyor',
+                                                            base_sha: 'b1a5e0000000000000000000000000000000feed',
+                                                            head_sha: 'ca7ca7000000000000000000000000000000beef',
+                                                          },
+                                                          at: '2026-07-15T12:01:00Z',
+                                                        },
+                                                        {
+                                                          id: 2,
+                                                          task_id: taskId,
+                                                          job_id: 'review-1',
+                                                          kind: 'review.round_completed',
+                                                          actor_id: 'system',
+                                                          actor_role: 'system' as const,
+                                                          payload: {
+                                                            review_round: 1,
+                                                            verdict: 'approve',
+                                                            summary: 'Both reviewers accepted the pushed branch.',
+                                                            reviews: [
+                                                              { review_work_order_id: 'review-1-seat-1' },
+                                                              { review_work_order_id: 'review-1-seat-2' },
+                                                            ],
+                                                          },
+                                                          at: '2026-07-15T12:02:00Z',
+                                                        },
+                                                      ],
+                                                      work_orders: [],
+                                                    }
+                                                  : {
+                                                      jobs: [],
+                                                      events: [],
+                                                      work_orders: taskId === 'no-orders' ? null : [],
+                                                    }
   const reviewDiagnostics =
     taskId === 'diagnostics'
       ? [
@@ -1527,6 +1572,9 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
                     : 'running',
       next_stage: taskId === 'parked' ? '' : 'implement',
       recovery_stage: taskId === 'parked' ? 'triage' : taskId === 'merge-request-changes' ? 'implement' : '',
+      // The head the factory judged, durable on the task itself once review
+      // resolves — what the gate card names as the thing being approved.
+      reviewed_head_sha: taskId === 'merge-request-changes' ? 'ca7ca7000000000000000000000000000000beef' : undefined,
       setup: taskId.startsWith('setup-') ? 'old' : '',
       setup_contract: taskId.startsWith('setup-')
         ? {
@@ -2439,7 +2487,12 @@ test('stalled task is labelled in the operator tray with recover and reasoned ca
   await page.goto('/')
   const tray = page.getByRole('region', { name: 'Needs operator' })
   await expect(tray.getByText('Stalled')).toBeVisible()
-  await expect(tray.getByText('Assigned to Assigned User')).toBeVisible()
+  // The board card carries the shared assignee chip: the name is what shows,
+  // and the account identifiers behind it stay in the tooltip.
+  const assignee = tray.getByTitle('Assigned to Assigned User — assigned@example.test · usr-assigned')
+  await expect(assignee).toBeVisible()
+  await expect(assignee).toContainText('Assigned User')
+  await expect(assignee).toContainText('AU')
   await expect(tray.getByText('harness exited: status 1')).toBeVisible()
   await tray.getByText('Short task').click()
   await expect(page.getByRole('button', { name: 'Recover work order' })).toBeVisible()
@@ -3497,6 +3550,44 @@ test('failed merge restores the existing error and retry action', async ({ page 
   await expect.poll(() => attempts).toBe(2)
 })
 
+// REQ-6: the gate is where a person reviews what their run produced, so it
+// states what is being approved — the head the factory judged, the pull request
+// it was pushed to, and the verdict that resolved — from the record the
+// pipeline already wrote.
+test('the merge gate names the reviewed head, pull request, and factory verdict', async ({ page }) => {
+  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'member-token'))
+  await page.goto('/tasks/merge-request-changes/full')
+
+  const card = page.getByRole('region', { name: 'What you are approving' })
+  await expect(card.getByText('ca7ca700', { exact: true })).toBeVisible()
+  // The full SHA stays available without spending a line on it.
+  await expect(card.getByText('ca7ca700', { exact: true })).toHaveAttribute(
+    'title',
+    'ca7ca7000000000000000000000000000000beef',
+  )
+  // The base and head bound a commit range, and the card says exactly that.
+  // Nothing in the browser contract carries a diff stat or changed-file list,
+  // so no wording here may imply the card summarises the change itself (REQ-6).
+  const range = card.getByText('b1a5e000 … ca7ca700')
+  await expect(range).toBeVisible()
+  await expect(range).toHaveAttribute(
+    'title',
+    'b1a5e0000000000000000000000000000000feed … ca7ca7000000000000000000000000000000beef',
+  )
+  await expect(card.getByText('Commit range')).toBeVisible()
+  await expect(card.getByText(/diff|files changed|insertions|deletions|everything since/i)).toHaveCount(0)
+
+  const pullRequest = card.getByRole('link', { name: /acme\/conveyor#482/ })
+  await expect(pullRequest).toHaveAttribute('href', 'https://github.test/acme/conveyor/pull/482')
+  await expect(card.getByText('2 factory reviewers approved this')).toBeVisible()
+  await expect(card.getByText('Both reviewers accepted the pushed branch.')).toBeVisible()
+  await expect(card.getByText('conveyor/task-merge-request-changes')).toBeVisible()
+
+  // Presentation only: the approve affordance the gate already offered is
+  // untouched beside it.
+  await expect(page.getByRole('region', { name: 'Human gate' }).getByRole('button', { name: 'Approve' })).toBeEnabled()
+})
+
 test('merge gate sends user feedback through request changes', async ({ page }) => {
   await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'member-token'))
   let feedback = ''
@@ -3508,10 +3599,59 @@ test('merge gate sends user feedback through request changes', async ({ page }) 
   await page.goto('/tasks/merge-request-changes/full')
   const gate = page.getByRole('region', { name: 'Human gate' })
   await gate.getByRole('button', { name: 'Request changes' }).click()
-  await gate.getByLabel('Redirect feedback').fill('Keep this exact feedback.')
+  // The composer says where the feedback goes before it is written, and will
+  // not send until something is written.
+  await expect(gate.getByText('This feedback goes to the next implementation run word for word.')).toBeVisible()
+  await expect(gate.getByText('Feedback is required to send this back.')).toBeVisible()
+  await expect(gate.getByRole('button', { name: 'Send feedback' })).toBeDisabled()
+
+  await gate.getByLabel('Changes you want').fill('Keep this exact feedback.')
+  await expect(gate.getByRole('button', { name: 'Send feedback' })).toBeEnabled()
   await gate.getByRole('button', { name: 'Send feedback' }).click()
 
   await expect.poll(() => feedback).toBe('Keep this exact feedback.')
+})
+
+// The return is a recorded decision, so it reads back in the timeline in the
+// same plain language it was sent in — never as the wire reason code (REQ-6).
+test('the recorded return reads back in the timeline with its feedback', async ({ page }) => {
+  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'member-token'))
+  let returned = false
+  await page.route('**/v1/tasks/merge-request-changes/activity', async (route) => {
+    const item = activity('merge-request-changes', false)
+    if (returned) {
+      item.interventions = [
+        {
+          id: 7,
+          task_id: 'merge-request-changes',
+          actor_id: 'usr-member',
+          actor_role: 'user' as const,
+          action: 'redirect' as const,
+          reason_code: 'user-request-changes',
+          comment: 'Keep this exact feedback.',
+          at: '2026-07-15T12:05:00Z',
+        },
+      ]
+    }
+    await route.fulfill({ json: item })
+  })
+  await page.route('**/v1/tasks/merge-request-changes/request-changes*', async (route) => {
+    returned = true
+    await route.fulfill({ json: { task: activity('merge-request-changes', false).task, feedback: 'ok' } })
+  })
+
+  await page.goto('/tasks/merge-request-changes/full')
+  const gate = page.getByRole('region', { name: 'Human gate' })
+  await gate.getByRole('button', { name: 'Request changes' }).click()
+  await gate.getByLabel('Changes you want').fill('Keep this exact feedback.')
+  await gate.getByRole('button', { name: 'Send feedback' }).click()
+
+  const timeline = page.getByRole('region', { name: 'Execution event timeline' })
+  await expect(timeline.getByText('Sent back with your feedback')).toBeVisible()
+  await expect(timeline.getByText('Keep this exact feedback.')).toBeVisible()
+  await expect(timeline.getByText('This feedback goes to the next implementation run word for word.')).toBeVisible()
+  // The wire reason code never reaches the story.
+  await expect(timeline.getByText('user-request-changes')).toHaveCount(0)
 })
 
 test('approved state keeps request changes on the legacy review route', async ({ page }) => {
@@ -4107,4 +4247,170 @@ test('task detail renders no proposal card for a document the task does not carr
   await expect(page.getByRole('region', { name: 'Activity' })).toBeVisible()
   await expect(page.getByRole('region', { name: 'System Design proposals from this task' })).toHaveCount(0)
   await expect(page.getByText('System Design update proposed')).toHaveCount(0)
+})
+
+// The workspace's own co-members, which is all the assignment picker may ever
+// offer: there is no user directory to search (AC-3.2).
+const assignmentMembers = [
+  {
+    workspace_id: 'demo',
+    user_id: 'usr_ada',
+    email: 'ada@example.test',
+    display_name: 'Ada Owner',
+    role: 'operator' as const,
+    created_at: createdAt,
+  },
+  {
+    workspace_id: 'demo',
+    user_id: 'usr_bo',
+    email: 'bo@example.test',
+    display_name: 'Bo Member',
+    role: 'user' as const,
+    created_at: createdAt,
+  },
+]
+
+/**
+ * Mount task detail with the reads the assignment control depends on, holding
+ * the assignee server-side so a set or clear comes back through the projection
+ * rather than from browser state.
+ *
+ * `operator` decides only the role the server reports for the caller, which is
+ * the real discriminator: the surface asks who it is rather than guessing.
+ */
+async function routeAssignment(page: Page, options: { operator: boolean }) {
+  const state: { assignee?: (typeof assignmentMembers)[number]; events: TaskEventFixture[] } = { events: [] }
+  // The app shell reconciles the stored selection against this enumeration, and
+  // the membership reads are workspace-scoped, so the selection has to survive.
+  await page.route('**/v1/workspaces', (route) => route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] }))
+  await page.route('**/v1/me**', (route) =>
+    route.fulfill({
+      json: {
+        id: 'usr_ada',
+        email: 'ada@example.test',
+        display_name: 'Ada Owner',
+        role: options.operator ? 'operator' : 'user',
+      },
+    }),
+  )
+  await page.route('**/v1/workspaces/demo/members**', (route) => route.fulfill({ json: assignmentMembers }))
+  await page.route('**/v1/tasks/assignable/assignee**', async (route) => {
+    const body = JSON.parse(route.request().postData() ?? '{}') as { assignee_user_id?: string }
+    const userID = (body.assignee_user_id ?? '').trim()
+    state.assignee = assignmentMembers.find((member) => member.user_id === userID)
+    state.events.push({
+      id: 900 + state.events.length,
+      task_id: 'assignable',
+      kind: state.assignee ? 'task.assignee.set' : 'task.assignee.cleared',
+      actor_id: 'usr_ada',
+      actor_role: 'human',
+      payload: { assignee_user_id: userID },
+      at: '2026-07-15T13:00:00Z',
+    })
+    await route.fulfill({ json: {} })
+  })
+  await page.route('**/v1/tasks/assignable/activity**', async (route) => {
+    const item = activity('assignable', false)
+    item.task.assignee = state.assignee
+      ? {
+          user_id: state.assignee.user_id,
+          email: state.assignee.email,
+          display_name: state.assignee.display_name,
+        }
+      : undefined
+    item.events = [...item.events, ...state.events]
+    await route.fulfill({ json: item })
+  })
+}
+
+type TaskEventFixture = {
+  id: number
+  task_id: string
+  kind: string
+  actor_id: string
+  actor_role: 'human'
+  payload: Record<string, unknown>
+  at: string
+}
+
+// REQ-4/AC-1.2: an operator routes the task by picking a workspace co-member,
+// and the audited outcome reads back in the timeline like every other operator
+// act. Assignment constrains who may claim it and nothing else (DEC-18).
+test('an operator assigns a task from the member picker and the timeline records it', async ({ page }) => {
+  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
+  await routeAssignment(page, { operator: true })
+
+  await page.goto('/tasks/assignable/full')
+  await expect(page.getByRole('button', { name: 'Assign', exact: true })).toBeVisible()
+  // Nothing claims the task yet, so no chip stands in for an assignment.
+  await expect(page.getByTitle(/^Assigned to/)).toHaveCount(0)
+
+  await page.getByRole('button', { name: 'Assign', exact: true }).click()
+  const picker = page.getByRole('listbox', { name: 'Workspace members' })
+  await expect(picker.getByRole('option', { name: 'Ada Owner' })).toBeVisible()
+  await picker.getByRole('option', { name: 'Bo Member' }).click()
+
+  // The header fact and the control both follow the server's answer.
+  await expect(page.getByTitle('Assigned to Bo Member — bo@example.test · usr_bo')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Reassign', exact: true })).toBeVisible()
+  await expect(page.getByRole('region', { name: 'Activity' })).toContainText('Assigned to Bo Member')
+
+  // Clearing restores the unassigned presentation rather than leaving a blank.
+  await page.getByRole('button', { name: 'Reassign', exact: true }).click()
+  await page.getByRole('button', { name: 'Clear assignee' }).click()
+  await expect(page.getByRole('button', { name: 'Assign', exact: true })).toBeVisible()
+  await expect(page.getByTitle(/^Assigned to/)).toHaveCount(0)
+  await expect(page.getByRole('region', { name: 'Activity' })).toContainText('Assignee cleared')
+})
+
+// AC-1.2/AC-2.2: setting an assignee is an operator act. A member reads who
+// holds the task and is offered no way to change it.
+test('a non-operator sees the assignee but no set or clear control', async ({ page }) => {
+  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'member'))
+  await routeAssignment(page, { operator: false })
+  await page.route('**/v1/tasks/assignable/activity**', async (route) => {
+    const item = activity('assignable', false)
+    item.task.assignee = { user_id: 'usr_bo', email: 'bo@example.test', display_name: 'Bo Member' }
+    await route.fulfill({ json: item })
+  })
+
+  await page.goto('/tasks/assignable/full')
+  await expect(page.getByTitle('Assigned to Bo Member — bo@example.test · usr_bo')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Assign' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Reassign' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Clear assignee' })).toHaveCount(0)
+})
+
+// AC-4.1/AC-4.3: the store refuses a claim on an assigned task by naming the
+// assignee's raw account ID. That sentence is written for an agent's error
+// channel, so the surface says who holds the task instead.
+test('a claim refusal names the assignee rather than showing the transport sentence', async ({ page }) => {
+  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
+  await page.route('**/v1/workspaces', (route) => route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] }))
+  await page.route('**/v1/activity*', (route) =>
+    route.fulfill({
+      json: [
+        {
+          task: {
+            ...activity('refused', false).task,
+            assignee: { user_id: 'usr_bo', email: 'bo@example.test', display_name: 'Bo Member' },
+          },
+          latest_stage: 'implement',
+          last_event_at: createdAt,
+          needs_attention: true,
+          stalled: {
+            needed: true,
+            reason: 'dispatch is failing repeatedly',
+            last_failure: 'task refused is assigned to usr_bo; only that assignee may claim its work orders',
+          },
+        },
+      ],
+    }),
+  )
+
+  await page.goto('/')
+  const tray = page.getByRole('region', { name: 'Needs operator' })
+  await expect(tray).toContainText('Assigned to Bo Member — only they can pick this up.')
+  await expect(tray).not.toContainText('only that assignee may claim its work orders')
+  await expect(tray).not.toContainText('usr_bo')
 })

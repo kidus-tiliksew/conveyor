@@ -68,6 +68,13 @@ export const planRevisionDecisionLabels: Record<string, string> = {
   [planRevisionReasonCodes.reject]: 'Plan revision rejected — task closed',
 }
 
+// Reason codes whose plain-language reading is the whole entry. Without this
+// the merge-gate return renders as the generic "Requested changes" beside a raw
+// `user-request-changes` badge — wire vocabulary in a person's story (REQ-6).
+export const interventionReasonLabels: Record<string, string> = {
+  'user-request-changes': 'Sent back with your feedback',
+}
+
 export const stageLabels: Record<string, string> = {
   triage: 'Triage',
   spec: 'Plan',

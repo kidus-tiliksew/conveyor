@@ -659,7 +659,7 @@ func taskFilterParams(ctx context.Context, filter store.TaskFilter) db.CountTask
 		Repositories: emptyIfNil(filter.Repositories),
 		Search:       filter.Query, CreatedFrom: nullableTimestamp(filter.CreatedFrom),
 		CreatedTo: nullableTimestamp(filter.CreatedTo), ServesRequirements: emptyIfNil(filter.ServesRequirementIDs),
-		GoverningDesigns: emptyIfNil(filter.GoverningDesignIDs),
+		GoverningDesigns: emptyIfNil(filter.GoverningDesignIDs), Assignee: filter.Assignee,
 	}
 }
 
@@ -676,6 +676,7 @@ func taskOperationsListParams(ctx context.Context, filter store.TaskFilter, limi
 		WorkspaceID: bound.WorkspaceID, TaskStates: bound.TaskStates, Repositories: bound.Repositories,
 		Search: bound.Search, CreatedFrom: bound.CreatedFrom, CreatedTo: bound.CreatedTo,
 		ServesRequirements: bound.ServesRequirements, GoverningDesigns: bound.GoverningDesigns,
+		Assignee:  bound.Assignee,
 		PageLimit: int32(limit), PageOffset: int32(offset),
 	}
 }
@@ -5054,9 +5055,22 @@ func (s *Store) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.T
 			fromState, state = state, approved
 			command = core.TaskInterventionApproveReview
 		}
+		nonAdvancingRefresh := store.NonAdvancingRefreshBinding(decision, aggregate.ApprovedHeadSHA)
+		if nonAdvancingRefresh {
+			if err = insertEvent(ctx, q, core.Event{TaskID: decision.TaskID, JobID: decision.JobID, Kind: "review.refresh_binding_not_advanced", Payload: core.JSONPayload(map[string]any{
+				"review_work_order_id": decision.ReviewWorkOrderID, "review_round": decision.ReviewRound,
+				"baseline_sha": decision.BaselineSHA, "head_sha": decision.HeadSHA, "bound_sha": aggregate.ApprovedHeadSHA,
+			})}); err != nil {
+				return err
+			}
+		}
 		if aggregate.Verdict == "approve" && aggregate.ApprovedHeadSHA != "" {
 			if state == core.TaskApproved {
-				if _, err = tx.Exec(ctx, `UPDATE tasks SET reviewed_head_sha=$1,approved_head_sha=$1,approval_stale=false,refresh_baseline_sha='',refresh_head_sha='',refresh_review_scope='',updated_at=now() WHERE workspace_id=$2 AND id=$3`, aggregate.ApprovedHeadSHA, workspace(ctx), decision.TaskID); err != nil {
+				query := `UPDATE tasks SET reviewed_head_sha=$1,updated_at=now() WHERE workspace_id=$2 AND id=$3`
+				if !nonAdvancingRefresh {
+					query = `UPDATE tasks SET reviewed_head_sha=$1,approved_head_sha=$1,approval_stale=false,refresh_baseline_sha='',refresh_head_sha='',refresh_review_scope='',updated_at=now() WHERE workspace_id=$2 AND id=$3`
+				}
+				if _, err = tx.Exec(ctx, query, aggregate.ApprovedHeadSHA, workspace(ctx), decision.TaskID); err != nil {
 					return err
 				}
 			} else if _, err = tx.Exec(ctx, `UPDATE tasks SET reviewed_head_sha=$1,updated_at=now() WHERE workspace_id=$2 AND id=$3`, aggregate.ApprovedHeadSHA, workspace(ctx), decision.TaskID); err != nil {

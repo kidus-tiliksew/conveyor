@@ -18,11 +18,13 @@ import (
 // TaskFilterFixture is the workspace the shared cases assert over. Suffix keeps
 // the seeded task IDs unique, because Postgres task IDs are global.
 type TaskFilterFixture struct {
-	Store     store.Store
-	Context   context.Context
-	Workspace string
-	Repo      string
-	Suffix    string
+	Store          store.Store
+	Context        context.Context
+	Workspace      string
+	Repo           string
+	Suffix         string
+	AssigneeUserID string
+	Assign         func(*testing.T, string, string)
 }
 
 func (f TaskFilterFixture) id(name string) string { return name + "-" + f.Suffix }
@@ -99,6 +101,10 @@ func SeedTaskFilterFixture(t *testing.T, fixture TaskFilterFixture) {
 			t.Fatalf("seed %s activity: %v", activity.task, err)
 		}
 	}
+	if fixture.Assign != nil {
+		fixture.Assign(t, fixture.id("alpha"), fixture.AssigneeUserID)
+		fixture.Assign(t, fixture.id("beta"), fixture.AssigneeUserID)
+	}
 }
 
 // RunTaskFilterConformance asserts that both entry points onto the shared
@@ -117,6 +123,9 @@ func RunTaskFilterConformance(t *testing.T, fixture TaskFilterFixture) {
 			States: []core.TaskState{core.TaskRunning, core.TaskQueued},
 		}, []string{"beta", "alpha", "gamma"}},
 		{"repository", store.TaskFilter{Repositories: []string{fixture.Repo}}, []string{"beta", "alpha", "gamma"}},
+		{"assignee", store.TaskFilter{Assignee: fixture.AssigneeUserID}, []string{"beta", "alpha"}},
+		{"unassigned", store.TaskFilter{Assignee: "unassigned"}, []string{"gamma"}},
+		{"unknown assignee", store.TaskFilter{Assignee: "usr-unknown"}, nil},
 		{"unknown repository", store.TaskFilter{Repositories: []string{"absent"}}, nil},
 		{"several repositories", store.TaskFilter{
 			Repositories: []string{"absent", fixture.Repo},
@@ -175,6 +184,21 @@ func RunTaskFilterConformance(t *testing.T, fixture TaskFilterFixture) {
 				t.Fatalf("ListTaskOperations total=%d want %d", page.Total, len(want))
 			}
 		})
+	}
+
+	// The same predicate must govern both the page and its total. Two assigned
+	// rows make an accidentally post-filtered page or unfiltered count visible.
+	for offset, want := range []string{"beta", "alpha"} {
+		page, err := fixture.Store.ListTaskOperations(fixture.Context, store.TaskOperationsQuery{
+			TaskFilter: store.TaskFilter{Assignee: fixture.AssigneeUserID}, Limit: 1, Offset: offset,
+		})
+		if err != nil {
+			t.Fatalf("assigned page %d: %v", offset, err)
+		}
+		assertTaskIDs(t, "assigned page", taskIDs(page.Tasks), []string{fixture.id(want)})
+		if page.Total != 2 {
+			t.Fatalf("assigned page %d total=%d want 2", offset, page.Total)
+		}
 	}
 
 	// An inverted range selects nothing at all, so both stores reject it at the

@@ -82,6 +82,29 @@ func (s *Store) ListWorkspaceMembers(ctx context.Context, requesterUserID, works
 	return result, rows.Err()
 }
 
+// ListWorkspaceInvitations returns the workspace's unredeemed invitations. Rows
+// are deleted on redemption and on revocation, so the table holds pending
+// invitations only and the read needs no status predicate. The caller is
+// authorized at the HTTP capability boundary, like RevokeWorkspaceInvitation.
+func (s *Store) ListWorkspaceInvitations(ctx context.Context, workspaceID string) ([]core.WorkspaceInvitation, error) {
+	rows, err := s.pool.Query(ctx, `SELECT i.workspace_id,i.email,i.role,i.invited_by,COALESCE(u.display_name,''),i.created_at
+		FROM workspace_membership_invitations i LEFT JOIN users u ON u.id=i.invited_by
+		WHERE i.workspace_id=$1 ORDER BY i.created_at DESC,i.email`, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []core.WorkspaceInvitation
+	for rows.Next() {
+		var item core.WorkspaceInvitation
+		if err := rows.Scan(&item.WorkspaceID, &item.Email, &item.Role, &item.InvitedBy, &item.InvitedByDisplayName, &item.CreatedAt); err != nil {
+			return nil, err
+		}
+		result = append(result, item)
+	}
+	return result, rows.Err()
+}
+
 func (s *Store) GrantWorkspaceRole(ctx context.Context, email, workspaceID string, role core.WorkspaceRole) (core.MembershipGrant, error) {
 	email, err := normalizeIdentityEmail(email)
 	if err != nil {

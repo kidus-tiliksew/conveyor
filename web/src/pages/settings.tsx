@@ -1,5 +1,6 @@
 import { KeyRound, PlugZap } from 'lucide-react'
 import { useTokenState } from '../components/app-shell'
+import { PersonalTokensCard } from '../components/settings/personal-tokens-card'
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import { Input } from '../components/ui/input'
 
@@ -37,6 +38,7 @@ export function SettingsPage() {
             </p>
           </CardContent>
         </Card>
+        <PersonalTokensCard />
         <Card className="mt-4">
           <CardHeader>
             <CardTitle>MCP work-order server</CardTitle>

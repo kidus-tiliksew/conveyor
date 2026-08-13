@@ -77,7 +77,51 @@ type IdentityUser struct {
 	CreatedAt   time.Time `json:"created_at"`
 }
 
+// CallerIdentity is the deliberately narrow self-identity projection. Role is
+// present only when the caller supplied an authorized workspace context.
+type CallerIdentity struct {
+	ID          string        `json:"id"`
+	Email       string        `json:"email"`
+	DisplayName string        `json:"display_name"`
+	Role        WorkspaceRole `json:"role,omitempty"`
+}
+
 type MembershipGrant struct {
 	Email string        `json:"email"`
 	Role  WorkspaceRole `json:"role"`
+}
+
+// WorkspaceInvitation is an unredeemed membership grant addressed to an email.
+// Redemption and revocation both delete the row, so an invitation record is
+// pending by construction and carries no account reference: inviting addresses
+// an email and never resolves the deployment's user directory (REQ-3/AC-3.2).
+type WorkspaceInvitation struct {
+	WorkspaceID string        `json:"workspace_id"`
+	Email       string        `json:"email"`
+	Role        WorkspaceRole `json:"role"`
+	// InvitedBy and its rendered name describe a workspace member the reader
+	// already sees in the member list, so naming the inviter discloses nothing
+	// the caller could not read from that list.
+	InvitedBy            string    `json:"invited_by"`
+	InvitedByDisplayName string    `json:"invited_by_display_name,omitempty"`
+	CreatedAt            time.Time `json:"created_at"`
+}
+
+// PersonalAccessToken is the non-secret view of a human credential. The bearer
+// value is stored only as a hash and is returned exactly once from issuance, so
+// no read path can reconstruct it (REQ-2, req-security-boundaries AC-2.1).
+type PersonalAccessToken struct {
+	ID         string     `json:"id"`
+	UserID     string     `json:"user_id"`
+	Label      string     `json:"label"`
+	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
+	RevokedAt  *time.Time `json:"revoked_at,omitempty"`
+	CreatedAt  time.Time  `json:"created_at"`
+}
+
+// IssuedPersonalAccessToken carries the one-time bearer value. Issuance is the
+// only operation that produces it; listing a token never does.
+type IssuedPersonalAccessToken struct {
+	PersonalAccessToken
+	Value string `json:"value"`
 }

@@ -153,6 +153,7 @@ func ReleaseWorkerClaim(ctx context.Context, st store.Store, id, workerID string
 		return core.WorkOrder{}, err
 	}
 	return taskops.ExecuteWorkOrder(ctx, st, order.TaskID, core.WorkOrderCmdRelease, func(lease taskops.TaskLease) (core.WorkOrder, error) {
-		return st.ReleaseWorkerClaimCommand(ctx, lease, id, workerID, release)
+		claim := core.WorkOrderClaimIdentity{WorkerID: workerID, ClaimantID: order.ClaimantID, SessionID: release.SessionID}
+		return st.ReleaseWorkerClaimCommand(ctx, lease, id, claim, release)
 	})
 }

@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { GitMerge, ThumbsUp, TriangleAlert, Undo2, UserRound, type LucideIcon } from 'lucide-react'
-import { pendingPlanRevisionRequest } from '../../lib/activity'
+import { ExternalLink, GitMerge, ThumbsUp, TriangleAlert, Undo2, UserRound, type LucideIcon } from 'lucide-react'
+import { mergeGateReview, pendingPlanRevisionRequest } from '../../lib/activity'
 import { fixMergeConflict, mergeTask, requestTaskChanges, reviewTask } from '../../lib/api'
 import { defaultReasonCode, interventionActions } from '../../lib/contracts'
 import type { ActivityItem, InterventionAction, Task, TaskEvent } from '../../lib/types'
@@ -116,6 +116,103 @@ function gateFor(task: Task, events: TaskEvent[], readiness?: ActivityItem['merg
   }
 }
 
+// One sentence, written once: the composer states it before the feedback is
+// typed and the recorded timeline entry states it after, so the promise a
+// person acted on is the promise the record keeps (REQ-6).
+export const changesComposerHint = 'This feedback goes to the next implementation run word for word.'
+
+// What the gate is approving, laid out beside the decision rather than left to
+// be reconstructed from the timeline. Every line is evidence the pipeline
+// already recorded, so a line with nothing behind it is absent instead of
+// filled in: a repository delivered without GitHub shows no pull request.
+// Secondary identity — commit SHAs — is muted and mono, with the full value in
+// the tooltip, per the surface's visual economy.
+//
+// The base and head the pipeline recorded bound a commit range and nothing
+// more: the browser contract carries no diff stat or changed-file list, so the
+// range is labelled as the range it is. Naming it anything that implies a
+// summary of the change would tell a person the card weighed something it never
+// saw, and the pull request beside it is where the diff actually lives (REQ-6).
+function MergeGateReviewCard({ item }: { item: ActivityItem }) {
+  const review = mergeGateReview(item)
+  const { branch, base_branch: baseBranch } = item.task
+  if (!review.headSHA && !review.pullRequest && !review.verdict && !branch) return null
+  const verdictLabel =
+    review.verdict &&
+    (review.verdict.verdict === 'approve'
+      ? review.verdict.seats > 1
+        ? `${review.verdict.seats} factory reviewers approved this`
+        : 'Factory review approved this'
+      : 'Factory review asked for changes')
+  return (
+    <section
+      aria-label="What you are approving"
+      className="mb-3 rounded-md border border-border bg-surface/40 px-3 py-2.5"
+    >
+      <h4 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-faint">What you are approving</h4>
+      <dl className="mt-2 grid gap-x-6 gap-y-1.5 text-xs sm:grid-cols-[auto_1fr]">
+        {branch && (
+          <>
+            <dt className="text-muted">Change</dt>
+            <dd className="min-w-0 truncate">
+              <span className="font-mono text-foreground/90">{branch}</span>
+              {baseBranch && <span className="text-muted"> into {baseBranch}</span>}
+            </dd>
+          </>
+        )}
+        {review.headSHA && (
+          <>
+            <dt className="text-muted">Reviewed at</dt>
+            <dd className="min-w-0">
+              <span className="font-mono text-foreground/90" title={review.headSHA}>
+                {review.headSHA.slice(0, 8)}
+              </span>
+            </dd>
+          </>
+        )}
+        {review.headSHA && review.baseSHA && (
+          <>
+            <dt className="text-muted">Commit range</dt>
+            <dd className="min-w-0">
+              <span className="font-mono text-foreground/90" title={`${review.baseSHA} … ${review.headSHA}`}>
+                {review.baseSHA.slice(0, 8)} … {review.headSHA.slice(0, 8)}
+              </span>
+            </dd>
+          </>
+        )}
+        {review.pullRequest && (
+          <>
+            <dt className="text-muted">Pull request</dt>
+            <dd className="min-w-0 truncate">
+              <a
+                href={review.pullRequest.url}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-1 text-primary hover:underline"
+              >
+                {review.pullRequest.repository ?? 'Pull request'}
+                {review.pullRequest.number ? `#${review.pullRequest.number}` : ''}
+                <ExternalLink className="size-3" aria-hidden="true" />
+              </a>
+            </dd>
+          </>
+        )}
+        {review.verdict && (
+          <>
+            <dt className="text-muted">Review</dt>
+            <dd className="min-w-0">
+              <span className={review.verdict.verdict === 'approve' ? 'text-positive' : 'text-attention'}>
+                {verdictLabel}
+              </span>
+              {review.verdict.summary && <span className="block text-muted leading-5">{review.verdict.summary}</span>}
+            </dd>
+          </>
+        )}
+      </dl>
+    </section>
+  )
+}
+
 const toneStyles: Record<GateTone, { card: string; header: string; title: string; icon: string }> = {
   positive: { card: 'border-positive/30', header: 'bg-positive-soft', title: 'text-positive', icon: 'text-positive' },
   neutral: { card: 'border-primary/25', header: 'bg-primary-soft', title: 'text-primary', icon: 'text-primary' },
@@ -207,6 +304,7 @@ function GenericReviewPanel({ item, onDecisionRecorded }: { item: ActivityItem; 
 
   const secondaryActions = secondaryActionsFor(gate.primaryAction)
   const expandedEntry = interventionActions.find((entry) => entry.action === expanded && entry.action !== 'approve')
+  const gateComposer = mergeGate && expanded === 'redirect'
 
   return (
     <section className={cn('rounded-lg border bg-background', style.card)} aria-label="Human gate">
@@ -243,6 +341,7 @@ function GenericReviewPanel({ item, onDecisionRecorded }: { item: ActivityItem; 
         </Button>
       </div>
       <div className="px-4 py-2.5">
+        {mergeGate && <MergeGateReviewCard item={item} />}
         <AttachmentsCard attachments={item.verification_evidence ?? []} title="Verification evidence" />
         <fieldset
           className={cn('flex flex-wrap items-center gap-1', (item.verification_evidence?.length ?? 0) > 0 && 'mt-3')}
@@ -273,10 +372,18 @@ function GenericReviewPanel({ item, onDecisionRecorded }: { item: ActivityItem; 
         </fieldset>
         {expandedEntry && (
           <div className="mt-2">
+            {/* At the merge gate the feedback is not a note filed against a
+                decision — it is the whole brief the next run works from, and it
+                travels word for word. Saying so before the box is typed into is
+                what makes the required field read as necessary rather than as
+                one more form control (REQ-6). */}
+            {gateComposer && <p className="mb-1.5 text-xs leading-5 text-muted">{changesComposerHint}</p>}
             <Textarea
               autoFocus
               className="min-h-16 text-sm"
-              aria-label={expanded === 'redirect' ? 'Redirect feedback' : 'Rejection note'}
+              aria-label={
+                expanded !== 'redirect' ? 'Rejection note' : gateComposer ? 'Changes you want' : 'Redirect feedback'
+              }
               value={comment}
               onChange={(event) => setComment(event.target.value)}
               placeholder={
@@ -285,7 +392,10 @@ function GenericReviewPanel({ item, onDecisionRecorded }: { item: ActivityItem; 
                   : 'Why is this rejected? Optional.'
               }
             />
-            <div className="mt-1.5 flex items-center justify-end gap-2">
+            <div className="mt-1.5 flex flex-wrap items-center justify-end gap-2">
+              {gateComposer && !comment.trim() && (
+                <p className="mr-auto text-xs text-muted">Feedback is required to send this back.</p>
+              )}
               <Button variant="ghost" size="sm" onClick={() => toggle(expanded!)}>
                 Cancel
               </Button>

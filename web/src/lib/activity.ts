@@ -1,5 +1,39 @@
-import { taskStateLabels, type GroupKey } from './contracts'
-import type { ActivityItem, ActivitySummary, Intervention, Job, TaskEvent, TaskRelation, WorkOrder } from './types'
+import { type GroupKey, taskStateLabels } from './contracts'
+import type {
+  ActivityItem,
+  ActivitySummary,
+  Intervention,
+  Job,
+  TaskAssignee,
+  TaskEvent,
+  TaskRelation,
+  WorkOrder,
+} from './types'
+
+// The name a person is known by, falling through the identity fields the task
+// projection carries. The raw user ID is the last resort: it identifies an
+// account, it does not name a colleague, so it never displaces a real name
+// (REQ-4, AC-4.3).
+export function assigneeName(assignee: TaskAssignee): string {
+  return assignee.display_name || assignee.email || assignee.user_id
+}
+
+// The store refuses a claim on an assigned task by naming the assignee's raw
+// account ID ("task T is assigned to usr_x; only that assignee may claim its
+// work orders", conveyor:internal/store/store.go). That sentence is written for
+// an agent's error channel, not for a person reading a task, so every surface
+// that would otherwise print it says who holds the task instead (AC-4.1,
+// AC-4.3). The hydrated assignee supplies the name; without one the account ID
+// is still better than the transport sentence around it.
+const claimRefusalPattern = /task \S+ is assigned to (\S+?);\s*only that assignee may claim its work orders/i
+
+export function humanizeClaimRefusal(text: string | undefined, assignee?: TaskAssignee): string | undefined {
+  if (!text) return text
+  const match = claimRefusalPattern.exec(text)
+  if (!match) return text
+  const name = assignee && assignee.user_id === match[1] ? assigneeName(assignee) : match[1]
+  return `Assigned to ${name} — only they can pick this up.`
+}
 
 // Feed grouping: the pipeline stage a task currently occupies.
 // Human gates, approved tasks awaiting merge, parked tasks, and pending
@@ -51,6 +85,81 @@ export function pullRequestURL(events: TaskEvent[]): string | undefined {
     }
   }
   return undefined
+}
+
+// What the merge gate is actually approving, read back off the durable record
+// the pipeline already wrote: the reviewed head the branch was judged at, the
+// pull request it was pushed to, the commit range that head covers, and the
+// factory's own verdict. Every field is optional because every field is
+// evidence — a repository delivered without GitHub has no pull request, and a
+// task that reached the gate through a path that recorded no round verdict
+// shows none rather than an invented one (REQ-6).
+export interface MergeGateReview {
+  headSHA?: string
+  baseSHA?: string
+  pullRequest?: { url: string; number?: number; repository?: string }
+  verdict?: { verdict: 'approve' | 'changes_requested'; summary?: string; seats: number }
+}
+
+export function mergeGateReview(item: ActivityItem): MergeGateReview {
+  const review: MergeGateReview = { headSHA: item.task.reviewed_head_sha || undefined }
+  for (let i = item.events.length - 1; i >= 0; i--) {
+    const event = item.events[i]
+    const payload = event.payload ?? {}
+    if (event.kind !== 'pull_request.opened') continue
+    review.headSHA = review.headSHA ?? (typeof payload.head_sha === 'string' ? payload.head_sha : undefined)
+    review.baseSHA = typeof payload.base_sha === 'string' ? payload.base_sha : undefined
+    if (typeof payload.url === 'string' && payload.url) {
+      review.pullRequest = {
+        url: payload.url,
+        number: typeof payload.number === 'number' ? payload.number : undefined,
+        repository: typeof payload.repository === 'string' ? payload.repository : undefined,
+      }
+    }
+    break
+  }
+  // The last completed round is the verdict the gate opened on; the seats that
+  // reported into it say how many independent reviewers stand behind it.
+  for (let i = item.events.length - 1; i >= 0; i--) {
+    const event = item.events[i]
+    if (event.kind !== 'review.round_completed') continue
+    const payload = event.payload ?? {}
+    review.verdict = {
+      verdict: payload.verdict === 'changes_requested' ? 'changes_requested' : 'approve',
+      summary: typeof payload.summary === 'string' && payload.summary.trim() ? payload.summary.trim() : undefined,
+      seats: (Array.isArray(payload.reviews) ? payload.reviews : []).length,
+    }
+    break
+  }
+  return review
+}
+
+// The reason code and bounce source the merge-gate request-changes command
+// records (conveyor:internal/store/changes_requested.go). The dashboard reads
+// them; it never writes them, and neither string is ever shown to a person.
+export const userRequestChangesReason = 'user-request-changes'
+
+export interface ReturnedForChanges {
+  feedback: string
+  at: string
+}
+
+// The server's user-request-changes attention marker, re-derived from the same
+// durable events it reads (store.UserRequestChangesPending): a bounce a person
+// asked for stays outstanding until an implementation run claims the work it
+// created. The marker itself reaches the dashboard only folded into
+// needs_attention, so this predicate is what tells that signal apart from the
+// other reasons a task wants a human — and it carries the feedback with it.
+export function pendingUserRequestChanges(events: TaskEvent[]): ReturnedForChanges | null {
+  let pending: ReturnedForChanges | null = null
+  for (const event of events) {
+    const payload = event.payload ?? {}
+    if (event.kind === 'pipeline.bounced' && payload.source === userRequestChangesReason) {
+      pending = { feedback: typeof payload.feedback === 'string' ? payload.feedback.trim() : '', at: event.at }
+    }
+    if (event.kind === 'work_order.claimed' && payload.stage === 'implement') pending = null
+  }
+  return pending
 }
 
 // Board-card gate chip: says what the gate is waiting for instead of a
@@ -326,7 +435,9 @@ export function deriveCurrentExecutionState(item: ActivityItem): CurrentExecutio
       order,
       attemptId: order.last_attempt_id,
       title: `${stage} paused — recovery needed`,
-      blocker: order.last_failure_message || 'The latest attempt released the work before completion.',
+      blocker:
+        humanizeClaimRefusal(order.last_failure_message, item.task.assignee) ||
+        'The latest attempt released the work before completion.',
       retry: 'No automatic retry is pending.',
       nextAction: 'Recover the work order to try again.',
       action: 'recover',
@@ -648,9 +759,25 @@ function jobSummary(job: Job, events: TaskEvent[]): string {
 function noteFor(
   event: TaskEvent,
   panels: PanelIndex,
+  assignee?: TaskAssignee,
 ): Omit<Extract<TimelineEntry, { type: 'note' }>, 'type' | 'at' | 'key'> | undefined {
   const payload = event.payload ?? {}
   switch (event.kind) {
+    // Assignment is an audited operator act, so it folds into the timeline
+    // beside the other decisions rather than being legible only as a header
+    // field that silently changed (REQ-4, AC-1.2). The event payload carries
+    // the account ID alone; the task's hydrated assignee is what supplies a
+    // name, so a still-current assignment reads as a person.
+    case 'task.assignee.set': {
+      const userID = typeof payload.assignee_user_id === 'string' ? payload.assignee_user_id : ''
+      const name = assignee && assignee.user_id === userID ? assigneeName(assignee) : userID
+      return { title: name ? `Assigned to ${name}` : 'Assignee set' }
+    }
+    // Revoking a member's workspace binding clears their assignments too, so
+    // this entry is not always a deliberate unassignment; it states what
+    // happened and leaves the cause to the surrounding entries.
+    case 'task.assignee.cleared':
+      return { title: 'Assignee cleared' }
     case 'work_order.child_failed':
       return {
         title:
@@ -965,7 +1092,7 @@ export function buildTimeline(item: ActivityItem): TimelineEntry[] {
   }
   for (const event of item.events) {
     if (attemptEventKinds.has(event.kind)) continue
-    const note = noteFor(event, panels)
+    const note = noteFor(event, panels, item.task.assignee)
     if (note) entries.push({ type: 'note', at: event.at, key: `event-${event.id}`, ...note })
   }
   for (const diagnostic of item.review_diagnostics ?? []) {

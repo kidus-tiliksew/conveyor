@@ -24,25 +24,40 @@ var ErrInvalidPersonalAccessToken = core.ErrInvalidCredential
 
 type IdentityUser = core.IdentityUser
 
-type PersonalAccessToken struct {
-	ID         string
-	UserID     string
-	Label      string
-	LastUsedAt *time.Time
-	RevokedAt  *time.Time
-	CreatedAt  time.Time
-}
+// The credential shapes are core types so the self-service store boundary in
+// internal/store can name them without importing this package.
+type PersonalAccessToken = core.PersonalAccessToken
 
-type IssuedPersonalAccessToken struct {
-	PersonalAccessToken
-	Value string
-}
+type IssuedPersonalAccessToken = core.IssuedPersonalAccessToken
 
 type IssuedAgentCredential struct {
 	ID     string
 	UserID string
 	Label  string
 	Value  string
+}
+
+// GetCallerIdentity resolves only the credential-derived user. A workspace
+// role is joined only when the HTTP boundary has supplied an authorized
+// workspace context; the join also closes membership-revocation races.
+func (s *Store) GetCallerIdentity(ctx context.Context, userID, workspaceID string) (core.CallerIdentity, error) {
+	var identity core.CallerIdentity
+	if workspaceID == "" {
+		err := s.pool.QueryRow(ctx, `SELECT id,email,display_name FROM users WHERE id=$1 AND status='active'`, userID).
+			Scan(&identity.ID, &identity.Email, &identity.DisplayName)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return core.CallerIdentity{}, store.ErrNotFound
+		}
+		return identity, err
+	}
+	err := s.pool.QueryRow(ctx, `SELECT u.id,u.email,u.display_name,b.role
+		FROM users u JOIN workspace_role_bindings b ON b.user_id=u.id
+		WHERE u.id=$1 AND u.status='active' AND b.workspace_id=$2`, userID, workspaceID).
+		Scan(&identity.ID, &identity.Email, &identity.DisplayName, &identity.Role)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return core.CallerIdentity{}, store.ErrNotFound
+	}
+	return identity, err
 }
 
 // BootstrapIdentity ensures that the configured legacy token maps to a usable
@@ -463,6 +478,38 @@ func (s *Store) RevokePersonalAccessToken(ctx context.Context, tokenID string) (
 	return personalAccessToken(row), nil
 }
 
+// ListOwnPersonalAccessTokens returns the caller's human credentials without
+// their values: the query selects no hash column, and the cleartext value only
+// ever existed in the issuance response (REQ-2, req-security-boundaries AC-2.1).
+func (s *Store) ListOwnPersonalAccessTokens(ctx context.Context, userID string) ([]PersonalAccessToken, error) {
+	rows, err := s.queries.ListOwnUserTokens(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]PersonalAccessToken, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, listedPersonalAccessToken(row))
+	}
+	return items, nil
+}
+
+// IssueOwnPersonalAccessToken mints a credential for the caller through the
+// existing opaque-hash issuer; self-service adds no second issuance path.
+func (s *Store) IssueOwnPersonalAccessToken(ctx context.Context, userID, label string) (IssuedPersonalAccessToken, error) {
+	return s.IssuePersonalAccessToken(ctx, userID, label)
+}
+
+// RevokeOwnPersonalAccessToken revokes a credential the caller owns. Ownership
+// is a predicate of the statement rather than a check around it, so another
+// user's token is reported exactly like a token that does not exist.
+func (s *Store) RevokeOwnPersonalAccessToken(ctx context.Context, userID, tokenID string) (PersonalAccessToken, error) {
+	row, err := s.queries.RevokeOwnUserToken(ctx, db.RevokeOwnUserTokenParams{ID: tokenID, UserID: userID})
+	if err != nil {
+		return PersonalAccessToken{}, notFound(err, "personal access token %s", tokenID)
+	}
+	return personalAccessToken(row), nil
+}
+
 func (s *Store) DeactivateIdentityUser(ctx context.Context, userID string) (IdentityUser, error) {
 	var row db.User
 	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
@@ -493,13 +540,26 @@ func identityUser(row db.User) IdentityUser {
 }
 
 func personalAccessToken(row db.UserToken) PersonalAccessToken {
-	item := PersonalAccessToken{ID: row.ID, UserID: row.UserID, Label: row.Label, CreatedAt: row.CreatedAt.Time}
-	if row.LastUsedAt.Valid {
-		value := row.LastUsedAt.Time
+	return credentialLifecycle(
+		PersonalAccessToken{ID: row.ID, UserID: row.UserID, Label: row.Label, CreatedAt: row.CreatedAt.Time},
+		row.LastUsedAt, row.RevokedAt,
+	)
+}
+
+func listedPersonalAccessToken(row db.ListOwnUserTokensRow) PersonalAccessToken {
+	return credentialLifecycle(
+		PersonalAccessToken{ID: row.ID, UserID: row.UserID, Label: row.Label, CreatedAt: row.CreatedAt.Time},
+		row.LastUsedAt, row.RevokedAt,
+	)
+}
+
+func credentialLifecycle(item PersonalAccessToken, lastUsedAt, revokedAt pgtype.Timestamptz) PersonalAccessToken {
+	if lastUsedAt.Valid {
+		value := lastUsedAt.Time
 		item.LastUsedAt = &value
 	}
-	if row.RevokedAt.Valid {
-		value := row.RevokedAt.Time
+	if revokedAt.Valid {
+		value := revokedAt.Time
 		item.RevokedAt = &value
 	}
 	return item

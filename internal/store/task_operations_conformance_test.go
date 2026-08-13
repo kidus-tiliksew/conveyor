@@ -8,6 +8,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
+	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
 func TestMemoryTaskOperationsPaginationConformance(t *testing.T) {
@@ -51,9 +52,19 @@ func TestMemoryTaskFilterConformance(t *testing.T) {
 		Workspace: workspace,
 		Repos:     []config.Repo{{Name: "conveyor", Base: "main"}},
 	})
+	if err := store.SetMemoryWorkspaceMember(st, workspace, "usr-filter-assignee", true); err != nil {
+		t.Fatal(err)
+	}
 	fixture := storetest.TaskFilterFixture{
 		Store: st, Context: store.WithWorkspace(t.Context(), workspace),
 		Workspace: workspace, Repo: "conveyor", Suffix: core.NewTaskID(),
+		AssigneeUserID: "usr-filter-assignee",
+		Assign: func(t *testing.T, taskID, userID string) {
+			t.Helper()
+			if _, err := taskops.New(st).SetAssignee(store.WithWorkspace(t.Context(), workspace), taskID, userID); err != nil {
+				t.Fatal(err)
+			}
+		},
 	}
 	storetest.SeedTaskFilterFixture(t, fixture)
 	storetest.RunTaskFilterConformance(t, fixture)

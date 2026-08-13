@@ -73,6 +73,8 @@ type Server struct {
 	Workspaces            store.WorkspaceControlStore
 	Memberships           store.MembershipStore
 	IdentityProvisioner   store.IdentityProvisioner
+	CallerIdentities      store.CallerIdentityStore
+	PersonalTokens        store.PersonalAccessTokenStore
 	EnsureWorkspaceQueues func(string) error
 	Deployment            *config.Config
 	WorkOrders            *workorder.Service
@@ -95,6 +97,12 @@ func NewServer(s store.Store) *Server {
 	}
 	if identities, ok := s.(store.IdentityProvisioner); ok {
 		server.IdentityProvisioner = identities
+	}
+	if identities, ok := s.(store.CallerIdentityStore); ok {
+		server.CallerIdentities = identities
+	}
+	if tokens, ok := s.(store.PersonalAccessTokenStore); ok {
+		server.PersonalTokens = tokens
 	}
 	return server
 }
@@ -121,7 +129,14 @@ func (s *Server) Handler() http.Handler {
 		r.With(s.requireWorkerAuth).Post("/worker/work-orders/{id}/attempt-checkpoint", s.checkpointWorkerOrderAttempt)
 		r.With(s.requireWorkerAuth).Post("/worker/work-orders/{id}/release", s.releaseWorkerOrder)
 		r.With(s.requireWorkspaceAuth).Get("/workspaces", s.listWorkspaces)
+		r.With(s.requireSelfServiceCredential, s.resolveOptionalWorkspaceCapability(core.CapabilityViewWorkspace)).Get("/me", s.getCallerIdentity)
 		r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Post("/users", s.provisionIdentityUser)
+		// Self-service credential routes carry no subject in the path: the owner
+		// is the presented credential, so no capability applies and no request
+		// can name another user's tokens (REQ-2/AC-2.1).
+		r.With(s.requireSelfServiceCredential).Get("/tokens", s.listOwnPersonalAccessTokens)
+		r.With(s.requireSelfServiceCredential).Post("/tokens", s.issueOwnPersonalAccessToken)
+		r.With(s.requireSelfServiceCredential).Delete("/tokens/{token_id}", s.revokeOwnPersonalAccessToken)
 		r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Post("/workspaces", s.createWorkspace)
 		r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Get("/harness-templates", s.getHarnessTemplates)
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityViewWorkspace)).Get("/workspaces/{workspace_id}", s.getWorkspaceRecord)
@@ -129,6 +144,7 @@ func (s *Server) Handler() http.Handler {
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityManageWorkspace)).Put("/workspaces/{workspace_id}/config", s.putWorkspaceConfig)
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityViewWorkspace)).Get("/workspaces/{workspace_id}/members", s.listWorkspaceMembers)
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityManageMembership)).Post("/workspaces/{workspace_id}/members", s.grantWorkspaceMembership)
+		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityManageMembership)).Get("/workspaces/{workspace_id}/invitations", s.listWorkspaceInvitations)
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityManageMembership)).Delete("/workspaces/{workspace_id}/invitations/{email}", s.revokeWorkspaceInvitation)
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityManageMembership)).Delete("/workspaces/{workspace_id}/members/{user_id}", s.revokeWorkspaceMembership)
 		r.Group(func(r chi.Router) {
@@ -412,6 +428,29 @@ func (s *Server) requireWorkspaceAuth(next http.Handler) http.Handler {
 	if s.Workspaces == nil {
 		return next
 	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		credential, err := s.authenticateUserCredential(r)
+		if err != nil {
+			writeCredentialVerificationError(w, err)
+			return
+		}
+		if credential.Kind != core.CredentialUser {
+			w.Header().Set("WWW-Authenticate", "Bearer")
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		ctx := store.WithCredential(r.Context(), credential)
+		ctx = store.WithActor(ctx, store.Actor{ID: store.UserActorID(credential.OwnerUserID), Role: core.ActorUser})
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+// requireSelfServiceCredential authenticates the human credential that owns a
+// self-service request. It never resolves a workspace and never consults a
+// capability bundle: the caller's authority over the resource is the fact that
+// the resource is theirs. Agent credentials are refused so an execution session
+// cannot enumerate or revoke its owner's tokens (REQ-2/AC-2.2).
+func (s *Server) requireSelfServiceCredential(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		credential, err := s.authenticateUserCredential(r)
 		if err != nil {
@@ -1314,6 +1353,7 @@ func parseTaskFilter(values url.Values) (store.TaskFilter, error) {
 	}
 	filter := store.TaskFilter{
 		Repositories:         repositories,
+		Assignee:             strings.TrimSpace(values.Get("assignee")),
 		Query:                strings.TrimSpace(values.Get("q")),
 		ServesRequirementIDs: parseTaskFilterList(values["serves_requirement"]),
 		GoverningDesignIDs:   parseTaskFilterList(values["governing_design"]),

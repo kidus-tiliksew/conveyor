@@ -3,6 +3,7 @@ package storetest
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -65,6 +66,31 @@ func RunPlanRevisionConformance(t *testing.T, st store.Store, ctx context.Contex
 		}
 		if !requestSeen || !releaseSeen || !gateSeen {
 			t.Fatalf("request=%v release=%v gate=%v events=%+v", requestSeen, releaseSeen, gateSeen, events)
+		}
+	})
+
+	t.Run("live claim rejects a different authenticated claimant", func(t *testing.T) {
+		fixture := newPlanRevisionFixture(t, st, ctx, core.StageImplement, true, true)
+		wrong := core.WorkOrderClaimIdentity{WorkerID: "worker-b", ClaimantID: "worker-b", SessionID: fixture.sessionID}
+		_, err := taskops.ExecuteWorkOrder(ctx, st, fixture.order.TaskID, core.WorkOrderCmdRequestPlanRevision, func(lease taskops.TaskLease) (store.PlanRevisionRequestResult, error) {
+			return st.RequestPlanRevisionCommand(ctx, lease, fixture.order.ID, wrong, "wrong claimant")
+		})
+		if !errors.Is(err, store.ErrWorkOrderClaimUnauthorized) {
+			t.Fatalf("plan revision error=%v", err)
+		}
+		release := core.WorkOrderRelease{SessionID: fixture.sessionID, Outcome: core.WorkOrderOutcomeReleased}
+		_, err = taskops.ExecuteWorkOrder(ctx, st, fixture.order.TaskID, core.WorkOrderCmdRelease, func(lease taskops.TaskLease) (core.WorkOrder, error) {
+			return st.ReleaseWorkerClaimCommand(ctx, lease, fixture.order.ID, wrong, release)
+		})
+		if !errors.Is(err, store.ErrWorkOrderClaimUnauthorized) {
+			t.Fatalf("release error=%v", err)
+		}
+		order, getErr := st.GetWorkOrder(ctx, fixture.order.ID)
+		if getErr != nil {
+			t.Fatal(getErr)
+		}
+		if order.State != core.WorkOrderClaimed || order.SessionID != fixture.sessionID {
+			t.Fatalf("unauthorized mutation changed claim: %+v", order)
 		}
 	})
 
@@ -155,8 +181,13 @@ func newPlanRevisionFixture(t *testing.T, st store.Store, ctx context.Context, s
 }
 
 func requestPlanRevision(ctx context.Context, st store.Store, taskID, orderID, workerID, sessionID, rationale string) (store.PlanRevisionRequestResult, error) {
+	order, err := st.GetWorkOrder(ctx, orderID)
+	if err != nil {
+		return store.PlanRevisionRequestResult{}, err
+	}
 	return taskops.ExecuteWorkOrder(ctx, st, taskID, core.WorkOrderCmdRequestPlanRevision, func(lease taskops.TaskLease) (store.PlanRevisionRequestResult, error) {
-		return st.RequestPlanRevisionCommand(ctx, lease, orderID, workerID, sessionID, rationale)
+		claim := core.WorkOrderClaimIdentity{WorkerID: workerID, ClaimantID: order.ClaimantID, SessionID: sessionID}
+		return st.RequestPlanRevisionCommand(ctx, lease, orderID, claim, rationale)
 	})
 }
 

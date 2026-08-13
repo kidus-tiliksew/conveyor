@@ -1,7 +1,7 @@
-import { useId, useLayoutEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import {
+  Check,
   ChevronDown,
   ChevronRight,
   ChevronUp,
@@ -12,27 +12,32 @@ import {
   Link2Off,
   Trash2,
 } from 'lucide-react'
-import { dependencyRelationLabel, parseProvenance, pullRequestURL } from '../../lib/activity'
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
+import { assigneeName, dependencyRelationLabel, parseProvenance, pullRequestURL } from '../../lib/activity'
 import {
   cancelTask,
   changeTaskSetup,
+  fetchCallerIdentity,
   fetchWorkspaceConfig,
+  fetchWorkspaceMembers,
   removeTaskDependency,
   setTaskAssignee,
   setTaskHold,
 } from '../../lib/api'
 import { findBlueprint } from '../../lib/blueprint'
 import { taskStateLabels } from '../../lib/contracts'
+import { errorMessage } from '../../lib/errors'
 import { relatedTaskRoute } from '../../lib/task-route'
 import type { ActivityItem } from '../../lib/types'
 import { absoluteTime, cn } from '../../lib/utils'
-import { useBlueprints, useOperatorToken } from '../app-shell'
+import { useBlueprints, useOperatorToken, useWorkspaceSelection } from '../app-shell'
 import { Badge } from '../ui/badge'
 import { Button } from '../ui/button'
 import { CopyButton } from '../ui/copy-button'
 import { Dialog } from '../ui/dialog'
 import { Textarea } from '../ui/input'
 import { MarkdownProse } from '../ui/markdown-prose'
+import { AssigneeChip } from './assignee-chip'
 
 // The task-header facts: state badges,
 // the facts a reviewer actually references — where the work lives, where it
@@ -135,11 +140,12 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
         />
         <Fact label="Created" value={absoluteTime(item.task.created_at)} />
         <Fact label="Human approval" value={approvalLabel(item.task.spec_approval, item.task.merge_approval)} />
+        {/* A labelled fact answers "who holds this?", so it says Unassigned
+            rather than going blank — unlike the list rows and board cards,
+            where absence is the answer. */}
         <Fact
           label="Assignee"
-          value={
-            item.task.assignee?.display_name || item.task.assignee?.email || item.task.assignee?.user_id || 'Unassigned'
-          }
+          value={item.task.assignee ? <AssigneeChip assignee={item.task.assignee} /> : 'Unassigned'}
         />
         {item.task.parent_task_id && (
           <Fact
@@ -665,36 +671,115 @@ function HoldControl({ item }: { item: ActivityItem }) {
   )
 }
 
+/**
+ * Set, reassign, or clear the task's assignee from the workspace's own member
+ * list (REQ-4). Assigning constrains who may claim the task's work orders; it
+ * never touches queue order (DEC-18).
+ *
+ * Assignment is an operator act, carried by the `set_assignee` capability. The
+ * caller's role for this workspace comes from the server's own self-identity
+ * read rather than being guessed in the browser, so a member simply has no
+ * control. Every member still reads the assignee wherever it is rendered — the
+ * members list itself is a co-member read, never a user directory (AC-3.2).
+ */
 function AssigneeControl({ item }: { item: ActivityItem }) {
   const token = useOperatorToken()
+  const { workspace } = useWorkspaceSelection()
   const queryClient = useQueryClient()
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+  const terminal = item.task.state === 'merged' || item.task.state === 'closed'
+  const enabled = Boolean(token && workspace) && !terminal
+  const identity = useQuery({
+    queryKey: ['caller-identity', token, workspace],
+    queryFn: () => fetchCallerIdentity(token),
+    enabled,
+    retry: false,
+  })
+  const isOperator = identity.data?.role === 'operator'
+  const members = useQuery({
+    queryKey: ['workspace-members', token, workspace],
+    queryFn: () => fetchWorkspaceMembers(token, workspace),
+    enabled: enabled && isOperator,
+    retry: false,
+  })
   const mutation = useMutation({
     mutationFn: (userId: string) => setTaskAssignee(item.task.id, token, userId),
     onSuccess: () => {
+      setOpen(false)
       void queryClient.invalidateQueries({ queryKey: ['activity'] })
       void queryClient.invalidateQueries({ queryKey: ['task', item.task.workspace, item.task.id] })
+      // The Tasks rows read their own projection, so they must be told too or
+      // the chip there disagrees with the header that just changed it.
+      void queryClient.invalidateQueries({ queryKey: ['task-operations'] })
     },
   })
-  const terminal = item.task.state === 'merged' || item.task.state === 'closed'
-  if (!token || terminal) return null
-  const assign = () => {
-    const value = window.prompt('Workspace member user ID', item.task.assignee?.user_id ?? '')
-    if (value != null) mutation.mutate(value.trim())
-  }
+  useEffect(() => {
+    const close = (event: MouseEvent) => {
+      if (!ref.current?.contains(event.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', close)
+    return () => document.removeEventListener('mousedown', close)
+  }, [])
+  if (!enabled || !isOperator) return null
+  const roster = members.data ?? []
   return (
-    <button
-      type="button"
-      disabled={mutation.isPending}
-      onClick={assign}
-      title={
-        item.task.assignee
-          ? `Assigned to ${item.task.assignee.display_name || item.task.assignee.user_id}`
-          : 'Assign task'
-      }
-      className="inline-flex items-center rounded-md px-2 py-1 text-xs font-medium leading-4 text-muted transition-colors hover:bg-raised hover:text-foreground disabled:opacity-40"
-    >
-      {item.task.assignee ? 'Reassign' : 'Assign'}
-    </button>
+    <div className="relative" ref={ref}>
+      <button
+        type="button"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        disabled={mutation.isPending}
+        onClick={() => setOpen(!open)}
+        title={item.task.assignee ? `Assigned to ${assigneeName(item.task.assignee)}` : 'Assign this task to a member'}
+        className="inline-flex items-center rounded-md px-2 py-1 text-xs font-medium leading-4 text-muted transition-colors hover:bg-raised hover:text-foreground disabled:opacity-40"
+      >
+        {item.task.assignee ? 'Reassign' : 'Assign'}
+      </button>
+      {open && (
+        <div className="absolute right-0 z-30 mt-1 w-64 overflow-hidden rounded-xl border border-border bg-surface shadow-2xl">
+          <div role="listbox" aria-label="Workspace members" className="max-h-56 overflow-y-auto p-1">
+            {roster.map((member) => {
+              const name = member.display_name || member.email || member.user_id
+              const current = item.task.assignee?.user_id === member.user_id
+              return (
+                <button
+                  key={member.user_id}
+                  type="button"
+                  role="option"
+                  aria-selected={current}
+                  disabled={mutation.isPending}
+                  onClick={() => mutation.mutate(member.user_id)}
+                  className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-xs hover:bg-raised aria-selected:bg-raised disabled:opacity-40"
+                >
+                  <span className="min-w-0 flex-1 truncate">{name}</span>
+                  {current && <Check className="size-3 shrink-0 text-primary" aria-hidden="true" />}
+                </button>
+              )
+            })}
+            {members.isSuccess && roster.length === 0 && (
+              <p className="px-2.5 py-3 text-xs text-muted">No workspace members to assign.</p>
+            )}
+            {members.isLoading && <p className="px-2.5 py-3 text-xs text-muted">Loading members…</p>}
+          </div>
+          {item.task.assignee && (
+            <button
+              type="button"
+              disabled={mutation.isPending}
+              onClick={() => mutation.mutate('')}
+              className="w-full border-t border-border px-3 py-2 text-left text-xs text-muted transition-colors hover:bg-raised hover:text-foreground disabled:opacity-40"
+            >
+              Clear assignee
+            </button>
+          )}
+          {mutation.error != null && (
+            <p role="alert" className="border-t border-border px-3 py-2 text-xs text-failure">
+              {errorMessage(mutation.error, 'Could not update the assignee.')}
+            </p>
+          )}
+        </div>
+      )}
+    </div>
   )
 }
 

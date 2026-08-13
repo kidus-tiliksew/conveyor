@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test'
+import { expect, type Page, test } from '@playwright/test'
 
 // UI coverage for the list-first Tasks view. The projection is mocked so each
 // assertion reads the rendering of durable authority rather than a live pipeline.
@@ -60,6 +60,11 @@ const operations = [
       repo: 'web',
       branch: 'web/task-shipped',
       state: 'merged',
+      assignee: {
+        user_id: 'usr-assigned',
+        email: 'assigned@example.test',
+        display_name: 'Assigned User',
+      },
       created_at: '2026-08-04T10:00:00Z',
     },
     last_event_at: '2026-08-05T09:00:00Z',
@@ -137,6 +142,9 @@ function matchOperations(url: string) {
   const repositories = params.getAll('repository')
   const requirements = params.getAll('serves_requirement')
   const designs = params.getAll('governing_design')
+  // Assignee is single-valued: empty is inactive, "unassigned" selects the
+  // tasks nobody holds, anything else is an exact user ID (REQ-4).
+  const assignee = params.get('assignee') ?? ''
   const needle = (params.get('q') ?? '').toLowerCase()
   const from = params.get('created_from') ?? ''
   const to = params.get('created_to') ?? ''
@@ -144,6 +152,8 @@ function matchOperations(url: string) {
     .filter((item) => {
       if (states.length && !states.includes(item.task.state)) return false
       if (repositories.length && !repositories.includes(item.task.repo)) return false
+      if (assignee === 'unassigned' && item.task.assignee) return false
+      if (assignee && assignee !== 'unassigned' && item.task.assignee?.user_id !== assignee) return false
       if (
         needle &&
         ![item.task.title, item.task.id, item.task.source, item.task.branch]
@@ -193,6 +203,32 @@ async function routeTasksSurface(page: Page) {
   )
   await page.route('**/v1/requirements**', (route) => route.fulfill({ json: requirementCorpus }))
   await page.route('**/v1/system-designs**', (route) => route.fulfill({ json: designCorpus }))
+  // The signed-in user, which is what "My tasks" resolves "my" against.
+  await page.route('**/v1/me**', (route) =>
+    route.fulfill({
+      json: { id: 'usr-assigned', email: 'assigned@example.test', display_name: 'Assigned User', role: 'user' },
+    }),
+  )
+  await page.route('**/v1/workspaces/*/members**', (route) =>
+    route.fulfill({
+      json: [
+        {
+          workspace_id: 'demo',
+          user_id: 'usr-assigned',
+          display_name: 'Assigned User',
+          role: 'user',
+          created_at: '2026-08-02T10:00:00Z',
+        },
+        {
+          workspace_id: 'demo',
+          user_id: 'usr-other',
+          display_name: 'Other Member',
+          role: 'user',
+          created_at: '2026-08-02T10:00:00Z',
+        },
+      ],
+    }),
+  )
   await page.route('**/v1/activity?**', (route) => route.fulfill({ json: [] }))
   await page.route('**/v1/tasks/*/activity**', (route) => {
     const taskId = /\/v1\/tasks\/([^/]+)\/activity/.exec(new URL(route.request().url()).pathname)?.[1] ?? ''
@@ -442,6 +478,23 @@ test('tasks view reports why a stalled task cannot move on its own', async ({ pa
   await expect(healthy.getByLabel('Needs operator')).toHaveCount(0)
 })
 
+// REQ-4/AC-4.3: assignment is claim-eligibility routing, so the row names who
+// holds the task. An unassigned row is silent about it rather than spending
+// width on an empty label.
+test('tasks rows carry an assignee chip only where someone holds the task', async ({ page }) => {
+  await openTasks(page)
+  const assigned = rows(page).filter({ hasText: 'Stuck conveyor change' })
+  const chip = assigned.getByTitle('Assigned to Assigned User — assigned@example.test · usr-assigned')
+  await expect(chip).toBeVisible()
+  // The name is what the row shows; the account identifiers stay in the tooltip.
+  await expect(chip).toContainText('Assigned User')
+  await expect(assigned).not.toContainText('usr-assigned')
+
+  const unassigned = rows(page).filter({ hasText: 'Bounced web plan' })
+  await expect(unassigned.getByTitle(/^Assigned to/)).toHaveCount(0)
+  await expect(unassigned).not.toContainText('Unassigned')
+})
+
 // AC-1.5: no barred field appears on the surface, and none is offered as a
 // filter or sort control.
 test('tasks view exposes no priority or declared-phase field', async ({ page }) => {
@@ -620,4 +673,158 @@ test('tasks view filters by created-at range, served requirement, and governing 
 
   await page.getByRole('button', { name: 'Reset filters' }).click()
   await expect(rows(page)).toHaveCount(5)
+})
+
+// REQ-4/AC-3.2: assignee is a member of the same server-applied filter family,
+// single-valued because a task has one holder, and its options come from the
+// workspace co-member read rather than any user directory. Filtering happens on
+// the server, so a browser-side narrowing would return the whole fixture and
+// fail here.
+test('tasks view filters by assignee and by unassigned', async ({ page }) => {
+  await openTasks(page)
+  await page.getByRole('button', { name: 'Open filters' }).click()
+  await page.getByRole('tab', { name: 'Assignee' }).click()
+
+  await page.getByRole('option', { name: 'Assigned User' }).click()
+  await expect(rows(page)).toContainText(['Shipped web change', 'Stuck conveyor change'])
+  await expect(rows(page)).toHaveCount(2)
+
+  // Unassigned is a distinct choice, and it replaces the member rather than
+  // accumulating beside it.
+  await page.getByRole('option', { name: 'Unassigned' }).click()
+  await expect(rows(page).filter({ hasText: 'Stuck conveyor change' })).toHaveCount(0)
+  await expect(rows(page).filter({ hasText: 'Bounced web plan' })).toHaveCount(1)
+
+  // "Any assignee" hands the whole workspace back.
+  await page.getByRole('option', { name: 'Any assignee' }).click()
+  await expect(rows(page)).toHaveCount(operations.length)
+})
+
+// REQ-4: one click onto the work that is mine and still moving. It is a preset
+// over the existing row, not a separate view — the filter row shows exactly
+// what it selected — and it narrows by state, so an assignment that is already
+// merged does not come back.
+test('My tasks shows only the signed-in user assignments that still need them', async ({ page }) => {
+  await openTasks(page)
+  const preset = page.getByRole('button', { name: 'My tasks' })
+  await expect(preset).toHaveAttribute('aria-pressed', 'false')
+
+  await preset.click()
+  await expect(preset).toHaveAttribute('aria-pressed', 'true')
+  // Stuck is queued and mine; Shipped is mine but merged, so it is done being
+  // routed and stays out.
+  await expect(rows(page)).toContainText(['Stuck conveyor change'])
+  await expect(rows(page)).toHaveCount(1)
+
+  // Pressing it again hands the surface back rather than stranding the operator
+  // inside a view with no way out.
+  await preset.click()
+  await expect(preset).toHaveAttribute('aria-pressed', 'false')
+  await expect(rows(page)).toHaveCount(operations.length)
+})
+
+// The task that came back to the signed-in person, and what it carries: the
+// framing, the feedback they wrote, and a link to the task itself. The marker
+// reaches the dashboard only folded into needs_attention, so the entry is
+// decided from the task's own durable events rather than inferred from state
+// (REQ-6).
+const returnedFeedback = 'The retry path still swallows the provider error — surface it before merging.'
+
+function returnedSummary(hold: boolean) {
+  return {
+    task: {
+      id: 'task-returned',
+      workspace: 'demo',
+      source: 'cli',
+      title: 'Returned conveyor change',
+      repo: 'conveyor',
+      branch: 'conveyor/task-returned',
+      state: 'queued',
+      next_stage: 'implement',
+      hold,
+      assignee: { user_id: 'usr-assigned', email: 'assigned@example.test', display_name: 'Assigned User' },
+      created_at: '2026-08-06T10:00:00Z',
+    },
+    latest_stage: 'implement',
+    last_event_at: '2026-08-06T11:00:00Z',
+    needs_attention: true,
+  }
+}
+
+function returnedDetail(hold: boolean, claimedAfter = false) {
+  const events = [
+    {
+      id: 1,
+      task_id: 'task-returned',
+      kind: 'pipeline.bounced',
+      actor_id: 'usr-assigned',
+      actor_role: 'user',
+      payload: { source: 'user-request-changes', feedback: returnedFeedback, from: 'review', to: 'implement' },
+      at: '2026-08-06T11:00:00Z',
+    },
+  ]
+  if (claimedAfter) {
+    events.push({
+      id: 2,
+      task_id: 'task-returned',
+      kind: 'work_order.claimed',
+      actor_id: 'worker-1',
+      actor_role: 'runner',
+      payload: { id: 'task-returned-implement-2', stage: 'implement' },
+      at: '2026-08-06T11:05:00Z',
+    })
+  }
+  return {
+    task: returnedSummary(hold).task,
+    jobs: [],
+    events,
+    interventions: [],
+    work_orders: [],
+    checkout_available: false,
+    checkout_guidance: '',
+    needs_attention: true,
+    at_merge_gate: false,
+  }
+}
+
+async function openTasksWithReturn(page: Page, options: { hold: boolean; claimedAfter?: boolean }) {
+  await routeTasksSurface(page)
+  // Registered after the surface defaults, so these win.
+  await page.route('**/v1/activity?**', (route) => route.fulfill({ json: [returnedSummary(options.hold)] }))
+  await page.route('**/v1/tasks/task-returned/activity**', (route) =>
+    route.fulfill({ json: returnedDetail(options.hold, options.claimedAfter) }),
+  )
+  await page.goto('/tasks')
+  await expect(page.getByRole('heading', { name: 'Tasks' })).toBeVisible()
+}
+
+test('work that came back with feedback reaches the signed-in user’s attention', async ({ page }) => {
+  await openTasksWithReturn(page, { hold: true })
+  const attention = page.getByRole('region', { name: 'Needs your attention' })
+  await expect(attention.getByText('Returned conveyor change came back to you with feedback')).toBeVisible()
+  await expect(attention.getByText(returnedFeedback, { exact: false })).toBeVisible()
+  await expect(attention.getByRole('link', { name: 'Open task' })).toHaveAttribute('href', '/tasks?task=task-returned')
+
+  // Held work was run from someone's own machine, so nothing picks the feedback
+  // up until they run it again.
+  await expect(attention.getByText('running the task again from your machine', { exact: false })).toBeVisible()
+  await expect(attention.getByText('conveyor run task-returned', { exact: false })).toBeVisible()
+})
+
+test('worker-pipeline work that came back says the factory is already continuing it', async ({ page }) => {
+  await openTasksWithReturn(page, { hold: false })
+  const attention = page.getByRole('region', { name: 'Needs your attention' })
+  await expect(attention.getByText('Returned conveyor change came back to you with feedback')).toBeVisible()
+  await expect(attention.getByText('The factory is already on it', { exact: false })).toBeVisible()
+  await expect(attention.getByText('from your machine', { exact: false })).toHaveCount(0)
+})
+
+// The signal clears exactly where the server clears its own marker: once an
+// implementation run has claimed the work the return created. Presentation of
+// an existing marker, with no derivation of its own.
+test('the returned-with-feedback entry clears once implementation picks it up', async ({ page }) => {
+  await openTasksWithReturn(page, { hold: false, claimedAfter: true })
+  await expect(page.getByRole('region', { name: 'Needs your attention' })).toHaveCount(0)
+  // The list itself is untouched by the band above it.
+  await expect(rows(page)).toHaveCount(operations.length)
 })

@@ -11,6 +11,7 @@ import { DropdownMenu, DropdownMenuItem } from '../components/ui/dropdown-menu'
 import { Switch } from '../components/ui/switch'
 import { Field } from '../components/workspace/field'
 import { HarnessCard, latestProbe } from '../components/workspace/harness-card'
+import { MembersSection } from '../components/workspace/members-section'
 import { SetupCard } from '../components/workspace/setup-card'
 import {
   ConfigValidationError,
@@ -30,17 +31,18 @@ import type {
   WorkspaceHarness,
 } from '../lib/types'
 
-type TabId = 'general' | 'execution' | 'harnesses' | 'workers'
+type TabId = 'general' | 'execution' | 'harnesses' | 'workers' | 'members'
 
 const TABS: Array<{ id: TabId; label: string }> = [
   { id: 'general', label: 'General' },
   { id: 'execution', label: 'Execution' },
   { id: 'harnesses', label: 'Harnesses' },
   { id: 'workers', label: 'Workers' },
+  { id: 'members', label: 'Members' },
 ]
 
 // Which tab owns a config section, for dirty markers and validation-error routing.
-const TAB_SLICES: Record<Exclude<TabId, 'workers'>, (document: WorkspaceConfigDocument) => unknown> = {
+const TAB_SLICES: Record<Exclude<TabId, 'workers' | 'members'>, (document: WorkspaceConfigDocument) => unknown> = {
   general: (document) => [document.max_bounces, document.work_order_queue_timeout, document.repos, document.monitor],
   execution: (document) => [document.execution, document.setups, document.default_setup],
   harnesses: (document) => [document.harnesses],
@@ -110,7 +112,7 @@ export function WorkspacePage() {
   const serverDocument = query.data?.document
   const dirtyTabs = useMemo(() => {
     if (!draft || !serverDocument) return [] as TabId[]
-    return (Object.keys(TAB_SLICES) as Array<Exclude<TabId, 'workers'>>).filter(
+    return (Object.keys(TAB_SLICES) as Array<Exclude<TabId, 'workers' | 'members'>>).filter(
       (id) => JSON.stringify(TAB_SLICES[id](draft)) !== JSON.stringify(TAB_SLICES[id](serverDocument)),
     )
   }, [draft, serverDocument])
@@ -214,6 +216,7 @@ export function WorkspacePage() {
                   onRevoke={(id) => revoke.mutate(id)}
                 />
               )}
+              {tab === 'members' && <MembersSection />}
             </div>
 
             {(save.error || saved || dirtyTabs.length > 0) && (
@@ -268,7 +271,15 @@ export function WorkspacePage() {
             )}
           </>
         ) : snapshot ? (
-          <ReadOnly snapshot={snapshot} />
+          // Configuration is an operator surface, so a member reaching this page
+          // gets the read-only summary. The member list belongs beside it: every
+          // member may see who else is here, without the management controls.
+          <>
+            <ReadOnly snapshot={snapshot} />
+            <div className="mt-4">
+              <MembersSection />
+            </div>
+          </>
         ) : null}
       </div>
     </div>
