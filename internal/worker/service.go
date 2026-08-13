@@ -923,8 +923,18 @@ func (s *Service) Reconcile(ctx context.Context, worker core.Worker, id, session
 }
 
 func (s *Service) Release(ctx context.Context, worker core.Worker, id string, release core.WorkOrderRelease) (core.WorkOrder, error) {
+	return s.ReleaseClaim(ctx, core.WorkOrderClaimIdentity{WorkerID: worker.ID, ClaimantID: worker.ID, SessionID: release.SessionID}, id, release)
+}
+
+// ReleaseClaim releases the exact authenticated claim. Worker-facing callers
+// use worker identity; MCP agent children carry the live claim identity that
+// their session authorization resolved (design-260805-973cd4).
+func (s *Service) ReleaseClaim(ctx context.Context, claim core.WorkOrderClaimIdentity, id string, release core.WorkOrderRelease) (core.WorkOrder, error) {
 	if strings.TrimSpace(release.SessionID) == "" {
 		return core.WorkOrder{}, fmt.Errorf("session_id is required")
+	}
+	if claim.SessionID != release.SessionID {
+		return core.WorkOrder{}, store.ErrWorkOrderClaimLost
 	}
 	release.Reason = strings.TrimSpace(release.Reason)
 	release.Cause = strings.TrimSpace(release.Cause)
@@ -970,7 +980,7 @@ func (s *Service) Release(ctx context.Context, worker core.Worker, id string, re
 		return core.WorkOrder{}, err
 	}
 	order, err := taskops.ExecuteWorkOrder(ctx, s.Store, current.TaskID, core.WorkOrderCmdRelease, func(taskLease taskops.TaskLease) (core.WorkOrder, error) {
-		return s.Store.ReleaseWorkerClaimCommand(ctx, taskLease, id, worker.ID, release)
+		return s.Store.ReleaseWorkerClaimCommand(ctx, taskLease, id, claim, release)
 	})
 	if err != nil {
 		return core.WorkOrder{}, err
@@ -981,6 +991,14 @@ func (s *Service) Release(ctx context.Context, worker core.Worker, id string, re
 // RequestPlanRevision atomically releases one exact implement attempt and
 // moves its task to the distinct operator gate (REQ-1, AC-1.1–AC-1.3).
 func (s *Service) RequestPlanRevision(ctx context.Context, worker core.Worker, id, sessionID, rationale string) (store.PlanRevisionRequestResult, error) {
+	return s.RequestPlanRevisionClaim(ctx, core.WorkOrderClaimIdentity{WorkerID: worker.ID, ClaimantID: worker.ID, SessionID: sessionID}, id, rationale)
+}
+
+// RequestPlanRevisionClaim raises the operator-gated revision request for the
+// exact authenticated claim owner without assuming every caller is a worker
+// credential (REQ-1, AC-1.1-AC-1.3; design-260805-973cd4).
+func (s *Service) RequestPlanRevisionClaim(ctx context.Context, claim core.WorkOrderClaimIdentity, id, rationale string) (store.PlanRevisionRequestResult, error) {
+	sessionID := claim.SessionID
 	sessionID, rationale = strings.TrimSpace(sessionID), strings.TrimSpace(rationale)
 	if sessionID == "" {
 		return store.PlanRevisionRequestResult{}, fmt.Errorf("session_id is required")
@@ -993,7 +1011,8 @@ func (s *Service) RequestPlanRevision(ctx context.Context, worker core.Worker, i
 		return store.PlanRevisionRequestResult{}, err
 	}
 	return taskops.ExecuteWorkOrder(ctx, s.Store, current.TaskID, core.WorkOrderCmdRequestPlanRevision, func(taskLease taskops.TaskLease) (store.PlanRevisionRequestResult, error) {
-		return s.Store.RequestPlanRevisionCommand(ctx, taskLease, id, worker.ID, sessionID, rationale)
+		claim.SessionID = sessionID
+		return s.Store.RequestPlanRevisionCommand(ctx, taskLease, id, claim, rationale)
 	})
 }
 

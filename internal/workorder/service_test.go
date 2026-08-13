@@ -1504,7 +1504,7 @@ func TestRecoverRejectsPendingPlanRevisionDecision(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err = taskops.ExecuteWorkOrder(ctx, st, order.TaskID, core.WorkOrderCmdRequestPlanRevision, func(lease taskops.TaskLease) (store.PlanRevisionRequestResult, error) {
-		return st.RequestPlanRevisionCommand(ctx, lease, order.ID, "", claimed.SessionID, "the approved plan is no longer valid")
+		return st.RequestPlanRevisionCommand(ctx, lease, order.ID, core.WorkOrderClaimIdentity{ClaimantID: claimed.ClaimantID, SessionID: claimed.SessionID}, "the approved plan is no longer valid")
 	}); err != nil {
 		t.Fatal(err)
 	}

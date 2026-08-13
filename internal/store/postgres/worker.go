@@ -264,7 +264,7 @@ func (s *Store) RenewWorkerClaimCommand(ctx context.Context, taskLease taskops.T
 	return order, nil
 }
 
-func (s *Store) ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID, workerID string, release core.WorkOrderRelease) (core.WorkOrder, error) {
+func (s *Store) ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID string, claim core.WorkOrderClaimIdentity, release core.WorkOrderRelease) (core.WorkOrder, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return core.WorkOrder{}, err
@@ -296,11 +296,11 @@ func (s *Store) ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskops
 			return core.WorkOrder{}, matchErr
 		}
 		if (current.LastAttemptID != "" && current.LastAttemptID == release.SessionID) || matches ||
-			(current.WorkerID == workerID && current.SessionID == release.SessionID) {
+			(current.WorkerID == claim.WorkerID && current.SessionID == release.SessionID) {
 			return core.WorkOrder{}, store.ErrWorkOrderCancelled
 		}
 	}
-	if current.WorkerID != workerID || current.SessionID == "" || current.SessionID != release.SessionID || current.State != core.WorkOrderClaimed {
+	if current.SessionID == "" || current.SessionID != release.SessionID || current.State != core.WorkOrderClaimed {
 		return core.WorkOrder{}, store.ErrWorkOrderClaimLost
 	}
 	if _, transitionErr := core.TransitionWorkOrder(current.State, core.WorkOrderCmdRelease); transitionErr != nil {
@@ -323,6 +323,9 @@ func (s *Store) ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskops
 			return core.WorkOrder{}, err
 		}
 		return core.WorkOrder{}, store.ErrWorkOrderClaimLost
+	}
+	if current.WorkerID != claim.WorkerID || current.ClaimantID != claim.ClaimantID {
+		return core.WorkOrder{}, store.ErrWorkOrderClaimUnauthorized
 	}
 	queueTimeout := current.QueueDeadline.Sub(current.QueueEnteredAt)
 	if queueTimeout <= 0 {
@@ -388,8 +391,8 @@ func (s *Store) ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskops
 		lastFailureAt = now
 	}
 	attemptID := current.AttemptID
-	order, err := scanWorkOrder(tx.QueryRow(ctx, `UPDATE work_orders SET state='queued',claimant_id='',session_id='',attempt_id='',last_attempt_id=$1,client_token_hash='',agent='',model='',worker_id='',lease_expires_at=NULL,model_enforcement='',execution_started_at=NULL,execution_deadline=NULL,last_attempt_outcome=$2,last_failure_category=$3,last_failure_message=$4,last_failure_detail=$5,last_failure_exit_status=$6,last_failure_at=$7,automatic_retry_count=$8,next_retry_at=$9,retry_suppressed=$10,retry_suppression_reason=$11,queue_entered_at=$12,queue_deadline=$13,operator_direction='',updated_at=$12 WHERE workspace_id=$14 AND id=$15 AND worker_id=$16 AND session_id=$17 AND state='claimed' RETURNING `+workOrderColumns,
-		attemptID, release.Outcome, lastFailureCategory, lastFailureMessage, lastFailureDetail, lastFailureExitStatus, nullableTimeValue(lastFailureAt), retryCount, nullableTimeValue(nextRetry), suppressed, suppressionReason, now, now.Add(queueTimeout), workspace(ctx), workOrderID, workerID, release.SessionID))
+	order, err := scanWorkOrder(tx.QueryRow(ctx, `UPDATE work_orders SET state='queued',claimant_id='',session_id='',attempt_id='',last_attempt_id=$1,client_token_hash='',agent='',model='',worker_id='',lease_expires_at=NULL,model_enforcement='',execution_started_at=NULL,execution_deadline=NULL,last_attempt_outcome=$2,last_failure_category=$3,last_failure_message=$4,last_failure_detail=$5,last_failure_exit_status=$6,last_failure_at=$7,automatic_retry_count=$8,next_retry_at=$9,retry_suppressed=$10,retry_suppression_reason=$11,queue_entered_at=$12,queue_deadline=$13,operator_direction='',updated_at=$12 WHERE workspace_id=$14 AND id=$15 AND worker_id=$16 AND claimant_id=$17 AND session_id=$18 AND state='claimed' RETURNING `+workOrderColumns,
+		attemptID, release.Outcome, lastFailureCategory, lastFailureMessage, lastFailureDetail, lastFailureExitStatus, nullableTimeValue(lastFailureAt), retryCount, nullableTimeValue(nextRetry), suppressed, suppressionReason, now, now.Add(queueTimeout), workspace(ctx), workOrderID, claim.WorkerID, claim.ClaimantID, release.SessionID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return core.WorkOrder{}, store.ErrWorkOrderClaimLost
 	}
@@ -405,7 +408,7 @@ func (s *Store) ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskops
 		}
 	}
 	q := s.queries.WithTx(tx)
-	eventCtx := workerClaimActorContext(ctx, workerID)
+	eventCtx := workerClaimActorContext(ctx, claim.WorkerID)
 	kind := "work_order.released"
 	if core.WorkOrderOutcomeConsumesRetry(release.Outcome) {
 		kind = "work_order.child_failed"
@@ -423,7 +426,7 @@ func (s *Store) ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskops
 	return order, nil
 }
 
-func (s *Store) RequestPlanRevisionCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID, workerID, sessionID, rationale string) (store.PlanRevisionRequestResult, error) {
+func (s *Store) RequestPlanRevisionCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID string, claim core.WorkOrderClaimIdentity, rationale string) (store.PlanRevisionRequestResult, error) {
 	rationale = strings.TrimSpace(rationale)
 	if rationale == "" {
 		return store.PlanRevisionRequestResult{}, fmt.Errorf("rationale is required")
@@ -454,9 +457,12 @@ func (s *Store) RequestPlanRevisionCommand(ctx context.Context, taskLease taskop
 	if err != nil {
 		return store.PlanRevisionRequestResult{}, err
 	}
-	if current.WorkerID != workerID || current.SessionID == "" || current.SessionID != sessionID || current.State != core.WorkOrderClaimed ||
+	if current.SessionID == "" || current.SessionID != claim.SessionID || current.State != core.WorkOrderClaimed ||
 		!current.LeaseExpiresAt.After(now) || (!current.ExecutionDeadline.IsZero() && !current.ExecutionDeadline.After(now)) {
 		return store.PlanRevisionRequestResult{}, store.ErrWorkOrderClaimLost
+	}
+	if current.WorkerID != claim.WorkerID || current.ClaimantID != claim.ClaimantID {
+		return store.PlanRevisionRequestResult{}, store.ErrWorkOrderClaimUnauthorized
 	}
 	if current.Stage != core.StageImplement {
 		return store.PlanRevisionRequestResult{}, fmt.Errorf("request_plan_revision requires an implement-stage work order")
@@ -491,8 +497,8 @@ func (s *Store) RequestPlanRevisionCommand(ctx context.Context, taskLease taskop
 		queueTimeout = config.DefaultWorkOrderQueueTimeout
 	}
 	attemptID := current.AttemptID
-	order, err := scanWorkOrder(tx.QueryRow(ctx, `UPDATE work_orders SET state=$1,claimant_id='',session_id='',attempt_id='',last_attempt_id=$2,client_token_hash='',agent='',model='',worker_id='',lease_expires_at=NULL,model_enforcement='',execution_started_at=NULL,execution_deadline=NULL,last_attempt_outcome=$3,last_failure_category='',last_failure_message=$4,last_failure_detail='',last_failure_exit_status=NULL,last_failure_at=$5,next_retry_at=NULL,retry_suppressed=true,retry_suppression_reason='',queue_entered_at=$5,queue_deadline=$6,operator_direction='',updated_at=$5 WHERE workspace_id=$7 AND id=$8 AND worker_id=$9 AND session_id=$10 AND state='claimed' RETURNING `+workOrderColumns,
-		nextOrder, attemptID, core.WorkOrderOutcomeReleased, core.WorkOrderReleaseReasonPlanRevisionRequested, now, now.Add(queueTimeout), workspace(ctx), workOrderID, workerID, sessionID))
+	order, err := scanWorkOrder(tx.QueryRow(ctx, `UPDATE work_orders SET state=$1,claimant_id='',session_id='',attempt_id='',last_attempt_id=$2,client_token_hash='',agent='',model='',worker_id='',lease_expires_at=NULL,model_enforcement='',execution_started_at=NULL,execution_deadline=NULL,last_attempt_outcome=$3,last_failure_category='',last_failure_message=$4,last_failure_detail='',last_failure_exit_status=NULL,last_failure_at=$5,next_retry_at=NULL,retry_suppressed=true,retry_suppression_reason='',queue_entered_at=$5,queue_deadline=$6,operator_direction='',updated_at=$5 WHERE workspace_id=$7 AND id=$8 AND worker_id=$9 AND claimant_id=$10 AND session_id=$11 AND state='claimed' RETURNING `+workOrderColumns,
+		nextOrder, attemptID, core.WorkOrderOutcomeReleased, core.WorkOrderReleaseReasonPlanRevisionRequested, now, now.Add(queueTimeout), workspace(ctx), workOrderID, claim.WorkerID, claim.ClaimantID, claim.SessionID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return store.PlanRevisionRequestResult{}, store.ErrWorkOrderClaimLost
 	}
@@ -506,11 +512,11 @@ func (s *Store) RequestPlanRevisionCommand(ctx context.Context, taskLease taskop
 	if err != nil {
 		return store.PlanRevisionRequestResult{}, err
 	}
-	eventCtx := workerClaimActorContext(ctx, workerID)
-	if err = insertEvent(eventCtx, q, core.Event{TaskID: current.TaskID, JobID: current.JobID, Kind: "work_order.plan_revision_requested", Payload: core.JSONPayload(map[string]any{"work_order_id": current.ID, "attempt_id": attemptID, "session_id": sessionID, "rationale": rationale, "plan_version": planVersion}), At: now}); err != nil {
+	eventCtx := workerClaimActorContext(ctx, claim.WorkerID)
+	if err = insertEvent(eventCtx, q, core.Event{TaskID: current.TaskID, JobID: current.JobID, Kind: "work_order.plan_revision_requested", Payload: core.JSONPayload(map[string]any{"work_order_id": current.ID, "attempt_id": attemptID, "session_id": claim.SessionID, "rationale": rationale, "plan_version": planVersion}), At: now}); err != nil {
 		return store.PlanRevisionRequestResult{}, err
 	}
-	if err = insertEvent(eventCtx, q, core.Event{TaskID: current.TaskID, JobID: current.JobID, Kind: "work_order.released", Payload: core.JSONPayload(map[string]any{"attempt_id": attemptID, "session_id": sessionID, "reason": core.WorkOrderReleaseReasonPlanRevisionRequested, "release_cause": core.WorkOrderReleaseCauseOperatorAction, "outcome": core.WorkOrderOutcomeReleased, "automatic_retry_count": order.AutomaticRetryCount, "retry_suppressed": true}), At: now}); err != nil {
+	if err = insertEvent(eventCtx, q, core.Event{TaskID: current.TaskID, JobID: current.JobID, Kind: "work_order.released", Payload: core.JSONPayload(map[string]any{"attempt_id": attemptID, "session_id": claim.SessionID, "reason": core.WorkOrderReleaseReasonPlanRevisionRequested, "release_cause": core.WorkOrderReleaseCauseOperatorAction, "outcome": core.WorkOrderOutcomeReleased, "automatic_retry_count": order.AutomaticRetryCount, "retry_suppressed": true}), At: now}); err != nil {
 		return store.PlanRevisionRequestResult{}, err
 	}
 	if err = insertEvent(eventCtx, q, core.Event{TaskID: current.TaskID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": taskRow.State, "to": nextTask, "command": core.TaskGatePlanRevision}), At: now}); err != nil {

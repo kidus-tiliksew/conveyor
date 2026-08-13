@@ -146,7 +146,7 @@ func newPlanRevisionLoopWithStore(t *testing.T, ctx context.Context, st store.St
 		t.Fatal(err)
 	}
 	result, err := taskops.ExecuteWorkOrder(ctx, st, task.ID, core.WorkOrderCmdRequestPlanRevision, func(lease taskops.TaskLease) (store.PlanRevisionRequestResult, error) {
-		return st.RequestPlanRevisionCommand(ctx, lease, order.ID, "implement-worker", claimed.SessionID, "the public API changed")
+		return st.RequestPlanRevisionCommand(ctx, lease, order.ID, core.WorkOrderClaimIdentity{WorkerID: "implement-worker", ClaimantID: claimed.ClaimantID, SessionID: claimed.SessionID}, "the public API changed")
 	})
 	if err != nil {
 		t.Fatal(err)

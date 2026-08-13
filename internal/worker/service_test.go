@@ -414,7 +414,7 @@ func TestReleaseRefreshesHarnessSnapshotFromCurrentConfig(t *testing.T) {
 	if err := st.CreateWorker(ctx, worker); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := storetest.For(st).ClaimWorkOrder(ctx, "refresh-task-implement-1", core.WorkOrderClaim{SessionID: "session-r", ClientToken: "token-r", WorkerID: worker.ID, Lease: time.Minute, ExecutionTimeout: time.Hour}); err != nil {
+	if _, err := storetest.For(st).ClaimWorkOrder(ctx, "refresh-task-implement-1", core.WorkOrderClaim{SessionID: "session-r", ClientToken: "token-r", ClaimantID: worker.ID, WorkerID: worker.ID, Lease: time.Minute, ExecutionTimeout: time.Hour}); err != nil {
 		t.Fatal(err)
 	}
 	service := &Service{Store: st, ConfigProvider: func(context.Context) (*config.Config, error) {

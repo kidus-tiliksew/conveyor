@@ -710,6 +710,15 @@ type WorkOrderClaim struct {
 	Governance       *GovernanceSnapshot
 }
 
+// WorkOrderClaimIdentity names the authenticated owner of one active claim.
+// Mutations compare all three fields so an agent child can act through its
+// worker-dispatched claim without weakening session or cross-order isolation.
+type WorkOrderClaimIdentity struct {
+	WorkerID   string
+	ClaimantID string
+	SessionID  string
+}
+
 const (
 	WorkOrderOutcomeChildFailure                    = "child_failure"
 	WorkOrderOutcomeStalled                         = "stalled"

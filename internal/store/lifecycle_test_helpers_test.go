@@ -88,7 +88,8 @@ func (a testLifecycleAdapter) ReleaseWorkerClaim(ctx context.Context, id, worker
 		return core.WorkOrder{}, err
 	}
 	return taskops.ExecuteWorkOrder(ctx, a.Store, order.TaskID, core.WorkOrderCmdRelease, func(lease taskops.TaskLease) (core.WorkOrder, error) {
-		return a.ReleaseWorkerClaimCommand(ctx, lease, id, workerID, release)
+		claim := core.WorkOrderClaimIdentity{WorkerID: workerID, ClaimantID: order.ClaimantID, SessionID: release.SessionID}
+		return a.ReleaseWorkerClaimCommand(ctx, lease, id, claim, release)
 	})
 }
 func (a testLifecycleAdapter) CancelTask(ctx context.Context, intervention core.Intervention) (core.Task, error) {
