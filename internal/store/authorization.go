@@ -13,6 +13,13 @@ type IdentityProvisioner interface {
 	ProvisionIdentityUser(context.Context, string, string) (core.IdentityUser, error)
 }
 
+// CallerIdentityStore reads only the authenticated caller. The caller user ID
+// comes from credential context; workspaceID is empty unless an authorized
+// optional workspace context was supplied (REQ-2/AC-2.1, REQ-3/AC-3.1).
+type CallerIdentityStore interface {
+	GetCallerIdentity(context.Context, string, string) (core.CallerIdentity, error)
+}
+
 // MembershipStore is the only workspace authorization boundary. Callers name
 // capabilities and never inspect persisted roles directly (REQ-8/AC-8.1).
 type MembershipStore interface {

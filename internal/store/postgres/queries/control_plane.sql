@@ -196,6 +196,9 @@ WHERE t.workspace_id = sqlc.arg(workspace_id)
                ORDER BY e.id DESC LIMIT 1
            ) = 'task.context_design_added'
        ))
+  AND (sqlc.arg(assignee)::text = '' OR
+       (sqlc.arg(assignee) = 'unassigned' AND t.assignee_user_id IS NULL) OR
+       (sqlc.arg(assignee) <> 'unassigned' AND t.assignee_user_id = sqlc.arg(assignee)))
 ORDER BY t.created_at DESC, t.id
 LIMIT NULLIF(sqlc.arg(page_limit)::int, 0)
 OFFSET sqlc.arg(page_offset)::int;
@@ -232,7 +235,10 @@ WHERE t.workspace_id = sqlc.arg(workspace_id)
                  AND e.payload_json ->> 'id' = wanted.document_id
                ORDER BY e.id DESC LIMIT 1
            ) = 'task.context_design_added'
-       ));
+       ))
+  AND (sqlc.arg(assignee)::text = '' OR
+       (sqlc.arg(assignee) = 'unassigned' AND t.assignee_user_id IS NULL) OR
+       (sqlc.arg(assignee) <> 'unassigned' AND t.assignee_user_id = sqlc.arg(assignee)));
 
 -- name: ListTaskOperationsEvents :many
 SELECT e.id, e.task_id, e.job_id, e.kind, e.actor_id, e.actor_role, e.payload_json, e.at, e.workspace_id

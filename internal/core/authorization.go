@@ -77,6 +77,15 @@ type IdentityUser struct {
 	CreatedAt   time.Time `json:"created_at"`
 }
 
+// CallerIdentity is the deliberately narrow self-identity projection. Role is
+// present only when the caller supplied an authorized workspace context.
+type CallerIdentity struct {
+	ID          string        `json:"id"`
+	Email       string        `json:"email"`
+	DisplayName string        `json:"display_name"`
+	Role        WorkspaceRole `json:"role,omitempty"`
+}
+
 type MembershipGrant struct {
 	Email string        `json:"email"`
 	Role  WorkspaceRole `json:"role"`

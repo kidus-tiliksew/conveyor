@@ -401,6 +401,65 @@ func TestHTTPMutationDerivesLegacyUserAndRejectsAgentCredentialIntegration(t *te
 	}
 }
 
+func TestCallerIdentityHTTPUsesHumanCredentialAndOptionalWorkspaceRoleIntegration(t *testing.T) {
+	st := newIdentityIntegrationStore(t, 0)
+	legacy := "caller-identity-legacy"
+	if _, err := st.BootstrapIdentity(t.Context(), config.FirstOperatorIdentity{
+		OrganizationName: "Caller Identity Org", Email: "caller@example.test", DisplayName: "Caller",
+	}, legacy); err != nil {
+		t.Fatal(err)
+	}
+	principal, err := st.VerifyPersonalAccessToken(t.Context(), legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent, err := st.IssueAgentCredential(t.Context(), principal.ID, "caller identity agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace := "caller-identity-" + core.NewTaskID()
+	operatorCtx := store.WithCredential(t.Context(), core.AuthenticatedCredential{ID: "legacy", OwnerUserID: principal.ID, Kind: core.CredentialUser, Scope: core.CredentialScopeOperator})
+	operatorCtx = store.WithActor(operatorCtx, store.Actor{ID: store.UserActorID(principal.ID), Role: core.ActorUser})
+	if _, err = st.CreateWorkspace(operatorCtx, workspace, workspace, isolationConfig(workspace)); err != nil {
+		t.Fatal(err)
+	}
+	workerCredential := "caller-worker-" + core.NewTaskID()
+	if err = st.CreateWorker(store.WithWorkspace(operatorCtx, workspace), core.Worker{
+		ID: "worker-" + core.NewTaskID(), Workspace: workspace, OwnerUserID: principal.ID,
+		Name: "caller worker", CredentialHash: workerCredential, CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	handler := httpapi.NewServer(st).Handler()
+	call := func(token, target string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodGet, target, nil)
+		request.Header.Set("Authorization", "Bearer "+token)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
+	}
+	unscoped := call(legacy, "/v1/me?user_id=usr-attacker")
+	if unscoped.Code != http.StatusOK || !strings.Contains(unscoped.Body.String(), `"id":"`+principal.ID+`"`) ||
+		!strings.Contains(unscoped.Body.String(), `"email":"caller@example.test"`) || strings.Contains(unscoped.Body.String(), `"role"`) {
+		t.Fatalf("unscoped status=%d body=%s", unscoped.Code, unscoped.Body.String())
+	}
+	scoped := call(legacy, "/v1/me?workspace_id="+workspace+"&user_id=usr-attacker")
+	if scoped.Code != http.StatusOK || !strings.Contains(scoped.Body.String(), `"id":"`+principal.ID+`"`) || !strings.Contains(scoped.Body.String(), `"role":"operator"`) {
+		t.Fatalf("scoped status=%d body=%s", scoped.Code, scoped.Body.String())
+	}
+	for name, token := range map[string]string{"agent": agent.Value, "worker": workerCredential} {
+		response := call(token, "/v1/me?workspace_id="+workspace)
+		if response.Code != http.StatusUnauthorized || strings.Contains(response.Body.String(), principal.Email) {
+			t.Fatalf("%s status=%d body=%s", name, response.Code, response.Body.String())
+		}
+	}
+	hidden := call(legacy, "/v1/me?workspace_id=absent")
+	if hidden.Code != http.StatusNotFound || strings.Contains(hidden.Body.String(), principal.Email) {
+		t.Fatalf("hidden status=%d body=%s", hidden.Code, hidden.Body.String())
+	}
+}
+
 func TestIdentityBootstrapConcurrentStartsConvergeIntegration(t *testing.T) {
 	st := newIdentityIntegrationStore(t, 0)
 	identity := config.FirstOperatorIdentity{OrganizationName: "Concurrent Org", Email: "owner@example.test", DisplayName: "Owner"}

@@ -37,6 +37,29 @@ type IssuedAgentCredential struct {
 	Value  string
 }
 
+// GetCallerIdentity resolves only the credential-derived user. A workspace
+// role is joined only when the HTTP boundary has supplied an authorized
+// workspace context; the join also closes membership-revocation races.
+func (s *Store) GetCallerIdentity(ctx context.Context, userID, workspaceID string) (core.CallerIdentity, error) {
+	var identity core.CallerIdentity
+	if workspaceID == "" {
+		err := s.pool.QueryRow(ctx, `SELECT id,email,display_name FROM users WHERE id=$1 AND status='active'`, userID).
+			Scan(&identity.ID, &identity.Email, &identity.DisplayName)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return core.CallerIdentity{}, store.ErrNotFound
+		}
+		return identity, err
+	}
+	err := s.pool.QueryRow(ctx, `SELECT u.id,u.email,u.display_name,b.role
+		FROM users u JOIN workspace_role_bindings b ON b.user_id=u.id
+		WHERE u.id=$1 AND u.status='active' AND b.workspace_id=$2`, userID, workspaceID).
+		Scan(&identity.ID, &identity.Email, &identity.DisplayName, &identity.Role)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return core.CallerIdentity{}, store.ErrNotFound
+	}
+	return identity, err
+}
+
 // BootstrapIdentity ensures that the configured legacy token maps to a usable
 // operator. The advisory lock makes upgrade recovery and rotation idempotent.
 func (s *Store) BootstrapIdentity(ctx context.Context, identity config.FirstOperatorIdentity, legacyToken string) (bool, error) {

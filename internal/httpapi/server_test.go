@@ -2847,6 +2847,12 @@ func TestTaskFilterParametersReachTheStoreOnBothSurfaces(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	if err := store.SetMemoryWorkspaceMember(st, "demo", "usr-ledger", true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := taskops.New(st).SetAssignee(ctx, "ledger-sweep", "usr-ledger"); err != nil {
+		t.Fatal(err)
+	}
 
 	// Each member narrows to exactly the seeded row that carries it. The
 	// created-at bounds straddle the two creation instants. The later attachment
@@ -2862,6 +2868,8 @@ func TestTaskFilterParametersReachTheStoreOnBothSurfaces(t *testing.T) {
 		{"created from", "created_from=2026-08-01T10:00:30Z", "rollout"},
 		{"created to", "created_to=2026-08-01T10:00:30Z", "ledger-sweep"},
 		{"state and repository", "state=running&repository=web", "rollout"},
+		{"assigned user", "assignee=usr-ledger", "ledger-sweep"},
+		{"unassigned", "assignee=unassigned", "rollout"},
 	} {
 		t.Run(applied.name, func(t *testing.T) {
 			for _, surface := range []string{"/v1/task-operations", "/v1/activity"} {
@@ -2898,6 +2906,10 @@ func TestTaskFilterParametersReachTheStoreOnBothSurfaces(t *testing.T) {
 	empty := get(t, "/v1/task-operations?workspace_id=demo&governing_design=design-nobody-attached")
 	if empty.Code != http.StatusOK || strings.Contains(empty.Body.String(), `"id":"rollout"`) {
 		t.Fatalf("unattached design filter status=%d body=%s", empty.Code, empty.Body.String())
+	}
+	unknownAssignee := get(t, "/v1/task-operations?workspace_id=demo&assignee=usr-nobody&limit=1&offset=0")
+	if unknownAssignee.Code != http.StatusOK || unknownAssignee.Header().Get("X-Conveyor-Total") != "0" || unknownAssignee.Body.String() != "[]\n" {
+		t.Fatalf("unknown assignee status=%d total=%q body=%s", unknownAssignee.Code, unknownAssignee.Header().Get("X-Conveyor-Total"), unknownAssignee.Body.String())
 	}
 
 	for _, rejected := range []struct {

@@ -1,0 +1,95 @@
+package httpapi
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/store"
+)
+
+type callerIdentityFixture struct {
+	store.Store
+	calls       int
+	userID      string
+	workspaceID string
+}
+
+func (f *callerIdentityFixture) GetCallerIdentity(_ context.Context, userID, workspaceID string) (core.CallerIdentity, error) {
+	f.calls++
+	f.userID, f.workspaceID = userID, workspaceID
+	identity := core.CallerIdentity{ID: userID, Email: "owner@example.test", DisplayName: "Owner"}
+	if workspaceID != "" {
+		identity.Role = core.WorkspaceRoleUser
+	}
+	return identity, nil
+}
+
+func TestCallerIdentityIsCredentialDerivedAndWorkspaceScoped(t *testing.T) {
+	t.Parallel()
+	identities := &callerIdentityFixture{Store: store.NewMemory()}
+	memberships := &membershipFixture{
+		roles: map[string]map[string]core.WorkspaceRole{
+			"usr-owner": {"visible": core.WorkspaceRoleUser},
+		},
+	}
+	server := NewServer(identities)
+	server.CallerIdentities = identities
+	server.Memberships = memberships
+	server.Credentials = staticCredentialVerifier{
+		"human-secret": {ID: "pat-owner", OwnerUserID: "usr-owner", Kind: core.CredentialUser, Scope: core.CredentialScopeUser},
+		"agent-secret": {ID: "agt-owner", OwnerUserID: "usr-owner", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser},
+	}
+	call := func(token, target string) *httptest.ResponseRecorder {
+		t.Helper()
+		request := httptest.NewRequest(http.MethodGet, target, nil)
+		if token != "" {
+			request.Header.Set("Authorization", "Bearer "+token)
+		}
+		request.Header.Set("X-Conveyor-Actor", "user:usr-attacker")
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, request)
+		return response
+	}
+
+	unscoped := call("human-secret", "/v1/me?user_id=usr-attacker")
+	if unscoped.Code != http.StatusOK {
+		t.Fatalf("unscoped status=%d body=%s", unscoped.Code, unscoped.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(unscoped.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["id"] != "usr-owner" || got["email"] != "owner@example.test" || got["display_name"] != "Owner" || got["role"] != nil || identities.userID != "usr-owner" || identities.workspaceID != "" {
+		t.Fatalf("unscoped identity=%v requested=%q/%q", got, identities.userID, identities.workspaceID)
+	}
+
+	scoped := call("human-secret", "/v1/me?workspace_id=visible&user_id=usr-attacker")
+	if scoped.Code != http.StatusOK {
+		t.Fatalf("scoped status=%d body=%s", scoped.Code, scoped.Body.String())
+	}
+	if err := json.Unmarshal(scoped.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["id"] != "usr-owner" || got["role"] != string(core.WorkspaceRoleUser) || identities.workspaceID != "visible" {
+		t.Fatalf("scoped identity=%v requested=%q/%q", got, identities.userID, identities.workspaceID)
+	}
+	if len(memberships.capabilityCalls) != 1 || memberships.capabilityCalls[0] != core.CapabilityViewWorkspace {
+		t.Fatalf("capability calls=%v", memberships.capabilityCalls)
+	}
+
+	before := identities.calls
+	unauthorizedWorkspace := call("human-secret", "/v1/me?workspace_id=hidden")
+	if unauthorizedWorkspace.Code != http.StatusNotFound || identities.calls != before {
+		t.Fatalf("hidden status=%d body=%s identity_calls=%d", unauthorizedWorkspace.Code, unauthorizedWorkspace.Body.String(), identities.calls)
+	}
+	for _, token := range []string{"", "agent-secret", "worker-secret"} {
+		response := call(token, "/v1/me")
+		if response.Code != http.StatusUnauthorized || identities.calls != before {
+			t.Fatalf("token=%q status=%d body=%s identity_calls=%d", token, response.Code, response.Body.String(), identities.calls)
+		}
+	}
+}
