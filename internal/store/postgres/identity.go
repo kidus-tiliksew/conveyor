@@ -460,7 +460,164 @@ func (s *Store) VerifyPersonalAccessToken(ctx context.Context, candidate string)
 // credential record. The presented secret is never returned or logged.
 func (s *Store) VerifyCredential(ctx context.Context, candidate string) (core.AuthenticatedCredential, error) {
 	credential, _, err := s.verifyCredential(ctx, candidate)
+	if err == nil && credential.Method == "" {
+		credential.Method = core.CredentialMethodBearer
+	}
 	return credential, err
+}
+
+const (
+	signInLinkLifetime       = 30 * time.Minute
+	dashboardSessionLifetime = 24 * time.Hour
+)
+
+// IssueSignInLink rotates prior unredeemed links and only succeeds for an
+// existing account or pending invitation. That predicate is the no-self-
+// registration boundary.
+func (s *Store) IssueSignInLink(ctx context.Context, email string) (core.IssuedSignInLink, error) {
+	email, err := normalizeIdentityEmail(email)
+	if err != nil {
+		return core.IssuedSignInLink{}, err
+	}
+	id, err := randomIdentityID("sil", 12)
+	if err != nil {
+		return core.IssuedSignInLink{}, err
+	}
+	secret := make([]byte, 32)
+	if _, err = rand.Read(secret); err != nil {
+		return core.IssuedSignInLink{}, err
+	}
+	value := "cv_signin_" + id + "_" + base64.RawURLEncoding.EncodeToString(secret)
+	hash := sha256.Sum256([]byte(value))
+	expires := time.Now().UTC().Add(signInLinkLifetime)
+	err = s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		if err := lockIdentityEmail(ctx, tx, email); err != nil {
+			return err
+		}
+		var userID *string
+		var allowed bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM users WHERE email=$1 AND status='active') OR EXISTS(SELECT 1 FROM workspace_membership_invitations WHERE email=$1)`, email).Scan(&allowed); err != nil {
+			return err
+		}
+		if !allowed {
+			return store.ErrNotFound
+		}
+		var uid string
+		if err := tx.QueryRow(ctx, `SELECT id FROM users WHERE email=$1 AND status='active'`, email).Scan(&uid); err == nil {
+			userID = &uid
+		} else if !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE invitation_signin_tokens SET redeemed_at=COALESCE(redeemed_at,now()) WHERE email=$1 AND redeemed_at IS NULL`, email); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO invitation_signin_tokens(id,email,user_id,token_hash,expires_at) VALUES($1,$2,$3,$4,$5)`, id, email, userID, hash[:], expires); err != nil {
+			return err
+		}
+		actor := store.ActorFromContext(ctx)
+		return q.InsertDeploymentEvent(ctx, db.InsertDeploymentEventParams{Kind: "identity.signin_link_issued", ActorID: actor.ID, ActorRole: string(actor.Role), PayloadJson: core.JSONPayload(map[string]any{"signin_link_id": id, "email": email}), At: pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true}})
+	})
+	if err != nil {
+		return core.IssuedSignInLink{}, err
+	}
+	return core.IssuedSignInLink{Email: email, Value: value, ExpiresAt: expires}, nil
+}
+
+// RedeemSignInLink consumes the link and creates its browser session in one
+// transaction. Concurrent or repeated redemption therefore has one winner.
+func (s *Store) RedeemSignInLink(ctx context.Context, candidate string) (core.DashboardSession, core.IdentityUser, error) {
+	hash := sha256.Sum256([]byte(candidate))
+	var session core.DashboardSession
+	var user core.IdentityUser
+	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		var linkID, email string
+		var userID *string
+		if err := tx.QueryRow(ctx, `UPDATE invitation_signin_tokens SET redeemed_at=now() WHERE token_hash=$1 AND redeemed_at IS NULL AND expires_at>now() RETURNING id,email,user_id`, hash[:]).Scan(&linkID, &email, &userID); err != nil {
+			return notFound(err, "sign-in link")
+		}
+		if userID == nil {
+			row, err := provisionIdentityUserInTx(ctx, tx, q, email, email)
+			if err != nil {
+				return err
+			}
+			uid := row.ID
+			userID = &uid
+			if _, err = tx.Exec(ctx, `UPDATE invitation_signin_tokens SET user_id=$1 WHERE id=$2`, uid, linkID); err != nil {
+				return err
+			}
+		}
+		if err := tx.QueryRow(ctx, `SELECT id,email,display_name,status,created_at FROM users WHERE id=$1 AND status='active'`, *userID).Scan(&user.ID, &user.Email, &user.DisplayName, &user.Status, &user.CreatedAt); err != nil {
+			return err
+		}
+		sid, err := randomIdentityID("ses", 12)
+		if err != nil {
+			return err
+		}
+		raw := make([]byte, 32)
+		if _, err = rand.Read(raw); err != nil {
+			return err
+		}
+		value := "cv_session_" + sid + "_" + base64.RawURLEncoding.EncodeToString(raw)
+		sh := sha256.Sum256([]byte(value))
+		expires := time.Now().UTC().Add(dashboardSessionLifetime)
+		if _, err = tx.Exec(ctx, `INSERT INTO dashboard_sessions(id,user_id,session_hash,expires_at) VALUES($1,$2,$3,$4)`, sid, *userID, sh[:], expires); err != nil {
+			return err
+		}
+		session = core.DashboardSession{ID: sid, UserID: *userID, Value: value, ExpiresAt: expires}
+		at := pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true}
+		if err = q.InsertDeploymentEvent(ctx, db.InsertDeploymentEventParams{Kind: "identity.signin_link_redeemed", ActorID: store.UserActorID(*userID), ActorRole: string(core.ActorUser), PayloadJson: core.JSONPayload(map[string]any{"signin_link_id": linkID}), At: at}); err != nil {
+			return err
+		}
+		return q.InsertDeploymentEvent(ctx, db.InsertDeploymentEventParams{Kind: "identity.dashboard_session_created", ActorID: store.UserActorID(*userID), ActorRole: string(core.ActorUser), PayloadJson: core.JSONPayload(map[string]any{"session_id": sid}), At: at})
+	})
+	if err != nil {
+		return core.DashboardSession{}, core.IdentityUser{}, core.ErrInvalidCredential
+	}
+	return session, user, nil
+}
+
+func (s *Store) VerifyDashboardSession(ctx context.Context, candidate string) (core.AuthenticatedCredential, error) {
+	hash := sha256.Sum256([]byte(candidate))
+	var id, userID string
+	if err := s.pool.QueryRow(ctx, `UPDATE dashboard_sessions s SET last_used_at=now() FROM users u WHERE s.session_hash=$1 AND s.user_id=u.id AND s.revoked_at IS NULL AND s.expires_at>now() AND u.status='active' RETURNING s.id,s.user_id`, hash[:]).Scan(&id, &userID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return core.AuthenticatedCredential{}, core.ErrInvalidCredential
+		}
+		return core.AuthenticatedCredential{}, err
+	}
+	var operator bool
+	if err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM workspace_role_bindings WHERE user_id=$1 AND role='operator')`, userID).Scan(&operator); err != nil {
+		return core.AuthenticatedCredential{}, err
+	}
+	scope := core.CredentialScopeUser
+	if operator {
+		scope = core.CredentialScopeOperator
+	}
+	return core.AuthenticatedCredential{ID: id, OwnerUserID: userID, Kind: core.CredentialUser, Scope: scope, Method: core.CredentialMethodSession}, nil
+}
+
+func (s *Store) RevokeDashboardSession(ctx context.Context, userID, sessionID string) error {
+	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		result, err := tx.Exec(ctx, `UPDATE dashboard_sessions SET revoked_at=COALESCE(revoked_at,now()) WHERE id=$1 AND user_id=$2 AND revoked_at IS NULL`, sessionID, userID)
+		if err != nil {
+			return err
+		}
+		if result.RowsAffected() != 1 {
+			return store.ErrNotFound
+		}
+		return q.InsertDeploymentEvent(ctx, db.InsertDeploymentEventParams{Kind: "identity.dashboard_session_revoked", ActorID: store.UserActorID(userID), ActorRole: string(core.ActorUser), PayloadJson: core.JSONPayload(map[string]any{"session_id": sessionID}), At: pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true}})
+	})
+}
+
+func (s *Store) RecordInvitationDelivery(ctx context.Context, email, outcome string) error {
+	if outcome != "sent" && outcome != "failed" && outcome != "fallback" {
+		return errors.New("invalid invitation delivery outcome")
+	}
+	actor := store.ActorFromContext(ctx)
+	return s.queries.InsertDeploymentEvent(ctx, db.InsertDeploymentEventParams{
+		Kind: "identity.invitation_delivery_" + outcome, ActorID: actor.ID, ActorRole: string(actor.Role),
+		PayloadJson: core.JSONPayload(map[string]any{"email": email}), At: pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true},
+	})
 }
 
 func (s *Store) verifyCredential(ctx context.Context, candidate string) (core.AuthenticatedCredential, IdentityUser, error) {

@@ -6,6 +6,7 @@ package config
 
 import (
 	"bytes"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -62,7 +63,36 @@ const (
 	OrganizationNameEnv         = "CONVEYOR_ORGANIZATION_NAME"
 	FirstOperatorEmailEnv       = "CONVEYOR_FIRST_OPERATOR_EMAIL"
 	FirstOperatorDisplayNameEnv = "CONVEYOR_FIRST_OPERATOR_DISPLAY_NAME"
+	SMTPHostEnv                 = "CONVEYOR_SMTP_HOST"
+	SMTPPortEnv                 = "CONVEYOR_SMTP_PORT"
+	SMTPUsernameEnv             = "CONVEYOR_SMTP_USERNAME"
+	SMTPPasswordEnv             = "CONVEYOR_SMTP_PASSWORD"
+	SMTPFromEnv                 = "CONVEYOR_SMTP_FROM"
+	PublicURLEnv                = "CONVEYOR_PUBLIC_URL"
 )
+
+// InvitationDelivery is process-only configuration. In particular, the SMTP
+// password can never enter YAML, the workspace API, or an event payload.
+type InvitationDelivery struct {
+	Host, Port, Username, Password, From, PublicURL string
+	// TLSConfig is an in-memory test/deployment trust override. Environment
+	// loading leaves it nil so system roots and TLS 1.2 remain the default.
+	TLSConfig *tls.Config `yaml:"-" json:"-"`
+}
+
+func InvitationDeliveryFromEnvironment() InvitationDelivery {
+	c := InvitationDelivery{
+		Host: strings.TrimSpace(os.Getenv(SMTPHostEnv)), Port: strings.TrimSpace(os.Getenv(SMTPPortEnv)),
+		Username: strings.TrimSpace(os.Getenv(SMTPUsernameEnv)), Password: os.Getenv(SMTPPasswordEnv),
+		From: strings.TrimSpace(os.Getenv(SMTPFromEnv)), PublicURL: strings.TrimRight(strings.TrimSpace(os.Getenv(PublicURLEnv)), "/"),
+	}
+	if c.Port == "" {
+		c.Port = "587"
+	}
+	return c
+}
+
+func (c InvitationDelivery) SMTPConfigured() bool { return c.Host != "" && c.From != "" }
 
 // FirstOperatorIdentity is process-only bootstrap input. It is deliberately
 // absent from Config and WorkspaceDocument so identity never enters persisted

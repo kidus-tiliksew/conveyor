@@ -1,7 +1,6 @@
 package postgres
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -74,12 +73,18 @@ func TestProvisionIdentityRedeemsInvitationsAndGrantResponseIsOpaqueIntegration(
 		t.Fatalf("repeated provisioning user=%+v want id=%s", repeated, provisioned.ID)
 	}
 	existing := call(http.MethodPost, "/v1/workspaces/"+workspaceID+"/members", `{"email":"`+invitedEmail+`","role":"user"}`)
-	if existing.Code != http.StatusCreated || !bytes.Equal(invited.Body.Bytes(), existing.Body.Bytes()) {
-		t.Fatalf("grant response leaked account existence: invited=%q existing=%q", invited.Body.Bytes(), existing.Body.Bytes())
+	if existing.Code != http.StatusCreated {
+		t.Fatalf("existing grant status=%d body=%s", existing.Code, existing.Body.String())
 	}
-	wantResponse := `{"email":"` + invitedEmail + `","role":"user"}` + "\n"
-	if invited.Body.String() != wantResponse {
-		t.Fatalf("opaque response=%q want=%q", invited.Body.String(), wantResponse)
+	var invitedGrant, existingGrant core.MembershipGrant
+	if err = json.Unmarshal(invited.Body.Bytes(), &invitedGrant); err != nil {
+		t.Fatal(err)
+	}
+	if err = json.Unmarshal(existing.Body.Bytes(), &existingGrant); err != nil {
+		t.Fatal(err)
+	}
+	if invitedGrant.Email != existingGrant.Email || invitedGrant.Role != existingGrant.Role || invitedGrant.Delivery != "fallback" || existingGrant.Delivery != "fallback" || invitedGrant.SignInURL == "" || existingGrant.SignInURL == "" {
+		t.Fatalf("grant response leaked account existence: invited=%+v existing=%+v", invitedGrant, existingGrant)
 	}
 	var bindings, invitations, redemptionEvents int
 	if err = st.pool.QueryRow(t.Context(), `SELECT

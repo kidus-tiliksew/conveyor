@@ -75,6 +75,8 @@ type Server struct {
 	IdentityProvisioner   store.IdentityProvisioner
 	CallerIdentities      store.CallerIdentityStore
 	PersonalTokens        store.PersonalAccessTokenStore
+	InvitationSessions    store.InvitationSessionStore
+	InvitationDelivery    config.InvitationDelivery
 	EnsureWorkspaceQueues func(string) error
 	Deployment            *config.Config
 	WorkOrders            *workorder.Service
@@ -104,6 +106,9 @@ func NewServer(s store.Store) *Server {
 	if tokens, ok := s.(store.PersonalAccessTokenStore); ok {
 		server.PersonalTokens = tokens
 	}
+	if sessions, ok := s.(store.InvitationSessionStore); ok {
+		server.InvitationSessions = sessions
+	}
 	return server
 }
 
@@ -120,6 +125,8 @@ func (s *Server) Handler() http.Handler {
 			writeJSON(w, http.StatusOK, map[string]string{"version": s.Release})
 		})
 		r.Post("/worker/enroll", s.enrollWorker)
+		r.Post("/sign-in/redeem", s.redeemSignInLink)
+		r.With(s.requireSelfServiceCredential).Post("/sign-out", s.signOutDashboardSession)
 		r.With(s.requireWorkerAuth).Post("/worker/heartbeat", s.heartbeatWorker)
 		r.With(s.requireWorkerAuth).Get("/worker/config", s.getWorkerConfig)
 		r.With(s.requireWorkerAuth).Get("/worker/work-orders", s.listWorkerOrders)
@@ -146,6 +153,7 @@ func (s *Server) Handler() http.Handler {
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityManageMembership)).Post("/workspaces/{workspace_id}/members", s.grantWorkspaceMembership)
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityManageMembership)).Get("/workspaces/{workspace_id}/invitations", s.listWorkspaceInvitations)
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityManageMembership)).Delete("/workspaces/{workspace_id}/invitations/{email}", s.revokeWorkspaceInvitation)
+		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityManageMembership)).Post("/workspaces/{workspace_id}/invitations/{email}/resend", s.resendWorkspaceInvitation)
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityManageMembership)).Delete("/workspaces/{workspace_id}/members/{user_id}", s.revokeWorkspaceMembership)
 		r.Group(func(r chi.Router) {
 			r.Use(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityViewWorkspace))
@@ -370,7 +378,7 @@ func (s *Server) requireMutationCapability(capability core.Capability) func(http
 			credential, ok := store.CredentialFromContext(r.Context())
 			if !ok {
 				var err error
-				credential, err = s.authenticateUserCredential(r)
+				credential, err = s.authenticateHumanCredential(r)
 				if err != nil {
 					writeCredentialVerificationError(w, err)
 					return
@@ -380,6 +388,9 @@ func (s *Server) requireMutationCapability(capability core.Capability) func(http
 			if !ok || credential.Kind != core.CredentialUser {
 				w.Header().Set("WWW-Authenticate", "Bearer")
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			if !s.requireSessionMutationProof(w, r, credential) {
 				return
 			}
 			ctx := store.WithCredential(r.Context(), credential)
@@ -434,7 +445,7 @@ func (s *Server) requireWorkspaceAuth(next http.Handler) http.Handler {
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		credential, err := s.authenticateUserCredential(r)
+		credential, err := s.authenticateHumanCredential(r)
 		if err != nil {
 			writeCredentialVerificationError(w, err)
 			return
@@ -442,6 +453,9 @@ func (s *Server) requireWorkspaceAuth(next http.Handler) http.Handler {
 		if credential.Kind != core.CredentialUser {
 			w.Header().Set("WWW-Authenticate", "Bearer")
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if !s.requireSessionMutationProof(w, r, credential) {
 			return
 		}
 		ctx := store.WithCredential(r.Context(), credential)
@@ -457,7 +471,7 @@ func (s *Server) requireWorkspaceAuth(next http.Handler) http.Handler {
 // cannot enumerate or revoke its owner's tokens (REQ-2/AC-2.2).
 func (s *Server) requireSelfServiceCredential(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		credential, err := s.authenticateUserCredential(r)
+		credential, err := s.authenticateHumanCredential(r)
 		if err != nil {
 			writeCredentialVerificationError(w, err)
 			return
@@ -465,6 +479,9 @@ func (s *Server) requireSelfServiceCredential(next http.Handler) http.Handler {
 		if credential.Kind != core.CredentialUser {
 			w.Header().Set("WWW-Authenticate", "Bearer")
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if !s.requireSessionMutationProof(w, r, credential) {
 			return
 		}
 		ctx := store.WithCredential(r.Context(), credential)
@@ -551,6 +568,47 @@ func (s *Server) authenticateUserCredential(r *http.Request) (core.Authenticated
 		return core.AuthenticatedCredential{}, core.ErrInvalidCredential
 	}
 	return s.verifyCredential(r.Context(), provided)
+}
+
+func (s *Server) authenticateHumanCredential(r *http.Request) (core.AuthenticatedCredential, error) {
+	if strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
+		credential, err := s.authenticateUserCredential(r)
+		if err == nil && credential.Method == "" {
+			credential.Method = core.CredentialMethodBearer
+		}
+		return credential, err
+	}
+	if s.InvitationSessions == nil {
+		return core.AuthenticatedCredential{}, core.ErrInvalidCredential
+	}
+	cookie, err := r.Cookie(dashboardSessionCookie)
+	if err != nil || cookie.Value == "" {
+		return core.AuthenticatedCredential{}, core.ErrInvalidCredential
+	}
+	return s.InvitationSessions.VerifyDashboardSession(r.Context(), cookie.Value)
+}
+
+func (s *Server) requireSessionMutationProof(w http.ResponseWriter, r *http.Request, credential core.AuthenticatedCredential) bool {
+	if credential.Method != core.CredentialMethodSession || r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodOptions {
+		return true
+	}
+	if r.Header.Get("X-Conveyor-CSRF") != "1" {
+		http.Error(w, "CSRF proof required", http.StatusForbidden)
+		return false
+	}
+	expectedOrigin := s.InvitationDelivery.PublicURL
+	if expectedOrigin == "" {
+		scheme := "http"
+		if r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
+			scheme = "https"
+		}
+		expectedOrigin = scheme + "://" + r.Host
+	}
+	if origin := strings.TrimRight(strings.TrimSpace(r.Header.Get("Origin")), "/"); origin == "" || origin != expectedOrigin {
+		http.Error(w, "invalid request origin", http.StatusForbidden)
+		return false
+	}
+	return true
 }
 
 func (s *Server) verifyCredential(ctx context.Context, provided string) (core.AuthenticatedCredential, error) {

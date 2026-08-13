@@ -169,6 +169,16 @@ func (s *Server) grantWorkspaceMembership(w http.ResponseWriter, r *http.Request
 		writeValidationError(w, "membership", err)
 		return
 	}
+	if s.InvitationSessions != nil {
+		delivery, issueErr := s.issueAndDeliverSignInLink(r, result.Email)
+		if issueErr != nil {
+			// Membership/invitation state is already durable. Delivery is
+			// intentionally best effort and must never roll it back.
+			result.Delivery = "failed"
+		} else {
+			result.SignInURL, result.Delivery = delivery.SignInURL, delivery.Delivery
+		}
+	}
 	writeJSON(w, http.StatusCreated, result)
 }
 
