@@ -11,6 +11,7 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/pipeline"
+	"github.com/kidus-tiliksew/conveyor/internal/releaseinfo"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
@@ -62,7 +63,7 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 	response := rpcResponse{JSONRPC: "2.0", ID: request.ID}
 	switch request.Method {
 	case "initialize":
-		response.Result = map[string]any{"protocolVersion": "2025-03-26", "capabilities": map[string]any{"tools": map[string]any{"listChanged": false}}, "serverInfo": map[string]string{"name": "conveyor", "version": "phase-4.7-v1.5"}}
+		response.Result = map[string]any{"protocolVersion": "2025-03-26", "capabilities": map[string]any{"tools": map[string]any{"listChanged": false}}, "serverInfo": map[string]string{"name": "conveyor", "version": releaseinfo.Version}}
 	case "notifications/initialized":
 		w.WriteHeader(http.StatusAccepted)
 		return

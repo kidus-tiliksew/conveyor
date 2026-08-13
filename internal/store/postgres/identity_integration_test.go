@@ -605,6 +605,14 @@ func TestSelfServicePersonalAccessTokensAreOwnerScopedIntegration(t *testing.T) 
 	if storedValues != 0 {
 		t.Fatal("issued token value was persisted in cleartext")
 	}
+	var issueEvents int
+	if err := st.pool.QueryRow(t.Context(), `SELECT count(*) FROM deployment_events
+		WHERE kind='identity.personal_token_issued'
+		  AND actor_id=$1 AND actor_role='human'
+		  AND payload_json=jsonb_build_object('credential_id',$2::text,'label','laptop')
+		  AND payload_json::text NOT LIKE $3`, store.UserActorID(alice.ID), issued.ID, "%"+issued.Value+"%").Scan(&issueEvents); err != nil || issueEvents != 1 {
+		t.Fatalf("personal-token issue audit count=%d err=%v", issueEvents, err)
+	}
 
 	// The new credential authenticates, and listing never reproduces its value.
 	listed := call(http.MethodGet, "/v1/tokens", issued.Value, "")
@@ -658,6 +666,22 @@ func TestSelfServicePersonalAccessTokensAreOwnerScopedIntegration(t *testing.T) 
 	}
 	if revokedRows != 1 || strings.Contains(after.Body.String(), issued.Value) {
 		t.Fatalf("post-revocation list=%s", after.Body.String())
+	}
+	var revokeEvents int
+	if err := st.pool.QueryRow(t.Context(), `SELECT count(*) FROM deployment_events
+		WHERE kind='identity.personal_token_revoked'
+		  AND actor_id=$1 AND actor_role='human'
+		  AND payload_json=jsonb_build_object('credential_id',$2::text,'label','laptop')
+		  AND payload_json::text NOT LIKE $3`, store.UserActorID(alice.ID), issued.ID, "%"+issued.Value+"%").Scan(&revokeEvents); err != nil || revokeEvents != 1 {
+		t.Fatalf("personal-token revoke audit count=%d err=%v", revokeEvents, err)
+	}
+	for _, statement := range []string{
+		`UPDATE deployment_events SET actor_id='tampered' WHERE payload_json->>'credential_id'=$1`,
+		`DELETE FROM deployment_events WHERE payload_json->>'credential_id'=$1`,
+	} {
+		if _, err := st.pool.Exec(t.Context(), statement, issued.ID); err == nil {
+			t.Fatalf("deployment token audit accepted append-only mutation: %s", statement)
+		}
 	}
 
 	// Agent credentials share the user_tokens table but are not human

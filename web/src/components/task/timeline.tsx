@@ -1,5 +1,6 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import {
   AlertTriangle,
   Check,
@@ -26,6 +27,7 @@ import {
   type PanelSeat,
   type TimelineEntry,
 } from '../../lib/activity'
+import { fetchWorkspaceMembers } from '../../lib/api'
 import {
   defaultReasonCode,
   interventionReasonLabels,
@@ -36,6 +38,7 @@ import { relatedTaskRoute, type TaskRouteVariant } from '../../lib/task-route'
 import type { ActivityItem, InterventionAction, Job, WorkOrder } from '../../lib/types'
 import { absoluteTime, cn, compactTokens, duration } from '../../lib/utils'
 import { Badge } from '../ui/badge'
+import { useOperatorToken, useWorkspaceSelection } from '../app-shell'
 import { MarkdownProse } from '../ui/markdown-prose'
 import { ReviewPanel, changesComposerHint, gateTone, isReviewable, type GateTone } from './review-panel'
 import { RedispatchCard, canRedispatch } from './redispatch-card'
@@ -79,7 +82,15 @@ export function Timeline({
   executionActions?: boolean
   routeVariant?: TaskRouteVariant
 }) {
-  const entries = buildTimeline(item)
+  const token = useOperatorToken()
+  const { workspace } = useWorkspaceSelection()
+  const members = useQuery({
+    queryKey: ['workspace-members', token, workspace],
+    queryFn: () => fetchWorkspaceMembers(token, workspace),
+    enabled: Boolean(token && workspace),
+    retry: false,
+  })
+  const entries = buildTimeline(item, members.data ?? [])
   const currentExecution = deriveCurrentExecutionState(item)
   const technicalEvents = technicalActivity(item)
   const usageReportedOrderIDs = reportedUsageOrderIDs(item)

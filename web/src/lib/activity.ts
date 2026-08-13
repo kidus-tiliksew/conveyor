@@ -7,6 +7,7 @@ import type {
   TaskAssignee,
   TaskEvent,
   TaskRelation,
+  WorkspaceMembership,
   WorkOrder,
 } from './types'
 
@@ -27,11 +28,25 @@ export function assigneeName(assignee: TaskAssignee): string {
 // is still better than the transport sentence around it.
 const claimRefusalPattern = /task \S+ is assigned to (\S+?);\s*only that assignee may claim its work orders/i
 
-export function humanizeClaimRefusal(text: string | undefined, assignee?: TaskAssignee): string | undefined {
+function assigneeForUser(
+  userID: string,
+  assignee?: TaskAssignee,
+  members: WorkspaceMembership[] = [],
+): TaskAssignee | undefined {
+  if (assignee?.user_id === userID) return assignee
+  return members.find((member) => member.user_id === userID)
+}
+
+export function humanizeClaimRefusal(
+  text: string | undefined,
+  assignee?: TaskAssignee,
+  members: WorkspaceMembership[] = [],
+): string | undefined {
   if (!text) return text
   const match = claimRefusalPattern.exec(text)
   if (!match) return text
-  const name = assignee && assignee.user_id === match[1] ? assigneeName(assignee) : match[1]
+  const resolved = assigneeForUser(match[1], assignee, members)
+  const name = resolved ? assigneeName(resolved) : match[1]
   return `Assigned to ${name} — only they can pick this up.`
 }
 
@@ -160,6 +175,19 @@ export function pendingUserRequestChanges(events: TaskEvent[]): ReturnedForChang
     if (event.kind === 'work_order.claimed' && payload.stage === 'implement') pending = null
   }
   return pending
+}
+
+// Match store.UserRequestChangesHold: the latest implement claim records
+// whether the bounced work originated in an explicit `conveyor run`. Hold is
+// deliberately not consulted because operators may hold worker-pipeline work.
+export function userRunImplementation(events: TaskEvent[]): boolean {
+  for (let index = events.length - 1; index >= 0; index--) {
+    const event = events[index]
+    const payload = event.payload ?? {}
+    if (event.kind !== 'work_order.claimed' || payload.stage !== 'implement') continue
+    return typeof payload.claimant_id === 'string' && /^run:.+/.test(payload.claimant_id)
+  }
+  return false
 }
 
 // Board-card gate chip: says what the gate is waiting for instead of a
@@ -760,6 +788,7 @@ function noteFor(
   event: TaskEvent,
   panels: PanelIndex,
   assignee?: TaskAssignee,
+  members: WorkspaceMembership[] = [],
 ): Omit<Extract<TimelineEntry, { type: 'note' }>, 'type' | 'at' | 'key'> | undefined {
   const payload = event.payload ?? {}
   switch (event.kind) {
@@ -770,7 +799,8 @@ function noteFor(
     // name, so a still-current assignment reads as a person.
     case 'task.assignee.set': {
       const userID = typeof payload.assignee_user_id === 'string' ? payload.assignee_user_id : ''
-      const name = assignee && assignee.user_id === userID ? assigneeName(assignee) : userID
+      const resolved = assigneeForUser(userID, assignee, members)
+      const name = resolved ? assigneeName(resolved) : userID
       return { title: name ? `Assigned to ${name}` : 'Assignee set' }
     }
     // Revoking a member's workspace binding clears their assignments too, so
@@ -1057,7 +1087,7 @@ function orderEntry(order: WorkOrder, hasJobEntry: boolean): Extract<TimelineEnt
 // The costed event timeline: one entry per stage execution,
 // interleaved with the notable pipeline events and every human/agent
 // decision, in wall-clock order. This is the audit log rendered as a story.
-export function buildTimeline(item: ActivityItem): TimelineEntry[] {
+export function buildTimeline(item: ActivityItem, members: WorkspaceMembership[] = []): TimelineEntry[] {
   const entries: TimelineEntry[] = []
   const panels = buildReviewPanels(item)
   const dependencyBlockedOrder = dependencyBlockedImplementationOrder(item)
@@ -1092,7 +1122,7 @@ export function buildTimeline(item: ActivityItem): TimelineEntry[] {
   }
   for (const event of item.events) {
     if (attemptEventKinds.has(event.kind)) continue
-    const note = noteFor(event, panels, item.task.assignee)
+    const note = noteFor(event, panels, item.task.assignee, members)
     if (note) entries.push({ type: 'note', at: event.at, key: `event-${event.id}`, ...note })
   }
   for (const diagnostic of item.review_diagnostics ?? []) {

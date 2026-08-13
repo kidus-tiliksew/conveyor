@@ -1,6 +1,6 @@
 import { useQueries } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { pendingUserRequestChanges } from '../../lib/activity'
+import { pendingUserRequestChanges, userRunImplementation } from '../../lib/activity'
 import { fetchTaskActivity } from '../../lib/api'
 import { isBlueprintAnchor } from '../../lib/blueprint'
 import type { ActivityItem } from '../../lib/types'
@@ -32,12 +32,11 @@ function excerpt(feedback: string): string {
   return feedback.length > EXCERPT_LIMIT ? `${feedback.slice(0, EXCERPT_LIMIT).trimEnd()}…` : feedback
 }
 
-// A held task was run from someone's own machine, so nothing will pick the
-// feedback up until they run it again; an unheld task is back in the queue and
-// the factory continues it without them. Saying which is the difference between
-// an entry that reads as a to-do and one that reads as a notification.
+// The latest implement claimant is the durable discriminator the server uses
+// when bouncing work. A task-run claim needs the person to resume it; a worker
+// claim returns to the factory even when an operator separately holds the task.
 function nextStep(item: ActivityItem): string {
-  return item.task.hold
+  return userRunImplementation(item.events)
     ? `Nothing is running this — pick the feedback up by running the task again from your machine (conveyor run ${item.task.id}).`
     : 'The factory is already on it — a fresh implementation run is carrying this feedback.'
 }

@@ -706,6 +706,10 @@ test('tasks view filters by assignee and by unassigned', async ({ page }) => {
 // merged does not come back.
 test('My tasks shows only the signed-in user assignments that still need them', async ({ page }) => {
   await openTasks(page)
+  await page.getByRole('button', { name: 'Open filters' }).click()
+  await page.getByRole('tab', { name: 'Repository' }).click()
+  await page.getByRole('option', { name: 'conveyor' }).click()
+  await expect(rows(page)).toHaveCount(3)
   const preset = page.getByRole('button', { name: 'My tasks' })
   await expect(preset).toHaveAttribute('aria-pressed', 'false')
 
@@ -716,11 +720,13 @@ test('My tasks shows only the signed-in user assignments that still need them', 
   await expect(rows(page)).toContainText(['Stuck conveyor change'])
   await expect(rows(page)).toHaveCount(1)
 
-  // Pressing it again hands the surface back rather than stranding the operator
-  // inside a view with no way out.
+  // The repo-narrowed subset is intentionally still the pressed preset. Turning
+  // it off removes only the assignee and preset states; the repo survives.
+  await expect(preset).toHaveAttribute('aria-pressed', 'true')
   await preset.click()
   await expect(preset).toHaveAttribute('aria-pressed', 'false')
-  await expect(rows(page)).toHaveCount(operations.length)
+  await expect(rows(page)).toHaveCount(3)
+  await expect(rows(page)).toContainText(['Wire the Tasks view', 'Historical anchor', 'Stuck conveyor change'])
 })
 
 // The task that came back to the signed-in person, and what it carries: the
@@ -751,10 +757,19 @@ function returnedSummary(hold: boolean) {
   }
 }
 
-function returnedDetail(hold: boolean, claimedAfter = false) {
+function returnedDetail(hold: boolean, claimantID: string, claimedAfter = false) {
   const events = [
     {
       id: 1,
+      task_id: 'task-returned',
+      kind: 'work_order.claimed',
+      actor_id: claimantID,
+      actor_role: 'runner',
+      payload: { id: 'task-returned-implement-1', stage: 'implement', claimant_id: claimantID },
+      at: '2026-08-06T10:55:00Z',
+    },
+    {
+      id: 2,
       task_id: 'task-returned',
       kind: 'pipeline.bounced',
       actor_id: 'usr-assigned',
@@ -765,7 +780,7 @@ function returnedDetail(hold: boolean, claimedAfter = false) {
   ]
   if (claimedAfter) {
     events.push({
-      id: 2,
+      id: 3,
       task_id: 'task-returned',
       kind: 'work_order.claimed',
       actor_id: 'worker-1',
@@ -787,19 +802,19 @@ function returnedDetail(hold: boolean, claimedAfter = false) {
   }
 }
 
-async function openTasksWithReturn(page: Page, options: { hold: boolean; claimedAfter?: boolean }) {
+async function openTasksWithReturn(page: Page, options: { hold: boolean; claimantID: string; claimedAfter?: boolean }) {
   await routeTasksSurface(page)
   // Registered after the surface defaults, so these win.
   await page.route('**/v1/activity?**', (route) => route.fulfill({ json: [returnedSummary(options.hold)] }))
   await page.route('**/v1/tasks/task-returned/activity**', (route) =>
-    route.fulfill({ json: returnedDetail(options.hold, options.claimedAfter) }),
+    route.fulfill({ json: returnedDetail(options.hold, options.claimantID, options.claimedAfter) }),
   )
   await page.goto('/tasks')
   await expect(page.getByRole('heading', { name: 'Tasks' })).toBeVisible()
 }
 
-test('work that came back with feedback reaches the signed-in user’s attention', async ({ page }) => {
-  await openTasksWithReturn(page, { hold: true })
+test('a run-claimed bounce tells the signed-in user to resume it regardless of hold', async ({ page }) => {
+  await openTasksWithReturn(page, { hold: false, claimantID: 'run:usr-assigned' })
   const attention = page.getByRole('region', { name: 'Needs your attention' })
   await expect(attention.getByText('Returned conveyor change came back to you with feedback')).toBeVisible()
   await expect(attention.getByText(returnedFeedback, { exact: false })).toBeVisible()
@@ -811,8 +826,8 @@ test('work that came back with feedback reaches the signed-in user’s attention
   await expect(attention.getByText('conveyor run task-returned', { exact: false })).toBeVisible()
 })
 
-test('worker-pipeline work that came back says the factory is already continuing it', async ({ page }) => {
-  await openTasksWithReturn(page, { hold: false })
+test('operator-held worker-pipeline work says the factory continues it once released', async ({ page }) => {
+  await openTasksWithReturn(page, { hold: true, claimantID: 'worker-1' })
   const attention = page.getByRole('region', { name: 'Needs your attention' })
   await expect(attention.getByText('Returned conveyor change came back to you with feedback')).toBeVisible()
   await expect(attention.getByText('The factory is already on it', { exact: false })).toBeVisible()
@@ -823,7 +838,7 @@ test('worker-pipeline work that came back says the factory is already continuing
 // implementation run has claimed the work the return created. Presentation of
 // an existing marker, with no derivation of its own.
 test('the returned-with-feedback entry clears once implementation picks it up', async ({ page }) => {
-  await openTasksWithReturn(page, { hold: false, claimedAfter: true })
+  await openTasksWithReturn(page, { hold: true, claimantID: 'worker-1', claimedAfter: true })
   await expect(page.getByRole('region', { name: 'Needs your attention' })).toHaveCount(0)
   // The list itself is untouched by the band above it.
   await expect(rows(page)).toHaveCount(operations.length)
