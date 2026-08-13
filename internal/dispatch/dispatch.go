@@ -945,20 +945,6 @@ func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task c
 			}
 		}
 	}
-	reviewedCommitSHA := ""
-	events, _ := d.Store.ListEvents(ctx, task.ID)
-	for i := len(events) - 1; i >= 0; i-- {
-		if events[i].Kind != "pull_request.opened" {
-			continue
-		}
-		var pullRequest struct {
-			HeadSHA string `json:"head_sha"`
-		}
-		if json.Unmarshal(events[i].Payload, &pullRequest) == nil && pullRequest.HeadSHA != "" {
-			reviewedCommitSHA = pullRequest.HeadSHA
-			break
-		}
-	}
 	implementModel := ""
 	jobs, _ := d.Store.ListJobs(ctx, task.ID)
 	for i := len(jobs) - 1; i >= 0; i-- {
@@ -984,6 +970,27 @@ func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task c
 		}
 		decisionReviewKind, decisionReviewScope = order.ReviewKind, order.ReviewScope
 		decisionBaseline, decisionHead = order.BaselineSHA, order.HeadSHA
+	}
+	reviewedCommitSHA := ""
+	if decisionReviewKind == "refresh" {
+		if decisionHead == "" {
+			return fmt.Errorf("refresh review work order %s has no reviewed head SHA", reviewWorkOrderID)
+		}
+		reviewedCommitSHA = decisionHead
+	} else {
+		events, _ := d.Store.ListEvents(ctx, task.ID)
+		for i := len(events) - 1; i >= 0; i-- {
+			if events[i].Kind != "pull_request.opened" {
+				continue
+			}
+			var pullRequest struct {
+				HeadSHA string `json:"head_sha"`
+			}
+			if json.Unmarshal(events[i].Payload, &pullRequest) == nil && pullRequest.HeadSHA != "" {
+				reviewedCommitSHA = pullRequest.HeadSHA
+				break
+			}
+		}
 	}
 	if err := taskops.New(d.Store).AcceptReviewDecision(ctx, core.ReviewDecision{
 		TaskID: task.ID, JobID: job.ID, ReviewWorkOrderID: reviewWorkOrderID,

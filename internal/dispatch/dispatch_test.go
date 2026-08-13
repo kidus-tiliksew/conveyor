@@ -1400,6 +1400,148 @@ func TestRepeatedStaleApprovalPollKeepsActiveRefreshSeat(t *testing.T) {
 	}
 }
 
+func TestApprovedRefreshBindsOrderHeadAndRestoresMergeReadiness(t *testing.T) {
+	ctx, st, task, d := approvedMergeFixtureWithScopeAndGate(t, "acme/app", config.RefreshReviewDelta, true)
+	if err := st.BindTaskApproval(ctx, task.ID, "head-a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]any{"head_sha": "head-a"})}); err != nil {
+		t.Fatal(err)
+	}
+	d.Cfg.Routing = config.Routing{Stages: map[string]config.StageRoute{"review": {Model: "reviewer", Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"}}}
+	d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
+		return githubtrigger.PullRequest{Number: 12, State: "open", Mergeable: "MERGEABLE", HeadSHA: "head-b"}, nil
+	}
+	if readiness, err := d.ReadMergeReadiness(ctx, task); err != nil || readiness.State != "STALE" {
+		t.Fatalf("initial readiness=%+v err=%v", readiness, err)
+	}
+	orders, err := st.ListTaskWorkOrders(ctx, task.ID)
+	if err != nil || len(orders) != 1 {
+		t.Fatalf("orders=%+v err=%v", orders, err)
+	}
+	order := orders[0]
+	claimed, err := storetest.For(st).ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{SessionID: "refresh-review", ClientToken: "refresh-token", Agent: "codex", Model: "reviewer", Lease: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobs, err := st.ListJobs(ctx, task.ID)
+	if err != nil || len(jobs) != 1 || jobs[0].ID != order.JobID {
+		t.Fatalf("jobs=%+v err=%v", jobs, err)
+	}
+	job := jobs[0]
+	current, err := st.GetTask(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = d.ApplyExternalReviewPinned(ctx, current, job, pipeline.Review{Verdict: "approve", ReasonCode: "approved", Summary: "head B approved"}, order.ID, claimed.SessionID, "reviewer", []core.ServedRequirementContext{}, emptyGovernanceAuthority(), true); err != nil {
+		t.Fatal(err)
+	}
+	current, err = st.GetTask(ctx, task.ID)
+	if err != nil || current.ApprovedHeadSHA != "head-b" || current.ReviewedHeadSHA != "head-b" || current.ApprovalStale || current.RefreshBaselineSHA != "" || current.RefreshHeadSHA != "" || current.RefreshReviewScope != "" {
+		t.Fatalf("settled task=%+v err=%v", current, err)
+	}
+	if readiness, readErr := d.ReadMergeReadiness(ctx, current); readErr != nil || readiness.State != "MERGEABLE" {
+		t.Fatalf("settled readiness=%+v err=%v", readiness, readErr)
+	}
+	orders, err = st.ListTaskWorkOrders(ctx, task.ID)
+	if err != nil || len(orders) != 1 {
+		t.Fatalf("refresh approval created replacement orders=%+v err=%v", orders, err)
+	}
+	events, err := st.ListEvents(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Kind != "review.completed" {
+			continue
+		}
+		var payload struct {
+			ReviewedCommitSHA string `json:"reviewed_commit_sha"`
+		}
+		if json.Unmarshal(event.Payload, &payload) != nil || payload.ReviewedCommitSHA != "head-b" {
+			t.Fatalf("review completion did not bind refresh head: %s", event.Payload)
+		}
+		return
+	}
+	t.Fatal("review.completed event not found")
+}
+
+func TestOrdinaryReviewWithoutOrderHeadFallsBackToPullRequestOpenedHead(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "test")
+	st := store.NewMemory()
+	task := core.Task{ID: "ordinary-review-head", Workspace: "test", Repo: "app", State: core.TaskRunning, NextStage: core.StageReview, PolicyVersion: 1, MergeApproval: true, CreatedAt: time.Now()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: task.ID + "-review-1-seat-1", TaskID: task.ID, Stage: core.StageReview, State: core.JobDone, ModelTier: "reviewer"}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	order := core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageReview, ReviewRound: 1, ReviewSeat: 1}
+	if err := storetest.For(st).CreateWorkOrder(ctx, order); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]any{"head_sha": "ordinary-head"})}); err != nil {
+		t.Fatal(err)
+	}
+	d := New(st, &config.Config{Workspace: "test"}, nil)
+	if err := d.ApplyExternalReviewPinned(ctx, task, job, pipeline.Review{Verdict: "approve", ReasonCode: "approved", Summary: "ordinary review"}, order.ID, "ordinary-session", "reviewer", []core.ServedRequirementContext{}, emptyGovernanceAuthority()); err != nil {
+		t.Fatal(err)
+	}
+	current, err := st.GetTask(ctx, task.ID)
+	if err != nil || current.ReviewedHeadSHA != "ordinary-head" {
+		t.Fatalf("ordinary reviewed head=%q err=%v", current.ReviewedHeadSHA, err)
+	}
+}
+
+func TestNonAdvancingRefreshBindingParksEpisodeWithoutReplacementRound(t *testing.T) {
+	ctx, st, task, d := approvedMergeFixtureWithScopeAndGate(t, "acme/app", config.RefreshReviewDelta, true)
+	if err := st.BindTaskApproval(ctx, task.ID, "head-a"); err != nil {
+		t.Fatal(err)
+	}
+	d.Cfg.Routing = config.Routing{Stages: map[string]config.StageRoute{"review": {Model: "reviewer", Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"}}}
+	d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
+		return githubtrigger.PullRequest{Number: 12, State: "open", Mergeable: "MERGEABLE", HeadSHA: "head-b"}, nil
+	}
+	if readiness, err := d.ReadMergeReadiness(ctx, task); err != nil || readiness.State != "STALE" {
+		t.Fatalf("initial readiness=%+v err=%v", readiness, err)
+	}
+	orders, err := st.ListTaskWorkOrders(ctx, task.ID)
+	if err != nil || len(orders) != 1 {
+		t.Fatalf("orders=%+v err=%v", orders, err)
+	}
+	order := orders[0]
+	claimed, err := storetest.For(st).ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{SessionID: "regressed-refresh", ClientToken: "regressed-token", Lease: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision := core.ReviewDecision{
+		TaskID: task.ID, JobID: order.JobID, ReviewWorkOrderID: order.ID, ClaimSession: claimed.SessionID,
+		ReviewRound: order.ReviewRound, ReviewSeat: order.ReviewSeat, ReviewKind: order.ReviewKind, ReviewScope: order.ReviewScope,
+		BaselineSHA: order.BaselineSHA, HeadSHA: order.HeadSHA, ReviewedCommitSHA: "head-a",
+		Verdict: "approve", ReasonCode: "approved", Summary: "forced stale binding", PolicyVersion: 1, MergeApproval: true,
+	}
+	if err = storetest.For(st).AcceptReviewDecision(ctx, decision); err != nil {
+		t.Fatal(err)
+	}
+	current, err := st.GetTask(ctx, task.ID)
+	if err != nil || !current.ApprovalStale || current.ApprovedHeadSHA != "head-a" || current.RefreshBaselineSHA != "head-a" || current.RefreshHeadSHA != "head-b" || current.RefreshReviewScope != config.RefreshReviewDelta {
+		t.Fatalf("parked task=%+v err=%v", current, err)
+	}
+	for range 2 {
+		if readiness, readErr := d.ReadMergeReadiness(ctx, current); readErr != nil || readiness.State != "STALE" {
+			t.Fatalf("parked readiness=%+v err=%v", readiness, readErr)
+		}
+	}
+	orders, err = st.ListTaskWorkOrders(ctx, task.ID)
+	if err != nil || len(orders) != 1 {
+		t.Fatalf("non-advancing binding created replacement orders=%+v err=%v", orders, err)
+	}
+	if count, countErr := st.CountEvents(ctx, task.ID, "review.refresh_binding_not_advanced"); countErr != nil || count != 1 {
+		t.Fatalf("non-advancing events=%d err=%v", count, countErr)
+	}
+}
+
 func TestCleanStaleApprovalCanSkipRefreshUnderFrozenNone(t *testing.T) {
 	ctx, st, task, d := approvedMergeFixtureWithScope(t, "acme/app", config.RefreshReviewNone)
 	if err := st.BindTaskApproval(ctx, task.ID, "approved-head"); err != nil {
