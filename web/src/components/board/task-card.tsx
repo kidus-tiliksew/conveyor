@@ -1,7 +1,10 @@
+import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { gateBadge, humanizeClaimRefusal, reviewDiagnosticBadge } from '../../lib/activity'
+import { fetchWorkspaceMembers } from '../../lib/api'
 import type { ActivitySummary } from '../../lib/types'
 import { cn, relativeTime } from '../../lib/utils'
+import { useOperatorToken, useWorkspaceSelection } from '../app-shell'
 import { AssigneeChip } from '../task/assignee-chip'
 import { Badge } from '../ui/badge'
 
@@ -20,6 +23,14 @@ function repoColor(seed: string) {
 // header, so a healthy card carries no chips at all and an exception stands
 // out on an otherwise calm board.
 export function TaskCard({ item, selected }: { item: ActivitySummary; selected: boolean }) {
+  const token = useOperatorToken()
+  const { workspace } = useWorkspaceSelection()
+  const { data: members = [] } = useQuery({
+    queryKey: ['workspace-members', token, workspace],
+    queryFn: () => fetchWorkspaceMembers(token, workspace),
+    enabled: Boolean(token && workspace),
+    retry: false,
+  })
   const lastAt = item.last_event_at || item.task.created_at
   const gate = gateBadge(item)
   const reviewDiagnostic = reviewDiagnosticBadge(item)
@@ -79,7 +90,7 @@ export function TaskCard({ item, selected }: { item: ActivitySummary; selected: 
       )}
       {item.stalled?.last_failure && (
         <p className="mt-2 line-clamp-2 text-[11px] leading-4 text-failure">
-          {humanizeClaimRefusal(item.stalled.last_failure, item.task.assignee)}
+          {humanizeClaimRefusal(item.stalled.last_failure, item.task.assignee, members)}
         </p>
       )}
       {item.forge_failure && (

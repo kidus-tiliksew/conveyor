@@ -31,10 +31,10 @@ import { Button } from '../components/ui/button'
 import { Card, CardContent } from '../components/ui/card'
 import { Skeleton } from '../components/ui/skeleton'
 import { humanizeClaimRefusal } from '../lib/activity'
-import { fetchCallerIdentity, fetchTaskOperations } from '../lib/api'
+import { fetchCallerIdentity, fetchTaskOperations, fetchWorkspaceMembers } from '../lib/api'
 import { stageLabels, taskStateLabels } from '../lib/contracts'
 import { errorMessage } from '../lib/errors'
-import type { TaskOperationsItem, TaskPlanStatus } from '../lib/types'
+import type { TaskOperationsItem, TaskPlanStatus, WorkspaceMembership } from '../lib/types'
 import { relativeTime } from '../lib/utils'
 
 const PAGE_SIZE = 25
@@ -78,6 +78,12 @@ export function TasksPage() {
   const { data: me } = useQuery({
     queryKey: ['caller-identity', token, workspace],
     queryFn: () => fetchCallerIdentity(token),
+    enabled: Boolean(workspace && token),
+    retry: false,
+  })
+  const { data: members = [] } = useQuery({
+    queryKey: ['workspace-members', token, workspace],
+    queryFn: () => fetchWorkspaceMembers(token, workspace),
     enabled: Boolean(workspace && token),
     retry: false,
   })
@@ -198,7 +204,7 @@ export function TasksPage() {
                 </div>
                 <ul aria-label="Tasks">
                   {items.map((item) => (
-                    <TaskRow key={item.task.id} item={item} selected={item.task.id === selectedId} />
+                    <TaskRow key={item.task.id} item={item} selected={item.task.id === selectedId} members={members} />
                   ))}
                 </ul>
               </div>
@@ -279,7 +285,11 @@ function MyTasksPreset({
       variant={active ? 'secondary' : 'outline'}
       size="sm"
       aria-pressed={active}
-      onClick={() => onChange(active ? emptyTaskFilter : { ...value, assignee: me, states: [...MY_TASK_STATES] })}
+      onClick={() =>
+        onChange(
+          active ? { ...value, assignee: '', states: [] } : { ...value, assignee: me, states: [...MY_TASK_STATES] },
+        )
+      }
     >
       <UserRound />
       My tasks
@@ -302,7 +312,15 @@ function SortHeader({ label }: { label: string }) {
   )
 }
 
-function TaskRow({ item, selected }: { item: TaskOperationsItem; selected: boolean }) {
+function TaskRow({
+  item,
+  selected,
+  members,
+}: {
+  item: TaskOperationsItem
+  selected: boolean
+  members: WorkspaceMembership[]
+}) {
   const { task } = item
   const stage =
     task.state === 'queued' ? (task.next_stage ?? item.latest_stage) : (item.latest_stage ?? task.next_stage)
@@ -370,7 +388,9 @@ function TaskRow({ item, selected }: { item: TaskOperationsItem; selected: boole
       {item.stalled?.needed && (
         <p className="col-span-full mt-2 border-t border-failure/20 pt-2 text-xs text-failure">
           Stalled — {item.stalled.reason}
-          {item.stalled.last_failure ? `: ${humanizeClaimRefusal(item.stalled.last_failure, task.assignee)}` : ''}
+          {item.stalled.last_failure
+            ? `: ${humanizeClaimRefusal(item.stalled.last_failure, task.assignee, members)}`
+            : ''}
         </p>
       )}
     </li>

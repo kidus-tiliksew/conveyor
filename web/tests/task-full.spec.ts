@@ -4363,6 +4363,31 @@ test('an operator assigns a task from the member picker and the timeline records
   await expect(page.getByRole('region', { name: 'Activity' })).toContainText('Assignee cleared')
 })
 
+test('assignment history resolves a prior assignee from the workspace roster', async ({ page }) => {
+  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
+  await routeAssignment(page, { operator: true })
+  await page.route('**/v1/tasks/assignable/activity**', async (route) => {
+    const item = activity('assignable', false)
+    item.task.assignee = { user_id: 'usr_ada', email: 'ada@example.test', display_name: 'Ada Owner' }
+    item.events = [
+      {
+        id: 901,
+        task_id: 'assignable',
+        kind: 'task.assignee.set',
+        actor_id: 'usr_ada',
+        actor_role: 'human',
+        payload: { assignee_user_id: 'usr_bo' },
+        at: '2026-07-15T12:00:00Z',
+      },
+    ]
+    await route.fulfill({ json: item })
+  })
+
+  await page.goto('/tasks/assignable/full')
+  await expect(page.getByRole('region', { name: 'Activity' })).toContainText('Assigned to Bo Member')
+  await expect(page.getByRole('region', { name: 'Activity' })).not.toContainText('Assigned to usr_bo')
+})
+
 // AC-1.2/AC-2.2: setting an assignee is an operator act. A member reads who
 // holds the task and is offered no way to change it.
 test('a non-operator sees the assignee but no set or clear control', async ({ page }) => {
@@ -4387,13 +4412,16 @@ test('a non-operator sees the assignee but no set or clear control', async ({ pa
 test('a claim refusal names the assignee rather than showing the transport sentence', async ({ page }) => {
   await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
   await page.route('**/v1/workspaces', (route) => route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] }))
+  await page.route('**/v1/workspaces/demo/members**', (route) => route.fulfill({ json: assignmentMembers }))
   await page.route('**/v1/activity*', (route) =>
     route.fulfill({
       json: [
         {
           task: {
             ...activity('refused', false).task,
-            assignee: { user_id: 'usr_bo', email: 'bo@example.test', display_name: 'Bo Member' },
+            // The task has since been reassigned; the refusal still names the
+            // member who held it when the failed claim was recorded.
+            assignee: { user_id: 'usr_ada', email: 'ada@example.test', display_name: 'Ada Owner' },
           },
           latest_stage: 'implement',
           last_event_at: createdAt,

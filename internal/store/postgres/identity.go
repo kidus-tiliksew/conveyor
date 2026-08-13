@@ -350,6 +350,21 @@ func auditLegacyTokenLifecycle(ctx context.Context, q *db.Queries, credentialID,
 	return nil
 }
 
+func auditPersonalAccessTokenLifecycle(ctx context.Context, q *db.Queries, row db.UserToken, kind string) error {
+	actorUserID := row.UserID
+	if credential, ok := store.CredentialFromContext(ctx); ok {
+		actorUserID = credential.OwnerUserID
+	}
+	if err := q.InsertDeploymentEvent(ctx, db.InsertDeploymentEventParams{
+		Kind: kind, ActorID: store.UserActorID(actorUserID), ActorRole: string(core.ActorUser),
+		PayloadJson: core.JSONPayload(map[string]any{"credential_id": row.ID, "label": row.Label}),
+		At:          pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true},
+	}); err != nil {
+		return fmt.Errorf("audit personal access token lifecycle: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) IssuePersonalAccessToken(ctx context.Context, userID, label string) (IssuedPersonalAccessToken, error) {
 	tokenID, err := randomIdentityID("pat", 12)
 	if err != nil {
@@ -383,7 +398,10 @@ func (s *Store) IssuePersonalAccessToken(ctx context.Context, userID, label stri
 			ID: tokenID, UserID: userID, Label: strings.TrimSpace(label), TokenHash: hash[:],
 			Kind: string(core.CredentialUser), Scope: string(scope),
 		})
-		return insertErr
+		if insertErr != nil {
+			return insertErr
+		}
+		return auditPersonalAccessTokenLifecycle(ctx, q, row, "identity.personal_token_issued")
 	})
 	if err != nil {
 		return IssuedPersonalAccessToken{}, err
@@ -471,7 +489,15 @@ func (s *Store) verifyCredential(ctx context.Context, candidate string) (core.Au
 }
 
 func (s *Store) RevokePersonalAccessToken(ctx context.Context, tokenID string) (PersonalAccessToken, error) {
-	row, err := s.queries.RevokeUserToken(ctx, tokenID)
+	var row db.UserToken
+	err := s.inTx(ctx, func(_ pgx.Tx, q *db.Queries) error {
+		var revokeErr error
+		row, revokeErr = q.RevokeUserToken(ctx, tokenID)
+		if revokeErr != nil {
+			return revokeErr
+		}
+		return auditPersonalAccessTokenLifecycle(ctx, q, row, "identity.personal_token_revoked")
+	})
 	if err != nil {
 		return PersonalAccessToken{}, notFound(err, "personal access token %s", tokenID)
 	}
@@ -503,7 +529,15 @@ func (s *Store) IssueOwnPersonalAccessToken(ctx context.Context, userID, label s
 // is a predicate of the statement rather than a check around it, so another
 // user's token is reported exactly like a token that does not exist.
 func (s *Store) RevokeOwnPersonalAccessToken(ctx context.Context, userID, tokenID string) (PersonalAccessToken, error) {
-	row, err := s.queries.RevokeOwnUserToken(ctx, db.RevokeOwnUserTokenParams{ID: tokenID, UserID: userID})
+	var row db.UserToken
+	err := s.inTx(ctx, func(_ pgx.Tx, q *db.Queries) error {
+		var revokeErr error
+		row, revokeErr = q.RevokeOwnUserToken(ctx, db.RevokeOwnUserTokenParams{ID: tokenID, UserID: userID})
+		if revokeErr != nil {
+			return revokeErr
+		}
+		return auditPersonalAccessTokenLifecycle(ctx, q, row, "identity.personal_token_revoked")
+	})
 	if err != nil {
 		return PersonalAccessToken{}, notFound(err, "personal access token %s", tokenID)
 	}
