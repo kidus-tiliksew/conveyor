@@ -3657,6 +3657,33 @@ test('contributor assignee can request merge-gate changes without gate approval 
   await expect.poll(() => feedback).toBe('Please cover the contributor path.')
 })
 
+test("non-assignee contributor cannot request changes at another user's merge gate", async ({ page }) => {
+  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'contributor-token'))
+  await page.route('**/v1/me**', (route) =>
+    route.fulfill({
+      json: {
+        id: 'usr_contributor',
+        email: 'contributor@example.test',
+        display_name: 'Connie Contributor',
+        role: 'contributor',
+      },
+    }),
+  )
+  await page.route('**/v1/tasks/merge-request-changes/activity*', (route) => {
+    const item = activity('merge-request-changes', false)
+    item.task.assignee = {
+      user_id: 'usr_other',
+      email: 'other@example.test',
+      display_name: 'Other Contributor',
+    }
+    return route.fulfill({ json: item })
+  })
+
+  await page.goto('/tasks/merge-request-changes/full')
+  await expect(page.getByRole('region', { name: 'Human gate' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Request changes' })).toHaveCount(0)
+})
+
 // The return is a recorded decision, so it reads back in the timeline in the
 // same plain language it was sent in — never as the wire reason code (REQ-6).
 test('the recorded return reads back in the timeline with its feedback', async ({ page }) => {

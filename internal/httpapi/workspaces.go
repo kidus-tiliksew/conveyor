@@ -166,6 +166,13 @@ func (s *Server) grantWorkspaceMembership(w http.ResponseWriter, r *http.Request
 	workspaceID, _ := store.WorkspaceFromContext(r.Context())
 	result, err := s.Memberships.GrantWorkspaceRole(r.Context(), request.Email, workspaceID, request.Role)
 	if err != nil {
+		if errors.Is(err, store.ErrLastWorkspaceOperator) {
+			writeJSON(w, http.StatusConflict, map[string]string{
+				"error":   "last_workspace_operator",
+				"message": "cannot demote the sole workspace operator; grant another operator first",
+			})
+			return
+		}
 		writeValidationError(w, "membership", err)
 		return
 	}
