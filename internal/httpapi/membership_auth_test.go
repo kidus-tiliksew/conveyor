@@ -355,6 +355,53 @@ func TestTaskRunRoutesAlsoRequireClaimWork(t *testing.T) {
 	}
 }
 
+func TestTaskRunRoutesRejectDashboardSessionsAndAcceptBearerPATs(t *testing.T) {
+	fixture := &membershipFixture{
+		workspaces: []core.Workspace{{ID: "alpha"}},
+		roles:      map[string]map[string]core.WorkspaceRole{"user": {"alpha": core.WorkspaceRoleExecutor}},
+	}
+	server := NewServer(store.NewMemory())
+	server.Workspaces, server.Memberships = fixture, fixture
+	server.Credentials = staticCredentialVerifier{"user-token": {ID: "pat_user", OwnerUserID: "user", Kind: core.CredentialUser, Scope: core.CredentialScopeUser}}
+	server.InvitationSessions = &invitationSessionFixture{credential: core.AuthenticatedCredential{
+		ID: "session_user", OwnerUserID: "user", Kind: core.CredentialUser,
+		Scope: core.CredentialScopeUser, Method: core.CredentialMethodSession,
+	}}
+	handler := server.Handler()
+	routes := []struct {
+		method string
+		path   string
+	}{
+		{http.MethodGet, "/v1/tasks/task/run-order"},
+		{http.MethodPost, "/v1/tasks/task/run-orders/order/claim"},
+		{http.MethodPost, "/v1/tasks/task/run-orders/order/renew"},
+		{http.MethodGet, "/v1/tasks/task/run-orders/order/reconcile"},
+		{http.MethodPost, "/v1/tasks/task/run-orders/order/attempt-checkpoint"},
+		{http.MethodPost, "/v1/tasks/task/run-orders/order/release"},
+	}
+	for _, route := range routes {
+		t.Run(route.method+" "+route.path, func(t *testing.T) {
+			sessionRequest := httptest.NewRequest(route.method, route.path+"?workspace_id=alpha", strings.NewReader(`{}`))
+			sessionRequest.AddCookie(&http.Cookie{Name: dashboardSessionCookie, Value: "session-secret"})
+			sessionRequest.Header.Set("X-Conveyor-CSRF", "1")
+			sessionRequest.Header.Set("Origin", "http://example.com")
+			sessionResponse := httptest.NewRecorder()
+			handler.ServeHTTP(sessionResponse, sessionRequest)
+			if sessionResponse.Code != http.StatusUnauthorized || sessionResponse.Header().Get("WWW-Authenticate") != "Bearer" {
+				t.Fatalf("session status=%d headers=%v body=%q", sessionResponse.Code, sessionResponse.Header(), sessionResponse.Body.String())
+			}
+
+			patRequest := httptest.NewRequest(route.method, route.path+"?workspace_id=alpha", strings.NewReader(`{}`))
+			patRequest.Header.Set("Authorization", "Bearer user-token")
+			patResponse := httptest.NewRecorder()
+			handler.ServeHTTP(patResponse, patRequest)
+			if patResponse.Code == http.StatusUnauthorized {
+				t.Fatalf("PAT was rejected by %s %s: body=%q", route.method, route.path, patResponse.Body.String())
+			}
+		})
+	}
+}
+
 func TestViewerReadsWorkspaceAndAllMutationsUseCapabilityRefusal(t *testing.T) {
 	fixture := &membershipFixture{
 		workspaces: []core.Workspace{{ID: "alpha"}},

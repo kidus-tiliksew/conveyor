@@ -1,6 +1,7 @@
 import { expect, test, type Route } from '@playwright/test'
 
-const invitationURL = '/sign-in?token=invite-once'
+const invitationToken = 'cv_signin_invite-once'
+const invitationURL = `/sign-in#token=${invitationToken}`
 
 test('an invitation opens a scoped session, guides first token setup, and signs out safely', async ({ page }) => {
   let sessionActive = false
@@ -9,6 +10,9 @@ test('an invitation opens a scoped session, guides first token setup, and signs 
   let signOutProved = false
   const invitations: string[] = []
   const issuedTokens: Array<{ id: string; user_id: string; label: string; created_at: string }> = []
+  const requestedURLs: string[] = []
+
+  page.on('request', (request) => requestedURLs.push(request.url()))
 
   await page.addInitScript(() => {
     localStorage.setItem('conveyor-workspace', 'demo')
@@ -27,7 +31,7 @@ test('an invitation opens a scoped session, guides first token setup, and signs 
 
     if (path === '/v1/sign-in/redeem' && request.method() === 'POST') {
       const body = request.postDataJSON() as { token: string }
-      if (body.token !== 'invite-once' || invitationUsed) {
+      if (body.token !== invitationToken || invitationUsed) {
         return route.fulfill({ status: 401, body: 'invalid or expired sign-in link' })
       }
       invitationUsed = true
@@ -98,7 +102,7 @@ test('an invitation opens a scoped session, guides first token setup, and signs 
           email: 'new@example.test',
           role: 'contributor',
           delivery: 'fallback',
-          sign_in_url: `${url.origin}/sign-in?token=invite-reissued`,
+          sign_in_url: `${url.origin}/sign-in#token=cv_signin_invite-reissued`,
         },
       })
     }
@@ -145,6 +149,7 @@ test('an invitation opens a scoped session, guides first token setup, and signs 
 
   await page.goto(invitationURL)
   await expect(page).toHaveURL(/\/settings\?welcome=true$/)
+  expect(requestedURLs.filter((requestedURL) => requestedURL.includes('cv_signin_'))).toEqual([])
   await expect(page.getByText('Welcome to Conveyor')).toBeVisible()
   await expect(page.getByRole('button', { name: 'Copy command' })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Copy connection settings' })).toBeVisible()
