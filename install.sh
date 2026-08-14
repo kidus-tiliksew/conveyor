@@ -2,6 +2,7 @@
 
 # Auditable Conveyor release installer. It performs no telemetry or update checks:
 # every network request below fetches only the release selected for this run.
+main() {
 set -eu
 
 repository_url=${CONVEYOR_REPOSITORY_URL:-https://github.com/kidus-tiliksew/conveyor}
@@ -72,7 +73,7 @@ curl -fsSL --retry 3 -o "$work_dir/$archive" "$archive_url" ||
 curl -fsSL --retry 3 -o "$work_dir/checksums.txt" "$checksums_url" ||
   fail "could not download checksum manifest $checksums_url"
 
-expected=$(grep "  ${archive}$" "$work_dir/checksums.txt" | awk '{print $1}') || true
+expected=$(grep -F "  $archive" "$work_dir/checksums.txt" | awk -v archive="$archive" '$0 == $1 "  " archive { print $1 }') || true
 [ -n "$expected" ] || fail "checksum manifest does not contain $archive"
 
 if command -v sha256sum >/dev/null 2>&1; then
@@ -103,3 +104,6 @@ installing=0
 printf 'Installed Conveyor %s to %s\n' "$version" "$install_dir"
 printf 'Next: conveyor init\n'
 printf 'Ensure %s is on PATH.\n' "$install_dir"
+}
+
+main "$@"
