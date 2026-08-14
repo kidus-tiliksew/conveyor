@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { Activity, ExternalLink, GitCommitHorizontal } from 'lucide-react'
-import { useOperatorToken, useWorkspaceSelection } from '../components/app-shell'
+import { useOperatorToken, useWorkspaceCapability, useWorkspaceSelection } from '../components/app-shell'
 import { DriftResolutionForm } from '../components/documents/drift-resolution-form'
 import { Badge } from '../components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
@@ -10,6 +10,7 @@ import { fetchMonitorStatus, fetchRequirements } from '../lib/api'
 export function MonitorPage() {
   const { workspace } = useWorkspaceSelection()
   const token = useOperatorToken()
+  const canManageWorkspace = useWorkspaceCapability('manage_workspace')
   const { data: status, error } = useQuery({
     queryKey: ['monitor', workspace],
     queryFn: fetchMonitorStatus,
@@ -93,14 +94,16 @@ export function MonitorPage() {
                   </div>
                   <p className="mt-1 truncate font-mono text-xs text-faint">{item.commit_sha || item.id}</p>
                   <p className="mt-1 text-xs text-muted">Detected {new Date(item.detected_at).toLocaleString()}</p>
-                  <DriftResolutionForm
-                    drift={item}
-                    surface="monitor"
-                    requirements={confirmedRequirements}
-                    requirementsPending={requirementsPending}
-                    token={token}
-                    workspace={workspace}
-                  />
+                  {canManageWorkspace && (
+                    <DriftResolutionForm
+                      drift={item}
+                      surface="monitor"
+                      requirements={confirmedRequirements}
+                      requirementsPending={requirementsPending}
+                      token={token}
+                      workspace={workspace}
+                    />
+                  )}
                 </div>
                 <div className="flex gap-2">
                   <Link

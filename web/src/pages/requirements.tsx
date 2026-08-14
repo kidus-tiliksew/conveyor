@@ -139,7 +139,7 @@ function requirementAttentionCount(item: RequirementSummary) {
  */
 export function RequirementsPage() {
   const token = useOperatorToken()
-  const canOperate = useWorkspaceCapability('operate_gates')
+  const canConfirmDocuments = useWorkspaceCapability('confirm_documents')
   const { workspace } = useWorkspaceSelection()
   const navigate = useNavigate()
   const client = useQueryClient()
@@ -237,7 +237,7 @@ export function RequirementsPage() {
             {overviews.length === 0 && (
               <DocumentTreeNote>Add a product overview, personas, or a glossary.</DocumentTreeNote>
             )}
-            {canOperate && (
+            {canConfirmDocuments && (
               <div className="px-2 pt-2">
                 <label className="flex cursor-pointer items-center justify-center gap-2 rounded-md border border-dashed border-edge px-2 py-2 text-xs font-medium text-muted transition-colors hover:border-primary/40 hover:bg-surface hover:text-primary">
                   <FileUp className="size-3.5" /> {upload.isPending ? 'Uploading…' : 'Add Markdown'}
@@ -389,7 +389,7 @@ function OverviewCanvas({
   remove: () => void
   removing: boolean
 }) {
-  const canOperate = useWorkspaceCapability('operate_gates')
+  const canConfirmDocuments = useWorkspaceCapability('confirm_documents')
   const [selectedVersion, setSelectedVersion] = useState(initialVersion ?? document.current_version)
   useEffect(
     () => setSelectedVersion(initialVersion ?? document.current_version),
@@ -420,7 +420,7 @@ function OverviewCanvas({
             <Badge variant="outline">Reference material</Badge>
           </div>
         </div>
-        {canOperate && (
+        {canConfirmDocuments && (
           <div className="flex shrink-0 items-center gap-2">
             <label
               className={`inline-flex h-8 cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-md border border-edge bg-background px-2.5 text-xs font-medium text-foreground transition-colors hover:bg-surface ${!token || uploading ? 'pointer-events-none opacity-40' : ''}`}
@@ -527,6 +527,7 @@ function RequirementCanvas({ summary, token }: { summary: RequirementSummary; to
 function RequirementDetailCanvas({ item, token }: { item: RequirementView; token: string }) {
   const { workspace } = useWorkspaceSelection()
   const canOperate = useWorkspaceCapability('operate_gates')
+  const canManageWorkspace = useWorkspaceCapability('manage_workspace')
   const canConfirm = useWorkspaceCapability('confirm_documents')
   const client = useQueryClient()
   const servingTasks = item.serving_tasks ?? []
@@ -648,7 +649,7 @@ function RequirementDetailCanvas({ item, token }: { item: RequirementView; token
               Open PR <ExternalLink className="inline size-3" />
             </a>
           )}
-          {canOperate && (
+          {canManageWorkspace && (
             <>
               <Button
                 size="sm"
@@ -731,7 +732,7 @@ function RequirementDetailCanvas({ item, token }: { item: RequirementView; token
                 Open the change <ExternalLink className="size-3" />
               </a>
             )}
-            {canOperate && (
+            {canManageWorkspace && (
               <DriftResolutionForm
                 drift={entry}
                 surface="requirement"

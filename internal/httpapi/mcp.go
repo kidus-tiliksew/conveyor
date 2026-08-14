@@ -372,8 +372,10 @@ func mcpCapability(name string) core.Capability {
 		// membership prerequisite; the exact live claim supplies mutation
 		// authority for executor sessions (REQ-1/AC-1.5).
 		return core.CapabilityViewWorkspace
-	case "create_task", "redispatch_work_order":
+	case "create_task":
 		return core.CapabilityOperateGates
+	case "redispatch_work_order":
+		return core.CapabilityRecoverWork
 	default:
 		return core.CapabilityClaimWork
 	}

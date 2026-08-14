@@ -84,6 +84,7 @@ export function Timeline({
 }) {
   const token = useOperatorToken()
   const canOperate = useWorkspaceCapability('operate_gates')
+  const canRequestChanges = useWorkspaceCapability('request_changes')
   const { workspace } = useWorkspaceSelection()
   const members = useQuery({
     queryKey: ['workspace-members', token, workspace],
@@ -131,8 +132,10 @@ export function Timeline({
   // Reviewable tasks open scrolled to the gate — the decision point — not
   // the top of a story the reviewer has often already read.
   useEffect(() => {
-    if (showGate && canOperate) gateRef.current?.scrollIntoView({ block: 'end' })
-  }, [item.task.id, showGate, canOperate])
+    if (showGate && (canOperate || (item.at_merge_gate && canRequestChanges))) {
+      gateRef.current?.scrollIntoView({ block: 'end' })
+    }
+  }, [item.task.id, item.at_merge_gate, showGate, canOperate, canRequestChanges])
 
   const tail = (
     executionActions && canOperate
@@ -240,7 +243,7 @@ export function Timeline({
               {card}
             </li>
           ))}
-          {showGate && canOperate && (
+          {showGate && (canOperate || (item.at_merge_gate && canRequestChanges)) && (
             <li ref={gateRef} className="relative pl-7">
               <TimelineDot
                 className={cn('animate-pulse', gateDots[gateTone(item.task, item.events, item.merge_readiness)])}

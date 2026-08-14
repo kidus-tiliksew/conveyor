@@ -12,10 +12,10 @@ func TestRoleCapabilitiesAreBundles(t *testing.T) {
 	if !RoleAllows(WorkspaceRoleContributor, CapabilityProposeDocuments) || RoleAllows(WorkspaceRoleContributor, CapabilityOperateGates) {
 		t.Fatal("contributor capability bundle is incorrect")
 	}
-	if !RoleAllows(WorkspaceRoleMaintainer, CapabilityOperateGates) || !RoleAllows(WorkspaceRoleMaintainer, CapabilitySetAssignee) || RoleAllows(WorkspaceRoleMaintainer, CapabilityConfirmDocuments) || RoleAllows(WorkspaceRoleMaintainer, CapabilityManageMembership) {
+	if !RoleAllows(WorkspaceRoleMaintainer, CapabilityOperateGates) || !RoleAllows(WorkspaceRoleMaintainer, CapabilitySetAssignee) || RoleAllows(WorkspaceRoleMaintainer, CapabilityConfirmDocuments) || RoleAllows(WorkspaceRoleMaintainer, CapabilityManageMembership) || RoleAllows(WorkspaceRoleMaintainer, CapabilityManageWorkspace) {
 		t.Fatal("maintainer capability bundle is incorrect")
 	}
-	if !RoleAllows(WorkspaceRoleOperator, CapabilityClaimWork) || !RoleAllows(WorkspaceRoleOperator, CapabilityManageMembership) {
+	if !RoleAllows(WorkspaceRoleOperator, CapabilityClaimWork) || !RoleAllows(WorkspaceRoleOperator, CapabilityConfirmDocuments) || !RoleAllows(WorkspaceRoleOperator, CapabilityManageMembership) || !RoleAllows(WorkspaceRoleOperator, CapabilityManageWorkspace) {
 		t.Fatal("operator must subsume contributor and operator capabilities")
 	}
 	// A role policy change is a bundle edit: the decision function and callers

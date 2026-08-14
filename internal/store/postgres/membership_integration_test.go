@@ -157,6 +157,9 @@ func TestWorkspaceMembershipAuthorizationIntegration(t *testing.T) {
 	if err := st.RevokeWorkspaceRole(workspaceBCtx, owner.ID, workspaceB); err != nil {
 		t.Fatalf("non-sole operator revocation: %v", err)
 	}
+	if _, err := st.GrantWorkspaceRole(workspaceBCtx, secondOperator.Email, workspaceB, core.WorkspaceRoleViewer); !errors.Is(err, store.ErrLastWorkspaceOperator) {
+		t.Fatalf("sole operator demotion error=%v", err)
+	}
 	member, err := st.queries.InsertIdentityUser(t.Context(), db.InsertIdentityUserParams{ID: "usr_member_" + suffix, Email: "member-" + suffix + "@example.test", DisplayName: "Member"})
 	if err != nil {
 		t.Fatal(err)
@@ -230,7 +233,7 @@ func TestWorkspaceMembershipAuthorizationIntegration(t *testing.T) {
 		}
 	}
 	now := time.Now().UTC()
-	task := core.Task{ID: "revoked-assignee-" + suffix, Workspace: workspaceA, Repo: "repo", BaseBranch: "main", Branch: "conveyor/revoked-assignee", State: core.TaskRunning, CreatedAt: now}
+	task := core.Task{ID: "demoted-assignee-" + suffix, Workspace: workspaceA, Repo: "repo", BaseBranch: "main", Branch: "conveyor/demoted-assignee", State: core.TaskRunning, CreatedAt: now}
 	if err := st.CreateTask(grantCtx, task); err != nil {
 		t.Fatal(err)
 	}
@@ -246,22 +249,22 @@ func TestWorkspaceMembershipAuthorizationIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := st.RevokeWorkspaceRole(grantCtx, member.ID, workspaceA); err != nil {
-		t.Fatal(err)
+	if _, err := st.GrantWorkspaceRole(grantCtx, member.Email, workspaceA, core.WorkspaceRoleViewer); err != nil {
+		t.Fatalf("demote assignee: %v", err)
 	}
 	cleared, err := st.GetTask(grantCtx, task.ID)
 	if err != nil || cleared.Assignee != nil {
-		t.Fatalf("task after membership revocation assignee=%+v err=%v", cleared.Assignee, err)
+		t.Fatalf("task after role demotion assignee=%+v err=%v", cleared.Assignee, err)
 	}
 	var clearEvents int
 	if err := st.pool.QueryRow(t.Context(), `SELECT count(*) FROM events WHERE workspace_id=$1 AND task_id=$2 AND kind='task.assignee.cleared' AND payload_json->>'revoked_user_id'=$3`, workspaceA, task.ID, member.ID).Scan(&clearEvents); err != nil || clearEvents != 1 {
 		t.Fatalf("assignment clear audit count=%d err=%v", clearEvents, err)
 	}
 	if _, err := storetest.For(st).ClaimWorkOrder(grantCtx, order.ID, core.WorkOrderClaim{SessionID: "first-come", ClientToken: "first-come", OwnerUserID: owner.ID}); err != nil {
-		t.Fatalf("claim after membership revocation: %v", err)
+		t.Fatalf("claim after role demotion: %v", err)
 	}
 	var audited int
-	if err := st.pool.QueryRow(t.Context(), `SELECT count(*) FROM events WHERE workspace_id=$1 AND kind IN ('workspace.membership_granted','workspace.membership_revoked')`, workspaceA).Scan(&audited); err != nil || audited != 3 {
+	if err := st.pool.QueryRow(t.Context(), `SELECT count(*) FROM events WHERE workspace_id=$1 AND kind='workspace.membership_granted'`, workspaceA).Scan(&audited); err != nil || audited != 3 {
 		t.Fatalf("membership audit count=%d err=%v", audited, err)
 	}
 }

@@ -3620,6 +3620,43 @@ test('merge gate sends user feedback through request changes', async ({ page }) 
   await expect.poll(() => feedback).toBe('Keep this exact feedback.')
 })
 
+test('contributor assignee can request merge-gate changes without gate approval controls', async ({ page }) => {
+  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'contributor-token'))
+  await page.route('**/v1/me**', (route) =>
+    route.fulfill({
+      json: {
+        id: 'usr_contributor',
+        email: 'contributor@example.test',
+        display_name: 'Connie Contributor',
+        role: 'contributor',
+      },
+    }),
+  )
+  await page.route('**/v1/tasks/merge-request-changes/activity*', (route) => {
+    const item = activity('merge-request-changes', false)
+    item.task.assignee = {
+      user_id: 'usr_contributor',
+      email: 'contributor@example.test',
+      display_name: 'Connie Contributor',
+    }
+    return route.fulfill({ json: item })
+  })
+  let feedback = ''
+  await page.route('**/v1/tasks/merge-request-changes/request-changes*', async (route) => {
+    feedback = ((await route.request().postDataJSON()) as { feedback: string }).feedback
+    await route.fulfill({ json: { task: activity('merge-request-changes', false).task, feedback } })
+  })
+
+  await page.goto('/tasks/merge-request-changes/full')
+  const gate = page.getByRole('region', { name: 'Human gate' })
+  await expect(gate.getByRole('button', { name: 'Approve' })).toHaveCount(0)
+  await expect(gate.getByRole('button', { name: 'Merge pull request' })).toHaveCount(0)
+  await gate.getByRole('button', { name: 'Request changes' }).click()
+  await gate.getByLabel('Changes you want').fill('Please cover the contributor path.')
+  await gate.getByRole('button', { name: 'Send feedback' }).click()
+  await expect.poll(() => feedback).toBe('Please cover the contributor path.')
+})
+
 // The return is a recorded decision, so it reads back in the timeline in the
 // same plain language it was sent in — never as the wire reason code (REQ-6).
 test('the recorded return reads back in the timeline with its feedback', async ({ page }) => {

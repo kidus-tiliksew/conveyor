@@ -24,9 +24,12 @@ const (
 	CapabilityConfirmDocuments Capability = "confirm_documents"
 	CapabilityManageMembership Capability = "manage_membership"
 	CapabilitySetAssignee      Capability = "set_assignee"
-	CapabilityOperateGates     Capability = "operate_gates"
-	CapabilityRecoverWork      Capability = "recover_work"
-	CapabilityManageWorkspace  Capability = "manage_workspace"
+	// OperateGates is the maintainer's factory-floor bundle: gate decisions
+	// and task operations. Corpus authority and control-plane administration
+	// remain separately named operator-only capabilities below.
+	CapabilityOperateGates    Capability = "operate_gates"
+	CapabilityRecoverWork     Capability = "recover_work"
+	CapabilityManageWorkspace Capability = "manage_workspace"
 )
 
 // roleCapabilities is the single role-to-capability decision table (REQ-8,

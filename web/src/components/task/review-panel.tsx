@@ -6,7 +6,7 @@ import { fixMergeConflict, mergeTask, requestTaskChanges, reviewTask } from '../
 import { defaultReasonCode, interventionActions } from '../../lib/contracts'
 import type { ActivityItem, InterventionAction, Task, TaskEvent } from '../../lib/types'
 import { cn } from '../../lib/utils'
-import { useOperatorToken, useWorkspaceSelection } from '../app-shell'
+import { useOperatorToken, useWorkspaceCapability, useWorkspaceSelection } from '../app-shell'
 import { Button } from '../ui/button'
 import { Textarea } from '../ui/input'
 import { AttachmentsCard } from './attachments-card'
@@ -238,15 +238,20 @@ type GateMutation =
 // so it gets its own card rather than another branch of the gate's derived
 // actions (REQ-2 AC-2.1).
 export function ReviewPanel({ item, onDecisionRecorded }: { item: ActivityItem; onDecisionRecorded?: () => void }) {
+  const canOperate = useWorkspaceCapability('operate_gates')
   const revisionRequest = pendingPlanRevisionRequest(item.events)
   if (revisionRequest)
-    return <PlanRevisionDecisionCard item={item} request={revisionRequest} onDecisionRecorded={onDecisionRecorded} />
+    return canOperate ? (
+      <PlanRevisionDecisionCard item={item} request={revisionRequest} onDecisionRecorded={onDecisionRecorded} />
+    ) : null
 
   return <GenericReviewPanel item={item} onDecisionRecorded={onDecisionRecorded} />
 }
 
 function GenericReviewPanel({ item, onDecisionRecorded }: { item: ActivityItem; onDecisionRecorded?: () => void }) {
   const token = useOperatorToken()
+  const canOperate = useWorkspaceCapability('operate_gates')
+  const canRequestChanges = useWorkspaceCapability('request_changes')
   const { workspace } = useWorkspaceSelection()
   const queryClient = useQueryClient()
   const [expanded, setExpanded] = useState<InterventionAction | null>(null)
@@ -302,7 +307,10 @@ function GenericReviewPanel({ item, onDecisionRecorded }: { item: ActivityItem; 
     mutation.reset()
   }
 
-  const secondaryActions = secondaryActionsFor(gate.primaryAction)
+  const canUsePrimary = canOperate || (mergeGate && canRequestChanges && gate.primaryAction === 'redirect')
+  const secondaryActions = secondaryActionsFor(gate.primaryAction).filter(
+    (entry) => canOperate || (mergeGate && canRequestChanges && entry.action === 'redirect'),
+  )
   const expandedEntry = interventionActions.find((entry) => entry.action === expanded && entry.action !== 'approve')
   const gateComposer = mergeGate && expanded === 'redirect'
 
@@ -314,31 +322,33 @@ function GenericReviewPanel({ item, onDecisionRecorded }: { item: ActivityItem; 
           <h3 className={cn('text-sm font-semibold', style.title)}>{gate.headline}</h3>
           <p className="mt-0.5 text-xs leading-5 text-muted">{gate.detail}</p>
         </div>
-        <Button
-          disabled={!token || mutation.isPending || gate.primaryAction === 'pending'}
-          onClick={() => {
-            if (gate.primaryAction === 'merge') return mutation.mutate({ kind: 'merge' })
-            if (gate.primaryAction === 'fix') return mutation.mutate({ kind: 'fix' })
-            if (gate.primaryAction === 'pending') return
-            if (gate.primaryAction === 'redirect') return toggle('redirect')
-            mutation.mutate({ kind: 'review', action: 'approve', comment: '' })
-          }}
-        >
-          {gate.primaryAction === 'merge' ? (
-            <GitMerge />
-          ) : gate.primaryAction === 'fix' ? (
-            <TriangleAlert />
-          ) : gate.primaryAction === 'redirect' ? (
-            <Undo2 />
-          ) : (
-            <ThumbsUp />
-          )}
-          {mutation.isPending && !expanded
-            ? gate.primaryAction === 'merge'
-              ? 'Merging…'
-              : 'Recording…'
-            : gate.primaryLabel}
-        </Button>
+        {canUsePrimary && (
+          <Button
+            disabled={!token || mutation.isPending || gate.primaryAction === 'pending'}
+            onClick={() => {
+              if (gate.primaryAction === 'merge') return mutation.mutate({ kind: 'merge' })
+              if (gate.primaryAction === 'fix') return mutation.mutate({ kind: 'fix' })
+              if (gate.primaryAction === 'pending') return
+              if (gate.primaryAction === 'redirect') return toggle('redirect')
+              mutation.mutate({ kind: 'review', action: 'approve', comment: '' })
+            }}
+          >
+            {gate.primaryAction === 'merge' ? (
+              <GitMerge />
+            ) : gate.primaryAction === 'fix' ? (
+              <TriangleAlert />
+            ) : gate.primaryAction === 'redirect' ? (
+              <Undo2 />
+            ) : (
+              <ThumbsUp />
+            )}
+            {mutation.isPending && !expanded
+              ? gate.primaryAction === 'merge'
+                ? 'Merging…'
+                : 'Recording…'
+              : gate.primaryLabel}
+          </Button>
+        )}
       </div>
       <div className="px-4 py-2.5">
         {mergeGate && <MergeGateReviewCard item={item} />}

@@ -216,7 +216,7 @@ function DesignCanvas({
   settledDecisions: Decision[]
 }) {
   const client = useQueryClient()
-  const canOperate = useWorkspaceCapability('operate_gates')
+  const canManageWorkspace = useWorkspaceCapability('manage_workspace')
   const canConfirm = useWorkspaceCapability('confirm_documents')
   const displayed = item.current_version ?? item.pending_versions[0] ?? item.versions[item.versions.length - 1]
   const confirm = useMutation({
@@ -257,7 +257,7 @@ function DesignCanvas({
               Open the change <ExternalLink className="size-3" />
             </a>
           )}
-          {canOperate && (
+          {canManageWorkspace && (
             <DriftResolutionForm
               drift={entry}
               surface="system_design"
