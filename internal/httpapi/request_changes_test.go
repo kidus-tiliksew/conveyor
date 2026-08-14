@@ -52,6 +52,10 @@ func TestRequestChangesBouncesThroughSharedContextAndAttention(t *testing.T) {
 	dispatcher := dispatch.New(st, cfg, nil)
 	server := NewServer(st)
 	server.BearerToken, server.Workspace = "user-token", "demo"
+	server.InvitationSessions = &invitationSessionFixture{credential: core.AuthenticatedCredential{
+		ID: "session_local", OwnerUserID: "local-operator", Kind: core.CredentialUser,
+		Scope: core.CredentialScopeOperator, Method: core.CredentialMethodSession,
+	}}
 	server.ConfigProvider = func(context.Context) (*config.Config, error) { return cfg, nil }
 	var dispatchErr error
 	server.OnCreate = func(callCtx context.Context, id string) { dispatchErr = dispatcher.DispatchNow(callCtx, id) }
@@ -64,8 +68,17 @@ func TestRequestChangesBouncesThroughSharedContextAndAttention(t *testing.T) {
 
 	feedback := "Keep this line exactly.\n\n  Preserve the indentation too."
 	body, _ := json.Marshal(map[string]string{"feedback": feedback})
+	missingProof := httptest.NewRequest(http.MethodPost, "/v1/tasks/"+task.ID+"/request-changes", bytes.NewReader(body))
+	missingProof.AddCookie(&http.Cookie{Name: dashboardSessionCookie, Value: "session-secret"})
+	missingProofResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(missingProofResponse, missingProof)
+	if missingProofResponse.Code != http.StatusForbidden {
+		t.Fatalf("missing CSRF proof status=%d body=%s", missingProofResponse.Code, missingProofResponse.Body.String())
+	}
 	request := httptest.NewRequest(http.MethodPost, "/v1/tasks/"+task.ID+"/request-changes", bytes.NewReader(body))
-	request.Header.Set("Authorization", "Bearer user-token")
+	request.AddCookie(&http.Cookie{Name: dashboardSessionCookie, Value: "session-secret"})
+	request.Header.Set("X-Conveyor-CSRF", "1")
+	request.Header.Set("Origin", "http://example.com")
 	response := httptest.NewRecorder()
 	server.Handler().ServeHTTP(response, request)
 	if response.Code != http.StatusAccepted || dispatchErr != nil {

@@ -1,5 +1,5 @@
 import { useQueryClient } from '@tanstack/react-query'
-import { useNavigate, useSearch } from '@tanstack/react-router'
+import { useNavigate } from '@tanstack/react-router'
 import { CheckCircle2, Link2, LoaderCircle } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { redeemSignInLink } from '../lib/api'
@@ -7,7 +7,7 @@ import { redeemSignInLink } from '../lib/api'
 type State = 'checking' | 'success' | 'invalid'
 
 export function SignInPage() {
-  const { token } = useSearch({ strict: false }) as { token?: string }
+  const [token] = useState(() => new URLSearchParams(window.location.hash.slice(1)).get('token') ?? undefined)
   const [state, setState] = useState<State>(token ? 'checking' : 'invalid')
   const started = useRef(false)
   const queryClient = useQueryClient()
@@ -16,6 +16,7 @@ export function SignInPage() {
   useEffect(() => {
     if (!token || started.current) return
     started.current = true
+    window.history.replaceState(window.history.state, '', `${window.location.pathname}${window.location.search}`)
     void redeemSignInLink(token)
       .then(async () => {
         sessionStorage.removeItem('conveyor-token')

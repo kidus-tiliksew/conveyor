@@ -71,6 +71,7 @@ func (s *Server) issueAndDeliverSignInLink(r *http.Request, email string) (core.
 		return result, nil
 	}
 	if err := sendSignInMail(s.InvitationDelivery, issued.Email, link); err != nil {
+		result.SignInURL = ""
 		result.Delivery = "failed"
 		s.recordInvitationDelivery(r, issued.Email, result.Delivery)
 		return result, nil
@@ -99,7 +100,7 @@ func (s *Server) signInURL(r *http.Request, token string) string {
 		base = scheme + "://" + r.Host
 	}
 	base += "/sign-in"
-	return base + "?token=" + url.QueryEscape(token)
+	return base + "#token=" + url.QueryEscape(token)
 }
 
 func (s *Server) resendWorkspaceInvitation(w http.ResponseWriter, r *http.Request) {

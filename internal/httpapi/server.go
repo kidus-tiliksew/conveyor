@@ -176,7 +176,10 @@ func (s *Server) Handler() http.Handler {
 			r.With(s.requireTaskRunAuth, s.requireWorkspaceCapability(core.CapabilityClaimWork)).Get("/tasks/{id}/run-orders/{order_id}/reconcile", s.reconcileTaskRunOrder)
 			r.With(s.requireTaskRunAuth, s.requireWorkspaceCapability(core.CapabilityClaimWork)).Post("/tasks/{id}/run-orders/{order_id}/attempt-checkpoint", s.checkpointTaskRunOrderAttempt)
 			r.With(s.requireTaskRunAuth, s.requireWorkspaceCapability(core.CapabilityClaimWork)).Post("/tasks/{id}/run-orders/{order_id}/release", s.releaseTaskRunOrder)
-			r.With(s.requireTaskRunAuth, s.requireWorkspaceCapability(core.CapabilityRequestChanges)).Post("/tasks/{id}/request-changes", s.requestTaskChanges)
+			// Request-changes is the human merge-gate action, not part of the
+			// bearer-only run-order automation plane. Dashboard sessions retain
+			// this route through the outer CSRF proof and capability boundary.
+			r.With(s.requireTaskRequestChangesAuth, s.requireWorkspaceCapability(core.CapabilityRequestChanges)).Post("/tasks/{id}/request-changes", s.requestTaskChanges)
 			r.Get("/reviews", s.listReviews)
 			r.Get("/workspace", s.getWorkspace)
 			r.Get("/work-orders", s.listWorkOrders)
