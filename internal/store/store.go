@@ -4522,7 +4522,7 @@ func (m *memory) SetTaskAssigneeCommand(ctx context.Context, lease taskops.TaskL
 		}
 		role := m.workspaceMemberRoles[key]
 		if role == "" {
-			role = core.WorkspaceRoleUser
+			role = core.WorkspaceRoleContributor
 		}
 		if !core.RoleAllows(role, core.CapabilityClaimWork) {
 			return core.Task{}, fmt.Errorf("assignee %s role %s lacks %s capability in workspace %s", assigneeUserID, role, core.CapabilityClaimWork, task.Workspace)
@@ -4559,7 +4559,7 @@ func SetMemoryWorkspaceMember(st Store, workspaceID, userID string, active bool)
 	defer memoryStore.mu.Unlock()
 	memoryStore.workspaceMembers[memoryScopedKey{workspace: workspaceID, id: userID}] = active
 	if active {
-		memoryStore.workspaceMemberRoles[memoryScopedKey{workspace: workspaceID, id: userID}] = core.WorkspaceRoleUser
+		memoryStore.workspaceMemberRoles[memoryScopedKey{workspace: workspaceID, id: userID}] = core.WorkspaceRoleContributor
 	}
 	return nil
 }

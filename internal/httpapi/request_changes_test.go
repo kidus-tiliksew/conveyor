@@ -143,8 +143,8 @@ func TestRequestChangesAssignmentAllowsAssigneeAndOperatorOnly(t *testing.T) {
 	fixture := &membershipFixture{
 		workspaces: []core.Workspace{{ID: "demo"}},
 		roles: map[string]map[string]core.WorkspaceRole{
-			"usr-assignee": {"demo": core.WorkspaceRoleUser},
-			"usr-member":   {"demo": core.WorkspaceRoleUser},
+			"usr-assignee": {"demo": core.WorkspaceRoleContributor},
+			"usr-member":   {"demo": core.WorkspaceRoleContributor},
 			"usr-operator": {"demo": core.WorkspaceRoleOperator},
 		},
 	}

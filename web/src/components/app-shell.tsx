@@ -47,7 +47,17 @@ export type WorkspaceCapability =
 
 const roleCapabilities: Record<import('../lib/types').WorkspaceRole, readonly WorkspaceCapability[]> = {
   viewer: ['view_workspace'],
-  user: ['view_workspace', 'claim_work', 'request_changes', 'propose_documents'],
+  executor: ['view_workspace', 'claim_work', 'request_changes'],
+  contributor: ['view_workspace', 'claim_work', 'request_changes', 'propose_documents'],
+  maintainer: [
+    'view_workspace',
+    'claim_work',
+    'request_changes',
+    'propose_documents',
+    'set_assignee',
+    'operate_gates',
+    'recover_work',
+  ],
   operator: [
     'view_workspace',
     'claim_work',
@@ -100,7 +110,7 @@ export function useWorkspaceCapability(capability: WorkspaceCapability) {
     enabled: Boolean(token && workspace),
     retry: false,
   })
-  return Boolean(identity.data?.role && roleCapabilities[identity.data.role].includes(capability))
+  return Boolean(identity.data?.role && roleCapabilities[identity.data.role]?.includes(capability))
 }
 
 // The Board passes the shared filter family so the server returns what it will

@@ -41,7 +41,7 @@ func TestTaskAssignmentClaimEligibilityIntegration(t *testing.T) {
 	credential := core.AuthenticatedCredential{ID: "legacy", OwnerUserID: owner.ID, Kind: core.CredentialUser, Scope: core.CredentialScopeOperator}
 	ctx := store.WithCredential(store.WithWorkspace(t.Context(), workspace), credential)
 	ctx = store.WithActor(ctx, store.Actor{ID: store.UserActorID(owner.ID), Role: core.ActorUser})
-	if _, err = st.GrantWorkspaceRole(ctx, member.Email, workspace, core.WorkspaceRoleUser); err != nil {
+	if _, err = st.GrantWorkspaceRole(ctx, member.Email, workspace, core.WorkspaceRoleExecutor); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
@@ -74,7 +74,7 @@ func TestTaskAssignmentClaimEligibilityIntegration(t *testing.T) {
 	if _, err = st.pool.Exec(ctx, `UPDATE users SET status='deactivated' WHERE id=$1`, inactive.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = st.pool.Exec(ctx, `INSERT INTO workspace_role_bindings(workspace_id,user_id,role) VALUES($1,$2,'user')`, workspace, inactive.ID); err != nil {
+	if _, err = st.pool.Exec(ctx, `INSERT INTO workspace_role_bindings(workspace_id,user_id,role) VALUES($1,$2,'contributor')`, workspace, inactive.ID); err != nil {
 		t.Fatal(err)
 	}
 	viewer, err := st.queries.InsertIdentityUser(t.Context(), db.InsertIdentityUserParams{

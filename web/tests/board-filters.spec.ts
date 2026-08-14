@@ -117,7 +117,7 @@ async function routeBoard(page: Page, seen: string[]) {
           workspace_id: 'demo',
           user_id: 'usr_bo',
           display_name: 'Bo Member',
-          role: 'user',
+          role: 'contributor',
           created_at: '2026-08-06T10:00:00Z',
         },
       ],

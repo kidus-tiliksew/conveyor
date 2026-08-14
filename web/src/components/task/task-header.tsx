@@ -17,7 +17,6 @@ import { assigneeName, dependencyRelationLabel, parseProvenance, pullRequestURL 
 import {
   cancelTask,
   changeTaskSetup,
-  fetchCallerIdentity,
   fetchWorkspaceConfig,
   fetchWorkspaceMembers,
   removeTaskDependency,
@@ -695,17 +694,11 @@ function AssigneeControl({ item }: { item: ActivityItem }) {
   const ref = useRef<HTMLDivElement>(null)
   const terminal = item.task.state === 'merged' || item.task.state === 'closed'
   const enabled = Boolean(token && workspace) && !terminal
-  const identity = useQuery({
-    queryKey: ['caller-identity', token, workspace],
-    queryFn: () => fetchCallerIdentity(token),
-    enabled,
-    retry: false,
-  })
-  const isOperator = identity.data?.role === 'operator'
+  const canAssign = useWorkspaceCapability('set_assignee')
   const members = useQuery({
     queryKey: ['workspace-members', token, workspace],
     queryFn: () => fetchWorkspaceMembers(token, workspace),
-    enabled: enabled && isOperator,
+    enabled: enabled && canAssign,
     retry: false,
   })
   const mutation = useMutation({
@@ -726,7 +719,7 @@ function AssigneeControl({ item }: { item: ActivityItem }) {
     document.addEventListener('mousedown', close)
     return () => document.removeEventListener('mousedown', close)
   }, [])
-  if (!enabled || !isOperator) return null
+  if (!enabled || !canAssign) return null
   const roster = members.data ?? []
   return (
     <div className="relative" ref={ref}>

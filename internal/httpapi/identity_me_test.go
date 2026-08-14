@@ -26,7 +26,7 @@ func (f *callerIdentityFixture) GetCallerIdentity(_ context.Context, userID, wor
 	f.userID, f.workspaceID = userID, workspaceID
 	identity := core.CallerIdentity{ID: userID, Email: "owner@example.test", DisplayName: "Owner"}
 	if workspaceID != "" {
-		identity.Role = core.WorkspaceRoleUser
+		identity.Role = core.WorkspaceRoleContributor
 	}
 	return identity, f.err
 }
@@ -51,7 +51,7 @@ func TestCallerIdentityIsCredentialDerivedAndWorkspaceScoped(t *testing.T) {
 	identities := &callerIdentityFixture{Store: store.NewMemory()}
 	memberships := &membershipFixture{
 		roles: map[string]map[string]core.WorkspaceRole{
-			"usr-owner": {"visible": core.WorkspaceRoleUser},
+			"usr-owner": {"visible": core.WorkspaceRoleContributor},
 		},
 	}
 	server := NewServer(identities)
@@ -92,7 +92,7 @@ func TestCallerIdentityIsCredentialDerivedAndWorkspaceScoped(t *testing.T) {
 	if err := json.Unmarshal(scoped.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
-	if got["id"] != "usr-owner" || got["role"] != string(core.WorkspaceRoleUser) || identities.workspaceID != "visible" {
+	if got["id"] != "usr-owner" || got["role"] != string(core.WorkspaceRoleContributor) || identities.workspaceID != "visible" {
 		t.Fatalf("scoped identity=%v requested=%q/%q", got, identities.userID, identities.workspaceID)
 	}
 	if len(memberships.capabilityCalls) != 1 || memberships.capabilityCalls[0] != core.CapabilityViewWorkspace {

@@ -7,9 +7,11 @@ import "time"
 type WorkspaceRole string
 
 const (
-	WorkspaceRoleViewer   WorkspaceRole = "viewer"
-	WorkspaceRoleUser     WorkspaceRole = "user"
-	WorkspaceRoleOperator WorkspaceRole = "operator"
+	WorkspaceRoleViewer      WorkspaceRole = "viewer"
+	WorkspaceRoleExecutor    WorkspaceRole = "executor"
+	WorkspaceRoleContributor WorkspaceRole = "contributor"
+	WorkspaceRoleMaintainer  WorkspaceRole = "maintainer"
+	WorkspaceRoleOperator    WorkspaceRole = "operator"
 )
 
 type Capability string
@@ -28,16 +30,30 @@ const (
 )
 
 // roleCapabilities is the single role-to-capability decision table (REQ-8,
-// AC-8.1). Operator explicitly subsumes the user bundle.
+// AC-8.1). Each role strictly subsumes the preceding bundle.
 var roleCapabilities = map[WorkspaceRole]map[Capability]bool{
 	WorkspaceRoleViewer: {
 		CapabilityViewWorkspace: true,
 	},
-	WorkspaceRoleUser: {
+	WorkspaceRoleExecutor: {
+		CapabilityViewWorkspace:  true,
+		CapabilityClaimWork:      true,
+		CapabilityRequestChanges: true,
+	},
+	WorkspaceRoleContributor: {
 		CapabilityViewWorkspace:    true,
 		CapabilityClaimWork:        true,
 		CapabilityRequestChanges:   true,
 		CapabilityProposeDocuments: true,
+	},
+	WorkspaceRoleMaintainer: {
+		CapabilityViewWorkspace:    true,
+		CapabilityClaimWork:        true,
+		CapabilityRequestChanges:   true,
+		CapabilityProposeDocuments: true,
+		CapabilitySetAssignee:      true,
+		CapabilityOperateGates:     true,
+		CapabilityRecoverWork:      true,
 	},
 	WorkspaceRoleOperator: {
 		CapabilityViewWorkspace:    true,

@@ -99,7 +99,7 @@ func TestMCPImplementationGovernanceProposalsBindToClaimedTask(t *testing.T) {
 	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "session-governance", ClientToken: "secret", ClaimantID: "implementer", Lease: time.Minute}); err != nil {
+	if _, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "session-governance", ClientToken: "secret", ClaimantID: "implementer", WorkerID: "implementer", Lease: time.Minute}); err != nil {
 		t.Fatal(err)
 	}
 	document, _, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "design-dispatch", Title: "Dispatch", Category: "Architecture"}, core.SystemDesignVersion{Content: "# Dispatch\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/dispatch/**\n```", Origin: core.SystemDesignOriginOperator})
@@ -110,6 +110,7 @@ func TestMCPImplementationGovernanceProposalsBindToClaimedTask(t *testing.T) {
 	server.Workspace = "demo"
 	server.WorkOrders = &workorder.Service{Store: st}
 	request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	request = request.WithContext(context.WithValue(request.Context(), workerContextKey{}, core.Worker{ID: "implementer", Workspace: "demo"}))
 	identity := map[string]any{"workspace_id": "demo", "work_order_id": job.ID, "session_id": "session-governance"}
 	revisionArgs := maps.Clone(identity)
 	revisionArgs["document_id"] = document.ID
@@ -896,7 +897,7 @@ func TestMCPWorkerDispatchedAgentClaimMutations(t *testing.T) {
 
 func TestMCPUserRunClaimMutationsRemainAuthorized(t *testing.T) {
 	t.Parallel()
-	for _, tool := range []string{"request_plan_revision", "release_work_order"} {
+	for _, tool := range []string{"request_plan_revision", "propose_system_design_revision", "propose_decision", "release_work_order"} {
 		t.Run(tool, func(t *testing.T) {
 			ctx := store.WithWorkspace(t.Context(), "demo")
 			st := store.NewMemory()
@@ -920,6 +921,10 @@ func TestMCPUserRunClaimMutationsRemainAuthorized(t *testing.T) {
 			if _, err = storetest.For(st).ClaimWorkOrder(ctx, orderID, core.WorkOrderClaim{SessionID: "run-session", ClientToken: "run-secret", ClaimantID: core.TaskRunClaimantID("user-a"), OwnerUserID: "user-a", Agent: "codex", Model: "model", Lease: time.Minute, ExecutionTimeout: time.Hour}); err != nil {
 				t.Fatal(err)
 			}
+			document, _, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "design-run-" + tool, Title: "Run", Category: "Architecture"}, core.SystemDesignVersion{Content: "# Run\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/httpapi/**\n```", Origin: core.SystemDesignOriginOperator})
+			if err != nil {
+				t.Fatal(err)
+			}
 			server := NewServer(st)
 			server.Workspace = "demo"
 			server.WorkOrders = &workorder.Service{Store: st}
@@ -927,6 +932,15 @@ func TestMCPUserRunClaimMutationsRemainAuthorized(t *testing.T) {
 			request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
 			request = request.WithContext(store.WithCredential(request.Context(), core.AuthenticatedCredential{ID: "user-token", OwnerUserID: "user-a", Kind: core.CredentialUser, Scope: core.CredentialScopeOperator}))
 			args := map[string]any{"workspace_id": "demo", "work_order_id": orderID, "session_id": "run-session", "rationale": "plan changed", "reason": "run ended"}
+			switch tool {
+			case "propose_system_design_revision":
+				args["document_id"] = document.ID
+				args["content"] = document.Title + "\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/httpapi/**\n```"
+			case "propose_decision":
+				args["statement"] = "Keep run claims exact."
+				args["context"] = "Run claims may propose task-local governance."
+				args["alternatives_rejected"] = "Grant freestanding proposal authority."
+			}
 			if _, err = server.callMCPTool(request, tool, args); err != nil {
 				t.Fatal(err)
 			}

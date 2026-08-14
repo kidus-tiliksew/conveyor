@@ -90,7 +90,7 @@ func TestInvitationLinkSessionAndFirstPATIntegration(t *testing.T) {
 	if repeated := call(http.MethodPost, "/v1/sign-in/redeem", "", `{"token":"`+token+`"}`, nil, false); repeated.Code != http.StatusUnauthorized {
 		t.Fatalf("repeat status=%d", repeated.Code)
 	}
-	workspaceMutation := `{"email":"second-user@example.test","role":"user"}`
+	workspaceMutation := `{"email":"second-user@example.test","role":"contributor"}`
 	if refused := call(http.MethodPost, "/v1/workspaces/"+workspace+"/members", "", workspaceMutation, cookies[0], false); refused.Code != http.StatusForbidden {
 		t.Fatalf("workspace mutation without CSRF status=%d body=%s", refused.Code, refused.Body.String())
 	}

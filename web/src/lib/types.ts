@@ -369,7 +369,7 @@ export interface WorkspaceRecord {
   created_at: string
 }
 
-export type WorkspaceRole = 'viewer' | 'user' | 'operator'
+export type WorkspaceRole = 'viewer' | 'executor' | 'contributor' | 'maintainer' | 'operator'
 
 // The self-identity projection behind GET /v1/me: deliberately narrow, and
 // carrying a role only when the request supplied authorized workspace context.
