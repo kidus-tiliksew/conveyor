@@ -233,7 +233,7 @@ func TestAuthorizationStoreFailuresDoNotLeakErrorText(t *testing.T) {
 	}
 
 	// Deployment-scoped mutation: requireMutationCapability's AuthorizeDeployment branch.
-	fixture.authorizeErrs = map[core.Capability]error{core.CapabilityOperateGates: errors.New(rawError)}
+	fixture.authorizeErrs = map[core.Capability]error{core.CapabilityManageWorkspace: errors.New(rawError)}
 	assertGeneric("deployment mutation", call(http.MethodPost, "/v1/users"))
 
 	// Workspace-scoped mutation: requireMutationCapability's AuthorizeWorkspace branch.
@@ -319,7 +319,7 @@ func TestMutationRoutesNameCapabilitiesExplicitly(t *testing.T) {
 	request.Header.Set("Authorization", "Bearer operator-token")
 	response = httptest.NewRecorder()
 	server.Handler().ServeHTTP(response, request)
-	if len(fixture.capabilityCalls) < 2 || fixture.capabilityCalls[len(fixture.capabilityCalls)-1] != core.CapabilityOperateGates {
+	if len(fixture.capabilityCalls) < 2 || fixture.capabilityCalls[len(fixture.capabilityCalls)-1] != core.CapabilityConfirmDocuments {
 		t.Fatalf("reference supersession capability calls=%v", fixture.capabilityCalls)
 	}
 }
@@ -468,7 +468,7 @@ func TestViewerMCPToolsRefuseNamedCapabilities(t *testing.T) {
 	if len(fixture.capabilityCalls) == 0 || fixture.capabilityCalls[len(fixture.capabilityCalls)-1] != core.CapabilityViewWorkspace {
 		t.Fatalf("viewer list_work_orders calls=%v", fixture.capabilityCalls)
 	}
-	for _, tool := range []string{"claim_work_order", "request_plan_revision", "propose_system_design_revision", "propose_decision", "set_assignee", "create_task"} {
+	for _, tool := range []string{"claim_work_order", "set_assignee", "create_task"} {
 		fixture.capabilityCalls = nil
 		_, err := server.callMCPTool(request, tool, map[string]any{"workspace_id": "alpha"})
 		if err == nil {
@@ -479,6 +479,50 @@ func TestViewerMCPToolsRefuseNamedCapabilities(t *testing.T) {
 			t.Fatalf("viewer MCP tool %s calls=%v want %q", tool, fixture.capabilityCalls, want)
 		}
 	}
+	for _, tool := range []string{"request_plan_revision", "propose_system_design_revision", "propose_decision"} {
+		fixture.capabilityCalls = nil
+		_, err := server.callMCPTool(request, tool, map[string]any{"workspace_id": "alpha", "work_order_id": "missing", "session_id": "missing"})
+		if !errors.Is(err, store.ErrWorkOrderClaimLost) {
+			t.Fatalf("viewer MCP governance tool %s error=%v, want claim loss", tool, err)
+		}
+		if len(fixture.capabilityCalls) == 0 || fixture.capabilityCalls[len(fixture.capabilityCalls)-1] != core.CapabilityViewWorkspace {
+			t.Fatalf("viewer MCP governance tool %s calls=%v", tool, fixture.capabilityCalls)
+		}
+	}
+}
+
+func TestMCPGovernanceToolsRemainClaimGatedForEveryRole(t *testing.T) {
+	roles := []core.WorkspaceRole{
+		core.WorkspaceRoleViewer,
+		core.WorkspaceRoleExecutor,
+		core.WorkspaceRoleContributor,
+		core.WorkspaceRoleMaintainer,
+		core.WorkspaceRoleOperator,
+	}
+	for _, role := range roles {
+		t.Run(string(role), func(t *testing.T) {
+			st := store.NewMemory()
+			fixture := &membershipFixture{
+				workspaces: []core.Workspace{{ID: "alpha"}},
+				roles:      map[string]map[string]core.WorkspaceRole{"user": {"alpha": role}},
+			}
+			server := NewServer(st)
+			server.Workspaces, server.Memberships = fixture, fixture
+			server.WorkOrders = &workorder.Service{Store: st}
+			request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+			request = request.WithContext(store.WithCredential(request.Context(), core.AuthenticatedCredential{ID: "pat", OwnerUserID: "user", Kind: core.CredentialUser, Scope: core.CredentialScopeUser}))
+			for _, tool := range []string{"request_plan_revision", "propose_system_design_revision", "propose_decision"} {
+				fixture.capabilityCalls = nil
+				_, err := server.callMCPTool(request, tool, map[string]any{"workspace_id": "alpha", "work_order_id": "missing", "session_id": "missing"})
+				if !errors.Is(err, store.ErrWorkOrderClaimLost) {
+					t.Fatalf("%s error=%v, want claim loss", tool, err)
+				}
+				if len(fixture.capabilityCalls) != 1 || fixture.capabilityCalls[0] != core.CapabilityViewWorkspace {
+					t.Fatalf("%s capability calls=%v", tool, fixture.capabilityCalls)
+				}
+			}
+		})
+	}
 }
 
 func TestExecutorAndMaintainerRouteBoundaries(t *testing.T) {
@@ -487,6 +531,7 @@ func TestExecutorAndMaintainerRouteBoundaries(t *testing.T) {
 		roles: map[string]map[string]core.WorkspaceRole{
 			"executor":   {"alpha": core.WorkspaceRoleExecutor},
 			"maintainer": {"alpha": core.WorkspaceRoleMaintainer},
+			"operator":   {"alpha": core.WorkspaceRoleOperator},
 		},
 	}
 	server := NewServer(store.NewMemory())
@@ -494,6 +539,7 @@ func TestExecutorAndMaintainerRouteBoundaries(t *testing.T) {
 	server.Credentials = staticCredentialVerifier{
 		"executor-token":   {ID: "pat_executor", OwnerUserID: "executor", Kind: core.CredentialUser, Scope: core.CredentialScopeUser},
 		"maintainer-token": {ID: "pat_maintainer", OwnerUserID: "maintainer", Kind: core.CredentialUser, Scope: core.CredentialScopeUser},
+		"operator-token":   {ID: "pat_operator", OwnerUserID: "operator", Kind: core.CredentialUser, Scope: core.CredentialScopeOperator},
 	}
 	call := func(method, path, token, body string) *httptest.ResponseRecorder {
 		t.Helper()
@@ -510,13 +556,34 @@ func TestExecutorAndMaintainerRouteBoundaries(t *testing.T) {
 	}
 	for _, route := range []struct {
 		method, path, body string
+		capability         core.Capability
 	}{
-		{http.MethodPost, "/v1/requirements/req/versions/1/confirm?workspace_id=alpha", ""},
-		{http.MethodGet, "/v1/workspaces/alpha/invitations?workspace_id=alpha", ""},
+		{http.MethodPost, "/v1/requirements/req/versions/1/confirm?workspace_id=alpha", "", core.CapabilityConfirmDocuments},
+		{http.MethodGet, "/v1/workspaces/alpha/invitations?workspace_id=alpha", "", core.CapabilityManageMembership},
+		{http.MethodPost, "/v1/lineage/rebuild?workspace_id=alpha", `{}`, core.CapabilityManageWorkspace},
+		{http.MethodPost, "/v1/requirements/req/staleness/signal/acknowledge?workspace_id=alpha", `{}`, core.CapabilityManageWorkspace},
+		{http.MethodPost, "/v1/requirements/req/staleness/signal/follow-up?workspace_id=alpha", `{}`, core.CapabilityManageWorkspace},
+		{http.MethodPost, "/v1/reference-documents?workspace_id=alpha", `{}`, core.CapabilityConfirmDocuments},
+		{http.MethodPost, "/v1/reference-documents/ref/versions?workspace_id=alpha", `{}`, core.CapabilityConfirmDocuments},
+		{http.MethodDelete, "/v1/reference-documents/ref?workspace_id=alpha", "", core.CapabilityConfirmDocuments},
+		{http.MethodPost, "/v1/decisions/DEC-1/dismiss?workspace_id=alpha", `{}`, core.CapabilityConfirmDocuments},
+		{http.MethodPost, "/v1/monitor/observations?workspace_id=alpha", `{}`, core.CapabilityManageWorkspace},
+		{http.MethodPost, "/v1/monitor/drift/drift/resolve?workspace_id=alpha", `{}`, core.CapabilityManageWorkspace},
+		{http.MethodPost, "/v1/workers/pairings?workspace_id=alpha", `{}`, core.CapabilityManageWorkspace},
+		{http.MethodDelete, "/v1/workers/worker?workspace_id=alpha", "", core.CapabilityManageWorkspace},
 	} {
+		fixture.capabilityCalls = nil
 		response := call(route.method, route.path, "maintainer-token", route.body)
 		if response.Code != http.StatusNotFound || response.Body.String() != canonicalWorkspaceNotFoundBody() {
 			t.Fatalf("maintainer forbidden route %s status=%d body=%q", route.path, response.Code, response.Body.String())
+		}
+		if len(fixture.capabilityCalls) == 0 || fixture.capabilityCalls[len(fixture.capabilityCalls)-1] != route.capability {
+			t.Fatalf("maintainer forbidden route %s calls=%v want=%q", route.path, fixture.capabilityCalls, route.capability)
+		}
+		fixture.capabilityCalls = nil
+		_ = call(route.method, route.path, "operator-token", route.body)
+		if len(fixture.capabilityCalls) == 0 || fixture.capabilityCalls[len(fixture.capabilityCalls)-1] != route.capability {
+			t.Fatalf("operator route %s calls=%v want=%q", route.path, fixture.capabilityCalls, route.capability)
 		}
 	}
 	for _, route := range []struct {
@@ -524,6 +591,14 @@ func TestExecutorAndMaintainerRouteBoundaries(t *testing.T) {
 	}{
 		{http.MethodPost, "/v1/tasks?workspace_id=alpha", `{}`},
 		{http.MethodPut, "/v1/tasks/task/assignee?workspace_id=alpha", `{}`},
+		{http.MethodPut, "/v1/tasks/task/hold?workspace_id=alpha", `{}`},
+		{http.MethodPost, "/v1/tasks/task/review?workspace_id=alpha", `{}`},
+		{http.MethodPost, "/v1/tasks/task/close?workspace_id=alpha", `{}`},
+		{http.MethodPost, "/v1/tasks/task/merge?workspace_id=alpha", `{}`},
+		{http.MethodPost, "/v1/tasks/task/merge-conflict-fix?workspace_id=alpha", `{}`},
+		{http.MethodPost, "/v1/tasks/task/redispatch?workspace_id=alpha", `{}`},
+		{http.MethodPost, "/v1/work-orders/order/recover?workspace_id=alpha", `{}`},
+		{http.MethodPost, "/v1/work-orders/order/preempt?workspace_id=alpha", `{}`},
 	} {
 		response := call(route.method, route.path, "maintainer-token", route.body)
 		if response.Code == http.StatusNotFound && response.Body.String() == canonicalWorkspaceNotFoundBody() {

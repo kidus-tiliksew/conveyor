@@ -15,7 +15,11 @@ import (
 // current operator bindings. Persisted credential scope is only a protocol
 // boundary and never sufficient authority on its own.
 func (s *Store) AuthorizeDeployment(ctx context.Context, userID string, capability core.Capability) (bool, error) {
-	if capability != core.CapabilityOperateGates {
+	// Deployment-scoped calls are restricted to live workspace operators, but
+	// they may exercise any capability in the operator bundle. This preserves
+	// legacy/non-workspace-scoped factory operations while keeping capabilities
+	// absent from lower roles behind the operator boundary.
+	if !core.RoleAllows(core.WorkspaceRoleOperator, capability) {
 		return false, nil
 	}
 	var allowed bool
@@ -133,10 +137,38 @@ func (s *Store) GrantWorkspaceRole(ctx context.Context, email, workspaceID strin
 		} else if lookupErr != nil {
 			return lookupErr
 		} else {
+			// Serialize role transitions with revocation so two concurrent changes
+			// cannot each demote the last operator or race assignment cleanup.
+			var lockedWorkspace string
+			if err := tx.QueryRow(ctx, `SELECT id FROM workspaces WHERE id=$1 FOR UPDATE`, workspaceID).Scan(&lockedWorkspace); err != nil {
+				if errors.Is(err, pgx.ErrNoRows) {
+					return fmt.Errorf("%w: workspace membership", store.ErrNotFound)
+				}
+				return err
+			}
+			var previousRole core.WorkspaceRole
+			roleErr := tx.QueryRow(ctx, `SELECT role FROM workspace_role_bindings WHERE workspace_id=$1 AND user_id=$2`, workspaceID, userID).Scan(&previousRole)
+			if roleErr != nil && !errors.Is(roleErr, pgx.ErrNoRows) {
+				return roleErr
+			}
+			if roleErr == nil && previousRole == core.WorkspaceRoleOperator && role != core.WorkspaceRoleOperator {
+				var operators int
+				if err := tx.QueryRow(ctx, `SELECT count(*) FROM workspace_role_bindings WHERE workspace_id=$1 AND role=$2`, workspaceID, core.WorkspaceRoleOperator).Scan(&operators); err != nil {
+					return err
+				}
+				if operators <= 1 {
+					return store.ErrLastWorkspaceOperator
+				}
+			}
 			if _, err := tx.Exec(ctx, `INSERT INTO workspace_role_bindings(workspace_id,user_id,role)
 				VALUES($1,$2,$3) ON CONFLICT(workspace_id,user_id) DO UPDATE SET role=excluded.role,updated_at=now()
 			`, workspaceID, userID, role); err != nil {
 				return err
+			}
+			if roleErr == nil && core.RoleAllows(previousRole, core.CapabilityClaimWork) && !core.RoleAllows(role, core.CapabilityClaimWork) {
+				if err := clearMemberAssignmentsTx(ctx, tx, q, workspaceID, userID); err != nil {
+					return err
+				}
 			}
 			if _, err := tx.Exec(ctx, `DELETE FROM workspace_membership_invitations WHERE workspace_id=$1 AND email=$2`, workspaceID, email); err != nil {
 				return err
@@ -213,38 +245,45 @@ func (s *Store) RevokeWorkspaceRole(ctx context.Context, userID, workspaceID str
 		if result.RowsAffected() == 0 {
 			return fmt.Errorf("%w: workspace membership", store.ErrNotFound)
 		}
-		rows, err := tx.Query(ctx, `UPDATE tasks SET assignee_user_id=NULL
-			WHERE workspace_id=$1 AND assignee_user_id=$2
-			RETURNING id`, workspaceID, userID)
-		if err != nil {
+		if err := clearMemberAssignmentsTx(ctx, tx, q, workspaceID, userID); err != nil {
 			return err
 		}
-		var taskIDs []string
-		for rows.Next() {
-			var taskID string
-			if err = rows.Scan(&taskID); err != nil {
-				rows.Close()
-				return err
-			}
-			taskIDs = append(taskIDs, taskID)
-		}
-		if err = rows.Err(); err != nil {
-			rows.Close()
-			return err
-		}
-		rows.Close()
 		if err := revokeOwnedWorkersTx(ctx, tx, q, userID, workspaceID, "workspace_membership_revoked"); err != nil {
 			return err
-		}
-		for _, taskID := range taskIDs {
-			if err = insertEvent(ctx, q, core.Event{TaskID: taskID, Kind: "task.assignee.cleared", Payload: core.JSONPayload(map[string]any{
-				"assignee_user_id": "", "revoked_user_id": userID,
-			})}); err != nil {
-				return err
-			}
 		}
 		return insertWorkspaceEvent(ctx, q, core.Event{Kind: "workspace.membership_revoked", Payload: core.JSONPayload(map[string]any{
 			"workspace_id": workspaceID, "user_id": userID,
 		})})
 	})
+}
+
+func clearMemberAssignmentsTx(ctx context.Context, tx pgx.Tx, q *db.Queries, workspaceID, userID string) error {
+	rows, err := tx.Query(ctx, `UPDATE tasks SET assignee_user_id=NULL
+		WHERE workspace_id=$1 AND assignee_user_id=$2
+		RETURNING id`, workspaceID, userID)
+	if err != nil {
+		return err
+	}
+	var taskIDs []string
+	for rows.Next() {
+		var taskID string
+		if err = rows.Scan(&taskID); err != nil {
+			rows.Close()
+			return err
+		}
+		taskIDs = append(taskIDs, taskID)
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	for _, taskID := range taskIDs {
+		if err = insertEvent(ctx, q, core.Event{TaskID: taskID, Kind: "task.assignee.cleared", Payload: core.JSONPayload(map[string]any{
+			"assignee_user_id": "", "revoked_user_id": userID,
+		})}); err != nil {
+			return err
+		}
+	}
+	return nil
 }

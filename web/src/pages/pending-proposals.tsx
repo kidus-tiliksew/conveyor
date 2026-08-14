@@ -28,6 +28,7 @@ const tierLabels: Record<PendingProposal['tier'], string> = {
 export function PendingProposalsPage() {
   const token = useOperatorToken()
   const canConfirm = useWorkspaceCapability('confirm_documents')
+  const canDismiss = useWorkspaceCapability('confirm_documents')
   const { workspace } = useWorkspaceSelection()
   const search = useSearch({ from: '/pending-proposals' })
   const client = useQueryClient()
@@ -138,7 +139,7 @@ export function PendingProposalsPage() {
                           : 'Confirm'}
                       </Button>
                     )}
-                    {canConfirm && proposal.tier === 'decision' && (
+                    {canDismiss && proposal.tier === 'decision' && (
                       <Button
                         size="sm"
                         variant="destructive"

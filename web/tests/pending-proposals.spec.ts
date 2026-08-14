@@ -190,6 +190,40 @@ test('requirements navigation stays usable when its attention projection fails o
   await expect(page.getByRole('link', { name: 'Requirements', exact: true })).toHaveText('Requirements')
 })
 
+test('maintainer can read pending decisions without corpus-authority controls', async ({ page }) => {
+  await initialize(page)
+  await page.route('**/v1/**', async (route: Route) => {
+    const path = new URL(route.request().url()).pathname
+    if (path === '/v1/workspaces') return route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] })
+    if (path === '/v1/me') return route.fulfill({ json: { id: 'usr_maintainer', role: 'maintainer' } })
+    if (path === '/v1/workspace') return route.fulfill({ json: { workspace: 'demo', repos: ['conveyor'] } })
+    if (path === '/v1/activity' || path === '/v1/blueprints') return route.fulfill({ json: [] })
+    if (path === '/v1/pending-proposals')
+      return route.fulfill({
+        json: {
+          items: [
+            {
+              id: 'DEC-42',
+              title: 'Operator-only corpus decision',
+              tier: 'decision',
+              origin_type: 'operator',
+              proposed_at: proposedAt,
+              age_seconds: 60,
+            },
+          ],
+          attention: { task_count: 0, pending_proposal_count: 1, total: 1 },
+        },
+      })
+    return route.fulfill({ json: [] })
+  })
+
+  await page.goto('/pending-proposals')
+  const decision = page.getByRole('listitem').filter({ hasText: 'Operator-only corpus decision' })
+  await expect(decision).toBeVisible()
+  await expect(decision.getByRole('button', { name: 'Confirm' })).toHaveCount(0)
+  await expect(decision.getByRole('button', { name: 'Dismiss' })).toHaveCount(0)
+})
+
 test('pending proposal consumers share one active query and hidden documents stop interval polling', async ({
   page,
 }) => {
