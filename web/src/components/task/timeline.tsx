@@ -40,7 +40,14 @@ import { absoluteTime, cn, compactTokens, duration } from '../../lib/utils'
 import { Badge } from '../ui/badge'
 import { useOperatorToken, useWorkspaceCapability, useWorkspaceSelection } from '../app-shell'
 import { MarkdownProse } from '../ui/markdown-prose'
-import { ReviewPanel, changesComposerHint, gateTone, isReviewable, type GateTone } from './review-panel'
+import {
+  ReviewPanel,
+  changesComposerHint,
+  gateTone,
+  isReviewable,
+  type GateTone,
+  useCanRequestTaskChanges,
+} from './review-panel'
 import { RedispatchCard, canRedispatch } from './redispatch-card'
 import {
   CheckpointProposalRecoveryCard,
@@ -84,7 +91,7 @@ export function Timeline({
 }) {
   const token = useOperatorToken()
   const canOperate = useWorkspaceCapability('operate_gates')
-  const canRequestChanges = useWorkspaceCapability('request_changes')
+  const canRequestChanges = useCanRequestTaskChanges(item.task)
   const { workspace } = useWorkspaceSelection()
   const members = useQuery({
     queryKey: ['workspace-members', token, workspace],

@@ -169,6 +169,9 @@ func (s *Store) GrantWorkspaceRole(ctx context.Context, email, workspaceID strin
 				if err := clearMemberAssignmentsTx(ctx, tx, q, workspaceID, userID); err != nil {
 					return err
 				}
+				if err := revokeOwnedWorkersTx(ctx, tx, q, userID, workspaceID, "workspace_membership_demoted"); err != nil {
+					return err
+				}
 			}
 			if _, err := tx.Exec(ctx, `DELETE FROM workspace_membership_invitations WHERE workspace_id=$1 AND email=$2`, workspaceID, email); err != nil {
 				return err

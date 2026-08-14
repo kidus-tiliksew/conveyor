@@ -83,6 +83,44 @@ func TestOwnedWorkerAuthorizationAndRevocationCascadeIntegration(t *testing.T) {
 	if _, err := st.AuthenticateWorker(ctx, legacyWorker.CredentialHash); err != nil {
 		t.Fatalf("ownerless legacy worker authentication: %v", err)
 	}
+	demotedMember, err := st.queries.InsertIdentityUser(t.Context(), db.InsertIdentityUserParams{
+		ID: "usr_demoted_" + core.NewTaskID(), Email: "demoted-member-" + core.NewTaskID() + "@example.test", DisplayName: "Demoted Worker Member",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.GrantWorkspaceRole(ctx, demotedMember.Email, workspace, core.WorkspaceRoleContributor); err != nil {
+		t.Fatal(err)
+	}
+	demotedWorker := core.Worker{ID: "worker-demoted-" + core.NewTaskID(), Workspace: workspace, OwnerUserID: demotedMember.ID, Name: "demoted", CredentialHash: "demoted-hash-" + core.NewTaskID(), CreatedAt: now}
+	if err := st.CreateWorker(ctx, demotedWorker); err != nil {
+		t.Fatal(err)
+	}
+	demotedOrder := createClaimable("demoted-worker")
+	if _, err := st.GrantWorkspaceRole(ctx, demotedMember.Email, workspace, core.WorkspaceRoleViewer); err != nil {
+		t.Fatalf("demote worker owner: %v", err)
+	}
+	if _, err := st.AuthenticateWorker(ctx, demotedWorker.CredentialHash); !errors.Is(err, store.ErrWorkerUnauthorized) {
+		t.Fatalf("demoted-owner worker authentication error=%v", err)
+	}
+	if _, err := st.HeartbeatWorker(ctx, demotedWorker.ID, now.Add(time.Minute), nil); !errors.Is(err, store.ErrWorkerUnauthorized) {
+		t.Fatalf("demoted-owner worker heartbeat error=%v", err)
+	}
+	if _, err := storetest.For(st).ClaimWorkOrder(ctx, demotedOrder.ID, core.WorkOrderClaim{
+		SessionID: "demoted-worker", ClientToken: "demoted-worker", WorkerID: demotedWorker.ID, OwnerUserID: demotedMember.ID, Lease: time.Minute,
+	}); !errors.Is(err, store.ErrWorkerUnauthorized) {
+		t.Fatalf("demoted-owner worker claim error=%v", err)
+	}
+	var demotionRevoked, demotionAudited int
+	if err := st.pool.QueryRow(t.Context(), `SELECT
+		(SELECT count(*) FROM workers WHERE id=$1 AND revoked_at IS NOT NULL),
+		(SELECT count(*) FROM events WHERE workspace_id=$2 AND kind='worker.revoked'
+		 AND payload_json->>'worker_id'=$1 AND payload_json->>'reason'='workspace_membership_demoted')`, demotedWorker.ID, workspace).Scan(&demotionRevoked, &demotionAudited); err != nil || demotionRevoked != 1 || demotionAudited != 1 {
+		t.Fatalf("demotion cascade revoked=%d audited=%d err=%v", demotionRevoked, demotionAudited, err)
+	}
+	if _, err := st.AuthenticateWorker(ctx, legacyWorker.CredentialHash); err != nil {
+		t.Fatalf("ownerless legacy worker changed by demotion: %v", err)
+	}
 	legacyOrder := createClaimable("legacy-unassigned")
 	if _, err := storetest.For(st).ClaimWorkOrder(ctx, legacyOrder.ID, core.WorkOrderClaim{
 		SessionID: "legacy-unassigned", ClientToken: "legacy-unassigned", WorkerID: legacyWorker.ID, OwnerUserID: "forged", Lease: time.Minute,

@@ -1,8 +1,8 @@
 import { useState } from 'react'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ExternalLink, GitMerge, ThumbsUp, TriangleAlert, Undo2, UserRound, type LucideIcon } from 'lucide-react'
 import { mergeGateReview, pendingPlanRevisionRequest } from '../../lib/activity'
-import { fixMergeConflict, mergeTask, requestTaskChanges, reviewTask } from '../../lib/api'
+import { fetchCallerIdentity, fixMergeConflict, mergeTask, requestTaskChanges, reviewTask } from '../../lib/api'
 import { defaultReasonCode, interventionActions } from '../../lib/contracts'
 import type { ActivityItem, InterventionAction, Task, TaskEvent } from '../../lib/types'
 import { cn } from '../../lib/utils'
@@ -27,6 +27,27 @@ export type GateTone = 'positive' | 'neutral' | 'alarm'
 // the timeline opens scrolled to it) only in these states.
 export function isReviewable(task: Task): boolean {
   return task.state === 'awaiting_human' || task.state === 'approved'
+}
+
+// Request changes follows the server's assignee-aware rule. Identity loading
+// and failures are deliberately fail-closed so capability alone never exposes
+// an action that an assigned task would refuse.
+export function useCanRequestTaskChanges(task: Task): boolean {
+  const token = useOperatorToken()
+  const canRequestChanges = useWorkspaceCapability('request_changes')
+  const canSetAssignee = useWorkspaceCapability('set_assignee')
+  const { workspace } = useWorkspaceSelection()
+  const identity = useQuery({
+    queryKey: ['caller-identity', token, workspace],
+    queryFn: () => fetchCallerIdentity(token),
+    enabled: Boolean(token && workspace),
+    retry: false,
+  })
+  return Boolean(
+    identity.data &&
+      canRequestChanges &&
+      (!task.assignee || task.assignee.user_id === identity.data.id || canSetAssignee),
+  )
 }
 
 // The gate's tone, exposed so the timeline can tint the rail dot to match.
@@ -251,7 +272,7 @@ export function ReviewPanel({ item, onDecisionRecorded }: { item: ActivityItem; 
 function GenericReviewPanel({ item, onDecisionRecorded }: { item: ActivityItem; onDecisionRecorded?: () => void }) {
   const token = useOperatorToken()
   const canOperate = useWorkspaceCapability('operate_gates')
-  const canRequestChanges = useWorkspaceCapability('request_changes')
+  const canRequestChanges = useCanRequestTaskChanges(item.task)
   const { workspace } = useWorkspaceSelection()
   const queryClient = useQueryClient()
   const [expanded, setExpanded] = useState<InterventionAction | null>(null)

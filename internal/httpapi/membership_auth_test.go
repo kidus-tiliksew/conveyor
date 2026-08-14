@@ -18,6 +18,7 @@ type membershipFixture struct {
 	workspaces      []core.Workspace
 	roles           map[string]map[string]core.WorkspaceRole
 	capabilityCalls []core.Capability
+	grantErr        error
 	revokeErr       error
 	invitationErr   error
 	authorizeErrs   map[core.Capability]error
@@ -90,7 +91,7 @@ func (f *membershipFixture) ListWorkspaceInvitations(_ context.Context, workspac
 	return f.invitations, f.invitationsErr
 }
 func (f *membershipFixture) GrantWorkspaceRole(context.Context, string, string, core.WorkspaceRole) (core.MembershipGrant, error) {
-	return core.MembershipGrant{}, nil
+	return core.MembershipGrant{}, f.grantErr
 }
 func (f *membershipFixture) RevokeWorkspaceInvitation(context.Context, string, string) error {
 	return f.invitationErr
@@ -697,6 +698,26 @@ func TestSoleOperatorRevocationIsActionable(t *testing.T) {
 	response := httptest.NewRecorder()
 	server.Handler().ServeHTTP(response, request)
 	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "grant another operator first") {
+		t.Fatalf("status=%d body=%q", response.Code, response.Body.String())
+	}
+}
+
+func TestSoleOperatorDemotionIsStructuredAndActionable(t *testing.T) {
+	fixture := &membershipFixture{
+		workspaces: []core.Workspace{{ID: "alpha"}},
+		roles:      map[string]map[string]core.WorkspaceRole{"operator": {"alpha": core.WorkspaceRoleOperator}},
+		grantErr:   store.ErrLastWorkspaceOperator,
+	}
+	server := NewServer(store.NewMemory())
+	server.Workspaces, server.Memberships = fixture, fixture
+	server.Credentials = staticCredentialVerifier{"operator-token": {ID: "pat_operator", OwnerUserID: "operator", Kind: core.CredentialUser, Scope: core.CredentialScopeOperator}}
+	request := httptest.NewRequest(http.MethodPost, "/v1/workspaces/alpha/members", strings.NewReader(`{"email":"operator@example.test","role":"viewer"}`))
+	request.Header.Set("Authorization", "Bearer operator-token")
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), `"error":"last_workspace_operator"`) ||
+		!strings.Contains(response.Body.String(), "cannot demote the sole workspace operator; grant another operator first") {
 		t.Fatalf("status=%d body=%q", response.Code, response.Body.String())
 	}
 }
