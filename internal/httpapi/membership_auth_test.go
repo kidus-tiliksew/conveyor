@@ -247,7 +247,7 @@ func TestAuthorizationStoreFailuresDoNotLeakErrorText(t *testing.T) {
 func TestMembershipScopesWorkspaceListAndNotFoundSurfaces(t *testing.T) {
 	fixture := &membershipFixture{
 		workspaces: []core.Workspace{{ID: "alpha", Name: "Alpha"}, {ID: "beta", Name: "Beta"}},
-		roles:      map[string]map[string]core.WorkspaceRole{"usr_1": {"alpha": core.WorkspaceRoleUser}},
+		roles:      map[string]map[string]core.WorkspaceRole{"usr_1": {"alpha": core.WorkspaceRoleContributor}},
 	}
 	server := NewServer(store.NewMemory())
 	server.Workspaces, server.Memberships = fixture, fixture
@@ -279,7 +279,7 @@ func TestMembershipScopesWorkspaceListAndNotFoundSurfaces(t *testing.T) {
 func TestMCPUnboundWorkspaceMatchesMissingWorkspace(t *testing.T) {
 	fixture := &membershipFixture{
 		workspaces: []core.Workspace{{ID: "alpha"}, {ID: "beta"}},
-		roles:      map[string]map[string]core.WorkspaceRole{"usr_1": {"alpha": core.WorkspaceRoleUser}},
+		roles:      map[string]map[string]core.WorkspaceRole{"usr_1": {"alpha": core.WorkspaceRoleContributor}},
 	}
 	server := NewServer(store.NewMemory())
 	server.Workspaces, server.Memberships = fixture, fixture
@@ -327,7 +327,7 @@ func TestMutationRoutesNameCapabilitiesExplicitly(t *testing.T) {
 func TestTaskRunRoutesAlsoRequireClaimWork(t *testing.T) {
 	fixture := &membershipFixture{
 		workspaces: []core.Workspace{{ID: "alpha"}},
-		roles:      map[string]map[string]core.WorkspaceRole{"user": {"alpha": core.WorkspaceRoleUser}},
+		roles:      map[string]map[string]core.WorkspaceRole{"user": {"alpha": core.WorkspaceRoleContributor}},
 	}
 	server := NewServer(store.NewMemory())
 	server.Workspaces, server.Memberships = fixture, fixture
@@ -434,6 +434,57 @@ func TestViewerMCPToolsRefuseNamedCapabilities(t *testing.T) {
 	}
 }
 
+func TestExecutorAndMaintainerRouteBoundaries(t *testing.T) {
+	fixture := &membershipFixture{
+		workspaces: []core.Workspace{{ID: "alpha"}},
+		roles: map[string]map[string]core.WorkspaceRole{
+			"executor":   {"alpha": core.WorkspaceRoleExecutor},
+			"maintainer": {"alpha": core.WorkspaceRoleMaintainer},
+		},
+	}
+	server := NewServer(store.NewMemory())
+	server.Workspaces, server.Memberships = fixture, fixture
+	server.Credentials = staticCredentialVerifier{
+		"executor-token":   {ID: "pat_executor", OwnerUserID: "executor", Kind: core.CredentialUser, Scope: core.CredentialScopeUser},
+		"maintainer-token": {ID: "pat_maintainer", OwnerUserID: "maintainer", Kind: core.CredentialUser, Scope: core.CredentialScopeUser},
+	}
+	call := func(method, path, token, body string) *httptest.ResponseRecorder {
+		t.Helper()
+		request := httptest.NewRequest(method, path, strings.NewReader(body))
+		request.Header.Set("Authorization", "Bearer "+token)
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, request)
+		return response
+	}
+
+	if response := call(http.MethodPost, "/v1/requirements?workspace_id=alpha", "executor-token", `{}`); response.Code != http.StatusNotFound || response.Body.String() != canonicalWorkspaceNotFoundBody() {
+		t.Fatalf("executor freestanding proposal status=%d body=%q", response.Code, response.Body.String())
+	}
+	for _, route := range []struct {
+		method, path, body string
+	}{
+		{http.MethodPost, "/v1/requirements/req/versions/1/confirm?workspace_id=alpha", ""},
+		{http.MethodGet, "/v1/workspaces/alpha/invitations?workspace_id=alpha", ""},
+	} {
+		response := call(route.method, route.path, "maintainer-token", route.body)
+		if response.Code != http.StatusNotFound || response.Body.String() != canonicalWorkspaceNotFoundBody() {
+			t.Fatalf("maintainer forbidden route %s status=%d body=%q", route.path, response.Code, response.Body.String())
+		}
+	}
+	for _, route := range []struct {
+		method, path, body string
+	}{
+		{http.MethodPost, "/v1/tasks?workspace_id=alpha", `{}`},
+		{http.MethodPut, "/v1/tasks/task/assignee?workspace_id=alpha", `{}`},
+	} {
+		response := call(route.method, route.path, "maintainer-token", route.body)
+		if response.Code == http.StatusNotFound && response.Body.String() == canonicalWorkspaceNotFoundBody() {
+			t.Fatalf("maintainer allowed route %s was capability-refused", route.path)
+		}
+	}
+}
+
 func TestReferenceDocumentSupersessionRequiresOperator(t *testing.T) {
 	st := store.NewMemory()
 	ctx := store.WithWorkspace(t.Context(), "alpha")
@@ -444,7 +495,7 @@ func TestReferenceDocumentSupersessionRequiresOperator(t *testing.T) {
 	fixture := &membershipFixture{
 		workspaces: []core.Workspace{{ID: "alpha"}},
 		roles: map[string]map[string]core.WorkspaceRole{
-			"user":     {"alpha": core.WorkspaceRoleUser},
+			"user":     {"alpha": core.WorkspaceRoleContributor},
 			"operator": {"alpha": core.WorkspaceRoleOperator},
 		},
 	}
@@ -533,10 +584,10 @@ func TestPendingInvitationListingIsGatedOnManageMembership(t *testing.T) {
 		workspaces: []core.Workspace{{ID: "alpha"}},
 		roles: map[string]map[string]core.WorkspaceRole{
 			"operator": {"alpha": core.WorkspaceRoleOperator},
-			"member":   {"alpha": core.WorkspaceRoleUser},
+			"member":   {"alpha": core.WorkspaceRoleContributor},
 		},
 		invitations: []core.WorkspaceInvitation{
-			{WorkspaceID: "alpha", Email: "invited@example.test", Role: core.WorkspaceRoleUser, InvitedBy: "operator", InvitedByDisplayName: "Ops"},
+			{WorkspaceID: "alpha", Email: "invited@example.test", Role: core.WorkspaceRoleContributor, InvitedBy: "operator", InvitedByDisplayName: "Ops"},
 		},
 	}
 	server := NewServer(store.NewMemory())

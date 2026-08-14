@@ -1,27 +1,31 @@
-import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { MailPlus, RotateCw, Trash2 } from 'lucide-react'
+import { useState } from 'react'
+import {
+  fetchWorkspaceInvitations,
+  fetchWorkspaceMembers,
+  inviteWorkspaceMember,
+  LastWorkspaceOperatorError,
+  resendWorkspaceInvitation,
+  revokeWorkspaceInvitation,
+  revokeWorkspaceMember,
+  WorkspaceNotVisibleError,
+} from '../../lib/api'
+import { errorMessage } from '../../lib/errors'
+import type { MembershipGrant, WorkspaceRole } from '../../lib/types'
 import { useOperatorToken, useWorkspaceSelection } from '../app-shell'
 import { Badge } from '../ui/badge'
 import { Button } from '../ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
 import { CopyButton } from '../ui/copy-button'
 import { Input, Select } from '../ui/input'
-import {
-  fetchWorkspaceInvitations,
-  fetchWorkspaceMembers,
-  inviteWorkspaceMember,
-  LastWorkspaceOperatorError,
-  revokeWorkspaceInvitation,
-  revokeWorkspaceMember,
-  resendWorkspaceInvitation,
-  WorkspaceNotVisibleError,
-} from '../../lib/api'
-import { errorMessage } from '../../lib/errors'
-import type { MembershipGrant, WorkspaceRole } from '../../lib/types'
 
 function formatTimestamp(value: string) {
   return new Date(value).toLocaleString()
+}
+
+function roleLabel(role: WorkspaceRole) {
+  return role.charAt(0).toUpperCase() + role.slice(1)
 }
 
 /**
@@ -60,14 +64,14 @@ export function MembersSection() {
   }
 
   const [email, setEmail] = useState('')
-  const [role, setRole] = useState<WorkspaceRole>('user')
+  const [role, setRole] = useState<WorkspaceRole>('contributor')
   const [delivery, setDelivery] = useState<MembershipGrant | null>(null)
   const invite = useMutation({
     mutationFn: () => inviteWorkspaceMember(token, workspace, { email: email.trim(), role }),
     onSuccess: async (result) => {
       setDelivery(result)
       setEmail('')
-      setRole('user')
+      setRole('contributor')
       await refresh()
     },
   })
@@ -117,7 +121,9 @@ export function MembersSection() {
                 onChange={(event) => setRole(event.target.value as WorkspaceRole)}
               >
                 <option value="viewer">Viewer</option>
-                <option value="user">User</option>
+                <option value="executor">Executor</option>
+                <option value="contributor">Contributor</option>
+                <option value="maintainer">Maintainer</option>
                 <option value="operator">Operator</option>
               </Select>
               <Button type="submit" disabled={!email.trim() || invite.isPending}>
@@ -177,9 +183,7 @@ export function MembersSection() {
                 </p>
               </div>
               <div className="flex shrink-0 items-center gap-2">
-                <Badge variant={member.role === 'operator' ? 'accent' : 'default'}>
-                  {member.role === 'operator' ? 'Operator' : member.role === 'viewer' ? 'Viewer' : 'User'}
-                </Badge>
+                <Badge variant={member.role === 'operator' ? 'accent' : 'default'}>{roleLabel(member.role)}</Badge>
                 {canManage && (
                   <Button
                     size="icon"
@@ -237,7 +241,7 @@ export function MembersSection() {
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
                   <Badge variant={invitation.role === 'operator' ? 'accent' : 'default'}>
-                    {invitation.role === 'operator' ? 'Operator' : invitation.role === 'viewer' ? 'Viewer' : 'User'}
+                    {roleLabel(invitation.role)}
                   </Badge>
                   <Button
                     size="sm"

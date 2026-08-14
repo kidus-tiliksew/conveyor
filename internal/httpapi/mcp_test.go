@@ -99,7 +99,7 @@ func TestMCPImplementationGovernanceProposalsBindToClaimedTask(t *testing.T) {
 	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "session-governance", ClientToken: "secret", ClaimantID: "implementer", Lease: time.Minute}); err != nil {
+	if _, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "session-governance", ClientToken: "secret", ClaimantID: "implementer", WorkerID: "implementer", Lease: time.Minute}); err != nil {
 		t.Fatal(err)
 	}
 	document, _, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "design-dispatch", Title: "Dispatch", Category: "Architecture"}, core.SystemDesignVersion{Content: "# Dispatch\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/dispatch/**\n```", Origin: core.SystemDesignOriginOperator})
@@ -110,6 +110,7 @@ func TestMCPImplementationGovernanceProposalsBindToClaimedTask(t *testing.T) {
 	server.Workspace = "demo"
 	server.WorkOrders = &workorder.Service{Store: st}
 	request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	request = request.WithContext(context.WithValue(request.Context(), workerContextKey{}, core.Worker{ID: "implementer", Workspace: "demo"}))
 	identity := map[string]any{"workspace_id": "demo", "work_order_id": job.ID, "session_id": "session-governance"}
 	revisionArgs := maps.Clone(identity)
 	revisionArgs["document_id"] = document.ID
@@ -800,9 +801,9 @@ func TestMCPRequestPlanRevisionEndToEnd(t *testing.T) {
 	}
 }
 
-func TestMCPWorkerDispatchedAgentClaimMutations(t *testing.T) {
+func TestMCPWorkerDispatchedExecutorClaimGovernance(t *testing.T) {
 	t.Parallel()
-	setup := func(t *testing.T) (*Server, *http.Request, string, string) {
+	setup := func(t *testing.T, ownLease time.Duration) (*Server, *http.Request, *membershipFixture, string, string, string) {
 		t.Helper()
 		ctx := store.WithWorkspace(t.Context(), "demo")
 		st := store.NewMemory()
@@ -833,60 +834,92 @@ func TestMCPWorkerDispatchedAgentClaimMutations(t *testing.T) {
 			if err = storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: orderID, TaskID: taskID, JobID: orderID, Stage: core.StageImplement, State: core.WorkOrderQueued}); err != nil {
 				t.Fatal(err)
 			}
-			if _, err = storetest.For(st).ClaimWorkOrder(ctx, orderID, core.WorkOrderClaim{SessionID: "session-" + suffix, ClientToken: "secret-" + suffix, ClaimantID: "worker-" + suffix, WorkerID: "worker-" + suffix, Agent: "codex", Model: "model", Lease: time.Minute, ExecutionTimeout: time.Hour}); err != nil {
+			lease := time.Minute
+			if suffix == "a" {
+				lease = ownLease
+			}
+			if _, err = storetest.For(st).ClaimWorkOrder(ctx, orderID, core.WorkOrderClaim{SessionID: "session-" + suffix, ClientToken: "secret-" + suffix, ClaimantID: "worker-" + suffix, WorkerID: "worker-" + suffix, Agent: "codex", Model: "model", Lease: lease, ExecutionTimeout: time.Hour}); err != nil {
 				t.Fatal(err)
 			}
 			orderIDs = append(orderIDs, orderID)
+		}
+		document, _, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "design-agent-claim", Title: "Agent claim", Category: "Architecture"}, core.SystemDesignVersion{Content: "# Agent claim\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/httpapi/**\n```", Origin: core.SystemDesignOriginOperator})
+		if err != nil {
+			t.Fatal(err)
 		}
 		server := NewServer(st)
 		server.Workspace = "demo"
 		server.WorkOrders = &workorder.Service{Store: st}
 		server.Workers = &workerservice.Service{Store: st, WorkOrders: server.WorkOrders}
+		membership := &membershipFixture{
+			workspaces: []core.Workspace{{ID: "demo"}},
+			roles: map[string]map[string]core.WorkspaceRole{
+				"owner-a": {"demo": core.WorkspaceRoleExecutor},
+				"owner-b": {"demo": core.WorkspaceRoleExecutor},
+			},
+		}
+		server.Workspaces, server.Memberships = membership, membership
 		request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
 		request = request.WithContext(store.WithCredential(request.Context(), core.AuthenticatedCredential{ID: "agent-a", OwnerUserID: "owner-a", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser}))
-		return server, request, orderIDs[0], orderIDs[1]
+		if ownLease <= time.Nanosecond {
+			time.Sleep(time.Millisecond)
+		}
+		return server, request, membership, orderIDs[0], orderIDs[1], document.ID
 	}
 
-	t.Run("cross-order access is authorization failure", func(t *testing.T) {
-		server, request, _, otherOrder := setup(t)
-		args := map[string]any{"workspace_id": "demo", "work_order_id": otherOrder, "session_id": "session-a", "rationale": "wrong target"}
-		if _, err := server.callMCPTool(request, "request_plan_revision", args); !errors.Is(err, store.ErrWorkOrderClaimUnauthorized) {
-			t.Fatalf("cross-order plan revision error=%v", err)
+	argsFor := func(tool, orderID, sessionID, documentID string) map[string]any {
+		args := map[string]any{"workspace_id": "demo", "work_order_id": orderID, "session_id": sessionID, "rationale": "the approved plan conflicts with the API"}
+		switch tool {
+		case "propose_system_design_revision":
+			args["document_id"] = documentID
+			args["content"] = "# Agent claim revision\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/httpapi/**\n```"
+		case "propose_decision":
+			args["statement"] = "Keep worker claims exact."
+			args["context"] = "Worker claims may propose task-local governance."
+			args["alternatives_rejected"] = "Grant freestanding proposal authority."
 		}
-		delete(args, "rationale")
-		if _, err := server.callMCPTool(request, "release_work_order", args); !errors.Is(err, store.ErrWorkOrderClaimUnauthorized) {
-			t.Fatalf("cross-order release error=%v", err)
+		return args
+	}
+	governanceTools := []string{"request_plan_revision", "propose_system_design_revision", "propose_decision"}
+
+	t.Run("own live claim authorizes all governance tools as executor", func(t *testing.T) {
+		for _, tool := range governanceTools {
+			t.Run(tool, func(t *testing.T) {
+				server, request, membership, ownOrder, _, documentID := setup(t, time.Minute)
+				if _, err := server.callMCPTool(request, tool, argsFor(tool, ownOrder, "session-a", documentID)); err != nil {
+					t.Fatal(err)
+				}
+				if len(membership.capabilityCalls) != 1 || membership.capabilityCalls[0] != core.CapabilityViewWorkspace {
+					t.Fatalf("membership capabilities=%v", membership.capabilityCalls)
+				}
+			})
 		}
 	})
 
-	t.Run("wrong credential class is authorization failure", func(t *testing.T) {
-		server, request, ownOrder, _ := setup(t)
-		request = request.WithContext(store.WithCredential(request.Context(), core.AuthenticatedCredential{ID: "user-a", OwnerUserID: "owner-a", Kind: core.CredentialUser, Scope: core.CredentialScopeOperator}))
-		args := map[string]any{"workspace_id": "demo", "work_order_id": ownOrder, "session_id": "session-a", "rationale": "wrong credential"}
-		if _, err := server.callMCPTool(request, "request_plan_revision", args); !errors.Is(err, store.ErrWorkOrderClaimUnauthorized) {
-			t.Fatalf("wrong-credential error=%v", err)
+	t.Run("different order is refused for all governance tools", func(t *testing.T) {
+		for _, tool := range governanceTools {
+			t.Run(tool, func(t *testing.T) {
+				server, request, _, _, otherOrder, documentID := setup(t, time.Minute)
+				if _, err := server.callMCPTool(request, tool, argsFor(tool, otherOrder, "session-a", documentID)); !errors.Is(err, store.ErrWorkOrderClaimUnauthorized) {
+					t.Fatalf("cross-order error=%v", err)
+				}
+			})
 		}
 	})
 
-	t.Run("wrong agent owner is authorization failure", func(t *testing.T) {
-		server, request, ownOrder, _ := setup(t)
-		request = request.WithContext(store.WithCredential(request.Context(), core.AuthenticatedCredential{ID: "agent-b", OwnerUserID: "owner-b", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser}))
-		args := map[string]any{"workspace_id": "demo", "work_order_id": ownOrder, "session_id": "session-a", "rationale": "wrong owner"}
-		if _, err := server.callMCPTool(request, "request_plan_revision", args); !errors.Is(err, store.ErrWorkOrderClaimUnauthorized) {
-			t.Fatalf("wrong-agent-owner error=%v", err)
+	t.Run("expired claim is refused for all governance tools", func(t *testing.T) {
+		for _, tool := range governanceTools {
+			t.Run(tool, func(t *testing.T) {
+				server, request, _, ownOrder, _, documentID := setup(t, time.Nanosecond)
+				if _, err := server.callMCPTool(request, tool, argsFor(tool, ownOrder, "session-a", documentID)); !errors.Is(err, store.ErrWorkOrderClaimLost) {
+					t.Fatalf("expired-claim error=%v", err)
+				}
+			})
 		}
 	})
 
-	t.Run("own plan revision succeeds", func(t *testing.T) {
-		server, request, ownOrder, _ := setup(t)
-		args := map[string]any{"workspace_id": "demo", "work_order_id": ownOrder, "session_id": "session-a", "rationale": "the approved plan conflicts with the API"}
-		if _, err := server.callMCPTool(request, "request_plan_revision", args); err != nil {
-			t.Fatal(err)
-		}
-	})
-
-	t.Run("own release succeeds", func(t *testing.T) {
-		server, request, ownOrder, _ := setup(t)
+	t.Run("non-governance release remains claim-bound", func(t *testing.T) {
+		server, request, _, ownOrder, _, _ := setup(t, time.Minute)
 		args := map[string]any{"workspace_id": "demo", "work_order_id": ownOrder, "session_id": "session-a", "reason": "agent handoff"}
 		if _, err := server.callMCPTool(request, "release_work_order", args); err != nil {
 			t.Fatal(err)
@@ -894,13 +927,15 @@ func TestMCPWorkerDispatchedAgentClaimMutations(t *testing.T) {
 	})
 }
 
-func TestMCPUserRunClaimMutationsRemainAuthorized(t *testing.T) {
+func TestMCPUserRunExecutorClaimGovernance(t *testing.T) {
 	t.Parallel()
-	for _, tool := range []string{"request_plan_revision", "release_work_order"} {
-		t.Run(tool, func(t *testing.T) {
-			ctx := store.WithWorkspace(t.Context(), "demo")
-			st := store.NewMemory()
-			taskID, orderID := "user-run-task-"+tool, "user-run-order-"+tool
+	setup := func(t *testing.T, ownLease time.Duration) (*Server, *http.Request, *membershipFixture, string, string, string) {
+		t.Helper()
+		ctx := store.WithWorkspace(t.Context(), "demo")
+		st := store.NewMemory()
+		var orderIDs []string
+		for _, suffix := range []string{"a", "b"} {
+			taskID, orderID := "user-run-task-"+suffix, "user-run-order-"+suffix
 			if err := st.CreateTask(ctx, core.Task{ID: taskID, Workspace: "demo", Repo: "conveyor", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: time.Now()}); err != nil {
 				t.Fatal(err)
 			}
@@ -917,18 +952,85 @@ func TestMCPUserRunClaimMutationsRemainAuthorized(t *testing.T) {
 			if err = storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: orderID, TaskID: taskID, JobID: orderID, Stage: core.StageImplement, State: core.WorkOrderQueued}); err != nil {
 				t.Fatal(err)
 			}
-			if _, err = storetest.For(st).ClaimWorkOrder(ctx, orderID, core.WorkOrderClaim{SessionID: "run-session", ClientToken: "run-secret", ClaimantID: core.TaskRunClaimantID("user-a"), OwnerUserID: "user-a", Agent: "codex", Model: "model", Lease: time.Minute, ExecutionTimeout: time.Hour}); err != nil {
+			lease := time.Minute
+			if suffix == "a" {
+				lease = ownLease
+			}
+			if _, err = storetest.For(st).ClaimWorkOrder(ctx, orderID, core.WorkOrderClaim{SessionID: "run-session-" + suffix, ClientToken: "run-secret-" + suffix, ClaimantID: core.TaskRunClaimantID("user-" + suffix), OwnerUserID: "user-" + suffix, Agent: "codex", Model: "model", Lease: lease, ExecutionTimeout: time.Hour}); err != nil {
 				t.Fatal(err)
 			}
-			server := NewServer(st)
-			server.Workspace = "demo"
-			server.WorkOrders = &workorder.Service{Store: st}
-			server.Workers = &workerservice.Service{Store: st, WorkOrders: server.WorkOrders}
-			request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
-			request = request.WithContext(store.WithCredential(request.Context(), core.AuthenticatedCredential{ID: "user-token", OwnerUserID: "user-a", Kind: core.CredentialUser, Scope: core.CredentialScopeOperator}))
-			args := map[string]any{"workspace_id": "demo", "work_order_id": orderID, "session_id": "run-session", "rationale": "plan changed", "reason": "run ended"}
-			if _, err = server.callMCPTool(request, tool, args); err != nil {
-				t.Fatal(err)
+			orderIDs = append(orderIDs, orderID)
+		}
+		document, _, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "design-run-claim", Title: "Run", Category: "Architecture"}, core.SystemDesignVersion{Content: "# Run\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/httpapi/**\n```", Origin: core.SystemDesignOriginOperator})
+		if err != nil {
+			t.Fatal(err)
+		}
+		server := NewServer(st)
+		server.Workspace = "demo"
+		server.WorkOrders = &workorder.Service{Store: st}
+		server.Workers = &workerservice.Service{Store: st, WorkOrders: server.WorkOrders}
+		membership := &membershipFixture{
+			workspaces: []core.Workspace{{ID: "demo"}},
+			roles: map[string]map[string]core.WorkspaceRole{
+				"user-a": {"demo": core.WorkspaceRoleExecutor},
+				"user-b": {"demo": core.WorkspaceRoleExecutor},
+			},
+		}
+		server.Workspaces, server.Memberships = membership, membership
+		request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+		request = request.WithContext(store.WithCredential(request.Context(), core.AuthenticatedCredential{ID: "user-token", OwnerUserID: "user-a", Kind: core.CredentialUser, Scope: core.CredentialScopeUser}))
+		if ownLease <= time.Nanosecond {
+			time.Sleep(time.Millisecond)
+		}
+		return server, request, membership, orderIDs[0], orderIDs[1], document.ID
+	}
+	argsFor := func(tool, orderID, sessionID, documentID string) map[string]any {
+		args := map[string]any{"workspace_id": "demo", "work_order_id": orderID, "session_id": sessionID, "rationale": "plan changed"}
+		switch tool {
+		case "propose_system_design_revision":
+			args["document_id"] = documentID
+			args["content"] = "# Run claim revision\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/httpapi/**\n```"
+		case "propose_decision":
+			args["statement"] = "Keep run claims exact."
+			args["context"] = "Run claims may propose task-local governance."
+			args["alternatives_rejected"] = "Grant freestanding proposal authority."
+		}
+		return args
+	}
+	governanceTools := []string{"request_plan_revision", "propose_system_design_revision", "propose_decision"}
+	for _, test := range []struct {
+		name       string
+		lease      time.Duration
+		otherOrder bool
+		wantErr    bool
+	}{
+		{name: "own live claim", lease: time.Minute},
+		{name: "different order", lease: time.Minute, otherOrder: true, wantErr: true},
+		{name: "expired claim", lease: time.Nanosecond, wantErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			for _, tool := range governanceTools {
+				t.Run(tool, func(t *testing.T) {
+					server, request, membership, ownOrder, otherOrder, documentID := setup(t, test.lease)
+					target := ownOrder
+					if test.otherOrder {
+						target = otherOrder
+					}
+					_, err := server.callMCPTool(request, tool, argsFor(tool, target, "run-session-a", documentID))
+					wantErr := store.ErrWorkOrderClaimUnauthorized
+					if test.lease <= time.Nanosecond {
+						wantErr = store.ErrWorkOrderClaimLost
+					}
+					if test.wantErr && !errors.Is(err, wantErr) {
+						t.Fatalf("claim authorization error=%v", err)
+					}
+					if !test.wantErr && err != nil {
+						t.Fatal(err)
+					}
+					if len(membership.capabilityCalls) != 1 || membership.capabilityCalls[0] != core.CapabilityViewWorkspace {
+						t.Fatalf("membership capabilities=%v", membership.capabilityCalls)
+					}
+				})
 			}
 		})
 	}

@@ -38,7 +38,7 @@ func TestOwnedWorkerAuthorizationAndRevocationCascadeIntegration(t *testing.T) {
 	}
 	credential := core.AuthenticatedCredential{ID: "legacy", OwnerUserID: owner.ID, Kind: core.CredentialUser, Scope: core.CredentialScopeOperator}
 	ctx := store.WithCredential(store.WithWorkspace(operatorCtx, workspace), credential)
-	if _, err := st.GrantWorkspaceRole(ctx, member.Email, workspace, core.WorkspaceRoleUser); err != nil {
+	if _, err := st.GrantWorkspaceRole(ctx, member.Email, workspace, core.WorkspaceRoleContributor); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
@@ -89,7 +89,7 @@ func TestOwnedWorkerAuthorizationAndRevocationCascadeIntegration(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("ownerless legacy worker unassigned claim: %v", err)
 	}
-	if _, err := st.GrantWorkspaceRole(ctx, member.Email, workspace, core.WorkspaceRoleUser); err != nil {
+	if _, err := st.GrantWorkspaceRole(ctx, member.Email, workspace, core.WorkspaceRoleContributor); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.RevokeWorkspaceRole(ctx, member.ID, workspace); err != nil {
@@ -106,7 +106,7 @@ func TestOwnedWorkerAuthorizationAndRevocationCascadeIntegration(t *testing.T) {
 		t.Fatalf("membership cascade revoked=%d audited=%d err=%v", revoked, audited, err)
 	}
 
-	if _, err := st.GrantWorkspaceRole(ctx, member.Email, workspace, core.WorkspaceRoleUser); err != nil {
+	if _, err := st.GrantWorkspaceRole(ctx, member.Email, workspace, core.WorkspaceRoleContributor); err != nil {
 		t.Fatal(err)
 	}
 	owned2 := core.Worker{ID: "worker-owned-" + core.NewTaskID(), Workspace: workspace, OwnerUserID: member.ID, Name: "owned-2", CredentialHash: "owned-hash-" + core.NewTaskID(), CreatedAt: now}

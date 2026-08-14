@@ -68,7 +68,7 @@ test('an invitation opens a scoped session, guides first token setup, and signs 
       })
     }
     if (path === '/v1/workspaces/demo/members' && request.method() === 'POST') {
-      const body = request.postDataJSON() as { email: string; role: 'user' }
+      const body = request.postDataJSON() as { email: string; role: 'contributor' }
       invitations.push(body.email)
       return route.fulfill({
         status: 201,
@@ -85,7 +85,7 @@ test('an invitation opens a scoped session, guides first token setup, and signs 
         json: invitations.map((email) => ({
           workspace_id: 'demo',
           email,
-          role: 'user',
+          role: 'contributor',
           invited_by: 'usr_owner',
           invited_by_display_name: 'Ada Owner',
           created_at: '2026-08-13T00:00:00Z',
@@ -96,7 +96,7 @@ test('an invitation opens a scoped session, guides first token setup, and signs 
       return route.fulfill({
         json: {
           email: 'new@example.test',
-          role: 'user',
+          role: 'contributor',
           delivery: 'fallback',
           sign_in_url: `${url.origin}/sign-in?token=invite-reissued`,
         },
@@ -126,7 +126,7 @@ test('an invitation opens a scoped session, guides first token setup, and signs 
       return route.fulfill({
         json: isOperator
           ? { id: 'usr_owner', email: 'owner@example.test', display_name: 'Ada Owner', role: 'operator' }
-          : { id: 'usr_invited', email: 'new@example.test', display_name: 'New Member', role: 'user' },
+          : { id: 'usr_invited', email: 'new@example.test', display_name: 'New Member', role: 'contributor' },
       })
     }
     return route.fulfill({ json: [] })

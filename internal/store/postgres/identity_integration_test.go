@@ -171,7 +171,7 @@ func TestFailedInvitationRevocationLeavesInvitationRedeemableIntegration(t *test
 	}
 
 	invitedEmail := "still-pending@example.test"
-	grant := call(http.MethodPost, "/v1/workspaces/"+workspaceID+"/members", `{"email":"`+invitedEmail+`","role":"user"}`)
+	grant := call(http.MethodPost, "/v1/workspaces/"+workspaceID+"/members", `{"email":"`+invitedEmail+`","role":"contributor"}`)
 	if grant.Code != http.StatusCreated {
 		t.Fatalf("grant invitation status=%d body=%s", grant.Code, grant.Body.String())
 	}
@@ -307,7 +307,7 @@ func TestDeploymentMutationAuthorizationTracksLiveOperatorBindingsIntegration(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.pool.Exec(t.Context(), `INSERT INTO workspace_role_bindings(workspace_id,user_id,role) VALUES($1,$2,'user')`, workspace, second.ID); err != nil {
+	if _, err := st.pool.Exec(t.Context(), `INSERT INTO workspace_role_bindings(workspace_id,user_id,role) VALUES($1,$2,'contributor')`, workspace, second.ID); err != nil {
 		t.Fatal(err)
 	}
 	userScopePAT, err := st.IssuePersonalAccessToken(t.Context(), second.ID, "issued as user")

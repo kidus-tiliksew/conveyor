@@ -4273,7 +4273,7 @@ const assignmentMembers = [
     user_id: 'usr_bo',
     email: 'bo@example.test',
     display_name: 'Bo Member',
-    role: 'user' as const,
+    role: 'contributor' as const,
     created_at: createdAt,
   },
 ]
@@ -4297,7 +4297,7 @@ async function routeAssignment(page: Page, options: { operator: boolean }) {
         id: 'usr_ada',
         email: 'ada@example.test',
         display_name: 'Ada Owner',
-        role: options.operator ? 'operator' : 'user',
+        role: options.operator ? 'operator' : 'contributor',
       },
     }),
   )

@@ -162,7 +162,7 @@ func TestTaskFilterMatchesTheMemoryStoreIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = st.pool.Exec(ctx, `INSERT INTO workspace_role_bindings(workspace_id,user_id,role) VALUES($1,$2,'user')`, workspace, user.ID); err != nil {
+	if _, err = st.pool.Exec(ctx, `INSERT INTO workspace_role_bindings(workspace_id,user_id,role) VALUES($1,$2,'contributor')`, workspace, user.ID); err != nil {
 		t.Fatal(err)
 	}
 	fixture := storetest.TaskFilterFixture{

@@ -1,4 +1,4 @@
-import { expect, test, type Page, type Route } from '@playwright/test'
+import { expect, type Page, type Route, test } from '@playwright/test'
 
 const workspaceConfig = {
   workspace: 'demo',
@@ -28,8 +28,17 @@ const workspaceConfig = {
 const notFound = { status: 404, json: { error: 'workspace_not_found', message: 'workspace not found' } }
 
 type MembershipState = {
-  members: Array<{ user_id: string; email: string; display_name: string; role: 'viewer' | 'user' | 'operator' }>
-  invitations: Array<{ email: string; role: 'viewer' | 'user' | 'operator'; invited_by_display_name: string }>
+  members: Array<{
+    user_id: string
+    email: string
+    display_name: string
+    role: 'viewer' | 'executor' | 'contributor' | 'maintainer' | 'operator'
+  }>
+  invitations: Array<{
+    email: string
+    role: 'viewer' | 'executor' | 'contributor' | 'maintainer' | 'operator'
+    invited_by_display_name: string
+  }>
   soleOperator: boolean
 }
 
@@ -37,7 +46,7 @@ function membershipDefaults(): MembershipState {
   return {
     members: [
       { user_id: 'usr_owner', email: 'owner@example.test', display_name: 'Ada Owner', role: 'operator' },
-      { user_id: 'usr_member', email: 'member@example.test', display_name: 'Bo Member', role: 'user' },
+      { user_id: 'usr_member', email: 'member@example.test', display_name: 'Bo Member', role: 'contributor' },
     ],
     invitations: [],
     soleOperator: false,
@@ -63,7 +72,7 @@ async function mockWorkspace(page: Page, role: 'operator' | 'member' | 'viewer',
 
     if (path === '/v1/workspaces') return route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] })
     if (path === '/v1/me') {
-      const workspaceRole = role === 'operator' ? 'operator' : role === 'viewer' ? 'viewer' : 'user'
+      const workspaceRole = role === 'operator' ? 'operator' : role === 'viewer' ? 'viewer' : 'contributor'
       return route.fulfill({
         json: { id: `usr_${role}`, email: `${role}@example.test`, display_name: role, role: workspaceRole },
       })
@@ -84,7 +93,10 @@ async function mockWorkspace(page: Page, role: 'operator' | 'member' | 'viewer',
       })
     }
     if (path === '/v1/workspaces/demo/members' && request.method() === 'POST') {
-      const body = request.postDataJSON() as { email: string; role: 'viewer' | 'user' | 'operator' }
+      const body = request.postDataJSON() as {
+        email: string
+        role: 'viewer' | 'executor' | 'contributor' | 'maintainer' | 'operator'
+      }
       state.invitations.push({ email: body.email, role: body.role, invited_by_display_name: 'Ada Owner' })
       return route.fulfill({ status: 201, json: { email: body.email, role: body.role } })
     }
@@ -147,6 +159,25 @@ test('an operator invites a member, sees the pending invitation, and revokes it'
   await page.getByRole('button', { name: 'Revoke' }).click()
   await expect(page.getByText('No pending invitations.')).toBeVisible()
   await expect(page.getByText('invited@example.test')).toHaveCount(0)
+})
+
+test('an operator can invite executors and maintainers and sees their role labels', async ({ page }) => {
+  const state = membershipDefaults()
+  await mockWorkspace(page, 'operator', state)
+  await openMembers(page, 'operator')
+
+  const form = page.getByRole('form', { name: 'Invite a member' })
+  for (const [email, role, label] of [
+    ['executor@example.test', 'executor', 'Executor'],
+    ['maintainer@example.test', 'maintainer', 'Maintainer'],
+  ] as const) {
+    await form.getByLabel('Email address').fill(email)
+    await form.getByLabel('Role').selectOption(role)
+    await form.getByRole('button', { name: 'Invite' }).click()
+    const invitation = page.getByText(email).locator('../..')
+    await expect(invitation).toBeVisible()
+    await expect(invitation.getByText(label, { exact: true })).toBeVisible()
+  }
 })
 
 test('a signed-in viewer sees the workspace and role but no mutation affordances', async ({ page }) => {

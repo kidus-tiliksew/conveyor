@@ -51,7 +51,7 @@ func TestProvisionIdentityRedeemsInvitationsAndGrantResponseIsOpaqueIntegration(
 		return response
 	}
 	invitedEmail := "redeem@example.test"
-	invited := call(http.MethodPost, "/v1/workspaces/"+workspaceID+"/members", `{"email":"`+invitedEmail+`","role":"user"}`)
+	invited := call(http.MethodPost, "/v1/workspaces/"+workspaceID+"/members", `{"email":"`+invitedEmail+`","role":"contributor"}`)
 	if invited.Code != http.StatusCreated {
 		t.Fatalf("invitation grant status=%d body=%s", invited.Code, invited.Body.String())
 	}
@@ -72,7 +72,7 @@ func TestProvisionIdentityRedeemsInvitationsAndGrantResponseIsOpaqueIntegration(
 	if repeated.ID != provisioned.ID {
 		t.Fatalf("repeated provisioning user=%+v want id=%s", repeated, provisioned.ID)
 	}
-	existing := call(http.MethodPost, "/v1/workspaces/"+workspaceID+"/members", `{"email":"`+invitedEmail+`","role":"user"}`)
+	existing := call(http.MethodPost, "/v1/workspaces/"+workspaceID+"/members", `{"email":"`+invitedEmail+`","role":"contributor"}`)
 	if existing.Code != http.StatusCreated {
 		t.Fatalf("existing grant status=%d body=%s", existing.Code, existing.Body.String())
 	}
@@ -88,7 +88,7 @@ func TestProvisionIdentityRedeemsInvitationsAndGrantResponseIsOpaqueIntegration(
 	}
 	var bindings, invitations, redemptionEvents int
 	if err = st.pool.QueryRow(t.Context(), `SELECT
-		(SELECT count(*) FROM workspace_role_bindings WHERE workspace_id=$1 AND user_id=$2 AND role='user'),
+		(SELECT count(*) FROM workspace_role_bindings WHERE workspace_id=$1 AND user_id=$2 AND role='contributor'),
 		(SELECT count(*) FROM workspace_membership_invitations WHERE workspace_id=$1 AND email=$3),
 		(SELECT count(*) FROM events WHERE workspace_id=$1 AND kind='workspace.membership_granted'
 			AND payload_json->>'redemption'='true' AND payload_json->>'granted_by'=$4
@@ -101,7 +101,7 @@ func TestProvisionIdentityRedeemsInvitationsAndGrantResponseIsOpaqueIntegration(
 	}
 
 	revokedEmail := "revoked@example.test"
-	if response := call(http.MethodPost, "/v1/workspaces/"+workspaceID+"/members", `{"email":"`+revokedEmail+`","role":"user"}`); response.Code != http.StatusCreated {
+	if response := call(http.MethodPost, "/v1/workspaces/"+workspaceID+"/members", `{"email":"`+revokedEmail+`","role":"contributor"}`); response.Code != http.StatusCreated {
 		t.Fatalf("revocable invitation status=%d body=%s", response.Code, response.Body.String())
 	}
 	if response := call(http.MethodDelete, "/v1/workspaces/"+workspaceID+"/invitations/"+revokedEmail, ""); response.Code != http.StatusNoContent {
@@ -162,8 +162,11 @@ func TestWorkspaceMembershipAuthorizationIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	grantCtx := store.WithWorkspace(operatorCtx, workspaceA)
-	grant, err := st.GrantWorkspaceRole(grantCtx, member.Email, workspaceA, core.WorkspaceRoleUser)
-	if err != nil || grant.Email != member.Email || grant.Role != core.WorkspaceRoleUser {
+	if _, err := st.GrantWorkspaceRole(grantCtx, member.Email, workspaceA, core.WorkspaceRole("user")); err == nil || !strings.Contains(err.Error(), "viewer, executor, contributor, maintainer, or operator") {
+		t.Fatalf("legacy user role error=%v", err)
+	}
+	grant, err := st.GrantWorkspaceRole(grantCtx, member.Email, workspaceA, core.WorkspaceRoleContributor)
+	if err != nil || grant.Email != member.Email || grant.Role != core.WorkspaceRoleContributor {
 		t.Fatalf("grant=%+v err=%v", grant, err)
 	}
 	visible, err := st.ListWorkspacesForUser(t.Context(), member.ID)
@@ -175,6 +178,23 @@ func TestWorkspaceMembershipAuthorizationIntegration(t *testing.T) {
 	}
 	if allowed, err := st.AuthorizeWorkspace(t.Context(), member.ID, workspaceA, core.CapabilityManageMembership); err != nil || allowed {
 		t.Fatalf("member management allowed=%t err=%v", allowed, err)
+	}
+	maintainer, err := st.queries.InsertIdentityUser(t.Context(), db.InsertIdentityUserParams{ID: "usr_maintainer_" + suffix, Email: "maintainer-" + suffix + "@example.test", DisplayName: "Maintainer"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.GrantWorkspaceRole(grantCtx, maintainer.Email, workspaceA, core.WorkspaceRoleMaintainer); err != nil {
+		t.Fatal(err)
+	}
+	for _, capability := range []core.Capability{core.CapabilityOperateGates, core.CapabilitySetAssignee, core.CapabilityRecoverWork} {
+		if allowed, authErr := st.AuthorizeWorkspace(t.Context(), maintainer.ID, workspaceA, capability); authErr != nil || !allowed {
+			t.Fatalf("maintainer capability %q allowed=%t err=%v", capability, allowed, authErr)
+		}
+	}
+	for _, capability := range []core.Capability{core.CapabilityConfirmDocuments, core.CapabilityManageMembership, core.CapabilityManageWorkspace} {
+		if allowed, authErr := st.AuthorizeWorkspace(t.Context(), maintainer.ID, workspaceA, capability); authErr != nil || allowed {
+			t.Fatalf("maintainer forbidden capability %q allowed=%t err=%v", capability, allowed, authErr)
+		}
 	}
 
 	token, err := st.IssuePersonalAccessToken(t.Context(), member.ID, "member test")
@@ -241,7 +261,7 @@ func TestWorkspaceMembershipAuthorizationIntegration(t *testing.T) {
 		t.Fatalf("claim after membership revocation: %v", err)
 	}
 	var audited int
-	if err := st.pool.QueryRow(t.Context(), `SELECT count(*) FROM events WHERE workspace_id=$1 AND kind IN ('workspace.membership_granted','workspace.membership_revoked')`, workspaceA).Scan(&audited); err != nil || audited != 2 {
+	if err := st.pool.QueryRow(t.Context(), `SELECT count(*) FROM events WHERE workspace_id=$1 AND kind IN ('workspace.membership_granted','workspace.membership_revoked')`, workspaceA).Scan(&audited); err != nil || audited != 3 {
 		t.Fatalf("membership audit count=%d err=%v", audited, err)
 	}
 }
@@ -285,7 +305,7 @@ func TestPendingInvitationListingIsOperatorScopedAndPendingOnlyIntegration(t *te
 	}
 
 	redeemed, revoked := "redeemed-"+suffix+"@example.test", "revoked-"+suffix+"@example.test"
-	for _, invite := range []struct{ email, role string }{{redeemed, "user"}, {revoked, "operator"}} {
+	for _, invite := range []struct{ email, role string }{{redeemed, "contributor"}, {revoked, "operator"}} {
 		if response := call(http.MethodPost, "/v1/workspaces/"+workspaceID+"/members", legacy, `{"email":"`+invite.email+`","role":"`+invite.role+`"}`); response.Code != http.StatusCreated {
 			t.Fatalf("invite %s status=%d body=%s", invite.email, response.Code, response.Body.String())
 		}

@@ -368,7 +368,10 @@ func mcpCapability(name string) core.Capability {
 	case "set_assignee":
 		return core.CapabilitySetAssignee
 	case "propose_system_design_revision", "propose_decision", "request_plan_revision":
-		return core.CapabilityProposeDocuments
+		// These tools are claim-bound below. Workspace visibility is the only
+		// membership prerequisite; the exact live claim supplies mutation
+		// authority for executor sessions (REQ-1/AC-1.5).
+		return core.CapabilityViewWorkspace
 	case "create_task", "redispatch_work_order":
 		return core.CapabilityOperateGates
 	default:
@@ -471,7 +474,7 @@ func liveWorkOrderClaim(order core.WorkOrder, now time.Time) bool {
 }
 
 func (s *Server) implementationGovernanceOrder(ctx context.Context, workerAuth bool, worker core.Worker, workOrderID, sessionID string) (core.WorkOrder, error) {
-	if err := s.authorizeWorkerOrder(ctx, workerAuth, worker, workOrderID); err != nil {
+	if _, err := s.authorizeClaimMutation(ctx, workerAuth, worker, workOrderID, sessionID); err != nil {
 		return core.WorkOrder{}, err
 	}
 	order, err := s.WorkOrders.AuthorizeClaimed(ctx, workOrderID, sessionID)
