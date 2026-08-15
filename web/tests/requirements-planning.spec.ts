@@ -629,6 +629,17 @@ test('design drift names its subject, counts once, and clears every rendering fr
     lineage: [],
     drift: resolved ? [] : [drift],
   })
+  const designSummary = () => {
+    const view = designView()
+    const { content: _content, governs: _governs, ...currentVersion } = view.current_version
+    return {
+      document: view.document,
+      current_version: currentVersion,
+      pending_versions: [],
+      pending_version_count: 0,
+      drift_count: view.drift.length,
+    }
+  }
 
   await page.route('**/v1/**', async (route) => {
     const shell = shellResponse(route)
@@ -639,7 +650,8 @@ test('design drift names its subject, counts once, and clears every rendering fr
     const detail = requirements().find((item) => path === `/v1/requirements/${item.requirement.id}`)
     if (detail) return route.fulfill({ json: detail })
     if (path.startsWith('/v1/requirements/') && path.endsWith('/versions')) return route.fulfill({ json: [] })
-    if (path === '/v1/system-designs') return route.fulfill({ json: [designView()] })
+    if (path === '/v1/system-designs') return route.fulfill({ json: [designSummary()] })
+    if (path === '/v1/system-designs/design-system-architecture') return route.fulfill({ json: designView() })
     if (path === '/v1/decisions') return route.fulfill({ json: [] })
     if (path === '/v1/monitor/drift/shared-design-drift/resolve') {
       resolved = true

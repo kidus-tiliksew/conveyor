@@ -3,13 +3,13 @@ import { Link } from '@tanstack/react-router'
 import { AlertTriangle, Check, FileText } from 'lucide-react'
 import { confirmSystemDesignVersion, fetchSystemDesigns, SystemDesignConflictError } from '../../lib/api'
 import { errorMessage } from '../../lib/errors'
-import type { SystemDesignVersion, SystemDesignView, Task } from '../../lib/types'
+import type { SystemDesignSummary, SystemDesignVersionSummary, Task } from '../../lib/types'
 import { useOperatorToken, useWorkspaceSelection } from '../app-shell'
 import { Button } from '../ui/button'
 
 export interface Proposal {
-  document: SystemDesignView['document']
-  version: SystemDesignVersion
+  document: SystemDesignSummary['document']
+  version: SystemDesignVersionSummary
   /** The confirmed version the document is on, for the confirm route's If-Match. */
   expected: number
 }
@@ -33,7 +33,7 @@ export function proposalIdentity(proposal: Proposal) {
 // each document's identity, so neither the pending list nor its resolution
 // flags are assumed present — a partial payload leaves a task with no card,
 // never a detail surface that fails to render.
-function selfOriginated(task: Task, designs: SystemDesignView[]): Proposal[] {
+function selfOriginated(task: Task, designs: SystemDesignSummary[]): Proposal[] {
   const attached = new Set((task.context?.designs ?? []).map((design) => design.id))
   return designs
     .filter((item) => attached.has(item.document.id))
@@ -57,6 +57,7 @@ export function useSystemDesignProposals(task: Task): Proposal[] {
     queryKey: ['system-designs', workspace],
     queryFn: fetchSystemDesigns,
     enabled: Boolean(workspace),
+    staleTime: 60_000,
   })
   return selfOriginated(task, designs.data ?? [])
 }

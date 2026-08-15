@@ -20,12 +20,13 @@ import { MarkdownProse } from '../components/ui/markdown-prose'
 import {
   confirmSystemDesignVersion,
   fetchDecisions,
+  fetchSystemDesign,
   fetchSystemDesigns,
   resolveDecision,
   SystemDesignConflictError,
 } from '../lib/api'
 import { errorMessage } from '../lib/errors'
-import type { Decision, SystemDesignVersion, SystemDesignView } from '../lib/types'
+import type { Decision, SystemDesignSummary, SystemDesignVersion, SystemDesignView } from '../lib/types'
 
 const originLabels: Record<SystemDesignVersion['origin'], string> = {
   planning_session: 'Written in a planning conversation',
@@ -53,6 +54,7 @@ export function SystemDesignPage() {
     queryKey: ['system-designs', workspace],
     queryFn: fetchSystemDesigns,
     enabled: Boolean(workspace),
+    staleTime: 60_000,
   })
   const decisions = useQuery({
     queryKey: ['decisions', workspace],
@@ -64,6 +66,12 @@ export function SystemDesignPage() {
     onSettled: () => void client.invalidateQueries({ queryKey: ['decisions', workspace] }),
   })
   const selected = designs.data?.find((item) => item.document.id === search.document)
+  const detail = useQuery({
+    queryKey: ['system-design', workspace, selected?.document.id],
+    queryFn: () => fetchSystemDesign(selected?.document.id ?? ''),
+    enabled: Boolean(workspace && selected?.document.id),
+    staleTime: 60_000,
+  })
   useEffect(() => {
     if (!decisions.data?.length || !window.location.hash) return
     const anchor = window.location.hash.slice(1)
@@ -78,7 +86,7 @@ export function SystemDesignPage() {
     })
   }, [designs.data, navigate, selected])
   const grouped = useMemo(() => {
-    const groups = new Map<string, SystemDesignView[]>()
+    const groups = new Map<string, SystemDesignSummary[]>()
     for (const item of designs.data ?? []) {
       const list = groups.get(item.document.category) ?? []
       list.push(item)
@@ -148,7 +156,7 @@ export function SystemDesignPage() {
                 <DocumentTreeItem
                   key={item.document.id}
                   label={item.document.title}
-                  attentionCount={new Set(item.drift.map((entry) => entry.id)).size + item.pending_versions.length}
+                  attentionCount={item.drift_count + item.pending_version_count}
                   selected={selected?.document.id === item.document.id}
                   onClick={() =>
                     void navigate({ to: '/system-design', search: { document: item.document.id }, replace: true })
@@ -166,15 +174,17 @@ export function SystemDesignPage() {
           )}
         </DocumentTree>
         <main className="min-w-0 flex-1 overflow-y-auto">
-          {selected ? (
+          {detail.data ? (
             <DesignCanvas
-              key={selected.document.id}
-              item={selected}
+              key={detail.data.document.id}
+              item={detail.data}
               token={token}
               workspace={workspace}
               decisionItems={decisionItems}
               settledDecisions={settledDecisions}
             />
+          ) : selected && detail.isLoading ? (
+            <div className="px-8 py-8 text-sm text-muted">Loading document…</div>
           ) : (
             <div className="mx-auto max-w-2xl px-6 py-16">
               <Card className="rounded-xl border-dashed">
@@ -222,10 +232,15 @@ function DesignCanvas({
   const confirm = useMutation({
     mutationFn: (version: number) =>
       confirmSystemDesignVersion(token, item.document.id, version, item.document.current_version ?? 0),
-    onSuccess: () => void client.invalidateQueries({ queryKey: ['system-designs', workspace] }),
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: ['system-designs', workspace] })
+      void client.invalidateQueries({ queryKey: ['system-design', workspace, item.document.id] })
+    },
     onError: (error) => {
-      if (error instanceof SystemDesignConflictError)
+      if (error instanceof SystemDesignConflictError) {
         void client.invalidateQueries({ queryKey: ['system-designs', workspace] })
+        void client.invalidateQueries({ queryKey: ['system-design', workspace, item.document.id] })
+      }
     },
   })
   const pending = item.pending_versions.at(-1)
@@ -266,6 +281,7 @@ function DesignCanvas({
               onResolved={() =>
                 Promise.all([
                   client.invalidateQueries({ queryKey: ['system-designs', workspace] }),
+                  client.invalidateQueries({ queryKey: ['system-design', workspace, item.document.id] }),
                   client.invalidateQueries({ queryKey: ['requirements', workspace] }),
                   client.invalidateQueries({ queryKey: ['requirement', workspace] }),
                 ])

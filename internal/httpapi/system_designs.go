@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
@@ -22,6 +23,43 @@ type systemDesignView struct {
 	Versions        []core.SystemDesignVersion `json:"versions"`
 	Lineage         []core.Event               `json:"lineage"`
 	Drift           []monitor.Drift            `json:"drift"`
+}
+
+// systemDesignSummary is the collection read model. Immutable document
+// content, governed paths, version history, lineage, and drift records belong
+// to the per-document endpoint and must not be repeated in the navigation tree.
+type systemDesignSummary struct {
+	Document            core.SystemDesign            `json:"document"`
+	CurrentVersion      *systemDesignVersionSummary  `json:"current_version,omitempty"`
+	PendingVersions     []systemDesignVersionSummary `json:"pending_versions"`
+	PendingVersionCount int                          `json:"pending_version_count"`
+	DriftCount          int                          `json:"drift_count"`
+}
+
+type systemDesignVersionSummary struct {
+	DocumentID      string                  `json:"document_id"`
+	Version         int                     `json:"version"`
+	Origin          core.SystemDesignOrigin `json:"origin"`
+	OriginSessionID string                  `json:"origin_session_id,omitempty"`
+	OriginTaskID    string                  `json:"origin_task_id,omitempty"`
+	Confirmed       bool                    `json:"confirmed"`
+	ConfirmedBy     string                  `json:"confirmed_by,omitempty"`
+	ConfirmedAt     time.Time               `json:"confirmed_at,omitempty"`
+	Dismissed       bool                    `json:"dismissed"`
+	DismissedBy     string                  `json:"dismissed_by,omitempty"`
+	DismissedAt     time.Time               `json:"dismissed_at,omitempty"`
+	Workspace       string                  `json:"workspace"`
+	CreatedAt       time.Time               `json:"created_at"`
+}
+
+func summarizeSystemDesignVersion(version core.SystemDesignVersion) systemDesignVersionSummary {
+	return systemDesignVersionSummary{
+		DocumentID: version.DocumentID, Version: version.Version, Origin: version.Origin,
+		OriginSessionID: version.OriginSessionID, OriginTaskID: version.OriginTaskID,
+		Confirmed: version.Confirmed, ConfirmedBy: version.ConfirmedBy, ConfirmedAt: version.ConfirmedAt,
+		Dismissed: version.Dismissed, DismissedBy: version.DismissedBy, DismissedAt: version.DismissedAt,
+		Workspace: version.Workspace, CreatedAt: version.CreatedAt,
+	}
 }
 
 func (s *Server) systemDesignView(r *http.Request, document core.SystemDesign, drift []monitor.Drift) (systemDesignView, error) {
@@ -62,30 +100,35 @@ func (s *Server) listSystemDesigns(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	views := make([]systemDesignView, 0, len(items))
+	views := make([]systemDesignSummary, 0, len(items))
 	versions, err := s.Store.ListSystemDesignVersionsByDocument(r.Context())
 	if err != nil {
 		log.Printf("handle system design request: %v", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	events, err := s.Store.ListSystemDesignEventsByDocument(r.Context())
-	if err != nil {
-		log.Printf("handle system design request: %v", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-	var drift []monitor.Drift
+	driftCounts := map[string]int{}
 	if s.Monitor != nil {
-		status, statusErr := s.Monitor.Status(r.Context())
-		if statusErr != nil {
-			http.Error(w, statusErr.Error(), http.StatusInternalServerError)
+		driftCounts, err = s.Store.ListActiveSystemDesignDriftCounts(r.Context())
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		drift = status.Drift
 	}
 	for _, item := range items {
-		views = append(views, buildSystemDesignView(item, versions[item.ID], events[item.ID], drift))
+		summary := systemDesignSummary{Document: item, PendingVersions: []systemDesignVersionSummary{}}
+		for _, version := range versions[item.ID] {
+			if version.Version == item.CurrentVersion {
+				current := summarizeSystemDesignVersion(version)
+				summary.CurrentVersion = &current
+			}
+			if !version.Confirmed && !version.Dismissed {
+				summary.PendingVersions = append(summary.PendingVersions, summarizeSystemDesignVersion(version))
+			}
+		}
+		summary.PendingVersionCount = len(summary.PendingVersions)
+		summary.DriftCount = driftCounts[item.ID]
+		views = append(views, summary)
 	}
 	writeJSON(w, http.StatusOK, views)
 }

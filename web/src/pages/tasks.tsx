@@ -12,7 +12,12 @@ import {
   Workflow,
 } from 'lucide-react'
 import { useEffect, useState } from 'react'
-import { useOperatorToken, useWorkspaceCapability, useWorkspaceSelection } from '../components/app-shell'
+import {
+  useOperatorToken,
+  useWorkspaceCapability,
+  useWorkspaceMembers,
+  useWorkspaceSelection,
+} from '../components/app-shell'
 import { AssigneeChip } from '../components/task/assignee-chip'
 import { ReturnedForChangesAttention } from '../components/task/returned-for-changes'
 import { TaskCreateSheet } from '../components/task/task-create-sheet'
@@ -31,7 +36,7 @@ import { Button } from '../components/ui/button'
 import { Card, CardContent } from '../components/ui/card'
 import { Skeleton } from '../components/ui/skeleton'
 import { humanizeClaimRefusal } from '../lib/activity'
-import { fetchCallerIdentity, fetchTaskOperations, fetchWorkspaceMembers } from '../lib/api'
+import { fetchCallerIdentity, fetchTaskOperations } from '../lib/api'
 import { stageLabels, taskStateLabels } from '../lib/contracts'
 import { errorMessage } from '../lib/errors'
 import type { TaskOperationsItem, TaskPlanStatus, WorkspaceMembership } from '../lib/types'
@@ -82,12 +87,7 @@ export function TasksPage() {
     enabled: Boolean(workspace && token),
     retry: false,
   })
-  const { data: members = [] } = useQuery({
-    queryKey: ['workspace-members', token, workspace],
-    queryFn: () => fetchWorkspaceMembers(token, workspace),
-    enabled: Boolean(workspace && token),
-    retry: false,
-  })
+  const { data: members = [] } = useWorkspaceMembers()
   const params = taskFilterParams(filter)
   // A range no task can satisfy is a half-typed date, not a question worth
   // asking the server: the filter says so in place and the last good page stays.

@@ -1063,6 +1063,14 @@ export interface SystemDesignView {
   lineage: TaskEvent[]
   drift: RepositoryDrift[]
 }
+export type SystemDesignVersionSummary = Omit<SystemDesignVersion, 'content' | 'governs'>
+export interface SystemDesignSummary {
+  document: SystemDesign
+  current_version?: SystemDesignVersionSummary
+  pending_versions: SystemDesignVersionSummary[]
+  pending_version_count: number
+  drift_count: number
+}
 export interface Decision {
   id: string
   statement: string

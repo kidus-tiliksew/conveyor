@@ -2176,6 +2176,8 @@ type observedStore struct {
 	store.Store
 	listTasksCalls           int
 	listWorkOrdersCalls      int
+	listScopedOrdersCalls    int
+	lastScopedOrderTaskIDs   []string
 	listPendingCalls         int
 	pendingProjectionCalls   int
 	listJobsCalls            int
@@ -2195,6 +2197,12 @@ func (s *observedStore) ListTasks(ctx context.Context) ([]core.Task, error) {
 func (s *observedStore) ListWorkOrders(ctx context.Context) ([]core.WorkOrder, error) {
 	s.listWorkOrdersCalls++
 	return s.Store.ListWorkOrders(ctx)
+}
+
+func (s *observedStore) ListWorkOrdersForTasks(ctx context.Context, taskIDs []string) ([]core.WorkOrder, error) {
+	s.listScopedOrdersCalls++
+	s.lastScopedOrderTaskIDs = append([]string(nil), taskIDs...)
+	return s.Store.ListWorkOrdersForTasks(ctx, taskIDs)
 }
 
 func (s *observedStore) ListPendingProposals(ctx context.Context) ([]core.PendingProposal, error) {
@@ -2225,6 +2233,11 @@ func (s *observedStore) ListInterventions(ctx context.Context, taskID string) ([
 func (s *observedStore) ListActivityMarkers(ctx context.Context) ([]store.ActivityMarker, error) {
 	s.listActivityMarkersCalls++
 	return s.Store.ListActivityMarkers(ctx)
+}
+
+func (s *observedStore) ListActivityMarkersForTasks(ctx context.Context, taskIDs []string) ([]store.ActivityMarker, error) {
+	s.listActivityMarkersCalls++
+	return s.Store.ListActivityMarkersForTasks(ctx, taskIDs)
 }
 
 func (s *observedStore) GetLatestJob(ctx context.Context, taskID string) (core.Job, bool, error) {
@@ -2281,6 +2294,43 @@ func TestActivityIndexAvoidsPerTaskHistoryQueries(t *testing.T) {
 		t.Fatalf("activity query calls = markers:%d jobs:%d events:%d interventions:%d",
 			observed.listActivityMarkersCalls, observed.listJobsCalls, observed.listEventsCalls, observed.listInterventionsCalls)
 	}
+	if observed.listScopedOrdersCalls != 1 || len(observed.lastScopedOrderTaskIDs) != 3 {
+		t.Fatalf("activity order scope calls=%d task_ids=%v", observed.listScopedOrdersCalls, observed.lastScopedOrderTaskIDs)
+	}
+}
+
+func TestActivityDefaultsToBoundedPageAndSupportsExplicitPaging(t *testing.T) {
+	base := store.NewMemory()
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	for i := 0; i < 205; i++ {
+		id := fmt.Sprintf("activity-%03d", i)
+		if err := base.CreateTask(ctx, core.Task{
+			ID: id, Workspace: "demo", State: core.TaskQueued,
+			CreatedAt: time.Date(2026, 8, 1, 0, i, 0, 0, time.UTC),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	handler := NewServer(base).Handler()
+	assertPage := func(path string, wantLimit, wantOffset, wantItems int) {
+		t.Helper()
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s status=%d body=%s", path, response.Code, response.Body.String())
+		}
+		var items []activityItem
+		if err := json.Unmarshal(response.Body.Bytes(), &items); err != nil {
+			t.Fatal(err)
+		}
+		if len(items) != wantItems || response.Header().Get("X-Conveyor-Total") != "205" ||
+			response.Header().Get("X-Conveyor-Limit") != strconv.Itoa(wantLimit) ||
+			response.Header().Get("X-Conveyor-Offset") != strconv.Itoa(wantOffset) {
+			t.Fatalf("%s items=%d total=%q limit=%q offset=%q", path, len(items), response.Header().Get("X-Conveyor-Total"), response.Header().Get("X-Conveyor-Limit"), response.Header().Get("X-Conveyor-Offset"))
+		}
+	}
+	assertPage("/v1/activity", 100, 0, 100)
+	assertPage("/v1/activity?limit=25&offset=200", 25, 200, 5)
 }
 
 func TestTaskActivityLoadsOneHistoryAndOmitsRunningEnd(t *testing.T) {

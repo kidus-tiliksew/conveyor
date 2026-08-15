@@ -87,6 +87,7 @@ type Store interface {
 	// Tasks list instead of a second implementation (AC-2.4). An inactive
 	// filter is exactly ListTasks.
 	ListTasksFiltered(ctx context.Context, filter TaskFilter) ([]core.Task, error)
+	ListTaskPage(ctx context.Context, query TaskOperationsQuery) (TaskPage, error)
 	ListTaskOperations(ctx context.Context, query TaskOperationsQuery) (TaskOperationsPage, error)
 	ApplyTaskCommand(ctx context.Context, lease taskops.TaskLease, id string, command taskops.Command) (core.Task, error)
 	// SetTaskHold toggles the per-task worker reservation with an audit
@@ -118,7 +119,11 @@ type Store interface {
 
 	AppendEvent(ctx context.Context, event core.Event) error
 	ListEvents(ctx context.Context, taskID string) ([]core.Event, error)
+	// ListRequirementDeliveryEventsForTasks batches only the ordered task
+	// context and merge events used by requirement-delivery classification.
+	ListRequirementDeliveryEventsForTasks(ctx context.Context, taskIDs []string) (map[string][]core.Event, error)
 	ListRequirementEvents(ctx context.Context, requirementID string) ([]core.Event, error)
+	ListRequirementEventsByRequirement(ctx context.Context) (map[string][]core.Event, error)
 	AcknowledgeRequirementStaleness(ctx context.Context, acknowledgment core.RequirementStalenessAcknowledgment) (core.RequirementStalenessAcknowledgment, error)
 	ListLineageLinks(ctx context.Context) ([]core.LineageLink, error)
 	LineageNodeExists(ctx context.Context, node core.LineageNode) (bool, error)
@@ -131,6 +136,7 @@ type Store interface {
 	// blueprint -> blueprint_version `versions`, and blueprint_version -> task
 	// `materializes` edges are eligible.
 	ListRequirementDeliveryLineage(ctx context.Context, requirementID string, budget core.LineageTraversalBudget) ([]core.LineageLink, error)
+	ListRequirementDeliveryLineageByRequirement(ctx context.Context, requirementIDs []string, budget core.LineageTraversalBudget) (map[string][]core.LineageLink, error)
 	// ListLineageNodeRecords resolves label data only for the supplied bounded
 	// graph nodes. Implementations must not replace this with workspace-wide
 	// entity scans.
@@ -186,6 +192,7 @@ type Store interface {
 	RecoverInterruptedReviewRoundCommand(ctx context.Context, lease taskops.TaskLease, request InterruptedReviewRecoveryRequest, queueTimeout time.Duration) (InterruptedReviewRecoveryResult, error)
 	GetWorkOrder(ctx context.Context, id string) (core.WorkOrder, error)
 	ListWorkOrders(ctx context.Context) ([]core.WorkOrder, error)
+	ListWorkOrdersForTasks(ctx context.Context, taskIDs []string) ([]core.WorkOrder, error)
 	ListTaskWorkOrders(ctx context.Context, taskID string) ([]core.WorkOrder, error)
 	// ListTaskWorkOrdersSnapshot returns persisted order state without applying
 	// clock-driven lifecycle transitions. It is for observational responses
@@ -233,6 +240,7 @@ type Store interface {
 	CreateRequirement(ctx context.Context, requirement core.Requirement, first core.RequirementVersion) (core.Requirement, core.RequirementVersion, error)
 	GetRequirement(ctx context.Context, id string) (core.Requirement, error)
 	ListRequirements(ctx context.Context) ([]core.Requirement, error)
+	ListRequirementVersionsByRequirement(ctx context.Context) (map[string][]core.RequirementVersion, error)
 	ProposeRequirementVersion(ctx context.Context, version core.RequirementVersion) (core.RequirementVersion, error)
 	ConfirmRequirementVersion(ctx context.Context, requirementID string, version int, expectedCurrentVersion ...int) (core.Requirement, core.RequirementVersion, error)
 	GetRequirementVersion(ctx context.Context, requirementID string, version int) (core.RequirementVersion, error)
@@ -266,6 +274,9 @@ type Store interface {
 	ListSystemDesignProposalEventsForTask(ctx context.Context, taskID string) ([]core.Event, error)
 	ListSystemDesignVersionsByDocument(ctx context.Context) (map[string][]core.SystemDesignVersion, error)
 	ListSystemDesignEventsByDocument(ctx context.Context) (map[string][]core.Event, error)
+	// ListActiveSystemDesignDriftCounts is the metadata-only projection used by
+	// the System Design collection; it must not materialize monitor history.
+	ListActiveSystemDesignDriftCounts(ctx context.Context) (map[string]int, error)
 	RecordSystemDesignConsulted(ctx context.Context, documentID string, version int, sessionID, workOrderID string) error
 
 	ProposeDecision(ctx context.Context, decision core.Decision) (core.Decision, error)
@@ -645,6 +656,13 @@ type TaskOperationsPage struct {
 	Events map[string][]core.Event
 	Plans  map[string]core.SpecVersion
 	Total  int
+}
+
+// TaskPage is the bounded task-only projection used by activity. It omits the
+// context events and latest plans that the richer Tasks surface consumes.
+type TaskPage struct {
+	Tasks []core.Task
+	Total int
 }
 
 // ForgeFailure is the latest unresolved GitHub projection or merge failure
@@ -2612,6 +2630,21 @@ func (m *memory) ListWorkOrders(ctx context.Context) ([]core.WorkOrder, error) {
 	return orders, nil
 }
 
+func (m *memory) ListWorkOrdersForTasks(ctx context.Context, taskIDs []string) ([]core.WorkOrder, error) {
+	if len(taskIDs) == 0 {
+		return []core.WorkOrder{}, nil
+	}
+	wanted := make(map[string]bool, len(taskIDs))
+	for _, taskID := range taskIDs {
+		wanted[taskID] = true
+	}
+	orders, err := m.ListWorkOrders(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return slices.DeleteFunc(orders, func(order core.WorkOrder) bool { return !wanted[order.TaskID] }), nil
+}
+
 func (m *memory) ListCheckpointContextCandidates(ctx context.Context, requirementID string) ([]CheckpointContextCandidate, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -4446,6 +4479,11 @@ func (m *memory) ListTaskOperations(ctx context.Context, query TaskOperationsQue
 	return page, nil
 }
 
+func (m *memory) ListTaskPage(ctx context.Context, query TaskOperationsQuery) (TaskPage, error) {
+	page, err := m.ListTaskOperations(ctx, query)
+	return TaskPage{Tasks: page.Tasks, Total: page.Total}, err
+}
+
 func taskOperationsEventKind(kind string) bool {
 	switch kind {
 	case TaskContextRequirementAdded, TaskContextRequirementRemoved, TaskContextDesignAdded, TaskContextDesignRemoved, "task.state_changed":
@@ -4915,6 +4953,29 @@ func (m *memory) ListEvents(_ context.Context, taskID string) ([]core.Event, err
 	return events, nil
 }
 
+func (m *memory) ListRequirementDeliveryEventsForTasks(_ context.Context, taskIDs []string) (map[string][]core.Event, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	result := make(map[string][]core.Event, len(taskIDs))
+	for _, taskID := range taskIDs {
+		events := make([]core.Event, 0)
+		for _, event := range m.events[taskID] {
+			switch event.Kind {
+			case "merge.confirmed", "merge.reconciled", TaskContextRequirementAdded, TaskContextRequirementActive, TaskContextRequirementRemoved:
+				events = append(events, event)
+			}
+		}
+		sort.Slice(events, func(i, j int) bool {
+			if events[i].At.Equal(events[j].At) {
+				return events[i].ID < events[j].ID
+			}
+			return events[i].At.Before(events[j].At)
+		})
+		result[taskID] = events
+	}
+	return result, nil
+}
+
 func (m *memory) ListRequirementEvents(ctx context.Context, requirementID string) ([]core.Event, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -4938,6 +4999,32 @@ func (m *memory) ListRequirementEvents(ctx context.Context, requirementID string
 		return events[i].At.Before(events[j].At)
 	})
 	return events, nil
+}
+
+func (m *memory) ListRequirementEventsByRequirement(ctx context.Context) (map[string][]core.Event, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	workspace := workspaceOrDefault(ctx, "")
+	out := map[string][]core.Event{}
+	for _, event := range m.events[""] {
+		var payload struct {
+			WorkspaceID   string `json:"workspace_id"`
+			RequirementID string `json:"requirement_id"`
+		}
+		if json.Unmarshal(event.Payload, &payload) != nil || payload.WorkspaceID != workspace || payload.RequirementID == "" {
+			continue
+		}
+		out[payload.RequirementID] = append(out[payload.RequirementID], event)
+	}
+	for requirementID := range out {
+		sort.Slice(out[requirementID], func(i, j int) bool {
+			if out[requirementID][i].At.Equal(out[requirementID][j].At) {
+				return out[requirementID][i].ID < out[requirementID][j].ID
+			}
+			return out[requirementID][i].At.Before(out[requirementID][j].At)
+		})
+	}
+	return out, nil
 }
 
 func (m *memory) ListEventsAfter(_ context.Context, taskID string, afterID int64) ([]core.Event, error) {
@@ -5400,6 +5487,18 @@ func (m *memory) ListRequirementDeliveryLineage(ctx context.Context, requirement
 		return nil, err
 	}
 	return boundedRequirementDeliveryLinks(links, requirementID, budget), nil
+}
+
+func (m *memory) ListRequirementDeliveryLineageByRequirement(ctx context.Context, requirementIDs []string, budget core.LineageTraversalBudget) (map[string][]core.LineageLink, error) {
+	out := make(map[string][]core.LineageLink, len(requirementIDs))
+	for _, requirementID := range requirementIDs {
+		links, err := m.ListRequirementDeliveryLineage(ctx, requirementID, budget)
+		if err != nil {
+			return nil, err
+		}
+		out[requirementID] = links
+	}
+	return out, nil
 }
 
 func boundedRequirementDeliveryLinks(links []core.LineageLink, requirementID string, budget core.LineageTraversalBudget) []core.LineageLink {

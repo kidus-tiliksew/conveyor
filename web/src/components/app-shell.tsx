@@ -22,11 +22,11 @@ import {
   fetchCallerIdentity,
   fetchPendingProposals,
   fetchWorkspace,
+  fetchWorkspaceMembers,
   fetchWorkspaces,
   SESSION_AUTH,
   signOutDashboardSession,
 } from '../lib/api'
-import { isBlueprintAnchor } from '../lib/blueprint'
 import { cn } from '../lib/utils'
 import { ThemeProvider, useTheme } from './theme-provider'
 import { Badge } from './ui/badge'
@@ -128,6 +128,18 @@ export function useActivity(filter?: Record<string, string | string[] | undefine
   })
 }
 
+export function useWorkspaceMembers() {
+  const token = useOperatorToken()
+  const { workspace } = useWorkspaceSelection()
+  return useQuery({
+    queryKey: ['workspace-members', token, workspace],
+    queryFn: () => fetchWorkspaceMembers(token, workspace),
+    enabled: Boolean(token && workspace),
+    staleTime: 60_000,
+    retry: false,
+  })
+}
+
 // Blueprint anchors left the activity feed, so this projection
 // is the only place the dashboard can resolve one — the Blueprints surface,
 // the anchor's own detail, and a child's parent reference all read it.
@@ -158,10 +170,11 @@ export function usePendingProposals() {
     queryKey: ['pending-proposals', workspace],
     queryFn: fetchPendingProposals,
     enabled: Boolean(workspace),
+    staleTime: 15_000,
     refetchInterval: () => (document.visibilityState === 'visible' ? 15_000 : false),
     refetchIntervalInBackground: false,
     refetchOnWindowFocus: true,
-    refetchOnReconnect: true,
+    refetchOnReconnect: 'always',
   })
 }
 
@@ -355,17 +368,11 @@ function NavSidebar() {
     enabled: !!token,
   })
   const { data: workspace } = useWorkspace()
-  const { data: activity } = useActivity()
   const { data: proposals } = usePendingProposals()
-  // Until the combined projection arrives, preserve the Board's existing
-  // task-only fallback and keep blueprint anchors out of that count.
-  const taskAttention = (activity ?? []).filter((item) => !isBlueprintAnchor(item.task) && item.needs_attention).length
-  // The server owns the combined derivation (AC-1.1); fall back to the
-  // already-loaded task count only while the protected projection is loading.
-  // Older fixtures and briefly mixed-version deployments can return the
-  // previous empty collection shape; degrade to the task signal instead of
-  // taking down the app shell while the projection catches up.
-  const attention = proposals?.attention?.total ?? taskAttention
+  // The bounded pending-proposals projection owns the workspace attention
+  // total. Reading it here avoids mounting a second unfiltered activity query
+  // beside the Board's filter-keyed activity request.
+  const attention = proposals?.attention?.total ?? 0
   const requirementAttention = new Set(
     (proposals?.items ?? []).filter((item) => item.tier === 'requirement').map((item) => item.id),
   ).size

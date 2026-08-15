@@ -124,6 +124,21 @@ const design = {
   drift: [],
 }
 
+const designSummary = {
+  document: design.document,
+  current_version: {
+    document_id: designVersion.document_id,
+    version: designVersion.version,
+    origin: designVersion.origin,
+    confirmed: designVersion.confirmed,
+    workspace: designVersion.workspace,
+    created_at: designVersion.created_at,
+  },
+  pending_versions: [],
+  pending_version_count: 0,
+  drift_count: 0,
+}
+
 function task(id: string, parentTaskId?: string) {
   return {
     id,
@@ -247,7 +262,8 @@ async function routeAPI(page: Page, options: Options = {}) {
     if (path === '/v1/requirements') return route.fulfill({ json: [requirement] })
     if (path === '/v1/requirements/req-retries') return route.fulfill({ json: requirement })
     if (path === '/v1/requirements/req-retries/versions') return route.fulfill({ json: [requirement.current_version] })
-    if (path === '/v1/system-designs') return route.fulfill({ json: [design] })
+    if (path === '/v1/system-designs') return route.fulfill({ json: [designSummary] })
+    if (path === '/v1/system-designs/design-dispatch') return route.fulfill({ json: design })
     if (path === '/v1/blueprints') return route.fulfill({ json: [] })
     if (path.endsWith('/events/stream'))
       return route.fulfill({ status: 200, headers: { 'Content-Type': 'text/event-stream' }, body: '' })

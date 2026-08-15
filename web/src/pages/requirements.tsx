@@ -57,7 +57,7 @@ import type {
   RequirementVersion,
   RequirementSummary,
   RequirementView,
-  SystemDesignView,
+  SystemDesignSummary,
   TaskEvent,
   CheckpointContextCandidate,
 } from '../lib/types'
@@ -152,6 +152,7 @@ export function RequirementsPage() {
     queryKey: ['requirements', workspace],
     queryFn: fetchRequirements,
     enabled: Boolean(workspace),
+    staleTime: 60_000,
   })
   const { data: overviews = [] } = useQuery({
     queryKey: ['reference-documents', workspace],
@@ -564,6 +565,7 @@ function RequirementDetailCanvas({ item, token }: { item: RequirementView; token
     queryKey: ['system-designs', workspace],
     queryFn: fetchSystemDesigns,
     enabled: Boolean(workspace),
+    staleTime: 60_000,
   })
   useEffect(() => {
     if (!displayed || !/^#(?:req|ac)-/i.test(window.location.hash)) return
@@ -1114,7 +1116,7 @@ function RequirementDetailCanvas({ item, token }: { item: RequirementView; token
   )
 }
 
-function systemDesignSubject(designs: SystemDesignView[], id?: string) {
+function systemDesignSubject(designs: SystemDesignSummary[], id?: string) {
   if (!id) return { title: 'its subject design document' }
   return { title: designs.find((item) => item.document.id === id)?.document.title ?? id }
 }

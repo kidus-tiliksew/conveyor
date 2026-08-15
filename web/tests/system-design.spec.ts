@@ -71,6 +71,20 @@ const design = {
     },
   ],
 }
+function versionSummary(version: typeof first | typeof pending) {
+  const { content: _content, governs: _governs, ...summary } = version
+  return summary
+}
+
+function summarizeDesign(view: typeof design) {
+  return {
+    document: view.document,
+    current_version: view.current_version ? versionSummary(view.current_version) : undefined,
+    pending_versions: view.pending_versions.map(versionSummary),
+    pending_version_count: view.pending_versions.length,
+    drift_count: view.drift.length,
+  }
+}
 
 async function initialize(page: Page) {
   await page.addInitScript(() => {
@@ -104,7 +118,8 @@ test('System Design renders a category tree, one attention surface, and authenti
       expect(request.headers().authorization).toBe('Bearer test-token')
       protectedReads.push(url.pathname)
     }
-    if (url.pathname === '/v1/system-designs') return route.fulfill({ json: [design] })
+    if (url.pathname === '/v1/system-designs') return route.fulfill({ json: [summarizeDesign(design)] })
+    if (url.pathname === '/v1/system-designs/design-dispatch') return route.fulfill({ json: design })
     if (url.pathname === '/v1/decisions')
       return route.fulfill({
         json: [
@@ -247,7 +262,8 @@ test('an oversized System Design comparison falls back to plain rendering', asyn
     const handled = shell(route)
     if (handled) return await handled
     const url = new URL(route.request().url())
-    if (url.pathname === '/v1/system-designs') return route.fulfill({ json: [oversized] })
+    if (url.pathname === '/v1/system-designs') return route.fulfill({ json: [summarizeDesign(oversized)] })
+    if (url.pathname === '/v1/system-designs/design-dispatch') return route.fulfill({ json: oversized })
     if (url.pathname === '/v1/decisions') return route.fulfill({ json: [] })
     return route.fulfill({ json: [] })
   })
@@ -272,7 +288,8 @@ test('a System Design with nothing outstanding says so in one quiet line', async
     const handled = shell(route)
     if (handled) return await handled
     const url = new URL(route.request().url())
-    if (url.pathname === '/v1/system-designs') return route.fulfill({ json: [settled] })
+    if (url.pathname === '/v1/system-designs') return route.fulfill({ json: [summarizeDesign(settled)] })
+    if (url.pathname === '/v1/system-designs/design-dispatch') return route.fulfill({ json: settled })
     if (url.pathname === '/v1/decisions') return route.fulfill({ json: [] })
     return route.fulfill({ json: [] })
   })
@@ -304,7 +321,8 @@ test('System Design resolves drift inline, restricts outcomes, and shows the con
     if (handled) return await handled
     const request = route.request()
     const url = new URL(request.url())
-    if (url.pathname === '/v1/system-designs') return route.fulfill({ json: [currentDesign()] })
+    if (url.pathname === '/v1/system-designs') return route.fulfill({ json: [summarizeDesign(currentDesign())] })
+    if (url.pathname === '/v1/system-designs/design-dispatch') return route.fulfill({ json: currentDesign() })
     if (url.pathname === '/v1/decisions') return route.fulfill({ json: [] })
     if (url.pathname === '/v1/monitor/drift/design-drift-1/resolve') {
       resolution = request.postDataJSON() as Record<string, string>
@@ -345,7 +363,8 @@ test('the System Design surface never starts a planning session on its own', asy
     const handled = shell(route)
     if (handled) return await handled
     const url = new URL(route.request().url())
-    if (url.pathname === '/v1/system-designs') return route.fulfill({ json: [design] })
+    if (url.pathname === '/v1/system-designs') return route.fulfill({ json: [summarizeDesign(design)] })
+    if (url.pathname === '/v1/system-designs/design-dispatch') return route.fulfill({ json: design })
     if (url.pathname === '/v1/decisions') return route.fulfill({ json: [] })
     if (url.pathname.startsWith('/v1/planning-sessions')) {
       planningRequests++
@@ -376,8 +395,9 @@ test('stale System Design confirmation refreshes the list and explains the retry
     const url = new URL(request.url())
     if (url.pathname === '/v1/system-designs') {
       designReads++
-      return route.fulfill({ json: [design] })
+      return route.fulfill({ json: [summarizeDesign(design)] })
     }
+    if (url.pathname === '/v1/system-designs/design-dispatch') return route.fulfill({ json: design })
     if (url.pathname === '/v1/decisions') return route.fulfill({ json: [] })
     if (url.pathname === '/v1/system-designs/design-dispatch/versions/2/confirm')
       return route.fulfill({
@@ -429,7 +449,8 @@ test('operators confirm and dismiss proposed decisions with conflict-safe refres
     if (handled) return await handled
     const request = route.request()
     const url = new URL(request.url())
-    if (url.pathname === '/v1/system-designs') return route.fulfill({ json: [design] })
+    if (url.pathname === '/v1/system-designs') return route.fulfill({ json: [summarizeDesign(design)] })
+    if (url.pathname === '/v1/system-designs/design-dispatch') return route.fulfill({ json: design })
     if (url.pathname === '/v1/decisions') {
       decisionReads++
       return route.fulfill({ json: decisions })

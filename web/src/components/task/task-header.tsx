@@ -18,7 +18,6 @@ import {
   cancelTask,
   changeTaskSetup,
   fetchWorkspaceConfig,
-  fetchWorkspaceMembers,
   removeTaskDependency,
   setTaskAssignee,
   setTaskHold,
@@ -29,7 +28,13 @@ import { errorMessage } from '../../lib/errors'
 import { relatedTaskRoute } from '../../lib/task-route'
 import type { ActivityItem } from '../../lib/types'
 import { absoluteTime, cn } from '../../lib/utils'
-import { useBlueprints, useOperatorToken, useWorkspaceCapability, useWorkspaceSelection } from '../app-shell'
+import {
+  useBlueprints,
+  useOperatorToken,
+  useWorkspaceCapability,
+  useWorkspaceMembers,
+  useWorkspaceSelection,
+} from '../app-shell'
 import { Badge } from '../ui/badge'
 import { Button } from '../ui/button'
 import { CopyButton } from '../ui/copy-button'
@@ -695,12 +700,7 @@ function AssigneeControl({ item }: { item: ActivityItem }) {
   const terminal = item.task.state === 'merged' || item.task.state === 'closed'
   const enabled = Boolean(token && workspace) && !terminal
   const canAssign = useWorkspaceCapability('set_assignee')
-  const members = useQuery({
-    queryKey: ['workspace-members', token, workspace],
-    queryFn: () => fetchWorkspaceMembers(token, workspace),
-    enabled: enabled && canAssign,
-    retry: false,
-  })
+  const members = useWorkspaceMembers()
   const mutation = useMutation({
     mutationFn: (userId: string) => setTaskAssignee(item.task.id, token, userId),
     onSuccess: () => {

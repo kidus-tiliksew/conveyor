@@ -535,6 +535,27 @@ SELECT id FROM repository_drift WHERE workspace_id=$1 AND resolved_at IS NULL OR
 	return status, driftRows.Err()
 }
 
+func (s *Store) ListActiveSystemDesignDriftCounts(ctx context.Context) (map[string]int, error) {
+	rows, err := s.pool.Query(ctx, `SELECT system_design_id,count(*)
+		FROM repository_drift
+		WHERE workspace_id=$1 AND resolved_at IS NULL AND system_design_id IS NOT NULL
+		GROUP BY system_design_id`, workspace(ctx))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	counts := map[string]int{}
+	for rows.Next() {
+		var documentID string
+		var count int
+		if err = rows.Scan(&documentID, &count); err != nil {
+			return nil, err
+		}
+		counts[documentID] = count
+	}
+	return counts, rows.Err()
+}
+
 func (s *Store) RecordMonitorSuccess(ctx context.Context, at time.Time) error {
 	_, err := s.pool.Exec(ctx, `
 INSERT INTO monitor_status (workspace_id,last_successful_at) VALUES ($1,$2)

@@ -10,12 +10,13 @@ import (
 	"testing"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/monitor"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
 type countingSystemDesignStore struct {
 	store.Store
-	lists, versionBatches, eventBatches, singularVersions, singularEvents int
+	lists, versionBatches, eventBatches, driftCounts, singularVersions, singularEvents int
 }
 
 func (s *countingSystemDesignStore) ListSystemDesigns(ctx context.Context) ([]core.SystemDesign, error) {
@@ -29,6 +30,10 @@ func (s *countingSystemDesignStore) ListSystemDesignVersionsByDocument(ctx conte
 func (s *countingSystemDesignStore) ListSystemDesignEventsByDocument(ctx context.Context) (map[string][]core.Event, error) {
 	s.eventBatches++
 	return s.Store.ListSystemDesignEventsByDocument(ctx)
+}
+func (s *countingSystemDesignStore) ListActiveSystemDesignDriftCounts(ctx context.Context) (map[string]int, error) {
+	s.driftCounts++
+	return s.Store.ListActiveSystemDesignDriftCounts(ctx)
 }
 func (s *countingSystemDesignStore) ListSystemDesignVersions(ctx context.Context, id string) ([]core.SystemDesignVersion, error) {
 	s.singularVersions++
@@ -56,13 +61,14 @@ func TestListSystemDesignsUsesBoundedStoreRounds(t *testing.T) {
 	counting := &countingSystemDesignStore{Store: base}
 	server := NewServer(counting)
 	server.Workspace = "demo"
+	server.Monitor = &monitor.Service{Store: base.(monitor.Store), WorkspaceID: "demo", Enabled: true}
 	response := httptest.NewRecorder()
 	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/system-designs", nil))
 	if response.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
-	if counting.lists != 1 || counting.versionBatches != 1 || counting.eventBatches != 1 || counting.singularVersions != 0 || counting.singularEvents != 0 {
-		t.Fatalf("store rounds lists=%d version_batches=%d event_batches=%d singular_versions=%d singular_events=%d", counting.lists, counting.versionBatches, counting.eventBatches, counting.singularVersions, counting.singularEvents)
+	if counting.lists != 1 || counting.versionBatches != 1 || counting.eventBatches != 0 || counting.driftCounts != 1 || counting.singularVersions != 0 || counting.singularEvents != 0 {
+		t.Fatalf("store rounds lists=%d version_batches=%d event_batches=%d drift_counts=%d singular_versions=%d singular_events=%d", counting.lists, counting.versionBatches, counting.eventBatches, counting.driftCounts, counting.singularVersions, counting.singularEvents)
 	}
 }
 
@@ -87,9 +93,18 @@ func TestSystemDesignAndDecisionHTTPConfirmationContracts(t *testing.T) {
 
 	list := httptest.NewRecorder()
 	handler.ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/v1/system-designs", nil))
-	var views []systemDesignView
-	if list.Code != http.StatusOK || json.Unmarshal(list.Body.Bytes(), &views) != nil || len(views) != 1 || views[0].Document.Title != "Dispatch" || len(views[0].PendingVersions) != 1 || len(views[0].Lineage) != 2 {
+	var views []systemDesignSummary
+	if list.Code != http.StatusOK || json.Unmarshal(list.Body.Bytes(), &views) != nil || len(views) != 1 || views[0].Document.Title != "Dispatch" || len(views[0].PendingVersions) != 1 {
 		t.Fatalf("list status=%d views=%+v body=%s", list.Code, views, list.Body.String())
+	}
+	if strings.Contains(list.Body.String(), "# Dispatch") || strings.Contains(list.Body.String(), `"lineage"`) || strings.Contains(list.Body.String(), `"versions"`) {
+		t.Fatalf("collection leaked detail payload: %s", list.Body.String())
+	}
+	detail := httptest.NewRecorder()
+	handler.ServeHTTP(detail, httptest.NewRequest(http.MethodGet, "/v1/system-designs/design-dispatch", nil))
+	var detailView systemDesignView
+	if detail.Code != http.StatusOK || json.Unmarshal(detail.Body.Bytes(), &detailView) != nil || len(detailView.Lineage) != 2 || detailView.PendingVersions[0].Content == "" {
+		t.Fatalf("detail status=%d view=%+v body=%s", detail.Code, detailView, detail.Body.String())
 	}
 
 	confirm := func(version, expected int) *httptest.ResponseRecorder {

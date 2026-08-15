@@ -406,6 +406,24 @@ func (s *Store) ListRequirementVersions(ctx context.Context, requirementID strin
 	return out, rows.Err()
 }
 
+func (s *Store) ListRequirementVersionsByRequirement(ctx context.Context) (map[string][]core.RequirementVersion, error) {
+	rows, err := s.pool.Query(ctx, requirementVersionSelect+
+		` WHERE workspace_id=$1 ORDER BY requirement_id,version`, workspace(ctx))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string][]core.RequirementVersion{}
+	for rows.Next() {
+		version, err := scanRequirementVersionRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		out[version.RequirementID] = append(out[version.RequirementID], version)
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) ProposeRequirementServes(ctx context.Context, blueprintTaskID, requirementID string, source core.RequirementServesSource, confirm bool) (core.RequirementServesLink, error) {
 	blueprintTaskID, requirementID = strings.TrimSpace(blueprintTaskID), strings.TrimSpace(requirementID)
 	if !source.Valid() {

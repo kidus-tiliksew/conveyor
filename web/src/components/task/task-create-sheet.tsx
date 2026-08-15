@@ -53,14 +53,16 @@ export function TaskCreateSheet({
     enabled: advancedOpen && Boolean(workspace?.workspace),
   })
   const requirements = useQuery({
-    queryKey: ['requirements', workspace?.workspace, 'task-intake'],
+    queryKey: ['requirements', workspace?.workspace],
     queryFn: fetchRequirements,
     enabled: Boolean(token && workspace?.workspace),
+    staleTime: 60_000,
   })
   const designs = useQuery({
-    queryKey: ['system-designs', workspace?.workspace, 'task-intake'],
+    queryKey: ['system-designs', workspace?.workspace],
     queryFn: fetchSystemDesigns,
     enabled: Boolean(token && workspace?.workspace),
+    staleTime: 60_000,
   })
 
   const [body, setBody] = useState('')
