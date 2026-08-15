@@ -59,11 +59,11 @@ func runTask(ctx context.Context, c *client, taskID, configPath string, input io
 	local, err := config.Load(configPath)
 	if err != nil {
 		_ = presentPendingRunOrder(output, *item)
-		return fmt.Errorf("load local execution config: %w", err)
+		return fmt.Errorf("load local execution config: %w; create it with `%s --config %s`", err, localExecutionSetupCommand, configPath)
 	}
 	if err = validateWorkerConfig(workerservice.WorkerConfig{WorkspaceDocument: local.WorkspaceDocument()}); err != nil {
 		_ = presentPendingRunOrder(output, *item)
-		return fmt.Errorf("invalid local execution config: %w", err)
+		return fmt.Errorf("invalid local execution config: %w; recreate it with `%s --config %s`", err, localExecutionSetupCommand, configPath)
 	}
 	firstActivityTimeout, err := configuredFirstActivityTimeout(local)
 	if err != nil {

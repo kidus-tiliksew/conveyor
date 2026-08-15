@@ -257,7 +257,7 @@ func TestRunTaskMissingSetupPresentsPendingOrderWithoutClaiming(t *testing.T) {
 	c := &client{base: server.URL, token: "user-credential", workspace: "demo"}
 	var output bytes.Buffer
 	err := runTask(t.Context(), c, "target", filepath.Join(t.TempDir(), "missing.yaml"), strings.NewReader(""), &output, true, false)
-	if err == nil || !strings.Contains(err.Error(), "load local execution config") || !strings.Contains(err.Error(), "missing.yaml") {
+	if err == nil || !strings.Contains(err.Error(), "load local execution config") || !strings.Contains(err.Error(), "missing.yaml") || !strings.Contains(err.Error(), "conveyor config init-execution") {
 		t.Fatalf("err=%v", err)
 	}
 	if claimCalls != 0 {
