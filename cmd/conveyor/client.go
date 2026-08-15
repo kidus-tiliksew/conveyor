@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strconv"
+	"strings"
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
@@ -20,14 +20,13 @@ type client struct {
 	base      string
 	token     string
 	workspace string
+	configErr error
+	resolved  resolvedClientConfig
 }
 
 func newClient() *client {
-	base := os.Getenv("CONVEYOR_ADDR")
-	if base == "" {
-		base = "http://localhost:8080"
-	}
-	return &client{base: base, token: os.Getenv("CONVEYOR_API_TOKEN"), workspace: workspaceFlag}
+	resolved, err := resolveClientConfig()
+	return &client{base: resolved.Server.Value, token: resolved.Token.Value, workspace: resolved.Workspace.Value, configErr: err, resolved: resolved}
 }
 
 func (c *client) createTask(body, repo, base string) (core.Task, error) {
@@ -233,6 +232,9 @@ func (c *client) do(method, path string, body []byte, out any) error {
 }
 
 func (c *client) doHeaders(method, path string, body []byte, out any, headers map[string]string) error {
+	if c.configErr != nil {
+		return c.configErr
+	}
 	req, err := http.NewRequest(method, c.base+path, bytes.NewReader(body))
 	if err != nil {
 		return err
@@ -262,4 +264,29 @@ func (c *client) doHeaders(method, path string, body []byte, out any, headers ma
 		return nil
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+func (c *client) callerIdentity() (core.CallerIdentity, error) {
+	var identity core.CallerIdentity
+	err := c.do(http.MethodGet, "/v1/me", nil, &identity)
+	return identity, err
+}
+
+func (c *client) personalAccessTokens() ([]core.PersonalAccessToken, error) {
+	var tokens []core.PersonalAccessToken
+	err := c.do(http.MethodGet, "/v1/tokens", nil, &tokens)
+	return tokens, err
+}
+
+func (c *client) revokePersonalAccessToken(id string) error {
+	return c.do(http.MethodDelete, "/v1/tokens/"+id, nil, nil)
+}
+
+func matchingPersonalAccessToken(value string, tokens []core.PersonalAccessToken) (core.PersonalAccessToken, bool) {
+	for _, token := range tokens {
+		if strings.HasPrefix(value, "cv_pat_"+token.ID+"_") {
+			return token, true
+		}
+	}
+	return core.PersonalAccessToken{}, false
 }

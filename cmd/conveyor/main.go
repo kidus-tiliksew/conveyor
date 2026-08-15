@@ -18,7 +18,12 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-var workspaceFlag string
+var (
+	workspaceFlag         string
+	serverFlag            string
+	workspaceFlagExplicit bool
+	serverFlagExplicit    bool
+)
 
 func main() {
 	if err := envfile.LoadDefault(); err != nil {
@@ -32,8 +37,13 @@ func main() {
 		Version:       releaseinfo.Version,
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		PersistentPreRun: func(cmd *cobra.Command, _ []string) {
+			workspaceFlagExplicit = cmd.Flags().Changed("workspace")
+			serverFlagExplicit = cmd.Flags().Changed("server")
+		},
 	}
 	root.AddCommand(
+		authCmd(),
 		taskCmd(),
 		configCmd(),
 		monitorCmd(),
@@ -44,7 +54,8 @@ func main() {
 		lineageCmd(),
 		doneCmd(),
 	)
-	root.PersistentFlags().StringVar(&workspaceFlag, "workspace", os.Getenv("CONVEYOR_WORKSPACE"), "workspace id (required when the server has multiple workspaces)")
+	root.PersistentFlags().StringVar(&serverFlag, "server", "", "Conveyor server URL")
+	root.PersistentFlags().StringVar(&workspaceFlag, "workspace", "", "workspace id (required when the server has multiple workspaces)")
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -58,13 +69,14 @@ func lineageCmd() *cobra.Command {
 	rebuild := &cobra.Command{Use: "rebuild", Short: "Repair lineage while preserving non-regenerable history", Args: cobra.NoArgs,
 		Long: "Repair the event-derived lineage projection by replaying every workspace event in memory within one transaction. Rebuild never deletes rows it cannot regenerate; those rows are reported as preserved_unregenerable. Stale identity cleanup requires a migration.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if strings.TrimSpace(workspaceFlag) == "" {
+			client := newClient()
+			if strings.TrimSpace(client.workspace) == "" {
 				return fmt.Errorf("--workspace is required")
 			}
 			if strings.TrimSpace(reason) == "" || strings.TrimSpace(requestID) == "" {
 				return fmt.Errorf("--reason and --request-id are required")
 			}
-			result, err := newClient().rebuildLineage(reason, requestID)
+			result, err := client.rebuildLineage(reason, requestID)
 			if err != nil {
 				return err
 			}
@@ -113,7 +125,43 @@ func monitorCmd() *cobra.Command {
 }
 
 func configCmd() *cobra.Command {
-	cmd := &cobra.Command{Use: "config", Short: "Export or import database-backed workspace config"}
+	cmd := &cobra.Command{Use: "config", Short: "Manage local defaults or database-backed workspace config"}
+	set := &cobra.Command{Use: "set", Short: "Set a local per-server default"}
+	setWorkspace := &cobra.Command{
+		Use: "workspace <id>", Short: "Set the default workspace for the effective server", Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			resolved, err := resolveClientConfig()
+			if err != nil {
+				return err
+			}
+			workspace := strings.TrimSpace(args[0])
+			if workspace == "" {
+				return fmt.Errorf("workspace id is required")
+			}
+			if err := updateLocalServerConfig(resolved.Server.Value, func(entry *localServerConfig) { entry.Workspace = workspace }); err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Set workspace %s for %s\n", workspace, resolved.Server.Value)
+			return nil
+		},
+	}
+	set.AddCommand(setWorkspace)
+	list := &cobra.Command{
+		Use: "list", Short: "Show effective local settings and their sources", Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			resolved, err := resolveClientConfig()
+			if err != nil {
+				return err
+			}
+			workspace := resolved.Workspace.Value
+			if workspace == "" {
+				workspace = "(automatic singleton)"
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "server\t%s\t%s\nworkspace\t%s\t%s\ncredential\t%s\n",
+				resolved.Server.Value, resolved.Server.Source, workspace, resolved.Workspace.Source, resolved.Token.Source)
+			return nil
+		},
+	}
 	export := &cobra.Command{
 		Use: "export", Short: "Write the current workspace config as YAML",
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -161,7 +209,7 @@ func configCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.AddCommand(export, importConfig)
+	cmd.AddCommand(set, list, export, importConfig)
 	return cmd
 }
 

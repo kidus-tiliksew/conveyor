@@ -234,6 +234,34 @@ Open `http://127.0.0.1:8080`. The Board and Tasks views are the
 operating surfaces, and `http://127.0.0.1:8080/settings` has the MCP
 endpoint with a paste-ready client snippet.
 
+Authenticate the contributor CLI once with a personal access token from
+Settings. The token is read through hidden terminal input and verified before
+it is saved; it is never passed in argv.
+
+```sh
+bin/conveyor --server http://127.0.0.1:8080 auth login
+bin/conveyor config set workspace demo
+bin/conveyor auth status
+```
+
+Credentials and workspace defaults are stored per server, so one machine can
+use multiple factories. The local JSON file uses a plaintext-at-rest trust
+model like `gh` and kubeconfig, with a 0700 parent directory and 0600 file;
+operating-system keychain integration may be added later. Use
+`conveyor auth logout --revoke` to remove the local entry and attempt remote
+revocation. `conveyor config list` shows the effective server and workspace and
+whether each came from a flag, environment, the stored file, or singleton
+fallback.
+
+Environment variables remain the supported non-interactive path for CI,
+workers, and MCP clients. They take precedence over stored values:
+
+```sh
+export CONVEYOR_ADDR=https://factory.example.com
+export CONVEYOR_API_TOKEN="$(conveyor --server "$CONVEYOR_ADDR" auth token)"
+export CONVEYOR_WORKSPACE=demo
+```
+
 Start a worker on the machine where your agents run:
 
 ```sh
@@ -253,7 +281,7 @@ requirements and governing designs at intake). Any MCP-speaking agent
 can claim work orders, submit plans, and file review verdicts with
 `CONVEYOR_API_TOKEN`. `CONVEYOR_API_KEY` powers only the server-owned
 triage and planning stages. Both binaries auto-load `.env`; process
-environment wins.
+environment wins over stored CLI defaults.
 
 ## Status
 
