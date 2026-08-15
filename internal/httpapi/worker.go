@@ -108,7 +108,7 @@ func (s *Server) listWorkers(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
 		return
 	}
-	available, reason := s.Workers.AutoAvailable(r.Context(), cfg)
+	workspaceServiceability := s.Workers.Serviceability(r.Context(), cfg)
 	rateLimits, err := s.Workers.RateLimitHealth(r.Context())
 	if err != nil {
 		log.Printf("handle worker request: %v", err)
@@ -117,15 +117,30 @@ func (s *Server) listWorkers(w http.ResponseWriter, r *http.Request) {
 	}
 	serviceability := make(map[string]any, len(cfg.Setups))
 	for _, setup := range cfg.Setups {
-		setupAvailable, setupReason := s.Workers.AutoAvailableForSetup(r.Context(), cfg, setup)
+		setupStatus := s.Workers.ServiceabilityForSetup(r.Context(), cfg, setup)
 		modelFailures, failureErr := s.Workers.ModelFailuresForSetup(r.Context(), setup)
 		if failureErr != nil {
 			http.Error(w, failureErr.Error(), http.StatusInternalServerError)
 			return
 		}
-		serviceability[setup.Name] = map[string]any{"auto_available": setupAvailable, "auto_unavailable_reason": setupReason, "model_failures": modelFailures}
+		serviceability[setup.Name] = workerServiceabilityPayload(setupStatus, modelFailures)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"workers": workers, "auto_available": available, "auto_unavailable_reason": reason, "setup_serviceability": serviceability, "rate_limits": rateLimits})
+	payload := workerServiceabilityPayload(workspaceServiceability, nil)
+	payload["workers"] = workers
+	payload["setup_serviceability"] = serviceability
+	payload["rate_limits"] = rateLimits
+	writeJSON(w, http.StatusOK, payload)
+}
+
+func workerServiceabilityPayload(status workerservice.WorkerServiceability, modelFailures []core.HarnessModelFailure) map[string]any {
+	payload := map[string]any{"worker_expected": status.WorkerExpected, "worker_available": status.Available}
+	if status.Reason != "" {
+		payload["worker_unavailable_reason"] = status.Reason
+	}
+	if modelFailures != nil {
+		payload["model_failures"] = modelFailures
+	}
+	return payload
 }
 
 func (s *Server) revokeWorker(w http.ResponseWriter, r *http.Request) {

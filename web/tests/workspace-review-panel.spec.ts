@@ -123,8 +123,9 @@ async function mockWorkspaceAPIs(page: Page, initialDocument = baseDocument) {
       await route.fulfill({
         json: {
           workers: [],
-          auto_available: false,
-          auto_unavailable_reason: 'manual test',
+          worker_expected: true,
+          worker_available: false,
+          worker_unavailable_reason: 'test worker is stale',
           rate_limits: [
             {
               work_order_id: 'order-1',

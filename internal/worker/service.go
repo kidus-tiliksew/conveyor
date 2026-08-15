@@ -64,6 +64,15 @@ type TaskWorkerStatus struct {
 	QueueContext      string    `json:"queue_context"`
 }
 
+// WorkerServiceability is advisory presentation state. WorkerExpected is
+// false for pull-only workspaces where no unrevoked enrollment exists; that
+// neutral state must not be presented as an unhealthy worker population.
+type WorkerServiceability struct {
+	WorkerExpected bool
+	Available      bool
+	Reason         string
+}
+
 type DispatchOrder struct {
 	Order            core.WorkOrder `json:"work_order"`
 	Task             core.Task      `json:"task"`
@@ -327,33 +336,38 @@ func (s *Service) RateLimitHealth(ctx context.Context) ([]core.RateLimitHealth, 
 	return result, nil
 }
 
-func (s *Service) AutoAvailable(ctx context.Context, cfg *config.Config) (bool, string) {
+func (s *Service) Serviceability(ctx context.Context, cfg *config.Config) WorkerServiceability {
 	setup, ok := cfg.Setup("")
 	if ok {
-		return s.AutoAvailableForSetup(ctx, cfg, setup)
+		return s.ServiceabilityForSetup(ctx, cfg, setup)
 	}
-	return s.autoAvailableForConfig(ctx, cfg)
+	return s.serviceabilityForConfig(ctx, cfg)
 }
 
-// AutoAvailableForSetup evaluates only the harnesses required by one setup.
-// A broken harness in an unrelated setup must not disable Auto (design-harness-execution).
-func (s *Service) AutoAvailableForSetup(ctx context.Context, cfg *config.Config, setup config.ExecutionSetup) (bool, string) {
+// ServiceabilityForSetup evaluates only the harnesses required by one setup.
+// A broken harness in an unrelated setup must not disable that setup.
+func (s *Service) ServiceabilityForSetup(ctx context.Context, cfg *config.Config, setup config.ExecutionSetup) WorkerServiceability {
 	if setup.Name == "" {
 		var ok bool
 		setup, ok = cfg.Setup("")
 		if !ok {
-			return false, "workspace has no valid default setup"
+			return WorkerServiceability{WorkerExpected: true, Reason: "workspace has no valid default setup"}
 		}
+	}
+	serviceability := s.serviceabilityForConfig(ctx, cfg.WithSetup(setup))
+	if !serviceability.WorkerExpected || serviceability.Available {
+		return serviceability
 	}
 	failures, err := s.ModelFailuresForSetup(ctx, setup)
 	if err != nil {
-		return false, err.Error()
+		serviceability.Reason = err.Error()
+		return serviceability
 	}
 	if len(failures) > 0 {
 		failure := failures[0]
-		return false, fmt.Sprintf("known provider rejection for %s / %s (observed on work order %s)", failure.Harness, failure.Model, failure.WorkOrderID)
+		serviceability.Reason = fmt.Sprintf("required harness %s has a known provider rejection for model %s (observed on work order %s)", failure.Harness, failure.Model, failure.WorkOrderID)
 	}
-	return s.autoAvailableForConfig(ctx, cfg.WithSetup(setup))
+	return serviceability
 }
 
 // ModelFailuresForSetup projects retained provider evidence onto one setup.
@@ -398,18 +412,35 @@ func setupHarnessModelPairs(setup config.ExecutionSetup) map[string]bool {
 	return result
 }
 
-func (s *Service) autoAvailableForConfig(ctx context.Context, cfg *config.Config) (bool, string) {
+func (s *Service) serviceabilityForConfig(ctx context.Context, cfg *config.Config) WorkerServiceability {
 	workers, err := s.Store.ListWorkers(ctx)
 	if err != nil {
-		return false, err.Error()
+		return WorkerServiceability{WorkerExpected: true, Reason: err.Error()}
+	}
+	active := unrevokedWorkers(workers)
+	if len(active) == 0 {
+		return WorkerServiceability{}
 	}
 	now := s.now()
-	for _, worker := range workers {
-		if healthy, _ := workerHealthyForRoutes(worker, cfg, now); healthy {
-			return true, ""
+	var reason string
+	for _, worker := range active {
+		if healthy, workerReason := workerHealthyForRoutes(worker, cfg, now); healthy {
+			return WorkerServiceability{WorkerExpected: true, Available: true}
+		} else if reason == "" {
+			reason = fmt.Sprintf("enrolled worker %q: %s", worker.Name, workerReason)
 		}
 	}
-	return false, "no live worker reports every routed harness healthy"
+	return WorkerServiceability{WorkerExpected: true, Reason: reason}
+}
+
+func unrevokedWorkers(workers []core.Worker) []core.Worker {
+	result := make([]core.Worker, 0, len(workers))
+	for _, worker := range workers {
+		if worker.RevokedAt.IsZero() {
+			result = append(result, worker)
+		}
+	}
+	return result
 }
 
 func (s *Service) TaskAvailability(ctx context.Context, cfg *config.Config, task core.Task, orders []core.WorkOrder) *TaskWorkerStatus {
@@ -452,6 +483,10 @@ func (s *Service) TaskAvailability(ctx context.Context, cfg *config.Config, task
 		status.Reason = err.Error()
 		return &status
 	}
+	workers = unrevokedWorkers(workers)
+	if len(workers) == 0 {
+		return nil
+	}
 	now := s.now()
 	for _, order := range activeOrders {
 		if order.State == core.WorkOrderClaimed && order.LeaseExpiresAt.After(now) {
@@ -460,17 +495,24 @@ func (s *Service) TaskAvailability(ctx context.Context, cfg *config.Config, task
 			return &status
 		}
 	}
+	var unhealthyReason string
 	for _, worker := range workers {
 		if worker.LastSeenAt.After(status.LastHeartbeatAt) {
 			status.LastHeartbeatAt = worker.LastSeenAt
 		}
 		if !worker.Live(now) {
+			if unhealthyReason == "" {
+				unhealthyReason = fmt.Sprintf("required harnesses %s cannot be served by enrolled worker %q: worker liveness lease expired", strings.Join(status.RequiredHarnesses, ", "), worker.Name)
+			}
 			continue
 		}
 		healthy := true
 		for _, order := range activeOrders {
-			if ok, _ := s.workerHealthyForOrder(worker, cfg, order); !ok {
+			if ok, reason := s.workerHealthyForOrder(worker, cfg, order); !ok {
 				healthy = false
+				if unhealthyReason == "" {
+					unhealthyReason = fmt.Sprintf("required harness %s cannot be served by enrolled worker %q: %s", order.RequiredHarness, worker.Name, reason)
+				}
 				break
 			}
 		}
@@ -479,6 +521,9 @@ func (s *Service) TaskAvailability(ctx context.Context, cfg *config.Config, task
 			status.Reason = "healthy worker available"
 			break
 		}
+	}
+	if !status.Available && unhealthyReason != "" {
+		status.Reason = unhealthyReason
 	}
 	if !status.LastHeartbeatAt.IsZero() {
 		age := now.Sub(status.LastHeartbeatAt)
