@@ -135,6 +135,10 @@ type Store interface {
 	// graph nodes. Implementations must not replace this with workspace-wide
 	// entity scans.
 	ListLineageNodeRecords(ctx context.Context, nodes []core.LineageNode) (map[core.LineageNode]LineageNodeRecord, error)
+	// ListLineageContextRecords resolves the bounded task outcomes and current
+	// confirmed requirement documents used by agent context assembly. It must
+	// read only the supplied graph nodes and avoid per-node queries.
+	ListLineageContextRecords(ctx context.Context, nodes []core.LineageNode) (LineageContextRecords, error)
 	RebuildLineage(ctx context.Context, request core.LineageRebuildRequest) (core.LineageRebuildResult, error)
 	ListEventsAfter(ctx context.Context, taskID string, afterID int64) ([]core.Event, error)
 	CountEvents(ctx context.Context, taskID, kind string) (int, error)
@@ -208,7 +212,7 @@ type Store interface {
 	AuthenticateWorker(ctx context.Context, credentialHash string) (core.Worker, error)
 	HeartbeatWorker(ctx context.Context, id string, leaseExpires time.Time, probes []core.HarnessProbe) (core.Worker, error)
 	RevokeWorker(ctx context.Context, id string) error
-	RenewWorkerClaimCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID, workerID, sessionID string, lease time.Duration) (core.WorkOrder, error)
+	RenewWorkerClaimCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID string, claim core.WorkOrderClaimIdentity, lease time.Duration) (core.WorkOrder, error)
 	ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID string, claim core.WorkOrderClaimIdentity, release core.WorkOrderRelease) (core.WorkOrder, error)
 	RequestPlanRevisionCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID string, claim core.WorkOrderClaimIdentity, rationale string) (PlanRevisionRequestResult, error)
 	// CancelPlanRevisionWorkOrderCommand retires the exact released
@@ -343,6 +347,29 @@ type LineageNodeRecord struct {
 	Slug   string
 	TaskID string
 	Stage  core.Stage
+}
+
+// LineageContextRecords is the bounded entity projection consumed after the
+// lineage walk has selected its node set. ReviewPayload is the latest review
+// completion event for a terminal task and remains raw until the context
+// renderer applies its existing summary rules.
+type LineageContextRecords struct {
+	Tasks        map[string]LineageContextTaskRecord
+	Requirements map[string]LineageContextRequirementRecord
+}
+
+type LineageContextTaskRecord struct {
+	Title         string
+	State         core.TaskState
+	ParentTaskID  string
+	ReviewPayload json.RawMessage
+}
+
+type LineageContextRequirementRecord struct {
+	Title      string
+	Version    int
+	Content    string
+	Statements []core.RequirementStatement
 }
 
 // RequirementVersionConflict is returned when an operator confirmation was
@@ -1221,7 +1248,7 @@ func (m *memory) RevokeWorker(ctx context.Context, id string) error {
 	return nil
 }
 
-func (m *memory) RenewWorkerClaimCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID, workerID, sessionID string, lease time.Duration) (core.WorkOrder, error) {
+func (m *memory) RenewWorkerClaimCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID string, claim core.WorkOrderClaimIdentity, lease time.Duration) (core.WorkOrder, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	order, ok := m.workOrders[workOrderID]
@@ -1233,19 +1260,19 @@ func (m *memory) RenewWorkerClaimCommand(ctx context.Context, taskLease taskops.
 		order = m.refreshWorkOrderLocked(ctx, order, now)
 	}
 	if ok && order.State == core.WorkOrderCancelled &&
-		((order.LastAttemptID != "" && order.LastAttemptID == sessionID) ||
-			m.cancelledSessionMatchesLocked(order, sessionID) ||
-			(order.WorkerID == workerID && order.SessionID == sessionID)) {
+		((order.LastAttemptID != "" && order.LastAttemptID == claim.SessionID) ||
+			m.cancelledSessionMatchesLocked(order, claim.SessionID) ||
+			(order.WorkerID == claim.WorkerID && order.ClaimantID == claim.ClaimantID && order.SessionID == claim.SessionID)) {
 		return core.WorkOrder{}, ErrWorkOrderCancelled
 	}
 	if ok {
 		for i := len(m.events[order.TaskID]) - 1; i >= 0; i-- {
-			if WorkOrderPreemptEventMatches(m.events[order.TaskID][i], workOrderID, workerID, sessionID) {
+			if WorkOrderPreemptEventMatches(m.events[order.TaskID][i], workOrderID, claim.WorkerID, claim.SessionID) {
 				return core.WorkOrder{}, ErrWorkOrderPreempted
 			}
 		}
 	}
-	if !ok || order.WorkerID != workerID || order.SessionID == "" || order.SessionID != sessionID {
+	if !ok || order.WorkerID != claim.WorkerID || order.ClaimantID != claim.ClaimantID || order.SessionID == "" || order.SessionID != claim.SessionID {
 		return core.WorkOrder{}, ErrWorkOrderClaimLost
 	}
 	if order.State == core.WorkOrderSubmitted || order.State == core.WorkOrderCompleted {
@@ -1264,7 +1291,7 @@ func (m *memory) RenewWorkerClaimCommand(ctx context.Context, taskLease taskops.
 	order.LeaseExpiresAt = expires
 	order.UpdatedAt = now
 	m.workOrders[workOrderID] = order
-	m.appendEventLocked(workerClaimActorContext(ctx, workerID), core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.lease_renewed", Payload: core.JSONPayload(map[string]any{"attempt_id": order.AttemptID, "lease_expires_at": expires})})
+	m.appendEventLocked(workerClaimActorContext(ctx, claim.WorkerID), core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.lease_renewed", Payload: core.JSONPayload(map[string]any{"attempt_id": order.AttemptID, "lease_expires_at": expires})})
 	return order, nil
 }
 
@@ -4471,6 +4498,68 @@ func (m *memory) ListLineageNodeRecords(ctx context.Context, nodes []core.Lineag
 		}
 	}
 	return records, nil
+}
+
+func (m *memory) ListLineageContextRecords(ctx context.Context, nodes []core.LineageNode) (LineageContextRecords, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	workspace := workspaceOrDefault(ctx, "")
+	result := LineageContextRecords{
+		Tasks:        map[string]LineageContextTaskRecord{},
+		Requirements: map[string]LineageContextRequirementRecord{},
+	}
+	for _, node := range nodes {
+		switch node.Type {
+		case core.LineageTask:
+			if _, exists := result.Tasks[node.ID]; exists {
+				continue
+			}
+			task, ok := m.tasks[node.ID]
+			if !ok || task.Workspace != workspace {
+				continue
+			}
+			record := LineageContextTaskRecord{Title: task.Title, State: task.State, ParentTaskID: task.ParentTaskID}
+			for index := len(m.events[task.ID]) - 1; core.TaskTerminal(task.State) && index >= 0; index-- {
+				event := m.events[task.ID][index]
+				if (event.Kind == "review.completed" || event.Kind == "review.round_completed") && validReviewSummaryPayload(event.Payload) {
+					record.ReviewPayload = append(json.RawMessage(nil), event.Payload...)
+					break
+				}
+			}
+			result.Tasks[node.ID] = record
+		case core.LineageRequirement:
+			if _, exists := result.Requirements[node.ID]; exists {
+				continue
+			}
+			key := memoryScopedKey{workspace: workspace, id: node.ID}
+			requirement, ok := m.requirements[key]
+			if !ok || requirement.CurrentVersion <= 0 {
+				continue
+			}
+			versions := m.requirementVersions[key]
+			if requirement.CurrentVersion > len(versions) {
+				continue
+			}
+			version := versions[requirement.CurrentVersion-1]
+			if !version.Confirmed {
+				continue
+			}
+			result.Requirements[node.ID] = LineageContextRequirementRecord{
+				Title: requirement.Title, Version: version.Version, Content: version.Content,
+				Statements: append([]core.RequirementStatement(nil), version.Statements...),
+			}
+		}
+	}
+	return result, nil
+}
+
+func validReviewSummaryPayload(payload json.RawMessage) bool {
+	var decoded struct {
+		Verdict  string `json:"verdict"`
+		Summary  string `json:"summary"`
+		Feedback string `json:"feedback"`
+	}
+	return json.Unmarshal(payload, &decoded) == nil
 }
 
 func lineageRecordBaseID(node core.LineageNode) string {

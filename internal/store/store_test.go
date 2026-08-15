@@ -1418,6 +1418,11 @@ func TestMemoryCancelTaskIsAtomicAndCancelledSessionIsTerminal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err = taskops.ExecuteWorkOrder(ctx, st, task.ID, core.WorkOrderCmdRenew, func(lease taskops.TaskLease) (core.WorkOrder, error) {
+		return st.RenewWorkerClaimCommand(ctx, lease, job.ID, core.WorkOrderClaimIdentity{WorkerID: "worker", ClaimantID: "different-claimant", SessionID: "session"}, time.Minute)
+	}); !errors.Is(err, ErrWorkOrderClaimLost) {
+		t.Fatalf("wrong-claimant renew error=%v", err)
+	}
 	attemptID := claimed.AttemptID
 	cancelled, err := storetestFor(st).CancelTask(ctx, core.Intervention{TaskID: task.ID, JobID: job.ID, Action: core.InterventionCancel, ReasonCode: "obsolete"})
 	if err != nil || cancelled.State != core.TaskClosed || cancelled.NextStage != "" {
