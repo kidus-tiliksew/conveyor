@@ -19,7 +19,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 )
 
-func TestPairingHeartbeatHealthAndAutoClaimLifecycle(t *testing.T) {
+func TestPairingHeartbeatHealthAndWorkerClaimLifecycle(t *testing.T) {
 	now := time.Now().UTC()
 	st := store.NewMemory()
 	cfg := workerTestConfig()
@@ -52,8 +52,8 @@ func TestPairingHeartbeatHealthAndAutoClaimLifecycle(t *testing.T) {
 	if err != nil || !worker.Live(now) {
 		t.Fatalf("worker=%+v err=%v", worker, err)
 	}
-	if available, reason := service.AutoAvailable(workerCtx, cfg); !available {
-		t.Fatalf("auto unavailable: %s", reason)
+	if status := service.Serviceability(workerCtx, cfg); !status.Available {
+		t.Fatalf("worker unavailable: %s", status.Reason)
 	}
 
 	createOrder := func(taskID string, hold bool) {
@@ -432,9 +432,9 @@ func TestReleaseRefreshesHarnessSnapshotFromCurrentConfig(t *testing.T) {
 		t.Fatalf("model failures=%+v err=%v", failures, err)
 	}
 	setup := config.ExecutionSetup{Name: "observed", ExecutionSettings: config.ContextualExecutionSettings{Implementation: config.ImplementationSettings{Harness: "claude", Model: "provider/model", ModelPolicy: config.ModelPolicyExplicit}}}
-	available, reason := service.AutoAvailableForSetup(ctx, &config.Config{}, setup)
-	if available || !strings.Contains(reason, "claude / provider/model") {
-		t.Fatalf("serviceability available=%v reason=%q", available, reason)
+	serviceability := service.ServiceabilityForSetup(ctx, &config.Config{}, setup)
+	if serviceability.Available || !strings.Contains(serviceability.Reason, "claude") || !strings.Contains(serviceability.Reason, "provider/model") {
+		t.Fatalf("serviceability=%+v", serviceability)
 	}
 	unrelated := setup
 	unrelated.Name = "unrelated"
@@ -541,15 +541,35 @@ func TestTaskAvailabilityTreatsLiveClaimAsHarnessHealthEvidence(t *testing.T) {
 	}
 }
 
-func TestTaskAvailabilityReturnsEmptyRequiredHarnessesAsArray(t *testing.T) {
-	status := (&Service{Store: store.NewMemory()}).TaskAvailability(
-		store.WithWorkspace(t.Context(), "demo"),
-		&config.Config{Workspace: "demo"},
-		core.Task{ID: "unrouted-task", Workspace: "demo"},
-		[]core.WorkOrder{{ID: "unrouted-order", TaskID: "unrouted-task", State: core.WorkOrderQueued}},
-	)
-	if status == nil || status.RequiredHarnesses == nil || len(status.RequiredHarnesses) != 0 {
-		t.Fatalf("status=%+v, want non-nil status with an empty required harness list", status)
+func TestTaskAvailabilityOmitsWarningWithoutEnrolledWorkers(t *testing.T) {
+	now := time.Now().UTC()
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	service := &Service{Store: st, Now: func() time.Time { return now }}
+	cfg := &config.Config{Workspace: "demo", Harnesses: []config.Harness{{Name: "codex"}}, Routing: config.Routing{Stages: map[string]config.StageRoute{"implement": {Harness: "codex"}}}}
+	task := core.Task{ID: "pull-only-task", Workspace: "demo"}
+	orders := []core.WorkOrder{{ID: "pull-only-order", TaskID: task.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, RequiredHarness: "codex"}}
+	status := service.TaskAvailability(ctx, cfg, task, orders)
+	if status != nil {
+		t.Fatalf("status=%+v, want neutral pull-only state", status)
+	}
+	revoked := core.Worker{ID: "revoked", Workspace: "demo", Name: "revoked", CreatedAt: now}
+	if err := st.CreateWorker(ctx, revoked); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.RevokeWorker(ctx, revoked.ID); err != nil {
+		t.Fatal(err)
+	}
+	if status = service.TaskAvailability(ctx, cfg, task, orders); status != nil {
+		t.Fatalf("revoked-only status=%+v, want neutral pull-only state", status)
+	}
+	stale := core.Worker{ID: "stale", Workspace: "demo", Name: "stale-codex", LastSeenAt: now.Add(-time.Minute), LeaseExpiresAt: now.Add(-time.Second), CreatedAt: now.Add(time.Second)}
+	if err := st.CreateWorker(ctx, stale); err != nil {
+		t.Fatal(err)
+	}
+	status = service.TaskAvailability(ctx, cfg, task, orders)
+	if status == nil || status.Available || !strings.Contains(status.Reason, "codex") || !strings.Contains(status.Reason, "stale-codex") || !strings.Contains(status.Reason, "liveness lease expired") {
+		t.Fatalf("stale status=%+v", status)
 	}
 }
 
@@ -565,7 +585,7 @@ func TestTaskAvailabilityOmitsStatusWithoutActionableTaskOrder(t *testing.T) {
 	}
 }
 
-func TestAutoHealthRequiresEveryRoutedHarnessOnOneLiveWorker(t *testing.T) {
+func TestWorkerHealthRequiresEveryRoutedHarnessOnOneLiveWorker(t *testing.T) {
 	now := time.Now().UTC()
 	st := store.NewMemory()
 	cfg := workerTestConfig()
@@ -581,12 +601,12 @@ func TestAutoHealthRequiresEveryRoutedHarnessOnOneLiveWorker(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if available, _ := service.AutoAvailable(ctx, cfg); available {
-		t.Fatal("different workers each reporting one routed harness enabled Auto")
+	if status := service.Serviceability(ctx, cfg); status.Available {
+		t.Fatal("different workers each reporting one routed harness enabled serviceability")
 	}
 }
 
-func TestAutoHealthIsScopedToSelectedSetup(t *testing.T) {
+func TestWorkerHealthIsScopedToSelectedSetup(t *testing.T) {
 	now := time.Now().UTC()
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	st := store.NewMemory()
@@ -607,10 +627,10 @@ func TestAutoHealthIsScopedToSelectedSetup(t *testing.T) {
 		t.Fatal(err)
 	}
 	service := &Service{Store: st, Now: func() time.Time { return now }}
-	if available, reason := service.AutoAvailableForSetup(ctx, cfg, good); !available {
-		t.Fatalf("good setup unavailable: %s", reason)
+	if status := service.ServiceabilityForSetup(ctx, cfg, good); !status.Available {
+		t.Fatalf("good setup unavailable: %s", status.Reason)
 	}
-	if available, _ := service.AutoAvailableForSetup(ctx, cfg, broken); available {
+	if status := service.ServiceabilityForSetup(ctx, cfg, broken); status.Available {
 		t.Fatal("broken setup became available because an unrelated setup was healthy")
 	}
 }
@@ -662,7 +682,7 @@ func TestBlockedImplementationIsWorkerVisibleButUnclaimable(t *testing.T) {
 	}
 }
 
-func TestAutoDispatchRequiresEveryRoutedHarnessHealthyOnClaimingWorker(t *testing.T) {
+func TestWorkerDispatchRequiresEveryRoutedHarnessHealthyOnClaimingWorker(t *testing.T) {
 	now := time.Now().UTC()
 	st := store.NewMemory()
 	cfg := workerTestConfig()

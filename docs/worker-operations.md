@@ -1,4 +1,4 @@
-# Durable Auto worker operation
+# Durable worker operation
 
 `conveyor worker run` reuses the owner-only enrollment credential saved by its
 first successful pairing. Restarting an enrolled worker normally needs no new

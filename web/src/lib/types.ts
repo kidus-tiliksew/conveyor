@@ -622,14 +622,16 @@ export interface HarnessModelFailure {
   observed_at: string
 }
 export interface SetupServiceability {
-  auto_available: boolean
-  auto_unavailable_reason?: string
+  worker_expected: boolean
+  worker_available: boolean
+  worker_unavailable_reason?: string
   model_failures?: HarnessModelFailure[]
 }
 export interface WorkerList {
   workers: Worker[]
-  auto_available: boolean
-  auto_unavailable_reason?: string
+  worker_expected: boolean
+  worker_available: boolean
+  worker_unavailable_reason?: string
   setup_serviceability?: Record<string, SetupServiceability>
   rate_limits?: RateLimitHealth[]
 }

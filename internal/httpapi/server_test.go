@@ -177,7 +177,7 @@ func attachmentTaskRequest(t *testing.T, intakeKey string, files map[string][]by
 	t.Helper()
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
-	if err := writer.WriteField("task", `{"body":"Use every file","repo":"api","mode":"manual","spec_approval":true,"merge_approval":true,"source":"dashboard"}`); err != nil {
+	if err := writer.WriteField("task", `{"body":"Use every file","repo":"api","hold":true,"spec_approval":true,"merge_approval":true,"source":"dashboard"}`); err != nil {
 		t.Fatal(err)
 	}
 	if err := writer.WriteField("idempotency_key", intakeKey); err != nil {
@@ -685,6 +685,10 @@ func TestTaskIntakeIsNotHealthGatedAndPersistsHold(t *testing.T) {
 	server := NewServer(st)
 	server.BearerToken, server.Workspace, server.ConfigProvider, server.Workers = "token", "demo", provider, workers
 	server.GenerateTaskTitle = func(_ context.Context, task core.Task) (string, error) { return task.Body, nil }
+	historical, err := json.Marshal(core.Task{ID: "historical", Mode: core.TaskModeAuto})
+	if err != nil || bytes.Contains(historical, []byte(`"mode"`)) {
+		t.Fatalf("historical task leaked retired mode: %s err=%v", historical, err)
+	}
 	request := func(body string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(http.MethodPost, "/v1/tasks", strings.NewReader(body))
 		req.Header.Set("Authorization", "Bearer token")
@@ -692,50 +696,22 @@ func TestTaskIntakeIsNotHealthGatedAndPersistsHold(t *testing.T) {
 		server.Handler().ServeHTTP(response, req)
 		return response
 	}
-	// §21.31: no worker is enrolled, yet nothing is rejected or resolved to
-	// another mode at intake — serviceability is advisory, orders queue openly.
-	response := request(`{"body":"deprecated auto","repo":"api","mode":"auto"}`)
-	if response.Code != http.StatusCreated {
-		t.Fatalf("deprecated auto status=%d body=%s", response.Code, response.Body.String())
-	}
-	var task core.Task
-	if err := json.Unmarshal(response.Body.Bytes(), &task); err != nil {
-		t.Fatal(err)
-	}
-	if task.Hold || task.Mode != "" || task.PolicyVersion != 1 || !task.SpecApproval || !task.MergeApproval {
-		t.Fatalf("deprecated auto task=%+v", task)
-	}
-	deprecatedEvents := func(id string) int {
-		events, _ := st.ListEvents(store.WithWorkspace(t.Context(), "demo"), id)
-		count := 0
-		for _, event := range events {
-			if event.Kind == "task.mode.deprecated" {
-				count++
-			}
+	// No worker is enrolled, yet nothing is rejected at intake: serviceability
+	// is advisory and orders queue openly. The retired mode input is rejected.
+	for _, retired := range []string{"auto", "manual"} {
+		response := request(`{"body":"retired input","repo":"api","mode":"` + retired + `"}`)
+		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "mode is retired") {
+			t.Fatalf("retired mode %q status=%d body=%s", retired, response.Code, response.Body.String())
 		}
-		return count
-	}
-	if deprecatedEvents(task.ID) != 1 {
-		t.Fatalf("expected deprecated-mode event for %s", task.ID)
 	}
 
-	response = request(`{"body":"deprecated manual","repo":"api","mode":"manual"}`)
-	if response.Code != http.StatusCreated {
-		t.Fatalf("deprecated manual status=%d body=%s", response.Code, response.Body.String())
-	}
-	var held core.Task
-	_ = json.Unmarshal(response.Body.Bytes(), &held)
-	if !held.Hold || held.Mode != "" || deprecatedEvents(held.ID) != 1 {
-		t.Fatalf("deprecated manual task=%+v", held)
-	}
-
-	response = request(`{"body":"held with gates off","repo":"api","hold":true,"spec_approval":false,"merge_approval":false}`)
+	response := request(`{"body":"held with gates off","repo":"api","hold":true,"spec_approval":false,"merge_approval":false}`)
 	if response.Code != http.StatusCreated {
 		t.Fatalf("hold status=%d body=%s", response.Code, response.Body.String())
 	}
 	var explicit core.Task
 	_ = json.Unmarshal(response.Body.Bytes(), &explicit)
-	if !explicit.Hold || explicit.SpecApproval || explicit.MergeApproval || deprecatedEvents(explicit.ID) != 0 {
+	if !explicit.Hold || explicit.SpecApproval || explicit.MergeApproval {
 		t.Fatalf("hold task=%+v", explicit)
 	}
 
@@ -772,7 +748,7 @@ func TestTaskIntakeSelectsAndFreezesExecutionSetup(t *testing.T) {
 		server.Handler().ServeHTTP(response, req)
 		return response
 	}
-	response := request(`{"body":"ui","repo":"api","setup":"frontend","mode":"manual"}`)
+	response := request(`{"body":"ui","repo":"api","setup":"frontend","hold":true}`)
 	if response.Code != http.StatusCreated {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -789,7 +765,7 @@ func TestTaskIntakeSelectsAndFreezesExecutionSetup(t *testing.T) {
 		t.Fatalf("persisted=%+v err=%v", persisted, err)
 	}
 	server.GenerateTaskTitle = func(context.Context, core.Task) (string, error) { return "unused", nil }
-	if unknown := request(`{"body":"bad","repo":"api","setup":"missing","mode":"manual"}`); unknown.Code != http.StatusBadRequest {
+	if unknown := request(`{"body":"bad","repo":"api","setup":"missing","hold":true}`); unknown.Code != http.StatusBadRequest {
 		t.Fatalf("unknown status=%d body=%s", unknown.Code, unknown.Body.String())
 	}
 }
@@ -2377,9 +2353,20 @@ func TestTaskActivityScopesWorkerStatusToActionableTaskOrders(t *testing.T) {
 
 	queued := httptest.NewRecorder()
 	server.Handler().ServeHTTP(queued, httptest.NewRequest(http.MethodGet, "/v1/tasks/queued-auto/activity?workspace_id=demo", nil))
+	if queued.Code != http.StatusOK || bytes.Contains(queued.Body.Bytes(), []byte(`"worker_status"`)) ||
+		bytes.Contains(queued.Body.Bytes(), []byte(`"needs_attention":true`)) {
+		t.Fatalf("pull-only queued activity status=%d body=%s", queued.Code, queued.Body.String())
+	}
+	if err := st.CreateWorker(ctx, core.Worker{ID: "stale-worker", Workspace: "demo", Name: "stale-codex", CreatedAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	queued = httptest.NewRecorder()
+	server.Handler().ServeHTTP(queued, httptest.NewRequest(http.MethodGet, "/v1/tasks/queued-auto/activity?workspace_id=demo", nil))
 	if queued.Code != http.StatusOK || !bytes.Contains(queued.Body.Bytes(), []byte(`"worker_status"`)) ||
 		!bytes.Contains(queued.Body.Bytes(), []byte(`"required_harnesses":["codex"]`)) ||
-		!bytes.Contains(queued.Body.Bytes(), []byte(`"queue_context":"never_started"`)) {
+		!bytes.Contains(queued.Body.Bytes(), []byte(`"queue_context":"never_started"`)) ||
+		!bytes.Contains(queued.Body.Bytes(), []byte(`worker liveness lease expired`)) ||
+		bytes.Contains(queued.Body.Bytes(), []byte(`"needs_attention":true`)) {
 		t.Fatalf("queued activity status=%d body=%s", queued.Code, queued.Body.String())
 	}
 

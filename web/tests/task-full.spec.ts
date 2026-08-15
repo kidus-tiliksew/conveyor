@@ -1210,7 +1210,7 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
                                           },
                                         ],
                                       }
-                                    : taskId === 'queued-worker'
+                                    : taskId === 'queued-worker' || taskId === 'pull-only-worker'
                                       ? {
                                           jobs: [],
                                           events: [],
@@ -2362,7 +2362,7 @@ test('preemption is rendered as attributed activity rather than a failure', asyn
 
 test('task detail tolerates null required harnesses from a legacy worker status', async ({ page }) => {
   await page.goto('/tasks/null-worker-status/full')
-  await expect(page.getByText('No healthy worker can serve this Auto task')).toBeVisible()
+  await expect(page.getByText('No healthy enrolled worker can serve this queued work')).toBeVisible()
   await expect(page.getByText('Required harnesses: not yet routed.')).toBeVisible()
   await expect(page.getByText('Something went wrong!')).toHaveCount(0)
 })
@@ -2751,7 +2751,7 @@ test('interrupted review round offers one same-round recovery and retains comple
     })
   })
   await page.goto('/tasks/interrupted-review/full')
-  await expect(page.getByText('No healthy worker can serve this Auto task')).toBeVisible()
+  await expect(page.getByText('No healthy enrolled worker can serve this queued work')).toBeVisible()
   await expect(page.getByText(/This work was interrupted/)).toBeVisible()
   await expect(page.getByText(/completed verdict retained/)).toBeVisible()
   await expect(page.getByRole('button', { name: 'Recover work order' })).toHaveCount(0)
@@ -3466,12 +3466,20 @@ test('worker warning is scoped to actionable task-owned work at the human gate',
 
   await expect(page.getByRole('region', { name: 'Human gate' }).getByText('Your review, please')).toBeVisible()
   await expect(page.getByText('GitHub review publication retrying')).toBeVisible()
-  await expect(page.getByRole('region', { name: 'Auto worker unavailable' })).toHaveCount(0)
+  await expect(page.getByRole('region', { name: 'Enrolled worker unavailable' })).toHaveCount(0)
   await expect(page.getByText('This queued work has never started.')).toHaveCount(0)
 
   await page.goto('/tasks/queued-worker/full')
-  await expect(page.getByRole('region', { name: 'Auto worker unavailable' })).toBeVisible()
+  await expect(page.getByRole('region', { name: 'Enrolled worker unavailable' })).toBeVisible()
   await expect(page.getByText('This queued work has never started.')).toBeVisible()
+})
+
+test('pull-only queued work waits for an operator agent without a worker alarm or route chip', async ({ page }) => {
+  await page.goto('/tasks/pull-only-worker/full')
+
+  await expect(page.getByText('Implementation — waiting for an operator agent', { exact: true })).toBeVisible()
+  await expect(page.getByRole('region', { name: 'Enrolled worker unavailable' })).toHaveCount(0)
+  await expect(page.getByText('Needs a route', { exact: true })).toHaveCount(0)
 })
 
 test('parked task offers recovery instead of an invalid approval verdict', async ({ page }) => {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -104,4 +105,45 @@ func (c *client) checkpointDispatchOrderAttemptContext(ctx context.Context, cred
 		return c.checkpointTaskRunOrderAttemptContext(ctx, credential, item, checkpoint)
 	}
 	return c.checkpointWorkerOrderAttemptContext(ctx, credential, item.Order.ID, checkpoint)
+}
+
+func (c *client) reportDispatchProgressContext(ctx context.Context, credential string, item workerservice.DispatchOrder, sessionID, message string) error {
+	payload, _ := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name": "report_progress",
+			"arguments": map[string]any{
+				"workspace_id": c.workspace, "work_order_id": item.Order.ID,
+				"session_id": sessionID, "message": message,
+			},
+		},
+	})
+	var envelope struct {
+		Result struct {
+			IsError bool `json:"isError"`
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"result"`
+		Error *struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := c.workerDoContext(ctx, http.MethodPost, "/mcp", payload, &envelope, credential); err != nil {
+		return err
+	}
+	if envelope.Error != nil {
+		return fmt.Errorf("MCP %d: %s", envelope.Error.Code, envelope.Error.Message)
+	}
+	if envelope.Result.IsError {
+		message := "report_progress failed"
+		if len(envelope.Result.Content) > 0 && strings.TrimSpace(envelope.Result.Content[0].Text) != "" {
+			message = strings.TrimSpace(envelope.Result.Content[0].Text)
+		}
+		return errors.New(message)
+	}
+	return nil
 }

@@ -46,10 +46,11 @@ func transientWorkerError(err error) bool {
 }
 
 type workerListResponse struct {
-	Workers               []core.Worker          `json:"workers"`
-	AutoAvailable         bool                   `json:"auto_available"`
-	AutoUnavailableReason string                 `json:"auto_unavailable_reason"`
-	RateLimits            []core.RateLimitHealth `json:"rate_limits"`
+	Workers                 []core.Worker          `json:"workers"`
+	WorkerExpected          bool                   `json:"worker_expected"`
+	WorkerAvailable         bool                   `json:"worker_available"`
+	WorkerUnavailableReason string                 `json:"worker_unavailable_reason"`
+	RateLimits              []core.RateLimitHealth `json:"rate_limits"`
 }
 
 func (c *client) issueWorkerPairing(ttl time.Duration) (string, time.Time, error) {

@@ -14,7 +14,45 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
+	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
 )
+
+func TestWorkerWarningFollowsEnrollmentLifecycleIntegration(t *testing.T) {
+	databaseURL := integrationDatabaseURL(t)
+	st, err := Open(t.Context(), databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	workspace := "serviceability-" + core.NewTaskID()
+	ctx := store.WithWorkspace(t.Context(), workspace)
+	now := time.Now().UTC()
+	service := &workerservice.Service{Store: st, Now: func() time.Time { return now }}
+	cfg := &config.Config{Workspace: workspace, Harnesses: []config.Harness{{Name: "codex"}}, Routing: config.Routing{Stages: map[string]config.StageRoute{"implement": {Harness: "codex", Execution: config.ExecutionMCP}}}}
+	if _, err = st.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	task := core.Task{ID: "claimant-aware", Workspace: workspace, State: core.TaskRunning}
+	orders := []core.WorkOrder{{ID: "claimant-aware-implement-1", TaskID: task.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, RequiredHarness: "codex"}}
+
+	if status := service.TaskAvailability(ctx, cfg, task, orders); status != nil {
+		t.Fatalf("zero-worker status=%+v", status)
+	}
+	worker := core.Worker{ID: "worker-" + core.NewTaskID(), Workspace: workspace, Name: "stale-codex", LastSeenAt: now.Add(-time.Minute), LeaseExpiresAt: now.Add(-time.Second), CreatedAt: now}
+	if err = st.CreateWorker(ctx, worker); err != nil {
+		t.Fatal(err)
+	}
+	status := service.TaskAvailability(ctx, cfg, task, orders)
+	if status == nil || status.Available || !strings.Contains(status.Reason, "codex") || !strings.Contains(status.Reason, "liveness lease expired") {
+		t.Fatalf("stale-worker status=%+v", status)
+	}
+	if err = st.RevokeWorker(ctx, worker.ID); err != nil {
+		t.Fatal(err)
+	}
+	if status = service.TaskAvailability(ctx, cfg, task, orders); status != nil {
+		t.Fatalf("revoked-worker status=%+v", status)
+	}
+}
 
 func TestPhase51WorkerPersistenceIntegration(t *testing.T) {
 	databaseURL := integrationDatabaseURL(t)
