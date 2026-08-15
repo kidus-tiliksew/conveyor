@@ -641,7 +641,15 @@ func runHarnessChildWithFirstActivityTimeout(ctx context.Context, c *client, cre
 	return runHarnessChildWithFirstActivityTimeoutAndOutput(ctx, c, credential, item, firstActivityTimeout, os.Stdout, os.Stderr)
 }
 
+func runHarnessChildWithFirstActivityTimeoutAndRunMode(ctx context.Context, c *client, credential string, item workerservice.DispatchOrder, firstActivityTimeout time.Duration, runMode string) error {
+	return runHarnessChildWithFirstActivityTimeoutAndOutputAndRunMode(ctx, c, credential, item, firstActivityTimeout, os.Stdout, os.Stderr, runMode)
+}
+
 func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *client, credential string, item workerservice.DispatchOrder, firstActivityTimeout time.Duration, stdout, stderr io.Writer) error {
+	return runHarnessChildWithFirstActivityTimeoutAndOutputAndRunMode(ctx, c, credential, item, firstActivityTimeout, stdout, stderr, "")
+}
+
+func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunMode(ctx context.Context, c *client, credential string, item workerservice.DispatchOrder, firstActivityTimeout time.Duration, stdout, stderr io.Writer, runMode string) error {
 	if firstActivityTimeout <= 0 {
 		return fmt.Errorf("first activity timeout must be positive")
 	}
@@ -735,6 +743,13 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 			}
 		}
 		return release(outcome, reason, exitStatus)
+	}
+	if runMode != "" {
+		message := "conveyor run mode: " + runMode
+		if err = c.reportDispatchProgressContext(ctx, credential, item, sessionID, message); err != nil {
+			_ = release(core.WorkOrderOutcomeReleased, "report run mode failed", nil)
+			return fmt.Errorf("report run mode progress: %w", err)
+		}
 	}
 	if hook := workerPreStartTestHook; hook != nil {
 		hook(setupCtx)
