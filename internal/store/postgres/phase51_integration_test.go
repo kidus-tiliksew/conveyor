@@ -29,6 +29,9 @@ func TestWorkerWarningFollowsEnrollmentLifecycleIntegration(t *testing.T) {
 	now := time.Now().UTC()
 	service := &workerservice.Service{Store: st, Now: func() time.Time { return now }}
 	cfg := &config.Config{Workspace: workspace, Harnesses: []config.Harness{{Name: "codex"}}, Routing: config.Routing{Stages: map[string]config.StageRoute{"implement": {Harness: "codex", Execution: config.ExecutionMCP}}}}
+	if _, err = st.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
 	task := core.Task{ID: "claimant-aware", Workspace: workspace, State: core.TaskRunning}
 	orders := []core.WorkOrder{{ID: "claimant-aware-implement-1", TaskID: task.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, RequiredHarness: "codex"}}
 
