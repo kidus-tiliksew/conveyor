@@ -138,7 +138,7 @@ type Task struct {
 	Body               string                `json:"body"`  // free-form description; becomes part of the prompt
 	Class              string                `json:"class"` // bug | feature | chore
 	Level              EscalationLevel       `json:"level"`
-	Mode               TaskMode              `json:"mode,omitempty"`     // legacy historical record; never read for behavior
+	Mode               TaskMode              `json:"-"`                  // legacy persistence only; never emitted or read for behavior
 	Hold               bool                  `json:"hold,omitempty"`     // reservation from the worker daemon
 	Assignee           *TaskAssignee         `json:"assignee,omitempty"` // claim-eligibility identity; never an ordering field
 	SpecApproval       bool                  `json:"spec_approval"`

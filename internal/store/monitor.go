@@ -423,6 +423,23 @@ func (m *memory) MonitorStatus(ctx context.Context, enabled bool, now time.Time)
 	return status, nil
 }
 
+func (m *memory) ListActiveSystemDesignDriftCounts(ctx context.Context) (map[string]int, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	workspace, ok := WorkspaceFromContext(ctx)
+	if !ok || workspace == "" {
+		return nil, ErrWorkspaceRequired
+	}
+	counts := map[string]int{}
+	prefix := workspace + "\x00"
+	for key, drift := range m.monitorDrift {
+		if strings.HasPrefix(key, prefix) && drift.ResolvedAt.IsZero() && drift.SystemDesignID != "" {
+			counts[drift.SystemDesignID]++
+		}
+	}
+	return counts, nil
+}
+
 func (m *memory) RecordMonitorSuccess(ctx context.Context, at time.Time) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

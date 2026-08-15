@@ -1066,6 +1066,9 @@ func TestMCPToolSchemasNeverEmitNullRequired(t *testing.T) {
 			if _, present := properties["title"]; present {
 				t.Fatalf("create_task still publishes a title field: %s", data)
 			}
+			if _, present := properties["mode"]; present {
+				t.Fatalf("create_task still publishes the retired execution-mode field: %s", data)
+			}
 			bodyRequired := false
 			for _, field := range schema["required"].([]string) {
 				bodyRequired = bodyRequired || field == "body"

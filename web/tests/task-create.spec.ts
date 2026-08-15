@@ -8,6 +8,7 @@ async function mockTaskCreateAPIs(
     taskList?: 'success' | 'error' | 'delayed'
     createDependencyError?: boolean
     candidates?: Array<Record<string, unknown>>
+    pullOnly?: boolean
   } = {},
 ) {
   let submitted = ''
@@ -70,9 +71,18 @@ async function mockTaskCreateAPIs(
       await route.fulfill({
         json: {
           workers: [],
-          auto_available: false,
-          auto_unavailable_reason: 'manual test',
-          setup_serviceability: { backend: { auto_available: false }, frontend: { auto_available: true } },
+          worker_expected: !options.pullOnly,
+          worker_available: false,
+          worker_unavailable_reason: options.pullOnly ? '' : 'test worker is stale',
+          setup_serviceability: options.pullOnly
+            ? {
+                backend: { worker_expected: false, worker_available: false },
+                frontend: { worker_expected: false, worker_available: false },
+              }
+            : {
+                backend: { worker_expected: true, worker_available: false },
+                frontend: { worker_expected: true, worker_available: true },
+              },
         },
       })
       return
@@ -349,6 +359,15 @@ test('intake offers a hold toggle and advisory worker warning instead of modes',
   await page.getByRole('button', { name: 'Create task' }).click()
 
   await expect.poll(submitted).toContain('"hold":true')
+})
+
+test('pull-only intake stays quiet when no enrolled worker is expected', async ({ page }) => {
+  await mockTaskCreateAPIs(page, { pullOnly: true })
+  await page.goto('/new')
+
+  await expect(page.getByText(/No worker can run/)).toHaveCount(0)
+  await expect(page.getByText(/claim it manually/)).toHaveCount(0)
+  await expect(page.getByRole('radiogroup', { name: 'Execution mode' })).toHaveCount(0)
 })
 
 test('dependency candidates load lazily and selected cross-repository chips survive repository changes', async ({

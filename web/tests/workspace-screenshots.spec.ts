@@ -134,10 +134,15 @@ async function mockAPIs(page: Page) {
               ],
             },
           ],
-          auto_available: true,
+          worker_expected: true,
+          worker_available: true,
           setup_serviceability: {
-            'setup-1': { auto_available: true },
-            'claude-heavy': { auto_available: false, auto_unavailable_reason: 'claude probe failing' },
+            'setup-1': { worker_expected: true, worker_available: true },
+            'claude-heavy': {
+              worker_expected: true,
+              worker_available: false,
+              worker_unavailable_reason: 'required harness claude probe failing',
+            },
           },
         },
       })

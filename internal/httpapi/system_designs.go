@@ -107,14 +107,13 @@ func (s *Server) listSystemDesigns(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	var drift []monitor.Drift
+	driftCounts := map[string]int{}
 	if s.Monitor != nil {
-		status, statusErr := s.Monitor.Status(r.Context())
-		if statusErr != nil {
-			http.Error(w, statusErr.Error(), http.StatusInternalServerError)
+		driftCounts, err = s.Store.ListActiveSystemDesignDriftCounts(r.Context())
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		drift = status.Drift
 	}
 	for _, item := range items {
 		summary := systemDesignSummary{Document: item, PendingVersions: []systemDesignVersionSummary{}}
@@ -128,11 +127,7 @@ func (s *Server) listSystemDesigns(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		summary.PendingVersionCount = len(summary.PendingVersions)
-		for _, entry := range drift {
-			if entry.SystemDesignID == item.ID {
-				summary.DriftCount++
-			}
-		}
+		summary.DriftCount = driftCounts[item.ID]
 		views = append(views, summary)
 	}
 	writeJSON(w, http.StatusOK, views)

@@ -540,7 +540,7 @@ function ExecutionTab({
   // Per-setup serviceability is advisory: it explains whether
   // the worker can serve a setup, and never gates anything.
   const workerReadyFor = (name: string) =>
-    workerHealth?.setup_serviceability?.[name]?.auto_available ?? workerHealth?.auto_available === true
+    workerHealth?.setup_serviceability?.[name]?.worker_available ?? workerHealth?.worker_available === true
   const uniqueName = (base: string) => {
     let name = base
     let suffix = 2
@@ -686,8 +686,8 @@ function ExecutionTab({
               onToggle={() => setExpanded({ ...expanded, [index]: !expanded[index] })}
               workerReady={workerReadyFor(setup.name)}
               workerReason={
-                workerHealth?.setup_serviceability?.[setup.name]?.auto_unavailable_reason ??
-                workerHealth?.auto_unavailable_reason
+                workerHealth?.setup_serviceability?.[setup.name]?.worker_unavailable_reason ??
+                workerHealth?.worker_unavailable_reason
               }
               setDraft={setDraft}
               onDuplicate={() => duplicateSetup(index)}
@@ -807,8 +807,12 @@ function WorkersTab({
       <CardHeader>
         <CardTitle>Workers</CardTitle>
         <div className="flex items-center gap-2">
-          <Badge variant={data?.auto_available ? 'positive' : 'attention'}>
-            {data?.auto_available ? 'Auto available' : 'Auto unavailable'}
+          <Badge variant={!data?.worker_expected || data.worker_available ? 'positive' : 'attention'}>
+            {!data?.worker_expected
+              ? 'Pull claiming'
+              : data.worker_available
+                ? 'Worker available'
+                : 'Worker unavailable'}
           </Badge>
           <Button size="sm" variant="secondary" onClick={onPair}>
             Issue pairing token
@@ -819,9 +823,9 @@ function WorkersTab({
         {pairing && (
           <p className="break-all rounded-md border border-border bg-surface p-2 font-mono text-xs">{pairing}</p>
         )}
-        {!data?.auto_available && (
+        {data?.worker_expected && !data.worker_available && (
           <div className="rounded-md border border-attention/40 bg-attention-soft p-3 text-xs leading-5 text-muted">
-            <p>{data?.auto_unavailable_reason}</p>
+            <p>{data?.worker_unavailable_reason}</p>
             <p>
               Restart an enrolled worker with its saved credential; ordinary restarts do not require a new pairing
               token.

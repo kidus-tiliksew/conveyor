@@ -127,7 +127,7 @@ async function routeBoard(page: Page, seen: string[]) {
     }),
   )
   await page.route('**/v1/workers**', (route) =>
-    route.fulfill({ json: { workers: [], auto_available: false, setup_serviceability: {} } }),
+    route.fulfill({ json: { workers: [], worker_expected: false, worker_available: false, setup_serviceability: {} } }),
   )
   await page.route('**/v1/tasks?**', (route) => {
     if (route.request().method() !== 'POST') return route.fallback()

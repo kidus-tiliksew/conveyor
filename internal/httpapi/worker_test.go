@@ -162,7 +162,9 @@ func TestWorkerEnrollmentHeartbeatHealthAndRevocationHTTP(t *testing.T) {
 		return response
 	}
 	emptyList := call(http.MethodGet, "/v1/workers", "", "operator")
-	if emptyList.Code != http.StatusOK || !strings.Contains(emptyList.Body.String(), `"workers":[]`) {
+	if emptyList.Code != http.StatusOK || !strings.Contains(emptyList.Body.String(), `"workers":[]`) ||
+		!strings.Contains(emptyList.Body.String(), `"worker_expected":false`) ||
+		strings.Contains(emptyList.Body.String(), `"worker_unavailable_reason"`) {
 		t.Fatalf("empty list status=%d body=%s", emptyList.Code, emptyList.Body.String())
 	}
 	pairResponse := call(http.MethodPost, "/v1/workers/pairings", `{"ttl_seconds":60}`, "operator")
@@ -179,6 +181,12 @@ func TestWorkerEnrollmentHeartbeatHealthAndRevocationHTTP(t *testing.T) {
 	}
 	var enrollment workerservice.Enrollment
 	_ = json.Unmarshal(enrollResponse.Body.Bytes(), &enrollment)
+	staleList := call(http.MethodGet, "/v1/workers", "", "operator")
+	if staleList.Code != http.StatusOK || !strings.Contains(staleList.Body.String(), `"worker_expected":true`) ||
+		!strings.Contains(staleList.Body.String(), `"worker_available":false`) ||
+		!strings.Contains(staleList.Body.String(), `"worker_unavailable_reason":"enrolled worker \"laptop\": worker liveness lease expired"`) {
+		t.Fatalf("stale list status=%d body=%s", staleList.Code, staleList.Body.String())
+	}
 	heartbeat := call(http.MethodPost, "/v1/worker/heartbeat", `{"probes":[{"harness":"codex","healthy":true,"checked_at":"`+time.Now().UTC().Format(time.RFC3339)+`"}]}`, enrollment.Credential)
 	if heartbeat.Code != http.StatusOK {
 		t.Fatalf("heartbeat status=%d body=%s", heartbeat.Code, heartbeat.Body.String())
@@ -206,12 +214,17 @@ func TestWorkerEnrollmentHeartbeatHealthAndRevocationHTTP(t *testing.T) {
 		t.Fatal(err)
 	}
 	list := call(http.MethodGet, "/v1/workers", "", "operator")
-	if list.Code != http.StatusOK || !strings.Contains(list.Body.String(), `"auto_available":true`) || !strings.Contains(list.Body.String(), `"rate_limits":[{"work_order_id":"rate-health-implement-1"`) || !strings.Contains(list.Body.String(), `"status":"limited"`) {
+	if list.Code != http.StatusOK || !strings.Contains(list.Body.String(), `"worker_available":true`) || !strings.Contains(list.Body.String(), `"rate_limits":[{"work_order_id":"rate-health-implement-1"`) || !strings.Contains(list.Body.String(), `"status":"limited"`) {
 		t.Fatalf("list status=%d body=%s", list.Code, list.Body.String())
 	}
 	revoke := call(http.MethodDelete, "/v1/workers/"+enrollment.Worker.ID, "", "operator")
 	if revoke.Code != http.StatusNoContent {
 		t.Fatalf("revoke status=%d body=%s", revoke.Code, revoke.Body.String())
+	}
+	revokedList := call(http.MethodGet, "/v1/workers", "", "operator")
+	if revokedList.Code != http.StatusOK || !strings.Contains(revokedList.Body.String(), `"worker_expected":false`) ||
+		strings.Contains(revokedList.Body.String(), `"worker_unavailable_reason"`) {
+		t.Fatalf("revoked list status=%d body=%s", revokedList.Code, revokedList.Body.String())
 	}
 	if response := call(http.MethodPost, "/v1/worker/heartbeat", `{"probes":[]}`, enrollment.Credential); response.Code != http.StatusUnauthorized {
 		t.Fatalf("revoked heartbeat status=%d", response.Code)

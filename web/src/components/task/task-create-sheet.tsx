@@ -83,7 +83,8 @@ export function TaskCreateSheet({
   const setupName = setup || workspace?.default_setup || setups[0]?.name || ''
   const selectedSetup = setups.find((entry) => entry.name === setupName)
   const setupHealth = workerHealth.data?.setup_serviceability?.[setupName]
-  const autoAvailable = setupHealth?.auto_available ?? workerHealth.data?.auto_available === true
+  const workerExpected = setupHealth?.worker_expected ?? workerHealth.data?.worker_expected === true
+  const workerAvailable = setupHealth?.worker_available ?? workerHealth.data?.worker_available === true
   // Hosts may keep their own surface mounted while sharing the complete intake
   // composition. The Tasks list remains the default for legacy `/new` links
   // and its own create action.
@@ -339,13 +340,13 @@ export function TaskCreateSheet({
               </p>
             </div>
           </div>
-          {!autoAvailable && !hold && (
+          {workerExpected && !workerAvailable && !hold && (
             <p className="mt-2 text-xs text-attention">
               No worker can run {setupName || 'this setup'} right now —{' '}
-              {setupHealth?.auto_unavailable_reason ??
-                workerHealth.data?.auto_unavailable_reason ??
+              {setupHealth?.worker_unavailable_reason ??
+                workerHealth.data?.worker_unavailable_reason ??
                 'waiting for a live worker with healthy routed harnesses'}
-              . The task will queue until a worker is available or you claim it manually.
+              . The task will queue until a worker is available or an agent claims it over a pull surface.
             </p>
           )}
         </Field>

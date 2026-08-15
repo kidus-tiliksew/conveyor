@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"strings"
@@ -17,6 +19,7 @@ import (
 
 func runCmd() *cobra.Command {
 	configPath := strings.TrimSpace(os.Getenv("CONVEYOR_CONFIG"))
+	auto := false
 	if configPath == "" {
 		configPath = "conveyor.yaml"
 	}
@@ -27,45 +30,153 @@ func runCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
-			return runTask(ctx, newClient(), args[0], configPath, cmd.OutOrStdout())
+			input := cmd.InOrStdin()
+			return runTask(ctx, newClient(), args[0], configPath, input, cmd.OutOrStdout(), auto, inputIsTerminal(input))
 		},
 	}
 	cmd.Flags().StringVar(&configPath, "config", configPath, "local execution configuration")
+	cmd.Flags().BoolVar(&auto, "auto", false, "run every claimable stage without confirmation")
 	return cmd
 }
 
-func runTask(ctx context.Context, c *client, taskID, configPath string, output interface{ Write([]byte) (int, error) }) error {
+const (
+	runModeConfirmed = "confirmed-per-stage"
+	runModeAuto      = "auto-chained"
+)
+
+func runTask(ctx context.Context, c *client, taskID, configPath string, input io.Reader, output io.Writer, auto, terminal bool) error {
 	if strings.TrimSpace(c.token) == "" {
 		return fmt.Errorf("CONVEYOR_API_TOKEN is required for task execution")
 	}
+	item, err := c.getTaskRunOrderContext(ctx, c.token, taskID)
+	if err != nil {
+		return err
+	}
+	if item == nil {
+		_, err = fmt.Fprintf(output, "task %s has no claimable implement or review order\n", taskID)
+		return err
+	}
 	local, err := config.Load(configPath)
 	if err != nil {
+		_ = presentPendingRunOrder(output, *item)
 		return fmt.Errorf("load local execution config: %w", err)
 	}
 	if err = validateWorkerConfig(workerservice.WorkerConfig{WorkspaceDocument: local.WorkspaceDocument()}); err != nil {
+		_ = presentPendingRunOrder(output, *item)
 		return fmt.Errorf("invalid local execution config: %w", err)
 	}
 	firstActivityTimeout, err := configuredFirstActivityTimeout(local)
 	if err != nil {
+		_ = presentPendingRunOrder(output, *item)
 		return err
 	}
+	reader := bufio.NewReader(input)
+	runStages := make([]core.Stage, 0, 2)
 	for {
-		item, getErr := c.getTaskRunOrderContext(ctx, c.token, taskID)
-		if getErr != nil {
-			return getErr
+		selected, selectErr := selectLocalRunDispatch(*item, local)
+		if selectErr != nil {
+			_ = presentPendingRunOrder(output, *item)
+			return selectErr
+		}
+		if err = presentRunOrder(output, selected, local.Routing.Stages[string(selected.Order.Stage)].TimeoutText); err != nil {
+			return err
+		}
+		mode := runModeAuto
+		if !auto {
+			mode = runModeConfirmed
+			if !terminal {
+				_, _ = fmt.Fprintf(output, "No work order was claimed because stdin is not a terminal.\nRun conveyor run %s --auto to proceed.\n", taskID)
+				return fmt.Errorf("stage confirmation requires a terminal; use conveyor run %s --auto", taskID)
+			}
+			confirmed, confirmErr := confirmRunStage(ctx, reader, output, selected.Order.Stage)
+			if confirmErr != nil {
+				return confirmErr
+			}
+			if !confirmed {
+				return printRunSummary(output, selected.Task, runStages)
+			}
+		}
+		if runErr := runHarnessChildWithFirstActivityTimeoutAndRunMode(ctx, c, c.token, selected, firstActivityTimeout, mode); runErr != nil {
+			return runErr
+		}
+		runStages = append(runStages, selected.Order.Stage)
+		item, err = c.getTaskRunOrderContext(ctx, c.token, taskID)
+		if err != nil {
+			return err
 		}
 		if item == nil {
 			_, err = fmt.Fprintf(output, "task %s has no claimable implement or review order\n", taskID)
 			return err
 		}
-		selected, selectErr := selectLocalRunDispatch(*item, local)
-		if selectErr != nil {
-			return selectErr
+	}
+}
+
+func inputIsTerminal(input io.Reader) bool {
+	file, ok := input.(*os.File)
+	if !ok {
+		return false
+	}
+	info, err := file.Stat()
+	return err == nil && info.Mode()&os.ModeCharDevice != 0
+}
+
+func presentRunOrder(output io.Writer, item workerservice.DispatchOrder, timeout string) error {
+	if err := presentPendingRunOrder(output, item); err != nil {
+		return err
+	}
+	effort := item.Effort
+	if effort == "" {
+		effort = "default"
+	}
+	_, err := fmt.Fprintf(output, "Execution: harness %s, model %s, effort %s, timeout %s\n", item.Harness.Name, item.Model, effort, timeout)
+	return err
+}
+
+func presentPendingRunOrder(output io.Writer, item workerservice.DispatchOrder) error {
+	_, err := fmt.Fprintf(output, "Task %s: %s (state %s)\nNext: %s work order %s\n", item.Task.ID, item.Task.Title, item.Task.State, item.Order.Stage, item.Order.ID)
+	return err
+}
+
+func confirmRunStage(ctx context.Context, input *bufio.Reader, output io.Writer, stage core.Stage) (bool, error) {
+	for {
+		if _, err := fmt.Fprintf(output, "Proceed with %s? [y/N]: ", stage); err != nil {
+			return false, err
 		}
-		if runErr := runHarnessChildWithFirstActivityTimeout(ctx, c, c.token, selected, firstActivityTimeout); runErr != nil {
-			return runErr
+		answer, err := input.ReadString('\n')
+		if err != nil && len(answer) == 0 {
+			if ctx.Err() != nil {
+				return false, ctx.Err()
+			}
+			if err == io.EOF {
+				_, _ = fmt.Fprintln(output)
+				return false, nil
+			}
+			return false, err
+		}
+		switch strings.ToLower(strings.TrimSpace(answer)) {
+		case "y", "yes":
+			return true, nil
+		case "", "n", "no":
+			return false, nil
+		default:
+			if _, err = fmt.Fprintln(output, "Please answer yes or no."); err != nil {
+				return false, err
+			}
 		}
 	}
+}
+
+func printRunSummary(output io.Writer, task core.Task, stages []core.Stage) error {
+	ran := "none"
+	if len(stages) > 0 {
+		names := make([]string, len(stages))
+		for index, stage := range stages {
+			names[index] = string(stage)
+		}
+		ran = strings.Join(names, ", ")
+	}
+	_, err := fmt.Fprintf(output, "Run stopped before claiming the next work order.\nRan: %s\nTask %s is currently %s.\nResume: conveyor run %s\n", ran, task.ID, task.State, task.ID)
+	return err
 }
 
 func configuredFirstActivityTimeout(local *config.Config) (time.Duration, error) {

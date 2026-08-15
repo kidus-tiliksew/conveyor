@@ -30,7 +30,7 @@ func newClient() *client {
 }
 
 func (c *client) createTask(body, repo, base string) (core.Task, error) {
-	return c.createTaskWithMode(body, repo, base, "", nil, nil)
+	return c.createTaskWithSetup(body, repo, base, false, nil, nil, "")
 }
 
 func (c *client) createTaskWithLevel(body, repo, base string, level core.EscalationLevel) (core.Task, error) {
@@ -49,15 +49,11 @@ func (c *client) createTaskWithLevel(body, repo, base string, level core.Escalat
 	return t, err
 }
 
-func (c *client) createTaskWithMode(body, repo, base string, mode core.TaskMode, specApproval, mergeApproval *bool) (core.Task, error) {
-	return c.createTaskWithSetup(body, repo, base, false, mode, specApproval, mergeApproval, "")
+func (c *client) createTaskWithSetup(body, repo, base string, hold bool, specApproval, mergeApproval *bool, setup string) (core.Task, error) {
+	return c.createTaskWithDependencies(body, repo, base, hold, specApproval, mergeApproval, setup, nil)
 }
 
-func (c *client) createTaskWithSetup(body, repo, base string, hold bool, mode core.TaskMode, specApproval, mergeApproval *bool, setup string) (core.Task, error) {
-	return c.createTaskWithDependencies(body, repo, base, hold, mode, specApproval, mergeApproval, setup, nil)
-}
-
-func (c *client) createTaskWithDependencies(body, repo, base string, hold bool, mode core.TaskMode, specApproval, mergeApproval *bool, setup string, dependsOn []string) (core.Task, error) {
+func (c *client) createTaskWithDependencies(body, repo, base string, hold bool, specApproval, mergeApproval *bool, setup string, dependsOn []string) (core.Task, error) {
 	if c.token == "" {
 		return core.Task{}, fmt.Errorf("CONVEYOR_API_TOKEN is required for task creation")
 	}
@@ -70,11 +66,6 @@ func (c *client) createTaskWithDependencies(body, repo, base string, hold bool, 
 	}
 	if hold {
 		payload["hold"] = true
-	}
-	if mode != "" {
-		// Deprecated passthrough (§21.31 change 6): the server maps manual to
-		// hold and records the deprecated usage.
-		payload["mode"] = mode
 	}
 	if specApproval != nil {
 		payload["spec_approval"] = *specApproval

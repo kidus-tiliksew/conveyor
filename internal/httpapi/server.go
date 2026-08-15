@@ -924,7 +924,6 @@ type createTaskReq struct {
 	BaseBranch      string               `json:"base_branch"`
 	Source          string               `json:"source"`
 	Level           core.EscalationLevel `json:"level"`
-	Mode            core.TaskMode        `json:"mode"` // deprecated §21.31: manual→hold, auto→no-op
 	Hold            bool                 `json:"hold"`
 	SpecApproval    *bool                `json:"spec_approval,omitempty"`
 	MergeApproval   *bool                `json:"merge_approval,omitempty"`
@@ -942,6 +941,9 @@ func (req *createTaskReq) UnmarshalJSON(data []byte) error {
 	for name := range fields {
 		if strings.EqualFold(name, "title") {
 			return fmt.Errorf("title is generated and must not be supplied")
+		}
+		if strings.EqualFold(name, "mode") {
+			return fmt.Errorf("mode is retired; use hold when reserving a task")
 		}
 	}
 	type request createTaskReq
@@ -1233,7 +1235,7 @@ func (s *Server) listActivityPage(w http.ResponseWriter, r *http.Request, query 
 		s.writeActivityItems(w, r, tasks[start:end], false)
 		return
 	}
-	page, err := s.Store.ListTaskOperations(r.Context(), query)
+	page, err := s.Store.ListTaskPage(r.Context(), query)
 	if err != nil {
 		log.Printf("handle API request: %v", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)

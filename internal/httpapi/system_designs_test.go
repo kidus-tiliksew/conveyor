@@ -10,12 +10,13 @@ import (
 	"testing"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/monitor"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
 type countingSystemDesignStore struct {
 	store.Store
-	lists, versionBatches, eventBatches, singularVersions, singularEvents int
+	lists, versionBatches, eventBatches, driftCounts, singularVersions, singularEvents int
 }
 
 func (s *countingSystemDesignStore) ListSystemDesigns(ctx context.Context) ([]core.SystemDesign, error) {
@@ -29,6 +30,10 @@ func (s *countingSystemDesignStore) ListSystemDesignVersionsByDocument(ctx conte
 func (s *countingSystemDesignStore) ListSystemDesignEventsByDocument(ctx context.Context) (map[string][]core.Event, error) {
 	s.eventBatches++
 	return s.Store.ListSystemDesignEventsByDocument(ctx)
+}
+func (s *countingSystemDesignStore) ListActiveSystemDesignDriftCounts(ctx context.Context) (map[string]int, error) {
+	s.driftCounts++
+	return s.Store.ListActiveSystemDesignDriftCounts(ctx)
 }
 func (s *countingSystemDesignStore) ListSystemDesignVersions(ctx context.Context, id string) ([]core.SystemDesignVersion, error) {
 	s.singularVersions++
@@ -56,13 +61,14 @@ func TestListSystemDesignsUsesBoundedStoreRounds(t *testing.T) {
 	counting := &countingSystemDesignStore{Store: base}
 	server := NewServer(counting)
 	server.Workspace = "demo"
+	server.Monitor = &monitor.Service{Store: base.(monitor.Store), WorkspaceID: "demo", Enabled: true}
 	response := httptest.NewRecorder()
 	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/system-designs", nil))
 	if response.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
-	if counting.lists != 1 || counting.versionBatches != 1 || counting.eventBatches != 0 || counting.singularVersions != 0 || counting.singularEvents != 0 {
-		t.Fatalf("store rounds lists=%d version_batches=%d event_batches=%d singular_versions=%d singular_events=%d", counting.lists, counting.versionBatches, counting.eventBatches, counting.singularVersions, counting.singularEvents)
+	if counting.lists != 1 || counting.versionBatches != 1 || counting.eventBatches != 0 || counting.driftCounts != 1 || counting.singularVersions != 0 || counting.singularEvents != 0 {
+		t.Fatalf("store rounds lists=%d version_batches=%d event_batches=%d drift_counts=%d singular_versions=%d singular_events=%d", counting.lists, counting.versionBatches, counting.eventBatches, counting.driftCounts, counting.singularVersions, counting.singularEvents)
 	}
 }
 

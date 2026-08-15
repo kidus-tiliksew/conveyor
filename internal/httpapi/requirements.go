@@ -457,6 +457,17 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 	graphs := make(map[string]core.LineageTraversal, len(requirements))
 	deliveryGraphs := make(map[string]core.LineageTraversal, len(requirements))
 	lineageByRequirement := make(map[string][]core.LineageLink, len(requirements))
+	deliveryLineageByRequirement := map[string][]core.LineageLink{}
+	if !includeDetail {
+		requirementIDs := make([]string, 0, len(requirements))
+		for _, requirement := range requirements {
+			requirementIDs = append(requirementIDs, requirement.ID)
+		}
+		deliveryLineageByRequirement, err = s.Store.ListRequirementDeliveryLineageByRequirement(r.Context(), requirementIDs, deliveryBudget)
+		if err != nil {
+			return nil, err
+		}
+	}
 	for _, requirement := range requirements {
 		root := core.LineageNode{Type: core.LineageRequirement, ID: requirement.ID}
 		if includeDetail {
@@ -475,9 +486,13 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 			graphs[root.ID] = graph
 			lineageByRequirement[root.ID] = lineage
 		}
-		deliveryLineage, deliveryErr := s.Store.ListRequirementDeliveryLineage(r.Context(), requirement.ID, deliveryBudget)
-		if deliveryErr != nil {
-			return nil, deliveryErr
+		deliveryLineage := deliveryLineageByRequirement[requirement.ID]
+		if includeDetail {
+			var deliveryErr error
+			deliveryLineage, deliveryErr = s.Store.ListRequirementDeliveryLineage(r.Context(), requirement.ID, deliveryBudget)
+			if deliveryErr != nil {
+				return nil, deliveryErr
+			}
 		}
 		deliveryGraph, deliveryErr := core.TraverseLineage(deliveryLineage, []core.LineageNode{root}, deliveryBudget)
 		if deliveryErr != nil {
@@ -521,6 +536,27 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 		activeDrift = status.Drift
 	}
 	eventsByTask := map[string][]core.Event{}
+	if !includeDetail {
+		taskSet := map[string]bool{}
+		for _, requirement := range requirements {
+			deliveryGraph := deliveryGraphs[requirement.ID]
+			for taskID := range deliveryReachableTasks(deliveryGraph.Links, requirement.ID) {
+				taskSet[taskID] = true
+			}
+			for taskID := range directServingTaskIDs(deliveryGraph.Links, requirement.ID) {
+				taskSet[taskID] = true
+			}
+		}
+		taskIDs := make([]string, 0, len(taskSet))
+		for taskID := range taskSet {
+			taskIDs = append(taskIDs, taskID)
+		}
+		sort.Strings(taskIDs)
+		eventsByTask, err = s.Store.ListRequirementDeliveryEventsForTasks(r.Context(), taskIDs)
+		if err != nil {
+			return nil, err
+		}
+	}
 	loadTaskEvents := func(taskID string) ([]core.Event, error) {
 		if events, ok := eventsByTask[taskID]; ok {
 			return events, nil
@@ -544,6 +580,15 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 		}
 	}
 	tasksByID := map[string]core.Task{}
+	if !includeDetail {
+		tasks, listErr := s.Store.ListTasks(r.Context())
+		if listErr != nil {
+			return nil, listErr
+		}
+		for _, task := range tasks {
+			tasksByID[task.ID] = task
+		}
+	}
 	loadTask := func(taskID string) (core.Task, error) {
 		if task, ok := tasksByID[taskID]; ok {
 			return task, nil

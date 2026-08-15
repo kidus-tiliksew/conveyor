@@ -783,6 +783,26 @@ func (s *Store) ListTaskOperations(ctx context.Context, query store.TaskOperatio
 	return page, nil
 }
 
+func (s *Store) ListTaskPage(ctx context.Context, query store.TaskOperationsQuery) (store.TaskPage, error) {
+	if err := query.Validate(); err != nil {
+		return store.TaskPage{}, err
+	}
+	filter := taskFilterParams(ctx, query.TaskFilter)
+	total, err := s.queries.CountTaskOperationsTasks(ctx, filter)
+	if err != nil {
+		return store.TaskPage{}, err
+	}
+	rows, err := s.queries.ListTaskOperationsTasks(ctx, taskOperationsListParams(ctx, query.TaskFilter, query.Limit, query.Offset))
+	if err != nil {
+		return store.TaskPage{}, err
+	}
+	tasks, err := s.hydrateTaskRows(ctx, rows)
+	if err != nil {
+		return store.TaskPage{}, err
+	}
+	return store.TaskPage{Tasks: tasks, Total: int(total)}, nil
+}
+
 func (s *Store) ListLineageNodeRecords(ctx context.Context, nodes []core.LineageNode) (map[core.LineageNode]store.LineageNodeRecord, error) {
 	taskNodes := map[string][]core.LineageNode{}
 	requirementNodes := map[string][]core.LineageNode{}
@@ -2423,6 +2443,34 @@ func (s *Store) ListEvents(ctx context.Context, taskID string) ([]core.Event, er
 	return result, nil
 }
 
+func (s *Store) ListRequirementDeliveryEventsForTasks(ctx context.Context, taskIDs []string) (map[string][]core.Event, error) {
+	result := make(map[string][]core.Event, len(taskIDs))
+	if len(taskIDs) == 0 {
+		return result, nil
+	}
+	rows, err := s.pool.Query(ctx, `SELECT e.id,e.task_id,e.job_id,e.kind,e.actor_id,e.actor_role,e.payload_json,e.at,e.workspace_id
+		FROM events e JOIN tasks t ON t.id=e.task_id
+		WHERE t.workspace_id=$1 AND e.task_id=ANY($2::text[]) AND e.kind IN (
+			'merge.confirmed','merge.reconciled',
+			'task.context_requirement_added','task.context_requirement_activated','task.context_requirement_removed'
+		)
+		ORDER BY e.task_id,e.at,e.id`, workspace(ctx), taskIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var event db.Event
+		if err := rows.Scan(&event.ID, &event.TaskID, &event.JobID, &event.Kind, &event.ActorID,
+			&event.ActorRole, &event.PayloadJson, &event.At, &event.WorkspaceID); err != nil {
+			return nil, err
+		}
+		converted := eventFromDB(event)
+		result[converted.TaskID] = append(result[converted.TaskID], converted)
+	}
+	return result, rows.Err()
+}
+
 func (s *Store) ListRequirementEvents(ctx context.Context, requirementID string) ([]core.Event, error) {
 	rows, err := s.queries.ListRequirementEvents(ctx, db.ListRequirementEventsParams{
 		WorkspaceID: workspace(ctx), RequirementID: requirementID,
@@ -2612,6 +2660,59 @@ func (s *Store) ListRequirementDeliveryLineage(ctx context.Context, requirementI
 		result = append(result, link)
 	}
 	return result, rows.Err()
+}
+
+func (s *Store) ListRequirementDeliveryLineageByRequirement(ctx context.Context, requirementIDs []string, budget core.LineageTraversalBudget) (map[string][]core.LineageLink, error) {
+	if len(requirementIDs) == 0 {
+		return map[string][]core.LineageLink{}, nil
+	}
+	if budget.MaxDepth < 0 || budget.MaxNodes <= 0 || budget.MaxLinks <= 0 {
+		return nil, fmt.Errorf("requirement delivery lineage requires bounded depth, nodes, and links")
+	}
+	rows, err := s.pool.Query(ctx, `WITH RECURSIVE walk(requirement_id,node_type,node_id,depth) AS (
+		SELECT requirement_id,'requirement'::text,requirement_id,0
+		FROM unnest($2::text[]) AS seed(requirement_id)
+		UNION
+		SELECT w.requirement_id,l.dst_type,l.dst_id,w.depth+1
+		FROM walk w JOIN links l ON l.workspace_id=$1 AND l.src_type=w.node_type AND l.src_id=w.node_id
+		WHERE w.depth < $3 AND (
+			(l.kind='serves' AND l.src_type='requirement' AND l.dst_type IN ('task','blueprint')) OR
+			(l.kind='versions' AND l.src_type='blueprint' AND l.dst_type='blueprint_version') OR
+			(l.kind='materializes' AND l.src_type='blueprint_version' AND l.dst_type='task')
+		)
+	), chosen AS (
+		SELECT w.requirement_id,min(w.depth) AS src_depth,l.workspace_id,l.src_type,l.src_id,l.dst_type,l.dst_id,l.kind,l.legacy_created_by_event,l.created_at,l.created_by_event_id
+		FROM walk w JOIN links l ON l.workspace_id=$1 AND l.src_type=w.node_type AND l.src_id=w.node_id
+		WHERE w.depth < $3 AND (
+			(l.kind='serves' AND l.src_type='requirement' AND l.dst_type IN ('task','blueprint')) OR
+			(l.kind='versions' AND l.src_type='blueprint' AND l.dst_type='blueprint_version') OR
+			(l.kind='materializes' AND l.src_type='blueprint_version' AND l.dst_type='task')
+		)
+		GROUP BY w.requirement_id,l.workspace_id,l.src_type,l.src_id,l.dst_type,l.dst_id,l.kind,l.legacy_created_by_event,l.created_at,l.created_by_event_id
+	), ranked AS (
+		SELECT *,row_number() OVER (PARTITION BY requirement_id ORDER BY src_depth,src_type,src_id,dst_type,dst_id,kind) AS position
+		FROM chosen
+	)
+	SELECT requirement_id,workspace_id,src_type,src_id,dst_type,dst_id,kind,legacy_created_by_event,created_at,created_by_event_id
+	FROM ranked WHERE position <= $4 ORDER BY requirement_id,position`, workspace(ctx), requirementIDs, budget.MaxDepth, budget.MaxLinks+1)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[string][]core.LineageLink, len(requirementIDs))
+	for rows.Next() {
+		var requirementID string
+		var link core.LineageLink
+		var legacy pgtype.Text
+		var createdAt pgtype.Timestamptz
+		var eventID pgtype.Int8
+		if err = rows.Scan(&requirementID, &link.Workspace, &link.SrcType, &link.SrcID, &link.DstType, &link.DstID, &link.Kind, &legacy, &createdAt, &eventID); err != nil {
+			return nil, err
+		}
+		link.LegacyCreatedByEvent, link.CreatedByEventID, link.CreatedAt = legacy.String, eventID.Int64, createdAt.Time
+		out[requirementID] = append(out[requirementID], link)
+	}
+	return out, rows.Err()
 }
 
 func (s *Store) RebuildLineage(ctx context.Context, request core.LineageRebuildRequest) (core.LineageRebuildResult, error) {
@@ -2851,6 +2952,8 @@ func (s *Store) listActivityMarkers(ctx context.Context, taskIDs []string) ([]st
 	}
 	ordersByTask := make(map[string][]core.WorkOrder)
 	hasReviewOrders := false
+	reviewTaskIDs := make([]string, 0)
+	seenReviewTask := map[string]bool{}
 	for _, order := range orders {
 		if order.Stage == core.StageImplement {
 			blockers := blockersByTask[order.TaskID]
@@ -2862,94 +2965,59 @@ func (s *Store) listActivityMarkers(ctx context.Context, taskIDs []string) ([]st
 		}
 		ordersByTask[order.TaskID] = append(ordersByTask[order.TaskID], order)
 		hasReviewOrders = hasReviewOrders || order.Stage == core.StageReview
+		if order.Stage == core.StageReview && (order.State == core.WorkOrderClaimed || order.State == core.WorkOrderQueued) &&
+			!order.ExecutionStartedAt.IsZero() && !seenReviewTask[order.TaskID] {
+			reviewTaskIDs = append(reviewTaskIDs, order.TaskID)
+			seenReviewTask[order.TaskID] = true
+		}
 	}
 	eventsByTask := make(map[string][]core.Event)
-	if hasReviewOrders {
-		lifecycleQuery := `SELECT e.id,e.task_id,COALESCE(e.job_id,''),e.kind,e.payload_json,e.at
-			FROM events e JOIN tasks t ON t.id=e.task_id
-			WHERE t.workspace_id=$1 AND e.kind IN ('work_order.claimed','work_order.lease_renewed','work_order.released','review.completed','review.accepted','task.setup.changed')
-			AND EXISTS (SELECT 1 FROM work_orders w WHERE w.workspace_id=t.workspace_id AND w.task_id=e.task_id
-				AND w.stage='review' AND w.state IN ('claimed','queued') AND w.execution_started_at IS NOT NULL)
-			ORDER BY e.at,e.id`
-		lifecycleArgs := []any{workspace(ctx)}
-		if len(taskIDs) > 0 {
-			lifecycleQuery = strings.Replace(lifecycleQuery, " AND e.kind IN", " AND t.id=ANY($2::text[]) AND e.kind IN", 1)
-			lifecycleArgs = append(lifecycleArgs, taskIDs)
-		}
-		lifecycleRows, queryErr := s.pool.Query(ctx, lifecycleQuery, lifecycleArgs...)
-		if queryErr != nil {
-			return nil, queryErr
-		}
-		for lifecycleRows.Next() {
-			var event core.Event
-			if scanErr := lifecycleRows.Scan(&event.ID, &event.TaskID, &event.JobID, &event.Kind, &event.Payload, &event.At); scanErr != nil {
-				lifecycleRows.Close()
-				return nil, scanErr
-			}
-			eventsByTask[event.TaskID] = append(eventsByTask[event.TaskID], event)
-		}
-		if queryErr = lifecycleRows.Err(); queryErr != nil {
-			lifecycleRows.Close()
-			return nil, queryErr
-		}
-		lifecycleRows.Close()
-	}
 	requestEventsByTask := make(map[string][]core.Event)
-	requestQuery := `SELECT e.id,e.task_id,COALESCE(e.job_id,''),e.kind,e.payload_json,e.at
-		FROM events e JOIN tasks t ON t.id=e.task_id
-		WHERE t.workspace_id=$1 AND e.kind IN ('pipeline.bounced','work_order.claimed') ORDER BY e.at,e.id`
-	requestArgs := []any{workspace(ctx)}
-	if len(taskIDs) > 0 {
-		requestQuery = strings.Replace(requestQuery, " AND e.kind IN", " AND t.id=ANY($2::text[]) AND e.kind IN", 1)
-		requestArgs = append(requestArgs, taskIDs)
-	}
-	requestRows, err := s.pool.Query(ctx, requestQuery, requestArgs...)
-	if err != nil {
-		return nil, err
-	}
-	for requestRows.Next() {
-		var event core.Event
-		if scanErr := requestRows.Scan(&event.ID, &event.TaskID, &event.JobID, &event.Kind, &event.Payload, &event.At); scanErr != nil {
-			requestRows.Close()
-			return nil, scanErr
-		}
-		requestEventsByTask[event.TaskID] = append(requestEventsByTask[event.TaskID], event)
-	}
-	if err = requestRows.Err(); err != nil {
-		requestRows.Close()
-		return nil, err
-	}
-	requestRows.Close()
 	forgeEventsByTask := make(map[string][]core.Event)
-	forgeQuery := `SELECT e.id,e.task_id,COALESCE(e.job_id,''),e.kind,e.payload_json,e.at
+	markerQuery := `SELECT e.id,e.task_id,COALESCE(e.job_id,''),e.kind,e.payload_json,e.at
 		FROM events e JOIN tasks t ON t.id=e.task_id
-		WHERE t.workspace_id=$1 AND e.kind IN (
-			'github_issue.publication_failed','github_issue.publication_published',
-			'review.publication_failed','review.publication_published',
-			'merge.failed','merge.confirmed','merge.reconciled'
+		WHERE t.workspace_id=$1
+		AND (cardinality($2::text[])=0 OR t.id=ANY($2::text[]))
+		AND (
+			(e.kind='pipeline.bounced' AND e.payload_json->>'source'='user-request-changes') OR
+			(e.kind='work_order.claimed' AND e.payload_json->>'stage'='implement') OR
+			(e.kind IN ('work_order.claimed','work_order.lease_renewed','work_order.released','review.completed','review.accepted','task.setup.changed')
+				AND e.task_id=ANY($3::text[])) OR
+			e.kind IN (
+				'github_issue.publication_failed','github_issue.publication_published',
+				'review.publication_failed','review.publication_published',
+				'merge.failed','merge.confirmed','merge.reconciled'
+			)
 		) ORDER BY e.at,e.id`
-	forgeArgs := []any{workspace(ctx)}
-	if len(taskIDs) > 0 {
-		forgeQuery = strings.Replace(forgeQuery, " AND e.kind IN", " AND t.id=ANY($2::text[]) AND e.kind IN", 1)
-		forgeArgs = append(forgeArgs, taskIDs)
-	}
-	forgeRows, err := s.pool.Query(ctx, forgeQuery, forgeArgs...)
+	markerArgs := []any{workspace(ctx), emptyIfNil(taskIDs), emptyIfNil(reviewTaskIDs)}
+	markerRows, err := s.pool.Query(ctx, markerQuery, markerArgs...)
 	if err != nil {
 		return nil, err
 	}
-	for forgeRows.Next() {
+	for markerRows.Next() {
 		var event core.Event
-		if scanErr := forgeRows.Scan(&event.ID, &event.TaskID, &event.JobID, &event.Kind, &event.Payload, &event.At); scanErr != nil {
-			forgeRows.Close()
+		if scanErr := markerRows.Scan(&event.ID, &event.TaskID, &event.JobID, &event.Kind, &event.Payload, &event.At); scanErr != nil {
+			markerRows.Close()
 			return nil, scanErr
 		}
-		forgeEventsByTask[event.TaskID] = append(forgeEventsByTask[event.TaskID], event)
+		switch event.Kind {
+		case "work_order.claimed", "work_order.lease_renewed", "work_order.released", "review.completed", "review.accepted", "task.setup.changed":
+			if hasReviewOrders {
+				eventsByTask[event.TaskID] = append(eventsByTask[event.TaskID], event)
+			}
+		}
+		switch event.Kind {
+		case "pipeline.bounced", "work_order.claimed":
+			requestEventsByTask[event.TaskID] = append(requestEventsByTask[event.TaskID], event)
+		case "github_issue.publication_failed", "github_issue.publication_published", "review.publication_failed", "review.publication_published", "merge.failed", "merge.confirmed", "merge.reconciled":
+			forgeEventsByTask[event.TaskID] = append(forgeEventsByTask[event.TaskID], event)
+		}
 	}
-	if err = forgeRows.Err(); err != nil {
-		forgeRows.Close()
+	if err = markerRows.Err(); err != nil {
+		markerRows.Close()
 		return nil, err
 	}
-	forgeRows.Close()
+	markerRows.Close()
 	result := make([]store.ActivityMarker, len(rows))
 	for i, row := range rows {
 		result[i] = store.ActivityMarker{
@@ -3199,6 +3267,19 @@ last_attempt_id, last_attempt_outcome, last_failure_category, last_failure_messa
 automatic_retry_count, next_retry_at, retry_suppressed, retry_suppression_reason,
 redispatch_count, operator_direction, progress, cost_usd, tokens_in, tokens_out, usage_reported, self_reported,
 rate_limit, rate_limit_observed_at, created_at, updated_at, served_requirement_snapshot, governance_snapshot`
+
+// activityWorkOrderColumns preserves scanWorkOrder's shape while omitting the
+// potentially large review-authority snapshots that board projections never
+// inspect or render.
+const activityWorkOrderColumns = `id, task_id, job_id, stage, state, claimant_id,
+session_id, attempt_id, client_token_hash, agent, model, worker_id, lease_expires_at,
+				review_round, review_seat, required_model, required_harness, required_effort, required_harness_config, execution_timeout, model_enforcement,
+				reason_code, review_kind, review_scope, baseline_sha, head_sha,
+queue_entered_at, queue_deadline, queue_blocked_at, execution_started_at, execution_deadline,
+last_attempt_id, last_attempt_outcome, last_failure_category, last_failure_message, last_failure_detail, last_failure_exit_status, last_failure_at,
+automatic_retry_count, next_retry_at, retry_suppressed, retry_suppression_reason,
+redispatch_count, operator_direction, progress, cost_usd, tokens_in, tokens_out, usage_reported, self_reported,
+rate_limit, rate_limit_observed_at, created_at, updated_at, NULL::jsonb, NULL::jsonb`
 
 func servedRequirementSnapshotJSON(snapshot []core.ServedRequirementContext) any {
 	if snapshot == nil {
@@ -4054,7 +4135,7 @@ func (s *Store) listWorkOrdersForTasks(ctx context.Context, taskIDs []string) ([
 	if len(taskIDs) == 0 {
 		return s.ListWorkOrders(ctx)
 	}
-	rows, err := s.pool.Query(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND task_id=ANY($2::text[]) ORDER BY created_at,id", workspace(ctx), taskIDs)
+	rows, err := s.pool.Query(ctx, "SELECT "+activityWorkOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND task_id=ANY($2::text[]) ORDER BY created_at,id", workspace(ctx), taskIDs)
 	if err != nil {
 		return nil, err
 	}
