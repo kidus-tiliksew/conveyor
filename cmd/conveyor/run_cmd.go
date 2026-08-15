@@ -48,28 +48,31 @@ func runTask(ctx context.Context, c *client, taskID, configPath string, input io
 	if strings.TrimSpace(c.token) == "" {
 		return fmt.Errorf("CONVEYOR_API_TOKEN is required for task execution")
 	}
+	item, err := c.getTaskRunOrderContext(ctx, c.token, taskID)
+	if err != nil {
+		return err
+	}
+	if item == nil {
+		_, err = fmt.Fprintf(output, "task %s has no claimable implement or review order\n", taskID)
+		return err
+	}
 	local, err := config.Load(configPath)
 	if err != nil {
+		_ = presentPendingRunOrder(output, *item)
 		return fmt.Errorf("load local execution config: %w", err)
 	}
 	if err = validateWorkerConfig(workerservice.WorkerConfig{WorkspaceDocument: local.WorkspaceDocument()}); err != nil {
+		_ = presentPendingRunOrder(output, *item)
 		return fmt.Errorf("invalid local execution config: %w", err)
 	}
 	firstActivityTimeout, err := configuredFirstActivityTimeout(local)
 	if err != nil {
+		_ = presentPendingRunOrder(output, *item)
 		return err
 	}
 	reader := bufio.NewReader(input)
 	runStages := make([]core.Stage, 0, 2)
 	for {
-		item, getErr := c.getTaskRunOrderContext(ctx, c.token, taskID)
-		if getErr != nil {
-			return getErr
-		}
-		if item == nil {
-			_, err = fmt.Fprintf(output, "task %s has no claimable implement or review order\n", taskID)
-			return err
-		}
 		selected, selectErr := selectLocalRunDispatch(*item, local)
 		if selectErr != nil {
 			return selectErr
@@ -96,6 +99,14 @@ func runTask(ctx context.Context, c *client, taskID, configPath string, input io
 			return runErr
 		}
 		runStages = append(runStages, selected.Order.Stage)
+		item, err = c.getTaskRunOrderContext(ctx, c.token, taskID)
+		if err != nil {
+			return err
+		}
+		if item == nil {
+			_, err = fmt.Fprintf(output, "task %s has no claimable implement or review order\n", taskID)
+			return err
+		}
 	}
 }
 
@@ -109,12 +120,19 @@ func inputIsTerminal(input io.Reader) bool {
 }
 
 func presentRunOrder(output io.Writer, item workerservice.DispatchOrder, timeout string) error {
+	if err := presentPendingRunOrder(output, item); err != nil {
+		return err
+	}
 	effort := item.Effort
 	if effort == "" {
 		effort = "default"
 	}
-	_, err := fmt.Fprintf(output, "Task %s: %s (state %s)\nNext: %s work order %s\nExecution: harness %s, model %s, effort %s, timeout %s\n",
-		item.Task.ID, item.Task.Title, item.Task.State, item.Order.Stage, item.Order.ID, item.Harness.Name, item.Model, effort, timeout)
+	_, err := fmt.Fprintf(output, "Execution: harness %s, model %s, effort %s, timeout %s\n", item.Harness.Name, item.Model, effort, timeout)
+	return err
+}
+
+func presentPendingRunOrder(output io.Writer, item workerservice.DispatchOrder) error {
+	_, err := fmt.Fprintf(output, "Task %s: %s (state %s)\nNext: %s work order %s\n", item.Task.ID, item.Task.Title, item.Task.State, item.Order.Stage, item.Order.ID)
 	return err
 }
 

@@ -232,6 +232,44 @@ func TestRunTaskNonTerminalPresentsAndDoesNotClaim(t *testing.T) {
 	}
 }
 
+func TestRunTaskMissingSetupPresentsPendingOrderWithoutClaiming(t *testing.T) {
+	claimCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer user-credential" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/tasks/target/run-order":
+			_ = json.NewEncoder(w).Encode(workerservice.DispatchOrder{
+				Order: core.WorkOrder{ID: "target-implement-1", TaskID: "target", Stage: core.StageImplement, State: core.WorkOrderQueued},
+				Task:  core.Task{ID: "target", Title: "Ship target", State: core.TaskRunning},
+			})
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/claim"):
+			claimCalls++
+			http.Error(w, "must not claim", http.StatusInternalServerError)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	c := &client{base: server.URL, token: "user-credential", workspace: "demo"}
+	var output bytes.Buffer
+	err := runTask(t.Context(), c, "target", filepath.Join(t.TempDir(), "missing.yaml"), strings.NewReader(""), &output, true, false)
+	if err == nil || !strings.Contains(err.Error(), "load local execution config") || !strings.Contains(err.Error(), "missing.yaml") {
+		t.Fatalf("err=%v", err)
+	}
+	if claimCalls != 0 {
+		t.Fatalf("claim calls=%d", claimCalls)
+	}
+	for _, want := range []string{"Task target: Ship target (state running)", "Next: implement work order target-implement-1"} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("output missing %q: %q", want, output.String())
+		}
+	}
+}
+
 func TestTaskRunHarnessHelper(t *testing.T) {
 	if os.Getenv("CONVEYOR_FAKE_TASK_RUN_HARNESS") != "1" {
 		return
