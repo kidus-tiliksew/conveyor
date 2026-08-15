@@ -13,9 +13,9 @@ import {
   X,
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { fetchRequirements, fetchSystemDesigns, fetchWorkspaceMembers } from '../../lib/api'
+import { fetchRequirements, fetchSystemDesigns } from '../../lib/api'
 import { taskStateLabels } from '../../lib/contracts'
-import { useOperatorToken, useWorkspace, useWorkspaceSelection } from '../app-shell'
+import { useWorkspace, useWorkspaceMembers, useWorkspaceSelection } from '../app-shell'
 import { Button } from '../ui/button'
 import { Input } from '../ui/input'
 
@@ -628,28 +628,24 @@ export function TaskFilters({
   className?: string
 }) {
   const { workspace } = useWorkspaceSelection()
-  const token = useOperatorToken()
   const { data: workspaceInfo } = useWorkspace()
   const states = useMemo(() => Object.keys(taskStateLabels).sort(), [])
   const repos = useMemo(() => (workspaceInfo?.repos ?? []).map((entry) => entry.name).sort(), [workspaceInfo])
   const requirements = useQuery({
-    queryKey: ['requirements', workspace, 'task-filters'],
+    queryKey: ['requirements', workspace],
     queryFn: fetchRequirements,
     enabled: Boolean(workspace),
+    staleTime: 60_000,
   })
   const designs = useQuery({
-    queryKey: ['system-designs', workspace, 'task-filters'],
+    queryKey: ['system-designs', workspace],
     queryFn: fetchSystemDesigns,
     enabled: Boolean(workspace),
+    staleTime: 60_000,
   })
   // Co-members, never a user directory: this read is workspace-scoped and the
   // server answers it for any member (AC-3.2).
-  const members = useQuery({
-    queryKey: ['workspace-members', token, workspace],
-    queryFn: () => fetchWorkspaceMembers(token, workspace),
-    enabled: Boolean(workspace && token),
-    retry: false,
-  })
+  const members = useWorkspaceMembers()
   const requirementOptions = (requirements.data ?? [])
     .filter((item) => item.current_version != null)
     .map((item) => ({ id: item.requirement.id, title: item.requirement.title }))

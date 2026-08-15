@@ -101,6 +101,9 @@ async function routeBoard(page: Page, seen: string[]) {
   )
   await page.route('**/v1/requirements**', (route) => route.fulfill({ json: requirementCorpus }))
   await page.route('**/v1/system-designs**', (route) => route.fulfill({ json: designCorpus }))
+  await page.route('**/v1/pending-proposals**', (route) =>
+    route.fulfill({ json: { items: [], attention: { task_count: 0, pending_proposal_count: 0, total: 0 } } }),
+  )
   // The assignee member offers workspace co-members, so the shared filter row
   // needs the membership read on this surface too.
   await page.route('**/v1/workspaces/*/members**', (route) =>
@@ -212,16 +215,21 @@ test('board orders each stage by creation time rather than latest activity', asy
 
 test('board opens on the last month and remembers the operator adjustment per workspace', async ({ page }) => {
   const seen: string[] = []
+  const requests: string[] = []
+  page.on('request', (request) => requests.push(new URL(request.url()).pathname))
   await openBoard(page, seen)
 
   // The default is a starting point the operator can see the effect of: the
   // board asks the server for recently created tasks, and the ancient task is gone.
   await expect(cards(page).filter({ hasText: 'Recent conveyor change' })).toHaveCount(1)
   await expect(cards(page).filter({ hasText: 'Ancient web change' })).toHaveCount(0)
-  // The bound went to the server rather than being applied to a fully-loaded
-  // workspace. The rail's attention badge speaks for the whole workspace and
-  // keeps reading the unfiltered feed, so this is `some`, not `every`.
-  expect(seen.some((url) => url.includes('created_from='))).toBe(true)
+  // The Board owns the only activity query; the rail reads the bounded
+  // pending-proposals attention projection instead of mounting a second,
+  // unfiltered activity request.
+  expect(seen).toHaveLength(1)
+  expect(seen[0]).toContain('created_from=')
+  expect(requests.filter((path) => path === '/v1/workspaces/demo/members')).toHaveLength(1)
+  expect(requests.filter((path) => path === '/v1/pending-proposals')).toHaveLength(1)
 
   // Adjusting it is what gets remembered — including across a reload.
   await page.getByRole('button', { name: 'Open filters' }).click()

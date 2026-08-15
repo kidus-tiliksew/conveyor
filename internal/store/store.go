@@ -119,6 +119,7 @@ type Store interface {
 	AppendEvent(ctx context.Context, event core.Event) error
 	ListEvents(ctx context.Context, taskID string) ([]core.Event, error)
 	ListRequirementEvents(ctx context.Context, requirementID string) ([]core.Event, error)
+	ListRequirementEventsByRequirement(ctx context.Context) (map[string][]core.Event, error)
 	AcknowledgeRequirementStaleness(ctx context.Context, acknowledgment core.RequirementStalenessAcknowledgment) (core.RequirementStalenessAcknowledgment, error)
 	ListLineageLinks(ctx context.Context) ([]core.LineageLink, error)
 	LineageNodeExists(ctx context.Context, node core.LineageNode) (bool, error)
@@ -182,6 +183,7 @@ type Store interface {
 	RecoverInterruptedReviewRoundCommand(ctx context.Context, lease taskops.TaskLease, request InterruptedReviewRecoveryRequest, queueTimeout time.Duration) (InterruptedReviewRecoveryResult, error)
 	GetWorkOrder(ctx context.Context, id string) (core.WorkOrder, error)
 	ListWorkOrders(ctx context.Context) ([]core.WorkOrder, error)
+	ListWorkOrdersForTasks(ctx context.Context, taskIDs []string) ([]core.WorkOrder, error)
 	ListTaskWorkOrders(ctx context.Context, taskID string) ([]core.WorkOrder, error)
 	// ListTaskWorkOrdersSnapshot returns persisted order state without applying
 	// clock-driven lifecycle transitions. It is for observational responses
@@ -229,6 +231,7 @@ type Store interface {
 	CreateRequirement(ctx context.Context, requirement core.Requirement, first core.RequirementVersion) (core.Requirement, core.RequirementVersion, error)
 	GetRequirement(ctx context.Context, id string) (core.Requirement, error)
 	ListRequirements(ctx context.Context) ([]core.Requirement, error)
+	ListRequirementVersionsByRequirement(ctx context.Context) (map[string][]core.RequirementVersion, error)
 	ProposeRequirementVersion(ctx context.Context, version core.RequirementVersion) (core.RequirementVersion, error)
 	ConfirmRequirementVersion(ctx context.Context, requirementID string, version int, expectedCurrentVersion ...int) (core.Requirement, core.RequirementVersion, error)
 	GetRequirementVersion(ctx context.Context, requirementID string, version int) (core.RequirementVersion, error)
@@ -2585,6 +2588,21 @@ func (m *memory) ListWorkOrders(ctx context.Context) ([]core.WorkOrder, error) {
 	return orders, nil
 }
 
+func (m *memory) ListWorkOrdersForTasks(ctx context.Context, taskIDs []string) ([]core.WorkOrder, error) {
+	if len(taskIDs) == 0 {
+		return []core.WorkOrder{}, nil
+	}
+	wanted := make(map[string]bool, len(taskIDs))
+	for _, taskID := range taskIDs {
+		wanted[taskID] = true
+	}
+	orders, err := m.ListWorkOrders(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return slices.DeleteFunc(orders, func(order core.WorkOrder) bool { return !wanted[order.TaskID] }), nil
+}
+
 func (m *memory) ListCheckpointContextCandidates(ctx context.Context, requirementID string) ([]CheckpointContextCandidate, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -4849,6 +4867,32 @@ func (m *memory) ListRequirementEvents(ctx context.Context, requirementID string
 		return events[i].At.Before(events[j].At)
 	})
 	return events, nil
+}
+
+func (m *memory) ListRequirementEventsByRequirement(ctx context.Context) (map[string][]core.Event, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	workspace := workspaceOrDefault(ctx, "")
+	out := map[string][]core.Event{}
+	for _, event := range m.events[""] {
+		var payload struct {
+			WorkspaceID   string `json:"workspace_id"`
+			RequirementID string `json:"requirement_id"`
+		}
+		if json.Unmarshal(event.Payload, &payload) != nil || payload.WorkspaceID != workspace || payload.RequirementID == "" {
+			continue
+		}
+		out[payload.RequirementID] = append(out[payload.RequirementID], event)
+	}
+	for requirementID := range out {
+		sort.Slice(out[requirementID], func(i, j int) bool {
+			if out[requirementID][i].At.Equal(out[requirementID][j].At) {
+				return out[requirementID][i].ID < out[requirementID][j].ID
+			}
+			return out[requirementID][i].At.Before(out[requirementID][j].At)
+		})
+	}
+	return out, nil
 }
 
 func (m *memory) ListEventsAfter(_ context.Context, taskID string, afterID int64) ([]core.Event, error) {

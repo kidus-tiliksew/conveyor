@@ -542,7 +542,7 @@ export function fetchReferenceDocuments() {
   return getJSON<import('./types').ReferenceDocument[]>(workspaceURL('/v1/reference-documents'))
 }
 export function fetchSystemDesigns() {
-  return getJSON<import('./types').SystemDesignView[]>(workspaceURL('/v1/system-designs'))
+  return getJSON<import('./types').SystemDesignSummary[]>(workspaceURL('/v1/system-designs'))
 }
 export function fetchSystemDesign(id: string) {
   return getJSON<import('./types').SystemDesignView>(workspaceURL(`/v1/system-designs/${encodeURIComponent(id)}`))

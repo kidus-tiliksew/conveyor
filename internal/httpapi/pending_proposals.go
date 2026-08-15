@@ -49,8 +49,8 @@ func pendingAuthorityForTask(taskID string, orders []core.WorkOrder, proposals [
 	return pendingAuthorityByTask(orders, proposals)[taskID]
 }
 
-func (s *Server) pendingAuthorityTasks(ctx context.Context, proposals []core.PendingProposal) (map[string]bool, error) {
-	orders, err := s.Store.ListWorkOrders(ctx)
+func (s *Server) pendingAuthorityTasks(ctx context.Context, proposals []core.PendingProposal, taskIDs []string) (map[string]bool, error) {
+	orders, err := s.Store.ListWorkOrdersForTasks(ctx, taskIDs)
 	if err != nil {
 		return nil, err
 	}

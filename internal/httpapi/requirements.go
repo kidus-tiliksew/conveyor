@@ -531,15 +531,43 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 		}
 		return events, listErr
 	}
+	versionsByRequirement := map[string][]core.RequirementVersion{}
+	requirementEventsByRequirement := map[string][]core.Event{}
+	if !includeDetail {
+		versionsByRequirement, err = s.Store.ListRequirementVersionsByRequirement(r.Context())
+		if err != nil {
+			return nil, err
+		}
+		requirementEventsByRequirement, err = s.Store.ListRequirementEventsByRequirement(r.Context())
+		if err != nil {
+			return nil, err
+		}
+	}
+	tasksByID := map[string]core.Task{}
+	loadTask := func(taskID string) (core.Task, error) {
+		if task, ok := tasksByID[taskID]; ok {
+			return task, nil
+		}
+		task, getErr := s.Store.GetTask(r.Context(), taskID)
+		if getErr == nil {
+			tasksByID[taskID] = task
+		}
+		return task, getErr
+	}
 	views := make([]requirementView, 0, len(requirements))
 	for _, requirement := range requirements {
-		versions, listErr := s.Store.ListRequirementVersions(r.Context(), requirement.ID)
-		if listErr != nil {
-			return nil, listErr
-		}
-		requirementEvents, listErr := s.Store.ListRequirementEvents(r.Context(), requirement.ID)
-		if listErr != nil {
-			return nil, listErr
+		versions := versionsByRequirement[requirement.ID]
+		requirementEvents := requirementEventsByRequirement[requirement.ID]
+		if includeDetail {
+			var listErr error
+			versions, listErr = s.Store.ListRequirementVersions(r.Context(), requirement.ID)
+			if listErr != nil {
+				return nil, listErr
+			}
+			requirementEvents, listErr = s.Store.ListRequirementEvents(r.Context(), requirement.ID)
+			if listErr != nil {
+				return nil, listErr
+			}
 		}
 		view := requirementView{
 			Requirement:       requirement,
@@ -597,7 +625,7 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 			if link.State != core.RequirementServesConfirmed {
 				continue
 			}
-			task, getErr := s.Store.GetTask(r.Context(), link.BlueprintTaskID)
+			task, getErr := loadTask(link.BlueprintTaskID)
 			if getErr != nil {
 				return nil, getErr
 			}
@@ -628,7 +656,7 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 			servingTaskIDs = directServingTaskIDs(lineageByRequirement[requirement.ID], requirement.ID)
 		}
 		for taskID := range servingTaskIDs {
-			task, getErr := s.Store.GetTask(r.Context(), taskID)
+			task, getErr := loadTask(taskID)
 			if getErr != nil {
 				return nil, getErr
 			}

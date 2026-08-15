@@ -2437,6 +2437,29 @@ func (s *Store) ListRequirementEvents(ctx context.Context, requirementID string)
 	return result, nil
 }
 
+func (s *Store) ListRequirementEventsByRequirement(ctx context.Context) (map[string][]core.Event, error) {
+	rows, err := s.pool.Query(ctx, `SELECT e.id,e.task_id,e.job_id,e.kind,e.actor_id,e.actor_role,e.payload_json,e.at,e.workspace_id,
+		e.payload_json->>'requirement_id'
+		FROM events e
+		WHERE e.workspace_id=$1 AND e.task_id IS NULL AND e.payload_json->>'requirement_id' IS NOT NULL
+		ORDER BY e.payload_json->>'requirement_id',e.at,e.id`, workspace(ctx))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string][]core.Event{}
+	for rows.Next() {
+		var event db.Event
+		var requirementID string
+		if err := rows.Scan(&event.ID, &event.TaskID, &event.JobID, &event.Kind, &event.ActorID,
+			&event.ActorRole, &event.PayloadJson, &event.At, &event.WorkspaceID, &requirementID); err != nil {
+			return nil, err
+		}
+		out[requirementID] = append(out[requirementID], eventFromDB(event))
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) ListLineageLinks(ctx context.Context) ([]core.LineageLink, error) {
 	rows, err := s.queries.ListLineageLinks(ctx, workspace(ctx))
 	if err != nil {
@@ -2754,6 +2777,13 @@ func (s *Store) CountEvents(ctx context.Context, taskID, kind string) (int, erro
 
 func (s *Store) ListActivityMarkers(ctx context.Context) ([]store.ActivityMarker, error) {
 	return s.listActivityMarkers(ctx, nil)
+}
+
+func (s *Store) ListWorkOrdersForTasks(ctx context.Context, taskIDs []string) ([]core.WorkOrder, error) {
+	if len(taskIDs) == 0 {
+		return []core.WorkOrder{}, nil
+	}
+	return s.listWorkOrdersForTasks(ctx, taskIDs)
 }
 
 func (s *Store) ListActivityMarkersForTasks(ctx context.Context, taskIDs []string) ([]store.ActivityMarker, error) {

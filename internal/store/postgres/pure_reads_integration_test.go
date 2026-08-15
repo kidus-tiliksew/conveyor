@@ -24,6 +24,21 @@ type queryRecorder struct {
 	queries []string
 }
 
+func TestRequirementEventLookupIndexIntegration(t *testing.T) {
+	st, _, _ := newPhase61IntegrationStore(t)
+	defer st.Close()
+	var definition string
+	if err := st.pool.QueryRow(t.Context(), `SELECT indexdef FROM pg_indexes
+		WHERE schemaname=current_schema() AND indexname='events_requirement_document_idx'`).Scan(&definition); err != nil {
+		t.Fatal(err)
+	}
+	for _, fragment := range []string{"workspace_id", "payload_json ->> 'requirement_id'", "at", "id", "task_id IS NULL"} {
+		if !strings.Contains(definition, fragment) {
+			t.Fatalf("requirement event index %q missing %q", definition, fragment)
+		}
+	}
+}
+
 func TestLineageNeighborhoodBatchesManyRootsInOneScopedQueryIntegration(t *testing.T) {
 	databaseURL := integrationDatabaseURL(t)
 	cfg, err := pgxpool.ParseConfig(databaseURL)

@@ -342,6 +342,10 @@ func TestRequirementsHTTPReplacesFeatureTreeAndConfirmsVersions(t *testing.T) {
 	if guard.neighborhood != 0 || guard.scopedArtifacts != 0 {
 		t.Fatalf("confirmed list queries neighborhood=%d scoped_artifacts=%d", guard.neighborhood, guard.scopedArtifacts)
 	}
+	if guard.batchVersions != 2 || guard.batchEvents != 2 || guard.singleVersions != 0 || guard.singleEvents != 0 {
+		t.Fatalf("confirmed list requirement reads batch_versions=%d batch_events=%d single_versions=%d single_events=%d",
+			guard.batchVersions, guard.batchEvents, guard.singleVersions, guard.singleEvents)
+	}
 
 	detail := httptest.NewRecorder()
 	handler.ServeHTTP(detail, httptest.NewRequest(http.MethodGet,
@@ -361,11 +365,35 @@ func TestRequirementsHTTPReplacesFeatureTreeAndConfirmsVersions(t *testing.T) {
 	if guard.neighborhood != 1 || guard.scopedArtifacts != 1 {
 		t.Fatalf("detail queries neighborhood=%d scoped_artifacts=%d", guard.neighborhood, guard.scopedArtifacts)
 	}
+	if guard.singleVersions != 1 || guard.singleEvents != 1 {
+		t.Fatalf("detail requirement reads versions=%d events=%d", guard.singleVersions, guard.singleEvents)
+	}
 }
 
 type requirementsScopedStore struct {
 	store.Store
 	fullLineage, fullArtifacts, neighborhood, scopedArtifacts int
+	batchVersions, batchEvents, singleVersions, singleEvents  int
+}
+
+func (st *requirementsScopedStore) ListRequirementVersionsByRequirement(ctx context.Context) (map[string][]core.RequirementVersion, error) {
+	st.batchVersions++
+	return st.Store.ListRequirementVersionsByRequirement(ctx)
+}
+
+func (st *requirementsScopedStore) ListRequirementEventsByRequirement(ctx context.Context) (map[string][]core.Event, error) {
+	st.batchEvents++
+	return st.Store.ListRequirementEventsByRequirement(ctx)
+}
+
+func (st *requirementsScopedStore) ListRequirementVersions(ctx context.Context, requirementID string) ([]core.RequirementVersion, error) {
+	st.singleVersions++
+	return st.Store.ListRequirementVersions(ctx, requirementID)
+}
+
+func (st *requirementsScopedStore) ListRequirementEvents(ctx context.Context, requirementID string) ([]core.Event, error) {
+	st.singleEvents++
+	return st.Store.ListRequirementEvents(ctx, requirementID)
 }
 
 func (st *requirementsScopedStore) ListLineageLinks(context.Context) ([]core.LineageLink, error) {

@@ -27,11 +27,13 @@ export function TaskContextAttachmentDialog({
     queryKey: ['requirements', workspace],
     queryFn: fetchRequirements,
     enabled: Boolean(workspace),
+    staleTime: 60_000,
   })
   const designQuery = useQuery({
     queryKey: ['system-designs', workspace],
     queryFn: fetchSystemDesigns,
     enabled: Boolean(workspace),
+    staleTime: 60_000,
   })
   const mutation = useMutation({
     mutationFn: () =>

@@ -61,7 +61,7 @@ func TestListSystemDesignsUsesBoundedStoreRounds(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
-	if counting.lists != 1 || counting.versionBatches != 1 || counting.eventBatches != 1 || counting.singularVersions != 0 || counting.singularEvents != 0 {
+	if counting.lists != 1 || counting.versionBatches != 1 || counting.eventBatches != 0 || counting.singularVersions != 0 || counting.singularEvents != 0 {
 		t.Fatalf("store rounds lists=%d version_batches=%d event_batches=%d singular_versions=%d singular_events=%d", counting.lists, counting.versionBatches, counting.eventBatches, counting.singularVersions, counting.singularEvents)
 	}
 }
@@ -87,9 +87,18 @@ func TestSystemDesignAndDecisionHTTPConfirmationContracts(t *testing.T) {
 
 	list := httptest.NewRecorder()
 	handler.ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/v1/system-designs", nil))
-	var views []systemDesignView
-	if list.Code != http.StatusOK || json.Unmarshal(list.Body.Bytes(), &views) != nil || len(views) != 1 || views[0].Document.Title != "Dispatch" || len(views[0].PendingVersions) != 1 || len(views[0].Lineage) != 2 {
+	var views []systemDesignSummary
+	if list.Code != http.StatusOK || json.Unmarshal(list.Body.Bytes(), &views) != nil || len(views) != 1 || views[0].Document.Title != "Dispatch" || len(views[0].PendingVersions) != 1 {
 		t.Fatalf("list status=%d views=%+v body=%s", list.Code, views, list.Body.String())
+	}
+	if strings.Contains(list.Body.String(), "# Dispatch") || strings.Contains(list.Body.String(), `"lineage"`) || strings.Contains(list.Body.String(), `"versions"`) {
+		t.Fatalf("collection leaked detail payload: %s", list.Body.String())
+	}
+	detail := httptest.NewRecorder()
+	handler.ServeHTTP(detail, httptest.NewRequest(http.MethodGet, "/v1/system-designs/design-dispatch", nil))
+	var detailView systemDesignView
+	if detail.Code != http.StatusOK || json.Unmarshal(detail.Body.Bytes(), &detailView) != nil || len(detailView.Lineage) != 2 || detailView.PendingVersions[0].Content == "" {
+		t.Fatalf("detail status=%d view=%+v body=%s", detail.Code, detailView, detail.Body.String())
 	}
 
 	confirm := func(version, expected int) *httptest.ResponseRecorder {

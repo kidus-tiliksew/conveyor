@@ -1198,12 +1198,51 @@ func (s *Server) listReviews(w http.ResponseWriter, r *http.Request) {
 // predicate the Tasks list uses, so the two surfaces cannot narrow differently
 // (AC-2.4).
 func (s *Server) listActivity(w http.ResponseWriter, r *http.Request) {
-	filter, err := parseTaskFilter(r.URL.Query())
+	query, _, err := parseTaskOperationsQuery(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	s.listActivityFiltered(w, r, filter, false)
+	// Activity is the Board's recent projection, not the historical archive.
+	// Keep the array response compatible while bounding every default read;
+	// callers can walk older history through the additive page parameters.
+	if query.Limit == 0 {
+		query.Limit = 100
+	}
+	s.listActivityPage(w, r, query)
+}
+
+func (s *Server) listActivityPage(w http.ResponseWriter, r *http.Request, query store.TaskOperationsQuery) {
+	// The no-auth in-memory server used by embedders predates explicit
+	// workspace resolution. Preserve that singleton compatibility path while
+	// production requests continue through the workspace-scoped store page.
+	workspaceID, scoped := store.WorkspaceFromContext(r.Context())
+	if s.Workspace == "" && s.Workspaces == nil && (!scoped || workspaceID == "test") {
+		tasks, err := s.Store.ListTasksFiltered(r.Context(), query.TaskFilter)
+		if err != nil {
+			log.Printf("handle API request: %v", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		total := len(tasks)
+		start := min(query.Offset, total)
+		end := min(start+query.Limit, total)
+		w.Header().Set("X-Conveyor-Total", strconv.Itoa(total))
+		w.Header().Set("X-Conveyor-Limit", strconv.Itoa(query.Limit))
+		w.Header().Set("X-Conveyor-Offset", strconv.Itoa(query.Offset))
+		s.writeActivityItems(w, r, tasks[start:end], false)
+		return
+	}
+	page, err := s.Store.ListTaskOperations(r.Context(), query)
+	if err != nil {
+		log.Printf("handle API request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("X-Conveyor-Total", strconv.Itoa(page.Total))
+	w.Header().Set("X-Conveyor-Limit", strconv.Itoa(query.Limit))
+	w.Header().Set("X-Conveyor-Offset", strconv.Itoa(query.Offset))
+	s.writeActivityItems(w, r, page.Tasks, false)
 }
 
 func (s *Server) listActivityFiltered(w http.ResponseWriter, r *http.Request, filter store.TaskFilter, reviewsOnly bool) {
@@ -1213,7 +1252,15 @@ func (s *Server) listActivityFiltered(w http.ResponseWriter, r *http.Request, fi
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	markers, err := s.Store.ListActivityMarkers(r.Context())
+	s.writeActivityItems(w, r, tasks, reviewsOnly)
+}
+
+func (s *Server) writeActivityItems(w http.ResponseWriter, r *http.Request, tasks []core.Task, reviewsOnly bool) {
+	taskIDs := make([]string, 0, len(tasks))
+	for _, task := range tasks {
+		taskIDs = append(taskIDs, task.ID)
+	}
+	markers, err := s.Store.ListActivityMarkersForTasks(r.Context(), taskIDs)
 	if err != nil {
 		log.Printf("handle API request: %v", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
@@ -1229,7 +1276,7 @@ func (s *Server) listActivityFiltered(w http.ResponseWriter, r *http.Request, fi
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	pendingAuthority, err := s.pendingAuthorityTasks(r.Context(), proposals)
+	pendingAuthority, err := s.pendingAuthorityTasks(r.Context(), proposals, taskIDs)
 	if err != nil {
 		log.Printf("handle API request: %v", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
@@ -1387,7 +1434,7 @@ func (s *Server) listTaskOperations(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	pendingAuthority, err := s.pendingAuthorityTasks(ctx, proposals)
+	pendingAuthority, err := s.pendingAuthorityTasks(ctx, proposals, taskIDs)
 	if err != nil {
 		log.Printf("handle API request: %v", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)

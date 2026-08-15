@@ -3,7 +3,6 @@ import { MailPlus, RotateCw, Trash2 } from 'lucide-react'
 import { useState } from 'react'
 import {
   fetchWorkspaceInvitations,
-  fetchWorkspaceMembers,
   inviteWorkspaceMember,
   LastWorkspaceOperatorError,
   resendWorkspaceInvitation,
@@ -13,7 +12,7 @@ import {
 } from '../../lib/api'
 import { errorMessage } from '../../lib/errors'
 import type { MembershipGrant, WorkspaceRole } from '../../lib/types'
-import { useOperatorToken, useWorkspaceSelection } from '../app-shell'
+import { useOperatorToken, useWorkspaceMembers, useWorkspaceSelection } from '../app-shell'
 import { Badge } from '../ui/badge'
 import { Button } from '../ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
@@ -42,11 +41,7 @@ export function MembersSection() {
   const queryClient = useQueryClient()
   const enabled = Boolean(token && workspace)
 
-  const members = useQuery({
-    queryKey: ['workspace-members', token, workspace],
-    queryFn: () => fetchWorkspaceMembers(token, workspace),
-    enabled,
-  })
+  const members = useWorkspaceMembers()
   const invitations = useQuery({
     queryKey: ['workspace-invitations', token, workspace],
     queryFn: () => fetchWorkspaceInvitations(token, workspace),
