@@ -739,7 +739,10 @@ func personalAccessToken(row db.UserToken) PersonalAccessToken {
 
 func listedPersonalAccessToken(row db.ListOwnUserTokensRow) PersonalAccessToken {
 	return credentialLifecycle(
-		PersonalAccessToken{ID: row.ID, UserID: row.UserID, Label: row.Label, CreatedAt: row.CreatedAt.Time},
+		PersonalAccessToken{
+			ID: row.ID, UserID: row.UserID, Label: row.Label,
+			DeploymentCredential: row.DeploymentCredential, CreatedAt: row.CreatedAt.Time,
+		},
 		row.LastUsedAt, row.RevokedAt,
 	)
 }

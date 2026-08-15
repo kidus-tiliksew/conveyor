@@ -1,6 +1,7 @@
 package lineagecontext
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -11,6 +12,76 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/pipeline"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
+
+type contextRecordCountingStore struct {
+	store.Store
+	contextBatches   int
+	taskPointReads   int
+	requirementReads int
+	versionReads     int
+}
+
+func (s *contextRecordCountingStore) ListLineageContextRecords(ctx context.Context, nodes []core.LineageNode) (store.LineageContextRecords, error) {
+	s.contextBatches++
+	return s.Store.ListLineageContextRecords(ctx, nodes)
+}
+
+func (s *contextRecordCountingStore) GetTask(ctx context.Context, id string) (core.Task, error) {
+	s.taskPointReads++
+	return s.Store.GetTask(ctx, id)
+}
+
+func (s *contextRecordCountingStore) GetRequirement(ctx context.Context, id string) (core.Requirement, error) {
+	s.requirementReads++
+	return s.Store.GetRequirement(ctx, id)
+}
+
+func (s *contextRecordCountingStore) GetRequirementVersion(ctx context.Context, id string, version int) (core.RequirementVersion, error) {
+	s.versionReads++
+	return s.Store.GetRequirementVersion(ctx, id, version)
+}
+
+func TestAssembleBatchesGraphContextRecords(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	base := store.NewMemory()
+	task := core.Task{ID: "batched-context", Workspace: "demo", Repo: "conveyor", Title: "Completed task", State: core.TaskMerged, CreatedAt: time.Now().UTC()}
+	if err := base.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	requirement, version, err := base.CreateRequirement(ctx, core.Requirement{ID: "req-batched", Title: "Batched authority"}, core.RequirementVersion{
+		Content: "Load graph context in bounded batches.", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Batch graph context."}}, Origin: core.RequirementOriginChat, OriginSessionID: "planning-session",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	human := store.WithActor(ctx, store.Actor{ID: "operator", Role: core.ActorHuman})
+	if _, _, err = base.ConfirmRequirementVersion(human, requirement.ID, version.Version); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = base.ProposeRequirementServes(ctx, task.ID, requirement.ID, core.RequirementServesPlanning, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = base.ConfirmRequirementServes(human, task.ID, requirement.ID); err != nil {
+		t.Fatal(err)
+	}
+	counted := &contextRecordCountingStore{Store: base}
+	result, err := Assemble(ctx, counted, nil, []core.LineageNode{{Type: core.LineageTask, ID: task.ID}, {Type: core.LineageRequirement, ID: requirement.ID}}, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if counted.contextBatches != 1 || counted.taskPointReads != 0 || counted.requirementReads != 0 || counted.versionReads != 0 {
+		t.Fatalf("context reads batches=%d task_points=%d requirements=%d versions=%d", counted.contextBatches, counted.taskPointReads, counted.requirementReads, counted.versionReads)
+	}
+	var requirementContent string
+	for _, item := range result.Items {
+		if item.Node.ID == requirement.ID {
+			requirementContent = item.Content
+		}
+	}
+	if !strings.Contains(requirementContent, "confirmed v1") {
+		t.Fatalf("batched context items=%+v", result.Items)
+	}
+}
 
 func TestRenderUntrustedContainsTripleBacktickContent(t *testing.T) {
 	rendered := RenderUntrusted(Result{Items: []Item{{

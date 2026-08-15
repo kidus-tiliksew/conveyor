@@ -151,12 +151,13 @@ type WorkspaceInvitation struct {
 // value is stored only as a hash and is returned exactly once from issuance, so
 // no read path can reconstruct it (REQ-2, req-security-boundaries AC-2.1).
 type PersonalAccessToken struct {
-	ID         string     `json:"id"`
-	UserID     string     `json:"user_id"`
-	Label      string     `json:"label"`
-	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
-	RevokedAt  *time.Time `json:"revoked_at,omitempty"`
-	CreatedAt  time.Time  `json:"created_at"`
+	ID                   string     `json:"id"`
+	UserID               string     `json:"user_id"`
+	Label                string     `json:"label"`
+	DeploymentCredential bool       `json:"deployment_credential"`
+	LastUsedAt           *time.Time `json:"last_used_at,omitempty"`
+	RevokedAt            *time.Time `json:"revoked_at,omitempty"`
+	CreatedAt            time.Time  `json:"created_at"`
 }
 
 // IssuedPersonalAccessToken carries the one-time bearer value. Issuance is the

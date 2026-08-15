@@ -234,18 +234,28 @@ test('a token secret is shown once, is never re-rendered, and the token can be r
     id: string
     user_id: string
     label: string
+    deployment_credential: boolean
     created_at: string
     last_used_at?: string
     revoked_at?: string
   }> = [
     {
+      id: 'pat_deployment',
+      user_id: 'usr_owner',
+      label: 'legacy API token',
+      deployment_credential: true,
+      created_at: '2026-07-31T00:00:00Z',
+    },
+    {
       id: 'pat_existing',
       user_id: 'usr_owner',
       label: 'Laptop CLI',
+      deployment_credential: false,
       created_at: '2026-08-01T00:00:00Z',
       last_used_at: '2026-08-10T00:00:00Z',
     },
   ]
+  const deleteRequests: string[] = []
   await page.addInitScript(() => {
     localStorage.setItem('conveyor-theme', 'dark')
     localStorage.setItem('conveyor-workspace', 'demo')
@@ -258,13 +268,20 @@ test('a token secret is shown once, is never re-rendered, and the token can be r
     if (path === '/v1/tokens' && request.method() === 'GET') return route.fulfill({ json: tokens })
     if (path === '/v1/tokens' && request.method() === 'POST') {
       const body = request.postDataJSON() as { label: string }
-      const created = { id: 'pat_new', user_id: 'usr_owner', label: body.label, created_at: '2026-08-13T00:00:00Z' }
+      const created = {
+        id: 'pat_new',
+        user_id: 'usr_owner',
+        label: body.label,
+        deployment_credential: false,
+        created_at: '2026-08-13T00:00:00Z',
+      }
       tokens.push(created)
       // Only the issuance response carries the value; the listing never does.
       return route.fulfill({ status: 201, json: { ...created, value: secret } })
     }
     if (path.startsWith('/v1/tokens/') && request.method() === 'DELETE') {
       const id = decodeURIComponent(path.split('/').pop() ?? '')
+      deleteRequests.push(id)
       for (const item of tokens) if (item.id === id) item.revoked_at = '2026-08-13T01:00:00Z'
       return route.fulfill({ status: 204, body: '' })
     }
@@ -275,6 +292,26 @@ test('a token secret is shown once, is never re-rendered, and the token can be r
   const card = page.getByRole('form', { name: 'Create an access token' })
   await expect(page.getByText('Laptop CLI')).toBeVisible()
   await expect(page.getByText(/Last used/)).toBeVisible()
+  const deploymentBadge = page.getByText('Deployment credential')
+  await expect(deploymentBadge).toBeVisible()
+  await expect(deploymentBadge).toHaveAttribute('title', 'The CONVEYOR_API_TOKEN mapping created at first boot.')
+
+  await page.getByRole('button', { name: 'Revoke legacy API token' }).click()
+  const deploymentDialog = page.getByRole('dialog', { name: 'Revoke deployment credential' })
+  await expect(deploymentDialog).toContainText('blocks the next conveyord start')
+  await expect(deploymentDialog).toContainText('Remove or change the environment variable')
+  await expect(deploymentDialog).toContainText('rotate CONVEYOR_API_TOKEN and restart instead')
+  const confirmation = deploymentDialog.getByLabel(/Type REVOKE DEPLOYMENT CREDENTIAL/)
+  const confirmRevoke = deploymentDialog.getByRole('button', { name: 'Revoke deployment credential' })
+  await expect(confirmRevoke).toBeDisabled()
+  await confirmation.fill('REVOKE')
+  await confirmation.press('Enter')
+  expect(deleteRequests).toEqual([])
+  await expect(confirmRevoke).toBeDisabled()
+  await confirmation.fill('REVOKE DEPLOYMENT CREDENTIAL')
+  await confirmRevoke.click()
+  await expect(deploymentDialog).toHaveCount(0)
+  expect(deleteRequests).toEqual(['pat_deployment'])
 
   await card.getByLabel('Token name').fill('Release runner')
   await card.getByRole('button', { name: 'Create token' }).click()
@@ -293,6 +330,8 @@ test('a token secret is shown once, is never re-rendered, and the token can be r
   await expect(page.getByText(secret)).toHaveCount(0)
 
   await page.getByRole('button', { name: 'Revoke Release runner' }).click()
+  await expect(page.getByRole('dialog', { name: 'Revoke deployment credential' })).toHaveCount(0)
+  expect(deleteRequests).toEqual(['pat_deployment', 'pat_new'])
   await expect(page.getByText('Revoked')).toBeVisible()
   await expect(page.getByText(secret)).toHaveCount(0)
 })

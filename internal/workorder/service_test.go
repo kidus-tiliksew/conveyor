@@ -80,6 +80,141 @@ func (s blockingObservationStore) ListBlockingTaskIDs(context.Context, string) (
 	return []string{"new-dependency"}, nil
 }
 
+type blockingLineageStore struct {
+	store.Store
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (s blockingLineageStore) ListLineageNeighborhood(ctx context.Context, _ []core.LineageNode, _ core.LineageTraversalBudget) ([]core.LineageLink, error) {
+	select {
+	case <-s.entered:
+	default:
+		close(s.entered)
+	}
+	select {
+	case <-s.release:
+		return nil, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func TestGetRenewsClaimOnlyWhileContextAssemblyIsActive(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	task := core.Task{ID: "guarded-context", Workspace: "demo", Repo: "conveyor", State: core.TaskRunning, CreatedAt: time.Now().UTC()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: task.ID + "-implement-1", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: job.Stage}); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{
+		SessionID: "guard-session", ClientToken: "secret", ClaimantID: "run:user", WorkerID: "worker-a",
+		Lease: 80 * time.Millisecond, ExecutionTimeout: 2 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := pack.Load("../../pack")
+	if err != nil {
+		t.Fatal(err)
+	}
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	logs := make(chan string, 1)
+	service := &Service{
+		Store: blockingLineageStore{Store: st, entered: entered, release: release}, Pack: bundle,
+		Logf: func(format string, args ...any) { logs <- fmt.Sprintf(format, args...) },
+	}
+	result := make(chan error, 1)
+	go func() {
+		_, getErr := service.Get(ctx, claimed.ID, claimed.SessionID)
+		result <- getErr
+	}()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("context assembly did not reach lineage lookup")
+	}
+	time.Sleep(180 * time.Millisecond)
+	during, err := st.GetWorkOrder(ctx, claimed.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !during.LeaseExpiresAt.After(time.Now()) {
+		t.Fatalf("lease was not kept active during assembly: %v", during.LeaseExpiresAt)
+	}
+	close(release)
+	if err = <-result; err != nil {
+		t.Fatalf("get work order: %v", err)
+	}
+	select {
+	case line := <-logs:
+		if !strings.Contains(line, "work_order_id="+claimed.ID) || !strings.Contains(line, "outcome=completed") || !strings.Contains(line, "nodes=") || !strings.Contains(line, "rendered_bytes=") {
+			t.Fatalf("assembly log=%q", line)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("context assembly completion was not logged")
+	}
+	time.Sleep(120 * time.Millisecond)
+	after, err := st.GetWorkOrder(ctx, claimed.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.LeaseExpiresAt.After(time.Now()) {
+		t.Fatalf("lease continued renewing after response: %v", after.LeaseExpiresAt)
+	}
+}
+
+func TestGetContextActivityStopsAtExecutionDeadline(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	task := core.Task{ID: "guarded-deadline", Workspace: "demo", Repo: "conveyor", State: core.TaskRunning, CreatedAt: time.Now().UTC()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: task.ID + "-implement-1", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: job.Stage}); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{
+		SessionID: "deadline-session", ClientToken: "secret", ClaimantID: "run:user", WorkerID: "worker-a",
+		Lease: 300 * time.Millisecond, ExecutionTimeout: 90 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := pack.Load("../../pack")
+	if err != nil {
+		t.Fatal(err)
+	}
+	logs := make(chan string, 1)
+	service := &Service{
+		Store: blockingLineageStore{Store: st, entered: make(chan struct{}), release: make(chan struct{})}, Pack: bundle,
+		Logf: func(format string, args ...any) { logs <- fmt.Sprintf(format, args...) },
+	}
+	started := time.Now()
+	_, err = service.Get(ctx, claimed.ID, claimed.SessionID)
+	if err == nil || !strings.Contains(err.Error(), "deadline") {
+		t.Fatalf("deadline error=%v", err)
+	}
+	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+		t.Fatalf("deadline guard returned after %s", elapsed)
+	}
+	if line := <-logs; !strings.Contains(line, "outcome=failed") {
+		t.Fatalf("assembly log=%q", line)
+	}
+}
+
 type dependencyBatchObservationStore struct {
 	store.Store
 	orders   []core.WorkOrder

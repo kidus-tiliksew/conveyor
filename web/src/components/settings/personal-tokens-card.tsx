@@ -6,6 +6,7 @@ import { Badge } from '../ui/badge'
 import { Button } from '../ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
 import { CopyButton } from '../ui/copy-button'
+import { Dialog } from '../ui/dialog'
 import { Input } from '../ui/input'
 import { fetchPersonalAccessTokens, issuePersonalAccessToken, revokePersonalAccessToken } from '../../lib/api'
 import { errorMessage } from '../../lib/errors'
@@ -14,6 +15,8 @@ function lifecycleSummary(created: string, lastUsed?: string) {
   const createdText = `Created ${new Date(created).toLocaleString()}`
   return lastUsed ? `${createdText} · Last used ${new Date(lastUsed).toLocaleString()}` : `${createdText} · Never used`
 }
+
+const deploymentRevokeConfirmation = 'REVOKE DEPLOYMENT CREDENTIAL'
 
 /**
  * The signed-in person's own access tokens.
@@ -27,6 +30,8 @@ export function PersonalTokensCard() {
   const queryClient = useQueryClient()
   const [label, setLabel] = useState('')
   const [issuedValue, setIssuedValue] = useState('')
+  const [deploymentRevokeID, setDeploymentRevokeID] = useState('')
+  const [deploymentRevokeText, setDeploymentRevokeText] = useState('')
 
   const tokens = useQuery({
     queryKey: ['personal-access-tokens', token],
@@ -44,9 +49,20 @@ export function PersonalTokensCard() {
   const revoke = useMutation({
     mutationFn: (id: string) => revokePersonalAccessToken(token, id),
     onSuccess: async () => {
+      setDeploymentRevokeID('')
+      setDeploymentRevokeText('')
       await queryClient.invalidateQueries({ queryKey: ['personal-access-tokens', token] })
     },
   })
+
+  const deploymentRevokeToken = tokens.data?.find(
+    (item) => item.id === deploymentRevokeID && item.deployment_credential && !item.revoked_at,
+  )
+  const closeDeploymentRevoke = () => {
+    if (revoke.isPending) return
+    setDeploymentRevokeID('')
+    setDeploymentRevokeText('')
+  }
 
   if (!token) return null
 
@@ -110,7 +126,14 @@ export function PersonalTokensCard() {
         {tokens.data?.map((item) => (
           <div key={item.id} className="flex items-center justify-between rounded-md border border-border p-3">
             <div className="min-w-0">
-              <p className="truncate text-sm font-medium">{item.label}</p>
+              <div className="flex min-w-0 items-center gap-2">
+                <p className="truncate text-sm font-medium">{item.label}</p>
+                {item.deployment_credential && (
+                  <Badge variant="outline" tabIndex={0} title="The CONVEYOR_API_TOKEN mapping created at first boot.">
+                    Deployment credential
+                  </Badge>
+                )}
+              </div>
               <p className="truncate text-xs text-muted" title={lifecycleSummary(item.created_at, item.last_used_at)}>
                 {lifecycleSummary(item.created_at, item.last_used_at)}
               </p>
@@ -124,7 +147,14 @@ export function PersonalTokensCard() {
                   variant="destructive"
                   aria-label={`Revoke ${item.label}`}
                   disabled={revoke.isPending}
-                  onClick={() => revoke.mutate(item.id)}
+                  onClick={() => {
+                    if (item.deployment_credential) {
+                      setDeploymentRevokeID(item.id)
+                      setDeploymentRevokeText('')
+                    } else {
+                      revoke.mutate(item.id)
+                    }
+                  }}
                 >
                   Revoke
                 </Button>
@@ -136,6 +166,52 @@ export function PersonalTokensCard() {
           <p className="text-sm text-failure">{errorMessage(revoke.error, 'Could not revoke that token.')}</p>
         )}
       </CardContent>
+      {deploymentRevokeToken && (
+        <Dialog onClose={closeDeploymentRevoke} label="Revoke deployment credential">
+          <div className="border-b border-border px-5 py-4">
+            <h2 className="text-base font-semibold tracking-tight">Revoke deployment credential?</h2>
+            <p className="mt-1 text-sm leading-6 text-muted">
+              Revoking this credential blocks the next conveyord start while <code>CONVEYOR_API_TOKEN</code> still
+              contains this value. Remove or change the environment variable before that start.
+            </p>
+          </div>
+          <form
+            className="space-y-4 px-5 py-4"
+            onSubmit={(event) => {
+              event.preventDefault()
+              if (deploymentRevokeText === deploymentRevokeConfirmation) revoke.mutate(deploymentRevokeToken.id)
+            }}
+          >
+            <p className="text-sm leading-6 text-foreground">
+              To retire a possibly leaked value without blocking startup, rotate <code>CONVEYOR_API_TOKEN</code> and
+              restart instead. Startup will re-map the deployment credential and record an audit event.
+            </p>
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium" htmlFor="deployment-revoke-confirmation">
+                Type <span className="font-mono">{deploymentRevokeConfirmation}</span> to continue
+              </label>
+              <Input
+                id="deployment-revoke-confirmation"
+                autoComplete="off"
+                value={deploymentRevokeText}
+                onChange={(event) => setDeploymentRevokeText(event.target.value)}
+              />
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button type="button" variant="secondary" disabled={revoke.isPending} onClick={closeDeploymentRevoke}>
+                Cancel
+              </Button>
+              <Button
+                type="submit"
+                variant="destructive"
+                disabled={deploymentRevokeText !== deploymentRevokeConfirmation || revoke.isPending}
+              >
+                {revoke.isPending ? 'Revoking…' : 'Revoke deployment credential'}
+              </Button>
+            </div>
+          </form>
+        </Dialog>
+      )}
     </Card>
   )
 }
