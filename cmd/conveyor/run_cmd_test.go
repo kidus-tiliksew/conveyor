@@ -270,6 +270,77 @@ func TestRunTaskMissingSetupPresentsPendingOrderWithoutClaiming(t *testing.T) {
 	}
 }
 
+func runTaskSelectionErrorScenario(t *testing.T, reviewSeat int, mutateConfig func(string) string) (int, string, error) {
+	t.Helper()
+	claimCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer user-credential" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/tasks/target/run-order":
+			_ = json.NewEncoder(w).Encode(workerservice.DispatchOrder{
+				Order: core.WorkOrder{ID: "target-review-1", TaskID: "target", Stage: core.StageReview, State: core.WorkOrderQueued, ReviewSeat: reviewSeat},
+				Task:  core.Task{ID: "target", Title: "Ship target", State: core.TaskRunning},
+			})
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/claim"):
+			claimCalls++
+			http.Error(w, "must not claim", http.StatusInternalServerError)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	template, err := os.ReadFile(filepath.Join("..", "..", "conveyor.example.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(t.TempDir(), "conveyor.yaml")
+	if err = os.WriteFile(configPath, []byte(mutateConfig(string(template))), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c := &client{base: server.URL, token: "user-credential", workspace: "demo"}
+	var output bytes.Buffer
+	err = runTask(t.Context(), c, "target", configPath, strings.NewReader(""), &output, true, false)
+	return claimCalls, output.String(), err
+}
+
+func TestRunTaskNoMCPRoutePresentsPendingOrderWithoutClaiming(t *testing.T) {
+	claimCalls, output, err := runTaskSelectionErrorScenario(t, 1, func(value string) string {
+		value = strings.Replace(value, "      review:\n        execution: mcp\n        timeout: 1h", "      review:\n        execution: in_process\n        timeout: 1h", 1)
+		value = strings.Replace(value, "    review:\n      seats:\n        - {model: gpt-5.6, harness: local-agent}\n        - {model: claude-opus-4.1, harness: local-agent}", "    review:\n      seats:\n        - {model: gpt-5.6}", 1)
+		return value
+	})
+	if err == nil || !strings.Contains(err.Error(), "no MCP route for review") {
+		t.Fatalf("err=%v", err)
+	}
+	if claimCalls != 0 {
+		t.Fatalf("claim calls=%d", claimCalls)
+	}
+	for _, want := range []string{"Task target: Ship target (state running)", "Next: review work order target-review-1"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output missing %q: %q", want, output)
+		}
+	}
+}
+
+func TestRunTaskNoSelectedHarnessPresentsPendingOrderWithoutClaiming(t *testing.T) {
+	claimCalls, output, err := runTaskSelectionErrorScenario(t, 3, func(value string) string { return value })
+	if err == nil || !strings.Contains(err.Error(), "no harness") {
+		t.Fatalf("err=%v", err)
+	}
+	if claimCalls != 0 {
+		t.Fatalf("claim calls=%d", claimCalls)
+	}
+	for _, want := range []string{"Task target: Ship target (state running)", "Next: review work order target-review-1"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output missing %q: %q", want, output)
+		}
+	}
+}
+
 func TestTaskRunHarnessHelper(t *testing.T) {
 	if os.Getenv("CONVEYOR_FAKE_TASK_RUN_HARNESS") != "1" {
 		return

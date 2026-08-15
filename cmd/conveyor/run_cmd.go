@@ -75,6 +75,7 @@ func runTask(ctx context.Context, c *client, taskID, configPath string, input io
 	for {
 		selected, selectErr := selectLocalRunDispatch(*item, local)
 		if selectErr != nil {
+			_ = presentPendingRunOrder(output, *item)
 			return selectErr
 		}
 		if err = presentRunOrder(output, selected, local.Routing.Stages[string(selected.Order.Stage)].TimeoutText); err != nil {
