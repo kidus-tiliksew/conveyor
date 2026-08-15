@@ -439,7 +439,7 @@ test('the canonical blueprint detail suppresses execution affordances and demote
   // An anchor takes no work orders, so execution-recovery affordances are
   // inert too: no redispatch nudge, no worker-serviceability alarm.
   await expect(page.getByRole('button', { name: /Redispatch/ })).toHaveCount(0)
-  await expect(page.getByRole('region', { name: 'Auto worker unavailable' })).toHaveCount(0)
+  await expect(page.getByRole('region', { name: 'Enrolled worker unavailable' })).toHaveCount(0)
 
   // The raw intake body is provenance: collapsed, below the blueprint, and
   // never the first thing the page says.

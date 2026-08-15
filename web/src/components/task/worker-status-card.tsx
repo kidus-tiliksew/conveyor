@@ -12,12 +12,12 @@ export function WorkerStatusCard({ item }: { item: ActivityItem }) {
   return (
     <section
       className="rounded-lg border border-attention/40 bg-attention-soft px-3 py-3"
-      aria-label="Auto worker unavailable"
+      aria-label="Enrolled worker unavailable"
     >
       <div className="flex items-start gap-2">
         <TriangleAlert className="mt-0.5 size-4 shrink-0 text-attention" />
         <div className="text-xs leading-5 text-muted">
-          <p className="font-medium text-attention">No healthy worker can serve this Auto task</p>
+          <p className="font-medium text-attention">No healthy enrolled worker can serve this queued work</p>
           <p>{status.reason}.</p>
           <p>Required harnesses: {requiredHarnesses.length ? requiredHarnesses.join(', ') : 'not yet routed'}.</p>
           <p>

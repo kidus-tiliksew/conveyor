@@ -32,7 +32,7 @@ import (
 var workerAttemptCheckpointer = checkpointAssignedTaskWorktree
 
 func workerCmd() *cobra.Command {
-	cmd := &cobra.Command{Use: "worker", Short: "Enroll and run the operator-owned Auto dispatcher"}
+	cmd := &cobra.Command{Use: "worker", Short: "Enroll and run the operator-owned worker dispatcher"}
 	var ttl time.Duration
 	pair := &cobra.Command{Use: "pair", Short: "Issue a short-lived single-use pairing token", RunE: func(cmd *cobra.Command, _ []string) error {
 		token, expires, err := newClient().issueWorkerPairing(ttl)
@@ -61,7 +61,7 @@ func workerCmd() *cobra.Command {
 	}}
 	var pairing, name string
 	var once bool
-	run := &cobra.Command{Use: "run", Short: "Heartbeat, claim Auto work, and supervise configured harnesses", RunE: func(cmd *cobra.Command, _ []string) error {
+	run := &cobra.Command{Use: "run", Short: "Heartbeat, claim queued work, and supervise configured harnesses", RunE: func(cmd *cobra.Command, _ []string) error {
 		ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
 		return runWorker(ctx, newClient(), pairing, name, once)

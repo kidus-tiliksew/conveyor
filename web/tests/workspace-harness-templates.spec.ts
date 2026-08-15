@@ -86,7 +86,8 @@ async function mockAPIs(page: Page, templatesFail = false) {
       if (templatesFail) return route.fulfill({ status: 500, body: 'catalog unavailable' })
       return route.fulfill({ json: { templates: harnessTemplates } })
     }
-    if (path === '/v1/workers') return route.fulfill({ json: { workers: [], auto_available: false } })
+    if (path === '/v1/workers')
+      return route.fulfill({ json: { workers: [], worker_expected: false, worker_available: false } })
     if (path === '/v1/workspace')
       return route.fulfill({ json: { workspace: 'demo', max_bounces: 2, database: 'postgres', repos: [] } })
     return route.fulfill({ json: [] })
