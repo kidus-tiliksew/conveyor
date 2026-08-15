@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 	"sync"
@@ -38,6 +39,7 @@ type Service struct {
 	ReviewDiffForBranch func(context.Context, string, string) (string, error)
 	ReviewDiffBetween   func(context.Context, string, string, string) (string, error)
 	ReviewPRDescription func(context.Context, string, string) (string, error)
+	Logf                func(string, ...any)
 	consultedMu         sync.Mutex
 	consulted           map[string]struct{}
 }
@@ -588,7 +590,99 @@ func (s *Service) Get(ctx context.Context, id, session string) (Context, error) 
 	if err != nil {
 		return Context{}, err
 	}
-	return s.contextForOrder(ctx, order)
+	if order.State != core.WorkOrderClaimed {
+		return s.contextForOrder(ctx, order)
+	}
+	return s.contextForClaimedOrder(ctx, order)
+}
+
+// contextForClaimedOrder treats the time spent assembling get_work_order as
+// activity by the exact current claim. Renewal stops before the response is
+// returned and never extends the fixed execution deadline.
+func (s *Service) contextForClaimedOrder(ctx context.Context, order core.WorkOrder) (result Context, err error) {
+	started := time.Now()
+	defer func() {
+		outcome := "completed"
+		if err != nil {
+			outcome = "failed"
+		}
+		s.logf("work_order_context_assembly work_order_id=%s nodes=%d rendered_bytes=%d elapsed=%s outcome=%s", order.ID, len(result.LineageContext.Traversal.Nodes), result.LineageContext.RenderedBytes, time.Since(started), outcome)
+	}()
+
+	remaining := time.Until(order.LeaseExpiresAt)
+	if remaining <= 0 {
+		return Context{}, fmt.Errorf("work order lease expired")
+	}
+	var assemblyCtx context.Context
+	var cancel context.CancelFunc
+	if order.ExecutionDeadline.IsZero() {
+		assemblyCtx, cancel = context.WithCancel(ctx)
+	} else {
+		assemblyCtx, cancel = context.WithDeadline(ctx, order.ExecutionDeadline)
+	}
+	defer cancel()
+
+	claim := core.WorkOrderClaimIdentity{WorkerID: order.WorkerID, ClaimantID: order.ClaimantID, SessionID: order.SessionID}
+	renew := func() error {
+		_, renewErr := taskops.ExecuteWorkOrder(assemblyCtx, s.Store, order.TaskID, core.WorkOrderCmdRenew, func(lease taskops.TaskLease) (core.WorkOrder, error) {
+			return s.Store.RenewWorkerClaimCommand(assemblyCtx, lease, order.ID, claim, remaining)
+		})
+		return renewErr
+	}
+	if err = renew(); err != nil {
+		return Context{}, fmt.Errorf("renew work-order context activity: %w", err)
+	}
+
+	guardErr := make(chan error, 1)
+	guardDone := make(chan struct{})
+	interval := remaining / 2
+	if interval <= 0 {
+		interval = remaining
+	}
+	go func() {
+		defer close(guardDone)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-assemblyCtx.Done():
+				return
+			case <-ticker.C:
+				if renewErr := renew(); renewErr != nil {
+					if assemblyCtx.Err() != nil {
+						return
+					}
+					guardErr <- renewErr
+					cancel()
+					return
+				}
+			}
+		}
+	}()
+
+	result, err = s.contextForOrder(assemblyCtx, order)
+	cancel()
+	<-guardDone
+	select {
+	case renewErr := <-guardErr:
+		return Context{}, fmt.Errorf("renew work-order context activity: %w", renewErr)
+	default:
+	}
+	if err != nil {
+		return Context{}, err
+	}
+	if deadlineErr := assemblyCtx.Err(); errors.Is(deadlineErr, context.DeadlineExceeded) {
+		return Context{}, fmt.Errorf("assemble work-order context before execution deadline: %w", deadlineErr)
+	}
+	return result, nil
+}
+
+func (s *Service) logf(format string, args ...any) {
+	if s.Logf != nil {
+		s.Logf(format, args...)
+		return
+	}
+	log.Printf(format, args...)
 }
 
 // AuthorizeClaimed returns the exact currently leased order without assembling

@@ -891,6 +891,96 @@ func (s *Store) ListLineageNodeRecords(ctx context.Context, nodes []core.Lineage
 	return records, nil
 }
 
+func (s *Store) ListLineageContextRecords(ctx context.Context, nodes []core.LineageNode) (store.LineageContextRecords, error) {
+	taskIDs, requirementIDs := map[string]bool{}, map[string]bool{}
+	for _, node := range nodes {
+		switch node.Type {
+		case core.LineageTask:
+			taskIDs[node.ID] = true
+		case core.LineageRequirement:
+			requirementIDs[node.ID] = true
+		}
+	}
+	result := store.LineageContextRecords{
+		Tasks:        map[string]store.LineageContextTaskRecord{},
+		Requirements: map[string]store.LineageContextRequirementRecord{},
+	}
+	if len(taskIDs) > 0 {
+		ids := make([]string, 0, len(taskIDs))
+		for id := range taskIDs {
+			ids = append(ids, id)
+		}
+		rows, err := s.pool.Query(ctx, `SELECT t.id,t.title,t.state,COALESCE(t.parent_task_id,''),review.payload_json
+			FROM tasks t
+			LEFT JOIN LATERAL (
+				SELECT e.payload_json FROM events e
+				WHERE e.workspace_id=t.workspace_id AND e.task_id=t.id
+					AND t.state IN ('merged','closed')
+					AND e.kind IN ('review.completed','review.round_completed')
+					AND (jsonb_typeof(e.payload_json)='object' OR e.payload_json='null'::jsonb)
+				ORDER BY e.id DESC LIMIT 1
+			) review ON TRUE
+			WHERE t.workspace_id=$1 AND t.id=ANY($2)`, workspace(ctx), ids)
+		if err != nil {
+			return store.LineageContextRecords{}, err
+		}
+		for rows.Next() {
+			var id, title, state, parentTaskID string
+			var reviewPayload []byte
+			if err = rows.Scan(&id, &title, &state, &parentTaskID, &reviewPayload); err != nil {
+				rows.Close()
+				return store.LineageContextRecords{}, err
+			}
+			result.Tasks[id] = store.LineageContextTaskRecord{
+				Title: title, State: core.TaskState(state), ParentTaskID: parentTaskID,
+				ReviewPayload: append(json.RawMessage(nil), reviewPayload...),
+			}
+		}
+		if err = rows.Err(); err != nil {
+			rows.Close()
+			return store.LineageContextRecords{}, err
+		}
+		rows.Close()
+	}
+	if len(requirementIDs) > 0 {
+		ids := make([]string, 0, len(requirementIDs))
+		for id := range requirementIDs {
+			ids = append(ids, id)
+		}
+		rows, err := s.pool.Query(ctx, `SELECT r.id,r.title,v.version,v.content,v.statements_json
+			FROM requirements r
+			JOIN requirement_versions v ON v.workspace_id=r.workspace_id
+				AND v.requirement_id=r.id AND v.version=r.current_version AND v.confirmed
+			WHERE r.workspace_id=$1 AND r.id=ANY($2) AND r.current_version IS NOT NULL`, workspace(ctx), ids)
+		if err != nil {
+			return store.LineageContextRecords{}, err
+		}
+		for rows.Next() {
+			var id, title, content string
+			var version int
+			var statementsJSON []byte
+			if err = rows.Scan(&id, &title, &version, &content, &statementsJSON); err != nil {
+				rows.Close()
+				return store.LineageContextRecords{}, err
+			}
+			var statements []core.RequirementStatement
+			if err = json.Unmarshal(statementsJSON, &statements); err != nil {
+				rows.Close()
+				return store.LineageContextRecords{}, fmt.Errorf("decode requirement %s v%d statements: %w", id, version, err)
+			}
+			result.Requirements[id] = store.LineageContextRequirementRecord{
+				Title: title, Version: version, Content: content, Statements: statements,
+			}
+		}
+		if err = rows.Err(); err != nil {
+			rows.Close()
+			return store.LineageContextRecords{}, err
+		}
+		rows.Close()
+	}
+	return result, nil
+}
+
 func lineageRecordBaseID(node core.LineageNode) string {
 	if node.Type != core.LineageBlueprintVersion && node.Type != core.LineageRequirementVersion && node.Type != core.LineageReferenceDocumentVersion && node.Type != core.LineageSystemDesignVersion {
 		return node.ID

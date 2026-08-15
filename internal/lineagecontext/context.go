@@ -104,6 +104,10 @@ func AssembleWithBudget(ctx context.Context, st store.Store, budget Budget, root
 	if err != nil {
 		return Result{}, err
 	}
+	records, err := st.ListLineageContextRecords(ctx, graph.Nodes)
+	if err != nil {
+		return Result{}, err
+	}
 	result := Result{Untrusted: true, Items: []Item{}, Artifacts: []core.Artifact{}, Traversal: graph, Budget: budget,
 		OmittedCount: graph.OmittedNodes + graph.OmittedLinks, ExhaustionReasons: append([]string(nil), graph.ExhaustionReasons...)}
 	candidates := []candidate{}
@@ -165,16 +169,12 @@ func AssembleWithBudget(ctx context.Context, st store.Store, budget Budget, root
 			if localTaskID != "" && !pathContains(graph.Paths[core.LineageNode{Type: node.Type, ID: node.ID}], "serves") {
 				continue
 			}
-			requirement, getErr := st.GetRequirement(ctx, node.ID)
-			if getErr != nil || requirement.CurrentVersion <= 0 {
+			requirement, ok := records.Requirements[node.ID]
+			if !ok || requirement.Version <= 0 {
 				continue
 			}
-			version, getErr := st.GetRequirementVersion(ctx, requirement.ID, requirement.CurrentVersion)
-			if getErr != nil || !version.Confirmed {
-				continue
-			}
-			lines := []string{fmt.Sprintf("%s (confirmed v%d)", requirement.Title, version.Version), version.Content}
-			for _, statement := range version.Statements {
+			lines := []string{fmt.Sprintf("%s (confirmed v%d)", requirement.Title, requirement.Version), requirement.Content}
+			for _, statement := range requirement.Statements {
 				lines = append(lines, statement.ID+": "+statement.Statement)
 			}
 			add(node, "served_requirement", strings.Join(lines, "\n"), 0, nil)
@@ -182,18 +182,18 @@ func AssembleWithBudget(ctx context.Context, st store.Store, budget Budget, root
 			if node.ID == localTaskID {
 				continue
 			}
-			task, getErr := st.GetTask(ctx, node.ID)
-			if getErr != nil || !core.TaskTerminal(task.State) {
+			task, ok := records.Tasks[node.ID]
+			if !ok || !core.TaskTerminal(task.State) {
 				continue
 			}
 			reason, priority := "adjacent_task_outcome", 4
 			if local.ParentTaskID != "" && task.ParentTaskID == local.ParentTaskID {
 				reason, priority = "sibling_outcome", 2
-			} else if dependencyIDs[task.ID] {
+			} else if dependencyIDs[node.ID] {
 				reason, priority = "dependency_outcome", 3
 			}
-			content := fmt.Sprintf("%s [%s]", firstNonempty(task.Title, task.ID), task.State)
-			if summary := latestVerdictSummary(ctx, st, task.ID); summary != "" {
+			content := fmt.Sprintf("%s [%s]", firstNonempty(task.Title, node.ID), task.State)
+			if summary := reviewSummary(task.ReviewPayload); summary != "" {
 				content += "\nReview outcome: " + summary
 			}
 			add(node, reason, content, priority, nil)
@@ -365,26 +365,16 @@ func SafeBacktickFence(content string) string {
 	return strings.Repeat("`", longest+1)
 }
 
-func latestVerdictSummary(ctx context.Context, st store.Store, taskID string) string {
-	events, err := st.ListEvents(ctx, taskID)
-	if err != nil {
+func reviewSummary(raw json.RawMessage) string {
+	var payload struct {
+		Verdict  string `json:"verdict"`
+		Summary  string `json:"summary"`
+		Feedback string `json:"feedback"`
+	}
+	if json.Unmarshal(raw, &payload) != nil {
 		return ""
 	}
-	for index := len(events) - 1; index >= 0; index-- {
-		if events[index].Kind != "review.completed" && events[index].Kind != "review.round_completed" {
-			continue
-		}
-		var payload struct {
-			Verdict  string `json:"verdict"`
-			Summary  string `json:"summary"`
-			Feedback string `json:"feedback"`
-		}
-		if json.Unmarshal(events[index].Payload, &payload) != nil {
-			continue
-		}
-		return strings.TrimSpace(strings.Join(nonempty(payload.Verdict, payload.Summary, payload.Feedback), ": "))
-	}
-	return ""
+	return strings.TrimSpace(strings.Join(nonempty(payload.Verdict, payload.Summary, payload.Feedback), ": "))
 }
 
 func artifactNode(artifact core.Artifact) core.LineageNode {

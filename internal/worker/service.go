@@ -944,7 +944,8 @@ func (s *Service) Renew(ctx context.Context, worker core.Worker, id, sessionID s
 		return core.WorkOrder{}, err
 	}
 	return taskops.ExecuteWorkOrder(ctx, s.Store, order.TaskID, core.WorkOrderCmdRenew, func(taskLease taskops.TaskLease) (core.WorkOrder, error) {
-		return s.Store.RenewWorkerClaimCommand(ctx, taskLease, id, worker.ID, sessionID, DefaultClaimLease)
+		claim := core.WorkOrderClaimIdentity{WorkerID: worker.ID, ClaimantID: order.ClaimantID, SessionID: sessionID}
+		return s.Store.RenewWorkerClaimCommand(ctx, taskLease, id, claim, DefaultClaimLease)
 	})
 }
 

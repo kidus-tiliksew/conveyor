@@ -218,7 +218,7 @@ func revokeOwnedWorkersTx(ctx context.Context, tx pgx.Tx, q *db.Queries, userID,
 	return nil
 }
 
-func (s *Store) RenewWorkerClaimCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID, workerID, sessionID string, lease time.Duration) (core.WorkOrder, error) {
+func (s *Store) RenewWorkerClaimCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID string, claim core.WorkOrderClaimIdentity, lease time.Duration) (core.WorkOrder, error) {
 	current, err := s.GetWorkOrder(ctx, workOrderID)
 	if err != nil {
 		return core.WorkOrder{}, err
@@ -228,28 +228,28 @@ func (s *Store) RenewWorkerClaimCommand(ctx context.Context, taskLease taskops.T
 	}
 	now := time.Now().UTC()
 	expires := now.Add(lease)
-	row := s.pool.QueryRow(ctx, `UPDATE work_orders SET lease_expires_at=CASE WHEN execution_deadline IS NULL THEN $1 ELSE LEAST($1,execution_deadline) END,updated_at=$2 WHERE workspace_id=$3 AND id=$4 AND worker_id=$5 AND session_id=$6 AND state='claimed' AND lease_expires_at>$2 AND (execution_deadline IS NULL OR execution_deadline>$2) RETURNING `+workOrderColumns, expires, now, workspace(ctx), workOrderID, workerID, sessionID)
+	row := s.pool.QueryRow(ctx, `UPDATE work_orders SET lease_expires_at=CASE WHEN execution_deadline IS NULL THEN $1 ELSE LEAST($1,execution_deadline) END,updated_at=$2 WHERE workspace_id=$3 AND id=$4 AND worker_id=$5 AND claimant_id=$6 AND session_id=$7 AND state='claimed' AND lease_expires_at>$2 AND (execution_deadline IS NULL OR execution_deadline>$2) RETURNING `+workOrderColumns, expires, now, workspace(ctx), workOrderID, claim.WorkerID, claim.ClaimantID, claim.SessionID)
 	order, err := scanWorkOrder(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		current, getErr := s.GetWorkOrder(ctx, workOrderID)
 		if getErr == nil && current.State == core.WorkOrderCancelled {
-			matches, matchErr := cancelledSessionMatches(ctx, s.pool, workspace(ctx), current.TaskID, current.JobID, sessionID)
+			matches, matchErr := cancelledSessionMatches(ctx, s.pool, workspace(ctx), current.TaskID, current.JobID, claim.SessionID)
 			if matchErr != nil {
 				return core.WorkOrder{}, matchErr
 			}
-			if (current.LastAttemptID != "" && current.LastAttemptID == sessionID) || matches ||
-				(current.WorkerID == workerID && current.SessionID == sessionID) {
+			if (current.LastAttemptID != "" && current.LastAttemptID == claim.SessionID) || matches ||
+				(current.WorkerID == claim.WorkerID && current.ClaimantID == claim.ClaimantID && current.SessionID == claim.SessionID) {
 				return core.WorkOrder{}, store.ErrWorkOrderCancelled
 			}
 		}
-		if getErr == nil && current.WorkerID == workerID && current.SessionID == sessionID && (current.State == core.WorkOrderSubmitted || current.State == core.WorkOrderCompleted) {
+		if getErr == nil && current.WorkerID == claim.WorkerID && current.ClaimantID == claim.ClaimantID && current.SessionID == claim.SessionID && (current.State == core.WorkOrderSubmitted || current.State == core.WorkOrderCompleted) {
 			return current, nil
 		}
 		var preempted bool
 		if preemptErr := s.pool.QueryRow(ctx, `SELECT EXISTS (
 			SELECT 1 FROM work_order_preemptions
 			WHERE workspace_id=$1 AND work_order_id=$2 AND revoked_worker_id=$3 AND revoked_session_id=$4
-		)`, workspace(ctx), workOrderID, workerID, sessionID).Scan(&preempted); preemptErr != nil {
+		)`, workspace(ctx), workOrderID, claim.WorkerID, claim.SessionID).Scan(&preempted); preemptErr != nil {
 			return core.WorkOrder{}, preemptErr
 		}
 		if preempted {
@@ -260,7 +260,7 @@ func (s *Store) RenewWorkerClaimCommand(ctx context.Context, taskLease taskops.T
 	if err != nil {
 		return core.WorkOrder{}, err
 	}
-	_ = s.AppendEvent(workerClaimActorContext(ctx, workerID), core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.lease_renewed", Payload: core.JSONPayload(map[string]any{"attempt_id": order.AttemptID, "lease_expires_at": order.LeaseExpiresAt})})
+	_ = s.AppendEvent(workerClaimActorContext(ctx, claim.WorkerID), core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.lease_renewed", Payload: core.JSONPayload(map[string]any{"attempt_id": order.AttemptID, "lease_expires_at": order.LeaseExpiresAt})})
 	return order, nil
 }
 
