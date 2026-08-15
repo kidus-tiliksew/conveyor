@@ -205,6 +205,9 @@ are written to `bin/`. This source-build path remains the supported devbox flow.
 With a released `conveyor`/`conveyord` installation and PostgreSQL 15 or newer
 already running, the first-run wizard creates the deployment and workspace
 configuration; no hand editing of YAML is required.
+Issue yourself a personal token immediately after your first sign-in.
+Treat the environment token as break-glass and rotate it through
+`CONVEYOR_API_TOKEN`, not the Revoke button.
 
 1. Export `CONVEYOR_DATABASE_URL`, a generated `CONVEYOR_API_TOKEN`, and
    `CONVEYOR_API_KEY`, then authenticate the host with `gh auth login`.

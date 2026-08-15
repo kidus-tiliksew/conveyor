@@ -45,7 +45,8 @@ WHERE id = $1 AND kind = 'user'
 RETURNING id, user_id, label, token_hash, kind, scope, last_used_at, revoked_at, created_at;
 
 -- name: ListOwnUserTokens :many
-SELECT id, user_id, label, last_used_at, revoked_at, created_at
+SELECT id, user_id, label, label = 'legacy API token' AS deployment_credential,
+       last_used_at, revoked_at, created_at
 FROM user_tokens
 WHERE user_id = $1 AND kind = 'user'
 ORDER BY created_at DESC, id;
