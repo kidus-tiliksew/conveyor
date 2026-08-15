@@ -409,6 +409,7 @@ export interface PersonalAccessToken {
   id: string
   user_id: string
   label: string
+  deployment_credential: boolean
   last_used_at?: string
   revoked_at?: string
   created_at: string

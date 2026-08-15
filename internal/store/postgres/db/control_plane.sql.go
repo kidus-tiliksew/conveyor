@@ -2231,19 +2231,21 @@ func (q *Queries) RevokeUserToken(ctx context.Context, id string) (UserToken, er
 }
 
 const listOwnUserTokens = `-- name: ListOwnUserTokens :many
-SELECT id, user_id, label, last_used_at, revoked_at, created_at
+SELECT id, user_id, label, label = 'legacy API token' AS deployment_credential,
+       last_used_at, revoked_at, created_at
 FROM user_tokens
 WHERE user_id = $1 AND kind = 'user'
 ORDER BY created_at DESC, id
 `
 
 type ListOwnUserTokensRow struct {
-	ID         string             `json:"id"`
-	UserID     string             `json:"user_id"`
-	Label      string             `json:"label"`
-	LastUsedAt pgtype.Timestamptz `json:"last_used_at"`
-	RevokedAt  pgtype.Timestamptz `json:"revoked_at"`
-	CreatedAt  pgtype.Timestamptz `json:"created_at"`
+	ID                   string             `json:"id"`
+	UserID               string             `json:"user_id"`
+	Label                string             `json:"label"`
+	DeploymentCredential bool               `json:"deployment_credential"`
+	LastUsedAt           pgtype.Timestamptz `json:"last_used_at"`
+	RevokedAt            pgtype.Timestamptz `json:"revoked_at"`
+	CreatedAt            pgtype.Timestamptz `json:"created_at"`
 }
 
 func (q *Queries) ListOwnUserTokens(ctx context.Context, userID string) ([]ListOwnUserTokensRow, error) {
@@ -2259,6 +2261,7 @@ func (q *Queries) ListOwnUserTokens(ctx context.Context, userID string) ([]ListO
 			&i.ID,
 			&i.UserID,
 			&i.Label,
+			&i.DeploymentCredential,
 			&i.LastUsedAt,
 			&i.RevokedAt,
 			&i.CreatedAt,

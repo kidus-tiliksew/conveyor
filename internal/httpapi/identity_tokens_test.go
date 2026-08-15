@@ -112,6 +112,33 @@ func TestPersonalAccessTokenIssuanceReturnsTheSecretOnlyOnce(t *testing.T) {
 	}
 }
 
+func TestPersonalAccessTokenListingCarriesOnlyNonSecretDeploymentMetadata(t *testing.T) {
+	tokens := &personalTokenFixture{tokens: map[string][]core.PersonalAccessToken{
+		"owner": {{
+			ID: "pat_deployment", UserID: "owner", Label: "legacy API token",
+			DeploymentCredential: true, CreatedAt: time.Unix(0, 0).UTC(),
+		}},
+	}}
+	server := newPersonalTokenServer(tokens)
+
+	listed := personalTokenCall(t, server, http.MethodGet, "/v1/tokens", "owner-token", "")
+	if listed.Code != http.StatusOK {
+		t.Fatalf("list status=%d body=%s", listed.Code, listed.Body.String())
+	}
+	var items []core.PersonalAccessToken
+	if err := json.Unmarshal(listed.Body.Bytes(), &items); err != nil {
+		t.Fatalf("decode token list: %v", err)
+	}
+	if len(items) != 1 || !items[0].DeploymentCredential {
+		t.Fatalf("deployment token list=%+v", items)
+	}
+	for _, forbidden := range []string{"token_hash", `"value"`} {
+		if strings.Contains(listed.Body.String(), forbidden) {
+			t.Fatalf("list response carried secret material %q: %s", forbidden, listed.Body.String())
+		}
+	}
+}
+
 func TestPersonalAccessTokenRoutesScopeEveryCallToTheCredentialOwner(t *testing.T) {
 	tokens := &personalTokenFixture{tokens: map[string][]core.PersonalAccessToken{
 		"owner": {{ID: "pat_owner_one", UserID: "owner", Label: "laptop"}},

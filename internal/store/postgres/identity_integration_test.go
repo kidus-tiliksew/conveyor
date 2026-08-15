@@ -587,6 +587,78 @@ func TestSelfServicePersonalAccessTokensAreOwnerScopedIntegration(t *testing.T) 
 		return response
 	}
 
+	// The bootstrap credential is marked only in its owner's non-secret list.
+	owner, err := st.VerifyPersonalAccessToken(t.Context(), legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ownerListed := call(http.MethodGet, "/v1/tokens", legacy, "")
+	var ownerTokens []core.PersonalAccessToken
+	if ownerListed.Code != http.StatusOK {
+		t.Fatalf("deployment token list status=%d body=%s", ownerListed.Code, ownerListed.Body.String())
+	}
+	if err := json.Unmarshal(ownerListed.Body.Bytes(), &ownerTokens); err != nil {
+		t.Fatalf("decode deployment token list: %v", err)
+	}
+	if len(ownerTokens) != 1 || ownerTokens[0].UserID != owner.ID || !ownerTokens[0].DeploymentCredential {
+		t.Fatalf("deployment token list=%+v", ownerTokens)
+	}
+	deploymentTokenID := ownerTokens[0].ID
+	for _, forbidden := range []string{legacy, "token_hash", `"value"`} {
+		if strings.Contains(ownerListed.Body.String(), forbidden) {
+			t.Fatalf("deployment token list carried secret material %q: %s", forbidden, ownerListed.Body.String())
+		}
+	}
+
+	ordinary := call(http.MethodPost, "/v1/tokens", legacy, `{"label":"operator laptop"}`)
+	if ordinary.Code != http.StatusCreated {
+		t.Fatalf("ordinary operator token status=%d body=%s", ordinary.Code, ordinary.Body.String())
+	}
+	ownerListed = call(http.MethodGet, "/v1/tokens", legacy, "")
+	if err := json.Unmarshal(ownerListed.Body.Bytes(), &ownerTokens); err != nil {
+		t.Fatal(err)
+	}
+	marked := 0
+	for _, item := range ownerTokens {
+		if item.DeploymentCredential {
+			marked++
+			if item.ID != deploymentTokenID {
+				t.Fatalf("deployment marker moved to ordinary token: %+v", ownerTokens)
+			}
+		}
+	}
+	if marked != 1 {
+		t.Fatalf("deployment marker count=%d tokens=%+v", marked, ownerTokens)
+	}
+
+	// Existing bootstrap rotation re-maps the credential without changing list
+	// secrecy; the marker follows the row that now authenticates the env value.
+	rotatedLegacy := "self-service-rotated-legacy-token"
+	if rotated, rotateErr := st.BootstrapIdentity(t.Context(), config.FirstOperatorIdentity{
+		OrganizationName: "Self Service Org", Email: "owner@example.test", DisplayName: "Owner",
+	}, rotatedLegacy); rotateErr != nil || !rotated {
+		t.Fatalf("rotate deployment credential rotated=%t err=%v", rotated, rotateErr)
+	}
+	if stale := call(http.MethodGet, "/v1/tokens", legacy, ""); stale.Code != http.StatusUnauthorized {
+		t.Fatalf("pre-rotation env token status=%d body=%s", stale.Code, stale.Body.String())
+	}
+	ownerListed = call(http.MethodGet, "/v1/tokens", rotatedLegacy, "")
+	if err := json.Unmarshal(ownerListed.Body.Bytes(), &ownerTokens); err != nil {
+		t.Fatal(err)
+	}
+	marked = 0
+	for _, item := range ownerTokens {
+		if item.DeploymentCredential {
+			marked++
+			if item.ID != deploymentTokenID {
+				t.Fatalf("rotated deployment marker token=%+v want id=%s", item, deploymentTokenID)
+			}
+		}
+	}
+	if marked != 1 || strings.Contains(ownerListed.Body.String(), rotatedLegacy) {
+		t.Fatalf("rotated deployment token list=%s", ownerListed.Body.String())
+	}
+
 	created := call(http.MethodPost, "/v1/tokens", aliceSeed.Value, `{"label":"laptop"}`)
 	if created.Code != http.StatusCreated {
 		t.Fatalf("issue status=%d body=%s", created.Code, created.Body.String())
@@ -636,6 +708,15 @@ func TestSelfServicePersonalAccessTokensAreOwnerScopedIntegration(t *testing.T) 
 	bobListed := call(http.MethodGet, "/v1/tokens", bobSeed.Value, "")
 	if bobListed.Code != http.StatusOK || strings.Contains(bobListed.Body.String(), issued.ID) {
 		t.Fatalf("bob list status=%d body=%s", bobListed.Code, bobListed.Body.String())
+	}
+	var bobTokens []core.PersonalAccessToken
+	if err := json.Unmarshal(bobListed.Body.Bytes(), &bobTokens); err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range bobTokens {
+		if item.DeploymentCredential {
+			t.Fatalf("deployment marker leaked to another owner: %+v", bobTokens)
+		}
 	}
 	if crossUser := call(http.MethodDelete, "/v1/tokens/"+issued.ID, bobSeed.Value, ""); crossUser.Code != http.StatusNotFound {
 		t.Fatalf("cross-user revocation status=%d body=%s", crossUser.Code, crossUser.Body.String())
