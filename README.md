@@ -189,6 +189,22 @@ Linux and macOS on amd64 and arm64, downloads only the selected GitHub release,
 and verifies its published SHA-256 checksum before unpacking or replacing
 either binary.
 
+### Contributor agent setup
+
+On each contributor machine, install the CLI and then install the factory's
+embedded agent skills. The second command defaults to user-global Claude Code
+skills under `~/.claude/skills`; pass `--project` to keep them in the current
+project instead.
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/kidus-tiliksew/conveyor/main/install.sh | sh
+conveyor skills install
+```
+
+`conveyor skills install --list` shows the release-carried files and their
+installed state without writing. Re-running the install refreshes only files
+previously owned by Conveyor and refuses unrelated collisions.
+
 To upgrade, re-run the installer with the newer version and restart the
 `conveyord` service. Replacing the two binaries is the entire software upgrade:
 startup applies pending database migrations, while a binary refuses to start
@@ -234,9 +250,10 @@ Open `http://127.0.0.1:8080`. The Board and Tasks views are the
 operating surfaces, and `http://127.0.0.1:8080/settings` has the MCP
 endpoint with a paste-ready client snippet.
 
-Authenticate the contributor CLI once with a personal access token from
-Settings. The token is read through hidden terminal input and verified before
-it is saved; it is never passed in argv.
+After installing the skills, connect the contributor CLI and MCP client with a
+personal access token from Settings. The CLI reads the token through hidden
+terminal input and verifies it before saving; it is never passed in argv. The
+Settings page also provides the MCP endpoint and paste-ready client snippet.
 
 ```sh
 bin/conveyor --server http://127.0.0.1:8080 auth login

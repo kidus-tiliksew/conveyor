@@ -44,6 +44,7 @@ func main() {
 	}
 	root.AddCommand(
 		authCmd(),
+		skillsCmd(),
 		taskCmd(),
 		configCmd(),
 		monitorCmd(),
