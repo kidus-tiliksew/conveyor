@@ -84,12 +84,13 @@ func workerInstallCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			paths, err := installWorkerService(cmd.Context(), newClient(), platform)
+			client := newClient()
+			paths, err := installWorkerService(cmd.Context(), client, platform)
 			if err != nil {
 				return err
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "installed worker service for workspace %s\nunit=%s\nstdout_log=%s\nstderr_log=%s\n",
-				workspaceFlag, paths.Unit, paths.Stdout, paths.Stderr)
+				client.workspace, paths.Unit, paths.Stdout, paths.Stderr)
 			return nil
 		},
 	}
@@ -105,14 +106,15 @@ func workerUninstallCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			paths, removed, err := uninstallWorkerService(cmd.Context(), newClient(), platform)
+			client := newClient()
+			paths, removed, err := uninstallWorkerService(cmd.Context(), client, platform)
 			if err != nil {
 				return err
 			}
 			if removed {
-				fmt.Fprintf(cmd.OutOrStdout(), "uninstalled worker service for workspace %s; enrollment preserved\nunit=%s\n", workspaceFlag, paths.Unit)
+				fmt.Fprintf(cmd.OutOrStdout(), "uninstalled worker service for workspace %s; enrollment preserved\nunit=%s\n", client.workspace, paths.Unit)
 			} else {
-				fmt.Fprintf(cmd.OutOrStdout(), "worker service for workspace %s is already uninstalled; enrollment preserved\nunit=%s\n", workspaceFlag, paths.Unit)
+				fmt.Fprintf(cmd.OutOrStdout(), "worker service for workspace %s is already uninstalled; enrollment preserved\nunit=%s\n", client.workspace, paths.Unit)
 			}
 			return nil
 		},
