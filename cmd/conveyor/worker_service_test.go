@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/serviceunit"
 )
 
 type recordedServiceCommand struct {
@@ -55,28 +56,33 @@ func saveTestWorkerEnrollment(t *testing.T, workspace string) string {
 	return path
 }
 
+func resolveTestWorkerService(t *testing.T, platform workerServicePlatform, workspace, address string) workerServicePaths {
+	t.Helper()
+	paths, err := resolveWorkerService(platform, workspace, address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths.Config = filepath.Join(platform.ConfigDir, "worker execution.yaml")
+	paths.Definition = workerServiceDefinition(platform, paths, workspace, address, paths.Config)
+	return paths
+}
+
 func TestWorkerServiceDefinitionsAreWorkspaceSpecificAndSecretFree(t *testing.T) {
 	for _, goos := range []string{"darwin", "linux"} {
 		t.Run(goos, func(t *testing.T) {
 			platform := testWorkerServicePlatform(t, goos, nil)
-			paths, err := resolveWorkerService(platform, "demo", "https://control.example")
-			if err != nil {
-				t.Fatal(err)
-			}
+			paths := resolveTestWorkerService(t, platform, "demo", "https://control.example")
 			for _, forbidden := range []string{"saved-secret", "CONVEYOR_API_TOKEN", "CONVEYOR_WORKER_TOKEN", "--pairing-token"} {
 				if strings.Contains(paths.Definition, forbidden) {
 					t.Fatalf("definition contains secret-bearing field %q:\n%s", forbidden, paths.Definition)
 				}
 			}
-			for _, required := range []string{workerServiceOwner, "--workspace", "demo", "worker", "run", "https://control.example"} {
+			for _, required := range []string{workerServiceOwner, "--workspace", "demo", "worker", "run", "--config", paths.Config, "https://control.example"} {
 				if !strings.Contains(paths.Definition, required) {
 					t.Fatalf("definition missing %q:\n%s", required, paths.Definition)
 				}
 			}
-			other, err := resolveWorkerService(platform, "demo-2", "https://control.example")
-			if err != nil {
-				t.Fatal(err)
-			}
+			other := resolveTestWorkerService(t, platform, "demo-2", "https://control.example")
 			if paths.Name == other.Name || paths.Unit == other.Unit {
 				t.Fatalf("workspace services collide: %#v %#v", paths, other)
 			}
@@ -86,10 +92,7 @@ func TestWorkerServiceDefinitionsAreWorkspaceSpecificAndSecretFree(t *testing.T)
 
 func TestLinuxWorkerServicePathDirectivesAreUnquoted(t *testing.T) {
 	platform := testWorkerServicePlatform(t, "linux", nil)
-	paths, err := resolveWorkerService(platform, "demo", "https://control.example")
-	if err != nil {
-		t.Fatal(err)
-	}
+	paths := resolveTestWorkerService(t, platform, "demo", "https://control.example")
 	for _, required := range []string{
 		"StandardOutput=append:" + paths.Stdout + "\n",
 		"StandardError=append:" + paths.Stderr + "\n",
@@ -110,7 +113,8 @@ func TestWorkerServiceInstallRequiresSavedEnrollmentBeforeMutation(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = installWorkerService(t.Context(), &client{base: "https://control.example", workspace: "demo"}, platform)
+	configPath := writeWorkerLocalExecutionConfig(t, []string{"true", "{prompt}", "{mcp_config}"}, []string{"true"})
+	_, err = installWorkerService(t.Context(), &client{base: "https://control.example", workspace: "demo"}, platform, configPath)
 	if err == nil || !strings.Contains(err.Error(), "worker pair") || !strings.Contains(err.Error(), "--pairing-token") {
 		t.Fatalf("expected actionable enrollment error, got %v", err)
 	}
@@ -122,6 +126,40 @@ func TestWorkerServiceInstallRequiresSavedEnrollmentBeforeMutation(t *testing.T)
 	}
 }
 
+func TestWorkerServiceInstallRejectsMissingLocalSetupBeforeMutation(t *testing.T) {
+	var commands []recordedServiceCommand
+	platform := testWorkerServicePlatform(t, "linux", func(_ context.Context, name string, args ...string) (string, error) {
+		commands = append(commands, recordedServiceCommand{name: name, args: args})
+		return "", nil
+	})
+	saveTestWorkerEnrollment(t, "demo")
+	paths, err := resolveWorkerService(platform, "demo", "https://control.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	missing := filepath.Join(t.TempDir(), "missing.yaml")
+	_, err = installWorkerService(t.Context(), &client{base: "https://control.example", workspace: "demo"}, platform, missing)
+	if err == nil || !strings.Contains(err.Error(), missing) || !strings.Contains(err.Error(), localExecutionSetupCommand) {
+		t.Fatalf("missing setup error=%v", err)
+	}
+	if len(commands) != 0 {
+		t.Fatalf("service manager called before setup validation: %#v", commands)
+	}
+	if _, statErr := os.Stat(paths.Unit); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("unit written before setup validation: %v", statErr)
+	}
+}
+
+func TestWorkerInstallConfigFlagUsesLocalExecutionDefault(t *testing.T) {
+	defaultPath := filepath.Join(t.TempDir(), "conveyor.yaml")
+	t.Setenv("CONVEYOR_CONFIG", defaultPath)
+	command := workerInstallCmd()
+	flag := command.Flags().Lookup("config")
+	if flag == nil || flag.DefValue != defaultPath {
+		t.Fatalf("config flag=%+v", flag)
+	}
+}
+
 func TestLinuxWorkerServiceInstallUninstallIsIdempotentAndPreservesEnrollment(t *testing.T) {
 	var commands []recordedServiceCommand
 	platform := testWorkerServicePlatform(t, "linux", func(_ context.Context, name string, args ...string) (string, error) {
@@ -129,12 +167,13 @@ func TestLinuxWorkerServiceInstallUninstallIsIdempotentAndPreservesEnrollment(t 
 		return "", nil
 	})
 	credential := saveTestWorkerEnrollment(t, "demo")
+	configPath := writeWorkerLocalExecutionConfig(t, []string{"true", "{prompt}", "{mcp_config}"}, []string{"true"})
 	c := &client{base: "https://control.example", workspace: "demo"}
-	first, err := installWorkerService(t.Context(), c, platform)
+	first, err := installWorkerService(t.Context(), c, platform, configPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := installWorkerService(t.Context(), c, platform)
+	second, err := installWorkerService(t.Context(), c, platform, configPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,6 +193,13 @@ func TestLinuxWorkerServiceInstallUninstallIsIdempotentAndPreservesEnrollment(t 
 	}
 	if strings.Contains(string(definition), "saved-secret") {
 		t.Fatal("saved credential leaked into systemd unit")
+	}
+	absoluteConfig, err := filepath.Abs(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Config != absoluteConfig || !strings.Contains(string(definition), "--config "+serviceunit.QuoteArg(absoluteConfig)) {
+		t.Fatalf("config=%q definition=%s", first.Config, definition)
 	}
 	for _, logPath := range []string{first.Stdout, first.Stderr} {
 		logInfo, statErr := os.Stat(logPath)
@@ -210,7 +256,8 @@ func TestWorkerServiceFailsClosedOnConflictingUnit(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := &client{base: "https://control.example", workspace: "demo"}
-	if _, err = installWorkerService(t.Context(), c, platform); err == nil || !strings.Contains(err.Error(), "refusing to overwrite") {
+	configPath := writeWorkerLocalExecutionConfig(t, []string{"true", "{prompt}", "{mcp_config}"}, []string{"true"})
+	if _, err = installWorkerService(t.Context(), c, platform, configPath); err == nil || !strings.Contains(err.Error(), "refusing to overwrite") {
 		t.Fatalf("install conflict error=%v", err)
 	}
 	if _, _, err = uninstallWorkerService(t.Context(), c, platform); err == nil || !strings.Contains(err.Error(), "refusing to remove") {
@@ -226,7 +273,8 @@ func TestDarwinWorkerServiceLifecycleUsesPerUserLaunchAgent(t *testing.T) {
 	})
 	saveTestWorkerEnrollment(t, "demo")
 	c := &client{base: "https://control.example", workspace: "demo"}
-	paths, err := installWorkerService(t.Context(), c, platform)
+	configPath := writeWorkerLocalExecutionConfig(t, []string{"true", "{prompt}", "{mcp_config}"}, []string{"true"})
+	paths, err := installWorkerService(t.Context(), c, platform, configPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -272,10 +320,7 @@ func TestWorkerServiceStatusSeparatesLocalFailureFromRemoteLiveness(t *testing.T
 		return "", nil
 	})
 	saveTestWorkerEnrollment(t, "demo")
-	paths, err := resolveWorkerService(platform, "demo", server.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
+	paths := resolveTestWorkerService(t, platform, "demo", server.URL)
 	c := &client{base: server.URL, workspace: "demo"}
 	status, err := inspectWorkerService(t.Context(), c, platform)
 	if err != nil {
@@ -353,14 +398,11 @@ func TestWorkerServiceDefinitionNativeSyntaxWhenAvailable(t *testing.T) {
 	}
 	platform := testWorkerServicePlatform(t, runtime.GOOS, nil)
 	platform.Executable = os.Args[0]
-	paths, err := resolveWorkerService(platform, "demo", "https://control.example")
-	if err != nil {
+	paths := resolveTestWorkerService(t, platform, "demo", "https://control.example")
+	if err := os.MkdirAll(filepath.Dir(paths.Unit), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err = os.MkdirAll(filepath.Dir(paths.Unit), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err = os.WriteFile(paths.Unit, []byte(paths.Definition), 0o600); err != nil {
+	if err := os.WriteFile(paths.Unit, []byte(paths.Definition), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if output, err := exec.Command(tool, args(paths.Unit)...).CombinedOutput(); err != nil {

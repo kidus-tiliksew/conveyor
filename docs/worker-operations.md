@@ -32,18 +32,19 @@ bin/conveyor --workspace demo worker pair
 bin/conveyor --workspace demo worker run --pairing-token <token> --once
 
 # Install, inspect, and remove the workspace-specific user service.
-bin/conveyor --workspace demo worker install
+bin/conveyor --workspace demo worker install --config /absolute/path/to/conveyor.yaml
 bin/conveyor --workspace demo worker status
 bin/conveyor --workspace demo worker uninstall
 ```
 
-`install` requires an existing saved enrollment, resolves the absolute
-Conveyor executable, and writes one stable workspace-specific definition. It
+`install` requires an existing saved enrollment and a valid local execution
+setup, resolves both the configuration path and Conveyor executable to
+absolute paths, and writes one stable workspace-specific definition. It
 uses a per-user launchd agent on macOS or a systemd user unit on Linux. The
 definition contains only the explicit workspace, control-plane address, and
-local paths needed by the existing `worker run` command. It never contains the
-saved worker credential, an API token, or a pairing token. Unit, metadata, and
-log files are created owner-only.
+local paths needed by the existing `worker run` command, including its explicit
+`--config` path. It never contains the saved worker credential, an API token,
+or a pairing token. Unit, metadata, and log files are created owner-only.
 
 Repeated installation converges on the same unit. Conveyor refuses to
 overwrite or remove an unrecognized or different-workspace definition at the

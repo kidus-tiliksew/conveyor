@@ -296,7 +296,12 @@ read harness, model, or effort choices from the server's persisted workspace
 copy. If the file is missing or invalid, startup fails before any claim and
 prints the config path plus the setup command needed to repair it. Set
 `CONVEYOR_CONFIG` when a service or working directory should use a path other
-than `./conveyor.yaml`.
+than `./conveyor.yaml`. Reinstall an existing user service with the absolute
+path so launchd or systemd preserves it:
+
+```sh
+bin/conveyor --workspace demo worker install --config /absolute/path/to/conveyor.yaml
+```
 
 File work from the CLI:
 
