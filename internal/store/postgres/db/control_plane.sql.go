@@ -2155,13 +2155,35 @@ type InsertUserTokenParams struct {
 }
 
 const insertUserToken = `-- name: InsertUserToken :one
-INSERT INTO user_tokens (id, user_id, label, token_hash, kind, scope)
-VALUES ($1, $2, $3, $4, $5, $6)
+INSERT INTO user_tokens (id, user_id, label, token_hash, kind, scope, deployment_credential)
+VALUES ($1, $2, $3, $4, $5, $6, false)
 RETURNING id, user_id, label, token_hash, kind, scope, last_used_at, revoked_at, created_at
 `
 
 func (q *Queries) InsertUserToken(ctx context.Context, arg InsertUserTokenParams) (UserToken, error) {
 	row := q.db.QueryRow(ctx, insertUserToken, arg.ID, arg.UserID, arg.Label, arg.TokenHash, arg.Kind, arg.Scope)
+	var item UserToken
+	err := row.Scan(&item.ID, &item.UserID, &item.Label, &item.TokenHash, &item.Kind, &item.Scope, &item.LastUsedAt, &item.RevokedAt, &item.CreatedAt)
+	return item, err
+}
+
+type InsertDeploymentCredentialParams struct {
+	ID        string `json:"id"`
+	UserID    string `json:"user_id"`
+	Label     string `json:"label"`
+	TokenHash []byte `json:"token_hash"`
+	Kind      string `json:"kind"`
+	Scope     string `json:"scope"`
+}
+
+const insertDeploymentCredential = `-- name: InsertDeploymentCredential :one
+INSERT INTO user_tokens (id, user_id, label, token_hash, kind, scope, deployment_credential)
+VALUES ($1, $2, $3, $4, $5, $6, true)
+RETURNING id, user_id, label, token_hash, kind, scope, last_used_at, revoked_at, created_at
+`
+
+func (q *Queries) InsertDeploymentCredential(ctx context.Context, arg InsertDeploymentCredentialParams) (UserToken, error) {
+	row := q.db.QueryRow(ctx, insertDeploymentCredential, arg.ID, arg.UserID, arg.Label, arg.TokenHash, arg.Kind, arg.Scope)
 	var item UserToken
 	err := row.Scan(&item.ID, &item.UserID, &item.Label, &item.TokenHash, &item.Kind, &item.Scope, &item.LastUsedAt, &item.RevokedAt, &item.CreatedAt)
 	return item, err
@@ -2231,7 +2253,7 @@ func (q *Queries) RevokeUserToken(ctx context.Context, id string) (UserToken, er
 }
 
 const listOwnUserTokens = `-- name: ListOwnUserTokens :many
-SELECT id, user_id, label, label = 'legacy API token' AS deployment_credential,
+SELECT id, user_id, label, deployment_credential,
        last_used_at, revoked_at, created_at
 FROM user_tokens
 WHERE user_id = $1 AND kind = 'user'

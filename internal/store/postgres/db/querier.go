@@ -13,6 +13,7 @@ type Querier interface {
 	DeactivateIdentityUser(ctx context.Context, id string) (User, error)
 	GetIdentityUser(ctx context.Context, id string) (User, error)
 	GetUserTokenByHash(ctx context.Context, tokenHash []byte) (GetUserTokenByHashRow, error)
+	InsertDeploymentCredential(ctx context.Context, arg InsertDeploymentCredentialParams) (UserToken, error)
 	InsertIdentityUser(ctx context.Context, arg InsertIdentityUserParams) (User, error)
 	InsertUserToken(ctx context.Context, arg InsertUserTokenParams) (UserToken, error)
 	ListOwnUserTokens(ctx context.Context, userID string) ([]ListOwnUserTokensRow, error)
