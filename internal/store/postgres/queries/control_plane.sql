@@ -23,8 +23,13 @@ RETURNING id, email, display_name, status, created_at;
 SELECT id, email, display_name, status, created_at FROM users WHERE id = $1;
 
 -- name: InsertUserToken :one
-INSERT INTO user_tokens (id, user_id, label, token_hash, kind, scope)
-VALUES ($1, $2, $3, $4, $5, $6)
+INSERT INTO user_tokens (id, user_id, label, token_hash, kind, scope, deployment_credential)
+VALUES ($1, $2, $3, $4, $5, $6, false)
+RETURNING id, user_id, label, token_hash, kind, scope, last_used_at, revoked_at, created_at;
+
+-- name: InsertDeploymentCredential :one
+INSERT INTO user_tokens (id, user_id, label, token_hash, kind, scope, deployment_credential)
+VALUES ($1, $2, $3, $4, $5, $6, true)
 RETURNING id, user_id, label, token_hash, kind, scope, last_used_at, revoked_at, created_at;
 
 -- name: GetUserTokenByHash :one
@@ -45,7 +50,7 @@ WHERE id = $1 AND kind = 'user'
 RETURNING id, user_id, label, token_hash, kind, scope, last_used_at, revoked_at, created_at;
 
 -- name: ListOwnUserTokens :many
-SELECT id, user_id, label, label = 'legacy API token' AS deployment_credential,
+SELECT id, user_id, label, deployment_credential,
        last_used_at, revoked_at, created_at
 FROM user_tokens
 WHERE user_id = $1 AND kind = 'user'
