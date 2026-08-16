@@ -36,6 +36,10 @@ func TestIdentityBootstrapAndPersonalAccessTokenLifecycleIntegration(t *testing.
 	if orgCount != 1 || userCount != 1 || tokenCount != 1 {
 		t.Fatalf("bootstrap counts org=%d user=%d token=%d, want 1/1/1", orgCount, userCount, tokenCount)
 	}
+	var markedCount int
+	if err := st.pool.QueryRow(t.Context(), `SELECT count(*) FROM user_tokens WHERE deployment_credential`).Scan(&markedCount); err != nil || markedCount != 1 {
+		t.Fatalf("bootstrap deployment marker count=%d err=%v", markedCount, err)
+	}
 	principal, err := st.VerifyPersonalAccessToken(t.Context(), legacy)
 	if err != nil || principal.Email != identity.Email || principal.Status != "active" {
 		t.Fatalf("legacy verification principal=%+v err=%v", principal, err)
@@ -45,7 +49,7 @@ func TestIdentityBootstrapAndPersonalAccessTokenLifecycleIntegration(t *testing.
 		t.Fatalf("bootstrap rotation workspace seeded=%t err=%v", seededWorkspace, err)
 	}
 	var storedHash []byte
-	if err := st.pool.QueryRow(t.Context(), `SELECT token_hash FROM user_tokens WHERE label='legacy API token'`).Scan(&storedHash); err != nil {
+	if err := st.pool.QueryRow(t.Context(), `SELECT token_hash FROM user_tokens WHERE deployment_credential`).Scan(&storedHash); err != nil {
 		t.Fatal(err)
 	}
 	wantHash := sha256.Sum256([]byte(legacy))
@@ -251,7 +255,7 @@ func TestIdentityBootstrapRevocationAndDeploymentAuditIntegration(t *testing.T) 
 	}
 
 	var tokenID string
-	if err := st.pool.QueryRow(t.Context(), `SELECT id FROM user_tokens WHERE label='legacy API token'`).Scan(&tokenID); err != nil {
+	if err := st.pool.QueryRow(t.Context(), `SELECT id FROM user_tokens WHERE deployment_credential`).Scan(&tokenID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := st.RevokePersonalAccessToken(t.Context(), tokenID); err != nil {
@@ -492,12 +496,57 @@ func TestIdentityBootstrapConcurrentStartsConvergeIntegration(t *testing.T) {
 	if seededCount != 1 {
 		t.Fatalf("concurrent bootstrap seeded count=%d, want 1", seededCount)
 	}
-	var users, tokens int
-	if err := st.pool.QueryRow(t.Context(), `SELECT (SELECT count(*) FROM users), (SELECT count(*) FROM user_tokens)`).Scan(&users, &tokens); err != nil {
+	var users, tokens, marked int
+	if err := st.pool.QueryRow(t.Context(), `SELECT (SELECT count(*) FROM users), (SELECT count(*) FROM user_tokens), (SELECT count(*) FROM user_tokens WHERE deployment_credential)`).Scan(&users, &tokens, &marked); err != nil {
 		t.Fatal(err)
 	}
-	if users != 1 || tokens != 1 {
-		t.Fatalf("concurrent bootstrap rows users=%d tokens=%d, want 1/1", users, tokens)
+	if users != 1 || tokens != 1 || marked != 1 {
+		t.Fatalf("concurrent bootstrap rows users=%d tokens=%d marked=%d, want 1/1/1", users, tokens, marked)
+	}
+}
+
+func TestDeploymentCredentialMarkerMigrationBackfillAndRerunIntegration(t *testing.T) {
+	st := newIdentityIntegrationStore(t, 97)
+	if _, err := st.pool.Exec(t.Context(), `INSERT INTO users(id,email,display_name,status)
+		VALUES('usr_marker_owner','marker-owner@example.test','Marker Owner','active')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.pool.Exec(t.Context(), `INSERT INTO user_tokens(id,user_id,label,token_hash,kind,scope)
+		VALUES('pat_legacy_marker','usr_marker_owner','legacy API token',decode(repeat('01',32),'hex'),'user','operator')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrateControlPlaneToVersion(t.Context(), st.pool, 98); err != nil {
+		t.Fatalf("apply marker migration: %v", err)
+	}
+
+	var marked bool
+	var markedCount int
+	if err := st.pool.QueryRow(t.Context(), `SELECT deployment_credential FROM user_tokens WHERE id='pat_legacy_marker'`).Scan(&marked); err != nil || !marked {
+		t.Fatalf("backfilled marker=%t err=%v", marked, err)
+	}
+	// The legacy label is display-only after migration and may collide.
+	if _, err := st.pool.Exec(t.Context(), `INSERT INTO user_tokens(id,user_id,label,token_hash,kind,scope)
+		VALUES('pat_label_collision','usr_marker_owner','legacy API token',decode(repeat('02',32),'hex'),'user','operator')`); err != nil {
+		t.Fatalf("duplicate display label rejected: %v", err)
+	}
+
+	raw, err := migrationFiles.ReadFile("migrations/098_deployment_credential_marker.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql, err := renderMigration(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.pool.Exec(t.Context(), string(sql)); err != nil {
+		t.Fatalf("rerun marker migration: %v", err)
+	}
+	if err := st.pool.QueryRow(t.Context(), `SELECT count(*) FROM user_tokens WHERE deployment_credential`).Scan(&markedCount); err != nil || markedCount != 1 {
+		t.Fatalf("marker count after rerun=%d err=%v", markedCount, err)
+	}
+	if _, err := st.pool.Exec(t.Context(), `INSERT INTO user_tokens(id,user_id,label,token_hash,kind,scope,deployment_credential)
+		VALUES('pat_second_marker','usr_marker_owner','other label',decode(repeat('03',32),'hex'),'user','operator',true)`); err == nil {
+		t.Fatal("deployment marker uniqueness accepted a second marked row")
 	}
 }
 
@@ -631,6 +680,37 @@ func TestSelfServicePersonalAccessTokensAreOwnerScopedIntegration(t *testing.T) 
 		t.Fatalf("deployment marker count=%d tokens=%+v", marked, ownerTokens)
 	}
 
+	spoofed := call(http.MethodPost, "/v1/tokens", legacy, `{"label":"legacy API token"}`)
+	if spoofed.Code != http.StatusCreated {
+		t.Fatalf("spoof-label issue status=%d body=%s", spoofed.Code, spoofed.Body.String())
+	}
+	var spoofedToken core.IssuedPersonalAccessToken
+	if err := json.Unmarshal(spoofed.Body.Bytes(), &spoofedToken); err != nil {
+		t.Fatal(err)
+	}
+	if spoofedToken.DeploymentCredential {
+		t.Fatalf("spoof-label issuance received deployment marker: %+v", spoofedToken)
+	}
+	ownerListed = call(http.MethodGet, "/v1/tokens", spoofedToken.Value, "")
+	if err := json.Unmarshal(ownerListed.Body.Bytes(), &ownerTokens); err != nil {
+		t.Fatal(err)
+	}
+	marked = 0
+	for _, item := range ownerTokens {
+		if item.DeploymentCredential {
+			marked++
+			if item.ID != deploymentTokenID {
+				t.Fatalf("spoof label moved deployment marker: %+v", ownerTokens)
+			}
+		}
+		if item.ID == spoofedToken.ID && item.DeploymentCredential {
+			t.Fatalf("spoofed token listed as deployment credential: %+v", item)
+		}
+	}
+	if marked != 1 {
+		t.Fatalf("deployment marker count after label spoof=%d tokens=%+v", marked, ownerTokens)
+	}
+
 	// Existing bootstrap rotation re-maps the credential without changing list
 	// secrecy; the marker follows the row that now authenticates the env value.
 	rotatedLegacy := "self-service-rotated-legacy-token"
@@ -641,6 +721,9 @@ func TestSelfServicePersonalAccessTokensAreOwnerScopedIntegration(t *testing.T) 
 	}
 	if stale := call(http.MethodGet, "/v1/tokens", legacy, ""); stale.Code != http.StatusUnauthorized {
 		t.Fatalf("pre-rotation env token status=%d body=%s", stale.Code, stale.Body.String())
+	}
+	if inert := call(http.MethodGet, "/v1/tokens", spoofedToken.Value, ""); inert.Code != http.StatusOK {
+		t.Fatalf("spoof-label token was altered by bootstrap rotation: status=%d body=%s", inert.Code, inert.Body.String())
 	}
 	ownerListed = call(http.MethodGet, "/v1/tokens", rotatedLegacy, "")
 	if err := json.Unmarshal(ownerListed.Body.Bytes(), &ownerTokens); err != nil {
