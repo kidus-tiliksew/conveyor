@@ -95,6 +95,41 @@ func TestExecutionWizardModelRoundTripWritesRunValidConfig(t *testing.T) {
 	}
 }
 
+func TestRunAndWorkerShareLocalSetupLoaderAndResolution(t *testing.T) {
+	harness := config.HarnessTemplates()[0].Harness
+	model := newExecutionWizardModel([]config.Harness{harness})
+	for model.field < len(model.fields) {
+		updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		model = updated.(executionWizardModel)
+	}
+	path := filepath.Join(t.TempDir(), "conveyor.yaml")
+	if err := writeLocalExecutionConfig(path, "demo", model.choices, []config.Harness{harness}); err != nil {
+		t.Fatal(err)
+	}
+	setup, err := loadLocalExecutionSetup(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := workerservice.DispatchOrder{Order: core.WorkOrder{
+		ID: "shared-loader", Stage: core.StageImplement, RequiredHarness: "server-harness", RequiredModel: "server-model",
+		RequiredHarnessConfig: &core.HarnessSnapshot{Name: "server-harness", Command: []string{"server-agent"}},
+	}}
+	run, err := selectLocalRunDispatch(item, setup.Config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker, err := selectLocalWorkerDispatch(item, setup.Config, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Harness.Name != worker.Harness.Name || run.Model != worker.Model || run.Effort != worker.Effort || !reflect.DeepEqual(run.EffortArgv, worker.EffortArgv) {
+		t.Fatalf("run=%+v worker=%+v", run, worker)
+	}
+	if setup.FirstActivityTimeout <= 0 || len(setup.WorkerDocument.Harnesses) != 1 || setup.WorkerDocument.Harnesses[0].Name != run.Harness.Name {
+		t.Fatalf("setup=%+v run=%+v", setup, run)
+	}
+}
+
 func TestExecutionSetupCommandIsDistinctFromTaskSetup(t *testing.T) {
 	command := configCmd()
 	resolved, _, err := command.Find([]string{"init-execution"})

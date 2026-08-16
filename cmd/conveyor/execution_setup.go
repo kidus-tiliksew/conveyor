@@ -25,6 +25,39 @@ import (
 
 const localExecutionSetupCommand = "conveyor config init-execution"
 
+type localExecutionSetup struct {
+	Config               *config.Config
+	WorkerDocument       workerservice.WorkerConfig
+	FirstActivityTimeout time.Duration
+}
+
+func defaultLocalExecutionConfigPath() string {
+	path := strings.TrimSpace(os.Getenv("CONVEYOR_CONFIG"))
+	if path == "" {
+		path = "conveyor.yaml"
+	}
+	return path
+}
+
+// loadLocalExecutionSetup is the one local launch-configuration boundary used
+// by both explicit conveyor run and the auto-claiming worker loop. Keeping the
+// actionable remedy here prevents the two entry points from drifting.
+func loadLocalExecutionSetup(path string) (localExecutionSetup, error) {
+	local, err := config.Load(path)
+	if err != nil {
+		return localExecutionSetup{}, fmt.Errorf("load local execution config: %w; create it with `%s --config %s`", err, localExecutionSetupCommand, path)
+	}
+	document := workerservice.WorkerConfig{WorkspaceDocument: local.WorkspaceDocument()}
+	if err = validateWorkerConfig(document); err != nil {
+		return localExecutionSetup{}, fmt.Errorf("invalid local execution config: %w; recreate it with `%s --config %s`", err, localExecutionSetupCommand, path)
+	}
+	firstActivityTimeout, err := configuredFirstActivityTimeout(local)
+	if err != nil {
+		return localExecutionSetup{}, localExecutionSetupRemedy(path, err)
+	}
+	return localExecutionSetup{Config: local, WorkerDocument: document, FirstActivityTimeout: firstActivityTimeout}, nil
+}
+
 var wizardTerminal = inputIsTerminal
 
 var runExecutionWizardUI = func(model executionWizardModel, input io.Reader, output io.Writer) (executionWizardModel, error) {

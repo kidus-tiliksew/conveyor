@@ -18,11 +18,8 @@ import (
 )
 
 func runCmd() *cobra.Command {
-	configPath := strings.TrimSpace(os.Getenv("CONVEYOR_CONFIG"))
+	configPath := defaultLocalExecutionConfigPath()
 	auto := false
-	if configPath == "" {
-		configPath = "conveyor.yaml"
-	}
 	cmd := &cobra.Command{
 		Use:   "run <task-id>",
 		Short: "Explicitly claim and execute one task on this machine",
@@ -56,20 +53,12 @@ func runTask(ctx context.Context, c *client, taskID, configPath string, input io
 		_, err = fmt.Fprintf(output, "task %s has no claimable implement or review order\n", taskID)
 		return err
 	}
-	local, err := config.Load(configPath)
+	setup, err := loadLocalExecutionSetup(configPath)
 	if err != nil {
 		_ = presentPendingRunOrder(output, *item)
-		return fmt.Errorf("load local execution config: %w; create it with `%s --config %s`", err, localExecutionSetupCommand, configPath)
+		return err
 	}
-	if err = validateWorkerConfig(workerservice.WorkerConfig{WorkspaceDocument: local.WorkspaceDocument()}); err != nil {
-		_ = presentPendingRunOrder(output, *item)
-		return fmt.Errorf("invalid local execution config: %w; recreate it with `%s --config %s`", err, localExecutionSetupCommand, configPath)
-	}
-	firstActivityTimeout, err := configuredFirstActivityTimeout(local)
-	if err != nil {
-		_ = presentPendingRunOrder(output, *item)
-		return localExecutionSetupRemedy(configPath, err)
-	}
+	local := setup.Config
 	reader := bufio.NewReader(input)
 	runStages := make([]core.Stage, 0, 2)
 	for {
@@ -96,7 +85,7 @@ func runTask(ctx context.Context, c *client, taskID, configPath string, input io
 				return printRunSummary(output, selected.Task, runStages)
 			}
 		}
-		if runErr := runHarnessChildWithFirstActivityTimeoutAndRunMode(ctx, c, c.token, selected, firstActivityTimeout, mode); runErr != nil {
+		if runErr := runHarnessChildWithFirstActivityTimeoutAndRunMode(ctx, c, c.token, selected, setup.FirstActivityTimeout, mode); runErr != nil {
 			return runErr
 		}
 		runStages = append(runStages, selected.Order.Stage)
@@ -195,6 +184,29 @@ func configuredFirstActivityTimeout(local *config.Config) (time.Duration, error)
 }
 
 func selectLocalRunDispatch(item workerservice.DispatchOrder, local *config.Config) (workerservice.DispatchOrder, error) {
+	item, err := selectLocalExecutionDispatch(item, local)
+	if err != nil {
+		return item, err
+	}
+	item.Dispatch = "run"
+	item.Auth = "user"
+	return item, nil
+}
+
+func selectLocalWorkerDispatch(item workerservice.DispatchOrder, local *config.Config, log io.Writer) (workerservice.DispatchOrder, error) {
+	selected, err := selectLocalExecutionDispatch(item, local)
+	if err != nil {
+		return item, err
+	}
+	if item.Order.RequiredModel != "" || item.Order.RequiredHarnessConfig != nil || item.Order.RequiredHarness != "" || item.Order.RequiredEffort != "" {
+		_, _ = fmt.Fprintf(log, "worker order %s: ignoring server-pinned execution fields; using local setup harness=%s model=%s effort=%s\n", item.Order.ID, selected.Harness.Name, selected.Model, selected.Effort)
+	}
+	selected.Dispatch = "worker"
+	selected.Auth = "byoa"
+	return selected, nil
+}
+
+func selectLocalExecutionDispatch(item workerservice.DispatchOrder, local *config.Config) (workerservice.DispatchOrder, error) {
 	stage := string(item.Order.Stage)
 	route, ok := local.Routing.Stages[stage]
 	if !ok || route.Execution != config.ExecutionMCP {
@@ -228,7 +240,5 @@ func selectLocalRunDispatch(item workerservice.DispatchOrder, local *config.Conf
 	item.Effort = effort
 	item.EffortArgv = append([]string(nil), harness.EffortArgs[effort]...)
 	item.HarnessSelection = "local"
-	item.Dispatch = "run"
-	item.Auth = "user"
 	return item, nil
 }

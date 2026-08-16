@@ -285,9 +285,18 @@ export CONVEYOR_WORKSPACE=demo
 Start a worker on the machine where your agents run:
 
 ```sh
+bin/conveyor config init-execution --config ./conveyor.yaml     # required local launch setup
 bin/conveyor --workspace demo worker pair                      # prints a single-use pairing token
-bin/conveyor --workspace demo worker run --pairing-token <t>   # exchanges it for a revocable credential
+bin/conveyor --workspace demo worker run --config ./conveyor.yaml --pairing-token <t>
 ```
+
+Upgrade note for solo Mac and devbox workers: create the local execution setup
+before replacing the binary while worker mode is enabled. Workers no longer
+read harness, model, or effort choices from the server's persisted workspace
+copy. If the file is missing or invalid, startup fails before any claim and
+prints the config path plus the setup command needed to repair it. Set
+`CONVEYOR_CONFIG` when a service or working directory should use a path other
+than `./conveyor.yaml`.
 
 File work from the CLI:
 
