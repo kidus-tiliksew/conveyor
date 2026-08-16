@@ -760,8 +760,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunMode(ctx context.Cont
 	if runMode != "" {
 		message := "conveyor run mode: " + runMode
 		if err = c.reportDispatchProgressContext(ctx, credential, item, sessionID, message); err != nil {
-			_ = release(core.WorkOrderOutcomeReleased, "report run mode failed", nil)
-			return fmt.Errorf("report run mode progress: %w", err)
+			_, _ = fmt.Fprintf(stderr, "warning: report run mode progress: %v; continuing because progress telemetry is best-effort\n", err)
 		}
 	}
 	if hook := workerPreStartTestHook; hook != nil {

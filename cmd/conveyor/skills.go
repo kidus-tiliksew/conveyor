@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/kidus-tiliksew/conveyor/internal/releaseinfo"
@@ -78,13 +79,14 @@ var embeddedSkillManifest = []embeddedSkillFile{
 
 type skillInstallFile struct {
 	embeddedSkillFile
-	tool    string
-	target  string
-	content []byte
-	prior   []byte
-	mode    fs.FileMode
-	exists  bool
-	status  string
+	tool       string
+	target     string
+	content    []byte
+	prior      []byte
+	mode       fs.FileMode
+	exists     bool
+	status     string
+	safetyRoot string
 }
 
 type skillTool struct {
@@ -122,7 +124,7 @@ func skillsInstallCmd() *cobra.Command {
 }
 
 func skillsInstallCmdWithLookPath(lookPath func(string) (string, error)) *cobra.Command {
-	var project, list, adopt bool
+	var project, list, adopt, force bool
 	var selectedTool string
 	command := &cobra.Command{
 		Use:   "install",
@@ -141,7 +143,7 @@ func skillsInstallCmdWithLookPath(lookPath func(string) (string, error)) *cobra.
 			if list {
 				return listEmbeddedSkillsForDestinations(cmd, base, destinations, releaseinfo.Version)
 			}
-			results, reports, err := installEmbeddedSkillsForDestinations(base, destinations, releaseinfo.Version, adopt)
+			results, reports, err := installEmbeddedSkillsForDestinationsWithForce(base, destinations, releaseinfo.Version, adopt, force)
 			if err != nil {
 				return err
 			}
@@ -158,6 +160,7 @@ func skillsInstallCmdWithLookPath(lookPath func(string) (string, error)) *cobra.
 	command.Flags().BoolVar(&list, "list", false, "list embedded files and their installed state without writing")
 	command.Flags().StringVar(&selectedTool, "tool", "", "install only for one detected tool (claude or codex)")
 	command.Flags().BoolVar(&adopt, "adopt", false, "adopt unmarked skill files in a selected native destination")
+	command.Flags().BoolVar(&force, "force", false, "allow replacing managed skills installed by a newer Conveyor release")
 	return command
 }
 
@@ -264,13 +267,17 @@ func installEmbeddedSkills(base, root, version string) ([]skillInstallFile, erro
 }
 
 func installEmbeddedSkillsForDestinations(base string, destinations []skillDestination, version string, adopt bool) ([]skillInstallFile, []skillInstallReport, error) {
+	return installEmbeddedSkillsForDestinationsWithForce(base, destinations, version, adopt, false)
+}
+
+func installEmbeddedSkillsForDestinationsWithForce(base string, destinations []skillDestination, version string, adopt, force bool) ([]skillInstallFile, []skillInstallReport, error) {
 	active, reports, err := activeSkillDestinations(base, destinations)
 	if err != nil {
 		return nil, nil, err
 	}
 	plan := make([]skillInstallFile, 0, len(active)*len(embeddedSkillManifest))
 	for _, destination := range active {
-		items, buildErr := buildSkillInstallPlanForTool(base, destination, version, true, adopt)
+		items, buildErr := buildSkillInstallPlanForToolWithForce(base, destination, version, true, adopt, force)
 		if buildErr != nil {
 			return nil, nil, buildErr
 		}
@@ -298,14 +305,14 @@ func installEmbeddedSkillsForDestinations(base string, destinations []skillDesti
 		if plan[index].status == "unchanged" {
 			continue
 		}
-		if err = ensureSafeInstallPath(base, plan[index].target); err != nil {
+		if err = ensureSafeInstallPath(plan[index].safetyRoot, plan[index].target); err != nil {
 			return nil, nil, err
 		}
 		directory := filepath.Dir(plan[index].target)
 		if err = os.MkdirAll(directory, 0o755); err != nil {
 			return nil, nil, fmt.Errorf("create skills directory %s: %w", directory, err)
 		}
-		if err = ensureSafeInstallPath(base, plan[index].target); err != nil {
+		if err = ensureSafeInstallPath(plan[index].safetyRoot, plan[index].target); err != nil {
 			return nil, nil, err
 		}
 		temporary, createErr := os.CreateTemp(directory, ".conveyor-skills-*")
@@ -338,7 +345,7 @@ func installEmbeddedSkillsForDestinations(base string, destinations []skillDesti
 	// Re-run the full preflight after staging so a collision or symlink that
 	// appeared while files were prepared cannot be overwritten.
 	for _, destination := range active {
-		rechecked, recheckErr := buildSkillInstallPlanForTool(base, destination, version, true, adopt)
+		rechecked, recheckErr := buildSkillInstallPlanForToolWithForce(base, destination, version, true, adopt, force)
 		if recheckErr != nil {
 			return nil, nil, recheckErr
 		}
@@ -365,7 +372,7 @@ func installEmbeddedSkillsForDestinations(base string, destinations []skillDesti
 		return rollbackErr
 	}
 	for _, item := range staged {
-		if err = ensureSafeInstallPath(base, plan[item.index].target); err == nil {
+		if err = ensureSafeInstallPath(plan[item.index].safetyRoot, plan[item.index].target); err == nil {
 			err = os.Rename(item.path, plan[item.index].target)
 		}
 		if err != nil {
@@ -382,6 +389,10 @@ func buildSkillInstallPlan(base, root, version string, rejectUnsafe bool) ([]ski
 }
 
 func buildSkillInstallPlanForTool(base string, destination skillDestination, version string, rejectUnsafe, adopt bool) ([]skillInstallFile, error) {
+	return buildSkillInstallPlanForToolWithForce(base, destination, version, rejectUnsafe, adopt, false)
+}
+
+func buildSkillInstallPlanForToolWithForce(base string, destination skillDestination, version string, rejectUnsafe, adopt, force bool) ([]skillInstallFile, error) {
 	if err := validMarkerValue(version); err != nil {
 		return nil, err
 	}
@@ -396,24 +407,32 @@ func buildSkillInstallPlanForTool(base string, destination skillDestination, ver
 	if !pathWithin(absoluteBase, absoluteRoot) {
 		return nil, fmt.Errorf("skills root %s is outside selected destination %s", absoluteRoot, absoluteBase)
 	}
+	resolvedRoot, err := resolveInstallDestination(absoluteRoot)
+	if err != nil {
+		return nil, err
+	}
+	safetyRoot, err := existingInstallAncestor(resolvedRoot)
+	if err != nil {
+		return nil, err
+	}
 	plan := make([]skillInstallFile, 0, len(embeddedSkillManifest))
 	for _, asset := range embeddedSkillManifest {
-		target := filepath.Join(absoluteRoot, filepath.FromSlash(asset.relative))
-		if !pathWithin(absoluteRoot, target) {
-			return nil, fmt.Errorf("embedded skills path %q escapes %s", asset.relative, absoluteRoot)
+		target := filepath.Join(resolvedRoot, filepath.FromSlash(asset.relative))
+		if !pathWithin(resolvedRoot, target) {
+			return nil, fmt.Errorf("embedded skills path %q escapes %s", asset.relative, resolvedRoot)
 		}
-		if safetyErr := ensureSafeInstallPath(absoluteBase, target); safetyErr != nil {
+		if safetyErr := ensureSafeInstallPath(safetyRoot, target); safetyErr != nil {
 			if rejectUnsafe {
 				return nil, safetyErr
 			}
-			plan = append(plan, skillInstallFile{embeddedSkillFile: asset, tool: destination.tool.name, target: target, mode: 0o644, status: "unsafe: " + safetyErr.Error()})
+			plan = append(plan, skillInstallFile{embeddedSkillFile: asset, tool: destination.tool.name, target: target, mode: 0o644, status: "unsafe: " + safetyErr.Error(), safetyRoot: safetyRoot})
 			continue
 		}
 		content, renderErr := renderEmbeddedSkill(asset, version)
 		if renderErr != nil {
 			return nil, renderErr
 		}
-		item := skillInstallFile{embeddedSkillFile: asset, tool: destination.tool.name, target: target, content: content, mode: 0o644, status: "missing"}
+		item := skillInstallFile{embeddedSkillFile: asset, tool: destination.tool.name, target: target, content: content, mode: 0o644, status: "missing", safetyRoot: safetyRoot}
 		info, statErr := os.Lstat(target)
 		switch {
 		case statErr == nil:
@@ -437,6 +456,13 @@ func buildSkillInstallPlanForTool(base string, destination skillDestination, ver
 				item.status = "collision"
 			case bytes.Equal(item.prior, item.content):
 				item.status = "unchanged"
+			case compareReleaseVersions(installedVersion, version) > 0 && !force:
+				if rejectUnsafe {
+					return nil, fmt.Errorf("refusing to downgrade managed skill %s from %s to %s; rerun with --force to override", target, installedVersion, version)
+				}
+				item.status = "downgrade refused " + installedVersion + " -> " + version + " (use --force)"
+			case compareReleaseVersions(installedVersion, version) > 0:
+				item.status = "downgrade " + installedVersion + " -> " + version + " (forced)"
 			default:
 				item.status = "refresh " + installedVersion + " -> " + version
 			}
@@ -449,6 +475,136 @@ func buildSkillInstallPlanForTool(base string, destination skillDestination, ver
 	}
 	sort.Slice(plan, func(i, j int) bool { return plan[i].relative < plan[j].relative })
 	return plan, nil
+}
+
+// resolveInstallDestination evaluates every existing path component and then
+// appends any missing suffix. This permits dotfile-manager symlinks such as
+// ~/.claude while ensuring all subsequent safety checks operate on the real
+// destination rather than the logical symlink path.
+func resolveInstallDestination(path string) (string, error) {
+	path = filepath.Clean(path)
+	cursor := path
+	var suffix []string
+	for {
+		_, err := os.Lstat(cursor)
+		if err == nil {
+			resolved, resolveErr := filepath.EvalSymlinks(cursor)
+			if resolveErr != nil {
+				return "", fmt.Errorf("resolve skills destination %s: %w", path, resolveErr)
+			}
+			for index := len(suffix) - 1; index >= 0; index-- {
+				resolved = filepath.Join(resolved, suffix[index])
+			}
+			return filepath.Clean(resolved), nil
+		}
+		if !os.IsNotExist(err) {
+			return "", fmt.Errorf("inspect skills destination %s: %w", cursor, err)
+		}
+		parent := filepath.Dir(cursor)
+		if parent == cursor {
+			return "", fmt.Errorf("resolve skills destination %s: no existing ancestor", path)
+		}
+		suffix = append(suffix, filepath.Base(cursor))
+		cursor = parent
+	}
+}
+
+func existingInstallAncestor(path string) (string, error) {
+	cursor := filepath.Clean(path)
+	for {
+		info, err := os.Lstat(cursor)
+		if err == nil {
+			if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+				return "", fmt.Errorf("refusing unsafe skills destination %s", cursor)
+			}
+			return cursor, nil
+		}
+		if !os.IsNotExist(err) {
+			return "", fmt.Errorf("inspect skills destination %s: %w", cursor, err)
+		}
+		parent := filepath.Dir(cursor)
+		if parent == cursor {
+			return "", fmt.Errorf("resolve skills destination %s: no existing ancestor", path)
+		}
+		cursor = parent
+	}
+}
+
+func compareReleaseVersions(left, right string) int {
+	type releaseVersion struct {
+		numbers    []int
+		prerelease []string
+	}
+	parse := func(value string) (releaseVersion, bool) {
+		value = strings.TrimPrefix(strings.TrimSpace(value), "v")
+		value = strings.SplitN(value, "+", 2)[0]
+		mainAndPrerelease := strings.SplitN(value, "-", 2)
+		parts := strings.Split(mainAndPrerelease[0], ".")
+		if len(parts) == 0 || len(parts) > 3 {
+			return releaseVersion{}, false
+		}
+		result := make([]int, 3)
+		for index, part := range parts {
+			parsed, err := strconv.Atoi(part)
+			if err != nil || parsed < 0 {
+				return releaseVersion{}, false
+			}
+			result[index] = parsed
+		}
+		parsed := releaseVersion{numbers: result}
+		if len(mainAndPrerelease) == 2 {
+			if mainAndPrerelease[1] == "" {
+				return releaseVersion{}, false
+			}
+			parsed.prerelease = strings.Split(mainAndPrerelease[1], ".")
+		}
+		return parsed, true
+	}
+	l, lok := parse(left)
+	r, rok := parse(right)
+	if !lok || !rok {
+		return 0
+	}
+	for index := range l.numbers {
+		if l.numbers[index] < r.numbers[index] {
+			return -1
+		}
+		if l.numbers[index] > r.numbers[index] {
+			return 1
+		}
+	}
+	if len(l.prerelease) == 0 && len(r.prerelease) > 0 {
+		return 1
+	}
+	if len(l.prerelease) > 0 && len(r.prerelease) == 0 {
+		return -1
+	}
+	for index := 0; index < min(len(l.prerelease), len(r.prerelease)); index++ {
+		leftPart, leftErr := strconv.Atoi(l.prerelease[index])
+		rightPart, rightErr := strconv.Atoi(r.prerelease[index])
+		switch {
+		case leftErr == nil && rightErr == nil && leftPart != rightPart:
+			if leftPart < rightPart {
+				return -1
+			}
+			return 1
+		case leftErr == nil && rightErr != nil:
+			return -1
+		case leftErr != nil && rightErr == nil:
+			return 1
+		case l.prerelease[index] < r.prerelease[index]:
+			return -1
+		case l.prerelease[index] > r.prerelease[index]:
+			return 1
+		}
+	}
+	if len(l.prerelease) < len(r.prerelease) {
+		return -1
+	}
+	if len(l.prerelease) > len(r.prerelease) {
+		return 1
+	}
+	return 0
 }
 
 func activeSkillDestinations(base string, destinations []skillDestination) ([]skillDestination, []skillInstallReport, error) {
@@ -476,20 +632,26 @@ func legacySkillArtifactExists(base string, destination skillDestination) (bool,
 	if !pathWithin(base, destination.legacyPath) {
 		return false, fmt.Errorf("legacy skill artifact %s is outside selected destination %s", destination.legacyPath, base)
 	}
-	if err := ensureSafeInstallPath(base, destination.legacyPath); err != nil {
+	if info, err := os.Lstat(destination.legacyPath); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return false, fmt.Errorf("refusing symlink legacy skill artifact: %s", destination.legacyPath)
+	} else if err != nil && !os.IsNotExist(err) {
+		return false, fmt.Errorf("inspect legacy skill artifact %s: %w", destination.legacyPath, err)
+	}
+	resolvedPath, err := resolveInstallDestination(destination.legacyPath)
+	if err != nil {
 		return false, err
 	}
-	info, err := os.Lstat(destination.legacyPath)
+	info, err := os.Lstat(resolvedPath)
 	switch {
 	case err == nil:
 		if info.Mode()&os.ModeSymlink != 0 {
-			return false, fmt.Errorf("refusing symlink legacy skill artifact: %s", destination.legacyPath)
+			return false, fmt.Errorf("refusing symlink legacy skill artifact: %s", resolvedPath)
 		}
 		return true, nil
 	case os.IsNotExist(err):
 		return false, nil
 	default:
-		return false, fmt.Errorf("inspect legacy skill artifact %s: %w", destination.legacyPath, err)
+		return false, fmt.Errorf("inspect legacy skill artifact %s: %w", resolvedPath, err)
 	}
 }
 
@@ -553,6 +715,13 @@ func pathWithin(root, target string) bool {
 func ensureSafeInstallPath(base, target string) error {
 	if !pathWithin(base, target) {
 		return fmt.Errorf("skills destination %s is outside selected destination %s", target, base)
+	}
+	baseInfo, err := os.Lstat(base)
+	if err != nil {
+		return fmt.Errorf("inspect skills destination %s: %w", base, err)
+	}
+	if baseInfo.Mode()&os.ModeSymlink != 0 || !baseInfo.IsDir() {
+		return fmt.Errorf("refusing unsafe skills destination %s", base)
 	}
 	relative, err := filepath.Rel(base, target)
 	if err != nil {
