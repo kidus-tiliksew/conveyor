@@ -137,6 +137,19 @@ pending_authority_tasks AS (
       AND (w.stage = 'implement' AND w.state = 'submitted' OR
            w.stage = 'review' AND w.state IN ('queued', 'claimed', 'submitted'))
 ),
+latest_user_change_events AS (
+    SELECT DISTINCT ON (e.task_id) e.task_id, e.kind
+    FROM events e
+    WHERE e.workspace_id = $1
+      AND (
+          (e.kind = 'pipeline.bounced' AND e.payload_json ->> 'source' = 'user-request-changes') OR
+          (e.kind = 'work_order.claimed' AND e.payload_json ->> 'stage' = 'implement')
+      )
+    ORDER BY e.task_id, e.at DESC, e.id DESC
+),
+user_changes_requested_tasks AS (
+    SELECT task_id FROM latest_user_change_events WHERE kind = 'pipeline.bounced'
+),
 attention_tasks AS (
     SELECT id AS task_id FROM tasks
       WHERE workspace_id = $1 AND state IN ('awaiting_human', 'parked')
@@ -145,6 +158,7 @@ attention_tasks AS (
     UNION SELECT task_id FROM interrupted_review_tasks
     UNION SELECT task_id FROM stalled_tasks
     UNION SELECT task_id FROM pending_authority_tasks
+    UNION SELECT task_id FROM user_changes_requested_tasks
 )
 SELECT count(*)::bigint
 FROM attention_tasks attention

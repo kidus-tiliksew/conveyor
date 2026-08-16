@@ -158,6 +158,7 @@ func (s *Server) Handler() http.Handler {
 		r.Group(func(r chi.Router) {
 			r.Use(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityViewWorkspace))
 			r.Get("/activity", s.listActivity)
+			r.Get("/attention/tasks", s.listCallerAttentionTasks)
 			r.Get("/pending-proposals", s.listPendingProposals)
 			r.Get("/tasks", s.listTasks)
 			r.Get("/task-operations", s.listTaskOperations)
@@ -1212,6 +1213,38 @@ func (s *Server) listActivity(w http.ResponseWriter, r *http.Request) {
 		query.Limit = 100
 	}
 	s.listActivityPage(w, r, query)
+}
+
+// listCallerAttentionTasks is a bounded personal inbox. The subject comes
+// only from the authenticated credential; there is deliberately no assignee
+// parameter that could turn another member's attention into an existence
+// oracle (DEC-19, req-260810-23b69f REQ-3).
+func (s *Server) listCallerAttentionTasks(w http.ResponseWriter, r *http.Request) {
+	query, _, err := parseTaskOperationsQuery(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if query.Limit == 0 {
+		query.Limit = 100
+	}
+	credential, ok := store.CredentialFromContext(r.Context())
+	if !ok || credential.OwnerUserID == "" {
+		http.Error(w, "authenticated user is required", http.StatusUnauthorized)
+		return
+	}
+	page, err := s.Store.ListCallerAttentionTaskPage(r.Context(), store.CallerAttentionQuery{
+		UserID: credential.OwnerUserID, Limit: query.Limit, Offset: query.Offset,
+	})
+	if err != nil {
+		log.Printf("list caller attention tasks: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("X-Conveyor-Total", strconv.Itoa(page.Total))
+	w.Header().Set("X-Conveyor-Limit", strconv.Itoa(query.Limit))
+	w.Header().Set("X-Conveyor-Offset", strconv.Itoa(query.Offset))
+	s.writeActivityItems(w, r, page.Tasks, false)
 }
 
 func (s *Server) listActivityPage(w http.ResponseWriter, r *http.Request, query store.TaskOperationsQuery) {

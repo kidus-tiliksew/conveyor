@@ -268,7 +268,7 @@ func TestMembershipScopesWorkspaceListAndNotFoundSurfaces(t *testing.T) {
 		t.Fatalf("workspace list status=%d body=%s", listed.Code, listed.Body.String())
 	}
 
-	for _, route := range []string{"/v1/tasks", "/v1/activity", "/v1/work-orders", "/v1/monitor", "/v1/pending-proposals", "/v1/tasks/task-id/events/stream"} {
+	for _, route := range []string{"/v1/tasks", "/v1/activity", "/v1/attention/tasks", "/v1/work-orders", "/v1/monitor", "/v1/pending-proposals", "/v1/tasks/task-id/events/stream"} {
 		unbound := call(route + "?workspace_id=beta")
 		missing := call(route + "?workspace_id=does-not-exist")
 		if unbound.Code != http.StatusNotFound || missing.Code != http.StatusNotFound || unbound.Body.String() != missing.Body.String() {
@@ -422,7 +422,7 @@ func TestViewerReadsWorkspaceAndAllMutationsUseCapabilityRefusal(t *testing.T) {
 		return response
 	}
 
-	for _, path := range []string{"/v1/activity", "/v1/tasks", "/v1/work-orders", "/v1/monitor", "/v1/pending-proposals", "/v1/workspace/config", "/v1/artifacts", "/v1/workers", "/v1/workspaces/alpha/members"} {
+	for _, path := range []string{"/v1/activity", "/v1/attention/tasks", "/v1/tasks", "/v1/work-orders", "/v1/monitor", "/v1/pending-proposals", "/v1/workspace/config", "/v1/artifacts", "/v1/workers", "/v1/workspaces/alpha/members"} {
 		response := call(http.MethodGet, path)
 		if response.Code == http.StatusNotFound && response.Body.String() == canonicalWorkspaceNotFoundBody() {
 			t.Fatalf("viewer read %s was capability-refused", path)

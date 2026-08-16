@@ -144,7 +144,7 @@ export function TasksPage() {
             up once the right filter was chosen would not be attention (REQ-6).
             Without an identity there is no "me" to scope it to, so it is
             absent rather than guessed at. */}
-        {me && <ReturnedForChangesAttention me={me.id} />}
+        {me && <ReturnedForChangesAttention />}
 
         <div className="mt-6 flex flex-wrap items-center gap-2">
           <TaskFilters value={filter} onChange={setFilter} fallback={emptyTaskFilter} />

@@ -53,6 +53,11 @@ export function TaskSheet({ taskId, panel }: { taskId: string; panel?: TaskPanel
         {/* The same corner affordance the full route carries (REQ-3): the
             panel opens over this one without dismissing it. */}
         <LineageExplorer type="task" id={taskId} />
+        {!panel && boardOrder.windowEdge && (
+          <span className="max-w-56 text-right text-[10px] leading-4 text-faint" role="note">
+            {boardOrder.windowEdge}
+          </span>
+        )}
         <SheetNavButton targetId={previousId} label="Previous task" icon={<ChevronUp />} panel={panel} />
         <SheetNavButton targetId={nextId} label="Next task" icon={<ChevronDown />} panel={panel} />
         {/* The panel's own address is shareable, so it is offered as one

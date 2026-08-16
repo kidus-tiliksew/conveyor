@@ -803,6 +803,52 @@ func (s *Store) ListTaskPage(ctx context.Context, query store.TaskOperationsQuer
 	return store.TaskPage{Tasks: tasks, Total: int(total)}, nil
 }
 
+func (s *Store) ListCallerAttentionTaskPage(ctx context.Context, query store.CallerAttentionQuery) (store.TaskPage, error) {
+	if err := query.Validate(); err != nil {
+		return store.TaskPage{}, err
+	}
+	cte := attentionTasksCTE()
+	filter := `
+FROM attention_tasks attention
+JOIN tasks t ON t.workspace_id=$1 AND t.id=attention.task_id
+WHERE t.assignee_user_id=$2
+  AND t.state NOT IN ('merged','closed')
+  AND NOT EXISTS (
+      SELECT 1 FROM tasks child
+      WHERE child.workspace_id=t.workspace_id AND child.parent_task_id=t.id
+  )`
+	var total int64
+	if err := s.pool.QueryRow(ctx, cte+"\nSELECT count(*)::bigint "+filter, workspace(ctx), query.UserID).Scan(&total); err != nil {
+		return store.TaskPage{}, err
+	}
+	rows, err := s.pool.Query(ctx, cte+`
+SELECT t.*
+`+filter+`
+ORDER BY t.created_at DESC,t.id
+LIMIT $3 OFFSET $4`, workspace(ctx), query.UserID, query.Limit, query.Offset)
+	if err != nil {
+		return store.TaskPage{}, err
+	}
+	defer rows.Close()
+	persisted, err := pgx.CollectRows(rows, pgx.RowToStructByName[db.Task])
+	if err != nil {
+		return store.TaskPage{}, err
+	}
+	tasks := make([]core.Task, len(persisted))
+	taskIDs := make([]string, len(persisted))
+	for index := range persisted {
+		tasks[index] = taskFromDB(persisted[index])
+		taskIDs[index] = tasks[index].ID
+	}
+	if err = s.hydrateTaskRelationsBatch(ctx, tasks, taskIDs, taskIDs); err != nil {
+		return store.TaskPage{}, err
+	}
+	if err = s.hydrateGitHubLifecyclesBatch(ctx, tasks); err != nil {
+		return store.TaskPage{}, err
+	}
+	return store.TaskPage{Tasks: tasks, Total: int(total)}, nil
+}
+
 func (s *Store) ListLineageNodeRecords(ctx context.Context, nodes []core.LineageNode) (map[core.LineageNode]store.LineageNodeRecord, error) {
 	taskNodes := map[string][]core.LineageNode{}
 	requirementNodes := map[string][]core.LineageNode{}

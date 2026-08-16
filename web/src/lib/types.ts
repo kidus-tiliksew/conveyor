@@ -231,6 +231,13 @@ export interface ActivitySummary {
   stalled?: StalledState
 }
 
+export interface ActivityPage {
+  items: ActivitySummary[]
+  total: number
+  limit: number
+  offset: number
+}
+
 // The four durable plan outcomes the Tasks view renders (AC-1.4). "none" is a
 // task with no persisted plan version; the version is absent with it.
 export type TaskPlanState = 'none' | 'pending_gate' | 'approved' | 'redirected'

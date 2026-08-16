@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	_ "embed"
+	"strings"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
@@ -10,6 +11,15 @@ import (
 
 //go:embed pending_proposals_attention.sql
 var pendingProposalsAttentionSQL string
+
+func attentionTasksCTE() string {
+	const marker = "\nSELECT count(*)::bigint"
+	index := strings.LastIndex(pendingProposalsAttentionSQL, marker)
+	if index < 0 {
+		panic("pending proposals attention SQL lost its terminal count query")
+	}
+	return pendingProposalsAttentionSQL[:index]
+}
 
 // ListPendingProposals is one workspace-scoped read over the three durable
 // authority tiers. Confirmation/dismissal changes the source rows, so the

@@ -573,6 +573,14 @@ test('selecting a row opens the task detail panel with a permalink', async ({ pa
   expect(new URL(page.url()).pathname).toBe('/tasks/task-bounced/full')
 })
 
+test('full task detail identifies a task outside the loaded Board page', async ({ page }) => {
+  await routeTasksSurface(page)
+  await page.goto('/tasks/task-shipped/full')
+  await expect(
+    page.getByRole('note').filter({ hasText: 'This task is outside the loaded Board window.' }),
+  ).toBeVisible()
+})
+
 // A blueprint anchor keeps its one canonical home. The panel
 // hosts the task's own detail composition rather than a copy of it, so the rule
 // arrives with the composition instead of being restated on this surface.
@@ -805,7 +813,16 @@ function returnedDetail(hold: boolean, claimantID: string, claimedAfter = false)
 async function openTasksWithReturn(page: Page, options: { hold: boolean; claimantID: string; claimedAfter?: boolean }) {
   await routeTasksSurface(page)
   // Registered after the surface defaults, so these win.
-  await page.route('**/v1/activity?**', (route) => route.fulfill({ json: [returnedSummary(options.hold)] }))
+  await page.route('**/v1/attention/tasks?**', (route) =>
+    route.fulfill({
+      headers: {
+        'X-Conveyor-Total': '1',
+        'X-Conveyor-Limit': '100',
+        'X-Conveyor-Offset': '0',
+      },
+      json: [returnedSummary(options.hold)],
+    }),
+  )
   await page.route('**/v1/tasks/task-returned/activity**', (route) =>
     route.fulfill({ json: returnedDetail(options.hold, options.claimantID, options.claimedAfter) }),
   )

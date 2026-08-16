@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, Outlet, useNavigate, useRouterState } from '@tanstack/react-router'
 import {
   Activity,
@@ -20,6 +20,7 @@ import {
   fetchActivity,
   fetchBlueprints,
   fetchCallerIdentity,
+  fetchCallerAttentionTasks,
   fetchPendingProposals,
   fetchWorkspace,
   fetchWorkspaceMembers,
@@ -113,16 +114,34 @@ export function useWorkspaceCapability(capability: WorkspaceCapability) {
   return Boolean(identity.data?.role && roleCapabilities[identity.data.role]?.includes(capability))
 }
 
-// The Board passes the shared filter family so the server returns what it will
-// show (AC-2.4). Callers that speak for the whole workspace — the attention
-// badge below, the sheet's prev/next order — pass nothing and keep reading the
-// unfiltered feed: an operator narrowing the board must not also narrow what is
-// waiting on them.
-export function useActivity(filter?: Record<string, string | string[] | undefined>, enabled = true) {
+// The Board passes the shared filter family and its current page so the server
+// returns exactly what it will show (AC-2.4). Caller-specific attention uses
+// its own projection below rather than depending on this bounded Board window.
+export function useActivity(
+  filter?: Record<string, string | string[] | undefined>,
+  enabled = true,
+  offset = 0,
+  limit = 100,
+) {
   const { workspace } = useWorkspaceSelection()
   return useQuery({
-    queryKey: ['activity', workspace, filter ?? null],
-    queryFn: () => fetchActivity(filter),
+    queryKey: ['activity', workspace, filter ?? null, limit, offset],
+    queryFn: () => fetchActivity({ filter, limit, offset }),
+    enabled: enabled && !!workspace,
+    refetchInterval: 15_000,
+  })
+}
+
+export function useCallerAttentionTasks(enabled = true) {
+  const { workspace } = useWorkspaceSelection()
+  return useInfiniteQuery({
+    queryKey: ['caller-attention-tasks', workspace],
+    queryFn: ({ pageParam }) => fetchCallerAttentionTasks({ limit: 100, offset: pageParam }),
+    initialPageParam: 0,
+    getNextPageParam: (last) => {
+      const next = last.offset + last.items.length
+      return next < last.total && last.items.length > 0 ? next : undefined
+    },
     enabled: enabled && !!workspace,
     refetchInterval: 15_000,
   })

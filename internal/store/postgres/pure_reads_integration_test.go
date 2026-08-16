@@ -165,6 +165,90 @@ func TestTaskOperationsPaginationBoundsMatchTheMemoryStoreIntegration(t *testing
 	})
 }
 
+func TestCallerAttentionFiltersBeforePagingIntegration(t *testing.T) {
+	st, ctx, workspace := newPhase61IntegrationStore(t)
+	defer st.Close()
+	userID := "usr_attention_" + core.NewTaskID()
+	if _, err := st.queries.InsertIdentityUser(t.Context(), db.InsertIdentityUserParams{
+		ID: userID, Email: userID + "@example.test", DisplayName: "Attention Assignee",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.pool.Exec(ctx, `INSERT INTO workspace_role_bindings(workspace_id,user_id,role) VALUES($1,$2,'contributor')`, workspace, userID); err != nil {
+		t.Fatal(err)
+	}
+	created := time.Date(2026, 8, 1, 10, 0, 0, 0, time.UTC)
+	oldID := "attention-old-" + core.NewTaskID()
+	old := phase61Task(workspace, oldID, core.TaskAwaiting, "")
+	old.CreatedAt = created
+	if err := st.CreateTask(ctx, old); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := taskops.New(st).SetAssignee(ctx, oldID, userID); err != nil {
+		t.Fatal(err)
+	}
+	otherUserID := "usr_attention_other_" + core.NewTaskID()
+	if _, err := st.queries.InsertIdentityUser(t.Context(), db.InsertIdentityUserParams{
+		ID: otherUserID, Email: otherUserID + "@example.test", DisplayName: "Other Assignee",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.pool.Exec(ctx, `INSERT INTO workspace_role_bindings(workspace_id,user_id,role) VALUES($1,$2,'contributor')`, workspace, otherUserID); err != nil {
+		t.Fatal(err)
+	}
+	otherUserTask := phase61Task(workspace, "attention-other-user-"+core.NewTaskID(), core.TaskAwaiting, "")
+	if err := st.CreateTask(ctx, otherUserTask); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := taskops.New(st).SetAssignee(ctx, otherUserTask.ID, otherUserID); err != nil {
+		t.Fatal(err)
+	}
+	anchor := phase61Task(workspace, "attention-anchor-"+core.NewTaskID(), core.TaskAwaiting, "")
+	if err := st.CreateTask(ctx, anchor); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := taskops.New(st).SetAssignee(ctx, anchor.ID, userID); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateTask(ctx, phase61Task(workspace, "attention-child-"+core.NewTaskID(), core.TaskQueued, anchor.ID)); err != nil {
+		t.Fatal(err)
+	}
+	otherWorkspace := "attention-other-workspace-" + core.NewTaskID()
+	otherContext := store.WithWorkspace(context.Background(), otherWorkspace)
+	if _, err := st.BootstrapWorkspaceConfig(otherContext, &config.Config{
+		Workspace: otherWorkspace,
+		Repos:     []config.Repo{{Name: "conveyor", URL: "https://example.test/conveyor", Base: "main"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	otherWorkspaceTask := phase61Task(otherWorkspace, "attention-other-workspace-task-"+core.NewTaskID(), core.TaskAwaiting, "")
+	if err := st.CreateTask(otherContext, otherWorkspaceTask); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := taskops.New(st).SetAssignee(otherContext, otherWorkspaceTask.ID, userID); err != nil {
+		t.Fatal(err)
+	}
+	for index := 0; index < 125; index++ {
+		id := fmt.Sprintf("attention-new-%03d-%s", index, core.NewTaskID())
+		task := phase61Task(workspace, id, core.TaskQueued, "")
+		task.CreatedAt = created.Add(time.Duration(index+1) * time.Minute)
+		if err := st.CreateTask(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := taskops.New(st).SetAssignee(ctx, id, userID); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	page, err := st.ListCallerAttentionTaskPage(ctx, store.CallerAttentionQuery{UserID: userID, Limit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != 1 || len(page.Tasks) != 1 || page.Tasks[0].ID != oldID {
+		t.Fatalf("attention page = total:%d tasks:%+v", page.Total, page.Tasks)
+	}
+}
+
 // The shared filter is SQL here and Go in the memory store, so both run the
 // same cases (AC-2.4).
 func TestTaskFilterMatchesTheMemoryStoreIntegration(t *testing.T) {

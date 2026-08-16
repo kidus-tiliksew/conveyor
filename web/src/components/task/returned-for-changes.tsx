@@ -1,11 +1,12 @@
 import { useQueries } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
+import { useEffect } from 'react'
 import { pendingUserRequestChanges, userRunImplementation } from '../../lib/activity'
 import { fetchTaskActivity } from '../../lib/api'
 import { isBlueprintAnchor } from '../../lib/blueprint'
 import type { ActivityItem } from '../../lib/types'
 import { relativeTime } from '../../lib/utils'
-import { useActivity, useWorkspaceSelection } from '../app-shell'
+import { useCallerAttentionTasks, useWorkspaceSelection } from '../app-shell'
 import { type AttentionItem, AttentionSurface } from '../documents/attention-surface'
 import { Button } from '../ui/button'
 
@@ -15,14 +16,10 @@ import { Button } from '../ui/button'
 // attention, staleness, bounce, hold, or assignment derivation — it is the
 // presentation of a marker the server already keeps.
 //
-// The marker itself reaches the dashboard only folded into `needs_attention`,
-// so the feed narrows the candidates — my assignments that are asking for a
-// human — and the task's own detail, which carries the durable events, is what
-// decides and supplies the feedback. That keeps the reading exact instead of
-// inferred from state, and the fan-out is bounded by how much of my own work is
-// waiting on me. Both queries are ones the app already holds: the unfiltered
-// feed behind the navigation badge, and the same task-detail cache entry the
-// task panel reads.
+// The caller-scoped attention projection narrows the candidates before paging;
+// the task's own detail, which carries the durable events, then decides and
+// supplies the feedback. The component consumes every attention page so an old
+// return cannot disappear behind newer unrelated Board activity.
 
 // Enough of the feedback to recognize which return this is, without turning an
 // attention entry into the task. The whole text is on the task itself.
@@ -41,11 +38,13 @@ function nextStep(item: ActivityItem): string {
     : 'The factory is already on it — a fresh implementation run is carrying this feedback.'
 }
 
-export function ReturnedForChangesAttention({ me }: { me: string }) {
+export function ReturnedForChangesAttention() {
   const { workspace } = useWorkspaceSelection()
-  const { data: feed } = useActivity()
-  const candidates = (feed ?? [])
-    .filter((summary) => summary.task.assignee?.user_id === me)
+  const attention = useCallerAttentionTasks()
+  useEffect(() => {
+    if (attention.hasNextPage && !attention.isFetchingNextPage) void attention.fetchNextPage()
+  }, [attention.hasNextPage, attention.isFetchingNextPage, attention.fetchNextPage])
+  const candidates = (attention.data?.pages.flatMap((page) => page.items) ?? [])
     .filter((summary) => summary.needs_attention && !isBlueprintAnchor(summary.task))
     .filter((summary) => summary.task.state !== 'merged' && summary.task.state !== 'closed')
     .map((summary) => summary.task.id)
