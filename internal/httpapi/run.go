@@ -121,7 +121,7 @@ func (s *Server) nextTaskRunOrder(ctx context.Context, task core.Task) (workerse
 	eligible := orders[:0]
 	for _, order := range orders {
 		if order.TaskID == task.ID && order.State == core.WorkOrderQueued && order.Claimable &&
-			(order.Stage == core.StageImplement || order.Stage == core.StageReview) {
+			(order.Stage == core.StageSpec || order.Stage == core.StageImplement || order.Stage == core.StageReview) {
 			eligible = append(eligible, order)
 		}
 	}
@@ -130,7 +130,7 @@ func (s *Server) nextTaskRunOrder(ctx context.Context, task core.Task) (workerse
 	}
 	sort.Slice(eligible, func(i, j int) bool {
 		if eligible[i].Stage != eligible[j].Stage {
-			return eligible[i].Stage == core.StageImplement
+			return taskRunStageOrder(eligible[i].Stage) < taskRunStageOrder(eligible[j].Stage)
 		}
 		if !eligible[i].QueueEnteredAt.Equal(eligible[j].QueueEnteredAt) {
 			return eligible[i].QueueEnteredAt.Before(eligible[j].QueueEnteredAt)
@@ -149,6 +149,19 @@ func (s *Server) nextTaskRunOrder(ctx context.Context, task core.Task) (workerse
 		Order: eligible[0], Task: task, Repository: repository,
 		HarnessSelection: "local", Dispatch: "run", Confinement: "none", Auth: "user",
 	}, true, nil
+}
+
+func taskRunStageOrder(stage core.Stage) int {
+	switch stage {
+	case core.StageSpec:
+		return 0
+	case core.StageImplement:
+		return 1
+	case core.StageReview:
+		return 2
+	default:
+		return 3
+	}
 }
 
 type taskRunClaimRequest struct {

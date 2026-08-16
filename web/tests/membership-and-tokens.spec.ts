@@ -332,6 +332,6 @@ test('a token secret is shown once, is never re-rendered, and the token can be r
   await page.getByRole('button', { name: 'Revoke Release runner' }).click()
   await expect(page.getByRole('dialog', { name: 'Revoke deployment credential' })).toHaveCount(0)
   expect(deleteRequests).toEqual(['pat_deployment', 'pat_new'])
-  await expect(page.getByText('Revoked')).toBeVisible()
+  await expect(page.getByText('Revoked')).toHaveCount(2)
   await expect(page.getByText(secret)).toHaveCount(0)
 })

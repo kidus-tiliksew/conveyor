@@ -97,6 +97,24 @@ func TestInstallEmbeddedSkillsCreateNoopAndRefresh(t *testing.T) {
 	if !bytes.HasPrefix(playbook, []byte(skillsOwnerPrefix+"v1.2.3 source=docs/playbooks/conveyor-planning.md -->\n")) {
 		t.Fatal("installed playbook has no release ownership marker")
 	}
+	workWrapperPath := filepath.Join(root, "conveyor-work", "SKILL.md")
+	workWrapper, err := os.ReadFile(workWrapperPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(workWrapper, []byte(skillsOwnerPrefix+"v1.2.3 source=.claude/skills/conveyor-work/SKILL.md -->")) {
+		t.Fatal("installed conveyor-work wrapper has no release ownership marker")
+	}
+	if bytes.Contains(workWrapper, []byte("../../../docs/playbooks")) || !bytes.Contains(workWrapper, []byte("[conveyor-work.md](conveyor-work.md)")) {
+		t.Fatal("installed conveyor-work wrapper is not self-contained")
+	}
+	workPlaybook, err := os.ReadFile(filepath.Join(root, "conveyor-work", "conveyor-work.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.HasPrefix(workPlaybook, []byte(skillsOwnerPrefix+"v1.2.3 source=docs/playbooks/conveyor-work.md -->\n")) {
+		t.Fatal("installed conveyor-work playbook has no release ownership marker")
+	}
 
 	unchanged, err := installEmbeddedSkills(base, root, "v1.2.3")
 	if err != nil {
@@ -225,7 +243,7 @@ func TestListEmbeddedSkillsReportsInstalledStateWithoutWriting(t *testing.T) {
 	if err := listEmbeddedSkills(command, base, root, "v1"); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(output.String(), "embedded release v1") || strings.Count(output.String(), "\tcreated\n") != len(embeddedSkillManifest) {
+	if !strings.Contains(output.String(), "embedded release v1") || strings.Count(output.String(), "\tnot installed (would create)\n") != len(embeddedSkillManifest) {
 		t.Fatalf("missing list output:\n%s", output.String())
 	}
 	if _, err := os.Stat(root); !os.IsNotExist(err) {
@@ -241,6 +259,174 @@ func TestListEmbeddedSkillsReportsInstalledStateWithoutWriting(t *testing.T) {
 	}
 	if strings.Count(output.String(), "\tunchanged\n") != len(embeddedSkillManifest) {
 		t.Fatalf("installed state missing:\n%s", output.String())
+	}
+}
+
+func TestSkillsInstallDetectsEveryToolAndSupportsNarrowing(t *testing.T) {
+	lookPath := func(name string) (string, error) { return "/tools/" + name, nil }
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	command := skillsInstallCmdWithLookPath(lookPath)
+	var output bytes.Buffer
+	command.SetOut(&output)
+	command.SetErr(&output)
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(output.String(), "claude\tcreated\t") != len(embeddedSkillManifest) || strings.Count(output.String(), "codex\tcreated\t") != len(embeddedSkillManifest) {
+		t.Fatalf("per-tool output missing:\n%s", output.String())
+	}
+	for _, asset := range embeddedSkillManifest {
+		claude, err := os.ReadFile(filepath.Join(home, ".claude", "skills", filepath.FromSlash(asset.relative)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		codex, err := os.ReadFile(filepath.Join(home, ".codex", "skills", filepath.FromSlash(asset.relative)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(claude, codex) {
+			t.Fatalf("%s differs across editor roots", asset.relative)
+		}
+	}
+
+	narrowedHome := t.TempDir()
+	t.Setenv("HOME", narrowedHome)
+	command = skillsInstallCmdWithLookPath(lookPath)
+	command.SetArgs([]string{"--tool", "codex"})
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(narrowedHome, ".codex", "skills")); err != nil {
+		t.Fatalf("codex destination missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(narrowedHome, ".claude")); !os.IsNotExist(err) {
+		t.Fatalf("narrowed install touched claude: %v", err)
+	}
+}
+
+func TestSkillsInstallDetectionErrorsAreReadOnly(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	missing := func(name string) (string, error) { return "", fs.ErrNotExist }
+
+	command := skillsInstallCmdWithLookPath(missing)
+	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "no supported agent tooling") {
+		t.Fatalf("no-tool error = %v", err)
+	}
+	command = skillsInstallCmdWithLookPath(func(name string) (string, error) { return "/tools/" + name, nil })
+	command.SetArgs([]string{"--tool", "unknown"})
+	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "unsupported tool") {
+		t.Fatalf("unknown-tool error = %v", err)
+	}
+	command = skillsInstallCmdWithLookPath(missing)
+	command.SetArgs([]string{"--tool", "codex"})
+	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "not available on PATH") {
+		t.Fatalf("missing selected-tool error = %v", err)
+	}
+	entries, err := os.ReadDir(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("detection errors wrote home: %v", entries)
+	}
+}
+
+func TestCodexLegacyArtifactIsReportOnlyForDefaultMultiToolInstall(t *testing.T) {
+	base := t.TempDir()
+	destinations := skillDestinations(base, supportedSkillTools)
+	codexDestination := destinations[1]
+	legacyFile := filepath.Join(codexDestination.legacyPath, "plugin.json")
+	if err := os.MkdirAll(filepath.Dir(legacyFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacyFile, []byte("operator plugin\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	items, reports, err := installEmbeddedSkillsForDestinations(base, destinations, "v1", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != len(supportedSkillTools)*len(embeddedSkillManifest) || len(reports) != 1 || !strings.Contains(reports[0].status, "skipped unmanaged") {
+		t.Fatalf("default legacy result: items=%d reports=%+v", len(items), reports)
+	}
+	for _, item := range items {
+		if item.status != "created" {
+			t.Fatalf("default %s status for %s = %q", item.tool, item.relative, item.status)
+		}
+	}
+	for _, destination := range destinations {
+		if _, err := os.Stat(destination.root); err != nil {
+			t.Fatalf("%s native root missing: %v", destination.tool.name, err)
+		}
+	}
+	legacy, err := os.ReadFile(legacyFile)
+	if err != nil || string(legacy) != "operator plugin\n" {
+		t.Fatalf("default install modified legacy content: %q, %v", legacy, err)
+	}
+}
+
+func TestAdoptReplacesOnlyUnmarkedNativeSkillFiles(t *testing.T) {
+	base := t.TempDir()
+	destination := skillDestinations(base, []skillTool{supportedSkillTools[1]})[0]
+	collision := filepath.Join(destination.root, "conveyor-plan", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(collision), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(collision, []byte("operator content\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := installEmbeddedSkillsForDestinations(base, []skillDestination{destination}, "v1", false); err == nil || !strings.Contains(err.Error(), "--adopt") {
+		t.Fatalf("collision error = %v", err)
+	}
+	content, err := os.ReadFile(collision)
+	if err != nil || string(content) != "operator content\n" {
+		t.Fatalf("collision changed before adoption: %q, %v", content, err)
+	}
+	items, _, err := installEmbeddedSkillsForDestinations(base, []skillDestination{destination}, "v1", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var adopted bool
+	for _, item := range items {
+		if item.target == collision && item.status == "adopted" {
+			adopted = true
+		}
+	}
+	if !adopted {
+		t.Fatal("unmarked native skill was not reported adopted")
+	}
+	content, err = os.ReadFile(collision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, owned := managedSkillVersion(content, ".claude/skills/conveyor-plan/SKILL.md"); !owned {
+		t.Fatal("adopted native skill has no ownership marker")
+	}
+}
+
+func TestManagedCodexInstallRefreshesAlongsideLegacyArtifact(t *testing.T) {
+	base := t.TempDir()
+	destination := skillDestinations(base, []skillTool{supportedSkillTools[1]})[0]
+	if _, _, err := installEmbeddedSkillsForDestinations(base, []skillDestination{destination}, "v1", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(destination.legacyPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	items, reports, err := installEmbeddedSkillsForDestinations(base, []skillDestination{destination}, "v2", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range items {
+		if item.status != "refresh v1 -> v2" {
+			t.Fatalf("managed codex status for %s = %q", item.relative, item.status)
+		}
+	}
+	if len(reports) != 1 || !strings.Contains(reports[0].status, "skipped") {
+		t.Fatalf("legacy report = %+v", reports)
 	}
 }
 

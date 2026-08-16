@@ -60,8 +60,9 @@ func (s *Store) GetCallerIdentity(ctx context.Context, userID, workspaceID strin
 	return identity, err
 }
 
-// BootstrapIdentity ensures that the configured legacy token maps to a usable
-// operator. The advisory lock makes upgrade recovery and rotation idempotent.
+// BootstrapIdentity ensures that the configured deployment token maps to a
+// usable operator. The advisory lock makes upgrade recovery and rotation
+// idempotent; the durable marker makes the display label irrelevant.
 func (s *Store) BootstrapIdentity(ctx context.Context, identity config.FirstOperatorIdentity, legacyToken string) (bool, error) {
 	identity.Email = strings.ToLower(strings.TrimSpace(identity.Email))
 	identity.DisplayName = strings.TrimSpace(identity.DisplayName)
@@ -93,7 +94,7 @@ func (s *Store) BootstrapIdentity(ctx context.Context, identity config.FirstOper
 	}
 	legacyErr := tx.QueryRow(ctx, `SELECT t.id,t.user_id,t.token_hash,t.kind,t.scope,t.revoked_at,u.status
 		FROM user_tokens t JOIN users u ON u.id=t.user_id
-		WHERE t.label='legacy API token' AND t.kind='user'`).Scan(
+		WHERE t.deployment_credential`).Scan(
 		&legacy.id, &legacy.userID, &legacy.tokenHash, &legacy.kind, &legacy.scope, &legacy.revoked, &legacy.status,
 	)
 	if legacyErr != nil && !errors.Is(legacyErr, pgx.ErrNoRows) {
@@ -186,7 +187,9 @@ func (s *Store) BootstrapIdentity(ctx context.Context, identity config.FirstOper
 	}
 
 	if legacyErr == nil {
-		if _, err := tx.Exec(ctx, `UPDATE user_tokens SET label='retired legacy API token' WHERE id=$1`, legacy.id); err != nil {
+		if _, err := tx.Exec(ctx, `UPDATE user_tokens
+			SET label='retired legacy API token',deployment_credential=false
+			WHERE id=$1`, legacy.id); err != nil {
 			return false, fmt.Errorf("retire unusable legacy API token mapping: %w", err)
 		}
 	}
@@ -194,7 +197,7 @@ func (s *Store) BootstrapIdentity(ctx context.Context, identity config.FirstOper
 	if err != nil {
 		return false, err
 	}
-	if _, err := q.InsertUserToken(ctx, db.InsertUserTokenParams{
+	if _, err := q.InsertDeploymentCredential(ctx, db.InsertDeploymentCredentialParams{
 		ID: tokenID, UserID: owner.ID, Label: "legacy API token", TokenHash: hash[:],
 		Kind: string(core.CredentialUser), Scope: string(core.CredentialScopeOperator),
 	}); err != nil {

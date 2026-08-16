@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -34,6 +35,19 @@ type embeddedSkillFile struct {
 }
 
 var embeddedSkillManifest = []embeddedSkillFile{
+	{
+		assetPath:   "skills_assets/conveyor-work/SKILL.md",
+		sourcePath:  ".claude/skills/conveyor-work/SKILL.md",
+		relative:    "conveyor-work/SKILL.md",
+		rewriteFrom: "[docs/playbooks/conveyor-work.md](../../../docs/playbooks/conveyor-work.md)",
+		rewriteTo:   "[conveyor-work.md](conveyor-work.md)",
+		skill:       true,
+	},
+	{
+		assetPath:  "skills_assets/conveyor-work/conveyor-work.md",
+		sourcePath: "docs/playbooks/conveyor-work.md",
+		relative:   "conveyor-work/conveyor-work.md",
+	},
 	{
 		assetPath:   "skills_assets/conveyor-plan/SKILL.md",
 		sourcePath:  ".claude/skills/conveyor-plan/SKILL.md",
@@ -64,12 +78,37 @@ var embeddedSkillManifest = []embeddedSkillFile{
 
 type skillInstallFile struct {
 	embeddedSkillFile
+	tool    string
 	target  string
 	content []byte
 	prior   []byte
 	mode    fs.FileMode
 	exists  bool
 	status  string
+}
+
+type skillTool struct {
+	name       string
+	binary     string
+	root       string
+	legacyPath string
+}
+
+type skillDestination struct {
+	tool       skillTool
+	root       string
+	legacyPath string
+}
+
+type skillInstallReport struct {
+	tool   string
+	status string
+	target string
+}
+
+var supportedSkillTools = []skillTool{
+	{name: "claude", binary: "claude", root: ".claude/skills"},
+	{name: "codex", binary: "codex", root: ".codex/skills", legacyPath: ".codex/plugins/cache/personal/conveyor/0.1.0"},
 }
 
 func skillsCmd() *cobra.Command {
@@ -79,35 +118,50 @@ func skillsCmd() *cobra.Command {
 }
 
 func skillsInstallCmd() *cobra.Command {
-	var project, list bool
+	return skillsInstallCmdWithLookPath(exec.LookPath)
+}
+
+func skillsInstallCmdWithLookPath(lookPath func(string) (string, error)) *cobra.Command {
+	var project, list, adopt bool
+	var selectedTool string
 	command := &cobra.Command{
 		Use:   "install",
 		Short: "Install Conveyor's embedded agent skills",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			base, root, err := skillsDestination(project)
+			base, err := skillsInstallBase(project)
 			if err != nil {
 				return err
 			}
-			if list {
-				return listEmbeddedSkills(cmd, base, root, releaseinfo.Version)
+			tools, err := selectSkillTools(selectedTool, lookPath)
+			if err != nil {
+				return err
 			}
-			results, err := installEmbeddedSkills(base, root, releaseinfo.Version)
+			destinations := skillDestinations(base, tools)
+			if list {
+				return listEmbeddedSkillsForDestinations(cmd, base, destinations, releaseinfo.Version)
+			}
+			results, reports, err := installEmbeddedSkillsForDestinations(base, destinations, releaseinfo.Version, adopt)
 			if err != nil {
 				return err
 			}
 			for _, result := range results {
-				fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\n", result.status, result.target)
+				fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\n", result.tool, result.status, result.target)
+			}
+			for _, report := range reports {
+				fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\n", report.tool, report.status, report.target)
 			}
 			return nil
 		},
 	}
-	command.Flags().BoolVar(&project, "project", false, "install under ./.claude/skills instead of the user-global directory")
+	command.Flags().BoolVar(&project, "project", false, "install under each tool's project skills directory instead of the user-global directory")
 	command.Flags().BoolVar(&list, "list", false, "list embedded files and their installed state without writing")
+	command.Flags().StringVar(&selectedTool, "tool", "", "install only for one detected tool (claude or codex)")
+	command.Flags().BoolVar(&adopt, "adopt", false, "adopt unmarked skill files in a selected native destination")
 	return command
 }
 
-func skillsDestination(project bool) (string, string, error) {
+func skillsInstallBase(project bool) (string, error) {
 	var base string
 	var err error
 	if project {
@@ -116,27 +170,87 @@ func skillsDestination(project bool) (string, string, error) {
 		base, err = os.UserHomeDir()
 	}
 	if err != nil {
-		return "", "", fmt.Errorf("resolve skills destination: %w", err)
+		return "", fmt.Errorf("resolve skills destination: %w", err)
 	}
 	base, err = filepath.Abs(base)
 	if err != nil {
-		return "", "", fmt.Errorf("resolve skills destination: %w", err)
+		return "", fmt.Errorf("resolve skills destination: %w", err)
 	}
 	base, err = filepath.EvalSymlinks(base)
 	if err != nil {
-		return "", "", fmt.Errorf("resolve skills destination %s: %w", base, err)
+		return "", fmt.Errorf("resolve skills destination %s: %w", base, err)
+	}
+	return base, nil
+}
+
+func skillsDestination(project bool) (string, string, error) {
+	base, err := skillsInstallBase(project)
+	if err != nil {
+		return "", "", err
 	}
 	return base, filepath.Join(base, ".claude", "skills"), nil
 }
 
-func listEmbeddedSkills(cmd *cobra.Command, base, root, version string) error {
-	plan, err := buildSkillInstallPlan(base, root, version, false)
-	if err != nil {
-		return err
+func selectSkillTools(selected string, lookPath func(string) (string, error)) ([]skillTool, error) {
+	selected = strings.TrimSpace(strings.ToLower(selected))
+	var tools []skillTool
+	known := false
+	for _, tool := range supportedSkillTools {
+		if selected != "" && selected != tool.name {
+			continue
+		}
+		known = true
+		if _, err := lookPath(tool.binary); err == nil {
+			tools = append(tools, tool)
+		} else if selected != "" {
+			return nil, fmt.Errorf("selected tool %q is not available on PATH", selected)
+		}
 	}
+	if selected != "" && !known {
+		return nil, fmt.Errorf("unsupported tool %q; supported tools: claude, codex", selected)
+	}
+	if len(tools) == 0 {
+		return nil, fmt.Errorf("no supported agent tooling detected on PATH (looked for claude and codex)")
+	}
+	return tools, nil
+}
+
+func skillDestinations(base string, tools []skillTool) []skillDestination {
+	destinations := make([]skillDestination, 0, len(tools))
+	for _, tool := range tools {
+		destination := skillDestination{tool: tool, root: filepath.Join(base, filepath.FromSlash(tool.root))}
+		if tool.legacyPath != "" {
+			destination.legacyPath = filepath.Join(base, filepath.FromSlash(tool.legacyPath))
+		}
+		destinations = append(destinations, destination)
+	}
+	return destinations
+}
+
+func listEmbeddedSkills(cmd *cobra.Command, base, root, version string) error {
+	destination := skillDestination{tool: supportedSkillTools[0], root: root}
+	return listEmbeddedSkillsForDestinations(cmd, base, []skillDestination{destination}, version)
+}
+
+func listEmbeddedSkillsForDestinations(cmd *cobra.Command, base string, destinations []skillDestination, version string) error {
 	fmt.Fprintf(cmd.OutOrStdout(), "embedded release %s\n", version)
-	for _, item := range plan {
-		fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\t%s\n", item.relative, item.sourcePath, item.target, item.status)
+	for _, destination := range destinations {
+		plan, err := buildSkillInstallPlanForTool(base, destination, version, false, false)
+		if err != nil {
+			return err
+		}
+		for _, item := range plan {
+			status := item.status
+			if status == "created" {
+				status = "not installed (would create)"
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\t%s\t%s\n", item.tool, item.relative, item.sourcePath, item.target, status)
+		}
+		if exists, err := legacySkillArtifactExists(base, destination); err != nil {
+			return err
+		} else if exists {
+			fmt.Fprintf(cmd.OutOrStdout(), "%s\tlegacy plugin\t%s\tunmanaged (left untouched)\n", destination.tool.name, destination.legacyPath)
+		}
 	}
 	return nil
 }
@@ -144,13 +258,27 @@ func listEmbeddedSkills(cmd *cobra.Command, base, root, version string) error {
 // installEmbeddedSkills preflights the complete set before writing and only
 // refreshes files carrying Conveyor's marker (req-260811-0ee057 AC-12.2).
 func installEmbeddedSkills(base, root, version string) ([]skillInstallFile, error) {
-	plan, err := buildSkillInstallPlan(base, root, version, true)
+	destination := skillDestination{tool: supportedSkillTools[0], root: root}
+	plan, _, err := installEmbeddedSkillsForDestinations(base, []skillDestination{destination}, version, false)
+	return plan, err
+}
+
+func installEmbeddedSkillsForDestinations(base string, destinations []skillDestination, version string, adopt bool) ([]skillInstallFile, []skillInstallReport, error) {
+	active, reports, err := activeSkillDestinations(base, destinations)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
+	}
+	plan := make([]skillInstallFile, 0, len(active)*len(embeddedSkillManifest))
+	for _, destination := range active {
+		items, buildErr := buildSkillInstallPlanForTool(base, destination, version, true, adopt)
+		if buildErr != nil {
+			return nil, nil, buildErr
+		}
+		plan = append(plan, items...)
 	}
 	for _, item := range plan {
 		if item.status == "collision" {
-			return nil, fmt.Errorf("refusing to overwrite %s: file is not owned by Conveyor; move it aside or choose the other install scope", item.target)
+			return nil, nil, fmt.Errorf("refusing to overwrite %s: file is not owned by Conveyor; move it aside or rerun with --adopt", item.target)
 		}
 	}
 
@@ -171,51 +299,53 @@ func installEmbeddedSkills(base, root, version string) ([]skillInstallFile, erro
 			continue
 		}
 		if err = ensureSafeInstallPath(base, plan[index].target); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		directory := filepath.Dir(plan[index].target)
 		if err = os.MkdirAll(directory, 0o755); err != nil {
-			return nil, fmt.Errorf("create skills directory %s: %w", directory, err)
+			return nil, nil, fmt.Errorf("create skills directory %s: %w", directory, err)
 		}
 		if err = ensureSafeInstallPath(base, plan[index].target); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		temporary, createErr := os.CreateTemp(directory, ".conveyor-skills-*")
 		if createErr != nil {
-			return nil, fmt.Errorf("stage %s: %w", plan[index].target, createErr)
+			return nil, nil, fmt.Errorf("stage %s: %w", plan[index].target, createErr)
 		}
 		temporaryPath := temporary.Name()
 		if chmodErr := temporary.Chmod(0o644); chmodErr != nil {
 			_ = temporary.Close()
 			_ = os.Remove(temporaryPath)
-			return nil, fmt.Errorf("set permissions on staged %s: %w", plan[index].target, chmodErr)
+			return nil, nil, fmt.Errorf("set permissions on staged %s: %w", plan[index].target, chmodErr)
 		}
 		if _, writeErr := temporary.Write(plan[index].content); writeErr != nil {
 			_ = temporary.Close()
 			_ = os.Remove(temporaryPath)
-			return nil, fmt.Errorf("stage %s: %w", plan[index].target, writeErr)
+			return nil, nil, fmt.Errorf("stage %s: %w", plan[index].target, writeErr)
 		}
 		if syncErr := temporary.Sync(); syncErr != nil {
 			_ = temporary.Close()
 			_ = os.Remove(temporaryPath)
-			return nil, fmt.Errorf("sync staged %s: %w", plan[index].target, syncErr)
+			return nil, nil, fmt.Errorf("sync staged %s: %w", plan[index].target, syncErr)
 		}
 		if closeErr := temporary.Close(); closeErr != nil {
 			_ = os.Remove(temporaryPath)
-			return nil, fmt.Errorf("close staged %s: %w", plan[index].target, closeErr)
+			return nil, nil, fmt.Errorf("close staged %s: %w", plan[index].target, closeErr)
 		}
 		staged = append(staged, stagedFile{index: index, path: temporaryPath})
 	}
 
 	// Re-run the full preflight after staging so a collision or symlink that
 	// appeared while files were prepared cannot be overwritten.
-	rechecked, err := buildSkillInstallPlan(base, root, version, true)
-	if err != nil {
-		return nil, err
-	}
-	for _, item := range rechecked {
-		if item.status == "collision" {
-			return nil, fmt.Errorf("refusing to overwrite %s: file is not owned by Conveyor", item.target)
+	for _, destination := range active {
+		rechecked, recheckErr := buildSkillInstallPlanForTool(base, destination, version, true, adopt)
+		if recheckErr != nil {
+			return nil, nil, recheckErr
+		}
+		for _, item := range rechecked {
+			if item.status == "collision" {
+				return nil, nil, fmt.Errorf("refusing to overwrite %s: file is not owned by Conveyor", item.target)
+			}
 		}
 	}
 
@@ -239,14 +369,19 @@ func installEmbeddedSkills(base, root, version string) ([]skillInstallFile, erro
 			err = os.Rename(item.path, plan[item.index].target)
 		}
 		if err != nil {
-			return nil, errors.Join(fmt.Errorf("install %s: %w", plan[item.index].target, err), rollback())
+			return nil, nil, errors.Join(fmt.Errorf("install %s: %w", plan[item.index].target, err), rollback())
 		}
 		written = append(written, item.index)
 	}
-	return plan, nil
+	return plan, reports, nil
 }
 
 func buildSkillInstallPlan(base, root, version string, rejectUnsafe bool) ([]skillInstallFile, error) {
+	destination := skillDestination{tool: supportedSkillTools[0], root: root}
+	return buildSkillInstallPlanForTool(base, destination, version, rejectUnsafe, false)
+}
+
+func buildSkillInstallPlanForTool(base string, destination skillDestination, version string, rejectUnsafe, adopt bool) ([]skillInstallFile, error) {
 	if err := validMarkerValue(version); err != nil {
 		return nil, err
 	}
@@ -254,7 +389,7 @@ func buildSkillInstallPlan(base, root, version string, rejectUnsafe bool) ([]ski
 	if err != nil {
 		return nil, fmt.Errorf("resolve install base: %w", err)
 	}
-	absoluteRoot, err := filepath.Abs(root)
+	absoluteRoot, err := filepath.Abs(destination.root)
 	if err != nil {
 		return nil, fmt.Errorf("resolve install root: %w", err)
 	}
@@ -271,14 +406,14 @@ func buildSkillInstallPlan(base, root, version string, rejectUnsafe bool) ([]ski
 			if rejectUnsafe {
 				return nil, safetyErr
 			}
-			plan = append(plan, skillInstallFile{embeddedSkillFile: asset, target: target, mode: 0o644, status: "unsafe: " + safetyErr.Error()})
+			plan = append(plan, skillInstallFile{embeddedSkillFile: asset, tool: destination.tool.name, target: target, mode: 0o644, status: "unsafe: " + safetyErr.Error()})
 			continue
 		}
 		content, renderErr := renderEmbeddedSkill(asset, version)
 		if renderErr != nil {
 			return nil, renderErr
 		}
-		item := skillInstallFile{embeddedSkillFile: asset, target: target, content: content, mode: 0o644, status: "missing"}
+		item := skillInstallFile{embeddedSkillFile: asset, tool: destination.tool.name, target: target, content: content, mode: 0o644, status: "missing"}
 		info, statErr := os.Lstat(target)
 		switch {
 		case statErr == nil:
@@ -296,6 +431,8 @@ func buildSkillInstallPlan(base, root, version string, rejectUnsafe bool) ([]ski
 			item.exists, item.mode = true, info.Mode()
 			installedVersion, owned := managedSkillVersion(item.prior, asset.sourcePath)
 			switch {
+			case !owned && adopt:
+				item.status = "adopted"
 			case !owned:
 				item.status = "collision"
 			case bytes.Equal(item.prior, item.content):
@@ -312,6 +449,48 @@ func buildSkillInstallPlan(base, root, version string, rejectUnsafe bool) ([]ski
 	}
 	sort.Slice(plan, func(i, j int) bool { return plan[i].relative < plan[j].relative })
 	return plan, nil
+}
+
+func activeSkillDestinations(base string, destinations []skillDestination) ([]skillDestination, []skillInstallReport, error) {
+	active := make([]skillDestination, 0, len(destinations))
+	var reports []skillInstallReport
+	for _, destination := range destinations {
+		legacy, err := legacySkillArtifactExists(base, destination)
+		if err != nil {
+			return nil, nil, err
+		}
+		if !legacy {
+			active = append(active, destination)
+			continue
+		}
+		active = append(active, destination)
+		reports = append(reports, skillInstallReport{tool: destination.tool.name, status: "skipped unmanaged legacy plugin", target: destination.legacyPath})
+	}
+	return active, reports, nil
+}
+
+func legacySkillArtifactExists(base string, destination skillDestination) (bool, error) {
+	if destination.legacyPath == "" {
+		return false, nil
+	}
+	if !pathWithin(base, destination.legacyPath) {
+		return false, fmt.Errorf("legacy skill artifact %s is outside selected destination %s", destination.legacyPath, base)
+	}
+	if err := ensureSafeInstallPath(base, destination.legacyPath); err != nil {
+		return false, err
+	}
+	info, err := os.Lstat(destination.legacyPath)
+	switch {
+	case err == nil:
+		if info.Mode()&os.ModeSymlink != 0 {
+			return false, fmt.Errorf("refusing symlink legacy skill artifact: %s", destination.legacyPath)
+		}
+		return true, nil
+	case os.IsNotExist(err):
+		return false, nil
+	default:
+		return false, fmt.Errorf("inspect legacy skill artifact %s: %w", destination.legacyPath, err)
+	}
 }
 
 func renderEmbeddedSkill(asset embeddedSkillFile, version string) ([]byte, error) {
