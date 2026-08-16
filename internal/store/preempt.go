@@ -70,42 +70,63 @@ func (m *memory) PreemptWorkOrderCommand(ctx context.Context, lease taskops.Task
 		return WorkOrderPreemptResult{}, fmt.Errorf("work-order preempt requires a valid taskops lease")
 	}
 	now := time.Now().UTC()
+	observedState := order.State
 	order = m.refreshWorkOrderLocked(ctx, order, now)
-	if order.State != core.WorkOrderClaimed || order.SessionID == "" || order.AttemptID == "" {
+	if observedState == core.WorkOrderClaimed && order.State != core.WorkOrderClaimed {
+		return WorkOrderPreemptResult{}, fmt.Errorf("%w: work order %s does not have an active claimed attempt", ErrWorkOrderPreemptConflict, order.ID)
+	}
+	retirement := order.State == core.WorkOrderQueued || order.State == core.WorkOrderStale
+	if !retirement && (order.State != core.WorkOrderClaimed || order.SessionID == "" || order.AttemptID == "") {
 		return WorkOrderPreemptResult{}, fmt.Errorf("%w: work order %s does not have an active claimed attempt", ErrWorkOrderPreemptConflict, order.ID)
 	}
 	next, transitionErr := core.TransitionWorkOrder(order.State, core.WorkOrderCmdPreempt)
 	if transitionErr != nil {
 		return WorkOrderPreemptResult{}, transitionErr
 	}
-	result := WorkOrderPreemptResult{
-		RequestID: request.RequestID, RevokedAttemptID: order.AttemptID,
-		RevokedSessionID: order.SessionID, RevokedWorkerID: order.WorkerID,
-		GraceBound: "one renewal interval",
+	result := WorkOrderPreemptResult{RequestID: request.RequestID}
+	priorState := order.State
+	if !retirement {
+		result.RevokedAttemptID, result.RevokedSessionID, result.RevokedWorkerID = order.AttemptID, order.SessionID, order.WorkerID
+		result.GraceBound = "one renewal interval"
+		order.LastAttemptID = order.AttemptID
+		clearActiveAttempt(&order)
+		order.LastAttemptOutcome = core.WorkOrderOutcomePreempted
+	} else {
+		clearActiveAttempt(&order)
+		order.LastAttemptOutcome = core.WorkOrderOutcomeCancelled
+		order.RetrySuppressed = true
+		order.RetrySuppressionReason = "operator retirement"
 	}
-	order.LastAttemptID = order.AttemptID
-	clearActiveAttempt(&order)
 	order.State = next
-	order.LastAttemptOutcome = core.WorkOrderOutcomePreempted
 	order.NextRetryAt = time.Time{}
-	order.RetrySuppressed = false
-	order.RetrySuppressionReason = ""
+	if !retirement {
+		order.RetrySuppressed = false
+		order.RetrySuppressionReason = ""
+	}
 	order.LastFailureCategory, order.LastFailureMessage, order.LastFailureDetail = "", "", ""
 	order.LastFailureExitStatus, order.LastFailureAt = nil, time.Time{}
 	order.UpdatedAt = now
 	order.Claimable = order.ClaimableAt(now)
 	m.workOrders[order.ID] = order
 	if job, index, found := m.findJobLocked(order.JobID); found {
-		job.State, job.StartedAt, job.EndedAt = core.JobPending, time.Time{}, time.Time{}
+		if retirement {
+			job.State, job.EndedAt = core.JobFailed, now
+		} else {
+			job.State, job.StartedAt, job.EndedAt = core.JobPending, time.Time{}, time.Time{}
+		}
 		m.jobs[job.TaskID][index] = job
 	}
 	result.WorkOrder = order
 	actor := ActorFromContext(ctx)
-	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.preempted", ActorID: actor.ID, ActorRole: actor.Role,
+	eventKind := "work_order.preempted"
+	if retirement {
+		eventKind = "work_order.retired"
+	}
+	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: eventKind, ActorID: actor.ID, ActorRole: actor.Role,
 		Payload: core.JSONPayload(map[string]any{
 			"work_order_id": order.ID, "request_id": request.RequestID, "reason": request.Reason,
 			"attempt_id": result.RevokedAttemptID, "session_id": result.RevokedSessionID, "worker_id": result.RevokedWorkerID,
-			"prior_state": core.WorkOrderClaimed, "new_state": order.State, "command": core.WorkOrderCmdPreempt,
+			"prior_state": priorState, "new_state": order.State, "command": core.WorkOrderCmdPreempt,
 			"queue_entered_at": order.QueueEnteredAt, "queue_deadline": order.QueueDeadline, "grace_bound": result.GraceBound,
 		}), At: now})
 	m.preemptions[request.RequestID] = memoryWorkOrderPreemption{Workspace: workspace, Request: request, Result: result}

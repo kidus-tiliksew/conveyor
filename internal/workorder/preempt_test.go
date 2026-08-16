@@ -101,7 +101,29 @@ func TestPreemptPreservesQueueTelemetryAndSignalsRevokedAttempt(t *testing.T) {
 	}
 }
 
-func TestPreemptAfterDeadWorkerLeaseExpiryConvergesWithoutPreemptEvent(t *testing.T) {
+func TestPreemptRetiresQueuedOrderIdempotently(t *testing.T) {
+	ctx, st, service, order := newLifecycleService(t, "retire-queued")
+	ctx = store.WithActor(store.WithWorkspace(ctx, "test"), store.Actor{ID: "operator", Role: core.ActorHuman})
+	result, err := service.Preempt(ctx, order.ID, "retire zombie", "retire-queued-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.WorkOrder.State != core.WorkOrderCancelled || result.WorkOrder.Claimable || result.RevokedAttemptID != "" {
+		t.Fatalf("retired=%+v", result)
+	}
+	duplicate, err := service.Preempt(ctx, order.ID, "retire zombie", "retire-queued-1")
+	if err != nil || duplicate.WorkOrder.State != core.WorkOrderCancelled {
+		t.Fatalf("duplicate=%+v err=%v", duplicate, err)
+	}
+	if _, err = service.Claim(ctx, order.ID, core.WorkOrderClaim{SessionID: "zombie", ClientToken: "secret"}); !errors.Is(err, store.ErrWorkOrderCancelled) {
+		t.Fatalf("claim retired order err=%v", err)
+	}
+	if count, countErr := st.CountEvents(ctx, order.TaskID, "work_order.retired"); countErr != nil || count != 1 {
+		t.Fatalf("retirement events=%d err=%v", count, countErr)
+	}
+}
+
+func TestPreemptAfterDeadWorkerLeaseExpiryRetiresQueuedOrder(t *testing.T) {
 	ctx, st, service, order := newLifecycleService(t, "preempt-dead")
 	ctx = store.WithActor(store.WithWorkspace(ctx, "test"), store.Actor{ID: "operator", Role: core.ActorHuman})
 	if _, err := service.Claim(ctx, order.ID, core.WorkOrderClaim{SessionID: "dead-session", ClientToken: "secret", WorkerID: "dead-worker", Lease: time.Nanosecond}); err != nil {
@@ -109,13 +131,20 @@ func TestPreemptAfterDeadWorkerLeaseExpiryConvergesWithoutPreemptEvent(t *testin
 	}
 	time.Sleep(time.Millisecond)
 	if _, err := service.Preempt(ctx, order.ID, "worker is gone", "preempt-dead-1"); !errors.Is(err, store.ErrWorkOrderPreemptConflict) {
-		t.Fatalf("expired preempt err=%v", err)
+		t.Fatalf("initial expired preempt err=%v", err)
+	}
+	result, err := service.Preempt(ctx, order.ID, "worker is gone", "preempt-dead-1")
+	if err != nil {
+		t.Fatalf("queued retirement retry err=%v", err)
 	}
 	converged, err := st.GetWorkOrder(ctx, order.ID)
-	if err != nil || converged.State != core.WorkOrderQueued || converged.LastAttemptOutcome != core.WorkOrderOutcomeExpired || !converged.RetrySuppressed {
+	if err != nil || converged.State != core.WorkOrderCancelled || converged.LastAttemptOutcome != core.WorkOrderOutcomeCancelled || !converged.RetrySuppressed || result.WorkOrder.State != core.WorkOrderCancelled {
 		t.Fatalf("expired order=%+v err=%v", converged, err)
 	}
 	if count, countErr := st.CountEvents(ctx, order.TaskID, "work_order.preempted"); countErr != nil || count != 0 {
 		t.Fatalf("preempt events=%d err=%v", count, countErr)
+	}
+	if count, countErr := st.CountEvents(ctx, order.TaskID, "work_order.retired"); countErr != nil || count != 1 {
+		t.Fatalf("retirement events=%d err=%v", count, countErr)
 	}
 }

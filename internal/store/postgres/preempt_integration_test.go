@@ -95,7 +95,7 @@ func TestWorkOrderPreemptionPersistenceIntegration(t *testing.T) {
 	}
 }
 
-func TestWorkOrderPreemptionExpiresDeadClaimBeforeEligibility(t *testing.T) {
+func TestWorkOrderPreemptionRetiresExpiredQueuedClaim(t *testing.T) {
 	databaseURL := integrationDatabaseURL(t)
 	st, err := Open(t.Context(), databaseURL)
 	if err != nil {
@@ -128,10 +128,13 @@ func TestWorkOrderPreemptionExpiresDeadClaimBeforeEligibility(t *testing.T) {
 	time.Sleep(time.Millisecond)
 	service := &workorder.Service{Store: st}
 	if _, err = service.Preempt(ctx, job.ID, "worker is gone", "expired-preempt-request"); !errors.Is(err, store.ErrWorkOrderPreemptConflict) {
-		t.Fatalf("expired preempt err=%v", err)
+		t.Fatalf("initial expired preempt err=%v", err)
+	}
+	if _, err = service.Preempt(ctx, job.ID, "worker is gone", "expired-preempt-request"); err != nil {
+		t.Fatalf("queued retirement retry err=%v", err)
 	}
 	expired, err := st.GetWorkOrder(ctx, job.ID)
-	if err != nil || expired.State != core.WorkOrderQueued || expired.LastAttemptOutcome != core.WorkOrderOutcomeExpired || expired.LastAttemptID != claimed.AttemptID || !expired.RetrySuppressed {
+	if err != nil || expired.State != core.WorkOrderCancelled || expired.LastAttemptOutcome != core.WorkOrderOutcomeCancelled || expired.LastAttemptID != claimed.AttemptID || !expired.RetrySuppressed {
 		t.Fatalf("expired order=%+v err=%v", expired, err)
 	}
 	if count, countErr := st.CountEvents(ctx, task.ID, "work_order.preempted"); countErr != nil || count != 0 {
@@ -139,5 +142,8 @@ func TestWorkOrderPreemptionExpiresDeadClaimBeforeEligibility(t *testing.T) {
 	}
 	if count, countErr := st.CountEvents(ctx, task.ID, "work_order.expired"); countErr != nil || count != 1 {
 		t.Fatalf("expiry events=%d err=%v", count, countErr)
+	}
+	if count, countErr := st.CountEvents(ctx, task.ID, "work_order.retired"); countErr != nil || count != 1 {
+		t.Fatalf("retirement events=%d err=%v", count, countErr)
 	}
 }

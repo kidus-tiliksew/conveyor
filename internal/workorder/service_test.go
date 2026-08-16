@@ -1905,6 +1905,63 @@ func TestRedispatchStaleOrderResetsQueueClockAndPreservesAudit(t *testing.T) {
 	}
 }
 
+func TestStageCompletionRetiresQueuedSameStageSibling(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "test")
+	st := store.NewMemory()
+	now := time.Now().UTC()
+	task := core.Task{ID: "completion-reaps-sibling", Workspace: "test", State: core.TaskRunning, CreatedAt: now}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	firstJob := core.Job{ID: task.ID + "-spec-1", TaskID: task.ID, Stage: core.StageSpec, State: core.JobPending}
+	secondJob := core.Job{ID: task.ID + "-spec-2", TaskID: task.ID, Stage: core.StageSpec, State: core.JobPending}
+	if err := st.CreateJob(ctx, firstJob); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateJob(ctx, secondJob); err != nil {
+		t.Fatal(err)
+	}
+	first := core.WorkOrder{ID: firstJob.ID, TaskID: task.ID, JobID: firstJob.ID, Stage: core.StageSpec, State: core.WorkOrderQueued, CreatedAt: now, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour)}
+	if err := storetest.For(st).CreateWorkOrder(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := storetest.For(st).ClaimWorkOrder(ctx, first.ID, core.WorkOrderClaim{SessionID: "spec-session", ClientToken: "secret", Lease: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second := core.WorkOrder{ID: secondJob.ID, TaskID: task.ID, JobID: secondJob.ID, Stage: core.StageSpec, State: core.WorkOrderQueued, CreatedAt: now.Add(time.Second), QueueEnteredAt: now.Add(time.Second), QueueDeadline: now.Add(time.Hour)}
+	if err = storetest.For(st).CreateWorkOrder(ctx, second); err != nil {
+		t.Fatal(err)
+	}
+	claimed.State = core.WorkOrderCompleted
+	if err = storetest.For(st).UpdateWorkOrder(ctx, claimed, core.WorkOrderCmdSubmitSpec); err != nil {
+		t.Fatal(err)
+	}
+	retired, err := st.GetWorkOrder(ctx, second.ID)
+	if err != nil || retired.State != core.WorkOrderCancelled || retired.Claimable {
+		t.Fatalf("retired sibling=%+v err=%v", retired, err)
+	}
+	if count, countErr := st.CountEvents(ctx, task.ID, "work_order.retired"); countErr != nil || count != 1 {
+		t.Fatalf("retirement events=%d err=%v", count, countErr)
+	}
+}
+
+func TestRecoverySupersessionGuardNamesSuccessorAndGate(t *testing.T) {
+	now := time.Now().UTC()
+	target := core.WorkOrder{ID: "task-spec-1", TaskID: "task", Stage: core.StageSpec, State: core.WorkOrderStale, CreatedAt: now}
+	successor := core.WorkOrder{ID: "task-spec-2", TaskID: "task", Stage: core.StageSpec, State: core.WorkOrderQueued, CreatedAt: now.Add(time.Second)}
+	if err := store.WorkOrderRecoverySupersessionError(core.Task{ID: "task", State: core.TaskRunning}, target, []core.WorkOrder{target, successor}); err == nil || !strings.Contains(err.Error(), successor.ID) {
+		t.Fatalf("successor guard err=%v", err)
+	}
+	if err := store.WorkOrderRecoverySupersessionError(core.Task{ID: "task", State: core.TaskAwaiting, RecoveryStage: core.StageImplement}, target, []core.WorkOrder{target}); err == nil || !strings.Contains(err.Error(), "plan gate") {
+		t.Fatalf("gate guard err=%v", err)
+	}
+	latest := core.WorkOrder{ID: "task-implement-1", TaskID: "task", Stage: core.StageImplement, State: core.WorkOrderStale, CreatedAt: now}
+	if err := store.WorkOrderRecoverySupersessionError(core.Task{ID: "task", State: core.TaskRunning}, latest, []core.WorkOrder{latest}); err != nil {
+		t.Fatalf("latest pending order rejected: %v", err)
+	}
+}
+
 func TestRedispatchRejectsOrdersOutsideStaleNeverClaimedGuard(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {

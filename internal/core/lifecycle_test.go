@@ -125,6 +125,14 @@ func TestWorkOrderLifecycleW1ThroughW15(t *testing.T) {
 		command WorkOrderCommand
 		to      WorkOrderState
 	}{"W14", WorkOrderStale, WorkOrderCmdRedispatch, WorkOrderQueued})
+	for _, from := range []WorkOrderState{WorkOrderQueued, WorkOrderStale} {
+		tests = append(tests, struct {
+			name    string
+			from    WorkOrderState
+			command WorkOrderCommand
+			to      WorkOrderState
+		}{"W16", from, WorkOrderCmdPreempt, WorkOrderCancelled})
+	}
 	for _, from := range []WorkOrderState{WorkOrderQueued, WorkOrderClaimed, WorkOrderSubmitted, WorkOrderStale, WorkOrderTimedOut} {
 		tests = append(tests, struct {
 			name    string
