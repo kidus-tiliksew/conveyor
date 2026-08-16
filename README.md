@@ -191,19 +191,40 @@ either binary.
 
 ### Contributor agent setup
 
-On each contributor machine, install the CLI and then install the factory's
-embedded agent skills. The second command defaults to user-global Claude Code
-skills under `~/.claude/skills`; pass `--project` to keep them in the current
-project instead.
+On each contributor machine, install the CLI, log in, install the factory's
+embedded agent skills, and install the native MCP registrations. The skills
+and MCP commands configure every detected Claude Code and Codex installation;
+use `--tool` to narrow either command to one client.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/kidus-tiliksew/conveyor/main/install.sh | sh
+conveyor --server https://factory.example auth login
 conveyor skills install
+conveyor --server https://factory.example mcp install
 ```
 
 `conveyor skills install --list` shows the release-carried files and their
 installed state without writing. Re-running the install refreshes only files
 previously owned by Conveyor and refuses unrelated collisions.
+
+`conveyor mcp install --list` similarly reports the native user registration
+state without writing. The installer writes `~/.codex/config.toml` with
+`[mcp_servers.conveyor]`, the selected server URL, and
+`bearer_token_env_var = "CONVEYOR_API_TOKEN"`; it writes `~/.claude.json` with
+Claude's user-scope `type: "http"` server and an environment-backed
+Authorization header. Stored token values are never copied into either file.
+If the bridge is absent, the command prints the exact shell setup line:
+
+```sh
+export CONVEYOR_API_TOKEN=$(conveyor auth token)
+```
+
+Add that line to the shell environment yourself; Conveyor does not edit shell
+startup files. Existing unmarked `conveyor` registrations are reported as
+skipped and left untouched unless `--adopt` is supplied. Re-running refreshes
+owned entries and reports each detected client as created, refreshed,
+unchanged, or skipped. When credentials are stored for more than one server,
+select one explicitly with `--server`.
 
 To upgrade, re-run the installer with the newer version and restart the
 `conveyord` service. Replacing the two binaries is the entire software upgrade:
