@@ -13,6 +13,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/kidus-tiliksew/conveyor/internal/config"
+	"github.com/kidus-tiliksew/conveyor/internal/core"
 	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
 )
 
@@ -65,6 +66,18 @@ func TestExecutionWizardModelRoundTripWritesRunValidConfig(t *testing.T) {
 	if err = validateWorkerConfig(workerservice.WorkerConfig{WorkspaceDocument: loaded.WorkspaceDocument()}); err != nil {
 		t.Fatalf("conveyor run rejected wizard config: %v", err)
 	}
+	for _, order := range []core.WorkOrder{
+		{ID: "implement-1", Stage: core.StageImplement},
+		{ID: "review-1", Stage: core.StageReview, ReviewSeat: 1},
+	} {
+		selected, selectErr := selectLocalRunDispatch(workerservice.DispatchOrder{Order: order}, loaded)
+		if selectErr != nil {
+			t.Fatalf("conveyor run could not select %s dispatch: %v", order.Stage, selectErr)
+		}
+		if selected.Harness.Name != harness.Name || selected.Model == "" || selected.Dispatch != "run" || selected.Auth != "user" {
+			t.Fatalf("selected %s dispatch = %+v", order.Stage, selected)
+		}
+	}
 	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatal(err)
@@ -79,6 +92,17 @@ func TestExecutionWizardModelRoundTripWritesRunValidConfig(t *testing.T) {
 	lower := strings.ToLower(string(data))
 	if strings.Contains(lower, "credential:") || strings.Contains(lower, "api_token:") || strings.Contains(lower, "authorization:") {
 		t.Fatalf("config contains credential-like content:\n%s", data)
+	}
+}
+
+func TestExecutionSetupCommandIsDistinctFromTaskSetup(t *testing.T) {
+	command := configCmd()
+	resolved, _, err := command.Find([]string{"init-execution"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.CommandPath() != "config init-execution" || !strings.Contains(resolved.Long, "conveyor task setup") {
+		t.Fatalf("init command path=%q long=%q", resolved.CommandPath(), resolved.Long)
 	}
 }
 

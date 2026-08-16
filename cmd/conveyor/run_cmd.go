@@ -68,7 +68,7 @@ func runTask(ctx context.Context, c *client, taskID, configPath string, input io
 	firstActivityTimeout, err := configuredFirstActivityTimeout(local)
 	if err != nil {
 		_ = presentPendingRunOrder(output, *item)
-		return err
+		return localExecutionSetupRemedy(configPath, err)
 	}
 	reader := bufio.NewReader(input)
 	runStages := make([]core.Stage, 0, 2)
@@ -76,7 +76,7 @@ func runTask(ctx context.Context, c *client, taskID, configPath string, input io
 		selected, selectErr := selectLocalRunDispatch(*item, local)
 		if selectErr != nil {
 			_ = presentPendingRunOrder(output, *item)
-			return selectErr
+			return localExecutionSetupRemedy(configPath, selectErr)
 		}
 		if err = presentRunOrder(output, selected, local.Routing.Stages[string(selected.Order.Stage)].TimeoutText); err != nil {
 			return err
@@ -109,6 +109,10 @@ func runTask(ctx context.Context, c *client, taskID, configPath string, input io
 			return err
 		}
 	}
+}
+
+func localExecutionSetupRemedy(configPath string, err error) error {
+	return fmt.Errorf("%w; recreate it with `%s --config %s`", err, localExecutionSetupCommand, configPath)
 }
 
 func inputIsTerminal(input io.Reader) bool {

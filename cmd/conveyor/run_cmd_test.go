@@ -313,7 +313,7 @@ func TestRunTaskNoMCPRoutePresentsPendingOrderWithoutClaiming(t *testing.T) {
 		value = strings.Replace(value, "    review:\n      seats:\n        - {model: gpt-5.6, harness: local-agent}\n        - {model: claude-opus-4.1, harness: local-agent}", "    review:\n      seats:\n        - {model: gpt-5.6}", 1)
 		return value
 	})
-	if err == nil || !strings.Contains(err.Error(), "no MCP route for review") {
+	if err == nil || !strings.Contains(err.Error(), "no MCP route for review") || !strings.Contains(err.Error(), localExecutionSetupCommand) {
 		t.Fatalf("err=%v", err)
 	}
 	if claimCalls != 0 {
@@ -328,7 +328,7 @@ func TestRunTaskNoMCPRoutePresentsPendingOrderWithoutClaiming(t *testing.T) {
 
 func TestRunTaskNoSelectedHarnessPresentsPendingOrderWithoutClaiming(t *testing.T) {
 	claimCalls, output, err := runTaskSelectionErrorScenario(t, 3, func(value string) string { return value })
-	if err == nil || !strings.Contains(err.Error(), "no harness") {
+	if err == nil || !strings.Contains(err.Error(), "no harness") || !strings.Contains(err.Error(), localExecutionSetupCommand) {
 		t.Fatalf("err=%v", err)
 	}
 	if claimCalls != 0 {
