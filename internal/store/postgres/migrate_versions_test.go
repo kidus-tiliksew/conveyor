@@ -2,6 +2,8 @@ package postgres
 
 import (
 	"io/fs"
+	"os"
+	"strings"
 	"testing"
 )
 
@@ -28,5 +30,22 @@ func TestEmbeddedMigrationVersionsAreUnique(t *testing.T) {
 			t.Fatalf("migration version %d is claimed by both %s and %s; renumber the newer file", version, prior, name)
 		}
 		seen[version] = name
+	}
+}
+
+func TestMigration096RemainsBurnedAndDocumented(t *testing.T) {
+	files, err := fs.Glob(migrationFiles, "migrations/096_*.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 0 {
+		t.Fatalf("burned migration 096 was reused: %v", files)
+	}
+	note, err := os.ReadFile("migrations/README.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if text := string(note); !strings.Contains(text, "`096` is permanently burned") || !strings.Contains(text, "out of order") {
+		t.Fatalf("migration 096 note is missing its permanent ordering rationale: %s", text)
 	}
 }

@@ -327,6 +327,12 @@ type Store interface {
 	ListArtifactsForLineage(ctx context.Context, nodes []core.LineageNode) ([]core.Artifact, error)
 }
 
+// UnscopedActivityStore is an explicit compatibility capability for the
+// in-memory store. Production stores must use the workspace-scoped page path.
+type UnscopedActivityStore interface {
+	SupportsUnscopedActivity() bool
+}
+
 // PlanRevisionRequestResult is the atomic projection committed when an
 // implementer contests its approved execution plan (REQ-1, AC-1.1–AC-1.3).
 type PlanRevisionRequestResult struct {
@@ -1154,6 +1160,8 @@ type memory struct {
 	nextReviewID                int64
 	taskLocks                   sync.Map
 }
+
+func (m *memory) SupportsUnscopedActivity() bool { return true }
 
 func (m *memory) IsDurable() bool { return false }
 

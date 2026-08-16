@@ -1251,8 +1251,8 @@ func (s *Server) listActivityPage(w http.ResponseWriter, r *http.Request, query 
 	// The no-auth in-memory server used by embedders predates explicit
 	// workspace resolution. Preserve that singleton compatibility path while
 	// production requests continue through the workspace-scoped store page.
-	workspaceID, scoped := store.WorkspaceFromContext(r.Context())
-	if s.Workspace == "" && s.Workspaces == nil && (!scoped || workspaceID == "test") {
+	compatibilityStore, supportsUnscopedActivity := s.Store.(store.UnscopedActivityStore)
+	if s.Workspace == "" && s.Workspaces == nil && supportsUnscopedActivity && compatibilityStore.SupportsUnscopedActivity() {
 		tasks, err := s.Store.ListTasksFiltered(r.Context(), query.TaskFilter)
 		if err != nil {
 			log.Printf("handle API request: %v", err)

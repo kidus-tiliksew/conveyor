@@ -165,32 +165,59 @@ func TestInstallEmbeddedSkillsRefusesCollisionBeforeWriting(t *testing.T) {
 	}
 }
 
-func TestInstallEmbeddedSkillsRejectsDestinationSymlink(t *testing.T) {
+func TestInstallEmbeddedSkillsResolvesEditorSymlinkAndRejectsNestedSymlink(t *testing.T) {
 	t.Parallel()
 	base := t.TempDir()
-	outside := t.TempDir()
-	if err := os.Symlink(outside, filepath.Join(base, ".claude")); err != nil {
+	managedRoot := t.TempDir()
+	if err := os.Symlink(managedRoot, filepath.Join(base, ".claude")); err != nil {
 		t.Skipf("symlink unavailable: %v", err)
 	}
 	root := filepath.Join(base, ".claude", "skills")
-	if _, err := installEmbeddedSkills(base, root, "v1"); err == nil || !strings.Contains(err.Error(), "refusing symlink") {
-		t.Fatalf("symlink error = %v", err)
-	}
-	entries, err := os.ReadDir(outside)
+	items, err := installEmbeddedSkills(base, root, "v1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 0 {
-		t.Fatalf("installer wrote through destination symlink: %v", entries)
+	for _, item := range items {
+		if !pathWithin(filepath.Join(managedRoot, "skills"), item.target) {
+			t.Fatalf("resolved target %s is outside symlink destination", item.target)
+		}
 	}
-	command := skillsInstallCmd()
-	var output bytes.Buffer
-	command.SetOut(&output)
-	if err := listEmbeddedSkills(command, base, root, "v1"); err != nil {
+
+	unsafeBase := t.TempDir()
+	unsafeManagedRoot := t.TempDir()
+	unsafeTarget := t.TempDir()
+	if err = os.Symlink(unsafeManagedRoot, filepath.Join(unsafeBase, ".claude")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if err = os.MkdirAll(filepath.Join(unsafeManagedRoot, "skills"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Count(output.String(), "unsafe: refusing symlink") != len(embeddedSkillManifest) {
-		t.Fatalf("--list did not report the unsafe destination:\n%s", output.String())
+	if err = os.Symlink(unsafeTarget, filepath.Join(unsafeManagedRoot, "skills", "conveyor-plan")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if _, err = installEmbeddedSkills(unsafeBase, filepath.Join(unsafeBase, ".claude", "skills"), "v1"); err == nil || !strings.Contains(err.Error(), "refusing symlink") {
+		t.Fatalf("nested symlink error = %v", err)
+	}
+}
+
+func TestInstallEmbeddedSkillsRefusesDowngradeUnlessForced(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	destination := skillDestination{tool: supportedSkillTools[0], root: filepath.Join(base, ".claude", "skills")}
+	if _, _, err := installEmbeddedSkillsForDestinations(base, []skillDestination{destination}, "v2.0.0", false); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := installEmbeddedSkillsForDestinations(base, []skillDestination{destination}, "v1.9.0", false); err == nil || !strings.Contains(err.Error(), "refusing to downgrade") || !strings.Contains(err.Error(), "--force") {
+		t.Fatalf("downgrade error = %v", err)
+	}
+	items, _, err := installEmbeddedSkillsForDestinationsWithForce(base, []skillDestination{destination}, "v1.9.0", false, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range items {
+		if item.status != "downgrade v2.0.0 -> v1.9.0 (forced)" {
+			t.Fatalf("forced downgrade status for %s = %q", item.relative, item.status)
+		}
 	}
 }
 
