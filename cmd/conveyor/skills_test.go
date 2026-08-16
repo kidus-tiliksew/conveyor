@@ -315,10 +315,11 @@ func TestSkillsInstallDetectionErrorsAreReadOnly(t *testing.T) {
 	}
 }
 
-func TestCodexLegacyArtifactRequiresExplicitAdoption(t *testing.T) {
+func TestCodexLegacyArtifactIsReportOnlyForDefaultMultiToolInstall(t *testing.T) {
 	base := t.TempDir()
-	destination := skillDestinations(base, []skillTool{supportedSkillTools[1]})[0]
-	legacyFile := filepath.Join(destination.legacyPath, "plugin.json")
+	destinations := skillDestinations(base, supportedSkillTools)
+	codexDestination := destinations[1]
+	legacyFile := filepath.Join(codexDestination.legacyPath, "plugin.json")
 	if err := os.MkdirAll(filepath.Dir(legacyFile), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -326,28 +327,26 @@ func TestCodexLegacyArtifactRequiresExplicitAdoption(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	items, reports, err := installEmbeddedSkillsForDestinations(base, []skillDestination{destination}, "v1", false)
+	items, reports, err := installEmbeddedSkillsForDestinations(base, destinations, "v1", false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(items) != 0 || len(reports) != 1 || !strings.Contains(reports[0].status, "skipped") {
+	if len(items) != len(supportedSkillTools)*len(embeddedSkillManifest) || len(reports) != 1 || !strings.Contains(reports[0].status, "skipped unmanaged") {
 		t.Fatalf("default legacy result: items=%d reports=%+v", len(items), reports)
 	}
-	if _, err := os.Stat(destination.root); !os.IsNotExist(err) {
-		t.Fatalf("default legacy handling wrote native root: %v", err)
+	for _, item := range items {
+		if item.status != "created" {
+			t.Fatalf("default %s status for %s = %q", item.tool, item.relative, item.status)
+		}
 	}
-
-	items, reports, err = installEmbeddedSkillsForDestinations(base, []skillDestination{destination}, "v1", true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	assertStatuses(t, items, "created")
-	if len(reports) != 1 || !strings.Contains(reports[0].status, "adopted legacy plugin into") {
-		t.Fatalf("adopt reports = %+v", reports)
+	for _, destination := range destinations {
+		if _, err := os.Stat(destination.root); err != nil {
+			t.Fatalf("%s native root missing: %v", destination.tool.name, err)
+		}
 	}
 	legacy, err := os.ReadFile(legacyFile)
 	if err != nil || string(legacy) != "operator plugin\n" {
-		t.Fatalf("adoption modified legacy content: %q, %v", legacy, err)
+		t.Fatalf("default install modified legacy content: %q, %v", legacy, err)
 	}
 }
 

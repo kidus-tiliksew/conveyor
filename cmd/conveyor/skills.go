@@ -144,7 +144,7 @@ func skillsInstallCmdWithLookPath(lookPath func(string) (string, error)) *cobra.
 	command.Flags().BoolVar(&project, "project", false, "install under each tool's project skills directory instead of the user-global directory")
 	command.Flags().BoolVar(&list, "list", false, "list embedded files and their installed state without writing")
 	command.Flags().StringVar(&selectedTool, "tool", "", "install only for one detected tool (claude or codex)")
-	command.Flags().BoolVar(&adopt, "adopt", false, "adopt unmarked skill files or the recognized legacy Codex artifact into the native destination")
+	command.Flags().BoolVar(&adopt, "adopt", false, "adopt unmarked skill files in a selected native destination")
 	return command
 }
 
@@ -236,7 +236,7 @@ func listEmbeddedSkillsForDestinations(cmd *cobra.Command, base string, destinat
 		if exists, err := legacySkillArtifactExists(base, destination); err != nil {
 			return err
 		} else if exists {
-			fmt.Fprintf(cmd.OutOrStdout(), "%s\tlegacy plugin\t%s\tunmanaged (use --adopt to migrate)\n", destination.tool.name, destination.legacyPath)
+			fmt.Fprintf(cmd.OutOrStdout(), "%s\tlegacy plugin\t%s\tunmanaged (left untouched)\n", destination.tool.name, destination.legacyPath)
 		}
 	}
 	return nil
@@ -251,7 +251,7 @@ func installEmbeddedSkills(base, root, version string) ([]skillInstallFile, erro
 }
 
 func installEmbeddedSkillsForDestinations(base string, destinations []skillDestination, version string, adopt bool) ([]skillInstallFile, []skillInstallReport, error) {
-	active, reports, err := activeSkillDestinations(base, destinations, adopt)
+	active, reports, err := activeSkillDestinations(base, destinations)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -438,7 +438,7 @@ func buildSkillInstallPlanForTool(base string, destination skillDestination, ver
 	return plan, nil
 }
 
-func activeSkillDestinations(base string, destinations []skillDestination, adopt bool) ([]skillDestination, []skillInstallReport, error) {
+func activeSkillDestinations(base string, destinations []skillDestination) ([]skillDestination, []skillInstallReport, error) {
 	active := make([]skillDestination, 0, len(destinations))
 	var reports []skillInstallReport
 	for _, destination := range destinations {
@@ -450,20 +450,8 @@ func activeSkillDestinations(base string, destinations []skillDestination, adopt
 			active = append(active, destination)
 			continue
 		}
-		managed, err := destinationHasManagedSkill(base, destination)
-		if err != nil {
-			return nil, nil, err
-		}
-		if !adopt && !managed {
-			reports = append(reports, skillInstallReport{tool: destination.tool.name, status: "skipped unmanaged legacy plugin (use --adopt)", target: destination.legacyPath})
-			continue
-		}
 		active = append(active, destination)
-		status := "skipped unmanaged legacy plugin"
-		if adopt {
-			status = "adopted legacy plugin into " + destination.root
-		}
-		reports = append(reports, skillInstallReport{tool: destination.tool.name, status: status, target: destination.legacyPath})
+		reports = append(reports, skillInstallReport{tool: destination.tool.name, status: "skipped unmanaged legacy plugin", target: destination.legacyPath})
 	}
 	return active, reports, nil
 }
@@ -490,26 +478,6 @@ func legacySkillArtifactExists(base string, destination skillDestination) (bool,
 	default:
 		return false, fmt.Errorf("inspect legacy skill artifact %s: %w", destination.legacyPath, err)
 	}
-}
-
-func destinationHasManagedSkill(base string, destination skillDestination) (bool, error) {
-	for _, asset := range embeddedSkillManifest {
-		target := filepath.Join(destination.root, filepath.FromSlash(asset.relative))
-		if err := ensureSafeInstallPath(base, target); err != nil {
-			return false, err
-		}
-		content, err := os.ReadFile(target)
-		if os.IsNotExist(err) {
-			continue
-		}
-		if err != nil {
-			return false, fmt.Errorf("read installed skill %s: %w", target, err)
-		}
-		if _, owned := managedSkillVersion(content, asset.sourcePath); owned {
-			return true, nil
-		}
-	}
-	return false, nil
 }
 
 func renderEmbeddedSkill(asset embeddedSkillFile, version string) ([]byte, error) {
