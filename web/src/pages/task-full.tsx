@@ -19,7 +19,7 @@ import { Skeleton } from '../components/ui/skeleton'
 export function TaskFullPage() {
   const { taskId } = useParams({ from: '/tasks/$taskId/full' })
   const { data: item, isLoading, error } = useTaskDetail(taskId)
-  const { previousId, nextId } = useTaskOrder(taskId)
+  const { previousId, nextId, windowEdge } = useTaskOrder(taskId)
   // A blueprint anchor has one home, and it is not this page.
   const redirecting = useCanonicalBlueprintRedirect(item?.task)
 
@@ -35,6 +35,11 @@ export function TaskFullPage() {
         {/* The corner affordance REQ-3 asks for: what this task connects to is
             one read away, and it costs nothing until it is opened. */}
         <LineageExplorer type="task" id={taskId} />
+        {windowEdge && (
+          <span className="max-w-56 text-right text-[10px] leading-4 text-faint" role="note">
+            {windowEdge}
+          </span>
+        )}
         <FullNavButton targetId={previousId} label="Previous task" icon={<ChevronUp />} />
         <FullNavButton targetId={nextId} label="Next task" icon={<ChevronDown />} />
       </header>

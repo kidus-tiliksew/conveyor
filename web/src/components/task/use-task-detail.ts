@@ -23,14 +23,13 @@ export function useTaskDetail(taskId: string) {
 
 // Prev/next follow the board's visual order: columns left to right, cards
 // by recency within each column. A surface that already knows the order it is
-// showing passes `enabled: false` and supplies its own — the board feed is the
-// whole workspace, and the Tasks list exists so that is never loaded to page
-// through it (AC-2.3).
+// showing passes `enabled: false` and supplies its own. Otherwise navigation is
+// deliberately limited to the current bounded Board page (AC-2.3).
 export function useTaskOrder(taskId: string, enabled = true) {
   const { data: activity } = useActivity(undefined, enabled)
   return useMemo(() => {
     const byGroup = new Map<string, Array<{ id: string; at: string }>>()
-    for (const summary of activity ?? []) {
+    for (const summary of activity?.items ?? []) {
       const key = groupForSummary(summary)
       byGroup.set(key, [
         ...(byGroup.get(key) ?? []),
@@ -43,9 +42,19 @@ export function useTaskOrder(taskId: string, enabled = true) {
         .map((entry) => entry.id),
     )
     const index = order.indexOf(taskId)
+    const edges: string[] = []
+    if (activity && index < 0) {
+      edges.push('This task is outside the loaded Board window.')
+    } else if (activity) {
+      if (index === 0 && activity.offset > 0) edges.push('The previous task is on an earlier Board page.')
+      if (index === order.length - 1 && activity.offset + activity.items.length < activity.total) {
+        edges.push('The next task is on a later Board page.')
+      }
+    }
     return {
       previousId: index > 0 ? order[index - 1] : undefined,
       nextId: index >= 0 && index < order.length - 1 ? order[index + 1] : undefined,
+      windowEdge: edges.join(' '),
     }
   }, [activity, taskId])
 }

@@ -175,12 +175,20 @@ async function routeBoard(page: Page, seen: string[]) {
     const needle = (params.get('q') ?? '').toLowerCase()
     // List members repeat their parameter and mean "any of" (AC-2.4).
     const repositories = params.getAll('repository')
+    const filtered = activity.filter((item) => {
+      if (from && item.task.created_at < from) return false
+      if (repositories.length && !repositories.includes(item.task.repo)) return false
+      return !needle || item.task.title.toLowerCase().includes(needle)
+    })
+    const limit = Number(params.get('limit') ?? 100)
+    const offset = Number(params.get('offset') ?? 0)
     return route.fulfill({
-      json: activity.filter((item) => {
-        if (from && item.task.created_at < from) return false
-        if (repositories.length && !repositories.includes(item.task.repo)) return false
-        return !needle || item.task.title.toLowerCase().includes(needle)
-      }),
+      headers: {
+        'X-Conveyor-Total': String(filtered.length),
+        'X-Conveyor-Limit': String(limit),
+        'X-Conveyor-Offset': String(offset),
+      },
+      json: filtered.slice(offset, offset + limit),
     })
   })
 }
@@ -211,6 +219,54 @@ test('board orders each stage by creation time rather than latest activity', asy
     'Same-time conveyor change',
     'Older busy conveyor change',
   ])
+})
+
+test('board pages a bounded activity window and reports its position', async ({ page }) => {
+  const seen: string[] = []
+  await page.addInitScript(() => {
+    localStorage.setItem('conveyor-workspace', 'demo')
+    sessionStorage.setItem('conveyor-token', 'test-token')
+  })
+  await routeBoard(page, seen)
+  const many = Array.from({ length: 205 }, (_, index) => ({
+    task: {
+      id: `paged-${String(index).padStart(3, '0')}`,
+      workspace: 'demo',
+      source: 'operator',
+      title: `Paged task ${String(index).padStart(3, '0')}`,
+      repo: 'conveyor',
+      branch: `conveyor/paged-${index}`,
+      state: 'running',
+      created_at: new Date(Date.UTC(2026, 7, 15, 12, 0, 0) - index * 1_000).toISOString(),
+    },
+    latest_stage: 'implement',
+    last_event_at: '2026-08-15T12:00:00Z',
+    needs_attention: false,
+  }))
+  await page.route('**/v1/activity?**', (route) => {
+    const params = new URL(route.request().url()).searchParams
+    const limit = Number(params.get('limit') ?? 100)
+    const offset = Number(params.get('offset') ?? 0)
+    return route.fulfill({
+      headers: {
+        'X-Conveyor-Total': String(many.length),
+        'X-Conveyor-Limit': String(limit),
+        'X-Conveyor-Offset': String(offset),
+      },
+      json: many.slice(offset, offset + limit),
+    })
+  })
+
+  await page.goto('/')
+  await expect(page.getByText('Showing 1–100 of 205')).toBeVisible()
+  await expect(cards(page)).toHaveCount(100)
+  await page.getByRole('button', { name: 'Next' }).click()
+  await expect(page.getByText('Showing 101–200 of 205')).toBeVisible()
+  await expect(cards(page)).toHaveCount(100)
+  await page.getByRole('button', { name: 'Next' }).click()
+  await expect(page.getByText('Showing 201–205 of 205')).toBeVisible()
+  await expect(cards(page)).toHaveCount(5)
+  await expect(page.getByRole('button', { name: 'Next' })).toBeDisabled()
 })
 
 test('board opens on the last month and remembers the operator adjustment per workspace', async ({ page }) => {

@@ -88,6 +88,10 @@ type Store interface {
 	// filter is exactly ListTasks.
 	ListTasksFiltered(ctx context.Context, filter TaskFilter) ([]core.Task, error)
 	ListTaskPage(ctx context.Context, query TaskOperationsQuery) (TaskPage, error)
+	// ListCallerAttentionTaskPage returns only the authenticated caller's
+	// assigned, nonterminal tasks that currently satisfy TaskNeedsAttention.
+	// Implementations must apply caller and attention predicates before paging.
+	ListCallerAttentionTaskPage(ctx context.Context, query CallerAttentionQuery) (TaskPage, error)
 	ListTaskOperations(ctx context.Context, query TaskOperationsQuery) (TaskOperationsPage, error)
 	ApplyTaskCommand(ctx context.Context, lease taskops.TaskLease, id string, command taskops.Command) (core.Task, error)
 	// SetTaskHold toggles the per-task worker reservation with an audit
@@ -621,6 +625,25 @@ type TaskOperationsQuery struct {
 	TaskFilter
 	Limit  int
 	Offset int
+}
+
+// CallerAttentionQuery is the bounded input for the personal attention read.
+// UserID is derived from the authenticated credential at the HTTP boundary;
+// clients never select another member's subject.
+type CallerAttentionQuery struct {
+	UserID string
+	Limit  int
+	Offset int
+}
+
+func (q CallerAttentionQuery) Validate() error {
+	if strings.TrimSpace(q.UserID) == "" {
+		return fmt.Errorf("caller attention user id is required")
+	}
+	if q.Limit <= 0 {
+		return fmt.Errorf("caller attention limit must be positive")
+	}
+	return (TaskOperationsQuery{Limit: q.Limit, Offset: q.Offset}).Validate()
 }
 
 // MaxTaskOperationsLimit bounds a single page, and MaxTaskOperationsOffset is
@@ -4482,6 +4505,47 @@ func (m *memory) ListTaskOperations(ctx context.Context, query TaskOperationsQue
 func (m *memory) ListTaskPage(ctx context.Context, query TaskOperationsQuery) (TaskPage, error) {
 	page, err := m.ListTaskOperations(ctx, query)
 	return TaskPage{Tasks: page.Tasks, Total: page.Total}, err
+}
+
+func (m *memory) ListCallerAttentionTaskPage(ctx context.Context, query CallerAttentionQuery) (TaskPage, error) {
+	if err := query.Validate(); err != nil {
+		return TaskPage{}, err
+	}
+	tasks, err := m.ListTasksFiltered(ctx, TaskFilter{Assignee: query.UserID})
+	if err != nil {
+		return TaskPage{}, err
+	}
+	markers, err := m.ListActivityMarkers(ctx)
+	if err != nil {
+		return TaskPage{}, err
+	}
+	proposals, err := m.ListPendingProposals(ctx)
+	if err != nil {
+		return TaskPage{}, err
+	}
+	orders, err := m.ListWorkOrders(ctx)
+	if err != nil {
+		return TaskPage{}, err
+	}
+	markerByTask := make(map[string]ActivityMarker, len(markers))
+	for _, marker := range markers {
+		markerByTask[marker.TaskID] = marker
+	}
+	pendingAuthority := pendingAuthorityTaskIDs(orders, proposals)
+	attention := make([]core.Task, 0, len(tasks))
+	for _, task := range tasks {
+		if core.TaskTerminal(task.State) || core.BlueprintAnchor(task) {
+			continue
+		}
+		if TaskNeedsAttention(task, markerByTask[task.ID], pendingAuthority[task.ID]) {
+			attention = append(attention, task)
+		}
+	}
+	page := TaskPage{Total: len(attention)}
+	start := min(query.Offset, len(attention))
+	end := min(start+query.Limit, len(attention))
+	page.Tasks = append([]core.Task(nil), attention[start:end]...)
+	return page, nil
 }
 
 func taskOperationsEventKind(kind string) bool {

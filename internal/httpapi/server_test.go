@@ -2333,6 +2333,55 @@ func TestActivityDefaultsToBoundedPageAndSupportsExplicitPaging(t *testing.T) {
 	assertPage("/v1/activity?limit=25&offset=200", 25, 200, 5)
 }
 
+func TestCallerAttentionPagesAfterSubjectAndAttentionFiltering(t *testing.T) {
+	base := store.NewMemory()
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	assignee := &core.TaskAssignee{UserID: "local-operator", Email: "operator@example.test"}
+	older := core.Task{
+		ID: "older-returned", Workspace: "demo", State: core.TaskAwaiting, Assignee: assignee,
+		CreatedAt: time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC),
+	}
+	if err := base.CreateTask(ctx, older); err != nil {
+		t.Fatal(err)
+	}
+	for index := 0; index < 125; index++ {
+		task := core.Task{
+			ID: fmt.Sprintf("newer-%03d", index), Workspace: "demo", State: core.TaskQueued, Assignee: assignee,
+			CreatedAt: older.CreatedAt.Add(time.Duration(index+1) * time.Minute),
+		}
+		if err := base.CreateTask(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := base.CreateTask(ctx, core.Task{
+		ID: "someone-elses", Workspace: "demo", State: core.TaskAwaiting,
+		Assignee: &core.TaskAssignee{UserID: "another-user"}, CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	server := NewServer(base)
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/v1/attention/tasks?limit=1&offset=0", nil)
+	request = request.WithContext(store.WithCredential(ctx, core.AuthenticatedCredential{
+		ID: "pat-local", OwnerUserID: "local-operator", Kind: core.CredentialUser, Scope: core.CredentialScopeUser,
+	}))
+	server.listCallerAttentionTasks(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response.Header().Get("X-Conveyor-Total") != "1" || response.Header().Get("X-Conveyor-Limit") != "1" || response.Header().Get("X-Conveyor-Offset") != "0" {
+		t.Fatalf("pagination headers = %+v", response.Header())
+	}
+	var items []activityItem
+	if err := json.Unmarshal(response.Body.Bytes(), &items); err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].Task.ID != older.ID || !items[0].NeedsAttention {
+		t.Fatalf("caller attention items = %+v", items)
+	}
+}
+
 func TestTaskActivityLoadsOneHistoryAndOmitsRunningEnd(t *testing.T) {
 	base := store.NewMemory()
 	task := core.Task{ID: "running-detail", State: core.TaskRunning}

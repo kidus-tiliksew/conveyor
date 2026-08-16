@@ -1,5 +1,6 @@
 import type {
   ActivityItem,
+  ActivityPage,
   ActivitySummary,
   Artifact,
   BlueprintView,
@@ -58,23 +59,39 @@ async function getJSON<T>(url: string): Promise<T> {
 // The Board sends the shared Tasks/Board filter family to the same store
 // predicate the Tasks list uses (AC-2.4), so the two surfaces cannot narrow
 // differently and neither one narrows a fully-loaded workspace in the browser.
-export function fetchActivity(filter?: Record<string, string | string[] | undefined>) {
-  const query = filterQuery(filter)
-  return getJSON<ActivitySummary[]>(workspaceURL(`/v1/activity${query ? `?${query}` : ''}`))
+async function fetchActivityPage(
+  path: string,
+  input: { limit: number; offset: number; filter?: Record<string, string | string[] | undefined> },
+) {
+  const query = new URLSearchParams({ limit: String(input.limit), offset: String(input.offset) })
+  for (const [key, value] of Object.entries(input.filter ?? {})) {
+    for (const entry of Array.isArray(value) ? value : value ? [value] : []) query.append(key, entry)
+  }
+  const response = await fetch(workspaceURL(`${path}?${query}`), { headers: authHeaders() })
+  if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
+  const items = (await response.json()) as ActivitySummary[]
+  return {
+    items,
+    total: Number(response.headers.get('X-Conveyor-Total') ?? items.length),
+    limit: Number(response.headers.get('X-Conveyor-Limit') ?? input.limit),
+    offset: Number(response.headers.get('X-Conveyor-Offset') ?? input.offset),
+  } satisfies ActivityPage
+}
+
+export function fetchActivity(input: {
+  limit: number
+  offset: number
+  filter?: Record<string, string | string[] | undefined>
+}) {
+  return fetchActivityPage('/v1/activity', input)
+}
+
+export function fetchCallerAttentionTasks(input: { limit: number; offset: number }) {
+  return fetchActivityPage('/v1/attention/tasks', input)
 }
 
 export function fetchPendingProposals() {
   return getJSON<PendingProposalsResponse>(workspaceURL('/v1/pending-proposals'))
-}
-
-// List members repeat their parameter (`state=a&state=b`), the spelling the
-// server's parseTaskFilter reads as a disjunction.
-function filterQuery(filter?: Record<string, string | string[] | undefined>) {
-  const params = new URLSearchParams()
-  for (const [key, value] of Object.entries(filter ?? {})) {
-    for (const entry of Array.isArray(value) ? value : value ? [value] : []) params.append(key, entry)
-  }
-  return params.toString()
 }
 
 export function fetchTaskActivity(taskId: string) {

@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link, useNavigate, useParams } from '@tanstack/react-router'
 import { Plus } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { groupForSummary } from '../../lib/activity'
 import { fetchWorkspaces } from '../../lib/api'
 import { isBlueprintAnchor } from '../../lib/blueprint'
@@ -30,17 +30,19 @@ export function Board() {
   // operator changes it to, per workspace (AC-2.4).
   const [filter, setFilter] = useTaskFilters('board', boardDefaultTaskFilter)
   const params = taskFilterParams(filter)
+  const [offset, setOffset] = useState(0)
+  const filterKey = JSON.stringify(params)
   // A range no task can satisfy is a half-typed date; the filter says so in
   // place rather than emptying the board behind a request the server refuses.
   const rangeError = taskFilterRangeError(filter)
-  const { data, isLoading, error } = useActivity(params, !rangeError)
+  const { data, isLoading, isFetching, error } = useActivity(params, !rangeError, offset)
   const { workspace } = useWorkspaceSelection()
   // Highlight the card whose sheet is open (child route /tasks/$taskId).
   const { taskId: selectedId } = useParams({ strict: false }) as { taskId?: string }
 
   const grouped = useMemo(() => {
     const byGroup = new Map<GroupKey, ActivitySummary[]>()
-    for (const item of data ?? []) {
+    for (const item of data?.items ?? []) {
       // The board represents claimable, executable work. A blueprint anchor
       // takes no orders and moves through no stage, so it lives on the
       // Blueprints surface instead. The feed already excludes
@@ -59,13 +61,27 @@ export function Board() {
     return byGroup
   }, [data])
 
+  useEffect(() => setOffset(0), [filterKey])
+  useEffect(() => {
+    if (!data || data.total === 0 || offset < data.total) return
+    setOffset(Math.floor((data.total - 1) / data.limit) * data.limit)
+  }, [data, offset])
+
   if (!workspace) return <Onboarding />
 
   return (
     <div className="flex h-full flex-col">
       <header className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b border-border px-6 py-3.5">
         <h1 className="text-lg font-semibold tracking-tight">Board</h1>
-        <TaskFilters value={filter} onChange={setFilter} fallback={boardDefaultTaskFilter} className="ml-auto" />
+        <TaskFilters
+          value={filter}
+          onChange={(next) => {
+            setOffset(0)
+            setFilter(next)
+          }}
+          fallback={boardDefaultTaskFilter}
+          className="ml-auto"
+        />
         <Button size="sm" onClick={() => setCreating(true)}>
           <Plus />
           New task
@@ -75,6 +91,30 @@ export function Board() {
         <p className="mx-6 mt-4 rounded-lg bg-failure-soft p-3 text-sm text-failure">
           Activity feed unavailable: {String(error)}
         </p>
+      )}
+      {data && !isLoading && (
+        <div className="flex shrink-0 items-center justify-end gap-3 border-b border-border px-6 py-2 text-xs text-muted">
+          <span>
+            Showing {data.total === 0 ? 0 : data.offset + 1}–{Math.min(data.offset + data.items.length, data.total)} of{' '}
+            {data.total}
+          </span>
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={data.offset === 0 || isFetching}
+            onClick={() => setOffset(Math.max(0, data.offset - data.limit))}
+          >
+            Previous
+          </Button>
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={data.offset + data.items.length >= data.total || isFetching}
+            onClick={() => setOffset(data.offset + data.limit)}
+          >
+            Next
+          </Button>
+        </div>
       )}
       <section aria-label="Task board" className="flex min-h-0 flex-1 gap-3 overflow-x-auto px-4 py-4">
         {isLoading
