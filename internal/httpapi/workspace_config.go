@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"strconv"
@@ -21,7 +22,7 @@ type WorkspaceConfigStore interface {
 }
 
 func (s *Server) getHarnessTemplates(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"templates": config.HarnessTemplates()})
+	writeJSON(w, http.StatusGone, map[string]string{"error": "execution_configuration_retired", "message": "server harness templates are retired; execution setups are client-local"})
 }
 
 func (s *Server) getWorkspaceConfig(w http.ResponseWriter, r *http.Request) {
@@ -54,10 +55,7 @@ func (s *Server) getWorkspaceConfig(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, parseErr.Error(), http.StatusInternalServerError)
 			return
 		}
-		record.Document = normalized.WorkspaceDocument()
-	}
-	if record.Document.Harnesses == nil {
-		record.Document.Harnesses = []config.Harness{}
+		record.Document = normalized.PolicyDocument()
 	}
 	if record.Document.Repos == nil {
 		record.Document.Repos = []config.Repo{}
@@ -85,8 +83,22 @@ func (s *Server) putWorkspaceConfig(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusPreconditionRequired, map[string]any{"error": "if_match_required", "message": err.Error()})
 		return
 	}
+	body, readErr := io.ReadAll(io.LimitReader(r.Body, 2<<20))
+	if readErr != nil {
+		writeValidationError(w, "document", readErr)
+		return
+	}
+	var raw any
+	if err := json.Unmarshal(body, &raw); err != nil {
+		writeValidationError(w, "document", err)
+		return
+	}
+	if field := forbiddenExecutionField(raw); field != "" {
+		writeValidationError(w, field, fmt.Errorf("%s is retired execution detail and must not be supplied", field))
+		return
+	}
 	var request workspaceConfigRequest
-	decoder := json.NewDecoder(r.Body)
+	decoder := json.NewDecoder(strings.NewReader(string(body)))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&request); err != nil {
 		writeValidationError(w, "document", err)
@@ -130,6 +142,36 @@ func (s *Server) putWorkspaceConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("ETag", fmt.Sprintf("\"%d\"", receipt.Version))
 	writeJSON(w, http.StatusOK, receipt)
+}
+
+func forbiddenExecutionField(value any) string {
+	forbidden := map[string]struct{}{
+		"execution_settings": {}, "routing": {}, "harnesses": {}, "setups": {}, "default_setup": {},
+		"planning_models": {}, "model": {}, "model_policy": {}, "harness": {}, "effort": {}, "argv": {},
+		"command": {}, "model_args": {}, "effort_args": {}, "probe_command": {}, "mcp_transport": {},
+	}
+	var walk func(any) string
+	walk = func(node any) string {
+		switch typed := node.(type) {
+		case map[string]any:
+			for key, child := range typed {
+				if _, blocked := forbidden[strings.ToLower(key)]; blocked {
+					return key
+				}
+				if found := walk(child); found != "" {
+					return found
+				}
+			}
+		case []any:
+			for _, child := range typed {
+				if found := walk(child); found != "" {
+					return found
+				}
+			}
+		}
+		return ""
+	}
+	return walk(value)
 }
 
 func parseIfMatch(value string) (int64, error) {

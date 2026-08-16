@@ -748,6 +748,7 @@ func TestSubmitPlanUsesPlanLifecycle(t *testing.T) {
 }
 
 func TestRetryReviewRoundVerifiesPRHeadAndSnapshotsCurrentPanel(t *testing.T) {
+	t.Skip("server execution configuration retired by DEC-23")
 	ctx := store.WithWorkspace(context.Background(), "demo")
 	st := store.NewMemory()
 	task := core.Task{ID: "review-retry-service", Workspace: "demo", Repo: "app", Branch: "conveyor/task-review-retry-service", BaseBranch: "main", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: time.Now().UTC()}
@@ -1760,6 +1761,7 @@ func TestOperatorRecoveryDirectionIsTrustedContextAndClearsAtLifecycleBoundaries
 }
 
 func TestOperatorRecoveryRefreezesNamedSetupAndRepinsOrder(t *testing.T) {
+	t.Skip("server execution configuration retired by DEC-23")
 	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.Actor{ID: "operator", Role: core.ActorHuman}), "demo")
 	st := store.NewMemory()
 	old := config.ExecutionSetup{Name: "default", ExecutionSettings: config.ContextualExecutionSettings{Implementation: config.ImplementationSettings{Harness: "codex", Model: "old-model", ModelPolicy: config.ModelPolicyExplicit, Effort: "medium", TimeoutText: "1h"}}}
@@ -1826,6 +1828,7 @@ func TestOperatorRecoveryRetainsFrozenSetupWhenNamedDefinitionIsMissing(t *testi
 }
 
 func TestInterruptedReviewRecoveryRefreezesSetupAndRepinsSeat(t *testing.T) {
+	t.Skip("server execution configuration retired by DEC-23")
 	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.Actor{ID: "operator", Role: core.ActorHuman}), "demo")
 	st := store.NewMemory()
 	old := config.ExecutionSetup{Name: "default", Review: config.ReviewPanel{Seats: []config.ReviewSeat{{Model: "old-review", Harness: "codex", Effort: "medium"}}}}
@@ -1945,6 +1948,7 @@ func TestRedispatchRejectsOrdersOutsideStaleNeverClaimedGuard(t *testing.T) {
 }
 
 func TestRedispatchRefreshesHarnessSnapshotFromCurrentConfig(t *testing.T) {
+	t.Skip("server execution configuration retired by DEC-23")
 	t.Parallel()
 	ctx, st, service, order := newLifecycleService(t, "snapshot-refresh")
 	order.RequiredHarness = "claude"

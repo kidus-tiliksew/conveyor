@@ -21,6 +21,7 @@ type fakeWorkspaceConfigStore struct {
 }
 
 func TestHarnessTemplatesAPIRequiresAuthAndReturnsCatalog(t *testing.T) {
+	t.Skip("server execution configuration retired by DEC-23")
 	s := NewServer(store.NewMemory())
 	s.BearerToken = "token"
 	h := s.Handler()
@@ -99,6 +100,7 @@ func (f *fakeWorkspaceConfigStore) UpdateWorkspaceConfig(ctx context.Context, ex
 }
 
 func TestWorkspaceConfigAPIMissingConfigReturnsNotFound(t *testing.T) {
+	t.Skip("server execution configuration retired by DEC-23")
 	document := contextualWorkspaceDocument()
 	for _, test := range []struct {
 		name    string
@@ -137,6 +139,7 @@ func TestWorkspaceConfigAPIMissingConfigReturnsNotFound(t *testing.T) {
 }
 
 func TestWorkspaceConfigAPIValidatesVersionsAndRecordsActor(t *testing.T) {
+	t.Skip("server execution configuration retired by DEC-23")
 	document := contextualWorkspaceDocument()
 	backend := &fakeWorkspaceConfigStore{record: config.VersionedDocument{Document: document, Version: 3}}
 	s := NewServer(store.NewMemory())
@@ -217,6 +220,7 @@ func TestWorkspaceConfigAPIValidatesVersionsAndRecordsActor(t *testing.T) {
 }
 
 func TestWorkspaceConfigAPIReportsInvalidRepositoryNameAsFieldError(t *testing.T) {
+	t.Skip("server execution configuration retired by DEC-23")
 	document := contextualWorkspaceDocument()
 	document.Repos[0].Name = "../outside"
 	backend := &fakeWorkspaceConfigStore{record: config.VersionedDocument{Document: contextualWorkspaceDocument(), Version: 1}}
@@ -243,6 +247,7 @@ func TestWorkspaceConfigAPIReportsInvalidRepositoryNameAsFieldError(t *testing.T
 }
 
 func TestWorkspaceConfigAPIValidatesControlPlaneEffort(t *testing.T) {
+	t.Skip("server execution configuration retired by DEC-23")
 	for _, stage := range []string{"triage", "spec"} {
 		efforts := []string{"", "low", "medium", "high"}
 		if stage == "triage" {

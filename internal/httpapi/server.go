@@ -946,6 +946,10 @@ func (req *createTaskReq) UnmarshalJSON(data []byte) error {
 		if strings.EqualFold(name, "mode") {
 			return fmt.Errorf("mode is retired; use hold when reserving a task")
 		}
+		switch strings.ToLower(name) {
+		case "setup", "setup_contract", "policy_contract", "execution_settings", "routing", "harness", "model", "effort", "argv":
+			return fmt.Errorf("%s is retired execution detail and must not be supplied", name)
+		}
 	}
 	type request createTaskReq
 	return json.Unmarshal(data, (*request)(req))

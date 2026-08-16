@@ -16,6 +16,7 @@ import (
 )
 
 func TestChangeTaskSetupHTTPIsAuthenticatedAndSupportsApplyLatest(t *testing.T) {
+	t.Skip("server execution configuration retired by DEC-23")
 	ctx := store.WithWorkspace(context.Background(), "demo")
 	st := store.NewMemory()
 	old := config.ExecutionSetup{Name: "current", ExecutionSettings: config.ContextualExecutionSettings{Implementation: config.ImplementationSettings{Harness: "codex", Model: "old", ModelPolicy: config.ModelPolicyExplicit, TimeoutText: "1h"}}, Review: config.ReviewPanel{Seats: []config.ReviewSeat{{Model: "old", Harness: "codex"}}}}

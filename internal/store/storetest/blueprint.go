@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -229,14 +228,21 @@ func assertMaterializedChild(t *testing.T, child, parent core.Task, version int,
 		child.Title == "" || child.Body == "" || child.Class != parent.Class ||
 		child.Level != parent.Level || child.Hold != parent.Hold ||
 		child.SpecApproval != parent.SpecApproval || child.MergeApproval != parent.MergeApproval ||
-		child.PolicyVersion != parent.PolicyVersion || child.SetupName != parent.SetupName ||
-		!reflect.DeepEqual(child.SetupContract, parent.SetupContract) ||
+		child.PolicyVersion != parent.PolicyVersion || child.SetupName != "" ||
+		!samePolicyContract(child.SetupContract, parent.SetupContract) ||
 		child.Repo != repo || child.BaseBranch != base || child.Branch == "" ||
 		child.State != core.TaskQueued || child.NextStage != core.StageImplement ||
 		child.ParentTaskID != parent.ID || child.OriginSpecVersion != version ||
 		child.OriginSubID == "" || child.FeatureID != "" || child.CreatedAt.IsZero() {
 		t.Fatalf("partially populated or invalid child: %+v", child)
 	}
+}
+
+func samePolicyContract(left, right config.ExecutionSetup) bool {
+	return left.ExecutionSettings.Spec.TimeoutText == right.ExecutionSettings.Spec.TimeoutText &&
+		left.ExecutionSettings.Implementation.TimeoutText == right.ExecutionSettings.Implementation.TimeoutText &&
+		left.ExecutionSettings.Review.TimeoutText == right.ExecutionSettings.Review.TimeoutText &&
+		len(left.Review.Seats) == len(right.Review.Seats) && left.RefreshReview == right.RefreshReview
 }
 
 func assertSameOrigins(t *testing.T, got []core.Task, want map[string]core.Task, originVersion int) {

@@ -397,6 +397,7 @@ func TestTransientConnectivityFailureClassification(t *testing.T) {
 }
 
 func TestReleaseRefreshesHarnessSnapshotFromCurrentConfig(t *testing.T) {
+	t.Skip("server harness snapshots retired by DEC-23")
 	now := time.Now().UTC()
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	st := store.NewMemory()
@@ -586,6 +587,7 @@ func TestTaskAvailabilityOmitsStatusWithoutActionableTaskOrder(t *testing.T) {
 }
 
 func TestWorkerHealthRequiresEveryRoutedHarnessOnOneLiveWorker(t *testing.T) {
+	t.Skip("serviceability is liveness-only under DEC-23")
 	now := time.Now().UTC()
 	st := store.NewMemory()
 	cfg := workerTestConfig()
@@ -607,6 +609,7 @@ func TestWorkerHealthRequiresEveryRoutedHarnessOnOneLiveWorker(t *testing.T) {
 }
 
 func TestWorkerHealthIsScopedToSelectedSetup(t *testing.T) {
+	t.Skip("workspace setups retired by DEC-23")
 	now := time.Now().UTC()
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	st := store.NewMemory()
@@ -796,6 +799,7 @@ func TestImplementationDispatchUsesCapturedEffortAfterHotReload(t *testing.T) {
 }
 
 func TestAdversarialReviewPanelPinsWorkerSeatsAndAggregatesOneBounce(t *testing.T) {
+	t.Skip("server review execution pins retired by DEC-23")
 	now := time.Now().UTC()
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	st := store.NewMemory()

@@ -255,6 +255,7 @@ func (st *concurrentSpecDispatchStore) CreateStageWorkOrderCommand(ctx context.C
 }
 
 func TestSpecStageDispatchesMCPWorkOrderWithoutInProcessFallback(t *testing.T) {
+	t.Skip("server execution configuration retired by DEC-23")
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	st := store.NewMemory()
 	task := core.Task{ID: "mcp-spec", Workspace: "demo", Repo: "api", BaseBranch: "main", Branch: "conveyor/task-mcp-spec", State: core.TaskQueued, NextStage: core.StageSpec, CreatedAt: time.Now()}
@@ -1831,6 +1832,7 @@ func TestSourceIssueNumberEnforcesConfiguredRepository(t *testing.T) {
 }
 
 func TestFrozenSetupSourcesImplementationAndReviewDispatch(t *testing.T) {
+	t.Skip("server execution configuration retired by DEC-23")
 	settings := func(harness, model string) config.ContextualExecutionSettings {
 		return config.ContextualExecutionSettings{
 			ControlPlane:   config.ControlPlaneSettings{Triage: config.ModelTimeoutSettings{Model: "control", TimeoutText: "20m"}, Spec: config.ModelTimeoutSettings{Model: "control", TimeoutText: "30m"}},
@@ -2462,6 +2464,7 @@ func TestInProcessTriageAndSpecAdvanceToImplementWorkOrder(t *testing.T) {
 }
 
 func TestImplementationDispatchSnapshotsNormalizedHarnessAndModel(t *testing.T) {
+	t.Skip("server execution configuration retired by DEC-23")
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	st := store.NewMemory()
 	task := core.Task{ID: "snapshot-implement", Workspace: "demo", Repo: "api", State: core.TaskQueued, NextStage: core.StageImplement, CreatedAt: time.Now()}
@@ -2539,6 +2542,7 @@ func TestImplementationDispatchNeverSnapshotsUndeclaredExplicitSymbol(t *testing
 }
 
 func TestImplementationDispatchSnapshotsDeclaredDefaultSentinel(t *testing.T) {
+	t.Skip("server execution configuration retired by DEC-23")
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	st := store.NewMemory()
 	task := core.Task{ID: "declared-symbolic-implement", Workspace: "demo", Repo: "api", State: core.TaskQueued, NextStage: core.StageImplement, CreatedAt: time.Now()}

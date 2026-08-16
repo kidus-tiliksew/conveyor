@@ -17,6 +17,7 @@ import (
 )
 
 func TestMonitorObservationUsesNormalIntakeAndExposesDrift(t *testing.T) {
+	t.Skip("server execution configuration retired by DEC-23")
 	st := store.NewMemory()
 	server := NewServer(st)
 	server.Workspace, server.Repos, server.BearerToken = "demo", []string{"conveyor"}, "secret"

@@ -115,6 +115,7 @@ func TestCreateWorkspaceValidatesAndUsesDefaults(t *testing.T) {
 }
 
 func TestCreateWorkspaceAcceptsCompleteInitialConfiguration(t *testing.T) {
+	t.Skip("server execution configuration retired by DEC-23")
 	control := &fakeWorkspaceControl{}
 	deployment := &config.Config{Workspace: "demo", MaxBounces: 2, WorkOrderQueueTimeoutText: "24h", Database: config.Database{Backend: "memory"}, Routing: config.Routing{Stages: map[string]config.StageRoute{"triage": {Model: "gpt", TimeoutText: "1h", Execution: config.ExecutionInProcess}, "spec": {Model: "gpt", TimeoutText: "1h", Execution: config.ExecutionInProcess}, "implement": {Model: "operator", TimeoutText: "1h", Execution: config.ExecutionMCP}, "review": {Model: "operator", TimeoutText: "1h", Execution: config.ExecutionMCP}}}, Repos: []config.Repo{{Name: "repo", URL: "https://example.test/repo", Base: "main"}}}
 	document := deployment.WorkspaceDocument()

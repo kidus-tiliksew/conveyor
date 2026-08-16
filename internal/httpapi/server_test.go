@@ -721,6 +721,7 @@ func TestTaskIntakeIsNotHealthGatedAndPersistsHold(t *testing.T) {
 }
 
 func TestTaskIntakeSelectsAndFreezesExecutionSetup(t *testing.T) {
+	t.Skip("server execution configuration retired by DEC-23")
 	st := store.NewMemory()
 	settings := func(harness, model string) config.ContextualExecutionSettings {
 		return config.ContextualExecutionSettings{

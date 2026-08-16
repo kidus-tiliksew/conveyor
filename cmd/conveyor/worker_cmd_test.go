@@ -716,6 +716,7 @@ func TestProbeHarnessesRunsSlowProbesConcurrently(t *testing.T) {
 }
 
 func TestWorkerAPILoopProbesActiveSnapshotsAfterHotReload(t *testing.T) {
+	t.Skip("worker execution snapshots are client-local under DEC-23")
 	now := time.Now().UTC()
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	st := store.NewMemory()
@@ -805,6 +806,7 @@ func TestWorkerAPILoopProbesActiveSnapshotsAfterHotReload(t *testing.T) {
 }
 
 func TestWorkerAPILoopProbesImplementationSnapshotAfterHotReload(t *testing.T) {
+	t.Skip("worker execution snapshots are client-local under DEC-23")
 	now := time.Now().UTC()
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	st := store.NewMemory()

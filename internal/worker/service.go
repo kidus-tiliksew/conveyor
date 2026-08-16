@@ -337,54 +337,22 @@ func (s *Service) RateLimitHealth(ctx context.Context) ([]core.RateLimitHealth, 
 }
 
 func (s *Service) Serviceability(ctx context.Context, cfg *config.Config) WorkerServiceability {
-	setup, ok := cfg.Setup("")
-	if ok {
-		return s.ServiceabilityForSetup(ctx, cfg, setup)
-	}
+	_ = cfg
 	return s.serviceabilityForConfig(ctx, cfg)
 }
 
 // ServiceabilityForSetup evaluates only the harnesses required by one setup.
 // A broken harness in an unrelated setup must not disable that setup.
 func (s *Service) ServiceabilityForSetup(ctx context.Context, cfg *config.Config, setup config.ExecutionSetup) WorkerServiceability {
-	if setup.Name == "" {
-		var ok bool
-		setup, ok = cfg.Setup("")
-		if !ok {
-			return WorkerServiceability{WorkerExpected: true, Reason: "workspace has no valid default setup"}
-		}
-	}
-	serviceability := s.serviceabilityForConfig(ctx, cfg.WithSetup(setup))
-	if !serviceability.WorkerExpected || serviceability.Available {
-		return serviceability
-	}
-	failures, err := s.ModelFailuresForSetup(ctx, setup)
-	if err != nil {
-		serviceability.Reason = err.Error()
-		return serviceability
-	}
-	if len(failures) > 0 {
-		failure := failures[0]
-		serviceability.Reason = fmt.Sprintf("required harness %s has a known provider rejection for model %s (observed on work order %s)", failure.Harness, failure.Model, failure.WorkOrderID)
-	}
-	return serviceability
+	_ = setup
+	return s.serviceabilityForConfig(ctx, cfg)
 }
 
 // ModelFailuresForSetup projects retained provider evidence onto one setup.
 // It is advisory health only; dispatch still evaluates the frozen order.
 func (s *Service) ModelFailuresForSetup(ctx context.Context, setup config.ExecutionSetup) ([]core.HarnessModelFailure, error) {
-	known, err := s.Store.ListHarnessModelFailures(ctx)
-	if err != nil {
-		return nil, err
-	}
-	pairs := setupHarnessModelPairs(setup)
-	result := make([]core.HarnessModelFailure, 0)
-	for _, failure := range known {
-		if pairs[failure.Harness+"\x00"+failure.Model] {
-			result = append(result, failure)
-		}
-	}
-	return result, nil
+	_, _ = ctx, setup
+	return nil, nil
 }
 
 func setupHarnessModelPairs(setup config.ExecutionSetup) map[string]bool {
@@ -424,10 +392,10 @@ func (s *Service) serviceabilityForConfig(ctx context.Context, cfg *config.Confi
 	now := s.now()
 	var reason string
 	for _, worker := range active {
-		if healthy, workerReason := workerHealthyForRoutes(worker, cfg, now); healthy {
+		if worker.Live(now) {
 			return WorkerServiceability{WorkerExpected: true, Available: true}
 		} else if reason == "" {
-			reason = fmt.Sprintf("enrolled worker %q: %s", worker.Name, workerReason)
+			reason = fmt.Sprintf("enrolled worker %q: worker liveness lease expired", worker.Name)
 		}
 	}
 	return WorkerServiceability{WorkerExpected: true, Reason: reason}

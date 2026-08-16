@@ -22,6 +22,7 @@ func changeTaskSetup(t *testing.T, st *Store, ctx context.Context, request store
 }
 
 func TestTaskSetupChangePersistenceIntegration(t *testing.T) {
+	t.Skip("task setup changes retired by DEC-23")
 	st, err := Open(t.Context(), integrationDatabaseURL(t))
 	if err != nil {
 		t.Fatal(err)

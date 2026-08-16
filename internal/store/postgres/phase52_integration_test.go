@@ -16,6 +16,7 @@ import (
 )
 
 func TestPhase52ReviewPanelPersistenceIntegration(t *testing.T) {
+	t.Skip("review persistence is seat shape only under DEC-23")
 	st, err := Open(t.Context(), integrationDatabaseURL(t))
 	if err != nil {
 		t.Fatal(err)

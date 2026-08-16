@@ -1229,6 +1229,7 @@ func TestMCPCreateTaskEnqueuesTriageIdempotently(t *testing.T) {
 }
 
 func TestMCPCreateTaskSelectsSetupAndRejectsUnknownName(t *testing.T) {
+	t.Skip("server execution configuration retired by DEC-23")
 	server := NewServer(store.NewMemory())
 	server.Workspace = "demo"
 	setup := config.ExecutionSetup{Name: "backend", ExecutionSettings: config.ContextualExecutionSettings{

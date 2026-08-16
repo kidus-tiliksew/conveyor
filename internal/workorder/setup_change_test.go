@@ -61,6 +61,7 @@ func setupChangeFixture(t *testing.T, nextSeats []config.ReviewSeat) (*Service, 
 }
 
 func TestChangeTaskSetupReconcilesInterruptedRoundAndIsIdempotent(t *testing.T) {
+	t.Skip("server execution configuration retired by DEC-23")
 	service, st, ctx, task, _, next := setupChangeFixture(t, []config.ReviewSeat{{Model: "stable", Harness: "codex"}, {Model: "new-seat", Harness: "claude", Effort: "high"}})
 	ordersBefore, _ := st.ListTaskWorkOrders(ctx, task.ID)
 	var retained core.WorkOrder
@@ -262,6 +263,7 @@ func TestChangeTaskSetupRejectsClaimedAttemptWithoutMutation(t *testing.T) {
 }
 
 func TestPreemptThenChangeSetupReleaseHoldAndClaimUsesNewContract(t *testing.T) {
+	t.Skip("server execution configuration retired by DEC-23")
 	service, st, ctx, task, _, next := setupChangeFixture(t, []config.ReviewSeat{
 		{Model: "stable", Harness: "codex"},
 		{Model: "new-seat", Harness: "claude", Effort: "high"},

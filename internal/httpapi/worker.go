@@ -115,19 +115,8 @@ func (s *Server) listWorkers(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	serviceability := make(map[string]any, len(cfg.Setups))
-	for _, setup := range cfg.Setups {
-		setupStatus := s.Workers.ServiceabilityForSetup(r.Context(), cfg, setup)
-		modelFailures, failureErr := s.Workers.ModelFailuresForSetup(r.Context(), setup)
-		if failureErr != nil {
-			http.Error(w, failureErr.Error(), http.StatusInternalServerError)
-			return
-		}
-		serviceability[setup.Name] = workerServiceabilityPayload(setupStatus, modelFailures)
-	}
 	payload := workerServiceabilityPayload(workspaceServiceability, nil)
 	payload["workers"] = workers
-	payload["setup_serviceability"] = serviceability
 	payload["rate_limits"] = rateLimits
 	writeJSON(w, http.StatusOK, payload)
 }

@@ -207,7 +207,7 @@ func (s *Store) BootstrapConfig(ctx context.Context, cfg *config.Config) error {
 // empty. Subsequent starts reconcile only the file-owned capacity metadata
 // and report seeded=false so callers can emit the required startup notice
 func (s *Store) BootstrapWorkspaceConfig(ctx context.Context, cfg *config.Config) (bool, error) {
-	configYAML, err := config.MarshalWorkspaceDocument(cfg)
+	configYAML, err := config.MarshalPolicyDocument(cfg)
 	if err != nil {
 		return false, err
 	}
@@ -231,7 +231,7 @@ func (s *Store) BootstrapWorkspaceConfig(ctx context.Context, cfg *config.Config
 			return false, parseErr
 		}
 		if legacy {
-			canonical, marshalErr := config.MarshalWorkspaceDocument(stored)
+			canonical, marshalErr := config.MarshalPolicyDocument(stored)
 			if marshalErr != nil {
 				return false, marshalErr
 			}
@@ -305,7 +305,7 @@ func (s *Store) GetWorkspace(ctx context.Context, id string) (core.Workspace, er
 // CreateWorkspace commits identity, configuration, repositories, and the
 // workspace.created audit event atomically.
 func (s *Store) CreateWorkspace(ctx context.Context, id, name string, cfg *config.Config) (core.Workspace, error) {
-	data, err := config.MarshalWorkspaceDocument(cfg)
+	data, err := config.MarshalPolicyDocument(cfg)
 	if err != nil {
 		return core.Workspace{}, err
 	}
@@ -390,7 +390,7 @@ func (s *Store) RuntimeConfig(ctx context.Context, deployment *config.Config) (*
 }
 
 func (s *Store) UpdateWorkspaceConfig(ctx context.Context, expectedVersion int64, next *config.Config) (config.UpdateReceipt, error) {
-	data, err := config.MarshalWorkspaceDocument(next)
+	data, err := config.MarshalPolicyDocument(next)
 	if err != nil {
 		return config.UpdateReceipt{}, err
 	}
@@ -418,7 +418,7 @@ func (s *Store) UpdateWorkspaceConfig(ctx context.Context, expectedVersion int64
 		if err := yaml.Unmarshal([]byte(before.ConfigYaml), &previous); err != nil {
 			return fmt.Errorf("decode previous workspace config: %w", err)
 		}
-		sections := configDiff(previous, next.WorkspaceDocument())
+		sections := configDiff(previous, next.PolicyDocument())
 		actor := store.ActorFromContext(ctx)
 		event, err := q.InsertWorkspaceEvent(ctx, db.InsertWorkspaceEventParams{
 			WorkspaceID: workspace(ctx), Kind: "config.updated", ActorID: actor.ID,
@@ -432,7 +432,7 @@ func (s *Store) UpdateWorkspaceConfig(ctx context.Context, expectedVersion int64
 			return err
 		}
 		result = config.UpdateReceipt{
-			VersionedDocument: config.VersionedDocument{Document: next.WorkspaceDocument(), Version: updated.ConfigVersion},
+			VersionedDocument: config.VersionedDocument{Document: next.PolicyDocument(), Version: updated.ConfigVersion},
 			EventID:           event.ID, ActorID: actor.ID, Sections: sections,
 		}
 		return nil
@@ -2119,7 +2119,7 @@ func (s *Store) ApproveSpecVersionAndMaterialize(ctx context.Context, taskID str
 				Body:   fmt.Sprintf("%s\n\nDefined by blueprint task %s, spec version %d (%s).", strings.TrimSpace(item.Summary), parent.ID, version, item.ID),
 				Class:  parent.Class, Level: parent.Level, Hold: parent.Hold,
 				SpecApproval: parent.SpecApproval, MergeApproval: parent.MergeApproval,
-				PolicyVersion: parent.PolicyVersion, SetupName: parent.SetupName,
+				PolicyVersion: parent.PolicyVersion,
 				SetupContract: parent.SetupContract, Repo: strings.TrimSpace(item.Repo),
 				BaseBranch: baseBranches[item.ID], Branch: gitx.BranchName(id),
 				State: core.TaskQueued, NextStage: core.StageImplement,
