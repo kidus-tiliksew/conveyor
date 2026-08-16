@@ -31,6 +31,28 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 )
 
+func writeWorkerLocalExecutionConfig(t *testing.T, command, probe []string) string {
+	t.Helper()
+	cfg, err := config.Load(filepath.Join("..", "..", "conveyor.example.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Harnesses) == 0 {
+		t.Fatal("example config has no harness")
+	}
+	cfg.Harnesses[0].Command = append([]string(nil), command...)
+	cfg.Harnesses[0].ProbeCommand = append([]string(nil), probe...)
+	data, err := config.MarshalWorkspaceDocument(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "conveyor.yaml")
+	if err = os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
 func runHarnessChild(ctx context.Context, c *client, credential string, item workerservice.DispatchOrder) error {
 	return runHarnessChildWithFirstActivityTimeout(ctx, c, credential, item, config.DefaultFirstActivityTimeout)
 }
@@ -343,13 +365,9 @@ func TestWorkerLaunchPromptDoesNotGiveReviewOrdersImplementationInstructions(t *
 
 func TestRunWorkerReconnectsAcrossRetryableControlPlaneFailures(t *testing.T) {
 	t.Setenv("CONVEYOR_WORKER_TOKEN", "saved-enrollment-credential")
+	t.Setenv("CONVEYOR_CONFIG", writeWorkerLocalExecutionConfig(t, []string{"true", "{prompt}", "{mcp_config}"}, []string{"true"}))
 	var mu sync.Mutex
 	counts := map[string]int{}
-	document := workerservice.WorkerConfig{WorkspaceDocument: config.WorkspaceDocument{
-		Workspace: "demo",
-		Harnesses: []config.Harness{{Name: "codex", Command: []string{"true"}, ProbeCommand: []string{"true"}, ProbeTimeoutText: "1s"}},
-		Execution: config.ExecutionPolicy{ImplementConcurrency: 1, ReviewConcurrency: 1, FirstActivityTimeoutText: config.DefaultFirstActivityTimeoutText},
-	}}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		counts[r.URL.Path]++
@@ -364,8 +382,6 @@ func TestRunWorkerReconnectsAcrossRetryableControlPlaneFailures(t *testing.T) {
 			return
 		}
 		switch r.URL.Path {
-		case "/v1/worker/config":
-			_ = json.NewEncoder(w).Encode(document)
 		case "/v1/worker/heartbeat":
 			_ = json.NewEncoder(w).Encode(core.Worker{ID: "worker-1"})
 		case "/v1/worker/work-orders":
@@ -381,15 +397,19 @@ func TestRunWorkerReconnectsAcrossRetryableControlPlaneFailures(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	for _, path := range []string{"/v1/worker/config", "/v1/worker/heartbeat", "/v1/worker/work-orders"} {
+	for _, path := range []string{"/v1/worker/heartbeat", "/v1/worker/work-orders"} {
 		if counts[path] < 2 {
 			t.Fatalf("%s attempts=%d want reconnect", path, counts[path])
 		}
+	}
+	if counts["/v1/worker/config"] != 0 {
+		t.Fatalf("worker read server execution config %d times", counts["/v1/worker/config"])
 	}
 }
 
 func TestRunWorkerTreatsRevokedCredentialAsTerminalAndCancellationInterruptsBackoff(t *testing.T) {
 	t.Setenv("CONVEYOR_WORKER_TOKEN", "revoked")
+	t.Setenv("CONVEYOR_CONFIG", writeWorkerLocalExecutionConfig(t, []string{"true", "{prompt}", "{mcp_config}"}, []string{"true"}))
 	var requests int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		requests++
@@ -427,18 +447,10 @@ func TestRunWorkerShutdownWaitsForActiveChildCleanup(t *testing.T) {
 	var completeReleaseOnce sync.Once
 	finishRelease := func() { completeReleaseOnce.Do(func() { close(completeRelease) }) }
 	defer finishRelease()
-	document := workerservice.WorkerConfig{WorkspaceDocument: config.WorkspaceDocument{
-		Workspace: "demo",
-		Harnesses: []config.Harness{{
-			Name: "helper", Command: []string{"true"}, ProbeCommand: []string{"true"}, ProbeTimeoutText: "1s",
-		}},
-		Execution: config.ExecutionPolicy{ImplementConcurrency: 1, ReviewConcurrency: 1, FirstActivityTimeoutText: config.DefaultFirstActivityTimeoutText},
-	}}
+	t.Setenv("CONVEYOR_CONFIG", writeWorkerLocalExecutionConfig(t,
+		[]string{os.Args[0], "-test.run=TestWorkerLifecycleHelper", "--", "{prompt}", "{mcp_config}", "cancel"}, []string{"true"}))
 	item := workerservice.DispatchOrder{
 		Order: core.WorkOrder{ID: "shutdown-active-child", Stage: core.StageImplement},
-		Harness: config.Harness{
-			Name: "helper", Command: []string{os.Args[0], "-test.run=TestWorkerLifecycleHelper", "--", "cancel"},
-		},
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer worker-credential" {
@@ -446,8 +458,6 @@ func TestRunWorkerShutdownWaitsForActiveChildCleanup(t *testing.T) {
 			return
 		}
 		switch r.URL.Path {
-		case "/v1/worker/config":
-			_ = json.NewEncoder(w).Encode(document)
 		case "/v1/worker/heartbeat":
 			_ = json.NewEncoder(w).Encode(core.Worker{ID: "worker-1"})
 		case "/v1/worker/work-orders":
@@ -526,6 +536,66 @@ func TestRunWorkerShutdownWaitsForActiveChildCleanup(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("worker did not return after child cleanup completed")
+	}
+}
+
+func TestRunWorkerMissingLocalSetupFailsBeforeServerContact(t *testing.T) {
+	t.Setenv("CONVEYOR_WORKER_TOKEN", "worker-credential")
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		http.Error(w, "must not contact server", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	missing := filepath.Join(t.TempDir(), "missing.yaml")
+	err := runWorkerWithPolicyAndConfig(t.Context(), &client{base: server.URL, workspace: "demo"}, "", "test", true, defaultWorkerReconnectPolicy, missing)
+	if err == nil || !strings.Contains(err.Error(), "load local execution config") || !strings.Contains(err.Error(), missing) || !strings.Contains(err.Error(), localExecutionSetupCommand) {
+		t.Fatalf("err=%v", err)
+	}
+	if requests != 0 {
+		t.Fatalf("server requests=%d", requests)
+	}
+}
+
+func TestSelectLocalWorkerDispatchIgnoresServerPins(t *testing.T) {
+	localHarness := config.Harness{
+		Name: "local", Command: []string{"local-agent", "{prompt}", "{mcp_config}"},
+		ProbeCommand: []string{"local-agent", "--version"}, EffortArgs: map[string][]string{"medium": {"--effort", "medium"}},
+	}
+	local := &config.Config{
+		Harnesses: []config.Harness{localHarness},
+		Routing: config.Routing{Stages: map[string]config.StageRoute{
+			"implement": {Execution: config.ExecutionMCP, Harness: "local", Model: "local-model", Effort: "medium"},
+		}},
+	}
+	serverHarness := &core.HarnessSnapshot{Name: "server", Command: []string{"server-agent"}}
+	item := workerservice.DispatchOrder{
+		Order:   core.WorkOrder{ID: "local-wins", Stage: core.StageImplement, RequiredHarness: "server", RequiredModel: "server-model", RequiredEffort: "high", RequiredHarnessConfig: serverHarness},
+		Harness: config.Harness{Name: "server", Command: []string{"server-agent"}}, Model: "server-model", Effort: "high", HarnessSelection: "enforced",
+	}
+	var log bytes.Buffer
+	selected, err := selectLocalWorkerDispatch(item, local, &log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selected.Harness.Name != "local" || selected.Model != "local-model" || selected.Effort != "medium" || selected.HarnessSelection != "local" || selected.Dispatch != "worker" || selected.Auth != "byoa" {
+		t.Fatalf("selected=%+v", selected)
+	}
+	if !reflect.DeepEqual(selected.EffortArgv, []string{"--effort", "medium"}) || !strings.Contains(log.String(), "ignoring server-pinned execution fields") || !strings.Contains(log.String(), "local-model") {
+		t.Fatalf("effort=%q log=%q", selected.EffortArgv, log.String())
+	}
+}
+
+func TestWorkerRunConfigFlagUsesLocalExecutionDefault(t *testing.T) {
+	t.Setenv("CONVEYOR_CONFIG", "/tmp/conveyor-worker-local.yaml")
+	command := workerCmd()
+	run, _, err := command.Find([]string{"run"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	flag := run.Flags().Lookup("config")
+	if flag == nil || flag.DefValue != "/tmp/conveyor-worker-local.yaml" {
+		t.Fatalf("config flag=%+v", flag)
 	}
 }
 
@@ -1905,7 +1975,16 @@ func TestWorkerLifecycleHelper(t *testing.T) {
 	if len(os.Args) < 2 {
 		return
 	}
-	mode := os.Args[len(os.Args)-1]
+	mode := ""
+	for _, arg := range os.Args {
+		switch arg {
+		case "exit", "cancel", "silent", "silent-grandchild", "early-output", "early-error", "early-then-silent", "continuous-output", "stall-deadline-race":
+			mode = arg
+		}
+	}
+	if mode == "" {
+		return
+	}
 	if pidFile := os.Getenv("CONVEYOR_FAKE_HARNESS_PID_FILE"); pidFile != "" {
 		if err := os.WriteFile(pidFile, []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
 			t.Fatal(err)

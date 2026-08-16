@@ -60,15 +60,17 @@ func workerCmd() *cobra.Command {
 		return nil
 	}}
 	var pairing, name string
+	configPath := defaultLocalExecutionConfigPath()
 	var once bool
 	run := &cobra.Command{Use: "run", Short: "Heartbeat, claim queued work, and supervise configured harnesses", RunE: func(cmd *cobra.Command, _ []string) error {
 		ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
-		return runWorker(ctx, newClient(), pairing, name, once)
+		return runWorkerWithConfig(ctx, newClient(), pairing, name, once, configPath)
 	}}
 	run.Flags().StringVar(&pairing, "pairing-token", "", "single-use token for first enrollment")
 	run.Flags().StringVar(&name, "name", defaultWorkerName(), "worker display name")
 	run.Flags().BoolVar(&once, "once", false, "process currently available work and exit")
+	run.Flags().StringVar(&configPath, "config", configPath, "local execution configuration")
 	cmd.AddCommand(pair, list, revoke, run, workerInstallCmd(), workerUninstallCmd(), workerStatusCmd())
 	return cmd
 }
@@ -280,7 +282,11 @@ func (p workerReconnectPolicy) next(delay time.Duration) time.Duration {
 }
 
 func runWorker(ctx context.Context, c *client, pairing, name string, once bool) error {
-	return runWorkerWithPolicy(ctx, c, pairing, name, once, defaultWorkerReconnectPolicy)
+	return runWorkerWithConfig(ctx, c, pairing, name, once, defaultLocalExecutionConfigPath())
+}
+
+func runWorkerWithConfig(ctx context.Context, c *client, pairing, name string, once bool, configPath string) error {
+	return runWorkerWithPolicyAndConfig(ctx, c, pairing, name, once, defaultWorkerReconnectPolicy, configPath)
 }
 
 const workerShutdownGracePeriod = 10 * time.Second
@@ -307,6 +313,15 @@ func newWorkerHarnessProbes() *workerHarnessProbes {
 }
 
 func runWorkerWithPolicy(ctx context.Context, c *client, pairing, name string, once bool, reconnect workerReconnectPolicy) error {
+	return runWorkerWithPolicyAndConfig(ctx, c, pairing, name, once, reconnect, defaultLocalExecutionConfigPath())
+}
+
+func runWorkerWithPolicyAndConfig(ctx context.Context, c *client, pairing, name string, once bool, reconnect workerReconnectPolicy, configPath string) error {
+	// Validate before enrollment, heartbeat, listing, or claiming so an enabled
+	// worker never advertises serviceability it cannot execute locally.
+	if _, err := loadLocalExecutionSetup(configPath); err != nil {
+		return err
+	}
 	saved, err := loadOrEnrollWorker(c, pairing, name)
 	if err != nil {
 		return err
@@ -328,17 +343,11 @@ func runWorkerWithPolicy(ctx context.Context, c *client, pairing, name string, o
 	retryDelay := reconnect.Initial
 	harnessProbes := newWorkerHarnessProbes()
 	for {
-		document, err := c.workerConfigContext(ctx, credential)
+		setup, err := loadLocalExecutionSetup(configPath)
 		if err != nil {
-			if retryErr := waitForWorkerReconnect(ctx, reconnect, &retryDelay, "load worker configuration", err); retryErr != nil {
-				return retryErr
-			}
-			continue
+			return err
 		}
-		if err = validateWorkerConfig(document); err != nil {
-			return fmt.Errorf("invalid worker configuration: %w", err)
-		}
-		firstActivityTimeout, _ := time.ParseDuration(document.Execution.FirstActivityTimeoutText)
+		document := setup.WorkerDocument
 		probes := harnessProbes.probe(ctx, document, time.Now().UTC())
 		if _, err = c.heartbeatWorkerContext(ctx, credential, probes); err != nil {
 			if retryErr := waitForWorkerReconnect(ctx, reconnect, &retryDelay, "heartbeat worker", err); retryErr != nil {
@@ -383,10 +392,14 @@ func runWorkerWithPolicy(ctx context.Context, c *client, pairing, name string, o
 			if counts[item.Order.Stage] >= limit {
 				continue
 			}
+			selected, selectErr := selectLocalWorkerDispatch(item, setup.Config, os.Stderr)
+			if selectErr != nil {
+				return localExecutionSetupRemedy(configPath, selectErr)
+			}
 			mu.Lock()
-			active[item.Order.ID] = item.Order.Stage
+			active[selected.Order.ID] = selected.Order.Stage
 			mu.Unlock()
-			counts[item.Order.Stage]++
+			counts[selected.Order.Stage]++
 			started = true
 			children.Add(1)
 			go func(order workerservice.DispatchOrder, firstActivityTimeout time.Duration) {
@@ -396,7 +409,7 @@ func runWorkerWithPolicy(ctx context.Context, c *client, pairing, name string, o
 				mu.Lock()
 				delete(active, order.Order.ID)
 				mu.Unlock()
-			}(item, firstActivityTimeout)
+			}(selected, setup.FirstActivityTimeout)
 		}
 		mu.Lock()
 		activeCount := len(active)

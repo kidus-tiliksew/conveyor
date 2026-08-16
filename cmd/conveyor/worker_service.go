@@ -31,6 +31,7 @@ type workerServicePaths struct {
 	Unit       string `json:"unit_path"`
 	Stdout     string `json:"stdout_log"`
 	Stderr     string `json:"stderr_log"`
+	Config     string `json:"execution_config,omitempty"`
 	ConfigDir  string `json:"-"`
 	Home       string `json:"-"`
 	Definition string `json:"-"`
@@ -75,7 +76,8 @@ type workerEnrollmentState struct {
 }
 
 func workerInstallCmd() *cobra.Command {
-	return &cobra.Command{
+	configPath := defaultLocalExecutionConfigPath()
+	cmd := &cobra.Command{
 		Use:   "install",
 		Short: "Install and start the enrolled worker as a user service",
 		Args:  cobra.NoArgs,
@@ -85,15 +87,17 @@ func workerInstallCmd() *cobra.Command {
 				return err
 			}
 			client := newClient()
-			paths, err := installWorkerService(cmd.Context(), client, platform)
+			paths, err := installWorkerService(cmd.Context(), client, platform, configPath)
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "installed worker service for workspace %s\nunit=%s\nstdout_log=%s\nstderr_log=%s\n",
-				client.workspace, paths.Unit, paths.Stdout, paths.Stderr)
+			fmt.Fprintf(cmd.OutOrStdout(), "installed worker service for workspace %s\nunit=%s\nexecution_config=%s\nstdout_log=%s\nstderr_log=%s\n",
+				client.workspace, paths.Unit, paths.Config, paths.Stdout, paths.Stderr)
 			return nil
 		},
 	}
+	cmd.Flags().StringVar(&configPath, "config", configPath, "local execution configuration")
+	return cmd
 }
 
 func workerUninstallCmd() *cobra.Command {
@@ -220,7 +224,6 @@ func resolveWorkerService(platform workerServicePlatform, workspace, address str
 			Stderr: filepath.Join(logDir, "stderr.log"),
 			Home:   platform.Home,
 		}
-		paths.Definition = launchdWorkerDefinition(paths, workspace, address, platform.Executable)
 		return paths, nil
 	}
 	name := "conveyor-worker-" + identity + ".service"
@@ -233,11 +236,17 @@ func resolveWorkerService(platform workerServicePlatform, workspace, address str
 		Home:      platform.Home,
 		ConfigDir: platform.ConfigDir,
 	}
-	paths.Definition = systemdWorkerDefinition(paths, workspace, address, platform.Executable)
 	return paths, nil
 }
 
-func launchdWorkerDefinition(paths workerServicePaths, workspace, address, executable string) string {
+func workerServiceDefinition(platform workerServicePlatform, paths workerServicePaths, workspace, address, configPath string) string {
+	if platform.GOOS == "darwin" {
+		return launchdWorkerDefinition(paths, workspace, address, platform.Executable, configPath)
+	}
+	return systemdWorkerDefinition(paths, workspace, address, platform.Executable, configPath)
+}
+
+func launchdWorkerDefinition(paths workerServicePaths, workspace, address, executable, configPath string) string {
 	return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -248,6 +257,7 @@ func launchdWorkerDefinition(paths workerServicePaths, workspace, address, execu
     <string>` + xmlEscape(executable) + `</string>
     <string>--workspace</string><string>` + xmlEscape(workspace) + `</string>
     <string>worker</string><string>run</string>
+    <string>--config</string><string>` + xmlEscape(configPath) + `</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>
@@ -266,14 +276,14 @@ func launchdWorkerDefinition(paths workerServicePaths, workspace, address, execu
 `
 }
 
-func systemdWorkerDefinition(paths workerServicePaths, workspace, address, executable string) string {
+func systemdWorkerDefinition(paths workerServicePaths, workspace, address, executable, configPath string) string {
 	return `[Unit]
 Description=Conveyor worker for workspace ` + workspace + `
 After=network-online.target
 
 [Service]
 Type=simple
-ExecStart=` + serviceunit.QuoteArg(executable) + ` --workspace ` + serviceunit.QuoteArg(workspace) + ` worker run
+ExecStart=` + serviceunit.QuoteArg(executable) + ` --workspace ` + serviceunit.QuoteArg(workspace) + ` worker run --config ` + serviceunit.QuoteArg(configPath) + `
 Environment="CONVEYOR_ADDR=` + systemdEscape(address) + `"
 Environment="HOME=` + systemdEscape(paths.Home) + `"
 Environment="XDG_CONFIG_HOME=` + systemdEscape(paths.ConfigDir) + `"
@@ -317,18 +327,31 @@ func loadSavedWorkerCredential(workspace string) (workerCredentialFile, error) {
 	return saved, nil
 }
 
-func installWorkerService(ctx context.Context, c *client, platform workerServicePlatform) (workerServicePaths, error) {
+func installWorkerService(ctx context.Context, c *client, platform workerServicePlatform, configPath string) (workerServicePaths, error) {
 	workspace := c.workspace
 	if err := requireWorkerServiceWorkspace(workspace); err != nil {
 		return workerServicePaths{}, err
 	}
-	if _, err := loadSavedWorkerCredential(workspace); err != nil {
+	configPath = strings.TrimSpace(configPath)
+	if configPath == "" {
+		return workerServicePaths{}, fmt.Errorf("local execution config path is required")
+	}
+	configPath, err := filepath.Abs(configPath)
+	if err != nil {
+		return workerServicePaths{}, fmt.Errorf("resolve local execution config path: %w", err)
+	}
+	if _, err = loadLocalExecutionSetup(configPath); err != nil {
+		return workerServicePaths{}, err
+	}
+	if _, err = loadSavedWorkerCredential(workspace); err != nil {
 		return workerServicePaths{}, err
 	}
 	paths, err := resolveWorkerService(platform, workspace, c.base)
 	if err != nil {
 		return workerServicePaths{}, err
 	}
+	paths.Config = configPath
+	paths.Definition = workerServiceDefinition(platform, paths, workspace, c.base, configPath)
 	if err = ensureWorkerServiceOwnership(paths, workspace); err != nil {
 		return workerServicePaths{}, err
 	}
