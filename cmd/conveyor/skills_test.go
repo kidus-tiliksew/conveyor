@@ -97,6 +97,24 @@ func TestInstallEmbeddedSkillsCreateNoopAndRefresh(t *testing.T) {
 	if !bytes.HasPrefix(playbook, []byte(skillsOwnerPrefix+"v1.2.3 source=docs/playbooks/conveyor-planning.md -->\n")) {
 		t.Fatal("installed playbook has no release ownership marker")
 	}
+	workWrapperPath := filepath.Join(root, "conveyor-work", "SKILL.md")
+	workWrapper, err := os.ReadFile(workWrapperPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(workWrapper, []byte(skillsOwnerPrefix+"v1.2.3 source=.claude/skills/conveyor-work/SKILL.md -->")) {
+		t.Fatal("installed conveyor-work wrapper has no release ownership marker")
+	}
+	if bytes.Contains(workWrapper, []byte("../../../docs/playbooks")) || !bytes.Contains(workWrapper, []byte("[conveyor-work.md](conveyor-work.md)")) {
+		t.Fatal("installed conveyor-work wrapper is not self-contained")
+	}
+	workPlaybook, err := os.ReadFile(filepath.Join(root, "conveyor-work", "conveyor-work.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.HasPrefix(workPlaybook, []byte(skillsOwnerPrefix+"v1.2.3 source=docs/playbooks/conveyor-work.md -->\n")) {
+		t.Fatal("installed conveyor-work playbook has no release ownership marker")
+	}
 
 	unchanged, err := installEmbeddedSkills(base, root, "v1.2.3")
 	if err != nil {
