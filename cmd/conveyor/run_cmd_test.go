@@ -29,10 +29,10 @@ func TestConfiguredFirstActivityTimeoutRejectsInvalidAndNonPositiveText(t *testi
 }
 
 type taskRunStats struct {
-	states                              map[string]core.WorkOrderState
-	getCalls, claimCalls, reviewSubmits int
-	verdictSubmits, releaseCalls        int
-	progress                            []string
+	states                                           map[string]core.WorkOrderState
+	getCalls, claimCalls, planSubmits, reviewSubmits int
+	verdictSubmits, releaseCalls                     int
+	progress                                         []string
 }
 
 func runTaskScenario(t *testing.T, input string, auto, terminal bool) (taskRunStats, string, error) {
@@ -153,6 +153,140 @@ func runTaskScenario(t *testing.T, input string, auto, terminal bool) (taskRunSt
 	return stats, output.String(), err
 }
 
+func runSpecTaskScenario(t *testing.T, input string, terminal bool) (taskRunStats, string, error) {
+	t.Helper()
+	t.Setenv("CONVEYOR_FAKE_TASK_RUN_HARNESS", "1")
+	origin := filepath.Join(t.TempDir(), "origin.git")
+	seed := filepath.Join(t.TempDir(), "seed")
+	mustGit(t, "", "init", "--bare", "--initial-branch=main", origin)
+	mustGit(t, "", "init", "-b", "main", seed)
+	configureGitUser(t, seed)
+	writeFile(t, filepath.Join(seed, "README.md"), "spec context\n")
+	mustGit(t, seed, "add", ".")
+	mustGit(t, seed, "commit", "-m", "initial")
+	mustGit(t, seed, "remote", "add", "origin", origin)
+	mustGit(t, seed, "push", "-u", "origin", "main")
+
+	var mu sync.Mutex
+	stats := taskRunStats{states: map[string]core.WorkOrderState{"target-spec-1": core.WorkOrderQueued}}
+	sessions := map[string]string{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer user-credential" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if r.URL.Path == "/mcp" {
+			var request struct {
+				ID     json.RawMessage `json:"id"`
+				Params struct {
+					Name      string         `json:"name"`
+					Arguments map[string]any `json:"arguments"`
+				} `json:"params"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&request)
+			orderID, _ := request.Params.Arguments["work_order_id"].(string)
+			if request.Params.Arguments["session_id"] != sessions[orderID] || orderID != "target-spec-1" {
+				http.Error(w, "wrong task session", http.StatusForbidden)
+				return
+			}
+			switch request.Params.Name {
+			case "get_work_order":
+			case "report_progress":
+				stats.progress = append(stats.progress, request.Params.Arguments["message"].(string))
+			case "submit_plan":
+				stats.planSubmits++
+				stats.states[orderID] = core.WorkOrderCompleted
+			default:
+				http.Error(w, "unexpected tool", http.StatusBadRequest)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": request.ID, "result": map[string]any{"content": []map[string]string{{"type": "text", "text": `{"ok":true}`}}}})
+			return
+		}
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/tasks/target/run-order":
+			stats.getCalls++
+			if stats.states["target-spec-1"] == core.WorkOrderCompleted {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(workerservice.DispatchOrder{
+				Order:      core.WorkOrder{ID: "target-spec-1", TaskID: "target", Stage: core.StageSpec, State: stats.states["target-spec-1"]},
+				Task:       core.Task{ID: "target", Title: "Plan target", State: core.TaskRunning, Repo: "conveyor", BaseBranch: "main"},
+				Repository: config.Repo{Name: "conveyor", URL: origin, Base: "main"}, Dispatch: "run", Auth: "user",
+			})
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/claim"):
+			stats.claimCalls++
+			var claim struct {
+				SessionID string `json:"session_id"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&claim)
+			sessions["target-spec-1"] = claim.SessionID
+			stats.states["target-spec-1"] = core.WorkOrderClaimed
+			_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: "target-spec-1", TaskID: "target", Stage: core.StageSpec, State: core.WorkOrderClaimed, AttemptID: "attempt-spec", LeaseExpiresAt: time.Now().Add(time.Minute)})
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/reconcile"):
+			state := stats.states["target-spec-1"]
+			_ = json.NewEncoder(w).Encode(workerservice.ClaimReconciliation{WorkOrder: core.WorkOrder{ID: "target-spec-1", State: state}, Authorized: state == core.WorkOrderClaimed})
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/release"):
+			stats.releaseCalls++
+			w.WriteHeader(http.StatusOK)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	template, err := os.ReadFile(filepath.Join("..", "..", "conveyor.example.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := `command: ["` + strings.ReplaceAll(os.Args[0], `"`, `\"`) + `", "-test.run=TestTaskRunHarnessHelper", "--", "{prompt}", "{mcp_config}"]`
+	localConfig := strings.Replace(string(template), `command: [agent-cli, --prompt, "{prompt}", --mcp-config, "{mcp_config}"]`, command, 1)
+	configPath := filepath.Join(t.TempDir(), "conveyor.yaml")
+	if err = os.WriteFile(configPath, []byte(localConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c := &client{base: server.URL, token: "user-credential", workspace: "demo"}
+	var output bytes.Buffer
+	err = runTask(t.Context(), c, "target", configPath, strings.NewReader(input), &output, false, terminal)
+	mu.Lock()
+	defer mu.Unlock()
+	return stats, output.String(), err
+}
+
+func TestRunTaskExecutesConfirmedSpecAndStopsAtOperatorGate(t *testing.T) {
+	stats, output, err := runSpecTaskScenario(t, "yes\n", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.states["target-spec-1"] != core.WorkOrderCompleted || stats.getCalls != 2 || stats.claimCalls != 1 || stats.planSubmits != 1 || stats.releaseCalls != 0 {
+		t.Fatalf("stats=%+v", stats)
+	}
+	if len(stats.progress) != 1 || stats.progress[0] != "conveyor run mode: confirmed-per-stage" {
+		t.Fatalf("progress=%q", stats.progress)
+	}
+	for _, want := range []string{"Next: spec work order target-spec-1", "Execution: harness local-agent, model gpt-5.6-sol, effort high, timeout 30m", "Proceed with spec?", "pending spec approval gate", "operator approval is required"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output missing %q: %q", want, output)
+		}
+	}
+}
+
+func TestRunTaskDeclinesSpecBeforeClaim(t *testing.T) {
+	stats, output, err := runSpecTaskScenario(t, "no\n", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.claimCalls != 0 || stats.planSubmits != 0 || stats.releaseCalls != 0 {
+		t.Fatalf("stats=%+v", stats)
+	}
+	if !strings.Contains(output, "Ran: none") || !strings.Contains(output, "Resume: conveyor run target") {
+		t.Fatalf("output=%q", output)
+	}
+}
+
 func TestRunTaskExecutesConfirmedImplementReviewChain(t *testing.T) {
 	stats, output, err := runTaskScenario(t, "yes\nyes\n", false, true)
 	if err != nil {
@@ -164,7 +298,7 @@ func TestRunTaskExecutesConfirmedImplementReviewChain(t *testing.T) {
 	if len(stats.progress) != 2 || stats.progress[0] != "conveyor run mode: confirmed-per-stage" || stats.progress[1] != "conveyor run mode: confirmed-per-stage" {
 		t.Fatalf("progress=%q", stats.progress)
 	}
-	for _, want := range []string{"Task target: Ship target (state running)", "Next: implement work order target-implement-1", "Proceed with implement?", "Next: review work order target-review-1", "Proceed with review?", "task target has no claimable implement or review order"} {
+	for _, want := range []string{"Task target: Ship target (state running)", "Next: implement work order target-implement-1", "Proceed with implement?", "Next: review work order target-review-1", "Proceed with review?", "task target has no claimable spec, implement, or review order"} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("output missing %q: %q", want, output)
 		}
@@ -270,7 +404,7 @@ func TestRunTaskMissingSetupPresentsPendingOrderWithoutClaiming(t *testing.T) {
 	}
 }
 
-func runTaskSelectionErrorScenario(t *testing.T, reviewSeat int, mutateConfig func(string) string) (int, string, error) {
+func runTaskSelectionErrorScenario(t *testing.T, stage core.Stage, reviewSeat int, mutateConfig func(string) string) (int, string, error) {
 	t.Helper()
 	claimCalls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -281,7 +415,7 @@ func runTaskSelectionErrorScenario(t *testing.T, reviewSeat int, mutateConfig fu
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/tasks/target/run-order":
 			_ = json.NewEncoder(w).Encode(workerservice.DispatchOrder{
-				Order: core.WorkOrder{ID: "target-review-1", TaskID: "target", Stage: core.StageReview, State: core.WorkOrderQueued, ReviewSeat: reviewSeat},
+				Order: core.WorkOrder{ID: "target-" + string(stage) + "-1", TaskID: "target", Stage: stage, State: core.WorkOrderQueued, ReviewSeat: reviewSeat},
 				Task:  core.Task{ID: "target", Title: "Ship target", State: core.TaskRunning},
 			})
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/claim"):
@@ -308,7 +442,7 @@ func runTaskSelectionErrorScenario(t *testing.T, reviewSeat int, mutateConfig fu
 }
 
 func TestRunTaskNoMCPRoutePresentsPendingOrderWithoutClaiming(t *testing.T) {
-	claimCalls, output, err := runTaskSelectionErrorScenario(t, 1, func(value string) string {
+	claimCalls, output, err := runTaskSelectionErrorScenario(t, core.StageReview, 1, func(value string) string {
 		value = strings.Replace(value, "      review:\n        execution: mcp\n        timeout: 1h", "      review:\n        execution: in_process\n        timeout: 1h", 1)
 		value = strings.Replace(value, "    review:\n      seats:\n        - {model: gpt-5.6, harness: local-agent}\n        - {model: claude-opus-4.1, harness: local-agent}", "    review:\n      seats:\n        - {model: gpt-5.6}", 1)
 		return value
@@ -326,8 +460,33 @@ func TestRunTaskNoMCPRoutePresentsPendingOrderWithoutClaiming(t *testing.T) {
 	}
 }
 
+func TestRunTaskInvalidSpecHarnessPresentsPendingOrderWithoutClaiming(t *testing.T) {
+	claimCalls, output, err := runTaskSelectionErrorScenario(t, core.StageSpec, 0, func(value string) string {
+		return strings.Replace(value, "      spec:\n        harness: local-agent", "      spec:\n        harness: missing-spec-harness", 1)
+	})
+	if err == nil || !strings.Contains(err.Error(), "stage spec") || !strings.Contains(err.Error(), `unknown harness "missing-spec-harness"`) || !strings.Contains(err.Error(), localExecutionSetupCommand) {
+		t.Fatalf("err=%v", err)
+	}
+	if claimCalls != 0 {
+		t.Fatalf("claim calls=%d", claimCalls)
+	}
+	for _, want := range []string{"Task target: Ship target (state running)", "Next: spec work order target-spec-1"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output missing %q: %q", want, output)
+		}
+	}
+}
+
+func TestSelectLocalRunDispatchNamesMissingSpecRoute(t *testing.T) {
+	item := workerservice.DispatchOrder{Order: core.WorkOrder{Stage: core.StageSpec}}
+	_, err := selectLocalRunDispatch(item, &config.Config{Routing: config.Routing{Stages: map[string]config.StageRoute{}}})
+	if err == nil || err.Error() != "local execution config has no MCP route for spec" {
+		t.Fatalf("err=%v", err)
+	}
+}
+
 func TestRunTaskNoSelectedHarnessPresentsPendingOrderWithoutClaiming(t *testing.T) {
-	claimCalls, output, err := runTaskSelectionErrorScenario(t, 3, func(value string) string { return value })
+	claimCalls, output, err := runTaskSelectionErrorScenario(t, core.StageReview, 3, func(value string) string { return value })
 	if err == nil || !strings.Contains(err.Error(), "no harness") || !strings.Contains(err.Error(), localExecutionSetupCommand) {
 		t.Fatalf("err=%v", err)
 	}
@@ -389,7 +548,24 @@ func TestTaskRunHarnessHelper(t *testing.T) {
 		}
 	}
 	call("get_work_order")
-	if strings.Contains(os.Getenv("CONVEYOR_WORK_ORDER_ID"), "implement") {
+	if strings.Contains(os.Getenv("CONVEYOR_WORK_ORDER_ID"), "spec") {
+		head, readErr := os.ReadFile(filepath.Join(".git", "HEAD"))
+		if readErr != nil || strings.HasPrefix(string(head), "ref:") {
+			t.Fatalf("spec checkout is not detached: head=%q err=%v", head, readErr)
+		}
+		gitConfig, readErr := os.ReadFile(filepath.Join(".git", "config"))
+		if readErr != nil || !strings.Contains(string(gitConfig), "disabled://conveyor-spec-read-only") {
+			t.Fatalf("spec checkout push remote is not disabled: err=%v", readErr)
+		}
+		info, statErr := os.Stat("README.md")
+		if statErr != nil {
+			t.Fatalf("stat spec checkout: %v", statErr)
+		}
+		if info.Mode().Perm()&0o222 != 0 {
+			t.Fatalf("spec checkout is not read-only: mode=%v", info.Mode())
+		}
+		call("submit_plan")
+	} else if strings.Contains(os.Getenv("CONVEYOR_WORK_ORDER_ID"), "implement") {
 		call("submit_for_review")
 	} else {
 		call("submit_review_verdict")

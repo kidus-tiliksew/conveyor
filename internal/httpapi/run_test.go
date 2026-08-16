@@ -25,6 +25,7 @@ func taskRunHTTPFixture(t *testing.T) (*Server, store.Store, http.Handler) {
 	cfg := &config.Config{
 		Workspace: "demo",
 		Routing: config.Routing{Stages: map[string]config.StageRoute{
+			"spec":      {Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"},
 			"implement": {Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"},
 			"review":    {Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"},
 		}},
@@ -43,22 +44,40 @@ func taskRunHTTPFixture(t *testing.T) (*Server, store.Store, http.Handler) {
 }
 
 func createTaskRunOrder(t *testing.T, st store.Store, taskID string) core.WorkOrder {
+	return createTaskRunOrderAtStage(t, st, taskID, core.StageImplement, time.Now().UTC())
+}
+
+func createTaskRunOrderAtStage(t *testing.T, st store.Store, taskID string, stage core.Stage, enteredAt time.Time) core.WorkOrder {
 	t.Helper()
 	ctx := store.WithWorkspace(t.Context(), "demo")
-	now := time.Now().UTC()
-	task := core.Task{ID: taskID, Workspace: "demo", Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-" + taskID, State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: now}
-	if err := st.CreateTask(ctx, task); err != nil {
-		t.Fatal(err)
+	if _, err := st.GetTask(ctx, taskID); err != nil {
+		task := core.Task{ID: taskID, Workspace: "demo", Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-" + taskID, State: core.TaskRunning, NextStage: stage, CreatedAt: enteredAt}
+		if err = st.CreateTask(ctx, task); err != nil {
+			t.Fatal(err)
+		}
 	}
-	job := core.Job{ID: taskID + "-implement-1", TaskID: taskID, Stage: core.StageImplement, State: core.JobPending}
+	job := core.Job{ID: taskID + "-" + string(stage) + "-1", TaskID: taskID, Stage: stage, State: core.JobPending}
 	if err := st.CreateJob(ctx, job); err != nil {
 		t.Fatal(err)
 	}
-	order := core.WorkOrder{ID: job.ID, TaskID: taskID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now}
+	order := core.WorkOrder{ID: job.ID, TaskID: taskID, JobID: job.ID, Stage: stage, State: core.WorkOrderQueued, QueueEnteredAt: enteredAt, QueueDeadline: enteredAt.Add(time.Hour), CreatedAt: enteredAt}
 	if err := storetest.For(st).CreateWorkOrder(ctx, order); err != nil {
 		t.Fatal(err)
 	}
 	return order
+}
+
+func TestTaskRunHTTPSelectsSpecImplementReviewInPipelineOrder(t *testing.T) {
+	_, st, handler := taskRunHTTPFixture(t)
+	now := time.Now().UTC()
+	for _, stage := range []core.Stage{core.StageReview, core.StageImplement, core.StageSpec, core.StageTriage, core.StageVerify, core.StageGate, core.StageMerge, core.StageMonitor} {
+		createTaskRunOrderAtStage(t, st, "target", stage, now.Add(-time.Duration(taskRunStageOrder(stage))*time.Minute))
+	}
+
+	next := taskRunHTTPCall(handler, http.MethodGet, "/v1/tasks/target/run-order", "")
+	if next.Code != http.StatusOK || !strings.Contains(next.Body.String(), `"stage":"spec"`) || !strings.Contains(next.Body.String(), `"id":"target-spec-1"`) {
+		t.Fatalf("next status=%d body=%s", next.Code, next.Body.String())
+	}
 }
 
 func taskRunHTTPCall(handler http.Handler, method, path, body string) *httptest.ResponseRecorder {
@@ -125,7 +144,7 @@ func TestTaskRunHTTPReturnsNoWorkAndSurfacesAssigneeRefusal(t *testing.T) {
 	if response := taskRunHTTPCall(handler, http.MethodGet, "/v1/tasks/missing/run-order", ""); response.Code != http.StatusNotFound {
 		t.Fatalf("missing task status=%d body=%s", response.Code, response.Body.String())
 	}
-	order := createTaskRunOrder(t, st, "assigned")
+	order := createTaskRunOrderAtStage(t, st, "assigned", core.StageSpec, time.Now().UTC())
 	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.Actor{ID: "user:operator", Role: core.ActorUser}), "demo")
 	if err := store.SetMemoryWorkspaceMember(st, "demo", "usr-alice", true); err != nil {
 		t.Fatal(err)
