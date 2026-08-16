@@ -53,7 +53,7 @@ func runTask(ctx context.Context, c *client, taskID, configPath string, input io
 		return err
 	}
 	if item == nil {
-		_, err = fmt.Fprintf(output, "task %s has no claimable implement or review order\n", taskID)
+		_, err = fmt.Fprintf(output, "task %s has no claimable spec, implement, or review order\n", taskID)
 		return err
 	}
 	local, err := config.Load(configPath)
@@ -105,7 +105,11 @@ func runTask(ctx context.Context, c *client, taskID, configPath string, input io
 			return err
 		}
 		if item == nil {
-			_, err = fmt.Fprintf(output, "task %s has no claimable implement or review order\n", taskID)
+			if selected.Order.Stage == core.StageSpec {
+				_, err = fmt.Fprintf(output, "task %s reached the pending spec approval gate; operator approval is required\n", taskID)
+				return err
+			}
+			_, err = fmt.Fprintf(output, "task %s has no claimable spec, implement, or review order\n", taskID)
 			return err
 		}
 	}
