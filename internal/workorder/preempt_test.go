@@ -104,7 +104,7 @@ func TestPreemptPreservesQueueTelemetryAndSignalsRevokedAttempt(t *testing.T) {
 func TestPreemptAfterDeadWorkerLeaseExpiryConvergesWithoutPreemptEvent(t *testing.T) {
 	ctx, st, service, order := newLifecycleService(t, "preempt-dead")
 	ctx = store.WithActor(store.WithWorkspace(ctx, "test"), store.Actor{ID: "operator", Role: core.ActorHuman})
-	if _, err := service.Claim(ctx, order.ID, core.WorkOrderClaim{SessionID: "dead-session", ClientToken: "secret", WorkerID: "dead-worker", Lease: time.Nanosecond}); err != nil {
+	if _, err := service.Claim(ctx, order.ID, core.WorkOrderClaim{SessionID: "dead-session", ClientToken: "secret", ClaimantID: "dead-worker", WorkerID: "dead-worker", Lease: time.Nanosecond}); err != nil {
 		t.Fatal(err)
 	}
 	time.Sleep(time.Millisecond)

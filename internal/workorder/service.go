@@ -172,8 +172,8 @@ func (s *Service) Claim(ctx context.Context, id string, claim core.WorkOrderClai
 	if strings.TrimSpace(claim.ClientToken) == "" {
 		return core.WorkOrder{}, fmt.Errorf("client_token is required")
 	}
-	if claim.ClaimantID == "" {
-		claim.ClaimantID = "mcp-agent"
+	if strings.TrimSpace(claim.ClaimantID) == "" {
+		return core.WorkOrder{}, fmt.Errorf("claimant_id is required")
 	}
 	if claim.Lease <= 0 {
 		claim.Lease = core.DefaultWorkOrderClaimLease
