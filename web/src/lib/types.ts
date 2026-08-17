@@ -51,8 +51,7 @@ export interface Task {
   spec_approval: boolean
   merge_approval: boolean
   policy_version: number
-  setup: string
-  setup_contract: ExecutionSetup
+  policy_contract?: TaskPolicyContract
   reviewed_head_sha?: string
   approved_head_sha?: string
   approval_stale?: boolean
@@ -352,21 +351,11 @@ export interface WorkspaceRepo {
   base: string
 }
 
-export interface WorkspaceRoute {
-  stage: string
-  model: string
-  timeout: string
-  execution: 'in_process' | 'mcp'
-}
-
 export interface WorkspaceInfo {
   workspace: string
   max_bounces: number
   database: string
   repos: WorkspaceRepo[] | null
-  routing: WorkspaceRoute[] | null
-  setups: ExecutionSetup[] | null
-  default_setup: string
 }
 
 export interface WorkspaceRecord {
@@ -435,40 +424,7 @@ export interface WorkspaceConfigRepo {
   base: string
 }
 
-export interface WorkspaceConfigRoute {
-  model: string
-  model_policy?: 'explicit' | 'harness_default'
-  effort?: 'low' | 'medium' | 'high'
-  timeout: string
-  execution: 'in_process' | 'mcp'
-  harness?: string
-}
-
-export interface WorkspaceHarness {
-  name: string
-  mcp_transport: 'json_file' | 'toml_override' | 'environment'
-  mcp_attachment?: string
-  command: string[]
-  model_args?: string[]
-  default_model_sentinels?: string[]
-  effort_args?: Partial<Record<'low' | 'medium' | 'high', string[]>>
-  probe_command: string[]
-  probe_timeout: string
-  stall_timeout?: string
-}
-
-export interface HarnessTemplate {
-  id: string
-  label: string
-  description: string
-  harness: WorkspaceHarness
-}
-
-export interface WorkspaceReviewSeat {
-  model: string
-  harness?: string
-  effort?: 'low' | 'medium' | 'high'
-}
+export type WorkspaceReviewSeat = Record<string, never>
 
 export interface ExecutionPolicy {
   spec_approval: boolean
@@ -479,48 +435,9 @@ export interface ExecutionPolicy {
   first_activity_timeout: string
 }
 
-export interface WorkspaceExecutionSettings {
-  control_plane: {
-    triage: { model: string; effort?: 'minimal' | 'low' | 'medium' | 'high'; timeout: string }
-    planning: {
-      model: string
-      effort?: 'minimal' | 'low' | 'medium' | 'high'
-      timeout: string
-      exploration_output_tokens: number
-      context?: {
-        depth: number
-        nodes: number
-        renderable_bytes: number
-        artifact_refs?: number
-        authority_nodes?: number
-      }
-    }
-  }
-  spec: {
-    harness: string
-    model?: string
-    model_policy: 'explicit' | 'harness_default'
-    effort?: 'low' | 'medium' | 'high'
-    timeout: string
-  }
-  implementation: {
-    harness: string
-    model?: string
-    model_policy: 'explicit' | 'harness_default'
-    effort?: 'low' | 'medium' | 'high'
-    timeout: string
-  }
-  review: {
-    execution: 'in_process' | 'mcp'
-    timeout: string
-    fallback_model?: string
-    fallback_harness?: string
-  }
-}
-
-export interface ExecutionSetup {
-  name: string
-  execution_settings: WorkspaceExecutionSettings
+export interface TaskPolicyContract {
+  max_bounces: number
+  stage_timeouts: Record<'spec' | 'implement' | 'review', string>
   review: { seats: WorkspaceReviewSeat[] }
   refresh_review: 'delta' | 'full' | 'none'
 }
@@ -529,17 +446,10 @@ export interface WorkspaceConfigDocument {
   workspace: string
   max_bounces: number
   work_order_queue_timeout: string
-  execution_settings: WorkspaceExecutionSettings
-  routing: {
-    stages: Record<string, WorkspaceConfigRoute>
-  }
-  harnesses: WorkspaceHarness[]
+  stage_timeouts: Record<'spec' | 'implement' | 'review', string>
   review: { seats: WorkspaceReviewSeat[] }
-  setups: ExecutionSetup[]
-  default_setup: string
   execution: ExecutionPolicy
   repos: WorkspaceConfigRepo[]
-  planning_models: string[]
   monitor?: { enabled: boolean; repositories: string[]; poll_interval: string; startup_window: string }
 }
 
@@ -738,7 +648,7 @@ export interface WorkOrder {
   required_model?: string
   required_harness?: string
   required_effort?: 'low' | 'medium' | 'high'
-  required_harness_config?: WorkspaceHarness
+  required_harness_config?: Record<string, unknown>
   execution_timeout?: string
   model_enforcement?: 'worker-pinned' | 'self-reported'
   lease_expires_at?: string

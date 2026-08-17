@@ -43,26 +43,6 @@ async function mockTaskCreateAPIs(
             { name: 'conveyor', base: 'main' },
             { name: 'api', base: 'develop' },
           ],
-          routing: [],
-          default_setup: 'backend',
-          setups: [
-            {
-              name: 'backend',
-              execution_settings: {
-                implementation: { harness: 'codex', model: 'gpt' },
-                review: { fallback_harness: 'codex' },
-              },
-              review: { seats: [{ model: 'gpt-review' }] },
-            },
-            {
-              name: 'frontend',
-              execution_settings: {
-                implementation: { harness: 'claude', model: 'claude-ui' },
-                review: { fallback_harness: 'claude' },
-              },
-              review: { seats: [{ model: 'claude-review' }] },
-            },
-          ],
         },
       })
       return
@@ -74,15 +54,6 @@ async function mockTaskCreateAPIs(
           worker_expected: !options.pullOnly,
           worker_available: false,
           worker_unavailable_reason: options.pullOnly ? '' : 'test worker is stale',
-          setup_serviceability: options.pullOnly
-            ? {
-                backend: { worker_expected: false, worker_available: false },
-                frontend: { worker_expected: false, worker_available: false },
-              }
-            : {
-                backend: { worker_expected: true, worker_available: false },
-                frontend: { worker_expected: true, worker_available: true },
-              },
         },
       })
       return
@@ -252,14 +223,12 @@ test('new task removes title input and submits description for AI title generati
   const create = page.getByRole('button', { name: 'Create task' })
   await expect(create).toBeDisabled()
   await page.locator('textarea').fill('Generate this title from context')
-  await page.getByLabel('Execution setup').selectOption('frontend')
-  await page.getByText('Composition').click()
-  await expect(page.getByText(/Implement: claude/)).toBeVisible()
+  await expect(page.getByLabel(/setup/i)).toHaveCount(0)
   await expect(create).toBeEnabled()
   await create.click()
 
   await expect.poll(submitted).toContain('Generate this title from context')
-  await expect.poll(submitted).toContain('frontend')
+  expect(submitted()).not.toContain('setup')
   await expect(page).toHaveURL(/\/tasks\?task=generated$/)
   expect(submitted()).not.toContain('"title"')
   // §21.31: no execution-mode selector; hold defaults off and is omitted.
@@ -351,11 +320,10 @@ test('intake offers a hold toggle and advisory worker warning instead of modes',
   await page.goto('/new')
 
   await expect(page.getByRole('radiogroup', { name: 'Execution mode' })).toHaveCount(0)
-  // backend (the default setup) is unserviceable in the mock: advisory only.
-  await expect(page.getByText(/No worker can run backend right now/)).toBeVisible()
+  await expect(page.getByText(/Worker unavailable/)).toBeVisible()
   await page.locator('textarea').fill('Hold this one for me')
   await page.getByRole('switch', { name: 'Hold for hands-on work' }).click()
-  await expect(page.getByText(/No worker can run backend/)).toHaveCount(0)
+  await expect(page.getByText(/Worker unavailable/)).toHaveCount(0)
   await page.getByRole('button', { name: 'Create task' }).click()
 
   await expect.poll(submitted).toContain('"hold":true')
@@ -365,7 +333,7 @@ test('pull-only intake stays quiet when no enrolled worker is expected', async (
   await mockTaskCreateAPIs(page, { pullOnly: true })
   await page.goto('/new')
 
-  await expect(page.getByText(/No worker can run/)).toHaveCount(0)
+  await expect(page.getByText(/Worker unavailable/)).toHaveCount(0)
   await expect(page.getByText(/claim it manually/)).toHaveCount(0)
   await expect(page.getByRole('radiogroup', { name: 'Execution mode' })).toHaveCount(0)
 })
