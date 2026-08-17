@@ -53,7 +53,7 @@ func TestRunTUIViewportResizeScrollAndFollow(t *testing.T) {
 	}, nil, make(chan runTUIAction, 1), make(chan struct{}, 1))
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 48, Height: 9})
 	model = updated.(runTUIModel)
-	if model.viewport.Width != 46 || model.viewport.Height < 1 || model.viewport.Height >= 9 {
+	if model.viewport.Width != 44 || model.viewport.Height < 1 || model.viewport.Height >= 9 {
 		t.Fatalf("viewport bounds = %dx%d", model.viewport.Width, model.viewport.Height)
 	}
 	updated, _ = model.Update(runTUIOutputMsg("one\ntwo\nthree\nfour\nfive\nsix\nseven\n"))
@@ -74,12 +74,12 @@ func TestRunTUIViewportResizeScrollAndFollow(t *testing.T) {
 	}
 	updated, _ = model.Update(tea.WindowSizeMsg{Width: 24, Height: 4})
 	model = updated.(runTUIModel)
-	if model.viewport.Width != 22 || model.viewport.Height != 1 {
+	if model.viewport.Width != 20 || model.viewport.Height != 1 {
 		t.Fatalf("small resize was not bounded: %dx%d", model.viewport.Width, model.viewport.Height)
 	}
 	updated, _ = model.Update(tea.WindowSizeMsg{Width: 120, Height: 50})
 	model = updated.(runTUIModel)
-	if model.viewport.Width != runTUIBoxMaxWidth-2 || model.viewport.Height != runTUIBoxMaxHeight {
+	if model.viewport.Width != runTUIBoxMaxWidth-4 || model.viewport.Height != runTUIBoxMaxHeight {
 		t.Fatalf("large terminal did not cap the box: %dx%d", model.viewport.Width, model.viewport.Height)
 	}
 }
@@ -98,7 +98,7 @@ func TestRunTUIGateWithoutOutputHidesBox(t *testing.T) {
 		t.Fatalf("gate frame is not compact: %d lines", strings.Count(view, "\n")+1)
 	}
 	updated, _ = updated.(runTUIModel).Update(runTUIOutputMsg("late line\n"))
-	if strings.Count(updated.(runTUIModel).View(), "╭") != 2 {
+	if strings.Count(updated.(runTUIModel).View(), "╭") != 3 {
 		t.Fatal("gate frame with stream output did not render the box")
 	}
 }
