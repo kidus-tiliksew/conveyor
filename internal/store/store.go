@@ -2241,7 +2241,39 @@ func (m *memory) CreateWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 	}
 	m.workOrders[order.ID] = order
 	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.created", Payload: core.JSONPayload(order)})
+	m.retireWorkOrderSiblingsLocked(ctx, order, "superseded by successor creation", now, true)
 	return nil
+}
+
+func (m *memory) retireWorkOrderSiblingsLocked(ctx context.Context, authoritative core.WorkOrder, reason string, now time.Time, olderOnly bool) {
+	// Review seats are intentionally parallel siblings, not superseded retries.
+	if authoritative.Stage == core.StageReview {
+		return
+	}
+	for id, sibling := range m.workOrders {
+		if id == authoritative.ID || sibling.TaskID != authoritative.TaskID || sibling.Stage != authoritative.Stage ||
+			(sibling.State != core.WorkOrderQueued && sibling.State != core.WorkOrderStale) {
+			continue
+		}
+		if olderOnly && !(sibling.CreatedAt.Before(authoritative.CreatedAt) || sibling.CreatedAt.Equal(authoritative.CreatedAt) && sibling.ID < authoritative.ID) {
+			continue
+		}
+		priorState := sibling.State
+		sibling.State, sibling.Claimable = core.WorkOrderCancelled, false
+		sibling.LastAttemptOutcome = core.WorkOrderOutcomeCancelled
+		sibling.RetrySuppressed, sibling.RetrySuppressionReason = true, "superseded"
+		sibling.NextRetryAt, sibling.LeaseExpiresAt = time.Time{}, time.Time{}
+		sibling.UpdatedAt = now
+		m.workOrders[id] = sibling
+		if job, index, found := m.findJobLocked(sibling.JobID); found {
+			job.State, job.EndedAt = core.JobFailed, now
+			m.jobs[job.TaskID][index] = job
+		}
+		m.appendEventLocked(ctx, core.Event{TaskID: sibling.TaskID, JobID: sibling.JobID, Kind: "work_order.retired", Payload: core.JSONPayload(map[string]any{
+			"work_order_id": sibling.ID, "authoritative_work_order_id": authoritative.ID, "stage": sibling.Stage,
+			"prior_state": priorState, "new_state": sibling.State, "reason": reason,
+		}), At: now})
+	}
 }
 
 func (m *memory) CreateReviewRoundCommand(ctx context.Context, lease taskops.TaskLease, taskID string, jobs []core.Job, orders []core.WorkOrder) error {
@@ -3005,6 +3037,15 @@ func (m *memory) RedispatchWorkOrderCommand(ctx context.Context, lease taskops.T
 	if !order.ExecutionStartedAt.IsZero() {
 		return core.WorkOrder{}, fmt.Errorf("work order %s was already claimed and requires operator recovery", id)
 	}
+	var taskOrders []core.WorkOrder
+	for _, candidate := range m.workOrders {
+		if candidate.TaskID == order.TaskID {
+			taskOrders = append(taskOrders, candidate)
+		}
+	}
+	if err := WorkOrderRecoverySupersessionError(m.tasks[order.TaskID], order, taskOrders); err != nil {
+		return core.WorkOrder{}, err
+	}
 	if queueTimeout <= 0 {
 		return core.WorkOrder{}, fmt.Errorf("work-order queue timeout must be positive")
 	}
@@ -3030,6 +3071,7 @@ func (m *memory) RedispatchWorkOrderCommand(ctx context.Context, lease taskops.T
 		m.jobs[job.TaskID][index] = job
 	}
 	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.redispatched", Payload: core.JSONPayload(map[string]any{"work_order_id": id, "prior_state": core.WorkOrderStale, "new_state": order.State, "command": core.WorkOrderCmdRedispatch, "reason": "stale never-claimed queue redispatch"}), At: now})
+	m.retireWorkOrderSiblingsLocked(ctx, order, "superseded by stale redispatch", now, false)
 	return order, nil
 }
 
@@ -3081,6 +3123,54 @@ func (m *memory) reviewSeatAcceptedLocked(order core.WorkOrder) bool {
 	return false
 }
 
+// WorkOrderRecoverySupersessionError rejects recovery once another order or
+// task progress has made the target's stage historical. Callers hold the
+// task-operation serialization boundary while evaluating it.
+func WorkOrderRecoverySupersessionError(task core.Task, order core.WorkOrder, taskOrders []core.WorkOrder) error {
+	for _, candidate := range taskOrders {
+		if candidate.ID == order.ID || candidate.Stage != order.Stage || candidate.State == core.WorkOrderCancelled {
+			continue
+		}
+		later := candidate.CreatedAt.After(order.CreatedAt) || candidate.CreatedAt.Equal(order.CreatedAt) && candidate.ID > order.ID
+		if later {
+			return fmt.Errorf("work order %s was superseded by same-stage successor %s", order.ID, candidate.ID)
+		}
+	}
+	pastStage := func(stage core.Stage) bool {
+		for _, candidate := range taskOrders {
+			if candidate.State == core.WorkOrderCancelled {
+				continue
+			}
+			if stage == core.StageSpec && (candidate.Stage == core.StageImplement || candidate.Stage == core.StageReview) {
+				return true
+			}
+			if stage == core.StageImplement && candidate.Stage == core.StageReview {
+				return true
+			}
+		}
+		return false
+	}
+	if task.State == core.TaskApproved || task.State == core.TaskMerged || task.State == core.TaskClosed {
+		gate := "terminal task state"
+		if order.Stage == core.StageReview {
+			gate = "merge gate"
+		}
+		return fmt.Errorf("work order %s cannot be recovered after its task reached the %s", order.ID, gate)
+	}
+	switch order.Stage {
+	case core.StageSpec:
+		if pastStage(core.StageSpec) || task.NextStage == core.StageImplement || task.NextStage == core.StageReview ||
+			task.RecoveryStage == core.StageImplement || task.RecoveryStage == core.StageReview {
+			return fmt.Errorf("work order %s cannot be recovered because task %s has passed the plan gate", order.ID, task.ID)
+		}
+	case core.StageImplement:
+		if pastStage(core.StageImplement) || task.NextStage == core.StageReview || task.RecoveryStage == core.StageReview {
+			return fmt.Errorf("work order %s cannot be recovered because task %s has advanced to review", order.ID, task.ID)
+		}
+	}
+	return nil
+}
+
 func (m *memory) RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, id, requestID, direction string, queueTimeout time.Duration, refreeze ...*RecoveryRefreeze) (core.WorkOrder, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -3121,6 +3211,15 @@ func (m *memory) RecoverWorkOrderCommand(ctx context.Context, lease taskops.Task
 	eligibleQueued := order.State == core.WorkOrderQueued && (order.LastAttemptOutcome != "" || order.RetrySuppressed || !order.NextRetryAt.IsZero())
 	if !eligibleQueued && order.State != core.WorkOrderStale && order.State != core.WorkOrderTimedOut {
 		return core.WorkOrder{}, fmt.Errorf("work order %s is not released, expired, or retry-suppressed", id)
+	}
+	var taskOrders []core.WorkOrder
+	for _, candidate := range m.workOrders {
+		if candidate.TaskID == order.TaskID {
+			taskOrders = append(taskOrders, candidate)
+		}
+	}
+	if err = WorkOrderRecoverySupersessionError(m.tasks[order.TaskID], order, taskOrders); err != nil {
+		return core.WorkOrder{}, err
 	}
 	now := time.Now().UTC()
 	prior := order.LastAttemptOutcome
@@ -3322,6 +3421,9 @@ func (m *memory) UpdateWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 	order.UpdatedAt = time.Now().UTC()
 	m.workOrders[order.ID] = order
 	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.updated", Payload: core.JSONPayload(order)})
+	if current.State != core.WorkOrderCompleted && order.State == core.WorkOrderCompleted {
+		m.retireWorkOrderSiblingsLocked(ctx, order, "stage completed", order.UpdatedAt, false)
+	}
 	return nil
 }
 

@@ -3461,8 +3461,23 @@ func (s *Store) CreateWorkOrderCommand(ctx context.Context, lease taskops.TaskLe
 	}
 	order.Claimable = order.ClaimableAt(time.Now().UTC())
 	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		if err := lockWorkOrderTaskTx(ctx, tx, workspace(ctx), order.TaskID); err != nil {
+			return err
+		}
 		if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtextextended($1,0))", "conveyor:work-order-create:"+workspace(ctx)+":"+order.TaskID); err != nil {
 			return err
+		}
+		if order.Stage != core.StageReview {
+			var activeSiblingID string
+			err := tx.QueryRow(ctx, `SELECT id FROM work_orders
+				WHERE workspace_id=$1 AND task_id=$2 AND stage=$3 AND state='claimed'
+				ORDER BY created_at,id LIMIT 1`, workspace(ctx), order.TaskID, order.Stage).Scan(&activeSiblingID)
+			if err == nil {
+				return fmt.Errorf("work order %s cannot be created while same-stage order %s is actively claimed", order.ID, activeSiblingID)
+			}
+			if !errors.Is(err, pgx.ErrNoRows) {
+				return err
+			}
 		}
 		var linked bool
 		if err := tx.QueryRow(ctx, `SELECT EXISTS (
@@ -3517,8 +3532,65 @@ func (s *Store) CreateWorkOrderCommand(ctx context.Context, lease taskops.TaskLe
 		if err != nil {
 			return err
 		}
-		return insertEvent(ctx, q, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.created", Payload: core.JSONPayload(order)})
+		if eventErr := insertEvent(ctx, q, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.created", Payload: core.JSONPayload(order)}); eventErr != nil {
+			return eventErr
+		}
+		return retireWorkOrderSiblingsTx(ctx, tx, q, workspace(ctx), order, "superseded by successor creation", time.Now().UTC(), true)
 	})
+}
+
+func retireWorkOrderSiblingsTx(ctx context.Context, tx pgx.Tx, q *db.Queries, workspaceID string, authoritative core.WorkOrder, reason string, now time.Time, olderOnly bool) error {
+	// Review seats are intentionally parallel siblings, not superseded retries.
+	if authoritative.Stage == core.StageReview {
+		return nil
+	}
+	rows, err := tx.Query(ctx, `SELECT id,job_id,state FROM work_orders
+		WHERE workspace_id=$1 AND task_id=$2 AND stage=$3 AND id<>$4 AND state IN ('queued','stale')
+		AND (NOT $5 OR (created_at,id)<($6,$4))
+		ORDER BY created_at,id FOR UPDATE`, workspaceID, authoritative.TaskID, authoritative.Stage, authoritative.ID, olderOnly, authoritative.CreatedAt)
+	if err != nil {
+		return err
+	}
+	type sibling struct {
+		id, jobID string
+		state     core.WorkOrderState
+	}
+	var siblings []sibling
+	for rows.Next() {
+		var item sibling
+		if err = rows.Scan(&item.id, &item.jobID, &item.state); err != nil {
+			rows.Close()
+			return err
+		}
+		siblings = append(siblings, item)
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	for _, item := range siblings {
+		tag, updateErr := tx.Exec(ctx, `UPDATE work_orders SET state='cancelled',claimant_id='',session_id='',attempt_id='',
+			client_token_hash='',agent='',model='',worker_id='',lease_expires_at=NULL,model_enforcement='',
+			last_attempt_outcome=$1,next_retry_at=NULL,retry_suppressed=true,retry_suppression_reason='superseded',updated_at=$2
+			WHERE workspace_id=$3 AND id=$4 AND state=$5`, core.WorkOrderOutcomeCancelled, now, workspaceID, item.id, item.state)
+		if updateErr != nil {
+			return updateErr
+		}
+		if tag.RowsAffected() != 1 {
+			return fmt.Errorf("work order %s changed during sibling retirement", item.id)
+		}
+		if _, updateErr = tx.Exec(ctx, `UPDATE jobs SET state='failed',ended_at=COALESCE(ended_at,$1),updated_at=$1 WHERE id=$2`, now, item.jobID); updateErr != nil {
+			return updateErr
+		}
+		if updateErr = insertEvent(ctx, q, core.Event{TaskID: authoritative.TaskID, JobID: item.jobID, Kind: "work_order.retired", Payload: core.JSONPayload(map[string]any{
+			"work_order_id": item.id, "authoritative_work_order_id": authoritative.ID, "stage": authoritative.Stage,
+			"prior_state": item.state, "new_state": core.WorkOrderCancelled, "reason": reason,
+		}), At: now}); updateErr != nil {
+			return updateErr
+		}
+	}
+	return nil
 }
 
 func (s *Store) CreateReviewRoundCommand(ctx context.Context, lease taskops.TaskLease, taskID string, jobs []core.Job, orders []core.WorkOrder) error {
@@ -4327,22 +4399,35 @@ func (s *Store) ListTaskWorkOrdersSnapshot(ctx context.Context, taskID string) (
 	return orders, rows.Err()
 }
 
+func lockWorkOrderTaskTx(ctx context.Context, tx pgx.Tx, workspaceID, taskID string) error {
+	key := fmt.Sprintf("conveyor:work-order-claim:%s:%s", workspaceID, taskID)
+	_, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtext($1))", key)
+	return err
+}
+
+func workOrderTaskIDTx(ctx context.Context, tx pgx.Tx, workspaceID, id string) (string, error) {
+	var taskID string
+	if err := tx.QueryRow(ctx, `SELECT task_id FROM work_orders WHERE workspace_id=$1 AND id=$2`, workspaceID, id).Scan(&taskID); err != nil {
+		return "", notFound(err, "work order %s", id)
+	}
+	return taskID, nil
+}
+
 func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease taskops.TaskLease, id string, claim core.WorkOrderClaim) (core.WorkOrder, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return core.WorkOrder{}, err
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
-	var taskID string
-	if err := tx.QueryRow(ctx, `SELECT task_id FROM work_orders WHERE workspace_id=$1 AND id=$2`, workspace(ctx), id).Scan(&taskID); err != nil {
-		return core.WorkOrder{}, notFound(err, "work order %s", id)
+	taskID, err := workOrderTaskIDTx(ctx, tx, workspace(ctx), id)
+	if err != nil {
+		return core.WorkOrder{}, err
 	}
 	// Session and client-token independence spans the implementation order and
 	// every seat in a review round. Serialize all claims for one task before
 	// locking an individual order so concurrent seats cannot both pass the
 	// sibling check against an uncommitted peer.
-	lockKey := fmt.Sprintf("conveyor:work-order-claim:%s:%s", workspace(ctx), taskID)
-	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtext($1))", lockKey); err != nil {
+	if err := lockWorkOrderTaskTx(ctx, tx, workspace(ctx), taskID); err != nil {
 		return core.WorkOrder{}, err
 	}
 	order, err := scanWorkOrder(tx.QueryRow(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND id=$2 FOR UPDATE", workspace(ctx), id))
@@ -4351,6 +4436,18 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease taskop
 	}
 	if !lifecycleLease.ValidForCommand(order.TaskID, string(core.WorkOrderCmdClaim)) {
 		return core.WorkOrder{}, fmt.Errorf("work-order claim requires a valid taskops lease")
+	}
+	if order.Stage != core.StageReview {
+		var activeSiblingID string
+		activeErr := tx.QueryRow(ctx, `SELECT id FROM work_orders
+			WHERE workspace_id=$1 AND task_id=$2 AND stage=$3 AND id<>$4 AND state='claimed'
+			ORDER BY created_at,id LIMIT 1`, workspace(ctx), order.TaskID, order.Stage, order.ID).Scan(&activeSiblingID)
+		if activeErr == nil {
+			return core.WorkOrder{}, fmt.Errorf("work order %s cannot be claimed while same-stage order %s is actively claimed", order.ID, activeSiblingID)
+		}
+		if !errors.Is(activeErr, pgx.ErrNoRows) {
+			return core.WorkOrder{}, activeErr
+		}
 	}
 	var assigneeUserID pgtype.Text
 	if err := tx.QueryRow(ctx, `SELECT assignee_user_id FROM tasks WHERE workspace_id=$1 AND id=$2`, workspace(ctx), order.TaskID).Scan(&assigneeUserID); err != nil {
@@ -4609,6 +4706,13 @@ func (s *Store) RedispatchWorkOrderCommand(ctx context.Context, lease taskops.Ta
 		return core.WorkOrder{}, err
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
+	taskID, err := workOrderTaskIDTx(ctx, tx, workspace(ctx), id)
+	if err != nil {
+		return core.WorkOrder{}, err
+	}
+	if err = lockWorkOrderTaskTx(ctx, tx, workspace(ctx), taskID); err != nil {
+		return core.WorkOrder{}, err
+	}
 	order, err := scanWorkOrder(tx.QueryRow(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND id=$2 FOR UPDATE", workspace(ctx), id))
 	if err != nil {
 		return core.WorkOrder{}, notFound(err, "work order %s", id)
@@ -4632,6 +4736,9 @@ func (s *Store) RedispatchWorkOrderCommand(ctx context.Context, lease taskops.Ta
 	}
 	if !order.ExecutionStartedAt.IsZero() {
 		return core.WorkOrder{}, fmt.Errorf("work order %s was already claimed and requires operator recovery", id)
+	}
+	if err = workOrderSupersessionGuardTx(ctx, tx, workspace(ctx), order); err != nil {
+		return core.WorkOrder{}, err
 	}
 	if _, transitionErr := core.TransitionWorkOrder(order.State, core.WorkOrderCmdRedispatch); transitionErr != nil {
 		return core.WorkOrder{}, transitionErr
@@ -4659,10 +4766,40 @@ func (s *Store) RedispatchWorkOrderCommand(ctx context.Context, lease taskops.Ta
 	if err = insertEvent(ctx, q, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.redispatched", Payload: core.JSONPayload(map[string]any{"work_order_id": id, "prior_state": core.WorkOrderStale, "new_state": order.State, "command": core.WorkOrderCmdRedispatch, "reason": "stale never-claimed queue redispatch"}), At: now}); err != nil {
 		return core.WorkOrder{}, err
 	}
+	if err = retireWorkOrderSiblingsTx(ctx, tx, q, workspace(ctx), order, "superseded by stale redispatch", now, false); err != nil {
+		return core.WorkOrder{}, err
+	}
 	if err = tx.Commit(ctx); err != nil {
 		return core.WorkOrder{}, err
 	}
 	return order, nil
+}
+
+func workOrderSupersessionGuardTx(ctx context.Context, tx pgx.Tx, workspaceID string, order core.WorkOrder) error {
+	var task core.Task
+	if err := tx.QueryRow(ctx, `SELECT id,state,next_stage,recovery_stage FROM tasks WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspaceID, order.TaskID).
+		Scan(&task.ID, &task.State, &task.NextStage, &task.RecoveryStage); err != nil {
+		return err
+	}
+	rows, err := tx.Query(ctx, `SELECT `+workOrderColumns+` FROM work_orders WHERE workspace_id=$1 AND task_id=$2 ORDER BY created_at,id FOR UPDATE`, workspaceID, order.TaskID)
+	if err != nil {
+		return err
+	}
+	var taskOrders []core.WorkOrder
+	for rows.Next() {
+		candidate, scanErr := scanWorkOrder(rows)
+		if scanErr != nil {
+			rows.Close()
+			return scanErr
+		}
+		taskOrders = append(taskOrders, candidate)
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	return store.WorkOrderRecoverySupersessionError(task, order, taskOrders)
 }
 
 func reviewSeatAcceptedTx(ctx context.Context, tx pgx.Tx, workspaceID, taskID, workOrderID string) (bool, error) {
@@ -4742,6 +4879,13 @@ func (s *Store) RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 		return core.WorkOrder{}, err
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
+	taskID, err := workOrderTaskIDTx(ctx, tx, workspace(ctx), id)
+	if err != nil {
+		return core.WorkOrder{}, err
+	}
+	if err = lockWorkOrderTaskTx(ctx, tx, workspace(ctx), taskID); err != nil {
+		return core.WorkOrder{}, err
+	}
 	order, err := scanWorkOrder(tx.QueryRow(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND id=$2 FOR UPDATE", workspace(ctx), id))
 	if err != nil {
 		return core.WorkOrder{}, notFound(err, "work order %s", id)
@@ -4770,6 +4914,9 @@ func (s *Store) RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 	eligibleQueued := order.State == core.WorkOrderQueued && (order.LastAttemptOutcome != "" || order.RetrySuppressed || !order.NextRetryAt.IsZero())
 	if !eligibleQueued && order.State != core.WorkOrderStale && order.State != core.WorkOrderTimedOut {
 		return core.WorkOrder{}, fmt.Errorf("work order %s is not released, expired, or retry-suppressed", id)
+	}
+	if err = workOrderSupersessionGuardTx(ctx, tx, workspace(ctx), order); err != nil {
+		return core.WorkOrder{}, err
 	}
 	prior := order.LastAttemptOutcome
 	priorAttemptID := order.LastAttemptID
@@ -5020,6 +5167,13 @@ func (s *Store) transitionWorkOrderTx(ctx context.Context, tx pgx.Tx, order core
 func (s *Store) UpdateWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, order core.WorkOrder, commands ...core.WorkOrderCommand) error {
 	var lifecycleErr error
 	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		taskID, err := workOrderTaskIDTx(ctx, tx, workspace(ctx), order.ID)
+		if err != nil {
+			return err
+		}
+		if err = lockWorkOrderTaskTx(ctx, tx, workspace(ctx), taskID); err != nil {
+			return err
+		}
 		current, err := scanWorkOrder(tx.QueryRow(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND id=$2 FOR UPDATE", workspace(ctx), order.ID))
 		if err != nil {
 			return notFound(err, "work order %s", order.ID)
@@ -5110,7 +5264,13 @@ func (s *Store) UpdateWorkOrderCommand(ctx context.Context, lease taskops.TaskLe
 		if tag.RowsAffected() != 1 {
 			return fmt.Errorf("work order %s not found", order.ID)
 		}
-		return insertEvent(ctx, q, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.updated", Payload: core.JSONPayload(order)})
+		if err = insertEvent(ctx, q, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.updated", Payload: core.JSONPayload(order)}); err != nil {
+			return err
+		}
+		if current.State != core.WorkOrderCompleted && order.State == core.WorkOrderCompleted {
+			return retireWorkOrderSiblingsTx(ctx, tx, q, workspace(ctx), order, "stage completed", now, false)
+		}
+		return nil
 	})
 	if err != nil {
 		return err

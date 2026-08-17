@@ -74,26 +74,35 @@ func (s *Store) PreemptWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 		}
 		return store.WorkOrderPreemptResult{}, fmt.Errorf("%w: work order %s does not have an active claimed attempt", store.ErrWorkOrderPreemptConflict, current.ID)
 	}
-	if current.State != core.WorkOrderClaimed || current.SessionID == "" || current.AttemptID == "" {
+	retirement := current.State == core.WorkOrderQueued || current.State == core.WorkOrderStale
+	if !retirement && (current.State != core.WorkOrderClaimed || current.SessionID == "" || current.AttemptID == "") {
 		return store.WorkOrderPreemptResult{}, fmt.Errorf("%w: work order %s does not have an active claimed attempt", store.ErrWorkOrderPreemptConflict, current.ID)
 	}
 	if _, transitionErr := core.TransitionWorkOrder(current.State, core.WorkOrderCmdPreempt); transitionErr != nil {
 		return store.WorkOrderPreemptResult{}, transitionErr
 	}
-	result := store.WorkOrderPreemptResult{
-		RequestID: request.RequestID, RevokedAttemptID: current.AttemptID,
-		RevokedSessionID: current.SessionID, RevokedWorkerID: current.WorkerID,
-		GraceBound: "one renewal interval",
+	result := store.WorkOrderPreemptResult{RequestID: request.RequestID}
+	lastAttemptID := current.AttemptID
+	if lastAttemptID == "" {
+		lastAttemptID = current.LastAttemptID
+	}
+	if !retirement {
+		result.RevokedAttemptID, result.RevokedSessionID, result.RevokedWorkerID = current.AttemptID, current.SessionID, current.WorkerID
+		result.GraceBound = "one renewal interval"
+	}
+	nextState, outcome, retrySuppressed, suppressionReason := core.WorkOrderQueued, core.WorkOrderOutcomePreempted, false, ""
+	if retirement {
+		nextState, outcome, retrySuppressed, suppressionReason = core.WorkOrderCancelled, core.WorkOrderOutcomeCancelled, true, "operator retirement"
 	}
 	updated, err := scanWorkOrder(tx.QueryRow(ctx, `UPDATE work_orders SET
-		state='queued',claimant_id='',session_id='',attempt_id='',last_attempt_id=$1,
+		state=$1,claimant_id='',session_id='',attempt_id='',last_attempt_id=$2,
 		client_token_hash='',agent='',model='',worker_id='',lease_expires_at=NULL,model_enforcement='',
-		execution_started_at=NULL,execution_deadline=NULL,last_attempt_outcome=$2,
+		execution_started_at=NULL,execution_deadline=NULL,last_attempt_outcome=$3,
 		last_failure_category='',last_failure_message='',last_failure_detail='',last_failure_exit_status=NULL,last_failure_at=NULL,
-		next_retry_at=NULL,retry_suppressed=false,retry_suppression_reason='',updated_at=$3
-		WHERE workspace_id=$4 AND id=$5 AND state='claimed' AND attempt_id=$1 AND session_id=$6 AND worker_id=$7
+		next_retry_at=NULL,retry_suppressed=$4,retry_suppression_reason=$5,updated_at=$6
+		WHERE workspace_id=$7 AND id=$8 AND state=$9
 		RETURNING `+workOrderColumns,
-		current.AttemptID, core.WorkOrderOutcomePreempted, now, workspaceID, current.ID, current.SessionID, current.WorkerID))
+		nextState, lastAttemptID, outcome, retrySuppressed, suppressionReason, now, workspaceID, current.ID, current.State))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return store.WorkOrderPreemptResult{}, fmt.Errorf("%w: work order %s changed concurrently", store.ErrWorkOrderPreemptConflict, current.ID)
 	}
@@ -102,16 +111,25 @@ func (s *Store) PreemptWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 	}
 	updated.Claimable = updated.ClaimableAt(now)
 	result.WorkOrder = updated
-	if _, err = tx.Exec(ctx, `UPDATE jobs SET state='pending',started_at=NULL,ended_at=NULL,updated_at=$1 WHERE id=$2`, now, current.JobID); err != nil {
+	jobState := core.JobPending
+	var endedAt any
+	if retirement {
+		jobState, endedAt = core.JobFailed, now
+	}
+	if _, err = tx.Exec(ctx, `UPDATE jobs SET state=$1,started_at=CASE WHEN $1='pending' THEN NULL ELSE started_at END,ended_at=$2,updated_at=$3 WHERE id=$4`, jobState, endedAt, now, current.JobID); err != nil {
 		return store.WorkOrderPreemptResult{}, err
 	}
 	actor := store.ActorFromContext(ctx)
 	q := s.queries.WithTx(tx)
-	if err = insertEvent(ctx, q, core.Event{TaskID: current.TaskID, JobID: current.JobID, Kind: "work_order.preempted", ActorID: actor.ID, ActorRole: actor.Role,
+	eventKind := "work_order.preempted"
+	if retirement {
+		eventKind = "work_order.retired"
+	}
+	if err = insertEvent(ctx, q, core.Event{TaskID: current.TaskID, JobID: current.JobID, Kind: eventKind, ActorID: actor.ID, ActorRole: actor.Role,
 		Payload: core.JSONPayload(map[string]any{
 			"work_order_id": current.ID, "request_id": request.RequestID, "reason": request.Reason,
 			"attempt_id": result.RevokedAttemptID, "session_id": result.RevokedSessionID, "worker_id": result.RevokedWorkerID,
-			"prior_state": core.WorkOrderClaimed, "new_state": updated.State, "command": core.WorkOrderCmdPreempt,
+			"prior_state": current.State, "new_state": updated.State, "command": core.WorkOrderCmdPreempt,
 			"queue_entered_at": updated.QueueEnteredAt, "queue_deadline": updated.QueueDeadline, "grace_bound": result.GraceBound,
 		}), At: now}); err != nil {
 		return store.WorkOrderPreemptResult{}, err
