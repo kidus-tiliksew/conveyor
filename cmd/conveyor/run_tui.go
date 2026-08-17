@@ -35,12 +35,24 @@ const (
 )
 
 var (
-	runTUITaskStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
-	runTUITabStyle    = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("6")).Padding(0, 1)
-	runTUIMetaStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	runTUIValueStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("7"))
-	runTUIWaitStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("11"))
-	runTUIBoxStyle    = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("8"))
+	runTUITaskStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
+	runTUITabStyle   = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("6")).Padding(0, 1)
+	runTUIMetaStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	runTUIValueStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("7"))
+	runTUIWaitStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("11"))
+	runTUIBoxStyle   = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("8"))
+	// Pager-style lugs (the bubbles viewport example): a bordered title tab
+	// spliced into the top rule, and a scroll-percent tab in the bottom rule.
+	runTUITitleLugStyle = func() lipgloss.Style {
+		b := lipgloss.RoundedBorder()
+		b.Right = "├"
+		return lipgloss.NewStyle().BorderStyle(b).BorderForeground(lipgloss.Color("8")).Padding(0, 1)
+	}()
+	runTUIInfoLugStyle = func() lipgloss.Style {
+		b := lipgloss.RoundedBorder()
+		b.Left = "┤"
+		return lipgloss.NewStyle().BorderStyle(b).BorderForeground(lipgloss.Color("8")).Padding(0, 1)
+	}()
 	runTUIPromptStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12"))
 	runTUIStatusStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("11"))
 	runTUIHintStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
@@ -390,11 +402,14 @@ func (m runTUIModel) outputBox() string {
 	if len(m.lines) == 0 {
 		inner = runTUIHintStyle.Italic(true).Render("waiting for agent output…")
 	}
-	box := runTUIBoxStyle.Width(m.viewport.Width).Render(inner)
-	if m.width > lipgloss.Width(box) {
-		box = lipgloss.PlaceHorizontal(m.width, lipgloss.Center, box)
-	}
-	return box
+	width := m.viewport.Width
+	title := runTUITitleLugStyle.Render(runTUIStageTitle(m.stage.stage))
+	head := lipgloss.JoinHorizontal(lipgloss.Center, title,
+		runTUIMetaStyle.Render(strings.Repeat("─", max(0, width-lipgloss.Width(title)))))
+	info := runTUIInfoLugStyle.Render(fmt.Sprintf("%3.0f%%", m.viewport.ScrollPercent()*100))
+	foot := lipgloss.JoinHorizontal(lipgloss.Center,
+		runTUIMetaStyle.Render(strings.Repeat("─", max(0, width-lipgloss.Width(info)))), info)
+	return head + "\n" + inner + "\n" + foot
 }
 
 func (m runTUIModel) promptBlock() string {
@@ -417,12 +432,26 @@ func (m runTUIModel) promptBlock() string {
 func (m runTUIModel) footer() string {
 	parts := []string{"Ctrl+C exit"}
 	if m.showOutputBox() && len(m.lines) > 0 {
-		parts = append([]string{fmt.Sprintf("%3.0f%%", m.viewport.ScrollPercent()*100), "↑/↓ · PgUp/PgDn · wheel scroll"}, parts...)
+		parts = append([]string{"↑/↓ · PgUp/PgDn · wheel scroll"}, parts...)
 	}
 	if m.gate != nil {
 		parts = append(parts, "type an action + Enter")
 	}
 	return runTUIHintStyle.Render(strings.Join(parts, " · "))
+}
+
+func runTUIStageTitle(stage core.Stage) string {
+	switch stage {
+	case core.StageSpec:
+		return "Planning"
+	case core.StageImplement:
+		return "Implementing"
+	case core.StageReview:
+		return "Reviewing"
+	case "":
+		return "Output"
+	}
+	return strings.ToUpper(string(stage)[:1]) + string(stage)[1:]
 }
 
 func runTUISpinnerFrame(elapsed time.Duration) string {
@@ -455,13 +484,13 @@ func (m *runTUIModel) resize() {
 	if m.height < 1 {
 		m.height = 1
 	}
-	m.viewport.Width = max(1, min(m.width, runTUIBoxMaxWidth)-2)
+	m.viewport.Width = max(1, min(m.width, runTUIBoxMaxWidth)-4)                   // border + inner padding
 	reserved := lipgloss.Height(m.header()) + lipgloss.Height(m.statusBlock()) + 1 // footer
 	if body := m.noticeBlock(); body != "" {
 		reserved += lipgloss.Height(body)
 	}
 	if m.showOutputBox() {
-		reserved += 2 // box border rows
+		reserved += 6 // title and scroll lug rows
 	}
 	if prompt := m.promptBlock(); prompt != "" {
 		reserved += lipgloss.Height(prompt)
@@ -480,7 +509,13 @@ func (m *runTUIModel) refreshViewportContent() {
 	}
 	rendered := make([]string, len(m.lines))
 	for i, line := range m.lines {
-		rendered[i] = runTUITruncate(line, m.viewport.Width)
+		truncated := runTUITruncate(line, m.viewport.Width)
+		// Raw harness event JSON the renderer passed through is context, not
+		// narrative — dim it so rendered prose and command lines stand out.
+		if strings.HasPrefix(strings.TrimSpace(truncated), "{\"") {
+			truncated = runTUIHintStyle.Render(truncated)
+		}
+		rendered[i] = truncated
 	}
 	m.viewport.SetContent(strings.Join(rendered, "\n"))
 }
