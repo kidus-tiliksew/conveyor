@@ -53,7 +53,7 @@ func TestRunTUIViewportResizeScrollAndFollow(t *testing.T) {
 	}, nil, make(chan runTUIAction, 1), make(chan struct{}, 1))
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 48, Height: 9})
 	model = updated.(runTUIModel)
-	if model.viewport.Width != 48 || model.viewport.Height < 1 || model.viewport.Height >= 9 {
+	if model.viewport.Width != 46 || model.viewport.Height < 1 || model.viewport.Height >= 9 {
 		t.Fatalf("viewport bounds = %dx%d", model.viewport.Width, model.viewport.Height)
 	}
 	updated, _ = model.Update(runTUIOutputMsg("one\ntwo\nthree\nfour\nfive\nsix\nseven\n"))
@@ -74,8 +74,30 @@ func TestRunTUIViewportResizeScrollAndFollow(t *testing.T) {
 	}
 	updated, _ = model.Update(tea.WindowSizeMsg{Width: 24, Height: 4})
 	model = updated.(runTUIModel)
-	if model.viewport.Width != 24 || model.viewport.Height != 1 {
+	if model.viewport.Width != 22 || model.viewport.Height != 1 {
 		t.Fatalf("small resize was not bounded: %dx%d", model.viewport.Width, model.viewport.Height)
+	}
+	updated, _ = model.Update(tea.WindowSizeMsg{Width: 120, Height: 50})
+	model = updated.(runTUIModel)
+	if model.viewport.Width != 98 || model.viewport.Height != runTUIBoxMaxHeight {
+		t.Fatalf("large terminal did not cap the box: %dx%d", model.viewport.Width, model.viewport.Height)
+	}
+}
+
+func TestRunTUIGateWithoutOutputHidesBox(t *testing.T) {
+	gate := testRunTUIGate()
+	model := newRunTUIModel(runTUIStage{started: time.Now()}, &gate, make(chan runTUIAction, 1), make(chan struct{}, 1))
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	view := updated.(runTUIModel).View()
+	if strings.Contains(view, "╭") || strings.Contains(view, "waiting for agent output") {
+		t.Fatalf("gate frame without stream output rendered the box: %q", view)
+	}
+	if strings.Count(view, "\n") > 8 {
+		t.Fatalf("gate frame is not compact: %d lines", strings.Count(view, "\n")+1)
+	}
+	updated, _ = updated.(runTUIModel).Update(runTUIOutputMsg("late line\n"))
+	if !strings.Contains(updated.(runTUIModel).View(), "╭") {
+		t.Fatal("gate frame with stream output did not render the box")
 	}
 }
 
