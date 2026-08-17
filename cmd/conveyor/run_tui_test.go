@@ -79,7 +79,7 @@ func TestRunTUIViewportResizeScrollAndFollow(t *testing.T) {
 	}
 	updated, _ = model.Update(tea.WindowSizeMsg{Width: 120, Height: 50})
 	model = updated.(runTUIModel)
-	if model.viewport.Width != 98 || model.viewport.Height != runTUIBoxMaxHeight {
+	if model.viewport.Width != runTUIBoxMaxWidth-2 || model.viewport.Height != runTUIBoxMaxHeight {
 		t.Fatalf("large terminal did not cap the box: %dx%d", model.viewport.Width, model.viewport.Height)
 	}
 }
@@ -89,14 +89,16 @@ func TestRunTUIGateWithoutOutputHidesBox(t *testing.T) {
 	model := newRunTUIModel(runTUIStage{started: time.Now()}, &gate, make(chan runTUIAction, 1), make(chan struct{}, 1))
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	view := updated.(runTUIModel).View()
-	if strings.Contains(view, "╭") || strings.Contains(view, "waiting for agent output") {
+	// One rounded border belongs to the header tab; a second would be the
+	// output box, which must stay hidden while a gate has no stream output.
+	if strings.Count(view, "╭") != 1 || strings.Contains(view, "waiting for agent output") {
 		t.Fatalf("gate frame without stream output rendered the box: %q", view)
 	}
-	if strings.Count(view, "\n") > 8 {
+	if strings.Count(view, "\n") > 9 {
 		t.Fatalf("gate frame is not compact: %d lines", strings.Count(view, "\n")+1)
 	}
 	updated, _ = updated.(runTUIModel).Update(runTUIOutputMsg("late line\n"))
-	if !strings.Contains(updated.(runTUIModel).View(), "╭") {
+	if strings.Count(updated.(runTUIModel).View(), "╭") != 2 {
 		t.Fatal("gate frame with stream output did not render the box")
 	}
 }
