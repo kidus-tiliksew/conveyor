@@ -62,11 +62,12 @@ func authCmd() *cobra.Command {
 					label = token.Label
 				}
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Server: %s\nIdentity: %s <%s>\n", c.base, identity.DisplayName, identity.Email)
+			output := cmd.OutOrStdout()
+			rows := [][2]string{{"Server", c.base}, {"Identity", fmt.Sprintf("%s <%s>", identity.DisplayName, identity.Email)}}
 			if label != "" {
-				fmt.Fprintf(cmd.OutOrStdout(), "Token label: %s\n", label)
+				rows = append(rows, [2]string{"Token label", label})
 			}
-			return nil
+			return renderCLIStatusRows(output, outputIsTerminal(output), rows...)
 		},
 	}
 	var revoke bool

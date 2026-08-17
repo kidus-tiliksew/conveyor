@@ -585,10 +585,10 @@ func readLocalExecutionConfig(path string) (localExecutionChoices, []config.Harn
 }
 
 func printLocalExecutionConfig(output io.Writer, path string) error {
+	styled := outputIsTerminal(output)
 	choices, _, _, err := readLocalExecutionConfig(path)
 	if errors.Is(err, os.ErrNotExist) {
-		_, err = fmt.Fprintf(output, "execution\t(not configured)\t%s\n", path)
-		return err
+		return renderCLIConfigRow(output, styled, "execution", "(not configured)", path)
 	}
 	if err != nil {
 		return fmt.Errorf("load local execution config: %w", err)
@@ -598,7 +598,9 @@ func printLocalExecutionConfig(output io.Writer, path string) error {
 		choice localStageChoice
 	}{{"spec", choices.Spec}, {"implement", choices.Implement}, {"review", choices.Review}} {
 		for _, field := range []struct{ name, value string }{{"harness", item.choice.Harness}, {"model", item.choice.Model}, {"effort", item.choice.Effort}, {"timeout", item.choice.Timeout}} {
-			fmt.Fprintf(output, "execution.%s.%s\t%s\tstored file %s\n", item.stage, field.name, field.value, path)
+			if err := renderCLIConfigRow(output, styled, "execution."+item.stage+"."+field.name, field.value, "stored file "+path); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

@@ -655,7 +655,11 @@ func runHarnessChildWithFirstActivityTimeout(ctx context.Context, c *client, cre
 }
 
 func runHarnessChildWithFirstActivityTimeoutAndRunMode(ctx context.Context, c *client, credential string, item workerservice.DispatchOrder, firstActivityTimeout time.Duration, runMode string) error {
-	return runHarnessChildWithFirstActivityTimeoutAndOutputAndRunMode(ctx, c, credential, item, firstActivityTimeout, os.Stdout, os.Stderr, runMode)
+	return runHarnessChildWithFirstActivityTimeoutAndRunModeAndPresentation(ctx, c, credential, item, firstActivityTimeout, runMode, nil)
+}
+
+func runHarnessChildWithFirstActivityTimeoutAndRunModeAndPresentation(ctx context.Context, c *client, credential string, item workerservice.DispatchOrder, firstActivityTimeout time.Duration, runMode string, presentation *runOutputPresentation) error {
+	return runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(ctx, c, credential, item, firstActivityTimeout, os.Stdout, os.Stderr, runMode, presentation)
 }
 
 func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *client, credential string, item workerservice.DispatchOrder, firstActivityTimeout time.Duration, stdout, stderr io.Writer) error {
@@ -663,6 +667,10 @@ func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *cl
 }
 
 func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunMode(ctx context.Context, c *client, credential string, item workerservice.DispatchOrder, firstActivityTimeout time.Duration, stdout, stderr io.Writer, runMode string) error {
+	return runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(ctx, c, credential, item, firstActivityTimeout, stdout, stderr, runMode, nil)
+}
+
+func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(ctx context.Context, c *client, credential string, item workerservice.DispatchOrder, firstActivityTimeout time.Duration, stdout, stderr io.Writer, runMode string, presentation *runOutputPresentation) error {
 	if firstActivityTimeout <= 0 {
 		return fmt.Errorf("first activity timeout must be positive")
 	}
@@ -699,12 +707,16 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunMode(ctx context.Cont
 	defer renewal.Stop()
 	var redactedStdout, redactedStderr *redact.Writer
 	var failureTail *boundedTailWriter
+	var terminalRenderer *harnessEventRenderer
 	flushOutput := func() {
 		if redactedStdout != nil {
 			_ = redactedStdout.Flush()
 		}
 		if redactedStderr != nil {
 			_ = redactedStderr.Flush()
+		}
+		if terminalRenderer != nil {
+			_ = terminalRenderer.Flush()
 		}
 	}
 	release := func(outcome, reason string, exitStatus *int) error {
@@ -863,11 +875,13 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunMode(ctx context.Cont
 	}
 	outputRedactor := redact.New([]string{credential, childAddress, sessionID, clientToken})
 	failureTail = &boundedTailWriter{limit: workerservice.FailureDetailLimit}
-	stdoutDestinations := []io.Writer{stdout, failureTail}
+	var usageDestination io.Writer
 	if codexUsage != nil {
-		stdoutDestinations = append(stdoutDestinations, codexUsage)
+		usageDestination = codexUsage
 	}
-	redactedStdout = &redact.Writer{Destination: io.MultiWriter(stdoutDestinations...), Redactor: outputRedactor}
+	stdoutFanout, renderer := harnessStdoutFanout(stdout, failureTail, usageDestination, item, presentation)
+	terminalRenderer = renderer
+	redactedStdout = &redact.Writer{Destination: stdoutFanout, Redactor: outputRedactor}
 	redactedStderr = &redact.Writer{Destination: io.MultiWriter(stderr, failureTail), Redactor: outputRedactor}
 	// Both redacted streams share one first-write signal; either stream
 	// permanently disarms output-start liveness (design-260805-973cd4).
