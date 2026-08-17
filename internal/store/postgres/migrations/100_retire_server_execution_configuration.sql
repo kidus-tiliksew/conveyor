@@ -3,26 +3,28 @@
 WITH captured AS (
     SELECT id,
            config_yaml,
-           coalesce((regexp_match(config_yaml, '(?ms)^    spec:\n.*?^        timeout: ([^\n]+)'))[1], '30m') AS spec_timeout,
-           coalesce((regexp_match(config_yaml, '(?ms)^    implementation:\n.*?^        timeout: ([^\n]+)'))[1], '4h') AS implement_timeout,
-           coalesce((regexp_match(config_yaml, '(?ms)^    review:\n.*?^        timeout: ([^\n]+)'))[1], '1h') AS review_timeout,
-           greatest(1, array_length(regexp_split_to_array(coalesce((regexp_match(config_yaml, '(?ms)^review:\n((?:^[ \t].*\n?)*)'))[1], ''), '(?m)^        - '), 1) - 1) AS review_seats
+           coalesce((regexp_match(config_yaml, '(?m)^stage_timeouts:\n(?:    [^\n]*\n)*    spec: ([^\n]+)'))[1], (regexp_match(config_yaml, '(?m)^    spec:\n(?:        [^\n]*\n)*        timeout: ([^\n]+)'))[1], '30m') AS spec_timeout,
+           coalesce((regexp_match(config_yaml, '(?m)^stage_timeouts:\n(?:    [^\n]*\n)*    implement: ([^\n]+)'))[1], (regexp_match(config_yaml, '(?m)^    implementation:\n(?:        [^\n]*\n)*        timeout: ([^\n]+)'))[1], '4h') AS implement_timeout,
+           coalesce((regexp_match(config_yaml, '(?m)^stage_timeouts:\n(?:    [^\n]*\n)*    review: ([^\n]+)'))[1], (regexp_match(config_yaml, '(?m)^    review:\n(?:        [^\n]*\n)*        timeout: ([^\n]+)'))[1], '1h') AS review_timeout,
+           greatest(1, array_length(regexp_split_to_array(coalesce((regexp_match(config_yaml, '(?m)^review:\n((?:[ \t]+[^\n]*(?:\n|$))*)'))[1], ''), '(?m)^        - '), 1) - 1) AS review_seats
     FROM workspaces
 ), stripped AS (
     SELECT id, spec_timeout, implement_timeout, review_timeout, review_seats,
            regexp_replace(
              regexp_replace(
                regexp_replace(
+               regexp_replace(
                  regexp_replace(
                    regexp_replace(
                      regexp_replace(
-                       regexp_replace(config_yaml, '(?ms)^execution_settings:\n(?:^[ \t].*\n?)*', '', 'g'),
-                       '(?ms)^routing:\n(?:^[ \t].*\n?)*', '', 'g'),
-                     '(?ms)^harnesses:\n(?:^[ \t].*\n?)*', '', 'g'),
-                   '(?ms)^review:\n(?:^[ \t].*\n?)*', '', 'g'),
-                 '(?ms)^setups:\n(?:^[ \t].*\n?)*', '', 'g'),
+                     regexp_replace(config_yaml, '(?m)^execution_settings:\n(?:[ \t]+[^\n]*(?:\n|$))*', '', 'g'),
+                       '(?m)^routing:\n(?:[ \t]+[^\n]*(?:\n|$))*', '', 'g'),
+                     '(?m)^harnesses:\n(?:[ \t]+[^\n]*(?:\n|$))*', '', 'g'),
+                   '(?m)^review:\n(?:[ \t]+[^\n]*(?:\n|$))*', '', 'g'),
+                 '(?m)^setups:\n(?:[ \t]+[^\n]*(?:\n|$))*', '', 'g'),
                '(?m)^default_setup:.*\n?', '', 'g'),
-             '(?ms)^planning_models:\n(?:^[ \t].*\n?)*', '', 'g') AS policy_yaml
+             '(?m)^planning_models:\n(?:[ \t]+[^\n]*(?:\n|$))*', '', 'g'),
+           '(?m)^stage_timeouts:\n(?:[ \t]+[^\n]*(?:\n|$))*', '', 'g') AS policy_yaml
     FROM captured
 )
 UPDATE workspaces workspace

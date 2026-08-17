@@ -70,7 +70,9 @@ func (s *Server) requestTaskChanges(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	maxBounces := 1
-	if s.ConfigProvider != nil {
+	if task.SetupContract.MaxBounces > 0 {
+		maxBounces = task.SetupContract.MaxBounces
+	} else if s.ConfigProvider != nil {
 		cfg, cfgErr := s.ConfigProvider(r.Context())
 		if cfgErr != nil {
 			http.Error(w, cfgErr.Error(), http.StatusInternalServerError)

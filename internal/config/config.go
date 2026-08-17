@@ -344,6 +344,7 @@ type ContextualExecutionSettings struct {
 // intake (design-harness-execution; DEC-7).
 type ExecutionSetup struct {
 	Name              string                      `yaml:"name" json:"name"`
+	MaxBounces        int                         `yaml:"max_bounces,omitempty" json:"max_bounces,omitempty"`
 	ExecutionSettings ContextualExecutionSettings `yaml:"execution_settings" json:"execution_settings"`
 	Review            ReviewPanel                 `yaml:"review" json:"review"`
 	RefreshReview     string                      `yaml:"refresh_review,omitempty" json:"refresh_review"`
@@ -355,12 +356,14 @@ type ExecutionSetup struct {
 func (s ExecutionSetup) MarshalJSON() ([]byte, error) {
 	seats := make([]struct{}, len(s.Review.Seats))
 	return json.Marshal(struct {
+		MaxBounces    int               `json:"max_bounces"`
 		StageTimeouts map[string]string `json:"stage_timeouts"`
 		Review        struct {
 			Seats []struct{} `json:"seats"`
 		} `json:"review"`
 		RefreshReview string `json:"refresh_review,omitempty"`
 	}{
+		MaxBounces: s.MaxBounces,
 		StageTimeouts: map[string]string{
 			"spec":      s.ExecutionSettings.Spec.TimeoutText,
 			"implement": s.ExecutionSettings.Implementation.TimeoutText,
@@ -388,6 +391,7 @@ func (s *ExecutionSetup) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 	var policy struct {
+		MaxBounces    int               `json:"max_bounces"`
 		StageTimeouts map[string]string `json:"stage_timeouts"`
 		Review        struct {
 			Seats []struct{} `json:"seats"`
@@ -401,8 +405,17 @@ func (s *ExecutionSetup) UnmarshalJSON(data []byte) error {
 	s.ExecutionSettings.Implementation.TimeoutText = policy.StageTimeouts["implement"]
 	s.ExecutionSettings.Review.TimeoutText = policy.StageTimeouts["review"]
 	s.Review.Seats = make([]ReviewSeat, len(policy.Review.Seats))
+	s.MaxBounces = policy.MaxBounces
 	s.RefreshReview = policy.RefreshReview
 	return nil
+}
+
+// HasFrozenPolicy distinguishes the policy carrier from a zero-value legacy
+// contract without relying on the retired setup name.
+func (s ExecutionSetup) HasFrozenPolicy() bool {
+	return s.Name != "" || s.MaxBounces > 0 || s.ExecutionSettings.Spec.TimeoutText != "" ||
+		s.ExecutionSettings.Implementation.TimeoutText != "" || s.ExecutionSettings.Review.TimeoutText != "" ||
+		s.Review.Seats != nil || s.RefreshReview != ""
 }
 
 const (
@@ -432,6 +445,27 @@ type WorkspaceDocument struct {
 
 	// v1.3 compatibility input; never emitted after normalization.
 	LegacyImage string `yaml:"image,omitempty" json:"-"`
+}
+
+// MarshalJSON gives the live policy projection a closed wire shape while
+// retaining legacy JSON emission for upgrade fixtures that still carry
+// execution settings. YAML remains the compatibility format for old rows.
+func (d WorkspaceDocument) MarshalJSON() ([]byte, error) {
+	policyOnly := d.StageTimeouts != nil && d.ExecutionSettings == nil && len(d.Routing.Stages) == 0 && len(d.Harnesses) == 0 && len(d.Setups) == 0 && d.DefaultSetup == "" && len(d.PlanningModels) == 0
+	if !policyOnly {
+		type legacy WorkspaceDocument
+		return json.Marshal(legacy(d))
+	}
+	return json.Marshal(struct {
+		Workspace                 string            `json:"workspace"`
+		MaxBounces                int               `json:"max_bounces"`
+		WorkOrderQueueTimeoutText string            `json:"work_order_queue_timeout"`
+		StageTimeouts             map[string]string `json:"stage_timeouts"`
+		Review                    ReviewPanel       `json:"review"`
+		Execution                 ExecutionPolicy   `json:"execution"`
+		Repos                     []Repo            `json:"repos"`
+		Monitor                   MonitorConfig     `json:"monitor"`
+	}{d.Workspace, d.MaxBounces, d.WorkOrderQueueTimeoutText, d.StageTimeouts, d.Review, d.Execution, d.Repos, d.Monitor})
 }
 
 var ErrVersionConflict = errors.New("workspace config version conflict")
@@ -510,6 +544,9 @@ func ParseWorkspaceDocument(data []byte, deployment *Config, source string) (*Co
 		next.DefaultSetup = document.DefaultSetup
 	}
 	next.Review = document.Review
+	if next.Routing.Stages == nil {
+		next.Routing.Stages = map[string]StageRoute{}
+	}
 	for stage, timeout := range document.StageTimeouts {
 		route := next.Routing.Stages[stage]
 		route.TimeoutText = timeout
@@ -1441,6 +1478,7 @@ func (c *Config) FreezePolicy() ExecutionSetup {
 		setup.RefreshReview = RefreshReviewDelta
 	}
 	return ExecutionSetup{
+		MaxBounces: c.MaxBounces,
 		ExecutionSettings: ContextualExecutionSettings{
 			Spec:           ImplementationSettings{TimeoutText: setup.ExecutionSettings.Spec.TimeoutText},
 			Implementation: ImplementationSettings{TimeoutText: setup.ExecutionSettings.Implementation.TimeoutText},
@@ -1483,6 +1521,9 @@ func (c *Config) Setup(name string) (ExecutionSetup, bool) {
 // calculations without consulting the mutable setup name again.
 func (c *Config) WithSetup(setup ExecutionSetup) *Config {
 	next := *c
+	if setup.MaxBounces > 0 {
+		next.MaxBounces = setup.MaxBounces
+	}
 	next.Setups = []ExecutionSetup{setup}
 	next.DefaultSetup = setup.Name
 	next.ExecutionSettings = &next.Setups[0].ExecutionSettings

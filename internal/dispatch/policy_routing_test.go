@@ -42,3 +42,38 @@ func TestPolicyOnlyReviewRoundFreezesSeatShapeNotExecution(t *testing.T) {
 		}
 	}
 }
+
+func TestFrozenPolicySurvivesWorkspacePolicyEdits(t *testing.T) {
+	intake := &config.Config{
+		MaxBounces:            3,
+		WorkOrderQueueTimeout: time.Hour,
+		Routing: config.Routing{Stages: map[string]config.StageRoute{
+			"spec":      {Execution: config.ExecutionMCP, TimeoutText: "20m"},
+			"implement": {Execution: config.ExecutionMCP, TimeoutText: "2h"},
+			"review":    {Execution: config.ExecutionMCP, TimeoutText: "40m"},
+		}},
+		Review: config.ReviewPanel{Seats: []config.ReviewSeat{{}, {}}},
+	}
+	task := core.Task{ID: "frozen-policy", SetupContract: intake.FreezePolicy()}
+	current := &config.Config{
+		MaxBounces:            9,
+		WorkOrderQueueTimeout: time.Hour,
+		Routing: config.Routing{Stages: map[string]config.StageRoute{
+			"spec":      {Execution: config.ExecutionMCP, TimeoutText: "50m"},
+			"implement": {Execution: config.ExecutionMCP, TimeoutText: "8h"},
+			"review":    {Execution: config.ExecutionMCP, TimeoutText: "3h"},
+		}},
+		Review: config.ReviewPanel{Seats: []config.ReviewSeat{{}}},
+	}
+	implement, err := BuildFutureWorkOrderRouting(current, task, core.StageImplement)
+	if err != nil || implement.ExecutionTimeoutText != "2h" {
+		t.Fatalf("implementation order=%+v err=%v", implement, err)
+	}
+	_, reviews, err := BuildReviewRound(current, task, current.Routing.Stages["review"], 1)
+	if err != nil || len(reviews) != 2 || reviews[0].ExecutionTimeoutText != "40m" {
+		t.Fatalf("review orders=%+v err=%v", reviews, err)
+	}
+	if frozen := current.WithSetup(task.SetupContract); frozen.MaxBounces != 3 {
+		t.Fatalf("max_bounces=%d", frozen.MaxBounces)
+	}
+}

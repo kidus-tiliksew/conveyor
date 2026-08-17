@@ -2,7 +2,6 @@ package worker
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	"reflect"
@@ -12,8 +11,6 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
-	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
-	"github.com/kidus-tiliksew/conveyor/internal/pipeline"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 	"github.com/kidus-tiliksew/conveyor/internal/workorder"
@@ -396,59 +393,6 @@ func TestTransientConnectivityFailureClassification(t *testing.T) {
 	}
 }
 
-func TestReleaseRefreshesHarnessSnapshotFromCurrentConfig(t *testing.T) {
-	t.Skip("server harness snapshots retired by DEC-23")
-	now := time.Now().UTC()
-	ctx := store.WithWorkspace(t.Context(), "demo")
-	st := store.NewMemory()
-	if err := st.CreateTask(ctx, core.Task{ID: "refresh-task", Workspace: "demo", State: core.TaskRunning, CreatedAt: now}); err != nil {
-		t.Fatal(err)
-	}
-	if err := st.CreateJob(ctx, core.Job{ID: "refresh-task-implement-1", TaskID: "refresh-task", Stage: core.StageImplement, State: core.JobPending}); err != nil {
-		t.Fatal(err)
-	}
-	pinned := &core.HarnessSnapshot{Name: "claude", Command: []string{"claude", "-p", "{prompt}", "{mcp_config}"}}
-	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: "refresh-task-implement-1", TaskID: "refresh-task", JobID: "refresh-task-implement-1", Stage: core.StageImplement, State: core.WorkOrderQueued, Claimable: true, RequiredHarness: "claude", RequiredModel: "provider/model", RequiredHarnessConfig: pinned, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now}); err != nil {
-		t.Fatal(err)
-	}
-	worker := core.Worker{ID: "worker-refresh", Workspace: "demo", Name: "refresh", CredentialHash: "hash", CreatedAt: now}
-	if err := st.CreateWorker(ctx, worker); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := storetest.For(st).ClaimWorkOrder(ctx, "refresh-task-implement-1", core.WorkOrderClaim{SessionID: "session-r", ClientToken: "token-r", ClaimantID: worker.ID, WorkerID: worker.ID, Lease: time.Minute, ExecutionTimeout: time.Hour}); err != nil {
-		t.Fatal(err)
-	}
-	service := &Service{Store: st, ConfigProvider: func(context.Context) (*config.Config, error) {
-		return &config.Config{Harnesses: []config.Harness{{Name: "claude", Command: []string{"claude", "-p", "{prompt}", "{mcp_config}", "--dangerously-skip-permissions"}}}}, nil
-	}}
-	released, err := service.Release(ctx, worker, "refresh-task-implement-1", core.WorkOrderRelease{SessionID: "session-r", Reason: "harness exited", Outcome: core.WorkOrderOutcomeChildFailure, FailureDetail: "The model is not supported by this provider"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if released.RequiredHarnessConfig == nil || !strings.Contains(strings.Join(released.RequiredHarnessConfig.Command, " "), "--dangerously-skip-permissions") {
-		t.Fatalf("released snapshot = %+v", released.RequiredHarnessConfig)
-	}
-	failures, err := st.ListHarnessModelFailures(ctx)
-	if err != nil || len(failures) != 1 || failures[0].Harness != "claude" || failures[0].Model != "provider/model" {
-		t.Fatalf("model failures=%+v err=%v", failures, err)
-	}
-	setup := config.ExecutionSetup{Name: "observed", ExecutionSettings: config.ContextualExecutionSettings{Implementation: config.ImplementationSettings{Harness: "claude", Model: "provider/model", ModelPolicy: config.ModelPolicyExplicit}}}
-	serviceability := service.ServiceabilityForSetup(ctx, &config.Config{}, setup)
-	if serviceability.Available || !strings.Contains(serviceability.Reason, "claude") || !strings.Contains(serviceability.Reason, "provider/model") {
-		t.Fatalf("serviceability=%+v", serviceability)
-	}
-	unrelated := setup
-	unrelated.Name = "unrelated"
-	unrelated.ExecutionSettings.Implementation.Model = "provider/other"
-	if projected, projectionErr := service.ModelFailuresForSetup(ctx, unrelated); projectionErr != nil || len(projected) != 0 {
-		t.Fatalf("unrelated model failures=%+v err=%v", projected, projectionErr)
-	}
-	refreshEvents, err := st.CountEvents(ctx, "refresh-task", "work_order.harness_refreshed")
-	if err != nil || refreshEvents != 1 {
-		t.Fatalf("harness refresh events = %d err=%v", refreshEvents, err)
-	}
-}
-
 func TestFailureDetailBoundAndProviderModelRejectionMatcher(t *testing.T) {
 	detail := strings.Repeat("x", FailureDetailLimit+100) + " unsupported model "
 	bounded := boundedFailureDetail(detail)
@@ -583,58 +527,6 @@ func TestTaskAvailabilityOmitsStatusWithoutActionableTaskOrder(t *testing.T) {
 	)
 	if status != nil {
 		t.Fatalf("status=%+v, want nil without queued or claimed task-owned work", status)
-	}
-}
-
-func TestWorkerHealthRequiresEveryRoutedHarnessOnOneLiveWorker(t *testing.T) {
-	t.Skip("serviceability is liveness-only under DEC-23")
-	now := time.Now().UTC()
-	st := store.NewMemory()
-	cfg := workerTestConfig()
-	cfg.Harnesses = append(cfg.Harnesses, config.Harness{Name: "claude", Command: []string{"claude", "{prompt}", "{mcp_config}"}, ProbeCommand: []string{"claude", "--version"}, ProbeTimeoutText: "5s", ProbeTimeout: 5 * time.Second})
-	review := cfg.Routing.Stages["review"]
-	review.Harness = "claude"
-	cfg.Routing.Stages["review"] = review
-	service := &Service{Store: st, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }, Now: func() time.Time { return now }}
-	ctx := store.WithWorkspace(t.Context(), "demo")
-	for index, probes := range [][]core.HarnessProbe{{{Harness: "codex", Healthy: true}}, {{Harness: "claude", Healthy: true}}} {
-		worker := core.Worker{ID: core.NewTaskID(), Workspace: "demo", Name: string(rune('a' + index)), CredentialHash: core.NewTaskID(), LeaseExpiresAt: now.Add(time.Minute), Probes: probes, CreatedAt: now}
-		if err := st.CreateWorker(ctx, worker); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if status := service.Serviceability(ctx, cfg); status.Available {
-		t.Fatal("different workers each reporting one routed harness enabled serviceability")
-	}
-}
-
-func TestWorkerHealthIsScopedToSelectedSetup(t *testing.T) {
-	t.Skip("workspace setups retired by DEC-23")
-	now := time.Now().UTC()
-	ctx := store.WithWorkspace(t.Context(), "demo")
-	st := store.NewMemory()
-	harness := func(name string) config.Harness {
-		return config.Harness{Name: name, Command: []string{name, "{prompt}", "{mcp_config}"}, ProbeCommand: []string{name, "--version"}, ProbeTimeoutText: "5s", ProbeTimeout: 5 * time.Second}
-	}
-	setup := func(name, harnessName string) config.ExecutionSetup {
-		return config.ExecutionSetup{Name: name, ExecutionSettings: config.ContextualExecutionSettings{
-			ControlPlane:   config.ControlPlaneSettings{Triage: config.ModelTimeoutSettings{Model: "control", TimeoutText: "20m"}, Spec: config.ModelTimeoutSettings{Model: "control", TimeoutText: "30m"}},
-			Implementation: config.ImplementationSettings{Harness: harnessName, Model: "model", ModelPolicy: config.ModelPolicyExplicit, TimeoutText: "2h"},
-			Review:         config.ReviewExecutionSettings{Execution: config.ExecutionInProcess, TimeoutText: "1h", FallbackModel: "review"},
-		}, Review: config.ReviewPanel{Seats: []config.ReviewSeat{{Model: "review"}}}}
-	}
-	good, broken := setup("good", "codex"), setup("broken", "claude")
-	cfg := &config.Config{Workspace: "demo", Harnesses: []config.Harness{harness("codex"), harness("claude")}, Setups: []config.ExecutionSetup{good, broken}, DefaultSetup: good.Name}
-	worker := core.Worker{ID: "setup-worker", Workspace: "demo", Name: "setup", CredentialHash: "hash", LeaseExpiresAt: now.Add(time.Minute), Probes: []core.HarnessProbe{{Harness: "codex", Healthy: true}, {Harness: "claude", Healthy: false}}, CreatedAt: now}
-	if err := st.CreateWorker(ctx, worker); err != nil {
-		t.Fatal(err)
-	}
-	service := &Service{Store: st, Now: func() time.Time { return now }}
-	if status := service.ServiceabilityForSetup(ctx, cfg, good); !status.Available {
-		t.Fatalf("good setup unavailable: %s", status.Reason)
-	}
-	if status := service.ServiceabilityForSetup(ctx, cfg, broken); status.Available {
-		t.Fatal("broken setup became available because an unrelated setup was healthy")
 	}
 }
 
@@ -798,133 +690,6 @@ func TestImplementationDispatchUsesCapturedEffortAfterHotReload(t *testing.T) {
 	}
 }
 
-func TestAdversarialReviewPanelPinsWorkerSeatsAndAggregatesOneBounce(t *testing.T) {
-	t.Skip("server review execution pins retired by DEC-23")
-	now := time.Now().UTC()
-	ctx := store.WithWorkspace(t.Context(), "demo")
-	st := store.NewMemory()
-	cfg := workerTestConfig()
-	cfg.MaxBounces = 2
-	cfg.Harnesses = append(cfg.Harnesses, config.Harness{Name: "claude", Command: []string{"claude", "{prompt}", "{mcp_config}"}, ModelArgs: []string{"--model", "{model}"}, EffortArgs: map[string][]string{"high": {"--effort", "high"}}, ProbeCommand: []string{"claude", "--version"}, ProbeTimeoutText: "5s", ProbeTimeout: 5 * time.Second})
-	cfg.Review = config.ReviewPanel{Seats: []config.ReviewSeat{{Model: "gpt-review", Effort: "high"}, {Model: "claude-review", Harness: "claude", Effort: "high"}}}
-	cfg.Repos = []config.Repo{{Name: "app", URL: "https://example.test/app", Base: "main"}}
-	task := core.Task{ID: "panel-task", Workspace: "demo", Repo: "app", PolicyVersion: 1, MergeApproval: true, State: core.TaskQueued, NextStage: core.StageReview, CreatedAt: now}
-	if err := st.CreateTask(ctx, task); err != nil {
-		t.Fatal(err)
-	}
-	dispatcher := dispatch.New(st, cfg, nil)
-	dispatcher.DisableMemoryQueueForTest()
-	if err := dispatcher.DispatchNow(ctx, task.ID); err != nil {
-		t.Fatal(err)
-	}
-	if err := dispatcher.DispatchNow(ctx, task.ID); err != nil {
-		t.Fatalf("review dispatch redelivery: %v", err)
-	}
-	if persisted, _ := st.ListTaskWorkOrders(ctx, task.ID); len(persisted) != 2 {
-		t.Fatalf("dispatch redelivery created duplicate seats: %+v", persisted)
-	} else {
-		bySeat := map[int]core.WorkOrder{}
-		for _, order := range persisted {
-			bySeat[order.ReviewSeat] = order
-		}
-		if bySeat[1].RequiredHarnessConfig == nil || bySeat[1].RequiredHarnessConfig.Command[0] != "codex" || bySeat[1].RequiredEffort != "high" || bySeat[2].RequiredHarnessConfig == nil || bySeat[2].RequiredHarnessConfig.Command[0] != "claude" || bySeat[2].RequiredEffort != "high" {
-			t.Fatalf("review seats did not snapshot harness execution: %+v", persisted)
-		}
-	}
-	workOrders := &workorder.Service{Store: st, Dispatcher: dispatcher, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
-	service := &Service{Store: st, WorkOrders: workOrders, ConfigProvider: workOrders.ConfigProvider, Now: func() time.Time { return now }}
-	worker := core.Worker{ID: "worker-panel", Workspace: "demo", Name: "panel worker", CredentialHash: "hash", LeaseExpiresAt: now.Add(time.Minute), Probes: []core.HarnessProbe{{Harness: "codex", Healthy: true}, {Harness: "claude", Healthy: true}}, CreatedAt: now}
-	if err := st.CreateWorker(ctx, worker); err != nil {
-		t.Fatal(err)
-	}
-	unhealthy := worker
-	unhealthy.Probes = []core.HarnessProbe{{Harness: "codex", Healthy: true}, {Harness: "claude", Healthy: false}}
-	if blocked, listErr := service.ListClaimable(ctx, unhealthy); listErr != nil || len(blocked) != 0 {
-		t.Fatalf("unhealthy panel harness was dispatchable: %+v err=%v", blocked, listErr)
-	}
-	listed, err := service.ListClaimable(ctx, worker)
-	if err != nil || len(listed) != 2 {
-		t.Fatalf("listed=%+v err=%v", listed, err)
-	}
-	// Simulate a restart after hot reload removes one harness, changes the
-	// other's command, and replaces the next round's panel. The existing round
-	// must still accept its old probe and dispatch both original definitions.
-	codex := cfg.Harnesses[0]
-	codex.Command = []string{"codex-next", "{prompt}", "{mcp_config}"}
-	cfg.Harnesses = []config.Harness{codex}
-	cfg.Review = config.ReviewPanel{Seats: []config.ReviewSeat{{Model: "next-review", Harness: "codex"}}}
-	restarted := &Service{Store: st, WorkOrders: workOrders, ConfigProvider: workOrders.ConfigProvider, Now: func() time.Time { return now }}
-	activeHarnesses, err := restarted.ActiveHarnesses(ctx)
-	if err != nil || len(activeHarnesses) != 2 {
-		t.Fatalf("active harness snapshots=%+v err=%v", activeHarnesses, err)
-	}
-	activeProbes := make([]core.HarnessProbe, 0, len(activeHarnesses))
-	for _, target := range activeHarnesses {
-		activeProbes = append(activeProbes, core.HarnessProbe{Harness: target.Harness.Name, Fingerprint: target.Fingerprint, Healthy: true})
-	}
-	worker, err = restarted.Heartbeat(ctx, worker, activeProbes)
-	if err != nil {
-		t.Fatalf("snapshotted harness probe after hot reload: %v", err)
-	}
-	listed, err = restarted.ListClaimable(ctx, worker)
-	if err != nil || len(listed) != 2 {
-		t.Fatalf("restarted dispatch after hot reload=%+v err=%v", listed, err)
-	}
-	bySeat := map[int]DispatchOrder{}
-	for _, item := range listed {
-		bySeat[item.Order.ReviewSeat] = item
-	}
-	if bySeat[1].Model != "gpt-review" || bySeat[1].Effort != "high" || bySeat[1].Harness.Name != "codex" || bySeat[1].Harness.Command[0] != "codex" || bySeat[2].Model != "claude-review" || bySeat[2].Effort != "high" || bySeat[2].Harness.Name != "claude" || bySeat[2].Harness.Command[0] != "claude" {
-		t.Fatalf("seat dispatch=%+v", bySeat)
-	}
-	first, err := restarted.ClaimForWorker(ctx, worker, bySeat[1].Order.ID, core.WorkOrderClaim{SessionID: "review-session-1", ClientToken: "review-token-1"})
-	if err != nil || first.ModelEnforcement != "worker-pinned" || first.Model != "gpt-review" {
-		t.Fatalf("first claim=%+v err=%v", first, err)
-	}
-	if _, err = restarted.ClaimForWorker(ctx, worker, bySeat[2].Order.ID, core.WorkOrderClaim{SessionID: "review-session-1", ClientToken: "review-token-2"}); err == nil || !strings.Contains(err.Error(), "session independence") {
-		t.Fatalf("same-session claim error=%v", err)
-	}
-	second, err := restarted.ClaimForWorker(ctx, worker, bySeat[2].Order.ID, core.WorkOrderClaim{SessionID: "review-session-2", ClientToken: "review-token-2"})
-	if err != nil || second.ModelEnforcement != "worker-pinned" || second.Model != "claude-review" {
-		t.Fatalf("second claim=%+v err=%v", second, err)
-	}
-	firstResult, err := workOrders.SubmitVerdict(ctx, first.ID, first.SessionID, pipeline.Review{Verdict: "approve", ReasonCode: "approved", Summary: "seat one approved", Feedback: "seat one checked the contract"})
-	if err != nil || firstResult["round_status"] != "pending" {
-		t.Fatalf("first verdict=%+v err=%v", firstResult, err)
-	}
-	secondResult, err := workOrders.SubmitVerdict(ctx, second.ID, second.SessionID, pipeline.Review{Verdict: "changes_requested", ReasonCode: "tests", Summary: "missing edge case", Feedback: "add the concurrency case"})
-	if err != nil || secondResult["round_status"] != "completed" {
-		t.Fatalf("second verdict=%+v err=%v", secondResult, err)
-	}
-	updated, _ := st.GetTask(ctx, task.ID)
-	if updated.State != core.TaskQueued || updated.NextStage != core.StageImplement {
-		t.Fatalf("task after panel=%+v", updated)
-	}
-	events, _ := st.ListEvents(ctx, task.ID)
-	bounces, completed := 0, 0
-	for _, event := range events {
-		if event.Kind == "pipeline.bounced" {
-			bounces++
-		}
-		if event.Kind != "review.round_completed" {
-			continue
-		}
-		completed++
-		var payload struct {
-			Verdict string `json:"verdict"`
-			Reviews []struct {
-				ModelEnforcement string `json:"model_enforcement"`
-			} `json:"reviews"`
-		}
-		if err = json.Unmarshal(event.Payload, &payload); err != nil || payload.Verdict != "changes_requested" || len(payload.Reviews) != 2 || payload.Reviews[0].ModelEnforcement != "worker-pinned" || payload.Reviews[1].ModelEnforcement != "worker-pinned" {
-			t.Fatalf("aggregate payload=%s err=%v", event.Payload, err)
-		}
-	}
-	if bounces != 1 || completed != 1 {
-		t.Fatalf("bounces=%d completed=%d events=%+v", bounces, completed, events)
-	}
-	interventions, _ := st.ListInterventions(ctx, task.ID)
-	if len(interventions) != 1 || !strings.Contains(interventions[0].Comment, "seat one checked") || !strings.Contains(interventions[0].Comment, "add the concurrency case") {
-		t.Fatalf("interventions=%+v", interventions)
-	}
-}
+// Simulate a restart after hot reload removes one harness, changes the
+// other's command, and replaces the next round's panel. The existing round
+// must still accept its old probe and dispatch both original definitions.

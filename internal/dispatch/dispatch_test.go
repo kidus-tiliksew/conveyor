@@ -255,7 +255,6 @@ func (st *concurrentSpecDispatchStore) CreateStageWorkOrderCommand(ctx context.C
 }
 
 func TestSpecStageDispatchesMCPWorkOrderWithoutInProcessFallback(t *testing.T) {
-	t.Skip("server execution configuration retired by DEC-23")
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	st := store.NewMemory()
 	task := core.Task{ID: "mcp-spec", Workspace: "demo", Repo: "api", BaseBranch: "main", Branch: "conveyor/task-mcp-spec", State: core.TaskQueued, NextStage: core.StageSpec, CreatedAt: time.Now()}
@@ -272,7 +271,7 @@ func TestSpecStageDispatchesMCPWorkOrderWithoutInProcessFallback(t *testing.T) {
 		t.Fatal(err)
 	}
 	orders, err := st.ListTaskWorkOrders(ctx, task.ID)
-	if err != nil || len(orders) != 1 || orders[0].Stage != core.StageSpec || orders[0].RequiredHarness != "codex" || orders[0].RequiredHarnessConfig == nil {
+	if err != nil || len(orders) != 1 || orders[0].Stage != core.StageSpec || orders[0].ExecutionTimeoutText != "30m" || orders[0].RequiredHarness != "" || orders[0].RequiredModel != "" || orders[0].RequiredHarnessConfig != nil {
 		t.Fatalf("orders=%+v err=%v", orders, err)
 	}
 	if agent.calls != 0 {
@@ -1832,7 +1831,6 @@ func TestSourceIssueNumberEnforcesConfiguredRepository(t *testing.T) {
 }
 
 func TestFrozenSetupSourcesImplementationAndReviewDispatch(t *testing.T) {
-	t.Skip("server execution configuration retired by DEC-23")
 	settings := func(harness, model string) config.ContextualExecutionSettings {
 		return config.ContextualExecutionSettings{
 			ControlPlane:   config.ControlPlaneSettings{Triage: config.ModelTimeoutSettings{Model: "control", TimeoutText: "20m"}, Spec: config.ModelTimeoutSettings{Model: "control", TimeoutText: "30m"}},
@@ -1859,11 +1857,11 @@ func TestFrozenSetupSourcesImplementationAndReviewDispatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	orders, err := st.ListTaskWorkOrders(ctx, task.ID)
-	if err != nil || len(orders) != 1 || orders[0].RequiredHarness != "claude" || orders[0].RequiredModel != "claude-ui" || orders[0].RequiredEffort != "high" || orders[0].ExecutionTimeoutText != "2h" {
+	if err != nil || len(orders) != 1 || orders[0].RequiredHarness != "" || orders[0].RequiredModel != "" || orders[0].RequiredEffort != "" || orders[0].ExecutionTimeoutText != "2h" {
 		t.Fatalf("implementation orders=%+v err=%v", orders, err)
 	}
 	jobs, reviewOrders, err := BuildReviewRound(cfg, task, cfg.Routing.Stages["review"], 1)
-	if err != nil || len(jobs) != 1 || len(reviewOrders) != 1 || reviewOrders[0].RequiredHarness != "claude" || reviewOrders[0].RequiredModel != "claude-review" || reviewOrders[0].ExecutionTimeoutText != "45m" {
+	if err != nil || len(jobs) != 1 || len(reviewOrders) != 1 || reviewOrders[0].RequiredHarness != "" || reviewOrders[0].RequiredModel != "" || reviewOrders[0].RequiredEffort != "" || reviewOrders[0].ExecutionTimeoutText != "45m" {
 		t.Fatalf("review jobs=%+v orders=%+v err=%v", jobs, reviewOrders, err)
 	}
 }
@@ -2463,48 +2461,6 @@ func TestInProcessTriageAndSpecAdvanceToImplementWorkOrder(t *testing.T) {
 	}
 }
 
-func TestImplementationDispatchSnapshotsNormalizedHarnessAndModel(t *testing.T) {
-	t.Skip("server execution configuration retired by DEC-23")
-	ctx := store.WithWorkspace(t.Context(), "demo")
-	st := store.NewMemory()
-	task := core.Task{ID: "snapshot-implement", Workspace: "demo", Repo: "api", State: core.TaskQueued, NextStage: core.StageImplement, CreatedAt: time.Now()}
-	if err := st.CreateTask(ctx, task); err != nil {
-		t.Fatal(err)
-	}
-	harness := config.Harness{Name: "codex", MCPTransport: config.MCPTransportTOMLOverride, Command: []string{"codex", "{prompt}", "{mcp_config}"}, ModelArgs: []string{"--model", "{model}"}, EffortArgs: map[string][]string{"high": {"--config", `model_reasoning_effort="high"`}}, ProbeCommand: []string{"codex", "--version"}, ProbeTimeoutText: "5s", StallTimeoutText: "45s"}
-	cfg := &config.Config{Workspace: "demo", WorkOrderQueueTimeout: time.Hour, Harnesses: []config.Harness{harness}, Routing: config.Routing{Stages: map[string]config.StageRoute{
-		"implement": {Model: "gpt-5", ModelPolicy: config.ModelPolicyExplicit, EffectiveModel: "gpt-5", Harness: "codex", Effort: "high", Timeout: time.Hour, TimeoutText: "1h", Execution: config.ExecutionMCP},
-	}}}
-	dispatcher := New(st, cfg, nil)
-	if err := dispatcher.DispatchNow(ctx, task.ID); err != nil {
-		t.Fatal(err)
-	}
-	orders, err := st.ListTaskWorkOrders(ctx, task.ID)
-	if err != nil || len(orders) != 1 {
-		t.Fatalf("orders=%+v err=%v", orders, err)
-	}
-	order := orders[0]
-	if order.RequiredModel != "gpt-5" || order.RequiredHarness != "codex" || order.RequiredEffort != "high" || order.RequiredHarnessConfig == nil || order.RequiredHarnessConfig.Name != "codex" || order.RequiredHarnessConfig.MCPTransport != config.MCPTransportTOMLOverride || order.RequiredHarnessConfig.StallTimeoutText != "45s" || !reflect.DeepEqual(order.RequiredHarnessConfig.EffortArgv, []string{"--config", `model_reasoning_effort="high"`}) {
-		t.Fatalf("snapshotted order=%+v", order)
-	}
-	cfg.Harnesses[0].EffortArgs["high"] = []string{"--config", `model_reasoning_effort="low"`}
-	cfg.Harnesses[0].StallTimeoutText = "2s"
-	if !reflect.DeepEqual(order.RequiredHarnessConfig.EffortArgv, []string{"--config", `model_reasoning_effort="high"`}) || order.RequiredHarnessConfig.StallTimeoutText != "45s" {
-		t.Fatalf("hot reload mutated in-flight effort argv: %+v", order.RequiredHarnessConfig)
-	}
-	events, err := st.ListEvents(ctx, task.ID)
-	if err != nil || len(events) == 0 {
-		t.Fatalf("events=%+v err=%v", events, err)
-	}
-	var audit map[string]any
-	if err = json.Unmarshal(events[len(events)-1].Payload, &audit); err != nil || audit["required_effort"] != "high" {
-		t.Fatalf("implementation effort audit=%+v err=%v", audit, err)
-	}
-	if argv, ok := audit["effort_argv"].([]any); !ok || len(argv) != 2 || argv[1] != `model_reasoning_effort="high"` {
-		t.Fatalf("implementation effort argv audit=%+v", audit)
-	}
-}
-
 func TestHarnessSnapshotPreservesEnvironmentAttachmentIdentity(t *testing.T) {
 	cfg := &config.Config{Harnesses: []config.Harness{{
 		Name: "grok", MCPTransport: config.MCPTransportEnvironment, MCPAttachment: "conveyor",
@@ -2538,33 +2494,6 @@ func TestImplementationDispatchNeverSnapshotsUndeclaredExplicitSymbol(t *testing
 	orders, listErr := st.ListTaskWorkOrders(ctx, task.ID)
 	if listErr != nil || len(orders) != 0 {
 		t.Fatalf("invalid symbolic model created work orders=%+v err=%v", orders, listErr)
-	}
-}
-
-func TestImplementationDispatchSnapshotsDeclaredDefaultSentinel(t *testing.T) {
-	t.Skip("server execution configuration retired by DEC-23")
-	ctx := store.WithWorkspace(t.Context(), "demo")
-	st := store.NewMemory()
-	task := core.Task{ID: "declared-symbolic-implement", Workspace: "demo", Repo: "api", State: core.TaskQueued, NextStage: core.StageImplement, CreatedAt: time.Now()}
-	if err := st.CreateTask(ctx, task); err != nil {
-		t.Fatal(err)
-	}
-	document := implementationModelDocument(config.ModelPolicyHarnessDefault, "subscription", []string{"subscription"})
-	raw, err := yaml.Marshal(document)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := config.ParseWorkspaceDocument(raw, &config.Config{Workspace: "demo", PackDir: "."}, "declared sentinel dispatch test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	dispatcher := New(st, cfg, nil)
-	if err = dispatcher.DispatchNow(ctx, task.ID); err != nil {
-		t.Fatal(err)
-	}
-	orders, err := st.ListTaskWorkOrders(ctx, task.ID)
-	if err != nil || len(orders) != 1 || orders[0].RequiredModel != "subscription" {
-		t.Fatalf("declared sentinel orders=%+v err=%v", orders, err)
 	}
 }
 

@@ -114,39 +114,6 @@ func TestCreateWorkspaceValidatesAndUsesDefaults(t *testing.T) {
 	}
 }
 
-func TestCreateWorkspaceAcceptsCompleteInitialConfiguration(t *testing.T) {
-	t.Skip("server execution configuration retired by DEC-23")
-	control := &fakeWorkspaceControl{}
-	deployment := &config.Config{Workspace: "demo", MaxBounces: 2, WorkOrderQueueTimeoutText: "24h", Database: config.Database{Backend: "memory"}, Routing: config.Routing{Stages: map[string]config.StageRoute{"triage": {Model: "gpt", TimeoutText: "1h", Execution: config.ExecutionInProcess}, "spec": {Model: "gpt", TimeoutText: "1h", Execution: config.ExecutionInProcess}, "implement": {Model: "operator", TimeoutText: "1h", Execution: config.ExecutionMCP}, "review": {Model: "operator", TimeoutText: "1h", Execution: config.ExecutionMCP}}}, Repos: []config.Repo{{Name: "repo", URL: "https://example.test/repo", Base: "main"}}}
-	document := deployment.WorkspaceDocument()
-	document.Workspace = "engineering"
-	document.MaxBounces = 4
-	document.WorkOrderQueueTimeoutText = "48h"
-	document.Routing.Stages["review"] = config.StageRoute{Model: "reviewer", TimeoutText: "2h", Execution: config.ExecutionMCP}
-	document.ExecutionSettings.Review.FallbackModel = "reviewer"
-	document.ExecutionSettings.Review.TimeoutText = "2h"
-	document.Repos = []config.Repo{{Name: "engineering", URL: "https://example.test/engineering", Base: "develop"}}
-	payload, err := json.Marshal(map[string]any{"id": "engineering", "name": "Engineering", "document": document})
-	if err != nil {
-		t.Fatal(err)
-	}
-	srv := NewServer(store.NewMemory())
-	srv.Workspaces, srv.Deployment, srv.BearerToken = control, deployment, "token"
-	req := httptest.NewRequest(http.MethodPost, "/v1/workspaces", bytes.NewReader(payload))
-	req.Header.Set("Authorization", "Bearer token")
-	w := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(w, req)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
-	}
-	if control.created == nil || control.created.Workspace != "engineering" || control.created.MaxBounces != 4 || control.created.WorkOrderQueueTimeoutText != "48h" {
-		t.Fatalf("created=%+v", control.created)
-	}
-	if len(control.created.Repos) != 1 || control.created.Repos[0].Name != "engineering" || control.created.Routing.Stages["review"].Model != "reviewer" {
-		t.Fatalf("created document=%+v", control.created.WorkspaceDocument())
-	}
-}
-
 func TestCreateWorkspaceDoesNotPersistWhenQueueRegistrationFails(t *testing.T) {
 	control := &fakeWorkspaceControl{}
 	srv := NewServer(store.NewMemory())

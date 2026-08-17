@@ -1228,33 +1228,6 @@ func TestMCPCreateTaskEnqueuesTriageIdempotently(t *testing.T) {
 	}
 }
 
-func TestMCPCreateTaskSelectsSetupAndRejectsUnknownName(t *testing.T) {
-	t.Skip("server execution configuration retired by DEC-23")
-	server := NewServer(store.NewMemory())
-	server.Workspace = "demo"
-	setup := config.ExecutionSetup{Name: "backend", ExecutionSettings: config.ContextualExecutionSettings{
-		ControlPlane:   config.ControlPlaneSettings{Triage: config.ModelTimeoutSettings{Model: "control", TimeoutText: "20m"}, Spec: config.ModelTimeoutSettings{Model: "control", TimeoutText: "30m"}},
-		Implementation: config.ImplementationSettings{Harness: "codex", Model: "gpt", ModelPolicy: config.ModelPolicyExplicit, TimeoutText: "2h"},
-		Review:         config.ReviewExecutionSettings{Execution: config.ExecutionInProcess, TimeoutText: "1h", FallbackModel: "review"},
-	}, Review: config.ReviewPanel{Seats: []config.ReviewSeat{{Model: "review"}}}}
-	server.ConfigProvider = func(context.Context) (*config.Config, error) {
-		return &config.Config{Workspace: "demo", Execution: config.ExecutionPolicy{DefaultMode: "manual", SpecApproval: true, MergeApproval: true}, Setups: []config.ExecutionSetup{setup}, DefaultSetup: setup.Name, Repos: []config.Repo{{Name: "api", Base: "main"}}}, nil
-	}
-	server.GenerateTaskTitle = func(context.Context, core.Task) (string, error) { return "MCP setup", nil }
-	request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
-	result, err := server.callMCPTool(request, "create_task", map[string]any{"workspace_id": "demo", "body": "work", "repo": "api", "setup": "backend", "idempotency_key": "setup-ok"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	created := result.(map[string]any)["task"].(core.Task)
-	if created.SetupName != "backend" || created.SetupContract.ExecutionSettings.Implementation.Harness != "codex" {
-		t.Fatalf("created=%+v", created)
-	}
-	if _, err = server.callMCPTool(request, "create_task", map[string]any{"workspace_id": "demo", "body": "work", "repo": "api", "setup": "missing", "idempotency_key": "setup-missing"}); err == nil || !strings.Contains(err.Error(), "unknown setup") {
-		t.Fatalf("unknown setup error=%v", err)
-	}
-}
-
 func TestMCPDependencyValidationPrecedesTitleAndIdempotencyIsSymmetric(t *testing.T) {
 	st := store.NewMemory()
 	ctx := store.WithWorkspace(t.Context(), "demo")

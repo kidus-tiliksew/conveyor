@@ -102,6 +102,23 @@ type WorkerConfig struct {
 	ActiveHarnesses []HarnessProbeTarget `json:"active_harnesses"`
 }
 
+func (c WorkerConfig) MarshalJSON() ([]byte, error) {
+	document, err := json.Marshal(c.WorkspaceDocument)
+	if err != nil {
+		return nil, err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(document, &fields); err != nil {
+		return nil, err
+	}
+	active, err := json.Marshal(c.ActiveHarnesses)
+	if err != nil {
+		return nil, err
+	}
+	fields["active_harnesses"] = active
+	return json.Marshal(fields)
+}
+
 func HarnessFingerprint(harness config.Harness) string {
 	data, _ := json.Marshal(struct {
 		Name                  string              `json:"name"`
@@ -412,7 +429,7 @@ func unrevokedWorkers(workers []core.Worker) []core.Worker {
 }
 
 func (s *Service) TaskAvailability(ctx context.Context, cfg *config.Config, task core.Task, orders []core.WorkOrder) *TaskWorkerStatus {
-	if task.SetupContract.Name != "" {
+	if task.SetupContract.HasFrozenPolicy() {
 		cfg = cfg.WithSetup(task.SetupContract)
 	}
 	status := TaskWorkerStatus{RequiredHarnesses: []string{}, Reason: "no healthy worker can serve the task's required harnesses", QueueContext: "never_started"}
@@ -601,7 +618,7 @@ func (s *Service) ListClaimable(ctx context.Context, worker core.Worker) ([]Disp
 			continue
 		}
 		orderCfg := cfg
-		if task.SetupContract.Name != "" {
+		if task.SetupContract.HasFrozenPolicy() {
 			orderCfg = cfg.WithSetup(task.SetupContract)
 		}
 		if healthy, _ := s.workerHealthyForOrder(worker, orderCfg, order); !healthy {
@@ -666,7 +683,7 @@ func (s *Service) ListVisibleOrders(ctx context.Context, worker core.Worker) ([]
 				continue
 			}
 			orderCfg := cfg
-			if task.SetupContract.Name != "" {
+			if task.SetupContract.HasFrozenPolicy() {
 				orderCfg = cfg.WithSetup(task.SetupContract)
 			}
 			if healthy, _ := s.workerHealthyForOrder(worker, orderCfg, order); !healthy {
@@ -718,7 +735,7 @@ func (s *Service) ClaimForWorker(ctx context.Context, worker core.Worker, id str
 	if order.Stage == core.StageImplement && len(task.BlockingTaskIDs) > 0 {
 		return core.WorkOrder{}, fmt.Errorf("task %s is blocked by unmerged dependencies: %s", task.ID, strings.Join(task.BlockingTaskIDs, ", "))
 	}
-	if task.SetupContract.Name != "" {
+	if task.SetupContract.HasFrozenPolicy() {
 		cfg = cfg.WithSetup(task.SetupContract)
 	}
 	if healthy, reason := s.workerHealthyForOrder(worker, cfg, order); !healthy {

@@ -21,7 +21,7 @@ func (d *Dispatcher) GenerateTaskTitle(ctx context.Context, task core.Task) (str
 	if err != nil {
 		return "", err
 	}
-	if task.SetupContract.Name != "" {
+	if task.SetupContract.HasFrozenPolicy() {
 		cfg = cfg.WithSetup(task.SetupContract)
 	}
 	route, ok := cfg.Routing.Stages[string(core.StageTriage)]
