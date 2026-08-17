@@ -61,6 +61,8 @@ func runTaskWithPresentation(ctx context.Context, c *client, taskID, configPath 
 	answers := newRunInputSource(reader)
 	runStages := make([]core.Stage, 0, 2)
 	attached := inputTerminal && outputTerminal
+	interactiveTUI := attached && !raw
+	var lastTUIStage runTUIStage
 	var setup localExecutionSetup
 	setupLoaded := false
 	var lastStage core.Stage
@@ -96,7 +98,18 @@ func runTaskWithPresentation(ctx context.Context, c *client, taskID, configPath 
 					continue
 				}
 			}
-			decision, feedback, waitErr := waitAtTaskRunGate(ctx, answers, output, *item, outputTerminal)
+			var decision runGateDecision
+			var feedback string
+			var waitErr error
+			if interactiveTUI {
+				gateInput := io.Reader(reader)
+				if _, ok := input.(*os.File); ok {
+					gateInput = input
+				}
+				decision, feedback, waitErr = waitAtTaskRunGateAttached(ctx, c, gateInput, output, *item, lastTUIStage)
+			} else {
+				decision, feedback, waitErr = waitAtTaskRunGate(ctx, answers, output, *item, outputTerminal)
+			}
 			if waitErr != nil {
 				return waitErr
 			}
@@ -154,12 +167,33 @@ func runTaskWithPresentation(ctx context.Context, c *client, taskID, configPath 
 				return printRunSummaryStyled(output, selected.Task, runStages, outputTerminal)
 			}
 		}
-		var presentation *runOutputPresentation
-		if outputTerminal && !raw {
-			presentation = &runOutputPresentation{output: output}
-		}
 		started := time.Now()
-		runErr := runHarnessChildWithFirstActivityTimeoutAndRunModeAndPresentation(ctx, c, c.token, selected, setup.FirstActivityTimeout, mode, presentation)
+		lastTUIStage = runTUIStage{task: selected.Task, stage: selected.Order.Stage, harness: selected.Harness.Name, model: selected.Model, started: started}
+		stageCtx, cancelStage := context.WithCancel(ctx)
+		var presentation *runOutputPresentation
+		var controller *runTUIController
+		if outputTerminal && !raw {
+			var tuiInput io.Reader
+			if _, ok := input.(*os.File); ok {
+				tuiInput = input
+			}
+			controller = startRunTUI(stageCtx, tuiInput, output, lastTUIStage, nil)
+			presentation = &runOutputPresentation{output: controller}
+			go func() {
+				select {
+				case <-controller.interrupt:
+					cancelStage()
+				case <-stageCtx.Done():
+				}
+			}()
+		}
+		runErr := runHarnessChildWithFirstActivityTimeoutAndRunModeAndPresentation(stageCtx, c, c.token, selected, setup.FirstActivityTimeout, mode, presentation)
+		if controller != nil {
+			if stopErr := controller.Stop(); stopErr != nil && runErr == nil {
+				runErr = stopErr
+			}
+		}
+		cancelStage()
 		if outputTerminal && !raw {
 			_ = presentRunStageSummary(output, selected.Order.Stage, time.Since(started), runErr)
 		}
@@ -168,6 +202,53 @@ func runTaskWithPresentation(ctx context.Context, c *client, taskID, configPath 
 		}
 		runStages = append(runStages, selected.Order.Stage)
 		lastStage = selected.Order.Stage
+	}
+}
+
+func waitAtTaskRunGateAttached(ctx context.Context, c *client, input io.Reader, output io.Writer, item workerservice.DispatchOrder, stage runTUIStage) (runGateDecision, string, error) {
+	if item.Gate == nil {
+		return runGatePoll, "", nil
+	}
+	stage.task = item.Task
+	stage.started = time.Now()
+	controller := startRunTUI(ctx, input, output, stage, &runTUIGate{task: item.Task, gate: *item.Gate})
+	ticker := time.NewTicker(runGatePollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			_ = controller.Stop()
+			return runGateStop, "", nil
+		case <-controller.interrupt:
+			_ = controller.Stop()
+			return runGateStop, "", nil
+		case <-controller.finished:
+			if err := controller.Stop(); err != nil {
+				return runGateStop, "", err
+			}
+			if ctx.Err() != nil {
+				return runGateStop, "", nil
+			}
+			return runGateStop, "", fmt.Errorf("attached run TUI exited before a gate action")
+		case action := <-controller.actions:
+			if err := controller.Stop(); err != nil {
+				return runGateStop, "", err
+			}
+			return action.decision, action.feedback, nil
+		case <-ticker.C:
+			fresh, err := c.getTaskRunOrderContext(ctx, c.token, item.Task.ID)
+			if err != nil {
+				_ = controller.Stop()
+				return runGateStop, "", err
+			}
+			if fresh == nil || fresh.Order.ID != "" || fresh.Gate == nil || fresh.Task.State == core.TaskMerged || fresh.Task.State == core.TaskClosed || fresh.Task.State == core.TaskParked {
+				if err = controller.Stop(); err != nil {
+					return runGateStop, "", err
+				}
+				return runGatePoll, "", nil
+			}
+			controller.UpdateGate(runTUIGate{task: fresh.Task, gate: *fresh.Gate})
+		}
 	}
 }
 
@@ -249,22 +330,24 @@ type runInputResult struct {
 }
 
 type runInputSource struct {
-	results <-chan runInputResult
+	reader  *bufio.Reader
+	results chan runInputResult
+	pending bool
 }
 
 func newRunInputSource(reader *bufio.Reader) *runInputSource {
-	results := make(chan runInputResult)
+	return &runInputSource{reader: reader, results: make(chan runInputResult, 1)}
+}
+
+func (s *runInputSource) startRead() {
+	if s.pending {
+		return
+	}
+	s.pending = true
 	go func() {
-		defer close(results)
-		for {
-			value, err := reader.ReadString('\n')
-			results <- runInputResult{value: value, err: err}
-			if err != nil {
-				return
-			}
-		}
+		value, err := s.reader.ReadString('\n')
+		s.results <- runInputResult{value: value, err: err}
 	}()
-	return &runInputSource{results: results}
 }
 
 func readRunPrompt(ctx context.Context, answers *runInputSource, output io.Writer, prompt string, styled bool) (string, error) {
@@ -279,6 +362,7 @@ func readRunPromptOrPoll(ctx context.Context, answers *runInputSource, output io
 	if _, err := fmt.Fprint(output, prompt); err != nil {
 		return "", false, err
 	}
+	answers.startRead()
 	var timer <-chan time.Time
 	if poll > 0 {
 		timer = time.After(poll)
@@ -289,10 +373,8 @@ func readRunPromptOrPoll(ctx context.Context, answers *runInputSource, output io
 		return "", false, nil
 	case <-timer:
 		return "", true, nil
-	case value, ok := <-answers.results:
-		if !ok {
-			return "", false, nil
-		}
+	case value := <-answers.results:
+		answers.pending = false
 		if value.err != nil && len(value.value) == 0 && value.err != io.EOF {
 			return "", false, value.err
 		}
@@ -375,17 +457,15 @@ func confirmRunStageFromSourceStyled(ctx context.Context, answers *runInputSourc
 		if _, err := fmt.Fprint(output, prompt); err != nil {
 			return false, err
 		}
+		answers.startRead()
 		var answer string
 		var err error
 		select {
 		case <-ctx.Done():
 			_, _ = fmt.Fprintln(output)
 			return false, nil
-		case read, ok := <-answers.results:
-			if !ok {
-				_, _ = fmt.Fprintln(output)
-				return false, nil
-			}
+		case read := <-answers.results:
+			answers.pending = false
 			answer, err = read.value, read.err
 		}
 		if err != nil && len(answer) == 0 {
