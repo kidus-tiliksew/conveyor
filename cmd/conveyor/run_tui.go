@@ -20,6 +20,23 @@ import (
 const (
 	runTUIDefaultWidth  = 80
 	runTUIDefaultHeight = 24
+	// The output box is a fixed-height window onto the agent stream, never a
+	// screen-filling pane: the whole inline frame must stay shorter than the
+	// terminal or Bubble Tea's in-place repaint degrades into scrollback spam.
+	runTUIBoxMaxHeight = 12
+	runTUIBoxMaxWidth  = 100
+)
+
+var (
+	runTUITaskStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
+	runTUIMetaStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	runTUIValueStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("7"))
+	runTUIWaitStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("11"))
+	runTUIBoxStyle    = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("8"))
+	runTUIPromptStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12"))
+	runTUIStatusStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("11"))
+	runTUIHintStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	runTUIEmptyStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Italic(true)
 )
 
 type runTUIStage struct {
@@ -95,7 +112,7 @@ func (m runTUIModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				m.lines = append(m.lines, line)
 			}
 		}
-		m.viewport.SetContent(strings.Join(m.lines, "\n"))
+		m.refreshViewportContent()
 		if follow {
 			m.viewport.GotoBottom()
 		}
@@ -205,53 +222,72 @@ func (m runTUIModel) View() string {
 	if m.collapsed {
 		return ""
 	}
-	sections := []string{m.chrome(), m.viewport.View()}
+	sections := []string{m.chrome()}
+	if m.showOutputBox() {
+		inner := m.viewport.View()
+		if len(m.lines) == 0 {
+			inner = runTUIEmptyStyle.Render("waiting for agent output…")
+		}
+		box := runTUIBoxStyle.Width(m.viewport.Width).Render(inner)
+		if m.width > lipgloss.Width(box) {
+			box = lipgloss.PlaceHorizontal(m.width, lipgloss.Center, box)
+		}
+		sections = append(sections, box)
+	}
 	if m.gate != nil {
-		prompt := fmt.Sprintf("Gate action [%s]: %s", m.gateActions(), m.input)
+		prompt := runTUIPromptStyle.Render(fmt.Sprintf("Gate action [%s]:", m.gateActions())) + " " + m.input + "▌"
 		if m.feedback {
-			prompt = "Feedback: " + m.input
+			prompt = runTUIPromptStyle.Render("Feedback:") + " " + m.input + "▌"
 		}
 		if m.status != "" {
-			prompt += "\n" + m.status
+			prompt += "\n" + runTUIStatusStyle.Render(m.status)
 		}
 		sections = append(sections, prompt)
 	}
 	return strings.Join(sections, "\n")
 }
 
+func runTUIMeta(pairs ...string) string {
+	parts := make([]string, 0, len(pairs)/2)
+	for i := 0; i+1 < len(pairs); i += 2 {
+		parts = append(parts, runTUIMetaStyle.Render(pairs[i]+" ")+runTUIValueStyle.Render(pairs[i+1]))
+	}
+	return strings.Join(parts, runTUIMetaStyle.Render("  "))
+}
+
 func (m runTUIModel) chrome() string {
 	task := m.stage.task
-	stage, harness, model := string(m.stage.stage), m.stage.harness, m.stage.model
 	if m.gate != nil {
 		task = m.gate.task
+	}
+	lines := []string{runTUITaskStyle.Render(fmt.Sprintf("Task %s", task.ID)) + runTUIValueStyle.Render(" · "+task.Title)}
+	if m.gate == nil {
+		stage := string(m.stage.stage)
 		if stage == "" {
-			stage = "waiting"
+			stage = "starting"
 		}
-		if harness == "" {
-			harness = "none"
-		}
-		if model == "" {
-			model = "none"
-		}
-	}
-	if stage == "" {
-		stage = "starting"
-	}
-	lines := []string{
-		fmt.Sprintf("Task %s · %s", task.ID, task.Title),
-		fmt.Sprintf("Stage %s  Harness %s  Model %s  Elapsed %s", stage, harness, model, m.elapsed),
-	}
-	if m.gate != nil {
-		lines = append(lines,
-			fmt.Sprintf("Waiting %s", m.gate.gate.Label),
-			fmt.Sprintf("Artifact %s", m.gate.gate.Summary),
-			"Claim none (polling recorded factory state)",
-		)
+		lines = append(lines, runTUIMeta(
+			"Stage", stage, "Harness", m.stage.harness, "Model", m.stage.model, "Elapsed", m.elapsed.String(),
+		))
+	} else {
+		lines = append(lines, runTUIWaitStyle.Render(fmt.Sprintf("Waiting %s · %s", m.gate.gate.Label, m.elapsed)))
+		lines = append(lines, runTUIMeta("Artifact", m.gate.gate.Summary))
 		if m.gate.gate.Rationale != "" {
-			lines = append(lines, "Rationale "+m.gate.gate.Rationale)
+			lines = append(lines, runTUIMeta("Rationale", m.gate.gate.Rationale))
 		}
+		if m.stage.stage != "" {
+			lines = append(lines, runTUIMetaStyle.Render(fmt.Sprintf("Last stage %s · %s · %s", m.stage.stage, m.stage.harness, m.stage.model)))
+		}
+		lines = append(lines, runTUIHintStyle.Render("No claim held — factory state refreshes automatically; Ctrl+C exits safely."))
 	}
 	return lipgloss.NewStyle().MaxWidth(max(1, m.width)).Render(strings.Join(lines, "\n"))
+}
+
+// showOutputBox reports whether the frame renders the output window: always
+// while a stage executes, and at a gate only when a stream actually produced
+// lines — an empty box under a gate would just push the prompt to the floor.
+func (m runTUIModel) showOutputBox() bool {
+	return m.gate == nil || len(m.lines) > 0
 }
 
 func (m *runTUIModel) resize() {
@@ -261,15 +297,48 @@ func (m *runTUIModel) resize() {
 	if m.height < 1 {
 		m.height = 1
 	}
-	m.viewport.Width = m.width
-	reserved := lipgloss.Height(m.chrome()) + 1
+	m.viewport.Width = max(1, min(m.width, runTUIBoxMaxWidth)-2)
+	reserved := lipgloss.Height(m.chrome())
+	if m.showOutputBox() {
+		reserved += 2 // box border rows
+	}
 	if m.gate != nil {
 		reserved += 1
 		if m.status != "" {
 			reserved++
 		}
 	}
-	m.viewport.Height = max(1, m.height-reserved)
+	m.viewport.Height = max(1, min(runTUIBoxMaxHeight, m.height-reserved-1))
+	m.refreshViewportContent()
+}
+
+// refreshViewportContent re-renders the stored raw lines at the current box
+// width. Lines are hard-truncated so a long line can never wrap inside the
+// border and silently grow the frame past the terminal height.
+func (m *runTUIModel) refreshViewportContent() {
+	if len(m.lines) == 0 {
+		m.viewport.SetContent("")
+		return
+	}
+	rendered := make([]string, len(m.lines))
+	for i, line := range m.lines {
+		rendered[i] = runTUITruncate(line, m.viewport.Width)
+	}
+	m.viewport.SetContent(strings.Join(rendered, "\n"))
+}
+
+func runTUITruncate(line string, width int) string {
+	if width < 1 {
+		return ""
+	}
+	runes := []rune(line)
+	if len(runes) <= width {
+		return line
+	}
+	if width == 1 {
+		return "…"
+	}
+	return string(runes[:width-1]) + "…"
 }
 
 func (m runTUIModel) gateActions() string {

@@ -372,7 +372,7 @@ func TestAttachedRunApprovesFreshGateWithParentCredentialAndNoClaim(t *testing.T
 	if reads != 2 || decisions != 1 || claims != 0 {
 		t.Fatalf("reads=%d decisions=%d claims=%d", reads, decisions, claims)
 	}
-	for _, want := range []string{"spec approval gate", "submitted execution plan v3", "Claim", "none", "Gate decision recorded", "finished in state merged"} {
+	for _, want := range []string{"spec approval gate", "submitted execution plan v3", "No claim held", "Gate decision recorded", "finished in state merged"} {
 		if !strings.Contains(output.String(), want) {
 			t.Fatalf("output missing %q: %q", want, output.String())
 		}
