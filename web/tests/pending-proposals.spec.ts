@@ -136,6 +136,7 @@ test('pending proposal queue covers every tier, resolves rows, updates the badge
   await expect(page.getByText('Decision', { exact: true })).toBeVisible()
   await expect(page.getByRole('link', { name: /Board/ })).toContainText('6')
   await expect(page.getByRole('link', { name: /Requirements/ })).toContainText('1')
+  await expect(page.getByRole('link', { name: /Pending proposals/ })).toContainText('4')
   await expect(
     page.getByText('Confirming a later version also dismisses earlier pending versions.').first(),
   ).toBeVisible()
@@ -150,6 +151,7 @@ test('pending proposal queue covers every tier, resolves rows, updates the badge
   await expect(page.getByText('No document decisions are waiting for you.')).toBeVisible()
   await expect(page.getByRole('link', { name: /Board/ })).toContainText('4')
   await expect(page.getByRole('link', { name: /Requirements/ })).not.toContainText('1')
+  await expect(page.getByRole('link', { name: /Pending proposals/ })).toContainText('2')
 
   await page.goBack()
   await expect(warning).toHaveCount(0)
@@ -158,9 +160,12 @@ test('pending proposal queue covers every tier, resolves rows, updates the badge
   await decision.getByRole('button', { name: 'Dismiss' }).click()
   await expect(page.getByText('Generate dashboard output from web sources.')).toHaveCount(0)
   await expect(page.getByRole('link', { name: /Board/ })).toContainText('3')
+  await expect(page.getByRole('link', { name: /Pending proposals/ })).toContainText('1')
 })
 
-test('requirements navigation stays usable when its attention projection fails or is empty', async ({ page }) => {
+test('attention navigation omits requirement and pending proposal badges when projection fails or is empty', async ({
+  page,
+}) => {
   await initialize(page)
   let failProjection = true
   let projectionRequests = 0
@@ -183,11 +188,13 @@ test('requirements navigation stays usable when its attention projection fails o
   await page.goto('/')
   await expect.poll(() => projectionRequests).toBeGreaterThan(0)
   await expect(page.getByRole('link', { name: 'Requirements', exact: true })).toHaveText('Requirements')
+  await expect(page.getByRole('link', { name: 'Pending proposals', exact: true })).toHaveText('Pending proposals')
 
   failProjection = false
   await page.reload()
   await expect.poll(() => projectionRequests).toBeGreaterThan(1)
   await expect(page.getByRole('link', { name: 'Requirements', exact: true })).toHaveText('Requirements')
+  await expect(page.getByRole('link', { name: 'Pending proposals', exact: true })).toHaveText('Pending proposals')
 })
 
 test('maintainer can read pending decisions without corpus-authority controls', async ({ page }) => {
