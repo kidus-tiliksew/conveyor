@@ -2521,7 +2521,7 @@ test('pending authority moves a live task to Needs operator until the proposal i
     await route.fulfill({
       json: [
         {
-          task: { ...item.task, title: 'Proposal-gated task' },
+          task: { ...item.task, title: 'Proposal-gated task', next_stage: 'review' },
           latest_stage: 'review',
           last_event_at: createdAt,
           needs_attention: pending,
