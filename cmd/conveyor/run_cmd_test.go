@@ -379,6 +379,37 @@ func TestAttachedRunApprovesFreshGateWithParentCredentialAndNoClaim(t *testing.T
 	}
 }
 
+func TestAttachedRawRunKeepsLegacyGatePromptPath(t *testing.T) {
+	resolved := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && !resolved:
+			_ = json.NewEncoder(w).Encode(workerservice.DispatchOrder{
+				Task: core.Task{ID: "target", Title: "Ship target", State: core.TaskAwaiting},
+				Gate: &workerservice.TaskRunGate{Kind: "spec", Label: "spec approval gate", Summary: "plan v1", CanOperate: true},
+			})
+		case r.Method == http.MethodGet:
+			_ = json.NewEncoder(w).Encode(workerservice.DispatchOrder{Task: core.Task{ID: "target", State: core.TaskMerged}})
+		case r.Method == http.MethodPost:
+			resolved = true
+			w.WriteHeader(http.StatusAccepted)
+			_ = json.NewEncoder(w).Encode(map[string]any{"task": core.Task{ID: "target", State: core.TaskMerged}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	c := &client{base: server.URL, token: "parent-user-credential", workspace: "demo"}
+	var output bytes.Buffer
+	if err := runTaskWithPresentation(t.Context(), c, "target", "unused.yaml", strings.NewReader("approve\n"), &output, false, true, true, true); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "Gate action [approve/changes/wait]:") || strings.Contains(output.String(), "\x1b[?25l") {
+		t.Fatalf("raw gate path unexpectedly used the Bubble Tea renderer: %q", output.String())
+	}
+}
+
 func TestAttachedRunRequestsMergeGateChangesWithFeedback(t *testing.T) {
 	resolved := false
 	feedback := ""
@@ -407,7 +438,7 @@ func TestAttachedRunRequestsMergeGateChangesWithFeedback(t *testing.T) {
 	if err := runTaskWithPresentation(t.Context(), c, "target", "unused.yaml", strings.NewReader("changes\n  fix the race  \n"), &output, false, true, true, false); err != nil {
 		t.Fatal(err)
 	}
-	if feedback != "fix the race" || !strings.Contains(output.String(), "Feedback:") {
+	if feedback != "fix the race" || !strings.Contains(output.String(), "merge approval gate") {
 		t.Fatalf("feedback=%q output=%q", feedback, output.String())
 	}
 }
@@ -467,7 +498,7 @@ func TestAttachedRunPollsGateResolvedElsewhereWithoutClaim(t *testing.T) {
 	if err := runTaskWithPresentation(ctx, c, "target", "unused.yaml", input, &output, true, true, true, false); err != nil {
 		t.Fatal(err)
 	}
-	if reads != 2 || mutations != 0 || !strings.Contains(output.String(), "finished in state merged") {
+	if reads != 3 || mutations != 0 || !strings.Contains(output.String(), "finished in state merged") {
 		t.Fatalf("reads=%d mutations=%d output=%q", reads, mutations, output.String())
 	}
 }
