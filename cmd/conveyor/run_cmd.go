@@ -15,11 +15,13 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 func runCmd() *cobra.Command {
 	configPath := defaultLocalExecutionConfigPath()
 	auto := false
+	raw := false
 	cmd := &cobra.Command{
 		Use:   "run <task-id>",
 		Short: "Explicitly claim and execute one task on this machine",
@@ -28,11 +30,13 @@ func runCmd() *cobra.Command {
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 			input := cmd.InOrStdin()
-			return runTask(ctx, newClient(), args[0], configPath, input, cmd.OutOrStdout(), auto, inputIsTerminal(input))
+			output := cmd.OutOrStdout()
+			return runTaskWithPresentation(ctx, newClient(), args[0], configPath, input, output, auto, inputIsTerminal(input), outputIsTerminal(output), raw)
 		},
 	}
 	cmd.Flags().StringVar(&configPath, "config", configPath, "local execution configuration")
 	cmd.Flags().BoolVar(&auto, "auto", false, "run every claimable stage without confirmation")
+	cmd.Flags().BoolVar(&raw, "raw", false, "print the raw harness event stream")
 	return cmd
 }
 
@@ -42,6 +46,10 @@ const (
 )
 
 func runTask(ctx context.Context, c *client, taskID, configPath string, input io.Reader, output io.Writer, auto, terminal bool) error {
+	return runTaskWithPresentation(ctx, c, taskID, configPath, input, output, auto, terminal, false, false)
+}
+
+func runTaskWithPresentation(ctx context.Context, c *client, taskID, configPath string, input io.Reader, output io.Writer, auto, inputTerminal, outputTerminal, raw bool) error {
 	if strings.TrimSpace(c.token) == "" {
 		return fmt.Errorf("CONVEYOR_API_TOKEN is required for task execution")
 	}
@@ -55,7 +63,7 @@ func runTask(ctx context.Context, c *client, taskID, configPath string, input io
 	}
 	setup, err := loadLocalExecutionSetup(configPath)
 	if err != nil {
-		_ = presentPendingRunOrder(output, *item)
+		_ = presentPendingRunOrderStyled(output, *item, outputTerminal)
 		return err
 	}
 	local := setup.Config
@@ -64,28 +72,37 @@ func runTask(ctx context.Context, c *client, taskID, configPath string, input io
 	for {
 		selected, selectErr := selectLocalRunDispatch(*item, local)
 		if selectErr != nil {
-			_ = presentPendingRunOrder(output, *item)
+			_ = presentPendingRunOrderStyled(output, *item, outputTerminal)
 			return localExecutionSetupRemedy(configPath, selectErr)
 		}
-		if err = presentRunOrder(output, selected, local.Routing.Stages[string(selected.Order.Stage)].TimeoutText); err != nil {
+		if err = presentRunOrderStyled(output, selected, local.Routing.Stages[string(selected.Order.Stage)].TimeoutText, outputTerminal); err != nil {
 			return err
 		}
 		mode := runModeAuto
 		if !auto {
 			mode = runModeConfirmed
-			if !terminal {
+			if !inputTerminal {
 				_, _ = fmt.Fprintf(output, "No work order was claimed because stdin is not a terminal.\nRun conveyor run %s --auto to proceed.\n", taskID)
 				return fmt.Errorf("stage confirmation requires a terminal; use conveyor run %s --auto", taskID)
 			}
-			confirmed, confirmErr := confirmRunStage(ctx, reader, output, selected.Order.Stage)
+			confirmed, confirmErr := confirmRunStageStyled(ctx, reader, output, selected.Order.Stage, outputTerminal)
 			if confirmErr != nil {
 				return confirmErr
 			}
 			if !confirmed {
-				return printRunSummary(output, selected.Task, runStages)
+				return printRunSummaryStyled(output, selected.Task, runStages, outputTerminal)
 			}
 		}
-		if runErr := runHarnessChildWithFirstActivityTimeoutAndRunMode(ctx, c, c.token, selected, setup.FirstActivityTimeout, mode); runErr != nil {
+		var presentation *runOutputPresentation
+		if outputTerminal && !raw {
+			presentation = &runOutputPresentation{output: output}
+		}
+		started := time.Now()
+		runErr := runHarnessChildWithFirstActivityTimeoutAndRunModeAndPresentation(ctx, c, c.token, selected, setup.FirstActivityTimeout, mode, presentation)
+		if outputTerminal && !raw {
+			_ = presentRunStageSummary(output, selected.Order.Stage, time.Since(started), runErr)
+		}
+		if runErr != nil {
 			return runErr
 		}
 		runStages = append(runStages, selected.Order.Stage)
@@ -117,26 +134,62 @@ func inputIsTerminal(input io.Reader) bool {
 	return err == nil && info.Mode()&os.ModeCharDevice != 0
 }
 
+func outputIsTerminal(output io.Writer) bool {
+	file, ok := output.(*os.File)
+	if !ok {
+		return false
+	}
+	return term.IsTerminal(int(file.Fd()))
+}
+
 func presentRunOrder(output io.Writer, item workerservice.DispatchOrder, timeout string) error {
-	if err := presentPendingRunOrder(output, item); err != nil {
+	return presentRunOrderStyled(output, item, timeout, false)
+}
+
+func presentRunOrderStyled(output io.Writer, item workerservice.DispatchOrder, timeout string, styled bool) error {
+	if err := presentPendingRunOrderStyled(output, item, styled); err != nil {
 		return err
 	}
 	effort := item.Effort
 	if effort == "" {
 		effort = "default"
 	}
-	_, err := fmt.Fprintf(output, "Execution: harness %s, model %s, effort %s, timeout %s\n", item.Harness.Name, item.Model, effort, timeout)
+	line := fmt.Sprintf("Execution: harness %s, model %s, effort %s, timeout %s", item.Harness.Name, item.Model, effort, timeout)
+	if styled {
+		line = newCLIPalette(output).muted.Render(line)
+	}
+	_, err := fmt.Fprintln(output, line)
 	return err
 }
 
 func presentPendingRunOrder(output io.Writer, item workerservice.DispatchOrder) error {
-	_, err := fmt.Fprintf(output, "Task %s: %s (state %s)\nNext: %s work order %s\n", item.Task.ID, item.Task.Title, item.Task.State, item.Order.Stage, item.Order.ID)
+	return presentPendingRunOrderStyled(output, item, false)
+}
+
+func presentPendingRunOrderStyled(output io.Writer, item workerservice.DispatchOrder, styled bool) error {
+	if !styled {
+		_, err := fmt.Fprintf(output, "Task %s: %s (state %s)\nNext: %s work order %s\n", item.Task.ID, item.Task.Title, item.Task.State, item.Order.Stage, item.Order.ID)
+		return err
+	}
+	palette := newCLIPalette(output)
+	if _, err := fmt.Fprintln(output, palette.title.Render(fmt.Sprintf("Task %s · %s", item.Task.ID, item.Task.Title))); err != nil {
+		return err
+	}
+	_, err := fmt.Fprintln(output, palette.accent.Render(strings.ToUpper(string(item.Order.Stage)))+fmt.Sprintf("  order %s  state %s", item.Order.ID, item.Task.State))
 	return err
 }
 
 func confirmRunStage(ctx context.Context, input *bufio.Reader, output io.Writer, stage core.Stage) (bool, error) {
+	return confirmRunStageStyled(ctx, input, output, stage, false)
+}
+
+func confirmRunStageStyled(ctx context.Context, input *bufio.Reader, output io.Writer, stage core.Stage, styled bool) (bool, error) {
 	for {
-		if _, err := fmt.Fprintf(output, "Proceed with %s? [y/N]: ", stage); err != nil {
+		prompt := fmt.Sprintf("Proceed with %s? [y/N]: ", stage)
+		if styled {
+			prompt = newCLIPalette(output).accent.Render(prompt)
+		}
+		if _, err := fmt.Fprint(output, prompt); err != nil {
 			return false, err
 		}
 		type readResult struct {
@@ -178,6 +231,10 @@ func confirmRunStage(ctx context.Context, input *bufio.Reader, output io.Writer,
 }
 
 func printRunSummary(output io.Writer, task core.Task, stages []core.Stage) error {
+	return printRunSummaryStyled(output, task, stages, false)
+}
+
+func printRunSummaryStyled(output io.Writer, task core.Task, stages []core.Stage, styled bool) error {
 	ran := "none"
 	if len(stages) > 0 {
 		names := make([]string, len(stages))
@@ -186,7 +243,29 @@ func printRunSummary(output io.Writer, task core.Task, stages []core.Stage) erro
 		}
 		ran = strings.Join(names, ", ")
 	}
-	_, err := fmt.Fprintf(output, "Run stopped before claiming the next work order.\nRan: %s\nTask %s is currently %s.\nResume: conveyor run %s\n", ran, task.ID, task.State, task.ID)
+	message := fmt.Sprintf("Run stopped before claiming the next work order.\nRan: %s\nTask %s is currently %s.\nResume: conveyor run %s", ran, task.ID, task.State, task.ID)
+	if styled {
+		message = newCLIPalette(output).muted.Render(message)
+	}
+	_, err := fmt.Fprintln(output, message)
+	return err
+}
+
+func presentRunStageSummary(output io.Writer, stage core.Stage, duration time.Duration, runErr error) error {
+	palette := newCLIPalette(output)
+	outcome := "completed"
+	mark := palette.success.Render("✓")
+	submitted := map[core.Stage]string{
+		core.StageSpec:      "execution plan",
+		core.StageImplement: "implementation for review",
+		core.StageReview:    "review verdict",
+	}[stage]
+	if runErr != nil {
+		outcome = "failed"
+		mark = palette.warning.Render("!")
+		submitted = "nothing"
+	}
+	_, err := fmt.Fprintf(output, "%s %s stage %s in %s · submitted: %s\n", mark, stage, outcome, duration.Round(time.Second), submitted)
 	return err
 }
 

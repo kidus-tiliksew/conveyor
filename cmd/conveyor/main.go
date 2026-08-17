@@ -176,9 +176,18 @@ func configCmd() *cobra.Command {
 			if workspace == "" {
 				workspace = "(automatic singleton)"
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "server\t%s\t%s\nworkspace\t%s\t%s\ncredential\t%s\n",
-				resolved.Server.Value, resolved.Server.Source, workspace, resolved.Workspace.Source, resolved.Token.Source)
-			return printLocalExecutionConfig(cmd.OutOrStdout(), configPath)
+			output := cmd.OutOrStdout()
+			styled := outputIsTerminal(output)
+			if err := renderCLIConfigRow(output, styled, "server", resolved.Server.Value, resolved.Server.Source); err != nil {
+				return err
+			}
+			if err := renderCLIConfigRow(output, styled, "workspace", workspace, resolved.Workspace.Source); err != nil {
+				return err
+			}
+			if err := renderCLIConfigRow(output, styled, "credential", resolved.Token.Source, ""); err != nil {
+				return err
+			}
+			return printLocalExecutionConfig(output, configPath)
 		},
 	}
 	initExecution := &cobra.Command{
