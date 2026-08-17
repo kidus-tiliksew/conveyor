@@ -95,6 +95,76 @@ func TestExecutionWizardModelRoundTripWritesRunValidConfig(t *testing.T) {
 	}
 }
 
+func TestExecutionWizardUsesEditableModelPlaceholder(t *testing.T) {
+	harness := config.HarnessTemplates()[0].Harness
+	model := newExecutionWizardModel([]config.Harness{harness})
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(executionWizardModel)
+
+	if model.fields[model.field].name != "model" || model.input.Value() != "" || model.input.Placeholder != "gpt-5.6-sol" || !model.input.Focused() {
+		t.Fatalf("model input = field %q value %q placeholder %q focused %v", model.fields[model.field].name, model.input.Value(), model.input.Placeholder, model.input.Focused())
+	}
+	view := model.View()
+	for _, text := range []string{"Step 2 of 12", "suggested default shown dimmed", "type any model to replace it"} {
+		if !strings.Contains(view, text) {
+			t.Fatalf("model view missing %q:\n%s", text, view)
+		}
+	}
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("operator-model")})
+	model = updated.(executionWizardModel)
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(executionWizardModel)
+	if model.choices.Spec.Model != "operator-model" {
+		t.Fatalf("spec model = %q", model.choices.Spec.Model)
+	}
+}
+
+func TestExecutionWizardHarnessSelectionRefreshesSuggestion(t *testing.T) {
+	templates := config.HarnessTemplates()
+	var codex, claude config.Harness
+	for _, template := range templates {
+		switch template.Harness.Name {
+		case "codex":
+			codex = template.Harness
+		case "claude":
+			claude = template.Harness
+		}
+	}
+	model := newExecutionWizardModel([]config.Harness{codex, claude})
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyDown})
+	model = updated.(executionWizardModel)
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(executionWizardModel)
+	if model.choices.Spec.Harness != "claude" || model.input.Placeholder != "opus" {
+		t.Fatalf("choice = %+v placeholder = %q", model.choices.Spec, model.input.Placeholder)
+	}
+	if strings.Contains(suggestedHarnessModel("claude", "spec"), "4.1") {
+		t.Fatalf("claude suggestion is pinned: %q", suggestedHarnessModel("claude", "spec"))
+	}
+}
+
+func TestExecutionWizardRendersStyledValidationAndKeyHelp(t *testing.T) {
+	harness := config.HarnessTemplates()[0].Harness
+	model := newExecutionWizardModel([]config.Harness{harness})
+	for model.field < 2 {
+		updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		model = updated.(executionWizardModel)
+	}
+	if view := model.View(); !strings.Contains(view, "↑/↓ select • enter confirm • esc cancel") || !strings.Contains(view, "› high") {
+		t.Fatalf("selector view lacks focus/help:\n%s", view)
+	}
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(executionWizardModel)
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("not-a-duration")})
+	model = updated.(executionWizardModel)
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(executionWizardModel)
+	want := wizardValidationStyle.Render("! timeout must be a positive duration")
+	if !strings.Contains(model.View(), want) {
+		t.Fatalf("validation is not rendered with wizard style:\n%s", model.View())
+	}
+}
+
 func TestRunAndWorkerShareLocalSetupLoaderAndResolution(t *testing.T) {
 	harness := config.HarnessTemplates()[0].Harness
 	model := newExecutionWizardModel([]config.Harness{harness})
@@ -215,6 +285,9 @@ func TestExecutionWizardRejectsHarnessThatLosesVersionFingerprintBeforeSave(t *t
 	if err == nil || !strings.Contains(err.Error(), "failed validation probe") {
 		t.Fatalf("error = %v", err)
 	}
+	if !strings.Contains(err.Error(), wizardValidationStyle.Render("! harness \"codex\" failed validation probe:")) {
+		t.Fatalf("probe validation is not styled: %q", err)
+	}
 	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
 		t.Fatalf("failed validation wrote %s: %v", path, statErr)
 	}
@@ -284,7 +357,7 @@ func TestConfigSetPreservesUnrelatedLocalConfiguration(t *testing.T) {
 	}
 }
 
-func TestBubbleTeaDependencyIsConfinedToConveyorCLI(t *testing.T) {
+func TestInteractiveDependenciesAreConfinedToConveyorCLI(t *testing.T) {
 	root := filepath.Join("..", "..")
 	for _, relative := range []string{"cmd/conveyord", "internal/store"} {
 		err := filepath.WalkDir(filepath.Join(root, relative), func(path string, entry fs.DirEntry, err error) error {
@@ -298,8 +371,10 @@ func TestBubbleTeaDependencyIsConfinedToConveyorCLI(t *testing.T) {
 			if readErr != nil {
 				return readErr
 			}
-			if strings.Contains(string(data), "charmbracelet/bubbletea") {
-				t.Errorf("Bubble Tea import escaped cmd/conveyor: %s", path)
+			for _, dependency := range []string{"charmbracelet/bubbletea", "charmbracelet/bubbles", "charmbracelet/lipgloss"} {
+				if strings.Contains(string(data), dependency) {
+					t.Errorf("interactive dependency %q escaped cmd/conveyor: %s", dependency, path)
+				}
 			}
 			return nil
 		})

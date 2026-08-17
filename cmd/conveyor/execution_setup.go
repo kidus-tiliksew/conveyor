@@ -16,7 +16,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/cursor"
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
@@ -94,12 +97,20 @@ type executionWizardModel struct {
 	fields     []wizardField
 	field      int
 	selected   int
-	buffer     string
-	dirty      bool
+	input      textinput.Model
 	choices    localExecutionChoices
 	cancelled  bool
 	validation string
 }
+
+var (
+	wizardTitleStyle      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("63"))
+	wizardProgressStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
+	wizardFieldStyle      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39"))
+	wizardSelectedStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("42"))
+	wizardHelpStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
+	wizardValidationStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("196"))
+)
 
 func newExecutionWizardModel(harnesses []config.Harness) executionWizardModel {
 	names := make([]string, 0, len(harnesses))
@@ -125,14 +136,29 @@ func newExecutionWizardModel(harnesses []config.Harness) executionWizardModel {
 			wizardField{stage: stage, name: "timeout", value: choice.Timeout},
 		)
 	}
-	return executionWizardModel{fields: fields}
+	input := textinput.New()
+	input.Prompt = "› "
+	input.Width = 56
+	input.CharLimit = 256
+	input.PromptStyle = wizardSelectedStyle
+	input.TextStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+	input.PlaceholderStyle = lipgloss.NewStyle().Italic(true).Foreground(lipgloss.Color("244"))
+	input.Cursor.SetMode(cursor.CursorStatic)
+	model := executionWizardModel{fields: fields, input: input}
+	model.prepareInput()
+	return model
 }
 
-func (m executionWizardModel) Init() tea.Cmd { return nil }
+func (m executionWizardModel) Init() tea.Cmd { return m.input.Focus() }
 
 func (m executionWizardModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	key, ok := message.(tea.KeyMsg)
 	if !ok {
+		if m.field < len(m.fields) && len(m.fields[m.field].options) == 0 {
+			var command tea.Cmd
+			m.input, command = m.input.Update(message)
+			return m, command
+		}
 		return m, nil
 	}
 	if key.Type == tea.KeyCtrlC || key.Type == tea.KeyEsc {
@@ -159,20 +185,10 @@ func (m executionWizardModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
-	switch key.Type {
-	case tea.KeyBackspace, tea.KeyDelete:
-		if !m.dirty {
-			m.buffer = field.value
-			m.dirty = true
-		}
-		if len(m.buffer) > 0 {
-			runes := []rune(m.buffer)
-			m.buffer = string(runes[:len(runes)-1])
-		}
-	case tea.KeyEnter:
-		value := field.value
-		if m.dirty {
-			value = strings.TrimSpace(m.buffer)
+	if key.Type == tea.KeyEnter {
+		value := strings.TrimSpace(m.input.Value())
+		if value == "" {
+			value = field.value
 		}
 		if value == "" {
 			m.validation = field.name + " is required"
@@ -187,17 +203,12 @@ func (m executionWizardModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.store(field, value)
 		m.advance()
-	default:
-		if key.Type == tea.KeyRunes {
-			if !m.dirty {
-				m.buffer = ""
-				m.dirty = true
-			}
-			m.buffer += string(key.Runes)
-			m.validation = ""
-		}
+		return m, nil
 	}
-	return m, nil
+	m.validation = ""
+	var command tea.Cmd
+	m.input, command = m.input.Update(message)
+	return m, command
 }
 
 func (m executionWizardModel) View() string {
@@ -209,25 +220,35 @@ func (m executionWizardModel) View() string {
 	}
 	field := m.fields[m.field]
 	var view strings.Builder
-	fmt.Fprintf(&view, "Local execution setup — %s %s\n\n", field.stage, field.name)
+	view.WriteString(wizardTitleStyle.Render("Local execution setup"))
+	view.WriteString("\n")
+	fmt.Fprintf(&view, "%s\n\n", wizardProgressStyle.Render(fmt.Sprintf("Step %d of %d", m.field+1, len(m.fields))))
+	fmt.Fprintf(&view, "%s  %s\n\n", wizardFieldStyle.Render(strings.ToUpper(field.stage)), wizardFieldStyle.Render(field.name))
 	if len(field.options) > 0 {
 		for index, option := range field.options {
-			cursor := "  "
+			marker := "  "
+			line := option
 			if index == m.selected {
-				cursor = "> "
+				marker = "› "
+				line = wizardSelectedStyle.Render(option)
 			}
-			fmt.Fprintf(&view, "%s%s\n", cursor, option)
+			fmt.Fprintf(&view, "%s%s\n", marker, line)
 		}
-		view.WriteString("\nUse ↑/↓ and Enter. Esc cancels.\n")
+		view.WriteString("\n")
+		view.WriteString(wizardHelpStyle.Render("↑/↓ select • enter confirm • esc cancel"))
+		view.WriteString("\n")
 	} else {
-		value := field.value
-		if m.dirty {
-			value = m.buffer
+		view.WriteString(m.input.View())
+		view.WriteString("\n\n")
+		help := "type any value • enter accept • esc cancel"
+		if field.name == "model" {
+			help = "suggested default shown dimmed; type any model to replace it • enter accept • esc cancel"
 		}
-		fmt.Fprintf(&view, "> %s\n\nEnter accepts the suggestion. Esc cancels.\n", value)
+		view.WriteString(wizardHelpStyle.Render(help))
+		view.WriteString("\n")
 	}
 	if m.validation != "" {
-		fmt.Fprintf(&view, "\n%s\n", m.validation)
+		fmt.Fprintf(&view, "\n%s\n", wizardValidationStyle.Render("! "+m.validation))
 	}
 	return view.String()
 }
@@ -235,9 +256,18 @@ func (m executionWizardModel) View() string {
 func (m *executionWizardModel) advance() {
 	m.field++
 	m.selected = 0
-	m.buffer = ""
-	m.dirty = false
 	m.validation = ""
+	m.prepareInput()
+}
+
+func (m *executionWizardModel) prepareInput() {
+	m.input.Reset()
+	if m.field >= len(m.fields) || len(m.fields[m.field].options) > 0 {
+		m.input.Blur()
+		return
+	}
+	m.input.Placeholder = m.fields[m.field].value
+	_ = m.input.Focus()
 }
 
 func (m *executionWizardModel) store(field wizardField, value string) {
@@ -257,18 +287,19 @@ func (m *executionWizardModel) store(field wizardField, value string) {
 	}
 }
 
+// harnessModelSuggestions supplies editable placeholders only. It is never a
+// validation list: the selected harness probe remains the source of truth.
+var harnessModelSuggestions = map[string]map[string]string{
+	"codex":  {"spec": "gpt-5.6-sol", "implement": "gpt-5.6-sol", "review": "gpt-5.6-terra"},
+	"claude": {"spec": "opus", "implement": "opus", "review": "opus"},
+	"grok":   {"spec": "grok-code-fast-1", "implement": "grok-code-fast-1", "review": "grok-code-fast-1"},
+}
+
 func suggestedHarnessModel(harness, stage string) string {
-	switch harness {
-	case "claude":
-		return "claude-opus-4.1"
-	case "grok":
-		return "grok-code-fast-1"
-	default:
-		if stage == "review" {
-			return "gpt-5.6-terra"
-		}
-		return "gpt-5.6-sol"
+	if stages, ok := harnessModelSuggestions[harness]; ok {
+		return stages[stage]
 	}
+	return harness
 }
 
 func (m *executionWizardModel) stageChoice(stage string) *localStageChoice {
@@ -323,7 +354,7 @@ func runExecutionSetupWizard(ctx context.Context, input io.Reader, output io.Wri
 	probes := probeHarnesses(ctx, selected)
 	for _, probe := range probes {
 		if !validLocalHarnessProbe(probe) {
-			return fmt.Errorf("harness %q failed validation probe: %s", probe.Harness, probe.Message)
+			return errors.New(wizardValidationStyle.Render(fmt.Sprintf("! harness %q failed validation probe: %s", probe.Harness, probe.Message)))
 		}
 	}
 	if len(probes) != len(selected) {
