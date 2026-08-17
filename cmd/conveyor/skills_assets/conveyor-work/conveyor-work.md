@@ -25,10 +25,14 @@ the task branch bare.
    same workspace, order, and session. Decode its returned base64 content by
    MIME type. Missing required artifact content is a blocker; filename metadata
    is not a substitute.
-5. Run `conveyor checkout <task-id>` and use the returned dedicated worktree.
-   Perform every repository read needed for implementation and every edit,
-   test, commit, and push there. Preserve the assigned branch history and obey
-   the delivered contract's validation and delivery instructions.
+5. For an implementation or review order, run `conveyor checkout <task-id>`
+   and use the returned dedicated worktree. Perform every repository read
+   needed for implementation and every edit, test, commit, and push there.
+   Preserve the assigned branch history and obey the delivered contract's
+   validation and delivery instructions. A spec order instead executes
+   read-only in the checkout where its session was launched: never run
+   `conveyor checkout` for a spec order and never alter that checkout's Git
+   state.
 
 Use `report_progress` at meaningful milestones. Usage reporting is
 observational and best-effort; it does not replace lifecycle completion.
@@ -127,21 +131,25 @@ abandoning the attempt, `release_work_order` with a truthful reason:
   Implementation and review must use separate sessions; an implementer never
   claims or judges its own review order.
 
+After the stage's submission tool succeeds, report the result and exit the
+session. Never poll `await_review` from a stage session. Verdict handling,
+bounces, and successor orders belong to the launcher (`conveyor run` or the
+worker), and a changes-requested bounce always arrives as a new order in a
+fresh session. The same report-and-exit rule applies after an explicit truthful
+release.
+
 `release_work_order` is an explicit abandonment or checkpoint handoff, not a
 way to declare success. Do not simply exit while leaving a claim to expire.
 
 ## Review bounces
 
-After `submit_for_review`, the implementation session may call `await_review`
-while it remains authorized. Keep renewing while waiting. Approval completes
-the review handoff; it does not authorize the executor to merge.
-
-A `changes_requested` result creates a successor implementation order. Return
-to `list_work_orders`, select that new order, claim it with fresh credentials,
-and call `get_work_order` before changing anything. Reuse the existing dedicated
-worktree and task branch, add and push corrective commits, and submit the
-successor order. Never amend or re-submit through the already submitted order,
-and never apply feedback outside a live successor claim.
+Approval completes the review handoff; it does not authorize the executor to
+merge. A `changes_requested` result creates a successor implementation order
+that the launcher schedules in a fresh session. That successor must call
+`get_work_order` before changing anything, then reuse the existing dedicated
+worktree and task branch, add and push corrective commits, and submit the new
+order. Never amend or re-submit through an already submitted order, and never
+apply feedback outside a live successor claim.
 
 ## Authority boundary
 

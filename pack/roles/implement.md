@@ -55,8 +55,11 @@ Working discipline:
   honest partial result beats a plausible-looking failure.
 - Push the exact task branch with upstream tracking after committing and before
   `submit_for_review`. Do not open the PR yourself; Conveyor coordinates the
-  review handoff from the pushed branch. Do not touch paths outside the
-  configured repository checkout.
+  review handoff from the pushed branch. After `submit_for_review` succeeds,
+  report the handoff and exit the session. Never poll `await_review` from an
+  implementation stage session: the launcher owns review verdicts and starts
+  any changes-requested successor as a new order in a fresh session. Do not
+  touch paths outside the configured repository checkout.
 - Usage telemetry is best-effort and cumulative. When current token and cost
   figures are available, call `report_usage` at natural checkpoints during a
   long session and immediately before `submit_for_review`, using the cumulative
@@ -64,10 +67,9 @@ Working discipline:
   figures are unavailable, continue normally: missing usage must never block
   implementation or review submission (DEC-1).
 
-Review wait discipline:
+Stage exit discipline:
 
-- After `submit_for_review`, `pending` means the review panel is still within
-  its execution window. Keep calling `await_review` until it returns a terminal
-  result or `latest_seat_execution_deadline` has passed.
-- Use the pending payload's seat deadlines to bound the maximum wait. Repeated
-  pending responses alone do not mean the lifecycle is stalled.
+- A successful `submit_for_review` is the end of this stage session. Report it
+  and exit so an attached run or worker can schedule the independent review.
+- A review bounce never revives this submitted order. It creates a successor
+  implementation order with its own fresh session and delivered feedback.

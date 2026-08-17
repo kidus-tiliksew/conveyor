@@ -948,6 +948,25 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 	ticker := time.NewTicker(renewEvery)
 	defer ticker.Stop()
 	claimFinalized := false
+	var finalizedOrder core.WorkOrder
+	var runTerminalTimer *time.Timer
+	var runTerminalDeadline <-chan time.Time
+	defer func() {
+		if runTerminalTimer != nil {
+			runTerminalTimer.Stop()
+		}
+	}()
+	observeFinalized := func(order core.WorkOrder) {
+		claimFinalized = true
+		finalizedOrder = order
+		firstActivityObserved = nil
+		firstActivityDeadline = nil
+		stallDeadline = nil
+		if item.Dispatch == "run" && runTerminalTimer == nil {
+			runTerminalTimer = time.NewTimer(workerRunTerminalChildGrace)
+			runTerminalDeadline = runTerminalTimer.C
+		}
+	}
 	handleChildExit := func(waitErr error) error {
 		waitErr = processGroup.terminate(&waitErr)
 		flushOutput()
@@ -1006,6 +1025,23 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 		select {
 		case waitErr := <-done:
 			return handleChildExit(waitErr)
+		case <-runTerminalDeadline:
+			// A normal child exit wins a race with the grace deadline.
+			select {
+			case waitErr := <-done:
+				return handleChildExit(waitErr)
+			default:
+			}
+			if err := presentRunChildReapNotice(stdout, presentation, string(item.Order.Stage), string(finalizedOrder.State)); err != nil {
+				return fmt.Errorf("present lingering-child reap: %w", err)
+			}
+			_ = processGroup.terminate(nil)
+			if processGroupAlive(processGroup.pgid) {
+				return fmt.Errorf("lingering %s session process group %d survived termination", item.Order.Stage, processGroup.pgid)
+			}
+			flushOutput()
+			reportCodexUsageFallback(c, credential, item.Order.ID, sessionID, finalizedOrder, codexUsage)
+			return nil
 		case <-firstActivityObserved:
 			if !firstActivityTimer.Stop() {
 				select {
@@ -1053,9 +1089,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 				return renewErr
 			}
 			if renewed.State == core.WorkOrderSubmitted || renewed.State == core.WorkOrderCompleted {
-				claimFinalized = true
-				firstActivityObserved = nil
-				firstActivityDeadline = nil
+				observeFinalized(renewed)
 				continue
 			}
 			if renewed.State != core.WorkOrderClaimed {
@@ -1126,8 +1160,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 				return renewErr
 			}
 			if renewed.State == core.WorkOrderSubmitted || renewed.State == core.WorkOrderCompleted {
-				claimFinalized = true
-				stallDeadline = nil
+				observeFinalized(renewed)
 				continue
 			}
 			if renewed.State != core.WorkOrderClaimed {
@@ -1188,7 +1221,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 				return renewErr
 			}
 			if renewed.State == core.WorkOrderSubmitted || renewed.State == core.WorkOrderCompleted {
-				claimFinalized = true
+				observeFinalized(renewed)
 				continue
 			}
 			if renewed.State != core.WorkOrderClaimed {
@@ -1390,6 +1423,11 @@ func (w *boundedTailWriter) String() string {
 // workerClaimRenewInterval paces claim renewal for both pre-start setup and
 // the running-child loop; tests shorten it to exercise renewal quickly.
 var workerClaimRenewInterval = 10 * time.Second
+
+// workerRunTerminalChildGrace gives a stage session time to exit on its own
+// after the attached run observes durable submission or completion. Tests
+// shorten it to exercise the launcher-side reap without slowing the suite.
+var workerRunTerminalChildGrace = 2 * time.Second
 
 // workerPreStartTestHook, when set by tests, runs with the setup context
 // between a successful claim and child launch to simulate slow pre-start
@@ -1707,12 +1745,12 @@ func workerLaunchPrompt(order core.WorkOrder, workspace, sessionID string) strin
 		return prompt + " Use the Conveyor MCP server and call get_work_order with that exact session_id for the approved contract. Complete the standard review lifecycle by calling submit_review_verdict, waiting for its response, and observing that the tool call succeeded before exiting. Printing, returning, or describing verdict JSON is not completion, and a missing or failed tool response is not terminal success."
 	}
 	if order.Stage == core.StageSpec {
-		return prompt + " Use the Conveyor MCP server and call get_work_order with that exact session_id. Inspect the repository and artifacts without making edits or git changes, then complete the plan lifecycle by calling submit_plan and observing that the tool call succeeded before exiting."
+		return prompt + " Use the Conveyor MCP server and call get_work_order with that exact session_id. Inspect the launched read-only repository checkout and artifacts without making edits or git changes; do not run conveyor checkout for a spec order. Complete the plan lifecycle by calling submit_plan, observing that the tool call succeeded, reporting the result, and exiting."
 	}
 	if order.Stage != core.StageImplement {
 		return fmt.Sprintf("%s Use the Conveyor MCP server, call get_work_order with that exact session_id for the approved contract, and complete the standard %s lifecycle.", prompt, order.Stage)
 	}
-	return prompt + " Use the Conveyor MCP server. First call get_work_order with that exact session_id for the approved contract. Immediately after get_work_order returns, announce a concise, plain-language summary of what the work order is about and what you will do next. Make this announcement before running checkout, inspecting files, or starting implementation. The announcement is informational: continue automatically without asking for confirmation, waiting for a user response, or pausing. Then complete the standard implement lifecycle."
+	return prompt + " Use the Conveyor MCP server. First call get_work_order with that exact session_id for the approved contract. Immediately after get_work_order returns, announce a concise, plain-language summary of what the work order is about and what you will do next. Make this announcement before running checkout, inspecting files, or starting implementation. The announcement is informational: continue automatically without asking for confirmation, waiting for a user response, or pausing. Then complete the standard implement lifecycle, reporting and exiting after submit_for_review succeeds without polling await_review."
 }
 
 func expandHarness(harness config.Harness, model, effort, prompt, mcpConfig string) []string {

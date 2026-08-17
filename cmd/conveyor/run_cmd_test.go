@@ -169,6 +169,9 @@ func runTaskScenario(t *testing.T, input string, auto, terminal bool) (taskRunSt
 				stage = core.StageReview
 			}
 			_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: orderID, TaskID: "target", Stage: stage, State: stats.states[orderID], AttemptID: "attempt-" + orderID, LeaseExpiresAt: time.Now().Add(time.Minute)})
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/renew"):
+			orderID := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v1/tasks/target/run-orders/"), "/renew")
+			_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: orderID, TaskID: "target", State: stats.states[orderID], LeaseExpiresAt: time.Now().Add(time.Minute)})
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/reconcile"):
 			orderID := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v1/tasks/target/run-orders/"), "/reconcile")
 			_ = json.NewEncoder(w).Encode(workerservice.ClaimReconciliation{WorkOrder: core.WorkOrder{ID: orderID, State: stats.states[orderID]}, Authorized: stats.states[orderID] == core.WorkOrderClaimed})
@@ -559,6 +562,32 @@ func TestRunTaskExecutesConfirmedImplementReviewChain(t *testing.T) {
 	}
 }
 
+func TestRunTaskAdvancesAfterSubmittedChildrenLinger(t *testing.T) {
+	previousRenew := workerClaimRenewInterval
+	previousTerminalGrace := workerRunTerminalChildGrace
+	previousTerminationGrace := workerProcessGroupTerminationGrace
+	workerClaimRenewInterval = 25 * time.Millisecond
+	workerRunTerminalChildGrace = 50 * time.Millisecond
+	workerProcessGroupTerminationGrace = 100 * time.Millisecond
+	t.Setenv("CONVEYOR_FAKE_TASK_RUN_LINGER_AFTER_SUBMIT", "1")
+	t.Cleanup(func() {
+		workerClaimRenewInterval = previousRenew
+		workerRunTerminalChildGrace = previousTerminalGrace
+		workerProcessGroupTerminationGrace = previousTerminationGrace
+	})
+
+	stats, output, err := runTaskScenario(t, "yes\nyes\n", false, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.reviewSubmits != 1 || stats.verdictSubmits != 1 || stats.claimCalls != 2 {
+		t.Fatalf("run did not advance through the review stage: stats=%+v", stats)
+	}
+	if !strings.Contains(output, "work order is submitted; ending lingering implement session") || !strings.Contains(output, "work order is completed; ending lingering review session") || !strings.Contains(output, "Next: review work order target-review-1") {
+		t.Fatalf("lingering-child reaping was not presented before stage advance: %q", output)
+	}
+}
+
 func TestRunTaskDeclinesBeforeFirstClaim(t *testing.T) {
 	stats, output, err := runTaskScenario(t, "no\n", false, true)
 	if err != nil {
@@ -823,5 +852,8 @@ func TestTaskRunHarnessHelper(t *testing.T) {
 		call("submit_for_review")
 	} else {
 		call("submit_review_verdict")
+	}
+	if os.Getenv("CONVEYOR_FAKE_TASK_RUN_LINGER_AFTER_SUBMIT") == "1" {
+		time.Sleep(30 * time.Second)
 	}
 }

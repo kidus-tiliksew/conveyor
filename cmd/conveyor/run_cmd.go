@@ -170,7 +170,7 @@ func runTaskWithPresentation(ctx context.Context, c *client, taskID, configPath 
 		started := time.Now()
 		lastTUIStage = runTUIStage{task: selected.Task, stage: selected.Order.Stage, harness: selected.Harness.Name, model: selected.Model, started: started}
 		stageCtx, cancelStage := context.WithCancel(ctx)
-		var presentation *runOutputPresentation
+		presentation := &runOutputPresentation{output: output}
 		var controller *runTUIController
 		if outputTerminal && !raw {
 			var tuiInput io.Reader
@@ -178,7 +178,7 @@ func runTaskWithPresentation(ctx context.Context, c *client, taskID, configPath 
 				tuiInput = input
 			}
 			controller = startRunTUI(stageCtx, tuiInput, output, lastTUIStage, nil)
-			presentation = &runOutputPresentation{output: controller}
+			presentation = &runOutputPresentation{output: controller, presentEvents: true, styled: true}
 			go func() {
 				select {
 				case <-controller.interrupt:

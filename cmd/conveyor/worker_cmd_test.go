@@ -326,6 +326,7 @@ func TestWorkerLaunchPromptRequiresNonBlockingImplementationAnnouncement(t *test
 		"plain-language summary of what the work order is about and what you will do next",
 		"before running checkout, inspecting files, or starting implementation",
 		"continue automatically without asking for confirmation, waiting for a user response, or pausing",
+		"reporting and exiting after submit_for_review succeeds without polling await_review",
 	}
 	position := -1
 	for _, required := range requiredInOrder {
@@ -337,6 +338,15 @@ func TestWorkerLaunchPromptRequiresNonBlockingImplementationAnnouncement(t *test
 			t.Fatalf("implementation prompt places %q out of order: %s", required, prompt)
 		}
 		position = next
+	}
+}
+
+func TestWorkerLaunchPromptKeepsSpecInLaunchedReadOnlyCheckout(t *testing.T) {
+	prompt := workerLaunchPrompt(core.WorkOrder{ID: "spec-order", Stage: core.StageSpec}, "demo", "worker-session")
+	for _, required := range []string{"launched read-only repository checkout", "do not run conveyor checkout for a spec order", "reporting the result, and exiting"} {
+		if !strings.Contains(prompt, required) {
+			t.Fatalf("spec prompt is missing %q: %s", required, prompt)
+		}
 	}
 }
 
@@ -1287,6 +1297,67 @@ func TestRunHarnessChildFirstActivityDisarmsTimeoutWithoutAddingSilenceLimit(t *
 			}
 			if !strings.Contains(stdout.String()+stderr.String(), "first activity") {
 				t.Fatalf("active harness stdout=%q stderr=%q", stdout.String(), stderr.String())
+			}
+		})
+	}
+}
+
+func TestRunHarnessChildReapsOnlyAfterAttachedRunObservesTerminalOrder(t *testing.T) {
+	previousRenew := workerClaimRenewInterval
+	previousTerminalGrace := workerRunTerminalChildGrace
+	previousTerminationGrace := workerProcessGroupTerminationGrace
+	workerClaimRenewInterval = 25 * time.Millisecond
+	workerRunTerminalChildGrace = 50 * time.Millisecond
+	workerProcessGroupTerminationGrace = 100 * time.Millisecond
+	t.Cleanup(func() {
+		workerClaimRenewInterval = previousRenew
+		workerRunTerminalChildGrace = previousTerminalGrace
+		workerProcessGroupTerminationGrace = previousTerminationGrace
+	})
+
+	for _, test := range []struct {
+		name       string
+		mode       string
+		renewState core.WorkOrderState
+		wantNotice bool
+		minElapsed time.Duration
+	}{
+		{name: "terminal order reaps lingering child", mode: "silent", renewState: core.WorkOrderSubmitted, wantNotice: true},
+		{name: "live order leaves child running", mode: "early-output", renewState: core.WorkOrderClaimed, minElapsed: 300 * time.Millisecond},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case strings.HasSuffix(r.URL.Path, "/claim"):
+					_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: "run-order", State: core.WorkOrderClaimed, LeaseExpiresAt: time.Now().Add(time.Minute)})
+				case strings.HasSuffix(r.URL.Path, "/renew"):
+					_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: "run-order", State: test.renewState, LeaseExpiresAt: time.Now().Add(time.Minute)})
+				case strings.HasSuffix(r.URL.Path, "/reconcile"):
+					_ = json.NewEncoder(w).Encode(workerservice.ClaimReconciliation{WorkOrder: core.WorkOrder{ID: "run-order", State: core.WorkOrderSubmitted}, Reason: "submitted"})
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer server.Close()
+
+			item := workerservice.DispatchOrder{
+				Order:    core.WorkOrder{ID: "run-order", TaskID: "run-task", Stage: core.StageImplement},
+				Task:     core.Task{ID: "run-task"},
+				Dispatch: "run",
+				Harness:  config.Harness{Name: "helper", Command: []string{os.Args[0], "-test.run=TestWorkerLifecycleHelper", "--", test.mode}},
+			}
+			var stdout, stderr, presented bytes.Buffer
+			started := time.Now()
+			err := runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(t.Context(), &client{base: server.URL, workspace: "demo"}, "user-credential", item, time.Second, &stdout, &stderr, runModeConfirmed, &runOutputPresentation{output: &presented})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if elapsed := time.Since(started); elapsed < test.minElapsed {
+				t.Fatalf("child ended before live-order safety interval: %s", elapsed)
+			}
+			hasNotice := strings.Contains(presented.String(), "ending lingering implement session")
+			if hasNotice != test.wantNotice {
+				t.Fatalf("notice=%t want=%t output=%q", hasNotice, test.wantNotice, presented.String())
 			}
 		})
 	}

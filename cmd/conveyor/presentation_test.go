@@ -9,6 +9,25 @@ import (
 	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
 )
 
+func TestRunChildReapNoticeUsesPresentationAndRawOutput(t *testing.T) {
+	for _, presented := range []bool{false, true} {
+		var raw, interactive bytes.Buffer
+		var presentation *runOutputPresentation
+		if presented {
+			presentation = &runOutputPresentation{output: &interactive, styled: true}
+		}
+		if err := presentRunChildReapNotice(&raw, presentation, "implement", "submitted"); err != nil {
+			t.Fatal(err)
+		}
+		output := raw.String() + interactive.String()
+		for _, want := range []string{"work order is submitted", "ending lingering implement session", "run can advance"} {
+			if !strings.Contains(output, want) {
+				t.Fatalf("presented=%t output missing %q: %q", presented, want, output)
+			}
+		}
+	}
+}
+
 func TestHarnessEventRendererSummarizesRecognizedCodexEvents(t *testing.T) {
 	var output bytes.Buffer
 	renderer := newHarnessEventRenderer(&output)
@@ -75,7 +94,7 @@ func TestHarnessStdoutFanoutPreservesRawConsumers(t *testing.T) {
 
 	t.Run("interactive presentation", func(t *testing.T) {
 		var console, tail, usage bytes.Buffer
-		fanout, renderer := harnessStdoutFanout(&bytes.Buffer{}, &tail, &usage, item, &runOutputPresentation{output: &console})
+		fanout, renderer := harnessStdoutFanout(&bytes.Buffer{}, &tail, &usage, item, &runOutputPresentation{output: &console, presentEvents: true})
 		if renderer == nil {
 			t.Fatal("interactive run did not install a renderer")
 		}
@@ -99,7 +118,7 @@ func TestInteractiveHarnessPresentationReceivesOnlyRedactedBytes(t *testing.T) {
 	raw := []byte(`{"type":"item.completed","item":{"type":"agent_message","text":"safe ` + secret + `"}}` + "\n")
 	var console, tail bytes.Buffer
 	item := workerservice.DispatchOrder{Dispatch: "run"}
-	fanout, renderer := harnessStdoutFanout(&bytes.Buffer{}, &tail, nil, item, &runOutputPresentation{output: &console})
+	fanout, renderer := harnessStdoutFanout(&bytes.Buffer{}, &tail, nil, item, &runOutputPresentation{output: &console, presentEvents: true})
 	redacted := &redact.Writer{Destination: fanout, Redactor: redact.New([]string{secret})}
 	if _, err := redacted.Write(raw); err != nil {
 		t.Fatal(err)
