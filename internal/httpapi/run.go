@@ -14,6 +14,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
 )
@@ -107,10 +108,114 @@ func (s *Server) getTaskRunOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !found {
-		w.WriteHeader(http.StatusNoContent)
+		gate, gateErr := s.taskRunGate(r.Context(), task)
+		if gateErr != nil {
+			log.Printf("get task run gate: %v", gateErr)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusOK, workerservice.DispatchOrder{Task: task, Gate: gate, Dispatch: "run", Auth: "user"})
 		return
 	}
 	writeJSON(w, http.StatusOK, dispatch)
+}
+
+// taskRunGate derives presentation state from the same audited transitions the
+// dispatcher and dashboard use. It never creates or touches a claim.
+func (s *Server) taskRunGate(ctx context.Context, task core.Task) (*workerservice.TaskRunGate, error) {
+	if task.State != core.TaskAwaiting {
+		return nil, nil
+	}
+	canOperate, err := s.taskRunCapability(ctx, core.CapabilityOperateGates)
+	if err != nil {
+		return nil, err
+	}
+	canRequestChanges, err := s.taskRunCapability(ctx, core.CapabilityRequestChanges)
+	if err != nil {
+		return nil, err
+	}
+	if task.Assignee != nil {
+		credential, _ := store.CredentialFromContext(ctx)
+		if task.Assignee.UserID != credential.OwnerUserID {
+			canSetAssignee, capabilityErr := s.taskRunCapability(ctx, core.CapabilitySetAssignee)
+			if capabilityErr != nil {
+				return nil, capabilityErr
+			}
+			canRequestChanges = canRequestChanges && canSetAssignee
+		}
+	}
+
+	if revision, pending, revisionErr := dispatch.PendingPlanRevisionGate(ctx, s.Store, task.ID); revisionErr != nil {
+		return nil, revisionErr
+	} else if pending {
+		return &workerservice.TaskRunGate{
+			Kind: "plan_revision", Label: "plan revision gate",
+			Summary:     fmt.Sprintf("implementation requested revision of execution plan v%d", revision.PlanVersion),
+			PlanVersion: revision.PlanVersion, Rationale: revision.Rationale,
+			CanOperate: canOperate, CanRequestChanges: canOperate,
+		}, nil
+	}
+
+	command, err := latestTaskGateCommand(ctx, s.Store, task.ID)
+	if err != nil {
+		return nil, err
+	}
+	switch command {
+	case core.TaskGateSpec:
+		spec, found, specErr := s.Store.GetLatestSpecVersion(ctx, task.ID)
+		if specErr != nil {
+			return nil, specErr
+		}
+		gate := &workerservice.TaskRunGate{Kind: "spec", Label: "spec approval gate", Summary: "submitted execution plan", CanOperate: canOperate, CanRequestChanges: canOperate}
+		if found {
+			gate.SpecVersion = spec.Version
+			gate.Summary = fmt.Sprintf("submitted execution plan v%d", spec.Version)
+		}
+		return gate, nil
+	case core.TaskGateMerge:
+		summary := "reviewed task branch"
+		if task.Branch != "" {
+			summary = task.Branch
+			if task.BaseBranch != "" {
+				summary += " into " + task.BaseBranch
+			}
+		}
+		return &workerservice.TaskRunGate{Kind: "merge", Label: "merge approval gate", Summary: summary, CanOperate: canOperate, CanRequestChanges: canRequestChanges}, nil
+	default:
+		return &workerservice.TaskRunGate{Kind: "human", Label: "human recovery gate", Summary: fmt.Sprintf("task is %s after %s", task.State, task.NextStage), CanOperate: canOperate, CanRequestChanges: canOperate}, nil
+	}
+}
+
+func (s *Server) taskRunCapability(ctx context.Context, capability core.Capability) (bool, error) {
+	credential, ok := store.CredentialFromContext(ctx)
+	if !ok || credential.Kind != core.CredentialUser {
+		return false, nil
+	}
+	workspaceID, scoped := store.WorkspaceFromContext(ctx)
+	if scoped && s.Memberships != nil {
+		return s.Memberships.AuthorizeWorkspace(ctx, credential.OwnerUserID, workspaceID, capability)
+	}
+	return credential.Scope == core.CredentialScopeOperator, nil
+}
+
+func latestTaskGateCommand(ctx context.Context, st store.Store, taskID string) (core.TaskCommand, error) {
+	events, err := st.ListEvents(ctx, taskID)
+	if err != nil {
+		return "", err
+	}
+	for index := len(events) - 1; index >= 0; index-- {
+		if events[index].Kind != "task.state_changed" {
+			continue
+		}
+		var transition struct {
+			Command core.TaskCommand `json:"command"`
+		}
+		if err := json.Unmarshal(events[index].Payload, &transition); err != nil {
+			return "", fmt.Errorf("decode latest task transition for %s: %w", taskID, err)
+		}
+		return transition.Command, nil
+	}
+	return "", nil
 }
 
 func (s *Server) nextTaskRunOrder(ctx context.Context, task core.Task) (workerservice.DispatchOrder, bool, error) {

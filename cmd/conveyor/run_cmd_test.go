@@ -324,6 +324,179 @@ func TestRunTaskExecutesConfirmedSpecAndStopsAtOperatorGate(t *testing.T) {
 	}
 }
 
+func TestAttachedRunApprovesFreshGateWithParentCredentialAndNoClaim(t *testing.T) {
+	var reads, decisions, claims int
+	resolved := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer parent-user-credential" {
+			http.Error(w, "wrong credential", http.StatusUnauthorized)
+			return
+		}
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/tasks/target/run-order":
+			reads++
+			state := core.TaskAwaiting
+			var gate *workerservice.TaskRunGate
+			if resolved {
+				state = core.TaskMerged
+			} else {
+				gate = &workerservice.TaskRunGate{Kind: "spec", Label: "spec approval gate", Summary: "submitted execution plan v3", SpecVersion: 3, CanOperate: true, CanRequestChanges: true}
+			}
+			_ = json.NewEncoder(w).Encode(workerservice.DispatchOrder{Task: core.Task{ID: "target", Title: "Ship target", State: state}, Gate: gate, Dispatch: "run", Auth: "user"})
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/tasks/target/review":
+			decisions++
+			var request map[string]string
+			_ = json.NewDecoder(r.Body).Decode(&request)
+			if request["action"] != "approve" || request["reason_code"] != "approved" {
+				http.Error(w, "wrong decision", http.StatusBadRequest)
+				return
+			}
+			resolved = true
+			w.WriteHeader(http.StatusAccepted)
+			_ = json.NewEncoder(w).Encode(map[string]any{"task": core.Task{ID: "target", State: core.TaskMerged}})
+		case strings.Contains(r.URL.Path, "/claim"):
+			claims++
+			http.Error(w, "must not claim while waiting", http.StatusInternalServerError)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	c := &client{base: server.URL, token: "parent-user-credential", workspace: "demo"}
+	var output bytes.Buffer
+	err := runTaskWithPresentation(t.Context(), c, "target", filepath.Join(t.TempDir(), "unused.yaml"), strings.NewReader("approve\n"), &output, true, true, true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reads != 2 || decisions != 1 || claims != 0 {
+		t.Fatalf("reads=%d decisions=%d claims=%d", reads, decisions, claims)
+	}
+	for _, want := range []string{"spec approval gate", "submitted execution plan v3", "Claim", "none", "Gate decision recorded", "finished in state merged"} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("output missing %q: %q", want, output.String())
+		}
+	}
+}
+
+func TestAttachedRunRequestsMergeGateChangesWithFeedback(t *testing.T) {
+	resolved := false
+	feedback := ""
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet:
+			if resolved {
+				_ = json.NewEncoder(w).Encode(workerservice.DispatchOrder{Task: core.Task{ID: "target", State: core.TaskClosed}})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(workerservice.DispatchOrder{Task: core.Task{ID: "target", State: core.TaskAwaiting}, Gate: &workerservice.TaskRunGate{Kind: "merge", Label: "merge approval gate", Summary: "branch into main", CanRequestChanges: true}})
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/request-changes"):
+			var request map[string]string
+			_ = json.NewDecoder(r.Body).Decode(&request)
+			feedback = request["feedback"]
+			resolved = true
+			w.WriteHeader(http.StatusAccepted)
+			_ = json.NewEncoder(w).Encode(map[string]any{"task": core.Task{ID: "target", State: core.TaskQueued}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	c := &client{base: server.URL, token: "parent-user-credential", workspace: "demo"}
+	var output bytes.Buffer
+	if err := runTaskWithPresentation(t.Context(), c, "target", "unused.yaml", strings.NewReader("changes\n  fix the race  \n"), &output, false, true, true, false); err != nil {
+		t.Fatal(err)
+	}
+	if feedback != "fix the race" || !strings.Contains(output.String(), "Feedback:") {
+		t.Fatalf("feedback=%q output=%q", feedback, output.String())
+	}
+}
+
+func TestAttachedRunAutoNeverApprovesGate(t *testing.T) {
+	decisions := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			_ = json.NewEncoder(w).Encode(workerservice.DispatchOrder{
+				Task: core.Task{ID: "target", Title: "Ship target", State: core.TaskAwaiting},
+				Gate: &workerservice.TaskRunGate{Kind: "merge", Label: "merge approval gate", Summary: "task branch", CanOperate: true},
+			})
+			return
+		}
+		decisions++
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer server.Close()
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+	c := &client{base: server.URL, token: "parent-user-credential", workspace: "demo"}
+	var output bytes.Buffer
+	if err := runTaskWithPresentation(ctx, c, "target", "unused.yaml", strings.NewReader(""), &output, true, true, true, false); err != nil {
+		t.Fatal(err)
+	}
+	if decisions != 0 || !strings.Contains(output.String(), "merge approval gate") || !strings.Contains(output.String(), "Ran: none") {
+		t.Fatalf("decisions=%d output=%q", decisions, output.String())
+	}
+}
+
+func TestAttachedRunPollsGateResolvedElsewhereWithoutClaim(t *testing.T) {
+	prior := runGatePollInterval
+	runGatePollInterval = 5 * time.Millisecond
+	defer func() { runGatePollInterval = prior }()
+	reads, mutations := 0, 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			mutations++
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		reads++
+		if reads == 1 {
+			_ = json.NewEncoder(w).Encode(workerservice.DispatchOrder{Task: core.Task{ID: "target", State: core.TaskAwaiting}, Gate: &workerservice.TaskRunGate{Kind: "spec", Label: "spec approval gate", Summary: "plan v1", CanOperate: true}})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(workerservice.DispatchOrder{Task: core.Task{ID: "target", State: core.TaskMerged}})
+	}))
+	defer server.Close()
+	input, writer := io.Pipe()
+	defer input.Close()
+	defer writer.Close()
+	c := &client{base: server.URL, token: "parent-user-credential", workspace: "demo"}
+	var output bytes.Buffer
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	if err := runTaskWithPresentation(ctx, c, "target", "unused.yaml", input, &output, true, true, true, false); err != nil {
+		t.Fatal(err)
+	}
+	if reads != 2 || mutations != 0 || !strings.Contains(output.String(), "finished in state merged") {
+		t.Fatalf("reads=%d mutations=%d output=%q", reads, mutations, output.String())
+	}
+}
+
+func TestAttachedRunGateConflictRefreshesRecordedState(t *testing.T) {
+	reads := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			reads++
+			if reads == 1 {
+				_ = json.NewEncoder(w).Encode(workerservice.DispatchOrder{Task: core.Task{ID: "target", State: core.TaskAwaiting}, Gate: &workerservice.TaskRunGate{Kind: "spec", Label: "spec approval gate", Summary: "plan v1", CanOperate: true}})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(workerservice.DispatchOrder{Task: core.Task{ID: "target", State: core.TaskClosed}})
+			return
+		}
+		http.Error(w, "gate already resolved", http.StatusConflict)
+	}))
+	defer server.Close()
+	c := &client{base: server.URL, token: "parent-user-credential", workspace: "demo"}
+	var output bytes.Buffer
+	if err := runTaskWithPresentation(t.Context(), c, "target", "unused.yaml", strings.NewReader("approve\n"), &output, false, true, true, false); err != nil {
+		t.Fatal(err)
+	}
+	if reads != 2 || !strings.Contains(output.String(), "Gate state changed") || !strings.Contains(output.String(), "finished in state closed") {
+		t.Fatalf("reads=%d output=%q", reads, output.String())
+	}
+}
+
 func TestRunTaskDeclinesSpecBeforeClaim(t *testing.T) {
 	stats, output, err := runSpecTaskScenario(t, "no\n", true)
 	if err != nil {

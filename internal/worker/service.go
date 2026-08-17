@@ -84,6 +84,21 @@ type DispatchOrder struct {
 	Dispatch         string         `json:"dispatch"`
 	Confinement      string         `json:"confinement"`
 	Auth             string         `json:"auth"`
+	Gate             *TaskRunGate   `json:"gate,omitempty"`
+}
+
+// TaskRunGate is the read-only human-gate projection returned to an attached
+// conveyor run when no work order is claimable. It is derived from durable
+// task events and grants no mutation authority (REQ-5, AC-5.6-AC-5.7).
+type TaskRunGate struct {
+	Kind              string `json:"kind"`
+	Label             string `json:"label"`
+	Summary           string `json:"summary"`
+	CanOperate        bool   `json:"can_operate"`
+	CanRequestChanges bool   `json:"can_request_changes"`
+	SpecVersion       int    `json:"spec_version,omitempty"`
+	PlanVersion       int    `json:"plan_version,omitempty"`
+	Rationale         string `json:"rationale,omitempty"`
 }
 
 // HarnessProbeTarget is one exact harness definition the worker must probe.
