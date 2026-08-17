@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -11,6 +12,142 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 )
+
+func TestSiblingReapingSerializesConcurrentClaimIntegration(t *testing.T) {
+	databaseURL := integrationDatabaseURL(t)
+	st, err := Open(t.Context(), databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	workspace := "sibling-claim-race-" + core.NewTaskID()
+	ctx := store.WithWorkspace(context.Background(), workspace)
+	cfg := &config.Config{Workspace: workspace, WorkOrderQueueTimeout: time.Hour, Repos: []config.Repo{{Name: "conveyor", URL: "https://example.test/conveyor", Base: "main"}}}
+	if _, err = st.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("completion", func(t *testing.T) {
+		now := time.Now().UTC().Truncate(time.Microsecond)
+		task := core.Task{ID: core.NewTaskID(), Workspace: workspace, Repo: "conveyor", Branch: "conveyor/task-" + core.NewTaskID(), BaseBranch: "main", State: core.TaskRunning, NextStage: core.StageSpec, CreatedAt: now.Add(-time.Hour)}
+		if err := st.CreateTask(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+		authoritativeJob := core.Job{ID: task.ID + "-spec-2", TaskID: task.ID, Stage: core.StageSpec, State: core.JobPending}
+		siblingJob := core.Job{ID: task.ID + "-spec-1", TaskID: task.ID, Stage: core.StageSpec, State: core.JobPending}
+		for _, job := range []core.Job{authoritativeJob, siblingJob} {
+			if err := st.CreateJob(ctx, job); err != nil {
+				t.Fatal(err)
+			}
+		}
+		authoritative := core.WorkOrder{ID: authoritativeJob.ID, TaskID: task.ID, JobID: authoritativeJob.ID, Stage: core.StageSpec, State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now}
+		sibling := core.WorkOrder{ID: siblingJob.ID, TaskID: task.ID, JobID: siblingJob.ID, Stage: core.StageSpec, State: core.WorkOrderQueued, QueueEnteredAt: now.Add(-time.Minute), QueueDeadline: now.Add(time.Hour), CreatedAt: now.Add(-time.Minute)}
+		// Insert the older sibling second so creation itself does not retire the
+		// newer authoritative order used to exercise completion.
+		if err := storetest.For(st).CreateWorkOrder(ctx, authoritative); err != nil {
+			t.Fatal(err)
+		}
+		if err := storetest.For(st).CreateWorkOrder(ctx, sibling); err != nil {
+			t.Fatal(err)
+		}
+		claimed, err := storetest.For(st).ClaimWorkOrder(ctx, authoritative.ID, core.WorkOrderClaim{SessionID: "authoritative-session", ClientToken: "authoritative-token", ClaimantID: "authoritative-agent", Agent: "codex", Model: "gpt", Lease: time.Minute, ExecutionTimeout: time.Hour})
+		if err != nil {
+			t.Fatal(err)
+		}
+		completed := claimed
+		completed.State = core.WorkOrderCompleted
+
+		start := make(chan struct{})
+		var ready sync.WaitGroup
+		ready.Add(2)
+		results := make(chan error, 2)
+		go func() {
+			ready.Done()
+			<-start
+			results <- storetest.For(st).UpdateWorkOrder(ctx, completed, core.WorkOrderCmdSubmitSpec)
+		}()
+		go func() {
+			ready.Done()
+			<-start
+			_, claimErr := storetest.For(st).ClaimWorkOrder(ctx, sibling.ID, core.WorkOrderClaim{SessionID: "sibling-session", ClientToken: "sibling-token", ClaimantID: "sibling-agent", Agent: "codex", Model: "gpt", Lease: time.Minute, ExecutionTimeout: time.Hour})
+			results <- claimErr
+		}()
+		ready.Wait()
+		close(start)
+		firstErr, secondErr := <-results, <-results
+		if firstErr == nil && secondErr == nil {
+			t.Fatal("completion and competing sibling claim both succeeded")
+		}
+		persisted, err := st.ListTaskWorkOrders(ctx, task.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		claimedOrClaimable := 0
+		for _, order := range persisted {
+			if order.State == core.WorkOrderClaimed || order.Claimable {
+				claimedOrClaimable++
+			}
+		}
+		if claimedOrClaimable != 0 {
+			t.Fatalf("competing claimed or claimable order survived completion: %+v", persisted)
+		}
+	})
+
+	t.Run("successor creation", func(t *testing.T) {
+		now := time.Now().UTC().Truncate(time.Microsecond)
+		task := core.Task{ID: core.NewTaskID(), Workspace: workspace, Repo: "conveyor", Branch: "conveyor/task-" + core.NewTaskID(), BaseBranch: "main", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: now.Add(-time.Hour)}
+		if err := st.CreateTask(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+		oldJob := core.Job{ID: task.ID + "-implement-1", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
+		newJob := core.Job{ID: task.ID + "-implement-2", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
+		for _, job := range []core.Job{oldJob, newJob} {
+			if err := st.CreateJob(ctx, job); err != nil {
+				t.Fatal(err)
+			}
+		}
+		oldOrder := core.WorkOrder{ID: oldJob.ID, TaskID: task.ID, JobID: oldJob.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: now.Add(-time.Minute), QueueDeadline: now.Add(time.Hour), CreatedAt: now.Add(-time.Minute)}
+		newOrder := core.WorkOrder{ID: newJob.ID, TaskID: task.ID, JobID: newJob.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now}
+		if err := storetest.For(st).CreateWorkOrder(ctx, oldOrder); err != nil {
+			t.Fatal(err)
+		}
+
+		start := make(chan struct{})
+		var ready sync.WaitGroup
+		ready.Add(2)
+		results := make(chan error, 2)
+		go func() {
+			ready.Done()
+			<-start
+			_, claimErr := storetest.For(st).ClaimWorkOrder(ctx, oldOrder.ID, core.WorkOrderClaim{SessionID: "old-session", ClientToken: "old-token", ClaimantID: "old-agent", Agent: "codex", Model: "gpt", Lease: time.Minute, ExecutionTimeout: time.Hour})
+			results <- claimErr
+		}()
+		go func() {
+			ready.Done()
+			<-start
+			results <- storetest.For(st).CreateWorkOrder(ctx, newOrder)
+		}()
+		ready.Wait()
+		close(start)
+		firstErr, secondErr := <-results, <-results
+		if (firstErr == nil) == (secondErr == nil) {
+			t.Fatalf("claim/create successes must be mutually exclusive: first=%v second=%v", firstErr, secondErr)
+		}
+		persisted, err := st.ListTaskWorkOrders(ctx, task.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		claimedOrClaimable := 0
+		for _, order := range persisted {
+			if order.State == core.WorkOrderClaimed || order.Claimable {
+				claimedOrClaimable++
+			}
+		}
+		if claimedOrClaimable != 1 {
+			t.Fatalf("successor race left %d competing claimed/claimable orders: %+v", claimedOrClaimable, persisted)
+		}
+	})
+}
 
 func TestRecoveryRejectsSupersededOrderAndAllowsLatestIntegration(t *testing.T) {
 	databaseURL := integrationDatabaseURL(t)
