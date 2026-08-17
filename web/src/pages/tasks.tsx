@@ -19,6 +19,7 @@ import {
   useWorkspaceSelection,
 } from '../components/app-shell'
 import { AssigneeChip } from '../components/task/assignee-chip'
+import { MCPSetup } from '../components/mcp/mcp-setup-dialog'
 import { ReturnedForChangesAttention } from '../components/task/returned-for-changes'
 import { TaskCreateSheet } from '../components/task/task-create-sheet'
 import type { TaskFilterState } from '../components/task/task-filters'
@@ -123,10 +124,13 @@ export function TasksPage() {
             {/* The server counts what the filters match, so the badge reports
                 the whole matching set rather than the page in hand. */}
             <Badge variant="mono">{page?.total ?? 0}</Badge>
+            <div className="ml-auto">
+              <MCPSetup />
+            </div>
             {/* Intake belongs to the surface where delivery is managed
                 (AC-2.1); it opens over this list, which stays behind it. */}
             {canOperate && (
-              <Link to="/tasks" search={{ create: true }} className="ml-auto">
+              <Link to="/tasks" search={{ create: true }}>
                 <Button size="sm" tabIndex={-1}>
                   <Plus />
                   New task

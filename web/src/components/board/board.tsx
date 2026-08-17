@@ -8,6 +8,7 @@ import { isBlueprintAnchor } from '../../lib/blueprint'
 import { type GroupKey, stageGroups } from '../../lib/contracts'
 import type { ActivitySummary } from '../../lib/types'
 import { useActivity, useTokenState, useWorkspaceSelection } from '../app-shell'
+import { MCPSetup } from '../mcp/mcp-setup-dialog'
 import { TaskCreateSheet } from '../task/task-create-sheet'
 import {
   boardDefaultTaskFilter,
@@ -82,6 +83,7 @@ export function Board() {
           fallback={boardDefaultTaskFilter}
           className="ml-auto"
         />
+        <MCPSetup />
         <Button size="sm" onClick={() => setCreating(true)}>
           <Plus />
           New task

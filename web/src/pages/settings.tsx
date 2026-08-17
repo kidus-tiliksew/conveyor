@@ -5,19 +5,14 @@ import { PersonalTokensCard } from '../components/settings/personal-tokens-card'
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import { CopyButton } from '../components/ui/copy-button'
 import { Input } from '../components/ui/input'
+import { mcpConnectionConfig, mcpEndpoint } from '../lib/mcp'
 
 export function SettingsPage() {
   const { token, setToken } = useTokenState()
   const { welcome } = useSearch({ from: '/settings' })
   const cliCommand = 'export CONVEYOR_API_TOKEN="<paste-your-token>"'
-  const mcpConfig = `{
-  "mcpServers": {
-    "conveyor": {
-      "url": "${location.origin}/mcp",
-      "headers": { "Authorization": "Bearer <paste-your-token>" }
-    }
-  }
-}`
+  const endpoint = mcpEndpoint(window.location.origin)
+  const mcpConfig = mcpConnectionConfig(endpoint).replace('<CONVEYOR_API_TOKEN>', '<paste-your-token>')
   return (
     <div className="h-full overflow-y-auto">
       <div className="mx-auto max-w-2xl px-6 py-8">
@@ -88,17 +83,12 @@ export function SettingsPage() {
           <CardContent className="space-y-2 text-sm leading-6 text-muted">
             <p>
               Connect each operator-owned coding-agent session to{' '}
-              <code className="font-mono text-xs text-foreground">{location.origin}/mcp</code> using the bearer token
-              above. Start a fresh session for review: Conveyor rejects self-review at claim time.
+              <code className="font-mono text-xs text-foreground">{endpoint}</code> using the bearer token above. Start
+              a fresh session for review: Conveyor rejects self-review at claim time.
             </p>
-            <pre className="overflow-x-auto rounded-md bg-background p-3 font-mono text-xs text-foreground">{`{
-  "mcpServers": {
-    "conveyor": {
-      "url": "${location.origin}/mcp",
-      "headers": { "Authorization": "Bearer <CONVEYOR_API_TOKEN>" }
-    }
-  }
-}`}</pre>
+            <pre className="overflow-x-auto rounded-md bg-background p-3 font-mono text-xs text-foreground">
+              {mcpConnectionConfig(endpoint)}
+            </pre>
           </CardContent>
         </Card>
       </div>
