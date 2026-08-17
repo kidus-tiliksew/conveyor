@@ -1865,7 +1865,7 @@ func (d *Dispatcher) dispatchConflictFixLocked(ctx context.Context, current core
 	if err != nil {
 		return core.WorkOrder{}, err
 	}
-	if recovery := store.InterruptedReviewRecoveryNeeded(store.CurrentReviewOrders(orders, events)); recovery != nil {
+	if recovery := store.InterruptedReviewRecoveryNeeded(current, store.CurrentReviewOrders(orders, events), events); recovery != nil {
 		if !dispatchState.RecoveryBlocked {
 			err = d.Store.AppendEvent(ctx, core.Event{TaskID: current.ID, Kind: "merge.conflict_recovery_blocked", Payload: core.JSONPayload(map[string]any{"workspace": current.Workspace, "task_id": current.ID, "reason_code": "merge-conflict", "approved_head": episode.ApprovedHead, "new_head": episode.NewHead, "review_round": recovery.ReviewRound, "error": recovery.Reason})})
 		}
