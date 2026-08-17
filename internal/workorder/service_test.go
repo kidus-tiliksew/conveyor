@@ -2685,6 +2685,28 @@ func TestSubmitVerdictReDerivesRunningFromLiveClaimAfterProjectionRegression(t *
 	if err != nil || order.State != core.WorkOrderCompleted {
 		t.Fatalf("review order after accepted verdict=%+v err=%v", order, err)
 	}
+	jobs, err := st.ListJobs(ctx, task.ID)
+	if err != nil || len(jobs) != 1 || jobs[0].State != core.JobDone || jobs[0].EndedAt.IsZero() {
+		t.Fatalf("review job after accepted verdict=%+v err=%v", jobs, err)
+	}
+	events, err := st.ListEvents(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	positions := map[string]int{}
+	for i, event := range events {
+		if _, exists := positions[event.Kind]; !exists {
+			positions[event.Kind] = i
+		}
+	}
+	for _, kind := range []string{"review.accepted", "work_order.updated", "job.updated", "review.round_completed"} {
+		if _, exists := positions[kind]; !exists {
+			t.Fatalf("missing %s in review settlement events", kind)
+		}
+	}
+	if positions["review.accepted"] >= positions["work_order.updated"] || positions["work_order.updated"] >= positions["job.updated"] || positions["job.updated"] >= positions["review.round_completed"] {
+		t.Fatalf("review settlement event order=%v", positions)
+	}
 }
 
 func TestSubmitVerdictRejectsMissingGovernancePinAndKeepsClaim(t *testing.T) {

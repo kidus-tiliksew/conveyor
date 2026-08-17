@@ -167,6 +167,14 @@ func TestClaimedReviewVerdictReDerivesRegressedTaskProjectionIntegration(t *test
 	if err != nil || current.State != core.TaskAwaiting {
 		t.Fatalf("task after verdict=%+v err=%v", current, err)
 	}
+	settledOrder, err := st.GetWorkOrder(ctx, order.ID)
+	if err != nil || settledOrder.State != core.WorkOrderCompleted {
+		t.Fatalf("review order after verdict=%+v err=%v", settledOrder, err)
+	}
+	settledJobs, err := st.ListJobs(ctx, task.ID)
+	if err != nil || len(settledJobs) != 1 || settledJobs[0].State != core.JobDone || settledJobs[0].EndedAt.IsZero() {
+		t.Fatalf("review job after verdict=%+v err=%v", settledJobs, err)
+	}
 
 	expiredTask := task
 	expiredTask.ID = core.NewTaskID()

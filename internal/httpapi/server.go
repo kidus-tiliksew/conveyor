@@ -1836,7 +1836,7 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, reviewItem{
 		Task: task, Jobs: jobs, Events: events, Interventions: interventions,
 		CheckoutCommand: checkoutCommand, CheckoutAvailable: checkoutAvailable, CheckoutGuidance: checkoutGuidance,
-		NeedsAttention:            task.State == core.TaskAwaiting || task.State == core.TaskParked || store.LatestForgeFailure(events) != nil || store.ReviewRecoveryNeeded(workOrders, events) != nil || store.InterruptedReviewRecoveryNeeded(workOrders) != nil || stalled != nil || store.UserRequestChangesPending(events) || pendingAuthority,
+		NeedsAttention:            task.State == core.TaskAwaiting || task.State == core.TaskParked || store.LatestForgeFailure(events) != nil || store.ReviewRecoveryNeeded(workOrders, events) != nil || store.InterruptedReviewRecoveryNeeded(task, workOrders, events) != nil || stalled != nil || store.UserRequestChangesPending(events) || pendingAuthority,
 		AtMergeGate:               store.AtMergeGate(task, events),
 		PendingAuthority:          pendingAuthority,
 		ForgeFailure:              store.LatestForgeFailure(events),
@@ -1844,7 +1844,7 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 		WorkOrders:                workOrders,
 		ReviewDiagnostics:         store.ReviewVerdictDiagnostics(workOrders, events, time.Now().UTC()),
 		ReviewRecovery:            store.ReviewRecoveryNeeded(workOrders, events),
-		InterruptedReviewRecovery: store.InterruptedReviewRecoveryNeeded(store.CurrentReviewOrders(workOrders, events)),
+		InterruptedReviewRecovery: store.InterruptedReviewRecoveryNeeded(task, store.CurrentReviewOrders(workOrders, events), events),
 		Stalled:                   stalled,
 		WorkerStatus:              workerStatus,
 		MergeReadiness:            mergeReadiness,

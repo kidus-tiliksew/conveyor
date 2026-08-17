@@ -360,7 +360,7 @@ func (s *Service) RecoverInterruptedReviewRound(ctx context.Context, taskID, req
 		return store.InterruptedReviewRecoveryResult{}, err
 	}
 	orders = store.CurrentReviewOrders(orders, events)
-	recovery := store.InterruptedReviewRecoveryNeeded(orders)
+	recovery := store.InterruptedReviewRecoveryNeeded(task, orders, events)
 	if recovery == nil {
 		// The store owns durable idempotency and may still return the original
 		// result after recovered seats have since been claimed.
@@ -1648,18 +1648,6 @@ func (s *Service) SubmitVerdict(ctx context.Context, id, session string, review 
 		return nil, fmt.Errorf("review job unavailable")
 	}
 	if err = s.Dispatcher.ApplyExternalReviewPinned(ctx, task, job, validated, order.ID, session, order.Model, order.ServedRequirementSnapshot, order.GovernanceSnapshot, true); err != nil {
-		return nil, err
-	}
-	order.State = core.WorkOrderCompleted
-	if err = guardedUpdateWorkOrder(ctx, s.Store, order, core.WorkOrderCmdSubmitReviewVerdict); err != nil {
-		return nil, err
-	}
-	job.State = core.JobDone
-	job.EndedAt = time.Now().UTC()
-	job.CostUSD = &order.CostUSD
-	job.TokensIn = order.TokensIn
-	job.TokensOut = order.TokensOut
-	if err = s.Store.UpdateJob(ctx, job); err != nil {
 		return nil, err
 	}
 	result := map[string]any{"verdict": validated.Verdict, "task_id": task.ID, "review_round": order.ReviewRound, "review_seat": order.ReviewSeat, "model_enforcement": order.ModelEnforcement}

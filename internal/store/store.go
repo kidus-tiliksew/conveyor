@@ -894,7 +894,13 @@ type memoryInterruptedReviewRecovery struct {
 	Result    InterruptedReviewRecoveryResult
 }
 
-func InterruptedReviewRecoveryNeeded(orders []core.WorkOrder) *InterruptedReviewRecoveryState {
+func InterruptedReviewRecoveryNeeded(task core.Task, orders []core.WorkOrder, events []core.Event) *InterruptedReviewRecoveryState {
+	// Recovery is an operator action for live work only. Historical review
+	// evidence remains visible after terminal delivery, but cannot mint more
+	// agent work (REQ-1/AC-1.3, REQ-6/AC-6.2; design-task-lifecycle).
+	if core.TaskTerminal(task.State) {
+		return nil
+	}
 	latest := 0
 	for _, order := range orders {
 		if order.Stage == core.StageReview && order.ReviewRound > latest {
@@ -911,8 +917,15 @@ func InterruptedReviewRecoveryNeeded(orders []core.WorkOrder) *InterruptedReview
 		EligibleOrders: make([]core.WorkOrder, 0),
 		RetainedOrders: make([]core.WorkOrder, 0),
 	}
+	verdicts := completedReviewWorkOrderIDs(events, latest)
 	for _, order := range orders {
 		if order.Stage != core.StageReview || order.ReviewRound != latest {
+			continue
+		}
+		// The append-only verdict is authoritative even if an older projection
+		// still says the seat is queued or claimed. Never recreate that seat.
+		if verdicts[order.ID] {
+			state.RetainedOrders = append(state.RetainedOrders, order)
 			continue
 		}
 		if order.State == core.WorkOrderClaimed || order.State == core.WorkOrderSubmitted {
@@ -934,6 +947,23 @@ func InterruptedReviewRecoveryNeeded(orders []core.WorkOrder) *InterruptedReview
 	sort.Slice(state.EligibleOrders, func(i, j int) bool { return state.EligibleOrders[i].ReviewSeat < state.EligibleOrders[j].ReviewSeat })
 	sort.Slice(state.RetainedOrders, func(i, j int) bool { return state.RetainedOrders[i].ReviewSeat < state.RetainedOrders[j].ReviewSeat })
 	return state
+}
+
+func completedReviewWorkOrderIDs(events []core.Event, round int) map[string]bool {
+	result := map[string]bool{}
+	for _, event := range events {
+		if event.Kind != "review.completed" {
+			continue
+		}
+		var payload struct {
+			ReviewWorkOrderID string `json:"review_work_order_id"`
+			ReviewRound       int    `json:"review_round"`
+		}
+		if json.Unmarshal(event.Payload, &payload) == nil && payload.ReviewWorkOrderID != "" && payload.ReviewRound == round {
+			result[payload.ReviewWorkOrderID] = true
+		}
+	}
+	return result
 }
 
 // ReviewRecoveryState is the actionable projection of a latest review round
@@ -1911,7 +1941,24 @@ func (m *memory) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.
 	if !ok || job.TaskID != decision.TaskID {
 		return fmt.Errorf("job %s does not belong to task %s", decision.JobID, decision.TaskID)
 	}
+	order := m.workOrders[decision.ReviewWorkOrderID]
+	if decision.ClaimSession != "" {
+		if order.ID == "" || order.TaskID != decision.TaskID || order.JobID != decision.JobID || order.Stage != core.StageReview {
+			return fmt.Errorf("review work order %s does not belong to task %s", decision.ReviewWorkOrderID, decision.TaskID)
+		}
+		if order.State != core.WorkOrderCompleted {
+			if _, err := core.TransitionWorkOrder(order.State, core.WorkOrderCmdSubmitReviewVerdict); err != nil {
+				return err
+			}
+		}
+		if job.State != core.JobDone {
+			if err := ValidateJobTransition(job.State, core.JobDone); err != nil {
+				return err
+			}
+		}
+	}
 	completed := false
+	accepted := false
 	for _, event := range m.events[decision.TaskID] {
 		var prior struct {
 			ReviewWorkOrderID string `json:"review_work_order_id"`
@@ -1920,14 +1967,19 @@ func (m *memory) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.
 			continue
 		}
 		if event.Kind == "review.accepted" {
-			return nil
+			accepted = true
 		}
 		completed = completed || event.Kind == "review.completed"
 	}
+	if accepted {
+		if decision.ClaimSession != "" {
+			return m.settleAcceptedReviewLocked(ctx, decision, order, job, time.Now().UTC())
+		}
+		return nil
+	}
 	if !completed {
 		if decision.ClaimSession != "" {
-			order, exists := m.workOrders[decision.ReviewWorkOrderID]
-			if !exists || order.TaskID != decision.TaskID || order.Stage != core.StageReview || order.State != core.WorkOrderClaimed || order.SessionID != decision.ClaimSession || !order.LeaseExpiresAt.After(time.Now()) {
+			if order.State != core.WorkOrderClaimed || order.SessionID != decision.ClaimSession || !order.LeaseExpiresAt.After(time.Now()) {
 				return ErrWorkOrderClaimLost
 			}
 			if task.State == core.TaskQueued {
@@ -1952,6 +2004,11 @@ func (m *memory) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.
 		}
 	}
 	m.appendEventLocked(ctx, core.Event{TaskID: task.ID, JobID: decision.JobID, Kind: "review.accepted", Payload: core.JSONPayload(map[string]any{"review_work_order_id": decision.ReviewWorkOrderID, "review_round": decision.ReviewRound, "review_seat": decision.ReviewSeat})})
+	if decision.ClaimSession != "" {
+		if err := m.settleAcceptedReviewLocked(ctx, decision, order, job, time.Now().UTC()); err != nil {
+			return err
+		}
+	}
 
 	reviews, required := m.completedReviewRoundLocked(decision.TaskID, decision.ReviewRound, decision.ReviewWorkOrderID)
 	if len(reviews) < required {
@@ -2040,6 +2097,29 @@ func (m *memory) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.
 	// the absent running -> approved table edge.
 	m.appendEventLocked(ctx, core.Event{TaskID: task.ID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": fromState, "to": state, "command": command})})
 	m.appendEventLocked(ctx, core.Event{TaskID: task.ID, Kind: "pipeline.transition_decided", Payload: core.JSONPayload(map[string]any{"from_stage": fromStage, "next_stage": next, "recovery_stage": recovery, "state": state, "review_work_order_id": decision.ReviewWorkOrderID})})
+	return nil
+}
+
+func (m *memory) settleAcceptedReviewLocked(ctx context.Context, decision core.ReviewDecision, order core.WorkOrder, job core.Job, now time.Time) error {
+	if order.State != core.WorkOrderCompleted {
+		next, err := core.TransitionWorkOrder(order.State, core.WorkOrderCmdSubmitReviewVerdict)
+		if err != nil {
+			return err
+		}
+		order.State, order.Claimable, order.OperatorDirection, order.UpdatedAt = next, false, "", now
+		m.workOrders[order.ID] = order
+		m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.updated", Payload: core.JSONPayload(order), At: now})
+	}
+	if job.State != core.JobDone {
+		if err := ValidateJobTransition(job.State, core.JobDone); err != nil {
+			return err
+		}
+		job.State, job.EndedAt = core.JobDone, now
+		job.CostUSD, job.TokensIn, job.TokensOut = &order.CostUSD, order.TokensIn, order.TokensOut
+		_, index, _ := m.findJobLocked(job.ID)
+		m.jobs[job.TaskID][index] = job
+		m.appendEventLocked(ctx, core.Event{TaskID: job.TaskID, JobID: job.ID, Kind: "job.updated", Payload: core.JSONPayload(job), At: now})
+	}
 	return nil
 }
 
@@ -2421,7 +2501,7 @@ func (m *memory) CreateConflictFixCommand(ctx context.Context, lease taskops.Tas
 			return ConflictFixResult{WorkOrder: existing}, nil
 		}
 	}
-	if InterruptedReviewRecoveryNeeded(CurrentReviewOrders(taskOrders, m.events[request.TaskID])) != nil {
+	if InterruptedReviewRecoveryNeeded(task, CurrentReviewOrders(taskOrders, m.events[request.TaskID]), m.events[request.TaskID]) != nil {
 		return ConflictFixResult{}, ErrConflictReviewRecovery
 	}
 	state, transitionCommand, err := core.TransitionConflictDispatch(task.State)
@@ -2604,17 +2684,31 @@ func (m *memory) RecoverInterruptedReviewRoundCommand(ctx context.Context, lease
 	if !ok || task.Workspace != workspace {
 		return InterruptedReviewRecoveryResult{}, fmt.Errorf("task %s not found", request.TaskID)
 	}
+	if core.TaskTerminal(task.State) {
+		return InterruptedReviewRecoveryResult{}, fmt.Errorf("%w: terminal task %s cannot recover review work", ErrReviewRetryConflict, request.TaskID)
+	}
 	now := time.Now().UTC()
+	latestRound := 0
+	for _, order := range m.workOrders {
+		if order.TaskID == request.TaskID && order.Stage == core.StageReview && order.ReviewRound > latestRound {
+			latestRound = order.ReviewRound
+		}
+	}
+	verdicts := completedReviewWorkOrderIDs(m.events[request.TaskID], latestRound)
 	var taskOrders []core.WorkOrder
 	for id, order := range m.workOrders {
 		if order.TaskID != request.TaskID || order.Stage != core.StageReview {
 			continue
 		}
-		order = m.refreshWorkOrderLocked(ctx, order, now)
-		m.workOrders[id] = order
+		// Durable verdict evidence owns the seat even when an old queue row's
+		// clocks have elapsed. Recovery must not rewrite that historical row.
+		if !verdicts[order.ID] {
+			order = m.refreshWorkOrderLocked(ctx, order, now)
+			m.workOrders[id] = order
+		}
 		taskOrders = append(taskOrders, order)
 	}
-	recovery := InterruptedReviewRecoveryNeeded(CurrentReviewOrders(taskOrders, m.events[request.TaskID]))
+	recovery := InterruptedReviewRecoveryNeeded(task, CurrentReviewOrders(taskOrders, m.events[request.TaskID]), m.events[request.TaskID])
 	if recovery == nil || recovery.ReviewRound != request.Round {
 		return InterruptedReviewRecoveryResult{}, fmt.Errorf("%w: task %s has no matching interrupted review round", ErrReviewRetryConflict, request.TaskID)
 	}
@@ -5292,7 +5386,7 @@ func (m *memory) ListActivityMarkers(ctx context.Context) ([]ActivityMarker, err
 		marker.ForgeFailure = LatestForgeFailure(m.events[id])
 		marker.ReviewDiagnostics = ReviewVerdictDiagnostics(ordersByTask[id], m.events[id], time.Now().UTC())
 		marker.ReviewRecovery = ReviewRecoveryNeeded(ordersByTask[id], m.events[id])
-		marker.InterruptedReviewRecovery = InterruptedReviewRecoveryNeeded(CurrentReviewOrders(ordersByTask[id], m.events[id]))
+		marker.InterruptedReviewRecovery = InterruptedReviewRecoveryNeeded(task, CurrentReviewOrders(ordersByTask[id], m.events[id]), m.events[id])
 		marker.Stalled = StalledTask(ordersByTask[id])
 		marker.UserChangesRequested = UserRequestChangesPending(m.events[id])
 		markers = append(markers, marker)

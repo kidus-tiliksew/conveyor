@@ -627,6 +627,33 @@ func TestInterruptedReviewRecoveryHTTPIsAuthorizedAtomicAndIdempotent(t *testing
 	}
 }
 
+func TestTerminalTaskHTTPRetainsReviewWithoutInterruptedRecovery(t *testing.T) {
+	st := store.NewMemory()
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	task := core.Task{ID: "merged-retained-review-http", Workspace: "demo", Repo: "api", State: core.TaskMerged, CreatedAt: time.Now().UTC()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: task.ID + "-review-1-seat-1", TaskID: task.ID, Stage: core.StageReview, State: core.JobPending}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	order := core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageReview, State: core.WorkOrderQueued, ReviewRound: 1, ReviewSeat: 1, RetrySuppressed: true}
+	createMemoryWorkOrderInState(t, st, ctx, order)
+	if err := st.AppendEvent(ctx, core.Event{TaskID: task.ID, JobID: job.ID, Kind: "review.completed", Payload: core.JSONPayload(map[string]any{
+		"review_work_order_id": order.ID, "review_round": 1, "review_seat": 1, "verdict": "approve", "summary": "retained approval",
+	})}); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(st)
+	server.Workspace = "demo"
+	activity := httptest.NewRecorder()
+	server.Handler().ServeHTTP(activity, httptest.NewRequest(http.MethodGet, "/v1/tasks/"+task.ID+"/activity?workspace_id=demo", nil))
+	if activity.Code != http.StatusOK || strings.Contains(activity.Body.String(), `"interrupted_review_recovery"`) || !strings.Contains(activity.Body.String(), `"summary":"retained approval"`) {
+		t.Fatalf("terminal review projection status=%d body=%s", activity.Code, activity.Body.String())
+	}
+}
+
 func TestSetTaskHoldTogglesReservationWithAudit(t *testing.T) {
 	st := store.NewMemory()
 	server := NewServer(st)

@@ -1062,14 +1062,14 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
                                       },
                                     ],
                                   }
-                                : taskId === 'interrupted-review'
+                                : taskId === 'interrupted-review' || taskId === 'merged-retained-review'
                                   ? {
                                       jobs: [
                                         {
                                           id: 'interrupted-review-review-1-seat-1',
                                           task_id: taskId,
                                           stage: 'review',
-                                          state: 'done',
+                                          state: taskId === 'merged-retained-review' ? 'pending' : 'done',
                                           cost_usd: 0,
                                           tokens_in: 0,
                                           tokens_out: 0,
@@ -1093,6 +1093,7 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
                                           actor_id: 'worker-1',
                                           actor_role: 'runner',
                                           payload: {
+                                            review_work_order_id: 'interrupted-review-review-1-seat-1',
                                             verdict: 'approve',
                                             summary: 'Completed verdict',
                                             feedback: 'Retain this verdict.',
@@ -1108,7 +1109,8 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
                                           task_id: taskId,
                                           job_id: 'interrupted-review-review-1-seat-1',
                                           stage: 'review',
-                                          state: 'completed',
+                                          state: taskId === 'merged-retained-review' ? 'queued' : 'completed',
+                                          retry_suppressed: taskId === 'merged-retained-review' ? true : undefined,
                                           review_round: 1,
                                           review_seat: 1,
                                           queue_entered_at: createdAt,
@@ -1565,11 +1567,13 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
                   taskId === 'spec-while-blocked' ||
                   taskId === 'unsatisfiable'
                 ? 'queued'
-                : taskId === 'merge-request-changes'
-                  ? 'awaiting_human'
-                  : taskId.startsWith('merge-')
-                    ? 'approved'
-                    : 'running',
+                : taskId === 'merged-retained-review'
+                  ? 'merged'
+                  : taskId === 'merge-request-changes'
+                    ? 'awaiting_human'
+                    : taskId.startsWith('merge-')
+                      ? 'approved'
+                      : 'running',
       next_stage: taskId === 'parked' ? '' : 'implement',
       recovery_stage: taskId === 'parked' ? 'triage' : taskId === 'merge-request-changes' ? 'implement' : '',
       // The head the factory judged, durable on the task itself once review
@@ -2589,6 +2593,13 @@ test('interrupted review round offers one same-round recovery and retains comple
   await action.click()
   await expect.poll(() => recoveryRequest).toContain('request_id')
   await expect(page.getByText(/Recovered 1 interrupted seat; 1 completed verdict retained/)).toBeVisible()
+})
+
+test('merged task retains historical approval without interrupted review recovery', async ({ page }) => {
+  await page.goto('/tasks/merged-retained-review/full')
+  await expect(page.getByText('Retain this verdict.')).toBeVisible()
+  await expect(page.getByTitle('Completed verdict')).toHaveText('Approved')
+  await expect(page.getByRole('button', { name: 'Recover interrupted review round' })).toHaveCount(0)
 })
 
 test('interrupted review recovery tolerates legacy null empty collections', async ({ page }) => {

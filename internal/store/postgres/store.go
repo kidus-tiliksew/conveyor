@@ -3160,14 +3160,40 @@ func (s *Store) listActivityMarkers(ctx context.Context, taskIDs []string) ([]st
 		return nil, err
 	}
 	markerRows.Close()
+	taskIDsForState := make([]string, 0, len(rows))
+	for _, row := range rows {
+		taskIDsForState = append(taskIDsForState, row.taskID)
+	}
+	taskStates := make(map[string]core.TaskState, len(taskIDsForState))
+	if len(taskIDsForState) > 0 {
+		stateRows, stateErr := s.pool.Query(ctx, `SELECT id,state FROM tasks WHERE workspace_id=$1 AND id=ANY($2::text[])`, workspace(ctx), taskIDsForState)
+		if stateErr != nil {
+			return nil, stateErr
+		}
+		for stateRows.Next() {
+			var taskID string
+			var state core.TaskState
+			if stateErr = stateRows.Scan(&taskID, &state); stateErr != nil {
+				stateRows.Close()
+				return nil, stateErr
+			}
+			taskStates[taskID] = state
+		}
+		if stateErr = stateRows.Err(); stateErr != nil {
+			stateRows.Close()
+			return nil, stateErr
+		}
+		stateRows.Close()
+	}
 	result := make([]store.ActivityMarker, len(rows))
 	for i, row := range rows {
+		task := core.Task{ID: row.taskID, State: taskStates[row.taskID]}
 		result[i] = store.ActivityMarker{
 			TaskID: row.taskID, LatestStage: core.Stage(row.latestStage), LastEventAt: row.lastEventAt,
 			ForgeFailure:              store.LatestForgeFailure(forgeEventsByTask[row.taskID]),
 			ReviewDiagnostics:         store.ReviewVerdictDiagnostics(ordersByTask[row.taskID], eventsByTask[row.taskID], time.Now().UTC()),
 			ReviewRecovery:            store.ReviewRecoveryNeeded(ordersByTask[row.taskID], eventsByTask[row.taskID]),
-			InterruptedReviewRecovery: store.InterruptedReviewRecoveryNeeded(store.CurrentReviewOrders(ordersByTask[row.taskID], eventsByTask[row.taskID])),
+			InterruptedReviewRecovery: store.InterruptedReviewRecoveryNeeded(task, store.CurrentReviewOrders(ordersByTask[row.taskID], eventsByTask[row.taskID]), eventsByTask[row.taskID]),
 			Stalled:                   store.StalledTask(ordersByTask[row.taskID]),
 			UserChangesRequested:      store.UserRequestChangesPending(requestEventsByTask[row.taskID]),
 		}
@@ -3814,7 +3840,7 @@ func (s *Store) CreateConflictFixCommand(ctx context.Context, lease taskops.Task
 		for i := range eventRows {
 			events[i] = eventFromDB(eventRows[i])
 		}
-		if store.InterruptedReviewRecoveryNeeded(store.CurrentReviewOrders(orders, events)) != nil {
+		if store.InterruptedReviewRecoveryNeeded(taskFromDB(before), store.CurrentReviewOrders(orders, events), events) != nil {
 			return store.ErrConflictReviewRecovery
 		}
 		state, transitionCommand, err := core.TransitionConflictDispatch(core.TaskState(before.State))
@@ -4115,6 +4141,23 @@ func (s *Store) RecoverInterruptedReviewRoundCommand(ctx context.Context, lease 
 	if _, err = tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtextextended($1,0))", "conveyor:interrupted-review-task:"+workspaceID+":"+request.TaskID); err != nil {
 		return store.InterruptedReviewRecoveryResult{}, err
 	}
+	q := s.queries.WithTx(tx)
+	taskRow, err := q.GetTask(ctx, db.GetTaskParams{ID: request.TaskID, WorkspaceID: workspaceID})
+	if err != nil {
+		return store.InterruptedReviewRecoveryResult{}, notFound(err, "task %s", request.TaskID)
+	}
+	recoveryTask := taskFromDB(taskRow)
+	if core.TaskTerminal(recoveryTask.State) {
+		return store.InterruptedReviewRecoveryResult{}, fmt.Errorf("%w: terminal task %s cannot recover review work", store.ErrReviewRetryConflict, request.TaskID)
+	}
+	eventRows, err := q.ListEvents(ctx, db.ListEventsParams{TaskID: nullableText(request.TaskID), WorkspaceID: workspaceID})
+	if err != nil {
+		return store.InterruptedReviewRecoveryResult{}, err
+	}
+	events := make([]core.Event, len(eventRows))
+	for i := range eventRows {
+		events[i] = eventFromDB(eventRows[i])
+	}
 	var latest int
 	if err = tx.QueryRow(ctx, `SELECT COALESCE(max(review_round),0) FROM work_orders WHERE workspace_id=$1 AND task_id=$2 AND stage='review'`, workspaceID, request.TaskID).Scan(&latest); err != nil {
 		return store.InterruptedReviewRecoveryResult{}, err
@@ -4150,7 +4193,7 @@ func (s *Store) RecoverInterruptedReviewRoundCommand(ctx context.Context, lease 
 			currentOrders = append(currentOrders, order)
 		}
 	}
-	recovery := store.InterruptedReviewRecoveryNeeded(currentOrders)
+	recovery := store.InterruptedReviewRecoveryNeeded(recoveryTask, currentOrders, events)
 	if recovery == nil || recovery.ReviewRound != request.Round {
 		return store.InterruptedReviewRecoveryResult{}, fmt.Errorf("%w: task %s has no recoverable interrupted review seats or has a conflicting active attempt", store.ErrReviewRetryConflict, request.TaskID)
 	}
@@ -4163,12 +4206,6 @@ func (s *Store) RecoverInterruptedReviewRoundCommand(ctx context.Context, lease 
 		RetainedOrders:  append(make([]core.WorkOrder, 0, len(recovery.RetainedOrders)), recovery.RetainedOrders...),
 	}
 	actor := store.ActorFromContext(ctx)
-	q := s.queries.WithTx(tx)
-	taskRow, err := q.GetTask(ctx, db.GetTaskParams{ID: request.TaskID, WorkspaceID: workspaceID})
-	if err != nil {
-		return store.InterruptedReviewRecoveryResult{}, notFound(err, "task %s", request.TaskID)
-	}
-	recoveryTask := taskFromDB(taskRow)
 	for _, eligible := range recovery.EligibleOrders {
 		change := request.Refreezes[eligible.ID]
 		if change == nil {
@@ -5367,9 +5404,6 @@ func (s *Store) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.T
 		)`, workspace(ctx), decision.TaskID, decision.ReviewWorkOrderID).Scan(&completed, &accepted); err != nil {
 			return err
 		}
-		if accepted {
-			return nil
-		}
 		before, err := q.GetTask(ctx, db.GetTaskParams{ID: decision.TaskID, WorkspaceID: workspace(ctx)})
 		if err != nil {
 			return notFound(err, "task %s", decision.TaskID)
@@ -5378,9 +5412,21 @@ func (s *Store) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.T
 		if err != nil || job.TaskID != decision.TaskID {
 			return fmt.Errorf("job %s does not belong to task %s in workspace %s", decision.JobID, decision.TaskID, workspace(ctx))
 		}
+		var order core.WorkOrder
 		if decision.ClaimSession != "" {
-			order, orderErr := scanWorkOrder(tx.QueryRow(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND id=$2 FOR UPDATE", workspace(ctx), decision.ReviewWorkOrderID))
-			if orderErr != nil || order.TaskID != decision.TaskID || order.Stage != core.StageReview || order.State != core.WorkOrderClaimed || order.SessionID != decision.ClaimSession || !order.LeaseExpiresAt.After(time.Now()) {
+			order, err = scanWorkOrder(tx.QueryRow(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND id=$2 FOR UPDATE", workspace(ctx), decision.ReviewWorkOrderID))
+			if err != nil || order.TaskID != decision.TaskID || order.JobID != decision.JobID || order.Stage != core.StageReview {
+				return fmt.Errorf("review work order %s does not belong to task %s in workspace %s", decision.ReviewWorkOrderID, decision.TaskID, workspace(ctx))
+			}
+		}
+		if accepted {
+			if decision.ClaimSession != "" {
+				return s.settleAcceptedReviewTx(ctx, tx, q, order, jobFromDB(job), time.Now().UTC())
+			}
+			return nil
+		}
+		if decision.ClaimSession != "" {
+			if order.State != core.WorkOrderClaimed || order.SessionID != decision.ClaimSession || !order.LeaseExpiresAt.After(time.Now()) {
 				return store.ErrWorkOrderClaimLost
 			}
 			if core.TaskState(before.State) == core.TaskQueued {
@@ -5404,6 +5450,11 @@ func (s *Store) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.T
 		}
 		if err := insertEvent(ctx, q, core.Event{TaskID: decision.TaskID, JobID: decision.JobID, Kind: "review.accepted", Payload: core.JSONPayload(map[string]any{"review_work_order_id": decision.ReviewWorkOrderID, "review_round": decision.ReviewRound, "review_seat": decision.ReviewSeat})}); err != nil {
 			return err
+		}
+		if decision.ClaimSession != "" {
+			if err := s.settleAcceptedReviewTx(ctx, tx, q, order, jobFromDB(job), time.Now().UTC()); err != nil {
+				return err
+			}
 		}
 		reviews, required, err := completedReviewRoundTx(ctx, tx, workspace(ctx), decision.TaskID, decision.ReviewRound, decision.ReviewWorkOrderID)
 		if err != nil {
@@ -5520,6 +5571,41 @@ func (s *Store) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.T
 		}
 		return nil
 	})
+}
+
+func (s *Store) settleAcceptedReviewTx(ctx context.Context, tx pgx.Tx, q *db.Queries, order core.WorkOrder, job core.Job, now time.Time) error {
+	if order.State != core.WorkOrderCompleted {
+		next, err := core.TransitionWorkOrder(order.State, core.WorkOrderCmdSubmitReviewVerdict)
+		if err != nil {
+			return err
+		}
+		order.State, order.Claimable, order.OperatorDirection, order.UpdatedAt = next, false, "", now
+		tag, err := tx.Exec(ctx, `UPDATE work_orders SET state=$1,operator_direction='',updated_at=$2
+			WHERE workspace_id=$3 AND id=$4 AND state=$5`, order.State, now, workspace(ctx), order.ID, core.WorkOrderClaimed)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() != 1 {
+			return fmt.Errorf("work order %s changed while accepting its review verdict", order.ID)
+		}
+		if err = insertEvent(ctx, q, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.updated", Payload: core.JSONPayload(order), At: now}); err != nil {
+			return err
+		}
+	}
+	if job.State != core.JobDone {
+		if err := store.ValidateJobTransition(job.State, core.JobDone); err != nil {
+			return err
+		}
+		job.State, job.EndedAt = core.JobDone, now
+		job.CostUSD, job.TokensIn, job.TokensOut = &order.CostUSD, order.TokensIn, order.TokensOut
+		if _, err := q.UpdateJob(ctx, jobUpdateParams(job, workspace(ctx))); err != nil {
+			return err
+		}
+		if err := insertEvent(ctx, q, core.Event{TaskID: job.TaskID, JobID: job.ID, Kind: "job.updated", Payload: core.JSONPayload(job), At: now}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 type completedReviewRecord struct {

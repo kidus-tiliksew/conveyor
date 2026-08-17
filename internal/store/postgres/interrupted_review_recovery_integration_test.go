@@ -3,7 +3,6 @@ package postgres
 import (
 	"context"
 	"errors"
-	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	"sync"
 	"testing"
 	"time"
@@ -11,6 +10,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
@@ -97,5 +97,69 @@ func TestInterruptedReviewRecoveryPersistenceIntegration(t *testing.T) {
 	recovered, _ := st.GetWorkOrder(ctx, orders[1].ID)
 	if retained.State != core.WorkOrderCompleted || recovered.State != core.WorkOrderQueued || recovered.RetrySuppressed || !recovered.Claimable {
 		t.Fatalf("retained=%+v recovered=%+v", retained, recovered)
+	}
+}
+
+func TestInterruptedReviewRecoveryRejectsTerminalTaskWithoutWritesIntegration(t *testing.T) {
+	st, err := Open(t.Context(), integrationDatabaseURL(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	workspace := "terminal-interrupted-review-" + core.NewTaskID()
+	ctx := store.WithActor(store.WithWorkspace(t.Context(), workspace), store.Actor{ID: "operator-pg", Role: core.ActorHuman})
+	if _, err = st.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "repo", Base: "main"}}}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	task := core.Task{ID: core.NewTaskID(), Workspace: workspace, Repo: "repo", State: core.TaskMerged, CreatedAt: now}
+	task.Branch = "conveyor/task-" + task.ID
+	if err = st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: task.ID + "-review-1-seat-1", TaskID: task.ID, Stage: core.StageReview, State: core.JobPending}
+	order := core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageReview, ReviewRound: 1, ReviewSeat: 1, RetrySuppressed: true, QueueEnteredAt: now.Add(-2 * time.Hour), QueueDeadline: now.Add(-time.Hour)}
+	if err = storetest.For(st).CreateReviewRound(ctx, task.ID, []core.Job{job}, []core.WorkOrder{order}); err != nil {
+		t.Fatal(err)
+	}
+	beforeOrder, err := st.GetWorkOrder(ctx, order.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeJobs, err := st.ListJobs(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = st.AppendEvent(ctx, core.Event{TaskID: task.ID, JobID: job.ID, Kind: "review.completed", Payload: core.JSONPayload(map[string]any{
+		"review_work_order_id": order.ID, "review_round": 1, "review_seat": 1, "verdict": "approve",
+	})}); err != nil {
+		t.Fatal(err)
+	}
+	beforeEventRows, err := st.ListEvents(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = storetest.For(st).RecoverInterruptedReviewRound(ctx, store.InterruptedReviewRecoveryRequest{TaskID: task.ID, RequestID: "terminal-recovery", Round: 1}, time.Hour)
+	if !errors.Is(err, store.ErrReviewRetryConflict) {
+		t.Fatalf("recovery error=%v", err)
+	}
+	afterEventRows, err := st.ListEvents(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persisted, err := st.GetWorkOrder(ctx, order.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobs, err := st.ListJobs(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var recoveries int
+	if err = st.pool.QueryRow(ctx, `SELECT count(*) FROM interrupted_review_recoveries WHERE workspace_id=$1 AND task_id=$2`, workspace, task.ID).Scan(&recoveries); err != nil {
+		t.Fatal(err)
+	}
+	if len(afterEventRows) != len(beforeEventRows) || persisted.State != beforeOrder.State || persisted.RetrySuppressed != beforeOrder.RetrySuppressed || persisted.QueueEnteredAt != beforeOrder.QueueEnteredAt || persisted.QueueDeadline != beforeOrder.QueueDeadline || len(jobs) != len(beforeJobs) || jobs[0].State != beforeJobs[0].State || recoveries != 0 {
+		t.Fatalf("terminal recovery wrote state: events %d->%d order=%+v jobs=%+v recoveries=%d", len(beforeEventRows), len(afterEventRows), persisted, jobs, recoveries)
 	}
 }
