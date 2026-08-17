@@ -5175,7 +5175,12 @@ func (m *memory) ListActivityMarkers(ctx context.Context) ([]ActivityMarker, err
 	markers := make([]ActivityMarker, 0, len(m.tasks))
 	for id, task := range m.tasks {
 		marker := ActivityMarker{TaskID: id, LastEventAt: task.CreatedAt}
-		if jobs := append([]core.Job(nil), m.jobs[id]...); len(jobs) != 0 {
+		for _, order := range ordersByTask[id] {
+			if order.State == core.WorkOrderClaimed {
+				marker.LatestStage = order.Stage
+			}
+		}
+		if jobs := append([]core.Job(nil), m.jobs[id]...); marker.LatestStage == "" && len(jobs) != 0 {
 			sortJobs(jobs)
 			marker.LatestStage = jobs[len(jobs)-1].Stage
 		}

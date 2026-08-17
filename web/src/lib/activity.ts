@@ -63,7 +63,7 @@ export function groupForSummary(item: ActivitySummary): GroupKey {
   if (state === 'awaiting_human' || state === 'approved' || state === 'parked') return 'human'
   if (state === 'merged' || state === 'closed') return 'done'
   const stage =
-    item.task.state === 'queued'
+    item.task.state === 'queued' || item.task.state === 'running'
       ? (item.task.next_stage ?? item.latest_stage)
       : (item.latest_stage ?? item.task.next_stage)
   switch (stage) {

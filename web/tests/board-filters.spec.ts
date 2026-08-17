@@ -221,6 +221,41 @@ test('board orders each stage by creation time rather than latest activity', asy
   ])
 })
 
+test('running cards use the in-flight stage when latest stage is stale', async ({ page }) => {
+  const seen: string[] = []
+  await page.addInitScript(() => {
+    localStorage.setItem('conveyor-workspace', 'demo')
+    sessionStorage.setItem('conveyor-token', 'test-token')
+  })
+  await routeBoard(page, seen)
+  await page.route('**/v1/activity?**', (route) =>
+    route.fulfill({
+      headers: { 'X-Conveyor-Total': '1', 'X-Conveyor-Limit': '100', 'X-Conveyor-Offset': '0' },
+      json: [
+        {
+          task: {
+            id: 'task-running-review',
+            workspace: 'demo',
+            source: 'operator',
+            title: 'Running external review',
+            repo: 'conveyor',
+            branch: 'conveyor/task-running-review',
+            state: 'running',
+            next_stage: 'review',
+            created_at: '2026-08-16T10:00:00Z',
+          },
+          latest_stage: 'spec',
+          last_event_at: '2026-08-16T11:00:00Z',
+          needs_attention: false,
+        },
+      ],
+    }),
+  )
+  await page.goto('/')
+  await expect(page.getByRole('region', { name: 'Reviewing' })).toContainText('Running external review')
+  await expect(page.getByRole('region', { name: 'Plan' })).not.toContainText('Running external review')
+})
+
 test('board pages a bounded activity window and reports its position', async ({ page }) => {
   const seen: string[] = []
   await page.addInitScript(() => {
