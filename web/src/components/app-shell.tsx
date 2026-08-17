@@ -392,6 +392,7 @@ function NavSidebar() {
   // total. Reading it here avoids mounting a second unfiltered activity query
   // beside the Board's filter-keyed activity request.
   const attention = proposals?.attention?.total ?? 0
+  const pendingProposalAttention = proposals?.attention?.pending_proposal_count ?? 0
   const requirementAttention = new Set(
     (proposals?.items ?? []).filter((item) => item.tier === 'requirement').map((item) => item.id),
   ).size
@@ -425,7 +426,9 @@ function NavSidebar() {
           {requirementAttention > 0 && <Badge variant="attention">{requirementAttention}</Badge>}
         </NavItem>
         <NavItem to="/system-design" icon={FileCode2} label="System Design" />
-        <NavItem to="/pending-proposals" icon={BellRing} label="Pending proposals" />
+        <NavItem to="/pending-proposals" icon={BellRing} label="Pending proposals">
+          {pendingProposalAttention > 0 && <Badge variant="attention">{pendingProposalAttention}</Badge>}
+        </NavItem>
         {/* Exactly the operating surfaces §21.61 accepts, and no others
             (REQ-4, AC-4.1). Planning and Blueprint history are parked, not
             retired: their routes stay mounted for deep links, the §21.49
