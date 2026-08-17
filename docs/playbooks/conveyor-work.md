@@ -33,6 +33,64 @@ the task branch bare.
 Use `report_progress` at meaningful milestones. Usage reporting is
 observational and best-effort; it does not replace lifecycle completion.
 
+## Keep scratch data outside checkouts
+
+At the start of every claimed loop, create one task-specific scratch root with
+the shape `$XDG_CACHE_HOME/conveyor/<task-id>` (defaulting to
+`$HOME/.cache/conveyor/<task-id>`). It must be outside both the shared primary
+checkout and the dedicated task worktree, and it must live on a disk-backed
+filesystem rather than `tmpfs`, `ramfs`, or another RAM-backed temporary
+mount. Resolve the candidate and both checkout paths to canonical absolute
+paths before use; stop and report the problem if the candidate is inside a
+checkout or its backing filesystem cannot be established as disk-backed.
+
+On Linux, `findmnt -T "$CONVEYOR_TASK_CACHE" -o TARGET,SOURCE,FSTYPE,OPTIONS`
+provides the required mount check. Use the platform's equivalent mount or
+filesystem inspection on other hosts. Do not silently fall back to `/tmp`.
+
+Create separate children and export every cache variable before any build or
+test command. Preserve the operator's `XDG_CACHE_HOME`; derive the task root
+from it instead of replacing it:
+
+```sh
+task_id='<task-id>'
+cache_base="${XDG_CACHE_HOME:-$HOME/.cache}/conveyor"
+export CONVEYOR_TASK_CACHE="$cache_base/$task_id"
+mkdir -p "$CONVEYOR_TASK_CACHE"/{go-build,go-tmp,tmp,playwright,npm}
+
+export GOCACHE="$CONVEYOR_TASK_CACHE/go-build"
+export GOTMPDIR="$CONVEYOR_TASK_CACHE/go-tmp"
+export TMPDIR="$CONVEYOR_TASK_CACHE/tmp"
+export PLAYWRIGHT_BROWSERS_PATH="$CONVEYOR_TASK_CACHE/playwright"
+export npm_config_cache="$CONVEYOR_TASK_CACHE/npm"
+```
+
+`PLAYWRIGHT_BROWSERS_PATH` controls the browser download used by this
+repository's `npx playwright install` command, while `npm_config_cache` routes
+npm/npx package cache data. Generated logs, reports, archives, review clones,
+and other disposable artifacts belong under `CONVEYOR_TASK_CACHE` too, unless
+the work-order contract requires a tracked repository output.
+
+Register cleanup for normal exit, command failure, and catchable interruption,
+and also remove the directory explicitly when the claim concludes. Before a
+recursive removal, canonicalize and verify that the target is exactly the
+current task's child of the selected `conveyor` cache base; never remove the
+base or another task's directory. A process killed without a catchable signal
+cannot run cleanup, so at the next claim entry inspect and remove only a stale
+directory for the same task after confirming no live process uses it.
+
+If a confined sandbox denies the sanctioned external path, first request
+write permission scoped only to that exact task cache directory. Only when
+that permission is unavailable may the session use a last-resort directory at
+the task worktree root named `.codex-cache-<task-id>/` (or the corresponding
+`.claude-<purpose>/` or `.grok-<purpose>/` harness form). Never put the fallback
+in the shared primary checkout. Before generating anything, require both
+`git check-ignore -q <fallback-path>` and an empty
+`git status --porcelain --untracked-files=normal`; repeat the status check
+after creating a probe file. If Git can see the fallback, remove it and stop
+rather than dirtying either checkout. Apply the same guarded cleanup rules to
+this fallback when the claim ends.
+
 ## Keep the lease alive
 
 The claim lease is short-lived and renewable. The repository default is five
@@ -95,7 +153,7 @@ changes, drift resolution, review judgment by the implementer, and merge are
 operator or independent-review acts. Never perform, simulate, or report those
 acts as completed.
 
-This loop implements `req-260811-0ee057` v15 REQ-12/AC-12.4 and the shared
+This loop implements `req-260811-0ee057` v16 REQ-12/AC-12.4 and the shared
 distribution rules in AC-12.1 and AC-12.3, preserves the executor proposal
 boundary in AC-1.5, and parallels the REQ-5 run path. The work-order mechanism
 remains governed by `design-260805-973cd4`; this playbook changes no lifecycle

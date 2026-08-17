@@ -65,6 +65,41 @@ func TestEmbeddedSkillsMatchRepositorySources(t *testing.T) {
 	}
 }
 
+func TestConveyorWorkSkillShipsScratchDiscipline(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	destinations := skillDestinations(base, supportedSkillTools)
+	if _, _, err := installEmbeddedSkillsForDestinations(base, destinations, "v1", false); err != nil {
+		t.Fatal(err)
+	}
+
+	required := []string{
+		"$XDG_CACHE_HOME/conveyor/<task-id>",
+		"$HOME/.cache/conveyor/<task-id>",
+		"GOCACHE",
+		"GOTMPDIR",
+		"TMPDIR",
+		"PLAYWRIGHT_BROWSERS_PATH",
+		"npm_config_cache",
+		"findmnt -T",
+		"write permission scoped only to that exact task cache directory",
+		"git check-ignore -q <fallback-path>",
+		"git status --porcelain --untracked-files=normal",
+		"normal exit, command failure, and catchable interruption",
+	}
+	for _, destination := range destinations {
+		content, err := os.ReadFile(filepath.Join(destination.root, "conveyor-work", "conveyor-work.md"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, fragment := range required {
+			if !bytes.Contains(content, []byte(fragment)) {
+				t.Errorf("%s installed conveyor-work playbook missing %q", destination.tool.name, fragment)
+			}
+		}
+	}
+}
+
 func TestInstallEmbeddedSkillsCreateNoopAndRefresh(t *testing.T) {
 	t.Parallel()
 	base := t.TempDir()

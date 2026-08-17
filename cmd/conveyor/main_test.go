@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -487,6 +488,49 @@ func TestCheckoutFailsSafelyForDirtyInProgressAndExistingPaths(t *testing.T) {
 			t.Fatalf("checkout error = %v", err)
 		}
 	})
+}
+
+func TestCheckoutIgnoresHarnessScratchButRejectsOtherExhaust(t *testing.T) {
+	_, currentFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("resolve test source path")
+	}
+	ignore, err := os.ReadFile(filepath.Join(filepath.Dir(currentFile), "..", "..", ".gitignore"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fixture := newGitFixture(t)
+	writeFile(t, filepath.Join(fixture.primary, ".gitignore"), string(ignore))
+	mustGit(t, fixture.primary, "add", ".gitignore")
+	mustGit(t, fixture.primary, "commit", "-m", "test fixture ignores")
+	mustGit(t, fixture.primary, "push", "origin", "main")
+
+	if err := os.Mkdir(filepath.Join(fixture.primary, ".codex-go-cache"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(fixture.primary, ".codex-go-cache", "entry"), "ignored\n")
+	branch := "conveyor/task-ignored-harness-scratch"
+	destination, err := checkoutTask(context.Background(), branch, "main", "conveyor", fixture.origin, "ignored-harness-scratch", "")
+	if err != nil {
+		t.Fatalf("ignored primary scratch blocked checkout: %v", err)
+	}
+
+	if err := os.Mkdir(filepath.Join(destination, ".codex-go-cache"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(destination, ".codex-go-cache", "entry"), "ignored\n")
+	if _, err = checkoutTask(context.Background(), branch, "main", "conveyor", fixture.origin, "ignored-harness-scratch", ""); err != nil {
+		t.Fatalf("ignored task-worktree scratch blocked checkout: %v", err)
+	}
+
+	if err := os.Mkdir(filepath.Join(destination, "unignored-exhaust"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(destination, "unignored-exhaust", "entry"), "visible\n")
+	if _, err = checkoutTask(context.Background(), branch, "main", "conveyor", fixture.origin, "ignored-harness-scratch", ""); err == nil || !strings.Contains(err.Error(), "uncommitted") {
+		t.Fatalf("unignored task-worktree exhaust was accepted: %v", err)
+	}
 }
 
 func TestCheckoutRejectsDivergentLocalAndRemoteTaskBranches(t *testing.T) {
