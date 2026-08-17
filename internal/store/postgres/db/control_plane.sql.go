@@ -894,6 +894,13 @@ const listActivityMarkers = `-- name: ListActivityMarkers :many
 SELECT
     t.id AS task_id,
     COALESCE((
+        SELECT w.stage FROM work_orders w
+        WHERE w.workspace_id = t.workspace_id
+          AND w.task_id = t.id
+          AND w.state = 'claimed'
+        ORDER BY w.execution_started_at DESC NULLS LAST, w.created_at DESC, w.id DESC
+        LIMIT 1
+    ), (
         SELECT j.stage FROM jobs j
         WHERE j.task_id = t.id
         ORDER BY j.started_at DESC, j.id DESC
