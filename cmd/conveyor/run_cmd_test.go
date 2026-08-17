@@ -1,8 +1,12 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -16,6 +20,52 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
 )
+
+type promptSignalWriter struct {
+	once  sync.Once
+	ready chan struct{}
+}
+
+func (w *promptSignalWriter) Write(p []byte) (int, error) {
+	if strings.Contains(string(p), "Proceed with implement?") {
+		w.once.Do(func() { close(w.ready) })
+	}
+	return len(p), nil
+}
+
+func TestConfirmRunStageCancellationDeclinesWithoutWaitingForInput(t *testing.T) {
+	reader, writer := io.Pipe()
+	t.Cleanup(func() {
+		_ = reader.Close()
+		_ = writer.Close()
+	})
+	ctx, cancel := context.WithCancel(t.Context())
+	output := &promptSignalWriter{ready: make(chan struct{})}
+	result := make(chan error, 1)
+	go func() {
+		confirmed, err := confirmRunStage(ctx, bufio.NewReader(reader), output, core.StageImplement)
+		if confirmed {
+			result <- fmt.Errorf("cancelled prompt was confirmed")
+			return
+		}
+		result <- err
+	}()
+
+	select {
+	case <-output.ready:
+	case <-time.After(time.Second):
+		t.Fatal("prompt was not written")
+	}
+	cancel()
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cancelled prompt remained blocked on input")
+	}
+}
 
 func TestConfiguredFirstActivityTimeoutRejectsInvalidAndNonPositiveText(t *testing.T) {
 	for _, value := range []string{"eventually", "0s", "-1s"} {

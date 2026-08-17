@@ -3047,7 +3047,13 @@ func (s *Store) listActivityMarkers(ctx context.Context, taskIDs []string) ([]st
 		}
 	} else {
 		selected, err := s.pool.Query(ctx, `SELECT t.id,
-			COALESCE((SELECT j.stage FROM jobs j WHERE j.task_id=t.id ORDER BY j.started_at DESC,j.id DESC LIMIT 1),'')::text,
+			COALESCE(
+				(SELECT w.stage FROM work_orders w WHERE w.workspace_id=t.workspace_id AND w.task_id=t.id
+					AND w.task_id=ANY($2::text[]) AND w.state='claimed'
+					ORDER BY w.execution_started_at DESC NULLS LAST,w.created_at DESC,w.id DESC LIMIT 1),
+				(SELECT j.stage FROM jobs j WHERE j.task_id=t.id ORDER BY j.started_at DESC,j.id DESC LIMIT 1),
+				''
+			)::text,
 			COALESCE((SELECT e.at FROM events e WHERE e.task_id=t.id ORDER BY e.id DESC LIMIT 1),t.created_at)::timestamptz
 			FROM tasks t WHERE t.workspace_id=$1 AND t.id=ANY($2::text[]) ORDER BY t.created_at,t.id`, workspace(ctx), taskIDs)
 		if err != nil {

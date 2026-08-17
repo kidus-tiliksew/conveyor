@@ -396,6 +396,53 @@ func TestActivityMarkersForTasksScopeEveryReadToThePageIntegration(t *testing.T)
 	}
 }
 
+func TestActivityMarkersPreferClaimedExternalOrderStageIntegration(t *testing.T) {
+	st, ctx, workspace := newPhase61IntegrationStore(t)
+	defer st.Close()
+	now := time.Now().UTC()
+	task := phase61Task(workspace, "claimed-activity-"+core.NewTaskID(), core.TaskRunning, "")
+	task.NextStage = core.StageImplement
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateJob(ctx, core.Job{ID: task.ID + "-spec", TaskID: task.ID, Stage: core.StageSpec, State: core.JobDone, StartedAt: now.Add(-time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	implementJob := core.Job{ID: task.ID + "-implement", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
+	if err := st.CreateJob(ctx, implementJob); err != nil {
+		t.Fatal(err)
+	}
+	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{
+		ID: implementJob.ID, TaskID: task.ID, JobID: implementJob.ID, Stage: core.StageImplement,
+		State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storetest.For(st).ClaimWorkOrder(ctx, implementJob.ID, core.WorkOrderClaim{SessionID: "external-session", ClientToken: "external-token", Lease: time.Minute, ExecutionTimeout: time.Hour}); err != nil {
+		t.Fatal(err)
+	}
+	for name, list := range map[string]func() ([]store.ActivityMarker, error){
+		"full":   func() ([]store.ActivityMarker, error) { return st.ListActivityMarkers(ctx) },
+		"scoped": func() ([]store.ActivityMarker, error) { return st.ListActivityMarkersForTasks(ctx, []string{task.ID}) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			markers, err := list()
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, marker := range markers {
+				if marker.TaskID == task.ID {
+					if marker.LatestStage != core.StageImplement {
+						t.Fatalf("latest stage=%q want %q", marker.LatestStage, core.StageImplement)
+					}
+					return
+				}
+			}
+			t.Fatalf("task %s missing from markers", task.ID)
+		})
+	}
+}
+
 func (r *queryRecorder) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
 	r.mu.Lock()
 	r.queries = append(r.queries, data.SQL)

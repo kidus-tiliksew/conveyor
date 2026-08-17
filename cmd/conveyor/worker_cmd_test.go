@@ -1460,6 +1460,57 @@ func TestRunHarnessChildFirstActivityDisarmsTimeoutWithoutAddingSilenceLimit(t *
 	}
 }
 
+func TestRunHarnessChildRunModeProgressFailureWarnsAndContinues(t *testing.T) {
+	released := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/mcp" {
+			var request struct {
+				ID json.RawMessage `json:"id"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&request)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"jsonrpc": "2.0", "id": request.ID,
+				"error": map[string]any{"code": -32601, "message": "tool report_progress is unavailable"},
+			})
+			return
+		}
+		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+		if len(parts) != 5 || strings.Join(parts[:3], "/") != "v1/worker/work-orders" {
+			http.NotFound(w, r)
+			return
+		}
+		switch parts[4] {
+		case "claim", "renew":
+			_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: parts[3], State: core.WorkOrderClaimed, LeaseExpiresAt: time.Now().Add(time.Minute)})
+		case "reconcile":
+			_ = json.NewEncoder(w).Encode(workerservice.ClaimReconciliation{WorkOrder: core.WorkOrder{ID: parts[3], State: core.WorkOrderSubmitted}, Reason: "submitted"})
+		case "release":
+			released <- struct{}{}
+			_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: parts[3], State: core.WorkOrderQueued})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	item := workerservice.DispatchOrder{
+		Order:   core.WorkOrder{ID: "best-effort-progress", Stage: core.StageImplement},
+		Harness: config.Harness{Name: "helper", Command: []string{os.Args[0], "-test.run=TestWorkerLifecycleHelper", "--", "early-output"}},
+	}
+	var stdout, stderr bytes.Buffer
+	if err := runHarnessChildWithFirstActivityTimeoutAndOutputAndRunMode(t.Context(), &client{base: server.URL, workspace: "demo"}, "worker-credential", item, time.Second, &stdout, &stderr, runModeConfirmed); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stderr.String(), "warning: report run mode progress") || !strings.Contains(stderr.String(), "best-effort") {
+		t.Fatalf("warning missing: stderr=%q", stderr.String())
+	}
+	select {
+	case <-released:
+		t.Fatal("healthy claim was released after progress telemetry failed")
+	default:
+	}
+}
+
 func TestRunHarnessChildStallTimeoutStopsAndReleasesSilentChild(t *testing.T) {
 	pidFile := filepath.Join(t.TempDir(), "stalled-harness.pid")
 	t.Setenv("CONVEYOR_FAKE_HARNESS_PID_FILE", pidFile)

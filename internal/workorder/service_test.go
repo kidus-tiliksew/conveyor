@@ -1105,7 +1105,7 @@ func TestReviewClaimPinsRequirementVersionRenderedAfterAuthorityMoves(t *testing
 	}
 	cfg := &config.Config{Routing: config.Routing{Stages: map[string]config.StageRoute{"review": {Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"}}}}
 	service := &Service{Store: st, Pack: bundle, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
-	claimed, err := service.Claim(ctx, job.ID, core.WorkOrderClaim{SessionID: "review-pin-session", ClientToken: "secret", Lease: time.Minute})
+	claimed, err := service.Claim(ctx, job.ID, core.WorkOrderClaim{SessionID: "review-pin-session", ClientToken: "secret", ClaimantID: "reviewer", Lease: time.Minute})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1170,7 +1170,7 @@ func TestReviewClaimPinsGovernanceVersionsAndDecisionAuthority(t *testing.T) {
 	}
 	cfg := &config.Config{Routing: config.Routing{Stages: map[string]config.StageRoute{"review": {Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"}}}}
 	service := &Service{Store: st, Pack: bundle, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
-	claimed, err := service.Claim(ctx, job.ID, core.WorkOrderClaim{SessionID: "governance-pin-session", ClientToken: "secret", Lease: time.Minute})
+	claimed, err := service.Claim(ctx, job.ID, core.WorkOrderClaim{SessionID: "governance-pin-session", ClientToken: "secret", ClaimantID: "reviewer", Lease: time.Minute})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1283,7 +1283,7 @@ func TestTaskAuthoredDesignProposalWithholdsReviewUntilDecision(t *testing.T) {
 	if err != nil || len(listed) != 2 || listed[1].Claimable {
 		t.Fatalf("withheld review listing=%+v err=%v", listed, err)
 	}
-	if _, err = service.Claim(ctx, reviewJob.ID, core.WorkOrderClaim{SessionID: "review-session-pending", ClientToken: "review-token-pending", Lease: time.Minute}); err == nil || !strings.Contains(err.Error(), "waiting on") {
+	if _, err = service.Claim(ctx, reviewJob.ID, core.WorkOrderClaim{SessionID: "review-session-pending", ClientToken: "review-token-pending", ClaimantID: "reviewer", Lease: time.Minute}); err == nil || !strings.Contains(err.Error(), "waiting on") {
 		t.Fatalf("pending review claim error=%v", err)
 	}
 	if _, err = storetest.For(st).ClaimWorkOrder(ctx, reviewJob.ID, core.WorkOrderClaim{SessionID: "direct-review-session", ClientToken: "direct-review-token", Lease: time.Minute}); err == nil || !strings.Contains(err.Error(), "waiting on") {
@@ -1292,13 +1292,13 @@ func TestTaskAuthoredDesignProposalWithholdsReviewUntilDecision(t *testing.T) {
 	if _, _, err = st.ConfirmSystemDesignVersion(ctx, document.ID, first.Version, initial.Version); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = service.Claim(ctx, reviewJob.ID, core.WorkOrderClaim{SessionID: "review-session-still-pending", ClientToken: "review-token-still-pending", Lease: time.Minute}); err == nil || !strings.Contains(err.Error(), "waiting on") {
+	if _, err = service.Claim(ctx, reviewJob.ID, core.WorkOrderClaim{SessionID: "review-session-still-pending", ClientToken: "review-token-still-pending", ClaimantID: "reviewer", Lease: time.Minute}); err == nil || !strings.Contains(err.Error(), "waiting on") {
 		t.Fatalf("review released before final proposal decision error=%v", err)
 	}
 	if _, _, err = st.ConfirmSystemDesignVersion(ctx, secondDocument.ID, secondDocumentProposal.Version); err != nil {
 		t.Fatal(err)
 	}
-	claimed, err := service.Claim(ctx, reviewJob.ID, core.WorkOrderClaim{SessionID: "review-session-pending", ClientToken: "review-token-pending", Lease: time.Minute})
+	claimed, err := service.Claim(ctx, reviewJob.ID, core.WorkOrderClaim{SessionID: "review-session-pending", ClientToken: "review-token-pending", ClaimantID: "reviewer", Lease: time.Minute})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1323,7 +1323,7 @@ func TestTaskAuthoredDesignProposalWithholdsReviewUntilDecision(t *testing.T) {
 	if err = storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: reviewJob2.ID, TaskID: task.ID, JobID: reviewJob2.ID, Stage: core.StageReview, ReviewRound: 2, ReviewSeat: 1, ServedRequirementSnapshot: []core.ServedRequirementContext{}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = service.Claim(ctx, reviewJob2.ID, core.WorkOrderClaim{SessionID: "review-session-refreshed", ClientToken: "review-token-refreshed", Lease: time.Minute}); err == nil || !strings.Contains(err.Error(), "waiting on") {
+	if _, err = service.Claim(ctx, reviewJob2.ID, core.WorkOrderClaim{SessionID: "review-session-refreshed", ClientToken: "review-token-refreshed", ClaimantID: "reviewer", Lease: time.Minute}); err == nil || !strings.Contains(err.Error(), "waiting on") {
 		t.Fatalf("second pending review claim error=%v", err)
 	}
 	replacement, err := st.ProposeSystemDesignVersion(ctx, core.SystemDesignVersion{
@@ -1336,7 +1336,7 @@ func TestTaskAuthoredDesignProposalWithholdsReviewUntilDecision(t *testing.T) {
 	if _, _, err = st.ConfirmSystemDesignVersion(ctx, document.ID, replacement.Version, first.Version); err != nil {
 		t.Fatal(err)
 	}
-	claimed2, err := service.Claim(ctx, reviewJob2.ID, core.WorkOrderClaim{SessionID: "review-session-refreshed", ClientToken: "review-token-refreshed", Lease: time.Minute})
+	claimed2, err := service.Claim(ctx, reviewJob2.ID, core.WorkOrderClaim{SessionID: "review-session-refreshed", ClientToken: "review-token-refreshed", ClaimantID: "reviewer", Lease: time.Minute})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1406,7 +1406,7 @@ func TestSubmitVerdictUsesParentPlanAfterProposalDecision(t *testing.T) {
 	dispatcher.DisableMemoryQueueForTest()
 	service := &Service{Store: st, Pack: bundle, Dispatcher: dispatcher, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
 	const session = "parent-plan-review-session"
-	claimed, err := service.Claim(ctx, job.ID, core.WorkOrderClaim{SessionID: session, ClientToken: "secret", Agent: "codex", Model: "reviewer", Lease: time.Minute})
+	claimed, err := service.Claim(ctx, job.ID, core.WorkOrderClaim{SessionID: session, ClientToken: "secret", ClaimantID: "reviewer", Agent: "codex", Model: "reviewer", Lease: time.Minute})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1488,7 +1488,7 @@ func TestWorkerFallbackUsageAdmitsSameTerminalSessionAndMarksProvenance(t *testi
 	t.Parallel()
 	ctx, st, service, order := newLifecycleService(t, "worker-fallback-usage")
 	claimed, err := service.Claim(ctx, order.ID, core.WorkOrderClaim{
-		SessionID: "worker-session", ClientToken: "token", Agent: "codex", Model: "gpt", Lease: time.Minute,
+		SessionID: "worker-session", ClientToken: "token", ClaimantID: "worker", Agent: "codex", Model: "gpt", Lease: time.Minute,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1526,7 +1526,7 @@ func TestWorkerFallbackUsagePreservesExistingAgentReport(t *testing.T) {
 	t.Parallel()
 	ctx, st, service, order := newLifecycleService(t, "worker-fallback-preserves-agent-usage")
 	claimed, err := service.Claim(ctx, order.ID, core.WorkOrderClaim{
-		SessionID: "worker-session", ClientToken: "token", Agent: "codex", Model: "gpt", Lease: time.Minute,
+		SessionID: "worker-session", ClientToken: "token", ClaimantID: "worker", Agent: "codex", Model: "gpt", Lease: time.Minute,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1575,7 +1575,7 @@ func TestQueuedTimeDoesNotConsumeExecutionTimeout(t *testing.T) {
 	service := &Service{Store: st, ConfigProvider: func(context.Context) (*config.Config, error) {
 		return &config.Config{Routing: config.Routing{Stages: map[string]config.StageRoute{"implement": {Timeout: time.Hour}}}}, nil
 	}}
-	claimed, err := service.Claim(ctx, job.ID, core.WorkOrderClaim{SessionID: "session", ClientToken: "token", Agent: "codex", Model: "gpt", Lease: time.Minute})
+	claimed, err := service.Claim(ctx, job.ID, core.WorkOrderClaim{SessionID: "session", ClientToken: "token", ClaimantID: "agent", Agent: "codex", Model: "gpt", Lease: time.Minute})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1591,7 +1591,7 @@ func TestQueuedTimeDoesNotConsumeExecutionTimeout(t *testing.T) {
 func TestExpiredAttemptRequiresRecoveryAndStartsFreshExecutionWindow(t *testing.T) {
 	t.Parallel()
 	ctx, st, service, order := newLifecycleService(t, "execution")
-	claimed, err := service.Claim(ctx, order.ID, core.WorkOrderClaim{SessionID: "first", ClientToken: "first-token", Agent: "codex", Model: "gpt", Lease: time.Minute})
+	claimed, err := service.Claim(ctx, order.ID, core.WorkOrderClaim{SessionID: "first", ClientToken: "first-token", ClaimantID: "agent", Agent: "codex", Model: "gpt", Lease: time.Minute})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1600,7 +1600,7 @@ func TestExpiredAttemptRequiresRecoveryAndStartsFreshExecutionWindow(t *testing.
 	if err = storetest.For(st).UpdateWorkOrder(ctx, claimed); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = service.Claim(ctx, order.ID, core.WorkOrderClaim{SessionID: "second", ClientToken: "second-token", Agent: "codex", Model: "gpt", Lease: 30 * time.Minute}); err == nil || !strings.Contains(err.Error(), "operator recovery") {
+	if _, err = service.Claim(ctx, order.ID, core.WorkOrderClaim{SessionID: "second", ClientToken: "second-token", ClaimantID: "agent", Agent: "codex", Model: "gpt", Lease: 30 * time.Minute}); err == nil || !strings.Contains(err.Error(), "operator recovery") {
 		t.Fatalf("claim after expiry error = %v", err)
 	}
 	expired, err := st.GetWorkOrder(ctx, order.ID)
@@ -1615,7 +1615,7 @@ func TestExpiredAttemptRequiresRecoveryAndStartsFreshExecutionWindow(t *testing.
 	if err != nil || duplicate.RedispatchCount != recovered.RedispatchCount {
 		t.Fatalf("duplicate recovery = %+v err=%v", duplicate, err)
 	}
-	reclaimed, err := service.Claim(ctx, order.ID, core.WorkOrderClaim{SessionID: "second", ClientToken: "second-token", Agent: "codex", Model: "gpt", Lease: 30 * time.Minute})
+	reclaimed, err := service.Claim(ctx, order.ID, core.WorkOrderClaim{SessionID: "second", ClientToken: "second-token", ClaimantID: "agent", Agent: "codex", Model: "gpt", Lease: 30 * time.Minute})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1634,7 +1634,7 @@ func TestRecoverRejectsPendingPlanRevisionDecision(t *testing.T) {
 	if err = st.ApproveSpecVersion(ctx, order.TaskID, plan.Version); err != nil {
 		t.Fatal(err)
 	}
-	claimed, err := service.Claim(ctx, order.ID, core.WorkOrderClaim{SessionID: "session", ClientToken: "token", Agent: "codex", Model: "gpt", Lease: time.Minute})
+	claimed, err := service.Claim(ctx, order.ID, core.WorkOrderClaim{SessionID: "session", ClientToken: "token", ClaimantID: "agent", Agent: "codex", Model: "gpt", Lease: time.Minute})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1726,7 +1726,7 @@ func TestOperatorRecoveryDirectionIsTrustedContextAndClearsAtLifecycleBoundaries
 	if err != nil {
 		t.Fatal(err)
 	}
-	resumed, err = service.Claim(ctx, order.ID, core.WorkOrderClaim{SessionID: "third", ClientToken: "third-token", Agent: "codex", Model: "gpt", Lease: time.Minute})
+	resumed, err = service.Claim(ctx, order.ID, core.WorkOrderClaim{SessionID: "third", ClientToken: "third-token", ClaimantID: "agent", Agent: "codex", Model: "gpt", Lease: time.Minute})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1871,7 +1871,7 @@ func TestStaleQueuedOrderIsListedNonClaimableAndRejected(t *testing.T) {
 	if err != nil || len(orders) != 1 || orders[0].State != core.WorkOrderStale || orders[0].Claimable {
 		t.Fatalf("orders = %+v err=%v", orders, err)
 	}
-	if _, err = service.Claim(ctx, order.ID, core.WorkOrderClaim{SessionID: "session", ClientToken: "token", Agent: "codex", Model: "gpt"}); !errors.Is(err, store.ErrWorkOrderStale) {
+	if _, err = service.Claim(ctx, order.ID, core.WorkOrderClaim{SessionID: "session", ClientToken: "token", ClaimantID: "agent", Agent: "codex", Model: "gpt"}); !errors.Is(err, store.ErrWorkOrderStale) {
 		t.Fatalf("stale claim error = %v", err)
 	}
 }
@@ -1895,7 +1895,7 @@ func TestRedispatchStaleOrderResetsQueueClockAndPreservesAudit(t *testing.T) {
 		!redispatched.ExecutionStartedAt.IsZero() || !redispatched.ExecutionDeadline.IsZero() {
 		t.Fatalf("redispatched = %+v", redispatched)
 	}
-	if _, err = service.Claim(ctx, order.ID, core.WorkOrderClaim{SessionID: "session", ClientToken: "token", Agent: "codex", Model: "gpt"}); err != nil {
+	if _, err = service.Claim(ctx, order.ID, core.WorkOrderClaim{SessionID: "session", ClientToken: "token", ClaimantID: "agent", Agent: "codex", Model: "gpt"}); err != nil {
 		t.Fatal(err)
 	}
 	staleEvents, _ := st.CountEvents(ctx, order.TaskID, "work_order.stale")
@@ -2134,7 +2134,7 @@ func TestOmittedClaimLeaseDefaultsToFiveMinutesAndExpiresToQueued(t *testing.T) 
 	t.Parallel()
 	ctx, st, service, order := newLifecycleService(t, "default-claim-lease")
 	claimed, err := service.Claim(ctx, order.ID, core.WorkOrderClaim{
-		SessionID: "session", ClientToken: "token", Agent: "codex", Model: "gpt",
+		SessionID: "session", ClientToken: "token", ClaimantID: "run:user", Agent: "codex", Model: "gpt",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -2149,6 +2149,19 @@ func TestOmittedClaimLeaseDefaultsToFiveMinutesAndExpiresToQueued(t *testing.T) 
 	expired, err := st.GetWorkOrder(ctx, order.ID)
 	if err != nil || expired.State != core.WorkOrderQueued {
 		t.Fatalf("expired order = %+v err=%v", expired, err)
+	}
+}
+
+func TestClaimRejectsEmptyClaimantIdentity(t *testing.T) {
+	t.Parallel()
+	ctx, _, service, order := newLifecycleService(t, "empty-claimant")
+	for _, claimantID := range []string{"", " \t\n"} {
+		_, err := service.Claim(ctx, order.ID, core.WorkOrderClaim{
+			SessionID: "session", ClientToken: "token", ClaimantID: claimantID, Agent: "codex", Model: "gpt",
+		})
+		if err == nil || !strings.Contains(err.Error(), "claimant_id is required") {
+			t.Fatalf("claimant_id %q error = %v", claimantID, err)
+		}
 	}
 }
 
@@ -2346,7 +2359,7 @@ func TestSubmitForReviewEvidenceGateIsSideEffectFreeAndPropagatesToEveryReviewSe
 		}
 		reviewSeats++
 		session := "review-session-" + order.ID
-		claimed, claimErr := service.Claim(ctx, order.ID, core.WorkOrderClaim{SessionID: session, ClientToken: "review-secret-" + order.ID, Lease: time.Minute})
+		claimed, claimErr := service.Claim(ctx, order.ID, core.WorkOrderClaim{SessionID: session, ClientToken: "review-secret-" + order.ID, ClaimantID: "reviewer", Lease: time.Minute})
 		if claimErr != nil {
 			t.Fatal(claimErr)
 		}
@@ -2870,7 +2883,7 @@ func TestWarmSessionBounceClaimsNextOrderReusesPRAndCannotSelfReview(t *testing.
 	if firstReview.ID == "" {
 		t.Fatalf("review order missing: %+v", orders)
 	}
-	if _, err = service.Claim(ctx, firstReview.ID, core.WorkOrderClaim{SessionID: "independent-review-1", ClientToken: "review-token-1", Agent: "codex", Model: "reviewer", Lease: time.Minute}); err != nil {
+	if _, err = service.Claim(ctx, firstReview.ID, core.WorkOrderClaim{SessionID: "independent-review-1", ClientToken: "review-token-1", ClaimantID: "reviewer-1", Agent: "codex", Model: "reviewer", Lease: time.Minute}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = service.SubmitVerdict(ctx, firstReview.ID, "independent-review-1", pipeline.Review{Verdict: "changes_requested", ReasonCode: "tests", Summary: "add coverage", Feedback: "add the loop test"}); err != nil {
@@ -2893,7 +2906,7 @@ func TestWarmSessionBounceClaimsNextOrderReusesPRAndCannotSelfReview(t *testing.
 	if secondImplement.ID == "" {
 		t.Fatalf("follow-up implement order missing: %+v", orders)
 	}
-	if _, err = service.Claim(ctx, secondImplement.ID, core.WorkOrderClaim{SessionID: implementSession, ClientToken: implementToken, Agent: "codex", Model: "implementer", Lease: time.Minute}); err != nil {
+	if _, err = service.Claim(ctx, secondImplement.ID, core.WorkOrderClaim{SessionID: implementSession, ClientToken: implementToken, ClaimantID: "implementer", Agent: "codex", Model: "implementer", Lease: time.Minute}); err != nil {
 		t.Fatal(err)
 	}
 	secondSubmit, err := service.SubmitForReview(ctx, secondImplement.ID, implementSession)
@@ -2913,7 +2926,7 @@ func TestWarmSessionBounceClaimsNextOrderReusesPRAndCannotSelfReview(t *testing.
 	if secondReview.ID == "" {
 		t.Fatalf("second review order missing: %+v", orders)
 	}
-	if _, err = service.Claim(ctx, secondReview.ID, core.WorkOrderClaim{SessionID: implementSession, ClientToken: implementToken, Agent: "codex", Model: "reviewer", Lease: time.Minute}); err == nil || !strings.Contains(err.Error(), "self-review forbidden") {
+	if _, err = service.Claim(ctx, secondReview.ID, core.WorkOrderClaim{SessionID: implementSession, ClientToken: implementToken, ClaimantID: "implementer", Agent: "codex", Model: "reviewer", Lease: time.Minute}); err == nil || !strings.Contains(err.Error(), "self-review forbidden") {
 		t.Fatalf("self-review error = %v", err)
 	}
 }

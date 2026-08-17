@@ -139,11 +139,25 @@ func confirmRunStage(ctx context.Context, input *bufio.Reader, output io.Writer,
 		if _, err := fmt.Fprintf(output, "Proceed with %s? [y/N]: ", stage); err != nil {
 			return false, err
 		}
-		answer, err := input.ReadString('\n')
+		type readResult struct {
+			answer string
+			err    error
+		}
+		result := make(chan readResult, 1)
+		go func() {
+			answer, err := input.ReadString('\n')
+			result <- readResult{answer: answer, err: err}
+		}()
+		var answer string
+		var err error
+		select {
+		case <-ctx.Done():
+			_, _ = fmt.Fprintln(output)
+			return false, nil
+		case read := <-result:
+			answer, err = read.answer, read.err
+		}
 		if err != nil && len(answer) == 0 {
-			if ctx.Err() != nil {
-				return false, ctx.Err()
-			}
 			if err == io.EOF {
 				_, _ = fmt.Fprintln(output)
 				return false, nil

@@ -1467,6 +1467,35 @@ func TestMemoryCancelTaskIsAtomicAndCancelledSessionIsTerminal(t *testing.T) {
 	}
 }
 
+func TestMemoryActivityMarkerPrefersClaimedOrderStage(t *testing.T) {
+	ctx := WithWorkspace(t.Context(), "demo")
+	st := NewMemory()
+	now := time.Now().UTC()
+	task := core.Task{ID: "claimed-activity", Workspace: "demo", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: now.Add(-time.Hour)}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateJob(ctx, core.Job{ID: "completed-spec", TaskID: task.ID, Stage: core.StageSpec, State: core.JobDone, StartedAt: now.Add(-time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateJob(ctx, core.Job{ID: "claimed-implement", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}); err != nil {
+		t.Fatal(err)
+	}
+	if err := storetestFor(st).CreateWorkOrder(ctx, core.WorkOrder{
+		ID: "claimed-implement", TaskID: task.ID, JobID: "claimed-implement", Stage: core.StageImplement,
+		State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storetestFor(st).ClaimWorkOrder(ctx, "claimed-implement", core.WorkOrderClaim{SessionID: "activity-session", ClientToken: "activity-token", Lease: time.Minute, ExecutionTimeout: time.Hour}); err != nil {
+		t.Fatal(err)
+	}
+	markers, err := st.ListActivityMarkersForTasks(ctx, []string{task.ID})
+	if err != nil || len(markers) != 1 || markers[0].LatestStage != core.StageImplement {
+		t.Fatalf("markers=%+v err=%v", markers, err)
+	}
+}
+
 func TestStalledTaskDerivesOnlyActionableNonTerminalOrders(t *testing.T) {
 	stalled := StalledTask([]core.WorkOrder{{ID: "retry", State: core.WorkOrderQueued, RetrySuppressed: true, LastFailureMessage: "provider rejected model"}})
 	if stalled == nil || stalled.WorkOrder.ID != "retry" || stalled.LastFailure == "" {

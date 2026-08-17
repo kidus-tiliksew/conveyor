@@ -113,7 +113,7 @@ func TestReviewClaimRefreshesProposalEvidenceWithoutRefreshingPinnedAuthorityInt
 	}
 
 	createReview(task.ID+"-review-1", 1, nil)
-	firstClaim, err := service.Claim(ctx, task.ID+"-review-1", core.WorkOrderClaim{SessionID: "review-refresh-1", ClientToken: "secret-1", Lease: time.Minute})
+	firstClaim, err := service.Claim(ctx, task.ID+"-review-1", core.WorkOrderClaim{SessionID: "review-refresh-1", ClientToken: "secret-1", ClaimantID: "reviewer-1", Lease: time.Minute})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,13 +125,13 @@ func TestReviewClaimRefreshesProposalEvidenceWithoutRefreshingPinnedAuthorityInt
 		t.Fatal(err)
 	}
 	createReview(task.ID+"-review-2", 2, nil)
-	if _, err = service.Claim(ctx, task.ID+"-review-2", core.WorkOrderClaim{SessionID: "review-refresh-2", ClientToken: "secret-2", Lease: time.Minute}); err == nil || !strings.Contains(err.Error(), "waiting on") {
+	if _, err = service.Claim(ctx, task.ID+"-review-2", core.WorkOrderClaim{SessionID: "review-refresh-2", ClientToken: "secret-2", ClaimantID: "reviewer-2", Lease: time.Minute}); err == nil || !strings.Contains(err.Error(), "waiting on") {
 		t.Fatalf("pending proposal review claim error=%v", err)
 	}
 	if _, _, err = st.ConfirmSystemDesignVersion(ctx, document.ID, proposal.Version, initial.Version); err != nil {
 		t.Fatal(err)
 	}
-	secondClaim, err := service.Claim(ctx, task.ID+"-review-2", core.WorkOrderClaim{SessionID: "review-refresh-2", ClientToken: "secret-2", Lease: time.Minute})
+	secondClaim, err := service.Claim(ctx, task.ID+"-review-2", core.WorkOrderClaim{SessionID: "review-refresh-2", ClientToken: "secret-2", ClaimantID: "reviewer-2", Lease: time.Minute})
 	if err != nil {
 		t.Fatal(err)
 	}

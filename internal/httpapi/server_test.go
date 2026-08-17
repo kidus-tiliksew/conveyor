@@ -2189,6 +2189,8 @@ type observedStore struct {
 	afterHook                func()
 }
 
+func (s *observedStore) SupportsUnscopedActivity() bool { return true }
+
 func (s *observedStore) ListTasks(ctx context.Context) ([]core.Task, error) {
 	s.listTasksCalls++
 	return s.Store.ListTasks(ctx)
