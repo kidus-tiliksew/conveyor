@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import {
   Check,
@@ -14,19 +14,12 @@ import {
 } from 'lucide-react'
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import { assigneeName, dependencyRelationLabel, parseProvenance, pullRequestURL } from '../../lib/activity'
-import {
-  cancelTask,
-  changeTaskSetup,
-  fetchWorkspaceConfig,
-  removeTaskDependency,
-  setTaskAssignee,
-  setTaskHold,
-} from '../../lib/api'
+import { cancelTask, removeTaskDependency, setTaskAssignee, setTaskHold } from '../../lib/api'
 import { findBlueprint } from '../../lib/blueprint'
 import { taskStateLabels } from '../../lib/contracts'
 import { errorMessage } from '../../lib/errors'
 import { relatedTaskRoute } from '../../lib/task-route'
-import type { ActivityItem } from '../../lib/types'
+import type { ActivityItem, TaskPolicyContract } from '../../lib/types'
 import { absoluteTime, cn } from '../../lib/utils'
 import {
   useBlueprints,
@@ -204,9 +197,6 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
             }
           />
         )}
-        {item.task.setup_contract?.name && (
-          <Fact label="Setup" value={<span className="font-mono">{item.task.setup_contract.name}</span>} />
-        )}
         {/* Suppressed when the task was raised from the very issue Conveyor
             went on to adopt — the Issue fact below already links it. */}
         {provenance.label !== issueLabel && (
@@ -264,6 +254,8 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
         )}
       </dl>
 
+      {item.task.policy_contract && <TaskPolicySummary contract={item.task.policy_contract} />}
+
       {canOperate && unsatisfiableIDs.size > 0 && (
         <UnlinkDependencyControl item={item} dependencyIDs={[...unsatisfiableIDs]} />
       )}
@@ -292,12 +284,8 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
         </section>
       )}
 
-      {/* Two disclosures, one row: the local-checkout helper and the rarely
-          used setup change. Both stay collapsed so the page opens on the work
-          rather than on configuration. */}
       <div className="mt-3 flex flex-wrap gap-x-6 gap-y-2">
         <Checkout item={item} />
-        {canOperate && <SetupChangeControl item={item} />}
       </div>
     </div>
   )
@@ -310,6 +298,26 @@ function approvalLabel(specApproval: boolean, mergeApproval: boolean) {
   if (specApproval) return 'Spec only'
   if (mergeApproval) return 'Merge only'
   return 'None — runs to merge'
+}
+
+function TaskPolicySummary({ contract }: { contract: TaskPolicyContract }) {
+  const seats = contract.review?.seats?.length ?? 0
+  const timeouts = contract.stage_timeouts ?? { spec: '', implement: '', review: '' }
+  return (
+    <section className="mt-4 rounded-md border border-border bg-surface p-3" aria-label="Frozen task policy">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h3 className="text-sm font-semibold">Frozen policy</h3>
+        <span className="text-[11px] text-faint">Policy-only projection of the task's intake-time contract</span>
+      </div>
+      <dl className="mt-2 grid gap-x-6 gap-y-2 text-xs sm:grid-cols-2 lg:grid-cols-5">
+        <Fact label="Plan timeout" value={timeouts.spec || 'Not recorded'} />
+        <Fact label="Implementation timeout" value={timeouts.implement || 'Not recorded'} />
+        <Fact label="Review timeout" value={timeouts.review || 'Not recorded'} />
+        <Fact label="Review seats" value={seats || 'Not recorded'} />
+        <Fact label="Review rounds" value={contract.max_bounces || 'Not recorded'} />
+      </dl>
+    </section>
+  )
 }
 
 function UnlinkDependencyControl({ item, dependencyIDs }: { item: ActivityItem; dependencyIDs: string[] }) {
@@ -515,123 +523,6 @@ function TaskBody({ body }: { body: string }) {
         </button>
       )}
     </div>
-  )
-}
-
-function SetupChangeControl({ item }: { item: ActivityItem }) {
-  const token = useOperatorToken()
-  const queryClient = useQueryClient()
-  const config = useQuery({
-    queryKey: ['workspace-config', item.task.workspace, token],
-    queryFn: () => fetchWorkspaceConfig(token),
-    enabled: Boolean(token),
-  })
-  const [selected, setSelected] = useState(item.task.setup)
-  const [reason, setReason] = useState('')
-  // Submitted spec/implement attempts are delivered, not executing; only
-  // claimed attempts and in-flight review verdicts block.
-  const claimed = (item.work_orders ?? []).some((order) => order.state === 'claimed')
-  const verdictInFlight = (item.work_orders ?? []).some(
-    (order) => order.stage === 'review' && order.state === 'submitted',
-  )
-  const terminal = item.task.state === 'merged' || item.task.state === 'closed'
-  const next = config.data?.document.setups.find((setup) => setup.name === selected)
-  const current = item.task.setup_contract
-  const mutation = useMutation({
-    mutationFn: () =>
-      changeTaskSetup(
-        item.task.id,
-        token,
-        selected === item.task.setup
-          ? { apply_latest: true, reason, request_id: crypto.randomUUID() }
-          : { setup: selected, reason, request_id: crypto.randomUUID() },
-      ),
-    onSuccess: () => {
-      setReason('')
-      void queryClient.invalidateQueries({ queryKey: ['task', item.task.workspace, item.task.id] })
-      void queryClient.invalidateQueries({ queryKey: ['activity'] })
-    },
-  })
-  if (!token || !current) return null
-  const disabledReason = terminal
-    ? 'Terminal tasks cannot change setup.'
-    : claimed
-      ? 'An attempt is claimed and executing.'
-      : verdictInFlight
-        ? 'A review verdict is in flight.'
-        : ''
-  const oldSeats = current?.review.seats ?? []
-  const newSeats = next?.review.seats ?? []
-  const interruptedOutcome = item.interrupted_review_recovery
-    ? oldSeats.length !== newSeats.length
-      ? 'Interrupted review: panel size changes, so a whole new round will run.'
-      : 'Interrupted review: identical seat assignments are retained; changed seats re-run.'
-    : ''
-  return (
-    <Disclosure summary="Change execution setup" note="affects future work only">
-      <div className="mt-2 grid gap-2 sm:grid-cols-[minmax(10rem,14rem)_1fr_auto]">
-        <select
-          aria-label="Named execution setup"
-          value={selected}
-          onChange={(event) => setSelected(event.target.value)}
-          disabled={Boolean(disabledReason) || mutation.isPending}
-          className="rounded-md border border-border bg-background px-2 py-1.5 text-xs"
-        >
-          {(config.data?.document.setups ?? []).map((setup) => (
-            <option key={setup.name} value={setup.name}>
-              {setup.name}
-            </option>
-          ))}
-        </select>
-        <input
-          aria-label="Setup change reason"
-          value={reason}
-          onChange={(event) => setReason(event.target.value)}
-          placeholder="Reason (optional)"
-          disabled={Boolean(disabledReason) || mutation.isPending}
-          className="rounded-md border border-border bg-background px-2 py-1.5 text-xs"
-        />
-        <Button
-          size="sm"
-          disabled={Boolean(disabledReason) || !next || mutation.isPending}
-          onClick={() => mutation.mutate()}
-        >
-          {selected === item.task.setup ? 'Apply latest setup' : 'Change setup'}
-        </Button>
-      </div>
-      {next && (
-        <div className="mt-2 grid gap-2 text-[11px] text-muted md:grid-cols-2">
-          <p>
-            <span className="font-medium text-foreground/80">Before:</span> implement{' '}
-            {current.execution_settings.implementation.harness} /{' '}
-            {current.execution_settings.implementation.model_policy} /{' '}
-            {current.execution_settings.implementation.effort || 'default'} /{' '}
-            {current.execution_settings.implementation.timeout}; review {current.execution_settings.review.execution},{' '}
-            {oldSeats
-              .map((seat) => `${seat.harness || 'fallback'}/${seat.model}/${seat.effort || 'default'}`)
-              .join(', ')}
-          </p>
-          <p>
-            <span className="font-medium text-foreground/80">After:</span> implement{' '}
-            {next.execution_settings.implementation.harness} / {next.execution_settings.implementation.model_policy} /{' '}
-            {next.execution_settings.implementation.effort || 'default'} /{' '}
-            {next.execution_settings.implementation.timeout}; review {next.execution_settings.review.execution},{' '}
-            {newSeats
-              .map((seat) => `${seat.harness || 'fallback'}/${seat.model}/${seat.effort || 'default'}`)
-              .join(', ')}
-          </p>
-        </div>
-      )}
-      {(disabledReason || interruptedOutcome) && (
-        <p className="mt-2 text-xs text-muted">{disabledReason || interruptedOutcome}</p>
-      )}
-      {mutation.error != null && <p className="mt-2 text-xs text-failure">{String(mutation.error)}</p>}
-      {mutation.data && (
-        <p className="mt-2 text-xs text-positive">
-          Setup changed: {mutation.data.review_transition.replaceAll('_', ' ')}.
-        </p>
-      )}
-    </Disclosure>
   )
 }
 

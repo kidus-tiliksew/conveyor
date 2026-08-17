@@ -162,24 +162,18 @@ const planningConfig = {
   version: 1,
   document: {
     workspace: 'demo',
-    planning_models: ['gpt-plan', 'gpt-plan-fast'],
-    execution_settings: {
-      control_plane: {
-        triage: { model: 'gpt-triage', timeout: '20m' },
-        planning: {
-          model: 'gpt-plan',
-          effort: 'high',
-          timeout: '30m',
-          exploration_output_tokens: 12000,
-        },
-      },
+    max_bounces: 3,
+    work_order_queue_timeout: '24h',
+    stage_timeouts: { spec: '30m', implement: '4h', review: '1h' },
+    review: { seats: [{}] },
+    execution: {
+      spec_approval: true,
+      merge_approval: true,
+      require_verification_evidence: false,
+      implement_concurrency: 1,
+      review_concurrency: 1,
+      first_activity_timeout: '2m',
     },
-    routing: { stages: { review: {} } },
-    review: { seats: [] },
-    setups: [],
-    default_setup: '',
-    execution: {},
-    harnesses: [],
     repos: [
       {
         name: 'conveyor',
@@ -731,7 +725,7 @@ test('requirement confirmation offers explicit attachment to eligible checkpoint
   await expect(offer).toHaveCount(0)
 })
 
-test('planning starts with an allowlisted model and sends that choice', async ({ page }) => {
+test('planning uses deployment configuration and sends no execution detail', async ({ page }) => {
   await initShell(page)
   let createdWith: Record<string, unknown> = {}
   await page.route('**/v1/**', async (route) => {
@@ -747,7 +741,6 @@ test('planning starts with an allowlisted model and sends that choice', async ({
           title: 'Planning work…',
           status: 'active',
           goal: createdWith.goal,
-          model: createdWith.model,
           effort: 'high',
           exploration_output_tokens: 12000,
           primary_repo: 'conveyor',
@@ -763,19 +756,11 @@ test('planning starts with an allowlisted model and sends that choice', async ({
   })
 
   await page.goto('/planning')
-  await expect(page.getByLabel('Planning model')).toHaveValue('gpt-plan')
-  await expect(page.getByLabel('Planning model').locator('option')).toHaveText(['gpt-plan', 'gpt-plan-fast'])
+  await expect(page.getByLabel('Planning model')).toHaveCount(0)
   await page.getByLabel('Planning goal').selectOption('bundle')
-  await page.getByLabel('Planning model').selectOption('gpt-plan-fast')
   await page.getByRole('button', { name: 'New session' }).click()
-  // The goal and model are the only creation inputs: no caller title reaches
-  // the server, which names the session itself.
-  await expect
-    .poll(() => createdWith)
-    .toEqual({
-      goal: 'bundle',
-      model: 'gpt-plan-fast',
-    })
+  // The server names and configures the session; the browser sends only intent.
+  await expect.poll(() => createdWith).toEqual({ goal: 'bundle' })
 })
 
 test('finalize immediately reveals a complete bundle preview, approval, and created tasks', async ({ page }) => {
@@ -1614,7 +1599,7 @@ test('planning keeps partial text through malformed and error stream frames and 
   await expect.poll(() => bundleFetches).toBeGreaterThanOrEqual(2)
 })
 
-test('planning explains run conflicts, uses a disabled default model fallback, and surfaces abandon failures', async ({
+test('planning explains run conflicts and surfaces abandon failures without configuration controls', async ({
   page,
 }) => {
   await initShell(page)
@@ -1633,13 +1618,7 @@ test('planning explains run conflicts, uses a disabled default model fallback, a
         json: [{ id: 'demo', name: 'Demo', config_version: 1 }],
       })
     if (url.pathname === '/v1/me') return route.fulfill({ json: { id: 'usr_operator', role: 'operator' } })
-    if (url.pathname === '/v1/workspace/config')
-      return route.fulfill({
-        json: {
-          ...planningConfig,
-          document: { ...planningConfig.document, planning_models: [] },
-        },
-      })
+    if (url.pathname === '/v1/workspace/config') return route.fulfill({ json: planningConfig })
     if (url.pathname === '/v1/workspace')
       return route.fulfill({
         json: { workspace: 'demo', repos: ['conveyor'] },
@@ -1662,9 +1641,7 @@ test('planning explains run conflicts, uses a disabled default model fallback, a
   })
 
   await page.goto('/planning')
-  await expect(page.getByLabel('Planning model')).toHaveValue('gpt-plan')
-  await expect(page.getByLabel('Planning model')).toBeDisabled()
-  await expect(page.getByLabel('Planning model').locator('option')).toHaveCount(1)
+  await expect(page.getByLabel('Planning model')).toHaveCount(0)
 
   await page.getByRole('button', { name: 'Abandon' }).click()
   const dialog = page.getByRole('dialog', { name: 'Abandon planning session' })

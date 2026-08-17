@@ -6,13 +6,7 @@ import { PlanningChat, relativeDate, sessionStatusLabels } from '../components/p
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { Select } from '../components/ui/input'
-import {
-  createPlanningSession,
-  decidePlanningBundle,
-  fetchPlanningBundles,
-  fetchPlanningSessions,
-  fetchWorkspaceConfig,
-} from '../lib/api'
+import { createPlanningSession, decidePlanningBundle, fetchPlanningBundles, fetchPlanningSessions } from '../lib/api'
 import { sessionGoalLabel, sessionGoalLabels } from '../lib/contracts'
 import { errorMessage } from '../lib/errors'
 import type { PlanningSessionGoal } from '../lib/types'
@@ -29,13 +23,7 @@ export function PlanningPage() {
   const client = useQueryClient()
   const [selectedId, setSelectedId] = useState('')
   const restoredWorkspace = useRef('')
-  const [model, setModel] = useState('')
   const [goal, setGoal] = useState<PlanningSessionGoal>('open')
-  const { data: workspaceConfig } = useQuery({
-    queryKey: ['workspace-config', token, workspace],
-    queryFn: () => fetchWorkspaceConfig(token),
-    enabled: Boolean(token && workspace),
-  })
   const {
     data: sessions,
     isLoading,
@@ -66,26 +54,10 @@ export function PlanningPage() {
     }
   }, [selectedId, workspace])
 
-  const configuredModels = workspaceConfig?.document.planning_models ?? []
-  const defaultModel =
-    workspaceConfig?.document.execution_settings.control_plane.planning?.model ??
-    workspaceConfig?.document.execution_settings.control_plane.triage.model ??
-    ''
-  const modelOptions = configuredModels.length ? configuredModels : defaultModel ? [defaultModel] : []
-  useEffect(() => {
-    if (!workspaceConfig) return
-    const next = configuredModels.includes(model) ? model : (configuredModels[0] ?? defaultModel)
-    if (next !== model) setModel(next)
-  }, [configuredModels, defaultModel, model, workspaceConfig])
-
   const create = useMutation({
     // No title is sent: the server names the session from its goal, and the
     // artifact it produces renames it.
-    mutationFn: () =>
-      createPlanningSession(token, {
-        goal,
-        model: configuredModels.length ? model || undefined : undefined,
-      }),
+    mutationFn: () => createPlanningSession(token, { goal }),
     onSuccess: (session) => {
       setSelectedId(session.id)
       void client.invalidateQueries({ queryKey: ['planning-sessions', workspace] })
@@ -128,19 +100,6 @@ export function PlanningPage() {
               {standaloneGoals.map((option) => (
                 <option key={option} value={option}>
                   {sessionGoalLabels[option]}
-                </option>
-              ))}
-            </Select>
-            <Select
-              aria-label="Planning model"
-              className="w-52 font-mono"
-              value={model}
-              onChange={(event) => setModel(event.target.value)}
-              disabled={!workspaceConfig || configuredModels.length === 0}
-            >
-              {modelOptions.map((candidate) => (
-                <option key={candidate} value={candidate}>
-                  {candidate}
                 </option>
               ))}
             </Select>

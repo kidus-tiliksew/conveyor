@@ -1575,26 +1575,12 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
       // The head the factory judged, durable on the task itself once review
       // resolves — what the gate card names as the thing being approved.
       reviewed_head_sha: taskId === 'merge-request-changes' ? 'ca7ca7000000000000000000000000000000beef' : undefined,
-      setup: taskId.startsWith('setup-') ? 'old' : '',
-      setup_contract: taskId.startsWith('setup-')
-        ? {
-            name: 'old',
-            execution_settings: {
-              control_plane: { triage: { model: 'control', timeout: '20m' } },
-              spec: { harness: 'codex', model: 'gpt-spec', model_policy: 'explicit', timeout: '30m' },
-              implementation: {
-                harness: 'codex',
-                model: 'gpt-old',
-                model_policy: 'explicit',
-                effort: 'medium',
-                timeout: '2h',
-              },
-              review: { execution: 'mcp', timeout: '45m', fallback_harness: 'codex' },
-            },
-            review: { seats: [{ harness: 'codex', model: 'gpt-review', effort: 'medium' }] },
-            refresh_review: 'delta',
-          }
-        : undefined,
+      policy_contract: {
+        max_bounces: 3,
+        stage_timeouts: { spec: '30m', implement: '2h', review: '45m' },
+        review: { seats: [{}] },
+        refresh_review: 'delta',
+      },
       parent_task_id: taskId === 'blueprint-child' ? 'blueprint-parent' : undefined,
       origin_spec_version: taskId === 'blueprint-child' ? 1 : undefined,
       origin_sub_id: taskId === 'blueprint-child' ? 'SUB-3' : undefined,
@@ -2122,185 +2108,21 @@ test('new task detail tolerates a null work-order list from the API', async ({ p
   await expect(page.getByText('Something went wrong!')).toHaveCount(0)
 })
 
-test('task detail previews and submits a named future-only setup change', async ({ page }) => {
+test('task detail renders the frozen policy projection and no retired controls', async ({ page }) => {
   await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
-  const nextSetup = {
-    name: 'next',
-    execution_settings: {
-      control_plane: { triage: { model: 'control', timeout: '20m' } },
-      spec: { harness: 'claude', model: 'claude-spec', model_policy: 'explicit', timeout: '30m' },
-      implementation: {
-        harness: 'claude',
-        model: 'claude-next',
-        model_policy: 'explicit',
-        effort: 'high',
-        timeout: '3h',
-      },
-      review: { execution: 'mcp', timeout: '1h', fallback_harness: 'claude' },
-    },
-    review: { seats: [{ harness: 'claude', model: 'claude-review', effort: 'high' }] },
-    refresh_review: 'delta',
-  }
-  await page.route('**/v1/workspace/config*', (route) =>
-    route.fulfill({
-      json: {
-        version: 1,
-        document: {
-          workspace: 'demo',
-          routing: { stages: { review: {} } },
-          review: { seats: [] },
-          harnesses: [],
-          repos: [],
-          setups: [activity('setup-change', false).task.setup_contract, nextSetup],
-          default_setup: 'old',
-          execution: {},
-        },
-      },
-    }),
-  )
-  let submitted: Record<string, unknown> | undefined
-  await page.route('**/v1/tasks/setup-change/setup*', async (route) => {
-    submitted = route.request().postDataJSON()
-    await route.fulfill({
-      json: {
-        task: { ...activity('setup-change', false).task, setup: 'next', setup_contract: nextSetup },
-        review_transition: 'same_round_reconciled',
-      },
-    })
-  })
-  await page.goto('/tasks/setup-change/full')
-  await expect(page.getByText('affects future work only')).toBeVisible()
-  // Both route variants keep the control collapsed: the page opens on the
-  // work, not on configuration.
-  await page.locator('summary', { hasText: 'Change execution setup' }).click()
-  await page.getByLabel('Named execution setup').selectOption('next')
-  await expect(page.getByText(/After: implement claude \/ explicit \/ high \/ 3h/)).toBeVisible()
-  await page.getByLabel('Setup change reason').fill('repair routing')
-  await page.getByRole('button', { name: 'Change setup' }).click()
-  await expect(page.getByText('Setup changed: same round reconciled.')).toBeVisible()
-  expect(submitted?.setup).toBe('next')
-  expect(submitted?.reason).toBe('repair routing')
-  expect(String(submitted?.request_id)).not.toBe('')
+  await page.goto('/tasks/policy-projection/full')
+
+  const policy = page.getByRole('region', { name: 'Frozen task policy' })
+  await expect(policy.getByRole('heading', { name: 'Frozen policy' })).toBeVisible()
+  await expect(policy).toContainText("Policy-only projection of the task's intake-time contract")
+  await expect(policy).toContainText('30m')
+  await expect(policy).toContainText('2h')
+  await expect(policy).toContainText('45m')
+  await expect(policy).toContainText('Review seats')
+  await expect(policy).toContainText('1')
+  await expect(page.getByText(/Change execution setup/i)).toHaveCount(0)
+  await expect(page.getByText(/^Setup$/)).toHaveCount(0)
 })
-
-test('task detail submits change and apply-latest setup actions without a reason', async ({ page }) => {
-  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
-  const nextSetup = {
-    name: 'next',
-    execution_settings: {
-      control_plane: { triage: { model: 'control', timeout: '20m' } },
-      spec: { harness: 'claude', model: 'claude-spec', model_policy: 'explicit', timeout: '30m' },
-      implementation: {
-        harness: 'claude',
-        model: 'claude-next',
-        model_policy: 'explicit',
-        effort: 'high',
-        timeout: '3h',
-      },
-      review: { execution: 'mcp', timeout: '1h', fallback_harness: 'claude' },
-    },
-    review: { seats: [{ harness: 'claude', model: 'claude-review', effort: 'high' }] },
-    refresh_review: 'delta',
-  }
-  await page.route('**/v1/workspace/config*', (route) =>
-    route.fulfill({
-      json: {
-        version: 1,
-        document: {
-          workspace: 'demo',
-          routing: { stages: { review: {} } },
-          review: { seats: [] },
-          harnesses: [],
-          repos: [],
-          setups: [activity('setup-change', false).task.setup_contract, nextSetup],
-          default_setup: 'old',
-          execution: {},
-        },
-      },
-    }),
-  )
-  const submitted: Record<string, unknown>[] = []
-  await page.route('**/v1/tasks/setup-change/setup*', async (route) => {
-    submitted.push(route.request().postDataJSON())
-    await route.fulfill({ json: { task: activity('setup-change', false).task, review_transition: 'none' } })
-  })
-  await page.goto('/tasks/setup-change/full')
-  await page.locator('summary', { hasText: 'Change execution setup' }).click()
-  const reason = page.getByLabel('Setup change reason')
-  await expect(reason).toHaveAttribute('placeholder', 'Reason (optional)')
-
-  const applyLatest = page.getByRole('button', { name: 'Apply latest setup' })
-  await expect(applyLatest).toBeEnabled()
-  await applyLatest.click()
-  await expect.poll(() => submitted.length).toBe(1)
-  expect(submitted[0]?.apply_latest).toBe(true)
-  expect(submitted[0]?.reason).toBe('')
-
-  await page.getByLabel('Named execution setup').selectOption('next')
-  const changeSetup = page.getByRole('button', { name: 'Change setup' })
-  await expect(changeSetup).toBeEnabled()
-  await changeSetup.click()
-  await expect.poll(() => submitted.length).toBe(2)
-  expect(submitted[1]?.setup).toBe('next')
-  expect(submitted[1]?.reason).toBe('')
-})
-
-test('task detail exposes the setup change control behind an expandable section', async ({ page }) => {
-  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
-  await page.route('**/v1/workspace/config*', (route) =>
-    route.fulfill({
-      json: {
-        version: 1,
-        document: {
-          workspace: 'demo',
-          routing: { stages: { review: {} } },
-          review: { seats: [] },
-          harnesses: [],
-          repos: [],
-          setups: [activity('setup-submitted', false).task.setup_contract],
-          default_setup: 'old',
-          execution: {},
-        },
-      },
-    }),
-  )
-  await page.goto('/tasks/setup-submitted')
-  const summary = page.locator('summary', { hasText: 'Change execution setup' })
-  await expect(summary).toBeVisible()
-  await expect(page.getByLabel('Named execution setup')).not.toBeVisible()
-  await summary.click()
-  await expect(page.getByLabel('Named execution setup')).toBeVisible()
-  // The implement attempt is submitted (delivered), not claimed: it must not
-  // disable the control.
-  await expect(page.getByLabel('Named execution setup')).toBeEnabled()
-  await expect(page.getByLabel('Setup change reason')).toBeEnabled()
-})
-
-test('a claimed attempt disables the setup change control with the specific blocker', async ({ page }) => {
-  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
-  await page.route('**/v1/workspace/config*', (route) =>
-    route.fulfill({
-      json: {
-        version: 1,
-        document: {
-          workspace: 'demo',
-          routing: { stages: { review: {} } },
-          review: { seats: [] },
-          harnesses: [],
-          repos: [],
-          setups: [activity('setup-claimed', false).task.setup_contract],
-          default_setup: 'old',
-          execution: {},
-        },
-      },
-    }),
-  )
-  await page.goto('/tasks/setup-claimed/full')
-  await page.locator('summary', { hasText: 'Change execution setup' }).click()
-  await expect(page.getByText('An attempt is claimed and executing.')).toBeVisible()
-  await expect(page.getByLabel('Named execution setup')).toBeDisabled()
-})
-
 test('a claimed attempt exposes reasoned operator preemption with the renewal grace bound', async ({ page }) => {
   await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
   let preemptBody = ''

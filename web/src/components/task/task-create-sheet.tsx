@@ -26,7 +26,7 @@ const DEPENDENCY_RESULT_LIMIT = 20
 // Task intake: the dashboard is one source among github/cli/cron.
 // A sheet instead of a page so intake happens over the board, with room for
 // the rich triage context that saves bounce rounds downstream — structured
-// description, base branch, execution policy, and artifact attachments.
+// description, base branch, policy overrides, and artifact attachments.
 export function TaskCreateSheet({
   onClose,
   onCreated,
@@ -46,7 +46,6 @@ export function TaskCreateSheet({
     enabled: Boolean(token && workspace?.workspace),
     refetchInterval: 5000,
   })
-  const setups = workspace?.setups ?? []
   const tasks = useQuery({
     queryKey: ['tasks', workspace?.workspace, 'dependency-candidates'],
     queryFn: fetchTasks,
@@ -69,7 +68,6 @@ export function TaskCreateSheet({
   const [repo, setRepo] = useState('')
   const [baseBranch, setBaseBranch] = useState('')
   const [hold, setHold] = useState(false)
-  const [setup, setSetup] = useState('')
   const [specGate, setSpecGate] = useState<'default' | 'on' | 'off'>('default')
   const [mergeGate, setMergeGate] = useState<'default' | 'on' | 'off'>('default')
   const [dependsOn, setDependsOn] = useState<string[]>([])
@@ -80,11 +78,8 @@ export function TaskCreateSheet({
   const fileInput = useRef<HTMLInputElement>(null)
   const intakeKey = useRef(crypto.randomUUID())
   const repoName = repo || repos[0]?.name || ''
-  const setupName = setup || workspace?.default_setup || setups[0]?.name || ''
-  const selectedSetup = setups.find((entry) => entry.name === setupName)
-  const setupHealth = workerHealth.data?.setup_serviceability?.[setupName]
-  const workerExpected = setupHealth?.worker_expected ?? workerHealth.data?.worker_expected === true
-  const workerAvailable = setupHealth?.worker_available ?? workerHealth.data?.worker_available === true
+  const workerExpected = workerHealth.data?.worker_expected === true
+  const workerAvailable = workerHealth.data?.worker_available === true
   // Hosts may keep their own surface mounted while sharing the complete intake
   // composition. The Tasks list remains the default for legacy `/new` links
   // and its own create action.
@@ -97,7 +92,6 @@ export function TaskCreateSheet({
         {
           body: body.trim(),
           repo: repoName,
-          ...(setupName ? { setup: setupName } : {}),
           ...(hold ? { hold } : {}),
           ...(specGate !== 'default' ? { spec_approval: specGate === 'on' } : {}),
           ...(mergeGate !== 'default' ? { merge_approval: mergeGate === 'on' } : {}),
@@ -222,38 +216,6 @@ export function TaskCreateSheet({
           </Field>
         </div>
 
-        <Field
-          label="Execution setup"
-          hint="Choose a prepared execution contract; its details are captured on this task."
-        >
-          <Select aria-label="Execution setup" value={setupName} onChange={(event) => setSetup(event.target.value)}>
-            {setups.map((entry) => (
-              <option key={entry.name} value={entry.name}>
-                {entry.name}
-                {entry.name === workspace?.default_setup ? ' (default)' : ''}
-              </option>
-            ))}
-          </Select>
-          {selectedSetup && (
-            <details className="mt-2 text-xs text-muted">
-              <summary className="cursor-pointer">Composition</summary>
-              <p className="mt-1 font-mono">
-                Implement: {selectedSetup.execution_settings.implementation.harness} ·{' '}
-                {selectedSetup.execution_settings.implementation.model || 'harness default'}
-              </p>
-              <p className="font-mono">
-                Review:{' '}
-                {selectedSetup.review.seats
-                  .map(
-                    (seat) =>
-                      `${seat.harness || selectedSetup.execution_settings.review.fallback_harness || 'in-process'} / ${seat.model}`,
-                  )
-                  .join(', ')}
-              </p>
-            </details>
-          )}
-        </Field>
-
         <TaskContextPicker
           label="Context"
           hint="Optional — attach the confirmed requirements this work should satisfy and the system design that governs it."
@@ -342,11 +304,8 @@ export function TaskCreateSheet({
           </div>
           {workerExpected && !workerAvailable && !hold && (
             <p className="mt-2 text-xs text-attention">
-              No worker can run {setupName || 'this setup'} right now —{' '}
-              {setupHealth?.worker_unavailable_reason ??
-                workerHealth.data?.worker_unavailable_reason ??
-                'waiting for a live worker with healthy routed harnesses'}
-              . The task will queue until a worker is available or an agent claims it over a pull surface.
+              Worker unavailable — {workerHealth.data?.worker_unavailable_reason ?? 'waiting for a live worker'}. The
+              task will queue until a worker is available or an agent claims it over a pull surface.
             </p>
           )}
         </Field>

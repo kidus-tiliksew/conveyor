@@ -4,7 +4,6 @@ import type {
   ActivitySummary,
   Artifact,
   BlueprintView,
-  HarnessTemplate,
   InterventionAction,
   LineageGraph,
   LineageNodeType,
@@ -364,7 +363,6 @@ export async function createPlanningSession(
   input: {
     requirement_context_id?: string
     system_design_context_id?: string
-    model?: string
     goal?: PlanningSessionGoal
     promotion?: RequirementDerivation
   },
@@ -660,34 +658,6 @@ export function fetchWorkspaceConfig(token: string) {
   return fetch(workspaceURL('/v1/workspace/config'), { headers: mutationHeaders(token) }).then(async (response) => {
     if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
     const result = (await response.json()) as VersionedWorkspaceConfig
-    const fallbackReview = {
-      seats: [
-        {
-          model: result.document.routing.stages.review?.model ?? '',
-          harness: result.document.routing.stages.review?.harness,
-        },
-      ],
-    }
-    const review = { ...result.document.review, seats: result.document.review?.seats ?? fallbackReview.seats }
-    const setups = (
-      result.document.setups?.length
-        ? result.document.setups
-        : [
-            {
-              name: 'default',
-              execution_settings: result.document.execution_settings,
-              review,
-              refresh_review: 'delta' as const,
-            },
-          ]
-    ).map((setup) => ({
-      ...setup,
-      review: { ...setup.review, seats: setup.review?.seats ?? review.seats },
-      refresh_review: setup.refresh_review || ('delta' as const),
-    }))
-    const planningModels = [
-      ...new Set((result.document.planning_models ?? []).map((model) => model.trim()).filter(Boolean)),
-    ]
     return {
       ...result,
       document: {
@@ -696,7 +666,6 @@ export function fetchWorkspaceConfig(token: string) {
           ...result.document.execution,
           require_verification_evidence: result.document.execution?.require_verification_evidence ?? false,
         },
-        harnesses: result.document.harnesses ?? [],
         repos: result.document.repos ?? [],
         monitor: result.document.monitor ?? {
           enabled: false,
@@ -704,19 +673,15 @@ export function fetchWorkspaceConfig(token: string) {
           poll_interval: '1m',
           startup_window: '24h',
         },
-        review,
-        setups,
-        default_setup: result.document.default_setup || setups[0].name,
-        planning_models: planningModels.length ? planningModels : [],
+        review: { seats: result.document.review?.seats ?? [{}] },
+        stage_timeouts: {
+          spec: result.document.stage_timeouts?.spec ?? '30m',
+          implement: result.document.stage_timeouts?.implement ?? '4h',
+          review: result.document.stage_timeouts?.review ?? '1h',
+        },
       },
     }
   })
-}
-
-export async function getHarnessTemplates(token: string) {
-  const response = await fetch('/v1/harness-templates', { headers: mutationHeaders(token) })
-  if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
-  return response.json() as Promise<{ templates: HarnessTemplate[] }>
 }
 
 export class ConfigValidationError extends Error {
@@ -762,7 +727,6 @@ export interface CreateTaskInput {
   hold?: boolean
   spec_approval?: boolean
   merge_approval?: boolean
-  setup?: string
   depends_on?: string[]
   requirement_ids?: string[]
   system_design_ids?: string[]
@@ -886,20 +850,6 @@ export async function setTaskAssignee(taskId: string, token: string, assigneeUse
   })
   if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
   return response.json() as Promise<Task>
-}
-
-export async function changeTaskSetup(
-  taskId: string,
-  token: string,
-  input: { setup?: string; apply_latest?: boolean; reason?: string; request_id: string },
-) {
-  const response = await fetch(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/setup`), {
-    method: 'POST',
-    headers: mutationHeaders(token),
-    body: JSON.stringify(input),
-  })
-  if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
-  return response.json() as Promise<{ task: Task; review_transition: string }>
 }
 
 export async function recoverWorkOrder(workOrderId: string, token: string, requestId: string, direction?: string) {

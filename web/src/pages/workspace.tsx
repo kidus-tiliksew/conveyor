@@ -13,51 +13,38 @@ import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import { Input } from '../components/ui/input'
-import { DropdownMenu, DropdownMenuItem } from '../components/ui/dropdown-menu'
 import { Switch } from '../components/ui/switch'
 import { Field } from '../components/workspace/field'
-import { HarnessCard, latestProbe } from '../components/workspace/harness-card'
 import { MembersSection } from '../components/workspace/members-section'
-import { SetupCard } from '../components/workspace/setup-card'
 import {
   ConfigValidationError,
   fetchWorkers,
   fetchWorkspaceConfig,
-  getHarnessTemplates,
   issueWorkerPairing,
   revokeWorker,
   updateWorkspaceConfig,
 } from '../lib/api'
 import { cn } from '../lib/utils'
-import type {
-  HarnessTemplate,
-  WorkerList,
-  WorkspaceConfigDocument,
-  WorkspaceConfigRepo,
-  WorkspaceHarness,
-} from '../lib/types'
+import type { WorkerList, WorkspaceConfigDocument, WorkspaceConfigRepo } from '../lib/types'
 
-type TabId = 'general' | 'execution' | 'harnesses' | 'workers' | 'members'
+type TabId = 'general' | 'policy' | 'workers' | 'members'
 
 const TABS: Array<{ id: TabId; label: string }> = [
   { id: 'general', label: 'General' },
-  { id: 'execution', label: 'Execution' },
-  { id: 'harnesses', label: 'Harnesses' },
+  { id: 'policy', label: 'Policy' },
   { id: 'workers', label: 'Workers' },
   { id: 'members', label: 'Members' },
 ]
 
 // Which tab owns a config section, for dirty markers and validation-error routing.
 const TAB_SLICES: Record<Exclude<TabId, 'workers' | 'members'>, (document: WorkspaceConfigDocument) => unknown> = {
-  general: (document) => [document.max_bounces, document.work_order_queue_timeout, document.repos, document.monitor],
-  execution: (document) => [document.execution, document.setups, document.default_setup],
-  harnesses: (document) => [document.harnesses],
+  general: (document) => [document.work_order_queue_timeout, document.repos, document.monitor],
+  policy: (document) => [document.max_bounces, document.stage_timeouts, document.review, document.execution],
 }
 
 function tabForField(field: string): TabId {
-  if (/^(max_bounces|work_order_queue_timeout|repos|monitor)/.test(field)) return 'general'
-  if (/^harnesses/.test(field)) return 'harnesses'
-  return 'execution'
+  if (/^(work_order_queue_timeout|repos|monitor)/.test(field)) return 'general'
+  return 'policy'
 }
 
 export function WorkspacePage() {
@@ -72,12 +59,6 @@ export function WorkspacePage() {
     queryFn: () => fetchWorkspaceConfig(token),
     enabled: Boolean(token && workspace),
   })
-  const templates = useQuery({
-    queryKey: ['harness-templates', token],
-    queryFn: () => getHarnessTemplates(token),
-    enabled: Boolean(token),
-    retry: false,
-  })
   const workers = useQuery({
     queryKey: ['workers', token, workspace],
     queryFn: () => fetchWorkers(token),
@@ -87,7 +68,7 @@ export function WorkspacePage() {
     refetchOnWindowFocus: true,
     refetchOnReconnect: true,
   })
-  const [tab, setTab] = useState<TabId>('execution')
+  const [tab, setTab] = useState<TabId>('policy')
   const [draft, setDraftState] = useState<WorkspaceConfigDocument | null>(null)
   const [saved, setSaved] = useState('')
   const [pairing, setPairing] = useState('')
@@ -207,15 +188,7 @@ export function WorkspacePage() {
 
             <div className="pt-5">
               {tab === 'general' && <GeneralTab draft={draft} setDraft={setDraft} />}
-              {tab === 'execution' && <ExecutionTab draft={draft} setDraft={setDraft} workerHealth={workers.data} />}
-              {tab === 'harnesses' && (
-                <HarnessesTab
-                  draft={draft}
-                  setDraft={setDraft}
-                  workerHealth={workers.data}
-                  templates={templates.data?.templates ?? []}
-                />
-              )}
+              {tab === 'policy' && <PolicyTab draft={draft} setDraft={setDraft} />}
               {tab === 'workers' && (
                 <WorkersTab
                   data={workers.data}
@@ -302,9 +275,6 @@ function GeneralTab({
   setDraft: (value: WorkspaceConfigDocument) => void
 }) {
   const update = (change: Partial<WorkspaceConfigDocument>) => setDraft({ ...draft, ...change })
-  const planningModels = draft.planning_models ?? [
-    draft.execution_settings.control_plane.planning?.model ?? draft.execution_settings.control_plane.triage.model,
-  ]
   const updateRepo = (index: number, change: Partial<WorkspaceConfigRepo>) => {
     const repos = [...draft.repos]
     repos[index] = { ...repos[index], ...change }
@@ -316,18 +286,7 @@ function GeneralTab({
         <CardHeader>
           <CardTitle>Basics</CardTitle>
         </CardHeader>
-        <CardContent className="grid gap-3 md:grid-cols-2">
-          <Field
-            label="Review rounds before check-in"
-            hint="Unsupervised implement–review rounds before the task pauses for a human look. The window resets after each human intervention."
-          >
-            <Input
-              type="number"
-              min={1}
-              value={draft.max_bounces}
-              onChange={(event) => update({ max_bounces: Number(event.target.value) })}
-            />
-          </Field>
+        <CardContent>
           <Field
             label="Work-order queue timeout"
             hint="How long a task may wait for a worker before it is marked stalled."
@@ -338,43 +297,6 @@ function GeneralTab({
               placeholder="24h"
             />
           </Field>
-        </CardContent>
-      </Card>
-      <Card>
-        <CardHeader>
-          <CardTitle>Planning model allowlist</CardTitle>
-          <Button size="sm" variant="secondary" onClick={() => update({ planning_models: [...planningModels, ''] })}>
-            <Plus />
-            Add model
-          </Button>
-        </CardHeader>
-        <CardContent className="space-y-2">
-          <p className="text-xs leading-5 text-muted">
-            Planning sessions may select only these operator-curated provider model IDs. The default setup's planning
-            model must remain in the list.
-          </p>
-          {planningModels.map((model, index) => (
-            <div key={index} className="flex items-center gap-2">
-              <Input
-                aria-label={`Planning model ${index + 1}`}
-                className="font-mono"
-                value={model}
-                onChange={(event) => {
-                  const next = [...planningModels]
-                  next[index] = event.target.value
-                  update({ planning_models: next })
-                }}
-              />
-              <Button
-                size="icon"
-                variant="ghost"
-                aria-label={`Remove planning model ${index + 1}`}
-                onClick={() => update({ planning_models: planningModels.filter((_, i) => i !== index) })}
-              >
-                <Trash2 />
-              </Button>
-            </div>
-          ))}
         </CardContent>
       </Card>
       <Card>
@@ -525,65 +447,25 @@ function GeneralTab({
   )
 }
 
-function ExecutionTab({
+function PolicyTab({
   draft,
   setDraft,
-  workerHealth,
 }: {
   draft: WorkspaceConfigDocument
   setDraft: (value: WorkspaceConfigDocument) => void
-  workerHealth?: WorkerList
 }) {
-  // Collapsed by default; expansion is keyed by index so renames keep it open.
-  const [expanded, setExpanded] = useState<Record<number, boolean>>({})
   const update = (change: Partial<WorkspaceConfigDocument>) => setDraft({ ...draft, ...change })
-  // Per-setup serviceability is advisory: it explains whether
-  // the worker can serve a setup, and never gates anything.
-  const workerReadyFor = (name: string) =>
-    workerHealth?.setup_serviceability?.[name]?.worker_available ?? workerHealth?.worker_available === true
-  const uniqueName = (base: string) => {
-    let name = base
-    let suffix = 2
-    while (draft.setups.some((setup) => setup.name === name)) name = `${base}-${suffix++}`
-    return name
-  }
-  const addSetup = () => {
-    const base = draft.setups.find((setup) => setup.name === draft.default_setup) ?? draft.setups[0]
-    const copy = structuredClone(base)
-    let suffix = 1
-    while (draft.setups.some((setup) => setup.name === `setup-${suffix}`)) suffix++
-    copy.name = `setup-${suffix}`
-    update({ setups: [...draft.setups, copy] })
-    setExpanded({ ...expanded, [draft.setups.length]: true })
-  }
-  const duplicateSetup = (index: number) => {
-    const copy = structuredClone(draft.setups[index])
-    copy.name = uniqueName(`${copy.name}-copy`)
-    update({ setups: [...draft.setups, copy] })
-    setExpanded({ ...expanded, [draft.setups.length]: true })
-  }
-  const deleteSetup = (index: number) => {
-    const removed = draft.setups[index]
-    const setups = draft.setups.filter((_, i) => i !== index)
-    const defaultSetup = draft.default_setup === removed.name ? setups[0].name : draft.default_setup
-    const projected = setups.find((setup) => setup.name === defaultSetup)!
-    setDraft({
-      ...draft,
-      setups,
-      default_setup: defaultSetup,
-      execution_settings: projected.execution_settings,
-      review: projected.review,
-    })
-    setExpanded({})
-  }
+  const updateStageTimeout = (stage: 'spec' | 'implement' | 'review', value: string) =>
+    update({ stage_timeouts: { ...draft.stage_timeouts, [stage]: value } })
+  const seatCount = draft.review.seats.length
   return (
     <div className="space-y-4">
       <Card>
         <CardHeader>
-          <CardTitle>Policy</CardTitle>
-          <span className="text-xs text-faint">Dispatch worker · confinement none · authentication BYOA.</span>
+          <CardTitle>Pipeline policy</CardTitle>
+          <span className="text-xs text-faint">Defaults are frozen onto each task at intake.</span>
         </CardHeader>
-        <CardContent className="grid gap-x-6 gap-y-4 md:grid-cols-2">
+        <CardContent className="grid gap-x-6 gap-y-5 md:grid-cols-2">
           <div className="space-y-3">
             <div className="flex items-center gap-3">
               <Switch
@@ -592,8 +474,8 @@ function ExecutionTab({
                 onChange={(checked) => update({ execution: { ...draft.execution, spec_approval: checked } })}
               />
               <div>
-                <p className="text-sm font-medium">Pause for spec approval</p>
-                <p className="text-xs text-faint">You approve the spec before implementation starts</p>
+                <p className="text-sm font-medium">Pause for plan approval</p>
+                <p className="text-xs text-faint">Require operator approval before implementation starts</p>
               </div>
             </div>
             <div className="flex items-center gap-3">
@@ -604,7 +486,7 @@ function ExecutionTab({
               />
               <div>
                 <p className="text-sm font-medium">Pause before merge</p>
-                <p className="text-xs text-faint">You approve the final PR before it merges</p>
+                <p className="text-xs text-faint">Require operator approval before the reviewed change lands</p>
               </div>
             </div>
             <div className="flex items-center gap-3">
@@ -617,180 +499,70 @@ function ExecutionTab({
               />
               <div>
                 <p className="text-sm font-medium">Require verification evidence</p>
-                <p className="text-xs text-faint">
-                  Refuse review submission until the task has an eligible screenshot or short recording
-                </p>
+                <p className="text-xs text-faint">Require an eligible screenshot or short recording before review</p>
               </div>
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-3">
-            <Field label="Parallel implementations">
-              <Input
-                type="number"
-                min={1}
-                value={draft.execution.implement_concurrency}
-                onChange={(event) =>
-                  update({ execution: { ...draft.execution, implement_concurrency: Number(event.target.value) } })
-                }
-              />
-            </Field>
+          <div className="grid gap-3 sm:grid-cols-2">
             <Field
-              label="Reserved review slots"
-              hint="Worker capacity held back so reviews never wait behind implementations."
+              label="Review rounds before check-in"
+              hint="Unsupervised implement-review rounds before the task pauses for an operator."
             >
               <Input
                 type="number"
                 min={1}
-                value={draft.execution.review_concurrency}
-                onChange={(event) =>
-                  update({ execution: { ...draft.execution, review_concurrency: Number(event.target.value) } })
-                }
+                value={draft.max_bounces}
+                onChange={(event) => update({ max_bounces: Number(event.target.value) })}
               />
             </Field>
-            <div className="col-span-2">
-              <Field
-                label="First activity timeout"
-                hint="Maximum time a launched harness may remain completely silent before worker recovery."
-              >
-                <Input
-                  value={draft.execution.first_activity_timeout}
-                  onChange={(event) =>
-                    update({ execution: { ...draft.execution, first_activity_timeout: event.target.value } })
-                  }
-                />
-              </Field>
-            </div>
+            <Field label="Review seats" hint="Independent verdicts required in each review round.">
+              <Input
+                aria-label="Review seats"
+                type="number"
+                min={1}
+                value={seatCount}
+                onChange={(event) => {
+                  const count = Math.max(1, Number(event.target.value) || 1)
+                  update({ review: { seats: Array.from({ length: count }, () => ({})) } })
+                }}
+              />
+            </Field>
           </div>
         </CardContent>
       </Card>
 
-      <div>
-        <div className="mb-3 flex items-center gap-3">
-          <div>
-            <h3 className="text-sm font-semibold">Execution setups</h3>
-            <p className="text-xs text-faint">Chosen at task intake and frozen on each task</p>
-          </div>
-          <Button size="sm" className="ml-auto" onClick={addSetup}>
-            <Plus />
-            New setup
-          </Button>
-        </div>
-        <div className="space-y-3">
-          {draft.setups.map((setup, index) => (
-            <SetupCard
-              key={index}
-              document={draft}
-              setup={setup}
-              index={index}
-              expanded={Boolean(expanded[index])}
-              onToggle={() => setExpanded({ ...expanded, [index]: !expanded[index] })}
-              workerReady={workerReadyFor(setup.name)}
-              workerReason={
-                workerHealth?.setup_serviceability?.[setup.name]?.worker_unavailable_reason ??
-                workerHealth?.worker_unavailable_reason
-              }
-              setDraft={setDraft}
-              onDuplicate={() => duplicateSetup(index)}
-              onDelete={() => deleteSetup(index)}
+      <Card>
+        <CardHeader>
+          <CardTitle>Stage timeouts</CardTitle>
+          <span className="text-xs text-faint">Each value is a positive duration such as 30m or 4h.</span>
+        </CardHeader>
+        <CardContent className="grid gap-3 md:grid-cols-3">
+          <Field label="Plan">
+            <Input
+              aria-label="Plan stage timeout"
+              value={draft.stage_timeouts.spec}
+              onChange={(event) => updateStageTimeout('spec', event.target.value)}
             />
-          ))}
-        </div>
-      </div>
+          </Field>
+          <Field label="Implementation">
+            <Input
+              aria-label="Implementation stage timeout"
+              value={draft.stage_timeouts.implement}
+              onChange={(event) => updateStageTimeout('implement', event.target.value)}
+            />
+          </Field>
+          <Field label="Review">
+            <Input
+              aria-label="Review stage timeout"
+              value={draft.stage_timeouts.review}
+              onChange={(event) => updateStageTimeout('review', event.target.value)}
+            />
+          </Field>
+        </CardContent>
+      </Card>
     </div>
   )
 }
-
-function HarnessesTab({
-  draft,
-  setDraft,
-  workerHealth,
-  templates,
-}: {
-  draft: WorkspaceConfigDocument
-  setDraft: (value: WorkspaceConfigDocument) => void
-  workerHealth?: WorkerList
-  templates: HarnessTemplate[]
-}) {
-  const [expanded, setExpanded] = useState<Record<number, boolean>>({})
-  const update = (change: Partial<WorkspaceConfigDocument>) => setDraft({ ...draft, ...change })
-  const updateHarness = (index: number, change: Partial<WorkspaceHarness>) => {
-    const harnesses = [...draft.harnesses]
-    harnesses[index] = { ...harnesses[index], ...change }
-    update({ harnesses })
-  }
-  const updateEffortArgs = (index: number, effort: 'low' | 'medium' | 'high', value: string[]) => {
-    const effortArgs = { ...draft.harnesses[index].effort_args }
-    if (value.length === 0) delete effortArgs[effort]
-    else effortArgs[effort] = value
-    updateHarness(index, { effort_args: Object.keys(effortArgs).length ? effortArgs : undefined })
-  }
-  const uniqueName = (base: string) => {
-    let name = base
-    let suffix = 2
-    while (draft.harnesses.some((harness) => harness.name === name)) name = `${base}-${suffix++}`
-    return name
-  }
-  const addHarness = (template?: HarnessTemplate) => {
-    const harness: WorkspaceHarness = template
-      ? { ...structuredClone(template.harness), name: uniqueName(template.id) }
-      : {
-          name: '',
-          mcp_transport: 'json_file',
-          command: [],
-          probe_command: [],
-          probe_timeout: '10s',
-          stall_timeout: '10m',
-        }
-    update({ harnesses: [...draft.harnesses, harness] })
-    setExpanded({ ...expanded, [draft.harnesses.length]: true })
-  }
-  return (
-    <div>
-      <div className="mb-3 flex items-center gap-3">
-        <div>
-          <h3 className="text-sm font-semibold">Harnesses</h3>
-          <p className="text-xs text-faint">How the worker launches each coding agent</p>
-        </div>
-        <DropdownMenu label="Add harness" className="ml-auto">
-          {templates.map((template) => (
-            <DropdownMenuItem key={template.id} onSelect={() => addHarness(template)}>
-              <span className="text-sm font-medium">{template.label}</span>
-              <span className="text-xs text-faint">{template.description}</span>
-            </DropdownMenuItem>
-          ))}
-          <DropdownMenuItem onSelect={() => addHarness()}>
-            <span className="text-sm font-medium">Custom</span>
-            <span className="text-xs text-faint">Start with a blank harness</span>
-          </DropdownMenuItem>
-        </DropdownMenu>
-      </div>
-      <div className="space-y-3">
-        {draft.harnesses.map((harness, index) => (
-          <HarnessCard
-            key={index}
-            harness={harness}
-            index={index}
-            expanded={Boolean(expanded[index])}
-            onToggle={() => setExpanded({ ...expanded, [index]: !expanded[index] })}
-            probe={latestProbe(workerHealth, harness.name)}
-            onChange={(change) => updateHarness(index, change)}
-            onEffortChange={(effort, value) => updateEffortArgs(index, effort, value)}
-            onRemove={() => {
-              update({ harnesses: draft.harnesses.filter((_, i) => i !== index) })
-              setExpanded({})
-            }}
-          />
-        ))}
-        {draft.harnesses.length === 0 && (
-          <p className="text-sm text-faint">
-            No harnesses yet. Add one to route implementation and review work to a coding agent.
-          </p>
-        )}
-      </div>
-    </div>
-  )
-}
-
 function WorkersTab({
   data,
   pairing,
