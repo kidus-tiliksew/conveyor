@@ -2546,10 +2546,17 @@ test('pending authority moves a live task to Needs operator until the proposal i
   await expect(page.getByRole('region', { name: 'Completed' }).getByText('Completed proposal task')).toBeVisible()
 
   pending = false
+  const refreshedActivity = page.waitForResponse(
+    (response) => response.request().method() === 'GET' && response.url().includes('/v1/activity'),
+  )
   await page.reload()
-  await expect(page.getByRole('region', { name: 'Needs operator' }).getByText('Proposal-gated task')).toHaveCount(0)
+  await refreshedActivity
   const reviewing = page.getByRole('region', { name: 'Reviewing' })
-  await expect(reviewing.getByText('Proposal-gated task')).toBeVisible()
+  // Wait for the destination card before asserting absence from its prior
+  // region. During a reload, both regions are briefly empty while the
+  // refreshed activity projection is rendered, especially under CI load.
+  await expect(reviewing.getByText('Proposal-gated task')).toBeVisible({ timeout: 15_000 })
+  await expect(page.getByRole('region', { name: 'Needs operator' }).getByText('Proposal-gated task')).toHaveCount(0)
   await expect(reviewing.getByText('Awaiting proposal decision')).toHaveCount(0)
 })
 
