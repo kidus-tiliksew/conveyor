@@ -19,10 +19,41 @@ func (c *client) getTaskRunOrderContext(ctx context.Context, credential, taskID 
 	if err != nil {
 		return nil, err
 	}
-	if result.Order.ID == "" {
+	if result.Order.ID == "" && result.Task.ID == "" {
 		return nil, nil
 	}
 	return &result, nil
+}
+
+func (c *client) approveTaskRunGateContext(ctx context.Context, credential string, item workerservice.DispatchOrder) error {
+	action, reason := core.InterventionApprove, "approved"
+	if item.Gate != nil && item.Gate.Kind == "plan_revision" {
+		action, reason = core.InterventionRedirect, "plan-revision-approved"
+	}
+	return c.reviewTaskRunGateContext(ctx, credential, item.Task.ID, action, reason, "")
+}
+
+func (c *client) requestTaskRunGateChangesContext(ctx context.Context, credential string, item workerservice.DispatchOrder, feedback string) error {
+	if item.Gate != nil && item.Gate.Kind == "merge" {
+		payload, _ := json.Marshal(map[string]string{"feedback": strings.TrimSpace(feedback)})
+		var response struct {
+			Task core.Task `json:"task"`
+		}
+		return c.workerDoContext(ctx, http.MethodPost, "/v1/tasks/"+url.PathEscape(item.Task.ID)+"/request-changes", payload, &response, credential)
+	}
+	reason := "changes-requested"
+	if item.Gate != nil && item.Gate.Kind == "plan_revision" {
+		reason = "plan-revision-declined"
+	}
+	return c.reviewTaskRunGateContext(ctx, credential, item.Task.ID, core.InterventionRedirect, reason, strings.TrimSpace(feedback))
+}
+
+func (c *client) reviewTaskRunGateContext(ctx context.Context, credential, taskID string, action core.InterventionAction, reason, comment string) error {
+	payload, _ := json.Marshal(map[string]string{"action": string(action), "reason_code": reason, "comment": comment})
+	var response struct {
+		Task core.Task `json:"task"`
+	}
+	return c.workerDoContext(ctx, http.MethodPost, "/v1/tasks/"+url.PathEscape(taskID)+"/review", payload, &response, credential)
 }
 
 func taskRunOrderPath(item workerservice.DispatchOrder, suffix string) string {

@@ -3,8 +3,10 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -45,6 +47,8 @@ const (
 	runModeAuto      = "auto-chained"
 )
 
+var runGatePollInterval = 2 * time.Second
+
 func runTask(ctx context.Context, c *client, taskID, configPath string, input io.Reader, output io.Writer, auto, terminal bool) error {
 	return runTaskWithPresentation(ctx, c, taskID, configPath, input, output, auto, terminal, false, false)
 }
@@ -53,23 +57,80 @@ func runTaskWithPresentation(ctx context.Context, c *client, taskID, configPath 
 	if strings.TrimSpace(c.token) == "" {
 		return fmt.Errorf("CONVEYOR_API_TOKEN is required for task execution")
 	}
-	item, err := c.getTaskRunOrderContext(ctx, c.token, taskID)
-	if err != nil {
-		return err
-	}
-	if item == nil {
-		_, err = fmt.Fprintf(output, "task %s has no claimable spec, implement, or review order\n", taskID)
-		return err
-	}
-	setup, err := loadLocalExecutionSetup(configPath)
-	if err != nil {
-		_ = presentPendingRunOrderStyled(output, *item, outputTerminal)
-		return err
-	}
-	local := setup.Config
 	reader := bufio.NewReader(input)
+	answers := newRunInputSource(reader)
 	runStages := make([]core.Stage, 0, 2)
+	attached := inputTerminal && outputTerminal
+	var setup localExecutionSetup
+	setupLoaded := false
+	var lastStage core.Stage
 	for {
+		item, err := c.getTaskRunOrderContext(ctx, c.token, taskID)
+		if err != nil {
+			return err
+		}
+		if item == nil || item.Order.ID == "" {
+			if !attached {
+				if lastStage == core.StageSpec {
+					_, err = fmt.Fprintf(output, "task %s reached the pending spec approval gate; operator approval is required\n", taskID)
+					return err
+				}
+				_, err = fmt.Fprintf(output, "task %s has no claimable spec, implement, or review order\n", taskID)
+				return err
+			}
+			if item == nil {
+				_, err = fmt.Fprintf(output, "task %s has no claimable spec, implement, or review order\n", taskID)
+				return err
+			}
+			if item.Task.State == core.TaskMerged || item.Task.State == core.TaskClosed || item.Task.State == core.TaskParked {
+				return printFinalRunSummaryStyled(output, item.Task, runStages, outputTerminal)
+			}
+			if item.Gate == nil {
+				if err = presentRunIdleStateStyled(output, item.Task, outputTerminal); err != nil {
+					return err
+				}
+				select {
+				case <-ctx.Done():
+					return printRunSummaryStyled(output, item.Task, runStages, outputTerminal)
+				case <-time.After(runGatePollInterval):
+					continue
+				}
+			}
+			decision, feedback, waitErr := waitAtTaskRunGate(ctx, answers, output, *item, outputTerminal)
+			if waitErr != nil {
+				return waitErr
+			}
+			switch decision {
+			case runGateStop:
+				return printRunSummaryStyled(output, item.Task, runStages, outputTerminal)
+			case runGatePoll:
+				continue
+			case runGateApprove:
+				err = c.approveTaskRunGateContext(ctx, c.token, *item)
+			case runGateRequestChanges:
+				err = c.requestTaskRunGateChangesContext(ctx, c.token, *item, feedback)
+			}
+			if err != nil {
+				var response *workerHTTPError
+				if errors.As(err, &response) && response.StatusCode == http.StatusConflict {
+					_, _ = fmt.Fprintln(output, "Gate state changed; refreshing task state.")
+					continue
+				}
+				return err
+			}
+			_, _ = fmt.Fprintln(output, "Gate decision recorded; refreshing task state.")
+			continue
+		}
+
+		if !setupLoaded {
+			setup, err = loadLocalExecutionSetup(configPath)
+			if err != nil {
+				_ = presentPendingRunOrderStyled(output, *item, outputTerminal)
+				return err
+			}
+			setupLoaded = true
+		}
+		local := setup.Config
 		selected, selectErr := selectLocalRunDispatch(*item, local)
 		if selectErr != nil {
 			_ = presentPendingRunOrderStyled(output, *item, outputTerminal)
@@ -85,7 +146,7 @@ func runTaskWithPresentation(ctx context.Context, c *client, taskID, configPath 
 				_, _ = fmt.Fprintf(output, "No work order was claimed because stdin is not a terminal.\nRun conveyor run %s --auto to proceed.\n", taskID)
 				return fmt.Errorf("stage confirmation requires a terminal; use conveyor run %s --auto", taskID)
 			}
-			confirmed, confirmErr := confirmRunStageStyled(ctx, reader, output, selected.Order.Stage, outputTerminal)
+			confirmed, confirmErr := confirmRunStageFromSourceStyled(ctx, answers, output, selected.Order.Stage, outputTerminal)
 			if confirmErr != nil {
 				return confirmErr
 			}
@@ -106,18 +167,136 @@ func runTaskWithPresentation(ctx context.Context, c *client, taskID, configPath 
 			return runErr
 		}
 		runStages = append(runStages, selected.Order.Stage)
-		item, err = c.getTaskRunOrderContext(ctx, c.token, taskID)
+		lastStage = selected.Order.Stage
+	}
+}
+
+type runGateDecision int
+
+const (
+	runGatePoll runGateDecision = iota
+	runGateApprove
+	runGateRequestChanges
+	runGateStop
+)
+
+func waitAtTaskRunGate(ctx context.Context, answers *runInputSource, output io.Writer, item workerservice.DispatchOrder, styled bool) (runGateDecision, string, error) {
+	gate := item.Gate
+	if gate == nil {
+		return runGatePoll, "", nil
+	}
+	if err := presentTaskRunGateStyled(output, item.Task, *gate, styled); err != nil {
+		return runGateStop, "", err
+	}
+	if !gate.CanOperate && !gate.CanRequestChanges {
+		_, _ = fmt.Fprintln(output, "A maintainer or operator can resolve this gate; waiting without a claim.")
+		select {
+		case <-ctx.Done():
+			return runGateStop, "", nil
+		case <-time.After(runGatePollInterval):
+			return runGatePoll, "", nil
+		}
+	}
+
+	actions := "wait"
+	if gate.CanOperate {
+		actions = "approve/changes/wait"
+	} else if gate.CanRequestChanges {
+		actions = "changes/wait"
+	}
+	for {
+		answer, polled, err := readRunPromptOrPoll(ctx, answers, output, fmt.Sprintf("Gate action [%s]: ", actions), styled, runGatePollInterval)
 		if err != nil {
-			return err
+			return runGateStop, "", err
 		}
-		if item == nil {
-			if selected.Order.Stage == core.StageSpec {
-				_, err = fmt.Fprintf(output, "task %s reached the pending spec approval gate; operator approval is required\n", taskID)
-				return err
+		if polled {
+			return runGatePoll, "", nil
+		}
+		switch strings.ToLower(strings.TrimSpace(answer)) {
+		case "":
+			return runGateStop, "", nil
+		case "wait":
+			select {
+			case <-ctx.Done():
+				return runGateStop, "", nil
+			case <-time.After(runGatePollInterval):
+				return runGatePoll, "", nil
 			}
-			_, err = fmt.Fprintf(output, "task %s has no claimable spec, implement, or review order\n", taskID)
-			return err
+		case "approve":
+			if gate.CanOperate {
+				return runGateApprove, "", nil
+			}
+		case "changes", "request-changes":
+			if gate.CanOperate || gate.CanRequestChanges {
+				feedback, feedbackErr := readRunPrompt(ctx, answers, output, "Feedback: ", styled)
+				if feedbackErr != nil {
+					return runGateStop, "", feedbackErr
+				}
+				if strings.TrimSpace(feedback) != "" {
+					return runGateRequestChanges, strings.TrimSpace(feedback), nil
+				}
+				_, _ = fmt.Fprintln(output, "Feedback is required to request changes.")
+				continue
+			}
 		}
+		_, _ = fmt.Fprintf(output, "Type one of: %s. Approval requires the full word approve.\n", actions)
+	}
+}
+
+type runInputResult struct {
+	value string
+	err   error
+}
+
+type runInputSource struct {
+	results <-chan runInputResult
+}
+
+func newRunInputSource(reader *bufio.Reader) *runInputSource {
+	results := make(chan runInputResult)
+	go func() {
+		defer close(results)
+		for {
+			value, err := reader.ReadString('\n')
+			results <- runInputResult{value: value, err: err}
+			if err != nil {
+				return
+			}
+		}
+	}()
+	return &runInputSource{results: results}
+}
+
+func readRunPrompt(ctx context.Context, answers *runInputSource, output io.Writer, prompt string, styled bool) (string, error) {
+	answer, _, err := readRunPromptOrPoll(ctx, answers, output, prompt, styled, 0)
+	return answer, err
+}
+
+func readRunPromptOrPoll(ctx context.Context, answers *runInputSource, output io.Writer, prompt string, styled bool, poll time.Duration) (string, bool, error) {
+	if styled {
+		prompt = newCLIPalette(output).accent.Render(prompt)
+	}
+	if _, err := fmt.Fprint(output, prompt); err != nil {
+		return "", false, err
+	}
+	var timer <-chan time.Time
+	if poll > 0 {
+		timer = time.After(poll)
+	}
+	select {
+	case <-ctx.Done():
+		_, _ = fmt.Fprintln(output)
+		return "", false, nil
+	case <-timer:
+		return "", true, nil
+	case value, ok := <-answers.results:
+		if !ok {
+			return "", false, nil
+		}
+		if value.err != nil && len(value.value) == 0 && value.err != io.EOF {
+			return "", false, value.err
+		}
+		return value.value, false, nil
 	}
 }
 
@@ -184,6 +363,10 @@ func confirmRunStage(ctx context.Context, input *bufio.Reader, output io.Writer,
 }
 
 func confirmRunStageStyled(ctx context.Context, input *bufio.Reader, output io.Writer, stage core.Stage, styled bool) (bool, error) {
+	return confirmRunStageFromSourceStyled(ctx, newRunInputSource(input), output, stage, styled)
+}
+
+func confirmRunStageFromSourceStyled(ctx context.Context, answers *runInputSource, output io.Writer, stage core.Stage, styled bool) (bool, error) {
 	for {
 		prompt := fmt.Sprintf("Proceed with %s? [y/N]: ", stage)
 		if styled {
@@ -192,23 +375,18 @@ func confirmRunStageStyled(ctx context.Context, input *bufio.Reader, output io.W
 		if _, err := fmt.Fprint(output, prompt); err != nil {
 			return false, err
 		}
-		type readResult struct {
-			answer string
-			err    error
-		}
-		result := make(chan readResult, 1)
-		go func() {
-			answer, err := input.ReadString('\n')
-			result <- readResult{answer: answer, err: err}
-		}()
 		var answer string
 		var err error
 		select {
 		case <-ctx.Done():
 			_, _ = fmt.Fprintln(output)
 			return false, nil
-		case read := <-result:
-			answer, err = read.answer, read.err
+		case read, ok := <-answers.results:
+			if !ok {
+				_, _ = fmt.Fprintln(output)
+				return false, nil
+			}
+			answer, err = read.value, read.err
 		}
 		if err != nil && len(answer) == 0 {
 			if err == io.EOF {
@@ -246,6 +424,47 @@ func printRunSummaryStyled(output io.Writer, task core.Task, stages []core.Stage
 	message := fmt.Sprintf("Run stopped before claiming the next work order.\nRan: %s\nTask %s is currently %s.\nResume: conveyor run %s", ran, task.ID, task.State, task.ID)
 	if styled {
 		message = newCLIPalette(output).muted.Render(message)
+	}
+	_, err := fmt.Fprintln(output, message)
+	return err
+}
+
+func presentTaskRunGateStyled(output io.Writer, task core.Task, gate workerservice.TaskRunGate, styled bool) error {
+	rows := [][2]string{
+		{"Task", fmt.Sprintf("%s · %s", task.ID, task.Title)},
+		{"Waiting", gate.Label},
+		{"Artifact", gate.Summary},
+		{"Claim", "none (polling recorded factory state)"},
+	}
+	if gate.Rationale != "" {
+		rows = append(rows, [2]string{"Rationale", gate.Rationale})
+	}
+	return renderCLIStatusRows(output, styled, rows...)
+}
+
+func presentRunIdleStateStyled(output io.Writer, task core.Task, styled bool) error {
+	if err := renderCLIStatusRows(output, styled,
+		[2]string{"Task", fmt.Sprintf("%s · %s", task.ID, task.Title)},
+		[2]string{"State", string(task.State)},
+	); err != nil {
+		return err
+	}
+	_, err := fmt.Fprintln(output, "No claimable stage or human gate is pending.")
+	return err
+}
+
+func printFinalRunSummaryStyled(output io.Writer, task core.Task, stages []core.Stage, styled bool) error {
+	ran := "none"
+	if len(stages) > 0 {
+		names := make([]string, len(stages))
+		for index, stage := range stages {
+			names[index] = string(stage)
+		}
+		ran = strings.Join(names, ", ")
+	}
+	message := fmt.Sprintf("Task %s finished in state %s.\nRan: %s", task.ID, task.State, ran)
+	if styled {
+		message = newCLIPalette(output).success.Render(message)
 	}
 	_, err := fmt.Fprintln(output, message)
 	return err

@@ -164,8 +164,75 @@ func TestTaskRunHTTPReturnsNoWorkAndSurfacesAssigneeRefusal(t *testing.T) {
 	if err = storetest.For(st).UpdateWorkOrder(store.WithWorkspace(t.Context(), "demo"), claimed, core.WorkOrderCmdSubmitReviewVerdict); err != nil {
 		t.Fatal(err)
 	}
-	if response := taskRunHTTPCall(handler, http.MethodGet, "/v1/tasks/assigned/run-order", ""); response.Code != http.StatusNoContent {
+	if response := taskRunHTTPCall(handler, http.MethodGet, "/v1/tasks/assigned/run-order", ""); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"state":"running"`) || !strings.Contains(response.Body.String(), `"work_order":{"id":""`) {
 		t.Fatalf("no-work status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestTaskRunHTTPProjectsSpecGateCapabilitiesWithoutClaim(t *testing.T) {
+	server, st, _ := taskRunHTTPFixture(t)
+	server.Memberships = &membershipFixture{roles: map[string]map[string]core.WorkspaceRole{
+		"local-operator": {"demo": core.WorkspaceRoleMaintainer},
+	}}
+	order := createTaskRunOrderAtStage(t, st, "gated", core.StageSpec, time.Now().UTC())
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.Actor{ID: "system", Role: core.ActorSystem}), "demo")
+	claimed, err := storetest.For(st).ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{SessionID: "finished", ClientToken: "secret", ClaimantID: core.TaskRunClaimantID("local-operator"), OwnerUserID: "local-operator", Lease: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed.State = core.WorkOrderCompleted
+	if err = storetest.For(st).UpdateWorkOrder(ctx, claimed, core.WorkOrderCmdSubmitSpec); err != nil {
+		t.Fatal(err)
+	}
+	spec, err := st.CreateSpecVersion(ctx, core.SpecVersion{TaskID: "gated", Content: "## Done criteria\n- attached"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = taskops.New(st).Perform(ctx, "gated", taskops.Command{Kind: core.TaskGateSpec, RecoveryStage: core.StageImplement, ProjectStages: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	response := taskRunHTTPCall(server.Handler(), http.MethodGet, "/v1/tasks/gated/run-order", "")
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var projection workerservice.DispatchOrder
+	if err = json.Unmarshal(response.Body.Bytes(), &projection); err != nil {
+		t.Fatal(err)
+	}
+	if projection.Order.ID != "" || projection.Task.State != core.TaskAwaiting || projection.Gate == nil || projection.Gate.Kind != "spec" || projection.Gate.SpecVersion != spec.Version || !projection.Gate.CanOperate || !projection.Gate.CanRequestChanges {
+		t.Fatalf("projection=%+v", projection)
+	}
+	unchanged, err := st.GetWorkOrder(ctx, order.ID)
+	if err != nil || unchanged.State != core.WorkOrderCompleted {
+		t.Fatalf("waiting changed work order=%+v err=%v", unchanged, err)
+	}
+	if count, countErr := st.CountEvents(ctx, "gated", "work_order.lease_renewed"); countErr != nil || count != 0 {
+		t.Fatalf("waiting renewed claim count=%d err=%v", count, countErr)
+	}
+}
+
+func TestTaskRunHTTPHidesGateActionsWithoutCapabilities(t *testing.T) {
+	server, st, _ := taskRunHTTPFixture(t)
+	server.Memberships = &membershipFixture{roles: map[string]map[string]core.WorkspaceRole{
+		"local-operator": {"demo": core.WorkspaceRoleViewer},
+	}}
+	order := createTaskRunOrderAtStage(t, st, "viewer-gate", core.StageImplement, time.Now().UTC())
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.Actor{ID: "system", Role: core.ActorSystem}), "demo")
+	claimed, err := storetest.For(st).ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{SessionID: "finished", ClientToken: "secret", Lease: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed.State = core.WorkOrderCompleted
+	if err = storetest.For(st).UpdateWorkOrder(ctx, claimed, core.WorkOrderCmdSubmitReviewVerdict); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = taskops.New(st).Perform(ctx, "viewer-gate", taskops.Command{Kind: core.TaskGateSpec, RecoveryStage: core.StageImplement, ProjectStages: true}); err != nil {
+		t.Fatal(err)
+	}
+	response := taskRunHTTPCall(server.Handler(), http.MethodGet, "/v1/tasks/viewer-gate/run-order", "")
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"can_operate":false`) || !strings.Contains(response.Body.String(), `"can_request_changes":false`) {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 }
 
