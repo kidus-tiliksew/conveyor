@@ -75,7 +75,7 @@ func TestPairingHeartbeatHealthAndWorkerClaimLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	listed, err := service.ListClaimable(workerCtx, worker)
-	if err != nil || len(listed) != 1 || listed[0].Task.ID != "auto-task" || listed[0].HarnessSelection != "enforced" || listed[0].Confinement != "none" || listed[0].Auth != "byoa" {
+	if err != nil || len(listed) != 1 || listed[0].Task.ID != "auto-task" || listed[0].HarnessSelection != "local" || listed[0].Confinement != "none" || listed[0].Auth != "byoa" {
 		t.Fatalf("listed=%+v err=%v", listed, err)
 	}
 	// Held tasks are rejected at claim time (DEC-5), and a
@@ -432,7 +432,7 @@ func TestProviderUsageLimitMatcher(t *testing.T) {
 	}
 }
 
-func TestTaskAvailabilityReportsHarnessHeartbeatAndQueueContext(t *testing.T) {
+func TestTaskAvailabilityReportsWorkerLivenessAndQueueContext(t *testing.T) {
 	now := time.Now().UTC()
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	st := store.NewMemory()
@@ -448,7 +448,7 @@ func TestTaskAvailabilityReportsHarnessHeartbeatAndQueueContext(t *testing.T) {
 	task := core.Task{ID: "worker-status-task", Workspace: "demo", NextStage: core.StageReview}
 	orders := []core.WorkOrder{{ID: "seat-2", TaskID: task.ID, Stage: core.StageReview, State: core.WorkOrderQueued, RequiredHarness: "claude", RetrySuppressed: true, LastAttemptOutcome: core.WorkOrderOutcomeExpired}}
 	status := service.TaskAvailability(ctx, cfg, task, orders)
-	if status.Available || status.QueueContext != "interrupted" || status.LastHeartbeatAge != "0s" || len(status.RequiredHarnesses) != 1 || status.RequiredHarnesses[0] != "claude" {
+	if !status.Available || status.QueueContext != "interrupted" || status.LastHeartbeatAge != "0s" || len(status.RequiredHarnesses) != 0 {
 		t.Fatalf("status=%+v", status)
 	}
 	if _, err := st.HeartbeatWorker(ctx, worker.ID, now.Add(DefaultLivenessLease), []core.HarnessProbe{{Harness: "claude", Healthy: true, CheckedAt: now}}); err != nil {
@@ -459,7 +459,7 @@ func TestTaskAvailabilityReportsHarnessHeartbeatAndQueueContext(t *testing.T) {
 	}
 }
 
-func TestTaskAvailabilityTreatsLiveClaimAsHarnessHealthEvidence(t *testing.T) {
+func TestTaskAvailabilityUsesWorkerLivenessNotHarnessProbes(t *testing.T) {
 	now := time.Now().UTC()
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	st := store.NewMemory()
@@ -477,7 +477,7 @@ func TestTaskAvailabilityTreatsLiveClaimAsHarnessHealthEvidence(t *testing.T) {
 	}
 	claimed.LeaseExpiresAt = now.Add(-time.Second)
 	status = service.TaskAvailability(ctx, cfg, task, []core.WorkOrder{claimed})
-	if status == nil || status.Available {
+	if status == nil || !status.Available {
 		t.Fatalf("expired claim status=%+v", status)
 	}
 	claimed.State = core.WorkOrderCancelled
@@ -513,7 +513,7 @@ func TestTaskAvailabilityOmitsWarningWithoutEnrolledWorkers(t *testing.T) {
 		t.Fatal(err)
 	}
 	status = service.TaskAvailability(ctx, cfg, task, orders)
-	if status == nil || status.Available || !strings.Contains(status.Reason, "codex") || !strings.Contains(status.Reason, "stale-codex") || !strings.Contains(status.Reason, "liveness lease expired") {
+	if status == nil || status.Available || !strings.Contains(status.Reason, "no live enrolled worker") || strings.Contains(status.Reason, "codex") {
 		t.Fatalf("stale status=%+v", status)
 	}
 }
@@ -577,7 +577,7 @@ func TestBlockedImplementationIsWorkerVisibleButUnclaimable(t *testing.T) {
 	}
 }
 
-func TestWorkerDispatchRequiresEveryRoutedHarnessHealthyOnClaimingWorker(t *testing.T) {
+func TestWorkerDispatchDoesNotFilterClientLocalHarnesses(t *testing.T) {
 	now := time.Now().UTC()
 	st := store.NewMemory()
 	cfg := workerTestConfig()
@@ -603,11 +603,11 @@ func TestWorkerDispatchRequiresEveryRoutedHarnessHealthyOnClaimingWorker(t *test
 	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
-	if listed, err := service.ListClaimable(ctx, worker); err != nil || len(listed) != 0 {
+	if listed, err := service.ListClaimable(ctx, worker); err != nil || len(listed) != 1 || listed[0].Harness.Name != "" || listed[0].Model != "" {
 		t.Fatalf("listed=%+v err=%v", listed, err)
 	}
-	if _, err := service.ClaimForWorker(ctx, worker, job.ID, core.WorkOrderClaim{SessionID: "session", ClientToken: "token"}); err == nil || !strings.Contains(err.Error(), "reviewer") {
-		t.Fatalf("claim error=%v", err)
+	if claimed, err := service.ClaimForWorker(ctx, worker, job.ID, core.WorkOrderClaim{SessionID: "session", ClientToken: "token"}); err != nil || claimed.WorkerID != worker.ID || claimed.Agent != "worker" {
+		t.Fatalf("claimed=%+v error=%v", claimed, err)
 	}
 }
 
@@ -652,7 +652,7 @@ func TestLegacyHarnessSnapshotDefaultsToJSONFileTransport(t *testing.T) {
 	}
 }
 
-func TestImplementationDispatchUsesCapturedEffortAfterHotReload(t *testing.T) {
+func TestImplementationDispatchLeavesExecutionToClientLocalSetup(t *testing.T) {
 	now := time.Now().UTC()
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	st := store.NewMemory()
@@ -685,8 +685,8 @@ func TestImplementationDispatchUsesCapturedEffortAfterHotReload(t *testing.T) {
 		t.Fatalf("listed=%+v err=%v", listed, err)
 	}
 	item := listed[0]
-	if item.Effort != "high" || !reflect.DeepEqual(item.EffortArgv, snapshot.EffortArgv) || !reflect.DeepEqual(item.Harness.EffortArgs["high"], snapshot.EffortArgv) || !reflect.DeepEqual(item.Repository, cfg.Repos[0]) {
-		t.Fatalf("implementation dispatch recomputed hot-reloaded effort: %+v", item)
+	if item.Model != "" || item.Effort != "" || item.Harness.Name != "" || len(item.EffortArgv) != 0 || !reflect.DeepEqual(item.Repository, cfg.Repos[0]) {
+		t.Fatalf("server leaked execution selection into worker dispatch: %+v", item)
 	}
 }
 

@@ -11,7 +11,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -429,20 +428,13 @@ func unrevokedWorkers(workers []core.Worker) []core.Worker {
 }
 
 func (s *Service) TaskAvailability(ctx context.Context, cfg *config.Config, task core.Task, orders []core.WorkOrder) *TaskWorkerStatus {
-	if task.SetupContract.HasFrozenPolicy() {
-		cfg = cfg.WithSetup(task.SetupContract)
-	}
-	status := TaskWorkerStatus{RequiredHarnesses: []string{}, Reason: "no healthy worker can serve the task's required harnesses", QueueContext: "never_started"}
-	required := map[string]bool{}
+	status := TaskWorkerStatus{RequiredHarnesses: []string{}, Reason: "no live enrolled worker is available", QueueContext: "never_started"}
 	var activeOrders []core.WorkOrder
 	for _, order := range orders {
 		if order.TaskID != task.ID || (order.State != core.WorkOrderQueued && order.State != core.WorkOrderClaimed) {
 			continue
 		}
 		activeOrders = append(activeOrders, order)
-		if order.RequiredHarness != "" {
-			required[order.RequiredHarness] = true
-		}
 		if order.LastAttemptOutcome != "" || order.RetrySuppressed || !order.LastFailureAt.IsZero() {
 			status.QueueContext = "interrupted"
 		}
@@ -452,17 +444,6 @@ func (s *Service) TaskAvailability(ctx context.Context, cfg *config.Config, task
 	if len(activeOrders) == 0 {
 		return nil
 	}
-	if len(required) == 0 {
-		if setupHarnesses, setupErr := requiredHarnesses(cfg); setupErr == nil {
-			for name := range setupHarnesses {
-				required[name] = true
-			}
-		}
-	}
-	for harness := range required {
-		status.RequiredHarnesses = append(status.RequiredHarnesses, harness)
-	}
-	sort.Strings(status.RequiredHarnesses)
 	workers, err := s.Store.ListWorkers(ctx)
 	if err != nil {
 		status.Reason = err.Error()
@@ -480,35 +461,15 @@ func (s *Service) TaskAvailability(ctx context.Context, cfg *config.Config, task
 			return &status
 		}
 	}
-	var unhealthyReason string
 	for _, worker := range workers {
 		if worker.LastSeenAt.After(status.LastHeartbeatAt) {
 			status.LastHeartbeatAt = worker.LastSeenAt
 		}
-		if !worker.Live(now) {
-			if unhealthyReason == "" {
-				unhealthyReason = fmt.Sprintf("required harnesses %s cannot be served by enrolled worker %q: worker liveness lease expired", strings.Join(status.RequiredHarnesses, ", "), worker.Name)
-			}
-			continue
-		}
-		healthy := true
-		for _, order := range activeOrders {
-			if ok, reason := s.workerHealthyForOrder(worker, cfg, order); !ok {
-				healthy = false
-				if unhealthyReason == "" {
-					unhealthyReason = fmt.Sprintf("required harness %s cannot be served by enrolled worker %q: %s", order.RequiredHarness, worker.Name, reason)
-				}
-				break
-			}
-		}
-		if healthy {
+		if worker.Live(now) {
 			status.Available = true
-			status.Reason = "healthy worker available"
+			status.Reason = "live enrolled worker available"
 			break
 		}
-	}
-	if !status.Available && unhealthyReason != "" {
-		status.Reason = unhealthyReason
 	}
 	if !status.LastHeartbeatAt.IsZero() {
 		age := now.Sub(status.LastHeartbeatAt)
@@ -525,72 +486,8 @@ func (s *Service) TaskAvailability(ctx context.Context, cfg *config.Config, task
 	return &status
 }
 
-func workerHealthyForRoutes(worker core.Worker, cfg *config.Config, now time.Time) (bool, string) {
-	if !worker.Live(now) {
-		return false, "worker liveness lease expired"
-	}
-	required, err := requiredHarnesses(cfg)
-	if err != nil {
-		return false, err.Error()
-	}
-	if len(required) == 0 {
-		return false, "no routed worker harness is configured"
-	}
-	for name, harness := range required {
-		if !probeHealthy(worker.Probes, name, HarnessFingerprint(harness), true) {
-			return false, fmt.Sprintf("routed harness %s is unhealthy", name)
-		}
-	}
-	return true, ""
-}
-
-func requiredHarnesses(cfg *config.Config) (map[string]config.Harness, error) {
-	result := map[string]config.Harness{}
-	byName := map[string]config.Harness{}
-	for _, harness := range cfg.Harnesses {
-		byName[harness.Name] = harness
-	}
-	for _, stage := range []string{"spec", "implement"} {
-		route, configured := cfg.Routing.Stages[stage]
-		if !configured || (stage == "spec" && route.Execution != config.ExecutionMCP) {
-			continue
-		}
-		if route.Harness == "" {
-			return nil, fmt.Errorf("%s route has no harness", stage)
-		}
-		harness, ok := byName[route.Harness]
-		if !ok {
-			return nil, fmt.Errorf("%s route harness %s is unavailable", stage, route.Harness)
-		}
-		result[route.Harness] = harness
-	}
-	reviewRoute := cfg.Routing.Stages["review"]
-	if reviewRoute.Execution != config.ExecutionInProcess {
-		seats := cfg.Review.Seats
-		if len(seats) == 0 {
-			seats = []config.ReviewSeat{{Model: reviewRoute.Model, Harness: reviewRoute.Harness}}
-		}
-		for i, seat := range seats {
-			harness := seat.Harness
-			if harness == "" {
-				harness = reviewRoute.Harness
-			}
-			if harness == "" {
-				return nil, fmt.Errorf("review seat %d has no harness", i+1)
-			}
-			definition, ok := byName[harness]
-			if !ok {
-				return nil, fmt.Errorf("review seat %d harness %s is unavailable", i+1, harness)
-			}
-			result[harness] = definition
-		}
-	}
-	return result, nil
-}
-
-// ListClaimable returns the queued orders this worker may claim (§21.31):
-// every order whose task is not held and whose frozen setup the worker's
-// healthy harnesses can serve.
+// ListClaimable returns queued orders eligible for this live worker. Execution
+// compatibility is resolved exclusively from the worker's client-local setup.
 func (s *Service) ListClaimable(ctx context.Context, worker core.Worker) ([]DispatchOrder, error) {
 	if s.Store.IsDurable() {
 		if _, err := s.Store.AuthenticateWorker(ctx, worker.CredentialHash); err != nil {
@@ -605,6 +502,9 @@ func (s *Service) ListClaimable(ctx context.Context, worker core.Worker) ([]Disp
 	if err != nil {
 		return nil, err
 	}
+	if !worker.Live(s.now()) {
+		return []DispatchOrder{}, nil
+	}
 	var result []DispatchOrder
 	for _, order := range orders {
 		if !order.Claimable || order.State != core.WorkOrderQueued {
@@ -617,27 +517,8 @@ func (s *Service) ListClaimable(ctx context.Context, worker core.Worker) ([]Disp
 		if task.Assignee != nil && task.Assignee.UserID != worker.OwnerUserID {
 			continue
 		}
-		orderCfg := cfg
-		if task.SetupContract.HasFrozenPolicy() {
-			orderCfg = cfg.WithSetup(task.SetupContract)
-		}
-		if healthy, _ := s.workerHealthyForOrder(worker, orderCfg, order); !healthy {
-			continue
-		}
-		harness, ok := harnessForOrder(orderCfg, order)
-		if !ok {
-			continue
-		}
-		model := cfg.EffectiveModel(string(order.Stage))
-		if order.RequiredModel != "" {
-			model = order.RequiredModel
-		}
-		var effortArgv []string
-		if order.RequiredEffort != "" && order.RequiredHarnessConfig != nil {
-			effortArgv = append([]string(nil), order.RequiredHarnessConfig.EffortArgv...)
-		}
 		repository, _ := cfg.Repo(task.Repo)
-		result = append(result, DispatchOrder{Order: order, Task: task, Repository: repository, Harness: harness, Model: model, Effort: order.RequiredEffort, EffortArgv: effortArgv, HarnessSelection: "enforced", Dispatch: "worker", Confinement: "none", Auth: "byoa"})
+		result = append(result, DispatchOrder{Order: order, Task: task, Repository: repository, HarnessSelection: "local", Dispatch: "worker", Confinement: "none", Auth: "byoa"})
 	}
 	// The reserved review slot precedes workspace FIFO; ID breaks equal
 	// queue-entry clocks deterministically (design-260805-973cd4).
@@ -671,10 +552,6 @@ func (s *Service) ListVisibleOrders(ctx context.Context, worker core.Worker) ([]
 	if err != nil {
 		return nil, err
 	}
-	cfg, err := s.ConfigProvider(ctx)
-	if err != nil {
-		return nil, err
-	}
 	for _, order := range orders {
 		if order.State == core.WorkOrderQueued && order.Stage == core.StageImplement &&
 			!order.Claimable && len(order.BlockingTaskIDs) > 0 {
@@ -682,14 +559,7 @@ func (s *Service) ListVisibleOrders(ctx context.Context, worker core.Worker) ([]
 			if getErr != nil || task.Hold || task.Assignee != nil && task.Assignee.UserID != worker.OwnerUserID {
 				continue
 			}
-			orderCfg := cfg
-			if task.SetupContract.HasFrozenPolicy() {
-				orderCfg = cfg.WithSetup(task.SetupContract)
-			}
-			if healthy, _ := s.workerHealthyForOrder(worker, orderCfg, order); !healthy {
-				continue
-			}
-			if _, ok := harnessForOrder(orderCfg, order); ok {
+			if worker.Live(s.now()) {
 				result = append(result, order)
 			}
 			continue
@@ -708,18 +578,13 @@ func (s *Service) ListVisibleOrders(ctx context.Context, worker core.Worker) ([]
 	return result, nil
 }
 
-// ClaimForWorker is the server-side worker claim: held tasks are rejected at
-// claim time — the same enforcement layer as the self-review guard — and the
-// claiming worker must probe healthy for every harness the order requires.
+// ClaimForWorker enforces task and worker lifecycle eligibility. Harness and
+// model selection remain exclusively in the worker's client-local setup.
 func (s *Service) ClaimForWorker(ctx context.Context, worker core.Worker, id string, claim core.WorkOrderClaim) (core.WorkOrder, error) {
 	if s.Store.IsDurable() {
 		if _, err := s.Store.AuthenticateWorker(ctx, worker.CredentialHash); err != nil {
 			return core.WorkOrder{}, err
 		}
-	}
-	cfg, err := s.ConfigProvider(ctx)
-	if err != nil {
-		return core.WorkOrder{}, err
 	}
 	order, err := s.Store.GetWorkOrder(ctx, id)
 	if err != nil {
@@ -735,68 +600,20 @@ func (s *Service) ClaimForWorker(ctx context.Context, worker core.Worker, id str
 	if order.Stage == core.StageImplement && len(task.BlockingTaskIDs) > 0 {
 		return core.WorkOrder{}, fmt.Errorf("task %s is blocked by unmerged dependencies: %s", task.ID, strings.Join(task.BlockingTaskIDs, ", "))
 	}
-	if task.SetupContract.HasFrozenPolicy() {
-		cfg = cfg.WithSetup(task.SetupContract)
-	}
-	if healthy, reason := s.workerHealthyForOrder(worker, cfg, order); !healthy {
-		return core.WorkOrder{}, fmt.Errorf("worker cannot serve this order: %s", reason)
-	}
-	harness, ok := harnessForOrder(cfg, order)
-	if !ok {
-		return core.WorkOrder{}, fmt.Errorf("no harness configured for %s", order.Stage)
+	if !worker.Live(s.now()) {
+		return core.WorkOrder{}, fmt.Errorf("worker liveness lease expired")
 	}
 	claim.WorkerID = worker.ID
 	claim.ClaimantID = worker.ID
 	// REQ-2: claim ownership is derived from the authenticated worker
 	// enrollment, never from the assigned task or a client assertion.
 	claim.OwnerUserID = worker.OwnerUserID
-	claim.Agent = harness.Name
-	claim.Model = cfg.EffectiveModel(string(order.Stage))
-	if order.RequiredModel != "" {
-		claim.Model = order.RequiredModel
-	}
+	claim.Agent = "worker"
+	claim.Model = order.RequiredModel // compatibility for pre-DEC-23 in-flight review orders
 	if claim.Lease <= 0 {
 		claim.Lease = DefaultClaimLease
 	}
-	claimed, err := s.WorkOrders.Claim(ctx, id, claim)
-	if err != nil {
-		return core.WorkOrder{}, err
-	}
-	if jobs, getErr := s.Store.ListJobs(ctx, task.ID); getErr == nil {
-		for _, job := range jobs {
-			if job.ID != claimed.JobID {
-				continue
-			}
-			job.Harness = harness.Name
-			job.ModelTier = claim.Model
-			job.AuthMode = "byoa"
-			job.Runner = "worker"
-			job.Confinement = "none"
-			_ = s.Store.UpdateJob(ctx, job)
-			break
-		}
-	}
-	return claimed, nil
-}
-
-func harnessForOrder(cfg *config.Config, order core.WorkOrder) (config.Harness, bool) {
-	if snapshot := order.RequiredHarnessConfig; snapshot != nil && snapshot.Name != "" {
-		return harnessFromSnapshot(snapshot), true
-	}
-	route, ok := cfg.Routing.Stages[string(order.Stage)]
-	name := order.RequiredHarness
-	if name == "" {
-		name = route.Harness
-	}
-	if !ok || name == "" {
-		return config.Harness{}, false
-	}
-	for _, harness := range cfg.Harnesses {
-		if harness.Name == name {
-			return harness, true
-		}
-	}
-	return config.Harness{}, false
+	return s.WorkOrders.Claim(ctx, id, claim)
 }
 
 func harnessFromSnapshot(snapshot *core.HarnessSnapshot) config.Harness {
@@ -815,98 +632,6 @@ func harnessFromSnapshot(snapshot *core.HarnessSnapshot) config.Harness {
 		ProbeTimeoutText:      snapshot.ProbeTimeoutText, ProbeTimeout: probeTimeout,
 		StallTimeoutText: snapshot.StallTimeoutText, StallTimeout: stallTimeout,
 	}
-}
-
-func (s *Service) workerHealthyForOrder(worker core.Worker, cfg *config.Config, order core.WorkOrder) (bool, string) {
-	if order.RequiredHarnessConfig == nil || orderMatchesCurrentConfig(cfg, order) {
-		return workerHealthyForRoutes(worker, cfg, s.now())
-	}
-	if order.RequiredHarnessConfig.Name != order.RequiredHarness {
-		return false, "snapshotted harness identity does not match the work order"
-	}
-	if !worker.Live(s.now()) {
-		return false, "worker liveness lease expired"
-	}
-	fingerprint := HarnessFingerprint(harnessFromSnapshot(order.RequiredHarnessConfig))
-	if probeHealthy(worker.Probes, order.RequiredHarness, fingerprint, false) {
-		return true, ""
-	}
-	return false, fmt.Sprintf("snapshotted harness %s is unhealthy", order.RequiredHarness)
-}
-
-func orderMatchesCurrentConfig(cfg *config.Config, order core.WorkOrder) bool {
-	if order.Stage == core.StageReview {
-		return reviewOrderMatchesCurrentConfig(cfg, order)
-	}
-	route, ok := cfg.Routing.Stages[string(order.Stage)]
-	if !ok || route.Harness != order.RequiredHarness || cfg.EffectiveModel(string(order.Stage)) != order.RequiredModel {
-		return false
-	}
-	harness, found := harnessForOrder(cfg, core.WorkOrder{Stage: order.Stage, RequiredHarness: route.Harness})
-	if !found {
-		return false
-	}
-	snapshot := &core.HarnessSnapshot{
-		Name: harness.Name, MCPTransport: harness.MCPTransport, MCPAttachment: harness.MCPAttachment, Command: harness.Command, ModelArgs: harness.ModelArgs,
-		DefaultModelSentinels: harness.DefaultModelSentinels,
-		EffortArgs:            harness.EffortArgs, Effort: route.Effort,
-		ProbeCommand: harness.ProbeCommand, ProbeTimeoutText: harness.ProbeTimeoutText,
-		StallTimeoutText: harness.StallTimeoutText,
-	}
-	if route.Effort != "" {
-		snapshot.EffortArgv = append([]string(nil), harness.EffortArgs[route.Effort]...)
-	}
-	return reflect.DeepEqual(snapshot, order.RequiredHarnessConfig)
-}
-
-func probeHealthy(probes []core.HarnessProbe, name, fingerprint string, allowLegacy bool) bool {
-	legacyHealthy := false
-	for _, probe := range probes {
-		if probe.Harness != name {
-			continue
-		}
-		if probe.Fingerprint == fingerprint {
-			return probe.Healthy
-		}
-		if probe.Fingerprint == "" {
-			legacyHealthy = legacyHealthy || probe.Healthy
-		}
-	}
-	return allowLegacy && legacyHealthy
-}
-
-func reviewOrderMatchesCurrentConfig(cfg *config.Config, order core.WorkOrder) bool {
-	route, ok := cfg.Routing.Stages["review"]
-	if !ok {
-		return false
-	}
-	seats := cfg.Review.Seats
-	if len(seats) == 0 {
-		seats = []config.ReviewSeat{{Model: route.Model, Harness: route.Harness}}
-	}
-	if order.ReviewSeat < 1 || order.ReviewSeat > len(seats) {
-		return false
-	}
-	seat := seats[order.ReviewSeat-1]
-	harnessName := seat.Harness
-	if harnessName == "" {
-		harnessName = route.Harness
-	}
-	if seat.Model != order.RequiredModel || harnessName != order.RequiredHarness || seat.Effort != order.RequiredEffort {
-		return false
-	}
-	harness, found := harnessForOrder(cfg, core.WorkOrder{Stage: core.StageReview, RequiredHarness: harnessName})
-	if !found {
-		return false
-	}
-	snapshot := &core.HarnessSnapshot{
-		Name: harness.Name, MCPTransport: harness.MCPTransport, MCPAttachment: harness.MCPAttachment, Command: harness.Command, ModelArgs: harness.ModelArgs,
-		DefaultModelSentinels: harness.DefaultModelSentinels,
-		EffortArgs:            harness.EffortArgs, Effort: seat.Effort,
-		ProbeCommand: harness.ProbeCommand, ProbeTimeoutText: harness.ProbeTimeoutText,
-		StallTimeoutText: harness.StallTimeoutText,
-	}
-	return reflect.DeepEqual(snapshot, order.RequiredHarnessConfig)
 }
 
 func cloneEffortArgs(source map[string][]string) map[string][]string {

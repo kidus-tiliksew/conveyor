@@ -59,11 +59,12 @@ func TestFrozenPolicySurvivesWorkspacePolicyEdits(t *testing.T) {
 		MaxBounces:            9,
 		WorkOrderQueueTimeout: time.Hour,
 		Routing: config.Routing{Stages: map[string]config.StageRoute{
-			"spec":      {Execution: config.ExecutionMCP, TimeoutText: "50m"},
-			"implement": {Execution: config.ExecutionMCP, TimeoutText: "8h"},
-			"review":    {Execution: config.ExecutionMCP, TimeoutText: "3h"},
+			"triage":    {Execution: config.ExecutionInProcess, Model: "title-model", TimeoutText: "1m"},
+			"spec":      {Execution: config.ExecutionMCP, Harness: "local", Model: "spec-local", TimeoutText: "50m"},
+			"implement": {Execution: config.ExecutionMCP, Harness: "local", Model: "implement-local", TimeoutText: "8h"},
+			"review":    {Execution: config.ExecutionMCP, Harness: "local", Model: "review-local", TimeoutText: "3h"},
 		}},
-		Review: config.ReviewPanel{Seats: []config.ReviewSeat{{}}},
+		Review: config.ReviewPanel{Seats: []config.ReviewSeat{{Harness: "local", Model: "review-local"}}},
 	}
 	implement, err := BuildFutureWorkOrderRouting(current, task, core.StageImplement)
 	if err != nil || implement.ExecutionTimeoutText != "2h" {
@@ -73,7 +74,8 @@ func TestFrozenPolicySurvivesWorkspacePolicyEdits(t *testing.T) {
 	if err != nil || len(reviews) != 2 || reviews[0].ExecutionTimeoutText != "40m" {
 		t.Fatalf("review orders=%+v err=%v", reviews, err)
 	}
-	if frozen := current.WithSetup(task.SetupContract); frozen.MaxBounces != 3 {
-		t.Fatalf("max_bounces=%d", frozen.MaxBounces)
+	frozen := current.WithPolicy(task.SetupContract)
+	if frozen.MaxBounces != 3 || frozen.Routing.Stages["triage"].Model != "title-model" || frozen.Routing.Stages["implement"].Harness != "local" || frozen.Routing.Stages["implement"].Model != "implement-local" || len(frozen.Review.Seats) != 2 || frozen.Review.Seats[0].Harness != "local" {
+		t.Fatalf("policy overlay replaced execution detail: %+v", frozen)
 	}
 }

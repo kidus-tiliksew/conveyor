@@ -172,7 +172,7 @@ func (d *Dispatcher) runTaskForSnapshot(ctx context.Context, task core.Task) err
 		return nil
 	}
 	if task.SetupContract.HasFrozenPolicy() {
-		cfg = cfg.WithSetup(task.SetupContract)
+		cfg = cfg.WithPolicy(task.SetupContract)
 	}
 	route, ok := cfg.Routing.Stages[string(task.NextStage)]
 	if !ok {
@@ -278,7 +278,7 @@ func BuildReviewRound(cfg *config.Config, task core.Task, route config.StageRout
 		return nil, nil, fmt.Errorf("review round configuration and positive round are required")
 	}
 	if task.SetupContract.HasFrozenPolicy() {
-		cfg = cfg.WithSetup(task.SetupContract)
+		cfg = cfg.WithPolicy(task.SetupContract)
 		route = cfg.Routing.Stages["review"]
 	}
 	now := time.Now().UTC()
@@ -349,7 +349,7 @@ func BuildFutureWorkOrderRouting(cfg *config.Config, task core.Task, stage core.
 		return core.WorkOrder{}, fmt.Errorf("future work routing requires spec or implementation stage")
 	}
 	if task.SetupContract.HasFrozenPolicy() {
-		cfg = cfg.WithSetup(task.SetupContract)
+		cfg = cfg.WithPolicy(task.SetupContract)
 	}
 	route, ok := cfg.Routing.Stages[string(stage)]
 	if !ok || route.Execution != config.ExecutionMCP {
@@ -805,7 +805,7 @@ func (d *Dispatcher) ApplyExternalReviewPinned(ctx context.Context, task core.Ta
 		return err
 	}
 	if task.SetupContract.HasFrozenPolicy() {
-		cfg = cfg.WithSetup(task.SetupContract)
+		cfg = cfg.WithPolicy(task.SetupContract)
 	}
 	return d.applyReview(ctx, cfg, task, job, result, "external-mcp", reviewWorkOrderID, session, model, servedRequirements, governance, len(claimAuthorized) > 0 && claimAuthorized[0], nil)
 }
@@ -1581,7 +1581,7 @@ func (d *Dispatcher) beginRefreshLocked(ctx context.Context, task core.Task, new
 		return err
 	}
 	if current.SetupContract.HasFrozenPolicy() {
-		cfg = cfg.WithSetup(current.SetupContract)
+		cfg = cfg.WithPolicy(current.SetupContract)
 	}
 	return d.createReviewRound(ctx, cfg, current, cfg.Routing.Stages[string(core.StageReview)])
 }
@@ -1898,7 +1898,7 @@ func (d *Dispatcher) dispatchConflictFixLocked(ctx context.Context, current core
 	systemCtx := store.WithActor(ctx, store.Actor{ID: "system", Role: core.ActorSystem})
 	intervention := core.Intervention{TaskID: current.ID, ActorID: "system", ActorRole: core.ActorSystem, Action: core.InterventionRedirect, ReasonCode: "merge-conflict", Comment: "Merge the base branch into the task branch, resolve conflicts, validate, push, and submit for refresh review."}
 	if current.SetupContract.HasFrozenPolicy() {
-		cfg = cfg.WithSetup(current.SetupContract)
+		cfg = cfg.WithPolicy(current.SetupContract)
 	}
 	if _, err = store.ServedRequirementsForTask(systemCtx, d.Store, current.ID, config.ServedRequirementAuthorityNodes(cfg)); err != nil {
 		return core.WorkOrder{}, err

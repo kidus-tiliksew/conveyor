@@ -1540,6 +1540,40 @@ func (c *Config) WithSetup(setup ExecutionSetup) *Config {
 	return &next
 }
 
+// WithPolicy overlays a task's frozen pipeline policy without replacing the
+// deployment's control-plane routes or a client's local execution detail.
+func (c *Config) WithPolicy(policy ExecutionSetup) *Config {
+	next := *c
+	if policy.MaxBounces > 0 {
+		next.MaxBounces = policy.MaxBounces
+	}
+	next.Routing = Routing{Stages: make(map[string]StageRoute, len(c.Routing.Stages))}
+	for stage, route := range c.Routing.Stages {
+		next.Routing.Stages[stage] = route
+	}
+	timeouts := map[string]string{
+		"spec":      policy.ExecutionSettings.Spec.TimeoutText,
+		"implement": policy.ExecutionSettings.Implementation.TimeoutText,
+		"review":    policy.ExecutionSettings.Review.TimeoutText,
+	}
+	for stage, timeout := range timeouts {
+		if timeout == "" {
+			continue
+		}
+		route := next.Routing.Stages[stage]
+		route.TimeoutText = timeout
+		route.Timeout, _ = time.ParseDuration(timeout)
+		next.Routing.Stages[stage] = route
+	}
+	if policy.Review.Seats != nil {
+		seats := make([]ReviewSeat, len(policy.Review.Seats))
+		copy(seats, c.Review.Seats)
+		next.Review = c.Review
+		next.Review.Seats = seats
+	}
+	return &next
+}
+
 func (c *Config) EffectiveModel(stage string) string {
 	route := c.Routing.Stages[stage]
 	if route.EffectiveModel != "" || route.ModelPolicy == ModelPolicyHarnessDefault {

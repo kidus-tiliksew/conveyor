@@ -43,7 +43,7 @@ func TestWorkerWarningFollowsEnrollmentLifecycleIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	status := service.TaskAvailability(ctx, cfg, task, orders)
-	if status == nil || status.Available || !strings.Contains(status.Reason, "codex") || !strings.Contains(status.Reason, "liveness lease expired") {
+	if status == nil || status.Available || !strings.Contains(status.Reason, "no live enrolled worker") || len(status.RequiredHarnesses) != 0 {
 		t.Fatalf("stale-worker status=%+v", status)
 	}
 	if err = st.RevokeWorker(ctx, worker.ID); err != nil {

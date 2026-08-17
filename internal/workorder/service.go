@@ -462,7 +462,7 @@ func (s *Service) RetryReviewRound(ctx context.Context, taskID, requestID, reaso
 		return store.ReviewRoundRetryResult{}, err
 	}
 	if task.SetupContract.HasFrozenPolicy() {
-		cfg = cfg.WithSetup(task.SetupContract)
+		cfg = cfg.WithPolicy(task.SetupContract)
 	}
 	route, ok := cfg.Routing.Stages[string(core.StageReview)]
 	if !ok || route.Execution != config.ExecutionMCP {
@@ -1260,7 +1260,7 @@ func (s *Service) SubmitForReview(ctx context.Context, id, session string) (map[
 		return nil, err
 	}
 	if task.SetupContract.HasFrozenPolicy() {
-		cfg = cfg.WithSetup(task.SetupContract)
+		cfg = cfg.WithPolicy(task.SetupContract)
 	}
 	evidence, err := s.taskVerificationEvidence(ctx, task.ID)
 	if err != nil {

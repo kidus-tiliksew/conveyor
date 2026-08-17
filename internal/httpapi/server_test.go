@@ -2412,9 +2412,9 @@ func TestTaskActivityScopesWorkerStatusToActionableTaskOrders(t *testing.T) {
 	queued = httptest.NewRecorder()
 	server.Handler().ServeHTTP(queued, httptest.NewRequest(http.MethodGet, "/v1/tasks/queued-auto/activity?workspace_id=demo", nil))
 	if queued.Code != http.StatusOK || !bytes.Contains(queued.Body.Bytes(), []byte(`"worker_status"`)) ||
-		!bytes.Contains(queued.Body.Bytes(), []byte(`"required_harnesses":["codex"]`)) ||
+		!bytes.Contains(queued.Body.Bytes(), []byte(`"required_harnesses":[]`)) ||
 		!bytes.Contains(queued.Body.Bytes(), []byte(`"queue_context":"never_started"`)) ||
-		!bytes.Contains(queued.Body.Bytes(), []byte(`worker liveness lease expired`)) ||
+		!bytes.Contains(queued.Body.Bytes(), []byte(`no live enrolled worker`)) ||
 		bytes.Contains(queued.Body.Bytes(), []byte(`"needs_attention":true`)) {
 		t.Fatalf("queued activity status=%d body=%s", queued.Code, queued.Body.String())
 	}
