@@ -3821,7 +3821,7 @@ func (m *memory) ApproveSpecVersionAndMaterialize(ctx context.Context, taskID st
 			Body:   fmt.Sprintf("%s\n\nDefined by blueprint task %s, spec version %d (%s).", strings.TrimSpace(item.Summary), parent.ID, version, item.ID),
 			Class:  parent.Class, Level: parent.Level, Hold: parent.Hold,
 			SpecApproval: parent.SpecApproval, MergeApproval: parent.MergeApproval,
-			PolicyVersion: parent.PolicyVersion, SetupName: parent.SetupName,
+			PolicyVersion: parent.PolicyVersion,
 			SetupContract: parent.SetupContract, Repo: strings.TrimSpace(item.Repo),
 			BaseBranch: baseBranches[item.ID], Branch: gitx.BranchName(id),
 			State: core.TaskQueued, NextStage: core.StageImplement,

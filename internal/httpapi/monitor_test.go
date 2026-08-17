@@ -20,18 +20,13 @@ func TestMonitorObservationUsesNormalIntakeAndExposesDrift(t *testing.T) {
 	st := store.NewMemory()
 	server := NewServer(st)
 	server.Workspace, server.Repos, server.BearerToken = "demo", []string{"conveyor"}, "secret"
-	frozen := config.ExecutionSetup{
-		Name: "monitor-default",
-		ExecutionSettings: config.ContextualExecutionSettings{
-			Implementation: config.ImplementationSettings{Harness: "codex", Model: "gpt-5.6", ModelPolicy: config.ModelPolicyExplicit, TimeoutText: "4h"},
-			Review:         config.ReviewExecutionSettings{Execution: config.ExecutionMCP, TimeoutText: "1h"},
-		},
-		Review: config.ReviewPanel{Seats: []config.ReviewSeat{{Model: "gpt-review"}}},
-	}
 	server.ConfigProvider = func(context.Context) (*config.Config, error) {
 		return &config.Config{
-			Workspace: "demo", Repos: []config.Repo{{Name: "conveyor", Base: "main"}},
-			DefaultSetup: frozen.Name, Setups: []config.ExecutionSetup{frozen},
+			Workspace: "demo", MaxBounces: 4, Repos: []config.Repo{{Name: "conveyor", Base: "main"}},
+			Routing: config.Routing{Stages: map[string]config.StageRoute{
+				"spec": {TimeoutText: "30m"}, "implement": {TimeoutText: "4h"}, "review": {TimeoutText: "1h"},
+			}},
+			Review:    config.ReviewPanel{Seats: []config.ReviewSeat{{}}},
 			Execution: config.ExecutionPolicy{SpecApproval: true, MergeApproval: true},
 		}, nil
 	}
@@ -91,7 +86,7 @@ func TestMonitorObservationUsesNormalIntakeAndExposesDrift(t *testing.T) {
 		t.Fatalf("tasks=%+v err=%v", tasks, err)
 	}
 	if enqueued != 1 || tasks[0].NextStage != core.StageTriage || tasks[0].Source != "monitor:direct_push" ||
-		tasks[0].SetupName != frozen.Name || tasks[0].SetupContract.Name != frozen.Name ||
+		tasks[0].SetupName != "" || tasks[0].SetupContract.MaxBounces != 4 || tasks[0].SetupContract.ExecutionSettings.Implementation.TimeoutText != "4h" ||
 		!tasks[0].SpecApproval || !tasks[0].MergeApproval {
 		t.Fatalf("enqueued=%d task=%+v", enqueued, tasks[0])
 	}

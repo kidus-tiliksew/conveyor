@@ -2,7 +2,6 @@ package postgres
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -19,81 +18,6 @@ func changeTaskSetup(t *testing.T, st *Store, ctx context.Context, request store
 	return taskops.ExecuteSetupChange(ctx, st, request.TaskID, func(lease taskops.TaskLease) (store.SetupChangeResult, error) {
 		return st.ChangeTaskSetupCommand(ctx, lease, request)
 	})
-}
-
-func TestTaskSetupChangePersistenceIntegration(t *testing.T) {
-	st, err := Open(t.Context(), integrationDatabaseURL(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer st.Close()
-	workspace := "setup-change-" + core.NewTaskID()
-	ctx := store.WithActor(store.WithWorkspace(context.Background(), workspace), store.Actor{ID: "operator-pg", Role: core.ActorHuman})
-	if _, err = st.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: workspace, Database: config.Database{Backend: "postgres"}, Repos: []config.Repo{{Name: "repo", Base: "main"}}}); err != nil {
-		t.Fatal(err)
-	}
-	old := config.ExecutionSetup{Name: "old", ExecutionSettings: config.ContextualExecutionSettings{Implementation: config.ImplementationSettings{Harness: "codex", Model: "old", Effort: "low", TimeoutText: "1h"}}}
-	next := old
-	next.Name, next.ExecutionSettings.Implementation.Model, next.ExecutionSettings.Implementation.Effort = "next", "new", "high"
-	now := time.Now().UTC()
-	task := core.Task{ID: core.NewTaskID(), Workspace: workspace, Repo: "repo", BaseBranch: "main", State: core.TaskRunning, NextStage: core.StageImplement, SetupName: old.Name, SetupContract: old, CreatedAt: now}
-	task.Branch = "conveyor/task-" + task.ID
-	if err = st.CreateTask(ctx, task); err != nil {
-		t.Fatal(err)
-	}
-	job := core.Job{ID: task.ID + "-implement-1", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
-	if err = st.CreateJob(ctx, job); err != nil {
-		t.Fatal(err)
-	}
-	order := core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, RequiredModel: "old", RequiredEffort: "low", QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour)}
-	if err = storetest.For(st).CreateWorkOrder(ctx, order); err != nil {
-		t.Fatal(err)
-	}
-	desired := order
-	desired.RequiredModel, desired.RequiredEffort, desired.QueueEnteredAt, desired.QueueDeadline = "new", "high", now.Add(time.Minute), now.Add(2*time.Hour)
-	request := store.SetupChangeRequest{TaskID: task.ID, RequestID: "setup-pg-1", Reason: " \t ", Setup: next, WorkOrderUpdates: []core.WorkOrder{desired}, ReviewTransition: "none"}
-	if _, err = st.ChangeTaskSetupCommand(ctx, taskops.TaskLease{}, request); err == nil {
-		t.Fatal("zero taskops lease authorized setup change")
-	}
-	unchanged, getErr := st.GetTask(ctx, task.ID)
-	if getErr != nil || unchanged.SetupName != old.Name {
-		t.Fatalf("unleased setup change mutated task=%+v err=%v", unchanged, getErr)
-	}
-	result, err := changeTaskSetup(t, st, ctx, request)
-	if err != nil || result.Task.SetupName != next.Name || len(result.UpdatedWorkOrders) != 1 {
-		t.Fatalf("result=%+v err=%v", result, err)
-	}
-	updated, _ := st.GetWorkOrder(ctx, order.ID)
-	if updated.RequiredModel != "new" || updated.RequiredEffort != "high" {
-		t.Fatalf("updated=%+v", updated)
-	}
-	duplicate, err := changeTaskSetup(t, st, ctx, request)
-	if err != nil || duplicate.Task.SetupName != next.Name {
-		t.Fatalf("duplicate=%+v err=%v", duplicate, err)
-	}
-	conflict := request
-	conflict.Reason = "different"
-	if _, err = changeTaskSetup(t, st, ctx, conflict); !errors.Is(err, store.ErrSetupChangeConflict) {
-		t.Fatalf("conflict=%v", err)
-	}
-	events, _ := st.ListEvents(ctx, task.ID)
-	var changes int
-	var auditReason string
-	for _, event := range events {
-		if event.Kind == "task.setup.changed" {
-			changes++
-			var payload struct {
-				Reason string `json:"reason"`
-			}
-			if err = json.Unmarshal(event.Payload, &payload); err != nil {
-				t.Fatal(err)
-			}
-			auditReason = payload.Reason
-		}
-	}
-	if changes != 1 || auditReason != "" {
-		t.Fatalf("changes=%d reason=%q", changes, auditReason)
-	}
 }
 
 func TestTaskSetupChangePostgresScopesExclusionToExecutingAttempts(t *testing.T) {

@@ -255,7 +255,7 @@ func (s *Store) ApprovePlanningBundle(ctx context.Context, id string) (core.Plan
 		}
 		now := time.Now().UTC()
 		for _, member := range bundle.Tasks {
-			task := core.Task{ID: member.CreatedTaskID, Workspace: bundle.Workspace, Source: "planning_bundle:" + bundle.ID + ":" + member.MemberID, IntakeKey: "planning-bundle:" + bundle.ID + ":" + member.MemberID, Title: member.Title, Body: member.Body, Level: core.L2, SpecApproval: member.SpecApproval, MergeApproval: member.MergeApproval, PolicyVersion: 1, SetupName: member.SetupName, SetupContract: member.SetupContract, Repo: member.Repo, BaseBranch: member.BaseBranch, Branch: gitx.BranchName(member.CreatedTaskID), State: core.TaskQueued, NextStage: core.StageTriage, CreatedAt: now}
+			task := core.Task{ID: member.CreatedTaskID, Workspace: bundle.Workspace, Source: "planning_bundle:" + bundle.ID + ":" + member.MemberID, IntakeKey: "planning-bundle:" + bundle.ID + ":" + member.MemberID, Title: member.Title, Body: member.Body, Level: core.L2, SpecApproval: member.SpecApproval, MergeApproval: member.MergeApproval, PolicyVersion: 1, SetupContract: member.SetupContract, Repo: member.Repo, BaseBranch: member.BaseBranch, Branch: gitx.BranchName(member.CreatedTaskID), State: core.TaskQueued, NextStage: core.StageTriage, CreatedAt: now}
 			if _, err = q.InsertTask(ctx, taskInsertParams(task)); err != nil {
 				return err
 			}

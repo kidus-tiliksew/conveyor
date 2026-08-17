@@ -144,8 +144,8 @@ type Task struct {
 	SpecApproval       bool                  `json:"spec_approval"`
 	MergeApproval      bool                  `json:"merge_approval"`
 	PolicyVersion      int                   `json:"policy_version"`
-	SetupName          string                `json:"setup"`
-	SetupContract      config.ExecutionSetup `json:"setup_contract"`
+	SetupName          string                `json:"-"` // retired live selector; retained for legacy row decoding
+	SetupContract      config.ExecutionSetup `json:"policy_contract"`
 	ReviewedHeadSHA    string                `json:"reviewed_head_sha,omitempty"`
 	ApprovedHeadSHA    string                `json:"approved_head_sha,omitempty"`
 	ApprovalStale      bool                  `json:"approval_stale,omitempty"`

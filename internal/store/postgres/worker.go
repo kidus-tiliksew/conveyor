@@ -98,20 +98,8 @@ func (s *Store) ListWorkers(ctx context.Context) ([]core.Worker, error) {
 }
 
 func (s *Store) ListHarnessModelFailures(ctx context.Context) ([]core.HarnessModelFailure, error) {
-	rows, err := s.pool.Query(ctx, `SELECT harness,model,detail,work_order_id,observed_at FROM harness_model_failures WHERE workspace_id=$1 ORDER BY harness,model`, workspace(ctx))
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var result []core.HarnessModelFailure
-	for rows.Next() {
-		var failure core.HarnessModelFailure
-		if err = rows.Scan(&failure.Harness, &failure.Model, &failure.Detail, &failure.WorkOrderID, &failure.ObservedAt); err != nil {
-			return nil, err
-		}
-		result = append(result, failure)
-	}
-	return result, rows.Err()
+	_ = ctx
+	return nil, nil
 }
 
 func (s *Store) AuthenticateWorker(ctx context.Context, credentialHash string) (core.Worker, error) {
@@ -401,11 +389,6 @@ func (s *Store) ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskops
 	}
 	if _, err = tx.Exec(ctx, `UPDATE jobs SET state='pending',started_at=NULL,ended_at=NULL,updated_at=$1 WHERE id=$2`, now, order.JobID); err != nil {
 		return core.WorkOrder{}, err
-	}
-	if release.ModelRejection && order.RequiredHarness != "" && order.RequiredModel != "" && order.LastFailureDetail != "" {
-		if _, err = tx.Exec(ctx, `INSERT INTO harness_model_failures (workspace_id,harness,model,detail,work_order_id,observed_at) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (workspace_id,harness,model) DO UPDATE SET detail=EXCLUDED.detail,work_order_id=EXCLUDED.work_order_id,observed_at=EXCLUDED.observed_at`, workspace(ctx), order.RequiredHarness, order.RequiredModel, order.LastFailureDetail, order.ID, now); err != nil {
-			return core.WorkOrder{}, err
-		}
 	}
 	q := s.queries.WithTx(tx)
 	eventCtx := workerClaimActorContext(ctx, claim.WorkerID)

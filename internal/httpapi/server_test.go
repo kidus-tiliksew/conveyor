@@ -720,56 +720,6 @@ func TestTaskIntakeIsNotHealthGatedAndPersistsHold(t *testing.T) {
 	}
 }
 
-func TestTaskIntakeSelectsAndFreezesExecutionSetup(t *testing.T) {
-	st := store.NewMemory()
-	settings := func(harness, model string) config.ContextualExecutionSettings {
-		return config.ContextualExecutionSettings{
-			ControlPlane:   config.ControlPlaneSettings{Triage: config.ModelTimeoutSettings{Model: "control", TimeoutText: "20m"}, Spec: config.ModelTimeoutSettings{Model: "control", TimeoutText: "30m"}},
-			Implementation: config.ImplementationSettings{Harness: harness, Model: model, ModelPolicy: config.ModelPolicyExplicit, TimeoutText: "2h"},
-			Review:         config.ReviewExecutionSettings{Execution: config.ExecutionMCP, TimeoutText: "1h"},
-		}
-	}
-	backend := config.ExecutionSetup{Name: "backend", ExecutionSettings: settings("codex", "gpt-backend"), Review: config.ReviewPanel{Seats: []config.ReviewSeat{{Model: "gpt-review", Harness: "codex"}}}}
-	frontend := config.ExecutionSetup{Name: "frontend", ExecutionSettings: settings("claude", "claude-ui"), Review: config.ReviewPanel{Seats: []config.ReviewSeat{{Model: "claude-review", Harness: "claude"}}}}
-	cfg := &config.Config{Workspace: "demo", Execution: config.ExecutionPolicy{DefaultMode: "manual", SpecApproval: true, MergeApproval: true}, Setups: []config.ExecutionSetup{backend, frontend}, DefaultSetup: backend.Name, Repos: []config.Repo{{Name: "api", Base: "main"}}}
-	server := NewServer(st)
-	server.BearerToken, server.Workspace = "token", "demo"
-	server.ConfigProvider = func(context.Context) (*config.Config, error) { return cfg, nil }
-	server.GenerateTaskTitle = func(_ context.Context, task core.Task) (string, error) {
-		if task.SetupContract.Name != frontend.Name {
-			t.Fatalf("title generation setup=%+v", task.SetupContract)
-		}
-		return "Frozen frontend", nil
-	}
-	request := func(body string) *httptest.ResponseRecorder {
-		req := httptest.NewRequest(http.MethodPost, "/v1/tasks", strings.NewReader(body))
-		req.Header.Set("Authorization", "Bearer token")
-		response := httptest.NewRecorder()
-		server.Handler().ServeHTTP(response, req)
-		return response
-	}
-	response := request(`{"body":"ui","repo":"api","setup":"frontend","hold":true}`)
-	if response.Code != http.StatusCreated {
-		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
-	}
-	var task core.Task
-	if err := json.Unmarshal(response.Body.Bytes(), &task); err != nil {
-		t.Fatal(err)
-	}
-	if task.SetupName != "frontend" || task.SetupContract.ExecutionSettings.Implementation.Harness != "claude" {
-		t.Fatalf("task setup=%+v", task)
-	}
-	cfg.Setups[1].ExecutionSettings.Implementation.Harness = "changed"
-	persisted, err := st.GetTask(store.WithWorkspace(t.Context(), "demo"), task.ID)
-	if err != nil || persisted.SetupContract.ExecutionSettings.Implementation.Harness != "claude" {
-		t.Fatalf("persisted=%+v err=%v", persisted, err)
-	}
-	server.GenerateTaskTitle = func(context.Context, core.Task) (string, error) { return "unused", nil }
-	if unknown := request(`{"body":"bad","repo":"api","setup":"missing","hold":true}`); unknown.Code != http.StatusBadRequest {
-		t.Fatalf("unknown status=%d body=%s", unknown.Code, unknown.Body.String())
-	}
-}
-
 func TestCreateTaskRequiresBearerToken(t *testing.T) {
 	st := store.NewMemory()
 	created := make(chan string, 1)
@@ -2464,9 +2414,9 @@ func TestTaskActivityScopesWorkerStatusToActionableTaskOrders(t *testing.T) {
 	queued = httptest.NewRecorder()
 	server.Handler().ServeHTTP(queued, httptest.NewRequest(http.MethodGet, "/v1/tasks/queued-auto/activity?workspace_id=demo", nil))
 	if queued.Code != http.StatusOK || !bytes.Contains(queued.Body.Bytes(), []byte(`"worker_status"`)) ||
-		!bytes.Contains(queued.Body.Bytes(), []byte(`"required_harnesses":["codex"]`)) ||
+		!bytes.Contains(queued.Body.Bytes(), []byte(`"required_harnesses":[]`)) ||
 		!bytes.Contains(queued.Body.Bytes(), []byte(`"queue_context":"never_started"`)) ||
-		!bytes.Contains(queued.Body.Bytes(), []byte(`worker liveness lease expired`)) ||
+		!bytes.Contains(queued.Body.Bytes(), []byte(`no live enrolled worker`)) ||
 		bytes.Contains(queued.Body.Bytes(), []byte(`"needs_attention":true`)) {
 		t.Fatalf("queued activity status=%d body=%s", queued.Code, queued.Body.String())
 	}

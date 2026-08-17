@@ -21,9 +21,6 @@ func (d *Dispatcher) GenerateTaskTitle(ctx context.Context, task core.Task) (str
 	if err != nil {
 		return "", err
 	}
-	if task.SetupContract.Name != "" {
-		cfg = cfg.WithSetup(task.SetupContract)
-	}
 	route, ok := cfg.Routing.Stages[string(core.StageTriage)]
 	if !ok || strings.TrimSpace(route.Model) == "" {
 		return "", fmt.Errorf("triage route with a model is not configured")

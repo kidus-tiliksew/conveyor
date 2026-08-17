@@ -214,7 +214,7 @@ var mcpAttachmentPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$
 // model is always pinned; Harness optionally overrides the workspace review
 // route for worker dispatch (design-harness-execution).
 type ReviewSeat struct {
-	Model   string `yaml:"model" json:"model"`
+	Model   string `yaml:"model,omitempty" json:"model,omitempty"`
 	Harness string `yaml:"harness,omitempty" json:"harness,omitempty"`
 	Effort  string `yaml:"effort,omitempty" json:"effort,omitempty"`
 }
@@ -344,9 +344,78 @@ type ContextualExecutionSettings struct {
 // intake (design-harness-execution; DEC-7).
 type ExecutionSetup struct {
 	Name              string                      `yaml:"name" json:"name"`
+	MaxBounces        int                         `yaml:"max_bounces,omitempty" json:"max_bounces,omitempty"`
 	ExecutionSettings ContextualExecutionSettings `yaml:"execution_settings" json:"execution_settings"`
 	Review            ReviewPanel                 `yaml:"review" json:"review"`
 	RefreshReview     string                      `yaml:"refresh_review,omitempty" json:"refresh_review"`
+}
+
+// MarshalJSON persists and serves only the frozen pipeline-policy subset.
+// Legacy execution setups remain YAML-readable for client-local files and are
+// accepted by UnmarshalJSON solely to migrate existing task rows.
+func (s ExecutionSetup) MarshalJSON() ([]byte, error) {
+	seats := make([]struct{}, len(s.Review.Seats))
+	return json.Marshal(struct {
+		MaxBounces    int               `json:"max_bounces"`
+		StageTimeouts map[string]string `json:"stage_timeouts"`
+		Review        struct {
+			Seats []struct{} `json:"seats"`
+		} `json:"review"`
+		RefreshReview string `json:"refresh_review,omitempty"`
+	}{
+		MaxBounces: s.MaxBounces,
+		StageTimeouts: map[string]string{
+			"spec":      s.ExecutionSettings.Spec.TimeoutText,
+			"implement": s.ExecutionSettings.Implementation.TimeoutText,
+			"review":    s.ExecutionSettings.Review.TimeoutText,
+		},
+		Review: struct {
+			Seats []struct{} `json:"seats"`
+		}{Seats: seats},
+		RefreshReview: s.RefreshReview,
+	})
+}
+
+func (s *ExecutionSetup) UnmarshalJSON(data []byte) error {
+	type legacy ExecutionSetup
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(data, &probe); err != nil {
+		return err
+	}
+	if _, policy := probe["stage_timeouts"]; !policy {
+		var decoded legacy
+		if err := json.Unmarshal(data, &decoded); err != nil {
+			return err
+		}
+		*s = ExecutionSetup(decoded)
+		return nil
+	}
+	var policy struct {
+		MaxBounces    int               `json:"max_bounces"`
+		StageTimeouts map[string]string `json:"stage_timeouts"`
+		Review        struct {
+			Seats []struct{} `json:"seats"`
+		} `json:"review"`
+		RefreshReview string `json:"refresh_review"`
+	}
+	if err := json.Unmarshal(data, &policy); err != nil {
+		return err
+	}
+	s.ExecutionSettings.Spec.TimeoutText = policy.StageTimeouts["spec"]
+	s.ExecutionSettings.Implementation.TimeoutText = policy.StageTimeouts["implement"]
+	s.ExecutionSettings.Review.TimeoutText = policy.StageTimeouts["review"]
+	s.Review.Seats = make([]ReviewSeat, len(policy.Review.Seats))
+	s.MaxBounces = policy.MaxBounces
+	s.RefreshReview = policy.RefreshReview
+	return nil
+}
+
+// HasFrozenPolicy distinguishes the policy carrier from a zero-value legacy
+// contract without relying on the retired setup name.
+func (s ExecutionSetup) HasFrozenPolicy() bool {
+	return s.Name != "" || s.MaxBounces > 0 || s.ExecutionSettings.Spec.TimeoutText != "" ||
+		s.ExecutionSettings.Implementation.TimeoutText != "" || s.ExecutionSettings.Review.TimeoutText != "" ||
+		s.Review.Seats != nil || s.RefreshReview != ""
 }
 
 const (
@@ -369,9 +438,34 @@ type WorkspaceDocument struct {
 	Repos                     []Repo                       `yaml:"repos" json:"repos"`
 	Monitor                   MonitorConfig                `yaml:"monitor" json:"monitor"`
 	PlanningModels            []string                     `yaml:"planning_models,omitempty" json:"planning_models"`
+	// StageTimeouts is pipeline policy. Execution details are client-local;
+	// legacy fields above remain decode-only upgrade inputs and are stripped
+	// from the workspace API and canonical persisted document.
+	StageTimeouts map[string]string `yaml:"stage_timeouts,omitempty" json:"stage_timeouts,omitempty"`
 
 	// v1.3 compatibility input; never emitted after normalization.
 	LegacyImage string `yaml:"image,omitempty" json:"-"`
+}
+
+// MarshalJSON gives the live policy projection a closed wire shape while
+// retaining legacy JSON emission for upgrade fixtures that still carry
+// execution settings. YAML remains the compatibility format for old rows.
+func (d WorkspaceDocument) MarshalJSON() ([]byte, error) {
+	policyOnly := d.StageTimeouts != nil && d.ExecutionSettings == nil && len(d.Routing.Stages) == 0 && len(d.Harnesses) == 0 && len(d.Setups) == 0 && d.DefaultSetup == "" && len(d.PlanningModels) == 0
+	if !policyOnly {
+		type legacy WorkspaceDocument
+		return json.Marshal(legacy(d))
+	}
+	return json.Marshal(struct {
+		Workspace                 string            `json:"workspace"`
+		MaxBounces                int               `json:"max_bounces"`
+		WorkOrderQueueTimeoutText string            `json:"work_order_queue_timeout"`
+		StageTimeouts             map[string]string `json:"stage_timeouts"`
+		Review                    ReviewPanel       `json:"review"`
+		Execution                 ExecutionPolicy   `json:"execution"`
+		Repos                     []Repo            `json:"repos"`
+		Monitor                   MonitorConfig     `json:"monitor"`
+	}{d.Workspace, d.MaxBounces, d.WorkOrderQueueTimeoutText, d.StageTimeouts, d.Review, d.Execution, d.Repos, d.Monitor})
 }
 
 var ErrVersionConflict = errors.New("workspace config version conflict")
@@ -437,17 +531,101 @@ func ParseWorkspaceDocument(data []byte, deployment *Config, source string) (*Co
 	next.Workspace = document.Workspace
 	next.MaxBounces = document.MaxBounces
 	next.WorkOrderQueueTimeoutText = document.WorkOrderQueueTimeoutText
-	next.ExecutionSettings = document.ExecutionSettings
-	next.Routing = document.Routing
-	next.Harnesses = document.Harnesses
+	policyOnly := document.ExecutionSettings == nil && document.Setups == nil && len(document.Routing.Stages) == 0 && len(document.Harnesses) == 0
+	// A policy-only document deliberately inherits no execution authority
+	// from workspace state. The deployment value is retained only as a
+	// compatibility substrate for in-process control-plane execution and old
+	// rows while dispatch transitions to client-local setup resolution.
+	if document.ExecutionSettings != nil || document.Setups != nil || len(document.Routing.Stages) != 0 || len(document.Harnesses) != 0 {
+		next.ExecutionSettings = document.ExecutionSettings
+		next.Routing = document.Routing
+		next.Harnesses = document.Harnesses
+		next.Setups = document.Setups
+		next.DefaultSetup = document.DefaultSetup
+	}
 	next.Review = document.Review
-	next.Setups = document.Setups
-	next.DefaultSetup = document.DefaultSetup
+	if next.Routing.Stages == nil {
+		next.Routing.Stages = map[string]StageRoute{}
+	}
+	for stage, timeout := range document.StageTimeouts {
+		route := next.Routing.Stages[stage]
+		route.TimeoutText = timeout
+		next.Routing.Stages[stage] = route
+	}
 	next.Execution = document.Execution
 	next.Repos = document.Repos
 	next.Monitor = document.Monitor
 	next.PlanningModels = document.PlanningModels
+	if policyOnly {
+		return normalizePolicy(&next, document)
+	}
 	return normalize(&next, source)
+}
+
+func normalizePolicy(next *Config, document WorkspaceDocument) (*Config, error) {
+	if next.MaxBounces == 0 {
+		next.MaxBounces = 10
+	}
+	if next.MaxBounces < 1 {
+		return nil, fmt.Errorf("max_bounces must be at least 1")
+	}
+	if next.WorkOrderQueueTimeoutText == "" {
+		next.WorkOrderQueueTimeoutText = DefaultWorkOrderQueueTimeoutText
+	}
+	queueTimeout, err := time.ParseDuration(next.WorkOrderQueueTimeoutText)
+	if err != nil || queueTimeout <= 0 {
+		return nil, fmt.Errorf("work_order_queue_timeout must be a positive duration")
+	}
+	next.WorkOrderQueueTimeout = queueTimeout
+	if next.Routing.Stages == nil {
+		next.Routing.Stages = map[string]StageRoute{}
+	}
+	for _, stage := range []string{"spec", "implement", "review"} {
+		timeout := strings.TrimSpace(document.StageTimeouts[stage])
+		if timeout == "" {
+			timeout = map[string]string{"spec": "30m", "implement": "4h", "review": "1h"}[stage]
+		}
+		parsed, parseErr := time.ParseDuration(timeout)
+		if parseErr != nil || parsed <= 0 {
+			return nil, fmt.Errorf("stage_timeouts.%s must be a positive duration", stage)
+		}
+		route := next.Routing.Stages[stage]
+		route.Execution, route.TimeoutText, route.Timeout = ExecutionMCP, timeout, parsed
+		route.Model, route.ModelPolicy, route.Harness, route.Effort, route.EffectiveModel = "", "", "", "", ""
+		next.Routing.Stages[stage] = route
+	}
+	next.ExecutionSettings, next.Harnesses, next.Setups, next.PlanningModels = nil, nil, nil, nil
+	next.DefaultSetup = ""
+	next.Review = document.Review
+	if next.Review.Seats == nil {
+		next.Review.Seats = []ReviewSeat{{}}
+	}
+	if next.Monitor.PollIntervalText == "" {
+		next.Monitor.PollIntervalText = "1m"
+	}
+	if next.Monitor.StartupWindowText == "" {
+		next.Monitor.StartupWindowText = "24h"
+	}
+	if next.Monitor.PollInterval, err = time.ParseDuration(next.Monitor.PollIntervalText); err != nil || next.Monitor.PollInterval <= 0 {
+		return nil, fmt.Errorf("monitor.poll_interval must be a positive duration")
+	}
+	if next.Monitor.StartupWindow, err = time.ParseDuration(next.Monitor.StartupWindowText); err != nil || next.Monitor.StartupWindow <= 0 {
+		return nil, fmt.Errorf("monitor.startup_window must be a positive duration")
+	}
+	seen := map[string]bool{}
+	for i, repo := range next.Repos {
+		if strings.TrimSpace(repo.Name) == "" || strings.TrimSpace(repo.URL) == "" {
+			return nil, fmt.Errorf("repo %d: name and url are required", i)
+		}
+		if !safePathSegment(repo.Name) {
+			return nil, fmt.Errorf("repo %d: name %q must use only ASCII letters, digits, '.', '_', or '-' and must not be '.' or '..'", i, repo.Name)
+		}
+		if seen[repo.Name] {
+			return nil, fmt.Errorf("duplicate repo name %q", repo.Name)
+		}
+		seen[repo.Name] = true
+	}
+	return next, nil
 }
 
 // ParseStoredWorkspaceDocument canonicalizes both the v1.4 document and the
@@ -1250,6 +1428,12 @@ func (c *Config) WorkspaceDocument() WorkspaceDocument {
 		Monitor:                   c.Monitor,
 		PlanningModels:            append([]string(nil), c.PlanningModels...),
 	}
+	document.StageTimeouts = make(map[string]string, 3)
+	for _, stage := range []string{"spec", "implement", "review"} {
+		if timeout := c.Routing.Stages[stage].TimeoutText; timeout != "" {
+			document.StageTimeouts[stage] = timeout
+		}
+	}
 	document.Monitor.PollInterval = 0
 	document.Monitor.StartupWindow = 0
 	document.Monitor.Repositories = append(make([]string, 0, len(c.Monitor.Repositories)), c.Monitor.Repositories...)
@@ -1261,6 +1445,48 @@ func (c *Config) WorkspaceDocument() WorkspaceDocument {
 		document.Routing.Stages[stage] = route
 	}
 	return document
+}
+
+// PolicyDocument is the sole live workspace configuration projection. It
+// intentionally contains no setup, harness, model, argv, effort, or routing
+// data (req-execution-configuration REQ-7/REQ-8; DEC-23).
+func (c *Config) PolicyDocument() WorkspaceDocument {
+	document := c.WorkspaceDocument()
+	document.ExecutionSettings = nil
+	document.Routing = Routing{}
+	document.Harnesses = nil
+	document.Setups = nil
+	document.DefaultSetup = ""
+	document.PlanningModels = nil
+	document.Execution.FirstActivityTimeout = 0
+	document.Execution.FirstActivityTimeoutText = ""
+	for i := range document.Review.Seats {
+		document.Review.Seats[i] = ReviewSeat{}
+	}
+	return document
+}
+
+// FreezePolicy projects the current default policy into the legacy task
+// contract carrier without retaining execution selection or routing detail.
+func (c *Config) FreezePolicy() ExecutionSetup {
+	setup, ok := c.Setup("")
+	if !ok {
+		setup.ExecutionSettings.Spec.TimeoutText = c.Routing.Stages["spec"].TimeoutText
+		setup.ExecutionSettings.Implementation.TimeoutText = c.Routing.Stages["implement"].TimeoutText
+		setup.ExecutionSettings.Review.TimeoutText = c.Routing.Stages["review"].TimeoutText
+		setup.Review = c.Review
+		setup.RefreshReview = RefreshReviewDelta
+	}
+	return ExecutionSetup{
+		MaxBounces: c.MaxBounces,
+		ExecutionSettings: ContextualExecutionSettings{
+			Spec:           ImplementationSettings{TimeoutText: setup.ExecutionSettings.Spec.TimeoutText},
+			Implementation: ImplementationSettings{TimeoutText: setup.ExecutionSettings.Implementation.TimeoutText},
+			Review:         ReviewExecutionSettings{TimeoutText: setup.ExecutionSettings.Review.TimeoutText},
+		},
+		Review:        ReviewPanel{Seats: make([]ReviewSeat, len(setup.Review.Seats))},
+		RefreshReview: setup.RefreshReview,
+	}
 }
 
 // Setup resolves a configured setup by name, defaulting an empty selector to
@@ -1295,6 +1521,9 @@ func (c *Config) Setup(name string) (ExecutionSetup, bool) {
 // calculations without consulting the mutable setup name again.
 func (c *Config) WithSetup(setup ExecutionSetup) *Config {
 	next := *c
+	if setup.MaxBounces > 0 {
+		next.MaxBounces = setup.MaxBounces
+	}
 	next.Setups = []ExecutionSetup{setup}
 	next.DefaultSetup = setup.Name
 	next.ExecutionSettings = &next.Setups[0].ExecutionSettings
@@ -1307,6 +1536,40 @@ func (c *Config) WithSetup(setup ExecutionSetup) *Config {
 			route.EffectiveModel, _ = normalizeHarnessModel(route, next.Harnesses)
 		}
 		next.Routing.Stages[stage] = route
+	}
+	return &next
+}
+
+// WithPolicy overlays a task's frozen pipeline policy without replacing the
+// deployment's control-plane routes or a client's local execution detail.
+func (c *Config) WithPolicy(policy ExecutionSetup) *Config {
+	next := *c
+	if policy.MaxBounces > 0 {
+		next.MaxBounces = policy.MaxBounces
+	}
+	next.Routing = Routing{Stages: make(map[string]StageRoute, len(c.Routing.Stages))}
+	for stage, route := range c.Routing.Stages {
+		next.Routing.Stages[stage] = route
+	}
+	timeouts := map[string]string{
+		"spec":      policy.ExecutionSettings.Spec.TimeoutText,
+		"implement": policy.ExecutionSettings.Implementation.TimeoutText,
+		"review":    policy.ExecutionSettings.Review.TimeoutText,
+	}
+	for stage, timeout := range timeouts {
+		if timeout == "" {
+			continue
+		}
+		route := next.Routing.Stages[stage]
+		route.TimeoutText = timeout
+		route.Timeout, _ = time.ParseDuration(timeout)
+		next.Routing.Stages[stage] = route
+	}
+	if policy.Review.Seats != nil {
+		seats := make([]ReviewSeat, len(policy.Review.Seats))
+		copy(seats, c.Review.Seats)
+		next.Review = c.Review
+		next.Review.Seats = seats
 	}
 	return &next
 }
@@ -1454,9 +1717,23 @@ func validResponsesEffort(effort string) bool {
 }
 
 func MarshalWorkspaceDocument(c *Config) ([]byte, error) {
-	data, err := yaml.Marshal(c.WorkspaceDocument())
+	document := c.WorkspaceDocument()
+	// Client-local execution setup files retain their established shape;
+	// stage_timeouts is the server policy projection of the same route data.
+	document.StageTimeouts = nil
+	data, err := yaml.Marshal(document)
 	if err != nil {
 		return nil, fmt.Errorf("marshal workspace config: %w", err)
+	}
+	return data, nil
+}
+
+// MarshalPolicyDocument is the server persistence boundary. The legacy
+// workspace marshal remains available to client-local execution setup files.
+func MarshalPolicyDocument(c *Config) ([]byte, error) {
+	data, err := yaml.Marshal(c.PolicyDocument())
+	if err != nil {
+		return nil, fmt.Errorf("marshal workspace policy: %w", err)
 	}
 	return data, nil
 }

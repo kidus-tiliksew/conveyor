@@ -39,6 +39,27 @@ func TestGenerateTaskTitleUsesTrustedTriageRoute(t *testing.T) {
 	}
 }
 
+func TestGenerateTaskTitleIgnoresFrozenTaskPolicy(t *testing.T) {
+	agent := &titleAgent{result: inprocess.Result{Output: "Keep intake on control-plane model"}}
+	d := New(store.NewMemory(), &config.Config{Workspace: "demo", Routing: config.Routing{Stages: map[string]config.StageRoute{
+		"triage": {Model: "deployment-title-model", Timeout: time.Second},
+	}}}, agent)
+	policy := config.ExecutionSetup{
+		MaxBounces: 3,
+		ExecutionSettings: config.ContextualExecutionSettings{
+			Implementation: config.ImplementationSettings{TimeoutText: "2h"},
+		},
+		Review: config.ReviewPanel{Seats: []config.ReviewSeat{{}}},
+	}
+	title, err := d.GenerateTaskTitle(t.Context(), core.Task{Body: "Create a normal task", SetupContract: policy})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if title != "Keep intake on control-plane model" || agent.model != "deployment-title-model" {
+		t.Fatalf("title=%q model=%q", title, agent.model)
+	}
+}
+
 func TestGenerateTaskTitleRejectsInvalidOutputAndProviderFailure(t *testing.T) {
 	cfg := &config.Config{Routing: config.Routing{Stages: map[string]config.StageRoute{"triage": {Model: "gpt"}}}}
 	for _, test := range []struct {

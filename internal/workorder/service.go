@@ -319,86 +319,16 @@ func (s *Service) Recover(ctx context.Context, id, requestID string, suppliedDir
 }
 
 func recoveryRefreeze(cfg *config.Config, task core.Task, order core.WorkOrder) *store.RecoveryRefreeze {
-	name := strings.TrimSpace(task.SetupName)
-	if name == "" {
-		name = strings.TrimSpace(task.SetupContract.Name)
-	}
-	if name == "" {
-		return nil
-	}
-	setup, ok := cfg.Setup(name)
-	if !ok || setup.Name != name {
-		return nil
-	}
-	projected := cfg.WithSetup(setup)
-	route, ok := projected.Routing.Stages[string(order.Stage)]
+	_ = task
+	route, ok := cfg.Routing.Stages[string(order.Stage)]
 	if !ok {
 		return nil
 	}
-	change := &store.RecoveryRefreeze{Setup: setup, ExecutionTimeoutText: route.TimeoutText}
+	change := &store.RecoveryRefreeze{Setup: cfg.FreezePolicy(), ExecutionTimeoutText: route.TimeoutText}
 	if change.ExecutionTimeoutText == "" {
 		change.ExecutionTimeoutText = order.ExecutionTimeoutText
 	}
-	if order.Stage == core.StageReview {
-		round := order.ReviewRound
-		if round <= 0 {
-			round = 1
-		}
-		refrozenTask := task
-		refrozenTask.SetupContract = setup
-		_, candidates, buildErr := dispatch.BuildReviewRound(projected, refrozenTask, route, round)
-		if buildErr != nil || len(candidates) == 0 {
-			return nil
-		}
-		index := order.ReviewSeat - 1
-		if index < 0 || index >= len(candidates) {
-			index = 0
-		}
-		candidate := candidates[index]
-		change.RequiredModel, change.RequiredHarness, change.RequiredEffort = candidate.RequiredModel, candidate.RequiredHarness, candidate.RequiredEffort
-		change.RequiredHarnessConfig, change.ExecutionTimeoutText = candidate.RequiredHarnessConfig, candidate.ExecutionTimeoutText
-		return change
-	}
-	change.RequiredModel = projected.EffectiveModel(string(order.Stage))
-	change.RequiredHarness, change.RequiredEffort = route.Harness, route.Effort
-	if route.Harness != "" {
-		change.RequiredHarnessConfig = recoveryHarnessSnapshot(projected.Harnesses, route.Harness, route.Effort)
-		if change.RequiredHarnessConfig == nil {
-			return nil
-		}
-	}
 	return change
-}
-
-func recoveryHarnessSnapshot(harnesses []config.Harness, name, effort string) *core.HarnessSnapshot {
-	for _, harness := range harnesses {
-		if harness.Name != name {
-			continue
-		}
-		snapshot := &core.HarnessSnapshot{
-			Name: harness.Name, MCPTransport: harness.MCPTransport, MCPAttachment: harness.MCPAttachment,
-			Command: append([]string(nil), harness.Command...), ModelArgs: append([]string(nil), harness.ModelArgs...),
-			DefaultModelSentinels: append([]string(nil), harness.DefaultModelSentinels...), EffortArgs: cloneRecoveryEffortArgs(harness.EffortArgs),
-			Effort: effort, ProbeCommand: append([]string(nil), harness.ProbeCommand...), ProbeTimeoutText: harness.ProbeTimeoutText,
-			StallTimeoutText: harness.StallTimeoutText,
-		}
-		if effort != "" {
-			snapshot.EffortArgv = append([]string(nil), harness.EffortArgs[effort]...)
-		}
-		return snapshot
-	}
-	return nil
-}
-
-func cloneRecoveryEffortArgs(source map[string][]string) map[string][]string {
-	if len(source) == 0 {
-		return nil
-	}
-	result := make(map[string][]string, len(source))
-	for effort, args := range source {
-		result[effort] = append([]string(nil), args...)
-	}
-	return result
 }
 
 // refreshQueuedHarnessSnapshot re-resolves an automatically redispatched
@@ -407,15 +337,9 @@ func cloneRecoveryEffortArgs(source map[string][]string) map[string][]string {
 // fallback, and the recovery transition that follows reports the authoritative
 // state errors.
 func (s *Service) refreshQueuedHarnessSnapshot(ctx context.Context, cfg *config.Config, id string) {
-	order, err := s.Store.GetWorkOrder(ctx, id)
-	if err != nil {
-		return
-	}
-	snapshot, changed := core.RefreshedHarnessSnapshot(cfg.Harnesses, order.RequiredHarnessConfig)
-	if !changed {
-		return
-	}
-	_, _ = s.Store.RefreshWorkOrderHarnessSnapshot(ctx, id, snapshot)
+	// Server-side harness snapshots are retired. Client-local execution setup
+	// resolves every newly claimed or redispatched order (DEC-23).
+	_, _, _ = ctx, cfg, id
 }
 
 func (s *Service) RecoverInterruptedReviewRound(ctx context.Context, taskID, requestID string) (store.InterruptedReviewRecoveryResult, error) {
@@ -537,8 +461,8 @@ func (s *Service) RetryReviewRound(ctx context.Context, taskID, requestID, reaso
 	if err != nil {
 		return store.ReviewRoundRetryResult{}, err
 	}
-	if task.SetupContract.Name != "" {
-		cfg = cfg.WithSetup(task.SetupContract)
+	if task.SetupContract.HasFrozenPolicy() {
+		cfg = cfg.WithPolicy(task.SetupContract)
 	}
 	route, ok := cfg.Routing.Stages[string(core.StageReview)]
 	if !ok || route.Execution != config.ExecutionMCP {
@@ -1335,8 +1259,8 @@ func (s *Service) SubmitForReview(ctx context.Context, id, session string) (map[
 	if err != nil {
 		return nil, err
 	}
-	if task.SetupContract.Name != "" {
-		cfg = cfg.WithSetup(task.SetupContract)
+	if task.SetupContract.HasFrozenPolicy() {
+		cfg = cfg.WithPolicy(task.SetupContract)
 	}
 	evidence, err := s.taskVerificationEvidence(ctx, task.ID)
 	if err != nil {

@@ -83,7 +83,7 @@ func planReviewSetupChange(cfg *config.Config, task core.Task, orders []core.Wor
 		return nil
 	}
 	sort.Slice(current, func(i, j int) bool { return current[i].ReviewSeat < current[j].ReviewSeat })
-	route := cfg.WithSetup(task.SetupContract).Routing.Stages[string(core.StageReview)]
+	route := cfg.WithPolicy(task.SetupContract).Routing.Stages[string(core.StageReview)]
 	_, desired, err := dispatch.BuildReviewRound(cfg, task, route, latest)
 	if err != nil {
 		return err

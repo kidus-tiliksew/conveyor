@@ -57,7 +57,6 @@ func (s *Server) createTaskRecordWithState(ctx context.Context, req createTaskRe
 	req.Repo = strings.TrimSpace(req.Repo)
 	req.BaseBranch = strings.TrimSpace(req.BaseBranch)
 	req.Source = strings.TrimSpace(req.Source)
-	req.Setup = strings.TrimSpace(req.Setup)
 	for index := range req.DependsOn {
 		req.DependsOn[index] = strings.TrimSpace(req.DependsOn[index])
 	}
@@ -112,12 +111,7 @@ func (s *Server) createTaskRecordWithState(ctx context.Context, req createTaskRe
 	}
 	var selectedSetup config.ExecutionSetup
 	if current != nil {
-		var ok bool
-		selectedSetup, ok = current.Setup(req.Setup)
-		if !ok {
-			return taskCreateResult{}, &taskCreateError{Status: http.StatusBadRequest, Message: "unknown setup " + req.Setup}
-		}
-		req.Setup = selectedSetup.Name
+		selectedSetup = current.FreezePolicy()
 	}
 	// §21.31: no mode axis, no intake-time health gating — serviceability is
 	// advisory and orders queue openly. Hold is the only reservation input.
@@ -142,7 +136,7 @@ func (s *Server) createTaskRecordWithState(ctx context.Context, req createTaskRe
 	if s.GenerateTaskTitle == nil {
 		return taskCreateResult{}, &taskCreateError{Status: http.StatusServiceUnavailable, Message: "task title generation is unavailable"}
 	}
-	generated, err := s.GenerateTaskTitle(ctx, core.Task{Source: req.Source, Body: req.Body, Repo: req.Repo, SetupName: req.Setup, SetupContract: selectedSetup})
+	generated, err := s.GenerateTaskTitle(ctx, core.Task{Source: req.Source, Body: req.Body, Repo: req.Repo, SetupContract: selectedSetup})
 	if err != nil {
 		return taskCreateResult{}, &taskCreateError{Status: http.StatusServiceUnavailable, Message: fmt.Sprintf("generate task title: %v", err)}
 	}
@@ -164,7 +158,6 @@ func (s *Server) createTaskRecordWithState(ctx context.Context, req createTaskRe
 		SpecApproval:  specApproval,
 		MergeApproval: mergeApproval,
 		PolicyVersion: 1,
-		SetupName:     req.Setup,
 		SetupContract: selectedSetup,
 		Repo:          req.Repo,
 		BaseBranch:    req.BaseBranch,
@@ -234,9 +227,6 @@ func resolvedIntakePolicy(req createTaskReq, current *config.Config) (bool, bool
 
 func sameIntakeRequest(task core.Task, req createTaskReq, intake store.TaskContextInput) bool {
 	if task.Body != req.Body || task.Repo != req.Repo || task.Source != req.Source || (req.BaseBranch != "" && task.BaseBranch != req.BaseBranch) {
-		return false
-	}
-	if req.Setup != "" && task.SetupName != req.Setup {
 		return false
 	}
 	actual := make([]string, 0, len(task.Dependencies))

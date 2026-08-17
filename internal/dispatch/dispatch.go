@@ -171,8 +171,8 @@ func (d *Dispatcher) runTaskForSnapshot(ctx context.Context, task core.Task) err
 	if task.NextStage == "" {
 		return nil
 	}
-	if task.SetupContract.Name != "" {
-		cfg = cfg.WithSetup(task.SetupContract)
+	if task.SetupContract.HasFrozenPolicy() {
+		cfg = cfg.WithPolicy(task.SetupContract)
 	}
 	route, ok := cfg.Routing.Stages[string(task.NextStage)]
 	if !ok {
@@ -271,15 +271,14 @@ func (d *Dispatcher) createReviewRound(ctx context.Context, cfg *config.Config, 
 	return d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "pipeline.awaiting_work_order", Payload: core.JSONPayload(map[string]any{"stage": core.StageReview, "execution": "mcp", "timeout": route.TimeoutText, "review_round": round, "seat_count": len(orders)})})
 }
 
-// BuildReviewRound snapshots the current workspace panel and harness routing
-// into a new immutable round. Retry recovery uses this same constructor so it
-// cannot accidentally reuse an expired seat's stale execution snapshot.
+// BuildReviewRound freezes only review-seat shape and timeout policy. Harness,
+// model, and effort are resolved by the claimant's local execution setup.
 func BuildReviewRound(cfg *config.Config, task core.Task, route config.StageRoute, round int) ([]core.Job, []core.WorkOrder, error) {
 	if cfg == nil || round <= 0 {
 		return nil, nil, fmt.Errorf("review round configuration and positive round are required")
 	}
-	if task.SetupContract.Name != "" {
-		cfg = cfg.WithSetup(task.SetupContract)
+	if task.SetupContract.HasFrozenPolicy() {
+		cfg = cfg.WithPolicy(task.SetupContract)
 		route = cfg.Routing.Stages["review"]
 	}
 	now := time.Now().UTC()
@@ -300,22 +299,12 @@ func BuildReviewRound(cfg *config.Config, task core.Task, route config.StageRout
 		if harness == "" {
 			harness = route.Harness
 		}
-		var harnessConfig *core.HarnessSnapshot
-		if harness != "" {
-			var ok bool
-			harnessConfig, ok = reviewHarnessSnapshot(cfg, harness)
-			if !ok {
-				return nil, nil, fmt.Errorf("review seat %d references unavailable harness %q", seatNumber, harness)
-			}
-		}
-		if harnessConfig != nil {
-			harnessConfig.Effort = seat.Effort
-		}
-		jobs = append(jobs, core.Job{ID: jobID, TaskID: task.ID, Stage: core.StageReview, Harness: "external-mcp", ModelTier: seat.Model, AuthMode: "byoa", Runner: "external", Confinement: "none", State: core.JobPending})
+		_ = harness
+		jobs = append(jobs, core.Job{ID: jobID, TaskID: task.ID, Stage: core.StageReview, Harness: "external-mcp", AuthMode: "byoa", Runner: "external", Confinement: "none", State: core.JobPending})
 		orders = append(orders, core.WorkOrder{
 			ID: jobID, TaskID: task.ID, JobID: jobID, Stage: core.StageReview,
 			State: core.WorkOrderQueued, Claimable: true,
-			ReviewRound: round, ReviewSeat: seatNumber, RequiredModel: seat.Model,
+			ReviewRound: round, ReviewSeat: seatNumber,
 			ReviewKind: func() string {
 				if task.ApprovalStale {
 					return "refresh"
@@ -323,7 +312,6 @@ func BuildReviewRound(cfg *config.Config, task core.Task, route config.StageRout
 				return ""
 			}(),
 			ReviewScope: task.RefreshReviewScope, BaselineSHA: task.RefreshBaselineSHA, HeadSHA: task.RefreshHeadSHA,
-			RequiredHarness: harness, RequiredEffort: seat.Effort, RequiredHarnessConfig: harnessConfig,
 			ExecutionTimeoutText: route.TimeoutText,
 			QueueEnteredAt:       now, QueueDeadline: now.Add(queueTimeout), CreatedAt: now,
 		})
@@ -360,32 +348,19 @@ func BuildFutureWorkOrderRouting(cfg *config.Config, task core.Task, stage core.
 	if cfg == nil || (stage != core.StageSpec && stage != core.StageImplement) {
 		return core.WorkOrder{}, fmt.Errorf("future work routing requires spec or implementation stage")
 	}
-	if task.SetupContract.Name != "" {
-		cfg = cfg.WithSetup(task.SetupContract)
+	if task.SetupContract.HasFrozenPolicy() {
+		cfg = cfg.WithPolicy(task.SetupContract)
 	}
 	route, ok := cfg.Routing.Stages[string(stage)]
 	if !ok || route.Execution != config.ExecutionMCP {
 		return core.WorkOrder{}, fmt.Errorf("%s does not use an MCP execution route", stage)
-	}
-	var snapshot *core.HarnessSnapshot
-	if route.Harness != "" {
-		var found bool
-		snapshot, found = reviewHarnessSnapshot(cfg, route.Harness)
-		if !found {
-			return core.WorkOrder{}, fmt.Errorf("%s route references unavailable harness %q", stage, route.Harness)
-		}
-		if route.Effort != "" {
-			snapshot.Effort = route.Effort
-			snapshot.EffortArgv = append([]string(nil), snapshot.EffortArgs[route.Effort]...)
-		}
 	}
 	queueTimeout := cfg.WorkOrderQueueTimeout
 	if queueTimeout <= 0 {
 		queueTimeout = config.DefaultWorkOrderQueueTimeout
 	}
 	now := time.Now().UTC()
-	return core.WorkOrder{Stage: stage, RequiredModel: cfg.EffectiveModel(string(stage)), RequiredHarness: route.Harness,
-		RequiredEffort: route.Effort, RequiredHarnessConfig: snapshot, ExecutionTimeoutText: route.TimeoutText,
+	return core.WorkOrder{Stage: stage, ExecutionTimeoutText: route.TimeoutText,
 		QueueEnteredAt: now, QueueDeadline: now.Add(queueTimeout)}, nil
 }
 
@@ -415,30 +390,15 @@ func (d *Dispatcher) createWorkOrder(ctx context.Context, cfg *config.Config, ta
 		}
 	}
 	jobID := fmt.Sprintf("%s-%s-%d", task.ID, task.NextStage, attempt)
-	effectiveModel := cfg.EffectiveModel(string(task.NextStage))
-	job := core.Job{ID: jobID, TaskID: task.ID, Stage: task.NextStage, Harness: "external-mcp", ModelTier: effectiveModel, AuthMode: "byoa", Runner: "external", Confinement: "none", State: core.JobPending}
+	job := core.Job{ID: jobID, TaskID: task.ID, Stage: task.NextStage, Harness: "external-mcp", AuthMode: "byoa", Runner: "external", Confinement: "none", State: core.JobPending}
 	now := time.Now().UTC()
 	queueTimeout := cfg.WorkOrderQueueTimeout
 	if queueTimeout <= 0 {
 		queueTimeout = config.DefaultWorkOrderQueueTimeout
 	}
-	var harnessConfig *core.HarnessSnapshot
-	if route.Harness != "" {
-		var found bool
-		harnessConfig, found = reviewHarnessSnapshot(cfg, route.Harness)
-		if !found {
-			return fmt.Errorf("%s route references unavailable harness %q", task.NextStage, route.Harness)
-		}
-		if route.Effort != "" {
-			harnessConfig.Effort = route.Effort
-			harnessConfig.EffortArgv = append([]string(nil), harnessConfig.EffortArgs[route.Effort]...)
-		}
-	}
 	order := core.WorkOrder{
 		ID: jobID, TaskID: task.ID, JobID: jobID, Stage: task.NextStage,
 		State: core.WorkOrderQueued, Claimable: true,
-		RequiredModel: effectiveModel, RequiredHarness: route.Harness,
-		RequiredEffort: route.Effort, RequiredHarnessConfig: harnessConfig,
 		ReasonCode: reasonCode, BaselineSHA: task.ApprovedHeadSHA,
 		ExecutionTimeoutText: route.TimeoutText,
 		QueueEnteredAt:       now, QueueDeadline: now.Add(queueTimeout), CreatedAt: now,
@@ -454,14 +414,9 @@ func (d *Dispatcher) createWorkOrder(ctx context.Context, cfg *config.Config, ta
 	}
 	payload := map[string]any{
 		"stage": task.NextStage, "execution": "mcp", "timeout": route.TimeoutText,
-		"harness": route.Harness, "model": effectiveModel, "model_policy": route.ModelPolicy,
 	}
 	if reasonCode != "" {
 		payload["reason_code"] = reasonCode
-	}
-	if route.Effort != "" {
-		payload["required_effort"] = route.Effort
-		payload["effort_argv"] = append([]string(nil), harnessConfig.EffortArgv...)
 	}
 	return d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, JobID: jobID, Kind: "pipeline.awaiting_work_order", Payload: core.JSONPayload(payload)})
 }
@@ -848,6 +803,9 @@ func (d *Dispatcher) ApplyExternalReviewPinned(ctx context.Context, task core.Ta
 	cfg, err := d.currentConfig(ctx)
 	if err != nil {
 		return err
+	}
+	if task.SetupContract.HasFrozenPolicy() {
+		cfg = cfg.WithPolicy(task.SetupContract)
 	}
 	return d.applyReview(ctx, cfg, task, job, result, "external-mcp", reviewWorkOrderID, session, model, servedRequirements, governance, len(claimAuthorized) > 0 && claimAuthorized[0], nil)
 }
@@ -1622,8 +1580,8 @@ func (d *Dispatcher) beginRefreshLocked(ctx context.Context, task core.Task, new
 	if err != nil {
 		return err
 	}
-	if current.SetupContract.Name != "" {
-		cfg = cfg.WithSetup(current.SetupContract)
+	if current.SetupContract.HasFrozenPolicy() {
+		cfg = cfg.WithPolicy(current.SetupContract)
 	}
 	return d.createReviewRound(ctx, cfg, current, cfg.Routing.Stages[string(core.StageReview)])
 }
@@ -1939,8 +1897,8 @@ func (d *Dispatcher) dispatchConflictFixLocked(ctx context.Context, current core
 	}
 	systemCtx := store.WithActor(ctx, store.Actor{ID: "system", Role: core.ActorSystem})
 	intervention := core.Intervention{TaskID: current.ID, ActorID: "system", ActorRole: core.ActorSystem, Action: core.InterventionRedirect, ReasonCode: "merge-conflict", Comment: "Merge the base branch into the task branch, resolve conflicts, validate, push, and submit for refresh review."}
-	if current.SetupContract.Name != "" {
-		cfg = cfg.WithSetup(current.SetupContract)
+	if current.SetupContract.HasFrozenPolicy() {
+		cfg = cfg.WithPolicy(current.SetupContract)
 	}
 	if _, err = store.ServedRequirementsForTask(systemCtx, d.Store, current.ID, config.ServedRequirementAuthorityNodes(cfg)); err != nil {
 		return core.WorkOrder{}, err
@@ -1957,25 +1915,12 @@ func (d *Dispatcher) dispatchConflictFixLocked(ctx context.Context, current core
 	}
 	route := cfg.Routing.Stages[string(core.StageImplement)]
 	jobID := fmt.Sprintf("%s-%s-%d", current.ID, core.StageImplement, attempt)
-	effectiveModel := cfg.EffectiveModel(string(core.StageImplement))
-	job := core.Job{ID: jobID, TaskID: current.ID, Stage: core.StageImplement, Harness: "external-mcp", ModelTier: effectiveModel, AuthMode: "byoa", Runner: "external", Confinement: "none", State: core.JobPending}
+	job := core.Job{ID: jobID, TaskID: current.ID, Stage: core.StageImplement, Harness: "external-mcp", AuthMode: "byoa", Runner: "external", Confinement: "none", State: core.JobPending}
 	queueTimeout := cfg.WorkOrderQueueTimeout
 	if queueTimeout <= 0 {
 		queueTimeout = config.DefaultWorkOrderQueueTimeout
 	}
-	var harnessConfig *core.HarnessSnapshot
-	if route.Harness != "" {
-		var found bool
-		harnessConfig, found = reviewHarnessSnapshot(cfg, route.Harness)
-		if !found {
-			return core.WorkOrder{}, fmt.Errorf("%s route references unavailable harness %q", core.StageImplement, route.Harness)
-		}
-		if route.Effort != "" {
-			harnessConfig.Effort = route.Effort
-			harnessConfig.EffortArgv = append([]string(nil), harnessConfig.EffortArgs[route.Effort]...)
-		}
-	}
-	order := core.WorkOrder{ID: jobID, TaskID: current.ID, JobID: jobID, Stage: core.StageImplement, State: core.WorkOrderQueued, Claimable: true, RequiredModel: effectiveModel, RequiredHarness: route.Harness, RequiredEffort: route.Effort, RequiredHarnessConfig: harnessConfig, ReasonCode: "merge-conflict", BaselineSHA: current.ApprovedHeadSHA, ExecutionTimeoutText: route.TimeoutText, QueueEnteredAt: now, QueueDeadline: now.Add(queueTimeout), CreatedAt: now}
+	order := core.WorkOrder{ID: jobID, TaskID: current.ID, JobID: jobID, Stage: core.StageImplement, State: core.WorkOrderQueued, Claimable: true, ReasonCode: "merge-conflict", BaselineSHA: current.ApprovedHeadSHA, ExecutionTimeoutText: route.TimeoutText, QueueEnteredAt: now, QueueDeadline: now.Add(queueTimeout), CreatedAt: now}
 	request := store.ConflictFixRequest{TaskID: current.ID, Job: job, WorkOrder: order, Intervention: intervention, ApprovedHead: current.ApprovedHeadSHA, NewHead: pr.HeadSHA}
 	var result store.ConflictFixResult
 	_, err = taskops.ExecuteWorkOrder(systemCtx, d.Store, current.ID, core.WorkOrderCmdCreate, func(lease taskops.TaskLease) (bool, error) {
