@@ -115,7 +115,7 @@ func TestPreemptRetiresQueuedOrderIdempotently(t *testing.T) {
 	if err != nil || duplicate.WorkOrder.State != core.WorkOrderCancelled {
 		t.Fatalf("duplicate=%+v err=%v", duplicate, err)
 	}
-	if _, err = service.Claim(ctx, order.ID, core.WorkOrderClaim{SessionID: "zombie", ClientToken: "secret"}); !errors.Is(err, store.ErrWorkOrderCancelled) {
+	if _, err = service.Claim(ctx, order.ID, core.WorkOrderClaim{SessionID: "zombie", ClientToken: "secret", ClaimantID: "zombie-agent"}); !errors.Is(err, store.ErrWorkOrderCancelled) {
 		t.Fatalf("claim retired order err=%v", err)
 	}
 	if count, countErr := st.CountEvents(ctx, order.TaskID, "work_order.retired"); countErr != nil || count != 1 {
@@ -126,7 +126,7 @@ func TestPreemptRetiresQueuedOrderIdempotently(t *testing.T) {
 func TestPreemptAfterDeadWorkerLeaseExpiryRetiresQueuedOrder(t *testing.T) {
 	ctx, st, service, order := newLifecycleService(t, "preempt-dead")
 	ctx = store.WithActor(store.WithWorkspace(ctx, "test"), store.Actor{ID: "operator", Role: core.ActorHuman})
-	if _, err := service.Claim(ctx, order.ID, core.WorkOrderClaim{SessionID: "dead-session", ClientToken: "secret", WorkerID: "dead-worker", Lease: time.Nanosecond}); err != nil {
+	if _, err := service.Claim(ctx, order.ID, core.WorkOrderClaim{SessionID: "dead-session", ClientToken: "secret", ClaimantID: "dead-worker", WorkerID: "dead-worker", Lease: time.Nanosecond}); err != nil {
 		t.Fatal(err)
 	}
 	time.Sleep(time.Millisecond)
