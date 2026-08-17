@@ -6,12 +6,7 @@ import { PlanningChat, relativeDate, sessionStatusLabels } from '../components/p
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { Select } from '../components/ui/input'
-import {
-  createPlanningSession,
-  decidePlanningBundle,
-  fetchPlanningBundles,
-  fetchPlanningSessions,
-} from '../lib/api'
+import { createPlanningSession, decidePlanningBundle, fetchPlanningBundles, fetchPlanningSessions } from '../lib/api'
 import { sessionGoalLabel, sessionGoalLabels } from '../lib/contracts'
 import { errorMessage } from '../lib/errors'
 import type { PlanningSessionGoal } from '../lib/types'
@@ -62,8 +57,7 @@ export function PlanningPage() {
   const create = useMutation({
     // No title is sent: the server names the session from its goal, and the
     // artifact it produces renames it.
-    mutationFn: () =>
-      createPlanningSession(token, { goal }),
+    mutationFn: () => createPlanningSession(token, { goal }),
     onSuccess: (session) => {
       setSelectedId(session.id)
       void client.invalidateQueries({ queryKey: ['planning-sessions', workspace] })

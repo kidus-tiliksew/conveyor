@@ -14,12 +14,7 @@ import {
 } from 'lucide-react'
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import { assigneeName, dependencyRelationLabel, parseProvenance, pullRequestURL } from '../../lib/activity'
-import {
-  cancelTask,
-  removeTaskDependency,
-  setTaskAssignee,
-  setTaskHold,
-} from '../../lib/api'
+import { cancelTask, removeTaskDependency, setTaskAssignee, setTaskHold } from '../../lib/api'
 import { findBlueprint } from '../../lib/blueprint'
 import { taskStateLabels } from '../../lib/contracts'
 import { errorMessage } from '../../lib/errors'

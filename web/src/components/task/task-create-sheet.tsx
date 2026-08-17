@@ -304,8 +304,8 @@ export function TaskCreateSheet({
           </div>
           {workerExpected && !workerAvailable && !hold && (
             <p className="mt-2 text-xs text-attention">
-              Worker unavailable — {workerHealth.data?.worker_unavailable_reason ?? 'waiting for a live worker'}.
-              The task will queue until a worker is available or an agent claims it over a pull surface.
+              Worker unavailable — {workerHealth.data?.worker_unavailable_reason ?? 'waiting for a live worker'}. The
+              task will queue until a worker is available or an agent claims it over a pull surface.
             </p>
           )}
         </Field>
