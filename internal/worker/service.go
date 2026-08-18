@@ -85,6 +85,20 @@ type DispatchOrder struct {
 	Confinement      string         `json:"confinement"`
 	Auth             string         `json:"auth"`
 	Gate             *TaskRunGate   `json:"gate,omitempty"`
+	PendingProposals []TaskRunProposal `json:"pending_proposals"`
+}
+
+// TaskRunProposal is the task-scoped, read-only authority projection shown by
+// an attended run. CanConfirm is derived from the invoking user credential;
+// execution credentials never receive this response or gain confirmation
+// authority through it (req-260811-0ee057 AC-2.2, AC-5.8).
+type TaskRunProposal struct {
+	Kind        string `json:"kind"`
+	DocumentID  string `json:"document_id"`
+	Title       string `json:"title"`
+	Version     int    `json:"version,omitempty"`
+	CanConfirm  bool   `json:"can_confirm"`
+	ActorHint   string `json:"actor_hint"`
 }
 
 // TaskRunGate is the read-only human-gate projection returned to an attached
