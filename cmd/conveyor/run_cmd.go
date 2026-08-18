@@ -224,7 +224,7 @@ func runTaskWithPresentation(ctx context.Context, c *client, taskID, configPath 
 		if interactiveTUI {
 			stageApp := ensureApp(selected.Task)
 			stageApp.StartStage(lastTUIStage)
-			presentation = &runOutputPresentation{output: stageApp, notice: stageApp.Notice}
+			presentation = &runOutputPresentation{output: stageApp, notice: stageApp.Notice, presentEvents: true}
 			childStderr = stageApp.Stderr()
 			go func() {
 				select {
