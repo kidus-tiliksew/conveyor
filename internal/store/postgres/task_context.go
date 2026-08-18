@@ -206,3 +206,73 @@ func (s *Store) UpdateTaskContext(ctx context.Context, taskID string, change sto
 	}
 	return store.TaskContextForTask(ctx, s, taskID)
 }
+
+func (s *Store) AttachSubmissionGovernance(ctx context.Context, taskID, repository string, changedPaths []string, attribution store.SubmissionGovernanceAttribution) ([]core.TaskDesignContext, error) {
+	attached := make([]core.TaskDesignContext, 0)
+	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		var state string
+		if err := tx.QueryRow(ctx, `SELECT state FROM tasks WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspace(ctx), taskID).Scan(&state); err != nil {
+			return notFound(err, "task %s", taskID)
+		}
+		if core.TaskTerminal(core.TaskState(state)) {
+			return store.ErrTaskTerminal
+		}
+		rows, err := q.ListEvents(ctx, db.ListEventsParams{TaskID: pgtype.Text{String: taskID, Valid: true}, WorkspaceID: workspace(ctx)})
+		if err != nil {
+			return err
+		}
+		events := make([]core.Event, len(rows))
+		for i := range rows {
+			events[i] = eventFromDB(rows[i])
+		}
+		_, active := store.ActiveTaskContextReferences(events)
+
+		scope, _ := json.Marshal([]map[string]string{{"repository": repository}})
+		designRows, err := tx.Query(ctx, `SELECT d.id,d.title,d.category,v.version,v.content,v.governs
+			FROM system_designs d JOIN system_design_versions v
+			  ON v.workspace_id=d.workspace_id AND v.document_id=d.id AND v.version=d.current_version
+			WHERE d.workspace_id=$1 AND v.governs @> $2::jsonb ORDER BY d.id
+			FOR SHARE OF d,v`, workspace(ctx), scope)
+		if err != nil {
+			return err
+		}
+		designs := make([]core.GovernanceDesignContext, 0)
+		for designRows.Next() {
+			var item core.GovernanceDesignContext
+			var governs []byte
+			if err = designRows.Scan(&item.ID, &item.Title, &item.Category, &item.Version, &item.Content, &governs); err != nil {
+				designRows.Close()
+				return err
+			}
+			if err = json.Unmarshal(governs, &item.Governs); err != nil {
+				designRows.Close()
+				return err
+			}
+			designs = append(designs, item)
+		}
+		if err = designRows.Err(); err != nil {
+			designRows.Close()
+			return err
+		}
+		designRows.Close()
+		now := time.Now().UTC()
+		for _, match := range core.ResolveGovernedDesigns(designs, repository, changedPaths) {
+			if active[match.Design.ID] > 0 {
+				continue
+			}
+			if err = insertEvent(ctx, q, core.Event{TaskID: taskID, Kind: store.TaskContextDesignAdded, At: now, Payload: core.JSONPayload(map[string]any{
+				"id": match.Design.ID, "version": match.Design.Version, "source": "submission_diff",
+				"work_order_id": attribution.WorkOrderID, "session_id": attribution.SessionID, "matching_paths": match.MatchingPaths,
+			})}); err != nil {
+				return err
+			}
+			active[match.Design.ID] = match.Design.Version
+			attached = append(attached, core.TaskDesignContext{ID: match.Design.ID, Title: match.Design.Title, Version: match.Design.Version})
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("attach submission governance: %w", err)
+	}
+	return attached, nil
+}

@@ -78,6 +78,9 @@ type Store interface {
 	ApprovePlanningBundle(ctx context.Context, id string) (core.PlanningBundle, error)
 	RejectPlanningBundle(ctx context.Context, id string) (core.PlanningBundle, error)
 	UpdateTaskContext(ctx context.Context, taskID string, change TaskContextChange) (core.TaskContext, error)
+	// AttachSubmissionGovernance atomically resolves current confirmed scopes
+	// and appends only missing design pins before review dispatch (AC-5.1–AC-5.4).
+	AttachSubmissionGovernance(ctx context.Context, taskID, repository string, changedPaths []string, attribution SubmissionGovernanceAttribution) ([]core.TaskDesignContext, error)
 	ListCheckpointContextCandidates(ctx context.Context, requirementID string) ([]CheckpointContextCandidate, error)
 	GetTask(ctx context.Context, id string) (core.Task, error)
 	GetTaskByIntakeKey(ctx context.Context, key string) (core.Task, bool, error)
@@ -4479,6 +4482,47 @@ func (m *memory) UpdateTaskContext(ctx context.Context, taskID string, change Ta
 	}
 	m.mu.Unlock()
 	return TaskContextForTask(ctx, m, taskID)
+}
+
+func (m *memory) AttachSubmissionGovernance(ctx context.Context, taskID, repository string, changedPaths []string, attribution SubmissionGovernanceAttribution) ([]core.TaskDesignContext, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	task, ok := m.tasks[taskID]
+	workspace := workspaceOrDefault(ctx, "")
+	contextWorkspace, workspaceScoped := WorkspaceFromContext(ctx)
+	if !ok || (workspaceScoped && task.Workspace != contextWorkspace) {
+		return nil, fmt.Errorf("task %s: %w", taskID, ErrNotFound)
+	}
+	if core.TaskTerminal(task.State) {
+		return nil, ErrTaskTerminal
+	}
+	designs := make([]core.GovernanceDesignContext, 0)
+	for key, document := range m.systemDesigns {
+		if key.workspace != workspace || document.CurrentVersion < 1 {
+			continue
+		}
+		versions := m.systemDesignVersions[key]
+		if document.CurrentVersion > len(versions) {
+			return nil, fmt.Errorf("system design %s current version %d is unavailable", document.ID, document.CurrentVersion)
+		}
+		version := versions[document.CurrentVersion-1]
+		designs = append(designs, core.GovernanceDesignContext{ID: document.ID, Title: document.Title, Category: document.Category, Version: version.Version, Content: version.Content, Governs: append([]core.GovernedScope(nil), version.Governs...)})
+	}
+	_, active := ActiveTaskContextReferences(m.events[taskID])
+	attached := make([]core.TaskDesignContext, 0)
+	now := time.Now().UTC()
+	for _, match := range core.ResolveGovernedDesigns(designs, repository, changedPaths) {
+		if active[match.Design.ID] > 0 {
+			continue
+		}
+		m.appendEventLocked(ctx, core.Event{TaskID: taskID, Kind: TaskContextDesignAdded, At: now, Payload: core.JSONPayload(map[string]any{
+			"id": match.Design.ID, "version": match.Design.Version, "source": "submission_diff",
+			"work_order_id": attribution.WorkOrderID, "session_id": attribution.SessionID, "matching_paths": match.MatchingPaths,
+		})})
+		active[match.Design.ID] = match.Design.Version
+		attached = append(attached, core.TaskDesignContext{ID: match.Design.ID, Title: match.Design.Title, Version: match.Design.Version})
+	}
+	return attached, nil
 }
 
 func (m *memory) recordDependencyOutcomeLocked(ctx context.Context, dependencyID string, state core.TaskState, at time.Time) {

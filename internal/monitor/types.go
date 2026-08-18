@@ -508,6 +508,7 @@ func (s *Service) recordSystemDesignDrift(ctx context.Context, observation Obser
 	if err != nil {
 		return err
 	}
+	designs := make([]core.GovernanceDesignContext, 0, len(documents))
 	for _, document := range documents {
 		if document.CurrentVersion == 0 {
 			continue
@@ -516,27 +517,12 @@ func (s *Service) recordSystemDesignDrift(ctx context.Context, observation Obser
 		if getErr != nil {
 			return getErr
 		}
-		matches := []string{}
-		for _, scope := range version.Governs {
-			if scope.Repository != observation.Repository {
-				continue
-			}
-			for _, changed := range observation.ChangedPaths {
-				for _, glob := range scope.Paths {
-					if core.MatchGovernedPath(glob, changed) {
-						matches = append(matches, changed)
-						break
-					}
-				}
-			}
-		}
-		if len(matches) == 0 {
-			continue
-		}
-		sort.Strings(matches)
-		matches = compactStrings(matches)
-		id := "design:" + document.ID + ":" + observation.Identity()
-		judgment, judgmentErr := s.Store.ResolveCausalSystemDesignMerge(ctx, document.ID, observation.Repository, observation.CommitSHA, observation.CausalEventID, id, matches, observation.Kind == LineagedMerge)
+		designs = append(designs, core.GovernanceDesignContext{ID: document.ID, Title: document.Title, Category: document.Category, Version: version.Version, Content: version.Content, Governs: version.Governs})
+	}
+	for _, match := range core.ResolveGovernedDesigns(designs, observation.Repository, observation.ChangedPaths) {
+		design := match.Design
+		id := "design:" + design.ID + ":" + observation.Identity()
+		judgment, judgmentErr := s.Store.ResolveCausalSystemDesignMerge(ctx, design.ID, observation.Repository, observation.CommitSHA, observation.CausalEventID, id, match.MatchingPaths, observation.Kind == LineagedMerge)
 		if judgmentErr != nil {
 			return judgmentErr
 		}
@@ -547,12 +533,12 @@ func (s *Service) recordSystemDesignDrift(ctx context.Context, observation Obser
 		if judgment.CausalEventValid {
 			causalEventID = observation.CausalEventID
 		}
-		_, fresh, recordErr := s.Store.RecordDrift(ctx, Drift{ID: id, WorkspaceID: observation.WorkspaceID, Repository: observation.Repository, Kind: observation.Kind, SourceURL: observation.SourceURL, CommitSHA: observation.CommitSHA, SystemDesignID: document.ID, SystemDesignVersion: version.Version, CausalEventID: causalEventID, MatchingPaths: matches, TaskID: taskID, DetectedAt: observation.ObservedAt})
+		_, fresh, recordErr := s.Store.RecordDrift(ctx, Drift{ID: id, WorkspaceID: observation.WorkspaceID, Repository: observation.Repository, Kind: observation.Kind, SourceURL: observation.SourceURL, CommitSHA: observation.CommitSHA, SystemDesignID: design.ID, SystemDesignVersion: design.Version, CausalEventID: causalEventID, MatchingPaths: match.MatchingPaths, TaskID: taskID, DetectedAt: observation.ObservedAt})
 		if recordErr != nil {
 			return recordErr
 		}
 		if fresh {
-			_ = s.Store.AuditMonitor(ctx, "system_design.drift_detected", map[string]any{"drift_id": id, "document_id": document.ID, "version": version.Version, "causal_event_id": causalEventID, "matching_paths": matches})
+			_ = s.Store.AuditMonitor(ctx, "system_design.drift_detected", map[string]any{"drift_id": id, "document_id": design.ID, "version": design.Version, "causal_event_id": causalEventID, "matching_paths": match.MatchingPaths})
 		}
 	}
 	return nil

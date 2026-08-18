@@ -243,6 +243,109 @@ test('System Design renders a category tree, one attention surface, and authenti
   expect(revisionInput).toEqual({})
   await expect.poll(() => [...new Set(protectedReads)].sort()).toEqual(['/v1/decisions', '/v1/system-designs'])
 })
+
+test('System Design search and deterministic sorting preserve categories and the selected canvas', async ({ page }) => {
+  await initialize(page)
+  const items = [
+    {
+      ...design,
+      document: {
+        ...design.document,
+        id: 'design-alpha-a',
+        slug: 'alpha-a',
+        title: 'Alpha',
+        created_at: '2026-07-01T10:00:00Z',
+        updated_at: '2026-07-04T10:00:00Z',
+      },
+    },
+    {
+      ...design,
+      document: {
+        ...design.document,
+        id: 'design-alpha-b',
+        slug: 'alpha-b',
+        title: 'alpha',
+        created_at: '2026-07-01T10:00:00Z',
+        updated_at: 'not-a-date',
+      },
+      pending_versions: [],
+      drift: [],
+    },
+    {
+      ...design,
+      document: {
+        ...design.document,
+        id: 'design-beta',
+        slug: 'beta',
+        title: 'Beta',
+        created_at: '2026-07-03T10:00:00Z',
+        updated_at: '2026-07-02T10:00:00Z',
+      },
+      pending_versions: [],
+      drift: [],
+    },
+    {
+      ...design,
+      document: {
+        ...design.document,
+        id: 'design-gamma',
+        slug: 'gamma',
+        title: 'Gamma',
+        category: 'Operations',
+        created_at: 'not-a-date',
+        updated_at: '2026-07-03T10:00:00Z',
+      },
+      pending_versions: [],
+      drift: [],
+    },
+  ]
+  await page.route('**/v1/**', async (route) => {
+    const handled = shell(route)
+    if (handled) return await handled
+    const path = new URL(route.request().url()).pathname
+    if (path === '/v1/system-designs') return route.fulfill({ json: items.map(summarizeDesign) })
+    const detail = items.find((item) => path === `/v1/system-designs/${item.document.id}`)
+    if (detail) return route.fulfill({ json: detail })
+    if (path === '/v1/decisions') return route.fulfill({ json: [] })
+    return route.fulfill({ json: [] })
+  })
+
+  await page.goto('/system-design?document=design-alpha-a')
+  const tree = page.getByRole('navigation', { name: 'Document tree' })
+  const architecture = tree.getByRole('heading', { name: 'Architecture' }).locator('..')
+  const rowOrder = () =>
+    architecture
+      .getByRole('button')
+      .filter({ hasText: /^(Alpha|alpha|Beta)/ })
+      .allTextContents()
+
+  await expect.poll(rowOrder).toEqual(['Alpha2', 'Beta', 'alpha'])
+  const sortTrigger = tree.getByRole('button', { name: 'Sort System Design by' })
+  const chooseSort = async (label: string) => {
+    await sortTrigger.click()
+    await expect(page.getByRole('menu', { name: 'Sort System Design by' })).toBeVisible()
+    await page.getByRole('menuitemradio', { name: label }).click()
+  }
+
+  await chooseSort('Updated')
+  await expect.poll(rowOrder).toEqual(['alpha', 'Beta', 'Alpha2'])
+  await chooseSort('Name')
+  await expect.poll(rowOrder).toEqual(['Alpha2', 'alpha', 'Beta'])
+  await chooseSort('Name')
+  await expect.poll(rowOrder).toEqual(['Beta', 'Alpha2', 'alpha'])
+  await chooseSort('Created')
+  await expect.poll(rowOrder).toEqual(['Beta', 'Alpha2', 'alpha'])
+
+  const search = tree.getByRole('searchbox', { name: 'Search System Design' })
+  await search.fill('gAm')
+  await expect(tree.getByRole('heading', { name: 'Architecture' })).toHaveCount(0)
+  await expect(tree.getByRole('heading', { name: 'Operations' })).toBeVisible()
+  await expect(tree.getByRole('button', { name: 'Gamma' })).toBeVisible()
+  await search.fill('missing')
+  await expect(tree.getByText('No documents match your search.')).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Alpha' })).toBeVisible()
+})
+
 test('an oversized System Design comparison falls back to plain rendering', async ({ page }) => {
   await initialize(page)
   const longCurrent = Array.from({ length: 500 }, (_, index) => `confirmed line ${index}`).join('\n')

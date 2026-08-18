@@ -21,12 +21,13 @@ func RunSystemDesignDriftConformance(t *testing.T, factory SystemDesignDriftFact
 	for _, test := range []struct {
 		name             string
 		attachBefore     bool
+		submissionAttach bool
 		attachAfter      bool
 		proposal         bool
 		wantDrift        bool
 		wantConsultation bool
 	}{
-		{name: "attached lineaged merge records consultation", attachBefore: true, wantConsultation: true},
+		{name: "submission-attached lineaged merge records consultation", attachBefore: true, submissionAttach: true, wantConsultation: true},
 		{name: "unattached lineaged merge records drift", wantDrift: true},
 		{name: "attachment after merge does not rewrite causal context", attachAfter: true, wantDrift: true},
 		{name: "same task proposal wins over attached consultation", attachBefore: true, proposal: true},
@@ -38,6 +39,13 @@ func RunSystemDesignDriftConformance(t *testing.T, factory SystemDesignDriftFact
 			delivery := createDriftTask(t, st, ctx, workspace, "lineaged-delivery")
 			document := createConfirmedDesign(t, st, ctx, "DESIGN-lineaged", "internal/dispatch/**")
 			attach := func() {
+				if test.submissionAttach {
+					attached, attachErr := st.AttachSubmissionGovernance(ctx, delivery.ID, "conveyor", []string{"internal/dispatch/dispatch.go"}, store.SubmissionGovernanceAttribution{WorkOrderID: delivery.ID + "-implement", SessionID: "worker-session"})
+					if attachErr != nil || len(attached) != 1 || attached[0].ID != document.ID {
+						t.Fatalf("submission attachment=%+v err=%v", attached, attachErr)
+					}
+					return
+				}
 				if err := st.AppendEvent(ctx, core.Event{TaskID: delivery.ID, Kind: store.TaskContextDesignAdded, Payload: core.JSONPayload(map[string]any{"id": document.ID, "version": 1})}); err != nil {
 					t.Fatal(err)
 				}
