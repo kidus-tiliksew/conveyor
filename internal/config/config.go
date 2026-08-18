@@ -186,10 +186,13 @@ type StageRoute struct {
 }
 
 type Harness struct {
-	Name                  string              `yaml:"name" json:"name"`
-	MCPTransport          string              `yaml:"mcp_transport" json:"mcp_transport"`
-	MCPAttachment         string              `yaml:"mcp_attachment,omitempty" json:"mcp_attachment,omitempty"`
-	Command               []string            `yaml:"command" json:"command"`
+	Name          string   `yaml:"name" json:"name"`
+	MCPTransport  string   `yaml:"mcp_transport" json:"mcp_transport"`
+	MCPAttachment string   `yaml:"mcp_attachment,omitempty" json:"mcp_attachment,omitempty"`
+	Command       []string `yaml:"command" json:"command"`
+	// ResumeCommand is an optional client-local argv fragment. AC-2.2 and
+	// DEC-23 keep both its validation and eventual substitution off the server.
+	ResumeCommand         []string            `yaml:"resume_command,omitempty" json:"resume_command,omitempty"`
 	ModelArgs             []string            `yaml:"model_args,omitempty" json:"model_args,omitempty"`
 	DefaultModelSentinels []string            `yaml:"default_model_sentinels,omitempty" json:"default_model_sentinels,omitempty"`
 	EffortArgs            map[string][]string `yaml:"effort_args,omitempty" json:"effort_args,omitempty"`
@@ -1609,6 +1612,15 @@ func validateHarness(h Harness, index int) error {
 	if counts["{prompt}"] != 1 {
 		return fmt.Errorf("harnesses[%d].command must contain exactly one {prompt}", index)
 	}
+	if len(h.ResumeCommand) > 0 {
+		resumeCounts, resumeErr := field("resume_command", h.ResumeCommand, map[string]bool{"{session_id}": true})
+		if resumeErr != nil {
+			return resumeErr
+		}
+		if resumeCounts["{session_id}"] != 1 {
+			return fmt.Errorf("harnesses[%d].resume_command must contain exactly one {session_id}", index)
+		}
+	}
 	if h.MCPTransport == MCPTransportEnvironment {
 		if counts["{mcp_config}"] != 0 {
 			return fmt.Errorf("harnesses[%d].command must not contain {mcp_config} for environment transport", index)
@@ -1628,6 +1640,9 @@ func validateHarness(h Harness, index int) error {
 		}
 	}
 	if _, err = field("model_args", h.ModelArgs, map[string]bool{"{model}": true}); err != nil {
+		return err
+	}
+	if _, err = field("default_model_sentinels", h.DefaultModelSentinels, map[string]bool{}); err != nil {
 		return err
 	}
 	for effort, values := range h.EffortArgs {
@@ -1694,7 +1709,7 @@ func environmentHarnessContainsRuntimeValue(h Harness) bool {
 	if forbidden(h.MCPAttachment) {
 		return true
 	}
-	groups := [][]string{h.Command, h.ModelArgs, h.DefaultModelSentinels, h.ProbeCommand}
+	groups := [][]string{h.Command, h.ResumeCommand, h.ModelArgs, h.DefaultModelSentinels, h.ProbeCommand}
 	for _, args := range h.EffortArgs {
 		groups = append(groups, args)
 	}

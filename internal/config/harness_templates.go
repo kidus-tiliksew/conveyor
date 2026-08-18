@@ -48,8 +48,9 @@ func HarnessTemplates() []HarnessTemplate {
 				// §21.29 grok precedent), and --add-dir .. reaches the §21.8
 				// sibling worktrees outside the primary checkout the child
 				// starts in.
-				Command:   []string{"claude", "-p", "{prompt}", "--mcp-config", "{mcp_config}", "--allowedTools", "mcp__conveyor__*", "--output-format", "stream-json", "--verbose", "--permission-mode", "bypassPermissions", "--add-dir", ".."},
-				ModelArgs: []string{"--model", "{model}"},
+				Command:       []string{"claude", "-p", "{prompt}", "--mcp-config", "{mcp_config}", "--allowedTools", "mcp__conveyor__*", "--output-format", "stream-json", "--verbose", "--permission-mode", "bypassPermissions", "--add-dir", ".."},
+				ResumeCommand: []string{"--resume", "{session_id}"},
+				ModelArgs:     []string{"--model", "{model}"},
 				EffortArgs: map[string][]string{
 					"low":    {"--effort", "low"},
 					"medium": {"--effort", "medium"},
