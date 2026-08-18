@@ -298,6 +298,12 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 			SessionID: stringArg("continuation_session_id"), AttemptID: stringArg("attempt_id"),
 			Harness: stringArg("harness"), LaunchEnvironment: stringArg("launch_environment"),
 		})
+	case "report_continuation_launch":
+		claim, err := s.authorizeClaimMutation(ctx, workerAuth, worker, stringArg("work_order_id"), session)
+		if err != nil {
+			return nil, err
+		}
+		return s.WorkOrders.ReportContinuationLaunch(ctx, stringArg("work_order_id"), claim, stringArg("mode"), stringArg("reason"))
 	case "propose_system_design_revision":
 		order, err := s.implementationGovernanceOrder(ctx, workerAuth, worker, stringArg("work_order_id"), session)
 		if err != nil {
@@ -372,7 +378,7 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 
 func humanReservedMCPTool(name string) bool {
 	switch name {
-	case "create_task", "redispatch_work_order", "set_assignee", "report_continuation":
+	case "create_task", "redispatch_work_order", "set_assignee", "report_continuation", "report_continuation_launch":
 		return true
 	default:
 		return false
@@ -654,6 +660,7 @@ func mcpTools() []map[string]any {
 		{"name": "report_progress", "description": "Record self-reported progress for a claimed order.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "message": str}, "work_order_id", "session_id", "message")},
 		{"name": "report_usage", "description": "Record best-effort cumulative self-reported token, cost, and optional provider rate-limit status as observational audit telemetry. Report at natural checkpoints and immediately before the stage's terminal lifecycle tool when figures are available; missing usage never blocks lifecycle progress (DEC-1).", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "tokens_in": num, "tokens_out": num, "cost_usd": num, "rate_limit": rateLimit, "source": map[string]any{"type": "string", "enum": []string{"self_reported", "worker_fallback"}, "description": "Reserved worker provenance; agents omit this or use self_reported."}}, "work_order_id", "session_id", "tokens_in", "tokens_out", "cost_usd")},
 		{"name": "report_continuation", "description": "Record best-effort advisory harness-native continuation metadata for the exact active attempt. Only the launching worker or conveyor run client may report it; failure or absence never changes lifecycle outcome.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "continuation_session_id": str, "attempt_id": str, "harness": str, "launch_environment": str}, "work_order_id", "session_id", "continuation_session_id", "attempt_id", "harness", "launch_environment")},
+		{"name": "report_continuation_launch", "description": "Append resumed-versus-cold recovery launch history for the exact active attempt without marking agent progress or affecting retry classification. Only the launching worker or conveyor run client may report it.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "mode": map[string]any{"type": "string", "enum": []string{"resumed", "cold"}}, "reason": str}, "work_order_id", "session_id", "mode", "reason")},
 		{"name": "propose_system_design_revision", "description": "Propose a complete immutable System Design revision from the current claimed implementation. The operator alone confirms after submission; confirmation never blocks implementation.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "document_id": str, "content": str}, "work_order_id", "session_id", "document_id", "content")},
 		{"name": "propose_decision", "description": "Propose the next stable DEC-n record from implementation deliberation. The operator alone confirms after submission; confirmation never blocks implementation.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "statement": str, "context": str, "alternatives_rejected": str, "supersedes": str}, "work_order_id", "session_id", "statement", "context", "alternatives_rejected")},
 		{"name": "upload_transcript", "description": "Upload an optional self-reported transcript through Conveyor redaction.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "transcript": str}, "work_order_id", "session_id", "transcript")},
