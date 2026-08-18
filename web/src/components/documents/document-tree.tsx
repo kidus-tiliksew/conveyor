@@ -2,6 +2,9 @@ import { ArrowDown, ArrowUp, FileText, Search } from 'lucide-react'
 import { type ReactNode, useEffect, useRef, useState } from 'react'
 import { cn } from '../../lib/utils'
 import { Badge } from '../ui/badge'
+import type { DocumentSortDirection } from './document-sort'
+
+export type { DocumentSortDirection } from './document-sort'
 
 // The tree is resizable between these bounds; the chosen width is a local
 // reading preference, so it persists per browser rather than per workspace.
@@ -102,8 +105,6 @@ export function DocumentTreeGroup({ label, children }: { label: string; children
     </section>
   )
 }
-
-export type DocumentSortDirection = 'ascending' | 'descending'
 
 export interface DocumentSortOption {
   value: string

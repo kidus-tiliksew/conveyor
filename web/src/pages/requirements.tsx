@@ -17,6 +17,7 @@ import {
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useOperatorToken, useWorkspaceCapability, useWorkspaceSelection } from '../components/app-shell'
 import { type AttentionItem, AttentionSurface } from '../components/documents/attention-surface'
+import { compareDocuments, type DocumentSort, type DocumentSortDirection } from '../components/documents/document-sort'
 import {
   DocumentTree,
   DocumentTreeGroup,
@@ -71,44 +72,17 @@ const originLabels: Record<RequirementVersion['origin'], string> = {
 }
 
 const referenceAnchor = /^reference-(.+)-v(\d+)$/
-type RequirementSort = 'name' | 'created' | 'updated'
-type SortDirection = 'ascending' | 'descending'
-
-function timestamp(value: string) {
-  const parsed = Date.parse(value)
-  return Number.isNaN(parsed) ? Number.NEGATIVE_INFINITY : parsed
-}
-
-function compareText(left: string, right: string) {
-  return left.localeCompare(right, 'en', { sensitivity: 'base' })
-}
-
-function compareTimestamp(left: string, right: string) {
-  const leftTime = timestamp(left)
-  const rightTime = timestamp(right)
-  return leftTime === rightTime ? 0 : leftTime < rightTime ? -1 : 1
-}
 
 export function visibleRequirements(
   requirements: RequirementSummary[],
   query: string,
-  sort: RequirementSort,
-  direction: SortDirection,
+  sort: DocumentSort,
+  direction: DocumentSortDirection,
 ) {
   const needle = query.trim().toLocaleLowerCase()
-  const multiplier = direction === 'ascending' ? 1 : -1
   return requirements
     .filter((item) => item.requirement.title.toLocaleLowerCase().includes(needle))
-    .sort((left, right) => {
-      const comparison =
-        sort === 'name'
-          ? compareText(left.requirement.title, right.requirement.title)
-          : compareTimestamp(
-              left.requirement[sort === 'created' ? 'created_at' : 'updated_at'],
-              right.requirement[sort === 'created' ? 'created_at' : 'updated_at'],
-            )
-      return comparison === 0 ? compareText(left.requirement.id, right.requirement.id) : comparison * multiplier
-    })
+    .sort((left, right) => compareDocuments(left.requirement, right.requirement, sort, direction))
 }
 
 function requirementAttentionCount(item: RequirementSummary) {
@@ -160,8 +134,8 @@ export function RequirementsPage() {
   })
   const selectedId = search.requirement ?? ''
   const [query, setQuery] = useState('')
-  const [sort, setSort] = useState<RequirementSort>('updated')
-  const [direction, setDirection] = useState<SortDirection>('descending')
+  const [sort, setSort] = useState<DocumentSort>('updated')
+  const [direction, setDirection] = useState<DocumentSortDirection>('descending')
   const visible = useMemo(
     () => visibleRequirements(requirements ?? [], query, sort, direction),
     [direction, query, requirements, sort],
@@ -276,7 +250,7 @@ export function RequirementsPage() {
               sort={sort}
               direction={direction}
               onSortChange={(nextSort, nextDirection) => {
-                setSort(nextSort as RequirementSort)
+                setSort(nextSort as DocumentSort)
                 setDirection(nextDirection)
               }}
             />

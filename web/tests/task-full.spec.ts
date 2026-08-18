@@ -2068,7 +2068,6 @@ async function mockTaskAPIs(page: Page) {
 test.beforeEach(async ({ page }) => {
   await mockTaskAPIs(page)
 })
-
 test('task detail headers show the task name while routes and API lookup keep using the task ID', async ({ page }) => {
   const fullTaskID = 'full-header-id'
   const fullActivity = page.waitForRequest(
@@ -4360,4 +4359,3 @@ test('a claim refusal names the assignee rather than showing the transport sente
   await expect(tray).not.toContainText('only that assignee may claim its work orders')
   await expect(tray).not.toContainText('usr_bo')
 })
-
