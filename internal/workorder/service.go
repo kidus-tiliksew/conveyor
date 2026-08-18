@@ -1101,34 +1101,6 @@ func (s *Service) ReportContinuation(ctx context.Context, id string, claim core.
 	return s.Store.RecordWorkOrderContinuation(ctx, id, claim, continuation)
 }
 
-// ReportContinuationLaunch appends recovery launch provenance without using a
-// progress event, because progress participates in retry classification while
-// continuation history is observational only (REQ-2/AC-2.4).
-func (s *Service) ReportContinuationLaunch(ctx context.Context, id string, claim core.WorkOrderClaimIdentity, mode, reason string) (core.WorkOrder, error) {
-	mode, reason = strings.TrimSpace(mode), strings.TrimSpace(reason)
-	if mode != "resumed" && mode != "cold" {
-		return core.WorkOrder{}, fmt.Errorf("continuation launch mode must be resumed or cold")
-	}
-	if reason == "" || len(reason) > 512 {
-		return core.WorkOrder{}, fmt.Errorf("continuation launch reason must be between 1 and 512 bytes")
-	}
-	order, err := s.authorized(ctx, id, claim.SessionID)
-	if err != nil {
-		return core.WorkOrder{}, err
-	}
-	if order.Stage != core.StageImplement || order.WorkerID != claim.WorkerID || order.ClaimantID != claim.ClaimantID || order.LastAttemptID == "" {
-		return core.WorkOrder{}, store.ErrWorkOrderClaimUnauthorized
-	}
-	err = s.Store.AppendEvent(ctx, core.Event{
-		TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.continuation_launched",
-		Payload: core.JSONPayload(map[string]any{
-			"work_order_id": order.ID, "attempt_id": order.AttemptID, "previous_attempt_id": order.LastAttemptID,
-			"mode": mode, "reason": reason,
-		}),
-	})
-	return order, err
-}
-
 func (s *Service) UsageWithRateLimit(ctx context.Context, id, session string, tokensIn, tokensOut int64, cost float64, rateLimit *core.RateLimitStatus) (core.WorkOrder, error) {
 	return s.usageWithRateLimit(ctx, id, session, tokensIn, tokensOut, cost, rateLimit, true)
 }
