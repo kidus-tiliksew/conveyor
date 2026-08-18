@@ -605,6 +605,7 @@ func TestHarnessResumeCommandRejectsInvalidPlaceholders(t *testing.T) {
 		{"prompt in resume field", func(h *Harness) { h.ResumeCommand = []string{"--resume", "{session_id}", "{prompt}"} }, "resume_command"},
 		{"session placeholder in command", func(h *Harness) { h.Command = append(h.Command, "{session_id}") }, "command"},
 		{"session placeholder in model args", func(h *Harness) { h.ModelArgs = []string{"--model", "{session_id}"} }, "model_args"},
+		{"session placeholder in default model sentinels", func(h *Harness) { h.DefaultModelSentinels = []string{"{session_id}"} }, "default_model_sentinels"},
 		{"session placeholder in effort args", func(h *Harness) { h.EffortArgs = map[string][]string{"high": {"{session_id}"}} }, "effort_args.high"},
 		{"session placeholder in probe", func(h *Harness) { h.ProbeCommand = append(h.ProbeCommand, "{session_id}") }, "probe_command"},
 	}

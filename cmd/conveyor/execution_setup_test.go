@@ -212,13 +212,24 @@ func TestSharedLocalSetupLoaderRejectsInvalidResumeCommand(t *testing.T) {
 	if err := writeLocalExecutionConfig(path, "demo", model.choices, []config.Harness{harness}); err != nil {
 		t.Fatal(err)
 	}
-	loaded, err := config.Load(path)
+	raw, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	document := loaded.WorkspaceDocument()
-	document.Harnesses[0].ResumeCommand = []string{"--resume", "missing-session-placeholder"}
-	raw, err := yaml.Marshal(document)
+	var document map[string]any
+	if err = yaml.Unmarshal(raw, &document); err != nil {
+		t.Fatal(err)
+	}
+	harnesses, ok := document["harnesses"].([]any)
+	if !ok || len(harnesses) == 0 {
+		t.Fatalf("generated harnesses = %#v", document["harnesses"])
+	}
+	harnessEntry, ok := harnesses[0].(map[string]any)
+	if !ok {
+		t.Fatalf("generated harness = %#v", harnesses[0])
+	}
+	harnessEntry["resume_command"] = []string{"--resume", "missing-session-placeholder"}
+	raw, err = yaml.Marshal(document)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -186,10 +186,10 @@ type StageRoute struct {
 }
 
 type Harness struct {
-	Name                  string              `yaml:"name" json:"name"`
-	MCPTransport          string              `yaml:"mcp_transport" json:"mcp_transport"`
-	MCPAttachment         string              `yaml:"mcp_attachment,omitempty" json:"mcp_attachment,omitempty"`
-	Command               []string            `yaml:"command" json:"command"`
+	Name          string   `yaml:"name" json:"name"`
+	MCPTransport  string   `yaml:"mcp_transport" json:"mcp_transport"`
+	MCPAttachment string   `yaml:"mcp_attachment,omitempty" json:"mcp_attachment,omitempty"`
+	Command       []string `yaml:"command" json:"command"`
 	// ResumeCommand is an optional client-local argv fragment. AC-2.2 and
 	// DEC-23 keep both its validation and eventual substitution off the server.
 	ResumeCommand         []string            `yaml:"resume_command,omitempty" json:"resume_command,omitempty"`
@@ -1640,6 +1640,9 @@ func validateHarness(h Harness, index int) error {
 		}
 	}
 	if _, err = field("model_args", h.ModelArgs, map[string]bool{"{model}": true}); err != nil {
+		return err
+	}
+	if _, err = field("default_model_sentinels", h.DefaultModelSentinels, map[string]bool{}); err != nil {
 		return err
 	}
 	for effort, values := range h.EffortArgs {
