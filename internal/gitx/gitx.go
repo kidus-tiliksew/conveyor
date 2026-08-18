@@ -226,6 +226,26 @@ func CommitsAhead(ctx context.Context, worktreeDir, base string) ([]string, erro
 // EnsureMirror maintains, falling back to local ref names for fully local
 // repositories.
 func (m *Manager) BranchDiff(ctx context.Context, repoURL, branch, base string) (string, error) {
+	return m.branchDiffOutput(ctx, repoURL, branch, base, "--no-ext-diff")
+}
+
+// BranchChangedPaths resolves the repository-relative filenames in the same
+// pushed three-dot diff used for review, without parsing a rendered patch.
+func (m *Manager) BranchChangedPaths(ctx context.Context, repoURL, branch, base string) ([]string, error) {
+	out, err := m.branchDiffOutput(ctx, repoURL, branch, base, "--name-only", "-z")
+	if err != nil {
+		return nil, err
+	}
+	paths := make([]string, 0)
+	for _, value := range strings.Split(out, "\x00") {
+		if value != "" {
+			paths = append(paths, value)
+		}
+	}
+	return paths, nil
+}
+
+func (m *Manager) branchDiffOutput(ctx context.Context, repoURL, branch, base string, modes ...string) (string, error) {
 	mirror, err := m.EnsureMirror(ctx, repoURL)
 	if err != nil {
 		return "", err
@@ -238,7 +258,9 @@ func (m *Manager) BranchDiff(ctx context.Context, repoURL, branch, base string) 
 	if !refExists(ctx, mirror, branchRef) {
 		branchRef = branch
 	}
-	return commandOutput(ctx, mirror, "git", "diff", "--no-ext-diff", baseRef+"..."+branchRef)
+	args := append([]string{"diff"}, modes...)
+	args = append(args, baseRef+"..."+branchRef)
+	return commandOutput(ctx, mirror, "git", args...)
 }
 
 // DiffAgainstBase returns the review input for the independent review stage.

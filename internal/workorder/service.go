@@ -30,18 +30,19 @@ import (
 const MaxTranscriptBytes = 4 << 20
 
 type Service struct {
-	Store               store.Store
-	Dispatcher          *dispatch.Dispatcher
-	Pack                *pack.Bundle
-	ConfigProvider      func(context.Context) (*config.Config, error)
-	OpenPR              func(context.Context, string, string, string, string, string) (string, error)
-	ReviewTarget        func(context.Context, string, string) (github.ReviewTarget, error)
-	ReviewDiffForBranch func(context.Context, string, string) (string, error)
-	ReviewDiffBetween   func(context.Context, string, string, string) (string, error)
-	ReviewPRDescription func(context.Context, string, string) (string, error)
-	Logf                func(string, ...any)
-	consultedMu         sync.Mutex
-	consulted           map[string]struct{}
+	Store                  store.Store
+	Dispatcher             *dispatch.Dispatcher
+	Pack                   *pack.Bundle
+	ConfigProvider         func(context.Context) (*config.Config, error)
+	OpenPR                 func(context.Context, string, string, string, string, string) (string, error)
+	ReviewTarget           func(context.Context, string, string) (github.ReviewTarget, error)
+	ReviewDiffForBranch    func(context.Context, string, string) (string, error)
+	ReviewDiffBetween      func(context.Context, string, string, string) (string, error)
+	ReviewPRDescription    func(context.Context, string, string) (string, error)
+	SubmissionChangedPaths func(context.Context, *config.Config, core.Task) ([]string, error)
+	Logf                   func(string, ...any)
+	consultedMu            sync.Mutex
+	consulted              map[string]struct{}
 }
 
 type Context struct {
@@ -1272,6 +1273,28 @@ func (s *Service) SubmitForReview(ctx context.Context, id, session string) (map[
 	repo, ok := cfg.Repo(task.Repo)
 	if !ok {
 		return nil, fmt.Errorf("repo %s not found", task.Repo)
+	}
+	// Diff-derived authority must be complete before the first PR, task-stage,
+	// or review-dispatch side effect (req-260811-228be6 REQ-5/AC-5.1–AC-5.4).
+	governance, err := s.Store.ListGovernanceDesigns(ctx, task.Repo)
+	if err != nil {
+		return nil, fmt.Errorf("resolve submission governance: %w", err)
+	}
+	if len(governance) > 0 {
+		changedPaths := s.SubmissionChangedPaths
+		if changedPaths == nil && s.Dispatcher != nil {
+			changedPaths = s.Dispatcher.ReviewChangedPaths
+		}
+		if changedPaths == nil {
+			changedPaths = dispatch.ReviewBranchChangedPaths
+		}
+		paths, pathErr := changedPaths(ctx, cfg, task)
+		if pathErr != nil {
+			return nil, fmt.Errorf("resolve submission diff changed paths: %w", pathErr)
+		}
+		if _, err = s.Store.AttachSubmissionGovernance(ctx, task.ID, task.Repo, paths, store.SubmissionGovernanceAttribution{WorkOrderID: order.ID, SessionID: session}); err != nil {
+			return nil, fmt.Errorf("attach submission governance: %w", err)
+		}
 	}
 	prURL := ""
 	reviewedHead := ""

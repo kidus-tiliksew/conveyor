@@ -2122,6 +2122,146 @@ func TestSubmitForReviewReturnsSynchronousInProcessVerdict(t *testing.T) {
 	}
 }
 
+type failingSubmissionGovernanceStore struct {
+	store.Store
+	err error
+}
+
+func (s failingSubmissionGovernanceStore) AttachSubmissionGovernance(context.Context, string, string, []string, store.SubmissionGovernanceAttribution) ([]core.TaskDesignContext, error) {
+	return nil, s.err
+}
+
+func TestSubmitForReviewGovernanceFailuresPrecedeReviewSideEffects(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		pathErr    error
+		attachErr  error
+		wantDetail string
+	}{
+		{name: "diff resolution", pathErr: errors.New("diff unavailable"), wantDetail: "resolve submission diff changed paths"},
+		{name: "atomic attachment", attachErr: errors.New("transaction rolled back"), wantDetail: "attach submission governance"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := store.WithWorkspace(t.Context(), "test")
+			base := store.NewMemory()
+			design, version, err := base.CreateSystemDesign(ctx, core.SystemDesign{ID: "design-submit-failure", Title: "Submit failure", Category: "Architecture"}, core.SystemDesignVersion{
+				Content: "# Submit\n\n```conveyor:governs\n- repo: app\n  paths:\n    - internal/**\n```", Origin: core.SystemDesignOriginOperator,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err = base.ConfirmSystemDesignVersion(ctx, design.ID, version.Version); err != nil {
+				t.Fatal(err)
+			}
+			task := core.Task{ID: "submission-failure-" + strings.ReplaceAll(test.name, " ", "-"), Workspace: "test", Repo: "app", Title: "Change", Branch: "conveyor/failure", BaseBranch: "main", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: time.Now()}
+			if err = base.CreateTask(ctx, task); err != nil {
+				t.Fatal(err)
+			}
+			job := core.Job{ID: task.ID + "-implement", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
+			if err = base.CreateJob(ctx, job); err != nil {
+				t.Fatal(err)
+			}
+			if err = storetest.For(base).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err = storetest.For(base).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "implementer", ClientToken: "secret", Lease: time.Minute}); err != nil {
+				t.Fatal(err)
+			}
+			cfg := &config.Config{Workspace: "test", Repos: []config.Repo{{Name: "app", Base: "main", GitHub: "acme/app"}}, Routing: config.Routing{Stages: map[string]config.StageRoute{"review": {Execution: config.ExecutionMCP, Timeout: time.Hour}}}}
+			dispatcher := dispatch.New(base, cfg, nil)
+			dispatcher.DisableMemoryQueueForTest()
+			var serviceStore store.Store = base
+			if test.attachErr != nil {
+				serviceStore = failingSubmissionGovernanceStore{Store: base, err: test.attachErr}
+			}
+			opened := 0
+			service := &Service{Store: serviceStore, Dispatcher: dispatcher, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil },
+				SubmissionChangedPaths: func(context.Context, *config.Config, core.Task) ([]string, error) {
+					return []string{"internal/change.go"}, test.pathErr
+				},
+				OpenPR: func(context.Context, string, string, string, string, string) (string, error) {
+					opened++
+					return "unexpected", nil
+				},
+			}
+			if _, err = service.SubmitForReview(ctx, job.ID, "implementer"); err == nil || !strings.Contains(err.Error(), test.wantDetail) {
+				t.Fatalf("submit error=%v", err)
+			}
+			order, orderErr := base.GetWorkOrder(ctx, job.ID)
+			current, taskErr := base.GetTask(ctx, task.ID)
+			context, contextErr := store.TaskContextForTask(ctx, base, task.ID)
+			if orderErr != nil || taskErr != nil || contextErr != nil || order.State != core.WorkOrderClaimed || current.NextStage != core.StageImplement || opened != 0 || len(context.Designs) != 0 {
+				t.Fatalf("order=%+v task=%+v context=%+v opened=%d errs=%v/%v/%v", order, current, context, opened, orderErr, taskErr, contextErr)
+			}
+		})
+	}
+}
+
+func TestSubmissionDerivedGovernanceEngagesTaskProposalReviewGate(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "test")
+	st := store.NewMemory()
+	design, confirmed, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "design-derived-gate", Title: "Derived gate", Category: "Architecture"}, core.SystemDesignVersion{
+		Content: "# Gate\n\n```conveyor:governs\n- repo: app\n  paths:\n    - internal/workorder/**\n```", Origin: core.SystemDesignOriginOperator,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmSystemDesignVersion(ctx, design.ID, confirmed.Version); err != nil {
+		t.Fatal(err)
+	}
+	task := core.Task{ID: "submission-derived-gate", Workspace: "test", Repo: "app", Title: "Gate change", Branch: "conveyor/derived-gate", BaseBranch: "main", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: time.Now()}
+	if err = st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.ProposeSystemDesignVersion(ctx, core.SystemDesignVersion{DocumentID: design.ID, Content: "# Proposed\n\n```conveyor:governs\n- repo: app\n  paths:\n    - internal/workorder/**\n```", Origin: core.SystemDesignOriginImplementation, OriginTaskID: task.ID}); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: task.ID + "-implement", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
+	if err = st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err = storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "implementer", ClientToken: "secret", Lease: time.Minute}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{Workspace: "test", Repos: []config.Repo{{Name: "app", Base: "main"}}, Routing: config.Routing{Stages: map[string]config.StageRoute{
+		"review": {Execution: config.ExecutionMCP, Model: "reviewer", Timeout: time.Hour, TimeoutText: "1h"},
+	}}}
+	dispatcher := dispatch.New(st, cfg, nil)
+	dispatcher.DisableMemoryQueueForTest()
+	service := &Service{Store: st, Dispatcher: dispatcher, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }, SubmissionChangedPaths: func(context.Context, *config.Config, core.Task) ([]string, error) {
+		return []string{"internal/workorder/service.go"}, nil
+	}}
+	if _, err = service.SubmitForReview(ctx, job.ID, "implementer"); err != nil {
+		t.Fatal(err)
+	}
+	context, err := store.TaskContextForTask(ctx, st, task.ID)
+	if err != nil || len(context.Designs) != 1 || context.Designs[0].ID != design.ID {
+		t.Fatalf("derived context=%+v err=%v", context, err)
+	}
+	if err = dispatcher.DispatchNow(ctx, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	orders, err := st.ListTaskWorkOrders(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var review core.WorkOrder
+	for _, order := range orders {
+		if order.Stage == core.StageReview {
+			review = order
+		}
+	}
+	if review.ID == "" {
+		t.Fatalf("review order missing: %+v", orders)
+	}
+	if _, err = service.Claim(ctx, review.ID, core.WorkOrderClaim{SessionID: "reviewer", ClientToken: "review-secret", ClaimantID: "reviewer", Lease: time.Minute}); err == nil || !strings.Contains(err.Error(), "waiting on 1 task-authored System Design proposal") {
+		t.Fatalf("review proposal gate error=%v", err)
+	}
+}
+
 func TestSubmitForReviewEvidenceGateIsSideEffectFreeAndPropagatesToEveryReviewSeat(t *testing.T) {
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	st := store.NewMemory()
@@ -2753,6 +2893,17 @@ func TestWarmSessionBounceClaimsNextOrderReusesPRAndCannotSelfReview(t *testing.
 	if err := st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
 	}
+	for _, fixture := range []struct{ id, path string }{{"design-first-diff", "internal/first/**"}, {"design-second-diff", "internal/second/**"}} {
+		design, version, createErr := st.CreateSystemDesign(ctx, core.SystemDesign{ID: fixture.id, Title: fixture.id, Category: "Architecture"}, core.SystemDesignVersion{
+			Content: "# " + fixture.id + "\n\n```conveyor:governs\n- repo: app\n  paths:\n    - " + fixture.path + "\n```", Origin: core.SystemDesignOriginOperator,
+		})
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		if _, _, createErr = st.ConfirmSystemDesignVersion(ctx, design.ID, version.Version); createErr != nil {
+			t.Fatal(createErr)
+		}
+	}
 	implementJob := core.Job{ID: "loop-task-implement-1", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending, ModelTier: "implementer", StartedAt: time.Now()}
 	if err := st.CreateJob(ctx, implementJob); err != nil {
 		t.Fatal(err)
@@ -2772,9 +2923,17 @@ func TestWarmSessionBounceClaimsNextOrderReusesPRAndCannotSelfReview(t *testing.
 	dispatcher := dispatch.New(st, cfg, nil)
 	dispatcher.DisableMemoryQueueForTest()
 	openCalls := 0
+	submissionDiffCalls := 0
 	service := &Service{
 		Store: st, Dispatcher: dispatcher,
 		ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil },
+		SubmissionChangedPaths: func(context.Context, *config.Config, core.Task) ([]string, error) {
+			submissionDiffCalls++
+			if submissionDiffCalls == 1 {
+				return []string{"internal/first/change.go"}, nil
+			}
+			return []string{"internal/second/change.go"}, nil
+		},
 		OpenPR: func(context.Context, string, string, string, string, string) (string, error) {
 			openCalls++
 			return "https://github.com/acme/app/pull/7", nil
@@ -2787,6 +2946,10 @@ func TestWarmSessionBounceClaimsNextOrderReusesPRAndCannotSelfReview(t *testing.
 	firstSubmit, err := service.SubmitForReview(ctx, implementJob.ID, implementSession)
 	if err != nil || firstSubmit["pr_url"] != "https://github.com/acme/app/pull/7" {
 		t.Fatalf("first submit=%v err=%v", firstSubmit, err)
+	}
+	firstContext, err := store.TaskContextForTask(ctx, st, task.ID)
+	if err != nil || len(firstContext.Designs) != 1 || firstContext.Designs[0].ID != "design-first-diff" {
+		t.Fatalf("first submission context=%+v err=%v", firstContext, err)
 	}
 	firstOrder, _ := st.GetWorkOrder(ctx, implementJob.ID)
 	firstOrder.LeaseExpiresAt = time.Now().Add(-time.Hour)
@@ -2809,7 +2972,10 @@ func TestWarmSessionBounceClaimsNextOrderReusesPRAndCannotSelfReview(t *testing.
 	if _, err = service.Claim(ctx, firstReview.ID, core.WorkOrderClaim{SessionID: "independent-review-1", ClientToken: "review-token-1", ClaimantID: "reviewer-1", Agent: "codex", Model: "reviewer", Lease: time.Minute}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = service.SubmitVerdict(ctx, firstReview.ID, "independent-review-1", pipeline.Review{Verdict: "changes_requested", ReasonCode: "tests", Summary: "add coverage", Feedback: "add the loop test"}); err != nil {
+	designApplicable, decisionCitable := true, false
+	if _, err = service.SubmitVerdict(ctx, firstReview.ID, "independent-review-1", pipeline.Review{Verdict: "changes_requested", ReasonCode: "tests", Summary: "add coverage", Feedback: "add the loop test", GovernanceAssessment: &core.GovernanceAssessment{
+		DesignApplicable: &designApplicable, DecisionCitable: &decisionCitable, CitedIDs: []string{}, UnknownIDs: []string{}, UngovernedIDs: []string{}, SupersededIDs: []string{}, Conflicts: []string{},
+	}}); err != nil {
 		t.Fatal(err)
 	}
 	verdict, err := service.AwaitReview(ctx, implementJob.ID, implementSession, time.Millisecond)
@@ -2835,6 +3001,10 @@ func TestWarmSessionBounceClaimsNextOrderReusesPRAndCannotSelfReview(t *testing.
 	secondSubmit, err := service.SubmitForReview(ctx, secondImplement.ID, implementSession)
 	if err != nil || secondSubmit["pr_url"] != firstSubmit["pr_url"] || openCalls != 2 {
 		t.Fatalf("second submit=%v first=%v calls=%d err=%v", secondSubmit, firstSubmit, openCalls, err)
+	}
+	secondContext, err := store.TaskContextForTask(ctx, st, task.ID)
+	if err != nil || len(secondContext.Designs) != 2 || secondContext.Designs[0].ID != "design-first-diff" || secondContext.Designs[1].ID != "design-second-diff" || submissionDiffCalls != 2 {
+		t.Fatalf("resubmission context=%+v diff_calls=%d err=%v", secondContext, submissionDiffCalls, err)
 	}
 	if err = dispatcher.DispatchNow(ctx, task.ID); err != nil {
 		t.Fatal(err)

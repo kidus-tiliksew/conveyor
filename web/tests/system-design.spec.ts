@@ -496,4 +496,3 @@ test('operators confirm and dismiss proposed decisions with conflict-safe refres
   await expect(page.locator('#decision-dec-2')).toContainText('Dismissed by second-operator')
   await expect.poll(() => decisionReads).toBeGreaterThanOrEqual(3)
 })
-

@@ -4360,4 +4360,3 @@ test('a claim refusal names the assignee rather than showing the transport sente
   await expect(tray).not.toContainText('only that assignee may claim its work orders')
   await expect(tray).not.toContainText('usr_bo')
 })
-
