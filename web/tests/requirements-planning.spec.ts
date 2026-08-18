@@ -537,23 +537,28 @@ test('requirements search and deterministic sorting preserve the selected canvas
       .filter({ hasText: /^(Alpha|alpha|Beta|Gamma)/ })
       .allTextContents()
 
-  await expect.poll(rowOrder).toEqual(['Alpha2', 'alpha', 'Beta', 'Gamma'])
+  // Most recently updated first is the default ordering.
+  await expect.poll(rowOrder).toEqual(['Alpha2', 'Gamma', 'Beta', 'alpha'])
   await expect(group.getByRole('button', { name: /Alpha/ }).getByLabel('2 attention items')).toBeVisible()
 
-  const sort = group.getByRole('combobox', { name: 'Sort requirements by' })
-  const direction = group.getByRole('button', { name: 'Sort ascending' })
-  await direction.click()
+  // The sort control is one menu on the search field: choosing an option
+  // sorts by it, and re-choosing the active option flips the direction.
+  const sortTrigger = group.getByRole('button', { name: 'Sort requirements by' })
+  const chooseSort = async (label: string) => {
+    await sortTrigger.click()
+    await page.getByRole('menuitemradio', { name: label }).click()
+  }
+
+  await chooseSort('Updated')
+  await expect.poll(rowOrder).toEqual(['alpha', 'Beta', 'Gamma', 'Alpha2'])
+
+  await chooseSort('Name')
+  await expect.poll(rowOrder).toEqual(['Alpha2', 'alpha', 'Beta', 'Gamma'])
+  await chooseSort('Name')
   await expect.poll(rowOrder).toEqual(['Gamma', 'Beta', 'Alpha2', 'alpha'])
 
-  await sort.selectOption('created')
+  await chooseSort('Created')
   await expect.poll(rowOrder).toEqual(['Beta', 'Alpha2', 'alpha', 'Gamma'])
-  await group.getByRole('button', { name: 'Sort descending' }).click()
-  await expect.poll(rowOrder).toEqual(['Gamma', 'Alpha2', 'alpha', 'Beta'])
-
-  await sort.selectOption('updated')
-  await expect.poll(rowOrder).toEqual(['alpha', 'Beta', 'Gamma', 'Alpha2'])
-  await group.getByRole('button', { name: 'Sort ascending' }).click()
-  await expect.poll(rowOrder).toEqual(['Alpha2', 'Gamma', 'Beta', 'alpha'])
 
   const search = group.getByRole('searchbox', { name: 'Search requirements' })
   await search.fill('bEt')
@@ -2248,3 +2253,5 @@ test('a deep link opens the document the URL asked for, not the first in the cor
   // The parked assistant does not reappear for a session named in the URL.
   await expect(page.getByRole('complementary', { name: 'Planning assistant' })).toHaveCount(0)
 })
+
+

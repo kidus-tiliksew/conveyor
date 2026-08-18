@@ -1,4 +1,3 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useSearch } from '@tanstack/react-router'
 import {
@@ -12,57 +11,57 @@ import {
   History,
   ListChecks,
   Paperclip,
-  Search,
   Sparkles,
   Trash2,
 } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useOperatorToken, useWorkspaceCapability, useWorkspaceSelection } from '../components/app-shell'
-import { AttentionSurface, type AttentionItem } from '../components/documents/attention-surface'
-import { DriftResolutionForm } from '../components/documents/drift-resolution-form'
-import { VersionDiff } from '../components/documents/version-diff'
+import { type AttentionItem, AttentionSurface } from '../components/documents/attention-surface'
 import {
   DocumentTree,
   DocumentTreeGroup,
   DocumentTreeItem,
   DocumentTreeNote,
+  DocumentTreeToolbar,
 } from '../components/documents/document-tree'
+import { DriftResolutionForm } from '../components/documents/drift-resolution-form'
+import { VersionDiff } from '../components/documents/version-diff'
 import { LineageExplorer } from '../components/lineage/lineage-explorer'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
+import { Dialog } from '../components/ui/dialog'
 import { MarkdownProse } from '../components/ui/markdown-prose'
 import {
-  confirmRequirementVersion,
   acknowledgeRequirementStaleness,
+  confirmRequirementVersion,
   createRequirementStalenessFollowUp,
-  fetchCheckpointContextCandidates,
+  deleteReferenceDocument,
   downloadArtifact,
+  fetchCheckpointContextCandidates,
+  fetchReferenceDocuments,
+  fetchReferenceDocumentVersions,
   fetchRequirement,
   fetchRequirements,
   fetchRequirementVersions,
-  fetchReferenceDocuments,
-  fetchReferenceDocumentVersions,
   fetchSystemDesigns,
-  uploadReferenceDocument,
-  deleteReferenceDocument,
-  uploadArtifact,
   updateTaskContext,
+  uploadArtifact,
+  uploadReferenceDocument,
 } from '../lib/api'
 import { sessionGoalLabel, taskStateLabels } from '../lib/contracts'
 import { errorMessage } from '../lib/errors'
 import type {
+  CheckpointContextCandidate,
   ReferenceDocument,
   ReferenceDocumentVersion,
   RequirementDerivation,
-  RequirementVersion,
   RequirementSummary,
+  RequirementVersion,
   RequirementView,
   SystemDesignSummary,
   TaskEvent,
-  CheckpointContextCandidate,
 } from '../lib/types'
-import { Dialog } from '../components/ui/dialog'
-import { Input, Select } from '../components/ui/input'
 
 const originLabels: Record<RequirementVersion['origin'], string> = {
   chat: 'Written in a planning conversation',
@@ -161,8 +160,8 @@ export function RequirementsPage() {
   })
   const selectedId = search.requirement ?? ''
   const [query, setQuery] = useState('')
-  const [sort, setSort] = useState<RequirementSort>('name')
-  const [direction, setDirection] = useState<SortDirection>('ascending')
+  const [sort, setSort] = useState<RequirementSort>('updated')
+  const [direction, setDirection] = useState<SortDirection>('descending')
   const visible = useMemo(
     () => visibleRequirements(requirements ?? [], query, sort, direction),
     [direction, query, requirements, sort],
@@ -264,43 +263,23 @@ export function RequirementsPage() {
           </DocumentTreeGroup>
 
           <DocumentTreeGroup label="Requirements">
-            <div className="mb-2 space-y-2 px-2">
-              <label className="relative block" htmlFor="requirement-search">
-                <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-faint" />
-                <Input
-                  id="requirement-search"
-                  type="search"
-                  aria-label="Search requirements"
-                  placeholder="Search requirements"
-                  value={query}
-                  onChange={(event) => setQuery(event.target.value)}
-                  className="h-8 pl-8 text-xs"
-                />
-              </label>
-              <div className="grid grid-cols-[1fr_auto] gap-1.5">
-                <Select
-                  aria-label="Sort requirements by"
-                  value={sort}
-                  onChange={(event) => setSort(event.target.value as RequirementSort)}
-                  className="[&_select]:h-8 [&_select]:py-1 [&_select]:text-xs"
-                >
-                  <option value="name">Name</option>
-                  <option value="created">Created</option>
-                  <option value="updated">Updated</option>
-                </Select>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  aria-label={`Sort ${direction}`}
-                  title={`Sort ${direction}`}
-                  onClick={() => setDirection((value) => (value === 'ascending' ? 'descending' : 'ascending'))}
-                  className="h-8 min-w-14 px-2 text-xs"
-                >
-                  {direction === 'ascending' ? 'Asc' : 'Desc'}
-                </Button>
-              </div>
-            </div>
+            <DocumentTreeToolbar
+              searchLabel="Search requirements"
+              sortLabel="Sort requirements by"
+              query={query}
+              onQueryChange={setQuery}
+              options={[
+                { value: 'updated', label: 'Updated', initialDirection: 'descending' },
+                { value: 'created', label: 'Created', initialDirection: 'descending' },
+                { value: 'name', label: 'Name', initialDirection: 'ascending' },
+              ]}
+              sort={sort}
+              direction={direction}
+              onSortChange={(nextSort, nextDirection) => {
+                setSort(nextSort as RequirementSort)
+                setDirection(nextDirection)
+              }}
+            />
             {visible.map((item) => (
               <DocumentTreeItem
                 key={item.requirement.id}
