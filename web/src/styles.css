@@ -183,3 +183,11 @@ button, input, textarea, select { font: inherit; }
 .spec-overflow-shadow {
   background: linear-gradient(to bottom, transparent, var(--color-card));
 }
+
+/* Task descriptions: agent-authored bodies often open with their own headings;
+   demoted here so they never outrank the task title rendered above them. */
+.markdown.markdown-demoted h1,
+.markdown.markdown-demoted h2 { font-size: 0.9375rem; }
+.markdown.markdown-demoted h3,
+.markdown.markdown-demoted h4 { font-size: 0.875rem; }
+

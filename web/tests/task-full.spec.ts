@@ -2116,14 +2116,12 @@ test('task detail renders the frozen policy projection and no retired controls',
   await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
   await page.goto('/tasks/policy-projection/full')
 
-  const policy = page.getByRole('region', { name: 'Frozen task policy' })
-  await expect(policy.getByRole('heading', { name: 'Frozen policy' })).toBeVisible()
-  await expect(policy).toContainText("Policy-only projection of the task's intake-time contract")
-  await expect(policy).toContainText('30m')
-  await expect(policy).toContainText('2h')
-  await expect(policy).toContainText('45m')
-  await expect(policy).toContainText('Review seats')
-  await expect(policy).toContainText('1')
+  // The frozen contract is one facts row; the label's tooltip carries the
+  // policy-only-projection caveat.
+  const policyLabel = page.getByText('Policy', { exact: true })
+  await expect(policyLabel).toBeVisible()
+  await expect(policyLabel).toHaveAttribute('title', /Frozen at intake/)
+  await expect(page.getByText('Plan 30m · Implement 2h · Review 45m · 1 review seat · 3 review rounds')).toBeVisible()
   await expect(page.getByText(/Change execution setup/i)).toHaveCount(0)
   await expect(page.getByText(/^Setup$/)).toHaveCount(0)
 })
@@ -4362,3 +4360,4 @@ test('a claim refusal names the assignee rather than showing the transport sente
   await expect(tray).not.toContainText('only that assignee may claim its work orders')
   await expect(tray).not.toContainText('usr_bo')
 })
+
