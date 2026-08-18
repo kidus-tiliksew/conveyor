@@ -1,4 +1,4 @@
-import { expect, test, type Page, type Route } from '@playwright/test'
+import { expect, type Page, type Route, test } from '@playwright/test'
 
 const first = {
   document_id: 'design-dispatch',
@@ -221,11 +221,11 @@ test('System Design renders a category tree, one attention surface, and authenti
   await expect(page.locator('textarea')).toHaveCount(0)
 
   // The diff and the version history stay, subordinated under the document.
-  const comparison = page.locator('details').filter({ hasText: 'Compare version 1 with the proposed version 2' })
+  const comparison = page.locator('details').filter({ hasText: 'Compared with confirmed v1' })
   await expect(comparison).toHaveAttribute('open', '')
   const diff = comparison.getByRole('region', { name: 'Pending version diff' })
-  await expect(diff).toContainText('From version 1')
-  await expect(diff).toContainText('To version 2')
+  await expect(diff).toContainText('Confirmed today')
+  await expect(diff).toContainText('Proposed')
   await expect(diff.getByText('The dispatcher owns durable stage transitions.', { exact: true })).toHaveClass(
     /bg-failure-soft/,
   )
@@ -496,3 +496,4 @@ test('operators confirm and dismiss proposed decisions with conflict-safe refres
   await expect(page.locator('#decision-dec-2')).toContainText('Dismissed by second-operator')
   await expect.poll(() => decisionReads).toBeGreaterThanOrEqual(3)
 })
+

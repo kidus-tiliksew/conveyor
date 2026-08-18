@@ -1,17 +1,17 @@
-import { useEffect, useMemo } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useSearch } from '@tanstack/react-router'
-import { Check, Clock, ExternalLink, GitCompare, History, Layers, X } from 'lucide-react'
+import { Check, Clock, ExternalLink, History, Layers, X } from 'lucide-react'
+import { useEffect, useMemo } from 'react'
 import { useOperatorToken, useWorkspaceCapability, useWorkspaceSelection } from '../components/app-shell'
-import { AttentionSurface, type AttentionItem } from '../components/documents/attention-surface'
-import { DriftResolutionForm } from '../components/documents/drift-resolution-form'
-import { VersionDiff } from '../components/documents/version-diff'
+import { type AttentionItem, AttentionSurface } from '../components/documents/attention-surface'
 import {
   DocumentTree,
   DocumentTreeGroup,
   DocumentTreeItem,
   DocumentTreeNote,
 } from '../components/documents/document-tree'
+import { DriftResolutionForm } from '../components/documents/drift-resolution-form'
+import { VersionDiff } from '../components/documents/version-diff'
 import { LineageExplorer } from '../components/lineage/lineage-explorer'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
@@ -367,15 +367,7 @@ function DesignCanvas({
         )}
       </section>
 
-      {pending && item.current_version && (
-        <details className="mt-8 rounded-lg border border-border bg-surface/40" open>
-          <summary className="flex cursor-pointer items-center gap-1.5 px-4 py-3 text-sm font-medium">
-            <GitCompare className="size-3.5 text-muted" />
-            Compare version {item.current_version.version} with the proposed version {pending.version}
-          </summary>
-          <DesignDiff from={item.current_version} to={pending} />
-        </details>
-      )}
+      {pending && item.current_version && <DesignDiff current={item.current_version} pending={pending} />}
 
       {deliveryConsultations.length > 0 && (
         <section className="mt-8 border-t border-border pt-5" aria-label="Delivery history">
@@ -481,29 +473,32 @@ function DesignCanvas({
   )
 }
 
-function DesignDiff({ from, to }: { from: SystemDesignVersion; to: SystemDesignVersion }) {
+// The pending-version comparison, presented exactly like the requirement
+// diff: one details block, confirmed on the left in failure red, proposed on
+// the right in positive green. Bounded because design documents run long.
+function DesignDiff({ current, pending }: { current: SystemDesignVersion; pending: SystemDesignVersion }) {
   return (
-    <section className="border-t border-border p-4" aria-label="Pending version diff">
-      <VersionDiff
-        left={{
-          content: from.content,
-          label: `From version ${from.version}`,
-          labelClassName: 'mb-2 text-xs font-semibold text-muted',
-          paneClassName: 'min-w-0 rounded-md border border-border bg-background p-3',
-          preClassName: 'max-h-72 overflow-auto whitespace-pre-wrap text-xs leading-5',
-        }}
-        right={{
-          content: to.content,
-          label: `To version ${to.version}`,
-          labelClassName: 'mb-2 text-xs font-semibold text-muted',
-          paneClassName: 'min-w-0 rounded-md border border-border bg-background p-3',
-          preClassName: 'max-h-72 overflow-auto whitespace-pre-wrap text-xs leading-5',
-        }}
-        bounded
-        className="grid gap-3 lg:grid-cols-2"
-        noticeClassName="mb-3 text-xs text-muted"
-      />
-    </section>
+    <details className="mt-6 rounded-lg border border-border bg-surface/40" open>
+      <summary className="cursor-pointer px-4 py-3 text-sm font-medium">
+        Compared with confirmed v{current.version}
+      </summary>
+      <section aria-label="Pending version diff">
+        <VersionDiff
+          left={{
+            content: current.content,
+            label: 'Confirmed today',
+            labelClassName: 'mb-2 text-xs font-medium text-failure',
+            preClassName: 'whitespace-pre-wrap font-sans text-xs leading-5 text-muted',
+          }}
+          right={{
+            content: pending.content,
+            label: 'Proposed',
+            labelClassName: 'mb-2 text-xs font-medium text-positive',
+          }}
+          bounded
+        />
+      </section>
+    </details>
   )
 }
 
