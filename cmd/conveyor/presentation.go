@@ -81,6 +81,7 @@ type runOutputPresentation struct {
 	output        io.Writer
 	presentEvents bool
 	styled        bool
+	notice        func(string)
 }
 
 func presentRunChildReapNotice(stdout io.Writer, presentation *runOutputPresentation, stage, state string) error {
@@ -88,6 +89,10 @@ func presentRunChildReapNotice(stdout io.Writer, presentation *runOutputPresenta
 	if presentation == nil {
 		_, err := fmt.Fprintln(stdout, "! "+message)
 		return err
+	}
+	if presentation.notice != nil {
+		presentation.notice("! " + message)
+		return nil
 	}
 	if !presentation.styled {
 		_, err := fmt.Fprintln(presentation.output, "! "+message)

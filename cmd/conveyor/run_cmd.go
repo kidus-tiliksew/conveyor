@@ -219,12 +219,12 @@ func runTaskWithPresentation(ctx context.Context, c *client, taskID, configPath 
 		started := time.Now()
 		lastTUIStage = runTUIStage{task: selected.Task, stage: selected.Order.Stage, harness: selected.Harness.Name, model: selected.Model, started: started}
 		stageCtx, cancelStage := context.WithCancel(ctx)
-		var presentation *runOutputPresentation
+		presentation := &runOutputPresentation{output: output}
 		var childStderr io.Writer
 		if interactiveTUI {
 			stageApp := ensureApp(selected.Task)
 			stageApp.StartStage(lastTUIStage)
-			presentation = &runOutputPresentation{output: stageApp}
+			presentation = &runOutputPresentation{output: stageApp, notice: stageApp.Notice}
 			childStderr = stageApp.Stderr()
 			go func() {
 				select {
