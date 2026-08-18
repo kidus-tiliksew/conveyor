@@ -1,14 +1,16 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useSearch } from '@tanstack/react-router'
 import { Check, Clock, ExternalLink, History, Layers, X } from 'lucide-react'
-import { useEffect, useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useOperatorToken, useWorkspaceCapability, useWorkspaceSelection } from '../components/app-shell'
 import { type AttentionItem, AttentionSurface } from '../components/documents/attention-surface'
+import { compareDocuments, type DocumentSort, type DocumentSortDirection } from '../components/documents/document-sort'
 import {
   DocumentTree,
   DocumentTreeGroup,
   DocumentTreeItem,
   DocumentTreeNote,
+  DocumentTreeToolbar,
 } from '../components/documents/document-tree'
 import { DriftResolutionForm } from '../components/documents/drift-resolution-form'
 import { VersionDiff } from '../components/documents/version-diff'
@@ -50,6 +52,9 @@ export function SystemDesignPage() {
   const navigate = useNavigate()
   const client = useQueryClient()
   const search = useSearch({ from: '/system-design' })
+  const [query, setQuery] = useState('')
+  const [sort, setSort] = useState<DocumentSort>('updated')
+  const [direction, setDirection] = useState<DocumentSortDirection>('descending')
   const designs = useQuery({
     queryKey: ['system-designs', workspace],
     queryFn: fetchSystemDesigns,
@@ -87,13 +92,22 @@ export function SystemDesignPage() {
   }, [designs.data, navigate, selected])
   const grouped = useMemo(() => {
     const groups = new Map<string, SystemDesignSummary[]>()
-    for (const item of designs.data ?? []) {
+    const needle = query.trim().toLocaleLowerCase()
+    for (const item of (designs.data ?? []).filter((candidate) =>
+      candidate.document.title.toLocaleLowerCase().includes(needle),
+    )) {
       const list = groups.get(item.document.category) ?? []
       list.push(item)
       groups.set(item.document.category, list)
     }
-    return [...groups.entries()]
-  }, [designs.data])
+    return [...groups.entries()].map(
+      ([category, items]) =>
+        [
+          category,
+          items.sort((left, right) => compareDocuments(left.document, right.document, sort, direction)),
+        ] as const,
+    )
+  }, [designs.data, direction, query, sort])
   const settledDecisions = (decisions.data ?? []).filter((decision) => decision.status !== 'proposed')
   // Decisions are workspace-wide, so they are voiced on whichever document is
   // open — the same place they were surfaced before.
@@ -150,6 +164,23 @@ export function SystemDesignPage() {
       </header>
       <div className="flex min-h-0 flex-1">
         <DocumentTree>
+          <DocumentTreeToolbar
+            searchLabel="Search System Design"
+            sortLabel="Sort System Design by"
+            query={query}
+            onQueryChange={setQuery}
+            options={[
+              { value: 'updated', label: 'Updated', initialDirection: 'descending' },
+              { value: 'created', label: 'Created', initialDirection: 'descending' },
+              { value: 'name', label: 'Name', initialDirection: 'ascending' },
+            ]}
+            sort={sort}
+            direction={direction}
+            onSortChange={(nextSort, nextDirection) => {
+              setSort(nextSort as DocumentSort)
+              setDirection(nextDirection)
+            }}
+          />
           {grouped.map(([category, items]) => (
             <DocumentTreeGroup key={category} label={category}>
               {items.map((item) => (
@@ -171,6 +202,9 @@ export function SystemDesignPage() {
           )}
           {!designs.isLoading && !designs.data?.length && (
             <DocumentTreeNote>Nothing written down yet.</DocumentTreeNote>
+          )}
+          {Boolean(designs.data?.length) && grouped.length === 0 && (
+            <DocumentTreeNote>No documents match your search.</DocumentTreeNote>
           )}
         </DocumentTree>
         <main className="min-w-0 flex-1 overflow-y-auto">

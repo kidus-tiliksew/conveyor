@@ -2253,5 +2253,3 @@ test('a deep link opens the document the URL asked for, not the first in the cor
   // The parked assistant does not reappear for a session named in the URL.
   await expect(page.getByRole('complementary', { name: 'Planning assistant' })).toHaveCount(0)
 })
-
-
