@@ -25,6 +25,22 @@ func (c *client) getTaskRunOrderContext(ctx context.Context, credential, taskID 
 	return &result, nil
 }
 
+func (c *client) confirmTaskRunProposalContext(ctx context.Context, credential, taskID string, proposal workerservice.TaskRunProposal) error {
+	switch proposal.Kind {
+	case "design":
+		var result map[string]any
+		path := "/v1/system-designs/" + url.PathEscape(proposal.DocumentID) + "/versions/" + fmt.Sprint(proposal.Version) + "/confirm"
+		return c.workerDoContext(ctx, http.MethodPost, path, nil, &result, credential)
+	case "decision":
+		var result core.Decision
+		return c.workerDoContext(ctx, http.MethodPost, "/v1/decisions/"+url.PathEscape(proposal.DocumentID)+"/confirm", nil, &result, credential)
+	case "plan_revision":
+		return c.reviewTaskRunGateContext(ctx, credential, taskID, core.InterventionRedirect, "plan-revision-approved", "")
+	default:
+		return fmt.Errorf("unsupported task run proposal kind %q", proposal.Kind)
+	}
+}
+
 func (c *client) approveTaskRunGateContext(ctx context.Context, credential string, item workerservice.DispatchOrder) error {
 	action, reason := core.InterventionApprove, "approved"
 	if item.Gate != nil && item.Gate.Kind == "plan_revision" {

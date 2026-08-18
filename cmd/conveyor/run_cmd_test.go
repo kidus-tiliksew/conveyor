@@ -533,6 +533,153 @@ func TestAttachedRunGateConflictRefreshesRecordedState(t *testing.T) {
 	}
 }
 
+func TestTaskRunProposalClientUsesExistingAuthenticatedEndpoints(t *testing.T) {
+	var paths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer parent-user-credential" {
+			http.Error(w, "wrong credential", http.StatusUnauthorized)
+			return
+		}
+		paths = append(paths, r.URL.Path)
+		if strings.HasSuffix(r.URL.Path, "/review") {
+			var request map[string]string
+			_ = json.NewDecoder(r.Body).Decode(&request)
+			if request["action"] != string(core.InterventionRedirect) || request["reason_code"] != "plan-revision-approved" {
+				http.Error(w, "wrong plan revision action", http.StatusBadRequest)
+				return
+			}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{})
+	}))
+	defer server.Close()
+	c := &client{base: server.URL, token: "parent-user-credential", workspace: "demo"}
+	for _, proposal := range []workerservice.TaskRunProposal{
+		{Kind: "design", DocumentID: "design-run", Version: 7},
+		{Kind: "decision", DocumentID: "DEC-9", Version: 1},
+		{Kind: "plan_revision", DocumentID: "target", Version: 3},
+	} {
+		if err := c.confirmTaskRunProposalContext(t.Context(), c.token, "target", proposal); err != nil {
+			t.Fatalf("confirm %+v: %v", proposal, err)
+		}
+	}
+	want := []string{
+		"/v1/system-designs/design-run/versions/7/confirm",
+		"/v1/decisions/DEC-9/confirm",
+		"/v1/tasks/target/review",
+	}
+	if fmt.Sprint(paths) != fmt.Sprint(want) {
+		t.Fatalf("paths=%q want=%q", paths, want)
+	}
+}
+
+func TestStageProposalPollingSurfacesAndRefreshesConfirmationRaces(t *testing.T) {
+	for _, conflict := range []bool{false, true} {
+		name := "confirmed"
+		if conflict {
+			name = "resolved concurrently"
+		}
+		t.Run(name, func(t *testing.T) {
+			prior := runGatePollInterval
+			runGatePollInterval = 5 * time.Millisecond
+			defer func() { runGatePollInterval = prior }()
+			proposal := workerservice.TaskRunProposal{Kind: "design", DocumentID: "design-run", Title: "Attached run", Version: 4, CanConfirm: true}
+			var mutex sync.Mutex
+			reads, confirmations := 0, 0
+			resolved := false
+			finished := make(chan struct{})
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Header.Get("Authorization") != "Bearer parent-user-credential" {
+					http.Error(w, "wrong credential", http.StatusUnauthorized)
+					return
+				}
+				mutex.Lock()
+				defer mutex.Unlock()
+				switch r.Method {
+				case http.MethodGet:
+					reads++
+					pending := []workerservice.TaskRunProposal(nil)
+					if reads >= 2 && !resolved {
+						pending = []workerservice.TaskRunProposal{proposal}
+					}
+					_ = json.NewEncoder(w).Encode(workerservice.DispatchOrder{Task: core.Task{ID: "target"}, PendingProposals: pending})
+				case http.MethodPost:
+					confirmations++
+					resolved = true
+					close(finished)
+					if conflict {
+						http.Error(w, "already resolved", http.StatusConflict)
+						return
+					}
+					_ = json.NewEncoder(w).Encode(map[string]any{})
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer server.Close()
+
+			actions := make(chan runTUIAction, 1)
+			appeared := make(chan struct{})
+			var appearedOnce sync.Once
+			var snapshots [][]workerservice.TaskRunProposal
+			var notices []string
+			presentation := taskProposalPresentation{
+				actions: actions,
+				update: func(next []workerservice.TaskRunProposal) {
+					mutex.Lock()
+					snapshots = append(snapshots, append([]workerservice.TaskRunProposal(nil), next...))
+					mutex.Unlock()
+					if len(next) > 0 {
+						appearedOnce.Do(func() { close(appeared) })
+					}
+				},
+				notice: func(message string) {
+					mutex.Lock()
+					notices = append(notices, message)
+					mutex.Unlock()
+				},
+			}
+			go func() {
+				<-appeared
+				actions <- runTUIAction{decision: runConfirmProposal, proposal: &proposal}
+			}()
+			c := &client{base: server.URL, token: "parent-user-credential", workspace: "demo"}
+			ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+			defer cancel()
+			err := runStageWithTaskProposalPresentation(ctx, c, c.token, "target", nil, presentation, func() error {
+				select {
+				case <-finished:
+					return nil
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			mutex.Lock()
+			defer mutex.Unlock()
+			if reads < 2 || confirmations != 1 {
+				t.Fatalf("reads=%d confirmations=%d", reads, confirmations)
+			}
+			var sawPending, sawCleared bool
+			for _, snapshot := range snapshots {
+				sawPending = sawPending || len(snapshot) == 1
+				sawCleared = sawCleared || (sawPending && len(snapshot) == 0)
+			}
+			if !sawPending || !sawCleared {
+				t.Fatalf("snapshots=%+v", snapshots)
+			}
+			joined := strings.Join(notices, "\n")
+			if conflict && !strings.Contains(joined, "state changed") {
+				t.Fatalf("race notice missing: %q", joined)
+			}
+			if !conflict && !strings.Contains(joined, "Confirmed design design-run v4") {
+				t.Fatalf("confirmation notice missing: %q", joined)
+			}
+		})
+	}
+}
+
 func TestRunTaskDeclinesSpecBeforeClaim(t *testing.T) {
 	stats, output, err := runSpecTaskScenario(t, "no\n", true)
 	if err != nil {

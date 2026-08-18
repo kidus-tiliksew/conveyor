@@ -165,6 +165,8 @@ func (r *harnessEventRenderer) renderLine(line string) error {
 			Type     string `json:"type"`
 			Text     string `json:"text"`
 			Command  string `json:"command"`
+			Tool     string `json:"tool"`
+			Name     string `json:"name"`
 			Status   string `json:"status"`
 			ExitCode *int   `json:"exit_code"`
 		} `json:"item"`
@@ -181,7 +183,7 @@ func (r *harnessEventRenderer) renderLine(line string) error {
 	case "turn.started":
 		rendered = r.palette.muted.Render("agent started")
 	case "item.started", "item.completed":
-		rendered = r.renderItem(event.Type, event.Item.Type, event.Item.Text, event.Item.Command, event.Item.Status, event.Item.ExitCode)
+		rendered = r.renderItem(event.Type, event.Item.Type, event.Item.Text, event.Item.Command, firstNonEmpty(event.Item.Tool, event.Item.Name), event.Item.Status, event.Item.ExitCode)
 		if rendered == "" {
 			rendered = r.palette.muted.Render(boundText(trimmed, harnessFallbackLimit))
 		}
@@ -207,7 +209,7 @@ func (r *harnessEventRenderer) renderLine(line string) error {
 	return err
 }
 
-func (r *harnessEventRenderer) renderItem(eventType, itemType, text, command, status string, exitCode *int) string {
+func (r *harnessEventRenderer) renderItem(eventType, itemType, text, command, tool, status string, exitCode *int) string {
 	switch itemType {
 	case "agent_message":
 		if eventType == "item.completed" && strings.TrimSpace(text) != "" {
@@ -237,6 +239,36 @@ func (r *harnessEventRenderer) renderItem(eventType, itemType, text, command, st
 	case "reasoning":
 		if eventType == "item.started" {
 			return r.palette.muted.Render("thinking…")
+		}
+	case "mcp_tool_call":
+		tool = boundText(tool, harnessCommandLimit)
+		if tool == "" {
+			tool = "MCP tool"
+		}
+		result := strings.TrimSpace(status)
+		if result == "" {
+			if eventType == "item.started" {
+				result = "running"
+			} else {
+				result = "completed"
+			}
+		}
+		style, mark := r.palette.accent, "› "
+		if eventType == "item.completed" {
+			style, mark = r.palette.success, "✓ "
+		}
+		if strings.Contains(strings.ToLower(result), "fail") || strings.Contains(strings.ToLower(result), "error") {
+			style, mark = r.palette.warning, "! "
+		}
+		return style.Render(mark) + tool + r.palette.muted.Render(" · "+result)
+	}
+	return ""
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
 		}
 	}
 	return ""

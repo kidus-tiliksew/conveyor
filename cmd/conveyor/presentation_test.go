@@ -85,6 +85,30 @@ func TestHarnessEventRendererBoundsUnknownAndOversizedLines(t *testing.T) {
 	}
 }
 
+func TestHarnessEventRendererSummarizesMCPToolCalls(t *testing.T) {
+	var output bytes.Buffer
+	renderer := newHarnessEventRenderer(&output)
+	events := strings.Join([]string{
+		`{"type":"item.started","item":{"type":"mcp_tool_call","tool":"conveyor.get_work_order","status":"in_progress","arguments":{"secret":"must-not-render"}}}`,
+		`{"type":"item.completed","item":{"type":"mcp_tool_call","name":"conveyor.report_progress","status":"completed","result":{"content":"large-result-must-not-render"}}}`,
+		`{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"conveyor.submit_for_review","status":"failed","error":"large-error-must-not-render"}}`,
+	}, "\n") + "\n"
+	if _, err := renderer.Write([]byte(events)); err != nil {
+		t.Fatal(err)
+	}
+	got := output.String()
+	for _, want := range []string{"conveyor.get_work_order", "in_progress", "conveyor.report_progress", "completed", "conveyor.submit_for_review", "failed"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("rendered output missing %q:\n%s", want, got)
+		}
+	}
+	for _, forbidden := range []string{"must-not-render", "arguments", "large-result", "large-error"} {
+		if strings.Contains(got, forbidden) {
+			t.Fatalf("rendered output leaked %q:\n%s", forbidden, got)
+		}
+	}
+}
+
 func TestHarnessStdoutFanoutPreservesRawConsumers(t *testing.T) {
 	raw := []byte(`{"type":"turn.completed","usage":{"input_tokens":3,"output_tokens":2}}` + "\n")
 	item := workerservice.DispatchOrder{Dispatch: "run"}

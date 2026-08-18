@@ -93,6 +93,12 @@ func (s *Server) getTaskRunOrder(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
+	proposals, err := s.taskRunPendingProposals(r.Context(), task)
+	if err != nil {
+		log.Printf("get task run proposals: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
 	dispatch, found, err := s.nextTaskRunOrder(r.Context(), task)
 	if errors.Is(err, errTaskRunConfigUnavailable) {
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
@@ -114,10 +120,76 @@ func (s *Server) getTaskRunOrder(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
-		writeJSON(w, http.StatusOK, workerservice.DispatchOrder{Task: task, Gate: gate, Dispatch: "run", Auth: "user"})
+		writeJSON(w, http.StatusOK, workerservice.DispatchOrder{Task: task, Gate: gate, PendingProposals: proposals, Dispatch: "run", Auth: "user"})
 		return
 	}
+	dispatch.PendingProposals = proposals
 	writeJSON(w, http.StatusOK, dispatch)
+}
+
+// taskRunPendingProposals projects only unresolved authority authored by this
+// task. The store read is already workspace-scoped; the origin filter prevents
+// proposals from another task in that workspace reaching the run response.
+// Capability flags are server-derived and grant no new mutation surface
+// (req-260811-0ee057 AC-1.5, AC-2.2, AC-5.8; design-260805-973cd4).
+func (s *Server) taskRunPendingProposals(ctx context.Context, task core.Task) ([]workerservice.TaskRunProposal, error) {
+	items, err := s.Store.ListPendingProposals(ctx)
+	if err != nil {
+		return nil, err
+	}
+	canConfirmDocuments, err := s.taskRunCapability(ctx, core.CapabilityConfirmDocuments)
+	if err != nil {
+		return nil, err
+	}
+	canOperateGates, err := s.taskRunCapability(ctx, core.CapabilityOperateGates)
+	if err != nil {
+		return nil, err
+	}
+	proposals := make([]workerservice.TaskRunProposal, 0)
+	for _, item := range items {
+		if item.OriginType != "task" || item.OriginID != task.ID {
+			continue
+		}
+		kind := ""
+		switch item.Tier {
+		case "system_design":
+			kind = "design"
+		case "decision":
+			kind = "decision"
+		default:
+			continue
+		}
+		version := item.Version
+		if kind == "decision" {
+			// Decisions are immutable single-version records. Project that
+			// proposed record as v1 so every proposal kind has an explicit
+			// version in the run context.
+			version = 1
+		}
+		proposals = append(proposals, workerservice.TaskRunProposal{
+			Kind: kind, DocumentID: item.ID, Title: item.Title, Version: version,
+			CanConfirm: canConfirmDocuments, ActorHint: "an operator can confirm",
+		})
+	}
+	if revision, pending, revisionErr := dispatch.PendingPlanRevisionGate(ctx, s.Store, task.ID); revisionErr != nil {
+		return nil, revisionErr
+	} else if pending {
+		proposals = append(proposals, workerservice.TaskRunProposal{
+			Kind: "plan_revision", DocumentID: task.ID, Title: "Execution plan",
+			Version: revision.PlanVersion, CanConfirm: canOperateGates,
+			ActorHint: "a maintainer or operator can confirm",
+		})
+	}
+	sort.Slice(proposals, func(i, j int) bool {
+		if proposals[i].Kind != proposals[j].Kind {
+			return proposals[i].Kind < proposals[j].Kind
+		}
+		if proposals[i].DocumentID != proposals[j].DocumentID {
+			return proposals[i].DocumentID < proposals[j].DocumentID
+		}
+		return proposals[i].Version < proposals[j].Version
+	})
+	return proposals, nil
 }
 
 // taskRunGate derives presentation state from the same audited transitions the

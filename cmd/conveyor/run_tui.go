@@ -88,31 +88,36 @@ type runTUIStageEndMsg string
 type runTUIConfirmMsg runTUIConfirm
 type runTUINoticeMsg string
 type runTUIIdleMsg string
+type runTUIProposalsMsg []workerservice.TaskRunProposal
+type runTUIClearGateMsg struct{}
 
 type runTUIAction struct {
 	decision runGateDecision
 	confirm  bool
 	feedback string
+	proposal *workerservice.TaskRunProposal
 }
 
 type runTUIModel struct {
-	viewport  viewport.Model
-	width     int
-	height    int
-	stage     runTUIStage
-	gate      *runTUIGate
-	confirm   *runTUIConfirm
-	idle      string
-	lines     []string
-	notices   []string
-	elapsed   time.Duration
-	input     string
-	feedback  bool
-	status    string
-	taskURL   string
-	actions   chan<- runTUIAction
-	interrupt chan<- struct{}
-	collapsed bool
+	viewport      viewport.Model
+	width         int
+	height        int
+	stage         runTUIStage
+	gate          *runTUIGate
+	confirm       *runTUIConfirm
+	idle          string
+	lines         []string
+	notices       []string
+	elapsed       time.Duration
+	input         string
+	feedback      bool
+	proposals     []workerservice.TaskRunProposal
+	proposalIndex int
+	status        string
+	taskURL       string
+	actions       chan<- runTUIAction
+	interrupt     chan<- struct{}
+	collapsed     bool
 }
 
 func newRunTUIModel(stage runTUIStage, gate *runTUIGate, actions chan<- runTUIAction, interrupt chan<- struct{}) runTUIModel {
@@ -151,6 +156,7 @@ func (m runTUIModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		stage := runTUIStage(message)
 		m.stage = stage
 		m.gate, m.confirm, m.idle = nil, nil, ""
+		m.proposals, m.proposalIndex = nil, 0
 		m.lines = nil
 		m.elapsed = 0
 		m.input, m.status, m.feedback = "", "", false
@@ -171,7 +177,13 @@ func (m runTUIModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.resize()
 	case runTUIIdleMsg:
 		m.idle = string(message)
-		m.confirm, m.gate = nil, nil
+		m.confirm, m.gate, m.proposals = nil, nil, nil
+		m.resize()
+	case runTUIProposalsMsg:
+		m.updateProposals([]workerservice.TaskRunProposal(message))
+		m.resize()
+	case runTUIClearGateMsg:
+		m.gate = nil
 		m.resize()
 	case runTUIGateMsg:
 		gate := runTUIGate(message)
@@ -207,8 +219,8 @@ func (m runTUIModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.handleConfirmKey(message)
 			return m, nil
 		}
-		if m.gate != nil {
-			if m.handleGateKey(message) {
+		if m.gate != nil || len(m.proposals) > 0 {
+			if m.handleInteractiveKey(message) {
 				m.resize()
 				return m, nil
 			}
@@ -252,10 +264,16 @@ func (m *runTUIModel) handleConfirmKey(key tea.KeyMsg) {
 	}
 }
 
-func (m *runTUIModel) handleGateKey(key tea.KeyMsg) bool {
+func (m *runTUIModel) handleInteractiveKey(key tea.KeyMsg) bool {
 	switch key.Type {
 	case tea.KeyEnter:
-		m.submitGateInput()
+		m.submitInteractiveInput()
+		return true
+	case tea.KeyTab:
+		if len(m.proposals) > 1 && m.input == "" && !m.feedback {
+			m.proposalIndex = (m.proposalIndex + 1) % len(m.proposals)
+			m.status = ""
+		}
 		return true
 	case tea.KeyBackspace, tea.KeyDelete:
 		value := []rune(m.input)
@@ -274,7 +292,7 @@ func (m *runTUIModel) handleGateKey(key tea.KeyMsg) bool {
 	return false
 }
 
-func (m *runTUIModel) submitGateInput() {
+func (m *runTUIModel) submitInteractiveInput() {
 	answer := strings.TrimSpace(m.input)
 	m.input = ""
 	if m.feedback {
@@ -285,28 +303,64 @@ func (m *runTUIModel) submitGateInput() {
 		m.sendAction(runTUIAction{decision: runGateRequestChanges, feedback: answer})
 		return
 	}
-	gate := m.gate.gate
 	switch strings.ToLower(answer) {
+	case "confirm":
+		if len(m.proposals) == 0 {
+			m.status = "There is no pending proposal to confirm."
+			return
+		}
+		proposal := m.proposals[m.proposalIndex]
+		if !proposal.CanConfirm {
+			m.status = "Confirmation is unavailable for this credential; " + proposal.ActorHint + "."
+			return
+		}
+		m.sendAction(runTUIAction{decision: runConfirmProposal, proposal: &proposal})
 	case "":
 		m.sendAction(runTUIAction{decision: runGateStop})
 	case "wait":
 		m.status = "Waiting; factory state continues to refresh."
 	case "approve":
-		if gate.CanOperate {
+		if m.gate != nil && m.gate.gate.CanOperate {
 			m.sendAction(runTUIAction{decision: runGateApprove})
 			return
 		}
 		m.status = "Approval is unavailable for this credential."
 	case "changes", "request-changes":
-		if gate.CanOperate || gate.CanRequestChanges {
+		if m.gate != nil && (m.gate.gate.CanOperate || m.gate.gate.CanRequestChanges) {
 			m.feedback = true
 			m.status = ""
 			return
 		}
 		m.status = "Request changes is unavailable for this credential."
 	default:
-		m.status = fmt.Sprintf("Type one of: %s. Approval requires the full word approve.", m.gateActions())
+		if m.gate != nil && len(m.proposals) == 0 {
+			m.status = fmt.Sprintf("Type one of: %s. Approval requires the full word approve.", m.gateActions())
+		} else {
+			m.status = "Type a complete action word; proposal confirmation requires the full word confirm."
+		}
 	}
+}
+
+func (m *runTUIModel) updateProposals(next []workerservice.TaskRunProposal) {
+	selected := ""
+	if len(m.proposals) > 0 && m.proposalIndex < len(m.proposals) {
+		selected = taskRunProposalKey(m.proposals[m.proposalIndex])
+	}
+	m.proposals = append([]workerservice.TaskRunProposal(nil), next...)
+	m.proposalIndex = 0
+	for i := range m.proposals {
+		if taskRunProposalKey(m.proposals[i]) == selected {
+			m.proposalIndex = i
+			break
+		}
+	}
+	if len(m.proposals) == 0 {
+		m.input, m.status = "", ""
+	}
+}
+
+func taskRunProposalKey(proposal workerservice.TaskRunProposal) string {
+	return fmt.Sprintf("%s:%s:%d", proposal.Kind, proposal.DocumentID, proposal.Version)
 }
 
 func (m runTUIModel) sendAction(action runTUIAction) {
@@ -373,13 +427,14 @@ func (m runTUIModel) noticeBlock() string {
 }
 
 func (m runTUIModel) statusBlock() string {
+	var block string
 	switch {
 	case m.confirm != nil:
 		lines := make([]string, 0, len(m.confirm.preview))
 		for _, line := range m.confirm.preview {
 			lines = append(lines, runTUIValueStyle.Render(runTUITruncate(line, max(1, m.width-2))))
 		}
-		return strings.Join(lines, "\n")
+		block = strings.Join(lines, "\n")
 	case m.gate != nil:
 		lines := []string{
 			runTUIWaitStyle.Render(fmt.Sprintf("Waiting %s · %s", m.gate.gate.Label, m.elapsed)),
@@ -392,18 +447,45 @@ func (m runTUIModel) statusBlock() string {
 			lines = append(lines, runTUIMetaStyle.Render(fmt.Sprintf("Last stage %s · %s · %s", m.stage.stage, m.stage.harness, m.stage.model)))
 		}
 		lines = append(lines, runTUIHintStyle.Render("No claim held — factory state refreshes automatically; Ctrl+C exits safely."))
-		return strings.Join(lines, "\n")
+		block = strings.Join(lines, "\n")
 	case m.idle != "":
-		return runTUIWaitStyle.Render(m.idle+" ") + runTUIHintStyle.Render(runTUISpinnerFrame(m.elapsed))
+		block = runTUIWaitStyle.Render(m.idle+" ") + runTUIHintStyle.Render(runTUISpinnerFrame(m.elapsed))
 	default:
 		stage := string(m.stage.stage)
 		if stage == "" {
 			stage = "starting"
 		}
-		return runTUIMeta(
+		block = runTUIMeta(
 			"Stage", stage, "Harness", m.stage.harness, "Model", m.stage.model, "Elapsed", m.elapsed.String(),
 		)
 	}
+	if proposals := m.proposalBlock(); proposals != "" && m.confirm == nil {
+		block += "\n" + proposals
+	}
+	return block
+}
+
+func (m runTUIModel) proposalBlock() string {
+	if len(m.proposals) == 0 {
+		return ""
+	}
+	lines := []string{runTUIWaitStyle.Render("Pending task proposal")}
+	for i, proposal := range m.proposals {
+		mark := "  "
+		if i == m.proposalIndex {
+			mark = "› "
+		}
+		version := ""
+		if proposal.Version > 0 {
+			version = fmt.Sprintf(" v%d", proposal.Version)
+		}
+		line := fmt.Sprintf("%s%s · %s%s · %s", mark, proposal.Kind, proposal.Title, version, proposal.DocumentID)
+		if !proposal.CanConfirm {
+			line += " · " + proposal.ActorHint
+		}
+		lines = append(lines, runTUIValueStyle.Render(runTUITruncate(line, max(1, m.width-2))))
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (m runTUIModel) outputBox() string {
@@ -429,8 +511,18 @@ func (m runTUIModel) promptBlock() string {
 	switch {
 	case m.confirm != nil:
 		return runTUIPromptStyle.Render(fmt.Sprintf("Proceed with %s? [y/N]", m.confirm.stage))
-	case m.gate != nil:
-		prompt := runTUIPromptStyle.Render(fmt.Sprintf("Gate action [%s]:", m.gateActions())) + " " + m.input + "▌"
+	case m.gate != nil || len(m.proposals) > 0:
+		actions := "confirm/wait"
+		label := "Action"
+		if m.gate != nil {
+			actions = m.gateActions()
+			label = "Gate action"
+			if len(m.proposals) > 0 {
+				actions = "confirm/" + actions
+				label = "Action"
+			}
+		}
+		prompt := runTUIPromptStyle.Render(fmt.Sprintf("%s [%s]:", label, actions)) + " " + m.input + "▌"
 		if m.feedback {
 			prompt = runTUIPromptStyle.Render("Feedback:") + " " + m.input + "▌"
 		}
@@ -449,6 +541,9 @@ func (m runTUIModel) footer() string {
 	}
 	if m.gate != nil {
 		parts = append(parts, "type an action + Enter")
+	}
+	if len(m.proposals) > 1 {
+		parts = append(parts, "Tab select proposal")
 	}
 	return runTUIHintStyle.Render(strings.Join(parts, " · "))
 }
@@ -548,6 +643,9 @@ func runTUITruncate(line string, width int) string {
 }
 
 func (m runTUIModel) gateActions() string {
+	if m.gate == nil {
+		return "wait"
+	}
 	if m.gate.gate.CanOperate {
 		return "approve/changes/wait"
 	}
@@ -663,6 +761,14 @@ func (c *runTUIController) Idle(state string) { c.program.Send(runTUIIdleMsg(sta
 
 func (c *runTUIController) UpdateGate(gate runTUIGate) {
 	c.program.Send(runTUIGateMsg(gate))
+}
+
+func (c *runTUIController) ClearGate() {
+	c.program.Send(runTUIClearGateMsg{})
+}
+
+func (c *runTUIController) UpdateProposals(proposals []workerservice.TaskRunProposal) {
+	c.program.Send(runTUIProposalsMsg(append([]workerservice.TaskRunProposal(nil), proposals...)))
 }
 
 // Confirm presents a stage preview and blocks until the user answers y/N,
