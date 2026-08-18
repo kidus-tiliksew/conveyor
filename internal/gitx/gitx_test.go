@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -382,6 +383,12 @@ func TestBranchDiffReadsPushedBranchFromBareCache(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(origin, "app.txt"), []byte("v2\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.MkdirAll(filepath.Join(origin, "nested"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(origin, "nested", "file with space.txt"), []byte("new\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	mustRun(t, origin, "git", "add", ".")
 	mustRun(t, origin, "git", "commit", "-m", "task work")
 	mustRun(t, origin, "git", "checkout", "main")
@@ -394,6 +401,13 @@ func TestBranchDiffReadsPushedBranchFromBareCache(t *testing.T) {
 		if !strings.Contains(diff, expected) {
 			t.Fatalf("branch diff missing %q:\n%s", expected, diff)
 		}
+	}
+	paths, err := m.BranchChangedPaths(ctx, repoURL, branch, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(paths, []string{"app.txt", "nested/file with space.txt"}) {
+		t.Fatalf("changed paths=%v", paths)
 	}
 }
 

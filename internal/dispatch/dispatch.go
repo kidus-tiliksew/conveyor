@@ -49,10 +49,11 @@ type Dispatcher struct {
 	// ReviewDiff resolves the pushed task branch's diff against its base for
 	// the in-process review fallback, which has no checkout of its own
 	// (design-system-architecture). Injectable for tests.
-	ReviewDiff   func(context.Context, *config.Config, core.Task) (string, error)
-	Now          func() time.Time
-	memoryQueue  chan queuedTask
-	durableQueue bool
+	ReviewDiff         func(context.Context, *config.Config, core.Task) (string, error)
+	ReviewChangedPaths func(context.Context, *config.Config, core.Task) ([]string, error)
+	Now                func() time.Time
+	memoryQueue        chan queuedTask
+	durableQueue       bool
 }
 
 func New(st store.Store, cfg *config.Config, agent inprocess.Agent) *Dispatcher {
@@ -64,8 +65,19 @@ func New(st store.Store, cfg *config.Config, agent inprocess.Agent) *Dispatcher 
 		RequestMerge:         github.MergePullRequest,
 		ListPullRequestFiles: github.PullRequestFiles,
 		ReviewDiff:           reviewBranchDiff,
+		ReviewChangedPaths:   ReviewBranchChangedPaths,
 		Now:                  func() time.Time { return time.Now().UTC() },
 	}
+}
+
+// ReviewBranchChangedPaths reads filenames from the same pushed branch/base
+// comparison that supplies the review patch.
+func ReviewBranchChangedPaths(ctx context.Context, cfg *config.Config, task core.Task) ([]string, error) {
+	repo, ok := cfg.Repo(task.Repo)
+	if !ok {
+		return nil, fmt.Errorf("repository %q is not configured", task.Repo)
+	}
+	return gitx.NewManager(cfg.CacheDir, "").BranchChangedPaths(ctx, repo.URL, task.Branch, task.BaseBranch)
 }
 
 // reviewBranchDiff reads the branch diff from the shared bare cache; the

@@ -65,6 +65,17 @@ func TestSystemDesignGovernedScopeParsingAndMatching(t *testing.T) {
 	}
 }
 
+func TestResolveGovernedDesignsIsDeterministicAndDeduplicatesOverlappingScopes(t *testing.T) {
+	designs := []GovernanceDesignContext{
+		{ID: "design-z", Version: 2, Governs: []GovernedScope{{Repository: "app", Paths: []string{"internal/**", "internal/workorder/**"}}}},
+		{ID: "design-a", Version: 1, Governs: []GovernedScope{{Repository: "other", Paths: []string{"**"}}}},
+	}
+	matches := ResolveGovernedDesigns(designs, "app", []string{"internal/workorder/service.go", "README.md", "internal/workorder/service.go"})
+	if len(matches) != 1 || matches[0].Design.ID != "design-z" || len(matches[0].MatchingPaths) != 1 || matches[0].MatchingPaths[0] != "internal/workorder/service.go" {
+		t.Fatalf("matches=%+v", matches)
+	}
+}
+
 func TestGovernanceAssessmentNormalizesDisjointFindings(t *testing.T) {
 	legacy := true
 	assessment := GovernanceAssessment{Applicable: &legacy, CitedIDs: []string{"DEC-2", "DEC-1", "DEC-1"}, UnknownIDs: []string{"missing"}}

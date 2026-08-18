@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -207,6 +208,45 @@ func MatchGovernedPath(glob, changedPath string) bool {
 	}
 	b.WriteByte('$')
 	return regexp.MustCompile(b.String()).MatchString(changedPath)
+}
+
+// GovernedDesignMatch carries the deterministic changed paths that place one
+// confirmed System Design document in authority for a repository diff.
+type GovernedDesignMatch struct {
+	Design        GovernanceDesignContext
+	MatchingPaths []string
+}
+
+// ResolveGovernedDesigns applies the same repository-relative governs fence
+// used by drift detection to a submitted branch diff. Document and path order
+// are stable so append-only context events are deterministic
+// (req-260811-228be6 REQ-5/AC-5.1, AC-5.4).
+func ResolveGovernedDesigns(designs []GovernanceDesignContext, repository string, changedPaths []string) []GovernedDesignMatch {
+	matches := make([]GovernedDesignMatch, 0)
+	for _, design := range designs {
+		paths := make([]string, 0)
+		for _, scope := range design.Governs {
+			if scope.Repository != repository {
+				continue
+			}
+			for _, changed := range changedPaths {
+				for _, glob := range scope.Paths {
+					if MatchGovernedPath(glob, changed) {
+						paths = append(paths, changed)
+						break
+					}
+				}
+			}
+		}
+		if len(paths) == 0 {
+			continue
+		}
+		sort.Strings(paths)
+		paths = slices.Compact(paths)
+		matches = append(matches, GovernedDesignMatch{Design: design, MatchingPaths: paths})
+	}
+	sort.Slice(matches, func(i, j int) bool { return matches[i].Design.ID < matches[j].Design.ID })
+	return matches
 }
 
 type DecisionOrigin string

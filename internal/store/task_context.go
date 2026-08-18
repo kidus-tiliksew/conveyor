@@ -29,6 +29,13 @@ type TaskContextChange struct {
 	Remove TaskContextInput `json:"remove"`
 }
 
+// SubmissionGovernanceAttribution distinguishes diff-derived attachments on
+// the existing context event kind (req-260811-228be6 REQ-5/AC-5.3).
+type SubmissionGovernanceAttribution struct {
+	WorkOrderID string
+	SessionID   string
+}
+
 // CheckpointContextCandidate is the minimum read model needed to offer a
 // confirmed requirement to an open task paused at an operator checkpoint.
 type CheckpointContextCandidate struct {
