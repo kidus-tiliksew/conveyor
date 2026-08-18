@@ -85,7 +85,7 @@ func runTaskWithPresentation(ctx context.Context, c *client, taskID, configPath 
 			} else {
 				tuiInput = reader
 			}
-			app = startRunTUI(ctx, tuiInput, output, runTUIStage{task: task}, nil)
+			app = startRunTUI(ctx, tuiInput, output, runTUIStage{task: task}, nil, strings.TrimRight(c.base, "/")+"/tasks/"+task.ID)
 		}
 		return app
 	}

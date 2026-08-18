@@ -109,6 +109,7 @@ type runTUIModel struct {
 	input     string
 	feedback  bool
 	status    string
+	taskURL   string
 	actions   chan<- runTUIAction
 	interrupt chan<- struct{}
 	collapsed bool
@@ -347,9 +348,17 @@ func (m runTUIModel) header() string {
 	if m.gate != nil {
 		task = m.gate.task
 	}
-	tab := runTUITabStyle.Render(runTUITaskStyle.Render("Task " + task.ID))
-	title := runTUIValueStyle.Render(runTUITruncate(task.Title, max(1, m.width-lipgloss.Width(tab)-2)))
-	return lipgloss.JoinHorizontal(lipgloss.Center, tab, " "+title)
+	title := task.Title
+	if strings.TrimSpace(title) == "" {
+		title = "Task " + task.ID
+	}
+	rendered := runTUITaskStyle.Render(runTUITruncate(title, max(1, m.width-1)))
+	if m.taskURL != "" {
+		// OSC 8 hyperlink: terminals that support it make the title clickable,
+		// opening the task on the Conveyor dashboard; others render plain text.
+		rendered = "\x1b]8;;" + m.taskURL + "\x07" + rendered + "\x1b]8;;\x07"
+	}
+	return rendered
 }
 
 func (m runTUIModel) noticeBlock() string {
@@ -403,7 +412,11 @@ func (m runTUIModel) outputBox() string {
 		inner = runTUIHintStyle.Italic(true).Render("waiting for agent output…")
 	}
 	width := m.viewport.Width
-	title := runTUITitleLugStyle.Render(runTUIStageTitle(m.stage.stage))
+	task := m.stage.task
+	if m.gate != nil {
+		task = m.gate.task
+	}
+	title := runTUITitleLugStyle.Render(strings.TrimSpace(runTUIStageTitle(m.stage.stage) + " " + task.ID))
 	head := lipgloss.JoinHorizontal(lipgloss.Center, title,
 		runTUIMetaStyle.Render(strings.Repeat("─", max(0, width-lipgloss.Width(title)))))
 	info := runTUIInfoLugStyle.Render(fmt.Sprintf("%3.0f%%", m.viewport.ScrollPercent()*100))
@@ -484,7 +497,7 @@ func (m *runTUIModel) resize() {
 	if m.height < 1 {
 		m.height = 1
 	}
-	m.viewport.Width = max(1, min(m.width, runTUIBoxMaxWidth)-4)                   // border + inner padding
+	m.viewport.Width = max(1, m.width)                                             // full terminal width
 	reserved := lipgloss.Height(m.header()) + lipgloss.Height(m.statusBlock()) + 1 // footer
 	if body := m.noticeBlock(); body != "" {
 		reserved += lipgloss.Height(body)
@@ -561,10 +574,11 @@ type runTUIController struct {
 	stopOnce  sync.Once
 }
 
-func startRunTUI(ctx context.Context, input io.Reader, output io.Writer, stage runTUIStage, gate *runTUIGate) *runTUIController {
+func startRunTUI(ctx context.Context, input io.Reader, output io.Writer, stage runTUIStage, gate *runTUIGate, taskURL string) *runTUIController {
 	actions := make(chan runTUIAction, 1)
 	interrupt := make(chan struct{}, 1)
 	model := newRunTUIModel(stage, gate, actions, interrupt)
+	model.taskURL = taskURL
 	options := []tea.ProgramOption{tea.WithContext(ctx), tea.WithOutput(output), tea.WithoutSignalHandler(), tea.WithMouseCellMotion()}
 	_, terminalInput := input.(*os.File)
 	if !terminalInput {
