@@ -15,6 +15,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
+	"gopkg.in/yaml.v3"
 )
 
 func TestDetectLocalHarnessesOffersOnlyHealthyPresentTemplates(t *testing.T) {
@@ -197,6 +198,35 @@ func TestRunAndWorkerShareLocalSetupLoaderAndResolution(t *testing.T) {
 	}
 	if setup.FirstActivityTimeout <= 0 || len(setup.WorkerDocument.Harnesses) != 1 || setup.WorkerDocument.Harnesses[0].Name != run.Harness.Name {
 		t.Fatalf("setup=%+v run=%+v", setup, run)
+	}
+}
+
+func TestSharedLocalSetupLoaderRejectsInvalidResumeCommand(t *testing.T) {
+	harness := config.HarnessTemplates()[0].Harness
+	model := newExecutionWizardModel([]config.Harness{harness})
+	for model.field < len(model.fields) {
+		updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		model = updated.(executionWizardModel)
+	}
+	path := filepath.Join(t.TempDir(), "conveyor.yaml")
+	if err := writeLocalExecutionConfig(path, "demo", model.choices, []config.Harness{harness}); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	document := loaded.WorkspaceDocument()
+	document.Harnesses[0].ResumeCommand = []string{"--resume", "missing-session-placeholder"}
+	raw, err := yaml.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = loadLocalExecutionSetup(path); err == nil || !strings.Contains(err.Error(), "harnesses[0].resume_command must contain exactly one {session_id}") {
+		t.Fatalf("loader error = %v", err)
 	}
 }
 

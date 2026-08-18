@@ -349,7 +349,7 @@ func TestExampleUsesContextualSettingsWithoutLiteralSubscriptionModel(t *testing
 		t.Fatalf("review settings=%+v route=%+v", cfg.Review, cfg.Routing.Stages["review"])
 	}
 	templates := HarnessTemplates()
-	if len(templates) != 3 || !reflect.DeepEqual(templates[1].Harness.Command, []string{"claude", "-p", "{prompt}", "--mcp-config", "{mcp_config}", "--allowedTools", "mcp__conveyor__*", "--output-format", "stream-json", "--verbose", "--permission-mode", "bypassPermissions", "--add-dir", ".."}) {
+	if len(templates) != 3 || !reflect.DeepEqual(templates[1].Harness.Command, []string{"claude", "-p", "{prompt}", "--mcp-config", "{mcp_config}", "--allowedTools", "mcp__conveyor__*", "--output-format", "stream-json", "--verbose", "--permission-mode", "bypassPermissions", "--add-dir", ".."}) || !reflect.DeepEqual(templates[1].Harness.ResumeCommand, []string{"--resume", "{session_id}"}) {
 		t.Fatalf("Claude catalog template does not pre-authorize the scoped Conveyor MCP lifecycle: %+v", templates)
 	}
 }
@@ -550,6 +550,79 @@ func TestHarnessRegistryValidatesFieldLocalTemplatesAndRoutes(t *testing.T) {
 	}
 }
 
+func TestHarnessResumeCommandIsOptionalFieldLocalAndRoundTrips(t *testing.T) {
+	base := validConfig()
+	document := base.WorkspaceDocument()
+	document.Harnesses = []Harness{{
+		Name: "codex", Command: []string{"codex", "exec", "{prompt}", "--config", "{mcp_config}"},
+		ResumeCommand: []string{"--resume", "{session_id}"}, ModelArgs: []string{"--model", "{model}"},
+		ProbeCommand: []string{"codex", "--version"}, ProbeTimeoutText: "5s",
+	}}
+	raw, err := yaml.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := ParseWorkspaceDocument(raw, base, "resume config")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := parsed.Harnesses[0].ResumeCommand; !reflect.DeepEqual(got, []string{"--resume", "{session_id}"}) {
+		t.Fatalf("resume_command = %#v", got)
+	}
+
+	document.Harnesses[0].ResumeCommand = nil
+	raw, err = yaml.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err = ParseWorkspaceDocument(raw, base, "cold-start config")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Harnesses[0].ResumeCommand != nil {
+		t.Fatalf("omitted resume_command = %#v", parsed.Harnesses[0].ResumeCommand)
+	}
+}
+
+func TestHarnessResumeCommandRejectsInvalidPlaceholders(t *testing.T) {
+	valid := Harness{
+		Name: "codex", MCPTransport: MCPTransportJSONFile,
+		Command: []string{"codex", "exec", "{prompt}", "--config", "{mcp_config}"}, ResumeCommand: []string{"--resume", "{session_id}"},
+		ModelArgs: []string{"--model", "{model}"}, ProbeCommand: []string{"codex", "--version"}, ProbeTimeoutText: "5s",
+	}
+	if err := ValidateHarness(valid); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name   string
+		mutate func(*Harness)
+		want   string
+	}{
+		{"missing session placeholder", func(h *Harness) { h.ResumeCommand = []string{"--resume", "session"} }, "resume_command must contain exactly one {session_id}"},
+		{"duplicate session placeholder", func(h *Harness) { h.ResumeCommand = []string{"--resume", "{session_id}", "{session_id}"} }, "resume_command must contain exactly one {session_id}"},
+		{"embedded session placeholder", func(h *Harness) { h.ResumeCommand = []string{"--resume=session-{session_id}"} }, "resume_command"},
+		{"unknown resume placeholder", func(h *Harness) { h.ResumeCommand = []string{"--resume", "{conversation_id}"} }, "resume_command"},
+		{"prompt in resume field", func(h *Harness) { h.ResumeCommand = []string{"--resume", "{session_id}", "{prompt}"} }, "resume_command"},
+		{"session placeholder in command", func(h *Harness) { h.Command = append(h.Command, "{session_id}") }, "command"},
+		{"session placeholder in model args", func(h *Harness) { h.ModelArgs = []string{"--model", "{session_id}"} }, "model_args"},
+		{"session placeholder in effort args", func(h *Harness) { h.EffortArgs = map[string][]string{"high": {"{session_id}"}} }, "effort_args.high"},
+		{"session placeholder in probe", func(h *Harness) { h.ProbeCommand = append(h.ProbeCommand, "{session_id}") }, "probe_command"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			candidate := valid
+			candidate.Command = append([]string(nil), valid.Command...)
+			candidate.ResumeCommand = append([]string(nil), valid.ResumeCommand...)
+			candidate.ModelArgs = append([]string(nil), valid.ModelArgs...)
+			candidate.ProbeCommand = append([]string(nil), valid.ProbeCommand...)
+			test.mutate(&candidate)
+			if err := ValidateHarness(candidate); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error=%v", err)
+			}
+		})
+	}
+}
+
 func TestHarnessStallTimeoutDefaultsDisablesAndRejectsInvalidValues(t *testing.T) {
 	base := validConfig()
 	document := base.WorkspaceDocument()
@@ -614,6 +687,7 @@ func TestEnvironmentHarnessRequiresNonSecretAttachmentAndTransportAwarePlacehold
 		{"missing attachment", func(h *Harness) { h.MCPAttachment = "" }, "mcp_attachment"},
 		{"URL attachment", func(h *Harness) { h.MCPAttachment = "https://example.test/mcp" }, "mcp_attachment"},
 		{"runtime token in command", func(h *Harness) { h.Command = append(h.Command, "CONVEYOR_API_TOKEN") }, "runtime Conveyor"},
+		{"runtime token in resume command", func(h *Harness) { h.ResumeCommand = []string{"--resume", "{session_id}", "CONVEYOR_API_TOKEN"} }, "runtime Conveyor"},
 		{"token-bearing endpoint", func(h *Harness) { h.Command = append(h.Command, "https://example.test/mcp?token=persisted") }, "runtime Conveyor"},
 		{"runtime address in effort", func(h *Harness) { h.EffortArgs = map[string][]string{"high": {"${CONVEYOR_ADDR}"}} }, "runtime Conveyor"},
 	}
@@ -686,6 +760,9 @@ func TestHarnessTemplatesMatchValidationContract(t *testing.T) {
 	}
 	if templates[0].Harness.MCPTransport != MCPTransportTOMLOverride || templates[1].Harness.MCPTransport != MCPTransportJSONFile {
 		t.Fatalf("codex/claude transports = %q/%q", templates[0].Harness.MCPTransport, templates[1].Harness.MCPTransport)
+	}
+	if !reflect.DeepEqual(templates[1].Harness.ResumeCommand, []string{"--resume", "{session_id}"}) {
+		t.Fatalf("claude resume command = %#v", templates[1].Harness.ResumeCommand)
 	}
 	grok := templates[2].Harness
 	if grok.MCPTransport != MCPTransportEnvironment || grok.MCPAttachment != "conveyor" {
