@@ -2,8 +2,8 @@ import { expect, type Page, test } from '@playwright/test'
 
 // The Board half of the shared Tasks/Board filter family (AC-2.4). What each
 // member means is asserted against the server in Go; what this covers is that
-// the Board sends the same family to the same route, opens on the last month of
-// activity, and remembers the operator's own adjustment per workspace.
+// the Board derives the same family from one workspace activity cache, opens
+// on the last month of activity, and remembers the operator's own adjustment.
 
 const activity = [
   {
@@ -171,24 +171,15 @@ async function routeBoard(page: Page, seen: string[]) {
     const url = route.request().url()
     seen.push(url)
     const params = new URL(url).searchParams
-    const from = params.get('created_from') ?? ''
-    const needle = (params.get('q') ?? '').toLowerCase()
-    // List members repeat their parameter and mean "any of" (AC-2.4).
-    const repositories = params.getAll('repository')
-    const filtered = activity.filter((item) => {
-      if (from && item.task.created_at < from) return false
-      if (repositories.length && !repositories.includes(item.task.repo)) return false
-      return !needle || item.task.title.toLowerCase().includes(needle)
-    })
     const limit = Number(params.get('limit') ?? 100)
     const offset = Number(params.get('offset') ?? 0)
     return route.fulfill({
       headers: {
-        'X-Conveyor-Total': String(filtered.length),
+        'X-Conveyor-Total': String(activity.length),
         'X-Conveyor-Limit': String(limit),
         'X-Conveyor-Offset': String(offset),
       },
-      json: filtered.slice(offset, offset + limit),
+      json: activity.slice(offset, offset + limit),
     })
   })
 }
@@ -311,14 +302,14 @@ test('board opens on the last month and remembers the operator adjustment per wo
   await openBoard(page, seen)
 
   // The default is a starting point the operator can see the effect of: the
-  // board asks the server for recently created tasks, and the ancient task is gone.
+  // board derives recently created tasks from the shared workspace window.
   await expect(cards(page).filter({ hasText: 'Recent conveyor change' })).toHaveCount(1)
   await expect(cards(page).filter({ hasText: 'Ancient web change' })).toHaveCount(0)
   // The Board owns the only activity query; the rail reads the bounded
   // pending-proposals attention projection instead of mounting a second,
   // unfiltered activity request.
   expect(seen).toHaveLength(1)
-  expect(seen[0]).toContain('created_from=')
+  expect(seen[0]).not.toContain('created_from=')
   expect(requests.filter((path) => path === '/v1/workspaces/demo/members')).toHaveLength(1)
   expect(requests.filter((path) => path === '/v1/pending-proposals')).toHaveLength(1)
 
@@ -370,26 +361,26 @@ test('board migrates a saved Updated window and persists only the Created shape'
   expect(stored).not.toHaveProperty('updated')
 })
 
-test('board sends the shared filter family to the server rather than narrowing in the browser', async ({ page }) => {
+test('board derives the shared filter family without creating activity query variants', async ({ page }) => {
   const seen: string[] = []
   await openBoard(page, seen)
 
   await page.getByRole('searchbox', { name: 'Search tasks' }).fill('ancient')
-  await expect.poll(() => seen.some((url) => url.includes('q=ancient')), { timeout: 5000 }).toBe(true)
+  await expect(cards(page)).toHaveCount(0)
+  expect(seen.some((url) => url.includes('q=ancient'))).toBe(false)
+  await page.getByRole('searchbox', { name: 'Search tasks' }).fill('')
 
   await page.getByRole('button', { name: 'Open filters' }).click()
+  await page.getByRole('tab', { name: 'Created' }).click()
+  await page.getByRole('option', { name: 'Any time' }).click()
   await page.getByRole('tab', { name: 'Repository' }).click()
   await page.getByRole('option', { name: 'web' }).click()
-  await expect.poll(() => seen.some((url) => url.includes('repository=web')), { timeout: 5000 }).toBe(true)
+  await expect(cards(page).filter({ hasText: 'Ancient web change' })).toHaveCount(1)
 
   // Checking a second value keeps the first: the member travels as one
   // repeated parameter, and the server reads it as a disjunction (AC-2.4).
   await page.getByRole('option', { name: 'conveyor' }).click()
-  await expect
-    .poll(() => seen.some((url) => url.includes('repository=web') && url.includes('repository=conveyor')), {
-      timeout: 5000,
-    })
-    .toBe(true)
+  await expect(cards(page).filter({ hasText: 'Ancient web change' })).toHaveCount(1)
 
   // The same family the Tasks list offers, on the same surface, by the same
   // component — including the two document filters.
@@ -402,17 +393,77 @@ test('board sends the shared filter family to the server rather than narrowing i
   // the barred fields still do not.
   await page.getByRole('tab', { name: 'Assignee' }).click()
   await page.getByRole('option', { name: 'Bo Member' }).click()
-  await expect.poll(() => seen.some((url) => url.includes('assignee=usr_bo')), { timeout: 5000 }).toBe(true)
+  await expect(cards(page)).toHaveCount(0)
 
   // Unassigned is its own choice, not the absence of one, and it replaces the
   // member rather than accumulating beside it.
   await page.getByRole('option', { name: 'Unassigned' }).click()
-  await expect.poll(() => seen.some((url) => url.includes('assignee=unassigned')), { timeout: 5000 }).toBe(true)
-  expect(seen.some((url) => url.includes('assignee=usr_bo') && url.includes('assignee=unassigned'))).toBe(false)
+  await expect(cards(page).filter({ hasText: 'Ancient web change' })).toHaveCount(1)
+  expect(seen.some((url) => url.includes('assignee='))).toBe(false)
+  expect(seen).toHaveLength(1)
 
   // AC-1.5 stands on this surface too: no barred field is offered as a filter.
   await expect(page.getByRole('tab', { name: 'Priority' })).toHaveCount(0)
   await expect(page.getByRole('tab', { name: 'Phase' })).toHaveCount(0)
+})
+
+test('activity polling is serialized, pauses while hidden, and cold-refreshes on resume', async ({ page }) => {
+  const seen: string[] = []
+  await page.addInitScript(() => {
+    localStorage.setItem('conveyor-workspace', 'demo')
+    sessionStorage.setItem('conveyor-token', 'test-token')
+    let visible = true
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      get: () => (visible ? 'visible' : 'hidden'),
+    })
+    ;(window as unknown as { setActivityVisible: (next: boolean) => void }).setActivityVisible = (next) => {
+      visible = next
+      document.dispatchEvent(new Event('visibilitychange'))
+    }
+    const nativeSetInterval = window.setInterval.bind(window)
+    window.setInterval = ((handler: TimerHandler, timeout?: number, ...args: unknown[]) =>
+      nativeSetInterval(handler, timeout === 15_000 ? 50 : timeout, ...args)) as typeof window.setInterval
+  })
+  await routeBoard(page, seen)
+  let requests = 0
+  let active = 0
+  let maxActive = 0
+  const urls: string[] = []
+  await page.route('**/v1/activity?**', async (route) => {
+    requests++
+    active++
+    maxActive = Math.max(maxActive, active)
+    urls.push(route.request().url())
+    await new Promise((resolve) => setTimeout(resolve, 120))
+    active--
+    await route.fulfill({
+      headers: {
+        ETag: `"activity-${requests}"`,
+        'X-Conveyor-Cursor': `cursor-${requests}`,
+        'X-Conveyor-Total': '1',
+        'X-Conveyor-Limit': '1000',
+        'X-Conveyor-Offset': '0',
+      },
+      json: [activity[0]],
+    })
+  })
+
+  await page.goto('/')
+  await expect.poll(() => requests).toBeGreaterThanOrEqual(3)
+  expect(maxActive).toBe(1)
+  await page.evaluate(() =>
+    (window as unknown as { setActivityVisible: (next: boolean) => void }).setActivityVisible(false),
+  )
+  await expect.poll(() => active).toBe(0)
+  const hiddenCount = requests
+  await page.waitForTimeout(200)
+  expect(requests).toBe(hiddenCount)
+  await page.evaluate(() =>
+    (window as unknown as { setActivityVisible: (next: boolean) => void }).setActivityVisible(true),
+  )
+  await expect.poll(() => requests).toBeGreaterThan(hiddenCount)
+  expect(new URL(urls.at(-1) ?? '').searchParams.has('since')).toBe(false)
 })
 
 test('board opens and closes task creation without leaving the board', async ({ page }) => {

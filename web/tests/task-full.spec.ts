@@ -1,6 +1,12 @@
 import { expect, type Page, type Route, test } from '@playwright/test'
 
 const createdAt = '2026-07-15T12:00:00Z'
+
+async function showAllBoardTasks(page: Page) {
+  await page.addInitScript(() =>
+    localStorage.setItem('conveyor-task-filters:board:demo', JSON.stringify({ created: 'any' })),
+  )
+}
 const checkpointProgress =
   'Choose whether the recovery should preserve the existing proposal or replace it with the newly confirmed lifecycle direction before implementation continues.'
 let emitLiveScrollEvent = () => {}
@@ -2279,6 +2285,7 @@ test('checkpoint recovery summarizes attached requirement and design context', a
 })
 
 test('stalled task is labelled in the operator tray with recover and reasoned cancel controls', async ({ page }) => {
+  await showAllBoardTasks(page)
   await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
   const item = activity('recovery', false)
   item.task.assignee = {
@@ -2338,6 +2345,7 @@ test('stalled task is labelled in the operator tray with recover and reasoned ca
 })
 
 test('pending authority moves a live task to Needs operator until the proposal is resolved', async ({ page }) => {
+  await showAllBoardTasks(page)
   const item = activity('design-proposal', false)
   let pending = true
   await page.route('**/v1/activity*', async (route) => {
@@ -2384,6 +2392,7 @@ test('pending authority moves a live task to Needs operator until the proposal i
 })
 
 test('forge failure categories render in the needs-operator tray and task activity evidence', async ({ page }) => {
+  await showAllBoardTasks(page)
   const item = activity('forge-failure', false)
   await page.route('**/v1/activity*', async (route) => {
     await route.fulfill({
@@ -2870,6 +2879,7 @@ test('activity job summaries render inline code without enabling raw HTML', asyn
 })
 
 test('long task body is constrained and expands accessibly in both header variants', async ({ page }) => {
+  await showAllBoardTasks(page)
   for (const path of ['/tasks/long-body', '/tasks/long-body/full']) {
     await page.goto(path)
     const expand = page.getByRole('button', { name: 'Show full description' })
@@ -3705,6 +3715,7 @@ test('task sheet opens scrolled to the human gate for reviewable tasks', async (
 })
 
 test('board activity surfaces expired-without-verdict state', async ({ page }) => {
+  await showAllBoardTasks(page)
   await page.goto('/')
   await expect(page.getByText('Verdict claim expired')).toBeVisible()
 })
@@ -3825,6 +3836,7 @@ test('recovery-needing work stays primary when dependencies are also unresolved'
 })
 
 test('board cards show a neutral, keyboard-reachable dependency chip using titles', async ({ page }) => {
+  await showAllBoardTasks(page)
   const item = activity('blueprint-child', false)
   await page.route('**/v1/activity*', (route) =>
     route.fulfill({
@@ -3841,6 +3853,7 @@ test('board cards show a neutral, keyboard-reachable dependency chip using title
 test('unsatisfiable dependency is attention-worthy and can be unlinked with an audited reason only from detail', async ({
   page,
 }) => {
+  await showAllBoardTasks(page)
   await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator-token'))
   let unlinked = false
   let unlinkBody: Record<string, string> | undefined
@@ -4327,6 +4340,7 @@ test('a non-operator sees the assignee but no set or clear control', async ({ pa
 // assignee's raw account ID. That sentence is written for an agent's error
 // channel, so the surface says who holds the task instead.
 test('a claim refusal names the assignee rather than showing the transport sentence', async ({ page }) => {
+  await showAllBoardTasks(page)
   await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
   await page.route('**/v1/workspaces', (route) => route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] }))
   await page.route('**/v1/workspaces/demo/members**', (route) => route.fulfill({ json: assignmentMembers }))

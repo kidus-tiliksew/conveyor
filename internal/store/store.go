@@ -552,6 +552,7 @@ type ActivityMarker struct {
 	TaskID                    string
 	LatestStage               core.Stage
 	LastEventAt               time.Time
+	LastEventID               int64
 	ForgeFailure              *ForgeFailure
 	ReviewDiagnostics         []ReviewVerdictDiagnostic
 	ReviewRecovery            *ReviewRecoveryState
@@ -5481,6 +5482,7 @@ func (m *memory) ListActivityMarkers(ctx context.Context) ([]ActivityMarker, err
 		}
 		if events := m.events[id]; len(events) != 0 {
 			marker.LastEventAt = events[len(events)-1].At
+			marker.LastEventID = events[len(events)-1].ID
 		}
 		marker.ForgeFailure = LatestForgeFailure(m.events[id])
 		marker.ReviewDiagnostics = ReviewVerdictDiagnostics(ordersByTask[id], m.events[id], time.Now().UTC())

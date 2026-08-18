@@ -813,7 +813,7 @@ function returnedDetail(hold: boolean, claimantID: string, claimedAfter = false)
 async function openTasksWithReturn(page: Page, options: { hold: boolean; claimantID: string; claimedAfter?: boolean }) {
   await routeTasksSurface(page)
   // Registered after the surface defaults, so these win.
-  await page.route('**/v1/attention/tasks?**', (route) =>
+  await page.route('**/v1/activity?**', (route) =>
     route.fulfill({
       headers: {
         'X-Conveyor-Total': '1',

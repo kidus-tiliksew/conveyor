@@ -1,4 +1,4 @@
-import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, Outlet, useNavigate, useRouterState } from '@tanstack/react-router'
 import {
   Activity,
@@ -15,12 +15,11 @@ import {
   SunMoon,
   Workflow,
 } from 'lucide-react'
-import { createContext, type ReactNode, useContext, useEffect, useState } from 'react'
+import { createContext, type ReactNode, useContext, useEffect, useMemo, useState } from 'react'
 import {
   fetchActivity,
   fetchBlueprints,
   fetchCallerIdentity,
-  fetchCallerAttentionTasks,
   fetchPendingProposals,
   fetchWorkspace,
   fetchWorkspaceMembers,
@@ -114,9 +113,9 @@ export function useWorkspaceCapability(capability: WorkspaceCapability) {
   return Boolean(identity.data?.role && roleCapabilities[identity.data.role]?.includes(capability))
 }
 
-// The Board passes the shared filter family and its current page so the server
-// returns exactly what it will show (AC-2.4). Caller-specific attention uses
-// its own projection below rather than depending on this bounded Board window.
+// Every activity consumer reads one workspace-wide cache. Filters and paging
+// are selectors over that bounded cache, so mounting another consumer cannot
+// create a second activity request loop.
 export function useActivity(
   filter?: Record<string, string | string[] | undefined>,
   enabled = true,
@@ -124,27 +123,58 @@ export function useActivity(
   limit = 100,
 ) {
   const { workspace } = useWorkspaceSelection()
+  const queryClient = useQueryClient()
+  const queryKey = useMemo(() => ['activity', workspace] as const, [workspace])
   return useQuery({
-    queryKey: ['activity', workspace, filter ?? null, limit, offset],
-    queryFn: () => fetchActivity({ filter, limit, offset }),
+    queryKey,
+    queryFn: () => {
+      const previous = queryClient.getQueryData<import('../lib/types').ActivityPage>(queryKey)
+      return fetchActivity({ limit: 1_000, offset: 0, cursor: previous?.cursor, etag: previous?.etag, previous })
+    },
+    select: (page) => selectActivityPage(page, filter, limit, offset),
     enabled: enabled && !!workspace,
-    refetchInterval: 15_000,
+    // TanStack schedules the next interval after the current promise settles,
+    // so this canonical query never overlaps itself. Browsers resume with a
+    // revalidation on visibility, focus, or reconnect.
+    refetchInterval: () => (document.visibilityState === 'visible' ? 15_000 : false),
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: 'always',
+    refetchOnReconnect: 'always',
   })
 }
 
-export function useCallerAttentionTasks(enabled = true) {
-  const { workspace } = useWorkspaceSelection()
-  return useInfiniteQuery({
-    queryKey: ['caller-attention-tasks', workspace],
-    queryFn: ({ pageParam }) => fetchCallerAttentionTasks({ limit: 100, offset: pageParam }),
-    initialPageParam: 0,
-    getNextPageParam: (last) => {
-      const next = last.offset + last.items.length
-      return next < last.total && last.items.length > 0 ? next : undefined
-    },
-    enabled: enabled && !!workspace,
-    refetchInterval: 15_000,
+function selectActivityPage(
+  page: import('../lib/types').ActivityPage,
+  filter: Record<string, string | string[] | undefined> | undefined,
+  limit: number,
+  offset: number,
+): import('../lib/types').ActivityPage {
+  const values = (key: string) => {
+    const value = filter?.[key]
+    return Array.isArray(value) ? value : value ? [value] : []
+  }
+  const filtered = page.items.filter(({ task }) => {
+    const query = values('q')[0]?.toLocaleLowerCase()
+    if (query && !`${task.id} ${task.title}`.toLocaleLowerCase().includes(query)) return false
+    const states = values('state')
+    if (states.length > 0 && !states.includes(task.state)) return false
+    const repositories = values('repository')
+    if (repositories.length > 0 && !repositories.includes(task.repo)) return false
+    const from = values('created_from')[0]
+    if (from && task.created_at < from) return false
+    const to = values('created_to')[0]
+    if (to && task.created_at >= to) return false
+    const requirements = new Set(task.context?.requirements?.map(({ id }) => id) ?? [])
+    if (values('serves_requirement').length > 0 && !values('serves_requirement').some((id) => requirements.has(id)))
+      return false
+    const designs = new Set(task.context?.designs?.map(({ id }) => id) ?? [])
+    if (values('governing_design').length > 0 && !values('governing_design').some((id) => designs.has(id))) return false
+    const assignee = values('assignee')[0]
+    if (assignee === 'unassigned' && task.assignee) return false
+    if (assignee && assignee !== 'unassigned' && task.assignee?.user_id !== assignee) return false
+    return true
   })
+  return { ...page, items: filtered.slice(offset, offset + limit), total: filtered.length, limit, offset }
 }
 
 export function useWorkspaceMembers() {
@@ -309,6 +339,24 @@ function WorkspaceProvider({
     if (workspaces.length === 1 && !workspaces.some((item) => item.id === workspace)) setWorkspace(workspaces[0].id)
     else if (!workspaces.some((item) => item.id === workspace) && workspace) setWorkspace('')
   }, [workspaces, workspace])
+  useEffect(() => {
+    if (!workspace) return
+    const coldRefresh = () => {
+      queryClient.setQueryData<import('../lib/types').ActivityPage>(['activity', workspace], (current) =>
+        current ? { ...current, cursor: undefined, etag: undefined } : current,
+      )
+      void queryClient.invalidateQueries({ queryKey: ['activity', workspace], exact: true })
+    }
+    const visibleRefresh = () => {
+      if (document.visibilityState === 'visible') coldRefresh()
+    }
+    window.addEventListener('online', coldRefresh)
+    document.addEventListener('visibilitychange', visibleRefresh)
+    return () => {
+      window.removeEventListener('online', coldRefresh)
+      document.removeEventListener('visibilitychange', visibleRefresh)
+    }
+  }, [queryClient, workspace])
   return <WorkspaceContext.Provider value={{ workspace, setWorkspace }}>{children}</WorkspaceContext.Provider>
 }
 
