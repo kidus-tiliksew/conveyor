@@ -152,6 +152,26 @@ func TestMCPInstallListIsReadOnlyAndIdempotent(t *testing.T) {
 	}
 }
 
+func TestMCPInstallFixtureIsolatesAmbientServerSelection(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CONVEYOR_ADDR", "http://localhost:8080")
+	setMCPTestCredentials(t, "https://factory.example", "stored-secret")
+
+	command := mcpInstallCmdWithLookPath(func(name string) (string, error) { return "/tools/" + name, nil })
+	command.SetArgs([]string{"--tool", "codex"})
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(filepath.Join(home, ".codex", "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(content, []byte(`url = "https://factory.example/mcp"`)) || bytes.Contains(content, []byte("localhost:8080")) {
+		t.Fatalf("ambient server leaked into MCP registration:\n%s", content)
+	}
+}
+
 func TestSelectedStoredMCPServerRequiresUnambiguousStoredCredential(t *testing.T) {
 	t.Setenv("CONVEYOR_ADDR", "")
 	serverFlag, serverFlagExplicit = "", false
@@ -171,6 +191,7 @@ func TestSelectedStoredMCPServerRequiresUnambiguousStoredCredential(t *testing.T
 
 func setMCPTestCredentials(t *testing.T, server, token string) {
 	t.Helper()
+	t.Setenv("CONVEYOR_ADDR", "")
 	setMCPTestConfig(t, localAuthConfig{Servers: map[string]localServerConfig{server: {Token: token}}})
 	serverFlag, serverFlagExplicit = "", false
 	t.Cleanup(func() { serverFlag, serverFlagExplicit = "", false })
