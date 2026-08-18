@@ -659,7 +659,17 @@ func runHarnessChildWithFirstActivityTimeoutAndRunMode(ctx context.Context, c *c
 }
 
 func runHarnessChildWithFirstActivityTimeoutAndRunModeAndPresentation(ctx context.Context, c *client, credential string, item workerservice.DispatchOrder, firstActivityTimeout time.Duration, runMode string, presentation *runOutputPresentation) error {
-	return runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(ctx, c, credential, item, firstActivityTimeout, os.Stdout, os.Stderr, runMode, presentation)
+	return runHarnessChildWithFirstActivityTimeoutAndRunModeAndPresentationAndStderr(ctx, c, credential, item, firstActivityTimeout, runMode, presentation, nil)
+}
+
+// The stderr override exists for the attached run app: while a Bubble Tea
+// program owns the terminal, the child's stderr must flow into the program —
+// one raw writer around the frame corrupts the repaint.
+func runHarnessChildWithFirstActivityTimeoutAndRunModeAndPresentationAndStderr(ctx context.Context, c *client, credential string, item workerservice.DispatchOrder, firstActivityTimeout time.Duration, runMode string, presentation *runOutputPresentation, stderr io.Writer) error {
+	if stderr == nil {
+		stderr = os.Stderr
+	}
+	return runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(ctx, c, credential, item, firstActivityTimeout, os.Stdout, stderr, runMode, presentation)
 }
 
 func runHarnessChildWithFirstActivityTimeoutAndOutput(ctx context.Context, c *client, credential string, item workerservice.DispatchOrder, firstActivityTimeout time.Duration, stdout, stderr io.Writer) error {

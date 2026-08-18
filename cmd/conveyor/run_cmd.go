@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -66,9 +67,32 @@ func runTaskWithPresentation(ctx context.Context, c *client, taskID, configPath 
 	var setup localExecutionSetup
 	setupLoaded := false
 	var lastStage core.Stage
+	// One persistent program owns the terminal for the whole attached run;
+	// every attached-path print below must route through it while it lives.
+	var app *runTUIController
+	stopApp := func() {
+		if app != nil {
+			_ = app.Stop()
+			app = nil
+		}
+	}
+	defer stopApp()
+	ensureApp := func(task core.Task) *runTUIController {
+		if app == nil {
+			var tuiInput io.Reader
+			if _, ok := input.(*os.File); ok {
+				tuiInput = input
+			} else {
+				tuiInput = reader
+			}
+			app = startRunTUI(ctx, tuiInput, output, runTUIStage{task: task}, nil, strings.TrimRight(c.base, "/")+"/tasks/"+task.ID)
+		}
+		return app
+	}
 	for {
 		item, err := c.getTaskRunOrderContext(ctx, c.token, taskID)
 		if err != nil {
+			stopApp()
 			return err
 		}
 		if item == nil || item.Order.ID == "" {
@@ -81,18 +105,23 @@ func runTaskWithPresentation(ctx context.Context, c *client, taskID, configPath 
 				return err
 			}
 			if item == nil {
+				stopApp()
 				_, err = fmt.Fprintf(output, "task %s has no claimable spec, implement, or review order\n", taskID)
 				return err
 			}
 			if item.Task.State == core.TaskMerged || item.Task.State == core.TaskClosed || item.Task.State == core.TaskParked {
+				stopApp()
 				return printFinalRunSummaryStyled(output, item.Task, runStages, outputTerminal)
 			}
 			if item.Gate == nil {
-				if err = presentRunIdleStateStyled(output, item.Task, outputTerminal); err != nil {
+				if interactiveTUI {
+					ensureApp(item.Task).Idle("Waiting for the factory — no claimable stage or pending gate")
+				} else if err = presentRunIdleStateStyled(output, item.Task, outputTerminal); err != nil {
 					return err
 				}
 				select {
 				case <-ctx.Done():
+					stopApp()
 					return printRunSummaryStyled(output, item.Task, runStages, outputTerminal)
 				case <-time.After(runGatePollInterval):
 					continue
@@ -102,19 +131,17 @@ func runTaskWithPresentation(ctx context.Context, c *client, taskID, configPath 
 			var feedback string
 			var waitErr error
 			if interactiveTUI {
-				gateInput := io.Reader(reader)
-				if _, ok := input.(*os.File); ok {
-					gateInput = input
-				}
-				decision, feedback, waitErr = waitAtTaskRunGateAttached(ctx, c, gateInput, output, *item, lastTUIStage)
+				decision, feedback, waitErr = waitAtTaskRunGateAttached(ctx, c, ensureApp(item.Task), *item, lastTUIStage)
 			} else {
 				decision, feedback, waitErr = waitAtTaskRunGate(ctx, answers, output, *item, outputTerminal)
 			}
 			if waitErr != nil {
+				stopApp()
 				return waitErr
 			}
 			switch decision {
 			case runGateStop:
+				stopApp()
 				return printRunSummaryStyled(output, item.Task, runStages, outputTerminal)
 			case runGatePoll:
 				continue
@@ -126,18 +153,28 @@ func runTaskWithPresentation(ctx context.Context, c *client, taskID, configPath 
 			if err != nil {
 				var response *workerHTTPError
 				if errors.As(err, &response) && response.StatusCode == http.StatusConflict {
-					_, _ = fmt.Fprintln(output, "Gate state changed; refreshing task state.")
+					if app != nil {
+						app.Notice("Gate state changed; refreshing task state.")
+					} else {
+						_, _ = fmt.Fprintln(output, "Gate state changed; refreshing task state.")
+					}
 					continue
 				}
+				stopApp()
 				return err
 			}
-			_, _ = fmt.Fprintln(output, "Gate decision recorded; refreshing task state.")
+			if app != nil {
+				app.Notice("Gate decision recorded; refreshing task state.")
+			} else {
+				_, _ = fmt.Fprintln(output, "Gate decision recorded; refreshing task state.")
+			}
 			continue
 		}
 
 		if !setupLoaded {
 			setup, err = loadLocalExecutionSetup(configPath)
 			if err != nil {
+				stopApp()
 				_ = presentPendingRunOrderStyled(output, *item, outputTerminal)
 				return err
 			}
@@ -146,11 +183,15 @@ func runTaskWithPresentation(ctx context.Context, c *client, taskID, configPath 
 		local := setup.Config
 		selected, selectErr := selectLocalRunDispatch(*item, local)
 		if selectErr != nil {
+			stopApp()
 			_ = presentPendingRunOrderStyled(output, *item, outputTerminal)
 			return localExecutionSetupRemedy(configPath, selectErr)
 		}
-		if err = presentRunOrderStyled(output, selected, local.Routing.Stages[string(selected.Order.Stage)].TimeoutText, outputTerminal); err != nil {
-			return err
+		stageTimeout := local.Routing.Stages[string(selected.Order.Stage)].TimeoutText
+		if !interactiveTUI {
+			if err = presentRunOrderStyled(output, selected, stageTimeout, outputTerminal); err != nil {
+				return err
+			}
 		}
 		mode := runModeAuto
 		if !auto {
@@ -159,45 +200,50 @@ func runTaskWithPresentation(ctx context.Context, c *client, taskID, configPath 
 				_, _ = fmt.Fprintf(output, "No work order was claimed because stdin is not a terminal.\nRun conveyor run %s --auto to proceed.\n", taskID)
 				return fmt.Errorf("stage confirmation requires a terminal; use conveyor run %s --auto", taskID)
 			}
-			confirmed, confirmErr := confirmRunStageFromSourceStyled(ctx, answers, output, selected.Order.Stage, outputTerminal)
+			var confirmed bool
+			var confirmErr error
+			if interactiveTUI {
+				confirmed, confirmErr = ensureApp(selected.Task).Confirm(ctx, selected.Order.Stage, runOrderPreviewLines(selected, stageTimeout))
+			} else {
+				confirmed, confirmErr = confirmRunStageFromSourceStyled(ctx, answers, output, selected.Order.Stage, outputTerminal)
+			}
 			if confirmErr != nil {
+				stopApp()
 				return confirmErr
 			}
 			if !confirmed {
+				stopApp()
 				return printRunSummaryStyled(output, selected.Task, runStages, outputTerminal)
 			}
 		}
 		started := time.Now()
 		lastTUIStage = runTUIStage{task: selected.Task, stage: selected.Order.Stage, harness: selected.Harness.Name, model: selected.Model, started: started}
 		stageCtx, cancelStage := context.WithCancel(ctx)
-		presentation := &runOutputPresentation{output: output}
-		var controller *runTUIController
-		if outputTerminal && !raw {
-			var tuiInput io.Reader
-			if _, ok := input.(*os.File); ok {
-				tuiInput = input
-			}
-			controller = startRunTUI(stageCtx, tuiInput, output, lastTUIStage, nil)
-			presentation = &runOutputPresentation{output: controller, presentEvents: true, styled: true}
+		var presentation *runOutputPresentation
+		var childStderr io.Writer
+		if interactiveTUI {
+			stageApp := ensureApp(selected.Task)
+			stageApp.StartStage(lastTUIStage)
+			presentation = &runOutputPresentation{output: stageApp}
+			childStderr = stageApp.Stderr()
 			go func() {
 				select {
-				case <-controller.interrupt:
+				case <-stageApp.interrupt:
 					cancelStage()
 				case <-stageCtx.Done():
 				}
 			}()
 		}
-		runErr := runHarnessChildWithFirstActivityTimeoutAndRunModeAndPresentation(stageCtx, c, c.token, selected, setup.FirstActivityTimeout, mode, presentation)
-		if controller != nil {
-			if stopErr := controller.Stop(); stopErr != nil && runErr == nil {
-				runErr = stopErr
-			}
-		}
+		runErr := runHarnessChildWithFirstActivityTimeoutAndRunModeAndPresentationAndStderr(stageCtx, c, c.token, selected, setup.FirstActivityTimeout, mode, presentation, childStderr)
 		cancelStage()
-		if outputTerminal && !raw {
-			_ = presentRunStageSummary(output, selected.Order.Stage, time.Since(started), runErr)
+		summary := renderRunStageSummary(selected.Order.Stage, time.Since(started), runErr)
+		if app != nil {
+			app.EndStage(summary)
+		} else if outputTerminal && !raw {
+			_, _ = fmt.Fprintln(output, summary)
 		}
 		if runErr != nil {
+			stopApp()
 			return runErr
 		}
 		runStages = append(runStages, selected.Order.Stage)
@@ -205,46 +251,33 @@ func runTaskWithPresentation(ctx context.Context, c *client, taskID, configPath 
 	}
 }
 
-func waitAtTaskRunGateAttached(ctx context.Context, c *client, input io.Reader, output io.Writer, item workerservice.DispatchOrder, stage runTUIStage) (runGateDecision, string, error) {
+func waitAtTaskRunGateAttached(ctx context.Context, c *client, controller *runTUIController, item workerservice.DispatchOrder, stage runTUIStage) (runGateDecision, string, error) {
 	if item.Gate == nil {
 		return runGatePoll, "", nil
 	}
-	stage.task = item.Task
-	stage.started = time.Now()
-	controller := startRunTUI(ctx, input, output, stage, &runTUIGate{task: item.Task, gate: *item.Gate})
+	controller.drainActions()
+	controller.UpdateGate(runTUIGate{task: item.Task, gate: *item.Gate})
 	ticker := time.NewTicker(runGatePollInterval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
-			_ = controller.Stop()
 			return runGateStop, "", nil
 		case <-controller.interrupt:
-			_ = controller.Stop()
 			return runGateStop, "", nil
 		case <-controller.finished:
-			if err := controller.Stop(); err != nil {
+			if err := controller.result; err != nil && err != context.Canceled {
 				return runGateStop, "", err
 			}
-			if ctx.Err() != nil {
-				return runGateStop, "", nil
-			}
-			return runGateStop, "", fmt.Errorf("attached run TUI exited before a gate action")
+			return runGateStop, "", nil
 		case action := <-controller.actions:
-			if err := controller.Stop(); err != nil {
-				return runGateStop, "", err
-			}
 			return action.decision, action.feedback, nil
 		case <-ticker.C:
 			fresh, err := c.getTaskRunOrderContext(ctx, c.token, item.Task.ID)
 			if err != nil {
-				_ = controller.Stop()
 				return runGateStop, "", err
 			}
 			if fresh == nil || fresh.Order.ID != "" || fresh.Gate == nil || fresh.Task.State == core.TaskMerged || fresh.Task.State == core.TaskClosed || fresh.Task.State == core.TaskParked {
-				if err = controller.Stop(); err != nil {
-					return runGateStop, "", err
-				}
 				return runGatePoll, "", nil
 			}
 			controller.UpdateGate(runTUIGate{task: fresh.Task, gate: *fresh.Gate})
@@ -259,6 +292,7 @@ const (
 	runGateApprove
 	runGateRequestChanges
 	runGateStop
+	runConfirmStage
 )
 
 func waitAtTaskRunGate(ctx context.Context, answers *runInputSource, output io.Writer, item workerservice.DispatchOrder, styled bool) (runGateDecision, string, error) {
@@ -425,6 +459,22 @@ func presentRunOrderStyled(output io.Writer, item workerservice.DispatchOrder, t
 
 func presentPendingRunOrder(output io.Writer, item workerservice.DispatchOrder) error {
 	return presentPendingRunOrderStyled(output, item, false)
+}
+
+// runOrderPreviewLines renders the pre-claim order presentation as plain
+// lines for the attached app's confirm panel.
+func runOrderPreviewLines(item workerservice.DispatchOrder, timeout string) []string {
+	var buffer bytes.Buffer
+	_ = presentRunOrderStyled(&buffer, item, timeout, false)
+	return strings.Split(strings.TrimSuffix(buffer.String(), "\n"), "\n")
+}
+
+// renderRunStageSummary is the stage summary as a single plain line, for the
+// attached app's notice log.
+func renderRunStageSummary(stage core.Stage, duration time.Duration, runErr error) string {
+	var buffer bytes.Buffer
+	_ = presentRunStageSummary(&buffer, stage, duration, runErr)
+	return strings.TrimSuffix(buffer.String(), "\n")
 }
 
 func presentPendingRunOrderStyled(output io.Writer, item workerservice.DispatchOrder, styled bool) error {

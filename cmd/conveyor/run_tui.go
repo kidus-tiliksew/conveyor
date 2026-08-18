@@ -1,5 +1,12 @@
 package main
 
+// The attended-run terminal app: one persistent Bubble Tea program owns the
+// terminal for the whole conveyor run invocation (req-260811-0ee057 AC-5.6,
+// AC-5.7). Every interaction — stage previews and confirmations, the live
+// agent stream, gate prompts, notices, and the child's stderr — flows through
+// this model; nothing else may write to the terminal while it runs, because a
+// single competing raw writer corrupts the repaint (the v0.4.1 lesson).
+
 import (
 	"bufio"
 	"context"
@@ -21,22 +28,36 @@ const (
 	runTUIDefaultWidth  = 80
 	runTUIDefaultHeight = 24
 	// The output box is a fixed-height window onto the agent stream, never a
-	// screen-filling pane: the whole inline frame must stay shorter than the
-	// terminal or Bubble Tea's in-place repaint degrades into scrollback spam.
-	runTUIBoxMaxHeight = 12
-	runTUIBoxMaxWidth  = 100
+	// screen-filling pane; bounded frames are what keep repaint stable.
+	runTUIBoxMaxHeight = 14
+	runTUIBoxMaxWidth  = 110
+	runTUINoticeLimit  = 5
 )
 
 var (
-	runTUITaskStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
-	runTUIMetaStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	runTUIValueStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("7"))
-	runTUIWaitStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("11"))
-	runTUIBoxStyle    = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("8"))
+	runTUITaskStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
+	runTUITabStyle   = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("6")).Padding(0, 1)
+	runTUIMetaStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	runTUIValueStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("7"))
+	runTUIWaitStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("11"))
+	runTUIBoxStyle   = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("8"))
+	// Pager-style lugs (the bubbles viewport example): a bordered title tab
+	// spliced into the top rule, and a scroll-percent tab in the bottom rule.
+	runTUITitleLugStyle = func() lipgloss.Style {
+		b := lipgloss.RoundedBorder()
+		b.Right = "├"
+		return lipgloss.NewStyle().BorderStyle(b).BorderForeground(lipgloss.Color("8")).Padding(0, 1)
+	}()
+	runTUIInfoLugStyle = func() lipgloss.Style {
+		b := lipgloss.RoundedBorder()
+		b.Left = "┤"
+		return lipgloss.NewStyle().BorderStyle(b).BorderForeground(lipgloss.Color("8")).Padding(0, 1)
+	}()
 	runTUIPromptStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12"))
 	runTUIStatusStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("11"))
 	runTUIHintStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	runTUIEmptyStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Italic(true)
+	runTUINoticeStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	runTUIDoneStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
 )
 
 type runTUIStage struct {
@@ -52,13 +73,25 @@ type runTUIGate struct {
 	gate workerservice.TaskRunGate
 }
 
+type runTUIConfirm struct {
+	stage   core.Stage
+	preview []string
+}
+
 type runTUIOutputMsg string
+type runTUIStderrMsg string
 type runTUITickMsg time.Time
 type runTUICollapseMsg struct{}
 type runTUIGateMsg runTUIGate
+type runTUIStageMsg runTUIStage
+type runTUIStageEndMsg string
+type runTUIConfirmMsg runTUIConfirm
+type runTUINoticeMsg string
+type runTUIIdleMsg string
 
 type runTUIAction struct {
 	decision runGateDecision
+	confirm  bool
 	feedback string
 }
 
@@ -68,11 +101,15 @@ type runTUIModel struct {
 	height    int
 	stage     runTUIStage
 	gate      *runTUIGate
+	confirm   *runTUIConfirm
+	idle      string
 	lines     []string
+	notices   []string
 	elapsed   time.Duration
 	input     string
 	feedback  bool
 	status    string
+	taskURL   string
 	actions   chan<- runTUIAction
 	interrupt chan<- struct{}
 	collapsed bool
@@ -88,6 +125,7 @@ func newRunTUIModel(stage runTUIStage, gate *runTUIGate, actions chan<- runTUIAc
 		actions:   actions,
 		interrupt: interrupt,
 	}
+	model.viewport.MouseWheelEnabled = true
 	model.resize()
 	return model
 }
@@ -106,20 +144,44 @@ func (m runTUIModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.width, m.height = message.Width, message.Height
 		m.resize()
 	case runTUIOutputMsg:
-		follow := m.viewport.AtBottom()
-		for _, line := range strings.Split(strings.TrimSuffix(string(message), "\n"), "\n") {
-			if line != "" {
-				m.lines = append(m.lines, line)
-			}
-		}
-		m.refreshViewportContent()
-		if follow {
-			m.viewport.GotoBottom()
-		}
+		m.appendLines(string(message))
+	case runTUIStderrMsg:
+		m.appendLines(string(message))
+	case runTUIStageMsg:
+		stage := runTUIStage(message)
+		m.stage = stage
+		m.gate, m.confirm, m.idle = nil, nil, ""
+		m.lines = nil
+		m.elapsed = 0
+		m.input, m.status, m.feedback = "", "", false
+		m.resize()
+	case runTUIStageEndMsg:
+		m.pushNotice(string(message))
+		m.stage.stage = ""
+		m.lines = nil
+		m.resize()
+	case runTUIConfirmMsg:
+		confirm := runTUIConfirm(message)
+		m.confirm = &confirm
+		m.gate, m.idle = nil, ""
+		m.input, m.status = "", ""
+		m.resize()
+	case runTUINoticeMsg:
+		m.pushNotice(string(message))
+		m.resize()
+	case runTUIIdleMsg:
+		m.idle = string(message)
+		m.confirm, m.gate = nil, nil
+		m.resize()
 	case runTUIGateMsg:
 		gate := runTUIGate(message)
 		if m.gate == nil || !sameRunTUIGate(*m.gate, gate) {
+			if m.gate == nil {
+				m.stage.started = time.Now()
+				m.elapsed = 0
+			}
 			m.gate = &gate
+			m.confirm, m.idle = nil, ""
 			m.input, m.status, m.feedback = "", "", false
 			m.resize()
 		}
@@ -131,11 +193,19 @@ func (m runTUIModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	case runTUICollapseMsg:
 		m.collapsed = true
 		return m, tea.Quit
+	case tea.MouseMsg:
+		updated, command := m.viewport.Update(message)
+		m.viewport = updated
+		return m, command
 	case tea.KeyMsg:
 		if message.Type == tea.KeyCtrlC {
 			m.sendInterrupt()
 			m.collapsed = true
 			return m, tea.Quit
+		}
+		if m.confirm != nil {
+			m.handleConfirmKey(message)
+			return m, nil
 		}
 		if m.gate != nil {
 			if m.handleGateKey(message) {
@@ -150,6 +220,38 @@ func (m runTUIModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m *runTUIModel) appendLines(chunk string) {
+	follow := m.viewport.AtBottom()
+	for _, line := range strings.Split(strings.TrimSuffix(chunk, "\n"), "\n") {
+		if line != "" {
+			m.lines = append(m.lines, line)
+		}
+	}
+	m.refreshViewportContent()
+	if follow {
+		m.viewport.GotoBottom()
+	}
+}
+
+func (m *runTUIModel) pushNotice(line string) {
+	if strings.TrimSpace(line) == "" {
+		return
+	}
+	m.notices = append(m.notices, line)
+	if len(m.notices) > runTUINoticeLimit {
+		m.notices = m.notices[len(m.notices)-runTUINoticeLimit:]
+	}
+}
+
+func (m *runTUIModel) handleConfirmKey(key tea.KeyMsg) {
+	switch strings.ToLower(key.String()) {
+	case "y":
+		m.sendAction(runTUIAction{decision: runConfirmStage, confirm: true})
+	case "n", "esc", "enter":
+		m.sendAction(runTUIAction{decision: runConfirmStage, confirm: false})
+	}
+}
+
 func (m *runTUIModel) handleGateKey(key tea.KeyMsg) bool {
 	switch key.Type {
 	case tea.KeyEnter:
@@ -162,6 +264,9 @@ func (m *runTUIModel) handleGateKey(key tea.KeyMsg) bool {
 		}
 		return true
 	case tea.KeyRunes:
+		if len(key.Runes) == 1 && (key.Runes[0] == 'k' || key.Runes[0] == 'j') && m.input == "" && len(m.lines) > 0 {
+			return false // let bare j/k scroll stream scrollback under a gate
+		}
 		m.input += string(key.Runes)
 		m.status = ""
 		return true
@@ -222,19 +327,109 @@ func (m runTUIModel) View() string {
 	if m.collapsed {
 		return ""
 	}
-	sections := []string{m.chrome()}
-	if m.showOutputBox() {
-		inner := m.viewport.View()
-		if len(m.lines) == 0 {
-			inner = runTUIEmptyStyle.Render("waiting for agent output…")
-		}
-		box := runTUIBoxStyle.Width(m.viewport.Width).Render(inner)
-		if m.width > lipgloss.Width(box) {
-			box = lipgloss.PlaceHorizontal(m.width, lipgloss.Center, box)
-		}
-		sections = append(sections, box)
+	sections := []string{m.header()}
+	if body := m.noticeBlock(); body != "" {
+		sections = append(sections, body)
 	}
+	sections = append(sections, m.statusBlock())
+	if m.showOutputBox() {
+		sections = append(sections, m.outputBox())
+	}
+	if prompt := m.promptBlock(); prompt != "" {
+		sections = append(sections, prompt)
+	}
+	sections = append(sections, m.footer())
+	return lipgloss.NewStyle().MaxWidth(max(1, m.width)).Render(strings.Join(sections, "\n"))
+}
+
+// header renders the pager-style task tab.
+func (m runTUIModel) header() string {
+	task := m.stage.task
 	if m.gate != nil {
+		task = m.gate.task
+	}
+	title := task.Title
+	if strings.TrimSpace(title) == "" {
+		title = "Task " + task.ID
+	}
+	rendered := runTUITaskStyle.Render(runTUITruncate(title, max(1, m.width-1)))
+	if m.taskURL != "" {
+		// OSC 8 hyperlink: terminals that support it make the title clickable,
+		// opening the task on the Conveyor dashboard; others render plain text.
+		rendered = "\x1b]8;;" + m.taskURL + "\x07" + rendered + "\x1b]8;;\x07"
+	}
+	return rendered
+}
+
+func (m runTUIModel) noticeBlock() string {
+	if len(m.notices) == 0 {
+		return ""
+	}
+	rendered := make([]string, len(m.notices))
+	for i, notice := range m.notices {
+		rendered[i] = runTUINoticeStyle.Render(runTUITruncate(notice, max(1, m.width-2)))
+	}
+	return strings.Join(rendered, "\n")
+}
+
+func (m runTUIModel) statusBlock() string {
+	switch {
+	case m.confirm != nil:
+		lines := make([]string, 0, len(m.confirm.preview))
+		for _, line := range m.confirm.preview {
+			lines = append(lines, runTUIValueStyle.Render(runTUITruncate(line, max(1, m.width-2))))
+		}
+		return strings.Join(lines, "\n")
+	case m.gate != nil:
+		lines := []string{
+			runTUIWaitStyle.Render(fmt.Sprintf("Waiting %s · %s", m.gate.gate.Label, m.elapsed)),
+			runTUIMeta("Artifact", m.gate.gate.Summary),
+		}
+		if m.gate.gate.Rationale != "" {
+			lines = append(lines, runTUIMeta("Rationale", m.gate.gate.Rationale))
+		}
+		if m.stage.stage != "" {
+			lines = append(lines, runTUIMetaStyle.Render(fmt.Sprintf("Last stage %s · %s · %s", m.stage.stage, m.stage.harness, m.stage.model)))
+		}
+		lines = append(lines, runTUIHintStyle.Render("No claim held — factory state refreshes automatically; Ctrl+C exits safely."))
+		return strings.Join(lines, "\n")
+	case m.idle != "":
+		return runTUIWaitStyle.Render(m.idle+" ") + runTUIHintStyle.Render(runTUISpinnerFrame(m.elapsed))
+	default:
+		stage := string(m.stage.stage)
+		if stage == "" {
+			stage = "starting"
+		}
+		return runTUIMeta(
+			"Stage", stage, "Harness", m.stage.harness, "Model", m.stage.model, "Elapsed", m.elapsed.String(),
+		)
+	}
+}
+
+func (m runTUIModel) outputBox() string {
+	inner := m.viewport.View()
+	if len(m.lines) == 0 {
+		inner = runTUIHintStyle.Italic(true).Render("waiting for agent output…")
+	}
+	width := m.viewport.Width
+	task := m.stage.task
+	if m.gate != nil {
+		task = m.gate.task
+	}
+	title := runTUITitleLugStyle.Render(strings.TrimSpace(runTUIStageTitle(m.stage.stage) + " " + task.ID))
+	head := lipgloss.JoinHorizontal(lipgloss.Center, title,
+		runTUIMetaStyle.Render(strings.Repeat("─", max(0, width-lipgloss.Width(title)))))
+	info := runTUIInfoLugStyle.Render(fmt.Sprintf("%3.0f%%", m.viewport.ScrollPercent()*100))
+	foot := lipgloss.JoinHorizontal(lipgloss.Center,
+		runTUIMetaStyle.Render(strings.Repeat("─", max(0, width-lipgloss.Width(info)))), info)
+	return head + "\n" + inner + "\n" + foot
+}
+
+func (m runTUIModel) promptBlock() string {
+	switch {
+	case m.confirm != nil:
+		return runTUIPromptStyle.Render(fmt.Sprintf("Proceed with %s? [y/N]", m.confirm.stage))
+	case m.gate != nil:
 		prompt := runTUIPromptStyle.Render(fmt.Sprintf("Gate action [%s]:", m.gateActions())) + " " + m.input + "▌"
 		if m.feedback {
 			prompt = runTUIPromptStyle.Render("Feedback:") + " " + m.input + "▌"
@@ -242,9 +437,39 @@ func (m runTUIModel) View() string {
 		if m.status != "" {
 			prompt += "\n" + runTUIStatusStyle.Render(m.status)
 		}
-		sections = append(sections, prompt)
+		return prompt
 	}
-	return strings.Join(sections, "\n")
+	return ""
+}
+
+func (m runTUIModel) footer() string {
+	parts := []string{"Ctrl+C exit"}
+	if m.showOutputBox() && len(m.lines) > 0 {
+		parts = append([]string{"↑/↓ · PgUp/PgDn · wheel scroll"}, parts...)
+	}
+	if m.gate != nil {
+		parts = append(parts, "type an action + Enter")
+	}
+	return runTUIHintStyle.Render(strings.Join(parts, " · "))
+}
+
+func runTUIStageTitle(stage core.Stage) string {
+	switch stage {
+	case core.StageSpec:
+		return "Planning"
+	case core.StageImplement:
+		return "Implementing"
+	case core.StageReview:
+		return "Reviewing"
+	case "":
+		return "Output"
+	}
+	return strings.ToUpper(string(stage)[:1]) + string(stage)[1:]
+}
+
+func runTUISpinnerFrame(elapsed time.Duration) string {
+	frames := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"}
+	return frames[int(elapsed.Seconds())%len(frames)]
 }
 
 func runTUIMeta(pairs ...string) string {
@@ -255,38 +480,13 @@ func runTUIMeta(pairs ...string) string {
 	return strings.Join(parts, runTUIMetaStyle.Render("  "))
 }
 
-func (m runTUIModel) chrome() string {
-	task := m.stage.task
-	if m.gate != nil {
-		task = m.gate.task
-	}
-	lines := []string{runTUITaskStyle.Render(fmt.Sprintf("Task %s", task.ID)) + runTUIValueStyle.Render(" · "+task.Title)}
-	if m.gate == nil {
-		stage := string(m.stage.stage)
-		if stage == "" {
-			stage = "starting"
-		}
-		lines = append(lines, runTUIMeta(
-			"Stage", stage, "Harness", m.stage.harness, "Model", m.stage.model, "Elapsed", m.elapsed.String(),
-		))
-	} else {
-		lines = append(lines, runTUIWaitStyle.Render(fmt.Sprintf("Waiting %s · %s", m.gate.gate.Label, m.elapsed)))
-		lines = append(lines, runTUIMeta("Artifact", m.gate.gate.Summary))
-		if m.gate.gate.Rationale != "" {
-			lines = append(lines, runTUIMeta("Rationale", m.gate.gate.Rationale))
-		}
-		if m.stage.stage != "" {
-			lines = append(lines, runTUIMetaStyle.Render(fmt.Sprintf("Last stage %s · %s · %s", m.stage.stage, m.stage.harness, m.stage.model)))
-		}
-		lines = append(lines, runTUIHintStyle.Render("No claim held — factory state refreshes automatically; Ctrl+C exits safely."))
-	}
-	return lipgloss.NewStyle().MaxWidth(max(1, m.width)).Render(strings.Join(lines, "\n"))
-}
-
-// showOutputBox reports whether the frame renders the output window: always
-// while a stage executes, and at a gate only when a stream actually produced
+// showOutputBox reports whether the frame renders the output window: while a
+// stage executes always, and elsewhere only when a stream actually produced
 // lines — an empty box under a gate would just push the prompt to the floor.
 func (m runTUIModel) showOutputBox() bool {
+	if m.confirm != nil || m.idle != "" {
+		return false
+	}
 	return m.gate == nil || len(m.lines) > 0
 }
 
@@ -297,16 +497,16 @@ func (m *runTUIModel) resize() {
 	if m.height < 1 {
 		m.height = 1
 	}
-	m.viewport.Width = max(1, min(m.width, runTUIBoxMaxWidth)-2)
-	reserved := lipgloss.Height(m.chrome())
-	if m.showOutputBox() {
-		reserved += 2 // box border rows
+	m.viewport.Width = max(1, m.width)                                             // full terminal width
+	reserved := lipgloss.Height(m.header()) + lipgloss.Height(m.statusBlock()) + 1 // footer
+	if body := m.noticeBlock(); body != "" {
+		reserved += lipgloss.Height(body)
 	}
-	if m.gate != nil {
-		reserved += 1
-		if m.status != "" {
-			reserved++
-		}
+	if m.showOutputBox() {
+		reserved += 6 // title and scroll lug rows
+	}
+	if prompt := m.promptBlock(); prompt != "" {
+		reserved += lipgloss.Height(prompt)
 	}
 	m.viewport.Height = max(1, min(runTUIBoxMaxHeight, m.height-reserved-1))
 	m.refreshViewportContent()
@@ -322,7 +522,13 @@ func (m *runTUIModel) refreshViewportContent() {
 	}
 	rendered := make([]string, len(m.lines))
 	for i, line := range m.lines {
-		rendered[i] = runTUITruncate(line, m.viewport.Width)
+		truncated := runTUITruncate(line, m.viewport.Width)
+		// Raw harness event JSON the renderer passed through is context, not
+		// narrative — dim it so rendered prose and command lines stand out.
+		if strings.HasPrefix(strings.TrimSpace(truncated), "{\"") {
+			truncated = runTUIHintStyle.Render(truncated)
+		}
+		rendered[i] = truncated
 	}
 	m.viewport.SetContent(strings.Join(rendered, "\n"))
 }
@@ -368,11 +574,12 @@ type runTUIController struct {
 	stopOnce  sync.Once
 }
 
-func startRunTUI(ctx context.Context, input io.Reader, output io.Writer, stage runTUIStage, gate *runTUIGate) *runTUIController {
+func startRunTUI(ctx context.Context, input io.Reader, output io.Writer, stage runTUIStage, gate *runTUIGate, taskURL string) *runTUIController {
 	actions := make(chan runTUIAction, 1)
 	interrupt := make(chan struct{}, 1)
 	model := newRunTUIModel(stage, gate, actions, interrupt)
-	options := []tea.ProgramOption{tea.WithContext(ctx), tea.WithOutput(output), tea.WithoutSignalHandler()}
+	model.taskURL = taskURL
+	options := []tea.ProgramOption{tea.WithContext(ctx), tea.WithOutput(output), tea.WithoutSignalHandler(), tea.WithMouseCellMotion()}
 	_, terminalInput := input.(*os.File)
 	if !terminalInput {
 		options = append(options, tea.WithInput(nil))
@@ -435,8 +642,54 @@ func (c *runTUIController) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+// StderrWriter adapts the child's stderr into model messages so stray child
+// diagnostics can never write raw to the terminal under the program.
+type runTUIStderrWriter struct{ controller *runTUIController }
+
+func (w runTUIStderrWriter) Write(p []byte) (int, error) {
+	w.controller.program.Send(runTUIStderrMsg(append([]byte(nil), p...)))
+	return len(p), nil
+}
+
+func (c *runTUIController) Stderr() io.Writer { return runTUIStderrWriter{controller: c} }
+
+func (c *runTUIController) StartStage(stage runTUIStage) { c.program.Send(runTUIStageMsg(stage)) }
+
+func (c *runTUIController) EndStage(summary string) { c.program.Send(runTUIStageEndMsg(summary)) }
+
+func (c *runTUIController) Notice(line string) { c.program.Send(runTUINoticeMsg(line)) }
+
+func (c *runTUIController) Idle(state string) { c.program.Send(runTUIIdleMsg(state)) }
+
 func (c *runTUIController) UpdateGate(gate runTUIGate) {
 	c.program.Send(runTUIGateMsg(gate))
+}
+
+// Confirm presents a stage preview and blocks until the user answers y/N,
+// the program ends, or the context cancels.
+func (c *runTUIController) Confirm(ctx context.Context, stage core.Stage, preview []string) (bool, error) {
+	c.drainActions()
+	c.program.Send(runTUIConfirmMsg(runTUIConfirm{stage: stage, preview: preview}))
+	select {
+	case <-ctx.Done():
+		return false, ctx.Err()
+	case <-c.interrupt:
+		return false, nil
+	case <-c.finished:
+		return false, c.result
+	case action := <-c.actions:
+		return action.confirm, nil
+	}
+}
+
+func (c *runTUIController) drainActions() {
+	for {
+		select {
+		case <-c.actions:
+		default:
+			return
+		}
+	}
 }
 
 func (c *runTUIController) Stop() error {

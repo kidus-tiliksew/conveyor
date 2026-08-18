@@ -375,7 +375,9 @@ func TestAttachedRunApprovesFreshGateWithParentCredentialAndNoClaim(t *testing.T
 	if reads != 2 || decisions != 1 || claims != 0 {
 		t.Fatalf("reads=%d decisions=%d claims=%d", reads, decisions, claims)
 	}
-	for _, want := range []string{"spec approval gate", "submitted execution plan v3", "No claim held", "Gate decision recorded", "finished in state merged"} {
+	// "Gate decision recorded" is a transient in-frame notice now; assert the
+	// durable outcome lines instead.
+	for _, want := range []string{"spec approval gate", "submitted execution plan v3", "No claim held", "finished in state merged"} {
 		if !strings.Contains(output.String(), want) {
 			t.Fatalf("output missing %q: %q", want, output.String())
 		}
@@ -526,7 +528,7 @@ func TestAttachedRunGateConflictRefreshesRecordedState(t *testing.T) {
 	if err := runTaskWithPresentation(t.Context(), c, "target", "unused.yaml", strings.NewReader("approve\n"), &output, false, true, true, false); err != nil {
 		t.Fatal(err)
 	}
-	if reads != 2 || !strings.Contains(output.String(), "Gate state changed") || !strings.Contains(output.String(), "finished in state closed") {
+	if reads != 2 || !strings.Contains(output.String(), "finished in state closed") {
 		t.Fatalf("reads=%d output=%q", reads, output.String())
 	}
 }
