@@ -243,7 +243,6 @@ test('System Design renders a category tree, one attention surface, and authenti
   expect(revisionInput).toEqual({})
   await expect.poll(() => [...new Set(protectedReads)].sort()).toEqual(['/v1/decisions', '/v1/system-designs'])
 })
-
 test('an oversized System Design comparison falls back to plain rendering', async ({ page }) => {
   await initialize(page)
   const longCurrent = Array.from({ length: 500 }, (_, index) => `confirmed line ${index}`).join('\n')
@@ -496,4 +495,3 @@ test('operators confirm and dismiss proposed decisions with conflict-safe refres
   await expect(page.locator('#decision-dec-2')).toContainText('Dismissed by second-operator')
   await expect.poll(() => decisionReads).toBeGreaterThanOrEqual(3)
 })
-

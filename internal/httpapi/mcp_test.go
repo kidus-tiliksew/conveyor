@@ -390,6 +390,98 @@ func TestMCPReportUsagePersistsOptionalRateLimitWithoutGatingOrClearing(t *testi
 	}
 }
 
+func TestMCPReportContinuationIsLaunchingClientOnlyAndReplacesCapture(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	task := core.Task{ID: "mcp-continuation", Workspace: "demo", State: core.TaskRunning, CreatedAt: time.Now()}
+	job := core.Job{ID: task.ID + "-implement-1", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement}); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{
+		SessionID: "claim-session", ClientToken: "secret", ClaimantID: "worker-a", WorkerID: "worker-a", Agent: "codex", Lease: time.Minute,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(st)
+	server.Workspace = "demo"
+	server.WorkOrders = &workorder.Service{Store: st}
+	args := map[string]any{
+		"workspace_id": "demo", "work_order_id": job.ID, "session_id": claimed.SessionID,
+		"continuation_session_id": "native-1", "attempt_id": claimed.AttemptID,
+		"harness": "codex", "launch_environment": "worker-a/env-1",
+	}
+	request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	agentRequest := request.WithContext(store.WithCredential(request.Context(), core.AuthenticatedCredential{
+		ID: "agent", OwnerUserID: "owner", Kind: core.CredentialAgent,
+	}))
+	if _, err = server.callMCPTool(agentRequest, "report_continuation", args); err == nil || !strings.Contains(err.Error(), "operator-scoped user credential") {
+		t.Fatalf("agent report error=%v", err)
+	}
+	workerRequest := request.WithContext(context.WithValue(request.Context(), workerContextKey{}, core.Worker{ID: "worker-a", Workspace: "demo"}))
+	result, err := server.callMCPTool(workerRequest, "report_continuation", args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reported := result.(core.WorkOrder)
+	if reported.ContinuationSessionID != "native-1" || reported.ContinuationAttemptID != claimed.AttemptID ||
+		reported.ContinuationHarness != "codex" || reported.ContinuationLaunchEnvironment != "worker-a/env-1" || reported.CanResumeContinuation() {
+		t.Fatalf("first capture=%+v", reported)
+	}
+	args["continuation_session_id"] = "native-2"
+	result, err = server.callMCPTool(workerRequest, "report_continuation", args)
+	if err != nil || result.(core.WorkOrder).ContinuationSessionID != "native-2" {
+		t.Fatalf("replacement=%+v err=%v", result, err)
+	}
+	beforeEvents, _ := st.ListEvents(ctx, task.ID)
+	args["attempt_id"] = "wrong-attempt"
+	if _, err = server.callMCPTool(workerRequest, "report_continuation", args); err == nil || !strings.Contains(err.Error(), "active work-order attempt") {
+		t.Fatalf("wrong attempt error=%v", err)
+	}
+	after, getErr := st.GetWorkOrder(ctx, job.ID)
+	afterEvents, _ := st.ListEvents(ctx, task.ID)
+	if getErr != nil || after.State != core.WorkOrderClaimed || after.SessionID != claimed.SessionID ||
+		after.ContinuationSessionID != "native-2" || len(afterEvents) != len(beforeEvents) {
+		t.Fatalf("failed report changed lifecycle or capture: order=%+v events=%d/%d err=%v", after, len(beforeEvents), len(afterEvents), getErr)
+	}
+
+	runTask := core.Task{ID: "mcp-run-continuation", Workspace: "demo", State: core.TaskRunning, CreatedAt: time.Now()}
+	runJob := core.Job{ID: runTask.ID + "-implement-1", TaskID: runTask.ID, Stage: core.StageImplement, State: core.JobPending}
+	if err = st.CreateTask(ctx, runTask); err != nil {
+		t.Fatal(err)
+	}
+	if err = st.CreateJob(ctx, runJob); err != nil {
+		t.Fatal(err)
+	}
+	if err = storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: runJob.ID, TaskID: runTask.ID, JobID: runJob.ID, Stage: core.StageImplement}); err != nil {
+		t.Fatal(err)
+	}
+	runClaim, err := storetest.For(st).ClaimWorkOrder(ctx, runJob.ID, core.WorkOrderClaim{
+		SessionID: "run-session", ClientToken: "run-secret", ClaimantID: core.TaskRunClaimantID("owner-a"), OwnerUserID: "owner-a", Agent: "codex", Lease: time.Minute,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runRequest := request.WithContext(store.WithCredential(request.Context(), core.AuthenticatedCredential{
+		ID: "user", OwnerUserID: "owner-a", Kind: core.CredentialUser,
+	}))
+	runArgs := map[string]any{
+		"workspace_id": "demo", "work_order_id": runJob.ID, "session_id": runClaim.SessionID,
+		"continuation_session_id": "native-run", "attempt_id": runClaim.AttemptID,
+		"harness": "codex", "launch_environment": "laptop-a",
+	}
+	if result, err = server.callMCPTool(runRequest, "report_continuation", runArgs); err != nil || result.(core.WorkOrder).ContinuationSessionID != "native-run" {
+		t.Fatalf("conveyor run capture=%+v err=%v", result, err)
+	}
+}
+
 func TestMCPWorkerFallbackDoesNotReplaceAgentUsage(t *testing.T) {
 	t.Parallel()
 	ctx := store.WithWorkspace(t.Context(), "demo")
@@ -629,7 +721,7 @@ func TestMCPToolsListRequiresAuthAndPublishesLifecycle(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"create_task", "set_assignee", "list_work_orders", "claim_work_order", "redispatch_work_order", "renew_work_order", "release_work_order", "request_plan_revision", "get_work_order", "read_artifact", "report_progress", "report_usage", "propose_system_design_revision", "propose_decision", "upload_transcript", "submit_plan", "submit_for_review", "await_review", "submit_review_verdict"}
+	want := []string{"create_task", "set_assignee", "list_work_orders", "claim_work_order", "redispatch_work_order", "renew_work_order", "release_work_order", "request_plan_revision", "get_work_order", "read_artifact", "report_progress", "report_usage", "report_continuation", "propose_system_design_revision", "propose_decision", "upload_transcript", "submit_plan", "submit_for_review", "await_review", "submit_review_verdict"}
 	if len(envelope.Result.Tools) != len(want) {
 		t.Fatalf("tools = %d, want %d", len(envelope.Result.Tools), len(want))
 	}

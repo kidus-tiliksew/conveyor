@@ -252,6 +252,59 @@ func (s *Store) RenewWorkerClaimCommand(ctx context.Context, taskLease taskops.T
 	return order, nil
 }
 
+func (s *Store) RecordWorkOrderContinuation(ctx context.Context, workOrderID string, claim core.WorkOrderClaimIdentity, continuation core.WorkOrderContinuation) (core.WorkOrder, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return core.WorkOrder{}, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	now := time.Now().UTC()
+	current, err := scanWorkOrder(tx.QueryRow(ctx, `SELECT `+workOrderColumns+` FROM work_orders WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspace(ctx), workOrderID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return core.WorkOrder{}, store.ErrWorkOrderClaimLost
+	}
+	if err != nil {
+		return core.WorkOrder{}, err
+	}
+	if current.Stage != core.StageImplement || current.State != core.WorkOrderClaimed || current.SessionID == "" ||
+		current.SessionID != claim.SessionID || current.WorkerID != claim.WorkerID || current.ClaimantID != claim.ClaimantID ||
+		!current.LeaseExpiresAt.After(now) || (!current.ExecutionDeadline.IsZero() && !current.ExecutionDeadline.After(now)) {
+		return core.WorkOrder{}, store.ErrWorkOrderClaimLost
+	}
+	if continuation.AttemptID != current.AttemptID {
+		return core.WorkOrder{}, fmt.Errorf("continuation attempt does not match the active work-order attempt")
+	}
+	expectedHarness := current.Agent
+	if expectedHarness == "" {
+		expectedHarness = current.RequiredHarness
+	}
+	if expectedHarness != "" && continuation.Harness != expectedHarness {
+		return core.WorkOrder{}, fmt.Errorf("continuation harness %q does not match active harness %q", continuation.Harness, expectedHarness)
+	}
+	order, err := scanWorkOrder(tx.QueryRow(ctx, `UPDATE work_orders SET continuation_session_id=$1,continuation_attempt_id=$2,
+		continuation_harness=$3,continuation_launch_environment=$4,updated_at=$5
+		WHERE workspace_id=$6 AND id=$7 AND state='claimed' AND worker_id=$8 AND claimant_id=$9 AND session_id=$10 RETURNING `+workOrderColumns,
+		continuation.SessionID, continuation.AttemptID, continuation.Harness, continuation.LaunchEnvironment,
+		now, workspace(ctx), workOrderID, claim.WorkerID, claim.ClaimantID, claim.SessionID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return core.WorkOrder{}, store.ErrWorkOrderClaimLost
+	}
+	if err != nil {
+		return core.WorkOrder{}, err
+	}
+	q := s.queries.WithTx(tx)
+	if err = insertEvent(ctx, q, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.continuation_reported", Payload: core.JSONPayload(map[string]any{
+		"work_order_id": order.ID, "attempt_id": continuation.AttemptID, "harness": continuation.Harness,
+		"launch_environment": continuation.LaunchEnvironment,
+	}), At: now}); err != nil {
+		return core.WorkOrder{}, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return core.WorkOrder{}, err
+	}
+	return order, nil
+}
+
 func (s *Store) ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID string, claim core.WorkOrderClaimIdentity, release core.WorkOrderRelease) (core.WorkOrder, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
