@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -56,6 +57,128 @@ func runHarnessChild(ctx context.Context, c *client, credential string, item wor
 
 func runHarnessChildWithOutput(ctx context.Context, c *client, credential string, item workerservice.DispatchOrder, stdout, stderr io.Writer) error {
 	return runHarnessChildWithFirstActivityTimeoutAndOutput(ctx, c, credential, item, config.DefaultFirstActivityTimeout, stdout, stderr)
+}
+
+func TestRecoveredHarnessContinuationLaunchAndCapture(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		dispatch    string
+		credential  string
+		recordedEnv string
+		wantResume  bool
+		wantReason  string
+	}{
+		{name: "worker matching recovery resumes", dispatch: "worker", credential: "worker-credential", recordedEnv: "worker:worker-1", wantResume: true, wantReason: "eligible_match"},
+		{name: "worker environment mismatch starts cold", dispatch: "worker", credential: "worker-credential", recordedEnv: "worker:other", wantReason: "launch_environment_mismatch"},
+		{name: "attached run matching recovery resumes", dispatch: "run", credential: "user-credential", recordedEnv: continuationLaunchEnvironment(core.WorkOrder{}, "run", "demo", "user-credential"), wantResume: true, wantReason: "eligible_match"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("CONVEYOR_FAKE_HARNESS", "1")
+			t.Setenv("CONVEYOR_FAKE_HARNESS_NATIVE_SESSION", "native-current")
+			argvReport := filepath.Join(t.TempDir(), "argv.txt")
+			t.Setenv("CONVEYOR_FAKE_HARNESS_ARGV_REPORT", argvReport)
+
+			state := core.WorkOrderClaimed
+			var mu sync.Mutex
+			var capture map[string]any
+			var progress []string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/mcp" {
+					var request struct {
+						Params struct {
+							Name      string         `json:"name"`
+							Arguments map[string]any `json:"arguments"`
+						} `json:"params"`
+					}
+					_ = json.NewDecoder(r.Body).Decode(&request)
+					mu.Lock()
+					switch request.Params.Name {
+					case "get_work_order":
+					case "report_continuation":
+						capture = request.Params.Arguments
+					case "report_progress":
+						progress = append(progress, fmt.Sprint(request.Params.Arguments["message"]))
+					case "submit_for_review":
+						state = core.WorkOrderSubmitted
+					default:
+						mu.Unlock()
+						http.Error(w, "unexpected tool "+request.Params.Name, http.StatusBadRequest)
+						return
+					}
+					mu.Unlock()
+					_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": map[string]any{"content": []map[string]string{{"type": "text", "text": `{"ok":true}`}}}})
+					return
+				}
+				switch {
+				case strings.HasSuffix(r.URL.Path, "/claim"):
+					_ = json.NewEncoder(w).Encode(core.WorkOrder{
+						ID: "recovered-implement", Stage: core.StageImplement, State: core.WorkOrderClaimed,
+						SessionID: "claimed-session", AttemptID: "attempt-current", WorkerID: "worker-1",
+						LastAttemptID: "attempt-prior", LastFailureMessage: core.WorkOrderReleaseReasonOperatorCheckpointReached,
+						OperatorDirection: "Proceed with the selected option.", ContinuationSessionID: "native-prior",
+						ContinuationAttemptID: "attempt-prior", ContinuationHarness: "claude", ContinuationLaunchEnvironment: test.recordedEnv,
+						LeaseExpiresAt: time.Now().Add(time.Minute),
+					})
+				case strings.HasSuffix(r.URL.Path, "/renew"):
+					mu.Lock()
+					current := state
+					mu.Unlock()
+					_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: "recovered-implement", State: current, LeaseExpiresAt: time.Now().Add(time.Minute)})
+				case strings.HasSuffix(r.URL.Path, "/reconcile"):
+					mu.Lock()
+					current := state
+					mu.Unlock()
+					_ = json.NewEncoder(w).Encode(workerservice.ClaimReconciliation{WorkOrder: core.WorkOrder{ID: "recovered-implement", State: current}, Authorized: current == core.WorkOrderClaimed})
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer server.Close()
+
+			item := workerservice.DispatchOrder{
+				Order: core.WorkOrder{ID: "recovered-implement", Stage: core.StageImplement},
+				Task:  core.Task{ID: "task"}, Dispatch: test.dispatch,
+				Harness: config.Harness{
+					Name: "claude", Command: []string{os.Args[0], "-test.run=TestWorkerHarnessHelper", "--", "{prompt}", "{mcp_config}"},
+					ResumeCommand: []string{"--resume", "{session_id}"}, MCPTransport: config.MCPTransportJSONFile,
+				},
+			}
+			var stdout, stderr bytes.Buffer
+			if err := runHarnessChildWithOutput(t.Context(), &client{base: server.URL, workspace: "demo"}, test.credential, item, &stdout, &stderr); err != nil {
+				t.Fatalf("launch: %v stdout=%s stderr=%s", err, stdout.String(), stderr.String())
+			}
+			argv, err := os.ReadFile(argvReport)
+			if err != nil {
+				t.Fatal(err)
+			}
+			hasResume := strings.Contains(string(argv), "--resume\nnative-prior")
+			if hasResume != test.wantResume {
+				t.Fatalf("resume=%v argv=%q", hasResume, argv)
+			}
+			if test.wantResume && !strings.Contains(string(argv), "# Operator direction\n\nProceed with the selected option.") {
+				t.Fatalf("resumed prompt omitted operator direction: %q", argv)
+			}
+			deadline := time.Now().Add(time.Second)
+			for {
+				mu.Lock()
+				reported := capture != nil
+				mu.Unlock()
+				if reported || time.Now().After(deadline) {
+					break
+				}
+				time.Sleep(time.Millisecond)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			wantProgress := "conveyor continuation recovery: mode=cold reason=" + test.wantReason
+			if test.wantResume {
+				wantProgress = "conveyor continuation recovery: mode=resumed reason=" + test.wantReason
+			}
+			if capture["continuation_session_id"] != "native-current" || capture["attempt_id"] != "attempt-current" || !slices.Contains(progress, wantProgress) {
+				t.Fatalf("capture=%v progress=%v want=%q", capture, progress, wantProgress)
+			}
+		})
+	}
 }
 
 func TestWorkerHarnessProbesRetryUnhealthyWithBoundedBackoffAndReportRecovery(t *testing.T) {
@@ -2015,10 +2138,27 @@ func TestWorkerHarnessHelper(t *testing.T) {
 		fmt.Fprintf(os.Stdout, "token=%s address=%s\n", os.Getenv("CONVEYOR_API_TOKEN"), os.Getenv("CONVEYOR_ADDR"))
 		fmt.Fprintf(os.Stderr, "session=%s client=%s\n", os.Getenv("CONVEYOR_SESSION_ID"), os.Getenv("CONVEYOR_CLIENT_TOKEN"))
 	}
-	prompt, configPath := os.Args[len(os.Args)-2], os.Args[len(os.Args)-1]
+	var prompt, configPath string
+	for _, argument := range os.Args {
+		if strings.Contains(argument, "Work on Conveyor work order") {
+			prompt = argument
+		}
+		if filepath.Base(argument) == "mcp.json" {
+			configPath = argument
+		}
+	}
 	session, orderID := os.Getenv("CONVEYOR_SESSION_ID"), os.Getenv("CONVEYOR_WORK_ORDER_ID")
-	if session == "" || !strings.Contains(prompt, session) {
+	if session == "" || configPath == "" || !strings.Contains(prompt, session) {
 		t.Fatalf("prompt does not carry exact session_id %q: %s", session, prompt)
+	}
+	if nativeSession := os.Getenv("CONVEYOR_FAKE_HARNESS_NATIVE_SESSION"); nativeSession != "" {
+		data, _ := json.Marshal(map[string]string{"type": "system", "subtype": "init", "session_id": nativeSession})
+		fmt.Fprintln(os.Stdout, string(data))
+	}
+	if reportPath := os.Getenv("CONVEYOR_FAKE_HARNESS_ARGV_REPORT"); reportPath != "" {
+		if err := os.WriteFile(reportPath, []byte(strings.Join(os.Args, "\n")+"\n"+prompt), 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
 	data, err := os.ReadFile(configPath)
 	if err != nil {
