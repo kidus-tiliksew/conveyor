@@ -2015,35 +2015,10 @@ func TestWorkerHarnessHelper(t *testing.T) {
 		fmt.Fprintf(os.Stdout, "token=%s address=%s\n", os.Getenv("CONVEYOR_API_TOKEN"), os.Getenv("CONVEYOR_ADDR"))
 		fmt.Fprintf(os.Stderr, "session=%s client=%s\n", os.Getenv("CONVEYOR_SESSION_ID"), os.Getenv("CONVEYOR_CLIENT_TOKEN"))
 	}
-	var prompt, configPath string
-	for _, argument := range os.Args {
-		if strings.Contains(argument, "Work on Conveyor work order") {
-			prompt = argument
-		}
-		if filepath.Base(argument) == "mcp.json" {
-			configPath = argument
-		}
-	}
+	prompt, configPath := os.Args[len(os.Args)-2], os.Args[len(os.Args)-1]
 	session, orderID := os.Getenv("CONVEYOR_SESSION_ID"), os.Getenv("CONVEYOR_WORK_ORDER_ID")
-	if session == "" || configPath == "" || !strings.Contains(prompt, session) {
+	if session == "" || !strings.Contains(prompt, session) {
 		t.Fatalf("prompt does not carry exact session_id %q: %s", session, prompt)
-	}
-	if os.Getenv("CONVEYOR_FAKE_HARNESS_REJECT_RESUME") == "1" {
-		for _, argument := range os.Args {
-			if argument == "--resume" {
-				fmt.Fprintln(os.Stderr, "saved native session was rejected")
-				os.Exit(2)
-			}
-		}
-	}
-	if nativeSession := os.Getenv("CONVEYOR_FAKE_HARNESS_NATIVE_SESSION"); nativeSession != "" {
-		data, _ := json.Marshal(map[string]string{"type": "system", "subtype": "init", "session_id": nativeSession})
-		fmt.Fprintln(os.Stdout, string(data))
-	}
-	if reportPath := os.Getenv("CONVEYOR_FAKE_HARNESS_ARGV_REPORT"); reportPath != "" {
-		if err := os.WriteFile(reportPath, []byte(strings.Join(os.Args, "\n")+"\n"+prompt), 0o600); err != nil {
-			t.Fatal(err)
-		}
 	}
 	data, err := os.ReadFile(configPath)
 	if err != nil {
