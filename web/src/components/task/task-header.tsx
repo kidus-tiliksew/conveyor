@@ -3,17 +3,17 @@ import { Link } from '@tanstack/react-router'
 import {
   Check,
   ChevronDown,
-  ChevronRight,
   ChevronUp,
   ExternalLink,
   GitBranch,
   GitPullRequest,
   Hand,
   Link2Off,
+  Terminal,
   Trash2,
 } from 'lucide-react'
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
-import { assigneeName, dependencyRelationLabel, parseProvenance, pullRequestURL } from '../../lib/activity'
+import { assigneeName, dependencyRelationLabel, pullRequestURL } from '../../lib/activity'
 import { cancelTask, removeTaskDependency, setTaskAssignee, setTaskHold } from '../../lib/api'
 import { findBlueprint } from '../../lib/blueprint'
 import { taskStateLabels } from '../../lib/contracts'
@@ -44,7 +44,6 @@ import { AssigneeChip } from './assignee-chip'
 // the whole page.
 export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sheet' | 'full' }) {
   const canOperate = useWorkspaceCapability('operate_gates')
-  const provenance = parseProvenance(item.task.source)
   const prURL = pullRequestURL(item.events)
   const Heading = variant === 'full' ? 'h1' : 'h2'
   const relatedRoute = relatedTaskRoute(variant)
@@ -55,9 +54,6 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
   const blockingIDs = new Set(item.task.blocking_task_ids ?? [])
   const unsatisfiableIDs = new Set(item.stalled?.unsatisfiable_edge ? (item.stalled.blocking_task_ids ?? []) : [])
   const stateLabel = item.stalled?.needed ? 'Stalled' : (taskStateLabels[item.task.state] ?? item.task.state)
-  const issueLabel = item.task.github?.issue_number
-    ? `${item.task.github.repository}#${item.task.github.issue_number}`
-    : ''
   const mergedChildren = item.task.children?.filter((child) => child.state === 'merged').length ?? 0
   const closedChildren = item.task.children?.filter((child) => child.state === 'closed').length ?? 0
   const openChildren = (item.task.children?.length ?? 0) - mergedChildren - closedChildren
@@ -114,17 +110,16 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
           </span>
         )}
       </div>
-      <Heading
-        className={cn('font-semibold leading-snug tracking-tight', variant === 'full' ? 'text-xl' : 'text-base')}
-      >
+      <Heading className={cn('font-semibold leading-snug tracking-tight', variant === 'full' ? 'text-xl' : 'text-lg')}>
         {item.task.title}
       </Heading>
       {item.task.body && <TaskBody body={item.task.body} />}
 
       <dl
         className={cn(
-          'mt-4 grid gap-x-8 gap-y-2.5 text-xs',
-          variant === 'full' ? 'grid-cols-2 lg:grid-cols-4' : 'grid-cols-2',
+          'mt-5 grid grid-cols-[minmax(5.5rem,max-content)_minmax(0,1fr)] items-baseline gap-x-6 gap-y-2 text-[13px] leading-5',
+          variant === 'full' &&
+            'lg:grid-cols-[minmax(5.5rem,max-content)_minmax(0,1fr)_minmax(5.5rem,max-content)_minmax(0,1fr)] lg:gap-x-10',
         )}
       >
         <Fact label="Repo" value={item.task.repo} />
@@ -139,7 +134,6 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
           }
         />
         <Fact label="Created" value={absoluteTime(item.task.created_at)} />
-        <Fact label="Human approval" value={approvalLabel(item.task.spec_approval, item.task.merge_approval)} />
         {/* A labelled fact answers "who holds this?", so it says Unassigned
             rather than going blank — unlike the list rows and board cards,
             where absence is the answer. */}
@@ -197,22 +191,6 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
             }
           />
         )}
-        {/* Suppressed when the task was raised from the very issue Conveyor
-            went on to adopt — the Issue fact below already links it. */}
-        {provenance.label !== issueLabel && (
-          <Fact
-            label="Raised by"
-            value={
-              provenance.href ? (
-                <a href={provenance.href} target="_blank" rel="noreferrer" className="text-primary hover:underline">
-                  {provenance.label}
-                </a>
-              ) : (
-                provenance.label
-              )
-            }
-          />
-        )}
         {item.task.github && (
           <Fact
             label="Issue"
@@ -252,21 +230,32 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
             }
           />
         )}
+        {item.task.policy_contract && (
+          <Fact
+            label={
+              <span
+                className="cursor-help underline decoration-dotted decoration-edge underline-offset-2"
+                title="Frozen at intake — the task keeps the policy it was created with even if workspace defaults change later."
+              >
+                Policy
+              </span>
+            }
+            value={<span className="whitespace-normal">{policySummary(item.task.policy_contract)}</span>}
+          />
+        )}
       </dl>
-
-      {item.task.policy_contract && <TaskPolicySummary contract={item.task.policy_contract} />}
 
       {canOperate && unsatisfiableIDs.size > 0 && (
         <UnlinkDependencyControl item={item} dependencyIDs={[...unsatisfiableIDs]} />
       )}
 
       {(item.task.children?.length ?? 0) > 0 && (
-        <section className="mt-4 rounded-md border border-border p-3">
-          <div className="flex items-center justify-between gap-3">
-            <h3 className="text-sm font-semibold">Blueprint tasks</h3>
-            <span className="text-xs text-muted">{childRollup}</span>
+        <section className="mt-5 rounded-md border border-border">
+          <div className="flex items-baseline justify-between gap-3 border-b border-border px-3 py-2">
+            <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-muted">Blueprint tasks</h3>
+            <span className="text-[11px] text-faint">{childRollup}</span>
           </div>
-          <ul className="mt-2 space-y-1.5">
+          <ul className="space-y-1.5 px-3 py-2.5">
             {item.task.children!.map((child) => (
               <li key={child.id} className="flex items-center gap-2 text-xs">
                 <Badge variant="mono">{child.origin_sub_id}</Badge>
@@ -284,40 +273,26 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
         </section>
       )}
 
-      <div className="mt-3 flex flex-wrap gap-x-6 gap-y-2">
+      <div className="mt-4">
         <Checkout item={item} />
       </div>
     </div>
   )
 }
 
-// Human approval stated as what a reviewer will be asked to do, not as the
-// pair of policy flags behind it.
-function approvalLabel(specApproval: boolean, mergeApproval: boolean) {
-  if (specApproval && mergeApproval) return 'Spec and merge'
-  if (specApproval) return 'Spec only'
-  if (mergeApproval) return 'Merge only'
-  return 'None — runs to merge'
-}
-
-function TaskPolicySummary({ contract }: { contract: TaskPolicyContract }) {
+// The frozen intake-time contract as one quiet line of facts; what "frozen"
+// means rides the row label's tooltip instead of a boxed section of its own.
+function policySummary(contract: TaskPolicyContract) {
   const seats = contract.review?.seats?.length ?? 0
   const timeouts = contract.stage_timeouts ?? { spec: '', implement: '', review: '' }
-  return (
-    <section className="mt-4 rounded-md border border-border bg-surface p-3" aria-label="Frozen task policy">
-      <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <h3 className="text-sm font-semibold">Frozen policy</h3>
-        <span className="text-[11px] text-faint">Policy-only projection of the task's intake-time contract</span>
-      </div>
-      <dl className="mt-2 grid gap-x-6 gap-y-2 text-xs sm:grid-cols-2 lg:grid-cols-5">
-        <Fact label="Plan timeout" value={timeouts.spec || 'Not recorded'} />
-        <Fact label="Implementation timeout" value={timeouts.implement || 'Not recorded'} />
-        <Fact label="Review timeout" value={timeouts.review || 'Not recorded'} />
-        <Fact label="Review seats" value={seats || 'Not recorded'} />
-        <Fact label="Review rounds" value={contract.max_bounces || 'Not recorded'} />
-      </dl>
-    </section>
-  )
+  const parts = [
+    timeouts.spec && `Plan ${timeouts.spec}`,
+    timeouts.implement && `Implement ${timeouts.implement}`,
+    timeouts.review && `Review ${timeouts.review}`,
+    seats > 0 && `${seats} review ${seats === 1 ? 'seat' : 'seats'}`,
+    contract.max_bounces > 0 && `${contract.max_bounces} review rounds`,
+  ].filter(Boolean)
+  return parts.length > 0 ? parts.join(' · ') : 'Not recorded'
 }
 
 function UnlinkDependencyControl({ item, dependencyIDs }: { item: ActivityItem; dependencyIDs: string[] }) {
@@ -496,7 +471,7 @@ function TaskBody({ body }: { body: string }) {
     <div className="mt-2 max-w-3xl">
       <div className="relative">
         <div ref={viewportRef} id={viewportID} className={cn(!expanded && 'max-h-40 overflow-hidden')}>
-          <MarkdownProse className="text-sm text-muted">{body}</MarkdownProse>
+          <MarkdownProse className="markdown-demoted text-sm text-muted">{body}</MarkdownProse>
         </div>
         {hasOverflow && !expanded && (
           <div
@@ -523,21 +498,6 @@ function TaskBody({ body }: { body: string }) {
         </button>
       )}
     </div>
-  )
-}
-
-// A quiet inline disclosure: secondary controls stay one click away instead
-// of occupying the space above the work they configure.
-function Disclosure({ summary, note, children }: { summary: string; note?: string; children: React.ReactNode }) {
-  return (
-    <details className="group/disclosure min-w-0 basis-full sm:basis-auto">
-      <summary className="inline-flex cursor-pointer list-none items-center gap-1.5 text-xs text-muted hover:text-foreground">
-        <ChevronRight className="size-3 shrink-0 transition-transform group-open/disclosure:rotate-90" />
-        {summary}
-        {note && <span className="text-faint">{note}</span>}
-      </summary>
-      <div className="mt-2 rounded-lg border border-border bg-surface p-3">{children}</div>
-    </details>
   )
 }
 
@@ -672,26 +632,37 @@ function AssigneeControl({ item }: { item: ActivityItem }) {
   )
 }
 
-function Fact({ label, value }: { label: string; value: React.ReactNode }) {
+// One aligned row of the facts grid: dt and dd are sibling grid cells, so
+// every label shares a column and the values line up.
+function Fact({ label, value }: { label: React.ReactNode; value: React.ReactNode }) {
   return (
-    <div className="min-w-0">
-      <dt className="text-faint">{label}</dt>
-      <dd className="mt-0.5 truncate text-foreground/85">{value}</dd>
-    </div>
+    <>
+      <dt className="text-xs leading-5 text-faint">{label}</dt>
+      <dd className="min-w-0 truncate text-foreground/90">{value}</dd>
+    </>
   )
 }
 
+// The dedicated-worktree command, inline rather than behind a disclosure:
+// it is the header's one execution affordance, so it earns its single line.
 function Checkout({ item }: { item: ActivityItem }) {
+  if (item.checkout_available && item.checkout_command) {
+    return (
+      <div className="flex min-w-0 max-w-xl items-center gap-2 rounded-md border border-border bg-surface py-0.5 pl-2.5 pr-0.5">
+        <Terminal className="size-3.5 shrink-0 text-faint" aria-hidden="true" />
+        <span className="shrink-0 text-[11px] font-medium text-muted">Work on this locally</span>
+        <code className="min-w-0 flex-1 truncate font-mono text-[11px] text-faint">{item.checkout_command}</code>
+        <CopyButton value={item.checkout_command} label="Copy dedicated worktree command" />
+      </div>
+    )
+  }
+  if (!item.checkout_guidance) return null
   return (
-    <Disclosure summary="Work on this locally">
-      {item.checkout_available && item.checkout_command ? (
-        <div className="flex max-w-xl items-center gap-1">
-          <code className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted">{item.checkout_command}</code>
-          <CopyButton value={item.checkout_command} label="Copy dedicated worktree command" />
-        </div>
-      ) : (
-        <p className="max-w-xl text-[11px] leading-5 text-muted">{item.checkout_guidance}</p>
-      )}
-    </Disclosure>
+    <div className="flex max-w-xl items-start gap-2 rounded-md border border-border bg-surface px-2.5 py-1.5">
+      <Terminal className="mt-0.5 size-3.5 shrink-0 text-faint" aria-hidden="true" />
+      <p className="min-w-0 text-[11px] leading-5 text-muted">
+        <span className="font-medium">Work on this locally</span> — {item.checkout_guidance}
+      </p>
+    </div>
   )
 }
