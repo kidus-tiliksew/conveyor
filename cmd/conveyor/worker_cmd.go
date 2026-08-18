@@ -705,6 +705,8 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 	if err != nil {
 		return err
 	}
+	launchEnvironment := continuationLaunchEnvironment(claimed, item.Dispatch, c.workspace, credential)
+	continuationPlan := planContinuationLaunch(claimed, item.Harness, launchEnvironment)
 	leaseExpiresAt := claimed.LeaseExpiresAt
 	// Pre-start setup (temp directory, MCP config, spec checkout clone) can
 	// outlast the claim lease, so renewal must begin at claim time rather than
@@ -802,7 +804,11 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 		_ = release(core.WorkOrderOutcomeReleased, "prepare MCP config failed", nil)
 		return err
 	}
-	prompt := workerLaunchPrompt(item.Order, c.workspace, sessionID)
+	coldPrompt := workerLaunchPrompt(claimed, c.workspace, sessionID)
+	prompt := coldPrompt
+	if continuationPlan.Resume {
+		prompt = continuationRecoveryPrompt(prompt, claimed)
+	}
 	var effortArgv []string
 	if item.Effort != "" {
 		if item.Order.Stage == core.StageSpec || item.Order.Stage == core.StageImplement {
@@ -819,12 +825,18 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 			return fmt.Errorf("harness %s does not support effort %s", item.Harness.Name, item.Effort)
 		}
 	}
-	argv := expandHarnessWithEffortArgv(item.Harness, item.Model, effortArgv, prompt, mcpConfig)
-	if len(argv) == 0 {
+	coldArgv := expandHarnessWithEffortArgv(item.Harness, item.Model, effortArgv, coldPrompt, mcpConfig)
+	if len(coldArgv) == 0 {
 		_ = release(core.WorkOrderOutcomeReleased, "empty harness command", nil)
 		return fmt.Errorf("harness %s has an empty command", item.Harness.Name)
 	}
+	argv := coldArgv
+	if continuationPlan.Resume {
+		argv = expandHarnessWithEffortArgv(item.Harness, item.Model, effortArgv, prompt, mcpConfig)
+		argv = appendContinuationResumeArgv(argv, item.Harness.ResumeCommand, claimed.ContinuationSessionID)
+	}
 	argv, codexUsage := enableCodexJSONOutput(item.Harness, argv)
+	coldArgv, _ = enableCodexJSONOutput(item.Harness, coldArgv)
 	childAddress := c.base
 	if item.Harness.MCPTransport == config.MCPTransportEnvironment {
 		childAddress = strings.TrimRight(c.base, "/") + "/mcp"
@@ -891,6 +903,14 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 	}
 	stdoutFanout, renderer := harnessStdoutFanout(stdout, failureTail, usageDestination, item, presentation)
 	terminalRenderer = renderer
+	if continuationObserverEnabled(item.Harness, launchEnvironment) {
+		reporter := newContinuationReporter(c, credential, item, claimed, launchEnvironment, func(message string) {
+			_, _ = fmt.Fprintln(stderr, "warning:", message)
+		})
+		defer reporter.Stop()
+		observer := newContinuationSessionObserver(reporter.Observe)
+		stdoutFanout = io.MultiWriter(stdoutFanout, observer)
+	}
 	redactedStdout = &redact.Writer{Destination: stdoutFanout, Redactor: outputRedactor}
 	redactedStderr = &redact.Writer{Destination: io.MultiWriter(stderr, failureTail), Redactor: outputRedactor}
 	// Both redacted streams share one first-write signal; either stream
@@ -914,13 +934,21 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 		return lost
 	}
 	leaseExpiresAt = handoffLease
-	command := exec.CommandContext(ctx, argv[0], argv[1:]...)
-	command.Stdout = &firstActivityWriter{Destination: redactedStdout, Signal: firstActivity}
-	command.Stderr = &firstActivityWriter{Destination: redactedStderr, Signal: firstActivity}
-	command.Env = childEnv
-	command.Dir = workingDirectory
-	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if err = command.Start(); err != nil {
+	newCommand := func(commandArgv []string) *exec.Cmd {
+		command := exec.CommandContext(ctx, commandArgv[0], commandArgv[1:]...)
+		command.Stdout = &firstActivityWriter{Destination: redactedStdout, Signal: firstActivity}
+		command.Stderr = &firstActivityWriter{Destination: redactedStderr, Signal: firstActivity}
+		command.Env = childEnv
+		command.Dir = workingDirectory
+		command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		return command
+	}
+	command, _, resumeStartErr, err := startHarnessCommandWithColdFallback(continuationPlan.Resume && ctx.Err() == nil, argv, coldArgv, newCommand)
+	if resumeStartErr != nil {
+		_, _ = fmt.Fprintf(stderr, "warning: resume launch failed to start: %v; retrying cold\n", resumeStartErr)
+		continuationPlan = continuationLaunchPlan{Reason: "resume_start_failed"}
+	}
+	if err != nil {
 		if ctx.Err() != nil {
 			if item.Dispatch != "run" {
 				_ = release(core.WorkOrderOutcomeCancelled, "worker shutting down", nil)
@@ -929,6 +957,18 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 		}
 		_ = release(core.WorkOrderOutcomeChildFailure, "harness launch failed: "+err.Error(), nil)
 		return err
+	}
+	if claimed.LastAttemptID != "" {
+		auditMode := "cold"
+		if continuationPlan.Resume {
+			auditMode = "resumed"
+		}
+		auditCtx, cancel := context.WithTimeout(context.Background(), continuationReportTimeout)
+		auditMessage := "conveyor continuation recovery: mode=" + auditMode + " reason=" + continuationPlan.Reason
+		if auditErr := c.reportDispatchProgressContext(auditCtx, credential, item, sessionID, auditMessage); auditErr != nil {
+			_, _ = fmt.Fprintf(stderr, "warning: report continuation recovery progress: %v; continuing because progress telemetry is best-effort\n", auditErr)
+		}
+		cancel()
 	}
 	done := make(chan error, 1)
 	go func() { done <- command.Wait() }()
@@ -1251,6 +1291,22 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 			return ctx.Err()
 		}
 	}
+}
+
+func startHarnessCommandWithColdFallback(resume bool, argv, coldArgv []string, newCommand func([]string) *exec.Cmd) (*exec.Cmd, bool, error, error) {
+	command := newCommand(argv)
+	if err := command.Start(); err != nil {
+		if !resume {
+			return command, false, nil, err
+		}
+		resumeErr := err
+		command = newCommand(coldArgv)
+		if err = command.Start(); err != nil {
+			return command, false, resumeErr, err
+		}
+		return command, false, resumeErr, nil
+	}
+	return command, resume, nil, nil
 }
 
 func attemptAuthorityLoss(reason string, checkpoint func(string) error) error {
