@@ -5612,6 +5612,27 @@ func (s *Store) settleAcceptedReviewTx(ctx context.Context, tx pgx.Tx, q *db.Que
 			return err
 		}
 	}
+	rows, err := tx.Query(ctx, `UPDATE work_orders
+		SET continuation_session_id='',continuation_attempt_id='',continuation_harness='',continuation_launch_environment='',updated_at=$1
+		WHERE workspace_id=$2 AND task_id=$3 AND stage='implement' AND state='submitted'
+			AND (continuation_session_id<>'' OR continuation_attempt_id<>'' OR continuation_harness<>'' OR continuation_launch_environment<>'')
+		RETURNING `+workOrderColumns, now, workspace(ctx), order.TaskID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		implementation, scanErr := scanWorkOrder(rows)
+		if scanErr != nil {
+			return scanErr
+		}
+		if eventErr := insertEvent(ctx, q, core.Event{TaskID: implementation.TaskID, JobID: implementation.JobID, Kind: "work_order.updated", Payload: core.JSONPayload(implementation), At: now}); eventErr != nil {
+			return eventErr
+		}
+	}
+	if err = rows.Err(); err != nil {
+		return err
+	}
 	return nil
 }
 

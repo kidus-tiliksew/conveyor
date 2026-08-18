@@ -2159,6 +2159,20 @@ func (m *memory) settleAcceptedReviewLocked(ctx context.Context, decision core.R
 		m.jobs[job.TaskID][index] = job
 		m.appendEventLocked(ctx, core.Event{TaskID: job.TaskID, JobID: job.ID, Kind: "job.updated", Payload: core.JSONPayload(job), At: now})
 	}
+	for id, implementation := range m.workOrders {
+		if implementation.TaskID != decision.TaskID || implementation.Stage != core.StageImplement || implementation.State != core.WorkOrderSubmitted {
+			continue
+		}
+		if implementation.ContinuationSessionID == "" && implementation.ContinuationAttemptID == "" &&
+			implementation.ContinuationHarness == "" && implementation.ContinuationLaunchEnvironment == "" {
+			continue
+		}
+		implementation.ContinuationSessionID, implementation.ContinuationAttemptID = "", ""
+		implementation.ContinuationHarness, implementation.ContinuationLaunchEnvironment = "", ""
+		implementation.UpdatedAt = now
+		m.workOrders[id] = implementation
+		m.appendEventLocked(ctx, core.Event{TaskID: implementation.TaskID, JobID: implementation.JobID, Kind: "work_order.updated", Payload: core.JSONPayload(implementation), At: now})
+	}
 	return nil
 }
 
