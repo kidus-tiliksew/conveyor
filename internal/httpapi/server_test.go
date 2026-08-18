@@ -2,11 +2,13 @@ package httpapi
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
+	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -2310,6 +2312,59 @@ func TestActivityDefaultsToBoundedPageAndSupportsExplicitPaging(t *testing.T) {
 	}
 	assertPage("/v1/activity", 100, 0, 100)
 	assertPage("/v1/activity?limit=25&offset=200", 25, 200, 5)
+}
+
+func TestActivitySupportsSlimConditionalGzipDeltaReads(t *testing.T) {
+	base := store.NewMemory()
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	task := core.Task{
+		ID: "activity-delta", Workspace: "demo", Title: "Visible title", Body: strings.Repeat("detail only ", 100),
+		Repo: "conveyor", State: core.TaskQueued, CreatedAt: time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC),
+	}
+	if err := base.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := base.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "task.created", At: task.CreatedAt}); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(base).Handler()
+	full := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/v1/activity", nil)
+	request.Header.Set("Accept-Encoding", "gzip")
+	handler.ServeHTTP(full, request)
+	if full.Code != http.StatusOK || full.Header().Get("Content-Encoding") != "gzip" || full.Header().Get("ETag") == "" || full.Header().Get("X-Conveyor-Cursor") == "" {
+		t.Fatalf("status=%d headers=%v", full.Code, full.Header())
+	}
+	reader, err := gzip.NewReader(full.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = reader.Close()
+	if bytes.Contains(body, []byte(`"body"`)) || bytes.Contains(body, []byte(`"policy_contract"`)) || !bytes.Contains(body, []byte(`"title":"Visible title"`)) {
+		t.Fatalf("activity summary is not slim: %s", body)
+	}
+
+	unchanged := httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodGet, "/v1/activity?since="+full.Header().Get("X-Conveyor-Cursor"), nil)
+	request.Header.Set("If-None-Match", full.Header().Get("ETag"))
+	handler.ServeHTTP(unchanged, request)
+	if unchanged.Code != http.StatusNotModified || unchanged.Body.Len() != 0 {
+		t.Fatalf("unchanged status=%d body=%s", unchanged.Code, unchanged.Body.String())
+	}
+
+	if err := base.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "task.updated", At: task.CreatedAt.Add(time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	delta := httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodGet, "/v1/activity?since="+full.Header().Get("X-Conveyor-Cursor"), nil)
+	handler.ServeHTTP(delta, request)
+	if delta.Code != http.StatusOK || !bytes.Contains(delta.Body.Bytes(), []byte(`"id":"activity-delta"`)) || delta.Header().Get("X-Conveyor-Cursor") == full.Header().Get("X-Conveyor-Cursor") {
+		t.Fatalf("delta status=%d cursor=%q body=%s", delta.Code, delta.Header().Get("X-Conveyor-Cursor"), delta.Body.String())
+	}
 }
 
 func TestCallerAttentionPagesAfterSubjectAndAttentionFiltering(t *testing.T) {

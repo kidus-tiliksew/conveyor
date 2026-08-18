@@ -4,8 +4,12 @@
 package httpapi
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1182,7 +1186,7 @@ type reviewItem struct {
 }
 
 type activityItem struct {
-	Task                      core.Task                             `json:"task"`
+	Task                      activityTask                          `json:"task"`
 	LatestStage               core.Stage                            `json:"latest_stage,omitempty"`
 	LastEventAt               time.Time                             `json:"last_event_at"`
 	NeedsAttention            bool                                  `json:"needs_attention"`
@@ -1192,6 +1196,35 @@ type activityItem struct {
 	ReviewRecovery            *store.ReviewRecoveryState            `json:"review_recovery,omitempty"`
 	InterruptedReviewRecovery *store.InterruptedReviewRecoveryState `json:"interrupted_review_recovery,omitempty"`
 	Stalled                   *store.StalledState                   `json:"stalled,omitempty"`
+}
+
+// activityTask is the bounded board/navigation projection. Task bodies,
+// execution policy, forge state, and other detail-only fields stay on the
+// per-task activity endpoint (design-web-dashboard).
+type activityTask struct {
+	ID              string              `json:"id"`
+	Title           string              `json:"title"`
+	Repo            string              `json:"repo"`
+	State           core.TaskState      `json:"state"`
+	NextStage       core.Stage          `json:"next_stage,omitempty"`
+	Hold            bool                `json:"hold,omitempty"`
+	Assignee        *core.TaskAssignee  `json:"assignee,omitempty"`
+	ReviewedHeadSHA string              `json:"reviewed_head_sha,omitempty"`
+	Dependencies    []core.TaskRelation `json:"dependencies,omitempty"`
+	BlockingTaskIDs []string            `json:"blocking_task_ids,omitempty"`
+	Children        []core.TaskRelation `json:"children,omitempty"`
+	Context         core.TaskContext    `json:"context,omitempty"`
+	CreatedAt       time.Time           `json:"created_at"`
+}
+
+func summarizeActivityTask(task core.Task) activityTask {
+	return activityTask{
+		ID: task.ID, Title: task.Title, Repo: task.Repo, State: task.State,
+		NextStage: task.NextStage, Hold: task.Hold, Assignee: task.Assignee,
+		ReviewedHeadSHA: task.ReviewedHeadSHA, Dependencies: task.Dependencies,
+		BlockingTaskIDs: task.BlockingTaskIDs, Children: task.Children,
+		Context: task.Context, CreatedAt: task.CreatedAt,
+	}
 }
 
 // The review inbox is the workspace's whole outstanding queue, so it reads the
@@ -1306,8 +1339,15 @@ func (s *Server) writeActivityItems(w http.ResponseWriter, r *http.Request, task
 		return
 	}
 	markerByTask := make(map[string]store.ActivityMarker, len(markers))
+	var cursor int64
 	for _, marker := range markers {
 		markerByTask[marker.TaskID] = marker
+		cursor = max(cursor, marker.LastEventID)
+	}
+	since, err := decodeActivityCursor(r.URL.Query().Get("since"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
 	}
 	proposals, err := s.Store.ListPendingProposals(r.Context())
 	if err != nil {
@@ -1322,6 +1362,7 @@ func (s *Server) writeActivityItems(w http.ResponseWriter, r *http.Request, task
 		return
 	}
 	items := make([]activityItem, 0, len(tasks))
+	fullItems := make([]activityItem, 0, len(tasks))
 	for _, task := range tasks {
 		// Blueprint anchors are intent artifacts, not claimable work, so they
 		// leave the stage-grouped board and its counts for the Blueprints
@@ -1340,8 +1381,8 @@ func (s *Server) writeActivityItems(w http.ResponseWriter, r *http.Request, task
 		}
 		// Project the existing presentation-only authority signal without
 		// changing any lifecycle gate (REQ-2 AC-2.2; REQ-3; design-web-dashboard).
-		items = append(items, activityItem{
-			Task: task, LatestStage: marker.LatestStage, LastEventAt: marker.LastEventAt,
+		item := activityItem{
+			Task: summarizeActivityTask(task), LatestStage: marker.LatestStage, LastEventAt: marker.LastEventAt,
 			NeedsAttention:            needsAttention(task, marker, pendingAuthority[task.ID]),
 			PendingAuthority:          pendingAuthority[task.ID],
 			ForgeFailure:              marker.ForgeFailure,
@@ -1349,9 +1390,66 @@ func (s *Server) writeActivityItems(w http.ResponseWriter, r *http.Request, task
 			ReviewRecovery:            marker.ReviewRecovery,
 			InterruptedReviewRecovery: marker.InterruptedReviewRecovery,
 			Stalled:                   marker.Stalled,
-		})
+		}
+		fullItems = append(fullItems, item)
+		if since == 0 || marker.LastEventID > since {
+			items = append(items, item)
+		}
 	}
-	writeJSON(w, http.StatusOK, items)
+	w.Header().Set("X-Conveyor-Cursor", encodeActivityCursor(cursor))
+	writeConditionalJSON(w, r, items, fullItems)
+}
+
+func encodeActivityCursor(id int64) string {
+	return base64.RawURLEncoding.EncodeToString([]byte("v1:" + strconv.FormatInt(id, 10)))
+}
+
+func decodeActivityCursor(value string) (int64, error) {
+	if value == "" {
+		return 0, nil
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(value)
+	if err != nil || !strings.HasPrefix(string(raw), "v1:") {
+		return 0, fmt.Errorf("invalid activity cursor")
+	}
+	id, err := strconv.ParseInt(strings.TrimPrefix(string(raw), "v1:"), 10, 64)
+	if err != nil || id < 0 {
+		return 0, fmt.Errorf("invalid activity cursor")
+	}
+	return id, nil
+}
+
+func writeConditionalJSON(w http.ResponseWriter, r *http.Request, v, etagValue any) {
+	body, err := json.Marshal(v)
+	if err != nil {
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	body = append(body, '\n')
+	etagBody, err := json.Marshal(etagValue)
+	if err != nil {
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	sum := sha256.Sum256(etagBody)
+	etag := fmt.Sprintf("\"%x\"", sum)
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("ETag", etag)
+	w.Header().Set("Vary", "Accept-Encoding")
+	if r.Header.Get("If-None-Match") == etag {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	if strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+		w.Header().Set("Content-Encoding", "gzip")
+		w.WriteHeader(http.StatusOK)
+		zw := gzip.NewWriter(w)
+		_, _ = io.Copy(zw, bytes.NewReader(body))
+		_ = zw.Close()
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(body)
 }
 
 // needsAttention is the one derivation the stage-grouped board and the

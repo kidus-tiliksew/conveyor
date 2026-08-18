@@ -1,12 +1,11 @@
-import { useQueries } from '@tanstack/react-query'
+import { useQueries, useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { useEffect } from 'react'
 import { pendingUserRequestChanges, userRunImplementation } from '../../lib/activity'
-import { fetchTaskActivity } from '../../lib/api'
+import { fetchCallerIdentity, fetchTaskActivity } from '../../lib/api'
 import { isBlueprintAnchor } from '../../lib/blueprint'
 import type { ActivityItem } from '../../lib/types'
 import { relativeTime } from '../../lib/utils'
-import { useCallerAttentionTasks, useWorkspaceSelection } from '../app-shell'
+import { useActivity, useOperatorToken, useWorkspaceSelection } from '../app-shell'
 import { type AttentionItem, AttentionSurface } from '../documents/attention-surface'
 import { Button } from '../ui/button'
 
@@ -16,10 +15,9 @@ import { Button } from '../ui/button'
 // attention, staleness, bounce, hold, or assignment derivation — it is the
 // presentation of a marker the server already keeps.
 //
-// The caller-scoped attention projection narrows the candidates before paging;
-// the task's own detail, which carries the durable events, then decides and
-// supplies the feedback. The component consumes every attention page so an old
-// return cannot disappear behind newer unrelated Board activity.
+// The shared workspace activity cache supplies the candidates. Caller identity
+// preserves the original assignee scope, and the task's own detail, which
+// carries the durable events, then decides and supplies the feedback.
 
 // Enough of the feedback to recognize which return this is, without turning an
 // attention entry into the task. The whole text is on the task itself.
@@ -40,12 +38,17 @@ function nextStep(item: ActivityItem): string {
 
 export function ReturnedForChangesAttention() {
   const { workspace } = useWorkspaceSelection()
-  const attention = useCallerAttentionTasks()
-  useEffect(() => {
-    if (attention.hasNextPage && !attention.isFetchingNextPage) void attention.fetchNextPage()
-  }, [attention.hasNextPage, attention.isFetchingNextPage, attention.fetchNextPage])
-  const candidates = (attention.data?.pages.flatMap((page) => page.items) ?? [])
+  const token = useOperatorToken()
+  const attention = useActivity()
+  const identity = useQuery({
+    queryKey: ['caller-identity', token, workspace],
+    queryFn: () => fetchCallerIdentity(token),
+    enabled: Boolean(token && workspace),
+    retry: false,
+  })
+  const candidates = (attention.data?.items ?? [])
     .filter((summary) => summary.needs_attention && !isBlueprintAnchor(summary.task))
+    .filter((summary) => summary.task.assignee?.user_id === identity.data?.id)
     .filter((summary) => summary.task.state !== 'merged' && summary.task.state !== 'closed')
     .map((summary) => summary.task.id)
 

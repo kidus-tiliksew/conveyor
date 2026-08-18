@@ -217,8 +217,25 @@ export interface SpecVersion {
   approved_at?: string
 }
 
+export type ActivityTask = Pick<
+  Task,
+  | 'id'
+  | 'title'
+  | 'repo'
+  | 'state'
+  | 'next_stage'
+  | 'hold'
+  | 'assignee'
+  | 'reviewed_head_sha'
+  | 'dependencies'
+  | 'blocking_task_ids'
+  | 'children'
+  | 'context'
+  | 'created_at'
+>
+
 export interface ActivitySummary {
-  task: Task
+  task: ActivityTask
   latest_stage?: Stage
   last_event_at: string
   needs_attention: boolean
@@ -235,6 +252,8 @@ export interface ActivityPage {
   total: number
   limit: number
   offset: number
+  cursor?: string
+  etag?: string
 }
 
 // The four durable plan outcomes the Tasks view renders (AC-1.4). "none" is a

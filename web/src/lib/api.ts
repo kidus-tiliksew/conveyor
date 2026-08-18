@@ -60,27 +60,66 @@ async function getJSON<T>(url: string): Promise<T> {
 // differently and neither one narrows a fully-loaded workspace in the browser.
 async function fetchActivityPage(
   path: string,
-  input: { limit: number; offset: number; filter?: Record<string, string | string[] | undefined> },
+  input: {
+    limit: number
+    offset: number
+    filter?: Record<string, string | string[] | undefined>
+    cursor?: string
+    etag?: string
+    previous?: ActivityPage
+  },
 ) {
   const query = new URLSearchParams({ limit: String(input.limit), offset: String(input.offset) })
+  if (input.cursor) query.set('since', input.cursor)
   for (const [key, value] of Object.entries(input.filter ?? {})) {
     for (const entry of Array.isArray(value) ? value : value ? [value] : []) query.append(key, entry)
   }
-  const response = await fetch(workspaceURL(`${path}?${query}`), { headers: authHeaders() })
+  const headers = new Headers(authHeaders())
+  if (input.etag) headers.set('If-None-Match', input.etag)
+  const response = await fetch(workspaceURL(`${path}?${query}`), { headers })
+  if (response.status === 304 && input.previous) return input.previous
+  if (response.status === 400 && input.cursor) {
+    return fetchActivityPage(path, { ...input, cursor: undefined, etag: undefined, previous: undefined })
+  }
   if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
-  const items = (await response.json()) as ActivitySummary[]
+  const incoming = (await response.json()) as ActivitySummary[]
+  // A representation can change through a read-time projection even when no
+  // task event advances its marker. The ETag detects that case; retrying cold
+  // prevents an empty delta from blessing stale summary data.
+  if (input.cursor && input.previous && incoming.length === 0 && response.headers.get('ETag') !== input.etag) {
+    return fetchActivityPage(path, { ...input, cursor: undefined, etag: undefined, previous: undefined })
+  }
+  const items =
+    input.cursor && input.previous ? mergeActivity(input.previous.items, incoming).slice(0, input.limit) : incoming
   return {
     items,
-    total: Number(response.headers.get('X-Conveyor-Total') ?? items.length),
+    total:
+      input.cursor && input.previous
+        ? input.previous.total
+        : Number(response.headers.get('X-Conveyor-Total') ?? items.length),
     limit: Number(response.headers.get('X-Conveyor-Limit') ?? input.limit),
     offset: Number(response.headers.get('X-Conveyor-Offset') ?? input.offset),
+    cursor: response.headers.get('X-Conveyor-Cursor') ?? input.cursor,
+    etag: response.headers.get('ETag') ?? undefined,
   } satisfies ActivityPage
+}
+
+function mergeActivity(current: ActivitySummary[], incoming: ActivitySummary[]): ActivitySummary[] {
+  const byID = new Map(current.map((item) => [item.task.id, item]))
+  for (const item of incoming) byID.set(item.task.id, item)
+  return [...byID.values()].sort((a, b) => {
+    const created = new Date(b.task.created_at).getTime() - new Date(a.task.created_at).getTime()
+    return created || a.task.id.localeCompare(b.task.id)
+  })
 }
 
 export function fetchActivity(input: {
   limit: number
   offset: number
   filter?: Record<string, string | string[] | undefined>
+  cursor?: string
+  etag?: string
+  previous?: ActivityPage
 }) {
   return fetchActivityPage('/v1/activity', input)
 }
