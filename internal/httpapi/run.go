@@ -159,8 +159,15 @@ func (s *Server) taskRunPendingProposals(ctx context.Context, task core.Task) ([
 		default:
 			continue
 		}
+		version := item.Version
+		if kind == "decision" {
+			// Decisions are immutable single-version records. Project that
+			// proposed record as v1 so every proposal kind has an explicit
+			// version in the run context.
+			version = 1
+		}
 		proposals = append(proposals, workerservice.TaskRunProposal{
-			Kind: kind, DocumentID: item.ID, Title: item.Title, Version: item.Version,
+			Kind: kind, DocumentID: item.ID, Title: item.Title, Version: version,
 			CanConfirm: canConfirmDocuments, ActorHint: "an operator can confirm",
 		})
 	}

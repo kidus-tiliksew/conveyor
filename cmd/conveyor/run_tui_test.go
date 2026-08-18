@@ -134,6 +134,67 @@ func TestRunTUIGateInputRequiresTypedActionsAndFeedback(t *testing.T) {
 	}
 }
 
+func TestRunTUIProposalPanelReplacesStateAndRequiresFullWord(t *testing.T) {
+	actions := make(chan runTUIAction, 2)
+	model := newRunTUIModel(runTUIStage{task: core.Task{ID: "target"}}, nil, actions, make(chan struct{}, 1))
+	design := workerservice.TaskRunProposal{Kind: "design", DocumentID: "design-run", Title: "Attached run", Version: 4, CanConfirm: true, ActorHint: "an operator can confirm"}
+	decision := workerservice.TaskRunProposal{Kind: "decision", DocumentID: "DEC-8", Title: "Keep authority server-side", Version: 1, CanConfirm: true, ActorHint: "an operator can confirm"}
+	updated, _ := model.Update(runTUIProposalsMsg{design, decision})
+	model = updated.(runTUIModel)
+	view := model.View()
+	for _, want := range []string{"Pending task proposal", "design-run", "Attached run", "v4", "Tab select proposal", "confirm/wait"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("proposal view missing %q: %q", want, view)
+		}
+	}
+	for _, key := range []tea.KeyMsg{{Type: tea.KeyRunes, Runes: []rune("c")}, {Type: tea.KeyEnter}} {
+		updated, _ = model.Update(key)
+		model = updated.(runTUIModel)
+	}
+	select {
+	case action := <-actions:
+		t.Fatalf("partial confirmation produced action: %+v", action)
+	default:
+	}
+	for _, key := range []tea.KeyMsg{{Type: tea.KeyTab}, {Type: tea.KeyRunes, Runes: []rune("confirm")}, {Type: tea.KeyEnter}} {
+		updated, _ = model.Update(key)
+		model = updated.(runTUIModel)
+	}
+	action := <-actions
+	if action.decision != runConfirmProposal || action.proposal == nil || action.proposal.DocumentID != decision.DocumentID {
+		t.Fatalf("proposal action=%+v", action)
+	}
+	updated, _ = model.Update(runTUIProposalsMsg{decision})
+	model = updated.(runTUIModel)
+	if strings.Contains(model.View(), design.DocumentID) || strings.Count(model.View(), decision.DocumentID) != 1 {
+		t.Fatalf("proposal refresh did not replace in place: %q", model.View())
+	}
+	updated, _ = model.Update(runTUIProposalsMsg{})
+	if strings.Contains(updated.(runTUIModel).View(), "Pending task proposal") {
+		t.Fatalf("cleared proposal remained visible: %q", updated.(runTUIModel).View())
+	}
+}
+
+func TestRunTUIProposalWithoutCapabilityShowsActorAndCannotConfirm(t *testing.T) {
+	actions := make(chan runTUIAction, 1)
+	model := newRunTUIModel(runTUIStage{}, nil, actions, make(chan struct{}, 1))
+	proposal := workerservice.TaskRunProposal{Kind: "design", DocumentID: "design-run", Title: "Attached run", Version: 5, ActorHint: "an operator can confirm"}
+	updated, _ := model.Update(runTUIProposalsMsg{proposal})
+	model = updated.(runTUIModel)
+	for _, key := range []tea.KeyMsg{{Type: tea.KeyRunes, Runes: []rune("confirm")}, {Type: tea.KeyEnter}} {
+		updated, _ = model.Update(key)
+		model = updated.(runTUIModel)
+	}
+	select {
+	case action := <-actions:
+		t.Fatalf("unauthorized proposal produced action: %+v", action)
+	default:
+	}
+	if !strings.Contains(model.View(), "an operator can confirm") || !strings.Contains(model.View(), "unavailable for this credential") {
+		t.Fatalf("actor guidance missing: %q", model.View())
+	}
+}
+
 func TestRunTUICollapseClearsFinalFrame(t *testing.T) {
 	model := newRunTUIModel(runTUIStage{task: core.Task{ID: "target"}}, nil, make(chan runTUIAction, 1), make(chan struct{}, 1))
 	updated, command := model.Update(runTUICollapseMsg{})

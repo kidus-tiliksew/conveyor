@@ -236,6 +236,122 @@ func TestTaskRunHTTPHidesGateActionsWithoutCapabilities(t *testing.T) {
 	}
 }
 
+func TestTaskRunHTTPProjectsOnlyTaskAuthoredPendingProposalsWithCapabilities(t *testing.T) {
+	server, st, _ := taskRunHTTPFixture(t)
+	server.Memberships = &membershipFixture{roles: map[string]map[string]core.WorkspaceRole{
+		"local-operator": {"demo": core.WorkspaceRoleOperator},
+	}}
+	order := createTaskRunOrder(t, st, "proposal-task")
+	createTaskRunOrder(t, st, "other-task")
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	if _, _, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "design-run-context", Title: "Run context", Category: "Architecture"}, core.SystemDesignVersion{
+		Content: "# Run context\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/httpapi/run.go\n```",
+		Origin:  core.SystemDesignOriginImplementation, OriginTaskID: "proposal-task",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	decision, err := st.ProposeDecision(ctx, core.Decision{
+		Statement: "Keep confirmation authority server-derived.", Context: "The run response is advisory.", AlternativesRejected: "Client-provided authority is spoofable.",
+		Origin: core.DecisionOriginImplementation, OriginTaskID: "proposal-task",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.CreateSystemDesign(ctx, core.SystemDesign{ID: "design-other", Title: "Other", Category: "Architecture"}, core.SystemDesignVersion{
+		Content: "# Other\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/other/**\n```",
+		Origin:  core.SystemDesignOriginImplementation, OriginTaskID: "other-task",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sibling := store.WithWorkspace(t.Context(), "sibling")
+	if _, _, err = st.CreateSystemDesign(sibling, core.SystemDesign{ID: "design-sibling", Title: "Sibling", Category: "Architecture"}, core.SystemDesignVersion{
+		Content: "# Sibling\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/sibling/**\n```",
+		Origin:  core.SystemDesignOriginImplementation, OriginTaskID: "proposal-task",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	response := taskRunHTTPCall(server.Handler(), http.MethodGet, "/v1/tasks/proposal-task/run-order", "")
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var projection workerservice.DispatchOrder
+	if err = json.Unmarshal(response.Body.Bytes(), &projection); err != nil {
+		t.Fatal(err)
+	}
+	if projection.Order.ID != order.ID || len(projection.PendingProposals) != 2 {
+		t.Fatalf("projection=%+v", projection)
+	}
+	got := map[string]workerservice.TaskRunProposal{}
+	for _, proposal := range projection.PendingProposals {
+		got[proposal.Kind] = proposal
+		if !proposal.CanConfirm || proposal.ActorHint == "" || proposal.Version < 1 {
+			t.Fatalf("incomplete operator proposal=%+v", proposal)
+		}
+	}
+	if got["design"].DocumentID != "design-run-context" || got["decision"].DocumentID != decision.ID || got["decision"].Version != 1 {
+		t.Fatalf("proposals=%+v", projection.PendingProposals)
+	}
+	if strings.Contains(response.Body.String(), "design-other") || strings.Contains(response.Body.String(), "design-sibling") {
+		t.Fatalf("cross-task or cross-workspace proposal leaked: %s", response.Body.String())
+	}
+
+	server.Memberships = &membershipFixture{roles: map[string]map[string]core.WorkspaceRole{
+		"local-operator": {"demo": core.WorkspaceRoleExecutor},
+	}}
+	response = taskRunHTTPCall(server.Handler(), http.MethodGet, "/v1/tasks/proposal-task/run-order", "")
+	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &projection) != nil {
+		t.Fatalf("executor status=%d body=%s", response.Code, response.Body.String())
+	}
+	for _, proposal := range projection.PendingProposals {
+		if proposal.CanConfirm || proposal.ActorHint != "an operator can confirm" {
+			t.Fatalf("executor gained confirmation authority: %+v", proposal)
+		}
+	}
+	unchanged, err := st.GetWorkOrder(ctx, order.ID)
+	if err != nil || unchanged.State != core.WorkOrderQueued || unchanged.SessionID != "" {
+		t.Fatalf("read mutated order=%+v err=%v", unchanged, err)
+	}
+}
+
+func TestTaskRunHTTPProjectsPendingPlanRevisionWithoutClaimMutation(t *testing.T) {
+	ctx, st, server, taskID, orderID := newPlanRevisionReviewServer(t)
+	cfg := &config.Config{Workspace: "demo", Routing: config.Routing{Stages: map[string]config.StageRoute{
+		"spec": {Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"}, "implement": {Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"},
+	}}, Repos: []config.Repo{{Name: "conveyor", URL: "https://example.test/conveyor.git", Base: "main"}}}
+	provider := func(context.Context) (*config.Config, error) { return cfg, nil }
+	server.ConfigProvider = provider
+	server.BearerToken = "user-token"
+	server.WorkOrders = &workorder.Service{Store: st, ConfigProvider: provider}
+	server.Workers = &workerservice.Service{Store: st, WorkOrders: server.WorkOrders, ConfigProvider: provider}
+	server.Memberships = &membershipFixture{roles: map[string]map[string]core.WorkspaceRole{
+		"local-operator": {"demo": core.WorkspaceRoleMaintainer},
+	}}
+	before, err := st.GetWorkOrder(ctx, orderID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := taskRunHTTPCall(server.Handler(), http.MethodGet, "/v1/tasks/"+taskID+"/run-order", "")
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var projection workerservice.DispatchOrder
+	if err = json.Unmarshal(response.Body.Bytes(), &projection); err != nil {
+		t.Fatal(err)
+	}
+	if len(projection.PendingProposals) != 1 {
+		t.Fatalf("proposals=%+v", projection.PendingProposals)
+	}
+	proposal := projection.PendingProposals[0]
+	if proposal.Kind != "plan_revision" || proposal.DocumentID != taskID || proposal.Title != "Execution plan" || proposal.Version != 1 || !proposal.CanConfirm || proposal.ActorHint == "" {
+		t.Fatalf("proposal=%+v", proposal)
+	}
+	after, err := st.GetWorkOrder(ctx, orderID)
+	if err != nil || after.State != before.State || after.SessionID != before.SessionID || !after.LeaseExpiresAt.Equal(before.LeaseExpiresAt) {
+		t.Fatalf("projection mutated claim before=%+v after=%+v err=%v", before, after, err)
+	}
+}
+
 func TestTaskRunHTTPMapsConfigurationAndRepositoryConditions(t *testing.T) {
 	for _, endpoint := range []struct {
 		name   string

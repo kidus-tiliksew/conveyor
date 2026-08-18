@@ -113,7 +113,7 @@ func runTaskWithPresentation(ctx context.Context, c *client, taskID, configPath 
 				stopApp()
 				return printFinalRunSummaryStyled(output, item.Task, runStages, outputTerminal)
 			}
-			if item.Gate == nil {
+			if item.Gate == nil && (!interactiveTUI || len(item.PendingProposals) == 0) {
 				if interactiveTUI {
 					ensureApp(item.Task).Idle("Waiting for the factory — no claimable stage or pending gate")
 				} else if err = presentRunIdleStateStyled(output, item.Task, outputTerminal); err != nil {
@@ -234,7 +234,15 @@ func runTaskWithPresentation(ctx context.Context, c *client, taskID, configPath 
 				}
 			}()
 		}
-		runErr := runHarnessChildWithFirstActivityTimeoutAndRunModeAndPresentationAndStderr(stageCtx, c, c.token, selected, setup.FirstActivityTimeout, mode, presentation, childStderr)
+		runChild := func() error {
+			return runHarnessChildWithFirstActivityTimeoutAndRunModeAndPresentationAndStderr(stageCtx, c, c.token, selected, setup.FirstActivityTimeout, mode, presentation, childStderr)
+		}
+		var runErr error
+		if interactiveTUI {
+			runErr = runStageWithTaskProposalPolling(stageCtx, c, c.token, selected.Task.ID, selected.PendingProposals, ensureApp(selected.Task), runChild)
+		} else {
+			runErr = runChild()
+		}
 		cancelStage()
 		summary := renderRunStageSummary(selected.Order.Stage, time.Since(started), runErr)
 		if app != nil {
@@ -252,11 +260,17 @@ func runTaskWithPresentation(ctx context.Context, c *client, taskID, configPath 
 }
 
 func waitAtTaskRunGateAttached(ctx context.Context, c *client, controller *runTUIController, item workerservice.DispatchOrder, stage runTUIStage) (runGateDecision, string, error) {
-	if item.Gate == nil {
+	if item.Gate == nil && len(item.PendingProposals) == 0 {
 		return runGatePoll, "", nil
 	}
 	controller.drainActions()
-	controller.UpdateGate(runTUIGate{task: item.Task, gate: *item.Gate})
+	presentation := taskProposalPresentation{actions: controller.actions, update: controller.UpdateProposals, notice: controller.Notice}
+	controller.UpdateProposals(item.PendingProposals)
+	if item.Gate != nil {
+		controller.UpdateGate(runTUIGate{task: item.Task, gate: *item.Gate})
+	} else {
+		controller.ClearGate()
+	}
 	ticker := time.NewTicker(runGatePollInterval)
 	defer ticker.Stop()
 	for {
@@ -270,19 +284,95 @@ func waitAtTaskRunGateAttached(ctx context.Context, c *client, controller *runTU
 				return runGateStop, "", err
 			}
 			return runGateStop, "", nil
-		case action := <-controller.actions:
-			return action.decision, action.feedback, nil
+		case action := <-presentation.actions:
+			if action.decision != runConfirmProposal || action.proposal == nil {
+				return action.decision, action.feedback, nil
+			}
+			confirmTaskRunProposal(ctx, c, c.token, item.Task.ID, *action.proposal, presentation)
 		case <-ticker.C:
 			fresh, err := c.getTaskRunOrderContext(ctx, c.token, item.Task.ID)
 			if err != nil {
 				return runGateStop, "", err
 			}
-			if fresh == nil || fresh.Order.ID != "" || fresh.Gate == nil || fresh.Task.State == core.TaskMerged || fresh.Task.State == core.TaskClosed || fresh.Task.State == core.TaskParked {
+			if fresh == nil || fresh.Order.ID != "" || fresh.Task.State == core.TaskMerged || fresh.Task.State == core.TaskClosed || fresh.Task.State == core.TaskParked {
 				return runGatePoll, "", nil
 			}
-			controller.UpdateGate(runTUIGate{task: fresh.Task, gate: *fresh.Gate})
+			controller.UpdateProposals(fresh.PendingProposals)
+			if fresh.Gate != nil {
+				controller.UpdateGate(runTUIGate{task: fresh.Task, gate: *fresh.Gate})
+			} else {
+				controller.ClearGate()
+				if len(fresh.PendingProposals) == 0 {
+					return runGatePoll, "", nil
+				}
+			}
 		}
 	}
+}
+
+func runStageWithTaskProposalPolling(ctx context.Context, c *client, credential, taskID string, initial []workerservice.TaskRunProposal, controller *runTUIController, run func() error) error {
+	controller.drainActions()
+	presentation := taskProposalPresentation{actions: controller.actions, update: controller.UpdateProposals, notice: controller.Notice}
+	return runStageWithTaskProposalPresentation(ctx, c, credential, taskID, initial, presentation, run)
+}
+
+type taskProposalPresentation struct {
+	actions <-chan runTUIAction
+	update  func([]workerservice.TaskRunProposal)
+	notice  func(string)
+}
+
+func runStageWithTaskProposalPresentation(ctx context.Context, c *client, credential, taskID string, initial []workerservice.TaskRunProposal, presentation taskProposalPresentation, run func() error) error {
+	presentation.update(initial)
+	result := make(chan error, 1)
+	go func() { result <- run() }()
+	ticker := time.NewTicker(runGatePollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case err := <-result:
+			return err
+		case action := <-presentation.actions:
+			if action.decision == runConfirmProposal && action.proposal != nil {
+				confirmTaskRunProposal(ctx, c, credential, taskID, *action.proposal, presentation)
+			}
+		case <-ticker.C:
+			fresh, err := c.getTaskRunOrderContext(ctx, credential, taskID)
+			if err != nil {
+				presentation.notice("Pending proposal refresh failed; the run is continuing: " + err.Error())
+				continue
+			}
+			if fresh == nil {
+				presentation.update(nil)
+				continue
+			}
+			presentation.update(fresh.PendingProposals)
+		}
+	}
+}
+
+func confirmTaskRunProposal(ctx context.Context, c *client, credential, taskID string, proposal workerservice.TaskRunProposal, presentation taskProposalPresentation) {
+	err := c.confirmTaskRunProposalContext(ctx, credential, taskID, proposal)
+	if err != nil {
+		var response *workerHTTPError
+		if errors.As(err, &response) && (response.StatusCode == http.StatusConflict || response.StatusCode == http.StatusNotFound) {
+			presentation.notice("Proposal state changed before confirmation; refreshing pending proposals.")
+		} else {
+			presentation.notice("Proposal confirmation was not recorded: " + err.Error())
+		}
+	} else {
+		presentation.notice(fmt.Sprintf("Confirmed %s %s v%d; refreshing pending proposals.", proposal.Kind, proposal.DocumentID, proposal.Version))
+	}
+	fresh, refreshErr := c.getTaskRunOrderContext(ctx, credential, taskID)
+	if refreshErr != nil {
+		presentation.notice("Pending proposal refresh failed; the run is continuing: " + refreshErr.Error())
+		return
+	}
+	if fresh == nil {
+		presentation.update(nil)
+		return
+	}
+	presentation.update(fresh.PendingProposals)
 }
 
 type runGateDecision int
@@ -293,6 +383,7 @@ const (
 	runGateRequestChanges
 	runGateStop
 	runConfirmStage
+	runConfirmProposal
 )
 
 func waitAtTaskRunGate(ctx context.Context, answers *runInputSource, output io.Writer, item workerservice.DispatchOrder, styled bool) (runGateDecision, string, error) {

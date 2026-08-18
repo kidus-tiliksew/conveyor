@@ -73,18 +73,18 @@ type WorkerServiceability struct {
 }
 
 type DispatchOrder struct {
-	Order            core.WorkOrder `json:"work_order"`
-	Task             core.Task      `json:"task"`
-	Repository       config.Repo    `json:"repository"`
-	Harness          config.Harness `json:"harness"`
-	Model            string         `json:"model"`
-	Effort           string         `json:"effort,omitempty"`
-	EffortArgv       []string       `json:"effort_argv,omitempty"`
-	HarnessSelection string         `json:"harness_selection"`
-	Dispatch         string         `json:"dispatch"`
-	Confinement      string         `json:"confinement"`
-	Auth             string         `json:"auth"`
-	Gate             *TaskRunGate   `json:"gate,omitempty"`
+	Order            core.WorkOrder    `json:"work_order"`
+	Task             core.Task         `json:"task"`
+	Repository       config.Repo       `json:"repository"`
+	Harness          config.Harness    `json:"harness"`
+	Model            string            `json:"model"`
+	Effort           string            `json:"effort,omitempty"`
+	EffortArgv       []string          `json:"effort_argv,omitempty"`
+	HarnessSelection string            `json:"harness_selection"`
+	Dispatch         string            `json:"dispatch"`
+	Confinement      string            `json:"confinement"`
+	Auth             string            `json:"auth"`
+	Gate             *TaskRunGate      `json:"gate,omitempty"`
 	PendingProposals []TaskRunProposal `json:"pending_proposals"`
 }
 
@@ -93,12 +93,12 @@ type DispatchOrder struct {
 // execution credentials never receive this response or gain confirmation
 // authority through it (req-260811-0ee057 AC-2.2, AC-5.8).
 type TaskRunProposal struct {
-	Kind        string `json:"kind"`
-	DocumentID  string `json:"document_id"`
-	Title       string `json:"title"`
-	Version     int    `json:"version,omitempty"`
-	CanConfirm  bool   `json:"can_confirm"`
-	ActorHint   string `json:"actor_hint"`
+	Kind       string `json:"kind"`
+	DocumentID string `json:"document_id"`
+	Title      string `json:"title"`
+	Version    int    `json:"version,omitempty"`
+	CanConfirm bool   `json:"can_confirm"`
+	ActorHint  string `json:"actor_hint"`
 }
 
 // TaskRunGate is the read-only human-gate projection returned to an attached
