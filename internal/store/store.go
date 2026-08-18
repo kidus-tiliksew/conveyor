@@ -1394,13 +1394,6 @@ func (m *memory) RecordWorkOrderContinuation(ctx context.Context, workOrderID st
 	if continuation.AttemptID != order.AttemptID {
 		return core.WorkOrder{}, fmt.Errorf("continuation attempt does not match the active work-order attempt")
 	}
-	expectedHarness := order.Agent
-	if expectedHarness == "" {
-		expectedHarness = order.RequiredHarness
-	}
-	if expectedHarness != "" && continuation.Harness != expectedHarness {
-		return core.WorkOrder{}, fmt.Errorf("continuation harness %q does not match active harness %q", continuation.Harness, expectedHarness)
-	}
 	order.ContinuationSessionID = continuation.SessionID
 	order.ContinuationAttemptID = continuation.AttemptID
 	order.ContinuationHarness = continuation.Harness

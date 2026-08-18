@@ -401,11 +401,11 @@ func TestMCPReportContinuationIsLaunchingClientOnlyAndReplacesCapture(t *testing
 	if err := st.CreateJob(ctx, job); err != nil {
 		t.Fatal(err)
 	}
-	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement}); err != nil {
+	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, RequiredHarness: "server-pinned"}); err != nil {
 		t.Fatal(err)
 	}
 	claimed, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{
-		SessionID: "claim-session", ClientToken: "secret", ClaimantID: "worker-a", WorkerID: "worker-a", Agent: "codex", Lease: time.Minute,
+		SessionID: "claim-session", ClientToken: "secret", ClaimantID: "worker-a", WorkerID: "worker-a", Agent: "worker", Lease: time.Minute,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -721,7 +721,7 @@ func TestMCPToolsListRequiresAuthAndPublishesLifecycle(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"create_task", "set_assignee", "list_work_orders", "claim_work_order", "redispatch_work_order", "renew_work_order", "release_work_order", "request_plan_revision", "get_work_order", "read_artifact", "report_progress", "report_usage", "report_continuation", "propose_system_design_revision", "propose_decision", "upload_transcript", "submit_plan", "submit_for_review", "await_review", "submit_review_verdict"}
+	want := []string{"create_task", "set_assignee", "list_work_orders", "claim_work_order", "redispatch_work_order", "renew_work_order", "release_work_order", "request_plan_revision", "get_work_order", "read_artifact", "report_progress", "report_usage", "report_continuation", "report_continuation_launch", "propose_system_design_revision", "propose_decision", "upload_transcript", "submit_plan", "submit_for_review", "await_review", "submit_review_verdict"}
 	if len(envelope.Result.Tools) != len(want) {
 		t.Fatalf("tools = %d, want %d", len(envelope.Result.Tools), len(want))
 	}

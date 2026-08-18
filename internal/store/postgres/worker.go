@@ -274,13 +274,6 @@ func (s *Store) RecordWorkOrderContinuation(ctx context.Context, workOrderID str
 	if continuation.AttemptID != current.AttemptID {
 		return core.WorkOrder{}, fmt.Errorf("continuation attempt does not match the active work-order attempt")
 	}
-	expectedHarness := current.Agent
-	if expectedHarness == "" {
-		expectedHarness = current.RequiredHarness
-	}
-	if expectedHarness != "" && continuation.Harness != expectedHarness {
-		return core.WorkOrder{}, fmt.Errorf("continuation harness %q does not match active harness %q", continuation.Harness, expectedHarness)
-	}
 	order, err := scanWorkOrder(tx.QueryRow(ctx, `UPDATE work_orders SET continuation_session_id=$1,continuation_attempt_id=$2,
 		continuation_harness=$3,continuation_launch_environment=$4,updated_at=$5
 		WHERE workspace_id=$6 AND id=$7 AND state='claimed' AND worker_id=$8 AND claimant_id=$9 AND session_id=$10 RETURNING `+workOrderColumns,

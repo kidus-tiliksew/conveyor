@@ -705,6 +705,8 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 	if err != nil {
 		return err
 	}
+	launchEnvironment := continuationLaunchEnvironment(claimed, item.Dispatch, c.workspace, credential)
+	continuationPlan := planContinuationLaunch(claimed, item.Harness, launchEnvironment)
 	leaseExpiresAt := claimed.LeaseExpiresAt
 	// Pre-start setup (temp directory, MCP config, spec checkout clone) can
 	// outlast the claim lease, so renewal must begin at claim time rather than
@@ -802,7 +804,10 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 		_ = release(core.WorkOrderOutcomeReleased, "prepare MCP config failed", nil)
 		return err
 	}
-	prompt := workerLaunchPrompt(item.Order, c.workspace, sessionID)
+	prompt := workerLaunchPrompt(claimed, c.workspace, sessionID)
+	if continuationPlan.Resume {
+		prompt = continuationRecoveryPrompt(prompt, claimed)
+	}
 	var effortArgv []string
 	if item.Effort != "" {
 		if item.Order.Stage == core.StageSpec || item.Order.Stage == core.StageImplement {
@@ -819,12 +824,17 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 			return fmt.Errorf("harness %s does not support effort %s", item.Harness.Name, item.Effort)
 		}
 	}
-	argv := expandHarnessWithEffortArgv(item.Harness, item.Model, effortArgv, prompt, mcpConfig)
-	if len(argv) == 0 {
+	coldArgv := expandHarnessWithEffortArgv(item.Harness, item.Model, effortArgv, prompt, mcpConfig)
+	if len(coldArgv) == 0 {
 		_ = release(core.WorkOrderOutcomeReleased, "empty harness command", nil)
 		return fmt.Errorf("harness %s has an empty command", item.Harness.Name)
 	}
+	argv := coldArgv
+	if continuationPlan.Resume {
+		argv = appendContinuationResumeArgv(argv, item.Harness.ResumeCommand, claimed.ContinuationSessionID)
+	}
 	argv, codexUsage := enableCodexJSONOutput(item.Harness, argv)
+	coldArgv, _ = enableCodexJSONOutput(item.Harness, coldArgv)
 	childAddress := c.base
 	if item.Harness.MCPTransport == config.MCPTransportEnvironment {
 		childAddress = strings.TrimRight(c.base, "/") + "/mcp"
@@ -891,6 +901,15 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 	}
 	stdoutFanout, renderer := harnessStdoutFanout(stdout, failureTail, usageDestination, item, presentation)
 	terminalRenderer = renderer
+	var continuationObserver *continuationSessionObserver
+	if launchEnvironment != "" {
+		reporter := newContinuationReporter(c, credential, item, claimed, launchEnvironment, func(message string) {
+			_, _ = fmt.Fprintln(stderr, "warning:", message)
+		})
+		defer reporter.Stop()
+		continuationObserver = newContinuationSessionObserver(reporter.Observe)
+		stdoutFanout = io.MultiWriter(stdoutFanout, continuationObserver)
+	}
 	redactedStdout = &redact.Writer{Destination: stdoutFanout, Redactor: outputRedactor}
 	redactedStderr = &redact.Writer{Destination: io.MultiWriter(stderr, failureTail), Redactor: outputRedactor}
 	// Both redacted streams share one first-write signal; either stream
@@ -914,13 +933,25 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 		return lost
 	}
 	leaseExpiresAt = handoffLease
-	command := exec.CommandContext(ctx, argv[0], argv[1:]...)
-	command.Stdout = &firstActivityWriter{Destination: redactedStdout, Signal: firstActivity}
-	command.Stderr = &firstActivityWriter{Destination: redactedStderr, Signal: firstActivity}
-	command.Env = childEnv
-	command.Dir = workingDirectory
-	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	newCommand := func(commandArgv []string) *exec.Cmd {
+		command := exec.CommandContext(ctx, commandArgv[0], commandArgv[1:]...)
+		command.Stdout = &firstActivityWriter{Destination: redactedStdout, Signal: firstActivity}
+		command.Stderr = &firstActivityWriter{Destination: redactedStderr, Signal: firstActivity}
+		command.Env = childEnv
+		command.Dir = workingDirectory
+		command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		return command
+	}
+	command := newCommand(argv)
 	if err = command.Start(); err != nil {
+		if continuationPlan.Resume && ctx.Err() == nil {
+			_, _ = fmt.Fprintf(stderr, "warning: resume launch failed to start: %v; retrying cold\n", err)
+			continuationPlan = continuationLaunchPlan{Reason: "resume launch failed to start; cold fallback started"}
+			command = newCommand(coldArgv)
+			err = command.Start()
+		}
+	}
+	if err != nil {
 		if ctx.Err() != nil {
 			if item.Dispatch != "run" {
 				_ = release(core.WorkOrderOutcomeCancelled, "worker shutting down", nil)
@@ -929,6 +960,27 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 		}
 		_ = release(core.WorkOrderOutcomeChildFailure, "harness launch failed: "+err.Error(), nil)
 		return err
+	}
+	historyRecorded := false
+	recordContinuationHistory := func() {
+		if historyRecorded || claimed.LastAttemptID == "" {
+			return
+		}
+		historyCtx, cancel := context.WithTimeout(context.Background(), continuationReportTimeout)
+		mode := "cold"
+		if continuationPlan.Resume {
+			mode = "resumed"
+		}
+		historyErr := c.reportDispatchContinuationLaunchContext(historyCtx, credential, item, sessionID, mode, continuationPlan.Reason)
+		cancel()
+		if historyErr != nil {
+			_, _ = fmt.Fprintf(stderr, "warning: record continuation launch history: %v\n", historyErr)
+			return
+		}
+		historyRecorded = true
+	}
+	if !continuationPlan.Resume {
+		recordContinuationHistory()
 	}
 	done := make(chan error, 1)
 	go func() { done <- command.Wait() }()
@@ -948,6 +1000,30 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 		defer stallTimer.Stop()
 	}
 	activityObserved := firstActivity.activity
+	restartColdAfterRejectedResume := func(waitErr error) error {
+		flushOutput()
+		_, _ = fmt.Fprintf(stderr, "warning: resumed session was rejected before its native session initialized: %v; retrying cold\n", waitErr)
+		continuationPlan = continuationLaunchPlan{Reason: "resume launch failed to initialize; cold fallback started"}
+		firstActivity = newFirstActivitySignal()
+		firstActivityObserved = firstActivity.observed
+		activityObserved = firstActivity.activity
+		resetTimer(firstActivityTimer, firstActivityTimeout)
+		firstActivityDeadline = firstActivityTimer.C
+		if stallTimer != nil {
+			resetTimer(stallTimer, stallTimeout)
+			stallDeadline = stallTimer.C
+			stallGeneration, stallDue = 0, time.Now().Add(stallTimeout)
+		}
+		command = newCommand(coldArgv)
+		if startErr := command.Start(); startErr != nil {
+			return startErr
+		}
+		done = make(chan error, 1)
+		go func() { done <- command.Wait() }()
+		processGroup = harnessProcessGroup{pgid: command.Process.Pid, done: done}
+		recordContinuationHistory()
+		return nil
+	}
 	renewEvery := workerClaimRenewInterval
 	if remaining := time.Until(leaseExpiresAt); remaining > 0 && remaining/3 < renewEvery {
 		renewEvery = remaining / 3
@@ -1034,6 +1110,14 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 	for {
 		select {
 		case waitErr := <-done:
+			if continuationPlan.Resume && waitErr != nil && (continuationObserver == nil || continuationObserver.Last() == "") {
+				if restartErr := restartColdAfterRejectedResume(waitErr); restartErr != nil {
+					_ = release(core.WorkOrderOutcomeChildFailure, "cold fallback launch failed: "+restartErr.Error(), nil)
+					return fmt.Errorf("cold fallback launch failed after resume rejection: %w", restartErr)
+				}
+				continue
+			}
+			recordContinuationHistory()
 			return handleChildExit(waitErr)
 		case <-runTerminalDeadline:
 			// A normal child exit wins a race with the grace deadline.
@@ -1050,9 +1134,13 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 				return fmt.Errorf("lingering %s session process group %d survived termination", item.Order.Stage, processGroup.pgid)
 			}
 			flushOutput()
+			recordContinuationHistory()
 			reportCodexUsageFallback(c, credential, item.Order.ID, sessionID, finalizedOrder, codexUsage)
 			return nil
 		case <-firstActivityObserved:
+			if continuationPlan.Resume && continuationObserver != nil && continuationObserver.Last() != "" {
+				recordContinuationHistory()
+			}
 			if !firstActivityTimer.Stop() {
 				select {
 				case <-firstActivityDeadline:
@@ -1062,6 +1150,9 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 			firstActivityObserved = nil
 			firstActivityDeadline = nil
 		case <-activityObserved:
+			if continuationPlan.Resume && continuationObserver != nil && continuationObserver.Last() != "" {
+				recordContinuationHistory()
+			}
 			if stallTimer != nil {
 				drainActivity(activityObserved)
 				stallGeneration, stallDue = resetStallTimerForActivity(stallTimer, firstActivity, stallTimeout)
@@ -1212,6 +1303,9 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 			}
 			return errors.New(workerStallTimeoutReason)
 		case <-ticker.C:
+			if continuationPlan.Resume && continuationObserver != nil && continuationObserver.Last() != "" {
+				recordContinuationHistory()
+			}
 			if claimFinalized {
 				continue
 			}

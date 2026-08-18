@@ -23,6 +23,58 @@ import (
 	githubtrigger "github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 )
 
+func TestReportContinuationLaunchAppendsAuditWithoutMarkingProgress(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	task := core.Task{ID: "continuation-history", Workspace: "demo", State: core.TaskRunning, CreatedAt: time.Now().UTC()}
+	job := core.Job{ID: task.ID + "-implement-1", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
+	order := core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := storetest.For(st).CreateWorkOrder(ctx, order); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := storetest.For(st).ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{
+		SessionID: "session", ClientToken: "secret", WorkerID: "worker", ClaimantID: "worker", Lease: time.Minute,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed.LastAttemptID = "attempt-prior"
+	if err = storetest.For(st).UpdateWorkOrder(ctx, claimed, taskops.WorkOrderMetadataCommand); err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{Store: st}
+	identity := core.WorkOrderClaimIdentity{WorkerID: claimed.WorkerID, ClaimantID: claimed.ClaimantID, SessionID: claimed.SessionID}
+	if _, err = service.ReportContinuationLaunch(ctx, claimed.ID, identity, "resumed", "eligible recorded continuation"); err != nil {
+		t.Fatal(err)
+	}
+	persisted, err := st.GetWorkOrder(ctx, claimed.ID)
+	if err != nil || persisted.Progress != "" {
+		t.Fatalf("progress=%q err=%v", persisted.Progress, err)
+	}
+	events, err := st.ListEvents(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var launchEvents, progressEvents int
+	for _, event := range events {
+		if event.Kind == "work_order.continuation_launched" && strings.Contains(string(event.Payload), `"mode":"resumed"`) {
+			launchEvents++
+		}
+		if event.Kind == "work_order.progress_reported" {
+			progressEvents++
+		}
+	}
+	if launchEvents != 1 || progressEvents != 0 {
+		t.Fatalf("launch=%d progress=%d events=%+v", launchEvents, progressEvents, events)
+	}
+}
+
 func TestGetWorkOrderSurfacesAuthorityBudgetAsNeedsAttention(t *testing.T) {
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	st := store.NewMemory()
