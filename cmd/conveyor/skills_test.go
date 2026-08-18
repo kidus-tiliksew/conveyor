@@ -92,8 +92,37 @@ func TestConveyorWorkSkillShipsScratchDiscipline(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		normalized := strings.Join(strings.Fields(string(content)), " ")
 		for _, fragment := range required {
-			if !bytes.Contains(content, []byte(fragment)) {
+			if !strings.Contains(normalized, fragment) {
+				t.Errorf("%s installed conveyor-work playbook missing %q", destination.tool.name, fragment)
+			}
+		}
+	}
+}
+
+func TestConveyorWorkSkillShipsStageCheckoutAndExitDiscipline(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	destinations := skillDestinations(base, supportedSkillTools)
+	if _, _, err := installEmbeddedSkillsForDestinations(base, destinations, "v1", false); err != nil {
+		t.Fatal(err)
+	}
+
+	required := []string{
+		"never run `conveyor checkout` for a spec order",
+		"implementation or review order, run `conveyor checkout <task-id>`",
+		"Never poll `await_review` from a stage session",
+		"changes-requested bounce always arrives as a new order in a fresh session",
+	}
+	for _, destination := range destinations {
+		content, err := os.ReadFile(filepath.Join(destination.root, "conveyor-work", "conveyor-work.md"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		normalized := strings.Join(strings.Fields(string(content)), " ")
+		for _, fragment := range required {
+			if !strings.Contains(normalized, fragment) {
 				t.Errorf("%s installed conveyor-work playbook missing %q", destination.tool.name, fragment)
 			}
 		}

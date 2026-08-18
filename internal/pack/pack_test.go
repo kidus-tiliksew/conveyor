@@ -319,17 +319,27 @@ func TestReviewRoleCarriesDurableRequirementCitationGuidance(t *testing.T) {
 	}
 }
 
-func TestImplementRoleKeepsAwaitingReviewThroughPanelDeadline(t *testing.T) {
+func TestStageRolesEndAtSubmissionWithoutAwaitingReview(t *testing.T) {
+	spec, err := (Loader{Dir: filepath.Join("..", "..", "pack")}).Role(core.StageSpec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	normalizedSpec := strings.Join(strings.Fields(spec), " ")
+	for _, required := range []string{"materialized read-only repository checkout", "do not run `conveyor checkout` for a spec order", "report the result and exit the session"} {
+		if !strings.Contains(normalizedSpec, required) {
+			t.Errorf("spec role is missing %q", required)
+		}
+	}
+
 	role, err := (Loader{Dir: filepath.Join("..", "..", "pack")}).Role(core.StageImplement)
 	if err != nil {
 		t.Fatal(err)
 	}
 	normalized := strings.Join(strings.Fields(role), " ")
 	for _, required := range []string{
-		"`pending` means the review panel is still within its execution window",
-		"Keep calling `await_review` until it returns a terminal result or `latest_seat_execution_deadline` has passed",
-		"Use the pending payload's seat deadlines to bound the maximum wait",
-		"Repeated pending responses alone do not mean the lifecycle is stalled",
+		"After `submit_for_review` succeeds, report the handoff and exit the session",
+		"Never poll `await_review` from an implementation stage session",
+		"successor as a new order in a fresh session",
 	} {
 		if !strings.Contains(normalized, required) {
 			t.Errorf("implement role is missing %q", required)

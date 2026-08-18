@@ -78,13 +78,34 @@ type harnessEventRenderer struct {
 }
 
 type runOutputPresentation struct {
-	output io.Writer
+	output        io.Writer
+	presentEvents bool
+	styled        bool
+	notice        func(string)
+}
+
+func presentRunChildReapNotice(stdout io.Writer, presentation *runOutputPresentation, stage, state string) error {
+	message := fmt.Sprintf("work order is %s; ending lingering %s session so the run can advance", state, stage)
+	if presentation == nil {
+		_, err := fmt.Fprintln(stdout, "! "+message)
+		return err
+	}
+	if presentation.notice != nil {
+		presentation.notice("! " + message)
+		return nil
+	}
+	if !presentation.styled {
+		_, err := fmt.Fprintln(presentation.output, "! "+message)
+		return err
+	}
+	_, err := fmt.Fprintln(presentation.output, newCLIPalette(presentation.output).warning.Render("! "+message))
+	return err
 }
 
 func harnessStdoutFanout(stdout, failureTail, usage io.Writer, item workerservice.DispatchOrder, presentation *runOutputPresentation) (io.Writer, *harnessEventRenderer) {
 	stdoutDestination := stdout
 	var renderer *harnessEventRenderer
-	if presentation != nil && item.Dispatch == "run" {
+	if presentation != nil && presentation.presentEvents && item.Dispatch == "run" {
 		renderer = newHarnessEventRenderer(presentation.output)
 		stdoutDestination = renderer
 	}
