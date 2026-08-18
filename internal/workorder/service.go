@@ -1090,6 +1090,17 @@ func (s *Service) Usage(ctx context.Context, id, session string, tokensIn, token
 	return s.UsageWithRateLimit(ctx, id, session, tokensIn, tokensOut, cost, nil)
 }
 
+// ReportContinuation replaces advisory harness-native continuation metadata for
+// the exact active attempt. Authorization of the launching worker or run client
+// is performed by the command plane before this claim-bound store mutation.
+func (s *Service) ReportContinuation(ctx context.Context, id string, claim core.WorkOrderClaimIdentity, continuation core.WorkOrderContinuation) (core.WorkOrder, error) {
+	continuation, err := core.NormalizeWorkOrderContinuation(continuation)
+	if err != nil {
+		return core.WorkOrder{}, err
+	}
+	return s.Store.RecordWorkOrderContinuation(ctx, id, claim, continuation)
+}
+
 func (s *Service) UsageWithRateLimit(ctx context.Context, id, session string, tokensIn, tokensOut int64, cost float64, rateLimit *core.RateLimitStatus) (core.WorkOrder, error) {
 	return s.usageWithRateLimit(ctx, id, session, tokensIn, tokensOut, cost, rateLimit, true)
 }

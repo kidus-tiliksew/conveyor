@@ -233,6 +233,7 @@ type Store interface {
 	// implementation order when the operator approves plan re-entry.
 	CancelPlanRevisionWorkOrderCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID, attemptID string) (core.WorkOrder, error)
 	RecordWorkOrderAttemptCheckpoint(ctx context.Context, workOrderID, workerID string, checkpoint core.WorkOrderAttemptCheckpoint) (bool, error)
+	RecordWorkOrderContinuation(ctx context.Context, workOrderID string, claim core.WorkOrderClaimIdentity, continuation core.WorkOrderContinuation) (core.WorkOrder, error)
 
 	// Feature methods remain only for migration and historical conformance.
 	// Live control-plane surfaces do not expose retired feature-tree mutation.
@@ -1377,6 +1378,42 @@ func (m *memory) RenewWorkerClaimCommand(ctx context.Context, taskLease taskops.
 	return order, nil
 }
 
+func (m *memory) RecordWorkOrderContinuation(ctx context.Context, workOrderID string, claim core.WorkOrderClaimIdentity, continuation core.WorkOrderContinuation) (core.WorkOrder, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	order, ok := m.workOrders[workOrderID]
+	now := time.Now().UTC()
+	if ok {
+		order = m.refreshWorkOrderLocked(ctx, order, now)
+	}
+	if !ok || order.Stage != core.StageImplement || order.State != core.WorkOrderClaimed || order.SessionID == "" ||
+		order.SessionID != claim.SessionID || order.WorkerID != claim.WorkerID || order.ClaimantID != claim.ClaimantID ||
+		!order.LeaseExpiresAt.After(now) || (!order.ExecutionDeadline.IsZero() && !order.ExecutionDeadline.After(now)) {
+		return core.WorkOrder{}, ErrWorkOrderClaimLost
+	}
+	if continuation.AttemptID != order.AttemptID {
+		return core.WorkOrder{}, fmt.Errorf("continuation attempt does not match the active work-order attempt")
+	}
+	expectedHarness := order.Agent
+	if expectedHarness == "" {
+		expectedHarness = order.RequiredHarness
+	}
+	if expectedHarness != "" && continuation.Harness != expectedHarness {
+		return core.WorkOrder{}, fmt.Errorf("continuation harness %q does not match active harness %q", continuation.Harness, expectedHarness)
+	}
+	order.ContinuationSessionID = continuation.SessionID
+	order.ContinuationAttemptID = continuation.AttemptID
+	order.ContinuationHarness = continuation.Harness
+	order.ContinuationLaunchEnvironment = continuation.LaunchEnvironment
+	order.UpdatedAt = now
+	m.workOrders[workOrderID] = order
+	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.continuation_reported", Payload: core.JSONPayload(map[string]any{
+		"work_order_id": order.ID, "attempt_id": continuation.AttemptID, "harness": continuation.Harness,
+		"launch_environment": continuation.LaunchEnvironment,
+	}), At: now})
+	return order, nil
+}
+
 func (m *memory) ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID string, claim core.WorkOrderClaimIdentity, release core.WorkOrderRelease) (core.WorkOrder, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -2110,6 +2147,8 @@ func (m *memory) settleAcceptedReviewLocked(ctx context.Context, decision core.R
 			return err
 		}
 		order.State, order.Claimable, order.OperatorDirection, order.UpdatedAt = next, false, "", now
+		order.ContinuationSessionID, order.ContinuationAttemptID = "", ""
+		order.ContinuationHarness, order.ContinuationLaunchEnvironment = "", ""
 		m.workOrders[order.ID] = order
 		m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.updated", Payload: core.JSONPayload(order), At: now})
 	}
@@ -2122,6 +2161,20 @@ func (m *memory) settleAcceptedReviewLocked(ctx context.Context, decision core.R
 		_, index, _ := m.findJobLocked(job.ID)
 		m.jobs[job.TaskID][index] = job
 		m.appendEventLocked(ctx, core.Event{TaskID: job.TaskID, JobID: job.ID, Kind: "job.updated", Payload: core.JSONPayload(job), At: now})
+	}
+	for id, implementation := range m.workOrders {
+		if implementation.TaskID != decision.TaskID || implementation.Stage != core.StageImplement || implementation.State != core.WorkOrderSubmitted {
+			continue
+		}
+		if implementation.ContinuationSessionID == "" && implementation.ContinuationAttemptID == "" &&
+			implementation.ContinuationHarness == "" && implementation.ContinuationLaunchEnvironment == "" {
+			continue
+		}
+		implementation.ContinuationSessionID, implementation.ContinuationAttemptID = "", ""
+		implementation.ContinuationHarness, implementation.ContinuationLaunchEnvironment = "", ""
+		implementation.UpdatedAt = now
+		m.workOrders[id] = implementation
+		m.appendEventLocked(ctx, core.Event{TaskID: implementation.TaskID, JobID: implementation.JobID, Kind: "work_order.updated", Payload: core.JSONPayload(implementation), At: now})
 	}
 	return nil
 }
@@ -3514,6 +3567,8 @@ func (m *memory) UpdateWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 	}
 	if order.State == core.WorkOrderCompleted {
 		order.OperatorDirection = ""
+		order.ContinuationSessionID, order.ContinuationAttemptID = "", ""
+		order.ContinuationHarness, order.ContinuationLaunchEnvironment = "", ""
 	}
 	order.UpdatedAt = time.Now().UTC()
 	m.workOrders[order.ID] = order

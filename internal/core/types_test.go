@@ -2,6 +2,7 @@ package core
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -125,5 +126,61 @@ func TestVerificationEvidencePolicyNormalizesAndRejectsIneligibleMedia(t *testin
 	}
 	if !(Artifact{Role: ArtifactRoleVerificationEvidence, TaskID: "task", ContentType: "video/webm", SizeBytes: 1}).EligibleVerificationEvidence() {
 		t.Fatal("eligible recording was rejected")
+	}
+}
+
+func TestWorkOrderContinuationValidationAndEligibility(t *testing.T) {
+	capture, err := NormalizeWorkOrderContinuation(WorkOrderContinuation{
+		SessionID: " native-session ", AttemptID: " attempt-1 ", Harness: " codex ", LaunchEnvironment: " worker-a ",
+	})
+	if err != nil || capture.SessionID != "native-session" || capture.LaunchEnvironment != "worker-a" {
+		t.Fatalf("normalized capture=%+v err=%v", capture, err)
+	}
+	if _, err = NormalizeWorkOrderContinuation(WorkOrderContinuation{
+		SessionID: strings.Repeat("x", MaxWorkOrderContinuationSessionIDRunes+1), AttemptID: "attempt-1", Harness: "codex", LaunchEnvironment: "worker-a",
+	}); err == nil || !strings.Contains(err.Error(), "continuation_session_id") {
+		t.Fatalf("oversized session error=%v", err)
+	}
+
+	base := WorkOrder{
+		Stage: StageImplement, LastAttemptID: "attempt-1", ContinuationSessionID: "native-session",
+		ContinuationAttemptID: "attempt-1", ContinuationHarness: "codex", ContinuationLaunchEnvironment: "worker-a",
+	}
+	for _, test := range []struct {
+		name     string
+		mutate   func(*WorkOrder)
+		eligible bool
+	}{
+		{name: "checkpoint", mutate: func(order *WorkOrder) { order.LastFailureMessage = WorkOrderReleaseReasonOperatorCheckpointReached }, eligible: true},
+		{name: "plan revision declined recovery", mutate: func(order *WorkOrder) { order.LastFailureMessage = WorkOrderReleaseReasonPlanRevisionRequested }, eligible: true},
+		{name: "crash", mutate: func(order *WorkOrder) { order.LastFailureMessage = "harness exited" }},
+		{name: "stall", mutate: func(order *WorkOrder) { order.LastFailureMessage = "agent progress stalled" }},
+		{name: "preemption", mutate: func(order *WorkOrder) { order.LastFailureMessage = "work order was preempted by an operator" }},
+		{name: "claim loss", mutate: func(order *WorkOrder) { order.LastFailureMessage = "claim lease expired" }},
+		{name: "ordinary release", mutate: func(order *WorkOrder) { order.LastFailureMessage = "session exited" }},
+		{name: "review", mutate: func(order *WorkOrder) {
+			order.Stage = StageReview
+			order.LastFailureMessage = WorkOrderReleaseReasonOperatorCheckpointReached
+		}},
+		{name: "post-bounce successor", mutate: func(order *WorkOrder) {
+			order.LastAttemptID = "bounce-attempt"
+			order.LastFailureMessage = WorkOrderReleaseReasonOperatorCheckpointReached
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			order := base
+			test.mutate(&order)
+			if got := order.CanResumeContinuation(); got != test.eligible {
+				t.Fatalf("eligible=%v want=%v order=%+v", got, test.eligible, order)
+			}
+			data, marshalErr := json.Marshal(order)
+			if marshalErr != nil || !strings.Contains(string(data), fmt.Sprintf(`"continuation_resume_eligible":%t`, test.eligible)) {
+				t.Fatalf("json=%s err=%v", data, marshalErr)
+			}
+			var decoded WorkOrder
+			if err := json.Unmarshal(data, &decoded); err != nil || decoded.ContinuationResumeEligible != test.eligible {
+				t.Fatalf("decoded eligibility=%v err=%v json=%s", decoded.ContinuationResumeEligible, err, data)
+			}
+		})
 	}
 }

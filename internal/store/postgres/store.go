@@ -3433,7 +3433,7 @@ session_id, attempt_id, client_token_hash, agent, model, worker_id, lease_expire
 queue_entered_at, queue_deadline, queue_blocked_at, execution_started_at, execution_deadline,
 last_attempt_id, last_attempt_outcome, last_failure_category, last_failure_message, last_failure_detail, last_failure_exit_status, last_failure_at,
 automatic_retry_count, next_retry_at, retry_suppressed, retry_suppression_reason,
-redispatch_count, operator_direction, progress, cost_usd, tokens_in, tokens_out, usage_reported, self_reported,
+redispatch_count, operator_direction, continuation_session_id, continuation_attempt_id, continuation_harness, continuation_launch_environment, progress, cost_usd, tokens_in, tokens_out, usage_reported, self_reported,
 rate_limit, rate_limit_observed_at, created_at, updated_at, served_requirement_snapshot, governance_snapshot`
 
 // activityWorkOrderColumns preserves scanWorkOrder's shape while omitting the
@@ -3446,7 +3446,7 @@ session_id, attempt_id, client_token_hash, agent, model, worker_id, lease_expire
 queue_entered_at, queue_deadline, queue_blocked_at, execution_started_at, execution_deadline,
 last_attempt_id, last_attempt_outcome, last_failure_category, last_failure_message, last_failure_detail, last_failure_exit_status, last_failure_at,
 automatic_retry_count, next_retry_at, retry_suppressed, retry_suppression_reason,
-redispatch_count, operator_direction, progress, cost_usd, tokens_in, tokens_out, usage_reported, self_reported,
+redispatch_count, operator_direction, continuation_session_id, continuation_attempt_id, continuation_harness, continuation_launch_environment, progress, cost_usd, tokens_in, tokens_out, usage_reported, self_reported,
 rate_limit, rate_limit_observed_at, created_at, updated_at, NULL::jsonb, NULL::jsonb`
 
 func servedRequirementSnapshotJSON(snapshot []core.ServedRequirementContext) any {
@@ -5277,6 +5277,8 @@ func (s *Store) UpdateWorkOrderCommand(ctx context.Context, lease taskops.TaskLe
 		}
 		if order.State == core.WorkOrderCompleted {
 			order.OperatorDirection = ""
+			order.ContinuationSessionID, order.ContinuationAttemptID = "", ""
+			order.ContinuationHarness, order.ContinuationLaunchEnvironment = "", ""
 		}
 		tag, err := tx.Exec(ctx, `UPDATE work_orders SET state=$1, claimant_id=$2, session_id=$3, attempt_id=$4,
 			client_token_hash=$5, agent=$6, model=$7, lease_expires_at=$8,
@@ -5285,8 +5287,10 @@ func (s *Store) UpdateWorkOrderCommand(ctx context.Context, lease taskops.TaskLe
 			last_failure_exit_status=$19, last_failure_at=$20, automatic_retry_count=$21,
 			next_retry_at=$22, retry_suppressed=$23, retry_suppression_reason=$24, redispatch_count=$25, progress=$26,
 			cost_usd=$27, tokens_in=$28, tokens_out=$29, usage_reported=$30, self_reported=$31,
-			operator_direction=$32, rate_limit=$33, rate_limit_observed_at=$34, updated_at=now()
-			WHERE workspace_id=$35 AND id=$36`, order.State, order.ClaimantID, order.SessionID, order.AttemptID,
+			operator_direction=$32, continuation_session_id=$33, continuation_attempt_id=$34,
+			continuation_harness=$35, continuation_launch_environment=$36,
+			rate_limit=$37, rate_limit_observed_at=$38, updated_at=now()
+			WHERE workspace_id=$39 AND id=$40`, order.State, order.ClaimantID, order.SessionID, order.AttemptID,
 			order.ClientTokenHash, order.Agent, order.Model, nullableTimeValue(order.LeaseExpiresAt),
 			order.ModelEnforcement,
 			order.QueueEnteredAt, order.QueueDeadline, nullableTimeValue(order.ExecutionStartedAt),
@@ -5294,7 +5298,8 @@ func (s *Store) UpdateWorkOrderCommand(ctx context.Context, lease taskops.TaskLe
 			order.LastFailureExitStatus, nullableTimeValue(order.LastFailureAt), order.AutomaticRetryCount,
 			nullableTimeValue(order.NextRetryAt), order.RetrySuppressed, order.RetrySuppressionReason, order.RedispatchCount, order.Progress,
 			order.CostUSD, order.TokensIn, order.TokensOut, order.UsageReported, order.SelfReported,
-			order.OperatorDirection, rateLimitJSON(order.RateLimit), nullableTimeValue(order.RateLimitObservedAt), workspace(ctx), order.ID)
+			order.OperatorDirection, order.ContinuationSessionID, order.ContinuationAttemptID, order.ContinuationHarness, order.ContinuationLaunchEnvironment,
+			rateLimitJSON(order.RateLimit), nullableTimeValue(order.RateLimitObservedAt), workspace(ctx), order.ID)
 		if err != nil {
 			return err
 		}
@@ -5580,7 +5585,9 @@ func (s *Store) settleAcceptedReviewTx(ctx context.Context, tx pgx.Tx, q *db.Que
 			return err
 		}
 		order.State, order.Claimable, order.OperatorDirection, order.UpdatedAt = next, false, "", now
-		tag, err := tx.Exec(ctx, `UPDATE work_orders SET state=$1,operator_direction='',updated_at=$2
+		order.ContinuationSessionID, order.ContinuationAttemptID = "", ""
+		order.ContinuationHarness, order.ContinuationLaunchEnvironment = "", ""
+		tag, err := tx.Exec(ctx, `UPDATE work_orders SET state=$1,operator_direction='',continuation_session_id='',continuation_attempt_id='',continuation_harness='',continuation_launch_environment='',updated_at=$2
 			WHERE workspace_id=$3 AND id=$4 AND state=$5`, order.State, now, workspace(ctx), order.ID, core.WorkOrderClaimed)
 		if err != nil {
 			return err
@@ -5604,6 +5611,27 @@ func (s *Store) settleAcceptedReviewTx(ctx context.Context, tx pgx.Tx, q *db.Que
 		if err := insertEvent(ctx, q, core.Event{TaskID: job.TaskID, JobID: job.ID, Kind: "job.updated", Payload: core.JSONPayload(job), At: now}); err != nil {
 			return err
 		}
+	}
+	rows, err := tx.Query(ctx, `UPDATE work_orders
+		SET continuation_session_id='',continuation_attempt_id='',continuation_harness='',continuation_launch_environment='',updated_at=$1
+		WHERE workspace_id=$2 AND task_id=$3 AND stage='implement' AND state='submitted'
+			AND (continuation_session_id<>'' OR continuation_attempt_id<>'' OR continuation_harness<>'' OR continuation_launch_environment<>'')
+		RETURNING `+workOrderColumns, now, workspace(ctx), order.TaskID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		implementation, scanErr := scanWorkOrder(rows)
+		if scanErr != nil {
+			return scanErr
+		}
+		if eventErr := insertEvent(ctx, q, core.Event{TaskID: implementation.TaskID, JobID: implementation.JobID, Kind: "work_order.updated", Payload: core.JSONPayload(implementation), At: now}); eventErr != nil {
+			return eventErr
+		}
+	}
+	if err = rows.Err(); err != nil {
+		return err
 	}
 	return nil
 }
@@ -5933,7 +5961,8 @@ func scanWorkOrder(row interface{ Scan(...any) error }) (core.WorkOrder, error) 
 		&queueEntered, &queueDeadline, &queueBlockedAt, &executionStarted, &executionDeadline,
 		&order.LastAttemptID, &order.LastAttemptOutcome, &order.LastFailureCategory, &order.LastFailureMessage, &order.LastFailureDetail, &order.LastFailureExitStatus, &lastFailureAt,
 		&order.AutomaticRetryCount, &nextRetryAt, &order.RetrySuppressed, &order.RetrySuppressionReason,
-		&order.RedispatchCount, &order.OperatorDirection, &order.Progress, &order.CostUSD, &order.TokensIn,
+		&order.RedispatchCount, &order.OperatorDirection, &order.ContinuationSessionID, &order.ContinuationAttemptID,
+		&order.ContinuationHarness, &order.ContinuationLaunchEnvironment, &order.Progress, &order.CostUSD, &order.TokensIn,
 		&order.TokensOut, &order.UsageReported, &order.SelfReported, &rateLimit, &rateLimitObservedAt, &order.CreatedAt, &order.UpdatedAt, &servedRequirementSnapshot, &governanceSnapshot)
 	order.Stage, order.State = core.Stage(stage), core.WorkOrderState(state)
 	if len(harnessConfig) > 0 && string(harnessConfig) != "{}" {
