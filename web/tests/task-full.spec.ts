@@ -2142,18 +2142,22 @@ test('new task detail tolerates a null work-order list from the API', async ({ p
   await expect(page.getByText('Something went wrong!')).toHaveCount(0)
 })
 
-test('task detail renders the frozen policy projection and no retired controls', async ({ page }) => {
+test('task detail omits the frozen policy projection and retired controls', async ({ page }) => {
   await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
-  await page.goto('/tasks/policy-projection/full')
+  for (const path of ['/tasks/policy-projection', '/tasks/policy-projection/full']) {
+    await page.goto(path)
 
-  // The frozen contract is one facts row; the label's tooltip carries the
-  // policy-only-projection caveat.
-  const policyLabel = page.getByText('Policy', { exact: true })
-  await expect(policyLabel).toBeVisible()
-  await expect(policyLabel).toHaveAttribute('title', /Frozen at intake/)
-  await expect(page.getByText('Plan 30m · Implement 2h · Review 45m · 1 review seat · 3 review rounds')).toBeVisible()
-  await expect(page.getByText(/Change execution setup/i)).toHaveCount(0)
-  await expect(page.getByText(/^Setup$/)).toHaveCount(0)
+    await expect(page.getByText('Repo', { exact: true })).toBeVisible()
+    await expect(page.getByText('Branch', { exact: true })).toBeVisible()
+    await expect(page.getByText('Created', { exact: true })).toBeVisible()
+    await expect(page.getByText('Assignee', { exact: true })).toBeVisible()
+    await expect(page.getByText('Policy', { exact: true })).toHaveCount(0)
+    await expect(page.getByText('Plan 30m · Implement 2h · Review 45m · 1 review seat · 3 review rounds')).toHaveCount(
+      0,
+    )
+    await expect(page.getByText(/Change execution setup/i)).toHaveCount(0)
+    await expect(page.getByText(/^Setup$/)).toHaveCount(0)
+  }
 })
 test('a claimed attempt exposes reasoned operator preemption with the renewal grace bound', async ({ page }) => {
   await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
