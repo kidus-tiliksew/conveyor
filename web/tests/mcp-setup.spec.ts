@@ -55,7 +55,15 @@ test('Board MCP action offers safe client-specific setup and complete dialog beh
   const endpoint = `${new URL(page.url()).origin}/mcp`
   await expect(dialog).toBeVisible()
   await expect(page.locator('body')).toHaveCSS('overflow', 'hidden')
-  await expect(dialog.getByRole('tab')).toHaveText(['Cursor', 'Claude Code', 'Codex', 'Other'])
+  await expect(dialog.getByRole('tab')).toHaveCount(4)
+  for (const label of ['Cursor', 'Claude Code', 'Codex', 'Other']) {
+    await expect(dialog.getByRole('tab', { name: label, exact: true })).toBeVisible()
+  }
+  for (const client of ['cursor', 'claude', 'codex']) {
+    await expect(dialog.locator(`[data-mcp-client-logo="${client}"] svg`)).toBeVisible()
+  }
+  await expect(dialog.locator('[data-mcp-client-logo]')).toHaveCount(3)
+  await expect(dialog.getByRole('tab', { name: 'Other' }).locator('[data-mcp-client-fallback]')).toBeVisible()
   await expect(dialog).toContainText(endpoint)
   await expect(dialog).toContainText('<CONVEYOR_API_TOKEN>')
   await expect(dialog).not.toContainText('test-token-that-must-not-appear')

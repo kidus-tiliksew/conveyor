@@ -1,4 +1,7 @@
-import { Cable, CheckCircle2, Code2, MousePointer2, Terminal, X } from 'lucide-react'
+import claudeIcon from '@lobehub/icons-static-svg/icons/claude-color.svg?raw'
+import codexIcon from '@lobehub/icons-static-svg/icons/codex.svg?raw'
+import cursorIcon from '@lobehub/icons-static-svg/icons/cursor.svg?raw'
+import { Cable, CheckCircle2, X } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { mcpClientSetups, mcpEndpoint, type MCPClient } from '../../lib/mcp'
 import { cn } from '../../lib/utils'
@@ -6,12 +9,11 @@ import { Button } from '../ui/button'
 import { CopyButton } from '../ui/copy-button'
 import { Dialog } from '../ui/dialog'
 
-const clientIcons = {
-  cursor: MousePointer2,
-  claude: Terminal,
-  codex: Code2,
-  other: Cable,
-} satisfies Record<MCPClient, typeof Cable>
+const clientLogos: Partial<Record<MCPClient, string>> = {
+  cursor: cursorIcon,
+  claude: claudeIcon,
+  codex: codexIcon,
+}
 
 export function MCPSetup() {
   const [open, setOpen] = useState(false)
@@ -54,7 +56,7 @@ export function MCPSetupDialog({ onClose }: { onClose: () => void }) {
         <div className="overflow-x-auto rounded-lg bg-surface p-1" role="tablist" aria-label="MCP clients">
           <div className="grid min-w-[34rem] grid-cols-4 gap-1">
             {clients.map((client) => {
-              const Icon = clientIcons[client.id]
+              const logo = clientLogos[client.id]
               return (
                 <button
                   key={client.id}
@@ -68,7 +70,16 @@ export function MCPSetupDialog({ onClose }: { onClose: () => void }) {
                   )}
                   onClick={() => setSelected(client.id)}
                 >
-                  <Icon className="size-4" aria-hidden="true" />
+                  {logo ? (
+                    <span
+                      aria-hidden="true"
+                      data-mcp-client-logo={client.id}
+                      className="inline-flex size-4 shrink-0 [&_svg]:size-4"
+                      dangerouslySetInnerHTML={{ __html: logo }}
+                    />
+                  ) : (
+                    <Cable aria-hidden="true" data-mcp-client-fallback className="size-4 shrink-0" />
+                  )}
                   {client.label}
                 </button>
               )
