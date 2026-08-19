@@ -346,10 +346,6 @@ export CONVEYOR_WORKSPACE=demo
 To upgrade, rerun the installer with the new version and restart `conveyord`.
 Startup applies pending migrations.
 
-Before upgrading a Mac or devbox worker with worker mode enabled, run
-`conveyor config init-execution`. Reinstall an existing user service if its
-configuration path changed.
-
 ## Status
 
 Conveyor is under active development. Its event log records defects and
