@@ -824,7 +824,7 @@ func classifyRequirementDeliveries(taskID string, events []core.Event, versions 
 		if directlyServing && currentVersion > 0 && pinnedVersion == 0 {
 			reasons = append(reasons, "planned requirement version unavailable")
 		}
-		if event.Kind == "merge.reconciled" {
+		if event.Kind == "merge.reconciled" && !reconciledMergeHasFactoryReview(events, event) {
 			reasons = append(reasons, "merged outside factory review")
 		}
 		if !directlyServing {
@@ -844,6 +844,61 @@ func classifyRequirementDeliveries(taskID string, events []core.Event, versions 
 		})
 	}
 	return deliveries
+}
+
+func reconciledMergeHasFactoryReview(events []core.Event, delivery core.Event) bool {
+	var merge struct {
+		HeadSHA                string `json:"head_sha"`
+		ReviewedHeadSHA        string `json:"reviewed_head_sha"`
+		ApprovedHeadSHA        string `json:"approved_head_sha"`
+		FactoryReviewValidated *bool  `json:"factory_review_validated"`
+	}
+	if json.Unmarshal(delivery.Payload, &merge) != nil {
+		return false
+	}
+	reviewHead := merge.ApprovedHeadSHA
+	if reviewHead == "" {
+		reviewHead = merge.ReviewedHeadSHA
+	}
+	if merge.FactoryReviewValidated != nil {
+		return *merge.FactoryReviewValidated && reviewHead != "" && merge.HeadSHA != "" && strings.EqualFold(reviewHead, merge.HeadSHA)
+	}
+
+	// Historical reconciliation events predate explicit provenance. Only an
+	// aggregate round proves that the whole configured panel accepted one head;
+	// an isolated per-seat decision is ambiguous and stays actionable.
+	for i := len(events) - 1; i >= 0; i-- {
+		event := events[i]
+		if event.Kind != "review.round_completed" || !eventBeforeDelivery(event, delivery) {
+			continue
+		}
+		var round struct {
+			Verdict         string `json:"verdict"`
+			ApprovedHeadSHA string `json:"approved_head_sha"`
+			Reviews         []struct {
+				Verdict           string `json:"verdict"`
+				ReviewedCommitSHA string `json:"reviewed_commit_sha"`
+			} `json:"reviews"`
+		}
+		if json.Unmarshal(event.Payload, &round) != nil || round.Verdict != "approve" {
+			return false
+		}
+		head := round.ApprovedHeadSHA
+		if head == "" && len(round.Reviews) > 0 {
+			head = round.Reviews[0].ReviewedCommitSHA
+			for _, review := range round.Reviews {
+				if review.Verdict != "approve" || review.ReviewedCommitSHA == "" || !strings.EqualFold(head, review.ReviewedCommitSHA) {
+					return false
+				}
+			}
+		}
+		return head != "" && merge.HeadSHA != "" && strings.EqualFold(head, merge.HeadSHA)
+	}
+	return false
+}
+
+func eventBeforeDelivery(event, delivery core.Event) bool {
+	return event.At.Before(delivery.At) || (event.At.Equal(delivery.At) && event.ID < delivery.ID)
 }
 
 func requirementAcknowledgedThrough(events []core.Event, confirmedAt time.Time) requirementDeliveryWatermark {

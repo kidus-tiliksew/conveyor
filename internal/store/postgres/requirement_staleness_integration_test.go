@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 	"time"
 
@@ -119,5 +120,86 @@ func TestRequirementStalenessAcknowledgmentSurvivesRestart(t *testing.T) {
 	later := read(restartedServer)
 	if !later.Staleness.DeliveryAfterIntent || len(later.Staleness.Deliveries) != 1 || later.Staleness.Deliveries[0].SignalID == before.Staleness.Deliveries[0].SignalID {
 		t.Fatalf("later delivery did not re-raise after restart: %+v", later.Staleness)
+	}
+}
+
+func TestRequirementReviewedReconciliationSurvivesRestart(t *testing.T) {
+	databaseURL := integrationDatabaseURL(t)
+	st, ctx, workspace := newPhase61IntegrationStore(t)
+	requirement, version, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-reconciled-" + core.NewTaskID(), Title: "Reviewed reconciliation"}, core.RequirementVersion{
+		Content: "Reviewed delivery remains trusted after recovery.", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Classify delivery from review provenance."}}, Origin: core.RequirementOriginOperator,
+	})
+	if err != nil {
+		st.Close()
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmRequirementVersion(ctx, requirement.ID, version.Version); err != nil {
+		st.Close()
+		t.Fatal(err)
+	}
+	task := core.Task{ID: "reviewed-reconciliation-" + core.NewTaskID(), Workspace: workspace, Title: "Reviewed recovery", Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-reviewed-recovery", State: core.TaskMerged, CreatedAt: time.Now().UTC()}
+	if err = st.CreateTask(ctx, task); err != nil {
+		st.Close()
+		t.Fatal(err)
+	}
+	confirmedAt := time.Now().UTC().Add(time.Second)
+	if err = st.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: store.TaskContextRequirementAdded, At: confirmedAt.Add(time.Second), Payload: core.JSONPayload(map[string]any{"id": requirement.ID, "version": version.Version})}); err != nil {
+		st.Close()
+		t.Fatal(err)
+	}
+	if err = st.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "review.round_completed", At: confirmedAt.Add(2 * time.Second), Payload: core.JSONPayload(map[string]any{
+		"review_round": 1, "verdict": "approve", "approved_head_sha": "reviewed-head",
+	})}); err != nil {
+		st.Close()
+		t.Fatal(err)
+	}
+	if err = st.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "merge.reconciled", At: confirmedAt.Add(3 * time.Second), Payload: core.JSONPayload(map[string]any{
+		"url": "https://example.test/pull/642", "head_sha": "reviewed-head", "result": "already_merged",
+	})}); err != nil {
+		st.Close()
+		t.Fatal(err)
+	}
+	st.Close()
+
+	restarted, err := Open(t.Context(), databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(restarted.Close)
+	restartedCtx := store.WithWorkspace(t.Context(), workspace)
+	eventsByTask, err := restarted.ListRequirementDeliveryEventsForTasks(restartedCtx, []string{task.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := make([]string, 0, len(eventsByTask[task.ID]))
+	for _, event := range eventsByTask[task.ID] {
+		kinds = append(kinds, event.Kind)
+	}
+	if !slices.Contains(kinds, "review.round_completed") || !slices.Contains(kinds, "merge.reconciled") {
+		t.Fatalf("persisted delivery evidence kinds=%v", kinds)
+	}
+
+	server := httpapi.NewServer(restarted)
+	server.Credentials = nil
+	server.Workspace = workspace
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/requirements/"+requirement.ID, nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("requirements status=%d body=%s", response.Code, response.Body.String())
+	}
+	var view struct {
+		Staleness struct {
+			DeliveryAfterIntent bool `json:"delivery_after_intent"`
+			Deliveries          []struct {
+				NeedsAttention bool     `json:"needs_attention"`
+				Reasons        []string `json:"reasons"`
+			} `json:"deliveries"`
+		} `json:"staleness"`
+	}
+	if err = json.Unmarshal(response.Body.Bytes(), &view); err != nil {
+		t.Fatal(err)
+	}
+	if view.Staleness.DeliveryAfterIntent || len(view.Staleness.Deliveries) != 1 || view.Staleness.Deliveries[0].NeedsAttention || len(view.Staleness.Deliveries[0].Reasons) != 0 {
+		t.Fatalf("reviewed reconciliation staleness=%+v", view.Staleness)
 	}
 }

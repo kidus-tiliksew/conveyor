@@ -874,8 +874,11 @@ func TestMergeFileFailureIsAuditedAndNonGating(t *testing.T) {
 
 func TestMergeApprovedTaskReconcilesAlreadyMergedPR(t *testing.T) {
 	ctx, st, task, d := approvedMergeFixture(t, "acme/app")
+	if err := st.BindTaskApproval(ctx, task.ID, "reviewed-head"); err != nil {
+		t.Fatal(err)
+	}
 	d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
-		return githubtrigger.PullRequest{Number: 12, State: "closed", Merged: true}, nil
+		return githubtrigger.PullRequest{Number: 12, State: "closed", Merged: true, HeadSHA: "reviewed-head"}, nil
 	}
 	mergeCalled := false
 	d.RequestMerge = func(context.Context, string, int) error { mergeCalled = true; return nil }
@@ -889,11 +892,54 @@ func TestMergeApprovedTaskReconcilesAlreadyMergedPR(t *testing.T) {
 	events, _ := st.ListEvents(ctx, task.ID)
 	found := false
 	for _, event := range events {
-		found = found || event.Kind == "merge.reconciled"
+		if event.Kind != "merge.reconciled" {
+			continue
+		}
+		found = true
+		var payload struct {
+			FactoryReviewValidated bool   `json:"factory_review_validated"`
+			ReviewedHeadSHA        string `json:"reviewed_head_sha"`
+			ApprovedHeadSHA        string `json:"approved_head_sha"`
+			HeadSHA                string `json:"head_sha"`
+		}
+		if err := json.Unmarshal(event.Payload, &payload); err != nil || !payload.FactoryReviewValidated ||
+			payload.ReviewedHeadSHA != "reviewed-head" || payload.ApprovedHeadSHA != "reviewed-head" || payload.HeadSHA != "reviewed-head" {
+			t.Fatalf("reconciliation provenance=%+v err=%v", payload, err)
+		}
 	}
 	if !found {
 		t.Fatalf("events=%+v", events)
 	}
+}
+
+func TestMergeApprovedTaskRecordsUnvalidatedReconciledHead(t *testing.T) {
+	ctx, st, task, d := approvedMergeFixture(t, "acme/app")
+	if err := st.BindTaskApproval(ctx, task.ID, "reviewed-head"); err != nil {
+		t.Fatal(err)
+	}
+	d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
+		return githubtrigger.PullRequest{Number: 12, State: "closed", Merged: true, HeadSHA: "outside-head"}, nil
+	}
+	if err := d.MergeApprovedTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	events, err := st.ListEvents(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Kind != "merge.reconciled" {
+			continue
+		}
+		var payload struct {
+			FactoryReviewValidated bool `json:"factory_review_validated"`
+		}
+		if err := json.Unmarshal(event.Payload, &payload); err != nil || payload.FactoryReviewValidated {
+			t.Fatalf("reconciliation provenance=%+v err=%v", payload, err)
+		}
+		return
+	}
+	t.Fatalf("merge.reconciled missing: %+v", events)
 }
 
 func TestReconcileMergeReadinessRecoversAcceptedTaskKnockedOutOfApproved(t *testing.T) {

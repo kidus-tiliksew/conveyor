@@ -127,7 +127,8 @@ type Store interface {
 	AppendEvent(ctx context.Context, event core.Event) error
 	ListEvents(ctx context.Context, taskID string) ([]core.Event, error)
 	// ListRequirementDeliveryEventsForTasks batches only the ordered task
-	// context and merge events used by requirement-delivery classification.
+	// context, aggregate review-round, and merge events used by
+	// requirement-delivery classification.
 	ListRequirementDeliveryEventsForTasks(ctx context.Context, taskIDs []string) (map[string][]core.Event, error)
 	ListRequirementEvents(ctx context.Context, requirementID string) ([]core.Event, error)
 	ListRequirementEventsByRequirement(ctx context.Context) (map[string][]core.Event, error)
@@ -5329,7 +5330,7 @@ func (m *memory) ListRequirementDeliveryEventsForTasks(_ context.Context, taskID
 		events := make([]core.Event, 0)
 		for _, event := range m.events[taskID] {
 			switch event.Kind {
-			case "merge.confirmed", "merge.reconciled", TaskContextRequirementAdded, TaskContextRequirementActive, TaskContextRequirementRemoved:
+			case "merge.confirmed", "merge.reconciled", "review.round_completed", TaskContextRequirementAdded, TaskContextRequirementActive, TaskContextRequirementRemoved:
 				events = append(events, event)
 			}
 		}
