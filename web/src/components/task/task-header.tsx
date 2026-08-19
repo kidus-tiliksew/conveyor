@@ -19,7 +19,7 @@ import { findBlueprint } from '../../lib/blueprint'
 import { taskStateLabels } from '../../lib/contracts'
 import { errorMessage } from '../../lib/errors'
 import { relatedTaskRoute } from '../../lib/task-route'
-import type { ActivityItem, TaskPolicyContract } from '../../lib/types'
+import type { ActivityItem } from '../../lib/types'
 import { absoluteTime, cn } from '../../lib/utils'
 import {
   useBlueprints,
@@ -230,19 +230,6 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
             }
           />
         )}
-        {item.task.policy_contract && (
-          <Fact
-            label={
-              <span
-                className="cursor-help underline decoration-dotted decoration-edge underline-offset-2"
-                title="Frozen at intake — the task keeps the policy it was created with even if workspace defaults change later."
-              >
-                Policy
-              </span>
-            }
-            value={<span className="whitespace-normal">{policySummary(item.task.policy_contract)}</span>}
-          />
-        )}
       </dl>
 
       {canOperate && unsatisfiableIDs.size > 0 && (
@@ -278,21 +265,6 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
       </div>
     </div>
   )
-}
-
-// The frozen intake-time contract as one quiet line of facts; what "frozen"
-// means rides the row label's tooltip instead of a boxed section of its own.
-function policySummary(contract: TaskPolicyContract) {
-  const seats = contract.review?.seats?.length ?? 0
-  const timeouts = contract.stage_timeouts ?? { spec: '', implement: '', review: '' }
-  const parts = [
-    timeouts.spec && `Plan ${timeouts.spec}`,
-    timeouts.implement && `Implement ${timeouts.implement}`,
-    timeouts.review && `Review ${timeouts.review}`,
-    seats > 0 && `${seats} review ${seats === 1 ? 'seat' : 'seats'}`,
-    contract.max_bounces > 0 && `${contract.max_bounces} review rounds`,
-  ].filter(Boolean)
-  return parts.length > 0 ? parts.join(' · ') : 'Not recorded'
 }
 
 function UnlinkDependencyControl({ item, dependencyIDs }: { item: ActivityItem; dependencyIDs: string[] }) {
