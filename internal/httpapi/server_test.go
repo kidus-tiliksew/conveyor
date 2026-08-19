@@ -1549,8 +1549,8 @@ func TestTaskActivityIncludesLatestSpecForHumanGate(t *testing.T) {
 		[]byte(`"needs_attention":true`),
 		[]byte(`"work_orders":[]`),
 		[]byte(`"checkout_available":true`),
-		[]byte(`"checkout_command":"conveyor checkout spec-gate"`),
-		[]byte(`"checkout_guidance":"Creates or reuses the clean, task-dedicated worktree without switching the primary checkout."`),
+		[]byte(`"checkout_command":"conveyor run spec-gate"`),
+		[]byte(`"checkout_guidance":"Runs the task through its governed work-order lifecycle."`),
 		[]byte(`"spec":{"task_id":"spec-gate"`),
 		[]byte(`"version":` + fmt.Sprint(created.Version)),
 		[]byte(`"content":"# Proposed change\n\nReview this exact text."`),
@@ -1640,7 +1640,7 @@ func TestTaskActivityFailsClosedWhenMergeReadinessCannotBeResolved(t *testing.T)
 	}
 }
 
-func TestTaskActivityEnablesCheckoutAfterPushedBranchEvent(t *testing.T) {
+func TestTaskActivityProvidesRunCommandAfterPushedBranchEvent(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	st := store.NewMemory()
@@ -1661,7 +1661,7 @@ func TestTaskActivityEnablesCheckoutAfterPushedBranchEvent(t *testing.T) {
 	}
 	for _, expected := range [][]byte{
 		[]byte(`"checkout_available":true`),
-		[]byte(`"checkout_command":"conveyor checkout pushed-task"`),
+		[]byte(`"checkout_command":"conveyor run pushed-task"`),
 	} {
 		if !bytes.Contains(response.Body.Bytes(), expected) {
 			t.Fatalf("activity body does not contain %s: %s", expected, response.Body.String())
@@ -1669,7 +1669,7 @@ func TestTaskActivityEnablesCheckoutAfterPushedBranchEvent(t *testing.T) {
 	}
 }
 
-func TestPullToLocalProvidesDedicatedWorktreeCommandBeforePush(t *testing.T) {
+func TestPullToLocalProvidesRunCommandBeforePush(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	st := store.NewMemory()
@@ -1682,7 +1682,7 @@ func TestPullToLocalProvidesDedicatedWorktreeCommandBeforePush(t *testing.T) {
 	request.Header.Set("Authorization", "Bearer token")
 	response := httptest.NewRecorder()
 	server.Handler().ServeHTTP(response, request)
-	if response.Code != http.StatusAccepted || !bytes.Contains(response.Body.Bytes(), []byte(`"checkout_command":"conveyor checkout assigned-only"`)) {
+	if response.Code != http.StatusAccepted || !bytes.Contains(response.Body.Bytes(), []byte(`"checkout_command":"conveyor run assigned-only"`)) {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 	interventions, err := st.ListInterventions(ctx, "assigned-only")
