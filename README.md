@@ -16,38 +16,38 @@ documents, approve plans when required, and control the merge policy.
   </tr>
   <tr>
     <td width="50%">
-      <a href="docs/assets/screenshots/task-lineage.png">
-        <img width="100%" src="docs/assets/screenshots/task-lineage.png" alt="A merged task with its plan, pull request, and lineage">
-      </a>
-      <br><sub>Task plan and lineage</sub>
-    </td>
-    <td width="50%">
       <a href="docs/assets/screenshots/system-design.png">
         <img width="100%" src="docs/assets/screenshots/system-design.png" alt="A confirmed System Design document with its architecture diagram">
       </a>
       <br><sub>Confirmed System Design</sub>
     </td>
-  </tr>
-  <tr>
     <td width="50%">
       <a href="docs/assets/screenshots/requirement-drift.png">
         <img width="100%" src="docs/assets/screenshots/requirement-drift.png" alt="A requirement with a delivery drift signal awaiting operator judgment">
       </a>
       <br><sub>Requirement drift</sub>
     </td>
-    <td width="50%">
-      <a href="docs/assets/screenshots/mcp-setup.png">
-        <img width="100%" src="docs/assets/screenshots/mcp-setup.png" alt="The MCP setup dialog for coding clients">
-      </a>
-      <br><sub>MCP client setup</sub>
-    </td>
   </tr>
   <tr>
-    <td colspan="2">
+    <td width="50%">
+      <a href="docs/assets/screenshots/task-lineage.png">
+        <img width="100%" src="docs/assets/screenshots/task-lineage.png" alt="A merged task with its plan, pull request, and lineage">
+      </a>
+      <br><sub>Task plan and lineage</sub>
+    </td>
+    <td width="50%">
       <a href="docs/assets/screenshots/review-loop.png">
         <img width="100%" src="docs/assets/screenshots/review-loop.png" alt="A task timeline with changes requested and the following implementation round">
       </a>
       <br><sub>Review feedback returning to implementation</sub>
+    </td>
+  </tr>
+  <tr>
+    <td colspan="2">
+      <a href="docs/assets/screenshots/mcp-setup.png">
+        <img width="100%" src="docs/assets/screenshots/mcp-setup.png" alt="The MCP setup dialog for coding clients">
+      </a>
+      <br><sub>MCP client setup</sub>
     </td>
   </tr>
 </table>
