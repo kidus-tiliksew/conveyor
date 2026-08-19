@@ -218,7 +218,7 @@ function taskActivity(taskId: string) {
     events: [],
     interventions: [],
     work_orders: [],
-    checkout_command: `conveyor checkout ${taskId}`,
+    checkout_command: `conveyor run ${taskId}`,
     checkout_available: true,
     checkout_guidance: '',
     needs_attention: false,

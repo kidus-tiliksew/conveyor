@@ -577,7 +577,7 @@ const gateDetail = {
     },
   ],
   checkout_available: true,
-  checkout_command: 'conveyor checkout task-260731-gate01',
+  checkout_command: 'conveyor run task-260731-gate01',
   checkout_guidance: '',
   needs_attention: true,
   spec: {
