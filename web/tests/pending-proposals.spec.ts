@@ -9,6 +9,66 @@ async function initialize(page: Page) {
   })
 }
 
+test('pending proposal label and attention badge stay on one line at the narrow reference viewport', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 550, height: 1982 })
+  await initialize(page)
+  await page.route('**/v1/**', async (route: Route) => {
+    const path = new URL(route.request().url()).pathname
+    if (path === '/v1/workspaces') return route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] })
+    if (path === '/v1/me') return route.fulfill({ json: { id: 'usr_operator', role: 'operator' } })
+    if (path === '/v1/workspace') return route.fulfill({ json: { workspace: 'demo', repos: ['conveyor'] } })
+    if (path === '/v1/activity' || path === '/v1/blueprints') return route.fulfill({ json: [] })
+    if (path === '/v1/pending-proposals')
+      return route.fulfill({
+        json: {
+          items: [
+            {
+              id: 'DEC-42',
+              title: 'Operator attention',
+              tier: 'decision',
+              origin_type: 'operator',
+              proposed_at: proposedAt,
+              age_seconds: 60,
+            },
+          ],
+          attention: { task_count: 0, pending_proposal_count: 1, total: 1 },
+        },
+      })
+    return route.fulfill({ json: [] })
+  })
+
+  await page.goto('/pending-proposals')
+  const primary = page.getByRole('navigation', { name: 'Primary' })
+  const pending = primary.getByRole('link', { name: /Pending proposals/ })
+  const label = pending.getByText('Pending proposals', { exact: true })
+  const badge = pending.getByText('1', { exact: true })
+
+  await expect(primary).toHaveCSS('width', '256px')
+  await expect(label).toBeVisible()
+  await expect(badge).toBeVisible()
+  expect(
+    await label.evaluate((element) => {
+      const lineHeight = Number.parseFloat(getComputedStyle(element).lineHeight)
+      return element.scrollHeight <= lineHeight + 1
+    }),
+  ).toBe(true)
+  expect(
+    await page.evaluate(() => {
+      const main = document.querySelector('main')
+      const nav = document.querySelector('nav[aria-label="Primary"]')
+      if (!(main instanceof HTMLElement) || !(nav instanceof HTMLElement)) return false
+      return (
+        document.documentElement.scrollWidth <= window.innerWidth &&
+        nav.scrollWidth <= nav.clientWidth &&
+        main.clientWidth > 0 &&
+        main.getBoundingClientRect().right <= window.innerWidth
+      )
+    }),
+  ).toBe(true)
+})
+
 test('pending proposal queue covers every tier, resolves rows, updates the badge, and clears the task warning', async ({
   page,
 }) => {
