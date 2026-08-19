@@ -368,7 +368,7 @@ func TestAttachedRunApprovesFreshGateWithParentCredentialAndNoClaim(t *testing.T
 
 	c := &client{base: server.URL, token: "parent-user-credential", workspace: "demo"}
 	var output bytes.Buffer
-	err := runTaskWithPresentation(t.Context(), c, "target", filepath.Join(t.TempDir(), "unused.yaml"), strings.NewReader("approve\n"), &output, true, true, true, false)
+	err := runTaskWithPresentation(t.Context(), c, "target", filepath.Join(t.TempDir(), "unused.yaml"), strings.NewReader("kk\napprove\n"), &output, true, true, true, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -432,7 +432,7 @@ func TestAttachedRunPreservesGateInputAcrossPoll(t *testing.T) {
 		_ = writer.Close()
 	})
 	go func() {
-		_, _ = io.WriteString(writer, "app")
+		_, _ = io.WriteString(writer, "kk\napp")
 		time.Sleep(40 * time.Millisecond)
 		_, _ = io.WriteString(writer, "rove\n")
 	}()
@@ -506,7 +506,7 @@ func TestAttachedRunRequestsMergeGateChangesWithFeedback(t *testing.T) {
 	defer server.Close()
 	c := &client{base: server.URL, token: "parent-user-credential", workspace: "demo"}
 	var output bytes.Buffer
-	if err := runTaskWithPresentation(t.Context(), c, "target", "unused.yaml", strings.NewReader("changes\n  fix the race  \n"), &output, false, true, true, false); err != nil {
+	if err := runTaskWithPresentation(t.Context(), c, "target", "unused.yaml", strings.NewReader("k\n  fix the race  \n"), &output, false, true, true, false); err != nil {
 		t.Fatal(err)
 	}
 	if feedback != "fix the race" || !strings.Contains(output.String(), "merge approval gate") {
@@ -591,7 +591,7 @@ func TestAttachedRunGateConflictRefreshesRecordedState(t *testing.T) {
 	defer server.Close()
 	c := &client{base: server.URL, token: "parent-user-credential", workspace: "demo"}
 	var output bytes.Buffer
-	if err := runTaskWithPresentation(t.Context(), c, "target", "unused.yaml", strings.NewReader("approve\n"), &output, false, true, true, false); err != nil {
+	if err := runTaskWithPresentation(t.Context(), c, "target", "unused.yaml", strings.NewReader("k\napprove\n"), &output, false, true, true, false); err != nil {
 		t.Fatal(err)
 	}
 	if reads != 2 || !strings.Contains(output.String(), "finished in state closed") {
