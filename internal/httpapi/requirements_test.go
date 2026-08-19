@@ -681,12 +681,76 @@ func TestRequirementDeliveryClassificationNamesSuspectConditions(t *testing.T) {
 		}
 	})
 
-	t.Run("external reconciliation", func(t *testing.T) {
+	t.Run("explicit reviewed reconciliation", func(t *testing.T) {
 		deliveries := classifyRequirementDeliveries("delivery", []core.Event{contextEvent, {
-			TaskID: "delivery", Kind: "merge.reconciled", At: mergeAt,
+			TaskID: "delivery", Kind: "merge.reconciled", At: mergeAt, Payload: core.JSONPayload(map[string]any{
+				"head_sha": "reviewed-head", "approved_head_sha": "reviewed-head", "factory_review_validated": true,
+			}),
 		}}, versions[:1], "req-versioned", requirementDeliveryWatermark{At: confirmedV1}, true)
+		if len(deliveries) != 1 || deliveries[0].NeedsAttention || len(deliveries[0].Reasons) != 0 {
+			t.Fatalf("reviewed reconciliation = %+v", deliveries)
+		}
+	})
+
+	t.Run("explicit outside reconciliation", func(t *testing.T) {
+		deliveries := classifyRequirementDeliveries("delivery", []core.Event{contextEvent, {
+			TaskID: "delivery", Kind: "merge.reconciled", At: mergeAt, Payload: core.JSONPayload(map[string]any{
+				"head_sha": "outside-head", "approved_head_sha": "reviewed-head", "factory_review_validated": false,
+			}),
+		}}, versions[:1], "req-versioned", requirementDeliveryWatermark{At: confirmedV1}, true)
+		if len(deliveries) != 1 || !deliveries[0].NeedsAttention || !slices.Contains(deliveries[0].Reasons, "merged outside factory review") {
+			t.Fatalf("outside reconciliation = %+v", deliveries)
+		}
+	})
+
+	t.Run("legacy approved round matching reconciled head", func(t *testing.T) {
+		deliveries := classifyRequirementDeliveries("delivery", []core.Event{contextEvent, {
+			ID: 10, TaskID: "delivery", Kind: "review.round_completed", At: mergeAt.Add(-time.Minute), Payload: core.JSONPayload(map[string]any{
+				"verdict": "approve", "approved_head_sha": "reviewed-head",
+			}),
+		}, {
+			ID: 20, TaskID: "delivery", Kind: "merge.reconciled", At: mergeAt, Payload: core.JSONPayload(map[string]any{"head_sha": "reviewed-head"}),
+		}}, versions[:1], "req-versioned", requirementDeliveryWatermark{At: confirmedV1}, true)
+		if len(deliveries) != 1 || deliveries[0].NeedsAttention || len(deliveries[0].Reasons) != 0 {
+			t.Fatalf("legacy reviewed reconciliation = %+v", deliveries)
+		}
+	})
+
+	t.Run("legacy evidence must precede and match merge", func(t *testing.T) {
+		for _, review := range []core.Event{
+			{ID: 10, TaskID: "delivery", Kind: "review.round_completed", At: mergeAt.Add(-time.Minute), Payload: core.JSONPayload(map[string]any{"verdict": "approve", "approved_head_sha": "other-head"})},
+			{ID: 30, TaskID: "delivery", Kind: "review.round_completed", At: mergeAt.Add(time.Minute), Payload: core.JSONPayload(map[string]any{"verdict": "approve", "approved_head_sha": "reviewed-head"})},
+		} {
+			deliveries := classifyRequirementDeliveries("delivery", []core.Event{contextEvent, review, {
+				ID: 20, TaskID: "delivery", Kind: "merge.reconciled", At: mergeAt, Payload: core.JSONPayload(map[string]any{"head_sha": "reviewed-head"}),
+			}}, versions[:1], "req-versioned", requirementDeliveryWatermark{At: confirmedV1}, true)
+			if len(deliveries) != 1 || !deliveries[0].NeedsAttention || !slices.Contains(deliveries[0].Reasons, "merged outside factory review") {
+				t.Fatalf("ambiguous reconciliation = %+v", deliveries)
+			}
+		}
+	})
+
+	t.Run("legacy per-seat approval matching reconciled head", func(t *testing.T) {
+		deliveries := classifyRequirementDeliveries("delivery", []core.Event{contextEvent, {
+			ID: 10, TaskID: "delivery", Kind: "review.completed", At: mergeAt.Add(-time.Minute), Payload: core.JSONPayload(map[string]any{
+				"verdict": "approve", "review_round": 0, "reviewed_commit_sha": "reviewed-head",
+			}),
+		}, {
+			ID: 20, TaskID: "delivery", Kind: "merge.reconciled", At: mergeAt, Payload: core.JSONPayload(map[string]any{"head_sha": "reviewed-head"}),
+		}}, versions[:1], "req-versioned", requirementDeliveryWatermark{At: confirmedV1}, true)
+		if len(deliveries) != 1 || deliveries[0].NeedsAttention {
+			t.Fatalf("legacy per-seat reconciliation = %+v", deliveries)
+		}
+	})
+
+	t.Run("legacy reconciliation preserves other reasons", func(t *testing.T) {
+		deliveries := classifyRequirementDeliveries("delivery", []core.Event{contextEvent, {
+			ID: 20, TaskID: "delivery", Kind: "merge.reconciled", At: mergeAt, Payload: core.JSONPayload(map[string]any{"head_sha": "unknown-head"}),
+		}}, versions, "req-versioned", requirementDeliveryWatermark{At: confirmedV1}, false)
 		if len(deliveries) != 1 || !deliveries[0].NeedsAttention ||
-			!slices.Contains(deliveries[0].Reasons, "merged outside factory review") {
+			!slices.Contains(deliveries[0].Reasons, "merged outside factory review") ||
+			!slices.Contains(deliveries[0].Reasons, "planned against v1; v2 was current at merge") ||
+			!slices.Contains(deliveries[0].Reasons, "delivered through related work without serving this requirement") {
 			t.Fatalf("reconciled delivery = %+v", deliveries)
 		}
 	})

@@ -2018,7 +2018,15 @@ func (d *Dispatcher) mergeApprovedTaskLocked(ctx context.Context, task core.Task
 		return d.recordMergeFailure(ctx, current, "pull_request_lookup_failed", fmt.Errorf("could not read the pull request for branch %s; verify GitHub authentication and retry: %w", current.Branch, err))
 	}
 	if pr.Merged {
-		if err := d.Store.AppendEvent(ctx, core.Event{TaskID: current.ID, Kind: "merge.reconciled", Payload: core.JSONPayload(map[string]any{"repository": repo.GitHub, "pull_request": pr.Number, "url": pr.URL, "base_sha": pr.BaseSHA, "head_sha": pr.HeadSHA, "result": "already_merged"})}); err != nil {
+		reviewHead := current.ApprovedHeadSHA
+		if reviewHead == "" {
+			reviewHead = current.ReviewedHeadSHA
+		}
+		factoryReviewValidated := reviewHead != "" && pr.HeadSHA != "" && strings.EqualFold(reviewHead, pr.HeadSHA)
+		if err := d.Store.AppendEvent(ctx, core.Event{TaskID: current.ID, Kind: "merge.reconciled", Payload: core.JSONPayload(map[string]any{
+			"repository": repo.GitHub, "pull_request": pr.Number, "url": pr.URL, "base_sha": pr.BaseSHA, "head_sha": pr.HeadSHA, "result": "already_merged",
+			"factory_review_validated": factoryReviewValidated, "reviewed_head_sha": current.ReviewedHeadSHA, "approved_head_sha": current.ApprovedHeadSHA,
+		})}); err != nil {
 			return err
 		}
 		d.observeConfirmedMerge(ctx, current, repo.GitHub, pr, "merge.reconciled")

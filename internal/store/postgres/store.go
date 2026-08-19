@@ -2587,7 +2587,7 @@ func (s *Store) ListRequirementDeliveryEventsForTasks(ctx context.Context, taskI
 	rows, err := s.pool.Query(ctx, `SELECT e.id,e.task_id,e.job_id,e.kind,e.actor_id,e.actor_role,e.payload_json,e.at,e.workspace_id
 		FROM events e JOIN tasks t ON t.id=e.task_id
 		WHERE t.workspace_id=$1 AND e.task_id=ANY($2::text[]) AND e.kind IN (
-			'merge.confirmed','merge.reconciled',
+			'merge.confirmed','merge.reconciled','review.completed','review.round_completed',
 			'task.context_requirement_added','task.context_requirement_activated','task.context_requirement_removed'
 		)
 		ORDER BY e.task_id,e.at,e.id`, workspace(ctx), taskIDs)
