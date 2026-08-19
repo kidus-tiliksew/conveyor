@@ -701,6 +701,114 @@ func TestRequirementDeliveryClassificationNamesSuspectConditions(t *testing.T) {
 	})
 }
 
+func TestRequirementStalenessReproducesExecutionConfigurationV3V4Signal(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	requirement, proposed, err := st.CreateRequirement(ctx, core.Requirement{
+		ID: "req-execution-configuration", Title: "Execution configuration: harnesses and setups",
+	}, core.RequirementVersion{
+		Content: "Initial execution configuration.",
+		Statements: []core.RequirementStatement{{
+			ID: "REQ-6", Statement: "Serviceability remains advisory.",
+		}}, Origin: core.RequirementOriginOperator,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	confirm := func(version core.RequirementVersion) core.RequirementVersion {
+		t.Helper()
+		_, confirmed, confirmErr := st.ConfirmRequirementVersion(ctx, requirement.ID, version.Version)
+		if confirmErr != nil {
+			t.Fatal(confirmErr)
+		}
+		return confirmed
+	}
+	propose := func(content string, statements []core.RequirementStatement) core.RequirementVersion {
+		t.Helper()
+		version, proposeErr := st.ProposeRequirementVersion(ctx, core.RequirementVersion{
+			RequirementID: requirement.ID, Content: content, Statements: statements, Origin: core.RequirementOriginOperator,
+		})
+		if proposeErr != nil {
+			t.Fatal(proposeErr)
+		}
+		return version
+	}
+	statementsV3 := []core.RequirementStatement{{ID: "REQ-6", Statement: "Serviceability remains advisory and claimant-aware."}}
+	confirm(proposed)
+	confirm(propose("Execution configuration v2.", statementsV3))
+	v3 := confirm(propose("Execution configuration v3.", statementsV3))
+
+	delivery := core.Task{
+		ID: "260815-4804be", Workspace: "demo", Title: "Add interactive local execution setup wizard",
+		Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-260815-4804be", State: core.TaskMerged,
+	}
+	if err = st.CreateTask(ctx, delivery); err != nil {
+		t.Fatal(err)
+	}
+	// The historical event omitted an explicit version. Classification must
+	// resolve that pin at the event instant rather than from today's task view.
+	if err = st.AppendEvent(ctx, core.Event{
+		TaskID: delivery.ID, Kind: store.TaskContextRequirementAdded, At: v3.ConfirmedAt,
+		Payload: core.JSONPayload(map[string]any{"id": requirement.ID}),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	statementsV4 := append(slices.Clone(statementsV3), core.RequirementStatement{
+		ID: "REQ-7", Statement: "Workspace policy contains no execution detail.",
+	})
+	v4 := confirm(propose("Execution configuration v4 retires server execution detail.", statementsV4))
+	mergeAt := v4.ConfirmedAt.Add(time.Second)
+	if err = st.AppendEvent(ctx, core.Event{
+		TaskID: delivery.ID, Kind: "merge.confirmed", At: mergeAt,
+		Payload: core.JSONPayload(map[string]any{
+			"url": "https://github.com/kidus-tiliksew/conveyor/pull/569", "pull_request": 569,
+		}),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// A merge in the same workspace is not a delivery candidate without the
+	// requirement's bounded serving/materialization lineage.
+	unrelated := core.Task{ID: "unrelated-merge", Workspace: "demo", Title: "Unrelated merge", Repo: "conveyor", State: core.TaskMerged}
+	if err = st.CreateTask(ctx, unrelated); err != nil {
+		t.Fatal(err)
+	}
+	if err = st.AppendEvent(ctx, core.Event{TaskID: unrelated.ID, Kind: "merge.confirmed", At: mergeAt}); err != nil {
+		t.Fatal(err)
+	}
+
+	server := NewServer(st)
+	server.Workspace = "demo"
+	getView := func() requirementView {
+		t.Helper()
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/requirements/"+requirement.ID, nil))
+		if response.Code != http.StatusOK {
+			t.Fatalf("detail status=%d body=%s", response.Code, response.Body.String())
+		}
+		var view requirementView
+		if unmarshalErr := json.Unmarshal(response.Body.Bytes(), &view); unmarshalErr != nil {
+			t.Fatal(unmarshalErr)
+		}
+		return view
+	}
+
+	view := getView()
+	if !view.Staleness.DeliveryAfterIntent || view.Staleness.PartialEvaluation || len(view.Staleness.Deliveries) != 1 {
+		t.Fatalf("reported delivery staleness=%+v", view.Staleness)
+	}
+	signal := view.Staleness.Deliveries[0]
+	if signal.TaskID != delivery.ID || signal.EventKind != "merge.confirmed" || !signal.At.Equal(mergeAt) ||
+		signal.PinnedVersion != 3 || signal.CurrentVersion != 4 || !signal.NeedsAttention ||
+		!slices.Equal(signal.Reasons, []string{"planned against v3; v4 was current at merge"}) ||
+		signal.URL != "https://github.com/kidus-tiliksew/conveyor/pull/569" || signal.SignalID == "" {
+		t.Fatalf("reported v3/v4 signal=%+v", signal)
+	}
+	if repeated := getView().Staleness.Deliveries[0]; repeated.SignalID != signal.SignalID {
+		t.Fatalf("signal identity changed: first=%s repeated=%s", signal.SignalID, repeated.SignalID)
+	}
+}
+
 func TestRequirementStalenessAcknowledgmentAndFollowUpLifecycle(t *testing.T) {
 	ctx := store.WithActor(store.WithWorkspace(t.Context(), "demo"), store.Actor{ID: "alice", Role: core.ActorHuman})
 	st := store.NewMemory()
