@@ -122,7 +122,8 @@ scanner. No secret values were read from the ignored local `.env` file.
   Exercise both binaries on all four advertised targets or document the limits
   of cross-platform validation.
 - [ ] Include `LICENSE`, `NOTICE`, the relevant README, and release metadata in
-  each archive. Current archives contain only `conveyor` and `conveyord`.
+  each archive. Current archives include `conveyor`, `conveyord`, and `LICENSE`;
+  `NOTICE`, the relevant README, and release metadata remain outstanding.
 - [ ] Generate an SPDX or CycloneDX SBOM for each release.
 - [ ] Publish signed provenance and sign the archives or checksum manifest.
   A checksum downloaded from the same mutable GitHub release is useful for
@@ -152,9 +153,9 @@ scanner. No secret values were read from the ignored local `.env` file.
 
 ### README and public documentation
 
-- [ ] Correct the README's statement that tasks have no assignees. Current
-  policy allows an assignee as a claim-eligibility constraint, without using
-  assignment for queue ordering.
+- [x] Confirm the README does not state that tasks have no assignees. Its
+  current description reflects DEC-18: an assignee constrains claim eligibility
+  without affecting queue ordering.
 - [ ] State the maturity and compatibility promise plainly. Define what
   `v0.x` means for database migrations, REST/MCP contracts, configuration, and
   CLI behavior.
