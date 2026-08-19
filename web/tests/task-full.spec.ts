@@ -1705,8 +1705,9 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
             },
           ]
         : [],
-    checkout_available: false,
-    checkout_guidance: 'Use the assigned worktree.',
+    checkout_command: taskId.startsWith('work-on-this-') ? `conveyor run ${taskId}` : undefined,
+    checkout_available: taskId.startsWith('work-on-this-'),
+    checkout_guidance: taskId.startsWith('work-on-this-') ? '' : 'Use the assigned worktree.',
     needs_attention: taskId === 'forge-failure' || taskId === 'unsatisfiable' || taskId === 'design-proposal',
     at_merge_gate: taskId === 'merge-request-changes',
     forge_failure:
@@ -2100,6 +2101,30 @@ test('task detail headers show the task name while routes and API lookup keep us
   await expect(sheetHeader).toContainText('Short task')
   await expect(sheetHeader).not.toContainText(sheetTaskID)
   expect(new URL(page.url()).pathname).toBe(`/tasks/${sheetTaskID}`)
+})
+
+test('Work on this shows, copies, and responsively wraps the task run command', async ({ page, context }) => {
+  const taskID = 'work-on-this-with-a-deliberately-long-responsive-identifier'
+  const expectedCommand = `conveyor run ${taskID}`
+  await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+
+  await page.goto(`/tasks/${taskID}/full`)
+  const command = page.getByText(expectedCommand, { exact: true })
+  const panel = command.locator('..')
+  await expect(command).toBeVisible()
+
+  const roomyPanel = await panel.boundingBox()
+  const roomyParent = await panel.locator('..').boundingBox()
+  expect(roomyPanel!.width).toBeLessThan(roomyParent!.width)
+
+  await page.getByRole('button', { name: 'Copy task run command' }).click()
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(expectedCommand)
+
+  await page.setViewportSize({ width: 640, height: 720 })
+  await expect(page.getByRole('button', { name: 'Copied' })).toBeVisible()
+  const narrowPanel = await panel.boundingBox()
+  expect(narrowPanel!.height).toBeGreaterThan(roomyPanel!.height)
+  await expect.poll(() => panel.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true)
 })
 
 test('task sheet adds bottom clearance without changing full-page task spacing', async ({ page }) => {

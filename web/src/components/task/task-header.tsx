@@ -38,7 +38,7 @@ import { AssigneeChip } from './assignee-chip'
 
 // The task-header facts: state badges,
 // the facts a reviewer actually references — where the work lives, where it
-// came from, where to read it — and the dedicated-worktree checkout command
+// came from, where to read it — and the task-run command
 // (§21.8). Anything the specification card or the timeline already states is
 // deliberately absent: the header introduces the task, it does not summarize
 // the whole page.
@@ -643,16 +643,18 @@ function Fact({ label, value }: { label: React.ReactNode; value: React.ReactNode
   )
 }
 
-// The dedicated-worktree command, inline rather than behind a disclosure:
-// it is the header's one execution affordance, so it earns its single line.
+// The task-run command, inline rather than behind a disclosure: it stays
+// content-sized on roomy screens and wraps as one usable group when constrained.
 function Checkout({ item }: { item: ActivityItem }) {
   if (item.checkout_available && item.checkout_command) {
     return (
-      <div className="flex min-w-0 max-w-xl items-center gap-2 rounded-md border border-border bg-surface py-0.5 pl-2.5 pr-0.5">
-        <Terminal className="size-3.5 shrink-0 text-faint" aria-hidden="true" />
-        <span className="shrink-0 text-[11px] font-medium text-muted">Work on this locally</span>
-        <code className="min-w-0 flex-1 truncate font-mono text-[11px] text-faint">{item.checkout_command}</code>
-        <CopyButton value={item.checkout_command} label="Copy dedicated worktree command" />
+      <div className="inline-flex w-fit max-w-full flex-wrap items-center gap-x-2 gap-y-1 rounded-md border border-border bg-surface py-0.5 pl-2.5 pr-0.5">
+        <span className="inline-flex min-w-0 items-center gap-2">
+          <Terminal className="size-3.5 shrink-0 text-faint" aria-hidden="true" />
+          <span className="min-w-0 text-[11px] font-medium text-muted">Work on this locally</span>
+        </span>
+        <code className="min-w-0 break-all font-mono text-[11px] text-faint">{item.checkout_command}</code>
+        <CopyButton value={item.checkout_command} label="Copy task run command" />
       </div>
     )
   }
