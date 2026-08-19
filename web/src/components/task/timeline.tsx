@@ -8,7 +8,6 @@ import {
   CircleDashed,
   Cpu,
   ExternalLink,
-  Pin,
   Undo2,
   UserRound,
 } from 'lucide-react'
@@ -756,6 +755,7 @@ function PanelEntry({
 }
 
 function SeatRow({ seat, index, usageAvailable }: { seat: PanelSeat; index: number; usageAvailable: boolean }) {
+  const progress = reviewSeatProgress(seat.order.progress)
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-4 py-2.5">
       <span className="w-11 shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-faint">
@@ -768,19 +768,30 @@ function SeatRow({ seat, index, usageAvailable }: { seat: PanelSeat; index: numb
           tokensOut={seat.job?.tokens_out || seat.order.tokens_out}
           note={seat.order.required_effort ? `effort ${seat.order.required_effort}` : undefined}
           usageAvailable={usageAvailable}
-          usageProvenance={usageProvenance(seat.order)}
+          showUnavailableUsage={false}
         />
       </span>
-      <span className="font-mono text-[11px] tabular-nums text-faint">{usageText(seat.order, usageAvailable)}</span>
-      <EnforcementChip enforcement={seat.order.model_enforcement} />
+      {usageAvailable && (
+        <span className="font-mono text-[11px] tabular-nums text-faint">
+          {compactTokens(seat.order.tokens_in)} in / {compactTokens(seat.order.tokens_out)} out
+        </span>
+      )}
       <span className="ml-auto">
         <SeatState seat={seat} index={index} />
       </span>
-      {seat.status === 'deliberating' && seat.order.progress && (
-        <p className="w-full line-clamp-2 text-xs leading-5 text-muted">{seat.order.progress}</p>
+      {seat.status === 'deliberating' && progress && (
+        <p className="w-full line-clamp-2 text-xs leading-5 text-muted">{progress}</p>
       )}
     </div>
   )
+}
+
+function reviewSeatProgress(progress?: string) {
+  return progress
+    ?.split('\n')
+    .filter((line) => !/^\s*conveyor run mode\s*:/i.test(line))
+    .join('\n')
+    .trim()
 }
 
 // A seat's review feedback rendered as a clipped document block — the same
@@ -839,32 +850,6 @@ function SeatNote({ seat }: { seat: PanelSeat }) {
         </button>
       )}
     </div>
-  )
-}
-
-// Enforcement rendered honestly: a pin for the model
-// the worker invoked itself, a dashed circle for what a claiming agent
-// merely reported — with the plain-words difference behind a hover.
-function EnforcementChip({ enforcement }: { enforcement?: WorkOrder['model_enforcement'] }) {
-  if (!enforcement) return null
-  const pinned = enforcement === 'worker-pinned'
-  return (
-    <span className="group/enforce relative inline-flex cursor-default items-center gap-1 whitespace-nowrap text-[11px] text-faint">
-      {pinned ? (
-        <Pin aria-hidden className="size-3 shrink-0" />
-      ) : (
-        <CircleDashed aria-hidden className="size-3 shrink-0" />
-      )}
-      <span>{pinned ? 'pinned' : 'self-reported'}</span>
-      <span
-        role="tooltip"
-        className="pointer-events-none absolute bottom-full left-0 z-10 mb-1.5 w-60 rounded-md bg-foreground px-2.5 py-1.5 text-[11px] leading-4 text-background opacity-0 shadow-md transition-opacity duration-150 after:absolute after:left-3 after:top-full after:border-4 after:border-transparent after:border-t-foreground group-hover/enforce:opacity-100"
-      >
-        {pinned
-          ? 'Executed by your worker, invoked with this exact model — enforcement Conveyor can vouch for.'
-          : 'Claimed by an operator-attached agent. The model is what the session reported — Conveyor can’t enforce it.'}
-      </span>
-    </span>
   )
 }
 
@@ -948,9 +933,9 @@ const placeholderSummaries = new Set([
   'Completed.',
 ])
 
-// The job footer keeps the operator-facing duration and model, while the model
-// chip retains usage and dispatch detail on hover. Harness, auth mode,
-// confinement, and actor plumbing stay in the API.
+// The job footer keeps the operator-facing facts — duration, model, and
+// explicit work-order usage — while the model chip retains dispatch detail on
+// hover. Harness, auth mode, confinement, and actor plumbing stay in the API.
 function JobEntry({
   job,
   summary,
@@ -1030,27 +1015,24 @@ function JobEntry({
         >
           {summary}
         </MarkdownProse>
-        <footer className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-border px-4 py-2 font-mono text-[11px] tabular-nums text-muted">
+        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 border-t border-border px-4 py-2 font-mono text-[11px] tabular-nums text-muted">
           <span>{duration(job.started_at, job.ended_at)}</span>
-          <span className="ml-auto min-w-0">
-            <ModelChip
-              model={model}
-              tokensIn={job.tokens_in}
-              tokensOut={job.tokens_out}
-              note={note || undefined}
-              usageAvailable={
-                providerUsage
-                  ? job.tokens_in + job.tokens_out > 0
-                  : order
-                    ? usageAvailable
-                    : job.tokens_in + job.tokens_out > 0
-              }
-              usageProvenance={
-                providerUsage ? 'provider-reported' : order ? usageProvenance(order) : 'provider-reported'
-              }
-            />
-          </span>
-        </footer>
+          <ModelChip
+            model={model}
+            tokensIn={job.tokens_in}
+            tokensOut={job.tokens_out}
+            note={note || undefined}
+            usageAvailable={
+              providerUsage
+                ? job.tokens_in + job.tokens_out > 0
+                : order
+                  ? usageAvailable
+                  : job.tokens_in + job.tokens_out > 0
+            }
+            usageProvenance={providerUsage ? 'provider-reported' : order ? usageProvenance(order) : 'provider-reported'}
+          />
+          {order && !providerUsage && <span>{usageText(order, usageAvailable === true)}</span>}
+        </div>
       </article>
     </li>
   )
@@ -1074,6 +1056,7 @@ function ModelChip({
   note,
   usageAvailable,
   usageProvenance,
+  showUnavailableUsage = true,
 }: {
   model: string
   tokensIn: number
@@ -1081,11 +1064,14 @@ function ModelChip({
   note?: string
   usageAvailable?: boolean
   usageProvenance?: string
+  showUnavailableUsage?: boolean
 }) {
   const logo = providerLogo(model)
   const usage = [
     usageAvailable === false
-      ? 'Usage unavailable'
+      ? showUnavailableUsage
+        ? 'Usage unavailable'
+        : undefined
       : usageAvailable || tokensIn + tokensOut > 0
         ? `${compactTokens(tokensIn)} in / ${compactTokens(tokensOut)} out`
         : undefined,

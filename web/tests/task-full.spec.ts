@@ -2646,79 +2646,6 @@ test('work-order cards use their actual stage and technical activity exposes cap
   await expect(technical.getByText('provider rejected the configured model', { exact: false })).toBeVisible()
 })
 
-test('implementation job cards keep duration left and model right without a standalone unavailable-usage label', async ({
-  page,
-}) => {
-  await page.setViewportSize({ width: 480, height: 720 })
-  await page.route('**/v1/tasks/implementation-card/activity*', async (route) => {
-    const item = activity('stage-aware', false)
-    item.task.id = 'implementation-card'
-    item.jobs = [
-      {
-        id: 'implementation-card-implement-1',
-        task_id: 'implementation-card',
-        stage: 'implement',
-        harness: 'codex',
-        model_tier: 'gpt-implement-with-an-intentionally-long-model-name',
-        runner: 'worker',
-        confinement: 'none',
-        cost_usd: 0,
-        tokens_in: 0,
-        tokens_out: 0,
-        state: 'done',
-        started_at: createdAt,
-        ended_at: '2026-07-15T12:01:00Z',
-      },
-    ]
-    item.work_orders = [
-      {
-        ...item.work_orders[1],
-        id: 'implementation-card-implement-1',
-        task_id: 'implementation-card',
-        job_id: 'implementation-card-implement-1',
-        state: 'completed',
-        required_model: 'gpt-implement-with-an-intentionally-long-model-name',
-      },
-    ]
-    item.events = [
-      {
-        id: 1,
-        task_id: 'implementation-card',
-        job_id: 'implementation-card-implement-1',
-        kind: 'job.summary',
-        actor_id: 'worker',
-        actor_role: 'runner',
-        payload: { summary: 'Implementation completed without reported usage.' },
-        at: '2026-07-15T12:01:00Z',
-      },
-    ]
-    await route.fulfill({ json: item })
-  })
-
-  await page.goto('/tasks/implementation-card/full')
-  const card = page.locator('article').filter({ hasText: 'Implementation completed without reported usage.' })
-  const footer = card.locator('footer')
-  const duration = footer.locator(':scope > span').first()
-  const model = footer.locator(':scope > span').last()
-
-  await expect(footer.locator(':scope > span')).toHaveCount(2)
-  await expect(duration).toHaveText('1m 00s')
-  await expect(model).toContainText('gpt-implement')
-  await expect(model.getByRole('tooltip')).toContainText('Usage unavailable')
-  expect(await footer.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true)
-  const [footerBox, durationBox, modelBox] = await Promise.all([
-    footer.boundingBox(),
-    duration.boundingBox(),
-    model.boundingBox(),
-  ])
-  expect(footerBox).not.toBeNull()
-  expect(durationBox).not.toBeNull()
-  expect(modelBox).not.toBeNull()
-  expect((modelBox?.x ?? 0) + (modelBox?.width ?? 0)).toBeGreaterThan(
-    (footerBox?.x ?? 0) + (footerBox?.width ?? 0) - 20,
-  )
-})
-
 test('task detail aggregates reported work-order usage and distinguishes reported zero from unavailable', async ({
   page,
 }) => {
@@ -2996,7 +2923,7 @@ test('review panel replaces duplicate review and bounce activity notes', async (
   // review.completed event carries no review_work_order_id.
   await expect(panel.getByText('Approved', { exact: true })).toBeVisible()
   await expect(panel.getByText('Changes', { exact: true })).toBeVisible()
-  await expect(panel.getByText('pinned', { exact: true })).toHaveCount(2)
+  await expect(panel.getByText('pinned', { exact: true })).toHaveCount(0)
   await expect(panel.getByText('2 of 2 verdicts in')).toBeVisible()
 
   // Feedback from every seat stays visible, attributed in the merged notes.
@@ -3146,6 +3073,43 @@ test('active review claim diagnostics stay in the review panel instead of standa
   await expect(page.getByText('Review claimed without terminal verdict submission')).toHaveCount(0)
   await expect(page.locator('article').filter({ hasText: 'Panel of 2 · unanimous to pass' })).toHaveCount(1)
   await expect(page.getByText('Review claim expired without verdict submission')).toBeVisible()
+})
+
+test('review panel hides generated metadata while preserving reported zero usage and meaningful progress', async ({
+  page,
+}) => {
+  await page.route('**/v1/tasks/review-panel-cleanup/activity*', async (route) => {
+    const item = activity('diagnostics', false)
+    item.task.id = 'review-panel-cleanup'
+    item.jobs = item.jobs?.map((job) => ({ ...job, task_id: 'review-panel-cleanup' }))
+    item.events = item.events.map((event) => ({ ...event, task_id: 'review-panel-cleanup' }))
+    item.work_orders = item.work_orders?.map((order, index) => ({
+      ...order,
+      task_id: 'review-panel-cleanup',
+      model_enforcement: 'self-reported',
+      usage_reported: index === 1,
+      tokens_in: 0,
+      tokens_out: 0,
+      progress:
+        index === 0
+          ? 'conveyor run mode: confirmed-per-stage'
+          : 'conveyor run mode: auto-chained\nChecking requirement citations.',
+    }))
+    await route.fulfill({ json: item })
+  })
+
+  await page.goto('/tasks/review-panel-cleanup/full')
+  const panel = page.locator('article').filter({ hasText: 'Panel of 2 · unanimous to pass' })
+
+  await expect(panel).toContainText('gpt-review')
+  await expect(panel).toContainText('claude-review')
+  await expect(panel.getByText('Deliberating')).toHaveCount(2)
+  await expect(panel.getByText('0 in / 0 out', { exact: true }).last()).toBeVisible()
+  await expect(panel.getByText('Checking requirement citations.', { exact: true })).toBeVisible()
+  await expect(panel.getByText(/conveyor run mode/i)).toHaveCount(0)
+  await expect(panel.getByText(/self-reported/i)).toHaveCount(0)
+  await expect(panel.getByText('Usage unavailable')).toHaveCount(0)
+  await expect(panel.getByRole('tooltip').filter({ hasText: 'Usage unavailable' })).toHaveCount(0)
 })
 
 test('human gate renders as the event timeline tail and the page opens scrolled to it', async ({ page }) => {
