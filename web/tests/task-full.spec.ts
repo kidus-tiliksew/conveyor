@@ -2923,7 +2923,7 @@ test('review panel replaces duplicate review and bounce activity notes', async (
   // review.completed event carries no review_work_order_id.
   await expect(panel.getByText('Approved', { exact: true })).toBeVisible()
   await expect(panel.getByText('Changes', { exact: true })).toBeVisible()
-  await expect(panel.getByText('pinned', { exact: true })).toHaveCount(2)
+  await expect(panel.getByText('pinned', { exact: true })).toHaveCount(0)
   await expect(panel.getByText('2 of 2 verdicts in')).toBeVisible()
 
   // Feedback from every seat stays visible, attributed in the merged notes.
@@ -3073,6 +3073,43 @@ test('active review claim diagnostics stay in the review panel instead of standa
   await expect(page.getByText('Review claimed without terminal verdict submission')).toHaveCount(0)
   await expect(page.locator('article').filter({ hasText: 'Panel of 2 · unanimous to pass' })).toHaveCount(1)
   await expect(page.getByText('Review claim expired without verdict submission')).toBeVisible()
+})
+
+test('review panel hides generated metadata while preserving reported zero usage and meaningful progress', async ({
+  page,
+}) => {
+  await page.route('**/v1/tasks/review-panel-cleanup/activity*', async (route) => {
+    const item = activity('diagnostics', false)
+    item.task.id = 'review-panel-cleanup'
+    item.jobs = item.jobs?.map((job) => ({ ...job, task_id: 'review-panel-cleanup' }))
+    item.events = item.events.map((event) => ({ ...event, task_id: 'review-panel-cleanup' }))
+    item.work_orders = item.work_orders?.map((order, index) => ({
+      ...order,
+      task_id: 'review-panel-cleanup',
+      model_enforcement: 'self-reported',
+      usage_reported: index === 1,
+      tokens_in: 0,
+      tokens_out: 0,
+      progress:
+        index === 0
+          ? 'conveyor run mode: confirmed-per-stage'
+          : 'conveyor run mode: auto-chained\nChecking requirement citations.',
+    }))
+    await route.fulfill({ json: item })
+  })
+
+  await page.goto('/tasks/review-panel-cleanup/full')
+  const panel = page.locator('article').filter({ hasText: 'Panel of 2 · unanimous to pass' })
+
+  await expect(panel).toContainText('gpt-review')
+  await expect(panel).toContainText('claude-review')
+  await expect(panel.getByText('Deliberating')).toHaveCount(2)
+  await expect(panel.getByText('0 in / 0 out', { exact: true }).last()).toBeVisible()
+  await expect(panel.getByText('Checking requirement citations.', { exact: true })).toBeVisible()
+  await expect(panel.getByText(/conveyor run mode/i)).toHaveCount(0)
+  await expect(panel.getByText(/self-reported/i)).toHaveCount(0)
+  await expect(panel.getByText('Usage unavailable')).toHaveCount(0)
+  await expect(panel.getByRole('tooltip').filter({ hasText: 'Usage unavailable' })).toHaveCount(0)
 })
 
 test('human gate renders as the event timeline tail and the page opens scrolled to it', async ({ page }) => {
