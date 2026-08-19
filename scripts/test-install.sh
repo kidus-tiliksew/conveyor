@@ -26,6 +26,7 @@ trap cleanup EXIT HUP INT TERM
 printf 'installer test fixture: %s\n' "$fixture_root"
 
 make -C "$repo_root" release VERSION="$version" RELEASE_DIR="$fixture_root/build" RELEASE_TARGETS="$os/$arch"
+tar -tzf "$fixture_root/build/$archive" | grep -F "conveyor_${version}_${os}_${arch}/LICENSE" >/dev/null
 asset_dir="$fixture_root/releases/download/$version"
 mkdir -p "$asset_dir"
 mv "$fixture_root/build/conveyor_${version}_${os}_${arch}.tar.gz" "$asset_dir/"

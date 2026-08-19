@@ -1,200 +1,227 @@
 # Conveyor
 
-Conveyor is a software factory. You describe what a product should be
-in versioned documents (requirements, system design, decisions), and
-the factory turns the gap between those documents and the code into
-tasks. Agents you run on your own machines claim the tasks over MCP,
-then plan, implement, and review them. Humans confirm the documents,
-approve the plans, and gate the merges. Every step is recorded as an
-event, and the events build a knowledge graph that links each merged
-change back through its task, plan, review, and evidence to the
-requirement it serves.
+Conveyor is a software factory for agent-written code. It queues work from
+confirmed requirements, System Design documents, and decisions. Agents on your
+machines plan, implement, and review that work. Operators confirm the
+documents, approve plans when required, and control the merge policy.
 
-![The Conveyor board: tasks moving through plan, implementing, reviewing, and verifying stages](docs/assets/board.png)
+<table>
+  <tr>
+    <td colspan="2">
+      <a href="docs/assets/board.png">
+        <img src="docs/assets/board.png" width="100%" alt="The Conveyor board with tasks in planning, implementation, review, and verification">
+      </a>
+      <br><sub>Task board</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <a href="docs/assets/screenshots/task-lineage.png">
+        <img width="100%" src="docs/assets/screenshots/task-lineage.png" alt="A merged task with its plan, pull request, and lineage">
+      </a>
+      <br><sub>Task plan and lineage</sub>
+    </td>
+    <td width="50%">
+      <a href="docs/assets/screenshots/system-design.png">
+        <img width="100%" src="docs/assets/screenshots/system-design.png" alt="A confirmed System Design document with its architecture diagram">
+      </a>
+      <br><sub>Confirmed System Design</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <a href="docs/assets/screenshots/requirement-drift.png">
+        <img width="100%" src="docs/assets/screenshots/requirement-drift.png" alt="A requirement with a delivery drift signal awaiting operator judgment">
+      </a>
+      <br><sub>Requirement drift</sub>
+    </td>
+    <td width="50%">
+      <a href="docs/assets/screenshots/mcp-setup.png">
+        <img width="100%" src="docs/assets/screenshots/mcp-setup.png" alt="The MCP setup dialog for coding clients">
+      </a>
+      <br><sub>MCP client setup</sub>
+    </td>
+  </tr>
+  <tr>
+    <td colspan="2">
+      <a href="docs/assets/screenshots/review-loop.png">
+        <img width="100%" src="docs/assets/screenshots/review-loop.png" alt="A task timeline with changes requested and the following implementation round">
+      </a>
+      <br><sub>Review feedback returning to implementation</sub>
+    </td>
+  </tr>
+</table>
 
-Conveyor has been building itself since July 2026. Nearly every feature
-in this repository entered as a document, went through the plan and
-review gates, and merged with its lineage recorded.
+Conveyor has used this process to build itself since July 2026.
 
-## The software factory
+## Why a software factory
 
-You can run a factory of agents dark, shipping code no human reads.
-That feels fast for a few months, until nobody understands the system
-anymore. Conveyor runs lit, with human judgment pushed as early in the
-process as it will go:
+Generating more code is easy. Checking that the code matches product intent is
+the hard part.
 
-- Work enters as requirements and design documents.
-  Agents can draft and propose them; only an operator can confirm them.
-- An optional plan gate has the agent submit a short written plan
-  (approach, files, risks, done-criteria) for approval before it writes
-  any code.
-- Review runs in a separate agent session. The server rejects
-  self-review at claim time, and a submission without test evidence is
-  rejected outright.
-- System Design documents declare which code they govern. A merge that
-  touches governed code without a design revision raises a drift
-  signal, and a monitor watches the default branch and files
-  reconciliation tasks when changes land outside the pipeline.
-- Every state transition appends to an event log. The knowledge graph
-  is a projection of that log.
+A queue of unsupervised agents can ship code that nobody has read. Conveyor
+puts human judgment at the points where mistakes change the product or its
+architecture:
+
+- Agents and operators draft documents. Operators confirm them.
+- A separate agent reviews each change. The server rejects self-review and
+  missing test evidence.
+- Governed code changes without a design revision raise a drift signal.
+- The monitor files reconciliation tasks for work outside the pipeline and
+  failures found after merge.
+
+Conveyor coordinates the work. It does not run your code in a hosted sandbox
+or hold your model credentials. Agents edit and test in Git worktrees on your
+hardware. Delivery uses ordinary pull requests.
 
 ## The knowledge graph
 
-Everything durable in the factory is a node — requirements and their versions, System Design documents,
-decisions, tasks, work orders, pull requests, commit ranges, review
-verdicts, test evidence — and every relationship between them is a
-typed edge: a task *serves* a requirement, a design *governs* a
-repository path, a decision *supersedes* an earlier one, a work order
-*produced* a verdict, a merge records the commit range it landed.
-Starting from any node you can walk to everything it touched: from a
-requirement down to the commits that satisfied it, or from a merged
-change back up to the intent it serves.
+Conveyor links each change to the documents, task, review, and test evidence
+behind it.
 
-Nobody maintains the graph by hand, and the graph is not itself the
-source of truth. Every edge is asserted by an event in the append-only
-log and carries the ID of the event that created it. The links table
-in PostgreSQL is a rebuildable projection: `conveyor lineage rebuild`
-replays the workspace's events in a single transaction and regenerates
-it, preserving the few historical rows no replay can derive.
+```mermaid
+flowchart LR
+    intent["Confirmed requirements<br/>and designs"] --> task["Task"]
+    task --> delivery["Delivered change"]
 
-The same graph serves every surface that needs context, through one
-bounded, deterministic traversal — depth, node, and link budgets make
-reads fail closed instead of walking an unbounded workspace:
+    intent -.-> check{"Misalignment checks"}
+    delivery -.-> check
+    repository["Observed repository"] -.-> check
 
-- When an agent claims a work order, its context is assembled by
-  walking the graph from the task: the requirements it serves, the
-  designs governing the code it touches, and the decisions that
-  settled how, ranked by relation and rendered within a byte budget.
-- Drift detection follows the *governs* edges from System Design
-  documents to repository paths to tell governed merges from
-  ungoverned ones.
-- Operators and API clients get the same walk through the lineage
-  explorer in the dashboard and `GET /v1/lineage/{type}/{id}`.
+    check -->|mismatch found| signal["Signal"]
+    signal --> followup["Judgment or gated follow-up"]
+    followup -->|re-enters the factory| task
+```
 
-The result is that traceability survives the people who had it in
-their heads. When an agent (or a person) asks why something is the way
-it is, the answer is a query. 
+Conveyor checks each delivery against confirmed requirements and governing
+designs. When a delivery and its confirmed intent disagree, Conveyor raises a
+signal. Repository drift and post-merge failures raise signals too. Conveyor
+never rewrites code or documents on its own. An operator can acknowledge the
+signal or send follow-up work through the normal gates.
 
-## The document tiers
+The event log is the source of the graph. PostgreSQL stores a projection for
+queries. `conveyor lineage rebuild` rebuilds it from the workspace's events.
 
-Not every document carries the same weight. Conveyor sorts them by
-two questions: does it bind anyone, and does it describe what the
-product should do or how the system does it? That gives four tiers:
+## How work moves
 
-- **Product overviews** are background reading: markdown uploads,
-  versioned with diffs, that describe the product without binding
-  anyone to anything. When an overview makes a claim worth enforcing,
-  the claim is promoted into a requirement with a link back to the
-  exact section it came from.
-- **Requirements** say what the product must do, framed as user
-  stories with nested acceptance criteria. Every statement carries a
-  stable ID — `REQ-n` for the requirement, `AC-n.m` for each
-  criterion — so it can be cited on its own.
-- **System Design documents** say how the system works, kept as
-  markdown inside the factory. Each one also declares which code it
-  governs, and that declaration is what arms drift detection — a
-  merge into governed paths without a design revision raises a
-  signal.
-- **Decisions** are settled arguments. Each `DEC-n` records what was
-  decided, the context, and the alternatives that were rejected, so a
-  question argued once — in planning, in implementation, or by an
-  operator — stays settled. A decision is never edited afterward,
-  only superseded by a later one.
+Planning produces confirmed documents and dependency-ordered tasks. An agent
+claims a task in a dedicated worktree, submits a plan when required, then
+implements and tests the change. A different agent reviews it against the
+pinned documents and test evidence. Conveyor applies the merge gate and
+monitors the default branch afterward.
 
-Requirements, designs, and decisions all move the same way: agents
-and operators draft and propose, versions never change once written,
-and only an operator confirms.
+## Documents are the authority
 
-The IDs are stable and citable in code comments. An implementing agent
-cites the requirements and decisions its code serves, and the reviewer
-checks those citations against the document versions pinned when the
-work order was claimed, so the contract the agent saw is the contract
-it is judged by.
+Conveyor keeps four document types:
 
-## How a task moves
+- **Product overviews.** These provide background. Conveyor versions the Markdown
+  uploads with diffs, but they do not bind implementation. Only a requirement
+  can bind implementation.
+- **Requirements.** These state what the product must do. Each requirement has
+  a stable `REQ-n` ID and each acceptance criterion has a stable `AC-n.m` ID.
+- **System Design documents.** These state how the system works and which
+  repository paths they govern.
+- **Decisions.** These record a settled choice, its context, and the rejected
+  options. Conveyor never edits a confirmed `DEC-n`. A later decision may
+  supersede it.
 
-1. **Plan.** In the in-product planning agent or an operator-side
-   session (see the [planning playbook](docs/playbooks/conveyor-planning.md)).
-   Output: proposed requirement and design revisions plus a
-   dependency-ordered set of tasks.
-2. **Queue.** Tasks carry their context with them: the requirements
-   they serve and the designs that govern them. There are no priority
-   fields and no assignees. Blocked is derived from dependencies, and
-   workers claim whatever is claimable.
-3. **Plan gate** (optional). A stage-typed work order collects a
-   versioned execution plan for approval or redirect before
-   implementation dispatches.
-4. **Implement.** An agent you own (Codex, Claude, anything that
-   speaks MCP) claims the work order, checks out a dedicated worktree,
-   and does every edit, test, commit, and push there. Conveyor never
-   executes your code and never holds your model credentials.
-5. **Review.** A fresh agent session judges the diff against the cited
-   acceptance criteria and the plan's done-criteria, and files a
-   structured verdict that the server validates.
-6. **Merge and watch.** Gated or automatic merge, then the monitor
-   keeps watching the branch for out-of-pipeline changes and
-   post-merge failures.
+Agents and operators can draft and propose new versions. Conveyor never edits a
+written version. Only an operator can confirm a proposal.
+
+An implementation cites the requirements and decisions it serves. Review checks
+the document versions captured when the agent claimed the work order. A
+revision made mid-task cannot change what the reviewer checks.
 
 ## Architecture
 
+```text
+   Operators in a browser              Agents such as Codex or Claude
+             |                                      |
+      React dashboard                       MCP work-order server
+      board, tasks, docs                    claim, plan, review
+             |                                      |
+             +------------------+-------------------+
+                                |
+                         conveyord in Go
+                  REST API, planning chat, event log
+                                |
+                           PostgreSQL
+                  events, documents, links, queue
+                                |
+                    conveyor worker on your machine
+                       supervises your agent CLIs
+                                |
+                    Git worktrees, repositories, PRs
 ```
-   Operators (browser)                  Agents (Codex, Claude, ...)
-          |                                       |
-   React dashboard                      MCP work-order server
-   Board / Tasks / Docs                 claim, plan, review, verdict
-          |                                       |
-          +----------------+----------------------+
-                           |
-                    conveyord (Go, one binary)
-              REST API, SSE planning chat, event log
-                           |
-                      PostgreSQL
-             events, documents, links, one queue
-                           |
-                 conveyor worker (your machine)
-             supervises your agents, your credentials
-                           |
-              git worktrees -> your repos -> PRs
-```
 
-Conveyor is a coordination plane, not an execution sandbox. The worker
-is a thin supervisor over agents you already run. Edits and tests
-happen in worktrees on your hardware, and delivery lands as ordinary
-pull requests.
+`conveyord` is one Go binary. PostgreSQL stores the event log, documents,
+lineage projection, and River queue. The worker launches agent CLIs with your
+local credentials.
 
-## Running it
+## Before you install
 
-An installed deployment needs PostgreSQL 15+, Git, an authenticated `gh` CLI
-(`GH_TOKEN` is the headless alternative), an API key for its configured
-OpenAI-compatible model endpoint, and the agent CLIs selected for execution.
-The installer itself needs `curl`, `tar`, and a SHA-256 tool, but not sudo.
+A deployed factory needs:
 
-### Install a release
+- PostgreSQL 15 or newer
+- Git
+- an authenticated `gh` CLI, or `GH_TOKEN` for headless use
+- an API key for the configured OpenAI-compatible model endpoint
+- the agent CLIs you plan to run
 
-The latest release installs both `conveyor` and `conveyord` to
-`~/.local/bin`:
+The release installer needs `curl`, `tar`, and a SHA-256 tool. It does not need
+`sudo`.
+
+Source development also needs Go 1.24, Node with npm, and Docker with Compose.
+
+## Install a release
+
+Install the latest `conveyor` and `conveyord` binaries in `~/.local/bin`:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/kidus-tiliksew/conveyor/main/install.sh | sh
 ```
 
-Pin the reviewed installer and release version when reproducibility matters:
+To install a reviewed version, pin the installer and the release:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/kidus-tiliksew/conveyor/v1.2.3/install.sh | sh -s -- v1.2.3
 ```
 
-Set `CONVEYOR_INSTALL_DIR` to override the destination. The script supports
-Linux and macOS on amd64 and arm64, downloads only the selected GitHub release,
-and verifies its published SHA-256 checksum before unpacking or replacing
-either binary.
+Set `CONVEYOR_INSTALL_DIR` to choose another destination. The installer supports
+Linux and macOS on amd64 and arm64. It downloads the selected GitHub release and
+checks the published SHA-256 digest before replacing either binary.
 
-### Contributor agent setup
+## Create a factory
 
-On each contributor machine, install the CLI, log in, install the factory's
-embedded agent skills, and install the native MCP registrations. The skills
-and MCP commands configure every detected Claude Code and Codex installation;
-use `--tool` to narrow either command to one client.
+Start with PostgreSQL already running.
+
+1. Export `CONVEYOR_DATABASE_URL`, a generated `CONVEYOR_API_TOKEN`, and
+   `CONVEYOR_API_KEY`. Authenticate the host with `gh auth login`.
+2. Run `conveyor init --config ./conveyor.yaml`. The wizard asks for the
+   organization, first operator, workspace, and repository. The repository path
+   must point to an existing clone. Repeating the same answers is a safe no-op.
+3. Run `conveyord -config ./conveyor.yaml`. To install a user service instead,
+   run `conveyord install --config ./conveyor.yaml` and inspect it with
+   `conveyord status`.
+4. Create the first task:
+
+```sh
+conveyor --workspace <workspace-id> task new \
+  --repo <repo-name> \
+  --message '<work>'
+```
+
+Startup applies pending embedded database migrations before the API or workers
+start. A binary refuses to start if a newer release created the store.
+
+Use a dedicated forge machine account for `gh` on a team server. GitHub records
+every factory action under the host's account. A personal account makes those
+actions look like one person's work.
+
+## Set up a contributor machine
+
+Install the CLI, authenticate, then install Conveyor's agent skills and native
+MCP registrations:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/kidus-tiliksew/conveyor/main/install.sh | sh
@@ -203,81 +230,86 @@ conveyor skills install
 conveyor --server https://factory.example mcp install
 ```
 
-`conveyor skills install --list` shows the release-carried files and their
-installed state without writing. Re-running the install refreshes only files
-previously owned by Conveyor and refuses unrelated collisions.
+Both install commands configure detected Codex and Claude Code clients. Pass
+`--tool` to select one client.
 
-`conveyor mcp install --list` similarly reports the native user registration
-state without writing. The installer writes `~/.codex/config.toml` with
-`[mcp_servers.conveyor]`, the selected server URL, and
-`bearer_token_env_var = "CONVEYOR_API_TOKEN"`; it writes `~/.claude.json` with
-Claude's user-scope `type: "http"` server and an environment-backed
-Authorization header. Stored token values are never copied into either file.
-If the bridge is absent, the command prints the exact shell setup line:
+`conveyor skills install --list` reports the release files and their installed
+state without writing. An install refreshes files already owned by Conveyor and
+refuses unrelated collisions.
+
+`conveyor mcp install --list` reports MCP registrations without writing. For
+Codex, installation writes `[mcp_servers.conveyor]`, the server URL, and
+`bearer_token_env_var = "CONVEYOR_API_TOKEN"` to `~/.codex/config.toml`. For
+Claude Code, it writes a user-scope HTTP server with an environment-backed
+Authorization header to `~/.claude.json`. It never copies a token value into
+either file.
+
+If the token bridge is missing, the command prints this setup line:
 
 ```sh
 export CONVEYOR_API_TOKEN=$(conveyor auth token)
 ```
 
-Add that line to the shell environment yourself; Conveyor does not edit shell
-startup files. Existing unmarked `conveyor` registrations are reported as
-skipped and left untouched unless `--adopt` is supplied. Re-running refreshes
-owned entries and reports each detected client as created, refreshed,
-unchanged, or skipped. When credentials are stored for more than one server,
-select one explicitly with `--server`.
+Add it to the shell environment yourself. Conveyor does not edit shell startup
+files. It leaves registrations it does not own untouched unless you pass
+`--adopt`. If credentials exist for several servers, select one with
+`--server`.
 
-To upgrade, re-run the installer with the newer version and restart the
-`conveyord` service. Replacing the two binaries is the entire software upgrade:
-startup applies pending database migrations, while a binary refuses to start
-against a store created by a newer release.
+## Run a task
 
-### Build from source
+Create the local execution configuration once, then run a task by ID:
 
-Development requires Go 1.24, Node/npm, Docker with Compose, and the runtime
-prerequisites above. Clone the repository and run `make build`; the binaries
-are written to `bin/`. This source-build path remains the supported devbox flow.
+```sh
+conveyor config init-execution --config ./conveyor.yaml
+conveyor run <task-id> --config ./conveyor.yaml
+```
 
-### Four-step solo quickstart
+Conveyor shows each claimable stage before it claims the work. Pass `--auto` to
+run claimable stages without those prompts. Operator gates still apply.
 
-With a released `conveyor`/`conveyord` installation and PostgreSQL 15 or newer
-already running, the first-run wizard creates the deployment and workspace
-configuration; no hand editing of YAML is required.
-Issue yourself a personal token immediately after your first sign-in.
-Treat the environment token as break-glass and rotate it through
-`CONVEYOR_API_TOKEN`, not the Revoke button.
+Use a durable worker when a machine should poll the queue and run available
+work without an attached operator. The
+[worker operations guide](docs/worker-operations.md) covers enrollment, service
+installation, and recovery.
 
-1. Export `CONVEYOR_DATABASE_URL`, a generated `CONVEYOR_API_TOKEN`, and
-   `CONVEYOR_API_KEY`, then authenticate the host with `gh auth login`.
-2. Run `conveyor init --config ./conveyor.yaml` and answer the organization,
-   first-operator, workspace, and repository prompts. The repository path must
-   be an existing filesystem clone. Re-running the same answers is a safe
-   no-op.
-3. Start the versioned binary with `conveyord -config ./conveyor.yaml` (or use
-   `conveyord install --config ./conveyor.yaml` and inspect it with
-   `conveyord status`). Startup applies pending embedded migrations before the
-   API or workers start; replacing the binary and restarting is the upgrade
-   procedure.
-4. Create the first task with
-   `conveyor --workspace <workspace-id> task new --repo <repo-name> --message '<work>'`.
+## File work
 
-On a team server, use a dedicated forge machine account for the host's `gh`
-login. Every forge action performed by the factory is authored as that host
-identity, so a personal account makes ownership and auditing ambiguous.
+File a task from the CLI:
+
+```sh
+conveyor --workspace demo task new \
+  --repo api \
+  --message 'fix the typo in README'
+```
+
+MCP clients can use `create_task`. The call requires `body`, `repo`, and a
+caller-stable `idempotency_key`. It may also attach served requirements and
+governing designs.
+
+Agents authenticate with `CONVEYOR_API_TOKEN` to claim work orders, submit
+plans, and file review verdicts. `CONVEYOR_API_KEY` is only for server-owned
+triage and planning. Both binaries load `.env`. Process environment values take
+precedence over stored CLI defaults.
+
+## Develop from source
+
+Clone the repository and run:
 
 ```sh
 cp conveyor.example.yaml conveyor.yaml
-cp .env.example .env   # set CONVEYOR_API_KEY; regenerate the operator token: openssl rand -hex 32
-make dev               # health-checked Postgres on :5432 + build + conveyord on :8080
+cp .env.example .env
+make dev
 ```
 
-Open `http://127.0.0.1:8080`. The Board and Tasks views are the
-operating surfaces, and `http://127.0.0.1:8080/settings` has the MCP
-endpoint with a paste-ready client snippet.
+Set `CONVEYOR_API_KEY` in `.env` and generate the initial operator token with
+`openssl rand -hex 32`. `make dev` starts a health-checked PostgreSQL instance
+on port 5432, builds the project, and starts `conveyord` on port 8080.
 
-After installing the skills, connect the contributor CLI and MCP client with a
-personal access token from Settings. The CLI reads the token through hidden
-terminal input and verifies it before saving; it is never passed in argv. The
-Settings page also provides the MCP endpoint and paste-ready client snippet.
+Open `http://127.0.0.1:8080`. The Settings page at
+`http://127.0.0.1:8080/settings` provides the MCP endpoint and client
+configuration.
+
+Connect the local CLI with a personal access token from Settings:
 
 ```sh
 bin/conveyor --server http://127.0.0.1:8080 auth login
@@ -285,17 +317,25 @@ bin/conveyor config set workspace demo
 bin/conveyor auth status
 ```
 
-Credentials and workspace defaults are stored per server, so one machine can
-use multiple factories. The local JSON file uses a plaintext-at-rest trust
-model like `gh` and kubeconfig, with a 0700 parent directory and 0600 file;
-operating-system keychain integration may be added later. Use
-`conveyor auth logout --revoke` to remove the local entry and attempt remote
-revocation. `conveyor config list` shows the effective server and workspace and
-whether each came from a flag, environment, the stored file, or singleton
-fallback.
+The CLI reads the token through hidden terminal input and verifies it before
+saving. It never passes the token in process arguments.
 
-Environment variables remain the supported non-interactive path for CI,
-workers, and MCP clients. They take precedence over stored values:
+Run `make build` when you only need the binaries. The build writes them to
+`bin/`.
+
+## Credentials and upgrades
+
+Conveyor stores CLI credentials and workspace defaults per server. The local
+JSON file is plaintext, like `gh` and kubeconfig. Conveyor creates its parent
+directory with mode 0700 and the file with mode 0600.
+
+Use `conveyor auth logout --revoke` to remove the local entry and request remote
+revocation. `conveyor config list` reports the effective server and workspace,
+including whether each value came from a flag, the environment, the stored
+file, or the singleton fallback.
+
+For CI, workers, and MCP clients, set environment variables. They override
+stored values:
 
 ```sh
 export CONVEYOR_ADDR=https://factory.example.com
@@ -303,42 +343,18 @@ export CONVEYOR_API_TOKEN="$(conveyor --server "$CONVEYOR_ADDR" auth token)"
 export CONVEYOR_WORKSPACE=demo
 ```
 
-Start a worker on the machine where your agents run:
+To upgrade, rerun the installer with the new version and restart `conveyord`.
+Startup applies pending migrations.
 
-```sh
-bin/conveyor config init-execution --config ./conveyor.yaml     # required local launch setup
-bin/conveyor --workspace demo worker pair                      # prints a single-use pairing token
-bin/conveyor --workspace demo worker run --config ./conveyor.yaml --pairing-token <t>
-```
-
-Upgrade note for solo Mac and devbox workers: create the local execution setup
-before replacing the binary while worker mode is enabled. Workers no longer
-read harness, model, or effort choices from the server's persisted workspace
-copy. If the file is missing or invalid, startup fails before any claim and
-prints the config path plus the setup command needed to repair it. Set
-`CONVEYOR_CONFIG` when a service or working directory should use a path other
-than `./conveyor.yaml`. Reinstall an existing user service with the absolute
-path so launchd or systemd preserves it:
-
-```sh
-bin/conveyor --workspace demo worker install --config /absolute/path/to/conveyor.yaml
-```
-
-File work from the CLI:
-
-```sh
-bin/conveyor --workspace demo task new --repo api --message 'fix the typo in README'
-```
-
-or over MCP with `create_task` (idempotent; `body`, `repo`, and a
-caller-stable `idempotency_key` are required, and you can attach served
-requirements and governing designs at intake). Any MCP-speaking agent
-can claim work orders, submit plans, and file review verdicts with
-`CONVEYOR_API_TOKEN`. `CONVEYOR_API_KEY` powers only the server-owned
-triage and planning stages. Both binaries auto-load `.env`; process
-environment wins over stored CLI defaults.
+Before upgrading a Mac or devbox worker with worker mode enabled, run
+`conveyor config init-execution`. Reinstall an existing user service if its
+configuration path changed.
 
 ## Status
 
-Conveyor is in active development. The factory's own records carry the
-full history, defects included.
+Conveyor is under active development. Its event log records defects and
+reconciliation work alongside successful merges.
+
+## License
+
+Conveyor is available under the [MIT License](LICENSE).
