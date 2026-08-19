@@ -183,6 +183,9 @@ func (m runTUIModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.updateProposals([]workerservice.TaskRunProposal(message))
 		m.resize()
 	case runTUIClearGateMsg:
+		if m.gate != nil {
+			m.input, m.status, m.feedback = "", "", false
+		}
 		m.gate = nil
 		m.resize()
 	case runTUIGateMsg:
@@ -354,7 +357,11 @@ func (m *runTUIModel) updateProposals(next []workerservice.TaskRunProposal) {
 			break
 		}
 	}
-	if len(m.proposals) == 0 {
+	// Proposal snapshots are a background projection. An empty snapshot must
+	// not reset an active gate prompt: the attached loop publishes proposals
+	// before its (often identical) gate snapshot on every poll. Prompt state is
+	// cleared only when there is no gate context left to own it.
+	if len(m.proposals) == 0 && m.gate == nil {
 		m.input, m.status = "", ""
 	}
 }
