@@ -2052,10 +2052,9 @@ func (s *Server) checkoutState(taskID string) (string, bool, string) {
 }
 
 func checkoutStateFromHistory(taskID string, _ []core.Event) (string, bool, string) {
-	// The checkout helper can safely create a missing assigned branch from the
-	// freshly fetched base, so the dedicated-worktree command is available as
-	// soon as the task exists (design-git-delivery).
-	return "conveyor checkout " + taskID, true, "Creates or reuses the clean, task-dedicated worktree without switching the primary checkout."
+	// An explicit run enters the governed work-order lifecycle and resolves its
+	// own dedicated checkout when implementation begins (design-git-delivery).
+	return "conveyor run " + taskID, true, "Runs the task through its governed work-order lifecycle."
 }
 
 func contains(xs []string, x string) bool {

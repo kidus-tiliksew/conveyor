@@ -705,7 +705,7 @@ func TestRequirementDeliveryClassificationNamesSuspectConditions(t *testing.T) {
 
 	t.Run("legacy approved round matching reconciled head", func(t *testing.T) {
 		deliveries := classifyRequirementDeliveries("delivery", []core.Event{contextEvent, {
-			ID: 10, TaskID: "delivery", Kind: "review.round_completed", At: mergeAt.Add(-time.Minute), Payload: core.JSONPayload(map[string]any{
+			ID: 10, TaskID: "delivery", Kind: "review.round_completed", At: mergeAt, Payload: core.JSONPayload(map[string]any{
 				"verdict": "approve", "approved_head_sha": "reviewed-head",
 			}),
 		}, {
@@ -719,6 +719,7 @@ func TestRequirementDeliveryClassificationNamesSuspectConditions(t *testing.T) {
 	t.Run("legacy evidence must precede and match merge", func(t *testing.T) {
 		for _, review := range []core.Event{
 			{ID: 10, TaskID: "delivery", Kind: "review.round_completed", At: mergeAt.Add(-time.Minute), Payload: core.JSONPayload(map[string]any{"verdict": "approve", "approved_head_sha": "other-head"})},
+			{ID: 30, TaskID: "delivery", Kind: "review.round_completed", At: mergeAt, Payload: core.JSONPayload(map[string]any{"verdict": "approve", "approved_head_sha": "reviewed-head"})},
 			{ID: 30, TaskID: "delivery", Kind: "review.round_completed", At: mergeAt.Add(time.Minute), Payload: core.JSONPayload(map[string]any{"verdict": "approve", "approved_head_sha": "reviewed-head"})},
 		} {
 			deliveries := classifyRequirementDeliveries("delivery", []core.Event{contextEvent, review, {
@@ -730,7 +731,7 @@ func TestRequirementDeliveryClassificationNamesSuspectConditions(t *testing.T) {
 		}
 	})
 
-	t.Run("legacy per-seat approval matching reconciled head", func(t *testing.T) {
+	t.Run("legacy per-seat approval remains ambiguous", func(t *testing.T) {
 		deliveries := classifyRequirementDeliveries("delivery", []core.Event{contextEvent, {
 			ID: 10, TaskID: "delivery", Kind: "review.completed", At: mergeAt.Add(-time.Minute), Payload: core.JSONPayload(map[string]any{
 				"verdict": "approve", "review_round": 0, "reviewed_commit_sha": "reviewed-head",
@@ -738,8 +739,9 @@ func TestRequirementDeliveryClassificationNamesSuspectConditions(t *testing.T) {
 		}, {
 			ID: 20, TaskID: "delivery", Kind: "merge.reconciled", At: mergeAt, Payload: core.JSONPayload(map[string]any{"head_sha": "reviewed-head"}),
 		}}, versions[:1], "req-versioned", requirementDeliveryWatermark{At: confirmedV1}, true)
-		if len(deliveries) != 1 || deliveries[0].NeedsAttention {
-			t.Fatalf("legacy per-seat reconciliation = %+v", deliveries)
+		if len(deliveries) != 1 || !deliveries[0].NeedsAttention ||
+			!slices.Contains(deliveries[0].Reasons, "merged outside factory review") {
+			t.Fatalf("ambiguous per-seat reconciliation = %+v", deliveries)
 		}
 	})
 
@@ -763,6 +765,194 @@ func TestRequirementDeliveryClassificationNamesSuspectConditions(t *testing.T) {
 			t.Fatalf("routine delivery = %+v", deliveries)
 		}
 	})
+
+	t.Run("missing direct context", func(t *testing.T) {
+		deliveries := classifyRequirementDeliveries("delivery", []core.Event{{
+			ID: 44, TaskID: "delivery", Kind: "merge.confirmed", At: mergeAt,
+		}}, versions, "req-versioned", requirementDeliveryWatermark{At: confirmedV2}, true)
+		if len(deliveries) != 1 || !deliveries[0].NeedsAttention ||
+			!slices.Contains(deliveries[0].Reasons, "planned requirement version unavailable") {
+			t.Fatalf("missing-context delivery = %+v", deliveries)
+		}
+	})
+
+	t.Run("same timestamp context is event bounded", func(t *testing.T) {
+		deliveries := classifyRequirementDeliveries("delivery", []core.Event{{
+			ID: 101, TaskID: "delivery", Kind: "merge.confirmed", At: mergeAt,
+		}, {
+			ID: 102, TaskID: "delivery", Kind: store.TaskContextRequirementActive, At: mergeAt,
+			Payload: core.JSONPayload(map[string]any{"id": "req-versioned", "version": 2}),
+		}}, versions, "req-versioned", requirementDeliveryWatermark{At: confirmedV2}, true)
+		if len(deliveries) != 1 || deliveries[0].PinnedVersion != 0 ||
+			!slices.Contains(deliveries[0].Reasons, "planned requirement version unavailable") {
+			t.Fatalf("event-bounded delivery = %+v", deliveries)
+		}
+	})
+}
+
+func TestRequirementDeliveryReevaluatesReportedReconciliationSignal(t *testing.T) {
+	confirmedAt := time.Date(2026, 8, 11, 10, 0, 0, 0, time.UTC)
+	mergeAt := time.Date(2026, 8, 19, 7, 26, 26, 739471000, time.UTC)
+	versions := []core.RequirementVersion{{
+		RequirementID: "req-260811-0ee057", Version: 17, Confirmed: true, ConfirmedAt: confirmedAt,
+	}}
+	events := []core.Event{{
+		ID: 281500, TaskID: "260819-1630df", Kind: store.TaskContextRequirementAdded, At: mergeAt.Add(-time.Hour),
+		Payload: core.JSONPayload(map[string]any{"id": "req-260811-0ee057", "version": 17}),
+	}, {
+		ID: 282079, TaskID: "260819-1630df", Kind: "review.round_completed", At: time.Date(2026, 8, 19, 7, 26, 9, 52663000, time.UTC),
+		Payload: core.JSONPayload(map[string]any{
+			"review_round": 1, "verdict": "approve", "approved_head_sha": "b309532aa8c2ec66ce0e4f42fdf7dc5bdd1298b7",
+		}),
+	}, {
+		ID: 282087, TaskID: "260819-1630df", Kind: "merge.reconciled", At: mergeAt,
+		Payload: core.JSONPayload(map[string]any{
+			"url":      "https://github.com/kidus-tiliksew/conveyor/pull/642",
+			"head_sha": "b309532aa8c2ec66ce0e4f42fdf7dc5bdd1298b7",
+		}),
+	}}
+
+	deliveries := classifyRequirementDeliveries("260819-1630df", events, versions, "req-260811-0ee057", requirementDeliveryWatermark{At: confirmedAt}, true)
+	if len(deliveries) != 1 || deliveries[0].DeliveryEventID != 282087 || deliveries[0].URL != "https://github.com/kidus-tiliksew/conveyor/pull/642" || deliveries[0].NeedsAttention || len(deliveries[0].Reasons) != 0 {
+		t.Fatalf("reported reconciliation re-evaluation = %+v", deliveries)
+	}
+}
+
+func TestRequirementDeliveryReproducesSuppliedVersionSignal(t *testing.T) {
+	confirmedV2 := time.Date(2026, 8, 8, 16, 48, 10, 669012000, time.UTC)
+	contextAt := time.Date(2026, 8, 13, 16, 25, 11, 181114000, time.UTC)
+	confirmedV3 := time.Date(2026, 8, 13, 16, 36, 59, 381747000, time.UTC)
+	mergeAt := time.Date(2026, 8, 13, 16, 53, 15, 905326000, time.UTC)
+	versions := []core.RequirementVersion{
+		{RequirementID: "req-security-boundaries", Version: 2, Confirmed: true, ConfirmedAt: confirmedV2},
+		{RequirementID: "req-security-boundaries", Version: 3, Confirmed: true, ConfirmedAt: confirmedV3},
+	}
+	events := []core.Event{{
+		ID: 265646, TaskID: "260813-21d15e", Kind: store.TaskContextRequirementAdded, At: contextAt,
+		Payload: core.JSONPayload(map[string]any{"id": "req-security-boundaries"}),
+	}, {
+		ID: 266166, TaskID: "260813-21d15e", Kind: "merge.confirmed", At: mergeAt,
+		Payload: core.JSONPayload(map[string]any{"url": "https://github.com/kidus-tiliksew/conveyor/pull/529"}),
+	}}
+	deliveries := classifyRequirementDeliveries("260813-21d15e", events, versions, "req-security-boundaries", requirementDeliveryWatermark{At: confirmedV2}, true)
+	if len(deliveries) != 1 {
+		t.Fatalf("deliveries = %+v", deliveries)
+	}
+	delivery := deliveries[0]
+	if delivery.SignalID != "efae210dca1db05af670a28445b532694f59c00c086966e9df595e9a8053f2cc" ||
+		delivery.PinnedVersion != 2 || delivery.CurrentVersion != 3 || delivery.DeliveryEventID != 266166 ||
+		delivery.URL != "https://github.com/kidus-tiliksew/conveyor/pull/529" ||
+		!slices.Equal(delivery.Reasons, []string{"planned against v2; v3 was current at merge"}) {
+		t.Fatalf("supplied delivery = %+v", delivery)
+	}
+}
+
+func TestRequirementStalenessReproducesExecutionConfigurationV3V4Signal(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	requirement, proposed, err := st.CreateRequirement(ctx, core.Requirement{
+		ID: "req-execution-configuration", Title: "Execution configuration: harnesses and setups",
+	}, core.RequirementVersion{
+		Content: "Initial execution configuration.",
+		Statements: []core.RequirementStatement{{
+			ID: "REQ-6", Statement: "Serviceability remains advisory.",
+		}}, Origin: core.RequirementOriginOperator,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	confirm := func(version core.RequirementVersion) core.RequirementVersion {
+		t.Helper()
+		_, confirmed, confirmErr := st.ConfirmRequirementVersion(ctx, requirement.ID, version.Version)
+		if confirmErr != nil {
+			t.Fatal(confirmErr)
+		}
+		return confirmed
+	}
+	propose := func(content string, statements []core.RequirementStatement) core.RequirementVersion {
+		t.Helper()
+		version, proposeErr := st.ProposeRequirementVersion(ctx, core.RequirementVersion{
+			RequirementID: requirement.ID, Content: content, Statements: statements, Origin: core.RequirementOriginOperator,
+		})
+		if proposeErr != nil {
+			t.Fatal(proposeErr)
+		}
+		return version
+	}
+	statementsV3 := []core.RequirementStatement{{ID: "REQ-6", Statement: "Serviceability remains advisory and claimant-aware."}}
+	confirm(proposed)
+	confirm(propose("Execution configuration v2.", statementsV3))
+	v3 := confirm(propose("Execution configuration v3.", statementsV3))
+
+	delivery := core.Task{
+		ID: "260815-4804be", Workspace: "demo", Title: "Add interactive local execution setup wizard",
+		Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-260815-4804be", State: core.TaskMerged,
+	}
+	if err = st.CreateTask(ctx, delivery); err != nil {
+		t.Fatal(err)
+	}
+	// The historical event omitted an explicit version. Classification must
+	// resolve that pin at the event instant rather than from today's task view.
+	if err = st.AppendEvent(ctx, core.Event{
+		TaskID: delivery.ID, Kind: store.TaskContextRequirementAdded, At: v3.ConfirmedAt,
+		Payload: core.JSONPayload(map[string]any{"id": requirement.ID}),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	statementsV4 := append(slices.Clone(statementsV3), core.RequirementStatement{
+		ID: "REQ-7", Statement: "Workspace policy contains no execution detail.",
+	})
+	v4 := confirm(propose("Execution configuration v4 retires server execution detail.", statementsV4))
+	mergeAt := v4.ConfirmedAt.Add(time.Second)
+	if err = st.AppendEvent(ctx, core.Event{
+		TaskID: delivery.ID, Kind: "merge.confirmed", At: mergeAt,
+		Payload: core.JSONPayload(map[string]any{
+			"url": "https://github.com/kidus-tiliksew/conveyor/pull/569", "pull_request": 569,
+		}),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// A merge in the same workspace is not a delivery candidate without the
+	// requirement's bounded serving/materialization lineage.
+	unrelated := core.Task{ID: "unrelated-merge", Workspace: "demo", Title: "Unrelated merge", Repo: "conveyor", State: core.TaskMerged}
+	if err = st.CreateTask(ctx, unrelated); err != nil {
+		t.Fatal(err)
+	}
+	if err = st.AppendEvent(ctx, core.Event{TaskID: unrelated.ID, Kind: "merge.confirmed", At: mergeAt}); err != nil {
+		t.Fatal(err)
+	}
+
+	server := NewServer(st)
+	server.Workspace = "demo"
+	getView := func() requirementView {
+		t.Helper()
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/requirements/"+requirement.ID, nil))
+		if response.Code != http.StatusOK {
+			t.Fatalf("detail status=%d body=%s", response.Code, response.Body.String())
+		}
+		var view requirementView
+		if unmarshalErr := json.Unmarshal(response.Body.Bytes(), &view); unmarshalErr != nil {
+			t.Fatal(unmarshalErr)
+		}
+		return view
+	}
+
+	view := getView()
+	if !view.Staleness.DeliveryAfterIntent || view.Staleness.PartialEvaluation || len(view.Staleness.Deliveries) != 1 {
+		t.Fatalf("reported delivery staleness=%+v", view.Staleness)
+	}
+	signal := view.Staleness.Deliveries[0]
+	if signal.TaskID != delivery.ID || signal.EventKind != "merge.confirmed" || !signal.At.Equal(mergeAt) ||
+		signal.PinnedVersion != 3 || signal.CurrentVersion != 4 || !signal.NeedsAttention ||
+		!slices.Equal(signal.Reasons, []string{"planned against v3; v4 was current at merge"}) ||
+		signal.URL != "https://github.com/kidus-tiliksew/conveyor/pull/569" || signal.SignalID == "" {
+		t.Fatalf("reported v3/v4 signal=%+v", signal)
+	}
+	if repeated := getView().Staleness.Deliveries[0]; repeated.SignalID != signal.SignalID {
+		t.Fatalf("signal identity changed: first=%s repeated=%s", signal.SignalID, repeated.SignalID)
+	}
 }
 
 func TestRequirementStalenessAcknowledgmentAndFollowUpLifecycle(t *testing.T) {
@@ -828,6 +1018,14 @@ func TestRequirementStalenessAcknowledgmentAndFollowUpLifecycle(t *testing.T) {
 		t.Fatalf("initial signal=%+v", view.Staleness)
 	}
 	firstSignal := view.Staleness.Deliveries[0]
+	listResponse := httptest.NewRecorder()
+	handler.ServeHTTP(listResponse, httptest.NewRequest(http.MethodGet, "/v1/requirements", nil))
+	var summaries []requirementSummary
+	if listResponse.Code != http.StatusOK || json.Unmarshal(listResponse.Body.Bytes(), &summaries) != nil ||
+		len(summaries) != 1 || len(summaries[0].Staleness.Deliveries) != 1 ||
+		summaries[0].Staleness.Deliveries[0].SignalID != firstSignal.SignalID {
+		t.Fatalf("list/detail causal delivery mismatch: status=%d summaries=%+v", listResponse.Code, summaries)
+	}
 	unauthorized := httptest.NewRecorder()
 	handler.ServeHTTP(unauthorized, httptest.NewRequest(http.MethodPost,
 		fmt.Sprintf("/v1/requirements/%s/staleness/%s/acknowledge", requirement.ID, firstSignal.SignalID), nil))
@@ -904,6 +1102,15 @@ func TestRequirementStalenessAcknowledgmentAndFollowUpLifecycle(t *testing.T) {
 	view = getView()
 	if view.Staleness.DeliveryAfterIntent || len(view.Staleness.Deliveries) != 1 || view.Staleness.Deliveries[0].FollowUp == nil || view.Staleness.Deliveries[0].FollowUp.TaskID != firstResult.Task.ID {
 		t.Fatalf("open follow-up did not replace attention: %+v", view.Staleness)
+	}
+	listResponse = httptest.NewRecorder()
+	handler.ServeHTTP(listResponse, httptest.NewRequest(http.MethodGet, "/v1/requirements", nil))
+	summaries = nil
+	if listResponse.Code != http.StatusOK || json.Unmarshal(listResponse.Body.Bytes(), &summaries) != nil ||
+		len(summaries) != 1 || len(summaries[0].Staleness.Deliveries) != 1 ||
+		summaries[0].Staleness.Deliveries[0].FollowUp == nil ||
+		summaries[0].Staleness.Deliveries[0].FollowUp.TaskID != firstResult.Task.ID {
+		t.Fatalf("linked causal delivery missing from list: status=%d summaries=%+v", listResponse.Code, summaries)
 	}
 }
 

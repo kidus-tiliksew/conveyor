@@ -33,7 +33,9 @@ func TestRequirementStalenessAcknowledgmentSurvivesRestart(t *testing.T) {
 		st.Close()
 		t.Fatal(err)
 	}
-	if err = st.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: store.TaskContextRequirementAdded, Payload: core.JSONPayload(map[string]any{"id": requirement.ID, "version": v1.Version})}); err != nil {
+	// Legacy context events did not record a version. The classifier reconstructs
+	// the confirmed version effective at this append-only event.
+	if err = st.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: store.TaskContextRequirementAdded, Payload: core.JSONPayload(map[string]any{"id": requirement.ID})}); err != nil {
 		st.Close()
 		t.Fatal(err)
 	}
@@ -47,7 +49,7 @@ func TestRequirementStalenessAcknowledgmentSurvivesRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	firstMerge := time.Now().UTC().Add(time.Minute)
-	if err = st.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "merge.confirmed", At: firstMerge}); err != nil {
+	if err = st.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "merge.confirmed", At: firstMerge, Payload: core.JSONPayload(map[string]any{"url": "https://example.test/pull/restart"})}); err != nil {
 		st.Close()
 		t.Fatal(err)
 	}
@@ -56,7 +58,11 @@ func TestRequirementStalenessAcknowledgmentSurvivesRestart(t *testing.T) {
 		Staleness struct {
 			DeliveryAfterIntent bool `json:"delivery_after_intent"`
 			Deliveries          []struct {
-				SignalID string `json:"signal_id"`
+				SignalID       string `json:"signal_id"`
+				Label          string `json:"label"`
+				URL            string `json:"url"`
+				PinnedVersion  int    `json:"pinned_version"`
+				CurrentVersion int    `json:"current_version"`
 			} `json:"deliveries"`
 		} `json:"staleness"`
 	}
@@ -76,7 +82,11 @@ func TestRequirementStalenessAcknowledgmentSurvivesRestart(t *testing.T) {
 	server.Credentials = nil // exercise the explicit memory-style shared-token fixture
 	server.Workspace, server.BearerToken = workspace, "token"
 	before := read(server)
-	if !before.Staleness.DeliveryAfterIntent || len(before.Staleness.Deliveries) != 1 {
+	if !before.Staleness.DeliveryAfterIntent || len(before.Staleness.Deliveries) != 1 ||
+		before.Staleness.Deliveries[0].Label != task.Title ||
+		before.Staleness.Deliveries[0].URL != "https://example.test/pull/restart" ||
+		before.Staleness.Deliveries[0].PinnedVersion != v1.Version ||
+		before.Staleness.Deliveries[0].CurrentVersion != v2.Version {
 		st.Close()
 		t.Fatalf("initial staleness=%+v", before.Staleness)
 	}
@@ -173,12 +183,11 @@ func TestRequirementReviewedReconciliationSurvivesRestart(t *testing.T) {
 	server.Credentials = nil
 	server.Workspace = workspace
 	response := httptest.NewRecorder()
-	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/requirements", nil))
+	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/requirements/"+requirement.ID, nil))
 	if response.Code != http.StatusOK {
 		t.Fatalf("requirements status=%d body=%s", response.Code, response.Body.String())
 	}
-	var views []struct {
-		ID        string `json:"id"`
+	var view struct {
 		Staleness struct {
 			DeliveryAfterIntent bool `json:"delivery_after_intent"`
 			Deliveries          []struct {
@@ -187,17 +196,10 @@ func TestRequirementReviewedReconciliationSurvivesRestart(t *testing.T) {
 			} `json:"deliveries"`
 		} `json:"staleness"`
 	}
-	if err = json.Unmarshal(response.Body.Bytes(), &views); err != nil {
+	if err = json.Unmarshal(response.Body.Bytes(), &view); err != nil {
 		t.Fatal(err)
 	}
-	for _, view := range views {
-		if view.ID != requirement.ID {
-			continue
-		}
-		if view.Staleness.DeliveryAfterIntent || len(view.Staleness.Deliveries) != 1 || view.Staleness.Deliveries[0].NeedsAttention || len(view.Staleness.Deliveries[0].Reasons) != 0 {
-			t.Fatalf("reviewed reconciliation staleness=%+v", view.Staleness)
-		}
-		return
+	if view.Staleness.DeliveryAfterIntent || len(view.Staleness.Deliveries) != 1 || view.Staleness.Deliveries[0].NeedsAttention || len(view.Staleness.Deliveries[0].Reasons) != 0 {
+		t.Fatalf("reviewed reconciliation staleness=%+v", view.Staleness)
 	}
-	t.Fatalf("requirement %s missing from views", requirement.ID)
 }

@@ -19,7 +19,7 @@ import { findBlueprint } from '../../lib/blueprint'
 import { taskStateLabels } from '../../lib/contracts'
 import { errorMessage } from '../../lib/errors'
 import { relatedTaskRoute } from '../../lib/task-route'
-import type { ActivityItem, TaskPolicyContract } from '../../lib/types'
+import type { ActivityItem } from '../../lib/types'
 import { absoluteTime, cn } from '../../lib/utils'
 import {
   useBlueprints,
@@ -38,7 +38,7 @@ import { AssigneeChip } from './assignee-chip'
 
 // The task-header facts: state badges,
 // the facts a reviewer actually references — where the work lives, where it
-// came from, where to read it — and the dedicated-worktree checkout command
+// came from, where to read it — and the task-run command
 // (§21.8). Anything the specification card or the timeline already states is
 // deliberately absent: the header introduces the task, it does not summarize
 // the whole page.
@@ -230,19 +230,6 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
             }
           />
         )}
-        {item.task.policy_contract && (
-          <Fact
-            label={
-              <span
-                className="cursor-help underline decoration-dotted decoration-edge underline-offset-2"
-                title="Frozen at intake — the task keeps the policy it was created with even if workspace defaults change later."
-              >
-                Policy
-              </span>
-            }
-            value={<span className="whitespace-normal">{policySummary(item.task.policy_contract)}</span>}
-          />
-        )}
       </dl>
 
       {canOperate && unsatisfiableIDs.size > 0 && (
@@ -278,21 +265,6 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
       </div>
     </div>
   )
-}
-
-// The frozen intake-time contract as one quiet line of facts; what "frozen"
-// means rides the row label's tooltip instead of a boxed section of its own.
-function policySummary(contract: TaskPolicyContract) {
-  const seats = contract.review?.seats?.length ?? 0
-  const timeouts = contract.stage_timeouts ?? { spec: '', implement: '', review: '' }
-  const parts = [
-    timeouts.spec && `Plan ${timeouts.spec}`,
-    timeouts.implement && `Implement ${timeouts.implement}`,
-    timeouts.review && `Review ${timeouts.review}`,
-    seats > 0 && `${seats} review ${seats === 1 ? 'seat' : 'seats'}`,
-    contract.max_bounces > 0 && `${contract.max_bounces} review rounds`,
-  ].filter(Boolean)
-  return parts.length > 0 ? parts.join(' · ') : 'Not recorded'
 }
 
 function UnlinkDependencyControl({ item, dependencyIDs }: { item: ActivityItem; dependencyIDs: string[] }) {
@@ -643,16 +615,18 @@ function Fact({ label, value }: { label: React.ReactNode; value: React.ReactNode
   )
 }
 
-// The dedicated-worktree command, inline rather than behind a disclosure:
-// it is the header's one execution affordance, so it earns its single line.
+// The task-run command, inline rather than behind a disclosure: it stays
+// content-sized on roomy screens and wraps as one usable group when constrained.
 function Checkout({ item }: { item: ActivityItem }) {
   if (item.checkout_available && item.checkout_command) {
     return (
-      <div className="flex min-w-0 max-w-xl items-center gap-2 rounded-md border border-border bg-surface py-0.5 pl-2.5 pr-0.5">
-        <Terminal className="size-3.5 shrink-0 text-faint" aria-hidden="true" />
-        <span className="shrink-0 text-[11px] font-medium text-muted">Work on this locally</span>
-        <code className="min-w-0 flex-1 truncate font-mono text-[11px] text-faint">{item.checkout_command}</code>
-        <CopyButton value={item.checkout_command} label="Copy dedicated worktree command" />
+      <div className="inline-flex w-fit max-w-full flex-wrap items-center gap-x-2 gap-y-1 rounded-md border border-border bg-surface py-0.5 pl-2.5 pr-0.5">
+        <span className="inline-flex min-w-0 items-center gap-2">
+          <Terminal className="size-3.5 shrink-0 text-faint" aria-hidden="true" />
+          <span className="min-w-0 text-[11px] font-medium text-muted">Work on this locally</span>
+        </span>
+        <code className="min-w-0 break-all font-mono text-[11px] text-faint">{item.checkout_command}</code>
+        <CopyButton value={item.checkout_command} label="Copy task run command" />
       </div>
     )
   }

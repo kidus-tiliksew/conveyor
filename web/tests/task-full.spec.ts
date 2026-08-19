@@ -1705,8 +1705,9 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
             },
           ]
         : [],
-    checkout_available: false,
-    checkout_guidance: 'Use the assigned worktree.',
+    checkout_command: taskId.startsWith('work-on-this-') ? `conveyor run ${taskId}` : undefined,
+    checkout_available: taskId.startsWith('work-on-this-'),
+    checkout_guidance: taskId.startsWith('work-on-this-') ? '' : 'Use the assigned worktree.',
     needs_attention: taskId === 'forge-failure' || taskId === 'unsatisfiable' || taskId === 'design-proposal',
     at_merge_gate: taskId === 'merge-request-changes',
     forge_failure:
@@ -2102,6 +2103,30 @@ test('task detail headers show the task name while routes and API lookup keep us
   expect(new URL(page.url()).pathname).toBe(`/tasks/${sheetTaskID}`)
 })
 
+test('Work on this shows, copies, and responsively wraps the task run command', async ({ page, context }) => {
+  const taskID = 'work-on-this-with-a-deliberately-long-responsive-identifier'
+  const expectedCommand = `conveyor run ${taskID}`
+  await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+
+  await page.goto(`/tasks/${taskID}/full`)
+  const command = page.getByText(expectedCommand, { exact: true })
+  const panel = command.locator('..')
+  await expect(command).toBeVisible()
+
+  const roomyPanel = await panel.boundingBox()
+  const roomyParent = await panel.locator('..').boundingBox()
+  expect(roomyPanel!.width).toBeLessThan(roomyParent!.width)
+
+  await page.getByRole('button', { name: 'Copy task run command' }).click()
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(expectedCommand)
+
+  await page.setViewportSize({ width: 640, height: 720 })
+  await expect(page.getByRole('button', { name: 'Copied' })).toBeVisible()
+  const narrowPanel = await panel.boundingBox()
+  expect(narrowPanel!.height).toBeGreaterThan(roomyPanel!.height)
+  await expect.poll(() => panel.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true)
+})
+
 test('task sheet adds bottom clearance without changing full-page task spacing', async ({ page }) => {
   await page.goto('/tasks/sheet-padding')
   const sheetContent = page.getByRole('dialog', { name: 'Task detail' }).locator('.overflow-y-auto')
@@ -2117,18 +2142,22 @@ test('new task detail tolerates a null work-order list from the API', async ({ p
   await expect(page.getByText('Something went wrong!')).toHaveCount(0)
 })
 
-test('task detail renders the frozen policy projection and no retired controls', async ({ page }) => {
+test('task detail omits the frozen policy projection and retired controls', async ({ page }) => {
   await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
-  await page.goto('/tasks/policy-projection/full')
+  for (const path of ['/tasks/policy-projection', '/tasks/policy-projection/full']) {
+    await page.goto(path)
 
-  // The frozen contract is one facts row; the label's tooltip carries the
-  // policy-only-projection caveat.
-  const policyLabel = page.getByText('Policy', { exact: true })
-  await expect(policyLabel).toBeVisible()
-  await expect(policyLabel).toHaveAttribute('title', /Frozen at intake/)
-  await expect(page.getByText('Plan 30m · Implement 2h · Review 45m · 1 review seat · 3 review rounds')).toBeVisible()
-  await expect(page.getByText(/Change execution setup/i)).toHaveCount(0)
-  await expect(page.getByText(/^Setup$/)).toHaveCount(0)
+    await expect(page.getByText('Repo', { exact: true })).toBeVisible()
+    await expect(page.getByText('Branch', { exact: true })).toBeVisible()
+    await expect(page.getByText('Created', { exact: true })).toBeVisible()
+    await expect(page.getByText('Assignee', { exact: true })).toBeVisible()
+    await expect(page.getByText('Policy', { exact: true })).toHaveCount(0)
+    await expect(page.getByText('Plan 30m · Implement 2h · Review 45m · 1 review seat · 3 review rounds')).toHaveCount(
+      0,
+    )
+    await expect(page.getByText(/Change execution setup/i)).toHaveCount(0)
+    await expect(page.getByText(/^Setup$/)).toHaveCount(0)
+  }
 })
 test('a claimed attempt exposes reasoned operator preemption with the renewal grace bound', async ({ page }) => {
   await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
