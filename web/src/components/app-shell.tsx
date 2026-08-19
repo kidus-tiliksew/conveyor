@@ -457,7 +457,7 @@ function NavSidebar() {
   })
 
   return (
-    <nav className="flex w-56 shrink-0 flex-col border-r border-border bg-rail" aria-label="Primary">
+    <nav className="flex w-64 shrink-0 flex-col border-r border-border bg-rail" aria-label="Primary">
       <div className="px-4 py-4">
         <p className="truncate text-sm font-semibold tracking-tight">{currentName}</p>
         <p className="mt-0.5 text-[11px] text-faint">Conveyor · software factory</p>
