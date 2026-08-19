@@ -2312,6 +2312,13 @@ func TestActivityDefaultsToBoundedPageAndSupportsExplicitPaging(t *testing.T) {
 	}
 	assertPage("/v1/activity", 100, 0, 100)
 	assertPage("/v1/activity?limit=25&offset=200", 25, 200, 5)
+
+	overLimit := httptest.NewRecorder()
+	handler.ServeHTTP(overLimit, httptest.NewRequest(http.MethodGet, fmt.Sprintf(
+		"/v1/activity?limit=%d", store.MaxTaskOperationsLimit+1), nil))
+	if overLimit.Code != http.StatusBadRequest || !strings.Contains(overLimit.Body.String(), "limit must be between 1 and 200") {
+		t.Fatalf("over-limit status=%d body=%s", overLimit.Code, overLimit.Body.String())
+	}
 }
 
 func TestActivitySupportsSlimConditionalGzipDeltaReads(t *testing.T) {

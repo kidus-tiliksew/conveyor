@@ -173,6 +173,9 @@ async function routeBoard(page: Page, seen: string[]) {
     const params = new URL(url).searchParams
     const limit = Number(params.get('limit') ?? 100)
     const offset = Number(params.get('offset') ?? 0)
+    if (!Number.isInteger(limit) || limit < 1 || limit > 200) {
+      return route.fulfill({ status: 400, body: 'limit must be between 1 and 200\n' })
+    }
     return route.fulfill({
       headers: {
         'X-Conveyor-Total': String(activity.length),
@@ -431,10 +434,17 @@ test('activity polling is serialized, pauses while hidden, and cold-refreshes on
   let maxActive = 0
   const urls: string[] = []
   await page.route('**/v1/activity?**', async (route) => {
+    const url = new URL(route.request().url())
+    const limit = Number(url.searchParams.get('limit') ?? 100)
     requests++
     active++
     maxActive = Math.max(maxActive, active)
-    urls.push(route.request().url())
+    urls.push(url.toString())
+    if (!Number.isInteger(limit) || limit < 1 || limit > 200) {
+      active--
+      await route.fulfill({ status: 400, body: 'limit must be between 1 and 200\n' })
+      return
+    }
     await new Promise((resolve) => setTimeout(resolve, 120))
     active--
     await route.fulfill({
@@ -442,7 +452,7 @@ test('activity polling is serialized, pauses while hidden, and cold-refreshes on
         ETag: `"activity-${requests}"`,
         'X-Conveyor-Cursor': `cursor-${requests}`,
         'X-Conveyor-Total': '1',
-        'X-Conveyor-Limit': '1000',
+        'X-Conveyor-Limit': String(limit),
         'X-Conveyor-Offset': '0',
       },
       json: [activity[0]],
@@ -450,8 +460,12 @@ test('activity polling is serialized, pauses while hidden, and cold-refreshes on
   })
 
   await page.goto('/')
+  await expect(page.getByRole('heading', { name: 'Board' })).toBeVisible()
+  await expect(page.getByText(/Activity feed unavailable:/)).toHaveCount(0)
   await expect.poll(() => requests).toBeGreaterThanOrEqual(3)
   expect(maxActive).toBe(1)
+  expect(urls.every((url) => Number(new URL(url).searchParams.get('limit')) === 200)).toBe(true)
+  expect(urls.some((url) => new URL(url).searchParams.has('since'))).toBe(true)
   await page.evaluate(() =>
     (window as unknown as { setActivityVisible: (next: boolean) => void }).setActivityVisible(false),
   )
@@ -463,6 +477,7 @@ test('activity polling is serialized, pauses while hidden, and cold-refreshes on
     (window as unknown as { setActivityVisible: (next: boolean) => void }).setActivityVisible(true),
   )
   await expect.poll(() => requests).toBeGreaterThan(hiddenCount)
+  expect(urls.every((url) => Number(new URL(url).searchParams.get('limit')) === 200)).toBe(true)
   expect(new URL(urls.at(-1) ?? '').searchParams.has('since')).toBe(false)
 })
 
