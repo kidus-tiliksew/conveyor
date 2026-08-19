@@ -134,6 +134,80 @@ func TestRunTUIGateInputRequiresTypedActionsAndFeedback(t *testing.T) {
 	}
 }
 
+func TestRunTUIGateRefreshPreservesPartialActionsFeedbackAndStatus(t *testing.T) {
+	actions := make(chan runTUIAction, 2)
+	gate := testRunTUIGate()
+	model := newRunTUIModel(runTUIStage{}, &gate, actions, make(chan struct{}, 1))
+
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("app")})
+	model = updated.(runTUIModel)
+	for range 2 {
+		updated, _ = model.Update(runTUIProposalsMsg{})
+		model = updated.(runTUIModel)
+		updated, _ = model.Update(runTUIGateMsg(gate))
+		model = updated.(runTUIModel)
+	}
+	if model.input != "app" || !strings.Contains(model.View(), "app") {
+		t.Fatalf("partial gate action was lost across refresh: input=%q view=%q", model.input, model.View())
+	}
+	for _, key := range []tea.KeyMsg{{Type: tea.KeyRunes, Runes: []rune("rove")}, {Type: tea.KeyEnter}} {
+		updated, _ = model.Update(key)
+		model = updated.(runTUIModel)
+	}
+	select {
+	case action := <-actions:
+		if action.decision != runGateApprove {
+			t.Fatalf("completed approval action = %+v", action)
+		}
+	default:
+		t.Fatal("completed approval did not produce an action")
+	}
+	select {
+	case action := <-actions:
+		t.Fatalf("approval produced more than one action: %+v", action)
+	default:
+	}
+
+	model = newRunTUIModel(runTUIStage{}, &gate, actions, make(chan struct{}, 1))
+	for _, key := range []tea.KeyMsg{{Type: tea.KeyRunes, Runes: []rune("changes")}, {Type: tea.KeyEnter}, {Type: tea.KeyRunes, Runes: []rune("fix the")}} {
+		updated, _ = model.Update(key)
+		model = updated.(runTUIModel)
+	}
+	updated, _ = model.Update(runTUIProposalsMsg{})
+	model = updated.(runTUIModel)
+	updated, _ = model.Update(runTUIGateMsg(gate))
+	model = updated.(runTUIModel)
+	if !model.feedback || model.input != "fix the" {
+		t.Fatalf("feedback was lost across refresh: feedback=%t input=%q", model.feedback, model.input)
+	}
+	for _, key := range []tea.KeyMsg{{Type: tea.KeyRunes, Runes: []rune(" race")}, {Type: tea.KeyEnter}} {
+		updated, _ = model.Update(key)
+		model = updated.(runTUIModel)
+	}
+	if action := <-actions; action.decision != runGateRequestChanges || action.feedback != "fix the race" {
+		t.Fatalf("request changes action = %+v", action)
+	}
+
+	model = newRunTUIModel(runTUIStage{}, &gate, actions, make(chan struct{}, 1))
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("invalid")})
+	model = updated.(runTUIModel)
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(runTUIModel)
+	status := model.status
+	updated, _ = model.Update(runTUIProposalsMsg{})
+	model = updated.(runTUIModel)
+	updated, _ = model.Update(runTUIGateMsg(gate))
+	model = updated.(runTUIModel)
+	if model.status != status {
+		t.Fatalf("validation status changed across refresh: before=%q after=%q", status, model.status)
+	}
+	updated, _ = model.Update(runTUIClearGateMsg{})
+	model = updated.(runTUIModel)
+	if model.gate != nil || model.input != "" || model.status != "" || model.feedback {
+		t.Fatalf("completed gate retained stale prompt state: gate=%+v input=%q status=%q feedback=%t", model.gate, model.input, model.status, model.feedback)
+	}
+}
+
 func TestRunTUIProposalPanelReplacesStateAndRequiresFullWord(t *testing.T) {
 	actions := make(chan runTUIAction, 2)
 	model := newRunTUIModel(runTUIStage{task: core.Task{ID: "target"}}, nil, actions, make(chan struct{}, 1))
@@ -172,6 +246,23 @@ func TestRunTUIProposalPanelReplacesStateAndRequiresFullWord(t *testing.T) {
 	updated, _ = model.Update(runTUIProposalsMsg{})
 	if strings.Contains(updated.(runTUIModel).View(), "Pending task proposal") {
 		t.Fatalf("cleared proposal remained visible: %q", updated.(runTUIModel).View())
+	}
+}
+
+func TestRunTUIIdempotentProposalRefreshPreservesSelectionAndInput(t *testing.T) {
+	model := newRunTUIModel(runTUIStage{task: core.Task{ID: "target"}}, nil, make(chan runTUIAction, 1), make(chan struct{}, 1))
+	design := workerservice.TaskRunProposal{Kind: "design", DocumentID: "design-run", Version: 4, CanConfirm: true}
+	decision := workerservice.TaskRunProposal{Kind: "decision", DocumentID: "DEC-8", Version: 1, CanConfirm: true}
+	updated, _ := model.Update(runTUIProposalsMsg{design, decision})
+	model = updated.(runTUIModel)
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyTab})
+	model = updated.(runTUIModel)
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("con")})
+	model = updated.(runTUIModel)
+	updated, _ = model.Update(runTUIProposalsMsg{decision, design})
+	model = updated.(runTUIModel)
+	if model.input != "con" || model.proposalIndex != 0 || taskRunProposalKey(model.proposals[model.proposalIndex]) != taskRunProposalKey(decision) {
+		t.Fatalf("idempotent proposal refresh lost state: input=%q index=%d proposals=%+v", model.input, model.proposalIndex, model.proposals)
 	}
 }
 
