@@ -129,7 +129,7 @@ export function useActivity(
     queryKey,
     queryFn: () => {
       const previous = queryClient.getQueryData<import('../lib/types').ActivityPage>(queryKey)
-      return fetchActivity({ limit: 1_000, offset: 0, cursor: previous?.cursor, etag: previous?.etag, previous })
+      return fetchActivity({ limit: 200, offset: 0, cursor: previous?.cursor, etag: previous?.etag, previous })
     },
     select: (page) => selectActivityPage(page, filter, limit, offset),
     enabled: enabled && !!workspace,
