@@ -948,9 +948,9 @@ const placeholderSummaries = new Set([
   'Completed.',
 ])
 
-// The job footer keeps the operator-facing facts — duration, model, and
-// explicit work-order usage — while the model chip retains dispatch detail on
-// hover. Harness, auth mode, confinement, and actor plumbing stay in the API.
+// The job footer keeps the operator-facing duration and model, while the model
+// chip retains usage and dispatch detail on hover. Harness, auth mode,
+// confinement, and actor plumbing stay in the API.
 function JobEntry({
   job,
   summary,
@@ -1030,24 +1030,27 @@ function JobEntry({
         >
           {summary}
         </MarkdownProse>
-        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 border-t border-border px-4 py-2 font-mono text-[11px] tabular-nums text-muted">
+        <footer className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-border px-4 py-2 font-mono text-[11px] tabular-nums text-muted">
           <span>{duration(job.started_at, job.ended_at)}</span>
-          <ModelChip
-            model={model}
-            tokensIn={job.tokens_in}
-            tokensOut={job.tokens_out}
-            note={note || undefined}
-            usageAvailable={
-              providerUsage
-                ? job.tokens_in + job.tokens_out > 0
-                : order
-                  ? usageAvailable
-                  : job.tokens_in + job.tokens_out > 0
-            }
-            usageProvenance={providerUsage ? 'provider-reported' : order ? usageProvenance(order) : 'provider-reported'}
-          />
-          {order && !providerUsage && <span>{usageText(order, usageAvailable === true)}</span>}
-        </div>
+          <span className="ml-auto min-w-0">
+            <ModelChip
+              model={model}
+              tokensIn={job.tokens_in}
+              tokensOut={job.tokens_out}
+              note={note || undefined}
+              usageAvailable={
+                providerUsage
+                  ? job.tokens_in + job.tokens_out > 0
+                  : order
+                    ? usageAvailable
+                    : job.tokens_in + job.tokens_out > 0
+              }
+              usageProvenance={
+                providerUsage ? 'provider-reported' : order ? usageProvenance(order) : 'provider-reported'
+              }
+            />
+          </span>
+        </footer>
       </article>
     </li>
   )
