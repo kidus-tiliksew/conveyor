@@ -151,7 +151,7 @@ function summarizeRequirement(view: {
     staleness: {
       delivery_after_intent: view.staleness?.delivery_after_intent ?? false,
       partial_evaluation: view.staleness?.partial_evaluation ?? false,
-      deliveries: (view.staleness?.deliveries ?? []).filter((delivery) => delivery.needs_attention),
+      deliveries: view.staleness?.deliveries ?? [],
       active_drift: view.staleness?.active_drift ?? [],
     },
     confirmation_eligible: view.confirmation_eligible,

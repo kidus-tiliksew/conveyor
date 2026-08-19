@@ -699,6 +699,58 @@ func TestRequirementDeliveryClassificationNamesSuspectConditions(t *testing.T) {
 			t.Fatalf("routine delivery = %+v", deliveries)
 		}
 	})
+
+	t.Run("missing direct context", func(t *testing.T) {
+		deliveries := classifyRequirementDeliveries("delivery", []core.Event{{
+			ID: 44, TaskID: "delivery", Kind: "merge.confirmed", At: mergeAt,
+		}}, versions, "req-versioned", requirementDeliveryWatermark{At: confirmedV2}, true)
+		if len(deliveries) != 1 || !deliveries[0].NeedsAttention ||
+			!slices.Contains(deliveries[0].Reasons, "planned requirement version unavailable") {
+			t.Fatalf("missing-context delivery = %+v", deliveries)
+		}
+	})
+
+	t.Run("same timestamp context is event bounded", func(t *testing.T) {
+		deliveries := classifyRequirementDeliveries("delivery", []core.Event{{
+			ID: 101, TaskID: "delivery", Kind: "merge.confirmed", At: mergeAt,
+		}, {
+			ID: 102, TaskID: "delivery", Kind: store.TaskContextRequirementActive, At: mergeAt,
+			Payload: core.JSONPayload(map[string]any{"id": "req-versioned", "version": 2}),
+		}}, versions, "req-versioned", requirementDeliveryWatermark{At: confirmedV2}, true)
+		if len(deliveries) != 1 || deliveries[0].PinnedVersion != 0 ||
+			!slices.Contains(deliveries[0].Reasons, "planned requirement version unavailable") {
+			t.Fatalf("event-bounded delivery = %+v", deliveries)
+		}
+	})
+}
+
+func TestRequirementDeliveryReproducesSuppliedVersionSignal(t *testing.T) {
+	confirmedV2 := time.Date(2026, 8, 8, 16, 48, 10, 669012000, time.UTC)
+	contextAt := time.Date(2026, 8, 13, 16, 25, 11, 181114000, time.UTC)
+	confirmedV3 := time.Date(2026, 8, 13, 16, 36, 59, 381747000, time.UTC)
+	mergeAt := time.Date(2026, 8, 13, 16, 53, 15, 905326000, time.UTC)
+	versions := []core.RequirementVersion{
+		{RequirementID: "req-security-boundaries", Version: 2, Confirmed: true, ConfirmedAt: confirmedV2},
+		{RequirementID: "req-security-boundaries", Version: 3, Confirmed: true, ConfirmedAt: confirmedV3},
+	}
+	events := []core.Event{{
+		ID: 265646, TaskID: "260813-21d15e", Kind: store.TaskContextRequirementAdded, At: contextAt,
+		Payload: core.JSONPayload(map[string]any{"id": "req-security-boundaries"}),
+	}, {
+		ID: 266166, TaskID: "260813-21d15e", Kind: "merge.confirmed", At: mergeAt,
+		Payload: core.JSONPayload(map[string]any{"url": "https://github.com/kidus-tiliksew/conveyor/pull/529"}),
+	}}
+	deliveries := classifyRequirementDeliveries("260813-21d15e", events, versions, "req-security-boundaries", requirementDeliveryWatermark{At: confirmedV2}, true)
+	if len(deliveries) != 1 {
+		t.Fatalf("deliveries = %+v", deliveries)
+	}
+	delivery := deliveries[0]
+	if delivery.SignalID != "efae210dca1db05af670a28445b532694f59c00c086966e9df595e9a8053f2cc" ||
+		delivery.PinnedVersion != 2 || delivery.CurrentVersion != 3 || delivery.DeliveryEventID != 266166 ||
+		delivery.URL != "https://github.com/kidus-tiliksew/conveyor/pull/529" ||
+		!slices.Equal(delivery.Reasons, []string{"planned against v2; v3 was current at merge"}) {
+		t.Fatalf("supplied delivery = %+v", delivery)
+	}
 }
 
 func TestRequirementStalenessReproducesExecutionConfigurationV3V4Signal(t *testing.T) {
@@ -872,6 +924,14 @@ func TestRequirementStalenessAcknowledgmentAndFollowUpLifecycle(t *testing.T) {
 		t.Fatalf("initial signal=%+v", view.Staleness)
 	}
 	firstSignal := view.Staleness.Deliveries[0]
+	listResponse := httptest.NewRecorder()
+	handler.ServeHTTP(listResponse, httptest.NewRequest(http.MethodGet, "/v1/requirements", nil))
+	var summaries []requirementSummary
+	if listResponse.Code != http.StatusOK || json.Unmarshal(listResponse.Body.Bytes(), &summaries) != nil ||
+		len(summaries) != 1 || len(summaries[0].Staleness.Deliveries) != 1 ||
+		summaries[0].Staleness.Deliveries[0].SignalID != firstSignal.SignalID {
+		t.Fatalf("list/detail causal delivery mismatch: status=%d summaries=%+v", listResponse.Code, summaries)
+	}
 	unauthorized := httptest.NewRecorder()
 	handler.ServeHTTP(unauthorized, httptest.NewRequest(http.MethodPost,
 		fmt.Sprintf("/v1/requirements/%s/staleness/%s/acknowledge", requirement.ID, firstSignal.SignalID), nil))
@@ -948,6 +1008,15 @@ func TestRequirementStalenessAcknowledgmentAndFollowUpLifecycle(t *testing.T) {
 	view = getView()
 	if view.Staleness.DeliveryAfterIntent || len(view.Staleness.Deliveries) != 1 || view.Staleness.Deliveries[0].FollowUp == nil || view.Staleness.Deliveries[0].FollowUp.TaskID != firstResult.Task.ID {
 		t.Fatalf("open follow-up did not replace attention: %+v", view.Staleness)
+	}
+	listResponse = httptest.NewRecorder()
+	handler.ServeHTTP(listResponse, httptest.NewRequest(http.MethodGet, "/v1/requirements", nil))
+	summaries = nil
+	if listResponse.Code != http.StatusOK || json.Unmarshal(listResponse.Body.Bytes(), &summaries) != nil ||
+		len(summaries) != 1 || len(summaries[0].Staleness.Deliveries) != 1 ||
+		summaries[0].Staleness.Deliveries[0].FollowUp == nil ||
+		summaries[0].Staleness.Deliveries[0].FollowUp.TaskID != firstResult.Task.ID {
+		t.Fatalf("linked causal delivery missing from list: status=%d summaries=%+v", listResponse.Code, summaries)
 	}
 }
 
