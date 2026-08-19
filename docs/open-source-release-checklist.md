@@ -55,8 +55,7 @@ release was `v0.6.0`; release assets were mutable.
   assets, wiki/project content, and branch names.
 - [ ] Audit commit authorship and contributor consent before publishing names
   and email addresses.
-- [ ] Remove local machine paths from `design-qa.md`. It currently references
-  `/Users/kidusteshome/...` files that public readers cannot access.
+- [x] Remove the obsolete `design-qa.md` report and its local machine paths.
 - [ ] Remove or rewrite private operational links and reconciliation evidence
   that will not be available to public contributors.
 - [ ] Delete stale remote task branches before an in-place visibility change,
