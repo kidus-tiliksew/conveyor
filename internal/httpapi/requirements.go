@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -123,10 +122,6 @@ func (s *Server) listRequirements(w http.ResponseWriter, r *http.Request) {
 	}
 	summaries := make([]requirementSummary, 0, len(views))
 	for _, view := range views {
-		staleness := view.Staleness
-		staleness.Deliveries = slices.DeleteFunc(staleness.Deliveries, func(delivery requirementDelivery) bool {
-			return !delivery.NeedsAttention
-		})
 		var current *requirementVersionSummary
 		if view.CurrentVersion != nil {
 			current = &requirementVersionSummary{
@@ -148,7 +143,7 @@ func (s *Server) listRequirements(w http.ResponseWriter, r *http.Request) {
 			CurrentVersion:       current,
 			PendingVersionCount:  len(view.PendingVersions),
 			ServingTasks:         servingTasks,
-			Staleness:            staleness,
+			Staleness:            view.Staleness,
 			ConfirmationEligible: view.ConfirmationEligible,
 		})
 	}
@@ -713,11 +708,18 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 		effectiveBoundary := requirementAcknowledgedThrough(requirementEvents, confirmedAt)
 		if !effectiveBoundary.At.IsZero() && !view.Staleness.PartialEvaluation {
 			for taskID := range reachableTasks {
+				task, taskErr := loadTask(taskID)
+				if taskErr != nil {
+					return nil, taskErr
+				}
 				events, eventsErr := loadTaskEvents(taskID)
 				if eventsErr != nil {
 					return nil, eventsErr
 				}
 				for _, delivery := range classifyRequirementDeliveries(taskID, events, versions, requirement.ID, effectiveBoundary, deliveryServingTaskIDs[taskID]) {
+					if delivery.Label == taskID && strings.TrimSpace(task.Title) != "" {
+						delivery.Label = task.Title
+					}
 					if delivery.NeedsAttention {
 						if followUp, found, lookupErr := s.Store.GetTaskByIntakeKey(r.Context(), requirementStalenessIntakeKey(delivery.SignalID)); lookupErr != nil {
 							return nil, lookupErr
@@ -732,6 +734,9 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 			}
 			sort.Slice(view.Staleness.Deliveries, func(i, j int) bool {
 				if view.Staleness.Deliveries[i].At.Equal(view.Staleness.Deliveries[j].At) {
+					if view.Staleness.Deliveries[i].DeliveryEventID != view.Staleness.Deliveries[j].DeliveryEventID {
+						return view.Staleness.Deliveries[i].DeliveryEventID > view.Staleness.Deliveries[j].DeliveryEventID
+					}
 					return view.Staleness.Deliveries[i].TaskID < view.Staleness.Deliveries[j].TaskID
 				}
 				return view.Staleness.Deliveries[i].At.After(view.Staleness.Deliveries[j].At)
@@ -811,10 +816,13 @@ func classifyRequirementDeliveries(taskID string, events []core.Event, versions 
 			continue
 		}
 		currentVersion := confirmedRequirementVersionAt(versions, event.At)
-		pinnedVersion := taskRequirementVersionAt(events, versions, requirementID, event.At)
+		pinnedVersion := taskRequirementVersionAt(events, versions, requirementID, event)
 		reasons := []string{}
 		if pinnedVersion > 0 && currentVersion > pinnedVersion {
 			reasons = append(reasons, fmt.Sprintf("planned against v%d; v%d was current at merge", pinnedVersion, currentVersion))
+		}
+		if directlyServing && currentVersion > 0 && pinnedVersion == 0 {
+			reasons = append(reasons, "planned requirement version unavailable")
 		}
 		if event.Kind == "merge.reconciled" {
 			reasons = append(reasons, "merged outside factory review")
@@ -889,10 +897,12 @@ func confirmedRequirementVersionAt(versions []core.RequirementVersion, at time.T
 	return current
 }
 
-func taskRequirementVersionAt(events []core.Event, versions []core.RequirementVersion, requirementID string, at time.Time) int {
+func taskRequirementVersionAt(events []core.Event, versions []core.RequirementVersion, requirementID string, delivery core.Event) int {
 	active, pinned := false, 0
 	for _, event := range events {
-		if event.At.After(at) {
+		// Event ID is the append-only ordering tie-breaker when durable events
+		// share a stored timestamp (REQ-5; design-database).
+		if event.At.After(delivery.At) || (event.At.Equal(delivery.At) && delivery.ID > 0 && event.ID > delivery.ID) {
 			continue
 		}
 		var payload struct {
@@ -915,6 +925,9 @@ func taskRequirementVersionAt(events []core.Event, versions []core.RequirementVe
 			}
 		case store.TaskContextRequirementActive:
 			active, pinned = true, payload.Version
+			if pinned == 0 {
+				pinned = confirmedRequirementVersionAt(versions, event.At)
+			}
 		case store.TaskContextRequirementRemoved:
 			active, pinned = false, 0
 		}
