@@ -384,6 +384,72 @@ func TestAttachedRunApprovesFreshGateWithParentCredentialAndNoClaim(t *testing.T
 	}
 }
 
+func TestAttachedRunPreservesGateInputAcrossPoll(t *testing.T) {
+	prior := runGatePollInterval
+	runGatePollInterval = 5 * time.Millisecond
+	defer func() { runGatePollInterval = prior }()
+
+	var mutex sync.Mutex
+	reads, decisions, claims := 0, 0, 0
+	resolved := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mutex.Lock()
+		defer mutex.Unlock()
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/tasks/target/run-order":
+			reads++
+			state := core.TaskAwaiting
+			var gate *workerservice.TaskRunGate
+			if resolved {
+				state = core.TaskMerged
+			} else {
+				gate = &workerservice.TaskRunGate{Kind: "spec", Label: "spec approval gate", Summary: "plan v1", CanOperate: true, CanRequestChanges: true}
+			}
+			_ = json.NewEncoder(w).Encode(workerservice.DispatchOrder{Task: core.Task{ID: "target", State: state}, Gate: gate, Dispatch: "run", Auth: "user"})
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/tasks/target/review":
+			decisions++
+			var request map[string]string
+			_ = json.NewDecoder(r.Body).Decode(&request)
+			if request["action"] != "approve" {
+				http.Error(w, "wrong decision", http.StatusBadRequest)
+				return
+			}
+			resolved = true
+			w.WriteHeader(http.StatusAccepted)
+			_ = json.NewEncoder(w).Encode(map[string]any{"task": core.Task{ID: "target", State: core.TaskMerged}})
+		case strings.Contains(r.URL.Path, "/claim"):
+			claims++
+			http.Error(w, "must not claim while waiting", http.StatusInternalServerError)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	input, writer := io.Pipe()
+	t.Cleanup(func() {
+		_ = input.Close()
+		_ = writer.Close()
+	})
+	go func() {
+		_, _ = io.WriteString(writer, "app")
+		time.Sleep(40 * time.Millisecond)
+		_, _ = io.WriteString(writer, "rove\n")
+	}()
+	c := &client{base: server.URL, token: "parent-user-credential", workspace: "demo"}
+	var output bytes.Buffer
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	if err := runTaskWithPresentation(ctx, c, "target", "unused.yaml", input, &output, true, true, true, false); err != nil {
+		t.Fatal(err)
+	}
+	mutex.Lock()
+	defer mutex.Unlock()
+	if reads < 3 || decisions != 1 || claims != 0 {
+		t.Fatalf("reads=%d decisions=%d claims=%d output=%q", reads, decisions, claims, output.String())
+	}
+}
+
 func TestAttachedRawRunKeepsLegacyGatePromptPath(t *testing.T) {
 	resolved := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
