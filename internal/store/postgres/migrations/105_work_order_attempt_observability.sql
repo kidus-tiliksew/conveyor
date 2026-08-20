@@ -1,4 +1,4 @@
--- Migration 104: bounded, observational attempt output (req-260820-221be8).
+-- Migration 105: bounded, observational attempt output (req-260820-221be8).
 
 ALTER TABLE work_orders
     ADD CONSTRAINT work_orders_workspace_id_id_key UNIQUE (workspace_id, id);
