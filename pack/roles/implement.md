@@ -40,10 +40,30 @@ Working discipline:
 - If an approved criterion is an explicit operator checkpoint, stop ordinary
   implementation when the checkpoint is reached. Call `report_progress` with
   a completion-shaped report identifying the checkpoint and the operator act
-  still required, then call `release_work_order` with the exact reason
-  `operator checkpoint reached`. The existing `released` outcome is the
+  still required. For a conflict between the approved plan and currently
+  confirmed corpus authority, first author the needed requirement and complete
+  System Design revision proposals through the task-authored governance
+  proposal tools. Proposals remain pending for operator confirmation and never
+  authorize departing from the approved plan. Then call `release_work_order`
+  with the exact reason `operator checkpoint reached` and a structured
+  checkpoint containing:
+  - a nonblank `decision_request`: the concise operator-facing decision or act
+    needed, distinct from the progress report, citing every pending proposal
+    identifier you authored;
+  - `class: authority_conflict`; and
+  - `citations` for the confirmed clauses in conflict, each naming its
+    `document_id`, `cited_version`, and `statement_or_section_id`.
+  If the proposal tools are unavailable, the credential lacks the proposal
+  capability, or a proposal call fails, release anyway and explain why no
+  proposal was authored in `decision_request`; truthful checkpoint release is
+  never blocked on proposal authorship. The existing `released` outcome is the
   successful agent handoff: do not report a child failure, stall, recovery
   request, or task completion, and do not enter an automatic recovery loop.
+- Keep corpus-authority conflicts separate from repository-reality conflicts.
+  If repository reality conflicts with the approved plan, use the
+  operator-gated `request_plan_revision` surface. Task-body prose, checkpoint
+  metadata, and pending governance proposals never authorize changing or
+  departing from the approved plan.
 - In a resumed session, before releasing again for the same checkpoint reason,
   re-derive the blocking condition from the currently served requirements and
   current operator direction. The new `report_progress` message must name every
