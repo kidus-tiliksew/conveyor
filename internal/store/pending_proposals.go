@@ -43,7 +43,9 @@ func (m *memory) ListPendingProposals(ctx context.Context) ([]core.PendingPropos
 				continue
 			}
 			originType, originID := string(version.Origin), ""
-			if version.OriginSessionID != "" {
+			if version.OriginTaskID != "" {
+				originType, originID = "task", version.OriginTaskID
+			} else if version.OriginSessionID != "" {
 				originType, originID = "session", version.OriginSessionID
 			} else if version.OriginDriftID != "" {
 				originType, originID = "drift", version.OriginDriftID

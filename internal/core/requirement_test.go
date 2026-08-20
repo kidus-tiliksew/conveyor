@@ -281,6 +281,20 @@ func TestValidateRequirementOriginRequiresExactlyOneProvenance(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name:    "implementation with task",
+			version: RequirementVersion{Origin: RequirementOriginImplementation, OriginTaskID: "task-1"},
+		},
+		{
+			name:    "implementation without task",
+			version: RequirementVersion{Origin: RequirementOriginImplementation},
+			wantErr: true,
+		},
+		{
+			name:    "implementation carrying session",
+			version: RequirementVersion{Origin: RequirementOriginImplementation, OriginTaskID: "task-1", OriginSessionID: "session-1"},
+			wantErr: true,
+		},
+		{
 			name:    "unknown origin",
 			version: RequirementVersion{Origin: RequirementOrigin("operator_edit"), OriginSessionID: "session-1"},
 			wantErr: true,

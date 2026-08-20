@@ -143,6 +143,13 @@ func TestMCPImplementationGovernanceProposalsBindToClaimedTask(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	requirement, _, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-dispatch", Title: "Dispatch requirements"}, core.RequirementVersion{
+		Content:    "# Dispatch\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Dispatch work safely.\n```",
+		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Dispatch work safely."}}, Origin: core.RequirementOriginOperator,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	server := NewServer(st)
 	server.Workspace = "demo"
 	server.WorkOrders = &workorder.Service{Store: st}
@@ -190,6 +197,43 @@ func TestMCPImplementationGovernanceProposalsBindToClaimedTask(t *testing.T) {
 		"deduplicated": true,
 		"guidance":     systemDesignProposalGuidance,
 	})
+	requirementArgs := maps.Clone(identity)
+	requirementArgs["document_id"] = requirement.ID
+	requirementArgs["content"] = "# Dispatch\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Dispatch work safely with exact claims.\n```"
+	result, err = server.callMCPTool(request, "propose_requirement_revision", requirementArgs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requirementResult := result.(requirementProposalResult)
+	proposedRequirement := requirementResult.RequirementVersion
+	if proposedRequirement.Origin != core.RequirementOriginImplementation || proposedRequirement.OriginTaskID != task.ID || proposedRequirement.Confirmed || proposedRequirement.Deduplicated {
+		t.Fatalf("requirement revision=%+v", proposedRequirement)
+	}
+	if requirementResult.Guidance != requirementProposalGuidance {
+		t.Fatalf("requirement guidance=%q", requirementResult.Guidance)
+	}
+	result, err = server.callMCPTool(request, "propose_requirement_revision", requirementArgs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reusedRequirement := result.(requirementProposalResult).RequirementVersion
+	if !reusedRequirement.Deduplicated || reusedRequirement.Version != proposedRequirement.Version {
+		t.Fatalf("reused requirement=%+v original=%+v", reusedRequirement, proposedRequirement)
+	}
+	invalidRequirementArgs := maps.Clone(requirementArgs)
+	invalidRequirementArgs["content"] = "missing the conveyor:requirements fence"
+	if _, err = server.callMCPTool(request, "propose_requirement_revision", invalidRequirementArgs); err == nil {
+		t.Fatal("invalid requirement proposal was accepted")
+	}
+	versions, listErr := st.ListRequirementVersions(ctx, requirement.ID)
+	if listErr != nil || len(versions) != 2 {
+		t.Fatalf("invalid proposal partially wrote versions=%+v err=%v", versions, listErr)
+	}
+	staleRequirementArgs := maps.Clone(requirementArgs)
+	staleRequirementArgs["session_id"] = "stale-session"
+	if _, err = server.callMCPTool(request, "propose_requirement_revision", staleRequirementArgs); err == nil {
+		t.Fatal("stale implementation session proposed a requirement revision")
+	}
 	decisionArgs := maps.Clone(identity)
 	decisionArgs["statement"] = "Project governance from events."
 	decisionArgs["context"] = "Lineage must rebuild."
@@ -216,6 +260,25 @@ func TestMCPImplementationGovernanceProposalsBindToClaimedTask(t *testing.T) {
 	wrongSession["session_id"] = "stale-session"
 	if _, err = server.callMCPTool(request, "propose_decision", wrongSession); err == nil {
 		t.Fatal("stale implementation session proposed a decision")
+	}
+	reviewOrderID := "order-governance-review"
+	reviewTask := core.Task{ID: "task-governance-review", Workspace: "demo", Repo: "conveyor", State: core.TaskRunning, CreatedAt: time.Now()}
+	if err = st.CreateTask(ctx, reviewTask); err != nil {
+		t.Fatal(err)
+	}
+	if err = st.CreateJob(ctx, core.Job{ID: reviewOrderID, TaskID: reviewTask.ID, Stage: core.StageReview, State: core.JobPending}); err != nil {
+		t.Fatal(err)
+	}
+	if err = storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: reviewOrderID, TaskID: reviewTask.ID, JobID: reviewOrderID, Stage: core.StageReview, State: core.WorkOrderQueued}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = storetest.For(st).ClaimWorkOrder(ctx, reviewOrderID, core.WorkOrderClaim{SessionID: "review-session", ClientToken: "review-secret", ClaimantID: "reviewer", WorkerID: "implementer", Lease: time.Minute}); err != nil {
+		t.Fatal(err)
+	}
+	reviewRequirementArgs := maps.Clone(requirementArgs)
+	reviewRequirementArgs["work_order_id"], reviewRequirementArgs["session_id"] = reviewOrderID, "review-session"
+	if _, err = server.callMCPTool(request, "propose_requirement_revision", reviewRequirementArgs); err == nil || !strings.Contains(err.Error(), "claimed implement work order") {
+		t.Fatalf("review-stage requirement proposal error=%v", err)
 	}
 }
 
@@ -757,7 +820,7 @@ func TestMCPToolsListRequiresAuthAndPublishesLifecycle(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"create_task", "set_assignee", "list_work_orders", "claim_work_order", "redispatch_work_order", "renew_work_order", "release_work_order", "request_plan_revision", "get_work_order", "read_artifact", "report_progress", "report_usage", "report_continuation", "propose_system_design_revision", "propose_decision", "upload_transcript", "submit_plan", "submit_for_review", "await_review", "submit_review_verdict"}
+	want := []string{"create_task", "set_assignee", "list_work_orders", "claim_work_order", "redispatch_work_order", "renew_work_order", "release_work_order", "request_plan_revision", "get_work_order", "read_artifact", "report_progress", "report_usage", "report_continuation", "propose_system_design_revision", "propose_requirement_revision", "propose_decision", "upload_transcript", "submit_plan", "submit_for_review", "await_review", "submit_review_verdict"}
 	if len(envelope.Result.Tools) != len(want) {
 		t.Fatalf("tools = %d, want %d", len(envelope.Result.Tools), len(want))
 	}
@@ -768,7 +831,7 @@ func TestMCPToolsListRequiresAuthAndPublishesLifecycle(t *testing.T) {
 		if strings.Contains(name, "preempt") {
 			t.Fatalf("operator-only preempt leaked into MCP tool %q", name)
 		}
-		if name == "propose_system_design_revision" || name == "propose_decision" {
+		if name == "propose_system_design_revision" || name == "propose_requirement_revision" || name == "propose_decision" {
 			description := envelope.Result.Tools[i].Description
 			if !strings.Contains(description, "operator alone confirms after submission") || !strings.Contains(description, "confirmation never blocks implementation") {
 				t.Fatalf("%s description=%q", name, description)
@@ -824,6 +887,7 @@ var mcpAgentSafeReasons = map[string]string{
 	"report_progress":                "records self-reported progress on the caller's claimed order",
 	"report_usage":                   "records observational usage on the caller's claimed order",
 	"propose_system_design_revision": "creates an unconfirmed proposal that grants no authority",
+	"propose_requirement_revision":   "creates an unconfirmed proposal that grants no authority",
 	"propose_decision":               "creates an unconfirmed proposal that grants no authority",
 	"upload_transcript":              "attaches redacted evidence only to the caller's claimed order",
 	"submit_plan":                    "submits only the caller's claimed plan-stage deliverable",
@@ -993,6 +1057,9 @@ func TestMCPWorkerDispatchedExecutorClaimGovernance(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		if _, _, err = st.CreateRequirement(ctx, core.Requirement{ID: "req-agent-claim", Title: "Agent claim"}, core.RequirementVersion{Content: "# Agent claim\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Keep claims exact.\n```", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Keep claims exact."}}, Origin: core.RequirementOriginOperator}); err != nil {
+			t.Fatal(err)
+		}
 		server := NewServer(st)
 		server.Workspace = "demo"
 		server.WorkOrders = &workorder.Service{Store: st}
@@ -1019,6 +1086,9 @@ func TestMCPWorkerDispatchedExecutorClaimGovernance(t *testing.T) {
 		case "propose_system_design_revision":
 			args["document_id"] = documentID
 			args["content"] = "# Agent claim revision\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/httpapi/**\n```"
+		case "propose_requirement_revision":
+			args["document_id"] = "req-agent-claim"
+			args["content"] = "# Agent claim\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Keep executor claims exact.\n```"
 		case "propose_decision":
 			args["statement"] = "Keep worker claims exact."
 			args["context"] = "Worker claims may propose task-local governance."
@@ -1026,7 +1096,7 @@ func TestMCPWorkerDispatchedExecutorClaimGovernance(t *testing.T) {
 		}
 		return args
 	}
-	governanceTools := []string{"request_plan_revision", "propose_system_design_revision", "propose_decision"}
+	governanceTools := []string{"request_plan_revision", "propose_system_design_revision", "propose_requirement_revision", "propose_decision"}
 
 	t.Run("own live claim authorizes all governance tools as executor", func(t *testing.T) {
 		for _, tool := range governanceTools {
@@ -1113,6 +1183,9 @@ func TestMCPUserRunExecutorClaimGovernance(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		if _, _, err = st.CreateRequirement(ctx, core.Requirement{ID: "req-run-claim", Title: "Run claim"}, core.RequirementVersion{Content: "# Run claim\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Keep run claims exact.\n```", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Keep run claims exact."}}, Origin: core.RequirementOriginOperator}); err != nil {
+			t.Fatal(err)
+		}
 		server := NewServer(st)
 		server.Workspace = "demo"
 		provider := func(context.Context) (*config.Config, error) {
@@ -1155,6 +1228,9 @@ func TestMCPUserRunExecutorClaimGovernance(t *testing.T) {
 		case "propose_system_design_revision":
 			args["document_id"] = documentID
 			args["content"] = "# Run claim revision\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/httpapi/**\n```"
+		case "propose_requirement_revision":
+			args["document_id"] = "req-run-claim"
+			args["content"] = "# Run claim\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Keep user run claims exact.\n```"
 		case "propose_decision":
 			args["statement"] = "Keep run claims exact."
 			args["context"] = "Run claims may propose task-local governance."
@@ -1162,7 +1238,7 @@ func TestMCPUserRunExecutorClaimGovernance(t *testing.T) {
 		}
 		return args
 	}
-	governanceTools := []string{"request_plan_revision", "propose_system_design_revision", "propose_decision"}
+	governanceTools := []string{"request_plan_revision", "propose_system_design_revision", "propose_requirement_revision", "propose_decision"}
 	for _, test := range []struct {
 		name            string
 		lease           time.Duration
