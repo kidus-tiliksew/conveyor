@@ -1888,8 +1888,86 @@ func TestRecoverySupersessionGuardNamesSuccessorAndGate(t *testing.T) {
 		t.Fatalf("gate guard err=%v", err)
 	}
 	latest := core.WorkOrder{ID: "task-implement-1", TaskID: "task", Stage: core.StageImplement, State: core.WorkOrderStale, CreatedAt: now}
-	if err := store.WorkOrderRecoverySupersessionError(core.Task{ID: "task", State: core.TaskRunning}, latest, []core.WorkOrder{latest}); err != nil {
+	earlierReview := core.WorkOrder{ID: "task-review-1", TaskID: "task", Stage: core.StageReview, State: core.WorkOrderCompleted, CreatedAt: now.Add(-time.Second)}
+	if err := store.WorkOrderRecoverySupersessionError(core.Task{ID: "task", State: core.TaskRunning, NextStage: core.StageImplement}, latest, []core.WorkOrder{latest, earlierReview}); err != nil {
 		t.Fatalf("latest pending order rejected: %v", err)
+	}
+	laterReview := core.WorkOrder{ID: "task-review-2", TaskID: "task", Stage: core.StageReview, State: core.WorkOrderCompleted, CreatedAt: now.Add(time.Second)}
+	if err := store.WorkOrderRecoverySupersessionError(core.Task{ID: "task", State: core.TaskRunning, NextStage: core.StageImplement}, latest, []core.WorkOrder{latest, laterReview}); err != nil {
+		t.Fatalf("bounce projection contradicted by completed review: %v", err)
+	}
+	if err := store.WorkOrderRecoverySupersessionError(core.Task{ID: "task", State: core.TaskRunning, NextStage: core.StageReview}, latest, []core.WorkOrder{latest, laterReview}); err == nil || !strings.Contains(err.Error(), "advanced to review") {
+		t.Fatalf("genuine review advancement err=%v", err)
+	}
+	if err := store.WorkOrderRecoverySupersessionError(core.Task{ID: "task", State: core.TaskClosed}, latest, []core.WorkOrder{latest}); err == nil || !strings.Contains(err.Error(), "terminal task state") {
+		t.Fatalf("terminal guard err=%v", err)
+	}
+}
+
+func TestRecoverWorkOrderAfterChangesRequestedBounce(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "test")
+	st := store.NewMemory()
+	now := time.Now().UTC()
+	task := core.Task{ID: "recover-review-bounce", Workspace: "test", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: now.Add(-time.Hour)}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	implementOne := core.WorkOrder{ID: task.ID + "-implement-1", TaskID: task.ID, JobID: task.ID + "-implement-1", Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: now.Add(-3 * time.Minute), QueueDeadline: now.Add(time.Hour), CreatedAt: now.Add(-3 * time.Minute)}
+	review := core.WorkOrder{ID: task.ID + "-review-1-seat-1", TaskID: task.ID, JobID: task.ID + "-review-1-seat-1", Stage: core.StageReview, State: core.WorkOrderQueued, ReviewRound: 1, ReviewSeat: 1, QueueEnteredAt: now.Add(-2 * time.Minute), QueueDeadline: now.Add(time.Hour), CreatedAt: now.Add(-2 * time.Minute)}
+	for _, order := range []core.WorkOrder{implementOne, review} {
+		if err := st.CreateJob(ctx, core.Job{ID: order.JobID, TaskID: task.ID, Stage: order.Stage, State: core.JobPending}); err != nil {
+			t.Fatal(err)
+		}
+		if err := storetest.For(st).CreateWorkOrder(ctx, order); err != nil {
+			t.Fatal(err)
+		}
+	}
+	claimedImplementOne, err := storetest.For(st).ClaimWorkOrder(ctx, implementOne.ID, core.WorkOrderClaim{SessionID: "implement-1-session", ClientToken: "implement-1-token", ClaimantID: "run:implementer", WorkerID: "worker-implement-1", Lease: time.Minute, ExecutionTimeout: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimedImplementOne.State = core.WorkOrderSubmitted
+	if err = storetest.For(st).UpdateWorkOrder(ctx, claimedImplementOne, core.WorkOrderCmdSubmitForReview); err != nil {
+		t.Fatal(err)
+	}
+	claimedReview, err := storetest.For(st).ClaimWorkOrder(ctx, review.ID, core.WorkOrderClaim{SessionID: "review-session", ClientToken: "review-token", ClaimantID: "run:reviewer", WorkerID: "worker-review", Lease: time.Minute, ExecutionTimeout: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = storetest.For(st).AcceptReviewDecision(ctx, core.ReviewDecision{TaskID: task.ID, JobID: review.JobID, ReviewWorkOrderID: review.ID, ClaimSession: claimedReview.SessionID, ReviewRound: 1, ReviewSeat: 1, Verdict: "changes_requested", ReasonCode: "tests", Summary: "revise", Feedback: "fix it", MaxBounces: 3}); err != nil {
+		t.Fatal(err)
+	}
+	implementTwo := core.WorkOrder{ID: task.ID + "-implement-2", TaskID: task.ID, JobID: task.ID + "-implement-2", Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now.Add(-time.Minute)}
+	if err := st.CreateJob(ctx, core.Job{ID: implementTwo.JobID, TaskID: task.ID, Stage: implementTwo.Stage, State: core.JobPending}); err != nil {
+		t.Fatal(err)
+	}
+	if err := storetest.For(st).CreateWorkOrder(ctx, implementTwo); err != nil {
+		t.Fatal(err)
+	}
+	claimedImplementTwo, err := storetest.For(st).ClaimWorkOrder(ctx, implementTwo.ID, core.WorkOrderClaim{SessionID: "implement-2-session", ClientToken: "implement-2-token", ClaimantID: "run:implementer", WorkerID: "worker-implement-2", Lease: time.Minute, ExecutionTimeout: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = storetest.For(st).ReleaseWorkerClaim(ctx, implementTwo.ID, claimedImplementTwo.WorkerID, core.WorkOrderRelease{SessionID: claimedImplementTwo.SessionID, Reason: core.WorkOrderReleaseReasonOperatorCheckpointReached, Cause: core.WorkOrderReleaseCauseOperatorAction, Outcome: core.WorkOrderOutcomeReleased}); err != nil {
+		t.Fatal(err)
+	}
+	before, err := st.GetTask(ctx, task.ID)
+	if err != nil || before.NextStage != core.StageImplement {
+		t.Fatalf("task before recovery=%+v err=%v", before, err)
+	}
+	service := &Service{Store: st, ConfigProvider: func(context.Context) (*config.Config, error) {
+		return &config.Config{WorkOrderQueueTimeout: time.Hour}, nil
+	}}
+	recovered, err := service.Recover(ctx, implementTwo.ID, "recover-bounce", "address the review feedback")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovered.State != core.WorkOrderQueued || !recovered.Claimable || recovered.OperatorDirection != "address the review feedback" {
+		t.Fatalf("recovered=%+v", recovered)
+	}
+	after, err := st.GetTask(ctx, task.ID)
+	if err != nil || after.NextStage != core.StageImplement {
+		t.Fatalf("task after recovery=%+v err=%v", after, err)
 	}
 }
 
