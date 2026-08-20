@@ -64,11 +64,11 @@ export function PendingProposalsPage() {
       ])
     },
   })
-  const items = search.task
-    ? (proposals.data?.items ?? []).filter(
-        (proposal) => proposal.origin_type === 'task' && proposal.origin_id === search.task,
-      )
-    : (proposals.data?.items ?? [])
+  const items = (proposals.data?.items ?? []).filter((proposal) => {
+    if (search.task && (proposal.origin_type !== 'task' || proposal.origin_id !== search.task)) return false
+    if (search.document && (proposal.id !== search.document || proposal.tier !== search.tier)) return false
+    return true
+  })
 
   return (
     <div className="h-full overflow-y-auto">
@@ -88,6 +88,17 @@ export function PendingProposalsPage() {
         {search.task && (
           <div className="mt-4 flex items-center justify-between rounded-md border border-border bg-surface px-3 py-2 text-xs text-muted">
             <span>Showing proposals from task {search.task}.</span>
+            <Link to="/pending-proposals" search={{}} className="font-medium text-primary hover:underline">
+              Show all
+            </Link>
+          </div>
+        )}
+        {search.document && search.tier && (
+          <div className="mt-4 flex items-center justify-between rounded-md border border-border bg-surface px-3 py-2 text-xs text-muted">
+            <span>
+              Showing {search.tier === 'requirement' ? 'Requirement' : 'System Design'} proposals for {search.document}.
+              Confirming another version dismisses older pending versions.
+            </span>
             <Link to="/pending-proposals" search={{}} className="font-medium text-primary hover:underline">
               Show all
             </Link>
