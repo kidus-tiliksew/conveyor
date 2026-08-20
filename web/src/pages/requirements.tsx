@@ -69,6 +69,7 @@ const originLabels: Record<RequirementVersion['origin'], string> = {
   drift_amendment: 'Written from a delivery change',
   feature_migration: 'Carried over from the old feature list',
   operator: 'Written by an operator',
+  implementation: 'Proposed by an implementation task',
 }
 
 const referenceAnchor = /^reference-(.+)-v(\d+)$/
@@ -713,7 +714,8 @@ function RequirementDetailCanvas({ item, token }: { item: RequirementView; token
       title: `Version ${version.version} is waiting for you`,
       detail: (
         <>
-          {originLabels[version.origin]} · {formatDate(version.created_at)}
+          {originLabels[version.origin]}
+          {version.origin_task_id && ` ${version.origin_task_id}`} · {formatDate(version.created_at)}
           {!item.confirmation_eligible && (
             <span className="block">
               A migrated seed needs its first deliberate revision before it can be confirmed.
@@ -771,6 +773,7 @@ function RequirementDetailCanvas({ item, token }: { item: RequirementView; token
                 <Clock className="size-3" />
                 {formatDate(displayed.created_at)}
               </span>
+              {displayed.origin_task_id && <Badge variant="outline">Task {displayed.origin_task_id}</Badge>}
             </div>
           )}
         </div>

@@ -11,6 +11,11 @@ WITH pending_origin_tasks AS (
     WHERE workspace_id = $1
       AND status = 'proposed' AND origin_task_id IS NOT NULL
 	UNION
+	SELECT DISTINCT origin_task_id AS task_id
+	FROM requirement_versions
+	WHERE workspace_id = $1
+	  AND origin = 'implementation' AND NOT confirmed AND NOT retired AND origin_task_id <> ''
+	UNION
 	SELECT DISTINCT task_id
 	FROM task_context_proposals
 	WHERE workspace_id = $1 AND state = 'proposed'

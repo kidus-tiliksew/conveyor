@@ -51,11 +51,16 @@ const (
 	// RequirementOriginOperator is a headless operator proposal. It carries no
 	// planning-session or drift provenance and never confirms itself.
 	RequirementOriginOperator RequirementOrigin = "operator"
+	// RequirementOriginImplementation is a task-authored proposal from a
+	// claimed implementation order. It carries the originating task ID and
+	// never confirms itself.
+	RequirementOriginImplementation RequirementOrigin = "implementation"
 )
 
 func (o RequirementOrigin) Valid() bool {
 	return o == RequirementOriginChat || o == RequirementOriginDriftAmendment ||
-		o == RequirementOriginFeatureMigration || o == RequirementOriginOperator
+		o == RequirementOriginFeatureMigration || o == RequirementOriginOperator ||
+		o == RequirementOriginImplementation
 }
 
 // RequirementStatement is one enumerable statement carrying a stable ID that
@@ -126,6 +131,7 @@ type RequirementVersion struct {
 	Statements      []RequirementStatement `json:"statements"`
 	Origin          RequirementOrigin      `json:"origin"`
 	OriginSessionID string                 `json:"origin_session_id,omitempty"`
+	OriginTaskID    string                 `json:"origin_task_id,omitempty"`
 	OriginDriftID   string                 `json:"origin_drift_id,omitempty"`
 	DerivedFrom     *RequirementDerivation `json:"derived_from,omitempty"`
 	Confirmed       bool                   `json:"confirmed"`
@@ -139,6 +145,9 @@ type RequirementVersion struct {
 	RetiredByVersion int       `json:"retired_by_version,omitempty"`
 	Workspace        string    `json:"workspace"`
 	CreatedAt        time.Time `json:"created_at"`
+	// Deduplicated is response metadata for an equivalent pending
+	// implementation proposal. It is not persisted on the immutable version.
+	Deduplicated bool `json:"deduplicated"`
 }
 
 // RequirementStalenessAcknowledgment is an append-only operator judgment over
@@ -475,26 +484,34 @@ func ValidateRequirementOrigin(version RequirementVersion) error {
 		return fmt.Errorf("invalid requirement origin %q", version.Origin)
 	}
 	session := strings.TrimSpace(version.OriginSessionID)
+	task := strings.TrimSpace(version.OriginTaskID)
 	drift := strings.TrimSpace(version.OriginDriftID)
 	switch version.Origin {
 	case RequirementOriginChat:
 		if session == "" {
 			return fmt.Errorf("requirement origin %s requires the planning session that revised it", version.Origin)
 		}
-		if drift != "" {
-			return fmt.Errorf("requirement origin %s must not carry a drift id", version.Origin)
+		if task != "" || drift != "" {
+			return fmt.Errorf("requirement origin %s must carry only a planning session id", version.Origin)
 		}
 	case RequirementOriginDriftAmendment:
 		if drift == "" {
 			return fmt.Errorf("requirement origin %s requires the drift record that amended it", version.Origin)
 		}
-		if session != "" {
-			return fmt.Errorf("requirement origin %s must not carry a planning session id", version.Origin)
+		if session != "" || task != "" {
+			return fmt.Errorf("requirement origin %s must carry only a drift id", version.Origin)
 		}
 	case RequirementOriginFeatureMigration, RequirementOriginOperator:
-		// Migration seeds and headless operator proposals have no session or drift.
+		// Migration seeds and headless operator proposals have no provenance ID.
+		if session != "" || task != "" || drift != "" {
+			return fmt.Errorf("requirement origin %s carries no session, task, or drift id", version.Origin)
+		}
+	case RequirementOriginImplementation:
+		if task == "" {
+			return fmt.Errorf("requirement origin %s requires the originating task id", version.Origin)
+		}
 		if session != "" || drift != "" {
-			return fmt.Errorf("requirement origin %s carries no session or drift id", version.Origin)
+			return fmt.Errorf("requirement origin %s must carry only an originating task id", version.Origin)
 		}
 	}
 	return nil

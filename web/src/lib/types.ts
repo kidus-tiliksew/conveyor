@@ -806,8 +806,9 @@ export interface RequirementVersion {
   version: number
   content: string
   statements: RequirementStatement[]
-  origin: 'chat' | 'drift_amendment' | 'feature_migration' | 'operator'
+  origin: 'chat' | 'drift_amendment' | 'feature_migration' | 'operator' | 'implementation'
   origin_session_id?: string
+  origin_task_id?: string
   origin_drift_id?: string
   derived_from?: RequirementDerivation
   confirmed: boolean
@@ -977,7 +978,14 @@ export interface RequirementSummary {
 
 export type RequirementVersionSummary = Pick<
   RequirementVersion,
-  'requirement_id' | 'version' | 'origin' | 'confirmed' | 'confirmed_by' | 'confirmed_at' | 'created_at'
+  | 'requirement_id'
+  | 'version'
+  | 'origin'
+  | 'origin_task_id'
+  | 'confirmed'
+  | 'confirmed_by'
+  | 'confirmed_at'
+  | 'created_at'
 >
 
 export interface RequirementStaleness {

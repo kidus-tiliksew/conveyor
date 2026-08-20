@@ -3181,6 +3181,17 @@ func (m *memory) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease tasko
 				}
 			}
 		}
+		for key, versions := range m.requirementVersions {
+			if key.workspace != workspace {
+				continue
+			}
+			for _, version := range versions {
+				if version.Origin == core.RequirementOriginImplementation && version.OriginTaskID == order.TaskID &&
+					!version.Confirmed && !version.Retired {
+					return core.WorkOrder{}, fmt.Errorf("review for task %s is waiting on task-authored requirement proposal %s v%d", order.TaskID, version.RequirementID, version.Version)
+				}
+			}
+		}
 	}
 	if order.State == core.WorkOrderStale {
 		return core.WorkOrder{}, fmt.Errorf("%w: %s", ErrWorkOrderStale, id)

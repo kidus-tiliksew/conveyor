@@ -232,6 +232,198 @@ func TestBoundedTailCapturesOnlyRedactedFinalTwoKiB(t *testing.T) {
 	}
 }
 
+func TestBoundedTranscriptSpoolRetainsNewestContentAndRemovesFile(t *testing.T) {
+	spool, err := newBoundedTranscriptSpool(t.TempDir(), 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := spool.path
+	if _, err = spool.Write([]byte("abcd")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = spool.Write([]byte("efghij")); err != nil {
+		t.Fatal(err)
+	}
+	content, truncated, err := spool.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if content != "cdefghij" || !truncated {
+		t.Fatalf("snapshot=%q truncated=%t", content, truncated)
+	}
+	if err = spool.Remove(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("spool still exists after removal: %v", err)
+	}
+}
+
+func TestBoundedTranscriptSpoolWriteFailureIsAdvisory(t *testing.T) {
+	spool, err := newBoundedTranscriptSpool(t.TempDir(), 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = spool.file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if written, writeErr := spool.Write([]byte("activity")); written != len("activity") || writeErr != nil {
+		t.Fatalf("write=%d err=%v", written, writeErr)
+	}
+	if _, _, err = spool.Snapshot(); err == nil {
+		t.Fatal("snapshot succeeded after the spool write failed")
+	}
+	if err = spool.Remove(); err != nil && !errors.Is(err, os.ErrClosed) {
+		t.Fatal(err)
+	}
+}
+
+func TestRenewDispatchClaimSnapshotRejectionFallsBackToPlainRenewal(t *testing.T) {
+	var requests []workerRenewRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request workerRenewRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		requests = append(requests, request)
+		if request.ActivitySnapshot != nil {
+			http.Error(w, "snapshot unsupported", http.StatusRequestEntityTooLarge)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: "order", State: core.WorkOrderClaimed, LeaseExpiresAt: time.Now().Add(time.Minute)})
+	}))
+	defer server.Close()
+
+	item := workerservice.DispatchOrder{Order: core.WorkOrder{ID: "order"}}
+	provider := func() *core.WorkOrderActivitySnapshotInput {
+		return &core.WorkOrderActivitySnapshotInput{Content: "recent output"}
+	}
+	renewed, err := renewDispatchClaimUntil(t.Context(), &client{base: server.URL, workspace: "demo"}, "credential", item, "session", time.Now().Add(time.Minute), provider)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if renewed.State != core.WorkOrderClaimed || len(requests) != 2 || requests[0].ActivitySnapshot == nil || requests[1].ActivitySnapshot != nil {
+		t.Fatalf("renewed=%+v requests=%+v", renewed, requests)
+	}
+}
+
+func TestRenewDispatchClaimSnapshotTransportFailureFallsBackToPlainRenewal(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		var request workerRenewRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if request.ActivitySnapshot != nil {
+			panic(http.ErrAbortHandler)
+		}
+		_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: "order", State: core.WorkOrderClaimed, LeaseExpiresAt: time.Now().Add(time.Minute)})
+	}))
+	defer server.Close()
+
+	item := workerservice.DispatchOrder{Order: core.WorkOrder{ID: "order"}}
+	provider := func() *core.WorkOrderActivitySnapshotInput {
+		return &core.WorkOrderActivitySnapshotInput{Content: "recent output"}
+	}
+	if _, err := renewDispatchClaimUntil(t.Context(), &client{base: server.URL, workspace: "demo"}, "credential", item, "session", time.Now().Add(time.Minute), provider); err != nil {
+		t.Fatal(err)
+	}
+	if requests != 2 {
+		t.Fatalf("requests=%d want advisory attempt plus plain fallback", requests)
+	}
+}
+
+func TestRunHarnessChildReportsRedactedSnapshotAndBestEffortTranscript(t *testing.T) {
+	previousInterval := workerClaimRenewInterval
+	workerClaimRenewInterval = 25 * time.Millisecond
+	t.Cleanup(func() { workerClaimRenewInterval = previousInterval })
+
+	previousCheckpointer := workerAttemptCheckpointer
+	workerAttemptCheckpointer = func(_ context.Context, _, _, _ string, checkpoint attemptCheckpoint) (*attemptCheckpointResult, error) {
+		return &attemptCheckpointResult{Worktree: "/assigned/observability", CommitSHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Pushed: true}, nil
+	}
+	t.Cleanup(func() { workerAttemptCheckpointer = previousCheckpointer })
+
+	const credential = "worker-observability-secret"
+	var mu sync.Mutex
+	var snapshots []string
+	var transcript *core.WorkOrderAttemptTranscript
+	checkpointRequests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+		if len(parts) != 5 || strings.Join(parts[:3], "/") != "v1/worker/work-orders" {
+			http.NotFound(w, r)
+			return
+		}
+		switch parts[4] {
+		case "claim":
+			_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: parts[3], State: core.WorkOrderClaimed, AttemptID: "attempt-observability", LeaseExpiresAt: time.Now().Add(time.Minute)})
+		case "renew":
+			var request workerRenewRequest
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			if request.ActivitySnapshot != nil {
+				mu.Lock()
+				snapshots = append(snapshots, request.ActivitySnapshot.Content)
+				mu.Unlock()
+			}
+			_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: parts[3], State: core.WorkOrderClaimed, AttemptID: "attempt-observability", LeaseExpiresAt: time.Now().Add(time.Minute)})
+		case "reconcile":
+			_ = json.NewEncoder(w).Encode(workerservice.ClaimReconciliation{WorkOrder: core.WorkOrder{ID: parts[3], State: core.WorkOrderClaimed}, Authorized: true})
+		case "attempt-checkpoint":
+			var request core.WorkOrderAttemptCheckpoint
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			checkpointRequests++
+			if request.Transcript != nil {
+				transcript = request.Transcript
+				panic(http.ErrAbortHandler)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]bool{"created": true})
+		case "release":
+			_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: parts[3], State: core.WorkOrderQueued})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	item := workerservice.DispatchOrder{
+		Order:      core.WorkOrder{ID: "observability-order", Stage: core.StageImplement},
+		Task:       core.Task{ID: "observability-task", Branch: "conveyor/observability", Repo: "conveyor"},
+		Repository: config.Repo{Name: "conveyor", URL: "https://example.test/conveyor.git"},
+		Harness:    config.Harness{Name: "helper", Command: []string{os.Args[0], "-test.run=TestWorkerLifecycleHelper", "--", "observability"}},
+	}
+	var stdout, stderr bytes.Buffer
+	err := runHarnessChildWithFirstActivityTimeoutAndOutput(t.Context(), &client{base: server.URL, workspace: "demo"}, credential, item, time.Second, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "harness exited before completing work order") {
+		t.Fatalf("child result=%v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(snapshots) == 0 {
+		t.Fatal("running renewals carried no activity snapshot")
+	}
+	for _, snapshot := range snapshots {
+		if strings.Contains(snapshot, credential) || !strings.Contains(snapshot, "[REDACTED:exact]") || !strings.Contains(snapshot, "observable activity") {
+			t.Fatalf("unsafe snapshot=%q", snapshot)
+		}
+	}
+	if transcript == nil || transcript.Truncated || strings.Contains(transcript.Content, credential) || !strings.Contains(transcript.Content, "[REDACTED:exact]") || !strings.Contains(transcript.Content, "observable activity") {
+		t.Fatalf("unsafe transcript=%+v", transcript)
+	}
+	if checkpointRequests != 2 || !strings.Contains(stderr.String(), "retrying checkpoint without transcript") {
+		t.Fatalf("checkpoint_requests=%d stderr=%q", checkpointRequests, stderr.String())
+	}
+}
+
 func TestExpandHarnessUsesWholeElementSubstitutionAndOptionalModelArgs(t *testing.T) {
 	harness := config.Harness{MCPTransport: config.MCPTransportTOMLOverride, Command: []string{"codex", "exec", "{prompt}", "--config", "{mcp_config}"}, ModelArgs: []string{"--model", "{model}"}}
 	override := `mcp_servers.conveyor={url="http://127.0.0.1:8080/mcp", bearer_token_env_var="CONVEYOR_API_TOKEN"}`
@@ -2084,7 +2276,7 @@ func TestWorkerLifecycleHelper(t *testing.T) {
 	mode := ""
 	for _, arg := range os.Args {
 		switch arg {
-		case "exit", "cancel", "silent", "silent-grandchild", "early-output", "early-error", "early-then-silent", "continuous-output", "stall-deadline-race":
+		case "exit", "cancel", "silent", "silent-grandchild", "early-output", "early-error", "early-then-silent", "continuous-output", "stall-deadline-race", "observability":
 			mode = arg
 		}
 	}
@@ -2129,6 +2321,9 @@ func TestWorkerLifecycleHelper(t *testing.T) {
 			fmt.Fprintf(os.Stdout, "activity %d\n", i)
 			time.Sleep(40 * time.Millisecond)
 		}
+	case "observability":
+		fmt.Fprintf(os.Stdout, "token=%s client=%s observable activity\n", os.Getenv("CONVEYOR_API_TOKEN"), os.Getenv("CONVEYOR_CLIENT_TOKEN"))
+		time.Sleep(250 * time.Millisecond)
 	case "stall-deadline-race":
 		raceDirectory := os.Getenv("CONVEYOR_FAKE_HARNESS_RACE_DIR")
 		fmt.Fprintln(os.Stdout, "initial activity")
