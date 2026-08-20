@@ -1444,10 +1444,11 @@ func TestRunHarnessChildReapsOnlyAfterAttachedRunObservesTerminalOrder(t *testin
 		renewState core.WorkOrderState
 		checkpoint bool
 		wantNotice bool
+		wantPause  bool
 		minElapsed time.Duration
 	}{
 		{name: "terminal order reaps lingering child", mode: "silent", renewState: core.WorkOrderSubmitted, wantNotice: true},
-		{name: "same-session checkpoint release reaps child gracefully", mode: "silent", checkpoint: true, wantNotice: true},
+		{name: "same-session checkpoint release reaps child gracefully", mode: "silent", checkpoint: true, wantPause: true},
 		{name: "live order leaves child running", mode: "early-output", renewState: core.WorkOrderClaimed, minElapsed: 300 * time.Millisecond},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -1493,9 +1494,16 @@ func TestRunHarnessChildReapsOnlyAfterAttachedRunObservesTerminalOrder(t *testin
 			if hasNotice != test.wantNotice {
 				t.Fatalf("notice=%t want=%t output=%q", hasNotice, test.wantNotice, presented.String())
 			}
+			hasPause := strings.Contains(presented.String(), "operator checkpoint reached") && strings.Contains(presented.String(), "run paused for operator direction")
+			if hasPause != test.wantPause {
+				t.Fatalf("checkpoint pause=%t want=%t output=%q", hasPause, test.wantPause, presented.String())
+			}
 			if test.checkpoint {
 				if output := stdout.String() + stderr.String() + presented.String(); strings.Contains(output, "claim expired or order reassigned") {
 					t.Fatalf("checkpoint race emitted false claim-loss text: %q", output)
+				}
+				if output := presented.String(); strings.Contains(output, "work order is queued") || strings.Contains(output, "run can advance") {
+					t.Fatalf("checkpoint race was presented as a generic terminal handoff: %q", output)
 				}
 				select {
 				case <-released:

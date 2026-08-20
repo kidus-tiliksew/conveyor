@@ -998,7 +998,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 	ticker := time.NewTicker(renewEvery)
 	defer ticker.Stop()
 	claimFinalized := false
-	checkpointReleaseObserved := false
+	checkpointReleaseReason := ""
 	var finalizedOrder core.WorkOrder
 	var runTerminalTimer *time.Timer
 	var runTerminalDeadline <-chan time.Time
@@ -1027,11 +1027,14 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 			}
 			return ctx.Err()
 		}
-		if checkpointReleaseObserved {
+		if checkpointReleaseReason != "" {
 			// Renewal already proved that this exact child durably released for
 			// operator direction. The release is the successful stage handoff;
 			// child exit status cannot turn it into claim loss or a duplicate
 			// release (design-260805-973cd4).
+			if err := presentRunCheckpointPause(stdout, presentation, string(item.Order.Stage), checkpointReleaseReason); err != nil {
+				return fmt.Errorf("present operator checkpoint pause: %w", err)
+			}
 			return nil
 		}
 		var exitStatus *int
@@ -1083,8 +1086,8 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 		if !workerOrderReleasedAtCheckpoint(renewErr) {
 			return false
 		}
-		checkpointReleaseObserved = true
-		observeFinalized(core.WorkOrder{ID: item.Order.ID, State: core.WorkOrderQueued})
+		checkpointReleaseReason = core.WorkOrderReleaseReasonOperatorCheckpointReached
+		observeFinalized(core.WorkOrder{ID: item.Order.ID, State: core.WorkOrderQueued, LastFailureMessage: checkpointReleaseReason})
 		return true
 	}
 	for {
@@ -1098,7 +1101,11 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 				return handleChildExit(waitErr)
 			default:
 			}
-			if err := presentRunChildReapNotice(stdout, presentation, string(item.Order.Stage), string(finalizedOrder.State)); err != nil {
+			if checkpointReleaseReason != "" {
+				if err := presentRunCheckpointPause(stdout, presentation, string(item.Order.Stage), checkpointReleaseReason); err != nil {
+					return fmt.Errorf("present operator checkpoint pause: %w", err)
+				}
+			} else if err := presentRunChildReapNotice(stdout, presentation, string(item.Order.Stage), string(finalizedOrder.State)); err != nil {
 				return fmt.Errorf("present lingering-child reap: %w", err)
 			}
 			_ = processGroup.terminate(nil)
