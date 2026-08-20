@@ -296,7 +296,9 @@ func TestRenewDispatchClaimSnapshotRejectionFallsBackToPlainRenewal(t *testing.T
 	defer server.Close()
 
 	item := workerservice.DispatchOrder{Order: core.WorkOrder{ID: "order"}}
-	provider := func() *workerActivitySnapshot { return &workerActivitySnapshot{Content: "recent output"} }
+	provider := func() *core.WorkOrderActivitySnapshotInput {
+		return &core.WorkOrderActivitySnapshotInput{Content: "recent output"}
+	}
 	renewed, err := renewDispatchClaimUntil(t.Context(), &client{base: server.URL, workspace: "demo"}, "credential", item, "session", time.Now().Add(time.Minute), provider)
 	if err != nil {
 		t.Fatal(err)
@@ -323,7 +325,9 @@ func TestRenewDispatchClaimSnapshotTransportFailureFallsBackToPlainRenewal(t *te
 	defer server.Close()
 
 	item := workerservice.DispatchOrder{Order: core.WorkOrder{ID: "order"}}
-	provider := func() *workerActivitySnapshot { return &workerActivitySnapshot{Content: "recent output"} }
+	provider := func() *core.WorkOrderActivitySnapshotInput {
+		return &core.WorkOrderActivitySnapshotInput{Content: "recent output"}
+	}
 	if _, err := renewDispatchClaimUntil(t.Context(), &client{base: server.URL, workspace: "demo"}, "credential", item, "session", time.Now().Add(time.Minute), provider); err != nil {
 		t.Fatal(err)
 	}
@@ -346,7 +350,7 @@ func TestRunHarnessChildReportsRedactedSnapshotAndBestEffortTranscript(t *testin
 	const credential = "worker-observability-secret"
 	var mu sync.Mutex
 	var snapshots []string
-	var transcript *workerAttemptTranscript
+	var transcript *core.WorkOrderAttemptTranscript
 	checkpointRequests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
@@ -372,7 +376,7 @@ func TestRunHarnessChildReportsRedactedSnapshotAndBestEffortTranscript(t *testin
 		case "reconcile":
 			_ = json.NewEncoder(w).Encode(workerservice.ClaimReconciliation{WorkOrder: core.WorkOrder{ID: parts[3], State: core.WorkOrderClaimed}, Authorized: true})
 		case "attempt-checkpoint":
-			var request workerAttemptCheckpointRequest
+			var request core.WorkOrderAttemptCheckpoint
 			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return

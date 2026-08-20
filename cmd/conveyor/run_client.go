@@ -90,7 +90,7 @@ func (c *client) claimTaskRunOrderContext(ctx context.Context, credential string
 	return result, err
 }
 
-func (c *client) renewTaskRunOrderContext(ctx context.Context, credential string, item workerservice.DispatchOrder, sessionID string, snapshot *workerActivitySnapshot) (core.WorkOrder, error) {
+func (c *client) renewTaskRunOrderContext(ctx context.Context, credential string, item workerservice.DispatchOrder, sessionID string, snapshot *core.WorkOrderActivitySnapshotInput) (core.WorkOrder, error) {
 	var result core.WorkOrder
 	payload, _ := json.Marshal(workerRenewRequest{SessionID: sessionID, ActivitySnapshot: snapshot})
 	err := c.workerDoContext(ctx, http.MethodPost, taskRunOrderPath(item, "/renew"), payload, &result, credential)
@@ -117,8 +117,9 @@ func (c *client) releaseTaskRunOrderContext(ctx context.Context, credential stri
 	return c.workerDoContext(ctx, http.MethodPost, taskRunOrderPath(item, "/release"), payload, &result, credential)
 }
 
-func (c *client) checkpointTaskRunOrderAttemptContext(ctx context.Context, credential string, item workerservice.DispatchOrder, checkpoint core.WorkOrderAttemptCheckpoint, transcript *workerAttemptTranscript) error {
-	payload, _ := json.Marshal(workerAttemptCheckpointRequest{WorkOrderAttemptCheckpoint: checkpoint, Transcript: transcript})
+func (c *client) checkpointTaskRunOrderAttemptContext(ctx context.Context, credential string, item workerservice.DispatchOrder, checkpoint core.WorkOrderAttemptCheckpoint, transcript *core.WorkOrderAttemptTranscript) error {
+	checkpoint.Transcript = transcript
+	payload, _ := json.Marshal(checkpoint)
 	var result map[string]bool
 	return c.workerDoContext(ctx, http.MethodPost, taskRunOrderPath(item, "/attempt-checkpoint"), payload, &result, credential)
 }
@@ -130,7 +131,7 @@ func (c *client) claimDispatchOrderContext(ctx context.Context, credential strin
 	return c.claimWorkerOrderContext(ctx, credential, item.Order.ID, session, clientToken)
 }
 
-func (c *client) renewDispatchOrderContext(ctx context.Context, credential string, item workerservice.DispatchOrder, sessionID string, snapshot *workerActivitySnapshot) (core.WorkOrder, error) {
+func (c *client) renewDispatchOrderContext(ctx context.Context, credential string, item workerservice.DispatchOrder, sessionID string, snapshot *core.WorkOrderActivitySnapshotInput) (core.WorkOrder, error) {
 	if item.Dispatch == "run" {
 		return c.renewTaskRunOrderContext(ctx, credential, item, sessionID, snapshot)
 	}
@@ -151,7 +152,7 @@ func (c *client) releaseDispatchOrderContext(ctx context.Context, credential str
 	return c.releaseWorkerOrderContext(ctx, credential, item.Order.ID, release)
 }
 
-func (c *client) checkpointDispatchOrderAttemptContext(ctx context.Context, credential string, item workerservice.DispatchOrder, checkpoint core.WorkOrderAttemptCheckpoint, transcript *workerAttemptTranscript) error {
+func (c *client) checkpointDispatchOrderAttemptContext(ctx context.Context, credential string, item workerservice.DispatchOrder, checkpoint core.WorkOrderAttemptCheckpoint, transcript *core.WorkOrderAttemptTranscript) error {
 	if item.Dispatch == "run" {
 		return c.checkpointTaskRunOrderAttemptContext(ctx, credential, item, checkpoint, transcript)
 	}

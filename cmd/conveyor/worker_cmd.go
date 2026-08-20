@@ -720,12 +720,12 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 		return err
 	}
 	activityTail := &boundedTailWriter{limit: workerActivitySnapshotLimit}
-	activitySnapshot := func() *workerActivitySnapshot {
+	activitySnapshot := func() *core.WorkOrderActivitySnapshotInput {
 		content := activityTail.String()
 		if content == "" {
 			return nil
 		}
-		return &workerActivitySnapshot{Content: content}
+		return &core.WorkOrderActivitySnapshotInput{Content: content}
 	}
 	launchEnvironment := continuationLaunchEnvironment(claimed, item.Dispatch, c.workspace, credential)
 	continuationPlan := planContinuationLaunch(claimed, item.Harness, launchEnvironment)
@@ -791,13 +791,13 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 			SessionID: sessionID, AttemptID: claimed.AttemptID, TerminationReason: reason,
 			CommitSHA: result.CommitSHA, PushResult: "pushed",
 		}
-		var transcript *workerAttemptTranscript
+		var transcript *core.WorkOrderAttemptTranscript
 		if transcriptSpool != nil {
 			content, truncated, readErr := transcriptSpool.Snapshot()
 			if readErr != nil {
 				_, _ = fmt.Fprintf(stderr, "warning: read attempt transcript: %v; continuing without transcript because capture is best-effort\n", readErr)
 			} else {
-				transcript = &workerAttemptTranscript{Content: content, Truncated: truncated}
+				transcript = &core.WorkOrderAttemptTranscript{Content: content, Truncated: truncated}
 			}
 		}
 		if transcript != nil {
@@ -1749,7 +1749,7 @@ type preStartClaimRenewal struct {
 	lost  error
 }
 
-func startPreStartClaimRenewal(ctx context.Context, cancelSetup context.CancelFunc, c *client, credential string, item workerservice.DispatchOrder, sessionID string, lease time.Time, snapshot func() *workerActivitySnapshot) *preStartClaimRenewal {
+func startPreStartClaimRenewal(ctx context.Context, cancelSetup context.CancelFunc, c *client, credential string, item workerservice.DispatchOrder, sessionID string, lease time.Time, snapshot func() *core.WorkOrderActivitySnapshotInput) *preStartClaimRenewal {
 	renewal := &preStartClaimRenewal{stop: make(chan struct{}), done: make(chan struct{}), cancel: cancelSetup, lease: lease}
 	go func() {
 		defer close(renewal.done)
@@ -1942,7 +1942,7 @@ func renewWorkerClaimUntil(ctx context.Context, c *client, credential, orderID, 
 	return renewDispatchClaimUntil(ctx, c, credential, item, sessionID, leaseExpiresAt, nil)
 }
 
-func renewDispatchClaimUntil(ctx context.Context, c *client, credential string, item workerservice.DispatchOrder, sessionID string, leaseExpiresAt time.Time, snapshot func() *workerActivitySnapshot) (core.WorkOrder, error) {
+func renewDispatchClaimUntil(ctx context.Context, c *client, credential string, item workerservice.DispatchOrder, sessionID string, leaseExpiresAt time.Time, snapshot func() *core.WorkOrderActivitySnapshotInput) (core.WorkOrder, error) {
 	if leaseExpiresAt.IsZero() {
 		return core.WorkOrder{}, errWorkerClaimAuthorityLost
 	}
@@ -1960,7 +1960,7 @@ func renewDispatchClaimUntil(ctx context.Context, c *client, credential string, 
 		if !time.Now().Before(safetyDeadline) {
 			return core.WorkOrder{}, errWorkerClaimAuthorityLost
 		}
-		var activity *workerActivitySnapshot
+		var activity *core.WorkOrderActivitySnapshotInput
 		if snapshot != nil {
 			activity = snapshot()
 		}

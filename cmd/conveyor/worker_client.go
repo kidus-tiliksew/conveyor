@@ -117,7 +117,7 @@ func (c *client) claimWorkerOrderContext(ctx context.Context, credential, id, se
 func (c *client) renewWorkerOrder(credential, id, sessionID string) (core.WorkOrder, error) {
 	return c.renewWorkerOrderContext(context.Background(), credential, id, sessionID, nil)
 }
-func (c *client) renewWorkerOrderContext(ctx context.Context, credential, id, sessionID string, snapshot *workerActivitySnapshot) (core.WorkOrder, error) {
+func (c *client) renewWorkerOrderContext(ctx context.Context, credential, id, sessionID string, snapshot *core.WorkOrderActivitySnapshotInput) (core.WorkOrder, error) {
 	var result core.WorkOrder
 	payload, _ := json.Marshal(workerRenewRequest{SessionID: sessionID, ActivitySnapshot: snapshot})
 	err := c.workerDoContext(ctx, http.MethodPost, "/v1/worker/work-orders/"+id+"/renew", payload, &result, credential)
@@ -193,29 +193,16 @@ func (c *client) checkpointWorkerOrderAttemptContext(ctx context.Context, creden
 	return c.checkpointWorkerOrderAttemptWithTranscriptContext(ctx, credential, id, checkpoint, nil)
 }
 
-func (c *client) checkpointWorkerOrderAttemptWithTranscriptContext(ctx context.Context, credential, id string, checkpoint core.WorkOrderAttemptCheckpoint, transcript *workerAttemptTranscript) error {
-	payload, _ := json.Marshal(workerAttemptCheckpointRequest{WorkOrderAttemptCheckpoint: checkpoint, Transcript: transcript})
+func (c *client) checkpointWorkerOrderAttemptWithTranscriptContext(ctx context.Context, credential, id string, checkpoint core.WorkOrderAttemptCheckpoint, transcript *core.WorkOrderAttemptTranscript) error {
+	checkpoint.Transcript = transcript
+	payload, _ := json.Marshal(checkpoint)
 	var result map[string]bool
 	return c.workerDoContext(ctx, http.MethodPost, "/v1/worker/work-orders/"+id+"/attempt-checkpoint", payload, &result, credential)
 }
 
-type workerActivitySnapshot struct {
-	Content string `json:"content"`
-}
-
 type workerRenewRequest struct {
-	SessionID        string                  `json:"session_id"`
-	ActivitySnapshot *workerActivitySnapshot `json:"activity_snapshot,omitempty"`
-}
-
-type workerAttemptTranscript struct {
-	Content   string `json:"content"`
-	Truncated bool   `json:"truncated"`
-}
-
-type workerAttemptCheckpointRequest struct {
-	core.WorkOrderAttemptCheckpoint
-	Transcript *workerAttemptTranscript `json:"transcript,omitempty"`
+	SessionID        string                               `json:"session_id"`
+	ActivitySnapshot *core.WorkOrderActivitySnapshotInput `json:"activity_snapshot,omitempty"`
 }
 
 func (c *client) workerDo(method, path string, body []byte, out any, credential string) error {
