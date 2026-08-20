@@ -426,9 +426,7 @@ func (s *Server) renewTaskRunOrder(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "task run service unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	var request struct {
-		SessionID string `json:"session_id"`
-	}
+	var request workOrderRenewRequest
 	_ = json.NewDecoder(r.Body).Decode(&request)
 	credential, ok := store.CredentialFromContext(r.Context())
 	order, err := s.Store.GetWorkOrder(r.Context(), chi.URLParam(r, "order_id"))
@@ -437,7 +435,7 @@ func (s *Server) renewTaskRunOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	claim := core.WorkOrderClaimIdentity{ClaimantID: core.TaskRunClaimantID(credential.OwnerUserID), SessionID: request.SessionID}
-	renewed, err := s.Workers.RenewClaim(r.Context(), claim, order.ID)
+	renewed, err := s.Workers.RenewClaim(r.Context(), claim, order.ID, request.snapshot())
 	if err != nil {
 		if errors.Is(err, store.ErrWorkOrderPreempted) {
 			w.Header().Set("X-Conveyor-Error-Code", "work_order_preempted")
@@ -505,11 +503,12 @@ func (s *Server) checkpointTaskRunOrderAttempt(w http.ResponseWriter, r *http.Re
 		http.Error(w, "task run service unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	var checkpoint core.WorkOrderAttemptCheckpoint
-	if err := json.NewDecoder(r.Body).Decode(&checkpoint); err != nil {
+	var request workOrderAttemptCheckpointRequest
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	checkpoint := request.checkpoint()
 	order, ok := s.authorizeTaskRunOrder(r, checkpoint.SessionID)
 	if !ok {
 		http.Error(w, store.ErrWorkOrderClaimLost.Error(), http.StatusConflict)

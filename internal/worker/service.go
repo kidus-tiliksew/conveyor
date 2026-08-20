@@ -17,6 +17,7 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/redact"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 	"github.com/kidus-tiliksew/conveyor/internal/workorder"
@@ -29,6 +30,11 @@ const (
 	DefaultRetryDelay    = time.Second
 	DefaultRetryMaximum  = 4 * time.Second
 	DefaultRetryLimit    = 3
+	// ActivitySnapshotLimit stays close to the existing failure-detail tail.
+	ActivitySnapshotLimit = 4 * 1024
+	// AttemptTranscriptLimit retains a useful stream-json tail while bounding
+	// one termination capture to a single-digit MiB payload.
+	AttemptTranscriptLimit = 4 * 1024 * 1024
 )
 
 type Service struct {
@@ -674,14 +680,14 @@ func cloneEffortArgs(source map[string][]string) map[string][]string {
 	return result
 }
 
-func (s *Service) Renew(ctx context.Context, worker core.Worker, id, sessionID string) (core.WorkOrder, error) {
-	return s.RenewClaim(ctx, core.WorkOrderClaimIdentity{WorkerID: worker.ID, ClaimantID: worker.ID, SessionID: sessionID}, id)
+func (s *Service) Renew(ctx context.Context, worker core.Worker, id, sessionID string, snapshot ...*core.WorkOrderActivitySnapshotInput) (core.WorkOrder, error) {
+	return s.RenewClaim(ctx, core.WorkOrderClaimIdentity{WorkerID: worker.ID, ClaimantID: worker.ID, SessionID: sessionID}, id, snapshot...)
 }
 
 // RenewClaim renews or classifies the exact authenticated child claim. The
 // explicit identity remains available after a deliberate release clears the
 // active ownership columns (design-260805-973cd4).
-func (s *Service) RenewClaim(ctx context.Context, claim core.WorkOrderClaimIdentity, id string) (core.WorkOrder, error) {
+func (s *Service) RenewClaim(ctx context.Context, claim core.WorkOrderClaimIdentity, id string, snapshots ...*core.WorkOrderActivitySnapshotInput) (core.WorkOrder, error) {
 	sessionID := claim.SessionID
 	if strings.TrimSpace(sessionID) == "" {
 		return core.WorkOrder{}, fmt.Errorf("session_id is required")
@@ -690,9 +696,18 @@ func (s *Service) RenewClaim(ctx context.Context, claim core.WorkOrderClaimIdent
 	if err != nil {
 		return core.WorkOrder{}, err
 	}
-	return taskops.ExecuteWorkOrder(ctx, s.Store, order.TaskID, core.WorkOrderCmdRenew, func(taskLease taskops.TaskLease) (core.WorkOrder, error) {
+	renewed, err := taskops.ExecuteWorkOrder(ctx, s.Store, order.TaskID, core.WorkOrderCmdRenew, func(taskLease taskops.TaskLease) (core.WorkOrder, error) {
 		return s.Store.RenewWorkerClaimCommand(ctx, taskLease, id, claim, DefaultClaimLease)
 	})
+	if err != nil {
+		return core.WorkOrder{}, err
+	}
+	if len(snapshots) > 0 && snapshots[0] != nil {
+		content, _ := boundedObservabilityContent(snapshots[0].Content, ActivitySnapshotLimit)
+		// Observability is best-effort and cannot alter the renewal result.
+		_ = s.Store.UpsertWorkOrderActivitySnapshot(ctx, id, claim, content)
+	}
+	return renewed, nil
 }
 
 func (s *Service) Reconcile(ctx context.Context, worker core.Worker, id, sessionID string) (ClaimReconciliation, error) {
@@ -843,7 +858,19 @@ func (s *Service) CheckpointAttempt(ctx context.Context, worker core.Worker, id 
 	if checkpoint.PushResult != "pushed" {
 		return false, fmt.Errorf("attempt checkpoint must have a confirmed pushed result")
 	}
-	return s.Store.RecordWorkOrderAttemptCheckpoint(ctx, id, worker.ID, checkpoint)
+	if checkpoint.Transcript != nil {
+		checkpoint.Transcript.Content, checkpoint.Transcript.Truncated = boundedObservabilityContent(
+			checkpoint.Transcript.Content, AttemptTranscriptLimit, checkpoint.Transcript.Truncated,
+		)
+	}
+	created, err := s.Store.RecordWorkOrderAttemptCheckpoint(ctx, id, worker.ID, checkpoint)
+	if err != nil {
+		return false, err
+	}
+	// Snapshot supersession and optional transcript persistence are isolated
+	// from the established checkpoint result.
+	_ = s.Store.FinalizeWorkOrderAttemptObservability(ctx, id, worker.ID, checkpoint)
+	return created, nil
 }
 
 const FailureDetailLimit = core.WorkOrderFailureDetailLimit
@@ -855,6 +882,20 @@ func boundedFailureDetail(detail string) string {
 		detail = strings.ToValidUTF8(detail, "�")
 	}
 	return strings.TrimSpace(detail)
+}
+
+func boundedObservabilityContent(content string, limit int, alreadyTruncated ...bool) (string, bool) {
+	content = strings.ToValidUTF8(content, "�")
+	content, _ = redact.New(nil).Redact(content)
+	truncated := len(alreadyTruncated) > 0 && alreadyTruncated[0]
+	if len(content) > limit {
+		// The source is valid UTF-8 at this point. Dropping only a partial
+		// leading rune keeps the newest complete content without expanding past
+		// the byte cap through a replacement rune.
+		content = strings.ToValidUTF8(content[len(content)-limit:], "")
+		truncated = true
+	}
+	return content, truncated
 }
 
 // providerModelRejection deliberately recognizes only explicit model support

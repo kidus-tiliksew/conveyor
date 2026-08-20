@@ -147,6 +147,20 @@ WHERE t.workspace_id = sqlc.arg(workspace_id)
   ), '') <> 'task.context_requirement_added'
 ORDER BY t.id;
 
+-- Attempt observability queries are mirrored by postgres/observability.go.
+-- The migration corpus is not sqlc-parseable in the ordinary development
+-- path, so PostgreSQL integration tests exercise these exact column names.
+-- name: GetWorkOrderActivitySnapshot :one
+SELECT attempt_id, content, captured_at
+FROM work_order_activity_snapshots
+WHERE workspace_id = $1 AND work_order_id = $2;
+
+-- name: ListWorkOrderTranscriptCaptures :many
+SELECT attempt_id, content, termination_reason, truncated, captured_at
+FROM work_order_transcript_captures
+WHERE workspace_id = $1 AND work_order_id = $2
+ORDER BY captured_at, attempt_id;
+
 -- The shared Tasks/Board filter (AC-2.4) is evaluated here rather than in Go, so
 -- neither surface ever loads the workspace to narrow it (AC-2.3). Each member
 -- short-circuits on its own empty argument, leaving the unfiltered plan as it

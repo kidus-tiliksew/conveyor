@@ -128,6 +128,14 @@ func TestPhase51WorkerPersistenceIntegration(t *testing.T) {
 	if err != nil || !renewed.ExecutionDeadline.Equal(deadline) {
 		t.Fatalf("renewed=%+v err=%v", renewed, err)
 	}
+	workerService := &workerservice.Service{Store: st}
+	activity := strings.Repeat("old", workerservice.ActivitySnapshotLimit) + "newest"
+	if renewed, err = workerService.Renew(ctx, worker, job.ID, "session", &core.WorkOrderActivitySnapshotInput{Content: activity}); err != nil || !renewed.ExecutionDeadline.Equal(deadline) {
+		t.Fatalf("snapshot renewal=%+v err=%v", renewed, err)
+	}
+	if snapshot, exists, snapshotErr := st.GetWorkOrderActivitySnapshot(ctx, job.ID); snapshotErr != nil || !exists || snapshot.AttemptID != claimed.AttemptID || len(snapshot.Content) > workerservice.ActivitySnapshotLimit || !strings.HasSuffix(snapshot.Content, "newest") {
+		t.Fatalf("snapshot=%+v exists=%v err=%v", snapshot, exists, snapshotErr)
+	}
 	checkpoint := core.WorkOrderAttemptCheckpoint{
 		SessionID: "session", AttemptID: claimed.AttemptID, TerminationReason: "harness exited",
 		CommitSHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", PushResult: "pushed",
@@ -163,6 +171,16 @@ func TestPhase51WorkerPersistenceIntegration(t *testing.T) {
 	}
 	if count, countErr := st.CountEvents(ctx, task.ID, "work_order.attempt_checkpointed"); countErr != nil || count != 1 {
 		t.Fatalf("attempt checkpoint events=%d err=%v", count, countErr)
+	}
+	checkpoint.Transcript = &core.WorkOrderAttemptTranscript{Content: strings.Repeat("t", workerservice.AttemptTranscriptLimit+10) + "tail"}
+	if created, checkpointErr := workerService.CheckpointAttempt(ctx, worker, job.ID, checkpoint); checkpointErr != nil || created {
+		t.Fatalf("observability checkpoint created=%v err=%v", created, checkpointErr)
+	}
+	if _, exists, snapshotErr := st.GetWorkOrderActivitySnapshot(ctx, job.ID); snapshotErr != nil || exists {
+		t.Fatalf("finalized snapshot exists=%v err=%v", exists, snapshotErr)
+	}
+	if captures, captureErr := st.ListWorkOrderTranscriptCaptures(ctx, job.ID); captureErr != nil || len(captures) != 1 || captures[0].AttemptID != claimed.AttemptID || len(captures[0].Content) > workerservice.AttemptTranscriptLimit || !strings.HasSuffix(captures[0].Content, "tail") || !captures[0].Truncated {
+		t.Fatalf("captures=%+v err=%v", captures, captureErr)
 	}
 	released, err := storetest.For(st).ReleaseWorkerClaim(ctx, job.ID, worker.ID, core.WorkOrderRelease{SessionID: "session", Reason: "worker cancelled", Cause: core.WorkOrderReleaseCauseOperatorAction, Outcome: core.WorkOrderOutcomeCancelled})
 	if err != nil || released.State != core.WorkOrderQueued || !released.ExecutionDeadline.IsZero() || !released.ExecutionStartedAt.IsZero() || !released.RetrySuppressed || !released.QueueEnteredAt.After(now) || released.QueueDeadline.Sub(released.QueueEnteredAt) != time.Hour {

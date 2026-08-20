@@ -702,6 +702,11 @@ type WorkOrder struct {
 	// separately non-authoritative task proposal evidence refreshed for this
 	// review claim. Nil is reserved for legacy compatibility handling.
 	GovernanceSnapshot *GovernanceSnapshot `json:"governance_snapshot,omitempty"`
+	// ActivitySnapshot and TranscriptCaptures are observational detail fields.
+	// Store list/claim paths leave them empty so they cannot become execution
+	// context or lifecycle input.
+	ActivitySnapshot   *WorkOrderActivitySnapshot   `json:"activity_snapshot,omitempty"`
+	TranscriptCaptures []WorkOrderTranscriptCapture `json:"transcript_captures,omitempty"`
 }
 
 // MarshalJSON keeps the three work-order clocks distinct on the wire and
@@ -875,11 +880,43 @@ type WorkOrderRelease struct {
 // made for an implementation attempt. SessionID authorizes the caller's
 // current claim; AttemptID identifies the predecessor work being preserved.
 type WorkOrderAttemptCheckpoint struct {
-	SessionID         string `json:"session_id"`
-	AttemptID         string `json:"attempt_id"`
-	TerminationReason string `json:"termination_reason"`
-	CommitSHA         string `json:"commit_sha"`
-	PushResult        string `json:"push_result"`
+	SessionID         string                      `json:"session_id"`
+	AttemptID         string                      `json:"attempt_id"`
+	TerminationReason string                      `json:"termination_reason"`
+	CommitSHA         string                      `json:"commit_sha"`
+	PushResult        string                      `json:"push_result"`
+	Transcript        *WorkOrderAttemptTranscript `json:"transcript,omitempty"`
+}
+
+// WorkOrderActivitySnapshotInput is the optional renewal-borne tail supplied
+// by a launcher. It is normalized, redacted, and bounded by the worker service
+// before the store sees it.
+type WorkOrderActivitySnapshotInput struct {
+	Content string `json:"content"`
+}
+
+// WorkOrderAttemptTranscript is the optional launcher capture supplied at the
+// existing attempt-checkpoint boundary.
+type WorkOrderAttemptTranscript struct {
+	Content   string `json:"content"`
+	Truncated bool   `json:"truncated"`
+}
+
+// WorkOrderActivitySnapshot is the latest-only running-attempt projection.
+type WorkOrderActivitySnapshot struct {
+	AttemptID  string    `json:"attempt_id"`
+	Content    string    `json:"content"`
+	CapturedAt time.Time `json:"captured_at"`
+}
+
+// WorkOrderTranscriptCapture is an immutable, bounded termination capture for
+// one attempt. CapturedAt is stamped by Conveyor rather than the launcher.
+type WorkOrderTranscriptCapture struct {
+	AttemptID         string    `json:"attempt_id"`
+	Content           string    `json:"content"`
+	TerminationReason string    `json:"termination_reason"`
+	Truncated         bool      `json:"truncated"`
+	CapturedAt        time.Time `json:"captured_at"`
 }
 
 // AuthorizesAttemptCheckpoint permits either the active attempt to preserve

@@ -233,11 +233,9 @@ func (s *Server) claimWorkerOrder(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) renewWorkerOrder(w http.ResponseWriter, r *http.Request) {
 	worker, _ := workerFromContext(r.Context())
-	var request struct {
-		SessionID string `json:"session_id"`
-	}
+	var request workOrderRenewRequest
 	_ = json.NewDecoder(r.Body).Decode(&request)
-	order, err := s.Workers.Renew(r.Context(), worker, chi.URLParam(r, "id"), request.SessionID)
+	order, err := s.Workers.Renew(r.Context(), worker, chi.URLParam(r, "id"), request.SessionID, request.snapshot())
 	if err != nil {
 		if errors.Is(err, store.ErrWorkOrderPreempted) {
 			w.Header().Set("X-Conveyor-Error-Code", "work_order_preempted")
@@ -285,15 +283,60 @@ func (s *Server) releaseWorkerOrder(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) checkpointWorkerOrderAttempt(w http.ResponseWriter, r *http.Request) {
 	worker, _ := workerFromContext(r.Context())
-	var request core.WorkOrderAttemptCheckpoint
+	var request workOrderAttemptCheckpointRequest
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	created, err := s.Workers.CheckpointAttempt(r.Context(), worker, chi.URLParam(r, "id"), request)
+	created, err := s.Workers.CheckpointAttempt(r.Context(), worker, chi.URLParam(r, "id"), request.checkpoint())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"created": created})
+}
+
+type workOrderRenewRequest struct {
+	SessionID        string          `json:"session_id"`
+	ActivitySnapshot json.RawMessage `json:"activity_snapshot"`
+}
+
+func (r workOrderRenewRequest) snapshot() *core.WorkOrderActivitySnapshotInput {
+	if len(r.ActivitySnapshot) == 0 || string(r.ActivitySnapshot) == "null" {
+		return nil
+	}
+	var snapshot struct {
+		Content *string `json:"content"`
+	}
+	if json.Unmarshal(r.ActivitySnapshot, &snapshot) != nil || snapshot.Content == nil {
+		return nil
+	}
+	return &core.WorkOrderActivitySnapshotInput{Content: *snapshot.Content}
+}
+
+type workOrderAttemptCheckpointRequest struct {
+	SessionID         string          `json:"session_id"`
+	AttemptID         string          `json:"attempt_id"`
+	TerminationReason string          `json:"termination_reason"`
+	CommitSHA         string          `json:"commit_sha"`
+	PushResult        string          `json:"push_result"`
+	Transcript        json.RawMessage `json:"transcript"`
+}
+
+func (r workOrderAttemptCheckpointRequest) checkpoint() core.WorkOrderAttemptCheckpoint {
+	checkpoint := core.WorkOrderAttemptCheckpoint{
+		SessionID: r.SessionID, AttemptID: r.AttemptID, TerminationReason: r.TerminationReason,
+		CommitSHA: r.CommitSHA, PushResult: r.PushResult,
+	}
+	if len(r.Transcript) == 0 || string(r.Transcript) == "null" {
+		return checkpoint
+	}
+	var transcript struct {
+		Content   *string `json:"content"`
+		Truncated bool    `json:"truncated"`
+	}
+	if json.Unmarshal(r.Transcript, &transcript) == nil && transcript.Content != nil {
+		checkpoint.Transcript = &core.WorkOrderAttemptTranscript{Content: *transcript.Content, Truncated: transcript.Truncated}
+	}
+	return checkpoint
 }

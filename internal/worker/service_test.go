@@ -16,6 +16,16 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 )
 
+type failingObservabilityStore struct{ store.Store }
+
+func (failingObservabilityStore) UpsertWorkOrderActivitySnapshot(context.Context, string, core.WorkOrderClaimIdentity, string) error {
+	return errors.New("snapshot unavailable")
+}
+
+func (failingObservabilityStore) FinalizeWorkOrderAttemptObservability(context.Context, string, string, core.WorkOrderAttemptCheckpoint) error {
+	return errors.New("transcript unavailable")
+}
+
 func TestPairingHeartbeatHealthAndWorkerClaimLifecycle(t *testing.T) {
 	now := time.Now().UTC()
 	st := store.NewMemory()
@@ -107,6 +117,13 @@ func TestPairingHeartbeatHealthAndWorkerClaimLifecycle(t *testing.T) {
 	renewed, err := service.Renew(workerCtx, worker, claimed.ID, "session-a")
 	if err != nil || !renewed.ExecutionDeadline.Equal(deadline) {
 		t.Fatalf("renewed=%+v err=%v", renewed, err)
+	}
+	activity := strings.Repeat("x", ActivitySnapshotLimit+100) + " token=ghp_abcdefghijklmnopqrstuvwxyz123456"
+	if renewed, err = service.Renew(workerCtx, worker, claimed.ID, "session-a", &core.WorkOrderActivitySnapshotInput{Content: activity}); err != nil || !renewed.ExecutionDeadline.Equal(deadline) {
+		t.Fatalf("snapshot renewal=%+v err=%v", renewed, err)
+	}
+	if snapshot, exists, snapshotErr := st.GetWorkOrderActivitySnapshot(workerCtx, claimed.ID); snapshotErr != nil || !exists || len(snapshot.Content) > ActivitySnapshotLimit || strings.Contains(snapshot.Content, "ghp_") || snapshot.AttemptID != claimed.AttemptID {
+		t.Fatalf("snapshot=%+v exists=%v err=%v", snapshot, exists, snapshotErr)
 	}
 	released, err := service.Release(workerCtx, worker, claimed.ID, core.WorkOrderRelease{SessionID: "session-a", Reason: core.WorkOrderReleaseReasonOperatorCheckpointReached, Cause: core.WorkOrderReleaseCauseOperatorAction, Outcome: core.WorkOrderOutcomeReleased})
 	if err != nil || released.State != core.WorkOrderQueued || !released.ExecutionDeadline.IsZero() || !released.ExecutionStartedAt.IsZero() || !released.RetrySuppressed {
@@ -217,7 +234,7 @@ func TestAttemptCheckpointIsAttemptScopedAndIdempotent(t *testing.T) {
 	worker := core.Worker{ID: "checkpoint-worker", Workspace: "demo"}
 	service := &Service{Store: st}
 	first, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{
-		SessionID: "session-first", ClientToken: "token-first", WorkerID: worker.ID,
+		SessionID: "session-first", ClientToken: "token-first", WorkerID: worker.ID, ClaimantID: worker.ID,
 		Lease: time.Minute, ExecutionTimeout: time.Hour,
 	})
 	if err != nil {
@@ -226,6 +243,10 @@ func TestAttemptCheckpointIsAttemptScopedAndIdempotent(t *testing.T) {
 	checkpoint := core.WorkOrderAttemptCheckpoint{
 		SessionID: "session-first", AttemptID: first.AttemptID, TerminationReason: "harness exited",
 		CommitSHA: "1111111111111111111111111111111111111111", PushResult: "pushed",
+		Transcript: &core.WorkOrderAttemptTranscript{Content: "before token=ghp_abcdefghijklmnopqrstuvwxyz123456 after"},
+	}
+	if _, err = service.Renew(ctx, worker, first.ID, "session-first", &core.WorkOrderActivitySnapshotInput{Content: "still running"}); err != nil {
+		t.Fatal(err)
 	}
 	created, err := service.CheckpointAttempt(ctx, worker, first.ID, checkpoint)
 	if err != nil || !created {
@@ -233,6 +254,12 @@ func TestAttemptCheckpointIsAttemptScopedAndIdempotent(t *testing.T) {
 	}
 	if created, err = service.CheckpointAttempt(ctx, worker, first.ID, checkpoint); err != nil || created {
 		t.Fatalf("duplicate checkpoint created=%v err=%v", created, err)
+	}
+	if _, exists, snapshotErr := st.GetWorkOrderActivitySnapshot(ctx, first.ID); snapshotErr != nil || exists {
+		t.Fatalf("checkpoint did not supersede snapshot exists=%v err=%v", exists, snapshotErr)
+	}
+	if captures, captureErr := st.ListWorkOrderTranscriptCaptures(ctx, first.ID); captureErr != nil || len(captures) != 1 || captures[0].AttemptID != first.AttemptID || captures[0].TerminationReason != "harness exited" || strings.Contains(captures[0].Content, "ghp_") {
+		t.Fatalf("captures=%+v err=%v", captures, captureErr)
 	}
 	wrong := checkpoint
 	wrong.SessionID = "different-session"
@@ -411,6 +438,48 @@ func TestFailureDetailBoundAndProviderModelRejectionMatcher(t *testing.T) {
 		if got := providerModelRejection(fixture.detail); got != fixture.want {
 			t.Fatalf("providerModelRejection(%q)=%v want %v", fixture.detail, got, fixture.want)
 		}
+	}
+}
+
+func TestObservabilityBoundsPreserveNewestValidUTF8(t *testing.T) {
+	prefix := strings.Repeat("x", ActivitySnapshotLimit) + "€"
+	bounded, truncated := boundedObservabilityContent(prefix+"newest", ActivitySnapshotLimit)
+	if !truncated || len(bounded) > ActivitySnapshotLimit || !strings.HasSuffix(bounded, "newest") || strings.ToValidUTF8(bounded, "") != bounded {
+		t.Fatalf("bounded length=%d truncated=%v suffix=%q", len(bounded), truncated, bounded[len(bounded)-16:])
+	}
+	transcript, transcriptTruncated := boundedObservabilityContent("short", AttemptTranscriptLimit, true)
+	if transcript != "short" || !transcriptTruncated {
+		t.Fatalf("transcript=%q truncated=%v", transcript, transcriptTruncated)
+	}
+}
+
+func TestObservabilityPersistenceFailuresDoNotChangeLifecycleResults(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	base := store.NewMemory()
+	now := time.Now().UTC()
+	task := core.Task{ID: "observability-failure", Workspace: "demo", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: now}
+	job := core.Job{ID: task.ID + "-implement-1", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
+	if err := base.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := base.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := storetest.For(base).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	worker := core.Worker{ID: "worker", Workspace: "demo"}
+	claimed, err := storetest.For(base).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{WorkerID: worker.ID, ClaimantID: worker.ID, SessionID: "session", ClientToken: "token", Lease: time.Minute, ExecutionTimeout: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{Store: failingObservabilityStore{Store: base}}
+	if renewed, renewErr := service.Renew(ctx, worker, job.ID, "session", &core.WorkOrderActivitySnapshotInput{Content: "tail"}); renewErr != nil || renewed.State != core.WorkOrderClaimed {
+		t.Fatalf("renewed=%+v err=%v", renewed, renewErr)
+	}
+	checkpoint := core.WorkOrderAttemptCheckpoint{SessionID: "session", AttemptID: claimed.AttemptID, TerminationReason: "harness exited", CommitSHA: strings.Repeat("a", 40), PushResult: "pushed", Transcript: &core.WorkOrderAttemptTranscript{Content: "transcript"}}
+	if created, checkpointErr := service.CheckpointAttempt(ctx, worker, job.ID, checkpoint); checkpointErr != nil || !created {
+		t.Fatalf("checkpoint created=%v err=%v", created, checkpointErr)
 	}
 }
 
