@@ -48,6 +48,7 @@ func main() {
 		skillsCmd(),
 		taskCmd(),
 		configCmd(),
+		setupCmd(),
 		monitorCmd(),
 		workerCmd(),
 		initCmd(),
@@ -132,6 +133,7 @@ func configCmd() *cobra.Command {
 	if configPath == "" {
 		configPath = "conveyor.yaml"
 	}
+	var executionSetupName string
 	set := &cobra.Command{
 		Use: "set execution.<stage>.<field> <value>", Short: "Set a local default or execution field", Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -139,13 +141,19 @@ func configCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err = setLocalExecutionField(configPath, resolved.Workspace.Value, args[0], args[1]); err != nil {
+			if strings.TrimSpace(executionSetupName) != "" {
+				err = setNamedLocalExecutionFieldContext(cmd.Context(), configPath, executionSetupName, args[0], args[1], true)
+			} else {
+				err = setLocalExecutionFieldContext(cmd.Context(), configPath, resolved.Workspace.Value, args[0], args[1], true)
+			}
+			if err != nil {
 				return err
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "Set %s in %s\n", args[0], configPath)
 			return nil
 		},
 	}
+	set.Flags().StringVar(&executionSetupName, "setup", "", "named local execution setup (bare keys target the default)")
 	setWorkspace := &cobra.Command{
 		Use: "workspace <id>", Short: "Set the default workspace for the effective server", Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {

@@ -373,6 +373,7 @@ func runWorkerWithPolicyAndConfig(ctx context.Context, c *client, pairing, name 
 			reviewLimit = 1
 		}
 		counts := map[core.Stage]int{}
+		overflowSkipped := false
 		mu.Lock()
 		for _, stage := range active {
 			counts[stage]++
@@ -394,6 +395,10 @@ func runWorkerWithPolicyAndConfig(ctx context.Context, c *client, pairing, name 
 			}
 			selected, selectErr := selectLocalWorkerDispatch(item, setup.Config, os.Stderr)
 			if selectErr != nil {
+				if logWorkerReviewSeatOverflow(os.Stderr, item, setup.Config, selectErr) {
+					overflowSkipped = true
+					continue
+				}
 				return localExecutionSetupRemedy(configPath, selectErr)
 			}
 			mu.Lock()
@@ -414,7 +419,7 @@ func runWorkerWithPolicyAndConfig(ctx context.Context, c *client, pairing, name 
 		mu.Lock()
 		activeCount := len(active)
 		mu.Unlock()
-		if once && activeCount == 0 && (started || len(orders) == 0) {
+		if once && activeCount == 0 && (started || len(orders) == 0 || overflowSkipped) {
 			return nil
 		}
 		select {
@@ -427,6 +432,15 @@ func runWorkerWithPolicyAndConfig(ctx context.Context, c *client, pairing, name 
 		case <-time.After(5 * time.Second):
 		}
 	}
+}
+
+func logWorkerReviewSeatOverflow(output io.Writer, item workerservice.DispatchOrder, local *config.Config, err error) bool {
+	var capacity *reviewSeatCapacityError
+	if !errors.As(err, &capacity) {
+		return false
+	}
+	_, _ = fmt.Fprintf(output, "worker order %s: review round requires seat %d, but default setup %q configures %d seat(s); leaving order queued without claiming\n", item.Order.ID, capacity.Required, local.DefaultSetup, capacity.Configured)
+	return true
 }
 
 func waitForWorkerChildren(children *sync.WaitGroup, timeout time.Duration) {
