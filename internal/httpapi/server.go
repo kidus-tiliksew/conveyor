@@ -1176,7 +1176,7 @@ type reviewItem struct {
 	PendingAuthority          bool                                  `json:"pending_authority"`
 	ForgeFailure              *store.ForgeFailure                   `json:"forge_failure,omitempty"`
 	Spec                      *core.SpecVersion                     `json:"spec,omitempty"`
-	WorkOrders                []core.WorkOrder                      `json:"work_orders"`
+	WorkOrders                []workOrderActivityView               `json:"work_orders"`
 	ReviewDiagnostics         []store.ReviewVerdictDiagnostic       `json:"review_diagnostics,omitempty"`
 	ReviewRecovery            *store.ReviewRecoveryState            `json:"review_recovery,omitempty"`
 	InterruptedReviewRecovery *store.InterruptedReviewRecoveryState `json:"interrupted_review_recovery,omitempty"`
@@ -1932,6 +1932,12 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
+	workOrderViews, err := s.checkpointWorkOrderViews(r.Context(), workOrders, proposals)
+	if err != nil {
+		log.Printf("enrich checkpoint recovery: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
 	pendingAuthority := pendingAuthorityForTask(id, workOrders, proposals)
 	writeJSON(w, http.StatusOK, reviewItem{
 		Task: task, Jobs: jobs, Events: events, Interventions: interventions,
@@ -1941,7 +1947,7 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 		PendingAuthority:          pendingAuthority,
 		ForgeFailure:              store.LatestForgeFailure(events),
 		Spec:                      specPointer,
-		WorkOrders:                workOrders,
+		WorkOrders:                workOrderViews,
 		ReviewDiagnostics:         store.ReviewVerdictDiagnostics(workOrders, events, time.Now().UTC()),
 		ReviewRecovery:            store.ReviewRecoveryNeeded(workOrders, events),
 		InterruptedReviewRecovery: store.InterruptedReviewRecoveryNeeded(task, store.CurrentReviewOrders(workOrders, events), events),

@@ -1156,6 +1156,118 @@ func TestReadEndpointsDoNotRequireToken(t *testing.T) {
 	}
 }
 
+func TestTaskActivityEnrichesAuthorityConflictCheckpoint(t *testing.T) {
+	t.Parallel()
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	task := core.Task{ID: "checkpoint-detail", Workspace: "demo", State: core.TaskRunning, CreatedAt: time.Now().UTC()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: task.ID + "-implement-1", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	requirement, firstRequirement, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-checkpoint", Title: "Checkpoint requirement"}, core.RequirementVersion{
+		Content: "Checkpoint requirement", Origin: core.RequirementOriginOperator,
+		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Resolve authority conflicts."}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmRequirementVersion(ctx, requirement.ID, firstRequirement.Version); err != nil {
+		t.Fatal(err)
+	}
+	secondRequirement, err := st.ProposeRequirementVersion(ctx, core.RequirementVersion{
+		RequirementID: requirement.ID, Content: "Updated checkpoint requirement", Origin: core.RequirementOriginOperator,
+		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Resolve authority conflicts with current guidance."}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmRequirementVersion(ctx, requirement.ID, secondRequirement.Version); err != nil {
+		t.Fatal(err)
+	}
+	design, firstDesign, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "design-checkpoint", Title: "Checkpoint design", Category: "Architecture"}, core.SystemDesignVersion{
+		Content: "# Checkpoint design\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/httpapi/**\n```", Origin: core.SystemDesignOriginOperator,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmSystemDesignVersion(ctx, design.ID, firstDesign.Version); err != nil {
+		t.Fatal(err)
+	}
+	pendingDesign, err := st.ProposeSystemDesignVersion(ctx, core.SystemDesignVersion{
+		DocumentID: design.ID, Content: "# Updated checkpoint design\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/httpapi/**\n```", Origin: core.SystemDesignOriginOperator,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The same stable ID in another workspace must not affect either current
+	// confirmation or pending-proposal state in this task detail response.
+	siblingCtx := store.WithWorkspace(t.Context(), "sibling")
+	siblingDesign, siblingFirst, err := st.CreateSystemDesign(siblingCtx, core.SystemDesign{ID: design.ID, Title: "Sibling checkpoint design", Category: "Architecture"}, core.SystemDesignVersion{
+		Content: "# Sibling checkpoint design\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/httpapi/**\n```", Origin: core.SystemDesignOriginOperator,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmSystemDesignVersion(siblingCtx, siblingDesign.ID, siblingFirst.Version); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.ProposeSystemDesignVersion(siblingCtx, core.SystemDesignVersion{
+		DocumentID: siblingDesign.ID, Content: "# Sibling proposal\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/httpapi/**\n```", Origin: core.SystemDesignOriginOperator,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	order := core.WorkOrder{
+		ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued,
+		Checkpoint: &core.WorkOrderCheckpoint{
+			DecisionRequest: "Confirm the governing revisions, then direct recovery.",
+			Class:           core.WorkOrderCheckpointClassAuthorityConflict,
+			Citations: []core.WorkOrderAuthorityConflictCitation{
+				{DocumentID: requirement.ID, CitedVersion: firstRequirement.Version, StatementOrSectionID: "REQ-1"},
+				{DocumentID: design.ID, CitedVersion: firstDesign.Version},
+			},
+		},
+	}
+	if err = storetest.For(st).CreateWorkOrder(ctx, order); err != nil {
+		t.Fatal(err)
+	}
+
+	server := NewServer(st)
+	server.Workspace = "demo"
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/tasks/"+task.ID+"/activity?workspace_id=demo", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var item struct {
+		WorkOrders []struct {
+			Checkpoint *checkpointActivityView `json:"checkpoint"`
+		} `json:"work_orders"`
+	}
+	if err = json.Unmarshal(response.Body.Bytes(), &item); err != nil {
+		t.Fatal(err)
+	}
+	if len(item.WorkOrders) != 1 || item.WorkOrders[0].Checkpoint == nil {
+		t.Fatalf("work orders=%+v", item.WorkOrders)
+	}
+	checkpoint := item.WorkOrders[0].Checkpoint
+	if checkpoint.DecisionRequest != order.Checkpoint.DecisionRequest || len(checkpoint.Citations) != 2 {
+		t.Fatalf("checkpoint=%+v", checkpoint)
+	}
+	if got := checkpoint.Citations[0]; got.DocumentKind != "requirement" || got.DocumentTitle != requirement.Title ||
+		got.CurrentConfirmedVersion != secondRequirement.Version || !got.NewerConfirmed || len(got.PendingProposals) != 0 {
+		t.Fatalf("requirement citation=%+v", got)
+	}
+	if got := checkpoint.Citations[1]; got.DocumentKind != "system_design" || got.DocumentTitle != design.Title ||
+		got.CurrentConfirmedVersion != firstDesign.Version || got.NewerConfirmed || len(got.PendingProposals) != 1 ||
+		got.PendingProposals[0].Version != pendingDesign.Version || got.PendingProposals[0].OriginType != "operator" {
+		t.Fatalf("system design citation=%+v", got)
+	}
+}
+
 func TestPendingProposalsProjectionAttentionAndTaskWarning(t *testing.T) {
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	st := store.NewMemory()

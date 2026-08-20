@@ -105,8 +105,12 @@ export function Timeline({
   // §21.62). A blueprint anchor runs no session and proposes nothing, which is
   // why this rides `executionActions` like the rest of the tail.
   const designProposals = useSystemDesignProposals(item.task)
+  const structuredCheckpoint = Boolean(currentExecution?.order.checkpoint?.decision_request?.trim())
   const combineCheckpointProposal =
-    hasWorkerRecovery(item) && isCheckpointReleasedRecovery(currentExecution) && designProposals.length > 0
+    !structuredCheckpoint &&
+    hasWorkerRecovery(item) &&
+    isCheckpointReleasedRecovery(currentExecution) &&
+    designProposals.length > 0
   const priorExecutionStatus = useRef(currentExecution?.status)
   const [executionAnnouncement, setExecutionAnnouncement] = useState('')
 

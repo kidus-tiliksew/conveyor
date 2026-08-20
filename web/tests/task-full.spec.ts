@@ -2330,6 +2330,123 @@ test('checkpoint recovery summarizes attached requirement and design context', a
   await expect(page.getByText(/Attached context: 1 requirement\(s\), 1 design document\(s\)/)).toBeVisible()
 })
 
+test('structured authority checkpoint leads with the decision and resolves through cited proposals', async ({
+  page,
+}) => {
+  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
+  const item = activity('operator-checkpoint', false)
+  const order = item.work_orders?.[0] as unknown as {
+    checkpoint: {
+      decision_request: string
+      class: string
+      citations: Array<{
+        document_id: string
+        document_kind: string
+        document_title: string
+        cited_version: number
+        statement_or_section_id?: string
+        current_confirmed_version: number
+        newer_confirmed: boolean
+        pending_proposals: Array<{
+          id: string
+          title: string
+          tier: string
+          version: number
+          origin_type: string
+          proposed_at: string
+        }>
+      }>
+    }
+  }
+  order.checkpoint = {
+    decision_request: 'Confirm the design revision and direct the next implementation attempt.',
+    class: 'authority_conflict',
+    citations: [
+      {
+        document_id: 'req-checkpoint',
+        document_kind: 'requirement',
+        document_title: 'Checkpoint requirement',
+        cited_version: 1,
+        statement_or_section_id: 'AC-2.2',
+        current_confirmed_version: 2,
+        newer_confirmed: true,
+        pending_proposals: [],
+      },
+      {
+        document_id: 'design-checkpoint',
+        document_kind: 'system_design',
+        document_title: 'Checkpoint design',
+        cited_version: 1,
+        current_confirmed_version: 1,
+        newer_confirmed: false,
+        pending_proposals: [
+          {
+            id: 'design-checkpoint',
+            title: 'Checkpoint design',
+            tier: 'system_design',
+            version: 2,
+            origin_type: 'operator',
+            proposed_at: createdAt,
+          },
+        ],
+      },
+    ],
+  }
+  let resolved = false
+  let confirmHeaders: Record<string, string> = {}
+  let recoveryBody: Record<string, unknown> | undefined
+  await page.route('**/v1/tasks/operator-checkpoint/activity*', async (route) => {
+    if (resolved) {
+      order.checkpoint.citations[1].current_confirmed_version = 2
+      order.checkpoint.citations[1].newer_confirmed = true
+      order.checkpoint.citations[1].pending_proposals = []
+    }
+    await route.fulfill({ json: item })
+  })
+  await page.route('**/v1/system-designs/design-checkpoint/versions/2/confirm**', async (route) => {
+    confirmHeaders = route.request().headers()
+    resolved = true
+    await route.fulfill({ json: {} })
+  })
+  await page.route('**/v1/work-orders/attempt-recovery-implement-1/recover*', async (route) => {
+    recoveryBody = route.request().postDataJSON() as Record<string, unknown>
+    await route.fulfill({ json: { id: 'operator-checkpoint-implement-2', state: 'queued', claimable: true } })
+  })
+
+  await page.goto('/tasks/operator-checkpoint/full')
+  const card = page.getByRole('region', { name: 'Checkpoint decision and recovery' })
+  await expect(card.getByText(order.checkpoint.decision_request, { exact: true })).toBeVisible()
+  await expect(card.getByText(checkpointProgress, { exact: true })).not.toBeVisible()
+  await card.getByText('Show full progress report').click()
+  await expect(card.getByText(checkpointProgress, { exact: true })).toBeVisible()
+  await expect(card.getByRole('link', { name: 'Checkpoint requirement' })).toHaveAttribute(
+    'href',
+    /requirements.*requirement=req-checkpoint.*#ac-2\.2/,
+  )
+  await expect(card.getByRole('link', { name: 'Checkpoint design' })).toHaveAttribute(
+    'href',
+    /system-design.*document=design-checkpoint/,
+  )
+  await expect(card.getByText('Now confirmed at v2')).toBeVisible()
+  await expect(card.getByText('Still confirmed at v1')).toBeVisible()
+  await expect(
+    card.getByText('No revision is waiting for a decision. Author one if the conflict remains.'),
+  ).toBeVisible()
+  await expect(card.getByText('A revision is waiting for your decision.')).toBeVisible()
+  await card.getByRole('button', { name: 'Confirm v2' }).click()
+  await expect.poll(() => resolved).toBe(true)
+  expect(confirmHeaders.authorization).toBe('Bearer operator')
+  expect(confirmHeaders['if-match']).toBe('"1"')
+
+  const direction = page.getByLabel('Operator direction')
+  await expect(direction).toHaveValue(
+    'Continue under the newly confirmed authority: req-checkpoint v2, design-checkpoint v2.',
+  )
+  await direction.fill('Proceed using the confirmed checkpoint documents.')
+  await page.getByRole('button', { name: 'Recover work order' }).click()
+  await expect.poll(() => recoveryBody?.direction).toBe('Proceed using the confirmed checkpoint documents.')
+})
+
 test('stalled task is labelled in the operator tray with recover and reasoned cancel controls', async ({ page }) => {
   await showAllBoardTasks(page)
   await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))

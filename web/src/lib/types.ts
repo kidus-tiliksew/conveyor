@@ -706,6 +706,7 @@ export interface WorkOrder {
   retry_suppression_reason?: string
   redispatch_count: number
   operator_direction?: string
+  checkpoint?: WorkOrderCheckpoint
   progress?: string
   cost_usd: number
   tokens_in: number
@@ -718,6 +719,33 @@ export interface WorkOrder {
   last_agent_activity_label?: string
   created_at?: string
   updated_at?: string
+}
+
+export interface WorkOrderCheckpoint {
+  decision_request?: string
+  class?: 'authority_conflict' | string
+  citations?: WorkOrderCheckpointCitation[]
+}
+
+export interface WorkOrderCheckpointCitation {
+  document_id: string
+  document_kind: 'requirement' | 'system_design'
+  document_title: string
+  cited_version: number
+  statement_or_section_id?: string
+  current_confirmed_version: number
+  newer_confirmed: boolean
+  pending_proposals: WorkOrderCheckpointPendingProposal[]
+}
+
+export interface WorkOrderCheckpointPendingProposal {
+  id: string
+  title: string
+  tier: 'requirement' | 'system_design'
+  version?: number
+  origin_type: 'task' | 'session' | 'drift' | 'operator'
+  origin_id?: string
+  proposed_at: string
 }
 
 export interface Artifact {

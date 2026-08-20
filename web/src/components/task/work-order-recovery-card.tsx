@@ -2,11 +2,12 @@ import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { Check, Clock3, FileText, Link2, RotateCcw, TriangleAlert } from 'lucide-react'
-import { confirmSystemDesignVersion, recoverWorkOrder } from '../../lib/api'
+import { confirmRequirementVersion, confirmSystemDesignVersion, recoverWorkOrder } from '../../lib/api'
 import { deriveCurrentExecutionState, pendingPlanRevisionRequest, type CurrentExecutionState } from '../../lib/activity'
 import { errorMessage } from '../../lib/errors'
-import type { ActivityItem } from '../../lib/types'
-import { useOperatorToken, useWorkspaceSelection } from '../app-shell'
+import type { ActivityItem, WorkOrderCheckpointCitation, WorkOrderCheckpointPendingProposal } from '../../lib/types'
+import { useOperatorToken, useWorkspaceCapability, useWorkspaceSelection } from '../app-shell'
+import { Badge } from '../ui/badge'
 import { Button } from '../ui/button'
 import { type Proposal, proposalIdentity } from './system-design-proposal-card'
 import { TaskContextAttachmentDialog } from './task-context-attachment-dialog'
@@ -178,10 +179,15 @@ function retryCountdown(at: string, now: number) {
 function RecoveryState({ item, state }: { item: ActivityItem; state: CurrentExecutionState }) {
   const { order } = state
   const token = useOperatorToken()
+  const canConfirmDocuments = useWorkspaceCapability('confirm_documents')
+  const { workspace } = useWorkspaceSelection()
   const queryClient = useQueryClient()
   const requestId = useRef(crypto.randomUUID())
   const [checkoutResolved, setCheckoutResolved] = useState(false)
-  const [direction, setDirection] = useState('')
+  const requestedDecision = order.checkpoint?.decision_request?.trim() ?? ''
+  const citations = order.checkpoint?.citations ?? []
+  const resolvedDirection = checkpointResolvedDirection(order.checkpoint?.class, citations)
+  const [direction, setDirection] = useState(resolvedDirection)
   const [attachingContext, setAttachingContext] = useState(false)
   const [now, setNow] = useState(Date.now())
   useEffect(() => {
@@ -189,12 +195,38 @@ function RecoveryState({ item, state }: { item: ActivityItem; state: CurrentExec
     const timer = window.setInterval(() => setNow(Date.now()), 1000)
     return () => window.clearInterval(timer)
   }, [state.kind])
+  useEffect(() => {
+    if (!resolvedDirection) return
+    setDirection((current) => (current.trim() ? current : resolvedDirection))
+  }, [resolvedDirection])
   const checkpointReleased = order.last_failure_message === 'operator checkpoint reached'
   const mutation = useMutation({
     mutationFn: () => recoverWorkOrder(order.id, token, requestId.current, direction.trim() || undefined),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['task', item.task.id] })
       void queryClient.invalidateQueries({ queryKey: ['activity'] })
+    },
+  })
+  const confirmProposal = useMutation({
+    mutationFn: ({
+      citation,
+      proposal,
+    }: {
+      citation: WorkOrderCheckpointCitation
+      proposal: WorkOrderCheckpointPendingProposal
+    }) => {
+      if (proposal.version == null) throw new Error('This proposal did not include a version.')
+      return citation.document_kind === 'requirement'
+        ? confirmRequirementVersion(token, citation.document_id, proposal.version, citation.current_confirmed_version)
+        : confirmSystemDesignVersion(token, citation.document_id, proposal.version, citation.current_confirmed_version)
+    },
+    onSettled: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['task', workspace, item.task.id] }),
+        queryClient.invalidateQueries({ queryKey: ['pending-proposals', workspace] }),
+        queryClient.invalidateQueries({ queryKey: ['requirements', workspace] }),
+        queryClient.invalidateQueries({ queryKey: ['system-designs', workspace] }),
+      ])
     },
   })
 
@@ -222,13 +254,24 @@ function RecoveryState({ item, state }: { item: ActivityItem; state: CurrentExec
     (!checkoutBlocked || checkoutResolved) &&
     (!checkpointReleased || direction.trim().length > 0)
   return (
-    <div className="space-y-3 rounded-lg border border-attention/50 bg-attention-soft px-3 py-3">
+    <section
+      aria-label={requestedDecision ? 'Checkpoint decision and recovery' : 'Work order recovery'}
+      className="space-y-3 rounded-lg border border-attention/50 bg-attention-soft px-3 py-3"
+    >
       <div className="flex items-start gap-2">
         <TriangleAlert className="mt-0.5 size-4 shrink-0 text-attention" aria-hidden />
-        <div className="min-w-0 space-y-1 text-xs leading-5 text-muted">
-          <p className="font-medium text-attention">{state.title}</p>
-          <p>{state.nextAction}</p>
-        </div>
+        {requestedDecision ? (
+          <div className="min-w-0 space-y-1 leading-5">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-attention">Decision needed</p>
+            <p className="text-sm font-semibold text-foreground">{requestedDecision}</p>
+            <p className="text-xs text-muted">{state.nextAction}</p>
+          </div>
+        ) : (
+          <div className="min-w-0 space-y-1 text-xs leading-5 text-muted">
+            <p className="font-medium text-attention">{state.title}</p>
+            <p>{state.nextAction}</p>
+          </div>
+        )}
       </div>
       <div className="space-y-2 text-xs leading-5 text-muted">
         {checkpointReleased ? (
@@ -238,13 +281,44 @@ function RecoveryState({ item, state }: { item: ActivityItem; state: CurrentExec
         ) : (
           <p>You can add an optional instruction for the next attempt.</p>
         )}
-        {checkpointReleased && order.progress?.trim() && (
+        {checkpointReleased && !requestedDecision && order.progress?.trim() && (
           <div className="space-y-1.5">
             <p className="font-medium text-foreground">Agent checkpoint message</p>
             <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded border border-attention/30 bg-surface p-2 font-sans text-sm text-foreground">
               {order.progress}
             </pre>
           </div>
+        )}
+        {checkpointReleased && requestedDecision && order.progress?.trim() && (
+          <details>
+            <summary className="cursor-pointer rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary">
+              Show full progress report
+            </summary>
+            <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded border border-attention/30 bg-surface p-2 font-sans text-sm text-foreground">
+              {order.progress}
+            </pre>
+          </details>
+        )}
+        {checkpointReleased && order.checkpoint?.class === 'authority_conflict' && (
+          <section className="space-y-2" aria-label="Authority conflict references">
+            <p className="font-medium text-foreground">Authority in question</p>
+            {citations.map((citation) => (
+              <CheckpointCitation
+                key={`${citation.document_kind}:${citation.document_id}:${citation.cited_version}:${citation.statement_or_section_id ?? ''}`}
+                citation={citation}
+                token={token}
+                canConfirm={canConfirmDocuments}
+                activeKey={
+                  confirmProposal.variables
+                    ? `${confirmProposal.variables.citation.document_id}:${confirmProposal.variables.proposal.version ?? 0}`
+                    : ''
+                }
+                isPending={confirmProposal.isPending}
+                error={confirmProposal.error}
+                onConfirm={(proposal) => confirmProposal.mutate({ citation, proposal })}
+              />
+            ))}
+          </section>
         )}
         <div className="flex flex-wrap items-center justify-between gap-2 rounded border border-attention/30 bg-surface/60 p-2">
           <span>
@@ -305,6 +379,106 @@ function RecoveryState({ item, state }: { item: ActivityItem; state: CurrentExec
       {mutation.error != null && <p className="text-xs text-failure">{String(mutation.error)}</p>}
       {attachingContext && (
         <TaskContextAttachmentDialog task={item.task} token={token} onClose={() => setAttachingContext(false)} />
+      )}
+    </section>
+  )
+}
+
+function checkpointResolvedDirection(checkpointClass: string | undefined, citations: WorkOrderCheckpointCitation[]) {
+  if (
+    checkpointClass !== 'authority_conflict' ||
+    citations.length === 0 ||
+    !citations.every((item) => item.newer_confirmed)
+  )
+    return ''
+  const versions = citations
+    .map((citation) => `${citation.document_id} v${citation.current_confirmed_version}`)
+    .join(', ')
+  return `Continue under the newly confirmed authority: ${versions}.`
+}
+
+function CheckpointCitation({
+  citation,
+  token,
+  canConfirm,
+  activeKey,
+  isPending,
+  error,
+  onConfirm,
+}: {
+  citation: WorkOrderCheckpointCitation
+  token: string
+  canConfirm: boolean
+  activeKey: string
+  isPending: boolean
+  error: Error | null
+  onConfirm: (proposal: WorkOrderCheckpointPendingProposal) => void
+}) {
+  return (
+    <div className="space-y-2 rounded border border-attention/30 bg-surface/60 p-2">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div>
+          {citation.document_kind === 'requirement' ? (
+            <Link
+              to="/requirements"
+              search={{ requirement: citation.document_id }}
+              hash={citation.statement_or_section_id?.toLowerCase()}
+              className="font-medium text-primary hover:underline"
+            >
+              {citation.document_title || citation.document_id}
+            </Link>
+          ) : (
+            <Link
+              to="/system-design"
+              search={{ document: citation.document_id }}
+              className="font-medium text-primary hover:underline"
+            >
+              {citation.document_title || citation.document_id}
+            </Link>
+          )}
+          <p className="text-muted">
+            Cited v{citation.cited_version}
+            {citation.statement_or_section_id
+              ? ` · ${citation.statement_or_section_id}`
+              : ' · document-level reference'}
+          </p>
+        </div>
+        <Badge variant={citation.newer_confirmed ? 'positive' : 'attention'}>
+          {citation.newer_confirmed
+            ? `Now confirmed at v${citation.current_confirmed_version}`
+            : `Still confirmed at v${citation.current_confirmed_version}`}
+        </Badge>
+      </div>
+      {citation.pending_proposals.length === 0 ? (
+        <p className="text-xs text-muted">No revision is waiting for a decision. Author one if the conflict remains.</p>
+      ) : (
+        <div className="space-y-2">
+          <p className="text-xs font-medium text-attention">
+            {citation.pending_proposals.length === 1
+              ? 'A revision is waiting for your decision.'
+              : `${citation.pending_proposals.length} revisions are waiting for your decision.`}
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {citation.pending_proposals.map((proposal) => {
+              const key = `${citation.document_id}:${proposal.version ?? 0}`
+              return (
+                <Button
+                  key={key}
+                  size="sm"
+                  disabled={!token || !canConfirm || isPending}
+                  onClick={() => onConfirm(proposal)}
+                >
+                  <Check aria-hidden />
+                  {isPending && activeKey === key ? 'Confirming…' : `Confirm v${proposal.version}`}
+                </Button>
+              )
+            })}
+          </div>
+          {!canConfirm && <p className="text-xs text-muted">Document confirmation capability is required.</p>}
+          {error != null && activeKey.startsWith(`${citation.document_id}:`) && (
+            <p className="text-xs text-failure">{errorMessage(error, 'Could not confirm this revision.')}</p>
+          )}
+        </div>
       )}
     </div>
   )
