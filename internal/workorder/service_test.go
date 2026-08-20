@@ -86,6 +86,22 @@ type blockingLineageStore struct {
 	release chan struct{}
 }
 
+type renewalObservationStore struct {
+	store.Store
+	renewed chan core.WorkOrder
+}
+
+func (s renewalObservationStore) RenewWorkerClaimCommand(ctx context.Context, lease taskops.TaskLease, workOrderID string, claim core.WorkOrderClaimIdentity, duration time.Duration) (core.WorkOrder, error) {
+	order, err := s.Store.RenewWorkerClaimCommand(ctx, lease, workOrderID, claim, duration)
+	if err == nil {
+		select {
+		case s.renewed <- order:
+		default:
+		}
+	}
+	return order, err
+}
+
 func (s blockingLineageStore) ListLineageNeighborhood(ctx context.Context, _ []core.LineageNode, _ core.LineageTraversalBudget) ([]core.LineageLink, error) {
 	select {
 	case <-s.entered:
@@ -128,8 +144,9 @@ func TestGetRenewsClaimOnlyWhileContextAssemblyIsActive(t *testing.T) {
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	logs := make(chan string, 1)
+	renewed := make(chan core.WorkOrder, 4)
 	service := &Service{
-		Store: blockingLineageStore{Store: st, entered: entered, release: release}, Pack: bundle,
+		Store: blockingLineageStore{Store: renewalObservationStore{Store: st, renewed: renewed}, entered: entered, release: release}, Pack: bundle,
 		Logf: func(format string, args ...any) { logs <- fmt.Sprintf(format, args...) },
 	}
 	result := make(chan error, 1)
@@ -142,13 +159,16 @@ func TestGetRenewsClaimOnlyWhileContextAssemblyIsActive(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("context assembly did not reach lineage lookup")
 	}
-	time.Sleep(180 * time.Millisecond)
-	during, err := st.GetWorkOrder(ctx, claimed.ID)
-	if err != nil {
-		t.Fatal(err)
+	var first, recurring core.WorkOrder
+	for index, target := range []*core.WorkOrder{&first, &recurring} {
+		select {
+		case *target = <-renewed:
+		case <-time.After(time.Second):
+			t.Fatalf("context assembly renewal %d was not observed", index+1)
+		}
 	}
-	if !during.LeaseExpiresAt.After(time.Now()) {
-		t.Fatalf("lease was not kept active during assembly: %v", during.LeaseExpiresAt)
+	if !recurring.LeaseExpiresAt.After(first.LeaseExpiresAt) {
+		t.Fatalf("recurring renewal did not extend the assembly lease: first=%v recurring=%v", first.LeaseExpiresAt, recurring.LeaseExpiresAt)
 	}
 	close(release)
 	if err = <-result; err != nil {
@@ -162,13 +182,17 @@ func TestGetRenewsClaimOnlyWhileContextAssemblyIsActive(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("context assembly completion was not logged")
 	}
-	time.Sleep(120 * time.Millisecond)
-	after, err := st.GetWorkOrder(ctx, claimed.ID)
-	if err != nil {
-		t.Fatal(err)
+	for draining := true; draining; {
+		select {
+		case <-renewed:
+		default:
+			draining = false
+		}
 	}
-	if after.LeaseExpiresAt.After(time.Now()) {
+	select {
+	case after := <-renewed:
 		t.Fatalf("lease continued renewing after response: %v", after.LeaseExpiresAt)
+	case <-time.After(120 * time.Millisecond):
 	}
 }
 

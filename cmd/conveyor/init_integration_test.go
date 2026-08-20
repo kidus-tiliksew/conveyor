@@ -45,7 +45,7 @@ func TestFreshStoreInitServesAPIAndCreatesFirstTaskIntegration(t *testing.T) {
 	databaseURL := parsed.String()
 	t.Setenv("CONVEYOR_DATABASE_URL", databaseURL)
 	t.Setenv("CONVEYOR_API_TOKEN", "fresh-init-operator-token")
-	t.Setenv("CONVEYOR_API_KEY", "fresh-init-api-key")
+	t.Setenv(config.LLMAPIKeyEnv, "fresh-init-api-key")
 	answers := initAnswers{
 		Organization: "Fresh Org", OperatorName: "Fresh Operator", OperatorEmail: "owner@example.test",
 		WorkspaceID: "fresh", WorkspaceName: "Fresh", RepositoryName: "app",

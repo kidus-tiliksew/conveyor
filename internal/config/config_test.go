@@ -2,14 +2,87 @@ package config
 
 import (
 	"encoding/json"
-	"gopkg.in/yaml.v3"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
+
+func TestLLMEnvironmentResolverPrecedenceFallbackAndWarnOnce(t *testing.T) {
+	tests := []struct {
+		name        string
+		environment map[string]string
+		want        LLMEnvironment
+		wantWarning []string
+	}{
+		{
+			name: "new names only",
+			environment: map[string]string{
+				LLMAPIKeyEnv:  "new-key",
+				LLMBaseURLEnv: "https://new.example/v1",
+			},
+			want: LLMEnvironment{APIKey: "new-key", BaseURL: "https://new.example/v1"},
+		},
+		{
+			name: "legacy fallback including empty new values",
+			environment: map[string]string{
+				LLMAPIKeyEnv:            " ",
+				LLMBaseURLEnv:           "",
+				DeprecatedLLMAPIKeyEnv:  "legacy-key",
+				DeprecatedLLMBaseURLEnv: "https://legacy.example/v1",
+			},
+			want:        LLMEnvironment{APIKey: "legacy-key", BaseURL: "https://legacy.example/v1"},
+			wantWarning: []string{DeprecatedLLMAPIKeyEnv, LLMAPIKeyEnv, DeprecatedLLMBaseURLEnv, LLMBaseURLEnv, "falling back"},
+		},
+		{
+			name: "new values win conflicts",
+			environment: map[string]string{
+				LLMAPIKeyEnv:            "new-key",
+				LLMBaseURLEnv:           "https://new.example/v1",
+				DeprecatedLLMAPIKeyEnv:  "legacy-key",
+				DeprecatedLLMBaseURLEnv: "https://legacy.example/v1",
+			},
+			want:        LLMEnvironment{APIKey: "new-key", BaseURL: "https://new.example/v1"},
+			wantWarning: []string{DeprecatedLLMAPIKeyEnv, LLMAPIKeyEnv, DeprecatedLLMBaseURLEnv, LLMBaseURLEnv, "takes precedence"},
+		},
+		{
+			name:        "empty base URL keeps provider default",
+			environment: map[string]string{LLMAPIKeyEnv: "new-key"},
+			want:        LLMEnvironment{APIKey: "new-key"},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			resolver := &llmEnvironmentResolver{}
+			warnings := make([]string, 0, 1)
+			getenv := func(name string) string { return test.environment[name] }
+			warnf := func(format string, args ...any) { warnings = append(warnings, fmt.Sprintf(format, args...)) }
+			if got := resolver.resolve(getenv, warnf); got != test.want {
+				t.Fatalf("resolved=%+v, want %+v", got, test.want)
+			}
+			_ = resolver.resolve(getenv, warnf)
+			if len(test.wantWarning) == 0 {
+				if len(warnings) != 0 {
+					t.Fatalf("warnings=%q, want none", warnings)
+				}
+				return
+			}
+			if len(warnings) != 1 {
+				t.Fatalf("warnings=%q, want exactly one", warnings)
+			}
+			for _, text := range test.wantWarning {
+				if !strings.Contains(warnings[0], text) {
+					t.Fatalf("warning=%q, want %q", warnings[0], text)
+				}
+			}
+		})
+	}
+}
 
 func TestWorkspaceDocumentEmitsEmptyCollectionsAsArrays(t *testing.T) {
 	cfg := validConfig()

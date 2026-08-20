@@ -196,7 +196,7 @@ checks the published SHA-256 digest before replacing either binary.
 Start with PostgreSQL already running.
 
 1. Export `CONVEYOR_DATABASE_URL`, a generated `CONVEYOR_API_TOKEN`, and
-   `CONVEYOR_API_KEY`. Authenticate the host with `gh auth login`.
+   `CONVEYOR_LLM_API_KEY`. Authenticate the host with `gh auth login`.
 2. Run `conveyor init --config ./conveyor.yaml`. The wizard asks for the
    organization, first operator, workspace, and repository. The repository path
    must point to an existing clone. Repeating the same answers is a safe no-op.
@@ -287,9 +287,11 @@ caller-stable `idempotency_key`. It may also attach served requirements and
 governing designs.
 
 Agents authenticate with `CONVEYOR_API_TOKEN` to claim work orders, submit
-plans, and file review verdicts. `CONVEYOR_API_KEY` is only for server-owned
-triage and planning. Both binaries load `.env`. Process environment values take
-precedence over stored CLI defaults.
+plans, and file review verdicts. The server-owned LLM provider credential is
+`CONVEYOR_LLM_API_KEY`; its optional endpoint is `CONVEYOR_LLM_BASE_URL`. Both
+binaries load `.env`, and process environment values take precedence over
+stored CLI defaults. The old `CONVEYOR_API_KEY` and `CONVEYOR_API_BASE_URL`
+names remain deprecated fallbacks for existing installations.
 
 ## Develop from source
 
@@ -301,7 +303,7 @@ cp .env.example .env
 make dev
 ```
 
-Set `CONVEYOR_API_KEY` in `.env` and generate the initial operator token with
+Set `CONVEYOR_LLM_API_KEY` in `.env` and generate the initial operator token with
 `openssl rand -hex 32`. `make dev` starts a health-checked PostgreSQL instance
 on port 5432, builds the project, and starts `conveyord` on port 8080.
 

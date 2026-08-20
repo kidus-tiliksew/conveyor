@@ -1,7 +1,8 @@
 // Package config loads Conveyor's immutable deployment settings and the
 // mutable workspace document. Phase 4.7 deliberately keeps execution
-// credentials out of both documents: conveyord uses CONVEYOR_API_KEY and MCP
-// clients bring their own agent credentials (design-system-architecture; DEC-3).
+// credentials out of both documents: conveyord uses CONVEYOR_LLM_API_KEY and
+// MCP clients bring their own agent credentials (design-system-architecture;
+// DEC-3).
 package config
 
 import (
@@ -15,6 +16,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -69,7 +71,66 @@ const (
 	SMTPPasswordEnv             = "CONVEYOR_SMTP_PASSWORD"
 	SMTPFromEnv                 = "CONVEYOR_SMTP_FROM"
 	PublicURLEnv                = "CONVEYOR_PUBLIC_URL"
+	LLMAPIKeyEnv                = "CONVEYOR_LLM_API_KEY"
+	LLMBaseURLEnv               = "CONVEYOR_LLM_BASE_URL"
+	DeprecatedLLMAPIKeyEnv      = "CONVEYOR_API_KEY"
+	DeprecatedLLMBaseURLEnv     = "CONVEYOR_API_BASE_URL"
 )
+
+// LLMEnvironment is process-only provider configuration for in-process
+// control-plane stages. It never enters deployment or workspace documents.
+type LLMEnvironment struct {
+	APIKey  string
+	BaseURL string
+}
+
+type llmEnvironmentResolver struct {
+	warnOnce sync.Once
+}
+
+var processLLMEnvironmentResolver llmEnvironmentResolver
+
+// ResolveLLMEnvironment applies the process-wide deprecated-name fallback and
+// emits at most one warning. Empty and whitespace-only new values allow the
+// legacy value to supply compatibility during the deprecation window.
+func ResolveLLMEnvironment(getenv func(string) string, warnf func(string, ...any)) LLMEnvironment {
+	return processLLMEnvironmentResolver.resolve(getenv, warnf)
+}
+
+func (r *llmEnvironmentResolver) resolve(getenv func(string) string, warnf func(string, ...any)) LLMEnvironment {
+	apiKey, apiKeyWarning := resolveLLMEnvironmentValue(getenv, LLMAPIKeyEnv, DeprecatedLLMAPIKeyEnv)
+	baseURL, baseURLWarning := resolveLLMEnvironmentValue(getenv, LLMBaseURLEnv, DeprecatedLLMBaseURLEnv)
+	warnings := make([]string, 0, 2)
+	if apiKeyWarning != "" {
+		warnings = append(warnings, apiKeyWarning)
+	}
+	if baseURLWarning != "" {
+		warnings = append(warnings, baseURLWarning)
+	}
+	if len(warnings) > 0 && warnf != nil {
+		r.warnOnce.Do(func() {
+			warnf("deprecated LLM environment configuration: %s", strings.Join(warnings, "; "))
+		})
+	}
+	return LLMEnvironment{APIKey: apiKey, BaseURL: baseURL}
+}
+
+func resolveLLMEnvironmentValue(getenv func(string) string, current, deprecated string) (string, string) {
+	currentValue := getenv(current)
+	deprecatedValue := getenv(deprecated)
+	currentSet := strings.TrimSpace(currentValue) != ""
+	deprecatedSet := strings.TrimSpace(deprecatedValue) != ""
+	if !deprecatedSet {
+		return currentValue, ""
+	}
+	if currentSet {
+		if currentValue != deprecatedValue {
+			return currentValue, fmt.Sprintf("%s is deprecated; %s is set and takes precedence", deprecated, current)
+		}
+		return currentValue, fmt.Sprintf("%s is deprecated; use %s instead", deprecated, current)
+	}
+	return deprecatedValue, fmt.Sprintf("%s is deprecated; falling back to it because %s is empty", deprecated, current)
+}
 
 // InvitationDelivery is process-only configuration. In particular, the SMTP
 // password can never enter YAML, the workspace API, or an event payload.
