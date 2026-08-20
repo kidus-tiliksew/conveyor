@@ -191,6 +191,80 @@ func TestRecoveryRejectsSupersededOrderAndAllowsLatestIntegration(t *testing.T) 
 	}
 }
 
+func TestRecoveryAllowsChangesRequestedBounceIntegration(t *testing.T) {
+	databaseURL := integrationDatabaseURL(t)
+	st, err := Open(t.Context(), databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	workspace := "recovery-review-bounce-" + core.NewTaskID()
+	ctx := store.WithWorkspace(context.Background(), workspace)
+	cfg := &config.Config{Workspace: workspace, WorkOrderQueueTimeout: time.Hour, Repos: []config.Repo{{Name: "conveyor", URL: "https://example.test/conveyor", Base: "main"}}}
+	if _, err = st.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	task := core.Task{ID: core.NewTaskID(), Workspace: workspace, Repo: "conveyor", Branch: "conveyor/task-" + core.NewTaskID(), BaseBranch: "main", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: now.Add(-time.Hour)}
+	if err = st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	implementOne := core.WorkOrder{ID: task.ID + "-implement-1", TaskID: task.ID, JobID: task.ID + "-implement-1", Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: now.Add(-3 * time.Minute), QueueDeadline: now.Add(time.Hour), CreatedAt: now.Add(-3 * time.Minute)}
+	review := core.WorkOrder{ID: task.ID + "-review-1-seat-1", TaskID: task.ID, JobID: task.ID + "-review-1-seat-1", Stage: core.StageReview, State: core.WorkOrderQueued, ReviewRound: 1, ReviewSeat: 1, QueueEnteredAt: now.Add(-2 * time.Minute), QueueDeadline: now.Add(time.Hour), CreatedAt: now.Add(-2 * time.Minute)}
+	for _, order := range []core.WorkOrder{implementOne, review} {
+		if err = st.CreateJob(ctx, core.Job{ID: order.JobID, TaskID: task.ID, Stage: order.Stage, State: core.JobPending}); err != nil {
+			t.Fatal(err)
+		}
+		if err = storetest.For(st).CreateWorkOrder(ctx, order); err != nil {
+			t.Fatal(err)
+		}
+	}
+	claimedImplementOne, err := storetest.For(st).ClaimWorkOrder(ctx, implementOne.ID, core.WorkOrderClaim{SessionID: "implement-1-session", ClientToken: "implement-1-token", ClaimantID: "run:implementer", WorkerID: "worker-implement-1", Lease: time.Minute, ExecutionTimeout: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimedImplementOne.State = core.WorkOrderSubmitted
+	if err = storetest.For(st).UpdateWorkOrder(ctx, claimedImplementOne, core.WorkOrderCmdSubmitForReview); err != nil {
+		t.Fatal(err)
+	}
+	claimedReview, err := storetest.For(st).ClaimWorkOrder(ctx, review.ID, core.WorkOrderClaim{SessionID: "review-session", ClientToken: "review-token", ClaimantID: "run:reviewer", WorkerID: "worker-review", Lease: time.Minute, ExecutionTimeout: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = storetest.For(st).AcceptReviewDecision(ctx, core.ReviewDecision{TaskID: task.ID, JobID: review.JobID, ReviewWorkOrderID: review.ID, ClaimSession: claimedReview.SessionID, ReviewRound: 1, ReviewSeat: 1, Verdict: "changes_requested", ReasonCode: "tests", Summary: "revise", Feedback: "fix it", MaxBounces: 3}); err != nil {
+		t.Fatal(err)
+	}
+	implementTwo := core.WorkOrder{ID: task.ID + "-implement-2", TaskID: task.ID, JobID: task.ID + "-implement-2", Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now.Add(-time.Minute)}
+	if err = st.CreateJob(ctx, core.Job{ID: implementTwo.JobID, TaskID: task.ID, Stage: implementTwo.Stage, State: core.JobPending}); err != nil {
+		t.Fatal(err)
+	}
+	if err = storetest.For(st).CreateWorkOrder(ctx, implementTwo); err != nil {
+		t.Fatal(err)
+	}
+	claimedImplementTwo, err := storetest.For(st).ClaimWorkOrder(ctx, implementTwo.ID, core.WorkOrderClaim{SessionID: "implement-2-session", ClientToken: "implement-2-token", ClaimantID: "run:implementer", WorkerID: "worker-implement-2", Lease: time.Minute, ExecutionTimeout: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = storetest.For(st).ReleaseWorkerClaim(ctx, implementTwo.ID, claimedImplementTwo.WorkerID, core.WorkOrderRelease{SessionID: claimedImplementTwo.SessionID, Reason: core.WorkOrderReleaseReasonOperatorCheckpointReached, Cause: core.WorkOrderReleaseCauseOperatorAction, Outcome: core.WorkOrderOutcomeReleased}); err != nil {
+		t.Fatal(err)
+	}
+	before, err := st.GetTask(ctx, task.ID)
+	if err != nil || before.NextStage != core.StageImplement {
+		t.Fatalf("task before recovery=%+v err=%v", before, err)
+	}
+	recovered, err := storetest.For(st).RecoverWorkOrderWithDirection(ctx, implementTwo.ID, "recover-bounce", "address the review feedback", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovered.State != core.WorkOrderQueued || !recovered.Claimable || recovered.OperatorDirection != "address the review feedback" {
+		t.Fatalf("recovered=%+v", recovered)
+	}
+	after, err := st.GetTask(ctx, task.ID)
+	if err != nil || after.NextStage != core.StageImplement {
+		t.Fatalf("task after recovery=%+v err=%v", after, err)
+	}
+}
+
 func TestWorkOrderZombieBackfillMigrationRetiresPassedStageAndIsRerunSafeIntegration(t *testing.T) {
 	st := newIdentityIntegrationStore(t, 98)
 	workspace := "zombie-backfill-" + core.NewTaskID()

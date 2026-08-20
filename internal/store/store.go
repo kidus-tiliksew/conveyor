@@ -3309,18 +3309,26 @@ func (m *memory) reviewSeatAcceptedLocked(order core.WorkOrder) bool {
 // task progress has made the target's stage historical. Callers hold the
 // task-operation serialization boundary while evaluating it.
 func WorkOrderRecoverySupersessionError(task core.Task, order core.WorkOrder, taskOrders []core.WorkOrder) error {
+	laterThanTarget := func(candidate core.WorkOrder) bool {
+		return candidate.CreatedAt.After(order.CreatedAt) || candidate.CreatedAt.Equal(order.CreatedAt) && candidate.ID > order.ID
+	}
 	for _, candidate := range taskOrders {
 		if candidate.ID == order.ID || candidate.Stage != order.Stage || candidate.State == core.WorkOrderCancelled {
 			continue
 		}
-		later := candidate.CreatedAt.After(order.CreatedAt) || candidate.CreatedAt.Equal(order.CreatedAt) && candidate.ID > order.ID
-		if later {
+		if laterThanTarget(candidate) {
 			return fmt.Errorf("work order %s was superseded by same-stage successor %s", order.ID, candidate.ID)
 		}
 	}
 	pastStage := func(stage core.Stage) bool {
+		// A bounce makes the target stage current again. Historical orders from
+		// later stages cannot contradict the task-stage projection
+		// (design-task-lifecycle).
+		if task.NextStage == stage {
+			return false
+		}
 		for _, candidate := range taskOrders {
-			if candidate.State == core.WorkOrderCancelled {
+			if candidate.State == core.WorkOrderCancelled || !laterThanTarget(candidate) {
 				continue
 			}
 			if stage == core.StageSpec && (candidate.Stage == core.StageImplement || candidate.Stage == core.StageReview) {
