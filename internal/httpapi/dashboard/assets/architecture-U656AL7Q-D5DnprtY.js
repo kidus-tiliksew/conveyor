@@ -1,0 +1,1 @@
+import"./chunk-FPAJGGOC-DaliHDW5.js";import{h as e}from"./mermaid-parser.core-BiKuYCPS.js";export{e as createArchitectureServices};
