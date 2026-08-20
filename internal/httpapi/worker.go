@@ -241,6 +241,8 @@ func (s *Server) renewWorkerOrder(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if errors.Is(err, store.ErrWorkOrderPreempted) {
 			w.Header().Set("X-Conveyor-Error-Code", "work_order_preempted")
+		} else if errors.Is(err, store.ErrWorkOrderReleasedAtCheckpoint) {
+			w.Header().Set("X-Conveyor-Error-Code", "work_order_released_checkpoint")
 		}
 		http.Error(w, err.Error(), http.StatusConflict)
 		return

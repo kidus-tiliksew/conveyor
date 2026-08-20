@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
@@ -75,6 +76,39 @@ func TestListWorkerOrdersMapsSentinelsAndRedactsInternalFailures(t *testing.T) {
 				t.Fatalf("status=%d body=%q", response.Code, response.Body.String())
 			}
 		})
+	}
+}
+
+func TestWorkerRenewHTTPReportsSameSessionCheckpointRelease(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	task := core.Task{ID: "worker-checkpoint", Workspace: "demo", State: core.TaskRunning, CreatedAt: time.Now()}
+	job := core.Job{ID: "worker-checkpoint-implement-1", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{WorkerID: "worker-a", ClaimantID: "worker-a", SessionID: "session-a", ClientToken: "secret", Lease: time.Minute}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storetest.For(st).ReleaseWorkerClaim(ctx, job.ID, "worker-a", core.WorkOrderRelease{SessionID: "session-a", Reason: core.WorkOrderReleaseReasonOperatorCheckpointReached, Cause: core.WorkOrderReleaseCauseOperatorAction, Outcome: core.WorkOrderOutcomeReleased}); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(st)
+	server.Workers = &workerservice.Service{Store: st}
+	route := chi.NewRouteContext()
+	route.URLParams.Add("id", job.ID)
+	request := httptest.NewRequest(http.MethodPost, "/v1/worker/work-orders/"+job.ID+"/renew", strings.NewReader(`{"session_id":"session-a"}`))
+	request = request.WithContext(context.WithValue(context.WithValue(ctx, chi.RouteCtxKey, route), workerContextKey{}, core.Worker{ID: "worker-a"}))
+	response := httptest.NewRecorder()
+	server.renewWorkerOrder(response, request)
+	if response.Code != http.StatusConflict || response.Header().Get("X-Conveyor-Error-Code") != "work_order_released_checkpoint" || !strings.Contains(response.Body.String(), "released by this session") {
+		t.Fatalf("status=%d code=%q body=%s", response.Code, response.Header().Get("X-Conveyor-Error-Code"), response.Body.String())
 	}
 }
 

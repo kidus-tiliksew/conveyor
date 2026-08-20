@@ -1442,21 +1442,32 @@ func TestRunHarnessChildReapsOnlyAfterAttachedRunObservesTerminalOrder(t *testin
 		name       string
 		mode       string
 		renewState core.WorkOrderState
+		checkpoint bool
 		wantNotice bool
 		minElapsed time.Duration
 	}{
 		{name: "terminal order reaps lingering child", mode: "silent", renewState: core.WorkOrderSubmitted, wantNotice: true},
+		{name: "same-session checkpoint release reaps child gracefully", mode: "silent", checkpoint: true, wantNotice: true},
 		{name: "live order leaves child running", mode: "early-output", renewState: core.WorkOrderClaimed, minElapsed: 300 * time.Millisecond},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			released := make(chan struct{}, 1)
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch {
 				case strings.HasSuffix(r.URL.Path, "/claim"):
 					_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: "run-order", State: core.WorkOrderClaimed, LeaseExpiresAt: time.Now().Add(time.Minute)})
 				case strings.HasSuffix(r.URL.Path, "/renew"):
+					if test.checkpoint {
+						w.Header().Set("X-Conveyor-Error-Code", "work_order_released_checkpoint")
+						http.Error(w, store.ErrWorkOrderReleasedAtCheckpoint.Error(), http.StatusConflict)
+						return
+					}
 					_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: "run-order", State: test.renewState, LeaseExpiresAt: time.Now().Add(time.Minute)})
 				case strings.HasSuffix(r.URL.Path, "/reconcile"):
 					_ = json.NewEncoder(w).Encode(workerservice.ClaimReconciliation{WorkOrder: core.WorkOrder{ID: "run-order", State: core.WorkOrderSubmitted}, Reason: "submitted"})
+				case strings.HasSuffix(r.URL.Path, "/release"):
+					released <- struct{}{}
+					_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: "run-order", State: core.WorkOrderQueued})
 				default:
 					http.NotFound(w, r)
 				}
@@ -1481,6 +1492,16 @@ func TestRunHarnessChildReapsOnlyAfterAttachedRunObservesTerminalOrder(t *testin
 			hasNotice := strings.Contains(presented.String(), "ending lingering implement session")
 			if hasNotice != test.wantNotice {
 				t.Fatalf("notice=%t want=%t output=%q", hasNotice, test.wantNotice, presented.String())
+			}
+			if test.checkpoint {
+				if output := stdout.String() + stderr.String() + presented.String(); strings.Contains(output, "claim expired or order reassigned") {
+					t.Fatalf("checkpoint race emitted false claim-loss text: %q", output)
+				}
+				select {
+				case <-released:
+					t.Fatal("checkpoint race attempted a duplicate release")
+				default:
+				}
 			}
 		})
 	}

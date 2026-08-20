@@ -139,6 +139,28 @@ func TestTaskRunHTTPIsExplicitlyTaskScopedAndUsesUserLeaseLifecycle(t *testing.T
 	}
 }
 
+func TestTaskRunHTTPRenewReportsSameSessionCheckpointRelease(t *testing.T) {
+	_, st, handler := taskRunHTTPFixture(t)
+	order := createTaskRunOrder(t, st, "checkpoint-run")
+	claim := taskRunHTTPCall(handler, http.MethodPost, "/v1/tasks/checkpoint-run/run-orders/"+order.ID+"/claim", `{"session_id":"run-session","client_token":"run-secret","agent":"codex","model":"gpt"}`)
+	if claim.Code != http.StatusOK {
+		t.Fatalf("claim status=%d body=%s", claim.Code, claim.Body.String())
+	}
+	release := taskRunHTTPCall(handler, http.MethodPost, "/v1/tasks/checkpoint-run/run-orders/"+order.ID+"/release", `{"session_id":"run-session","reason":"operator checkpoint reached","release_cause":"operator_action","outcome":"released"}`)
+	if release.Code != http.StatusOK {
+		t.Fatalf("release status=%d body=%s", release.Code, release.Body.String())
+	}
+	renew := taskRunHTTPCall(handler, http.MethodPost, "/v1/tasks/checkpoint-run/run-orders/"+order.ID+"/renew", `{"session_id":"run-session"}`)
+	if renew.Code != http.StatusConflict || renew.Header().Get("X-Conveyor-Error-Code") != "work_order_released_checkpoint" ||
+		!strings.Contains(renew.Body.String(), "released by this session at an operator checkpoint") {
+		t.Fatalf("renew status=%d code=%q body=%s", renew.Code, renew.Header().Get("X-Conveyor-Error-Code"), renew.Body.String())
+	}
+	wrong := taskRunHTTPCall(handler, http.MethodPost, "/v1/tasks/checkpoint-run/run-orders/"+order.ID+"/renew", `{"session_id":"other-session"}`)
+	if wrong.Code != http.StatusConflict || wrong.Header().Get("X-Conveyor-Error-Code") != "" || !strings.Contains(wrong.Body.String(), "claim expired or order reassigned") {
+		t.Fatalf("wrong-session status=%d code=%q body=%s", wrong.Code, wrong.Header().Get("X-Conveyor-Error-Code"), wrong.Body.String())
+	}
+}
+
 func TestTaskRunHTTPReturnsNoWorkAndSurfacesAssigneeRefusal(t *testing.T) {
 	_, st, handler := taskRunHTTPFixture(t)
 	if response := taskRunHTTPCall(handler, http.MethodGet, "/v1/tasks/missing/run-order", ""); response.Code != http.StatusNotFound {

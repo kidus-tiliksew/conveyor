@@ -675,6 +675,14 @@ func cloneEffortArgs(source map[string][]string) map[string][]string {
 }
 
 func (s *Service) Renew(ctx context.Context, worker core.Worker, id, sessionID string) (core.WorkOrder, error) {
+	return s.RenewClaim(ctx, core.WorkOrderClaimIdentity{WorkerID: worker.ID, ClaimantID: worker.ID, SessionID: sessionID}, id)
+}
+
+// RenewClaim renews or classifies the exact authenticated child claim. The
+// explicit identity remains available after a deliberate release clears the
+// active ownership columns (design-260805-973cd4).
+func (s *Service) RenewClaim(ctx context.Context, claim core.WorkOrderClaimIdentity, id string) (core.WorkOrder, error) {
+	sessionID := claim.SessionID
 	if strings.TrimSpace(sessionID) == "" {
 		return core.WorkOrder{}, fmt.Errorf("session_id is required")
 	}
@@ -683,7 +691,6 @@ func (s *Service) Renew(ctx context.Context, worker core.Worker, id, sessionID s
 		return core.WorkOrder{}, err
 	}
 	return taskops.ExecuteWorkOrder(ctx, s.Store, order.TaskID, core.WorkOrderCmdRenew, func(taskLease taskops.TaskLease) (core.WorkOrder, error) {
-		claim := core.WorkOrderClaimIdentity{WorkerID: worker.ID, ClaimantID: order.ClaimantID, SessionID: sessionID}
 		return s.Store.RenewWorkerClaimCommand(ctx, taskLease, id, claim, DefaultClaimLease)
 	})
 }

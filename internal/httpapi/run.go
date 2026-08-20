@@ -430,15 +430,19 @@ func (s *Server) renewTaskRunOrder(w http.ResponseWriter, r *http.Request) {
 		SessionID string `json:"session_id"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&request)
-	order, ok := s.authorizeTaskRunOrder(r, request.SessionID)
-	if !ok {
+	credential, ok := store.CredentialFromContext(r.Context())
+	order, err := s.Store.GetWorkOrder(r.Context(), chi.URLParam(r, "order_id"))
+	if !ok || credential.Kind != core.CredentialUser || err != nil || order.TaskID != chi.URLParam(r, "id") {
 		http.Error(w, store.ErrWorkOrderClaimLost.Error(), http.StatusConflict)
 		return
 	}
-	renewed, err := s.Workers.Renew(r.Context(), core.Worker{}, order.ID, request.SessionID)
+	claim := core.WorkOrderClaimIdentity{ClaimantID: core.TaskRunClaimantID(credential.OwnerUserID), SessionID: request.SessionID}
+	renewed, err := s.Workers.RenewClaim(r.Context(), claim, order.ID)
 	if err != nil {
 		if errors.Is(err, store.ErrWorkOrderPreempted) {
 			w.Header().Set("X-Conveyor-Error-Code", "work_order_preempted")
+		} else if errors.Is(err, store.ErrWorkOrderReleasedAtCheckpoint) {
+			w.Header().Set("X-Conveyor-Error-Code", "work_order_released_checkpoint")
 		}
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
