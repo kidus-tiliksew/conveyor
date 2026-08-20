@@ -103,58 +103,63 @@ func TestRunTUIGateWithoutOutputHidesBox(t *testing.T) {
 	}
 }
 
-func TestRunTUIGateListUsesWaitDefaultAndTypedApproval(t *testing.T) {
+func TestRunTUIGateApprovalUsesSafeYesNoConfirmation(t *testing.T) {
 	actions := make(chan runTUIAction, 2)
 	gate := testRunTUIGate()
 	model := newRunTUIModel(runTUIStage{}, &gate, actions, make(chan struct{}, 1))
 
-	if model.selectedActionKey() != "wait" {
-		t.Fatalf("initial action = %q, want wait", model.selectedActionKey())
+	if model.selectedActionKey() != model.gateActionKey("approve") {
+		t.Fatalf("initial action = %q, want approve", model.selectedActionKey())
 	}
 	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	model = updated.(runTUIModel)
-	select {
-	case action := <-actions:
-		t.Fatalf("Wait produced mutation action: %+v", action)
-	default:
-	}
-	for range 2 {
-		updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyUp})
-		model = updated.(runTUIModel)
-	}
-	if model.selectedActionKey() != model.gateActionKey("approve") {
-		t.Fatalf("arrow selection = %q, want approve", model.selectedActionKey())
+	if model.confirmYes || !strings.Contains(model.View(), "Approve this action?") || !strings.Contains(model.View(), "> No") {
+		t.Fatalf("approval did not open with No selected: %q", model.View())
 	}
 	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	model = updated.(runTUIModel)
 	select {
 	case action := <-actions:
-		t.Fatalf("highlighted approval produced action: %+v", action)
+		t.Fatalf("No produced mutation action: %+v", action)
 	default:
 	}
-	for _, key := range []tea.KeyMsg{{Type: tea.KeyRunes, Runes: []rune("a")}, {Type: tea.KeyEnter}} {
-		updated, _ := model.Update(key)
+
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(runTUIModel)
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	model = updated.(runTUIModel)
+	if model.confirmation != "" {
+		t.Fatalf("Esc retained confirmation state: confirmation=%q", model.confirmation)
+	}
+
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(runTUIModel)
+	for _, key := range []tea.KeyMsg{{Type: tea.KeyRunes, Runes: []rune("approve")}, {Type: tea.KeyEnter}} {
+		updated, _ = model.Update(key)
 		model = updated.(runTUIModel)
 	}
 	select {
 	case action := <-actions:
-		t.Fatalf("single-key approval produced action: %+v", action)
+		t.Fatalf("typed approval produced action: %+v", action)
 	default:
 	}
-	if !strings.Contains(model.View(), "full word approve") {
-		t.Fatalf("invalid action guidance missing: %q", model.View())
-	}
-	for _, key := range []tea.KeyMsg{{Type: tea.KeyRunes, Runes: []rune("approve")}, {Type: tea.KeyEnter}} {
+
+	for _, key := range []tea.KeyMsg{{Type: tea.KeyEnter}, {Type: tea.KeyUp}, {Type: tea.KeyEnter}} {
 		updated, _ = model.Update(key)
 		model = updated.(runTUIModel)
 	}
 	if action := <-actions; action.decision != runGateApprove {
 		t.Fatalf("approval action = %+v", action)
 	}
+	select {
+	case action := <-actions:
+		t.Fatalf("approval produced more than one action: %+v", action)
+	default:
+	}
 
 	model = newRunTUIModel(runTUIStage{}, &gate, actions, make(chan struct{}, 1))
 	for _, key := range []tea.KeyMsg{
-		{Type: tea.KeyUp}, {Type: tea.KeyEnter}, {Type: tea.KeyEnter},
+		{Type: tea.KeyDown}, {Type: tea.KeyEnter}, {Type: tea.KeyEnter},
 	} {
 		updated, _ := model.Update(key)
 		model = updated.(runTUIModel)
@@ -178,13 +183,9 @@ func TestRunTUIGateRefreshPreservesPartialActionsFeedbackAndStatus(t *testing.T)
 	model := newRunTUIModel(runTUIStage{}, &gate, actions, make(chan struct{}, 1))
 	var updated tea.Model
 
-	for range 2 {
-		updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyUp})
-		model = updated.(runTUIModel)
-	}
 	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	model = updated.(runTUIModel)
-	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("app")})
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyUp})
 	model = updated.(runTUIModel)
 	for range 2 {
 		updated, _ = model.Update(runTUIProposalsMsg{})
@@ -192,13 +193,11 @@ func TestRunTUIGateRefreshPreservesPartialActionsFeedbackAndStatus(t *testing.T)
 		updated, _ = model.Update(runTUIGateMsg(gate))
 		model = updated.(runTUIModel)
 	}
-	if model.input != "app" || !strings.Contains(model.View(), "app") {
-		t.Fatalf("partial gate action was lost across refresh: input=%q view=%q", model.input, model.View())
+	if !model.confirmYes || model.confirmation == "" || model.inputAction != model.gateActionKey("approve") {
+		t.Fatalf("affirmative gate confirmation was lost across refresh: yes=%t confirmation=%q action=%q", model.confirmYes, model.confirmation, model.inputAction)
 	}
-	for _, key := range []tea.KeyMsg{{Type: tea.KeyRunes, Runes: []rune("rove")}, {Type: tea.KeyEnter}} {
-		updated, _ = model.Update(key)
-		model = updated.(runTUIModel)
-	}
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(runTUIModel)
 	select {
 	case action := <-actions:
 		if action.decision != runGateApprove {
@@ -214,7 +213,7 @@ func TestRunTUIGateRefreshPreservesPartialActionsFeedbackAndStatus(t *testing.T)
 	}
 
 	model = newRunTUIModel(runTUIStage{}, &gate, actions, make(chan struct{}, 1))
-	for _, key := range []tea.KeyMsg{{Type: tea.KeyUp}, {Type: tea.KeyEnter}, {Type: tea.KeyRunes, Runes: []rune("fix the")}} {
+	for _, key := range []tea.KeyMsg{{Type: tea.KeyDown}, {Type: tea.KeyEnter}, {Type: tea.KeyRunes, Runes: []rune("fix the")}} {
 		updated, _ = model.Update(key)
 		model = updated.(runTUIModel)
 	}
@@ -234,7 +233,7 @@ func TestRunTUIGateRefreshPreservesPartialActionsFeedbackAndStatus(t *testing.T)
 	}
 
 	model = newRunTUIModel(runTUIStage{}, &gate, actions, make(chan struct{}, 1))
-	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyUp})
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyDown})
 	model = updated.(runTUIModel)
 	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	model = updated.(runTUIModel)
@@ -255,7 +254,7 @@ func TestRunTUIGateRefreshPreservesPartialActionsFeedbackAndStatus(t *testing.T)
 	}
 }
 
-func TestRunTUIProposalPanelReplacesStateAndRequiresFullWord(t *testing.T) {
+func TestRunTUIProposalPanelUsesYesNoAndReplacesState(t *testing.T) {
 	actions := make(chan runTUIAction, 2)
 	model := newRunTUIModel(runTUIStage{task: core.Task{ID: "target"}}, nil, actions, make(chan struct{}, 1))
 	design := workerservice.TaskRunProposal{Kind: "design", DocumentID: "design-run", Title: "Attached run", Version: 4, CanConfirm: true, ActorHint: "an operator can confirm"}
@@ -268,21 +267,24 @@ func TestRunTUIProposalPanelReplacesStateAndRequiresFullWord(t *testing.T) {
 			t.Fatalf("proposal view missing %q: %q", want, view)
 		}
 	}
-	for _, key := range []tea.KeyMsg{{Type: tea.KeyUp}, {Type: tea.KeyEnter}, {Type: tea.KeyRunes, Runes: []rune("c")}, {Type: tea.KeyEnter}} {
+	if model.selectedActionKey() != "proposal:"+taskRunProposalKey(design) {
+		t.Fatalf("initial proposal = %q, want design", model.selectedActionKey())
+	}
+	for _, key := range []tea.KeyMsg{{Type: tea.KeyEnter}, {Type: tea.KeyEnter}} {
 		updated, _ = model.Update(key)
 		model = updated.(runTUIModel)
 	}
 	select {
 	case action := <-actions:
-		t.Fatalf("partial confirmation produced action: %+v", action)
+		t.Fatalf("No confirmation produced action: %+v", action)
 	default:
 	}
-	for _, key := range []tea.KeyMsg{{Type: tea.KeyRunes, Runes: []rune("confirm")}, {Type: tea.KeyEnter}} {
+	for _, key := range []tea.KeyMsg{{Type: tea.KeyEnter}, {Type: tea.KeyUp}, {Type: tea.KeyEnter}} {
 		updated, _ = model.Update(key)
 		model = updated.(runTUIModel)
 	}
 	action := <-actions
-	if action.decision != runConfirmProposal || action.proposal == nil || action.proposal.DocumentID != decision.DocumentID {
+	if action.decision != runConfirmProposal || action.proposal == nil || action.proposal.DocumentID != design.DocumentID {
 		t.Fatalf("proposal action=%+v", action)
 	}
 	updated, _ = model.Update(runTUIProposalsMsg{decision})
@@ -329,8 +331,9 @@ func TestRunTUIActionListFiltersGatePermissions(t *testing.T) {
 			if strings.Join(got, ",") != strings.Join(test.wantKeys, ",") {
 				t.Fatalf("action keys = %v, want %v", got, test.wantKeys)
 			}
-			if model.selectedActionKey() != "wait" {
-				t.Fatalf("initial action = %q, want wait", model.selectedActionKey())
+			selected := model.actionList.SelectedItem().(runTUIActionItem)
+			if selected.decision != model.actionList.Items()[0].(runTUIActionItem).decision {
+				t.Fatalf("initial action = %q, want first item %q", selected.key, model.actionList.Items()[0].(runTUIActionItem).key)
 			}
 			if test.unexpectedLabel != "" && strings.Contains(model.View(), test.unexpectedLabel) {
 				t.Fatalf("view exposed unavailable %q action: %q", test.unexpectedLabel, model.View())
@@ -339,28 +342,33 @@ func TestRunTUIActionListFiltersGatePermissions(t *testing.T) {
 	}
 }
 
-func TestRunTUIIdempotentProposalRefreshPreservesSelectionAndInput(t *testing.T) {
+func TestRunTUIProposalRefreshPreservesStableSelectionAndFallsBackToFirst(t *testing.T) {
 	model := newRunTUIModel(runTUIStage{task: core.Task{ID: "target"}}, nil, make(chan runTUIAction, 1), make(chan struct{}, 1))
 	design := workerservice.TaskRunProposal{Kind: "design", DocumentID: "design-run", Version: 4, CanConfirm: true}
 	decision := workerservice.TaskRunProposal{Kind: "decision", DocumentID: "DEC-8", Version: 1, CanConfirm: true}
 	updated, _ := model.Update(runTUIProposalsMsg{design, decision})
 	model = updated.(runTUIModel)
-	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyUp})
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyDown})
 	model = updated.(runTUIModel)
 	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	model = updated.(runTUIModel)
-	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("con")})
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyUp})
 	model = updated.(runTUIModel)
 	updated, _ = model.Update(runTUIProposalsMsg{decision, design})
 	model = updated.(runTUIModel)
-	if model.input != "con" || model.inputAction != "proposal:"+taskRunProposalKey(decision) || model.selectedActionKey() != "proposal:"+taskRunProposalKey(decision) {
-		t.Fatalf("idempotent proposal refresh lost state: input=%q action=%q selected=%q proposals=%+v", model.input, model.inputAction, model.selectedActionKey(), model.proposals)
+	if !model.confirmYes || model.inputAction != "proposal:"+taskRunProposalKey(decision) || model.selectedActionKey() != "proposal:"+taskRunProposalKey(decision) {
+		t.Fatalf("proposal refresh lost state: yes=%t action=%q selected=%q proposals=%+v", model.confirmYes, model.inputAction, model.selectedActionKey(), model.proposals)
 	}
 	decision.CanConfirm = false
 	updated, _ = model.Update(runTUIProposalsMsg{decision, design})
 	model = updated.(runTUIModel)
-	if model.input != "" || model.confirmation != "" || model.inputAction != "" {
-		t.Fatalf("capability removal retained confirmation input: input=%q confirmation=%q action=%q", model.input, model.confirmation, model.inputAction)
+	if model.confirmation != "" || model.inputAction != "" || model.confirmYes {
+		t.Fatalf("capability removal retained confirmation: confirmation=%q action=%q yes=%t", model.confirmation, model.inputAction, model.confirmYes)
+	}
+	updated, _ = model.Update(runTUIProposalsMsg{design})
+	model = updated.(runTUIModel)
+	if model.selectedActionKey() != "proposal:"+taskRunProposalKey(design) {
+		t.Fatalf("removed selection fell back to %q, want first proposal", model.selectedActionKey())
 	}
 }
 
@@ -370,7 +378,7 @@ func TestRunTUIProposalWithoutCapabilityShowsActorAndCannotConfirm(t *testing.T)
 	proposal := workerservice.TaskRunProposal{Kind: "design", DocumentID: "design-run", Title: "Attached run", Version: 5, ActorHint: "an operator can confirm"}
 	updated, _ := model.Update(runTUIProposalsMsg{proposal})
 	model = updated.(runTUIModel)
-	for _, key := range []tea.KeyMsg{{Type: tea.KeyUp}, {Type: tea.KeyEnter}} {
+	for _, key := range []tea.KeyMsg{{Type: tea.KeyEnter}} {
 		updated, _ = model.Update(key)
 		model = updated.(runTUIModel)
 	}
