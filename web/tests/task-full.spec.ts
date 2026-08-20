@@ -2408,6 +2408,25 @@ test('structured authority checkpoint leads with the decision and resolves throu
     resolved = true
     await route.fulfill({ json: {} })
   })
+  await page.route('**/v1/pending-proposals*', async (route) => {
+    await route.fulfill({
+      json: {
+        items: [
+          {
+            id: 'design-checkpoint',
+            title: 'Checkpoint design',
+            tier: 'system_design',
+            version: 2,
+            origin_type: 'session',
+            origin_id: 'local-operator-session',
+            proposed_at: createdAt,
+            age_seconds: 60,
+          },
+        ],
+        attention: { task_count: 0, pending_proposal_count: 1, total: 1 },
+      },
+    })
+  })
   await page.route('**/v1/work-orders/attempt-recovery-implement-1/recover*', async (route) => {
     recoveryBody = route.request().postDataJSON() as Record<string, unknown>
     await route.fulfill({ json: { id: 'operator-checkpoint-implement-2', state: 'queued', claimable: true } })
@@ -2433,6 +2452,12 @@ test('structured authority checkpoint leads with the decision and resolves throu
     card.getByText('No revision is waiting for a decision. Author one if the conflict remains.'),
   ).toBeVisible()
   await expect(card.getByText('A revision is waiting for your decision.')).toBeVisible()
+  const dismissPath = card.getByRole('link', { name: 'Review or dismiss v2' })
+  await expect(dismissPath).toHaveAttribute('href', /pending-proposals.*document=design-checkpoint.*tier=system_design/)
+  await dismissPath.click()
+  await expect(page.getByText('Showing System Design proposals for design-checkpoint.')).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Checkpoint design' })).toBeVisible()
+  await page.goBack()
   await card.getByRole('button', { name: 'Confirm v2' }).click()
   await expect.poll(() => resolved).toBe(true)
   expect(confirmHeaders.authorization).toBe('Bearer operator')

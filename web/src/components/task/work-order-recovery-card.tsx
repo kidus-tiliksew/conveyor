@@ -462,15 +462,21 @@ function CheckpointCitation({
             {citation.pending_proposals.map((proposal) => {
               const key = `${citation.document_id}:${proposal.version ?? 0}`
               return (
-                <Button
-                  key={key}
-                  size="sm"
-                  disabled={!token || !canConfirm || isPending}
-                  onClick={() => onConfirm(proposal)}
-                >
-                  <Check aria-hidden />
-                  {isPending && activeKey === key ? 'Confirming…' : `Confirm v${proposal.version}`}
-                </Button>
+                <div key={key} className="flex flex-wrap items-center gap-2">
+                  <Button size="sm" disabled={!token || !canConfirm || isPending} onClick={() => onConfirm(proposal)}>
+                    <Check aria-hidden />
+                    {isPending && activeKey === key ? 'Confirming…' : `Confirm v${proposal.version}`}
+                  </Button>
+                  {canConfirm && (
+                    <Link
+                      to="/pending-proposals"
+                      search={{ document: citation.document_id, tier: citation.document_kind }}
+                      className="text-xs font-medium text-primary hover:underline"
+                    >
+                      Review or dismiss v{proposal.version}
+                    </Link>
+                  )}
+                </div>
               )
             })}
           </div>

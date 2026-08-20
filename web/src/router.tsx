@@ -131,8 +131,12 @@ const systemDesignRoute = createRoute({
 const pendingProposalsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/pending-proposals',
-  validateSearch: (search: Record<string, unknown>): { task?: string } => ({
+  validateSearch: (
+    search: Record<string, unknown>,
+  ): { task?: string; document?: string; tier?: 'requirement' | 'system_design' } => ({
     task: typeof search.task === 'string' && search.task ? search.task : undefined,
+    document: typeof search.document === 'string' && search.document ? search.document : undefined,
+    tier: search.tier === 'requirement' || search.tier === 'system_design' ? search.tier : undefined,
   }),
   component: PendingProposalsPage,
 })
