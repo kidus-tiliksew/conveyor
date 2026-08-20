@@ -2,8 +2,8 @@ import { expect, type Page, test } from '@playwright/test'
 
 // The Board half of the shared Tasks/Board filter family (AC-2.4). What each
 // member means is asserted against the server in Go; what this covers is that
-// the Board derives the same family from one workspace activity cache, opens
-// on the last month of activity, and remembers the operator's own adjustment.
+// the Board sends that family through one workspace activity cache, opens on
+// the last month of activity, and remembers the operator's own adjustment.
 
 const activity = [
   {
@@ -74,6 +74,28 @@ const requirementCorpus = [
 const designCorpus = [
   { document: { id: 'design-lifecycle', title: 'Work-order lifecycle' }, current_version: { version: 16 } },
 ]
+
+function matchingActivity(url: string) {
+  const params = new URL(url).searchParams
+  const values = (key: string) => params.getAll(key)
+  return activity.filter(({ task }) => {
+    const query = params.get('q')?.toLocaleLowerCase()
+    if (query && !`${task.id} ${task.title}`.toLocaleLowerCase().includes(query)) return false
+    if (values('state').length > 0 && !values('state').includes(task.state)) return false
+    if (values('repository').length > 0 && !values('repository').includes(task.repo)) return false
+    const from = params.get('created_from')
+    if (from && task.created_at < from) return false
+    const to = params.get('created_to')
+    if (to && task.created_at >= to) return false
+    const assigneeFilter = params.get('assignee')
+    const assignee = (task as typeof task & { assignee?: { user_id: string } }).assignee
+    if (assigneeFilter === 'unassigned' && assignee) return false
+    if (assigneeFilter && assigneeFilter !== 'unassigned' && assignee?.user_id !== assigneeFilter) {
+      return false
+    }
+    return true
+  })
+}
 
 // Every request the board makes for its feed, so the test can assert what the
 // server was actually asked rather than only what came back.
@@ -173,16 +195,17 @@ async function routeBoard(page: Page, seen: string[]) {
     const params = new URL(url).searchParams
     const limit = Number(params.get('limit') ?? 100)
     const offset = Number(params.get('offset') ?? 0)
+    const matching = matchingActivity(url)
     if (!Number.isInteger(limit) || limit < 1 || limit > 200) {
       return route.fulfill({ status: 400, body: 'limit must be between 1 and 200\n' })
     }
     return route.fulfill({
       headers: {
-        'X-Conveyor-Total': String(activity.length),
+        'X-Conveyor-Total': String(matching.length),
         'X-Conveyor-Limit': String(limit),
         'X-Conveyor-Offset': String(offset),
       },
-      json: activity.slice(offset, offset + limit),
+      json: matching.slice(offset, offset + limit),
     })
   })
 }
@@ -250,14 +273,14 @@ test('running cards use the in-flight stage when latest stage is stale', async (
   await expect(page.getByRole('region', { name: 'Plan' })).not.toContainText('Running external review')
 })
 
-test('board pages a bounded activity window and reports its position', async ({ page }) => {
+test('board pages beyond the 200th activity item and walks back without blanking', async ({ page }) => {
   const seen: string[] = []
   await page.addInitScript(() => {
     localStorage.setItem('conveyor-workspace', 'demo')
     sessionStorage.setItem('conveyor-token', 'test-token')
   })
   await routeBoard(page, seen)
-  const many = Array.from({ length: 200 }, (_, index) => ({
+  const many = Array.from({ length: 323 }, (_, index) => ({
     task: {
       id: `paged-${String(index).padStart(3, '0')}`,
       workspace: 'demo',
@@ -273,6 +296,7 @@ test('board pages a bounded activity window and reports its position', async ({ 
     needs_attention: false,
   }))
   await page.route('**/v1/activity?**', (route) => {
+    seen.push(route.request().url())
     const params = new URL(route.request().url()).searchParams
     const limit = Number(params.get('limit') ?? 100)
     const offset = Number(params.get('offset') ?? 0)
@@ -290,12 +314,23 @@ test('board pages a bounded activity window and reports its position', async ({ 
   })
 
   await page.goto('/')
-  await expect(page.getByText('Showing 1–100 of 200')).toBeVisible()
+  await expect(page.getByText('Showing 1–100 of 323')).toBeVisible()
   await expect(cards(page)).toHaveCount(100)
   await page.getByRole('button', { name: 'Next' }).click()
-  await expect(page.getByText('Showing 101–200 of 200')).toBeVisible()
+  await expect(page.getByText('Showing 101–200 of 323')).toBeVisible()
   await expect(cards(page)).toHaveCount(100)
+  await page.getByRole('button', { name: 'Next' }).click()
+  await expect(page.getByText('Showing 201–300 of 323')).toBeVisible()
+  await expect(cards(page)).toHaveCount(100)
+  await page.getByRole('button', { name: 'Next' }).click()
+  await expect(page.getByText('Showing 301–323 of 323')).toBeVisible()
+  await expect(cards(page)).toHaveCount(23)
   await expect(page.getByRole('button', { name: 'Next' })).toBeDisabled()
+  await page.getByRole('button', { name: 'Previous' }).click()
+  await expect(page.getByText('Showing 201–300 of 323')).toBeVisible()
+  await expect(cards(page)).toHaveCount(100)
+  expect(seen.some((url) => new URL(url).searchParams.get('offset') === '200')).toBe(true)
+  expect(seen.some((url) => new URL(url).searchParams.get('offset') === '300')).toBe(true)
 })
 
 test('board opens on the last month and remembers the operator adjustment per workspace', async ({ page }) => {
@@ -305,14 +340,14 @@ test('board opens on the last month and remembers the operator adjustment per wo
   await openBoard(page, seen)
 
   // The default is a starting point the operator can see the effect of: the
-  // board derives recently created tasks from the shared workspace window.
+  // board asks the server for recently created tasks across the workspace.
   await expect(cards(page).filter({ hasText: 'Recent conveyor change' })).toHaveCount(1)
   await expect(cards(page).filter({ hasText: 'Ancient web change' })).toHaveCount(0)
-  // The Board owns the only activity query; the rail reads the bounded
+  // The Board owns the only activity refresh lifecycle; the rail reads the
   // pending-proposals attention projection instead of mounting a second,
   // unfiltered activity request.
   expect(seen).toHaveLength(1)
-  expect(seen[0]).not.toContain('created_from=')
+  expect(seen[0]).toContain('created_from=')
   expect(requests.filter((path) => path === '/v1/workspaces/demo/members')).toHaveLength(1)
   expect(requests.filter((path) => path === '/v1/pending-proposals')).toHaveLength(1)
 
@@ -364,18 +399,21 @@ test('board migrates a saved Updated window and persists only the Created shape'
   expect(stored).not.toHaveProperty('updated')
 })
 
-test('board derives the shared filter family without creating activity query variants', async ({ page }) => {
+test('board sends the shared filter family to the whole-workspace activity query', async ({ page }) => {
   const seen: string[] = []
   await openBoard(page, seen)
 
   await page.getByRole('searchbox', { name: 'Search tasks' }).fill('ancient')
   await expect(cards(page)).toHaveCount(0)
-  expect(seen.some((url) => url.includes('q=ancient'))).toBe(false)
+  expect(seen.some((url) => url.includes('q=ancient'))).toBe(true)
   await page.getByRole('searchbox', { name: 'Search tasks' }).fill('')
 
   await page.getByRole('button', { name: 'Open filters' }).click()
   await page.getByRole('tab', { name: 'Created' }).click()
   await page.getByRole('option', { name: 'Any time' }).click()
+  await page.getByRole('searchbox', { name: 'Search tasks' }).fill('ancient')
+  await expect(cards(page).filter({ hasText: 'Ancient web change' })).toHaveCount(1)
+  await page.getByRole('searchbox', { name: 'Search tasks' }).fill('')
   await page.getByRole('tab', { name: 'Repository' }).click()
   await page.getByRole('option', { name: 'web' }).click()
   await expect(cards(page).filter({ hasText: 'Ancient web change' })).toHaveCount(1)
@@ -402,8 +440,8 @@ test('board derives the shared filter family without creating activity query var
   // member rather than accumulating beside it.
   await page.getByRole('option', { name: 'Unassigned' }).click()
   await expect(cards(page).filter({ hasText: 'Ancient web change' })).toHaveCount(1)
-  expect(seen.some((url) => url.includes('assignee='))).toBe(false)
-  expect(seen).toHaveLength(1)
+  expect(seen.some((url) => url.includes('assignee=usr_bo'))).toBe(true)
+  expect(seen.some((url) => url.includes('assignee=unassigned'))).toBe(true)
 
   // AC-1.5 stands on this surface too: no barred field is offered as a filter.
   await expect(page.getByRole('tab', { name: 'Priority' })).toHaveCount(0)
@@ -414,6 +452,7 @@ test('activity polling is serialized, pauses while hidden, and cold-refreshes on
   const seen: string[] = []
   await page.addInitScript(() => {
     localStorage.setItem('conveyor-workspace', 'demo')
+    localStorage.setItem('conveyor-task-filters:board:demo', JSON.stringify({ created: 'any' }))
     sessionStorage.setItem('conveyor-token', 'test-token')
     let visible = true
     Object.defineProperty(document, 'visibilityState', {
@@ -464,7 +503,7 @@ test('activity polling is serialized, pauses while hidden, and cold-refreshes on
   await expect(page.getByText(/Activity feed unavailable:/)).toHaveCount(0)
   await expect.poll(() => requests).toBeGreaterThanOrEqual(3)
   expect(maxActive).toBe(1)
-  expect(urls.every((url) => Number(new URL(url).searchParams.get('limit')) === 200)).toBe(true)
+  expect(urls.every((url) => Number(new URL(url).searchParams.get('limit')) === 100)).toBe(true)
   expect(urls.some((url) => new URL(url).searchParams.has('since'))).toBe(true)
   await page.evaluate(() =>
     (window as unknown as { setActivityVisible: (next: boolean) => void }).setActivityVisible(false),
@@ -477,8 +516,61 @@ test('activity polling is serialized, pauses while hidden, and cold-refreshes on
     (window as unknown as { setActivityVisible: (next: boolean) => void }).setActivityVisible(true),
   )
   await expect.poll(() => requests).toBeGreaterThan(hiddenCount)
-  expect(urls.every((url) => Number(new URL(url).searchParams.get('limit')) === 200)).toBe(true)
+  expect(urls.every((url) => Number(new URL(url).searchParams.get('limit')) === 100)).toBe(true)
   expect(new URL(urls.at(-1) ?? '').searchParams.has('since')).toBe(false)
+})
+
+test('simultaneous filtered Board and task-order consumers share one serialized refresh lifecycle', async ({
+  page,
+}) => {
+  const seen: string[] = []
+  await page.addInitScript(() => {
+    localStorage.setItem('conveyor-workspace', 'demo')
+    sessionStorage.setItem('conveyor-token', 'test-token')
+  })
+  await routeBoard(page, seen)
+  await page.route('**/v1/tasks/task-recent/activity**', (route) =>
+    route.fulfill({
+      json: {
+        task: activity[0].task,
+        jobs: [],
+        events: [],
+        interventions: [],
+        work_orders: [],
+        checkout_available: false,
+        checkout_guidance: '',
+        needs_attention: false,
+      },
+    }),
+  )
+  let active = 0
+  let maxActive = 0
+  const urls: string[] = []
+  await page.route('**/v1/activity?**', async (route) => {
+    const url = route.request().url()
+    const params = new URL(url).searchParams
+    const matching = matchingActivity(url)
+    active++
+    maxActive = Math.max(maxActive, active)
+    urls.push(url)
+    await new Promise((resolve) => setTimeout(resolve, 80))
+    active--
+    await route.fulfill({
+      headers: {
+        'X-Conveyor-Total': String(matching.length),
+        'X-Conveyor-Limit': params.get('limit') ?? '100',
+        'X-Conveyor-Offset': params.get('offset') ?? '0',
+      },
+      json: matching,
+    })
+  })
+
+  await page.goto('/tasks/task-recent')
+  await expect(page.getByRole('dialog', { name: 'Task detail' })).toBeVisible()
+  await expect.poll(() => urls.length).toBeGreaterThanOrEqual(2)
+  expect(urls.some((url) => new URL(url).searchParams.has('created_from'))).toBe(true)
+  expect(urls.some((url) => !new URL(url).searchParams.has('created_from'))).toBe(true)
+  expect(maxActive).toBe(1)
 })
 
 test('board opens and closes task creation without leaving the board', async ({ page }) => {

@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { type QueryClient, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, Outlet, useNavigate, useRouterState } from '@tanstack/react-router'
 import {
   Activity,
@@ -15,7 +15,7 @@ import {
   SunMoon,
   Workflow,
 } from 'lucide-react'
-import { createContext, type ReactNode, useContext, useEffect, useMemo, useState } from 'react'
+import { createContext, type ReactNode, useContext, useEffect, useState } from 'react'
 import {
   fetchActivity,
   fetchBlueprints,
@@ -113,68 +113,75 @@ export function useWorkspaceCapability(capability: WorkspaceCapability) {
   return Boolean(identity.data?.role && roleCapabilities[identity.data.role]?.includes(capability))
 }
 
-// Every activity consumer reads one workspace-wide cache. Filters and paging
-// are selectors over that bounded cache, so mounting another consumer cannot
-// create a second activity request loop.
-export function useActivity(
-  filter?: Record<string, string | string[] | undefined>,
-  enabled = true,
-  offset = 0,
-  limit = 100,
-) {
+type ActivityFilter = Record<string, string | string[] | undefined>
+
+// TanStack keeps each server representation independently addressable, while
+// this queue keeps simultaneous consumers from issuing overlapping activity
+// reads. WorkspaceProvider owns the only refresh clock below; queries merely
+// describe the page they need (design-web-dashboard).
+const activityRequestTails = new WeakMap<QueryClient, Promise<void>>()
+
+function enqueueActivityRequest<T>(queryClient: QueryClient, request: () => Promise<T>): Promise<T> {
+  const previous = activityRequestTails.get(queryClient) ?? Promise.resolve()
+  const current = previous.catch(() => undefined).then(request)
+  activityRequestTails.set(
+    queryClient,
+    current.then(
+      () => undefined,
+      () => undefined,
+    ),
+  )
+  return current
+}
+
+// List-valued filter members are disjunctions, so their order has no semantic
+// meaning. Canonicalizing them makes equivalent Board selections share one
+// Query entry and one conditional-revalidation history.
+function normalizeActivityFilter(filter?: ActivityFilter): Record<string, string[]> {
+  return Object.fromEntries(
+    Object.entries(filter ?? {})
+      .sort(([left], [right]) => left.localeCompare(right))
+      .flatMap(([key, value]) => {
+        const values = (Array.isArray(value) ? value : value ? [value] : []).slice().sort()
+        return values.length > 0 ? [[key, values] as const] : []
+      }),
+  )
+}
+
+// Every activity consumer reads a server-paged representation from the one
+// workspace cache family. WorkspaceProvider serializes and refreshes every
+// active member, so adding a filtered Board page does not add another polling
+// lifecycle or overlap the unfiltered task-detail consumers.
+export function useActivity(filter?: ActivityFilter, enabled = true, offset = 0, limit = 100) {
   const { workspace } = useWorkspaceSelection()
   const queryClient = useQueryClient()
-  const queryKey = useMemo(() => ['activity', workspace] as const, [workspace])
+  const normalizedFilter = normalizeActivityFilter(filter)
+  const queryKey = ['activity', workspace, { filter: normalizedFilter, limit, offset }] as const
   return useQuery({
     queryKey,
     queryFn: () => {
       const previous = queryClient.getQueryData<import('../lib/types').ActivityPage>(queryKey)
-      return fetchActivity({ limit: 200, offset: 0, cursor: previous?.cursor, etag: previous?.etag, previous })
+      return enqueueActivityRequest(queryClient, () =>
+        fetchActivity({
+          limit,
+          offset,
+          filter: normalizedFilter,
+          // Only the unfiltered first page has a stable merge boundary. Later
+          // pages can shift when newer tasks arrive, while a filtered task can
+          // leave its result without appearing in the delta. Those pages use
+          // ETag revalidation with full response bodies instead.
+          cursor: offset === 0 && Object.keys(normalizedFilter).length === 0 ? previous?.cursor : undefined,
+          etag: previous?.etag,
+          previous,
+        }),
+      )
     },
-    select: (page) => selectActivityPage(page, filter, limit, offset),
     enabled: enabled && !!workspace,
-    // TanStack schedules the next interval after the current promise settles,
-    // so this canonical query never overlaps itself. Browsers resume with a
-    // revalidation on visibility, focus, or reconnect.
-    refetchInterval: () => (document.visibilityState === 'visible' ? 15_000 : false),
-    refetchIntervalInBackground: false,
-    refetchOnWindowFocus: 'always',
-    refetchOnReconnect: 'always',
+    placeholderData: (previous) => previous,
+    refetchInterval: false,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
   })
-}
-
-function selectActivityPage(
-  page: import('../lib/types').ActivityPage,
-  filter: Record<string, string | string[] | undefined> | undefined,
-  limit: number,
-  offset: number,
-): import('../lib/types').ActivityPage {
-  const values = (key: string) => {
-    const value = filter?.[key]
-    return Array.isArray(value) ? value : value ? [value] : []
-  }
-  const filtered = page.items.filter(({ task }) => {
-    const query = values('q')[0]?.toLocaleLowerCase()
-    if (query && !`${task.id} ${task.title}`.toLocaleLowerCase().includes(query)) return false
-    const states = values('state')
-    if (states.length > 0 && !states.includes(task.state)) return false
-    const repositories = values('repository')
-    if (repositories.length > 0 && !repositories.includes(task.repo)) return false
-    const from = values('created_from')[0]
-    if (from && task.created_at < from) return false
-    const to = values('created_to')[0]
-    if (to && task.created_at >= to) return false
-    const requirements = new Set(task.context?.requirements?.map(({ id }) => id) ?? [])
-    if (values('serves_requirement').length > 0 && !values('serves_requirement').some((id) => requirements.has(id)))
-      return false
-    const designs = new Set(task.context?.designs?.map(({ id }) => id) ?? [])
-    if (values('governing_design').length > 0 && !values('governing_design').some((id) => designs.has(id))) return false
-    const assignee = values('assignee')[0]
-    if (assignee === 'unassigned' && task.assignee) return false
-    if (assignee && assignee !== 'unassigned' && task.assignee?.user_id !== assignee) return false
-    return true
-  })
-  return { ...page, items: filtered.slice(offset, offset + limit), total: filtered.length, limit, offset }
 }
 
 export function useWorkspaceMembers() {
@@ -341,19 +348,70 @@ function WorkspaceProvider({
   }, [workspaces, workspace])
   useEffect(() => {
     if (!workspace) return
-    const coldRefresh = () => {
-      queryClient.setQueryData<import('../lib/types').ActivityPage>(['activity', workspace], (current) =>
-        current ? { ...current, cursor: undefined, etag: undefined } : current,
-      )
-      void queryClient.invalidateQueries({ queryKey: ['activity', workspace], exact: true })
+    let disposed = false
+    let refreshRunning = false
+    let refreshIsCold = false
+    let refreshPending = false
+    let coldPending = false
+
+    // One workspace clock refreshes all active activity representations in
+    // sequence. Calls that arrive while a pass is running coalesce into one
+    // follow-up pass, so focus/reconnect/visibility cannot create competing
+    // request loops (design-web-dashboard).
+    const refreshActivity = async (cold: boolean) => {
+      if (refreshRunning) {
+        // An ordinary tick cannot improve on a pass already in flight. A
+        // cold trigger needs one follow-up only when the current pass still
+        // carries conditional state.
+        if (cold && !refreshIsCold) {
+          refreshPending = true
+          coldPending = true
+        }
+        return
+      }
+      refreshRunning = true
+      let coldPass = cold
+      do {
+        refreshIsCold = coldPass
+        refreshPending = false
+        const queries = queryClient.getQueryCache().findAll({ queryKey: ['activity', workspace], type: 'active' })
+        for (const query of queries) {
+          if (disposed) break
+          if (coldPass) {
+            queryClient.setQueryData<import('../lib/types').ActivityPage>(query.queryKey, (current) =>
+              current ? { ...current, cursor: undefined, etag: undefined } : current,
+            )
+          }
+          try {
+            await query.fetch()
+          } catch {
+            // Each query exposes its own error state to its consumer. One
+            // failed representation must not prevent the others refreshing.
+          }
+        }
+        coldPass = coldPending
+        coldPending = false
+      } while (refreshPending && !disposed && document.visibilityState === 'visible')
+      refreshIsCold = false
+      refreshRunning = false
     }
+
+    const scheduledRefresh = () => {
+      if (document.visibilityState === 'visible') void refreshActivity(false)
+    }
+    const coldRefresh = () => void refreshActivity(true)
     const visibleRefresh = () => {
       if (document.visibilityState === 'visible') coldRefresh()
     }
+    const interval = window.setInterval(scheduledRefresh, 15_000)
     window.addEventListener('online', coldRefresh)
+    window.addEventListener('focus', coldRefresh)
     document.addEventListener('visibilitychange', visibleRefresh)
     return () => {
+      disposed = true
+      window.clearInterval(interval)
       window.removeEventListener('online', coldRefresh)
+      window.removeEventListener('focus', coldRefresh)
       document.removeEventListener('visibilitychange', visibleRefresh)
     }
   }, [queryClient, workspace])

@@ -93,10 +93,7 @@ async function fetchActivityPage(
     input.cursor && input.previous ? mergeActivity(input.previous.items, incoming).slice(0, input.limit) : incoming
   return {
     items,
-    total:
-      input.cursor && input.previous
-        ? input.previous.total
-        : Number(response.headers.get('X-Conveyor-Total') ?? items.length),
+    total: Number(response.headers.get('X-Conveyor-Total') ?? items.length),
     limit: Number(response.headers.get('X-Conveyor-Limit') ?? input.limit),
     offset: Number(response.headers.get('X-Conveyor-Offset') ?? input.offset),
     cursor: response.headers.get('X-Conveyor-Cursor') ?? input.cursor,
