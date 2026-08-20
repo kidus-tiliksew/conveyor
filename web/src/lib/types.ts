@@ -717,8 +717,24 @@ export interface WorkOrder {
   rate_limit_observed_at?: string
   last_agent_activity_at?: string
   last_agent_activity_label?: string
+  activity_snapshot?: WorkOrderActivitySnapshot
+  transcript_captures?: WorkOrderTranscriptCapture[]
   created_at?: string
   updated_at?: string
+}
+
+export interface WorkOrderActivitySnapshot {
+  attempt_id: string
+  content: string
+  captured_at: string
+}
+
+export interface WorkOrderTranscriptCapture {
+  attempt_id: string
+  content: string
+  termination_reason: string
+  truncated: boolean
+  captured_at: string
 }
 
 export interface WorkOrderCheckpoint {

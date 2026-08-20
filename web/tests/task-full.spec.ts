@@ -2724,6 +2724,78 @@ test('a running attempt becoming paused is announced through the live region', a
   await expect(page.getByRole('status')).toContainText('Retry the implementation after the provider limit has cleared.')
 })
 
+test('recent activity refreshes for a claimed order and disappears after termination', async ({ page }) => {
+  let activityRequests = 0
+  await page.route('**/v1/tasks/attempt-observability/activity*', async (route) => {
+    activityRequests++
+    const item = activity('usage-suppressed', false)
+    item.task.id = 'attempt-observability'
+    item.work_orders[0] = {
+      ...item.work_orders[0],
+      task_id: 'attempt-observability',
+      state: activityRequests < 3 ? 'claimed' : 'completed',
+      claimable: false,
+      attempt_id: 'attempt-live',
+      last_attempt_id: activityRequests < 3 ? undefined : 'attempt-live',
+      activity_snapshot:
+        activityRequests < 3
+          ? {
+              attempt_id: 'attempt-live',
+              content: activityRequests === 1 ? 'building dashboard\nfirst tail' : 'running tests\nlatest tail',
+              captured_at: activityRequests === 1 ? '2026-07-15T12:01:00Z' : '2026-07-15T12:02:00Z',
+            }
+          : undefined,
+    }
+    await route.fulfill({ json: item })
+  })
+
+  await page.goto('/tasks/attempt-observability/full')
+  const recent = page.getByRole('region', { name: 'Recent activity' })
+  await expect(recent).toContainText('first tail')
+  await expect(recent.getByText(/Captured/)).toBeVisible()
+
+  await page.reload()
+  await expect(recent).toContainText('latest tail')
+  await expect(recent).not.toContainText('first tail')
+
+  await page.reload()
+  await expect(recent).toHaveCount(0)
+})
+
+test('terminated attempt transcripts stay collapsed until opened and absence stays silent', async ({ page }) => {
+  await page.route('**/v1/tasks/attempt-transcript/activity*', async (route) => {
+    const item = activity('timeout', false)
+    item.task.id = 'attempt-transcript'
+    item.jobs[0].task_id = 'attempt-transcript'
+    item.work_orders[0] = {
+      ...item.work_orders[0],
+      task_id: 'attempt-transcript',
+      transcript_captures: [
+        {
+          attempt_id: 'attempt-ended',
+          content: 'captured transcript tail marker',
+          termination_reason: 'execution deadline elapsed',
+          truncated: true,
+          captured_at: '2026-07-15T12:30:00Z',
+        },
+      ],
+    }
+    await route.fulfill({ json: item })
+  })
+
+  await page.goto('/tasks/attempt-transcript/full')
+  const disclosure = page.getByText('Attempt attempt-ended transcript')
+  await expect(disclosure).toBeVisible()
+  await expect(page.getByText('captured transcript tail marker')).toHaveCount(0)
+  await disclosure.click()
+  await expect(page.getByText('captured transcript tail marker')).toBeVisible()
+  await expect(page.getByText('Ended: execution deadline elapsed')).toBeVisible()
+  await expect(page.getByText('This transcript was truncated; the most recent output is shown.')).toBeVisible()
+
+  await page.goto('/tasks/timeout/full')
+  await expect(page.getByText(/Attempt .* transcript/)).toHaveCount(0)
+})
+
 test('timed-out review round exposes a reasoned full-round retry and preserves history', async ({ page }) => {
   await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
   let retryRequest = ''
