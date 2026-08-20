@@ -62,6 +62,76 @@ var requirementConformanceRepos = []config.Repo{
 func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 	t.Helper()
 
+	t.Run("task context proposals unify requirement and design confirmation", func(t *testing.T) {
+		fixture := factory(t, requirementConformanceRepos)
+		st, ctx := fixture.Store, store.WithActor(fixture.Context, store.Actor{ID: requirementConformanceActor, Role: core.ActorUser})
+		requirement, version, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-" + core.NewTaskID(), Title: "Context proposal"},
+			core.RequirementVersion{Content: "Context proposal", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Confirm context."}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err = st.ConfirmRequirementVersion(ctx, requirement.ID, version.Version); err != nil {
+			t.Fatal(err)
+		}
+		design, designVersion, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "design-" + core.NewTaskID(), Title: "Context design", Category: "Architecture"},
+			core.SystemDesignVersion{Content: "# Context\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/**\n```", Origin: core.SystemDesignOriginOperator})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err = st.ConfirmSystemDesignVersion(ctx, design.ID, designVersion.Version); err != nil {
+			t.Fatal(err)
+		}
+		taskID := core.NewTaskID()
+		if err = st.CreateTask(ctx, core.Task{ID: taskID, Workspace: fixture.Workspace, Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-" + taskID, State: core.TaskRunning, CreatedAt: time.Now().UTC()}); err != nil {
+			t.Fatal(err)
+		}
+		for _, input := range []core.TaskContextProposalInput{
+			{TaskID: taskID, TargetKind: core.TaskContextProposalRequirement, TargetID: requirement.ID, Source: core.TaskContextProposalTriage, Justification: "REQ-1 serves this task."},
+			{TaskID: taskID, TargetKind: core.TaskContextProposalSystemDesign, TargetID: design.ID, Source: core.TaskContextProposalPlanning, Justification: "The design governs this path."},
+		} {
+			proposal, suppressed, proposeErr := st.ProposeTaskContext(ctx, input)
+			if proposeErr != nil || suppressed || proposal.Justification != input.Justification {
+				t.Fatalf("proposal=%+v suppressed=%t err=%v", proposal, suppressed, proposeErr)
+			}
+		}
+		pending, err := st.ListPendingProposals(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		contextPending := 0
+		for _, proposal := range pending {
+			if proposal.Tier == "task_context" && proposal.OriginType == "task" && proposal.OriginID == taskID && proposal.Justification != "" {
+				contextPending++
+			}
+		}
+		if contextPending != 2 {
+			t.Fatalf("pending proposals=%+v", pending)
+		}
+		projection, err := st.PendingProposalsProjection(ctx)
+		if err != nil || len(projection.Items) != len(pending) {
+			t.Fatalf("projection=%+v err=%v", projection, err)
+		}
+		if _, err = st.ConfirmTaskContextProposal(ctx, taskID, core.TaskContextProposalRequirement, requirement.ID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = st.ConfirmTaskContextProposal(ctx, taskID, core.TaskContextProposalSystemDesign, design.ID); err != nil {
+			t.Fatal(err)
+		}
+		attached, err := store.TaskContextForTask(ctx, st, taskID)
+		if err != nil || len(attached.Requirements) != 1 || len(attached.Designs) != 1 || attached.Designs[0].Version != designVersion.Version || len(attached.Proposals) != 0 {
+			t.Fatalf("attached=%+v err=%v", attached, err)
+		}
+		pending, err = st.ListPendingProposals(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, proposal := range pending {
+			if proposal.Tier == "task_context" && proposal.OriginID == taskID {
+				t.Fatalf("resolved proposal remained pending: %+v", proposal)
+			}
+		}
+	})
+
 	t.Run("requirement staleness acknowledgments are durable audited events", func(t *testing.T) {
 		st, ctx, _ := newRequirementFixture(t, factory)
 		requirement, _, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-staleness-ack", Title: "Staleness acknowledgment"}, core.RequirementVersion{

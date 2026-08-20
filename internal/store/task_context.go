@@ -88,7 +88,12 @@ func TaskContextForTask(ctx context.Context, st Store, taskID string) (core.Task
 	if err != nil {
 		return core.TaskContext{}, err
 	}
-	return TaskContextFromEvents(ctx, st, events)
+	result, err := TaskContextFromEvents(ctx, st, events)
+	if err != nil {
+		return core.TaskContext{}, err
+	}
+	result.Proposals, err = st.ListTaskContextProposals(ctx, taskID, core.TaskContextProposalProposed)
+	return result, err
 }
 
 func TaskContextFromEvents(ctx context.Context, st Store, events []core.Event) (core.TaskContext, error) {

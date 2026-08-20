@@ -63,6 +63,13 @@ func (m *memory) ListPendingProposals(ctx context.Context) ([]core.PendingPropos
 		}
 		out = append(out, core.PendingProposal{ID: decision.ID, Title: decision.Statement, Tier: "decision", OriginType: originType, OriginID: originID, ProposedAt: decision.CreatedAt})
 	}
+	for _, proposal := range m.taskContextProposals {
+		if proposal.Workspace != workspace || proposal.State != core.TaskContextProposalProposed {
+			continue
+		}
+		out = append(out, core.PendingProposal{ID: proposal.TargetID, Title: proposal.TargetTitle, Tier: "task_context", OriginType: "task", OriginID: proposal.TaskID,
+			TargetKind: string(proposal.TargetKind), Justification: proposal.Justification, ProposedAt: proposal.CreatedAt})
+	}
 	sortPendingProposals(out)
 	return out, nil
 }

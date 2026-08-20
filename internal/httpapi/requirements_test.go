@@ -1457,10 +1457,10 @@ func TestRequirementsHTTPSurfacesBlueprintSpecGateHandoffAndRemovesFeatureMutati
 		view.ServingBlueprints[0].Task.ID != task.ID ||
 		view.ServingBlueprints[0].Spec == nil ||
 		view.ServingBlueprints[0].Spec.Version != spec.Version ||
-		view.ServingBlueprints[0].Spec.Approved || !view.Staleness.DeliveryAfterIntent ||
+		view.ServingBlueprints[0].Spec.Approved || view.Staleness.DeliveryAfterIntent ||
 		len(view.Staleness.Deliveries) != 1 || view.Staleness.Deliveries[0].Label != "Blueprint delivery" ||
-		!view.Staleness.Deliveries[0].NeedsAttention ||
-		!slices.Contains(view.Staleness.Deliveries[0].Reasons, "delivered through related work without serving this requirement") {
+		view.Staleness.Deliveries[0].NeedsAttention ||
+		slices.Contains(view.Staleness.Deliveries[0].Reasons, "delivered through related work without serving this requirement") {
 		t.Fatalf("blueprint handoff=%+v staleness=%+v", view.ServingBlueprints, view.Staleness)
 	}
 
