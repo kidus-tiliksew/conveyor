@@ -15,13 +15,13 @@ Available tools and representative arguments:
 - `read_file {"repo":"","path":"internal/example.go","offset":1,"limit":400}`
 - `grep {"repo":"","pattern":"eligib","path":"internal","context":0,"mode":"content","case_sensitive":true}`
 - `history {"repo":"","path":"internal/example.go","n":20}`
-- `list_requirements {}` and `read_requirement {"requirement_id":"req-...","version":0}`
+- `list_requirements {}` and `read_requirement {"requirement_id":"req-..."}` expose only current confirmed documents; lists contain summaries and explicit reads contain bodies
 - `list_approved_specs {}` and `read_approved_spec {"task_id":"..."}`
 - `read_artifact {"artifact_id":"..."}` and `read_task_lineage {"task_id":"..."}`
 - `draft_requirement`, `revise_requirement`, and `finalize_requirement` accept the full requirement-v2 shape: requirement_id, title, prose, statements, and optional derived_from. Each statement has a stable REQ-n id, a normative statement, optional user_story fields (as_a, i_want, so_that), and optional nested acceptance_criteria entries (id, statement). Acceptance IDs are parent-qualified (AC-n.m belongs under REQ-n) and, like REQ IDs, are never reused for a different meaning in a later version.
 - `list_system_designs {}`
-- `read_system_design {"document_id":"design-runtime","version":0}`
-- `list_decisions {}` to inspect proposed, confirmed, and superseded decision records before choosing a supersession target
+- `read_system_design {"document_id":"design-runtime"}` exposes only the current confirmed body
+- `list_decisions {}` to inspect confirmed and superseded decision summaries before choosing a supersession target
 - `draft_system_design {"document_id":"","title":"Runtime architecture","category":"Architecture","content":"# Runtime architecture\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/dispatch/**\n```"}`
 - `revise_system_design {"document_id":"design-runtime","title":"Runtime architecture","category":"Architecture","content":"# Runtime architecture\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/dispatch/**\n```"}`
 - `finalize_system_design {"document_id":"design-runtime","title":"Runtime architecture","category":"Architecture","content":"# Runtime architecture\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/dispatch/**\n```"}`

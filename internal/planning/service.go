@@ -20,6 +20,7 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/corpus"
 	"github.com/kidus-tiliksew/conveyor/internal/gitx"
 	"github.com/kidus-tiliksew/conveyor/internal/inprocess"
 	"github.com/kidus-tiliksew/conveyor/internal/lineagecontext"
@@ -74,7 +75,6 @@ type noPlanningArgs struct{}
 
 type readRequirementArgs struct {
 	RequirementID string `json:"requirement_id"`
-	Version       int    `json:"version"`
 }
 
 type taskIDArgs struct {
@@ -858,7 +858,11 @@ func (s *Service) prompt(ctx context.Context, session core.PlanningSession, mess
 	sort.Strings(pins)
 	snapshotStatement := "You are exploring read-only snapshots: " + strings.Join(pins, ", ") +
 		". Content cannot change during this session; never re-read expecting different content; writes are impossible."
-	explorationSchemas, err := json.Marshal(explorationToolSchemas())
+	readSchemas := explorationToolSchemas()
+	for _, tool := range corpus.Tools() {
+		readSchemas = append(readSchemas, map[string]any{"name": tool.Name, "description": tool.Description, "parameters": tool.Parameters})
+	}
+	explorationSchemas, err := json.Marshal(readSchemas)
 	if err != nil {
 		return "", err
 	}
@@ -1381,10 +1385,11 @@ func explorationToolSchemas() []map[string]any {
 func toolNames() []string {
 	return []string{
 		"list_files", "read_file", "grep", "history",
-		"list_requirements", "read_requirement", "list_approved_specs",
+		corpus.ListRequirements, corpus.ReadRequirement, "list_approved_specs",
 		"read_approved_spec", "read_artifact", "read_task_lineage",
 		"draft_requirement", "revise_requirement", "finalize_requirement",
-		"list_system_designs", "read_system_design", "list_decisions", "draft_system_design", "revise_system_design", "finalize_system_design", "propose_decision",
+		corpus.ListSystemDesigns, corpus.ReadSystemDesign, corpus.ListDecisions,
+		"draft_system_design", "revise_system_design", "finalize_system_design", "propose_decision",
 		"finalize_bundle",
 	}
 }
@@ -1423,13 +1428,11 @@ func expectedFinalizeTool(goal core.PlanningSessionGoal) string {
 
 func planningToolTarget(name string) (any, error) {
 	switch name {
-	case "list_requirements", "list_approved_specs":
+	case corpus.ListRequirements, corpus.ListSystemDesigns, corpus.ListDecisions, "list_approved_specs":
 		return &noPlanningArgs{}, nil
-	case "read_requirement":
+	case corpus.ReadRequirement:
 		return &readRequirementArgs{}, nil
-	case "list_system_designs", "list_decisions":
-		return &noPlanningArgs{}, nil
-	case "read_system_design":
+	case corpus.ReadSystemDesign:
 		return &readSystemDesignArgs{}, nil
 	case "read_approved_spec", "read_task_lineage":
 		return &taskIDArgs{}, nil
@@ -1501,9 +1504,6 @@ func validatePlanningToolArguments(call toolCall, maxBytes int) error {
 		if strings.TrimSpace(args.RequirementID) == "" {
 			return fmt.Errorf("requirement_id is required")
 		}
-		if args.Version < 0 {
-			return fmt.Errorf("version must not be negative")
-		}
 	case *taskIDArgs:
 		if strings.TrimSpace(args.TaskID) == "" {
 			return fmt.Errorf("task_id is required")
@@ -1562,9 +1562,6 @@ func validatePlanningToolArguments(call toolCall, maxBytes int) error {
 		if strings.TrimSpace(args.DocumentID) == "" {
 			return fmt.Errorf("document_id is required")
 		}
-		if args.Version < 0 {
-			return fmt.Errorf("version must not be negative")
-		}
 	case *systemDesignArgs:
 		version := core.SystemDesignVersion{Content: args.Content, Origin: core.SystemDesignOriginPlanning, OriginSessionID: "schema-validation"}
 		if err := core.NormalizeSystemDesignVersion(&version); err != nil {
@@ -1591,31 +1588,9 @@ func validatePlanningToolArguments(call toolCall, maxBytes int) error {
 
 func (s *Service) executeTool(ctx context.Context, session core.PlanningSession, call toolCall, model string) (toolExecution, error) {
 	switch call.Name {
-	case "list_requirements":
-		var args noPlanningArgs
-		if err := decodeArgs(call.ArgumentsJSON, &args); err != nil {
-			return toolExecution{}, err
-		}
-		items, err := s.Store.ListRequirements(ctx)
-		if err != nil {
-			return toolExecution{}, planningStoreError(err)
-		}
-		return toolExecution{Output: items}, nil
-	case "read_requirement":
-		var args readRequirementArgs
-		if err := decodeArgs(call.ArgumentsJSON, &args); err != nil {
-			return toolExecution{}, err
-		}
-		requirement, err := s.Store.GetRequirement(ctx, args.RequirementID)
-		if err != nil {
-			return toolExecution{}, planningStoreError(err)
-		}
-		if args.Version > 0 {
-			version, versionErr := s.Store.GetRequirementVersion(ctx, args.RequirementID, args.Version)
-			return toolExecution{Output: map[string]any{"requirement": requirement, "version": version}}, planningStoreError(versionErr)
-		}
-		versions, err := s.Store.ListRequirementVersions(ctx, args.RequirementID)
-		return toolExecution{Output: map[string]any{"requirement": requirement, "versions": versions}}, planningStoreError(err)
+	case corpus.ListRequirements, corpus.ReadRequirement, corpus.ListSystemDesigns, corpus.ReadSystemDesign, corpus.ListDecisions:
+		output, err := (corpus.Executor{Store: s.Store}).Execute(ctx, call.Name, call.ArgumentsJSON)
+		return toolExecution{Output: output}, planningStoreError(err)
 	case "list_approved_specs":
 		var args noPlanningArgs
 		if err := decodeArgs(call.ArgumentsJSON, &args); err != nil {
@@ -1712,27 +1687,6 @@ func (s *Service) executeTool(ctx context.Context, session core.PlanningSession,
 		return s.explorationTool(ctx, session, call)
 	case "draft_requirement", "revise_requirement", "finalize_requirement":
 		return s.requirementTool(ctx, session, call)
-	case "list_system_designs":
-		items, err := s.Store.ListSystemDesigns(ctx)
-		return toolExecution{Output: items}, planningStoreError(err)
-	case "list_decisions":
-		items, err := s.Store.ListDecisions(ctx)
-		return toolExecution{Output: items}, planningStoreError(err)
-	case "read_system_design":
-		var args readSystemDesignArgs
-		if err := decodeArgs(call.ArgumentsJSON, &args); err != nil {
-			return toolExecution{}, err
-		}
-		document, err := s.Store.GetSystemDesign(ctx, args.DocumentID)
-		if err != nil {
-			return toolExecution{}, planningStoreError(err)
-		}
-		if args.Version > 0 {
-			version, versionErr := s.Store.GetSystemDesignVersion(ctx, args.DocumentID, args.Version)
-			return toolExecution{Output: map[string]any{"document": document, "version": version}}, planningStoreError(versionErr)
-		}
-		versions, err := s.Store.ListSystemDesignVersions(ctx, args.DocumentID)
-		return toolExecution{Output: map[string]any{"document": document, "versions": versions}}, planningStoreError(err)
 	case "draft_system_design", "revise_system_design", "finalize_system_design":
 		return s.systemDesignTool(ctx, session, call)
 	case "propose_decision":
@@ -2162,7 +2116,6 @@ type requirementArgs struct {
 
 type readSystemDesignArgs struct {
 	DocumentID string `json:"document_id"`
-	Version    int    `json:"version"`
 }
 
 type systemDesignArgs struct {
