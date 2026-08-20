@@ -83,7 +83,7 @@ function FullBody({ item }: { item: ActivityItem }) {
           aria-label="Execution plan"
           className="space-y-4 border-b border-border px-6 py-4 lg:border-b-0 lg:border-r"
         >
-          <TaskContextCard context={item.task.context} />
+          <TaskContextCard taskId={item.task.id} context={item.task.context} />
           {item.spec ? (
             <SpecCard spec={item.spec} collapsible={false} routeVariant="full" />
           ) : (

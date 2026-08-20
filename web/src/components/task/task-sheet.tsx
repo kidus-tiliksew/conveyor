@@ -127,7 +127,7 @@ function SheetBody({ item }: { item: ActivityItem }) {
   return (
     <div className="space-y-4">
       <TaskHeader item={item} variant="sheet" />
-      <TaskContextCard context={item.task.context} />
+      <TaskContextCard taskId={item.task.id} context={item.task.context} />
       {item.spec && (
         <SpecCard
           key={`${item.spec.task_id}-${item.spec.version}`}
