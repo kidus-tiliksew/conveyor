@@ -112,6 +112,24 @@ func TestTaskRunHTTPIsExplicitlyTaskScopedAndUsesUserLeaseLifecycle(t *testing.T
 	if renew.Code != http.StatusOK {
 		t.Fatalf("renew status=%d body=%s", renew.Code, renew.Body.String())
 	}
+	malformedSnapshot := taskRunHTTPCall(handler, http.MethodPost, "/v1/tasks/target/run-orders/"+target.ID+"/renew", `{"session_id":"run-session","activity_snapshot":"malformed"}`)
+	if malformedSnapshot.Code != http.StatusOK {
+		t.Fatalf("malformed snapshot changed renewal status=%d body=%s", malformedSnapshot.Code, malformedSnapshot.Body.String())
+	}
+	snapshotRenew := taskRunHTTPCall(handler, http.MethodPost, "/v1/tasks/target/run-orders/"+target.ID+"/renew", `{"session_id":"run-session","activity_snapshot":{"content":"latest output"}}`)
+	if snapshotRenew.Code != http.StatusOK {
+		t.Fatalf("snapshot renewal status=%d body=%s", snapshotRenew.Code, snapshotRenew.Body.String())
+	}
+	if snapshot, exists, snapshotErr := st.GetWorkOrderActivitySnapshot(store.WithWorkspace(t.Context(), "demo"), target.ID); snapshotErr != nil || !exists || snapshot.Content != "latest output" {
+		t.Fatalf("snapshot=%+v exists=%v err=%v", snapshot, exists, snapshotErr)
+	}
+	checkpoint := taskRunHTTPCall(handler, http.MethodPost, "/v1/tasks/target/run-orders/"+target.ID+"/attempt-checkpoint", `{"session_id":"run-session","attempt_id":"`+claimed.AttemptID+`","termination_reason":"harness exited","commit_sha":"1111111111111111111111111111111111111111","push_result":"pushed","transcript":"malformed"}`)
+	if checkpoint.Code != http.StatusOK || !strings.Contains(checkpoint.Body.String(), `"created":true`) {
+		t.Fatalf("malformed transcript changed checkpoint status=%d body=%s", checkpoint.Code, checkpoint.Body.String())
+	}
+	if captures, captureErr := st.ListWorkOrderTranscriptCaptures(store.WithWorkspace(t.Context(), "demo"), target.ID); captureErr != nil || len(captures) != 0 {
+		t.Fatalf("malformed transcript captures=%+v err=%v", captures, captureErr)
+	}
 	events, err := st.ListEvents(store.WithWorkspace(t.Context(), "demo"), "target")
 	if err != nil {
 		t.Fatal(err)

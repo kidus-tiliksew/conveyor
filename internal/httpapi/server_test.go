@@ -1888,6 +1888,57 @@ func TestPlanRevisionApprovalIsDurableBeforeImmediatePlanClaim(t *testing.T) {
 	}
 }
 
+func TestTaskActivityExposesOnlyRunningSnapshotAndAttemptTranscriptHistory(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	now := time.Now().UTC()
+	task := core.Task{ID: "attempt-observability", Workspace: "demo", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: now}
+	job := core.Job{ID: task.ID + "-implement-1", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	worker := core.Worker{ID: "worker", Workspace: "demo"}
+	claimed, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{WorkerID: worker.ID, ClaimantID: worker.ID, SessionID: "session", ClientToken: "token", Lease: time.Minute, ExecutionTimeout: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := &workerservice.Service{Store: st}
+	if _, err = service.Renew(ctx, worker, job.ID, "session", &core.WorkOrderActivitySnapshotInput{Content: "running tail"}); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(st)
+	server.Workspace = "demo"
+	running := httptest.NewRecorder()
+	server.Handler().ServeHTTP(running, httptest.NewRequest(http.MethodGet, "/v1/tasks/"+task.ID+"/activity?workspace_id=demo", nil))
+	if running.Code != http.StatusOK || !strings.Contains(running.Body.String(), `"activity_snapshot":{"attempt_id":"`+claimed.AttemptID+`","content":"running tail"`) || strings.Contains(running.Body.String(), "transcript_captures") {
+		t.Fatalf("running detail status=%d body=%s", running.Code, running.Body.String())
+	}
+	checkpoint := core.WorkOrderAttemptCheckpoint{SessionID: "session", AttemptID: claimed.AttemptID, TerminationReason: "harness exited", CommitSHA: strings.Repeat("b", 40), PushResult: "pushed", Transcript: &core.WorkOrderAttemptTranscript{Content: "completed transcript"}}
+	if created, checkpointErr := service.CheckpointAttempt(ctx, worker, job.ID, checkpoint); checkpointErr != nil || !created {
+		t.Fatalf("checkpoint created=%v err=%v", created, checkpointErr)
+	}
+	after := httptest.NewRecorder()
+	server.Handler().ServeHTTP(after, httptest.NewRequest(http.MethodGet, "/v1/tasks/"+task.ID+"/activity?workspace_id=demo", nil))
+	if after.Code != http.StatusOK || strings.Contains(after.Body.String(), "activity_snapshot") || !strings.Contains(after.Body.String(), `"transcript_captures":[{"attempt_id":"`+claimed.AttemptID+`","content":"completed transcript","termination_reason":"harness exited"`) {
+		t.Fatalf("completed detail status=%d body=%s", after.Code, after.Body.String())
+	}
+	events, err := st.ListEvents(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if strings.Contains(string(event.Payload), "running tail") || strings.Contains(string(event.Payload), "completed transcript") {
+			t.Fatalf("observability leaked into event %s: %s", event.Kind, event.Payload)
+		}
+	}
+}
+
 func newPlanRevisionReviewServer(t *testing.T) (context.Context, store.Store, *Server, string, string) {
 	t.Helper()
 	ctx := store.WithWorkspace(t.Context(), "demo")
