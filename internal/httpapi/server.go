@@ -1869,6 +1869,26 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 		workOrders = []core.WorkOrder{}
 	}
 	for index := range workOrders {
+		captures, captureErr := s.Store.ListWorkOrderTranscriptCaptures(r.Context(), workOrders[index].ID)
+		if captureErr != nil {
+			log.Printf("load work-order transcript captures: %v", captureErr)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		if len(captures) > 0 {
+			workOrders[index].TranscriptCaptures = captures
+		}
+		if workOrders[index].State == core.WorkOrderClaimed && workOrders[index].AttemptID != "" {
+			snapshot, exists, snapshotErr := s.Store.GetWorkOrderActivitySnapshot(r.Context(), workOrders[index].ID)
+			if snapshotErr != nil {
+				log.Printf("load work-order activity snapshot: %v", snapshotErr)
+				http.Error(w, "internal server error", http.StatusInternalServerError)
+				return
+			}
+			if exists && snapshot.AttemptID == workOrders[index].AttemptID {
+				workOrders[index].ActivitySnapshot = &snapshot
+			}
+		}
 		if workOrders[index].Stage != core.StageImplement {
 			continue
 		}

@@ -245,6 +245,10 @@ type Store interface {
 	// implementation order when the operator approves plan re-entry.
 	CancelPlanRevisionWorkOrderCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID, attemptID string) (core.WorkOrder, error)
 	RecordWorkOrderAttemptCheckpoint(ctx context.Context, workOrderID, workerID string, checkpoint core.WorkOrderAttemptCheckpoint) (bool, error)
+	UpsertWorkOrderActivitySnapshot(ctx context.Context, workOrderID string, claim core.WorkOrderClaimIdentity, content string) error
+	FinalizeWorkOrderAttemptObservability(ctx context.Context, workOrderID, workerID string, checkpoint core.WorkOrderAttemptCheckpoint) error
+	GetWorkOrderActivitySnapshot(ctx context.Context, workOrderID string) (core.WorkOrderActivitySnapshot, bool, error)
+	ListWorkOrderTranscriptCaptures(ctx context.Context, workOrderID string) ([]core.WorkOrderTranscriptCapture, error)
 	RecordWorkOrderContinuation(ctx context.Context, workOrderID string, claim core.WorkOrderClaimIdentity, continuation core.WorkOrderContinuation) (core.WorkOrder, error)
 
 	// Feature methods remain only for migration and historical conformance.
@@ -1102,6 +1106,8 @@ func NewMemoryWithConfig(cfg *config.Config) Store {
 		transcripts:                 map[string]core.Transcript{},
 		specs:                       map[string][]core.SpecVersion{},
 		workOrders:                  map[string]core.WorkOrder{},
+		workOrderActivitySnapshots:  map[string]core.WorkOrderActivitySnapshot{},
+		workOrderTranscriptCaptures: map[string][]core.WorkOrderTranscriptCapture{},
 		publications:                map[string]core.ReviewPublication{},
 		github:                      map[string]core.GitHubLifecycle{},
 		features:                    map[string]core.Feature{},
@@ -1169,6 +1175,8 @@ type memory struct {
 	transcripts                 map[string]core.Transcript
 	specs                       map[string][]core.SpecVersion
 	workOrders                  map[string]core.WorkOrder
+	workOrderActivitySnapshots  map[string]core.WorkOrderActivitySnapshot
+	workOrderTranscriptCaptures map[string][]core.WorkOrderTranscriptCapture
 	publications                map[string]core.ReviewPublication
 	github                      map[string]core.GitHubLifecycle
 	features                    map[string]core.Feature
@@ -1766,6 +1774,92 @@ func (m *memory) RecordWorkOrderAttemptCheckpoint(ctx context.Context, workOrder
 		Payload: AttemptCheckpointPayload(order, checkpoint), At: time.Now().UTC(),
 	})
 	return true, nil
+}
+
+func (m *memory) UpsertWorkOrderActivitySnapshot(ctx context.Context, workOrderID string, claim core.WorkOrderClaimIdentity, content string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	order, ok := m.workOrders[workOrderID]
+	if !ok || order.State != core.WorkOrderClaimed || order.WorkerID != claim.WorkerID ||
+		order.ClaimantID != claim.ClaimantID || order.SessionID != claim.SessionID ||
+		order.AttemptID == "" || !order.LeaseExpiresAt.After(time.Now().UTC()) {
+		return ErrWorkOrderClaimLost
+	}
+	if selected, hasWorkspace := WorkspaceFromContext(ctx); hasWorkspace && m.tasks[order.TaskID].Workspace != selected {
+		return ErrWorkOrderClaimLost
+	}
+	m.workOrderActivitySnapshots[workOrderID] = core.WorkOrderActivitySnapshot{
+		AttemptID: order.AttemptID, Content: content, CapturedAt: time.Now().UTC(),
+	}
+	return nil
+}
+
+func (m *memory) FinalizeWorkOrderAttemptObservability(ctx context.Context, workOrderID, workerID string, checkpoint core.WorkOrderAttemptCheckpoint) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	order, ok := m.workOrders[workOrderID]
+	if !ok {
+		return ErrWorkOrderClaimLost
+	}
+	if selected, hasWorkspace := WorkspaceFromContext(ctx); hasWorkspace && m.tasks[order.TaskID].Workspace != selected {
+		return ErrWorkOrderClaimLost
+	}
+	claimed, checkpointed := false, false
+	for _, event := range m.events[order.TaskID] {
+		if AttemptCheckpointClaimEventMatches(event, order.ID, workerID, checkpoint) {
+			claimed = true
+		}
+		if AttemptCheckpointEventMatches(event, order.ID, checkpoint.AttemptID, checkpoint.CommitSHA) {
+			checkpointed = true
+		}
+	}
+	if !claimed || !checkpointed {
+		return ErrWorkOrderClaimLost
+	}
+	if current, exists := m.workOrderActivitySnapshots[workOrderID]; exists && current.AttemptID == checkpoint.AttemptID {
+		delete(m.workOrderActivitySnapshots, workOrderID)
+	}
+	if checkpoint.Transcript == nil {
+		return nil
+	}
+	for _, capture := range m.workOrderTranscriptCaptures[workOrderID] {
+		if capture.AttemptID == checkpoint.AttemptID {
+			return nil
+		}
+	}
+	m.workOrderTranscriptCaptures[workOrderID] = append(m.workOrderTranscriptCaptures[workOrderID], core.WorkOrderTranscriptCapture{
+		AttemptID: checkpoint.AttemptID, Content: checkpoint.Transcript.Content,
+		TerminationReason: checkpoint.TerminationReason, Truncated: checkpoint.Transcript.Truncated,
+		CapturedAt: time.Now().UTC(),
+	})
+	return nil
+}
+
+func (m *memory) GetWorkOrderActivitySnapshot(ctx context.Context, workOrderID string) (core.WorkOrderActivitySnapshot, bool, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	order, ok := m.workOrders[workOrderID]
+	if !ok {
+		return core.WorkOrderActivitySnapshot{}, false, nil
+	}
+	if selected, hasWorkspace := WorkspaceFromContext(ctx); hasWorkspace && m.tasks[order.TaskID].Workspace != selected {
+		return core.WorkOrderActivitySnapshot{}, false, nil
+	}
+	snapshot, exists := m.workOrderActivitySnapshots[workOrderID]
+	return snapshot, exists, nil
+}
+
+func (m *memory) ListWorkOrderTranscriptCaptures(ctx context.Context, workOrderID string) ([]core.WorkOrderTranscriptCapture, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	order, ok := m.workOrders[workOrderID]
+	if !ok {
+		return []core.WorkOrderTranscriptCapture{}, nil
+	}
+	if selected, hasWorkspace := WorkspaceFromContext(ctx); hasWorkspace && m.tasks[order.TaskID].Workspace != selected {
+		return []core.WorkOrderTranscriptCapture{}, nil
+	}
+	return append([]core.WorkOrderTranscriptCapture(nil), m.workOrderTranscriptCaptures[workOrderID]...), nil
 }
 
 func workerClaimActorContext(ctx context.Context, workerID string) context.Context {
