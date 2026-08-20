@@ -115,11 +115,11 @@ func (c *client) claimWorkerOrderContext(ctx context.Context, credential, id, se
 	return result, err
 }
 func (c *client) renewWorkerOrder(credential, id, sessionID string) (core.WorkOrder, error) {
-	return c.renewWorkerOrderContext(context.Background(), credential, id, sessionID)
+	return c.renewWorkerOrderContext(context.Background(), credential, id, sessionID, nil)
 }
-func (c *client) renewWorkerOrderContext(ctx context.Context, credential, id, sessionID string) (core.WorkOrder, error) {
+func (c *client) renewWorkerOrderContext(ctx context.Context, credential, id, sessionID string, snapshot *workerActivitySnapshot) (core.WorkOrder, error) {
 	var result core.WorkOrder
-	payload, _ := json.Marshal(map[string]string{"session_id": sessionID})
+	payload, _ := json.Marshal(workerRenewRequest{SessionID: sessionID, ActivitySnapshot: snapshot})
 	err := c.workerDoContext(ctx, http.MethodPost, "/v1/worker/work-orders/"+id+"/renew", payload, &result, credential)
 	return result, err
 }
@@ -130,7 +130,7 @@ func (c *client) reconcileWorkerOrderContext(ctx context.Context, credential, id
 		// Compatibility for older control planes during rolling upgrades. The
 		// renew response is still server-authoritative and retains stale-session
 		// rejection; new servers use the read-only reconciliation endpoint.
-		order, renewErr := c.renewWorkerOrderContext(ctx, credential, id, sessionID)
+		order, renewErr := c.renewWorkerOrderContext(ctx, credential, id, sessionID, nil)
 		if renewErr != nil {
 			return result, renewErr
 		}
@@ -190,9 +190,32 @@ func (c *client) releaseWorkerOrderContext(ctx context.Context, credential, id s
 }
 
 func (c *client) checkpointWorkerOrderAttemptContext(ctx context.Context, credential, id string, checkpoint core.WorkOrderAttemptCheckpoint) error {
-	payload, _ := json.Marshal(checkpoint)
+	return c.checkpointWorkerOrderAttemptWithTranscriptContext(ctx, credential, id, checkpoint, nil)
+}
+
+func (c *client) checkpointWorkerOrderAttemptWithTranscriptContext(ctx context.Context, credential, id string, checkpoint core.WorkOrderAttemptCheckpoint, transcript *workerAttemptTranscript) error {
+	payload, _ := json.Marshal(workerAttemptCheckpointRequest{WorkOrderAttemptCheckpoint: checkpoint, Transcript: transcript})
 	var result map[string]bool
 	return c.workerDoContext(ctx, http.MethodPost, "/v1/worker/work-orders/"+id+"/attempt-checkpoint", payload, &result, credential)
+}
+
+type workerActivitySnapshot struct {
+	Content string `json:"content"`
+}
+
+type workerRenewRequest struct {
+	SessionID        string                  `json:"session_id"`
+	ActivitySnapshot *workerActivitySnapshot `json:"activity_snapshot,omitempty"`
+}
+
+type workerAttemptTranscript struct {
+	Content   string `json:"content"`
+	Truncated bool   `json:"truncated"`
+}
+
+type workerAttemptCheckpointRequest struct {
+	core.WorkOrderAttemptCheckpoint
+	Transcript *workerAttemptTranscript `json:"transcript,omitempty"`
 }
 
 func (c *client) workerDo(method, path string, body []byte, out any, credential string) error {
