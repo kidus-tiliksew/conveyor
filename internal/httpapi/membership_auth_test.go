@@ -480,7 +480,7 @@ func TestViewerMCPToolsRefuseNamedCapabilities(t *testing.T) {
 			t.Fatalf("viewer MCP tool %s calls=%v want %q", tool, fixture.capabilityCalls, want)
 		}
 	}
-	for _, tool := range []string{"request_plan_revision", "propose_system_design_revision", "propose_decision"} {
+	for _, tool := range []string{"request_plan_revision", "propose_system_design_revision", "propose_requirement_revision", "propose_decision"} {
 		fixture.capabilityCalls = nil
 		_, err := server.callMCPTool(request, tool, map[string]any{"workspace_id": "alpha", "work_order_id": "missing", "session_id": "missing"})
 		if !errors.Is(err, store.ErrWorkOrderClaimLost) {
@@ -512,7 +512,7 @@ func TestMCPGovernanceToolsRemainClaimGatedForEveryRole(t *testing.T) {
 			server.WorkOrders = &workorder.Service{Store: st}
 			request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
 			request = request.WithContext(store.WithCredential(request.Context(), core.AuthenticatedCredential{ID: "pat", OwnerUserID: "user", Kind: core.CredentialUser, Scope: core.CredentialScopeUser}))
-			for _, tool := range []string{"request_plan_revision", "propose_system_design_revision", "propose_decision"} {
+			for _, tool := range []string{"request_plan_revision", "propose_system_design_revision", "propose_requirement_revision", "propose_decision"} {
 				fixture.capabilityCalls = nil
 				_, err := server.callMCPTool(request, tool, map[string]any{"workspace_id": "alpha", "work_order_id": "missing", "session_id": "missing"})
 				if !errors.Is(err, store.ErrWorkOrderClaimLost) {

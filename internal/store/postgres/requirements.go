@@ -77,10 +77,10 @@ func (s *Store) CreateRequirement(ctx context.Context, requirement core.Requirem
 			return err
 		}
 		if _, err := tx.Exec(ctx, `INSERT INTO requirement_versions
-			(workspace_id,requirement_id,version,content,statements_json,origin,origin_session_id,origin_drift_id,confirmed,created_at,derived_from)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,false,$9,$10)`,
+			(workspace_id,requirement_id,version,content,statements_json,origin,origin_session_id,origin_task_id,origin_drift_id,confirmed,created_at,derived_from)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,false,$10,$11)`,
 			first.Workspace, first.RequirementID, first.Version, first.Content, statements,
-			string(first.Origin), first.OriginSessionID, first.OriginDriftID, first.CreatedAt, derivedFrom); err != nil {
+			string(first.Origin), first.OriginSessionID, first.OriginTaskID, first.OriginDriftID, first.CreatedAt, derivedFrom); err != nil {
 			return err
 		}
 		if err := insertRequirementEvent(ctx, q, "requirement.created", map[string]any{
@@ -92,7 +92,7 @@ func (s *Store) CreateRequirement(ctx context.Context, requirement core.Requirem
 		return insertRequirementEvent(ctx, q, "requirement.version_proposed", map[string]any{
 			"workspace_id": requirement.Workspace, "requirement_id": requirement.ID,
 			"version": first.Version, "origin": first.Origin,
-			"origin_session_id": first.OriginSessionID, "origin_drift_id": first.OriginDriftID,
+			"origin_session_id": first.OriginSessionID, "origin_task_id": first.OriginTaskID, "origin_drift_id": first.OriginDriftID,
 			"statement_count": len(first.Statements),
 		})
 	})
@@ -211,6 +211,33 @@ func (s *Store) ProposeRequirementVersion(ctx context.Context, version core.Requ
 			version.Workspace, version.RequirementID).Scan(&latestVersion, &issued); err != nil {
 			return err
 		}
+		if version.Origin == core.RequirementOriginImplementation {
+			rows, queryErr := tx.Query(ctx, requirementVersionSelect+`
+				WHERE workspace_id=$1 AND requirement_id=$2 AND origin=$3 AND origin_task_id=$4
+				  AND NOT confirmed AND NOT retired ORDER BY version`, version.Workspace, version.RequirementID,
+				string(version.Origin), version.OriginTaskID)
+			if queryErr != nil {
+				return queryErr
+			}
+			for rows.Next() {
+				existing, scanErr := scanRequirementVersionRow(rows)
+				if scanErr != nil {
+					rows.Close()
+					return scanErr
+				}
+				if existing.Content == version.Content {
+					rows.Close()
+					existing.Deduplicated = true
+					version = existing
+					return nil
+				}
+			}
+			if rowsErr := rows.Err(); rowsErr != nil {
+				rows.Close()
+				return rowsErr
+			}
+			rows.Close()
+		}
 		if err := core.ValidateRequirementRevision(highWaterMark, issued, version.Statements); err != nil {
 			return err
 		}
@@ -224,10 +251,10 @@ func (s *Store) ProposeRequirementVersion(ctx context.Context, version core.Requ
 			return err
 		}
 		if _, err := tx.Exec(ctx, `INSERT INTO requirement_versions
-			(workspace_id,requirement_id,version,content,statements_json,origin,origin_session_id,origin_drift_id,confirmed,created_at,derived_from)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,false,$9,$10)`,
+			(workspace_id,requirement_id,version,content,statements_json,origin,origin_session_id,origin_task_id,origin_drift_id,confirmed,created_at,derived_from)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,false,$10,$11)`,
 			version.Workspace, version.RequirementID, version.Version, version.Content, statements,
-			string(version.Origin), version.OriginSessionID, version.OriginDriftID, version.CreatedAt, derivedFrom); err != nil {
+			string(version.Origin), version.OriginSessionID, version.OriginTaskID, version.OriginDriftID, version.CreatedAt, derivedFrom); err != nil {
 			return err
 		}
 		if mark := core.RequirementStatementHighWaterMark(version.Statements); mark > highWaterMark {
@@ -242,7 +269,7 @@ func (s *Store) ProposeRequirementVersion(ctx context.Context, version core.Requ
 		return insertRequirementEvent(ctx, q, "requirement.version_proposed", map[string]any{
 			"workspace_id": version.Workspace, "requirement_id": version.RequirementID,
 			"version": version.Version, "origin": version.Origin,
-			"origin_session_id": version.OriginSessionID, "origin_drift_id": version.OriginDriftID,
+			"origin_session_id": version.OriginSessionID, "origin_task_id": version.OriginTaskID, "origin_drift_id": version.OriginDriftID,
 			"statement_count": len(version.Statements),
 		})
 	})
@@ -848,7 +875,7 @@ func (s *Store) ListPlanningSessionEvents(ctx context.Context, sessionID string)
 
 const requirementSelect = `SELECT workspace_id,id,slug,title,current_version,statement_high_water_mark,created_at,updated_at FROM requirements`
 
-const requirementVersionSelect = `SELECT workspace_id,requirement_id,version,content,statements_json,origin,origin_session_id,origin_drift_id,confirmed,confirmed_by,confirmed_at,retired,retired_by,retired_at,retired_by_version,created_at,derived_from FROM requirement_versions`
+const requirementVersionSelect = `SELECT workspace_id,requirement_id,version,content,statements_json,origin,origin_session_id,origin_task_id,origin_drift_id,confirmed,confirmed_by,confirmed_at,retired,retired_by,retired_at,retired_by_version,created_at,derived_from FROM requirement_versions`
 
 const planningSessionSelect = `SELECT workspace_id,id,title,status,goal,COALESCE(requirement_context_id,''),
 	COALESCE(system_design_context_id,''),COALESCE(produced_requirement_id,''),COALESCE(produced_task_id,''),COALESCE(produced_system_design_id,''),COALESCE(produced_bundle_id,''),
@@ -891,7 +918,7 @@ func scanRequirementVersionRow(row pgx.Row) (core.RequirementVersion, error) {
 	var retiredByVersion *int32
 	var derivedFrom []byte
 	if err := row.Scan(&stored.Workspace, &stored.RequirementID, &stored.Version, &stored.Content,
-		&statements, &origin, &stored.OriginSessionID, &stored.OriginDriftID,
+		&statements, &origin, &stored.OriginSessionID, &stored.OriginTaskID, &stored.OriginDriftID,
 		&stored.Confirmed, &confirmedBy, &confirmedAt, &stored.Retired, &retiredBy, &retiredAt,
 		&retiredByVersion, &stored.CreatedAt, &derivedFrom); err != nil {
 		return core.RequirementVersion{}, err

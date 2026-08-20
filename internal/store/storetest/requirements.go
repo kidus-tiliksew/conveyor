@@ -647,6 +647,10 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 			"feature migration carrying a drift":   {Origin: core.RequirementOriginFeatureMigration, OriginDriftID: "drift-x"},
 			"operator carrying a session":          {Origin: core.RequirementOriginOperator, OriginSessionID: "session-x"},
 			"operator carrying a drift":            {Origin: core.RequirementOriginOperator, OriginDriftID: "drift-x"},
+			"operator carrying a task":             {Origin: core.RequirementOriginOperator, OriginTaskID: "task-x"},
+			"implementation without a task":        {Origin: core.RequirementOriginImplementation},
+			"implementation carrying a session":    {Origin: core.RequirementOriginImplementation, OriginTaskID: "task-x", OriginSessionID: "session-x"},
+			"implementation carrying a drift":      {Origin: core.RequirementOriginImplementation, OriginTaskID: "task-x", OriginDriftID: "drift-x"},
 			"unrecognised origin":                  {Origin: "operator_hunch", OriginSessionID: "session-x"},
 		} {
 			candidate.Content = "Must not commit."
@@ -1718,6 +1722,109 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 		}
 		if messages, err := st.ListPlanningMessages(ctx, session.ID); err != nil || len(messages) != 1 {
 			t.Fatalf("owning workspace messages=%+v err=%v, want 1", messages, err)
+		}
+	})
+
+	t.Run("task authored requirement proposals gate review until decided", func(t *testing.T) {
+		st, ctx, workspace := newRequirementFixture(t, factory)
+		taskID := "task-requirement-gate-" + core.NewTaskID()
+		if err := st.CreateTask(ctx, core.Task{ID: taskID, Workspace: workspace, Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-" + taskID, State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: time.Now().UTC()}); err != nil {
+			t.Fatal(err)
+		}
+		requirement, initial, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-gate-" + core.NewTaskID(), Title: "Review gate"}, core.RequirementVersion{
+			Content:    "# Review gate\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Review waits for proposal decisions.\n```",
+			Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Review waits for proposal decisions."}}, Origin: core.RequirementOriginOperator,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err = st.ConfirmRequirementVersion(ctx, requirement.ID, initial.Version); err != nil {
+			t.Fatal(err)
+		}
+		proposal, err := st.ProposeRequirementVersion(ctx, core.RequirementVersion{
+			RequirementID: requirement.ID,
+			Content:       "# Review gate\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Review waits for every task-authored proposal decision.\n```",
+			Statements:    []core.RequirementStatement{{ID: "REQ-1", Statement: "Review waits for every task-authored proposal decision."}},
+			Origin:        core.RequirementOriginImplementation,
+			OriginTaskID:  taskID,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		pending, err := st.ListPendingProposals(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, item := range pending {
+			found = found || item.Tier == "requirement" && item.ID == requirement.ID && item.Version == proposal.Version && item.OriginType == "task" && item.OriginID == taskID
+		}
+		if !found {
+			t.Fatalf("task-authored requirement missing from pending proposals: %+v", pending)
+		}
+		job := core.Job{ID: taskID + "-review-1", TaskID: taskID, Stage: core.StageReview, State: core.JobPending}
+		if err = st.CreateJob(ctx, job); err != nil {
+			t.Fatal(err)
+		}
+		if err = For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: taskID, JobID: job.ID, Stage: core.StageReview, State: core.WorkOrderQueued}); err != nil {
+			t.Fatal(err)
+		}
+		projection, err := st.PendingProposalsProjection(ctx)
+		if err != nil || projection.TaskCount != 1 {
+			t.Fatalf("task-authored requirement attention=%+v err=%v", projection, err)
+		}
+		if _, err = For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "blocked", ClientToken: "blocked-token", Lease: time.Minute}); err == nil || !strings.Contains(err.Error(), requirement.ID) {
+			t.Fatalf("pending requirement did not name itself in review gate: %v", err)
+		}
+		if _, _, err = st.ConfirmRequirementVersion(ctx, requirement.ID, proposal.Version, initial.Version); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "released", ClientToken: "released-token", Lease: time.Minute}); err != nil {
+			t.Fatalf("review stayed blocked after requirement decision: %v", err)
+		}
+
+		dismissedTaskID := "task-requirement-dismiss-" + core.NewTaskID()
+		if err = st.CreateTask(ctx, core.Task{ID: dismissedTaskID, Workspace: workspace, Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-" + dismissedTaskID, State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: time.Now().UTC()}); err != nil {
+			t.Fatal(err)
+		}
+		dismissed, err := st.ProposeRequirementVersion(ctx, core.RequirementVersion{
+			RequirementID: requirement.ID,
+			Content:       "# Review gate\n\n```conveyor:requirements\n- id: REQ-1\n  statement: This task-authored alternative may be dismissed.\n```",
+			Statements:    []core.RequirementStatement{{ID: "REQ-1", Statement: "This task-authored alternative may be dismissed."}},
+			Origin:        core.RequirementOriginImplementation,
+			OriginTaskID:  dismissedTaskID,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		operatorChoice, err := st.ProposeRequirementVersion(ctx, core.RequirementVersion{
+			RequirementID: requirement.ID,
+			Content:       "# Review gate\n\n```conveyor:requirements\n- id: REQ-1\n  statement: The operator selected a different revision.\n```",
+			Statements:    []core.RequirementStatement{{ID: "REQ-1", Statement: "The operator selected a different revision."}},
+			Origin:        core.RequirementOriginOperator,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		dismissedJob := core.Job{ID: dismissedTaskID + "-review-1", TaskID: dismissedTaskID, Stage: core.StageReview, State: core.JobPending}
+		if err = st.CreateJob(ctx, dismissedJob); err != nil {
+			t.Fatal(err)
+		}
+		if err = For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: dismissedJob.ID, TaskID: dismissedTaskID, JobID: dismissedJob.ID, Stage: core.StageReview, State: core.WorkOrderQueued}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = For(st).ClaimWorkOrder(ctx, dismissedJob.ID, core.WorkOrderClaim{SessionID: "dismiss-blocked", ClientToken: "dismiss-blocked-token", Lease: time.Minute}); err == nil || !strings.Contains(err.Error(), requirement.ID) {
+			t.Fatalf("review was not blocked before dismissal: %v", err)
+		}
+		if _, _, err = st.ConfirmRequirementVersion(ctx, requirement.ID, operatorChoice.Version, proposal.Version); err != nil {
+			t.Fatal(err)
+		}
+		dismissed, err = st.GetRequirementVersion(ctx, requirement.ID, dismissed.Version)
+		if err != nil || !dismissed.Retired || dismissed.RetiredByVersion != operatorChoice.Version {
+			t.Fatalf("task-authored proposal was not dismissed by the selected version: %+v err=%v", dismissed, err)
+		}
+		if _, err = For(st).ClaimWorkOrder(ctx, dismissedJob.ID, core.WorkOrderClaim{SessionID: "dismiss-released", ClientToken: "dismiss-released-token", Lease: time.Minute}); err != nil {
+			t.Fatalf("review stayed blocked after requirement dismissal: %v", err)
 		}
 	})
 }

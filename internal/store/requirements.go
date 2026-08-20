@@ -142,7 +142,7 @@ func (m *memory) CreateRequirement(ctx context.Context, requirement core.Require
 	})})
 	m.appendEventLocked(ctx, core.Event{Kind: "requirement.version_proposed", Payload: core.JSONPayload(map[string]any{
 		"workspace_id": workspace, "requirement_id": requirement.ID, "version": first.Version,
-		"origin": first.Origin, "origin_session_id": first.OriginSessionID, "origin_drift_id": first.OriginDriftID,
+		"origin": first.Origin, "origin_session_id": first.OriginSessionID, "origin_task_id": first.OriginTaskID, "origin_drift_id": first.OriginDriftID,
 		"statement_count": len(first.Statements),
 	})})
 	return requirement, first, nil
@@ -193,6 +193,15 @@ func (m *memory) ProposeRequirementVersion(ctx context.Context, version core.Req
 		return core.RequirementVersion{}, err
 	}
 	existing := m.requirementVersions[key]
+	if version.Origin == core.RequirementOriginImplementation {
+		for _, previous := range existing {
+			if previous.Origin == version.Origin && previous.OriginTaskID == version.OriginTaskID &&
+				!previous.Confirmed && !previous.Retired && previous.Content == version.Content {
+				previous.Deduplicated = true
+				return previous, nil
+			}
+		}
+	}
 	// Every REQ-n the document has ever issued, so reinstating a statement that
 	// an unconfirmed proposal dropped is not mistaken for identifier reuse.
 	var issued []string
@@ -226,7 +235,7 @@ func (m *memory) ProposeRequirementVersion(ctx context.Context, version core.Req
 	m.requirements[key] = requirement
 	m.appendEventLocked(ctx, core.Event{Kind: "requirement.version_proposed", Payload: core.JSONPayload(map[string]any{
 		"workspace_id": workspace, "requirement_id": version.RequirementID, "version": version.Version,
-		"origin": version.Origin, "origin_session_id": version.OriginSessionID, "origin_drift_id": version.OriginDriftID,
+		"origin": version.Origin, "origin_session_id": version.OriginSessionID, "origin_task_id": version.OriginTaskID, "origin_drift_id": version.OriginDriftID,
 		"statement_count": len(version.Statements),
 	})})
 	return version, nil

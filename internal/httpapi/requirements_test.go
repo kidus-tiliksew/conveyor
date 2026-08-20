@@ -136,6 +136,42 @@ func TestOperatorRequirementProposalRESTLifecycle(t *testing.T) {
 	}
 }
 
+func TestRequirementReadsExposeImplementationOriginTask(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	requirement, initial, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-task-origin", Title: "Task origin"}, core.RequirementVersion{
+		Content:    "# Task origin\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Reads expose provenance.\n```",
+		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Reads expose provenance."}}, Origin: core.RequirementOriginOperator,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmRequirementVersion(ctx, requirement.ID, initial.Version); err != nil {
+		t.Fatal(err)
+	}
+	proposal, err := st.ProposeRequirementVersion(ctx, core.RequirementVersion{
+		RequirementID: requirement.ID, Content: "# Task origin\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Reads expose task provenance.\n```",
+		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Reads expose task provenance."}}, Origin: core.RequirementOriginImplementation, OriginTaskID: "task-proposer",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmRequirementVersion(ctx, requirement.ID, proposal.Version, initial.Version); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(st)
+	server.Workspace, server.BearerToken = "demo", "token"
+	for _, path := range []string{"/v1/requirements", "/v1/requirements/" + requirement.ID, "/v1/requirements/" + requirement.ID + "/versions"} {
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		request.Header.Set("Authorization", "Bearer token")
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, request)
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"origin":"implementation"`) || !strings.Contains(response.Body.String(), `"origin_task_id":"task-proposer"`) {
+			t.Fatalf("%s status=%d body=%s", path, response.Code, response.Body.String())
+		}
+	}
+}
+
 func TestRequirementConfirmationDistinguishesSupersededFromIfMatchConflict(t *testing.T) {
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	st := store.NewMemory()

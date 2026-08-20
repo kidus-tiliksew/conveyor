@@ -4560,6 +4560,16 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease taskop
 		if !errors.Is(pendingErr, pgx.ErrNoRows) {
 			return core.WorkOrder{}, pendingErr
 		}
+		var pendingRequirement string
+		pendingErr = tx.QueryRow(ctx, `SELECT requirement_id,version FROM requirement_versions
+			WHERE workspace_id=$1 AND origin=$2 AND origin_task_id=$3 AND NOT confirmed AND NOT retired
+			ORDER BY requirement_id,version LIMIT 1`, workspace(ctx), string(core.RequirementOriginImplementation), order.TaskID).Scan(&pendingRequirement, &pendingVersion)
+		if pendingErr == nil {
+			return core.WorkOrder{}, fmt.Errorf("review for task %s is waiting on task-authored requirement proposal %s v%d", order.TaskID, pendingRequirement, pendingVersion)
+		}
+		if !errors.Is(pendingErr, pgx.ErrNoRows) {
+			return core.WorkOrder{}, pendingErr
+		}
 		accepted, acceptedErr := reviewSeatAcceptedTx(ctx, tx, workspace(ctx), order.TaskID, order.ID)
 		if acceptedErr != nil {
 			return core.WorkOrder{}, acceptedErr

@@ -62,6 +62,7 @@ type requirementVersionSummary struct {
 	RequirementID string                 `json:"requirement_id"`
 	Version       int                    `json:"version"`
 	Origin        core.RequirementOrigin `json:"origin"`
+	OriginTaskID  string                 `json:"origin_task_id,omitempty"`
 	Confirmed     bool                   `json:"confirmed"`
 	ConfirmedBy   string                 `json:"confirmed_by,omitempty"`
 	ConfirmedAt   time.Time              `json:"confirmed_at,omitempty"`
@@ -128,6 +129,7 @@ func (s *Server) listRequirements(w http.ResponseWriter, r *http.Request) {
 				RequirementID: view.CurrentVersion.RequirementID,
 				Version:       view.CurrentVersion.Version,
 				Origin:        view.CurrentVersion.Origin,
+				OriginTaskID:  view.CurrentVersion.OriginTaskID,
 				Confirmed:     view.CurrentVersion.Confirmed,
 				ConfirmedBy:   view.CurrentVersion.ConfirmedBy,
 				ConfirmedAt:   view.CurrentVersion.ConfirmedAt,
