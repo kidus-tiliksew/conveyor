@@ -32,7 +32,14 @@ import {
   stageLabels,
 } from '../../lib/contracts'
 import { relatedTaskRoute, type TaskRouteVariant } from '../../lib/task-route'
-import type { ActivityItem, InterventionAction, Job, WorkOrder } from '../../lib/types'
+import type {
+  ActivityItem,
+  InterventionAction,
+  Job,
+  WorkOrder,
+  WorkOrderActivitySnapshot,
+  WorkOrderTranscriptCapture,
+} from '../../lib/types'
 import { absoluteTime, cn, compactTokens, duration } from '../../lib/utils'
 import { Badge } from '../ui/badge'
 import { useWorkspaceCapability, useWorkspaceMembers } from '../app-shell'
@@ -333,12 +340,76 @@ function CurrentExecutionSummary({
           <dd className="text-muted">{state.nextAction}</dd>
         </div>
       </dl>
+      {state.order.state === 'claimed' && state.order.activity_snapshot && (
+        <RecentActivity snapshot={state.order.activity_snapshot} />
+      )}
       {preemptOrder && (
         <div className="mt-3 border-t border-border/60 pt-2.5">
           <WorkOrderPreemptControl order={preemptOrder} />
         </div>
       )}
     </section>
+  )
+}
+
+function RecentActivity({ snapshot }: { snapshot: WorkOrderActivitySnapshot }) {
+  const outputRef = useRef<HTMLPreElement>(null)
+
+  useLayoutEffect(() => {
+    if (outputRef.current) outputRef.current.scrollTop = outputRef.current.scrollHeight
+  }, [snapshot.content])
+
+  return (
+    <section aria-label="Recent activity" className="mt-3 border-t border-border/60 pt-2.5">
+      <div className="mb-1.5 flex flex-wrap items-baseline gap-2">
+        <h3 className="text-xs font-medium text-foreground">Recent activity</h3>
+        <time className="text-[11px] text-faint" title={absoluteTime(snapshot.captured_at)}>
+          Captured {absoluteTime(snapshot.captured_at)}
+        </time>
+      </div>
+      <pre
+        ref={outputRef}
+        className="max-h-40 overflow-auto whitespace-pre-wrap rounded border border-border bg-background p-2 font-mono text-[11px] leading-5 text-foreground"
+      >
+        {snapshot.content}
+      </pre>
+    </section>
+  )
+}
+
+function TranscriptCaptures({ captures }: { captures?: WorkOrderTranscriptCapture[] }) {
+  if (!captures?.length) return null
+  return (
+    <div className="basis-full space-y-1.5 pt-1">
+      {captures.map((capture) => (
+        <TranscriptDisclosure key={`${capture.attempt_id}-${capture.captured_at}`} capture={capture} />
+      ))}
+    </div>
+  )
+}
+
+function TranscriptDisclosure({ capture }: { capture: WorkOrderTranscriptCapture }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <details className="text-xs text-muted" onToggle={(toggle) => setOpen(toggle.currentTarget.open)}>
+      <summary className="cursor-pointer rounded-sm font-medium text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary">
+        Attempt {capture.attempt_id} transcript
+        <span className="ml-2 font-normal text-faint">Captured {absoluteTime(capture.captured_at)}</span>
+      </summary>
+      {open && (
+        <div className="mt-2 rounded border border-border bg-surface p-2">
+          <p className="mb-1.5 text-[11px] text-faint">Ended: {capture.termination_reason}</p>
+          {capture.truncated && (
+            <p className="mb-1.5 text-[11px] font-medium text-attention">
+              This transcript was truncated; the most recent output is shown.
+            </p>
+          )}
+          <pre className="max-h-64 overflow-auto whitespace-pre-wrap font-mono text-[11px] leading-5 text-foreground">
+            {capture.content}
+          </pre>
+        </div>
+      )}
+    </details>
   )
 }
 
@@ -786,6 +857,7 @@ function SeatRow({ seat, index, usageAvailable }: { seat: PanelSeat; index: numb
       {seat.status === 'deliberating' && progress && (
         <p className="w-full line-clamp-2 text-xs leading-5 text-muted">{progress}</p>
       )}
+      <TranscriptCaptures captures={seat.order.transcript_captures} />
     </div>
   )
 }
@@ -996,6 +1068,7 @@ function JobEntry({
               {usageText(order, usageAvailable === true)}
             </span>
           )}
+          <TranscriptCaptures captures={order?.transcript_captures} />
         </div>
       </li>
     )
@@ -1019,6 +1092,11 @@ function JobEntry({
         >
           {summary}
         </MarkdownProse>
+        {order?.transcript_captures?.length ? (
+          <div className="px-4 pb-3">
+            <TranscriptCaptures captures={order.transcript_captures} />
+          </div>
+        ) : null}
         <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 border-t border-border px-4 py-2 font-mono text-[11px] tabular-nums text-muted">
           <span>{duration(job.started_at, job.ended_at)}</span>
           <ModelChip
