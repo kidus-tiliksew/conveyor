@@ -719,6 +719,14 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 	if err != nil {
 		return err
 	}
+	activityTail := &boundedTailWriter{limit: workerActivitySnapshotLimit}
+	activitySnapshot := func() *core.WorkOrderActivitySnapshotInput {
+		content := activityTail.String()
+		if content == "" {
+			return nil
+		}
+		return &core.WorkOrderActivitySnapshotInput{Content: content}
+	}
 	launchEnvironment := continuationLaunchEnvironment(claimed, item.Dispatch, c.workspace, credential)
 	continuationPlan := planContinuationLaunch(claimed, item.Harness, launchEnvironment)
 	leaseExpiresAt := claimed.LeaseExpiresAt
@@ -729,10 +737,11 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 	// long-running setup steps abort instead of continuing unclaimed.
 	setupCtx, cancelSetup := context.WithCancel(ctx)
 	defer cancelSetup()
-	renewal := startPreStartClaimRenewal(setupCtx, cancelSetup, c, credential, item, sessionID, leaseExpiresAt)
+	renewal := startPreStartClaimRenewal(setupCtx, cancelSetup, c, credential, item, sessionID, leaseExpiresAt, activitySnapshot)
 	defer renewal.Stop()
 	var redactedStdout, redactedStderr *redact.Writer
 	var failureTail *boundedTailWriter
+	var transcriptSpool *boundedTranscriptSpool
 	var terminalRenderer *harnessEventRenderer
 	flushOutput := func() {
 		if redactedStdout != nil {
@@ -763,6 +772,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 		if item.Order.Stage != core.StageImplement {
 			return nil
 		}
+		flushOutput()
 		// Rolling-upgrade and unit-test dispatch fixtures may predate the
 		// repository identity contract. They cannot safely identify a task
 		// worktree, so preservation remains unavailable rather than guessing.
@@ -770,17 +780,39 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 			return nil
 		}
 		checkpointCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
 		result, checkpointErr := workerAttemptCheckpointer(checkpointCtx, item.Task.Branch, item.Task.Repo, item.Repository.URL, attemptCheckpoint{
 			AttemptID: claimed.AttemptID, WorkOrderID: item.Order.ID, TerminationReason: reason,
 		})
+		cancel()
 		if checkpointErr != nil || result == nil {
 			return checkpointErr
 		}
-		if err := c.checkpointDispatchOrderAttemptContext(checkpointCtx, credential, item, core.WorkOrderAttemptCheckpoint{
+		checkpoint := core.WorkOrderAttemptCheckpoint{
 			SessionID: sessionID, AttemptID: claimed.AttemptID, TerminationReason: reason,
 			CommitSHA: result.CommitSHA, PushResult: "pushed",
-		}); err != nil {
+		}
+		var transcript *core.WorkOrderAttemptTranscript
+		if transcriptSpool != nil {
+			content, truncated, readErr := transcriptSpool.Snapshot()
+			if readErr != nil {
+				_, _ = fmt.Fprintf(stderr, "warning: read attempt transcript: %v; continuing without transcript because capture is best-effort\n", readErr)
+			} else {
+				transcript = &core.WorkOrderAttemptTranscript{Content: content, Truncated: truncated}
+			}
+		}
+		if transcript != nil {
+			transcriptCtx, cancelTranscript := context.WithTimeout(context.Background(), 5*time.Second)
+			transcriptErr := c.checkpointDispatchOrderAttemptContext(transcriptCtx, credential, item, checkpoint, transcript)
+			cancelTranscript()
+			if transcriptErr == nil {
+				return nil
+			}
+			_, _ = fmt.Fprintf(stderr, "warning: upload attempt transcript: %v; retrying checkpoint without transcript because capture is best-effort\n", transcriptErr)
+		}
+		checkpointOnlyCtx, cancelCheckpointOnly := context.WithTimeout(context.Background(), 30*time.Second)
+		err := c.checkpointDispatchOrderAttemptContext(checkpointOnlyCtx, credential, item, checkpoint, nil)
+		cancelCheckpointOnly()
+		if err != nil {
 			return fmt.Errorf("checkpoint commit %s was pushed from %s, but its audit event is not durable; successor reconciliation required: %w", result.CommitSHA, result.Worktree, err)
 		}
 		return nil
@@ -813,6 +845,17 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 		_ = makeCheckoutWritable(directory)
 		_ = os.RemoveAll(directory)
 	}()
+	transcriptSpool, err = newBoundedTranscriptSpool(directory, workerAttemptTranscriptLimit)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "warning: create attempt transcript spool: %v; continuing because capture is best-effort\n", err)
+		transcriptSpool = nil
+	} else {
+		defer func() {
+			if removeErr := transcriptSpool.Remove(); removeErr != nil {
+				_, _ = fmt.Fprintf(stderr, "warning: remove attempt transcript spool: %v\n", removeErr)
+			}
+		}()
+	}
 	mcpConfig, err := prepareMCPConfig(directory, c.base, credential, item.Harness.MCPTransport)
 	if err != nil {
 		_ = release(core.WorkOrderOutcomeReleased, "prepare MCP config failed", nil)
@@ -925,8 +968,13 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 		observer := newContinuationSessionObserver(reporter.Observe)
 		stdoutFanout = io.MultiWriter(stdoutFanout, observer)
 	}
+	observabilityDestinations := []io.Writer{activityTail}
+	if transcriptSpool != nil {
+		observabilityDestinations = append(observabilityDestinations, transcriptSpool)
+	}
+	stdoutFanout = io.MultiWriter(append([]io.Writer{stdoutFanout}, observabilityDestinations...)...)
 	redactedStdout = &redact.Writer{Destination: stdoutFanout, Redactor: outputRedactor}
-	redactedStderr = &redact.Writer{Destination: io.MultiWriter(stderr, failureTail), Redactor: outputRedactor}
+	redactedStderr = &redact.Writer{Destination: io.MultiWriter(append([]io.Writer{stderr, failureTail}, observabilityDestinations...)...), Redactor: outputRedactor}
 	// Both redacted streams share one first-write signal; either stream
 	// permanently disarms output-start liveness (design-260805-973cd4).
 	firstActivity := newFirstActivitySignal()
@@ -1163,7 +1211,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 				firstActivityDeadline = nil
 				continue
 			}
-			renewed, renewErr := renewDispatchClaimUntil(ctx, c, credential, item, sessionID, leaseExpiresAt)
+			renewed, renewErr := renewDispatchClaimUntil(ctx, c, credential, item, sessionID, leaseExpiresAt, activitySnapshot)
 			if renewErr != nil {
 				if observeCheckpointRelease(renewErr) {
 					continue
@@ -1237,7 +1285,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 				stallDeadline = nil
 				continue
 			}
-			renewed, renewErr := renewDispatchClaimUntil(ctx, c, credential, item, sessionID, leaseExpiresAt)
+			renewed, renewErr := renewDispatchClaimUntil(ctx, c, credential, item, sessionID, leaseExpiresAt, activitySnapshot)
 			if renewErr != nil {
 				if observeCheckpointRelease(renewErr) {
 					continue
@@ -1298,7 +1346,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 			if claimFinalized {
 				continue
 			}
-			renewed, renewErr := renewDispatchClaimUntil(ctx, c, credential, item, sessionID, leaseExpiresAt)
+			renewed, renewErr := renewDispatchClaimUntil(ctx, c, credential, item, sessionID, leaseExpiresAt, activitySnapshot)
 			if renewErr != nil {
 				if observeCheckpointRelease(renewErr) {
 					continue
@@ -1516,6 +1564,14 @@ type boundedTailWriter struct {
 	data  []byte
 }
 
+const (
+	// These worker-local limits match the shared observability wire contract.
+	// The server independently bounds both inputs (req-260820-221be8 AC-1.2,
+	// AC-2.2; design-260805-973cd4).
+	workerActivitySnapshotLimit  = 4 * 1024
+	workerAttemptTranscriptLimit = 4 * 1024 * 1024
+)
+
 func (w *boundedTailWriter) Write(p []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -1530,6 +1586,133 @@ func (w *boundedTailWriter) String() string {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return strings.TrimSpace(strings.ToValidUTF8(string(w.data), "�"))
+}
+
+// boundedTranscriptSpool retains the newest redacted child output on disk.
+// It is observability only and is never exposed to continuation or resume
+// machinery (req-260820-221be8 AC-2.2, AC-3.3).
+type boundedTranscriptSpool struct {
+	mu         sync.Mutex
+	file       *os.File
+	path       string
+	limit      int
+	size       int
+	truncated  bool
+	captureErr error
+}
+
+func newBoundedTranscriptSpool(directory string, limit int) (*boundedTranscriptSpool, error) {
+	if limit <= 0 {
+		return nil, fmt.Errorf("transcript spool limit must be positive")
+	}
+	file, err := os.CreateTemp(directory, ".attempt-transcript-*")
+	if err != nil {
+		return nil, err
+	}
+	return &boundedTranscriptSpool{file: file, path: file.Name(), limit: limit}, nil
+}
+
+func (s *boundedTranscriptSpool) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.file == nil {
+		return len(p), nil
+	}
+	written := len(p)
+	if written == 0 {
+		return 0, nil
+	}
+	if s.captureErr != nil {
+		return written, nil
+	}
+	if written >= s.limit {
+		if err := s.replaceLocked(p[written-s.limit:]); err != nil {
+			s.captureErr = err
+			return written, nil
+		}
+		s.truncated = true
+		return written, nil
+	}
+	if s.size+written <= s.limit {
+		n, err := s.file.Write(p)
+		s.size += n
+		if err != nil {
+			s.captureErr = err
+			return written, nil
+		}
+		if n != written {
+			s.captureErr = io.ErrShortWrite
+			return written, nil
+		}
+		return written, nil
+	}
+	keep := s.limit - written
+	existing := make([]byte, keep)
+	if _, err := s.file.ReadAt(existing, int64(s.size-keep)); err != nil {
+		s.captureErr = err
+		return written, nil
+	}
+	combined := append(existing, p...)
+	if err := s.replaceLocked(combined); err != nil {
+		s.captureErr = err
+		return written, nil
+	}
+	s.truncated = true
+	return written, nil
+}
+
+func (s *boundedTranscriptSpool) replaceLocked(content []byte) error {
+	if err := s.file.Truncate(0); err != nil {
+		return err
+	}
+	if _, err := s.file.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	n, err := s.file.Write(content)
+	s.size = n
+	if err != nil {
+		return err
+	}
+	if n != len(content) {
+		return io.ErrShortWrite
+	}
+	return nil
+}
+
+func (s *boundedTranscriptSpool) Snapshot() (string, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.file == nil {
+		return "", s.truncated, os.ErrClosed
+	}
+	if s.captureErr != nil {
+		return "", s.truncated, s.captureErr
+	}
+	content := make([]byte, s.size)
+	if s.size > 0 {
+		if _, err := s.file.ReadAt(content, 0); err != nil {
+			return "", s.truncated, err
+		}
+	}
+	return strings.ToValidUTF8(string(content), "�"), s.truncated, nil
+}
+
+func (s *boundedTranscriptSpool) Remove() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.file == nil {
+		return nil
+	}
+	closeErr := s.file.Close()
+	s.file = nil
+	removeErr := os.Remove(s.path)
+	if closeErr != nil {
+		return closeErr
+	}
+	if removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+		return removeErr
+	}
+	return nil
 }
 
 // workerClaimRenewInterval paces claim renewal for both pre-start setup and
@@ -1566,7 +1749,7 @@ type preStartClaimRenewal struct {
 	lost  error
 }
 
-func startPreStartClaimRenewal(ctx context.Context, cancelSetup context.CancelFunc, c *client, credential string, item workerservice.DispatchOrder, sessionID string, lease time.Time) *preStartClaimRenewal {
+func startPreStartClaimRenewal(ctx context.Context, cancelSetup context.CancelFunc, c *client, credential string, item workerservice.DispatchOrder, sessionID string, lease time.Time, snapshot func() *core.WorkOrderActivitySnapshotInput) *preStartClaimRenewal {
 	renewal := &preStartClaimRenewal{stop: make(chan struct{}), done: make(chan struct{}), cancel: cancelSetup, lease: lease}
 	go func() {
 		defer close(renewal.done)
@@ -1582,7 +1765,7 @@ func startPreStartClaimRenewal(ctx context.Context, cancelSetup context.CancelFu
 				renewal.mu.Lock()
 				current := renewal.lease
 				renewal.mu.Unlock()
-				renewed, err := renewDispatchClaimUntil(ctx, c, credential, item, sessionID, current)
+				renewed, err := renewDispatchClaimUntil(ctx, c, credential, item, sessionID, current, snapshot)
 				if err == nil && renewed.State != core.WorkOrderClaimed {
 					err = fmt.Errorf("server reports %s", renewed.State)
 				}
@@ -1756,10 +1939,10 @@ func reconcileDispatchClaimUntil(ctx context.Context, c *client, credential stri
 
 func renewWorkerClaimUntil(ctx context.Context, c *client, credential, orderID, sessionID string, leaseExpiresAt time.Time) (core.WorkOrder, error) {
 	item := workerservice.DispatchOrder{Order: core.WorkOrder{ID: orderID}, Dispatch: "worker"}
-	return renewDispatchClaimUntil(ctx, c, credential, item, sessionID, leaseExpiresAt)
+	return renewDispatchClaimUntil(ctx, c, credential, item, sessionID, leaseExpiresAt, nil)
 }
 
-func renewDispatchClaimUntil(ctx context.Context, c *client, credential string, item workerservice.DispatchOrder, sessionID string, leaseExpiresAt time.Time) (core.WorkOrder, error) {
+func renewDispatchClaimUntil(ctx context.Context, c *client, credential string, item workerservice.DispatchOrder, sessionID string, leaseExpiresAt time.Time, snapshot func() *core.WorkOrderActivitySnapshotInput) (core.WorkOrder, error) {
 	if leaseExpiresAt.IsZero() {
 		return core.WorkOrder{}, errWorkerClaimAuthorityLost
 	}
@@ -1777,9 +1960,30 @@ func renewDispatchClaimUntil(ctx context.Context, c *client, credential string, 
 		if !time.Now().Before(safetyDeadline) {
 			return core.WorkOrder{}, errWorkerClaimAuthorityLost
 		}
-		requestCtx, cancel := context.WithDeadline(ctx, safetyDeadline)
-		renewed, err := c.renewDispatchOrderContext(requestCtx, credential, item, sessionID)
-		cancel()
+		var activity *core.WorkOrderActivitySnapshotInput
+		if snapshot != nil {
+			activity = snapshot()
+		}
+		var renewed core.WorkOrder
+		var err error
+		if activity != nil {
+			// Reserve most of the lease-safety window for the authoritative
+			// renewal fallback when the advisory payload stalls in transport.
+			advisoryBudget := time.Until(safetyDeadline) / 2
+			if advisoryBudget > 2*time.Second {
+				advisoryBudget = 2 * time.Second
+			}
+			advisoryCtx, cancelAdvisory := context.WithTimeout(ctx, advisoryBudget)
+			renewed, err = c.renewDispatchOrderContext(advisoryCtx, credential, item, sessionID, activity)
+			cancelAdvisory()
+		}
+		if activity == nil || err != nil {
+			// AC-1.3: observability is advisory. Older servers and servers that
+			// reject an optional snapshot still get the unchanged renewal request.
+			requestCtx, cancel := context.WithDeadline(ctx, safetyDeadline)
+			renewed, err = c.renewDispatchOrderContext(requestCtx, credential, item, sessionID, nil)
+			cancel()
+		}
 		if err == nil {
 			return renewed, nil
 		}
