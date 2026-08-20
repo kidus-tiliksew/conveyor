@@ -105,10 +105,14 @@ func (c *client) reconcileTaskRunOrderContext(ctx context.Context, credential st
 }
 
 func (c *client) releaseTaskRunOrderContext(ctx context.Context, credential string, item workerservice.DispatchOrder, release core.WorkOrderRelease) error {
-	payload, _ := json.Marshal(map[string]any{
+	payloadValue := map[string]any{
 		"session_id": release.SessionID, "reason": release.Reason, "release_cause": release.Cause,
 		"outcome": release.Outcome, "exit_status": release.ExitStatus, "failure_detail": release.FailureDetail,
-	})
+	}
+	if release.Checkpoint != nil {
+		payloadValue["checkpoint"] = release.Checkpoint
+	}
+	payload, _ := json.Marshal(payloadValue)
 	var result core.WorkOrder
 	return c.workerDoContext(ctx, http.MethodPost, taskRunOrderPath(item, "/release"), payload, &result, credential)
 }

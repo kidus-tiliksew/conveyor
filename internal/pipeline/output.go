@@ -14,13 +14,20 @@ import (
 )
 
 type Triage struct {
-	Class   string      `json:"class"`
-	Route   string      `json:"route"`
-	Summary string      `json:"summary"`
-	Brief   TriageBrief `json:"brief"`
-	// RequirementID proposes a requirement relation for a stray task. It
-	// replaces the retired feature suggestion: triage proposes, an operator confirms.
-	RequirementID string `json:"requirement_id,omitempty"`
+	Class                 string            `json:"class"`
+	Route                 string            `json:"route"`
+	Summary               string            `json:"summary"`
+	Brief                 TriageBrief       `json:"brief"`
+	RequirementProposals  []ContextProposal `json:"requirement_proposals"`
+	SystemDesignProposals []ContextProposal `json:"system_design_proposals"`
+}
+
+// ContextProposal is advisory grounding emitted by triage. Store validation,
+// deduplication, and operator confirmation determine whether it becomes task
+// authority; parsing it never attaches context directly.
+type ContextProposal struct {
+	ID            string `json:"id"`
+	Justification string `json:"justification"`
 }
 
 // TriageBrief frames downstream investigation without becoming normative.
@@ -99,6 +106,12 @@ func ParseTriage(output string) (Triage, error) {
 	}
 	if value.Brief.Risks == nil {
 		value.Brief.Risks = []string{}
+	}
+	if value.RequirementProposals == nil {
+		value.RequirementProposals = []ContextProposal{}
+	}
+	if value.SystemDesignProposals == nil {
+		value.SystemDesignProposals = []ContextProposal{}
 	}
 	return value, nil
 }

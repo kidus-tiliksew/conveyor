@@ -374,6 +374,7 @@ type WorkOrder struct {
 	ExecutionDeadline             pgtype.Timestamptz `json:"execution_deadline"`
 	RedispatchCount               int32              `json:"redispatch_count"`
 	OperatorDirection             string             `json:"operator_direction"`
+	Checkpoint                    []byte             `json:"checkpoint"`
 	ContinuationSessionID         string             `json:"continuation_session_id"`
 	ContinuationAttemptID         string             `json:"continuation_attempt_id"`
 	ContinuationHarness           string             `json:"continuation_harness"`

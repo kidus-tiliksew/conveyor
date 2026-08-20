@@ -265,15 +265,16 @@ func (s *Server) reconcileWorkerOrder(w http.ResponseWriter, r *http.Request) {
 func (s *Server) releaseWorkerOrder(w http.ResponseWriter, r *http.Request) {
 	worker, _ := workerFromContext(r.Context())
 	var request struct {
-		SessionID     string `json:"session_id"`
-		Reason        string `json:"reason"`
-		Cause         string `json:"release_cause"`
-		Outcome       string `json:"outcome"`
-		ExitStatus    *int   `json:"exit_status"`
-		FailureDetail string `json:"failure_detail"`
+		SessionID     string                    `json:"session_id"`
+		Reason        string                    `json:"reason"`
+		Checkpoint    *core.WorkOrderCheckpoint `json:"checkpoint"`
+		Cause         string                    `json:"release_cause"`
+		Outcome       string                    `json:"outcome"`
+		ExitStatus    *int                      `json:"exit_status"`
+		FailureDetail string                    `json:"failure_detail"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&request)
-	order, err := s.Workers.Release(r.Context(), worker, chi.URLParam(r, "id"), core.WorkOrderRelease{SessionID: request.SessionID, Reason: request.Reason, Cause: request.Cause, Outcome: request.Outcome, ExitStatus: request.ExitStatus, FailureDetail: request.FailureDetail})
+	order, err := s.Workers.Release(r.Context(), worker, chi.URLParam(r, "id"), core.WorkOrderRelease{SessionID: request.SessionID, Reason: request.Reason, Checkpoint: request.Checkpoint, Cause: request.Cause, Outcome: request.Outcome, ExitStatus: request.ExitStatus, FailureDetail: request.FailureDetail})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusConflict)
 		return

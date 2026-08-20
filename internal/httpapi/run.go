@@ -473,12 +473,13 @@ func (s *Server) releaseTaskRunOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var request struct {
-		SessionID     string `json:"session_id"`
-		Reason        string `json:"reason"`
-		Cause         string `json:"release_cause"`
-		Outcome       string `json:"outcome"`
-		ExitStatus    *int   `json:"exit_status"`
-		FailureDetail string `json:"failure_detail"`
+		SessionID     string                    `json:"session_id"`
+		Reason        string                    `json:"reason"`
+		Checkpoint    *core.WorkOrderCheckpoint `json:"checkpoint"`
+		Cause         string                    `json:"release_cause"`
+		Outcome       string                    `json:"outcome"`
+		ExitStatus    *int                      `json:"exit_status"`
+		FailureDetail string                    `json:"failure_detail"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&request)
 	order, ok := s.authorizeTaskRunOrder(r, request.SessionID)
@@ -488,7 +489,7 @@ func (s *Server) releaseTaskRunOrder(w http.ResponseWriter, r *http.Request) {
 	}
 	claim := core.WorkOrderClaimIdentity{WorkerID: order.WorkerID, ClaimantID: order.ClaimantID, SessionID: order.SessionID}
 	released, err := s.Workers.ReleaseClaim(r.Context(), claim, order.ID, core.WorkOrderRelease{
-		SessionID: request.SessionID, Reason: request.Reason, Cause: request.Cause,
+		SessionID: request.SessionID, Reason: request.Reason, Checkpoint: request.Checkpoint, Cause: request.Cause,
 		Outcome: request.Outcome, ExitStatus: request.ExitStatus, FailureDetail: request.FailureDetail,
 	})
 	if err != nil {

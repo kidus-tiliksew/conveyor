@@ -228,7 +228,11 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 		if err != nil {
 			return nil, err
 		}
-		return s.Workers.ReleaseClaim(ctx, claim, stringArg("work_order_id"), core.WorkOrderRelease{SessionID: session, Reason: stringArg("reason"), Cause: core.WorkOrderReleaseCauseOperatorAction, Outcome: core.WorkOrderOutcomeReleased})
+		checkpoint, err := checkpointArg(args)
+		if err != nil {
+			return nil, err
+		}
+		return s.Workers.ReleaseClaim(ctx, claim, stringArg("work_order_id"), core.WorkOrderRelease{SessionID: session, Reason: stringArg("reason"), Checkpoint: checkpoint, Cause: core.WorkOrderReleaseCauseOperatorAction, Outcome: core.WorkOrderOutcomeReleased})
 	case "request_plan_revision":
 		claim, err := s.authorizeClaimMutation(ctx, workerAuth, worker, stringArg("work_order_id"), session)
 		if err != nil {
@@ -576,6 +580,22 @@ func numberArg(value any) (int64, bool) {
 	}
 	return 0, false
 }
+
+func checkpointArg(args map[string]any) (*core.WorkOrderCheckpoint, error) {
+	value, ok := args["checkpoint"]
+	if !ok || value == nil {
+		return nil, nil
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		return nil, fmt.Errorf("checkpoint is invalid: %w", err)
+	}
+	var checkpoint core.WorkOrderCheckpoint
+	if err = json.Unmarshal(data, &checkpoint); err != nil {
+		return nil, fmt.Errorf("checkpoint is invalid: %w", err)
+	}
+	return &checkpoint, nil
+}
 func floatArg(value any) (float64, bool) {
 	switch typed := value.(type) {
 	case float64:
@@ -650,7 +670,7 @@ func mcpTools() []map[string]any {
 		{"name": "claim_work_order", "description": "Claim a work order with a bounded lease. Review self-claim is forbidden. claimant_id is accepted for wire compatibility but ignored; claimant identity is derived from the authenticated credential.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "client_token": str, "claimant_id": str, "agent": str, "model": str, "lease_seconds": num}, "work_order_id", "session_id", "client_token", "agent", "model")},
 		{"name": "redispatch_work_order", "description": "Return a stale queued work order in one workspace to the queue with a fresh queue deadline. Active and execution-timed-out work orders are rejected.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str}, "work_order_id")},
 		{"name": "renew_work_order", "description": "Renew the exact execution child session lease without extending its fixed attempt deadline.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str}, "work_order_id", "session_id")},
-		{"name": "release_work_order", "description": "Release the exact execution child session without allowing a stale child to alter a newer claim.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "reason": str}, "work_order_id", "session_id")},
+		{"name": "release_work_order", "description": "Release the exact execution child session without allowing a stale child to alter a newer claim. Operator checkpoints require checkpoint.decision_request.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "reason": str, "checkpoint": object(map[string]any{"decision_request": str, "class": map[string]any{"type": "string", "enum": []string{core.WorkOrderCheckpointClassAuthorityConflict}}, "citations": map[string]any{"type": "array", "items": object(map[string]any{"document_id": str, "cited_version": num, "statement_or_section_id": str}, "document_id", "cited_version")}})}, "work_order_id", "session_id")},
 		{"name": "request_plan_revision", "description": "Request operator-gated revision of the approved execution plan for the exact claimed implement session.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "rationale": str}, "work_order_id", "session_id", "rationale")},
 		{"name": "get_work_order", "description": "Get the claimed order contract, spec, branch, feedback, artifacts, and review diff. The authority_source response field is live for a provisional queued-review peek and pinned for claim-time snapshot authority.", "inputSchema": object(identity, "work_order_id", "session_id")},
 		{"name": "read_artifact", "description": "Read one artifact authorized for the claimed work order. The workspace, work order, session, and artifact ownership must all match; content is returned as base64.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "artifact_id": str}, "workspace_id", "work_order_id", "session_id", "artifact_id")},

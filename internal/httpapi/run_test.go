@@ -164,9 +164,13 @@ func TestTaskRunHTTPRenewReportsSameSessionCheckpointRelease(t *testing.T) {
 	if claim.Code != http.StatusOK {
 		t.Fatalf("claim status=%d body=%s", claim.Code, claim.Body.String())
 	}
-	release := taskRunHTTPCall(handler, http.MethodPost, "/v1/tasks/checkpoint-run/run-orders/"+order.ID+"/release", `{"session_id":"run-session","reason":"operator checkpoint reached","release_cause":"operator_action","outcome":"released"}`)
+	release := taskRunHTTPCall(handler, http.MethodPost, "/v1/tasks/checkpoint-run/run-orders/"+order.ID+"/release", `{"session_id":"run-session","reason":"operator checkpoint reached","checkpoint":{"decision_request":"Choose whether to proceed."},"release_cause":"operator_action","outcome":"released"}`)
 	if release.Code != http.StatusOK {
 		t.Fatalf("release status=%d body=%s", release.Code, release.Body.String())
+	}
+	var checkpointReleased core.WorkOrder
+	if err := json.Unmarshal(release.Body.Bytes(), &checkpointReleased); err != nil || checkpointReleased.Checkpoint == nil || checkpointReleased.Checkpoint.DecisionRequest != "Choose whether to proceed." {
+		t.Fatalf("checkpoint release body=%s err=%v", release.Body.String(), err)
 	}
 	renew := taskRunHTTPCall(handler, http.MethodPost, "/v1/tasks/checkpoint-run/run-orders/"+order.ID+"/renew", `{"session_id":"run-session"}`)
 	if renew.Code != http.StatusConflict || renew.Header().Get("X-Conveyor-Error-Code") != "work_order_released_checkpoint" ||

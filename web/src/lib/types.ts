@@ -84,6 +84,22 @@ export interface TaskAssignee {
 export interface TaskContext {
   requirements?: Array<{ id: string; title: string; version: number }>
   designs?: Array<{ id: string; title: string; version: number }>
+  proposals?: TaskContextProposal[]
+}
+
+export interface TaskContextProposal {
+  task_id: string
+  target_kind: 'requirement' | 'system_design'
+  target_id: string
+  target_title: string
+  state: 'proposed' | 'confirmed' | 'dismissed'
+  source: 'planning' | 'triage' | 'operator'
+  justification: string
+  created_by_event_id: number
+  proposed_by: string
+  workspace: string
+  created_at: string
+  updated_at: string
 }
 
 export interface CheckpointContextCandidate {
@@ -624,10 +640,12 @@ export interface ActivityItem {
 export interface PendingProposal {
   id: string
   title: string
-  tier: 'requirement' | 'system_design' | 'decision'
+  tier: 'requirement' | 'system_design' | 'decision' | 'task_context'
   version?: number
   origin_type: 'task' | 'session' | 'drift' | 'operator'
   origin_id?: string
+  target_kind?: 'requirement' | 'system_design'
+  justification?: string
   proposed_at: string
   age_seconds: number
 }

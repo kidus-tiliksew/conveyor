@@ -56,17 +56,20 @@ func TestParsePlanValidatesShapeAndExtractsDoneCriteria(t *testing.T) {
 	}
 }
 
-func TestParseTriageTakesRequirementIDAndRejectsRetiredFeatureID(t *testing.T) {
+func TestParseTriageTakesContextProposalsAndRejectsRetiredSuggestionFields(t *testing.T) {
 	t.Parallel()
-	triage, err := ParseTriage("```conveyor:triage\n{\"class\":\"feature\",\"route\":\"proceed\",\"summary\":\"Serves existing intent.\",\"requirement_id\":\"req-1\"}\n```")
-	if err != nil || triage.RequirementID != "req-1" {
+	triage, err := ParseTriage("```conveyor:triage\n{\"class\":\"feature\",\"route\":\"proceed\",\"summary\":\"Serves existing intent.\",\"requirement_proposals\":[{\"id\":\"req-1\",\"justification\":\"REQ-1 governs retries.\"}],\"system_design_proposals\":[{\"id\":\"design-runtime\",\"justification\":\"The body governs dispatch.\"}]}\n```")
+	if err != nil || len(triage.RequirementProposals) != 1 || triage.RequirementProposals[0].ID != "req-1" || len(triage.SystemDesignProposals) != 1 {
 		t.Fatalf("triage=%+v err=%v", triage, err)
 	}
-	// feature_id retired with the feature tree. The
+	// requirement_id and feature_id are retired. The
 	// parser disallows unknown fields precisely so a model still emitting the
 	// old key fails loudly instead of having its proposal silently dropped.
-	if _, err := ParseTriage("```conveyor:triage\n{\"class\":\"feature\",\"route\":\"proceed\",\"summary\":\"Serves existing intent.\",\"feature_id\":\"feature-1\"}\n```"); err == nil || !strings.Contains(err.Error(), "feature_id") {
-		t.Fatalf("retired feature_id error = %v", err)
+	for _, field := range []string{"feature_id", "requirement_id"} {
+		input := "```conveyor:triage\n{\"class\":\"feature\",\"route\":\"proceed\",\"summary\":\"Serves existing intent.\",\"" + field + "\":\"old\"}\n```"
+		if _, err := ParseTriage(input); err == nil || !strings.Contains(err.Error(), field) {
+			t.Fatalf("retired %s error = %v", field, err)
+		}
 	}
 }
 
