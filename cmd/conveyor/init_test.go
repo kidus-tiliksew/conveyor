@@ -137,17 +137,26 @@ func TestInitPrerequisitesRequirePackAndConditionalAPIKey(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := checkInitPrerequisites(t.Context(), prerequisites, answers); err == nil || !strings.Contains(err.Error(), "CONVEYOR_API_KEY") {
+	if err := checkInitPrerequisites(t.Context(), prerequisites, answers); err == nil || !strings.Contains(err.Error(), config.LLMAPIKeyEnv) {
 		t.Fatalf("missing API key error=%v", err)
 	}
 	prerequisites.getenv = func(name string) string {
-		if name == "CONVEYOR_API_KEY" {
+		if name == config.LLMAPIKeyEnv {
 			return "present"
 		}
 		return ""
 	}
 	if err := checkInitPrerequisites(t.Context(), prerequisites, answers); err != nil {
 		t.Fatalf("complete prerequisites: %v", err)
+	}
+	prerequisites.getenv = func(name string) string {
+		if name == config.DeprecatedLLMAPIKeyEnv {
+			return "legacy-present"
+		}
+		return ""
+	}
+	if err := checkInitPrerequisites(t.Context(), prerequisites, answers); err != nil {
+		t.Fatalf("legacy API key fallback: %v", err)
 	}
 	if configUsesInProcessExecution(config.Config{Routing: config.Routing{Stages: map[string]config.StageRoute{"implement": {Execution: config.ExecutionMCP}}}}) {
 		t.Fatal("API key required for a config with no in-process routes")
@@ -157,11 +166,12 @@ func TestInitPrerequisitesRequirePackAndConditionalAPIKey(t *testing.T) {
 func TestInitializeDeploymentRejectsMissingAPIKeyBeforeWriting(t *testing.T) {
 	t.Setenv("CONVEYOR_DATABASE_URL", "postgres://example")
 	t.Setenv("CONVEYOR_API_TOKEN", "operator-token")
-	t.Setenv("CONVEYOR_API_KEY", "")
+	t.Setenv(config.LLMAPIKeyEnv, "")
+	t.Setenv(config.DeprecatedLLMAPIKeyEnv, "")
 	configPath := filepath.Join(t.TempDir(), "nested", "conveyor.yaml")
 	answers := initAnswers{WorkspaceID: "demo", RepositoryName: "app", RepositoryURL: "https://github.com/example/app", BaseBranch: "main", ClonePath: t.TempDir()}
 	err := initializeDeployment(t.Context(), &strings.Builder{}, configPath, answers)
-	if err == nil || !strings.Contains(err.Error(), "CONVEYOR_API_KEY") {
+	if err == nil || !strings.Contains(err.Error(), config.LLMAPIKeyEnv) {
 		t.Fatalf("missing API key error=%v", err)
 	}
 	if _, statErr := os.Stat(filepath.Dir(configPath)); !errors.Is(statErr, os.ErrNotExist) {

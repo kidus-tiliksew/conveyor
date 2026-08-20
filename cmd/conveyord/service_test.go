@@ -49,7 +49,7 @@ func testDaemonPlatform(t *testing.T) daemonServicePlatform {
 func TestDaemonServiceInstallIsRepeatableAndOwnershipSafe(t *testing.T) {
 	platform := testDaemonPlatform(t)
 	envFile := filepath.Join(t.TempDir(), ".env")
-	if err := os.WriteFile(envFile, []byte("CONVEYOR_API_TOKEN=test\nCONVEYOR_API_KEY=test\n"), 0o600); err != nil {
+	if err := os.WriteFile(envFile, []byte("CONVEYOR_API_TOKEN=test\nCONVEYOR_LLM_API_KEY=test\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	paths, err := resolveDaemonServiceWithEnvironment(platform, "/etc/conveyor/conveyor.yaml", envFile)

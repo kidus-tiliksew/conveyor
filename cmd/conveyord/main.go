@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -70,9 +71,9 @@ func main() {
 	if apiToken == "" {
 		log.Fatal("CONVEYOR_API_TOKEN is required for authenticated task creation")
 	}
-	pipelineKey := os.Getenv("CONVEYOR_API_KEY")
-	if pipelineKey == "" {
-		log.Fatal("CONVEYOR_API_KEY is required for in-process triage and spec stages")
+	llmEnvironment, err := resolveConveyordLLMEnvironment(os.Getenv, log.Printf)
+	if err != nil {
+		log.Fatal(err)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -117,7 +118,7 @@ func main() {
 		log.Printf("WARNING: using volatile memory store; set CONVEYOR_DATABASE_URL for Phase 2 durability")
 	}
 	defer closeStore()
-	agent := &inprocess.OpenAI{APIKey: pipelineKey, BaseURL: os.Getenv("CONVEYOR_API_BASE_URL")}
+	agent := &inprocess.OpenAI{APIKey: llmEnvironment.APIKey, BaseURL: llmEnvironment.BaseURL}
 	d := dispatch.New(st, cfg, agent)
 	d.Pack = packBundle
 	var stopRiver func()
@@ -463,4 +464,12 @@ func logControlPlaneModelOverrides(logf func(string, ...any)) {
 	for _, override := range config.ActiveControlPlaneModelOverrides() {
 		logf("control-plane model override active: %s=%s", override.Variable, override.Model)
 	}
+}
+
+func resolveConveyordLLMEnvironment(getenv func(string) string, warnf func(string, ...any)) (config.LLMEnvironment, error) {
+	environment := config.ResolveLLMEnvironment(getenv, warnf)
+	if strings.TrimSpace(environment.APIKey) == "" {
+		return config.LLMEnvironment{}, fmt.Errorf("CONVEYOR_LLM_API_KEY is required for in-process triage and spec stages (CONVEYOR_API_KEY is a deprecated fallback)")
+	}
+	return environment, nil
 }
