@@ -10,10 +10,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
@@ -729,6 +731,11 @@ func (s *Service) ReleaseClaim(ctx context.Context, claim core.WorkOrderClaimIde
 		return core.WorkOrder{}, store.ErrWorkOrderClaimLost
 	}
 	release.Reason = strings.TrimSpace(release.Reason)
+	checkpoint, err := s.normalizeCheckpoint(ctx, release.Reason, release.Checkpoint)
+	if err != nil {
+		return core.WorkOrder{}, err
+	}
+	release.Checkpoint = checkpoint
 	release.Cause = strings.TrimSpace(release.Cause)
 	if release.Cause == "" {
 		release.Cause = core.WorkOrderReleaseCauseSessionExit
@@ -778,6 +785,130 @@ func (s *Service) ReleaseClaim(ctx context.Context, claim core.WorkOrderClaimIde
 		return core.WorkOrder{}, err
 	}
 	return s.refreshReleasedHarnessSnapshot(ctx, order), nil
+}
+
+func (s *Service) normalizeCheckpoint(ctx context.Context, reason string, checkpoint *core.WorkOrderCheckpoint) (*core.WorkOrderCheckpoint, error) {
+	if checkpoint == nil {
+		if reason == core.WorkOrderReleaseReasonOperatorCheckpointReached {
+			return nil, fmt.Errorf("checkpoint.decision_request is required when reason is %q", core.WorkOrderReleaseReasonOperatorCheckpointReached)
+		}
+		return nil, nil
+	}
+	normalized := &core.WorkOrderCheckpoint{
+		DecisionRequest: strings.TrimSpace(checkpoint.DecisionRequest),
+		Class:           strings.TrimSpace(checkpoint.Class),
+	}
+	if utf8.RuneCountInString(normalized.DecisionRequest) > core.WorkOrderDecisionRequestLimit {
+		return nil, fmt.Errorf("checkpoint.decision_request exceeds %d characters", core.WorkOrderDecisionRequestLimit)
+	}
+	if reason == core.WorkOrderReleaseReasonOperatorCheckpointReached && normalized.DecisionRequest == "" {
+		return nil, fmt.Errorf("checkpoint.decision_request is required when reason is %q", core.WorkOrderReleaseReasonOperatorCheckpointReached)
+	}
+	if normalized.Class != "" && normalized.Class != core.WorkOrderCheckpointClassAuthorityConflict {
+		return nil, fmt.Errorf("checkpoint.class %q is not recognized; allowed value is %q", normalized.Class, core.WorkOrderCheckpointClassAuthorityConflict)
+	}
+	if normalized.Class == "" && len(checkpoint.Citations) > 0 {
+		return nil, fmt.Errorf("checkpoint.class must be %q when citations are supplied", core.WorkOrderCheckpointClassAuthorityConflict)
+	}
+	if normalized.Class == core.WorkOrderCheckpointClassAuthorityConflict && len(checkpoint.Citations) == 0 {
+		return nil, fmt.Errorf("checkpoint.citations is required when checkpoint.class is %q", core.WorkOrderCheckpointClassAuthorityConflict)
+	}
+	for i, citation := range checkpoint.Citations {
+		citation.DocumentID = strings.TrimSpace(citation.DocumentID)
+		citation.StatementOrSectionID = strings.TrimSpace(citation.StatementOrSectionID)
+		if citation.DocumentID == "" {
+			return nil, fmt.Errorf("checkpoint.citations[%d].document_id is required", i)
+		}
+		if citation.CitedVersion <= 0 {
+			return nil, fmt.Errorf("checkpoint.citations[%d].cited_version must be positive", i)
+		}
+		exists, clauseKnown, err := s.checkpointCitation(ctx, citation)
+		if err != nil {
+			return nil, err
+		}
+		if !exists {
+			return nil, fmt.Errorf("checkpoint.citations[%d].document_id %q does not exist in this workspace", i, citation.DocumentID)
+		}
+		if !clauseKnown {
+			citation.StatementOrSectionID = ""
+		}
+		normalized.Citations = append(normalized.Citations, citation)
+	}
+	if normalized.DecisionRequest == "" && normalized.Class == "" && len(normalized.Citations) == 0 {
+		return nil, nil
+	}
+	return normalized, nil
+}
+
+func (s *Service) checkpointCitation(ctx context.Context, citation core.WorkOrderAuthorityConflictCitation) (bool, bool, error) {
+	clause := citation.StatementOrSectionID
+	if requirement, err := s.Store.GetRequirement(ctx, citation.DocumentID); err == nil {
+		version := requirement.CurrentVersion
+		if citation.CitedVersion > 0 {
+			version = citation.CitedVersion
+		}
+		revision, getErr := s.Store.GetRequirementVersion(ctx, citation.DocumentID, version)
+		if getErr != nil {
+			return true, clause == "", nil
+		}
+		if clause == "" {
+			return true, true, nil
+		}
+		for _, statement := range revision.Statements {
+			if statement.ID == clause {
+				return true, true, nil
+			}
+			for _, criterion := range statement.AcceptanceCriteria {
+				if criterion.ID == clause {
+					return true, true, nil
+				}
+			}
+		}
+		return true, false, nil
+	} else if !errors.Is(err, store.ErrNotFound) {
+		return false, false, err
+	}
+	if document, err := s.Store.GetSystemDesign(ctx, citation.DocumentID); err == nil {
+		version := document.CurrentVersion
+		if citation.CitedVersion > 0 {
+			version = citation.CitedVersion
+		}
+		revision, getErr := s.Store.GetSystemDesignVersion(ctx, citation.DocumentID, version)
+		return true, clause == "" || (getErr == nil && markdownClauseExists(revision.Content, clause)), nil
+	} else if !errors.Is(err, store.ErrNotFound) {
+		return false, false, err
+	}
+	return false, false, nil
+}
+
+func markdownClauseExists(content, clause string) bool {
+	clause = strings.TrimSpace(clause)
+	if clause == "" {
+		return true
+	}
+	needle := strings.ToLower(clause)
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "#") {
+			heading := strings.TrimSpace(strings.TrimLeft(line, "#"))
+			anchor := strings.Trim(strings.Map(func(r rune) rune {
+				if r >= 'A' && r <= 'Z' {
+					return r + ('a' - 'A')
+				}
+				if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+					return r
+				}
+				if r == ' ' {
+					return '-'
+				}
+				return -1
+			}, heading), "-")
+			if strings.EqualFold(heading, clause) || anchor == needle {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // RequestPlanRevision atomically releases one exact implement attempt and

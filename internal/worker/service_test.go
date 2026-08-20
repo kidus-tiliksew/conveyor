@@ -108,7 +108,7 @@ func TestPairingHeartbeatHealthAndWorkerClaimLifecycle(t *testing.T) {
 	if err != nil || !renewed.ExecutionDeadline.Equal(deadline) {
 		t.Fatalf("renewed=%+v err=%v", renewed, err)
 	}
-	released, err := service.Release(workerCtx, worker, claimed.ID, core.WorkOrderRelease{SessionID: "session-a", Reason: core.WorkOrderReleaseReasonOperatorCheckpointReached, Cause: core.WorkOrderReleaseCauseOperatorAction, Outcome: core.WorkOrderOutcomeReleased})
+	released, err := service.Release(workerCtx, worker, claimed.ID, core.WorkOrderRelease{SessionID: "session-a", Reason: core.WorkOrderReleaseReasonOperatorCheckpointReached, Checkpoint: &core.WorkOrderCheckpoint{DecisionRequest: "Choose whether to proceed."}, Cause: core.WorkOrderReleaseCauseOperatorAction, Outcome: core.WorkOrderOutcomeReleased})
 	if err != nil || released.State != core.WorkOrderQueued || !released.ExecutionDeadline.IsZero() || !released.ExecutionStartedAt.IsZero() || !released.RetrySuppressed {
 		t.Fatalf("released=%+v err=%v", released, err)
 	}
@@ -146,6 +146,75 @@ func TestPairingHeartbeatHealthAndWorkerClaimLifecycle(t *testing.T) {
 	}
 	if submitted, renewErr := service.Renew(workerCtx, worker, submittedClaim.ID, "session-b"); renewErr != nil || submitted.State != core.WorkOrderSubmitted || !submitted.ExecutionDeadline.Equal(submittedClaim.ExecutionDeadline) {
 		t.Fatalf("submitted renew=%+v err=%v", submitted, renewErr)
+	}
+}
+
+func TestReleaseCheckpointDecisionValidationAndCitations(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	service := &Service{Store: st}
+	now := time.Now().UTC()
+	task := core.Task{ID: "checkpoint-metadata", Workspace: "demo", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: now}
+	job := core.Job{ID: task.ID + "-implement-1", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	claim := core.WorkOrderClaimIdentity{WorkerID: "worker", ClaimantID: "worker", SessionID: "checkpoint-session"}
+	if _, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{WorkerID: claim.WorkerID, ClaimantID: claim.ClaimantID, SessionID: claim.SessionID, ClientToken: "secret", Lease: time.Minute}); err != nil {
+		t.Fatal(err)
+	}
+	statements := []core.RequirementStatement{{ID: "REQ-1", Statement: "Checkpoints name the decision.", AcceptanceCriteria: []core.AcceptanceCriterion{{ID: "AC-1.1", Statement: "The request is distinct."}}}}
+	requirement, version, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-checkpoint", Title: "Checkpoint"}, core.RequirementVersion{Content: "Checkpoint authority.\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Checkpoints name the decision.\n  acceptance_criteria:\n    - id: AC-1.1\n      statement: The request is distinct.\n```", Statements: statements, Origin: core.RequirementOriginOperator})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmRequirementVersion(ctx, requirement.ID, version.Version); err != nil {
+		t.Fatal(err)
+	}
+
+	release := core.WorkOrderRelease{SessionID: claim.SessionID, Reason: core.WorkOrderReleaseReasonOperatorCheckpointReached, Cause: core.WorkOrderReleaseCauseOperatorAction, Outcome: core.WorkOrderOutcomeReleased}
+	if _, err = service.ReleaseClaim(ctx, claim, job.ID, release); err == nil || !strings.Contains(err.Error(), "checkpoint.decision_request is required") {
+		t.Fatalf("missing decision request error=%v", err)
+	}
+	if order, getErr := st.GetWorkOrder(ctx, job.ID); getErr != nil || order.State != core.WorkOrderClaimed {
+		t.Fatalf("missing request mutated order=%+v err=%v", order, getErr)
+	}
+	release.Checkpoint = &core.WorkOrderCheckpoint{DecisionRequest: "Resolve the cited conflict.", Class: core.WorkOrderCheckpointClassAuthorityConflict, Citations: []core.WorkOrderAuthorityConflictCitation{{DocumentID: "missing-document", CitedVersion: 1}}}
+	if _, err = service.ReleaseClaim(ctx, claim, job.ID, release); err == nil || !strings.Contains(err.Error(), "does not exist in this workspace") {
+		t.Fatalf("unknown document error=%v", err)
+	}
+	if order, getErr := st.GetWorkOrder(ctx, job.ID); getErr != nil || order.State != core.WorkOrderClaimed {
+		t.Fatalf("unknown document mutated order=%+v err=%v", order, getErr)
+	}
+	release.Checkpoint.Citations = []core.WorkOrderAuthorityConflictCitation{
+		{DocumentID: requirement.ID, CitedVersion: version.Version, StatementOrSectionID: "AC-1.1"},
+		{DocumentID: requirement.ID, CitedVersion: version.Version, StatementOrSectionID: "AC-9.9"},
+	}
+	released, err := service.ReleaseClaim(ctx, claim, job.ID, release)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if released.Checkpoint == nil || released.Checkpoint.DecisionRequest != "Resolve the cited conflict." || len(released.Checkpoint.Citations) != 2 || released.Checkpoint.Citations[0].StatementOrSectionID != "AC-1.1" || released.Checkpoint.Citations[1].StatementOrSectionID != "" {
+		t.Fatalf("normalized checkpoint=%+v", released.Checkpoint)
+	}
+	events, err := st.ListEvents(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, event := range events {
+		if event.Kind == "work_order.released" && strings.Contains(string(event.Payload), `"decision_request":"Resolve the cited conflict."`) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("release event omitted checkpoint: %+v", events)
 	}
 }
 
