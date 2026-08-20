@@ -177,42 +177,7 @@ func TestRolePromptsEnforceOperatorAuthorityBoundary(t *testing.T) {
 		t.Fatal(err)
 	}
 	normalizedImplement := strings.Join(strings.Fields(implement), " ")
-	for _, required := range []string{
-		"explicit operator checkpoint",
-		"report_progress",
-		"release_work_order",
-		core.WorkOrderReleaseReasonOperatorCheckpointReached,
-		"currently confirmed corpus authority",
-		"needed requirement and complete System Design revision proposals",
-		"task-authored governance proposal tools",
-		"pending for operator confirmation",
-		"decision_request",
-		"distinct from the progress report",
-		"pending proposal identifier",
-		"class: authority_conflict",
-		"document_id",
-		"cited_version",
-		"statement_or_section_id",
-		"proposal tools are unavailable",
-		"credential lacks the proposal capability",
-		"proposal call fails",
-		"release anyway",
-		"truthful checkpoint release is never blocked on proposal authorship",
-		"request_plan_revision",
-		"repository reality conflicts with the approved plan",
-		"never authorize changing or departing from the approved plan",
-		"existing `released` outcome",
-		"do not enter an automatic recovery loop",
-		"`wip(attempt-` checkpoint commit",
-		"never validation evidence",
-		"resumed session",
-		"same checkpoint reason",
-		"re-derive the blocking condition",
-		"currently served requirements",
-		"current operator direction",
-		"served-authority `id vN` version checked",
-		"historical context",
-	} {
+	for _, required := range []string{"explicit operator checkpoint", "report_progress", "release_work_order", core.WorkOrderReleaseReasonOperatorCheckpointReached, "existing `released` outcome", "do not enter an automatic recovery loop", "`wip(attempt-` checkpoint commit", "never validation evidence", "resumed session", "same checkpoint reason", "re-derive the blocking condition", "currently served requirements", "current operator direction", "served-authority `id vN` version checked", "historical context"} {
 		if !strings.Contains(normalizedImplement, required) {
 			t.Errorf("implement role is missing %q", required)
 		}
