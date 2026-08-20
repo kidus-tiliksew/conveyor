@@ -23,6 +23,7 @@ import (
 
 func runCmd() *cobra.Command {
 	configPath := defaultLocalExecutionConfigPath()
+	setupName := ""
 	auto := false
 	raw := false
 	cmd := &cobra.Command{
@@ -34,10 +35,11 @@ func runCmd() *cobra.Command {
 			defer stop()
 			input := cmd.InOrStdin()
 			output := cmd.OutOrStdout()
-			return runTaskWithPresentation(ctx, newClient(), args[0], configPath, input, output, auto, inputIsTerminal(input), outputIsTerminal(output), raw)
+			return runTaskWithPresentationAndSetup(ctx, newClient(), args[0], configPath, setupName, input, output, auto, inputIsTerminal(input), outputIsTerminal(output), raw)
 		},
 	}
 	cmd.Flags().StringVar(&configPath, "config", configPath, "local execution configuration")
+	cmd.Flags().StringVar(&setupName, "setup", "", "named local execution setup (does not change the persisted default)")
 	cmd.Flags().BoolVar(&auto, "auto", false, "run every claimable stage without confirmation")
 	cmd.Flags().BoolVar(&raw, "raw", false, "print the raw harness event stream")
 	return cmd
@@ -55,6 +57,10 @@ func runTask(ctx context.Context, c *client, taskID, configPath string, input io
 }
 
 func runTaskWithPresentation(ctx context.Context, c *client, taskID, configPath string, input io.Reader, output io.Writer, auto, inputTerminal, outputTerminal, raw bool) error {
+	return runTaskWithPresentationAndSetup(ctx, c, taskID, configPath, "", input, output, auto, inputTerminal, outputTerminal, raw)
+}
+
+func runTaskWithPresentationAndSetup(ctx context.Context, c *client, taskID, configPath, setupName string, input io.Reader, output io.Writer, auto, inputTerminal, outputTerminal, raw bool) error {
 	if strings.TrimSpace(c.token) == "" {
 		return fmt.Errorf("CONVEYOR_API_TOKEN is required for task execution")
 	}
@@ -172,11 +178,18 @@ func runTaskWithPresentation(ctx context.Context, c *client, taskID, configPath 
 		}
 
 		if !setupLoaded {
-			setup, err = loadLocalExecutionSetup(configPath)
+			setup, err = loadNamedLocalExecutionSetup(configPath, setupName)
 			if err != nil {
 				stopApp()
 				_ = presentPendingRunOrderStyled(output, *item, outputTerminal)
 				return err
+			}
+			if strings.TrimSpace(setupName) != "" {
+				if err = probeLocalExecutionConfig(ctx, setup.Config); err != nil {
+					stopApp()
+					_ = presentPendingRunOrderStyled(output, *item, outputTerminal)
+					return fmt.Errorf("setup %q failed pre-claim harness probe: %w", setupName, err)
+				}
 			}
 			setupLoaded = true
 		}
@@ -185,6 +198,11 @@ func runTaskWithPresentation(ctx context.Context, c *client, taskID, configPath 
 		if selectErr != nil {
 			stopApp()
 			_ = presentPendingRunOrderStyled(output, *item, outputTerminal)
+			var capacity *reviewSeatCapacityError
+			if errors.As(selectErr, &capacity) {
+				_, err = fmt.Fprintf(output, "Review round requires seat %d, but setup %q configures %d seat(s); the order was left queued and nothing was claimed.\n", capacity.Required, local.DefaultSetup, capacity.Configured)
+				return err
+			}
 			return localExecutionSetupRemedy(configPath, selectErr)
 		}
 		stageTimeout := local.Routing.Stages[string(selected.Order.Stage)].TimeoutText
@@ -745,6 +763,9 @@ func selectLocalWorkerDispatch(item workerservice.DispatchOrder, local *config.C
 
 func selectLocalExecutionDispatch(item workerservice.DispatchOrder, local *config.Config) (workerservice.DispatchOrder, error) {
 	stage := string(item.Order.Stage)
+	if item.Order.Stage == core.StageReview && item.Order.ReviewSeat > len(local.Review.Seats) {
+		return item, &reviewSeatCapacityError{Required: item.Order.ReviewSeat, Configured: len(local.Review.Seats)}
+	}
 	route, ok := local.Routing.Stages[stage]
 	if !ok || route.Execution != config.ExecutionMCP {
 		return item, fmt.Errorf("local execution config has no MCP route for %s", stage)
@@ -778,4 +799,43 @@ func selectLocalExecutionDispatch(item workerservice.DispatchOrder, local *confi
 	item.EffortArgv = append([]string(nil), harness.EffortArgs[effort]...)
 	item.HarnessSelection = "local"
 	return item, nil
+}
+
+type reviewSeatCapacityError struct {
+	Required   int
+	Configured int
+}
+
+func probeLocalExecutionConfig(ctx context.Context, local *config.Config) error {
+	wanted := make(map[string]bool)
+	for _, route := range local.Routing.Stages {
+		if route.Harness != "" {
+			wanted[route.Harness] = true
+		}
+	}
+	for _, seat := range local.Review.Seats {
+		if seat.Harness != "" {
+			wanted[seat.Harness] = true
+		}
+	}
+	candidates := make([]config.Harness, 0, len(wanted))
+	for _, harness := range local.Harnesses {
+		if wanted[harness.Name] {
+			candidates = append(candidates, harness)
+		}
+	}
+	probes := probeHarnesses(ctx, candidates)
+	if len(probes) != len(candidates) {
+		return errors.New("one or more selected harnesses could not be probe-validated")
+	}
+	for _, probe := range probes {
+		if !validLocalHarnessProbe(probe) {
+			return fmt.Errorf("harness %q failed validation probe: %s", probe.Harness, probe.Message)
+		}
+	}
+	return nil
+}
+
+func (e *reviewSeatCapacityError) Error() string {
+	return fmt.Sprintf("review round requires seat %d but local setup configures %d seat(s)", e.Required, e.Configured)
 }

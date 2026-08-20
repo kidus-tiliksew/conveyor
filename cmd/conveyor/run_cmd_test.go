@@ -983,15 +983,15 @@ func TestSelectLocalRunDispatchNamesMissingSpecRoute(t *testing.T) {
 	}
 }
 
-func TestRunTaskNoSelectedHarnessPresentsPendingOrderWithoutClaiming(t *testing.T) {
+func TestRunTaskReviewSeatOverflowPresentsShortfallWithoutClaiming(t *testing.T) {
 	claimCalls, output, err := runTaskSelectionErrorScenario(t, core.StageReview, 3, func(value string) string { return value })
-	if err == nil || !strings.Contains(err.Error(), "no harness") || !strings.Contains(err.Error(), localExecutionSetupCommand) {
+	if err != nil {
 		t.Fatalf("err=%v", err)
 	}
 	if claimCalls != 0 {
 		t.Fatalf("claim calls=%d", claimCalls)
 	}
-	for _, want := range []string{"Task target: Ship target (state running)", "Next: review work order target-review-1"} {
+	for _, want := range []string{"Task target: Ship target (state running)", "Next: review work order target-review-1", "requires seat 3", "configures 2 seat(s)", "left queued", "nothing was claimed"} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("output missing %q: %q", want, output)
 		}

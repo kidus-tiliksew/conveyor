@@ -166,6 +166,36 @@ func TestExecutionWizardRendersStyledValidationAndKeyHelp(t *testing.T) {
 	}
 }
 
+func TestExecutionWizardEditsAndReordersMultipleReviewSeats(t *testing.T) {
+	templates := config.HarnessTemplates()
+	model := newReviewSeatExecutionWizardModel([]config.Harness{templates[0].Harness}, []localStageChoice{
+		{Harness: templates[0].Harness.Name, Model: "first", Effort: "high"},
+		{Harness: templates[0].Harness.Name, Model: "second", Effort: "medium"},
+	})
+	for model.field < 10 {
+		updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		model = updated.(executionWizardModel)
+	}
+	if len(model.fields) != 17 {
+		t.Fatalf("seat editor fields=%d", len(model.fields))
+	}
+	for model.field < len(model.fields)-1 {
+		updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		model = updated.(executionWizardModel)
+	}
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("2,1")})
+	model = updated.(executionWizardModel)
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(executionWizardModel)
+	if model.field != len(model.fields) || len(model.choices.ReviewSeats) != 2 || model.choices.ReviewSeats[0].Model != "second" || model.choices.ReviewSeats[1].Model != "first" {
+		t.Fatalf("review seats=%+v field=%d/%d", model.choices.ReviewSeats, model.field, len(model.fields))
+	}
+	document := localExecutionDocument("demo", model.choices, []config.Harness{templates[0].Harness})
+	if len(document.Review.Seats) != 2 || document.Review.Seats[0].Model != "second" {
+		t.Fatalf("document seats=%+v", document.Review.Seats)
+	}
+}
+
 func TestRunAndWorkerShareLocalSetupLoaderAndResolution(t *testing.T) {
 	harness := config.HarnessTemplates()[0].Harness
 	model := newExecutionWizardModel([]config.Harness{harness})
