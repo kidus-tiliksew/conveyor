@@ -226,6 +226,7 @@ type TaskAssignee struct {
 type TaskContext struct {
 	Requirements []TaskRequirementContext `json:"requirements,omitempty"`
 	Designs      []TaskDesignContext      `json:"designs,omitempty"`
+	Proposals    []TaskContextProposal    `json:"proposals,omitempty"`
 }
 
 type TaskRequirementContext struct {

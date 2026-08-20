@@ -289,13 +289,15 @@ type Decision struct {
 // operator still owes the factory. It is derived from immutable proposal rows;
 // it is never pipeline state and never gates work (REQ-1, REQ-3).
 type PendingProposal struct {
-	ID         string    `json:"id"`
-	Title      string    `json:"title"`
-	Tier       string    `json:"tier"`
-	Version    int       `json:"version,omitempty"`
-	OriginType string    `json:"origin_type"`
-	OriginID   string    `json:"origin_id,omitempty"`
-	ProposedAt time.Time `json:"proposed_at"`
+	ID            string    `json:"id"`
+	Title         string    `json:"title"`
+	Tier          string    `json:"tier"`
+	Version       int       `json:"version,omitempty"`
+	OriginType    string    `json:"origin_type"`
+	OriginID      string    `json:"origin_id,omitempty"`
+	TargetKind    string    `json:"target_kind,omitempty"`
+	Justification string    `json:"justification,omitempty"`
+	ProposedAt    time.Time `json:"proposed_at"`
 }
 
 // GovernanceDesignContext is the immutable portion of a confirmed System

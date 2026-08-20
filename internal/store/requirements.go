@@ -370,117 +370,45 @@ func (m *memory) AcknowledgeRequirementStaleness(ctx context.Context, acknowledg
 	return acknowledgment, nil
 }
 
-func requirementServesKey(workspace, blueprintTaskID, requirementID string) string {
-	return workspace + "\x00" + blueprintTaskID + "\x00" + requirementID
-}
-
 func (m *memory) ProposeRequirementServes(ctx context.Context, blueprintTaskID, requirementID string, source core.RequirementServesSource, confirm bool) (core.RequirementServesLink, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	workspace := workspaceOrDefault(ctx, "")
-	blueprintTaskID, requirementID = strings.TrimSpace(blueprintTaskID), strings.TrimSpace(requirementID)
-	if !source.Valid() {
-		return core.RequirementServesLink{}, fmt.Errorf("invalid requirement serves source %q", source)
+	proposal, _, err := m.proposeTaskContext(ctx, core.TaskContextProposalInput{TaskID: blueprintTaskID, TargetKind: core.TaskContextProposalRequirement,
+		TargetID: requirementID, Source: core.TaskContextProposalSource(source), Justification: "This confirmed requirement is relevant task context."}, true)
+	if err != nil {
+		return core.RequirementServesLink{}, err
 	}
-	task, exists := m.tasks[blueprintTaskID]
-	if !exists || task.Workspace != workspace {
-		return core.RequirementServesLink{}, fmt.Errorf("blueprint task %s not found", blueprintTaskID)
-	}
-	requirement, exists := m.requirements[memoryScopedKey{workspace: workspace, id: requirementID}]
-	if !exists {
-		return core.RequirementServesLink{}, fmt.Errorf("requirement %s not found", requirementID)
-	}
-	key := requirementServesKey(workspace, blueprintTaskID, requirementID)
-	if existing, ok := m.requirementServes[key]; ok {
-		if confirm && existing.State == core.RequirementServesProposed {
-			return m.confirmRequirementServesLocked(ctx, key, existing)
-		}
-		if existing.State == core.RequirementServesDismissed {
-			return core.RequirementServesLink{}, fmt.Errorf("%w: cannot repropose a dismissed link", ErrRequirementServesTransition)
-		}
-		return existing, nil
-	}
-	actor, now := ActorFromContext(ctx), time.Now().UTC()
-	eventKind := "requirement.serves_proposed"
-	if source == core.RequirementServesPlanning || source == core.RequirementServesTriage {
-		eventKind = "task.requirement_suggested"
-	}
-	m.appendEventLocked(ctx, core.Event{TaskID: blueprintTaskID, Kind: eventKind, At: now, Payload: core.JSONPayload(map[string]any{
-		"requirement_id": requirement.ID, "requirement_slug": requirement.Slug,
-		"requirement_title": requirement.Title, "source": source,
-	})})
-	link := core.RequirementServesLink{
-		BlueprintTaskID: blueprintTaskID, RequirementID: requirementID,
-		State: core.RequirementServesProposed, Source: source,
-		CreatedByEventID: m.nextEventID, ProposedBy: actor.ID,
-		Workspace: workspace, CreatedAt: now, UpdatedAt: now,
-	}
-	m.requirementServes[key] = link
 	if confirm {
-		return m.confirmRequirementServesLocked(ctx, key, link)
+		proposal, err = m.transitionTaskContextProposal(ctx, blueprintTaskID, core.TaskContextProposalRequirement, requirementID, core.TaskContextProposalConfirmed, true)
+		if err != nil {
+			return core.RequirementServesLink{}, err
+		}
 	}
-	return link, nil
+	return requirementServesFromProposal(proposal), nil
 }
 
 func (m *memory) ConfirmRequirementServes(ctx context.Context, blueprintTaskID, requirementID string) (core.RequirementServesLink, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	key := requirementServesKey(workspaceOrDefault(ctx, ""), strings.TrimSpace(blueprintTaskID), strings.TrimSpace(requirementID))
-	link, ok := m.requirementServes[key]
-	if !ok {
-		return core.RequirementServesLink{}, fmt.Errorf("requirement serves proposal %s -> %s not found", blueprintTaskID, requirementID)
-	}
-	return m.confirmRequirementServesLocked(ctx, key, link)
-}
-
-func (m *memory) confirmRequirementServesLocked(ctx context.Context, key string, link core.RequirementServesLink) (core.RequirementServesLink, error) {
-	if link.State == core.RequirementServesConfirmed {
-		return link, nil
-	}
-	if link.State != core.RequirementServesProposed {
-		return core.RequirementServesLink{}, fmt.Errorf("%w: cannot confirm %s link", ErrRequirementServesTransition, link.State)
-	}
-	actor, now := ActorFromContext(ctx), time.Now().UTC()
-	m.appendEventLocked(ctx, core.Event{TaskID: link.BlueprintTaskID, Kind: "requirement.serves_confirmed", At: now, Payload: core.JSONPayload(map[string]any{
-		"requirement_id": link.RequirementID, "confirmed_by": actor.ID,
-	})})
-	link.State, link.DecisionEventID, link.DecidedBy, link.UpdatedAt = core.RequirementServesConfirmed, m.nextEventID, actor.ID, now
-	m.requirementServes[key] = link
-	return link, nil
+	proposal, err := m.transitionTaskContextProposal(ctx, blueprintTaskID, core.TaskContextProposalRequirement, requirementID, core.TaskContextProposalConfirmed, true)
+	return requirementServesFromProposal(proposal), err
 }
 
 func (m *memory) DismissRequirementServes(ctx context.Context, blueprintTaskID, requirementID string) (core.RequirementServesLink, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	key := requirementServesKey(workspaceOrDefault(ctx, ""), strings.TrimSpace(blueprintTaskID), strings.TrimSpace(requirementID))
-	link, ok := m.requirementServes[key]
-	if !ok {
-		return core.RequirementServesLink{}, fmt.Errorf("requirement serves proposal %s -> %s not found", blueprintTaskID, requirementID)
+	proposal, err := m.transitionTaskContextProposal(ctx, blueprintTaskID, core.TaskContextProposalRequirement, requirementID, core.TaskContextProposalDismissed, true)
+	if err == nil {
+		m.mu.Lock()
+		delete(m.lineage, lineageLinkKey(core.LineageLink{Workspace: proposal.Workspace, SrcType: core.LineageRequirement, SrcID: proposal.TargetID, DstType: core.LineageBlueprint, DstID: proposal.TaskID, Kind: "serves"}))
+		m.mu.Unlock()
 	}
-	if link.State == core.RequirementServesDismissed {
-		return link, nil
-	}
-	if link.State != core.RequirementServesProposed {
-		return core.RequirementServesLink{}, fmt.Errorf("%w: cannot dismiss %s link", ErrRequirementServesTransition, link.State)
-	}
-	actor, now := ActorFromContext(ctx), time.Now().UTC()
-	m.appendEventLocked(ctx, core.Event{TaskID: link.BlueprintTaskID, Kind: "requirement.serves_dismissed", At: now, Payload: core.JSONPayload(map[string]any{
-		"requirement_id": link.RequirementID, "dismissed_by": actor.ID,
-	})})
-	delete(m.lineage, lineageLinkKey(core.LineageLink{Workspace: link.Workspace, SrcType: core.LineageRequirement, SrcID: link.RequirementID, DstType: core.LineageBlueprint, DstID: link.BlueprintTaskID, Kind: "serves"}))
-	link.State, link.DecisionEventID, link.DecidedBy, link.UpdatedAt = core.RequirementServesDismissed, m.nextEventID, actor.ID, now
-	m.requirementServes[key] = link
-	return link, nil
+	return requirementServesFromProposal(proposal), err
 }
 
 func (m *memory) ListRequirementServes(ctx context.Context) ([]core.RequirementServesLink, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	workspace := workspaceOrDefault(ctx, "")
+	proposals, err := m.ListTaskContextProposals(ctx, "", "")
+	if err != nil {
+		return nil, err
+	}
 	links := []core.RequirementServesLink{}
-	for _, link := range m.requirementServes {
-		if link.Workspace == workspace {
-			links = append(links, link)
+	for _, proposal := range proposals {
+		if proposal.TargetKind == core.TaskContextProposalRequirement {
+			links = append(links, requirementServesFromProposal(proposal))
 		}
 	}
 	sort.Slice(links, func(i, j int) bool {
@@ -490,6 +418,13 @@ func (m *memory) ListRequirementServes(ctx context.Context) ([]core.RequirementS
 		return links[i].RequirementID < links[j].RequirementID
 	})
 	return links, nil
+}
+
+func requirementServesFromProposal(proposal core.TaskContextProposal) core.RequirementServesLink {
+	return core.RequirementServesLink{BlueprintTaskID: proposal.TaskID, RequirementID: proposal.TargetID,
+		State: core.RequirementServesState(proposal.State), Source: core.RequirementServesSource(proposal.Source),
+		CreatedByEventID: proposal.CreatedByEventID, DecisionEventID: proposal.DecisionEventID, ProposedBy: proposal.ProposedBy,
+		DecidedBy: proposal.DecidedBy, Workspace: proposal.Workspace, CreatedAt: proposal.CreatedAt, UpdatedAt: proposal.UpdatedAt}
 }
 
 func (m *memory) CreatePlanningSession(ctx context.Context, session core.PlanningSession) (core.PlanningSession, error) {
@@ -784,16 +719,16 @@ func (m *memory) FinalizePlanningSession(ctx context.Context, request PlanningFi
 		"transcript_artifact_id":    session.TranscriptArtifactID,
 	})})
 	if session.RequirementContextID != "" && session.ProducedTaskID != "" {
-		servesKey := requirementServesKey(workspace, session.ProducedTaskID, session.RequirementContextID)
-		if _, exists := m.requirementServes[servesKey]; !exists {
+		servesKey := proposalKey(session.ProducedTaskID, core.TaskContextProposalRequirement, session.RequirementContextID)
+		if _, exists := m.taskContextProposals[servesKey]; !exists {
 			requirement := m.requirements[memoryScopedKey{workspace: workspace, id: session.RequirementContextID}]
 			m.appendEventLocked(ctx, core.Event{TaskID: session.ProducedTaskID, Kind: "task.requirement_suggested", At: now, Payload: core.JSONPayload(map[string]any{
 				"requirement_id": requirement.ID, "requirement_slug": requirement.Slug,
 				"requirement_title": requirement.Title, "source": core.RequirementServesPlanning,
 			})})
-			m.requirementServes[servesKey] = core.RequirementServesLink{
-				BlueprintTaskID: session.ProducedTaskID, RequirementID: requirement.ID,
-				State: core.RequirementServesProposed, Source: core.RequirementServesPlanning,
+			m.taskContextProposals[servesKey] = core.TaskContextProposal{
+				TaskID: session.ProducedTaskID, TargetKind: core.TaskContextProposalRequirement, TargetID: requirement.ID, TargetTitle: requirement.Title,
+				State: core.TaskContextProposalProposed, Source: core.TaskContextProposalPlanning, Justification: "This planning requirement is relevant task context.",
 				CreatedByEventID: m.nextEventID, ProposedBy: ActorFromContext(ctx).ID,
 				Workspace: workspace, CreatedAt: now, UpdatedAt: now,
 			}
