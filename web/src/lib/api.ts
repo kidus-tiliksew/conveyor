@@ -537,6 +537,22 @@ export async function updateTaskContext(
   if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
   return response.json() as Promise<import('./types').TaskContext>
 }
+export async function resolveTaskContextProposal(
+  token: string,
+  taskId: string,
+  targetKind: 'requirement' | 'system_design',
+  targetId: string,
+  action: 'confirm' | 'dismiss',
+) {
+  const response = await fetch(
+    workspaceURL(
+      `/v1/tasks/${encodeURIComponent(taskId)}/context/proposals/${encodeURIComponent(targetKind)}/${encodeURIComponent(targetId)}/${action}`,
+    ),
+    { method: 'POST', headers: mutationHeaders(token) },
+  )
+  if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
+  return response.json() as Promise<import('./types').TaskContextProposal>
+}
 // The Tasks view's read-only projection: task state, relations,
 // attached context, and plan status from one durable source.
 // Every member of the shared filter family travels to the server (AC-2.3): the

@@ -1,17 +1,17 @@
 import { Link, useParams } from '@tanstack/react-router'
 import { ArrowLeft, ChevronDown, ChevronUp } from 'lucide-react'
-import type { ActivityItem } from '../lib/types'
 import { useCanonicalBlueprintRedirect } from '../components/blueprint/use-blueprint-route'
 import { LineageExplorer } from '../components/lineage/lineage-explorer'
 import { AttachmentsCard } from '../components/task/attachments-card'
 import { isReviewable } from '../components/task/review-panel'
 import { SpecCard } from '../components/task/spec-card'
-import { TaskHeader } from '../components/task/task-header'
 import { TaskContextCard } from '../components/task/task-context-card'
+import { TaskHeader } from '../components/task/task-header'
 import { Timeline } from '../components/task/timeline'
 import { useTaskDetail, useTaskOrder } from '../components/task/use-task-detail'
 import { Button } from '../components/ui/button'
 import { Skeleton } from '../components/ui/skeleton'
+import type { ActivityItem } from '../lib/types'
 
 // The full task page keeps its route header fixed while the task content uses
 // one native scroll region. That region includes the task description so a
@@ -83,7 +83,7 @@ function FullBody({ item }: { item: ActivityItem }) {
           aria-label="Execution plan"
           className="space-y-4 border-b border-border px-6 py-4 lg:border-b-0 lg:border-r"
         >
-          <TaskContextCard context={item.task.context} />
+          <TaskContextCard taskId={item.task.id} context={item.task.context} />
           {item.spec ? (
             <SpecCard spec={item.spec} collapsible={false} routeVariant="full" />
           ) : (

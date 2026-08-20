@@ -16,7 +16,24 @@ const detailRequestCounts = new Map<string, number>()
 // as origin, so which documents these name is what decides whether
 // a task's own pending version reaches its detail at all.
 type AttachedDocument = { id: string; title: string; version: number }
-const attachedContext: Record<string, { requirements?: AttachedDocument[]; designs?: AttachedDocument[] }> = {
+type ContextProposalFixture = {
+  task_id: string
+  target_kind: 'requirement' | 'system_design'
+  target_id: string
+  target_title: string
+  state: 'proposed'
+  source: 'planning' | 'triage' | 'operator'
+  justification: string
+  created_by_event_id: number
+  proposed_by: string
+  workspace: string
+  created_at: string
+  updated_at: string
+}
+const attachedContext: Record<
+  string,
+  { requirements?: AttachedDocument[]; designs?: AttachedDocument[]; proposals?: ContextProposalFixture[] }
+> = {
   'attached-context': {
     requirements: [{ id: 'req-context', title: 'Confirmed product outcome', version: 3 }],
     designs: [{ id: 'design-context', title: 'Confirmed technical guidance', version: 2 }],
@@ -2853,6 +2870,143 @@ test('task detail links attached product and design context', async ({ page }) =
   )
   await expect(context).toContainText('v3')
   await expect(context).toContainText('v2')
+})
+
+test('task context suggestions show justification and become attachments or disappear when resolved', async ({
+  page,
+}) => {
+  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'test-token'))
+  const taskId = 'context-suggestions'
+  let requirementConfirmed = false
+  let requirementPending = true
+  let designPending = true
+  const proposal = (
+    target_kind: ContextProposalFixture['target_kind'],
+    target_id: string,
+    target_title: string,
+    source: ContextProposalFixture['source'],
+    justification: string,
+  ): ContextProposalFixture => ({
+    task_id: taskId,
+    target_kind,
+    target_id,
+    target_title,
+    state: 'proposed',
+    source,
+    justification,
+    created_by_event_id: 42,
+    proposed_by: 'system',
+    workspace: 'demo',
+    created_at: createdAt,
+    updated_at: createdAt,
+  })
+
+  await page.route('**/v1/tasks/context-suggestions/activity*', (route) => {
+    const item = activity(taskId, false)
+    item.task.context = {
+      requirements: requirementConfirmed ? [{ id: 'req-intake', title: 'Task intake and triage', version: 4 }] : [],
+      designs: [],
+      proposals: [
+        ...(requirementPending
+          ? [
+              proposal(
+                'requirement',
+                'req-intake',
+                'Task intake and triage',
+                'triage',
+                'The task explicitly changes operator intake behavior.',
+              ),
+            ]
+          : []),
+        ...(designPending
+          ? [
+              proposal(
+                'system_design',
+                'design-web-dashboard',
+                'Web dashboard',
+                'planning',
+                'The dashboard interaction inventory governs this surface.',
+              ),
+            ]
+          : []),
+      ],
+    }
+    return route.fulfill({ json: item })
+  })
+  await page.route('**/v1/tasks/context-suggestions/context/proposals/requirement/req-intake/confirm*', (route) => {
+    expect(route.request().headers().authorization).toBe('Bearer test-token')
+    requirementPending = false
+    requirementConfirmed = true
+    return route.fulfill({ json: {} })
+  })
+  await page.route(
+    '**/v1/tasks/context-suggestions/context/proposals/system_design/design-web-dashboard/dismiss*',
+    (route) => {
+      expect(route.request().headers().authorization).toBe('Bearer test-token')
+      designPending = false
+      return route.fulfill({ json: {} })
+    },
+  )
+
+  await page.goto(`/tasks/${taskId}/full`)
+  const suggestions = page.getByRole('region', { name: 'Suggested context' })
+  await expect(suggestions).toContainText('Task intake and triage')
+  await expect(suggestions).toContainText('From task intake')
+  await expect(suggestions).toContainText('The task explicitly changes operator intake behavior.')
+  await expect(suggestions).toContainText('The dashboard interaction inventory governs this surface.')
+
+  await suggestions
+    .getByRole('listitem')
+    .filter({ hasText: 'Task intake and triage' })
+    .getByRole('button', {
+      name: 'Attach context',
+    })
+    .click()
+  const attached = page.getByRole('region', { name: 'Attached context' })
+  await expect(attached.getByRole('link', { name: 'Task intake and triage' })).toBeVisible()
+  await expect(suggestions).not.toContainText('The task explicitly changes operator intake behavior.')
+
+  await suggestions
+    .getByRole('listitem')
+    .filter({ hasText: 'Web dashboard' })
+    .getByRole('button', {
+      name: 'Dismiss',
+    })
+    .click()
+  await expect(suggestions).toHaveCount(0)
+})
+
+test('task context suggestions remain visible without decision controls for non-operators', async ({ page }) => {
+  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'viewer-token'))
+  await page.route('**/v1/me**', (route) => route.fulfill({ json: { id: 'usr_viewer', role: 'contributor' } }))
+  await page.route('**/v1/tasks/context-suggestion-viewer/activity*', (route) => {
+    const item = activity('context-suggestion-viewer', false)
+    item.task.context = {
+      proposals: [
+        {
+          task_id: 'context-suggestion-viewer',
+          target_kind: 'requirement',
+          target_id: 'req-intake',
+          target_title: 'Task intake and triage',
+          state: 'proposed',
+          source: 'operator',
+          justification: 'Useful context remains readable to collaborators.',
+          created_by_event_id: 43,
+          proposed_by: 'usr_operator',
+          workspace: 'demo',
+          created_at: createdAt,
+          updated_at: createdAt,
+        },
+      ],
+    }
+    return route.fulfill({ json: item })
+  })
+
+  await page.goto('/tasks/context-suggestion-viewer/full')
+  const suggestions = page.getByRole('region', { name: 'Suggested context' })
+  await expect(suggestions).toContainText('Useful context remains readable to collaborators.')
+  await expect(suggestions.getByRole('button', { name: 'Attach context' })).toHaveCount(0)
+  await expect(suggestions.getByRole('button', { name: 'Dismiss' })).toHaveCount(0)
 })
 
 test('task sheet bounds an overflowing spec and expands and collapses it accessibly', async ({ page }) => {
