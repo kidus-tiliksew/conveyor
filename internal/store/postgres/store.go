@@ -3445,7 +3445,7 @@ session_id, attempt_id, client_token_hash, agent, model, worker_id, lease_expire
 queue_entered_at, queue_deadline, queue_blocked_at, execution_started_at, execution_deadline,
 last_attempt_id, last_attempt_outcome, last_failure_category, last_failure_message, last_failure_detail, last_failure_exit_status, last_failure_at,
 automatic_retry_count, next_retry_at, retry_suppressed, retry_suppression_reason,
-redispatch_count, operator_direction, continuation_session_id, continuation_attempt_id, continuation_harness, continuation_launch_environment, progress, cost_usd, tokens_in, tokens_out, usage_reported, self_reported,
+redispatch_count, operator_direction, checkpoint, continuation_session_id, continuation_attempt_id, continuation_harness, continuation_launch_environment, progress, cost_usd, tokens_in, tokens_out, usage_reported, self_reported,
 rate_limit, rate_limit_observed_at, created_at, updated_at, served_requirement_snapshot, governance_snapshot`
 
 // activityWorkOrderColumns preserves scanWorkOrder's shape while omitting the
@@ -3458,7 +3458,7 @@ session_id, attempt_id, client_token_hash, agent, model, worker_id, lease_expire
 queue_entered_at, queue_deadline, queue_blocked_at, execution_started_at, execution_deadline,
 last_attempt_id, last_attempt_outcome, last_failure_category, last_failure_message, last_failure_detail, last_failure_exit_status, last_failure_at,
 automatic_retry_count, next_retry_at, retry_suppressed, retry_suppression_reason,
-redispatch_count, operator_direction, continuation_session_id, continuation_attempt_id, continuation_harness, continuation_launch_environment, progress, cost_usd, tokens_in, tokens_out, usage_reported, self_reported,
+redispatch_count, operator_direction, checkpoint, continuation_session_id, continuation_attempt_id, continuation_harness, continuation_launch_environment, progress, cost_usd, tokens_in, tokens_out, usage_reported, self_reported,
 rate_limit, rate_limit_observed_at, created_at, updated_at, NULL::jsonb, NULL::jsonb`
 
 func servedRequirementSnapshotJSON(snapshot []core.ServedRequirementContext) any {
@@ -3473,6 +3473,13 @@ func governanceSnapshotJSON(snapshot *core.GovernanceSnapshot) any {
 		return nil
 	}
 	return core.JSONPayload(snapshot)
+}
+
+func checkpointJSON(checkpoint *core.WorkOrderCheckpoint) any {
+	if checkpoint == nil {
+		return json.RawMessage(`{}`)
+	}
+	return core.JSONPayload(checkpoint)
 }
 
 func (s *Store) CreateWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, order core.WorkOrder) error {
@@ -5964,7 +5971,7 @@ func scanReviewPublication(row interface{ Scan(...any) error }) (core.ReviewPubl
 func scanWorkOrder(row interface{ Scan(...any) error }) (core.WorkOrder, error) {
 	var order core.WorkOrder
 	var stage, state string
-	var harnessConfig, rateLimit, servedRequirementSnapshot, governanceSnapshot []byte
+	var harnessConfig, checkpoint, rateLimit, servedRequirementSnapshot, governanceSnapshot []byte
 	var lease, queueEntered, queueDeadline, queueBlockedAt, executionStarted, executionDeadline, lastFailureAt, nextRetryAt, rateLimitObservedAt pgtype.Timestamptz
 	err := row.Scan(&order.ID, &order.TaskID, &order.JobID, &stage, &state, &order.ClaimantID,
 		&order.SessionID, &order.AttemptID, &order.ClientTokenHash, &order.Agent, &order.Model, &order.WorkerID, &lease,
@@ -5973,10 +5980,19 @@ func scanWorkOrder(row interface{ Scan(...any) error }) (core.WorkOrder, error) 
 		&queueEntered, &queueDeadline, &queueBlockedAt, &executionStarted, &executionDeadline,
 		&order.LastAttemptID, &order.LastAttemptOutcome, &order.LastFailureCategory, &order.LastFailureMessage, &order.LastFailureDetail, &order.LastFailureExitStatus, &lastFailureAt,
 		&order.AutomaticRetryCount, &nextRetryAt, &order.RetrySuppressed, &order.RetrySuppressionReason,
-		&order.RedispatchCount, &order.OperatorDirection, &order.ContinuationSessionID, &order.ContinuationAttemptID,
+		&order.RedispatchCount, &order.OperatorDirection, &checkpoint, &order.ContinuationSessionID, &order.ContinuationAttemptID,
 		&order.ContinuationHarness, &order.ContinuationLaunchEnvironment, &order.Progress, &order.CostUSD, &order.TokensIn,
 		&order.TokensOut, &order.UsageReported, &order.SelfReported, &rateLimit, &rateLimitObservedAt, &order.CreatedAt, &order.UpdatedAt, &servedRequirementSnapshot, &governanceSnapshot)
 	order.Stage, order.State = core.Stage(stage), core.WorkOrderState(state)
+	if len(checkpoint) > 0 && string(checkpoint) != "{}" {
+		var value core.WorkOrderCheckpoint
+		if err == nil {
+			err = json.Unmarshal(checkpoint, &value)
+		}
+		if err == nil {
+			order.Checkpoint = &value
+		}
+	}
 	if len(harnessConfig) > 0 && string(harnessConfig) != "{}" {
 		var snapshot core.HarnessSnapshot
 		if err == nil {
