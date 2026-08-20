@@ -25,8 +25,11 @@ for them, not for the operator.
 
 Structure that has survived contact with the agents:
 
-1. `# <imperative summary>` then one paragraph: what was observed or
-   decided, with evidence (task/PR/review references) — the why.
+1. Open directly with one paragraph: what was observed or decided, with
+   evidence (task/PR/review references) — the why. Do not open with a `#` or
+   `##` summary heading: the title is generated from the body (see Mechanics),
+   so a leading summary heading renders as a duplicate beneath the title in
+   the task view.
 2. Numbered contract items, most important first. Each: the defect or
    goal, `file.go:line` anchors, a concrete failure scenario or behavior
    spec, and the fix **shape** (constrain the approach only where it

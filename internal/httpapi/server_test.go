@@ -2293,7 +2293,7 @@ func TestActivityDefaultsToBoundedPageAndSupportsExplicitPaging(t *testing.T) {
 		}
 	}
 	handler := NewServer(base).Handler()
-	assertPage := func(path string, wantLimit, wantOffset, wantItems int) {
+	assertPage := func(path string, wantTotal, wantLimit, wantOffset, wantItems int) {
 		t.Helper()
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
@@ -2304,14 +2304,17 @@ func TestActivityDefaultsToBoundedPageAndSupportsExplicitPaging(t *testing.T) {
 		if err := json.Unmarshal(response.Body.Bytes(), &items); err != nil {
 			t.Fatal(err)
 		}
-		if len(items) != wantItems || response.Header().Get("X-Conveyor-Total") != "205" ||
+		if len(items) != wantItems || response.Header().Get("X-Conveyor-Total") != strconv.Itoa(wantTotal) ||
 			response.Header().Get("X-Conveyor-Limit") != strconv.Itoa(wantLimit) ||
 			response.Header().Get("X-Conveyor-Offset") != strconv.Itoa(wantOffset) {
 			t.Fatalf("%s items=%d total=%q limit=%q offset=%q", path, len(items), response.Header().Get("X-Conveyor-Total"), response.Header().Get("X-Conveyor-Limit"), response.Header().Get("X-Conveyor-Offset"))
 		}
 	}
-	assertPage("/v1/activity", 100, 0, 100)
-	assertPage("/v1/activity?limit=25&offset=200", 25, 200, 5)
+	assertPage("/v1/activity", 205, 100, 0, 100)
+	assertPage("/v1/activity?limit=25&offset=200", 205, 25, 200, 5)
+	// Filtering precedes both the total and the slice. This is the combined
+	// contract the Board relies on when it searches beyond its first page.
+	assertPage("/v1/activity?q=activity-20&limit=2&offset=2", 5, 2, 2, 2)
 
 	overLimit := httptest.NewRecorder()
 	handler.ServeHTTP(overLimit, httptest.NewRequest(http.MethodGet, fmt.Sprintf(
