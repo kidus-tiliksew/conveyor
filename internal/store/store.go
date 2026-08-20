@@ -29,26 +29,29 @@ var (
 	// ErrNotFound classifies a missing durable planning resource independently
 	// of the backing store, so callers can distinguish model-supplied bad IDs
 	// from unavailable infrastructure.
-	ErrNotFound                     = errors.New("resource not found")
-	ErrLastWorkspaceOperator        = errors.New("cannot revoke the sole workspace operator; grant another operator first")
-	ErrWorkspaceConflict            = errors.New("workspace id or name already exists")
-	ErrRequirementSlugConflict      = errors.New("requirement slug already exists")
-	ErrSystemDesignIDConflict       = errors.New("system design id already exists")
-	ErrSystemDesignSlugConflict     = errors.New("system design slug already exists")
-	ErrDecisionIDConflict           = errors.New("decision id already exists")
-	ErrDecisionSupersessionConflict = errors.New("decision supersession conflicts with current state")
-	ErrRequirementServesTransition  = errors.New("invalid requirement serves-link transition")
-	ErrWorkOrderStale               = errors.New("work order is stale and requires redispatch")
-	ErrWorkOrderTimedOut            = errors.New("work order execution deadline exceeded")
-	ErrReviewRetryConflict          = errors.New("review round retry conflicts with current state")
-	ErrPairingInvalid               = errors.New("worker pairing token is invalid, expired, or already used")
-	ErrWorkerUnauthorized           = errors.New("worker credential is invalid or revoked")
-	ErrWorkOrderCancelled           = errors.New("work order was cancelled")
-	ErrWorkOrderPreempted           = errors.New("work order was preempted by an operator")
-	ErrWorkOrderPreemptConflict     = errors.New("work order preempt conflict")
-	ErrTaskTerminal                 = errors.New("task is already terminal")
-	ErrLineageRebuildValidation     = errors.New("invalid lineage rebuild request")
-	ErrLineageRebuildConflict       = errors.New("lineage rebuild request conflicts with a prior request")
+	ErrNotFound                      = errors.New("resource not found")
+	ErrLastWorkspaceOperator         = errors.New("cannot revoke the sole workspace operator; grant another operator first")
+	ErrWorkspaceConflict             = errors.New("workspace id or name already exists")
+	ErrRequirementSlugConflict       = errors.New("requirement slug already exists")
+	ErrSystemDesignIDConflict        = errors.New("system design id already exists")
+	ErrSystemDesignSlugConflict      = errors.New("system design slug already exists")
+	ErrDecisionIDConflict            = errors.New("decision id already exists")
+	ErrDecisionSupersessionConflict  = errors.New("decision supersession conflicts with current state")
+	ErrTaskContextProposalTransition = errors.New("invalid task context proposal transition")
+	// ErrRequirementServesTransition is the compatibility name retained for
+	// callers migrated onto the unified task-context proposal lifecycle.
+	ErrRequirementServesTransition = ErrTaskContextProposalTransition
+	ErrWorkOrderStale              = errors.New("work order is stale and requires redispatch")
+	ErrWorkOrderTimedOut           = errors.New("work order execution deadline exceeded")
+	ErrReviewRetryConflict         = errors.New("review round retry conflicts with current state")
+	ErrPairingInvalid              = errors.New("worker pairing token is invalid, expired, or already used")
+	ErrWorkerUnauthorized          = errors.New("worker credential is invalid or revoked")
+	ErrWorkOrderCancelled          = errors.New("work order was cancelled")
+	ErrWorkOrderPreempted          = errors.New("work order was preempted by an operator")
+	ErrWorkOrderPreemptConflict    = errors.New("work order preempt conflict")
+	ErrTaskTerminal                = errors.New("task is already terminal")
+	ErrLineageRebuildValidation    = errors.New("invalid lineage rebuild request")
+	ErrLineageRebuildConflict      = errors.New("lineage rebuild request conflicts with a prior request")
 	// ErrWorkOrderClaimLost is the order-scoped counterpart to
 	// ErrWorkerUnauthorized: the caller's credential is valid but the order is
 	// no longer claimed by it, typically because the claim lease expired and
@@ -78,6 +81,10 @@ type Store interface {
 	ApprovePlanningBundle(ctx context.Context, id string) (core.PlanningBundle, error)
 	RejectPlanningBundle(ctx context.Context, id string) (core.PlanningBundle, error)
 	UpdateTaskContext(ctx context.Context, taskID string, change TaskContextChange) (core.TaskContext, error)
+	ProposeTaskContext(ctx context.Context, input core.TaskContextProposalInput) (core.TaskContextProposal, bool, error)
+	ConfirmTaskContextProposal(ctx context.Context, taskID string, kind core.TaskContextProposalTargetKind, targetID string) (core.TaskContextProposal, error)
+	DismissTaskContextProposal(ctx context.Context, taskID string, kind core.TaskContextProposalTargetKind, targetID string) (core.TaskContextProposal, error)
+	ListTaskContextProposals(ctx context.Context, taskID string, state core.TaskContextProposalState) ([]core.TaskContextProposal, error)
 	// AttachSubmissionGovernance atomically resolves current confirmed scopes
 	// and appends only missing design pins before review dispatch (AC-5.1–AC-5.4).
 	AttachSubmissionGovernance(ctx context.Context, taskID, repository string, changedPaths []string, attribution SubmissionGovernanceAttribution) ([]core.TaskDesignContext, error)
@@ -1096,7 +1103,7 @@ func NewMemoryWithConfig(cfg *config.Config) Store {
 		features:                    map[string]core.Feature{},
 		requirements:                map[memoryScopedKey]core.Requirement{},
 		requirementVersions:         map[memoryScopedKey][]core.RequirementVersion{},
-		requirementServes:           map[string]core.RequirementServesLink{},
+		taskContextProposals:        map[string]core.TaskContextProposal{},
 		referenceDocuments:          map[memoryScopedKey]core.ReferenceDocument{},
 		referenceDocumentVersions:   map[memoryScopedKey][]core.ReferenceDocumentVersion{},
 		systemDesigns:               map[memoryScopedKey]core.SystemDesign{},
@@ -1163,7 +1170,7 @@ type memory struct {
 	features                    map[string]core.Feature
 	requirements                map[memoryScopedKey]core.Requirement
 	requirementVersions         map[memoryScopedKey][]core.RequirementVersion
-	requirementServes           map[string]core.RequirementServesLink
+	taskContextProposals        map[string]core.TaskContextProposal
 	referenceDocuments          map[memoryScopedKey]core.ReferenceDocument
 	referenceDocumentVersions   map[memoryScopedKey][]core.ReferenceDocumentVersion
 	systemDesigns               map[memoryScopedKey]core.SystemDesign

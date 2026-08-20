@@ -10,6 +10,10 @@ WITH pending_origin_tasks AS (
     FROM decisions
     WHERE workspace_id = $1
       AND status = 'proposed' AND origin_task_id IS NOT NULL
+	UNION
+	SELECT DISTINCT task_id
+	FROM task_context_proposals
+	WHERE workspace_id = $1 AND state = 'proposed'
 ),
 superseded_reviews AS (
     SELECT DISTINCT jsonb_array_elements_text(

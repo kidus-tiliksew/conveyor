@@ -961,7 +961,9 @@ func TestRequirementServesMigrationBackfillsSuggestionsAsProposalsIntegration(t 
 		t.Fatal(err)
 	}
 
-	f.upgradeTo(t, 51)
+	// Migration 051 first records the historical lifecycle; migration 103 folds
+	// it into the single task-context proposal table used by current code.
+	f.upgradeTo(t, 103)
 
 	links, err := f.store.ListRequirementServes(f.ctx)
 	if err != nil {

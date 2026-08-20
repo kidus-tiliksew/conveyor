@@ -54,6 +54,19 @@ func TestPullRequestIdentityRepairAuditKindIsMigrationAllowed(t *testing.T) {
 	}
 }
 
+func TestTaskContextProposalMigrationUnifiesRequirementLifecycle(t *testing.T) {
+	raw, err := migrationFiles.ReadFile("migrations/103_task_context_proposals.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := strings.ToLower(string(raw))
+	for _, required := range []string{"create table task_context_proposals", "justification text not null", "insert into task_context_proposals", "drop table requirement_serves_links"} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("migration 103 missing %q", required)
+		}
+	}
+}
+
 func TestLineageMigrationVocabularyAgreesWithProjector(t *testing.T) {
 	canonical := controlstore.CanonicalLineageKinds()
 	emitted := map[string]bool{}
