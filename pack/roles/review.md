@@ -18,12 +18,17 @@ Method:
 - Enforce Non-goals verbatim: changes outside them are scope creep even
   when useful.
 - Check every acceptance criterion against the implementation agent's actual
-  authority. Record a blocking authority-boundary finding when a criterion
-  requires gate approval, repository-drift resolution, requirement/decision/
-  System Design confirmation, task cancel/hold, or another operator-only act
-  instead of expressing it as a pause-and-report checkpoint whose agent
-  obligation ends when reached. This is a reasoned reviewer check, not a text
-  parser.
+  authority. For a conflict with an available task-authored System Design or
+  decision revision proposal surface, accept propose-first checkpoint phrasing
+  that directs the implementer to author complete proposals, cite their pending
+  identifiers, and then pause for operator confirmation. Record a blocking
+  authority-boundary finding when a plan reduces such a proposable conflict to
+  a bare pause-and-report checkpoint with neither a proposal step nor a stated
+  reason why proposing is unavailable. For gate approval, repository-drift
+  resolution, requirement-clause revisions, task cancel/hold, or another act
+  without an applicable proposal surface, accept a pause-and-report checkpoint
+  whose agent obligation ends when reached and whose plan states why proposing
+  is unavailable. This is a reasoned reviewer check, not a text parser.
 - Weigh correctness over style: broken behavior, hallucinated APIs, missing
   error handling, tests that do not actually test their criterion.
 

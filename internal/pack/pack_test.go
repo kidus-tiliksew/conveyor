@@ -159,9 +159,16 @@ func TestRolePromptsEnforceOperatorAuthorityBoundary(t *testing.T) {
 	for _, required := range []string{
 		"repository checkout, repository Make targets",
 		"Gate approval, repository-drift resolution",
-		"requirement/decision/System Design confirmation",
+		"System Design revision or decision",
+		"task-authored governance proposal tools",
+		"complete revision proposals first",
+		"pending proposal identifiers",
+		"proposals already pending",
+		"requirement-clause revisions",
 		"task cancel/hold",
-		`"pause and report until the operator has done X."`,
+		"no applicable task-authored proposal surface is available",
+		`"pause and report until the operator has done X,"`,
+		"state why proposing is unavailable",
 		"reaching and reporting the checkpoint satisfies the agent's obligation",
 		"operator checkpoint reached",
 		"monitor-sourced `chore` tasks",
@@ -223,7 +230,21 @@ func TestRolePromptsEnforceOperatorAuthorityBoundary(t *testing.T) {
 		t.Fatal(err)
 	}
 	normalizedReview := strings.Join(strings.Fields(review), " ")
-	for _, required := range []string{"blocking authority-boundary finding", "repository-drift resolution", "requirement/decision/", "task cancel/hold", "pause-and-report checkpoint", "reasoned reviewer check, not a text parser"} {
+	for _, required := range []string{
+		"blocking authority-boundary finding",
+		"task-authored System Design or decision revision proposal surface",
+		"accept propose-first checkpoint phrasing",
+		"author complete proposals",
+		"cite their pending identifiers",
+		"bare pause-and-report checkpoint",
+		"neither a proposal step nor a stated reason why proposing is unavailable",
+		"repository-drift resolution",
+		"requirement-clause revisions",
+		"task cancel/hold",
+		"without an applicable proposal surface",
+		"agent obligation ends when reached",
+		"reasoned reviewer check, not a text parser",
+	} {
 		if !strings.Contains(normalizedReview, required) {
 			t.Errorf("review role is missing %q", required)
 		}
