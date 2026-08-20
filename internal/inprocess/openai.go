@@ -106,7 +106,7 @@ func (client *OpenAI) Run(ctx context.Context, model string, input Input) (Resul
 	diagnostic := requestDiagnostic(model, endpointHost, input.Attachments)
 	if strings.TrimSpace(client.APIKey) == "" {
 		diagnostic.Phase = "client_validation"
-		return Result{Diagnostic: &diagnostic}, fmt.Errorf("Responses API (%s) client validation failed for model %q: CONVEYOR_API_KEY is required for in-process stages", endpointHost, model)
+		return Result{Diagnostic: &diagnostic}, fmt.Errorf("Responses API (%s) client validation failed for model %q: CONVEYOR_LLM_API_KEY is required for in-process stages (CONVEYOR_API_KEY is a deprecated fallback)", endpointHost, model)
 	}
 	if input.OutputSchema != nil && (strings.TrimSpace(input.OutputSchema.Name) == "" || input.OutputSchema.Schema == nil) {
 		diagnostic.Phase = "client_validation"

@@ -79,7 +79,7 @@ func TestOpenAIRunUsesStructuredBinaryInputsAndTranscribesAudio(t *testing.T) {
 func TestOpenAIRunDefaultEndpointIsNamedWithoutRequest(t *testing.T) {
 	t.Parallel()
 	result, err := (&OpenAI{}).Run(context.Background(), "gpt-5.6-terra", Input{Prompt: "work"})
-	if err == nil || !strings.Contains(err.Error(), "Responses API (api.openai.com) client validation failed") {
+	if err == nil || !strings.Contains(err.Error(), "Responses API (api.openai.com) client validation failed") || !strings.Contains(err.Error(), "CONVEYOR_LLM_API_KEY") {
 		t.Fatalf("err = %v", err)
 	}
 	if result.Diagnostic == nil || result.Diagnostic.Endpoint != "api.openai.com" || result.Diagnostic.Provider != "openai_responses" {

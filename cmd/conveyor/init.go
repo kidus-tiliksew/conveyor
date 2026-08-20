@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -32,6 +33,7 @@ type initPrerequisites struct {
 	run      func(context.Context, string, ...string) ([]byte, error)
 	stat     func(string) (os.FileInfo, error)
 	getenv   func(string) string
+	warnf    func(string, ...any)
 }
 
 func initCmd() *cobra.Command {
@@ -52,6 +54,7 @@ func initCmd() *cobra.Command {
 				},
 				stat:   os.Stat,
 				getenv: os.Getenv,
+				warnf:  log.Printf,
 			}
 			if err = checkInitPrerequisites(cmd.Context(), prerequisites, answers); err != nil {
 				return err
@@ -161,8 +164,13 @@ func checkInitPrerequisites(ctx context.Context, prerequisites initPrerequisites
 	if getenv == nil {
 		getenv = os.Getenv
 	}
-	if configUsesInProcessExecution(generated) && strings.TrimSpace(getenv("CONVEYOR_API_KEY")) == "" {
-		return errors.New("CONVEYOR_API_KEY is required for in-process triage and spec stages; set it and rerun `conveyor init`")
+	warnf := prerequisites.warnf
+	if warnf == nil {
+		warnf = log.Printf
+	}
+	llmEnvironment := config.ResolveLLMEnvironment(getenv, warnf)
+	if configUsesInProcessExecution(generated) && strings.TrimSpace(llmEnvironment.APIKey) == "" {
+		return errors.New("CONVEYOR_LLM_API_KEY is required for in-process triage and spec stages; set it and rerun `conveyor init` (CONVEYOR_API_KEY is a deprecated fallback)")
 	}
 	return nil
 }
@@ -303,8 +311,12 @@ func initializeDeployment(ctx context.Context, output io.Writer, configPath stri
 }
 
 func requireInitAPIKey(candidate config.Config) error {
-	if configUsesInProcessExecution(candidate) && strings.TrimSpace(os.Getenv("CONVEYOR_API_KEY")) == "" {
-		return errors.New("CONVEYOR_API_KEY is required for in-process triage and spec stages; set it and rerun `conveyor init`")
+	if !configUsesInProcessExecution(candidate) {
+		return nil
+	}
+	llmEnvironment := config.ResolveLLMEnvironment(os.Getenv, log.Printf)
+	if strings.TrimSpace(llmEnvironment.APIKey) == "" {
+		return errors.New("CONVEYOR_LLM_API_KEY is required for in-process triage and spec stages; set it and rerun `conveyor init` (CONVEYOR_API_KEY is a deprecated fallback)")
 	}
 	return nil
 }
