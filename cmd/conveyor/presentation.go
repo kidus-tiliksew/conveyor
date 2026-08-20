@@ -86,6 +86,15 @@ type runOutputPresentation struct {
 
 func presentRunChildReapNotice(stdout io.Writer, presentation *runOutputPresentation, stage, state string) error {
 	message := fmt.Sprintf("work order is %s; ending lingering %s session so the run can advance", state, stage)
+	return presentRunNotice(stdout, presentation, message)
+}
+
+func presentRunCheckpointPause(stdout io.Writer, presentation *runOutputPresentation, stage, reason string) error {
+	message := fmt.Sprintf("work order was released because %s; run paused for operator direction while the lingering %s session exits", reason, stage)
+	return presentRunNotice(stdout, presentation, message)
+}
+
+func presentRunNotice(stdout io.Writer, presentation *runOutputPresentation, message string) error {
 	if presentation == nil {
 		_, err := fmt.Fprintln(stdout, "! "+message)
 		return err

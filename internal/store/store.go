@@ -58,6 +58,10 @@ var (
 	// ownership returned to the queue. Kept distinct so agents do
 	// not misdiagnose a lapsed claim as a revoked credential.
 	ErrWorkOrderClaimLost = errors.New("work order claim is no longer held by this worker (claim expired or order reassigned)")
+	// ErrWorkOrderReleasedAtCheckpoint reports that renewal observed an exact
+	// same-session claim which already released itself for operator direction.
+	// The release remains authoritative; renewal does not resurrect the claim.
+	ErrWorkOrderReleasedAtCheckpoint = errors.New("work_order_released_checkpoint: work order claim was released by this session at an operator checkpoint")
 	// ErrWorkOrderClaimUnauthorized distinguishes a live claim owned by a
 	// different authenticated claimant from an expired or reassigned lease.
 	ErrWorkOrderClaimUnauthorized = errors.New("authenticated caller does not hold this live work order claim")
@@ -1364,6 +1368,13 @@ func (m *memory) RenewWorkerClaimCommand(ctx context.Context, taskLease taskops.
 			}
 		}
 	}
+	if ok && deliberateCheckpointRelease(order) {
+		for i := len(m.events[order.TaskID]) - 1; i >= 0; i-- {
+			if ReleasedCheckpointClaimEventMatches(m.events[order.TaskID][i], order, claim) {
+				return core.WorkOrder{}, ErrWorkOrderReleasedAtCheckpoint
+			}
+		}
+	}
 	if !ok || order.WorkerID != claim.WorkerID || order.ClaimantID != claim.ClaimantID || order.SessionID == "" || order.SessionID != claim.SessionID {
 		return core.WorkOrder{}, ErrWorkOrderClaimLost
 	}
@@ -1772,6 +1783,25 @@ func AttemptCheckpointClaimEventMatches(event core.Event, workOrderID, workerID 
 	return json.Unmarshal(event.Payload, &claimed) == nil && claimed.ID == workOrderID &&
 		claimed.Stage == core.StageImplement && claimed.WorkerID == workerID &&
 		claimed.SessionID == checkpoint.SessionID && claimed.AttemptID == checkpoint.AttemptID
+}
+
+// ReleasedCheckpointClaimEventMatches binds a post-release renewal outcome to
+// the immutable claim event for the retained last attempt. This prevents a
+// later or differently authenticated session from inheriting graceful exit.
+func ReleasedCheckpointClaimEventMatches(event core.Event, order core.WorkOrder, claim core.WorkOrderClaimIdentity) bool {
+	if event.Kind != "work_order.claimed" || event.JobID != order.JobID || order.LastAttemptID == "" {
+		return false
+	}
+	var claimed core.WorkOrder
+	return json.Unmarshal(event.Payload, &claimed) == nil && claimed.ID == order.ID &&
+		claimed.AttemptID == order.LastAttemptID && claimed.WorkerID == claim.WorkerID &&
+		claimed.ClaimantID == claim.ClaimantID && claimed.SessionID == claim.SessionID
+}
+
+func deliberateCheckpointRelease(order core.WorkOrder) bool {
+	return order.State == core.WorkOrderQueued && order.WorkerID == "" && order.ClaimantID == "" && order.SessionID == "" &&
+		(order.LastFailureMessage == core.WorkOrderReleaseReasonOperatorCheckpointReached ||
+			order.LastFailureMessage == core.WorkOrderReleaseReasonPlanRevisionRequested)
 }
 
 func AttemptCheckpointPayload(order core.WorkOrder, checkpoint core.WorkOrderAttemptCheckpoint) json.RawMessage {

@@ -86,6 +86,42 @@ func TestMCPReadArtifactSupportsManualSessionsAndEnforcesWorkerOwnership(t *test
 	}
 }
 
+func TestMCPRenewReportsSameSessionCheckpointRelease(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	task := core.Task{ID: "mcp-checkpoint", Workspace: "demo", State: core.TaskRunning, CreatedAt: time.Now()}
+	job := core.Job{ID: "mcp-checkpoint-implement-1", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued}); err != nil {
+		t.Fatal(err)
+	}
+	claimant := core.TaskRunClaimantID("usr-runner")
+	if _, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "run-session", ClientToken: "secret", ClaimantID: claimant, Lease: time.Minute}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storetest.For(st).ReleaseWorkerClaim(ctx, job.ID, "", core.WorkOrderRelease{SessionID: "run-session", Reason: core.WorkOrderReleaseReasonOperatorCheckpointReached, Cause: core.WorkOrderReleaseCauseOperatorAction, Outcome: core.WorkOrderOutcomeReleased}); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(st)
+	server.Workspace = "demo"
+	server.WorkOrders = &workorder.Service{Store: st}
+	server.Workers = &workerservice.Service{Store: st, WorkOrders: server.WorkOrders}
+	request := httptest.NewRequest(http.MethodPost, "/mcp", nil).WithContext(store.WithCredential(ctx, core.AuthenticatedCredential{ID: "user-token", OwnerUserID: "usr-runner", Kind: core.CredentialUser, Scope: core.CredentialScopeUser}))
+	args := map[string]any{"workspace_id": "demo", "work_order_id": job.ID, "session_id": "run-session"}
+	if _, err := server.callMCPTool(request, "renew_work_order", args); !errors.Is(err, store.ErrWorkOrderReleasedAtCheckpoint) {
+		t.Fatalf("renew error=%v", err)
+	}
+	args["session_id"] = "other-session"
+	if _, err := server.callMCPTool(request, "renew_work_order", args); !errors.Is(err, store.ErrWorkOrderClaimLost) {
+		t.Fatalf("wrong-session renew error=%v", err)
+	}
+}
+
 func TestMCPImplementationGovernanceProposalsBindToClaimedTask(t *testing.T) {
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	st := store.NewMemory()

@@ -233,6 +233,23 @@ func (s *Store) RenewWorkerClaimCommand(ctx context.Context, taskLease taskops.T
 		if getErr == nil && current.WorkerID == claim.WorkerID && current.ClaimantID == claim.ClaimantID && current.SessionID == claim.SessionID && (current.State == core.WorkOrderSubmitted || current.State == core.WorkOrderCompleted) {
 			return current, nil
 		}
+		if getErr == nil && current.State == core.WorkOrderQueued && current.WorkerID == "" && current.ClaimantID == "" && current.SessionID == "" &&
+			(current.LastFailureMessage == core.WorkOrderReleaseReasonOperatorCheckpointReached ||
+				current.LastFailureMessage == core.WorkOrderReleaseReasonPlanRevisionRequested) && current.LastAttemptID != "" {
+			var releasedByClaim bool
+			if matchErr := s.pool.QueryRow(ctx, `SELECT EXISTS (
+				SELECT 1 FROM events WHERE workspace_id=$1 AND task_id=$2 AND job_id=$3
+				AND kind='work_order.claimed' AND payload_json->>'id'=$4
+				AND payload_json->>'attempt_id'=$5 AND payload_json->>'worker_id'=$6
+				AND payload_json->>'claimed_by'=$7 AND payload_json->>'session_id'=$8
+			)`, workspace(ctx), current.TaskID, current.JobID, current.ID, current.LastAttemptID,
+				claim.WorkerID, claim.ClaimantID, claim.SessionID).Scan(&releasedByClaim); matchErr != nil {
+				return core.WorkOrder{}, matchErr
+			}
+			if releasedByClaim {
+				return core.WorkOrder{}, store.ErrWorkOrderReleasedAtCheckpoint
+			}
+		}
 		var preempted bool
 		if preemptErr := s.pool.QueryRow(ctx, `SELECT EXISTS (
 			SELECT 1 FROM work_order_preemptions

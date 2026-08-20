@@ -1012,6 +1012,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 	ticker := time.NewTicker(renewEvery)
 	defer ticker.Stop()
 	claimFinalized := false
+	checkpointReleaseReason := ""
 	var finalizedOrder core.WorkOrder
 	var runTerminalTimer *time.Timer
 	var runTerminalDeadline <-chan time.Time
@@ -1039,6 +1040,16 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 				_ = release(core.WorkOrderOutcomeCancelled, "worker shutting down", nil)
 			}
 			return ctx.Err()
+		}
+		if checkpointReleaseReason != "" {
+			// Renewal already proved that this exact child durably released for
+			// operator direction. The release is the successful stage handoff;
+			// child exit status cannot turn it into claim loss or a duplicate
+			// release (design-260805-973cd4).
+			if err := presentRunCheckpointPause(stdout, presentation, string(item.Order.Stage), checkpointReleaseReason); err != nil {
+				return fmt.Errorf("present operator checkpoint pause: %w", err)
+			}
+			return nil
 		}
 		var exitStatus *int
 		if waitErr != nil {
@@ -1085,6 +1096,14 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 		}
 		return nil
 	}
+	observeCheckpointRelease := func(renewErr error) bool {
+		if !workerOrderReleasedAtCheckpoint(renewErr) {
+			return false
+		}
+		checkpointReleaseReason = core.WorkOrderReleaseReasonOperatorCheckpointReached
+		observeFinalized(core.WorkOrder{ID: item.Order.ID, State: core.WorkOrderQueued, LastFailureMessage: checkpointReleaseReason})
+		return true
+	}
 	for {
 		select {
 		case waitErr := <-done:
@@ -1096,7 +1115,11 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 				return handleChildExit(waitErr)
 			default:
 			}
-			if err := presentRunChildReapNotice(stdout, presentation, string(item.Order.Stage), string(finalizedOrder.State)); err != nil {
+			if checkpointReleaseReason != "" {
+				if err := presentRunCheckpointPause(stdout, presentation, string(item.Order.Stage), checkpointReleaseReason); err != nil {
+					return fmt.Errorf("present operator checkpoint pause: %w", err)
+				}
+			} else if err := presentRunChildReapNotice(stdout, presentation, string(item.Order.Stage), string(finalizedOrder.State)); err != nil {
 				return fmt.Errorf("present lingering-child reap: %w", err)
 			}
 			_ = processGroup.terminate(nil)
@@ -1142,6 +1165,9 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 			}
 			renewed, renewErr := renewDispatchClaimUntil(ctx, c, credential, item, sessionID, leaseExpiresAt)
 			if renewErr != nil {
+				if observeCheckpointRelease(renewErr) {
+					continue
+				}
 				_ = processGroup.terminate(nil)
 				if workerOrderPreempted(renewErr) {
 					return attemptAuthorityLoss(errWorkerOrderPreempted.Error(), checkpointAttempt)
@@ -1213,6 +1239,9 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 			}
 			renewed, renewErr := renewDispatchClaimUntil(ctx, c, credential, item, sessionID, leaseExpiresAt)
 			if renewErr != nil {
+				if observeCheckpointRelease(renewErr) {
+					continue
+				}
 				_ = processGroup.terminate(nil)
 				if workerOrderPreempted(renewErr) {
 					return attemptAuthorityLoss(errWorkerOrderPreempted.Error(), checkpointAttempt)
@@ -1271,6 +1300,9 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 			}
 			renewed, renewErr := renewDispatchClaimUntil(ctx, c, credential, item, sessionID, leaseExpiresAt)
 			if renewErr != nil {
+				if observeCheckpointRelease(renewErr) {
+					continue
+				}
 				_ = processGroup.terminate(nil)
 				if workerOrderPreempted(renewErr) {
 					return attemptAuthorityLoss(errWorkerOrderPreempted.Error(), checkpointAttempt)
@@ -1659,6 +1691,12 @@ func makeCheckoutWritable(root string) error {
 var errWorkerClaimAuthorityLost = errors.New("worker claim authority cannot be confirmed before lease safety margin")
 var errWorkerOrderCancelled = errors.New("work order was cancelled by an operator")
 var errWorkerOrderPreempted = errors.New("work order was preempted by an operator")
+
+func workerOrderReleasedAtCheckpoint(err error) bool {
+	var response *workerHTTPError
+	return errors.As(err, &response) && response.StatusCode == http.StatusConflict &&
+		(response.Code == "work_order_released_checkpoint" || strings.Contains(strings.ToLower(response.Message), "work_order_released_checkpoint"))
+}
 
 func workerOrderCancelled(err error) bool {
 	var response *workerHTTPError

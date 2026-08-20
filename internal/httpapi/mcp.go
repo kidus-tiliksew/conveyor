@@ -214,12 +214,15 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 		}
 		return s.WorkOrders.Redispatch(ctx, stringArg("work_order_id"))
 	case "renew_work_order":
-		if !workerAuth {
-			if err := s.authorizeUserRunMCPOrder(ctx, stringArg("work_order_id"), session); err != nil {
-				return nil, err
-			}
+		if workerAuth {
+			return s.Workers.Renew(ctx, worker, stringArg("work_order_id"), session)
 		}
-		return s.Workers.Renew(ctx, worker, stringArg("work_order_id"), session)
+		credential, ok := store.CredentialFromContext(ctx)
+		if !ok || credential.Kind != core.CredentialUser {
+			return nil, store.ErrWorkOrderClaimLost
+		}
+		claim := core.WorkOrderClaimIdentity{ClaimantID: core.TaskRunClaimantID(credential.OwnerUserID), SessionID: session}
+		return s.Workers.RenewClaim(ctx, claim, stringArg("work_order_id"))
 	case "release_work_order":
 		claim, err := s.authorizeClaimMutation(ctx, workerAuth, worker, stringArg("work_order_id"), session)
 		if err != nil {
