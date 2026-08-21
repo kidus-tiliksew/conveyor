@@ -2795,7 +2795,7 @@ test('a running attempt becoming paused is announced through the live region', a
   await expect(page.getByRole('status')).toContainText('Retry the implementation after the provider limit has cleared.')
 })
 
-test('recent activity refreshes for a claimed order and disappears after termination', async ({ page }) => {
+test('client machine activity is collapsed, refreshes, and disappears after termination', async ({ page }) => {
   let activityRequests = 0
   await page.route('**/v1/tasks/attempt-observability/activity*', async (route) => {
     activityRequests++
@@ -2812,7 +2812,10 @@ test('recent activity refreshes for a claimed order and disappears after termina
         activityRequests < 3
           ? {
               attempt_id: 'attempt-live',
-              content: activityRequests === 1 ? 'building dashboard\nfirst tail' : 'running tests\nlatest tail',
+              content:
+                activityRequests === 1
+                  ? `building dashboard\n${Array.from({ length: 20 }, (_, index) => `first output ${index}`).join('\n')}\nfirst tail`
+                  : `running tests\n${Array.from({ length: 20 }, (_, index) => `latest output ${index}`).join('\n')}\nlatest tail`,
               captured_at: activityRequests === 1 ? '2026-07-15T12:01:00Z' : '2026-07-15T12:02:00Z',
             }
           : undefined,
@@ -2821,16 +2824,33 @@ test('recent activity refreshes for a claimed order and disappears after termina
   })
 
   await page.goto('/tasks/attempt-observability/full')
-  const recent = page.getByRole('region', { name: 'Recent activity' })
-  await expect(recent).toContainText('first tail')
-  await expect(recent.getByText(/Captured/)).toBeVisible()
+  const activityRegion = page.getByRole('region', { name: 'Client machine activity' })
+  const disclosure = activityRegion.locator('details')
+  const toggle = activityRegion.locator('summary')
+  const output = activityRegion.locator('pre')
+  await expect(page.getByRole('region', { name: 'Recent activity' })).toHaveCount(0)
+  await expect(activityRegion.getByRole('heading', { name: 'Client machine activity' })).toBeVisible()
+  await expect(disclosure).not.toHaveAttribute('open', '')
+  await expect(output).not.toBeVisible()
+
+  await toggle.focus()
+  await toggle.press('Enter')
+  await expect(disclosure).toHaveAttribute('open', '')
+  await expect(output).toContainText('first tail')
+  await expect(activityRegion.getByText(/Captured/)).toBeVisible()
+  await expect.poll(() => output.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
 
   await page.reload()
-  await expect(recent).toContainText('latest tail')
-  await expect(recent).not.toContainText('first tail')
+  await expect(disclosure).not.toHaveAttribute('open', '')
+  await expect(output).not.toBeVisible()
+  await toggle.click()
+  await expect(disclosure).toHaveAttribute('open', '')
+  await expect(output).toContainText('latest tail')
+  await expect(output).not.toContainText('first tail')
+  await expect.poll(() => output.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
 
   await page.reload()
-  await expect(recent).toHaveCount(0)
+  await expect(activityRegion).toHaveCount(0)
 })
 
 test('terminated attempt transcripts stay collapsed until opened and absence stays silent', async ({ page }) => {
