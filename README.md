@@ -173,7 +173,12 @@ The release installer needs `curl`, `tar`, and a SHA-256 tool. It does not need
 
 Source development also needs Go 1.24, Node with npm, and Docker with Compose.
 
-## Install a release
+## Getting started
+
+The steps below stand up a factory end to end on one machine. A team server
+works the same way; repeat step 5 on each contributor machine.
+
+### 1. Install the release
 
 Install the latest `conveyor` and `conveyord` binaries in `~/.local/bin`:
 
@@ -191,78 +196,114 @@ Set `CONVEYOR_INSTALL_DIR` to choose another destination. The installer supports
 Linux and macOS on amd64 and arm64. It downloads the selected GitHub release and
 checks the published SHA-256 digest before replacing either binary.
 
-## Create a factory
+### 2. Stand up PostgreSQL and the environment
 
-Start with PostgreSQL already running.
-
-1. Export `CONVEYOR_DATABASE_URL`, a generated `CONVEYOR_API_TOKEN`, and
-   `CONVEYOR_LLM_API_KEY`. Authenticate the host with `gh auth login`.
-2. Run `conveyor init --config ./conveyor.yaml`. The wizard asks for the
-   organization, first operator, workspace, and repository. The repository path
-   must point to an existing clone. Repeating the same answers is a safe no-op.
-   Canonical role prompts are embedded in the release; set `pack_dir` only to
-   use a strict on-disk custom-pack override.
-3. Run `conveyord -config ./conveyor.yaml`. To install a user service instead,
-   run `conveyord install --config ./conveyor.yaml` and inspect it with
-   `conveyord status`.
-4. Create the first task:
+Start PostgreSQL 15 or newer, generate the operator API token, and export the
+three required variables:
 
 ```sh
-conveyor --workspace <workspace-id> task new \
-  --repo <repo-name> \
-  --message '<work>'
+openssl rand -hex 32
 ```
 
-Startup applies pending embedded database migrations before the API or workers
-start. A binary refuses to start if a newer release created the store.
+```sh
+export CONVEYOR_DATABASE_URL='postgres://conveyor:conveyor@localhost:5432/conveyor?sslmode=disable'
+export CONVEYOR_API_TOKEN='<generated token>'
+export CONVEYOR_LLM_API_KEY='<provider API key>'
+```
 
-Use a dedicated forge machine account for `gh` on a team server. GitHub records
-every factory action under the host's account. A personal account makes those
-actions look like one person's work.
+Authenticate the host with `gh auth login`. On a team server, use a dedicated
+forge machine account: GitHub records every factory action under the host's
+account, and a personal account makes those actions look like one person's
+work.
 
-## Set up a contributor machine
+### 3. Start the server
 
-Install the CLI, authenticate, then install Conveyor's agent skills and native
-MCP registrations:
+`conveyord` reads a deployment config. Start from the annotated example:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/kidus-tiliksew/conveyor/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/kidus-tiliksew/conveyor/main/conveyor.example.yaml -o conveyor.yaml
+```
+
+Adjust the harness and review-seat entries for the agent CLIs on the machine.
+Canonical role prompts are embedded in the release; set `pack_dir` only to use
+a strict on-disk custom-pack override. The `workspace:` and `repos:` entries
+are optional — leave them out to create the workspace in the dashboard in the
+next step.
+
+```sh
+conveyord -config ./conveyor.yaml
+```
+
+To install a user service instead, run `conveyord install --config
+./conveyor.yaml` and inspect it with `conveyord status`.
+
+Startup applies pending embedded database migrations, then creates the
+organization and first operator and binds `CONVEYOR_API_TOKEN` as that
+operator's token. A binary refuses to start if a newer release created the
+store.
+
+### 4. Set up the workspace in the dashboard
+
+Open `http://127.0.0.1:8080` and paste the `CONVEYOR_API_TOKEN` value on the
+Settings page — the token stays in session storage and is forgotten when the
+tab closes. Create the workspace from the board's first-run prompt, then add
+the repository (name, URL, GitHub slug, base branch) on the Workspace page.
+Settings also mints personal access tokens for contributors and shows the MCP
+client configuration.
+
+### 5. Connect the CLI, skills, and MCP clients
+
+Authenticate the CLI with a personal access token from Settings, then install
+Conveyor's agent skills and native MCP registrations:
+
+```sh
 conveyor --server https://factory.example auth login
 conveyor skills install
 conveyor --server https://factory.example mcp install
 ```
 
-Both install commands configure detected Codex and Claude Code clients. Pass
-`--tool` to select one client.
-
-`conveyor skills install --list` reports the release files and their installed
-state without writing. An install refreshes files already owned by Conveyor and
-refuses unrelated collisions.
-
-`conveyor mcp install --list` reports MCP registrations without writing. For
-Codex, installation writes `[mcp_servers.conveyor]`, the server URL, and
-`bearer_token_env_var = "CONVEYOR_API_TOKEN"` to `~/.codex/config.toml`. For
-Claude Code, it writes a user-scope HTTP server with an environment-backed
-Authorization header to `~/.claude.json`. It never copies a token value into
-either file.
-
-If the token bridge is missing, the command prints this setup line:
+Both install commands configure detected Codex and Claude Code clients; pass
+`--tool` to select one, or `--list` to report state without writing. An
+install refreshes files Conveyor owns and refuses unrelated collisions. MCP
+registration writes an environment-backed token reference, never a token
+value. If the token bridge is missing, the command prints this setup line to
+add to the shell environment yourself:
 
 ```sh
 export CONVEYOR_API_TOKEN=$(conveyor auth token)
 ```
 
-Add it to the shell environment yourself. Conveyor does not edit shell startup
-files. It leaves registrations it does not own untouched unless you pass
-`--adopt`. If credentials exist for several servers, select one with
-`--server`.
+Repeat this step on each contributor machine.
 
-## Run a task
+### 6. Create an execution setup
 
-Create the local execution configuration once, then run a task by ID:
+A machine that runs tasks needs a local execution configuration describing its
+agent harnesses. The factory host's `conveyor.yaml` from step 3 already
+qualifies; on other machines, generate one:
 
 ```sh
 conveyor config init-execution
+```
+
+The wizard detects installed agent CLIs, probes them, and writes the harness,
+stage, and review-seat configuration.
+
+### 7. Build the document corpus
+
+Confirmed documents are what the factory implements and reviews against, so
+write them before filing work. Open an agent session in your project — the
+installed skills wrap the [planning playbook](docs/playbooks/conveyor-planning.md)
+— and draft requirements, System Design documents, and decisions. Every push
+is a proposal; confirm each one in the dashboard. The in-product planning chat
+is the same flow without the local session.
+
+### 8. Create and run tasks
+
+File dependency-ordered tasks from the same agent session using the
+[task-filing playbook](docs/playbooks/conveyor-task-filing.md), or from the
+CLI (see [File work](#file-work)). Then run one by ID:
+
+```sh
 conveyor run <task-id>
 ```
 
