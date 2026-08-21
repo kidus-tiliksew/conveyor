@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -17,16 +18,19 @@ import (
 
 // client is a thin wrapper over the control-plane API (design-http-api).
 type client struct {
-	base      string
-	token     string
-	workspace string
-	configErr error
-	resolved  resolvedClientConfig
+	base                string
+	token               string
+	workspace           string
+	configErr           error
+	resolved            resolvedClientConfig
+	forgeTokenPreflight func(context.Context, string) error
 }
 
 func newClient() *client {
 	resolved, err := resolveClientConfig()
-	return &client{base: resolved.Server.Value, token: resolved.Token.Value, workspace: resolved.Workspace.Value, configErr: err, resolved: resolved}
+	c := &client{base: resolved.Server.Value, token: resolved.Token.Value, workspace: resolved.Workspace.Value, configErr: err, resolved: resolved}
+	c.forgeTokenPreflight = c.fetchForgeTokenPreflight
+	return c
 }
 
 func (c *client) createTask(body, repo, base string) (core.Task, error) {

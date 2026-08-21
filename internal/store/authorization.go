@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 )
@@ -53,7 +54,30 @@ var (
 	ErrForgeTokenKey           = errors.New("forge token encryption key unavailable")
 	ErrForgeTokenDecrypt       = errors.New("forge token decryption failed")
 	ErrForgeTokenOwnerInactive = errors.New("forge token owner is inactive")
+	ErrForgeTokenRequired      = errors.New(ForgeTokenRequiredMessage)
 )
+
+const (
+	ForgeTokenRequiredCode    = "forge_token_required"
+	ForgeTokenRequiredMessage = "stored forge token is required; add one in account settings before claiming work"
+)
+
+// RequireForgeTokenPresence is the metadata-only eligibility check shared by
+// read projections and non-durable claim paths. Durable claims repeat this
+// check transactionally without decrypting the token or contacting the forge.
+func RequireForgeTokenPresence(ctx context.Context, tokens ForgeTokenStore, ownerUserID string) error {
+	if tokens == nil || ownerUserID == "" {
+		return ErrForgeTokenRequired
+	}
+	status, err := tokens.GetForgeTokenStatus(ctx, ownerUserID)
+	if errors.Is(err, ErrNotFound) || err == nil && !status.Configured {
+		return ErrForgeTokenRequired
+	}
+	if err != nil {
+		return fmt.Errorf("check stored forge token presence: %w", err)
+	}
+	return nil
+}
 
 // ForgeTokenStore is the sole recoverable-credential boundary. Management
 // methods take a credential-derived owner; presence is metadata-only for later

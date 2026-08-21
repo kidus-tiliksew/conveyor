@@ -188,6 +188,9 @@ func main() {
 		}
 		return cfg, nil
 	}}
+	if tokens, ok := st.(store.ForgeTokenStore); ok {
+		workOrders.ForgeTokens = tokens
+	}
 	if secrets, ok := st.(store.ForgeTokenStore); ok {
 		workOrders.RedactionSecrets = secrets
 	}
@@ -274,6 +277,7 @@ func main() {
 	srv.Workers = &workerservice.Service{Store: st, WorkOrders: workOrders, ConfigProvider: workOrders.ConfigProvider, RetryDelay: *workerRetryDelay, RetryMaximum: *workerRetryMaximum}
 	if secrets, ok := st.(store.ForgeTokenStore); ok {
 		srv.Workers.RedactionSecrets = secrets
+		srv.Workers.ForgeTokens = secrets
 	}
 	if pgStore != nil {
 		srv.Workspaces = pgStore
