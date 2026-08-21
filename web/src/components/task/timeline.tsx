@@ -113,6 +113,14 @@ export function Timeline({
   // why this rides `executionActions` like the rest of the tail.
   const designProposals = useSystemDesignProposals(item.task)
   const structuredCheckpoint = Boolean(currentExecution?.order.checkpoint?.decision_request?.trim())
+  const citedSystemDesigns = new Set(
+    structuredCheckpoint && currentExecution?.order.checkpoint?.class === 'authority_conflict'
+      ? (currentExecution.order.checkpoint.citations ?? [])
+          .filter((citation) => citation.document_kind === 'system_design')
+          .map((citation) => citation.document_id)
+      : [],
+  )
+  const standaloneDesignProposals = designProposals.filter((proposal) => !citedSystemDesigns.has(proposal.document.id))
   const combineCheckpointProposal =
     !structuredCheckpoint &&
     hasWorkerRecovery(item) &&
@@ -201,14 +209,14 @@ export function Timeline({
                 <WorkOrderRecoveryCard item={item} />
               ),
           },
-          designProposals.length > 0 &&
+          standaloneDesignProposals.length > 0 &&
             !combineCheckpointProposal && {
               key: 'design-proposal',
               dot: 'bg-attention-dot',
               card: (
                 <SystemDesignProposalCard
                   task={item.task}
-                  proposals={designProposals}
+                  proposals={standaloneDesignProposals}
                   reviewWaiting={item.pending_authority === true}
                 />
               ),
@@ -360,19 +368,24 @@ function RecentActivity({ snapshot }: { snapshot: WorkOrderActivitySnapshot }) {
   }, [snapshot.content])
 
   return (
-    <section aria-label="Recent activity" className="mt-3 border-t border-border/60 pt-2.5">
-      <div className="mb-1.5 flex flex-wrap items-baseline gap-2">
-        <h3 className="text-xs font-medium text-foreground">Recent activity</h3>
-        <time className="text-[11px] text-faint" title={absoluteTime(snapshot.captured_at)}>
-          Captured {absoluteTime(snapshot.captured_at)}
-        </time>
-      </div>
-      <pre
-        ref={outputRef}
-        className="max-h-40 overflow-auto whitespace-pre-wrap rounded border border-border bg-background p-2 font-mono text-[11px] leading-5 text-foreground"
-      >
-        {snapshot.content}
-      </pre>
+    <section aria-label="Client machine activity" className="mt-3 border-t border-border/60 pt-2.5">
+      <details>
+        <summary
+          aria-label="Client machine activity"
+          className="flex cursor-pointer flex-wrap items-baseline gap-2 rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+        >
+          <h3 className="text-xs font-medium text-foreground">Client machine activity</h3>
+          <time className="text-[11px] text-faint" title={absoluteTime(snapshot.captured_at)}>
+            Captured {absoluteTime(snapshot.captured_at)}
+          </time>
+        </summary>
+        <pre
+          ref={outputRef}
+          className="mt-1.5 max-h-40 overflow-auto whitespace-pre-wrap rounded border border-border bg-background p-2 font-mono text-[11px] leading-5 text-foreground"
+        >
+          {snapshot.content}
+        </pre>
+      </details>
     </section>
   )
 }
