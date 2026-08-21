@@ -772,7 +772,7 @@ func TestRunWorkerShutdownWaitsForActiveChildCleanup(t *testing.T) {
 	t.Setenv("CONVEYOR_CONFIG", writeWorkerLocalExecutionConfig(t,
 		[]string{os.Args[0], "-test.run=TestWorkerLifecycleHelper", "--", "{prompt}", "{mcp_config}", "cancel"}, []string{"true"}))
 	item := workerservice.DispatchOrder{
-		Order: core.WorkOrder{ID: "shutdown-active-child", Stage: core.StageImplement},
+		Order: core.WorkOrder{ID: "shutdown-active-child", Stage: core.StageImplement, Claimable: true},
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer worker-credential" {

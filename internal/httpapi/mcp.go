@@ -194,7 +194,7 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 		if listErr != nil {
 			return nil, listErr
 		}
-		return projectAssigneeClaimability(ctx, orders), nil
+		return projectAssigneeClaimability(ctx, orders, s.ForgeTokens), nil
 	case "claim_work_order":
 		lease := core.DefaultWorkOrderClaimLease
 		if value, ok := numberArg(args["lease_seconds"]); ok && value > 0 && value <= 3600 {

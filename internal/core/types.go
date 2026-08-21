@@ -640,6 +640,7 @@ type WorkOrder struct {
 	Stage                         Stage                `json:"stage"`
 	State                         WorkOrderState       `json:"state"`
 	Claimable                     bool                 `json:"claimable"`
+	ClaimRefusalReason            string               `json:"claim_refusal_reason,omitempty"`
 	BlockingTaskIDs               []string             `json:"blocking_task_ids,omitempty"`
 	Assignee                      *TaskAssignee        `json:"assignee,omitempty"`
 	UnsatisfiableTaskIDs          []string             `json:"unsatisfiable_task_ids,omitempty"`
@@ -776,17 +777,18 @@ func (w WorkOrder) ClaimableAt(at time.Time) bool {
 }
 
 type WorkOrderClaim struct {
-	SessionID        string
-	ClientToken      string
-	ClaimantID       string
-	Agent            string
-	Model            string
-	Lease            time.Duration
-	ExecutionTimeout time.Duration
-	WorkerID         string
-	OwnerUserID      string
-	Requirements     []ServedRequirementContext
-	Governance       *GovernanceSnapshot
+	SessionID         string
+	ClientToken       string
+	ClaimantID        string
+	Agent             string
+	Model             string
+	Lease             time.Duration
+	ExecutionTimeout  time.Duration
+	WorkerID          string
+	OwnerUserID       string
+	RequireForgeToken bool
+	Requirements      []ServedRequirementContext
+	Governance        *GovernanceSnapshot
 }
 
 // WorkOrderClaimIdentity names the authenticated owner of one active claim.

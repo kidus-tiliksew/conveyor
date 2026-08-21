@@ -112,3 +112,17 @@ func TestForgeTokenPutStrictJSON(t *testing.T) {
 		}
 	}
 }
+
+func TestForgeTokenClaimabilityProjectionNamesMissingToken(t *testing.T) {
+	ctx := store.WithCredential(t.Context(), core.AuthenticatedCredential{ID: "agent", OwnerUserID: "usr", Kind: core.CredentialAgent})
+	fixture := &forgeTokenFixture{}
+	orders := projectAssigneeClaimability(ctx, []core.WorkOrder{{ID: "queued", State: core.WorkOrderQueued, Claimable: true}}, fixture)
+	if orders[0].Claimable || orders[0].ClaimRefusalReason != store.ForgeTokenRequiredMessage {
+		t.Fatalf("missing-token projection=%+v", orders[0])
+	}
+	fixture.status.Configured = true
+	orders = projectAssigneeClaimability(ctx, []core.WorkOrder{{ID: "queued", State: core.WorkOrderQueued, Claimable: true}}, fixture)
+	if !orders[0].Claimable || orders[0].ClaimRefusalReason != "" {
+		t.Fatalf("configured projection=%+v", orders[0])
+	}
+}

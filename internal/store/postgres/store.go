@@ -4564,6 +4564,25 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease taskop
 			}
 		}
 	}
+	if claim.RequireForgeToken {
+		var ownerStatus string
+		if err := tx.QueryRow(ctx, `SELECT status FROM users WHERE id=$1 FOR SHARE`, claim.OwnerUserID).Scan(&ownerStatus); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return core.WorkOrder{}, store.ErrForgeTokenRequired
+			}
+			return core.WorkOrder{}, err
+		}
+		if ownerStatus != "active" {
+			return core.WorkOrder{}, store.ErrForgeTokenRequired
+		}
+		var tokenOwner string
+		if err := tx.QueryRow(ctx, `SELECT user_id FROM user_forge_tokens WHERE user_id=$1 FOR SHARE`, claim.OwnerUserID).Scan(&tokenOwner); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return core.WorkOrder{}, store.ErrForgeTokenRequired
+			}
+			return core.WorkOrder{}, err
+		}
+	}
 	if assigneeUserID.Valid && assigneeUserID.String != claim.OwnerUserID {
 		return core.WorkOrder{}, fmt.Errorf("task %s is assigned to %s; only that assignee may claim its work orders", order.TaskID, assigneeUserID.String)
 	}

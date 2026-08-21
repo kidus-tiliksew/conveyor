@@ -225,6 +225,9 @@ func (s *Server) claimWorkerOrder(w http.ResponseWriter, r *http.Request) {
 	}
 	order, err := s.Workers.ClaimForWorker(r.Context(), worker, chi.URLParam(r, "id"), core.WorkOrderClaim{SessionID: request.SessionID, ClientToken: request.ClientToken, Lease: time.Duration(request.LeaseSeconds) * time.Second})
 	if err != nil {
+		if errors.Is(err, store.ErrForgeTokenRequired) {
+			w.Header().Set("X-Conveyor-Error-Code", store.ForgeTokenRequiredCode)
+		}
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}

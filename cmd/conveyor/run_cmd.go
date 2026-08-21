@@ -68,6 +68,9 @@ func runTaskWithPresentationAndSetup(ctx context.Context, c *client, taskID, con
 	if strings.TrimSpace(c.token) == "" {
 		return fmt.Errorf("CONVEYOR_API_TOKEN is required for task execution")
 	}
+	if err := c.preflightForgeToken(ctx, c.token); err != nil {
+		return err
+	}
 	reader := bufio.NewReader(input)
 	answers := newRunInputSource(reader)
 	runStages := make([]core.Stage, 0, 2)

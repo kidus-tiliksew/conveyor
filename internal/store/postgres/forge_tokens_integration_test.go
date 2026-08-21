@@ -5,10 +5,13 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
+	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 )
 
 func TestForgeTokenEncryptedLifecycleIntegration(t *testing.T) {
@@ -120,5 +123,52 @@ func TestForgeTokenMissingKeyRejectsStoreIntegration(t *testing.T) {
 	var rows int
 	if err = st.pool.QueryRow(t.Context(), `SELECT count(*) FROM user_forge_tokens`).Scan(&rows); err != nil || rows != 0 {
 		t.Fatalf("rows=%d err=%v", rows, err)
+	}
+}
+
+func TestForgeTokenClaimGateIsTransactionalIntegration(t *testing.T) {
+	st := newIdentityIntegrationStore(t, 0)
+	st.ConfigureForgeTokenEncryptionKey(bytes.Repeat([]byte{0x51}, 32))
+	if _, err := st.BootstrapIdentity(t.Context(), config.FirstOperatorIdentity{OrganizationName: "Claim Gate", Email: "claim-gate@example.test", DisplayName: "Claim Owner"}, "bootstrap-secret"); err != nil {
+		t.Fatal(err)
+	}
+	owner, err := st.VerifyPersonalAccessToken(t.Context(), "bootstrap-secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace := "forge-claim-" + core.NewTaskID()
+	ctx := store.WithWorkspace(t.Context(), workspace)
+	if seeded, seedErr := st.BootstrapWorkspaceConfig(ctx, isolationConfig(workspace)); seedErr != nil || !seeded {
+		t.Fatalf("workspace seeded=%t err=%v", seeded, seedErr)
+	}
+	if err = st.queries.UpsertRepo(ctx, db.UpsertRepoParams{WorkspaceID: workspace, Name: "conveyor", DefaultBase: "main"}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	task := core.Task{ID: "forge-claim-task", Workspace: workspace, Repo: "conveyor", State: core.TaskRunning, CreatedAt: now}
+	if err = st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: task.ID + "-implement-1", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
+	if err = st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err = storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: job.Stage}); err != nil {
+		t.Fatal(err)
+	}
+	claim := core.WorkOrderClaim{SessionID: "session", ClientToken: "secret", ClaimantID: core.TaskRunClaimantID(owner.ID), OwnerUserID: owner.ID, RequireForgeToken: true, Lease: time.Minute}
+	if _, err = storetest.For(st).ClaimWorkOrder(ctx, job.ID, claim); !errors.Is(err, store.ErrForgeTokenRequired) {
+		t.Fatalf("missing-token claim=%v", err)
+	}
+	queued, err := st.GetWorkOrder(ctx, job.ID)
+	if err != nil || queued.State != core.WorkOrderQueued {
+		t.Fatalf("refused order=%+v err=%v", queued, err)
+	}
+	actorCtx := store.WithActor(ctx, store.Actor{ID: store.UserActorID(owner.ID), Role: core.ActorUser})
+	if _, err = st.StoreForgeToken(actorCtx, owner.ID, "github_pat_claim-secret", "claim-owner"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = storetest.For(st).ClaimWorkOrder(ctx, job.ID, claim); err != nil {
+		t.Fatalf("configured-token claim=%v", err)
 	}
 }
