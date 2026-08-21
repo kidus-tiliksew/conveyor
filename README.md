@@ -260,9 +260,16 @@ files. It leaves registrations it does not own untouched unless you pass
 Create the local execution configuration once, then run a task by ID:
 
 ```sh
-conveyor config init-execution --config ./conveyor.yaml
-conveyor run <task-id> --config ./conveyor.yaml
+conveyor config init-execution
+conveyor run <task-id>
 ```
+
+Client-side execution commands resolve one local file in this order: an
+explicit `--config` path, `CONVEYOR_CONFIG`, an existing `./conveyor.yaml`,
+then the per-user default at the platform user-config directory under
+`conveyor/conveyor.yaml`. The working-directory file remains compatible with
+factory hosts where deployment and execution settings intentionally share one
+file. Use `conveyor config list` to see the selected path and source.
 
 Conveyor shows each claimable stage before it claims the work. Pass `--auto` to
 run claimable stages without those prompts. Operator gates still apply.
@@ -334,7 +341,9 @@ directory with mode 0700 and the file with mode 0600.
 Use `conveyor auth logout --revoke` to remove the local entry and request remote
 revocation. `conveyor config list` reports the effective server and workspace,
 including whether each value came from a flag, the environment, the stored
-file, or the singleton fallback.
+file, or the singleton fallback. It also reports the resolved client execution
+configuration path and whether a flag, `CONVEYOR_CONFIG`, the working-directory
+file, or the user default selected it.
 
 For CI, workers, and MCP clients, set environment variables. They override
 stored values:

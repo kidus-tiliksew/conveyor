@@ -82,12 +82,16 @@ func workerInstallCmd() *cobra.Command {
 		Short: "Install and start the enrolled worker as a user service",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			resolvedConfig, err := resolveLocalExecutionConfigPath(cmd, configPath)
+			if err != nil {
+				return err
+			}
 			platform, err := currentWorkerServicePlatform()
 			if err != nil {
 				return err
 			}
 			client := newClient()
-			paths, err := installWorkerService(cmd.Context(), client, platform, configPath)
+			paths, err := installWorkerService(cmd.Context(), client, platform, resolvedConfig.Path)
 			if err != nil {
 				return err
 			}
