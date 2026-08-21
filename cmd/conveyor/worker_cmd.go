@@ -1148,13 +1148,40 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 		}
 		return nil
 	}
-	observeCheckpointRelease := func(renewErr error) bool {
-		if !workerOrderReleasedAtCheckpoint(renewErr) {
-			return false
+	observeCheckpointRelease := func(renewErr error) (bool, error) {
+		typedRelease := workerOrderReleasedAtCheckpoint(renewErr)
+		if !typedRelease && (item.Dispatch != "run" || !workerOrderConflict(renewErr)) {
+			return false, nil
 		}
-		checkpointReleaseReason = core.WorkOrderReleaseReasonOperatorCheckpointReached
-		observeFinalized(core.WorkOrder{ID: item.Order.ID, State: core.WorkOrderQueued, LastFailureMessage: checkpointReleaseReason})
-		return true
+		if item.Dispatch == "run" {
+			reconcileCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			reconciled, reconcileErr := c.reconcileTaskRunOrderContext(reconcileCtx, credential, item, sessionID)
+			cancel()
+			if reconcileErr == nil && reconciled.ReleasedAtCheckpoint &&
+				(reconciled.WorkOrder.LastFailureMessage == core.WorkOrderReleaseReasonOperatorCheckpointReached ||
+					reconciled.WorkOrder.LastFailureMessage == core.WorkOrderReleaseReasonPlanRevisionRequested) {
+				checkpointReleaseReason = reconciled.WorkOrder.LastFailureMessage
+				observeFinalized(reconciled.WorkOrder)
+				return true, nil
+			}
+			if typedRelease {
+				// The typed response proves a deliberate self-release but not which
+				// release reason was persisted. Fail closed when the read-only
+				// reconciliation cannot supply that reason rather than relabeling a
+				// plan-revision release as an operator checkpoint. The caller must
+				// not attempt a second release for this already-released claim.
+				if reconcileErr != nil {
+					return false, fmt.Errorf("confirm checkpoint release reason: %w", reconcileErr)
+				}
+				return false, fmt.Errorf("confirm checkpoint release reason: server reported %s (%s)", reconciled.WorkOrder.State, reconciled.Reason)
+			}
+		}
+		if typedRelease {
+			checkpointReleaseReason = core.WorkOrderReleaseReasonOperatorCheckpointReached
+			observeFinalized(core.WorkOrder{ID: item.Order.ID, State: core.WorkOrderQueued, LastFailureMessage: checkpointReleaseReason})
+			return true, nil
+		}
+		return false, nil
 	}
 	for {
 		select {
@@ -1217,10 +1244,14 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 			}
 			renewed, renewErr := renewDispatchClaimUntil(ctx, c, credential, item, sessionID, leaseExpiresAt, activitySnapshot)
 			if renewErr != nil {
-				if observeCheckpointRelease(renewErr) {
+				observedCheckpoint, checkpointErr := observeCheckpointRelease(renewErr)
+				if observedCheckpoint {
 					continue
 				}
 				_ = processGroup.terminate(nil)
+				if checkpointErr != nil {
+					return checkpointErr
+				}
 				if workerOrderPreempted(renewErr) {
 					return attemptAuthorityLoss(errWorkerOrderPreempted.Error(), checkpointAttempt)
 				}
@@ -1291,10 +1322,14 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 			}
 			renewed, renewErr := renewDispatchClaimUntil(ctx, c, credential, item, sessionID, leaseExpiresAt, activitySnapshot)
 			if renewErr != nil {
-				if observeCheckpointRelease(renewErr) {
+				observedCheckpoint, checkpointErr := observeCheckpointRelease(renewErr)
+				if observedCheckpoint {
 					continue
 				}
 				_ = processGroup.terminate(nil)
+				if checkpointErr != nil {
+					return checkpointErr
+				}
 				if workerOrderPreempted(renewErr) {
 					return attemptAuthorityLoss(errWorkerOrderPreempted.Error(), checkpointAttempt)
 				}
@@ -1352,10 +1387,14 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 			}
 			renewed, renewErr := renewDispatchClaimUntil(ctx, c, credential, item, sessionID, leaseExpiresAt, activitySnapshot)
 			if renewErr != nil {
-				if observeCheckpointRelease(renewErr) {
+				observedCheckpoint, checkpointErr := observeCheckpointRelease(renewErr)
+				if observedCheckpoint {
 					continue
 				}
 				_ = processGroup.terminate(nil)
+				if checkpointErr != nil {
+					return checkpointErr
+				}
 				if workerOrderPreempted(renewErr) {
 					return attemptAuthorityLoss(errWorkerOrderPreempted.Error(), checkpointAttempt)
 				}
@@ -1883,6 +1922,11 @@ func workerOrderReleasedAtCheckpoint(err error) bool {
 	var response *workerHTTPError
 	return errors.As(err, &response) && response.StatusCode == http.StatusConflict &&
 		(response.Code == "work_order_released_checkpoint" || strings.Contains(strings.ToLower(response.Message), "work_order_released_checkpoint"))
+}
+
+func workerOrderConflict(err error) bool {
+	var response *workerHTTPError
+	return errors.As(err, &response) && response.StatusCode == http.StatusConflict
 }
 
 func workerOrderCancelled(err error) bool {

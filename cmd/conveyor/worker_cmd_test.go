@@ -1631,16 +1631,24 @@ func TestRunHarnessChildReapsOnlyAfterAttachedRunObservesTerminalOrder(t *testin
 	})
 
 	for _, test := range []struct {
-		name       string
-		mode       string
-		renewState core.WorkOrderState
-		checkpoint bool
-		wantNotice bool
-		wantPause  bool
-		minElapsed time.Duration
+		name             string
+		mode             string
+		renewState       core.WorkOrderState
+		checkpointReason string
+		genericConflict  bool
+		genuineLoss      bool
+		reconcileFailure bool
+		wantNotice       bool
+		wantPause        bool
+		wantErr          bool
+		wantErrContains  string
+		minElapsed       time.Duration
 	}{
 		{name: "terminal order reaps lingering child", mode: "silent", renewState: core.WorkOrderSubmitted, wantNotice: true},
-		{name: "same-session checkpoint release reaps child gracefully", mode: "silent", checkpoint: true, wantPause: true},
+		{name: "typed same-session checkpoint release reaps child gracefully", mode: "silent", checkpointReason: core.WorkOrderReleaseReasonOperatorCheckpointReached, wantPause: true},
+		{name: "typed plan revision with unavailable reconciliation fails closed", mode: "silent", checkpointReason: core.WorkOrderReleaseReasonPlanRevisionRequested, reconcileFailure: true, wantErr: true, wantErrContains: "confirm checkpoint release reason"},
+		{name: "generic conflict reconciles same-session plan revision", mode: "silent", checkpointReason: core.WorkOrderReleaseReasonPlanRevisionRequested, genericConflict: true, wantPause: true},
+		{name: "generic conflict for genuine claim loss remains fatal", mode: "silent", genericConflict: true, genuineLoss: true, wantErr: true},
 		{name: "live order leaves child running", mode: "early-output", renewState: core.WorkOrderClaimed, minElapsed: 300 * time.Millisecond},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -1650,13 +1658,32 @@ func TestRunHarnessChildReapsOnlyAfterAttachedRunObservesTerminalOrder(t *testin
 				case strings.HasSuffix(r.URL.Path, "/claim"):
 					_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: "run-order", State: core.WorkOrderClaimed, LeaseExpiresAt: time.Now().Add(time.Minute)})
 				case strings.HasSuffix(r.URL.Path, "/renew"):
-					if test.checkpoint {
-						w.Header().Set("X-Conveyor-Error-Code", "work_order_released_checkpoint")
-						http.Error(w, store.ErrWorkOrderReleasedAtCheckpoint.Error(), http.StatusConflict)
+					if test.checkpointReason != "" || test.genuineLoss {
+						if !test.genericConflict {
+							w.Header().Set("X-Conveyor-Error-Code", "work_order_released_checkpoint")
+							http.Error(w, store.ErrWorkOrderReleasedAtCheckpoint.Error(), http.StatusConflict)
+						} else {
+							http.Error(w, store.ErrWorkOrderClaimLost.Error(), http.StatusConflict)
+						}
 						return
 					}
 					_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: "run-order", State: test.renewState, LeaseExpiresAt: time.Now().Add(time.Minute)})
 				case strings.HasSuffix(r.URL.Path, "/reconcile"):
+					if test.reconcileFailure {
+						http.Error(w, "reconciliation unavailable", http.StatusServiceUnavailable)
+						return
+					}
+					if test.genuineLoss {
+						http.Error(w, store.ErrWorkOrderClaimLost.Error(), http.StatusConflict)
+						return
+					}
+					if test.checkpointReason != "" {
+						_ = json.NewEncoder(w).Encode(workerservice.ClaimReconciliation{
+							WorkOrder:            core.WorkOrder{ID: "run-order", State: core.WorkOrderQueued, LastFailureMessage: test.checkpointReason},
+							ReleasedAtCheckpoint: true, Reason: "session deliberately released at an operator checkpoint",
+						})
+						return
+					}
 					_ = json.NewEncoder(w).Encode(workerservice.ClaimReconciliation{WorkOrder: core.WorkOrder{ID: "run-order", State: core.WorkOrderSubmitted}, Reason: "submitted"})
 				case strings.HasSuffix(r.URL.Path, "/release"):
 					released <- struct{}{}
@@ -1676,8 +1703,14 @@ func TestRunHarnessChildReapsOnlyAfterAttachedRunObservesTerminalOrder(t *testin
 			var stdout, stderr, presented bytes.Buffer
 			started := time.Now()
 			err := runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(t.Context(), &client{base: server.URL, workspace: "demo"}, "user-credential", item, time.Second, &stdout, &stderr, runModeConfirmed, &runOutputPresentation{output: &presented})
-			if err != nil {
+			if test.wantErr && err == nil {
+				t.Fatal("run succeeded after genuine claim loss")
+			}
+			if !test.wantErr && err != nil {
 				t.Fatal(err)
+			}
+			if test.wantErrContains != "" && !strings.Contains(err.Error(), test.wantErrContains) {
+				t.Fatalf("error %q does not contain %q", err, test.wantErrContains)
 			}
 			if elapsed := time.Since(started); elapsed < test.minElapsed {
 				t.Fatalf("child ended before live-order safety interval: %s", elapsed)
@@ -1686,11 +1719,11 @@ func TestRunHarnessChildReapsOnlyAfterAttachedRunObservesTerminalOrder(t *testin
 			if hasNotice != test.wantNotice {
 				t.Fatalf("notice=%t want=%t output=%q", hasNotice, test.wantNotice, presented.String())
 			}
-			hasPause := strings.Contains(presented.String(), "operator checkpoint reached") && strings.Contains(presented.String(), "run paused for operator direction")
+			hasPause := test.checkpointReason != "" && strings.Contains(presented.String(), test.checkpointReason) && strings.Contains(presented.String(), "run paused for operator direction")
 			if hasPause != test.wantPause {
 				t.Fatalf("checkpoint pause=%t want=%t output=%q", hasPause, test.wantPause, presented.String())
 			}
-			if test.checkpoint {
+			if test.checkpointReason != "" {
 				if output := stdout.String() + stderr.String() + presented.String(); strings.Contains(output, "claim expired or order reassigned") {
 					t.Fatalf("checkpoint race emitted false claim-loss text: %q", output)
 				}
