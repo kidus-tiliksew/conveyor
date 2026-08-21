@@ -110,28 +110,6 @@ implements and tests the change. A different agent reviews it against the
 pinned documents and test evidence. Conveyor applies the merge gate and
 monitors the default branch afterward.
 
-## Documents are the authority
-
-Conveyor keeps four document types:
-
-- **Product overviews.** These provide background. Conveyor versions the Markdown
-  uploads with diffs, but they do not bind implementation. Only a requirement
-  can bind implementation.
-- **Requirements.** These state what the product must do. Each requirement has
-  a stable `REQ-n` ID and each acceptance criterion has a stable `AC-n.m` ID.
-- **System Design documents.** These state how the system works and which
-  repository paths they govern.
-- **Decisions.** These record a settled choice, its context, and the rejected
-  options. Conveyor never edits a confirmed `DEC-n`. A later decision may
-  supersede it.
-
-Agents and operators can draft and propose new versions. Conveyor never edits a
-written version. Only an operator can confirm a proposal.
-
-An implementation cites the requirements and decisions it serves. Review checks
-the document versions captured when the agent claimed the work order. A
-revision made mid-task cannot change what the reviewer checks.
-
 ## Architecture
 
 ```text
@@ -287,6 +265,18 @@ conveyor config init-execution
 
 The wizard detects installed agent CLIs, probes them, and writes the harness,
 stage, and review-seat configuration.
+
+New implicit task checkouts are created under
+`~/.conveyor/worktrees/<repo>-task-<task-id>`. To use another machine-local
+container, add an absolute or `~/...` top-level path to the same client file:
+
+```yaml
+worktree_root: ~/task-worktrees
+```
+
+The resolution order is an explicit `conveyor checkout --path`, configured
+`worktree_root`, then `~/.conveyor/worktrees`. Existing Git-registered
+worktrees stay where they are and continue to be reused and cleaned up there.
 
 ### 7. Build the document corpus
 

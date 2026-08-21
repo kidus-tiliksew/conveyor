@@ -564,6 +564,7 @@ func TestIsolatedChildEnvironmentReplacesLaunchIdentity(t *testing.T) {
 		"CONVEYOR_TASK_REPO_URL": "https://github.com/kidus-tiliksew/conveyor.git",
 		"GIT_AUTHOR_NAME":        "Executing User", "GIT_AUTHOR_EMAIL": "executor@example.test",
 		"GIT_COMMITTER_NAME": "Executing User", "GIT_COMMITTER_EMAIL": "executor@example.test",
+		"CONVEYOR_WORKTREE_ROOT": "/var/lib/conveyor/worktrees",
 	})
 	for name, want := range map[string]string{
 		"CONVEYOR_API_TOKEN": "fresh", "CONVEYOR_ADDR": "endpoint", "CONVEYOR_WORKSPACE": "demo",
@@ -573,6 +574,7 @@ func TestIsolatedChildEnvironmentReplacesLaunchIdentity(t *testing.T) {
 		"CONVEYOR_TASK_REPO_URL": "https://github.com/kidus-tiliksew/conveyor.git",
 		"GIT_AUTHOR_NAME":        "Executing User", "GIT_AUTHOR_EMAIL": "executor@example.test",
 		"GIT_COMMITTER_NAME": "Executing User", "GIT_COMMITTER_EMAIL": "executor@example.test",
+		"CONVEYOR_WORKTREE_ROOT": "/var/lib/conveyor/worktrees",
 	} {
 		if got := environmentValue(env, name); got != want {
 			t.Fatalf("%s=%q want=%q", name, got, want)
@@ -1168,7 +1170,7 @@ func TestRunHarnessChildCompletesImplementAndReviewMCPFlows(t *testing.T) {
 		orderID := "fake-" + string(stage)
 		item := workerservice.DispatchOrder{Order: core.WorkOrder{ID: orderID, Stage: stage}, Harness: harness, Model: "fake-model"}
 		var stdout, stderr bytes.Buffer
-		if err := runHarnessChildWithOutput(t.Context(), c, "worker-credential", item, &stdout, &stderr); err != nil {
+		if err := runHarnessChildWithOutput(contextWithWorktreeRoot(t.Context(), "/var/lib/conveyor/worktrees"), c, "worker-credential", item, &stdout, &stderr); err != nil {
 			t.Fatalf("%s child: %v", stage, err)
 		}
 		outputs[stage] = stdout.String() + stderr.String()
@@ -1188,6 +1190,9 @@ func TestRunHarnessChildCompletesImplementAndReviewMCPFlows(t *testing.T) {
 		}
 		if strings.Count(output, "[REDACTED:exact]") < 4 {
 			t.Fatalf("%s child output was not fully redacted: %q", stage, output)
+		}
+		if !strings.Contains(output, "worktree_root=/var/lib/conveyor/worktrees") {
+			t.Fatalf("%s child did not receive local worktree root: %q", stage, output)
 		}
 	}
 }
@@ -2396,7 +2401,7 @@ func TestWorkerHarnessHelper(t *testing.T) {
 		t.Fatal("missing prompt and MCP config arguments")
 	}
 	if os.Getenv("CONVEYOR_FAKE_HARNESS_EMIT_ENV") == "1" {
-		fmt.Fprintf(os.Stdout, "token=%s address=%s\n", os.Getenv("CONVEYOR_API_TOKEN"), os.Getenv("CONVEYOR_ADDR"))
+		fmt.Fprintf(os.Stdout, "token=%s address=%s worktree_root=%s\n", os.Getenv("CONVEYOR_API_TOKEN"), os.Getenv("CONVEYOR_ADDR"), os.Getenv("CONVEYOR_WORKTREE_ROOT"))
 		fmt.Fprintf(os.Stderr, "session=%s client=%s\n", os.Getenv("CONVEYOR_SESSION_ID"), os.Getenv("CONVEYOR_CLIENT_TOKEN"))
 	}
 	var prompt, configPath string

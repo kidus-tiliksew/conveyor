@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/gitx"
 )
@@ -38,6 +39,17 @@ type attemptCheckpointResult struct {
 	Pushed    bool
 }
 
+type worktreeRootContextKey struct{}
+
+func contextWithWorktreeRoot(ctx context.Context, root string) context.Context {
+	return context.WithValue(ctx, worktreeRootContextKey{}, root)
+}
+
+func worktreeRootFromContext(ctx context.Context) string {
+	root, _ := ctx.Value(worktreeRootContextKey{}).(string)
+	return root
+}
+
 // checkoutTask resolves one safe, task-dedicated checkout without switching or
 // rewriting the operator's primary checkout (design-git-delivery; DEC-10).
 func checkoutTask(ctx context.Context, branch, base, repo, repoURL, taskID, destination string) (string, error) {
@@ -45,7 +57,20 @@ func checkoutTask(ctx context.Context, branch, base, repo, repoURL, taskID, dest
 	return path, err
 }
 
+func checkoutTaskAtRoot(ctx context.Context, branch, base, repo, repoURL, taskID, destination, worktreeRoot string) (string, error) {
+	path, _, err := checkoutTaskWithCheckpointAtRoot(ctx, branch, base, repo, repoURL, taskID, destination, worktreeRoot, nil)
+	return path, err
+}
+
 func checkoutTaskWithCheckpoint(ctx context.Context, branch, base, repo, repoURL, taskID, destination string, checkpoint *attemptCheckpoint) (string, *attemptCheckpointResult, error) {
+	root, err := defaultImplicitWorktreeRoot()
+	if err != nil {
+		return "", nil, err
+	}
+	return checkoutTaskWithCheckpointAtRoot(ctx, branch, base, repo, repoURL, taskID, destination, root, checkpoint)
+}
+
+func checkoutTaskWithCheckpointAtRoot(ctx context.Context, branch, base, repo, repoURL, taskID, destination, worktreeRoot string, checkpoint *attemptCheckpoint) (string, *attemptCheckpointResult, error) {
 	root, err := repositoryRoot(ctx)
 	if err != nil {
 		return "", nil, fmt.Errorf("checkout must run inside the target repository: %w", err)
@@ -74,7 +99,7 @@ func checkoutTaskWithCheckpoint(ctx context.Context, branch, base, repo, repoURL
 
 	implicitDestination := destination == ""
 	if implicitDestination {
-		destination, err = implicitCheckoutDestination(primary, repo, taskID)
+		destination, err = implicitCheckoutDestination(worktreeRoot, repo, taskID)
 		if err != nil {
 			return "", nil, err
 		}
@@ -202,7 +227,7 @@ func checkoutTaskWithCheckpoint(ctx context.Context, branch, base, repo, repoURL
 		if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
 			return "", nil, fmt.Errorf("create implicit worktree container: %w", err)
 		}
-		validated, err := implicitCheckoutDestination(primary, repo, taskID)
+		validated, err := implicitCheckoutDestination(worktreeRoot, repo, taskID)
 		if err != nil {
 			return "", nil, err
 		}
@@ -446,39 +471,68 @@ func canonicalWorktreePath(path string) (string, error) {
 	return filepath.Join(parent, filepath.Base(cleaned)), nil
 }
 
+func defaultImplicitWorktreeRoot() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve user home for implicit worktree root: %w", err)
+	}
+	return config.DefaultWorktreeRoot(home), nil
+}
+
 // implicitCheckoutDestination keeps the deterministic worktree name beneath
-// one fixed canonical container directly beside the primary checkout,
-// independently of configuration validation (design-git-delivery).
-func implicitCheckoutDestination(primary, repo, taskID string) (string, error) {
+// one fixed canonical client-local root, independently of the primary
+// checkout location (design-git-delivery).
+func implicitCheckoutDestination(worktreeRoot, repo, taskID string) (string, error) {
 	if !safeImplicitCheckoutComponent(repo) {
 		return "", fmt.Errorf("refusing implicit checkout destination: repository name %q is not one safe path component", repo)
 	}
 	if !safeImplicitCheckoutComponent(taskID) {
 		return "", fmt.Errorf("refusing implicit checkout destination: task ID %q is not one safe path component", taskID)
 	}
-	canonicalPrimary, err := canonicalWorktreePath(primary)
-	if err != nil {
-		return "", fmt.Errorf("resolve primary checkout path: %w", err)
+	if !filepath.IsAbs(worktreeRoot) {
+		return "", fmt.Errorf("refusing implicit checkout destination: worktree root %q is not absolute", worktreeRoot)
 	}
-	siblingParent := filepath.Dir(canonicalPrimary)
-	container := filepath.Join(siblingParent, "conveyor-worktrees")
-	if resolved, resolveErr := filepath.EvalSymlinks(container); resolveErr == nil {
-		if filepath.Clean(resolved) != filepath.Clean(container) {
-			return "", fmt.Errorf("refusing implicit checkout destination: container %s resolves outside the canonical path", container)
-		}
-	} else if !os.IsNotExist(resolveErr) {
-		return "", fmt.Errorf("resolve worktree container %s: %w", container, resolveErr)
+	container := filepath.Clean(worktreeRoot)
+	canonicalContainer, err := canonicalPathThroughExistingParent(container)
+	if err != nil {
+		return "", fmt.Errorf("resolve worktree root %s: %w", container, err)
+	}
+	if canonicalContainer != container {
+		return "", fmt.Errorf("refusing implicit checkout destination: worktree root %s resolves outside the canonical path", container)
 	}
 	destination := filepath.Join(container, repo+"-task-"+taskID)
-	if resolved, resolveErr := filepath.EvalSymlinks(destination); resolveErr == nil {
-		destination = filepath.Clean(resolved)
-	} else if !os.IsNotExist(resolveErr) {
-		return "", fmt.Errorf("resolve worktree path %s: %w", destination, resolveErr)
+	canonicalDestination, err := canonicalPathThroughExistingParent(destination)
+	if err != nil {
+		return "", fmt.Errorf("resolve worktree path %s: %w", destination, err)
 	}
-	if filepath.Clean(filepath.Dir(destination)) != filepath.Clean(container) {
+	if canonicalDestination != filepath.Clean(destination) || filepath.Clean(filepath.Dir(canonicalDestination)) != container {
 		return "", fmt.Errorf("refusing implicit checkout destination %s: resolved path is not inside canonical container %s", destination, container)
 	}
-	return destination, nil
+	return canonicalDestination, nil
+}
+
+func canonicalPathThroughExistingParent(path string) (string, error) {
+	cleaned := filepath.Clean(path)
+	missing := make([]string, 0, 2)
+	candidate := cleaned
+	for {
+		resolved, err := filepath.EvalSymlinks(candidate)
+		if err == nil {
+			for i := len(missing) - 1; i >= 0; i-- {
+				resolved = filepath.Join(resolved, missing[i])
+			}
+			return filepath.Clean(resolved), nil
+		}
+		if !os.IsNotExist(err) {
+			return "", err
+		}
+		parent := filepath.Dir(candidate)
+		if parent == candidate {
+			return "", err
+		}
+		missing = append(missing, filepath.Base(candidate))
+		candidate = parent
+	}
 }
 
 func safeImplicitCheckoutComponent(value string) bool {
