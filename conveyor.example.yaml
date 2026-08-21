@@ -7,7 +7,7 @@
 # general value for their stages. Empty values are ignored; these deployment
 # overrides never change the stored workspace configuration or MCP work orders.
 workspace: demo
-pack_dir: pack
+# pack_dir: /path/to/custom/pack  # optional strict override; omitted uses the embedded canonical role pack
 # Review rounds before human check-in (spec §21.17): the window resets after
 # each human intervention; hitting it parks the task, it does not fail it.
 max_bounces: 10

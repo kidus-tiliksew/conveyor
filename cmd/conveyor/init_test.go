@@ -70,15 +70,6 @@ func TestReadInitAnswersUsesDefaultsAndRequiresRepositoryURL(t *testing.T) {
 
 func TestDefaultInitConfigValidatesWithoutHandEditing(t *testing.T) {
 	clone := t.TempDir()
-	for _, role := range []string{"triage", "planning", "spec", "implement", "review"} {
-		rolePath := filepath.Join(clone, "pack", "roles", role+".md")
-		if err := os.MkdirAll(filepath.Dir(rolePath), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(rolePath, []byte(role), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
 	answers := initAnswers{WorkspaceID: "demo", RepositoryName: "app", RepositoryURL: "https://github.com/Example/App.git", BaseBranch: "main", ClonePath: clone}
 	candidate, err := defaultInitConfig("postgres://example", answers)
 	if err != nil {
@@ -103,15 +94,15 @@ func TestDefaultInitConfigValidatesWithoutHandEditing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.PackDir != filepath.Join(resolvedClone, "pack") || loaded.Repos[0].Checkout != resolvedClone || loaded.Repos[0].GitHub != "example/app" {
+	if loaded.PackDir != "" || loaded.Repos[0].Checkout != resolvedClone || loaded.Repos[0].GitHub != "example/app" {
 		t.Fatalf("generated paths and identity=%+v pack=%q", loaded.Repos[0], loaded.PackDir)
 	}
 	if _, err = pack.Load(loaded.PackDir); err != nil {
-		t.Fatalf("load generated config pack from outside clone: %v", err)
+		t.Fatalf("load embedded pack for generated config: %v", err)
 	}
 }
 
-func TestInitPrerequisitesRequirePackAndConditionalAPIKey(t *testing.T) {
+func TestInitPrerequisitesAllowNoPackAndRequireConditionalAPIKey(t *testing.T) {
 	clone := t.TempDir()
 	answers := initAnswers{RepositoryName: "app", RepositoryURL: "https://github.com/example/app", ClonePath: clone}
 	prerequisites := initPrerequisites{
@@ -124,18 +115,6 @@ func TestInitPrerequisitesRequirePackAndConditionalAPIKey(t *testing.T) {
 		},
 		stat:   os.Stat,
 		getenv: func(string) string { return "" },
-	}
-	if err := checkInitPrerequisites(t.Context(), prerequisites, answers); err == nil || !strings.Contains(err.Error(), filepath.Join(clone, "pack", "roles", "triage.md")) {
-		t.Fatalf("missing pack error=%v", err)
-	}
-	for _, role := range []string{"triage", "planning", "spec", "implement", "review"} {
-		path := filepath.Join(clone, "pack", "roles", role+".md")
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, []byte(role), 0o644); err != nil {
-			t.Fatal(err)
-		}
 	}
 	if err := checkInitPrerequisites(t.Context(), prerequisites, answers); err == nil || !strings.Contains(err.Error(), config.LLMAPIKeyEnv) {
 		t.Fatalf("missing API key error=%v", err)

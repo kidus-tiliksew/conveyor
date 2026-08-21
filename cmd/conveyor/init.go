@@ -15,6 +15,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/gitx"
+	"github.com/kidus-tiliksew/conveyor/internal/pack"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	postgresstore "github.com/kidus-tiliksew/conveyor/internal/store/postgres"
 	"github.com/spf13/cobra"
@@ -148,14 +149,6 @@ func checkInitPrerequisites(ctx context.Context, prerequisites initPrerequisites
 	if output, gitErr := prerequisites.run(ctx, git, "-C", clone, "rev-parse", "--show-toplevel"); gitErr != nil || !sameFilesystemPath(strings.TrimSpace(string(output)), clone) {
 		return fmt.Errorf("repository path %s is not a filesystem clone; run `gh repo clone %s %s`", clone, answers.RepositoryURL, clone)
 	}
-	packDir := filepath.Join(clone, "pack")
-	for _, role := range []string{"triage", "planning", "spec", "implement", "review"} {
-		rolePath := filepath.Join(packDir, "roles", role+".md")
-		roleInfo, roleErr := prerequisites.stat(rolePath)
-		if roleErr != nil || !roleInfo.Mode().IsRegular() {
-			return fmt.Errorf("Conveyor prompt pack is missing required role %s", rolePath)
-		}
-	}
 	generated, err := defaultInitConfig("postgres://init-prerequisite", answers)
 	if err != nil {
 		return err
@@ -273,6 +266,9 @@ func initializeDeployment(ctx context.Context, output io.Writer, configPath stri
 			return fmt.Errorf("validate generated deployment config: %w", err)
 		}
 	}
+	if _, err = pack.Load(validated.PackDir); err != nil {
+		return fmt.Errorf("load deployment role pack: %w", err)
+	}
 	pgStore, err := postgresstore.Open(ctx, databaseURL)
 	if err != nil {
 		return fmt.Errorf("initialize Postgres store: %w", err)
@@ -338,7 +334,7 @@ func defaultInitConfig(databaseURL string, answers initAnswers) (config.Config, 
 	}
 	review := config.ReviewPanel{Seats: []config.ReviewSeat{{Model: "gpt-5.6-terra", Harness: harness.Name, Effort: "high"}}}
 	return config.Config{
-		Workspace: answers.WorkspaceID, PackDir: filepath.Join(clone, "pack"), MaxBounces: 10,
+		Workspace: answers.WorkspaceID, MaxBounces: 10,
 		WorkOrderQueueTimeoutText: config.DefaultWorkOrderQueueTimeoutText,
 		Database:                  config.Database{Backend: "postgres", URL: databaseURL},
 		ExecutionSettings:         &settings,

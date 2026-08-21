@@ -331,6 +331,50 @@ repos:
 	}
 }
 
+func TestLoadPreservesOmittedAndExplicitPackDirectory(t *testing.T) {
+	base := `workspace: demo
+routing:
+  stages:
+    triage: {model: gpt, timeout: 20m, execution: in_process}
+    spec: {model: gpt, timeout: 30m, execution: in_process}
+    implement: {model: operator, timeout: 4h, execution: mcp}
+    review: {model: reviewer, timeout: 1h, execution: mcp}
+repos:
+  - {name: repo, url: https://example.test/repo, base: main}
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "conveyor.yaml")
+	if err := os.WriteFile(path, []byte(base), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.PackDir != "" {
+		t.Fatalf("omitted pack_dir resolved to %q, want embedded default marker", cfg.PackDir)
+	}
+
+	if err = os.WriteFile(path, []byte("pack_dir: custom-pack\n"+base), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(dir, "custom-pack")
+	if cfg.PackDir != want {
+		t.Fatalf("explicit pack_dir=%q, want %q", cfg.PackDir, want)
+	}
+
+	if err = os.WriteFile(path, []byte("pack_dir: \"\"\n"+base), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = Load(path); err == nil || !strings.Contains(err.Error(), "pack_dir override") {
+		t.Fatalf("explicit empty pack_dir error=%v", err)
+	}
+}
+
 func TestRepositoryNamesUseCheckoutSafeAlphabet(t *testing.T) {
 	for _, name := range []string{"repo", "Repo-1.2_name", "a", "..."} {
 		t.Run("accept/"+name, func(t *testing.T) {

@@ -200,6 +200,8 @@ Start with PostgreSQL already running.
 2. Run `conveyor init --config ./conveyor.yaml`. The wizard asks for the
    organization, first operator, workspace, and repository. The repository path
    must point to an existing clone. Repeating the same answers is a safe no-op.
+   Canonical role prompts are embedded in the release; set `pack_dir` only to
+   use a strict on-disk custom-pack override.
 3. Run `conveyord -config ./conveyor.yaml`. To install a user service instead,
    run `conveyord install --config ./conveyor.yaml` and inspect it with
    `conveyord status`.

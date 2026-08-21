@@ -37,6 +37,48 @@ func TestLoadValidatesAndCachesWholePack(t *testing.T) {
 	}
 }
 
+func TestLoadUsesEmbeddedPackWhenDirectoryIsUnset(t *testing.T) {
+	bundle, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	role, err := bundle.Role(core.StageImplement)
+	if err != nil || !strings.Contains(role, "implementation agent") {
+		t.Fatalf("embedded implementation role=%q err=%v", role, err)
+	}
+}
+
+func TestExplicitPackOverrideWinsAndNeverFallsBack(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "roles"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, role := range []string{"triage", "planning", "spec", "implement", "review"} {
+		if err := os.WriteFile(filepath.Join(dir, "roles", role+".md"), []byte("custom "+role), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bundle, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	role, err := bundle.Role(core.StageReview)
+	if err != nil || role != "custom review" {
+		t.Fatalf("override review role=%q err=%v", role, err)
+	}
+
+	missing := filepath.Join(t.TempDir(), "missing-pack")
+	if _, err = Load(missing); err == nil || !strings.Contains(err.Error(), missing) {
+		t.Fatalf("missing override error=%v, want path %q", err, missing)
+	}
+	if err = os.WriteFile(filepath.Join(dir, "roles", "review.md"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = Load(dir); err == nil || !strings.Contains(err.Error(), dir) || !strings.Contains(err.Error(), "empty") {
+		t.Fatalf("invalid override error=%v, want path and empty-file detail", err)
+	}
+}
+
 func TestPackRequiresAndLoadsPlanningRole(t *testing.T) {
 	dir := filepath.Join("..", "..", "pack")
 	bundle, err := Load(dir)
