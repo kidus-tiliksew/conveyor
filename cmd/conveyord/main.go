@@ -60,7 +60,7 @@ func main() {
 	}
 	logControlPlaneModelOverrides(log.Printf)
 	cfg := deployment
-	packBundle, err := pack.Load(deployment.PackDir)
+	packBundle, err := loadConveyordPack(deployment)
 	if err != nil {
 		log.Fatalf("load Phase 3 pack: %v", err)
 	}
@@ -477,6 +477,10 @@ func main() {
 	if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)
 	}
+}
+
+func loadConveyordPack(deployment *config.Config) (*pack.Bundle, error) {
+	return pack.Load(deployment.PackDir)
 }
 
 func logControlPlaneModelOverrides(logf func(string, ...any)) {

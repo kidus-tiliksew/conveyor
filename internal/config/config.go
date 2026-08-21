@@ -567,7 +567,8 @@ type UpdateReceipt struct {
 // snapshot. CacheDir is retained for the bare-clone cache and checkout flow.
 type Config struct {
 	Workspace                 string                       `yaml:"workspace"`
-	PackDir                   string                       `yaml:"pack_dir"`
+	PackDir                   string                       `yaml:"pack_dir,omitempty"`
+	packDirSet                bool                         `yaml:"-"`
 	MaxBounces                int                          `yaml:"max_bounces"`
 	WorkOrderQueueTimeout     time.Duration                `yaml:"-"`
 	WorkOrderQueueTimeoutText string                       `yaml:"work_order_queue_timeout"`
@@ -594,6 +595,11 @@ func Load(path string) (*Config, error) {
 	if err := decodeKnown(data, &c); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
+	var fields map[string]yaml.Node
+	if err := yaml.Unmarshal(data, &fields); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", path, err)
+	}
+	_, c.packDirSet = fields["pack_dir"]
 	return normalize(&c, path)
 }
 
@@ -1032,10 +1038,13 @@ func normalizeLegacy(c *Config, path string) (*Config, error) {
 		requestedPlanning = c.ExecutionSettings.ControlPlane.Planning
 	}
 	applyContextualExecutionSettings(c)
-	if c.PackDir == "" {
-		c.PackDir = "pack"
+	if c.PackDir != "" {
+		c.packDirSet = true
 	}
-	if !filepath.IsAbs(c.PackDir) {
+	if c.packDirSet && strings.TrimSpace(c.PackDir) == "" {
+		return nil, fmt.Errorf("pack_dir override %q is empty", c.PackDir)
+	}
+	if c.packDirSet && !filepath.IsAbs(c.PackDir) {
 		configDir, err := filepath.Abs(filepath.Dir(path))
 		if err != nil {
 			return nil, err

@@ -2,12 +2,49 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
+	"github.com/kidus-tiliksew/conveyor/internal/core"
 )
+
+func TestLoadConveyordPackUsesEmbeddedDefaultAndStrictOverride(t *testing.T) {
+	bundle, err := loadConveyordPack(&config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	role, err := bundle.Role(core.StageTriage)
+	if err != nil || strings.TrimSpace(role) == "" {
+		t.Fatalf("embedded triage role=%q err=%v", role, err)
+	}
+
+	missing := filepath.Join(t.TempDir(), "missing-pack")
+	if _, err = loadConveyordPack(&config.Config{PackDir: missing}); err == nil || !strings.Contains(err.Error(), missing) {
+		t.Fatalf("missing override error=%v, want path %q", err, missing)
+	}
+
+	dir := t.TempDir()
+	if err = os.MkdirAll(filepath.Join(dir, "roles"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"triage", "planning", "spec", "implement", "review"} {
+		if err = os.WriteFile(filepath.Join(dir, "roles", name+".md"), []byte("override "+name), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bundle, err = loadConveyordPack(&config.Config{PackDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	role, err = bundle.Role(core.StageTriage)
+	if err != nil || role != "override triage" {
+		t.Fatalf("explicit override role=%q err=%v", role, err)
+	}
+}
 
 func TestLogControlPlaneModelOverrides(t *testing.T) {
 	t.Setenv(config.ControlPlaneModelEnv, "general")
