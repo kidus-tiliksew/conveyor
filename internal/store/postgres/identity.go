@@ -574,7 +574,8 @@ func (s *Store) RedeemSignInLink(ctx context.Context, candidate string) (core.Da
 // credential error as an incorrect password (REQ-10/AC-10.2, AC-10.5).
 func (s *Store) SignInWithPassword(ctx context.Context, email, password string) (core.DashboardSession, core.IdentityUser, error) {
 	normalized, normalizeErr := normalizeIdentityEmail(email)
-	encoded := dummyPasswordHash
+	dummyHash := fixedDummyPasswordHash()
+	encoded := dummyHash
 	var candidateID string
 	if normalizeErr == nil {
 		var stored *string
@@ -584,7 +585,7 @@ func (s *Store) SignInWithPassword(ctx context.Context, email, password string) 
 			return core.DashboardSession{}, core.IdentityUser{}, err
 		}
 	}
-	if !verifyPassword(encoded, password) || encoded == dummyPasswordHash {
+	if !verifyPassword(encoded, password) || encoded == dummyHash {
 		return core.DashboardSession{}, core.IdentityUser{}, core.ErrInvalidCredential
 	}
 

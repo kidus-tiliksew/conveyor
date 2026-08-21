@@ -169,7 +169,7 @@ test('an invitation opens a scoped session, guides first token setup, and signs 
 
   await page.goto(invitationURL)
   await expect(page.getByRole('heading', { name: 'This link no longer works' })).toBeVisible()
-  await expect(page.getByText(/Ask your operator to resend/)).toBeVisible()
+  await expect(page.getByRole('alert')).toContainText('Ask your operator to resend')
 
   await page.goto('/')
   await page.getByLabel('Operator token').fill('operator-token')
@@ -270,7 +270,7 @@ test('a returning user signs in with a password and resets it through an operato
   await page.goto('/settings')
   const passwordForm = page.getByRole('form', { name: 'Update password' })
   await passwordForm.getByLabel('Current password').fill(password)
-  await passwordForm.getByLabel('New password').fill('second-password-value')
+  await passwordForm.getByLabel('New password', { exact: true }).fill('second-password-value')
   await passwordForm.getByLabel('Confirm new password').fill('second-password-value')
   await passwordForm.getByRole('button', { name: 'Update password' }).click()
   await expect(page.getByText('Password updated.')).toBeVisible()
@@ -280,7 +280,7 @@ test('a returning user signs in with a password and resets it through an operato
   await page.goto('/sign-in#token=operator-reset-link')
   await expect(page).toHaveURL(/\/settings\?welcome=true$/)
   const resetForm = page.getByRole('form', { name: 'Update password' })
-  await resetForm.getByLabel('New password').fill('reset-password-value')
+  await resetForm.getByLabel('New password', { exact: true }).fill('reset-password-value')
   await resetForm.getByLabel('Confirm new password').fill('reset-password-value')
   await resetForm.getByRole('button', { name: 'Update password' }).click()
   await expect(page.getByText('Password updated.')).toBeVisible()

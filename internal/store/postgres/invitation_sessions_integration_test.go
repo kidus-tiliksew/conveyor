@@ -348,4 +348,14 @@ func TestPasswordSignInResetAndSlidingSessionIntegration(t *testing.T) {
 	if cleartextHashes != 0 {
 		t.Fatal("cleartext password persisted")
 	}
+	var passwordEvents, passwordSecrets int
+	if err = st.pool.QueryRow(t.Context(), `SELECT
+		count(*) FILTER (WHERE kind IN ('identity.password_set','identity.password_changed')),
+		count(*) FILTER (WHERE payload_json::text LIKE '%first-password-value%' OR payload_json::text LIKE '%second-password-value%' OR payload_json::text LIKE '%reset-password-value%')
+		FROM deployment_events`).Scan(&passwordEvents, &passwordSecrets); err != nil {
+		t.Fatal(err)
+	}
+	if passwordEvents != 3 || passwordSecrets != 0 {
+		t.Fatalf("password audit events=%d secrets=%d", passwordEvents, passwordSecrets)
+	}
 }

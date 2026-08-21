@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 
 	"golang.org/x/crypto/argon2"
 )
@@ -22,10 +23,21 @@ const (
 	passwordHashBytes    uint32 = 32
 )
 
-// Unknown and passwordless accounts verify against this fixed, valid hash so
-// every refusal performs the same Argon2id work as a real account. It is not a
+var (
+	dummyPasswordHashOnce sync.Once
+	dummyPasswordHash     string
+)
+
+// fixedDummyPasswordHash lazily builds the fixed, valid hash used for unknown
+// and passwordless accounts. Deferring the intentionally expensive Argon2id
+// work avoids imposing it on unrelated process startup. The result is not a
 // credential and is never persisted.
-var dummyPasswordHash = encodePasswordHashWithSalt("conveyor-invalid-password", []byte("cv-dummy-salt-v1"))
+func fixedDummyPasswordHash() string {
+	dummyPasswordHashOnce.Do(func() {
+		dummyPasswordHash = encodePasswordHashWithSalt("conveyor-invalid-password", []byte("cv-dummy-salt-v1"))
+	})
+	return dummyPasswordHash
+}
 
 func hashPassword(password string) (string, error) {
 	salt := make([]byte, passwordSaltBytes)
