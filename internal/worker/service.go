@@ -57,9 +57,10 @@ type Enrollment struct {
 // ClaimReconciliation is a read-only server-authoritative view used after a
 // scheduler gap or ambiguous release. Authorized is never inferred locally.
 type ClaimReconciliation struct {
-	WorkOrder  core.WorkOrder `json:"work_order"`
-	Authorized bool           `json:"authorized"`
-	Reason     string         `json:"reason"`
+	WorkOrder            core.WorkOrder `json:"work_order"`
+	Authorized           bool           `json:"authorized"`
+	ReleasedAtCheckpoint bool           `json:"released_at_checkpoint,omitempty"`
+	Reason               string         `json:"reason"`
 }
 
 type TaskWorkerStatus struct {
@@ -713,6 +714,14 @@ func (s *Service) RenewClaim(ctx context.Context, claim core.WorkOrderClaimIdent
 }
 
 func (s *Service) Reconcile(ctx context.Context, worker core.Worker, id, sessionID string) (ClaimReconciliation, error) {
+	return s.ReconcileClaim(ctx, core.WorkOrderClaimIdentity{WorkerID: worker.ID, ClaimantID: worker.ID, SessionID: sessionID}, id)
+}
+
+// ReconcileClaim returns a read-only view of either the active exact claim or
+// its exact deliberate checkpoint release. It never renews or restores claim
+// authority.
+func (s *Service) ReconcileClaim(ctx context.Context, claim core.WorkOrderClaimIdentity, id string) (ClaimReconciliation, error) {
+	sessionID := claim.SessionID
 	if strings.TrimSpace(sessionID) == "" {
 		return ClaimReconciliation{}, fmt.Errorf("session_id is required")
 	}
@@ -720,15 +729,21 @@ func (s *Service) Reconcile(ctx context.Context, worker core.Worker, id, session
 	if err != nil {
 		return ClaimReconciliation{}, err
 	}
-	authorized := order.WorkerID == worker.ID && order.SessionID == sessionID &&
+	authorized := order.WorkerID == claim.WorkerID && order.ClaimantID == claim.ClaimantID && order.SessionID == sessionID &&
 		order.State == core.WorkOrderClaimed && order.LeaseExpiresAt.After(s.now())
+	releasedAtCheckpoint, err := store.ReleasedCheckpointClaimMatches(ctx, s.Store, order, claim)
+	if err != nil {
+		return ClaimReconciliation{}, err
+	}
 	reason := "session is no longer the active lease owner"
 	if authorized {
 		reason = "session owns the active claim"
+	} else if releasedAtCheckpoint {
+		reason = "session deliberately released at an operator checkpoint"
 	} else if order.State == core.WorkOrderSubmitted || order.State == core.WorkOrderCompleted {
 		reason = "work order already reached a durable terminal handoff"
 	}
-	return ClaimReconciliation{WorkOrder: order, Authorized: authorized, Reason: reason}, nil
+	return ClaimReconciliation{WorkOrder: order, Authorized: authorized, ReleasedAtCheckpoint: releasedAtCheckpoint, Reason: reason}, nil
 }
 
 func (s *Service) Release(ctx context.Context, worker core.Worker, id string, release core.WorkOrderRelease) (core.WorkOrder, error) {

@@ -1892,9 +1892,35 @@ func ReleasedCheckpointClaimEventMatches(event core.Event, order core.WorkOrder,
 		return false
 	}
 	var claimed core.WorkOrder
-	return json.Unmarshal(event.Payload, &claimed) == nil && claimed.ID == order.ID &&
-		claimed.AttemptID == order.LastAttemptID && claimed.WorkerID == claim.WorkerID &&
-		claimed.ClaimantID == claim.ClaimantID && claimed.SessionID == claim.SessionID
+	if json.Unmarshal(event.Payload, &claimed) != nil {
+		return false
+	}
+	workerIdentityMatches := claimed.WorkerID != "" && claim.WorkerID != "" && claimed.WorkerID == claim.WorkerID
+	runIdentityMatches := claimed.WorkerID == "" && claim.WorkerID == "" &&
+		core.IsTaskRunClaimantID(claimed.ClaimantID) && core.IsTaskRunClaimantID(claim.ClaimantID)
+	return claimed.ID == order.ID && claimed.AttemptID == order.LastAttemptID &&
+		(workerIdentityMatches || runIdentityMatches) && claimed.ClaimantID == claim.ClaimantID &&
+		claimed.SessionID == claim.SessionID
+}
+
+// ReleasedCheckpointClaimMatches verifies a deliberate queued release against
+// the immutable claim event for the exact retained attempt. It is read-only so
+// reconciliation can distinguish a child's own checkpoint handoff from real
+// authority loss without renewing or restoring the claim.
+func ReleasedCheckpointClaimMatches(ctx context.Context, st Store, order core.WorkOrder, claim core.WorkOrderClaimIdentity) (bool, error) {
+	if !deliberateCheckpointRelease(order) {
+		return false, nil
+	}
+	events, err := st.ListEvents(ctx, order.TaskID)
+	if err != nil {
+		return false, err
+	}
+	for i := len(events) - 1; i >= 0; i-- {
+		if ReleasedCheckpointClaimEventMatches(events[i], order, claim) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func deliberateCheckpointRelease(order core.WorkOrder) bool {

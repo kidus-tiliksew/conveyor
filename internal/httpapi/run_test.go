@@ -172,6 +172,15 @@ func TestTaskRunHTTPRenewReportsSameSessionCheckpointRelease(t *testing.T) {
 	if err := json.Unmarshal(release.Body.Bytes(), &checkpointReleased); err != nil || checkpointReleased.Checkpoint == nil || checkpointReleased.Checkpoint.DecisionRequest != "Choose whether to proceed." {
 		t.Fatalf("checkpoint release body=%s err=%v", release.Body.String(), err)
 	}
+	reconcile := taskRunHTTPCall(handler, http.MethodGet, "/v1/tasks/checkpoint-run/run-orders/"+order.ID+"/reconcile?session_id=run-session", "")
+	if reconcile.Code != http.StatusOK || !strings.Contains(reconcile.Body.String(), `"released_at_checkpoint":true`) ||
+		!strings.Contains(reconcile.Body.String(), `"last_failure_message":"operator checkpoint reached"`) {
+		t.Fatalf("reconcile status=%d body=%s", reconcile.Code, reconcile.Body.String())
+	}
+	wrongReconcile := taskRunHTTPCall(handler, http.MethodGet, "/v1/tasks/checkpoint-run/run-orders/"+order.ID+"/reconcile?session_id=other-session", "")
+	if wrongReconcile.Code != http.StatusConflict || !strings.Contains(wrongReconcile.Body.String(), "claim expired or order reassigned") {
+		t.Fatalf("wrong reconcile status=%d body=%s", wrongReconcile.Code, wrongReconcile.Body.String())
+	}
 	renew := taskRunHTTPCall(handler, http.MethodPost, "/v1/tasks/checkpoint-run/run-orders/"+order.ID+"/renew", `{"session_id":"run-session"}`)
 	if renew.Code != http.StatusConflict || renew.Header().Get("X-Conveyor-Error-Code") != "work_order_released_checkpoint" ||
 		!strings.Contains(renew.Body.String(), "released by this session at an operator checkpoint") {

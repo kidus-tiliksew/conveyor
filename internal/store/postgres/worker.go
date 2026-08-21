@@ -240,7 +240,10 @@ func (s *Store) RenewWorkerClaimCommand(ctx context.Context, taskLease taskops.T
 			if matchErr := s.pool.QueryRow(ctx, `SELECT EXISTS (
 				SELECT 1 FROM events WHERE workspace_id=$1 AND task_id=$2 AND job_id=$3
 				AND kind='work_order.claimed' AND payload_json->>'id'=$4
-				AND payload_json->>'attempt_id'=$5 AND payload_json->>'worker_id'=$6
+				AND payload_json->>'attempt_id'=$5 AND (
+					($6<>'' AND payload_json->>'worker_id'=$6) OR
+					($6='' AND $7 LIKE 'run:%' AND length($7)>4 AND NOT (payload_json ? 'worker_id'))
+				)
 				AND payload_json->>'claimed_by'=$7 AND payload_json->>'session_id'=$8
 			)`, workspace(ctx), current.TaskID, current.JobID, current.ID, current.LastAttemptID,
 				claim.WorkerID, claim.ClaimantID, claim.SessionID).Scan(&releasedByClaim); matchErr != nil {

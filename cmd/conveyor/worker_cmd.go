@@ -1149,12 +1149,30 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 		return nil
 	}
 	observeCheckpointRelease := func(renewErr error) bool {
-		if !workerOrderReleasedAtCheckpoint(renewErr) {
+		typedRelease := workerOrderReleasedAtCheckpoint(renewErr)
+		if !typedRelease && (item.Dispatch != "run" || !workerOrderConflict(renewErr)) {
 			return false
 		}
-		checkpointReleaseReason = core.WorkOrderReleaseReasonOperatorCheckpointReached
-		observeFinalized(core.WorkOrder{ID: item.Order.ID, State: core.WorkOrderQueued, LastFailureMessage: checkpointReleaseReason})
-		return true
+		if item.Dispatch == "run" {
+			reconcileCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			reconciled, reconcileErr := c.reconcileTaskRunOrderContext(reconcileCtx, credential, item, sessionID)
+			cancel()
+			if reconcileErr == nil && reconciled.ReleasedAtCheckpoint &&
+				(reconciled.WorkOrder.LastFailureMessage == core.WorkOrderReleaseReasonOperatorCheckpointReached ||
+					reconciled.WorkOrder.LastFailureMessage == core.WorkOrderReleaseReasonPlanRevisionRequested) {
+				checkpointReleaseReason = reconciled.WorkOrder.LastFailureMessage
+				observeFinalized(reconciled.WorkOrder)
+				return true
+			}
+		}
+		if typedRelease {
+			// The typed response itself proves the exact self-release. Retain the
+			// existing graceful behavior if the follow-up read is unavailable.
+			checkpointReleaseReason = core.WorkOrderReleaseReasonOperatorCheckpointReached
+			observeFinalized(core.WorkOrder{ID: item.Order.ID, State: core.WorkOrderQueued, LastFailureMessage: checkpointReleaseReason})
+			return true
+		}
+		return false
 	}
 	for {
 		select {
@@ -1883,6 +1901,11 @@ func workerOrderReleasedAtCheckpoint(err error) bool {
 	var response *workerHTTPError
 	return errors.As(err, &response) && response.StatusCode == http.StatusConflict &&
 		(response.Code == "work_order_released_checkpoint" || strings.Contains(strings.ToLower(response.Message), "work_order_released_checkpoint"))
+}
+
+func workerOrderConflict(err error) bool {
+	var response *workerHTTPError
+	return errors.As(err, &response) && response.StatusCode == http.StatusConflict
 }
 
 func workerOrderCancelled(err error) bool {

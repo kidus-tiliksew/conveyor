@@ -454,14 +454,20 @@ func (s *Server) reconcileTaskRunOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sessionID := r.URL.Query().Get("session_id")
-	order, ok := s.authorizeTaskRunOrder(r, sessionID)
-	if !ok {
+	credential, ok := store.CredentialFromContext(r.Context())
+	order, err := s.Store.GetWorkOrder(r.Context(), chi.URLParam(r, "order_id"))
+	if !ok || credential.Kind != core.CredentialUser || err != nil || order.TaskID != chi.URLParam(r, "id") {
 		http.Error(w, store.ErrWorkOrderClaimLost.Error(), http.StatusConflict)
 		return
 	}
-	result, err := s.Workers.Reconcile(r.Context(), core.Worker{}, order.ID, sessionID)
+	claim := core.WorkOrderClaimIdentity{ClaimantID: core.TaskRunClaimantID(credential.OwnerUserID), SessionID: sessionID}
+	result, err := s.Workers.ReconcileClaim(r.Context(), claim, order.ID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	if !result.Authorized && !result.ReleasedAtCheckpoint {
+		http.Error(w, store.ErrWorkOrderClaimLost.Error(), http.StatusConflict)
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
