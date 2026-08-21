@@ -14,6 +14,14 @@ func proposalKey(taskID string, kind core.TaskContextProposalTargetKind, targetI
 	return taskID + "\x00" + string(kind) + "\x00" + targetID
 }
 
+func (m *memory) deleteProposedTaskContextLocked(taskID string) {
+	for key, proposal := range m.taskContextProposals {
+		if proposal.TaskID == taskID && proposal.State == core.TaskContextProposalProposed {
+			delete(m.taskContextProposals, key)
+		}
+	}
+}
+
 func (m *memory) ProposeTaskContext(ctx context.Context, input core.TaskContextProposalInput) (core.TaskContextProposal, bool, error) {
 	return m.proposeTaskContext(ctx, input, false)
 }

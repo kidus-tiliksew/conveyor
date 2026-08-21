@@ -102,3 +102,26 @@ func TestTaskContextProposalValidation(t *testing.T) {
 		t.Fatal("empty justification was accepted")
 	}
 }
+
+func TestPendingProposalsDefensivelyExcludeTerminalTaskContext(t *testing.T) {
+	ctx := WithWorkspace(t.Context(), "demo")
+	st := NewMemory().(*memory)
+	now := time.Now().UTC()
+	for _, task := range []core.Task{
+		{ID: "open-pending", Workspace: "demo", State: core.TaskRunning, CreatedAt: now},
+		{ID: "merged-pending", Workspace: "demo", State: core.TaskMerged, CreatedAt: now},
+		{ID: "closed-pending", Workspace: "demo", State: core.TaskClosed, CreatedAt: now},
+	} {
+		if err := st.CreateTask(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+		st.taskContextProposals[proposalKey(task.ID, core.TaskContextProposalRequirement, "req-context")] = core.TaskContextProposal{
+			TaskID: task.ID, Workspace: task.Workspace, TargetKind: core.TaskContextProposalRequirement,
+			TargetID: "req-context", TargetTitle: "Context", State: core.TaskContextProposalProposed, CreatedAt: now,
+		}
+	}
+	pending, err := st.ListPendingProposals(ctx)
+	if err != nil || len(pending) != 1 || pending[0].OriginID != "open-pending" {
+		t.Fatalf("pending=%+v err=%v", pending, err)
+	}
+}

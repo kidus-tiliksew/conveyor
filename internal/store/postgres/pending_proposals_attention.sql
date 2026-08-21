@@ -16,9 +16,11 @@ WITH pending_origin_tasks AS (
 	WHERE workspace_id = $1
 	  AND origin = 'implementation' AND NOT confirmed AND NOT retired AND origin_task_id <> ''
 	UNION
-	SELECT DISTINCT task_id
-	FROM task_context_proposals
-	WHERE workspace_id = $1 AND state = 'proposed'
+	SELECT DISTINCT proposal.task_id
+	FROM task_context_proposals proposal
+	JOIN tasks task ON task.workspace_id = proposal.workspace_id AND task.id = proposal.task_id
+	WHERE proposal.workspace_id = $1 AND proposal.state = 'proposed'
+	  AND task.state NOT IN ('merged', 'closed')
 ),
 superseded_reviews AS (
     SELECT DISTINCT jsonb_array_elements_text(

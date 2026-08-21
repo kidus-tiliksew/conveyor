@@ -1525,6 +1525,11 @@ func (s *Store) ApplyTaskCommand(ctx context.Context, lease taskops.TaskLease, i
 			}
 			result = taskFromDB(updated)
 		}
+		if core.TaskTerminal(state) {
+			if err := deleteProposedTaskContextTx(ctx, tx, id); err != nil {
+				return err
+			}
+		}
 		if err := insertEvent(ctx, q, core.Event{TaskID: id, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": before.State, "to": state, "command": command.Kind})}); err != nil {
 			return err
 		}
@@ -1676,6 +1681,9 @@ func (s *Store) closeBlueprintParentTx(ctx context.Context, tx pgx.Tx, q *db.Que
 	if _, err = q.UpdateTaskState(ctx, db.UpdateTaskStateParams{
 		ID: parentID, WorkspaceID: workspace(ctx), State: string(closed),
 	}); err != nil {
+		return false, err
+	}
+	if err = deleteProposedTaskContextTx(ctx, tx, parentID); err != nil {
 		return false, err
 	}
 	if err = insertEvent(ctx, q, core.Event{TaskID: parentID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{
@@ -3362,6 +3370,9 @@ func (s *Store) CancelTaskCommand(ctx context.Context, lease taskops.TaskLease, 
 		}
 	}
 	if _, err = tx.Exec(ctx, `UPDATE tasks SET state=$1,next_stage='',recovery_stage='',updated_at=$2 WHERE workspace_id=$3 AND id=$4 AND state=$5`, taskState, intervention.At, workspace(ctx), intervention.TaskID, priorState); err != nil {
+		return core.Task{}, err
+	}
+	if err = deleteProposedTaskContextTx(ctx, tx, intervention.TaskID); err != nil {
 		return core.Task{}, err
 	}
 	if err = insertEvent(ctx, q, core.Event{TaskID: intervention.TaskID, Kind: "task.state_changed", ActorID: intervention.ActorID, ActorRole: intervention.ActorRole, Payload: core.JSONPayload(map[string]any{"from": priorState, "to": taskState, "command": core.TaskCancel}), At: intervention.At}); err != nil {
