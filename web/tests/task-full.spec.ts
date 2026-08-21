@@ -2335,6 +2335,13 @@ test('structured authority checkpoint leads with the decision and resolves throu
 }) => {
   await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
   const item = activity('operator-checkpoint', false)
+  item.task.context = {
+    designs: [
+      { id: 'design-checkpoint', title: 'Checkpoint design', version: 1 },
+      { id: 'design-uncited', title: 'Uncited design', version: 1 },
+      { id: 'req-checkpoint', title: 'Requirement identity design', version: 1 },
+    ],
+  }
   const order = item.work_orders?.[0] as unknown as {
     checkpoint: {
       decision_request: string
@@ -2403,6 +2410,15 @@ test('structured authority checkpoint leads with the decision and resolves throu
     }
     await route.fulfill({ json: item })
   })
+  await page.route('**/v1/system-designs**', (route) =>
+    route.fulfill({
+      json: [
+        designProposalSummary('operator-checkpoint', 'design-checkpoint', 'Checkpoint design', 2),
+        designProposalSummary('operator-checkpoint', 'design-uncited', 'Uncited design', 3),
+        designProposalSummary('operator-checkpoint', 'req-checkpoint', 'Requirement identity design', 4),
+      ],
+    }),
+  )
   await page.route('**/v1/system-designs/design-checkpoint/versions/2/confirm**', async (route) => {
     confirmHeaders = route.request().headers()
     resolved = true
@@ -2452,6 +2468,15 @@ test('structured authority checkpoint leads with the decision and resolves throu
     card.getByText('No revision is waiting for a decision. Author one if the conflict remains.'),
   ).toBeVisible()
   await expect(card.getByText('A revision is waiting for your decision.')).toBeVisible()
+  const standalone = page.getByRole('region', { name: 'System Design proposals from this task' })
+  await expect(standalone).toHaveCount(1)
+  await expect(standalone.getByRole('link', { name: 'Checkpoint design' })).toHaveCount(0)
+  await expect(standalone.getByRole('link', { name: 'Uncited design' })).toHaveCount(1)
+  await expect(standalone.getByRole('link', { name: 'Requirement identity design' })).toHaveCount(1)
+  await expect(card.getByRole('button', { name: 'Confirm v2' })).toHaveCount(1)
+  await expect(page.getByRole('button', { name: 'Confirm version 2' })).toHaveCount(0)
+  await expect(standalone.getByRole('button', { name: 'Confirm version 3' })).toHaveCount(1)
+  await expect(standalone.getByRole('button', { name: 'Confirm version 4' })).toHaveCount(1)
   const dismissPath = card.getByRole('link', { name: 'Review or dismiss v2' })
   await expect(dismissPath).toHaveAttribute('href', /pending-proposals.*document=design-checkpoint.*tier=system_design/)
   await dismissPath.click()
@@ -2470,6 +2495,52 @@ test('structured authority checkpoint leads with the decision and resolves throu
   await direction.fill('Proceed using the confirmed checkpoint documents.')
   await page.getByRole('button', { name: 'Recover work order' }).click()
   await expect.poll(() => recoveryBody?.direction).toBe('Proceed using the confirmed checkpoint documents.')
+})
+
+test('structured authority checkpoint omits the standalone card when every proposal is cited', async ({ page }) => {
+  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
+  const item = activity('operator-checkpoint', false)
+  item.task.context = {
+    designs: [{ id: 'design-checkpoint', title: 'Checkpoint design', version: 1 }],
+  }
+  const order = item.work_orders?.[0]
+  if (!order) throw new Error('Expected the checkpoint fixture to include a work order.')
+  order.checkpoint = {
+    decision_request: 'Confirm the cited design before implementation continues.',
+    class: 'authority_conflict',
+    citations: [
+      {
+        document_id: 'design-checkpoint',
+        document_kind: 'system_design',
+        document_title: 'Checkpoint design',
+        cited_version: 1,
+        current_confirmed_version: 1,
+        newer_confirmed: false,
+        pending_proposals: [
+          {
+            id: 'design-checkpoint',
+            title: 'Checkpoint design',
+            tier: 'system_design',
+            version: 2,
+            origin_type: 'task',
+            proposed_at: createdAt,
+          },
+        ],
+      },
+    ],
+  }
+  await page.route('**/v1/tasks/operator-checkpoint/activity*', (route) => route.fulfill({ json: item }))
+  await page.route('**/v1/system-designs**', (route) =>
+    route.fulfill({
+      json: [designProposalSummary('operator-checkpoint', 'design-checkpoint', 'Checkpoint design', 2)],
+    }),
+  )
+
+  await page.goto('/tasks/operator-checkpoint/full')
+  await expect(page.getByRole('region', { name: 'Checkpoint decision and recovery' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Confirm v2' })).toHaveCount(1)
+  await expect(page.getByRole('region', { name: 'System Design proposals from this task' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Confirm version 2' })).toHaveCount(0)
 })
 
 test('stalled task is labelled in the operator tray with recover and reasoned cancel controls', async ({ page }) => {
@@ -4370,8 +4441,18 @@ test('unsatisfiable dependency is attention-worthy and can be unlinked with an a
 // The origin-task System Design proposal card. The decision a
 // task raised is confirmable from that task, without leaving for the document.
 function designCollection(originTaskId: string, resolved: boolean) {
+  return [designProposalSummary(originTaskId, 'design-lifecycle', 'Work-order lifecycle', 2, resolved)]
+}
+
+function designProposalSummary(
+  originTaskId: string,
+  documentId: string,
+  title: string,
+  proposalVersion: number,
+  resolved = false,
+) {
   const confirmedVersion = {
-    document_id: 'design-lifecycle',
+    document_id: documentId,
     version: 1,
     content: '# Lifecycle\n\nThe service owns lifecycle authority.',
     governs: [{ repository: 'conveyor', paths: ['internal/workorder/**'] }],
@@ -4383,7 +4464,7 @@ function designCollection(originTaskId: string, resolved: boolean) {
   }
   const proposal = {
     ...confirmedVersion,
-    version: 2,
+    version: proposalVersion,
     content: '# Lifecycle\n\nThe service owns lifecycle authority and recovery direction.',
     origin: 'implementation_deliberation',
     origin_task_id: originTaskId,
@@ -4391,26 +4472,24 @@ function designCollection(originTaskId: string, resolved: boolean) {
     dismissed: false,
     created_at: '2026-08-05T09:00:00Z',
   }
-  return [
-    {
-      document: {
-        id: 'design-lifecycle',
-        slug: 'lifecycle',
-        title: 'Work-order lifecycle',
-        category: 'Architecture',
-        current_version: resolved ? 2 : 1,
-        workspace: 'demo',
-        created_at: '2026-08-05T08:00:00Z',
-        updated_at: '2026-08-05T09:00:00Z',
-      },
-      current_version: resolved ? proposal : confirmedVersion,
-      // Confirmation is what empties this list; the card reads no other state.
-      pending_versions: resolved ? [] : [proposal],
-      versions: [confirmedVersion, proposal],
-      lineage: [],
-      drift: [],
+  return {
+    document: {
+      id: documentId,
+      slug: documentId,
+      title,
+      category: 'Architecture',
+      current_version: resolved ? proposalVersion : 1,
+      workspace: 'demo',
+      created_at: '2026-08-05T08:00:00Z',
+      updated_at: '2026-08-05T09:00:00Z',
     },
-  ]
+    current_version: resolved ? proposal : confirmedVersion,
+    // Confirmation is what empties this list; the card reads no other state.
+    pending_versions: resolved ? [] : [proposal],
+    versions: [confirmedVersion, proposal],
+    lineage: [],
+    drift: [],
+  }
 }
 
 test('checkpoint proposal confirmation completes before recovery with an audited direction', async ({ page }) => {

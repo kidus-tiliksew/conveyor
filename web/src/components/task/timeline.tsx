@@ -113,6 +113,14 @@ export function Timeline({
   // why this rides `executionActions` like the rest of the tail.
   const designProposals = useSystemDesignProposals(item.task)
   const structuredCheckpoint = Boolean(currentExecution?.order.checkpoint?.decision_request?.trim())
+  const citedSystemDesigns = new Set(
+    structuredCheckpoint && currentExecution?.order.checkpoint?.class === 'authority_conflict'
+      ? (currentExecution.order.checkpoint.citations ?? [])
+          .filter((citation) => citation.document_kind === 'system_design')
+          .map((citation) => citation.document_id)
+      : [],
+  )
+  const standaloneDesignProposals = designProposals.filter((proposal) => !citedSystemDesigns.has(proposal.document.id))
   const combineCheckpointProposal =
     !structuredCheckpoint &&
     hasWorkerRecovery(item) &&
@@ -201,14 +209,14 @@ export function Timeline({
                 <WorkOrderRecoveryCard item={item} />
               ),
           },
-          designProposals.length > 0 &&
+          standaloneDesignProposals.length > 0 &&
             !combineCheckpointProposal && {
               key: 'design-proposal',
               dot: 'bg-attention-dot',
               card: (
                 <SystemDesignProposalCard
                   task={item.task}
-                  proposals={designProposals}
+                  proposals={standaloneDesignProposals}
                   reviewWaiting={item.pending_authority === true}
                 />
               ),
