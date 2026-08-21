@@ -2248,10 +2248,10 @@ func (d *Dispatcher) mergeApprovedTaskLocked(ctx context.Context, task core.Task
 	}
 	confirmed, err := d.ViewPullRequest(ctx, repo.GitHub, current.Branch)
 	if err != nil {
-		return d.recordMergeFailure(ctx, current, "merge_verification_failed", fmt.Errorf("GitHub accepted the merge request but Conveyor could not verify pull request %s#%d; inspect it and retry reconciliation: %w", repo.GitHub, pr.Number, err))
+		return d.recordMergeFailureWithAuthor(ctx, current, "merge_verification_failed", fmt.Errorf("GitHub accepted the merge request but Conveyor could not verify pull request %s#%d; inspect it and retry reconciliation: %w", repo.GitHub, pr.Number, err), author)
 	}
 	if !confirmed.Merged {
-		return d.recordMergeFailure(ctx, current, "merge_unconfirmed", fmt.Errorf("GitHub did not confirm pull request %s#%d as merged; inspect checks or merge-queue status and retry", repo.GitHub, pr.Number))
+		return d.recordMergeFailureWithAuthor(ctx, current, "merge_unconfirmed", fmt.Errorf("GitHub did not confirm pull request %s#%d as merged; inspect checks or merge-queue status and retry", repo.GitHub, pr.Number), author)
 	}
 	if err := d.Store.AppendEvent(ctx, core.Event{TaskID: current.ID, Kind: "merge.confirmed", Payload: core.JSONPayload(map[string]any{"repository": repo.GitHub, "pull_request": confirmed.Number, "url": confirmed.URL, "base_sha": confirmed.BaseSHA, "head_sha": confirmed.HeadSHA, "forge_author_class": author.Class, "forge_author_user_id": author.UserID})}); err != nil {
 		return err

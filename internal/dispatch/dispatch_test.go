@@ -868,6 +868,78 @@ func TestMergeApprovedTaskUsesApprovingOperatorCredentialAndAuditsIdentity(t *te
 	}
 }
 
+func TestMergeApprovedTaskVerificationFailuresAuditApprovingOperatorIdentity(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		reasonCode string
+		verify     func() (githubtrigger.PullRequest, error)
+	}{
+		{
+			name:       "verification read fails",
+			reasonCode: "merge_verification_failed",
+			verify: func() (githubtrigger.PullRequest, error) {
+				return githubtrigger.PullRequest{}, errors.New("verification unavailable")
+			},
+		},
+		{
+			name:       "merge remains unconfirmed",
+			reasonCode: "merge_unconfirmed",
+			verify: func() (githubtrigger.PullRequest, error) {
+				return githubtrigger.PullRequest{Number: 12, State: "open", Merged: false}, nil
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx, st, task, d := approvedMergeFixtureWithScopeAndGate(t, "acme/app", config.RefreshReviewDelta, true)
+			if err := st.CreateIntervention(ctx, core.Intervention{TaskID: task.ID, Action: core.InterventionApprove, ActorID: store.UserActorID("usr-approver"), ActorRole: core.ActorUser}); err != nil {
+				t.Fatal(err)
+			}
+			d.ForgeTokens = &mergeForgeTokens{
+				status:     core.ForgeTokenStatus{Configured: true},
+				credential: core.ForgeTokenCredential{UserID: "usr-approver", Token: "approver-forge-token"},
+			}
+			views := 0
+			d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
+				views++
+				if views == 1 {
+					return githubtrigger.PullRequest{Number: 12, URL: "https://github.com/acme/app/pull/12", State: "open", Mergeable: "MERGEABLE"}, nil
+				}
+				return test.verify()
+			}
+			d.RequestMerge = func(context.Context, string, int) error {
+				t.Fatal("approver merge fell back to host identity")
+				return nil
+			}
+			d.RequestMergeWithCredential = func(_ context.Context, _ string, _ int, token string) error {
+				if token != "approver-forge-token" {
+					t.Fatalf("merge token = %q", token)
+				}
+				return nil
+			}
+
+			if err := d.MergeApprovedTask(ctx, task); err == nil {
+				t.Fatal("expected merge verification failure")
+			}
+			events, err := st.ListEvents(ctx, task.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			found := false
+			for _, event := range events {
+				payload := string(event.Payload)
+				if event.Kind == "merge.failed" && strings.Contains(payload, `"reason_code":"`+test.reasonCode+`"`) {
+					found = strings.Contains(payload, `"forge_author_class":"approving_operator"`) &&
+						strings.Contains(payload, `"forge_author_user_id":"usr-approver"`) &&
+						!strings.Contains(payload, "approver-forge-token")
+				}
+			}
+			if !found {
+				t.Fatalf("merge.failed attribution missing or unsafe: %+v", events)
+			}
+		})
+	}
+}
+
 func TestMergeAuthorFallsBackToHostOnlyWhenApproverHasNoToken(t *testing.T) {
 	ctx, st, task, d := approvedMergeFixtureWithScopeAndGate(t, "acme/app", config.RefreshReviewDelta, true)
 	if err := st.CreateIntervention(ctx, core.Intervention{TaskID: task.ID, Action: core.InterventionApprove, ActorID: store.UserActorID("usr-approver"), ActorRole: core.ActorUser}); err != nil {
