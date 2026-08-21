@@ -405,6 +405,11 @@ type AuthenticatedCredential struct {
 	// Method distinguishes browser sessions from bearer credentials without
 	// changing the user actor or live capability model.
 	Method CredentialMethod
+	// SessionExpiresAt and SessionEstablishedByLink are populated only for
+	// browser sessions. They let the HTTP boundary refresh the opaque cookie and
+	// enforce link-authorized password recovery without widening bearer access.
+	SessionExpiresAt         time.Time
+	SessionEstablishedByLink bool
 }
 
 type CredentialMethod string

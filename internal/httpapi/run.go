@@ -59,7 +59,7 @@ func (s *Server) requireTaskRequestChangesAuth(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		credential, err := s.authenticateHumanCredential(r)
+		credential, err := s.authenticateHumanCredential(w, r)
 		if err != nil {
 			writeCredentialVerificationError(w, err)
 			return

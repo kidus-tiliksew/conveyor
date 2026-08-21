@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 )
@@ -39,10 +40,17 @@ type MembershipStore interface {
 type InvitationSessionStore interface {
 	IssueSignInLink(context.Context, string) (core.IssuedSignInLink, error)
 	RedeemSignInLink(context.Context, string) (core.DashboardSession, core.IdentityUser, error)
+	SignInWithPassword(context.Context, string, string) (core.DashboardSession, core.IdentityUser, error)
+	SetOwnPassword(context.Context, string, string, string, string) error
 	VerifyDashboardSession(context.Context, string) (core.AuthenticatedCredential, error)
 	RevokeDashboardSession(context.Context, string, string) error
 	RecordInvitationDelivery(context.Context, string, string) error
 }
+
+var (
+	ErrInvalidCurrentPassword = errors.New("invalid current password")
+	ErrInvalidPassword        = errors.New("password must contain between 12 and 1024 bytes")
+)
 
 // PersonalAccessTokenStore is the self-service human-credential boundary. Every
 // method takes the owning user resolved from the presented credential, so a

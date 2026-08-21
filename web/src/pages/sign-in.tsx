@@ -1,8 +1,10 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
-import { CheckCircle2, Link2, LoaderCircle } from 'lucide-react'
+import { CheckCircle2, KeyRound, Link2, LoaderCircle } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
-import { redeemSignInLink } from '../lib/api'
+import { Button } from '../components/ui/button'
+import { Input } from '../components/ui/input'
+import { redeemSignInLink, signInWithPassword } from '../lib/api'
 
 type State = 'checking' | 'success' | 'invalid'
 
@@ -12,6 +14,10 @@ export function SignInPage() {
   const started = useRef(false)
   const queryClient = useQueryClient()
   const navigate = useNavigate()
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [passwordError, setPasswordError] = useState('')
+  const [passwordPending, setPasswordPending] = useState(false)
 
   useEffect(() => {
     if (!token || started.current) return
@@ -27,32 +33,92 @@ export function SignInPage() {
       .catch(() => setState('invalid'))
   }, [navigate, queryClient, token])
 
+  async function submitPassword(event: React.FormEvent) {
+    event.preventDefault()
+    setPasswordPending(true)
+    setPasswordError('')
+    try {
+      await signInWithPassword(email, password)
+      sessionStorage.removeItem('conveyor-token')
+      queryClient.clear()
+      await navigate({ to: '/', replace: true })
+    } catch {
+      setPasswordError(
+        'Email or password was not accepted. Ask your operator for a fresh sign-in link if you forgot it.',
+      )
+    } finally {
+      setPasswordPending(false)
+    }
+  }
+
   return (
     <main className="grid min-h-screen place-items-center bg-background px-6 py-12">
-      <section className="w-full max-w-md rounded-xl border border-border bg-card p-8 text-center shadow-sm">
-        <div className="mx-auto mb-5 grid size-12 place-items-center rounded-xl bg-primary-soft text-primary">
-          {state === 'checking' ? (
-            <LoaderCircle className="size-6 animate-spin" aria-hidden="true" />
-          ) : state === 'success' ? (
-            <CheckCircle2 className="size-6" aria-hidden="true" />
-          ) : (
-            <Link2 className="size-6" aria-hidden="true" />
-          )}
+      <section className="w-full max-w-md rounded-xl border border-border bg-card p-8 shadow-sm">
+        <div className="text-center">
+          <div className="mx-auto mb-5 grid size-12 place-items-center rounded-xl bg-primary-soft text-primary">
+            {state === 'checking' ? (
+              <LoaderCircle className="size-6 animate-spin" aria-hidden="true" />
+            ) : state === 'success' ? (
+              <CheckCircle2 className="size-6" aria-hidden="true" />
+            ) : (
+              <Link2 className="size-6" aria-hidden="true" />
+            )}
+          </div>
+          <h1 className="text-xl font-semibold tracking-tight">
+            {state === 'checking'
+              ? 'Signing you in…'
+              : state === 'success'
+                ? 'You’re signed in'
+                : 'This link no longer works'}
+          </h1>
+          <p className="mt-3 text-sm leading-6 text-muted" role={state === 'invalid' && token ? 'alert' : undefined}>
+            {state === 'checking'
+              ? 'This should only take a moment.'
+              : state === 'success'
+                ? 'Opening your workspace…'
+                : token
+                  ? 'It may have expired or already been used. Ask your operator to resend your invitation.'
+                  : 'Use your account password, or ask your operator for a one-time sign-in link.'}
+          </p>
         </div>
-        <h1 className="text-xl font-semibold tracking-tight">
-          {state === 'checking'
-            ? 'Signing you in…'
-            : state === 'success'
-              ? 'You’re signed in'
-              : 'This link no longer works'}
-        </h1>
-        <p className="mt-3 text-sm leading-6 text-muted" role={state === 'invalid' ? 'alert' : undefined}>
-          {state === 'checking'
-            ? 'This should only take a moment.'
-            : state === 'success'
-              ? 'Opening your workspace…'
-              : 'It may have expired or already been used. Ask your operator to resend your invitation.'}
-        </p>
+        {state !== 'checking' && state !== 'success' && (
+          <>
+            <div className="my-6 flex items-center gap-3 text-xs text-faint">
+              <span className="h-px flex-1 bg-border" />
+              Password sign-in
+              <span className="h-px flex-1 bg-border" />
+            </div>
+            <form className="space-y-3" aria-label="Password sign-in" onSubmit={submitPassword}>
+              <Input
+                type="email"
+                aria-label="Email address"
+                autoComplete="email"
+                value={email}
+                onChange={(event) => setEmail(event.target.value)}
+              />
+              <Input
+                type="password"
+                aria-label="Password"
+                autoComplete="current-password"
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+              />
+              <Button type="submit" className="w-full" disabled={passwordPending || !email.trim() || !password}>
+                <KeyRound aria-hidden="true" />
+                {passwordPending ? 'Signing in…' : 'Sign in'}
+              </Button>
+              {passwordError && (
+                <p className="text-sm leading-5 text-failure" role="alert">
+                  {passwordError}
+                </p>
+              )}
+            </form>
+            <p className="mt-5 text-xs leading-5 text-faint">
+              Forgot your password? Ask your operator to resend your invitation link. It signs you in so you can replace
+              the password in Settings.
+            </p>
+          </>
+        )}
       </section>
     </main>
   )

@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -218,5 +219,133 @@ func TestInvitationLinkSessionAndFirstPATIntegration(t *testing.T) {
 	}
 	if lifecycleEvents < 7 {
 		t.Fatalf("audited lifecycle events=%d, want at least 7", lifecycleEvents)
+	}
+}
+
+func TestPasswordSignInResetAndSlidingSessionIntegration(t *testing.T) {
+	st := newIdentityIntegrationStore(t, 0)
+	legacy := "password-owner-token"
+	if _, err := st.BootstrapIdentity(t.Context(), config.FirstOperatorIdentity{OrganizationName: "Password Org", Email: "password-owner@example.test", DisplayName: "Password Owner"}, legacy); err != nil {
+		t.Fatal(err)
+	}
+	owner, err := st.VerifyPersonalAccessToken(t.Context(), legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	credential := core.AuthenticatedCredential{ID: "legacy", OwnerUserID: owner.ID, Kind: core.CredentialUser, Scope: core.CredentialScopeOperator, Method: core.CredentialMethodBearer}
+	ctx := store.WithActor(store.WithCredential(t.Context(), credential), store.Actor{ID: store.UserActorID(owner.ID), Role: core.ActorUser})
+	if _, err = st.ProvisionIdentityUser(ctx, "passwordless@example.test", "Passwordless"); err != nil {
+		t.Fatal(err)
+	}
+
+	server := httpapi.NewServer(st)
+	server.InvitationDelivery = config.InvitationDelivery{PublicURL: "https://conveyor.example"}
+	handler := server.Handler()
+	call := func(method, path, body, source string, cookie *http.Cookie, csrf bool) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(method, path, strings.NewReader(body))
+		request.RemoteAddr = source + ":4321"
+		request.Header.Set("Content-Type", "application/json")
+		if cookie != nil {
+			request.AddCookie(cookie)
+		}
+		if csrf {
+			request.Header.Set("X-Conveyor-CSRF", "1")
+			request.Header.Set("Origin", "https://conveyor.example")
+		}
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
+	}
+
+	link, err := st.IssueSignInLink(ctx, owner.Email)
+	if err != nil {
+		t.Fatal(err)
+	}
+	redeem := call(http.MethodPost, "/v1/sign-in/redeem", `{"token":"`+link.Value+`"}`, "192.0.2.1", nil, false)
+	if redeem.Code != http.StatusOK {
+		t.Fatalf("redeem status=%d body=%s", redeem.Code, redeem.Body.String())
+	}
+	linkCookie := redeem.Result().Cookies()[0]
+	if set := call(http.MethodPost, "/v1/password", `{"current_password":"","new_password":"first-password-value"}`, "192.0.2.2", linkCookie, true); set.Code != http.StatusNoContent {
+		t.Fatalf("first password status=%d body=%s", set.Code, set.Body.String())
+	}
+
+	passwordSignIn := call(http.MethodPost, "/v1/sign-in/password", `{"email":"PASSWORD-OWNER@example.test","password":"first-password-value"}`, "192.0.2.3", nil, true)
+	if passwordSignIn.Code != http.StatusOK {
+		t.Fatalf("password sign-in status=%d body=%s", passwordSignIn.Code, passwordSignIn.Body.String())
+	}
+	passwordCookie := passwordSignIn.Result().Cookies()[0]
+
+	refusals := []*httptest.ResponseRecorder{
+		call(http.MethodPost, "/v1/sign-in/password", `{"email":"missing@example.test","password":"wrong-password-value"}`, "192.0.2.4", nil, true),
+		call(http.MethodPost, "/v1/sign-in/password", `{"email":"passwordless@example.test","password":"wrong-password-value"}`, "192.0.2.5", nil, true),
+		call(http.MethodPost, "/v1/sign-in/password", `{"email":"password-owner@example.test","password":"wrong-password-value"}`, "192.0.2.6", nil, true),
+	}
+	for index, refusal := range refusals {
+		if refusal.Code != http.StatusUnauthorized || refusal.Body.String() != refusals[0].Body.String() {
+			t.Fatalf("refusal %d status=%d body=%q first=%q", index, refusal.Code, refusal.Body.String(), refusals[0].Body.String())
+		}
+	}
+
+	if changed := call(http.MethodPost, "/v1/password", `{"current_password":"wrong-password-value","new_password":"second-password-value"}`, "192.0.2.7", passwordCookie, true); changed.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong current password status=%d body=%s", changed.Code, changed.Body.String())
+	}
+	if changed := call(http.MethodPost, "/v1/password", `{"current_password":"first-password-value","new_password":"second-password-value"}`, "192.0.2.8", passwordCookie, true); changed.Code != http.StatusNoContent {
+		t.Fatalf("change password status=%d body=%s", changed.Code, changed.Body.String())
+	}
+
+	resetLink, err := st.IssueSignInLink(ctx, owner.Email)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resetRedeem := call(http.MethodPost, "/v1/sign-in/redeem", `{"token":"`+resetLink.Value+`"}`, "192.0.2.9", nil, false)
+	if resetRedeem.Code != http.StatusOK {
+		t.Fatalf("reset redeem status=%d body=%s", resetRedeem.Code, resetRedeem.Body.String())
+	}
+	if reset := call(http.MethodPost, "/v1/password", `{"current_password":"","new_password":"reset-password-value"}`, "192.0.2.10", resetRedeem.Result().Cookies()[0], true); reset.Code != http.StatusNoContent {
+		t.Fatalf("link reset status=%d body=%s", reset.Code, reset.Body.String())
+	}
+
+	session, _, err := st.SignInWithPassword(t.Context(), owner.Email, "reset-password-value")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.pool.Exec(t.Context(), `UPDATE dashboard_sessions SET expires_at=now()+interval '1 hour' WHERE id=$1`, session.ID); err != nil {
+		t.Fatal(err)
+	}
+	verified, err := st.VerifyDashboardSession(t.Context(), session.Value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if time.Until(verified.SessionExpiresAt) < 6*24*time.Hour+23*time.Hour {
+		t.Fatalf("session was not renewed through the seven-day window: %s", verified.SessionExpiresAt)
+	}
+	if err = st.RevokeDashboardSession(t.Context(), owner.ID, session.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.VerifyDashboardSession(t.Context(), session.Value); err == nil {
+		t.Fatal("revoked session was renewed")
+	}
+
+	deactivatedSession, _, err := st.SignInWithPassword(t.Context(), owner.Email, "reset-password-value")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.DeactivateIdentityUser(ctx, owner.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.VerifyDashboardSession(t.Context(), deactivatedSession.Value); err == nil {
+		t.Fatal("deactivated user retained password session")
+	}
+	if _, _, err = st.SignInWithPassword(t.Context(), owner.Email, "reset-password-value"); !errors.Is(err, core.ErrInvalidCredential) {
+		t.Fatalf("deactivated password sign-in err=%v", err)
+	}
+
+	var cleartextHashes int
+	if err = st.pool.QueryRow(t.Context(), `SELECT count(*) FROM users WHERE password_hash IN ('first-password-value','second-password-value','reset-password-value')`).Scan(&cleartextHashes); err != nil {
+		t.Fatal(err)
+	}
+	if cleartextHashes != 0 {
+		t.Fatal("cleartext password persisted")
 	}
 }
