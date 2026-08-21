@@ -6,6 +6,7 @@ package pack
 import (
 	"bytes"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -14,6 +15,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/lineagecontext"
 	"github.com/kidus-tiliksew/conveyor/internal/pipeline"
+	embeddedpack "github.com/kidus-tiliksew/conveyor/pack"
 )
 
 type Loader struct{ Dir string }
@@ -27,27 +29,31 @@ type Bundle struct {
 
 func Load(dir string) (*Bundle, error) {
 	if dir == "" {
-		return nil, fmt.Errorf("pack_dir is required")
+		return loadFS(embeddedpack.RoleFiles, "embedded role pack")
 	}
+	return loadFS(os.DirFS(dir), fmt.Sprintf("pack override %q", dir))
+}
+
+func loadFS(source fs.FS, sourceName string) (*Bundle, error) {
 	bundle := &Bundle{roles: make(map[core.Stage]string)}
 	for _, stage := range pipelineStages {
-		role, err := (Loader{Dir: dir}).Role(stage)
+		data, err := fs.ReadFile(source, filepath.ToSlash(filepath.Join("roles", string(stage)+".md")))
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("load %s role prompt from %s: %w", stage, sourceName, err)
 		}
-		if len(bytes.TrimSpace([]byte(role))) == 0 {
-			return nil, fmt.Errorf("load %s role prompt: file is empty", stage)
+		if len(bytes.TrimSpace(data)) == 0 {
+			return nil, fmt.Errorf("load %s role prompt from %s: file is empty", stage, sourceName)
 		}
-		bundle.roles[stage] = role
+		bundle.roles[stage] = string(data)
 	}
-	planningRole, err := (Loader{Dir: dir}).PlanningRole()
+	planningRole, err := fs.ReadFile(source, "roles/planning.md")
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("load planning role prompt from %s: %w", sourceName, err)
 	}
-	if len(bytes.TrimSpace([]byte(planningRole))) == 0 {
-		return nil, fmt.Errorf("load planning role prompt: file is empty")
+	if len(bytes.TrimSpace(planningRole)) == 0 {
+		return nil, fmt.Errorf("load planning role prompt from %s: file is empty", sourceName)
 	}
-	bundle.planningRole = planningRole
+	bundle.planningRole = string(planningRole)
 	return bundle, nil
 }
 
