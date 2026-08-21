@@ -45,19 +45,19 @@ not create child tasks.
 Gate approval, repository-drift resolution, requirement/decision/System Design
 confirmation, and task cancel/hold are operator-only actions, but plans must
 distinguish conflicts for which an implementation order can author a proposal.
-When confirmation of a System Design revision or decision is needed and the
-task-authored governance proposal tools apply, direct the implementer to author
-the complete revision proposals first, cite the resulting pending proposal
-identifiers in the checkpoint report, and then pause for operator confirmation.
-Reaching the checkpoint with those proposals already pending is the
-implementer's success condition.
+When confirmation of a requirement-clause revision, System Design revision, or
+decision is needed and the task-authored governance proposal tools apply,
+direct the implementer to author the complete revision proposals first, cite
+the resulting pending proposal identifiers in the checkpoint report, and then
+pause for operator confirmation. Reaching the checkpoint with those proposals
+already pending is the implementer's success condition.
 
-For gate approval, repository-drift resolution, requirement-clause revisions,
-and task cancel/hold, no applicable task-authored proposal surface is available.
-Express the checkpoint exactly as "pause and report until the operator has done
-X," and require the plan to state why proposing is unavailable. In every case,
-reaching and reporting the checkpoint satisfies the agent's obligation; the
-agent reports progress and releases the work order with reason `operator
+For gate approval, repository-drift resolution, and task cancel/hold, no
+applicable task-authored proposal surface is available. Express the checkpoint
+exactly as "pause and report until the operator has done X," and require the
+plan to state why proposing is unavailable. In every case, reaching and
+reporting the checkpoint satisfies the agent's obligation; the agent reports
+progress and releases the work order with reason `operator
 checkpoint reached`. Acceptance must otherwise be verifiable through the
 repository checkout, repository Make targets, and documented MCP tools. For
 monitor-sourced `chore` tasks, drift resolution and governance confirmation

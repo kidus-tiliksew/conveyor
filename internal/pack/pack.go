@@ -233,7 +233,7 @@ func RenderGovernanceContract(stage core.Stage, snapshot core.GovernanceSnapshot
 			out.WriteString("\nNo implementation-originated System Design proposal evidence from this task was present when this review was claimed.\n")
 		}
 	} else if stage == core.StageImplement {
-		out.WriteString("\n# System Design proposals from this task\n\nProposals are fire-and-forget: report the proposal identifier in progress and the implementation handoff, then proceed immediately to `submit_for_review`. Never wait for, request, or condition progress on operator confirmation.\n")
+		out.WriteString("\n# Authority-conflict proposal discipline\n\nAt an approved authority-conflict checkpoint, author complete proposals first with the applicable task-authored governance tools: `propose_requirement_revision`, `propose_system_design_revision`, and `propose_decision`. Cite every pending proposal identifier in the checkpoint decision request, then follow the role's checkpoint-release instructions without waiting for operator confirmation. If a proposal tool is genuinely unavailable or fails, checkpoint release remains admissible when the decision request explains why no proposal was authored.\n\n# System Design proposals from this task\n\nOutside an approved authority-conflict checkpoint, proposals are fire-and-forget: report the proposal identifier in progress and the implementation handoff, then proceed immediately to `submit_for_review`. Never wait for, request, or condition progress on operator confirmation.\n")
 		if len(pending) > 0 {
 			out.WriteString("A resumed implementation session must report an existing identical proposal identifier instead of proposing it again. These proposals confer no authority.\n")
 		}
