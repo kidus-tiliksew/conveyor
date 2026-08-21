@@ -3,6 +3,7 @@
 package redact
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"io"
@@ -14,6 +15,39 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 )
+
+// SecretSource resolves recoverable control-plane credentials only for the
+// immediate in-process redaction boundary.
+type SecretSource interface {
+	ListForgeTokensForRedaction(context.Context) ([]string, error)
+}
+
+// Text combines pattern/entropy detection with current exact-match secrets.
+// Source failures are returned so callers can fail persistence closed.
+func Text(ctx context.Context, source SecretSource, value string) (string, Stats, error) {
+	redactor, err := WithSecrets(ctx, source, nil)
+	if err != nil {
+		return "", Stats{}, err
+	}
+	clean, stats := redactor.Redact(value)
+	return clean, stats, nil
+}
+
+// WithSecrets constructs an ephemeral redactor from current stored secrets and
+// any boundary-local values such as a provider credential.
+func WithSecrets(ctx context.Context, source SecretSource, additional []string) (*Redactor, error) {
+	secrets := append([]string(nil), additional...)
+	var err error
+	if source != nil {
+		stored, sourceErr := source.ListForgeTokensForRedaction(ctx)
+		err = sourceErr
+		if err != nil {
+			return nil, err
+		}
+		secrets = append(secrets, stored...)
+	}
+	return New(secrets), nil
+}
 
 const (
 	exactPlaceholder   = "[REDACTED:exact]"

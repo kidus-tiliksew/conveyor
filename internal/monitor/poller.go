@@ -62,7 +62,10 @@ func (p *Poller) Poll(ctx context.Context) error {
 			category = string(githubtrigger.ForgeRequest)
 		}
 		backoffUntil := now.Add(delay)
-		detail, _ := redact.New(nil).Redact(err.Error())
+		detail, _, redactErr := redact.Text(ctx, p.Service.RedactionSecrets, err.Error())
+		if redactErr != nil {
+			return fmt.Errorf("resolve monitor redaction credentials: %w", redactErr)
+		}
 		_ = p.Service.Store.RecordMonitorFailure(ctx, category, detail, backoffUntil)
 		kind := "monitor.retry"
 		if attempt == attempts {

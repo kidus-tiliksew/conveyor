@@ -238,13 +238,14 @@ var (
 )
 
 type Service struct {
-	Store        Store
-	Intake       func(context.Context, TaskRequest) (IntakeResult, error)
-	WorkspaceID  string
-	Enabled      bool
-	Repositories map[string]struct{}
-	Now          func() time.Time
-	ResolveScope func(context.Context) (workspace string, enabled bool, repositories map[string]struct{}, err error)
+	Store            Store
+	Intake           func(context.Context, TaskRequest) (IntakeResult, error)
+	WorkspaceID      string
+	Enabled          bool
+	Repositories     map[string]struct{}
+	Now              func() time.Time
+	ResolveScope     func(context.Context) (workspace string, enabled bool, repositories map[string]struct{}, err error)
+	RedactionSecrets redact.SecretSource
 }
 
 func (s *Service) Status(ctx context.Context) (Status, error) {

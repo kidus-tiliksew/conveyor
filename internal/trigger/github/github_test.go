@@ -4,11 +4,35 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestValidateTokenIdentityUsesEnvironmentOnly(t *testing.T) {
+	dir := t.TempDir()
+	script := `#!/bin/sh
+for arg in "$@"; do [ "$arg" = "candidate-forge-secret" ] && exit 12; done
+[ "$GH_TOKEN" = "candidate-forge-secret" ] || exit 13
+[ "$*" = "api user --jq .login" ] || exit 14
+printf 'octocat\n'
+`
+	path := filepath.Join(dir, "gh")
+	if err := os.WriteFile(path, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	login, err := ValidateTokenIdentity(t.Context(), "candidate-forge-secret")
+	if err != nil || login != "octocat" {
+		t.Fatalf("login=%q err=%v", login, err)
+	}
+	if _, err = ValidateTokenIdentity(t.Context(), "wrong"); !errors.Is(err, ErrAuthenticatedIdentityRead) || strings.Contains(err.Error(), "wrong") {
+		t.Fatalf("invalid identity err=%v", err)
+	}
+}
 
 func TestMarkIssueDispatchedMovesReadyLabel(t *testing.T) {
 	var calls [][]string

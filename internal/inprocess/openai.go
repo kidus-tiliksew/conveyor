@@ -84,9 +84,10 @@ type Agent interface {
 }
 
 type OpenAI struct {
-	APIKey  string
-	BaseURL string
-	Client  *http.Client
+	APIKey           string
+	BaseURL          string
+	Client           *http.Client
+	RedactionSecrets redact.SecretSource
 	// RetryDelay overrides the transient-failure backoff base; zero uses the
 	// default. Tests set it to keep retries fast.
 	RetryDelay time.Duration
@@ -115,7 +116,7 @@ func (client *OpenAI) Run(ctx context.Context, model string, input Input) (Resul
 	if phase, err := validateImageInputs(model, endpointHost, input.Attachments); err != nil {
 		diagnostic.Phase = phase
 		requestValue := map[string]any{"model": model, "attachment_summary": diagnostic, "store": false}
-		transcript, stats, redactErr := client.auditEnvelope(requestValue, map[string]any{"diagnostic": diagnostic})
+		transcript, stats, redactErr := client.auditEnvelope(ctx, requestValue, map[string]any{"diagnostic": diagnostic})
 		if redactErr != nil {
 			return Result{Diagnostic: &diagnostic}, redactErr
 		}
@@ -138,7 +139,7 @@ func (client *OpenAI) Run(ctx context.Context, model string, input Input) (Resul
 			if err != nil {
 				diagnostic.Phase = "attachment_preparation"
 				failure := fmt.Errorf("transcribe artifact %s (%s): %w", attachment.ID, attachment.Name, err)
-				audit, stats, redactErr := client.auditEnvelope(map[string]any{"model": model, "input": auditContent, "store": false}, map[string]any{"diagnostic": diagnostic, "error": failure.Error()})
+				audit, stats, redactErr := client.auditEnvelope(ctx, map[string]any{"model": model, "input": auditContent, "store": false}, map[string]any{"diagnostic": diagnostic, "error": failure.Error()})
 				if redactErr != nil {
 					return Result{Diagnostic: &diagnostic}, redactErr
 				}
@@ -150,7 +151,7 @@ func (client *OpenAI) Run(ctx context.Context, model string, input Input) (Resul
 		default:
 			diagnostic.Phase = "attachment_preparation"
 			failure := fmt.Errorf("unsupported attachment kind %q for artifact %s", attachment.Kind, attachment.ID)
-			audit, stats, redactErr := client.auditEnvelope(map[string]any{"model": model, "input": auditContent, "store": false}, map[string]any{"diagnostic": diagnostic, "error": failure.Error()})
+			audit, stats, redactErr := client.auditEnvelope(ctx, map[string]any{"model": model, "input": auditContent, "store": false}, map[string]any{"diagnostic": diagnostic, "error": failure.Error()})
 			if redactErr != nil {
 				return Result{Diagnostic: &diagnostic}, redactErr
 			}
@@ -239,7 +240,7 @@ func (client *OpenAI) Run(ctx context.Context, model string, input Input) (Resul
 	if err != nil {
 		diagnostic.Phase = "retry_exhausted"
 		diagnostic.Retryable = true
-		transcript, stats, redactErr := client.auditEnvelope(auditRequestValue, map[string]any{"diagnostic": diagnostic, "transport_error": err.Error()})
+		transcript, stats, redactErr := client.auditEnvelope(ctx, auditRequestValue, map[string]any{"diagnostic": diagnostic, "transport_error": err.Error()})
 		if redactErr != nil {
 			return Result{Diagnostic: &diagnostic}, redactErr
 		}
@@ -284,7 +285,7 @@ func (client *OpenAI) Run(ctx context.Context, model string, input Input) (Resul
 	} else {
 		diagnostic.Phase = "completed"
 	}
-	transcript, stats, redactErr := client.auditEnvelope(auditRequestValue, map[string]any{"response": responseValue, "diagnostic": diagnostic})
+	transcript, stats, redactErr := client.auditEnvelope(ctx, auditRequestValue, map[string]any{"response": responseValue, "diagnostic": diagnostic})
 	if redactErr != nil {
 		return Result{Diagnostic: &diagnostic}, redactErr
 	}
@@ -535,9 +536,13 @@ func providerErrorCode(raw []byte) string {
 	return fmt.Sprint(envelope.Error.Code)
 }
 
-func (client *OpenAI) auditEnvelope(request, response any) ([]byte, core.RedactionStats, error) {
+func (client *OpenAI) auditEnvelope(ctx context.Context, request, response any) ([]byte, core.RedactionStats, error) {
 	envelope, _ := json.Marshal(map[string]any{"request": request, "result": response})
-	transcript, stats, err := redact.New([]string{client.APIKey}).RedactJSON(envelope)
+	redactor, err := redact.WithSecrets(ctx, client.RedactionSecrets, []string{client.APIKey})
+	if err != nil {
+		return nil, core.RedactionStats{}, err
+	}
+	transcript, stats, err := redactor.RedactJSON(envelope)
 	if err != nil {
 		return nil, core.RedactionStats{}, err
 	}

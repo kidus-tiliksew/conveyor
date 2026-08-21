@@ -40,13 +40,14 @@ const (
 )
 
 type Service struct {
-	Store          store.Store
-	WorkOrders     *workorder.Service
-	ConfigProvider func(context.Context) (*config.Config, error)
-	Now            func() time.Time
-	RetryDelay     time.Duration
-	RetryMaximum   time.Duration
-	RetryLimit     int
+	Store            store.Store
+	WorkOrders       *workorder.Service
+	ConfigProvider   func(context.Context) (*config.Config, error)
+	Now              func() time.Time
+	RetryDelay       time.Duration
+	RetryMaximum     time.Duration
+	RetryLimit       int
+	RedactionSecrets redact.SecretSource
 }
 
 type Enrollment struct {
@@ -706,9 +707,11 @@ func (s *Service) RenewClaim(ctx context.Context, claim core.WorkOrderClaimIdent
 		return core.WorkOrder{}, err
 	}
 	if len(snapshots) > 0 && snapshots[0] != nil {
-		content, _ := boundedObservabilityContent(snapshots[0].Content, ActivitySnapshotLimit)
+		content, _, redactErr := s.boundedObservabilityContent(ctx, snapshots[0].Content, ActivitySnapshotLimit)
 		// Observability is best-effort and cannot alter the renewal result.
-		_ = s.Store.UpsertWorkOrderActivitySnapshot(ctx, id, claim, content)
+		if redactErr == nil {
+			_ = s.Store.UpsertWorkOrderActivitySnapshot(ctx, id, claim, content)
+		}
 	}
 	return renewed, nil
 }
@@ -1005,9 +1008,14 @@ func (s *Service) CheckpointAttempt(ctx context.Context, worker core.Worker, id 
 		return false, fmt.Errorf("attempt checkpoint must have a confirmed pushed result")
 	}
 	if checkpoint.Transcript != nil {
-		checkpoint.Transcript.Content, checkpoint.Transcript.Truncated = boundedObservabilityContent(
+		content, truncated, redactErr := s.boundedObservabilityContent(ctx,
 			checkpoint.Transcript.Content, AttemptTranscriptLimit, checkpoint.Transcript.Truncated,
 		)
+		if redactErr != nil {
+			checkpoint.Transcript = nil
+		} else {
+			checkpoint.Transcript.Content, checkpoint.Transcript.Truncated = content, truncated
+		}
 	}
 	created, err := s.Store.RecordWorkOrderAttemptCheckpoint(ctx, id, worker.ID, checkpoint)
 	if err != nil {
@@ -1042,6 +1050,20 @@ func boundedObservabilityContent(content string, limit int, alreadyTruncated ...
 		truncated = true
 	}
 	return content, truncated
+}
+
+func (s *Service) boundedObservabilityContent(ctx context.Context, content string, limit int, alreadyTruncated ...bool) (string, bool, error) {
+	content = strings.ToValidUTF8(content, "�")
+	clean, _, err := redact.Text(ctx, s.RedactionSecrets, content)
+	if err != nil {
+		return "", false, err
+	}
+	truncated := len(alreadyTruncated) > 0 && alreadyTruncated[0]
+	if len(clean) > limit {
+		clean = strings.ToValidUTF8(clean[len(clean)-limit:], "")
+		truncated = true
+	}
+	return clean, truncated, nil
 }
 
 // providerModelRejection deliberately recognizes only explicit model support

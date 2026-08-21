@@ -2,11 +2,32 @@ package redact
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 )
+
+type testSecretSource struct {
+	values []string
+	err    error
+}
+
+func (s testSecretSource) ListForgeTokensForRedaction(context.Context) ([]string, error) {
+	return s.values, s.err
+}
+
+func TestTextIncludesStoredForgeTokensAndFailsClosed(t *testing.T) {
+	clean, stats, err := Text(t.Context(), testSecretSource{values: []string{"plain-forge-value"}}, "before plain-forge-value after")
+	if err != nil || clean != "before [REDACTED:exact] after" || stats.Exact != 1 {
+		t.Fatalf("clean=%q stats=%+v err=%v", clean, stats, err)
+	}
+	if _, _, err = Text(t.Context(), testSecretSource{err: errors.New("decrypt failed")}, "persist me"); err == nil {
+		t.Fatal("secret resolution failure did not fail closed")
+	}
+}
 
 func TestWriterRedactsExactValuesSplitAcrossWritesAndFlush(t *testing.T) {
 	secret := "child-only-runtime-value"
