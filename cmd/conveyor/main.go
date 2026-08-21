@@ -129,27 +129,28 @@ func monitorCmd() *cobra.Command {
 
 func configCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "config", Short: "Manage local defaults or database-backed workspace config"}
-	configPath := strings.TrimSpace(os.Getenv("CONVEYOR_CONFIG"))
-	if configPath == "" {
-		configPath = "conveyor.yaml"
-	}
+	configPath := defaultLocalExecutionConfigPath()
 	var executionSetupName string
 	set := &cobra.Command{
 		Use: "set execution.<stage>.<field> <value>", Short: "Set a local default or execution field", Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			resolvedConfig, err := resolveLocalExecutionConfigPath(cmd, configPath)
+			if err != nil {
+				return err
+			}
 			resolved, err := resolveClientConfig()
 			if err != nil {
 				return err
 			}
 			if strings.TrimSpace(executionSetupName) != "" {
-				err = setNamedLocalExecutionFieldContext(cmd.Context(), configPath, executionSetupName, args[0], args[1], true)
+				err = setNamedLocalExecutionFieldContext(cmd.Context(), resolvedConfig.Path, executionSetupName, args[0], args[1], true)
 			} else {
-				err = setLocalExecutionFieldContext(cmd.Context(), configPath, resolved.Workspace.Value, args[0], args[1], true)
+				err = setLocalExecutionFieldContext(cmd.Context(), resolvedConfig.Path, resolved.Workspace.Value, args[0], args[1], true)
 			}
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Set %s in %s\n", args[0], configPath)
+			fmt.Fprintf(cmd.OutOrStdout(), "Set %s in %s\n", args[0], resolvedConfig.Path)
 			return nil
 		},
 	}
@@ -176,6 +177,10 @@ func configCmd() *cobra.Command {
 	list := &cobra.Command{
 		Use: "list", Short: "Show effective local settings and their sources", Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			resolvedConfig, err := resolveLocalExecutionConfigPath(cmd, configPath)
+			if err != nil {
+				return err
+			}
 			resolved, err := resolveClientConfig()
 			if err != nil {
 				return err
@@ -195,18 +200,25 @@ func configCmd() *cobra.Command {
 			if err := renderCLIConfigRow(output, styled, "credential", resolved.Token.Source, ""); err != nil {
 				return err
 			}
-			return printLocalExecutionConfig(output, configPath)
+			if err := renderCLIConfigRow(output, styled, "execution_config", resolvedConfig.Path, resolvedConfig.Source); err != nil {
+				return err
+			}
+			return printLocalExecutionConfig(output, resolvedConfig.Path)
 		},
 	}
 	initExecution := &cobra.Command{
 		Use: "init-execution", Short: "Interactively create local execution settings", Args: cobra.NoArgs,
 		Long: "Interactively create local execution settings. The name is deliberately distinct from `conveyor task setup`, which changes a task's frozen workspace setup.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			resolvedConfig, err := resolveLocalExecutionConfigPath(cmd, configPath)
+			if err != nil {
+				return err
+			}
 			resolved, err := resolveClientConfig()
 			if err != nil {
 				return err
 			}
-			return runExecutionSetupWizard(cmd.Context(), cmd.InOrStdin(), cmd.OutOrStdout(), configPath, resolved.Workspace.Value)
+			return runExecutionSetupWizard(cmd.Context(), cmd.InOrStdin(), cmd.OutOrStdout(), resolvedConfig.Path, resolved.Workspace.Value)
 		},
 	}
 	export := &cobra.Command{
