@@ -452,6 +452,14 @@ export interface IssuedPersonalAccessToken extends PersonalAccessToken {
   value: string
 }
 
+// AC-1.2: forge-token reads expose status metadata only; the credential value
+// has no field in the browser's read model.
+export interface ForgeTokenStatus {
+  configured: boolean
+  forge_login?: string
+  stored_at?: string
+}
+
 export interface WorkspaceConfigRepo {
   name: string
   url: string

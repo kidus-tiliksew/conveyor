@@ -335,3 +335,107 @@ test('a token secret is shown once, is never re-rendered, and the token can be r
   await expect(page.getByText('Revoked')).toHaveCount(2)
   await expect(page.getByText(secret)).toHaveCount(0)
 })
+
+test('a user stores, replaces, and deletes a write-only GitHub token from settings', async ({ page }) => {
+  const firstSecret = 'github_pat_synthetic_first_secret'
+  const replacementSecret = 'github_pat_synthetic_replacement_secret'
+  const invalidSecret = 'github_pat_synthetic_invalid_secret'
+  let status: { configured: boolean; forge_login?: string; stored_at?: string } = { configured: false }
+  const writes: Array<{ method: string; body?: { token: string } }> = []
+
+  await page.addInitScript(() => {
+    localStorage.setItem('conveyor-theme', 'dark')
+    localStorage.setItem('conveyor-workspace', 'demo')
+    sessionStorage.setItem('conveyor-token', 'caller-token')
+  })
+  await page.route('**/v1/**', async (route: Route) => {
+    const request = route.request()
+    const path = new URL(request.url()).pathname
+    if (path === '/v1/workspaces') return route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] })
+    if (path === '/v1/tokens') return route.fulfill({ json: [] })
+    if (path === '/v1/forge-token' && request.method() === 'GET') return route.fulfill({ json: status })
+    if (path === '/v1/forge-token' && request.method() === 'PUT') {
+      const body = request.postDataJSON() as { token: string }
+      writes.push({ method: 'PUT', body })
+      if (body.token === invalidSecret) {
+        return route.fulfill({
+          status: 422,
+          contentType: 'text/plain',
+          body: 'forge token validation failed: authenticated forge identity read failed\n',
+        })
+      }
+      status = {
+        configured: true,
+        forge_login: body.token === firstSecret ? 'octocat' : 'delivery-cat',
+        stored_at: body.token === firstSecret ? '2026-08-21T12:00:00Z' : '2026-08-21T13:00:00Z',
+      }
+      return route.fulfill({ json: status })
+    }
+    if (path === '/v1/forge-token' && request.method() === 'DELETE') {
+      writes.push({ method: 'DELETE' })
+      status = { configured: false }
+      return route.fulfill({ status: 204, body: '' })
+    }
+    return route.fulfill({ json: [] })
+  })
+
+  await page.goto('/settings')
+  const card = page.getByText('GitHub token', { exact: true }).locator('../..')
+  await expect(card.getByText('A GitHub token is required before you can execute tasks.')).toBeVisible()
+  await expect(card).toContainText('Contents read and write')
+  await expect(card).toContainText('Pull requests read and write')
+
+  const input = card.locator('input[aria-label="GitHub token"]')
+  await input.fill(firstSecret)
+  await card.getByRole('button', { name: 'Store token' }).click()
+  await expect(card.getByText('Connected as octocat')).toBeVisible()
+  await expect(card.getByText(/Stored 8\/21\/2026/)).toBeVisible()
+  await expect(input).toHaveValue('')
+  expect(writes).toEqual([{ method: 'PUT', body: { token: firstSecret } }])
+
+  await input.fill(invalidSecret)
+  await card.getByRole('button', { name: 'Replace token' }).click()
+  await expect(card.getByText('forge token validation failed: authenticated forge identity read failed')).toBeVisible()
+  await expect(card.getByText('Connected as octocat')).toBeVisible()
+  await expect(input).toHaveValue('')
+
+  await input.fill(replacementSecret)
+  await card.getByRole('button', { name: 'Replace token' }).click()
+  await expect(card.getByText('Connected as delivery-cat')).toBeVisible()
+  await expect(input).toHaveValue('')
+
+  await page.reload()
+  await expect(page.getByText('Connected as delivery-cat')).toBeVisible()
+  await expect(page.locator('body')).not.toContainText(firstSecret)
+  await expect(page.locator('body')).not.toContainText(replacementSecret)
+  await expect(page.locator('body')).not.toContainText(invalidSecret)
+  await expect(page.getByRole('button', { name: /reveal/i })).toHaveCount(0)
+
+  await page.getByRole('button', { name: 'Delete token' }).click()
+  await expect(page.getByText('A GitHub token is required before you can execute tasks.')).toBeVisible()
+  expect(writes.at(-1)).toEqual({ method: 'DELETE' })
+})
+
+test('the GitHub token card shows loading and status errors', async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('conveyor-theme', 'dark')
+    localStorage.setItem('conveyor-workspace', 'demo')
+    sessionStorage.setItem('conveyor-token', 'caller-token')
+  })
+  await page.route('**/v1/**', async (route: Route) => {
+    const request = route.request()
+    const path = new URL(request.url()).pathname
+    if (path === '/v1/workspaces') return route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] })
+    if (path === '/v1/tokens') return route.fulfill({ json: [] })
+    if (path === '/v1/forge-token') {
+      await new Promise((resolve) => setTimeout(resolve, 150))
+      return route.fulfill({ status: 500, contentType: 'text/plain', body: 'forge token status unavailable\n' })
+    }
+    return route.fulfill({ json: [] })
+  })
+
+  await page.goto('/settings')
+  await expect(page.getByText('Loading your GitHub token status…')).toBeVisible()
+  await expect(page.getByText('forge token status unavailable')).toBeVisible()
+  await expect(page.getByRole('form', { name: /GitHub token/ })).toHaveCount(0)
+})
