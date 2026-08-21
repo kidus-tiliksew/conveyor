@@ -46,3 +46,25 @@ func TestRunPreflightStopsBeforeOrderLookup(t *testing.T) {
 		t.Fatalf("called=%t err=%v", called, err)
 	}
 }
+
+func TestWorkerPreflightStopsBeforeEnrollment(t *testing.T) {
+	t.Setenv("CONVEYOR_CONFIG", writeWorkerLocalExecutionConfig(t, []string{"true", "{prompt}", "{mcp_config}"}, []string{"true"}))
+	t.Setenv("CONVEYOR_WORKER_TOKEN", "")
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		requests++
+	}))
+	defer server.Close()
+	c := &client{
+		base:      server.URL,
+		token:     "invoking-user",
+		workspace: "demo",
+		forgeTokenPreflight: func(context.Context, string) error {
+			return store.ErrForgeTokenRequired
+		},
+	}
+	err := runWorkerWithPolicy(t.Context(), c, "pairing-code", "worker", true, defaultWorkerReconnectPolicy)
+	if !errors.Is(err, store.ErrForgeTokenRequired) || requests != 0 {
+		t.Fatalf("worker preflight err=%v requests=%d", err, requests)
+	}
+}
