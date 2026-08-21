@@ -46,6 +46,8 @@ type Server struct {
 	Release                  string
 	planningBundleMu         sync.Mutex
 	planningBundleDispatched map[string]struct{}
+	passwordLimiterOnce      sync.Once
+	passwordLimiter          *passwordAttemptLimiter
 	// Repos is the set of valid repo names; nil skips validation.
 	Repos []string
 	// OnCreate is invoked with each created task's ID (the dispatcher's
@@ -130,7 +132,9 @@ func (s *Server) Handler() http.Handler {
 		})
 		r.Post("/worker/enroll", s.enrollWorker)
 		r.Post("/sign-in/redeem", s.redeemSignInLink)
+		r.Post("/sign-in/password", s.signInWithPassword)
 		r.With(s.requireSelfServiceCredential).Post("/sign-out", s.signOutDashboardSession)
+		r.With(s.requireSelfServiceCredential).Post("/password", s.setOwnPassword)
 		r.With(s.requireWorkerAuth).Post("/worker/heartbeat", s.heartbeatWorker)
 		r.With(s.requireWorkerAuth).Get("/worker/config", s.getWorkerConfig)
 		r.With(s.requireWorkerAuth).Get("/worker/work-orders", s.listWorkerOrders)
@@ -388,7 +392,7 @@ func (s *Server) requireMutationCapability(capability core.Capability) func(http
 			credential, ok := store.CredentialFromContext(r.Context())
 			if !ok {
 				var err error
-				credential, err = s.authenticateHumanCredential(r)
+				credential, err = s.authenticateHumanCredential(w, r)
 				if err != nil {
 					writeCredentialVerificationError(w, err)
 					return
@@ -455,7 +459,7 @@ func (s *Server) requireWorkspaceAuth(next http.Handler) http.Handler {
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		credential, err := s.authenticateHumanCredential(r)
+		credential, err := s.authenticateHumanCredential(w, r)
 		if err != nil {
 			writeCredentialVerificationError(w, err)
 			return
@@ -481,7 +485,7 @@ func (s *Server) requireWorkspaceAuth(next http.Handler) http.Handler {
 // cannot enumerate or revoke its owner's tokens (REQ-2/AC-2.2).
 func (s *Server) requireSelfServiceCredential(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		credential, err := s.authenticateHumanCredential(r)
+		credential, err := s.authenticateHumanCredential(w, r)
 		if err != nil {
 			writeCredentialVerificationError(w, err)
 			return
@@ -580,7 +584,7 @@ func (s *Server) authenticateUserCredential(r *http.Request) (core.Authenticated
 	return s.verifyCredential(r.Context(), provided)
 }
 
-func (s *Server) authenticateHumanCredential(r *http.Request) (core.AuthenticatedCredential, error) {
+func (s *Server) authenticateHumanCredential(w http.ResponseWriter, r *http.Request) (core.AuthenticatedCredential, error) {
 	if strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
 		credential, err := s.authenticateUserCredential(r)
 		if err == nil && credential.Method == "" {
@@ -595,7 +599,11 @@ func (s *Server) authenticateHumanCredential(r *http.Request) (core.Authenticate
 	if err != nil || cookie.Value == "" {
 		return core.AuthenticatedCredential{}, core.ErrInvalidCredential
 	}
-	return s.InvitationSessions.VerifyDashboardSession(r.Context(), cookie.Value)
+	credential, err := s.InvitationSessions.VerifyDashboardSession(r.Context(), cookie.Value)
+	if err == nil && !credential.SessionExpiresAt.IsZero() {
+		setDashboardSessionCookie(w, r, s.InvitationDelivery.PublicURL, cookie.Value, credential.SessionExpiresAt)
+	}
+	return credential, err
 }
 
 func (s *Server) requireSessionMutationProof(w http.ResponseWriter, r *http.Request, credential core.AuthenticatedCredential) bool {
@@ -606,6 +614,10 @@ func (s *Server) requireSessionMutationProof(w http.ResponseWriter, r *http.Requ
 		http.Error(w, "CSRF proof required", http.StatusForbidden)
 		return false
 	}
+	return s.requireRequestOrigin(w, r)
+}
+
+func (s *Server) requireRequestOrigin(w http.ResponseWriter, r *http.Request) bool {
 	expectedOrigin := s.InvitationDelivery.PublicURL
 	if expectedOrigin == "" {
 		scheme := "http"

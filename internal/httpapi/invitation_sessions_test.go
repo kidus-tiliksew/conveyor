@@ -32,6 +32,14 @@ func (f *invitationSessionFixture) RedeemSignInLink(context.Context, string) (co
 	return core.DashboardSession{}, core.IdentityUser{}, nil
 }
 
+func (f *invitationSessionFixture) SignInWithPassword(context.Context, string, string) (core.DashboardSession, core.IdentityUser, error) {
+	return core.DashboardSession{}, core.IdentityUser{}, core.ErrInvalidCredential
+}
+
+func (f *invitationSessionFixture) SetOwnPassword(context.Context, string, string, string, string) error {
+	return nil
+}
+
 func (f *invitationSessionFixture) VerifyDashboardSession(context.Context, string) (core.AuthenticatedCredential, error) {
 	return f.credential, nil
 }

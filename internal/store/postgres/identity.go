@@ -471,7 +471,7 @@ func (s *Store) VerifyCredential(ctx context.Context, candidate string) (core.Au
 
 const (
 	signInLinkLifetime       = 30 * time.Minute
-	dashboardSessionLifetime = 24 * time.Hour
+	dashboardSessionLifetime = 7 * 24 * time.Hour
 )
 
 // IssueSignInLink rotates prior unredeemed links and only succeeds for an
@@ -552,26 +552,16 @@ func (s *Store) RedeemSignInLink(ctx context.Context, candidate string) (core.Da
 		if err := tx.QueryRow(ctx, `SELECT id,email,display_name,status,created_at FROM users WHERE id=$1 AND status='active'`, *userID).Scan(&user.ID, &user.Email, &user.DisplayName, &user.Status, &user.CreatedAt); err != nil {
 			return err
 		}
-		sid, err := randomIdentityID("ses", 12)
-		if err != nil {
-			return err
+		var mintErr error
+		session, mintErr = mintDashboardSession(ctx, tx, *userID, true)
+		if mintErr != nil {
+			return mintErr
 		}
-		raw := make([]byte, 32)
-		if _, err = rand.Read(raw); err != nil {
-			return err
-		}
-		value := "cv_session_" + sid + "_" + base64.RawURLEncoding.EncodeToString(raw)
-		sh := sha256.Sum256([]byte(value))
-		expires := time.Now().UTC().Add(dashboardSessionLifetime)
-		if _, err = tx.Exec(ctx, `INSERT INTO dashboard_sessions(id,user_id,session_hash,expires_at) VALUES($1,$2,$3,$4)`, sid, *userID, sh[:], expires); err != nil {
-			return err
-		}
-		session = core.DashboardSession{ID: sid, UserID: *userID, Value: value, ExpiresAt: expires}
 		at := pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true}
-		if err = q.InsertDeploymentEvent(ctx, db.InsertDeploymentEventParams{Kind: "identity.signin_link_redeemed", ActorID: store.UserActorID(*userID), ActorRole: string(core.ActorUser), PayloadJson: core.JSONPayload(map[string]any{"signin_link_id": linkID}), At: at}); err != nil {
-			return err
+		if eventErr := q.InsertDeploymentEvent(ctx, db.InsertDeploymentEventParams{Kind: "identity.signin_link_redeemed", ActorID: store.UserActorID(*userID), ActorRole: string(core.ActorUser), PayloadJson: core.JSONPayload(map[string]any{"signin_link_id": linkID}), At: at}); eventErr != nil {
+			return eventErr
 		}
-		return q.InsertDeploymentEvent(ctx, db.InsertDeploymentEventParams{Kind: "identity.dashboard_session_created", ActorID: store.UserActorID(*userID), ActorRole: string(core.ActorUser), PayloadJson: core.JSONPayload(map[string]any{"session_id": sid}), At: at})
+		return q.InsertDeploymentEvent(ctx, db.InsertDeploymentEventParams{Kind: "identity.dashboard_session_created", ActorID: store.UserActorID(*userID), ActorRole: string(core.ActorUser), PayloadJson: core.JSONPayload(map[string]any{"session_id": session.ID}), At: at})
 	})
 	if err != nil {
 		return core.DashboardSession{}, core.IdentityUser{}, core.ErrInvalidCredential
@@ -579,10 +569,113 @@ func (s *Store) RedeemSignInLink(ctx context.Context, candidate string) (core.Da
 	return session, user, nil
 }
 
+// SignInWithPassword never provisions an account. Missing, deactivated, and
+// passwordless accounts all take the same Argon2id path and return the same
+// credential error as an incorrect password (REQ-10/AC-10.2, AC-10.5).
+func (s *Store) SignInWithPassword(ctx context.Context, email, password string) (core.DashboardSession, core.IdentityUser, error) {
+	normalized, normalizeErr := normalizeIdentityEmail(email)
+	dummyHash := fixedDummyPasswordHash()
+	encoded := dummyHash
+	var candidateID string
+	if normalizeErr == nil {
+		var stored *string
+		if err := s.pool.QueryRow(ctx, `SELECT id,password_hash FROM users WHERE email=$1 AND status='active'`, normalized).Scan(&candidateID, &stored); err == nil && stored != nil {
+			encoded = *stored
+		} else if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return core.DashboardSession{}, core.IdentityUser{}, err
+		}
+	}
+	if !verifyPassword(encoded, password) || encoded == dummyHash {
+		return core.DashboardSession{}, core.IdentityUser{}, core.ErrInvalidCredential
+	}
+
+	var session core.DashboardSession
+	var user core.IdentityUser
+	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		var current *string
+		if err := tx.QueryRow(ctx, `SELECT id,email,display_name,status,created_at,password_hash FROM users WHERE id=$1 AND status='active' FOR UPDATE`, candidateID).Scan(&user.ID, &user.Email, &user.DisplayName, &user.Status, &user.CreatedAt, &current); err != nil {
+			return err
+		}
+		if current == nil || subtle.ConstantTimeCompare([]byte(*current), []byte(encoded)) != 1 {
+			return core.ErrInvalidCredential
+		}
+		var err error
+		session, err = mintDashboardSession(ctx, tx, user.ID, false)
+		if err != nil {
+			return err
+		}
+		return q.InsertDeploymentEvent(ctx, db.InsertDeploymentEventParams{Kind: "identity.dashboard_session_created", ActorID: store.UserActorID(user.ID), ActorRole: string(core.ActorUser), PayloadJson: core.JSONPayload(map[string]any{"session_id": session.ID, "method": "password"}), At: pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true}})
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, core.ErrInvalidCredential) {
+			return core.DashboardSession{}, core.IdentityUser{}, core.ErrInvalidCredential
+		}
+		return core.DashboardSession{}, core.IdentityUser{}, err
+	}
+	return session, user, nil
+}
+
+// SetOwnPassword binds both the user and session IDs supplied by the verified
+// cookie. Link-established sessions authorize recovery; every other session
+// must prove the current password when one is already present (AC-10.4-10.6).
+func (s *Store) SetOwnPassword(ctx context.Context, userID, sessionID, currentPassword, newPassword string) error {
+	if !validNewPassword(newPassword) {
+		return store.ErrInvalidPassword
+	}
+	encoded, err := hashPassword(newPassword)
+	if err != nil {
+		return err
+	}
+	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		var existing *string
+		var establishedByLink bool
+		if err := tx.QueryRow(ctx, `SELECT u.password_hash,s.established_by_link
+			FROM users u JOIN dashboard_sessions s ON s.user_id=u.id
+			WHERE u.id=$1 AND u.status='active' AND s.id=$2 AND s.revoked_at IS NULL AND s.expires_at>now()
+			FOR UPDATE OF u,s`, userID, sessionID).Scan(&existing, &establishedByLink); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return core.ErrInvalidCredential
+			}
+			return err
+		}
+		if existing != nil && !establishedByLink && !verifyPassword(*existing, currentPassword) {
+			return store.ErrInvalidCurrentPassword
+		}
+		kind := "identity.password_set"
+		if existing != nil {
+			kind = "identity.password_changed"
+		}
+		if _, err := tx.Exec(ctx, `UPDATE users SET password_hash=$2 WHERE id=$1`, userID, encoded); err != nil {
+			return err
+		}
+		return q.InsertDeploymentEvent(ctx, db.InsertDeploymentEventParams{Kind: kind, ActorID: store.UserActorID(userID), ActorRole: string(core.ActorUser), PayloadJson: core.JSONPayload(map[string]any{"session_id": sessionID}), At: pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true}})
+	})
+}
+
+func mintDashboardSession(ctx context.Context, tx pgx.Tx, userID string, establishedByLink bool) (core.DashboardSession, error) {
+	sid, err := randomIdentityID("ses", 12)
+	if err != nil {
+		return core.DashboardSession{}, err
+	}
+	raw := make([]byte, 32)
+	if _, err = rand.Read(raw); err != nil {
+		return core.DashboardSession{}, err
+	}
+	value := "cv_session_" + sid + "_" + base64.RawURLEncoding.EncodeToString(raw)
+	hash := sha256.Sum256([]byte(value))
+	expires := time.Now().UTC().Add(dashboardSessionLifetime)
+	if _, err = tx.Exec(ctx, `INSERT INTO dashboard_sessions(id,user_id,session_hash,expires_at,established_by_link) VALUES($1,$2,$3,$4,$5)`, sid, userID, hash[:], expires, establishedByLink); err != nil {
+		return core.DashboardSession{}, err
+	}
+	return core.DashboardSession{ID: sid, UserID: userID, Value: value, ExpiresAt: expires}, nil
+}
+
 func (s *Store) VerifyDashboardSession(ctx context.Context, candidate string) (core.AuthenticatedCredential, error) {
 	hash := sha256.Sum256([]byte(candidate))
 	var id, userID string
-	if err := s.pool.QueryRow(ctx, `UPDATE dashboard_sessions s SET last_used_at=now() FROM users u WHERE s.session_hash=$1 AND s.user_id=u.id AND s.revoked_at IS NULL AND s.expires_at>now() AND u.status='active' RETURNING s.id,s.user_id`, hash[:]).Scan(&id, &userID); err != nil {
+	var expiresAt time.Time
+	var establishedByLink bool
+	if err := s.pool.QueryRow(ctx, `UPDATE dashboard_sessions s SET last_used_at=now(),expires_at=now()+interval '7 days' FROM users u WHERE s.session_hash=$1 AND s.user_id=u.id AND s.revoked_at IS NULL AND s.expires_at>now() AND u.status='active' RETURNING s.id,s.user_id,s.expires_at,s.established_by_link`, hash[:]).Scan(&id, &userID, &expiresAt, &establishedByLink); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return core.AuthenticatedCredential{}, core.ErrInvalidCredential
 		}
@@ -596,7 +689,7 @@ func (s *Store) VerifyDashboardSession(ctx context.Context, candidate string) (c
 	if operator {
 		scope = core.CredentialScopeOperator
 	}
-	return core.AuthenticatedCredential{ID: id, OwnerUserID: userID, Kind: core.CredentialUser, Scope: scope, Method: core.CredentialMethodSession}, nil
+	return core.AuthenticatedCredential{ID: id, OwnerUserID: userID, Kind: core.CredentialUser, Scope: scope, Method: core.CredentialMethodSession, SessionExpiresAt: expiresAt, SessionEstablishedByLink: establishedByLink}, nil
 }
 
 func (s *Store) RevokeDashboardSession(ctx context.Context, userID, sessionID string) error {

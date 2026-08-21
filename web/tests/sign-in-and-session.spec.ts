@@ -169,10 +169,120 @@ test('an invitation opens a scoped session, guides first token setup, and signs 
 
   await page.goto(invitationURL)
   await expect(page.getByRole('heading', { name: 'This link no longer works' })).toBeVisible()
-  await expect(page.getByText(/Ask your operator to resend/)).toBeVisible()
+  await expect(page.getByRole('alert')).toContainText('Ask your operator to resend')
 
   await page.goto('/')
   await page.getByLabel('Operator token').fill('operator-token')
   await page.getByRole('button', { name: 'Continue as operator' }).click()
   await expect(page.getByLabel('Switch to Private')).toBeVisible()
+})
+
+test('a returning user signs in with a password and resets it through an operator link', async ({ page }) => {
+  let password = 'first-password-value'
+  let sessionActive = false
+  let linkEstablished = false
+  let passwordSignInProved = false
+  let passwordMutationProved = false
+
+  await page.addInitScript(() => localStorage.setItem('conveyor-workspace', 'demo'))
+  await page.route('**/v1/**', async (route: Route) => {
+    const request = route.request()
+    const url = new URL(request.url())
+    const path = url.pathname
+    const body = request.postDataJSON() as Record<string, string> | null
+
+    if (path === '/v1/sign-in/password' && request.method() === 'POST') {
+      passwordSignInProved =
+        request.headers()['x-conveyor-csrf'] === '1' &&
+        request.headers().origin === url.origin &&
+        !request.headers().authorization
+      if (body?.email !== 'returning@example.test' || body.password !== password) {
+        return route.fulfill({ status: 401, body: 'invalid email or password\n' })
+      }
+      sessionActive = true
+      linkEstablished = false
+      return route.fulfill({
+        status: 200,
+        headers: { 'Set-Cookie': 'conveyor_session=password-session; Path=/v1; HttpOnly; SameSite=Strict' },
+        json: { user: { id: 'usr_returning', email: body.email }, expires_at: '2026-08-28T00:00:00Z' },
+      })
+    }
+    if (path === '/v1/sign-in/redeem' && request.method() === 'POST') {
+      sessionActive = true
+      linkEstablished = true
+      return route.fulfill({
+        status: 200,
+        headers: { 'Set-Cookie': 'conveyor_session=link-session; Path=/v1; HttpOnly; SameSite=Strict' },
+        json: { user: { id: 'usr_returning', email: 'returning@example.test' }, expires_at: '2026-08-28T00:00:00Z' },
+      })
+    }
+    if (path === '/v1/password' && request.method() === 'POST') {
+      passwordMutationProved =
+        sessionActive &&
+        request.headers()['x-conveyor-csrf'] === '1' &&
+        request.headers().origin === url.origin &&
+        !request.headers().authorization
+      if (!linkEstablished && body?.current_password !== password) {
+        return route.fulfill({ status: 401, body: 'current password is incorrect\n' })
+      }
+      password = body?.new_password ?? password
+      return route.fulfill({ status: 204, body: '' })
+    }
+    if (path === '/v1/sign-out') {
+      sessionActive = false
+      return route.fulfill({
+        status: 204,
+        headers: { 'Set-Cookie': 'conveyor_session=; Path=/v1; Max-Age=0' },
+        body: '',
+      })
+    }
+    if (path === '/v1/workspaces') {
+      return sessionActive
+        ? route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] })
+        : route.fulfill({ status: 401, body: 'unauthorized' })
+    }
+    if (path === '/v1/workspace')
+      return route.fulfill({ json: { workspace: 'demo', max_bounces: 2, database: 'postgres', repos: [] } })
+    if (path === '/v1/me')
+      return route.fulfill({
+        json: {
+          id: 'usr_returning',
+          email: 'returning@example.test',
+          display_name: 'Returning User',
+          role: 'contributor',
+        },
+      })
+    if (path === '/v1/tokens') return route.fulfill({ json: [] })
+    if (path === '/v1/pending-proposals')
+      return route.fulfill({ json: { items: [], attention: { total: 0, pending_proposal_count: 0 } } })
+    return route.fulfill({ json: [] })
+  })
+
+  await page.goto('/sign-in')
+  await expect(page.getByText(/Forgot your password/)).toBeVisible()
+  const signIn = page.getByRole('form', { name: 'Password sign-in' })
+  await signIn.getByLabel('Email address').fill('returning@example.test')
+  await signIn.getByLabel('Password').fill(password)
+  await signIn.getByRole('button', { name: 'Sign in' }).click()
+  await expect(page).toHaveURL('/')
+  expect(passwordSignInProved).toBe(true)
+
+  await page.goto('/settings')
+  const passwordForm = page.getByRole('form', { name: 'Update password' })
+  await passwordForm.getByLabel('Current password').fill(password)
+  await passwordForm.getByLabel('New password', { exact: true }).fill('second-password-value')
+  await passwordForm.getByLabel('Confirm new password').fill('second-password-value')
+  await passwordForm.getByRole('button', { name: 'Update password' }).click()
+  await expect(page.getByText('Password updated.')).toBeVisible()
+  expect(passwordMutationProved).toBe(true)
+
+  await page.getByRole('button', { name: 'Sign out' }).click()
+  await page.goto('/sign-in#token=operator-reset-link')
+  await expect(page).toHaveURL(/\/settings\?welcome=true$/)
+  const resetForm = page.getByRole('form', { name: 'Update password' })
+  await resetForm.getByLabel('New password', { exact: true }).fill('reset-password-value')
+  await resetForm.getByLabel('Confirm new password').fill('reset-password-value')
+  await resetForm.getByRole('button', { name: 'Update password' }).click()
+  await expect(page.getByText('Password updated.')).toBeVisible()
+  expect(password).toBe('reset-password-value')
 })

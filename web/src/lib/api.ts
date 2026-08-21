@@ -153,6 +153,25 @@ export async function redeemSignInLink(token: string) {
   return response.json() as Promise<{ user: import('./types').CallerIdentity; expires_at: string }>
 }
 
+export async function signInWithPassword(email: string, password: string) {
+  const response = await fetch('/v1/sign-in/password', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Conveyor-CSRF': '1' },
+    body: JSON.stringify({ email, password }),
+  })
+  if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
+  return response.json() as Promise<{ user: import('./types').CallerIdentity; expires_at: string }>
+}
+
+export async function updateOwnPassword(currentPassword: string, newPassword: string) {
+  const response = await fetch('/v1/password', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Conveyor-CSRF': '1' },
+    body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+  })
+  if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
+}
+
 export async function signOutDashboardSession() {
   const response = await fetch('/v1/sign-out', {
     method: 'POST',

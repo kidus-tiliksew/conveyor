@@ -40,9 +40,17 @@ func (s *Server) redeemSignInLink(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid or expired sign-in link", http.StatusUnauthorized)
 		return
 	}
-	secure := r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") || strings.HasPrefix(strings.ToLower(s.InvitationDelivery.PublicURL), "https://")
-	http.SetCookie(w, &http.Cookie{Name: dashboardSessionCookie, Value: session.Value, Path: "/v1", HttpOnly: true, Secure: secure, SameSite: http.SameSiteStrictMode, Expires: session.ExpiresAt, MaxAge: int(time.Until(session.ExpiresAt).Seconds())})
+	setDashboardSessionCookie(w, r, s.InvitationDelivery.PublicURL, session.Value, session.ExpiresAt)
 	writeJSON(w, http.StatusOK, map[string]any{"user": user, "expires_at": session.ExpiresAt})
+}
+
+func setDashboardSessionCookie(w http.ResponseWriter, r *http.Request, publicURL, value string, expires time.Time) {
+	secure := r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") || strings.HasPrefix(strings.ToLower(publicURL), "https://")
+	maxAge := int(time.Until(expires).Seconds())
+	if maxAge < 1 {
+		maxAge = 1
+	}
+	http.SetCookie(w, &http.Cookie{Name: dashboardSessionCookie, Value: value, Path: "/v1", HttpOnly: true, Secure: secure, SameSite: http.SameSiteStrictMode, Expires: expires, MaxAge: maxAge})
 }
 
 func (s *Server) signOutDashboardSession(w http.ResponseWriter, r *http.Request) {
