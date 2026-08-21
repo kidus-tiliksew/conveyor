@@ -322,6 +322,32 @@ export async function revokePersonalAccessToken(token: string, id: string) {
   if (!response.ok) throw new Error(membershipErrorMessage(await response.text(), response.statusText))
 }
 
+export async function fetchForgeToken(token: string) {
+  const response = await fetch('/v1/forge-token', { headers: mutationHeaders(token) })
+  if (!response.ok) throw new Error(membershipErrorMessage(await response.text(), response.statusText))
+  return response.json() as Promise<import('./types').ForgeTokenStatus>
+}
+
+// The credential is accepted only as a write body. The returned type cannot
+// represent it, preserving the write-only browser contract from AC-1.2.
+export async function storeForgeToken(token: string, forgeToken: string) {
+  const response = await fetch('/v1/forge-token', {
+    method: 'PUT',
+    headers: mutationHeaders(token),
+    body: JSON.stringify({ token: forgeToken }),
+  })
+  if (!response.ok) throw new Error(membershipErrorMessage(await response.text(), response.statusText))
+  return response.json() as Promise<import('./types').ForgeTokenStatus>
+}
+
+export async function deleteForgeToken(token: string) {
+  const response = await fetch('/v1/forge-token', {
+    method: 'DELETE',
+    headers: mutationHeaders(token),
+  })
+  if (!response.ok) throw new Error(membershipErrorMessage(await response.text(), response.statusText))
+}
+
 export function fetchBlueprints() {
   return getJSON<BlueprintView[]>(workspaceURL('/v1/blueprints'))
 }
