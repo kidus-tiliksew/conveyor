@@ -2,6 +2,7 @@ import { useSearch } from '@tanstack/react-router'
 import { CheckCircle2, KeyRound, PlugZap, Terminal } from 'lucide-react'
 import { useTokenState } from '../components/app-shell'
 import { PersonalTokensCard } from '../components/settings/personal-tokens-card'
+import { ForgeTokenCard } from '../components/settings/forge-token-card'
 import { PasswordCard } from '../components/settings/password-card'
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import { CopyButton } from '../components/ui/copy-button'
@@ -77,6 +78,7 @@ export function SettingsPage() {
         </Card>
         <PasswordCard />
         <PersonalTokensCard />
+        <ForgeTokenCard />
         <Card className="mt-4">
           <CardHeader>
             <CardTitle>MCP work-order server</CardTitle>
