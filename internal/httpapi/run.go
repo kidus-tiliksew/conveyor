@@ -322,10 +322,17 @@ func (s *Server) nextTaskRunOrder(ctx context.Context, task core.Task) (workerse
 	if !ok {
 		return workerservice.DispatchOrder{}, false, errTaskRepositoryUnconfigured
 	}
-	return workerservice.DispatchOrder{
+	item := workerservice.DispatchOrder{
 		Order: eligible[0], Task: task, Repository: repository,
 		HarnessSelection: "local", Dispatch: "run", Confinement: "none", Auth: "user",
-	}, true, nil
+	}
+	if credential, authenticated := store.CredentialFromContext(ctx); authenticated && s.CallerIdentities != nil {
+		item.GitAuthor, err = store.GitAuthorForUser(ctx, s.CallerIdentities, credential.OwnerUserID)
+		if err != nil {
+			return workerservice.DispatchOrder{}, false, err
+		}
+	}
+	return item, true, nil
 }
 
 func taskRunStageOrder(stage core.Stage) int {

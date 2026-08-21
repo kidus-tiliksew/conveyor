@@ -34,6 +34,35 @@ printf 'octocat\n'
 	}
 }
 
+func TestCredentialedForgeCommandUsesEnvironmentOnly(t *testing.T) {
+	dir := t.TempDir()
+	script := `#!/bin/sh
+for arg in "$@"; do [ "$arg" = "executor-forge-secret" ] && exit 12; done
+[ "$GH_TOKEN" = "executor-forge-secret" ] || exit 13
+[ "$*" = "pr list --repo acme/app" ] || exit 14
+printf 'ok\n'
+`
+	path := filepath.Join(dir, "gh")
+	if err := os.WriteFile(path, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	t.Setenv("GH_TOKEN", "ambient-host-secret")
+	out, err := ghWithToken("executor-forge-secret")(t.Context(), "pr", "list", "--repo", "acme/app")
+	if err != nil || strings.TrimSpace(string(out)) != "ok" {
+		t.Fatalf("output=%q err=%v", out, err)
+	}
+}
+
+func TestOpenPRForBranchCredentialFailureIsPermissionCategorized(t *testing.T) {
+	_, err := openPRForBranch(t.Context(), "acme/app", "conveyor/task-1", "main", "title", "body", func(context.Context, ...string) ([]byte, error) {
+		return nil, errors.New("HTTP 403 resource not accessible")
+	})
+	if ErrorCategory(err) != ForgePermission {
+		t.Fatalf("error=%v category=%q", err, ErrorCategory(err))
+	}
+}
+
 func TestMarkIssueDispatchedMovesReadyLabel(t *testing.T) {
 	var calls [][]string
 	run := func(_ context.Context, args ...string) ([]byte, error) {

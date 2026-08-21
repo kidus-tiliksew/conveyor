@@ -295,6 +295,8 @@ type GitHubLifecycle struct {
 	Attempts           int                    `json:"attempts"`
 	ForgeErrorCategory string                 `json:"forge_error_category,omitempty"`
 	LastError          string                 `json:"last_error,omitempty"`
+	ForgeAuthorClass   ForgeAuthorClass       `json:"forge_author_class,omitempty"`
+	ForgeAuthorUserID  string                 `json:"forge_author_user_id,omitempty"`
 	CreatedAt          time.Time              `json:"created_at"`
 	UpdatedAt          time.Time              `json:"updated_at"`
 }
@@ -1035,12 +1037,14 @@ type ReviewPublication struct {
 	Attempts               int                    `json:"attempts"`
 	// CheckRunID is retained for historical v1.22 publications. Portable v1.23
 	// commit-status publications leave it zero.
-	CheckRunID         int64     `json:"check_run_id,omitempty"`
-	CommentID          int64     `json:"comment_id,omitempty"`
-	ForgeErrorCategory string    `json:"forge_error_category,omitempty"`
-	LastError          string    `json:"last_error,omitempty"`
-	CreatedAt          time.Time `json:"created_at"`
-	UpdatedAt          time.Time `json:"updated_at"`
+	CheckRunID         int64            `json:"check_run_id,omitempty"`
+	CommentID          int64            `json:"comment_id,omitempty"`
+	ForgeErrorCategory string           `json:"forge_error_category,omitempty"`
+	LastError          string           `json:"last_error,omitempty"`
+	ForgeAuthorClass   ForgeAuthorClass `json:"forge_author_class,omitempty"`
+	ForgeAuthorUserID  string           `json:"forge_author_user_id,omitempty"`
+	CreatedAt          time.Time        `json:"created_at"`
+	UpdatedAt          time.Time        `json:"updated_at"`
 }
 
 // ReviewDecision is the atomic internal acceptance record for one completed

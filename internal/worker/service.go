@@ -49,6 +49,7 @@ type Service struct {
 	RetryLimit       int
 	RedactionSecrets redact.SecretSource
 	ForgeTokens      store.ForgeTokenStore
+	IdentityUsers    store.CallerIdentityStore
 }
 
 type Enrollment struct {
@@ -84,19 +85,20 @@ type WorkerServiceability struct {
 }
 
 type DispatchOrder struct {
-	Order            core.WorkOrder    `json:"work_order"`
-	Task             core.Task         `json:"task"`
-	Repository       config.Repo       `json:"repository"`
-	Harness          config.Harness    `json:"harness"`
-	Model            string            `json:"model"`
-	Effort           string            `json:"effort,omitempty"`
-	EffortArgv       []string          `json:"effort_argv,omitempty"`
-	HarnessSelection string            `json:"harness_selection"`
-	Dispatch         string            `json:"dispatch"`
-	Confinement      string            `json:"confinement"`
-	Auth             string            `json:"auth"`
-	Gate             *TaskRunGate      `json:"gate,omitempty"`
-	PendingProposals []TaskRunProposal `json:"pending_proposals"`
+	Order            core.WorkOrder         `json:"work_order"`
+	Task             core.Task              `json:"task"`
+	Repository       config.Repo            `json:"repository"`
+	Harness          config.Harness         `json:"harness"`
+	Model            string                 `json:"model"`
+	Effort           string                 `json:"effort,omitempty"`
+	EffortArgv       []string               `json:"effort_argv,omitempty"`
+	HarnessSelection string                 `json:"harness_selection"`
+	Dispatch         string                 `json:"dispatch"`
+	Confinement      string                 `json:"confinement"`
+	Auth             string                 `json:"auth"`
+	Gate             *TaskRunGate           `json:"gate,omitempty"`
+	PendingProposals []TaskRunProposal      `json:"pending_proposals"`
+	GitAuthor        core.GitAuthorIdentity `json:"git_author,omitempty"`
 }
 
 // TaskRunProposal is the task-scoped, read-only authority projection shown by
@@ -566,7 +568,14 @@ func (s *Service) ListClaimable(ctx context.Context, worker core.Worker) ([]Disp
 			order.ClaimRefusalReason = store.ForgeTokenRequiredMessage
 		}
 		repository, _ := cfg.Repo(task.Repo)
-		result = append(result, DispatchOrder{Order: order, Task: task, Repository: repository, HarnessSelection: "local", Dispatch: "worker", Confinement: "none", Auth: "byoa"})
+		item := DispatchOrder{Order: order, Task: task, Repository: repository, HarnessSelection: "local", Dispatch: "worker", Confinement: "none", Auth: "byoa"}
+		if s.IdentityUsers != nil {
+			item.GitAuthor, getErr = store.GitAuthorForUser(ctx, s.IdentityUsers, worker.OwnerUserID)
+			if getErr != nil {
+				return nil, getErr
+			}
+		}
+		result = append(result, item)
 	}
 	// The reserved review slot precedes workspace FIFO; ID breaks equal
 	// queue-entry clocks deterministically (design-260805-973cd4).

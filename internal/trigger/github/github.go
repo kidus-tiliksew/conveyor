@@ -110,6 +110,15 @@ func ErrorCategory(err error) ForgeErrorCategory {
 // boundary such as the Phase 5.6 monitor.
 func CategorizeError(err error) error { return forgeCallError(err) }
 
+// PermissionError marks a credential-resolution failure at a governed forge
+// write as the uniform permission category without exposing credential data.
+func PermissionError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &Error{Category: ForgePermission, Err: err}
+}
+
 func forgeCallError(err error) error {
 	if err == nil || ErrorCategory(err) != "" {
 		return err
@@ -383,6 +392,13 @@ func pullRequestForBranch(ctx context.Context, repo, branch string, run ghRunner
 // remain authoritative; Conveyor never forces or bypasses them.
 func MergePullRequest(ctx context.Context, repo string, number int) error {
 	return mergePullRequest(ctx, repo, number, gh)
+}
+
+// MergePullRequestWithCredential performs the user-attributed write with an
+// explicit per-call token. Ambient authentication remains reserved for host
+// acts and read-only paths (req-260821-830dbf AC-4.1).
+func MergePullRequestWithCredential(ctx context.Context, repo string, number int, token string) error {
+	return mergePullRequest(ctx, repo, number, ghWithToken(token))
 }
 
 func mergePullRequest(ctx context.Context, repo string, number int, run ghRunner) error {
@@ -800,24 +816,34 @@ func OpenPR(ctx context.Context, worktreeDir, repo, branch, base, title, body st
 // creates or reuses the PR without requiring Conveyor to own a worktree
 // (design-git-delivery).
 func OpenPRForBranch(ctx context.Context, repo, branch, base, title, body string) (string, error) {
+	return openPRForBranch(ctx, repo, branch, base, title, body, gh)
+}
+
+// OpenPRForBranchWithCredential opens or reconciles a task PR under the
+// executing user's token. The token is confined to GH_TOKEN in cmd.Env.
+func OpenPRForBranchWithCredential(ctx context.Context, repo, branch, base, title, body, token string) (string, error) {
+	return openPRForBranch(ctx, repo, branch, base, title, body, ghWithToken(token))
+}
+
+func openPRForBranch(ctx context.Context, repo, branch, base, title, body string, runGH ghRunner) (string, error) {
 	body = reconcilePullRequestBody("", body)
-	existing, err := gh(ctx, "pr", "list", "--repo", repo, "--head", branch, "--state", "open", "--json", "url", "--jq", ".[0].url")
+	existing, err := runGH(ctx, "pr", "list", "--repo", repo, "--head", branch, "--state", "open", "--json", "url", "--jq", ".[0].url")
 	if err != nil {
-		return "", fmt.Errorf("find existing PR: %w", err)
+		return "", fmt.Errorf("find existing PR: %w", forgeCallError(err))
 	}
 	if value := strings.TrimSpace(string(existing)); value != "" {
-		current, viewErr := gh(ctx, "pr", "view", branch, "--repo", repo, "--json", "body", "--jq", ".body")
+		current, viewErr := runGH(ctx, "pr", "view", branch, "--repo", repo, "--json", "body", "--jq", ".body")
 		if viewErr != nil {
-			return "", fmt.Errorf("read existing PR body: %w", viewErr)
+			return "", fmt.Errorf("read existing PR body: %w", forgeCallError(viewErr))
 		}
-		if _, err = gh(ctx, "pr", "edit", branch, "--repo", repo, "--body", reconcilePullRequestBody(string(current), body)); err != nil {
-			return "", fmt.Errorf("update existing PR body: %w", err)
+		if _, err = runGH(ctx, "pr", "edit", branch, "--repo", repo, "--body", reconcilePullRequestBody(string(current), body)); err != nil {
+			return "", fmt.Errorf("update existing PR body: %w", forgeCallError(err))
 		}
 		return value, nil
 	}
-	out, err := gh(ctx, "pr", "create", "--repo", repo, "--head", branch, "--base", base, "--title", title, "--body", body)
+	out, err := runGH(ctx, "pr", "create", "--repo", repo, "--head", branch, "--base", base, "--title", title, "--body", body)
 	if err != nil {
-		return "", err
+		return "", forgeCallError(err)
 	}
 	return strings.TrimSpace(string(out)), nil
 }
@@ -939,7 +965,27 @@ func legacyPullRequestLifecycleEnd(body string) int {
 }
 
 func gh(ctx context.Context, args ...string) ([]byte, error) {
-	out, err := exec.CommandContext(ctx, "gh", args...).Output()
+	return runGHCommand(ctx, "", args...)
+}
+
+func ghWithToken(token string) ghRunner {
+	return func(ctx context.Context, args ...string) ([]byte, error) {
+		return runGHCommand(ctx, token, args...)
+	}
+}
+
+func runGHCommand(ctx context.Context, token string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, "gh", args...)
+	if token != "" {
+		environment := make([]string, 0, len(os.Environ())+1)
+		for _, value := range os.Environ() {
+			if !strings.HasPrefix(value, "GH_TOKEN=") {
+				environment = append(environment, value)
+			}
+		}
+		cmd.Env = append(environment, "GH_TOKEN="+token)
+	}
+	out, err := cmd.Output()
 	if err != nil {
 		if ee, ok := err.(*exec.ExitError); ok {
 			return nil, fmt.Errorf("gh %s: %w: %s", strings.Join(args, " "), err, ee.Stderr)

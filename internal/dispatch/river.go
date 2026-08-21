@@ -117,6 +117,7 @@ func (w *githubIssuePublicationWorker) Work(ctx context.Context, job *river.Job[
 		})
 	}
 	if publishErr != nil {
+		lifecycle.ForgeAuthorClass = core.ForgeAuthorHost
 		if errors.Is(publishErr, github.ErrIssueReconciliationPending) {
 			lifecycle.ReconcileMisses++
 		}
@@ -131,6 +132,7 @@ func (w *githubIssuePublicationWorker) Work(ctx context.Context, job *river.Job[
 		return publishErr
 	}
 	lifecycle.State = core.GitHubPublicationPublished
+	lifecycle.ForgeAuthorClass = core.ForgeAuthorHost
 	lifecycle.CreateState = core.GitHubCreateConfirmed
 	lifecycle.ReconcileMisses = 0
 	lifecycle.IssueNumber = result.Number
@@ -218,6 +220,7 @@ func (w *reviewPublicationWorker) Work(ctx context.Context, job *river.Job[queue
 		publishErr = errors.New("publish review: required aggregate comment returned no comment ID")
 	}
 	if publishErr != nil {
+		publication.ForgeAuthorClass = core.ForgeAuthorHost
 		publication.ForgeErrorCategory = string(github.ErrorCategory(publishErr))
 		publication.LastError = publishErr.Error()
 		if job.Attempt >= job.MaxAttempts {
@@ -229,6 +232,7 @@ func (w *reviewPublicationWorker) Work(ctx context.Context, job *river.Job[queue
 		return publishErr
 	}
 	publication.State = core.ReviewPublicationPublished
+	publication.ForgeAuthorClass = core.ForgeAuthorHost
 	publication.CheckRunID = result.CheckRunID
 	publication.CommentID = result.CommentID
 	publication.ReviewedCommitSHA = result.ReviewedCommitSHA

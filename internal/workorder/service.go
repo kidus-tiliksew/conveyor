@@ -34,7 +34,7 @@ type Service struct {
 	Dispatcher             *dispatch.Dispatcher
 	Pack                   *pack.Bundle
 	ConfigProvider         func(context.Context) (*config.Config, error)
-	OpenPR                 func(context.Context, string, string, string, string, string) (string, error)
+	OpenPR                 func(context.Context, string, string, string, string, string, string) (string, error)
 	ReviewTarget           func(context.Context, string, string) (github.ReviewTarget, error)
 	ReviewDiffForBranch    func(context.Context, string, string) (string, error)
 	ReviewDiffBetween      func(context.Context, string, string, string) (string, error)
@@ -1336,10 +1336,17 @@ func (s *Service) SubmitForReview(ctx context.Context, id, session string) (map[
 		}
 		openPR := s.OpenPR
 		if openPR == nil {
-			openPR = github.OpenPRForBranch
+			openPR = github.OpenPRForBranchWithCredential
 		}
-		prURL, err = openPR(ctx, repo.GitHub, task.Branch, task.BaseBranch, task.Title, dispatch.PRBody(task, evidence...))
+		author, token, credentialErr := s.taskPRCredential(ctx, order)
+		if credentialErr != nil {
+			return nil, credentialErr
+		}
+		prURL, err = openPR(ctx, repo.GitHub, task.Branch, task.BaseBranch, task.Title, dispatch.PRBody(task, evidence...), token)
 		if err != nil {
+			if author.UserID != "" {
+				return nil, fmt.Errorf("open PR for user %s: %w", author.UserID, err)
+			}
 			return nil, fmt.Errorf("open PR: %w", err)
 		}
 		reviewTarget := s.ReviewTarget
@@ -1357,6 +1364,7 @@ func (s *Service) SubmitForReview(ctx context.Context, id, session string) (map[
 		if err = s.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, JobID: order.JobID, Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]any{
 			"url": prURL, "number": target.Number, "base_sha": target.BaseSHA, "head_sha": target.HeadSHA,
 			"repository": repo.GitHub, "work_order_id": order.ID, "evidence_ids": evidenceIDs,
+			"forge_author_class": author.Class, "forge_author_user_id": author.UserID,
 		})}); err != nil {
 			return nil, fmt.Errorf("record reviewed PR head: %w", err)
 		}
@@ -1413,6 +1421,26 @@ func (s *Service) SubmitForReview(ctx context.Context, id, session string) (map[
 	}
 	s.Dispatcher.Enqueue(ctx, task.ID)
 	return map[string]any{"pr_url": prURL, "review_execution": reviewExecution, "await_review": true}, nil
+}
+
+func (s *Service) taskPRCredential(ctx context.Context, order core.WorkOrder) (core.ForgeAuthoringIdentity, string, error) {
+	author := core.ForgeAuthoringIdentity{Class: core.ForgeAuthorExecutingUser}
+	var err error
+	author.UserID, err = store.WorkOrderOwnerUserID(ctx, s.Store, order)
+	if err != nil {
+		return author, "", github.PermissionError(fmt.Errorf("resolve task PR author: %w", err))
+	}
+	if s.ForgeTokens == nil {
+		return author, "", github.PermissionError(fmt.Errorf("task PR write for user %s has no forge credential store", author.UserID))
+	}
+	credential, err := s.ForgeTokens.GetForgeTokenForUse(ctx, author.UserID)
+	if err != nil || strings.TrimSpace(credential.Token) == "" {
+		if err == nil {
+			err = store.ErrForgeTokenRequired
+		}
+		return author, "", github.PermissionError(fmt.Errorf("task PR write for user %s: %w", author.UserID, err))
+	}
+	return author, credential.Token, nil
 }
 
 func (s *Service) taskVerificationEvidence(ctx context.Context, taskID string) ([]core.Artifact, error) {
