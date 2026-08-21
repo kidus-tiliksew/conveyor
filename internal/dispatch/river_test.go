@@ -49,6 +49,7 @@ func TestGitHubIssuePublicationFirstAttemptPersistsLifecycleWithoutRetryActivity
 	if count, countErr := st.CountEvents(ctx, taskID, "github_issue.publication_published"); countErr != nil || count != 1 {
 		t.Fatalf("published events=%d err=%v", count, countErr)
 	}
+	assertForgeWriteAuthor(t, st, ctx, taskID, "github_issue.publication_published", core.ForgeAuthorHost)
 }
 
 func TestGitHubIssuePublicationRecoverableFailureEmitsRetryActivityWithError(t *testing.T) {
@@ -156,12 +157,37 @@ func TestReviewPublicationRequiresAggregateCommentAndIgnoresEventTimestamp(t *te
 	if err != nil || stored.State != core.ReviewPublicationPublished || stored.CommentID != 51 || stored.ReviewedCommitSHA != "head-1" {
 		t.Fatalf("stored publication=%+v err=%v", stored, err)
 	}
+	assertForgeWriteAuthor(t, st, ctx, publication.TaskID, "review.publication_published", core.ForgeAuthorHost)
 	if err = worker.Work(ctx, reviewPublicationJob(publication.ReviewWorkOrderID, 2)); err != nil {
 		t.Fatal(err)
 	}
 	if calls != 1 {
 		t.Fatalf("published retry called GitHub %d times, want 1", calls)
 	}
+}
+
+func assertForgeWriteAuthor(t *testing.T, st store.Store, ctx context.Context, taskID, kind string, want core.ForgeAuthorClass) {
+	t.Helper()
+	events, err := st.ListEvents(ctx, taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Kind != kind {
+			continue
+		}
+		var payload struct {
+			Class core.ForgeAuthorClass `json:"forge_author_class"`
+		}
+		if err := json.Unmarshal(events[i].Payload, &payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload.Class != want {
+			t.Fatalf("%s forge author class = %q, want %q", kind, payload.Class, want)
+		}
+		return
+	}
+	t.Fatalf("event %s not found", kind)
 }
 
 func TestReviewPublicationFailureKeepsInternalReviewAuthoritative(t *testing.T) {

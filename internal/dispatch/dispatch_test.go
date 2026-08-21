@@ -737,6 +737,27 @@ type reviewAcceptanceFlakyStore struct {
 	failures int
 }
 
+type mergeForgeTokens struct {
+	status     core.ForgeTokenStatus
+	credential core.ForgeTokenCredential
+	statusErr  error
+	useErr     error
+}
+
+func (*mergeForgeTokens) StoreForgeToken(context.Context, string, string, string) (core.ForgeTokenStatus, error) {
+	return core.ForgeTokenStatus{}, nil
+}
+func (*mergeForgeTokens) DeleteForgeToken(context.Context, string) error { return nil }
+func (f *mergeForgeTokens) GetForgeTokenStatus(context.Context, string) (core.ForgeTokenStatus, error) {
+	return f.status, f.statusErr
+}
+func (f *mergeForgeTokens) GetForgeTokenForUse(context.Context, string) (core.ForgeTokenCredential, error) {
+	return f.credential, f.useErr
+}
+func (*mergeForgeTokens) ListForgeTokensForRedaction(context.Context) ([]string, error) {
+	return nil, nil
+}
+
 func approvedMergeFixture(t *testing.T, githubRepo string) (context.Context, store.Store, core.Task, *Dispatcher) {
 	return approvedMergeFixtureWithScope(t, githubRepo, config.RefreshReviewDelta)
 }
@@ -797,6 +818,70 @@ func TestMergeApprovedTaskMergesOnlyAfterAuthoritativeConfirmation(t *testing.T)
 	}
 	if merges != 1 || views != 2 {
 		t.Fatalf("idempotent retry merges=%d views=%d", merges, views)
+	}
+}
+
+func TestMergeApprovedTaskUsesApprovingOperatorCredentialAndAuditsIdentity(t *testing.T) {
+	ctx, st, task, d := approvedMergeFixtureWithScopeAndGate(t, "acme/app", config.RefreshReviewDelta, true)
+	if err := st.CreateIntervention(ctx, core.Intervention{TaskID: task.ID, Action: core.InterventionApprove, ActorID: store.UserActorID("usr-approver"), ActorRole: core.ActorUser}); err != nil {
+		t.Fatal(err)
+	}
+	d.ForgeTokens = &mergeForgeTokens{
+		status:     core.ForgeTokenStatus{Configured: true},
+		credential: core.ForgeTokenCredential{UserID: "usr-approver", Token: "approver-forge-token"},
+	}
+	views := 0
+	d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
+		views++
+		return githubtrigger.PullRequest{Number: 12, URL: "https://github.com/acme/app/pull/12", State: map[bool]string{false: "open", true: "closed"}[views > 1], Mergeable: "MERGEABLE", Merged: views > 1, BaseSHA: "base", HeadSHA: "head"}, nil
+	}
+	d.RequestMerge = func(context.Context, string, int) error {
+		t.Fatal("approver merge fell back to host identity")
+		return nil
+	}
+	var usedToken string
+	d.RequestMergeWithCredential = func(_ context.Context, repo string, number int, token string) error {
+		if repo != "acme/app" || number != 12 {
+			t.Fatalf("merge target=%s#%d", repo, number)
+		}
+		usedToken = token
+		return nil
+	}
+	if err := d.MergeApprovedTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if usedToken != "approver-forge-token" {
+		t.Fatalf("used token=%q", usedToken)
+	}
+	events, err := st.ListEvents(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, kind := range []string{"merge.requested", "merge.confirmed"} {
+		found := false
+		for _, event := range events {
+			found = found || (event.Kind == kind && strings.Contains(string(event.Payload), `"forge_author_class":"approving_operator"`) && strings.Contains(string(event.Payload), `"forge_author_user_id":"usr-approver"`) && !strings.Contains(string(event.Payload), "approver-forge-token"))
+		}
+		if !found {
+			t.Fatalf("%s attribution missing or unsafe: %+v", kind, events)
+		}
+	}
+}
+
+func TestMergeAuthorFallsBackToHostOnlyWhenApproverHasNoToken(t *testing.T) {
+	ctx, st, task, d := approvedMergeFixtureWithScopeAndGate(t, "acme/app", config.RefreshReviewDelta, true)
+	if err := st.CreateIntervention(ctx, core.Intervention{TaskID: task.ID, Action: core.InterventionApprove, ActorID: store.UserActorID("usr-approver"), ActorRole: core.ActorUser}); err != nil {
+		t.Fatal(err)
+	}
+	d.ForgeTokens = &mergeForgeTokens{status: core.ForgeTokenStatus{Configured: false}}
+	author, token, err := d.mergeAuthor(ctx, task)
+	if err != nil || author.Class != core.ForgeAuthorHost || author.UserID != "" || token != "" {
+		t.Fatalf("author=%+v token=%q err=%v", author, token, err)
+	}
+	d.ForgeTokens = &mergeForgeTokens{status: core.ForgeTokenStatus{Configured: true}, useErr: store.ErrForgeTokenDecrypt}
+	author, token, err = d.mergeAuthor(ctx, task)
+	if err == nil || githubtrigger.ErrorCategory(err) != githubtrigger.ForgePermission || author.Class != core.ForgeAuthorHost || token != "" || !strings.Contains(err.Error(), "usr-approver") {
+		t.Fatalf("decrypt author=%+v token=%q err=%v category=%q", author, token, err, githubtrigger.ErrorCategory(err))
 	}
 }
 

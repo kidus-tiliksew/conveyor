@@ -18,6 +18,17 @@ import (
 
 type failingObservabilityStore struct{ store.Store }
 
+type workerIdentityFixture struct {
+	identity core.CallerIdentity
+}
+
+func (f workerIdentityFixture) GetCallerIdentity(_ context.Context, userID, workspaceID string) (core.CallerIdentity, error) {
+	if userID != f.identity.ID || workspaceID != "" {
+		return core.CallerIdentity{}, store.ErrNotFound
+	}
+	return f.identity, nil
+}
+
 func (failingObservabilityStore) UpsertWorkOrderActivitySnapshot(context.Context, string, core.WorkOrderClaimIdentity, string) error {
 	return errors.New("snapshot unavailable")
 }
@@ -31,7 +42,7 @@ func TestPairingHeartbeatHealthAndWorkerClaimLifecycle(t *testing.T) {
 	st := store.NewMemory()
 	cfg := workerTestConfig()
 	workOrders := &workorder.Service{Store: st, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
-	service := &Service{Store: st, WorkOrders: workOrders, ConfigProvider: workOrders.ConfigProvider, Now: func() time.Time { return now }}
+	service := &Service{Store: st, WorkOrders: workOrders, ConfigProvider: workOrders.ConfigProvider, Now: func() time.Time { return now }, IdentityUsers: workerIdentityFixture{identity: core.CallerIdentity{ID: "usr-assigned", DisplayName: "Assigned User", Email: "assigned@example.test"}}}
 	operatorCtx := store.WithCredential(t.Context(), core.AuthenticatedCredential{ID: "operator-token", OwnerUserID: "usr-assigned", Kind: core.CredentialUser, Scope: core.CredentialScopeOperator})
 	operatorCtx = store.WithWorkspace(store.WithActor(operatorCtx, store.Actor{ID: store.UserActorID("usr-assigned"), Role: core.ActorUser}), "demo")
 	token, pairing, err := service.IssuePairing(operatorCtx, time.Minute)
@@ -85,7 +96,7 @@ func TestPairingHeartbeatHealthAndWorkerClaimLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	listed, err := service.ListClaimable(workerCtx, worker)
-	if err != nil || len(listed) != 1 || listed[0].Task.ID != "auto-task" || listed[0].HarnessSelection != "local" || listed[0].Confinement != "none" || listed[0].Auth != "byoa" {
+	if err != nil || len(listed) != 1 || listed[0].Task.ID != "auto-task" || listed[0].HarnessSelection != "local" || listed[0].Confinement != "none" || listed[0].Auth != "byoa" || listed[0].GitAuthor.Name != "Assigned User" || listed[0].GitAuthor.Email != "assigned@example.test" {
 		t.Fatalf("listed=%+v err=%v", listed, err)
 	}
 	// Held tasks are rejected at claim time (DEC-5), and a

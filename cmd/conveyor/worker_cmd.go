@@ -913,7 +913,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 	if item.Harness.MCPTransport == config.MCPTransportEnvironment {
 		childAddress = strings.TrimRight(c.base, "/") + "/mcp"
 	}
-	childEnv := isolatedChildEnvironment(os.Environ(), map[string]string{
+	childValues := map[string]string{
 		"CONVEYOR_API_TOKEN":     credential,
 		"CONVEYOR_ADDR":          childAddress,
 		"CONVEYOR_WORKSPACE":     c.workspace,
@@ -932,7 +932,14 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 		"CONVEYOR_CURRENT_ATTEMPT_ID":      claimed.AttemptID,
 		"CONVEYOR_PREVIOUS_ATTEMPT_ID":     claimed.LastAttemptID,
 		"CONVEYOR_PREVIOUS_ATTEMPT_REASON": claimed.LastFailureMessage,
-	})
+	}
+	if item.GitAuthor.Name != "" && item.GitAuthor.Email != "" {
+		childValues["GIT_AUTHOR_NAME"] = item.GitAuthor.Name
+		childValues["GIT_AUTHOR_EMAIL"] = item.GitAuthor.Email
+		childValues["GIT_COMMITTER_NAME"] = item.GitAuthor.Name
+		childValues["GIT_COMMITTER_EMAIL"] = item.GitAuthor.Email
+	}
+	childEnv := isolatedChildEnvironment(os.Environ(), childValues)
 	workingDirectory := ""
 	if item.Order.Stage == core.StageSpec {
 		workingDirectory, err = materializeSpecCheckout(setupCtx, directory, item)

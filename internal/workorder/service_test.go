@@ -2281,7 +2281,7 @@ func TestSubmitForReviewGovernanceFailuresPrecedeReviewSideEffects(t *testing.T)
 				SubmissionChangedPaths: func(context.Context, *config.Config, core.Task) ([]string, error) {
 					return []string{"internal/change.go"}, test.pathErr
 				},
-				OpenPR: func(context.Context, string, string, string, string, string) (string, error) {
+				OpenPR: func(context.Context, string, string, string, string, string, string) (string, error) {
 					opened++
 					return "unexpected", nil
 				},
@@ -2385,7 +2385,7 @@ func TestSubmitForReviewEvidenceGateIsSideEffectFreeAndPropagatesToEveryReviewSe
 	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "implementer", ClientToken: "secret", Lease: time.Minute}); err != nil {
+	if _, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "implementer", ClientToken: "secret", ClaimantID: core.TaskRunClaimantID("usr-evidence"), OwnerUserID: "usr-evidence", Lease: time.Minute}); err != nil {
 		t.Fatal(err)
 	}
 	cfg := &config.Config{
@@ -2408,9 +2408,9 @@ func TestSubmitForReviewEvidenceGateIsSideEffectFreeAndPropagatesToEveryReviewSe
 	openCalls := 0
 	var prBody string
 	service := &Service{
-		Store: st, Dispatcher: dispatcher, Pack: bundle,
+		Store: st, Dispatcher: dispatcher, Pack: bundle, ForgeTokens: &claimForgeTokens{configured: true, credential: core.ForgeTokenCredential{UserID: "usr-evidence", Token: "evidence-token"}},
 		ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil },
-		OpenPR: func(_ context.Context, _, _, _, _ string, body string) (string, error) {
+		OpenPR: func(_ context.Context, _, _, _, _ string, body, _ string) (string, error) {
 			openCalls++
 			prBody = body
 			return "https://github.com/acme/app/pull/54", nil
@@ -2502,7 +2502,7 @@ func TestSubmitForReviewEvidenceGateIsSideEffectFreeAndPropagatesToEveryReviewSe
 		}
 		reviewSeats++
 		session := "review-session-" + order.ID
-		claimed, claimErr := service.Claim(ctx, order.ID, core.WorkOrderClaim{SessionID: session, ClientToken: "review-secret-" + order.ID, ClaimantID: "reviewer", Lease: time.Minute})
+		claimed, claimErr := service.Claim(ctx, order.ID, core.WorkOrderClaim{SessionID: session, ClientToken: "review-secret-" + order.ID, ClaimantID: "reviewer", OwnerUserID: "usr-reviewer", Lease: time.Minute})
 		if claimErr != nil {
 			t.Fatal(claimErr)
 		}
@@ -2598,7 +2598,7 @@ func TestSubmitForReviewWaitsForIssueAndPassesClosingReference(t *testing.T) {
 	if err = storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "implementer", ClientToken: "secret", Lease: time.Minute}); err != nil {
+	if _, err = storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "implementer", ClientToken: "secret", ClaimantID: core.TaskRunClaimantID("usr-executor"), OwnerUserID: "usr-executor", Lease: time.Minute}); err != nil {
 		t.Fatal(err)
 	}
 	cfg := &config.Config{Workspace: "test", Repos: []config.Repo{{Name: "app", Base: "main", GitHub: "acme/app"}}, Routing: config.Routing{Stages: map[string]config.StageRoute{"review": {Execution: config.ExecutionMCP}}}}
@@ -2606,9 +2606,11 @@ func TestSubmitForReviewWaitsForIssueAndPassesClosingReference(t *testing.T) {
 	dispatcher.DisableMemoryQueueForTest()
 	opened := 0
 	var body string
-	service := &Service{Store: st, Dispatcher: dispatcher, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }, OpenPR: func(_ context.Context, _, _, _, _ string, value string) (string, error) {
+	var usedToken string
+	service := &Service{Store: st, Dispatcher: dispatcher, ForgeTokens: &claimForgeTokens{configured: true, credential: core.ForgeTokenCredential{UserID: "usr-executor", Token: "executor-forge-token"}}, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }, OpenPR: func(_ context.Context, _, _, _, _ string, value, token string) (string, error) {
 		opened++
 		body = value
+		usedToken = token
 		return "https://github.com/acme/app/pull/9", nil
 	}, ReviewTarget: func(context.Context, string, string) (githubtrigger.ReviewTarget, error) {
 		return githubtrigger.ReviewTarget{Number: 9, HeadSHA: "abc"}, nil
@@ -2626,8 +2628,19 @@ func TestSubmitForReviewWaitsForIssueAndPassesClosingReference(t *testing.T) {
 	if _, err = service.SubmitForReview(ctx, job.ID, "implementer"); err != nil {
 		t.Fatal(err)
 	}
-	if opened != 1 || !strings.Contains(body, "Closes #42") {
-		t.Fatalf("opened=%d body=%q", opened, body)
+	if opened != 1 || usedToken != "executor-forge-token" || !strings.Contains(body, "Closes #42") {
+		t.Fatalf("opened=%d token=%q body=%q", opened, usedToken, body)
+	}
+	events, err := st.ListEvents(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundAttribution := false
+	for _, event := range events {
+		foundAttribution = foundAttribution || (event.Kind == "pull_request.opened" && strings.Contains(string(event.Payload), `"forge_author_class":"executing_user"`) && strings.Contains(string(event.Payload), `"forge_author_user_id":"usr-executor"`) && !strings.Contains(string(event.Payload), "executor-forge-token"))
+	}
+	if !foundAttribution {
+		t.Fatalf("pull request attribution missing or unsafe: %+v", events)
 	}
 }
 
@@ -2649,14 +2662,14 @@ func TestSubmitForReviewAdvancesStaleRefreshHead(t *testing.T) {
 	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "implementer", ClientToken: "secret", Lease: time.Minute}); err != nil {
+	if _, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "implementer", ClientToken: "secret", ClaimantID: core.TaskRunClaimantID("usr-refresh"), OwnerUserID: "usr-refresh", Lease: time.Minute}); err != nil {
 		t.Fatal(err)
 	}
 	cfg := &config.Config{Workspace: "test", Repos: []config.Repo{{Name: "app", Base: "main", GitHub: "acme/app"}}, Routing: config.Routing{Stages: map[string]config.StageRoute{"review": {Execution: config.ExecutionMCP}}}}
 	dispatcher := dispatch.New(st, cfg, nil)
 	dispatcher.DisableMemoryQueueForTest()
-	service := &Service{Store: st, Dispatcher: dispatcher, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil },
-		OpenPR: func(context.Context, string, string, string, string, string) (string, error) {
+	service := &Service{Store: st, Dispatcher: dispatcher, ForgeTokens: &claimForgeTokens{configured: true, credential: core.ForgeTokenCredential{UserID: "usr-refresh", Token: "refresh-token"}}, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil },
+		OpenPR: func(context.Context, string, string, string, string, string, string) (string, error) {
 			return "https://github.com/acme/app/pull/7", nil
 		},
 		ReviewTarget: func(context.Context, string, string) (githubtrigger.ReviewTarget, error) {
@@ -3015,7 +3028,7 @@ func TestWarmSessionBounceClaimsNextOrderReusesPRAndCannotSelfReview(t *testing.
 	}
 	const implementSession = "warm-implementation-session"
 	const implementToken = "warm-implementation-token"
-	if _, err := storetest.For(st).ClaimWorkOrder(ctx, implementJob.ID, core.WorkOrderClaim{SessionID: implementSession, ClientToken: implementToken, Agent: "codex", Model: "implementer", Lease: time.Minute}); err != nil {
+	if _, err := storetest.For(st).ClaimWorkOrder(ctx, implementJob.ID, core.WorkOrderClaim{SessionID: implementSession, ClientToken: implementToken, ClaimantID: core.TaskRunClaimantID("usr-loop"), OwnerUserID: "usr-loop", Agent: "codex", Model: "implementer", Lease: time.Minute}); err != nil {
 		t.Fatal(err)
 	}
 	cfg := &config.Config{Workspace: "test", MaxBounces: 2, Repos: []config.Repo{{Name: "app", Base: "main", GitHub: "acme/app"}}, Routing: config.Routing{Stages: map[string]config.StageRoute{
@@ -3027,7 +3040,7 @@ func TestWarmSessionBounceClaimsNextOrderReusesPRAndCannotSelfReview(t *testing.
 	openCalls := 0
 	submissionDiffCalls := 0
 	service := &Service{
-		Store: st, Dispatcher: dispatcher,
+		Store: st, Dispatcher: dispatcher, ForgeTokens: &claimForgeTokens{configured: true, credential: core.ForgeTokenCredential{UserID: "usr-loop", Token: "loop-token"}},
 		ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil },
 		SubmissionChangedPaths: func(context.Context, *config.Config, core.Task) ([]string, error) {
 			submissionDiffCalls++
@@ -3036,7 +3049,7 @@ func TestWarmSessionBounceClaimsNextOrderReusesPRAndCannotSelfReview(t *testing.
 			}
 			return []string{"internal/second/change.go"}, nil
 		},
-		OpenPR: func(context.Context, string, string, string, string, string) (string, error) {
+		OpenPR: func(context.Context, string, string, string, string, string, string) (string, error) {
 			openCalls++
 			return "https://github.com/acme/app/pull/7", nil
 		},
@@ -3071,7 +3084,7 @@ func TestWarmSessionBounceClaimsNextOrderReusesPRAndCannotSelfReview(t *testing.
 	if firstReview.ID == "" {
 		t.Fatalf("review order missing: %+v", orders)
 	}
-	if _, err = service.Claim(ctx, firstReview.ID, core.WorkOrderClaim{SessionID: "independent-review-1", ClientToken: "review-token-1", ClaimantID: "reviewer-1", Agent: "codex", Model: "reviewer", Lease: time.Minute}); err != nil {
+	if _, err = service.Claim(ctx, firstReview.ID, core.WorkOrderClaim{SessionID: "independent-review-1", ClientToken: "review-token-1", ClaimantID: "reviewer-1", OwnerUserID: "usr-reviewer-1", Agent: "codex", Model: "reviewer", Lease: time.Minute}); err != nil {
 		t.Fatal(err)
 	}
 	designApplicable, decisionCitable := true, false
@@ -3097,7 +3110,7 @@ func TestWarmSessionBounceClaimsNextOrderReusesPRAndCannotSelfReview(t *testing.
 	if secondImplement.ID == "" {
 		t.Fatalf("follow-up implement order missing: %+v", orders)
 	}
-	if _, err = service.Claim(ctx, secondImplement.ID, core.WorkOrderClaim{SessionID: implementSession, ClientToken: implementToken, ClaimantID: "implementer", Agent: "codex", Model: "implementer", Lease: time.Minute}); err != nil {
+	if _, err = service.Claim(ctx, secondImplement.ID, core.WorkOrderClaim{SessionID: implementSession, ClientToken: implementToken, ClaimantID: core.TaskRunClaimantID("usr-loop"), OwnerUserID: "usr-loop", Agent: "codex", Model: "implementer", Lease: time.Minute}); err != nil {
 		t.Fatal(err)
 	}
 	secondSubmit, err := service.SubmitForReview(ctx, secondImplement.ID, implementSession)
@@ -3121,7 +3134,7 @@ func TestWarmSessionBounceClaimsNextOrderReusesPRAndCannotSelfReview(t *testing.
 	if secondReview.ID == "" {
 		t.Fatalf("second review order missing: %+v", orders)
 	}
-	if _, err = service.Claim(ctx, secondReview.ID, core.WorkOrderClaim{SessionID: implementSession, ClientToken: implementToken, ClaimantID: "implementer", Agent: "codex", Model: "reviewer", Lease: time.Minute}); err == nil || !strings.Contains(err.Error(), "self-review forbidden") {
+	if _, err = service.Claim(ctx, secondReview.ID, core.WorkOrderClaim{SessionID: implementSession, ClientToken: implementToken, ClaimantID: "implementer", OwnerUserID: "usr-loop", Agent: "codex", Model: "reviewer", Lease: time.Minute}); err == nil || !strings.Contains(err.Error(), "self-review forbidden") {
 		t.Fatalf("self-review error = %v", err)
 	}
 }

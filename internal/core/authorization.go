@@ -182,3 +182,26 @@ type ForgeTokenCredential struct {
 	UserID string `json:"-"`
 	Token  string `json:"-"`
 }
+
+// ForgeAuthorClass is the non-secret identity class recorded for a forge
+// write. UserID is present only for user-attributed writes; credentials never
+// enter this value or an event payload (req-260821-830dbf REQ-3/REQ-4).
+type ForgeAuthorClass string
+
+const (
+	ForgeAuthorExecutingUser     ForgeAuthorClass = "executing_user"
+	ForgeAuthorApprovingOperator ForgeAuthorClass = "approving_operator"
+	ForgeAuthorHost              ForgeAuthorClass = "host"
+)
+
+type ForgeAuthoringIdentity struct {
+	Class  ForgeAuthorClass `json:"class"`
+	UserID string           `json:"user_id,omitempty"`
+}
+
+// GitAuthorIdentity is the account identity copied into a dispatched child
+// process's Git author and committer environment. It is not a forge secret.
+type GitAuthorIdentity struct {
+	Name  string `json:"name"`
+	Email string `json:"email"`
+}
