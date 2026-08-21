@@ -67,6 +67,24 @@ func TestTaskContextProposalMigrationUnifiesRequirementLifecycle(t *testing.T) {
 	}
 }
 
+func TestTaskContextTerminalCleanupMigration(t *testing.T) {
+	raw, err := migrationFiles.ReadFile("migrations/108_task_context_proposals_terminal_cleanup.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := strings.ToLower(string(raw))
+	for _, required := range []string{"delete from task_context_proposals", "using tasks", "proposal.state = 'proposed'", "task.state in ('merged', 'closed')"} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("migration 108 missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{"update task_context_proposals", "delete from events"} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("migration 108 contains forbidden operation %q", forbidden)
+		}
+	}
+}
+
 func TestLineageMigrationVocabularyAgreesWithProjector(t *testing.T) {
 	canonical := controlstore.CanonicalLineageKinds()
 	emitted := map[string]bool{}

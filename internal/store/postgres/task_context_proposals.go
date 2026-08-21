@@ -245,3 +245,9 @@ func getTaskContextProposalTx(ctx context.Context, tx pgx.Tx, taskID string, kin
 	}
 	return scanTaskContextProposal(tx.QueryRow(ctx, query, workspace(ctx), taskID, kind, targetID))
 }
+
+func deleteProposedTaskContextTx(ctx context.Context, tx pgx.Tx, taskID string) error {
+	_, err := tx.Exec(ctx, `DELETE FROM task_context_proposals
+		WHERE workspace_id=$1 AND task_id=$2 AND state='proposed'`, workspace(ctx), taskID)
+	return err
+}

@@ -5326,6 +5326,9 @@ func (m *memory) ApplyTaskCommand(ctx context.Context, lease taskops.TaskLease, 
 		task.RecoveryStage = command.RecoveryStage
 	}
 	m.tasks[id] = task
+	if core.TaskTerminal(state) {
+		m.deleteProposedTaskContextLocked(task.ID)
+	}
 	m.appendEventLocked(ctx, core.Event{TaskID: id, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": fromState, "to": state, "command": command.Kind})})
 	m.recordDependencyOutcomeLocked(ctx, id, state, time.Now().UTC())
 	if command.ProjectStages {
@@ -5365,6 +5368,7 @@ func (m *memory) closeBlueprintParentLocked(ctx context.Context, parentID string
 	}
 	parent.State = closed
 	m.tasks[parent.ID] = parent
+	m.deleteProposedTaskContextLocked(parent.ID)
 	m.appendEventLocked(ctx, core.Event{TaskID: parent.ID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": from, "to": closed, "command": core.TaskBlueprintClose})})
 	m.appendEventLocked(ctx, core.Event{TaskID: parent.ID, Kind: "blueprint.closed", Payload: core.JSONPayload(map[string]any{"children": childCount, "terminal_states": []core.TaskState{core.TaskMerged, core.TaskClosed}})})
 	m.recordDependencyOutcomeLocked(ctx, parent.ID, closed, time.Now().UTC())
@@ -5846,6 +5850,7 @@ func (m *memory) CancelTaskCommand(ctx context.Context, lease taskops.TaskLease,
 	from := task.State
 	task.State, task.NextStage, task.RecoveryStage = taskState, "", ""
 	m.tasks[task.ID] = task
+	m.deleteProposedTaskContextLocked(task.ID)
 	m.appendEventLocked(ctx, core.Event{TaskID: task.ID, Kind: "task.state_changed", ActorID: intervention.ActorID, ActorRole: intervention.ActorRole, Payload: core.JSONPayload(map[string]any{"from": from, "to": taskState, "command": core.TaskCancel}), At: intervention.At})
 	m.appendEventLocked(ctx, core.Event{TaskID: task.ID, Kind: "task.cancelled", ActorID: intervention.ActorID, ActorRole: intervention.ActorRole, Payload: core.JSONPayload(map[string]any{"actor": intervention.ActorID, "reason": intervention.ReasonCode, "comment": intervention.Comment, "from": from, "cancelled_work_orders": cancelled}), At: intervention.At})
 	m.recordDependencyOutcomeLocked(ctx, task.ID, taskState, intervention.At)

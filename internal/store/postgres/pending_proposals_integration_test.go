@@ -1,11 +1,13 @@
 package postgres
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
@@ -143,6 +145,175 @@ func TestPendingProposalsProjectionIntegration(t *testing.T) {
 	items, err = st.ListPendingProposals(ctx)
 	if err != nil || len(items) != 0 {
 		t.Fatalf("resolved items=%+v err=%v", items, err)
+	}
+}
+
+func TestTerminalTaskContextProposalsStayOutOfPendingProjectionIntegration(t *testing.T) {
+	st, err := Open(t.Context(), integrationDatabaseURL(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	workspace := "terminal-pending-context-" + core.NewTaskID()
+	ctx := store.WithWorkspace(t.Context(), workspace)
+	if _, err = st.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "conveyor", Base: "main"}}}); err != nil {
+		t.Fatal(err)
+	}
+	requirement, version, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-" + core.NewTaskID(), Title: "Pending context"}, core.RequirementVersion{
+		Content: "Pending context", Origin: core.RequirementOriginOperator,
+		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Only decidable context needs attention."}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmRequirementVersion(ctx, requirement.ID, version.Version); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	states := map[string]core.TaskState{
+		"open": core.TaskRunning, "merged": core.TaskMerged, "closed": core.TaskClosed,
+	}
+	taskIDs := map[string]string{}
+	for label, finalState := range states {
+		taskID := label + "-context-" + core.NewTaskID()
+		taskIDs[label] = taskID
+		if err = st.CreateTask(ctx, core.Task{ID: taskID, Workspace: workspace, Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-" + taskID, State: core.TaskRunning, CreatedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+		if _, suppressed, proposeErr := st.ProposeTaskContext(ctx, core.TaskContextProposalInput{
+			TaskID: taskID, TargetKind: core.TaskContextProposalRequirement, TargetID: requirement.ID,
+			Source: core.TaskContextProposalTriage, Justification: "Pending projection regression.",
+		}); proposeErr != nil || suppressed {
+			t.Fatalf("propose %s suppressed=%t err=%v", label, suppressed, proposeErr)
+		}
+		jobID := taskID + "-implement"
+		if err = st.CreateJob(ctx, core.Job{ID: jobID, TaskID: taskID, Stage: core.StageImplement, State: core.JobPending, StartedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = st.pool.Exec(ctx, `INSERT INTO work_orders
+			(id,workspace_id,task_id,job_id,stage,state,queue_entered_at,queue_deadline,created_at,updated_at)
+			VALUES ($1,$2,$3,$4,'implement','submitted',$5,$6,$5,$5)`, jobID, workspace, taskID, jobID, now, now.Add(time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+		if finalState != core.TaskRunning {
+			// Simulate a pre-108 stranded row by bypassing the command-plane cleanup.
+			if _, err = st.pool.Exec(ctx, `UPDATE tasks SET state=$1 WHERE workspace_id=$2 AND id=$3`, finalState, workspace, taskID); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	projection, err := st.PendingProposalsProjection(ctx)
+	if err != nil || len(projection.Items) != 1 || projection.Items[0].OriginID != taskIDs["open"] || projection.TaskCount != 1 {
+		t.Fatalf("projection=%+v err=%v", projection, err)
+	}
+	for _, label := range []string{"merged", "closed"} {
+		if _, transitionErr := st.ConfirmTaskContextProposal(ctx, taskIDs[label], core.TaskContextProposalRequirement, requirement.ID); !errors.Is(transitionErr, store.ErrTaskTerminal) {
+			t.Fatalf("%s terminal decision err=%v", label, transitionErr)
+		}
+	}
+}
+
+func TestTaskContextTerminalCleanupMigrationIntegration(t *testing.T) {
+	databaseURL := integrationDatabaseURL(t)
+	admin, err := pgxpool.New(t.Context(), databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Close()
+	schema := "migration_v107_" + strings.ReplaceAll(core.NewTaskID(), "-", "_")
+	if _, err = admin.Exec(t.Context(), "CREATE SCHEMA "+pgx.Identifier{schema}.Sanitize()); err != nil {
+		t.Fatal(err)
+	}
+	poolConfig, err := pgxpool.ParseConfig(databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	poolConfig.ConnConfig.RuntimeParams["search_path"] = schema
+	pool, err := pgxpool.NewWithConfig(t.Context(), poolConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	if err = migrateControlPlaneToVersion(t.Context(), pool, 107); err != nil {
+		t.Fatal(err)
+	}
+	st := &Store{pool: pool, queries: db.New(pool)}
+	workspace := "migration-context-" + core.NewTaskID()
+	ctx := store.WithWorkspace(t.Context(), workspace)
+	if _, err = st.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "conveyor", Base: "main"}}}); err != nil {
+		t.Fatal(err)
+	}
+	targets := make([]core.Requirement, 3)
+	for index := range targets {
+		var version core.RequirementVersion
+		targets[index], version, err = st.CreateRequirement(ctx, core.Requirement{ID: "req-migration-" + core.NewTaskID(), Title: fmt.Sprintf("Migration context %d", index+1)}, core.RequirementVersion{
+			Content: "Migration context", Origin: core.RequirementOriginOperator,
+			Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Preserve decided context."}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err = st.ConfirmRequirementVersion(ctx, targets[index].ID, version.Version); err != nil {
+			t.Fatal(err)
+		}
+	}
+	now := time.Now().UTC()
+	taskIDs := map[string]string{}
+	for _, label := range []string{"open", "merged", "closed"} {
+		taskID := label + "-migration-" + core.NewTaskID()
+		taskIDs[label] = taskID
+		if err = st.CreateTask(ctx, core.Task{ID: taskID, Workspace: workspace, Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-" + taskID, State: core.TaskRunning, CreatedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+		if _, suppressed, proposeErr := st.ProposeTaskContext(ctx, core.TaskContextProposalInput{
+			TaskID: taskID, TargetKind: core.TaskContextProposalRequirement, TargetID: targets[0].ID,
+			Source: core.TaskContextProposalTriage, Justification: "Migration cleanup candidate.",
+		}); proposeErr != nil || suppressed {
+			t.Fatalf("propose %s suppressed=%t err=%v", label, suppressed, proposeErr)
+		}
+	}
+	if _, suppressed, proposeErr := st.ProposeTaskContext(ctx, core.TaskContextProposalInput{
+		TaskID: taskIDs["merged"], TargetKind: core.TaskContextProposalRequirement, TargetID: targets[1].ID,
+		Source: core.TaskContextProposalTriage, Justification: "Confirmed history.",
+	}); proposeErr != nil || suppressed {
+		t.Fatalf("confirmed candidate suppressed=%t err=%v", suppressed, proposeErr)
+	}
+	if _, err = st.ConfirmTaskContextProposal(ctx, taskIDs["merged"], core.TaskContextProposalRequirement, targets[1].ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, suppressed, proposeErr := st.ProposeTaskContext(ctx, core.TaskContextProposalInput{
+		TaskID: taskIDs["closed"], TargetKind: core.TaskContextProposalRequirement, TargetID: targets[2].ID,
+		Source: core.TaskContextProposalTriage, Justification: "Dismissed history.",
+	}); proposeErr != nil || suppressed {
+		t.Fatalf("dismissed candidate suppressed=%t err=%v", suppressed, proposeErr)
+	}
+	if _, err = st.DismissTaskContextProposal(ctx, taskIDs["closed"], core.TaskContextProposalRequirement, targets[2].ID); err != nil {
+		t.Fatal(err)
+	}
+	for label, state := range map[string]core.TaskState{"merged": core.TaskMerged, "closed": core.TaskClosed} {
+		if _, err = pool.Exec(ctx, `UPDATE tasks SET state=$1 WHERE workspace_id=$2 AND id=$3`, state, workspace, taskIDs[label]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err = migrateControlPlane(t.Context(), pool); err != nil {
+		t.Fatal(err)
+	}
+	var head int
+	if err = pool.QueryRow(ctx, `SELECT max(version) FROM conveyor_schema_migrations`).Scan(&head); err != nil || head != 108 {
+		t.Fatalf("migration head=%d err=%v", head, err)
+	}
+	for label, want := range map[string]map[core.TaskContextProposalState]int{
+		"open":   {core.TaskContextProposalProposed: 1},
+		"merged": {core.TaskContextProposalProposed: 0, core.TaskContextProposalConfirmed: 1},
+		"closed": {core.TaskContextProposalProposed: 0, core.TaskContextProposalDismissed: 1},
+	} {
+		for state, wantCount := range want {
+			items, listErr := st.ListTaskContextProposals(ctx, taskIDs[label], state)
+			if listErr != nil || len(items) != wantCount {
+				t.Fatalf("%s state=%s items=%+v err=%v", label, state, items, listErr)
+			}
+		}
 	}
 }
 

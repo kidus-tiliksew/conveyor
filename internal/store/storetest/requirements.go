@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/monitor"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
 // Cross-implementation conformance for requirement documents and planning
@@ -129,6 +131,116 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 			if proposal.Tier == "task_context" && proposal.OriginID == taskID {
 				t.Fatalf("resolved proposal remained pending: %+v", proposal)
 			}
+		}
+	})
+
+	t.Run("terminal tasks retire only proposed context", func(t *testing.T) {
+		fixture := factory(t, requirementConformanceRepos)
+		st, ctx := fixture.Store, store.WithActor(fixture.Context, store.Actor{ID: requirementConformanceActor, Role: core.ActorUser})
+		targets := make([]core.Requirement, 3)
+		for index := range targets {
+			var err error
+			targets[index], _, err = st.CreateRequirement(ctx,
+				core.Requirement{ID: "req-terminal-context-" + core.NewTaskID(), Title: fmt.Sprintf("Terminal context %d", index+1)},
+				core.RequirementVersion{Content: "Terminal context", Origin: core.RequirementOriginOperator,
+					Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Retain only decided context."}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			versions, err := st.ListRequirementVersions(ctx, targets[index].ID)
+			if err != nil || len(versions) != 1 {
+				t.Fatalf("versions=%+v err=%v", versions, err)
+			}
+			if _, _, err = st.ConfirmRequirementVersion(ctx, targets[index].ID, versions[0].Version); err != nil {
+				t.Fatal(err)
+			}
+		}
+		propose := func(taskID string, target core.Requirement) {
+			t.Helper()
+			if _, suppressed, err := st.ProposeTaskContext(ctx, core.TaskContextProposalInput{
+				TaskID: taskID, TargetKind: core.TaskContextProposalRequirement, TargetID: target.ID,
+				Source: core.TaskContextProposalTriage, Justification: "Terminal cleanup conformance.",
+			}); err != nil || suppressed {
+				t.Fatalf("propose task=%s target=%s suppressed=%t err=%v", taskID, target.ID, suppressed, err)
+			}
+		}
+
+		openID := "open-context-" + core.NewTaskID()
+		closedID := "closed-context-" + core.NewTaskID()
+		mergedID := "merged-context-" + core.NewTaskID()
+		for _, task := range []core.Task{
+			{ID: openID, Workspace: fixture.Workspace, Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-" + openID, State: core.TaskRunning, CreatedAt: time.Now().UTC()},
+			{ID: closedID, Workspace: fixture.Workspace, Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-" + closedID, State: core.TaskRunning, CreatedAt: time.Now().UTC()},
+			{ID: mergedID, Workspace: fixture.Workspace, Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-" + mergedID, State: core.TaskApproved, CreatedAt: time.Now().UTC()},
+		} {
+			if err := st.CreateTask(ctx, task); err != nil {
+				t.Fatal(err)
+			}
+		}
+		propose(openID, targets[0])
+		propose(closedID, targets[0])
+		for _, target := range targets {
+			propose(mergedID, target)
+		}
+		if _, err := st.ConfirmTaskContextProposal(ctx, mergedID, core.TaskContextProposalRequirement, targets[1].ID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := st.DismissTaskContextProposal(ctx, mergedID, core.TaskContextProposalRequirement, targets[2].ID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := For(st).CancelTask(ctx, core.Intervention{TaskID: closedID, Action: core.InterventionCancel, ReasonCode: "terminal-context-test"}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := taskops.New(st).Perform(ctx, mergedID, taskops.Command{Kind: core.TaskMergeConfirm}); err != nil {
+			t.Fatal(err)
+		}
+
+		pending, err := st.ListPendingProposals(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		contextOrigins := map[string]int{}
+		for _, proposal := range pending {
+			if proposal.Tier == "task_context" {
+				contextOrigins[proposal.OriginID]++
+			}
+		}
+		if contextOrigins[openID] != 1 || contextOrigins[closedID] != 0 || contextOrigins[mergedID] != 0 {
+			t.Fatalf("pending context origins=%v", contextOrigins)
+		}
+		for _, terminalID := range []string{closedID, mergedID} {
+			proposed, listErr := st.ListTaskContextProposals(ctx, terminalID, core.TaskContextProposalProposed)
+			if listErr != nil || len(proposed) != 0 {
+				t.Fatalf("terminal proposed task=%s proposals=%+v err=%v", terminalID, proposed, listErr)
+			}
+			if _, transitionErr := st.ConfirmTaskContextProposal(ctx, terminalID, core.TaskContextProposalRequirement, targets[0].ID); !errors.Is(transitionErr, store.ErrTaskTerminal) {
+				t.Fatalf("terminal decision task=%s err=%v", terminalID, transitionErr)
+			}
+		}
+		decided, err := st.ListTaskContextProposals(ctx, mergedID, "")
+		if err != nil || len(decided) != 2 || decided[0].State == core.TaskContextProposalProposed || decided[1].State == core.TaskContextProposalProposed {
+			t.Fatalf("decided proposals=%+v err=%v", decided, err)
+		}
+
+		parentID := "blueprint-context-" + core.NewTaskID()
+		childID := "blueprint-child-" + core.NewTaskID()
+		if err = st.CreateTask(ctx, core.Task{ID: parentID, Workspace: fixture.Workspace, Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-" + parentID, State: core.TaskQueued, CreatedAt: time.Now().UTC()}); err != nil {
+			t.Fatal(err)
+		}
+		if err = st.CreateTask(ctx, core.Task{ID: childID, Workspace: fixture.Workspace, Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-" + childID, ParentTaskID: parentID, State: core.TaskRunning, CreatedAt: time.Now().UTC()}); err != nil {
+			t.Fatal(err)
+		}
+		propose(parentID, targets[0])
+		if _, err = taskops.New(st).Perform(ctx, childID, taskops.Command{Kind: core.TaskCancel}); err != nil {
+			t.Fatal(err)
+		}
+		parent, err := st.GetTask(ctx, parentID)
+		if err != nil || parent.State != core.TaskClosed {
+			t.Fatalf("blueprint parent=%+v err=%v", parent, err)
+		}
+		proposed, err := st.ListTaskContextProposals(ctx, parentID, core.TaskContextProposalProposed)
+		if err != nil || len(proposed) != 0 {
+			t.Fatalf("blueprint parent proposals=%+v err=%v", proposed, err)
 		}
 	})
 

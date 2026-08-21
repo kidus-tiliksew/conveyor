@@ -51,7 +51,8 @@ func (s *Store) ListPendingProposals(ctx context.Context) ([]core.PendingProposa
 			UNION ALL
 			SELECT p.target_id,p.target_title,'task_context',NULL::integer,'task',p.task_id,p.target_kind,p.justification,p.created_at
 			FROM task_context_proposals p
-			WHERE p.workspace_id=$1 AND p.state='proposed'
+			JOIN tasks t ON t.workspace_id=p.workspace_id AND t.id=p.task_id
+			WHERE p.workspace_id=$1 AND p.state='proposed' AND t.state NOT IN ('merged','closed')
 		) pending
 		ORDER BY proposed_at,tier,proposal_id,version NULLS FIRST`, workspace(ctx))
 	if err != nil {
