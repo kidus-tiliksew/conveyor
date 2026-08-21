@@ -1148,10 +1148,10 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 		}
 		return nil
 	}
-	observeCheckpointRelease := func(renewErr error) bool {
+	observeCheckpointRelease := func(renewErr error) (bool, error) {
 		typedRelease := workerOrderReleasedAtCheckpoint(renewErr)
 		if !typedRelease && (item.Dispatch != "run" || !workerOrderConflict(renewErr)) {
-			return false
+			return false, nil
 		}
 		if item.Dispatch == "run" {
 			reconcileCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -1162,17 +1162,26 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 					reconciled.WorkOrder.LastFailureMessage == core.WorkOrderReleaseReasonPlanRevisionRequested) {
 				checkpointReleaseReason = reconciled.WorkOrder.LastFailureMessage
 				observeFinalized(reconciled.WorkOrder)
-				return true
+				return true, nil
+			}
+			if typedRelease {
+				// The typed response proves a deliberate self-release but not which
+				// release reason was persisted. Fail closed when the read-only
+				// reconciliation cannot supply that reason rather than relabeling a
+				// plan-revision release as an operator checkpoint. The caller must
+				// not attempt a second release for this already-released claim.
+				if reconcileErr != nil {
+					return false, fmt.Errorf("confirm checkpoint release reason: %w", reconcileErr)
+				}
+				return false, fmt.Errorf("confirm checkpoint release reason: server reported %s (%s)", reconciled.WorkOrder.State, reconciled.Reason)
 			}
 		}
 		if typedRelease {
-			// The typed response itself proves the exact self-release. Retain the
-			// existing graceful behavior if the follow-up read is unavailable.
 			checkpointReleaseReason = core.WorkOrderReleaseReasonOperatorCheckpointReached
 			observeFinalized(core.WorkOrder{ID: item.Order.ID, State: core.WorkOrderQueued, LastFailureMessage: checkpointReleaseReason})
-			return true
+			return true, nil
 		}
-		return false
+		return false, nil
 	}
 	for {
 		select {
@@ -1235,10 +1244,14 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 			}
 			renewed, renewErr := renewDispatchClaimUntil(ctx, c, credential, item, sessionID, leaseExpiresAt, activitySnapshot)
 			if renewErr != nil {
-				if observeCheckpointRelease(renewErr) {
+				observedCheckpoint, checkpointErr := observeCheckpointRelease(renewErr)
+				if observedCheckpoint {
 					continue
 				}
 				_ = processGroup.terminate(nil)
+				if checkpointErr != nil {
+					return checkpointErr
+				}
 				if workerOrderPreempted(renewErr) {
 					return attemptAuthorityLoss(errWorkerOrderPreempted.Error(), checkpointAttempt)
 				}
@@ -1309,10 +1322,14 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 			}
 			renewed, renewErr := renewDispatchClaimUntil(ctx, c, credential, item, sessionID, leaseExpiresAt, activitySnapshot)
 			if renewErr != nil {
-				if observeCheckpointRelease(renewErr) {
+				observedCheckpoint, checkpointErr := observeCheckpointRelease(renewErr)
+				if observedCheckpoint {
 					continue
 				}
 				_ = processGroup.terminate(nil)
+				if checkpointErr != nil {
+					return checkpointErr
+				}
 				if workerOrderPreempted(renewErr) {
 					return attemptAuthorityLoss(errWorkerOrderPreempted.Error(), checkpointAttempt)
 				}
@@ -1370,10 +1387,14 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 			}
 			renewed, renewErr := renewDispatchClaimUntil(ctx, c, credential, item, sessionID, leaseExpiresAt, activitySnapshot)
 			if renewErr != nil {
-				if observeCheckpointRelease(renewErr) {
+				observedCheckpoint, checkpointErr := observeCheckpointRelease(renewErr)
+				if observedCheckpoint {
 					continue
 				}
 				_ = processGroup.terminate(nil)
+				if checkpointErr != nil {
+					return checkpointErr
+				}
 				if workerOrderPreempted(renewErr) {
 					return attemptAuthorityLoss(errWorkerOrderPreempted.Error(), checkpointAttempt)
 				}

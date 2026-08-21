@@ -1637,13 +1637,16 @@ func TestRunHarnessChildReapsOnlyAfterAttachedRunObservesTerminalOrder(t *testin
 		checkpointReason string
 		genericConflict  bool
 		genuineLoss      bool
+		reconcileFailure bool
 		wantNotice       bool
 		wantPause        bool
 		wantErr          bool
+		wantErrContains  string
 		minElapsed       time.Duration
 	}{
 		{name: "terminal order reaps lingering child", mode: "silent", renewState: core.WorkOrderSubmitted, wantNotice: true},
 		{name: "typed same-session checkpoint release reaps child gracefully", mode: "silent", checkpointReason: core.WorkOrderReleaseReasonOperatorCheckpointReached, wantPause: true},
+		{name: "typed plan revision with unavailable reconciliation fails closed", mode: "silent", checkpointReason: core.WorkOrderReleaseReasonPlanRevisionRequested, reconcileFailure: true, wantErr: true, wantErrContains: "confirm checkpoint release reason"},
 		{name: "generic conflict reconciles same-session plan revision", mode: "silent", checkpointReason: core.WorkOrderReleaseReasonPlanRevisionRequested, genericConflict: true, wantPause: true},
 		{name: "generic conflict for genuine claim loss remains fatal", mode: "silent", genericConflict: true, genuineLoss: true, wantErr: true},
 		{name: "live order leaves child running", mode: "early-output", renewState: core.WorkOrderClaimed, minElapsed: 300 * time.Millisecond},
@@ -1666,6 +1669,10 @@ func TestRunHarnessChildReapsOnlyAfterAttachedRunObservesTerminalOrder(t *testin
 					}
 					_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: "run-order", State: test.renewState, LeaseExpiresAt: time.Now().Add(time.Minute)})
 				case strings.HasSuffix(r.URL.Path, "/reconcile"):
+					if test.reconcileFailure {
+						http.Error(w, "reconciliation unavailable", http.StatusServiceUnavailable)
+						return
+					}
 					if test.genuineLoss {
 						http.Error(w, store.ErrWorkOrderClaimLost.Error(), http.StatusConflict)
 						return
@@ -1701,6 +1708,9 @@ func TestRunHarnessChildReapsOnlyAfterAttachedRunObservesTerminalOrder(t *testin
 			}
 			if !test.wantErr && err != nil {
 				t.Fatal(err)
+			}
+			if test.wantErrContains != "" && !strings.Contains(err.Error(), test.wantErrContains) {
+				t.Fatalf("error %q does not contain %q", err, test.wantErrContains)
 			}
 			if elapsed := time.Since(started); elapsed < test.minElapsed {
 				t.Fatalf("child ended before live-order safety interval: %s", elapsed)
