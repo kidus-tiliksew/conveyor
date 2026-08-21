@@ -128,6 +128,55 @@ func TestWorkspaceDocumentEmitsEmptyCollectionsAsArrays(t *testing.T) {
 	}
 }
 
+func TestWorktreeRootIsNormalizedAndRemainsClientLocal(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	example, err := os.ReadFile(filepath.Join("..", "..", "conveyor.example.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	writeAndLoad := func(t *testing.T, suffix string) (*Config, error) {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), "conveyor.yaml")
+		if err := os.WriteFile(path, append(append([]byte(nil), example...), []byte(suffix)...), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return Load(path)
+	}
+
+	defaulted, err := writeAndLoad(t, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(home, ".conveyor", "worktrees"); defaulted.WorktreeRoot != want {
+		t.Fatalf("default worktree root = %q, want %q", defaulted.WorktreeRoot, want)
+	}
+
+	configured, err := writeAndLoad(t, "\nworktree_root: ~/task-worktrees\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(home, "task-worktrees"); configured.WorktreeRoot != want {
+		t.Fatalf("configured worktree root = %q, want %q", configured.WorktreeRoot, want)
+	}
+	workspaceJSON, err := json.Marshal(configured.WorkspaceDocument())
+	if err != nil {
+		t.Fatal(err)
+	}
+	policyYAML, err := MarshalPolicyDocument(configured)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(workspaceJSON, []byte("worktree_root")) || bytes.Contains(policyYAML, []byte("worktree_root")) {
+		t.Fatalf("client-local worktree root crossed workspace projection: json=%s yaml=%s", workspaceJSON, policyYAML)
+	}
+
+	if _, err := writeAndLoad(t, "\nworktree_root: relative/worktrees\n"); err == nil || !strings.Contains(err.Error(), "worktree_root must be absolute") {
+		t.Fatalf("relative worktree root error = %v", err)
+	}
+}
+
 func TestFirstOperatorIdentityEnvironmentIsProcessOnly(t *testing.T) {
 	t.Setenv(OrganizationNameEnv, "Example Organization")
 	t.Setenv(FirstOperatorEmailEnv, " OWNER@EXAMPLE.TEST ")

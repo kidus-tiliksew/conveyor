@@ -25,6 +25,13 @@ and child launches come from this local file. Execution fields still returned
 by an older server are logged and ignored during the transition, while
 assignment, hold, claim, lease, heartbeat, and recovery remain server-owned.
 
+New implicit task checkouts use `~/.conveyor/worktrees` on the worker host.
+Set the top-level client-local field `worktree_root` to an absolute path (or a
+`~/...` path) to choose a different root for both worker and `conveyor run`
+children. An explicit `conveyor checkout --path` still takes precedence.
+Changing this setting does not move or remove existing registered worktrees;
+Git registration continues to locate and clean those at their original paths.
+
 Install the enrolled worker under the host's user service manager so process
 crashes, login, and control-plane restarts do not require operator
 intervention:

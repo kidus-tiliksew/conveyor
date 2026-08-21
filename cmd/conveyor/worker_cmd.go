@@ -422,14 +422,14 @@ func runWorkerWithPolicyAndConfig(ctx context.Context, c *client, pairing, name 
 			counts[selected.Order.Stage]++
 			started = true
 			children.Add(1)
-			go func(order workerservice.DispatchOrder, firstActivityTimeout time.Duration) {
+			go func(order workerservice.DispatchOrder, firstActivityTimeout time.Duration, worktreeRoot string) {
 				defer children.Done()
-				err := runHarnessChildWithFirstActivityTimeout(ctx, c, credential, order, firstActivityTimeout)
+				err := runHarnessChildWithFirstActivityTimeout(contextWithWorktreeRoot(ctx, worktreeRoot), c, credential, order, firstActivityTimeout)
 				completions <- childResult{stage: order.Order.Stage, err: err}
 				mu.Lock()
 				delete(active, order.Order.ID)
 				mu.Unlock()
-			}(selected, setup.FirstActivityTimeout)
+			}(selected, setup.FirstActivityTimeout, setup.Config.WorktreeRoot)
 		}
 		mu.Lock()
 		activeCount := len(active)
@@ -920,6 +920,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 		"CONVEYOR_WORK_ORDER_ID": item.Order.ID,
 		"CONVEYOR_SESSION_ID":    sessionID,
 		"CONVEYOR_CLIENT_TOKEN":  clientToken,
+		"CONVEYOR_WORKTREE_ROOT": worktreeRootFromContext(ctx),
 		// The branch assignment travels with the dispatch so `conveyor
 		// checkout` resolves it locally; worker credentials are valid on the
 		// worker and MCP planes only, never on workspace REST reads, so a

@@ -499,11 +499,16 @@ func reviewTaskCmd(action core.InterventionAction) *cobra.Command {
 
 func checkoutCmd() *cobra.Command {
 	var destination string
+	configPath := defaultLocalExecutionConfigPath()
 	cmd := &cobra.Command{
 		Use:   "checkout <task-id>",
 		Short: "Create or reuse the task's dedicated local worktree (design-git-delivery)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			worktreeRoot, err := checkoutWorktreeRoot(cmd, configPath)
+			if err != nil {
+				return err
+			}
 			branch, base, repo, repoURL, ok := assignedCheckoutFromEnvironment(args[0])
 			if !ok {
 				client := newClient()
@@ -527,7 +532,7 @@ func checkoutCmd() *cobra.Command {
 				branch, base, repo = task.Branch, task.BaseBranch, task.Repo
 			}
 			checkpoint := assignedPredecessorCheckpointFromEnvironment(args[0])
-			path, checkpointed, err := checkoutTaskWithCheckpoint(cmd.Context(), branch, base, repo, repoURL, args[0], destination, checkpoint)
+			path, checkpointed, err := checkoutTaskWithCheckpointAtRoot(cmd.Context(), branch, base, repo, repoURL, args[0], destination, worktreeRoot, checkpoint)
 			if err != nil {
 				return err
 			}
@@ -545,8 +550,27 @@ func checkoutCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&destination, "path", "", "destination path (default: sibling conveyor-worktrees/<repo>-task-<id>)")
+	cmd.Flags().StringVar(&destination, "path", "", "destination path (default: <worktree_root>/<repo>-task-<id>)")
+	cmd.Flags().StringVar(&configPath, "config", configPath, "local execution configuration")
 	return cmd
+}
+
+func checkoutWorktreeRoot(cmd *cobra.Command, configPath string) (string, error) {
+	if forwarded := strings.TrimSpace(os.Getenv("CONVEYOR_WORKTREE_ROOT")); forwarded != "" {
+		return forwarded, nil
+	}
+	resolved, err := resolveLocalExecutionConfigPath(cmd, configPath)
+	if err != nil {
+		return "", err
+	}
+	local, err := config.Load(resolved.Path)
+	if err == nil {
+		return local.WorktreeRoot, nil
+	}
+	if !os.IsNotExist(err) {
+		return "", fmt.Errorf("load local execution config for worktree root: %w", err)
+	}
+	return defaultImplicitWorktreeRoot()
 }
 
 func assignedPredecessorCheckpointFromEnvironment(taskID string) *attemptCheckpoint {
