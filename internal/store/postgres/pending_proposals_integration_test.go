@@ -300,7 +300,7 @@ func TestTaskContextTerminalCleanupMigrationIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	var head int
-	if err = pool.QueryRow(ctx, `SELECT max(version) FROM conveyor_schema_migrations`).Scan(&head); err != nil || head != 108 {
+	if err = pool.QueryRow(ctx, `SELECT max(version) FROM conveyor_schema_migrations`).Scan(&head); err != nil || head != embeddedMigrationHead(t) {
 		t.Fatalf("migration head=%d err=%v", head, err)
 	}
 	for label, want := range map[string]map[core.TaskContextProposalState]int{
