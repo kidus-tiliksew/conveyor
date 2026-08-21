@@ -10,17 +10,20 @@ Every enabled worker also requires the client-local execution setup used by
 worker:
 
 ```sh
-conveyor config init-execution --config /absolute/path/to/conveyor.yaml
-conveyor --workspace demo worker run --config /absolute/path/to/conveyor.yaml
+conveyor config init-execution
+conveyor --workspace demo worker run
 ```
 
-`CONVEYOR_CONFIG` selects the same path non-interactively. Worker startup loads
-and validates the complete file before enrollment, heartbeat, work listing, or
-claiming; a missing or invalid file exits with the exact path and the
-`config init-execution` remediation command. Harness probes and child launches
-come from this local file. Execution fields still returned by an older server
-are logged and ignored during the transition, while assignment, hold, claim,
-lease, heartbeat, and recovery remain server-owned.
+The worker uses the same client-side resolution chain as `conveyor run`: an
+explicit `--config` path, `CONVEYOR_CONFIG`, an existing `./conveyor.yaml`, then
+the per-user default under the platform user-config directory. Use an explicit
+absolute path for a deliberately non-default service configuration. Worker
+startup loads and validates the complete selected file before enrollment,
+heartbeat, work listing, or claiming; a missing or invalid file exits with the
+exact path and the `config init-execution` remediation command. Harness probes
+and child launches come from this local file. Execution fields still returned
+by an older server are logged and ignored during the transition, while
+assignment, hold, claim, lease, heartbeat, and recovery remain server-owned.
 
 Install the enrolled worker under the host's user service manager so process
 crashes, login, and control-plane restarts do not require operator
@@ -32,14 +35,16 @@ bin/conveyor --workspace demo worker pair
 bin/conveyor --workspace demo worker run --pairing-token <token> --once
 
 # Install, inspect, and remove the workspace-specific user service.
-bin/conveyor --workspace demo worker install --config /absolute/path/to/conveyor.yaml
+bin/conveyor --workspace demo worker install
 bin/conveyor --workspace demo worker status
 bin/conveyor --workspace demo worker uninstall
 ```
 
 `install` requires an existing saved enrollment and a valid local execution
-setup, resolves both the configuration path and Conveyor executable to
-absolute paths, and writes one stable workspace-specific definition. It
+setup, resolves both the selected configuration path and Conveyor executable
+to absolute paths, and writes one stable workspace-specific definition. Pass
+`--config /absolute/path/to/conveyor.yaml` when installing from a deliberately
+non-default location. It
 uses a per-user launchd agent on macOS or a systemd user unit on Linux. The
 definition contains only the explicit workspace, control-plane address, and
 local paths needed by the existing `worker run` command, including its explicit

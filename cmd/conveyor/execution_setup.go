@@ -35,14 +35,6 @@ type localExecutionSetup struct {
 	FirstActivityTimeout time.Duration
 }
 
-func defaultLocalExecutionConfigPath() string {
-	path := strings.TrimSpace(os.Getenv("CONVEYOR_CONFIG"))
-	if path == "" {
-		path = "conveyor.yaml"
-	}
-	return path
-}
-
 // loadLocalExecutionSetup is the one local launch-configuration boundary used
 // by both explicit conveyor run and the auto-claiming worker loop. Keeping the
 // actionable remedy here prevents the two entry points from drifting.

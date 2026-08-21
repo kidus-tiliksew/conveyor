@@ -26,46 +26,66 @@ func setupCmd() *cobra.Command {
 	create := &cobra.Command{
 		Use: "create <name>", Short: "Interactively create a named local execution setup", Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			path, err := resolveLocalExecutionConfigPath(cmd, configPath)
+			if err != nil {
+				return err
+			}
 			resolved, err := resolveClientConfig()
 			if err != nil {
 				return err
 			}
-			return runNamedExecutionSetupWizard(cmd.Context(), cmd.InOrStdin(), cmd.OutOrStdout(), configPath, resolved.Workspace.Value, args[0], false)
+			return runNamedExecutionSetupWizard(cmd.Context(), cmd.InOrStdin(), cmd.OutOrStdout(), path.Path, resolved.Workspace.Value, args[0], false)
 		},
 	}
 	edit := &cobra.Command{
 		Use: "edit <name>", Short: "Interactively edit a named local execution setup", Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			path, err := resolveLocalExecutionConfigPath(cmd, configPath)
+			if err != nil {
+				return err
+			}
 			resolved, err := resolveClientConfig()
 			if err != nil {
 				return err
 			}
-			return runNamedExecutionSetupWizard(cmd.Context(), cmd.InOrStdin(), cmd.OutOrStdout(), configPath, resolved.Workspace.Value, args[0], true)
+			return runNamedExecutionSetupWizard(cmd.Context(), cmd.InOrStdin(), cmd.OutOrStdout(), path.Path, resolved.Workspace.Value, args[0], true)
 		},
 	}
 	list := &cobra.Command{
 		Use: "list", Short: "List every named local execution setup", Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return printNamedExecutionSetups(cmd.OutOrStdout(), configPath)
+			path, err := resolveLocalExecutionConfigPath(cmd, configPath)
+			if err != nil {
+				return err
+			}
+			return printNamedExecutionSetups(cmd.OutOrStdout(), path.Path)
 		},
 	}
 	remove := &cobra.Command{
 		Use: "delete <name>", Short: "Delete a non-default local execution setup", Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := deleteNamedExecutionSetup(configPath, args[0]); err != nil {
+			path, err := resolveLocalExecutionConfigPath(cmd, configPath)
+			if err != nil {
 				return err
 			}
-			_, err := fmt.Fprintf(cmd.OutOrStdout(), "Deleted local execution setup %s\n", strings.TrimSpace(args[0]))
+			if err := deleteNamedExecutionSetup(path.Path, args[0]); err != nil {
+				return err
+			}
+			_, err = fmt.Fprintf(cmd.OutOrStdout(), "Deleted local execution setup %s\n", strings.TrimSpace(args[0]))
 			return err
 		},
 	}
 	makeDefault := &cobra.Command{
 		Use: "default <name>", Short: "Designate the default local execution setup", Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := setDefaultExecutionSetup(configPath, args[0]); err != nil {
+			path, err := resolveLocalExecutionConfigPath(cmd, configPath)
+			if err != nil {
 				return err
 			}
-			_, err := fmt.Fprintf(cmd.OutOrStdout(), "Default local execution setup is now %s\n", strings.TrimSpace(args[0]))
+			if err := setDefaultExecutionSetup(path.Path, args[0]); err != nil {
+				return err
+			}
+			_, err = fmt.Fprintf(cmd.OutOrStdout(), "Default local execution setup is now %s\n", strings.TrimSpace(args[0]))
 			return err
 		},
 	}
@@ -79,14 +99,18 @@ func setupSeatCmd(configPath *string) *cobra.Command {
 	add := &cobra.Command{
 		Use: "add <setup>", Short: "Append a review seat at lowest priority", Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			path, err := resolveLocalExecutionConfigPath(cmd, *configPath)
+			if err != nil {
+				return err
+			}
 			seat := config.ReviewSeat{Harness: strings.TrimSpace(harness), Model: strings.TrimSpace(model), Effort: strings.TrimSpace(effort)}
 			if seat.Harness == "" || seat.Model == "" || seat.Effort == "" {
 				return errors.New("--harness, --model, and --effort are required")
 			}
-			if err := appendNamedReviewSeat(cmd.Context(), *configPath, args[0], seat); err != nil {
+			if err := appendNamedReviewSeat(cmd.Context(), path.Path, args[0], seat); err != nil {
 				return err
 			}
-			_, err := fmt.Fprintf(cmd.OutOrStdout(), "Appended review seat to setup %s\n", strings.TrimSpace(args[0]))
+			_, err = fmt.Fprintf(cmd.OutOrStdout(), "Appended review seat to setup %s\n", strings.TrimSpace(args[0]))
 			return err
 		},
 	}
@@ -96,11 +120,15 @@ func setupSeatCmd(configPath *string) *cobra.Command {
 	remove := &cobra.Command{
 		Use: "remove <setup> <position>", Short: "Remove a review seat by one-based position", Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			path, err := resolveLocalExecutionConfigPath(cmd, *configPath)
+			if err != nil {
+				return err
+			}
 			position, err := positivePosition(args[1])
 			if err != nil {
 				return err
 			}
-			return mutateNamedReviewSeats(*configPath, args[0], func(seats []config.ReviewSeat) ([]config.ReviewSeat, error) {
+			return mutateNamedReviewSeats(path.Path, args[0], func(seats []config.ReviewSeat) ([]config.ReviewSeat, error) {
 				if len(seats) == 1 {
 					return nil, errors.New("cannot remove the last review seat; every setup requires at least one")
 				}
@@ -114,6 +142,10 @@ func setupSeatCmd(configPath *string) *cobra.Command {
 	move := &cobra.Command{
 		Use: "move <setup> <from> <to>", Short: "Move a review seat to a new one-based priority position", Args: cobra.ExactArgs(3),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			path, err := resolveLocalExecutionConfigPath(cmd, *configPath)
+			if err != nil {
+				return err
+			}
 			from, err := positivePosition(args[1])
 			if err != nil {
 				return err
@@ -122,7 +154,7 @@ func setupSeatCmd(configPath *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return mutateNamedReviewSeats(*configPath, args[0], func(seats []config.ReviewSeat) ([]config.ReviewSeat, error) {
+			return mutateNamedReviewSeats(path.Path, args[0], func(seats []config.ReviewSeat) ([]config.ReviewSeat, error) {
 				if from > len(seats) || to > len(seats) {
 					return nil, fmt.Errorf("review seat positions must be between 1 and %d", len(seats))
 				}
