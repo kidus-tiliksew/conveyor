@@ -258,7 +258,13 @@ func TestConfigSetWorkspaceAndListSources(t *testing.T) {
 	if err := command.Execute(); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(output.String(), "workspace\tengineering\tstored file") || strings.Contains(output.String(), "token") {
+	executionPath, err := localAuthConfigPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	executionPath = filepath.Join(filepath.Dir(executionPath), localExecutionConfigName)
+	if !strings.Contains(output.String(), "workspace\tengineering\tstored file") ||
+		!strings.Contains(output.String(), "execution_config\t"+executionPath+"\tuser default") || strings.Contains(output.String(), "token") {
 		t.Fatalf("config list = %q", output.String())
 	}
 }

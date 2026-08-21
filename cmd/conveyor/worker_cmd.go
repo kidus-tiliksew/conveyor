@@ -63,9 +63,13 @@ func workerCmd() *cobra.Command {
 	configPath := defaultLocalExecutionConfigPath()
 	var once bool
 	run := &cobra.Command{Use: "run", Short: "Heartbeat, claim queued work, and supervise configured harnesses", RunE: func(cmd *cobra.Command, _ []string) error {
+		resolvedConfig, err := resolveLocalExecutionConfigPath(cmd, configPath)
+		if err != nil {
+			return err
+		}
 		ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
-		return runWorkerWithConfig(ctx, newClient(), pairing, name, once, configPath)
+		return runWorkerWithConfig(ctx, newClient(), pairing, name, once, resolvedConfig.Path)
 	}}
 	run.Flags().StringVar(&pairing, "pairing-token", "", "single-use token for first enrollment")
 	run.Flags().StringVar(&name, "name", defaultWorkerName(), "worker display name")

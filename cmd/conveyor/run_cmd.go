@@ -31,11 +31,15 @@ func runCmd() *cobra.Command {
 		Short: "Explicitly claim and execute one task on this machine",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			resolvedConfig, err := resolveLocalExecutionConfigPath(cmd, configPath)
+			if err != nil {
+				return err
+			}
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 			input := cmd.InOrStdin()
 			output := cmd.OutOrStdout()
-			return runTaskWithPresentationAndSetup(ctx, newClient(), args[0], configPath, setupName, input, output, auto, inputIsTerminal(input), outputIsTerminal(output), raw)
+			return runTaskWithPresentationAndSetup(ctx, newClient(), args[0], resolvedConfig.Path, setupName, input, output, auto, inputIsTerminal(input), outputIsTerminal(output), raw)
 		},
 	}
 	cmd.Flags().StringVar(&configPath, "config", configPath, "local execution configuration")
