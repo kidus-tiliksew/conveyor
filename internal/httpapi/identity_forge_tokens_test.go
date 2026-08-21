@@ -81,6 +81,9 @@ func TestForgeTokenSelfServiceLifecycleAndCredentialClasses(t *testing.T) {
 	if put.Code != http.StatusOK || strings.Contains(put.Body.String(), "valid-forge-secret") || !strings.Contains(put.Body.String(), `"forge_login":"octocat"`) {
 		t.Fatalf("put status=%d body=%s", put.Code, put.Body.String())
 	}
+	if got := call(http.MethodPut, "human", `{"token":"replacement-invalid-secret"}`); got.Code != http.StatusUnprocessableEntity || fixture.storeCalls != 1 || fixture.token != "valid-forge-secret" || strings.Contains(got.Body.String(), "replacement-invalid-secret") {
+		t.Fatalf("invalid replacement status=%d stores=%d retained=%q body=%q", got.Code, fixture.storeCalls, fixture.token, got.Body.String())
+	}
 	get := call(http.MethodGet, "human", "")
 	if get.Code != http.StatusOK || strings.Contains(get.Body.String(), "valid-forge-secret") || !strings.Contains(get.Body.String(), `"configured":true`) {
 		t.Fatalf("get status=%d body=%s", get.Code, get.Body.String())

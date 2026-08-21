@@ -3,6 +3,7 @@ package postgres
 import (
 	"bytes"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
@@ -50,6 +51,27 @@ func TestForgeTokenEncryptedLifecycleIntegration(t *testing.T) {
 	}
 	if values, err := st.ListForgeTokensForRedaction(ctx); err != nil || len(values) != 1 || values[0] != second {
 		t.Fatalf("redaction values=%v err=%v", values, err)
+	}
+	var auditPayloads []string
+	rowsQuery, err := st.pool.Query(ctx, `SELECT payload_json::text FROM deployment_events WHERE kind IN ('identity.forge_token_stored','identity.forge_token_replaced') ORDER BY id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rowsQuery.Next() {
+		var payload string
+		if err = rowsQuery.Scan(&payload); err != nil {
+			rowsQuery.Close()
+			t.Fatal(err)
+		}
+		auditPayloads = append(auditPayloads, payload)
+	}
+	if err = rowsQuery.Err(); err != nil {
+		rowsQuery.Close()
+		t.Fatal(err)
+	}
+	rowsQuery.Close()
+	if len(auditPayloads) != 2 || strings.Contains(strings.Join(auditPayloads, "\n"), first) || strings.Contains(strings.Join(auditPayloads, "\n"), second) {
+		t.Fatalf("secret-bearing forge-token audit payloads: %v", auditPayloads)
 	}
 	metadata, err := st.GetForgeTokenStatus(ctx, owner.ID)
 	if err != nil || !metadata.Configured || metadata.ForgeLogin != "second-login" {

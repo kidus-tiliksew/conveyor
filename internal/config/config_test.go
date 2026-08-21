@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -15,10 +16,22 @@ import (
 )
 
 func TestForgeTokenEncryptionKeyFromEnvironment(t *testing.T) {
-	t.Setenv(ForgeTokenEncryptionKeyEnv, base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	encoded := base64.StdEncoding.EncodeToString(make([]byte, 32))
+	t.Setenv(ForgeTokenEncryptionKeyEnv, encoded)
 	key, err := ForgeTokenEncryptionKeyFromEnvironment()
 	if err != nil || len(key) != 32 {
 		t.Fatalf("key length=%d err=%v", len(key), err)
+	}
+	jsonConfig, err := json.Marshal(Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	yamlConfig, err := yaml.Marshal(Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(jsonConfig, []byte(encoded)) || bytes.Contains(yamlConfig, []byte(encoded)) || bytes.Contains(jsonConfig, []byte(ForgeTokenEncryptionKeyEnv)) || bytes.Contains(yamlConfig, []byte(ForgeTokenEncryptionKeyEnv)) {
+		t.Fatal("process-only forge token key entered persisted configuration")
 	}
 	t.Setenv(ForgeTokenEncryptionKeyEnv, "not-base64")
 	if _, err = ForgeTokenEncryptionKeyFromEnvironment(); err == nil {
