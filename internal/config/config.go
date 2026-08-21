@@ -564,7 +564,8 @@ type UpdateReceipt struct {
 }
 
 // Config combines immutable deployment settings with the current workspace
-// snapshot. CacheDir is retained for the bare-clone cache and checkout flow.
+// snapshot. CacheDir and WorktreeRoot are client-local filesystem settings;
+// neither crosses the workspace API boundary.
 type Config struct {
 	Workspace                 string                       `yaml:"workspace"`
 	PackDir                   string                       `yaml:"pack_dir,omitempty"`
@@ -573,6 +574,7 @@ type Config struct {
 	WorkOrderQueueTimeout     time.Duration                `yaml:"-"`
 	WorkOrderQueueTimeoutText string                       `yaml:"work_order_queue_timeout"`
 	CacheDir                  string                       `yaml:"cache_dir"`
+	WorktreeRoot              string                       `yaml:"worktree_root,omitempty" json:"-"`
 	Database                  Database                     `yaml:"database"`
 	ExecutionSettings         *ContextualExecutionSettings `yaml:"execution_settings,omitempty"`
 	Routing                   Routing                      `yaml:"routing"`
@@ -1088,6 +1090,11 @@ func normalizeLegacy(c *Config, path string) (*Config, error) {
 		return nil, err
 	}
 	c.CacheDir = expandDefault(c.CacheDir, home, filepath.Join(home, ".conveyor", "cache"))
+	c.WorktreeRoot = expandDefault(c.WorktreeRoot, home, DefaultWorktreeRoot(home))
+	if !filepath.IsAbs(c.WorktreeRoot) {
+		return nil, fmt.Errorf("worktree_root must be absolute after home expansion")
+	}
+	c.WorktreeRoot = filepath.Clean(c.WorktreeRoot)
 	if c.Database.URL == "" {
 		c.Database.URL = os.Getenv("CONVEYOR_DATABASE_URL")
 	}
@@ -1865,6 +1872,13 @@ func expandDefault(value, home, fallback string) string {
 		return filepath.Join(home, strings.TrimPrefix(strings.TrimPrefix(value, "~"), "/"))
 	}
 	return value
+}
+
+// DefaultWorktreeRoot returns the machine-local container used for new
+// implicit task worktrees. Existing registered worktrees remain discoverable
+// through Git regardless of their location (design-git-delivery).
+func DefaultWorktreeRoot(home string) string {
+	return filepath.Join(home, ".conveyor", "worktrees")
 }
 
 func safePathSegment(value string) bool {

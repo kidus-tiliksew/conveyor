@@ -100,6 +100,7 @@ func TestCheckoutAcceptsEquivalentConfiguredOriginForms(t *testing.T) {
 
 func TestCheckoutCreatesMissingBranchFromFreshBaseWithoutTouchingPrimary(t *testing.T) {
 	fixture := newGitFixture(t)
+	t.Setenv("HOME", fixture.tmp)
 	primaryHead := mustGitOutput(t, fixture.primary, "rev-parse", "HEAD")
 	fixture.advanceMain(t, "fresh-base.txt", "fresh base\n")
 
@@ -107,11 +108,7 @@ func TestCheckoutCreatesMissingBranchFromFreshBaseWithoutTouchingPrimary(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	canonicalPrimary, err := filepath.EvalSymlinks(fixture.primary)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := filepath.Join(filepath.Dir(canonicalPrimary), "conveyor-worktrees", "conveyor-task-missing")
+	want := filepath.Join(fixture.tmp, ".conveyor", "worktrees", "conveyor-task-missing")
 	if got != want {
 		t.Fatalf("destination = %q, want %q", got, want)
 	}
@@ -206,7 +203,7 @@ func TestCheckoutReusesOriginalRegisteredWorktreeAcrossRounds(t *testing.T) {
 func TestCheckoutReusesRegisteredWorktreeAtFormerSiblingLocation(t *testing.T) {
 	fixture := newGitFixture(t)
 	branch := "conveyor/task-legacy-location"
-	legacyPath := filepath.Join(fixture.tmp, "conveyor-task-legacy-location")
+	legacyPath := filepath.Join(fixture.tmp, "conveyor-worktrees", "conveyor-task-legacy-location")
 	mustGit(t, fixture.primary, "worktree", "add", "-b", branch, legacyPath, "origin/main")
 
 	got, err := checkoutTask(context.Background(), branch, "main", "conveyor", fixture.origin, "legacy-location", "")
@@ -216,8 +213,15 @@ func TestCheckoutReusesRegisteredWorktreeAtFormerSiblingLocation(t *testing.T) {
 	if got != legacyPath {
 		t.Fatalf("registered legacy worktree = %q, want %q", got, legacyPath)
 	}
-	if _, err := os.Stat(filepath.Join(fixture.tmp, "conveyor-worktrees", "conveyor-task-legacy-location")); !os.IsNotExist(err) {
-		t.Fatalf("checkout relocated registered worktree: %v", err)
+	if _, err := os.Stat(filepath.Join(fixture.tmp, ".conveyor", "worktrees", "conveyor-task-legacy-location")); !os.IsNotExist(err) {
+		t.Fatalf("checkout created a replacement worktree under the new root: %v", err)
+	}
+	cleanup, err := removeTaskWorktree(context.Background(), branch, core.TaskMerged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cleanup.Worktree != "removed" || cleanup.Path != legacyPath {
+		t.Fatalf("legacy cleanup result = %+v", cleanup)
 	}
 }
 
@@ -344,17 +348,18 @@ func TestAttemptCheckpointCleanNoopAndUnattributableDirtyStateStillBlocks(t *tes
 
 func TestCheckoutSupportsConcurrentTaskWorktreesAndPathOverride(t *testing.T) {
 	fixture := newGitFixture(t)
+	root := filepath.Join(fixture.tmp, "configured-worktrees")
 	primaryHead := mustGitOutput(t, fixture.primary, "rev-parse", "HEAD")
-	first, err := checkoutTask(context.Background(), "conveyor/task-one", "main", "conveyor", fixture.origin, "one", "")
+	first, err := checkoutTaskAtRoot(context.Background(), "conveyor/task-one", "main", "conveyor", fixture.origin, "one", "", root)
 	if err != nil {
 		t.Fatal(err)
 	}
 	override := filepath.Join(fixture.tmp, "custom-two")
-	second, err := checkoutTask(context.Background(), "conveyor/task-two", "main", "conveyor", fixture.origin, "two", override)
+	second, err := checkoutTaskAtRoot(context.Background(), "conveyor/task-two", "main", "conveyor", fixture.origin, "two", override, "relative-root-is-ignored")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first == second || second != override {
+	if first != filepath.Join(root, "conveyor-task-one") || second != override {
 		t.Fatalf("worktree paths = %q and %q", first, second)
 	}
 	assertBranch(t, first, "conveyor/task-one")
@@ -405,7 +410,7 @@ func TestCheckoutRejectsImplicitDestinationResolvedOutsideContainer(t *testing.T
 		t.Fatal(err)
 	}
 
-	_, err := checkoutTask(context.Background(), "conveyor/task-symlink", "main", "conveyor", fixture.origin, "symlink", "")
+	_, err := checkoutTaskAtRoot(context.Background(), "conveyor/task-symlink", "main", "conveyor", fixture.origin, "symlink", "", container)
 	if err == nil || !strings.Contains(err.Error(), "resolved path is not inside canonical container") {
 		t.Fatalf("checkout error = %v", err)
 	}
@@ -420,16 +425,51 @@ func TestCheckoutRejectsSymlinkedImplicitContainer(t *testing.T) {
 	if err := os.Mkdir(outside, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(outside, filepath.Join(fixture.tmp, "conveyor-worktrees")); err != nil {
+	container := filepath.Join(fixture.tmp, "configured-worktrees")
+	if err := os.Symlink(outside, container); err != nil {
 		t.Fatal(err)
 	}
 
-	_, err := checkoutTask(context.Background(), "conveyor/task-container-symlink", "main", "conveyor", fixture.origin, "container-symlink", "")
-	if err == nil || !strings.Contains(err.Error(), "container") || !strings.Contains(err.Error(), "canonical path") {
+	_, err := checkoutTaskAtRoot(context.Background(), "conveyor/task-container-symlink", "main", "conveyor", fixture.origin, "container-symlink", "", container)
+	if err == nil || !strings.Contains(err.Error(), "worktree root") || !strings.Contains(err.Error(), "canonical path") {
 		t.Fatalf("checkout error = %v", err)
 	}
 	if gitRefExists(context.Background(), fixture.primary, "refs/heads/conveyor/task-container-symlink") {
 		t.Fatal("task branch created after symlinked container rejection")
+	}
+}
+
+func TestCheckoutRejectsSymlinkedDefaultWorktreeRoot(t *testing.T) {
+	fixture := newGitFixture(t)
+	outside := filepath.Join(fixture.tmp, "outside-default-root")
+	if err := os.Mkdir(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	conveyorHome := filepath.Join(fixture.tmp, ".conveyor")
+	if err := os.Mkdir(conveyorHome, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(conveyorHome, "worktrees")); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := checkoutTask(context.Background(), "conveyor/task-default-root-symlink", "main", "conveyor", fixture.origin, "default-root-symlink", "")
+	if err == nil || !strings.Contains(err.Error(), "worktree root") || !strings.Contains(err.Error(), "canonical path") {
+		t.Fatalf("checkout error = %v", err)
+	}
+	if gitRefExists(context.Background(), fixture.primary, "refs/heads/conveyor/task-default-root-symlink") {
+		t.Fatal("task branch created after symlinked default root rejection")
+	}
+}
+
+func TestCheckoutRejectsRelativeConfiguredWorktreeRoot(t *testing.T) {
+	fixture := newGitFixture(t)
+	_, err := checkoutTaskAtRoot(context.Background(), "conveyor/task-relative-root", "main", "conveyor", fixture.origin, "relative-root", "", "relative/worktrees")
+	if err == nil || !strings.Contains(err.Error(), "worktree root") || !strings.Contains(err.Error(), "not absolute") {
+		t.Fatalf("checkout error = %v", err)
+	}
+	if gitRefExists(context.Background(), fixture.primary, "refs/heads/conveyor/task-relative-root") {
+		t.Fatal("task branch created after relative worktree root rejection")
 	}
 }
 
@@ -685,6 +725,7 @@ func newGitFixture(t *testing.T) gitFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv("HOME", tmp)
 	origin := filepath.Join(tmp, "origin.git")
 	seed := filepath.Join(tmp, "seed")
 	primary := filepath.Join(tmp, "primary")
