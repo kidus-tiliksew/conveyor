@@ -329,6 +329,14 @@ type User struct {
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
+type UserForgeToken struct {
+	UserID      string             `json:"user_id"`
+	CipherNonce []byte             `json:"cipher_nonce"`
+	Ciphertext  []byte             `json:"ciphertext"`
+	ForgeLogin  string             `json:"forge_login"`
+	StoredAt    pgtype.Timestamptz `json:"stored_at"`
+}
+
 type Org struct {
 	ID        string             `json:"id"`
 	Name      string             `json:"name"`

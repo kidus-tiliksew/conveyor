@@ -35,9 +35,10 @@ import (
 )
 
 type Store struct {
-	pool    *pgxpool.Pool
-	queries *db.Queries
-	river   *river.Client[pgx.Tx]
+	pool          *pgxpool.Pool
+	queries       *db.Queries
+	river         *river.Client[pgx.Tx]
+	forgeTokenKey []byte
 }
 
 type sideEffectConnKey struct{}
@@ -92,6 +93,13 @@ func (s *Store) Close() { s.pool.Close() }
 
 func (s *Store) Pool() *pgxpool.Pool { return s.pool }
 func (s *Store) IsDurable() bool     { return true }
+
+// ConfigureForgeTokenEncryptionKey installs a process-only AES-256 key. The
+// copy prevents later caller mutation and the value never enters persisted
+// configuration.
+func (s *Store) ConfigureForgeTokenEncryptionKey(key []byte) {
+	s.forgeTokenKey = append(s.forgeTokenKey[:0], key...)
+}
 
 // WithTaskSideEffectLock holds a workspace-scoped Postgres advisory lock across one
 // external side effect. This keeps duplicate dashboard requests and multiple

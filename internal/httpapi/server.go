@@ -81,6 +81,8 @@ type Server struct {
 	IdentityProvisioner   store.IdentityProvisioner
 	CallerIdentities      store.CallerIdentityStore
 	PersonalTokens        store.PersonalAccessTokenStore
+	ForgeTokens           store.ForgeTokenStore
+	ValidateForgeToken    func(context.Context, string) (string, error)
 	InvitationSessions    store.InvitationSessionStore
 	InvitationDelivery    config.InvitationDelivery
 	EnsureWorkspaceQueues func(string) error
@@ -111,6 +113,9 @@ func NewServer(s store.Store) *Server {
 	}
 	if tokens, ok := s.(store.PersonalAccessTokenStore); ok {
 		server.PersonalTokens = tokens
+	}
+	if tokens, ok := s.(store.ForgeTokenStore); ok {
+		server.ForgeTokens = tokens
 	}
 	if sessions, ok := s.(store.InvitationSessionStore); ok {
 		server.InvitationSessions = sessions
@@ -152,6 +157,9 @@ func (s *Server) Handler() http.Handler {
 		r.With(s.requireSelfServiceCredential).Get("/tokens", s.listOwnPersonalAccessTokens)
 		r.With(s.requireSelfServiceCredential).Post("/tokens", s.issueOwnPersonalAccessToken)
 		r.With(s.requireSelfServiceCredential).Delete("/tokens/{token_id}", s.revokeOwnPersonalAccessToken)
+		r.With(s.requireSelfServiceCredential).Get("/forge-token", s.getOwnForgeToken)
+		r.With(s.requireSelfServiceCredential).Put("/forge-token", s.putOwnForgeToken)
+		r.With(s.requireSelfServiceCredential).Delete("/forge-token", s.deleteOwnForgeToken)
 		r.With(s.requireMutationCapability(core.CapabilityManageWorkspace)).Post("/workspaces", s.createWorkspace)
 		r.With(s.requireMutationCapability(core.CapabilityManageWorkspace)).Get("/harness-templates", s.getHarnessTemplates)
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityViewWorkspace)).Get("/workspaces/{workspace_id}", s.getWorkspaceRecord)

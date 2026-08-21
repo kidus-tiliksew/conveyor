@@ -8,6 +8,7 @@ package config
 import (
 	"bytes"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -73,9 +74,25 @@ const (
 	PublicURLEnv                = "CONVEYOR_PUBLIC_URL"
 	LLMAPIKeyEnv                = "CONVEYOR_LLM_API_KEY"
 	LLMBaseURLEnv               = "CONVEYOR_LLM_BASE_URL"
+	ForgeTokenEncryptionKeyEnv  = "CONVEYOR_FORGE_TOKEN_ENCRYPTION_KEY"
 	DeprecatedLLMAPIKeyEnv      = "CONVEYOR_API_KEY"
 	DeprecatedLLMBaseURLEnv     = "CONVEYOR_API_BASE_URL"
 )
+
+// ForgeTokenEncryptionKeyFromEnvironment resolves the process-only key used
+// for recoverable per-user forge credentials. The value is deliberately not a
+// Config field, so it cannot enter deployment or workspace documents.
+func ForgeTokenEncryptionKeyFromEnvironment() ([]byte, error) {
+	value := strings.TrimSpace(os.Getenv(ForgeTokenEncryptionKeyEnv))
+	if value == "" {
+		return nil, fmt.Errorf("%s is required", ForgeTokenEncryptionKeyEnv)
+	}
+	key, err := base64.StdEncoding.DecodeString(value)
+	if err != nil || len(key) != 32 {
+		return nil, fmt.Errorf("%s must be standard base64 encoding exactly 32 bytes", ForgeTokenEncryptionKeyEnv)
+	}
+	return key, nil
+}
 
 // LLMEnvironment is process-only provider configuration for in-process
 // control-plane stages. It never enters deployment or workspace documents.

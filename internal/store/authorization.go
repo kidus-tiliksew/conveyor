@@ -48,9 +48,24 @@ type InvitationSessionStore interface {
 }
 
 var (
-	ErrInvalidCurrentPassword = errors.New("invalid current password")
-	ErrInvalidPassword        = errors.New("password must contain between 12 and 1024 bytes")
+	ErrInvalidCurrentPassword  = errors.New("invalid current password")
+	ErrInvalidPassword         = errors.New("password must contain between 12 and 1024 bytes")
+	ErrForgeTokenKey           = errors.New("forge token encryption key unavailable")
+	ErrForgeTokenDecrypt       = errors.New("forge token decryption failed")
+	ErrForgeTokenOwnerInactive = errors.New("forge token owner is inactive")
 )
+
+// ForgeTokenStore is the sole recoverable-credential boundary. Management
+// methods take a credential-derived owner; presence is metadata-only for later
+// claim/preflight consumers; use and redaction lookups are the only plaintext
+// exits and must fail closed for inactive owners or cipher failures.
+type ForgeTokenStore interface {
+	StoreForgeToken(context.Context, string, string, string) (core.ForgeTokenStatus, error)
+	DeleteForgeToken(context.Context, string) error
+	GetForgeTokenStatus(context.Context, string) (core.ForgeTokenStatus, error)
+	GetForgeTokenForUse(context.Context, string) (core.ForgeTokenCredential, error)
+	ListForgeTokensForRedaction(context.Context) ([]string, error)
+}
 
 // PersonalAccessTokenStore is the self-service human-credential boundary. Every
 // method takes the owning user resolved from the presented credential, so a

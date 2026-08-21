@@ -22,6 +22,39 @@ RETURNING id, email, display_name, status, created_at;
 -- name: GetIdentityUser :one
 SELECT id, email, display_name, status, created_at FROM users WHERE id = $1;
 
+-- name: UpsertUserForgeToken :one
+INSERT INTO user_forge_tokens (user_id, cipher_nonce, ciphertext, forge_login, stored_at)
+VALUES ($1, $2, $3, $4, now())
+ON CONFLICT (user_id) DO UPDATE SET
+    cipher_nonce = EXCLUDED.cipher_nonce,
+    ciphertext = EXCLUDED.ciphertext,
+    forge_login = EXCLUDED.forge_login,
+    stored_at = EXCLUDED.stored_at
+RETURNING user_id, cipher_nonce, ciphertext, forge_login, stored_at;
+
+-- name: DeleteUserForgeToken :execrows
+DELETE FROM user_forge_tokens WHERE user_id = $1;
+
+-- name: GetUserForgeTokenStatus :one
+SELECT u.status,
+       (f.user_id IS NOT NULL AND u.status = 'active') AS configured,
+       CASE WHEN u.status = 'active' THEN f.forge_login END AS forge_login,
+       CASE WHEN u.status = 'active' THEN f.stored_at END AS stored_at
+FROM users u
+LEFT JOIN user_forge_tokens f ON f.user_id = u.id
+WHERE u.id = $1;
+
+-- name: GetUserForgeTokenForUse :one
+SELECT f.user_id, f.cipher_nonce, f.ciphertext, f.forge_login, f.stored_at
+FROM user_forge_tokens f
+JOIN users u ON u.id = f.user_id AND u.status = 'active'
+WHERE f.user_id = $1;
+
+-- name: ListUserForgeTokensForRedaction :many
+SELECT user_id, cipher_nonce, ciphertext, forge_login, stored_at
+FROM user_forge_tokens
+ORDER BY user_id;
+
 -- name: InsertUserToken :one
 INSERT INTO user_tokens (id, user_id, label, token_hash, kind, scope, deployment_credential)
 VALUES ($1, $2, $3, $4, $5, $6, false)

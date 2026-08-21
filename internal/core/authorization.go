@@ -166,3 +166,19 @@ type IssuedPersonalAccessToken struct {
 	PersonalAccessToken
 	Value string `json:"value"`
 }
+
+// ForgeTokenStatus is the only forge-credential representation exposed to
+// callers. Ciphertext, nonce, and plaintext never enter this projection.
+type ForgeTokenStatus struct {
+	Configured bool      `json:"configured"`
+	ForgeLogin string    `json:"forge_login,omitempty"`
+	StoredAt   time.Time `json:"stored_at,omitempty"`
+}
+
+// ForgeTokenCredential is restricted to governed outbound-use and redaction
+// boundaries. Token is intentionally omitted from every JSON representation.
+type ForgeTokenCredential struct {
+	ForgeTokenStatus
+	UserID string `json:"-"`
+	Token  string `json:"-"`
+}

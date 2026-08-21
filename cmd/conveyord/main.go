@@ -27,6 +27,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/releaseinfo"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	postgresstore "github.com/kidus-tiliksew/conveyor/internal/store/postgres"
+	githubtrigger "github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
 	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 	"github.com/kidus-tiliksew/conveyor/internal/worktreemaint"
@@ -87,6 +88,11 @@ func main() {
 		if err != nil {
 			log.Fatalf("open Postgres store: %v", err)
 		}
+		if forgeKey, keyErr := config.ForgeTokenEncryptionKeyFromEnvironment(); keyErr != nil {
+			log.Printf("forge token encryption unavailable until configured: %v", keyErr)
+		} else {
+			pgStore.ConfigureForgeTokenEncryptionKey(forgeKey)
+		}
 		if _, bootstrapErr := pgStore.BootstrapIdentity(ctx, config.FirstOperatorIdentityFromEnvironment(), apiToken); bootstrapErr != nil {
 			pgStore.Close()
 			log.Fatalf("bootstrap deployment identity: %v", bootstrapErr)
@@ -119,6 +125,9 @@ func main() {
 	}
 	defer closeStore()
 	agent := &inprocess.OpenAI{APIKey: llmEnvironment.APIKey, BaseURL: llmEnvironment.BaseURL}
+	if secrets, ok := st.(store.ForgeTokenStore); ok {
+		agent.RedactionSecrets = secrets
+	}
 	d := dispatch.New(st, cfg, agent)
 	d.Pack = packBundle
 	var stopRiver func()
@@ -172,12 +181,16 @@ func main() {
 	srv.OnMerge = d.MergeApprovedTask
 	srv.OnMergeReadiness = d.ReadMergeReadiness
 	srv.OnConflictFix = d.DispatchConflictFix
+	srv.ValidateForgeToken = githubtrigger.ValidateTokenIdentity
 	workOrders := &workorder.Service{Store: st, Dispatcher: d, Pack: packBundle, ConfigProvider: func(ctx context.Context) (*config.Config, error) {
 		if pgStore != nil {
 			return pgStore.RuntimeConfig(ctx, deployment)
 		}
 		return cfg, nil
 	}}
+	if secrets, ok := st.(store.ForgeTokenStore); ok {
+		workOrders.RedactionSecrets = secrets
+	}
 	srv.WorkOrders = workOrders
 	srv.Planning = &planning.Service{
 		Store: st, Agent: agent, ConfigProvider: workOrders.ConfigProvider,
@@ -250,12 +263,18 @@ func main() {
 				return current.Workspace, current.Monitor.Enabled, scoped, nil
 			},
 		}
+		if secrets, ok := st.(store.ForgeTokenStore); ok {
+			srv.Monitor.RedactionSecrets = secrets
+		}
 		d.ObserveDesignMerge = func(ctx context.Context, observation monitor.Observation, taskID string) error {
 			_, err := srv.Monitor.ProcessDesignMerge(ctx, observation, taskID)
 			return err
 		}
 	}
 	srv.Workers = &workerservice.Service{Store: st, WorkOrders: workOrders, ConfigProvider: workOrders.ConfigProvider, RetryDelay: *workerRetryDelay, RetryMaximum: *workerRetryMaximum}
+	if secrets, ok := st.(store.ForgeTokenStore); ok {
+		srv.Workers.RedactionSecrets = secrets
+	}
 	if pgStore != nil {
 		srv.Workspaces = pgStore
 		srv.EnsureWorkspaceQueues = addWorkspaceQueue

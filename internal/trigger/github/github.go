@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"os"
 	"os/exec"
 	"regexp"
 	"sort"
@@ -47,7 +48,30 @@ var legacyPullRequestLifecyclePattern = regexp.MustCompile(`^<!-- conveyor:task-
 var (
 	ErrPullRequestNotFound        = errors.New("pull request not found")
 	ErrIssueReconciliationPending = errors.New("GitHub issue reconciliation pending")
+	ErrAuthenticatedIdentityRead  = errors.New("authenticated forge identity read failed")
 )
+
+// ValidateTokenIdentity validates a candidate without ever placing it in argv.
+// Child detail is intentionally collapsed to a stable secret-free error.
+func ValidateTokenIdentity(ctx context.Context, token string) (string, error) {
+	if strings.TrimSpace(token) == "" {
+		return "", ErrAuthenticatedIdentityRead
+	}
+	cmd := exec.CommandContext(ctx, "gh", "api", "user", "--jq", ".login")
+	environment := make([]string, 0, len(os.Environ())+1)
+	for _, value := range os.Environ() {
+		if !strings.HasPrefix(value, "GH_TOKEN=") {
+			environment = append(environment, value)
+		}
+	}
+	cmd.Env = append(environment, "GH_TOKEN="+token)
+	out, err := cmd.Output()
+	login := strings.TrimSpace(string(out))
+	if err != nil || login == "" {
+		return "", ErrAuthenticatedIdentityRead
+	}
+	return login, nil
+}
 
 // ForgeErrorCategory is the stable GitHub failure taxonomy recorded in
 // operator evidence (design-git-delivery). It deliberately remains local to

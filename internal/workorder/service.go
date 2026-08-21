@@ -41,6 +41,7 @@ type Service struct {
 	ReviewPRDescription    func(context.Context, string, string) (string, error)
 	SubmissionChangedPaths func(context.Context, *config.Config, core.Task) ([]string, error)
 	Logf                   func(string, ...any)
+	RedactionSecrets       redact.SecretSource
 	consultedMu            sync.Mutex
 	consulted              map[string]struct{}
 }
@@ -1236,7 +1237,10 @@ func (s *Service) UploadTranscript(ctx context.Context, id, session, transcript 
 	if len(transcript) > MaxTranscriptBytes {
 		return core.Artifact{}, fmt.Errorf("transcript exceeds %d bytes", MaxTranscriptBytes)
 	}
-	clean, stats := redact.New(nil).Redact(transcript)
+	clean, stats, err := redact.Text(ctx, s.RedactionSecrets, transcript)
+	if err != nil {
+		return core.Artifact{}, fmt.Errorf("resolve redaction credentials: %w", err)
+	}
 	content := []byte(clean)
 	sum := sha256.Sum256(content)
 	artifactID := fmt.Sprintf("%x", sum)
