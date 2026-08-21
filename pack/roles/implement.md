@@ -41,9 +41,11 @@ Working discipline:
   implementation when the checkpoint is reached. Call `report_progress` with
   a completion-shaped report identifying the checkpoint and the operator act
   still required. For a conflict between the approved plan and currently
-  confirmed corpus authority, first author the needed requirement and complete
-  System Design revision proposals through the task-authored governance
-  proposal tools. Proposals remain pending for operator confirmation and never
+  confirmed corpus authority, first author complete revision proposals through
+  the applicable task-authored governance proposal tools:
+  `propose_requirement_revision` for requirement clauses,
+  `propose_system_design_revision` for System Design, and `propose_decision`
+  for decisions. Proposals remain pending for operator confirmation and never
   authorize departing from the approved plan. Then call `release_work_order`
   with the exact reason `operator checkpoint reached` and a structured
   checkpoint containing:

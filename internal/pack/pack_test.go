@@ -159,12 +159,12 @@ func TestRolePromptsEnforceOperatorAuthorityBoundary(t *testing.T) {
 	for _, required := range []string{
 		"repository checkout, repository Make targets",
 		"Gate approval, repository-drift resolution",
-		"System Design revision or decision",
+		"requirement-clause revision, System Design revision, or decision",
 		"task-authored governance proposal tools",
 		"complete revision proposals first",
 		"pending proposal identifiers",
 		"proposals already pending",
-		"requirement-clause revisions",
+		"For gate approval, repository-drift resolution, and task cancel/hold",
 		"task cancel/hold",
 		"no applicable task-authored proposal surface is available",
 		`"pause and report until the operator has done X,"`,
@@ -190,8 +190,11 @@ func TestRolePromptsEnforceOperatorAuthorityBoundary(t *testing.T) {
 		"release_work_order",
 		core.WorkOrderReleaseReasonOperatorCheckpointReached,
 		"currently confirmed corpus authority",
-		"needed requirement and complete System Design revision proposals",
+		"complete revision proposals",
 		"task-authored governance proposal tools",
+		"propose_requirement_revision",
+		"propose_system_design_revision",
+		"propose_decision",
 		"pending for operator confirmation",
 		"decision_request",
 		"distinct from the progress report",
@@ -232,14 +235,13 @@ func TestRolePromptsEnforceOperatorAuthorityBoundary(t *testing.T) {
 	normalizedReview := strings.Join(strings.Fields(review), " ")
 	for _, required := range []string{
 		"blocking authority-boundary finding",
-		"task-authored System Design or decision revision proposal surface",
+		"task-authored requirement, System Design, or decision revision proposal surface",
 		"accept propose-first checkpoint phrasing",
 		"author complete proposals",
 		"cite their pending identifiers",
 		"bare pause-and-report checkpoint",
 		"neither a proposal step nor a stated reason why proposing is unavailable",
-		"repository-drift resolution",
-		"requirement-clause revisions",
+		"gate approval, repository-drift resolution, task cancel/hold",
 		"task cancel/hold",
 		"without an applicable proposal surface",
 		"agent obligation ends when reached",
@@ -247,6 +249,14 @@ func TestRolePromptsEnforceOperatorAuthorityBoundary(t *testing.T) {
 	} {
 		if !strings.Contains(normalizedReview, required) {
 			t.Errorf("review role is missing %q", required)
+		}
+	}
+	for _, obsolete := range []string{
+		"For gate approval, repository-drift resolution, requirement-clause revisions",
+		"repository-drift resolution, requirement-clause revisions, task cancel/hold",
+	} {
+		if strings.Contains(normalizedSpec, obsolete) || strings.Contains(normalizedReview, obsolete) {
+			t.Errorf("role still classifies requirement revisions as non-proposable: %q", obsolete)
 		}
 	}
 }
@@ -313,7 +323,7 @@ func TestGovernanceContractHeadsPinsAndBudgetsAuthority(t *testing.T) {
 func TestImplementGovernanceContractMakesProposalsFireAndForget(t *testing.T) {
 	t.Parallel()
 	contract := RenderGovernanceContract(core.StageImplement, core.GovernanceSnapshot{})
-	for _, required := range []string{"fire-and-forget", "report the proposal identifier in progress and the implementation handoff", "proceed immediately to `submit_for_review`", "Never wait for, request, or condition progress on operator confirmation"} {
+	for _, required := range []string{"Authority-conflict proposal discipline", "approved authority-conflict checkpoint", "author complete proposals first", "propose_requirement_revision", "propose_system_design_revision", "propose_decision", "pending proposal identifier", "checkpoint-release instructions without waiting", "genuinely unavailable or fails", "explains why no proposal was authored", "Outside an approved authority-conflict checkpoint", "fire-and-forget", "report the proposal identifier in progress and the implementation handoff", "proceed immediately to `submit_for_review`", "Never wait for, request, or condition progress on operator confirmation"} {
 		if !strings.Contains(contract, required) {
 			t.Fatalf("implement governance contract missing %q: %s", required, contract)
 		}
