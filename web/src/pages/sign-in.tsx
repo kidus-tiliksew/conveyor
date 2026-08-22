@@ -28,7 +28,7 @@ export function SignInPage() {
         sessionStorage.removeItem('conveyor-token')
         queryClient.clear()
         setState('success')
-        await navigate({ to: '/settings', search: { welcome: true }, replace: true })
+        await navigate({ to: '/onboarding', replace: true })
       })
       .catch(() => setState('invalid'))
   }, [navigate, queryClient, token])
@@ -75,7 +75,7 @@ export function SignInPage() {
             {state === 'checking'
               ? 'This should only take a moment.'
               : state === 'success'
-                ? 'Opening your workspace…'
+                ? 'Opening profile setup…'
                 : token
                   ? 'It may have expired or already been used. Ask your operator to resend your invitation.'
                   : 'Use your account password, or ask your operator for a one-time sign-in link.'}
@@ -115,7 +115,7 @@ export function SignInPage() {
             </form>
             <p className="mt-5 text-xs leading-5 text-faint">
               Forgot your password? Ask your operator to resend your invitation link. It signs you in so you can replace
-              the password in Settings.
+              the password on the secure onboarding page.
             </p>
           </>
         )}

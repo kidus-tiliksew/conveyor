@@ -236,7 +236,7 @@ export function usePendingProposals() {
 
 export function AppShell() {
   const pathname = useRouterState({ select: (state) => state.location.pathname })
-  if (pathname === '/sign-in') {
+  if (pathname === '/sign-in' || pathname === '/onboarding') {
     return (
       <ThemeProvider>
         <Outlet />

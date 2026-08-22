@@ -41,7 +41,7 @@ func (s *Server) redeemSignInLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	setDashboardSessionCookie(w, r, s.InvitationDelivery.PublicURL, session.Value, session.ExpiresAt)
-	writeJSON(w, http.StatusOK, map[string]any{"user": user, "expires_at": session.ExpiresAt})
+	writeJSON(w, http.StatusOK, map[string]any{"user": user, "expires_at": session.ExpiresAt, "onboarding_required": true})
 }
 
 func setDashboardSessionCookie(w http.ResponseWriter, r *http.Request, publicURL, value string, expires time.Time) {

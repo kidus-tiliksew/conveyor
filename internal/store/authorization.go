@@ -22,6 +22,13 @@ type CallerIdentityStore interface {
 	GetCallerIdentity(context.Context, string, string) (core.CallerIdentity, error)
 }
 
+// OwnProfileStore mutates only the authenticated dashboard-session owner. Both
+// identifiers come from the verified cookie, so another user's profile cannot
+// be addressed through this boundary (REQ-10/AC-10.8).
+type OwnProfileStore interface {
+	SetOwnDisplayName(context.Context, string, string, string) (core.CallerIdentity, error)
+}
+
 // MembershipStore is the only workspace authorization boundary. Callers name
 // capabilities and never inspect persisted roles directly (REQ-8/AC-8.1).
 type MembershipStore interface {
