@@ -150,7 +150,11 @@ export async function redeemSignInLink(token: string) {
     body: JSON.stringify({ token }),
   })
   if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
-  return response.json() as Promise<{ user: import('./types').CallerIdentity; expires_at: string }>
+  return response.json() as Promise<{
+    user: import('./types').CallerIdentity
+    expires_at: string
+    onboarding_required: true
+  }>
 }
 
 export async function signInWithPassword(email: string, password: string) {
@@ -170,6 +174,22 @@ export async function updateOwnPassword(currentPassword: string, newPassword: st
     body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
   })
   if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
+}
+
+export async function fetchOwnProfile() {
+  const response = await fetch('/v1/me')
+  if (!response.ok) throw new Error(membershipErrorMessage(await response.text(), response.statusText))
+  return (await response.json()) as import('./types').CallerIdentity
+}
+
+export async function updateOwnDisplayName(displayName: string) {
+  const response = await fetch('/v1/me', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', 'X-Conveyor-CSRF': '1' },
+    body: JSON.stringify({ display_name: displayName }),
+  })
+  if (!response.ok) throw new Error(membershipErrorMessage(await response.text(), response.statusText))
+  return (await response.json()) as import('./types').CallerIdentity
 }
 
 export async function signOutDashboardSession() {

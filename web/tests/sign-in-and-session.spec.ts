@@ -7,6 +7,10 @@ test('an invitation opens a scoped session, guides first token setup, and signs 
   let sessionActive = false
   let invitationUsed = false
   let sessionMutationProved = false
+  let profileMutationProved = false
+  let passwordMutationProved = false
+  let workspaceOpenedBeforeCompletion = false
+  let displayName = 'New Member'
   let signOutProved = false
   const invitations: string[] = []
   const issuedTokens: Array<{ id: string; user_id: string; label: string; created_at: string }> = []
@@ -42,8 +46,32 @@ test('an invitation opens a scoped session, guides first token setup, and signs 
         json: {
           user: { id: 'usr_invited', email: 'new@example.test', display_name: 'New Member' },
           expires_at: '2026-08-14T00:00:00Z',
+          onboarding_required: true,
         },
       })
+    }
+    if (path === '/v1/me' && request.method() === 'PUT') {
+      const body = request.postDataJSON() as { display_name: string }
+      profileMutationProved =
+        isMemberSession &&
+        request.headers()['x-conveyor-csrf'] === '1' &&
+        request.headers().origin === url.origin &&
+        authorization === ''
+      displayName = body.display_name.trim()
+      return route.fulfill({
+        json: { id: 'usr_invited', email: 'new@example.test', display_name: displayName },
+      })
+    }
+    if (path === '/v1/password' && request.method() === 'POST') {
+      const body = request.postDataJSON() as { current_password: string; new_password: string }
+      passwordMutationProved =
+        isMemberSession &&
+        request.headers()['x-conveyor-csrf'] === '1' &&
+        request.headers().origin === url.origin &&
+        authorization === '' &&
+        body.current_password === '' &&
+        body.new_password.length >= 12
+      return route.fulfill({ status: 204, body: '' })
     }
     if (path === '/v1/sign-out' && request.method() === 'POST') {
       signOutProved =
@@ -56,6 +84,7 @@ test('an invitation opens a scoped session, guides first token setup, and signs 
       })
     }
     if (path === '/v1/workspaces') {
+      if (sessionActive && (!profileMutationProved || !passwordMutationProved)) workspaceOpenedBeforeCompletion = true
       if (isOperator)
         return route.fulfill({
           json: [
@@ -68,7 +97,9 @@ test('an invitation opens a scoped session, guides first token setup, and signs 
     }
     if (path === '/v1/workspaces/demo/members' && request.method() === 'GET') {
       return route.fulfill({
-        json: [{ user_id: 'usr_owner', email: 'owner@example.test', display_name: 'Ada Owner', role: 'operator' }],
+        json: isOperator
+          ? [{ user_id: 'usr_owner', email: 'owner@example.test', display_name: 'Ada Owner', role: 'operator' }]
+          : [{ user_id: 'usr_invited', email: 'new@example.test', display_name: displayName, role: 'contributor' }],
       })
     }
     if (path === '/v1/workspaces/demo/members' && request.method() === 'POST') {
@@ -130,7 +161,7 @@ test('an invitation opens a scoped session, guides first token setup, and signs 
       return route.fulfill({
         json: isOperator
           ? { id: 'usr_owner', email: 'owner@example.test', display_name: 'Ada Owner', role: 'operator' }
-          : { id: 'usr_invited', email: 'new@example.test', display_name: 'New Member', role: 'contributor' },
+          : { id: 'usr_invited', email: 'new@example.test', display_name: displayName, role: 'contributor' },
       })
     }
     return route.fulfill({ json: [] })
@@ -148,14 +179,25 @@ test('an invitation opens a scoped session, guides first token setup, and signs 
   await expect(page.getByRole('button', { name: 'Resend' })).toBeVisible()
 
   await page.goto(invitationURL)
-  await expect(page).toHaveURL(/\/settings\?welcome=true$/)
+  await expect(page).toHaveURL('/onboarding')
   expect(requestedURLs.filter((requestedURL) => requestedURL.includes('cv_signin_'))).toEqual([])
-  await expect(page.getByText('Welcome to Conveyor')).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Copy command' })).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Copy connection settings' })).toBeVisible()
+  const onboarding = page.getByRole('form', { name: 'Complete your profile' })
+  await expect(onboarding.getByLabel('Display name')).toHaveValue('New Member')
+  await onboarding.getByLabel('Display name').fill('Chosen Member')
+  await onboarding.getByLabel('New password', { exact: true }).fill('first-password-value')
+  await onboarding.getByLabel('Confirm new password').fill('first-password-value')
+  await onboarding.getByRole('button', { name: 'Complete setup' }).click()
+  await expect(page).toHaveURL('/')
+  expect(profileMutationProved).toBe(true)
+  expect(passwordMutationProved).toBe(true)
+  expect(workspaceOpenedBeforeCompletion).toBe(false)
   await expect(page.getByLabel('Switch to Demo')).toBeVisible()
   await expect(page.getByLabel('Switch to Private')).toHaveCount(0)
   await expect.poll(() => page.evaluate(() => sessionStorage.getItem('conveyor-token'))).toBeNull()
+
+  await page.goto('/workspace')
+  await expect(page.getByText('Chosen Member')).toBeVisible()
+  await page.goto('/settings')
 
   const tokenForm = page.getByRole('form', { name: 'Create an access token' })
   await tokenForm.getByLabel('Token name').fill('My laptop')
@@ -179,6 +221,7 @@ test('an invitation opens a scoped session, guides first token setup, and signs 
 
 test('a returning user signs in with a password and resets it through an operator link', async ({ page }) => {
   let password = 'first-password-value'
+  let displayName = 'Returning User'
   let sessionActive = false
   let linkEstablished = false
   let passwordSignInProved = false
@@ -213,7 +256,17 @@ test('a returning user signs in with a password and resets it through an operato
       return route.fulfill({
         status: 200,
         headers: { 'Set-Cookie': 'conveyor_session=link-session; Path=/v1; HttpOnly; SameSite=Strict' },
-        json: { user: { id: 'usr_returning', email: 'returning@example.test' }, expires_at: '2026-08-28T00:00:00Z' },
+        json: {
+          user: { id: 'usr_returning', email: 'returning@example.test', display_name: displayName },
+          expires_at: '2026-08-28T00:00:00Z',
+          onboarding_required: true,
+        },
+      })
+    }
+    if (path === '/v1/me' && request.method() === 'PUT') {
+      displayName = body?.display_name?.trim() ?? displayName
+      return route.fulfill({
+        json: { id: 'usr_returning', email: 'returning@example.test', display_name: displayName },
       })
     }
     if (path === '/v1/password' && request.method() === 'POST') {
@@ -248,7 +301,7 @@ test('a returning user signs in with a password and resets it through an operato
         json: {
           id: 'usr_returning',
           email: 'returning@example.test',
-          display_name: 'Returning User',
+          display_name: displayName,
           role: 'contributor',
         },
       })
@@ -268,6 +321,11 @@ test('a returning user signs in with a password and resets it through an operato
   expect(passwordSignInProved).toBe(true)
 
   await page.goto('/settings')
+  const profileForm = page.getByRole('form', { name: 'Update profile' })
+  await profileForm.getByLabel('Display name').fill('Renamed User')
+  await profileForm.getByRole('button', { name: 'Save profile' }).click()
+  await expect(page.getByText('Display name updated.')).toBeVisible()
+  expect(displayName).toBe('Renamed User')
   const passwordForm = page.getByRole('form', { name: 'Update password' })
   await passwordForm.getByLabel('Current password').fill(password)
   await passwordForm.getByLabel('New password', { exact: true }).fill('second-password-value')
@@ -278,11 +336,12 @@ test('a returning user signs in with a password and resets it through an operato
 
   await page.getByRole('button', { name: 'Sign out' }).click()
   await page.goto('/sign-in#token=operator-reset-link')
-  await expect(page).toHaveURL(/\/settings\?welcome=true$/)
-  const resetForm = page.getByRole('form', { name: 'Update password' })
+  await expect(page).toHaveURL('/onboarding')
+  const resetForm = page.getByRole('form', { name: 'Complete your profile' })
+  await expect(resetForm.getByLabel('Display name')).toHaveValue('Renamed User')
   await resetForm.getByLabel('New password', { exact: true }).fill('reset-password-value')
   await resetForm.getByLabel('Confirm new password').fill('reset-password-value')
-  await resetForm.getByRole('button', { name: 'Update password' }).click()
-  await expect(page.getByText('Password updated.')).toBeVisible()
+  await resetForm.getByRole('button', { name: 'Complete setup' }).click()
+  await expect(page).toHaveURL('/')
   expect(password).toBe('reset-password-value')
 })

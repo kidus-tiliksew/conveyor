@@ -464,6 +464,65 @@ func TestCallerIdentityHTTPUsesHumanCredentialAndOptionalWorkspaceRoleIntegratio
 	}
 }
 
+func TestOwnDisplayNameSessionMutationAndAuditIntegration(t *testing.T) {
+	st := newIdentityIntegrationStore(t, 0)
+	legacy := "profile-owner-legacy"
+	if _, err := st.BootstrapIdentity(t.Context(), config.FirstOperatorIdentity{
+		OrganizationName: "Profile Org", Email: "profile@example.test", DisplayName: "Provisioned Name",
+	}, legacy); err != nil {
+		t.Fatal(err)
+	}
+	principal, err := st.VerifyPersonalAccessToken(t.Context(), legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actorCtx := store.WithActor(t.Context(), store.Actor{ID: store.UserActorID(principal.ID), Role: core.ActorUser})
+	issued, err := st.IssueSignInLink(actorCtx, principal.Email)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, _, err := st.RedeemSignInLink(t.Context(), issued.Value)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	handler := httpapi.NewServer(st).Handler()
+	request := httptest.NewRequest(http.MethodPut, "http://conveyor.example/v1/me", strings.NewReader(`{"display_name":"  Chosen Name  "}`))
+	request.AddCookie(&http.Cookie{Name: "conveyor_session", Value: session.Value})
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Conveyor-CSRF", "1")
+	request.Header.Set("Origin", "http://conveyor.example")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"id":"`+principal.ID+`"`) ||
+		!strings.Contains(response.Body.String(), `"display_name":"Chosen Name"`) {
+		t.Fatalf("session status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	bearer := httptest.NewRequest(http.MethodPut, "/v1/me", strings.NewReader(`{"display_name":"Bearer Name"}`))
+	bearer.Header.Set("Authorization", "Bearer "+legacy)
+	bearer.Header.Set("Content-Type", "application/json")
+	bearerResponse := httptest.NewRecorder()
+	handler.ServeHTTP(bearerResponse, bearer)
+	if bearerResponse.Code != http.StatusBadRequest {
+		t.Fatalf("bearer status=%d body=%s", bearerResponse.Code, bearerResponse.Body.String())
+	}
+
+	var storedName, actorID, payload string
+	if err = st.pool.QueryRow(t.Context(), `SELECT u.display_name,e.actor_id,e.payload_json::text
+		FROM users u JOIN deployment_events e ON e.kind='identity.display_name_changed'
+		WHERE u.id=$1`, principal.ID).Scan(&storedName, &actorID, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if storedName != "Chosen Name" || actorID != store.UserActorID(principal.ID) ||
+		strings.Contains(payload, "Chosen Name") || strings.Contains(payload, session.Value) {
+		t.Fatalf("stored=%q actor=%q payload=%s", storedName, actorID, payload)
+	}
+	if _, err = st.SetOwnDisplayName(actorCtx, "usr-attacker", session.ID, "Attacker Name"); !errors.Is(err, core.ErrInvalidCredential) {
+		t.Fatalf("cross-user update err=%v", err)
+	}
+}
+
 func TestIdentityBootstrapConcurrentStartsConvergeIntegration(t *testing.T) {
 	st := newIdentityIntegrationStore(t, 0)
 	identity := config.FirstOperatorIdentity{OrganizationName: "Concurrent Org", Email: "owner@example.test", DisplayName: "Owner"}

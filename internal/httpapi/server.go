@@ -80,6 +80,7 @@ type Server struct {
 	Memberships           store.MembershipStore
 	IdentityProvisioner   store.IdentityProvisioner
 	CallerIdentities      store.CallerIdentityStore
+	OwnProfiles           store.OwnProfileStore
 	PersonalTokens        store.PersonalAccessTokenStore
 	ForgeTokens           store.ForgeTokenStore
 	ValidateForgeToken    func(context.Context, string) (string, error)
@@ -110,6 +111,9 @@ func NewServer(s store.Store) *Server {
 	}
 	if identities, ok := s.(store.CallerIdentityStore); ok {
 		server.CallerIdentities = identities
+	}
+	if profiles, ok := s.(store.OwnProfileStore); ok {
+		server.OwnProfiles = profiles
 	}
 	if tokens, ok := s.(store.PersonalAccessTokenStore); ok {
 		server.PersonalTokens = tokens
@@ -150,6 +154,7 @@ func (s *Server) Handler() http.Handler {
 		r.With(s.requireWorkerAuth).Post("/worker/work-orders/{id}/release", s.releaseWorkerOrder)
 		r.With(s.requireWorkspaceAuth).Get("/workspaces", s.listWorkspaces)
 		r.With(s.requireSelfServiceCredential, s.resolveOptionalWorkspaceCapability(core.CapabilityViewWorkspace)).Get("/me", s.getCallerIdentity)
+		r.With(s.requireSelfServiceCredential).Put("/me", s.putOwnDisplayName)
 		r.With(s.requireMutationCapability(core.CapabilityManageWorkspace)).Post("/users", s.provisionIdentityUser)
 		// Self-service credential routes carry no subject in the path: the owner
 		// is the presented credential, so no capability applies and no request

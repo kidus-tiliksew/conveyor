@@ -60,6 +60,33 @@ func (s *Store) GetCallerIdentity(ctx context.Context, userID, workspaceID strin
 	return identity, err
 }
 
+// SetOwnDisplayName updates only the active user joined to the verified live
+// dashboard session and records the credential-derived self-service act in the
+// same transaction (REQ-10/AC-10.8).
+func (s *Store) SetOwnDisplayName(ctx context.Context, userID, sessionID, displayName string) (core.CallerIdentity, error) {
+	var identity core.CallerIdentity
+	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		if err := tx.QueryRow(ctx, `UPDATE users u SET display_name=$3
+			FROM dashboard_sessions s
+			WHERE u.id=$1 AND u.status='active' AND s.id=$2 AND s.user_id=u.id
+				AND s.revoked_at IS NULL AND s.expires_at>now()
+			RETURNING u.id,u.email,u.display_name`, userID, sessionID, displayName).
+			Scan(&identity.ID, &identity.Email, &identity.DisplayName); err != nil {
+			return notFound(err, "dashboard session")
+		}
+		actor := store.ActorFromContext(ctx)
+		return q.InsertDeploymentEvent(ctx, db.InsertDeploymentEventParams{
+			Kind: "identity.display_name_changed", ActorID: actor.ID, ActorRole: string(actor.Role),
+			PayloadJson: core.JSONPayload(map[string]any{"user_id": userID, "session_id": sessionID}),
+			At:          pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true},
+		})
+	})
+	if errors.Is(err, store.ErrNotFound) {
+		return core.CallerIdentity{}, core.ErrInvalidCredential
+	}
+	return identity, err
+}
+
 // BootstrapIdentity ensures that the configured deployment token maps to a
 // usable operator. The advisory lock makes upgrade recovery and rotation
 // idempotent; the durable marker makes the display label irrelevant.

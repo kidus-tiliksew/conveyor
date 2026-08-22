@@ -4,6 +4,7 @@ import { useTokenState } from '../components/app-shell'
 import { PersonalTokensCard } from '../components/settings/personal-tokens-card'
 import { ForgeTokenCard } from '../components/settings/forge-token-card'
 import { PasswordCard } from '../components/settings/password-card'
+import { ProfileCard } from '../components/settings/profile-card'
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import { CopyButton } from '../components/ui/copy-button'
 import { Input } from '../components/ui/input'
@@ -76,6 +77,7 @@ export function SettingsPage() {
             </p>
           </CardContent>
         </Card>
+        <ProfileCard />
         <PasswordCard />
         <PersonalTokensCard />
         <ForgeTokenCard />

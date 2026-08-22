@@ -13,6 +13,7 @@ import { TaskFullPage } from './pages/task-full'
 import { TasksPage } from './pages/tasks'
 import { WorkspacePage } from './pages/workspace'
 import { MonitorPage } from './pages/monitor'
+import { OnboardingPage } from './pages/onboarding'
 import { PlanningPage } from './pages/planning'
 import { PendingProposalsPage } from './pages/pending-proposals'
 
@@ -108,6 +109,11 @@ const signInRoute = createRoute({
   }),
   component: SignInPage,
 })
+const onboardingRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/onboarding',
+  component: OnboardingPage,
+})
 const requirementsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/requirements',
@@ -169,6 +175,7 @@ const routeTree = rootRoute.addChildren([
   monitorRoute,
   settingsRoute,
   signInRoute,
+  onboardingRoute,
 ])
 export const router = createRouter({ routeTree })
 

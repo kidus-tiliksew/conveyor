@@ -18,6 +18,8 @@ type callerIdentityFixture struct {
 	calls       int
 	userID      string
 	workspaceID string
+	sessionID   string
+	displayName string
 	err         error
 }
 
@@ -29,6 +31,12 @@ func (f *callerIdentityFixture) GetCallerIdentity(_ context.Context, userID, wor
 		identity.Role = core.WorkspaceRoleContributor
 	}
 	return identity, f.err
+}
+
+func (f *callerIdentityFixture) SetOwnDisplayName(_ context.Context, userID, sessionID, displayName string) (core.CallerIdentity, error) {
+	f.calls++
+	f.userID, f.sessionID, f.displayName = userID, sessionID, displayName
+	return core.CallerIdentity{ID: userID, Email: "owner@example.test", DisplayName: displayName}, f.err
 }
 
 func TestCallerIdentityMapsMissingBindingToNotFound(t *testing.T) {
@@ -108,6 +116,57 @@ func TestCallerIdentityIsCredentialDerivedAndWorkspaceScoped(t *testing.T) {
 		response := call(token, "/v1/me")
 		if response.Code != http.StatusUnauthorized || identities.calls != before {
 			t.Fatalf("token=%q status=%d body=%s identity_calls=%d", token, response.Code, response.Body.String(), identities.calls)
+		}
+	}
+}
+
+func TestPutOwnDisplayNameRequiresSessionAndUsesCredentialOwner(t *testing.T) {
+	t.Parallel()
+	profiles := &callerIdentityFixture{Store: store.NewMemory()}
+	server := NewServer(profiles)
+	server.OwnProfiles = profiles
+	server.Credentials = staticCredentialVerifier{
+		"human-secret": {ID: "pat-owner", OwnerUserID: "usr-owner", Kind: core.CredentialUser, Scope: core.CredentialScopeUser},
+	}
+	server.InvitationSessions = &invitationSessionFixture{credential: core.AuthenticatedCredential{
+		ID: "ses-owner", OwnerUserID: "usr-owner", Kind: core.CredentialUser,
+		Scope: core.CredentialScopeUser, Method: core.CredentialMethodSession,
+	}}
+	call := func(body, bearer string, session bool) *httptest.ResponseRecorder {
+		t.Helper()
+		request := httptest.NewRequest(http.MethodPut, "http://conveyor.example/v1/me", strings.NewReader(body))
+		request.Header.Set("Content-Type", "application/json")
+		if bearer != "" {
+			request.Header.Set("Authorization", "Bearer "+bearer)
+		}
+		if session {
+			request.AddCookie(&http.Cookie{Name: dashboardSessionCookie, Value: "session-secret"})
+			request.Header.Set("X-Conveyor-CSRF", "1")
+			request.Header.Set("Origin", "http://conveyor.example")
+		}
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, request)
+		return response
+	}
+
+	if response := call(`{"display_name":"  Chosen Name  "}`, "", true); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"display_name":"Chosen Name"`) {
+		t.Fatalf("session status=%d body=%s", response.Code, response.Body.String())
+	}
+	if profiles.userID != "usr-owner" || profiles.sessionID != "ses-owner" || profiles.displayName != "Chosen Name" {
+		t.Fatalf("profile target=%q session=%q name=%q", profiles.userID, profiles.sessionID, profiles.displayName)
+	}
+	before := profiles.calls
+	if response := call(`{"display_name":"Bearer Name"}`, "human-secret", false); response.Code != http.StatusBadRequest || profiles.calls != before {
+		t.Fatalf("bearer status=%d body=%s calls=%d", response.Code, response.Body.String(), profiles.calls)
+	}
+	for _, body := range []string{
+		`{"display_name":" "}`,
+		`{"display_name":"Name","user_id":"usr-attacker"}`,
+		`{"display_name":"Name"} {}`,
+		`{"display_name":"` + strings.Repeat("x", maxDisplayNameBytes+1) + `"}`,
+	} {
+		if response := call(body, "", true); response.Code != http.StatusUnprocessableEntity || profiles.calls != before {
+			t.Fatalf("body=%q status=%d response=%s calls=%d", body, response.Code, response.Body.String(), profiles.calls)
 		}
 	}
 }

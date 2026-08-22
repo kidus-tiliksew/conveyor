@@ -1,0 +1,83 @@
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { UserRound } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { useOperatorToken, useWorkspaceSelection } from '../app-shell'
+import { Button } from '../ui/button'
+import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
+import { Input } from '../ui/input'
+import { fetchCallerIdentity, SESSION_AUTH, updateOwnDisplayName } from '../../lib/api'
+
+export function ProfileCard() {
+  const token = useOperatorToken()
+  const { workspace } = useWorkspaceSelection()
+  const queryClient = useQueryClient()
+  const identity = useQuery({
+    queryKey: ['caller-identity', token, workspace],
+    queryFn: () => fetchCallerIdentity(token),
+    enabled: Boolean(token && workspace),
+  })
+  const [displayName, setDisplayName] = useState('')
+  const [message, setMessage] = useState('')
+  const [failed, setFailed] = useState(false)
+
+  useEffect(() => {
+    if (identity.data) setDisplayName(identity.data.display_name)
+  }, [identity.data])
+
+  const update = useMutation({
+    mutationFn: () => updateOwnDisplayName(displayName),
+    onSuccess: async (profile) => {
+      setFailed(false)
+      setDisplayName(profile.display_name)
+      setMessage('Display name updated.')
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['caller-identity'] }),
+        queryClient.invalidateQueries({ queryKey: ['workspace-members'] }),
+      ])
+    },
+    onError: (cause) => {
+      setFailed(true)
+      setMessage(cause instanceof Error ? cause.message : 'Could not update display name.')
+    },
+  })
+
+  const sessionOnly = token === SESSION_AUTH
+  return (
+    <Card className="mt-4">
+      <CardHeader>
+        <CardTitle>Profile</CardTitle>
+        <UserRound className="size-4 text-primary" />
+      </CardHeader>
+      <CardContent>
+        <p className="mb-4 text-sm leading-6 text-muted">This is the name teammates see in workspace member lists.</p>
+        <form
+          className="max-w-sm space-y-3"
+          aria-label="Update profile"
+          onSubmit={(event) => {
+            event.preventDefault()
+            setMessage('')
+            update.mutate()
+          }}
+        >
+          <Input
+            aria-label="Display name"
+            autoComplete="name"
+            maxLength={128}
+            value={displayName}
+            onChange={(event) => setDisplayName(event.target.value)}
+            disabled={!sessionOnly || identity.isPending}
+          />
+          <Button type="submit" disabled={!sessionOnly || update.isPending || !displayName.trim()}>
+            {update.isPending ? 'Saving…' : 'Save profile'}
+          </Button>
+          {!sessionOnly && <p className="text-xs text-faint">Sign in with your account to edit your profile.</p>}
+          {message && (
+            <p className={`text-sm ${failed ? 'text-failure' : 'text-positive'}`} role="status">
+              {message}
+            </p>
+          )}
+        </form>
+      </CardContent>
+    </Card>
+  )
+}

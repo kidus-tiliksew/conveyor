@@ -1,7 +1,9 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"errors"
+	"io"
 	"log"
 	"net/http"
 	"strings"
@@ -71,6 +73,57 @@ func (s *Server) getCallerIdentity(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Printf("get caller identity: %v", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, identity)
+}
+
+const maxDisplayNameBytes = 128
+
+// putOwnDisplayName is deliberately session-only even though GET /v1/me also
+// accepts human bearer credentials. The target user and session are both
+// credential-derived; the JSON body cannot name another user (AC-10.8).
+func (s *Server) putOwnDisplayName(w http.ResponseWriter, r *http.Request) {
+	if s.OwnProfiles == nil {
+		http.Error(w, "profile unavailable", http.StatusNotFound)
+		return
+	}
+	credential, _ := store.CredentialFromContext(r.Context())
+	if credential.Method != core.CredentialMethodSession {
+		http.Error(w, "session required", http.StatusBadRequest)
+		return
+	}
+	var request struct {
+		DisplayName string `json:"display_name"`
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 4096)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		writeValidationError(w, "display_name", errors.New("valid display name input is required"))
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		writeValidationError(w, "display_name", errors.New("request body must contain one JSON object"))
+		return
+	}
+	request.DisplayName = strings.TrimSpace(request.DisplayName)
+	if request.DisplayName == "" {
+		writeValidationError(w, "display_name", errors.New("display name is required"))
+		return
+	}
+	if len(request.DisplayName) > maxDisplayNameBytes {
+		writeValidationError(w, "display_name", errors.New("display name must contain at most 128 bytes"))
+		return
+	}
+	identity, err := s.OwnProfiles.SetOwnDisplayName(r.Context(), credential.OwnerUserID, credential.ID, request.DisplayName)
+	if errors.Is(err, store.ErrNotFound) || errors.Is(err, core.ErrInvalidCredential) {
+		http.Error(w, "session unavailable", http.StatusUnauthorized)
+		return
+	}
+	if err != nil {
+		log.Printf("set own display name: %v", err)
+		http.Error(w, "could not update profile", http.StatusInternalServerError)
 		return
 	}
 	writeJSON(w, http.StatusOK, identity)
