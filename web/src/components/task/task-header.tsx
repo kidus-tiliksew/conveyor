@@ -23,7 +23,7 @@ import type { ActivityItem } from '../../lib/types'
 import { absoluteTime, cn } from '../../lib/utils'
 import {
   useBlueprints,
-  useOperatorToken,
+  useDashboardSession,
   useWorkspaceCapability,
   useWorkspaceMembers,
   useWorkspaceSelection,
@@ -268,14 +268,14 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
 }
 
 function UnlinkDependencyControl({ item, dependencyIDs }: { item: ActivityItem; dependencyIDs: string[] }) {
-  const token = useOperatorToken()
+  const token = useDashboardSession()
   const queryClient = useQueryClient()
   const [selectedID, setSelectedID] = useState('')
   const [reason, setReason] = useState('')
   const requestID = useRef(crypto.randomUUID())
   const selected = item.task.dependencies?.find((dependency) => dependency.id === selectedID)
   const mutation = useMutation({
-    mutationFn: () => removeTaskDependency(item.task.id, selectedID, token, reason.trim(), requestID.current),
+    mutationFn: () => removeTaskDependency(item.task.id, selectedID, reason.trim(), requestID.current),
     onSuccess: () => {
       setSelectedID('')
       setReason('')
@@ -356,12 +356,12 @@ function UnlinkDependencyControl({ item, dependencyIDs }: { item: ActivityItem; 
 // keeps it while suppressing checkout, branch, and hold. Its
 // consequences for children are whatever the backend does today.
 export function CancelControl({ item }: { item: ActivityItem }) {
-  const token = useOperatorToken()
+  const token = useDashboardSession()
   const queryClient = useQueryClient()
   const [open, setOpen] = useState(false)
   const [reason, setReason] = useState('')
   const mutation = useMutation({
-    mutationFn: () => cancelTask(item.task.id, token, reason.trim()),
+    mutationFn: () => cancelTask(item.task.id, reason.trim()),
     onSuccess: () => {
       setOpen(false)
       setReason('')
@@ -476,10 +476,10 @@ function TaskBody({ body }: { body: string }) {
 // Per-task hold toggle: while held, the worker daemon never
 // claims this task's work orders — you attach an agent and claim explicitly.
 function HoldControl({ item }: { item: ActivityItem }) {
-  const token = useOperatorToken()
+  const token = useDashboardSession()
   const queryClient = useQueryClient()
   const toggle = useMutation({
-    mutationFn: () => setTaskHold(item.task.id, token, !item.task.hold),
+    mutationFn: () => setTaskHold(item.task.id, !item.task.hold),
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['activity'] }),
   })
   const terminal = item.task.state === 'merged' || item.task.state === 'closed'
@@ -515,7 +515,7 @@ function HoldControl({ item }: { item: ActivityItem }) {
  * members list itself is a co-member read, never a user directory (AC-3.2).
  */
 function AssigneeControl({ item }: { item: ActivityItem }) {
-  const token = useOperatorToken()
+  const token = useDashboardSession()
   const { workspace } = useWorkspaceSelection()
   const queryClient = useQueryClient()
   const [open, setOpen] = useState(false)
@@ -525,7 +525,7 @@ function AssigneeControl({ item }: { item: ActivityItem }) {
   const canAssign = useWorkspaceCapability('set_assignee')
   const members = useWorkspaceMembers()
   const mutation = useMutation({
-    mutationFn: (userId: string) => setTaskAssignee(item.task.id, token, userId),
+    mutationFn: (userId: string) => setTaskAssignee(item.task.id, userId),
     onSuccess: () => {
       setOpen(false)
       void queryClient.invalidateQueries({ queryKey: ['activity'] })

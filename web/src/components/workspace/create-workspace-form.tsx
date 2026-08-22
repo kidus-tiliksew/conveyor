@@ -1,9 +1,8 @@
 import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { Link } from '@tanstack/react-router'
 import { createWorkspace } from '../../lib/api'
 import type { WorkspaceRecord } from '../../lib/types'
-import { useOperatorToken, useWorkspaceSelection } from '../app-shell'
+import { useDashboardSession, useWorkspaceSelection } from '../app-shell'
 import { Button } from '../ui/button'
 import { Input } from '../ui/input'
 
@@ -28,13 +27,13 @@ export function CreateWorkspaceForm({
   onCreated?: (created: WorkspaceRecord) => void
   onCancel?: () => void
 }) {
-  const token = useOperatorToken()
+  const token = useDashboardSession()
   const queryClient = useQueryClient()
   const { setWorkspace } = useWorkspaceSelection()
   const [name, setName] = useState('')
   const id = slugify(name)
   const create = useMutation({
-    mutationFn: () => createWorkspace(token, { id, name: name.trim() }),
+    mutationFn: () => createWorkspace({ id, name: name.trim() }),
     onSuccess: async (created) => {
       await queryClient.invalidateQueries({ queryKey: ['workspaces'] })
       setWorkspace(created.id)
@@ -45,11 +44,7 @@ export function CreateWorkspaceForm({
   if (!token) {
     return (
       <p className="rounded-md border border-border p-3 text-sm text-muted">
-        Set the operator token in{' '}
-        <Link to="/settings" className="text-primary hover:underline">
-          Settings
-        </Link>{' '}
-        to create a workspace.
+        Sign in with an account that can manage workspaces to create one.
       </p>
     )
   }

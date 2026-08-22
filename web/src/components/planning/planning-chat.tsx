@@ -64,7 +64,7 @@ export function PlanningChat({
   })
   const { data: allArtifacts = [] } = useQuery({
     queryKey: ['artifacts', workspace],
-    queryFn: () => fetchArtifacts(token),
+    queryFn: fetchArtifacts,
     enabled: Boolean(token),
   })
   const sessionArtifacts = (Array.isArray(allArtifacts) ? allArtifacts : [])
@@ -81,7 +81,6 @@ export function PlanningChat({
       controller.current = new AbortController()
       setStreamed([])
       await streamPlanningMessage(
-        token,
         session.id,
         content,
         (part) => {
@@ -114,11 +113,11 @@ export function PlanningChat({
     },
   })
   const upload = useMutation({
-    mutationFn: (file: File) => uploadArtifact(token, file, undefined, undefined, undefined, session.id),
+    mutationFn: (file: File) => uploadArtifact(file, undefined, undefined, undefined, session.id),
     onSuccess: (artifact) => setAttachments((current) => [...current, artifact]),
   })
   const abandon = useMutation({
-    mutationFn: () => abandonPlanningSession(token, session.id, abandonReason),
+    mutationFn: () => abandonPlanningSession(session.id, abandonReason),
     onSuccess: () => {
       setShowAbandon(false)
       void client.invalidateQueries({
@@ -368,9 +367,7 @@ export function PlanningChat({
             </p>
           )}
           {!token && (
-            <p className={`mt-2 text-xs text-attention ${sidebar ? '' : 'mx-auto max-w-3xl'}`}>
-              Set the operator token in Settings to plan.
-            </p>
+            <p className={`mt-2 text-xs text-attention ${sidebar ? '' : 'mx-auto max-w-3xl'}`}>Sign in to plan.</p>
           )}
         </form>
       )}

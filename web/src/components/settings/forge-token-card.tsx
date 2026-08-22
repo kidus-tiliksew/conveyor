@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { KeyRound } from 'lucide-react'
-import { useOperatorToken } from '../app-shell'
+import { useDashboardSession } from '../app-shell'
 import { Button } from '../ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
 import { Input } from '../ui/input'
@@ -13,25 +13,25 @@ function storedSummary(storedAt?: string) {
 }
 
 export function ForgeTokenCard() {
-  const token = useOperatorToken()
+  const token = useDashboardSession()
   const queryClient = useQueryClient()
   const [forgeToken, setForgeToken] = useState('')
 
   const status = useQuery({
     queryKey: ['forge-token', token],
-    queryFn: () => fetchForgeToken(token),
+    queryFn: () => fetchForgeToken(),
     enabled: Boolean(token),
     retry: false,
   })
   const store = useMutation({
-    mutationFn: (value: string) => storeForgeToken(token, value),
+    mutationFn: (value: string) => storeForgeToken(value),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['forge-token', token] })
     },
     onSettled: () => setForgeToken(''),
   })
   const remove = useMutation({
-    mutationFn: () => deleteForgeToken(token),
+    mutationFn: () => deleteForgeToken(),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['forge-token', token] })
     },

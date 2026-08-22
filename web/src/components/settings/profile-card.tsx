@@ -1,19 +1,19 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { UserRound } from 'lucide-react'
 import { useEffect, useState } from 'react'
-import { useOperatorToken, useWorkspaceSelection } from '../app-shell'
+import { useDashboardSession, useWorkspaceSelection } from '../app-shell'
 import { Button } from '../ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
 import { Input } from '../ui/input'
-import { fetchCallerIdentity, SESSION_AUTH, updateOwnDisplayName } from '../../lib/api'
+import { fetchCallerIdentity, updateOwnDisplayName } from '../../lib/api'
 
 export function ProfileCard() {
-  const token = useOperatorToken()
+  const token = useDashboardSession()
   const { workspace } = useWorkspaceSelection()
   const queryClient = useQueryClient()
   const identity = useQuery({
     queryKey: ['caller-identity', token, workspace],
-    queryFn: () => fetchCallerIdentity(token),
+    queryFn: () => fetchCallerIdentity(),
     enabled: Boolean(token && workspace),
   })
   const [displayName, setDisplayName] = useState('')
@@ -21,7 +21,7 @@ export function ProfileCard() {
   const [failed, setFailed] = useState(false)
 
   useEffect(() => {
-    if (identity.data) setDisplayName(identity.data.display_name)
+    if (identity.data) setDisplayName(identity.data.display_name ?? '')
   }, [identity.data])
 
   const update = useMutation({
@@ -41,7 +41,7 @@ export function ProfileCard() {
     },
   })
 
-  const sessionOnly = token === SESSION_AUTH
+  const sessionOnly = true
   return (
     <Card className="mt-4">
       <CardHeader>

@@ -5,7 +5,6 @@ const proposedAt = '2026-08-10T10:00:00Z'
 async function initialize(page: Page) {
   await page.addInitScript(() => {
     localStorage.setItem('conveyor-workspace', 'demo')
-    sessionStorage.setItem('conveyor-token', 'test-token')
   })
 }
 
@@ -92,7 +91,7 @@ test('pending proposal queue covers every tier, resolves rows, updates the badge
       })
     if (path === '/v1/blueprints') return route.fulfill({ json: [] })
     if (path === '/v1/pending-proposals') {
-      expect(request.headers().authorization).toBe('Bearer test-token')
+      expect(request.headers().authorization).toBeUndefined()
       const items = [
         ...(requirementPending
           ? [
@@ -277,13 +276,13 @@ test('task context suggestions reach attention with task links, justifications, 
     }
     if (path === '/v1/tasks/context-task/context/proposals/requirement/req-intake/confirm') {
       calls.push('confirm')
-      expect(request.headers().authorization).toBe('Bearer test-token')
+      expect(request.headers().authorization).toBeUndefined()
       requirementPending = false
       return route.fulfill({ json: {} })
     }
     if (path === '/v1/tasks/context-task/context/proposals/system_design/design-web-dashboard/dismiss') {
       calls.push('dismiss')
-      expect(request.headers().authorization).toBe('Bearer test-token')
+      expect(request.headers().authorization).toBeUndefined()
       designPending = false
       return route.fulfill({ json: {} })
     }

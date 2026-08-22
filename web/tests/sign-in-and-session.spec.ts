@@ -4,7 +4,8 @@ const invitationToken = 'cv_signin_invite-once'
 const invitationURL = `/sign-in#token=${invitationToken}`
 
 test('an invitation opens a scoped session, guides first token setup, and signs out safely', async ({ page }) => {
-  let sessionActive = false
+  let sessionActive = true
+  let sessionRole: 'operator' | 'member' | 'none' = 'operator'
   let invitationUsed = false
   let sessionMutationProved = false
   let profileMutationProved = false
@@ -20,18 +21,14 @@ test('an invitation opens a scoped session, guides first token setup, and signs 
 
   await page.addInitScript(() => {
     localStorage.setItem('conveyor-workspace', 'demo')
-    if (!sessionStorage.getItem('conveyor-test-initialized')) {
-      sessionStorage.setItem('conveyor-test-initialized', '1')
-      sessionStorage.setItem('conveyor-token', 'operator-token')
-    }
   })
   await page.route('**/v1/**', async (route: Route) => {
     const request = route.request()
     const url = new URL(request.url())
     const path = url.pathname
     const authorization = request.headers().authorization ?? ''
-    const isOperator = authorization === 'Bearer operator-token'
-    const isMemberSession = sessionActive && request.headers().cookie?.includes('conveyor_session=session-one')
+    const isOperator = sessionActive && sessionRole === 'operator'
+    const isMemberSession = sessionActive && sessionRole === 'member'
 
     if (path === '/v1/sign-in/redeem' && request.method() === 'POST') {
       const body = request.postDataJSON() as { token: string }
@@ -40,6 +37,7 @@ test('an invitation opens a scoped session, guides first token setup, and signs 
       }
       invitationUsed = true
       sessionActive = true
+      sessionRole = 'member'
       return route.fulfill({
         status: 200,
         headers: { 'Set-Cookie': 'conveyor_session=session-one; Path=/v1; HttpOnly; SameSite=Strict' },
@@ -77,6 +75,7 @@ test('an invitation opens a scoped session, guides first token setup, and signs 
       signOutProved =
         request.headers()['x-conveyor-csrf'] === '1' && request.headers().origin === url.origin && authorization === ''
       sessionActive = false
+      sessionRole = 'none'
       return route.fulfill({
         status: 204,
         headers: { 'Set-Cookie': 'conveyor_session=; Path=/v1; Max-Age=0; HttpOnly; SameSite=Strict' },
@@ -84,7 +83,9 @@ test('an invitation opens a scoped session, guides first token setup, and signs 
       })
     }
     if (path === '/v1/workspaces') {
-      if (sessionActive && (!profileMutationProved || !passwordMutationProved)) workspaceOpenedBeforeCompletion = true
+      if (sessionRole === 'member' && (!profileMutationProved || !passwordMutationProved)) {
+        workspaceOpenedBeforeCompletion = true
+      }
       if (isOperator)
         return route.fulfill({
           json: [
@@ -211,12 +212,8 @@ test('an invitation opens a scoped session, guides first token setup, and signs 
 
   await page.goto(invitationURL)
   await expect(page.getByRole('heading', { name: 'This link no longer works' })).toBeVisible()
-  await expect(page.getByRole('alert')).toContainText('Ask your operator to resend')
-
-  await page.goto('/')
-  await page.getByLabel('Operator token').fill('operator-token')
-  await page.getByRole('button', { name: 'Continue as operator' }).click()
-  await expect(page.getByLabel('Switch to Private')).toBeVisible()
+  await expect(page.getByRole('alert')).toContainText('Ask your operator to issue')
+  await expect(page.getByLabel('Operator token')).toHaveCount(0)
 })
 
 test('a returning user signs in with a password and resets it through an operator link', async ({ page }) => {
@@ -312,7 +309,7 @@ test('a returning user signs in with a password and resets it through an operato
   })
 
   await page.goto('/sign-in')
-  await expect(page.getByText(/Forgot your password/)).toBeVisible()
+  await expect(page.getByText(/Locked out/)).toBeVisible()
   const signIn = page.getByRole('form', { name: 'Password sign-in' })
   await signIn.getByLabel('Email address').fill('returning@example.test')
   await signIn.getByLabel('Password').fill(password)

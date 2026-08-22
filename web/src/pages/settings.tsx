@@ -1,17 +1,14 @@
 import { useSearch } from '@tanstack/react-router'
-import { CheckCircle2, KeyRound, PlugZap, Terminal } from 'lucide-react'
-import { useTokenState } from '../components/app-shell'
+import { CheckCircle2, PlugZap, Terminal } from 'lucide-react'
 import { PersonalTokensCard } from '../components/settings/personal-tokens-card'
 import { ForgeTokenCard } from '../components/settings/forge-token-card'
 import { PasswordCard } from '../components/settings/password-card'
 import { ProfileCard } from '../components/settings/profile-card'
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import { CopyButton } from '../components/ui/copy-button'
-import { Input } from '../components/ui/input'
 import { mcpConnectionConfig, mcpEndpoint } from '../lib/mcp'
 
 export function SettingsPage() {
-  const { token, setToken } = useTokenState()
   const { welcome } = useSearch({ from: '/settings' })
   const cliCommand = 'export CONVEYOR_API_TOKEN="<paste-your-token>"'
   const endpoint = mcpEndpoint(window.location.origin)
@@ -51,32 +48,6 @@ export function SettingsPage() {
           </Card>
         )}
 
-        <Card className={welcome ? 'mt-4' : 'mt-6'}>
-          <CardHeader>
-            <CardTitle>Operator fallback</CardTitle>
-            <KeyRound className="size-4 text-faint" />
-          </CardHeader>
-          <CardContent className="space-y-2.5">
-            <p className="text-sm leading-6 text-muted">
-              Operators and non-durable deployments can use the control plane's{' '}
-              <code className="font-mono text-xs">CONVEYOR_API_TOKEN</code>. Multi-workspace reads and writes both
-              accept it. The token is kept in session storage and forgotten when the tab closes.
-            </p>
-            <Input
-              type="password"
-              aria-label="Operator token"
-              placeholder="Paste the API token"
-              value={token}
-              onChange={(event) => setToken(event.target.value)}
-              className="max-w-sm font-mono"
-            />
-            <p className="text-xs text-faint">
-              {token
-                ? 'Token set — workspace data and operator actions are enabled.'
-                : 'No token — set it to load workspaces.'}
-            </p>
-          </CardContent>
-        </Card>
         <ProfileCard />
         <PasswordCard />
         <PersonalTokensCard />

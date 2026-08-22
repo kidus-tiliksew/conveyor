@@ -3,8 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { CheckCircle2, Plus, Save, Trash2 } from 'lucide-react'
 import {
-  useOperatorToken,
-  useTokenState,
+  useDashboardSession,
   useWorkspace,
   useWorkspaceCapability,
   useWorkspaceSelection,
@@ -48,20 +47,19 @@ function tabForField(field: string): TabId {
 }
 
 export function WorkspacePage() {
-  const token = useOperatorToken()
-  const { token: operatorToken } = useTokenState()
+  const token = useDashboardSession()
   const canManageWorkspace = useWorkspaceCapability('manage_workspace')
   const queryClient = useQueryClient()
   const { workspace } = useWorkspaceSelection()
   const { data: snapshot } = useWorkspace()
   const query = useQuery({
     queryKey: ['workspace-config', token, workspace],
-    queryFn: () => fetchWorkspaceConfig(token),
+    queryFn: () => fetchWorkspaceConfig(),
     enabled: Boolean(token && workspace),
   })
   const workers = useQuery({
     queryKey: ['workers', token, workspace],
-    queryFn: () => fetchWorkers(token),
+    queryFn: () => fetchWorkers(),
     enabled: Boolean(token && workspace),
     refetchInterval: () => (document.visibilityState === 'visible' ? 15_000 : false),
     refetchIntervalInBackground: false,
@@ -76,7 +74,7 @@ export function WorkspacePage() {
     setDraftState(query.data ? structuredClone(query.data.document) : null)
   }, [query.data, workspace])
   const save = useMutation({
-    mutationFn: () => updateWorkspaceConfig(token, draft!, query.data!.version),
+    mutationFn: () => updateWorkspaceConfig(draft!, query.data!.version),
     onSuccess: (receipt) => {
       queryClient.setQueryData(['workspace-config', token, workspace], receipt)
       void queryClient.invalidateQueries({ queryKey: ['workspace', workspace] })
@@ -85,12 +83,12 @@ export function WorkspacePage() {
     },
   })
   const pair = useMutation({
-    mutationFn: () => issueWorkerPairing(token),
+    mutationFn: () => issueWorkerPairing(),
     onSuccess: (result) =>
       setPairing(`${result.pairing_token} (expires ${new Date(result.expires_at).toLocaleTimeString()})`),
   })
   const revoke = useMutation({
-    mutationFn: (id: string) => revokeWorker(token, id),
+    mutationFn: (id: string) => revokeWorker(id),
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['workers', token, workspace] }),
   })
 
@@ -118,7 +116,7 @@ export function WorkspacePage() {
             <h1 className="text-xl font-semibold">Workspace</h1>
             {draft && <Badge variant="mono">{draft.workspace}</Badge>}
           </div>
-          {operatorToken && (
+          {canManageWorkspace && (
             <Link to="/workspaces/new">
               <Button variant="secondary" tabIndex={-1}>
                 <Plus />
@@ -127,12 +125,7 @@ export function WorkspacePage() {
             </Link>
           )}
         </div>
-        {!token && (
-          <p className="mt-6 rounded-lg border border-border p-3 text-sm text-muted">
-            Set the operator token in Settings to edit workspace configuration.
-          </p>
-        )}
-        {token && !workspace && (
+        {!workspace && (
           <Card className="mt-6">
             <CardHeader>
               <CardTitle>No workspace selected</CardTitle>

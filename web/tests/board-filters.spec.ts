@@ -216,7 +216,6 @@ async function openBoard(page: Page, seen: string[], workspace = 'demo') {
   // original one back before the app read it.
   await page.addInitScript((selected) => {
     if (!localStorage.getItem('conveyor-workspace')) localStorage.setItem('conveyor-workspace', selected)
-    sessionStorage.setItem('conveyor-token', 'test-token')
   }, workspace)
   await routeBoard(page, seen)
   await page.goto('/')
@@ -242,7 +241,6 @@ test('running cards use the in-flight stage when latest stage is stale', async (
   const seen: string[] = []
   await page.addInitScript(() => {
     localStorage.setItem('conveyor-workspace', 'demo')
-    sessionStorage.setItem('conveyor-token', 'test-token')
   })
   await routeBoard(page, seen)
   await page.route('**/v1/activity?**', (route) =>
@@ -277,7 +275,6 @@ test('board pages beyond the 200th activity item and walks back without blanking
   const seen: string[] = []
   await page.addInitScript(() => {
     localStorage.setItem('conveyor-workspace', 'demo')
-    sessionStorage.setItem('conveyor-token', 'test-token')
   })
   await routeBoard(page, seen)
   const many = Array.from({ length: 323 }, (_, index) => ({
@@ -380,7 +377,6 @@ test('board migrates a saved Updated window and persists only the Created shape'
   const seen: string[] = []
   await page.addInitScript(() => {
     localStorage.setItem('conveyor-workspace', 'demo')
-    sessionStorage.setItem('conveyor-token', 'test-token')
     localStorage.setItem(
       'conveyor-task-filters:board:demo',
       JSON.stringify({ updated: '7d', updatedFrom: '', updatedTo: '' }),
@@ -453,7 +449,6 @@ test('activity polling is serialized, pauses while hidden, and cold-refreshes on
   await page.addInitScript(() => {
     localStorage.setItem('conveyor-workspace', 'demo')
     localStorage.setItem('conveyor-task-filters:board:demo', JSON.stringify({ created: 'any' }))
-    sessionStorage.setItem('conveyor-token', 'test-token')
     let visible = true
     Object.defineProperty(document, 'visibilityState', {
       configurable: true,
@@ -526,7 +521,6 @@ test('simultaneous filtered Board and task-order consumers share one serialized 
   const seen: string[] = []
   await page.addInitScript(() => {
     localStorage.setItem('conveyor-workspace', 'demo')
-    sessionStorage.setItem('conveyor-token', 'test-token')
   })
   await routeBoard(page, seen)
   await page.route('**/v1/tasks/task-recent/activity**', (route) =>

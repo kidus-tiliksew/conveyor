@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { MessageSquarePlus } from 'lucide-react'
-import { useOperatorToken, useWorkspaceCapability, useWorkspaceSelection } from '../components/app-shell'
+import { useDashboardSession, useWorkspaceCapability, useWorkspaceSelection } from '../components/app-shell'
 import { PlanningChat, relativeDate, sessionStatusLabels } from '../components/planning/planning-chat'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
@@ -16,7 +16,7 @@ import type { PlanningSessionGoal } from '../lib/types'
 const standaloneGoals: PlanningSessionGoal[] = ['open', 'bundle']
 
 export function PlanningPage() {
-  const token = useOperatorToken()
+  const token = useDashboardSession()
   const { workspace } = useWorkspaceSelection()
   const canPropose = useWorkspaceCapability('propose_documents')
   const canConfirm = useWorkspaceCapability('confirm_documents')
@@ -57,7 +57,7 @@ export function PlanningPage() {
   const create = useMutation({
     // No title is sent: the server names the session from its goal, and the
     // artifact it produces renames it.
-    mutationFn: () => createPlanningSession(token, { goal }),
+    mutationFn: () => createPlanningSession({ goal }),
     onSuccess: (session) => {
       setSelectedId(session.id)
       void client.invalidateQueries({ queryKey: ['planning-sessions', workspace] })
@@ -66,7 +66,7 @@ export function PlanningPage() {
   const selected = sessions?.find((session) => session.id === selectedId)
   const selectedBundle = bundles?.find((bundle) => bundle.id === selected?.produced_bundle_id)
   const decideBundle = useMutation({
-    mutationFn: (decision: 'approve' | 'reject') => decidePlanningBundle(token, selectedBundle!.id, decision),
+    mutationFn: (decision: 'approve' | 'reject') => decidePlanningBundle(selectedBundle!.id, decision),
     onSuccess: () => {
       void client.invalidateQueries({ queryKey: ['planning-bundles', workspace] })
       void client.invalidateQueries({ queryKey: ['tasks', workspace] })

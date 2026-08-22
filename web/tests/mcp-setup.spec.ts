@@ -3,7 +3,6 @@ import { expect, test, type Page } from '@playwright/test'
 async function routeDashboard(page: Page) {
   await page.addInitScript(() => {
     localStorage.setItem('conveyor-workspace', 'demo')
-    sessionStorage.setItem('conveyor-token', 'test-token-that-must-not-appear')
   })
   await page.route('**/v1/**', (route) => {
     const url = new URL(route.request().url())

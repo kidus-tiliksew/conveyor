@@ -4,7 +4,6 @@ test('monitor page renders health, deduplication, task links, and drift age', as
   let resolution: Record<string, string> | undefined
   await page.addInitScript(() => {
     localStorage.setItem('conveyor-workspace', 'demo')
-    sessionStorage.setItem('conveyor-token', 'test-token')
   })
   await page.route('**/v1/workspaces', (route) =>
     route.fulfill({ json: [{ id: 'demo', name: 'Demo', config_version: 1 }] }),

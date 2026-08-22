@@ -3,7 +3,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { RotateCcw, TriangleAlert } from 'lucide-react'
 import { retryReviewRound } from '../../lib/api'
 import type { ActivityItem } from '../../lib/types'
-import { useOperatorToken } from '../app-shell'
+import { useDashboardSession } from '../app-shell'
 import { Button } from '../ui/button'
 import { Textarea } from '../ui/input'
 
@@ -13,12 +13,12 @@ export function hasReviewRoundRetry(item: ActivityItem) {
 
 export function ReviewRoundRetryCard({ item }: { item: ActivityItem }) {
   const recovery = item.review_recovery
-  const token = useOperatorToken()
+  const token = useDashboardSession()
   const queryClient = useQueryClient()
   const requestId = useRef(crypto.randomUUID())
   const [reason, setReason] = useState('')
   const mutation = useMutation({
-    mutationFn: () => retryReviewRound(item.task.id, token, requestId.current, reason.trim()),
+    mutationFn: () => retryReviewRound(item.task.id, requestId.current, reason.trim()),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['task', item.task.id] })
       void queryClient.invalidateQueries({ queryKey: ['activity'] })

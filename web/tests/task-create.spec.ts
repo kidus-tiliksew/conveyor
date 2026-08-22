@@ -19,7 +19,6 @@ async function mockTaskCreateAPIs(
   })
   await page.addInitScript(() => {
     localStorage.setItem('conveyor-workspace', 'demo')
-    sessionStorage.setItem('conveyor-token', 'operator-token')
   })
   await page.route('**/v1/**', async (route: Route) => {
     const url = new URL(route.request().url())
@@ -59,7 +58,7 @@ async function mockTaskCreateAPIs(
       return
     }
     if (url.pathname === '/v1/requirements') {
-      expect(route.request().headers().authorization).toBe('Bearer operator-token')
+      expect(route.request().headers().authorization).toBeUndefined()
       await route.fulfill({
         json: [
           {
@@ -95,7 +94,7 @@ async function mockTaskCreateAPIs(
       return
     }
     if (url.pathname === '/v1/system-designs') {
-      expect(route.request().headers().authorization).toBe('Bearer operator-token')
+      expect(route.request().headers().authorization).toBeUndefined()
       await route.fulfill({
         json: [
           {

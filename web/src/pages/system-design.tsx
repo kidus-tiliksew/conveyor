@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useSearch } from '@tanstack/react-router'
 import { Check, Clock, ExternalLink, History, Layers, X } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
-import { useOperatorToken, useWorkspaceCapability, useWorkspaceSelection } from '../components/app-shell'
+import { useDashboardSession, useWorkspaceCapability, useWorkspaceSelection } from '../components/app-shell'
 import { type AttentionItem, AttentionSurface } from '../components/documents/attention-surface'
 import { compareDocuments, type DocumentSort, type DocumentSortDirection } from '../components/documents/document-sort'
 import {
@@ -46,7 +46,7 @@ const originLabels: Record<SystemDesignVersion['origin'], string> = {
  * propose→confirm route stay exactly as they are.
  */
 export function SystemDesignPage() {
-  const token = useOperatorToken()
+  const token = useDashboardSession()
   const canConfirm = useWorkspaceCapability('confirm_documents')
   const { workspace } = useWorkspaceSelection()
   const navigate = useNavigate()
@@ -67,7 +67,7 @@ export function SystemDesignPage() {
     enabled: Boolean(workspace),
   })
   const resolve = useMutation({
-    mutationFn: ({ id, action }: { id: string; action: 'confirm' | 'dismiss' }) => resolveDecision(token, id, action),
+    mutationFn: ({ id, action }: { id: string; action: 'confirm' | 'dismiss' }) => resolveDecision(id, action),
     onSettled: () => void client.invalidateQueries({ queryKey: ['decisions', workspace] }),
   })
   const selected = designs.data?.find((item) => item.document.id === search.document)
@@ -265,7 +265,7 @@ function DesignCanvas({
   const displayed = item.current_version ?? item.pending_versions[0] ?? item.versions[item.versions.length - 1]
   const confirm = useMutation({
     mutationFn: (version: number) =>
-      confirmSystemDesignVersion(token, item.document.id, version, item.document.current_version ?? 0),
+      confirmSystemDesignVersion(item.document.id, version, item.document.current_version ?? 0),
     onSuccess: () => {
       void client.invalidateQueries({ queryKey: ['system-designs', workspace] })
       void client.invalidateQueries({ queryKey: ['system-design', workspace, item.document.id] })

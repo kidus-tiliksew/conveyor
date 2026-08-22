@@ -719,7 +719,6 @@ const details: Record<string, unknown> = {
 async function mockAPIs(page: Page) {
   await page.addInitScript(() => {
     localStorage.setItem('conveyor-workspace', 'conveyor')
-    sessionStorage.setItem('conveyor-token', 'operator-token')
   })
   await page.route('**/v1/**', async (route: Route) => {
     const url = new URL(route.request().url())

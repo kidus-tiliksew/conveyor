@@ -12,7 +12,7 @@ import {
 } from '../../lib/api'
 import { errorMessage } from '../../lib/errors'
 import type { MembershipGrant, WorkspaceRole } from '../../lib/types'
-import { useOperatorToken, useWorkspaceMembers, useWorkspaceSelection } from '../app-shell'
+import { useDashboardSession, useWorkspaceCapability, useWorkspaceMembers, useWorkspaceSelection } from '../app-shell'
 import { Badge } from '../ui/badge'
 import { Button } from '../ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
@@ -42,20 +42,21 @@ type DeliveryNotice = {
  * else is here, which the members API already restricts to co-members.
  */
 export function MembersSection() {
-  const token = useOperatorToken()
+  const token = useDashboardSession()
   const { workspace } = useWorkspaceSelection()
+  const canManage = useWorkspaceCapability('manage_membership')
   const queryClient = useQueryClient()
-  const enabled = Boolean(token && workspace)
+  const enabled = Boolean(token && workspace && canManage)
 
   const members = useWorkspaceMembers()
   const invitations = useQuery({
     queryKey: ['workspace-invitations', token, workspace],
-    queryFn: () => fetchWorkspaceInvitations(token, workspace),
+    queryFn: () => fetchWorkspaceInvitations(workspace),
     enabled,
     retry: false,
   })
-  const canManage = invitations.isSuccess
   const invitationsFailed = invitations.error != null && !(invitations.error instanceof WorkspaceNotVisibleError)
+  const pendingInvitations = invitations.data ?? []
 
   const refresh = async () => {
     await Promise.all([
@@ -72,7 +73,7 @@ export function MembersSection() {
   const roleChange = existingMember && existingMember.role !== role ? existingMember : undefined
   const invite = useMutation({
     mutationFn: (request: { email: string; role: WorkspaceRole; existingRole?: WorkspaceRole }) =>
-      inviteWorkspaceMember(token, workspace, { email: request.email, role: request.role }),
+      inviteWorkspaceMember(workspace, { email: request.email, role: request.role }),
     onSuccess: async (result, request) => {
       setDelivery({
         grant: result,
@@ -85,19 +86,19 @@ export function MembersSection() {
     },
   })
   const removeMember = useMutation({
-    mutationFn: (userID: string) => revokeWorkspaceMember(token, workspace, userID),
+    mutationFn: (userID: string) => revokeWorkspaceMember(workspace, userID),
     onSuccess: refresh,
   })
   const removeInvitation = useMutation({
-    mutationFn: (invitedEmail: string) => revokeWorkspaceInvitation(token, workspace, invitedEmail),
+    mutationFn: (invitedEmail: string) => revokeWorkspaceInvitation(workspace, invitedEmail),
     onSuccess: refresh,
   })
   const resendInvitation = useMutation({
-    mutationFn: (invitedEmail: string) => resendWorkspaceInvitation(token, workspace, invitedEmail),
+    mutationFn: (invitedEmail: string) => resendWorkspaceInvitation(workspace, invitedEmail),
     onSuccess: (result) => setDelivery({ grant: result, kind: 'invitation' }),
   })
   const sendMemberSignInLink = useMutation({
-    mutationFn: (memberEmail: string) => resendWorkspaceInvitation(token, workspace, memberEmail),
+    mutationFn: (memberEmail: string) => resendWorkspaceInvitation(workspace, memberEmail),
     onSuccess: (result) => setDelivery({ grant: result, kind: 'sign_in' }),
   })
 
@@ -283,11 +284,11 @@ export function MembersSection() {
         <Card>
           <CardHeader>
             <CardTitle>Pending invitations</CardTitle>
-            <span className="text-xs text-faint">{invitations.data.length}</span>
+            <span className="text-xs text-faint">{pendingInvitations.length}</span>
           </CardHeader>
           <CardContent className="space-y-3">
-            {invitations.data.length === 0 && <p className="text-sm text-faint">No pending invitations.</p>}
-            {invitations.data.map((invitation) => (
+            {pendingInvitations.length === 0 && <p className="text-sm text-faint">No pending invitations.</p>}
+            {pendingInvitations.map((invitation) => (
               <div
                 key={invitation.email}
                 className="flex items-center justify-between rounded-md border border-border p-3"

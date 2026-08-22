@@ -3,7 +3,7 @@ import { RotateCcw } from 'lucide-react'
 import { redispatchTask } from '../../lib/api'
 import { dependencyBlockedImplementationOrder, unsatisfiableDependencyOrder } from '../../lib/activity'
 import type { ActivityItem } from '../../lib/types'
-import { useOperatorToken } from '../app-shell'
+import { useDashboardSession } from '../app-shell'
 import { Button } from '../ui/button'
 
 export function canRedispatch(item: ActivityItem) {
@@ -15,10 +15,10 @@ export function canRedispatch(item: ActivityItem) {
 // parked task at its recorded recovery stage, or reopen a closed task with a
 // decided stage.
 export function RedispatchCard({ item }: { item: ActivityItem }) {
-  const token = useOperatorToken()
+  const token = useDashboardSession()
   const queryClient = useQueryClient()
   const mutation = useMutation({
-    mutationFn: () => redispatchTask(item.task.id, token),
+    mutationFn: () => redispatchTask(item.task.id),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['task', item.task.id] })
       void queryClient.invalidateQueries({ queryKey: ['activity'] })

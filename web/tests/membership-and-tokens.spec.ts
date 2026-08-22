@@ -61,10 +61,9 @@ function membershipDefaults(): MembershipState {
  * answer 404, which is how the surface learns it must stay read-only.
  */
 async function mockWorkspace(page: Page, role: 'operator' | 'member' | 'viewer', state: MembershipState) {
-  await page.addInitScript((sessionOnly) => {
+  await page.addInitScript((_sessionOnly) => {
     localStorage.setItem('conveyor-theme', 'dark')
     localStorage.setItem('conveyor-workspace', 'demo')
-    if (!sessionOnly) sessionStorage.setItem('conveyor-token', 'caller-token')
   }, role === 'viewer')
   await page.route('**/v1/**', async (route: Route) => {
     const request = route.request()
@@ -346,7 +345,6 @@ test('a token secret is shown once, is never re-rendered, and the token can be r
   await page.addInitScript(() => {
     localStorage.setItem('conveyor-theme', 'dark')
     localStorage.setItem('conveyor-workspace', 'demo')
-    sessionStorage.setItem('conveyor-token', 'caller-token')
   })
   await page.route('**/v1/**', async (route: Route) => {
     const request = route.request()
@@ -433,7 +431,6 @@ test('a user stores, replaces, and deletes a write-only GitHub token from settin
   await page.addInitScript(() => {
     localStorage.setItem('conveyor-theme', 'dark')
     localStorage.setItem('conveyor-workspace', 'demo')
-    sessionStorage.setItem('conveyor-token', 'caller-token')
   })
   await page.route('**/v1/**', async (route: Route) => {
     const request = route.request()
@@ -507,7 +504,6 @@ test('the GitHub token card shows loading and status errors', async ({ page }) =
   await page.addInitScript(() => {
     localStorage.setItem('conveyor-theme', 'dark')
     localStorage.setItem('conveyor-workspace', 'demo')
-    sessionStorage.setItem('conveyor-token', 'caller-token')
   })
   await page.route('**/v1/**', async (route: Route) => {
     const request = route.request()

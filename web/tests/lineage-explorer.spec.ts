@@ -194,7 +194,6 @@ function taskActivity(id: string, parentTaskId?: string) {
 async function initShell(page: Page) {
   await page.addInitScript(() => {
     localStorage.setItem('conveyor-workspace', 'demo')
-    sessionStorage.setItem('conveyor-token', 'test-token')
   })
 }
 
@@ -288,7 +287,7 @@ test('the task Knowledge explorer shows its focused hierarchy and canonical boun
   // The read is the canonical lineage route, authenticated and workspace-scoped.
   await expect.poll(() => reads.length).toBe(1)
   expect(reads[0].path).toBe(`/v1/lineage/task/${taskId}`)
-  expect(reads[0].authorization).toBe('Bearer test-token')
+  expect(reads[0].authorization).toBeUndefined()
   expect(reads[0].workspace).toBe('demo')
 
   await expect(panel.getByRole('heading', { level: 3 })).toHaveText([/Requirements/, /System Designs/, /Tasks/])

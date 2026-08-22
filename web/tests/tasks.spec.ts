@@ -185,7 +185,6 @@ function matchOperations(url: string) {
 async function routeTasksSurface(page: Page) {
   await page.addInitScript(() => {
     localStorage.setItem('conveyor-workspace', 'demo')
-    sessionStorage.setItem('conveyor-token', 'test-token')
   })
   await page.route('**/v1/workspaces', (route) => route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] }))
   // The repository filter reads the configured repositories, so this fixture
@@ -247,7 +246,7 @@ async function routeTasksSurface(page: Page) {
     })
   })
   await page.route('**/v1/task-operations?**', (route) => {
-    expect(route.request().headers().authorization).toBe('Bearer test-token')
+    expect(route.request().headers().authorization).toBeUndefined()
     // Mirror the server contract: every filter narrows the set before paging,
     // and the page bounds travel in the additive response headers.
     const params = new URL(route.request().url()).searchParams
@@ -433,7 +432,6 @@ test('tasks table stays aligned and readable at a constrained width', async ({ p
 test('tasks view distinguishes an empty workspace from a failed load', async ({ page }) => {
   await page.addInitScript(() => {
     localStorage.setItem('conveyor-workspace', 'demo')
-    sessionStorage.setItem('conveyor-token', 'test-token')
   })
   await page.route('**/v1/workspaces', (route) => route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] }))
   await page.route('**/v1/workspace?**', (route) =>

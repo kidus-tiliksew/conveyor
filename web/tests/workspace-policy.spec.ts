@@ -23,7 +23,6 @@ async function mockAPIs(page: Page, reject = false, workers: Record<string, unkn
   let submitted: Record<string, unknown> | undefined
   await page.addInitScript(() => {
     localStorage.setItem('conveyor-workspace', 'demo')
-    sessionStorage.setItem('conveyor-token', 'operator-token')
   })
   await page.route('**/v1/**', async (route: Route) => {
     const path = new URL(route.request().url()).pathname

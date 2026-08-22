@@ -7,7 +7,7 @@ import { fetchWorkspaces } from '../../lib/api'
 import { isBlueprintAnchor } from '../../lib/blueprint'
 import { type GroupKey, stageGroups } from '../../lib/contracts'
 import type { ActivitySummary } from '../../lib/types'
-import { useActivity, useTokenState, useWorkspaceSelection } from '../app-shell'
+import { useActivity, useWorkspaceCapability, useWorkspaceSelection } from '../app-shell'
 import { MCPSetup } from '../mcp/mcp-setup-dialog'
 import { TaskCreateSheet } from '../task/task-create-sheet'
 import {
@@ -144,29 +144,19 @@ export function Board() {
   )
 }
 
-// The board is the landing page, so it also owns first-run guidance: no
-// token → Settings; token but no workspace → create one; several → pick one.
+// The board is the landing page, so it also owns first-run guidance when the
+// signed-in user has no workspace or needs to pick one.
 function Onboarding() {
-  const { token } = useTokenState()
+  const canManageWorkspace = useWorkspaceCapability('manage_workspace')
   const { data: workspaces } = useQuery({
-    queryKey: ['workspaces', token],
-    queryFn: () => fetchWorkspaces(token),
-    enabled: !!token,
+    queryKey: ['workspaces'],
+    queryFn: fetchWorkspaces,
   })
   return (
     <div className="grid h-full place-items-center px-6">
       <div className="max-w-md text-center">
         <h1 className="text-lg font-semibold tracking-tight">Welcome to Conveyor</h1>
-        {!token ? (
-          <>
-            <p className="mt-2 text-sm leading-6 text-muted">
-              Set the operator token to load your workspaces and the factory board.
-            </p>
-            <Link to="/settings" className="mt-4 inline-block">
-              <Button tabIndex={-1}>Open Settings</Button>
-            </Link>
-          </>
-        ) : (workspaces?.length ?? 0) === 0 ? (
+        {(workspaces?.length ?? 0) === 0 && canManageWorkspace ? (
           <>
             <p className="mt-2 text-sm leading-6 text-muted">No workspaces yet. Create one to start the line.</p>
             <Link to="/workspaces/new" className="mt-4 inline-block">

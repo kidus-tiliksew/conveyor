@@ -2,7 +2,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link, useSearch } from '@tanstack/react-router'
 import { Check, Clock, FileDiff, X } from 'lucide-react'
 import {
-  useOperatorToken,
+  useDashboardSession,
   usePendingProposals,
   useWorkspaceCapability,
   useWorkspaceSelection,
@@ -28,7 +28,7 @@ const tierLabels: Record<PendingProposal['tier'], string> = {
 }
 
 export function PendingProposalsPage() {
-  const token = useOperatorToken()
+  const token = useDashboardSession()
   const canConfirmDocuments = useWorkspaceCapability('confirm_documents')
   const canOperateGates = useWorkspaceCapability('operate_gates')
   const { workspace } = useWorkspaceSelection()
@@ -41,17 +41,17 @@ export function PendingProposalsPage() {
         if (proposal.origin_type !== 'task' || !proposal.origin_id || !proposal.target_kind) {
           throw new Error('This context suggestion is missing its task or document kind.')
         }
-        return resolveTaskContextProposal(token, proposal.origin_id, proposal.target_kind, proposal.id, action)
+        return resolveTaskContextProposal(proposal.origin_id, proposal.target_kind, proposal.id, action)
       }
-      if (proposal.tier === 'decision') return resolveDecision(token, proposal.id, action)
+      if (proposal.tier === 'decision') return resolveDecision(proposal.id, action)
       if (action === 'dismiss') throw new Error('This document tier is resolved by choosing the version to confirm.')
       if (proposal.version == null) throw new Error('The proposal did not include a version.')
       if (proposal.tier === 'requirement') {
         const view = await fetchRequirement(proposal.id)
-        return confirmRequirementVersion(token, proposal.id, proposal.version, view.requirement.current_version ?? 0)
+        return confirmRequirementVersion(proposal.id, proposal.version, view.requirement.current_version ?? 0)
       }
       const view = await fetchSystemDesign(proposal.id)
-      return confirmSystemDesignVersion(token, proposal.id, proposal.version, view.document.current_version ?? 0)
+      return confirmSystemDesignVersion(proposal.id, proposal.version, view.document.current_version ?? 0)
     },
     onSettled: async () => {
       await Promise.all([

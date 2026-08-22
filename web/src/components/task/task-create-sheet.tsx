@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Link, useNavigate } from '@tanstack/react-router'
+import { useNavigate } from '@tanstack/react-router'
 import { Paperclip, X } from 'lucide-react'
 import {
   createTask,
@@ -11,7 +11,7 @@ import {
   TaskIntakeError,
 } from '../../lib/api'
 import { formatBytes } from '../../lib/utils'
-import { useOperatorToken, useWorkspace } from '../app-shell'
+import { useDashboardSession, useWorkspace } from '../app-shell'
 import { Button } from '../ui/button'
 import { Input, Select } from '../ui/input'
 import { MarkdownEditor } from '../ui/markdown-editor'
@@ -34,7 +34,7 @@ export function TaskCreateSheet({
   onClose?: () => void
   onCreated?: (taskId: string) => void
 } = {}) {
-  const token = useOperatorToken()
+  const token = useDashboardSession()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const { data: workspace } = useWorkspace()
@@ -42,7 +42,7 @@ export function TaskCreateSheet({
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const workerHealth = useQuery({
     queryKey: ['workers', token, workspace?.workspace],
-    queryFn: () => fetchWorkers(token),
+    queryFn: () => fetchWorkers(),
     enabled: Boolean(token && workspace?.workspace),
     refetchInterval: 5000,
   })
@@ -88,7 +88,6 @@ export function TaskCreateSheet({
   const mutation = useMutation({
     mutationFn: async () => {
       const task = await createTask(
-        token,
         {
           body: body.trim(),
           repo: repoName,
@@ -374,17 +373,7 @@ export function TaskCreateSheet({
 
       <footer className="flex shrink-0 items-center justify-between gap-3 border-t border-border px-5 py-3">
         <p className="text-xs text-faint">
-          {token ? (
-            'Dispatches after every attachment is stored.'
-          ) : (
-            <>
-              Requires the operator token — set it in{' '}
-              <Link to="/settings" className="text-primary hover:underline">
-                Settings
-              </Link>
-              .
-            </>
-          )}
+          {token ? 'Dispatches after every attachment is stored.' : <>Sign in to create tasks.</>}
         </p>
         <Button disabled={!token || !body.trim() || !repoName || mutation.isPending} onClick={() => mutation.mutate()}>
           {mutation.isPending ? 'Creating…' : 'Create task'}
