@@ -40,6 +40,7 @@ type MembershipState = {
     invited_by_display_name: string
   }>
   soleOperator: boolean
+  resendDeliveries: Record<string, 'sent' | 'fallback'>
 }
 
 function membershipDefaults(): MembershipState {
@@ -50,6 +51,7 @@ function membershipDefaults(): MembershipState {
     ],
     invitations: [],
     soleOperator: false,
+    resendDeliveries: {},
   }
 }
 
@@ -98,8 +100,23 @@ async function mockWorkspace(page: Page, role: 'operator' | 'member' | 'viewer',
         email: string
         role: 'viewer' | 'executor' | 'contributor' | 'maintainer' | 'operator'
       }
-      state.invitations.push({ email: body.email, role: body.role, invited_by_display_name: 'Ada Owner' })
-      return route.fulfill({ status: 201, json: { email: body.email, role: body.role } })
+      const email = body.email.trim().toLowerCase()
+      const member = state.members.find((candidate) => candidate.email.toLowerCase() === email)
+      if (member) {
+        if (state.soleOperator && member.role === 'operator' && body.role !== 'operator') {
+          return route.fulfill({
+            status: 409,
+            json: {
+              error: 'last_workspace_operator',
+              message: 'cannot demote the sole workspace operator; grant another operator first',
+            },
+          })
+        }
+        member.role = body.role
+        return route.fulfill({ status: 201, json: { email, role: body.role, delivery: 'sent' } })
+      }
+      state.invitations.push({ email, role: body.role, invited_by_display_name: 'Ada Owner' })
+      return route.fulfill({ status: 201, json: { email, role: body.role, delivery: 'sent' } })
     }
     if (path.startsWith('/v1/workspaces/demo/members/') && request.method() === 'DELETE') {
       if (state.soleOperator) {
@@ -124,6 +141,20 @@ async function mockWorkspace(page: Page, role: 'operator' | 'member' | 'viewer',
           invited_by: 'usr_owner',
           created_at: '2026-08-02T00:00:00Z',
         })),
+      })
+    }
+    if (path.endsWith('/resend') && request.method() === 'POST') {
+      const email = decodeURIComponent(path.split('/').at(-2) ?? '').toLowerCase()
+      const delivery = state.resendDeliveries[email] ?? 'sent'
+      const membership = state.members.find((member) => member.email.toLowerCase() === email)
+      const invitation = state.invitations.find((candidate) => candidate.email.toLowerCase() === email)
+      return route.fulfill({
+        json: {
+          email,
+          role: membership?.role ?? invitation?.role ?? 'contributor',
+          delivery,
+          ...(delivery === 'fallback' ? { sign_in_url: `https://conveyor.example/sign-in/${email}` } : {}),
+        },
       })
     }
     if (path.startsWith('/v1/workspaces/demo/invitations/') && request.method() === 'DELETE') {
@@ -157,9 +188,63 @@ test('an operator invites a member, sees the pending invitation, and revokes it'
   await expect(page.getByText('invited@example.test')).toBeVisible()
   await expect(page.getByText('Invited by Ada Owner')).toBeVisible()
 
+  await page.getByRole('button', { name: 'Resend' }).click()
+  await expect(page.getByText('Invitation sent')).toBeVisible()
+
   await page.getByRole('button', { name: 'Revoke' }).click()
   await expect(page.getByText('No pending invitations.')).toBeVisible()
   await expect(page.getByText('invited@example.test')).toHaveCount(0)
+})
+
+test('an operator sends existing-member sign-in links for sent and fallback delivery', async ({ page }) => {
+  const state = membershipDefaults()
+  state.resendDeliveries['owner@example.test'] = 'fallback'
+  await mockWorkspace(page, 'operator', state)
+  await openMembers(page, 'operator')
+
+  await page.getByRole('button', { name: 'Send sign-in link to Bo Member' }).click()
+  await expect(page.getByText('Sign-in link sent')).toBeVisible()
+  await expect(page.getByText(/get back in if they forgot their password/)).toBeVisible()
+  await page.getByRole('button', { name: 'Dismiss' }).click()
+
+  await page.getByRole('button', { name: 'Send sign-in link to Ada Owner' }).click()
+  await expect(page.getByText('Sign-in link ready to share')).toBeVisible()
+  await expect(page.getByText(/Email delivery is unavailable/)).toBeVisible()
+  await expect(page.getByText('https://conveyor.example/sign-in/owner@example.test')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Copy sign-in link' })).toBeVisible()
+})
+
+test('inviting an existing member with a different role is presented as a role change', async ({ page }) => {
+  const state = membershipDefaults()
+  await mockWorkspace(page, 'operator', state)
+  await openMembers(page, 'operator')
+
+  const form = page.getByRole('form', { name: 'Invite a member' })
+  await form.getByLabel('Email address').fill('MEMBER@EXAMPLE.TEST')
+  await form.getByLabel('Role').selectOption('maintainer')
+  await expect(form.getByText(/Role change: member@example.test already has the Contributor role/)).toBeVisible()
+  await form.getByRole('button', { name: 'Change role' }).click()
+
+  await expect(page.getByText('Role updated')).toBeVisible()
+  await expect(page.getByText('member@example.test changed from Contributor to Maintainer.')).toBeVisible()
+  const memberRow = page.getByText('Bo Member').locator('../..')
+  await expect(memberRow.getByText('Maintainer', { exact: true })).toBeVisible()
+})
+
+test('a sole-operator role-change refusal names the existing account and attempted roles', async ({ page }) => {
+  const state = { ...membershipDefaults(), soleOperator: true }
+  await mockWorkspace(page, 'operator', state)
+  await openMembers(page, 'operator')
+
+  const form = page.getByRole('form', { name: 'Invite a member' })
+  await form.getByLabel('Email address').fill('owner@example.test')
+  await form.getByLabel('Role').selectOption('contributor')
+  await expect(form.getByText(/already has the Operator role/)).toBeVisible()
+  await form.getByRole('button', { name: 'Change role' }).click()
+
+  await expect(form.getByText(/account already exists as owner@example.test with the Operator role/)).toBeVisible()
+  await expect(form.getByText(/attempted role change to Contributor was refused/)).toBeVisible()
+  await expect(form.getByText(/Grant another member the Operator role first/)).toBeVisible()
 })
 
 test('an operator can invite executors and maintainers and sees their role labels', async ({ page }) => {
@@ -197,6 +282,7 @@ test('a signed-in viewer sees the workspace and role but no mutation affordances
   await expect(page.getByText('View only')).toBeVisible()
   await expect(page.getByRole('form', { name: 'Invite a member' })).toHaveCount(0)
   await expect(page.getByRole('button', { name: /Remove Vi Viewer/ })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: /Send sign-in link/ })).toHaveCount(0)
 
   await page.goto('/tasks')
   await expect(page.getByRole('heading', { name: 'Tasks' })).toBeVisible()
@@ -225,6 +311,7 @@ test('a member sees the roster read-only, with no management controls', async ({
   await expect(page.getByText('View only')).toBeVisible()
   await expect(page.getByRole('form', { name: 'Invite a member' })).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Remove Ada Owner' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: /Send sign-in link/ })).toHaveCount(0)
   await expect(page.getByText('Pending invitations')).toHaveCount(0)
 })
 
