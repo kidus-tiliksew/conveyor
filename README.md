@@ -1,20 +1,22 @@
 # Conveyor
 
-Generating code is easier than it has ever been. Checking that the code
+Generating code is easier than ever. Checking that the code
 matches product intent is now the bottleneck, and it is a bottleneck that
 gets worse as agents get faster: a queue of unsupervised agents can ship
 more unread code per day than a team can read.
 
-A software factory is the industrial answer to this shape of problem. You do
+A software factory is the answer to this shape of problem. You do
 not inspect every screw; you fix the process so that inspection happens at
 the points where mistakes can happen, and you make every unit traceable
 so that when something is wrong you know what else is affected.
 
-Conveyor is a software factory for agent-written code. It queues work from Requirements, System Design documents, and decisions. Agents on your
-machines plan, implement, and review that work.
+Conveyor is a software factory for agent-written code. 
 
-Human operators confirm the
-documents, and approve plans when required.
+It queues work from Requirements, System Design documents, and decisions. 
+
+Agents on your machines plan, implement, and review that work.
+
+Human operators confirm the documents, and approve plans when required.
 
 Conveyor has used this process to build itself since July 2026.
 

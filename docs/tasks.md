@@ -1,5 +1,10 @@
 # Tasks
 
+<a href="assets/screenshots/conveyor-run-auto.png">
+  <img src="assets/screenshots/conveyor-run-auto.png" width="100%" alt="Four conveyor run --auto sessions working tasks in parallel, each showing stage progress, an approval gate, and live agent output">
+</a>
+<sub>Four tasks running in parallel with <code>conveyor run --auto</code></sub>
+
 A task is the unit of intended change: one branch, one eventual pull
 request, one thread of judgment from intent to merge. This page follows a
 task through its whole life: creation, context, governance, execution,
@@ -87,12 +92,17 @@ Spec and implement stages get one order per dispatch. Review gets one order
 per configured review seat, so a two-seat setup means two independent
 reviews per round.
 
-Nothing is pushed to agents. Two launchers pull: the durable worker
-(`conveyor worker run`), which polls, claims eligible orders, and supervises
-harness children from its local execution setup; and `conveyor run
-<task-id>`, where a person claims and executes stages interactively. Both
-launch the agent with its work-order identity and task assignment in the
-environment and the Conveyor MCP endpoint configured.
+Nothing is pushed to agents. You run a task with `conveyor run <task-id>`:
+it claims each stage on your machine, launches the agent from your local
+execution setup with its work-order identity and task assignment in the
+environment and the Conveyor MCP endpoint configured, shows you the output,
+and surfaces gates inline. 
+
+Pass `--auto` to chain claimable stages without per-stage confirmation.
+
+A durable worker (`conveyor worker run`) can do the same thing unattended,
+polling the queue and running eligible orders around the clock; see
+[Worker operations](worker-operations.md) if you want one.
 
 ## What a work order carries
 

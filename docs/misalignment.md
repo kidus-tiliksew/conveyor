@@ -1,5 +1,10 @@
 # Misalignment
 
+<a href="assets/screenshots/system-design-drift.png">
+  <img src="assets/screenshots/system-design-drift.png" width="100%" alt="A confirmed System Design document with a drift signal: code changed in the repository without a matching update, awaiting an operator's resolution">
+</a>
+<sub>A governed path changed without this design; the operator picks the resolution</sub>
+
 Conveyor's core wager is that generating code is no longer the hard part;
 noticing when the code and the confirmed intent disagree is. Misalignment
 detection is how the factory notices. It compares three things that can

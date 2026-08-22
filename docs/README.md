@@ -1,13 +1,3 @@
-# Conveyor documentation
-
-Conveyor is a software factory for agent-written code. Operators confirm
-Requirements, System Design documents, and decisions; agents on your machines
-plan, implement, and review tasks triggered from those documents; every code merge
-links back to the intent that justified it. 
-
-These docs cover installing the
-factory, running it alone or as a team, and the concepts that make it work.
-
 ## Getting started
 
 - [Installation](installation.md): release installer, source builds, prerequisites
