@@ -204,7 +204,7 @@ func (s *Server) revokeWorkspaceMembership(w http.ResponseWriter, r *http.Reques
 
 func (s *Server) revokeWorkspaceInvitation(w http.ResponseWriter, r *http.Request) {
 	workspaceID, _ := store.WorkspaceFromContext(r.Context())
-	if err := s.Memberships.RevokeWorkspaceInvitation(r.Context(), chi.URLParam(r, "email"), workspaceID); err != nil {
+	if err := s.Memberships.RevokeWorkspaceInvitation(r.Context(), chiURLParamEmail(r), workspaceID); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeWorkspaceNotFound(w)
 			return

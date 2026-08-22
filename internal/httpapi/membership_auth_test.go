@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
@@ -21,6 +22,7 @@ type membershipFixture struct {
 	grantErr        error
 	revokeErr       error
 	invitationErr   error
+	revokedEmails   []string
 	authorizeErrs   map[core.Capability]error
 	invitations     []core.WorkspaceInvitation
 	invitationList  []string
@@ -31,6 +33,16 @@ type identityProvisioningFixture struct {
 	store.Store
 	calls        int
 	provisionErr error
+}
+
+type recordingInvitationSessionFixture struct {
+	invitationSessionFixture
+	issueEmails []string
+}
+
+func (f *recordingInvitationSessionFixture) IssueSignInLink(ctx context.Context, email string) (core.IssuedSignInLink, error) {
+	f.issueEmails = append(f.issueEmails, email)
+	return f.invitationSessionFixture.IssueSignInLink(ctx, email)
 }
 
 func (f *identityProvisioningFixture) ProvisionIdentityUser(_ context.Context, email, displayName string) (core.IdentityUser, error) {
@@ -93,7 +105,8 @@ func (f *membershipFixture) ListWorkspaceInvitations(_ context.Context, workspac
 func (f *membershipFixture) GrantWorkspaceRole(context.Context, string, string, core.WorkspaceRole) (core.MembershipGrant, error) {
 	return core.MembershipGrant{}, f.grantErr
 }
-func (f *membershipFixture) RevokeWorkspaceInvitation(context.Context, string, string) error {
+func (f *membershipFixture) RevokeWorkspaceInvitation(_ context.Context, email, _ string) error {
+	f.revokedEmails = append(f.revokedEmails, email)
 	return f.invitationErr
 }
 func (f *membershipFixture) RevokeWorkspaceRole(context.Context, string, string) error {
@@ -204,6 +217,66 @@ func TestRevokeWorkspaceInvitationClassifiesNotFoundAndStoreFailures(t *testing.
 	response = call()
 	if response.Code != http.StatusInternalServerError || strings.Contains(response.Body.String(), rawError) || response.Body.String() != "internal server error\n" {
 		t.Fatalf("infrastructure status=%d body=%q", response.Code, response.Body.String())
+	}
+}
+
+func TestInvitationEmailRoutesDecodeEncodedAndPreserveUnencodedAddresses(t *testing.T) {
+	for _, encoded := range []bool{true, false} {
+		name := "unencoded"
+		emailSegment := "user@example.com"
+		if encoded {
+			name = "encoded"
+			emailSegment = "user%40example.com"
+		}
+		t.Run(name, func(t *testing.T) {
+			memberships := &membershipFixture{
+				workspaces:  []core.Workspace{{ID: "alpha"}},
+				roles:       map[string]map[string]core.WorkspaceRole{"operator": {"alpha": core.WorkspaceRoleOperator}},
+				invitations: []core.WorkspaceInvitation{{WorkspaceID: "alpha", Email: "user@example.com"}},
+			}
+			sessions := &recordingInvitationSessionFixture{}
+			server := NewServer(store.NewMemory())
+			server.Workspaces, server.Memberships = memberships, memberships
+			server.InvitationSessions = sessions
+			server.Credentials = staticCredentialVerifier{
+				"operator-token": {ID: "pat_operator", OwnerUserID: "operator", Kind: core.CredentialUser, Scope: core.CredentialScopeOperator},
+			}
+			call := func(method, suffix string) *httptest.ResponseRecorder {
+				t.Helper()
+				request := httptest.NewRequest(method, "/v1/workspaces/alpha/invitations/"+emailSegment+suffix, nil)
+				if encoded && request.URL.RawPath == "" {
+					t.Fatal("encoded request did not populate URL.RawPath")
+				}
+				request.Header.Set("Authorization", "Bearer operator-token")
+				response := httptest.NewRecorder()
+				server.Handler().ServeHTTP(response, request)
+				return response
+			}
+
+			if response := call(http.MethodPost, "/resend"); response.Code != http.StatusOK {
+				t.Fatalf("resend status=%d body=%q", response.Code, response.Body.String())
+			}
+			if got := sessions.issueEmails; len(got) != 1 || got[0] != "user@example.com" {
+				t.Fatalf("resend emails=%v", got)
+			}
+
+			if response := call(http.MethodDelete, ""); response.Code != http.StatusNoContent {
+				t.Fatalf("revoke status=%d body=%q", response.Code, response.Body.String())
+			}
+			if got := memberships.revokedEmails; len(got) != 1 || got[0] != "user@example.com" {
+				t.Fatalf("revoke emails=%v", got)
+			}
+		})
+	}
+}
+
+func TestChiURLParamEmailFallsBackWhenUnescapingFails(t *testing.T) {
+	routeContext := chi.NewRouteContext()
+	routeContext.URLParams.Add("email", "invalid%escape@example.com")
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	request = request.WithContext(context.WithValue(request.Context(), chi.RouteCtxKey, routeContext))
+	if got := chiURLParamEmail(request); got != "invalid%escape@example.com" {
+		t.Fatalf("chiURLParamEmail()=%q", got)
 	}
 }
 

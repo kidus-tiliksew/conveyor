@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { MailPlus, RotateCw, Trash2 } from 'lucide-react'
+import { KeyRound, MailPlus, RotateCw, Trash2 } from 'lucide-react'
 import { useState } from 'react'
 import {
   fetchWorkspaceInvitations,
@@ -25,6 +25,12 @@ function formatTimestamp(value: string) {
 
 function roleLabel(role: WorkspaceRole) {
   return role.charAt(0).toUpperCase() + role.slice(1)
+}
+
+type DeliveryNotice = {
+  grant: MembershipGrant
+  kind: 'invitation' | 'role_change' | 'sign_in'
+  previousRole?: WorkspaceRole
 }
 
 /**
@@ -60,11 +66,19 @@ export function MembersSection() {
 
   const [email, setEmail] = useState('')
   const [role, setRole] = useState<WorkspaceRole>('contributor')
-  const [delivery, setDelivery] = useState<MembershipGrant | null>(null)
+  const [delivery, setDelivery] = useState<DeliveryNotice | null>(null)
+  const normalizedEmail = email.trim().toLowerCase()
+  const existingMember = members.data?.find((member) => member.email?.trim().toLowerCase() === normalizedEmail)
+  const roleChange = existingMember && existingMember.role !== role ? existingMember : undefined
   const invite = useMutation({
-    mutationFn: () => inviteWorkspaceMember(token, workspace, { email: email.trim(), role }),
-    onSuccess: async (result) => {
-      setDelivery(result)
+    mutationFn: (request: { email: string; role: WorkspaceRole; existingRole?: WorkspaceRole }) =>
+      inviteWorkspaceMember(token, workspace, { email: request.email, role: request.role }),
+    onSuccess: async (result, request) => {
+      setDelivery({
+        grant: result,
+        kind: request.existingRole ? 'role_change' : 'invitation',
+        previousRole: request.existingRole,
+      })
       setEmail('')
       setRole('contributor')
       await refresh()
@@ -80,8 +94,14 @@ export function MembersSection() {
   })
   const resendInvitation = useMutation({
     mutationFn: (invitedEmail: string) => resendWorkspaceInvitation(token, workspace, invitedEmail),
-    onSuccess: (result) => setDelivery(result),
+    onSuccess: (result) => setDelivery({ grant: result, kind: 'invitation' }),
   })
+  const sendMemberSignInLink = useMutation({
+    mutationFn: (memberEmail: string) => resendWorkspaceInvitation(token, workspace, memberEmail),
+    onSuccess: (result) => setDelivery({ grant: result, kind: 'sign_in' }),
+  })
+
+  const attemptedRoleChange = invite.variables?.existingRole
 
   return (
     <div className="space-y-4">
@@ -97,7 +117,7 @@ export function MembersSection() {
               aria-label="Invite a member"
               onSubmit={(event) => {
                 event.preventDefault()
-                invite.mutate()
+                invite.mutate({ email: email.trim(), role, existingRole: roleChange?.role })
               }}
             >
               <Input
@@ -123,15 +143,24 @@ export function MembersSection() {
               </Select>
               <Button type="submit" disabled={!email.trim() || invite.isPending}>
                 <MailPlus />
-                {invite.isPending ? 'Inviting…' : 'Invite'}
+                {invite.isPending
+                  ? roleChange
+                    ? 'Changing role…'
+                    : 'Inviting…'
+                  : roleChange
+                    ? 'Change role'
+                    : 'Invite'}
               </Button>
               <p className="basis-full text-xs leading-5 text-muted">
-                The person receives a one-time sign-in link. Opening it creates their account and workspace membership.
-                Operators can invite, remove, and change who else is an operator.
+                {roleChange
+                  ? `Role change: ${roleChange.email} already has the ${roleLabel(roleChange.role)} role. Submitting will change their role to ${roleLabel(role)}.`
+                  : 'The person receives a one-time sign-in link. Opening it creates their account and workspace membership. Operators can invite, remove, and change who else is an operator.'}
               </p>
               {invite.error && (
                 <p className="basis-full text-xs text-failure">
-                  {errorMessage(invite.error, 'Could not send that invitation.')}
+                  {invite.error instanceof LastWorkspaceOperatorError && attemptedRoleChange
+                    ? `This account already exists as ${invite.variables.email} with the ${roleLabel(attemptedRoleChange)} role. The attempted role change to ${roleLabel(invite.variables.role)} was refused because this is the sole workspace operator. Grant another member the Operator role first, then try the demotion again.`
+                    : errorMessage(invite.error, 'Could not send that invitation.')}
                 </p>
               )}
             </form>
@@ -141,26 +170,45 @@ export function MembersSection() {
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <p className="text-sm font-medium text-foreground">
-                    {delivery.delivery === 'sent' ? 'Invitation sent' : 'Invitation ready to share'}
+                    {delivery.kind === 'sign_in'
+                      ? delivery.grant.delivery === 'sent'
+                        ? 'Sign-in link sent'
+                        : 'Sign-in link ready to share'
+                      : delivery.kind === 'role_change'
+                        ? 'Role updated'
+                        : delivery.grant.delivery === 'sent'
+                          ? 'Invitation sent'
+                          : 'Invitation ready to share'}
                   </p>
                   <p className="mt-1 text-xs leading-5 text-muted">
-                    {delivery.delivery === 'sent'
-                      ? 'We sent a sign-in link by email.'
-                      : delivery.sign_in_url
-                        ? 'Email delivery is unavailable. Copy this link and send it yourself.'
-                        : 'The invitation was created. Use resend to create a new sign-in link.'}
+                    {delivery.kind === 'sign_in'
+                      ? delivery.grant.delivery === 'sent'
+                        ? 'We emailed a fresh sign-in link. The member can use it to get back in if they forgot their password.'
+                        : delivery.grant.sign_in_url
+                          ? 'Email delivery is unavailable. Copy this fresh sign-in link so the member can get back in if they forgot their password.'
+                          : 'A fresh sign-in link could not be delivered. Try sending it again.'
+                      : delivery.kind === 'role_change'
+                        ? `${delivery.grant.email} changed from ${roleLabel(delivery.previousRole ?? delivery.grant.role)} to ${roleLabel(delivery.grant.role)}.${delivery.grant.sign_in_url ? ' Email delivery is unavailable; copy the fresh sign-in link below.' : ''}`
+                        : delivery.grant.delivery === 'sent'
+                          ? 'We sent a sign-in link by email.'
+                          : delivery.grant.sign_in_url
+                            ? 'Email delivery is unavailable. Copy this link and send it yourself.'
+                            : 'The invitation was created. Use resend to create a new sign-in link.'}
                   </p>
                 </div>
                 <Button size="sm" variant="ghost" onClick={() => setDelivery(null)}>
                   Dismiss
                 </Button>
               </div>
-              {delivery.sign_in_url && (
+              {delivery.grant.sign_in_url && (
                 <div className="flex items-center gap-2 rounded-md border border-border bg-card p-2">
-                  <p className="min-w-0 flex-1 truncate font-mono text-xs" title={delivery.sign_in_url}>
-                    {delivery.sign_in_url}
+                  <p className="min-w-0 flex-1 truncate font-mono text-xs" title={delivery.grant.sign_in_url}>
+                    {delivery.grant.sign_in_url}
                   </p>
-                  <CopyButton value={delivery.sign_in_url} label="Copy invitation link" />
+                  <CopyButton
+                    value={delivery.grant.sign_in_url}
+                    label={delivery.kind === 'invitation' ? 'Copy invitation link' : 'Copy sign-in link'}
+                  />
                 </div>
               )}
             </div>
@@ -181,6 +229,20 @@ export function MembersSection() {
                 <Badge variant={member.role === 'operator' ? 'accent' : 'default'}>{roleLabel(member.role)}</Badge>
                 {canManage && (
                   <Button
+                    size="sm"
+                    variant="secondary"
+                    aria-label={`Send sign-in link to ${member.display_name || member.email || member.user_id}`}
+                    disabled={sendMemberSignInLink.isPending || !member.email}
+                    onClick={() => member.email && sendMemberSignInLink.mutate(member.email)}
+                  >
+                    <KeyRound />
+                    {sendMemberSignInLink.isPending && sendMemberSignInLink.variables === member.email
+                      ? 'Sending…'
+                      : 'Send sign-in link'}
+                  </Button>
+                )}
+                {canManage && (
+                  <Button
                     size="icon"
                     variant="ghost"
                     className="hover:text-failure"
@@ -199,6 +261,11 @@ export function MembersSection() {
               {removeMember.error instanceof LastWorkspaceOperatorError
                 ? 'This workspace would be left without an operator. Make someone else an operator first, then remove this one.'
                 : errorMessage(removeMember.error, 'Could not remove that member.')}
+            </p>
+          )}
+          {sendMemberSignInLink.error && (
+            <p className="text-sm text-failure">
+              {errorMessage(sendMemberSignInLink.error, 'Could not send that sign-in link.')}
             </p>
           )}
         </CardContent>
