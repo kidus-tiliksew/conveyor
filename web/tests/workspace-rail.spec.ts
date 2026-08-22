@@ -17,6 +17,12 @@ async function mockShell(page: Page) {
       await route.fulfill({ json: workspaces })
       return
     }
+    if (url.pathname === '/v1/me') {
+      await route.fulfill({
+        json: { id: 'usr_operator', email: 'operator@example.test', display_name: 'Operator', role: 'operator' },
+      })
+      return
+    }
     await route.fulfill({ json: [] })
   })
 }
