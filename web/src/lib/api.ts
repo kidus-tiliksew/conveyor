@@ -244,7 +244,14 @@ export async function inviteWorkspaceMember(
     headers: mutationHeaders(token),
     body: JSON.stringify(input),
   })
-  if (!response.ok) throw new Error(membershipErrorMessage(await response.text(), response.statusText))
+  if (!response.ok) {
+    const body = await response.text()
+    const message = membershipErrorMessage(body, response.statusText)
+    if (response.status === 409 && membershipErrorCode(body) === 'last_workspace_operator') {
+      throw new LastWorkspaceOperatorError(message)
+    }
+    throw new Error(message)
+  }
   return response.json() as Promise<import('./types').MembershipGrant>
 }
 
@@ -285,6 +292,14 @@ function membershipErrorMessage(body: string, fallback: string) {
     return parsed.message || parsed.fields?.[0]?.message || text || fallback
   } catch {
     return text || fallback
+  }
+}
+
+function membershipErrorCode(body: string) {
+  try {
+    return (JSON.parse(body) as { error?: string }).error
+  } catch {
+    return undefined
   }
 }
 
