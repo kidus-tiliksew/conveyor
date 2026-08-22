@@ -129,9 +129,15 @@ func (s *Server) resendWorkspaceInvitation(w http.ResponseWriter, r *http.Reques
 }
 
 func chiURLParamEmail(r *http.Request) string {
-	// chi has already URL-decoded route parameters; keeping this helper local
-	// makes it harder to accidentally accept an email from a request body.
-	return chi.URLParam(r, "email")
+	// chi routes on RawPath when it is populated, so route parameters can still
+	// be percent-encoded. Keep invalid escapes unchanged for downstream
+	// validation instead of turning malformed input into a transport error.
+	email := chi.URLParam(r, "email")
+	decoded, err := url.PathUnescape(email)
+	if err != nil {
+		return email
+	}
+	return decoded
 }
 
 func sendSignInMail(cfg config.InvitationDelivery, to, link string) error {
