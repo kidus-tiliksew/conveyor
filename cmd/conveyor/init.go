@@ -282,8 +282,7 @@ func initializeDeployment(ctx context.Context, output io.Writer, configPath stri
 	}
 	if !seeded {
 		if _, workspaceErr := pgStore.GetWorkspace(ctx, answers.WorkspaceID); workspaceErr == nil {
-			fmt.Fprintln(output, "Conveyor is already initialized; no changes were made.")
-			return nil
+			fmt.Fprintln(output, "Conveyor is already initialized; issuing a fresh first-operator sign-in link.")
 		}
 	}
 	owner, err := pgStore.VerifyPersonalAccessToken(ctx, apiToken)
@@ -303,6 +302,9 @@ func initializeDeployment(ctx context.Context, output io.Writer, configPath stri
 		}
 	}
 	fmt.Fprintf(output, "Initialized Conveyor organization %q and workspace %q.\nConfig: %s\nNext: run `conveyord install --config %s`.\n", answers.Organization, answers.WorkspaceID, absoluteConfig, absoluteConfig)
+	if err = issueAndPrintSignInLink(ctx, output, pgStore, answers.OperatorEmail, config.InvitationDeliveryFromEnvironment().PublicURL); err != nil {
+		return fmt.Errorf("issue first operator sign-in link; initialization state is safe to retry: %w", err)
+	}
 	return nil
 }
 
