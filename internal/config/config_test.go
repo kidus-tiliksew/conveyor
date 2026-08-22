@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -565,6 +566,131 @@ func TestWorkOrderQueueTimeoutDefaultsAndRejectsInvalidDuration(t *testing.T) {
 	if _, err = ParseWorkspaceDocument(invalid, deployment, "test"); err == nil || !strings.Contains(err.Error(), "work_order_queue_timeout") {
 		t.Fatalf("invalid timeout error=%v", err)
 	}
+}
+
+func TestWorkspaceParsingDoesNotMutateDeploymentConfig(t *testing.T) {
+	seed, err := normalize(validConfig(), "deployment seed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	policyData, err := MarshalPolicyDocument(seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fullData, err := MarshalWorkspaceDocument(seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	parsers := []struct {
+		name  string
+		parse func([]byte, *Config) (*Config, error)
+	}{
+		{name: "ParseWorkspaceDocument", parse: func(data []byte, deployment *Config) (*Config, error) {
+			return ParseWorkspaceDocument(data, deployment, "deployment isolation")
+		}},
+		{name: "ParseStoredWorkspaceDocument", parse: func(data []byte, deployment *Config) (*Config, error) {
+			parsed, _, err := ParseStoredWorkspaceDocument(data, deployment, "stored deployment isolation")
+			return parsed, err
+		}},
+	}
+	documents := []struct {
+		name string
+		data []byte
+	}{
+		{name: "policy only", data: policyData},
+		{name: "full workspace", data: fullData},
+	}
+
+	for _, parser := range parsers {
+		for _, document := range documents {
+			t.Run(parser.name+"/"+document.name, func(t *testing.T) {
+				deployment, normalizeErr := normalize(validConfig(), "shared deployment")
+				if normalizeErr != nil {
+					t.Fatal(normalizeErr)
+				}
+				enrichMutableConfigForIsolationTest(deployment)
+				beforeValue := fmt.Sprintf("%#v", deployment)
+				before, marshalErr := yaml.Marshal(deployment)
+				if marshalErr != nil {
+					t.Fatal(marshalErr)
+				}
+
+				parsed, parseErr := parser.parse(document.data, deployment)
+				if parseErr != nil {
+					t.Fatal(parseErr)
+				}
+				after, marshalErr := yaml.Marshal(deployment)
+				if marshalErr != nil {
+					t.Fatal(marshalErr)
+				}
+				afterValue := fmt.Sprintf("%#v", deployment)
+				if afterValue != beforeValue || !bytes.Equal(after, before) {
+					t.Fatalf("deployment config changed during parsing\nbefore:\n%s\nafter:\n%s", before, after)
+				}
+				if parsed.Workspace != "demo" || parsed.Routing.Stages["implement"].TimeoutText != "4h" || parsed.Repos[0].Name != "repo" {
+					t.Fatalf("effective config changed: %+v", parsed)
+				}
+			})
+		}
+	}
+}
+
+func TestParsePolicyDocumentConcurrentlyAgainstSharedDeployment(t *testing.T) {
+	deployment, err := normalize(validConfig(), "shared deployment")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := MarshalPolicyDocument(deployment)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const goroutines = 32
+	const parsesPerGoroutine = 50
+	errs := make(chan error, goroutines)
+	var wait sync.WaitGroup
+	for i := 0; i < goroutines; i++ {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			for parse := 0; parse < parsesPerGoroutine; parse++ {
+				parsed, parseErr := ParseWorkspaceDocument(data, deployment, "concurrent policy parse")
+				if parseErr != nil {
+					errs <- parseErr
+					return
+				}
+				if parsed.Routing.Stages["implement"].TimeoutText != "4h" {
+					errs <- fmt.Errorf("implement timeout = %q", parsed.Routing.Stages["implement"].TimeoutText)
+					return
+				}
+			}
+		}()
+	}
+	wait.Wait()
+	close(errs)
+	for parseErr := range errs {
+		t.Fatal(parseErr)
+	}
+}
+
+func enrichMutableConfigForIsolationTest(config *Config) {
+	settings := *config.ExecutionSettings
+	config.ExecutionSettings = &settings
+	for stage, route := range config.Routing.Stages {
+		route.LegacyHarnesses = []string{"legacy-" + stage}
+		config.Routing.Stages[stage] = route
+	}
+	config.Harnesses = []Harness{{
+		Name: "codex", Command: []string{"codex", "{prompt}", "{mcp_config}"}, ResumeCommand: []string{"--resume", "{session_id}"},
+		ModelArgs: []string{"--model", "{model}"}, DefaultModelSentinels: []string{"default"}, EffortArgs: map[string][]string{"high": {"--effort", "high"}}, ProbeCommand: []string{"codex", "--version"},
+	}}
+	config.Review.Seats = []ReviewSeat{{Model: "reviewer", Harness: "codex", Effort: "high"}}
+	config.Setups[0].Review.Seats = []ReviewSeat{{Model: "setup-reviewer", Harness: "codex"}}
+	config.Repos[0].LegacySecretRefs = []string{"legacy-secret"}
+	config.Repos[0].LegacyToolPolicy = map[string]any{"nested": map[string]any{"allow": []any{"read", map[string]any{"path": "internal/config"}}}}
+	config.Monitor.Repositories = []string{"repo"}
+	config.PlanningModels = []string{"planner"}
 }
 
 func TestFirstActivityTimeoutDefaultsAndValidatesStageTimeouts(t *testing.T) {
