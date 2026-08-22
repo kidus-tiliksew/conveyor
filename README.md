@@ -65,25 +65,6 @@ Conveyor has used this process to build itself since July 2026.
   </tr>
 </table>
 
-## Why a software factory
-
-Generating more code is easier than ever. Checking that the code matches product intent is now harder.
-
-A queue of unsupervised agents can ship code that nobody has read. Conveyor
-tries to put human judgment at the points where mistakes change the product or its
-architecture:
-
-- Agents and operators draft documents. Operators confirm them.
-- A separate agent reviews each change. The server rejects self-review and
-  missing test evidence.
-- Governed code changes without a design revision raise a drift signal.
-- The monitor files reconciliation tasks for work outside the pipeline and
-  failures found after merge.
-
-Conveyor coordinates the work. It does not run your code in a hosted sandbox
-or hold your model credentials. Agents edit and test in Git worktrees on your
-hardware. Delivery uses ordinary pull requests.
-
 ## The knowledge graph
 
 Conveyor links each change to the documents, task, review, and test evidence
