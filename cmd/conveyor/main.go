@@ -44,6 +44,7 @@ func main() {
 	}
 	root.AddCommand(
 		authCmd(),
+		userCmd(),
 		mcpCmd(),
 		skillsCmd(),
 		taskCmd(),
