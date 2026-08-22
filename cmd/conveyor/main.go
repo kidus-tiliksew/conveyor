@@ -123,7 +123,7 @@ func monitorCmd() *cobra.Command {
 			return nil
 		},
 	}
-	resolve.Flags().StringVar(&outcome, "outcome", "", "requirements_amended, conflict_resolved, or change_reverted")
+	resolve.Flags().StringVar(&outcome, "outcome", "", "requirements_amended, design_document_updated, conflict_resolved, or change_reverted")
 	command.AddCommand(status, resolve)
 	return command
 }

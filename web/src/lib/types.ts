@@ -496,7 +496,7 @@ export interface WorkspaceConfigDocument {
   monitor?: { enabled: boolean; repositories: string[]; poll_interval: string; startup_window: string }
 }
 
-export type MonitorSignalKind = 'post_merge_failure' | 'direct_push' | 'external_pr_merge' | 'revert'
+export type MonitorSignalKind = 'post_merge_failure' | 'direct_push' | 'external_pr_merge' | 'lineaged_merge' | 'revert'
 export type MonitorDriftOutcome =
   | 'requirements_amended'
   | 'design_document_updated'
