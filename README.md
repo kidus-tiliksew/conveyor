@@ -2,8 +2,12 @@
 
 Conveyor is a software factory for agent-written code. It queues work from
 confirmed requirements, System Design documents, and decisions. Agents on your
-machines plan, implement, and review that work. Operators confirm the
-documents, approve plans when required, and control the merge policy.
+machines plan, implement, and review that work.
+
+Human operators confirm the
+documents, and approve plans when required.
+
+Conveyor has used this process to build itself since July 2026.
 
 <table>
   <tr>
@@ -52,15 +56,12 @@ documents, approve plans when required, and control the merge policy.
   </tr>
 </table>
 
-Conveyor has used this process to build itself since July 2026.
-
 ## Why a software factory
 
-Generating more code is easy. Checking that the code matches product intent is
-the hard part.
+Generating more code is easier than ever. Checking that the code matches product intent is now harder.
 
 A queue of unsupervised agents can ship code that nobody has read. Conveyor
-puts human judgment at the points where mistakes change the product or its
+tries to put human judgment at the points where mistakes change the product or its
 architecture:
 
 - Agents and operators draft documents. Operators confirm them.
@@ -99,17 +100,6 @@ signal. Repository drift and post-merge failures raise signals too. Conveyor
 never rewrites code or documents on its own. An operator can acknowledge the
 signal or send follow-up work through the normal gates.
 
-The event log is the source of the graph. PostgreSQL stores a projection for
-queries. `conveyor lineage rebuild` rebuilds it from the workspace's events.
-
-## How work moves
-
-Planning produces confirmed documents and dependency-ordered tasks. An agent
-claims a task in a dedicated worktree, submits a plan when required, then
-implements and tests the change. A different agent reviews it against the
-pinned documents and test evidence. Conveyor applies the merge gate and
-monitors the default branch afterward.
-
 ## Architecture
 
 ```text
@@ -143,7 +133,7 @@ A deployed factory needs:
 - PostgreSQL 15 or newer
 - Git
 - an authenticated `gh` CLI, or `GH_TOKEN` for headless use
-- an API key for the configured OpenAI-compatible model endpoint
+- an API key for the configured OpenAI-compatible model endpoint like OpenRouter
 - the agent CLIs you plan to run
 
 The release installer needs `curl`, `tar`, and a SHA-256 tool. It does not need
@@ -153,6 +143,8 @@ Source development also needs Go 1.24, Node with npm, and Docker with Compose.
 
 ## Getting started
 
+Conveyor runs in two ways: solo mode, where one person runs the whole factory
+on one machine, or multiplayer mode, where multiple users share a team server.
 The steps below stand up a factory end to end on one machine. A team server
 works the same way; repeat step 5 on each contributor machine.
 
