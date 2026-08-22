@@ -89,7 +89,6 @@ function summarizeDesign(view: typeof design) {
 async function initialize(page: Page) {
   await page.addInitScript(() => {
     localStorage.setItem('conveyor-workspace', 'demo')
-    sessionStorage.setItem('conveyor-token', 'test-token')
   })
 }
 
@@ -115,7 +114,7 @@ test('System Design renders a category tree, one attention surface, and authenti
     const url = new URL(request.url())
     if (url.pathname === '/v1/system-designs' || url.pathname === '/v1/decisions') {
       expect(url.searchParams.get('workspace_id')).toBe('demo')
-      expect(request.headers().authorization).toBe('Bearer test-token')
+      expect(request.headers().authorization).toBeUndefined()
       protectedReads.push(url.pathname)
     }
     if (url.pathname === '/v1/system-designs') return route.fulfill({ json: [summarizeDesign(design)] })
@@ -136,7 +135,7 @@ test('System Design renders a category tree, one attention surface, and authenti
         ],
       })
     if (url.pathname === '/v1/system-designs/design-dispatch/versions/2/confirm') {
-      expect(request.headers().authorization).toBe('Bearer test-token')
+      expect(request.headers().authorization).toBeUndefined()
       expect(request.headers()['if-match']).toBe('"1"')
       expect(url.searchParams.get('workspace_id')).toBe('demo')
       confirmed = true
@@ -559,7 +558,7 @@ test('operators confirm and dismiss proposed decisions with conflict-safe refres
     }
     if (url.pathname === '/v1/decisions/DEC-1/confirm') {
       expect(request.method()).toBe('POST')
-      expect(request.headers().authorization).toBe('Bearer test-token')
+      expect(request.headers().authorization).toBeUndefined()
       expect(request.headers()['x-conveyor-actor']).toBeUndefined()
       decisions = decisions.map((item) =>
         item.id === 'DEC-1'
@@ -574,7 +573,7 @@ test('operators confirm and dismiss proposed decisions with conflict-safe refres
       return route.fulfill({ json: decisions[0] })
     }
     if (url.pathname === '/v1/decisions/DEC-2/dismiss') {
-      expect(request.headers().authorization).toBe('Bearer test-token')
+      expect(request.headers().authorization).toBeUndefined()
       decisions = decisions.map((item) =>
         item.id === 'DEC-2'
           ? {

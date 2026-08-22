@@ -3,7 +3,7 @@ import { Download, FileText, Image as ImageIcon, Paperclip, Video, X } from 'luc
 import type { Artifact } from '../../lib/types'
 import { downloadArtifact, fetchArtifactObjectURL } from '../../lib/api'
 import { absoluteTime, cn, formatBytes } from '../../lib/utils'
-import { useOperatorToken } from '../app-shell'
+import { useDashboardSession } from '../app-shell'
 import { Badge } from '../ui/badge'
 import { Button } from '../ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
@@ -17,9 +17,8 @@ function isVideo(contentType: string) {
   return contentType.startsWith('video/')
 }
 
-// Fetch object URLs for media attachments so they can preview inline. The
-// download route needs the operator token and forces attachment disposition,
-// so a plain <img src> cannot load it; the URLs are revoked on unmount.
+// Fetch object URLs for media attachments so they can preview inline. The URLs
+// are revoked on unmount.
 function useMediaPreviews(attachments: Artifact[], token: string) {
   const signature = attachments.map((attachment) => attachment.id).join(',')
   const [urls, setUrls] = useState<Record<string, string>>({})
@@ -33,7 +32,7 @@ function useMediaPreviews(attachments: Artifact[], token: string) {
     for (const attachment of attachments.filter(
       (entry) => isImage(entry.content_type) || isVideo(entry.content_type),
     )) {
-      void fetchArtifactObjectURL(token, attachment)
+      void fetchArtifactObjectURL(attachment)
         .then((url) => {
           if (!active) {
             URL.revokeObjectURL(url)
@@ -62,7 +61,7 @@ function useMediaPreviews(attachments: Artifact[], token: string) {
 // as small tiles directly below the spec, each expandable in-place. Omitted
 // entirely when the task carries no attachments.
 export function AttachmentsCard({ attachments, title = 'Attachments' }: { attachments: Artifact[]; title?: string }) {
-  const token = useOperatorToken()
+  const token = useDashboardSession()
   const { urls, failed } = useMediaPreviews(attachments, token)
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const expanded = useMemo(
@@ -182,8 +181,8 @@ function AttachmentDialog({
           variant="secondary"
           size="sm"
           disabled={!token}
-          title={token ? undefined : 'Add the operator token in Settings to download'}
-          onClick={() => void downloadArtifact(token, attachment).catch(() => {})}
+          title={token ? undefined : 'Sign in to download'}
+          onClick={() => void downloadArtifact(attachment).catch(() => {})}
         >
           <Download />
           Download
@@ -212,7 +211,7 @@ function AttachmentDialog({
                 ? 'This evidence could not be loaded for preview. Use the authorized download instead.'
                 : token
                   ? 'No inline preview for this file type.'
-                  : 'Add the operator token in Settings to preview and download attachments.'}
+                  : 'Sign in to preview and download attachments.'}
             </p>
           </div>
         )}

@@ -10,12 +10,17 @@ async function mockShell(page: Page) {
   await page.addInitScript(() => {
     localStorage.setItem('conveyor-theme', 'dark')
     localStorage.setItem('conveyor-workspace', 'design')
-    sessionStorage.setItem('conveyor-token', 'operator-token')
   })
   await page.route('**/v1/**', async (route: Route) => {
     const url = new URL(route.request().url())
     if (url.pathname === '/v1/workspaces') {
       await route.fulfill({ json: workspaces })
+      return
+    }
+    if (url.pathname === '/v1/me') {
+      await route.fulfill({
+        json: { id: 'usr_operator', email: 'operator@example.test', display_name: 'Operator', role: 'operator' },
+      })
       return
     }
     await route.fulfill({ json: [] })

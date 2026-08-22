@@ -15,7 +15,7 @@ import {
   Trash2,
 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useOperatorToken, useWorkspaceCapability, useWorkspaceSelection } from '../components/app-shell'
+import { useDashboardSession, useWorkspaceCapability, useWorkspaceSelection } from '../components/app-shell'
 import { type AttentionItem, AttentionSurface } from '../components/documents/attention-surface'
 import { compareDocuments, type DocumentSort, type DocumentSortDirection } from '../components/documents/document-sort'
 import {
@@ -112,7 +112,7 @@ function requirementAttentionCount(item: RequirementSummary) {
  * arrive as proposed versions an operator confirms here.
  */
 export function RequirementsPage() {
-  const token = useOperatorToken()
+  const token = useDashboardSession()
   const canConfirmDocuments = useWorkspaceCapability('confirm_documents')
   const { workspace } = useWorkspaceSelection()
   const navigate = useNavigate()
@@ -175,11 +175,11 @@ export function RequirementsPage() {
   }
 
   const upload = useMutation({
-    mutationFn: ({ file, id }: { file: File; id?: string }) => uploadReferenceDocument(token, file, id),
+    mutationFn: ({ file, id }: { file: File; id?: string }) => uploadReferenceDocument(file, id),
     onSuccess: () => client.invalidateQueries({ queryKey: ['reference-documents', workspace] }),
   })
   const remove = useMutation({
-    mutationFn: (id: string) => deleteReferenceDocument(token, id),
+    mutationFn: (id: string) => deleteReferenceDocument(id),
     onSuccess: () => {
       setOpenOverview(undefined)
       return client.invalidateQueries({ queryKey: ['reference-documents', workspace] })
@@ -529,7 +529,7 @@ function RequirementDetailCanvas({ item, token }: { item: RequirementView; token
   const currentVersion = item.current_version?.version ?? 0
   const [attachmentOffer, setAttachmentOffer] = useState<number | null>(null)
   const confirm = useMutation({
-    mutationFn: (version: number) => confirmRequirementVersion(token, item.requirement.id, version, currentVersion),
+    mutationFn: (version: number) => confirmRequirementVersion(item.requirement.id, version, currentVersion),
     onSuccess: ({ version }) => setAttachmentOffer(version.version),
     onSettled: async () => {
       await Promise.all([
@@ -540,7 +540,7 @@ function RequirementDetailCanvas({ item, token }: { item: RequirementView; token
     },
   })
   const upload = useMutation({
-    mutationFn: (file: File) => uploadArtifact(token, file, undefined, item.requirement.id),
+    mutationFn: (file: File) => uploadArtifact(file, undefined, item.requirement.id),
     onSuccess: () => {
       void client.invalidateQueries({ queryKey: ['requirements', workspace] })
       void client.invalidateQueries({ queryKey: ['requirement', workspace, item.requirement.id] })
@@ -555,11 +555,11 @@ function RequirementDetailCanvas({ item, token }: { item: RequirementView; token
     ])
   }
   const acknowledgeStaleness = useMutation({
-    mutationFn: (signalID: string) => acknowledgeRequirementStaleness(token, item.requirement.id, signalID),
+    mutationFn: (signalID: string) => acknowledgeRequirementStaleness(item.requirement.id, signalID),
     onSettled: refreshRequirement,
   })
   const fileStalenessFollowUp = useMutation({
-    mutationFn: (signalID: string) => createRequirementStalenessFollowUp(token, item.requirement.id, signalID),
+    mutationFn: (signalID: string) => createRequirementStalenessFollowUp(item.requirement.id, signalID),
     onSettled: refreshRequirement,
   })
 
@@ -751,7 +751,6 @@ function RequirementDetailCanvas({ item, token }: { item: RequirementView; token
         <CheckpointContextOffer
           requirementId={item.requirement.id}
           requirementTitle={item.requirement.title}
-          token={token}
           onClose={() => setAttachmentOffer(null)}
         />
       )}
@@ -969,7 +968,7 @@ function RequirementDetailCanvas({ item, token }: { item: RequirementView; token
                 <button
                   type="button"
                   key={`${artifact.id}-${artifact.role}`}
-                  onClick={() => void downloadArtifact(token, artifact)}
+                  onClick={() => void downloadArtifact(artifact)}
                   className="flex w-full items-center gap-2 rounded-md border border-border p-2 text-left transition-colors hover:border-edge hover:bg-surface"
                 >
                   <Download className="size-3.5 shrink-0 text-primary" />
@@ -1080,12 +1079,10 @@ function systemDesignSubject(designs: SystemDesignSummary[], id?: string) {
 function CheckpointContextOffer({
   requirementId,
   requirementTitle,
-  token,
   onClose,
 }: {
   requirementId: string
   requirementTitle: string
-  token: string
   onClose: () => void
 }) {
   const { workspace } = useWorkspaceSelection()
@@ -1102,9 +1099,7 @@ function CheckpointContextOffer({
   const attach = useMutation({
     mutationFn: async () => {
       const results = await Promise.allSettled(
-        selected.map((taskId) =>
-          updateTaskContext(token, taskId, { add: { requirement_ids: [requirementId] }, remove: {} }),
-        ),
+        selected.map((taskId) => updateTaskContext(taskId, { add: { requirement_ids: [requirementId] }, remove: {} })),
       )
       const failed = results.filter((result) => result.status === 'rejected')
       if (failed.length > 0) throw new Error(`Could not attach context to ${failed.length} selected task(s).`)

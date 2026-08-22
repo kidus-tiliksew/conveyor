@@ -13,7 +13,7 @@ import {
 } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import {
-  useOperatorToken,
+  useDashboardSession,
   useWorkspaceCapability,
   useWorkspaceMembers,
   useWorkspaceSelection,
@@ -78,13 +78,13 @@ export function TasksPage() {
   const { task: selectedId, create } = useSearch({ strict: false }) as { task?: string; create?: boolean }
   const [filter, setFilter] = useTaskFilters('tasks')
   const [offset, setOffset] = useState(0)
-  const token = useOperatorToken()
+  const token = useDashboardSession()
   const canOperate = useWorkspaceCapability('operate_gates')
   // Who "my" is. Without an identity the preset has no referent, so it is not
   // offered rather than guessing (REQ-2).
   const { data: me } = useQuery({
     queryKey: ['caller-identity', token, workspace],
-    queryFn: () => fetchCallerIdentity(token),
+    queryFn: () => fetchCallerIdentity(),
     enabled: Boolean(workspace && token),
     retry: false,
   })

@@ -240,7 +240,6 @@ function activityFeed() {
 async function initShell(page: Page) {
   await page.addInitScript(() => {
     localStorage.setItem('conveyor-workspace', 'demo')
-    sessionStorage.setItem('conveyor-token', 'test-token')
   })
 }
 

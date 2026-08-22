@@ -3,7 +3,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { RotateCcw, TriangleAlert } from 'lucide-react'
 import { recoverInterruptedReviewRound } from '../../lib/api'
 import type { ActivityItem } from '../../lib/types'
-import { useOperatorToken } from '../app-shell'
+import { useDashboardSession } from '../app-shell'
 import { Button } from '../ui/button'
 
 export function hasInterruptedReviewRecovery(item: ActivityItem) {
@@ -12,11 +12,11 @@ export function hasInterruptedReviewRecovery(item: ActivityItem) {
 
 export function InterruptedReviewRecoveryCard({ item }: { item: ActivityItem }) {
   const recovery = item.interrupted_review_recovery
-  const token = useOperatorToken()
+  const token = useDashboardSession()
   const queryClient = useQueryClient()
   const requestId = useRef(crypto.randomUUID())
   const mutation = useMutation({
-    mutationFn: () => recoverInterruptedReviewRound(item.task.id, token, requestId.current),
+    mutationFn: () => recoverInterruptedReviewRound(item.task.id, requestId.current),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['task', item.task.id] })
       void queryClient.invalidateQueries({ queryKey: ['activity'] })

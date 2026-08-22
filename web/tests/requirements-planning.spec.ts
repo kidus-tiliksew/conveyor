@@ -194,7 +194,6 @@ const planningConfig = {
 async function initShell(page: Page) {
   await page.addInitScript(() => {
     localStorage.setItem('conveyor-workspace', 'demo')
-    sessionStorage.setItem('conveyor-token', 'test-token')
   })
 }
 
@@ -806,7 +805,7 @@ test('finalize immediately reveals a complete bundle preview, approval, and crea
   await page.route('**/v1/**', async (route) => {
     const url = new URL(route.request().url())
     expect(url.searchParams.get('workspace_id') ?? 'demo').toBe('demo')
-    if (url.pathname !== '/v1/workspaces') expect(route.request().headers().authorization).toBe('Bearer test-token')
+    if (url.pathname !== '/v1/workspaces') expect(route.request().headers().authorization).toBeUndefined()
     if (url.pathname === '/v1/workspaces')
       return route.fulfill({ json: [{ id: 'demo', name: 'Demo', config_version: 1 }] })
     if (url.pathname === '/v1/me') return route.fulfill({ json: { id: 'usr_operator', role: 'operator' } })
@@ -1736,7 +1735,6 @@ test('planning restores the selected session independently in each workspace', a
     localStorage.setItem('conveyor-workspace', 'demo')
     localStorage.setItem('conveyor-planning-session:demo', 'session-demo')
     localStorage.setItem('conveyor-planning-session:beta', 'session-beta')
-    sessionStorage.setItem('conveyor-token', 'test-token')
   })
   const sessions = {
     demo: [
@@ -1920,7 +1918,7 @@ test('reference documents upload safely, load history on demand, compare both si
   const tree = page.getByRole('navigation', { name: 'Document tree' })
   const overviewItem = tree.getByRole('button', { name: /Product overview/ })
   await expect(overviewItem).toBeVisible()
-  expect(listAuthorization).toBe('Bearer test-token')
+  expect(listAuthorization).toBe('')
   expect(versionRequests).toBe(0)
 
   const addInput = tree.locator('label').filter({ hasText: 'Add Markdown' }).locator('input[type=file]')
@@ -1931,7 +1929,7 @@ test('reference documents upload safely, load history on demand, compare both si
 
   await overviewItem.click()
   await expect.poll(() => versionRequests).toBe(1)
-  expect(versionAuthorization).toBe('Bearer test-token')
+  expect(versionAuthorization).toBe('')
   await expect(page.getByRole('heading', { level: 2, name: 'Product overview', exact: true })).toBeVisible()
   await page.getByLabel('Read version').selectOption('1')
   await expect(page.getByText('Removed section.')).toBeVisible()

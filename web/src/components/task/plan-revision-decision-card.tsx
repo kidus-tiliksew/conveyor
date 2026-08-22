@@ -6,7 +6,7 @@ import { reviewTask } from '../../lib/api'
 import { planRevisionReasonCodes } from '../../lib/contracts'
 import type { ActivityItem, InterventionAction } from '../../lib/types'
 import { cn } from '../../lib/utils'
-import { useOperatorToken, useWorkspaceSelection } from '../app-shell'
+import { useDashboardSession, useWorkspaceSelection } from '../app-shell'
 import { Button } from '../ui/button'
 import { Textarea } from '../ui/input'
 
@@ -69,7 +69,7 @@ export function PlanRevisionDecisionCard({
   request: PlanRevisionRequest
   onDecisionRecorded?: () => void
 }) {
-  const token = useOperatorToken()
+  const token = useDashboardSession()
   const { workspace } = useWorkspaceSelection()
   const queryClient = useQueryClient()
   const [decision, setDecision] = useState<PlanRevisionDecision | null>(null)
@@ -81,7 +81,7 @@ export function PlanRevisionDecisionCard({
       // Direction is operator instruction the backend normalizes and carries
       // into the next order, so it is sent trimmed — never with the incidental
       // whitespace a textarea collects.
-      await reviewTask(item.task.id, token, {
+      await reviewTask(item.task.id, {
         action: contract.action,
         reasonCode: contract.reasonCode,
         comment: direction.trim(),
@@ -148,7 +148,7 @@ export function PlanRevisionDecisionCard({
               {decisions[entry].label}
             </button>
           ))}
-          {!token && <span className="ml-auto text-xs text-attention">Set the operator token in Settings to act.</span>}
+          {!token && <span className="ml-auto text-xs text-attention">Sign in to act.</span>}
         </fieldset>
         {selected && decision && (
           <div className="mt-2">

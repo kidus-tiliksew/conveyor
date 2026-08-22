@@ -2160,7 +2160,6 @@ test('new task detail tolerates a null work-order list from the API', async ({ p
 })
 
 test('task detail omits the frozen policy projection and retired controls', async ({ page }) => {
-  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
   for (const path of ['/tasks/policy-projection', '/tasks/policy-projection/full']) {
     await page.goto(path)
 
@@ -2177,7 +2176,6 @@ test('task detail omits the frozen policy projection and retired controls', asyn
   }
 })
 test('a claimed attempt exposes reasoned operator preemption with the renewal grace bound', async ({ page }) => {
-  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
   let preemptBody = ''
   let preemptKey = ''
   await page.route('**/v1/work-orders/setup-claimed-implement-1/preempt*', async (route) => {
@@ -2243,7 +2241,6 @@ test('task detail tolerates null required harnesses from a legacy worker status'
 })
 
 test('suppressed worker order exposes failure state and audited recovery action', async ({ page }) => {
-  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
   let recoveryRequest = ''
   await page.route('**/v1/work-orders/*/recover*', async (route) => {
     recoveryRequest = route.request().postData() ?? ''
@@ -2261,7 +2258,6 @@ test('suppressed worker order exposes failure state and audited recovery action'
 })
 
 test('ordinary recovery permits an empty operator direction', async ({ page }) => {
-  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
   let recoveryRequest = ''
   await page.route('**/v1/work-orders/*/recover*', async (route) => {
     recoveryRequest = route.request().postData() ?? ''
@@ -2277,7 +2273,6 @@ test('ordinary recovery permits an empty operator direction', async ({ page }) =
 })
 
 test('checkpoint recovery requires and submits operator direction', async ({ page }) => {
-  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
   let recoveryRequest = ''
   await page.route('**/v1/work-orders/*/recover*', async (route) => {
     recoveryRequest = route.request().postData() ?? ''
@@ -2319,7 +2314,6 @@ test('task timeline expands the complete agent progress report', async ({ page }
 })
 
 test('checkpoint recovery summarizes attached requirement and design context', async ({ page }) => {
-  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
   const item = activity('operator-checkpoint', false)
   item.task.context = {
     requirements: [{ id: 'req-1', title: 'Confirmed requirement', version: 2 }],
@@ -2333,7 +2327,6 @@ test('checkpoint recovery summarizes attached requirement and design context', a
 test('structured authority checkpoint leads with the decision and resolves through cited proposals', async ({
   page,
 }) => {
-  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
   const item = activity('operator-checkpoint', false)
   item.task.context = {
     designs: [
@@ -2485,7 +2478,7 @@ test('structured authority checkpoint leads with the decision and resolves throu
   await page.goBack()
   await card.getByRole('button', { name: 'Confirm v2' }).click()
   await expect.poll(() => resolved).toBe(true)
-  expect(confirmHeaders.authorization).toBe('Bearer operator')
+  expect(confirmHeaders.authorization).toBeUndefined()
   expect(confirmHeaders['if-match']).toBe('"1"')
 
   const direction = page.getByLabel('Operator direction')
@@ -2498,7 +2491,6 @@ test('structured authority checkpoint leads with the decision and resolves throu
 })
 
 test('structured authority checkpoint omits the standalone card when every proposal is cited', async ({ page }) => {
-  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
   const item = activity('operator-checkpoint', false)
   item.task.context = {
     designs: [{ id: 'design-checkpoint', title: 'Checkpoint design', version: 1 }],
@@ -2545,7 +2537,6 @@ test('structured authority checkpoint omits the standalone card when every propo
 
 test('stalled task is labelled in the operator tray with recover and reasoned cancel controls', async ({ page }) => {
   await showAllBoardTasks(page)
-  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
   const item = activity('recovery', false)
   item.task.assignee = {
     user_id: 'usr-assigned',
@@ -2678,7 +2669,6 @@ test('forge failure categories render in the needs-operator tray and task activi
 })
 
 test('checkout-blocked recovery explains the safe operator sequence before recovery', async ({ page }) => {
-  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
   await page.goto('/tasks/checkout-blocked-recovery/full')
 
   const failure = page.getByText('The primary checkout has pre-existing changes, so Conveyor left them untouched.')
@@ -2723,7 +2713,6 @@ test('attempt recovery keeps the later checkout blocker authoritative without a 
 })
 
 test('provider-limit retry states expose only the correct action', async ({ page }) => {
-  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
   await page.goto('/tasks/usage-retry-pending/full')
   await expect(page.getByText(/Retrying in/)).toBeVisible()
   await expect(page.getByRole('button', { name: /Retry implementation|Recover work order/ })).toHaveCount(0)
@@ -2888,7 +2877,6 @@ test('terminated attempt transcripts stay collapsed until opened and absence sta
 })
 
 test('timed-out review round exposes a reasoned full-round retry and preserves history', async ({ page }) => {
-  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
   let retryRequest = ''
   await page.route('**/v1/tasks/*/review-round/retry*', async (route) => {
     retryRequest = route.request().postData() ?? ''
@@ -2926,7 +2914,6 @@ test('contradictory completed review round surfaces a needs-operator retry card'
 })
 
 test('interrupted review round offers one same-round recovery and retains completed verdicts', async ({ page }) => {
-  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
   let recoveryRequest = ''
   await page.route('**/v1/tasks/*/review-round/recover*', async (route) => {
     recoveryRequest = route.request().postData() ?? ''
@@ -3180,7 +3167,6 @@ test('task detail links attached product and design context', async ({ page }) =
 test('task context suggestions show justification and become attachments or disappear when resolved', async ({
   page,
 }) => {
-  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'test-token'))
   const taskId = 'context-suggestions'
   let requirementConfirmed = false
   let requirementPending = true
@@ -3239,7 +3225,7 @@ test('task context suggestions show justification and become attachments or disa
     return route.fulfill({ json: item })
   })
   await page.route('**/v1/tasks/context-suggestions/context/proposals/requirement/req-intake/confirm*', (route) => {
-    expect(route.request().headers().authorization).toBe('Bearer test-token')
+    expect(route.request().headers().authorization).toBeUndefined()
     requirementPending = false
     requirementConfirmed = true
     return route.fulfill({ json: {} })
@@ -3247,7 +3233,7 @@ test('task context suggestions show justification and become attachments or disa
   await page.route(
     '**/v1/tasks/context-suggestions/context/proposals/system_design/design-web-dashboard/dismiss*',
     (route) => {
-      expect(route.request().headers().authorization).toBe('Bearer test-token')
+      expect(route.request().headers().authorization).toBeUndefined()
       designPending = false
       return route.fulfill({ json: {} })
     },
@@ -3282,7 +3268,6 @@ test('task context suggestions show justification and become attachments or disa
 })
 
 test('task context suggestions remain visible without decision controls for non-operators', async ({ page }) => {
-  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'viewer-token'))
   await page.route('**/v1/me**', (route) => route.fulfill({ json: { id: 'usr_viewer', role: 'contributor' } }))
   await page.route('**/v1/tasks/context-suggestion-viewer/activity*', (route) => {
     const item = activity('context-suggestion-viewer', false)
@@ -3431,7 +3416,6 @@ test('review panel replaces duplicate review and bounce activity notes', async (
 test('review card renders authorized verification evidence with accessible preview and download fallback', async ({
   page,
 }) => {
-  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator-token'))
   const authorizationHeaders: string[] = []
   let videoRequests = 0
   let allowVideoDownload = false
@@ -3478,7 +3462,7 @@ test('review card renders authorized verification evidence with accessible previ
   expect(download.suggestedFilename()).toBe('proof recording.webm')
   expect(videoRequests).toBe(previewRequestCount + 1)
   expect(authorizationHeaders.length).toBeGreaterThanOrEqual(3)
-  expect(authorizationHeaders.every((header) => header === 'Bearer operator-token')).toBe(true)
+  expect(authorizationHeaders.every((header) => header === '')).toBe(true)
 })
 
 test('spec approval keeps the human marker without a duplicate versioned event', async ({ page }) => {
@@ -3651,7 +3635,6 @@ for (const decision of [
   },
 ] as const) {
   test(`plan revision gate renders request context and submits ${decision.name}`, async ({ page }) => {
-    await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
     const taskId = `plan-revision-${decision.action}-${decision.reasonCode}`
     let activityRequests = 0
     await page.route(`**/v1/tasks/${taskId}/activity*`, async (route) => {
@@ -3855,7 +3838,6 @@ test('pull-only queued work waits for an operator agent without a worker alarm o
 })
 
 test('parked task offers recovery instead of an invalid approval verdict', async ({ page }) => {
-  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
   await page.goto('/tasks/parked/full')
 
   await expect(page.getByRole('region', { name: 'Human gate' })).toHaveCount(0)
@@ -3888,7 +3870,6 @@ test('merge gate fails closed when readiness is absent', async ({ page }) => {
 })
 
 test('merge gate stays pending until the post-success task and activity refreshes settle', async ({ page }) => {
-  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
   let merged = false
   let releaseRefresh = () => {}
   const refreshReleased = new Promise<void>((resolve) => {
@@ -3921,7 +3902,6 @@ test('merge gate stays pending until the post-success task and activity refreshe
 })
 
 test('failed merge restores the existing error and retry action', async ({ page }) => {
-  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
   let attempts = 0
   await page.route('**/v1/tasks/merge-failure/merge*', async (route) => {
     attempts++
@@ -3943,7 +3923,6 @@ test('failed merge restores the existing error and retry action', async ({ page 
 // it was pushed to, and the verdict that resolved — from the record the
 // pipeline already wrote.
 test('the merge gate names the reviewed head, pull request, and factory verdict', async ({ page }) => {
-  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'member-token'))
   await page.goto('/tasks/merge-request-changes/full')
 
   const card = page.getByRole('region', { name: 'What you are approving' })
@@ -3977,7 +3956,6 @@ test('the merge gate names the reviewed head, pull request, and factory verdict'
 })
 
 test('merge gate sends user feedback through request changes', async ({ page }) => {
-  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'member-token'))
   let feedback = ''
   await page.route('**/v1/tasks/merge-request-changes/request-changes*', async (route) => {
     feedback = ((await route.request().postDataJSON()) as { feedback: string }).feedback
@@ -4001,7 +3979,6 @@ test('merge gate sends user feedback through request changes', async ({ page }) 
 })
 
 test('contributor assignee can request merge-gate changes without gate approval controls', async ({ page }) => {
-  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'contributor-token'))
   await page.route('**/v1/me**', (route) =>
     route.fulfill({
       json: {
@@ -4038,7 +4015,6 @@ test('contributor assignee can request merge-gate changes without gate approval 
 })
 
 test("non-assignee contributor cannot request changes at another user's merge gate", async ({ page }) => {
-  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'contributor-token'))
   await page.route('**/v1/me**', (route) =>
     route.fulfill({
       json: {
@@ -4067,7 +4043,6 @@ test("non-assignee contributor cannot request changes at another user's merge ga
 // The return is a recorded decision, so it reads back in the timeline in the
 // same plain language it was sent in — never as the wire reason code (REQ-6).
 test('the recorded return reads back in the timeline with its feedback', async ({ page }) => {
-  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'member-token'))
   let returned = false
   await page.route('**/v1/tasks/merge-request-changes/activity*', async (route) => {
     const item = activity('merge-request-changes', false)
@@ -4107,7 +4082,6 @@ test('the recorded return reads back in the timeline with its feedback', async (
 })
 
 test('approved state keeps request changes on the legacy review route', async ({ page }) => {
-  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'member-token'))
   let legacyFeedback = ''
   let mergeGateRequests = 0
   await page.route('**/v1/tasks/merge-delayed/request-changes*', async (route) => {
@@ -4130,7 +4104,6 @@ test('approved state keeps request changes on the legacy review route', async ({
 })
 
 test('conflicting readiness makes the idempotent fix dispatch primary', async ({ page }) => {
-  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
   let dispatches = 0
   await page.route('**/v1/tasks/merge-conflict/merge-conflict-fix*', async (route) => {
     dispatches++
@@ -4168,7 +4141,6 @@ test('new task events preserve the task sheet scroll position', async ({ page })
 
 for (const decision of ['approve', 'redirect'] as const) {
   test(`successful ${decision} scrolls the task sheet to the refreshed timeline tail`, async ({ page }) => {
-    await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
     let recorded = false
     await page.route('**/v1/tasks/gate/activity*', async (route) => {
       const item = activity('gate', true)
@@ -4379,7 +4351,6 @@ test('unsatisfiable dependency is attention-worthy and can be unlinked with an a
   page,
 }) => {
   await showAllBoardTasks(page)
-  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator-token'))
   let unlinked = false
   let unlinkBody: Record<string, string> | undefined
   const currentItem = () => {
@@ -4513,7 +4484,6 @@ function designProposalSummary(
 }
 
 test('checkpoint proposal confirmation completes before recovery with an audited direction', async ({ page }) => {
-  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
   await page.route('**/v1/workspaces', (route) => route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] }))
   const item = activity('operator-checkpoint', false)
   item.task.context = {
@@ -4551,14 +4521,13 @@ test('checkpoint proposal confirmation completes before recovery with an audited
 
   await card.getByRole('button', { name: 'Confirm v2 and recover' }).click()
   await expect.poll(() => calls).toEqual(['confirm', 'recover'])
-  expect(confirmHeaders.authorization).toBe('Bearer operator')
+  expect(confirmHeaders.authorization).toBeUndefined()
   expect(confirmHeaders['if-match']).toBe('"1"')
   expect(recoveryBody?.direction).toBe('Operator confirmed design-lifecycle v2.')
   expect(recoveryBody?.request_id).toBeTruthy()
 })
 
 test('checkpoint proposal confirmation failure is visible and does not recover', async ({ page }) => {
-  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
   await page.route('**/v1/workspaces', (route) => route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] }))
   const item = activity('operator-checkpoint', false)
   item.task.context = {
@@ -4585,7 +4554,6 @@ test('checkpoint proposal confirmation failure is visible and does not recover',
 })
 
 test("a task's own System Design proposal is confirmable from its detail and clears in place", async ({ page }) => {
-  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'test-token'))
   await page.route('**/v1/workspaces', (route) => route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] }))
   let confirmed = false
   let pendingAuthority = true
@@ -4634,7 +4602,7 @@ test("a task's own System Design proposal is confirmable from its detail and cle
   await expect(card).toHaveCount(0)
   await expect(page.getByText('Review is waiting on a System Design decision')).toHaveCount(0)
   expect(await page.evaluate(() => (window as unknown as { noReload?: boolean }).noReload)).toBe(true)
-  expect(confirmHeaders.authorization).toBe('Bearer test-token')
+  expect(confirmHeaders.authorization).toBeUndefined()
   expect(confirmHeaders['if-match']).toBe('"1"')
 
   // The same composition carries it on the sheet route, not just the full page.
@@ -4649,7 +4617,6 @@ test("a task's own System Design proposal is confirmable from its detail and cle
 })
 
 test('task detail renders no proposal card for a pending version another task raised', async ({ page }) => {
-  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'test-token'))
   await page.route('**/v1/workspaces', (route) => route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] }))
   await page.route('**/v1/system-designs**', (route) => route.fulfill({ json: designCollection('other-task', false) }))
 
@@ -4663,7 +4630,6 @@ test('task detail renders no proposal card for a pending version another task ra
 })
 
 test('task detail renders a proposal-only card without the review-gate headline', async ({ page }) => {
-  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'test-token'))
   await page.route('**/v1/workspaces', (route) => route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] }))
   await page.route('**/v1/system-designs**', (route) =>
     route.fulfill({ json: designCollection('proposal-only', false) }),
@@ -4677,7 +4643,6 @@ test('task detail renders a proposal-only card without the review-gate headline'
 })
 
 test('task detail keeps merged attention ahead of Redispatch in the timeline tail', async ({ page }) => {
-  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'test-token'))
   await page.route('**/v1/workspaces', (route) => route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] }))
   await page.route('**/v1/system-designs**', (route) =>
     route.fulfill({ json: designCollection('design-proposal-queued', false) }),
@@ -4700,7 +4665,6 @@ test('task detail keeps merged attention ahead of Redispatch in the timeline tai
 // but carries a different document, so the decision stays on the document's own
 // attention surface.
 test('task detail renders no proposal card for a document the task does not carry', async ({ page }) => {
-  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'test-token'))
   await page.route('**/v1/workspaces', (route) => route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] }))
   await page.route('**/v1/system-designs**', (route) =>
     route.fulfill({ json: designCollection('unattached-proposal', false) }),
@@ -4800,7 +4764,6 @@ type TaskEventFixture = {
 // and the audited outcome reads back in the timeline like every other operator
 // act. Assignment constrains who may claim it and nothing else (DEC-18).
 test('an operator assigns a task from the member picker and the timeline records it', async ({ page }) => {
-  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
   await routeAssignment(page, { operator: true })
 
   await page.goto('/tasks/assignable/full')
@@ -4827,7 +4790,6 @@ test('an operator assigns a task from the member picker and the timeline records
 })
 
 test('assignment history resolves a prior assignee from the workspace roster', async ({ page }) => {
-  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
   await routeAssignment(page, { operator: true })
   await page.route('**/v1/tasks/assignable/activity**', async (route) => {
     const item = activity('assignable', false)
@@ -4854,7 +4816,6 @@ test('assignment history resolves a prior assignee from the workspace roster', a
 // AC-1.2/AC-2.2: setting an assignee is an operator act. A member reads who
 // holds the task and is offered no way to change it.
 test('a non-operator sees the assignee but no set or clear control', async ({ page }) => {
-  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'member'))
   await routeAssignment(page, { operator: false })
   await page.route('**/v1/tasks/assignable/activity**', async (route) => {
     const item = activity('assignable', false)
@@ -4874,7 +4835,6 @@ test('a non-operator sees the assignee but no set or clear control', async ({ pa
 // channel, so the surface says who holds the task instead.
 test('a claim refusal names the assignee rather than showing the transport sentence', async ({ page }) => {
   await showAllBoardTasks(page)
-  await page.addInitScript(() => sessionStorage.setItem('conveyor-token', 'operator'))
   await page.route('**/v1/workspaces', (route) => route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] }))
   await page.route('**/v1/workspaces/demo/members**', (route) => route.fulfill({ json: assignmentMembers }))
   await page.route('**/v1/activity*', (route) =>

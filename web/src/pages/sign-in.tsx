@@ -9,9 +9,10 @@ import { redeemSignInLink, signInWithPassword } from '../lib/api'
 type State = 'checking' | 'success' | 'invalid'
 
 export function SignInPage() {
-  const [token] = useState(() => new URLSearchParams(window.location.hash.slice(1)).get('token') ?? undefined)
+  const [hash, setHash] = useState(() => window.location.hash)
+  const token = new URLSearchParams(hash.replace(/^#/, '')).get('token') ?? undefined
   const [state, setState] = useState<State>(token ? 'checking' : 'invalid')
-  const started = useRef(false)
+  const processedToken = useRef<string | undefined>(undefined)
   const queryClient = useQueryClient()
   const navigate = useNavigate()
   const [email, setEmail] = useState('')
@@ -20,12 +21,23 @@ export function SignInPage() {
   const [passwordPending, setPasswordPending] = useState(false)
 
   useEffect(() => {
-    if (!token || started.current) return
-    started.current = true
+    const readHash = () => setHash(window.location.hash)
+    window.addEventListener('hashchange', readHash)
+    return () => window.removeEventListener('hashchange', readHash)
+  }, [])
+
+  useEffect(() => {
+    if (!token) {
+      processedToken.current = undefined
+      setState('invalid')
+      return
+    }
+    if (processedToken.current === token) return
+    processedToken.current = token
+    setState('checking')
     window.history.replaceState(window.history.state, '', `${window.location.pathname}${window.location.search}`)
     void redeemSignInLink(token)
       .then(async () => {
-        sessionStorage.removeItem('conveyor-token')
         queryClient.clear()
         setState('success')
         await navigate({ to: '/onboarding', replace: true })
@@ -39,7 +51,6 @@ export function SignInPage() {
     setPasswordError('')
     try {
       await signInWithPassword(email, password)
-      sessionStorage.removeItem('conveyor-token')
       queryClient.clear()
       await navigate({ to: '/', replace: true })
     } catch {
@@ -69,7 +80,9 @@ export function SignInPage() {
               ? 'Signing you in…'
               : state === 'success'
                 ? 'You’re signed in'
-                : 'This link no longer works'}
+                : token
+                  ? 'This link no longer works'
+                  : 'Sign in to Conveyor'}
           </h1>
           <p className="mt-3 text-sm leading-6 text-muted" role={state === 'invalid' && token ? 'alert' : undefined}>
             {state === 'checking'
@@ -77,8 +90,8 @@ export function SignInPage() {
               : state === 'success'
                 ? 'Opening profile setup…'
                 : token
-                  ? 'It may have expired or already been used. Ask your operator to resend your invitation.'
-                  : 'Use your account password, or ask your operator for a one-time sign-in link.'}
+                  ? 'It may have expired or already been used. Ask your operator to issue a fresh sign-in link.'
+                  : 'Use your account password, or ask your operator to issue a one-time sign-in link.'}
           </p>
         </div>
         {state !== 'checking' && state !== 'success' && (
@@ -114,8 +127,9 @@ export function SignInPage() {
               )}
             </form>
             <p className="mt-5 text-xs leading-5 text-faint">
-              Forgot your password? Ask your operator to resend your invitation link. It signs you in so you can replace
-              the password on the secure onboarding page.
+              Locked out? On the Conveyor host, an operator can run{' '}
+              <code className="font-mono">conveyor user issue-link &lt;email&gt;</code> to issue a fresh one-time
+              sign-in link.
             </p>
           </>
         )}

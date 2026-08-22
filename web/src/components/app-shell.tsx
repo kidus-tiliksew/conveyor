@@ -6,7 +6,6 @@ import {
   FileCode2,
   FolderGit2,
   Kanban,
-  KeyRound,
   ListChecks,
   LogOut,
   type LucideIcon,
@@ -24,14 +23,12 @@ import {
   fetchWorkspace,
   fetchWorkspaceMembers,
   fetchWorkspaces,
-  SESSION_AUTH,
   signOutDashboardSession,
 } from '../lib/api'
 import { cn } from '../lib/utils'
 import { ThemeProvider, useTheme } from './theme-provider'
 import { Badge } from './ui/badge'
 import { Button } from './ui/button'
-import { Input } from './ui/input'
 
 export type WorkspaceCapability =
   | 'view_workspace'
@@ -72,14 +69,6 @@ const roleCapabilities: Record<import('../lib/types').WorkspaceRole, readonly Wo
   ],
 }
 
-// The context carries either a tab-scoped operator bearer token or an opaque
-// marker indicating that the browser's HttpOnly session cookie is active.
-const TokenContext = createContext<{ token: string; operatorToken: string; setToken: (value: string) => void }>({
-  token: '',
-  operatorToken: '',
-  setToken: () => {},
-})
-
 const WorkspaceContext = createContext<{ workspace: string; setWorkspace: (value: string) => void }>({
   workspace: '',
   setWorkspace: () => {},
@@ -89,24 +78,19 @@ export function useWorkspaceSelection() {
   return useContext(WorkspaceContext)
 }
 
-export function useOperatorToken() {
-  return useContext(TokenContext).token
-}
-
-export function useTokenState() {
-  const { operatorToken, setToken } = useContext(TokenContext)
-  return { token: operatorToken, setToken }
+export function useDashboardSession() {
+  return 'session'
 }
 
 // Dashboard affordances consume the same fixed role bundles as the server.
 // This is presentation only: every request still crosses the server capability
 // boundary, while a viewer never sees a control that can only be refused.
 export function useWorkspaceCapability(capability: WorkspaceCapability) {
-  const token = useOperatorToken()
+  const token = useDashboardSession()
   const { workspace } = useWorkspaceSelection()
   const identity = useQuery({
     queryKey: ['caller-identity', token, workspace],
-    queryFn: () => fetchCallerIdentity(token),
+    queryFn: () => fetchCallerIdentity(),
     enabled: Boolean(token && workspace),
     retry: false,
   })
@@ -185,11 +169,11 @@ export function useActivity(filter?: ActivityFilter, enabled = true, offset = 0,
 }
 
 export function useWorkspaceMembers() {
-  const token = useOperatorToken()
+  const token = useDashboardSession()
   const { workspace } = useWorkspaceSelection()
   return useQuery({
     queryKey: ['workspace-members', token, workspace],
-    queryFn: () => fetchWorkspaceMembers(token, workspace),
+    queryFn: () => fetchWorkspaceMembers(workspace),
     enabled: Boolean(token && workspace),
     staleTime: 60_000,
     retry: false,
@@ -247,82 +231,32 @@ export function AppShell() {
 }
 
 function AuthenticatedAppShell() {
-  const [token, setToken] = useState(() => sessionStorage.getItem('conveyor-token') ?? '')
-  const saveToken = (value: string) => {
-    setToken(value)
-    if (value) sessionStorage.setItem('conveyor-token', value)
-    else sessionStorage.removeItem('conveyor-token')
-  }
+  const navigate = useNavigate()
   const workspaces = useQuery({
-    queryKey: ['workspaces', token],
-    queryFn: () => fetchWorkspaces(token),
+    queryKey: ['workspaces'],
+    queryFn: fetchWorkspaces,
     retry: false,
   })
-  const credential = token || (workspaces.isSuccess ? SESSION_AUTH : '')
+  useEffect(() => {
+    if (workspaces.isError) void navigate({ to: '/sign-in', replace: true })
+  }, [navigate, workspaces.isError])
 
   return (
     <ThemeProvider>
-      <TokenContext.Provider value={{ token: credential, operatorToken: token, setToken: saveToken }}>
-        {workspaces.isPending ? (
-          <div className="grid h-screen place-items-center bg-background text-sm text-muted">Opening Conveyor…</div>
-        ) : workspaces.isError ? (
-          <SignInRequired token={token} setToken={saveToken} />
-        ) : (
-          <WorkspaceProvider workspaces={workspaces.data}>
-            <div className="flex h-screen overflow-hidden">
-              <IconRail />
-              <NavSidebar />
-              <main className="min-w-0 flex-1 overflow-hidden bg-background">
-                <Outlet />
-              </main>
-            </div>
-          </WorkspaceProvider>
-        )}
-      </TokenContext.Provider>
+      {workspaces.isPending || workspaces.isError ? (
+        <div className="grid h-screen place-items-center bg-background text-sm text-muted">Opening Conveyor…</div>
+      ) : (
+        <WorkspaceProvider workspaces={workspaces.data}>
+          <div className="flex h-screen overflow-hidden">
+            <IconRail />
+            <NavSidebar />
+            <main className="min-w-0 flex-1 overflow-hidden bg-background">
+              <Outlet />
+            </main>
+          </div>
+        </WorkspaceProvider>
+      )}
     </ThemeProvider>
-  )
-}
-
-function SignInRequired({ token, setToken }: { token: string; setToken: (value: string) => void }) {
-  const [value, setValue] = useState(token)
-  const queryClient = useQueryClient()
-  return (
-    <main className="grid min-h-screen place-items-center bg-background px-6 py-12">
-      <div className="w-full max-w-md rounded-xl border border-border bg-card p-7 shadow-sm">
-        <div className="mb-5 grid size-10 place-items-center rounded-lg bg-primary-soft text-primary">
-          <KeyRound className="size-5" />
-        </div>
-        <h1 className="text-xl font-semibold tracking-tight">Sign in to Conveyor</h1>
-        <p className="mt-2 text-sm leading-6 text-muted">
-          Open the invitation link sent by your operator. Each link can be used once.
-        </p>
-        <div className="my-6 flex items-center gap-3 text-xs text-faint">
-          <span className="h-px flex-1 bg-border" />
-          Operator fallback
-          <span className="h-px flex-1 bg-border" />
-        </div>
-        <form
-          className="space-y-3"
-          onSubmit={(event) => {
-            event.preventDefault()
-            setToken(value.trim())
-            void queryClient.invalidateQueries({ queryKey: ['workspaces'] })
-          }}
-        >
-          <Input
-            type="password"
-            aria-label="Operator token"
-            placeholder="Paste the operator token"
-            value={value}
-            onChange={(event) => setValue(event.target.value)}
-          />
-          <Button type="submit" className="w-full" disabled={!value.trim()}>
-            Continue as operator
-          </Button>
-        </form>
-        {token && <p className="mt-3 text-xs text-failure">That operator token was not accepted.</p>}
-      </div>
-    </main>
   )
 }
 
@@ -421,13 +355,13 @@ function WorkspaceProvider({
 // The rail is the workspace switcher (§21.10: workspace context is explicit
 // everywhere): one initials tile per workspace, "+" creates a new one.
 function IconRail() {
-  const token = useOperatorToken()
-  const { token: operatorToken } = useTokenState()
+  const token = useDashboardSession()
+  const canManageWorkspace = useWorkspaceCapability('manage_workspace')
   const navigate = useNavigate()
   const { workspace: selected, setWorkspace } = useWorkspaceSelection()
   const { data: workspaces } = useQuery({
     queryKey: ['workspaces', token],
-    queryFn: () => fetchWorkspaces(token),
+    queryFn: fetchWorkspaces,
     enabled: !!token,
   })
   // Land on the board after a switch so an open task sheet from the previous
@@ -460,7 +394,7 @@ function IconRail() {
             {initials(item.name || item.id)}
           </button>
         ))}
-        {operatorToken && (
+        {canManageWorkspace && (
           <Link
             to="/workspaces/new"
             title="Add workspace"
@@ -482,14 +416,13 @@ function initials(name: string) {
 }
 
 function NavSidebar() {
-  const token = useOperatorToken()
-  const { setToken } = useTokenState()
+  const token = useDashboardSession()
   const queryClient = useQueryClient()
   const navigate = useNavigate()
   const { workspace: selected } = useWorkspaceSelection()
   const { data: workspaces } = useQuery({
     queryKey: ['workspaces', token],
-    queryFn: () => fetchWorkspaces(token),
+    queryFn: fetchWorkspaces,
     enabled: !!token,
   })
   const { data: workspace } = useWorkspace()
@@ -507,10 +440,9 @@ function NavSidebar() {
   const signOut = useMutation({
     mutationFn: signOutDashboardSession,
     onSettled: () => {
-      setToken('')
       localStorage.removeItem('conveyor-workspace')
       queryClient.clear()
-      void navigate({ to: '/' })
+      void navigate({ to: '/sign-in' })
     },
   })
 

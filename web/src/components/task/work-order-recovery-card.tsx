@@ -6,7 +6,7 @@ import { confirmRequirementVersion, confirmSystemDesignVersion, recoverWorkOrder
 import { deriveCurrentExecutionState, pendingPlanRevisionRequest, type CurrentExecutionState } from '../../lib/activity'
 import { errorMessage } from '../../lib/errors'
 import type { ActivityItem, WorkOrderCheckpointCitation, WorkOrderCheckpointPendingProposal } from '../../lib/types'
-import { useOperatorToken, useWorkspaceCapability, useWorkspaceSelection } from '../app-shell'
+import { useDashboardSession, useWorkspaceCapability, useWorkspaceSelection } from '../app-shell'
 import { Badge } from '../ui/badge'
 import { Button } from '../ui/button'
 import { type Proposal, proposalIdentity } from './system-design-proposal-card'
@@ -43,7 +43,7 @@ export function CheckpointProposalRecoveryCard({
   state: CurrentExecutionState
   proposals: Proposal[]
 }) {
-  const token = useOperatorToken()
+  const token = useDashboardSession()
   const { workspace } = useWorkspaceSelection()
   const queryClient = useQueryClient()
   const requestId = useRef(crypto.randomUUID())
@@ -61,13 +61,13 @@ export function CheckpointProposalRecoveryCard({
       const expectedByDocument = new Map<string, number>()
       for (const proposal of snapshot) {
         const expected = expectedByDocument.get(proposal.document.id) ?? proposal.expected
-        await confirmSystemDesignVersion(token, proposal.document.id, proposal.version.version, expected)
+        await confirmSystemDesignVersion(proposal.document.id, proposal.version.version, expected)
         expectedByDocument.set(proposal.document.id, proposal.version.version)
       }
       const direction = snapshot
         .map((proposal) => `Operator confirmed ${proposal.document.id} v${proposal.version.version}.`)
         .join(' ')
-      return recoverWorkOrder(state.order.id, token, requestId.current, direction)
+      return recoverWorkOrder(state.order.id, requestId.current, direction)
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['task', item.task.id] })
@@ -178,7 +178,7 @@ function retryCountdown(at: string, now: number) {
 
 function RecoveryState({ item, state }: { item: ActivityItem; state: CurrentExecutionState }) {
   const { order } = state
-  const token = useOperatorToken()
+  const token = useDashboardSession()
   const canConfirmDocuments = useWorkspaceCapability('confirm_documents')
   const { workspace } = useWorkspaceSelection()
   const queryClient = useQueryClient()
@@ -201,7 +201,7 @@ function RecoveryState({ item, state }: { item: ActivityItem; state: CurrentExec
   }, [resolvedDirection])
   const checkpointReleased = order.last_failure_message === 'operator checkpoint reached'
   const mutation = useMutation({
-    mutationFn: () => recoverWorkOrder(order.id, token, requestId.current, direction.trim() || undefined),
+    mutationFn: () => recoverWorkOrder(order.id, requestId.current, direction.trim() || undefined),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['task', item.task.id] })
       void queryClient.invalidateQueries({ queryKey: ['activity'] })
@@ -217,8 +217,8 @@ function RecoveryState({ item, state }: { item: ActivityItem; state: CurrentExec
     }) => {
       if (proposal.version == null) throw new Error('This proposal did not include a version.')
       return citation.document_kind === 'requirement'
-        ? confirmRequirementVersion(token, citation.document_id, proposal.version, citation.current_confirmed_version)
-        : confirmSystemDesignVersion(token, citation.document_id, proposal.version, citation.current_confirmed_version)
+        ? confirmRequirementVersion(citation.document_id, proposal.version, citation.current_confirmed_version)
+        : confirmSystemDesignVersion(citation.document_id, proposal.version, citation.current_confirmed_version)
     },
     onSettled: async () => {
       await Promise.all([
@@ -377,9 +377,7 @@ function RecoveryState({ item, state }: { item: ActivityItem; state: CurrentExec
       </Button>
       {!token && <p className="text-xs text-muted">Operator authorization is required to retry.</p>}
       {mutation.error != null && <p className="text-xs text-failure">{String(mutation.error)}</p>}
-      {attachingContext && (
-        <TaskContextAttachmentDialog task={item.task} token={token} onClose={() => setAttachingContext(false)} />
-      )}
+      {attachingContext && <TaskContextAttachmentDialog task={item.task} onClose={() => setAttachingContext(false)} />}
     </section>
   )
 }

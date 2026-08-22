@@ -4,7 +4,7 @@ import { Check, X } from 'lucide-react'
 import { resolveTaskContextProposal } from '../../lib/api'
 import { errorMessage } from '../../lib/errors'
 import type { TaskContext, TaskContextProposal } from '../../lib/types'
-import { useOperatorToken, useWorkspaceCapability, useWorkspaceSelection } from '../app-shell'
+import { useDashboardSession, useWorkspaceCapability, useWorkspaceSelection } from '../app-shell'
 import { Badge } from '../ui/badge'
 import { Button } from '../ui/button'
 
@@ -55,13 +55,13 @@ export function TaskContextCard({ taskId, context }: { taskId: string; context?:
 }
 
 function SuggestedContextCard({ taskId, proposals }: { taskId: string; proposals: TaskContextProposal[] }) {
-  const token = useOperatorToken()
+  const token = useDashboardSession()
   const canOperate = useWorkspaceCapability('operate_gates')
   const { workspace } = useWorkspaceSelection()
   const client = useQueryClient()
   const resolve = useMutation({
     mutationFn: ({ proposal, action }: { proposal: TaskContextProposal; action: 'confirm' | 'dismiss' }) =>
-      resolveTaskContextProposal(token, taskId, proposal.target_kind, proposal.target_id, action),
+      resolveTaskContextProposal(taskId, proposal.target_kind, proposal.target_id, action),
     onSuccess: async () => {
       await Promise.all([
         client.invalidateQueries({ queryKey: ['task', workspace, taskId] }),

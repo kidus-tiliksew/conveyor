@@ -4,7 +4,7 @@ import { AlertTriangle, Check, FileText } from 'lucide-react'
 import { confirmSystemDesignVersion, fetchSystemDesigns, SystemDesignConflictError } from '../../lib/api'
 import { errorMessage } from '../../lib/errors'
 import type { SystemDesignSummary, SystemDesignVersionSummary, Task } from '../../lib/types'
-import { useOperatorToken, useWorkspaceSelection } from '../app-shell'
+import { useDashboardSession, useWorkspaceSelection } from '../app-shell'
 import { Button } from '../ui/button'
 
 export interface Proposal {
@@ -88,12 +88,12 @@ export function SystemDesignProposalCard({
   proposals: Proposal[]
   reviewWaiting?: boolean
 }) {
-  const token = useOperatorToken()
+  const token = useDashboardSession()
   const { workspace } = useWorkspaceSelection()
   const client = useQueryClient()
   const confirm = useMutation({
     mutationFn: (proposal: Proposal) =>
-      confirmSystemDesignVersion(token, proposal.document.id, proposal.version.version, proposal.expected),
+      confirmSystemDesignVersion(proposal.document.id, proposal.version.version, proposal.expected),
     // Refetching the collection is what removes the card: the confirmed
     // version is no longer pending, so it stops matching. A conflict means
     // the document moved under us, and the refreshed list is the answer to

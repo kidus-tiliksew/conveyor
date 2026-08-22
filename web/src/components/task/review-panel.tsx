@@ -6,7 +6,7 @@ import { fetchCallerIdentity, fixMergeConflict, mergeTask, requestTaskChanges, r
 import { defaultReasonCode, interventionActions } from '../../lib/contracts'
 import type { ActivityItem, InterventionAction, Task, TaskEvent } from '../../lib/types'
 import { cn } from '../../lib/utils'
-import { useOperatorToken, useWorkspaceCapability, useWorkspaceSelection } from '../app-shell'
+import { useDashboardSession, useWorkspaceCapability, useWorkspaceSelection } from '../app-shell'
 import { Button } from '../ui/button'
 import { Textarea } from '../ui/input'
 import { AttachmentsCard } from './attachments-card'
@@ -33,13 +33,13 @@ export function isReviewable(task: Task): boolean {
 // and failures are deliberately fail-closed so capability alone never exposes
 // an action that an assigned task would refuse.
 export function useCanRequestTaskChanges(task: Task): boolean {
-  const token = useOperatorToken()
+  const token = useDashboardSession()
   const canRequestChanges = useWorkspaceCapability('request_changes')
   const canSetAssignee = useWorkspaceCapability('set_assignee')
   const { workspace } = useWorkspaceSelection()
   const identity = useQuery({
     queryKey: ['caller-identity', token, workspace],
-    queryFn: () => fetchCallerIdentity(token),
+    queryFn: () => fetchCallerIdentity(),
     enabled: Boolean(token && workspace),
     retry: false,
   })
@@ -270,7 +270,7 @@ export function ReviewPanel({ item, onDecisionRecorded }: { item: ActivityItem; 
 }
 
 function GenericReviewPanel({ item, onDecisionRecorded }: { item: ActivityItem; onDecisionRecorded?: () => void }) {
-  const token = useOperatorToken()
+  const token = useDashboardSession()
   const canOperate = useWorkspaceCapability('operate_gates')
   const canRequestChanges = useCanRequestTaskChanges(item.task)
   const { workspace } = useWorkspaceSelection()
@@ -286,18 +286,18 @@ function GenericReviewPanel({ item, onDecisionRecorded }: { item: ActivityItem; 
   const mutation = useMutation({
     mutationFn: async (input: GateMutation) => {
       if (input.kind === 'merge') {
-        await mergeTask(item.task.id, token)
+        await mergeTask(item.task.id)
         return
       }
       if (input.kind === 'fix') {
-        await fixMergeConflict(item.task.id, token)
+        await fixMergeConflict(item.task.id)
         return
       }
       if (input.kind === 'review' && input.action === 'redirect' && mergeGate) {
-        await requestTaskChanges(item.task.id, token, input.comment)
+        await requestTaskChanges(item.task.id, input.comment)
         return
       }
-      await reviewTask(item.task.id, token, {
+      await reviewTask(item.task.id, {
         action: input.action,
         comment: input.comment,
         reasonCode: defaultReasonCode[input.action],
@@ -399,7 +399,7 @@ function GenericReviewPanel({ item, onDecisionRecorded }: { item: ActivityItem; 
               {entry.label}
             </button>
           ))}
-          {!token && <span className="ml-auto text-xs text-attention">Set the operator token in Settings to act.</span>}
+          {!token && <span className="ml-auto text-xs text-attention">Sign in to act.</span>}
         </fieldset>
         {expandedEntry && (
           <div className="mt-2">

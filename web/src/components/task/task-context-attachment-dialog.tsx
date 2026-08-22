@@ -8,15 +8,7 @@ import { Button } from '../ui/button'
 import { Dialog } from '../ui/dialog'
 import { TaskContextPicker } from './task-context-picker'
 
-export function TaskContextAttachmentDialog({
-  task,
-  token,
-  onClose,
-}: {
-  task: Task
-  token: string
-  onClose: () => void
-}) {
+export function TaskContextAttachmentDialog({ task, onClose }: { task: Task; onClose: () => void }) {
   const { workspace } = useWorkspaceSelection()
   const client = useQueryClient()
   const initialRequirements = task.context?.requirements?.map((item) => item.id) ?? []
@@ -37,7 +29,7 @@ export function TaskContextAttachmentDialog({
   })
   const mutation = useMutation({
     mutationFn: () =>
-      updateTaskContext(token, task.id, {
+      updateTaskContext(task.id, {
         add: {
           requirement_ids: requirements,
           system_design_ids: designs,
