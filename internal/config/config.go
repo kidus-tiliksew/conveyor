@@ -613,7 +613,7 @@ func ParseWorkspaceDocument(data []byte, deployment *Config, source string) (*Co
 	if document.Workspace != "" && document.Workspace != deployment.Workspace {
 		return nil, fmt.Errorf("workspace must remain %q", deployment.Workspace)
 	}
-	next := *deployment
+	next := cloneConfig(deployment)
 	if document.Workspace == "" {
 		document.Workspace = deployment.Workspace
 	}
@@ -649,6 +649,114 @@ func ParseWorkspaceDocument(data []byte, deployment *Config, source string) (*Co
 		return normalizePolicy(&next, document)
 	}
 	return normalize(&next, source)
+}
+
+// cloneConfig isolates every mutable container reachable from a deployment
+// config before workspace overlays and normalization. RuntimeConfig callers
+// parse concurrently, so even compatibility-only fields must not alias the
+// long-lived deployment value (design-harness-execution).
+func cloneConfig(source *Config) Config {
+	next := *source
+	if source.ExecutionSettings != nil {
+		settings := *source.ExecutionSettings
+		next.ExecutionSettings = &settings
+	}
+	if source.Routing.Stages != nil {
+		next.Routing.Stages = make(map[string]StageRoute, len(source.Routing.Stages))
+		for stage, route := range source.Routing.Stages {
+			route.LegacyHarnesses = cloneStrings(route.LegacyHarnesses)
+			next.Routing.Stages[stage] = route
+		}
+	}
+	if source.Harnesses != nil {
+		next.Harnesses = make([]Harness, len(source.Harnesses))
+		for i, harness := range source.Harnesses {
+			harness.Command = cloneStrings(harness.Command)
+			harness.ResumeCommand = cloneStrings(harness.ResumeCommand)
+			harness.ModelArgs = cloneStrings(harness.ModelArgs)
+			harness.DefaultModelSentinels = cloneStrings(harness.DefaultModelSentinels)
+			harness.ProbeCommand = cloneStrings(harness.ProbeCommand)
+			harness.EffortArgs = cloneStringSlices(harness.EffortArgs)
+			next.Harnesses[i] = harness
+		}
+	}
+	next.Review.Seats = cloneSlice(source.Review.Seats)
+	if source.Setups != nil {
+		next.Setups = make([]ExecutionSetup, len(source.Setups))
+		for i, setup := range source.Setups {
+			setup.Review.Seats = cloneSlice(setup.Review.Seats)
+			next.Setups[i] = setup
+		}
+	}
+	if source.Repos != nil {
+		next.Repos = make([]Repo, len(source.Repos))
+		for i, repo := range source.Repos {
+			repo.LegacySecretRefs = cloneStrings(repo.LegacySecretRefs)
+			repo.LegacyToolPolicy = cloneAnyMap(repo.LegacyToolPolicy)
+			next.Repos[i] = repo
+		}
+	}
+	next.Monitor.Repositories = cloneStrings(source.Monitor.Repositories)
+	next.PlanningModels = cloneStrings(source.PlanningModels)
+	return next
+}
+
+func cloneStrings(source []string) []string {
+	return cloneSlice(source)
+}
+
+func cloneSlice[T any](source []T) []T {
+	if source == nil {
+		return nil
+	}
+	next := make([]T, len(source))
+	copy(next, source)
+	return next
+}
+
+func cloneStringSlices(source map[string][]string) map[string][]string {
+	if source == nil {
+		return nil
+	}
+	next := make(map[string][]string, len(source))
+	for key, values := range source {
+		next[key] = cloneStrings(values)
+	}
+	return next
+}
+
+func cloneAnyMap(source map[string]any) map[string]any {
+	if source == nil {
+		return nil
+	}
+	next := make(map[string]any, len(source))
+	for key, value := range source {
+		next[key] = cloneAny(value)
+	}
+	return next
+}
+
+func cloneAny(value any) any {
+	switch value := value.(type) {
+	case map[string]any:
+		return cloneAnyMap(value)
+	case []any:
+		next := make([]any, len(value))
+		for i, item := range value {
+			next[i] = cloneAny(item)
+		}
+		return next
+	case []string:
+		return cloneStrings(value)
+	case map[string]string:
+		next := make(map[string]string, len(value))
+		for key, item := range value {
+			next[key] = item
+		}
+		return next
+	default:
+		return value
+	}
 }
 
 func normalizePolicy(next *Config, document WorkspaceDocument) (*Config, error) {
