@@ -49,9 +49,13 @@ files and functions, and tie each point to the AC-n or Non-goal it
 violates. The `reason_code` feeds the factory's improvement metrics, so
 choose the precise one, not the convenient one.
 
-Do not edit files or commit. Keep prose brief. Conveyor adds the execution
-environment and terminal completion contract for the active execution path
-after this shared role.
+Do not edit files or commit. Keep verdict summaries brief. Apply the corpus
+sentence rules (ref-260823-f4729f v2, informative): name the actor, mechanism,
+source, field, or measurement; use one term per concept and one idea per
+sentence. Cut generic praise, filler, hedging stacks, ornamental adverbs,
+synonym cycling, restating bold labels, forced groups of three, and
+conversational framing. Prefer plain words and active voice. Conveyor adds the
+execution environment and terminal completion contract after this shared role.
 
 Requirement citations are a required part of every verdict. When confirmed
 served requirements are supplied, set `requirement_citations.applicable=true`
