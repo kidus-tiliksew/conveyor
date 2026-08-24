@@ -193,31 +193,14 @@ func (s *Server) listArtifacts(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) uploadArtifact(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, maxArtifactBytes+(1<<20))
-	if err := r.ParseMultipartForm(maxArtifactBytes); err != nil {
-		http.Error(w, "artifact exceeds 25 MiB or form is invalid", http.StatusRequestEntityTooLarge)
-		return
-	}
-	file, header, err := r.FormFile("file")
+	upload, status, err := readMultipartArtifact(w, r)
 	if err != nil {
-		http.Error(w, "file is required", 400)
+		http.Error(w, err.Error(), status)
 		return
 	}
-	defer file.Close()
-	content, err := io.ReadAll(io.LimitReader(file, maxArtifactBytes+1))
-	if err != nil {
-		http.Error(w, err.Error(), 400)
-		return
-	}
-	if len(content) > maxArtifactBytes {
-		http.Error(w, "artifact exceeds 25 MiB", http.StatusRequestEntityTooLarge)
-		return
-	}
+	header, content := upload.Header, upload.Content
 	sum := sha256.Sum256(content)
-	contentType := header.Header.Get("Content-Type")
-	if contentType == "" || contentType == "application/octet-stream" {
-		contentType = http.DetectContentType(content)
-	}
+	contentType := upload.ContentType
 	workspace := s.Workspace
 	if s.ConfigProvider != nil {
 		if cfg, getErr := s.ConfigProvider(r.Context()); getErr == nil {
@@ -249,6 +232,37 @@ func (s *Server) uploadArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 201, artifact)
+}
+
+type multipartArtifactUpload struct {
+	Header      *multipart.FileHeader
+	Content     []byte
+	ContentType string
+}
+
+func readMultipartArtifact(w http.ResponseWriter, r *http.Request) (multipartArtifactUpload, int, error) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxArtifactBytes+(1<<20))
+	if err := r.ParseMultipartForm(maxArtifactBytes); err != nil {
+		return multipartArtifactUpload{}, http.StatusRequestEntityTooLarge, fmt.Errorf("artifact exceeds 25 MiB or form is invalid")
+	}
+	defer r.MultipartForm.RemoveAll()
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		return multipartArtifactUpload{}, http.StatusBadRequest, fmt.Errorf("file is required")
+	}
+	defer file.Close()
+	content, err := io.ReadAll(io.LimitReader(file, maxArtifactBytes+1))
+	if err != nil {
+		return multipartArtifactUpload{}, http.StatusBadRequest, err
+	}
+	if len(content) > maxArtifactBytes {
+		return multipartArtifactUpload{}, http.StatusRequestEntityTooLarge, fmt.Errorf("artifact exceeds 25 MiB")
+	}
+	contentType := strings.TrimSpace(header.Header.Get("Content-Type"))
+	if contentType == "" || contentType == "application/octet-stream" {
+		contentType = http.DetectContentType(content)
+	}
+	return multipartArtifactUpload{Header: header, Content: content, ContentType: contentType}, 0, nil
 }
 
 func safeFilename(header *multipart.FileHeader) string {

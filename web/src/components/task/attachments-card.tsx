@@ -3,7 +3,6 @@ import { Download, FileText, Image as ImageIcon, Paperclip, Video, X } from 'luc
 import type { Artifact } from '../../lib/types'
 import { downloadArtifact, fetchArtifactObjectURL } from '../../lib/api'
 import { absoluteTime, cn, formatBytes } from '../../lib/utils'
-import { useDashboardSession } from '../app-shell'
 import { Badge } from '../ui/badge'
 import { Button } from '../ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
@@ -19,7 +18,7 @@ function isVideo(contentType: string) {
 
 // Fetch object URLs for media attachments so they can preview inline. The URLs
 // are revoked on unmount.
-function useMediaPreviews(attachments: Artifact[], token: string) {
+function useMediaPreviews(attachments: Artifact[]) {
   const signature = attachments.map((attachment) => attachment.id).join(',')
   const [urls, setUrls] = useState<Record<string, string>>({})
   const [failed, setFailed] = useState<Record<string, boolean>>({})
@@ -49,10 +48,10 @@ function useMediaPreviews(attachments: Artifact[], token: string) {
       active = false
       for (const url of created) URL.revokeObjectURL(url)
     }
-    // Re-run only when the set of attachments (or auth) changes, not on every
+    // Re-run only when the set of attachments changes, not on every
     // render — the array identity is otherwise stable across query refetches.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [signature, token])
+  }, [signature])
 
   return { urls, failed }
 }
@@ -61,8 +60,7 @@ function useMediaPreviews(attachments: Artifact[], token: string) {
 // as small tiles directly below the spec, each expandable in-place. Omitted
 // entirely when the task carries no attachments.
 export function AttachmentsCard({ attachments, title = 'Attachments' }: { attachments: Artifact[]; title?: string }) {
-  const token = useDashboardSession()
-  const { urls, failed } = useMediaPreviews(attachments, token)
+  const { urls, failed } = useMediaPreviews(attachments)
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const expanded = useMemo(
     () => attachments.find((attachment) => attachment.id === expandedId) ?? null,
@@ -98,7 +96,6 @@ export function AttachmentsCard({ attachments, title = 'Attachments' }: { attach
           attachment={expanded}
           previewURL={urls[expanded.id]}
           previewFailed={failed[expanded.id]}
-          token={token}
           onClose={() => setExpandedId(null)}
         />
       )}
@@ -153,13 +150,11 @@ function AttachmentDialog({
   attachment,
   previewURL,
   previewFailed,
-  token,
   onClose,
 }: {
   attachment: Artifact
   previewURL?: string
   previewFailed?: boolean
-  token: string
   onClose: () => void
 }) {
   const image = isImage(attachment.content_type)
@@ -177,13 +172,7 @@ function AttachmentDialog({
             {absoluteTime(attachment.created_at)}
           </p>
         </div>
-        <Button
-          variant="secondary"
-          size="sm"
-          disabled={!token}
-          title={token ? undefined : 'Sign in to download'}
-          onClick={() => void downloadArtifact(attachment).catch(() => {})}
-        >
+        <Button variant="secondary" size="sm" onClick={() => void downloadArtifact(attachment).catch(() => {})}>
           <Download />
           Download
         </Button>
@@ -209,9 +198,7 @@ function AttachmentDialog({
             <p className="max-w-sm text-sm text-muted">
               {(image || video) && previewFailed
                 ? 'This evidence could not be loaded for preview. Use the authorized download instead.'
-                : token
-                  ? 'No inline preview for this file type.'
-                  : 'Sign in to preview and download attachments.'}
+                : 'No inline preview for this file type.'}
             </p>
           </div>
         )}

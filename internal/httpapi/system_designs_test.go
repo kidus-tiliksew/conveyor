@@ -63,7 +63,7 @@ func TestListSystemDesignsUsesBoundedStoreRounds(t *testing.T) {
 	server.Workspace = "demo"
 	server.Monitor = &monitor.Service{Store: base.(monitor.Store), WorkspaceID: "demo", Enabled: true}
 	response := httptest.NewRecorder()
-	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/system-designs", nil))
+	server.Handler().ServeHTTP(response, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/system-designs", nil)))
 	if response.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -92,7 +92,7 @@ func TestSystemDesignAndDecisionHTTPConfirmationContracts(t *testing.T) {
 	handler := server.Handler()
 
 	list := httptest.NewRecorder()
-	handler.ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/v1/system-designs", nil))
+	handler.ServeHTTP(list, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/system-designs", nil)))
 	var views []systemDesignSummary
 	if list.Code != http.StatusOK || json.Unmarshal(list.Body.Bytes(), &views) != nil || len(views) != 1 || views[0].Document.Title != "Dispatch" || len(views[0].PendingVersions) != 1 {
 		t.Fatalf("list status=%d views=%+v body=%s", list.Code, views, list.Body.String())
@@ -101,7 +101,7 @@ func TestSystemDesignAndDecisionHTTPConfirmationContracts(t *testing.T) {
 		t.Fatalf("collection leaked detail payload: %s", list.Body.String())
 	}
 	detail := httptest.NewRecorder()
-	handler.ServeHTTP(detail, httptest.NewRequest(http.MethodGet, "/v1/system-designs/design-dispatch", nil))
+	handler.ServeHTTP(detail, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/system-designs/design-dispatch", nil)))
 	var detailView systemDesignView
 	if detail.Code != http.StatusOK || json.Unmarshal(detail.Body.Bytes(), &detailView) != nil || len(detailView.Lineage) != 2 || detailView.PendingVersions[0].Content == "" {
 		t.Fatalf("detail status=%d view=%+v body=%s", detail.Code, detailView, detail.Body.String())

@@ -327,7 +327,7 @@ func TestRequirementsHTTPReplacesFeatureTreeAndConfirmsVersions(t *testing.T) {
 	handler := server.Handler()
 
 	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/requirements", nil))
+	handler.ServeHTTP(response, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/requirements", nil)))
 	if response.Code != http.StatusOK {
 		t.Fatalf("list status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -370,7 +370,7 @@ func TestRequirementsHTTPReplacesFeatureTreeAndConfirmsVersions(t *testing.T) {
 		t.Fatalf("confirmed requirement=%+v err=%v", current, getErr)
 	}
 	confirmedList := httptest.NewRecorder()
-	handler.ServeHTTP(confirmedList, httptest.NewRequest(http.MethodGet, "/v1/requirements", nil))
+	handler.ServeHTTP(confirmedList, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/requirements", nil)))
 	if confirmedList.Code != http.StatusOK || !strings.Contains(confirmedList.Body.String(), `"current_version":{"requirement_id":"req-retries","version":1`) ||
 		strings.Contains(confirmedList.Body.String(), `"content"`) || confirmedList.Body.Len() > 2048 {
 		t.Fatalf("compact confirmed list status=%d bytes=%d body=%s", confirmedList.Code, confirmedList.Body.Len(), confirmedList.Body.String())
@@ -384,8 +384,8 @@ func TestRequirementsHTTPReplacesFeatureTreeAndConfirmsVersions(t *testing.T) {
 	}
 
 	detail := httptest.NewRecorder()
-	handler.ServeHTTP(detail, httptest.NewRequest(http.MethodGet,
-		"/v1/requirements/"+requirement.ID, nil))
+	handler.ServeHTTP(detail, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet,
+		"/v1/requirements/"+requirement.ID, nil)))
 	if detail.Code != http.StatusOK || !strings.Contains(detail.Body.String(), `"current_version"`) ||
 		strings.Contains(detail.Body.String(), `"pending_versions":[{`) {
 		t.Fatalf("detail status=%d body=%s", detail.Code, detail.Body.String())
@@ -519,7 +519,7 @@ func TestRequirementStalenessFollowsLineageToChildMerge(t *testing.T) {
 	}
 	server.Monitor = &monitor.Service{Store: st.(monitor.Store), WorkspaceID: "demo", Enabled: true}
 	response := httptest.NewRecorder()
-	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/requirements/"+requirement.ID, nil))
+	server.Handler().ServeHTTP(response, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/requirements/"+requirement.ID, nil)))
 	if response.Code != http.StatusOK {
 		t.Fatalf("detail status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -601,7 +601,7 @@ func TestDesignDriftCrossPostsPreserveSubjectAndResolveEverywhere(t *testing.T) 
 	handler := server.Handler()
 	list := func() []requirementView {
 		response := httptest.NewRecorder()
-		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/requirements", nil))
+		handler.ServeHTTP(response, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/requirements", nil)))
 		if response.Code != http.StatusOK {
 			t.Fatalf("list status=%d body=%s", response.Code, response.Body.String())
 		}
@@ -673,7 +673,7 @@ func TestRequirementStalenessFollowsTaskLevelServesChain(t *testing.T) {
 	server := NewServer(st)
 	server.Workspace = "demo"
 	response := httptest.NewRecorder()
-	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/requirements/"+requirement.ID, nil))
+	server.Handler().ServeHTTP(response, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/requirements/"+requirement.ID, nil)))
 	if response.Code != http.StatusOK {
 		t.Fatalf("detail status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -964,7 +964,7 @@ func TestRequirementStalenessReproducesExecutionConfigurationV3V4Signal(t *testi
 	getView := func() requirementView {
 		t.Helper()
 		response := httptest.NewRecorder()
-		server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/requirements/"+requirement.ID, nil))
+		server.Handler().ServeHTTP(response, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/requirements/"+requirement.ID, nil)))
 		if response.Code != http.StatusOK {
 			t.Fatalf("detail status=%d body=%s", response.Code, response.Body.String())
 		}
@@ -1030,7 +1030,7 @@ func TestRequirementStalenessAcknowledgmentAndFollowUpLifecycle(t *testing.T) {
 	handler := server.Handler()
 	getView := func() requirementView {
 		response := httptest.NewRecorder()
-		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/requirements/"+requirement.ID, nil))
+		handler.ServeHTTP(response, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/requirements/"+requirement.ID, nil)))
 		if response.Code != http.StatusOK {
 			t.Fatalf("requirement status=%d body=%s", response.Code, response.Body.String())
 		}
@@ -1055,7 +1055,7 @@ func TestRequirementStalenessAcknowledgmentAndFollowUpLifecycle(t *testing.T) {
 	}
 	firstSignal := view.Staleness.Deliveries[0]
 	listResponse := httptest.NewRecorder()
-	handler.ServeHTTP(listResponse, httptest.NewRequest(http.MethodGet, "/v1/requirements", nil))
+	handler.ServeHTTP(listResponse, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/requirements", nil)))
 	var summaries []requirementSummary
 	if listResponse.Code != http.StatusOK || json.Unmarshal(listResponse.Body.Bytes(), &summaries) != nil ||
 		len(summaries) != 1 || len(summaries[0].Staleness.Deliveries) != 1 ||
@@ -1140,7 +1140,7 @@ func TestRequirementStalenessAcknowledgmentAndFollowUpLifecycle(t *testing.T) {
 		t.Fatalf("open follow-up did not replace attention: %+v", view.Staleness)
 	}
 	listResponse = httptest.NewRecorder()
-	handler.ServeHTTP(listResponse, httptest.NewRequest(http.MethodGet, "/v1/requirements", nil))
+	handler.ServeHTTP(listResponse, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/requirements", nil)))
 	summaries = nil
 	if listResponse.Code != http.StatusOK || json.Unmarshal(listResponse.Body.Bytes(), &summaries) != nil ||
 		len(summaries) != 1 || len(summaries[0].Staleness.Deliveries) != 1 ||
@@ -1201,7 +1201,7 @@ func TestRequirementStalenessIgnoresDisplayTruncation(t *testing.T) {
 	server.Workspace = "demo"
 	server.Monitor = &monitor.Service{Store: base.(monitor.Store), WorkspaceID: "demo", Enabled: true}
 	response := httptest.NewRecorder()
-	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/requirements/"+requirement.ID, nil))
+	server.Handler().ServeHTTP(response, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/requirements/"+requirement.ID, nil)))
 	if response.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -1245,7 +1245,7 @@ func TestRequirementStalenessSurfacesTruncatedDeliveryEvaluation(t *testing.T) {
 	server := NewServer(&truncatedDeliveryLineageStore{Store: base})
 	server.Workspace = "demo"
 	response := httptest.NewRecorder()
-	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/requirements/"+requirement.ID, nil))
+	server.Handler().ServeHTTP(response, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/requirements/"+requirement.ID, nil)))
 	if response.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -1292,7 +1292,7 @@ func TestRequirementStalenessIgnoresDismissedServesProjection(t *testing.T) {
 	server := NewServer(st)
 	server.Workspace = "demo"
 	response := httptest.NewRecorder()
-	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/requirements/"+requirement.ID, nil))
+	server.Handler().ServeHTTP(response, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/requirements/"+requirement.ID, nil)))
 	if response.Code != http.StatusOK {
 		t.Fatalf("detail status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -1369,9 +1369,9 @@ func TestRequirementsHTTPDistinguishesMigratedSeedFromStaleConfirmableRevision(t
 	server := NewServer(st)
 	server.Workspace = "demo"
 	response := httptest.NewRecorder()
-	server.Handler().ServeHTTP(response, httptest.NewRequest(
+	server.Handler().ServeHTTP(response, authenticatedMemoryRead(server, httptest.NewRequest(
 		http.MethodGet, "/v1/requirements/"+seed.ID, nil,
-	))
+	)))
 	if response.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -1401,7 +1401,7 @@ func TestRequirementsHTTPDistinguishesMigratedSeedFromStaleConfirmableRevision(t
 		t.Fatal(err)
 	}
 	response = httptest.NewRecorder()
-	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/requirements/"+seed.ID, nil))
+	server.Handler().ServeHTTP(response, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/requirements/"+seed.ID, nil)))
 	if err = json.Unmarshal(response.Body.Bytes(), &view); err != nil {
 		t.Fatal(err)
 	}
@@ -1480,8 +1480,8 @@ func TestRequirementsHTTPSurfacesBlueprintSpecGateHandoffAndRemovesFeatureMutati
 	server.Workspace, server.BearerToken = "demo", "token"
 	handler := server.Handler()
 	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet,
-		"/v1/requirements/"+requirement.ID, nil))
+	handler.ServeHTTP(response, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet,
+		"/v1/requirements/"+requirement.ID, nil)))
 	if response.Code != http.StatusOK {
 		t.Fatalf("detail status=%d body=%s", response.Code, response.Body.String())
 	}

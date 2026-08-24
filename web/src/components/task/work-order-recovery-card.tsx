@@ -6,7 +6,7 @@ import { confirmRequirementVersion, confirmSystemDesignVersion, recoverWorkOrder
 import { deriveCurrentExecutionState, pendingPlanRevisionRequest, type CurrentExecutionState } from '../../lib/activity'
 import { errorMessage } from '../../lib/errors'
 import type { ActivityItem, WorkOrderCheckpointCitation, WorkOrderCheckpointPendingProposal } from '../../lib/types'
-import { useDashboardSession, useWorkspaceCapability, useWorkspaceSelection } from '../app-shell'
+import { useWorkspaceCapability, useWorkspaceSelection } from '../app-shell'
 import { Badge } from '../ui/badge'
 import { Button } from '../ui/button'
 import { type Proposal, proposalIdentity } from './system-design-proposal-card'
@@ -43,7 +43,8 @@ export function CheckpointProposalRecoveryCard({
   state: CurrentExecutionState
   proposals: Proposal[]
 }) {
-  const token = useDashboardSession()
+  const canConfirm = useWorkspaceCapability('confirm_documents')
+  const canRecover = useWorkspaceCapability('recover_work')
   const { workspace } = useWorkspaceSelection()
   const queryClient = useQueryClient()
   const requestId = useRef(crypto.randomUUID())
@@ -130,7 +131,7 @@ export function CheckpointProposalRecoveryCard({
         ))}
       </div>
       <div className="flex flex-wrap items-center gap-3">
-        <Button size="sm" disabled={!token || mutation.isPending} onClick={() => mutation.mutate()}>
+        <Button size="sm" disabled={!canConfirm || !canRecover || mutation.isPending} onClick={() => mutation.mutate()}>
           <Check aria-hidden />
           {mutation.isPending ? 'Confirming and recovering…' : actionLabel}
         </Button>
@@ -142,7 +143,8 @@ export function CheckpointProposalRecoveryCard({
           Review or dismiss proposals
         </Link>
       </div>
-      {!token && <p className="text-xs text-muted">Operator authorization is required to continue.</p>}
+      {!canConfirm && <p className="text-xs text-muted">Document confirmation capability is required.</p>}
+      {!canRecover && <p className="text-xs text-muted">Work recovery capability is required.</p>}
       {mutation.error != null && (
         <p className="text-xs text-failure">{errorMessage(mutation.error, 'Could not confirm and recover.')}</p>
       )}
@@ -178,7 +180,8 @@ function retryCountdown(at: string, now: number) {
 
 function RecoveryState({ item, state }: { item: ActivityItem; state: CurrentExecutionState }) {
   const { order } = state
-  const token = useDashboardSession()
+  const canOperateGates = useWorkspaceCapability('operate_gates')
+  const canRecoverWork = useWorkspaceCapability('recover_work')
   const canConfirmDocuments = useWorkspaceCapability('confirm_documents')
   const { workspace } = useWorkspaceSelection()
   const queryClient = useQueryClient()
@@ -248,8 +251,7 @@ function RecoveryState({ item, state }: { item: ActivityItem; state: CurrentExec
   const checkoutBlocked = state.kind === 'checkout_blocked'
   const actionLabel =
     state.action === 'retry_implementation' || checkoutBlocked ? 'Retry implementation' : 'Recover work order'
-  const canRecover =
-    Boolean(token) &&
+  const recoveryFormValid =
     !mutation.isPending &&
     (!checkoutBlocked || checkoutResolved) &&
     (!checkpointReleased || direction.trim().length > 0)
@@ -306,7 +308,6 @@ function RecoveryState({ item, state }: { item: ActivityItem; state: CurrentExec
               <CheckpointCitation
                 key={`${citation.document_kind}:${citation.document_id}:${citation.cited_version}:${citation.statement_or_section_id ?? ''}`}
                 citation={citation}
-                token={token}
                 canConfirm={canConfirmDocuments}
                 activeKey={
                   confirmProposal.variables
@@ -327,9 +328,11 @@ function RecoveryState({ item, state }: { item: ActivityItem; state: CurrentExec
               ? 'None'
               : `${item.task.context?.requirements?.length ?? 0} requirement(s), ${item.task.context?.designs?.length ?? 0} design document(s)`}
           </span>
-          <Button variant="secondary" size="sm" disabled={!token} onClick={() => setAttachingContext(true)}>
-            <Link2 aria-hidden /> Attach context
-          </Button>
+          {canOperateGates && (
+            <Button variant="secondary" size="sm" onClick={() => setAttachingContext(true)}>
+              <Link2 aria-hidden /> Attach context
+            </Button>
+          )}
         </div>
         <label className="block space-y-1.5">
           <span className="font-medium text-foreground">Operator direction</span>
@@ -371,11 +374,16 @@ function RecoveryState({ item, state }: { item: ActivityItem; state: CurrentExec
           </label>
         </div>
       )}
-      <Button variant="secondary" size="sm" disabled={!canRecover} onClick={() => mutation.mutate()}>
+      <Button
+        variant="secondary"
+        size="sm"
+        disabled={!canRecoverWork || !recoveryFormValid}
+        onClick={() => mutation.mutate()}
+      >
         <RotateCcw aria-hidden />
         {mutation.isPending ? 'Retrying…' : actionLabel}
       </Button>
-      {!token && <p className="text-xs text-muted">Operator authorization is required to retry.</p>}
+      {!canRecoverWork && <p className="text-xs text-muted">Work recovery capability is required.</p>}
       {mutation.error != null && <p className="text-xs text-failure">{String(mutation.error)}</p>}
       {attachingContext && <TaskContextAttachmentDialog task={item.task} onClose={() => setAttachingContext(false)} />}
     </section>
@@ -397,7 +405,6 @@ function checkpointResolvedDirection(checkpointClass: string | undefined, citati
 
 function CheckpointCitation({
   citation,
-  token,
   canConfirm,
   activeKey,
   isPending,
@@ -405,7 +412,6 @@ function CheckpointCitation({
   onConfirm,
 }: {
   citation: WorkOrderCheckpointCitation
-  token: string
   canConfirm: boolean
   activeKey: string
   isPending: boolean
@@ -461,7 +467,7 @@ function CheckpointCitation({
               const key = `${citation.document_id}:${proposal.version ?? 0}`
               return (
                 <div key={key} className="flex flex-wrap items-center gap-2">
-                  <Button size="sm" disabled={!token || !canConfirm || isPending} onClick={() => onConfirm(proposal)}>
+                  <Button size="sm" disabled={!canConfirm || isPending} onClick={() => onConfirm(proposal)}>
                     <Check aria-hidden />
                     {isPending && activeKey === key ? 'Confirming…' : `Confirm v${proposal.version}`}
                   </Button>

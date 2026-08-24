@@ -18,6 +18,25 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+func healthyDetections(harnesses ...config.Harness) []detectedHarness {
+	detected := make([]detectedHarness, len(harnesses))
+	for index, harness := range harnesses {
+		detected[index] = detectedHarness{Harness: harness, Probe: core.HarnessProbe{Harness: harness.Name, Healthy: true, Fingerprint: "test", Message: "test harness"}}
+	}
+	return detected
+}
+
+func driveExecutionWizard(t *testing.T, model *executionWizardModel, message tea.Msg) *executionWizardModel {
+	t.Helper()
+	updated, command := model.Update(message)
+	model = updated.(*executionWizardModel)
+	for command != nil && !model.completed && !model.cancelled {
+		updated, command = model.Update(command())
+		model = updated.(*executionWizardModel)
+	}
+	return model
+}
+
 func TestDetectLocalHarnessesOffersOnlyHealthyPresentTemplates(t *testing.T) {
 	directory := t.TempDir()
 	writeProbeFixture(t, directory, "codex", "codex 1.2.3", true)
@@ -51,13 +70,9 @@ func TestExecutionWizardDeclineWritesNothing(t *testing.T) {
 
 func TestExecutionWizardModelRoundTripWritesRunValidConfig(t *testing.T) {
 	harness := config.HarnessTemplates()[0].Harness
-	model := newExecutionWizardModel([]config.Harness{harness})
-	for model.field < len(model.fields) {
-		updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
-		model = updated.(executionWizardModel)
-	}
+	state := newExecutionWizardState(healthyDetections(harness), nil)
 	path := filepath.Join(t.TempDir(), "conveyor.yaml")
-	if err := writeLocalExecutionConfig(path, "demo", model.choices, []config.Harness{harness}); err != nil {
+	if err := writeLocalExecutionConfig(path, "demo", state.choices, []config.Harness{harness}); err != nil {
 		t.Fatal(err)
 	}
 	loaded, err := config.Load(path)
@@ -96,101 +111,59 @@ func TestExecutionWizardModelRoundTripWritesRunValidConfig(t *testing.T) {
 	}
 }
 
-func TestExecutionWizardUsesEditableModelPlaceholder(t *testing.T) {
+func TestExecutionWizardDefaultsFastPathCompletesFromOneConfirmation(t *testing.T) {
+	t.Setenv("TERM", "xterm-256color")
 	harness := config.HarnessTemplates()[0].Harness
-	model := newExecutionWizardModel([]config.Harness{harness})
-	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	model = updated.(executionWizardModel)
-
-	if model.fields[model.field].name != "model" || model.input.Value() != "" || model.input.Placeholder != "gpt-5.6-sol" || !model.input.Focused() {
-		t.Fatalf("model input = field %q value %q placeholder %q focused %v", model.fields[model.field].name, model.input.Value(), model.input.Placeholder, model.input.Focused())
+	detected := healthyDetections(harness)
+	model := newExecutionWizardModel(nil, detected)
+	model = driveExecutionWizard(t, model, tea.KeyMsg{Type: tea.KeyEnter})
+	if !model.completed || !model.state.acceptDefaults || len(model.state.choices.ReviewSeats) != 1 {
+		t.Fatalf("completed=%v defaults=%v choices=%+v", model.completed, model.state.acceptDefaults, model.state.choices)
 	}
+}
+
+func TestExecutionWizardUsesGroupedHuhFormAndPreservesState(t *testing.T) {
+	harness := config.HarnessTemplates()[0].Harness
+	detected := healthyDetections(harness)
+	state := newExecutionWizardState(detected, nil)
+	state.acceptDefaults = false
+	state.choices.Spec.Model = "operator-model"
+	state.choices.Implement.Model = "later-model"
+	model := newExecutionWizardModel(state, detected)
 	view := model.View()
-	for _, text := range []string{"Step 2 of 12", "suggested default shown dimmed", "type any model to replace it"} {
-		if !strings.Contains(view, text) {
-			t.Fatalf("model view missing %q:\n%s", text, view)
-		}
+	if !strings.Contains(view, "Local execution setup") || model.form == nil {
+		t.Fatalf("huh form view = %q", view)
 	}
-	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("operator-model")})
-	model = updated.(executionWizardModel)
-	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	model = updated.(executionWizardModel)
-	if model.choices.Spec.Model != "operator-model" {
-		t.Fatalf("spec model = %q", model.choices.Spec.Model)
+	model.form.NextGroup()
+	model.form.NextGroup()
+	model.form.PrevGroup()
+	if state.choices.Spec.Model != "operator-model" || state.choices.Implement.Model != "later-model" {
+		t.Fatalf("back navigation lost values: %+v", state.choices)
 	}
 }
 
-func TestExecutionWizardHarnessSelectionRefreshesSuggestion(t *testing.T) {
-	templates := config.HarnessTemplates()
-	var codex, claude config.Harness
-	for _, template := range templates {
-		switch template.Harness.Name {
-		case "codex":
-			codex = template.Harness
-		case "claude":
-			claude = template.Harness
-		}
-	}
-	model := newExecutionWizardModel([]config.Harness{codex, claude})
-	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyDown})
-	model = updated.(executionWizardModel)
-	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	model = updated.(executionWizardModel)
-	if model.choices.Spec.Harness != "claude" || model.input.Placeholder != "opus" {
-		t.Fatalf("choice = %+v placeholder = %q", model.choices.Spec, model.input.Placeholder)
-	}
-	if strings.Contains(suggestedHarnessModel("claude", "spec"), "4.1") {
-		t.Fatalf("claude suggestion is pinned: %q", suggestedHarnessModel("claude", "spec"))
-	}
-}
-
-func TestExecutionWizardRendersStyledValidationAndKeyHelp(t *testing.T) {
+func TestExecutionWizardDirectSeatActionsAddRemoveAndReorder(t *testing.T) {
 	harness := config.HarnessTemplates()[0].Harness
-	model := newExecutionWizardModel([]config.Harness{harness})
-	for model.field < 2 {
-		updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
-		model = updated.(executionWizardModel)
-	}
-	if view := model.View(); !strings.Contains(view, "↑/↓ select • enter confirm • esc cancel") || !strings.Contains(view, "› high") {
-		t.Fatalf("selector view lacks focus/help:\n%s", view)
-	}
-	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	model = updated.(executionWizardModel)
-	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("not-a-duration")})
-	model = updated.(executionWizardModel)
-	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	model = updated.(executionWizardModel)
-	want := wizardValidationStyle.Render("! timeout must be a positive duration")
-	if !strings.Contains(model.View(), want) {
-		t.Fatalf("validation is not rendered with wizard style:\n%s", model.View())
-	}
-}
-
-func TestExecutionWizardEditsAndReordersMultipleReviewSeats(t *testing.T) {
-	templates := config.HarnessTemplates()
-	model := newReviewSeatExecutionWizardModel([]config.Harness{templates[0].Harness}, []localStageChoice{
-		{Harness: templates[0].Harness.Name, Model: "first", Effort: "high"},
-		{Harness: templates[0].Harness.Name, Model: "second", Effort: "medium"},
+	state := newExecutionWizardState(healthyDetections(harness), []localStageChoice{
+		{Harness: harness.Name, Model: "first", Effort: "high"},
+		{Harness: harness.Name, Model: "second", Effort: "medium"},
 	})
-	for model.field < 10 {
-		updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
-		model = updated.(executionWizardModel)
+	state.seatIndex, state.seatAction = 1, "up"
+	applySeatAction(state)
+	if state.choices.ReviewSeats[0].Model != "second" {
+		t.Fatalf("move seats=%+v", state.choices.ReviewSeats)
 	}
-	if len(model.fields) != 17 {
-		t.Fatalf("seat editor fields=%d", len(model.fields))
+	state.seatAction = "add"
+	applySeatAction(state)
+	if len(state.choices.ReviewSeats) != 3 {
+		t.Fatalf("add seats=%+v", state.choices.ReviewSeats)
 	}
-	for model.field < len(model.fields)-1 {
-		updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
-		model = updated.(executionWizardModel)
+	state.seatAction = "remove"
+	applySeatAction(state)
+	if len(state.choices.ReviewSeats) != 2 {
+		t.Fatalf("remove seats=%+v", state.choices.ReviewSeats)
 	}
-	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("2,1")})
-	model = updated.(executionWizardModel)
-	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	model = updated.(executionWizardModel)
-	if model.field != len(model.fields) || len(model.choices.ReviewSeats) != 2 || model.choices.ReviewSeats[0].Model != "second" || model.choices.ReviewSeats[1].Model != "first" {
-		t.Fatalf("review seats=%+v field=%d/%d", model.choices.ReviewSeats, model.field, len(model.fields))
-	}
-	document := localExecutionDocument("demo", model.choices, []config.Harness{templates[0].Harness})
+	document := localExecutionDocument("demo", state.choices, []config.Harness{harness})
 	if len(document.Review.Seats) != 2 || document.Review.Seats[0].Model != "second" {
 		t.Fatalf("document seats=%+v", document.Review.Seats)
 	}
@@ -198,13 +171,9 @@ func TestExecutionWizardEditsAndReordersMultipleReviewSeats(t *testing.T) {
 
 func TestRunAndWorkerShareLocalSetupLoaderAndResolution(t *testing.T) {
 	harness := config.HarnessTemplates()[0].Harness
-	model := newExecutionWizardModel([]config.Harness{harness})
-	for model.field < len(model.fields) {
-		updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
-		model = updated.(executionWizardModel)
-	}
+	state := newExecutionWizardState(healthyDetections(harness), nil)
 	path := filepath.Join(t.TempDir(), "conveyor.yaml")
-	if err := writeLocalExecutionConfig(path, "demo", model.choices, []config.Harness{harness}); err != nil {
+	if err := writeLocalExecutionConfig(path, "demo", state.choices, []config.Harness{harness}); err != nil {
 		t.Fatal(err)
 	}
 	setup, err := loadLocalExecutionSetup(path)
@@ -233,13 +202,9 @@ func TestRunAndWorkerShareLocalSetupLoaderAndResolution(t *testing.T) {
 
 func TestSharedLocalSetupLoaderRejectsInvalidResumeCommand(t *testing.T) {
 	harness := config.HarnessTemplates()[0].Harness
-	model := newExecutionWizardModel([]config.Harness{harness})
-	for model.field < len(model.fields) {
-		updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
-		model = updated.(executionWizardModel)
-	}
+	state := newExecutionWizardState(healthyDetections(harness), nil)
 	path := filepath.Join(t.TempDir(), "conveyor.yaml")
-	if err := writeLocalExecutionConfig(path, "demo", model.choices, []config.Harness{harness}); err != nil {
+	if err := writeLocalExecutionConfig(path, "demo", state.choices, []config.Harness{harness}); err != nil {
 		t.Fatal(err)
 	}
 	raw, err := os.ReadFile(path)
@@ -277,7 +242,7 @@ func TestExecutionSetupCommandIsDistinctFromTaskSetup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resolved.CommandPath() != "config init-execution" || !strings.Contains(resolved.Long, "conveyor task setup") {
+	if resolved.CommandPath() != "config init-execution" || !strings.Contains(resolved.Long, "conveyor task setup") || resolved.Flags().Lookup("defaults") == nil {
 		t.Fatalf("init command path=%q long=%q", resolved.CommandPath(), resolved.Long)
 	}
 }
@@ -301,11 +266,8 @@ func TestExecutionWizardPreservesExistingLocalConfiguration(t *testing.T) {
 	previousTerminal := wizardTerminal
 	wizardTerminal = func(io.Reader) bool { return true }
 	previousUI := runExecutionWizardUI
-	runExecutionWizardUI = func(model executionWizardModel, _ io.Reader, _ io.Writer) (executionWizardModel, error) {
-		for model.field < len(model.fields) {
-			updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
-			model = updated.(executionWizardModel)
-		}
+	runExecutionWizardUI = func(model *executionWizardModel, _ io.Reader, _ io.Writer) (*executionWizardModel, error) {
+		model.completed = true
 		return model, nil
 	}
 	t.Cleanup(func() {
@@ -329,7 +291,7 @@ func TestExecutionWizardPreservesExistingLocalConfiguration(t *testing.T) {
 	}
 }
 
-func TestExecutionWizardRejectsHarnessThatLosesVersionFingerprintBeforeSave(t *testing.T) {
+func TestExecutionWizardUsesDetectionProbeWithoutDiscardingAnswers(t *testing.T) {
 	directory := t.TempDir()
 	writeProbeFixture(t, directory, "codex", "codex 1.2.3", true)
 	t.Setenv("PATH", directory)
@@ -337,14 +299,12 @@ func TestExecutionWizardRejectsHarnessThatLosesVersionFingerprintBeforeSave(t *t
 	previousTerminal := wizardTerminal
 	wizardTerminal = func(io.Reader) bool { return true }
 	previousUI := runExecutionWizardUI
-	runExecutionWizardUI = func(model executionWizardModel, _ io.Reader, _ io.Writer) (executionWizardModel, error) {
-		for model.field < len(model.fields) {
-			updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
-			model = updated.(executionWizardModel)
-		}
+	runExecutionWizardUI = func(model *executionWizardModel, _ io.Reader, _ io.Writer) (*executionWizardModel, error) {
+		model.state.choices.Spec.Model = "captured-model"
 		if err := os.WriteFile(filepath.Join(directory, "codex"), []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
-			return executionWizardModel{}, err
+			return nil, err
 		}
+		model.completed = true
 		return model, nil
 	}
 	t.Cleanup(func() {
@@ -352,15 +312,75 @@ func TestExecutionWizardRejectsHarnessThatLosesVersionFingerprintBeforeSave(t *t
 		runExecutionWizardUI = previousUI
 	})
 
-	err := runExecutionSetupWizard(t.Context(), strings.NewReader(""), &bytes.Buffer{}, path, "demo")
-	if err == nil || !strings.Contains(err.Error(), "failed validation probe") {
-		t.Fatalf("error = %v", err)
+	if err := runExecutionSetupWizard(t.Context(), strings.NewReader(""), &bytes.Buffer{}, path, "demo"); err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(err.Error(), wizardValidationStyle.Render("! harness \"codex\" failed validation probe:")) {
-		t.Fatalf("probe validation is not styled: %q", err)
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
-		t.Fatalf("failed validation wrote %s: %v", path, statErr)
+	if loaded.ExecutionSettings.Spec.Model != "captured-model" {
+		t.Fatalf("captured answers were lost: %+v", loaded.ExecutionSettings.Spec)
+	}
+}
+
+func TestExecutionSetupDefaultsWritesWithoutTerminal(t *testing.T) {
+	directory := t.TempDir()
+	writeProbeFixture(t, directory, "codex", "codex 1.2.3", true)
+	t.Setenv("PATH", directory)
+	path := filepath.Join(directory, "conveyor.yaml")
+	if err := runExecutionSetupDefaults(t.Context(), io.Discard, path, "demo"); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.ExecutionSettings.Spec.Model != suggestedHarnessModel("codex", "spec") || len(loaded.Review.Seats) != 1 {
+		t.Fatalf("defaults setup = %+v seats=%+v", loaded.ExecutionSettings, loaded.Review.Seats)
+	}
+}
+
+func TestExecutionWizardSummaryDeclineReturnsWithValuesIntact(t *testing.T) {
+	directory := t.TempDir()
+	writeProbeFixture(t, directory, "codex", "codex 1.2.3", true)
+	t.Setenv("PATH", directory)
+	path := filepath.Join(directory, "conveyor.yaml")
+	previousTerminal := wizardTerminal
+	wizardTerminal = func(io.Reader) bool { return true }
+	previousUI := runExecutionWizardUI
+	calls := 0
+	runExecutionWizardUI = func(model *executionWizardModel, _ io.Reader, _ io.Writer) (*executionWizardModel, error) {
+		calls++
+		model.state.acceptDefaults = false
+		model.state.choices.Implement.Model = "preserved-after-summary-decline"
+		model.state.confirmSummary = calls > 1
+		model.completed = true
+		return model, nil
+	}
+	t.Cleanup(func() {
+		wizardTerminal = previousTerminal
+		runExecutionWizardUI = previousUI
+	})
+	if err := runExecutionSetupWizard(t.Context(), strings.NewReader(""), io.Discard, path, "demo"); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 || loaded.ExecutionSettings.Implementation.Model != "preserved-after-summary-decline" {
+		t.Fatalf("calls=%d implementation=%+v", calls, loaded.ExecutionSettings.Implementation)
+	}
+}
+
+func TestExecutionWizardUnhealthyHarnessValidationPreservesChoices(t *testing.T) {
+	harness := config.HarnessTemplates()[0].Harness
+	detected := []detectedHarness{{Harness: harness, Probe: core.HarnessProbe{Harness: harness.Name, Message: "authentication required"}}}
+	state := &executionWizardState{choices: localExecutionChoices{Spec: localStageChoice{Harness: harness.Name, Model: "kept-model"}}}
+	err := harnessProbeValidator(detected)(harness.Name)
+	if err == nil || !strings.Contains(err.Error(), "authentication required") || state.choices.Spec.Model != "kept-model" {
+		t.Fatalf("error=%v state=%+v", err, state.choices.Spec)
 	}
 }
 

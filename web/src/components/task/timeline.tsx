@@ -47,6 +47,7 @@ import { MarkdownProse } from '../ui/markdown-prose'
 import {
   ReviewPanel,
   changesComposerHint,
+  gateNeedsRecoveryCapability,
   gateTone,
   isReviewable,
   type GateTone,
@@ -94,6 +95,7 @@ export function Timeline({
   routeVariant?: TaskRouteVariant
 }) {
   const canOperate = useWorkspaceCapability('operate_gates')
+  const canRecover = useWorkspaceCapability('recover_work')
   const canRequestChanges = useCanRequestTaskChanges(item.task)
   const members = useWorkspaceMembers()
   const entries = buildTimeline(item, members.data ?? [])
@@ -101,12 +103,13 @@ export function Timeline({
   const technicalEvents = technicalActivity(item)
   const usageReportedOrderIDs = reportedUsageOrderIDs(item)
   const showGate = isReviewable(item.task)
+  const recoveryGate = gateNeedsRecoveryCapability(item.task, item.events, item.merge_readiness)
   const timelineRef = useRef<HTMLElement>(null)
   const gateRef = useRef<HTMLLIElement>(null)
   const [decisionScrollRequest, setDecisionScrollRequest] = useState(0)
   // Preemption is an execution affordance: a blueprint anchor takes no work
   // orders, so it never offers one.
-  const preemptOrder = executionActions && canOperate ? claimedWorkOrder(item) : undefined
+  const preemptOrder = executionActions && canRecover ? claimedWorkOrder(item) : undefined
   // A System Design revision this task proposed is a decision waiting on the
   // operator, so it belongs in the live tail beside the other ones (spec
   // §21.62). A blueprint anchor runs no session and proposes nothing, which is
@@ -148,15 +151,16 @@ export function Timeline({
   // Reviewable tasks open scrolled to the gate — the decision point — not
   // the top of a story the reviewer has often already read.
   useEffect(() => {
-    if (showGate && (canOperate || (item.at_merge_gate && canRequestChanges))) {
+    if (showGate && (canOperate || (item.at_merge_gate && canRequestChanges) || (canRecover && recoveryGate))) {
       gateRef.current?.scrollIntoView({ block: 'end' })
     }
-  }, [item.task.id, item.at_merge_gate, showGate, canOperate, canRequestChanges])
+  }, [item.task.id, item.at_merge_gate, showGate, canOperate, canRecover, canRequestChanges, recoveryGate])
 
   const tail = (
-    executionActions && canOperate
+    executionActions
       ? [
-          item.pending_authority === true &&
+          canOperate &&
+            item.pending_authority === true &&
             designProposals.length === 0 && {
               key: 'pending-authority',
               dot: 'bg-attention-dot',
@@ -184,32 +188,37 @@ export function Timeline({
                 </section>
               ),
             },
-          hasWorkerAlert(item) && {
-            key: 'worker-alert',
-            dot: 'bg-attention-dot',
-            card: <WorkerStatusCard item={item} />,
-          },
-          hasInterruptedReviewRecovery(item) && {
-            key: 'interrupted-review',
-            dot: 'bg-attention-dot',
-            card: <InterruptedReviewRecoveryCard item={item} />,
-          },
-          hasReviewRoundRetry(item) && {
-            key: 'review-retry',
-            dot: 'bg-attention-dot',
-            card: <ReviewRoundRetryCard item={item} />,
-          },
-          hasWorkerRecovery(item) && {
-            key: 'order-recovery',
-            dot: 'bg-attention-dot',
-            card:
-              combineCheckpointProposal && currentExecution ? (
-                <CheckpointProposalRecoveryCard item={item} state={currentExecution} proposals={designProposals} />
-              ) : (
-                <WorkOrderRecoveryCard item={item} />
-              ),
-          },
-          standaloneDesignProposals.length > 0 &&
+          canOperate &&
+            hasWorkerAlert(item) && {
+              key: 'worker-alert',
+              dot: 'bg-attention-dot',
+              card: <WorkerStatusCard item={item} />,
+            },
+          canRecover &&
+            hasInterruptedReviewRecovery(item) && {
+              key: 'interrupted-review',
+              dot: 'bg-attention-dot',
+              card: <InterruptedReviewRecoveryCard item={item} />,
+            },
+          canRecover &&
+            hasReviewRoundRetry(item) && {
+              key: 'review-retry',
+              dot: 'bg-attention-dot',
+              card: <ReviewRoundRetryCard item={item} />,
+            },
+          canRecover &&
+            hasWorkerRecovery(item) && {
+              key: 'order-recovery',
+              dot: 'bg-attention-dot',
+              card:
+                combineCheckpointProposal && currentExecution ? (
+                  <CheckpointProposalRecoveryCard item={item} state={currentExecution} proposals={designProposals} />
+                ) : (
+                  <WorkOrderRecoveryCard item={item} />
+                ),
+            },
+          canOperate &&
+            standaloneDesignProposals.length > 0 &&
             !combineCheckpointProposal && {
               key: 'design-proposal',
               dot: 'bg-attention-dot',
@@ -221,7 +230,12 @@ export function Timeline({
                 />
               ),
             },
-          canRedispatch(item) && { key: 'redispatch', dot: 'bg-edge', card: <RedispatchCard item={item} /> },
+          canRecover &&
+            canRedispatch(item) && {
+              key: 'redispatch',
+              dot: 'bg-edge',
+              card: <RedispatchCard item={item} />,
+            },
         ]
       : []
   ).filter((entry) => entry !== false)
@@ -259,7 +273,7 @@ export function Timeline({
               {card}
             </li>
           ))}
-          {showGate && (canOperate || (item.at_merge_gate && canRequestChanges)) && (
+          {showGate && (canOperate || (item.at_merge_gate && canRequestChanges) || (canRecover && recoveryGate)) && (
             <li ref={gateRef} className="relative pl-7">
               <TimelineDot
                 className={cn('animate-pulse', gateDots[gateTone(item.task, item.events, item.merge_readiness)])}

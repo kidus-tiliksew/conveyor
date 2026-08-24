@@ -3,7 +3,6 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { RotateCcw, TriangleAlert } from 'lucide-react'
 import { retryReviewRound } from '../../lib/api'
 import type { ActivityItem } from '../../lib/types'
-import { useDashboardSession } from '../app-shell'
 import { Button } from '../ui/button'
 import { Textarea } from '../ui/input'
 
@@ -13,7 +12,6 @@ export function hasReviewRoundRetry(item: ActivityItem) {
 
 export function ReviewRoundRetryCard({ item }: { item: ActivityItem }) {
   const recovery = item.review_recovery
-  const token = useDashboardSession()
   const queryClient = useQueryClient()
   const requestId = useRef(crypto.randomUUID())
   const [reason, setReason] = useState('')
@@ -60,7 +58,7 @@ export function ReviewRoundRetryCard({ item }: { item: ActivityItem }) {
       <Button
         variant="secondary"
         size="sm"
-        disabled={!token || !reason.trim() || mutation.isPending}
+        disabled={!reason.trim() || mutation.isPending}
         onClick={() => mutation.mutate()}
       >
         <RotateCcw />

@@ -1,7 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { KeyRound } from 'lucide-react'
-import { useDashboardSession } from '../app-shell'
 import { Button } from '../ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
 import { Input } from '../ui/input'
@@ -13,31 +12,27 @@ function storedSummary(storedAt?: string) {
 }
 
 export function ForgeTokenCard() {
-  const token = useDashboardSession()
   const queryClient = useQueryClient()
   const [forgeToken, setForgeToken] = useState('')
 
   const status = useQuery({
-    queryKey: ['forge-token', token],
+    queryKey: ['forge-token'],
     queryFn: () => fetchForgeToken(),
-    enabled: Boolean(token),
     retry: false,
   })
   const store = useMutation({
     mutationFn: (value: string) => storeForgeToken(value),
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ['forge-token', token] })
+      await queryClient.invalidateQueries({ queryKey: ['forge-token'] })
     },
     onSettled: () => setForgeToken(''),
   })
   const remove = useMutation({
     mutationFn: () => deleteForgeToken(),
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ['forge-token', token] })
+      await queryClient.invalidateQueries({ queryKey: ['forge-token'] })
     },
   })
-
-  if (!token) return null
 
   const pending = store.isPending || remove.isPending
   const current = status.data

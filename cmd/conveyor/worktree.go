@@ -73,7 +73,7 @@ func checkoutTaskWithCheckpoint(ctx context.Context, branch, base, repo, repoURL
 func checkoutTaskWithCheckpointAtRoot(ctx context.Context, branch, base, repo, repoURL, taskID, destination, worktreeRoot string, checkpoint *attemptCheckpoint) (string, *attemptCheckpointResult, error) {
 	root, err := repositoryRoot(ctx)
 	if err != nil {
-		return "", nil, fmt.Errorf("checkout must run inside the target repository: %w", err)
+		return "", nil, fmt.Errorf("checkout must run from inside the target repository; change into its primary checkout (dispatched launches may configure repos[].checkout): %w", err)
 	}
 	// Identity precedes fetches, ref inspection, worktree reuse, and creation.
 	// A directory label is never accepted as proof of repository ownership

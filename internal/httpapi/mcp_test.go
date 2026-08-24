@@ -481,7 +481,8 @@ func TestMCPSubmitForReviewReturnsActionableEvidenceGateError(t *testing.T) {
 	_, err := server.callMCPTool(request, "submit_for_review", map[string]any{
 		"workspace_id": "demo", "work_order_id": job.ID, "session_id": "session",
 	})
-	if err == nil || !strings.Contains(err.Error(), "POST /v1/artifacts") || !strings.Contains(err.Error(), "role=verification_evidence") {
+	if err == nil || !strings.Contains(err.Error(), "/v1/worker/work-orders/"+job.ID+"/verification-evidence") ||
+		!strings.Contains(err.Error(), "X-Conveyor-Work-Order-Token") || !strings.Contains(err.Error(), "X-Conveyor-Work-Order-Session") {
 		t.Fatalf("MCP evidence gate error=%v", err)
 	}
 	order, getErr := st.GetWorkOrder(ctx, job.ID)

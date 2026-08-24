@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useSearch } from '@tanstack/react-router'
 import { Check, Clock, ExternalLink, History, Layers, X } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
-import { useDashboardSession, useWorkspaceCapability, useWorkspaceSelection } from '../components/app-shell'
+import { useWorkspaceCapability, useWorkspaceSelection } from '../components/app-shell'
 import { type AttentionItem, AttentionSurface } from '../components/documents/attention-surface'
 import { compareDocuments, type DocumentSort, type DocumentSortDirection } from '../components/documents/document-sort'
 import {
@@ -46,7 +46,6 @@ const originLabels: Record<SystemDesignVersion['origin'], string> = {
  * propose→confirm route stay exactly as they are.
  */
 export function SystemDesignPage() {
-  const token = useDashboardSession()
   const canConfirm = useWorkspaceCapability('confirm_documents')
   const { workspace } = useWorkspaceSelection()
   const navigate = useNavigate()
@@ -127,7 +126,7 @@ export function SystemDesignPage() {
         <>
           <Button
             size="sm"
-            disabled={!token || resolve.isPending}
+            disabled={resolve.isPending}
             onClick={() => resolve.mutate({ id: decision.id, action: 'confirm' })}
           >
             <Check />
@@ -138,7 +137,7 @@ export function SystemDesignPage() {
           <Button
             size="sm"
             variant="destructive"
-            disabled={!token || resolve.isPending}
+            disabled={resolve.isPending}
             onClick={() => resolve.mutate({ id: decision.id, action: 'dismiss' })}
           >
             <X />
@@ -212,7 +211,6 @@ export function SystemDesignPage() {
             <DesignCanvas
               key={detail.data.document.id}
               item={detail.data}
-              token={token}
               workspace={workspace}
               decisionItems={decisionItems}
               settledDecisions={settledDecisions}
@@ -248,13 +246,11 @@ export function SystemDesignPage() {
 
 function DesignCanvas({
   item,
-  token,
   workspace,
   decisionItems,
   settledDecisions,
 }: {
   item: SystemDesignView
-  token: string
   workspace: string
   decisionItems: AttentionItem[]
   settledDecisions: Decision[]
@@ -310,7 +306,6 @@ function DesignCanvas({
             <DriftResolutionForm
               drift={entry}
               surface="system_design"
-              token={token}
               workspace={workspace}
               onResolved={() =>
                 Promise.all([
@@ -335,7 +330,7 @@ function DesignCanvas({
         </>
       ),
       action: canConfirm ? (
-        <Button disabled={!token || confirm.isPending} onClick={() => confirm.mutate(version.version)}>
+        <Button disabled={confirm.isPending} onClick={() => confirm.mutate(version.version)}>
           <Check />
           {confirm.isPending && confirm.variables === version.version
             ? 'Confirming…'

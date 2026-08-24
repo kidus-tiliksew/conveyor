@@ -30,7 +30,6 @@ const driftOutcomes: Record<DriftResolutionSurface, Array<{ value: MonitorDriftO
 export function DriftResolutionForm({
   drift,
   surface,
-  token,
   workspace,
   requirementID: fixedRequirementID,
   requirements = [],
@@ -39,7 +38,6 @@ export function DriftResolutionForm({
 }: {
   drift: RepositoryDrift
   surface: DriftResolutionSurface
-  token: string
   workspace: string
   requirementID?: string
   requirements?: RequirementSummary[]
@@ -107,7 +105,7 @@ export function DriftResolutionForm({
           )}
         </label>
       )}
-      <Button type="submit" size="sm" disabled={!token || mutation.isPending || (needsRequirement && !requirementID)}>
+      <Button type="submit" size="sm" disabled={mutation.isPending || (needsRequirement && !requirementID)}>
         {mutation.isPending ? 'Resolving…' : 'Resolve'}
       </Button>
       {mutation.error && (

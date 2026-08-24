@@ -6,7 +6,7 @@ import { fetchCallerIdentity, fixMergeConflict, mergeTask, requestTaskChanges, r
 import { defaultReasonCode, interventionActions } from '../../lib/contracts'
 import type { ActivityItem, InterventionAction, Task, TaskEvent } from '../../lib/types'
 import { cn } from '../../lib/utils'
-import { useDashboardSession, useWorkspaceCapability, useWorkspaceSelection } from '../app-shell'
+import { useWorkspaceCapability, useWorkspaceSelection } from '../app-shell'
 import { Button } from '../ui/button'
 import { Textarea } from '../ui/input'
 import { AttachmentsCard } from './attachments-card'
@@ -33,14 +33,13 @@ export function isReviewable(task: Task): boolean {
 // and failures are deliberately fail-closed so capability alone never exposes
 // an action that an assigned task would refuse.
 export function useCanRequestTaskChanges(task: Task): boolean {
-  const token = useDashboardSession()
   const canRequestChanges = useWorkspaceCapability('request_changes')
   const canSetAssignee = useWorkspaceCapability('set_assignee')
   const { workspace } = useWorkspaceSelection()
   const identity = useQuery({
-    queryKey: ['caller-identity', token, workspace],
+    queryKey: ['caller-identity', workspace],
     queryFn: () => fetchCallerIdentity(),
-    enabled: Boolean(token && workspace),
+    enabled: Boolean(workspace),
     retry: false,
   })
   return Boolean(
@@ -53,6 +52,14 @@ export function useCanRequestTaskChanges(task: Task): boolean {
 // The gate's tone, exposed so the timeline can tint the rail dot to match.
 export function gateTone(task: Task, events: TaskEvent[], readiness?: ActivityItem['merge_readiness']): GateTone {
   return gateFor(task, events, readiness).tone
+}
+
+export function gateNeedsRecoveryCapability(
+  task: Task,
+  events: TaskEvent[],
+  readiness?: ActivityItem['merge_readiness'],
+): boolean {
+  return gateFor(task, events, readiness).primaryAction === 'fix'
 }
 type GatePrimary = 'merge' | 'approve' | 'redirect' | 'fix' | 'pending'
 
@@ -270,7 +277,7 @@ export function ReviewPanel({ item, onDecisionRecorded }: { item: ActivityItem; 
 }
 
 function GenericReviewPanel({ item, onDecisionRecorded }: { item: ActivityItem; onDecisionRecorded?: () => void }) {
-  const token = useDashboardSession()
+  const canRecover = useWorkspaceCapability('recover_work')
   const canOperate = useWorkspaceCapability('operate_gates')
   const canRequestChanges = useCanRequestTaskChanges(item.task)
   const { workspace } = useWorkspaceSelection()
@@ -328,7 +335,9 @@ function GenericReviewPanel({ item, onDecisionRecorded }: { item: ActivityItem; 
     mutation.reset()
   }
 
-  const canUsePrimary = canOperate || (mergeGate && canRequestChanges && gate.primaryAction === 'redirect')
+  const canUsePrimary =
+    (gate.primaryAction === 'fix' ? canRecover : canOperate) ||
+    (mergeGate && canRequestChanges && gate.primaryAction === 'redirect')
   const secondaryActions = secondaryActionsFor(gate.primaryAction).filter(
     (entry) => canOperate || (mergeGate && canRequestChanges && entry.action === 'redirect'),
   )
@@ -345,7 +354,7 @@ function GenericReviewPanel({ item, onDecisionRecorded }: { item: ActivityItem; 
         </div>
         {canUsePrimary && (
           <Button
-            disabled={!token || mutation.isPending || gate.primaryAction === 'pending'}
+            disabled={mutation.isPending || gate.primaryAction === 'pending'}
             onClick={() => {
               if (gate.primaryAction === 'merge') return mutation.mutate({ kind: 'merge' })
               if (gate.primaryAction === 'fix') return mutation.mutate({ kind: 'fix' })
@@ -399,7 +408,6 @@ function GenericReviewPanel({ item, onDecisionRecorded }: { item: ActivityItem; 
               {entry.label}
             </button>
           ))}
-          {!token && <span className="ml-auto text-xs text-attention">Sign in to act.</span>}
         </fieldset>
         {expandedEntry && (
           <div className="mt-2">
@@ -433,7 +441,7 @@ function GenericReviewPanel({ item, onDecisionRecorded }: { item: ActivityItem; 
               <Button
                 variant={expanded === 'reject' ? 'destructive' : 'secondary'}
                 size="sm"
-                disabled={!token || mutation.isPending || (expanded === 'redirect' && !comment.trim())}
+                disabled={mutation.isPending || (expanded === 'redirect' && !comment.trim())}
                 onClick={() => mutation.mutate({ kind: 'review', action: expanded!, comment })}
               >
                 {mutation.isPending ? 'Recording…' : expandedEntry.confirmLabel}

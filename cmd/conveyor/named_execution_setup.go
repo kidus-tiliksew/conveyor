@@ -332,9 +332,10 @@ func runNamedExecutionSetupWizard(ctx context.Context, input io.Reader, output i
 	if !wizardTerminal(input) {
 		return fmt.Errorf("execution setup requires a terminal; use `conveyor config set --setup %s execution.<stage>.<field> <value> --config %s`", name, path)
 	}
-	harnesses := detectLocalHarnesses(ctx)
-	if len(harnesses) == 0 {
-		return errors.New("no supported harness was found on PATH (looked for codex, claude, and grok)")
+	detected := detectLocalHarnessHealth(ctx)
+	healthy := healthyDetectedHarnesses(detected)
+	if len(healthy) == 0 {
+		return noHealthyHarnessError(detected)
 	}
 	local, loadErr := config.Load(path)
 	if loadErr != nil && !errors.Is(loadErr, os.ErrNotExist) {
@@ -358,40 +359,50 @@ func runNamedExecutionSetupWizard(ctx context.Context, input io.Reader, output i
 			initialSeats = append(initialSeats, localStageChoice{Harness: seat.Harness, Model: seat.Model, Effort: seat.Effort})
 		}
 	}
-	model := newReviewSeatExecutionWizardModel(harnesses, initialSeats)
+	state := newExecutionWizardState(detected, initialSeats)
 	if edit {
 		setup, _, _ := namedSetup(local, name)
-		prefillExecutionWizard(&model, setup)
+		prefillExecutionWizard(state, setup)
+		state.acceptDefaults = false
 	}
-	completed, err := runExecutionWizardUI(model, input, output)
-	if err != nil {
-		return err
-	}
-	if completed.cancelled || completed.field < len(completed.fields) {
-		_, _ = fmt.Fprintln(output, "Execution setup cancelled; nothing was written.")
-		return nil
-	}
-	selected := selectedHarnesses(completed.choices, harnesses)
-	probes := probeHarnesses(ctx, selected)
-	if len(probes) != len(selected) {
-		return errors.New("one or more selected harnesses could not be probe-validated")
-	}
-	for _, probe := range probes {
-		if !validLocalHarnessProbe(probe) {
-			return errors.New(wizardValidationStyle.Render(fmt.Sprintf("! harness %q failed validation probe: %s", probe.Harness, probe.Message)))
+	for {
+		completed, err := runExecutionWizardUI(newExecutionWizardModel(state, detected), input, output)
+		if err != nil {
+			return err
 		}
+		if completed.cancelled || !completed.completed {
+			_, _ = fmt.Fprintln(output, "Execution setup cancelled; nothing was written.")
+			return nil
+		}
+		state = completed.state
+		if state.acceptDefaults {
+			break
+		}
+		if state.seatAction != "continue" {
+			applySeatAction(state)
+			state.skipDefaults = true
+			continue
+		}
+		if !state.confirmSummary {
+			state.confirmSummary = true
+			state.focusSeats = false
+			state.skipDefaults = true
+			continue
+		}
+		break
 	}
+	selected := selectedHarnesses(state.choices, healthy)
 	if workspace == "" {
 		workspace = "local"
 	}
-	if err = writeNamedExecutionSetup(path, local, workspace, name, completed.choices, selected, edit); err != nil {
+	if err := writeNamedExecutionSetup(path, local, workspace, name, state.choices, selected, edit); err != nil {
 		return err
 	}
-	_, err = fmt.Fprintf(output, "Saved local execution setup %s to %s\n", name, path)
+	_, err := fmt.Fprintf(output, "Saved local execution setup %s to %s\n", name, path)
 	return err
 }
 
-func prefillExecutionWizard(model *executionWizardModel, setup config.ExecutionSetup) {
+func prefillExecutionWizard(state *executionWizardState, setup config.ExecutionSetup) {
 	choices := localExecutionChoices{
 		Spec:      localStageChoice{Harness: setup.ExecutionSettings.Spec.Harness, Model: setup.ExecutionSettings.Spec.Model, Effort: setup.ExecutionSettings.Spec.Effort, Timeout: setup.ExecutionSettings.Spec.TimeoutText},
 		Implement: localStageChoice{Harness: setup.ExecutionSettings.Implementation.Harness, Model: setup.ExecutionSettings.Implementation.Model, Effort: setup.ExecutionSettings.Implementation.Effort, Timeout: setup.ExecutionSettings.Implementation.TimeoutText},
@@ -405,33 +416,7 @@ func prefillExecutionWizard(model *executionWizardModel, setup config.ExecutionS
 	for _, seat := range setup.Review.Seats {
 		choices.ReviewSeats = append(choices.ReviewSeats, localStageChoice{Harness: seat.Harness, Model: seat.Model, Effort: seat.Effort})
 	}
-	model.choices = choices
-	for index := range model.fields {
-		field := &model.fields[index]
-		if field.name == "seat_count" {
-			field.value = strconv.Itoa(len(choices.ReviewSeats))
-			continue
-		}
-		if field.name == "seat_order" {
-			continue
-		}
-		choice := choices.Spec
-		if field.stage == "implement" {
-			choice = choices.Implement
-		} else if field.stage == "review" {
-			choice = choices.Review
-		}
-		if field.seat > 0 && field.seat <= len(choices.ReviewSeats) {
-			choice = choices.ReviewSeats[field.seat-1]
-		}
-		value := map[string]string{"harness": choice.Harness, "model": choice.Model, "effort": choice.Effort, "timeout": choice.Timeout}[field.name]
-		if len(field.options) == 0 {
-			field.value = value
-			continue
-		}
-		field.options = preferredOptionFirst(field.options, value)
-	}
-	model.prepareInput()
+	state.choices = choices
 }
 
 func writeNamedExecutionSetup(path string, local *config.Config, workspace, name string, choices localExecutionChoices, selected []config.Harness, edit bool) error {

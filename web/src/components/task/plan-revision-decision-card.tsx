@@ -6,7 +6,7 @@ import { reviewTask } from '../../lib/api'
 import { planRevisionReasonCodes } from '../../lib/contracts'
 import type { ActivityItem, InterventionAction } from '../../lib/types'
 import { cn } from '../../lib/utils'
-import { useDashboardSession, useWorkspaceSelection } from '../app-shell'
+import { useWorkspaceSelection } from '../app-shell'
 import { Button } from '../ui/button'
 import { Textarea } from '../ui/input'
 
@@ -69,7 +69,6 @@ export function PlanRevisionDecisionCard({
   request: PlanRevisionRequest
   onDecisionRecorded?: () => void
 }) {
-  const token = useDashboardSession()
   const { workspace } = useWorkspaceSelection()
   const queryClient = useQueryClient()
   const [decision, setDecision] = useState<PlanRevisionDecision | null>(null)
@@ -116,7 +115,7 @@ export function PlanRevisionDecisionCard({
             implementation with direction, or reject the task.
           </p>
         </div>
-        <Button disabled={!token || mutation.isPending} onClick={() => select('approve')}>
+        <Button disabled={mutation.isPending} onClick={() => select('approve')}>
           <ThumbsUp />
           {decisions.approve.label}
         </Button>
@@ -148,7 +147,6 @@ export function PlanRevisionDecisionCard({
               {decisions[entry].label}
             </button>
           ))}
-          {!token && <span className="ml-auto text-xs text-attention">Sign in to act.</span>}
         </fieldset>
         {selected && decision && (
           <div className="mt-2">
@@ -170,7 +168,7 @@ export function PlanRevisionDecisionCard({
                 // Declining is how operator direction reaches the retried
                 // implementation, so an empty one is not a decision the API
                 // accepts (REQ-2 AC-2.3).
-                disabled={!token || mutation.isPending || (decision === 'decline' && !direction.trim())}
+                disabled={mutation.isPending || (decision === 'decline' && !direction.trim())}
                 onClick={() => mutation.mutate(decision)}
               >
                 {mutation.isPending ? 'Recording…' : selected.confirmLabel}

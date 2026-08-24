@@ -40,7 +40,7 @@ function workspaceURL(path: string) {
 
 async function getJSON<T>(url: string): Promise<T> {
   const response = await fetch(url)
-  if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
+  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   return response.json() as Promise<T>
 }
 
@@ -70,7 +70,7 @@ async function fetchActivityPage(
   if (response.status === 400 && input.cursor) {
     return fetchActivityPage(path, { ...input, cursor: undefined, etag: undefined, previous: undefined })
   }
-  if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
+  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   const incoming = (await response.json()) as ActivitySummary[]
   // A representation can change through a read-time projection even when no
   // task event advances its marker. The ETag detects that case; retrying cold
@@ -128,7 +128,7 @@ export function fetchWorkspace() {
 
 export async function fetchWorkspaces() {
   const response = await fetch('/v1/workspaces')
-  if (!response.ok) throw new Error(await response.text())
+  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   return response.json() as Promise<WorkspaceRecord[]>
 }
 
@@ -138,7 +138,7 @@ export async function redeemSignInLink(token: string) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ token }),
   })
-  if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
+  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   return response.json() as Promise<{
     user: import('./types').CallerIdentity
     expires_at: string
@@ -152,7 +152,7 @@ export async function signInWithPassword(email: string, password: string) {
     headers: { 'Content-Type': 'application/json', 'X-Conveyor-CSRF': '1' },
     body: JSON.stringify({ email, password }),
   })
-  if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
+  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   return response.json() as Promise<{ user: import('./types').CallerIdentity; expires_at: string }>
 }
 
@@ -162,12 +162,12 @@ export async function updateOwnPassword(currentPassword: string, newPassword: st
     headers: { 'Content-Type': 'application/json', 'X-Conveyor-CSRF': '1' },
     body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
   })
-  if (!response.ok) throw new Error(membershipErrorMessage(await response.text(), response.statusText))
+  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
 }
 
 export async function fetchOwnProfile() {
   const response = await fetch('/v1/me')
-  if (!response.ok) throw new Error(membershipErrorMessage(await response.text(), response.statusText))
+  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   return (await response.json()) as import('./types').CallerIdentity
 }
 
@@ -177,7 +177,7 @@ export async function updateOwnDisplayName(displayName: string) {
     headers: { 'Content-Type': 'application/json', 'X-Conveyor-CSRF': '1' },
     body: JSON.stringify({ display_name: displayName }),
   })
-  if (!response.ok) throw new Error(membershipErrorMessage(await response.text(), response.statusText))
+  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   return (await response.json()) as import('./types').CallerIdentity
 }
 
@@ -187,7 +187,7 @@ export async function signOutDashboardSession() {
     headers: { 'Content-Type': 'application/json', 'X-Conveyor-CSRF': '1' },
   })
   if (!response.ok && response.status !== 400 && response.status !== 401) {
-    throw new Error((await response.text()).trim() || response.statusText)
+    throw new Error(apiErrorMessage(await response.text(), response.statusText))
   }
 }
 
@@ -203,7 +203,7 @@ export async function createWorkspace(input: CreateWorkspaceInput) {
     headers: mutationHeaders(),
     body: JSON.stringify(input),
   })
-  if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
+  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   return response.json() as Promise<WorkspaceRecord>
 }
 
@@ -219,7 +219,7 @@ function invitationsURL(workspace: string, suffix = '') {
 
 export async function fetchWorkspaceMembers(workspace: string) {
   const response = await fetch(membersURL(workspace), { headers: mutationHeaders() })
-  if (!response.ok) throw new Error(membershipErrorMessage(await response.text(), response.statusText))
+  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   return ((await response.json()) as import('./types').WorkspaceMembership[]) ?? []
 }
 
@@ -232,7 +232,7 @@ export class WorkspaceNotVisibleError extends Error {}
 export async function fetchWorkspaceInvitations(workspace: string) {
   const response = await fetch(invitationsURL(workspace), { headers: mutationHeaders() })
   if (!response.ok) {
-    const message = membershipErrorMessage(await response.text(), response.statusText)
+    const message = apiErrorMessage(await response.text(), response.statusText)
     if (response.status === 404) throw new WorkspaceNotVisibleError(message)
     throw new Error(message)
   }
@@ -254,7 +254,7 @@ export async function inviteWorkspaceMember(
   })
   if (!response.ok) {
     const body = await response.text()
-    const message = membershipErrorMessage(body, response.statusText)
+    const message = apiErrorMessage(body, response.statusText)
     if (response.status === 409 && membershipErrorCode(body) === 'last_workspace_operator') {
       throw new LastWorkspaceOperatorError(message)
     }
@@ -269,7 +269,7 @@ export async function revokeWorkspaceMember(workspace: string, userID: string) {
     headers: mutationHeaders(),
   })
   if (!response.ok) {
-    const message = membershipErrorMessage(await response.text(), response.statusText)
+    const message = apiErrorMessage(await response.text(), response.statusText)
     if (response.status === 409) throw new LastWorkspaceOperatorError(message)
     throw new Error(message)
   }
@@ -280,7 +280,7 @@ export async function revokeWorkspaceInvitation(workspace: string, email: string
     method: 'DELETE',
     headers: mutationHeaders(),
   })
-  if (!response.ok) throw new Error(membershipErrorMessage(await response.text(), response.statusText))
+  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
 }
 
 export async function resendWorkspaceInvitation(workspace: string, email: string) {
@@ -288,12 +288,13 @@ export async function resendWorkspaceInvitation(workspace: string, email: string
     method: 'POST',
     headers: mutationHeaders(),
   })
-  if (!response.ok) throw new Error(membershipErrorMessage(await response.text(), response.statusText))
+  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   return response.json() as Promise<import('./types').MembershipGrant>
 }
 
-// Membership failures arrive either as a JSON envelope or as plain text.
-function membershipErrorMessage(body: string, fallback: string) {
+// API failures arrive either as a JSON envelope or as plain text. Keeping the
+// decoder here prevents mutation surfaces from rendering raw JSON to people.
+function apiErrorMessage(body: string, fallback: string) {
   const text = body.trim()
   try {
     const parsed = JSON.parse(text) as { message?: string; fields?: Array<{ message?: string }> }
@@ -316,13 +317,13 @@ function membershipErrorCode(body: string) {
 // operator things here?" without the browser guessing (REQ-2, DEC-19).
 export async function fetchCallerIdentity() {
   const response = await fetch(workspaceURL('/v1/me'), { headers: mutationHeaders() })
-  if (!response.ok) throw new Error(membershipErrorMessage(await response.text(), response.statusText))
+  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   return (await response.json()) as import('./types').CallerIdentity
 }
 
 export async function fetchPersonalAccessTokens() {
   const response = await fetch('/v1/tokens', { headers: mutationHeaders() })
-  if (!response.ok) throw new Error(membershipErrorMessage(await response.text(), response.statusText))
+  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   return ((await response.json()) as import('./types').PersonalAccessToken[]) ?? []
 }
 
@@ -333,7 +334,7 @@ export async function issuePersonalAccessToken(label: string) {
     headers: mutationHeaders(),
     body: JSON.stringify({ label }),
   })
-  if (!response.ok) throw new Error(membershipErrorMessage(await response.text(), response.statusText))
+  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   return response.json() as Promise<import('./types').IssuedPersonalAccessToken>
 }
 
@@ -342,12 +343,12 @@ export async function revokePersonalAccessToken(id: string) {
     method: 'DELETE',
     headers: mutationHeaders(),
   })
-  if (!response.ok) throw new Error(membershipErrorMessage(await response.text(), response.statusText))
+  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
 }
 
 export async function fetchForgeToken() {
   const response = await fetch('/v1/forge-token', { headers: mutationHeaders() })
-  if (!response.ok) throw new Error(membershipErrorMessage(await response.text(), response.statusText))
+  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   return response.json() as Promise<import('./types').ForgeTokenStatus>
 }
 
@@ -359,7 +360,7 @@ export async function storeForgeToken(forgeToken: string) {
     headers: mutationHeaders(),
     body: JSON.stringify({ token: forgeToken }),
   })
-  if (!response.ok) throw new Error(membershipErrorMessage(await response.text(), response.statusText))
+  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   return response.json() as Promise<import('./types').ForgeTokenStatus>
 }
 
@@ -368,7 +369,7 @@ export async function deleteForgeToken() {
     method: 'DELETE',
     headers: mutationHeaders(),
   })
-  if (!response.ok) throw new Error(membershipErrorMessage(await response.text(), response.statusText))
+  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
 }
 
 export function fetchBlueprints() {
@@ -423,7 +424,7 @@ export async function acknowledgeRequirementStaleness(requirementId: string, sig
     ),
     { method: 'POST', headers: mutationHeaders() },
   )
-  if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
+  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   return response.json()
 }
 
@@ -434,7 +435,7 @@ export async function createRequirementStalenessFollowUp(requirementId: string, 
     ),
     { method: 'POST', headers: mutationHeaders() },
   )
-  if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
+  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   return response.json() as Promise<{ task: Task; created: boolean }>
 }
 export function fetchPlanningSessions() {
@@ -448,7 +449,7 @@ export async function decidePlanningBundle(id: string, decision: 'approve' | 're
     method: 'POST',
     headers: mutationHeaders(),
   })
-  if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
+  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   return response.json() as Promise<PlanningBundle>
 }
 export function fetchPlanningSession(sessionId: string) {
@@ -468,7 +469,7 @@ export async function createPlanningSession(input: {
     headers: mutationHeaders(),
     body: JSON.stringify(input),
   })
-  if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
+  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   return response.json() as Promise<PlanningSession>
 }
 export async function abandonPlanningSession(sessionId: string, reason?: string) {
@@ -477,7 +478,7 @@ export async function abandonPlanningSession(sessionId: string, reason?: string)
     headers: mutationHeaders(),
     body: JSON.stringify({ reason: reason?.trim() || undefined }),
   })
-  if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
+  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   return response.json() as Promise<PlanningSession>
 }
 export async function streamPlanningMessage(
@@ -572,7 +573,7 @@ export async function resolveMonitorDrift(driftId: string, outcome: MonitorDrift
     headers: mutationHeaders(),
     body: JSON.stringify({ outcome, ...(requirementId ? { requirement_id: requirementId } : {}) }),
   })
-  if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
+  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   return response.json() as Promise<RepositoryDrift>
 }
 export function fetchTasks() {
@@ -587,7 +588,7 @@ export async function updateTaskContext(
     headers: mutationHeaders(),
     body: JSON.stringify(change),
   })
-  if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
+  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   return response.json() as Promise<import('./types').TaskContext>
 }
 export async function resolveTaskContextProposal(
@@ -602,7 +603,7 @@ export async function resolveTaskContextProposal(
     ),
     { method: 'POST', headers: mutationHeaders() },
   )
-  if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
+  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   return response.json() as Promise<import('./types').TaskContextProposal>
 }
 // The Tasks view's read-only projection: task state, relations,
@@ -620,7 +621,7 @@ export async function fetchTaskOperations(input: {
     for (const entry of Array.isArray(value) ? value : value ? [value] : []) query.append(key, entry)
   }
   const response = await fetch(workspaceURL(`/v1/task-operations?${query}`))
-  if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
+  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   const items = (await response.json()) as TaskOperationsItem[]
   return {
     items,
@@ -631,7 +632,7 @@ export async function fetchTaskOperations(input: {
 }
 export async function fetchArtifacts() {
   const response = await fetch(workspaceURL('/v1/artifacts'))
-  if (!response.ok) throw new Error(await response.text())
+  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   return response.json() as Promise<Artifact[]>
 }
 export async function uploadArtifact(
@@ -652,7 +653,7 @@ export async function uploadArtifact(
     headers: mutationAuthHeaders(),
     body,
   })
-  if (!response.ok) throw new Error(await response.text())
+  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   return response.json() as Promise<Artifact>
 }
 
@@ -702,7 +703,7 @@ export async function resolveDecision(id: string, action: 'confirm' | 'dismiss')
     headers: mutationHeaders(),
   })
   if (!response.ok) {
-    const message = (await response.text()).trim() || response.statusText
+    const message = apiErrorMessage(await response.text(), response.statusText)
     if (response.status === 409) throw new DecisionConflictError(message)
     throw new Error(message)
   }
@@ -720,7 +721,7 @@ export async function uploadReferenceDocument(file: File, id?: string) {
   if (!id) body.set('name', file.name.replace(/\.(md|markdown)$/i, ''))
   const path = id ? `/v1/reference-documents/${encodeURIComponent(id)}/versions` : '/v1/reference-documents'
   const response = await fetch(workspaceURL(path), { method: 'POST', headers: mutationHeaders(), body })
-  if (!response.ok) throw new Error(await response.text())
+  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   return response.json()
 }
 export async function deleteReferenceDocument(id: string) {
@@ -728,7 +729,7 @@ export async function deleteReferenceDocument(id: string) {
     method: 'DELETE',
     headers: mutationHeaders(),
   })
-  if (!response.ok) throw new Error(await response.text())
+  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
 }
 // Fetch an attachment's bytes as an object URL for inline preview. The caller
 // revokes the returned URL when the preview unmounts.
@@ -736,14 +737,14 @@ export async function fetchArtifactObjectURL(artifact: Artifact) {
   const response = await fetch(
     workspaceURL(artifact.download_url ?? `/v1/artifacts/${encodeURIComponent(artifact.id)}`),
   )
-  if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
+  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   return URL.createObjectURL(await response.blob())
 }
 export async function downloadArtifact(artifact: Artifact) {
   const response = await fetch(
     workspaceURL(artifact.download_url ?? `/v1/artifacts/${encodeURIComponent(artifact.id)}`),
   )
-  if (!response.ok) throw new Error(await response.text())
+  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   const blob = await response.blob()
   const url = URL.createObjectURL(blob)
   const anchor = document.createElement('a')
@@ -755,7 +756,7 @@ export async function downloadArtifact(artifact: Artifact) {
 
 export function fetchWorkspaceConfig() {
   return fetch(workspaceURL('/v1/workspace/config'), { headers: mutationHeaders() }).then(async (response) => {
-    if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
+    if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
     const result = (await response.json()) as VersionedWorkspaceConfig
     return {
       ...result,
@@ -842,7 +843,7 @@ export class TaskIntakeError extends Error {
 
 export async function fetchWorkers() {
   const response = await fetch(workspaceURL('/v1/workers'), { headers: mutationHeaders() })
-  if (!response.ok) throw new Error(await response.text())
+  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   const result = (await response.json()) as WorkerList
   return { ...result, workers: (result.workers ?? []).map((worker) => ({ ...worker, probes: worker.probes ?? [] })) }
 }
@@ -852,7 +853,7 @@ export async function issueWorkerPairing() {
     headers: mutationHeaders(),
     body: JSON.stringify({ ttl_seconds: 600 }),
   })
-  if (!response.ok) throw new Error(await response.text())
+  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   return response.json() as Promise<{ pairing_token: string; expires_at: string }>
 }
 export async function revokeWorker(id: string) {
@@ -860,7 +861,7 @@ export async function revokeWorker(id: string) {
     method: 'DELETE',
     headers: mutationHeaders(),
   })
-  if (!response.ok) throw new Error(await response.text())
+  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
 }
 
 export async function createTask(input: CreateTaskInput, attachments: File[] = [], idempotencyKey = '') {
@@ -874,18 +875,9 @@ export async function createTask(input: CreateTaskInput, attachments: File[] = [
     body,
   })
   if (!response.ok) {
-    const contentType = response.headers.get('Content-Type') ?? ''
     const raw = await response.text()
-    let payload: { error?: string; message?: string } | undefined
-    if (contentType.includes('application/json')) {
-      try {
-        payload = JSON.parse(raw) as { error?: string; message?: string }
-      } catch {
-        // Preserve the response body as the fallback for malformed envelopes.
-      }
-    }
-    const message = payload?.message?.trim() || raw.trim() || response.statusText
-    const code = payload?.error === 'invalid_dependencies' ? 'invalid_dependencies' : 'request_failed'
+    const message = apiErrorMessage(raw, response.statusText)
+    const code = membershipErrorCode(raw) === 'invalid_dependencies' ? 'invalid_dependencies' : 'request_failed'
     throw new TaskIntakeError(message, code)
   }
   return response.json() as Promise<Task>
@@ -900,7 +892,7 @@ export async function removeTaskDependency(taskId: string, dependencyId: string,
       body: JSON.stringify({ reason, request_id: requestId }),
     },
   )
-  if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
+  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   return response.json() as Promise<{ task: Task; request_id: string; removed: boolean }>
 }
 
@@ -909,7 +901,7 @@ export async function redispatchTask(taskId: string) {
     method: 'POST',
     headers: mutationHeaders(),
   })
-  if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
+  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   return response.json() as Promise<Task>
 }
 
@@ -919,7 +911,7 @@ export async function cancelTask(taskId: string, reason: string) {
     headers: mutationHeaders(),
     body: JSON.stringify({ reason }),
   })
-  if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
+  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   return response.json() as Promise<Task>
 }
 
@@ -931,7 +923,7 @@ export async function setTaskHold(taskId: string, hold: boolean) {
     headers: mutationHeaders(),
     body: JSON.stringify({ hold }),
   })
-  if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
+  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   return response.json() as Promise<Task>
 }
 
@@ -941,7 +933,7 @@ export async function setTaskAssignee(taskId: string, assigneeUserId: string) {
     headers: mutationHeaders(),
     body: JSON.stringify({ assignee_user_id: assigneeUserId }),
   })
-  if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
+  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   return response.json() as Promise<Task>
 }
 
@@ -951,7 +943,7 @@ export async function recoverWorkOrder(workOrderId: string, requestId: string, d
     headers: { ...mutationHeaders(), 'Content-Type': 'application/json', 'X-Idempotency-Key': requestId },
     body: JSON.stringify({ request_id: requestId, direction }),
   })
-  if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
+  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   return response.json() as Promise<WorkOrder>
 }
 
@@ -961,7 +953,7 @@ export async function preemptWorkOrder(workOrderId: string, reason: string, requ
     headers: { ...mutationHeaders(), 'X-Idempotency-Key': requestId },
     body: JSON.stringify({ reason, request_id: requestId }),
   })
-  if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
+  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   return response.json() as Promise<{
     request_id: string
     work_order: WorkOrder
@@ -978,7 +970,7 @@ export async function retryReviewRound(taskId: string, requestId: string, reason
     headers: { ...mutationHeaders(), 'Content-Type': 'application/json', 'X-Idempotency-Key': requestId },
     body: JSON.stringify({ request_id: requestId, reason }),
   })
-  if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
+  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   return response.json() as Promise<import('./types').ReviewRoundRetryResult>
 }
 
@@ -988,7 +980,7 @@ export async function recoverInterruptedReviewRound(taskId: string, requestId: s
     headers: { ...mutationHeaders(), 'Content-Type': 'application/json', 'X-Idempotency-Key': requestId },
     body: JSON.stringify({ request_id: requestId }),
   })
-  if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
+  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   return response.json() as Promise<import('./types').InterruptedReviewRecoveryResult>
 }
 
@@ -1004,7 +996,7 @@ export async function reviewTask(taskId: string, input: ReviewInput) {
     headers: mutationHeaders(),
     body: JSON.stringify({ action: input.action, reason_code: input.reasonCode, comment: input.comment }),
   })
-  if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
+  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   return response.json() as Promise<{
     task: Task
     checkout_command?: string
@@ -1019,7 +1011,7 @@ export async function requestTaskChanges(taskId: string, feedback: string) {
     headers: mutationHeaders(),
     body: JSON.stringify({ feedback }),
   })
-  if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
+  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   return response.json() as Promise<{ task: Task; feedback: string }>
 }
 
@@ -1028,7 +1020,7 @@ export async function mergeTask(taskId: string) {
     method: 'POST',
     headers: mutationHeaders(),
   })
-  if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
+  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   return response.json() as Promise<Task>
 }
 
@@ -1037,6 +1029,6 @@ export async function fixMergeConflict(taskId: string) {
     method: 'POST',
     headers: mutationHeaders(),
   })
-  if (!response.ok) throw new Error((await response.text()).trim() || response.statusText)
+  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   return response.json() as Promise<import('./types').WorkOrder>
 }

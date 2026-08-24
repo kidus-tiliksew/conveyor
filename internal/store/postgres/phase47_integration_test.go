@@ -4,14 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 	"gopkg.in/yaml.v3"
 )
@@ -502,5 +503,85 @@ func TestArtifactRolePersistenceIntegration(t *testing.T) {
 		if artifact.ID == legacy.ID && artifact.Role != core.ArtifactRoleGeneratedAudit {
 			t.Fatalf("legacy transcript role = %q", artifact.Role)
 		}
+	}
+}
+
+func TestClaimedVerificationEvidenceUploadIntegration(t *testing.T) {
+	databaseURL := integrationDatabaseURL(t)
+	ctx := context.Background()
+	st, err := Open(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	workspace := "claimed-evidence-" + core.NewTaskID()
+	ctx = store.WithWorkspace(ctx, workspace)
+	cfg := &config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "api", URL: "https://example.test/api.git", Base: "main"}}}
+	if _, err = st.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	createClaim := func(taskID, orderID string, lease time.Duration) {
+		t.Helper()
+		task := core.Task{ID: taskID, Workspace: workspace, Repo: "api", Title: taskID, BaseBranch: "main", Branch: "conveyor/" + taskID, State: core.TaskRunning, CreatedAt: time.Now()}
+		if err = st.CreateTask(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+		job := core.Job{ID: orderID, TaskID: taskID, Stage: core.StageImplement, State: core.JobPending}
+		if err = st.CreateJob(ctx, job); err != nil {
+			t.Fatal(err)
+		}
+		if err = storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: orderID, TaskID: taskID, JobID: orderID, Stage: core.StageImplement, State: core.WorkOrderQueued}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = storetest.For(st).ClaimWorkOrder(ctx, orderID, core.WorkOrderClaim{WorkerID: "worker-a", ClaimantID: "worker-a", SessionID: "session-a", ClientToken: "token-a", Lease: lease, ExecutionTimeout: time.Hour}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	createClaim("claimed-evidence-task", "claimed-evidence-task-implement-1", time.Minute)
+	request := store.ClaimedVerificationEvidenceRequest{WorkOrderID: "claimed-evidence-task-implement-1", WorkerID: "worker-a", SessionID: "session-a", ClientToken: "token-a", Name: "proof.bin", ContentType: "IMAGE/PNG; charset=binary"}
+	content := []byte("same concurrent evidence")
+
+	var wg sync.WaitGroup
+	artifacts := make([]core.Artifact, 2)
+	errs := make([]error, 2)
+	for index := range artifacts {
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+			artifacts[index], errs[index] = st.CreateClaimedVerificationEvidence(ctx, request, content)
+		}(index)
+	}
+	wg.Wait()
+	if errs[0] != nil || errs[1] != nil || artifacts[0].ID != artifacts[1].ID || artifacts[0].TaskID != "claimed-evidence-task" || artifacts[0].ContentType != "image/png" {
+		t.Fatalf("artifacts=%+v errors=%v", artifacts, errs)
+	}
+	listed, err := st.ListArtifacts(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	links := 0
+	for _, artifact := range listed {
+		if artifact.ID == artifacts[0].ID && artifact.TaskID == "claimed-evidence-task" && artifact.Role == core.ArtifactRoleVerificationEvidence {
+			links++
+		}
+	}
+	if links != 1 {
+		t.Fatalf("matching evidence links=%d artifacts=%+v", links, listed)
+	}
+
+	wrong := request
+	wrong.ClientToken = "wrong"
+	if _, err = st.CreateClaimedVerificationEvidence(ctx, wrong, []byte("wrong")); !errors.Is(err, store.ErrVerificationEvidenceClaimConflict) {
+		t.Fatalf("wrong token error=%v", err)
+	}
+	if _, err = st.CreateClaimedVerificationEvidence(store.WithWorkspace(context.Background(), workspace+"-other"), request, []byte("cross")); !errors.Is(err, store.ErrVerificationEvidenceClaimConflict) {
+		t.Fatalf("cross-workspace error=%v", err)
+	}
+	createClaim("expired-evidence-task", "expired-evidence-task-implement-1", time.Nanosecond)
+	time.Sleep(time.Millisecond)
+	expired := request
+	expired.WorkOrderID = "expired-evidence-task-implement-1"
+	if _, err = st.CreateClaimedVerificationEvidence(ctx, expired, []byte("expired")); !errors.Is(err, store.ErrVerificationEvidenceClaimConflict) {
+		t.Fatalf("expired claim error=%v", err)
 	}
 }

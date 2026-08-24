@@ -13,14 +13,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/cursor"
-	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/huh"
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
@@ -67,14 +64,14 @@ func loadNamedLocalExecutionSetup(path, name string) (localExecutionSetup, error
 
 var wizardTerminal = inputIsTerminal
 
-var runExecutionWizardUI = func(model executionWizardModel, input io.Reader, output io.Writer) (executionWizardModel, error) {
+var runExecutionWizardUI = func(model *executionWizardModel, input io.Reader, output io.Writer) (*executionWizardModel, error) {
 	result, err := tea.NewProgram(model, tea.WithInput(input), tea.WithOutput(output)).Run()
 	if err != nil {
-		return executionWizardModel{}, err
+		return nil, err
 	}
-	completed, ok := result.(executionWizardModel)
+	completed, ok := result.(*executionWizardModel)
 	if !ok {
-		return executionWizardModel{}, errors.New("execution setup returned an unexpected UI result")
+		return nil, errors.New("execution setup returned an unexpected UI result")
 	}
 	return completed, nil
 }
@@ -91,326 +88,231 @@ type localExecutionChoices struct {
 	ReviewSeats             []localStageChoice
 }
 
-type wizardField struct {
-	stage   string
-	name    string
-	seat    int
-	options []string
-	value   string
-}
-
 type executionWizardModel struct {
-	fields     []wizardField
-	field      int
-	selected   int
-	input      textinput.Model
-	choices    localExecutionChoices
-	cancelled  bool
-	validation string
+	form      *huh.Form
+	state     *executionWizardState
+	cancelled bool
+	completed bool
 }
 
-var (
-	wizardTitleStyle      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("63"))
-	wizardProgressStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
-	wizardFieldStyle      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39"))
-	wizardSelectedStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("42"))
-	wizardHelpStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
-	wizardValidationStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("196"))
-)
-
-func newExecutionWizardModel(harnesses []config.Harness) executionWizardModel {
-	names := make([]string, 0, len(harnesses))
-	for _, harness := range harnesses {
-		names = append(names, harness.Name)
-	}
-	fields := make([]wizardField, 0, 12)
-	defaultHarness := "codex"
-	if len(names) > 0 {
-		defaultHarness = names[0]
-	}
-	defaults := map[string]localStageChoice{
-		"spec":      {Model: suggestedHarnessModel(defaultHarness, "spec"), Effort: "high", Timeout: "30m"},
-		"implement": {Model: suggestedHarnessModel(defaultHarness, "implement"), Effort: "high", Timeout: "4h"},
-		"review":    {Model: suggestedHarnessModel(defaultHarness, "review"), Effort: "high", Timeout: "1h"},
-	}
-	for _, stage := range []string{"spec", "implement", "review"} {
-		choice := defaults[stage]
-		fields = append(fields,
-			wizardField{stage: stage, name: "harness", options: append([]string(nil), names...)},
-			wizardField{stage: stage, name: "model", value: choice.Model},
-			wizardField{stage: stage, name: "effort", options: []string{"high", "medium", "low"}},
-			wizardField{stage: stage, name: "timeout", value: choice.Timeout},
-		)
-	}
-	input := textinput.New()
-	input.Prompt = "› "
-	input.Width = 56
-	input.CharLimit = 256
-	input.PromptStyle = wizardSelectedStyle
-	input.TextStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
-	input.PlaceholderStyle = lipgloss.NewStyle().Italic(true).Foreground(lipgloss.Color("244"))
-	input.Cursor.SetMode(cursor.CursorStatic)
-	model := executionWizardModel{fields: fields, input: input}
-	model.prepareInput()
-	return model
+type executionWizardState struct {
+	choices        localExecutionChoices
+	acceptDefaults bool
+	confirmSummary bool
+	seatIndex      int
+	seatAction     string
+	focusSeats     bool
+	skipDefaults   bool
 }
 
-// newReviewSeatExecutionWizardModel keeps the established stage editor while
-// replacing the singleton review choice with an ordered seat-list editor.
-// The seat count adds/removes seats and the final permutation reorders them.
-func newReviewSeatExecutionWizardModel(harnesses []config.Harness, seats []localStageChoice) executionWizardModel {
-	model := newExecutionWizardModel(harnesses)
-	model.fields = append([]wizardField(nil), model.fields[:8]...)
-	review := model.choices.Review
+type detectedHarness struct {
+	Harness config.Harness
+	Probe   core.HarnessProbe
+}
+
+func newExecutionWizardState(harnesses []detectedHarness, seats []localStageChoice) *executionWizardState {
+	name := harnesses[0].Harness.Name
+	for _, detected := range harnesses {
+		if validLocalHarnessProbe(detected.Probe) {
+			name = detected.Harness.Name
+			break
+		}
+	}
+	state := &executionWizardState{acceptDefaults: true, confirmSummary: true, seatAction: "continue"}
+	state.choices = localExecutionChoices{
+		Spec:      localStageChoice{Harness: name, Model: suggestedHarnessModel(name, "spec"), Effort: "high", Timeout: "30m"},
+		Implement: localStageChoice{Harness: name, Model: suggestedHarnessModel(name, "implement"), Effort: "high", Timeout: "4h"},
+		Review:    localStageChoice{Harness: name, Model: suggestedHarnessModel(name, "review"), Effort: "high", Timeout: "1h"},
+	}
 	if len(seats) == 0 {
-		defaultHarness := "codex"
-		if len(harnesses) > 0 {
-			defaultHarness = harnesses[0].Name
-		}
-		seats = []localStageChoice{{Harness: defaultHarness, Model: suggestedHarnessModel(defaultHarness, "review"), Effort: "high"}}
+		seats = []localStageChoice{{Harness: name, Model: suggestedHarnessModel(name, "review"), Effort: "high"}}
 	}
-	model.choices.Review = review
-	model.choices.Review.Timeout = "1h"
-	model.choices.ReviewSeats = append([]localStageChoice(nil), seats...)
-	model.fields = append(model.fields,
-		wizardField{stage: "review", name: "timeout", value: "1h"},
-		wizardField{stage: "review", name: "seat_count", value: strconv.Itoa(len(seats))},
-	)
-	model.field = 0
-	model.prepareInput()
-	return model
+	state.choices.ReviewSeats = append([]localStageChoice(nil), seats...)
+	return state
 }
 
-func (m executionWizardModel) Init() tea.Cmd { return m.input.Focus() }
-
-func (m executionWizardModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
-	key, ok := message.(tea.KeyMsg)
-	if !ok {
-		if m.field < len(m.fields) && len(m.fields[m.field].options) == 0 {
-			var command tea.Cmd
-			m.input, command = m.input.Update(message)
-			return m, command
-		}
-		return m, nil
+func newExecutionWizardModel(state *executionWizardState, harnesses []detectedHarness) *executionWizardModel {
+	if state == nil {
+		state = newExecutionWizardState(harnesses, nil)
 	}
-	if key.Type == tea.KeyCtrlC || key.Type == tea.KeyEsc {
-		m.cancelled = true
-		return m, tea.Quit
+	options := harnessOptions(harnesses)
+	groups := []*huh.Group{
+		huh.NewGroup(huh.NewConfirm().Title("Use detected defaults?").Description(defaultsSummary(state.choices)).Affirmative("Use defaults").Negative("Customize").Value(&state.acceptDefaults)).Title("Local execution setup").WithHideFunc(func() bool { return state.skipDefaults }),
+		stageGroup("Spec", &state.choices.Spec, options, harnesses).WithHideFunc(func() bool { return state.acceptDefaults || state.focusSeats }),
+		stageGroup("Implement", &state.choices.Implement, options, harnesses).WithHideFunc(func() bool { return state.acceptDefaults || state.focusSeats }),
+		reviewStageGroup(state, options, harnesses).WithHideFunc(func() bool { return state.acceptDefaults }),
+		seatManagementGroup(state).WithHideFunc(func() bool { return state.acceptDefaults }),
+		huh.NewGroup(huh.NewConfirm().Title("Write this execution setup?").DescriptionFunc(func() string { return choicesSummary(state.choices) }, nil).Affirmative("Write setup").Negative("Back to edit").Value(&state.confirmSummary)).Title("Summary").WithHideFunc(func() bool { return state.acceptDefaults || state.seatAction != "continue" }),
 	}
-	if m.field >= len(m.fields) {
-		return m, tea.Quit
-	}
-	field := m.fields[m.field]
-	if len(field.options) > 0 {
-		switch key.Type {
-		case tea.KeyUp:
-			if m.selected > 0 {
-				m.selected--
-			}
-		case tea.KeyDown:
-			if m.selected+1 < len(field.options) {
-				m.selected++
-			}
-		case tea.KeyEnter:
-			m.store(field, field.options[m.selected])
-			m.advance()
-		}
-		return m, nil
-	}
-	if key.Type == tea.KeyEnter {
-		value := strings.TrimSpace(m.input.Value())
-		if value == "" {
-			value = field.value
-		}
-		if value == "" {
-			m.validation = field.name + " is required"
-			return m, nil
-		}
-		if field.name == "timeout" {
-			parsed, err := time.ParseDuration(value)
-			if err != nil || parsed <= 0 {
-				m.validation = "timeout must be a positive duration"
-				return m, nil
-			}
-		}
-		if field.name == "seat_count" {
-			count, err := strconv.Atoi(value)
-			if err != nil || count < 1 {
-				m.validation = "review seat count must be at least one"
-				return m, nil
-			}
-			m.configureReviewSeatFields(count)
-			m.advance()
-			return m, nil
-		}
-		if field.name == "seat_order" {
-			if err := m.reorderReviewSeats(value); err != nil {
-				m.validation = err.Error()
-				return m, nil
-			}
-			m.advance()
-			return m, nil
-		}
-		m.store(field, value)
-		m.advance()
-		return m, nil
-	}
-	m.validation = ""
-	var command tea.Cmd
-	m.input, command = m.input.Update(message)
-	return m, command
+	form := huh.NewForm(groups...).WithShowHelp(true).WithShowErrors(true)
+	return &executionWizardModel{form: form, state: state}
 }
 
-func (m executionWizardModel) View() string {
+func (m *executionWizardModel) Init() tea.Cmd { return m.form.Init() }
+
+func (m *executionWizardModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
+	updated, cmd := m.form.Update(message)
+	m.form = updated.(*huh.Form)
+	m.cancelled = m.form.State == huh.StateAborted
+	m.completed = m.form.State == huh.StateCompleted
+	if m.cancelled || m.completed {
+		return m, tea.Quit
+	}
+	return m, cmd
+}
+
+func (m *executionWizardModel) View() string {
 	if m.cancelled {
 		return "Execution setup cancelled; nothing was written.\n"
 	}
-	if m.field >= len(m.fields) {
-		return "Execution setup complete.\n"
-	}
-	field := m.fields[m.field]
-	var view strings.Builder
-	view.WriteString(wizardTitleStyle.Render("Local execution setup"))
-	view.WriteString("\n")
-	fmt.Fprintf(&view, "%s\n\n", wizardProgressStyle.Render(fmt.Sprintf("Step %d of %d", m.field+1, len(m.fields))))
-	stageLabel := strings.ToUpper(field.stage)
-	if field.seat > 0 {
-		stageLabel = fmt.Sprintf("REVIEW SEAT %d", field.seat)
-	}
-	fmt.Fprintf(&view, "%s  %s\n\n", wizardFieldStyle.Render(stageLabel), wizardFieldStyle.Render(field.name))
-	if len(field.options) > 0 {
-		for index, option := range field.options {
-			marker := "  "
-			line := option
-			if index == m.selected {
-				marker = "› "
-				line = wizardSelectedStyle.Render(option)
-			}
-			fmt.Fprintf(&view, "%s%s\n", marker, line)
-		}
-		view.WriteString("\n")
-		view.WriteString(wizardHelpStyle.Render("↑/↓ select • enter confirm • esc cancel"))
-		view.WriteString("\n")
-	} else {
-		view.WriteString(m.input.View())
-		view.WriteString("\n\n")
-		help := "type any value • enter accept • esc cancel"
-		if field.name == "model" {
-			help = "suggested default shown dimmed; type any model to replace it • enter accept • esc cancel"
-		}
-		view.WriteString(wizardHelpStyle.Render(help))
-		view.WriteString("\n")
-	}
-	if m.validation != "" {
-		fmt.Fprintf(&view, "\n%s\n", wizardValidationStyle.Render("! "+m.validation))
-	}
-	return view.String()
+	return m.form.View()
 }
 
-func (m *executionWizardModel) advance() {
-	m.field++
-	m.selected = 0
-	m.validation = ""
-	m.prepareInput()
+func stageGroup(title string, choice *localStageChoice, options []huh.Option[string], harnesses []detectedHarness) *huh.Group {
+	return huh.NewGroup(
+		huh.NewSelect[string]().Title("Harness").Options(options...).Value(&choice.Harness).Validate(harnessProbeValidator(harnesses)),
+		huh.NewInput().Title("Model").Value(&choice.Model).Validate(requiredValue("model")),
+		huh.NewSelect[string]().Title("Effort").Options(huh.NewOptions("high", "medium", "low")...).Value(&choice.Effort),
+		huh.NewInput().Title("Timeout").Value(&choice.Timeout).Validate(positiveDuration),
+	).Title(title + " stage").Description("Tab and shift+tab move within this stage; use the form's previous key to revisit earlier stages.")
 }
 
-func (m *executionWizardModel) prepareInput() {
-	m.input.Reset()
-	if m.field >= len(m.fields) || len(m.fields[m.field].options) > 0 {
-		m.input.Blur()
-		return
-	}
-	m.input.Placeholder = m.fields[m.field].value
-	_ = m.input.Focus()
-}
-
-func (m *executionWizardModel) store(field wizardField, value string) {
-	choice := m.stageChoice(field.stage)
-	if field.seat > 0 {
-		choice = &m.choices.ReviewSeats[field.seat-1]
-	}
-	switch field.name {
-	case "harness":
-		previousHarness := choice.Harness
-		choice.Harness = value
-		if m.field+1 < len(m.fields) && m.fields[m.field+1].stage == field.stage && m.fields[m.field+1].name == "model" {
-			next := &m.fields[m.field+1]
-			if field.seat == 0 || next.value == "" || next.value == suggestedHarnessModel(previousHarness, field.stage) {
-				next.value = suggestedHarnessModel(value, field.stage)
-			}
-		}
-	case "model":
-		choice.Model = value
-	case "effort":
-		choice.Effort = value
-	case "timeout":
-		choice.Timeout = value
-	}
-}
-
-func (m *executionWizardModel) configureReviewSeatFields(count int) {
-	for len(m.choices.ReviewSeats) < count {
-		seat := m.choices.Review
-		if seat.Harness == "" && len(m.fields) > 0 {
-			seat = localStageChoice{Harness: m.choices.Spec.Harness, Model: suggestedHarnessModel(m.choices.Spec.Harness, "review"), Effort: "high"}
-		}
-		m.choices.ReviewSeats = append(m.choices.ReviewSeats, seat)
-	}
-	m.choices.ReviewSeats = m.choices.ReviewSeats[:count]
-	fields := append([]wizardField(nil), m.fields[:m.field+1]...)
-	for index, seat := range m.choices.ReviewSeats {
-		harnessOptions := append([]string(nil), m.availableHarnessNames()...)
-		harnessOptions = preferredOptionFirst(harnessOptions, seat.Harness)
-		effortOptions := preferredOptionFirst([]string{"high", "medium", "low"}, seat.Effort)
+func reviewStageGroup(state *executionWizardState, options []huh.Option[string], harnesses []detectedHarness) *huh.Group {
+	fields := []huh.Field{huh.NewInput().Title("Review timeout").Value(&state.choices.Review.Timeout).Validate(positiveDuration)}
+	for index := range state.choices.ReviewSeats {
+		seat := &state.choices.ReviewSeats[index]
+		prefix := fmt.Sprintf("Seat %d ", index+1)
 		fields = append(fields,
-			wizardField{stage: "review", seat: index + 1, name: "harness", options: harnessOptions},
-			wizardField{stage: "review", seat: index + 1, name: "model", value: seat.Model},
-			wizardField{stage: "review", seat: index + 1, name: "effort", options: effortOptions},
+			huh.NewSelect[string]().Title(prefix+"harness").Options(options...).Value(&seat.Harness).Validate(harnessProbeValidator(harnesses)),
+			huh.NewInput().Title(prefix+"model").Value(&seat.Model).Validate(requiredValue("model")),
+			huh.NewSelect[string]().Title(prefix+"effort").Options(huh.NewOptions("high", "medium", "low")...).Value(&seat.Effort),
 		)
 	}
-	order := make([]string, count)
-	for index := range order {
-		order[index] = strconv.Itoa(index + 1)
-	}
-	fields = append(fields, wizardField{stage: "review", name: "seat_order", value: strings.Join(order, ",")})
-	m.fields = fields
+	return huh.NewGroup(fields...).Title("Review stage").Description("Seats are shown in priority order; the next step adds, removes, or moves them without typed counts or permutations.")
 }
 
-func (m executionWizardModel) availableHarnessNames() []string {
-	for _, field := range m.fields {
-		if field.name == "harness" && len(field.options) > 0 {
-			return append([]string(nil), field.options...)
-		}
+func seatManagementGroup(state *executionWizardState) *huh.Group {
+	positions := make([]huh.Option[int], len(state.choices.ReviewSeats))
+	for index, seat := range state.choices.ReviewSeats {
+		positions[index] = huh.NewOption(fmt.Sprintf("%d: %s / %s", index+1, seat.Harness, seat.Model), index)
 	}
-	return nil
+	if state.seatIndex >= len(positions) {
+		state.seatIndex = len(positions) - 1
+	}
+	return huh.NewGroup(
+		huh.NewSelect[int]().Title("Selected seat").Options(positions...).Value(&state.seatIndex),
+		huh.NewSelect[string]().Title("Seat action").Options(
+			huh.NewOption("Continue to summary", "continue"),
+			huh.NewOption("Add a seat after this one", "add"),
+			huh.NewOption("Remove this seat", "remove"),
+			huh.NewOption("Move this seat earlier", "up"),
+			huh.NewOption("Move this seat later", "down"),
+		).Value(&state.seatAction).Validate(func(action string) error {
+			if action == "remove" && len(state.choices.ReviewSeats) == 1 {
+				return errors.New("at least one review seat is required")
+			}
+			return nil
+		}),
+	).Title("Manage review seats")
 }
 
-func preferredOptionFirst(options []string, preferred string) []string {
-	for index, option := range options {
-		if option == preferred {
-			return append([]string{option}, append(options[:index], options[index+1:]...)...)
+func harnessOptions(harnesses []detectedHarness) []huh.Option[string] {
+	options := make([]huh.Option[string], 0, len(harnesses))
+	for _, detected := range harnesses {
+		label := detected.Harness.Name + " — healthy"
+		if !validLocalHarnessProbe(detected.Probe) {
+			label = detected.Harness.Name + " — unavailable: " + detected.Probe.Message
 		}
+		options = append(options, huh.NewOption(label, detected.Harness.Name))
 	}
 	return options
 }
 
-func (m *executionWizardModel) reorderReviewSeats(value string) error {
-	parts := strings.Split(value, ",")
-	if len(parts) != len(m.choices.ReviewSeats) {
-		return fmt.Errorf("seat order must list each position once, for example 1,2,3")
-	}
-	seen := make(map[int]bool, len(parts))
-	reordered := make([]localStageChoice, len(parts))
-	for index, part := range parts {
-		position, err := strconv.Atoi(strings.TrimSpace(part))
-		if err != nil || position < 1 || position > len(parts) || seen[position] {
-			return fmt.Errorf("seat order must list each position once, for example 1,2,3")
+func harnessProbeValidator(harnesses []detectedHarness) func(string) error {
+	return func(name string) error {
+		for _, detected := range harnesses {
+			if detected.Harness.Name == name {
+				if validLocalHarnessProbe(detected.Probe) {
+					return nil
+				}
+				return fmt.Errorf("harness %q failed validation probe: %s", name, detected.Probe.Message)
+			}
 		}
-		seen[position] = true
-		reordered[index] = m.choices.ReviewSeats[position-1]
+		return fmt.Errorf("harness %q was not detected", name)
 	}
-	m.choices.ReviewSeats = reordered
+}
+
+func requiredValue(name string) func(string) error {
+	return func(value string) error {
+		if strings.TrimSpace(value) == "" {
+			return fmt.Errorf("%s is required", name)
+		}
+		return nil
+	}
+}
+
+func positiveDuration(value string) error {
+	parsed, err := time.ParseDuration(strings.TrimSpace(value))
+	if err != nil || parsed <= 0 {
+		return errors.New("timeout must be a positive duration")
+	}
 	return nil
+}
+
+func defaultsSummary(choices localExecutionChoices) string {
+	return "Accept the first healthy detected harness and its suggested models, effort, timeouts, and one review seat.\n\n" + choicesSummary(choices)
+}
+
+func choicesSummary(choices localExecutionChoices) string {
+	var summary strings.Builder
+	for _, stage := range []struct {
+		name   string
+		choice localStageChoice
+	}{{"spec", choices.Spec}, {"implement", choices.Implement}} {
+		fmt.Fprintf(&summary, "%s: harness=%s model=%s effort=%s timeout=%s\n", stage.name, stage.choice.Harness, stage.choice.Model, stage.choice.Effort, stage.choice.Timeout)
+	}
+	fmt.Fprintf(&summary, "review: timeout=%s\n", choices.Review.Timeout)
+	for index, seat := range choices.ReviewSeats {
+		fmt.Fprintf(&summary, "  seat %d: harness=%s model=%s effort=%s\n", index+1, seat.Harness, seat.Model, seat.Effort)
+	}
+	return strings.TrimSpace(summary.String())
+}
+
+func applySeatAction(state *executionWizardState) {
+	index := state.seatIndex
+	if len(state.choices.ReviewSeats) == 0 || index < 0 || index >= len(state.choices.ReviewSeats) {
+		state.seatAction = "continue"
+		return
+	}
+	switch state.seatAction {
+	case "add":
+		seat := state.choices.ReviewSeats[index]
+		state.choices.ReviewSeats = append(state.choices.ReviewSeats, localStageChoice{})
+		copy(state.choices.ReviewSeats[index+2:], state.choices.ReviewSeats[index+1:])
+		state.choices.ReviewSeats[index+1] = seat
+		state.seatIndex = index + 1
+	case "remove":
+		if len(state.choices.ReviewSeats) == 1 {
+			state.seatAction = "continue"
+			return
+		}
+		state.choices.ReviewSeats = append(state.choices.ReviewSeats[:index], state.choices.ReviewSeats[index+1:]...)
+		if state.seatIndex >= len(state.choices.ReviewSeats) {
+			state.seatIndex = len(state.choices.ReviewSeats) - 1
+		}
+	case "up":
+		if index > 0 {
+			state.choices.ReviewSeats[index-1], state.choices.ReviewSeats[index] = state.choices.ReviewSeats[index], state.choices.ReviewSeats[index-1]
+			state.seatIndex--
+		}
+	case "down":
+		if index+1 < len(state.choices.ReviewSeats) {
+			state.choices.ReviewSeats[index+1], state.choices.ReviewSeats[index] = state.choices.ReviewSeats[index], state.choices.ReviewSeats[index+1]
+			state.seatIndex++
+		}
+	}
+	state.seatAction = "continue"
+	state.focusSeats = true
 }
 
 // harnessModelSuggestions supplies editable placeholders only. It is never a
@@ -428,18 +330,7 @@ func suggestedHarnessModel(harness, stage string) string {
 	return harness
 }
 
-func (m *executionWizardModel) stageChoice(stage string) *localStageChoice {
-	switch stage {
-	case "spec":
-		return &m.choices.Spec
-	case "implement":
-		return &m.choices.Implement
-	default:
-		return &m.choices.Review
-	}
-}
-
-func detectLocalHarnesses(ctx context.Context) []config.Harness {
+func detectLocalHarnessHealth(ctx context.Context) []detectedHarness {
 	candidates := make([]config.Harness, 0, len(config.HarnessTemplates()))
 	for _, template := range config.HarnessTemplates() {
 		if _, err := exec.LookPath(template.Harness.ProbeCommand[0]); err == nil {
@@ -447,61 +338,116 @@ func detectLocalHarnesses(ctx context.Context) []config.Harness {
 		}
 	}
 	probes := probeHarnesses(ctx, candidates)
-	healthy := make(map[string]bool, len(probes))
+	byName := make(map[string]core.HarnessProbe, len(probes))
 	for _, probe := range probes {
-		healthy[probe.Harness] = validLocalHarnessProbe(probe)
+		byName[probe.Harness] = probe
 	}
-	available := candidates[:0]
+	detected := make([]detectedHarness, 0, len(candidates))
 	for _, candidate := range candidates {
-		if healthy[candidate.Name] {
-			available = append(available, candidate)
+		probe, ok := byName[candidate.Name]
+		if !ok {
+			probe = core.HarnessProbe{Harness: candidate.Name, Message: "probe returned no result"}
+		}
+		detected = append(detected, detectedHarness{Harness: candidate, Probe: probe})
+	}
+	return detected
+}
+
+func detectLocalHarnesses(ctx context.Context) []config.Harness {
+	return healthyDetectedHarnesses(detectLocalHarnessHealth(ctx))
+}
+
+func healthyDetectedHarnesses(detected []detectedHarness) []config.Harness {
+	healthy := make([]config.Harness, 0, len(detected))
+	for _, item := range detected {
+		if validLocalHarnessProbe(item.Probe) {
+			healthy = append(healthy, item.Harness)
 		}
 	}
-	return available
+	return healthy
 }
 
 func runExecutionSetupWizard(ctx context.Context, input io.Reader, output io.Writer, configPath, workspace string) error {
 	if !wizardTerminal(input) {
 		return fmt.Errorf("execution setup requires a terminal; use `conveyor config set execution.<stage>.<field> <value> --config %s`", configPath)
 	}
-	harnesses := detectLocalHarnesses(ctx)
-	if len(harnesses) == 0 {
+	detected := detectLocalHarnessHealth(ctx)
+	healthy := healthyDetectedHarnesses(detected)
+	if len(healthy) == 0 {
+		return noHealthyHarnessError(detected)
+	}
+	state := newExecutionWizardState(detected, nil)
+	for {
+		completed, err := runExecutionWizardUI(newExecutionWizardModel(state, detected), input, output)
+		if err != nil {
+			return err
+		}
+		if completed.cancelled || !completed.completed {
+			_, _ = fmt.Fprintln(output, "Execution setup cancelled; nothing was written.")
+			return nil
+		}
+		state = completed.state
+		if state.acceptDefaults {
+			break
+		}
+		if state.seatAction != "continue" {
+			applySeatAction(state)
+			state.skipDefaults = true
+			continue
+		}
+		if !state.confirmSummary {
+			state.confirmSummary = true
+			state.focusSeats = false
+			state.skipDefaults = true
+			continue
+		}
+		break
+	}
+	return persistExecutionSetup(output, configPath, workspace, state.choices, healthy)
+}
+
+func runExecutionSetupDefaults(ctx context.Context, output io.Writer, configPath, workspace string) error {
+	detected := detectLocalHarnessHealth(ctx)
+	healthy := healthyDetectedHarnesses(detected)
+	if len(healthy) == 0 {
+		return noHealthyHarnessError(detected)
+	}
+	state := newExecutionWizardState(detected, nil)
+	return persistExecutionSetup(output, configPath, workspace, state.choices, healthy)
+}
+
+func noHealthyHarnessError(detected []detectedHarness) error {
+	if len(detected) == 0 {
 		return errors.New("no supported harness was found on PATH (looked for codex, claude, and grok)")
 	}
-	completed, err := runExecutionWizardUI(newReviewSeatExecutionWizardModel(harnesses, nil), input, output)
-	if err != nil {
-		return err
+	messages := make([]string, 0, len(detected))
+	for _, item := range detected {
+		messages = append(messages, fmt.Sprintf("%s: %s", item.Harness.Name, item.Probe.Message))
 	}
-	if completed.cancelled || completed.field < len(completed.fields) {
-		_, _ = fmt.Fprintln(output, "Execution setup cancelled; nothing was written.")
-		return nil
-	}
-	selected := selectedHarnesses(completed.choices, harnesses)
-	probes := probeHarnesses(ctx, selected)
-	for _, probe := range probes {
-		if !validLocalHarnessProbe(probe) {
-			return errors.New(wizardValidationStyle.Render(fmt.Sprintf("! harness %q failed validation probe: %s", probe.Harness, probe.Message)))
-		}
-	}
-	if len(probes) != len(selected) {
-		return errors.New("one or more selected harnesses could not be probe-validated")
+	return fmt.Errorf("no detected harness passed its validation probe (%s)", strings.Join(messages, "; "))
+}
+
+func persistExecutionSetup(output io.Writer, configPath, workspace string, choices localExecutionChoices, healthy []config.Harness) error {
+	selected := selectedHarnesses(choices, healthy)
+	if len(selected) == 0 {
+		return errors.New("selected harnesses did not include a healthy detected harness")
 	}
 	if workspace == "" {
 		workspace = "local"
 	}
 	existing, loadErr := config.Load(configPath)
 	if loadErr == nil {
-		if err := writeUpdatedLocalExecutionConfig(configPath, existing, completed.choices, mergeLocalHarnesses(existing.Harnesses, selected)); err != nil {
+		if err := writeUpdatedLocalExecutionConfig(configPath, existing, choices, mergeLocalHarnesses(existing.Harnesses, selected)); err != nil {
 			return err
 		}
 	} else if errors.Is(loadErr, os.ErrNotExist) {
-		if err := writeLocalExecutionConfig(configPath, workspace, completed.choices, selected); err != nil {
+		if err := writeLocalExecutionConfig(configPath, workspace, choices, selected); err != nil {
 			return err
 		}
 	} else {
 		return fmt.Errorf("load existing local execution config: %w", loadErr)
 	}
-	_, err = fmt.Fprintf(output, "Saved local execution setup to %s\n", configPath)
+	_, err := fmt.Fprintf(output, "Saved local execution setup to %s\n", configPath)
 	return err
 }
 

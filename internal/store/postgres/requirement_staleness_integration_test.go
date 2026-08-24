@@ -68,7 +68,9 @@ func TestRequirementStalenessAcknowledgmentSurvivesRestart(t *testing.T) {
 	}
 	read := func(server *httpapi.Server) view {
 		response := httptest.NewRecorder()
-		server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/requirements/"+requirement.ID, nil))
+		request := httptest.NewRequest(http.MethodGet, "/v1/requirements/"+requirement.ID, nil)
+		request.Header.Set("Authorization", "Bearer token")
+		server.Handler().ServeHTTP(response, request)
 		if response.Code != http.StatusOK {
 			t.Fatalf("read status=%d body=%s", response.Code, response.Body.String())
 		}
@@ -181,9 +183,11 @@ func TestRequirementReviewedReconciliationSurvivesRestart(t *testing.T) {
 
 	server := httpapi.NewServer(restarted)
 	server.Credentials = nil
-	server.Workspace = workspace
+	server.Workspace, server.BearerToken = workspace, "token"
 	response := httptest.NewRecorder()
-	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/requirements/"+requirement.ID, nil))
+	request := httptest.NewRequest(http.MethodGet, "/v1/requirements/"+requirement.ID, nil)
+	request.Header.Set("Authorization", "Bearer token")
+	server.Handler().ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
 		t.Fatalf("requirements status=%d body=%s", response.Code, response.Body.String())
 	}

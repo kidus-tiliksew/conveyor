@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { Activity, ExternalLink, GitCommitHorizontal } from 'lucide-react'
-import { useDashboardSession, useWorkspaceCapability, useWorkspaceSelection } from '../components/app-shell'
+import { useWorkspaceCapability, useWorkspaceSelection } from '../components/app-shell'
 import { DriftResolutionForm } from '../components/documents/drift-resolution-form'
 import { Badge } from '../components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
@@ -9,7 +9,6 @@ import { fetchMonitorStatus, fetchRequirements } from '../lib/api'
 
 export function MonitorPage() {
   const { workspace } = useWorkspaceSelection()
-  const token = useDashboardSession()
   const canManageWorkspace = useWorkspaceCapability('manage_workspace')
   const { data: status, error } = useQuery({
     queryKey: ['monitor', workspace],
@@ -100,7 +99,6 @@ export function MonitorPage() {
                       surface="monitor"
                       requirements={confirmedRequirements}
                       requirementsPending={requirementsPending}
-                      token={token}
                       workspace={workspace}
                     />
                   )}

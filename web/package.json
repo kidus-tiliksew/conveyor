@@ -8,7 +8,7 @@
     "build": "tsc --noEmit && vite build",
     "lint": "biome lint --max-diagnostics=100 ./src ./tests ./playwright.config.ts && biome format --max-diagnostics=100 ./src ./tests ./playwright.config.ts",
     "test:e2e": "playwright test",
-    "typecheck": "tsc --noEmit --pretty false"
+    "typecheck": "node ./scripts/check-capabilities.mjs && tsc --noEmit --pretty false"
   },
   "dependencies": {
     "@fontsource/ibm-plex-sans": "^5.2.8",

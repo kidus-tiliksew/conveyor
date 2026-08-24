@@ -5,7 +5,7 @@ import { fetchCallerIdentity, fetchTaskActivity } from '../../lib/api'
 import { isBlueprintAnchor } from '../../lib/blueprint'
 import type { ActivityItem } from '../../lib/types'
 import { relativeTime } from '../../lib/utils'
-import { useActivity, useDashboardSession, useWorkspaceSelection } from '../app-shell'
+import { useActivity, useWorkspaceSelection } from '../app-shell'
 import { type AttentionItem, AttentionSurface } from '../documents/attention-surface'
 import { Button } from '../ui/button'
 
@@ -38,12 +38,11 @@ function nextStep(item: ActivityItem): string {
 
 export function ReturnedForChangesAttention() {
   const { workspace } = useWorkspaceSelection()
-  const token = useDashboardSession()
   const attention = useActivity()
   const identity = useQuery({
-    queryKey: ['caller-identity', token, workspace],
+    queryKey: ['caller-identity', workspace],
     queryFn: () => fetchCallerIdentity(),
-    enabled: Boolean(token && workspace),
+    enabled: Boolean(workspace),
     retry: false,
   })
   const candidates = (attention.data?.items ?? [])

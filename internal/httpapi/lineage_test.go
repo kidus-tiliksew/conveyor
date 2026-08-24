@@ -113,7 +113,7 @@ func TestLineageHTTPReturnsBoundedTaskGraphAndTaskDetailProjection(t *testing.T)
 	}
 	handler := server.Handler()
 	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/lineage/task/"+task.ID+"?max_depth=2&max_nodes=8", nil))
+	handler.ServeHTTP(response, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/lineage/task/"+task.ID+"?max_depth=2&max_nodes=8", nil)))
 	if response.Code != http.StatusOK {
 		t.Fatalf("lineage status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -126,18 +126,18 @@ func TestLineageHTTPReturnsBoundedTaskGraphAndTaskDetailProjection(t *testing.T)
 	}
 
 	activity := httptest.NewRecorder()
-	handler.ServeHTTP(activity, httptest.NewRequest(http.MethodGet, "/v1/tasks/"+task.ID+"/activity", nil))
+	handler.ServeHTTP(activity, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/tasks/"+task.ID+"/activity", nil)))
 	if activity.Code != http.StatusOK || !json.Valid(activity.Body.Bytes()) || containsJSONField(activity.Body.Bytes(), "lineage_graph") {
 		t.Fatalf("activity status=%d body=%s", activity.Code, activity.Body.String())
 	}
 
 	overBudget := httptest.NewRecorder()
-	handler.ServeHTTP(overBudget, httptest.NewRequest(http.MethodGet, "/v1/lineage/task/"+task.ID+"?max_nodes=129", nil))
+	handler.ServeHTTP(overBudget, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/lineage/task/"+task.ID+"?max_nodes=129", nil)))
 	if overBudget.Code != http.StatusBadRequest {
 		t.Fatalf("over-budget status=%d body=%s", overBudget.Code, overBudget.Body.String())
 	}
 	overDepth := httptest.NewRecorder()
-	handler.ServeHTTP(overDepth, httptest.NewRequest(http.MethodGet, "/v1/lineage/task/"+task.ID+"?max_depth=3", nil))
+	handler.ServeHTTP(overDepth, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/lineage/task/"+task.ID+"?max_depth=3", nil)))
 	if overDepth.Code != http.StatusBadRequest {
 		t.Fatalf("configured over-depth status=%d body=%s", overDepth.Code, overDepth.Body.String())
 	}
@@ -151,7 +151,7 @@ func TestLineageHTTPHidesConfigurationProviderDetails(t *testing.T) {
 		return nil, errors.New("secret provider address and credentials")
 	}
 	response := httptest.NewRecorder()
-	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/lineage/task/anything", nil))
+	server.Handler().ServeHTTP(response, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/lineage/task/anything", nil)))
 	if response.Code != http.StatusInternalServerError || strings.TrimSpace(response.Body.String()) != "lineage configuration is unavailable" ||
 		strings.Contains(response.Body.String(), "credentials") {
 		t.Fatalf("configuration failure status=%d body=%q", response.Code, response.Body.String())
@@ -169,7 +169,7 @@ func TestLineageHTTPDistinguishesUnlinkedAndAbsentRootsAndBoundsLargeGraphs(t *t
 	server.Workspace = "demo"
 	call := func(path string) *httptest.ResponseRecorder {
 		response := httptest.NewRecorder()
-		server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		server.Handler().ServeHTTP(response, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, path, nil)))
 		return response
 	}
 	unlinked := call("/v1/lineage/task/" + root.ID)
@@ -281,7 +281,7 @@ func TestLineageHTTPQueriesPlanningThroughDeliveryEvidenceEndToEnd(t *testing.T)
 		return &config.Config{ExecutionSettings: &config.ContextualExecutionSettings{ControlPlane: config.ControlPlaneSettings{Planning: config.PlanningSettings{Context: config.LineageContextSettings{Depth: 8, Nodes: 32, RenderableBytes: 256 << 10}}}}}, nil
 	}
 	response := httptest.NewRecorder()
-	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/lineage/requirement/requirement-e2e", nil))
+	server.Handler().ServeHTTP(response, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/lineage/requirement/requirement-e2e", nil)))
 	if response.Code != http.StatusOK {
 		t.Fatalf("lineage status=%d body=%s", response.Code, response.Body.String())
 	}

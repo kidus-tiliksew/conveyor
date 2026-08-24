@@ -21,13 +21,7 @@ import { errorMessage } from '../../lib/errors'
 import { relatedTaskRoute } from '../../lib/task-route'
 import type { ActivityItem } from '../../lib/types'
 import { absoluteTime, cn } from '../../lib/utils'
-import {
-  useBlueprints,
-  useDashboardSession,
-  useWorkspaceCapability,
-  useWorkspaceMembers,
-  useWorkspaceSelection,
-} from '../app-shell'
+import { useBlueprints, useWorkspaceCapability, useWorkspaceMembers, useWorkspaceSelection } from '../app-shell'
 import { Badge } from '../ui/badge'
 import { Button } from '../ui/button'
 import { CopyButton } from '../ui/copy-button'
@@ -268,7 +262,6 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
 }
 
 function UnlinkDependencyControl({ item, dependencyIDs }: { item: ActivityItem; dependencyIDs: string[] }) {
-  const token = useDashboardSession()
   const queryClient = useQueryClient()
   const [selectedID, setSelectedID] = useState('')
   const [reason, setReason] = useState('')
@@ -294,7 +287,6 @@ function UnlinkDependencyControl({ item, dependencyIDs }: { item: ActivityItem; 
     setReason('')
     setSelectedID('')
   }
-  if (!token) return null
   return (
     <section
       className="mt-4 rounded-md border border-attention/40 bg-attention-soft p-3"
@@ -356,7 +348,6 @@ function UnlinkDependencyControl({ item, dependencyIDs }: { item: ActivityItem; 
 // keeps it while suppressing checkout, branch, and hold. Its
 // consequences for children are whatever the backend does today.
 export function CancelControl({ item }: { item: ActivityItem }) {
-  const token = useDashboardSession()
   const queryClient = useQueryClient()
   const [open, setOpen] = useState(false)
   const [reason, setReason] = useState('')
@@ -370,7 +361,7 @@ export function CancelControl({ item }: { item: ActivityItem }) {
     },
   })
   const terminal = item.task.state === 'merged' || item.task.state === 'closed'
-  if (!token || terminal) return null
+  if (terminal) return null
   return (
     <>
       <button
@@ -476,14 +467,13 @@ function TaskBody({ body }: { body: string }) {
 // Per-task hold toggle: while held, the worker daemon never
 // claims this task's work orders — you attach an agent and claim explicitly.
 function HoldControl({ item }: { item: ActivityItem }) {
-  const token = useDashboardSession()
   const queryClient = useQueryClient()
   const toggle = useMutation({
     mutationFn: () => setTaskHold(item.task.id, !item.task.hold),
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['activity'] }),
   })
   const terminal = item.task.state === 'merged' || item.task.state === 'closed'
-  if (!token || terminal) return null
+  if (terminal) return null
   // The badge row already says "Held"; this control says what pressing it does.
   return (
     <button
@@ -515,13 +505,12 @@ function HoldControl({ item }: { item: ActivityItem }) {
  * members list itself is a co-member read, never a user directory (AC-3.2).
  */
 function AssigneeControl({ item }: { item: ActivityItem }) {
-  const token = useDashboardSession()
   const { workspace } = useWorkspaceSelection()
   const queryClient = useQueryClient()
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
   const terminal = item.task.state === 'merged' || item.task.state === 'closed'
-  const enabled = Boolean(token && workspace) && !terminal
+  const enabled = Boolean(workspace) && !terminal
   const canAssign = useWorkspaceCapability('set_assignee')
   const members = useWorkspaceMembers()
   const mutation = useMutation({

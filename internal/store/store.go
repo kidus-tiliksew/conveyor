@@ -65,6 +65,11 @@ var (
 	// ErrWorkOrderClaimUnauthorized distinguishes a live claim owned by a
 	// different authenticated claimant from an expired or reassigned lease.
 	ErrWorkOrderClaimUnauthorized = errors.New("authenticated caller does not hold this live work order claim")
+	// ErrVerificationEvidenceClaimConflict intentionally collapses every
+	// missing, stale, expired, superseded, stage-mismatched, or differently
+	// owned claim into one response so the upload route cannot disclose another
+	// task's ownership.
+	ErrVerificationEvidenceClaimConflict = errors.New("verification evidence upload requires the matching live implement claim")
 )
 
 // WorkspaceControlStore owns durable workspace resources independently of a
@@ -341,10 +346,25 @@ type Store interface {
 	AbandonPlanningSession(ctx context.Context, sessionID string, reason ...string) (core.PlanningSession, error)
 
 	CreateArtifact(ctx context.Context, artifact core.Artifact, content []byte) (core.Artifact, error)
+	// CreateClaimedVerificationEvidence atomically derives evidence ownership
+	// from an exact live implement claim (req-review-gates-evidence REQ-3/AC-3.1; DEC-29).
+	CreateClaimedVerificationEvidence(ctx context.Context, request ClaimedVerificationEvidenceRequest, content []byte) (core.Artifact, error)
 	GetArtifact(ctx context.Context, id string) (core.Artifact, []byte, error)
 	GetArtifactForPlanningSession(ctx context.Context, id, sessionID string) (core.Artifact, []byte, error)
 	ListArtifacts(ctx context.Context) ([]core.Artifact, error)
 	ListArtifactsForLineage(ctx context.Context, nodes []core.LineageNode) ([]core.Artifact, error)
+}
+
+// ClaimedVerificationEvidenceRequest carries only claim identity and file
+// metadata. Task, workspace, and artifact role are always derived by the
+// store from the matching live implement order.
+type ClaimedVerificationEvidenceRequest struct {
+	WorkOrderID string
+	WorkerID    string
+	SessionID   string
+	ClientToken string
+	Name        string
+	ContentType string
 }
 
 // UnscopedActivityStore is an explicit compatibility capability for the
@@ -3937,6 +3957,10 @@ func (m *memory) AssignTaskFeature(ctx context.Context, taskID, featureID string
 func (m *memory) CreateArtifact(ctx context.Context, artifact core.Artifact, content []byte) (core.Artifact, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.createArtifactLocked(ctx, artifact, content)
+}
+
+func (m *memory) createArtifactLocked(ctx context.Context, artifact core.Artifact, content []byte) (core.Artifact, error) {
 	workspace := workspaceOrDefault(ctx, artifact.Workspace)
 	if artifact.Workspace != "" && artifact.Workspace != workspace {
 		return core.Artifact{}, fmt.Errorf("artifact workspace mismatch")
@@ -3993,6 +4017,34 @@ func (m *memory) CreateArtifact(ctx context.Context, artifact core.Artifact, con
 	}
 	m.artifacts[key] = memoryArtifact{meta: artifact, content: append([]byte(nil), content...), links: []core.Artifact{artifact}}
 	return artifact, nil
+}
+
+func (m *memory) CreateClaimedVerificationEvidence(ctx context.Context, request ClaimedVerificationEvidenceRequest, content []byte) (core.Artifact, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	workspace := workspaceOrDefault(ctx, "")
+	order, ok := m.workOrders[request.WorkOrderID]
+	if !ok {
+		return core.Artifact{}, ErrVerificationEvidenceClaimConflict
+	}
+	now := time.Now().UTC()
+	order = m.refreshWorkOrderLocked(ctx, order, now)
+	if order.State != core.WorkOrderClaimed || order.Stage != core.StageImplement ||
+		order.WorkerID == "" || order.WorkerID != request.WorkerID ||
+		request.SessionID == "" || order.SessionID != request.SessionID ||
+		request.ClientToken == "" || order.ClientTokenHash != tokenHash(request.ClientToken) ||
+		!order.LeaseExpiresAt.After(now) ||
+		(!order.ExecutionDeadline.IsZero() && !order.ExecutionDeadline.After(now)) {
+		return core.Artifact{}, ErrVerificationEvidenceClaimConflict
+	}
+	task, ok := m.tasks[order.TaskID]
+	if !ok || task.Workspace != workspace {
+		return core.Artifact{}, ErrVerificationEvidenceClaimConflict
+	}
+	return m.createArtifactLocked(ctx, core.Artifact{
+		Workspace: workspace, Name: request.Name, ContentType: request.ContentType,
+		Role: core.ArtifactRoleVerificationEvidence, TaskID: order.TaskID, CreatedAt: now,
+	}, content)
 }
 
 func (m *memory) artifactForRead(ctx context.Context, id string) (memoryArtifact, bool) {

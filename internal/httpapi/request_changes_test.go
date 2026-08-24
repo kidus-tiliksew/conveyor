@@ -60,6 +60,7 @@ func TestRequestChangesBouncesThroughSharedContextAndAttention(t *testing.T) {
 	var dispatchErr error
 	server.OnCreate = func(callCtx context.Context, id string) { dispatchErr = dispatcher.DispatchNow(callCtx, id) }
 	activityRequest := httptest.NewRequest(http.MethodGet, "/v1/tasks/"+task.ID+"/activity", nil)
+	authenticatedMemoryRead(server, activityRequest)
 	activityResponse := httptest.NewRecorder()
 	server.Handler().ServeHTTP(activityResponse, activityRequest)
 	if activityResponse.Code != http.StatusOK || !strings.Contains(activityResponse.Body.String(), `"at_merge_gate":true`) {
@@ -140,6 +141,7 @@ func TestApprovedTaskDetailIsNotAtMergeGate(t *testing.T) {
 	}
 	server := NewServer(st)
 	request := httptest.NewRequest(http.MethodGet, "/v1/tasks/"+task.ID+"/activity", nil)
+	authenticatedMemoryRead(server, request)
 	response := httptest.NewRecorder()
 	server.Handler().ServeHTTP(response, request)
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"at_merge_gate":false`) {

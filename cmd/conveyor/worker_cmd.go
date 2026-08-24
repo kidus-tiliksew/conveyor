@@ -24,6 +24,7 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/gitx"
 	"github.com/kidus-tiliksew/conveyor/internal/redact"
 	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
 	"github.com/spf13/cobra"
@@ -422,14 +423,16 @@ func runWorkerWithPolicyAndConfig(ctx context.Context, c *client, pairing, name 
 			counts[selected.Order.Stage]++
 			started = true
 			children.Add(1)
-			go func(order workerservice.DispatchOrder, firstActivityTimeout time.Duration, worktreeRoot string) {
+			go func(order workerservice.DispatchOrder, firstActivityTimeout time.Duration, local *config.Config) {
 				defer children.Done()
-				err := runHarnessChildWithFirstActivityTimeout(contextWithWorktreeRoot(ctx, worktreeRoot), c, credential, order, firstActivityTimeout)
+				childCtx := contextWithWorktreeRoot(ctx, local.WorktreeRoot)
+				childCtx = contextWithLocalExecutionConfig(childCtx, local)
+				err := runHarnessChildWithFirstActivityTimeout(childCtx, c, credential, order, firstActivityTimeout)
 				completions <- childResult{stage: order.Order.Stage, err: err}
 				mu.Lock()
 				delete(active, order.Order.ID)
 				mu.Unlock()
-			}(selected, setup.FirstActivityTimeout, setup.Config.WorktreeRoot)
+			}(selected, setup.FirstActivityTimeout, setup.Config)
 		}
 		mu.Lock()
 		activeCount := len(active)
@@ -456,6 +459,62 @@ func logWorkerReviewSeatOverflow(output io.Writer, item workerservice.DispatchOr
 	}
 	_, _ = fmt.Fprintf(output, "worker order %s: review round requires seat %d, but default setup %q configures %d seat(s); leaving order queued without claiming\n", item.Order.ID, capacity.Required, local.DefaultSetup, capacity.Configured)
 	return true
+}
+
+type localExecutionConfigContextKey struct{}
+
+func contextWithLocalExecutionConfig(ctx context.Context, local *config.Config) context.Context {
+	return context.WithValue(ctx, localExecutionConfigContextKey{}, local)
+}
+
+func localExecutionConfigFromContext(ctx context.Context) *config.Config {
+	local, _ := ctx.Value(localExecutionConfigContextKey{}).(*config.Config)
+	return local
+}
+
+func resolveHarnessWorkingDirectory(ctx context.Context, local *config.Config, item workerservice.DispatchOrder) (string, error) {
+	launcherDirectory, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("resolve launcher directory: %w", err)
+	}
+	// Old rolling-upgrade and unit-test dispatch fixtures may predate repository
+	// identity. Production dispatches always carry both fields; retaining the
+	// launcher's directory for legacy fixtures avoids guessing an identity.
+	if strings.TrimSpace(item.Task.Repo) == "" || strings.TrimSpace(item.Repository.URL) == "" {
+		return launcherDirectory, nil
+	}
+	// Direct callers without a selected local setup are legacy test and
+	// rolling-upgrade seams. Both production dispatch paths always attach the
+	// loaded setup before a claim is created.
+	if local == nil {
+		return launcherDirectory, nil
+	}
+
+	var configuredErr error
+	if repo, ok := local.Repo(item.Task.Repo); ok && strings.TrimSpace(repo.Checkout) != "" {
+		configuredCheckout, resolveErr := gitx.ResolvePrimaryCheckout(ctx, repo.Checkout, item.Task.Repo, item.Repository.URL)
+		if resolveErr == nil {
+			resolveErr = gitx.VerifyRepositoryIdentity(ctx, configuredCheckout, item.Task.Repo, item.Repository.URL)
+		}
+		if resolveErr == nil {
+			return filepath.Clean(configuredCheckout), nil
+		}
+		configuredErr = fmt.Errorf("configured checkout %q is not verified: %w", repo.Checkout, resolveErr)
+	}
+
+	discovered, discoveredErr := gitx.ResolvePrimaryCheckout(ctx, launcherDirectory, item.Task.Repo, item.Repository.URL)
+	if discoveredErr == nil {
+		if verifyErr := gitx.VerifyRepositoryIdentity(ctx, discovered, item.Task.Repo, item.Repository.URL); verifyErr == nil {
+			return discovered, nil
+		} else {
+			discoveredErr = verifyErr
+		}
+	}
+	detail := discoveredErr
+	if configuredErr != nil {
+		detail = errors.Join(configuredErr, discoveredErr)
+	}
+	return "", fmt.Errorf("cannot resolve a verified primary checkout for repository %q; add a repos: [{name, url, checkout}] entry to the local execution config, or launch from inside the repository: %w", item.Task.Repo, detail)
 }
 
 func waitForWorkerChildren(children *sync.WaitGroup, timeout time.Duration) {
@@ -956,10 +1015,11 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 			return err
 		}
 	} else {
-		workingDirectory, err = os.Getwd()
+		workingDirectory, err = resolveHarnessWorkingDirectory(setupCtx, localExecutionConfigFromContext(ctx), item)
 		if err != nil {
-			_ = release(core.WorkOrderOutcomeReleased, "resolve worker directory failed", nil)
-			return fmt.Errorf("resolve worker directory: %w", err)
+			reason := err.Error()
+			_ = release(core.WorkOrderOutcomeReleased, reason, nil)
+			return err
 		}
 	}
 	if item.Harness.MCPTransport == config.MCPTransportEnvironment {
