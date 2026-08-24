@@ -115,6 +115,21 @@ func (failingCredentialVerifier) VerifyCredential(context.Context, string) (core
 	return core.AuthenticatedCredential{}, errors.New("credential database unavailable")
 }
 
+func authenticatedMemoryRead(server *Server, request *http.Request) *http.Request {
+	if server.BearerToken == "" {
+		server.BearerToken = "memory-read-token"
+	}
+	request.Header.Set("Authorization", "Bearer "+server.BearerToken)
+	return request
+}
+
+func authenticatedMemoryHandler(server *Server) http.Handler {
+	handler := server.Handler()
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handler.ServeHTTP(w, authenticatedMemoryRead(server, r))
+	})
+}
+
 func TestCredentialAuthDerivesTypedActorsAndIgnoresAssertedHeader(t *testing.T) {
 	server := NewServer(store.NewMemory())
 	server.Credentials = staticCredentialVerifier{
@@ -264,7 +279,7 @@ func TestVerificationEvidenceUploadAndTaskActivityUseExplicitRole(t *testing.T) 
 	}
 
 	activity := httptest.NewRecorder()
-	server.Handler().ServeHTTP(activity, httptest.NewRequest(http.MethodGet, "/v1/tasks/"+task.ID+"/activity?workspace_id=demo", nil))
+	server.Handler().ServeHTTP(activity, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/tasks/"+task.ID+"/activity?workspace_id=demo", nil)))
 	if activity.Code != http.StatusOK ||
 		!strings.Contains(activity.Body.String(), `"verification_evidence":[`) ||
 		!strings.Contains(activity.Body.String(), `"role":"verification_evidence"`) ||
@@ -538,12 +553,12 @@ func TestReviewRoundRetryHTTPIsAuthorizedActionableAndIdempotent(t *testing.T) {
 	server.BearerToken, server.Workspace, server.ConfigProvider, server.WorkOrders = "token", "demo", provider, service
 
 	activity := httptest.NewRecorder()
-	server.Handler().ServeHTTP(activity, httptest.NewRequest(http.MethodGet, "/v1/tasks/"+task.ID+"/activity?workspace_id=demo", nil))
+	server.Handler().ServeHTTP(activity, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/tasks/"+task.ID+"/activity?workspace_id=demo", nil)))
 	if activity.Code != http.StatusOK || !strings.Contains(activity.Body.String(), `"needs_attention":true`) || !strings.Contains(activity.Body.String(), `"review_recovery"`) || !strings.Contains(activity.Body.String(), `"prior_round":1`) {
 		t.Fatalf("activity status=%d body=%s", activity.Code, activity.Body.String())
 	}
 	reviews := httptest.NewRecorder()
-	server.Handler().ServeHTTP(reviews, httptest.NewRequest(http.MethodGet, "/v1/reviews?workspace_id=demo", nil))
+	server.Handler().ServeHTTP(reviews, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/reviews?workspace_id=demo", nil)))
 	if reviews.Code != http.StatusOK || !strings.Contains(reviews.Body.String(), task.ID) || !strings.Contains(reviews.Body.String(), `"needs_attention":true`) {
 		t.Fatalf("reviews status=%d body=%s", reviews.Code, reviews.Body.String())
 	}
@@ -623,7 +638,7 @@ func TestInterruptedReviewRecoveryHTTPIsAuthorizedAtomicAndIdempotent(t *testing
 		t.Fatalf("conflict status=%d body=%s", conflict.Code, conflict.Body.String())
 	}
 	activity := httptest.NewRecorder()
-	server.Handler().ServeHTTP(activity, httptest.NewRequest(http.MethodGet, "/v1/tasks/"+task.ID+"/activity?workspace_id=demo", nil))
+	server.Handler().ServeHTTP(activity, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/tasks/"+task.ID+"/activity?workspace_id=demo", nil)))
 	if activity.Code != http.StatusOK || strings.Contains(activity.Body.String(), `"interrupted_review_recovery"`) {
 		t.Fatalf("recovery action remained visible status=%d body=%s", activity.Code, activity.Body.String())
 	}
@@ -650,7 +665,7 @@ func TestTerminalTaskHTTPRetainsReviewWithoutInterruptedRecovery(t *testing.T) {
 	server := NewServer(st)
 	server.Workspace = "demo"
 	activity := httptest.NewRecorder()
-	server.Handler().ServeHTTP(activity, httptest.NewRequest(http.MethodGet, "/v1/tasks/"+task.ID+"/activity?workspace_id=demo", nil))
+	server.Handler().ServeHTTP(activity, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/tasks/"+task.ID+"/activity?workspace_id=demo", nil)))
 	if activity.Code != http.StatusOK || strings.Contains(activity.Body.String(), `"interrupted_review_recovery"`) || !strings.Contains(activity.Body.String(), `"summary":"retained approval"`) {
 		t.Fatalf("terminal review projection status=%d body=%s", activity.Code, activity.Body.String())
 	}
@@ -987,6 +1002,7 @@ func TestGitHubLifecycleAppearsInTaskReadsButNotRetiredFeatureTree(t *testing.T)
 	server.Workspace = "demo"
 	for _, path := range []string{"/v1/tasks/github-visible", "/v1/tasks/github-visible/activity"} {
 		request := httptest.NewRequest(http.MethodGet, path, nil)
+		authenticatedMemoryRead(server, request)
 		response := httptest.NewRecorder()
 		server.Handler().ServeHTTP(response, request)
 		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), lifecycle.IssueURL) {
@@ -997,6 +1013,7 @@ func TestGitHubLifecycleAppearsInTaskReadsButNotRetiredFeatureTree(t *testing.T)
 	// retired feature hierarchy. Requirement/blueprint lineage is deposited by
 	// planning and rendered from living documents instead.
 	request := httptest.NewRequest(http.MethodGet, "/v1/requirements", nil)
+	authenticatedMemoryRead(server, request)
 	response := httptest.NewRecorder()
 	server.Handler().ServeHTTP(response, request)
 	if response.Code != http.StatusOK || strings.TrimSpace(response.Body.String()) != "[]" {
@@ -1146,13 +1163,18 @@ func TestRedispatchReturnsConflictForTerminalTaskTransition(t *testing.T) {
 	}
 }
 
-func TestReadEndpointsDoNotRequireToken(t *testing.T) {
+func TestReadEndpointsRequireToken(t *testing.T) {
 	s := NewServer(store.NewMemory())
 	s.BearerToken = "secret-token"
 	res := httptest.NewRecorder()
 	s.Handler().ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/v1/tasks", nil))
-	if res.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d", res.Code, http.StatusOK)
+	if res.Code != http.StatusUnauthorized || res.Header().Get("WWW-Authenticate") != "Bearer" {
+		t.Fatalf("status = %d, want %d; headers=%v", res.Code, http.StatusUnauthorized, res.Header())
+	}
+	authorized := httptest.NewRecorder()
+	s.Handler().ServeHTTP(authorized, authenticatedMemoryRead(s, httptest.NewRequest(http.MethodGet, "/v1/tasks", nil)))
+	if authorized.Code != http.StatusOK {
+		t.Fatalf("authorized status = %d, want %d", authorized.Code, http.StatusOK)
 	}
 }
 
@@ -1238,7 +1260,7 @@ func TestTaskActivityEnrichesAuthorityConflictCheckpoint(t *testing.T) {
 	server := NewServer(st)
 	server.Workspace = "demo"
 	response := httptest.NewRecorder()
-	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/tasks/"+task.ID+"/activity?workspace_id=demo", nil))
+	server.Handler().ServeHTTP(response, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/tasks/"+task.ID+"/activity?workspace_id=demo", nil)))
 	if response.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -1342,22 +1364,22 @@ func TestPendingProposalsProjectionAttentionAndTaskWarning(t *testing.T) {
 		}
 	}
 	detail := httptest.NewRecorder()
-	server.Handler().ServeHTTP(detail, httptest.NewRequest(http.MethodGet, "/v1/tasks/"+task.ID+"/activity?workspace_id=demo", nil))
+	server.Handler().ServeHTTP(detail, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/tasks/"+task.ID+"/activity?workspace_id=demo", nil)))
 	if detail.Code != http.StatusOK || !strings.Contains(detail.Body.String(), `"pending_authority":true`) || !strings.Contains(detail.Body.String(), `"needs_attention":true`) {
 		t.Fatalf("detail status=%d body=%s", detail.Code, detail.Body.String())
 	}
 	activity := httptest.NewRecorder()
-	server.Handler().ServeHTTP(activity, httptest.NewRequest(http.MethodGet, "/v1/activity?workspace_id=demo", nil))
+	server.Handler().ServeHTTP(activity, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/activity?workspace_id=demo", nil)))
 	if activity.Code != http.StatusOK || !strings.Contains(activity.Body.String(), `"id":"`+task.ID+`"`) || !strings.Contains(activity.Body.String(), `"needs_attention":true`) || !strings.Contains(activity.Body.String(), `"pending_authority":true`) {
 		t.Fatalf("activity status=%d body=%s", activity.Code, activity.Body.String())
 	}
 	reviews := httptest.NewRecorder()
-	server.Handler().ServeHTTP(reviews, httptest.NewRequest(http.MethodGet, "/v1/reviews?workspace_id=demo", nil))
+	server.Handler().ServeHTTP(reviews, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/reviews?workspace_id=demo", nil)))
 	if reviews.Code != http.StatusOK || !strings.Contains(reviews.Body.String(), `"id":"`+task.ID+`"`) || !strings.Contains(reviews.Body.String(), `"needs_attention":true`) || !strings.Contains(reviews.Body.String(), `"pending_authority":true`) {
 		t.Fatalf("reviews status=%d body=%s", reviews.Code, reviews.Body.String())
 	}
 	operations := httptest.NewRecorder()
-	server.Handler().ServeHTTP(operations, httptest.NewRequest(http.MethodGet, "/v1/task-operations?workspace_id=demo", nil))
+	server.Handler().ServeHTTP(operations, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/task-operations?workspace_id=demo", nil)))
 	if operations.Code != http.StatusOK || !strings.Contains(operations.Body.String(), `"id":"`+task.ID+`"`) || !strings.Contains(operations.Body.String(), `"needs_attention":true`) {
 		t.Fatalf("task operations status=%d body=%s", operations.Code, operations.Body.String())
 	}
@@ -1372,17 +1394,17 @@ func TestPendingProposalsProjectionAttentionAndTaskWarning(t *testing.T) {
 		t.Fatal(err)
 	}
 	detail = httptest.NewRecorder()
-	server.Handler().ServeHTTP(detail, httptest.NewRequest(http.MethodGet, "/v1/tasks/"+task.ID+"/activity?workspace_id=demo", nil))
+	server.Handler().ServeHTTP(detail, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/tasks/"+task.ID+"/activity?workspace_id=demo", nil)))
 	if detail.Code != http.StatusOK || !strings.Contains(detail.Body.String(), `"pending_authority":false`) {
 		t.Fatalf("resolved detail status=%d body=%s", detail.Code, detail.Body.String())
 	}
 	activity = httptest.NewRecorder()
-	server.Handler().ServeHTTP(activity, httptest.NewRequest(http.MethodGet, "/v1/activity?workspace_id=demo", nil))
+	server.Handler().ServeHTTP(activity, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/activity?workspace_id=demo", nil)))
 	if activity.Code != http.StatusOK || !strings.Contains(activity.Body.String(), `"id":"`+task.ID+`"`) || !strings.Contains(activity.Body.String(), `"pending_authority":false`) {
 		t.Fatalf("resolved activity status=%d body=%s", activity.Code, activity.Body.String())
 	}
 	reviews = httptest.NewRecorder()
-	server.Handler().ServeHTTP(reviews, httptest.NewRequest(http.MethodGet, "/v1/reviews?workspace_id=demo", nil))
+	server.Handler().ServeHTTP(reviews, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/reviews?workspace_id=demo", nil)))
 	if reviews.Code != http.StatusOK || strings.Contains(reviews.Body.String(), `"id":"`+task.ID+`"`) {
 		t.Fatalf("resolved reviews status=%d body=%s", reviews.Code, reviews.Body.String())
 	}
@@ -1412,7 +1434,7 @@ func TestActivityIncludesAllTasksWhileReviewsStayFiltered(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	handler := NewServer(st).Handler()
+	handler := authenticatedMemoryHandler(NewServer(st))
 	activity := httptest.NewRecorder()
 	handler.ServeHTTP(activity, httptest.NewRequest(http.MethodGet, "/v1/activity", nil))
 	if activity.Code != http.StatusOK || !bytes.Contains(activity.Body.Bytes(), []byte(`"id":"running"`)) {
@@ -1468,7 +1490,7 @@ func TestActivityUsesHumanGateAfterSubmittedOrderRecoversFromRetries(t *testing.
 		t.Fatal(err)
 	}
 
-	handler := NewServer(st).Handler()
+	handler := authenticatedMemoryHandler(NewServer(st))
 	for _, path := range []string{
 		"/v1/activity",
 		"/v1/tasks/" + task.ID + "/activity",
@@ -1514,7 +1536,7 @@ func TestTaskActivityExposesLatestAgentProgressWithLabelAndTimestamp(t *testing.
 	}
 
 	response := httptest.NewRecorder()
-	NewServer(st).Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/tasks/"+task.ID+"/activity", nil))
+	authenticatedMemoryHandler(NewServer(st)).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/tasks/"+task.ID+"/activity", nil))
 	if response.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -1577,7 +1599,7 @@ func TestActivitySurfacesReviewClaimsWithoutTerminalVerdicts(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	handler := NewServer(st).Handler()
+	handler := authenticatedMemoryHandler(NewServer(st))
 	for _, path := range []string{"/v1/activity", "/v1/tasks/missing-verdicts/activity"} {
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
@@ -1613,7 +1635,7 @@ func TestListJobsOmitsInProcessCostAndKeepsWorkerCost(t *testing.T) {
 		}
 	}
 	response := httptest.NewRecorder()
-	NewServer(st).Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/tasks/"+task.ID+"/jobs", nil))
+	authenticatedMemoryHandler(NewServer(st)).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/tasks/"+task.ID+"/jobs", nil))
 	if response.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -1653,7 +1675,7 @@ func TestTaskActivityIncludesLatestSpecForHumanGate(t *testing.T) {
 	}
 
 	response := httptest.NewRecorder()
-	NewServer(st).Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/tasks/spec-gate/activity", nil))
+	authenticatedMemoryHandler(NewServer(st)).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/tasks/spec-gate/activity", nil))
 	if response.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -1694,7 +1716,7 @@ func TestTaskActivitySurfacesAttachmentsExcludingAuditTranscripts(t *testing.T) 
 	server := NewServer(st)
 	server.Workspace = "demo"
 	response := httptest.NewRecorder()
-	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/tasks/attach-task/activity?workspace_id=demo", nil))
+	server.Handler().ServeHTTP(response, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/tasks/attach-task/activity?workspace_id=demo", nil)))
 	if response.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -1723,7 +1745,7 @@ func TestTaskActivityOmitsAttachmentsWhenNone(t *testing.T) {
 	server := NewServer(st)
 	server.Workspace = "demo"
 	response := httptest.NewRecorder()
-	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/tasks/bare-task/activity?workspace_id=demo", nil))
+	server.Handler().ServeHTTP(response, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/tasks/bare-task/activity?workspace_id=demo", nil)))
 	if response.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -1746,7 +1768,7 @@ func TestTaskActivityFailsClosedWhenMergeReadinessCannotBeResolved(t *testing.T)
 	}
 
 	response := httptest.NewRecorder()
-	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/tasks/readiness-error/activity", nil))
+	server.Handler().ServeHTTP(response, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/tasks/readiness-error/activity", nil)))
 	if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), "resolve merge readiness") {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -1767,7 +1789,7 @@ func TestTaskActivityProvidesRunCommandAfterPushedBranchEvent(t *testing.T) {
 	}
 
 	response := httptest.NewRecorder()
-	NewServer(st).Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/tasks/pushed-task/activity", nil))
+	authenticatedMemoryHandler(NewServer(st)).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/tasks/pushed-task/activity", nil))
 	if response.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -2027,7 +2049,7 @@ func TestTaskActivityExposesOnlyRunningSnapshotAndAttemptTranscriptHistory(t *te
 	server := NewServer(st)
 	server.Workspace = "demo"
 	running := httptest.NewRecorder()
-	server.Handler().ServeHTTP(running, httptest.NewRequest(http.MethodGet, "/v1/tasks/"+task.ID+"/activity?workspace_id=demo", nil))
+	server.Handler().ServeHTTP(running, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/tasks/"+task.ID+"/activity?workspace_id=demo", nil)))
 	if running.Code != http.StatusOK || !strings.Contains(running.Body.String(), `"activity_snapshot":{"attempt_id":"`+claimed.AttemptID+`","content":"running tail"`) || strings.Contains(running.Body.String(), "transcript_captures") {
 		t.Fatalf("running detail status=%d body=%s", running.Code, running.Body.String())
 	}
@@ -2036,7 +2058,7 @@ func TestTaskActivityExposesOnlyRunningSnapshotAndAttemptTranscriptHistory(t *te
 		t.Fatalf("checkpoint created=%v err=%v", created, checkpointErr)
 	}
 	after := httptest.NewRecorder()
-	server.Handler().ServeHTTP(after, httptest.NewRequest(http.MethodGet, "/v1/tasks/"+task.ID+"/activity?workspace_id=demo", nil))
+	server.Handler().ServeHTTP(after, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/tasks/"+task.ID+"/activity?workspace_id=demo", nil)))
 	if after.Code != http.StatusOK || strings.Contains(after.Body.String(), "activity_snapshot") || !strings.Contains(after.Body.String(), `"transcript_captures":[{"attempt_id":"`+claimed.AttemptID+`","content":"completed transcript","termination_reason":"harness exited"`) {
 		t.Fatalf("completed detail status=%d body=%s", after.Code, after.Body.String())
 	}
@@ -2430,7 +2452,7 @@ func TestActivityIndexAvoidsPerTaskHistoryQueries(t *testing.T) {
 	}
 	observed := &observedStore{Store: base}
 	response := httptest.NewRecorder()
-	NewServer(observed).Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/activity", nil))
+	authenticatedMemoryHandler(NewServer(observed)).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/activity", nil))
 	if response.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -2455,7 +2477,7 @@ func TestActivityDefaultsToBoundedPageAndSupportsExplicitPaging(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	handler := NewServer(base).Handler()
+	handler := authenticatedMemoryHandler(NewServer(base))
 	assertPage := func(path string, wantTotal, wantLimit, wantOffset, wantItems int) {
 		t.Helper()
 		response := httptest.NewRecorder()
@@ -2500,7 +2522,7 @@ func TestActivitySupportsSlimConditionalGzipDeltaReads(t *testing.T) {
 	if err := base.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "task.created", At: task.CreatedAt}); err != nil {
 		t.Fatal(err)
 	}
-	handler := NewServer(base).Handler()
+	handler := authenticatedMemoryHandler(NewServer(base))
 	full := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "/v1/activity", nil)
 	request.Header.Set("Accept-Encoding", "gzip")
@@ -2602,7 +2624,7 @@ func TestTaskActivityLoadsOneHistoryAndOmitsRunningEnd(t *testing.T) {
 	}
 	observed := &observedStore{Store: base}
 	response := httptest.NewRecorder()
-	NewServer(observed).Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/tasks/running-detail/activity", nil))
+	authenticatedMemoryHandler(NewServer(observed)).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/tasks/running-detail/activity", nil))
 	if response.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -2658,7 +2680,7 @@ func TestTaskActivityScopesWorkerStatusToActionableTaskOrders(t *testing.T) {
 	}
 
 	queued := httptest.NewRecorder()
-	server.Handler().ServeHTTP(queued, httptest.NewRequest(http.MethodGet, "/v1/tasks/queued-auto/activity?workspace_id=demo", nil))
+	server.Handler().ServeHTTP(queued, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/tasks/queued-auto/activity?workspace_id=demo", nil)))
 	if queued.Code != http.StatusOK || bytes.Contains(queued.Body.Bytes(), []byte(`"worker_status"`)) ||
 		bytes.Contains(queued.Body.Bytes(), []byte(`"needs_attention":true`)) {
 		t.Fatalf("pull-only queued activity status=%d body=%s", queued.Code, queued.Body.String())
@@ -2667,7 +2689,7 @@ func TestTaskActivityScopesWorkerStatusToActionableTaskOrders(t *testing.T) {
 		t.Fatal(err)
 	}
 	queued = httptest.NewRecorder()
-	server.Handler().ServeHTTP(queued, httptest.NewRequest(http.MethodGet, "/v1/tasks/queued-auto/activity?workspace_id=demo", nil))
+	server.Handler().ServeHTTP(queued, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/tasks/queued-auto/activity?workspace_id=demo", nil)))
 	if queued.Code != http.StatusOK || !bytes.Contains(queued.Body.Bytes(), []byte(`"worker_status"`)) ||
 		!bytes.Contains(queued.Body.Bytes(), []byte(`"required_harnesses":[]`)) ||
 		!bytes.Contains(queued.Body.Bytes(), []byte(`"queue_context":"never_started"`)) ||
@@ -2678,7 +2700,7 @@ func TestTaskActivityScopesWorkerStatusToActionableTaskOrders(t *testing.T) {
 
 	for _, taskID := range []string{"awaiting-auto", "approved-auto"} {
 		response := httptest.NewRecorder()
-		server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/tasks/"+taskID+"/activity?workspace_id=demo", nil))
+		server.Handler().ServeHTTP(response, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/tasks/"+taskID+"/activity?workspace_id=demo", nil)))
 		if response.Code != http.StatusOK || bytes.Contains(response.Body.Bytes(), []byte(`"worker_status"`)) {
 			t.Fatalf("%s activity status=%d body=%s", taskID, response.Code, response.Body.String())
 		}
@@ -2688,7 +2710,7 @@ func TestTaskActivityScopesWorkerStatusToActionableTaskOrders(t *testing.T) {
 	}
 
 	merged := httptest.NewRecorder()
-	server.Handler().ServeHTTP(merged, httptest.NewRequest(http.MethodGet, "/v1/tasks/merged-auto/activity?workspace_id=demo", nil))
+	server.Handler().ServeHTTP(merged, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/tasks/merged-auto/activity?workspace_id=demo", nil)))
 	if merged.Code != http.StatusOK || bytes.Contains(merged.Body.Bytes(), []byte(`"worker_status"`)) {
 		t.Fatalf("merged activity status=%d body=%s", merged.Code, merged.Body.String())
 	}
@@ -2727,7 +2749,7 @@ func TestEventStreamUsesIncrementalReads(t *testing.T) {
 	observed := &observedStore{Store: base, afterHook: cancel}
 	request := httptest.NewRequest(http.MethodGet, "/v1/tasks/stream-task/events/stream", nil).WithContext(ctx)
 	response := httptest.NewRecorder()
-	NewServer(observed).Handler().ServeHTTP(response, request)
+	authenticatedMemoryHandler(NewServer(observed)).ServeHTTP(response, request)
 	if observed.listEventsAfterCalls != 1 || observed.listEventsCalls != 0 {
 		t.Fatalf("stream query calls = incremental:%d full:%d", observed.listEventsAfterCalls, observed.listEventsCalls)
 	}
@@ -2774,7 +2796,7 @@ func taskOperations(t *testing.T, st store.Store) taskOperationsResponse {
 	server := NewServer(st)
 	server.Workspace = "demo"
 	response := httptest.NewRecorder()
-	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/task-operations?workspace_id=demo", nil))
+	server.Handler().ServeHTTP(response, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/task-operations?workspace_id=demo", nil)))
 	if response.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -2829,8 +2851,8 @@ func TestTaskOperationsPaginationFiltersAndBatchesProjectionReads(t *testing.T) 
 	server := NewServer(observed)
 	server.Workspace = "demo"
 	response := httptest.NewRecorder()
-	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet,
-		"/v1/task-operations?workspace_id=demo&state=running&repository=web&limit=1&offset=1", nil))
+	server.Handler().ServeHTTP(response, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet,
+		"/v1/task-operations?workspace_id=demo&state=running&repository=web&limit=1&offset=1", nil)))
 	if response.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -2851,8 +2873,8 @@ func TestTaskOperationsPaginationFiltersAndBatchesProjectionReads(t *testing.T) 
 	}
 
 	bad := httptest.NewRecorder()
-	server.Handler().ServeHTTP(bad, httptest.NewRequest(http.MethodGet,
-		"/v1/task-operations?workspace_id=demo&state=unknown&limit=1", nil))
+	server.Handler().ServeHTTP(bad, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet,
+		"/v1/task-operations?workspace_id=demo&state=unknown&limit=1", nil)))
 	if bad.Code != http.StatusBadRequest {
 		t.Fatalf("invalid filter status=%d body=%s", bad.Code, bad.Body.String())
 	}
@@ -2860,7 +2882,7 @@ func TestTaskOperationsPaginationFiltersAndBatchesProjectionReads(t *testing.T) 
 	// Pagination is additive: a caller that does not opt in still receives the
 	// whole workspace as a bare array, with no pagination metadata attached.
 	compat := httptest.NewRecorder()
-	server.Handler().ServeHTTP(compat, httptest.NewRequest(http.MethodGet, "/v1/task-operations?workspace_id=demo", nil))
+	server.Handler().ServeHTTP(compat, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/task-operations?workspace_id=demo", nil)))
 	if compat.Code != http.StatusOK {
 		t.Fatalf("compatibility status=%d body=%s", compat.Code, compat.Body.String())
 	}
@@ -2877,7 +2899,7 @@ func TestTaskOperationsPaginationFiltersAndBatchesProjectionReads(t *testing.T) 
 
 	// offset without limit is a caller error rather than a silent full read.
 	orphan := httptest.NewRecorder()
-	server.Handler().ServeHTTP(orphan, httptest.NewRequest(http.MethodGet, "/v1/task-operations?workspace_id=demo&offset=1", nil))
+	server.Handler().ServeHTTP(orphan, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/task-operations?workspace_id=demo&offset=1", nil)))
 	if orphan.Code != http.StatusBadRequest {
 		t.Fatalf("offset without limit status=%d body=%s", orphan.Code, orphan.Body.String())
 	}
@@ -2885,8 +2907,8 @@ func TestTaskOperationsPaginationFiltersAndBatchesProjectionReads(t *testing.T) 
 	// The largest representable offset is served — an empty page past the end,
 	// with the total still reported so a client can correct itself.
 	edge := httptest.NewRecorder()
-	server.Handler().ServeHTTP(edge, httptest.NewRequest(http.MethodGet, fmt.Sprintf(
-		"/v1/task-operations?workspace_id=demo&limit=1&offset=%d", store.MaxTaskOperationsOffset), nil))
+	server.Handler().ServeHTTP(edge, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, fmt.Sprintf(
+		"/v1/task-operations?workspace_id=demo&limit=1&offset=%d", store.MaxTaskOperationsOffset), nil)))
 	if edge.Code != http.StatusOK {
 		t.Fatalf("boundary offset status=%d body=%s", edge.Code, edge.Body.String())
 	}
@@ -2913,8 +2935,8 @@ func TestTaskOperationsPaginationFiltersAndBatchesProjectionReads(t *testing.T) 
 		"-1",
 	} {
 		overflow := httptest.NewRecorder()
-		server.Handler().ServeHTTP(overflow, httptest.NewRequest(http.MethodGet,
-			"/v1/task-operations?workspace_id=demo&limit=1&offset="+offset, nil))
+		server.Handler().ServeHTTP(overflow, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet,
+			"/v1/task-operations?workspace_id=demo&limit=1&offset="+offset, nil)))
 		if overflow.Code != http.StatusBadRequest {
 			t.Fatalf("offset=%s status=%d body=%s", offset, overflow.Code, overflow.Body.String())
 		}
@@ -2922,8 +2944,8 @@ func TestTaskOperationsPaginationFiltersAndBatchesProjectionReads(t *testing.T) 
 
 	// The limit bound is the store's, not a second copy of it.
 	overLimit := httptest.NewRecorder()
-	server.Handler().ServeHTTP(overLimit, httptest.NewRequest(http.MethodGet, fmt.Sprintf(
-		"/v1/task-operations?workspace_id=demo&limit=%d", store.MaxTaskOperationsLimit+1), nil))
+	server.Handler().ServeHTTP(overLimit, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, fmt.Sprintf(
+		"/v1/task-operations?workspace_id=demo&limit=%d", store.MaxTaskOperationsLimit+1), nil)))
 	if overLimit.Code != http.StatusBadRequest {
 		t.Fatalf("over-limit status=%d body=%s", overLimit.Code, overLimit.Body.String())
 	}
@@ -3126,7 +3148,7 @@ func TestTaskOperationsExposesAssigneeButNoRetiredFields(t *testing.T) {
 	server := NewServer(st)
 	server.Workspace = "demo"
 	response := httptest.NewRecorder()
-	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/task-operations?workspace_id=demo", nil))
+	server.Handler().ServeHTTP(response, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/task-operations?workspace_id=demo", nil)))
 	if response.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -3169,7 +3191,7 @@ func TestTaskFilterParametersReachTheStoreOnBothSurfaces(t *testing.T) {
 		server := NewServer(st)
 		server.Workspace = "demo"
 		response := httptest.NewRecorder()
-		server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, target, nil))
+		server.Handler().ServeHTTP(response, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, target, nil)))
 		return response
 	}
 	for index, seed := range []struct {

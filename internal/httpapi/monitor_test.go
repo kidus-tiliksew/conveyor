@@ -104,6 +104,7 @@ func TestMonitorObservationUsesNormalIntakeAndExposesDrift(t *testing.T) {
 		}
 	}
 	statusRequest := httptest.NewRequest(http.MethodGet, "/v1/monitor", nil)
+	authenticatedMemoryRead(server, statusRequest)
 	statusResponse := httptest.NewRecorder()
 	handler.ServeHTTP(statusResponse, statusRequest)
 	if statusResponse.Code != http.StatusOK {

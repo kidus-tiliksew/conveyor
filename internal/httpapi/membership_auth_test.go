@@ -350,6 +350,51 @@ func TestMembershipScopesWorkspaceListAndNotFoundSurfaces(t *testing.T) {
 	}
 }
 
+func TestMemoryWorkspaceReadsRequireHumanCredential(t *testing.T) {
+	server := NewServer(store.NewMemory())
+	server.Workspace = "demo"
+	server.BearerToken = "operator-token"
+	server.InvitationSessions = &invitationSessionFixture{credential: core.AuthenticatedCredential{
+		ID: "session-operator", OwnerUserID: "local-operator", Kind: core.CredentialUser,
+		Scope: core.CredentialScopeOperator, Method: core.CredentialMethodSession,
+	}}
+	handler := server.Handler()
+
+	for _, path := range []string{"/v1/workspaces", "/v1/tasks?workspace_id=demo"} {
+		t.Run(path, func(t *testing.T) {
+			unauthenticated := httptest.NewRecorder()
+			handler.ServeHTTP(unauthenticated, httptest.NewRequest(http.MethodGet, path, nil))
+			if unauthenticated.Code != http.StatusUnauthorized || unauthenticated.Header().Get("WWW-Authenticate") != "Bearer" || unauthenticated.Body.String() != "unauthorized\n" {
+				t.Fatalf("unauthenticated status=%d headers=%v body=%q", unauthenticated.Code, unauthenticated.Header(), unauthenticated.Body.String())
+			}
+
+			bearerRequest := httptest.NewRequest(http.MethodGet, path, nil)
+			bearerRequest.Header.Set("Authorization", "Bearer operator-token")
+			bearer := httptest.NewRecorder()
+			handler.ServeHTTP(bearer, bearerRequest)
+			if bearer.Code != http.StatusOK {
+				t.Fatalf("bearer status=%d body=%q", bearer.Code, bearer.Body.String())
+			}
+
+			sessionRequest := httptest.NewRequest(http.MethodGet, path, nil)
+			sessionRequest.AddCookie(&http.Cookie{Name: dashboardSessionCookie, Value: "session-secret"})
+			session := httptest.NewRecorder()
+			handler.ServeHTTP(session, sessionRequest)
+			if session.Code != http.StatusOK {
+				t.Fatalf("session status=%d body=%q", session.Code, session.Body.String())
+			}
+		})
+	}
+
+	mutation := httptest.NewRequest(http.MethodPost, "/v1/lineage/rebuild?workspace_id=demo", nil)
+	mutation.AddCookie(&http.Cookie{Name: dashboardSessionCookie, Value: "session-secret"})
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, mutation)
+	if response.Code != http.StatusForbidden || response.Body.String() != "CSRF proof required\n" {
+		t.Fatalf("session mutation without CSRF status=%d body=%q", response.Code, response.Body.String())
+	}
+}
+
 func TestMCPUnboundWorkspaceMatchesMissingWorkspace(t *testing.T) {
 	fixture := &membershipFixture{
 		workspaces: []core.Workspace{{ID: "alpha"}, {ID: "beta"}},

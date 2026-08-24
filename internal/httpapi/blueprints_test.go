@@ -118,8 +118,11 @@ func TestActivityFeedExcludesBlueprintAnchorsButKeepsChildren(t *testing.T) {
 	server := NewServer(st)
 	server.Workspace, server.BearerToken = "demo", "token"
 	handler := server.Handler()
+	authenticatedHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handler.ServeHTTP(w, authenticatedMemoryRead(server, r))
+	})
 
-	feed := listActivityTaskIDs(t, handler, "/v1/activity?workspace_id=demo")
+	feed := listActivityTaskIDs(t, authenticatedHandler, "/v1/activity?workspace_id=demo")
 	for _, id := range feed {
 		if id == anchor.ID {
 			t.Fatalf("board feed still carries the blueprint anchor: %v", feed)
@@ -154,8 +157,11 @@ func TestReviewInboxKeepsBlueprintAnchors(t *testing.T) {
 	server := NewServer(st)
 	server.Workspace, server.BearerToken = "demo", "token"
 	handler := server.Handler()
+	authenticatedHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handler.ServeHTTP(w, authenticatedMemoryRead(server, r))
+	})
 
-	inbox := listActivityTaskIDs(t, handler, "/v1/reviews?workspace_id=demo")
+	inbox := listActivityTaskIDs(t, authenticatedHandler, "/v1/reviews?workspace_id=demo")
 	found := false
 	for _, id := range inbox {
 		if id == anchor.ID {
@@ -165,7 +171,7 @@ func TestReviewInboxKeepsBlueprintAnchors(t *testing.T) {
 	if !found {
 		t.Fatalf("review inbox dropped the blueprint anchor: %v", inbox)
 	}
-	board := listActivityTaskIDs(t, handler, "/v1/activity?workspace_id=demo")
+	board := listActivityTaskIDs(t, authenticatedHandler, "/v1/activity?workspace_id=demo")
 	gatedOnBoard := false
 	for _, id := range board {
 		if id == gated.ID {
@@ -249,7 +255,9 @@ func TestBlueprintsProjectionReportsDeliveryAndDependencyOrder(t *testing.T) {
 
 	server := NewServer(st)
 	server.Workspace, server.BearerToken = "demo", "token"
-	views := listBlueprintViews(t, server.Handler())
+	views := listBlueprintViews(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server.Handler().ServeHTTP(w, authenticatedMemoryRead(server, r))
+	}))
 
 	if len(views) != 1 {
 		t.Fatalf("blueprint views=%d, want 1", len(views))
@@ -382,7 +390,9 @@ func TestBlueprintsProjectionFollowsRevisedGoverningSpec(t *testing.T) {
 
 	server := NewServer(st)
 	server.Workspace, server.BearerToken = "demo", "token"
-	handler := server.Handler()
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server.Handler().ServeHTTP(w, authenticatedMemoryRead(server, r))
+	})
 
 	// A revision that reuses every child: no child records version 2, so a
 	// child-derived governing version would report 1 and lose the decomposition.
@@ -481,7 +491,9 @@ func TestBlueprintsProjectionIgnoresUnapprovedDraft(t *testing.T) {
 
 	server := NewServer(st)
 	server.Workspace, server.BearerToken = "demo", "token"
-	view := listBlueprintViews(t, server.Handler())[0]
+	view := listBlueprintViews(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server.Handler().ServeHTTP(w, authenticatedMemoryRead(server, r))
+	}))[0]
 
 	if view.GoverningVersion != 1 || view.Spec == nil || view.Spec.Version != 1 || !view.Spec.Approved {
 		t.Fatalf("governing=%d spec=%+v, want the approved v1", view.GoverningVersion, view.Spec)
@@ -512,7 +524,9 @@ func TestBlueprintsProjectionIsEmptyWithoutAnchors(t *testing.T) {
 	}
 	server := NewServer(st)
 	server.Workspace, server.BearerToken = "demo", "token"
-	if views := listBlueprintViews(t, server.Handler()); len(views) != 0 {
+	if views := listBlueprintViews(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server.Handler().ServeHTTP(w, authenticatedMemoryRead(server, r))
+	})); len(views) != 0 {
 		t.Fatalf("blueprint views=%+v, want none", views)
 	}
 }

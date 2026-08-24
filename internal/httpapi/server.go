@@ -69,8 +69,8 @@ type Server struct {
 	// BearerToken authenticates mutating requests (design-http-api). An empty
 	// token denies all mutations rather than silently disabling auth.
 	BearerToken string
-	// WorkspaceInfo is the static fallback for the unauthenticated display
-	// snapshot; production resolves it dynamically through ConfigProvider.
+	// WorkspaceInfo is the static fallback for the display snapshot; production
+	// resolves it dynamically through ConfigProvider.
 	WorkspaceInfo *WorkspaceInfo
 	// ConfigProvider resolves current database-backed workspace scope while
 	// preserving file-backed deployment fields.
@@ -466,29 +466,39 @@ func (s *Server) requireMutationCapability(capability core.Capability) func(http
 }
 
 func (s *Server) requireWorkspaceAuth(next http.Handler) http.Handler {
-	// Unit-test and explicit memory stores have no durable workspace registry;
-	// production multi-workspace reads follow the authenticated operator policy.
-	if s.Workspaces == nil {
-		return next
-	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		credential, err := s.authenticateHumanCredential(w, r)
+		authenticated, ok := s.withHumanCredential(w, r)
+		if !ok {
+			return
+		}
+		next.ServeHTTP(w, authenticated)
+	})
+}
+
+// withHumanCredential keeps the workspace-read protocol boundary authenticated
+// even when an explicit memory deployment has no workspace registry
+// (req-security-boundaries REQ-1; design-http-api).
+func (s *Server) withHumanCredential(w http.ResponseWriter, r *http.Request) (*http.Request, bool) {
+	credential, ok := store.CredentialFromContext(r.Context())
+	if !ok {
+		var err error
+		credential, err = s.authenticateHumanCredential(w, r)
 		if err != nil {
 			writeCredentialVerificationError(w, err)
-			return
+			return r, false
 		}
-		if credential.Kind != core.CredentialUser {
-			w.Header().Set("WWW-Authenticate", "Bearer")
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-		if !s.requireSessionMutationProof(w, r, credential) {
-			return
-		}
-		ctx := store.WithCredential(r.Context(), credential)
-		ctx = store.WithActor(ctx, store.Actor{ID: store.UserActorID(credential.OwnerUserID), Role: core.ActorUser})
-		next.ServeHTTP(w, r.WithContext(ctx))
-	})
+	}
+	if credential.Kind != core.CredentialUser {
+		w.Header().Set("WWW-Authenticate", "Bearer")
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return r, false
+	}
+	if !s.requireSessionMutationProof(w, r, credential) {
+		return r, false
+	}
+	ctx := store.WithCredential(r.Context(), credential)
+	ctx = store.WithActor(ctx, store.Actor{ID: store.UserActorID(credential.OwnerUserID), Role: core.ActorUser})
+	return r.WithContext(ctx), true
 }
 
 // requireSelfServiceCredential authenticates the human credential that owns a
@@ -521,7 +531,11 @@ func (s *Server) requireWorkspaceCapability(capability core.Capability) func(htt
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if s.Workspaces == nil {
-				next.ServeHTTP(w, r)
+				authenticated, ok := s.withHumanCredential(w, r)
+				if !ok {
+					return
+				}
+				next.ServeHTTP(w, authenticated)
 				return
 			}
 			if s.Memberships == nil {
