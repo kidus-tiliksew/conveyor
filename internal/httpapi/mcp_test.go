@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -1354,6 +1355,29 @@ func TestMCPWorkerDispatchedExecutorClaimGovernance(t *testing.T) {
 		return args
 	}
 	governanceTools := []string{"request_plan_revision", "propose_system_design_revision", "propose_requirement_revision", "propose_decision"}
+
+	t.Run("session-bound run agent cannot enumerate or act on another order", func(t *testing.T) {
+		server, _, _, ownOrder, otherOrder, _ := setup(t, time.Minute)
+		request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+		request = request.WithContext(store.WithCredential(request.Context(), core.AuthenticatedCredential{
+			ID: "run-agent", OwnerUserID: "owner-a", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser,
+			RunWorkspaceID: "demo", RunWorkOrderID: ownOrder, RunSessionID: "session-a",
+		}))
+		listed, err := server.callMCPTool(request, "list_work_orders", map[string]any{"workspace_id": "demo"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		encoded, _ := json.Marshal(listed)
+		if !bytes.Contains(encoded, []byte(ownOrder)) || bytes.Contains(encoded, []byte(otherOrder)) {
+			t.Fatalf("bound list=%s", encoded)
+		}
+		if _, err = server.callMCPTool(request, "claim_work_order", map[string]any{"workspace_id": "demo", "work_order_id": otherOrder, "session_id": "new-session"}); err == nil || !strings.Contains(err.Error(), "session-bound") {
+			t.Fatalf("cross-order claim error=%v", err)
+		}
+		if _, err = server.callMCPTool(request, "report_progress", map[string]any{"workspace_id": "demo", "work_order_id": otherOrder, "session_id": "session-b", "message": "escape"}); !errors.Is(err, store.ErrWorkOrderClaimUnauthorized) {
+			t.Fatalf("cross-order mutation error=%v", err)
+		}
+	})
 
 	t.Run("own live claim authorizes all governance tools as executor", func(t *testing.T) {
 		for _, tool := range governanceTools {

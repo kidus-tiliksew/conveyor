@@ -82,6 +82,7 @@ type Server struct {
 	CallerIdentities      store.CallerIdentityStore
 	OwnProfiles           store.OwnProfileStore
 	PersonalTokens        store.PersonalAccessTokenStore
+	AgentCredentials      store.AgentCredentialStore
 	ForgeTokens           store.ForgeTokenStore
 	ValidateForgeToken    func(context.Context, string) (string, error)
 	InvitationSessions    store.InvitationSessionStore
@@ -117,6 +118,9 @@ func NewServer(s store.Store) *Server {
 	}
 	if tokens, ok := s.(store.PersonalAccessTokenStore); ok {
 		server.PersonalTokens = tokens
+	}
+	if credentials, ok := s.(store.AgentCredentialStore); ok {
+		server.AgentCredentials = credentials
 	}
 	if tokens, ok := s.(store.ForgeTokenStore); ok {
 		server.ForgeTokens = tokens
@@ -197,6 +201,8 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/tasks/{id}/spec", s.getLatestSpec)
 			r.With(s.requireTaskRunAuth, s.requireWorkspaceCapability(core.CapabilityClaimWork)).Get("/tasks/{id}/run-order", s.getTaskRunOrder)
 			r.With(s.requireTaskRunAuth, s.requireWorkspaceCapability(core.CapabilityClaimWork)).Post("/tasks/{id}/run-orders/{order_id}/claim", s.claimTaskRunOrder)
+			r.With(s.requireTaskRunAuth, s.requireWorkspaceCapability(core.CapabilityClaimWork)).Post("/tasks/{id}/run-orders/{order_id}/agent-credential", s.issueTaskRunAgentCredential)
+			r.With(s.requireTaskRunAuth, s.requireWorkspaceCapability(core.CapabilityClaimWork)).Delete("/tasks/{id}/run-orders/{order_id}/agent-credential", s.revokeTaskRunAgentCredential)
 			r.With(s.requireTaskRunAuth, s.requireWorkspaceCapability(core.CapabilityClaimWork)).Post("/tasks/{id}/run-orders/{order_id}/renew", s.renewTaskRunOrder)
 			r.With(s.requireTaskRunAuth, s.requireWorkspaceCapability(core.CapabilityClaimWork)).Get("/tasks/{id}/run-orders/{order_id}/reconcile", s.reconcileTaskRunOrder)
 			r.With(s.requireTaskRunAuth, s.requireWorkspaceCapability(core.CapabilityClaimWork)).Post("/tasks/{id}/run-orders/{order_id}/attempt-checkpoint", s.checkpointTaskRunOrderAttempt)

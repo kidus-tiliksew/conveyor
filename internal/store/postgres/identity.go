@@ -30,12 +30,7 @@ type PersonalAccessToken = core.PersonalAccessToken
 
 type IssuedPersonalAccessToken = core.IssuedPersonalAccessToken
 
-type IssuedAgentCredential struct {
-	ID     string
-	UserID string
-	Label  string
-	Value  string
-}
+type IssuedAgentCredential = store.IssuedAgentCredential
 
 // GetCallerIdentity resolves only the credential-derived user. A workspace
 // role is joined only when the HTTP boundary has supplied an authorized
@@ -475,6 +470,47 @@ func (s *Store) IssueAgentCredential(ctx context.Context, userID, label string) 
 	return IssuedAgentCredential{ID: row.ID, UserID: row.UserID, Label: row.Label, Value: value}, nil
 }
 
+// RevokeAgentCredential revokes only an agent-class credential owned by the
+// authenticated run parent. The kind and owner predicates make human PATs and
+// credentials belonging to another user unaddressable through this boundary.
+func (s *Store) RevokeAgentCredential(ctx context.Context, userID, credentialID string) error {
+	result, err := s.pool.Exec(ctx, `UPDATE user_tokens SET revoked_at=COALESCE(revoked_at, now())
+		WHERE id=$1 AND user_id=$2 AND kind=$3`, credentialID, userID, string(core.CredentialAgent))
+	if err != nil {
+		return fmt.Errorf("revoke agent credential: %w", err)
+	}
+	if result.RowsAffected() != 1 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
+// RevokeRunAgentCredential revokes only the credential issued for the exact
+// attended-run workspace, work order, and session. The row is locked while
+// its persisted label is parsed and matched so a parent cannot use another
+// live claim to revoke a sibling child credential owned by the same user.
+func (s *Store) RevokeRunAgentCredential(ctx context.Context, userID, credentialID string, expected store.RunAgentCredentialBinding) error {
+	return s.inTx(ctx, func(tx pgx.Tx, _ *db.Queries) error {
+		var label string
+		err := tx.QueryRow(ctx, `SELECT label FROM user_tokens
+			WHERE id=$1 AND user_id=$2 AND kind=$3 FOR UPDATE`, credentialID, userID, string(core.CredentialAgent)).Scan(&label)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return store.ErrNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("read run agent credential: %w", err)
+		}
+		binding, ok := store.ParseRunAgentCredentialLabel(label)
+		if !ok || binding != expected {
+			return store.ErrRunAgentCredentialBindingMismatch
+		}
+		if _, err = tx.Exec(ctx, `UPDATE user_tokens SET revoked_at=COALESCE(revoked_at, now()) WHERE id=$1`, credentialID); err != nil {
+			return fmt.Errorf("revoke run agent credential: %w", err)
+		}
+		return nil
+	})
+}
+
 func (s *Store) VerifyPersonalAccessToken(ctx context.Context, candidate string) (IdentityUser, error) {
 	credential, user, err := s.verifyCredential(ctx, candidate)
 	if err != nil {
@@ -764,6 +800,13 @@ func (s *Store) verifyCredential(ctx context.Context, candidate string) (core.Au
 	}
 	kind, scope := core.CredentialKind(row.Kind), core.CredentialScope(row.Scope)
 	credential := core.AuthenticatedCredential{ID: row.ID, OwnerUserID: row.UserID, Kind: kind, Scope: scope}
+	if kind == core.CredentialAgent {
+		if binding, ok := store.ParseRunAgentCredentialLabel(row.Label); ok {
+			credential.RunWorkspaceID = binding.WorkspaceID
+			credential.RunWorkOrderID = binding.WorkOrderID
+			credential.RunSessionID = binding.SessionID
+		}
+	}
 	user := IdentityUser{ID: row.UserID, Email: row.Email, DisplayName: row.DisplayName, Status: row.Status}
 	return credential, user, nil
 }

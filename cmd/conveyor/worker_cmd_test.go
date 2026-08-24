@@ -234,6 +234,10 @@ func TestRecoveredHarnessContinuationLaunchAndCapture(t *testing.T) {
 					return
 				}
 				switch {
+				case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/agent-credential"):
+					_ = json.NewEncoder(w).Encode(map[string]string{"credential_id": "run-agent", "credential": "run-agent-secret"})
+				case r.Method == http.MethodDelete && strings.HasSuffix(r.URL.Path, "/agent-credential"):
+					w.WriteHeader(http.StatusNoContent)
 				case strings.HasSuffix(r.URL.Path, "/claim"):
 					_ = json.NewEncoder(w).Encode(core.WorkOrder{
 						ID: "recovered-implement", Stage: core.StageImplement, State: core.WorkOrderClaimed,
@@ -1788,6 +1792,10 @@ func TestRunHarnessChildReapsOnlyAfterAttachedRunObservesTerminalOrder(t *testin
 			released := make(chan struct{}, 1)
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch {
+				case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/agent-credential"):
+					_ = json.NewEncoder(w).Encode(map[string]string{"credential_id": "run-agent", "credential": "run-agent-secret"})
+				case r.Method == http.MethodDelete && strings.HasSuffix(r.URL.Path, "/agent-credential"):
+					w.WriteHeader(http.StatusNoContent)
 				case strings.HasSuffix(r.URL.Path, "/claim"):
 					_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: "run-order", State: core.WorkOrderClaimed, LeaseExpiresAt: time.Now().Add(time.Minute)})
 				case strings.HasSuffix(r.URL.Path, "/renew"):
@@ -1916,6 +1924,10 @@ func TestRunHarnessChildExitClassifiesCheckpointReleaseBeforeRenewal(t *testing.
 			releases := make(chan core.WorkOrderRelease, 1)
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch {
+				case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/agent-credential"):
+					_ = json.NewEncoder(w).Encode(map[string]string{"credential_id": "run-agent", "credential": "run-agent-secret"})
+				case r.Method == http.MethodDelete && strings.HasSuffix(r.URL.Path, "/agent-credential"):
+					w.WriteHeader(http.StatusNoContent)
 				case strings.HasSuffix(r.URL.Path, "/claim"):
 					_ = json.NewEncoder(w).Encode(core.WorkOrder{
 						ID: "exit-checkpoint-order", State: core.WorkOrderClaimed, LeaseExpiresAt: time.Now().Add(time.Minute),
@@ -2565,6 +2577,38 @@ func TestRunHarnessChildReadinessFailureReleasesClaimWithoutStartingModel(t *tes
 	}
 	if stdout.Len() != 0 || stderr.Len() != 0 || os.Getenv("CONVEYOR_CLIENT_TOKEN") != "parent-client-token" {
 		t.Fatalf("readiness failure leaked output or mutated parent launch state")
+	}
+}
+
+func TestRunChildAgentCredentialIssuanceFailureReleasesClaim(t *testing.T) {
+	released := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/claim"):
+			_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: "run-order", State: core.WorkOrderClaimed, LeaseExpiresAt: time.Now().Add(time.Minute)})
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/agent-credential"):
+			http.Error(w, "issuer unavailable", http.StatusServiceUnavailable)
+		case strings.HasSuffix(r.URL.Path, "/release"):
+			released <- struct{}{}
+			_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: "run-order", State: core.WorkOrderQueued})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	item := workerservice.DispatchOrder{
+		Order: core.WorkOrder{ID: "run-order", TaskID: "run-task", Stage: core.StageImplement},
+		Task:  core.Task{ID: "run-task"}, Dispatch: "run",
+		Harness: config.Harness{Name: "unused", Command: []string{"false"}},
+	}
+	err := runHarnessChildWithOutput(t.Context(), &client{base: server.URL, workspace: "demo"}, "operator-pat", item, io.Discard, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "issue child agent credential") {
+		t.Fatalf("error=%v", err)
+	}
+	select {
+	case <-released:
+	case <-time.After(time.Second):
+		t.Fatal("claim was not released after credential issuance failure")
 	}
 }
 

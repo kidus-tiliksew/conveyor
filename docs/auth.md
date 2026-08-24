@@ -3,8 +3,8 @@
 Conveyor has one identity model and several credential planes. A person has
 one account; how they prove it depends on where they are: a session cookie in
 the browser, a personal access token in the CLI and MCP clients, a worker
-credential on an enrolled machine. Agents never hold credentials of their own
-beyond what the launcher hands them.
+credential on an enrolled machine, and a short-lived agent credential in an
+attended `conveyor run` child. Agents never hold the operator's personal token.
 
 ## The two human credential methods
 
@@ -120,18 +120,32 @@ retrying.
 
 ## What an agent session gets
 
-The launcher (worker or `conveyor run`) starts the agent with an isolated
-environment: the credential to reach Conveyor's MCP endpoint
+The launcher starts the agent with an isolated environment: the credential to
+reach Conveyor's MCP endpoint
 (`CONVEYOR_API_TOKEN`), the server address and workspace, the work order and
 session identity, and the task's branch and repository assignment. MCP
 registration files reference the token through the environment, never by
 value, and the launcher redacts the credential from the child's output
 streams.
 
+The two launch paths deliberately use different execution credentials. A
+worker child receives the worker's enrollment credential. For every
+`conveyor run` stage and restart, the authenticated parent claims the order and
+then mints a fresh agent-class credential owned by the invoking user and
+authorized only through that exact workspace, work order, and session claim.
+Only that agent credential reaches the child environment and MCP registration.
+The parent retains its personal token for lease renewal, release,
+reconciliation, and interactive gate or proposal confirmation, and revokes the
+agent credential when the child exits, including setup failure, cancellation,
+or terminal submission. Deactivating the owning user makes all derived agent
+credentials fail closed at verification time.
+
 Everything the agent can do with that credential is scoped: claim-bound
 mutation tools work only against its own live claim, artifact reads are
 bounded to what the work order's lineage selection actually served, and
-document content injected into prompts is labeled untrusted data.
+document content injected into prompts is labeled untrusted data. Agent
+credentials are rejected by operator-only REST routes and by human-reserved
+MCP tools; renewal on the attended run path remains a parent-owned REST act.
 
 ## Workspace context
 

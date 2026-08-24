@@ -82,7 +82,9 @@ type taskRunStats struct {
 	states                                           map[string]core.WorkOrderState
 	getCalls, claimCalls, planSubmits, reviewSubmits int
 	verdictSubmits, releaseCalls                     int
+	agentIssues, agentRevokes                        int
 	progress                                         []string
+	mcpCredentials                                   []string
 }
 
 func runTaskScenario(t *testing.T, input string, auto, terminal bool) (taskRunStats, string, error) {
@@ -95,13 +97,15 @@ func runTaskScenario(t *testing.T, input string, auto, terminal bool) (taskRunSt
 	}}
 	sessions := map[string]string{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer user-credential" {
+		authorization := r.Header.Get("Authorization")
+		if authorization != "Bearer user-credential" && !(r.URL.Path == "/mcp" && authorization == "Bearer child-agent-credential") {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 		mu.Lock()
 		defer mu.Unlock()
 		if r.URL.Path == "/mcp" {
+			stats.mcpCredentials = append(stats.mcpCredentials, authorization)
 			var request struct {
 				ID     json.RawMessage `json:"id"`
 				Params struct {
@@ -141,6 +145,12 @@ func runTaskScenario(t *testing.T, input string, auto, terminal bool) (taskRunSt
 			return
 		}
 		switch {
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/agent-credential"):
+			stats.agentIssues++
+			_ = json.NewEncoder(w).Encode(map[string]string{"credential_id": "agent-id", "credential": "child-agent-credential"})
+		case r.Method == http.MethodDelete && strings.HasSuffix(r.URL.Path, "/agent-credential"):
+			stats.agentRevokes++
+			w.WriteHeader(http.StatusNoContent)
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/tasks/target/run-order":
 			stats.getCalls++
 			order := core.WorkOrder{ID: "target-implement-1", TaskID: "target", Stage: core.StageImplement, State: stats.states["target-implement-1"]}
@@ -224,13 +234,15 @@ func runSpecTaskScenario(t *testing.T, input string, terminal bool) (taskRunStat
 	stats := taskRunStats{states: map[string]core.WorkOrderState{"target-spec-1": core.WorkOrderQueued}}
 	sessions := map[string]string{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer user-credential" {
+		authorization := r.Header.Get("Authorization")
+		if authorization != "Bearer user-credential" && !(r.URL.Path == "/mcp" && authorization == "Bearer child-agent-credential") {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 		mu.Lock()
 		defer mu.Unlock()
 		if r.URL.Path == "/mcp" {
+			stats.mcpCredentials = append(stats.mcpCredentials, authorization)
 			var request struct {
 				ID     json.RawMessage `json:"id"`
 				Params struct {
@@ -259,6 +271,12 @@ func runSpecTaskScenario(t *testing.T, input string, terminal bool) (taskRunStat
 			return
 		}
 		switch {
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/agent-credential"):
+			stats.agentIssues++
+			_ = json.NewEncoder(w).Encode(map[string]string{"credential_id": "agent-id", "credential": "child-agent-credential"})
+		case r.Method == http.MethodDelete && strings.HasSuffix(r.URL.Path, "/agent-credential"):
+			stats.agentRevokes++
+			w.WriteHeader(http.StatusNoContent)
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/tasks/target/run-order":
 			stats.getCalls++
 			if stats.states["target-spec-1"] == core.WorkOrderCompleted {
@@ -314,7 +332,7 @@ func TestRunTaskExecutesConfirmedSpecAndStopsAtOperatorGate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stats.states["target-spec-1"] != core.WorkOrderCompleted || stats.getCalls != 2 || stats.claimCalls != 1 || stats.planSubmits != 1 || stats.releaseCalls != 0 {
+	if stats.states["target-spec-1"] != core.WorkOrderCompleted || stats.getCalls != 2 || stats.claimCalls != 1 || stats.planSubmits != 1 || stats.releaseCalls != 0 || stats.agentIssues != 1 || stats.agentRevokes != 1 || countValues(stats.mcpCredentials, "Bearer child-agent-credential") != 2 {
 		t.Fatalf("stats=%+v", stats)
 	}
 	if len(stats.progress) != 1 || stats.progress[0] != "conveyor run mode: confirmed-per-stage" {
@@ -764,7 +782,7 @@ func TestRunTaskExecutesConfirmedImplementReviewChain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stats.states["target-implement-1"] != core.WorkOrderSubmitted || stats.states["target-review-1"] != core.WorkOrderCompleted || stats.getCalls != 3 || stats.claimCalls != 2 || stats.reviewSubmits != 1 || stats.verdictSubmits != 1 || stats.releaseCalls != 0 {
+	if stats.states["target-implement-1"] != core.WorkOrderSubmitted || stats.states["target-review-1"] != core.WorkOrderCompleted || stats.getCalls != 3 || stats.claimCalls != 2 || stats.reviewSubmits != 1 || stats.verdictSubmits != 1 || stats.releaseCalls != 0 || stats.agentIssues != 2 || stats.agentRevokes != 2 || countValues(stats.mcpCredentials, "Bearer child-agent-credential") != 4 {
 		t.Fatalf("stats=%+v", stats)
 	}
 	if len(stats.progress) != 2 || stats.progress[0] != "conveyor run mode: confirmed-per-stage" || stats.progress[1] != "conveyor run mode: confirmed-per-stage" {
@@ -775,6 +793,16 @@ func TestRunTaskExecutesConfirmedImplementReviewChain(t *testing.T) {
 			t.Fatalf("output missing %q: %q", want, output)
 		}
 	}
+}
+
+func countValues(values []string, target string) int {
+	count := 0
+	for _, value := range values {
+		if value == target {
+			count++
+		}
+	}
+	return count
 }
 
 func TestRunTaskAdvancesAfterSubmittedChildrenLinger(t *testing.T) {

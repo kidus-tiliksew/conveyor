@@ -431,6 +431,80 @@ func (s *Server) authorizeTaskRunOrder(r *http.Request, sessionID string) (core.
 		order.ClaimantID == core.TaskRunClaimantID(credential.OwnerUserID) && order.SessionID == sessionID
 }
 
+type taskRunAgentCredentialRequest struct {
+	SessionID    string `json:"session_id"`
+	CredentialID string `json:"credential_id,omitempty"`
+}
+
+// issueTaskRunAgentCredential splits the human control plane from the exact
+// child execution principal after claim (req-security-boundaries REQ-1/AC-1.1,
+// REQ-2/AC-2.2; design-harness-execution; design-http-api).
+func (s *Server) issueTaskRunAgentCredential(w http.ResponseWriter, r *http.Request) {
+	if s.AgentCredentials == nil {
+		http.Error(w, "agent credential service unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	var request taskRunAgentCredentialRequest
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	order, ok := s.authorizeTaskRunOrder(r, request.SessionID)
+	if !ok || order.State != core.WorkOrderClaimed {
+		http.Error(w, store.ErrWorkOrderClaimLost.Error(), http.StatusConflict)
+		return
+	}
+	credential, _ := store.CredentialFromContext(r.Context())
+	workspaceID, _ := store.WorkspaceFromContext(r.Context())
+	label, err := store.RunAgentCredentialLabel(store.RunAgentCredentialBinding{WorkspaceID: workspaceID, WorkOrderID: order.ID, SessionID: request.SessionID})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	issued, err := s.AgentCredentials.IssueAgentCredential(r.Context(), credential.OwnerUserID, label)
+	if err != nil {
+		log.Printf("issue task run agent credential: %v", err)
+		http.Error(w, "agent credential issuance failed", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusCreated, issued)
+}
+
+func (s *Server) revokeTaskRunAgentCredential(w http.ResponseWriter, r *http.Request) {
+	if s.AgentCredentials == nil {
+		http.Error(w, "agent credential service unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	var request taskRunAgentCredentialRequest
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	// Revocation must remain available after the child has submitted or released
+	// the order and the live claim fields have been cleared. Ownership and the
+	// agent-kind predicate are enforced atomically by AgentCredentialStore.
+	if strings.TrimSpace(request.SessionID) == "" || strings.TrimSpace(request.CredentialID) == "" {
+		http.Error(w, "session_id and credential_id are required", http.StatusBadRequest)
+		return
+	}
+	credential, _ := store.CredentialFromContext(r.Context())
+	workspaceID, _ := store.WorkspaceFromContext(r.Context())
+	binding := store.RunAgentCredentialBinding{
+		WorkspaceID: workspaceID,
+		WorkOrderID: chi.URLParam(r, "order_id"),
+		SessionID:   request.SessionID,
+	}
+	if err := s.AgentCredentials.RevokeRunAgentCredential(r.Context(), credential.OwnerUserID, request.CredentialID, binding); errors.Is(err, store.ErrRunAgentCredentialBindingMismatch) {
+		http.Error(w, store.ErrRunAgentCredentialBindingMismatch.Error(), http.StatusConflict)
+		return
+	} else if err != nil && !errors.Is(err, store.ErrNotFound) {
+		log.Printf("revoke task run agent credential: %v", err)
+		http.Error(w, "agent credential revocation failed", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *Server) renewTaskRunOrder(w http.ResponseWriter, r *http.Request) {
 	if s.Workers == nil {
 		http.Error(w, "task run service unavailable", http.StatusServiceUnavailable)

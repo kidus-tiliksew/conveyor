@@ -407,6 +407,12 @@ type AuthenticatedCredential struct {
 	// Method distinguishes browser sessions from bearer credentials without
 	// changing the user actor or live capability model.
 	Method CredentialMethod
+	// Run bindings are populated only for short-lived conveyor-run agent
+	// credentials. They keep one child structurally confined to the exact
+	// workspace and already-claimed session for which its parent issued it.
+	RunWorkspaceID string
+	RunWorkOrderID string
+	RunSessionID   string
 	// SessionExpiresAt and SessionEstablishedByLink are populated only for
 	// browser sessions. They let the HTTP boundary refresh the opaque cookie and
 	// enforce link-authorized password recovery without widening bearer access.

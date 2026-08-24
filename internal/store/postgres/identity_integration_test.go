@@ -16,9 +16,16 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
 	"github.com/kidus-tiliksew/conveyor/internal/httpapi"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
+	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
+	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
+	"github.com/kidus-tiliksew/conveyor/internal/workorder"
+	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/riverdriver/riverpgxv5"
+	"github.com/riverqueue/river/rivermigrate"
 )
 
 func TestIdentityBootstrapAndPersonalAccessTokenLifecycleIntegration(t *testing.T) {
@@ -114,6 +121,12 @@ func TestIdentityBootstrapAndPersonalAccessTokenLifecycleIntegration(t *testing.
 	if resolved, err = st.VerifyCredential(t.Context(), agent.Value); err != nil || resolved.Kind != core.CredentialAgent {
 		t.Fatalf("agent credential changed by PAT revocation: credential=%+v err=%v", resolved, err)
 	}
+	if err = st.RevokeAgentCredential(t.Context(), principal.ID, agent.ID); err != nil {
+		t.Fatalf("revoke agent credential: %v", err)
+	}
+	if _, err = st.VerifyCredential(t.Context(), agent.Value); !errors.Is(err, ErrInvalidPersonalAccessToken) {
+		t.Fatalf("revoked agent verification err=%v, want invalid", err)
+	}
 	if revoked, err := st.RevokePersonalAccessToken(t.Context(), issued.ID); err != nil || revoked.RevokedAt == nil {
 		t.Fatalf("revoke token=%+v err=%v", revoked, err)
 	}
@@ -125,11 +138,55 @@ func TestIdentityBootstrapAndPersonalAccessTokenLifecycleIntegration(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
+	boundLabel, err := store.RunAgentCredentialLabel(store.RunAgentCredentialBinding{WorkspaceID: "demo", WorkOrderID: "order-1", SessionID: "session-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ownerBoundAgent, err := st.IssueAgentCredential(t.Context(), principal.ID, boundLabel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if credential, verifyErr := st.VerifyCredential(t.Context(), ownerBoundAgent.Value); verifyErr != nil || credential.RunWorkspaceID != "demo" || credential.RunWorkOrderID != "order-1" || credential.RunSessionID != "session-1" {
+		t.Fatalf("bound agent credential=%+v err=%v", credential, verifyErr)
+	}
+	revocationBinding := store.RunAgentCredentialBinding{WorkspaceID: "demo", WorkOrderID: "order-2", SessionID: "session-2"}
+	revocationLabel, err := store.RunAgentCredentialLabel(revocationBinding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	revocableAgent, err := st.IssueAgentCredential(t.Context(), principal.ID, revocationLabel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, mismatched := range map[string]store.RunAgentCredentialBinding{
+		"workspace":  {WorkspaceID: "other", WorkOrderID: "order-2", SessionID: "session-2"},
+		"work order": {WorkspaceID: "demo", WorkOrderID: "order-3", SessionID: "session-2"},
+		"session":    {WorkspaceID: "demo", WorkOrderID: "order-2", SessionID: "session-3"},
+	} {
+		if revokeErr := st.RevokeRunAgentCredential(t.Context(), principal.ID, revocableAgent.ID, mismatched); !errors.Is(revokeErr, store.ErrRunAgentCredentialBindingMismatch) {
+			t.Fatalf("%s mismatch revoke err=%v", name, revokeErr)
+		}
+		if credential, verifyErr := st.VerifyCredential(t.Context(), revocableAgent.Value); verifyErr != nil || credential.ID != revocableAgent.ID {
+			t.Fatalf("%s mismatch changed credential=%+v err=%v", name, credential, verifyErr)
+		}
+	}
+	if err = st.RevokeRunAgentCredential(t.Context(), principal.ID, revocableAgent.ID, revocationBinding); err != nil {
+		t.Fatalf("revoke bound agent credential: %v", err)
+	}
+	if err = st.RevokeRunAgentCredential(t.Context(), principal.ID, revocableAgent.ID, revocationBinding); err != nil {
+		t.Fatalf("repeat bound agent revocation: %v", err)
+	}
+	if _, err = st.VerifyCredential(t.Context(), revocableAgent.Value); !errors.Is(err, ErrInvalidPersonalAccessToken) {
+		t.Fatalf("revoked bound agent verification err=%v, want invalid", err)
+	}
 	if user, err := st.DeactivateIdentityUser(t.Context(), principal.ID); err != nil || user.Status != "deactivated" {
 		t.Fatalf("deactivate user=%+v err=%v", user, err)
 	}
 	if _, err := st.VerifyPersonalAccessToken(t.Context(), second.Value); !errors.Is(err, ErrInvalidPersonalAccessToken) {
 		t.Fatalf("deactivated-user verification err=%v, want invalid", err)
+	}
+	if _, err := st.VerifyCredential(t.Context(), ownerBoundAgent.Value); !errors.Is(err, ErrInvalidPersonalAccessToken) {
+		t.Fatalf("deactivated-owner agent verification err=%v, want invalid", err)
 	}
 	if _, err := st.IssuePersonalAccessToken(t.Context(), principal.ID, "forbidden"); err == nil {
 		t.Fatal("issued token for deactivated user")
@@ -402,6 +459,181 @@ func TestHTTPMutationDerivesLegacyUserAndRejectsAgentCredentialIntegration(t *te
 	}
 	if !found {
 		t.Fatalf("credential-derived user actor missing from events: %+v", events)
+	}
+}
+
+func TestIssuedRunAgentCredentialCompletesMCPStageLifecyclesAndRejectsOperatorActsIntegration(t *testing.T) {
+	st := newIdentityIntegrationStore(t, 0)
+	legacy := "run-agent-lifecycle-operator"
+	if _, err := st.BootstrapIdentity(t.Context(), config.FirstOperatorIdentity{
+		OrganizationName: "Run Agent Org", Email: "owner@example.test", DisplayName: "Owner",
+	}, legacy); err != nil {
+		t.Fatal(err)
+	}
+	owner, err := st.VerifyPersonalAccessToken(t.Context(), legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace := "run-agent-lifecycle-" + core.NewTaskID()
+	cfg := isolationConfig(workspace)
+	for stage, route := range cfg.Routing.Stages {
+		if stage == string(core.StageSpec) || stage == string(core.StageImplement) || stage == string(core.StageReview) {
+			route.Execution = config.ExecutionMCP
+			cfg.Routing.Stages[stage] = route
+		}
+	}
+	operatorCtx := store.WithCredential(t.Context(), core.AuthenticatedCredential{
+		ID: "deployment", OwnerUserID: owner.ID, Kind: core.CredentialUser, Scope: core.CredentialScopeOperator,
+	})
+	operatorCtx = store.WithActor(operatorCtx, store.Actor{ID: store.UserActorID(owner.ID), Role: core.ActorUser})
+	if _, err = st.CreateWorkspace(operatorCtx, workspace, workspace, cfg); err != nil {
+		t.Fatal(err)
+	}
+	ctx := store.WithWorkspace(operatorCtx, workspace)
+	provider := func(context.Context) (*config.Config, error) { return cfg, nil }
+	dispatcher := dispatch.New(st, cfg, nil)
+	dispatcher.DisableMemoryQueueForTest()
+	orders := &workorder.Service{Store: st, Dispatcher: dispatcher, ConfigProvider: provider}
+	workers := &workerservice.Service{Store: st, WorkOrders: orders, ConfigProvider: provider}
+	server := httpapi.NewServer(st)
+	server.Workspace, server.ConfigProvider, server.WorkOrders, server.Workers = workspace, provider, orders, workers
+	handler := server.Handler()
+
+	call := func(token, method, path, body string) *httptest.ResponseRecorder {
+		t.Helper()
+		request := httptest.NewRequest(method, path, strings.NewReader(body))
+		request.Header.Set("Authorization", "Bearer "+token)
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
+	}
+	type mcpEnvelope struct {
+		Result struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+			IsError bool `json:"isError"`
+		} `json:"result"`
+	}
+	mcpCall := func(token, name string, args map[string]any) mcpEnvelope {
+		t.Helper()
+		payload, marshalErr := json.Marshal(map[string]any{
+			"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+			"params": map[string]any{"name": name, "arguments": args},
+		})
+		if marshalErr != nil {
+			t.Fatal(marshalErr)
+		}
+		response := call(token, http.MethodPost, "/mcp", string(payload))
+		if response.Code != http.StatusOK {
+			t.Fatalf("MCP %s status=%d body=%s", name, response.Code, response.Body.String())
+		}
+		var envelope mcpEnvelope
+		if unmarshalErr := json.Unmarshal(response.Body.Bytes(), &envelope); unmarshalErr != nil {
+			t.Fatalf("decode MCP %s: %v body=%s", name, unmarshalErr, response.Body.String())
+		}
+		return envelope
+	}
+	createOrder := func(stage core.Stage) (core.Task, core.WorkOrder) {
+		t.Helper()
+		taskID := "run-agent-" + string(stage) + "-" + core.NewTaskID()
+		task := core.Task{ID: taskID, Workspace: workspace, Source: "test", Title: "Run agent " + string(stage), Repo: "repo", BaseBranch: "main", Branch: "conveyor/" + taskID, State: core.TaskRunning, NextStage: stage, PolicyVersion: 1, CreatedAt: time.Now().UTC()}
+		if createErr := st.CreateTask(ctx, task); createErr != nil {
+			t.Fatal(createErr)
+		}
+		job := core.Job{ID: taskID + "-" + string(stage) + "-1", TaskID: taskID, Stage: stage, State: core.JobPending}
+		if createErr := st.CreateJob(ctx, job); createErr != nil {
+			t.Fatal(createErr)
+		}
+		order := core.WorkOrder{ID: job.ID, TaskID: taskID, JobID: job.ID, Stage: stage, State: core.WorkOrderQueued, QueueEnteredAt: time.Now().UTC(), QueueDeadline: time.Now().Add(time.Hour), CreatedAt: time.Now().UTC()}
+		if stage == core.StageReview {
+			order.ReviewRound, order.ReviewSeat = 1, 1
+			order.ServedRequirementSnapshot = []core.ServedRequirementContext{}
+			order.GovernanceSnapshot = &core.GovernanceSnapshot{Designs: []core.GovernanceDesignContext{}, Decisions: []core.Decision{}, PendingDesignProposals: []core.PendingSystemDesignProposal{}}
+		}
+		if createErr := storetest.For(st).CreateWorkOrder(ctx, order); createErr != nil {
+			t.Fatal(createErr)
+		}
+		return task, order
+	}
+	claimAndIssue := func(task core.Task, order core.WorkOrder) (string, string) {
+		t.Helper()
+		sessionID := "session-" + string(order.Stage) + "-" + core.NewTaskID()
+		basePath := "/v1/tasks/" + task.ID + "/run-orders/" + order.ID
+		claimBody, _ := json.Marshal(map[string]string{"session_id": sessionID, "client_token": "client-" + sessionID, "agent": "codex", "model": "integration"})
+		claimed := call(legacy, http.MethodPost, basePath+"/claim?workspace_id="+workspace, string(claimBody))
+		if claimed.Code != http.StatusOK {
+			t.Fatalf("claim %s status=%d body=%s", order.Stage, claimed.Code, claimed.Body.String())
+		}
+		issueBody, _ := json.Marshal(map[string]string{"session_id": sessionID})
+		issuedResponse := call(legacy, http.MethodPost, basePath+"/agent-credential?workspace_id="+workspace, string(issueBody))
+		if issuedResponse.Code != http.StatusCreated {
+			t.Fatalf("issue %s status=%d body=%s", order.Stage, issuedResponse.Code, issuedResponse.Body.String())
+		}
+		var issued store.IssuedAgentCredential
+		if decodeErr := json.Unmarshal(issuedResponse.Body.Bytes(), &issued); decodeErr != nil || issued.ID == "" || issued.Value == "" {
+			t.Fatalf("decode issued %s credential=%+v err=%v", order.Stage, issued, decodeErr)
+		}
+		verified, verifyErr := st.VerifyCredential(t.Context(), issued.Value)
+		if verifyErr != nil || verified.Kind != core.CredentialAgent || verified.OwnerUserID != owner.ID || verified.RunWorkspaceID != workspace || verified.RunWorkOrderID != order.ID || verified.RunSessionID != sessionID {
+			t.Fatalf("verified %s credential=%+v err=%v", order.Stage, verified, verifyErr)
+		}
+		return sessionID, issued.Value
+	}
+	baseArgs := func(order core.WorkOrder, sessionID string) map[string]any {
+		return map[string]any{"workspace_id": workspace, "work_order_id": order.ID, "session_id": sessionID}
+	}
+
+	specTask, specOrder := createOrder(core.StageSpec)
+	specSession, specAgent := claimAndIssue(specTask, specOrder)
+	specArgs := baseArgs(specOrder, specSession)
+	specArgs["markdown"] = "## Approach\nExercise the issued credential.\n\n## Files touched\n- internal/httpapi/mcp.go\n\n## Ordering\n1. Submit.\n\n## Risks\n- Authorization drift.\n\n## Done criteria\n- The issued credential submits the plan."
+	specArgs["decomposition"] = []any{}
+	if result := mcpCall(specAgent, "submit_plan", specArgs); result.Result.IsError {
+		t.Fatalf("issued spec credential failed: %+v", result)
+	}
+	if submitted, getErr := st.GetWorkOrder(ctx, specOrder.ID); getErr != nil || submitted.State != core.WorkOrderCompleted {
+		t.Fatalf("submitted spec order=%+v err=%v", submitted, getErr)
+	}
+
+	implementTask, implementOrder := createOrder(core.StageImplement)
+	implementSession, implementAgent := claimAndIssue(implementTask, implementOrder)
+	if result := mcpCall(implementAgent, "submit_for_review", baseArgs(implementOrder, implementSession)); result.Result.IsError {
+		t.Fatalf("issued implement credential failed: %+v", result)
+	}
+	if submitted, getErr := st.GetWorkOrder(ctx, implementOrder.ID); getErr != nil || submitted.State != core.WorkOrderSubmitted {
+		t.Fatalf("submitted implement order=%+v err=%v", submitted, getErr)
+	}
+
+	reviewTask, reviewOrder := createOrder(core.StageReview)
+	reviewSession, reviewAgent := claimAndIssue(reviewTask, reviewOrder)
+	reviewArgs := baseArgs(reviewOrder, reviewSession)
+	reviewArgs["verdict"], reviewArgs["reason_code"], reviewArgs["summary"], reviewArgs["feedback"] = "changes_requested", "coverage", "Issued credential completed review", "Exercise the correction bounce without an external forge."
+	reviewArgs["requirement_citations"] = map[string]any{"applicable": false, "cited_ids": []any{}, "unknown_ids": []any{}, "unserved_ids": []any{}, "conflicts": []any{}}
+	reviewArgs["done_criteria_coverage"] = map[string]any{"applicable": false, "summary": "No approved plan", "satisfied": []any{}, "unsatisfied": []any{}, "unverified": []any{}, "conflicts": []any{}}
+	reviewArgs["governance_assessment"] = map[string]any{"design_applicable": false, "decision_citable": false, "cited_ids": []any{}, "unknown_ids": []any{}, "ungoverned_ids": []any{}, "superseded_ids": []any{}, "conflicts": []any{}}
+	if result := mcpCall(reviewAgent, "submit_review_verdict", reviewArgs); result.Result.IsError {
+		t.Fatalf("issued review credential failed: %+v", result)
+	}
+	if submitted, getErr := st.GetWorkOrder(ctx, reviewOrder.ID); getErr != nil || submitted.State != core.WorkOrderCompleted {
+		t.Fatalf("submitted review order=%+v err=%v", submitted, getErr)
+	}
+
+	for _, route := range []struct{ method, path, body string }{
+		{http.MethodPost, "/v1/requirements/missing/versions/1/confirm?workspace_id=" + workspace, "{}"},
+		{http.MethodPost, "/v1/workspaces/" + workspace + "/members", `{"email":"denied@example.test","role":"contributor"}`},
+		{http.MethodPost, "/v1/tokens", `{"label":"denied"}`},
+	} {
+		if response := call(reviewAgent, route.method, route.path, route.body); response.Code != http.StatusUnauthorized {
+			t.Fatalf("agent operator route %s status=%d body=%s", route.path, response.Code, response.Body.String())
+		}
+	}
+	for _, tool := range []string{"create_task", "set_assignee", "redispatch_work_order", "report_continuation"} {
+		result := mcpCall(reviewAgent, tool, map[string]any{"workspace_id": workspace})
+		if !result.Result.IsError || len(result.Result.Content) == 0 || !strings.Contains(result.Result.Content[0].Text, "operator-scoped user credential") {
+			t.Fatalf("human-reserved MCP tool %s result=%+v", tool, result)
+		}
 	}
 }
 
@@ -949,5 +1181,18 @@ func newIdentityIntegrationStore(t *testing.T, maxVersion int) *Store {
 	if err := migrateControlPlaneToVersion(t.Context(), pool, maxVersion); err != nil {
 		t.Fatalf("migrate identity fixture to %d: %v", maxVersion, err)
 	}
-	return &Store{pool: pool, queries: db.New(pool)}
+	if maxVersion == 0 {
+		migrator, migrateErr := rivermigrate.New(riverpgxv5.New(pool), nil)
+		if migrateErr != nil {
+			t.Fatal(migrateErr)
+		}
+		if _, migrateErr = migrator.Migrate(t.Context(), rivermigrate.DirectionUp, nil); migrateErr != nil {
+			t.Fatal(migrateErr)
+		}
+	}
+	riverClient, err := river.NewClient(riverpgxv5.New(pool), &river.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &Store{pool: pool, queries: db.New(pool), river: riverClient}
 }

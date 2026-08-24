@@ -813,6 +813,24 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 	defer cancelSetup()
 	renewal := startPreStartClaimRenewal(setupCtx, cancelSetup, c, credential, item, sessionID, leaseExpiresAt, activitySnapshot)
 	defer renewal.Stop()
+	childCredential := credential
+	if item.Dispatch == "run" {
+		issued, issueErr := c.issueTaskRunAgentCredentialContext(setupCtx, credential, item, sessionID)
+		if issueErr != nil {
+			releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_ = c.releaseDispatchOrderContext(releaseCtx, credential, item, core.WorkOrderRelease{SessionID: sessionID, Outcome: core.WorkOrderOutcomeReleased, Reason: "issue child agent credential failed", Cause: core.WorkOrderReleaseCauseSessionExit})
+			cancel()
+			return fmt.Errorf("issue child agent credential: %w", issueErr)
+		}
+		childCredential = issued.Value
+		defer func() {
+			revokeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if revokeErr := c.revokeTaskRunAgentCredentialContext(revokeCtx, credential, item, sessionID, issued.ID); revokeErr != nil {
+				_, _ = fmt.Fprintf(stderr, "warning: revoke child agent credential: %v\n", revokeErr)
+			}
+		}()
+	}
 	var redactedStdout, redactedStderr *redact.Writer
 	var failureTail *boundedTailWriter
 	var transcriptSpool *boundedTranscriptSpool
@@ -930,7 +948,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 			}
 		}()
 	}
-	mcpConfig, err := prepareMCPConfig(directory, c.base, credential, item.Harness.MCPTransport)
+	mcpConfig, err := prepareMCPConfig(directory, c.base, childCredential, item.Harness.MCPTransport)
 	if err != nil {
 		_ = release(core.WorkOrderOutcomeReleased, "prepare MCP config failed", nil)
 		return err
@@ -973,7 +991,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 		childAddress = strings.TrimRight(c.base, "/") + "/mcp"
 	}
 	childValues := map[string]string{
-		"CONVEYOR_API_TOKEN":     credential,
+		"CONVEYOR_API_TOKEN":     childCredential,
 		"CONVEYOR_ADDR":          childAddress,
 		"CONVEYOR_WORKSPACE":     c.workspace,
 		"CONVEYOR_WORK_ORDER_ID": item.Order.ID,
@@ -1035,7 +1053,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 			return err
 		}
 	}
-	outputRedactor := redact.New([]string{credential, childAddress, sessionID, clientToken})
+	outputRedactor := redact.New([]string{credential, childCredential, childAddress, sessionID, clientToken})
 	failureTail = &boundedTailWriter{limit: workerservice.FailureDetailLimit}
 	var usageDestination io.Writer
 	if codexUsage != nil {

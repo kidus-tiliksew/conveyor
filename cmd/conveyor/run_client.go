@@ -90,6 +90,24 @@ func (c *client) claimTaskRunOrderContext(ctx context.Context, credential string
 	return result, err
 }
 
+type issuedTaskRunAgentCredential struct {
+	ID    string `json:"credential_id"`
+	Value string `json:"credential"`
+}
+
+func (c *client) issueTaskRunAgentCredentialContext(ctx context.Context, credential string, item workerservice.DispatchOrder, sessionID string) (issuedTaskRunAgentCredential, error) {
+	var result issuedTaskRunAgentCredential
+	payload, _ := json.Marshal(map[string]string{"session_id": sessionID})
+	err := c.workerDoContext(ctx, http.MethodPost, taskRunOrderPath(item, "/agent-credential"), payload, &result, credential)
+	return result, err
+}
+
+func (c *client) revokeTaskRunAgentCredentialContext(ctx context.Context, credential string, item workerservice.DispatchOrder, sessionID, credentialID string) error {
+	payload, _ := json.Marshal(map[string]string{"session_id": sessionID, "credential_id": credentialID})
+	var result map[string]any
+	return c.workerDoContext(ctx, http.MethodDelete, taskRunOrderPath(item, "/agent-credential"), payload, &result, credential)
+}
+
 func (c *client) renewTaskRunOrderContext(ctx context.Context, credential string, item workerservice.DispatchOrder, sessionID string, snapshot *core.WorkOrderActivitySnapshotInput) (core.WorkOrder, error) {
 	var result core.WorkOrder
 	payload, _ := json.Marshal(workerRenewRequest{SessionID: sessionID, ActivitySnapshot: snapshot})
