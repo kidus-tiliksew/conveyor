@@ -333,8 +333,10 @@ test('viewer can read requirement detail without the Attach context control', as
 
   await page.goto('/requirements')
   await expect(page.getByRole('heading', { level: 1, name: 'Requirements' })).toBeVisible()
-  await expect(page.getByText('Retry behavior', { exact: true }).first()).toBeVisible()
-  await expect(page.getByText('Attach context', { exact: true })).toHaveCount(0)
+  const canvas = page.getByRole('region', { name: 'Requirement document' })
+  await expect(canvas.getByRole('heading', { name: 'Retry behavior' })).toBeVisible()
+  await expect(page.getByText('Loading requirement…')).toHaveCount(0)
+  await expect(canvas.getByText('Attach context', { exact: true })).toHaveCount(0)
 })
 
 test('requirements resolves attributed drift inline and refreshes its pending amendment', async ({ page }) => {
