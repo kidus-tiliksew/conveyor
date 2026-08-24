@@ -28,13 +28,11 @@ export const sessionStatusLabels: Record<PlanningSession['status'], string> = {
 
 export function PlanningChat({
   summary,
-  token,
   workspace,
   variant = 'page',
   onFinalized,
 }: {
   summary: PlanningSession
-  token: string
   workspace: string
   /** `sidebar` drops the page chrome the document canvas already provides. */
   variant?: 'page' | 'sidebar'
@@ -65,7 +63,6 @@ export function PlanningChat({
   const { data: allArtifacts = [] } = useQuery({
     queryKey: ['artifacts', workspace],
     queryFn: fetchArtifacts,
-    enabled: Boolean(token),
   })
   const sessionArtifacts = (Array.isArray(allArtifacts) ? allArtifacts : [])
     .filter(
@@ -226,7 +223,7 @@ export function PlanningChat({
             size="sm"
             aria-label="Abandon"
             title="Abandon this planning session"
-            disabled={!token || abandon.isPending}
+            disabled={abandon.isPending}
             onClick={() => setShowAbandon(true)}
           >
             <Square /> {sidebar ? '' : 'Abandon'}
@@ -313,7 +310,7 @@ export function PlanningChat({
           className={`shrink-0 border-t border-border bg-background ${gutter} py-4`}
           onSubmit={(event) => {
             event.preventDefault()
-            if (draft.trim() && token && !send.isPending) send.mutate(draft.trim())
+            if (draft.trim() && !send.isPending) send.mutate(draft.trim())
           }}
         >
           <div
@@ -334,21 +331,19 @@ export function PlanningChat({
               onKeyDown={(event) => {
                 if (event.key === 'Enter' && !event.shiftKey) {
                   event.preventDefault()
-                  if (draft.trim() && token && !send.isPending) send.mutate(draft.trim())
+                  if (draft.trim() && !send.isPending) send.mutate(draft.trim())
                 }
               }}
               placeholder="Describe the outcome, constraints, and why it matters…"
               className="w-full resize-none bg-transparent px-2 py-1 text-sm leading-6 outline-none placeholder:text-faint"
             />
             <div className="flex items-center justify-between gap-3">
-              <label
-                className={`inline-flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-muted hover:bg-surface ${!token ? 'pointer-events-none opacity-40' : ''}`}
-              >
+              <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-muted hover:bg-surface">
                 <FileUp className="size-4" /> {upload.isPending ? 'Uploading…' : 'Attach'}
                 <input
                   className="hidden"
                   type="file"
-                  disabled={!token || upload.isPending}
+                  disabled={upload.isPending}
                   onChange={(event) => {
                     const file = event.target.files?.[0]
                     if (file) upload.mutate(file)
@@ -356,7 +351,7 @@ export function PlanningChat({
                   }}
                 />
               </label>
-              <Button type="submit" size="sm" disabled={!token || !draft.trim() || send.isPending}>
+              <Button type="submit" size="sm" disabled={!draft.trim() || send.isPending}>
                 <Send /> Send
               </Button>
             </div>
@@ -365,9 +360,6 @@ export function PlanningChat({
             <p className={`mt-2 text-xs text-failure ${sidebar ? '' : 'mx-auto max-w-3xl'}`}>
               {errorMessage(upload.error, 'Could not attach that file.')}
             </p>
-          )}
-          {!token && (
-            <p className={`mt-2 text-xs text-attention ${sidebar ? '' : 'mx-auto max-w-3xl'}`}>Sign in to plan.</p>
           )}
         </form>
       )}
@@ -399,7 +391,7 @@ export function PlanningChat({
               <Button variant="ghost" disabled={abandon.isPending} onClick={() => setShowAbandon(false)}>
                 Keep session
               </Button>
-              <Button variant="destructive" disabled={!token || abandon.isPending} onClick={() => abandon.mutate()}>
+              <Button variant="destructive" disabled={abandon.isPending} onClick={() => abandon.mutate()}>
                 {abandon.isPending ? 'Abandoning…' : 'Abandon session'}
               </Button>
             </div>

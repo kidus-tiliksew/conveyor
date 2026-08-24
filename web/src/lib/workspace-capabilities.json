@@ -1,0 +1,26 @@
+{
+  "viewer": ["view_workspace"],
+  "executor": ["view_workspace", "claim_work", "request_changes"],
+  "contributor": ["view_workspace", "claim_work", "request_changes", "propose_documents"],
+  "maintainer": [
+    "view_workspace",
+    "claim_work",
+    "request_changes",
+    "propose_documents",
+    "set_assignee",
+    "operate_gates",
+    "recover_work"
+  ],
+  "operator": [
+    "view_workspace",
+    "claim_work",
+    "request_changes",
+    "propose_documents",
+    "confirm_documents",
+    "manage_membership",
+    "set_assignee",
+    "operate_gates",
+    "recover_work",
+    "manage_workspace"
+  ]
+}

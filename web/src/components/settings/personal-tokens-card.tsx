@@ -1,7 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { KeyRound, Plus } from 'lucide-react'
-import { useDashboardSession } from '../app-shell'
 import { Badge } from '../ui/badge'
 import { Button } from '../ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
@@ -26,7 +25,6 @@ const deploymentRevokeConfirmation = 'REVOKE DEPLOYMENT CREDENTIAL'
  * so leaving this screen is the same as losing it.
  */
 export function PersonalTokensCard() {
-  const token = useDashboardSession()
   const queryClient = useQueryClient()
   const [label, setLabel] = useState('')
   const [issuedValue, setIssuedValue] = useState('')
@@ -34,16 +32,15 @@ export function PersonalTokensCard() {
   const [deploymentRevokeText, setDeploymentRevokeText] = useState('')
 
   const tokens = useQuery({
-    queryKey: ['personal-access-tokens', token],
+    queryKey: ['personal-access-tokens'],
     queryFn: () => fetchPersonalAccessTokens(),
-    enabled: Boolean(token),
   })
   const issue = useMutation({
     mutationFn: () => issuePersonalAccessToken(label.trim()),
     onSuccess: async (created) => {
       setIssuedValue(created.value)
       setLabel('')
-      await queryClient.invalidateQueries({ queryKey: ['personal-access-tokens', token] })
+      await queryClient.invalidateQueries({ queryKey: ['personal-access-tokens'] })
     },
   })
   const revoke = useMutation({
@@ -51,7 +48,7 @@ export function PersonalTokensCard() {
     onSuccess: async () => {
       setDeploymentRevokeID('')
       setDeploymentRevokeText('')
-      await queryClient.invalidateQueries({ queryKey: ['personal-access-tokens', token] })
+      await queryClient.invalidateQueries({ queryKey: ['personal-access-tokens'] })
     },
   })
 
@@ -63,8 +60,6 @@ export function PersonalTokensCard() {
     setDeploymentRevokeID('')
     setDeploymentRevokeText('')
   }
-
-  if (!token) return null
 
   return (
     <Card className="mt-4">

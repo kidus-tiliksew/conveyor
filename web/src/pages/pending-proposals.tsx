@@ -1,12 +1,7 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link, useSearch } from '@tanstack/react-router'
 import { Check, Clock, FileDiff, X } from 'lucide-react'
-import {
-  useDashboardSession,
-  usePendingProposals,
-  useWorkspaceCapability,
-  useWorkspaceSelection,
-} from '../components/app-shell'
+import { usePendingProposals, useWorkspaceCapability, useWorkspaceSelection } from '../components/app-shell'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import {
@@ -28,7 +23,6 @@ const tierLabels: Record<PendingProposal['tier'], string> = {
 }
 
 export function PendingProposalsPage() {
-  const token = useDashboardSession()
   const canConfirmDocuments = useWorkspaceCapability('confirm_documents')
   const canOperateGates = useWorkspaceCapability('operate_gates')
   const { workspace } = useWorkspaceSelection()
@@ -169,7 +163,7 @@ export function PendingProposalsPage() {
                     {canConfirm && (
                       <Button
                         size="sm"
-                        disabled={!token || resolve.isPending}
+                        disabled={resolve.isPending}
                         onClick={() => resolve.mutate({ proposal, action: 'confirm' })}
                       >
                         <Check />
@@ -182,7 +176,7 @@ export function PendingProposalsPage() {
                       <Button
                         size="sm"
                         variant="destructive"
-                        disabled={!token || resolve.isPending}
+                        disabled={resolve.isPending}
                         onClick={() => resolve.mutate({ proposal, action: 'dismiss' })}
                       >
                         <X />

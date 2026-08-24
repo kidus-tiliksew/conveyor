@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { MessageSquarePlus } from 'lucide-react'
-import { useDashboardSession, useWorkspaceCapability, useWorkspaceSelection } from '../components/app-shell'
+import { useWorkspaceCapability, useWorkspaceSelection } from '../components/app-shell'
 import { PlanningChat, relativeDate, sessionStatusLabels } from '../components/planning/planning-chat'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
@@ -16,7 +16,6 @@ import type { PlanningSessionGoal } from '../lib/types'
 const standaloneGoals: PlanningSessionGoal[] = ['open', 'bundle']
 
 export function PlanningPage() {
-  const token = useDashboardSession()
   const { workspace } = useWorkspaceSelection()
   const canPropose = useWorkspaceCapability('propose_documents')
   const canConfirm = useWorkspaceCapability('confirm_documents')
@@ -88,7 +87,7 @@ export function PlanningPage() {
             className="flex flex-wrap items-center gap-2"
             onSubmit={(event) => {
               event.preventDefault()
-              if (token) create.mutate()
+              create.mutate()
             }}
           >
             <Select
@@ -103,7 +102,7 @@ export function PlanningPage() {
                 </option>
               ))}
             </Select>
-            <Button type="submit" disabled={!token || create.isPending}>
+            <Button type="submit" disabled={create.isPending}>
               <MessageSquarePlus /> {create.isPending ? 'Starting…' : 'New session'}
             </Button>
           </form>
@@ -159,7 +158,6 @@ export function PlanningPage() {
               <PlanningChat
                 key={`${workspace}:${selected.id}`}
                 summary={selected}
-                token={token}
                 workspace={workspace}
                 onFinalized={() => {
                   void client.invalidateQueries({ queryKey: ['planning-sessions', workspace] })
@@ -185,15 +183,12 @@ export function PlanningPage() {
                       <div className="flex gap-2">
                         <Button
                           variant="secondary"
-                          disabled={!token || decideBundle.isPending}
+                          disabled={decideBundle.isPending}
                           onClick={() => decideBundle.mutate('reject')}
                         >
                           Reject
                         </Button>
-                        <Button
-                          disabled={!token || decideBundle.isPending}
-                          onClick={() => decideBundle.mutate('approve')}
-                        >
+                        <Button disabled={decideBundle.isPending} onClick={() => decideBundle.mutate('approve')}>
                           Approve task set
                         </Button>
                       </div>

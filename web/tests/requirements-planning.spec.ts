@@ -318,6 +318,25 @@ test('requirements renders a document tree, one attention surface, and confirms 
   await expect(page).toHaveURL(/\/requirements/)
 })
 
+test('viewer can read requirement detail without the Attach context control', async ({ page }) => {
+  await initShell(page)
+  await page.route('**/v1/**', async (route) => {
+    const path = new URL(route.request().url()).pathname
+    if (path === '/v1/me') return route.fulfill({ json: { id: 'usr_viewer', role: 'viewer' } })
+    const shell = shellResponse(route)
+    if (shell) return await shell
+    if (path === '/v1/requirements') return route.fulfill({ json: [summarizeRequirement(requirement)] })
+    if (path === '/v1/requirements/req-retries') return route.fulfill({ json: requirement })
+    if (path === '/v1/requirements/req-retries/versions') return route.fulfill({ json: requirement.pending_versions })
+    return route.fulfill({ json: [] })
+  })
+
+  await page.goto('/requirements')
+  await expect(page.getByRole('heading', { level: 1, name: 'Requirements' })).toBeVisible()
+  await expect(page.getByText('Retry behavior', { exact: true }).first()).toBeVisible()
+  await expect(page.getByText('Attach context', { exact: true })).toHaveCount(0)
+})
+
 test('requirements resolves attributed drift inline and refreshes its pending amendment', async ({ page }) => {
   await initShell(page)
   const confirmedVersion = {

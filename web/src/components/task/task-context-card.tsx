@@ -4,7 +4,7 @@ import { Check, X } from 'lucide-react'
 import { resolveTaskContextProposal } from '../../lib/api'
 import { errorMessage } from '../../lib/errors'
 import type { TaskContext, TaskContextProposal } from '../../lib/types'
-import { useDashboardSession, useWorkspaceCapability, useWorkspaceSelection } from '../app-shell'
+import { useWorkspaceCapability, useWorkspaceSelection } from '../app-shell'
 import { Badge } from '../ui/badge'
 import { Button } from '../ui/button'
 
@@ -55,7 +55,6 @@ export function TaskContextCard({ taskId, context }: { taskId: string; context?:
 }
 
 function SuggestedContextCard({ taskId, proposals }: { taskId: string; proposals: TaskContextProposal[] }) {
-  const token = useDashboardSession()
   const canOperate = useWorkspaceCapability('operate_gates')
   const { workspace } = useWorkspaceSelection()
   const client = useQueryClient()
@@ -119,7 +118,7 @@ function SuggestedContextCard({ taskId, proposals }: { taskId: string; proposals
                 <div className="mt-3 flex flex-wrap gap-2">
                   <Button
                     size="sm"
-                    disabled={!token || resolve.isPending}
+                    disabled={resolve.isPending}
                     onClick={() => resolve.mutate({ proposal, action: 'confirm' })}
                   >
                     <Check />
@@ -130,7 +129,7 @@ function SuggestedContextCard({ taskId, proposals }: { taskId: string; proposals
                   <Button
                     size="sm"
                     variant="destructive"
-                    disabled={!token || resolve.isPending}
+                    disabled={resolve.isPending}
                     onClick={() => resolve.mutate({ proposal, action: 'dismiss' })}
                   >
                     <X />

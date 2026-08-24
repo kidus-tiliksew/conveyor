@@ -2272,6 +2272,23 @@ test('ordinary recovery permits an empty operator direction', async ({ page }) =
   expect(JSON.parse(recoveryRequest)).not.toHaveProperty('direction')
 })
 
+test('recovery authorization refusal renders the API message instead of its JSON envelope', async ({ page }) => {
+  await page.route('**/v1/work-orders/*/recover*', (route) =>
+    route.fulfill({
+      status: 404,
+      json: {
+        error: 'workspace_not_found',
+        message: 'This workspace is unavailable or you cannot recover work in it.',
+      },
+    }),
+  )
+
+  await page.goto('/tasks/recovery/full')
+  await page.getByRole('button', { name: 'Recover work order' }).click()
+  await expect(page.getByText(/This workspace is unavailable or you cannot recover work in it\./)).toBeVisible()
+  await expect(page.getByText(/\{"error":"workspace_not_found"/)).toHaveCount(0)
+})
+
 test('checkpoint recovery requires and submits operator direction', async ({ page }) => {
   let recoveryRequest = ''
   await page.route('**/v1/work-orders/*/recover*', async (route) => {
@@ -4614,6 +4631,19 @@ test("a task's own System Design proposal is confirmable from its detail and cle
       name: 'Confirm version 2',
     }),
   ).toBeVisible()
+})
+
+test('maintainer sees a pending task System Design proposal without an enabled Confirm action', async ({ page }) => {
+  await page.route('**/v1/me**', (route) => route.fulfill({ json: { id: 'usr_maintainer', role: 'maintainer' } }))
+  await page.route('**/v1/system-designs**', (route) =>
+    route.fulfill({ json: designCollection('design-proposal', false) }),
+  )
+
+  await page.goto('/tasks/design-proposal/full')
+  const card = page.getByRole('region', { name: 'Review is waiting on a document decision' })
+  await expect(card).toContainText('System Design update proposed')
+  await expect(card.getByRole('button', { name: 'Confirm version 2' })).toBeDisabled()
+  await expect(card.getByText('Document confirmation capability is required.')).toBeVisible()
 })
 
 test('task detail renders no proposal card for a pending version another task raised', async ({ page }) => {

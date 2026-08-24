@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { createWorkspace } from '../../lib/api'
 import type { WorkspaceRecord } from '../../lib/types'
-import { useDashboardSession, useWorkspaceSelection } from '../app-shell'
+import { useWorkspaceSelection } from '../app-shell'
 import { Button } from '../ui/button'
 import { Input } from '../ui/input'
 
@@ -27,7 +27,6 @@ export function CreateWorkspaceForm({
   onCreated?: (created: WorkspaceRecord) => void
   onCancel?: () => void
 }) {
-  const token = useDashboardSession()
   const queryClient = useQueryClient()
   const { setWorkspace } = useWorkspaceSelection()
   const [name, setName] = useState('')
@@ -40,14 +39,6 @@ export function CreateWorkspaceForm({
       onCreated?.(created)
     },
   })
-
-  if (!token) {
-    return (
-      <p className="rounded-md border border-border p-3 text-sm text-muted">
-        Sign in with an account that can manage workspaces to create one.
-      </p>
-    )
-  }
 
   return (
     <div className="space-y-4">

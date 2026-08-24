@@ -3,7 +3,6 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { OctagonX } from 'lucide-react'
 import { preemptWorkOrder } from '../../lib/api'
 import type { ActivityItem, WorkOrder } from '../../lib/types'
-import { useDashboardSession } from '../app-shell'
 import { Button } from '../ui/button'
 import { Textarea } from '../ui/input'
 
@@ -19,7 +18,6 @@ export function claimedWorkOrder(item: ActivityItem): WorkOrder | undefined {
 // mechanics (work-order revocation, renewal discovery, checkpoint before the
 // next claim) live in its tooltip.
 export function WorkOrderPreemptControl({ order }: { order: WorkOrder }) {
-  const token = useDashboardSession()
   const queryClient = useQueryClient()
   const [expanded, setExpanded] = useState(false)
   const [reason, setReason] = useState('')
@@ -66,7 +64,7 @@ export function WorkOrderPreemptControl({ order }: { order: WorkOrder }) {
           <Button
             variant="destructive"
             size="sm"
-            disabled={!token || !reason.trim() || mutation.isPending || mutation.isSuccess}
+            disabled={!reason.trim() || mutation.isPending || mutation.isSuccess}
             onClick={() => mutation.mutate()}
           >
             <OctagonX />

@@ -11,7 +11,7 @@ import {
   TaskIntakeError,
 } from '../../lib/api'
 import { formatBytes } from '../../lib/utils'
-import { useDashboardSession, useWorkspace } from '../app-shell'
+import { useWorkspace } from '../app-shell'
 import { Button } from '../ui/button'
 import { Input, Select } from '../ui/input'
 import { MarkdownEditor } from '../ui/markdown-editor'
@@ -34,16 +34,15 @@ export function TaskCreateSheet({
   onClose?: () => void
   onCreated?: (taskId: string) => void
 } = {}) {
-  const token = useDashboardSession()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const { data: workspace } = useWorkspace()
   const repos = workspace?.repos ?? []
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const workerHealth = useQuery({
-    queryKey: ['workers', token, workspace?.workspace],
+    queryKey: ['workers', workspace?.workspace],
     queryFn: () => fetchWorkers(),
-    enabled: Boolean(token && workspace?.workspace),
+    enabled: Boolean(workspace?.workspace),
     refetchInterval: 5000,
   })
   const tasks = useQuery({
@@ -54,13 +53,13 @@ export function TaskCreateSheet({
   const requirements = useQuery({
     queryKey: ['requirements', workspace?.workspace],
     queryFn: fetchRequirements,
-    enabled: Boolean(token && workspace?.workspace),
+    enabled: Boolean(workspace?.workspace),
     staleTime: 60_000,
   })
   const designs = useQuery({
     queryKey: ['system-designs', workspace?.workspace],
     queryFn: fetchSystemDesigns,
-    enabled: Boolean(token && workspace?.workspace),
+    enabled: Boolean(workspace?.workspace),
     staleTime: 60_000,
   })
 
@@ -372,10 +371,8 @@ export function TaskCreateSheet({
       </div>
 
       <footer className="flex shrink-0 items-center justify-between gap-3 border-t border-border px-5 py-3">
-        <p className="text-xs text-faint">
-          {token ? 'Dispatches after every attachment is stored.' : <>Sign in to create tasks.</>}
-        </p>
-        <Button disabled={!token || !body.trim() || !repoName || mutation.isPending} onClick={() => mutation.mutate()}>
+        <p className="text-xs text-faint">Dispatches after every attachment is stored.</p>
+        <Button disabled={!body.trim() || !repoName || mutation.isPending} onClick={() => mutation.mutate()}>
           {mutation.isPending ? 'Creating…' : 'Create task'}
         </Button>
       </footer>
