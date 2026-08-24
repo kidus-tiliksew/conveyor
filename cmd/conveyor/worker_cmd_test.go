@@ -59,6 +59,130 @@ func runHarnessChildWithOutput(ctx context.Context, c *client, credential string
 	return runHarnessChildWithFirstActivityTimeoutAndOutput(ctx, c, credential, item, config.DefaultFirstActivityTimeout, stdout, stderr)
 }
 
+func TestResolveHarnessWorkingDirectory(t *testing.T) {
+	fixture := newGitFixture(t)
+	item := workerservice.DispatchOrder{
+		Order:      core.WorkOrder{ID: "resolve-implement", Stage: core.StageImplement},
+		Task:       core.Task{ID: "resolve-task", Repo: "app"},
+		Repository: config.Repo{Name: "app", URL: fixture.origin},
+	}
+
+	t.Run("configured checkout from outside repository", func(t *testing.T) {
+		outside := t.TempDir()
+		t.Chdir(outside)
+		configuredLink := filepath.Join(t.TempDir(), "configured-checkout")
+		if err := os.Symlink(fixture.primary, configuredLink); err != nil {
+			t.Fatal(err)
+		}
+		local := &config.Config{Repos: []config.Repo{{Name: "app", URL: fixture.origin, Checkout: configuredLink}}}
+		got, err := resolveHarnessWorkingDirectory(t.Context(), local, item)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want, err := filepath.EvalSymlinks(fixture.primary)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Fatalf("working directory = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("inside primary checkout", func(t *testing.T) {
+		t.Chdir(fixture.primary)
+		got, err := resolveHarnessWorkingDirectory(t.Context(), &config.Config{}, item)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != fixture.primary {
+			t.Fatalf("working directory = %q, want %q", got, fixture.primary)
+		}
+	})
+
+	t.Run("mismatched configured checkout fails with remedies", func(t *testing.T) {
+		outside := t.TempDir()
+		t.Chdir(outside)
+		wrong := filepath.Join(t.TempDir(), "wrong")
+		mustGit(t, "", "init", "-b", "main", wrong)
+		mustGit(t, wrong, "remote", "add", "origin", "https://example.test/wrong.git")
+		local := &config.Config{Repos: []config.Repo{{Name: "app", URL: fixture.origin, Checkout: wrong}}}
+		_, err := resolveHarnessWorkingDirectory(t.Context(), local, item)
+		if err == nil {
+			t.Fatal("resolution succeeded")
+		}
+		for _, want := range []string{"repos: [{name, url, checkout}]", "launch from inside the repository", "configured checkout"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("error %q does not contain %q", err, want)
+			}
+		}
+	})
+
+	t.Run("review uses the same non-spec resolver", func(t *testing.T) {
+		t.Chdir(t.TempDir())
+		review := item
+		review.Order.Stage = core.StageReview
+		local := &config.Config{Repos: []config.Repo{{Name: "app", URL: fixture.origin, Checkout: fixture.primary}}}
+		got, err := resolveHarnessWorkingDirectory(t.Context(), local, review)
+		if err != nil || got != fixture.primary {
+			t.Fatalf("working directory = %q, error = %v", got, err)
+		}
+	})
+}
+
+func TestRunHarnessChildReleasesBeforeLaunchWhenRepositoryCannotBeResolved(t *testing.T) {
+	fixture := newGitFixture(t)
+	outside := t.TempDir()
+	t.Chdir(outside)
+	marker := filepath.Join(t.TempDir(), "harness-started")
+	releases := make(chan core.WorkOrderRelease, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+		if len(parts) != 5 || strings.Join(parts[:3], "/") != "v1/worker/work-orders" {
+			http.NotFound(w, r)
+			return
+		}
+		switch parts[4] {
+		case "claim", "renew":
+			_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: parts[3], State: core.WorkOrderClaimed, AttemptID: "attempt-resolve", LeaseExpiresAt: time.Now().Add(time.Minute)})
+		case "release":
+			var release core.WorkOrderRelease
+			if err := json.NewDecoder(r.Body).Decode(&release); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			releases <- release
+			_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: parts[3], State: core.WorkOrderQueued})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	item := workerservice.DispatchOrder{
+		Order:      core.WorkOrder{ID: "resolve-failure", Stage: core.StageImplement},
+		Task:       core.Task{ID: "resolve-task", Repo: "app", Branch: "conveyor/resolve-task"},
+		Repository: config.Repo{Name: "app", URL: fixture.origin},
+		Harness:    config.Harness{Name: "must-not-start", Command: []string{"sh", "-c", "touch " + marker}},
+	}
+	local := &config.Config{Repos: []config.Repo{{Name: "app", URL: fixture.origin, Checkout: outside}}}
+	ctx := contextWithLocalExecutionConfig(t.Context(), local)
+	err := runHarnessChildWithOutput(ctx, &client{base: server.URL, workspace: "demo"}, "worker-credential", item, io.Discard, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "repos: [{name, url, checkout}]") {
+		t.Fatalf("resolution error = %v", err)
+	}
+	if _, statErr := os.Stat(marker); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("harness process was spawned: stat error = %v", statErr)
+	}
+	select {
+	case release := <-releases:
+		if release.Outcome != core.WorkOrderOutcomeReleased || !strings.Contains(release.Reason, "launch from inside the repository") {
+			t.Fatalf("release = %+v", release)
+		}
+	default:
+		t.Fatal("claim was not released before returning")
+	}
+}
+
 func TestRecoveredHarnessContinuationLaunchAndCapture(t *testing.T) {
 	for _, test := range []struct {
 		name        string

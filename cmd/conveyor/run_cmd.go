@@ -243,7 +243,7 @@ func runTaskWithPresentationAndSetup(ctx context.Context, c *client, taskID, con
 		}
 		started := time.Now()
 		lastTUIStage = runTUIStage{task: selected.Task, stage: selected.Order.Stage, harness: selected.Harness.Name, model: selected.Model, started: started}
-		stageCtx, cancelStage := context.WithCancel(contextWithWorktreeRoot(ctx, local.WorktreeRoot))
+		stageCtx, cancelStage := context.WithCancel(contextWithLocalExecutionConfig(contextWithWorktreeRoot(ctx, local.WorktreeRoot), local))
 		presentation := &runOutputPresentation{output: output}
 		var childStderr io.Writer
 		if interactiveTUI {
