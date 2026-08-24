@@ -14,7 +14,9 @@ Conveyor is a software factory for agent-written code.
 
 It queues work from Requirements, System Design documents, and Decisions. Human operators confirm the documents, and approve plans when required. Agents on your machines plan, implement, and review that work.
 
-Conveyor has used this process to build itself since July 2026. Contributions go through the factory too. To start contributing, request access first by opening an issue, and you will get a workspace account to plan and pick up work from.
+Conveyor has used this process to build itself since July 2026. 
+
+Contributions go through the factory too. To start contributing, request access first by opening an issue, and you will get a workspace account to plan and pick up work from.
 
 <table>
   <tr>
