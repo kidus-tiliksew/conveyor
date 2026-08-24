@@ -1749,6 +1749,139 @@ func TestRunHarnessChildReapsOnlyAfterAttachedRunObservesTerminalOrder(t *testin
 	}
 }
 
+func TestRunHarnessChildExitClassifiesCheckpointReleaseBeforeRenewal(t *testing.T) {
+	previousRenew := workerClaimRenewInterval
+	workerClaimRenewInterval = time.Minute
+	t.Cleanup(func() { workerClaimRenewInterval = previousRenew })
+
+	for _, test := range []struct {
+		name             string
+		dispatch         string
+		typedConflict    bool
+		checkpointReason string
+		reconcileFailure bool
+		genuineLoss      bool
+		wantErrContains  string
+		wantPause        bool
+		wantRelease      bool
+	}{
+		{
+			name: "run typed checkpoint release presents pause and succeeds", dispatch: "run", typedConflict: true,
+			checkpointReason: core.WorkOrderReleaseReasonOperatorCheckpointReached, wantPause: true,
+		},
+		{
+			name: "run generic conflict verifies persisted plan revision and succeeds", dispatch: "run",
+			checkpointReason: core.WorkOrderReleaseReasonPlanRevisionRequested, wantPause: true,
+		},
+		{
+			name: "worker typed checkpoint release succeeds without duplicate release", dispatch: "worker", typedConflict: true,
+			checkpointReason: core.WorkOrderReleaseReasonOperatorCheckpointReached,
+		},
+		{
+			name: "run typed checkpoint release with unavailable reason fails without duplicate release", dispatch: "run", typedConflict: true,
+			reconcileFailure: true, wantErrContains: "confirm checkpoint release reason",
+		},
+		{
+			name: "run generic genuine claim loss retains child failure release", dispatch: "run", genuineLoss: true,
+			wantErrContains: "confirm work-order completion", wantRelease: true,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var mu sync.Mutex
+			reconcileCalls := 0
+			releases := make(chan core.WorkOrderRelease, 1)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case strings.HasSuffix(r.URL.Path, "/claim"):
+					_ = json.NewEncoder(w).Encode(core.WorkOrder{
+						ID: "exit-checkpoint-order", State: core.WorkOrderClaimed, LeaseExpiresAt: time.Now().Add(time.Minute),
+					})
+				case strings.HasSuffix(r.URL.Path, "/reconcile"):
+					mu.Lock()
+					reconcileCalls++
+					call := reconcileCalls
+					mu.Unlock()
+					if call == 1 || test.dispatch == "worker" {
+						if test.typedConflict {
+							w.Header().Set("X-Conveyor-Error-Code", "work_order_released_checkpoint")
+							http.Error(w, store.ErrWorkOrderReleasedAtCheckpoint.Error(), http.StatusConflict)
+						} else {
+							http.Error(w, store.ErrWorkOrderClaimLost.Error(), http.StatusConflict)
+						}
+						return
+					}
+					if test.reconcileFailure {
+						http.Error(w, "reconciliation unavailable", http.StatusServiceUnavailable)
+						return
+					}
+					if test.genuineLoss {
+						http.Error(w, store.ErrWorkOrderClaimLost.Error(), http.StatusConflict)
+						return
+					}
+					_ = json.NewEncoder(w).Encode(workerservice.ClaimReconciliation{
+						WorkOrder: core.WorkOrder{
+							ID: "exit-checkpoint-order", State: core.WorkOrderQueued, LastFailureMessage: test.checkpointReason,
+						},
+						ReleasedAtCheckpoint: true,
+						Reason:               "session deliberately released at an operator checkpoint",
+					})
+				case strings.HasSuffix(r.URL.Path, "/release"):
+					var wire struct {
+						Reason     string `json:"reason"`
+						Cause      string `json:"release_cause"`
+						Outcome    string `json:"outcome"`
+						ExitStatus *int   `json:"exit_status"`
+					}
+					_ = json.NewDecoder(r.Body).Decode(&wire)
+					releases <- core.WorkOrderRelease{
+						Reason: wire.Reason, Cause: wire.Cause, Outcome: wire.Outcome, ExitStatus: wire.ExitStatus,
+					}
+					_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: "exit-checkpoint-order", State: core.WorkOrderQueued})
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer server.Close()
+
+			item := workerservice.DispatchOrder{
+				Order:    core.WorkOrder{ID: "exit-checkpoint-order", TaskID: "exit-checkpoint-task", Stage: core.StageImplement},
+				Task:     core.Task{ID: "exit-checkpoint-task"},
+				Dispatch: test.dispatch,
+				Harness:  config.Harness{Name: "helper", Command: []string{os.Args[0], "-test.run=TestWorkerLifecycleHelper", "--", "exit"}},
+			}
+			var stdout, stderr, presented bytes.Buffer
+			err := runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(
+				t.Context(), &client{base: server.URL, workspace: "demo"}, "credential", item,
+				time.Second, &stdout, &stderr, "", &runOutputPresentation{output: &presented},
+			)
+			if test.wantErrContains == "" && err != nil {
+				t.Fatal(err)
+			}
+			if test.wantErrContains != "" && (err == nil || !strings.Contains(err.Error(), test.wantErrContains)) {
+				t.Fatalf("error=%v want substring %q", err, test.wantErrContains)
+			}
+			hasPause := strings.Contains(presented.String(), "run paused for operator direction") &&
+				strings.Contains(presented.String(), test.checkpointReason)
+			if hasPause != test.wantPause {
+				t.Fatalf("checkpoint pause=%t want=%t output=%q", hasPause, test.wantPause, presented.String())
+			}
+			select {
+			case release := <-releases:
+				if !test.wantRelease {
+					t.Fatalf("unexpected duplicate release: %+v", release)
+				}
+				if release.Outcome != core.WorkOrderOutcomeChildFailure || release.Reason != "could not confirm work-order completion" {
+					t.Fatalf("release=%+v", release)
+				}
+			default:
+				if test.wantRelease {
+					t.Fatal("genuine claim loss did not retain child-failure release")
+				}
+			}
+		})
+	}
+}
+
 func TestRunHarnessChildRunModeProgressFailureWarnsAndContinues(t *testing.T) {
 	released := make(chan struct{}, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

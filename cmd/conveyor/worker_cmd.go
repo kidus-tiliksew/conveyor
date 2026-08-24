@@ -1103,6 +1103,50 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 			runTerminalDeadline = runTerminalTimer.C
 		}
 	}
+	observeCheckpointRelease := func(conflictErr error) (bool, error) {
+		typedRelease := workerOrderReleasedAtCheckpoint(conflictErr)
+		if !typedRelease && (item.Dispatch != "run" || !workerOrderConflict(conflictErr)) {
+			return false, nil
+		}
+		if item.Dispatch == "run" {
+			reconcileCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			reconciled, reconcileErr := c.reconcileTaskRunOrderContext(reconcileCtx, credential, item, sessionID)
+			cancel()
+			if reconcileErr == nil && reconciled.ReleasedAtCheckpoint &&
+				(reconciled.WorkOrder.LastFailureMessage == core.WorkOrderReleaseReasonOperatorCheckpointReached ||
+					reconciled.WorkOrder.LastFailureMessage == core.WorkOrderReleaseReasonPlanRevisionRequested) {
+				checkpointReleaseReason = reconciled.WorkOrder.LastFailureMessage
+				observeFinalized(reconciled.WorkOrder)
+				return true, nil
+			}
+			if typedRelease {
+				// The typed response proves a deliberate self-release but not which
+				// release reason was persisted. Fail closed when the read-only
+				// reconciliation cannot supply that reason rather than relabeling a
+				// plan-revision release as an operator checkpoint. The caller must
+				// not attempt a second release for this already-released claim.
+				if reconcileErr != nil {
+					return false, fmt.Errorf("confirm checkpoint release reason: %w", reconcileErr)
+				}
+				return false, fmt.Errorf("confirm checkpoint release reason: server reported %s (%s)", reconciled.WorkOrder.State, reconciled.Reason)
+			}
+		}
+		if typedRelease {
+			checkpointReleaseReason = core.WorkOrderReleaseReasonOperatorCheckpointReached
+			observeFinalized(core.WorkOrder{ID: item.Order.ID, State: core.WorkOrderQueued, LastFailureMessage: checkpointReleaseReason})
+			return true, nil
+		}
+		return false, nil
+	}
+	presentCheckpointRelease := func() error {
+		if item.Dispatch != "run" {
+			return nil
+		}
+		if err := presentRunCheckpointPause(stdout, presentation, string(item.Order.Stage), checkpointReleaseReason); err != nil {
+			return fmt.Errorf("present operator checkpoint pause: %w", err)
+		}
+		return nil
+	}
 	handleChildExit := func(waitErr error) error {
 		waitErr = processGroup.terminate(&waitErr)
 		flushOutput()
@@ -1117,10 +1161,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 			// operator direction. The release is the successful stage handoff;
 			// child exit status cannot turn it into claim loss or a duplicate
 			// release (design-260805-973cd4).
-			if err := presentRunCheckpointPause(stdout, presentation, string(item.Order.Stage), checkpointReleaseReason); err != nil {
-				return fmt.Errorf("present operator checkpoint pause: %w", err)
-			}
-			return nil
+			return presentCheckpointRelease()
 		}
 		var exitStatus *int
 		if waitErr != nil {
@@ -1134,6 +1175,13 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 		// just before child exit cannot receive a later WIP commit.
 		reconciled, reconcileErr := reconcileDispatchClaimUntil(ctx, c, credential, item, sessionID, leaseExpiresAt)
 		if reconcileErr != nil {
+			observedCheckpoint, checkpointErr := observeCheckpointRelease(reconcileErr)
+			if observedCheckpoint {
+				return presentCheckpointRelease()
+			}
+			if checkpointErr != nil {
+				return fmt.Errorf("confirm work-order completion: %w", checkpointErr)
+			}
 			_ = releaseAfterCheckpoint(core.WorkOrderOutcomeChildFailure, "could not confirm work-order completion", exitStatus)
 			return fmt.Errorf("confirm work-order completion: %w", reconcileErr)
 		}
@@ -1166,41 +1214,6 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 			return waitErr
 		}
 		return nil
-	}
-	observeCheckpointRelease := func(renewErr error) (bool, error) {
-		typedRelease := workerOrderReleasedAtCheckpoint(renewErr)
-		if !typedRelease && (item.Dispatch != "run" || !workerOrderConflict(renewErr)) {
-			return false, nil
-		}
-		if item.Dispatch == "run" {
-			reconcileCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			reconciled, reconcileErr := c.reconcileTaskRunOrderContext(reconcileCtx, credential, item, sessionID)
-			cancel()
-			if reconcileErr == nil && reconciled.ReleasedAtCheckpoint &&
-				(reconciled.WorkOrder.LastFailureMessage == core.WorkOrderReleaseReasonOperatorCheckpointReached ||
-					reconciled.WorkOrder.LastFailureMessage == core.WorkOrderReleaseReasonPlanRevisionRequested) {
-				checkpointReleaseReason = reconciled.WorkOrder.LastFailureMessage
-				observeFinalized(reconciled.WorkOrder)
-				return true, nil
-			}
-			if typedRelease {
-				// The typed response proves a deliberate self-release but not which
-				// release reason was persisted. Fail closed when the read-only
-				// reconciliation cannot supply that reason rather than relabeling a
-				// plan-revision release as an operator checkpoint. The caller must
-				// not attempt a second release for this already-released claim.
-				if reconcileErr != nil {
-					return false, fmt.Errorf("confirm checkpoint release reason: %w", reconcileErr)
-				}
-				return false, fmt.Errorf("confirm checkpoint release reason: server reported %s (%s)", reconciled.WorkOrder.State, reconciled.Reason)
-			}
-		}
-		if typedRelease {
-			checkpointReleaseReason = core.WorkOrderReleaseReasonOperatorCheckpointReached
-			observeFinalized(core.WorkOrder{ID: item.Order.ID, State: core.WorkOrderQueued, LastFailureMessage: checkpointReleaseReason})
-			return true, nil
-		}
-		return false, nil
 	}
 	for {
 		select {
