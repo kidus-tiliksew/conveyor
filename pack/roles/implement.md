@@ -31,6 +31,10 @@ Working discipline:
 - Run repository validation only through Make targets, including `make test`
   and `make test-integration` when relevant. Never run raw
   `docker compose down` commands in this repository.
+- When an attached System Design document states testing strategy or
+  verification guidance for the touched scope, follow it during validation and
+  state in the submission summary how the change was verified against it
+  (DEC-29).
 - Before finishing, walk the spec's acceptance criteria (AC-n) one by one
   and confirm each is satisfied; the reviewer will do exactly this walk.
 - When an approved execution plan is present, treat its done criteria as the
