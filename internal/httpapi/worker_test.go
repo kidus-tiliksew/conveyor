@@ -1,11 +1,14 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/textproto"
 	"strings"
 	"testing"
 	"time"
@@ -18,6 +21,101 @@ import (
 	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
 	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 )
+
+func workerEvidenceRequest(t *testing.T, credential, orderID, session, token, contentType string, content []byte, extra map[string]string) *http.Request {
+	t.Helper()
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	for key, value := range extra {
+		if err := writer.WriteField(key, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	header := make(textproto.MIMEHeader)
+	header.Set("Content-Disposition", `form-data; name="file"; filename="proof.bin"`)
+	header.Set("Content-Type", contentType)
+	part, err := writer.CreatePart(header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = part.Write(content); err != nil {
+		t.Fatal(err)
+	}
+	if err = writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/v1/worker/work-orders/"+orderID+"/verification-evidence", &body)
+	request.Header.Set("Authorization", "Bearer "+credential)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	request.Header.Set("X-Conveyor-Work-Order-Session", session)
+	request.Header.Set("X-Conveyor-Work-Order-Token", token)
+	return request
+}
+
+func TestWorkerVerificationEvidenceUploadIsBoundToLiveClaim(t *testing.T) {
+	st := store.NewMemory()
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	orders := &workorder.Service{Store: st}
+	workers := &workerservice.Service{Store: st, WorkOrders: orders}
+	pairing, _, err := workers.IssuePairing(ctx, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enrollment, err := workers.Enroll(t.Context(), pairing, "evidence-worker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"evidence-task", "other-task"} {
+		if err = st.CreateTask(ctx, core.Task{ID: id, Workspace: "demo", State: core.TaskRunning, CreatedAt: time.Now()}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	job := core.Job{ID: "evidence-task-implement-1", TaskID: "evidence-task", Stage: core.StageImplement, State: core.JobPending}
+	if err = st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err = storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: job.TaskID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{
+		WorkerID: enrollment.Worker.ID, ClaimantID: enrollment.Worker.ID,
+		SessionID: "evidence-session", ClientToken: "evidence-token", Lease: time.Minute, ExecutionTimeout: time.Hour,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(st)
+	server.Workspace, server.WorkOrders, server.Workers = "demo", orders, workers
+	handler := server.Handler()
+
+	success := httptest.NewRecorder()
+	handler.ServeHTTP(success, workerEvidenceRequest(t, enrollment.Credential, job.ID, "evidence-session", "evidence-token", "IMAGE/PNG; charset=binary", []byte("png evidence"), nil))
+	if success.Code != http.StatusCreated {
+		t.Fatalf("success status=%d body=%s", success.Code, success.Body.String())
+	}
+	var artifact core.Artifact
+	if err = json.Unmarshal(success.Body.Bytes(), &artifact); err != nil {
+		t.Fatal(err)
+	}
+	if artifact.TaskID != "evidence-task" || artifact.Workspace != "demo" || artifact.Role != core.ArtifactRoleVerificationEvidence || artifact.ContentType != "image/png" {
+		t.Fatalf("artifact=%+v", artifact)
+	}
+
+	wrongToken := httptest.NewRecorder()
+	handler.ServeHTTP(wrongToken, workerEvidenceRequest(t, enrollment.Credential, job.ID, "evidence-session", "wrong", "image/png", []byte("other"), nil))
+	if wrongToken.Code != http.StatusConflict || wrongToken.Header().Get("X-Conveyor-Error-Code") != "verification_evidence_claim_conflict" {
+		t.Fatalf("wrong token status=%d body=%s", wrongToken.Code, wrongToken.Body.String())
+	}
+	crossTask := httptest.NewRecorder()
+	handler.ServeHTTP(crossTask, workerEvidenceRequest(t, enrollment.Credential, job.ID, "evidence-session", "evidence-token", "image/png", []byte("other"), map[string]string{"task_id": "other-task"}))
+	if crossTask.Code != http.StatusBadRequest || !strings.Contains(crossTask.Body.String(), "only one file") {
+		t.Fatalf("cross-task status=%d body=%s", crossTask.Code, crossTask.Body.String())
+	}
+	unsupported := httptest.NewRecorder()
+	handler.ServeHTTP(unsupported, workerEvidenceRequest(t, enrollment.Credential, job.ID, "evidence-session", "evidence-token", "image/gif", []byte("gif"), nil))
+	if unsupported.Code != http.StatusBadRequest || !strings.Contains(unsupported.Body.String(), "unsupported") {
+		t.Fatalf("unsupported status=%d body=%s", unsupported.Code, unsupported.Body.String())
+	}
+}
 
 type unauthorizedWorkerStore struct{ store.Store }
 

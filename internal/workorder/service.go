@@ -1263,6 +1263,16 @@ func (s *Service) UploadTranscript(ctx context.Context, id, session, transcript 
 	return artifact, nil
 }
 
+// UploadVerificationEvidence attaches evidence only through the exact live
+// worker claim. The store derives task and workspace ownership atomically with
+// artifact creation; callers cannot supply either value or select a role.
+func (s *Service) UploadVerificationEvidence(ctx context.Context, id, workerID, session, clientToken, name, contentType string, content []byte) (core.Artifact, error) {
+	return s.Store.CreateClaimedVerificationEvidence(ctx, store.ClaimedVerificationEvidenceRequest{
+		WorkOrderID: id, WorkerID: workerID, SessionID: session, ClientToken: clientToken,
+		Name: name, ContentType: contentType,
+	}, content)
+}
+
 func (s *Service) SubmitForReview(ctx context.Context, id, session string) (map[string]any, error) {
 	order, err := s.authorized(ctx, id, session)
 	if err != nil {
@@ -1290,7 +1300,7 @@ func (s *Service) SubmitForReview(ctx context.Context, id, session string) (map[
 		return nil, err
 	}
 	if cfg.Execution.RequireVerificationEvidence && len(evidence) == 0 {
-		return nil, fmt.Errorf("verification evidence is required before review; attach a task-owned screenshot (PNG, JPEG, or WebP, up to 10 MiB) or short recording (MP4 or WebM, up to 25 MiB) through POST /v1/artifacts with task_id=%s and role=verification_evidence, then retry submit_for_review", task.ID)
+		return nil, fmt.Errorf("verification evidence is required before review; attach a screenshot (PNG, JPEG, or WebP, up to 10 MiB) or short recording (MP4 or WebM, up to 25 MiB) through POST /v1/worker/work-orders/%s/verification-evidence with multipart field file, X-Conveyor-Work-Order-Token, and X-Conveyor-Work-Order-Session, then retry submit_for_review", order.ID)
 	}
 	repo, ok := cfg.Repo(task.Repo)
 	if !ok {

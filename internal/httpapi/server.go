@@ -152,6 +152,9 @@ func (s *Server) Handler() http.Handler {
 		r.With(s.requireWorkerAuth).Post("/worker/work-orders/{id}/renew", s.renewWorkerOrder)
 		r.With(s.requireWorkerAuth).Post("/worker/work-orders/{id}/attempt-checkpoint", s.checkpointWorkerOrderAttempt)
 		r.With(s.requireWorkerAuth).Post("/worker/work-orders/{id}/release", s.releaseWorkerOrder)
+		// req-review-gates-evidence REQ-3/AC-3.1; DEC-29: this is an
+		// exact-claim exception, not an agent-reachable role capability.
+		r.With(s.requireWorkerAuth).Post("/worker/work-orders/{id}/verification-evidence", s.uploadWorkerVerificationEvidence)
 		r.With(s.requireWorkspaceAuth).Get("/workspaces", s.listWorkspaces)
 		r.With(s.requireSelfServiceCredential, s.resolveOptionalWorkspaceCapability(core.CapabilityViewWorkspace)).Get("/me", s.getCallerIdentity)
 		r.With(s.requireSelfServiceCredential).Put("/me", s.putOwnDisplayName)

@@ -285,6 +285,44 @@ func (s *Server) releaseWorkerOrder(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, order)
 }
 
+func (s *Server) uploadWorkerVerificationEvidence(w http.ResponseWriter, r *http.Request) {
+	worker, ok := workerFromContext(r.Context())
+	if !ok || s.WorkOrders == nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	upload, status, err := readMultipartArtifact(w, r)
+	if err != nil {
+		http.Error(w, err.Error(), status)
+		return
+	}
+	if len(r.MultipartForm.Value) != 0 || len(r.MultipartForm.File) != 1 || len(r.MultipartForm.File["file"]) != 1 {
+		http.Error(w, "multipart body must contain only one file field", http.StatusBadRequest)
+		return
+	}
+	artifact, err := s.WorkOrders.UploadVerificationEvidence(
+		r.Context(), chi.URLParam(r, "id"), worker.ID,
+		strings.TrimSpace(r.Header.Get("X-Conveyor-Work-Order-Session")),
+		strings.TrimSpace(r.Header.Get("X-Conveyor-Work-Order-Token")),
+		safeFilename(upload.Header), upload.ContentType, upload.Content,
+	)
+	if errors.Is(err, store.ErrVerificationEvidenceClaimConflict) {
+		w.Header().Set("X-Conveyor-Error-Code", "verification_evidence_claim_conflict")
+		http.Error(w, store.ErrVerificationEvidenceClaimConflict.Error(), http.StatusConflict)
+		return
+	}
+	if err != nil {
+		if strings.HasPrefix(err.Error(), "verification evidence") {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		log.Printf("upload worker verification evidence: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusCreated, artifact)
+}
+
 func (s *Server) checkpointWorkerOrderAttempt(w http.ResponseWriter, r *http.Request) {
 	worker, _ := workerFromContext(r.Context())
 	var request workOrderAttemptCheckpointRequest
