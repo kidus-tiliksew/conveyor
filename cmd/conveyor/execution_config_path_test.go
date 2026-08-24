@@ -9,7 +9,6 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 )
 
@@ -154,11 +153,8 @@ func TestConfigInitExecutionWritesUserDefaultForOtherConsumers(t *testing.T) {
 	previousTerminal := wizardTerminal
 	wizardTerminal = func(io.Reader) bool { return true }
 	previousUI := runExecutionWizardUI
-	runExecutionWizardUI = func(model executionWizardModel, _ io.Reader, _ io.Writer) (executionWizardModel, error) {
-		for model.field < len(model.fields) {
-			updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
-			model = updated.(executionWizardModel)
-		}
+	runExecutionWizardUI = func(model *executionWizardModel, _ io.Reader, _ io.Writer) (*executionWizardModel, error) {
+		model.completed = true
 		return model, nil
 	}
 	t.Cleanup(func() {
