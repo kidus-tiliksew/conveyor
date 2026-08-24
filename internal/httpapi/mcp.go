@@ -126,6 +126,13 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 		return nil, err
 	}
 	ctx := store.WithWorkspace(r.Context(), workspace)
+	if name == "submit_spec" {
+		return nil, fmt.Errorf("MCP tool submit_spec not found; use submit_plan")
+	}
+	capability, capabilityMapped := mcpCapabilities[name]
+	if !capabilityMapped {
+		return nil, fmt.Errorf("unknown tool %q", name)
+	}
 	if !workerAuth && s.Workspaces != nil {
 		if s.Memberships == nil {
 			return nil, fmt.Errorf("workspace_not_found: workspace not found")
@@ -134,7 +141,7 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 		if !ok {
 			return nil, fmt.Errorf("workspace_not_found: workspace not found")
 		}
-		allowed, authErr := s.Memberships.AuthorizeWorkspace(ctx, credential.OwnerUserID, workspace, mcpCapability(name))
+		allowed, authErr := s.Memberships.AuthorizeWorkspace(ctx, credential.OwnerUserID, workspace, capability)
 		if authErr != nil {
 			return nil, authErr
 		}
@@ -185,16 +192,27 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 	if s.WorkOrders == nil {
 		return nil, fmt.Errorf("work-order service unavailable")
 	}
+	usageSource, _ := args["source"].(string)
+	if claimantBoundMCPTools[name] && !(name == "report_usage" && usageSource == "worker_fallback") {
+		if _, err := s.authorizeClaimantSession(ctx, workerAuth, worker, stringArg("work_order_id"), session); err != nil {
+			return nil, err
+		}
+	}
 	switch name {
 	case "list_work_orders":
 		if workerAuth {
-			return s.Workers.ListVisibleOrders(ctx, worker)
+			orders, listErr := s.Workers.ListVisibleOrders(ctx, worker)
+			if listErr != nil {
+				return nil, listErr
+			}
+			return s.projectWorkOrderSessions(ctx, orders, true, worker)
 		}
 		orders, listErr := s.WorkOrders.List(ctx)
 		if listErr != nil {
 			return nil, listErr
 		}
-		return projectAssigneeClaimability(ctx, orders, s.ForgeTokens), nil
+		orders = projectAssigneeClaimability(ctx, orders, s.ForgeTokens)
+		return s.projectWorkOrderSessions(ctx, orders, false, core.Worker{})
 	case "claim_work_order":
 		lease := core.DefaultWorkOrderClaimLease
 		if value, ok := numberArg(args["lease_seconds"]); ok && value > 0 && value <= 3600 {
@@ -289,7 +307,7 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 			}
 			rateLimit = &status
 		}
-		if stringArg("source") == "worker_fallback" {
+		if usageSource == "worker_fallback" {
 			if !workerAuth {
 				return nil, fmt.Errorf("worker_fallback usage requires a worker credential")
 			}
@@ -368,8 +386,6 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 			return nil, fmt.Errorf("invalid structured plan: %w", decodeErr)
 		}
 		return s.WorkOrders.SubmitPlan(ctx, stringArg("work_order_id"), session, value)
-	case "submit_spec":
-		return nil, fmt.Errorf("MCP tool submit_spec not found; use submit_plan")
 	case "submit_for_review":
 		return s.WorkOrders.SubmitForReview(ctx, stringArg("work_order_id"), session)
 	case "await_review":
@@ -409,24 +425,40 @@ func humanReservedMCPTool(name string) bool {
 	}
 }
 
-func mcpCapability(name string) core.Capability {
-	switch name {
-	case "list_work_orders":
-		return core.CapabilityViewWorkspace
-	case "set_assignee":
-		return core.CapabilitySetAssignee
-	case "propose_system_design_revision", "propose_requirement_revision", "propose_decision", "request_plan_revision":
-		// These tools are claim-bound below. Workspace visibility is the only
-		// membership prerequisite; the exact live claim supplies mutation
-		// authority for executor sessions (REQ-1/AC-1.5).
-		return core.CapabilityViewWorkspace
-	case "create_task":
-		return core.CapabilityOperateGates
-	case "redispatch_work_order":
-		return core.CapabilityRecoverWork
-	default:
-		return core.CapabilityClaimWork
-	}
+var mcpCapabilities = map[string]core.Capability{
+	"create_task":                    core.CapabilityOperateGates,
+	"set_assignee":                   core.CapabilitySetAssignee,
+	"list_work_orders":               core.CapabilityViewWorkspace,
+	"claim_work_order":               core.CapabilityClaimWork,
+	"redispatch_work_order":          core.CapabilityRecoverWork,
+	"renew_work_order":               core.CapabilityClaimWork,
+	"release_work_order":             core.CapabilityClaimWork,
+	"request_plan_revision":          core.CapabilityViewWorkspace,
+	"get_work_order":                 core.CapabilityClaimWork,
+	"read_artifact":                  core.CapabilityClaimWork,
+	"report_progress":                core.CapabilityClaimWork,
+	"report_usage":                   core.CapabilityClaimWork,
+	"report_continuation":            core.CapabilityClaimWork,
+	"propose_system_design_revision": core.CapabilityViewWorkspace,
+	"propose_requirement_revision":   core.CapabilityViewWorkspace,
+	"propose_decision":               core.CapabilityViewWorkspace,
+	"upload_transcript":              core.CapabilityClaimWork,
+	"submit_plan":                    core.CapabilityClaimWork,
+	"submit_for_review":              core.CapabilityClaimWork,
+	"await_review":                   core.CapabilityClaimWork,
+	"submit_review_verdict":          core.CapabilityClaimWork,
+}
+
+func mcpCapability(name string) core.Capability { return mcpCapabilities[name] }
+
+var claimantBoundMCPTools = map[string]bool{
+	"report_progress":       true,
+	"report_usage":          true,
+	"upload_transcript":     true,
+	"submit_plan":           true,
+	"submit_for_review":     true,
+	"await_review":          true,
+	"submit_review_verdict": true,
 }
 
 // authorizeWorkerOrder scopes worker-credentialed MCP calls to orders the
@@ -456,17 +488,25 @@ func (s *Server) authorizeUserRunMCPOrder(ctx context.Context, workOrderID, sess
 	return nil
 }
 
-// authorizeClaimMutation resolves the authenticated owner of one live claim.
-// Worker credentials retain worker ownership checks, user credentials retain
-// explicit conveyor-run ownership, and worker-dispatched agent children are
-// admitted only through the exact live implement session they already hold.
-func (s *Server) authorizeClaimMutation(ctx context.Context, workerAuth bool, worker core.Worker, workOrderID, sessionID string) (core.WorkOrderClaimIdentity, error) {
-	if workerAuth {
-		if err := s.authorizeWorkerOrder(ctx, true, worker, workOrderID); err != nil {
-			return core.WorkOrderClaimIdentity{}, err
+// authorizeClaimantSession binds a presented session ID to its authenticated
+// claimant without imposing a lifecycle state. The called work-order operation
+// remains responsible for its existing state, lease, and deadline checks.
+func (s *Server) authorizeClaimantSession(ctx context.Context, workerAuth bool, worker core.Worker, workOrderID, sessionID string) (core.WorkOrderClaimIdentity, error) {
+	order, err := s.Store.GetWorkOrder(ctx, workOrderID)
+	if err != nil || order.SessionID == "" || order.SessionID != sessionID {
+		orders, listErr := s.Store.ListWorkOrders(ctx)
+		if listErr != nil {
+			return core.WorkOrderClaimIdentity{}, listErr
 		}
-		order, err := s.WorkOrders.AuthorizeClaimed(ctx, workOrderID, sessionID)
-		if err != nil {
+		for _, candidate := range orders {
+			if sessionID != "" && candidate.ID != workOrderID && candidate.SessionID == sessionID {
+				return core.WorkOrderClaimIdentity{}, store.ErrWorkOrderClaimUnauthorized
+			}
+		}
+		return core.WorkOrderClaimIdentity{}, store.ErrWorkOrderClaimLost
+	}
+	if workerAuth {
+		if order.WorkerID == "" || order.WorkerID != worker.ID {
 			return core.WorkOrderClaimIdentity{}, store.ErrWorkOrderClaimLost
 		}
 		return claimIdentity(order), nil
@@ -475,43 +515,42 @@ func (s *Server) authorizeClaimMutation(ctx context.Context, workerAuth bool, wo
 	if !ok {
 		return core.WorkOrderClaimIdentity{}, store.ErrWorkOrderClaimUnauthorized
 	}
-	if credential.Kind == core.CredentialUser {
-		order, err := s.Store.GetWorkOrder(ctx, workOrderID)
-		if err != nil || !liveWorkOrderClaim(order, time.Now()) {
-			return core.WorkOrderClaimIdentity{}, store.ErrWorkOrderClaimLost
+	if order.WorkerID == "" {
+		if (credential.Kind == core.CredentialUser || credential.Kind == core.CredentialAgent) && order.ClaimantID == core.TaskRunClaimantID(credential.OwnerUserID) {
+			return claimIdentity(order), nil
 		}
-		if order.WorkerID != "" || order.ClaimantID != core.TaskRunClaimantID(credential.OwnerUserID) || order.SessionID != sessionID {
-			return core.WorkOrderClaimIdentity{}, store.ErrWorkOrderClaimUnauthorized
-		}
-		return claimIdentity(order), nil
+		return core.WorkOrderClaimIdentity{}, store.ErrWorkOrderClaimUnauthorized
 	}
 	if credential.Kind != core.CredentialAgent {
 		return core.WorkOrderClaimIdentity{}, store.ErrWorkOrderClaimUnauthorized
 	}
-	orders, err := s.Store.ListWorkOrders(ctx)
+	workers, err := s.Store.ListWorkers(ctx)
 	if err != nil {
 		return core.WorkOrderClaimIdentity{}, err
 	}
-	now := time.Now()
-	for _, order := range orders {
-		if order.SessionID != sessionID || !liveWorkOrderClaim(order, now) {
-			continue
+	for _, claimedWorker := range workers {
+		if claimedWorker.ID == order.WorkerID && claimedWorker.OwnerUserID != "" && claimedWorker.OwnerUserID == credential.OwnerUserID {
+			return claimIdentity(order), nil
 		}
-		if order.ID != workOrderID || order.Stage != core.StageImplement || order.WorkerID == "" {
-			return core.WorkOrderClaimIdentity{}, store.ErrWorkOrderClaimUnauthorized
-		}
-		workers, listErr := s.Store.ListWorkers(ctx)
-		if listErr != nil {
-			return core.WorkOrderClaimIdentity{}, listErr
-		}
-		for _, claimedWorker := range workers {
-			if claimedWorker.ID == order.WorkerID && claimedWorker.OwnerUserID != "" && claimedWorker.OwnerUserID == credential.OwnerUserID {
-				return claimIdentity(order), nil
-			}
-		}
-		return core.WorkOrderClaimIdentity{}, store.ErrWorkOrderClaimUnauthorized
 	}
-	return core.WorkOrderClaimIdentity{}, store.ErrWorkOrderClaimLost
+	return core.WorkOrderClaimIdentity{}, store.ErrWorkOrderClaimUnauthorized
+}
+
+// authorizeClaimMutation resolves the authenticated owner of one live claim.
+// Worker credentials retain worker ownership checks, user and agent credentials
+// retain owner-derived conveyor-run identity, and worker-dispatched agent
+// children are admitted only through the exact live session their owner's
+// worker already holds.
+func (s *Server) authorizeClaimMutation(ctx context.Context, workerAuth bool, worker core.Worker, workOrderID, sessionID string) (core.WorkOrderClaimIdentity, error) {
+	claim, err := s.authorizeClaimantSession(ctx, workerAuth, worker, workOrderID, sessionID)
+	if err != nil {
+		return core.WorkOrderClaimIdentity{}, err
+	}
+	order, err := s.Store.GetWorkOrder(ctx, workOrderID)
+	if err != nil || !liveWorkOrderClaim(order, time.Now()) {
+		return core.WorkOrderClaimIdentity{}, store.ErrWorkOrderClaimLost
+	}
+	return claim, nil
 }
 
 func claimIdentity(order core.WorkOrder) core.WorkOrderClaimIdentity {
