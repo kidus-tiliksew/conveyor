@@ -37,6 +37,19 @@ type embeddedSkillFile struct {
 
 var embeddedSkillManifest = []embeddedSkillFile{
 	{
+		assetPath:   "skills_assets/conveyor-testing-doc/SKILL.md",
+		sourcePath:  ".claude/skills/conveyor-testing-doc/SKILL.md",
+		relative:    "conveyor-testing-doc/SKILL.md",
+		rewriteFrom: "[docs/playbooks/conveyor-testing-doc.md](../../../docs/playbooks/conveyor-testing-doc.md)",
+		rewriteTo:   "[conveyor-testing-doc.md](conveyor-testing-doc.md)",
+		skill:       true,
+	},
+	{
+		assetPath:  "skills_assets/conveyor-testing-doc/conveyor-testing-doc.md",
+		sourcePath: "docs/playbooks/conveyor-testing-doc.md",
+		relative:   "conveyor-testing-doc/conveyor-testing-doc.md",
+	},
+	{
 		assetPath:   "skills_assets/conveyor-work/SKILL.md",
 		sourcePath:  ".claude/skills/conveyor-work/SKILL.md",
 		relative:    "conveyor-work/SKILL.md",
