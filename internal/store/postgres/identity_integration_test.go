@@ -149,6 +149,36 @@ func TestIdentityBootstrapAndPersonalAccessTokenLifecycleIntegration(t *testing.
 	if credential, verifyErr := st.VerifyCredential(t.Context(), ownerBoundAgent.Value); verifyErr != nil || credential.RunWorkspaceID != "demo" || credential.RunWorkOrderID != "order-1" || credential.RunSessionID != "session-1" {
 		t.Fatalf("bound agent credential=%+v err=%v", credential, verifyErr)
 	}
+	revocationBinding := store.RunAgentCredentialBinding{WorkspaceID: "demo", WorkOrderID: "order-2", SessionID: "session-2"}
+	revocationLabel, err := store.RunAgentCredentialLabel(revocationBinding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	revocableAgent, err := st.IssueAgentCredential(t.Context(), principal.ID, revocationLabel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, mismatched := range map[string]store.RunAgentCredentialBinding{
+		"workspace":  {WorkspaceID: "other", WorkOrderID: "order-2", SessionID: "session-2"},
+		"work order": {WorkspaceID: "demo", WorkOrderID: "order-3", SessionID: "session-2"},
+		"session":    {WorkspaceID: "demo", WorkOrderID: "order-2", SessionID: "session-3"},
+	} {
+		if revokeErr := st.RevokeRunAgentCredential(t.Context(), principal.ID, revocableAgent.ID, mismatched); !errors.Is(revokeErr, store.ErrRunAgentCredentialBindingMismatch) {
+			t.Fatalf("%s mismatch revoke err=%v", name, revokeErr)
+		}
+		if credential, verifyErr := st.VerifyCredential(t.Context(), revocableAgent.Value); verifyErr != nil || credential.ID != revocableAgent.ID {
+			t.Fatalf("%s mismatch changed credential=%+v err=%v", name, credential, verifyErr)
+		}
+	}
+	if err = st.RevokeRunAgentCredential(t.Context(), principal.ID, revocableAgent.ID, revocationBinding); err != nil {
+		t.Fatalf("revoke bound agent credential: %v", err)
+	}
+	if err = st.RevokeRunAgentCredential(t.Context(), principal.ID, revocableAgent.ID, revocationBinding); err != nil {
+		t.Fatalf("repeat bound agent revocation: %v", err)
+	}
+	if _, err = st.VerifyCredential(t.Context(), revocableAgent.Value); !errors.Is(err, ErrInvalidPersonalAccessToken) {
+		t.Fatalf("revoked bound agent verification err=%v, want invalid", err)
+	}
 	if user, err := st.DeactivateIdentityUser(t.Context(), principal.ID); err != nil || user.Status != "deactivated" {
 		t.Fatalf("deactivate user=%+v err=%v", user, err)
 	}

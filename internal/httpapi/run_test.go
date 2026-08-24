@@ -55,12 +55,21 @@ func (f *taskRunAgentCredentialFixture) IssueAgentCredential(_ context.Context, 
 	return issued, nil
 }
 
-func (f *taskRunAgentCredentialFixture) RevokeAgentCredential(_ context.Context, userID, credentialID string) error {
+func (f *taskRunAgentCredentialFixture) RevokeRunAgentCredential(_ context.Context, userID, credentialID string, expected store.RunAgentCredentialBinding) error {
 	if userID != "local-operator" {
 		return store.ErrNotFound
 	}
-	f.revoked = append(f.revoked, credentialID)
-	return nil
+	for _, issued := range f.issued {
+		binding, ok := store.ParseRunAgentCredentialLabel(issued.Label)
+		if issued.ID == credentialID && (!ok || binding != expected) {
+			return store.ErrRunAgentCredentialBindingMismatch
+		}
+		if issued.ID == credentialID {
+			f.revoked = append(f.revoked, credentialID)
+			return nil
+		}
+	}
+	return store.ErrNotFound
 }
 
 func createTaskRunOrder(t *testing.T, st store.Store, taskID string) core.WorkOrder {
@@ -201,6 +210,15 @@ func TestTaskRunHTTPIssuesClaimBoundAgentCredentialAndRevokesAfterSubmission(t *
 	release := taskRunHTTPCall(handler, http.MethodPost, "/v1/tasks/target/run-orders/"+order.ID+"/release", `{"session_id":"run-session","reason":"done","outcome":"released"}`)
 	if release.Code != http.StatusOK {
 		t.Fatalf("release status=%d body=%s", release.Code, release.Body.String())
+	}
+	crossSession := taskRunHTTPCall(handler, http.MethodDelete, "/v1/tasks/target/run-orders/"+order.ID+"/agent-credential", `{"session_id":"other-session","credential_id":"agent-1"}`)
+	if crossSession.Code != http.StatusConflict || len(fixture.revoked) != 0 {
+		t.Fatalf("cross-session revoke status=%d body=%s revoked=%v", crossSession.Code, crossSession.Body.String(), fixture.revoked)
+	}
+	other := createTaskRunOrder(t, st, "other")
+	crossOrder := taskRunHTTPCall(handler, http.MethodDelete, "/v1/tasks/other/run-orders/"+other.ID+"/agent-credential", `{"session_id":"run-session","credential_id":"agent-1"}`)
+	if crossOrder.Code != http.StatusConflict || len(fixture.revoked) != 0 {
+		t.Fatalf("cross-order revoke status=%d body=%s revoked=%v", crossOrder.Code, crossOrder.Body.String(), fixture.revoked)
 	}
 	revoked := taskRunHTTPCall(handler, http.MethodDelete, "/v1/tasks/target/run-orders/"+order.ID+"/agent-credential", `{"session_id":"run-session","credential_id":"agent-1"}`)
 	if revoked.Code != http.StatusNoContent || len(fixture.revoked) != 1 || fixture.revoked[0] != "agent-1" {

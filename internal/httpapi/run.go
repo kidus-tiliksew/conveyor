@@ -488,7 +488,16 @@ func (s *Server) revokeTaskRunAgentCredential(w http.ResponseWriter, r *http.Req
 		return
 	}
 	credential, _ := store.CredentialFromContext(r.Context())
-	if err := s.AgentCredentials.RevokeAgentCredential(r.Context(), credential.OwnerUserID, request.CredentialID); err != nil && !errors.Is(err, store.ErrNotFound) {
+	workspaceID, _ := store.WorkspaceFromContext(r.Context())
+	binding := store.RunAgentCredentialBinding{
+		WorkspaceID: workspaceID,
+		WorkOrderID: chi.URLParam(r, "order_id"),
+		SessionID:   request.SessionID,
+	}
+	if err := s.AgentCredentials.RevokeRunAgentCredential(r.Context(), credential.OwnerUserID, request.CredentialID, binding); errors.Is(err, store.ErrRunAgentCredentialBindingMismatch) {
+		http.Error(w, store.ErrRunAgentCredentialBindingMismatch.Error(), http.StatusConflict)
+		return
+	} else if err != nil && !errors.Is(err, store.ErrNotFound) {
 		log.Printf("revoke task run agent credential: %v", err)
 		http.Error(w, "agent credential revocation failed", http.StatusInternalServerError)
 		return

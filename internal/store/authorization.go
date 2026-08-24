@@ -117,7 +117,7 @@ type PersonalAccessTokenStore interface {
 // (req-security-boundaries REQ-1/AC-1.1, REQ-2/AC-2.2-AC-2.3).
 type AgentCredentialStore interface {
 	IssueAgentCredential(context.Context, string, string) (IssuedAgentCredential, error)
-	RevokeAgentCredential(context.Context, string, string) error
+	RevokeRunAgentCredential(context.Context, string, string, RunAgentCredentialBinding) error
 }
 
 type IssuedAgentCredential struct {
@@ -134,6 +134,8 @@ type RunAgentCredentialBinding struct {
 	WorkOrderID string `json:"work_order_id"`
 	SessionID   string `json:"session_id"`
 }
+
+var ErrRunAgentCredentialBindingMismatch = errors.New("agent credential does not match the task run binding")
 
 func RunAgentCredentialLabel(binding RunAgentCredentialBinding) (string, error) {
 	if strings.TrimSpace(binding.WorkspaceID) == "" || strings.TrimSpace(binding.WorkOrderID) == "" || strings.TrimSpace(binding.SessionID) == "" {
