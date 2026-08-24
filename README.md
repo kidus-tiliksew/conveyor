@@ -12,11 +12,7 @@ so that when something is wrong you know what else is affected.
 
 Conveyor is a software factory for agent-written code. 
 
-It queues work from Requirements, System Design documents, and Decisions. 
-
-Human operators confirm the documents, and approve plans when required.
-
-Agents on your machines plan, implement, and review that work.
+It queues work from Requirements, System Design documents, and Decisions. Human operators confirm the documents, and approve plans when required. Agents on your machines plan, implement, and review that work.
 
 Conveyor has used this process to build itself since July 2026.
 
