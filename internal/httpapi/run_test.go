@@ -40,7 +40,27 @@ func taskRunHTTPFixture(t *testing.T) (*Server, store.Store, http.Handler) {
 	server.ConfigProvider = provider
 	server.WorkOrders = orders
 	server.Workers = workers
+	server.AgentCredentials = &taskRunAgentCredentialFixture{}
 	return server, st, server.Handler()
+}
+
+type taskRunAgentCredentialFixture struct {
+	issued  []store.IssuedAgentCredential
+	revoked []string
+}
+
+func (f *taskRunAgentCredentialFixture) IssueAgentCredential(_ context.Context, userID, label string) (store.IssuedAgentCredential, error) {
+	issued := store.IssuedAgentCredential{ID: fmt.Sprintf("agent-%d", len(f.issued)+1), UserID: userID, Label: label, Value: "child-agent-secret"}
+	f.issued = append(f.issued, issued)
+	return issued, nil
+}
+
+func (f *taskRunAgentCredentialFixture) RevokeAgentCredential(_ context.Context, userID, credentialID string) error {
+	if userID != "local-operator" {
+		return store.ErrNotFound
+	}
+	f.revoked = append(f.revoked, credentialID)
+	return nil
 }
 
 func createTaskRunOrder(t *testing.T, st store.Store, taskID string) core.WorkOrder {
@@ -154,6 +174,37 @@ func TestTaskRunHTTPIsExplicitlyTaskScopedAndUsesUserLeaseLifecycle(t *testing.T
 	}
 	if released.State != core.WorkOrderQueued || released.SessionID != "" || released.ClaimantID != "" {
 		t.Fatalf("released=%+v", released)
+	}
+}
+
+func TestTaskRunHTTPIssuesClaimBoundAgentCredentialAndRevokesAfterSubmission(t *testing.T) {
+	server, st, handler := taskRunHTTPFixture(t)
+	order := createTaskRunOrder(t, st, "target")
+	claim := taskRunHTTPCall(handler, http.MethodPost, "/v1/tasks/target/run-orders/"+order.ID+"/claim", `{"session_id":"run-session","client_token":"run-secret","agent":"codex","model":"gpt"}`)
+	if claim.Code != http.StatusOK {
+		t.Fatalf("claim status=%d body=%s", claim.Code, claim.Body.String())
+	}
+	issued := taskRunHTTPCall(handler, http.MethodPost, "/v1/tasks/target/run-orders/"+order.ID+"/agent-credential", `{"session_id":"run-session"}`)
+	if issued.Code != http.StatusCreated || !strings.Contains(issued.Body.String(), `"credential":"child-agent-secret"`) || strings.Contains(issued.Body.String(), "local-operator") {
+		t.Fatalf("issue status=%d body=%s", issued.Code, issued.Body.String())
+	}
+	fixture := server.AgentCredentials.(*taskRunAgentCredentialFixture)
+	if len(fixture.issued) != 1 {
+		t.Fatalf("issued=%+v", fixture.issued)
+	}
+	binding, bound := store.ParseRunAgentCredentialLabel(fixture.issued[0].Label)
+	if fixture.issued[0].UserID != "local-operator" || !bound || binding.WorkspaceID != "demo" || binding.WorkOrderID != order.ID || binding.SessionID != "run-session" {
+		t.Fatalf("issued=%+v", fixture.issued)
+	}
+	// A terminal stage clears claim authority before launcher cleanup. The
+	// authenticated owner must still be able to revoke the exact agent token.
+	release := taskRunHTTPCall(handler, http.MethodPost, "/v1/tasks/target/run-orders/"+order.ID+"/release", `{"session_id":"run-session","reason":"done","outcome":"released"}`)
+	if release.Code != http.StatusOK {
+		t.Fatalf("release status=%d body=%s", release.Code, release.Body.String())
+	}
+	revoked := taskRunHTTPCall(handler, http.MethodDelete, "/v1/tasks/target/run-orders/"+order.ID+"/agent-credential", `{"session_id":"run-session","credential_id":"agent-1"}`)
+	if revoked.Code != http.StatusNoContent || len(fixture.revoked) != 1 || fixture.revoked[0] != "agent-1" {
+		t.Fatalf("revoke status=%d body=%s revoked=%v", revoked.Code, revoked.Body.String(), fixture.revoked)
 	}
 }
 

@@ -114,6 +114,12 @@ func TestIdentityBootstrapAndPersonalAccessTokenLifecycleIntegration(t *testing.
 	if resolved, err = st.VerifyCredential(t.Context(), agent.Value); err != nil || resolved.Kind != core.CredentialAgent {
 		t.Fatalf("agent credential changed by PAT revocation: credential=%+v err=%v", resolved, err)
 	}
+	if err = st.RevokeAgentCredential(t.Context(), principal.ID, agent.ID); err != nil {
+		t.Fatalf("revoke agent credential: %v", err)
+	}
+	if _, err = st.VerifyCredential(t.Context(), agent.Value); !errors.Is(err, ErrInvalidPersonalAccessToken) {
+		t.Fatalf("revoked agent verification err=%v, want invalid", err)
+	}
 	if revoked, err := st.RevokePersonalAccessToken(t.Context(), issued.ID); err != nil || revoked.RevokedAt == nil {
 		t.Fatalf("revoke token=%+v err=%v", revoked, err)
 	}
@@ -125,11 +131,25 @@ func TestIdentityBootstrapAndPersonalAccessTokenLifecycleIntegration(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
+	boundLabel, err := store.RunAgentCredentialLabel(store.RunAgentCredentialBinding{WorkspaceID: "demo", WorkOrderID: "order-1", SessionID: "session-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ownerBoundAgent, err := st.IssueAgentCredential(t.Context(), principal.ID, boundLabel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if credential, verifyErr := st.VerifyCredential(t.Context(), ownerBoundAgent.Value); verifyErr != nil || credential.RunWorkspaceID != "demo" || credential.RunWorkOrderID != "order-1" || credential.RunSessionID != "session-1" {
+		t.Fatalf("bound agent credential=%+v err=%v", credential, verifyErr)
+	}
 	if user, err := st.DeactivateIdentityUser(t.Context(), principal.ID); err != nil || user.Status != "deactivated" {
 		t.Fatalf("deactivate user=%+v err=%v", user, err)
 	}
 	if _, err := st.VerifyPersonalAccessToken(t.Context(), second.Value); !errors.Is(err, ErrInvalidPersonalAccessToken) {
 		t.Fatalf("deactivated-user verification err=%v, want invalid", err)
+	}
+	if _, err := st.VerifyCredential(t.Context(), ownerBoundAgent.Value); !errors.Is(err, ErrInvalidPersonalAccessToken) {
+		t.Fatalf("deactivated-owner agent verification err=%v, want invalid", err)
 	}
 	if _, err := st.IssuePersonalAccessToken(t.Context(), principal.ID, "forbidden"); err == nil {
 		t.Fatal("issued token for deactivated user")

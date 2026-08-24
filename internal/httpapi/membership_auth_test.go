@@ -142,6 +142,32 @@ func TestProvisionIdentityUserRequiresHumanDeploymentOperator(t *testing.T) {
 	}
 }
 
+func TestAgentCredentialCannotReachRepresentativeOperatorRESTRoutes(t *testing.T) {
+	server := NewServer(store.NewMemory())
+	server.Workspace = "demo"
+	server.Credentials = staticCredentialVerifier{
+		"run-agent": {ID: "agt_run", OwnerUserID: "operator", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser},
+	}
+	handler := server.Handler()
+	for _, route := range []struct {
+		method string
+		path   string
+		body   string
+	}{
+		{http.MethodPost, "/v1/requirements/req/versions/1/confirm?workspace_id=demo", ""},
+		{http.MethodPost, "/v1/workspaces/demo/members", `{"email":"member@example.test","role":"viewer"}`},
+		{http.MethodPost, "/v1/tokens", `{"label":"smuggled"}`},
+	} {
+		request := httptest.NewRequest(route.method, route.path, strings.NewReader(route.body))
+		request.Header.Set("Authorization", "Bearer run-agent")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusUnauthorized {
+			t.Fatalf("%s %s status=%d body=%s", route.method, route.path, response.Code, response.Body.String())
+		}
+	}
+}
+
 func TestProvisionIdentityUserClassifiesValidationAndStoreFailures(t *testing.T) {
 	fixture := &identityProvisioningFixture{Store: store.NewMemory()}
 	server := NewServer(fixture)
@@ -458,6 +484,8 @@ func TestTaskRunRoutesAlsoRequireClaimWork(t *testing.T) {
 	}{
 		{http.MethodGet, "/v1/tasks/task/run-order"},
 		{http.MethodPost, "/v1/tasks/task/run-orders/order/claim"},
+		{http.MethodPost, "/v1/tasks/task/run-orders/order/agent-credential"},
+		{http.MethodDelete, "/v1/tasks/task/run-orders/order/agent-credential"},
 		{http.MethodPost, "/v1/tasks/task/run-orders/order/renew"},
 		{http.MethodGet, "/v1/tasks/task/run-orders/order/reconcile"},
 		{http.MethodPost, "/v1/tasks/task/run-orders/order/attempt-checkpoint"},
@@ -493,6 +521,8 @@ func TestTaskRunRoutesRejectDashboardSessionsAndAcceptBearerPATs(t *testing.T) {
 	}{
 		{http.MethodGet, "/v1/tasks/task/run-order"},
 		{http.MethodPost, "/v1/tasks/task/run-orders/order/claim"},
+		{http.MethodPost, "/v1/tasks/task/run-orders/order/agent-credential"},
+		{http.MethodDelete, "/v1/tasks/task/run-orders/order/agent-credential"},
 		{http.MethodPost, "/v1/tasks/task/run-orders/order/renew"},
 		{http.MethodGet, "/v1/tasks/task/run-orders/order/reconcile"},
 		{http.MethodPost, "/v1/tasks/task/run-orders/order/attempt-checkpoint"},

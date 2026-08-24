@@ -125,7 +125,22 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 	if err != nil {
 		return nil, err
 	}
+	session := stringArg("session_id")
 	ctx := store.WithWorkspace(r.Context(), workspace)
+	// A conveyor-run child credential is narrower than the general agent class:
+	// it cannot escape the exact parent-claimed session that minted it
+	// (req-security-boundaries REQ-1/AC-1.1; design-http-api).
+	if credential, ok := store.CredentialFromContext(ctx); ok && credential.Kind == core.CredentialAgent && credential.RunWorkOrderID != "" {
+		if credential.RunWorkspaceID != workspace {
+			return nil, fmt.Errorf("workspace_not_found: workspace not found")
+		}
+		if name == "claim_work_order" {
+			return nil, fmt.Errorf("claim_work_order is unavailable to a session-bound run child credential")
+		}
+		if workOrderID := stringArg("work_order_id"); workOrderID != "" && (workOrderID != credential.RunWorkOrderID || session != credential.RunSessionID) {
+			return nil, store.ErrWorkOrderClaimUnauthorized
+		}
+	}
 	if name == "submit_spec" {
 		return nil, fmt.Errorf("MCP tool submit_spec not found; use submit_plan")
 	}
@@ -149,7 +164,6 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 			return nil, fmt.Errorf("workspace_not_found: workspace not found")
 		}
 	}
-	session := stringArg("session_id")
 	switch name {
 	case "create_task":
 		if workerAuth {
@@ -212,6 +226,15 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 			return nil, listErr
 		}
 		orders = projectAssigneeClaimability(ctx, orders, s.ForgeTokens)
+		if credential, ok := store.CredentialFromContext(ctx); ok && credential.Kind == core.CredentialAgent && credential.RunWorkOrderID != "" {
+			filtered := orders[:0]
+			for _, order := range orders {
+				if order.ID == credential.RunWorkOrderID {
+					filtered = append(filtered, order)
+				}
+			}
+			orders = filtered
+		}
 		return s.projectWorkOrderSessions(ctx, orders, false, core.Worker{})
 	case "claim_work_order":
 		lease := core.DefaultWorkOrderClaimLease
@@ -513,6 +536,10 @@ func (s *Server) authorizeClaimantSession(ctx context.Context, workerAuth bool, 
 	}
 	credential, ok := store.CredentialFromContext(ctx)
 	if !ok {
+		return core.WorkOrderClaimIdentity{}, store.ErrWorkOrderClaimUnauthorized
+	}
+	if credential.Kind == core.CredentialAgent && credential.RunWorkOrderID != "" &&
+		(credential.RunWorkOrderID != workOrderID || credential.RunSessionID != sessionID) {
 		return core.WorkOrderClaimIdentity{}, store.ErrWorkOrderClaimUnauthorized
 	}
 	if order.WorkerID == "" {

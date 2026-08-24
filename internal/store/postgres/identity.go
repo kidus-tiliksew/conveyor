@@ -30,12 +30,7 @@ type PersonalAccessToken = core.PersonalAccessToken
 
 type IssuedPersonalAccessToken = core.IssuedPersonalAccessToken
 
-type IssuedAgentCredential struct {
-	ID     string
-	UserID string
-	Label  string
-	Value  string
-}
+type IssuedAgentCredential = store.IssuedAgentCredential
 
 // GetCallerIdentity resolves only the credential-derived user. A workspace
 // role is joined only when the HTTP boundary has supplied an authorized
@@ -475,6 +470,21 @@ func (s *Store) IssueAgentCredential(ctx context.Context, userID, label string) 
 	return IssuedAgentCredential{ID: row.ID, UserID: row.UserID, Label: row.Label, Value: value}, nil
 }
 
+// RevokeAgentCredential revokes only an agent-class credential owned by the
+// authenticated run parent. The kind and owner predicates make human PATs and
+// credentials belonging to another user unaddressable through this boundary.
+func (s *Store) RevokeAgentCredential(ctx context.Context, userID, credentialID string) error {
+	result, err := s.pool.Exec(ctx, `UPDATE user_tokens SET revoked_at=COALESCE(revoked_at, now())
+		WHERE id=$1 AND user_id=$2 AND kind=$3`, credentialID, userID, string(core.CredentialAgent))
+	if err != nil {
+		return fmt.Errorf("revoke agent credential: %w", err)
+	}
+	if result.RowsAffected() != 1 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
 func (s *Store) VerifyPersonalAccessToken(ctx context.Context, candidate string) (IdentityUser, error) {
 	credential, user, err := s.verifyCredential(ctx, candidate)
 	if err != nil {
@@ -764,6 +774,13 @@ func (s *Store) verifyCredential(ctx context.Context, candidate string) (core.Au
 	}
 	kind, scope := core.CredentialKind(row.Kind), core.CredentialScope(row.Scope)
 	credential := core.AuthenticatedCredential{ID: row.ID, OwnerUserID: row.UserID, Kind: kind, Scope: scope}
+	if kind == core.CredentialAgent {
+		if binding, ok := store.ParseRunAgentCredentialLabel(row.Label); ok {
+			credential.RunWorkspaceID = binding.WorkspaceID
+			credential.RunWorkOrderID = binding.WorkOrderID
+			credential.RunSessionID = binding.SessionID
+		}
+	}
 	user := IdentityUser{ID: row.UserID, Email: row.Email, DisplayName: row.DisplayName, Status: row.Status}
 	return credential, user, nil
 }
