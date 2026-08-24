@@ -208,8 +208,8 @@ func configCmd() *cobra.Command {
 		},
 	}
 	initExecution := &cobra.Command{
-		Use: "init-execution", Short: "Interactively create local execution settings", Args: cobra.NoArgs,
-		Long: "Interactively create local execution settings. The name is deliberately distinct from `conveyor task setup`, which changes a task's frozen workspace setup.",
+		Use: "init-execution", Short: "Create local execution settings", Args: cobra.NoArgs,
+		Long: "Create local execution settings interactively, or pass --defaults for the non-interactive detected defaults. The name is deliberately distinct from `conveyor task setup`, which changes a task's frozen workspace setup.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			resolvedConfig, err := resolveLocalExecutionConfigPath(cmd, configPath)
 			if err != nil {
@@ -219,9 +219,17 @@ func configCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			defaults, err := cmd.Flags().GetBool("defaults")
+			if err != nil {
+				return err
+			}
+			if defaults {
+				return runExecutionSetupDefaults(cmd.Context(), cmd.OutOrStdout(), resolvedConfig.Path, resolved.Workspace.Value)
+			}
 			return runExecutionSetupWizard(cmd.Context(), cmd.InOrStdin(), cmd.OutOrStdout(), resolvedConfig.Path, resolved.Workspace.Value)
 		},
 	}
+	initExecution.Flags().Bool("defaults", false, "write the first healthy detected harness defaults without prompting")
 	export := &cobra.Command{
 		Use: "export", Short: "Write the current workspace config as YAML",
 		RunE: func(cmd *cobra.Command, _ []string) error {
