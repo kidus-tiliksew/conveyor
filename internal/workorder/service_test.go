@@ -2423,7 +2423,9 @@ func TestSubmitForReviewEvidenceGateIsSideEffectFreeAndPropagatesToEveryReviewSe
 	assertRejectedWithoutSideEffects := func() {
 		t.Helper()
 		if _, submitErr := service.SubmitForReview(ctx, job.ID, "implementer"); submitErr == nil ||
-			!strings.Contains(submitErr.Error(), "role=verification_evidence") ||
+			!strings.Contains(submitErr.Error(), "/v1/worker/work-orders/"+job.ID+"/verification-evidence") ||
+			!strings.Contains(submitErr.Error(), "X-Conveyor-Work-Order-Token") ||
+			!strings.Contains(submitErr.Error(), "X-Conveyor-Work-Order-Session") ||
 			!strings.Contains(submitErr.Error(), "screenshot") {
 			t.Fatalf("evidence rejection=%v", submitErr)
 		}

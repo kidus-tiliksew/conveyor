@@ -6241,6 +6241,54 @@ func (s *Store) CreateArtifact(ctx context.Context, artifact core.Artifact, cont
 	return artifact, nil
 }
 
+func (s *Store) CreateClaimedVerificationEvidence(ctx context.Context, request store.ClaimedVerificationEvidenceRequest, content []byte) (core.Artifact, error) {
+	artifact := core.Artifact{
+		Workspace: workspace(ctx), Name: request.Name, ContentType: request.ContentType,
+		SizeBytes: int64(len(content)), Role: core.ArtifactRoleVerificationEvidence,
+		CreatedAt: time.Now().UTC(),
+	}
+	clientTokenHash := fmt.Sprintf("%x", sha256.Sum256([]byte(request.ClientToken)))
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return core.Artifact{}, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	if strings.TrimSpace(request.WorkOrderID) == "" || strings.TrimSpace(request.WorkerID) == "" ||
+		strings.TrimSpace(request.SessionID) == "" || strings.TrimSpace(request.ClientToken) == "" {
+		return core.Artifact{}, store.ErrVerificationEvidenceClaimConflict
+	}
+	if err = tx.QueryRow(ctx, `SELECT task_id FROM work_orders
+		WHERE workspace_id=$1 AND id=$2 AND state='claimed' AND stage='implement'
+		AND worker_id=$3 AND session_id=$4 AND client_token_hash=$5
+		AND lease_expires_at>now() AND (execution_deadline IS NULL OR execution_deadline>now())
+		FOR UPDATE`, workspace(ctx), request.WorkOrderID, request.WorkerID, request.SessionID, clientTokenHash).Scan(&artifact.TaskID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return core.Artifact{}, store.ErrVerificationEvidenceClaimConflict
+		}
+		return core.Artifact{}, err
+	}
+	normalized, err := core.NormalizeVerificationEvidenceContentType(artifact.ContentType, artifact.SizeBytes)
+	if err != nil {
+		return core.Artifact{}, err
+	}
+	artifact.ContentType = normalized
+	artifact.ID = fmt.Sprintf("%x", sha256.Sum256(content))
+	if _, err = tx.Exec(ctx, `INSERT INTO artifacts (id,workspace_id,name,content_type,size_bytes,content,created_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(workspace_id,id) DO NOTHING`,
+		artifact.ID, workspace(ctx), artifact.Name, artifact.ContentType, artifact.SizeBytes, content, artifact.CreatedAt); err != nil {
+		return core.Artifact{}, err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO artifact_links (workspace_id,artifact_id,task_id,role)
+		VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING`, workspace(ctx), artifact.ID, artifact.TaskID, artifact.Role); err != nil {
+		return core.Artifact{}, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return core.Artifact{}, err
+	}
+	return artifact, nil
+}
+
 func (s *Store) GetArtifact(ctx context.Context, id string) (core.Artifact, []byte, error) {
 	var artifact core.Artifact
 	var content []byte
