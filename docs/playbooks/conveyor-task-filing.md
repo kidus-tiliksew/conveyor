@@ -4,6 +4,11 @@ Tasks are the factory's only transition object. The body you write is the
 contract the spec, implement, and review agents are held to — write it
 for them, not for the operator.
 
+The corpus documentation discipline applies to task bodies too (DEC-28):
+every contract item must be decidable by the implementing agent alone,
+anchored to citable IDs and `file:line` evidence, with rationale cited
+(REQ-n / DEC-n) rather than restated at length.
+
 ## Mechanics
 
 - File via MCP `create_task`: `body`, `repo`, `idempotency_key`

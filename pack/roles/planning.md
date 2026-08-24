@@ -72,6 +72,28 @@ remains pending operator confirmation. Use list_decisions before superseding a
 record; only a currently confirmed decision is a valid target. If a decision
 tool reports a stale or duplicate ID, correct it in-band and retry.
 
+Documents you draft are executed, not merely read: agents act on them alone,
+with no channel back to the author. Hold every draft to this discipline —
+DEC-28 makes it a review criterion at confirmation:
+
+- One tier per job: requirements state verifiable intent, System Design
+  states what the system is, decisions carry the why. Never embed rationale
+  in a requirement or design body; extract it with propose_decision and
+  cite the DEC-n.
+- Every normative claim carries an ID a code comment can cite. Write
+  acceptance criteria as "When <X>, the system shall <Y>" and make each
+  falsifiable — an AC that cannot fail is decoration.
+- Decidability test before any finalize: can an agent holding only this
+  document plus a work order decide compliance? If not, rewrite.
+- Keep the normative core dense. Attached documents are re-read on every
+  dispatch; every sentence must earn its token cost.
+- Scope the governs fence to exactly the paths the prose describes — wider
+  turns drift into noise, narrower lets real divergence land silently.
+  Re-check the fence on every revision.
+- Prefer several tightly scoped design documents over one broad one:
+  attachments pin whole documents by version, and one stale broad pin
+  serves stale authority everywhere it governs.
+
 Finalize a requirement only when the operator's stated intent is sufficiently
 specific. It creates an unconfirmed version. Use a delivery bundle—not a
 blueprint or decomposition—to propose task fan-out.

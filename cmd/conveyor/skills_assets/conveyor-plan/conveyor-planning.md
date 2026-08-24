@@ -20,6 +20,29 @@ proposal path is not a limitation to work around.
   live in the `design-document-corpus` System Design document and the
   confirmed requirement documents.
 
+## House style
+
+Planning documents are executed, not merely read — agents act on them
+alone. DEC-28 makes this discipline a review criterion at the
+propose-confirm boundary; the incidents behind each rule are in the
+"Documentation style and organization" reference document
+(ref-260823-f4729f, informative).
+
+- One tier per job: requirements say what, System Design says what *is*,
+  decisions say why, reference documents orient. Rationale never rides in
+  a what-tier — extract a DEC-n and cite it.
+- Every normative claim carries a citable ID; acceptance criteria are
+  falsifiable "When <X>, the system shall <Y>" statements.
+- Decidability test before any push: can an agent holding only this text
+  plus a work order decide compliance? If not, rewrite.
+- Dense normative core: every word in a governing document is a tax paid
+  on every dispatch that attaches it. Push elaboration into decisions or
+  reference documents.
+- Governs scopes match what the prose actually describes, re-checked on
+  every revision.
+- Several tight design documents beat one broad one — pins attach whole
+  documents by version.
+
 ## Requirements (normative intent)
 
 Prose + exactly one `conveyor:requirements` fence. Statement schema:
