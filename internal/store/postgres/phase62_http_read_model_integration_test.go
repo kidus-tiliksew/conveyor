@@ -62,11 +62,14 @@ func TestPhase62RequirementsHTTPIncludesWorkspaceRequirementLineageIntegration(t
 	createRequirement(t, siblingCtx, "Sibling retries")
 
 	server := httpapi.NewServer(st)
-	server.Workspace = workspace
+	server.Credentials = nil // exercise the explicit memory-style shared-token fixture
+	server.Workspace, server.BearerToken = workspace, "token"
 	response := httptest.NewRecorder()
-	server.Handler().ServeHTTP(response, httptest.NewRequest(
+	request := httptest.NewRequest(
 		http.MethodGet, "/v1/requirements/"+requirementID, nil,
-	))
+	)
+	request.Header.Set("Authorization", "Bearer token")
+	server.Handler().ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}

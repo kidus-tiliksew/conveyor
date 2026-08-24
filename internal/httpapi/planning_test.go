@@ -206,6 +206,7 @@ func TestPlanningHTTPStreamsAISDKProtocolAndRestoresDurableMessages(t *testing.T
 	}
 
 	restore := httptest.NewRequest(http.MethodGet, "/v1/planning-sessions/"+session.ID+"/messages", nil)
+	authenticatedMemoryRead(server, restore)
 	restoredResponse := httptest.NewRecorder()
 	handler.ServeHTTP(restoredResponse, restore)
 	if restoredResponse.Code != http.StatusOK {
@@ -242,6 +243,7 @@ func TestPlanningHTTPRequiresMutationAuthAndKeepsWorkspaceScope(t *testing.T) {
 	}
 
 	conflict := httptest.NewRequest(http.MethodGet, "/v1/planning-sessions?workspace_id=demo", nil)
+	authenticatedMemoryRead(server, conflict)
 	conflict.Header.Set("X-Workspace-ID", "other")
 	conflictResponse := httptest.NewRecorder()
 	handler.ServeHTTP(conflictResponse, conflict)
@@ -406,7 +408,7 @@ func TestPlanningHTTPBundlePreviewAndOperatorApproval(t *testing.T) {
 	}
 
 	preview := httptest.NewRecorder()
-	server.Handler().ServeHTTP(preview, httptest.NewRequest(http.MethodGet, "/v1/planning-bundles", nil))
+	server.Handler().ServeHTTP(preview, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/planning-bundles", nil)))
 	if preview.Code != http.StatusOK || !strings.Contains(preview.Body.String(), bundle.ID) || !strings.Contains(preview.Body.String(), `"status":"pending"`) {
 		t.Fatalf("preview status=%d body=%s", preview.Code, preview.Body.String())
 	}

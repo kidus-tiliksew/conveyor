@@ -93,7 +93,7 @@ func TestSpecResponsesFilterMaterializedChildrenByOriginVersion(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			response := httptest.NewRecorder()
-			server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, test.path, nil))
+			server.Handler().ServeHTTP(response, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, test.path, nil)))
 			if response.Code != http.StatusOK {
 				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 			}
