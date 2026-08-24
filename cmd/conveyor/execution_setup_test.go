@@ -59,7 +59,8 @@ func TestExecutionWizardDeclineWritesNothing(t *testing.T) {
 	t.Cleanup(func() { wizardTerminal = previousTerminal })
 
 	var output bytes.Buffer
-	err := runExecutionSetupWizard(t.Context(), strings.NewReader("\x1b"), &output, path, "demo")
+	// Huh aborts forms on Ctrl+C; Escape is not a form-abort binding.
+	err := runExecutionSetupWizard(t.Context(), strings.NewReader("\x03"), &output, path, "demo")
 	if err != nil {
 		t.Fatal(err)
 	}
