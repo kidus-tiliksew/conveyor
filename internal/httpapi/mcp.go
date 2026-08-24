@@ -192,7 +192,8 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 	if s.WorkOrders == nil {
 		return nil, fmt.Errorf("work-order service unavailable")
 	}
-	if claimantBoundMCPTools[name] && !(name == "report_usage" && stringArg("source") == "worker_fallback") {
+	usageSource, _ := args["source"].(string)
+	if claimantBoundMCPTools[name] && !(name == "report_usage" && usageSource == "worker_fallback") {
 		if _, err := s.authorizeClaimantSession(ctx, workerAuth, worker, stringArg("work_order_id"), session); err != nil {
 			return nil, err
 		}
@@ -306,7 +307,7 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 			}
 			rateLimit = &status
 		}
-		if stringArg("source") == "worker_fallback" {
+		if usageSource == "worker_fallback" {
 			if !workerAuth {
 				return nil, fmt.Errorf("worker_fallback usage requires a worker credential")
 			}

@@ -667,9 +667,6 @@ func TestMCPWorkerFallbackDoesNotReplaceAgentUsage(t *testing.T) {
 		"tokens_in": 100.0, "tokens_out": 25.0, "cost_usd": 0.5,
 	}
 	workerRequest := request.WithContext(context.WithValue(request.Context(), workerContextKey{}, core.Worker{ID: "worker", Workspace: "demo"}))
-	if _, err := server.callMCPTool(workerRequest, "report_usage", args); err != nil {
-		t.Fatal(err)
-	}
 	fallback := maps.Clone(args)
 	fallback["tokens_in"] = 500.0
 	fallback["tokens_out"] = 125.0
@@ -680,6 +677,24 @@ func TestMCPWorkerFallbackDoesNotReplaceAgentUsage(t *testing.T) {
 		t.Fatal(err)
 	}
 	reported := result.(core.WorkOrder)
+	if reported.TokensIn != 500 || reported.TokensOut != 125 || reported.CostUSD != 0 || !reported.UsageReported || reported.SelfReported {
+		t.Fatalf("worker fallback was not classified as fallback usage: %+v", reported)
+	}
+	result, err = server.callMCPTool(workerRequest, "report_usage", args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reported = result.(core.WorkOrder)
+	if reported.TokensIn != 100 || reported.TokensOut != 25 || reported.CostUSD != 0.5 || !reported.UsageReported || !reported.SelfReported {
+		t.Fatalf("self-reported usage was not claimant-bound agent usage: %+v", reported)
+	}
+	fallback["tokens_in"] = 700.0
+	fallback["tokens_out"] = 175.0
+	result, err = server.callMCPTool(workerRequest, "report_usage", fallback)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reported = result.(core.WorkOrder)
 	if reported.TokensIn != 100 || reported.TokensOut != 25 || reported.CostUSD != 0.5 || !reported.UsageReported || !reported.SelfReported {
 		t.Fatalf("fallback replaced agent usage: %+v", reported)
 	}
