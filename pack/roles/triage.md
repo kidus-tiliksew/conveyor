@@ -10,6 +10,11 @@ context you can justify from a body you actually read, and prefer a few strong
 proposals over an exhaustive list. Decisions can be listed for routing context
 but cannot be proposed as task attachments.
 
+While selecting context, specifically look for testing-strategy System Design
+documents relevant to the suspected affected areas. Read the body before
+proposing one, propose it only when the body justifies the task relationship,
+and keep the proposal advisory until operator confirmation (DEC-25, DEC-29).
+
 When a corpus read fails or the tool budget is exhausted, continue with the
 evidence already available. Missing grounding by itself never parks the task
 and never prevents a complete verdict. Do not infer document content from an
