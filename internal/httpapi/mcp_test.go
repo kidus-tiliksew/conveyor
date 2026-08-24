@@ -996,14 +996,27 @@ func TestMCPClaimantBoundToolsRejectForeignUsersAndWorkers(t *testing.T) {
 				ctx := store.WithWorkspace(t.Context(), "demo")
 				st := store.NewMemory()
 				taskID := "claim-bound-" + tool + "-" + core.NewTaskID()
-				jobID := taskID + "-implement-1"
-				if err := st.CreateTask(ctx, core.Task{ID: taskID, Workspace: "demo", Repo: "conveyor", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: time.Now()}); err != nil {
+				stage := core.StageImplement
+				if tool == "submit_plan" {
+					stage = core.StageSpec
+				} else if tool == "submit_review_verdict" {
+					stage = core.StageReview
+				}
+				jobID := taskID + "-" + string(stage) + "-1"
+				task := core.Task{ID: taskID, Workspace: "demo", Repo: "conveyor", Branch: "conveyor/" + taskID, BaseBranch: "main", State: core.TaskRunning, NextStage: stage, SpecApproval: tool == "submit_plan", PolicyVersion: 1, CreatedAt: time.Now()}
+				if err := st.CreateTask(ctx, task); err != nil {
 					t.Fatal(err)
 				}
-				if err := st.CreateJob(ctx, core.Job{ID: jobID, TaskID: taskID, Stage: core.StageImplement, State: core.JobPending}); err != nil {
+				if err := st.CreateJob(ctx, core.Job{ID: jobID, TaskID: taskID, Stage: stage, State: core.JobPending}); err != nil {
 					t.Fatal(err)
 				}
-				if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: jobID, TaskID: taskID, JobID: jobID, Stage: core.StageImplement, State: core.WorkOrderQueued}); err != nil {
+				order := core.WorkOrder{ID: jobID, TaskID: taskID, JobID: jobID, Stage: stage, State: core.WorkOrderQueued}
+				if stage == core.StageReview {
+					order.ReviewRound, order.ReviewSeat = 1, 1
+					order.ServedRequirementSnapshot = []core.ServedRequirementContext{}
+					order.GovernanceSnapshot = &core.GovernanceSnapshot{Designs: []core.GovernanceDesignContext{}, Decisions: []core.Decision{}, PendingDesignProposals: []core.PendingSystemDesignProposal{}}
+				}
+				if err := storetest.For(st).CreateWorkOrder(ctx, order); err != nil {
 					t.Fatal(err)
 				}
 				claim := core.WorkOrderClaim{SessionID: "victim-session", ClientToken: "secret", Lease: time.Minute}
@@ -1015,16 +1028,37 @@ func TestMCPClaimantBoundToolsRejectForeignUsersAndWorkers(t *testing.T) {
 				if _, err := storetest.For(st).ClaimWorkOrder(ctx, jobID, claim); err != nil {
 					t.Fatal(err)
 				}
+				cfg := &config.Config{Workspace: "demo", MaxBounces: 2, Repos: []config.Repo{{Name: "conveyor", Base: "main"}}, Routing: config.Routing{Stages: map[string]config.StageRoute{
+					"spec": {Execution: config.ExecutionMCP, Timeout: time.Hour}, "implement": {Execution: config.ExecutionMCP, Timeout: time.Hour}, "review": {Execution: config.ExecutionMCP, Timeout: time.Hour},
+				}}}
+				dispatcher := dispatch.New(st, cfg, nil)
+				dispatcher.DisableMemoryQueueForTest()
 				server := NewServer(st)
 				server.Workspace = "demo"
-				server.WorkOrders = &workorder.Service{Store: st}
+				server.WorkOrders = &workorder.Service{Store: st, Dispatcher: dispatcher, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
+				if tool == "await_review" {
+					claimed, err := st.GetWorkOrder(ctx, jobID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					claimed.State = core.WorkOrderSubmitted
+					if err = storetest.For(st).UpdateWorkOrder(ctx, claimed, core.WorkOrderCmdSubmitForReview); err != nil {
+						t.Fatal(err)
+					}
+				}
 				return server, jobID
 			}
 			args := func(orderID string) map[string]any {
 				return map[string]any{
 					"workspace_id": "demo", "work_order_id": orderID, "session_id": "victim-session",
 					"message": "progress", "tokens_in": 1.0, "tokens_out": 1.0, "cost_usd": 0.0,
-					"transcript": "redacted", "markdown": "invalid", "decomposition": []any{}, "timeout_seconds": 0.0,
+					"transcript":    "redacted",
+					"markdown":      "## Approach\nUse the approved path.\n\n## Files touched\n- internal/httpapi/mcp.go\n\n## Ordering\n1. Implement.\n\n## Risks\n- Drift.\n\n## Done criteria\n- The change is tested.",
+					"decomposition": []any{}, "timeout_seconds": 0.001,
+					"verdict": "changes_requested", "reason_code": "tests", "summary": "claimant admission succeeds", "feedback": "add coverage",
+					"requirement_citations":  map[string]any{"applicable": false, "cited_ids": []any{}, "unknown_ids": []any{}, "unserved_ids": []any{}, "conflicts": []any{}},
+					"done_criteria_coverage": map[string]any{"applicable": false, "summary": "No execution plan is available", "satisfied": []any{}, "unsatisfied": []any{}, "unverified": []any{}, "conflicts": []any{}},
+					"governance_assessment":  map[string]any{"design_applicable": false, "decision_citable": false, "cited_ids": []any{}, "unknown_ids": []any{}, "ungoverned_ids": []any{}, "superseded_ids": []any{}, "conflicts": []any{}},
 				}
 			}
 
@@ -1037,13 +1071,8 @@ func TestMCPClaimantBoundToolsRejectForeignUsersAndWorkers(t *testing.T) {
 
 			owner := httptest.NewRequest(http.MethodPost, "/mcp", nil)
 			owner = owner.WithContext(store.WithCredential(owner.Context(), core.AuthenticatedCredential{ID: "owner", OwnerUserID: "owner", Kind: core.CredentialUser}))
-			if tool == "await_review" {
-				canceled, cancel := context.WithCancel(owner.Context())
-				cancel()
-				owner = owner.WithContext(canceled)
-			}
-			if _, err := userServer.callMCPTool(owner, tool, args(userOrderID)); errors.Is(err, store.ErrWorkOrderClaimUnauthorized) || errors.Is(err, store.ErrWorkOrderClaimLost) {
-				t.Fatalf("owning user was refused: %v", err)
+			if _, err := userServer.callMCPTool(owner, tool, args(userOrderID)); err != nil {
+				t.Fatalf("owning user call failed: %v", err)
 			}
 
 			workerServer, workerOrderID := setup(t, "worker-a")
@@ -1051,6 +1080,11 @@ func TestMCPClaimantBoundToolsRejectForeignUsersAndWorkers(t *testing.T) {
 			foreignWorker = foreignWorker.WithContext(context.WithValue(foreignWorker.Context(), workerContextKey{}, core.Worker{ID: "worker-b", Workspace: "demo"}))
 			if _, err := workerServer.callMCPTool(foreignWorker, tool, args(workerOrderID)); !errors.Is(err, store.ErrWorkOrderClaimLost) {
 				t.Fatalf("foreign worker error=%v", err)
+			}
+			owningWorker := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+			owningWorker = owningWorker.WithContext(context.WithValue(owningWorker.Context(), workerContextKey{}, core.Worker{ID: "worker-a", Workspace: "demo"}))
+			if _, err := workerServer.callMCPTool(owningWorker, tool, args(workerOrderID)); err != nil {
+				t.Fatalf("owning worker call failed: %v", err)
 			}
 		})
 	}
