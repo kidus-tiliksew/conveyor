@@ -15,7 +15,7 @@ import {
   Trash2,
 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useDashboardSession, useWorkspaceCapability, useWorkspaceSelection } from '../components/app-shell'
+import { useWorkspaceCapability, useWorkspaceSelection } from '../components/app-shell'
 import { type AttentionItem, AttentionSurface } from '../components/documents/attention-surface'
 import { compareDocuments, type DocumentSort, type DocumentSortDirection } from '../components/documents/document-sort'
 import {
@@ -112,7 +112,6 @@ function requirementAttentionCount(item: RequirementSummary) {
  * arrive as proposed versions an operator confirms here.
  */
 export function RequirementsPage() {
-  const token = useDashboardSession()
   const canConfirmDocuments = useWorkspaceCapability('confirm_documents')
   const { workspace } = useWorkspaceSelection()
   const navigate = useNavigate()
@@ -220,7 +219,7 @@ export function RequirementsPage() {
                     className="hidden"
                     type="file"
                     accept=".md,.markdown,text/markdown"
-                    disabled={!token || upload.isPending}
+                    disabled={upload.isPending}
                     onChange={(event) => {
                       const file = event.target.files?.[0]
                       if (file) upload.mutate({ file })
@@ -281,7 +280,6 @@ export function RequirementsPage() {
                 key={openOverviewDocument.id}
                 document={openOverviewDocument}
                 workspace={workspace}
-                token={token}
                 initialVersion={openOverview?.version}
                 upload={(file) => upload.mutate({ file, id: openOverviewDocument.id })}
                 uploading={upload.isPending}
@@ -304,7 +302,7 @@ export function RequirementsPage() {
                     </CardContent>
                   </Card>
                 )}
-                {selected && <RequirementCanvas key={selected.requirement.id} summary={selected} token={token} />}
+                {selected && <RequirementCanvas key={selected.requirement.id} summary={selected} />}
               </>
             )}
           </div>
@@ -328,7 +326,6 @@ function readOverviewAnchor(hash: string) {
 function OverviewCanvas({
   document,
   workspace,
-  token,
   initialVersion,
   upload,
   uploading,
@@ -337,7 +334,6 @@ function OverviewCanvas({
 }: {
   document: ReferenceDocument
   workspace: string
-  token: string
   initialVersion?: number
   upload: (file: File) => void
   uploading: boolean
@@ -378,14 +374,14 @@ function OverviewCanvas({
         {canConfirmDocuments && (
           <div className="flex shrink-0 items-center gap-2">
             <label
-              className={`inline-flex h-8 cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-md border border-edge bg-background px-2.5 text-xs font-medium text-foreground transition-colors hover:bg-surface ${!token || uploading ? 'pointer-events-none opacity-40' : ''}`}
+              className={`inline-flex h-8 cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-md border border-edge bg-background px-2.5 text-xs font-medium text-foreground transition-colors hover:bg-surface ${uploading ? 'pointer-events-none opacity-40' : ''}`}
             >
               <FileUp className="size-3.5" /> {uploading ? 'Uploading…' : 'Re-upload'}
               <input
                 className="hidden"
                 type="file"
                 accept=".md,.markdown,text/markdown"
-                disabled={!token || uploading}
+                disabled={uploading}
                 onChange={(event) => {
                   const file = event.target.files?.[0]
                   if (file) upload(file)
@@ -396,7 +392,7 @@ function OverviewCanvas({
             <Button
               variant="destructive"
               size="sm"
-              disabled={!token || removing}
+              disabled={removing}
               onClick={() => {
                 if (window.confirm(`Delete ${document.name}? Its saved versions will no longer appear here.`)) remove()
               }}
@@ -460,7 +456,7 @@ function OverviewDiff({ prior, current }: { prior: ReferenceDocumentVersion; cur
   )
 }
 
-function RequirementCanvas({ summary, token }: { summary: RequirementSummary; token: string }) {
+function RequirementCanvas({ summary }: { summary: RequirementSummary }) {
   const { workspace } = useWorkspaceSelection()
   const {
     data: item,
@@ -476,10 +472,10 @@ function RequirementCanvas({ summary, token }: { summary: RequirementSummary; to
     return <EmptyMessage tone="failure">{errorMessage(error, 'Could not load this requirement.')}</EmptyMessage>
   if (!item) return <EmptyMessage tone="failure">Could not load this requirement.</EmptyMessage>
 
-  return <RequirementDetailCanvas item={item} token={token} />
+  return <RequirementDetailCanvas item={item} />
 }
 
-function RequirementDetailCanvas({ item, token }: { item: RequirementView; token: string }) {
+function RequirementDetailCanvas({ item }: { item: RequirementView }) {
   const { workspace } = useWorkspaceSelection()
   const canOperate = useWorkspaceCapability('operate_gates')
   const canManageWorkspace = useWorkspaceCapability('manage_workspace')
@@ -610,7 +606,7 @@ function RequirementDetailCanvas({ item, token }: { item: RequirementView; token
               <Button
                 size="sm"
                 variant="secondary"
-                disabled={!token || fileStalenessFollowUp.isPending || acknowledgeStaleness.isPending}
+                disabled={fileStalenessFollowUp.isPending || acknowledgeStaleness.isPending}
                 onClick={() => fileStalenessFollowUp.mutate(delivery.signal_id)}
               >
                 File a task
@@ -618,7 +614,7 @@ function RequirementDetailCanvas({ item, token }: { item: RequirementView; token
               <Button
                 size="sm"
                 variant="ghost"
-                disabled={!token || acknowledgeStaleness.isPending || fileStalenessFollowUp.isPending}
+                disabled={acknowledgeStaleness.isPending || fileStalenessFollowUp.isPending}
                 onClick={() => acknowledgeStaleness.mutate(delivery.signal_id)}
               >
                 Dismiss
@@ -692,7 +688,6 @@ function RequirementDetailCanvas({ item, token }: { item: RequirementView; token
               <DriftResolutionForm
                 drift={entry}
                 surface="requirement"
-                token={token}
                 workspace={workspace}
                 requirementID={item.requirement.id}
                 onResolved={() =>
@@ -728,7 +723,7 @@ function RequirementDetailCanvas({ item, token }: { item: RequirementView; token
       ),
       action: canConfirm ? (
         <Button
-          disabled={!token || confirm.isPending || !item.confirmation_eligible}
+          disabled={confirm.isPending || !item.confirmation_eligible}
           title={!item.confirmation_eligible ? 'Revise this migrated seed before confirming it.' : undefined}
           onClick={() => confirm.mutate(version.version)}
         >
@@ -976,21 +971,21 @@ function RequirementDetailCanvas({ item, token }: { item: RequirementView; token
                   <span className="font-mono text-[10px] text-faint">{artifact.size_bytes} B</span>
                 </button>
               ))}
-              <label
-                className={`flex cursor-pointer items-center justify-center gap-2 rounded-md border border-dashed border-edge px-3 py-2 text-xs font-medium text-muted transition-colors hover:border-primary/40 hover:bg-surface hover:text-primary ${!token ? 'pointer-events-none opacity-40' : ''}`}
-              >
-                <FileUp className="size-4" /> {upload.isPending ? 'Uploading…' : 'Attach context'}
-                <input
-                  className="hidden"
-                  type="file"
-                  disabled={!token || upload.isPending}
-                  onChange={(event) => {
-                    const file = event.target.files?.[0]
-                    if (file) upload.mutate(file)
-                    event.currentTarget.value = ''
-                  }}
-                />
-              </label>
+              {canOperate && (
+                <label className="flex cursor-pointer items-center justify-center gap-2 rounded-md border border-dashed border-edge px-3 py-2 text-xs font-medium text-muted transition-colors hover:border-primary/40 hover:bg-surface hover:text-primary">
+                  <FileUp className="size-4" /> {upload.isPending ? 'Uploading…' : 'Attach context'}
+                  <input
+                    className="hidden"
+                    type="file"
+                    disabled={upload.isPending}
+                    onChange={(event) => {
+                      const file = event.target.files?.[0]
+                      if (file) upload.mutate(file)
+                      event.currentTarget.value = ''
+                    }}
+                  />
+                </label>
+              )}
               {upload.error && (
                 <p className="text-xs text-failure">{errorMessage(upload.error, 'Could not attach that file.')}</p>
               )}

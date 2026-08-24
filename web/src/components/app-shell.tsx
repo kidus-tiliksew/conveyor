@@ -25,49 +25,11 @@ import {
   fetchWorkspaces,
   signOutDashboardSession,
 } from '../lib/api'
+import { roleCapabilities, type WorkspaceCapability } from '../lib/workspace-capabilities'
 import { cn } from '../lib/utils'
 import { ThemeProvider, useTheme } from './theme-provider'
 import { Badge } from './ui/badge'
 import { Button } from './ui/button'
-
-export type WorkspaceCapability =
-  | 'view_workspace'
-  | 'claim_work'
-  | 'request_changes'
-  | 'propose_documents'
-  | 'confirm_documents'
-  | 'manage_membership'
-  | 'set_assignee'
-  | 'operate_gates'
-  | 'recover_work'
-  | 'manage_workspace'
-
-const roleCapabilities: Record<import('../lib/types').WorkspaceRole, readonly WorkspaceCapability[]> = {
-  viewer: ['view_workspace'],
-  executor: ['view_workspace', 'claim_work', 'request_changes'],
-  contributor: ['view_workspace', 'claim_work', 'request_changes', 'propose_documents'],
-  maintainer: [
-    'view_workspace',
-    'claim_work',
-    'request_changes',
-    'propose_documents',
-    'set_assignee',
-    'operate_gates',
-    'recover_work',
-  ],
-  operator: [
-    'view_workspace',
-    'claim_work',
-    'request_changes',
-    'propose_documents',
-    'confirm_documents',
-    'manage_membership',
-    'set_assignee',
-    'operate_gates',
-    'recover_work',
-    'manage_workspace',
-  ],
-}
 
 const WorkspaceContext = createContext<{ workspace: string; setWorkspace: (value: string) => void }>({
   workspace: '',
@@ -78,20 +40,15 @@ export function useWorkspaceSelection() {
   return useContext(WorkspaceContext)
 }
 
-export function useDashboardSession() {
-  return 'session'
-}
-
 // Dashboard affordances consume the same fixed role bundles as the server.
 // This is presentation only: every request still crosses the server capability
 // boundary, while a viewer never sees a control that can only be refused.
 export function useWorkspaceCapability(capability: WorkspaceCapability) {
-  const token = useDashboardSession()
   const { workspace } = useWorkspaceSelection()
   const identity = useQuery({
-    queryKey: ['caller-identity', token, workspace],
+    queryKey: ['caller-identity', workspace],
     queryFn: () => fetchCallerIdentity(),
-    enabled: Boolean(token && workspace),
+    enabled: Boolean(workspace),
     retry: false,
   })
   return Boolean(identity.data?.role && roleCapabilities[identity.data.role]?.includes(capability))
@@ -169,12 +126,11 @@ export function useActivity(filter?: ActivityFilter, enabled = true, offset = 0,
 }
 
 export function useWorkspaceMembers() {
-  const token = useDashboardSession()
   const { workspace } = useWorkspaceSelection()
   return useQuery({
-    queryKey: ['workspace-members', token, workspace],
+    queryKey: ['workspace-members', workspace],
     queryFn: () => fetchWorkspaceMembers(workspace),
-    enabled: Boolean(token && workspace),
+    enabled: Boolean(workspace),
     staleTime: 60_000,
     retry: false,
   })
@@ -355,14 +311,12 @@ function WorkspaceProvider({
 // The rail is the workspace switcher (§21.10: workspace context is explicit
 // everywhere): one initials tile per workspace, "+" creates a new one.
 function IconRail() {
-  const token = useDashboardSession()
   const canManageWorkspace = useWorkspaceCapability('manage_workspace')
   const navigate = useNavigate()
   const { workspace: selected, setWorkspace } = useWorkspaceSelection()
   const { data: workspaces } = useQuery({
-    queryKey: ['workspaces', token],
+    queryKey: ['workspaces'],
     queryFn: fetchWorkspaces,
-    enabled: !!token,
   })
   // Land on the board after a switch so an open task sheet from the previous
   // workspace can't linger pointing at a task the new context can't resolve.
@@ -416,14 +370,12 @@ function initials(name: string) {
 }
 
 function NavSidebar() {
-  const token = useDashboardSession()
   const queryClient = useQueryClient()
   const navigate = useNavigate()
   const { workspace: selected } = useWorkspaceSelection()
   const { data: workspaces } = useQuery({
-    queryKey: ['workspaces', token],
+    queryKey: ['workspaces'],
     queryFn: fetchWorkspaces,
-    enabled: !!token,
   })
   const { data: workspace } = useWorkspace()
   const { data: proposals } = usePendingProposals()

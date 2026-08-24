@@ -3,7 +3,6 @@ import { RotateCcw } from 'lucide-react'
 import { redispatchTask } from '../../lib/api'
 import { dependencyBlockedImplementationOrder, unsatisfiableDependencyOrder } from '../../lib/activity'
 import type { ActivityItem } from '../../lib/types'
-import { useDashboardSession } from '../app-shell'
 import { Button } from '../ui/button'
 
 export function canRedispatch(item: ActivityItem) {
@@ -15,7 +14,6 @@ export function canRedispatch(item: ActivityItem) {
 // parked task at its recorded recovery stage, or reopen a closed task with a
 // decided stage.
 export function RedispatchCard({ item }: { item: ActivityItem }) {
-  const token = useDashboardSession()
   const queryClient = useQueryClient()
   const mutation = useMutation({
     mutationFn: () => redispatchTask(item.task.id),
@@ -34,7 +32,7 @@ export function RedispatchCard({ item }: { item: ActivityItem }) {
             ? 'Parked by triage — resume from the recorded recovery stage when this work is ready.'
             : 'Closed — redispatch resumes at the decided stage.'}
       </p>
-      <Button variant="secondary" size="sm" disabled={!token || mutation.isPending} onClick={() => mutation.mutate()}>
+      <Button variant="secondary" size="sm" disabled={mutation.isPending} onClick={() => mutation.mutate()}>
         <RotateCcw />
         {mutation.isPending ? (parked ? 'Resuming…' : 'Dispatching…') : parked ? 'Resume task' : 'Redispatch'}
       </Button>

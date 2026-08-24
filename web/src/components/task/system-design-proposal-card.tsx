@@ -4,7 +4,7 @@ import { AlertTriangle, Check, FileText } from 'lucide-react'
 import { confirmSystemDesignVersion, fetchSystemDesigns, SystemDesignConflictError } from '../../lib/api'
 import { errorMessage } from '../../lib/errors'
 import type { SystemDesignSummary, SystemDesignVersionSummary, Task } from '../../lib/types'
-import { useDashboardSession, useWorkspaceSelection } from '../app-shell'
+import { useWorkspaceCapability, useWorkspaceSelection } from '../app-shell'
 import { Button } from '../ui/button'
 
 export interface Proposal {
@@ -71,7 +71,8 @@ export function useSystemDesignProposals(task: Task): Proposal[] {
  * Presentation only: the read is the existing `/v1/system-designs` collection
  * narrowed client-side to this task's attached documents and its own pending
  * versions, and Confirm posts to the same operator-credentialed
- * route the attention surface uses. Agents still never confirm. A resolved
+ * route the attention surface uses. The action follows the same
+ * `confirm_documents` capability as that route; agents still never confirm. A resolved
  * version stops matching the filter, so the card clears itself — no new state,
  * and the timeline already records what happened.
  *
@@ -88,7 +89,7 @@ export function SystemDesignProposalCard({
   proposals: Proposal[]
   reviewWaiting?: boolean
 }) {
-  const token = useDashboardSession()
+  const canConfirm = useWorkspaceCapability('confirm_documents')
   const { workspace } = useWorkspaceSelection()
   const client = useQueryClient()
   const confirm = useMutation({
@@ -140,10 +141,11 @@ export function SystemDesignProposalCard({
                   .
                 </p>
               </div>
-              <Button size="sm" disabled={!token || confirm.isPending} onClick={() => confirm.mutate(proposal)}>
+              <Button size="sm" disabled={!canConfirm || confirm.isPending} onClick={() => confirm.mutate(proposal)}>
                 <Check />
                 {active && confirm.isPending ? 'Confirming…' : `Confirm version ${proposal.version.version}`}
               </Button>
+              {!canConfirm && <p>Document confirmation capability is required.</p>}
               {confirm.error != null && active && (
                 <p className="text-failure">{errorMessage(confirm.error, 'Could not confirm this version.')}</p>
               )}

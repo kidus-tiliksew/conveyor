@@ -2,12 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { CheckCircle2, Plus, Save, Trash2 } from 'lucide-react'
-import {
-  useDashboardSession,
-  useWorkspace,
-  useWorkspaceCapability,
-  useWorkspaceSelection,
-} from '../components/app-shell'
+import { useWorkspace, useWorkspaceCapability, useWorkspaceSelection } from '../components/app-shell'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
@@ -47,20 +42,19 @@ function tabForField(field: string): TabId {
 }
 
 export function WorkspacePage() {
-  const token = useDashboardSession()
   const canManageWorkspace = useWorkspaceCapability('manage_workspace')
   const queryClient = useQueryClient()
   const { workspace } = useWorkspaceSelection()
   const { data: snapshot } = useWorkspace()
   const query = useQuery({
-    queryKey: ['workspace-config', token, workspace],
+    queryKey: ['workspace-config', workspace],
     queryFn: () => fetchWorkspaceConfig(),
-    enabled: Boolean(token && workspace),
+    enabled: Boolean(workspace),
   })
   const workers = useQuery({
-    queryKey: ['workers', token, workspace],
+    queryKey: ['workers', workspace],
     queryFn: () => fetchWorkers(),
-    enabled: Boolean(token && workspace),
+    enabled: Boolean(workspace),
     refetchInterval: () => (document.visibilityState === 'visible' ? 15_000 : false),
     refetchIntervalInBackground: false,
     refetchOnWindowFocus: true,
@@ -76,7 +70,7 @@ export function WorkspacePage() {
   const save = useMutation({
     mutationFn: () => updateWorkspaceConfig(draft!, query.data!.version),
     onSuccess: (receipt) => {
-      queryClient.setQueryData(['workspace-config', token, workspace], receipt)
+      queryClient.setQueryData(['workspace-config', workspace], receipt)
       void queryClient.invalidateQueries({ queryKey: ['workspace', workspace] })
       setDraftState(structuredClone(receipt.document))
       setSaved(`Recorded config.updated event ${receipt.event_id} · version ${receipt.version}`)
@@ -89,7 +83,7 @@ export function WorkspacePage() {
   })
   const revoke = useMutation({
     mutationFn: (id: string) => revokeWorker(id),
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['workers', token, workspace] }),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['workers', workspace] }),
   })
 
   const setDraft = (value: WorkspaceConfigDocument) => {

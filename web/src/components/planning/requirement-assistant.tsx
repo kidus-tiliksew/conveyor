@@ -84,7 +84,6 @@ export const draftAction = guidedActions.find((action) => action.id === 'draft')
 export function RequirementAssistant({
   selected,
   sessionId,
-  token,
   workspace,
   onStart,
   starting,
@@ -93,7 +92,6 @@ export function RequirementAssistant({
 }: {
   selected?: RequirementView
   sessionId: string
-  token: string
   workspace: string
   onStart: (action: GuidedAction, promotion?: RequirementDerivation) => void
   starting: boolean
@@ -131,7 +129,7 @@ export function RequirementAssistant({
             variant="secondary"
             size="sm"
             title={action.hint}
-            disabled={!token || !workspace || starting}
+            disabled={!workspace || starting}
             onClick={() => (action.id === 'promote' ? setPromotionOpen(true) : onStart(action))}
           >
             <action.icon /> {action.label}
@@ -167,7 +165,6 @@ export function RequirementAssistant({
           <PlanningChat
             key={`${workspace}:${session.id}`}
             summary={session}
-            token={token}
             workspace={workspace}
             variant="sidebar"
             onFinalized={onFinalized}

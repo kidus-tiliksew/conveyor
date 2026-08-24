@@ -12,7 +12,7 @@ import {
 } from '../../lib/api'
 import { errorMessage } from '../../lib/errors'
 import type { MembershipGrant, WorkspaceRole } from '../../lib/types'
-import { useDashboardSession, useWorkspaceCapability, useWorkspaceMembers, useWorkspaceSelection } from '../app-shell'
+import { useWorkspaceCapability, useWorkspaceMembers, useWorkspaceSelection } from '../app-shell'
 import { Badge } from '../ui/badge'
 import { Button } from '../ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
@@ -42,15 +42,14 @@ type DeliveryNotice = {
  * else is here, which the members API already restricts to co-members.
  */
 export function MembersSection() {
-  const token = useDashboardSession()
   const { workspace } = useWorkspaceSelection()
   const canManage = useWorkspaceCapability('manage_membership')
   const queryClient = useQueryClient()
-  const enabled = Boolean(token && workspace && canManage)
+  const enabled = Boolean(workspace && canManage)
 
   const members = useWorkspaceMembers()
   const invitations = useQuery({
-    queryKey: ['workspace-invitations', token, workspace],
+    queryKey: ['workspace-invitations', workspace],
     queryFn: () => fetchWorkspaceInvitations(workspace),
     enabled,
     retry: false,
@@ -60,8 +59,8 @@ export function MembersSection() {
 
   const refresh = async () => {
     await Promise.all([
-      queryClient.invalidateQueries({ queryKey: ['workspace-members', token, workspace] }),
-      queryClient.invalidateQueries({ queryKey: ['workspace-invitations', token, workspace] }),
+      queryClient.invalidateQueries({ queryKey: ['workspace-members', workspace] }),
+      queryClient.invalidateQueries({ queryKey: ['workspace-invitations', workspace] }),
     ])
   }
 
