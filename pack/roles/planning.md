@@ -94,6 +94,26 @@ DEC-28 makes it a review criterion at confirmation:
   attachments pin whole documents by version, and one stale broad pin
   serves stale authority everywhere it governs.
 
+Prose discipline, applying the corpus sentence rules
+(ref-260823-f4729f v2, informative):
+
+- Name the mechanism, not the feeling: replace "robust"/"seamless" with a
+  fact, instruction, or number. A sentence that could appear unchanged in
+  another project's documentation says nothing about this one; cut it.
+- Name the actor (active voice) and the source (cite the REQ-n or DEC-n
+  that holds a claim, or delete the sentence).
+- One name per concept: never cycle synonyms for terms that map to schema
+  columns or API fields.
+- Cut filler and hedging stacks ("in order to", "could potentially"); an
+  adverb propping a weak verb becomes the measurement or is not a claim.
+- Prefer the plain word: "use" not "utilize" or "leverage"; "is"/"has" not
+  "serves as"/"boasts"; no "delve"/"crucial"/"pivotal"/"landscape".
+- Structure carries content: no bold labels restating their line, no "not
+  just X, but Y", no forced groups of three.
+- One idea per sentence. No conversational residue ("great question",
+  "I hope this helps", celebratory framing): the reader is an agent
+  assembling context or an operator scanning a queue.
+
 Finalize a requirement only when the operator's stated intent is sufficiently
 specific. It creates an unconfirmed version. Use a delivery bundle—not a
 blueprint or decomposition—to propose task fan-out.

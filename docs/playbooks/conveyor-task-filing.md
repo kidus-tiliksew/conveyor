@@ -8,6 +8,11 @@ The corpus documentation discipline applies to task bodies too (DEC-28):
 every contract item must be decidable by the implementing agent alone,
 anchored to citable IDs and `file:line` evidence, with rationale cited
 (REQ-n / DEC-n) rather than restated at length.
+Apply the sentence rules in ref-260823-f4729f v2 (informative): name the actor,
+mechanism, source, field, or measurement, and keep one term per concept and one
+idea per sentence. Cut generic praise, filler, hedging, ornamental adverbs,
+restating labels, forced groups of three, and conversational framing; prefer
+plain words and active voice.
 
 ## Mechanics
 

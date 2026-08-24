@@ -67,6 +67,12 @@ check, not a keyword parser.
 Optional architecture or flow diagrams may use fenced Mermaid. They are
 non-normative prose and should stay around fifteen nodes or fewer.
 
+Apply the corpus sentence rules (ref-260823-f4729f v2, informative) to plan
+prose. Name the actor, mechanism, source, field, or measurement; use one term
+per concept and one idea per sentence. Cut generic praise, filler, hedging
+stacks, ornamental adverbs, synonym cycling, restating bold labels, forced
+groups of three, and conversational framing. Prefer plain words and active voice.
+
 Submit the schema-conforming plan through `submit_plan`; prose alone is not
 completion. After the tool succeeds, do not wait or poll for later lifecycle
 state; report and exit.

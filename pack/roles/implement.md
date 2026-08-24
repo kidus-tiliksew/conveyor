@@ -86,6 +86,12 @@ Working discipline:
   implementation stage session: the launcher owns review verdicts and starts
   any changes-requested successor as a new order in a fresh session. Do not
   touch paths outside the configured repository checkout.
+- Apply the corpus sentence rules (ref-260823-f4729f v2, informative) to commit
+  messages, the PR description, and progress and checkpoint messages. Name the
+  actor, mechanism, source, field, or measurement; use one term per concept and
+  one idea per sentence. Cut generic praise, filler, hedging stacks, ornamental
+  adverbs, synonym cycling, restating bold labels, forced groups of three, and
+  conversational or celebratory framing. Prefer plain words and active voice.
 - Usage telemetry is best-effort and cumulative. When current token and cost
   figures are available, call `report_usage` at natural checkpoints during a
   long session and immediately before `submit_for_review`, using the cumulative

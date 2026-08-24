@@ -42,6 +42,16 @@ propose-confirm boundary; the incidents behind each rule are in the
   every revision.
 - Several tight design documents beat one broad one — pins attach whole
   documents by version.
+- Name the mechanism, actor, and source. Replace generic praise with a fact,
+  instruction, or number, and cite the REQ-n or DEC-n that holds each claim.
+- Use one name per concept, especially for schema columns and API fields.
+- Cut filler, hedging stacks, and ornamental adverbs; state the measurement or
+  remove the claim.
+- Prefer plain words, active voice, and one idea per sentence.
+- Let structure carry content: do not restate bold labels, use "not just X,
+  but Y", or force groups of three.
+- Remove conversational residue and celebratory framing. The full sentence
+  rules and their failure classes live in ref-260823-f4729f v2 (informative).
 
 ## Requirements (normative intent)
 
