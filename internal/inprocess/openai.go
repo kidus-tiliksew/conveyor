@@ -24,13 +24,16 @@ import (
 )
 
 type Result struct {
-	Output     string
-	Model      string
-	TokensIn   int64
-	TokensOut  int64
-	Transcript []byte
-	Redactions core.RedactionStats
-	Diagnostic *Diagnostic
+	Output            string
+	Model             string
+	TokensIn          int64
+	TokensOut         int64
+	Transcript        []byte
+	Redactions        core.RedactionStats
+	Diagnostic        *Diagnostic
+	FunctionCalls     []FunctionCall
+	ResponseItems     []json.RawMessage
+	ToolCallsExecuted int
 }
 
 type Diagnostic struct {
@@ -68,8 +71,40 @@ type Input struct {
 	Effort                    string
 	Attachments               []Attachment
 	OutputSchema              *OutputSchema
+	Tools                     []FunctionTool
+	Continuation              *Continuation
 	ServedRequirementSnapshot []core.ServedRequirementContext
 	GovernanceSnapshot        *core.GovernanceSnapshot
+}
+
+// FunctionTool is one strict native Responses API function declaration.
+type FunctionTool struct {
+	Type        string         `json:"type"`
+	Name        string         `json:"name"`
+	Description string         `json:"description"`
+	Parameters  map[string]any `json:"parameters"`
+	Strict      bool           `json:"strict"`
+}
+
+// FunctionCall is an executable function_call output item.
+type FunctionCall struct {
+	CallID        string
+	Name          string
+	ArgumentsJSON string
+}
+
+// FunctionCallOutput is appended after the response item that requested it.
+type FunctionCallOutput struct {
+	CallID string
+	Output string
+}
+
+// Continuation carries the complete prior provider item history and the
+// outputs produced for the latest function calls. The client prepends the
+// original user input and never relies on previous_response_id.
+type Continuation struct {
+	ResponseItems       []json.RawMessage
+	FunctionCallOutputs []FunctionCallOutput
 }
 
 // OutputSchema requests a strict Responses-compatible JSON-schema result.
@@ -112,6 +147,12 @@ func (client *OpenAI) Run(ctx context.Context, model string, input Input) (Resul
 	if input.OutputSchema != nil && (strings.TrimSpace(input.OutputSchema.Name) == "" || input.OutputSchema.Schema == nil) {
 		diagnostic.Phase = "client_validation"
 		return Result{Diagnostic: &diagnostic}, fmt.Errorf("Responses API (%s) client validation failed for model %q: structured output requires a schema name and JSON schema", endpointHost, model)
+	}
+	for _, tool := range input.Tools {
+		if tool.Type != "function" || strings.TrimSpace(tool.Name) == "" || tool.Parameters == nil {
+			diagnostic.Phase = "client_validation"
+			return Result{Diagnostic: &diagnostic}, fmt.Errorf("Responses API (%s) client validation failed for model %q: native function tools require type, name, and parameters", endpointHost, model)
+		}
 	}
 	if phase, err := validateImageInputs(model, endpointHost, input.Attachments); err != nil {
 		diagnostic.Phase = phase
@@ -158,10 +199,21 @@ func (client *OpenAI) Run(ctx context.Context, model string, input Input) (Resul
 			return Result{Transcript: audit, Redactions: stats, Diagnostic: &diagnostic}, failure
 		}
 	}
-	requestInput := []map[string]any{{"role": "user", "content": content}}
-	auditInput := []map[string]any{{"role": "user", "content": auditContent}}
-	requestValue := responsesRequestEnvelope(model, requestInput, input.Effort, input.OutputSchema)
-	auditRequestValue := responsesRequestEnvelope(model, auditInput, input.Effort, input.OutputSchema)
+	requestInput := []any{map[string]any{"role": "user", "content": content}}
+	auditInput := []any{map[string]any{"role": "user", "content": auditContent}}
+	if input.Continuation != nil {
+		for _, item := range input.Continuation.ResponseItems {
+			requestInput = append(requestInput, item)
+			auditInput = append(auditInput, item)
+		}
+		for _, output := range input.Continuation.FunctionCallOutputs {
+			item := map[string]any{"type": "function_call_output", "call_id": output.CallID, "output": output.Output}
+			requestInput = append(requestInput, item)
+			auditInput = append(auditInput, item)
+		}
+	}
+	requestValue := responsesRequestEnvelope(model, requestInput, input.Effort, input.OutputSchema, input.Tools)
+	auditRequestValue := responsesRequestEnvelope(model, auditInput, input.Effort, input.OutputSchema, input.Tools)
 	body, _ := json.Marshal(requestValue)
 	httpClient := client.Client
 	if httpClient == nil {
@@ -214,7 +266,7 @@ func (client *OpenAI) Run(ctx context.Context, model string, input Input) (Resul
 				if failure.retryable() {
 					transient = true
 				}
-			} else if missingOutputText(raw) {
+			} else if missingUsableOutput(raw) {
 				transient = true
 			}
 		}
@@ -275,7 +327,7 @@ func (client *OpenAI) Run(ctx context.Context, model string, input Input) (Resul
 		}
 	} else if decodeErr = json.Unmarshal(raw, &decoded); decodeErr != nil {
 		diagnostic.Phase = "response_validation"
-	} else if outputText = decoded.outputText(); outputText == "" {
+	} else if outputText = decoded.outputText(); outputText == "" && len(decoded.functionCalls()) == 0 {
 		diagnostic.Retryable = true
 		if attempts >= responsesMaxAttempts {
 			diagnostic.Phase = "retry_exhausted"
@@ -315,24 +367,18 @@ func (client *OpenAI) Run(ctx context.Context, model string, input Input) (Resul
 	if decodeErr != nil {
 		return Result{Transcript: transcript, Redactions: stats, Diagnostic: &diagnostic}, fmt.Errorf("decode Responses API result for model %q: %w", model, decodeErr)
 	}
-	if outputText == "" {
+	if outputText == "" && len(decoded.functionCalls()) == 0 {
 		return Result{Transcript: transcript, Redactions: stats, Diagnostic: &diagnostic}, fmt.Errorf("Responses API (%s) returned no output_text for model %q after %d attempt(s): provider completed with reasoning-only or empty output", endpointHost, model, attempts)
 	}
-	return Result{Output: outputText, Model: decoded.Model, TokensIn: decoded.Usage.InputTokens, TokensOut: decoded.Usage.OutputTokens, Transcript: transcript, Redactions: stats, Diagnostic: &diagnostic}, nil
+	return Result{Output: outputText, Model: decoded.Model, TokensIn: decoded.Usage.InputTokens, TokensOut: decoded.Usage.OutputTokens, Transcript: transcript, Redactions: stats, Diagnostic: &diagnostic, FunctionCalls: decoded.functionCalls(), ResponseItems: decoded.responseItems()}, nil
 }
 
 // responsesBody is the successful Responses API shape the pipeline consumes:
 // the concatenated output_text parts of the final message item.
 type responsesBody struct {
-	Model  string `json:"model"`
-	Output []struct {
-		Type    string `json:"type"`
-		Content []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		} `json:"content"`
-	} `json:"output"`
-	Usage struct {
+	Model  string            `json:"model"`
+	Output []json.RawMessage `json:"output"`
+	Usage  struct {
 		InputTokens  int64 `json:"input_tokens"`
 		OutputTokens int64 `json:"output_tokens"`
 	} `json:"usage"`
@@ -340,11 +386,18 @@ type responsesBody struct {
 
 func (body responsesBody) outputText() string {
 	for index := len(body.Output) - 1; index >= 0; index-- {
-		if body.Output[index].Type != "message" {
+		var item struct {
+			Type    string `json:"type"`
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
+		}
+		if json.Unmarshal(body.Output[index], &item) != nil || item.Type != "message" {
 			continue
 		}
 		var output strings.Builder
-		for _, part := range body.Output[index].Content {
+		for _, part := range item.Content {
 			if part.Type == "output_text" {
 				output.WriteString(part.Text)
 			}
@@ -354,20 +407,42 @@ func (body responsesBody) outputText() string {
 	return ""
 }
 
-// missingOutputText reports a well-formed 2xx body that self-reports success
-// yet carries no final message text — the provider spent the whole generation
-// on reasoning items and stopped. Observed intermittently from x-ai/grok
-// models via OpenRouter; resubmitting the identical request usually succeeds,
-// so the retry loop classifies it transient.
-func missingOutputText(raw []byte) bool {
+func (body responsesBody) functionCalls() []FunctionCall {
+	calls := make([]FunctionCall, 0)
+	for _, raw := range body.Output {
+		var item struct {
+			Type      string `json:"type"`
+			CallID    string `json:"call_id"`
+			Name      string `json:"name"`
+			Arguments string `json:"arguments"`
+		}
+		if json.Unmarshal(raw, &item) == nil && item.Type == "function_call" {
+			calls = append(calls, FunctionCall{CallID: item.CallID, Name: item.Name, ArgumentsJSON: item.Arguments})
+		}
+	}
+	return calls
+}
+
+func (body responsesBody) responseItems() []json.RawMessage {
+	items := make([]json.RawMessage, len(body.Output))
+	for i := range body.Output {
+		items[i] = append(json.RawMessage(nil), body.Output[i]...)
+	}
+	return items
+}
+
+// missingUsableOutput reports a well-formed 2xx body that carries neither final
+// message text nor a function call. Observed reasoning-only results from
+// x-ai/grok models are retried, while native tool turns proceed immediately.
+func missingUsableOutput(raw []byte) bool {
 	var decoded responsesBody
 	if json.Unmarshal(raw, &decoded) != nil {
 		return false
 	}
-	return decoded.outputText() == ""
+	return decoded.outputText() == "" && len(decoded.functionCalls()) == 0
 }
 
-func responsesRequestEnvelope(model string, input any, effort string, outputSchema *OutputSchema) map[string]any {
+func responsesRequestEnvelope(model string, input any, effort string, outputSchema *OutputSchema, tools []FunctionTool) map[string]any {
 	request := map[string]any{"model": model, "input": input, "store": false}
 	if effort != "" {
 		request["reasoning"] = map[string]any{"effort": effort}
@@ -376,6 +451,9 @@ func responsesRequestEnvelope(model string, input any, effort string, outputSche
 		request["text"] = map[string]any{"format": map[string]any{
 			"type": "json_schema", "name": outputSchema.Name, "strict": true, "schema": outputSchema.Schema,
 		}}
+	}
+	if len(tools) > 0 {
+		request["tools"] = tools
 	}
 	return request
 }

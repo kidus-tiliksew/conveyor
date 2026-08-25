@@ -320,6 +320,66 @@ func TestOpenAIRunUsesOnlyFinalMessageOutput(t *testing.T) {
 	}
 }
 
+func TestOpenAIRunParsesNativeFunctionCallsAlongsideMessageText(t *testing.T) {
+	t.Parallel()
+	var request map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.WriteString(w, `{"model":"gpt-test","output":[{"type":"reasoning","encrypted_content":"opaque"},{"type":"function_call","call_id":"call-1","name":"list_requirements","arguments":"{}"},{"type":"message","content":[{"type":"output_text","text":"premature verdict"}]}],"usage":{"input_tokens":4,"output_tokens":3}}`)
+	}))
+	defer server.Close()
+	tools := []FunctionTool{{Type: "function", Name: "list_requirements", Description: "List requirements.", Parameters: map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{}}, Strict: true}}
+	result, err := (&OpenAI{APIKey: "sk-test", BaseURL: server.URL, Client: server.Client()}).Run(context.Background(), "gpt-test", Input{Prompt: "triage", Tools: tools})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Output != "premature verdict" || len(result.FunctionCalls) != 1 || result.FunctionCalls[0].CallID != "call-1" || result.FunctionCalls[0].Name != "list_requirements" || result.FunctionCalls[0].ArgumentsJSON != "{}" || len(result.ResponseItems) != 3 {
+		t.Fatalf("result=%+v", result)
+	}
+	encoded, _ := json.Marshal(request)
+	if !strings.Contains(string(encoded), `"tools":[{"description":"List requirements.","name":"list_requirements","parameters":{"additionalProperties":false,"properties":{},"type":"object"},"strict":true,"type":"function"}]`) {
+		t.Fatalf("native tools missing from request: %s", encoded)
+	}
+}
+
+func TestOpenAIRunContinuationResendsOpaqueItemsAndFunctionOutputsWithoutStorage(t *testing.T) {
+	t.Parallel()
+	var request map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.WriteString(w, `{"model":"gpt-test","output":[{"type":"message","content":[{"type":"output_text","text":"done"}]}],"usage":{"input_tokens":7,"output_tokens":1}}`)
+	}))
+	defer server.Close()
+	prior := []json.RawMessage{
+		json.RawMessage(`{"type":"reasoning","id":"reason-1","encrypted_content":"encrypted-reasoning"}`),
+		json.RawMessage(`{"type":"function_call","call_id":"call-1","name":"read_requirement","arguments":"{\"requirement_id\":\"req-1\"}"}`),
+	}
+	result, err := (&OpenAI{APIKey: "sk-test", BaseURL: server.URL, Client: server.Client()}).Run(context.Background(), "gpt-test", Input{
+		Prompt: "triage",
+		Continuation: &Continuation{
+			ResponseItems:       prior,
+			FunctionCallOutputs: []FunctionCallOutput{{CallID: "call-1", Output: `{"untrusted_data":true,"result":{"id":"req-1"}}`}},
+		},
+	})
+	if err != nil || result.Output != "done" {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	encoded, _ := json.Marshal(request)
+	requestText := string(encoded)
+	for _, expected := range []string{"encrypted-reasoning", `"type":"function_call"`, `"type":"function_call_output"`, `"call_id":"call-1"`, `"store":false`} {
+		if !strings.Contains(requestText, expected) {
+			t.Fatalf("continuation request missing %q: %s", expected, requestText)
+		}
+	}
+	if _, present := request["previous_response_id"]; present {
+		t.Fatalf("continuation relied on previous_response_id: %+v", request)
+	}
+}
+
 func TestOpenAIRunRetriesTransientUpstreamFailures(t *testing.T) {
 	t.Parallel()
 	attempts := 0

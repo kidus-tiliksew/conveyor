@@ -1,12 +1,30 @@
 package corpus
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
+
+func TestFunctionToolsStaySynchronizedAndStrict(t *testing.T) {
+	definitions := Tools()
+	functions := FunctionTools()
+	if len(functions) != len(definitions) {
+		t.Fatalf("function tools=%d definitions=%d", len(functions), len(definitions))
+	}
+	for index, function := range functions {
+		definition := definitions[index]
+		if function.Type != "function" || !function.Strict || function.Name != definition.Name || function.Description != definition.Description || !reflect.DeepEqual(function.Parameters, definition.Parameters) {
+			t.Fatalf("function tool %d=%+v definition=%+v", index, function, definition)
+		}
+		if !IsTool(function.Name) {
+			t.Fatalf("unregistered function tool %q", function.Name)
+		}
+	}
+}
 
 func TestToolsAreReadOnlyAndListsAreConfirmedSummaries(t *testing.T) {
 	ctx := store.WithWorkspace(t.Context(), "demo")

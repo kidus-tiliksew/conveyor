@@ -2522,12 +2522,18 @@ func (st *reviewAcceptanceFlakyStore) AcceptReviewDecisionCommand(ctx context.Co
 
 type sequenceAgent struct {
 	outputs []string
+	results []inprocess.Result
 	inputs  []inprocess.Input
 	next    int
 }
 
 func (agent *sequenceAgent) Run(_ context.Context, _ string, input inprocess.Input) (inprocess.Result, error) {
 	agent.inputs = append(agent.inputs, input)
+	if len(agent.results) > 0 {
+		result := agent.results[agent.next]
+		agent.next++
+		return result, nil
+	}
 	output := agent.outputs[agent.next]
 	agent.next++
 	return inprocess.Result{Output: output, TokensIn: 20, TokensOut: 10}, nil
@@ -2816,12 +2822,17 @@ func TestTriageParkRecordsReasonAndRemainsRecoverable(t *testing.T) {
 		t.Fatal(err)
 	}
 	foundReason := false
+	foundToolCount := false
 	for _, event := range events {
 		if event.Kind == "triage.completed" && strings.Contains(string(event.Payload), "different repository") {
 			foundReason = true
+			var payload map[string]any
+			if json.Unmarshal(event.Payload, &payload) == nil && payload["tool_calls_executed"] == float64(0) {
+				foundToolCount = true
+			}
 		}
 	}
-	if !foundReason {
+	if !foundReason || !foundToolCount {
 		t.Fatalf("triage completion did not retain parking reason: %+v", events)
 	}
 	outcome, err := taskops.New(st).Perform(ctx, task.ID, taskops.Command{Kind: core.TaskRecover, NextStage: core.StageTriage, ProjectStages: true})
@@ -3220,7 +3231,7 @@ func TestReviewCitationValidationUsesInProcessBounceAndExternalRetry(t *testing.
 		t.Fatalf("external validation created %d in-process bounce events", count)
 	}
 	output := "```conveyor:review\n{\"verdict\":\"approve\",\"reason_code\":\"approved\",\"summary\":\"looks good\",\"feedback\":\"\"}\n```"
-	if err = d.completeOutput(ctx, cfg, task, job, output, "in-process"); err != nil {
+	if err = d.completeOutput(ctx, cfg, task, job, output, "in-process", 0); err != nil {
 		t.Fatal(err)
 	}
 	updated, err := st.GetTask(ctx, task.ID)
@@ -3247,7 +3258,7 @@ func TestReviewCitationValidationUsesInProcessBounceAndExternalRetry(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = d.completeOutput(ctx, cfg, updated, job, output, "in-process"); err != nil {
+	if err = d.completeOutput(ctx, cfg, updated, job, output, "in-process", 0); err != nil {
 		t.Fatal(err)
 	}
 	updated, err = st.GetTask(ctx, task.ID)

@@ -42,10 +42,14 @@ type Tool struct {
 	Parameters  map[string]any `json:"parameters"`
 }
 
-type Call struct {
-	ID            string `json:"id"`
-	Name          string `json:"name"`
-	ArgumentsJSON string `json:"arguments_json"`
+// FunctionTool exposes Tool through the strict native Responses API function
+// shape without duplicating the corpus definitions.
+type FunctionTool struct {
+	Type        string         `json:"type"`
+	Name        string         `json:"name"`
+	Description string         `json:"description"`
+	Parameters  map[string]any `json:"parameters"`
+	Strict      bool           `json:"strict"`
 }
 
 type RequirementSummary struct {
@@ -83,6 +87,21 @@ func Tools() []Tool {
 		{Name: ReadSystemDesign, Description: "Read the body of a System Design's current confirmed version.", Parameters: read("document_id", "Confirmed System Design identity to read.")},
 		{Name: ListDecisions, Description: "List confirmed or superseded decisions by identity and short summary.", Parameters: empty},
 	}
+}
+
+func FunctionTools() []FunctionTool {
+	definitions := Tools()
+	tools := make([]FunctionTool, 0, len(definitions))
+	for _, definition := range definitions {
+		tools = append(tools, FunctionTool{
+			Type:        "function",
+			Name:        definition.Name,
+			Description: definition.Description,
+			Parameters:  definition.Parameters,
+			Strict:      true,
+		})
+	}
+	return tools
 }
 
 func Names() []string {
