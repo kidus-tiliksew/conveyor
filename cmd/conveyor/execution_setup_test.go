@@ -123,6 +123,67 @@ func TestExecutionWizardDefaultsFastPathCompletesFromOneConfirmation(t *testing.
 	}
 }
 
+func TestExecutionWizardModelPlaceholdersFollowEachHarnessSelection(t *testing.T) {
+	tests := []struct {
+		name  string
+		stage string
+	}{
+		{name: "spec", stage: "spec"},
+		{name: "implement", stage: "implement"},
+		{name: "review", stage: "review"},
+		{name: "review seat", stage: "review"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			choice := localStageChoice{Harness: "codex"}
+			if got := harnessModelPlaceholder(choice.Harness, test.stage); got != suggestedHarnessModel("codex", test.stage) {
+				t.Fatalf("codex placeholder = %q", got)
+			}
+			choice.Harness = "claude"
+			if got := harnessModelPlaceholder(choice.Harness, test.stage); got != suggestedHarnessModel("claude", test.stage) {
+				t.Fatalf("claude placeholder = %q", got)
+			}
+		})
+	}
+}
+
+func TestExecutionWizardResolvesUntouchedPlaceholdersAndPreservesEnteredModels(t *testing.T) {
+	choices := localExecutionChoices{
+		Spec:        localStageChoice{Harness: "claude"},
+		Implement:   localStageChoice{Harness: "grok", Model: "operator-model"},
+		Review:      localStageChoice{Harness: "codex"},
+		ReviewSeats: []localStageChoice{{Harness: "claude"}, {Harness: "grok", Model: "seat-model"}},
+	}
+	resolved := resolvedExecutionChoices(choices)
+	if resolved.Spec.Model != suggestedHarnessModel("claude", "spec") || resolved.Review.Model != suggestedHarnessModel("codex", "review") || resolved.ReviewSeats[0].Model != suggestedHarnessModel("claude", "review") {
+		t.Fatalf("resolved placeholders = %+v", resolved)
+	}
+	if resolved.Implement.Model != "operator-model" || resolved.ReviewSeats[1].Model != "seat-model" {
+		t.Fatalf("operator models changed = %+v", resolved)
+	}
+	if choices.Spec.Model != "" || choices.ReviewSeats[0].Model != "" {
+		t.Fatalf("resolution mutated wizard state = %+v", choices)
+	}
+}
+
+func TestExecutionWizardMissingModelSuggestionRemainsRequired(t *testing.T) {
+	choice := localStageChoice{Harness: "custom"}
+	input := modelInput("Model", "implement", &choice)
+	if placeholder := harnessModelPlaceholder(choice.Harness, "implement"); placeholder != "Enter model (required)" {
+		t.Fatalf("placeholder = %q", placeholder)
+	}
+	input.Blur()
+	if input.Error() == nil || !strings.Contains(input.Error().Error(), "model is required") {
+		t.Fatalf("missing model error = %v", input.Error())
+	}
+	choice.Model = "custom-model"
+	input = modelInput("Model", "implement", &choice)
+	input.Blur()
+	if input.Error() != nil {
+		t.Fatalf("custom model rejected: %v", input.Error())
+	}
+}
+
 func TestExecutionWizardUsesGroupedHuhFormAndPreservesState(t *testing.T) {
 	harness := config.HarnessTemplates()[0].Harness
 	detected := healthyDetections(harness)
