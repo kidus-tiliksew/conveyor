@@ -309,7 +309,8 @@ test('a returning user signs in with a password and resets it through an operato
   })
 
   await page.goto('/sign-in')
-  await expect(page.getByText(/Locked out/)).toBeVisible()
+  await expect(page.getByText(/Locked out/)).toHaveCount(0)
+  await expect(page.getByText(/conveyor user issue-link/)).toHaveCount(0)
   const signIn = page.getByRole('form', { name: 'Password sign-in' })
   await signIn.getByLabel('Email address').fill('returning@example.test')
   await signIn.getByLabel('Password').fill(password)

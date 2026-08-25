@@ -126,11 +126,6 @@ export function SignInPage() {
                 </p>
               )}
             </form>
-            <p className="mt-5 text-xs leading-5 text-faint">
-              Locked out? On the Conveyor host, an operator can run{' '}
-              <code className="font-mono">conveyor user issue-link &lt;email&gt;</code> to issue a fresh one-time
-              sign-in link.
-            </p>
           </>
         )}
       </section>
