@@ -1881,6 +1881,71 @@ func TestRunHarnessChildReapsOnlyAfterAttachedRunObservesTerminalOrder(t *testin
 	}
 }
 
+func TestRunHarnessChildExitUsesTerminalOrderObservedByRenewal(t *testing.T) {
+	previousRenew := workerClaimRenewInterval
+	previousTerminalGrace := workerRunTerminalChildGrace
+	workerClaimRenewInterval = 10 * time.Millisecond
+	workerRunTerminalChildGrace = 500 * time.Millisecond
+	t.Cleanup(func() {
+		workerClaimRenewInterval = previousRenew
+		workerRunTerminalChildGrace = previousTerminalGrace
+	})
+
+	var mu sync.Mutex
+	reconcileCalls := 0
+	releases := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/agent-credential"):
+			_ = json.NewEncoder(w).Encode(map[string]string{"credential_id": "run-agent", "credential": "run-agent-secret"})
+		case r.Method == http.MethodDelete && strings.HasSuffix(r.URL.Path, "/agent-credential"):
+			w.WriteHeader(http.StatusNoContent)
+		case strings.HasSuffix(r.URL.Path, "/claim"):
+			_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: "terminal-exit-order", State: core.WorkOrderClaimed, LeaseExpiresAt: time.Now().Add(time.Minute)})
+		case strings.HasSuffix(r.URL.Path, "/renew"):
+			_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: "terminal-exit-order", State: core.WorkOrderSubmitted})
+		case strings.HasSuffix(r.URL.Path, "/reconcile"):
+			mu.Lock()
+			reconcileCalls++
+			mu.Unlock()
+			http.Error(w, store.ErrWorkOrderClaimLost.Error(), http.StatusConflict)
+		case strings.HasSuffix(r.URL.Path, "/release"):
+			releases <- struct{}{}
+			_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: "terminal-exit-order", State: core.WorkOrderQueued})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	item := workerservice.DispatchOrder{
+		Order:    core.WorkOrder{ID: "terminal-exit-order", TaskID: "terminal-exit-task", Stage: core.StageImplement},
+		Task:     core.Task{ID: "terminal-exit-task"},
+		Dispatch: "run",
+		Harness:  config.Harness{Name: "helper", Command: []string{os.Args[0], "-test.run=TestWorkerLifecycleHelper", "--", "brief"}},
+	}
+	var stdout, stderr bytes.Buffer
+	if err := runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(
+		t.Context(), &client{base: server.URL, workspace: "demo"}, "user-credential", item,
+		time.Second, &stdout, &stderr, runModeAuto, &runOutputPresentation{output: io.Discard},
+	); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if reconcileCalls != 0 {
+		t.Fatalf("terminal order observed by renewal made %d reconciliation calls", reconcileCalls)
+	}
+	select {
+	case <-releases:
+		t.Fatal("terminal child exit attempted a release")
+	default:
+	}
+	if output := stdout.String() + stderr.String(); strings.Contains(output, "claim expired or order reassigned") {
+		t.Fatalf("terminal child exit emitted false claim-loss text: %q", output)
+	}
+}
+
 func TestRunHarnessChildExitClassifiesCheckpointReleaseBeforeRenewal(t *testing.T) {
 	previousRenew := workerClaimRenewInterval
 	workerClaimRenewInterval = time.Minute
@@ -2619,7 +2684,7 @@ func TestWorkerLifecycleHelper(t *testing.T) {
 	mode := ""
 	for _, arg := range os.Args {
 		switch arg {
-		case "exit", "cancel", "silent", "silent-grandchild", "early-output", "early-error", "early-then-silent", "continuous-output", "stall-deadline-race", "observability":
+		case "exit", "brief", "cancel", "silent", "silent-grandchild", "early-output", "early-error", "early-then-silent", "continuous-output", "stall-deadline-race", "observability":
 			mode = arg
 		}
 	}
@@ -2636,6 +2701,8 @@ func TestWorkerLifecycleHelper(t *testing.T) {
 		fmt.Fprintf(os.Stdout, "token=%s address=%s\n", os.Getenv("CONVEYOR_API_TOKEN"), os.Getenv("CONVEYOR_ADDR"))
 		fmt.Fprintf(os.Stderr, "session=%s client=%s\n", os.Getenv("CONVEYOR_SESSION_ID"), os.Getenv("CONVEYOR_CLIENT_TOKEN"))
 		os.Exit(7)
+	case "brief":
+		time.Sleep(100 * time.Millisecond)
 	case "cancel":
 		time.Sleep(30 * time.Second)
 	case "silent":
