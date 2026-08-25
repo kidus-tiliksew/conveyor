@@ -120,12 +120,12 @@ func newExecutionWizardState(harnesses []detectedHarness, seats []localStageChoi
 	}
 	state := &executionWizardState{acceptDefaults: true, confirmSummary: true, seatAction: "continue"}
 	state.choices = localExecutionChoices{
-		Spec:      localStageChoice{Harness: name, Model: suggestedHarnessModel(name, "spec"), Effort: "high", Timeout: "30m"},
-		Implement: localStageChoice{Harness: name, Model: suggestedHarnessModel(name, "implement"), Effort: "high", Timeout: "4h"},
-		Review:    localStageChoice{Harness: name, Model: suggestedHarnessModel(name, "review"), Effort: "high", Timeout: "1h"},
+		Spec:      localStageChoice{Harness: name, Effort: "high", Timeout: "30m"},
+		Implement: localStageChoice{Harness: name, Effort: "high", Timeout: "4h"},
+		Review:    localStageChoice{Harness: name, Effort: "high", Timeout: "1h"},
 	}
 	if len(seats) == 0 {
-		seats = []localStageChoice{{Harness: name, Model: suggestedHarnessModel(name, "review"), Effort: "high"}}
+		seats = []localStageChoice{{Harness: name, Effort: "high"}}
 	}
 	state.choices.ReviewSeats = append([]localStageChoice(nil), seats...)
 	return state
@@ -138,8 +138,8 @@ func newExecutionWizardModel(state *executionWizardState, harnesses []detectedHa
 	options := harnessOptions(harnesses)
 	groups := []*huh.Group{
 		huh.NewGroup(huh.NewConfirm().Title("Use detected defaults?").Description(defaultsSummary(state.choices)).Affirmative("Use defaults").Negative("Customize").Value(&state.acceptDefaults)).Title("Local execution setup").WithHideFunc(func() bool { return state.skipDefaults }),
-		stageGroup("Spec", &state.choices.Spec, options, harnesses).WithHideFunc(func() bool { return state.acceptDefaults || state.focusSeats }),
-		stageGroup("Implement", &state.choices.Implement, options, harnesses).WithHideFunc(func() bool { return state.acceptDefaults || state.focusSeats }),
+		stageGroup("Spec", "spec", &state.choices.Spec, options, harnesses).WithHideFunc(func() bool { return state.acceptDefaults || state.focusSeats }),
+		stageGroup("Implement", "implement", &state.choices.Implement, options, harnesses).WithHideFunc(func() bool { return state.acceptDefaults || state.focusSeats }),
 		reviewStageGroup(state, options, harnesses).WithHideFunc(func() bool { return state.acceptDefaults }),
 		seatManagementGroup(state).WithHideFunc(func() bool { return state.acceptDefaults }),
 		huh.NewGroup(huh.NewConfirm().Title("Write this execution setup?").DescriptionFunc(func() string { return choicesSummary(state.choices) }, nil).Affirmative("Write setup").Negative("Back to edit").Value(&state.confirmSummary)).Title("Summary").WithHideFunc(func() bool { return state.acceptDefaults || state.seatAction != "continue" }),
@@ -168,10 +168,10 @@ func (m *executionWizardModel) View() string {
 	return m.form.View()
 }
 
-func stageGroup(title string, choice *localStageChoice, options []huh.Option[string], harnesses []detectedHarness) *huh.Group {
+func stageGroup(title, stage string, choice *localStageChoice, options []huh.Option[string], harnesses []detectedHarness) *huh.Group {
 	return huh.NewGroup(
 		huh.NewSelect[string]().Title("Harness").Options(options...).Value(&choice.Harness).Validate(harnessProbeValidator(harnesses)),
-		huh.NewInput().Title("Model").Value(&choice.Model).Validate(requiredValue("model")),
+		modelInput("Model", stage, choice),
 		huh.NewSelect[string]().Title("Effort").Options(huh.NewOptions("high", "medium", "low")...).Value(&choice.Effort),
 		huh.NewInput().Title("Timeout").Value(&choice.Timeout).Validate(positiveDuration),
 	).Title(title + " stage").Description("Tab and shift+tab move within this stage; use the form's previous key to revisit earlier stages.")
@@ -184,11 +184,24 @@ func reviewStageGroup(state *executionWizardState, options []huh.Option[string],
 		prefix := fmt.Sprintf("Seat %d ", index+1)
 		fields = append(fields,
 			huh.NewSelect[string]().Title(prefix+"harness").Options(options...).Value(&seat.Harness).Validate(harnessProbeValidator(harnesses)),
-			huh.NewInput().Title(prefix+"model").Value(&seat.Model).Validate(requiredValue("model")),
+			modelInput(prefix+"model", "review", seat),
 			huh.NewSelect[string]().Title(prefix+"effort").Options(huh.NewOptions("high", "medium", "low")...).Value(&seat.Effort),
 		)
 	}
 	return huh.NewGroup(fields...).Title("Review stage").Description("Seats are shown in priority order; the next step adds, removes, or moves them without typed counts or permutations.")
+}
+
+func modelInput(title, stage string, choice *localStageChoice) *huh.Input {
+	return huh.NewInput().
+		Title(title).
+		Value(&choice.Model).
+		PlaceholderFunc(func() string { return harnessModelPlaceholder(choice.Harness, stage) }, &choice.Harness).
+		Validate(func(value string) error {
+			if strings.TrimSpace(value) != "" || suggestedHarnessModel(choice.Harness, stage) != "" {
+				return nil
+			}
+			return errors.New("model is required")
+		})
 }
 
 func seatManagementGroup(state *executionWizardState) *huh.Group {
@@ -242,15 +255,6 @@ func harnessProbeValidator(harnesses []detectedHarness) func(string) error {
 	}
 }
 
-func requiredValue(name string) func(string) error {
-	return func(value string) error {
-		if strings.TrimSpace(value) == "" {
-			return fmt.Errorf("%s is required", name)
-		}
-		return nil
-	}
-}
-
 func positiveDuration(value string) error {
 	parsed, err := time.ParseDuration(strings.TrimSpace(value))
 	if err != nil || parsed <= 0 {
@@ -264,6 +268,7 @@ func defaultsSummary(choices localExecutionChoices) string {
 }
 
 func choicesSummary(choices localExecutionChoices) string {
+	choices = resolvedExecutionChoices(choices)
 	var summary strings.Builder
 	for _, stage := range []struct {
 		name   string
@@ -327,7 +332,30 @@ func suggestedHarnessModel(harness, stage string) string {
 	if stages, ok := harnessModelSuggestions[harness]; ok {
 		return stages[stage]
 	}
-	return harness
+	return ""
+}
+
+func harnessModelPlaceholder(harness, stage string) string {
+	if suggestion := suggestedHarnessModel(harness, stage); suggestion != "" {
+		return suggestion
+	}
+	return "Enter model (required)"
+}
+
+func resolvedExecutionChoices(choices localExecutionChoices) localExecutionChoices {
+	choices.ReviewSeats = append([]localStageChoice(nil), choices.ReviewSeats...)
+	resolve := func(choice *localStageChoice, stage string) {
+		if strings.TrimSpace(choice.Model) == "" {
+			choice.Model = suggestedHarnessModel(choice.Harness, stage)
+		}
+	}
+	resolve(&choices.Spec, "spec")
+	resolve(&choices.Implement, "implement")
+	resolve(&choices.Review, "review")
+	for index := range choices.ReviewSeats {
+		resolve(&choices.ReviewSeats[index], "review")
+	}
+	return choices
 }
 
 func detectLocalHarnessHealth(ctx context.Context) []detectedHarness {
@@ -489,6 +517,7 @@ func selectedHarnesses(choices localExecutionChoices, available []config.Harness
 }
 
 func localExecutionDocument(workspace string, choices localExecutionChoices, harnesses []config.Harness) config.WorkspaceDocument {
+	choices = resolvedExecutionChoices(choices)
 	reviewSeats := []config.ReviewSeat{{Harness: choices.Review.Harness, Model: choices.Review.Model, Effort: choices.Review.Effort}}
 	if len(choices.ReviewSeats) > 0 {
 		reviewSeats = make([]config.ReviewSeat, len(choices.ReviewSeats))
@@ -522,10 +551,10 @@ func writeLocalExecutionConfig(path, workspace string, choices localExecutionCho
 
 func writeUpdatedLocalExecutionConfig(path string, existing *config.Config, choices localExecutionChoices, harnesses []config.Harness) error {
 	document := localExecutionDocument(existing.Workspace, choices, harnesses)
-	if choices.Spec.Model == "" && existing.ExecutionSettings != nil {
+	if choices.Spec.Model == "" && suggestedHarnessModel(choices.Spec.Harness, "spec") == "" && existing.ExecutionSettings != nil {
 		document.ExecutionSettings.Spec.ModelPolicy = existing.ExecutionSettings.Spec.ModelPolicy
 	}
-	if choices.Implement.Model == "" && existing.ExecutionSettings != nil {
+	if choices.Implement.Model == "" && suggestedHarnessModel(choices.Implement.Harness, "implement") == "" && existing.ExecutionSettings != nil {
 		document.ExecutionSettings.Implementation.ModelPolicy = existing.ExecutionSettings.Implementation.ModelPolicy
 	}
 	existing.ExecutionSettings = document.ExecutionSettings
