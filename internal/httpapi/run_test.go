@@ -261,6 +261,66 @@ func TestTaskRunHTTPRenewReportsSameSessionCheckpointRelease(t *testing.T) {
 	}
 }
 
+func TestTaskRunHTTPReconcileDisclosesTerminalHandoffOnlyToSubmittingSession(t *testing.T) {
+	_, st, handler := taskRunHTTPFixture(t)
+	for _, test := range []struct {
+		name    string
+		stage   core.Stage
+		state   core.WorkOrderState
+		command core.WorkOrderCommand
+	}{
+		{name: "submitted implementation", stage: core.StageImplement, state: core.WorkOrderSubmitted, command: core.WorkOrderCmdSubmitForReview},
+		{name: "completed review", stage: core.StageReview, state: core.WorkOrderCompleted, command: core.WorkOrderCmdSubmitReviewVerdict},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			taskID := "terminal-" + strings.ReplaceAll(test.name, " ", "-")
+			order := createTaskRunOrderAtStage(t, st, taskID, test.stage, time.Now().UTC())
+			claim := taskRunHTTPCall(handler, http.MethodPost, "/v1/tasks/"+taskID+"/run-orders/"+order.ID+"/claim", `{"session_id":"run-session","client_token":"run-secret","agent":"codex","model":"gpt"}`)
+			if claim.Code != http.StatusOK {
+				t.Fatalf("claim status=%d body=%s", claim.Code, claim.Body.String())
+			}
+			var terminal core.WorkOrder
+			if err := json.Unmarshal(claim.Body.Bytes(), &terminal); err != nil {
+				t.Fatal(err)
+			}
+			terminal.State = test.state
+			if err := storetest.For(st).UpdateWorkOrder(store.WithWorkspace(t.Context(), "demo"), terminal, test.command); err != nil {
+				t.Fatal(err)
+			}
+
+			sameSession := taskRunHTTPCall(handler, http.MethodGet, "/v1/tasks/"+taskID+"/run-orders/"+order.ID+"/reconcile?session_id=run-session", "")
+			if sameSession.Code != http.StatusOK || !strings.Contains(sameSession.Body.String(), `"state":"`+string(test.state)+`"`) {
+				t.Fatalf("same-session reconcile status=%d body=%s", sameSession.Code, sameSession.Body.String())
+			}
+			foreignSession := taskRunHTTPCall(handler, http.MethodGet, "/v1/tasks/"+taskID+"/run-orders/"+order.ID+"/reconcile?session_id=foreign-session", "")
+			if foreignSession.Code != http.StatusConflict || !strings.Contains(foreignSession.Body.String(), "claim expired or order reassigned") {
+				t.Fatalf("foreign-session reconcile status=%d body=%s", foreignSession.Code, foreignSession.Body.String())
+			}
+		})
+	}
+}
+
+func TestTaskRunHTTPReconcileRejectsExpiredNonTerminalClaim(t *testing.T) {
+	_, st, handler := taskRunHTTPFixture(t)
+	order := createTaskRunOrder(t, st, "expired-run")
+	claim := taskRunHTTPCall(handler, http.MethodPost, "/v1/tasks/expired-run/run-orders/"+order.ID+"/claim", `{"session_id":"run-session","client_token":"run-secret","agent":"codex","model":"gpt"}`)
+	if claim.Code != http.StatusOK {
+		t.Fatalf("claim status=%d body=%s", claim.Code, claim.Body.String())
+	}
+	var expired core.WorkOrder
+	if err := json.Unmarshal(claim.Body.Bytes(), &expired); err != nil {
+		t.Fatal(err)
+	}
+	expired.LeaseExpiresAt = time.Now().Add(-time.Second)
+	if err := storetest.For(st).UpdateWorkOrder(store.WithWorkspace(t.Context(), "demo"), expired); err != nil {
+		t.Fatal(err)
+	}
+	reconcile := taskRunHTTPCall(handler, http.MethodGet, "/v1/tasks/expired-run/run-orders/"+order.ID+"/reconcile?session_id=run-session", "")
+	if reconcile.Code != http.StatusConflict || !strings.Contains(reconcile.Body.String(), "claim expired or order reassigned") {
+		t.Fatalf("expired reconcile status=%d body=%s", reconcile.Code, reconcile.Body.String())
+	}
+}
+
 func TestTaskRunHTTPReturnsNoWorkAndSurfacesAssigneeRefusal(t *testing.T) {
 	_, st, handler := taskRunHTTPFixture(t)
 	if response := taskRunHTTPCall(handler, http.MethodGet, "/v1/tasks/missing/run-order", ""); response.Code != http.StatusNotFound {

@@ -550,7 +550,10 @@ func (s *Server) reconcileTaskRunOrder(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
-	if !result.Authorized && !result.ReleasedAtCheckpoint {
+	terminalHandoff := (result.WorkOrder.State == core.WorkOrderSubmitted || result.WorkOrder.State == core.WorkOrderCompleted) &&
+		result.WorkOrder.WorkerID == claim.WorkerID && result.WorkOrder.ClaimantID == claim.ClaimantID &&
+		result.WorkOrder.SessionID == claim.SessionID && result.WorkOrder.AttemptID != ""
+	if !result.Authorized && !result.ReleasedAtCheckpoint && !terminalHandoff {
 		http.Error(w, store.ErrWorkOrderClaimLost.Error(), http.StatusConflict)
 		return
 	}

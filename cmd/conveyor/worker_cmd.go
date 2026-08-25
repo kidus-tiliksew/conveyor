@@ -1250,8 +1250,17 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 			}
 		}
 		// Reconcile before checkpointing so a terminal handoff that committed
-		// just before child exit cannot receive a later WIP commit.
-		reconciled, reconcileErr := reconcileDispatchClaimUntil(ctx, c, credential, item, sessionID, leaseExpiresAt)
+		// just before child exit cannot receive a later WIP commit. A terminal
+		// order already observed by renewal is authoritative and avoids making
+		// successful completion depend on an older server's reconcile behavior.
+		reconciled := workerservice.ClaimReconciliation{}
+		var reconcileErr error
+		if claimFinalized && (finalizedOrder.State == core.WorkOrderSubmitted || finalizedOrder.State == core.WorkOrderCompleted) {
+			reconciled.WorkOrder = finalizedOrder
+			reconciled.Reason = "renewal observed a durable terminal handoff"
+		} else {
+			reconciled, reconcileErr = reconcileDispatchClaimUntil(ctx, c, credential, item, sessionID, leaseExpiresAt)
+		}
 		if reconcileErr != nil {
 			observedCheckpoint, checkpointErr := observeCheckpointRelease(reconcileErr)
 			if observedCheckpoint {
