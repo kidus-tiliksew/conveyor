@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -13,64 +12,24 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func TestInitPrerequisitesNameEveryMissingRequirement(t *testing.T) {
-	clone := t.TempDir()
-	answers := initAnswers{RepositoryName: "app", RepositoryURL: "github.com/example/app", ClonePath: clone}
-	tests := []struct {
-		name          string
-		prerequisites initPrerequisites
-		want          string
-	}{
-		{name: "git absent", prerequisites: initPrerequisites{lookPath: func(name string) (string, error) { return "", errors.New(name + " absent") }}, want: "git is required"},
-		{name: "gh absent", prerequisites: initPrerequisites{lookPath: func(name string) (string, error) {
-			if name == "git" {
-				return "/git", nil
-			}
-			return "", errors.New("gh absent")
-		}}, want: "run `gh auth login`"},
-		{name: "gh unauthenticated", prerequisites: initPrerequisites{lookPath: func(name string) (string, error) { return "/" + name, nil }, run: func(_ context.Context, name string, _ ...string) ([]byte, error) {
-			if name == "/gh" {
-				return []byte("no account"), errors.New("exit 1")
-			}
-			return []byte(clone), nil
-		}}, want: "run `gh auth login`"},
-		{name: "clone absent", prerequisites: initPrerequisites{lookPath: func(name string) (string, error) { return "/" + name, nil }, run: func(_ context.Context, _ string, _ ...string) ([]byte, error) { return nil, nil }, stat: func(string) (os.FileInfo, error) { return nil, os.ErrNotExist }}, want: "repository clone"},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			if test.prerequisites.stat == nil {
-				test.prerequisites.stat = os.Stat
-			}
-			if test.prerequisites.run == nil {
-				test.prerequisites.run = func(context.Context, string, ...string) ([]byte, error) { return nil, nil }
-			}
-			err := checkInitPrerequisites(t.Context(), test.prerequisites, answers)
-			if err == nil || !strings.Contains(err.Error(), test.want) {
-				t.Fatalf("error=%v, want %q", err, test.want)
-			}
-		})
-	}
-}
-
 func TestReadInitAnswersUsesDefaultsAndRequiresRepositoryURL(t *testing.T) {
 	t.Setenv(config.OrganizationNameEnv, "Example Org")
-	input := strings.NewReader("\nOwner\nowner@example.test\ndemo\nDemo\napp\nhttps://github.com/example/app\nmain\n/tmp/app\n")
+	input := strings.NewReader("\nOwner\nowner@example.test\ndemo\nDemo\napp\nhttps://github.com/example/app\nmain\n")
 	var output strings.Builder
 	answers, err := readInitAnswers(input, &output)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if answers.Organization != "Example Org" || answers.WorkspaceID != "demo" || answers.RepositoryName != "app" || answers.ClonePath != "/tmp/app" {
+	if answers.Organization != "Example Org" || answers.WorkspaceID != "demo" || answers.RepositoryName != "app" {
 		t.Fatalf("answers=%+v", answers)
 	}
-	if !strings.Contains(output.String(), "Organization name [Example Org]") {
+	if !strings.Contains(output.String(), "Organization name [Example Org]") || strings.Contains(strings.ToLower(output.String()), "clone") {
 		t.Fatalf("prompts=%q", output.String())
 	}
 }
 
 func TestDefaultInitConfigValidatesWithoutHandEditing(t *testing.T) {
-	clone := t.TempDir()
-	answers := initAnswers{WorkspaceID: "demo", RepositoryName: "app", RepositoryURL: "https://github.com/Example/App.git", BaseBranch: "main", ClonePath: clone}
+	answers := initAnswers{WorkspaceID: "demo", RepositoryName: "app", RepositoryURL: "https://github.com/Example/App.git", BaseBranch: "main"}
 	candidate, err := defaultInitConfig("postgres://example", answers)
 	if err != nil {
 		t.Fatal(err)
@@ -87,14 +46,10 @@ func TestDefaultInitConfigValidatesWithoutHandEditing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.Workspace != "demo" || len(loaded.Repos) != 1 || loaded.Repos[0].Name != "app" || loaded.DefaultSetup != "default" {
+	if loaded.Workspace != "demo" || len(loaded.Repos) != 1 || loaded.Repos[0].Name != "app" || loaded.Repos[0].URL != "https://github.com/Example/App.git" || loaded.DefaultSetup != "default" {
 		t.Fatalf("config=%+v", loaded)
 	}
-	resolvedClone, err := resolvedInitClonePath(clone)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if loaded.PackDir != "" || loaded.Repos[0].Checkout != resolvedClone || loaded.Repos[0].GitHub != "example/app" {
+	if loaded.PackDir != "" || loaded.Repos[0].Checkout != "" || loaded.Repos[0].GitHub != "example/app" || loaded.Repos[0].Base != "main" {
 		t.Fatalf("generated paths and identity=%+v pack=%q", loaded.Repos[0], loaded.PackDir)
 	}
 	if _, err = pack.Load(loaded.PackDir); err != nil {
@@ -103,20 +58,12 @@ func TestDefaultInitConfigValidatesWithoutHandEditing(t *testing.T) {
 }
 
 func TestInitPrerequisitesAllowNoPackAndRequireConditionalAPIKey(t *testing.T) {
-	clone := t.TempDir()
-	answers := initAnswers{RepositoryName: "app", RepositoryURL: "https://github.com/example/app", ClonePath: clone}
+	t.Setenv("PATH", t.TempDir())
+	answers := initAnswers{RepositoryName: "app", RepositoryURL: "https://github.com/example/app"}
 	prerequisites := initPrerequisites{
-		lookPath: func(name string) (string, error) { return "/" + name, nil },
-		run: func(_ context.Context, name string, _ ...string) ([]byte, error) {
-			if name == "/git" {
-				return []byte(clone), nil
-			}
-			return nil, nil
-		},
-		stat:   os.Stat,
 		getenv: func(string) string { return "" },
 	}
-	if err := checkInitPrerequisites(t.Context(), prerequisites, answers); err == nil || !strings.Contains(err.Error(), config.LLMAPIKeyEnv) {
+	if err := checkInitPrerequisites(prerequisites, answers); err == nil || !strings.Contains(err.Error(), config.LLMAPIKeyEnv) {
 		t.Fatalf("missing API key error=%v", err)
 	}
 	prerequisites.getenv = func(name string) string {
@@ -125,8 +72,8 @@ func TestInitPrerequisitesAllowNoPackAndRequireConditionalAPIKey(t *testing.T) {
 		}
 		return ""
 	}
-	if err := checkInitPrerequisites(t.Context(), prerequisites, answers); err != nil {
-		t.Fatalf("complete prerequisites: %v", err)
+	if err := checkInitPrerequisites(prerequisites, answers); err != nil {
+		t.Fatalf("prerequisites without host repository tools or clone: %v", err)
 	}
 	prerequisites.getenv = func(name string) string {
 		if name == config.DeprecatedLLMAPIKeyEnv {
@@ -134,7 +81,7 @@ func TestInitPrerequisitesAllowNoPackAndRequireConditionalAPIKey(t *testing.T) {
 		}
 		return ""
 	}
-	if err := checkInitPrerequisites(t.Context(), prerequisites, answers); err != nil {
+	if err := checkInitPrerequisites(prerequisites, answers); err != nil {
 		t.Fatalf("legacy API key fallback: %v", err)
 	}
 	if configUsesInProcessExecution(config.Config{Routing: config.Routing{Stages: map[string]config.StageRoute{"implement": {Execution: config.ExecutionMCP}}}}) {
@@ -148,7 +95,7 @@ func TestInitializeDeploymentRejectsMissingAPIKeyBeforeWriting(t *testing.T) {
 	t.Setenv(config.LLMAPIKeyEnv, "")
 	t.Setenv(config.DeprecatedLLMAPIKeyEnv, "")
 	configPath := filepath.Join(t.TempDir(), "nested", "conveyor.yaml")
-	answers := initAnswers{WorkspaceID: "demo", RepositoryName: "app", RepositoryURL: "https://github.com/example/app", BaseBranch: "main", ClonePath: t.TempDir()}
+	answers := initAnswers{WorkspaceID: "demo", RepositoryName: "app", RepositoryURL: "https://github.com/example/app", BaseBranch: "main"}
 	err := initializeDeployment(t.Context(), &strings.Builder{}, configPath, answers)
 	if err == nil || !strings.Contains(err.Error(), config.LLMAPIKeyEnv) {
 		t.Fatalf("missing API key error=%v", err)

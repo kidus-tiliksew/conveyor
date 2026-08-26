@@ -8,7 +8,6 @@ import (
 	"io"
 	"log"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -26,15 +25,11 @@ type initAnswers struct {
 	Organization, OperatorName, OperatorEmail string
 	WorkspaceID, WorkspaceName                string
 	RepositoryName, RepositoryURL, BaseBranch string
-	ClonePath                                 string
 }
 
 type initPrerequisites struct {
-	lookPath func(string) (string, error)
-	run      func(context.Context, string, ...string) ([]byte, error)
-	stat     func(string) (os.FileInfo, error)
-	getenv   func(string) string
-	warnf    func(string, ...any)
+	getenv func(string) string
+	warnf  func(string, ...any)
 }
 
 func initCmd() *cobra.Command {
@@ -48,16 +43,8 @@ func initCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			prerequisites := initPrerequisites{
-				lookPath: exec.LookPath,
-				run: func(ctx context.Context, name string, args ...string) ([]byte, error) {
-					return exec.CommandContext(ctx, name, args...).CombinedOutput()
-				},
-				stat:   os.Stat,
-				getenv: os.Getenv,
-				warnf:  log.Printf,
-			}
-			if err = checkInitPrerequisites(cmd.Context(), prerequisites, answers); err != nil {
+			prerequisites := initPrerequisites{getenv: os.Getenv, warnf: log.Printf}
+			if err = checkInitPrerequisites(prerequisites, answers); err != nil {
 				return err
 			}
 			return initializeDeployment(cmd.Context(), cmd.OutOrStdout(), configPath, answers)
@@ -84,10 +71,9 @@ func readInitAnswers(input io.Reader, output io.Writer) (initAnswers, error) {
 		{"Repository name", filepath.Base(current), nil},
 		{"Repository URL", "", nil},
 		{"Default branch", "main", nil},
-		{"Repository clone path", current, nil},
 	}
 	answers := initAnswers{}
-	destinations := []*string{&answers.Organization, &answers.OperatorName, &answers.OperatorEmail, &answers.WorkspaceID, &answers.WorkspaceName, &answers.RepositoryName, &answers.RepositoryURL, &answers.BaseBranch, &answers.ClonePath}
+	destinations := []*string{&answers.Organization, &answers.OperatorName, &answers.OperatorEmail, &answers.WorkspaceID, &answers.WorkspaceName, &answers.RepositoryName, &answers.RepositoryURL, &answers.BaseBranch}
 	for i := range fields {
 		fields[i].destination = destinations[i]
 		if fields[i].defaultValue == "" {
@@ -113,7 +99,6 @@ func readInitAnswers(input io.Reader, output io.Writer) (initAnswers, error) {
 		"first operator email": answers.OperatorEmail, "workspace id": answers.WorkspaceID,
 		"workspace name": answers.WorkspaceName, "repository name": answers.RepositoryName,
 		"repository URL": answers.RepositoryURL, "default branch": answers.BaseBranch,
-		"repository clone path": answers.ClonePath,
 	} {
 		if strings.TrimSpace(value) == "" {
 			return initAnswers{}, fmt.Errorf("%s is required", label)
@@ -122,33 +107,7 @@ func readInitAnswers(input io.Reader, output io.Writer) (initAnswers, error) {
 	return answers, nil
 }
 
-func checkInitPrerequisites(ctx context.Context, prerequisites initPrerequisites, answers initAnswers) error {
-	git, err := prerequisites.lookPath("git")
-	if err != nil {
-		return errors.New("git is required on the Conveyor host; install git and rerun `conveyor init`")
-	}
-	gh, err := prerequisites.lookPath("gh")
-	if err != nil {
-		return errors.New("GitHub CLI `gh` is required on the Conveyor host; install it, then run `gh auth login`")
-	}
-	if output, authErr := prerequisites.run(ctx, gh, "auth", "status"); authErr != nil {
-		detail := strings.TrimSpace(string(output))
-		if detail != "" {
-			return fmt.Errorf("GitHub CLI is not authenticated; run `gh auth login` and retry (%s)", detail)
-		}
-		return errors.New("GitHub CLI is not authenticated; run `gh auth login` and retry")
-	}
-	clone, err := resolvedInitClonePath(answers.ClonePath)
-	if err != nil {
-		return fmt.Errorf("resolve repository clone path %q: %w", answers.ClonePath, err)
-	}
-	info, err := prerequisites.stat(clone)
-	if err != nil || !info.IsDir() {
-		return fmt.Errorf("repository clone for %q is missing at %s; run `gh repo clone %s %s`", answers.RepositoryName, clone, answers.RepositoryURL, clone)
-	}
-	if output, gitErr := prerequisites.run(ctx, git, "-C", clone, "rev-parse", "--show-toplevel"); gitErr != nil || !sameFilesystemPath(strings.TrimSpace(string(output)), clone) {
-		return fmt.Errorf("repository path %s is not a filesystem clone; run `gh repo clone %s %s`", clone, answers.RepositoryURL, clone)
-	}
+func checkInitPrerequisites(prerequisites initPrerequisites, answers initAnswers) error {
 	generated, err := defaultInitConfig("postgres://init-prerequisite", answers)
 	if err != nil {
 		return err
@@ -168,17 +127,6 @@ func checkInitPrerequisites(ctx context.Context, prerequisites initPrerequisites
 	return nil
 }
 
-func resolvedInitClonePath(path string) (string, error) {
-	absolute, err := filepath.Abs(path)
-	if err != nil {
-		return "", fmt.Errorf("resolve repository clone path %q: %w", path, err)
-	}
-	if resolved, resolveErr := filepath.EvalSymlinks(absolute); resolveErr == nil {
-		absolute = resolved
-	}
-	return filepath.Clean(absolute), nil
-}
-
 func configUsesInProcessExecution(candidate config.Config) bool {
 	if candidate.ExecutionSettings != nil {
 		return true
@@ -189,12 +137,6 @@ func configUsesInProcessExecution(candidate config.Config) bool {
 		}
 	}
 	return false
-}
-
-func sameFilesystemPath(left, right string) bool {
-	leftResolved, leftErr := filepath.EvalSymlinks(left)
-	rightResolved, rightErr := filepath.EvalSymlinks(right)
-	return leftErr == nil && rightErr == nil && filepath.Clean(leftResolved) == filepath.Clean(rightResolved)
 }
 
 func initializeDeployment(ctx context.Context, output io.Writer, configPath string, answers initAnswers) error {
@@ -320,10 +262,6 @@ func requireInitAPIKey(candidate config.Config) error {
 }
 
 func defaultInitConfig(databaseURL string, answers initAnswers) (config.Config, error) {
-	clone, err := resolvedInitClonePath(answers.ClonePath)
-	if err != nil {
-		return config.Config{}, err
-	}
 	harness := config.HarnessTemplates()[0].Harness
 	settings := config.ContextualExecutionSettings{
 		ControlPlane: config.ControlPlaneSettings{
@@ -345,7 +283,7 @@ func defaultInitConfig(databaseURL string, answers initAnswers) (config.Config, 
 		Setups:                    []config.ExecutionSetup{{Name: "default", ExecutionSettings: settings, Review: review, RefreshReview: config.RefreshReviewDelta}},
 		DefaultSetup:              "default",
 		Execution:                 config.ExecutionPolicy{SpecApproval: true, MergeApproval: true, ImplementConcurrency: 1, ReviewConcurrency: 1, FirstActivityTimeoutText: config.DefaultFirstActivityTimeoutText},
-		Repos:                     []config.Repo{{Name: answers.RepositoryName, URL: answers.RepositoryURL, GitHub: initGitHubSlug(answers.RepositoryURL), Base: answers.BaseBranch, Checkout: clone}},
+		Repos:                     []config.Repo{{Name: answers.RepositoryName, URL: answers.RepositoryURL, GitHub: initGitHubSlug(answers.RepositoryURL), Base: answers.BaseBranch}},
 		Monitor:                   config.MonitorConfig{PollIntervalText: "1m", StartupWindowText: "24h"},
 	}, nil
 }

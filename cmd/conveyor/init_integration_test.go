@@ -48,14 +48,19 @@ func TestFreshStoreInitServesAPIAndCreatesFirstTaskIntegration(t *testing.T) {
 	t.Setenv("CONVEYOR_API_TOKEN", "fresh-init-operator-token")
 	t.Setenv(config.LLMAPIKeyEnv, "fresh-init-api-key")
 	t.Setenv(config.PublicURLEnv, "https://conveyor.example/")
+	t.Setenv("PATH", t.TempDir())
 	answers := initAnswers{
 		Organization: "Fresh Org", OperatorName: "Fresh Operator", OperatorEmail: "owner@example.test",
 		WorkspaceID: "fresh", WorkspaceName: "Fresh", RepositoryName: "app",
-		RepositoryURL: "https://github.com/example/app", BaseBranch: "main", ClonePath: t.TempDir(),
+		RepositoryURL: "https://github.com/example/app", BaseBranch: "main",
 	}
 	configPath := filepath.Join(t.TempDir(), "conveyor.yaml")
 	var output strings.Builder
-	if err = initializeDeployment(t.Context(), &output, configPath, answers); err != nil {
+	command := initCmd()
+	command.SetIn(strings.NewReader("Fresh Org\nFresh Operator\nowner@example.test\nfresh\nFresh\napp\nhttps://github.com/example/app\nmain\n"))
+	command.SetOut(&output)
+	command.SetArgs([]string{"--config", configPath})
+	if err = command.Execute(); err != nil {
 		t.Fatal(err)
 	}
 	firstInitToken := signInTokenFromOutput(t, output.String())
