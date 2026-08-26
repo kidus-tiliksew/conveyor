@@ -57,6 +57,14 @@ type restClient struct {
 	identity string
 }
 
+type secretSafeError struct {
+	message string
+	err     error
+}
+
+func (e *secretSafeError) Error() string { return e.message }
+func (e *secretSafeError) Unwrap() error { return e.err }
+
 func newRESTRunner(client *http.Client, baseURL, token, identity string) ghRunner {
 	api := &restClient{http: client, baseURL: strings.TrimRight(baseURL, "/"), token: strings.TrimSpace(token), identity: strings.TrimSpace(identity)}
 	return api.run
@@ -115,12 +123,12 @@ func (c *restClient) request(ctx context.Context, method, endpoint, accept strin
 	}
 	response, err := c.http.Do(req)
 	if err != nil {
-		return nil, nil, 0, &Error{Category: ForgeRequest, Err: fmt.Errorf("GitHub REST transport: %w", err)}
+		return nil, nil, 0, &Error{Category: ForgeRequest, Err: fmt.Errorf("GitHub REST transport: %w", c.safeError(err))}
 	}
 	defer response.Body.Close()
 	raw, readErr := io.ReadAll(response.Body)
 	if readErr != nil {
-		return nil, response.Header, response.StatusCode, &Error{Category: ForgeResponse, Err: fmt.Errorf("read GitHub REST response: %w", readErr)}
+		return nil, response.Header, response.StatusCode, &Error{Category: ForgeResponse, Err: fmt.Errorf("read GitHub REST response: %w", c.safeError(readErr))}
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		category := ForgeStatus
@@ -132,9 +140,20 @@ func (c *restClient) request(ctx context.Context, method, endpoint, accept strin
 		if category == ForgePermission {
 			return nil, response.Header, response.StatusCode, &Error{Category: category, Err: fmt.Errorf("%s is expired, revoked, or lacks permission; replace it in settings (GitHub HTTP %d)", c.identityLabel(), response.StatusCode)}
 		}
-		return nil, response.Header, response.StatusCode, &Error{Category: category, Err: fmt.Errorf("GitHub REST status %d: %s", response.StatusCode, secretSafeMessage(raw))}
+		return nil, response.Header, response.StatusCode, &Error{Category: category, Err: fmt.Errorf("GitHub REST status %d: %s", response.StatusCode, c.secretSafe(secretSafeMessage(raw)))}
 	}
 	return raw, response.Header, response.StatusCode, nil
+}
+
+func (c *restClient) secretSafe(value string) string {
+	if c.token == "" {
+		return value
+	}
+	return strings.ReplaceAll(value, c.token, "[REDACTED]")
+}
+
+func (c *restClient) safeError(err error) error {
+	return &secretSafeError{message: c.secretSafe(err.Error()), err: err}
 }
 
 func secretSafeMessage(raw []byte) string {
@@ -301,9 +320,22 @@ func (c *restClient) issue(ctx context.Context, args ...string) ([]byte, error) 
 	switch args[0] {
 	case "list":
 		endpoint := fmt.Sprintf("repos/%s/issues?state=%s&labels=%s&per_page=100", repo, url.QueryEscape(option(args, "--state")), url.QueryEscape(option(args, "--label")))
-		raw, _, _, err := c.request(ctx, http.MethodGet, endpoint, "application/vnd.github+json", nil)
+		var issues []json.RawMessage
+		for endpoint != "" {
+			raw, headers, _, err := c.request(ctx, http.MethodGet, endpoint, "application/vnd.github+json", nil)
+			if err != nil {
+				return nil, err
+			}
+			var page []json.RawMessage
+			if json.Unmarshal(raw, &page) != nil {
+				return nil, forgeResponseError("parse GitHub issue listing")
+			}
+			issues = append(issues, page...)
+			endpoint = nextLink(headers.Get("Link"))
+		}
+		raw, err := json.Marshal(issues)
 		if err != nil {
-			return nil, err
+			return nil, forgeResponseError("encode GitHub issue listing")
 		}
 		return normalizeIssues(raw)
 	case "create":

@@ -1,10 +1,6 @@
-// Package github implements the Phase 1 trigger and output: issues
-// labeled conveyor:ready become tasks, and completed tasks open PRs
-// (DEC-8; design-git-delivery).
-//
-// Phase 1 shells out to the gh CLI (already authenticated on the
-// user's machine); webhook ingestion arrives with the HTTP API in
-// later phases.
+// Package github implements GitHub intake and delivery over the REST API.
+// Every forge request uses an explicit stored token supplied by its caller
+// (DEC-8; DEC-31; design-git-delivery).
 package github
 
 import (

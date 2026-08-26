@@ -36,6 +36,34 @@ type failingStageOrderStore struct {
 	err error
 }
 
+func TestWorkspaceForgeOperationFailsClosedWithoutTokenIntegration(t *testing.T) {
+	databaseURL := dispatchIntegrationDatabaseURL(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	st, err := storepg.Open(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	workspace := "forge-fail-closed-" + core.NewTaskID()
+	cfg := dispatchRaceConfig(workspace)
+	actorCtx := store.WithActor(ctx, store.Actor{ID: "test", Role: core.ActorHuman})
+	if _, err = st.CreateWorkspace(actorCtx, workspace, "Forge fail closed", cfg); err != nil {
+		t.Fatal(err)
+	}
+	dispatcher := New(st, cfg, nil)
+	_, err = dispatcher.PublishIssue(store.WithWorkspace(ctx, workspace), githubtrigger.IssuePublication{
+		Repo: "acme/repo", TaskID: "task-without-workspace-token", Title: "must fail before GitHub",
+	})
+	if githubtrigger.ErrorCategory(err) != githubtrigger.ForgePermission {
+		t.Fatalf("category = %q, error = %v", githubtrigger.ErrorCategory(err), err)
+	}
+	if !strings.Contains(err.Error(), "workspace "+workspace+" forge token") || !strings.Contains(err.Error(), "add or replace it in workspace settings") {
+		t.Fatalf("permission remedy = %v", err)
+	}
+}
+
 func TestRiverDispatchCompletesBlueprintAnchorIntegration(t *testing.T) {
 	databaseURL := dispatchIntegrationDatabaseURL(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)

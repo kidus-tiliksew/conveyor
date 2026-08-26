@@ -2,11 +2,21 @@ package github
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 )
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
+}
 
 func TestRESTRunnerUsesOnlyExplicitToken(t *testing.T) {
 	t.Setenv("GH_TOKEN", "ambient-secret")
@@ -73,6 +83,72 @@ func TestRESTRunnerMapsRateLimitAndMalformedResponse(t *testing.T) {
 			t.Fatalf("category = %q, error = %v", ErrorCategory(err), err)
 		}
 	})
+}
+
+func TestRESTRunnerMapsTransportAndStatusFailuresWithoutTokenLeakage(t *testing.T) {
+	const token = "explicit-secret"
+	t.Run("transport", func(t *testing.T) {
+		transportErr := errors.New("transport rejected " + token)
+		client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return nil, transportErr
+		})}
+		run := newRESTRunner(client, "https://github.test", token, "user usr-1 forge token")
+		_, err := run(t.Context(), "api", "user")
+		if ErrorCategory(err) != ForgeRequest || !errors.Is(err, transportErr) || strings.Contains(err.Error(), token) || !strings.Contains(err.Error(), "[REDACTED]") {
+			t.Fatalf("transport error = %v, category = %q", err, ErrorCategory(err))
+		}
+	})
+
+	t.Run("status", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = io.WriteString(w, `{"message":"upstream echoed `+token+`"}`)
+		}))
+		defer server.Close()
+		run := newRESTRunner(server.Client(), server.URL, token, "workspace demo forge token")
+		_, err := run(t.Context(), "api", "user")
+		if ErrorCategory(err) != ForgeStatus || strings.Contains(err.Error(), token) || !strings.Contains(err.Error(), "[REDACTED]") {
+			t.Fatalf("status error = %v, category = %q", err, ErrorCategory(err))
+		}
+	})
+}
+
+func TestRESTRunnerPaginatesReadyIssues(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if got := r.Header.Get("Authorization"); got != "Bearer workspace-token" {
+			t.Fatalf("Authorization = %q", got)
+		}
+		if requests == 1 {
+			if got := r.URL.Query().Get("labels"); got != ReadyLabel {
+				t.Fatalf("labels = %q", got)
+			}
+			w.Header().Set("Link", "<"+serverURL(r)+"?page=2>; rel=\"next\"")
+			_, _ = io.WriteString(w, `[{"number":1,"title":"one","body":"first","html_url":"https://github.test/issues/1"}]`)
+			return
+		}
+		_, _ = io.WriteString(w, `[{"number":2,"title":"two","body":"second","html_url":"https://github.test/issues/2"}]`)
+	}))
+	defer server.Close()
+
+	run := newRESTRunner(server.Client(), server.URL, "workspace-token", "workspace demo forge token")
+	raw, err := run(t.Context(), "issue", "list", "--repo", "acme/app", "--label", ReadyLabel, "--state", "open")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var issues []Issue
+	if err = json.Unmarshal(raw, &issues); err != nil {
+		t.Fatal(err)
+	}
+	want := []Issue{{Number: 1, Title: "one", Body: "first", URL: "https://github.test/issues/1"}, {Number: 2, Title: "two", Body: "second", URL: "https://github.test/issues/2"}}
+	if !reflect.DeepEqual(issues, want) || requests != 2 {
+		t.Fatalf("issues = %+v, requests = %d", issues, requests)
+	}
+}
+
+func serverURL(r *http.Request) string {
+	return "http://" + r.Host + r.URL.Path
 }
 
 func TestRESTRunnerPreservesUnifiedDiffAcceptHeader(t *testing.T) {
