@@ -502,6 +502,60 @@ func TestTaskRunRoutesAlsoRequireClaimWork(t *testing.T) {
 	}
 }
 
+func TestTaskRunChildRoutesAdmitOnlyBoundRunChildAgents(t *testing.T) {
+	fixture := &membershipFixture{
+		workspaces: []core.Workspace{{ID: "alpha"}},
+		roles:      map[string]map[string]core.WorkspaceRole{"user": {"alpha": core.WorkspaceRoleExecutor}},
+	}
+	server := NewServer(store.NewMemory())
+	server.Workspaces, server.Memberships = fixture, fixture
+	server.Credentials = staticCredentialVerifier{
+		"bound-token": {ID: "agt_child", OwnerUserID: "user", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser,
+			RunWorkspaceID: "alpha", RunWorkOrderID: "order", RunSessionID: "session"},
+		"unbound-token": {ID: "agt_plain", OwnerUserID: "user", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser},
+	}
+	handler := server.Handler()
+	call := func(token, method, path string) *httptest.ResponseRecorder {
+		t.Helper()
+		fixture.capabilityCalls = nil
+		request := httptest.NewRequest(method, path+"?workspace_id=alpha", strings.NewReader(`{}`))
+		request.Header.Set("Authorization", "Bearer "+token)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
+	}
+
+	childRoutes := []struct{ method, path string }{
+		{http.MethodPost, "/v1/tasks/task/run-orders/order/renew"},
+		{http.MethodPost, "/v1/tasks/task/run-orders/order/attempt-checkpoint"},
+	}
+	for _, route := range childRoutes {
+		response := call("bound-token", route.method, route.path)
+		if response.Code == http.StatusUnauthorized {
+			t.Fatalf("bound child rejected at boundary %s %s body=%q", route.method, route.path, response.Body.String())
+		}
+		if len(fixture.capabilityCalls) < 2 || fixture.capabilityCalls[len(fixture.capabilityCalls)-1] != core.CapabilityClaimWork {
+			t.Fatalf("bound child %s %s capability calls=%v", route.method, route.path, fixture.capabilityCalls)
+		}
+		if response = call("unbound-token", route.method, route.path); response.Code != http.StatusUnauthorized {
+			t.Fatalf("unbound agent %s %s status=%d", route.method, route.path, response.Code)
+		}
+	}
+
+	for _, route := range []struct{ method, path string }{
+		{http.MethodGet, "/v1/tasks/task/run-order"},
+		{http.MethodPost, "/v1/tasks/task/run-orders/order/claim"},
+		{http.MethodPost, "/v1/tasks/task/run-orders/order/agent-credential"},
+		{http.MethodDelete, "/v1/tasks/task/run-orders/order/agent-credential"},
+		{http.MethodGet, "/v1/tasks/task/run-orders/order/reconcile"},
+		{http.MethodPost, "/v1/tasks/task/run-orders/order/release"},
+	} {
+		if response := call("bound-token", route.method, route.path); response.Code != http.StatusUnauthorized {
+			t.Fatalf("bound child reached user-reserved %s %s status=%d body=%q", route.method, route.path, response.Code, response.Body.String())
+		}
+	}
+}
+
 func TestTaskRunRoutesRejectDashboardSessionsAndAcceptBearerPATs(t *testing.T) {
 	fixture := &membershipFixture{
 		workspaces: []core.Workspace{{ID: "alpha"}},

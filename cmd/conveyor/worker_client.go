@@ -200,6 +200,34 @@ func (c *client) checkpointWorkerOrderAttemptWithTranscriptContext(ctx context.C
 	return c.workerDoContext(ctx, http.MethodPost, "/v1/worker/work-orders/"+id+"/attempt-checkpoint", payload, &result, credential)
 }
 
+// workerPlaneUnauthorized reports whether the worker plane refused the
+// presented credential class outright (HTTP 401). Lifecycle conflicts,
+// validation failures, and transport errors are never classified as
+// unauthorized.
+func workerPlaneUnauthorized(err error) bool {
+	var response *workerHTTPError
+	return errors.As(err, &response) && response.StatusCode == http.StatusUnauthorized
+}
+
+// deliverCheckoutAttemptCheckpointContext records a predecessor attempt
+// checkpoint worker-plane first, matching the worker daemon's dispatch path.
+// Only a worker-plane HTTP 401 — the plane refusing the credential class —
+// retries the identical checkpoint payload once through the task run plane,
+// where the launched user or session-bound run child credential is admitted
+// (req-260818-24dd3a; req-security-boundaries REQ-1/AC-1.1). Every other
+// worker-plane failure propagates unchanged, and a failed fallback reports
+// both refusals.
+func (c *client) deliverCheckoutAttemptCheckpointContext(ctx context.Context, credential, taskID, workOrderID string, checkpoint core.WorkOrderAttemptCheckpoint) error {
+	workerErr := c.checkpointWorkerOrderAttemptContext(ctx, credential, workOrderID, checkpoint)
+	if workerErr == nil || !workerPlaneUnauthorized(workerErr) {
+		return workerErr
+	}
+	if fallbackErr := c.checkpointTaskRunOrderAttemptByIDContext(ctx, credential, taskID, workOrderID, checkpoint); fallbackErr != nil {
+		return fmt.Errorf("worker-plane checkpoint recording unauthorized (%v); run-plane fallback failed: %w", workerErr, fallbackErr)
+	}
+	return nil
+}
+
 type workerRenewRequest struct {
 	SessionID        string                               `json:"session_id"`
 	ActivitySnapshot *core.WorkOrderActivitySnapshotInput `json:"activity_snapshot,omitempty"`

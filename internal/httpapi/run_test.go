@@ -186,6 +186,111 @@ func TestTaskRunHTTPIsExplicitlyTaskScopedAndUsesUserLeaseLifecycle(t *testing.T
 	}
 }
 
+func taskRunHTTPCallAs(handler http.Handler, token, method, path, body string) *httptest.ResponseRecorder {
+	request := httptest.NewRequest(method, path, strings.NewReader(body))
+	request.Header.Set("Authorization", "Bearer "+token)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	return response
+}
+
+func TestTaskRunHTTPAdmitsBoundRunChildOnRenewAndCheckpointOnly(t *testing.T) {
+	server, st, handler := taskRunHTTPFixture(t)
+	target := createTaskRunOrder(t, st, "target")
+	other := createTaskRunOrder(t, st, "other")
+	agentCredential := func(id, workspace, orderID, sessionID string) core.AuthenticatedCredential {
+		return core.AuthenticatedCredential{
+			ID: id, OwnerUserID: "local-operator", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser,
+			RunWorkspaceID: workspace, RunWorkOrderID: orderID, RunSessionID: sessionID,
+		}
+	}
+	server.Credentials = staticCredentialVerifier{
+		"user-token":      {ID: "pat_user", OwnerUserID: "local-operator", Kind: core.CredentialUser, Scope: core.CredentialScopeUser},
+		"child-token":     agentCredential("agt_child", "demo", target.ID, "run-session"),
+		"other-child":     agentCredential("agt_other", "demo", other.ID, "other-session"),
+		"foreign-child":   agentCredential("agt_foreign", "elsewhere", target.ID, "run-session"),
+		"unbound-agent":   {ID: "agt_plain", OwnerUserID: "local-operator", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser},
+		"different-owner": agentCredential("agt_stranger", "demo", target.ID, "run-session"),
+	}
+	stranger := server.Credentials.(staticCredentialVerifier)["different-owner"]
+	stranger.OwnerUserID = "someone-else"
+	server.Credentials.(staticCredentialVerifier)["different-owner"] = stranger
+
+	claim := taskRunHTTPCallAs(handler, "user-token", http.MethodPost, "/v1/tasks/target/run-orders/"+target.ID+"/claim", `{"session_id":"run-session","client_token":"run-secret","agent":"codex","model":"gpt"}`)
+	if claim.Code != http.StatusOK {
+		t.Fatalf("claim status=%d body=%s", claim.Code, claim.Body.String())
+	}
+	var claimed core.WorkOrder
+	if err := json.Unmarshal(claim.Body.Bytes(), &claimed); err != nil {
+		t.Fatal(err)
+	}
+
+	renew := taskRunHTTPCallAs(handler, "child-token", http.MethodPost, "/v1/tasks/target/run-orders/"+target.ID+"/renew", `{"session_id":"run-session"}`)
+	if renew.Code != http.StatusOK {
+		t.Fatalf("bound child renew status=%d body=%s", renew.Code, renew.Body.String())
+	}
+	checkpoint := taskRunHTTPCallAs(handler, "child-token", http.MethodPost, "/v1/tasks/target/run-orders/"+target.ID+"/attempt-checkpoint", `{"session_id":"run-session","attempt_id":"`+claimed.AttemptID+`","termination_reason":"predecessor adopted","commit_sha":"2222222222222222222222222222222222222222","push_result":"pushed"}`)
+	if checkpoint.Code != http.StatusOK || !strings.Contains(checkpoint.Body.String(), `"created":true`) {
+		t.Fatalf("bound child checkpoint status=%d body=%s", checkpoint.Code, checkpoint.Body.String())
+	}
+	events, err := st.ListEvents(store.WithWorkspace(t.Context(), "demo"), "target")
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundAgentRenewal := false
+	for _, event := range events {
+		foundAgentRenewal = foundAgentRenewal || (event.Kind == "work_order.lease_renewed" && event.ActorRole == core.ActorAgent)
+	}
+	if !foundAgentRenewal {
+		t.Fatalf("child renewal did not retain agent actor attribution: %+v", events)
+	}
+
+	// Exact-scope regressions: a mismatched order, session, workspace, or
+	// owner renews and records nothing.
+	if crossOrder := taskRunHTTPCallAs(handler, "other-child", http.MethodPost, "/v1/tasks/target/run-orders/"+target.ID+"/renew", `{"session_id":"run-session"}`); crossOrder.Code != http.StatusConflict {
+		t.Fatalf("cross-order child renew status=%d body=%s", crossOrder.Code, crossOrder.Body.String())
+	}
+	if crossSession := taskRunHTTPCallAs(handler, "child-token", http.MethodPost, "/v1/tasks/target/run-orders/"+target.ID+"/renew", `{"session_id":"other-session"}`); crossSession.Code != http.StatusConflict {
+		t.Fatalf("cross-session child renew status=%d body=%s", crossSession.Code, crossSession.Body.String())
+	}
+	if crossWorkspace := taskRunHTTPCallAs(handler, "foreign-child", http.MethodPost, "/v1/tasks/target/run-orders/"+target.ID+"/renew", `{"session_id":"run-session"}`); crossWorkspace.Code != http.StatusConflict {
+		t.Fatalf("cross-workspace child renew status=%d body=%s", crossWorkspace.Code, crossWorkspace.Body.String())
+	}
+	if crossOwner := taskRunHTTPCallAs(handler, "different-owner", http.MethodPost, "/v1/tasks/target/run-orders/"+target.ID+"/renew", `{"session_id":"run-session"}`); crossOwner.Code != http.StatusConflict {
+		t.Fatalf("cross-owner child renew status=%d body=%s", crossOwner.Code, crossOwner.Body.String())
+	}
+	if crossCheckpoint := taskRunHTTPCallAs(handler, "other-child", http.MethodPost, "/v1/tasks/target/run-orders/"+target.ID+"/attempt-checkpoint", `{"session_id":"run-session","attempt_id":"`+claimed.AttemptID+`","termination_reason":"escape","commit_sha":"3333333333333333333333333333333333333333","push_result":"pushed"}`); crossCheckpoint.Code != http.StatusConflict {
+		t.Fatalf("cross-order child checkpoint status=%d body=%s", crossCheckpoint.Code, crossCheckpoint.Body.String())
+	}
+
+	// An agent credential without its complete run binding never reaches the
+	// child routes, and even a bound child stays off every other run-order
+	// control route.
+	if unbound := taskRunHTTPCallAs(handler, "unbound-agent", http.MethodPost, "/v1/tasks/target/run-orders/"+target.ID+"/renew", `{"session_id":"run-session"}`); unbound.Code != http.StatusUnauthorized {
+		t.Fatalf("unbound agent renew status=%d body=%s", unbound.Code, unbound.Body.String())
+	}
+	for _, route := range []struct{ method, path, body string }{
+		{http.MethodGet, "/v1/tasks/target/run-order", ""},
+		{http.MethodPost, "/v1/tasks/target/run-orders/" + target.ID + "/claim", `{"session_id":"run-session","client_token":"x","agent":"codex","model":"gpt"}`},
+		{http.MethodPost, "/v1/tasks/target/run-orders/" + target.ID + "/agent-credential", `{"session_id":"run-session"}`},
+		{http.MethodDelete, "/v1/tasks/target/run-orders/" + target.ID + "/agent-credential", `{"session_id":"run-session","credential_id":"agent-1"}`},
+		{http.MethodGet, "/v1/tasks/target/run-orders/" + target.ID + "/reconcile?session_id=run-session", ""},
+		{http.MethodPost, "/v1/tasks/target/run-orders/" + target.ID + "/release", `{"session_id":"run-session","reason":"escape","outcome":"released"}`},
+	} {
+		if response := taskRunHTTPCallAs(handler, "child-token", route.method, route.path, route.body); response.Code != http.StatusUnauthorized {
+			t.Fatalf("bound child %s %s status=%d body=%s", route.method, route.path, response.Code, response.Body.String())
+		}
+	}
+
+	// The parent's user credential contract is unchanged.
+	if userRenew := taskRunHTTPCallAs(handler, "user-token", http.MethodPost, "/v1/tasks/target/run-orders/"+target.ID+"/renew", `{"session_id":"run-session"}`); userRenew.Code != http.StatusOK {
+		t.Fatalf("user renew status=%d body=%s", userRenew.Code, userRenew.Body.String())
+	}
+	if userCheckpoint := taskRunHTTPCallAs(handler, "user-token", http.MethodPost, "/v1/tasks/target/run-orders/"+target.ID+"/attempt-checkpoint", `{"session_id":"run-session","attempt_id":"`+claimed.AttemptID+`","termination_reason":"operator record","commit_sha":"4444444444444444444444444444444444444444","push_result":"pushed"}`); userCheckpoint.Code != http.StatusOK {
+		t.Fatalf("user checkpoint status=%d body=%s", userCheckpoint.Code, userCheckpoint.Body.String())
+	}
+}
+
 func TestTaskRunHTTPIssuesClaimBoundAgentCredentialAndRevokesAfterSubmission(t *testing.T) {
 	server, st, handler := taskRunHTTPFixture(t)
 	order := createTaskRunOrder(t, st, "target")

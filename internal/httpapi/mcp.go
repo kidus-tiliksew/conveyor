@@ -265,10 +265,27 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 			return s.Workers.Renew(ctx, worker, stringArg("work_order_id"), session)
 		}
 		credential, ok := store.CredentialFromContext(ctx)
-		if !ok || credential.Kind != core.CredentialUser {
+		if !ok {
 			return nil, store.ErrWorkOrderClaimLost
 		}
-		claim := core.WorkOrderClaimIdentity{ClaimantID: core.TaskRunClaimantID(credential.OwnerUserID), SessionID: session}
+		var claim core.WorkOrderClaimIdentity
+		if credential.Kind == core.CredentialUser {
+			claim = core.WorkOrderClaimIdentity{ClaimantID: core.TaskRunClaimantID(credential.OwnerUserID), SessionID: session}
+		} else {
+			// A session-bound run child renews only the exact live non-worker
+			// claim its owner minted it for, through the same owner-derived
+			// run identity the claim lifecycle records
+			// (req-security-boundaries REQ-1/AC-1.1; req-260818-24dd3a).
+			order, err := s.Store.GetWorkOrder(ctx, stringArg("work_order_id"))
+			if err != nil {
+				return nil, store.ErrWorkOrderClaimLost
+			}
+			var authorized bool
+			claim, authorized = taskRunLifecycleClaim(ctx, credential, order, session)
+			if !authorized {
+				return nil, store.ErrWorkOrderClaimLost
+			}
+		}
 		return s.Workers.RenewClaim(ctx, claim, stringArg("work_order_id"))
 	case "release_work_order":
 		claim, err := s.authorizeClaimMutation(ctx, workerAuth, worker, stringArg("work_order_id"), session)
