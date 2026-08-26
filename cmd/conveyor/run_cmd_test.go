@@ -83,6 +83,7 @@ type taskRunStats struct {
 	getCalls, claimCalls, planSubmits, reviewSubmits int
 	verdictSubmits, releaseCalls                     int
 	agentIssues, agentRevokes                        int
+	cleanupChecks, cleanupRecords, localCleanups     int
 	progress                                         []string
 	mcpCredentials                                   []string
 }
@@ -145,6 +146,12 @@ func runTaskScenario(t *testing.T, input string, auto, terminal bool) (taskRunSt
 			return
 		}
 		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/tasks/target/worktree-cleanup":
+			stats.cleanupChecks++
+			_ = json.NewEncoder(w).Encode(terminalCleanupStatus{Terminal: true})
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/tasks/target/worktree-cleanup":
+			stats.cleanupRecords++
+			_ = json.NewEncoder(w).Encode(terminalCleanupReceipt{Completed: true, Recorded: true})
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/agent-credential"):
 			stats.agentIssues++
 			_ = json.NewEncoder(w).Encode(map[string]string{"credential_id": "agent-id", "credential": "child-agent-credential"})
@@ -158,7 +165,10 @@ func runTaskScenario(t *testing.T, input string, auto, terminal bool) (taskRunSt
 				order = core.WorkOrder{ID: "target-review-1", TaskID: "target", Stage: core.StageReview, State: stats.states["target-review-1"], ReviewSeat: 1}
 			}
 			if stats.states["target-review-1"] == core.WorkOrderCompleted {
-				w.WriteHeader(http.StatusNoContent)
+				_ = json.NewEncoder(w).Encode(workerservice.DispatchOrder{
+					Task:     core.Task{ID: "target", Title: "Ship target", State: core.TaskMerged, Repo: "conveyor", Branch: "conveyor/task-target", BaseBranch: "main"},
+					Dispatch: "run", Auth: "user",
+				})
 				return
 			}
 			_ = json.NewEncoder(w).Encode(workerservice.DispatchOrder{
@@ -209,6 +219,14 @@ func runTaskScenario(t *testing.T, input string, auto, terminal bool) (taskRunSt
 		t.Fatal(err)
 	}
 	c := &client{base: server.URL, token: "user-credential", workspace: "demo"}
+	previousCleanup := cleanupTerminalTaskWorktree
+	cleanupTerminalTaskWorktree = func(context.Context, *config.Config, workerservice.DispatchOrder) (worktreeCleanupResult, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		stats.localCleanups++
+		return worktreeCleanupResult{Worktree: "removed", Branch: "retained", Path: "/worktrees/target"}, nil
+	}
+	t.Cleanup(func() { cleanupTerminalTaskWorktree = previousCleanup })
 	var output bytes.Buffer
 	err = runTask(t.Context(), c, "target", configPath, strings.NewReader(input), &output, auto, terminal)
 	mu.Lock()
@@ -782,13 +800,13 @@ func TestRunTaskExecutesConfirmedImplementReviewChain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stats.states["target-implement-1"] != core.WorkOrderSubmitted || stats.states["target-review-1"] != core.WorkOrderCompleted || stats.getCalls != 3 || stats.claimCalls != 2 || stats.reviewSubmits != 1 || stats.verdictSubmits != 1 || stats.releaseCalls != 0 || stats.agentIssues != 2 || stats.agentRevokes != 2 || countValues(stats.mcpCredentials, "Bearer child-agent-credential") != 4 {
+	if stats.states["target-implement-1"] != core.WorkOrderSubmitted || stats.states["target-review-1"] != core.WorkOrderCompleted || stats.getCalls != 3 || stats.claimCalls != 2 || stats.reviewSubmits != 1 || stats.verdictSubmits != 1 || stats.releaseCalls != 0 || stats.agentIssues != 2 || stats.agentRevokes != 2 || stats.cleanupChecks != 1 || stats.cleanupRecords != 1 || stats.localCleanups != 1 || countValues(stats.mcpCredentials, "Bearer child-agent-credential") != 4 {
 		t.Fatalf("stats=%+v", stats)
 	}
 	if len(stats.progress) != 2 || stats.progress[0] != "conveyor run mode: confirmed-per-stage" || stats.progress[1] != "conveyor run mode: confirmed-per-stage" {
 		t.Fatalf("progress=%q", stats.progress)
 	}
-	for _, want := range []string{"Task target: Ship target (state running)", "Next: implement work order target-implement-1", "Proceed with implement?", "Next: review work order target-review-1", "Proceed with review?", "task target has no claimable spec, implement, or review order"} {
+	for _, want := range []string{"Task target: Ship target (state running)", "Next: implement work order target-implement-1", "Proceed with implement?", "Next: review work order target-review-1", "Proceed with review?", "Task target finished in state merged."} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("output missing %q: %q", want, output)
 		}

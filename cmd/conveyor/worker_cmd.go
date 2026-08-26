@@ -344,6 +344,7 @@ func runWorkerWithPolicyAndConfig(ctx context.Context, c *client, pairing, name 
 	}
 	credential := saved.Credential
 	active := map[string]core.Stage{}
+	cleanupTasks := map[string]workerservice.DispatchOrder{}
 	completions := make(chan childResult, 1024)
 	started := false
 	var mu sync.Mutex
@@ -377,6 +378,7 @@ func runWorkerWithPolicyAndConfig(ctx context.Context, c *client, pairing, name 
 			continue
 		}
 		retryDelay = reconnect.Initial
+		cleanupWorkerTaskWorktrees(ctx, c, credential, cleanupTasks, setup.Config, os.Stderr)
 		implementLimit := document.Execution.ImplementConcurrency
 		if implementLimit < 1 {
 			implementLimit = 1
@@ -420,6 +422,7 @@ func runWorkerWithPolicyAndConfig(ctx context.Context, c *client, pairing, name 
 			mu.Lock()
 			active[selected.Order.ID] = selected.Order.Stage
 			mu.Unlock()
+			cleanupTasks[selected.Task.ID] = selected
 			counts[selected.Order.Stage]++
 			started = true
 			children.Add(1)
@@ -448,6 +451,22 @@ func runWorkerWithPolicyAndConfig(ctx context.Context, c *client, pairing, name 
 				fmt.Fprintln(os.Stderr, "worker child:", result.err)
 			}
 		case <-time.After(5 * time.Second):
+		}
+	}
+}
+
+func cleanupWorkerTaskWorktrees(ctx context.Context, c *client, credential string, tasks map[string]workerservice.DispatchOrder, local *config.Config, output io.Writer) {
+	for taskID, item := range tasks {
+		attempt, err := attemptTerminalWorktreeCleanup(ctx, c, credential, item, local)
+		if err != nil {
+			fmt.Fprintf(output, "worker worktree cleanup task %s: %v\n", taskID, err)
+			continue
+		}
+		for _, warning := range attempt.Cleanup.ProcessWarnings {
+			fmt.Fprintf(output, "worker worktree cleanup task %s: warning: %s\n", taskID, warning)
+		}
+		if attempt.Completed {
+			delete(tasks, taskID)
 		}
 	}
 }
