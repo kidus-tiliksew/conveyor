@@ -37,6 +37,7 @@ var (
 	ErrSystemDesignSlugConflict      = errors.New("system design slug already exists")
 	ErrDecisionIDConflict            = errors.New("decision id already exists")
 	ErrDecisionSupersessionConflict  = errors.New("decision supersession conflicts with current state")
+	ErrDecisionSweepTransition       = errors.New("invalid decision supersession sweep transition")
 	ErrTaskContextProposalTransition = errors.New("invalid task context proposal transition")
 	// ErrRequirementServesTransition is the compatibility name retained for
 	// callers migrated onto the unified task-context proposal lifecycle.
@@ -313,6 +314,7 @@ type Store interface {
 	DismissDecision(ctx context.Context, id string) (core.Decision, error)
 	GetDecision(ctx context.Context, id string) (core.Decision, error)
 	ListDecisions(ctx context.Context) ([]core.Decision, error)
+	DismissDecisionSupersessionSweep(ctx context.Context, decisionID, documentTier, documentID string) (core.DecisionSupersessionSweepEntry, error)
 	// ListPendingProposals normalizes unresolved proposals across the
 	// requirement, System Design, and decision tiers (REQ-1, AC-1.2).
 	ListPendingProposals(ctx context.Context) ([]core.PendingProposal, error)
@@ -1139,6 +1141,7 @@ func NewMemoryWithConfig(cfg *config.Config) Store {
 		systemDesigns:               map[memoryScopedKey]core.SystemDesign{},
 		systemDesignVersions:        map[memoryScopedKey][]core.SystemDesignVersion{},
 		decisions:                   map[memoryScopedKey]core.Decision{},
+		decisionSupersessionSweeps:  map[memoryDecisionSweepKey]core.DecisionSupersessionSweepEntry{},
 		planningSessions:            map[memoryScopedKey]core.PlanningSession{},
 		planningBundles:             map[memoryScopedKey]core.PlanningBundle{},
 		planningMessages:            map[memoryScopedKey][]core.PlanningMessage{},
@@ -1183,6 +1186,13 @@ type memoryDependencyRemoval struct {
 	Actor   Actor
 }
 
+type memoryDecisionSweepKey struct {
+	workspace    string
+	decisionID   string
+	documentTier string
+	documentID   string
+}
+
 type memory struct {
 	mu                          sync.RWMutex
 	tasks                       map[string]core.Task
@@ -1208,6 +1218,7 @@ type memory struct {
 	systemDesigns               map[memoryScopedKey]core.SystemDesign
 	systemDesignVersions        map[memoryScopedKey][]core.SystemDesignVersion
 	decisions                   map[memoryScopedKey]core.Decision
+	decisionSupersessionSweeps  map[memoryDecisionSweepKey]core.DecisionSupersessionSweepEntry
 	planningSessions            map[memoryScopedKey]core.PlanningSession
 	planningBundles             map[memoryScopedKey]core.PlanningBundle
 	planningMessages            map[memoryScopedKey][]core.PlanningMessage

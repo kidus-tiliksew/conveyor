@@ -227,6 +227,9 @@ func (s *Store) ConfirmSystemDesignVersion(ctx context.Context, documentID strin
 		if err = insertWorkspaceEvent(ctx, q, core.Event{Kind: "system_design.version_confirmed", Payload: core.JSONPayload(map[string]any{"workspace_id": workspace(ctx), "document_id": documentID, "version": version, "supersedes_version": currentVersion, "confirmed_by": actor.ID, "origin": confirmed.Origin, "origin_session_id": confirmed.OriginSessionID, "origin_task_id": confirmed.OriginTaskID, "governs": confirmed.Governs})}); err != nil {
 			return err
 		}
+		if err = recomputeDecisionSweepsForDocumentTx(ctx, tx, q, core.DecisionSweepTierSystemDesign, documentID, confirmed.Content); err != nil {
+			return err
+		}
 		return activatePendingTaskContextTx(ctx, tx, q, workspace(ctx), documentID, version, true)
 	})
 	return document, confirmed, err
@@ -521,13 +524,19 @@ func (s *Store) ConfirmDecision(ctx context.Context, id string) (core.Decision, 
 			return err
 		}
 		decision.Status, decision.ConfirmedBy, decision.ConfirmedAt = core.DecisionConfirmed, actor.ID, now
-		return insertWorkspaceEvent(ctx, q, core.Event{Kind: "decision.confirmed", Payload: core.JSONPayload(map[string]any{"workspace_id": workspace(ctx), "decision_id": id, "confirmed_by": actor.ID, "supersedes": decision.Supersedes})})
+		if err = insertWorkspaceEvent(ctx, q, core.Event{Kind: "decision.confirmed", Payload: core.JSONPayload(map[string]any{"workspace_id": workspace(ctx), "decision_id": id, "confirmed_by": actor.ID, "supersedes": decision.Supersedes})}); err != nil {
+			return err
+		}
+		return recomputeDecisionSupersessionSweepTx(ctx, tx, q, decision)
 	})
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "decisions_confirmed_supersedes_key" {
 			return decision, fmt.Errorf("%w: %s", store.ErrDecisionSupersessionConflict, decision.Supersedes)
 		}
+	}
+	if err == nil {
+		decision, err = s.GetDecision(ctx, id)
 	}
 	return decision, err
 }
@@ -553,6 +562,9 @@ func (s *Store) DismissDecision(ctx context.Context, id string) (core.Decision, 
 		decision.Status, decision.DismissedBy, decision.DismissedAt = core.DecisionDismissed, actor.ID, now
 		return insertWorkspaceEvent(ctx, q, core.Event{Kind: "decision.dismissed", Payload: core.JSONPayload(map[string]any{"workspace_id": workspace(ctx), "decision_id": id, "dismissed_by": actor.ID, "supersedes": decision.Supersedes})})
 	})
+	if err == nil {
+		decision, err = s.GetDecision(ctx, id)
+	}
 	return decision, err
 }
 
@@ -576,7 +588,13 @@ func scanDecision(row pgx.Row, id string) (core.Decision, error) {
 	return item, err
 }
 func (s *Store) GetDecision(ctx context.Context, id string) (core.Decision, error) {
-	return scanDecision(s.pool.QueryRow(ctx, decisionSelect+` WHERE workspace_id=$1 AND id=$2`, workspace(ctx), id), id)
+	item, err := scanDecision(s.pool.QueryRow(ctx, decisionSelect+` WHERE workspace_id=$1 AND id=$2`, workspace(ctx), id), id)
+	if err != nil {
+		return item, err
+	}
+	entries, err := s.listDecisionSupersessionSweeps(ctx, id)
+	item.Sweep = decisionSupersessionSweep(entries)
+	return item, err
 }
 func (s *Store) ListDecisions(ctx context.Context) ([]core.Decision, error) {
 	rows, err := s.pool.Query(ctx, decisionSelect+` WHERE workspace_id=$1 ORDER BY substring(id from 5)::integer`, workspace(ctx))
@@ -592,7 +610,203 @@ func (s *Store) ListDecisions(ctx context.Context) ([]core.Decision, error) {
 		}
 		out = append(out, item)
 	}
-	return out, rows.Err()
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	entries, err := s.listDecisionSupersessionSweeps(ctx, "")
+	if err != nil {
+		return nil, err
+	}
+	byDecision := make(map[string][]core.DecisionSupersessionSweepEntry)
+	for _, entry := range entries {
+		byDecision[entry.DecisionID] = append(byDecision[entry.DecisionID], entry)
+	}
+	for i := range out {
+		out[i].Sweep = decisionSupersessionSweep(byDecision[out[i].ID])
+	}
+	return out, nil
+}
+
+const decisionSupersessionSweepSelect = `SELECT decision_id,superseded_decision_id,document_tier,document_id,status,detected_by,detected_at,resolved_by,resolved_at FROM decision_supersession_sweeps`
+
+type decisionSupersessionSweepScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanDecisionSupersessionSweep(row decisionSupersessionSweepScanner) (core.DecisionSupersessionSweepEntry, error) {
+	var entry core.DecisionSupersessionSweepEntry
+	var status string
+	var resolvedAt *time.Time
+	err := row.Scan(&entry.DecisionID, &entry.SupersededDecisionID, &entry.DocumentTier, &entry.DocumentID, &status, &entry.DetectedBy, &entry.DetectedAt, &entry.ResolvedBy, &resolvedAt)
+	entry.Status = core.DecisionSupersessionSweepStatus(status)
+	if resolvedAt != nil {
+		entry.ResolvedAt = *resolvedAt
+	}
+	return entry, err
+}
+
+func (s *Store) listDecisionSupersessionSweeps(ctx context.Context, decisionID string) ([]core.DecisionSupersessionSweepEntry, error) {
+	rows, err := s.queries.ListDecisionSupersessionSweeps(ctx, db.ListDecisionSupersessionSweepsParams{WorkspaceID: workspace(ctx), DecisionID: decisionID})
+	if err != nil {
+		return nil, err
+	}
+	entries := make([]core.DecisionSupersessionSweepEntry, 0, len(rows))
+	for _, row := range rows {
+		entry := core.DecisionSupersessionSweepEntry{
+			DecisionID: row.DecisionID, SupersededDecisionID: row.SupersededDecisionID,
+			DocumentTier: row.DocumentTier, DocumentID: row.DocumentID,
+			Status: core.DecisionSupersessionSweepStatus(row.Status), DetectedBy: row.DetectedBy,
+			DetectedAt: row.DetectedAt.Time, ResolvedBy: row.ResolvedBy,
+		}
+		if row.ResolvedAt.Valid {
+			entry.ResolvedAt = row.ResolvedAt.Time
+		}
+		entries = append(entries, entry)
+	}
+	return entries, nil
+}
+
+func decisionSupersessionSweep(entries []core.DecisionSupersessionSweepEntry) core.DecisionSupersessionSweep {
+	clean := true
+	for _, entry := range entries {
+		clean = clean && entry.Status != core.DecisionSweepOpen
+	}
+	if entries == nil {
+		entries = []core.DecisionSupersessionSweepEntry{}
+	}
+	return core.DecisionSupersessionSweep{Clean: clean, Entries: entries}
+}
+
+func recomputeDecisionSupersessionSweepTx(ctx context.Context, tx pgx.Tx, q *db.Queries, decision core.Decision) error {
+	if decision.Supersedes == "" {
+		return nil
+	}
+	exists, err := decisionSupersessionSweepTableExistsTx(ctx, tx)
+	if err != nil || !exists {
+		return err
+	}
+	actor, now := store.ActorFromContext(ctx), time.Now().UTC()
+	rows, err := tx.Query(ctx, `
+WITH current_corpus AS (
+  SELECT r.workspace_id,'requirement'::text document_tier,r.id document_id,v.content
+  FROM requirements r JOIN requirement_versions v ON v.workspace_id=r.workspace_id AND v.requirement_id=r.id AND v.version=r.current_version
+  WHERE r.workspace_id=$1 AND v.confirmed
+  UNION ALL
+  SELECT d.workspace_id,'system_design',d.id,v.content
+  FROM system_designs d JOIN system_design_versions v ON v.workspace_id=d.workspace_id AND v.document_id=d.id AND v.version=d.current_version
+  WHERE d.workspace_id=$1 AND v.confirmed
+  UNION ALL
+  SELECT d.workspace_id,'reference_document',d.id,v.content
+  FROM reference_documents d JOIN reference_document_versions v ON v.workspace_id=d.workspace_id AND v.document_id=d.id AND v.version=d.current_version
+  WHERE d.workspace_id=$1 AND d.deleted_at IS NULL
+)
+INSERT INTO decision_supersession_sweeps(workspace_id,decision_id,superseded_decision_id,document_tier,document_id,status,detected_by,detected_at)
+SELECT $1,$2,$3,document_tier,document_id,'open',$4,$5
+FROM current_corpus WHERE content ~ ('\m' || $3 || '\M')
+ON CONFLICT (workspace_id,decision_id,document_tier,document_id) DO UPDATE
+SET status='open',detected_by=excluded.detected_by,detected_at=excluded.detected_at,resolved_by='',resolved_at=NULL
+WHERE decision_supersession_sweeps.status='auto_cleared'
+RETURNING decision_id,superseded_decision_id,document_tier,document_id,status,detected_by,detected_at,resolved_by,resolved_at`,
+		workspace(ctx), decision.ID, decision.Supersedes, actor.ID, now)
+	if err != nil {
+		return err
+	}
+	return appendDecisionSweepEvents(ctx, rows, q, "decision.supersession_sweep_opened")
+}
+
+func recomputeDecisionSweepsForDocumentTx(ctx context.Context, tx pgx.Tx, q *db.Queries, tier, documentID, content string) error {
+	exists, err := decisionSupersessionSweepTableExistsTx(ctx, tx)
+	if err != nil || !exists {
+		return err
+	}
+	actor, now := store.ActorFromContext(ctx), time.Now().UTC()
+	cleared, err := tx.Query(ctx, `
+UPDATE decision_supersession_sweeps s
+SET status='auto_cleared',resolved_by=$4,resolved_at=$5
+FROM decisions d
+WHERE s.workspace_id=$1 AND s.document_tier=$2 AND s.document_id=$3 AND s.status='open'
+  AND d.workspace_id=s.workspace_id AND d.id=s.decision_id
+  AND NOT ($6 ~ ('\m' || d.supersedes || '\M'))
+RETURNING s.decision_id,s.superseded_decision_id,s.document_tier,s.document_id,s.status,s.detected_by,s.detected_at,s.resolved_by,s.resolved_at`,
+		workspace(ctx), tier, documentID, actor.ID, now, content)
+	if err != nil {
+		return err
+	}
+	if err = appendDecisionSweepEvents(ctx, cleared, q, "decision.supersession_sweep_auto_cleared"); err != nil {
+		return err
+	}
+	opened, err := tx.Query(ctx, `
+INSERT INTO decision_supersession_sweeps(workspace_id,decision_id,superseded_decision_id,document_tier,document_id,status,detected_by,detected_at)
+SELECT d.workspace_id,d.id,d.supersedes,$2,$3,'open',$4,$5
+FROM decisions d
+WHERE d.workspace_id=$1 AND d.supersedes IS NOT NULL AND d.confirmed_at IS NOT NULL
+  AND $6 ~ ('\m' || d.supersedes || '\M')
+ON CONFLICT (workspace_id,decision_id,document_tier,document_id) DO UPDATE
+SET status='open',detected_by=excluded.detected_by,detected_at=excluded.detected_at,resolved_by='',resolved_at=NULL
+WHERE decision_supersession_sweeps.status='auto_cleared'
+RETURNING decision_id,superseded_decision_id,document_tier,document_id,status,detected_by,detected_at,resolved_by,resolved_at`,
+		workspace(ctx), tier, documentID, actor.ID, now, content)
+	if err != nil {
+		return err
+	}
+	return appendDecisionSweepEvents(ctx, opened, q, "decision.supersession_sweep_opened")
+}
+
+func appendDecisionSweepEvents(ctx context.Context, rows pgx.Rows, q *db.Queries, kind string) error {
+	entries := make([]core.DecisionSupersessionSweepEntry, 0)
+	for rows.Next() {
+		entry, err := scanDecisionSupersessionSweep(rows)
+		if err != nil {
+			rows.Close()
+			return err
+		}
+		entries = append(entries, entry)
+	}
+	err := rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if err = insertWorkspaceEvent(ctx, q, core.Event{Kind: kind, Payload: core.JSONPayload(entry)}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func decisionSupersessionSweepTableExistsTx(ctx context.Context, tx pgx.Tx) (bool, error) {
+	var exists bool
+	err := tx.QueryRow(ctx, `SELECT to_regclass('decision_supersession_sweeps') IS NOT NULL`).Scan(&exists)
+	return exists, err
+}
+
+func (s *Store) DismissDecisionSupersessionSweep(ctx context.Context, decisionID, documentTier, documentID string) (core.DecisionSupersessionSweepEntry, error) {
+	var entry core.DecisionSupersessionSweepEntry
+	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		actor, now := store.ActorFromContext(ctx), time.Now().UTC()
+		current, err := scanDecisionSupersessionSweep(tx.QueryRow(ctx, decisionSupersessionSweepSelect+` WHERE workspace_id=$1 AND decision_id=$2 AND document_tier=$3 AND document_id=$4 FOR UPDATE`, workspace(ctx), decisionID, documentTier, documentID))
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("%w: decision sweep entry %s/%s/%s", store.ErrNotFound, decisionID, documentTier, documentID)
+		}
+		if err != nil {
+			return err
+		}
+		if current.Status == core.DecisionSweepDismissed {
+			entry = current
+			return nil
+		}
+		if current.Status != core.DecisionSweepOpen {
+			return fmt.Errorf("%w: entry is %s and cannot be dismissed", store.ErrDecisionSweepTransition, current.Status)
+		}
+		entry, err = scanDecisionSupersessionSweep(tx.QueryRow(ctx, `UPDATE decision_supersession_sweeps SET status='dismissed',resolved_by=$5,resolved_at=$6 WHERE workspace_id=$1 AND decision_id=$2 AND document_tier=$3 AND document_id=$4 RETURNING decision_id,superseded_decision_id,document_tier,document_id,status,detected_by,detected_at,resolved_by,resolved_at`, workspace(ctx), decisionID, documentTier, documentID, actor.ID, now))
+		if err != nil {
+			return err
+		}
+		return insertWorkspaceEvent(ctx, q, core.Event{Kind: "decision.supersession_sweep_dismissed", Payload: core.JSONPayload(entry)})
+	})
+	return entry, err
 }
 
 func nullString(value string) any {

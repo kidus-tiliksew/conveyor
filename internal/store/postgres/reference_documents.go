@@ -32,7 +32,10 @@ func (s *Store) CreateReferenceDocument(ctx context.Context, document core.Refer
 		if _, err := tx.Exec(ctx, `INSERT INTO reference_document_versions (workspace_id,document_id,version,filename,content_type,content,created_by,created_at) VALUES ($1,$2,1,$3,$4,$5,$6,$7)`, workspace(ctx), document.ID, version.Filename, version.ContentType, version.Content, version.CreatedBy, now); err != nil {
 			return err
 		}
-		return insertWorkspaceEvent(ctx, q, core.Event{Kind: "reference_document.created", Payload: core.JSONPayload(map[string]any{"workspace_id": workspace(ctx), "document_id": document.ID, "version": 1, "name": document.Name})})
+		if err := insertWorkspaceEvent(ctx, q, core.Event{Kind: "reference_document.created", Payload: core.JSONPayload(map[string]any{"workspace_id": workspace(ctx), "document_id": document.ID, "version": 1, "name": document.Name})}); err != nil {
+			return err
+		}
+		return recomputeDecisionSweepsForDocumentTx(ctx, tx, q, core.DecisionSweepTierReferenceDocument, document.ID, version.Content)
 	})
 	return document, version, err
 }
@@ -53,7 +56,10 @@ func (s *Store) SupersedeReferenceDocument(ctx context.Context, documentID strin
 		if _, err := tx.Exec(ctx, `UPDATE reference_documents SET current_version=$3,updated_at=$4 WHERE workspace_id=$1 AND id=$2`, workspace(ctx), documentID, version.Version, now); err != nil {
 			return err
 		}
-		return insertWorkspaceEvent(ctx, q, core.Event{Kind: "reference_document.superseded", Payload: core.JSONPayload(map[string]any{"workspace_id": workspace(ctx), "document_id": documentID, "version": version.Version, "supersedes_version": current})})
+		if err := insertWorkspaceEvent(ctx, q, core.Event{Kind: "reference_document.superseded", Payload: core.JSONPayload(map[string]any{"workspace_id": workspace(ctx), "document_id": documentID, "version": version.Version, "supersedes_version": current})}); err != nil {
+			return err
+		}
+		return recomputeDecisionSweepsForDocumentTx(ctx, tx, q, core.DecisionSweepTierReferenceDocument, documentID, version.Content)
 	})
 	return version, err
 }

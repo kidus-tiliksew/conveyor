@@ -200,3 +200,73 @@ func TestSystemDesignAndDecisionHTTPConfirmationContracts(t *testing.T) {
 		t.Fatalf("unsafe design id status=%d body=%s", badIDResponse.Code, badIDResponse.Body.String())
 	}
 }
+
+func TestDecisionSupersessionSweepHTTPProjectionAndDismissal(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	createRequirement := func(id, content string) {
+		t.Helper()
+		requirement, version, err := st.CreateRequirement(ctx, core.Requirement{ID: id, Title: id}, core.RequirementVersion{
+			Content: content, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Keep decision citations current."}}, Origin: core.RequirementOriginOperator,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err = st.ConfirmRequirementVersion(ctx, requirement.ID, version.Version); err != nil {
+			t.Fatal(err)
+		}
+	}
+	createRequirement("req-stale", "DEC-1 governs this requirement.")
+	createRequirement("req-boundary", "DEC-18 governs this requirement.")
+	first, err := st.ProposeDecision(ctx, core.Decision{Statement: "Use the first mechanism.", Context: "The corpus needs a stable choice.", AlternativesRejected: "No decision loses traceability.", Origin: core.DecisionOriginOperator})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first, err = st.ConfirmDecision(ctx, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	second, err := st.ProposeDecision(ctx, core.Decision{Statement: "Use the replacement mechanism.", Context: "The prior choice is retired.", AlternativesRejected: "Keeping both choices live is ambiguous.", Origin: core.DecisionOriginOperator, Supersedes: first.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second, err = st.ConfirmDecision(ctx, second.ID); err != nil {
+		t.Fatal(err)
+	}
+	if second.Supersedes != first.ID || len(second.Sweep.Entries) != 1 || second.Sweep.Entries[0].DocumentID != "req-stale" || second.Sweep.Clean {
+		t.Fatalf("confirmed replacement=%+v", second)
+	}
+
+	server := NewServer(st)
+	server.Workspace, server.BearerToken = "demo", "token"
+	handler := server.Handler()
+	for _, path := range []string{"/v1/decisions", "/v1/decisions/" + second.ID} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, path, nil)))
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"supersedes":"`+first.ID+`"`) || !strings.Contains(response.Body.String(), `"document_id":"req-stale"`) || strings.Contains(response.Body.String(), `"document_id":"req-boundary"`) {
+			t.Fatalf("read %s status=%d body=%s", path, response.Code, response.Body.String())
+		}
+	}
+	predecessor := httptest.NewRecorder()
+	handler.ServeHTTP(predecessor, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/decisions/"+first.ID, nil)))
+	if predecessor.Code != http.StatusOK || !strings.Contains(predecessor.Body.String(), `"superseded_by":"`+second.ID+`"`) {
+		t.Fatalf("predecessor status=%d body=%s", predecessor.Code, predecessor.Body.String())
+	}
+
+	unauthorized := httptest.NewRecorder()
+	handler.ServeHTTP(unauthorized, httptest.NewRequest(http.MethodPost, "/v1/decisions/"+second.ID+"/sweep/requirement/req-stale/dismiss", nil))
+	if unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized dismissal status=%d body=%s", unauthorized.Code, unauthorized.Body.String())
+	}
+	dismiss := httptest.NewRequest(http.MethodPost, "/v1/decisions/"+second.ID+"/sweep/requirement/req-stale/dismiss", nil)
+	dismiss.Header.Set("Authorization", "Bearer token")
+	dismissed := httptest.NewRecorder()
+	handler.ServeHTTP(dismissed, dismiss)
+	if dismissed.Code != http.StatusOK || !strings.Contains(dismissed.Body.String(), `"status":"dismissed"`) || !strings.Contains(dismissed.Body.String(), `"resolved_by":"user:local-operator"`) {
+		t.Fatalf("dismissal status=%d body=%s", dismissed.Code, dismissed.Body.String())
+	}
+	detail := httptest.NewRecorder()
+	handler.ServeHTTP(detail, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/decisions/"+second.ID, nil)))
+	if detail.Code != http.StatusOK || !strings.Contains(detail.Body.String(), `"clean":true`) {
+		t.Fatalf("clean detail status=%d body=%s", detail.Code, detail.Body.String())
+	}
+}

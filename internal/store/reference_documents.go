@@ -37,6 +37,7 @@ func (m *memory) CreateReferenceDocument(ctx context.Context, document core.Refe
 	m.referenceDocuments[key] = document
 	m.referenceDocumentVersions[key] = []core.ReferenceDocumentVersion{version}
 	m.appendEventLocked(ctx, core.Event{Kind: "reference_document.created", Payload: core.JSONPayload(map[string]any{"workspace_id": workspace, "document_id": document.ID, "version": 1, "name": document.Name})})
+	m.recomputeDecisionSweepsForDocumentLocked(ctx, core.DecisionSweepTierReferenceDocument, document.ID, version.Content)
 	return document, version, nil
 }
 
@@ -56,6 +57,7 @@ func (m *memory) SupersedeReferenceDocument(ctx context.Context, documentID stri
 	document.CurrentVersion, document.UpdatedAt = version.Version, now
 	m.referenceDocuments[key] = document
 	m.appendEventLocked(ctx, core.Event{Kind: "reference_document.superseded", Payload: core.JSONPayload(map[string]any{"workspace_id": key.workspace, "document_id": documentID, "version": version.Version, "supersedes_version": version.SupersedesVersion})})
+	m.recomputeDecisionSweepsForDocumentLocked(ctx, core.DecisionSweepTierReferenceDocument, documentID, version.Content)
 	return version, nil
 }
 

@@ -243,6 +243,7 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/decisions/{id}", s.getDecision)
 			r.With(s.requireMutationCapability(core.CapabilityConfirmDocuments)).Post("/decisions/{id}/confirm", s.confirmDecision)
 			r.With(s.requireMutationCapability(core.CapabilityConfirmDocuments)).Post("/decisions/{id}/dismiss", s.dismissDecision)
+			r.With(s.requireMutationCapability(core.CapabilityConfirmDocuments)).Post("/decisions/{id}/sweep/{tier}/{document_id}/dismiss", s.dismissDecisionSupersessionSweep)
 			r.Get("/planning-sessions", s.listPlanningSessions)
 			r.With(s.requireMutationCapability(core.CapabilityProposeDocuments)).Post("/planning-sessions", s.createPlanningSession)
 			r.Get("/planning-sessions/{id}", s.getPlanningSession)

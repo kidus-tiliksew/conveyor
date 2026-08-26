@@ -629,3 +629,11 @@ WHERE s.task_id = t.id
   AND t.workspace_id = sqlc.arg(workspace_id)
   AND s.version = (SELECT MAX(version) FROM task_specs WHERE task_id = sqlc.arg(task_id))
 RETURNING s.*;
+
+-- name: ListDecisionSupersessionSweeps :many
+SELECT workspace_id, decision_id, superseded_decision_id, document_tier,
+       document_id, status, detected_by, detected_at, resolved_by, resolved_at
+FROM decision_supersession_sweeps
+WHERE workspace_id = sqlc.arg(workspace_id)
+  AND (sqlc.arg(decision_id)::text = '' OR decision_id = sqlc.arg(decision_id))
+ORDER BY decision_id, document_tier, document_id;

@@ -189,6 +189,7 @@ func (m *memory) ConfirmSystemDesignVersion(ctx context.Context, documentID stri
 		"confirmed_by": actor.ID, "origin": confirmed.Origin, "origin_session_id": confirmed.OriginSessionID,
 		"origin_task_id": confirmed.OriginTaskID, "governs": confirmed.Governs,
 	})})
+	m.recomputeDecisionSweepsForDocumentLocked(ctx, core.DecisionSweepTierSystemDesign, documentID, confirmed.Content)
 	m.activatePendingDesignContextLocked(ctx, workspace, documentID, version)
 	return document, confirmed, nil
 }
@@ -429,7 +430,7 @@ func (m *memory) DismissDecision(ctx context.Context, id string) (core.Decision,
 		return core.Decision{}, fmt.Errorf("%w: decision %s", ErrNotFound, id)
 	}
 	if decision.Status == core.DecisionDismissed {
-		return decision, nil
+		return m.decisionWithSupersessionSweepLocked(decision), nil
 	}
 	if decision.Status != core.DecisionProposed {
 		return core.Decision{}, fmt.Errorf("%w: decision %s is %s and cannot be dismissed", ErrDecisionSupersessionConflict, id, decision.Status)
@@ -440,7 +441,7 @@ func (m *memory) DismissDecision(ctx context.Context, id string) (core.Decision,
 	m.appendEventLocked(ctx, core.Event{Kind: "decision.dismissed", Payload: core.JSONPayload(map[string]any{
 		"workspace_id": workspace, "decision_id": id, "dismissed_by": actor.ID, "supersedes": decision.Supersedes,
 	})})
-	return decision, nil
+	return m.decisionWithSupersessionSweepLocked(decision), nil
 }
 
 func (m *memory) ConfirmDecision(ctx context.Context, id string) (core.Decision, error) {
@@ -453,7 +454,7 @@ func (m *memory) ConfirmDecision(ctx context.Context, id string) (core.Decision,
 		return core.Decision{}, fmt.Errorf("%w: decision %s", ErrNotFound, id)
 	}
 	if decision.Status == core.DecisionConfirmed {
-		return decision, nil
+		return m.decisionWithSupersessionSweepLocked(decision), nil
 	}
 	if decision.Status != core.DecisionProposed {
 		return core.Decision{}, fmt.Errorf("%w: decision %s is %s and cannot be confirmed", ErrDecisionSupersessionConflict, id, decision.Status)
@@ -478,7 +479,8 @@ func (m *memory) ConfirmDecision(ctx context.Context, id string) (core.Decision,
 	m.appendEventLocked(ctx, core.Event{Kind: "decision.confirmed", Payload: core.JSONPayload(map[string]any{
 		"workspace_id": workspace, "decision_id": id, "confirmed_by": actor.ID, "supersedes": decision.Supersedes,
 	})})
-	return decision, nil
+	m.recomputeDecisionSupersessionSweepLocked(ctx, decision)
+	return m.decisionWithSupersessionSweepLocked(decision), nil
 }
 
 func (m *memory) GetDecision(ctx context.Context, id string) (core.Decision, error) {
@@ -488,7 +490,7 @@ func (m *memory) GetDecision(ctx context.Context, id string) (core.Decision, err
 	if !ok {
 		return core.Decision{}, fmt.Errorf("%w: decision %s", ErrNotFound, id)
 	}
-	return item, nil
+	return m.decisionWithSupersessionSweepLocked(item), nil
 }
 
 func (m *memory) ListDecisions(ctx context.Context) ([]core.Decision, error) {
@@ -498,7 +500,7 @@ func (m *memory) ListDecisions(ctx context.Context) ([]core.Decision, error) {
 	out := []core.Decision{}
 	for key, item := range m.decisions {
 		if key.workspace == workspace {
-			out = append(out, item)
+			out = append(out, m.decisionWithSupersessionSweepLocked(item))
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return decisionOrdinal(out[i].ID) < decisionOrdinal(out[j].ID) })
@@ -506,3 +508,104 @@ func (m *memory) ListDecisions(ctx context.Context) ([]core.Decision, error) {
 }
 
 func decisionOrdinal(id string) int { n, _ := strconv.Atoi(strings.TrimPrefix(id, "DEC-")); return n }
+
+func (m *memory) recomputeDecisionSupersessionSweepLocked(ctx context.Context, decision core.Decision) {
+	if decision.Supersedes == "" {
+		return
+	}
+	workspace := workspaceOrDefault(ctx, decision.Workspace)
+	for key, document := range m.requirements {
+		if key.workspace == workspace && document.CurrentVersion > 0 {
+			content := m.requirementVersions[key][document.CurrentVersion-1].Content
+			m.recomputeDecisionSweepEntryLocked(ctx, decision, core.DecisionSweepTierRequirement, document.ID, content)
+		}
+	}
+	for key, document := range m.systemDesigns {
+		if key.workspace == workspace && document.CurrentVersion > 0 {
+			content := m.systemDesignVersions[key][document.CurrentVersion-1].Content
+			m.recomputeDecisionSweepEntryLocked(ctx, decision, core.DecisionSweepTierSystemDesign, document.ID, content)
+		}
+	}
+	for key, document := range m.referenceDocuments {
+		if key.workspace == workspace && document.DeletedAt.IsZero() && document.CurrentVersion > 0 {
+			content := m.referenceDocumentVersions[key][document.CurrentVersion-1].Content
+			m.recomputeDecisionSweepEntryLocked(ctx, decision, core.DecisionSweepTierReferenceDocument, document.ID, content)
+		}
+	}
+}
+
+func (m *memory) recomputeDecisionSweepsForDocumentLocked(ctx context.Context, tier, documentID, content string) {
+	workspace := workspaceOrDefault(ctx, "")
+	for key, decision := range m.decisions {
+		if key.workspace != workspace || decision.Supersedes == "" || decision.ConfirmedAt.IsZero() {
+			continue
+		}
+		m.recomputeDecisionSweepEntryLocked(ctx, decision, tier, documentID, content)
+	}
+}
+
+func (m *memory) recomputeDecisionSweepEntryLocked(ctx context.Context, decision core.Decision, tier, documentID, content string) {
+	key := memoryDecisionSweepKey{workspace: decision.Workspace, decisionID: decision.ID, documentTier: tier, documentID: documentID}
+	entry, exists := m.decisionSupersessionSweeps[key]
+	matches := core.ContainsDecisionToken(content, decision.Supersedes)
+	actor, now := ActorFromContext(ctx), time.Now().UTC()
+	if matches && (!exists || entry.Status == core.DecisionSweepAutoCleared) {
+		eventKind := "decision.supersession_sweep_opened"
+		if exists {
+			eventKind = "decision.supersession_sweep_reopened"
+		}
+		entry = core.DecisionSupersessionSweepEntry{
+			DecisionID: decision.ID, SupersededDecisionID: decision.Supersedes,
+			DocumentID: documentID, DocumentTier: tier, Status: core.DecisionSweepOpen,
+			DetectedBy: actor.ID, DetectedAt: now,
+		}
+		m.decisionSupersessionSweeps[key] = entry
+		m.appendEventLocked(ctx, core.Event{Kind: eventKind, Payload: core.JSONPayload(entry)})
+		return
+	}
+	if !matches && exists && entry.Status == core.DecisionSweepOpen {
+		entry.Status, entry.ResolvedBy, entry.ResolvedAt = core.DecisionSweepAutoCleared, actor.ID, now
+		m.decisionSupersessionSweeps[key] = entry
+		m.appendEventLocked(ctx, core.Event{Kind: "decision.supersession_sweep_auto_cleared", Payload: core.JSONPayload(entry)})
+	}
+}
+
+func (m *memory) decisionWithSupersessionSweepLocked(decision core.Decision) core.Decision {
+	entries := make([]core.DecisionSupersessionSweepEntry, 0)
+	clean := true
+	for key, entry := range m.decisionSupersessionSweeps {
+		if key.workspace == decision.Workspace && key.decisionID == decision.ID {
+			entries = append(entries, entry)
+			clean = clean && entry.Status != core.DecisionSweepOpen
+		}
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].DocumentTier == entries[j].DocumentTier {
+			return entries[i].DocumentID < entries[j].DocumentID
+		}
+		return entries[i].DocumentTier < entries[j].DocumentTier
+	})
+	decision.Sweep = core.DecisionSupersessionSweep{Clean: clean, Entries: entries}
+	return decision
+}
+
+func (m *memory) DismissDecisionSupersessionSweep(ctx context.Context, decisionID, documentTier, documentID string) (core.DecisionSupersessionSweepEntry, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := memoryDecisionSweepKey{workspace: workspaceOrDefault(ctx, ""), decisionID: decisionID, documentTier: documentTier, documentID: documentID}
+	entry, ok := m.decisionSupersessionSweeps[key]
+	if !ok {
+		return entry, fmt.Errorf("%w: decision sweep entry %s/%s/%s", ErrNotFound, decisionID, documentTier, documentID)
+	}
+	if entry.Status == core.DecisionSweepDismissed {
+		return entry, nil
+	}
+	if entry.Status != core.DecisionSweepOpen {
+		return entry, fmt.Errorf("%w: entry is %s and cannot be dismissed", ErrDecisionSweepTransition, entry.Status)
+	}
+	actor, now := ActorFromContext(ctx), time.Now().UTC()
+	entry.Status, entry.ResolvedBy, entry.ResolvedAt = core.DecisionSweepDismissed, actor.ID, now
+	m.decisionSupersessionSweeps[key] = entry
+	m.appendEventLocked(ctx, core.Event{Kind: "decision.supersession_sweep_dismissed", Payload: core.JSONPayload(entry)})
+	return entry, nil
+}
