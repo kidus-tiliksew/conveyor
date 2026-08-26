@@ -465,7 +465,7 @@ func RunSystemDesignDriftConformance(t *testing.T, factory SystemDesignDriftFact
 					ID: fmt.Sprintf("concurrent-saturation-%d", index), WorkspaceID: workspace,
 					Repository: "conveyor", Kind: monitor.LineagedMerge,
 					SourceURL: fmt.Sprintf("https://example.test/pull/concurrent-%d", index),
-					TaskID:    task.ID, DetectedAt: time.Now().UTC(),
+					TaskID: task.ID, DetectedAt: time.Now().UTC(),
 				})
 				errorsByCall <- err
 			}(index)
