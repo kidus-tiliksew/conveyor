@@ -199,7 +199,7 @@ CREATE TABLE IF NOT EXISTS conveyor_schema_migrations (
 				return fmt.Errorf("record work-order zombie retirement audit: %w", err)
 			}
 		}
-		if version == 113 {
+		if version == 115 {
 			if err := recordDecisionSupersessionSweepBackfillAudit(ctx, tx); err != nil {
 				return fmt.Errorf("record decision supersession sweep backfill audit: %w", err)
 			}
@@ -220,7 +220,7 @@ CREATE TABLE IF NOT EXISTS conveyor_schema_migrations (
 func recordDecisionSupersessionSweepBackfillAudit(ctx context.Context, tx pgx.Tx) error {
 	_, err := tx.Exec(ctx, `
 INSERT INTO events (workspace_id,kind,actor_id,actor_role,payload_json,at)
-SELECT workspace_id,'decision.supersession_sweep_opened','migration-113','system',
+SELECT workspace_id,'decision.supersession_sweep_opened','migration-115','system',
        jsonb_build_object(
          'decision_id',decision_id,
          'superseded_decision_id',superseded_decision_id,
@@ -231,7 +231,7 @@ SELECT workspace_id,'decision.supersession_sweep_opened','migration-113','system
          'detected_at',detected_at
        ),detected_at
 FROM decision_supersession_sweeps
-WHERE detected_by='migration-113'`)
+WHERE detected_by='migration-115'`)
 	return err
 }
 

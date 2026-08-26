@@ -51,14 +51,16 @@ export function ForgeTokenCard() {
             {errorMessage(status.error, 'Could not load your GitHub token status.')}
           </p>
         )}
-        {status.isSuccess && !configured && (
+        {status.isSuccess && (
           <div className="space-y-1">
-            <p className="text-sm font-medium text-attention">
-              A GitHub token is required before you can execute tasks.
-            </p>
+            {!configured && (
+              <p className="text-sm font-medium text-attention">
+                A GitHub token is required before you can execute tasks.
+              </p>
+            )}
             <p className="text-sm leading-6 text-muted">
               Create a fine-grained token with repository permissions for Contents read and write and Pull requests read
-              and write.
+              and write, and Issues read and write.
             </p>
           </div>
         )}

@@ -190,6 +190,7 @@ func (m *memory) ConfirmSystemDesignVersion(ctx context.Context, documentID stri
 		"origin_task_id": confirmed.OriginTaskID, "governs": confirmed.Governs,
 	})})
 	m.recomputeDecisionSweepsForDocumentLocked(ctx, core.DecisionSweepTierSystemDesign, documentID, confirmed.Content)
+	m.reconcileConfirmedSystemDesignDriftLocked(ctx, documentID, version, confirmed.CreatedAt, now)
 	m.activatePendingDesignContextLocked(ctx, workspace, documentID, version)
 	return document, confirmed, nil
 }

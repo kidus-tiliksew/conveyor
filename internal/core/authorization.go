@@ -183,6 +183,14 @@ type ForgeTokenCredential struct {
 	Token  string `json:"-"`
 }
 
+// WorkspaceForgeTokenCredential is restricted to governed workspace-level
+// outbound-use boundaries. The token never enters a JSON representation.
+type WorkspaceForgeTokenCredential struct {
+	ForgeTokenStatus
+	WorkspaceID string `json:"-"`
+	Token       string `json:"-"`
+}
+
 // ForgeAuthorClass is the non-secret identity class recorded for a forge
 // write. UserID is present only for user-attributed writes; credentials never
 // enter this value or an event payload (req-260821-830dbf REQ-3/REQ-4).

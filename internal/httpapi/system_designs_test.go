@@ -8,11 +8,29 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/monitor"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
+
+func TestSystemDesignViewSerializesDriftDetectedAt(t *testing.T) {
+	detectedAt := time.Date(2026, 8, 26, 7, 0, 0, 0, time.UTC)
+	view := buildSystemDesignView(core.SystemDesign{ID: "design-monitor"}, nil, nil, []monitor.Drift{{
+		ID: "drift-1", SystemDesignID: "design-monitor", DetectedAt: detectedAt,
+	}})
+	raw, err := json.Marshal(view)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var response struct {
+		Drift []map[string]json.RawMessage `json:"drift"`
+	}
+	if err = json.Unmarshal(raw, &response); err != nil || len(response.Drift) != 1 || len(response.Drift[0]["detected_at"]) == 0 {
+		t.Fatalf("system design drift detected_at missing: json=%s err=%v", raw, err)
+	}
+}
 
 type countingSystemDesignStore struct {
 	store.Store

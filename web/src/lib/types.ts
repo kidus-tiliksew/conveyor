@@ -460,6 +460,10 @@ export interface ForgeTokenStatus {
   stored_at?: string
 }
 
+// Workspace token reads use the same secret-free metadata contract. A distinct
+// name prevents workspace settings from growing a credential-bearing shape.
+export type WorkspaceForgeTokenStatus = ForgeTokenStatus
+
 export interface WorkspaceConfigRepo {
   name: string
   url: string

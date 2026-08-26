@@ -350,6 +350,14 @@ type UserForgeToken struct {
 	StoredAt    pgtype.Timestamptz `json:"stored_at"`
 }
 
+type WorkspaceForgeToken struct {
+	WorkspaceID string             `json:"workspace_id"`
+	CipherNonce []byte             `json:"cipher_nonce"`
+	Ciphertext  []byte             `json:"ciphertext"`
+	ForgeLogin  string             `json:"forge_login"`
+	StoredAt    pgtype.Timestamptz `json:"stored_at"`
+}
+
 type Org struct {
 	ID        string             `json:"id"`
 	Name      string             `json:"name"`

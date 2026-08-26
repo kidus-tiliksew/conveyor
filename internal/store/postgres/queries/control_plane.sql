@@ -55,6 +55,38 @@ SELECT user_id, cipher_nonce, ciphertext, forge_login, stored_at
 FROM user_forge_tokens
 ORDER BY user_id;
 
+-- name: UpsertWorkspaceForgeToken :one
+INSERT INTO workspace_forge_tokens (workspace_id, cipher_nonce, ciphertext, forge_login, stored_at)
+VALUES ($1, $2, $3, $4, now())
+ON CONFLICT (workspace_id) DO UPDATE SET
+    cipher_nonce = EXCLUDED.cipher_nonce,
+    ciphertext = EXCLUDED.ciphertext,
+    forge_login = EXCLUDED.forge_login,
+    stored_at = EXCLUDED.stored_at
+RETURNING workspace_id, cipher_nonce, ciphertext, forge_login, stored_at;
+
+-- name: DeleteWorkspaceForgeToken :execrows
+DELETE FROM workspace_forge_tokens WHERE workspace_id = $1;
+
+-- name: GetWorkspaceForgeTokenStatus :one
+SELECT w.id AS workspace_id,
+       (f.workspace_id IS NOT NULL) AS configured,
+       f.forge_login,
+       f.stored_at
+FROM workspaces w
+LEFT JOIN workspace_forge_tokens f ON f.workspace_id = w.id
+WHERE w.id = $1;
+
+-- name: GetWorkspaceForgeTokenForUse :one
+SELECT workspace_id, cipher_nonce, ciphertext, forge_login, stored_at
+FROM workspace_forge_tokens
+WHERE workspace_id = $1;
+
+-- name: ListWorkspaceForgeTokensForRedaction :many
+SELECT workspace_id, cipher_nonce, ciphertext, forge_login, stored_at
+FROM workspace_forge_tokens
+ORDER BY workspace_id;
+
 -- name: InsertUserToken :one
 INSERT INTO user_tokens (id, user_id, label, token_hash, kind, scope, deployment_credential)
 VALUES ($1, $2, $3, $4, $5, $6, false)
