@@ -84,6 +84,7 @@ type Server struct {
 	PersonalTokens        store.PersonalAccessTokenStore
 	AgentCredentials      store.AgentCredentialStore
 	ForgeTokens           store.ForgeTokenStore
+	WorkspaceForgeTokens  store.WorkspaceForgeTokenStore
 	ValidateForgeToken    func(context.Context, string) (string, error)
 	InvitationSessions    store.InvitationSessionStore
 	InvitationDelivery    config.InvitationDelivery
@@ -124,6 +125,9 @@ func NewServer(s store.Store) *Server {
 	}
 	if tokens, ok := s.(store.ForgeTokenStore); ok {
 		server.ForgeTokens = tokens
+	}
+	if tokens, ok := s.(store.WorkspaceForgeTokenStore); ok {
+		server.WorkspaceForgeTokens = tokens
 	}
 	if sessions, ok := s.(store.InvitationSessionStore); ok {
 		server.InvitationSessions = sessions
@@ -179,6 +183,9 @@ func (s *Server) Handler() http.Handler {
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityViewWorkspace)).Get("/workspaces/{workspace_id}", s.getWorkspaceRecord)
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityViewWorkspace)).Get("/workspaces/{workspace_id}/config", s.getWorkspaceConfig)
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityManageWorkspace)).Put("/workspaces/{workspace_id}/config", s.putWorkspaceConfig)
+		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityManageWorkspace)).Get("/workspaces/{workspace_id}/forge-token", s.getWorkspaceForgeToken)
+		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityManageWorkspace)).Put("/workspaces/{workspace_id}/forge-token", s.putWorkspaceForgeToken)
+		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityManageWorkspace)).Delete("/workspaces/{workspace_id}/forge-token", s.deleteWorkspaceForgeToken)
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityViewWorkspace)).Get("/workspaces/{workspace_id}/members", s.listWorkspaceMembers)
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityManageMembership)).Post("/workspaces/{workspace_id}/members", s.grantWorkspaceMembership)
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityManageMembership)).Get("/workspaces/{workspace_id}/invitations", s.listWorkspaceInvitations)

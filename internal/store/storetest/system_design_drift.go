@@ -3,9 +3,11 @@ package storetest
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -307,7 +309,7 @@ func RunSystemDesignDriftConformance(t *testing.T, factory SystemDesignDriftFact
 			t.Fatal(err)
 		}
 		mergeEventID := latestEventID(t, st, ctx, delivery.ID, "merge.confirmed")
-		if _, err := service.ProcessDesignMerge(ctx, monitor.Observation{Repository: "conveyor", Kind: monitor.ExternalPRMerge, OccurrenceID: "pr:88", SourceURL: "https://example.test/pull/88", CommitSHA: "resolution-head", ChangedPaths: []string{"internal/dispatch/service.go"}, CausalEventID: mergeEventID}, delivery.ID); err != nil {
+		if _, err := service.ProcessDesignMerge(ctx, monitor.Observation{Repository: "conveyor", Kind: monitor.LineagedMerge, OccurrenceID: "pr:88", SourceURL: "https://example.test/pull/88", CommitSHA: "resolution-head", ChangedPaths: []string{"internal/dispatch/service.go"}, CausalEventID: mergeEventID}, delivery.ID); err != nil {
 			t.Fatal(err)
 		}
 		status, _ := service.Status(ctx)
@@ -334,6 +336,15 @@ func RunSystemDesignDriftConformance(t *testing.T, factory SystemDesignDriftFact
 		if _, _, err = st.ConfirmSystemDesignVersion(ctx, document.ID, replacement.Version); err != nil {
 			t.Fatal(err)
 		}
+		status, err = service.Status(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, drift := range status.Drift {
+			if drift.ID == driftID {
+				t.Fatalf("confirmed replacement did not reconcile drift: %+v", drift)
+			}
+		}
 		if _, err = service.Resolve(ctx, driftID, "design_document_updated", ""); err != nil {
 			t.Fatal(err)
 		}
@@ -341,13 +352,138 @@ func RunSystemDesignDriftConformance(t *testing.T, factory SystemDesignDriftFact
 		if err != nil {
 			t.Fatal(err)
 		}
-		detected, resolved := false, false
+		detected, resolved, namedVersion := false, false, false
 		for _, event := range events {
 			detected = detected || event.Kind == "system_design.drift_detected"
 			resolved = resolved || event.Kind == "system_design.drift_resolved"
+			var payload map[string]any
+			if event.Kind == "system_design.drift_resolved" && json.Unmarshal(event.Payload, &payload) == nil {
+				namedVersion = namedVersion || fmt.Sprint(payload["confirmed_version"]) == fmt.Sprint(replacement.Version)
+			}
 		}
-		if !detected || !resolved {
+		if !detected || !resolved || !namedVersion {
 			t.Fatalf("drift lifecycle events missing: %+v", events)
+		}
+	})
+
+	t.Run("unresolved task drift saturates at the shared bound", func(t *testing.T) {
+		st, ctx, workspace := factory(t)
+		task := createDriftTask(t, st, ctx, workspace, "saturated-drift-task")
+		monitorStore := st.(monitor.Store)
+		detectedAt := time.Now().UTC()
+		for index := 0; index < monitor.MaxUnresolvedDriftPerTask; index++ {
+			drift := monitor.Drift{
+				ID: fmt.Sprintf("saturation-%d", index), WorkspaceID: workspace, Repository: "conveyor",
+				Kind: monitor.DirectPush, SourceURL: fmt.Sprintf("https://example.test/commit/%d", index),
+				TaskID: task.ID, DetectedAt: detectedAt.Add(time.Duration(index) * time.Second),
+			}
+			if _, fresh, err := monitorStore.RecordDrift(ctx, drift); err != nil || !fresh {
+				t.Fatalf("record drift %d fresh=%t err=%v", index, fresh, err)
+			}
+			if index == 0 {
+				if _, duplicateFresh, duplicateErr := monitorStore.RecordDrift(ctx, drift); duplicateErr != nil || duplicateFresh {
+					t.Fatalf("duplicate drift fresh=%t err=%v", duplicateFresh, duplicateErr)
+				}
+			}
+		}
+		_, _, err := monitorStore.RecordDrift(ctx, monitor.Drift{
+			ID: "saturation-refused", WorkspaceID: workspace, Repository: "conveyor", Kind: monitor.Revert,
+			SourceURL: "https://example.test/commit/refused", TaskID: task.ID, DetectedAt: detectedAt.Add(time.Hour),
+		})
+		if !errors.Is(err, monitor.ErrTaskDriftSaturated) || !strings.Contains(err.Error(), task.ID) {
+			t.Fatalf("saturation error=%v", err)
+		}
+		status, err := monitorStore.MonitorStatus(ctx, true, detectedAt.Add(2*time.Hour))
+		if err != nil || status.DriftCount != monitor.MaxUnresolvedDriftPerTask {
+			t.Fatalf("drift count=%d err=%v", status.DriftCount, err)
+		}
+		observation := monitor.Observation{
+			WorkspaceID: workspace, Repository: "conveyor", Kind: monitor.LineagedMerge,
+			OccurrenceID: "saturated-link", SourceURL: "https://example.test/pull/saturated", ObservedAt: detectedAt.Add(3 * time.Hour),
+		}
+		if _, _, err = monitorStore.Observe(ctx, observation); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = monitorStore.LinkTask(ctx, observation.Identity(), task.ID, "reused"); !errors.Is(err, monitor.ErrTaskDriftSaturated) || !strings.Contains(err.Error(), task.ID) {
+			t.Fatalf("link saturation error=%v", err)
+		}
+	})
+
+	t.Run("confirmation leaves ineligible drift unresolved", func(t *testing.T) {
+		st, ctx, workspace := factory(t)
+		task := createDriftTask(t, st, ctx, workspace, "ineligible-reconciliation")
+		document := createConfirmedDesign(t, st, ctx, "DESIGN-ineligible", "internal/store/**")
+		other := createConfirmedDesign(t, st, ctx, "DESIGN-other", "cmd/**")
+		content := "# Replacement\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/store/**\n```"
+		replacement, err := st.ProposeSystemDesignVersion(ctx, core.SystemDesignVersion{DocumentID: document.ID, Content: content, Origin: core.SystemDesignOriginOperator})
+		if err != nil {
+			t.Fatal(err)
+		}
+		drifts := []monitor.Drift{
+			{ID: "proposal-before-detection", WorkspaceID: workspace, Repository: "conveyor", Kind: monitor.LineagedMerge, SourceURL: "https://example.test/pull/late", SystemDesignID: document.ID, SystemDesignVersion: 1, TaskID: task.ID, DetectedAt: replacement.CreatedAt.Add(time.Second)},
+			{ID: "non-lineaged-kind", WorkspaceID: workspace, Repository: "conveyor", Kind: monitor.DirectPush, SourceURL: "https://example.test/commit/direct", SystemDesignID: document.ID, SystemDesignVersion: 1, TaskID: task.ID, DetectedAt: replacement.CreatedAt.Add(-time.Second)},
+			{ID: "other-document", WorkspaceID: workspace, Repository: "conveyor", Kind: monitor.LineagedMerge, SourceURL: "https://example.test/pull/other", SystemDesignID: document.ID, SystemDesignVersion: 1, TaskID: task.ID, DetectedAt: replacement.CreatedAt.Add(-time.Second)},
+		}
+		for _, drift := range drifts {
+			if _, _, err = st.(monitor.Store).RecordDrift(ctx, drift); err != nil {
+				t.Fatal(err)
+			}
+		}
+		otherRevision, err := st.ProposeSystemDesignVersion(ctx, core.SystemDesignVersion{DocumentID: other.ID, Content: "# Other replacement\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - cmd/**\n```", Origin: core.SystemDesignOriginOperator})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err = st.ConfirmSystemDesignVersion(ctx, other.ID, otherRevision.Version); err != nil {
+			t.Fatal(err)
+		}
+		status, err := st.(monitor.Store).MonitorStatus(ctx, true, time.Now().UTC())
+		if err != nil || status.DriftCount != len(drifts) {
+			t.Fatalf("unrelated confirmation drift count=%d err=%v", status.DriftCount, err)
+		}
+		if _, _, err = st.ConfirmSystemDesignVersion(ctx, document.ID, replacement.Version); err != nil {
+			t.Fatal(err)
+		}
+		status, err = st.(monitor.Store).MonitorStatus(ctx, true, time.Now().UTC())
+		if err != nil || status.DriftCount != 2 {
+			t.Fatalf("ineligible drift count=%d err=%v drift=%+v", status.DriftCount, err, status.Drift)
+		}
+	})
+
+	t.Run("concurrent fresh drift cannot exceed the task bound", func(t *testing.T) {
+		st, ctx, workspace := factory(t)
+		task := createDriftTask(t, st, ctx, workspace, "concurrent-saturation")
+		monitorStore := st.(monitor.Store)
+		errorsByCall := make(chan error, monitor.MaxUnresolvedDriftPerTask+1)
+		var ready sync.WaitGroup
+		start := make(chan struct{})
+		for index := 0; index <= monitor.MaxUnresolvedDriftPerTask; index++ {
+			ready.Add(1)
+			go func(index int) {
+				ready.Done()
+				<-start
+				_, _, err := monitorStore.RecordDrift(ctx, monitor.Drift{
+					ID: fmt.Sprintf("concurrent-saturation-%d", index), WorkspaceID: workspace,
+					Repository: "conveyor", Kind: monitor.LineagedMerge,
+					SourceURL: fmt.Sprintf("https://example.test/pull/concurrent-%d", index),
+					TaskID: task.ID, DetectedAt: time.Now().UTC(),
+				})
+				errorsByCall <- err
+			}(index)
+		}
+		ready.Wait()
+		close(start)
+		saturated := 0
+		for index := 0; index <= monitor.MaxUnresolvedDriftPerTask; index++ {
+			err := <-errorsByCall
+			if errors.Is(err, monitor.ErrTaskDriftSaturated) {
+				saturated++
+			} else if err != nil {
+				t.Fatal(err)
+			}
+		}
+		status, err := monitorStore.MonitorStatus(ctx, true, time.Now().UTC())
+		if err != nil || saturated != 1 || status.DriftCount != monitor.MaxUnresolvedDriftPerTask {
+			t.Fatalf("saturated=%d drift_count=%d err=%v", saturated, status.DriftCount, err)
 		}
 	})
 }

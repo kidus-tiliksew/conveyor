@@ -1,38 +1,45 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { KeyRound } from 'lucide-react'
+import { Building2 } from 'lucide-react'
+import { useWorkspaceCapability, useWorkspaceSelection } from '../app-shell'
 import { Button } from '../ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
 import { Input } from '../ui/input'
-import { deleteForgeToken, fetchForgeToken, storeForgeToken } from '../../lib/api'
+import { deleteWorkspaceForgeToken, fetchWorkspaceForgeToken, storeWorkspaceForgeToken } from '../../lib/api'
 import { errorMessage } from '../../lib/errors'
 
 function storedSummary(storedAt?: string) {
   return storedAt ? `Stored ${new Date(storedAt).toLocaleString()}` : 'Stored time unavailable'
 }
 
-export function ForgeTokenCard() {
+export function WorkspaceForgeTokenCard() {
+  const canManageWorkspace = useWorkspaceCapability('manage_workspace')
+  const { workspace } = useWorkspaceSelection()
   const queryClient = useQueryClient()
   const [forgeToken, setForgeToken] = useState('')
+  const queryKey = ['workspace-forge-token', workspace]
 
   const status = useQuery({
-    queryKey: ['forge-token'],
-    queryFn: () => fetchForgeToken(),
+    queryKey,
+    queryFn: () => fetchWorkspaceForgeToken(workspace),
+    enabled: canManageWorkspace && Boolean(workspace),
     retry: false,
   })
   const store = useMutation({
-    mutationFn: (value: string) => storeForgeToken(value),
+    mutationFn: (value: string) => storeWorkspaceForgeToken(workspace, value),
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ['forge-token'] })
+      await queryClient.invalidateQueries({ queryKey })
     },
     onSettled: () => setForgeToken(''),
   })
   const remove = useMutation({
-    mutationFn: () => deleteForgeToken(),
+    mutationFn: () => deleteWorkspaceForgeToken(workspace),
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ['forge-token'] })
+      await queryClient.invalidateQueries({ queryKey })
     },
   })
+
+  if (!canManageWorkspace || !workspace) return null
 
   const pending = store.isPending || remove.isPending
   const current = status.data
@@ -41,25 +48,25 @@ export function ForgeTokenCard() {
   return (
     <Card className="mt-4">
       <CardHeader>
-        <CardTitle>GitHub token</CardTitle>
-        <KeyRound className="size-4 text-faint" />
+        <CardTitle>Workspace GitHub token</CardTitle>
+        <Building2 className="size-4 text-faint" />
       </CardHeader>
       <CardContent className="space-y-4">
-        {status.isPending && <p className="text-sm text-muted">Loading your GitHub token status…</p>}
+        {status.isPending && <p className="text-sm text-muted">Loading the workspace GitHub token status…</p>}
         {status.error && (
           <p className="text-sm text-failure" role="alert">
-            {errorMessage(status.error, 'Could not load your GitHub token status.')}
+            {errorMessage(status.error, 'Could not load the workspace GitHub token status.')}
           </p>
         )}
         {status.isSuccess && (
           <div className="space-y-1">
             {!configured && (
               <p className="text-sm font-medium text-attention">
-                A GitHub token is required before you can execute tasks.
+                Store the token used for workspace-level GitHub acts.
               </p>
             )}
             <p className="text-sm leading-6 text-muted">
-              Create a fine-grained token with repository permissions for Contents read and write and Pull requests read
+              Create a fine-grained token with repository permissions for Contents read and write, Pull requests read
               and write, and Issues read and write.
             </p>
           </div>
@@ -80,7 +87,7 @@ export function ForgeTokenCard() {
         {status.isSuccess && (
           <form
             className="flex flex-wrap items-end gap-2"
-            aria-label={configured ? 'Replace GitHub token' : 'Store GitHub token'}
+            aria-label={configured ? 'Replace workspace GitHub token' : 'Store workspace GitHub token'}
             onSubmit={(event) => {
               event.preventDefault()
               store.mutate(forgeToken)
@@ -90,7 +97,7 @@ export function ForgeTokenCard() {
               required
               type="password"
               autoComplete="off"
-              aria-label="GitHub token"
+              aria-label="Workspace GitHub token"
               placeholder="github_pat_…"
               className="max-w-sm font-mono"
               value={forgeToken}
@@ -108,14 +115,14 @@ export function ForgeTokenCard() {
             </Button>
             {store.error && (
               <p className="basis-full text-sm text-failure" role="alert">
-                {errorMessage(store.error, 'Could not store that GitHub token.')}
+                {errorMessage(store.error, 'Could not store that workspace GitHub token.')}
               </p>
             )}
           </form>
         )}
         {remove.error && (
           <p className="text-sm text-failure" role="alert">
-            {errorMessage(remove.error, 'Could not delete your GitHub token.')}
+            {errorMessage(remove.error, 'Could not delete the workspace GitHub token.')}
           </p>
         )}
       </CardContent>

@@ -164,5 +164,16 @@ func (s *Store) ListForgeTokensForRedaction(ctx context.Context) ([]string, erro
 		}
 		values = append(values, value)
 	}
+	workspaceRows, err := s.queries.ListWorkspaceForgeTokensForRedaction(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range workspaceRows {
+		value, err := s.decryptWorkspaceForgeToken(row)
+		if err != nil {
+			return nil, err
+		}
+		values = append(values, value)
+	}
 	return values, nil
 }
