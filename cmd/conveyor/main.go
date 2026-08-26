@@ -551,7 +551,7 @@ func checkoutCmd() *cobra.Command {
 					SessionID: os.Getenv("CONVEYOR_SESSION_ID"), AttemptID: checkpoint.AttemptID,
 					TerminationReason: checkpoint.TerminationReason, CommitSHA: checkpointed.CommitSHA, PushResult: "pushed",
 				}
-				if err = client.checkpointWorkerOrderAttemptContext(cmd.Context(), client.token, checkpoint.WorkOrderID, request); err != nil {
+				if err = client.deliverCheckoutAttemptCheckpointContext(cmd.Context(), client.token, args[0], checkpoint.WorkOrderID, request); err != nil {
 					return fmt.Errorf("record predecessor attempt checkpoint %s: %w", checkpointed.CommitSHA, err)
 				}
 			}

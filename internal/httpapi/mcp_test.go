@@ -1269,6 +1269,90 @@ func TestMCPRequestPlanRevisionEndToEnd(t *testing.T) {
 	}
 }
 
+func TestMCPRunChildRenewsExactOwnClaimOnly(t *testing.T) {
+	t.Parallel()
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	orderIDs := make(map[string]string)
+	for _, suffix := range []string{"a", "b"} {
+		taskID, orderID := "run-renew-task-"+suffix, "run-renew-order-"+suffix
+		if err := st.CreateTask(ctx, core.Task{ID: taskID, Workspace: "demo", Repo: "conveyor", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: time.Now()}); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.CreateJob(ctx, core.Job{ID: orderID, TaskID: taskID, Stage: core.StageImplement, State: core.JobPending}); err != nil {
+			t.Fatal(err)
+		}
+		if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: orderID, TaskID: taskID, JobID: orderID, Stage: core.StageImplement, State: core.WorkOrderQueued}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := storetest.For(st).ClaimWorkOrder(ctx, orderID, core.WorkOrderClaim{SessionID: "session-" + suffix, ClientToken: "secret-" + suffix, ClaimantID: core.TaskRunClaimantID("owner-a"), Agent: "codex", Model: "model", Lease: time.Minute, ExecutionTimeout: time.Hour}); err != nil {
+			t.Fatal(err)
+		}
+		orderIDs[suffix] = orderID
+	}
+	server := NewServer(st)
+	server.Workspace = "demo"
+	server.WorkOrders = &workorder.Service{Store: st}
+	server.Workers = &workerservice.Service{Store: st, WorkOrders: server.WorkOrders}
+	membership := &membershipFixture{
+		workspaces: []core.Workspace{{ID: "demo"}},
+		roles:      map[string]map[string]core.WorkspaceRole{"owner-a": {"demo": core.WorkspaceRoleExecutor}},
+	}
+	server.Workspaces, server.Memberships = membership, membership
+	requestFor := func(credential core.AuthenticatedCredential) *http.Request {
+		request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+		return request.WithContext(store.WithCredential(request.Context(), credential))
+	}
+	bound := core.AuthenticatedCredential{
+		ID: "run-agent", OwnerUserID: "owner-a", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser,
+		RunWorkspaceID: "demo", RunWorkOrderID: orderIDs["a"], RunSessionID: "session-a",
+	}
+
+	renewed, err := server.callMCPTool(requestFor(bound), "renew_work_order", map[string]any{"workspace_id": "demo", "work_order_id": orderIDs["a"], "session_id": "session-a"})
+	if err != nil {
+		t.Fatalf("bound child renew: %v", err)
+	}
+	if order, ok := renewed.(core.WorkOrder); !ok || order.SessionID != "session-a" || order.State != core.WorkOrderClaimed {
+		t.Fatalf("bound child renewed=%+v", renewed)
+	}
+
+	if _, err = server.callMCPTool(requestFor(bound), "renew_work_order", map[string]any{"workspace_id": "demo", "work_order_id": orderIDs["b"], "session_id": "session-b"}); !errors.Is(err, store.ErrWorkOrderClaimUnauthorized) {
+		t.Fatalf("cross-order child renew error=%v", err)
+	}
+	if _, err = server.callMCPTool(requestFor(bound), "renew_work_order", map[string]any{"workspace_id": "demo", "work_order_id": orderIDs["a"], "session_id": "session-b"}); !errors.Is(err, store.ErrWorkOrderClaimUnauthorized) {
+		t.Fatalf("cross-session child renew error=%v", err)
+	}
+	unbound := core.AuthenticatedCredential{ID: "plain-agent", OwnerUserID: "owner-a", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser}
+	if _, err = server.callMCPTool(requestFor(unbound), "renew_work_order", map[string]any{"workspace_id": "demo", "work_order_id": orderIDs["a"], "session_id": "session-a"}); !errors.Is(err, store.ErrWorkOrderClaimLost) {
+		t.Fatalf("unbound agent renew error=%v", err)
+	}
+	// A worker-held claim is never renewable through the run-child identity,
+	// even under a matching binding tuple.
+	if err = st.CreateTask(ctx, core.Task{ID: "run-renew-task-c", Workspace: "demo", Repo: "conveyor", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if err = st.CreateJob(ctx, core.Job{ID: "run-renew-order-c", TaskID: "run-renew-task-c", Stage: core.StageImplement, State: core.JobPending}); err != nil {
+		t.Fatal(err)
+	}
+	if err = storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: "run-renew-order-c", TaskID: "run-renew-task-c", JobID: "run-renew-order-c", Stage: core.StageImplement, State: core.WorkOrderQueued}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = storetest.For(st).ClaimWorkOrder(ctx, "run-renew-order-c", core.WorkOrderClaim{SessionID: "session-c", ClientToken: "secret-c", ClaimantID: "worker-c", WorkerID: "worker-c", Agent: "codex", Model: "model", Lease: time.Minute, ExecutionTimeout: time.Hour}); err != nil {
+		t.Fatal(err)
+	}
+	workerBound := core.AuthenticatedCredential{
+		ID: "run-agent-c", OwnerUserID: "owner-a", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser,
+		RunWorkspaceID: "demo", RunWorkOrderID: "run-renew-order-c", RunSessionID: "session-c",
+	}
+	if _, err = server.callMCPTool(requestFor(workerBound), "renew_work_order", map[string]any{"workspace_id": "demo", "work_order_id": "run-renew-order-c", "session_id": "session-c"}); !errors.Is(err, store.ErrWorkOrderClaimLost) {
+		t.Fatalf("worker-claim child renew error=%v", err)
+	}
+	user := core.AuthenticatedCredential{ID: "pat_owner", OwnerUserID: "owner-a", Kind: core.CredentialUser, Scope: core.CredentialScopeUser}
+	if _, err = server.callMCPTool(requestFor(user), "renew_work_order", map[string]any{"workspace_id": "demo", "work_order_id": orderIDs["a"], "session_id": "session-a"}); err != nil {
+		t.Fatalf("user renew regression: %v", err)
+	}
+}
+
 func TestMCPWorkerDispatchedExecutorClaimGovernance(t *testing.T) {
 	t.Parallel()
 	setup := func(t *testing.T, ownLease time.Duration) (*Server, *http.Request, *membershipFixture, string, string, string) {
