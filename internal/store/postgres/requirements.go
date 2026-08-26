@@ -401,6 +401,9 @@ func (s *Store) ConfirmRequirementVersion(ctx context.Context, requirementID str
 		if err = insertRequirementEvent(ctx, q, "requirement.version_confirmed", payload); err != nil {
 			return err
 		}
+		if err = recomputeDecisionSweepsForDocumentTx(ctx, tx, q, core.DecisionSweepTierRequirement, requirementID, confirmed.Content); err != nil {
+			return err
+		}
 		return activatePendingTaskContextTx(ctx, tx, q, workspace(ctx), requirementID, version, false)
 	})
 	if err != nil {

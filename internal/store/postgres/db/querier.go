@@ -63,6 +63,7 @@ type Querier interface {
 	ListTaskOperationsLatestPlans(ctx context.Context, arg ListTaskOperationsLatestPlansParams) ([]TaskSpec, error)
 	ListTaskOperationsTasks(ctx context.Context, arg ListTaskOperationsTasksParams) ([]ListTaskOperationsTasksRow, error)
 	ListInterventions(ctx context.Context, arg ListInterventionsParams) ([]Intervention, error)
+	ListDecisionSupersessionSweeps(ctx context.Context, arg ListDecisionSupersessionSweepsParams) ([]DecisionSupersessionSweep, error)
 	ListJobs(ctx context.Context, arg ListJobsParams) ([]Job, error)
 	ListCheckpointContextCandidates(ctx context.Context, arg ListCheckpointContextCandidatesParams) ([]ListCheckpointContextCandidatesRow, error)
 	ListLineageLinks(ctx context.Context, workspaceID string) ([]Link, error)

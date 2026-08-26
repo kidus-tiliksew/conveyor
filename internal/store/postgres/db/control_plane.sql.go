@@ -11,6 +11,40 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const listDecisionSupersessionSweeps = `-- name: ListDecisionSupersessionSweeps :many
+SELECT workspace_id, decision_id, superseded_decision_id, document_tier,
+       document_id, status, detected_by, detected_at, resolved_by, resolved_at
+FROM decision_supersession_sweeps
+WHERE workspace_id = $1
+  AND ($2::text = '' OR decision_id = $2)
+ORDER BY decision_id, document_tier, document_id
+`
+
+type ListDecisionSupersessionSweepsParams struct {
+	WorkspaceID string `json:"workspace_id"`
+	DecisionID  string `json:"decision_id"`
+}
+
+func (q *Queries) ListDecisionSupersessionSweeps(ctx context.Context, arg ListDecisionSupersessionSweepsParams) ([]DecisionSupersessionSweep, error) {
+	rows, err := q.db.Query(ctx, listDecisionSupersessionSweeps, arg.WorkspaceID, arg.DecisionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []DecisionSupersessionSweep
+	for rows.Next() {
+		var item DecisionSupersessionSweep
+		if err := rows.Scan(&item.WorkspaceID, &item.DecisionID, &item.SupersededDecisionID, &item.DocumentTier, &item.DocumentID, &item.Status, &item.DetectedBy, &item.DetectedAt, &item.ResolvedBy, &item.ResolvedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listCheckpointContextCandidates = `-- name: ListCheckpointContextCandidates :many
 SELECT t.id, t.title, t.state
 FROM tasks t

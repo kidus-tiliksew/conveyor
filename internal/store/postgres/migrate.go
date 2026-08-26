@@ -199,6 +199,11 @@ CREATE TABLE IF NOT EXISTS conveyor_schema_migrations (
 				return fmt.Errorf("record work-order zombie retirement audit: %w", err)
 			}
 		}
+		if version == 115 {
+			if err := recordDecisionSupersessionSweepBackfillAudit(ctx, tx); err != nil {
+				return fmt.Errorf("record decision supersession sweep backfill audit: %w", err)
+			}
+		}
 		if _, err := tx.Exec(ctx,
 			"INSERT INTO conveyor_schema_migrations (version, name, checksum) VALUES ($1, $2, $3)",
 			version, filepath.Base(name), checksum,
@@ -210,6 +215,24 @@ CREATE TABLE IF NOT EXISTS conveyor_schema_migrations (
 		return fmt.Errorf("commit control-plane migrations: %w", err)
 	}
 	return nil
+}
+
+func recordDecisionSupersessionSweepBackfillAudit(ctx context.Context, tx pgx.Tx) error {
+	_, err := tx.Exec(ctx, `
+INSERT INTO events (workspace_id,kind,actor_id,actor_role,payload_json,at)
+SELECT workspace_id,'decision.supersession_sweep_opened','migration-115','system',
+       jsonb_build_object(
+         'decision_id',decision_id,
+         'superseded_decision_id',superseded_decision_id,
+         'document_tier',document_tier,
+         'document_id',document_id,
+         'status',status,
+         'detected_by',detected_by,
+         'detected_at',detected_at
+       ),detected_at
+FROM decision_supersession_sweeps
+WHERE detected_by='migration-115'`)
+	return err
 }
 
 func latestMigrationVersion(files []string) (int, error) {

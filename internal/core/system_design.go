@@ -266,23 +266,62 @@ const (
 	DecisionSuperseded DecisionStatus = "superseded"
 )
 
+type DecisionSupersessionSweepStatus string
+
+const (
+	DecisionSweepOpen                  DecisionSupersessionSweepStatus = "open"
+	DecisionSweepDismissed             DecisionSupersessionSweepStatus = "dismissed"
+	DecisionSweepAutoCleared           DecisionSupersessionSweepStatus = "auto_cleared"
+	DecisionSweepTierRequirement                                       = "requirement"
+	DecisionSweepTierSystemDesign                                      = "system_design"
+	DecisionSweepTierReferenceDocument                                 = "reference_document"
+)
+
+type DecisionSupersessionSweepEntry struct {
+	DecisionID           string                          `json:"decision_id"`
+	SupersededDecisionID string                          `json:"superseded_decision_id"`
+	DocumentID           string                          `json:"document_id"`
+	DocumentTier         string                          `json:"document_tier"`
+	Status               DecisionSupersessionSweepStatus `json:"status"`
+	DetectedBy           string                          `json:"detected_by"`
+	DetectedAt           time.Time                       `json:"detected_at"`
+	ResolvedBy           string                          `json:"resolved_by,omitempty"`
+	ResolvedAt           time.Time                       `json:"resolved_at,omitempty"`
+}
+
+type DecisionSupersessionSweep struct {
+	Clean   bool                             `json:"clean"`
+	Entries []DecisionSupersessionSweepEntry `json:"entries"`
+}
+
 type Decision struct {
-	ID                   string         `json:"id"`
-	Statement            string         `json:"statement"`
-	Context              string         `json:"context"`
-	AlternativesRejected string         `json:"alternatives_rejected"`
-	Status               DecisionStatus `json:"status"`
-	Origin               DecisionOrigin `json:"origin"`
-	OriginSessionID      string         `json:"origin_session_id,omitempty"`
-	OriginTaskID         string         `json:"origin_task_id,omitempty"`
-	Supersedes           string         `json:"supersedes,omitempty"`
-	ConfirmedBy          string         `json:"confirmed_by,omitempty"`
-	ConfirmedAt          time.Time      `json:"confirmed_at,omitempty"`
-	DismissedBy          string         `json:"dismissed_by,omitempty"`
-	DismissedAt          time.Time      `json:"dismissed_at,omitempty"`
-	SupersededBy         string         `json:"superseded_by,omitempty"`
-	Workspace            string         `json:"workspace"`
-	CreatedAt            time.Time      `json:"created_at"`
+	ID                   string                    `json:"id"`
+	Statement            string                    `json:"statement"`
+	Context              string                    `json:"context"`
+	AlternativesRejected string                    `json:"alternatives_rejected"`
+	Status               DecisionStatus            `json:"status"`
+	Origin               DecisionOrigin            `json:"origin"`
+	OriginSessionID      string                    `json:"origin_session_id,omitempty"`
+	OriginTaskID         string                    `json:"origin_task_id,omitempty"`
+	Supersedes           string                    `json:"supersedes,omitempty"`
+	ConfirmedBy          string                    `json:"confirmed_by,omitempty"`
+	ConfirmedAt          time.Time                 `json:"confirmed_at,omitempty"`
+	DismissedBy          string                    `json:"dismissed_by,omitempty"`
+	DismissedAt          time.Time                 `json:"dismissed_at,omitempty"`
+	SupersededBy         string                    `json:"superseded_by,omitempty"`
+	Sweep                DecisionSupersessionSweep `json:"sweep"`
+	Workspace            string                    `json:"workspace"`
+	CreatedAt            time.Time                 `json:"created_at"`
+}
+
+// ContainsDecisionToken applies the corpus whole-token rule. Decision IDs use
+// ASCII word characters around their numeric suffix, so regexp word boundaries
+// distinguish DEC-1 from DEC-18 without interpreting adjacent prose as a cite.
+func ContainsDecisionToken(content, decisionID string) bool {
+	if !decisionIDPattern.MatchString(decisionID) {
+		return false
+	}
+	return regexp.MustCompile(`\b` + regexp.QuoteMeta(decisionID) + `\b`).MatchString(content)
 }
 
 // PendingProposal is the workspace-level, read-only projection of authority an

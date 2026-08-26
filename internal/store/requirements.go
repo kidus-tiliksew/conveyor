@@ -318,6 +318,7 @@ func (m *memory) ConfirmRequirementVersion(ctx context.Context, requirementID st
 		payload["derived_document_id"], payload["derived_document_version"], payload["derived_section_anchor"], payload["derived_target_id"] = confirmed.DerivedFrom.DocumentID, confirmed.DerivedFrom.Version, confirmed.DerivedFrom.SectionAnchor, confirmed.DerivedFrom.TargetID
 	}
 	m.appendEventLocked(ctx, core.Event{Kind: "requirement.version_confirmed", Payload: core.JSONPayload(payload)})
+	m.recomputeDecisionSweepsForDocumentLocked(ctx, core.DecisionSweepTierRequirement, requirementID, confirmed.Content)
 	m.activatePendingRequirementContextLocked(ctx, workspace, requirementID, version)
 	return requirement, confirmed, nil
 }

@@ -331,12 +331,21 @@ func (s *Server) dismissDecision(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, item)
 }
 
+func (s *Server) dismissDecisionSupersessionSweep(w http.ResponseWriter, r *http.Request) {
+	entry, err := s.Store.DismissDecisionSupersessionSweep(r.Context(), chi.URLParam(r, "id"), chi.URLParam(r, "tier"), chi.URLParam(r, "document_id"))
+	if err != nil {
+		http.Error(w, fmt.Sprintf("dismiss decision supersession sweep: %v", err), systemDesignMutationStatus(err))
+		return
+	}
+	writeJSON(w, http.StatusOK, entry)
+}
+
 func systemDesignMutationStatus(err error) int {
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		return http.StatusNotFound
 	case errors.Is(err, store.ErrSystemDesignIDConflict), errors.Is(err, store.ErrSystemDesignSlugConflict),
-		errors.Is(err, store.ErrDecisionIDConflict), errors.Is(err, store.ErrDecisionSupersessionConflict):
+		errors.Is(err, store.ErrDecisionIDConflict), errors.Is(err, store.ErrDecisionSupersessionConflict), errors.Is(err, store.ErrDecisionSweepTransition):
 		return http.StatusConflict
 	default:
 		return http.StatusInternalServerError

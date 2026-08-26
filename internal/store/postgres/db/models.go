@@ -38,6 +38,19 @@ type Event struct {
 	WorkspaceID string             `json:"workspace_id"`
 }
 
+type DecisionSupersessionSweep struct {
+	WorkspaceID          string             `json:"workspace_id"`
+	DecisionID           string             `json:"decision_id"`
+	SupersededDecisionID string             `json:"superseded_decision_id"`
+	DocumentTier         string             `json:"document_tier"`
+	DocumentID           string             `json:"document_id"`
+	Status               string             `json:"status"`
+	DetectedBy           string             `json:"detected_by"`
+	DetectedAt           pgtype.Timestamptz `json:"detected_at"`
+	ResolvedBy           string             `json:"resolved_by"`
+	ResolvedAt           pgtype.Timestamptz `json:"resolved_at"`
+}
+
 type Feature struct {
 	ID          string             `json:"id"`
 	WorkspaceID string             `json:"workspace_id"`
