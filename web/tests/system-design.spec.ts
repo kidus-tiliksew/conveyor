@@ -403,6 +403,120 @@ test('a System Design with nothing outstanding says so in one quiet line', async
   const metadata = page.getByRole('heading', { name: 'Dispatch ownership' }).locator('..')
   await expect(metadata.getByText('v1', { exact: true })).toBeVisible()
   await expect(metadata.getByText('Confirmed', { exact: true })).toBeVisible()
+  await expect(page.getByRole('region', { name: 'Settled decisions' })).toContainText('No settled decisions yet.')
+})
+
+test('System Design links decision supersession and dismisses an unclean sweep signal', async ({ page }) => {
+  await initialize(page)
+  let dismissalAttempts = 0
+  let dismissed = false
+  const decisions = () => [
+    {
+      id: 'DEC-1',
+      statement: 'Use the retired mechanism.',
+      context: 'This choice has been replaced.',
+      alternatives_rejected: 'No decision.',
+      status: 'superseded',
+      origin: 'operator',
+      superseded_by: 'DEC-2',
+      sweep: { clean: true, entries: [] },
+      workspace: 'demo',
+      created_at: '2026-08-05T08:00:00Z',
+    },
+    {
+      id: 'DEC-2',
+      statement: 'Use the replacement mechanism.',
+      context: 'The replacement preserves governance history.',
+      alternatives_rejected: 'Keep both mechanisms active.',
+      status: 'confirmed',
+      origin: 'operator',
+      supersedes: 'DEC-1',
+      sweep: {
+        clean: dismissed,
+        entries: [
+          {
+            decision_id: 'DEC-2',
+            superseded_decision_id: 'DEC-1',
+            document_id: 'req-stale',
+            document_tier: 'requirement',
+            status: dismissed ? 'dismissed' : 'open',
+            detected_by: 'decision.confirmed',
+            detected_at: '2026-08-26T10:00:00Z',
+          },
+          {
+            decision_id: 'DEC-2',
+            superseded_decision_id: 'DEC-1',
+            document_id: 'product-overview',
+            document_tier: 'reference_document',
+            status: 'dismissed',
+            detected_by: 'decision.confirmed',
+            detected_at: '2026-08-26T10:00:00Z',
+          },
+        ],
+      },
+      workspace: 'demo',
+      created_at: '2026-08-26T09:00:00Z',
+    },
+  ]
+  await page.route('**/v1/**', async (route) => {
+    const handled = shell(route)
+    if (handled) return await handled
+    const request = route.request()
+    const url = new URL(request.url())
+    if (url.pathname === '/v1/system-designs') return route.fulfill({ json: [summarizeDesign(design)] })
+    if (url.pathname === '/v1/system-designs/design-dispatch') return route.fulfill({ json: design })
+    if (url.pathname === '/v1/decisions') return route.fulfill({ json: decisions() })
+    if (url.pathname === '/v1/decisions/DEC-2/sweep/requirement/req-stale/dismiss') {
+      dismissalAttempts++
+      if (dismissalAttempts === 1)
+        return route.fulfill({ status: 409, json: { message: 'This sweep signal changed; refresh and try again.' } })
+      dismissed = true
+      return route.fulfill({ json: decisions()[1].sweep.entries[0] })
+    }
+    return route.fulfill({ json: [] })
+  })
+
+  await page.goto('/system-design?document=design-dispatch#decision-dec-2')
+  const register = page.getByRole('region', { name: 'Settled decisions' })
+  await expect(register.getByRole('link', { name: 'DEC-2' })).toHaveAttribute('href', '#decision-dec-2')
+  await expect(register.getByRole('link', { name: 'DEC-1' })).toHaveAttribute('href', '#decision-dec-1')
+  await register.getByText('documents still citing DEC-1').click()
+  const checklist = register.getByRole('list', { name: 'Documents still citing DEC-1' })
+  await expect(checklist.getByRole('link', { name: 'req-stale' })).toHaveAttribute(
+    'href',
+    '/requirements?requirement=req-stale',
+  )
+  await expect(checklist.getByRole('link', { name: 'product-overview' })).toHaveAttribute(
+    'href',
+    '/requirements#reference-product-overview-v0',
+  )
+  await expect(checklist).toContainText('Requirement')
+  await expect(checklist).toContainText('open')
+  await checklist.getByRole('button', { name: 'Dismiss' }).click()
+  await expect(checklist).toContainText('This sweep signal changed; refresh and try again.')
+  await checklist.getByRole('button', { name: 'Dismiss' }).click()
+  await expect.poll(() => dismissed).toBe(true)
+  await expect(register.getByText('documents still citing DEC-1')).toHaveCount(0)
+})
+
+test('System Design keeps the document visible when the decision register fails', async ({ page }) => {
+  await initialize(page)
+  await page.route('**/v1/**', async (route) => {
+    const handled = shell(route)
+    if (handled) return await handled
+    const url = new URL(route.request().url())
+    if (url.pathname === '/v1/system-designs') return route.fulfill({ json: [summarizeDesign(design)] })
+    if (url.pathname === '/v1/system-designs/design-dispatch') return route.fulfill({ json: design })
+    if (url.pathname === '/v1/decisions')
+      return route.fulfill({ status: 500, body: 'Decision projection unavailable.' })
+    return route.fulfill({ json: [] })
+  })
+
+  await page.goto('/system-design?document=design-dispatch')
+  await expect(page.getByRole('heading', { name: 'Dispatch ownership' })).toBeVisible()
+  await expect(page.getByRole('region', { name: 'Settled decisions' })).toContainText(
+    'Decision projection unavailable.',
+  )
 })
 
 test('System Design resolves drift inline, restricts outcomes, and shows the confirmed-version precondition', async ({

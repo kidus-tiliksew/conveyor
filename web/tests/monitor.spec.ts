@@ -56,6 +56,18 @@ test('monitor page renders health, deduplication, task links, and drift age', as
             created_at: '2026-07-28T12:00:00Z',
             updated_at: '2026-07-28T12:02:00Z',
           },
+          {
+            workspace_id: 'demo',
+            repository: 'conveyor',
+            kind: 'revert',
+            occurrence_id: 'revert:saturated',
+            source_url: 'https://example.test/commit/saturated',
+            state: 'observed',
+            deduplicated_count: 0,
+            last_error: 'Task monitor-task already has 5 unresolved drift signals.',
+            created_at: '2026-07-28T12:03:00Z',
+            updated_at: '2026-07-28T12:03:00Z',
+          },
         ],
         drift: [
           {
@@ -66,7 +78,7 @@ test('monitor page renders health, deduplication, task links, and drift age', as
             source_url: 'https://example.test/commit/abc',
             commit_sha: 'abc',
             task_id: 'drift-task',
-            detected_at: '2026-07-28T11:00:00Z',
+            detected_at: new Date(Date.now() - 3_600_000).toISOString(),
           },
         ],
         drift_count: 1,
@@ -81,6 +93,7 @@ test('monitor page renders health, deduplication, task links, and drift age', as
   await expect(page.getByText('1', { exact: true }).first()).toBeVisible()
   await expect(page.getByText('1h', { exact: true })).toBeVisible()
   await expect(page.getByText('direct_push', { exact: true })).toBeVisible()
+  await expect(page.getByText('Detected 1h ago', { exact: true })).toBeVisible()
   await expect(page.getByText('2 duplicates', { exact: true })).toBeVisible()
   await expect(page.getByText('created', { exact: true })).toBeVisible()
   // Scoped to the page body: the shell's own Tasks nav entry also matches a
@@ -89,6 +102,9 @@ test('monitor page renders health, deduplication, task links, and drift age', as
     'href',
     '/tasks/drift-task',
   )
+  const refusal = page.getByText('revert:saturated').locator('..')
+  await expect(refusal).toContainText('Task monitor-task already has 5 unresolved drift signals.')
+  await expect(refusal.getByRole('link', { name: 'Task' })).toHaveCount(0)
 
   const form = page.getByRole('form', { name: 'Resolve drift direct_push:conveyor:abc' })
   await form.getByLabel('Resolution outcome for direct_push:conveyor:abc').selectOption('requirements_amended')

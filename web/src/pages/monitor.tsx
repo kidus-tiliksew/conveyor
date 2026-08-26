@@ -49,6 +49,7 @@ export function MonitorPage() {
             label="Oldest drift"
             value={duration(status?.oldest_drift_age ?? 0)}
             attention={(status?.drift_count ?? 0) > 0}
+            title="Age of the oldest unreconciled signal"
           />
           <Metric
             label="Last successful observation"
@@ -92,7 +93,9 @@ export function MonitorPage() {
                     <span className="text-sm font-medium">{item.repository}</span>
                   </div>
                   <p className="mt-1 truncate font-mono text-xs text-faint">{item.commit_sha || item.id}</p>
-                  <p className="mt-1 text-xs text-muted">Detected {new Date(item.detected_at).toLocaleString()}</p>
+                  <p className="mt-1 text-xs text-muted" title={new Date(item.detected_at).toLocaleString()}>
+                    Detected {age(item.detected_at)} ago
+                  </p>
                   {canManageWorkspace && (
                     <DriftResolutionForm
                       drift={item}
@@ -158,6 +161,7 @@ export function MonitorPage() {
                       Task
                     </Link>
                   )}
+                  {item.last_error && <p className="max-w-md text-xs text-failure">{item.last_error}</p>}
                 </div>
               ))}
           </CardContent>
@@ -167,15 +171,31 @@ export function MonitorPage() {
   )
 }
 
-function Metric({ label, value, attention = false }: { label: string; value: string; attention?: boolean }) {
+function Metric({
+  label,
+  value,
+  attention = false,
+  title,
+}: {
+  label: string
+  value: string
+  attention?: boolean
+  title?: string
+}) {
   return (
     <Card>
       <CardContent>
         <p className="text-xs text-muted">{label}</p>
-        <p className={`mt-2 text-lg font-semibold ${attention ? 'text-attention' : ''}`}>{value}</p>
+        <p className={`mt-2 text-lg font-semibold ${attention ? 'text-attention' : ''}`} title={title}>
+          {value}
+        </p>
       </CardContent>
     </Card>
   )
+}
+
+function age(detectedAt: string) {
+  return duration(Math.max(0, Date.now() - new Date(detectedAt).getTime()) * 1_000_000)
 }
 
 function duration(nanoseconds: number) {

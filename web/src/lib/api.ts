@@ -738,6 +738,16 @@ export async function resolveDecision(id: string, action: 'confirm' | 'dismiss')
   return response.json() as Promise<import('./types').Decision>
 }
 export class DecisionConflictError extends Error {}
+export async function dismissDecisionSupersessionSweep(decisionId: string, documentTier: string, documentId: string) {
+  const response = await fetch(
+    workspaceURL(
+      `/v1/decisions/${encodeURIComponent(decisionId)}/sweep/${encodeURIComponent(documentTier)}/${encodeURIComponent(documentId)}/dismiss`,
+    ),
+    { method: 'POST', headers: mutationHeaders() },
+  )
+  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
+  return response.json() as Promise<import('./types').DecisionSupersessionSweepEntry>
+}
 export function fetchReferenceDocumentVersions(id: string) {
   return getJSON<import('./types').ReferenceDocumentVersion[]>(
     workspaceURL(`/v1/reference-documents/${encodeURIComponent(id)}/versions`),

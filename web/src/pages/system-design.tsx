@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useNavigate, useSearch } from '@tanstack/react-router'
+import { Link, useNavigate, useSearch } from '@tanstack/react-router'
 import { Check, Clock, ExternalLink, History, Layers, X } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { useWorkspaceCapability, useWorkspaceSelection } from '../components/app-shell'
@@ -21,6 +21,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import { MarkdownProse } from '../components/ui/markdown-prose'
 import {
   confirmSystemDesignVersion,
+  dismissDecisionSupersessionSweep,
   fetchDecisions,
   fetchSystemDesign,
   fetchSystemDesigns,
@@ -28,7 +29,13 @@ import {
   SystemDesignConflictError,
 } from '../lib/api'
 import { errorMessage } from '../lib/errors'
-import type { Decision, SystemDesignSummary, SystemDesignVersion, SystemDesignView } from '../lib/types'
+import type {
+  Decision,
+  DecisionSupersessionSweepEntry,
+  SystemDesignSummary,
+  SystemDesignVersion,
+  SystemDesignView,
+} from '../lib/types'
 
 const originLabels: Record<SystemDesignVersion['origin'], string> = {
   planning_session: 'Written in a planning conversation',
@@ -67,6 +74,11 @@ export function SystemDesignPage() {
   })
   const resolve = useMutation({
     mutationFn: ({ id, action }: { id: string; action: 'confirm' | 'dismiss' }) => resolveDecision(id, action),
+    onSettled: () => void client.invalidateQueries({ queryKey: ['decisions', workspace] }),
+  })
+  const dismissSweep = useMutation({
+    mutationFn: ({ decisionId, entry }: { decisionId: string; entry: DecisionSupersessionSweepEntry }) =>
+      dismissDecisionSupersessionSweep(decisionId, entry.document_tier, entry.document_id),
     onSettled: () => void client.invalidateQueries({ queryKey: ['decisions', workspace] }),
   })
   const selected = designs.data?.find((item) => item.document.id === search.document)
@@ -214,9 +226,17 @@ export function SystemDesignPage() {
               workspace={workspace}
               decisionItems={decisionItems}
               settledDecisions={settledDecisions}
+              decisionsLoading={decisions.isLoading}
+              decisionsError={decisions.error}
+              canConfirmDecisions={canConfirm}
+              dismissSweep={dismissSweep}
             />
           ) : selected && detail.isLoading ? (
             <div className="px-8 py-8 text-sm text-muted">Loading document…</div>
+          ) : selected && detail.error ? (
+            <div className="px-8 py-8 text-sm text-failure">
+              {errorMessage(detail.error, 'Could not load this System Design document.')}
+            </div>
           ) : (
             <div className="mx-auto max-w-2xl px-6 py-16">
               <Card className="rounded-xl border-dashed">
@@ -249,11 +269,25 @@ function DesignCanvas({
   workspace,
   decisionItems,
   settledDecisions,
+  decisionsLoading,
+  decisionsError,
+  canConfirmDecisions,
+  dismissSweep,
 }: {
   item: SystemDesignView
   workspace: string
   decisionItems: AttentionItem[]
   settledDecisions: Decision[]
+  decisionsLoading: boolean
+  decisionsError: Error | null
+  canConfirmDecisions: boolean
+  dismissSweep: ReturnType<
+    typeof useMutation<
+      DecisionSupersessionSweepEntry,
+      Error,
+      { decisionId: string; entry: DecisionSupersessionSweepEntry }
+    >
+  >
 }) {
   const client = useQueryClient()
   const canManageWorkspace = useWorkspaceCapability('manage_workspace')
@@ -455,8 +489,16 @@ function DesignCanvas({
         </details>
       )}
 
-      {settledDecisions.length > 0 && (
-        <section className="mt-10 border-t border-border pt-8" aria-label="Settled decisions">
+      <section className="mt-10 border-t border-border pt-8" aria-label="Settled decisions">
+        {decisionsLoading ? (
+          <p className="text-sm text-muted">Loading decisions…</p>
+        ) : decisionsError ? (
+          <p className="rounded-md bg-failure-soft px-3 py-2 text-sm text-failure">
+            {errorMessage(decisionsError, 'Could not load decisions.')}
+          </p>
+        ) : settledDecisions.length === 0 ? (
+          <p className="text-sm text-muted">No settled decisions yet.</p>
+        ) : (
           <Card className="rounded-lg">
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
@@ -480,6 +522,76 @@ function DesignCanvas({
                   </div>
                   <p className="mt-2 text-sm font-medium">{decision.statement}</p>
                   <p className="mt-1 text-xs text-muted">{decision.context}</p>
+                  {(decision.supersedes || decision.superseded_by) && (
+                    <p className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted">
+                      {decision.supersedes && (
+                        <span>
+                          Supersedes <DecisionLink id={decision.supersedes} />
+                        </span>
+                      )}
+                      {decision.superseded_by && (
+                        <span>
+                          Superseded by <DecisionLink id={decision.superseded_by} />
+                        </span>
+                      )}
+                    </p>
+                  )}
+                  {decision.supersedes && decision.sweep && !decision.sweep.clean && (
+                    <details className="mt-3 rounded-md border border-attention/40 bg-attention-soft/40 p-3">
+                      <summary className="flex cursor-pointer flex-wrap items-center gap-2 text-xs font-medium">
+                        <Badge variant="attention">
+                          {decision.sweep.entries.filter((entry) => entry.status === 'open').length} open
+                        </Badge>
+                        documents still citing {decision.supersedes}
+                      </summary>
+                      <p className="mt-2 text-xs text-muted">
+                        These signals manage operator attention. They do not block delivery, review, or merge.
+                      </p>
+                      <ul
+                        className="mt-2 divide-y divide-border"
+                        aria-label={`Documents still citing ${decision.supersedes}`}
+                      >
+                        {decision.sweep.entries.map((entry) => {
+                          const pending =
+                            dismissSweep.isPending &&
+                            dismissSweep.variables?.decisionId === decision.id &&
+                            dismissSweep.variables.entry.document_tier === entry.document_tier &&
+                            dismissSweep.variables.entry.document_id === entry.document_id
+                          const failed = dismissSweep.error && dismissSweep.variables?.entry === entry
+                          return (
+                            <li key={`${entry.document_tier}:${entry.document_id}`} className="py-2 text-xs">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <SweepDocumentLink entry={entry} />
+                                <Badge>{sweepTierLabel(entry.document_tier)}</Badge>
+                                <Badge variant={entry.status === 'open' ? 'attention' : 'default'}>
+                                  {entry.status}
+                                </Badge>
+                                <time className="text-faint" title={new Date(entry.detected_at).toLocaleString()}>
+                                  Detected {formatDate(entry.detected_at)}
+                                </time>
+                                {entry.status === 'open' && canConfirmDecisions && (
+                                  <Button
+                                    className="ml-auto"
+                                    size="sm"
+                                    variant="secondary"
+                                    disabled={dismissSweep.isPending}
+                                    onClick={() => dismissSweep.mutate({ decisionId: decision.id, entry })}
+                                  >
+                                    {pending ? 'Dismissing…' : 'Dismiss'}
+                                  </Button>
+                                )}
+                              </div>
+                              {failed && (
+                                <p className="mt-1 text-failure">
+                                  {errorMessage(dismissSweep.error, 'Could not dismiss this signal.')}
+                                </p>
+                              )}
+                            </li>
+                          )
+                        })}
+                      </ul>
+                    </details>
+                  )}
                   {decision.status === 'confirmed' && decision.confirmed_by && decision.confirmed_at && (
                     <p className="mt-2 flex items-center gap-1 text-xs text-muted">
                       <Clock className="size-3" /> Confirmed by {decision.confirmed_by} on{' '}
@@ -496,10 +608,45 @@ function DesignCanvas({
               ))}
             </CardContent>
           </Card>
-        </section>
-      )}
+        )}
+      </section>
     </article>
   )
+}
+
+function DecisionLink({ id }: { id: string }) {
+  return (
+    <a href={`#decision-${id.toLowerCase()}`} className="font-medium text-primary hover:underline">
+      {id}
+    </a>
+  )
+}
+
+function SweepDocumentLink({ entry }: { entry: DecisionSupersessionSweepEntry }) {
+  const className = 'font-medium text-primary hover:underline'
+  if (entry.document_tier === 'system_design')
+    return (
+      <Link to="/system-design" search={{ document: entry.document_id }} className={className}>
+        {entry.document_id}
+      </Link>
+    )
+  if (entry.document_tier === 'requirement')
+    return (
+      <Link to="/requirements" search={{ requirement: entry.document_id }} className={className}>
+        {entry.document_id}
+      </Link>
+    )
+  return (
+    <Link to="/requirements" hash={`reference-${entry.document_id}-v0`} className={className}>
+      {entry.document_id}
+    </Link>
+  )
+}
+
+function sweepTierLabel(tier: DecisionSupersessionSweepEntry['document_tier']) {
+  if (tier === 'system_design') return 'System Design'
+  if (tier === 'reference_document') return 'Reference document'
+  return 'Requirement'
 }
 
 // The pending-version comparison, presented exactly like the requirement
