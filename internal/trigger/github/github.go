@@ -13,7 +13,6 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
-	"os"
 	"os/exec"
 	"regexp"
 	"sort"
@@ -51,26 +50,20 @@ var (
 	ErrAuthenticatedIdentityRead  = errors.New("authenticated forge identity read failed")
 )
 
-// ValidateTokenIdentity validates a candidate without ever placing it in argv.
+// ValidateTokenIdentity validates a candidate with an authenticated REST read.
 // Child detail is intentionally collapsed to a stable secret-free error.
 func ValidateTokenIdentity(ctx context.Context, token string) (string, error) {
 	if strings.TrimSpace(token) == "" {
 		return "", ErrAuthenticatedIdentityRead
 	}
-	cmd := exec.CommandContext(ctx, "gh", "api", "user", "--jq", ".login")
-	environment := make([]string, 0, len(os.Environ())+1)
-	for _, value := range os.Environ() {
-		if !strings.HasPrefix(value, "GH_TOKEN=") {
-			environment = append(environment, value)
-		}
+	out, err := ghWithTokenAndIdentity(token, "stored forge token")(ctx, "api", "user")
+	var response struct {
+		Login string `json:"login"`
 	}
-	cmd.Env = append(environment, "GH_TOKEN="+token)
-	out, err := cmd.Output()
-	login := strings.TrimSpace(string(out))
-	if err != nil || login == "" {
+	if err != nil || json.Unmarshal(out, &response) != nil || strings.TrimSpace(response.Login) == "" {
 		return "", ErrAuthenticatedIdentityRead
 	}
-	return login, nil
+	return strings.TrimSpace(response.Login), nil
 }
 
 // ForgeErrorCategory is the stable GitHub failure taxonomy recorded in
@@ -395,10 +388,9 @@ func MergePullRequest(ctx context.Context, repo string, number int) error {
 }
 
 // MergePullRequestWithCredential performs the user-attributed write with an
-// explicit per-call token. Ambient authentication remains reserved for host
-// acts and read-only paths (req-260821-830dbf AC-4.1).
+// explicit per-call token.
 func MergePullRequestWithCredential(ctx context.Context, repo string, number int, token string) error {
-	return mergePullRequest(ctx, repo, number, ghWithToken(token))
+	return mergePullRequest(ctx, repo, number, ghWithTokenAndIdentity(token, "executing user forge token"))
 }
 
 func mergePullRequest(ctx context.Context, repo string, number int, run ghRunner) error {
@@ -820,9 +812,9 @@ func OpenPRForBranch(ctx context.Context, repo, branch, base, title, body string
 }
 
 // OpenPRForBranchWithCredential opens or reconciles a task PR under the
-// executing user's token. The token is confined to GH_TOKEN in cmd.Env.
+// executing user's explicit token.
 func OpenPRForBranchWithCredential(ctx context.Context, repo, branch, base, title, body, token string) (string, error) {
-	return openPRForBranch(ctx, repo, branch, base, title, body, ghWithToken(token))
+	return openPRForBranch(ctx, repo, branch, base, title, body, ghWithTokenAndIdentity(token, "executing user forge token"))
 }
 
 func openPRForBranch(ctx context.Context, repo, branch, base, title, body string, runGH ghRunner) (string, error) {
@@ -965,34 +957,15 @@ func legacyPullRequestLifecycleEnd(body string) int {
 }
 
 func gh(ctx context.Context, args ...string) ([]byte, error) {
-	return runGHCommand(ctx, "", args...)
+	credential, ok := credentialFromContext(ctx)
+	if !ok {
+		return nil, PermissionError(errors.New("workspace forge token is required; add or replace it in workspace settings"))
+	}
+	return ghWithTokenAndIdentity(credential.Token, credential.Identity)(ctx, args...)
 }
 
 func ghWithToken(token string) ghRunner {
-	return func(ctx context.Context, args ...string) ([]byte, error) {
-		return runGHCommand(ctx, token, args...)
-	}
-}
-
-func runGHCommand(ctx context.Context, token string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "gh", args...)
-	if token != "" {
-		environment := make([]string, 0, len(os.Environ())+1)
-		for _, value := range os.Environ() {
-			if !strings.HasPrefix(value, "GH_TOKEN=") {
-				environment = append(environment, value)
-			}
-		}
-		cmd.Env = append(environment, "GH_TOKEN="+token)
-	}
-	out, err := cmd.Output()
-	if err != nil {
-		if ee, ok := err.(*exec.ExitError); ok {
-			return nil, fmt.Errorf("gh %s: %w: %s", strings.Join(args, " "), err, ee.Stderr)
-		}
-		return nil, fmt.Errorf("gh %s: %w", strings.Join(args, " "), err)
-	}
-	return out, nil
+	return ghWithTokenAndIdentity(token, "forge token")
 }
 
 func run(ctx context.Context, dir, name string, args ...string) error {
