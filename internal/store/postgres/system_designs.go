@@ -227,9 +227,54 @@ func (s *Store) ConfirmSystemDesignVersion(ctx context.Context, documentID strin
 		if err = insertWorkspaceEvent(ctx, q, core.Event{Kind: "system_design.version_confirmed", Payload: core.JSONPayload(map[string]any{"workspace_id": workspace(ctx), "document_id": documentID, "version": version, "supersedes_version": currentVersion, "confirmed_by": actor.ID, "origin": confirmed.Origin, "origin_session_id": confirmed.OriginSessionID, "origin_task_id": confirmed.OriginTaskID, "governs": confirmed.Governs})}); err != nil {
 			return err
 		}
+		if err = reconcileConfirmedSystemDesignDriftTx(ctx, tx, q, documentID, version, confirmed.CreatedAt, now); err != nil {
+			return err
+		}
 		return activatePendingTaskContextTx(ctx, tx, q, workspace(ctx), documentID, version, true)
 	})
 	return document, confirmed, err
+}
+
+func reconcileConfirmedSystemDesignDriftTx(ctx context.Context, tx pgx.Tx, q *db.Queries, documentID string, version int, proposedAt, resolvedAt time.Time) error {
+	rows, err := tx.Query(ctx, `UPDATE repository_drift
+		SET resolved_at=$5,outcome='design_document_updated'
+		WHERE workspace_id=$1 AND system_design_id=$2 AND kind='lineaged_merge'
+		  AND system_design_version<$3 AND detected_at<$4 AND resolved_at IS NULL
+		RETURNING id,task_id`, workspace(ctx), documentID, version, proposedAt, resolvedAt)
+	if err != nil {
+		return err
+	}
+	type reconciledDrift struct{ id, taskID string }
+	var reconciled []reconciledDrift
+	for rows.Next() {
+		var drift reconciledDrift
+		if err = rows.Scan(&drift.id, &drift.taskID); err != nil {
+			rows.Close()
+			return err
+		}
+		reconciled = append(reconciled, drift)
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	for _, drift := range reconciled {
+		payload := core.JSONPayload(map[string]any{
+			"drift_id": drift.id, "outcome": "design_document_updated", "resolved_at": resolvedAt,
+			"document_id": documentID, "confirmed_version": version,
+		})
+		if err = insertEvent(ctx, q, core.Event{TaskID: drift.taskID, Kind: "monitor.drift_reconciled", At: resolvedAt, Payload: payload}); err != nil {
+			return err
+		}
+		if err = insertWorkspaceEvent(ctx, q, core.Event{Kind: "system_design.drift_resolved", At: resolvedAt, Payload: core.JSONPayload(map[string]any{
+			"workspace_id": workspace(ctx), "document_id": documentID, "drift_id": drift.id,
+			"outcome": "design_document_updated", "resolved_at": resolvedAt, "confirmed_version": version,
+		})}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 const systemDesignSelect = `SELECT workspace_id,id,slug,title,category,current_version,created_at,updated_at FROM system_designs`

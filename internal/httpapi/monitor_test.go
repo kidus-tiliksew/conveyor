@@ -113,8 +113,14 @@ func TestMonitorObservationUsesNormalIntakeAndExposesDrift(t *testing.T) {
 	var status monitor.Status
 	if err = json.Unmarshal(statusResponse.Body.Bytes(), &status); err != nil ||
 		status.DriftCount != 1 || len(status.Drift) != 1 ||
-		status.Drift[0].RequirementID != "req-runtime" {
+		status.Drift[0].RequirementID != "req-runtime" || status.Drift[0].DetectedAt.IsZero() {
 		t.Fatalf("status=%+v err=%v", status, err)
+	}
+	var rawStatus struct {
+		Drift []map[string]json.RawMessage `json:"drift"`
+	}
+	if err = json.Unmarshal(statusResponse.Body.Bytes(), &rawStatus); err != nil || len(rawStatus.Drift) != 1 || len(rawStatus.Drift[0]["detected_at"]) == 0 {
+		t.Fatalf("monitor drift detected_at missing: body=%s err=%v", statusResponse.Body.String(), err)
 	}
 }
 

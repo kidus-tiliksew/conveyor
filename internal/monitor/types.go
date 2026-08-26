@@ -230,12 +230,19 @@ type Store interface {
 	ResolveCausalSystemDesignMerge(context.Context, string, string, string, int64, string, []string, bool) (SystemDesignMergeJudgment, error)
 }
 
+const MaxUnresolvedDriftPerTask = 5
+
 var (
 	ErrUnknownRequirementID    = errors.New("unknown monitor requirement_id")
 	ErrRequirementIDMissing    = errors.New("monitor requirement_id is missing")
 	ErrRequirementIDInvalid    = errors.New("monitor requirement_id is invalid")
 	ErrRequirementIDNotAllowed = errors.New("monitor requirement_id is only allowed for requirements_amended")
+	ErrTaskDriftSaturated      = errors.New("monitor_task_drift_saturated")
 )
+
+func TaskDriftSaturatedError(taskID string) error {
+	return fmt.Errorf("%w: task %s already has %d unresolved drift signals", ErrTaskDriftSaturated, taskID, MaxUnresolvedDriftPerTask)
+}
 
 type Service struct {
 	Store            Store
