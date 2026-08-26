@@ -79,6 +79,8 @@ type GithubLifecycle struct {
 	CreateAttempts     int32              `json:"create_attempts"`
 	ReconcileMisses    int32              `json:"reconcile_misses"`
 	ForgeErrorCategory string             `json:"forge_error_category"`
+	ForgeAuthorClass   string             `json:"forge_author_class"`
+	ForgeAuthorUserID  string             `json:"forge_author_user_id"`
 }
 
 type HarnessModelFailure struct {
@@ -234,6 +236,8 @@ type ReviewPublication struct {
 	ModelEnforcement       string             `json:"model_enforcement"`
 	RequiredEffort         string             `json:"required_effort"`
 	ForgeErrorCategory     string             `json:"forge_error_category"`
+	ForgeAuthorClass       string             `json:"forge_author_class"`
+	ForgeAuthorUserID      string             `json:"forge_author_user_id"`
 }
 
 type ReviewRoundRetry struct {

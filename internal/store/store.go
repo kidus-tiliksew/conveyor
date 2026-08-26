@@ -2079,6 +2079,9 @@ func (m *memory) withPlanningSessionLock(ctx context.Context, sessionID string, 
 func (m *memory) QueueReviewPublication(ctx context.Context, publication core.ReviewPublication) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if err := NormalizeForgeAuthorProjectionForWrite(&publication.ForgeAuthorClass, &publication.ForgeAuthorUserID, core.ForgeAuthorWorkspace); err != nil {
+		return err
+	}
 	if _, ok := m.publications[publication.ReviewWorkOrderID]; ok {
 		return nil
 	}
@@ -2102,6 +2105,9 @@ func (m *memory) GetReviewPublication(_ context.Context, id string) (core.Review
 func (m *memory) UpdateReviewPublication(ctx context.Context, publication core.ReviewPublication) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if err := NormalizeForgeAuthorProjectionForWrite(&publication.ForgeAuthorClass, &publication.ForgeAuthorUserID, core.ForgeAuthorWorkspace); err != nil {
+		return err
+	}
 	current, ok := m.publications[publication.ReviewWorkOrderID]
 	if !ok {
 		return fmt.Errorf("review publication %s not found", publication.ReviewWorkOrderID)
@@ -2138,6 +2144,10 @@ func (m *memory) ReconcileReviewPublications(ctx context.Context) (int, error) {
 					missing = append(missing, publication)
 				} else if existing.State == core.ReviewPublicationPublished && existing.CommentID <= 0 {
 					existing.State = core.ReviewPublicationRetrying
+					if existing.ForgeAuthorClass == "" || existing.ForgeAuthorClass == core.ForgeAuthorClass("host") {
+						existing.ForgeAuthorClass = core.ForgeAuthorWorkspace
+						existing.ForgeAuthorUserID = ""
+					}
 					existing.ForgeErrorCategory = ""
 					existing.LastError = "reconciling published review projection without required comment"
 					existing.UpdatedAt = time.Now().UTC()
@@ -2496,7 +2506,7 @@ func reviewPublicationFromDecision(decision core.ReviewDecision) core.ReviewPubl
 		SameModelAsImplementer: decision.SameModelAsImplementer,
 		ReviewRound:            decision.ReviewRound, ReviewSeat: decision.ReviewSeat,
 		RequiredModel: decision.RequiredModel, RequiredHarness: decision.RequiredHarness, RequiredEffort: decision.RequiredEffort,
-		ModelEnforcement: decision.ModelEnforcement,
+		ModelEnforcement: decision.ModelEnforcement, ForgeAuthorClass: core.ForgeAuthorWorkspace,
 	}
 }
 
@@ -2514,6 +2524,10 @@ func reviewPublicationFromEvent(taskID, jobID string, payload []byte) (core.Revi
 	publication.TaskID = taskID
 	publication.JobID = jobID
 	publication.State = core.ReviewPublicationQueued
+	if publication.ForgeAuthorClass == "" || publication.ForgeAuthorClass == core.ForgeAuthorClass("host") {
+		publication.ForgeAuthorClass = core.ForgeAuthorWorkspace
+		publication.ForgeAuthorUserID = ""
+	}
 	return publication, true
 }
 
@@ -3899,8 +3913,43 @@ func ValidateReviewPublicationUpdate(current, next core.ReviewPublication) error
 // ValidateReviewPublicationProjection prevents a required Phase 5.3 projection
 // from being recorded as complete without its deterministic aggregate comment
 func ValidateReviewPublicationProjection(publication core.ReviewPublication) error {
+	if err := validateForgeAuthorProjection(publication.ForgeAuthorClass, publication.ForgeAuthorUserID); err != nil {
+		return fmt.Errorf("review publication %s: %w", publication.ReviewWorkOrderID, err)
+	}
 	if publication.State == core.ReviewPublicationPublished && publication.CommentID <= 0 {
 		return fmt.Errorf("published review publication %s requires a nonzero comment ID", publication.ReviewWorkOrderID)
+	}
+	return nil
+}
+
+// NormalizeForgeAuthorProjectionForWrite applies the caller's explicit default
+// and rejects retired or internally inconsistent author attribution before a
+// projection or event is written.
+func NormalizeForgeAuthorProjectionForWrite(class *core.ForgeAuthorClass, userID *string, fallback core.ForgeAuthorClass) error {
+	if *class == "" {
+		*class = fallback
+	}
+	*userID = strings.TrimSpace(*userID)
+	return validateForgeAuthorProjection(*class, *userID)
+}
+
+func validateForgeAuthorProjection(class core.ForgeAuthorClass, userID string) error {
+	// Historical replay input predates forge attribution. Store write paths
+	// normalize the blank pair to workspace before persisting a new event.
+	if class == "" && userID == "" {
+		return nil
+	}
+	switch class {
+	case core.ForgeAuthorWorkspace:
+		if userID != "" {
+			return fmt.Errorf("workspace forge author cannot carry a user ID")
+		}
+	case core.ForgeAuthorExecutingUser, core.ForgeAuthorApprovingOperator:
+		if userID == "" {
+			return fmt.Errorf("forge author class %s requires a user ID", class)
+		}
+	default:
+		return fmt.Errorf("unsupported forge author class %q", class)
 	}
 	return nil
 }
@@ -4515,6 +4564,9 @@ func (m *memory) RemoveTaskDependency(ctx context.Context, request DependencyRem
 func (m *memory) QueueGitHubLifecycle(ctx context.Context, lifecycle core.GitHubLifecycle) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if err := NormalizeForgeAuthorProjectionForWrite(&lifecycle.ForgeAuthorClass, &lifecycle.ForgeAuthorUserID, core.ForgeAuthorWorkspace); err != nil {
+		return err
+	}
 	if _, ok := m.tasks[lifecycle.TaskID]; !ok {
 		return fmt.Errorf("task %s not found", lifecycle.TaskID)
 	}
@@ -4547,6 +4599,9 @@ func (m *memory) GetGitHubLifecycle(_ context.Context, taskID string) (core.GitH
 func (m *memory) UpdateGitHubLifecycle(ctx context.Context, lifecycle core.GitHubLifecycle) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if err := NormalizeForgeAuthorProjectionForWrite(&lifecycle.ForgeAuthorClass, &lifecycle.ForgeAuthorUserID, core.ForgeAuthorWorkspace); err != nil {
+		return err
+	}
 	current, ok := m.github[lifecycle.TaskID]
 	if !ok {
 		return fmt.Errorf("GitHub lifecycle for task %s not found", lifecycle.TaskID)

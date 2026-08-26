@@ -49,7 +49,7 @@ func TestGitHubIssuePublicationFirstAttemptPersistsLifecycleWithoutRetryActivity
 	if count, countErr := st.CountEvents(ctx, taskID, "github_issue.publication_published"); countErr != nil || count != 1 {
 		t.Fatalf("published events=%d err=%v", count, countErr)
 	}
-	assertForgeWriteAuthor(t, st, ctx, taskID, "github_issue.publication_published", core.ForgeAuthorHost)
+	assertForgeWriteAuthor(t, st, ctx, taskID, "github_issue.publication_published", core.ForgeAuthorWorkspace)
 }
 
 func TestGitHubIssuePublicationRecoverableFailureEmitsRetryActivityWithError(t *testing.T) {
@@ -157,7 +157,7 @@ func TestReviewPublicationRequiresAggregateCommentAndIgnoresEventTimestamp(t *te
 	if err != nil || stored.State != core.ReviewPublicationPublished || stored.CommentID != 51 || stored.ReviewedCommitSHA != "head-1" {
 		t.Fatalf("stored publication=%+v err=%v", stored, err)
 	}
-	assertForgeWriteAuthor(t, st, ctx, publication.TaskID, "review.publication_published", core.ForgeAuthorHost)
+	assertForgeWriteAuthor(t, st, ctx, publication.TaskID, "review.publication_published", core.ForgeAuthorWorkspace)
 	if err = worker.Work(ctx, reviewPublicationJob(publication.ReviewWorkOrderID, 2)); err != nil {
 		t.Fatal(err)
 	}

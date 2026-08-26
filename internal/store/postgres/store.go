@@ -2437,9 +2437,13 @@ func (s *Store) recordDependencyOutcomeTx(ctx context.Context, tx pgx.Tx, depend
 const githubLifecycleColumns = `task_id, repository, spec_version, source,
 source_issue_number, issue_number, issue_url, outcome, state, create_state,
 create_attempts, reconcile_misses, attempts, forge_error_category, last_error,
+forge_author_class, forge_author_user_id,
 created_at, updated_at`
 
 func (s *Store) QueueGitHubLifecycle(ctx context.Context, lifecycle core.GitHubLifecycle) error {
+	if err := store.NormalizeForgeAuthorProjectionForWrite(&lifecycle.ForgeAuthorClass, &lifecycle.ForgeAuthorUserID, core.ForgeAuthorWorkspace); err != nil {
+		return err
+	}
 	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
 		if lifecycle.State == "" {
 			lifecycle.State = core.GitHubPublicationQueued
@@ -2452,12 +2456,12 @@ func (s *Store) QueueGitHubLifecycle(ctx context.Context, lifecycle core.GitHubL
 		}
 		command, err := tx.Exec(ctx, `INSERT INTO github_lifecycles (
 			workspace_id, task_id, repository, spec_version, source,
-			source_issue_number, state, create_state, created_at, updated_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$9)
+			source_issue_number, state, create_state, forge_author_class, forge_author_user_id, created_at, updated_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$11)
 		ON CONFLICT (workspace_id, task_id) DO NOTHING`, workspace(ctx),
 			lifecycle.TaskID, lifecycle.Repository, lifecycle.SpecVersion,
 			lifecycle.Source, lifecycle.SourceIssueNumber, lifecycle.State, lifecycle.CreateState,
-			lifecycle.CreatedAt)
+			lifecycle.ForgeAuthorClass, lifecycle.ForgeAuthorUserID, lifecycle.CreatedAt)
 		if err != nil {
 			return err
 		}
@@ -2487,6 +2491,9 @@ func (s *Store) GetGitHubLifecycle(ctx context.Context, taskID string) (core.Git
 }
 
 func (s *Store) UpdateGitHubLifecycle(ctx context.Context, lifecycle core.GitHubLifecycle) error {
+	if err := store.NormalizeForgeAuthorProjectionForWrite(&lifecycle.ForgeAuthorClass, &lifecycle.ForgeAuthorUserID, core.ForgeAuthorWorkspace); err != nil {
+		return err
+	}
 	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
 		var current core.GitHubPublicationState
 		if err := tx.QueryRow(ctx, `SELECT state FROM github_lifecycles WHERE workspace_id=$1 AND task_id=$2 FOR UPDATE`, workspace(ctx), lifecycle.TaskID).Scan(&current); err != nil {
@@ -2498,11 +2505,11 @@ func (s *Store) UpdateGitHubLifecycle(ctx context.Context, lifecycle core.GitHub
 		command, err := tx.Exec(ctx, `UPDATE github_lifecycles SET
 			issue_number=$1, issue_url=$2, outcome=$3, state=$4, attempts=$5,
 			forge_error_category=$6, last_error=$7, create_state=$8, create_attempts=$9, reconcile_misses=$10,
-			updated_at=now()
-			WHERE workspace_id=$11 AND task_id=$12`, lifecycle.IssueNumber,
+			forge_author_class=$11, forge_author_user_id=$12, updated_at=now()
+			WHERE workspace_id=$13 AND task_id=$14`, lifecycle.IssueNumber,
 			lifecycle.IssueURL, lifecycle.Outcome, lifecycle.State, lifecycle.Attempts,
 			lifecycle.ForgeErrorCategory, lifecycle.LastError, lifecycle.CreateState, lifecycle.CreateAttempts,
-			lifecycle.ReconcileMisses, workspace(ctx), lifecycle.TaskID)
+			lifecycle.ReconcileMisses, lifecycle.ForgeAuthorClass, lifecycle.ForgeAuthorUserID, workspace(ctx), lifecycle.TaskID)
 		if err != nil {
 			return err
 		}
@@ -2561,6 +2568,7 @@ func scanGitHubLifecycle(row interface{ Scan(...any) error }) (core.GitHubLifecy
 		&lifecycle.IssueURL, &lifecycle.Outcome, &state, &createState,
 		&lifecycle.CreateAttempts, &lifecycle.ReconcileMisses, &lifecycle.Attempts,
 		&lifecycle.ForgeErrorCategory, &lifecycle.LastError,
+		&lifecycle.ForgeAuthorClass, &lifecycle.ForgeAuthorUserID,
 		&lifecycle.CreatedAt, &lifecycle.UpdatedAt)
 	lifecycle.State = core.GitHubPublicationState(state)
 	lifecycle.CreateState = core.GitHubCreateState(createState)
@@ -5398,7 +5406,7 @@ const reviewPublicationColumns = `review_work_order_id, task_id, job_id, verdict
 reason_code, summary, feedback, reviewed_commit_sha, reviewer_model,
 reviewer_session, same_model_as_implementer, review_round, review_seat,
 required_model, required_harness, required_effort, model_enforcement, state, attempts, check_run_id,
-comment_id, forge_error_category, last_error, created_at, updated_at`
+comment_id, forge_error_category, last_error, forge_author_class, forge_author_user_id, created_at, updated_at`
 
 func (s *Store) QueueReviewPublication(ctx context.Context, publication core.ReviewPublication) error {
 	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
@@ -5407,6 +5415,9 @@ func (s *Store) QueueReviewPublication(ctx context.Context, publication core.Rev
 }
 
 func (s *Store) queueReviewPublicationTx(ctx context.Context, tx pgx.Tx, q *db.Queries, publication core.ReviewPublication) error {
+	if err := store.NormalizeForgeAuthorProjectionForWrite(&publication.ForgeAuthorClass, &publication.ForgeAuthorUserID, core.ForgeAuthorWorkspace); err != nil {
+		return err
+	}
 	if publication.State == "" {
 		publication.State = core.ReviewPublicationQueued
 	}
@@ -5418,8 +5429,8 @@ func (s *Store) queueReviewPublicationTx(ctx context.Context, tx pgx.Tx, q *db.Q
 			review_work_order_id, workspace_id, task_id, job_id, verdict, reason_code,
 			summary, feedback, reviewed_commit_sha, reviewer_model, reviewer_session,
 			same_model_as_implementer, review_round, review_seat, required_model,
-			required_harness, required_effort, model_enforcement, state
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+			required_harness, required_effort, model_enforcement, state, forge_author_class, forge_author_user_id
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
 		ON CONFLICT (review_work_order_id) DO NOTHING`, publication.ReviewWorkOrderID,
 		workspace(ctx), publication.TaskID, publication.JobID, publication.Verdict,
 		publication.ReasonCode, publication.Summary, publication.Feedback,
@@ -5427,7 +5438,7 @@ func (s *Store) queueReviewPublicationTx(ctx context.Context, tx pgx.Tx, q *db.Q
 		publication.ReviewerSession, publication.SameModelAsImplementer,
 		publication.ReviewRound, publication.ReviewSeat, publication.RequiredModel,
 		publication.RequiredHarness, publication.RequiredEffort, publication.ModelEnforcement,
-		publication.State)
+		publication.State, publication.ForgeAuthorClass, publication.ForgeAuthorUserID)
 	if err != nil {
 		return err
 	}
@@ -5831,6 +5842,9 @@ func (s *Store) GetReviewPublication(ctx context.Context, id string) (core.Revie
 }
 
 func (s *Store) UpdateReviewPublication(ctx context.Context, publication core.ReviewPublication) error {
+	if err := store.NormalizeForgeAuthorProjectionForWrite(&publication.ForgeAuthorClass, &publication.ForgeAuthorUserID, core.ForgeAuthorWorkspace); err != nil {
+		return err
+	}
 	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
 		var current core.ReviewPublication
 		var state string
@@ -5843,10 +5857,10 @@ func (s *Store) UpdateReviewPublication(ctx context.Context, publication core.Re
 		}
 		command, err := tx.Exec(ctx, `UPDATE review_publications SET state=$1, attempts=$2,
 			check_run_id=$3, comment_id=$4, reviewed_commit_sha=$5, forge_error_category=$6, last_error=$7,
-			updated_at=now() WHERE workspace_id=$8 AND review_work_order_id=$9`,
+			forge_author_class=$8, forge_author_user_id=$9, updated_at=now() WHERE workspace_id=$10 AND review_work_order_id=$11`,
 			publication.State, publication.Attempts, publication.CheckRunID,
 			publication.CommentID, publication.ReviewedCommitSHA, publication.ForgeErrorCategory, publication.LastError,
-			workspace(ctx), publication.ReviewWorkOrderID)
+			publication.ForgeAuthorClass, publication.ForgeAuthorUserID, workspace(ctx), publication.ReviewWorkOrderID)
 		if err != nil {
 			return err
 		}
@@ -5889,6 +5903,10 @@ func (s *Store) ReconcileReviewPublications(ctx context.Context) (int, error) {
 		if json.Unmarshal(payload, &publication) == nil && publication.ReviewWorkOrderID != "" {
 			publication.TaskID, publication.JobID = taskID, jobID
 			publication.State = core.ReviewPublicationQueued
+			if publication.ForgeAuthorClass == "" || publication.ForgeAuthorClass == core.ForgeAuthorClass("host") {
+				publication.ForgeAuthorClass = core.ForgeAuthorWorkspace
+				publication.ForgeAuthorUserID = ""
+			}
 			missing = append(missing, publication)
 		}
 	}
@@ -5997,7 +6015,7 @@ func reviewPublicationFromDecision(decision core.ReviewDecision) core.ReviewPubl
 		SameModelAsImplementer: decision.SameModelAsImplementer,
 		ReviewRound:            decision.ReviewRound, ReviewSeat: decision.ReviewSeat,
 		RequiredModel: decision.RequiredModel, RequiredHarness: decision.RequiredHarness, RequiredEffort: decision.RequiredEffort,
-		ModelEnforcement: decision.ModelEnforcement,
+		ModelEnforcement: decision.ModelEnforcement, ForgeAuthorClass: core.ForgeAuthorWorkspace,
 	}
 }
 
@@ -6011,7 +6029,8 @@ func scanReviewPublication(row interface{ Scan(...any) error }) (core.ReviewPubl
 		&publication.ReviewRound, &publication.ReviewSeat, &publication.RequiredModel,
 		&publication.RequiredHarness, &publication.RequiredEffort, &publication.ModelEnforcement, &state,
 		&publication.Attempts, &publication.CheckRunID, &publication.CommentID,
-		&publication.ForgeErrorCategory, &publication.LastError, &publication.CreatedAt, &publication.UpdatedAt)
+		&publication.ForgeErrorCategory, &publication.LastError, &publication.ForgeAuthorClass, &publication.ForgeAuthorUserID,
+		&publication.CreatedAt, &publication.UpdatedAt)
 	publication.State = core.ReviewPublicationState(state)
 	return publication, err
 }
