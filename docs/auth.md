@@ -86,18 +86,21 @@ their enrolled workers in the same operation.
 
 ## GitHub (forge) tokens
 
-Executing tasks requires a stored GitHub token, because Conveyor opens pull
-requests and merges as the person doing the work, not as a shared bot
-account. Save a fine-grained token with Contents read and write and Pull
-requests read and write under Settings. The server validates it by reading
+Executing tasks requires a stored GitHub token. Conveyor opens task pull
+requests as the executing user and performs a gated merge as the operator who
+approved it. Save a fine-grained token with Contents, Pull requests, and Issues
+read and write under Settings. The server validates it by reading
 the authenticated login, encrypts it with AES-256 under
 `CONVEYOR_FORGE_TOKEN_ENCRYPTION_KEY`, and never returns the value again;
 status reads report only `{configured, forge_login, stored_at}`.
 
 Claiming work is refused without one (the error code is
 `forge_token_required`), and both `conveyor run` and the worker check for it
-before doing anything else. Every forge write records which identity class
-performed it: the executing user, the approving operator, or the host.
+before doing anything else. A gated merge waits when the approving operator
+has no stored token; the recorded approval remains in place and reconciliation
+retries after the operator adds the token. Workspace issue and review
+publication uses the workspace token. Every forge-write event records exactly
+one identity class: `executing_user`, `approving_operator`, or `workspace`.
 
 ## Worker credentials
 

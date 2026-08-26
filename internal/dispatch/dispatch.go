@@ -2202,23 +2202,23 @@ func (d *Dispatcher) mergeApprovedTaskLocked(ctx context.Context, task core.Task
 	}
 	author, mergeToken, err := d.mergeAuthor(ctx, current)
 	if err != nil {
-		return d.recordMergeFailure(ctx, current, "merge_author_unavailable", err)
+		return d.recordMergeFailureWithAuthor(ctx, current, "merge_author_unavailable", err, author)
 	}
 	cfg, err := d.currentConfig(ctx)
 	if err != nil {
-		return d.recordMergeFailure(ctx, current, "workspace_config_unavailable", fmt.Errorf("load workspace repository configuration: %w", err))
+		return d.recordMergeFailureWithAuthor(ctx, current, "workspace_config_unavailable", fmt.Errorf("load workspace repository configuration: %w", err), author)
 	}
 	repo, ok := cfg.Repo(current.Repo)
 	if !ok || strings.TrimSpace(repo.GitHub) == "" {
-		return d.recordMergeFailure(ctx, current, "unsupported_repository", fmt.Errorf("repository %q does not configure GitHub; merge it in its forge and retry reconciliation", current.Repo))
+		return d.recordMergeFailureWithAuthor(ctx, current, "unsupported_repository", fmt.Errorf("repository %q does not configure GitHub; merge it in its forge and retry reconciliation", current.Repo), author)
 	}
 
 	pr, err := d.ViewPullRequest(ctx, repo.GitHub, current.Branch)
 	if err != nil {
 		if errors.Is(err, github.ErrPullRequestNotFound) {
-			return d.recordMergeFailure(ctx, current, "missing_pull_request", fmt.Errorf("no pull request found for branch %s; push it and submit it for review before merging: %w", current.Branch, err))
+			return d.recordMergeFailureWithAuthor(ctx, current, "missing_pull_request", fmt.Errorf("no pull request found for branch %s; push it and submit it for review before merging: %w", current.Branch, err), author)
 		}
-		return d.recordMergeFailure(ctx, current, "pull_request_lookup_failed", fmt.Errorf("could not read the pull request for branch %s; verify GitHub authentication and retry: %w", current.Branch, err))
+		return d.recordMergeFailureWithAuthor(ctx, current, "pull_request_lookup_failed", fmt.Errorf("could not read the pull request for branch %s; verify GitHub authentication and retry: %w", current.Branch, err), author)
 	}
 	if pr.Merged {
 		reviewHead := current.ApprovedHeadSHA
@@ -2226,17 +2226,19 @@ func (d *Dispatcher) mergeApprovedTaskLocked(ctx context.Context, task core.Task
 			reviewHead = current.ReviewedHeadSHA
 		}
 		factoryReviewValidated := reviewHead != "" && pr.HeadSHA != "" && strings.EqualFold(reviewHead, pr.HeadSHA)
-		if err := d.Store.AppendEvent(ctx, core.Event{TaskID: current.ID, Kind: "merge.reconciled", Payload: core.JSONPayload(map[string]any{
+		payload := map[string]any{
 			"repository": repo.GitHub, "pull_request": pr.Number, "url": pr.URL, "base_sha": pr.BaseSHA, "head_sha": pr.HeadSHA, "result": "already_merged",
 			"factory_review_validated": factoryReviewValidated, "reviewed_head_sha": current.ReviewedHeadSHA, "approved_head_sha": current.ApprovedHeadSHA,
-		})}); err != nil {
+		}
+		addForgeAuthor(payload, author)
+		if err := d.Store.AppendEvent(ctx, core.Event{TaskID: current.ID, Kind: "merge.reconciled", Payload: core.JSONPayload(payload)}); err != nil {
 			return err
 		}
 		d.observeConfirmedMerge(ctx, current, repo.GitHub, pr, "merge.reconciled")
 		return d.confirmTaskMerged(ctx, current.ID)
 	}
 	if pr.State != "open" {
-		return d.recordMergeFailure(ctx, current, "pull_request_not_open", fmt.Errorf("pull request %s#%d is %s without a merge; reopen or replace it and retry", repo.GitHub, pr.Number, pr.State))
+		return d.recordMergeFailureWithAuthor(ctx, current, "pull_request_not_open", fmt.Errorf("pull request %s#%d is %s without a merge; reopen or replace it and retry", repo.GitHub, pr.Number, pr.State), author)
 	}
 	approvedHead := current.ApprovedHeadSHA
 	if approvedHead == "" {
@@ -2272,9 +2274,11 @@ func (d *Dispatcher) mergeApprovedTaskLocked(ctx context.Context, task core.Task
 		return fmt.Errorf("approval is stale: reviewed head %s differs from current head %s; refresh review dispatched", approvedHead, pr.HeadSHA)
 	}
 	if pr.Mergeable != "MERGEABLE" {
-		return d.recordMergeFailure(ctx, current, "pull_request_not_mergeable", fmt.Errorf("pull request %s#%d is not mergeable (%s); update the branch or resolve required checks and retry", repo.GitHub, pr.Number, pr.Mergeable))
+		return d.recordMergeFailureWithAuthor(ctx, current, "pull_request_not_mergeable", fmt.Errorf("pull request %s#%d is not mergeable (%s); update the branch or resolve required checks and retry", repo.GitHub, pr.Number, pr.Mergeable), author)
 	}
-	if err := d.Store.AppendEvent(ctx, core.Event{TaskID: current.ID, Kind: "merge.requested", Payload: core.JSONPayload(map[string]any{"repository": repo.GitHub, "pull_request": pr.Number, "url": pr.URL, "forge_author_class": author.Class, "forge_author_user_id": author.UserID})}); err != nil {
+	requestPayload := map[string]any{"repository": repo.GitHub, "pull_request": pr.Number, "url": pr.URL}
+	addForgeAuthor(requestPayload, author)
+	if err := d.Store.AppendEvent(ctx, core.Event{TaskID: current.ID, Kind: "merge.requested", Payload: core.JSONPayload(requestPayload)}); err != nil {
 		return err
 	}
 	requestMerge := d.RequestMerge
@@ -2296,7 +2300,9 @@ func (d *Dispatcher) mergeApprovedTaskLocked(ctx context.Context, task core.Task
 	if !confirmed.Merged {
 		return d.recordMergeFailureWithAuthor(ctx, current, "merge_unconfirmed", fmt.Errorf("GitHub did not confirm pull request %s#%d as merged; inspect checks or merge-queue status and retry", repo.GitHub, pr.Number), author)
 	}
-	if err := d.Store.AppendEvent(ctx, core.Event{TaskID: current.ID, Kind: "merge.confirmed", Payload: core.JSONPayload(map[string]any{"repository": repo.GitHub, "pull_request": confirmed.Number, "url": confirmed.URL, "base_sha": confirmed.BaseSHA, "head_sha": confirmed.HeadSHA, "forge_author_class": author.Class, "forge_author_user_id": author.UserID})}); err != nil {
+	confirmedPayload := map[string]any{"repository": repo.GitHub, "pull_request": confirmed.Number, "url": confirmed.URL, "base_sha": confirmed.BaseSHA, "head_sha": confirmed.HeadSHA}
+	addForgeAuthor(confirmedPayload, author)
+	if err := d.Store.AppendEvent(ctx, core.Event{TaskID: current.ID, Kind: "merge.confirmed", Payload: core.JSONPayload(confirmedPayload)}); err != nil {
 		return err
 	}
 	d.observeConfirmedMerge(ctx, current, repo.GitHub, confirmed, "merge.confirmed")
@@ -2430,10 +2436,6 @@ func (d *Dispatcher) confirmTaskMerged(ctx context.Context, taskID string) error
 	return d.transition(ctx, taskID, command, "", "")
 }
 
-func (d *Dispatcher) recordMergeFailure(ctx context.Context, task core.Task, reason string, mergeErr error) error {
-	return d.recordMergeFailureWithAuthor(ctx, task, reason, mergeErr, core.ForgeAuthoringIdentity{})
-}
-
 func (d *Dispatcher) recordMergeFailureWithAuthor(ctx context.Context, task core.Task, reason string, mergeErr error, author core.ForgeAuthoringIdentity) error {
 	payload := map[string]any{"reason_code": reason, "error": mergeErr.Error()}
 	if category := github.ErrorCategory(mergeErr); category != "" {
@@ -2441,6 +2443,8 @@ func (d *Dispatcher) recordMergeFailureWithAuthor(ctx context.Context, task core
 	}
 	if author.Class != "" {
 		payload["forge_author_class"] = author.Class
+	}
+	if author.UserID != "" {
 		payload["forge_author_user_id"] = author.UserID
 	}
 	if err := d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "merge.failed", Payload: core.JSONPayload(payload)}); err != nil {
@@ -2449,30 +2453,44 @@ func (d *Dispatcher) recordMergeFailureWithAuthor(ctx context.Context, task core
 	return mergeErr
 }
 
+func addForgeAuthor(payload map[string]any, author core.ForgeAuthoringIdentity) {
+	payload["forge_author_class"] = author.Class
+	if author.UserID != "" {
+		payload["forge_author_user_id"] = author.UserID
+	}
+}
+
 func (d *Dispatcher) mergeAuthor(ctx context.Context, task core.Task) (core.ForgeAuthoringIdentity, string, error) {
-	host := core.ForgeAuthoringIdentity{Class: core.ForgeAuthorHost}
+	workspace := core.ForgeAuthoringIdentity{Class: core.ForgeAuthorWorkspace}
 	if !task.MergeApproval {
-		return host, "", nil
+		return workspace, "", nil
 	}
 	userID, ok, err := store.ApprovingOperatorUserID(ctx, d.Store, task.ID)
-	if err != nil || !ok || d.ForgeTokens == nil {
-		return host, "", err
+	author := core.ForgeAuthoringIdentity{Class: core.ForgeAuthorApprovingOperator, UserID: userID}
+	if err != nil {
+		return author, "", fmt.Errorf("resolve approving operator for merge: %w", err)
+	}
+	if !ok || strings.TrimSpace(userID) == "" {
+		return author, "", github.PermissionError(fmt.Errorf("merge requires the approving operator identity: %w", store.ErrForgeTokenRequired))
+	}
+	if d.ForgeTokens == nil {
+		return author, "", github.PermissionError(fmt.Errorf("merge write for approving operator %s requires a stored forge token; add one in account settings: %w", userID, store.ErrForgeTokenRequired))
 	}
 	status, err := d.ForgeTokens.GetForgeTokenStatus(ctx, userID)
 	if errors.Is(err, store.ErrNotFound) || (err == nil && !status.Configured) {
-		return host, "", nil
+		return author, "", github.PermissionError(fmt.Errorf("merge write for approving operator %s requires a stored forge token; add one in account settings: %w", userID, store.ErrForgeTokenRequired))
 	}
 	if err != nil {
-		return host, "", fmt.Errorf("resolve approving operator %s forge token status: %w", userID, err)
+		return author, "", fmt.Errorf("resolve approving operator %s forge token status: %w", userID, err)
 	}
 	credential, err := d.ForgeTokens.GetForgeTokenForUse(ctx, userID)
 	if err != nil || strings.TrimSpace(credential.Token) == "" {
 		if err == nil {
 			err = store.ErrForgeTokenRequired
 		}
-		return host, "", github.PermissionError(fmt.Errorf("merge write for approving operator %s: %w", userID, err))
+		return author, "", github.PermissionError(fmt.Errorf("merge write for approving operator %s: %w", userID, err))
 	}
-	return core.ForgeAuthoringIdentity{Class: core.ForgeAuthorApprovingOperator, UserID: userID}, credential.Token, nil
+	return author, credential.Token, nil
 }
 
 // PollGitHub preserves issue intake while execution ownership moves to MCP.

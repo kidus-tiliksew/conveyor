@@ -805,6 +805,22 @@ func TestMergeApprovedTaskMergesOnlyAfterAuthoritativeConfirmation(t *testing.T)
 	for _, event := range events {
 		requested += boolInt(event.Kind == "merge.requested")
 		confirmed += boolInt(event.Kind == "merge.confirmed")
+		if event.Kind == "merge.requested" || event.Kind == "merge.confirmed" {
+			var fields map[string]any
+			if err = json.Unmarshal(event.Payload, &fields); err != nil {
+				t.Fatal(err)
+			}
+			if _, exists := fields["forge_author_user_id"]; exists {
+				t.Fatalf("workspace merge event carries a user ID: %s", event.Payload)
+			}
+			var author struct {
+				Class  core.ForgeAuthorClass `json:"forge_author_class"`
+				UserID string                `json:"forge_author_user_id"`
+			}
+			if err = json.Unmarshal(event.Payload, &author); err != nil || author.Class != core.ForgeAuthorWorkspace || author.UserID != "" {
+				t.Fatalf("automatic merge author=%+v err=%v", author, err)
+			}
+		}
 	}
 	if requested != 1 || confirmed != 1 {
 		t.Fatalf("events=%+v", events)
@@ -940,20 +956,61 @@ func TestMergeApprovedTaskVerificationFailuresAuditApprovingOperatorIdentity(t *
 	}
 }
 
-func TestMergeAuthorFallsBackToHostOnlyWhenApproverHasNoToken(t *testing.T) {
+func TestMergeApprovedTaskWaitsForApproverTokenThenRetriesWithSameApproval(t *testing.T) {
 	ctx, st, task, d := approvedMergeFixtureWithScopeAndGate(t, "acme/app", config.RefreshReviewDelta, true)
 	if err := st.CreateIntervention(ctx, core.Intervention{TaskID: task.ID, Action: core.InterventionApprove, ActorID: store.UserActorID("usr-approver"), ActorRole: core.ActorUser}); err != nil {
 		t.Fatal(err)
 	}
-	d.ForgeTokens = &mergeForgeTokens{status: core.ForgeTokenStatus{Configured: false}}
+	forgeTokens := &mergeForgeTokens{status: core.ForgeTokenStatus{Configured: false}}
+	d.ForgeTokens = forgeTokens
 	author, token, err := d.mergeAuthor(ctx, task)
-	if err != nil || author.Class != core.ForgeAuthorHost || author.UserID != "" || token != "" {
+	if err == nil || author.Class != core.ForgeAuthorApprovingOperator || author.UserID != "usr-approver" || token != "" ||
+		!strings.Contains(err.Error(), "stored forge token") || !strings.Contains(err.Error(), "account settings") {
 		t.Fatalf("author=%+v token=%q err=%v", author, token, err)
 	}
-	d.ForgeTokens = &mergeForgeTokens{status: core.ForgeTokenStatus{Configured: true}, useErr: store.ErrForgeTokenDecrypt}
-	author, token, err = d.mergeAuthor(ctx, task)
-	if err == nil || githubtrigger.ErrorCategory(err) != githubtrigger.ForgePermission || author.Class != core.ForgeAuthorHost || token != "" || !strings.Contains(err.Error(), "usr-approver") {
-		t.Fatalf("decrypt author=%+v token=%q err=%v category=%q", author, token, err, githubtrigger.ErrorCategory(err))
+	if err = d.MergeApprovedTask(ctx, task); err == nil || githubtrigger.ErrorCategory(err) != githubtrigger.ForgePermission {
+		t.Fatalf("missing-token merge err=%v category=%q", err, githubtrigger.ErrorCategory(err))
+	}
+	current, getErr := st.GetTask(ctx, task.ID)
+	if getErr != nil || current.State != core.TaskApproved || !current.MergeApproval {
+		t.Fatalf("approval changed after refusal: task=%+v err=%v", current, getErr)
+	}
+	events, eventErr := st.ListEvents(ctx, task.ID)
+	if eventErr != nil {
+		t.Fatal(eventErr)
+	}
+	foundRefusal := false
+	for _, event := range events {
+		payload := string(event.Payload)
+		foundRefusal = foundRefusal || (event.Kind == "merge.failed" &&
+			strings.Contains(payload, `"reason_code":"merge_author_unavailable"`) &&
+			strings.Contains(payload, `"forge_author_class":"approving_operator"`) &&
+			strings.Contains(payload, `"forge_author_user_id":"usr-approver"`) &&
+			!strings.Contains(payload, "approver-forge-token"))
+	}
+	if !foundRefusal {
+		t.Fatalf("missing-token refusal attribution not found: %+v", events)
+	}
+
+	forgeTokens.status = core.ForgeTokenStatus{Configured: true}
+	forgeTokens.credential = core.ForgeTokenCredential{UserID: "usr-approver", Token: "approver-forge-token"}
+	views := 0
+	d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
+		views++
+		return githubtrigger.PullRequest{Number: 12, State: map[bool]string{false: "open", true: "closed"}[views > 1], Mergeable: "MERGEABLE", Merged: views > 1}, nil
+	}
+	d.RequestMergeWithCredential = func(_ context.Context, _ string, _ int, usedToken string) error {
+		if usedToken != "approver-forge-token" {
+			t.Fatalf("merge token=%q", usedToken)
+		}
+		return nil
+	}
+	if err = d.MergeApprovedTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	current, getErr = st.GetTask(ctx, task.ID)
+	if getErr != nil || current.State != core.TaskMerged {
+		t.Fatalf("post-token retry task=%+v err=%v", current, getErr)
 	}
 }
 
@@ -1054,14 +1111,24 @@ func TestMergeApprovedTaskReconcilesAlreadyMergedPR(t *testing.T) {
 		}
 		found = true
 		var payload struct {
-			FactoryReviewValidated bool   `json:"factory_review_validated"`
-			ReviewedHeadSHA        string `json:"reviewed_head_sha"`
-			ApprovedHeadSHA        string `json:"approved_head_sha"`
-			HeadSHA                string `json:"head_sha"`
+			FactoryReviewValidated bool                  `json:"factory_review_validated"`
+			ReviewedHeadSHA        string                `json:"reviewed_head_sha"`
+			ApprovedHeadSHA        string                `json:"approved_head_sha"`
+			HeadSHA                string                `json:"head_sha"`
+			ForgeAuthorClass       core.ForgeAuthorClass `json:"forge_author_class"`
+			ForgeAuthorUserID      string                `json:"forge_author_user_id"`
 		}
 		if err := json.Unmarshal(event.Payload, &payload); err != nil || !payload.FactoryReviewValidated ||
-			payload.ReviewedHeadSHA != "reviewed-head" || payload.ApprovedHeadSHA != "reviewed-head" || payload.HeadSHA != "reviewed-head" {
+			payload.ReviewedHeadSHA != "reviewed-head" || payload.ApprovedHeadSHA != "reviewed-head" || payload.HeadSHA != "reviewed-head" ||
+			payload.ForgeAuthorClass != core.ForgeAuthorWorkspace || payload.ForgeAuthorUserID != "" {
 			t.Fatalf("reconciliation provenance=%+v err=%v", payload, err)
+		}
+		var fields map[string]any
+		if err := json.Unmarshal(event.Payload, &fields); err != nil {
+			t.Fatal(err)
+		}
+		if _, exists := fields["forge_author_user_id"]; exists {
+			t.Fatalf("workspace reconciliation carries a user ID: %s", event.Payload)
 		}
 	}
 	if !found {
@@ -1799,6 +1866,13 @@ func TestGateOffConflictingMergeAutomaticallyDispatchesFix(t *testing.T) {
 
 func TestConflictingMergeGateRetriesRecordOneBlockedEvent(t *testing.T) {
 	ctx, st, task, d := approvedMergeFixtureWithScopeAndGate(t, "acme/app", config.RefreshReviewNone, true)
+	if err := st.CreateIntervention(ctx, core.Intervention{TaskID: task.ID, Action: core.InterventionApprove, ActorID: store.UserActorID("usr-approver"), ActorRole: core.ActorUser}); err != nil {
+		t.Fatal(err)
+	}
+	d.ForgeTokens = &mergeForgeTokens{
+		status:     core.ForgeTokenStatus{Configured: true},
+		credential: core.ForgeTokenCredential{UserID: "usr-approver", Token: "approver-forge-token"},
+	}
 	if err := st.BindTaskApproval(ctx, task.ID, "approved-head"); err != nil {
 		t.Fatal(err)
 	}

@@ -199,7 +199,7 @@ type ForgeAuthorClass string
 const (
 	ForgeAuthorExecutingUser     ForgeAuthorClass = "executing_user"
 	ForgeAuthorApprovingOperator ForgeAuthorClass = "approving_operator"
-	ForgeAuthorHost              ForgeAuthorClass = "host"
+	ForgeAuthorWorkspace         ForgeAuthorClass = "workspace"
 )
 
 type ForgeAuthoringIdentity struct {
