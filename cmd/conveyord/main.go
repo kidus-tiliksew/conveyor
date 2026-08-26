@@ -30,7 +30,6 @@ import (
 	githubtrigger "github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
 	"github.com/kidus-tiliksew/conveyor/internal/workorder"
-	"github.com/kidus-tiliksew/conveyor/internal/worktreemaint"
 )
 
 func main() {
@@ -200,52 +199,6 @@ func main() {
 		Store: st, Agent: agent, ConfigProvider: workOrders.ConfigProvider,
 		Prompt: planningRole,
 	}
-	startDir, err := os.Getwd()
-	if err != nil {
-		log.Fatalf("resolve daemon working directory: %v", err)
-	}
-	worktreeMaintainer := &worktreemaint.Maintainer{
-		Store: st, ConfigProvider: workOrders.ConfigProvider, StartDir: startDir, Logf: log.Printf,
-	}
-	reconcileWorktrees := func() {
-		var workspaceIDs []string
-		if pgStore != nil {
-			items, listErr := pgStore.ListWorkspaces(ctx)
-			if listErr != nil {
-				log.Printf("list workspaces for worktree maintenance: %v", listErr)
-				return
-			}
-			for _, item := range items {
-				workspaceIDs = append(workspaceIDs, item.ID)
-			}
-		} else if cfg.Workspace != "" {
-			workspaceIDs = append(workspaceIDs, cfg.Workspace)
-		}
-		for _, workspaceID := range workspaceIDs {
-			workspaceCtx := store.WithWorkspace(ctx, workspaceID)
-			result, maintenanceErr := worktreeMaintainer.Reconcile(workspaceCtx)
-			if maintenanceErr != nil {
-				log.Printf("worktree maintenance workspace %s: %v", workspaceID, maintenanceErr)
-				continue
-			}
-			if result.Cleaned != 0 {
-				log.Printf("cleaned %d terminal task worktree(s) in workspace %s", result.Cleaned, workspaceID)
-			}
-		}
-	}
-	reconcileWorktrees()
-	go func() {
-		ticker := time.NewTicker(time.Minute)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				reconcileWorktrees()
-			}
-		}
-	}()
 	if monitorStore, ok := st.(monitor.Store); ok {
 		repositories := make(map[string]struct{}, len(cfg.Monitor.Repositories))
 		for _, repository := range cfg.Monitor.Repositories {

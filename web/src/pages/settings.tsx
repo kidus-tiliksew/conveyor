@@ -4,6 +4,7 @@ import { PersonalTokensCard } from '../components/settings/personal-tokens-card'
 import { ForgeTokenCard } from '../components/settings/forge-token-card'
 import { PasswordCard } from '../components/settings/password-card'
 import { ProfileCard } from '../components/settings/profile-card'
+import { WorkspaceForgeTokenCard } from '../components/settings/workspace-forge-token-card'
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import { CopyButton } from '../components/ui/copy-button'
 import { mcpConnectionConfig, mcpEndpoint } from '../lib/mcp'
@@ -52,6 +53,7 @@ export function SettingsPage() {
         <PasswordCard />
         <PersonalTokensCard />
         <ForgeTokenCard />
+        <WorkspaceForgeTokenCard />
         <Card className="mt-4">
           <CardHeader>
             <CardTitle>MCP work-order server</CardTitle>

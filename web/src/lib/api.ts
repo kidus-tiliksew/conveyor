@@ -372,6 +372,34 @@ export async function deleteForgeToken() {
   if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
 }
 
+export async function fetchWorkspaceForgeToken(workspace: string) {
+  const response = await fetch(`/v1/workspaces/${encodeURIComponent(workspace)}/forge-token`, {
+    headers: mutationHeaders(),
+  })
+  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
+  return response.json() as Promise<import('./types').WorkspaceForgeTokenStatus>
+}
+
+// The workspace credential is write-only in browser code. The response carries
+// the same metadata-only shape used by the personal token surface.
+export async function storeWorkspaceForgeToken(workspace: string, forgeToken: string) {
+  const response = await fetch(`/v1/workspaces/${encodeURIComponent(workspace)}/forge-token`, {
+    method: 'PUT',
+    headers: mutationHeaders(),
+    body: JSON.stringify({ token: forgeToken }),
+  })
+  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
+  return response.json() as Promise<import('./types').WorkspaceForgeTokenStatus>
+}
+
+export async function deleteWorkspaceForgeToken(workspace: string) {
+  const response = await fetch(`/v1/workspaces/${encodeURIComponent(workspace)}/forge-token`, {
+    method: 'DELETE',
+    headers: mutationHeaders(),
+  })
+  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
+}
+
 export function fetchBlueprints() {
   return getJSON<BlueprintView[]>(workspaceURL('/v1/blueprints'))
 }

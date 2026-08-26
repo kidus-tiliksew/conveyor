@@ -438,6 +438,14 @@ func removeTaskWorktree(ctx context.Context, branch string, state core.TaskState
 	if filepath.Clean(root) != filepath.Clean(primary) {
 		return result, fmt.Errorf("done must run inside the repository's primary checkout")
 	}
+	return removeTaskWorktreeAtPrimary(ctx, primary, branch, state)
+}
+
+func removeTaskWorktreeAtPrimary(ctx context.Context, primary, branch string, state core.TaskState) (worktreeCleanupResult, error) {
+	result := worktreeCleanupResult{Worktree: "skipped", Branch: "absent", Path: "-"}
+	if state != core.TaskMerged && state != core.TaskClosed {
+		return result, fmt.Errorf("task must be merged or closed before worktree cleanup (state %s)", state)
+	}
 	cleanup, err := gitx.CleanupTaskWorktree(ctx, primary, branch)
 	return worktreeCleanupResult(cleanup), err
 }

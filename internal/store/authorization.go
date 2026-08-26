@@ -100,6 +100,16 @@ type ForgeTokenStore interface {
 	ListForgeTokensForRedaction(context.Context) ([]string, error)
 }
 
+// WorkspaceForgeTokenStore owns the single recoverable forge credential for a
+// workspace. Management callers supply a workspace resolved by the HTTP
+// capability boundary; only use and redaction reads may return plaintext.
+type WorkspaceForgeTokenStore interface {
+	StoreWorkspaceForgeToken(context.Context, string, string, string) (core.ForgeTokenStatus, error)
+	DeleteWorkspaceForgeToken(context.Context, string) error
+	GetWorkspaceForgeTokenStatus(context.Context, string) (core.ForgeTokenStatus, error)
+	GetWorkspaceForgeTokenForUse(context.Context, string) (core.WorkspaceForgeTokenCredential, error)
+}
+
 // PersonalAccessTokenStore is the self-service human-credential boundary. Every
 // method takes the owning user resolved from the presented credential, so a
 // caller cannot name another user's tokens: cross-user reads and revocations

@@ -84,6 +84,7 @@ type Server struct {
 	PersonalTokens        store.PersonalAccessTokenStore
 	AgentCredentials      store.AgentCredentialStore
 	ForgeTokens           store.ForgeTokenStore
+	WorkspaceForgeTokens  store.WorkspaceForgeTokenStore
 	ValidateForgeToken    func(context.Context, string) (string, error)
 	InvitationSessions    store.InvitationSessionStore
 	InvitationDelivery    config.InvitationDelivery
@@ -125,6 +126,9 @@ func NewServer(s store.Store) *Server {
 	if tokens, ok := s.(store.ForgeTokenStore); ok {
 		server.ForgeTokens = tokens
 	}
+	if tokens, ok := s.(store.WorkspaceForgeTokenStore); ok {
+		server.WorkspaceForgeTokens = tokens
+	}
 	if sessions, ok := s.(store.InvitationSessionStore); ok {
 		server.InvitationSessions = sessions
 	}
@@ -156,6 +160,8 @@ func (s *Server) Handler() http.Handler {
 		r.With(s.requireWorkerAuth).Post("/worker/work-orders/{id}/renew", s.renewWorkerOrder)
 		r.With(s.requireWorkerAuth).Post("/worker/work-orders/{id}/attempt-checkpoint", s.checkpointWorkerOrderAttempt)
 		r.With(s.requireWorkerAuth).Post("/worker/work-orders/{id}/release", s.releaseWorkerOrder)
+		r.With(s.requireWorkerAuth).Get("/worker/tasks/{id}/worktree-cleanup", s.getWorktreeCleanupStatus)
+		r.With(s.requireWorkerAuth).Post("/worker/tasks/{id}/worktree-cleanup", s.recordWorktreeCleanup)
 		// req-review-gates-evidence REQ-3/AC-3.1; DEC-29: this is an
 		// exact-claim exception, not an agent-reachable role capability.
 		r.With(s.requireWorkerAuth).Post("/worker/work-orders/{id}/verification-evidence", s.uploadWorkerVerificationEvidence)
@@ -177,6 +183,9 @@ func (s *Server) Handler() http.Handler {
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityViewWorkspace)).Get("/workspaces/{workspace_id}", s.getWorkspaceRecord)
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityViewWorkspace)).Get("/workspaces/{workspace_id}/config", s.getWorkspaceConfig)
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityManageWorkspace)).Put("/workspaces/{workspace_id}/config", s.putWorkspaceConfig)
+		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityManageWorkspace)).Get("/workspaces/{workspace_id}/forge-token", s.getWorkspaceForgeToken)
+		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityManageWorkspace)).Put("/workspaces/{workspace_id}/forge-token", s.putWorkspaceForgeToken)
+		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityManageWorkspace)).Delete("/workspaces/{workspace_id}/forge-token", s.deleteWorkspaceForgeToken)
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityViewWorkspace)).Get("/workspaces/{workspace_id}/members", s.listWorkspaceMembers)
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityManageMembership)).Post("/workspaces/{workspace_id}/members", s.grantWorkspaceMembership)
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityManageMembership)).Get("/workspaces/{workspace_id}/invitations", s.listWorkspaceInvitations)
@@ -207,6 +216,8 @@ func (s *Server) Handler() http.Handler {
 			r.With(s.requireTaskRunAuth, s.requireWorkspaceCapability(core.CapabilityClaimWork)).Get("/tasks/{id}/run-orders/{order_id}/reconcile", s.reconcileTaskRunOrder)
 			r.With(s.requireTaskRunAuth, s.requireWorkspaceCapability(core.CapabilityClaimWork)).Post("/tasks/{id}/run-orders/{order_id}/attempt-checkpoint", s.checkpointTaskRunOrderAttempt)
 			r.With(s.requireTaskRunAuth, s.requireWorkspaceCapability(core.CapabilityClaimWork)).Post("/tasks/{id}/run-orders/{order_id}/release", s.releaseTaskRunOrder)
+			r.With(s.requireTaskRunAuth, s.requireWorkspaceCapability(core.CapabilityClaimWork)).Get("/tasks/{id}/worktree-cleanup", s.getWorktreeCleanupStatus)
+			r.With(s.requireTaskRunAuth, s.requireWorkspaceCapability(core.CapabilityClaimWork)).Post("/tasks/{id}/worktree-cleanup", s.recordWorktreeCleanup)
 			// Request-changes is the human merge-gate action, not part of the
 			// bearer-only run-order automation plane. Dashboard sessions retain
 			// this route through the outer CSRF proof and capability boundary.

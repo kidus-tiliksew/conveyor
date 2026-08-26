@@ -37,21 +37,9 @@ func (s *Server) putOwnForgeToken(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "forge token unavailable", http.StatusNotFound)
 		return
 	}
-	var request struct {
-		Token string `json:"token"`
-	}
-	decoder := json.NewDecoder(r.Body)
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&request); err != nil {
+	request, err := decodeForgeTokenRequest(r)
+	if err != nil {
 		writeValidationError(w, "token", err)
-		return
-	}
-	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		writeValidationError(w, "token", errors.New("request body must contain one JSON object"))
-		return
-	}
-	if strings.TrimSpace(request.Token) == "" {
-		writeValidationError(w, "token", errors.New("token is required"))
 		return
 	}
 	login, err := s.ValidateForgeToken(r.Context(), request.Token)
@@ -62,11 +50,31 @@ func (s *Server) putOwnForgeToken(w http.ResponseWriter, r *http.Request) {
 	credential, _ := store.CredentialFromContext(r.Context())
 	status, err := s.ForgeTokens.StoreForgeToken(r.Context(), credential.OwnerUserID, request.Token, login)
 	if err != nil {
-		log.Printf("store forge token: %v", err)
+		log.Printf("store forge token failed")
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	writeJSON(w, http.StatusOK, status)
+}
+
+type forgeTokenRequest struct {
+	Token string `json:"token"`
+}
+
+func decodeForgeTokenRequest(r *http.Request) (forgeTokenRequest, error) {
+	var request forgeTokenRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		return forgeTokenRequest{}, err
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return forgeTokenRequest{}, errors.New("request body must contain one JSON object")
+	}
+	if strings.TrimSpace(request.Token) == "" {
+		return forgeTokenRequest{}, errors.New("token is required")
+	}
+	return request, nil
 }
 
 func (s *Server) deleteOwnForgeToken(w http.ResponseWriter, r *http.Request) {

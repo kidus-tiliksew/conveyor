@@ -468,12 +468,14 @@ test('a user stores, replaces, and deletes a write-only GitHub token from settin
   await expect(card.getByText('A GitHub token is required before you can execute tasks.')).toBeVisible()
   await expect(card).toContainText('Contents read and write')
   await expect(card).toContainText('Pull requests read and write')
+  await expect(card).toContainText('Issues read and write')
 
   const input = card.locator('input[aria-label="GitHub token"]')
   await input.fill(firstSecret)
   await card.getByRole('button', { name: 'Store token' }).click()
   await expect(card.getByText('Connected as octocat')).toBeVisible()
   await expect(card.getByText(/Stored 8\/21\/2026/)).toBeVisible()
+  await expect(card).toContainText('Issues read and write')
   await expect(input).toHaveValue('')
   expect(writes).toEqual([{ method: 'PUT', body: { token: firstSecret } }])
 
