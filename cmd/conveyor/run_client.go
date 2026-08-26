@@ -154,9 +154,10 @@ func (c *client) checkpointTaskRunOrderAttemptByIDContext(ctx context.Context, c
 	return c.workerDoContext(ctx, http.MethodPost, path, payload, &result, credential)
 }
 
-func (c *client) claimDispatchOrderContext(ctx context.Context, credential string, item workerservice.DispatchOrder, session, clientToken string) (core.WorkOrder, error) {
+func (c *client) claimDispatchOrderContext(ctx context.Context, credential string, item workerservice.DispatchOrder, session, clientToken string) (workerservice.ClaimDelivery, error) {
 	if item.Dispatch == "run" {
-		return c.claimTaskRunOrderContext(ctx, credential, item, session, clientToken)
+		order, err := c.claimTaskRunOrderContext(ctx, credential, item, session, clientToken)
+		return workerservice.ClaimDelivery{WorkOrder: order}, err
 	}
 	return c.claimWorkerOrderContext(ctx, credential, item.Order.ID, session, clientToken)
 }

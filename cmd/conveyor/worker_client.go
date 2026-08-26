@@ -105,14 +105,28 @@ func (c *client) listWorkerOrdersContext(ctx context.Context, credential string)
 	err := c.workerDoContext(ctx, http.MethodGet, "/v1/worker/work-orders", nil, &result, credential)
 	return result, err
 }
-func (c *client) claimWorkerOrder(credential, id, session, clientToken string) (core.WorkOrder, error) {
+func (c *client) claimWorkerOrder(credential, id, session, clientToken string) (workerservice.ClaimDelivery, error) {
 	return c.claimWorkerOrderContext(context.Background(), credential, id, session, clientToken)
 }
-func (c *client) claimWorkerOrderContext(ctx context.Context, credential, id, session, clientToken string) (core.WorkOrder, error) {
-	var result core.WorkOrder
+func (c *client) claimWorkerOrderContext(ctx context.Context, credential, id, session, clientToken string) (workerservice.ClaimDelivery, error) {
+	var raw json.RawMessage
 	payload, _ := json.Marshal(map[string]any{"session_id": session, "client_token": clientToken, "lease_seconds": int64(workerservice.DefaultClaimLease.Seconds())})
-	err := c.workerDoContext(ctx, http.MethodPost, "/v1/worker/work-orders/"+id+"/claim", payload, &result, credential)
-	return result, err
+	if err := c.workerDoContext(ctx, http.MethodPost, "/v1/worker/work-orders/"+id+"/claim", payload, &raw, credential); err != nil {
+		return workerservice.ClaimDelivery{}, err
+	}
+	var result workerservice.ClaimDelivery
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return workerservice.ClaimDelivery{}, err
+	}
+	if result.WorkOrder.ID == "" {
+		// Decode the old shape only so rolling upgrades and identity-free legacy
+		// fixtures fail at the launch boundary instead of becoming malformed
+		// claims. Current repository-bearing dispatches require ForgeToken.
+		if err := json.Unmarshal(raw, &result.WorkOrder); err != nil {
+			return workerservice.ClaimDelivery{}, err
+		}
+	}
+	return result, nil
 }
 func (c *client) renewWorkerOrder(credential, id, sessionID string) (core.WorkOrder, error) {
 	return c.renewWorkerOrderContext(context.Background(), credential, id, sessionID, nil)

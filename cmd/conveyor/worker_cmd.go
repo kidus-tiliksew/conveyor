@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -808,9 +809,26 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 		return fmt.Errorf("generate worker client token: %w", err)
 	}
 	sessionID := "worker-" + session
-	claimed, err := c.claimDispatchOrderContext(ctx, credential, item, sessionID, clientToken)
+	delivery, err := c.claimDispatchOrderContext(ctx, credential, item, sessionID, clientToken)
 	if err != nil {
 		return err
+	}
+	claimed := delivery.WorkOrder
+	forgeToken := delivery.ForgeToken
+	// Clear the delivery envelope immediately. The token remains only in the
+	// attempt-local value and child Git environment until this function exits.
+	delivery = workerservice.ClaimDelivery{}
+	var gitEnvironment map[string]string
+	if item.Dispatch == "worker" && strings.TrimSpace(item.Task.Repo) != "" && strings.TrimSpace(item.Repository.URL) != "" && strings.TrimSpace(forgeToken) == "" {
+		releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = c.releaseDispatchOrderContext(releaseCtx, credential, item, core.WorkOrderRelease{
+			SessionID: sessionID,
+			Outcome:   core.WorkOrderOutcomeReleased,
+			Reason:    "worker claim response omitted the executing user forge token",
+			Cause:     core.WorkOrderReleaseCauseSessionExit,
+		})
+		cancel()
+		return fmt.Errorf("worker claim response omitted the executing user forge token")
 	}
 	activityTail := &boundedTailWriter{limit: workerActivitySnapshotLimit}
 	activitySnapshot := func() *core.WorkOrderActivitySnapshotInput {
@@ -891,6 +909,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 			return nil
 		}
 		checkpointCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		checkpointCtx = contextWithGitEnvironment(checkpointCtx, gitEnvironment)
 		result, checkpointErr := workerAttemptCheckpointer(checkpointCtx, item.Task.Branch, item.Task.Repo, item.Repository.URL, attemptCheckpoint{
 			AttemptID: claimed.AttemptID, WorkOrderID: item.Order.ID, TerminationReason: reason,
 		})
@@ -1036,10 +1055,27 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 		childValues["GIT_COMMITTER_NAME"] = item.GitAuthor.Name
 		childValues["GIT_COMMITTER_EMAIL"] = item.GitAuthor.Email
 	}
-	childEnv := isolatedChildEnvironment(os.Environ(), childValues)
+	gitEnvironment, err = childGitCredentialEnvironment(forgeToken)
+	if err != nil {
+		_ = release(core.WorkOrderOutcomeReleased, "prepare child Git credential environment failed", nil)
+		return err
+	}
+	defer func() {
+		for key := range gitEnvironment {
+			gitEnvironment[key] = ""
+		}
+		forgeToken = ""
+	}()
 	workingDirectory := ""
 	if item.Order.Stage == core.StageSpec {
-		workingDirectory, err = materializeSpecCheckout(setupCtx, directory, item)
+		if len(gitEnvironment) > 0 {
+			err = requireHTTPSRemote(item.Repository.URL)
+		}
+		if err != nil {
+			_ = release(core.WorkOrderOutcomeReleased, err.Error(), nil)
+			return err
+		}
+		workingDirectory, err = materializeSpecCheckout(contextWithGitEnvironment(setupCtx, gitEnvironment), directory, item)
 		if err != nil {
 			if _, lost := renewal.Stop(); lost != nil {
 				if workerOrderPreempted(lost) {
@@ -1058,7 +1094,16 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 			_ = release(core.WorkOrderOutcomeReleased, reason, nil)
 			return err
 		}
+		if len(gitEnvironment) > 0 {
+			err = validateHTTPSOrigin(setupCtx, workingDirectory)
+		}
+		if err != nil {
+			_ = release(core.WorkOrderOutcomeReleased, err.Error(), nil)
+			return err
+		}
 	}
+	childEnv := isolatedChildEnvironment(os.Environ(), childValues)
+	childEnv = isolatedChildEnvironment(childEnv, gitEnvironment)
 	if item.Harness.MCPTransport == config.MCPTransportEnvironment {
 		if err = validateGrokEnvironmentAttachment(setupCtx, item.Harness, childEnv, workingDirectory); err != nil {
 			if _, lost := renewal.Stop(); lost != nil {
@@ -1072,7 +1117,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 			return err
 		}
 	}
-	outputRedactor := redact.New([]string{credential, childCredential, childAddress, sessionID, clientToken})
+	outputRedactor := redact.New([]string{credential, childCredential, childAddress, sessionID, clientToken, forgeToken})
 	failureTail = &boundedTailWriter{limit: workerservice.FailureDetailLimit}
 	var usageDestination io.Writer
 	if codexUsage != nil {
@@ -2245,6 +2290,82 @@ func isolatedChildEnvironment(base []string, values map[string]string) []string 
 		result = append(result, name+"="+values[name])
 	}
 	return result
+}
+
+const (
+	gitAskPassModeEnv     = "CONVEYOR_GIT_ASKPASS_MODE"
+	gitAskPassTokenEnv    = "CONVEYOR_GIT_ASKPASS_TOKEN"
+	gitAskPassUsernameEnv = "CONVEYOR_GIT_ASKPASS_USERNAME"
+)
+
+// childGitCredentialEnvironment keeps the forge token in process memory and
+// the child-only environment. Git invokes this same executable as askpass;
+// neither the token nor a token-bearing URL enters argv or Git configuration
+// (req-260821-830dbf REQ-6/AC-6.1).
+func childGitCredentialEnvironment(token string) (map[string]string, error) {
+	if strings.TrimSpace(token) == "" {
+		return nil, nil
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		return nil, fmt.Errorf("resolve Conveyor executable for Git askpass: %w", err)
+	}
+	return map[string]string{
+		"GIT_ASKPASS":         executable,
+		"GIT_TERMINAL_PROMPT": "0",
+		"GCM_INTERACTIVE":     "never",
+		"GIT_CONFIG_NOSYSTEM": "1",
+		"GIT_CONFIG_GLOBAL":   os.DevNull,
+		"GIT_CONFIG_COUNT":    "1",
+		"GIT_CONFIG_KEY_0":    "credential.helper",
+		"GIT_CONFIG_VALUE_0":  "",
+		gitAskPassModeEnv:     "1",
+		gitAskPassTokenEnv:    token,
+		gitAskPassUsernameEnv: "x-access-token",
+	}, nil
+}
+
+func runGitAskPass(output io.Writer, prompt string) error {
+	lowerPrompt := strings.ToLower(strings.TrimSpace(prompt))
+	switch {
+	case strings.HasPrefix(lowerPrompt, "username for "):
+		username := os.Getenv(gitAskPassUsernameEnv)
+		if username == "" {
+			return fmt.Errorf("Git askpass username is unavailable")
+		}
+		_, err := fmt.Fprintln(output, username)
+		return err
+	case strings.HasPrefix(lowerPrompt, "password for "):
+		token := os.Getenv(gitAskPassTokenEnv)
+		if token == "" {
+			return fmt.Errorf("Git askpass token is unavailable")
+		}
+		_, err := fmt.Fprintln(output, token)
+		return err
+	default:
+		return fmt.Errorf("Git askpass received an unsupported prompt")
+	}
+}
+
+func isGitAskPassPrompt(prompt string) bool {
+	lowerPrompt := strings.ToLower(strings.TrimSpace(prompt))
+	return strings.HasPrefix(lowerPrompt, "username for ") || strings.HasPrefix(lowerPrompt, "password for ")
+}
+
+func requireHTTPSRemote(remote string) error {
+	parsed, err := url.Parse(strings.TrimSpace(remote))
+	if err != nil || !strings.EqualFold(parsed.Scheme, "https") || parsed.Host == "" || parsed.User != nil {
+		return fmt.Errorf("repository origin must use an HTTPS URL without embedded credentials; configure origin with an https:// remote")
+	}
+	return nil
+}
+
+func validateHTTPSOrigin(ctx context.Context, directory string) error {
+	remote, err := gitOutput(ctx, directory, "remote", "get-url", "origin")
+	if err != nil {
+		return fmt.Errorf("inspect repository origin before credentialed Git work: %w", err)
+	}
+	return requireHTTPSRemote(remote)
 }
 
 func workerLaunchPrompt(order core.WorkOrder, workspace, sessionID string) string {

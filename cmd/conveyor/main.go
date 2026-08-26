@@ -26,6 +26,17 @@ var (
 )
 
 func main() {
+	if os.Getenv(gitAskPassModeEnv) == "1" && len(os.Args) == 2 && isGitAskPassPrompt(os.Args[1]) {
+		prompt := ""
+		if len(os.Args) > 1 {
+			prompt = os.Args[1]
+		}
+		if err := runGitAskPass(os.Stdout, prompt); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := envfile.LoadDefault(); err != nil {
 		fmt.Fprintln(os.Stderr, "error: load local environment:", err)
 		os.Exit(1)

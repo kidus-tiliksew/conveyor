@@ -101,6 +101,15 @@ type DispatchOrder struct {
 	GitAuthor        core.GitAuthorIdentity `json:"git_author,omitempty"`
 }
 
+// ClaimDelivery is the authenticated worker claim response. ForgeToken is
+// deliberately absent from queued dispatch projections and every durable
+// work-order representation; only the worker that owns the exact live claim
+// receives it (req-260821-830dbf REQ-6/AC-6.1).
+type ClaimDelivery struct {
+	WorkOrder  core.WorkOrder `json:"work_order"`
+	ForgeToken string         `json:"forge_token"`
+}
+
 // TaskRunProposal is the task-scoped, read-only authority projection shown by
 // an attended run. CanConfirm is derived from the invoking user credential;
 // execution credentials never receive this response or gain confirmation
@@ -676,6 +685,58 @@ func (s *Service) ClaimForWorker(ctx context.Context, worker core.Worker, id str
 		claim.Lease = DefaultClaimLease
 	}
 	return s.WorkOrders.Claim(ctx, id, claim)
+}
+
+// ClaimForWorkerDelivery resolves the authenticated enrollment owner's forge
+// credential only after the exact worker claim exists. A failed outbound-use
+// read releases that exact session and never falls back to another identity or
+// an ambient host credential (req-260821-830dbf AC-3.2, AC-6.1).
+func (s *Service) ClaimForWorkerDelivery(ctx context.Context, worker core.Worker, id string, claim core.WorkOrderClaim) (ClaimDelivery, error) {
+	order, err := s.ClaimForWorker(ctx, worker, id, claim)
+	if err != nil {
+		return ClaimDelivery{}, err
+	}
+	credential, resolveErr := s.resolveWorkerForgeToken(ctx, worker)
+	if resolveErr == nil {
+		return ClaimDelivery{WorkOrder: order, ForgeToken: credential.Token}, nil
+	}
+	reason := fmt.Sprintf("resolve forge token for worker owner %s failed", strings.TrimSpace(worker.OwnerUserID))
+	_, releaseErr := s.Release(ctx, worker, id, core.WorkOrderRelease{
+		SessionID: claim.SessionID,
+		Reason:    reason,
+		Cause:     core.WorkOrderReleaseCauseSessionExit,
+		Outcome:   core.WorkOrderOutcomeReleased,
+	})
+	if releaseErr != nil {
+		return ClaimDelivery{}, errors.Join(resolveErr, fmt.Errorf("release exact claim after forge token resolution failed: %w", releaseErr))
+	}
+	return ClaimDelivery{}, resolveErr
+}
+
+func (s *Service) resolveWorkerForgeToken(ctx context.Context, worker core.Worker) (core.ForgeTokenCredential, error) {
+	if s.ForgeTokens == nil || strings.TrimSpace(worker.OwnerUserID) == "" {
+		return core.ForgeTokenCredential{}, workerForgeTokenRequired(worker.OwnerUserID, nil)
+	}
+	credential, err := s.ForgeTokens.GetForgeTokenForUse(ctx, worker.OwnerUserID)
+	if err != nil {
+		return core.ForgeTokenCredential{}, workerForgeTokenRequired(worker.OwnerUserID, err)
+	}
+	if credential.UserID != worker.OwnerUserID || strings.TrimSpace(credential.Token) == "" {
+		return core.ForgeTokenCredential{}, workerForgeTokenRequired(worker.OwnerUserID, errors.New("resolved credential did not match the worker owner"))
+	}
+	return credential, nil
+}
+
+func workerForgeTokenRequired(ownerUserID string, cause error) error {
+	owner := strings.TrimSpace(ownerUserID)
+	if owner == "" {
+		owner = "<missing>"
+	}
+	detail := "forge token cannot be resolved"
+	if cause != nil {
+		detail = cause.Error()
+	}
+	return fmt.Errorf("worker owner %s: %s; %w", owner, detail, store.ErrForgeTokenRequired)
 }
 
 func harnessFromSnapshot(snapshot *core.HarnessSnapshot) config.Harness {

@@ -29,6 +29,16 @@ import (
 	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
 )
 
+func TestMain(m *testing.M) {
+	if os.Getenv(gitAskPassModeEnv) == "1" && len(os.Args) == 2 && isGitAskPassPrompt(os.Args[1]) {
+		if err := runGitAskPass(os.Stdout, os.Args[1]); err != nil {
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
+
 func writeWorkerLocalExecutionConfig(t *testing.T, command, probe []string) string {
 	t.Helper()
 	cfg, err := config.Load(filepath.Join("..", "..", "conveyor.example.yaml"))
@@ -470,12 +480,15 @@ func TestRunHarnessChildReportsRedactedSnapshotAndBestEffortTranscript(t *testin
 	t.Cleanup(func() { workerClaimRenewInterval = previousInterval })
 
 	previousCheckpointer := workerAttemptCheckpointer
-	workerAttemptCheckpointer = func(_ context.Context, _, _, _ string, checkpoint attemptCheckpoint) (*attemptCheckpointResult, error) {
+	checkpointReceivedToken := false
+	workerAttemptCheckpointer = func(ctx context.Context, _, _, _ string, checkpoint attemptCheckpoint) (*attemptCheckpointResult, error) {
+		checkpointReceivedToken = gitEnvironmentFromContext(ctx)[gitAskPassTokenEnv] == "forge-observability-secret"
 		return &attemptCheckpointResult{Worktree: "/assigned/observability", CommitSHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Pushed: true}, nil
 	}
 	t.Cleanup(func() { workerAttemptCheckpointer = previousCheckpointer })
 
 	const credential = "worker-observability-secret"
+	const forgeToken = "forge-observability-secret"
 	var mu sync.Mutex
 	var snapshots []string
 	var transcript *core.WorkOrderAttemptTranscript
@@ -488,7 +501,7 @@ func TestRunHarnessChildReportsRedactedSnapshotAndBestEffortTranscript(t *testin
 		}
 		switch parts[4] {
 		case "claim":
-			_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: parts[3], State: core.WorkOrderClaimed, AttemptID: "attempt-observability", LeaseExpiresAt: time.Now().Add(time.Minute)})
+			_ = json.NewEncoder(w).Encode(workerservice.ClaimDelivery{WorkOrder: core.WorkOrder{ID: parts[3], State: core.WorkOrderClaimed, AttemptID: "attempt-observability", LeaseExpiresAt: time.Now().Add(time.Minute)}, ForgeToken: forgeToken})
 		case "renew":
 			var request workerRenewRequest
 			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
@@ -540,15 +553,18 @@ func TestRunHarnessChildReportsRedactedSnapshotAndBestEffortTranscript(t *testin
 		t.Fatal("running renewals carried no activity snapshot")
 	}
 	for _, snapshot := range snapshots {
-		if strings.Contains(snapshot, credential) || !strings.Contains(snapshot, "[REDACTED:exact]") || !strings.Contains(snapshot, "observable activity") {
+		if strings.Contains(snapshot, credential) || strings.Contains(snapshot, forgeToken) || !strings.Contains(snapshot, "[REDACTED:exact]") || !strings.Contains(snapshot, "observable activity") {
 			t.Fatalf("unsafe snapshot=%q", snapshot)
 		}
 	}
-	if transcript == nil || transcript.Truncated || strings.Contains(transcript.Content, credential) || !strings.Contains(transcript.Content, "[REDACTED:exact]") || !strings.Contains(transcript.Content, "observable activity") {
+	if transcript == nil || transcript.Truncated || strings.Contains(transcript.Content, credential) || strings.Contains(transcript.Content, forgeToken) || !strings.Contains(transcript.Content, "[REDACTED:exact]") || !strings.Contains(transcript.Content, "observable activity") {
 		t.Fatalf("unsafe transcript=%+v", transcript)
 	}
 	if checkpointRequests != 2 || !strings.Contains(stderr.String(), "retrying checkpoint without transcript") {
 		t.Fatalf("checkpoint_requests=%d stderr=%q", checkpointRequests, stderr.String())
+	}
+	if !checkpointReceivedToken {
+		t.Fatal("worker-side checkpoint push did not receive the child-only Git credential environment")
 	}
 }
 
@@ -714,6 +730,155 @@ func TestIsolatedChildEnvironmentReplacesLaunchIdentity(t *testing.T) {
 	})
 	if environmentValue(env, "CONVEYOR_SESSION_ID") != "session" || environmentValue(other, "CONVEYOR_SESSION_ID") != "other-session" || environmentValue(other, "CONVEYOR_CLIENT_TOKEN") != "other-client" {
 		t.Fatalf("concurrent child environments shared launch identity")
+	}
+}
+
+func TestChildGitCredentialEnvironmentUsesAskPassWithoutPersistentSecrets(t *testing.T) {
+	const token = "forge-token-only-in-environment"
+	environment, err := childGitCredentialEnvironment(token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if environment[gitAskPassTokenEnv] != token || environment[gitAskPassModeEnv] != "1" || environment["GIT_TERMINAL_PROMPT"] != "0" || environment["GIT_CONFIG_VALUE_0"] != "" {
+		t.Fatalf("Git environment=%v", environment)
+	}
+	for name, value := range environment {
+		if name != gitAskPassTokenEnv && strings.Contains(value, token) {
+			t.Fatalf("token escaped its dedicated environment value through %s", name)
+		}
+	}
+	t.Setenv(gitAskPassUsernameEnv, environment[gitAskPassUsernameEnv])
+	t.Setenv(gitAskPassTokenEnv, environment[gitAskPassTokenEnv])
+	var output bytes.Buffer
+	if err = runGitAskPass(&output, "Username for 'https://example.test':"); err != nil || strings.TrimSpace(output.String()) != "x-access-token" {
+		t.Fatalf("username response=%q err=%v", output.String(), err)
+	}
+	output.Reset()
+	if err = runGitAskPass(&output, "Password for 'https://x-access-token@example.test':"); err != nil || strings.TrimSpace(output.String()) != token {
+		t.Fatalf("password response=%q err=%v", output.String(), err)
+	}
+	output.Reset()
+	if err = runGitAskPass(&output, "OTP:"); err == nil || output.Len() != 0 {
+		t.Fatalf("unsupported prompt response=%q err=%v", output.String(), err)
+	}
+	if err = requireHTTPSRemote("https://github.com/example/repository.git"); err != nil {
+		t.Fatal(err)
+	}
+	for _, remote := range []string{"git@github.com:example/repository.git", "ssh://git@github.com/example/repository.git", "https://token@github.com/example/repository.git"} {
+		if err = requireHTTPSRemote(remote); err == nil || !strings.Contains(err.Error(), "HTTPS") {
+			t.Fatalf("remote %q error=%v", remote, err)
+		}
+	}
+}
+
+func TestChildGitCredentialEnvironmentPushesWithoutAmbientCredential(t *testing.T) {
+	const token = "forge-token-used-only-by-askpass"
+	serverRoot := t.TempDir()
+	bare := filepath.Join(serverRoot, "repository.git")
+	if output, err := exec.Command("git", "init", "--bare", bare).CombinedOutput(); err != nil {
+		t.Fatalf("init bare repository: %v\n%s", err, output)
+	}
+	if output, err := exec.Command("git", "--git-dir", bare, "config", "http.receivepack", "true").CombinedOutput(); err != nil {
+		t.Fatalf("enable HTTP receive-pack: %v\n%s", err, output)
+	}
+	authenticatedRequests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		username, password, ok := r.BasicAuth()
+		if !ok || username != "x-access-token" || password != token {
+			w.Header().Set("WWW-Authenticate", `Basic realm="conveyor-test"`)
+			http.Error(w, "authentication required", http.StatusUnauthorized)
+			return
+		}
+		authenticatedRequests++
+		command := exec.Command("git", "http-backend")
+		command.Env = append(os.Environ(),
+			"GIT_PROJECT_ROOT="+serverRoot,
+			"GIT_HTTP_EXPORT_ALL=1",
+			"REQUEST_METHOD="+r.Method,
+			"PATH_INFO="+r.URL.Path,
+			"QUERY_STRING="+r.URL.RawQuery,
+			"CONTENT_TYPE="+r.Header.Get("Content-Type"),
+			"CONTENT_LENGTH="+strconv.FormatInt(r.ContentLength, 10),
+			"REMOTE_USER=x-access-token",
+		)
+		command.Stdin = r.Body
+		var response, stderr bytes.Buffer
+		command.Stdout, command.Stderr = &response, &stderr
+		if err := command.Run(); err != nil {
+			http.Error(w, "Git backend failed", http.StatusInternalServerError)
+			return
+		}
+		headerBlock, body, ok := bytes.Cut(response.Bytes(), []byte("\r\n\r\n"))
+		if !ok {
+			http.Error(w, "Git backend returned malformed CGI output", http.StatusInternalServerError)
+			return
+		}
+		status := http.StatusOK
+		for _, line := range strings.Split(string(headerBlock), "\r\n") {
+			name, value, found := strings.Cut(line, ":")
+			if !found {
+				continue
+			}
+			value = strings.TrimSpace(value)
+			if strings.EqualFold(name, "Status") {
+				if code, parseErr := strconv.Atoi(strings.Fields(value)[0]); parseErr == nil {
+					status = code
+				}
+				continue
+			}
+			w.Header().Add(name, value)
+		}
+		w.WriteHeader(status)
+		_, _ = w.Write(body)
+	}))
+	defer server.Close()
+
+	checkout := t.TempDir()
+	if output, err := exec.Command("git", "init", checkout).CombinedOutput(); err != nil {
+		t.Fatalf("init checkout: %v\n%s", err, output)
+	}
+	if err := os.WriteFile(filepath.Join(checkout, "README.md"), []byte("credential fixture\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"-C", checkout, "add", "README.md"}, {"-C", checkout, "-c", "user.name=Worker", "-c", "user.email=worker@example.test", "commit", "-m", "fixture"}} {
+		if output, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, output)
+		}
+	}
+	environment, err := childGitCredentialEnvironment(token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostHome := t.TempDir()
+	push := exec.Command("git", "-C", checkout, "push", server.URL+"/repository.git", "HEAD:refs/heads/task")
+	push.Env = isolatedChildEnvironment(os.Environ(), environment)
+	push.Env = isolatedChildEnvironment(push.Env, map[string]string{"HOME": hostHome})
+	output, err := push.CombinedOutput()
+	if err != nil {
+		t.Fatalf("credentialed push: %v\n%s", err, output)
+	}
+	if bytes.Contains(output, []byte(token)) || authenticatedRequests == 0 {
+		t.Fatalf("unsafe push output=%q authenticated_requests=%d", output, authenticatedRequests)
+	}
+	if output, err = exec.Command("git", "--git-dir", bare, "rev-parse", "refs/heads/task").CombinedOutput(); err != nil {
+		t.Fatalf("pushed branch is missing: %v\n%s", err, output)
+	}
+	for _, root := range []string{checkout, serverRoot, hostHome} {
+		if err = filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+			if walkErr != nil || entry.IsDir() {
+				return walkErr
+			}
+			data, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return readErr
+			}
+			if bytes.Contains(data, []byte(token)) {
+				return fmt.Errorf("forge token persisted in %s", path)
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
@@ -2732,7 +2897,7 @@ func TestWorkerLifecycleHelper(t *testing.T) {
 			time.Sleep(40 * time.Millisecond)
 		}
 	case "observability":
-		fmt.Fprintf(os.Stdout, "token=%s client=%s observable activity\n", os.Getenv("CONVEYOR_API_TOKEN"), os.Getenv("CONVEYOR_CLIENT_TOKEN"))
+		fmt.Fprintf(os.Stdout, "token=%s client=%s forge=%s observable activity\n", os.Getenv("CONVEYOR_API_TOKEN"), os.Getenv("CONVEYOR_CLIENT_TOKEN"), os.Getenv(gitAskPassTokenEnv))
 		time.Sleep(250 * time.Millisecond)
 	case "stall-deadline-race":
 		raceDirectory := os.Getenv("CONVEYOR_FAKE_HARNESS_RACE_DIR")
