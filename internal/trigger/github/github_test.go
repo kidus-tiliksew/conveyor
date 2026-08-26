@@ -4,27 +4,27 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 )
 
-func TestValidateTokenIdentityUsesEnvironmentOnly(t *testing.T) {
-	dir := t.TempDir()
-	script := `#!/bin/sh
-for arg in "$@"; do [ "$arg" = "candidate-forge-secret" ] && exit 12; done
-[ "$GH_TOKEN" = "candidate-forge-secret" ] || exit 13
-[ "$*" = "api user --jq .login" ] || exit 14
-printf 'octocat\n'
-`
-	path := filepath.Join(dir, "gh")
-	if err := os.WriteFile(path, []byte(script), 0700); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", dir)
+func TestValidateTokenIdentityUsesExplicitHTTPSCredential(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer candidate-forge-secret" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		_, _ = w.Write([]byte(`{"login":"octocat"}`))
+	}))
+	defer server.Close()
+	previousClient, previousURL := defaultRESTHTTPClient, defaultRESTBaseURL
+	defaultRESTHTTPClient, defaultRESTBaseURL = server.Client(), server.URL
+	t.Cleanup(func() { defaultRESTHTTPClient, defaultRESTBaseURL = previousClient, previousURL })
+
 	login, err := ValidateTokenIdentity(t.Context(), "candidate-forge-secret")
 	if err != nil || login != "octocat" {
 		t.Fatalf("login=%q err=%v", login, err)
@@ -34,22 +34,21 @@ printf 'octocat\n'
 	}
 }
 
-func TestCredentialedForgeCommandUsesEnvironmentOnly(t *testing.T) {
-	dir := t.TempDir()
-	script := `#!/bin/sh
-for arg in "$@"; do [ "$arg" = "executor-forge-secret" ] && exit 12; done
-[ "$GH_TOKEN" = "executor-forge-secret" ] || exit 13
-[ "$*" = "pr list --repo acme/app" ] || exit 14
-printf 'ok\n'
-`
-	path := filepath.Join(dir, "gh")
-	if err := os.WriteFile(path, []byte(script), 0700); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", dir)
+func TestCredentialedForgeRequestIgnoresAmbientToken(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer executor-forge-secret" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		_, _ = w.Write([]byte(`[{"html_url":"https://github.test/acme/app/pull/1"}]`))
+	}))
+	defer server.Close()
+	previousClient, previousURL := defaultRESTHTTPClient, defaultRESTBaseURL
+	defaultRESTHTTPClient, defaultRESTBaseURL = server.Client(), server.URL
+	t.Cleanup(func() { defaultRESTHTTPClient, defaultRESTBaseURL = previousClient, previousURL })
 	t.Setenv("GH_TOKEN", "ambient-host-secret")
 	out, err := ghWithToken("executor-forge-secret")(t.Context(), "pr", "list", "--repo", "acme/app")
-	if err != nil || strings.TrimSpace(string(out)) != "ok" {
+	if err != nil || strings.TrimSpace(string(out)) != "https://github.test/acme/app/pull/1" {
 		t.Fatalf("output=%q err=%v", out, err)
 	}
 }

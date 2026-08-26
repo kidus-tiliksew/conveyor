@@ -48,6 +48,7 @@ type Dispatcher struct {
 	RequestMergeWithCredential func(context.Context, string, int, string) error
 	ListPullRequestFiles       func(context.Context, string, int) ([]string, error)
 	ForgeTokens                store.ForgeTokenStore
+	WorkspaceForgeTokens       store.WorkspaceForgeTokenStore
 	ObserveDesignMerge         func(context.Context, monitor.Observation, string) error
 	// ReviewDiff resolves the pushed task branch's diff against its base for
 	// the in-process review fallback, which has no checkout of its own
@@ -60,18 +61,77 @@ type Dispatcher struct {
 }
 
 func New(st store.Store, cfg *config.Config, agent inprocess.Agent) *Dispatcher {
-	return &Dispatcher{
+	d := &Dispatcher{
 		Store: st, Cfg: cfg, Agent: agent, memoryQueue: make(chan queuedTask, 64), durableQueue: st.IsDurable(),
-		PublishIssue:               github.PublishIssue,
-		PublishReview:              github.PublishReview,
-		ViewPullRequest:            github.PullRequestForBranch,
-		RequestMerge:               github.MergePullRequest,
+		WorkspaceForgeTokens:       workspaceForgeTokenStore(st),
 		RequestMergeWithCredential: github.MergePullRequestWithCredential,
-		ListPullRequestFiles:       github.PullRequestFiles,
 		ReviewDiff:                 reviewBranchDiff,
 		ReviewChangedPaths:         ReviewBranchChangedPaths,
 		Now:                        func() time.Time { return time.Now().UTC() },
 	}
+	d.PublishIssue = func(ctx context.Context, publication github.IssuePublication) (github.IssuePublicationResult, error) {
+		forgeCtx, err := d.workspaceForgeContext(ctx)
+		if err != nil {
+			return github.IssuePublicationResult{}, err
+		}
+		return github.PublishIssue(forgeCtx, publication)
+	}
+	d.PublishReview = func(ctx context.Context, publication github.ReviewPublication) (github.ReviewPublicationResult, error) {
+		forgeCtx, err := d.workspaceForgeContext(ctx)
+		if err != nil {
+			return github.ReviewPublicationResult{}, err
+		}
+		return github.PublishReview(forgeCtx, publication)
+	}
+	d.ViewPullRequest = func(ctx context.Context, repo, branch string) (github.PullRequest, error) {
+		forgeCtx, err := d.workspaceForgeContext(ctx)
+		if err != nil {
+			return github.PullRequest{}, err
+		}
+		return github.PullRequestForBranch(forgeCtx, repo, branch)
+	}
+	d.RequestMerge = func(ctx context.Context, repo string, number int) error {
+		forgeCtx, err := d.workspaceForgeContext(ctx)
+		if err != nil {
+			return err
+		}
+		return github.MergePullRequest(forgeCtx, repo, number)
+	}
+	d.ListPullRequestFiles = func(ctx context.Context, repo string, number int) ([]string, error) {
+		forgeCtx, err := d.workspaceForgeContext(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return github.PullRequestFiles(forgeCtx, repo, number)
+	}
+	return d
+}
+
+func workspaceForgeTokenStore(st store.Store) store.WorkspaceForgeTokenStore {
+	tokens, _ := st.(store.WorkspaceForgeTokenStore)
+	return tokens
+}
+
+func (d *Dispatcher) workspaceForgeContext(ctx context.Context) (context.Context, error) {
+	workspaceID, ok := store.WorkspaceFromContext(ctx)
+	if !ok || strings.TrimSpace(workspaceID) == "" {
+		return nil, github.PermissionError(errors.New("workspace forge token cannot be resolved without an explicit workspace"))
+	}
+	if d.WorkspaceForgeTokens == nil {
+		return nil, github.PermissionError(fmt.Errorf("workspace %s forge token is required; add it in workspace settings", workspaceID))
+	}
+	credential, err := d.WorkspaceForgeTokens.GetWorkspaceForgeTokenForUse(ctx, workspaceID)
+	if err != nil || strings.TrimSpace(credential.Token) == "" {
+		if err == nil {
+			err = store.ErrForgeTokenRequired
+		}
+		return nil, github.PermissionError(fmt.Errorf("workspace %s forge token is unavailable; add or replace it in workspace settings: %w", workspaceID, err))
+	}
+	identity := fmt.Sprintf("workspace %s forge token", workspaceID)
+	if credential.ForgeLogin != "" {
+		identity += " for " + credential.ForgeLogin
+	}
+	return github.WithCredential(ctx, credential.Token, identity), nil
 }
 
 // ReviewBranchChangedPaths reads filenames from the same pushed branch/base
@@ -2429,6 +2489,11 @@ func (d *Dispatcher) PollGitHub(ctx context.Context, interval time.Duration) {
 	}
 }
 func (d *Dispatcher) pollOnce(ctx context.Context) {
+	forgeCtx, forgeErr := d.workspaceForgeContext(ctx)
+	if forgeErr != nil {
+		log.Printf("GitHub intake: %v", forgeErr)
+		return
+	}
 	cfg, err := d.currentConfig(ctx)
 	if err != nil {
 		return
@@ -2437,7 +2502,7 @@ func (d *Dispatcher) pollOnce(ctx context.Context) {
 		if repo.GitHub == "" {
 			continue
 		}
-		issues, err := github.ListReadyIssues(ctx, repo.GitHub)
+		issues, err := github.ListReadyIssues(forgeCtx, repo.GitHub)
 		if err != nil {
 			log.Printf("poll %s: %v", repo.GitHub, err)
 			continue
@@ -2460,7 +2525,7 @@ func (d *Dispatcher) pollOnce(ctx context.Context) {
 			if err = d.Store.CreateTask(ctx, task); err != nil {
 				continue
 			}
-			if err = github.MarkIssueDispatched(ctx, repo.GitHub, issue.Number, id); err != nil {
+			if err = github.MarkIssueDispatched(forgeCtx, repo.GitHub, issue.Number, id); err != nil {
 				continue
 			}
 			_, _ = taskops.New(d.Store).Perform(ctx, id, taskops.Command{Kind: core.TaskIntakeFinalize})

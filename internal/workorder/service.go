@@ -43,6 +43,7 @@ type Service struct {
 	Logf                   func(string, ...any)
 	RedactionSecrets       redact.SecretSource
 	ForgeTokens            store.ForgeTokenStore
+	WorkspaceForgeTokens   store.WorkspaceForgeTokenStore
 	consultedMu            sync.Mutex
 	consulted              map[string]struct{}
 }
@@ -484,6 +485,10 @@ func (s *Service) RetryReviewRound(ctx context.Context, taskID, requestID, reaso
 	reviewTarget := s.ReviewTarget
 	if reviewTarget == nil {
 		reviewTarget = github.ReviewTargetForBranch
+		ctx, err = s.workspaceForgeContext(ctx)
+		if err != nil {
+			return store.ReviewRoundRetryResult{}, err
+		}
 	}
 	target, err := reviewTarget(ctx, repo.GitHub, task.Branch)
 	if err != nil {
@@ -831,21 +836,55 @@ func (s *Service) reviewDiffForBranch(ctx context.Context, repo, branch string) 
 	if s.ReviewDiffForBranch != nil {
 		return s.ReviewDiffForBranch(ctx, repo, branch)
 	}
-	return github.DiffForBranch(ctx, repo, branch)
+	forgeCtx, err := s.workspaceForgeContext(ctx)
+	if err != nil {
+		return "", err
+	}
+	return github.DiffForBranch(forgeCtx, repo, branch)
 }
 
 func (s *Service) reviewDiffBetween(ctx context.Context, repo, baseline, head string) (string, error) {
 	if s.ReviewDiffBetween != nil {
 		return s.ReviewDiffBetween(ctx, repo, baseline, head)
 	}
-	return github.DiffBetween(ctx, repo, baseline, head)
+	forgeCtx, err := s.workspaceForgeContext(ctx)
+	if err != nil {
+		return "", err
+	}
+	return github.DiffBetween(forgeCtx, repo, baseline, head)
 }
 
 func (s *Service) reviewPRDescription(ctx context.Context, repo, branch string) (string, error) {
 	if s.ReviewPRDescription != nil {
 		return s.ReviewPRDescription(ctx, repo, branch)
 	}
-	return github.PullRequestDescriptionForBranch(ctx, repo, branch)
+	forgeCtx, err := s.workspaceForgeContext(ctx)
+	if err != nil {
+		return "", err
+	}
+	return github.PullRequestDescriptionForBranch(forgeCtx, repo, branch)
+}
+
+func (s *Service) workspaceForgeContext(ctx context.Context) (context.Context, error) {
+	workspaceID, ok := store.WorkspaceFromContext(ctx)
+	if !ok || strings.TrimSpace(workspaceID) == "" {
+		return nil, github.PermissionError(errors.New("workspace forge token cannot be resolved without an explicit workspace"))
+	}
+	if s.WorkspaceForgeTokens == nil {
+		return nil, github.PermissionError(fmt.Errorf("workspace %s forge token is required; add it in workspace settings", workspaceID))
+	}
+	credential, err := s.WorkspaceForgeTokens.GetWorkspaceForgeTokenForUse(ctx, workspaceID)
+	if err != nil || strings.TrimSpace(credential.Token) == "" {
+		if err == nil {
+			err = store.ErrForgeTokenRequired
+		}
+		return nil, github.PermissionError(fmt.Errorf("workspace %s forge token is unavailable; add or replace it in workspace settings: %w", workspaceID, err))
+	}
+	identity := fmt.Sprintf("workspace %s forge token", workspaceID)
+	if credential.ForgeLogin != "" {
+		identity += " for " + credential.ForgeLogin
+	}
+	return github.WithCredential(ctx, credential.Token, identity), nil
 }
 
 func (s *Service) planRevisionContextForOrder(ctx context.Context, order core.WorkOrder, events []core.Event) (*PlanRevisionContext, string, error) {
@@ -1362,6 +1401,10 @@ func (s *Service) SubmitForReview(ctx context.Context, id, session string) (map[
 		reviewTarget := s.ReviewTarget
 		if reviewTarget == nil {
 			reviewTarget = github.ReviewTargetForBranch
+			ctx, err = s.workspaceForgeContext(ctx)
+			if err != nil {
+				return nil, err
+			}
 		}
 		target, targetErr := reviewTarget(ctx, repo.GitHub, task.Branch)
 		if targetErr != nil {

@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"os/exec"
 	"sort"
 	"strconv"
 	"strings"
@@ -94,7 +93,7 @@ func RecordedLineage(task core.Task, events []core.Event, repository, githubSlug
 
 func (s GitHubSource) Observations(ctx context.Context, since time.Time) ([]Observation, error) {
 	if s.Run == nil {
-		s.Run = runGH
+		return nil, githubtrigger.PermissionError(fmt.Errorf("workspace forge token is required for monitor reads; add it in workspace settings"))
 	}
 	if strings.TrimSpace(s.Repository) == "" || strings.TrimSpace(s.GitHubSlug) == "" {
 		return nil, fmt.Errorf("monitor GitHub repository name and slug are required")
@@ -299,20 +298,12 @@ func (s GitHubSource) checks(ctx context.Context, sha string) (githubCheckRuns, 
 	return checks, nil
 }
 
-func runGH(ctx context.Context, args ...string) ([]byte, error) {
-	output, err := exec.CommandContext(ctx, "gh", args...).CombinedOutput()
-	if err != nil {
-		return nil, fmt.Errorf("gh %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(output)))
-	}
-	return output, nil
-}
-
 // FetchGitHubHints reads the advisory file from the exact observed revision.
 // A missing file means the repository supplies no hints; every other forge or
 // validation failure is operator-visible and fails closed.
 func FetchGitHubHints(ctx context.Context, slug, revision string, run CommandRunner) (*HintContext, error) {
 	if run == nil {
-		run = runGH
+		return nil, githubtrigger.PermissionError(fmt.Errorf("workspace forge token is required for monitor hints; add it in workspace settings"))
 	}
 	raw, err := run(ctx, "api", "--method", "GET",
 		"repos/"+slug+"/contents/.conveyor/hints.yaml", "-f", "ref="+revision)

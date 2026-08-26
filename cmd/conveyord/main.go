@@ -191,6 +191,10 @@ func main() {
 		workOrders.ForgeTokens = tokens
 		d.ForgeTokens = tokens
 	}
+	if tokens, ok := st.(store.WorkspaceForgeTokenStore); ok {
+		workOrders.WorkspaceForgeTokens = tokens
+		d.WorkspaceForgeTokens = tokens
+	}
 	if secrets, ok := st.(store.ForgeTokenStore); ok {
 		workOrders.RedactionSecrets = secrets
 	}
@@ -377,8 +381,25 @@ func main() {
 								"monitored repository requires a GitHub slug", time.Now().Add(current.Monitor.PollInterval))
 							continue
 						}
+						workspaceTokens, ok := st.(store.WorkspaceForgeTokenStore)
+						if !ok {
+							_ = srv.Monitor.Store.RecordMonitorFailure(workspaceCtx, string(githubtrigger.ForgePermission),
+								"workspace "+workspaceID+" forge token is required; add it in workspace settings", time.Now().Add(current.Monitor.PollInterval))
+							continue
+						}
+						credential, tokenErr := workspaceTokens.GetWorkspaceForgeTokenForUse(workspaceCtx, workspaceID)
+						if tokenErr != nil || strings.TrimSpace(credential.Token) == "" {
+							_ = srv.Monitor.Store.RecordMonitorFailure(workspaceCtx, string(githubtrigger.ForgePermission),
+								"workspace "+workspaceID+" forge token is unavailable; add or replace it in workspace settings", time.Now().Add(current.Monitor.PollInterval))
+							continue
+						}
+						identity := "workspace " + workspaceID + " forge token"
+						if credential.ForgeLogin != "" {
+							identity += " for " + credential.ForgeLogin
+						}
+						runGitHub := githubtrigger.RESTRunner(credential.Token, identity)
 						source := monitor.GitHubSource{
-							WorkspaceID: workspaceID, Repository: repositoryName, GitHubSlug: repository.GitHub,
+							WorkspaceID: workspaceID, Repository: repositoryName, GitHubSlug: repository.GitHub, Run: runGitHub,
 							KnownLineage: func(taskID string, pullRequestNumber int, headSHA string) bool {
 								task, taskErr := st.GetTask(workspaceCtx, taskID)
 								if taskErr != nil || task.Repo != repositoryName ||
@@ -398,7 +419,7 @@ func main() {
 							return srv.Monitor.Store.AuditMonitor(ctx, "monitor.suppressed", payload)
 						}
 						source.LoadHints = func(ctx context.Context, revision string) (*monitor.HintContext, error) {
-							return monitor.FetchGitHubHints(ctx, repository.GitHub, revision, nil)
+							return monitor.FetchGitHubHints(ctx, repository.GitHub, revision, runGitHub)
 						}
 						poller := monitor.Poller{
 							Service: srv.Monitor, Source: source, StartupWindow: current.Monitor.StartupWindow,
