@@ -515,6 +515,7 @@ export interface MonitorObservation {
   commit_sha?: string
   task_id?: string
   task_outcome?: 'created' | 'reused'
+  last_error?: string
   state: string
   deduplicated_count: number
   created_at: string
@@ -1100,6 +1101,21 @@ export interface Decision {
   dismissed_by?: string
   dismissed_at?: string
   superseded_by?: string
+  sweep: {
+    clean: boolean
+    entries: DecisionSupersessionSweepEntry[]
+  }
   workspace: string
   created_at: string
+}
+export interface DecisionSupersessionSweepEntry {
+  decision_id: string
+  superseded_decision_id: string
+  document_id: string
+  document_tier: 'requirement' | 'system_design' | 'reference_document'
+  status: 'open' | 'dismissed' | 'auto_cleared'
+  detected_by: string
+  detected_at: string
+  resolved_by?: string
+  resolved_at?: string
 }
