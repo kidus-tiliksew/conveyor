@@ -32,14 +32,15 @@ export CONVEYOR_PUBLIC_URL='https://factory.example.com'
   in the dashboard for you to deliver by hand, which is fine for a small
   team.
 
-## Host: the GitHub account
+## Workspace and user GitHub accounts
 
-Authenticate the host's `gh` with a dedicated machine account, not your
-personal one. The host credential is used for read-only observation (the
-monitor, issue polling) and as a fallback author class; GitHub records those
-actions under whatever account the host uses. Individual pushes, PRs, and
-merges are made with each user's own GitHub token, so the history still
-attributes real work to real people.
+Store a workspace GitHub token in Workspace settings for issue and review
+publication. Store each contributor's token in their account settings so task
+pull requests use the executing user's identity. A gated merge uses the stored
+token of the operator who approved it; if that token is missing, Conveyor keeps
+the approval and waits until the operator adds one. The server does not fall
+back to the host identity. Forge-write events record `workspace`,
+`executing_user`, or `approving_operator` without recording token values.
 
 ## Host: invite the team
 
