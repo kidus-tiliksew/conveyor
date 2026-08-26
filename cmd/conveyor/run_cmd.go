@@ -80,6 +80,7 @@ func runTaskWithPresentationAndSetup(ctx context.Context, c *client, taskID, con
 	var setup localExecutionSetup
 	setupLoaded := false
 	var lastStage core.Stage
+	var lastRepository config.Repo
 	// One persistent program owns the terminal for the whole attached run;
 	// every attached-path print below must route through it while it lives.
 	var app *runTUIController
@@ -109,6 +110,24 @@ func runTaskWithPresentationAndSetup(ctx context.Context, c *client, taskID, con
 			return err
 		}
 		if item == nil || item.Order.ID == "" {
+			if item != nil && (item.Task.State == core.TaskMerged || item.Task.State == core.TaskClosed || item.Task.State == core.TaskParked) {
+				if setupLoaded && (item.Task.State == core.TaskMerged || item.Task.State == core.TaskClosed) {
+					cleanupItem := *item
+					if strings.TrimSpace(cleanupItem.Repository.URL) == "" {
+						cleanupItem.Repository = lastRepository
+					}
+					attempt, cleanupErr := attemptTerminalWorktreeCleanup(ctx, c, c.token, cleanupItem, setup.Config)
+					if cleanupErr != nil {
+						_, _ = fmt.Fprintf(output, "worktree cleanup task %s: %v\n", taskID, cleanupErr)
+					} else {
+						for _, warning := range attempt.Cleanup.ProcessWarnings {
+							_, _ = fmt.Fprintf(output, "worktree cleanup task %s: warning: %s\n", taskID, warning)
+						}
+					}
+				}
+				stopApp()
+				return printFinalRunSummaryStyled(output, item.Task, runStages, outputTerminal)
+			}
 			if !attached {
 				if lastStage == core.StageSpec {
 					_, err = fmt.Fprintf(output, "task %s reached the pending spec approval gate; operator approval is required\n", taskID)
@@ -121,10 +140,6 @@ func runTaskWithPresentationAndSetup(ctx context.Context, c *client, taskID, con
 				stopApp()
 				_, err = fmt.Fprintf(output, "task %s has no claimable spec, implement, or review order\n", taskID)
 				return err
-			}
-			if item.Task.State == core.TaskMerged || item.Task.State == core.TaskClosed || item.Task.State == core.TaskParked {
-				stopApp()
-				return printFinalRunSummaryStyled(output, item.Task, runStages, outputTerminal)
 			}
 			if item.Gate == nil && (!interactiveTUI || len(item.PendingProposals) == 0) {
 				if interactiveTUI {
@@ -212,6 +227,7 @@ func runTaskWithPresentationAndSetup(ctx context.Context, c *client, taskID, con
 			}
 			return localExecutionSetupRemedy(configPath, selectErr)
 		}
+		lastRepository = selected.Repository
 		stageTimeout := local.Routing.Stages[string(selected.Order.Stage)].TimeoutText
 		if !interactiveTUI {
 			if err = presentRunOrderStyled(output, selected, stageTimeout, outputTerminal); err != nil {

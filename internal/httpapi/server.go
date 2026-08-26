@@ -160,6 +160,8 @@ func (s *Server) Handler() http.Handler {
 		r.With(s.requireWorkerAuth).Post("/worker/work-orders/{id}/renew", s.renewWorkerOrder)
 		r.With(s.requireWorkerAuth).Post("/worker/work-orders/{id}/attempt-checkpoint", s.checkpointWorkerOrderAttempt)
 		r.With(s.requireWorkerAuth).Post("/worker/work-orders/{id}/release", s.releaseWorkerOrder)
+		r.With(s.requireWorkerAuth).Get("/worker/tasks/{id}/worktree-cleanup", s.getWorktreeCleanupStatus)
+		r.With(s.requireWorkerAuth).Post("/worker/tasks/{id}/worktree-cleanup", s.recordWorktreeCleanup)
 		// req-review-gates-evidence REQ-3/AC-3.1; DEC-29: this is an
 		// exact-claim exception, not an agent-reachable role capability.
 		r.With(s.requireWorkerAuth).Post("/worker/work-orders/{id}/verification-evidence", s.uploadWorkerVerificationEvidence)
@@ -214,6 +216,8 @@ func (s *Server) Handler() http.Handler {
 			r.With(s.requireTaskRunAuth, s.requireWorkspaceCapability(core.CapabilityClaimWork)).Get("/tasks/{id}/run-orders/{order_id}/reconcile", s.reconcileTaskRunOrder)
 			r.With(s.requireTaskRunAuth, s.requireWorkspaceCapability(core.CapabilityClaimWork)).Post("/tasks/{id}/run-orders/{order_id}/attempt-checkpoint", s.checkpointTaskRunOrderAttempt)
 			r.With(s.requireTaskRunAuth, s.requireWorkspaceCapability(core.CapabilityClaimWork)).Post("/tasks/{id}/run-orders/{order_id}/release", s.releaseTaskRunOrder)
+			r.With(s.requireTaskRunAuth, s.requireWorkspaceCapability(core.CapabilityClaimWork)).Get("/tasks/{id}/worktree-cleanup", s.getWorktreeCleanupStatus)
+			r.With(s.requireTaskRunAuth, s.requireWorkspaceCapability(core.CapabilityClaimWork)).Post("/tasks/{id}/worktree-cleanup", s.recordWorktreeCleanup)
 			// Request-changes is the human merge-gate action, not part of the
 			// bearer-only run-order automation plane. Dashboard sessions retain
 			// this route through the outer CSRF proof and capability boundary.
