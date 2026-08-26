@@ -443,6 +443,15 @@ test('System Design links decision supersession and dismisses an unclean sweep s
             detected_by: 'decision.confirmed',
             detected_at: '2026-08-26T10:00:00Z',
           },
+          {
+            decision_id: 'DEC-2',
+            superseded_decision_id: 'DEC-1',
+            document_id: 'product-overview',
+            document_tier: 'reference_document',
+            status: 'dismissed',
+            detected_by: 'decision.confirmed',
+            detected_at: '2026-08-26T10:00:00Z',
+          },
         ],
       },
       workspace: 'demo',
@@ -469,13 +478,17 @@ test('System Design links decision supersession and dismisses an unclean sweep s
 
   await page.goto('/system-design?document=design-dispatch#decision-dec-2')
   const register = page.getByRole('region', { name: 'Settled decisions' })
-  await expect(register.getByRole('link', { name: 'DEC-2' })).toHaveAttribute('href', '/system-design#decision-dec-2')
-  await expect(register.getByRole('link', { name: 'DEC-1' })).toHaveAttribute('href', '/system-design#decision-dec-1')
+  await expect(register.getByRole('link', { name: 'DEC-2' })).toHaveAttribute('href', '#decision-dec-2')
+  await expect(register.getByRole('link', { name: 'DEC-1' })).toHaveAttribute('href', '#decision-dec-1')
   await register.getByText('documents still citing DEC-1').click()
   const checklist = register.getByRole('list', { name: 'Documents still citing DEC-1' })
   await expect(checklist.getByRole('link', { name: 'req-stale' })).toHaveAttribute(
     'href',
     '/requirements?requirement=req-stale',
+  )
+  await expect(checklist.getByRole('link', { name: 'product-overview' })).toHaveAttribute(
+    'href',
+    '/requirements#reference-product-overview-v0',
   )
   await expect(checklist).toContainText('Requirement')
   await expect(checklist).toContainText('open')

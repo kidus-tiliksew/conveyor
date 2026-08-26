@@ -616,13 +616,9 @@ function DesignCanvas({
 
 function DecisionLink({ id }: { id: string }) {
   return (
-    <Link
-      to="/system-design"
-      hash={`decision-${id.toLowerCase()}`}
-      className="font-medium text-primary hover:underline"
-    >
+    <a href={`#decision-${id.toLowerCase()}`} className="font-medium text-primary hover:underline">
       {id}
-    </Link>
+    </a>
   )
 }
 
@@ -641,7 +637,7 @@ function SweepDocumentLink({ entry }: { entry: DecisionSupersessionSweepEntry })
       </Link>
     )
   return (
-    <Link to="/requirements" className={className}>
+    <Link to="/requirements" hash={`reference-${entry.document_id}-v0`} className={className}>
       {entry.document_id}
     </Link>
   )
