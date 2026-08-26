@@ -98,7 +98,7 @@ func TestRequestChangesBouncesThroughSharedContextAndAttention(t *testing.T) {
 		t.Fatalf("interventions=%+v err=%v", interventions, err)
 	}
 	markers, err := st.ListActivityMarkers(ctx)
-	if err != nil || len(markers) != 1 || !markers[0].UserChangesRequested || !store.TaskNeedsAttention(updated, markers[0], false) {
+	if err != nil || len(markers) != 1 || !markers[0].UserChangesRequested || !store.TaskNeedsAttention(updated, markers[0], false, false) {
 		t.Fatalf("markers=%+v err=%v", markers, err)
 	}
 	bundle, err := pack.Load("../../pack")

@@ -1424,6 +1424,95 @@ func TestPendingProposalsProjectionAttentionAndTaskWarning(t *testing.T) {
 	}
 }
 
+func TestTaskContextProposalSignalsAttentionWithoutPendingAuthority(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	task := core.Task{ID: "context-attention", Workspace: "demo", Repo: "conveyor", State: core.TaskRunning, CreatedAt: time.Now().UTC()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	requirement, version, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-context-attention", Title: "Context attention"}, core.RequirementVersion{
+		Content: "Context attention", Origin: core.RequirementOriginOperator,
+		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Surface proposed task context on the origin task."}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmRequirementVersion(ctx, requirement.ID, version.Version); err != nil {
+		t.Fatal(err)
+	}
+	if _, suppressed, proposeErr := st.ProposeTaskContext(ctx, core.TaskContextProposalInput{
+		TaskID: task.ID, TargetKind: core.TaskContextProposalRequirement, TargetID: requirement.ID,
+		Source: core.TaskContextProposalTriage, Justification: "This requirement governs the task outcome.",
+	}); proposeErr != nil || suppressed {
+		t.Fatalf("suppressed=%t err=%v", suppressed, proposeErr)
+	}
+
+	server := NewServer(st)
+	server.BearerToken, server.Workspace = "operator-token", "demo"
+	request := func(path string) *httptest.ResponseRecorder {
+		t.Helper()
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, path+"?workspace_id=demo", nil)))
+		return response
+	}
+
+	pending := request("/v1/pending-proposals")
+	var projection pendingProposalsResponse
+	if pending.Code != http.StatusOK || json.Unmarshal(pending.Body.Bytes(), &projection) != nil || len(projection.Items) != 0 ||
+		projection.Attention.TaskCount != 1 || projection.Attention.PendingProposalCount != 0 || projection.Attention.Total != 1 {
+		t.Fatalf("pending status=%d projection=%+v body=%s", pending.Code, projection, pending.Body.String())
+	}
+	detail := request("/v1/tasks/" + task.ID + "/activity")
+	if detail.Code != http.StatusOK || !strings.Contains(detail.Body.String(), `"needs_attention":true`) ||
+		!strings.Contains(detail.Body.String(), `"pending_authority":false`) ||
+		!strings.Contains(detail.Body.String(), `"target_id":"`+requirement.ID+`"`) {
+		t.Fatalf("detail status=%d body=%s", detail.Code, detail.Body.String())
+	}
+	activity := request("/v1/activity")
+	if activity.Code != http.StatusOK || !strings.Contains(activity.Body.String(), `"id":"`+task.ID+`"`) ||
+		!strings.Contains(activity.Body.String(), `"needs_attention":true`) || !strings.Contains(activity.Body.String(), `"pending_authority":false`) {
+		t.Fatalf("activity status=%d body=%s", activity.Code, activity.Body.String())
+	}
+	operations := request("/v1/task-operations")
+	if operations.Code != http.StatusOK || !strings.Contains(operations.Body.String(), `"id":"`+task.ID+`"`) ||
+		!strings.Contains(operations.Body.String(), `"needs_attention":true`) {
+		t.Fatalf("operations status=%d body=%s", operations.Code, operations.Body.String())
+	}
+	reviews := request("/v1/reviews")
+	if reviews.Code != http.StatusOK || strings.Contains(reviews.Body.String(), `"id":"`+task.ID+`"`) {
+		t.Fatalf("reviews status=%d body=%s", reviews.Code, reviews.Body.String())
+	}
+	jobID := task.ID + "-implement-1"
+	if err = st.CreateJob(ctx, core.Job{ID: jobID, TaskID: task.ID, Stage: core.StageImplement, State: core.JobRunning}); err != nil {
+		t.Fatal(err)
+	}
+	order := core.WorkOrder{ID: jobID, TaskID: task.ID, JobID: jobID, Stage: core.StageImplement, State: core.WorkOrderQueued}
+	if err = storetest.For(st).CreateWorkOrder(ctx, order); err != nil {
+		t.Fatal(err)
+	}
+	claimed, claimErr := storetest.For(st).ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{SessionID: "context-attention-session", ClientToken: "token", WorkerID: "worker", Lease: time.Minute})
+	if claimErr != nil {
+		t.Fatal(claimErr)
+	}
+	claimed.State = core.WorkOrderSubmitted
+	if err = storetest.For(st).UpdateWorkOrder(ctx, claimed, core.WorkOrderCmdSubmitForReview); err != nil {
+		t.Fatal(err)
+	}
+	detail = request("/v1/tasks/" + task.ID + "/activity")
+	if detail.Code != http.StatusOK || !strings.Contains(detail.Body.String(), `"pending_authority":true`) {
+		t.Fatalf("submitted detail status=%d body=%s", detail.Code, detail.Body.String())
+	}
+
+	if _, err = st.DismissTaskContextProposal(ctx, task.ID, core.TaskContextProposalRequirement, requirement.ID); err != nil {
+		t.Fatal(err)
+	}
+	pending = request("/v1/pending-proposals")
+	if json.Unmarshal(pending.Body.Bytes(), &projection) != nil || projection.Attention.TaskCount != 0 || projection.Attention.Total != 0 {
+		t.Fatalf("resolved projection=%+v body=%s", projection, pending.Body.String())
+	}
+}
+
 func TestActivityIncludesAllTasksWhileReviewsStayFiltered(t *testing.T) {
 	st := store.NewMemory()
 	for _, task := range []core.Task{

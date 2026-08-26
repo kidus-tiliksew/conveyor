@@ -82,3 +82,13 @@ func pendingAuthorityByTask(orders []core.WorkOrder, proposals []core.PendingPro
 	}
 	return result
 }
+
+func pendingTaskContextByTask(proposals []core.PendingProposal) map[string]bool {
+	result := make(map[string]bool)
+	for _, proposal := range proposals {
+		if proposal.Tier == "task_context" && proposal.OriginType == "task" && proposal.OriginID != "" {
+			result[proposal.OriginID] = true
+		}
+	}
+	return result
+}

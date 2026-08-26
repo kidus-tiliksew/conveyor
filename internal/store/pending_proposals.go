@@ -116,7 +116,7 @@ func (m *memory) PendingProposalsProjection(ctx context.Context) (PendingProposa
 		if core.TaskTerminal(task.State) {
 			marker.Stalled = nil
 		}
-		if TaskNeedsAttention(task, marker, pendingAuthority[task.ID] || contextAttention[task.ID]) {
+		if TaskNeedsAttention(task, marker, pendingAuthority[task.ID], contextAttention[task.ID]) {
 			count++
 		}
 	}

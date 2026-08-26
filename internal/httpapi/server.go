@@ -1411,6 +1411,7 @@ func (s *Server) writeActivityItems(w http.ResponseWriter, r *http.Request, task
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
+	pendingContext := pendingTaskContextByTask(proposals)
 	items := make([]activityItem, 0, len(tasks))
 	fullItems := make([]activityItem, 0, len(tasks))
 	for _, task := range tasks {
@@ -1433,7 +1434,7 @@ func (s *Server) writeActivityItems(w http.ResponseWriter, r *http.Request, task
 		// changing any lifecycle gate (REQ-2 AC-2.2; REQ-3; design-web-dashboard).
 		item := activityItem{
 			Task: summarizeActivityTask(task), LatestStage: marker.LatestStage, LastEventAt: marker.LastEventAt,
-			NeedsAttention:            needsAttention(task, marker, pendingAuthority[task.ID]),
+			NeedsAttention:            needsAttention(task, marker, pendingAuthority[task.ID], pendingContext[task.ID]),
 			PendingAuthority:          pendingAuthority[task.ID],
 			ForgeFailure:              marker.ForgeFailure,
 			ReviewDiagnostics:         marker.ReviewDiagnostics,
@@ -1505,8 +1506,8 @@ func writeConditionalJSON(w http.ResponseWriter, r *http.Request, v, etagValue a
 // needsAttention is the one derivation the stage-grouped board and the
 // list-first Tasks view share, so the two surfaces cannot disagree about which
 // work is waiting on a human (design-web-dashboard).
-func needsAttention(task core.Task, marker store.ActivityMarker, pendingAuthority bool) bool {
-	return store.TaskNeedsAttention(task, marker, pendingAuthority)
+func needsAttention(task core.Task, marker store.ActivityMarker, pendingAuthority, pendingContext bool) bool {
+	return store.TaskNeedsAttention(task, marker, pendingAuthority, pendingContext)
 }
 
 // Plan status is the four durable outcomes AC-1.4 names. Each is read off the
@@ -1627,6 +1628,7 @@ func (s *Server) listTaskOperations(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
+	pendingContext := pendingTaskContextByTask(proposals)
 	// Blocked stays a derived predicate owned by the dependency substrate
 	// (design-task-lifecycle); the view reads it, and reads the unsatisfiable edges the
 	// task record itself does not carry.
@@ -1658,7 +1660,7 @@ func (s *Server) listTaskOperations(w http.ResponseWriter, r *http.Request) {
 			LatestStage:          marker.LatestStage,
 			LastEventAt:          marker.LastEventAt,
 			Stalled:              taskStalledSummaryFor(marker.Stalled),
-			NeedsAttention:       needsAttention(task, marker, pendingAuthority[task.ID]),
+			NeedsAttention:       needsAttention(task, marker, pendingAuthority[task.ID], pendingContext[task.ID]),
 			UnsatisfiableTaskIDs: blockers[task.ID].UnsatisfiableTaskIDs,
 			ChildRollup:          taskChildRollupFor(task.Children),
 			Plan:                 taskPlanStatusFor(latest, hasPlan, events),
@@ -2016,7 +2018,7 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, reviewItem{
 		Task: task, Jobs: jobs, Events: events, Interventions: interventions,
 		CheckoutCommand: checkoutCommand, CheckoutAvailable: checkoutAvailable, CheckoutGuidance: checkoutGuidance,
-		NeedsAttention:            task.State == core.TaskAwaiting || task.State == core.TaskParked || store.LatestForgeFailure(events) != nil || store.ReviewRecoveryNeeded(workOrders, events) != nil || store.InterruptedReviewRecoveryNeeded(task, workOrders, events) != nil || stalled != nil || store.UserRequestChangesPending(events) || pendingAuthority,
+		NeedsAttention:            task.State == core.TaskAwaiting || task.State == core.TaskParked || store.LatestForgeFailure(events) != nil || store.ReviewRecoveryNeeded(workOrders, events) != nil || store.InterruptedReviewRecoveryNeeded(task, workOrders, events) != nil || stalled != nil || store.UserRequestChangesPending(events) || pendingAuthority || len(task.Context.Proposals) > 0,
 		AtMergeGate:               store.AtMergeGate(task, events),
 		PendingAuthority:          pendingAuthority,
 		ForgeFailure:              store.LatestForgeFailure(events),

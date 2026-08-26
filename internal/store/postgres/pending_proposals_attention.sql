@@ -22,6 +22,13 @@ WITH pending_origin_tasks AS (
 	WHERE proposal.workspace_id = $1 AND proposal.state = 'proposed'
 	  AND task.state NOT IN ('merged', 'closed')
 ),
+open_context_tasks AS (
+	SELECT DISTINCT proposal.task_id
+	FROM task_context_proposals proposal
+	JOIN tasks task ON task.workspace_id = proposal.workspace_id AND task.id = proposal.task_id
+	WHERE proposal.workspace_id = $1 AND proposal.state = 'proposed'
+	  AND task.state NOT IN ('merged', 'closed')
+),
 superseded_reviews AS (
     SELECT DISTINCT jsonb_array_elements_text(
         COALESCE(e.payload_json #> '{review_transition,superseded_work_order_ids}', '[]'::jsonb)
@@ -169,6 +176,7 @@ attention_tasks AS (
     UNION SELECT task_id FROM interrupted_review_tasks
     UNION SELECT task_id FROM stalled_tasks
     UNION SELECT task_id FROM pending_authority_tasks
+    UNION SELECT task_id FROM open_context_tasks
     UNION SELECT task_id FROM user_changes_requested_tasks
 )
 SELECT count(*)::bigint
