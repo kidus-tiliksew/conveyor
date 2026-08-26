@@ -1890,6 +1890,12 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
+	task.Context.Proposals, err = s.Store.ListTaskContextProposals(r.Context(), id, core.TaskContextProposalProposed)
+	if err != nil {
+		log.Printf("handle API request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
 	interventions, err := s.Store.ListInterventions(r.Context(), id)
 	if err != nil {
 		log.Printf("handle API request: %v", err)

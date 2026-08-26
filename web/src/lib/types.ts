@@ -648,12 +648,10 @@ export interface ActivityItem {
 export interface PendingProposal {
   id: string
   title: string
-  tier: 'requirement' | 'system_design' | 'decision' | 'task_context'
+  tier: 'requirement' | 'system_design' | 'decision'
   version?: number
   origin_type: 'task' | 'session' | 'drift' | 'operator'
   origin_id?: string
-  target_kind?: 'requirement' | 'system_design'
-  justification?: string
   proposed_at: string
   age_seconds: number
 }

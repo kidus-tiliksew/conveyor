@@ -35,6 +35,9 @@ func (s *Server) listPendingProposals(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().UTC()
 	items := make([]pendingProposalItem, 0, len(projection.Items))
 	for _, proposal := range projection.Items {
+		if proposal.Tier == "task_context" {
+			continue
+		}
 		age := now.Sub(proposal.ProposedAt)
 		if age < 0 {
 			age = 0

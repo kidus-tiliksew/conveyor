@@ -98,6 +98,7 @@ func (m *memory) PendingProposalsProjection(ctx context.Context) (PendingProposa
 		return PendingProposalsProjection{}, err
 	}
 	pendingAuthority := pendingAuthorityTaskIDs(orders, proposals)
+	contextAttention := pendingTaskContextIDs(proposals)
 	byTask := make(map[string]ActivityMarker, len(markers))
 	for _, marker := range markers {
 		byTask[marker.TaskID] = marker
@@ -115,11 +116,21 @@ func (m *memory) PendingProposalsProjection(ctx context.Context) (PendingProposa
 		if core.TaskTerminal(task.State) {
 			marker.Stalled = nil
 		}
-		if TaskNeedsAttention(task, marker, pendingAuthority[task.ID]) {
+		if TaskNeedsAttention(task, marker, pendingAuthority[task.ID] || contextAttention[task.ID]) {
 			count++
 		}
 	}
 	return PendingProposalsProjection{Items: proposals, TaskCount: count}, nil
+}
+
+func pendingTaskContextIDs(proposals []core.PendingProposal) map[string]bool {
+	result := make(map[string]bool)
+	for _, proposal := range proposals {
+		if proposal.Tier == "task_context" && proposal.OriginType == "task" && proposal.OriginID != "" {
+			result[proposal.OriginID] = true
+		}
+	}
+	return result
 }
 
 func pendingAuthorityTaskIDs(orders []core.WorkOrder, proposals []core.PendingProposal) map[string]bool {
