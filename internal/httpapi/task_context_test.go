@@ -131,8 +131,15 @@ func TestTaskContextProposalRESTAndTaskProjection(t *testing.T) {
 	if detail.Code != http.StatusOK || !strings.Contains(detail.Body.String(), `"justification":"REQ-1 directly governs`) {
 		t.Fatalf("detail status=%d body=%s", detail.Code, detail.Body.String())
 	}
+	activity := request(http.MethodGet, "/v1/tasks/"+task.ID+"/activity")
+	if activity.Code != http.StatusOK || !strings.Contains(activity.Body.String(), `"target_id":"req-rest-proposal"`) ||
+		!strings.Contains(activity.Body.String(), `"target_id":"design-rest-proposal"`) ||
+		!strings.Contains(activity.Body.String(), `"justification":"REQ-1 directly governs`) {
+		t.Fatalf("activity status=%d body=%s", activity.Code, activity.Body.String())
+	}
 	pending := request(http.MethodGet, "/v1/pending-proposals")
-	if pending.Code != http.StatusOK || !strings.Contains(pending.Body.String(), `"tier":"task_context"`) || !strings.Contains(pending.Body.String(), `"origin_id":"rest-proposal-task"`) {
+	if pending.Code != http.StatusOK || strings.Contains(pending.Body.String(), `"tier":"task_context"`) ||
+		!strings.Contains(pending.Body.String(), `"pending_proposal_count":0`) || !strings.Contains(pending.Body.String(), `"task_count":1`) {
 		t.Fatalf("pending status=%d body=%s", pending.Code, pending.Body.String())
 	}
 	unauthorizedRequest := httptest.NewRequest(http.MethodPost, "/v1/tasks/"+task.ID+"/context/proposals/requirement/"+requirement.ID+"/confirm", nil)

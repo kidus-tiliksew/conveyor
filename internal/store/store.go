@@ -608,10 +608,10 @@ type PendingProposalsProjection struct {
 // TaskNeedsAttention is the shared operator-attention truth table. Keeping it
 // at the store boundary lets the memory projection match the HTTP activity
 // surfaces while PostgreSQL computes the same predicates from narrow columns.
-func TaskNeedsAttention(task core.Task, marker ActivityMarker, pendingAuthority bool) bool {
+func TaskNeedsAttention(task core.Task, marker ActivityMarker, pendingAuthority, pendingContext bool) bool {
 	return task.State == core.TaskAwaiting || task.State == core.TaskParked ||
 		marker.ForgeFailure != nil || marker.ReviewRecovery != nil ||
-		marker.InterruptedReviewRecovery != nil || marker.Stalled != nil || pendingAuthority || marker.UserChangesRequested
+		marker.InterruptedReviewRecovery != nil || marker.Stalled != nil || pendingAuthority || pendingContext || marker.UserChangesRequested
 }
 
 // TaskFilter is the one predicate set the Tasks list and the Board both send
@@ -5070,12 +5070,13 @@ func (m *memory) ListCallerAttentionTaskPage(ctx context.Context, query CallerAt
 		markerByTask[marker.TaskID] = marker
 	}
 	pendingAuthority := pendingAuthorityTaskIDs(orders, proposals)
+	pendingContext := pendingTaskContextIDs(proposals)
 	attention := make([]core.Task, 0, len(tasks))
 	for _, task := range tasks {
 		if core.TaskTerminal(task.State) || core.BlueprintAnchor(task) {
 			continue
 		}
-		if TaskNeedsAttention(task, markerByTask[task.ID], pendingAuthority[task.ID]) {
+		if TaskNeedsAttention(task, markerByTask[task.ID], pendingAuthority[task.ID], pendingContext[task.ID]) {
 			attention = append(attention, task)
 		}
 	}

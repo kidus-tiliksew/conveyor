@@ -10,7 +10,6 @@ import {
   fetchRequirement,
   fetchSystemDesign,
   resolveDecision,
-  resolveTaskContextProposal,
 } from '../lib/api'
 import { errorMessage } from '../lib/errors'
 import type { PendingProposal } from '../lib/types'
@@ -19,24 +18,16 @@ const tierLabels: Record<PendingProposal['tier'], string> = {
   requirement: 'Requirement',
   system_design: 'System Design',
   decision: 'Decision',
-  task_context: 'Suggested context',
 }
 
 export function PendingProposalsPage() {
   const canConfirmDocuments = useWorkspaceCapability('confirm_documents')
-  const canOperateGates = useWorkspaceCapability('operate_gates')
   const { workspace } = useWorkspaceSelection()
   const search = useSearch({ from: '/pending-proposals' })
   const client = useQueryClient()
   const proposals = usePendingProposals()
   const resolve = useMutation({
     mutationFn: async ({ proposal, action }: { proposal: PendingProposal; action: 'confirm' | 'dismiss' }) => {
-      if (proposal.tier === 'task_context') {
-        if (proposal.origin_type !== 'task' || !proposal.origin_id || !proposal.target_kind) {
-          throw new Error('This context suggestion is missing its task or document kind.')
-        }
-        return resolveTaskContextProposal(proposal.origin_id, proposal.target_kind, proposal.id, action)
-      }
       if (proposal.tier === 'decision') return resolveDecision(proposal.id, action)
       if (action === 'dismiss') throw new Error('This document tier is resolved by choosing the version to confirm.')
       if (proposal.version == null) throw new Error('The proposal did not include a version.')
@@ -59,6 +50,8 @@ export function PendingProposalsPage() {
     },
   })
   const items = (proposals.data?.items ?? []).filter((proposal) => {
+    if (proposal.tier !== 'requirement' && proposal.tier !== 'system_design' && proposal.tier !== 'decision')
+      return false
     if (search.task && (proposal.origin_type !== 'task' || proposal.origin_id !== search.task)) return false
     if (search.document && (proposal.id !== search.document || proposal.tier !== search.tier)) return false
     return true
@@ -70,9 +63,7 @@ export function PendingProposalsPage() {
         <header className="flex flex-wrap items-start justify-between gap-3 border-b border-border pb-5">
           <div>
             <h1 className="text-xl font-semibold tracking-tight">Pending proposals</h1>
-            <p className="mt-1 text-sm text-muted">
-              Document updates and suggested context waiting for an operator across this workspace.
-            </p>
+            <p className="mt-1 text-sm text-muted">Document updates waiting for an operator across this workspace.</p>
           </div>
           <Badge variant={items.length > 0 ? 'attention' : 'positive'}>
             {items.length} {items.length === 1 ? 'proposal' : 'proposals'}
@@ -106,7 +97,7 @@ export function PendingProposalsPage() {
         )}
         {!proposals.isLoading && !proposals.error && items.length === 0 && (
           <p className="mt-8 rounded-lg border border-border bg-card p-6 text-sm text-muted">
-            No document or context decisions are waiting for you.
+            No document decisions are waiting for you.
           </p>
         )}
         {items.length > 0 && (
@@ -117,16 +108,8 @@ export function PendingProposalsPage() {
               const sameDocumentCount = (proposals.data?.items ?? []).filter(
                 (item) => item.tier === proposal.tier && item.id === proposal.id,
               ).length
-              const taskContextActionable =
-                proposal.tier === 'task_context' &&
-                proposal.origin_type === 'task' &&
-                Boolean(proposal.origin_id && proposal.target_kind)
-              const canConfirm =
-                proposal.tier === 'task_context' ? canOperateGates && taskContextActionable : canConfirmDocuments
-              const canDismiss =
-                proposal.tier === 'task_context'
-                  ? canOperateGates && taskContextActionable
-                  : canConfirmDocuments && proposal.tier === 'decision'
+              const canConfirm = canConfirmDocuments
+              const canDismiss = canConfirmDocuments && proposal.tier === 'decision'
               return (
                 <li key={key} className="grid gap-4 px-4 py-4 md:grid-cols-[minmax(0,1fr)_auto]">
                   <div className="min-w-0">
@@ -139,15 +122,7 @@ export function PendingProposalsPage() {
                     </div>
                     <h2 className="mt-2 font-medium leading-6">{proposal.title}</h2>
                     <p className="mt-1 text-xs text-muted">Origin: {originLink(proposal)}</p>
-                    {proposal.tier === 'task_context' && proposal.target_kind && (
-                      <p className="mt-1 text-xs text-muted">
-                        {proposal.target_kind === 'requirement' ? 'Outcome' : 'Guidance'} suggested for this task.
-                      </p>
-                    )}
-                    {proposal.justification && (
-                      <p className="mt-2 text-sm leading-5 text-foreground">{proposal.justification}</p>
-                    )}
-                    {proposal.tier !== 'task_context' && sameDocumentCount > 1 && proposal.version != null && (
+                    {sameDocumentCount > 1 && proposal.version != null && (
                       <p className="mt-1 text-xs text-muted">
                         Confirming a later version also dismisses earlier pending versions.
                       </p>
@@ -202,19 +177,6 @@ function proposalKey(proposal: PendingProposal) {
 
 function detailLink(proposal: PendingProposal) {
   const className = 'inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline'
-  if (proposal.tier === 'task_context' && proposal.target_kind === 'requirement')
-    return (
-      <Link to="/requirements" search={{ requirement: proposal.id }} className={className}>
-        <FileDiff className="size-3" /> View document
-      </Link>
-    )
-  if (proposal.tier === 'task_context' && proposal.target_kind === 'system_design')
-    return (
-      <Link to="/system-design" search={{ document: proposal.id }} className={className}>
-        <FileDiff className="size-3" /> View document
-      </Link>
-    )
-  if (proposal.tier === 'task_context') return null
   if (proposal.tier === 'requirement')
     return (
       <Link to="/requirements" search={{ requirement: proposal.id }} className={className}>

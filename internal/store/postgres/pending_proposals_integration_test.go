@@ -482,6 +482,32 @@ func TestPendingProposalsAttentionTruthTableAndWorkspaceIsolationIntegration(t *
 		proposeFor(task)
 		addOrder(task, candidate.stage, candidate.state, 1, 1, false)
 	}
+	contextRequirement, contextVersion, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-context-" + core.NewTaskID(), Title: "Context attention"}, core.RequirementVersion{
+		Content: "Context attention", Origin: core.RequirementOriginOperator,
+		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Surface open context on its origin task."}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmRequirementVersion(ctx, contextRequirement.ID, contextVersion.Version); err != nil {
+		t.Fatal(err)
+	}
+	proposeContext := func(task core.Task) {
+		t.Helper()
+		if _, suppressed, proposeErr := st.ProposeTaskContext(ctx, core.TaskContextProposalInput{
+			TaskID: task.ID, TargetKind: core.TaskContextProposalRequirement, TargetID: contextRequirement.ID,
+			Source: core.TaskContextProposalTriage, Justification: "PostgreSQL attention projection regression.",
+		}); proposeErr != nil || suppressed {
+			t.Fatalf("task=%s suppressed=%t err=%v", task.ID, suppressed, proposeErr)
+		}
+	}
+	contextAttention := createTask("context-attention", core.TaskRunning, "")
+	proposeContext(contextAttention)
+	terminalContext := createTask("terminal-context", core.TaskRunning, "")
+	proposeContext(terminalContext)
+	if _, err = st.pool.Exec(ctx, `UPDATE tasks SET state='merged' WHERE workspace_id=$1 AND id=$2`, workspace, terminalContext.ID); err != nil {
+		t.Fatal(err)
+	}
 	reviewRecovery := createTask("review-recovery", core.TaskRunning, "")
 	addOrder(reviewRecovery, core.StageReview, core.WorkOrderTimedOut, 1, 1, false)
 	interrupted := createTask("interrupted", core.TaskClosed, "")
@@ -491,8 +517,8 @@ func TestPendingProposalsAttentionTruthTableAndWorkspaceIsolationIntegration(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	if projection.TaskCount != 10 || len(projection.Items) != 4 {
-		t.Fatalf("projection=%+v want task_count=10 proposals=4", projection)
+	if projection.TaskCount != 11 || len(projection.Items) != 5 {
+		t.Fatalf("projection=%+v want task_count=11 proposals=5", projection)
 	}
 
 	sibling := "pending-truth-sibling-" + core.NewTaskID()
@@ -505,8 +531,24 @@ func TestPendingProposalsAttentionTruthTableAndWorkspaceIsolationIntegration(t *
 	if err = st.CreateTask(siblingCtx, siblingTask); err != nil {
 		t.Fatal(err)
 	}
+	siblingRequirement, siblingVersion, err := st.CreateRequirement(siblingCtx, core.Requirement{ID: "req-sibling-" + core.NewTaskID(), Title: "Sibling context"}, core.RequirementVersion{
+		Content: "Sibling context", Origin: core.RequirementOriginOperator,
+		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Keep attention workspace scoped."}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmRequirementVersion(siblingCtx, siblingRequirement.ID, siblingVersion.Version); err != nil {
+		t.Fatal(err)
+	}
+	if _, suppressed, proposeErr := st.ProposeTaskContext(siblingCtx, core.TaskContextProposalInput{
+		TaskID: siblingTask.ID, TargetKind: core.TaskContextProposalRequirement, TargetID: siblingRequirement.ID,
+		Source: core.TaskContextProposalTriage, Justification: "Sibling workspace context.",
+	}); proposeErr != nil || suppressed {
+		t.Fatalf("sibling suppressed=%t err=%v", suppressed, proposeErr)
+	}
 	projection, err = st.PendingProposalsProjection(ctx)
-	if err != nil || projection.TaskCount != 10 || len(projection.Items) != 4 {
+	if err != nil || projection.TaskCount != 11 || len(projection.Items) != 5 {
 		t.Fatalf("workspace isolation projection=%+v err=%v", projection, err)
 	}
 }

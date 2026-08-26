@@ -35,6 +35,9 @@ func (s *Server) listPendingProposals(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().UTC()
 	items := make([]pendingProposalItem, 0, len(projection.Items))
 	for _, proposal := range projection.Items {
+		if proposal.Tier == "task_context" {
+			continue
+		}
 		age := now.Sub(proposal.ProposedAt)
 		if age < 0 {
 			age = 0
@@ -75,6 +78,16 @@ func pendingAuthorityByTask(orders []core.WorkOrder, proposals []core.PendingPro
 		}
 		if order.Stage == core.StageReview && (order.State == core.WorkOrderQueued || order.State == core.WorkOrderClaimed || order.State == core.WorkOrderSubmitted) {
 			result[order.TaskID] = true
+		}
+	}
+	return result
+}
+
+func pendingTaskContextByTask(proposals []core.PendingProposal) map[string]bool {
+	result := make(map[string]bool)
+	for _, proposal := range proposals {
+		if proposal.Tier == "task_context" && proposal.OriginType == "task" && proposal.OriginID != "" {
+			result[proposal.OriginID] = true
 		}
 	}
 	return result

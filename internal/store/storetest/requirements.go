@@ -110,7 +110,7 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 			t.Fatalf("pending proposals=%+v", pending)
 		}
 		projection, err := st.PendingProposalsProjection(ctx)
-		if err != nil || len(projection.Items) != len(pending) {
+		if err != nil || len(projection.Items) != len(pending) || projection.TaskCount != 1 {
 			t.Fatalf("projection=%+v err=%v", projection, err)
 		}
 		if _, err = st.ConfirmTaskContextProposal(ctx, taskID, core.TaskContextProposalRequirement, requirement.ID); err != nil {
@@ -131,6 +131,10 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 			if proposal.Tier == "task_context" && proposal.OriginID == taskID {
 				t.Fatalf("resolved proposal remained pending: %+v", proposal)
 			}
+		}
+		projection, err = st.PendingProposalsProjection(ctx)
+		if err != nil || projection.TaskCount != 0 {
+			t.Fatalf("resolved projection=%+v err=%v", projection, err)
 		}
 	})
 

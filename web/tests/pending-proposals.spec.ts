@@ -68,7 +68,7 @@ test('pending proposal label and attention badge stay on one line at the narrow 
   ).toBe(true)
 })
 
-test('pending proposal queue covers every tier, resolves rows, updates the badge, and clears the task warning', async ({
+test('pending proposal queue covers every document tier, resolves rows, updates the badge, and clears the task warning', async ({
   page,
 }) => {
   await initialize(page)
@@ -207,7 +207,7 @@ test('pending proposal queue covers every tier, resolves rows, updates the badge
   await expect(page.getByText('Showing proposals from task review-task.')).toBeVisible()
   const later = page.getByRole('listitem').filter({ hasText: 'v3' })
   await later.getByRole('button', { name: 'Confirm' }).click()
-  await expect(page.getByText('No document or context decisions are waiting for you.')).toBeVisible()
+  await expect(page.getByText('No document decisions are waiting for you.')).toBeVisible()
   await expect(page.getByRole('link', { name: /Board/ })).toContainText('4')
   await expect(page.getByRole('link', { name: /Requirements/ })).not.toContainText('1')
   await expect(page.getByRole('link', { name: /Pending proposals/ })).toContainText('2')
@@ -222,91 +222,54 @@ test('pending proposal queue covers every tier, resolves rows, updates the badge
   await expect(page.getByRole('link', { name: /Pending proposals/ })).toContainText('1')
 })
 
-test('task context suggestions reach attention with task links, justifications, actions, and count updates', async ({
-  page,
-}) => {
+test('pending proposals keeps task context suggestions off the workspace queue and its count', async ({ page }) => {
   await initialize(page)
-  let requirementPending = true
-  let designPending = true
-  const calls: string[] = []
-
   await page.route('**/v1/**', async (route: Route) => {
-    const request = route.request()
-    const path = new URL(request.url()).pathname
+    const path = new URL(route.request().url()).pathname
     if (path === '/v1/workspaces') return route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] })
     if (path === '/v1/me') return route.fulfill({ json: { id: 'usr_operator', role: 'operator' } })
     if (path === '/v1/workspace') return route.fulfill({ json: { workspace: 'demo', repos: ['conveyor'] } })
     if (path === '/v1/activity' || path === '/v1/blueprints') return route.fulfill({ json: [] })
     if (path === '/v1/pending-proposals') {
-      const items = [
-        ...(requirementPending
-          ? [
-              {
-                id: 'req-intake',
-                title: 'Task intake and triage',
-                tier: 'task_context',
-                origin_type: 'task',
-                origin_id: 'context-task',
-                target_kind: 'requirement',
-                justification: 'The task changes how intake suggestions reach an operator.',
-                proposed_at: proposedAt,
-                age_seconds: 90,
-              },
-            ]
-          : []),
-        ...(designPending
-          ? [
-              {
-                id: 'design-web-dashboard',
-                title: 'Web dashboard',
-                tier: 'task_context',
-                origin_type: 'task',
-                origin_id: 'context-task',
-                target_kind: 'system_design',
-                justification: 'The dashboard interaction inventory governs the change.',
-                proposed_at: proposedAt,
-                age_seconds: 60,
-              },
-            ]
-          : []),
-      ]
       return route.fulfill({
-        json: { items, attention: { task_count: 0, pending_proposal_count: items.length, total: items.length } },
+        json: {
+          items: [
+            {
+              id: 'req-document-update',
+              title: 'Document-only queue contract',
+              tier: 'requirement',
+              version: 2,
+              origin_type: 'operator',
+              proposed_at: proposedAt,
+              age_seconds: 90,
+            },
+            // The page filter is defensive. The HTTP contract excludes this row.
+            {
+              id: 'req-intake',
+              title: 'Task intake and triage',
+              tier: 'task_context',
+              origin_type: 'task',
+              origin_id: 'context-task',
+              target_kind: 'requirement',
+              justification: 'This suggestion belongs on the task view.',
+              proposed_at: proposedAt,
+              age_seconds: 60,
+            },
+          ],
+          attention: { task_count: 1, pending_proposal_count: 1, total: 2 },
+        },
       })
-    }
-    if (path === '/v1/tasks/context-task/context/proposals/requirement/req-intake/confirm') {
-      calls.push('confirm')
-      expect(request.headers().authorization).toBeUndefined()
-      requirementPending = false
-      return route.fulfill({ json: {} })
-    }
-    if (path === '/v1/tasks/context-task/context/proposals/system_design/design-web-dashboard/dismiss') {
-      calls.push('dismiss')
-      expect(request.headers().authorization).toBeUndefined()
-      designPending = false
-      return route.fulfill({ json: {} })
     }
     return route.fulfill({ json: [] })
   })
 
   await page.goto('/pending-proposals')
-  const requirement = page.getByRole('listitem').filter({ hasText: 'Task intake and triage' })
-  await expect(requirement.getByRole('link', { name: 'task context-task' })).toHaveAttribute(
-    'href',
-    /tasks\/context-task\/full/,
-  )
-  await expect(requirement).toContainText('The task changes how intake suggestions reach an operator.')
-  await expect(page.getByRole('link', { name: /Pending proposals/ })).toContainText('2')
-  await requirement.getByRole('button', { name: 'Confirm' }).click()
-  await expect(requirement).toHaveCount(0)
+  await expect(page.getByRole('listitem')).toHaveCount(1)
+  await expect(page.getByText('Document-only queue contract')).toBeVisible()
+  await expect(page.getByText('Task intake and triage')).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Dismiss' })).toHaveCount(0)
   await expect(page.getByRole('link', { name: /Pending proposals/ })).toContainText('1')
-
-  const design = page.getByRole('listitem').filter({ hasText: 'Web dashboard' })
-  await expect(design).toContainText('The dashboard interaction inventory governs the change.')
-  await design.getByRole('button', { name: 'Dismiss' }).click()
-  await expect(page.getByText('No document or context decisions are waiting for you.')).toBeVisible()
-  await expect(page.getByRole('link', { name: 'Pending proposals', exact: true })).toHaveText('Pending proposals')
-  expect(calls).toEqual(['confirm', 'dismiss'])
+  await expect(page.getByRole('link', { name: /Board/ })).toContainText('2')
 })
 
 test('attention navigation omits requirement and pending proposal badges when projection fails or is empty', async ({

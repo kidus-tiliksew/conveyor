@@ -3258,6 +3258,11 @@ test('task context suggestions show justification and become attachments or disa
     },
   )
 
+  await page.goto(`/tasks/${taskId}`)
+  const sheetSuggestions = page.getByRole('region', { name: 'Suggested context' })
+  await expect(sheetSuggestions).toContainText('Task intake and triage')
+  await expect(sheetSuggestions).toContainText('The dashboard interaction inventory governs this surface.')
+
   await page.goto(`/tasks/${taskId}/full`)
   const suggestions = page.getByRole('region', { name: 'Suggested context' })
   await expect(suggestions).toContainText('Task intake and triage')
