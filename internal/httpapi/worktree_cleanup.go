@@ -58,6 +58,10 @@ func (s *Server) recordWorktreeCleanup(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	if err := validateWorktreeCleanupRecord(request); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_worktree_cleanup", "message": err.Error()})
+		return
+	}
 	task, authorized, err := s.authorizedWorktreeCleanupTask(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -117,6 +121,28 @@ func (s *Server) recordWorktreeCleanup(w http.ResponseWriter, r *http.Request) {
 }
 
 var errWorktreeCleanupStateChanged = errors.New("worktree cleanup state changed")
+
+func validateWorktreeCleanupRecord(record worktreeCleanupRecord) error {
+	switch record.Worktree {
+	case "removed", "pruned", "skipped":
+	default:
+		return errors.New("cleanup worktree result must be removed, pruned, or skipped")
+	}
+	switch record.BranchResult {
+	case "retained", "absent":
+	default:
+		return errors.New("cleanup branch result must be retained or absent")
+	}
+	if strings.TrimSpace(record.Path) == "" {
+		return errors.New("cleanup path is required")
+	}
+	for _, warning := range record.ProcessWarnings {
+		if strings.TrimSpace(warning) == "" {
+			return errors.New("cleanup process warnings must not contain blank entries")
+		}
+	}
+	return nil
+}
 
 func (s *Server) authorizedWorktreeCleanupTask(r *http.Request) (core.Task, bool, error) {
 	task, err := s.Store.GetTask(r.Context(), chi.URLParam(r, "id"))

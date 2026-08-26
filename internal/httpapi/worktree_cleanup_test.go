@@ -31,9 +31,7 @@ func TestWorktreeCleanupRecordsCredentialActorOnce(t *testing.T) {
 				t.Fatal(err)
 			}
 			srv := NewServer(st)
-			body, _ := json.Marshal(worktreeCleanupRecord{
-				Repository: task.Repo, Branch: task.Branch, Worktree: "removed", BranchResult: "retained", Path: "/task/worktree",
-			})
+			body := []byte(`{"repository":"conveyor","branch":"conveyor/task-terminal","worktree":"removed","branch_result":"retained","path":"/task/worktree","actor":"user:spoofed"}`)
 			var wait sync.WaitGroup
 			wait.Add(2)
 			responses := make(chan *httptest.ResponseRecorder, 2)
@@ -102,18 +100,50 @@ func TestWorktreeCleanupRejectsForeignNonterminalAndMismatchedRequests(t *testin
 		t.Fatalf("nonterminal status=%d decoded=%+v", statusResponse.Code, status)
 	}
 
-	body, _ := json.Marshal(worktreeCleanupRecord{Repository: "other", Branch: task.Branch})
+	body, _ := json.Marshal(worktreeCleanupRecord{Repository: "other", Branch: task.Branch, Worktree: "removed", BranchResult: "retained", Path: "/task/worktree"})
 	mismatch := httptest.NewRecorder()
 	srv.recordWorktreeCleanup(mismatch, worktreeCleanupRequest(ctx, http.MethodPost, task.ID, body))
 	if mismatch.Code != http.StatusConflict {
 		t.Fatalf("mismatch status=%d body=%s", mismatch.Code, mismatch.Body.String())
 	}
 
-	body, _ = json.Marshal(worktreeCleanupRecord{Repository: task.Repo, Branch: task.Branch})
+	body, _ = json.Marshal(worktreeCleanupRecord{Repository: task.Repo, Branch: task.Branch, Worktree: "removed", BranchResult: "retained", Path: "/task/worktree"})
 	nonterminal := httptest.NewRecorder()
 	srv.recordWorktreeCleanup(nonterminal, worktreeCleanupRequest(ctx, http.MethodPost, task.ID, body))
 	if nonterminal.Code != http.StatusConflict {
 		t.Fatalf("nonterminal status=%d body=%s", nonterminal.Code, nonterminal.Body.String())
+	}
+}
+
+func TestWorktreeCleanupRejectsMalformedResultPayload(t *testing.T) {
+	st := store.NewMemory()
+	actor := store.Actor{ID: store.UserActorID("owner"), Role: core.ActorUser}
+	ctx := store.WithActor(store.WithWorkspace(t.Context(), "demo"), actor)
+	task := core.Task{ID: "terminal", Workspace: "demo", Repo: "conveyor", Branch: "conveyor/task-terminal", State: core.TaskMerged}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "work_order.claimed"}); err != nil {
+		t.Fatal(err)
+	}
+	srv := NewServer(st)
+	for _, test := range []struct {
+		name   string
+		record worktreeCleanupRecord
+	}{
+		{name: "worktree result", record: worktreeCleanupRecord{Repository: task.Repo, Branch: task.Branch, Worktree: "deleted", BranchResult: "retained", Path: "/task/worktree"}},
+		{name: "branch result", record: worktreeCleanupRecord{Repository: task.Repo, Branch: task.Branch, Worktree: "removed", BranchResult: "deleted", Path: "/task/worktree"}},
+		{name: "path", record: worktreeCleanupRecord{Repository: task.Repo, Branch: task.Branch, Worktree: "removed", BranchResult: "retained"}},
+		{name: "warning", record: worktreeCleanupRecord{Repository: task.Repo, Branch: task.Branch, Worktree: "removed", BranchResult: "retained", Path: "/task/worktree", ProcessWarnings: []string{" "}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			body, _ := json.Marshal(test.record)
+			response := httptest.NewRecorder()
+			srv.recordWorktreeCleanup(response, worktreeCleanupRequest(ctx, http.MethodPost, task.ID, body))
+			if response.Code != http.StatusBadRequest {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+		})
 	}
 }
 
