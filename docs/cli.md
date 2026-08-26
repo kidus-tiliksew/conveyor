@@ -49,7 +49,9 @@ same trust model as `gh` and kubeconfig).
 `conveyor init` initializes an organization and first workspace interactively:
 organization name, first operator identity, workspace id, and the target
 repository. It requires `CONVEYOR_DATABASE_URL` and `CONVEYOR_API_TOKEN` in
-the environment, verifies `git` and an authenticated `gh`, writes
+the environment plus `CONVEYOR_LLM_API_KEY` when the generated setup uses
+in-process triage or planning. It registers the repository by name, URL, and
+default branch without requiring a local clone or forge tool, writes
 `conveyor.yaml` (mode 0600), and prints the first operator's sign-in link.
 `--config` picks a different output path.
 

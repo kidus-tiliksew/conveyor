@@ -9,7 +9,9 @@ first half is the same.
 ## 1. Install
 
 Follow [Installation](installation.md). You need both binaries on your PATH,
-a running PostgreSQL 15 or newer, Git, and an authenticated `gh` CLI.
+a running PostgreSQL 15 or newer, and the environment values in the next step.
+Task execution later requires Git on the worker machine, but initialization
+does not require Git, a forge CLI, or a local repository clone.
 
 ## 2. Export the environment
 
@@ -47,9 +49,10 @@ conveyor init
 
 `conveyor init` prompts for the organization name, your name and email, a
 workspace id, and the repository Conveyor will work on (name, URL, default
-branch, and the path of your local clone). It verifies `git` and `gh` are
-ready, writes `conveyor.yaml`, creates the organization and workspace in the
-database, and binds `CONVEYOR_API_TOKEN` as your operator token.
+branch). It registers that metadata without inspecting the deployment host's
+filesystem or forge tools, writes `conveyor.yaml`, creates the organization and
+workspace in the database, and binds `CONVEYOR_API_TOKEN` as your operator
+token.
 
 It ends by printing two things: the command to install the server as a user
 service, and a sign-in link for your new operator account. Keep the link; you
