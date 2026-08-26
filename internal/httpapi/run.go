@@ -49,6 +49,119 @@ func (s *Server) requireTaskRunAuth(next http.Handler) http.Handler {
 	})
 }
 
+// requireTaskRunChildAuth guards the two run-order lifecycle routes a
+// launched child must reach: renewal and predecessor-attempt checkpoint
+// recording. It admits the human bearer credential exactly as
+// requireTaskRunAuth does, and additionally a session-bound run child agent
+// credential carrying all three run bindings. Exact workspace, order, and
+// session confinement is enforced per handler against the presented request
+// (req-security-boundaries REQ-1/AC-1.1; req-260818-24dd3a; design-http-api).
+func (s *Server) requireTaskRunChildAuth(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if credential, ok := store.CredentialFromContext(r.Context()); ok && credential.Kind == core.CredentialUser && credential.Method == core.CredentialMethodBearer {
+			next.ServeHTTP(w, r)
+			return
+		}
+		credential, err := s.authenticateUserCredential(r)
+		if err != nil {
+			writeCredentialVerificationError(w, err)
+			return
+		}
+		switch {
+		case credential.Kind == core.CredentialUser:
+			if credential.Method == "" {
+				credential.Method = core.CredentialMethodBearer
+			}
+			ctx := store.WithCredential(r.Context(), credential)
+			ctx = store.WithActor(ctx, store.Actor{ID: store.UserActorID(credential.OwnerUserID), Role: core.ActorUser})
+			next.ServeHTTP(w, r.WithContext(ctx))
+		case boundRunChildCredential(credential):
+			ctx := store.WithCredential(r.Context(), credential)
+			ctx = store.WithActor(ctx, store.Actor{ID: store.AgentActorID(credential.ID), Role: core.ActorAgent})
+			next.ServeHTTP(w, r.WithContext(ctx))
+		default:
+			w.Header().Set("WWW-Authenticate", "Bearer")
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+		}
+	})
+}
+
+// requireTaskRunChildCapability authorizes the already-authenticated run
+// lifecycle credential's owner for one workspace capability. It mirrors
+// requireWorkspaceCapability's membership path but never re-runs the human
+// credential boundary: requireTaskRunChildAuth has already admitted exactly
+// the user parent or the session-bound run child, and in registry-less
+// memory deployments that authentication is the whole boundary, matching the
+// worker plane's contract.
+func (s *Server) requireTaskRunChildCapability(capability core.Capability) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if s.Workspaces == nil {
+				next.ServeHTTP(w, r)
+				return
+			}
+			if s.Memberships == nil {
+				writeWorkspaceNotFound(w)
+				return
+			}
+			credential, ok := store.CredentialFromContext(r.Context())
+			workspaceID, scoped := store.WorkspaceFromContext(r.Context())
+			if !ok || !scoped {
+				writeWorkspaceNotFound(w)
+				return
+			}
+			allowed, err := s.Memberships.AuthorizeWorkspace(r.Context(), credential.OwnerUserID, workspaceID, capability)
+			if err != nil {
+				log.Printf("authorize run child capability: %v", err)
+				http.Error(w, "internal server error", http.StatusInternalServerError)
+				return
+			}
+			if !allowed {
+				writeWorkspaceNotFound(w)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// boundRunChildCredential reports whether the credential is a conveyor-run
+// child agent credential carrying its complete run binding. An agent
+// credential without all three bindings is never admitted to run-order
+// lifecycle routes.
+func boundRunChildCredential(credential core.AuthenticatedCredential) bool {
+	return credential.Kind == core.CredentialAgent &&
+		strings.TrimSpace(credential.RunWorkspaceID) != "" &&
+		strings.TrimSpace(credential.RunWorkOrderID) != "" &&
+		strings.TrimSpace(credential.RunSessionID) != ""
+}
+
+// taskRunLifecycleClaim resolves the owner-derived claim identity a presented
+// credential may use against one run-order lifecycle route. A user credential
+// keeps the existing parent contract. A bound run child is additionally
+// confined to its exact minted workspace, work order, and session, and the
+// stored order must remain a non-worker claim owned by the credential owner
+// in that exact session; any mismatch resolves no identity and renews or
+// records nothing.
+func taskRunLifecycleClaim(ctx context.Context, credential core.AuthenticatedCredential, order core.WorkOrder, sessionID string) (core.WorkOrderClaimIdentity, bool) {
+	switch {
+	case credential.Kind == core.CredentialUser:
+		return core.WorkOrderClaimIdentity{ClaimantID: core.TaskRunClaimantID(credential.OwnerUserID), SessionID: sessionID}, true
+	case boundRunChildCredential(credential):
+		workspaceID, scoped := store.WorkspaceFromContext(ctx)
+		if !scoped || credential.RunWorkspaceID != workspaceID ||
+			credential.RunWorkOrderID != order.ID || credential.RunSessionID != sessionID {
+			return core.WorkOrderClaimIdentity{}, false
+		}
+		if order.WorkerID != "" || order.ClaimantID != core.TaskRunClaimantID(credential.OwnerUserID) || order.SessionID != sessionID {
+			return core.WorkOrderClaimIdentity{}, false
+		}
+		return core.WorkOrderClaimIdentity{ClaimantID: core.TaskRunClaimantID(credential.OwnerUserID), SessionID: sessionID}, true
+	default:
+		return core.WorkOrderClaimIdentity{}, false
+	}
+}
+
 // requireTaskRequestChangesAuth preserves the dashboard session boundary for
 // the human merge-gate action. In production the workspace group has already
 // populated the credential; the fallback keeps memory-mode task routes on the
@@ -431,6 +544,27 @@ func (s *Server) authorizeTaskRunOrder(r *http.Request, sessionID string) (core.
 		order.ClaimantID == core.TaskRunClaimantID(credential.OwnerUserID) && order.SessionID == sessionID
 }
 
+// authorizeTaskRunChildOrder authorizes the run parent exactly as
+// authorizeTaskRunOrder does, or a session-bound run child confined to this
+// exact order and session. Only the child-reachable lifecycle routes
+// (renewal, predecessor-attempt checkpoint) call it; every other run-order
+// control route keeps the user-only authorizeTaskRunOrder boundary.
+func (s *Server) authorizeTaskRunChildOrder(r *http.Request, sessionID string) (core.WorkOrder, bool) {
+	credential, ok := store.CredentialFromContext(r.Context())
+	if !ok {
+		return core.WorkOrder{}, false
+	}
+	if credential.Kind == core.CredentialUser {
+		return s.authorizeTaskRunOrder(r, sessionID)
+	}
+	order, err := s.Store.GetWorkOrder(r.Context(), chi.URLParam(r, "order_id"))
+	if err != nil || order.TaskID != chi.URLParam(r, "id") {
+		return core.WorkOrder{}, false
+	}
+	_, authorized := taskRunLifecycleClaim(r.Context(), credential, order, sessionID)
+	return order, authorized
+}
+
 type taskRunAgentCredentialRequest struct {
 	SessionID    string `json:"session_id"`
 	CredentialID string `json:"credential_id,omitempty"`
@@ -514,11 +648,15 @@ func (s *Server) renewTaskRunOrder(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewDecoder(r.Body).Decode(&request)
 	credential, ok := store.CredentialFromContext(r.Context())
 	order, err := s.Store.GetWorkOrder(r.Context(), chi.URLParam(r, "order_id"))
-	if !ok || credential.Kind != core.CredentialUser || err != nil || order.TaskID != chi.URLParam(r, "id") {
+	if !ok || err != nil || order.TaskID != chi.URLParam(r, "id") {
 		http.Error(w, store.ErrWorkOrderClaimLost.Error(), http.StatusConflict)
 		return
 	}
-	claim := core.WorkOrderClaimIdentity{ClaimantID: core.TaskRunClaimantID(credential.OwnerUserID), SessionID: request.SessionID}
+	claim, authorized := taskRunLifecycleClaim(r.Context(), credential, order, request.SessionID)
+	if !authorized {
+		http.Error(w, store.ErrWorkOrderClaimLost.Error(), http.StatusConflict)
+		return
+	}
 	renewed, err := s.Workers.RenewClaim(r.Context(), claim, order.ID, request.snapshot())
 	if err != nil {
 		if errors.Is(err, store.ErrWorkOrderPreempted) {
@@ -603,7 +741,7 @@ func (s *Server) checkpointTaskRunOrderAttempt(w http.ResponseWriter, r *http.Re
 		return
 	}
 	checkpoint := request.checkpoint()
-	order, ok := s.authorizeTaskRunOrder(r, checkpoint.SessionID)
+	order, ok := s.authorizeTaskRunChildOrder(r, checkpoint.SessionID)
 	if !ok {
 		http.Error(w, store.ErrWorkOrderClaimLost.Error(), http.StatusConflict)
 		return

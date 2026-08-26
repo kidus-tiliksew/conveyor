@@ -142,6 +142,18 @@ func (c *client) checkpointTaskRunOrderAttemptContext(ctx context.Context, crede
 	return c.workerDoContext(ctx, http.MethodPost, taskRunOrderPath(item, "/attempt-checkpoint"), payload, &result, credential)
 }
 
+// checkpointTaskRunOrderAttemptByIDContext posts one predecessor attempt
+// checkpoint through the task run plane for callers that hold only the
+// assigned task and work-order identity (conveyor checkout's recording
+// fallback). The payload is the same checkpoint encoding the dispatch planes
+// send, with no transcript attached.
+func (c *client) checkpointTaskRunOrderAttemptByIDContext(ctx context.Context, credential, taskID, orderID string, checkpoint core.WorkOrderAttemptCheckpoint) error {
+	payload, _ := json.Marshal(checkpoint)
+	var result map[string]bool
+	path := "/v1/tasks/" + url.PathEscape(taskID) + "/run-orders/" + url.PathEscape(orderID) + "/attempt-checkpoint"
+	return c.workerDoContext(ctx, http.MethodPost, path, payload, &result, credential)
+}
+
 func (c *client) claimDispatchOrderContext(ctx context.Context, credential string, item workerservice.DispatchOrder, session, clientToken string) (core.WorkOrder, error) {
 	if item.Dispatch == "run" {
 		return c.claimTaskRunOrderContext(ctx, credential, item, session, clientToken)

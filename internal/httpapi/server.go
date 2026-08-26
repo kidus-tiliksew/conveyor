@@ -192,6 +192,16 @@ func (s *Server) Handler() http.Handler {
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityManageMembership)).Delete("/workspaces/{workspace_id}/invitations/{email}", s.revokeWorkspaceInvitation)
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityManageMembership)).Post("/workspaces/{workspace_id}/invitations/{email}/resend", s.resendWorkspaceInvitation)
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityManageMembership)).Delete("/workspaces/{workspace_id}/members/{user_id}", s.revokeWorkspaceMembership)
+		// Renewal and predecessor-attempt checkpoint recording are the only
+		// run-order lifecycle routes a session-bound run child credential may
+		// reach; every other run-order control route stays on the user-only
+		// requireTaskRunAuth boundary (req-security-boundaries REQ-1/AC-1.1;
+		// req-260818-24dd3a; design-http-api).
+		r.Group(func(r chi.Router) {
+			r.Use(s.requireTaskRunChildAuth, s.resolveWorkspaceContext, s.requireTaskRunChildCapability(core.CapabilityViewWorkspace), s.requireTaskRunChildCapability(core.CapabilityClaimWork))
+			r.Post("/tasks/{id}/run-orders/{order_id}/renew", s.renewTaskRunOrder)
+			r.Post("/tasks/{id}/run-orders/{order_id}/attempt-checkpoint", s.checkpointTaskRunOrderAttempt)
+		})
 		r.Group(func(r chi.Router) {
 			r.Use(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityViewWorkspace))
 			r.Get("/activity", s.listActivity)
@@ -212,9 +222,7 @@ func (s *Server) Handler() http.Handler {
 			r.With(s.requireTaskRunAuth, s.requireWorkspaceCapability(core.CapabilityClaimWork)).Post("/tasks/{id}/run-orders/{order_id}/claim", s.claimTaskRunOrder)
 			r.With(s.requireTaskRunAuth, s.requireWorkspaceCapability(core.CapabilityClaimWork)).Post("/tasks/{id}/run-orders/{order_id}/agent-credential", s.issueTaskRunAgentCredential)
 			r.With(s.requireTaskRunAuth, s.requireWorkspaceCapability(core.CapabilityClaimWork)).Delete("/tasks/{id}/run-orders/{order_id}/agent-credential", s.revokeTaskRunAgentCredential)
-			r.With(s.requireTaskRunAuth, s.requireWorkspaceCapability(core.CapabilityClaimWork)).Post("/tasks/{id}/run-orders/{order_id}/renew", s.renewTaskRunOrder)
 			r.With(s.requireTaskRunAuth, s.requireWorkspaceCapability(core.CapabilityClaimWork)).Get("/tasks/{id}/run-orders/{order_id}/reconcile", s.reconcileTaskRunOrder)
-			r.With(s.requireTaskRunAuth, s.requireWorkspaceCapability(core.CapabilityClaimWork)).Post("/tasks/{id}/run-orders/{order_id}/attempt-checkpoint", s.checkpointTaskRunOrderAttempt)
 			r.With(s.requireTaskRunAuth, s.requireWorkspaceCapability(core.CapabilityClaimWork)).Post("/tasks/{id}/run-orders/{order_id}/release", s.releaseTaskRunOrder)
 			r.With(s.requireTaskRunAuth, s.requireWorkspaceCapability(core.CapabilityClaimWork)).Get("/tasks/{id}/worktree-cleanup", s.getWorktreeCleanupStatus)
 			r.With(s.requireTaskRunAuth, s.requireWorkspaceCapability(core.CapabilityClaimWork)).Post("/tasks/{id}/worktree-cleanup", s.recordWorktreeCleanup)
