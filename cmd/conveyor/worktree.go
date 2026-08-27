@@ -629,6 +629,9 @@ func inProgressGitOperation(ctx context.Context, path string) (string, error) {
 func gitOutput(ctx context.Context, dir string, args ...string) (string, error) {
 	command := exec.CommandContext(ctx, "git", args...)
 	command.Dir = dir
+	if environment := gitEnvironmentFromContext(ctx); len(environment) > 0 {
+		command.Env = isolatedChildEnvironment(os.Environ(), environment)
+	}
 	out, err := command.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
@@ -644,5 +647,26 @@ func gitRefExists(ctx context.Context, dir, ref string) bool {
 func gitIsAncestor(ctx context.Context, dir, older, newer string) bool {
 	command := exec.CommandContext(ctx, "git", "merge-base", "--is-ancestor", older, newer)
 	command.Dir = dir
+	if environment := gitEnvironmentFromContext(ctx); len(environment) > 0 {
+		command.Env = isolatedChildEnvironment(os.Environ(), environment)
+	}
 	return command.Run() == nil
+}
+
+type gitEnvironmentContextKey struct{}
+
+func contextWithGitEnvironment(ctx context.Context, environment map[string]string) context.Context {
+	if len(environment) == 0 {
+		return ctx
+	}
+	copy := make(map[string]string, len(environment))
+	for key, value := range environment {
+		copy[key] = value
+	}
+	return context.WithValue(ctx, gitEnvironmentContextKey{}, copy)
+}
+
+func gitEnvironmentFromContext(ctx context.Context) map[string]string {
+	environment, _ := ctx.Value(gitEnvironmentContextKey{}).(map[string]string)
+	return environment
 }

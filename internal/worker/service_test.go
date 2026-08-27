@@ -2,8 +2,8 @@ package worker
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
-	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	"reflect"
 	"strings"
 	"testing"
@@ -12,9 +12,35 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 )
+
+type workerForgeTokenFixture struct {
+	status core.ForgeTokenStatus
+	token  string
+	useErr error
+	users  []string
+}
+
+func (f *workerForgeTokenFixture) StoreForgeToken(context.Context, string, string, string) (core.ForgeTokenStatus, error) {
+	return core.ForgeTokenStatus{}, nil
+}
+func (f *workerForgeTokenFixture) DeleteForgeToken(context.Context, string) error { return nil }
+func (f *workerForgeTokenFixture) GetForgeTokenStatus(context.Context, string) (core.ForgeTokenStatus, error) {
+	return f.status, nil
+}
+func (f *workerForgeTokenFixture) GetForgeTokenForUse(_ context.Context, userID string) (core.ForgeTokenCredential, error) {
+	f.users = append(f.users, userID)
+	if f.useErr != nil {
+		return core.ForgeTokenCredential{}, f.useErr
+	}
+	return core.ForgeTokenCredential{ForgeTokenStatus: f.status, UserID: userID, Token: f.token}, nil
+}
+func (f *workerForgeTokenFixture) ListForgeTokensForRedaction(context.Context) ([]string, error) {
+	return []string{f.token}, nil
+}
 
 type failingObservabilityStore struct{ store.Store }
 
@@ -290,6 +316,68 @@ func TestWorkerClaimUsesEnrollmentOwnerForAssignmentEligibility(t *testing.T) {
 	legacyClaim, err := service.ClaimForWorker(ctx, worker("worker-legacy", ""), unassigned.ID, core.WorkOrderClaim{SessionID: "legacy", ClientToken: "legacy", OwnerUserID: "forged"})
 	if err != nil || legacyClaim.WorkerID != "worker-legacy" {
 		t.Fatalf("legacy unassigned claim=%+v err=%v", legacyClaim, err)
+	}
+}
+
+func TestWorkerClaimDeliveryResolvesOnlyEnrollmentOwnerAndFailsClosed(t *testing.T) {
+	now := time.Now().UTC()
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	cfg := workerTestConfig()
+	workOrders := &workorder.Service{Store: st, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
+	tokens := &workerForgeTokenFixture{
+		status: core.ForgeTokenStatus{Configured: true, ForgeLogin: "owner-login"},
+		token:  "forge-secret-for-owner",
+	}
+	service := &Service{Store: st, WorkOrders: workOrders, ConfigProvider: workOrders.ConfigProvider, ForgeTokens: tokens, Now: func() time.Time { return now }}
+	worker := core.Worker{ID: "worker-owner", Workspace: "demo", OwnerUserID: "usr-owner", LeaseExpiresAt: now.Add(time.Minute), Probes: []core.HarnessProbe{{Harness: "codex", Healthy: true}}}
+
+	createOrder := func(taskID string) core.WorkOrder {
+		t.Helper()
+		task := core.Task{ID: taskID, Workspace: "demo", Repo: "conveyor", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: now}
+		if err := st.CreateTask(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+		job := core.Job{ID: taskID + "-implement-1", TaskID: taskID, Stage: core.StageImplement, State: core.JobPending}
+		if err := st.CreateJob(ctx, job); err != nil {
+			t.Fatal(err)
+		}
+		order := core.WorkOrder{ID: job.ID, TaskID: taskID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, Claimable: true, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour)}
+		if err := storetest.For(st).CreateWorkOrder(ctx, order); err != nil {
+			t.Fatal(err)
+		}
+		return order
+	}
+
+	first := createOrder("owner-token-delivery")
+	delivery, err := service.ClaimForWorkerDelivery(ctx, worker, first.ID, core.WorkOrderClaim{SessionID: "delivery-session", ClientToken: "delivery-client"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if delivery.WorkOrder.WorkerID != worker.ID || delivery.ForgeToken != tokens.token || !reflect.DeepEqual(tokens.users, []string{"usr-owner"}) {
+		t.Fatalf("delivery=%+v users=%v", delivery, tokens.users)
+	}
+	queuedJSON, err := json.Marshal(DispatchOrder{Order: first, Task: core.Task{ID: first.TaskID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	orderJSON, err := json.Marshal(delivery.WorkOrder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(queuedJSON), tokens.token) || strings.Contains(string(orderJSON), tokens.token) {
+		t.Fatalf("forge token escaped secret-free projections: queued=%s order=%s", queuedJSON, orderJSON)
+	}
+
+	second := createOrder("owner-token-resolution-failure")
+	tokens.useErr = store.ErrForgeTokenDecrypt
+	_, err = service.ClaimForWorkerDelivery(ctx, worker, second.ID, core.WorkOrderClaim{SessionID: "failed-session", ClientToken: "failed-client"})
+	if !errors.Is(err, store.ErrForgeTokenRequired) || !strings.Contains(err.Error(), "usr-owner") || !strings.Contains(err.Error(), store.ForgeTokenRequiredMessage) {
+		t.Fatalf("resolution error=%v", err)
+	}
+	released, getErr := st.GetWorkOrder(ctx, second.ID)
+	if getErr != nil || released.State != core.WorkOrderQueued || released.SessionID != "" || released.LastFailureMessage != "resolve forge token for worker owner usr-owner failed" {
+		t.Fatalf("failed delivery left claim active: order=%+v err=%v", released, getErr)
 	}
 }
 

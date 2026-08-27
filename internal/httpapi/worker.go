@@ -223,7 +223,7 @@ func (s *Server) claimWorkerOrder(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	order, err := s.Workers.ClaimForWorker(r.Context(), worker, chi.URLParam(r, "id"), core.WorkOrderClaim{SessionID: request.SessionID, ClientToken: request.ClientToken, Lease: time.Duration(request.LeaseSeconds) * time.Second})
+	delivery, err := s.Workers.ClaimForWorkerDelivery(r.Context(), worker, chi.URLParam(r, "id"), core.WorkOrderClaim{SessionID: request.SessionID, ClientToken: request.ClientToken, Lease: time.Duration(request.LeaseSeconds) * time.Second})
 	if err != nil {
 		if errors.Is(err, store.ErrForgeTokenRequired) {
 			w.Header().Set("X-Conveyor-Error-Code", store.ForgeTokenRequiredCode)
@@ -231,7 +231,7 @@ func (s *Server) claimWorkerOrder(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
-	writeJSON(w, http.StatusOK, order)
+	writeJSON(w, http.StatusOK, delivery)
 }
 
 func (s *Server) renewWorkerOrder(w http.ResponseWriter, r *http.Request) {

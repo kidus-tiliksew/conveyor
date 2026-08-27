@@ -177,6 +177,53 @@ func TestListWorkerOrdersMapsSentinelsAndRedactsInternalFailures(t *testing.T) {
 	}
 }
 
+func TestWorkerClaimHTTPReturnsDedicatedOwnerTokenDelivery(t *testing.T) {
+	now := time.Now().UTC()
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	cfg := &config.Config{Workspace: "demo", Routing: config.Routing{Stages: map[string]config.StageRoute{
+		"implement": {Execution: config.ExecutionMCP, Timeout: time.Hour},
+	}}}
+	provider := func(context.Context) (*config.Config, error) { return cfg, nil }
+	workOrders := &workorder.Service{Store: st, ConfigProvider: provider}
+	tokens := &forgeTokenFixture{status: core.ForgeTokenStatus{Configured: true, ForgeLogin: "owner-login"}, token: "owner-forge-secret"}
+	workers := &workerservice.Service{Store: st, WorkOrders: workOrders, ConfigProvider: provider, ForgeTokens: tokens, Now: func() time.Time { return now }}
+	worker := core.Worker{ID: "worker-a", Workspace: "demo", OwnerUserID: "usr-owner", LeaseExpiresAt: now.Add(time.Minute), Probes: []core.HarnessProbe{{Harness: "codex", Healthy: true}}}
+	task := core.Task{ID: "worker-token-delivery", Workspace: "demo", Repo: "conveyor", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: now}
+	job := core.Job{ID: task.ID + "-implement-1", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, Claimable: true, QueueEnteredAt: now}); err != nil {
+		t.Fatal(err)
+	}
+
+	server := NewServer(st)
+	server.Workers = workers
+	route := chi.NewRouteContext()
+	route.URLParams.Add("id", job.ID)
+	request := httptest.NewRequest(http.MethodPost, "/v1/worker/work-orders/"+job.ID+"/claim", strings.NewReader(`{"session_id":"delivery-session","client_token":"delivery-client","lease_seconds":60}`))
+	request = request.WithContext(context.WithValue(context.WithValue(ctx, chi.RouteCtxKey, route), workerContextKey{}, worker))
+	response := httptest.NewRecorder()
+	server.claimWorkerOrder(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var delivery workerservice.ClaimDelivery
+	if err := json.Unmarshal(response.Body.Bytes(), &delivery); err != nil {
+		t.Fatal(err)
+	}
+	if delivery.WorkOrder.ID != job.ID || delivery.WorkOrder.WorkerID != worker.ID || delivery.ForgeToken != tokens.token {
+		t.Fatalf("delivery=%+v", delivery)
+	}
+	if strings.Count(response.Body.String(), tokens.token) != 1 {
+		t.Fatalf("claim response did not isolate the token to one dedicated field: %s", response.Body.String())
+	}
+}
+
 func TestWorkerRenewHTTPReportsSameSessionCheckpointRelease(t *testing.T) {
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	st := store.NewMemory()

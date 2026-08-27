@@ -35,8 +35,8 @@ func (f *forgeTokenFixture) GetForgeTokenStatus(context.Context, string) (core.F
 	f.statusCalls++
 	return f.status, nil
 }
-func (f *forgeTokenFixture) GetForgeTokenForUse(context.Context, string) (core.ForgeTokenCredential, error) {
-	return core.ForgeTokenCredential{}, nil
+func (f *forgeTokenFixture) GetForgeTokenForUse(_ context.Context, userID string) (core.ForgeTokenCredential, error) {
+	return core.ForgeTokenCredential{ForgeTokenStatus: f.status, UserID: userID, Token: f.token}, nil
 }
 func (f *forgeTokenFixture) ListForgeTokensForRedaction(context.Context) ([]string, error) {
 	if f.token == "" {
