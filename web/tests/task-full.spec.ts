@@ -3025,6 +3025,87 @@ test('work-order cards use their actual stage and technical activity exposes cap
   await expect(technical.getByText('provider rejected the configured model', { exact: false })).toBeVisible()
 })
 
+test('implementation job cards keep duration left and model right without a standalone unavailable-usage label', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 480, height: 720 })
+  await page.route('**/v1/tasks/implementation-card/activity*', async (route) => {
+    const item = activity('stage-aware', false)
+    item.task.id = 'implementation-card'
+    item.jobs = [
+      {
+        id: 'implementation-card-implement-1',
+        task_id: 'implementation-card',
+        stage: 'implement',
+        harness: 'codex',
+        model_tier: 'gpt-implement-with-an-intentionally-long-model-name',
+        runner: 'worker',
+        confinement: 'none',
+        cost_usd: 0,
+        tokens_in: 0,
+        tokens_out: 0,
+        state: 'done',
+        started_at: createdAt,
+        ended_at: '2026-07-15T12:01:00Z',
+      },
+    ]
+    item.work_orders = [
+      {
+        ...item.work_orders[1],
+        id: 'implementation-card-implement-1',
+        task_id: 'implementation-card',
+        job_id: 'implementation-card-implement-1',
+        state: 'completed',
+        required_model: 'gpt-implement-with-an-intentionally-long-model-name',
+      },
+    ]
+    item.events = [
+      {
+        id: 1,
+        task_id: 'implementation-card',
+        job_id: 'implementation-card-implement-1',
+        kind: 'job.summary',
+        actor_id: 'worker',
+        actor_role: 'runner',
+        payload: { summary: 'Implementation completed without reported usage.' },
+        at: '2026-07-15T12:01:00Z',
+      },
+    ]
+    await route.fulfill({ json: item })
+  })
+
+  await page.goto('/tasks/implementation-card/full')
+  const card = page.locator('article').filter({ hasText: 'Implementation completed without reported usage.' })
+  const footer = card.locator('footer')
+  const directItems = footer.locator(':scope > span')
+  const duration = directItems.first()
+  const model = directItems.last()
+
+  await expect(directItems).toHaveCount(2)
+  await expect(duration).toHaveText('1m 00s')
+  await expect(model).toContainText('gpt-implement')
+  const unavailableUsage = footer.getByText('Usage unavailable', { exact: true })
+  await expect(unavailableUsage).toHaveCount(1)
+  await expect(unavailableUsage).toHaveAttribute('role', 'tooltip')
+  await expect(unavailableUsage).toHaveCSS('opacity', '0')
+
+  const layout = await footer.evaluate((element) => {
+    const [durationItem, modelItem] = Array.from(element.children) as HTMLElement[]
+    const footerBox = element.getBoundingClientRect()
+    const durationBox = durationItem.getBoundingClientRect()
+    const modelBox = modelItem.getBoundingClientRect()
+    const style = getComputedStyle(element)
+    return {
+      durationInset: durationBox.left - footerBox.left - Number.parseFloat(style.paddingLeft),
+      modelInset: footerBox.right - Number.parseFloat(style.paddingRight) - modelBox.right,
+      overflows: element.scrollWidth > element.clientWidth,
+    }
+  })
+  expect(layout.durationInset).toBeLessThanOrEqual(1)
+  expect(layout.modelInset).toBeLessThanOrEqual(1)
+  expect(layout.overflows).toBe(false)
+})
+
 test('task detail aggregates reported work-order usage and distinguishes reported zero from unavailable', async ({
   page,
 }) => {
