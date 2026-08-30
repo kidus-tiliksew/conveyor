@@ -1611,6 +1611,22 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
       parent_task_id: taskId === 'blueprint-child' ? 'blueprint-parent' : undefined,
       origin_spec_version: taskId === 'blueprint-child' ? 1 : undefined,
       origin_sub_id: taskId === 'blueprint-child' ? 'SUB-3' : undefined,
+      github:
+        taskId === 'github-fallback'
+          ? {
+              task_id: taskId,
+              repository: 'acme/conveyor',
+              spec_version: 7,
+              source: 'dashboard',
+              state: 'retrying' as const,
+              create_state: 'reconciling' as const,
+              create_attempts: 1,
+              reconcile_misses: 0,
+              attempts: 1,
+              created_at: createdAt,
+              updated_at: createdAt,
+            }
+          : undefined,
       blocking_task_ids:
         taskId === 'blueprint-child'
           ? ['blueprint-sub-2']
@@ -2118,6 +2134,12 @@ test('task detail headers show the task name while routes and API lookup keep us
   await expect(sheetHeader).toContainText('Short task')
   await expect(sheetHeader).not.toContainText(sheetTaskID)
   expect(new URL(page.url()).pathname).toBe(`/tasks/${sheetTaskID}`)
+})
+
+test('task metadata presents stored spec versions as plan versions', async ({ page }) => {
+  await page.goto('/tasks/github-fallback/full')
+  await expect(page.getByText('retrying · plan v7')).toBeVisible()
+  await expect(page.getByText('retrying · spec v7')).toHaveCount(0)
 })
 
 test('Work on this shows, copies, and responsively wraps the task run command', async ({ page, context }) => {
@@ -2992,7 +3014,7 @@ test('work-order cards use their actual stage and technical activity exposes cap
 }) => {
   await page.goto('/tasks/stage-aware/full')
   const timeline = page.getByRole('region', { name: 'Execution event timeline' })
-  await expect(timeline.getByText('Spec — waiting for an operator agent', { exact: true })).toBeVisible()
+  await expect(timeline.getByText('Plan — waiting for an operator agent', { exact: true })).toBeVisible()
   await expect(timeline.getByText('Implementation — in progress', { exact: true })).toBeVisible()
   await expect(timeline.getByText('Review — timed out', { exact: true })).toBeVisible()
   await expect(timeline.getByText('Review — waiting for an operator agent', { exact: true })).toHaveCount(0)
@@ -4286,7 +4308,7 @@ test('blueprint and dependency details remain linked and read only', async ({ pa
   await expect(page.getByText('Implementation — waiting for an operator agent', { exact: true })).toHaveCount(0)
   await expect(page.getByText('Any agent connected over MCP can claim this.', { exact: false })).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Redispatch' })).toHaveCount(0)
-  await expect(page.getByRole('link', { name: 'Phase 6 blueprint · spec v1' })).toHaveAttribute(
+  await expect(page.getByRole('link', { name: 'Phase 6 blueprint · plan v1' })).toHaveAttribute(
     'href',
     '/blueprints/blueprint-parent',
   )
@@ -4300,6 +4322,25 @@ test('blueprint and dependency details remain linked and read only', async ({ pa
   )
   await expect(page.getByText('awaiting_human')).toHaveCount(0)
   await expect(page.getByText('terminal outcome')).toHaveCount(0)
+})
+
+test('blueprint history describes a missing stored spec as a missing plan version', async ({ page }) => {
+  const [blueprint] = blueprintProjection()
+  await page.route('**/v1/blueprints**', (route) =>
+    route.fulfill({
+      json: [
+        {
+          ...blueprint,
+          spec: undefined,
+          governing_version: undefined,
+        },
+      ],
+    }),
+  )
+
+  await page.goto('/blueprints/blueprint-parent')
+  await expect(page.getByText('This blueprint has no recorded plan version.')).toBeVisible()
+  await expect(page.getByText('This blueprint has no recorded spec version.')).toHaveCount(0)
 })
 
 test('blocked detail polling clears waiting state without a reload and stays off when unblocked', async ({ page }) => {
@@ -4332,7 +4373,7 @@ test('dependency links follow the detail route variant and spec claiming stays a
   await page.goto('/tasks/spec-while-blocked/full')
   const timeline = page.getByRole('region', { name: 'Execution event timeline' })
   await expect(timeline.getByRole('heading', { name: 'Waiting on dependencies' })).toBeVisible()
-  await expect(timeline.getByText('Spec — waiting for an operator agent', { exact: true })).toBeVisible()
+  await expect(timeline.getByText('Plan — waiting for an operator agent', { exact: true })).toBeVisible()
   await expect(timeline.getByText('Implementation — waiting for an operator agent', { exact: true })).toHaveCount(0)
 })
 

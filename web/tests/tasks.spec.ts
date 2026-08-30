@@ -49,7 +49,7 @@ const operations = [
     last_event_at: '2026-08-06T09:00:00Z',
     needs_attention: false,
     child_rollup: { total: 3, merged: 1, closed: 1, open: 1 },
-    plan: { state: 'approved', version: 1 },
+    plan: { state: 'approved', version: 1, legacy: true },
   },
   {
     task: {
@@ -376,6 +376,7 @@ test('tasks view reports actionable plan status and stays quiet about approved p
 
   const approved = rows(page).filter({ hasText: 'Historical anchor' })
   await expect(approved.getByText('Plan approved', { exact: false })).toHaveCount(0)
+  await expect(approved.getByText('Historical plan gate')).toBeVisible()
   // The stage itself is what the column is for, and it stays.
   await expect(approved.getByText('Implement', { exact: true })).toBeVisible()
 })
@@ -509,7 +510,10 @@ test('tasks view exposes no priority or declared-phase field', async ({ page }) 
 test('tasks view is where a task is created', async ({ page }) => {
   await openTasks(page)
   await page.getByRole('link', { name: 'New task' }).click()
-  await expect(page.getByRole('dialog', { name: 'New task' })).toBeVisible()
+  const intake = page.getByRole('dialog', { name: 'New task' })
+  await expect(intake).toBeVisible()
+  await expect(intake.getByText(/triage and plan prompt/)).toBeVisible()
+  await expect(intake.getByText(/Designs, plans, logs .* triage and plan agents/)).toBeVisible()
   expect(new URL(page.url()).pathname).toBe('/tasks')
   // The list it files into stays behind the sheet rather than being replaced.
   await expect(page.getByRole('heading', { name: 'Tasks' })).toBeVisible()

@@ -116,7 +116,7 @@ function BlueprintSpec({ view }: { view: BlueprintView }) {
           <CardTitle>Blueprint</CardTitle>
         </CardHeader>
         <CardContent>
-          <p className="text-sm text-muted">This blueprint has no recorded spec version.</p>
+          <p className="text-sm text-muted">This blueprint has no recorded plan version.</p>
         </CardContent>
       </Card>
     )
