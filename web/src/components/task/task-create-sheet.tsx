@@ -185,7 +185,7 @@ export function TaskCreateSheet({
       <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-5 py-4">
         <Field
           label="Description"
-          hint="AI generates the task title from this context, which also becomes the triage and spec prompt."
+          hint="AI generates the task title from this context, which also becomes the triage and plan prompt."
         >
           <MarkdownEditor value={body} onChange={setBody} placeholder={descriptionScaffold} />
         </Field>
@@ -327,7 +327,7 @@ export function TaskCreateSheet({
 
         <Field
           label="Attachments"
-          hint="Designs, specs, logs — uploaded as task artifacts for the triage and spec agents."
+          hint="Designs, plans, logs — uploaded as task artifacts for the triage and plan agents."
         >
           <input
             ref={fileInput}

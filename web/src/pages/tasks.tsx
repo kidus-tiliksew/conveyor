@@ -407,19 +407,19 @@ function PlanBadge({ plan }: { plan: TaskPlanStatus }) {
   const version = plan.version ? ` v${plan.version}` : ''
   switch (plan.state) {
     case 'approved':
-      return plan.legacy ? <Badge variant="mono">Historical spec gate</Badge> : null
+      return plan.legacy ? <Badge variant="mono">Historical plan gate</Badge> : null
     case 'pending_gate':
       return (
         <>
           <Badge variant="attention">Plan awaiting approval{version}</Badge>
-          {plan.legacy && <Badge variant="mono">Historical spec gate</Badge>}
+          {plan.legacy && <Badge variant="mono">Historical plan gate</Badge>}
         </>
       )
     case 'redirected':
       return (
         <>
           <Badge variant="attention">Plan changes requested{version}</Badge>
-          {plan.legacy && <Badge variant="mono">Historical spec gate</Badge>}
+          {plan.legacy && <Badge variant="mono">Historical plan gate</Badge>}
         </>
       )
     default:
