@@ -644,7 +644,7 @@ function FinalizedHandoff({
         <div className="min-w-0 flex-1">
           <p className="text-sm font-semibold text-positive">Planning artifact finalized</p>
           <p className="text-xs text-muted">
-            The conversation is archived in lineage; authority remains with the ordinary confirmation or spec gate.
+            The conversation is archived in lineage; authority remains with the ordinary confirmation or plan gate.
           </p>
         </div>
         {session.produced_requirement_id && (
@@ -662,7 +662,7 @@ function FinalizedHandoff({
             params={{ taskId: session.produced_task_id }}
             className="inline-flex items-center gap-1.5 text-sm font-medium text-primary hover:underline"
           >
-            Open spec gate <ArrowRight className="size-4" />
+            Open plan gate <ArrowRight className="size-4" />
           </Link>
         )}
       </div>

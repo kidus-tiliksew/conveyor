@@ -149,7 +149,7 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
                   className="text-primary hover:underline"
                 >
                   {parent?.title ?? item.task.parent_task_id}
-                  {item.task.origin_spec_version ? ` · spec v${item.task.origin_spec_version}` : ''}
+                  {item.task.origin_spec_version ? ` · plan v${item.task.origin_spec_version}` : ''}
                 </Link>
                 {/* Blueprint history left the sidebar with the rest of the
                     parked presentation (AC-4.1), so the records reach through
@@ -202,7 +202,7 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
                   <ExternalLink className="size-3 shrink-0" />
                 </a>
               ) : (
-                `${item.task.github.state} · spec v${item.task.github.spec_version}`
+                `${item.task.github.state} · plan v${item.task.github.spec_version}`
               )
             }
           />

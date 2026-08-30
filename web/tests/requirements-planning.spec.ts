@@ -1869,7 +1869,8 @@ test('a historical finalized blueprint session remains readable', async ({ page 
 
   await page.goto('/planning')
   await expect(page.getByText('Planning artifact finalized')).toBeVisible()
-  await expect(page.getByRole('link', { name: 'Open spec gate' })).toHaveAttribute('href', '/tasks/blueprint-task')
+  await expect(page.getByText(/authority remains with the ordinary confirmation or plan gate/)).toBeVisible()
+  await expect(page.getByRole('link', { name: 'Open plan gate' })).toHaveAttribute('href', '/tasks/blueprint-task')
 })
 
 test('reference documents upload safely, load history on demand, compare both sides, and confirm deletion', async ({
