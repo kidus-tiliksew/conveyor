@@ -32,14 +32,52 @@ func TestSystemDesignViewSerializesDriftDetectedAt(t *testing.T) {
 	}
 }
 
+func TestSystemDesignArchiveRESTLifecycle(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	document, version, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "design-archive-api", Title: "Archive API", Category: "Architecture"}, core.SystemDesignVersion{Content: "# Archive\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/**\n```", Origin: core.SystemDesignOriginOperator})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmSystemDesignVersion(ctx, document.ID, version.Version); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(st)
+	server.Workspace, server.BearerToken = "demo", "token"
+	handler := server.Handler()
+	call := func(method, path string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, path, nil)
+		req.Header.Set("Authorization", "Bearer token")
+		req.Header.Set("X-Conveyor-Actor", "archive-operator")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, req)
+		return response
+	}
+	if response := call(http.MethodPost, "/v1/system-designs/"+document.ID+"/archive"); response.Code != http.StatusOK {
+		t.Fatalf("archive status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := call(http.MethodGet, "/v1/system-designs"); response.Code != http.StatusOK || strings.Contains(response.Body.String(), document.ID) {
+		t.Fatalf("default list status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := call(http.MethodGet, "/v1/system-designs?include_archived=true"); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"archived":true`) {
+		t.Fatalf("archived list status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := call(http.MethodPost, "/v1/system-designs/"+document.ID+"/versions/1/confirm"); response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), `"error":"system_design_archived"`) {
+		t.Fatalf("confirm status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := call(http.MethodPost, "/v1/system-designs/"+document.ID+"/restore"); response.Code != http.StatusOK || strings.Contains(response.Body.String(), `"archived":true`) {
+		t.Fatalf("restore status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
 type countingSystemDesignStore struct {
 	store.Store
 	lists, versionBatches, eventBatches, driftCounts, singularVersions, singularEvents int
 }
 
-func (s *countingSystemDesignStore) ListSystemDesigns(ctx context.Context) ([]core.SystemDesign, error) {
+func (s *countingSystemDesignStore) ListSystemDesigns(ctx context.Context, includeArchived bool) ([]core.SystemDesign, error) {
 	s.lists++
-	return s.Store.ListSystemDesigns(ctx)
+	return s.Store.ListSystemDesigns(ctx, includeArchived)
 }
 func (s *countingSystemDesignStore) ListSystemDesignVersionsByDocument(ctx context.Context) (map[string][]core.SystemDesignVersion, error) {
 	s.versionBatches++

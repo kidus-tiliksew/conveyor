@@ -111,26 +111,59 @@ func (s *Store) GetRequirement(ctx context.Context, id string) (core.Requirement
 	return scanRequirement(s.pool.QueryRow(ctx, requirementSelect+` WHERE workspace_id=$1 AND id=$2`, workspace(ctx), id), id)
 }
 
-func (s *Store) ListRequirements(ctx context.Context) ([]core.Requirement, error) {
-	rows, err := s.pool.Query(ctx, requirementSelect+` WHERE workspace_id=$1 ORDER BY title,id`, workspace(ctx))
+func (s *Store) ListRequirements(ctx context.Context, includeArchived bool) ([]core.Requirement, error) {
+	rows, err := s.pool.Query(ctx, requirementSelect+` WHERE workspace_id=$1 AND ($2 OR archived_at IS NULL) ORDER BY title,id`, workspace(ctx), includeArchived)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	out := []core.Requirement{}
 	for rows.Next() {
-		var requirement core.Requirement
-		var currentVersion *int32
-		if err := rows.Scan(&requirement.Workspace, &requirement.ID, &requirement.Slug, &requirement.Title,
-			&currentVersion, &requirement.StatementHighWaterMark, &requirement.CreatedAt, &requirement.UpdatedAt); err != nil {
-			return nil, err
-		}
-		if currentVersion != nil {
-			requirement.CurrentVersion = int(*currentVersion)
+		requirement, scanErr := scanRequirement(rows, "")
+		if scanErr != nil {
+			return nil, scanErr
 		}
 		out = append(out, requirement)
 	}
 	return out, rows.Err()
+}
+
+func (s *Store) ArchiveRequirement(ctx context.Context, id, actor string) error {
+	return s.setRequirementArchived(ctx, id, actor, true)
+}
+
+func (s *Store) RestoreRequirement(ctx context.Context, id, actor string) error {
+	return s.setRequirementArchived(ctx, id, actor, false)
+}
+
+func (s *Store) setRequirementArchived(ctx context.Context, id, actor string, archived bool) error {
+	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		var current *int
+		var archivedAt *time.Time
+		if err := tx.QueryRow(ctx, `SELECT current_version,archived_at FROM requirements WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspace(ctx), id).Scan(&current, &archivedAt); err != nil {
+			return notFound(err, "requirement %s", id)
+		}
+		if (archivedAt != nil) == archived {
+			return nil
+		}
+		now := time.Now().UTC()
+		if archived {
+			if _, err := tx.Exec(ctx, `UPDATE requirements SET archived_at=$3,archived_by=$4,updated_at=$3 WHERE workspace_id=$1 AND id=$2`, workspace(ctx), id, now, actor); err != nil {
+				return err
+			}
+		} else if _, err := tx.Exec(ctx, `UPDATE requirements SET archived_at=NULL,archived_by='',updated_at=$3 WHERE workspace_id=$1 AND id=$2`, workspace(ctx), id, now); err != nil {
+			return err
+		}
+		version := 0
+		if current != nil {
+			version = *current
+		}
+		kind := "requirement.restored"
+		if archived {
+			kind = "requirement.archived"
+		}
+		return insertRequirementEvent(ctx, q, kind, map[string]any{"workspace_id": workspace(ctx), "requirement_id": id, "version": version, "actor": actor, "at": now})
+	})
 }
 
 func (s *Store) AcknowledgeRequirementStaleness(ctx context.Context, acknowledgment core.RequirementStalenessAcknowledgment) (core.RequirementStalenessAcknowledgment, error) {
@@ -191,6 +224,11 @@ func (s *Store) ProposeRequirementVersion(ctx context.Context, version core.Requ
 				return fmt.Errorf("requirement %s not found", version.RequirementID)
 			}
 			return err
+		}
+		if archived, archiveErr := documentArchivedTx(ctx, tx, "requirements", version.Workspace, version.RequirementID); archiveErr != nil {
+			return archiveErr
+		} else if archived {
+			return &store.RequirementArchivedError{RequirementID: version.RequirementID}
 		}
 		// Every REQ-n the document has ever issued, not just its latest
 		// version's, so reinstating a statement that an unconfirmed proposal
@@ -299,6 +337,11 @@ func (s *Store) ConfirmRequirementVersion(ctx context.Context, requirementID str
 			}
 			return err
 		}
+		if archived, archiveErr := documentArchivedTx(ctx, tx, "requirements", workspace(ctx), requirementID); archiveErr != nil {
+			return archiveErr
+		} else if archived {
+			return &store.RequirementArchivedError{RequirementID: requirementID}
+		}
 		current := 0
 		if currentVersion != nil {
 			current = int(*currentVersion)
@@ -317,8 +360,7 @@ func (s *Store) ConfirmRequirementVersion(ctx context.Context, requirementID str
 		}
 		if stored.Confirmed && version == current {
 			confirmed = stored
-			requirement, err = scanRequirement(tx.QueryRow(ctx, requirementSelect+
-				` WHERE workspace_id=$1 AND id=$2`, workspace(ctx), requirementID), requirementID)
+			requirement, err = getRequirementTx(ctx, tx, requirementID)
 			return err
 		}
 		if stored.Retired {
@@ -386,8 +428,7 @@ func (s *Store) ConfirmRequirementVersion(ctx context.Context, requirementID str
 		}
 		stored.Confirmed, stored.ConfirmedBy, stored.ConfirmedAt = true, actor.ID, now
 		confirmed = stored
-		if requirement, err = scanRequirement(tx.QueryRow(ctx, requirementSelect+
-			` WHERE workspace_id=$1 AND id=$2`, workspace(ctx), requirementID), requirementID); err != nil {
+		if requirement, err = getRequirementTx(ctx, tx, requirementID); err != nil {
 			return err
 		}
 		payload := map[string]any{
@@ -459,8 +500,7 @@ func (s *Store) DismissRequirementVersion(ctx context.Context, requirementID str
 			return err
 		}
 		dismissed.Retired, dismissed.RetiredBy, dismissed.RetiredAt, dismissed.RetiredByVersion = true, actor.ID, now, 0
-		if requirement, err = scanRequirement(tx.QueryRow(ctx, requirementSelect+
-			` WHERE workspace_id=$1 AND id=$2`, workspace(ctx), requirementID), requirementID); err != nil {
+		if requirement, err = getRequirementTx(ctx, tx, requirementID); err != nil {
 			return err
 		}
 		return insertRequirementEvent(ctx, q, "requirement.version_dismissed", map[string]any{
@@ -934,7 +974,7 @@ func (s *Store) ListPlanningSessionEvents(ctx context.Context, sessionID string)
 	return out, rows.Err()
 }
 
-const requirementSelect = `SELECT workspace_id,id,slug,title,current_version,statement_high_water_mark,created_at,updated_at FROM requirements`
+const requirementSelect = `SELECT workspace_id,id,slug,title,current_version,statement_high_water_mark,archived_at,archived_by,created_at,updated_at FROM requirements`
 
 const requirementVersionSelect = `SELECT workspace_id,requirement_id,version,content,statements_json,origin,origin_session_id,origin_task_id,origin_drift_id,confirmed,confirmed_by,confirmed_at,retired,retired_by,retired_at,retired_by_version,created_at,derived_from FROM requirement_versions`
 
@@ -947,8 +987,9 @@ const planningSessionSelect = `SELECT workspace_id,id,title,status,goal,COALESCE
 func scanRequirement(row pgx.Row, id string) (core.Requirement, error) {
 	var requirement core.Requirement
 	var currentVersion *int32
+	var archivedAt *time.Time
 	if err := row.Scan(&requirement.Workspace, &requirement.ID, &requirement.Slug, &requirement.Title,
-		&currentVersion, &requirement.StatementHighWaterMark, &requirement.CreatedAt, &requirement.UpdatedAt); err != nil {
+		&currentVersion, &requirement.StatementHighWaterMark, &archivedAt, &requirement.ArchivedBy, &requirement.CreatedAt, &requirement.UpdatedAt); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return core.Requirement{}, fmt.Errorf("%w: requirement %s", store.ErrNotFound, id)
 		}
@@ -957,7 +998,30 @@ func scanRequirement(row pgx.Row, id string) (core.Requirement, error) {
 	if currentVersion != nil {
 		requirement.CurrentVersion = int(*currentVersion)
 	}
+	if archivedAt != nil {
+		requirement.Archived, requirement.ArchivedAt = true, *archivedAt
+	}
 	return requirement, nil
+}
+
+func getRequirementTx(ctx context.Context, tx pgx.Tx, id string) (core.Requirement, error) {
+	exists, err := archivalColumnExistsTx(ctx, tx, "requirements")
+	if err != nil {
+		return core.Requirement{}, err
+	}
+	if exists {
+		return scanRequirement(tx.QueryRow(ctx, requirementSelect+` WHERE workspace_id=$1 AND id=$2`, workspace(ctx), id), id)
+	}
+	var requirement core.Requirement
+	var currentVersion *int32
+	err = tx.QueryRow(ctx, `SELECT workspace_id,id,slug,title,current_version,statement_high_water_mark,created_at,updated_at FROM requirements WHERE workspace_id=$1 AND id=$2`, workspace(ctx), id).Scan(&requirement.Workspace, &requirement.ID, &requirement.Slug, &requirement.Title, &currentVersion, &requirement.StatementHighWaterMark, &requirement.CreatedAt, &requirement.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return core.Requirement{}, fmt.Errorf("%w: requirement %s", store.ErrNotFound, id)
+	}
+	if currentVersion != nil {
+		requirement.CurrentVersion = int(*currentVersion)
+	}
+	return requirement, err
 }
 
 func scanRequirementVersion(row pgx.Row, requirementID string, version int) (core.RequirementVersion, error) {

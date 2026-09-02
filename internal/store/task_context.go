@@ -104,14 +104,14 @@ func TaskContextFromEvents(ctx context.Context, st Store, events []core.Event) (
 		if getErr != nil || document.CurrentVersion <= 0 {
 			continue
 		}
-		result.Requirements = append(result.Requirements, core.TaskRequirementContext{ID: id, Title: document.Title, Version: document.CurrentVersion})
+		result.Requirements = append(result.Requirements, core.TaskRequirementContext{ID: id, Title: document.Title, Version: document.CurrentVersion, Archived: document.Archived})
 	}
 	for id, version := range designs {
 		document, getErr := st.GetSystemDesign(ctx, id)
 		if getErr != nil {
 			continue
 		}
-		result.Designs = append(result.Designs, core.TaskDesignContext{ID: id, Title: document.Title, Version: version})
+		result.Designs = append(result.Designs, core.TaskDesignContext{ID: id, Title: document.Title, Version: version, Archived: document.Archived})
 	}
 	sort.Slice(result.Requirements, func(i, j int) bool { return result.Requirements[i].ID < result.Requirements[j].ID })
 	sort.Slice(result.Designs, func(i, j int) bool { return result.Designs[i].ID < result.Designs[j].ID })

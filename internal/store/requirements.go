@@ -158,13 +158,13 @@ func (m *memory) GetRequirement(ctx context.Context, id string) (core.Requiremen
 	return requirement, nil
 }
 
-func (m *memory) ListRequirements(ctx context.Context) ([]core.Requirement, error) {
+func (m *memory) ListRequirements(ctx context.Context, includeArchived bool) ([]core.Requirement, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	workspace := workspaceOrDefault(ctx, "")
 	out := []core.Requirement{}
 	for key, requirement := range m.requirements {
-		if key.workspace == workspace {
+		if key.workspace == workspace && (includeArchived || !requirement.Archived) {
 			out = append(out, requirement)
 		}
 	}
@@ -177,6 +177,45 @@ func (m *memory) ListRequirements(ctx context.Context) ([]core.Requirement, erro
 	return out, nil
 }
 
+func (m *memory) ArchiveRequirement(ctx context.Context, id, actor string) error {
+	return m.setRequirementArchived(ctx, id, actor, true)
+}
+
+func (m *memory) RestoreRequirement(ctx context.Context, id, actor string) error {
+	return m.setRequirementArchived(ctx, id, actor, false)
+}
+
+func (m *memory) setRequirementArchived(ctx context.Context, id, actor string, archived bool) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	workspace := workspaceOrDefault(ctx, "")
+	key := memoryScopedKey{workspace: workspace, id: id}
+	document, ok := m.requirements[key]
+	if !ok {
+		return fmt.Errorf("%w: requirement %s", ErrNotFound, id)
+	}
+	if document.Archived == archived {
+		return nil
+	}
+	now := time.Now().UTC()
+	document.Archived, document.UpdatedAt = archived, now
+	if archived {
+		document.ArchivedBy, document.ArchivedAt = actor, now
+	} else {
+		document.ArchivedBy, document.ArchivedAt = "", time.Time{}
+	}
+	m.requirements[key] = document
+	kind := "requirement.restored"
+	if archived {
+		kind = "requirement.archived"
+	}
+	m.appendEventLocked(ctx, core.Event{Kind: kind, Payload: core.JSONPayload(map[string]any{
+		"workspace_id": workspace, "requirement_id": id, "version": document.CurrentVersion,
+		"actor": actor, "at": now,
+	})})
+	return nil
+}
+
 func (m *memory) ProposeRequirementVersion(ctx context.Context, version core.RequirementVersion) (core.RequirementVersion, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -185,6 +224,9 @@ func (m *memory) ProposeRequirementVersion(ctx context.Context, version core.Req
 	requirement, ok := m.requirements[key]
 	if !ok {
 		return core.RequirementVersion{}, fmt.Errorf("requirement %s not found", version.RequirementID)
+	}
+	if requirement.Archived {
+		return core.RequirementVersion{}, &RequirementArchivedError{RequirementID: version.RequirementID}
 	}
 	if err := core.ValidateRequirementOrigin(version); err != nil {
 		return core.RequirementVersion{}, err
@@ -249,6 +291,9 @@ func (m *memory) ConfirmRequirementVersion(ctx context.Context, requirementID st
 	requirement, ok := m.requirements[key]
 	if !ok {
 		return core.Requirement{}, core.RequirementVersion{}, fmt.Errorf("requirement %s not found", requirementID)
+	}
+	if requirement.Archived {
+		return core.Requirement{}, core.RequirementVersion{}, &RequirementArchivedError{RequirementID: requirementID}
 	}
 	versions := m.requirementVersions[key]
 	if len(expectedCurrentVersion) > 1 {
@@ -331,6 +376,9 @@ func (m *memory) DismissRequirementVersion(ctx context.Context, requirementID st
 	requirement, ok := m.requirements[key]
 	if !ok {
 		return core.Requirement{}, core.RequirementVersion{}, fmt.Errorf("%w: requirement %s", ErrNotFound, requirementID)
+	}
+	if requirement.Archived {
+		return core.Requirement{}, core.RequirementVersion{}, &RequirementArchivedError{RequirementID: requirementID}
 	}
 	versions := m.requirementVersions[key]
 	if version < 1 || version > len(versions) {

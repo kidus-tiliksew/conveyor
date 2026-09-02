@@ -17,6 +17,9 @@ func (m *memory) ListPendingProposals(ctx context.Context) ([]core.PendingPropos
 			continue
 		}
 		document := m.systemDesigns[key]
+		if document.Archived {
+			continue
+		}
 		for _, version := range versions {
 			if version.Confirmed || version.Dismissed {
 				continue
@@ -35,6 +38,9 @@ func (m *memory) ListPendingProposals(ctx context.Context) ([]core.PendingPropos
 			continue
 		}
 		document := m.requirements[key]
+		if document.Archived {
+			continue
+		}
 		for _, version := range versions {
 			// Older unconfirmed revisions become unactionable once intent moves
 			// past them; a newer still-pending revision remains independently

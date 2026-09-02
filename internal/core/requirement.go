@@ -118,6 +118,9 @@ type Requirement struct {
 	// It is monotonic so a retired statement's ID is never reissued to a
 	// different statement in a later revision.
 	StatementHighWaterMark int       `json:"statement_high_water_mark"`
+	Archived               bool      `json:"archived"`
+	ArchivedBy             string    `json:"archived_by,omitempty"`
+	ArchivedAt             time.Time `json:"archived_at,omitempty"`
 	Workspace              string    `json:"workspace"`
 	CreatedAt              time.Time `json:"created_at"`
 	UpdatedAt              time.Time `json:"updated_at"`

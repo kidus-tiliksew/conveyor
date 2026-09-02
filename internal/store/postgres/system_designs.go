@@ -66,35 +66,71 @@ func (s *Store) CreateSystemDesign(ctx context.Context, document core.SystemDesi
 func (s *Store) GetSystemDesign(ctx context.Context, id string) (core.SystemDesign, error) {
 	item := core.SystemDesign{Workspace: workspace(ctx), ID: id}
 	var current *int
-	err := s.pool.QueryRow(ctx, `SELECT slug,title,category,current_version,created_at,updated_at FROM system_designs WHERE workspace_id=$1 AND id=$2`, workspace(ctx), id).Scan(&item.Slug, &item.Title, &item.Category, &current, &item.CreatedAt, &item.UpdatedAt)
+	var archivedAt *time.Time
+	err := s.pool.QueryRow(ctx, `SELECT slug,title,category,current_version,archived_at,archived_by,created_at,updated_at FROM system_designs WHERE workspace_id=$1 AND id=$2`, workspace(ctx), id).Scan(&item.Slug, &item.Title, &item.Category, &current, &archivedAt, &item.ArchivedBy, &item.CreatedAt, &item.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return item, fmt.Errorf("%w: system design %s", store.ErrNotFound, id)
 	}
 	if current != nil {
 		item.CurrentVersion = *current
 	}
+	if archivedAt != nil {
+		item.Archived, item.ArchivedAt = true, *archivedAt
+	}
 	return item, err
 }
 
-func (s *Store) ListSystemDesigns(ctx context.Context) ([]core.SystemDesign, error) {
-	rows, err := s.pool.Query(ctx, `SELECT id,slug,title,category,current_version,created_at,updated_at FROM system_designs WHERE workspace_id=$1 ORDER BY category,title,id`, workspace(ctx))
+func (s *Store) ListSystemDesigns(ctx context.Context, includeArchived bool) ([]core.SystemDesign, error) {
+	rows, err := s.pool.Query(ctx, systemDesignSelect+` WHERE workspace_id=$1 AND ($2 OR archived_at IS NULL) ORDER BY category,title,id`, workspace(ctx), includeArchived)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	out := []core.SystemDesign{}
 	for rows.Next() {
-		item := core.SystemDesign{Workspace: workspace(ctx)}
-		var current *int
-		if err = rows.Scan(&item.ID, &item.Slug, &item.Title, &item.Category, &current, &item.CreatedAt, &item.UpdatedAt); err != nil {
-			return nil, err
-		}
-		if current != nil {
-			item.CurrentVersion = *current
+		item, scanErr := scanSystemDesign(rows, "")
+		if scanErr != nil {
+			return nil, scanErr
 		}
 		out = append(out, item)
 	}
 	return out, rows.Err()
+}
+
+func (s *Store) ArchiveSystemDesign(ctx context.Context, id, actor string) error {
+	return s.setSystemDesignArchived(ctx, id, actor, true)
+}
+func (s *Store) RestoreSystemDesign(ctx context.Context, id, actor string) error {
+	return s.setSystemDesignArchived(ctx, id, actor, false)
+}
+func (s *Store) setSystemDesignArchived(ctx context.Context, id, actor string, archived bool) error {
+	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		var current *int
+		var archivedAt *time.Time
+		if err := tx.QueryRow(ctx, `SELECT current_version,archived_at FROM system_designs WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspace(ctx), id).Scan(&current, &archivedAt); err != nil {
+			return notFound(err, "system design %s", id)
+		}
+		if (archivedAt != nil) == archived {
+			return nil
+		}
+		now := time.Now().UTC()
+		if archived {
+			if _, err := tx.Exec(ctx, `UPDATE system_designs SET archived_at=$3,archived_by=$4,updated_at=$3 WHERE workspace_id=$1 AND id=$2`, workspace(ctx), id, now, actor); err != nil {
+				return err
+			}
+		} else if _, err := tx.Exec(ctx, `UPDATE system_designs SET archived_at=NULL,archived_by='',updated_at=$3 WHERE workspace_id=$1 AND id=$2`, workspace(ctx), id, now); err != nil {
+			return err
+		}
+		version := 0
+		if current != nil {
+			version = *current
+		}
+		kind := "system_design.restored"
+		if archived {
+			kind = "system_design.archived"
+		}
+		return insertWorkspaceEvent(ctx, q, core.Event{Kind: kind, Payload: core.JSONPayload(map[string]any{"workspace_id": workspace(ctx), "document_id": id, "version": version, "actor": actor, "at": now})})
+	})
 }
 
 func (s *Store) ProposeSystemDesignVersion(ctx context.Context, version core.SystemDesignVersion) (core.SystemDesignVersion, error) {
@@ -105,6 +141,11 @@ func (s *Store) ProposeSystemDesignVersion(ctx context.Context, version core.Sys
 		var latest int
 		if err := tx.QueryRow(ctx, `SELECT 1 FROM system_designs WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspace(ctx), version.DocumentID).Scan(new(int)); err != nil {
 			return notFound(err, "system design %s", version.DocumentID)
+		}
+		if archived, archiveErr := documentArchivedTx(ctx, tx, "system_designs", workspace(ctx), version.DocumentID); archiveErr != nil {
+			return archiveErr
+		} else if archived {
+			return &store.SystemDesignArchivedError{DocumentID: version.DocumentID}
 		}
 		if version.Origin == core.SystemDesignOriginImplementation {
 			rows, queryErr := tx.Query(ctx, systemDesignVersionSelect+` WHERE workspace_id=$1 AND document_id=$2 AND origin=$3 AND origin_task_id=$4 AND NOT confirmed AND NOT dismissed ORDER BY version`, workspace(ctx), version.DocumentID, string(version.Origin), version.OriginTaskID)
@@ -159,6 +200,11 @@ func (s *Store) ConfirmSystemDesignVersion(ctx context.Context, documentID strin
 		var current *int
 		if err := tx.QueryRow(ctx, `SELECT current_version FROM system_designs WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspace(ctx), documentID).Scan(&current); err != nil {
 			return notFound(err, "system design %s", documentID)
+		}
+		if archived, archiveErr := documentArchivedTx(ctx, tx, "system_designs", workspace(ctx), documentID); archiveErr != nil {
+			return archiveErr
+		} else if archived {
+			return &store.SystemDesignArchivedError{DocumentID: documentID}
 		}
 		currentVersion := 0
 		if current != nil {
@@ -333,18 +379,22 @@ func reconcileConfirmedSystemDesignDriftTx(ctx context.Context, tx pgx.Tx, q *db
 	return nil
 }
 
-const systemDesignSelect = `SELECT workspace_id,id,slug,title,category,current_version,created_at,updated_at FROM system_designs`
+const systemDesignSelect = `SELECT workspace_id,id,slug,title,category,current_version,archived_at,archived_by,created_at,updated_at FROM system_designs`
 const systemDesignVersionSelect = `SELECT workspace_id,document_id,version,content,governs,origin,coalesce(origin_session_id,''),coalesce(origin_task_id,''),confirmed,coalesce(confirmed_by,''),confirmed_at,dismissed,coalesce(dismissed_by,''),dismissed_at,created_at FROM system_design_versions`
 
 func scanSystemDesign(row pgx.Row, id string) (core.SystemDesign, error) {
 	var item core.SystemDesign
 	var current *int
-	err := row.Scan(&item.Workspace, &item.ID, &item.Slug, &item.Title, &item.Category, &current, &item.CreatedAt, &item.UpdatedAt)
+	var archivedAt *time.Time
+	err := row.Scan(&item.Workspace, &item.ID, &item.Slug, &item.Title, &item.Category, &current, &archivedAt, &item.ArchivedBy, &item.CreatedAt, &item.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return item, fmt.Errorf("%w: system design %s", store.ErrNotFound, id)
 	}
 	if current != nil {
 		item.CurrentVersion = *current
+	}
+	if archivedAt != nil {
+		item.Archived, item.ArchivedAt = true, *archivedAt
 	}
 	return item, err
 }
@@ -374,6 +424,30 @@ func scanSystemDesignVersion(row pgx.Row, id string, version int) (core.SystemDe
 	return item, nil
 }
 
+// documentArchivedTx keeps historical migration tests able to seed an older
+// schema with the current store before migrating it forward.
+func documentArchivedTx(ctx context.Context, tx pgx.Tx, table, workspaceID, id string) (bool, error) {
+	if table != "requirements" && table != "system_designs" {
+		return false, fmt.Errorf("unsupported archival table %q", table)
+	}
+	columnExists, err := archivalColumnExistsTx(ctx, tx, table)
+	if err != nil || !columnExists {
+		return false, err
+	}
+	var archivedAt *time.Time
+	err = tx.QueryRow(ctx, fmt.Sprintf(`SELECT archived_at FROM %s WHERE workspace_id=$1 AND id=$2`, table), workspaceID, id).Scan(&archivedAt)
+	return archivedAt != nil, err
+}
+
+func archivalColumnExistsTx(ctx context.Context, tx pgx.Tx, table string) (bool, error) {
+	var columnExists bool
+	err := tx.QueryRow(ctx, `SELECT EXISTS (
+		SELECT 1 FROM information_schema.columns
+		WHERE table_schema=current_schema() AND table_name=$1 AND column_name='archived_at'
+	)`, table).Scan(&columnExists)
+	return columnExists, err
+}
+
 func (s *Store) GetSystemDesignVersion(ctx context.Context, id string, version int) (core.SystemDesignVersion, error) {
 	return scanSystemDesignVersion(s.pool.QueryRow(ctx, systemDesignVersionSelect+` WHERE workspace_id=$1 AND document_id=$2 AND version=$3`, workspace(ctx), id, version), id, version)
 }
@@ -399,7 +473,7 @@ func (s *Store) ListGovernanceDesigns(ctx context.Context, repository string) ([
 	rows, err := s.pool.Query(ctx, `SELECT d.id,d.title,d.category,v.version,v.content,v.governs
 		FROM system_designs d JOIN system_design_versions v
 		  ON v.workspace_id=d.workspace_id AND v.document_id=d.id AND v.version=d.current_version
-		WHERE d.workspace_id=$1 AND v.governs @> $2::jsonb ORDER BY d.id`, workspace(ctx), scope)
+		WHERE d.workspace_id=$1 AND d.archived_at IS NULL AND v.governs @> $2::jsonb ORDER BY d.id`, workspace(ctx), scope)
 	if err != nil {
 		return nil, err
 	}
@@ -789,11 +863,11 @@ func recomputeDecisionSupersessionSweepTx(ctx context.Context, tx pgx.Tx, q *db.
 WITH current_corpus AS (
   SELECT r.workspace_id,'requirement'::text document_tier,r.id document_id,v.content
   FROM requirements r JOIN requirement_versions v ON v.workspace_id=r.workspace_id AND v.requirement_id=r.id AND v.version=r.current_version
-  WHERE r.workspace_id=$1 AND v.confirmed
+  WHERE r.workspace_id=$1 AND r.archived_at IS NULL AND v.confirmed
   UNION ALL
   SELECT d.workspace_id,'system_design',d.id,v.content
   FROM system_designs d JOIN system_design_versions v ON v.workspace_id=d.workspace_id AND v.document_id=d.id AND v.version=d.current_version
-  WHERE d.workspace_id=$1 AND v.confirmed
+  WHERE d.workspace_id=$1 AND d.archived_at IS NULL AND v.confirmed
   UNION ALL
   SELECT d.workspace_id,'reference_document',d.id,v.content
   FROM reference_documents d JOIN reference_document_versions v ON v.workspace_id=d.workspace_id AND v.document_id=d.id AND v.version=d.current_version

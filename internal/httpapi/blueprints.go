@@ -282,7 +282,7 @@ func (s *Server) servedRequirements(r *http.Request) (map[string][]blueprintRequ
 	if err != nil {
 		return nil, err
 	}
-	requirements, err := s.Store.ListRequirements(r.Context())
+	requirements, err := s.Store.ListRequirements(r.Context(), false)
 	if err != nil {
 		return nil, err
 	}

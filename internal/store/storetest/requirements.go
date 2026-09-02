@@ -64,6 +64,104 @@ var requirementConformanceRepos = []config.Repo{
 func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 	t.Helper()
 
+	t.Run("requirement and system design archive lifecycle", func(t *testing.T) {
+		fixture := factory(t, requirementConformanceRepos)
+		ctx := store.WithActor(fixture.Context, store.Actor{ID: requirementConformanceActor, Role: core.ActorUser})
+		requirement, version, err := fixture.Store.CreateRequirement(ctx, core.Requirement{ID: "req-" + core.NewTaskID(), Title: "Archived requirement"}, core.RequirementVersion{Content: "Archived requirement", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Archive intent safely."}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err = fixture.Store.ConfirmRequirementVersion(ctx, requirement.ID, version.Version); err != nil {
+			t.Fatal(err)
+		}
+		if err = fixture.Store.ArchiveRequirement(ctx, requirement.ID, requirementConformanceActor); err != nil {
+			t.Fatal(err)
+		}
+		requirementEvents, err := fixture.Store.ListRequirementEvents(ctx, requirement.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		archiveEvents := 0
+		for _, event := range requirementEvents {
+			if event.Kind == "requirement.archived" {
+				archiveEvents++
+				if event.ActorID != requirementConformanceActor {
+					t.Fatalf("archive actor=%q", event.ActorID)
+				}
+			}
+		}
+		if archiveEvents != 1 {
+			t.Fatalf("requirement archive events=%d", archiveEvents)
+		}
+		if listed, listErr := fixture.Store.ListRequirements(ctx, false); listErr != nil || len(listed) != 0 {
+			t.Fatalf("live list after archive = %#v, %v", listed, listErr)
+		}
+		listed, err := fixture.Store.ListRequirements(ctx, true)
+		if err != nil || len(listed) != 1 || !listed[0].Archived || listed[0].ArchivedBy != requirementConformanceActor || listed[0].ArchivedAt.IsZero() {
+			t.Fatalf("archived requirement = %#v, %v", listed, err)
+		}
+		if _, err = fixture.Store.ProposeRequirementVersion(ctx, core.RequirementVersion{RequirementID: requirement.ID, Content: "Blocked", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Archive intent safely."}}}); err == nil {
+			t.Fatal("proposal against archived requirement succeeded")
+		}
+		if err = fixture.Store.ArchiveRequirement(ctx, requirement.ID, requirementConformanceActor); err != nil {
+			t.Fatal(err)
+		}
+		requirementEvents, err = fixture.Store.ListRequirementEvents(ctx, requirement.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		archiveEvents = 0
+		for _, event := range requirementEvents {
+			if event.Kind == "requirement.archived" {
+				archiveEvents++
+			}
+		}
+		if archiveEvents != 1 {
+			t.Fatalf("idempotent requirement archive events=%d", archiveEvents)
+		}
+		if err = fixture.Store.RestoreRequirement(ctx, requirement.ID, requirementConformanceActor); err != nil {
+			t.Fatal(err)
+		}
+		restored, err := fixture.Store.GetRequirement(ctx, requirement.ID)
+		if err != nil || restored.Archived || restored.CurrentVersion != version.Version {
+			t.Fatalf("restored requirement = %#v, %v", restored, err)
+		}
+		if _, err = fixture.Store.ProposeRequirementVersion(ctx, core.RequirementVersion{RequirementID: requirement.ID, Content: "Restored", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Archive intent safely."}}}); err != nil {
+			t.Fatalf("proposal after restore: %v", err)
+		}
+
+		design, designVersion, err := fixture.Store.CreateSystemDesign(ctx, core.SystemDesign{ID: "design-" + core.NewTaskID(), Title: "Archived design", Category: "Architecture"}, core.SystemDesignVersion{Content: "# Archived\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/**\n```", Origin: core.SystemDesignOriginOperator})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err = fixture.Store.ConfirmSystemDesignVersion(ctx, design.ID, designVersion.Version); err != nil {
+			t.Fatal(err)
+		}
+		if err = fixture.Store.ArchiveSystemDesign(ctx, design.ID, requirementConformanceActor); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = fixture.Store.ProposeSystemDesignVersion(ctx, core.SystemDesignVersion{DocumentID: design.ID, Content: designVersion.Content, Origin: core.SystemDesignOriginOperator}); err == nil {
+			t.Fatal("proposal against archived system design succeeded")
+		}
+		if listed, listErr := fixture.Store.ListSystemDesigns(ctx, false); listErr != nil || len(listed) != 0 {
+			t.Fatalf("live design list after archive = %#v, %v", listed, listErr)
+		}
+		designs, err := fixture.Store.ListSystemDesigns(ctx, true)
+		if err != nil || len(designs) != 1 || !designs[0].Archived {
+			t.Fatalf("archived design = %#v, %v", designs, err)
+		}
+		if err = fixture.Store.RestoreSystemDesign(ctx, design.ID, requirementConformanceActor); err != nil {
+			t.Fatal(err)
+		}
+		restoredDesign, err := fixture.Store.GetSystemDesign(ctx, design.ID)
+		if err != nil || restoredDesign.Archived || restoredDesign.CurrentVersion != designVersion.Version {
+			t.Fatalf("restored design = %#v, %v", restoredDesign, err)
+		}
+		if _, err = fixture.Store.ProposeSystemDesignVersion(ctx, core.SystemDesignVersion{DocumentID: design.ID, Content: designVersion.Content, Origin: core.SystemDesignOriginOperator}); err != nil {
+			t.Fatalf("design proposal after restore: %v", err)
+		}
+	})
+
 	t.Run("task context proposals unify requirement and design confirmation", func(t *testing.T) {
 		fixture := factory(t, requirementConformanceRepos)
 		st, ctx := fixture.Store, store.WithActor(fixture.Context, store.Actor{ID: requirementConformanceActor, Role: core.ActorUser})
@@ -1082,7 +1180,7 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 				t.Fatal(err)
 			}
 		}
-		listed, err := st.ListRequirements(ctx)
+		listed, err := st.ListRequirements(ctx, false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1496,7 +1594,7 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 		if callbackInvoked {
 			t.Fatal("produced-write callback ran after abandonment won")
 		}
-		requirements, err := st.ListRequirements(ctx)
+		requirements, err := st.ListRequirements(ctx, false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1815,7 +1913,7 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 		if _, err := st.GetPlanningSession(sibling, session.ID); err == nil {
 			t.Fatal("planning session was readable from another workspace")
 		}
-		if listed, err := st.ListRequirements(sibling); err != nil || len(listed) != 0 {
+		if listed, err := st.ListRequirements(sibling, false); err != nil || len(listed) != 0 {
 			t.Fatalf("cross-workspace ListRequirements=%+v err=%v, want empty", listed, err)
 		}
 		if versions, err := st.ListRequirementVersions(sibling, requirement.ID); err != nil || len(versions) != 0 {
@@ -2068,7 +2166,7 @@ func assertPlanningSessionRoundTrip(t *testing.T, ctx context.Context, st store.
 
 func assertRequirementCount(t *testing.T, ctx context.Context, st store.Store, want int) {
 	t.Helper()
-	listed, err := st.ListRequirements(ctx)
+	listed, err := st.ListRequirements(ctx, false)
 	if err != nil {
 		t.Fatal(err)
 	}

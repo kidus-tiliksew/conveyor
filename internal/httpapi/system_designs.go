@@ -94,7 +94,7 @@ func buildSystemDesignView(document core.SystemDesign, versions []core.SystemDes
 }
 
 func (s *Server) listSystemDesigns(w http.ResponseWriter, r *http.Request) {
-	items, err := s.Store.ListSystemDesigns(r.Context())
+	items, err := s.Store.ListSystemDesigns(r.Context(), r.URL.Query().Get("include_archived") == "true")
 	if err != nil {
 		log.Printf("handle system design request: %v", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
@@ -235,6 +235,11 @@ func (s *Server) proposeSystemDesignVersion(w http.ResponseWriter, r *http.Reque
 	}
 	version, err := s.Store.ProposeSystemDesignVersion(r.Context(), input.version(chi.URLParam(r, "id")))
 	if err != nil {
+		var archived *store.SystemDesignArchivedError
+		if errors.As(err, &archived) {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "system_design_archived", "message": archived.Error()})
+			return
+		}
 		http.Error(w, err.Error(), systemDesignMutationStatus(err))
 		return
 	}
@@ -257,6 +262,11 @@ func (s *Server) confirmSystemDesignVersion(w http.ResponseWriter, r *http.Reque
 	}
 	document, confirmed, err := s.Store.ConfirmSystemDesignVersion(r.Context(), chi.URLParam(r, "id"), version, expected...)
 	if err != nil {
+		var archived *store.SystemDesignArchivedError
+		if errors.As(err, &archived) {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "system_design_archived", "message": archived.Error()})
+			return
+		}
 		var conflict *store.SystemDesignVersionConflict
 		if errors.As(err, &conflict) {
 			writeJSON(w, http.StatusConflict, map[string]any{"error": "system_design_version_conflict", "message": conflict.Error(), "document_id": conflict.DocumentID, "requested_version": conflict.Requested, "current_version": conflict.Current})
@@ -266,6 +276,37 @@ func (s *Server) confirmSystemDesignVersion(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"document": document, "version": confirmed})
+}
+
+func (s *Server) archiveSystemDesign(w http.ResponseWriter, r *http.Request) {
+	s.setSystemDesignArchiveState(w, r, true)
+}
+func (s *Server) restoreSystemDesign(w http.ResponseWriter, r *http.Request) {
+	s.setSystemDesignArchiveState(w, r, false)
+}
+func (s *Server) setSystemDesignArchiveState(w http.ResponseWriter, r *http.Request, archived bool) {
+	id := chi.URLParam(r, "id")
+	actor := store.ActorFromContext(r.Context()).ID
+	var err error
+	if archived {
+		err = s.Store.ArchiveSystemDesign(r.Context(), id, actor)
+	} else {
+		err = s.Store.RestoreSystemDesign(r.Context(), id, actor)
+	}
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			http.Error(w, err.Error(), http.StatusNotFound)
+		} else {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+		return
+	}
+	document, err := s.Store.GetSystemDesign(r.Context(), id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, document)
 }
 
 func (s *Server) dismissSystemDesignVersion(w http.ResponseWriter, r *http.Request) {

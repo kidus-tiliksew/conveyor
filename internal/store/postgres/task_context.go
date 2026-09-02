@@ -101,7 +101,8 @@ func repinTaskDesignContextTx(ctx context.Context, tx pgx.Tx, q *db.Queries, wor
 func validateTaskContextTx(ctx context.Context, tx pgx.Tx, workspaceID string, input store.TaskContextInput) (map[string]int, error) {
 	for _, id := range input.RequirementIDs {
 		var current pgtype.Int4
-		err := tx.QueryRow(ctx, `SELECT current_version FROM requirements WHERE workspace_id=$1 AND id=$2`, workspaceID, id).Scan(&current)
+		var archivedAt *time.Time
+		err := tx.QueryRow(ctx, `SELECT current_version,archived_at FROM requirements WHERE workspace_id=$1 AND id=$2`, workspaceID, id).Scan(&current, &archivedAt)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, &store.TaskContextReferenceError{Kind: "requirement", ID: id, Reason: "was not found in this workspace"}
 		}
@@ -111,11 +112,15 @@ func validateTaskContextTx(ctx context.Context, tx pgx.Tx, workspaceID string, i
 		if !current.Valid || current.Int32 <= 0 {
 			return nil, &store.TaskContextReferenceError{Kind: "requirement", ID: id, Reason: "has no confirmed version"}
 		}
+		if archivedAt != nil {
+			return nil, &store.RequirementArchivedError{RequirementID: id}
+		}
 	}
 	versions := map[string]int{}
 	for _, id := range input.DesignIDs {
 		var current pgtype.Int4
-		err := tx.QueryRow(ctx, `SELECT current_version FROM system_designs WHERE workspace_id=$1 AND id=$2`, workspaceID, id).Scan(&current)
+		var archivedAt *time.Time
+		err := tx.QueryRow(ctx, `SELECT current_version,archived_at FROM system_designs WHERE workspace_id=$1 AND id=$2`, workspaceID, id).Scan(&current, &archivedAt)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, &store.TaskContextReferenceError{Kind: "system design", ID: id, Reason: "was not found in this workspace"}
 		}
@@ -124,6 +129,9 @@ func validateTaskContextTx(ctx context.Context, tx pgx.Tx, workspaceID string, i
 		}
 		if !current.Valid || current.Int32 <= 0 {
 			return nil, &store.TaskContextReferenceError{Kind: "system design", ID: id, Reason: "has no confirmed version"}
+		}
+		if archivedAt != nil {
+			return nil, &store.SystemDesignArchivedError{DocumentID: id}
 		}
 		versions[id] = int(current.Int32)
 	}

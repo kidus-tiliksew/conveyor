@@ -230,15 +230,17 @@ type TaskContext struct {
 }
 
 type TaskRequirementContext struct {
-	ID      string `json:"id"`
-	Title   string `json:"title"`
-	Version int    `json:"version"`
+	ID       string `json:"id"`
+	Title    string `json:"title"`
+	Version  int    `json:"version"`
+	Archived bool   `json:"archived"`
 }
 
 type TaskDesignContext struct {
-	ID      string `json:"id"`
-	Title   string `json:"title"`
-	Version int    `json:"version"`
+	ID       string `json:"id"`
+	Title    string `json:"title"`
+	Version  int    `json:"version"`
+	Archived bool   `json:"archived"`
 }
 
 // TaskRelation is the compact live reference used by dependency and blueprint

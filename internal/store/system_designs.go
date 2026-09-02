@@ -67,13 +67,13 @@ func (m *memory) GetSystemDesign(ctx context.Context, id string) (core.SystemDes
 	return item, nil
 }
 
-func (m *memory) ListSystemDesigns(ctx context.Context) ([]core.SystemDesign, error) {
+func (m *memory) ListSystemDesigns(ctx context.Context, includeArchived bool) ([]core.SystemDesign, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	workspace := workspaceOrDefault(ctx, "")
 	out := []core.SystemDesign{}
 	for key, item := range m.systemDesigns {
-		if key.workspace == workspace {
+		if key.workspace == workspace && (includeArchived || !item.Archived) {
 			out = append(out, item)
 		}
 	}
@@ -89,6 +89,45 @@ func (m *memory) ListSystemDesigns(ctx context.Context) ([]core.SystemDesign, er
 	return out, nil
 }
 
+func (m *memory) ArchiveSystemDesign(ctx context.Context, id, actor string) error {
+	return m.setSystemDesignArchived(ctx, id, actor, true)
+}
+
+func (m *memory) RestoreSystemDesign(ctx context.Context, id, actor string) error {
+	return m.setSystemDesignArchived(ctx, id, actor, false)
+}
+
+func (m *memory) setSystemDesignArchived(ctx context.Context, id, actor string, archived bool) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	workspace := workspaceOrDefault(ctx, "")
+	key := memoryScopedKey{workspace: workspace, id: id}
+	document, ok := m.systemDesigns[key]
+	if !ok {
+		return fmt.Errorf("%w: system design %s", ErrNotFound, id)
+	}
+	if document.Archived == archived {
+		return nil
+	}
+	now := time.Now().UTC()
+	document.Archived, document.UpdatedAt = archived, now
+	if archived {
+		document.ArchivedBy, document.ArchivedAt = actor, now
+	} else {
+		document.ArchivedBy, document.ArchivedAt = "", time.Time{}
+	}
+	m.systemDesigns[key] = document
+	kind := "system_design.restored"
+	if archived {
+		kind = "system_design.archived"
+	}
+	m.appendEventLocked(ctx, core.Event{Kind: kind, Payload: core.JSONPayload(map[string]any{
+		"workspace_id": workspace, "document_id": id, "version": document.CurrentVersion,
+		"actor": actor, "at": now,
+	})})
+	return nil
+}
+
 func (m *memory) ProposeSystemDesignVersion(ctx context.Context, version core.SystemDesignVersion) (core.SystemDesignVersion, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -97,6 +136,9 @@ func (m *memory) ProposeSystemDesignVersion(ctx context.Context, version core.Sy
 	document, ok := m.systemDesigns[key]
 	if !ok {
 		return core.SystemDesignVersion{}, fmt.Errorf("%w: system design %s", ErrNotFound, version.DocumentID)
+	}
+	if document.Archived {
+		return core.SystemDesignVersion{}, &SystemDesignArchivedError{DocumentID: version.DocumentID}
 	}
 	if err := core.NormalizeSystemDesignVersion(&version); err != nil {
 		return core.SystemDesignVersion{}, err
@@ -139,6 +181,9 @@ func (m *memory) ConfirmSystemDesignVersion(ctx context.Context, documentID stri
 	document, ok := m.systemDesigns[key]
 	if !ok {
 		return core.SystemDesign{}, core.SystemDesignVersion{}, fmt.Errorf("%w: system design %s", ErrNotFound, documentID)
+	}
+	if document.Archived {
+		return core.SystemDesign{}, core.SystemDesignVersion{}, &SystemDesignArchivedError{DocumentID: documentID}
 	}
 	if len(expectedCurrentVersion) > 1 {
 		return core.SystemDesign{}, core.SystemDesignVersion{}, fmt.Errorf("at most one expected current system design version may be supplied")
@@ -253,7 +298,7 @@ func (m *memory) ListGovernanceDesigns(ctx context.Context, repository string) (
 	workspace := workspaceOrDefault(ctx, "")
 	out := make([]core.GovernanceDesignContext, 0)
 	for key, document := range m.systemDesigns {
-		if key.workspace != workspace || document.CurrentVersion < 1 {
+		if key.workspace != workspace || document.CurrentVersion < 1 || document.Archived {
 			continue
 		}
 		versions := m.systemDesignVersions[key]
@@ -551,13 +596,13 @@ func (m *memory) recomputeDecisionSupersessionSweepLocked(ctx context.Context, d
 	}
 	workspace := workspaceOrDefault(ctx, decision.Workspace)
 	for key, document := range m.requirements {
-		if key.workspace == workspace && document.CurrentVersion > 0 {
+		if key.workspace == workspace && document.CurrentVersion > 0 && !document.Archived {
 			content := m.requirementVersions[key][document.CurrentVersion-1].Content
 			m.recomputeDecisionSweepEntryLocked(ctx, decision, core.DecisionSweepTierRequirement, document.ID, content)
 		}
 	}
 	for key, document := range m.systemDesigns {
-		if key.workspace == workspace && document.CurrentVersion > 0 {
+		if key.workspace == workspace && document.CurrentVersion > 0 && !document.Archived {
 			content := m.systemDesignVersions[key][document.CurrentVersion-1].Content
 			m.recomputeDecisionSweepEntryLocked(ctx, decision, core.DecisionSweepTierSystemDesign, document.ID, content)
 		}

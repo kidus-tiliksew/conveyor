@@ -572,7 +572,7 @@ func (s *failingFinalizeRequirementStore) GetRequirement(context.Context, string
 	return core.Requirement{}, s.err
 }
 
-func (s *failingListRequirementsStore) ListRequirements(context.Context) ([]core.Requirement, error) {
+func (s *failingListRequirementsStore) ListRequirements(context.Context, bool) ([]core.Requirement, error) {
 	return nil, s.err
 }
 
@@ -673,11 +673,11 @@ type countingPlanningStore struct {
 	listRequirementsCalls int
 }
 
-func (s *countingPlanningStore) ListRequirements(ctx context.Context) ([]core.Requirement, error) {
+func (s *countingPlanningStore) ListRequirements(ctx context.Context, includeArchived bool) ([]core.Requirement, error) {
 	s.mu.Lock()
 	s.listRequirementsCalls++
 	s.mu.Unlock()
-	return s.Store.ListRequirements(ctx)
+	return s.Store.ListRequirements(ctx, includeArchived)
 }
 
 func TestServiceStreamsRecoverableOutcomeForIrreducibleContext(t *testing.T) {
@@ -1567,7 +1567,7 @@ func TestRequirementToolRevisesTheSessionContextDocument(t *testing.T) {
 		versions[1].OriginSessionID != session.ID {
 		t.Fatalf("context document versions=%+v err=%v, want a proposed v2", versions, err)
 	}
-	corpus, err := st.ListRequirements(ctx)
+	corpus, err := st.ListRequirements(ctx, false)
 	if err != nil || len(corpus) != 1 || corpus[0].ID != existing.ID {
 		t.Fatalf("corpus=%+v err=%v, want only the context document", corpus, err)
 	}

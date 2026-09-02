@@ -33,14 +33,14 @@ func (s *Store) ListPendingProposals(ctx context.Context) ([]core.PendingProposa
 				coalesce(v.origin_task_id,v.origin_session_id,'') AS origin_id,'' AS target_kind,'' AS justification,v.created_at AS proposed_at
 			FROM system_design_versions v
 			JOIN system_designs d ON d.workspace_id=v.workspace_id AND d.id=v.document_id
-			WHERE v.workspace_id=$1 AND NOT v.confirmed AND NOT v.dismissed
+			WHERE v.workspace_id=$1 AND d.archived_at IS NULL AND NOT v.confirmed AND NOT v.dismissed
 			UNION ALL
 			SELECT v.requirement_id,r.title,'requirement' AS tier,v.version,
 				CASE WHEN v.origin_task_id <> '' THEN 'task' WHEN v.origin_session_id <> '' THEN 'session' WHEN v.origin_drift_id <> '' THEN 'drift' ELSE v.origin END AS origin_type,
 				coalesce(nullif(v.origin_task_id,''),nullif(v.origin_session_id,''),nullif(v.origin_drift_id,''),'') AS origin_id,'' AS target_kind,'' AS justification,v.created_at AS proposed_at
 			FROM requirement_versions v
 			JOIN requirements r ON r.workspace_id=v.workspace_id AND r.id=v.requirement_id
-			WHERE v.workspace_id=$1 AND NOT v.confirmed AND NOT v.retired
+			WHERE v.workspace_id=$1 AND r.archived_at IS NULL AND NOT v.confirmed AND NOT v.retired
 			  AND v.version > coalesce(r.current_version,0)
 			UNION ALL
 			SELECT d.id,d.statement,'decision' AS tier,NULL::integer AS version,

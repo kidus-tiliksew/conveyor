@@ -73,7 +73,7 @@ func TestTriageMixedFunctionCallAndVerdictExecutesBeforeFinalizing(t *testing.T)
 
 type failingCorpusStore struct{ store.Store }
 
-func (s failingCorpusStore) ListRequirements(context.Context) ([]core.Requirement, error) {
+func (s failingCorpusStore) ListRequirements(context.Context, bool) ([]core.Requirement, error) {
 	return nil, errors.New("corpus unavailable")
 }
 
@@ -82,9 +82,9 @@ type countingCorpusStore struct {
 	listCalls int
 }
 
-func (s *countingCorpusStore) ListRequirements(ctx context.Context) ([]core.Requirement, error) {
+func (s *countingCorpusStore) ListRequirements(ctx context.Context, includeArchived bool) ([]core.Requirement, error) {
 	s.listCalls++
-	return s.Store.ListRequirements(ctx)
+	return s.Store.ListRequirements(ctx, includeArchived)
 }
 
 func TestTriageCorpusFailureIsInBandAndFailOpen(t *testing.T) {

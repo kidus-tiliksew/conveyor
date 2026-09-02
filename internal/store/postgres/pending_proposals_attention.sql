@@ -2,8 +2,8 @@
 -- facts and never selects the general task/work-order JSON columns.
 WITH pending_origin_tasks AS (
     SELECT DISTINCT origin_task_id AS task_id
-    FROM system_design_versions
-    WHERE workspace_id = $1
+    FROM system_design_versions v JOIN system_designs d ON d.workspace_id=v.workspace_id AND d.id=v.document_id
+    WHERE v.workspace_id = $1 AND d.archived_at IS NULL
       AND NOT confirmed AND NOT dismissed AND origin_task_id IS NOT NULL
     UNION
     SELECT DISTINCT origin_task_id AS task_id
@@ -12,8 +12,8 @@ WITH pending_origin_tasks AS (
       AND status = 'proposed' AND origin_task_id IS NOT NULL
 	UNION
 	SELECT DISTINCT origin_task_id AS task_id
-	FROM requirement_versions
-	WHERE workspace_id = $1
+	FROM requirement_versions v JOIN requirements r ON r.workspace_id=v.workspace_id AND r.id=v.requirement_id
+	WHERE v.workspace_id = $1 AND r.archived_at IS NULL
 	  AND origin = 'implementation' AND NOT confirmed AND NOT retired AND origin_task_id <> ''
 	UNION
 	SELECT DISTINCT proposal.task_id

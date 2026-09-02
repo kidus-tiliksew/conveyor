@@ -23,6 +23,9 @@ type SystemDesign struct {
 	Title          string    `json:"title"`
 	Category       string    `json:"category"`
 	CurrentVersion int       `json:"current_version,omitempty"`
+	Archived       bool      `json:"archived"`
+	ArchivedBy     string    `json:"archived_by,omitempty"`
+	ArchivedAt     time.Time `json:"archived_at,omitempty"`
 	Workspace      string    `json:"workspace"`
 	CreatedAt      time.Time `json:"created_at"`
 	UpdatedAt      time.Time `json:"updated_at"`

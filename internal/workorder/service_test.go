@@ -859,7 +859,7 @@ type governanceReadTrapStore struct {
 	reads int
 }
 
-func (st *governanceReadTrapStore) ListSystemDesigns(context.Context) ([]core.SystemDesign, error) {
+func (st *governanceReadTrapStore) ListSystemDesigns(context.Context, bool) ([]core.SystemDesign, error) {
 	st.reads++
 	return nil, errors.New("live governance authority must not be read")
 }

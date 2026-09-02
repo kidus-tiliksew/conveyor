@@ -220,7 +220,7 @@ type Store interface {
 	AuditMonitor(context.Context, string, map[string]any) error
 	WithMonitorSignalClassLock(context.Context, string, SignalKind, func(context.Context) error) error
 	FindOpenMonitorTask(context.Context, string, SignalKind) (string, bool, error)
-	ListSystemDesigns(context.Context) ([]core.SystemDesign, error)
+	ListSystemDesigns(context.Context, bool) ([]core.SystemDesign, error)
 	GetSystemDesignVersion(context.Context, string, int) (core.SystemDesignVersion, error)
 	// ResolveCausalSystemDesignMerge atomically resolves the delivering task's
 	// same-task proposal and merge-time pinned design attachment. When requested,
@@ -512,7 +512,7 @@ func (s *Service) recordSystemDesignDrift(ctx context.Context, observation Obser
 	if len(observation.ChangedPaths) == 0 {
 		return nil
 	}
-	documents, err := s.Store.ListSystemDesigns(ctx)
+	documents, err := s.Store.ListSystemDesigns(ctx, false)
 	if err != nil {
 		return err
 	}
