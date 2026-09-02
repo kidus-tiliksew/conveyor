@@ -411,6 +411,33 @@ func (s *Server) confirmRequirementVersion(w http.ResponseWriter, r *http.Reques
 	})
 }
 
+func (s *Server) dismissRequirementVersion(w http.ResponseWriter, r *http.Request) {
+	version, err := strconv.Atoi(chi.URLParam(r, "version"))
+	if err != nil || version < 1 {
+		http.Error(w, "requirement version must be a positive integer", http.StatusBadRequest)
+		return
+	}
+	requirement, dismissed, err := s.Store.DismissRequirementVersion(r.Context(), chi.URLParam(r, "id"), version)
+	if err != nil {
+		var conflict *store.RequirementVersionDismissalConflict
+		if errors.As(err, &conflict) {
+			code := "requirement_version_" + string(conflict.Reason)
+			body := map[string]any{
+				"error": code, "message": conflict.Error(), "requirement_id": conflict.RequirementID,
+				"requested_version": conflict.Requested, "current_version": conflict.Current,
+			}
+			if conflict.SupersededBy > 0 {
+				body["superseded_by_version"] = conflict.SupersededBy
+			}
+			writeJSON(w, http.StatusConflict, body)
+			return
+		}
+		http.Error(w, err.Error(), requirementMutationStatus(err))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"requirement": requirement, "version": dismissed})
+}
+
 func (s *Server) listCheckpointContextCandidates(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if _, err := s.Store.GetRequirement(r.Context(), id); err != nil {

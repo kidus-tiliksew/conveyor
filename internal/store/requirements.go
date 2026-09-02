@@ -323,6 +323,45 @@ func (m *memory) ConfirmRequirementVersion(ctx context.Context, requirementID st
 	return requirement, confirmed, nil
 }
 
+func (m *memory) DismissRequirementVersion(ctx context.Context, requirementID string, version int) (core.Requirement, core.RequirementVersion, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	workspace := workspaceOrDefault(ctx, "")
+	key := memoryScopedKey{workspace: workspace, id: requirementID}
+	requirement, ok := m.requirements[key]
+	if !ok {
+		return core.Requirement{}, core.RequirementVersion{}, fmt.Errorf("%w: requirement %s", ErrNotFound, requirementID)
+	}
+	versions := m.requirementVersions[key]
+	if version < 1 || version > len(versions) {
+		return core.Requirement{}, core.RequirementVersion{}, fmt.Errorf("%w: requirement %s has no version %d", ErrNotFound, requirementID, version)
+	}
+	dismissed := versions[version-1]
+	if dismissed.Confirmed {
+		return core.Requirement{}, core.RequirementVersion{}, &RequirementVersionDismissalConflict{RequirementID: requirementID, Requested: version, Current: requirement.CurrentVersion, Reason: VersionDismissalConfirmed}
+	}
+	if dismissed.Retired {
+		reason := VersionDismissalDismissed
+		if dismissed.RetiredByVersion > 0 {
+			reason = VersionDismissalSuperseded
+		}
+		return core.Requirement{}, core.RequirementVersion{}, &RequirementVersionDismissalConflict{RequirementID: requirementID, Requested: version, Current: requirement.CurrentVersion, Reason: reason, SupersededBy: dismissed.RetiredByVersion}
+	}
+	if version < requirement.CurrentVersion {
+		return core.Requirement{}, core.RequirementVersion{}, &RequirementVersionDismissalConflict{RequirementID: requirementID, Requested: version, Current: requirement.CurrentVersion, Reason: VersionDismissalSuperseded, SupersededBy: requirement.CurrentVersion}
+	}
+	actor, now := ActorFromContext(ctx), time.Now().UTC()
+	dismissed.Retired, dismissed.RetiredBy, dismissed.RetiredAt, dismissed.RetiredByVersion = true, actor.ID, now, 0
+	versions[version-1] = dismissed
+	m.requirementVersions[key] = versions
+	requirement.UpdatedAt = now
+	m.requirements[key] = requirement
+	m.appendEventLocked(ctx, core.Event{Kind: "requirement.version_dismissed", Payload: core.JSONPayload(map[string]any{
+		"workspace_id": workspace, "requirement_id": requirementID, "version": version, "dismissed_by": actor.ID,
+	})})
+	return requirement, dismissed, nil
+}
+
 func (m *memory) GetRequirementVersion(ctx context.Context, requirementID string, version int) (core.RequirementVersion, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

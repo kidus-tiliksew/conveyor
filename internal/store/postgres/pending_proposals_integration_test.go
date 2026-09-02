@@ -16,7 +16,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 )
 
-func TestTaskAuthoredDesignProposalWithholdsReviewAcrossRestartIntegration(t *testing.T) {
+func TestTaskAuthoredDesignProposalDismissalReleasesReviewAcrossRestartIntegration(t *testing.T) {
 	databaseURL := integrationDatabaseURL(t)
 	st, err := Open(t.Context(), databaseURL)
 	if err != nil {
@@ -54,11 +54,74 @@ func TestTaskAuthoredDesignProposalWithholdsReviewAcrossRestartIntegration(t *te
 	if _, err = storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "blocked", ClientToken: "blocked-token", Lease: time.Minute}); err == nil || !strings.Contains(err.Error(), "waiting on") {
 		t.Fatalf("claim while proposal pending error=%v", err)
 	}
-	if _, _, err = st.ConfirmSystemDesignVersion(ctx, design.ID, proposal.Version); err != nil {
+	if _, _, err = st.DismissSystemDesignVersion(ctx, design.ID, proposal.Version); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "released", ClientToken: "released-token", Lease: time.Minute}); err != nil {
-		t.Fatalf("claim after proposal confirmation: %v", err)
+		t.Fatalf("claim after proposal dismissal: %v", err)
+	}
+}
+
+func TestDirectVersionDismissalClearsPendingProjectionAndKeepsHistoryIntegration(t *testing.T) {
+	st, err := Open(t.Context(), integrationDatabaseURL(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	workspace := "direct-version-dismissal-" + core.NewTaskID()
+	ctx := store.WithActor(store.WithWorkspace(t.Context(), workspace), store.Actor{ID: "operator-dismiss", Role: core.ActorHuman})
+	if _, err = st.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "conveyor", Base: "main"}}}); err != nil {
+		t.Fatal(err)
+	}
+	requirement, requirementVersion, err := st.CreateRequirement(ctx,
+		core.Requirement{ID: "req-" + core.NewTaskID(), Title: "Dismiss pending requirement"},
+		core.RequirementVersion{Content: "migrated seed", Origin: core.RequirementOriginFeatureMigration})
+	if err != nil {
+		t.Fatal(err)
+	}
+	designContent := "# Dismiss pending design\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/**\n```"
+	design, designVersion, err := st.CreateSystemDesign(ctx,
+		core.SystemDesign{ID: "design-" + core.NewTaskID(), Title: "Dismiss pending design", Category: "Architecture"},
+		core.SystemDesignVersion{Content: designContent, Origin: core.SystemDesignOriginImplementation, OriginTaskID: core.NewTaskID()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if items, listErr := st.ListPendingProposals(ctx); listErr != nil || len(items) != 2 {
+		t.Fatalf("pending before dismissal=%+v err=%v", items, listErr)
+	}
+	if _, _, err = st.DismissRequirementVersion(ctx, requirement.ID, requirementVersion.Version); err != nil {
+		t.Fatalf("dismiss migrated seed: %v", err)
+	}
+	if _, _, err = st.DismissSystemDesignVersion(ctx, design.ID, designVersion.Version); err != nil {
+		t.Fatal(err)
+	}
+	if items, listErr := st.ListPendingProposals(ctx); listErr != nil || len(items) != 0 {
+		t.Fatalf("pending after dismissal=%+v err=%v", items, listErr)
+	}
+	if requirements, listErr := st.ListRequirements(ctx); listErr != nil || len(requirements) != 1 || requirements[0].ID != requirement.ID {
+		t.Fatalf("requirements after dismissal=%+v err=%v", requirements, listErr)
+	}
+	requirementHistory, err := st.ListRequirementVersions(ctx, requirement.ID)
+	if err != nil || len(requirementHistory) != 1 || !requirementHistory[0].Retired || requirementHistory[0].RetiredByVersion != 0 {
+		t.Fatalf("requirement history=%+v err=%v", requirementHistory, err)
+	}
+	designHistory, err := st.ListSystemDesignVersions(ctx, design.ID)
+	if err != nil || len(designHistory) != 1 || !designHistory[0].Dismissed {
+		t.Fatalf("design history=%+v err=%v", designHistory, err)
+	}
+	requirementEvents, err := st.ListRequirementEvents(ctx, requirement.ID)
+	if err != nil || requirementEvents[len(requirementEvents)-1].Kind != "requirement.version_dismissed" {
+		t.Fatalf("requirement events=%+v err=%v", requirementEvents, err)
+	}
+	designEvents, err := st.ListSystemDesignEvents(ctx, design.ID)
+	if err != nil || designEvents[len(designEvents)-1].Kind != "system_design.version_dismissed" {
+		t.Fatalf("design events=%+v err=%v", designEvents, err)
+	}
+	reproposed, err := st.ProposeSystemDesignVersion(ctx, core.SystemDesignVersion{
+		DocumentID: design.ID, Content: designContent, Origin: designVersion.Origin, OriginTaskID: designVersion.OriginTaskID,
+	})
+	if err != nil || reproposed.Version != 2 || reproposed.Deduplicated {
+		t.Fatalf("design reproposal=%+v err=%v", reproposed, err)
 	}
 }
 

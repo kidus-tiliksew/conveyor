@@ -238,6 +238,59 @@ func (s *Store) ConfirmSystemDesignVersion(ctx context.Context, documentID strin
 	return document, confirmed, err
 }
 
+func (s *Store) DismissSystemDesignVersion(ctx context.Context, documentID string, version int) (core.SystemDesign, core.SystemDesignVersion, error) {
+	var (
+		document  core.SystemDesign
+		dismissed core.SystemDesignVersion
+	)
+	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		var current *int
+		if err := tx.QueryRow(ctx, `SELECT current_version FROM system_designs
+			WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspace(ctx), documentID).Scan(&current); err != nil {
+			return notFound(err, "system design %s", documentID)
+		}
+		currentVersion := 0
+		if current != nil {
+			currentVersion = *current
+		}
+		var err error
+		dismissed, err = scanSystemDesignVersion(tx.QueryRow(ctx, systemDesignVersionSelect+
+			` WHERE workspace_id=$1 AND document_id=$2 AND version=$3`, workspace(ctx), documentID, version), documentID, version)
+		if err != nil {
+			return err
+		}
+		if dismissed.Confirmed {
+			return &store.SystemDesignVersionDismissalConflict{DocumentID: documentID, Requested: version, Current: currentVersion, Reason: store.VersionDismissalConfirmed}
+		}
+		if version < currentVersion {
+			return &store.SystemDesignVersionDismissalConflict{DocumentID: documentID, Requested: version, Current: currentVersion, Reason: store.VersionDismissalSuperseded, SupersededBy: currentVersion}
+		}
+		if dismissed.Dismissed {
+			return &store.SystemDesignVersionDismissalConflict{DocumentID: documentID, Requested: version, Current: currentVersion, Reason: store.VersionDismissalDismissed}
+		}
+		actor, now := store.ActorFromContext(ctx), time.Now().UTC()
+		if _, err = tx.Exec(ctx, `UPDATE system_design_versions
+			SET dismissed=true,dismissed_by=$4,dismissed_at=$5
+			WHERE workspace_id=$1 AND document_id=$2 AND version=$3`,
+			workspace(ctx), documentID, version, actor.ID, now); err != nil {
+			return err
+		}
+		if _, err = tx.Exec(ctx, `UPDATE system_designs SET updated_at=$3
+			WHERE workspace_id=$1 AND id=$2`, workspace(ctx), documentID, now); err != nil {
+			return err
+		}
+		dismissed.Dismissed, dismissed.DismissedBy, dismissed.DismissedAt = true, actor.ID, now
+		if document, err = scanSystemDesign(tx.QueryRow(ctx, systemDesignSelect+
+			` WHERE workspace_id=$1 AND id=$2`, workspace(ctx), documentID), documentID); err != nil {
+			return err
+		}
+		return insertWorkspaceEvent(ctx, q, core.Event{Kind: "system_design.version_dismissed", Payload: core.JSONPayload(map[string]any{
+			"workspace_id": workspace(ctx), "document_id": documentID, "version": version, "dismissed_by": actor.ID,
+		})})
+	})
+	return document, dismissed, err
+}
+
 func reconcileConfirmedSystemDesignDriftTx(ctx context.Context, tx pgx.Tx, q *db.Queries, documentID string, version int, proposedAt, resolvedAt time.Time) error {
 	rows, err := tx.Query(ctx, `UPDATE repository_drift
 		SET resolved_at=$5,outcome='design_document_updated'

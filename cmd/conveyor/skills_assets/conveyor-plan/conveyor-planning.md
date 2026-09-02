@@ -77,6 +77,8 @@ Prose + exactly one `conveyor:requirements` fence. Statement schema:
 - Push: `POST /v1/requirements` (new document) and
   `POST /v1/requirements/{id}/versions` (revision).
   Confirm: `POST /v1/requirements/{id}/versions/{version}/confirm`.
+  Dismiss one pending version:
+  `POST /v1/requirements/{id}/versions/{version}/dismiss`.
 - **Promotion**: when a claim originates in an uploaded overview, carry
   `derived_from: {document_id, version, section_anchor, target_id}` on the
   proposal — anchor must be a real heading slug in that document version;
@@ -109,6 +111,13 @@ paths:
   Confirm: `POST /v1/system-designs/{id}/versions/{version}/confirm`
   (supports `If-Match`; confirming a later pending revision dismisses
   earlier ones).
+  Dismiss one pending version:
+  `POST /v1/system-designs/{id}/versions/{version}/dismiss`.
+
+Direct dismissal is an operator-only `confirm_documents` act. The UI requires
+confirmation before sending it. The dismissed version stays in history with
+its actor and time and cannot be confirmed later; it does not archive or
+delete the document.
 
 ## Decisions (DEC-n)
 

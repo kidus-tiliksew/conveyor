@@ -74,6 +74,8 @@ test('pending proposal queue covers every document tier, resolves rows, updates 
   await initialize(page)
   let requirementPending = true
   let decisionPending = true
+  let designPending = true
+  let designDismissRequests = 0
 
   await page.route('**/v1/**', async (route: Route) => {
     const request = route.request()
@@ -117,16 +119,20 @@ test('pending proposal queue covers every document tier, resolves rows, updates 
               },
             ]
           : []),
-        {
-          id: 'design-dashboard',
-          title: 'Web dashboard architecture',
-          tier: 'system_design',
-          version: 4,
-          origin_type: 'session',
-          origin_id: 'planning-1',
-          proposed_at: proposedAt,
-          age_seconds: 900,
-        },
+        ...(designPending
+          ? [
+              {
+                id: 'design-dashboard',
+                title: 'Web dashboard architecture',
+                tier: 'system_design',
+                version: 4,
+                origin_type: 'session',
+                origin_id: 'planning-1',
+                proposed_at: proposedAt,
+                age_seconds: 900,
+              },
+            ]
+          : []),
         ...(decisionPending
           ? [
               {
@@ -155,6 +161,11 @@ test('pending proposal queue covers every document tier, resolves rows, updates 
     }
     if (path === '/v1/decisions/DEC-16/dismiss') {
       decisionPending = false
+      return route.fulfill({ json: {} })
+    }
+    if (path === '/v1/system-designs/design-dashboard/versions/4/dismiss') {
+      designDismissRequests++
+      designPending = false
       return route.fulfill({ json: {} })
     }
     if (path === '/v1/tasks/review-task/activity')
@@ -220,6 +231,18 @@ test('pending proposal queue covers every document tier, resolves rows, updates 
   await expect(page.getByText('Generate dashboard output from web sources.')).toHaveCount(0)
   await expect(page.getByRole('link', { name: /Board/ })).toContainText('3')
   await expect(page.getByRole('link', { name: /Pending proposals/ })).toContainText('1')
+
+  const design = page.getByRole('listitem').filter({ hasText: 'Web dashboard architecture' })
+  await design.getByRole('button', { name: 'Dismiss' }).click()
+  await expect(page.getByRole('dialog', { name: 'Dismiss version 4 of Web dashboard architecture' })).toBeVisible()
+  expect(designDismissRequests).toBe(0)
+  await page.getByRole('button', { name: 'Cancel' }).click()
+  await expect(design).toBeVisible()
+  expect(designDismissRequests).toBe(0)
+  await design.getByRole('button', { name: 'Dismiss' }).click()
+  await page.getByRole('button', { name: 'Dismiss version 4' }).click()
+  await expect.poll(() => designDismissRequests).toBe(1)
+  await expect(page.getByText('No document decisions are waiting for you.')).toBeVisible()
 })
 
 test('pending proposals keeps task context suggestions off the workspace queue and its count', async ({ page }) => {
@@ -267,7 +290,7 @@ test('pending proposals keeps task context suggestions off the workspace queue a
   await expect(page.getByRole('listitem')).toHaveCount(1)
   await expect(page.getByText('Document-only queue contract')).toBeVisible()
   await expect(page.getByText('Task intake and triage')).toHaveCount(0)
-  await expect(page.getByRole('button', { name: 'Dismiss' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Dismiss' })).toBeVisible()
   await expect(page.getByRole('link', { name: /Pending proposals/ })).toContainText('1')
   await expect(page.getByRole('link', { name: /Board/ })).toContainText('2')
 })

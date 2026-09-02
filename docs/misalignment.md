@@ -109,7 +109,9 @@ keep implementing. The one exception, noted above: a review cannot be
 claimed while the task under review has its own authored proposals still
 undecided. The task page shows this state directly, with the confirm action
 in place. Deciding the proposal either way, confirm or dismiss, releases the
-review.
+review. Dismissing a pending requirement or System Design version requires an
+explicit confirmation step, retains the version in history, and makes that
+version permanently unavailable for later confirmation.
 
 ## Review-time governance
 

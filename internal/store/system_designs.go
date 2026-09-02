@@ -195,6 +195,41 @@ func (m *memory) ConfirmSystemDesignVersion(ctx context.Context, documentID stri
 	return document, confirmed, nil
 }
 
+func (m *memory) DismissSystemDesignVersion(ctx context.Context, documentID string, version int) (core.SystemDesign, core.SystemDesignVersion, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	workspace := workspaceOrDefault(ctx, "")
+	key := memoryScopedKey{workspace: workspace, id: documentID}
+	document, ok := m.systemDesigns[key]
+	if !ok {
+		return core.SystemDesign{}, core.SystemDesignVersion{}, fmt.Errorf("%w: system design %s", ErrNotFound, documentID)
+	}
+	versions := m.systemDesignVersions[key]
+	if version < 1 || version > len(versions) {
+		return core.SystemDesign{}, core.SystemDesignVersion{}, fmt.Errorf("%w: system design %s has no version %d", ErrNotFound, documentID, version)
+	}
+	dismissed := versions[version-1]
+	if dismissed.Confirmed {
+		return core.SystemDesign{}, core.SystemDesignVersion{}, &SystemDesignVersionDismissalConflict{DocumentID: documentID, Requested: version, Current: document.CurrentVersion, Reason: VersionDismissalConfirmed}
+	}
+	if version < document.CurrentVersion {
+		return core.SystemDesign{}, core.SystemDesignVersion{}, &SystemDesignVersionDismissalConflict{DocumentID: documentID, Requested: version, Current: document.CurrentVersion, Reason: VersionDismissalSuperseded, SupersededBy: document.CurrentVersion}
+	}
+	if dismissed.Dismissed {
+		return core.SystemDesign{}, core.SystemDesignVersion{}, &SystemDesignVersionDismissalConflict{DocumentID: documentID, Requested: version, Current: document.CurrentVersion, Reason: VersionDismissalDismissed}
+	}
+	actor, now := ActorFromContext(ctx), time.Now().UTC()
+	dismissed.Dismissed, dismissed.DismissedBy, dismissed.DismissedAt = true, actor.ID, now
+	versions[version-1] = dismissed
+	m.systemDesignVersions[key] = versions
+	document.UpdatedAt = now
+	m.systemDesigns[key] = document
+	m.appendEventLocked(ctx, core.Event{Kind: "system_design.version_dismissed", Payload: core.JSONPayload(map[string]any{
+		"workspace_id": workspace, "document_id": documentID, "version": version, "dismissed_by": actor.ID,
+	})})
+	return document, dismissed, nil
+}
+
 func (m *memory) GetSystemDesignVersion(ctx context.Context, documentID string, version int) (core.SystemDesignVersion, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

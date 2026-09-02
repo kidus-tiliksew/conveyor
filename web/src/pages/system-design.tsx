@@ -14,6 +14,7 @@ import {
 } from '../components/documents/document-tree'
 import { DriftResolutionForm } from '../components/documents/drift-resolution-form'
 import { VersionDiff } from '../components/documents/version-diff'
+import { VersionDismissDialog } from '../components/documents/version-dismiss-dialog'
 import { LineageExplorer } from '../components/lineage/lineage-explorer'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
@@ -22,6 +23,7 @@ import { MarkdownProse } from '../components/ui/markdown-prose'
 import {
   confirmSystemDesignVersion,
   dismissDecisionSupersessionSweep,
+  dismissSystemDesignVersion,
   fetchDecisions,
   fetchSystemDesign,
   fetchSystemDesigns,
@@ -293,6 +295,7 @@ function DesignCanvas({
   const canManageWorkspace = useWorkspaceCapability('manage_workspace')
   const canConfirm = useWorkspaceCapability('confirm_documents')
   const displayed = item.current_version ?? item.pending_versions[0] ?? item.versions[item.versions.length - 1]
+  const [dismissTarget, setDismissTarget] = useState<SystemDesignVersion | null>(null)
   const confirm = useMutation({
     mutationFn: (version: number) =>
       confirmSystemDesignVersion(item.document.id, version, item.document.current_version ?? 0),
@@ -305,6 +308,19 @@ function DesignCanvas({
         void client.invalidateQueries({ queryKey: ['system-designs', workspace] })
         void client.invalidateQueries({ queryKey: ['system-design', workspace, item.document.id] })
       }
+    },
+  })
+  const dismiss = useMutation({
+    mutationFn: (version: number) => dismissSystemDesignVersion(item.document.id, version),
+    onSuccess: () => setDismissTarget(null),
+    onSettled: async () => {
+      await Promise.all([
+        client.invalidateQueries({ queryKey: ['system-designs', workspace] }),
+        client.invalidateQueries({ queryKey: ['system-design', workspace, item.document.id] }),
+        client.invalidateQueries({ queryKey: ['pending-proposals', workspace] }),
+        client.invalidateQueries({ queryKey: ['activity', workspace] }),
+        client.invalidateQueries({ queryKey: ['task', workspace] }),
+      ])
     },
   })
   const pending = item.pending_versions.at(-1)
@@ -364,12 +380,21 @@ function DesignCanvas({
         </>
       ),
       action: canConfirm ? (
-        <Button disabled={confirm.isPending} onClick={() => confirm.mutate(version.version)}>
-          <Check />
-          {confirm.isPending && confirm.variables === version.version
-            ? 'Confirming…'
-            : `Confirm version ${version.version}`}
-        </Button>
+        <>
+          <Button disabled={confirm.isPending || dismiss.isPending} onClick={() => confirm.mutate(version.version)}>
+            <Check />
+            {confirm.isPending && confirm.variables === version.version
+              ? 'Confirming…'
+              : `Confirm version ${version.version}`}
+          </Button>
+          <Button
+            variant="destructive"
+            disabled={confirm.isPending || dismiss.isPending}
+            onClick={() => setDismissTarget(version)}
+          >
+            <X /> Dismiss
+          </Button>
+        </>
       ) : undefined,
       error:
         confirm.error && confirm.variables === version.version
@@ -381,6 +406,16 @@ function DesignCanvas({
 
   return (
     <article className="mx-auto max-w-4xl px-8 py-8">
+      {dismissTarget && (
+        <VersionDismissDialog
+          documentTitle={item.document.title}
+          version={dismissTarget.version}
+          pending={dismiss.isPending}
+          error={dismiss.error ? errorMessage(dismiss.error, 'Could not dismiss this version.') : undefined}
+          onCancel={() => setDismissTarget(null)}
+          onConfirm={() => dismiss.mutate(dismissTarget.version)}
+        />
+      )}
       <header className="mb-8 flex items-start gap-4 border-b border-border pb-6">
         <div className="min-w-0 flex-1">
           <span
@@ -477,6 +512,11 @@ function DesignCanvas({
                     <Badge variant={version.confirmed ? 'positive' : version.dismissed ? 'default' : 'accent'}>
                       {version.confirmed ? 'Confirmed' : version.dismissed ? 'Dismissed' : 'Proposed'}
                     </Badge>
+                    {version.dismissed && version.dismissed_by && version.dismissed_at && (
+                      <span className="text-faint">
+                        Dismissed by {version.dismissed_by} on {formatDate(version.dismissed_at)}
+                      </span>
+                    )}
                     <span className="ml-auto font-medium text-primary hover:underline">Read version</span>
                   </summary>
                   <div className="mt-2 rounded-md bg-surface p-4">

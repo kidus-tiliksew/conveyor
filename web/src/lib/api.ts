@@ -445,6 +445,15 @@ export async function confirmRequirementVersion(requirementId: string, version: 
   return response.json() as Promise<{ requirement: RequirementView['requirement']; version: RequirementVersion }>
 }
 
+export async function dismissRequirementVersion(requirementId: string, version: number) {
+  const response = await fetch(
+    workspaceURL(`/v1/requirements/${encodeURIComponent(requirementId)}/versions/${version}/dismiss`),
+    { method: 'POST', headers: mutationHeaders() },
+  )
+  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
+  return response.json() as Promise<{ requirement: RequirementView['requirement']; version: RequirementVersion }>
+}
+
 export async function acknowledgeRequirementStaleness(requirementId: string, signalId: string) {
   const response = await fetch(
     workspaceURL(
@@ -720,6 +729,18 @@ export async function confirmSystemDesignVersion(id: string, version: number, ex
     throw new Error(message)
   }
   return response.json()
+}
+
+export async function dismissSystemDesignVersion(id: string, version: number) {
+  const response = await fetch(
+    workspaceURL(`/v1/system-designs/${encodeURIComponent(id)}/versions/${version}/dismiss`),
+    { method: 'POST', headers: mutationHeaders() },
+  )
+  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
+  return response.json() as Promise<{
+    document: import('./types').SystemDesign
+    version: import('./types').SystemDesignVersion
+  }>
 }
 export class SystemDesignConflictError extends Error {}
 export function fetchDecisions() {

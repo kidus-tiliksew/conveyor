@@ -273,6 +273,7 @@ type Store interface {
 	ListRequirementVersionsByRequirement(ctx context.Context) (map[string][]core.RequirementVersion, error)
 	ProposeRequirementVersion(ctx context.Context, version core.RequirementVersion) (core.RequirementVersion, error)
 	ConfirmRequirementVersion(ctx context.Context, requirementID string, version int, expectedCurrentVersion ...int) (core.Requirement, core.RequirementVersion, error)
+	DismissRequirementVersion(ctx context.Context, requirementID string, version int) (core.Requirement, core.RequirementVersion, error)
 	GetRequirementVersion(ctx context.Context, requirementID string, version int) (core.RequirementVersion, error)
 	ListRequirementVersions(ctx context.Context, requirementID string) ([]core.RequirementVersion, error)
 	ProposeRequirementServes(ctx context.Context, blueprintTaskID, requirementID string, source core.RequirementServesSource, confirm bool) (core.RequirementServesLink, error)
@@ -295,6 +296,7 @@ type Store interface {
 	ListSystemDesigns(ctx context.Context) ([]core.SystemDesign, error)
 	ProposeSystemDesignVersion(ctx context.Context, version core.SystemDesignVersion) (core.SystemDesignVersion, error)
 	ConfirmSystemDesignVersion(ctx context.Context, documentID string, version int, expectedCurrentVersion ...int) (core.SystemDesign, core.SystemDesignVersion, error)
+	DismissSystemDesignVersion(ctx context.Context, documentID string, version int) (core.SystemDesign, core.SystemDesignVersion, error)
 	GetSystemDesignVersion(ctx context.Context, documentID string, version int) (core.SystemDesignVersion, error)
 	ListSystemDesignVersions(ctx context.Context, documentID string) ([]core.SystemDesignVersion, error)
 	ListSystemDesignEvents(ctx context.Context, documentID string) ([]core.Event, error)
@@ -456,6 +458,36 @@ type RequirementVersionSuperseded struct {
 	SupersededBy  int
 }
 
+type VersionDismissalConflictReason string
+
+const (
+	VersionDismissalConfirmed  VersionDismissalConflictReason = "confirmed"
+	VersionDismissalDismissed  VersionDismissalConflictReason = "dismissed"
+	VersionDismissalSuperseded VersionDismissalConflictReason = "superseded"
+)
+
+// RequirementVersionDismissalConflict classifies terminal version states for
+// the direct operator dismissal route. Refreshing cannot make any of them
+// actionable again.
+type RequirementVersionDismissalConflict struct {
+	RequirementID string
+	Requested     int
+	Current       int
+	Reason        VersionDismissalConflictReason
+	SupersededBy  int
+}
+
+func (e *RequirementVersionDismissalConflict) Error() string {
+	switch e.Reason {
+	case VersionDismissalConfirmed:
+		return fmt.Sprintf("requirement %s version %d is already confirmed", e.RequirementID, e.Requested)
+	case VersionDismissalDismissed:
+		return fmt.Sprintf("requirement %s version %d is already dismissed", e.RequirementID, e.Requested)
+	default:
+		return fmt.Sprintf("requirement %s version %d was superseded by confirmed version %d", e.RequirementID, e.Requested, e.SupersededBy)
+	}
+}
+
 func (e *RequirementVersionSuperseded) Error() string {
 	return fmt.Sprintf("requirement %s version %d was superseded by newer confirmed version %d", e.RequirementID, e.Requested, e.SupersededBy)
 }
@@ -465,6 +497,25 @@ type SystemDesignVersionConflict struct {
 	Requested  int
 	Current    int
 	Expected   *int
+}
+
+type SystemDesignVersionDismissalConflict struct {
+	DocumentID   string
+	Requested    int
+	Current      int
+	Reason       VersionDismissalConflictReason
+	SupersededBy int
+}
+
+func (e *SystemDesignVersionDismissalConflict) Error() string {
+	switch e.Reason {
+	case VersionDismissalConfirmed:
+		return fmt.Sprintf("system design %s version %d is already confirmed", e.DocumentID, e.Requested)
+	case VersionDismissalDismissed:
+		return fmt.Sprintf("system design %s version %d is already dismissed", e.DocumentID, e.Requested)
+	default:
+		return fmt.Sprintf("system design %s version %d was superseded by confirmed version %d", e.DocumentID, e.Requested, e.SupersededBy)
+	}
 }
 
 func (e *SystemDesignVersionConflict) Error() string {

@@ -268,6 +268,33 @@ func (s *Server) confirmSystemDesignVersion(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusOK, map[string]any{"document": document, "version": confirmed})
 }
 
+func (s *Server) dismissSystemDesignVersion(w http.ResponseWriter, r *http.Request) {
+	version, err := strconv.Atoi(chi.URLParam(r, "version"))
+	if err != nil || version < 1 {
+		http.Error(w, "system design version must be a positive integer", http.StatusBadRequest)
+		return
+	}
+	document, dismissed, err := s.Store.DismissSystemDesignVersion(r.Context(), chi.URLParam(r, "id"), version)
+	if err != nil {
+		var conflict *store.SystemDesignVersionDismissalConflict
+		if errors.As(err, &conflict) {
+			code := "system_design_version_" + string(conflict.Reason)
+			body := map[string]any{
+				"error": code, "message": conflict.Error(), "document_id": conflict.DocumentID,
+				"requested_version": conflict.Requested, "current_version": conflict.Current,
+			}
+			if conflict.SupersededBy > 0 {
+				body["superseded_by_version"] = conflict.SupersededBy
+			}
+			writeJSON(w, http.StatusConflict, body)
+			return
+		}
+		http.Error(w, err.Error(), systemDesignMutationStatus(err))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"document": document, "version": dismissed})
+}
+
 func (s *Server) listDecisions(w http.ResponseWriter, r *http.Request) {
 	items, err := s.Store.ListDecisions(r.Context())
 	if err != nil {

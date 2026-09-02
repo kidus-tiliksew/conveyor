@@ -276,7 +276,10 @@ test('requirements renders a document tree, one attention surface, and confirms 
   await expect(attention.getByRole('link', { name: 'Inspect task' })).toHaveAttribute('href', '/tasks/blueprint-task')
   await expect(attention.getByRole('link', { name: /Open PR/ })).toHaveAttribute('href', 'https://example.test/pull/42')
   await expect(attention.getByRole('button', { name: 'File a task' })).toBeVisible()
-  await expect(attention.getByRole('button', { name: 'Dismiss' })).toBeVisible()
+  const stalenessItem = attention
+    .getByText('Blueprint delivery may have moved past the confirmed intent')
+    .locator('xpath=ancestor::li')
+  await expect(stalenessItem.getByRole('button', { name: 'Dismiss' })).toBeVisible()
   await expect(attention).toContainText('Version 1 is waiting for you')
 
   // AC-1.2: a routine factory-reviewed delivery remains visible as neutral
@@ -316,6 +319,45 @@ test('requirements renders a document tree, one attention surface, and confirms 
   await attention.getByRole('button', { name: 'Confirm version 1' }).click()
   await expect.poll(() => confirmed).toBe(true)
   await expect(page).toHaveURL(/\/requirements/)
+})
+
+test('requirement dismissal waits for dialog confirmation and preserves cancel', async ({ page }) => {
+  await initShell(page)
+  let dismissed = false
+  let dismissRequests = 0
+  await page.route('**/v1/**', async (route) => {
+    const shell = shellResponse(route)
+    if (shell) return await shell
+    const path = new URL(route.request().url()).pathname
+    const view = dismissed ? { ...requirement, pending_versions: [] } : requirement
+    if (path === '/v1/requirements') return route.fulfill({ json: [summarizeRequirement(view)] })
+    if (path === '/v1/requirements/req-retries') return route.fulfill({ json: view })
+    if (path === '/v1/requirements/req-retries/versions')
+      return route.fulfill({
+        json: dismissed ? [{ ...requirement.pending_versions[0], retired: true }] : requirement.pending_versions,
+      })
+    if (path === '/v1/requirements/req-retries/versions/1/dismiss') {
+      dismissRequests++
+      dismissed = true
+      return route.fulfill({ json: { requirement: requirement.requirement, version: requirement.pending_versions[0] } })
+    }
+    if (path === '/v1/planning-sessions') return route.fulfill({ json: [] })
+    return route.fulfill({ json: [] })
+  })
+
+  await page.goto('/requirements')
+  const attention = page.getByRole('region', { name: 'Needs your attention' })
+  const versionItem = attention.getByText('Version 1 is waiting for you').locator('xpath=ancestor::li')
+  await versionItem.getByRole('button', { name: 'Dismiss' }).click()
+  await expect(page.getByRole('dialog', { name: 'Dismiss version 1 of Retry behavior' })).toBeVisible()
+  expect(dismissRequests).toBe(0)
+  await page.getByRole('button', { name: 'Cancel' }).click()
+  await expect(versionItem).toBeVisible()
+  expect(dismissRequests).toBe(0)
+  await versionItem.getByRole('button', { name: 'Dismiss' }).click()
+  await page.getByRole('button', { name: 'Dismiss version 1' }).click()
+  await expect.poll(() => dismissRequests).toBe(1)
+  await expect(attention.getByText('Version 1 is waiting for you')).toHaveCount(0)
 })
 
 test('viewer can read requirement detail without the Attach context control', async ({ page }) => {
