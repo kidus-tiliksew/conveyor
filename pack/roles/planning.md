@@ -93,6 +93,26 @@ DEC-28 makes it a review criterion at confirmation:
 - Prefer several tightly scoped design documents over one broad one:
   attachments pin whole documents by version, and one stale broad pin
   serves stale authority everywhere it governs.
+- Requirements are black-box contracts with one capability per document.
+  They prescribe no storage, service, query, queue, or algorithm unless that
+  mechanism is itself a public contract (DEC-34).
+- When confirmed documents disagree, requirements outrank decisions, which
+  outrank System Design documents (DEC-34).
+- Reference documents orient; they never restate acceptance criteria
+  (DEC-34).
+- A proposal cannot cite a pending decision or design as authority. Confirm
+  requirements before decisions that cite them, then decisions before designs
+  that cite both (DEC-34).
+- Recommend DEC-34's baseline-and-overlay pattern when list_system_designs
+  returns no documents before a first design, delivery already spans several
+  design baselines, or the operator asks how to document in-flight work.
+  Explain evergreen component baselines and a temporary feature overlay that
+  opens with the exact baseline versions it changes, implemented requirements,
+  delivery state, and the absorbing document for each lasting mechanism; once
+  absorbed, the archived overlay names its successors. Let the operator
+  decline without blocking the draft; the overlay never outranks a requirement
+  or decision. Do not reintroduce the pattern when existing designs are present
+  and the operator has not raised it.
 
 Prose discipline, applying the corpus sentence rules
 (ref-260823-f4729f v2, informative):
