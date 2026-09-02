@@ -26,13 +26,18 @@ Informative documents are reference material: product overviews, roadmaps,
 anything uploaded as Markdown. They cannot be cited, on purpose. When a claim
 in an overview should become enforceable, an operator promotes it into a
 requirement, and Conveyor records a `derived_from` link back to the overview
-when that requirement is confirmed.
+when that requirement is confirmed. Informative documents never restate
+acceptance criteria (DEC-34).
 
 ## Requirements
 
 A requirement document has two parts: an explanation written for people, and
 one `conveyor:requirements` code block that Conveyor parses. The explanation
 can say whatever helps a reader; only the code block is validated:
+
+A requirement is a black-box contract and each requirement document covers
+one capability. It does not prescribe storage, services, queries, queues, or
+algorithms unless that mechanism is itself a public contract (DEC-34).
 
 ````markdown
 Operators need to recover a lost sign-in without database surgery.
@@ -77,6 +82,25 @@ pinned authority when a task touches those paths, and it arms
 without the delivering task having consulted or proposed a revision to the
 design raises a drift signal.
 
+## Baselines and overlays
+
+DEC-34 recommends evergreen System Design documents as component baselines and
+a temporary feature overlay for delivery that changes several baselines. The
+overlay opens by naming the exact baseline versions it changes, the
+requirements it implements, its delivery state, and the absorbing document
+for each lasting mechanism; it does not outrank a requirement or decision.
+
+Planning agents recommend this pattern when a workspace creates its first
+System Design document, when in-flight delivery spans several baselines, or
+when an operator asks how to document a feature under development. A workspace
+may decline and revise evergreen baselines directly, as Conveyor's own corpus
+does, and the agent does not press the pattern again after that choice.
+
+After delivery, the operator proposes the baseline revisions and then archives
+the overlay naming those documents as successors. The archive step ships with
+req-document-operating-surfaces REQ-5 AC-5.7; until then, the operator retires
+the overlay by hand.
+
 ## Decisions
 
 A decision (DEC-n) records a settled judgment: a statement, its context, and
@@ -94,6 +118,18 @@ unknown one.
 
 The server mints DEC-n IDs from a per-workspace sequence; like requirement
 IDs, they are never recycled.
+
+## Precedence and confirmation order
+
+When confirmed documents disagree, read requirements first, decisions second,
+and System Design documents third (DEC-34). Requirements hold the public
+contract, decisions constrain the chosen direction, and designs describe the
+mechanism within those constraints.
+
+Confirm requirements before the decisions that cite them, then confirm
+decisions before the designs that cite both (DEC-34). A pending document has no
+authority, so this order prevents a proposal from depending on an unconfirmed
+premise.
 
 ## Propose, then confirm
 

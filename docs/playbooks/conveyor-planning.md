@@ -42,6 +42,24 @@ propose-confirm boundary; the incidents behind each rule are in the
   every revision.
 - Several tight design documents beat one broad one — pins attach whole
   documents by version.
+- Requirements are black-box contracts with one capability per document; do
+  not prescribe storage, services, queries, queues, or algorithms unless the
+  mechanism is itself a public contract (DEC-34).
+- Confirmed-document precedence is requirements, then decisions, then System
+  Design documents (DEC-34).
+- Reference documents orient and never restate acceptance criteria (DEC-34).
+- A proposal cannot cite a pending decision or design as authority; confirm
+  requirements before decisions that cite them, then decisions before designs
+  that cite both (DEC-34).
+- Recommend DEC-34's baseline-and-overlay pattern when
+  `GET /v1/system-designs` returns an empty workspace list before a first
+  design, delivery already spans several design baselines, or the operator
+  asks how to document in-flight work. Explain evergreen component baselines
+  and a temporary feature overlay, recommend the pattern as the default, and
+  let the operator decline without blocking the draft; once absorbed, the
+  archived overlay names its successors. The overlay never outranks a
+  requirement or decision. Do not reintroduce the pattern when designs exist
+  and the operator has not raised it.
 - Name the mechanism, actor, and source. Replace generic praise with a fact,
   instruction, or number, and cite the REQ-n or DEC-n that holds each claim.
 - Use one name per concept, especially for schema columns and API fields.
@@ -100,6 +118,10 @@ paths:
   `conveyor:path:line-range` evidence. Category is operator-named
   (Architecture, Database design, API contracts, …) and immutable after
   creation.
+- When the operator takes the baseline-and-overlay recommendation, draft the
+  temporary overlay to open with the exact baseline versions it changes, the
+  requirements it implements, its delivery state, and the absorbing owner for
+  each lasting mechanism (DEC-34).
 - Governed scope is load-bearing: merges touching those paths without a
   proposed revision raise the drift signal. Scope only what the document
   genuinely describes.
