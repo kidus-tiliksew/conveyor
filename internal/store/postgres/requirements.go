@@ -412,6 +412,64 @@ func (s *Store) ConfirmRequirementVersion(ctx context.Context, requirementID str
 	return requirement, confirmed, nil
 }
 
+func (s *Store) DismissRequirementVersion(ctx context.Context, requirementID string, version int) (core.Requirement, core.RequirementVersion, error) {
+	var (
+		requirement core.Requirement
+		dismissed   core.RequirementVersion
+	)
+	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		var currentVersion *int32
+		if err := tx.QueryRow(ctx, `SELECT current_version FROM requirements
+			WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspace(ctx), requirementID).Scan(&currentVersion); err != nil {
+			return notFound(err, "requirement %s", requirementID)
+		}
+		current := 0
+		if currentVersion != nil {
+			current = int(*currentVersion)
+		}
+		var err error
+		dismissed, err = scanRequirementVersion(tx.QueryRow(ctx, requirementVersionSelect+
+			` WHERE workspace_id=$1 AND requirement_id=$2 AND version=$3`,
+			workspace(ctx), requirementID, version), requirementID, version)
+		if err != nil {
+			return err
+		}
+		if dismissed.Confirmed {
+			return &store.RequirementVersionDismissalConflict{RequirementID: requirementID, Requested: version, Current: current, Reason: store.VersionDismissalConfirmed}
+		}
+		if dismissed.Retired {
+			reason := store.VersionDismissalDismissed
+			if dismissed.RetiredByVersion > 0 {
+				reason = store.VersionDismissalSuperseded
+			}
+			return &store.RequirementVersionDismissalConflict{RequirementID: requirementID, Requested: version, Current: current, Reason: reason, SupersededBy: dismissed.RetiredByVersion}
+		}
+		if version < current {
+			return &store.RequirementVersionDismissalConflict{RequirementID: requirementID, Requested: version, Current: current, Reason: store.VersionDismissalSuperseded, SupersededBy: current}
+		}
+		actor, now := store.ActorFromContext(ctx), time.Now().UTC()
+		if _, err = tx.Exec(ctx, `UPDATE requirement_versions
+			SET retired=true, retired_by=$4, retired_at=$5, retired_by_version=NULL
+			WHERE workspace_id=$1 AND requirement_id=$2 AND version=$3`,
+			workspace(ctx), requirementID, version, actor.ID, now); err != nil {
+			return err
+		}
+		if _, err = tx.Exec(ctx, `UPDATE requirements SET updated_at=$3
+			WHERE workspace_id=$1 AND id=$2`, workspace(ctx), requirementID, now); err != nil {
+			return err
+		}
+		dismissed.Retired, dismissed.RetiredBy, dismissed.RetiredAt, dismissed.RetiredByVersion = true, actor.ID, now, 0
+		if requirement, err = scanRequirement(tx.QueryRow(ctx, requirementSelect+
+			` WHERE workspace_id=$1 AND id=$2`, workspace(ctx), requirementID), requirementID); err != nil {
+			return err
+		}
+		return insertRequirementEvent(ctx, q, "requirement.version_dismissed", map[string]any{
+			"workspace_id": workspace(ctx), "requirement_id": requirementID, "version": version, "dismissed_by": actor.ID,
+		})
+	})
+	return requirement, dismissed, err
+}
+
 func (s *Store) GetRequirementVersion(ctx context.Context, requirementID string, version int) (core.RequirementVersion, error) {
 	return scanRequirementVersion(s.pool.QueryRow(ctx, requirementVersionSelect+
 		` WHERE workspace_id=$1 AND requirement_id=$2 AND version=$3`,

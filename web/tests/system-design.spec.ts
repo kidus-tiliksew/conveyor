@@ -105,6 +105,7 @@ test('System Design renders a category tree, one attention surface, and authenti
 }) => {
   await initialize(page)
   let confirmed = false
+  let dismissAttempts = 0
   let revisionInput: Record<string, unknown> = {}
   const protectedReads: string[] = []
   await page.route('**/v1/**', async (route) => {
@@ -140,6 +141,10 @@ test('System Design renders a category tree, one attention surface, and authenti
       expect(url.searchParams.get('workspace_id')).toBe('demo')
       confirmed = true
       return route.fulfill({ json: { document: design.document, version: pending } })
+    }
+    if (url.pathname === '/v1/system-designs/design-dispatch/versions/2/dismiss') {
+      dismissAttempts++
+      return route.fulfill({ json: {} })
     }
     if (url.pathname === '/v1/planning-sessions' && request.method() === 'POST') {
       revisionInput = JSON.parse(request.postData() ?? '{}') as Record<string, unknown>
@@ -199,6 +204,12 @@ test('System Design renders a category tree, one attention surface, and authenti
   )
   await expect(attention).toContainText('Version 2 is waiting for you')
   await expect(attention.getByRole('button', { name: 'Confirm version 2' })).toBeVisible()
+  await attention.getByRole('button', { name: 'Dismiss' }).click()
+  await expect(page.getByRole('dialog', { name: 'Dismiss version 2 of Dispatch ownership' })).toBeVisible()
+  expect(dismissAttempts).toBe(0)
+  await page.getByRole('button', { name: 'Cancel' }).click()
+  await expect(attention).toContainText('Version 2 is waiting for you')
+  expect(dismissAttempts).toBe(0)
 
   // AC-4.2/AC-4.4: the judged merge remains visible as neutral history and
   // does not enter the document's attention surface or count.

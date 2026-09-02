@@ -27,6 +27,7 @@ import {
 } from '../components/documents/document-tree'
 import { DriftResolutionForm } from '../components/documents/drift-resolution-form'
 import { VersionDiff } from '../components/documents/version-diff'
+import { VersionDismissDialog } from '../components/documents/version-dismiss-dialog'
 import { LineageExplorer } from '../components/lineage/lineage-explorer'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
@@ -38,6 +39,7 @@ import {
   confirmRequirementVersion,
   createRequirementStalenessFollowUp,
   deleteReferenceDocument,
+  dismissRequirementVersion,
   downloadArtifact,
   fetchCheckpointContextCandidates,
   fetchReferenceDocuments,
@@ -524,6 +526,7 @@ function RequirementDetailCanvas({ item }: { item: RequirementView }) {
   }, [displayed])
   const currentVersion = item.current_version?.version ?? 0
   const [attachmentOffer, setAttachmentOffer] = useState<number | null>(null)
+  const [dismissTarget, setDismissTarget] = useState<RequirementVersion | null>(null)
   const confirm = useMutation({
     mutationFn: (version: number) => confirmRequirementVersion(item.requirement.id, version, currentVersion),
     onSuccess: ({ version }) => setAttachmentOffer(version.version),
@@ -532,6 +535,20 @@ function RequirementDetailCanvas({ item }: { item: RequirementView }) {
         client.invalidateQueries({ queryKey: ['requirements', workspace] }),
         client.invalidateQueries({ queryKey: ['requirement', workspace, item.requirement.id] }),
         client.invalidateQueries({ queryKey: ['requirement-versions', workspace, item.requirement.id] }),
+      ])
+    },
+  })
+  const dismiss = useMutation({
+    mutationFn: (version: number) => dismissRequirementVersion(item.requirement.id, version),
+    onSuccess: () => setDismissTarget(null),
+    onSettled: async () => {
+      await Promise.all([
+        client.invalidateQueries({ queryKey: ['requirements', workspace] }),
+        client.invalidateQueries({ queryKey: ['requirement', workspace, item.requirement.id] }),
+        client.invalidateQueries({ queryKey: ['requirement-versions', workspace, item.requirement.id] }),
+        client.invalidateQueries({ queryKey: ['pending-proposals', workspace] }),
+        client.invalidateQueries({ queryKey: ['activity', workspace] }),
+        client.invalidateQueries({ queryKey: ['task', workspace] }),
       ])
     },
   })
@@ -722,16 +739,25 @@ function RequirementDetailCanvas({ item }: { item: RequirementView }) {
         </>
       ),
       action: canConfirm ? (
-        <Button
-          disabled={confirm.isPending || !item.confirmation_eligible}
-          title={!item.confirmation_eligible ? 'Revise this migrated seed before confirming it.' : undefined}
-          onClick={() => confirm.mutate(version.version)}
-        >
-          <Check />
-          {confirm.isPending && confirm.variables === version.version
-            ? 'Confirming…'
-            : `Confirm version ${version.version}`}
-        </Button>
+        <>
+          <Button
+            disabled={confirm.isPending || dismiss.isPending || !item.confirmation_eligible}
+            title={!item.confirmation_eligible ? 'Revise this migrated seed before confirming it.' : undefined}
+            onClick={() => confirm.mutate(version.version)}
+          >
+            <Check />
+            {confirm.isPending && confirm.variables === version.version
+              ? 'Confirming…'
+              : `Confirm version ${version.version}`}
+          </Button>
+          <Button
+            variant="destructive"
+            disabled={confirm.isPending || dismiss.isPending}
+            onClick={() => setDismissTarget(version)}
+          >
+            <Trash2 /> Dismiss
+          </Button>
+        </>
       ) : undefined,
       error:
         confirm.error && confirm.variables === version.version
@@ -742,6 +768,16 @@ function RequirementDetailCanvas({ item }: { item: RequirementView }) {
 
   return (
     <div className="min-w-0">
+      {dismissTarget && (
+        <VersionDismissDialog
+          documentTitle={item.requirement.title}
+          version={dismissTarget.version}
+          pending={dismiss.isPending}
+          error={dismiss.error ? errorMessage(dismiss.error, 'Could not dismiss this version.') : undefined}
+          onCancel={() => setDismissTarget(null)}
+          onConfirm={() => dismiss.mutate(dismissTarget.version)}
+        />
+      )}
       {canOperate && attachmentOffer != null && (
         <CheckpointContextOffer
           requirementId={item.requirement.id}
@@ -761,7 +797,13 @@ function RequirementDetailCanvas({ item }: { item: RequirementView }) {
             <div className="mt-3 flex flex-wrap items-center gap-1.5">
               <Badge variant="mono">v{displayed.version}</Badge>
               <Badge variant={displayed.confirmed ? 'positive' : displayed.retired ? 'default' : 'accent'}>
-                {displayed.confirmed ? 'Confirmed' : displayed.retired ? 'Superseded' : 'Proposed'}
+                {displayed.confirmed
+                  ? 'Confirmed'
+                  : displayed.retired
+                    ? displayed.retired_by_version
+                      ? 'Superseded'
+                      : 'Dismissed'
+                    : 'Proposed'}
               </Badge>
               <span className="inline-flex items-center gap-1 text-xs text-faint">
                 <Clock className="size-3" />
@@ -815,8 +857,19 @@ function RequirementDetailCanvas({ item }: { item: RequirementView }) {
                 >
                   <span className="font-medium">v{version.version}</span>
                   <span className={`ml-1.5 text-[11px] ${active ? 'text-primary-foreground/75' : 'text-faint'}`}>
-                    {version.confirmed ? 'Confirmed' : version.retired ? 'Superseded' : 'Proposed'} ·{' '}
-                    {originLabels[version.origin]}
+                    {version.confirmed
+                      ? 'Confirmed'
+                      : version.retired
+                        ? version.retired_by_version
+                          ? 'Superseded'
+                          : 'Dismissed'
+                        : 'Proposed'}{' '}
+                    · {originLabels[version.origin]}
+                    {version.retired &&
+                      !version.retired_by_version &&
+                      version.retired_by &&
+                      version.retired_at &&
+                      ` · Dismissed by ${version.retired_by} on ${formatDate(version.retired_at)}`}
                   </span>
                 </button>
               )
@@ -1301,6 +1354,7 @@ function eventLabel(event: TaskEvent) {
     'requirement.version_proposed': 'Revision proposed',
     'requirement.version_confirmed': 'Revision confirmed',
     'requirement.version_retired': 'Revision superseded',
+    'requirement.version_dismissed': 'Revision dismissed',
     'merge.confirmed': 'Delivery merged',
     'merge.reconciled': 'Merged delivery reconciled',
   }

@@ -13,7 +13,7 @@ import (
 // . The Postgres half runs the identical suite in
 // internal/store/postgres, which is what proves the two agree.
 func TestMemoryRequirementConformance(t *testing.T) {
-	storetest.RunRequirementConformance(t, func(t *testing.T, repos []config.Repo) storetest.RequirementFixture {
+	factory := func(t *testing.T, repos []config.Repo) storetest.RequirementFixture {
 		t.Helper()
 		// A fresh store and workspace per subtest, mirroring the fresh Postgres
 		// workspace the integration harness provisions.
@@ -24,5 +24,7 @@ func TestMemoryRequirementConformance(t *testing.T) {
 			Context:   store.WithWorkspace(t.Context(), workspace),
 			Workspace: workspace,
 		}
-	})
+	}
+	storetest.RunRequirementConformance(t, factory)
+	storetest.RunVersionDismissalConformance(t, factory)
 }

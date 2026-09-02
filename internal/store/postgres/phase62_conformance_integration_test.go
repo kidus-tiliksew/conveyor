@@ -27,7 +27,7 @@ func TestPhase62RequirementConformanceIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	storetest.RunRequirementConformance(t, func(t *testing.T, repos []config.Repo) storetest.RequirementFixture {
+	factory := func(t *testing.T, repos []config.Repo) storetest.RequirementFixture {
 		t.Helper()
 		// One fresh workspace per subtest so document slugs, session ids, and
 		// listing order are never contaminated by an earlier case.
@@ -37,5 +37,7 @@ func TestPhase62RequirementConformanceIntegration(t *testing.T) {
 			t.Fatal(err)
 		}
 		return storetest.RequirementFixture{Store: st, Context: ctx, Workspace: workspace}
-	})
+	}
+	storetest.RunRequirementConformance(t, factory)
+	storetest.RunVersionDismissalConformance(t, factory)
 }

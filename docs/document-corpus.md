@@ -159,8 +159,15 @@ becomes permanently unactionable. Attempting to confirm a version older than
 the current one returns a conflict. Versions are immutable and strictly
 monotonic per document.
 
+The same capability may dismiss one pending requirement or System Design
+version directly. The version keeps its immutable content, statement IDs,
+dismissal actor, and dismissal time in history, but leaves pending and
+attention projections and can never be confirmed later. Direct dismissal does
+not archive or delete the document, and confirmation still resolves earlier
+pending versions as described above.
+
 The Pending proposals page collects every undecided proposal, with its age,
-its origin, and a confirm action, so an operator can see at a glance how
+its origin, and confirm and dismiss actions, so an operator can see at a glance how
 much authority the factory is waiting on. A pending task-authored
 proposal also blocks that task's review from being claimed until it is
 decided either way, which is the one place a proposal touches the pipeline;

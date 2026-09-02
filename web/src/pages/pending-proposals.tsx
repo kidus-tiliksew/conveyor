@@ -1,12 +1,16 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link, useSearch } from '@tanstack/react-router'
 import { Check, Clock, FileDiff, X } from 'lucide-react'
+import { useState } from 'react'
 import { usePendingProposals, useWorkspaceCapability, useWorkspaceSelection } from '../components/app-shell'
+import { VersionDismissDialog } from '../components/documents/version-dismiss-dialog'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import {
   confirmRequirementVersion,
   confirmSystemDesignVersion,
+  dismissRequirementVersion,
+  dismissSystemDesignVersion,
   fetchRequirement,
   fetchSystemDesign,
   resolveDecision,
@@ -26,17 +30,22 @@ export function PendingProposalsPage() {
   const search = useSearch({ from: '/pending-proposals' })
   const client = useQueryClient()
   const proposals = usePendingProposals()
+  const [dismissTarget, setDismissTarget] = useState<PendingProposal | null>(null)
   const resolve = useMutation({
     mutationFn: async ({ proposal, action }: { proposal: PendingProposal; action: 'confirm' | 'dismiss' }) => {
       if (proposal.tier === 'decision') return resolveDecision(proposal.id, action)
-      if (action === 'dismiss') throw new Error('This document tier is resolved by choosing the version to confirm.')
       if (proposal.version == null) throw new Error('The proposal did not include a version.')
       if (proposal.tier === 'requirement') {
+        if (action === 'dismiss') return dismissRequirementVersion(proposal.id, proposal.version)
         const view = await fetchRequirement(proposal.id)
         return confirmRequirementVersion(proposal.id, proposal.version, view.requirement.current_version ?? 0)
       }
+      if (action === 'dismiss') return dismissSystemDesignVersion(proposal.id, proposal.version)
       const view = await fetchSystemDesign(proposal.id)
       return confirmSystemDesignVersion(proposal.id, proposal.version, view.document.current_version ?? 0)
+    },
+    onSuccess: (_, variables) => {
+      if (variables.action === 'dismiss') setDismissTarget(null)
     },
     onSettled: async () => {
       await Promise.all([
@@ -59,6 +68,16 @@ export function PendingProposalsPage() {
 
   return (
     <div className="h-full overflow-y-auto">
+      {dismissTarget?.tier !== 'decision' && dismissTarget?.version != null && (
+        <VersionDismissDialog
+          documentTitle={dismissTarget.title}
+          version={dismissTarget.version}
+          pending={resolve.isPending}
+          error={resolve.error ? errorMessage(resolve.error, 'Could not dismiss this version.') : undefined}
+          onCancel={() => setDismissTarget(null)}
+          onConfirm={() => resolve.mutate({ proposal: dismissTarget, action: 'dismiss' })}
+        />
+      )}
       <div className="mx-auto max-w-5xl px-6 py-8">
         <header className="flex flex-wrap items-start justify-between gap-3 border-b border-border pb-5">
           <div>
@@ -109,7 +128,7 @@ export function PendingProposalsPage() {
                 (item) => item.tier === proposal.tier && item.id === proposal.id,
               ).length
               const canConfirm = canConfirmDocuments
-              const canDismiss = canConfirmDocuments && proposal.tier === 'decision'
+              const canDismiss = canConfirmDocuments
               return (
                 <li key={key} className="grid gap-4 px-4 py-4 md:grid-cols-[minmax(0,1fr)_auto]">
                   <div className="min-w-0">
@@ -152,7 +171,11 @@ export function PendingProposalsPage() {
                         size="sm"
                         variant="destructive"
                         disabled={resolve.isPending}
-                        onClick={() => resolve.mutate({ proposal, action: 'dismiss' })}
+                        onClick={() =>
+                          proposal.tier === 'decision'
+                            ? resolve.mutate({ proposal, action: 'dismiss' })
+                            : setDismissTarget(proposal)
+                        }
                       >
                         <X />
                         {active && resolve.isPending && resolve.variables?.action === 'dismiss'
