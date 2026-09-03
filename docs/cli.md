@@ -220,7 +220,7 @@ The daemon takes single-dash flags:
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `-addr` | `127.0.0.1:8080` | Listen address |
+| `-addr` | `127.0.0.1:8080` | Listen address. An explicit flag overrides `CONVEYOR_LISTEN_ADDR` and `PORT`. |
 | `-config` | `conveyor.yaml` | Deployment config path |
 | `-poll-github` | `0` | Poll interval for `conveyor:ready` issues; `0` disables |
 | `-worker-retry-delay` / `-worker-retry-max` | `1s` / `4s` | Supervised-child retry backoff |

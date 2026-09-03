@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,7 +11,105 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/envfile"
 )
+
+func TestResolveConveyordListenAddress(t *testing.T) {
+	tests := []struct {
+		name         string
+		flagAddr     string
+		flagExplicit bool
+		environment  map[string]string
+		wantAddr     string
+		wantSource   string
+		wantError    string
+	}{
+		{name: "default", flagAddr: "127.0.0.1:8080", wantAddr: "127.0.0.1:8080", wantSource: "default"},
+		{name: "PORT", flagAddr: "127.0.0.1:8080", environment: map[string]string{"PORT": "9000"}, wantAddr: "0.0.0.0:9000", wantSource: "PORT"},
+		{name: "listen environment", flagAddr: "127.0.0.1:8080", environment: map[string]string{"CONVEYOR_LISTEN_ADDR": "127.0.0.2:7000"}, wantAddr: "127.0.0.2:7000", wantSource: "CONVEYOR_LISTEN_ADDR"},
+		{name: "listen environment wins over PORT", flagAddr: "127.0.0.1:8080", environment: map[string]string{"CONVEYOR_LISTEN_ADDR": ":7000", "PORT": "9000"}, wantAddr: ":7000", wantSource: "CONVEYOR_LISTEN_ADDR"},
+		{name: "flag wins over environment", flagAddr: "localhost:6000", flagExplicit: true, environment: map[string]string{"CONVEYOR_LISTEN_ADDR": "bad", "PORT": "bad"}, wantAddr: "localhost:6000", wantSource: "flag"},
+		{name: "explicit flag equal to default wins", flagAddr: "127.0.0.1:8080", flagExplicit: true, environment: map[string]string{"PORT": "9000"}, wantAddr: "127.0.0.1:8080", wantSource: "flag"},
+		{name: "invalid listen environment", flagAddr: "127.0.0.1:8080", environment: map[string]string{"CONVEYOR_LISTEN_ADDR": "localhost", "PORT": "9000"}, wantError: `invalid CONVEYOR_LISTEN_ADDR "localhost"`},
+		{name: "non-numeric PORT", flagAddr: "127.0.0.1:8080", environment: map[string]string{"PORT": "http"}, wantError: `invalid PORT "http"`},
+		{name: "zero PORT", flagAddr: "127.0.0.1:8080", environment: map[string]string{"PORT": "0"}, wantError: `invalid PORT "0"`},
+		{name: "out-of-range PORT", flagAddr: "127.0.0.1:8080", environment: map[string]string{"PORT": "65536"}, wantError: `invalid PORT "65536"`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			getenv := func(name string) string { return tt.environment[name] }
+			addr, source, err := resolveConveyordListenAddress(tt.flagAddr, tt.flagExplicit, getenv)
+			if tt.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantError) {
+					t.Fatalf("error=%v, want substring %q", err, tt.wantError)
+				}
+				return
+			}
+			if err != nil || addr != tt.wantAddr || source != tt.wantSource {
+				t.Fatalf("addr=%q source=%q err=%v, want addr=%q source=%q", addr, source, err, tt.wantAddr, tt.wantSource)
+			}
+		})
+	}
+}
+
+func TestFlagWasSetRecognizesExplicitDefault(t *testing.T) {
+	fs := flag.NewFlagSet("conveyord", flag.ContinueOnError)
+	addr := fs.String("addr", "127.0.0.1:8080", "listen address")
+	if err := fs.Parse([]string{"-addr", "127.0.0.1:8080"}); err != nil {
+		t.Fatal(err)
+	}
+	if *addr != "127.0.0.1:8080" || !flagWasSet(fs, "addr") {
+		t.Fatalf("addr=%q explicit=%v, want explicit default", *addr, flagWasSet(fs, "addr"))
+	}
+}
+
+func TestResolveConveyordListenAddressFromEnvFile(t *testing.T) {
+	tests := []struct {
+		name       string
+		contents   string
+		processEnv map[string]string
+		wantAddr   string
+		wantSource string
+	}{
+		{name: "file PORT", contents: "PORT=9000\n", wantAddr: "0.0.0.0:9000", wantSource: "PORT"},
+		{name: "file listen address", contents: "CONVEYOR_LISTEN_ADDR=localhost:7000\n", wantAddr: "localhost:7000", wantSource: "CONVEYOR_LISTEN_ADDR"},
+		{name: "process PORT remains authoritative", contents: "PORT=9000\n", processEnv: map[string]string{"PORT": "8000"}, wantAddr: "0.0.0.0:8000", wantSource: "PORT"},
+		{name: "process listen address remains authoritative", contents: "CONVEYOR_LISTEN_ADDR=localhost:7000\n", processEnv: map[string]string{"CONVEYOR_LISTEN_ADDR": "localhost:8000"}, wantAddr: "localhost:8000", wantSource: "CONVEYOR_LISTEN_ADDR"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, name := range []string{"CONVEYOR_LISTEN_ADDR", "PORT"} {
+				previous, present := os.LookupEnv(name)
+				if err := os.Unsetenv(name); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() {
+					if present {
+						_ = os.Setenv(name, previous)
+					} else {
+						_ = os.Unsetenv(name)
+					}
+				})
+			}
+			for name, value := range tt.processEnv {
+				if err := os.Setenv(name, value); err != nil {
+					t.Fatal(err)
+				}
+			}
+			path := filepath.Join(t.TempDir(), ".env")
+			if err := os.WriteFile(path, []byte(tt.contents), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := envfile.Load(path); err != nil {
+				t.Fatal(err)
+			}
+			addr, source, err := resolveConveyordListenAddress("127.0.0.1:8080", false, os.Getenv)
+			if err != nil || addr != tt.wantAddr || source != tt.wantSource {
+				t.Fatalf("addr=%q source=%q err=%v, want addr=%q source=%q", addr, source, err, tt.wantAddr, tt.wantSource)
+			}
+		})
+	}
+}
 
 func TestLoadConveyordPackUsesEmbeddedDefaultAndStrictOverride(t *testing.T) {
 	bundle, err := loadConveyordPack(&config.Config{})
