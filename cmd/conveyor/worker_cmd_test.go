@@ -588,12 +588,58 @@ func TestCodexUsageCollectorAcceptsOnlyValidTurnCompletedJSONL(t *testing.T) {
 	_, _ = collector.Write([]byte(`"output_tokens":5}}` + "\n" + `not-json` + "\n"))
 
 	usage, ok := collector.Usage()
-	if !ok || usage != (codexUsageTotals{TokensIn: 21262, TokensOut: 5}) {
+	if !ok || usage != (workerUsageTotals{TokensIn: 21262, TokensOut: 5}) {
 		t.Fatalf("usage=%+v available=%v", usage, ok)
 	}
 	_, _ = collector.Write([]byte(`{"type":"turn.completed","usage":{"input_tokens":-1,"output_tokens":7}}` + "\n"))
 	if got, _ := collector.Usage(); got != usage {
 		t.Fatalf("invalid terminal payload replaced usage: %+v", got)
+	}
+}
+
+func TestCursorUsageCollectorAcceptsOnlyValidResultJSONL(t *testing.T) {
+	collector := &cursorUsageCollector{}
+	ignored := []string{
+		`{"type":"result"}`,
+		`{"type":"result","usage":{"inputTokens":1}}`,
+		`{"type":"result","usage":{"outputTokens":1}}`,
+		`{"type":"result","usage":{"inputTokens":-1,"outputTokens":1}}`,
+		`{"type":"result","usage":{"inputTokens":1,"outputTokens":-1}}`,
+		`{"type":"result","usage":{"inputTokens":1.5,"outputTokens":2}}`,
+		`not-json`,
+	}
+	for _, line := range ignored {
+		_, _ = collector.Write([]byte(line + "\n"))
+	}
+	if usage, ok := collector.Usage(); ok {
+		t.Fatalf("invalid result produced usage: %+v", usage)
+	}
+
+	_, _ = collector.Write([]byte(`{"type":"result","is_error":true,"usage":{"inputTokens":13630,"outputTokens":89,"cacheReadTokens":20864,`))
+	_, _ = collector.Write([]byte(`"cacheWriteTokens":7}}` + "\n"))
+	usage, ok := collector.Usage()
+	if !ok || usage != (workerUsageTotals{TokensIn: 13630, TokensOut: 89}) {
+		t.Fatalf("usage=%+v available=%v", usage, ok)
+	}
+
+	_, _ = collector.Write([]byte(`{"type":"result","usage":{"inputTokens":4,"outputTokens":2}}` + "\n"))
+	if got, _ := collector.Usage(); got != (workerUsageTotals{TokensIn: 4, TokensOut: 2}) {
+		t.Fatalf("last result did not win: %+v", got)
+	}
+}
+
+func TestCursorUsageCollectorIgnoresNonTerminalEventsAndOverlongInput(t *testing.T) {
+	collector := &cursorUsageCollector{}
+	for _, eventType := range []string{"system", "user", "thinking", "assistant", "tool_call"} {
+		_, _ = collector.Write([]byte(fmt.Sprintf(`{"type":%q,"usage":{"inputTokens":8,"outputTokens":5}}`, eventType) + "\n"))
+	}
+	_, _ = collector.Write(bytes.Repeat([]byte("x"), 64*1024+1))
+	if usage, ok := collector.Usage(); ok {
+		t.Fatalf("ignored input produced usage: %+v", usage)
+	}
+	_, _ = collector.Write([]byte(`{"type":"result","usage":{"inputTokens":3,"outputTokens":1}}` + "\n"))
+	if got, ok := collector.Usage(); !ok || got != (workerUsageTotals{TokensIn: 3, TokensOut: 1}) {
+		t.Fatalf("collector did not recover after overlong input: %+v available=%v", got, ok)
 	}
 }
 
@@ -614,7 +660,22 @@ func TestEnableCodexJSONOutputIsNarrowAndIdempotent(t *testing.T) {
 	}
 }
 
-func TestReportCodexUsageFallbackIsBestEffortReplacementOnly(t *testing.T) {
+func TestEnableHarnessUsageCollectionSelectsCursorByCommandBasename(t *testing.T) {
+	original := []string{"/opt/bin/cursor-agent", "-p", "prompt", "--output-format", "stream-json"}
+	harness := config.Harness{Name: "renamed-cursor", Command: original}
+	got, collector := enableHarnessUsageCollection(harness, original)
+	if _, ok := collector.(*cursorUsageCollector); !ok || !reflect.DeepEqual(got, original) {
+		t.Fatalf("cursor argv=%q collector=%T", got, collector)
+	}
+
+	nonCursor := config.Harness{Name: "renamed-cursor", Command: []string{"codex", "exec", "prompt"}}
+	got, collector = enableHarnessUsageCollection(nonCursor, nonCursor.Command)
+	if collector != nil || !reflect.DeepEqual(got, nonCursor.Command) {
+		t.Fatalf("non-cursor argv=%q collector=%T", got, collector)
+	}
+}
+
+func TestReportWorkerUsageFallbackIsBestEffortReplacementOnly(t *testing.T) {
 	var mu sync.Mutex
 	calls := 0
 	var arguments map[string]any
@@ -640,15 +701,15 @@ func TestReportCodexUsageFallbackIsBestEffortReplacementOnly(t *testing.T) {
 	defer server.Close()
 	c := &client{base: server.URL, workspace: "demo"}
 
-	valid := &codexUsageCollector{}
-	_, _ = valid.Write([]byte(`{"type":"turn.completed","usage":{"input_tokens":21,"output_tokens":3}}` + "\n"))
-	reportCodexUsageFallback(c, "worker-token", "order-1", "session-1", core.WorkOrder{}, valid)
+	valid := &cursorUsageCollector{}
+	_, _ = valid.Write([]byte(`{"type":"result","usage":{"inputTokens":21,"outputTokens":3}}` + "\n"))
+	reportWorkerUsageFallback(c, "worker-token", "order-1", "session-1", core.WorkOrder{}, valid)
 
-	invalid := &codexUsageCollector{}
-	_, _ = invalid.Write([]byte(`{"type":"turn.completed","usage":{"input_tokens":"bad","output_tokens":3}}` + "\n"))
-	reportCodexUsageFallback(c, "worker-token", "order-1", "session-1", core.WorkOrder{}, invalid)
-	reportCodexUsageFallback(c, "worker-token", "order-1", "session-1", core.WorkOrder{}, &codexUsageCollector{})
-	reportCodexUsageFallback(c, "worker-token", "order-1", "session-1", core.WorkOrder{UsageReported: true}, valid)
+	invalid := &cursorUsageCollector{}
+	_, _ = invalid.Write([]byte(`{"type":"result","usage":{"inputTokens":"bad","outputTokens":3}}` + "\n"))
+	reportWorkerUsageFallback(c, "worker-token", "order-1", "session-1", core.WorkOrder{}, invalid)
+	reportWorkerUsageFallback(c, "worker-token", "order-1", "session-1", core.WorkOrder{}, &codexUsageCollector{})
+	reportWorkerUsageFallback(c, "worker-token", "order-1", "session-1", core.WorkOrder{UsageReported: true}, valid)
 
 	mu.Lock()
 	defer mu.Unlock()
