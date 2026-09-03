@@ -32,12 +32,19 @@ export function mcpClientSetups(endpoint: string): MCPClientSetup[] {
       label: 'Cursor',
       description: 'Connect Cursor to this Conveyor deployment.',
       steps: [
-        'Create or open .cursor/mcp.json in your project.',
-        'Add the configuration below and replace the token placeholder with an access token.',
-        'Restart Cursor, then enable Conveyor from MCP settings.',
+        'Run conveyor auth login, then conveyor mcp install --tool cursor, or merge the configuration below into ~/.cursor/mcp.json.',
+        `Export CONVEYOR_ADDR=${endpoint} and CONVEYOR_API_TOKEN=$(conveyor auth token) in the shell that launches Cursor.`,
+        'Verify with cursor-agent mcp list-tools conveyor.',
       ],
-      snippetLabel: '.cursor/mcp.json',
-      snippet: jsonConfig,
+      snippetLabel: '~/.cursor/mcp.json',
+      snippet: `{
+  "mcpServers": {
+    "conveyor": {
+      "url": "\${env:CONVEYOR_ADDR}",
+      "headers": { "Authorization": "Bearer \${env:CONVEYOR_API_TOKEN}" }
+    }
+  }
+}`,
     },
     {
       id: 'claude',

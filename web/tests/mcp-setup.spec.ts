@@ -63,8 +63,25 @@ test('Board MCP action offers safe client-specific setup and complete dialog beh
   }
   await expect(dialog.locator('[data-mcp-client-logo]')).toHaveCount(3)
   await expect(dialog.getByRole('tab', { name: 'Other' }).locator('[data-mcp-client-fallback]')).toBeVisible()
-  await expect(dialog).toContainText(endpoint)
-  await expect(dialog).toContainText('<CONVEYOR_API_TOKEN>')
+  await expect(dialog.getByRole('tab', { name: 'Cursor' })).toHaveAttribute('aria-selected', 'true')
+  await expect(dialog).toContainText('~/.cursor/mcp.json')
+  await expect(dialog).toContainText(
+    'Run conveyor auth login, then conveyor mcp install --tool cursor, or merge the configuration below into ~/.cursor/mcp.json.',
+  )
+  await expect(dialog).toContainText(
+    `Export CONVEYOR_ADDR=${endpoint} and CONVEYOR_API_TOKEN=$(conveyor auth token) in the shell that launches Cursor.`,
+  )
+  await expect(dialog).toContainText('Verify with cursor-agent mcp list-tools conveyor.')
+  await expect(dialog.locator('pre')).toHaveText(`{
+  "mcpServers": {
+    "conveyor": {
+      "url": "\${env:CONVEYOR_ADDR}",
+      "headers": { "Authorization": "Bearer \${env:CONVEYOR_API_TOKEN}" }
+    }
+  }
+}`)
+  await expect(dialog.locator('pre')).not.toContainText(endpoint)
+  await expect(dialog.locator('pre')).not.toContainText('<CONVEYOR_API_TOKEN>')
   await expect(dialog).not.toContainText('test-token-that-must-not-appear')
 
   await dialog.getByRole('tab', { name: 'Claude Code' }).click()
