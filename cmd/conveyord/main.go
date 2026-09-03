@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -24,6 +25,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/monitor"
 	"github.com/kidus-tiliksew/conveyor/internal/pack"
 	"github.com/kidus-tiliksew/conveyor/internal/planning"
+	queueargs "github.com/kidus-tiliksew/conveyor/internal/queue"
 	"github.com/kidus-tiliksew/conveyor/internal/releaseinfo"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	postgresstore "github.com/kidus-tiliksew/conveyor/internal/store/postgres"
@@ -31,6 +33,41 @@ import (
 	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
 	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 )
+
+type workspaceQueueRegistrar struct {
+	mu    sync.Mutex
+	known map[string]struct{}
+	add   func(string) error
+	logf  func(string, ...any)
+}
+
+func newWorkspaceQueueRegistrar(known []string, add func(string) error, logf func(string, ...any)) *workspaceQueueRegistrar {
+	registered := make(map[string]struct{}, len(known))
+	for _, workspace := range known {
+		registered[workspace] = struct{}{}
+	}
+	return &workspaceQueueRegistrar{known: registered, add: add, logf: logf}
+}
+
+func (r *workspaceQueueRegistrar) ensure(workspace string) (bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.known[workspace]; ok {
+		return false, nil
+	}
+	if err := r.add(workspace); err != nil {
+		return false, err
+	}
+	r.known[workspace] = struct{}{}
+	r.logf("registered River scheduling for workspace %s: queues=%s,%s,%s periodic_job=%s",
+		workspace,
+		queueargs.DispatchQueue(workspace),
+		queueargs.ReviewPublicationQueue(workspace),
+		queueargs.GitHubIssuePublicationQueue(workspace),
+		queueargs.OrderClockPeriodicID(workspace),
+	)
+	return true, nil
+}
 
 func main() {
 	if handled, err := runServiceVerb(context.Background(), os.Args[1:], os.Stdout, os.Stderr); handled {
@@ -131,6 +168,7 @@ func main() {
 	d.Pack = packBundle
 	var stopRiver func()
 	var addWorkspaceQueue func(string) error
+	var workspaceQueues *workspaceQueueRegistrar
 	if pgStore != nil {
 		d.ConfigProvider = func(ctx context.Context) (*config.Config, error) {
 			return pgStore.RuntimeConfig(ctx, deployment)
@@ -150,7 +188,13 @@ func main() {
 		if clientErr = client.Start(ctx); clientErr != nil {
 			log.Fatalf("start River worker: %v", clientErr)
 		}
-		addWorkspaceQueue = func(workspace string) error { return dispatch.AddWorkspaceQueues(client, workspace) }
+		workspaceQueues = newWorkspaceQueueRegistrar(workspaceIDs, func(workspace string) error {
+			return dispatch.AddWorkspaceQueues(client, workspace)
+		}, log.Printf)
+		addWorkspaceQueue = func(workspace string) error {
+			_, err := workspaceQueues.ensure(workspace)
+			return err
+		}
 		stopRiver = func() {
 			stopCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
@@ -254,6 +298,10 @@ func main() {
 				return
 			}
 			for _, workspace := range workspaces {
+				if _, queueErr := workspaceQueues.ensure(workspace.ID); queueErr != nil {
+					log.Printf("register River scheduling for workspace %s: %v", workspace.ID, queueErr)
+					return
+				}
 				workspaceCtx := store.WithWorkspace(ctx, workspace.ID)
 				mergeReadiness, mergeErr := d.ReconcileMergeReadiness(workspaceCtx)
 				if mergeErr != nil {
