@@ -291,22 +291,22 @@ func (s *Server) setSystemDesignArchiveState(w http.ResponseWriter, r *http.Requ
 	var err error
 	if archived {
 		var input struct {
-			SupersedingDocumentIDs []string `json:"superseding_document_ids"`
+			SupersededBy []string `json:"superseded_by"`
 		}
 		if decodeErr := json.NewDecoder(r.Body).Decode(&input); decodeErr != nil && !errors.Is(decodeErr, io.EOF) {
 			http.Error(w, decodeErr.Error(), http.StatusBadRequest)
 			return
 		}
-		err = s.Store.ArchiveSystemDesign(r.Context(), id, actor, input.SupersedingDocumentIDs)
+		err = s.Store.ArchiveSystemDesign(r.Context(), id, actor, input.SupersededBy)
 	} else {
 		err = s.Store.RestoreSystemDesign(r.Context(), id, actor)
 	}
 	if err != nil {
-		var reference *store.SupersedingDocumentReferenceError
+		var reference *store.SupersededByInvalidError
 		if errors.Is(err, store.ErrNotFound) {
 			http.Error(w, err.Error(), http.StatusNotFound)
 		} else if errors.As(err, &reference) {
-			writeJSON(w, http.StatusConflict, map[string]string{"error": "invalid_superseding_document", "document_id": reference.DocumentID, "reason": reference.Reason})
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "superseded_by_invalid", "detail": reference.Error(), "document_id": reference.DocumentID, "reason": reference.Reason})
 		} else {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 		}

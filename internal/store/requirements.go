@@ -155,7 +155,7 @@ func (m *memory) GetRequirement(ctx context.Context, id string) (core.Requiremen
 	if !ok {
 		return core.Requirement{}, fmt.Errorf("%w: requirement %s", ErrNotFound, id)
 	}
-	requirement.SupersedingDocumentIDs = append([]string(nil), requirement.SupersedingDocumentIDs...)
+	requirement.SupersededBy = append([]string(nil), requirement.SupersededBy...)
 	return requirement, nil
 }
 
@@ -166,7 +166,7 @@ func (m *memory) ListRequirements(ctx context.Context, includeArchived bool) ([]
 	out := []core.Requirement{}
 	for key, requirement := range m.requirements {
 		if key.workspace == workspace && (includeArchived || !requirement.Archived) {
-			requirement.SupersedingDocumentIDs = append([]string(nil), requirement.SupersedingDocumentIDs...)
+			requirement.SupersededBy = append([]string(nil), requirement.SupersededBy...)
 			out = append(out, requirement)
 		}
 	}
@@ -179,15 +179,15 @@ func (m *memory) ListRequirements(ctx context.Context, includeArchived bool) ([]
 	return out, nil
 }
 
-func (m *memory) ArchiveRequirement(ctx context.Context, id, actor string, supersedingDocumentIDs []string) error {
-	return m.setRequirementArchived(ctx, id, actor, true, supersedingDocumentIDs)
+func (m *memory) ArchiveRequirement(ctx context.Context, id, actor string, supersededBy []string) error {
+	return m.setRequirementArchived(ctx, id, actor, true, supersededBy)
 }
 
 func (m *memory) RestoreRequirement(ctx context.Context, id, actor string) error {
 	return m.setRequirementArchived(ctx, id, actor, false, nil)
 }
 
-func (m *memory) setRequirementArchived(ctx context.Context, id, actor string, archived bool, supersedingDocumentIDs []string) error {
+func (m *memory) setRequirementArchived(ctx context.Context, id, actor string, archived bool, supersededBy []string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	workspace := workspaceOrDefault(ctx, "")
@@ -202,21 +202,21 @@ func (m *memory) setRequirementArchived(ctx context.Context, id, actor string, a
 	accepted := []string{}
 	if archived {
 		var err error
-		accepted, err = m.validateSupersedingDocumentIDsLocked(workspace, id, supersedingDocumentIDs)
+		accepted, err = m.validateSupersededByLocked(workspace, id, supersededBy)
 		if err != nil {
 			return err
 		}
 	} else {
-		accepted = append([]string(nil), document.SupersedingDocumentIDs...)
+		accepted = append([]string(nil), document.SupersededBy...)
 	}
 	now := time.Now().UTC()
 	document.Archived, document.UpdatedAt = archived, now
 	if archived {
 		document.ArchivedBy, document.ArchivedAt = actor, now
-		document.SupersedingDocumentIDs = append([]string(nil), accepted...)
+		document.SupersededBy = append([]string(nil), accepted...)
 	} else {
 		document.ArchivedBy, document.ArchivedAt = "", time.Time{}
-		document.SupersedingDocumentIDs = nil
+		document.SupersededBy = nil
 	}
 	m.requirements[key] = document
 	kind := "requirement.restored"
@@ -225,30 +225,27 @@ func (m *memory) setRequirementArchived(ctx context.Context, id, actor string, a
 	}
 	payload := map[string]any{
 		"workspace_id": workspace, "requirement_id": id, "version": document.CurrentVersion,
-		"actor": actor, "at": now, "superseding_document_ids": accepted,
-	}
-	if !archived {
-		payload["cleared_superseding_document_ids"] = accepted
+		"actor": actor, "at": now, "superseded_by": accepted,
 	}
 	m.appendEventLocked(ctx, core.Event{Kind: kind, Payload: core.JSONPayload(payload)})
 	return nil
 }
 
-// validateSupersedingDocumentIDsLocked keeps replacement authority live and
+// validateSupersededByLocked keeps replacement authority live and
 // workspace-local (req-document-operating-surfaces REQ-5/AC-5.7).
-func (m *memory) validateSupersedingDocumentIDsLocked(workspace, targetID string, ids []string) ([]string, error) {
+func (m *memory) validateSupersededByLocked(workspace, targetID string, ids []string) ([]string, error) {
 	accepted := make([]string, 0, len(ids))
 	seen := make(map[string]bool, len(ids))
 	for _, candidate := range ids {
 		candidate = strings.TrimSpace(candidate)
 		if candidate == targetID {
-			return nil, &SupersedingDocumentReferenceError{DocumentID: candidate, Reason: "is the document being archived"}
+			return nil, &SupersededByInvalidError{DocumentID: candidate, Reason: "is the document being archived"}
 		}
 		if candidate == "" {
-			return nil, &SupersedingDocumentReferenceError{DocumentID: "(empty)", Reason: "is unknown in this workspace"}
+			return nil, &SupersededByInvalidError{DocumentID: "(empty)", Reason: "is unknown in this workspace"}
 		}
 		if seen[candidate] {
-			return nil, &SupersedingDocumentReferenceError{DocumentID: candidate, Reason: "is duplicated"}
+			continue
 		}
 		seen[candidate] = true
 		requirement, requirementOK := m.requirements[memoryScopedKey{workspace: workspace, id: candidate}]
@@ -260,7 +257,7 @@ func (m *memory) validateSupersedingDocumentIDsLocked(workspace, targetID string
 			} else if requirementOK || designOK {
 				reason = "has no confirmed version"
 			}
-			return nil, &SupersedingDocumentReferenceError{DocumentID: candidate, Reason: reason}
+			return nil, &SupersededByInvalidError{DocumentID: candidate, Reason: reason}
 		}
 		accepted = append(accepted, candidate)
 	}

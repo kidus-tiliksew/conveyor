@@ -82,8 +82,8 @@ export interface TaskAssignee {
 }
 
 export interface TaskContext {
-  requirements?: Array<{ id: string; title: string; version: number; archived: boolean }>
-  designs?: Array<{ id: string; title: string; version: number; archived: boolean }>
+  requirements?: Array<{ id: string; title: string; version: number; archived: boolean; superseded_by?: string[] }>
+  designs?: Array<{ id: string; title: string; version: number; archived: boolean; superseded_by?: string[] }>
   proposals?: TaskContextProposal[]
 }
 
@@ -826,6 +826,7 @@ export interface Requirement {
   archived: boolean
   archived_by?: string
   archived_at?: string
+  superseded_by?: string[]
   workspace: string
   created_at: string
   updated_at: string
@@ -1057,6 +1058,7 @@ export interface SystemDesign {
   archived: boolean
   archived_by?: string
   archived_at?: string
+  superseded_by?: string[]
   workspace: string
   created_at: string
   updated_at: string

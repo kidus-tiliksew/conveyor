@@ -723,11 +723,14 @@ test('operators confirm and dismiss proposed decisions with conflict-safe refres
   await expect.poll(() => decisionReads).toBeGreaterThanOrEqual(3)
 })
 
-test('System Design archives and restores from an archived deep link', async ({ page }) => {
+test('System Design archives with successors, shows inline rejection, and restores from an archived deep link', async ({
+  page,
+}) => {
   await initialize(page)
   let archived = false
   let archiveCalls = 0
   let restoreCalls = 0
+  let submittedSuccessors: string[] = []
   const archivedAt = '2026-09-02T18:15:00Z'
   const view = () => ({
     ...design,
@@ -736,6 +739,7 @@ test('System Design archives and restores from an archived deep link', async ({ 
       archived,
       archived_by: archived ? 'Operator One' : undefined,
       archived_at: archived ? archivedAt : undefined,
+      superseded_by: archived ? submittedSuccessors : undefined,
     },
     lineage: archived
       ? [
@@ -759,13 +763,47 @@ test('System Design archives and restores from an archived deep link', async ({ 
     const request = route.request()
     const url = new URL(request.url())
     if (url.pathname === '/v1/system-designs') {
-      expect(url.searchParams.get('include_archived')).toBe('true')
+      if (url.searchParams.has('include_archived')) expect(url.searchParams.get('include_archived')).toBe('true')
       return route.fulfill({ json: [summarizeDesign(view())] })
     }
     if (url.pathname === '/v1/system-designs/design-dispatch') return route.fulfill({ json: view() })
+    if (url.pathname === '/v1/requirements') {
+      return route.fulfill({
+        json: [
+          {
+            requirement: {
+              id: 'req-replacement',
+              slug: 'replacement',
+              title: 'Replacement requirement',
+              current_version: 1,
+              statement_high_water_mark: 1,
+              archived: false,
+              workspace: 'demo',
+              created_at: '2026-09-02T17:00:00Z',
+              updated_at: '2026-09-02T17:00:00Z',
+            },
+            pending_version_count: 0,
+            serving_tasks: [],
+            staleness: {},
+            confirmation_eligible: true,
+          },
+        ],
+      })
+    }
     if (url.pathname === '/v1/system-designs/design-dispatch/archive' && request.method() === 'POST') {
-      archived = true
       archiveCalls++
+      submittedSuccessors = (JSON.parse(request.postData() ?? '{}') as { superseded_by?: string[] }).superseded_by ?? []
+      expect(submittedSuccessors).toEqual(['req-replacement'])
+      if (archiveCalls === 1) {
+        return route.fulfill({
+          status: 409,
+          json: {
+            error: 'superseded_by_invalid',
+            detail: 'superseded_by identifier "req-replacement" is archived',
+          },
+        })
+      }
+      archived = true
       return route.fulfill({ json: view().document })
     }
     if (url.pathname === '/v1/system-designs/design-dispatch/restore' && request.method() === 'POST') {
@@ -778,14 +816,26 @@ test('System Design archives and restores from an archived deep link', async ({ 
   })
 
   await page.goto('/system-design?document=design-dispatch')
-  page.once('dialog', (dialog) => dialog.accept())
   await page.getByRole('button', { name: 'Archive' }).click()
+  const archiveDialog = page.getByRole('dialog', { name: 'Archive Dispatch ownership' })
+  await archiveDialog.getByLabel(/Replacement requirement/).check()
+  await archiveDialog.getByRole('button', { name: 'Archive' }).click()
   await expect.poll(() => archiveCalls).toBe(1)
-  await expect(page.getByText('This System Design document is archived.')).toBeVisible()
+  await expect(archiveDialog.getByText('superseded_by identifier "req-replacement" is archived')).toBeVisible()
+  await archiveDialog.getByRole('button', { name: 'Archive' }).click()
+  await expect.poll(() => archiveCalls).toBe(2)
+  const archivedNotice = page.getByText('This System Design document is archived.').locator('..')
+  await expect(archivedNotice).toBeVisible()
+  await expect(archivedNotice.getByText('Superseded by')).toBeVisible()
+  await expect(archivedNotice.getByRole('link', { name: 'req-replacement' })).toHaveAttribute('href', /requirements/)
   const archivedGroup = page.getByRole('navigation', { name: 'Document tree' }).locator('details')
   await expect(archivedGroup).not.toHaveAttribute('open', '')
   await archivedGroup.locator('summary').click()
-  await expect(archivedGroup.getByRole('button', { name: 'Dispatch ownership' })).toBeVisible()
+  const archivedTreeItem = archivedGroup.getByRole('button', { name: 'Dispatch ownership' })
+  await expect(archivedTreeItem).toBeVisible()
+  await expect(archivedTreeItem).toHaveAttribute('title', 'Superseded by req-replacement')
+  await archivedTreeItem.hover()
+  await expect(archivedGroup.getByRole('link', { name: 'req-replacement' })).toBeVisible()
   await expect(page.getByText('Archived', { exact: true }).last()).toHaveAttribute(
     'title',
     /Archived by Operator One on/,

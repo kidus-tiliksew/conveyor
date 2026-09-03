@@ -254,6 +254,8 @@ export function DocumentTreeToolbar({
 export function DocumentTreeItem({
   label,
   meta,
+  title,
+  tooltip,
   attentionCount,
   selected,
   onClick,
@@ -261,43 +263,53 @@ export function DocumentTreeItem({
   label: string
   /** Quiet document identity — the confirmed version, never a signal. */
   meta?: string
+  title?: string
+  tooltip?: ReactNode
   /** Compact navigation signal; detailed attention remains on the canvas. */
   attentionCount?: number
   selected: boolean
   onClick: () => void
 }) {
   return (
-    <button
-      type="button"
-      aria-current={selected ? 'true' : undefined}
-      onClick={onClick}
-      className={`relative flex w-full items-center gap-2.5 rounded-md py-2 pl-3 pr-2.5 text-left transition-colors before:absolute before:inset-y-1.5 before:left-0 before:w-0.5 before:rounded-full before:transition-colors ${
-        selected
-          ? 'bg-primary-soft text-primary before:bg-primary'
-          : 'text-foreground before:bg-transparent hover:bg-surface'
-      }`}
-    >
-      <FileText className={`size-4 shrink-0 ${selected ? 'text-primary' : 'text-faint'}`} />
-      <span className="min-w-0 flex-1">
-        <span className="block truncate text-sm font-medium">{label}</span>
-        {meta && (
-          <span
-            className={`mt-0.5 block truncate font-mono text-[10px] tracking-wide ${selected ? 'text-primary/70' : 'text-faint'}`}
+    <div className="group relative">
+      <button
+        type="button"
+        title={title}
+        aria-current={selected ? 'true' : undefined}
+        onClick={onClick}
+        className={`relative flex w-full items-center gap-2.5 rounded-md py-2 pl-3 pr-2.5 text-left transition-colors before:absolute before:inset-y-1.5 before:left-0 before:w-0.5 before:rounded-full before:transition-colors ${
+          selected
+            ? 'bg-primary-soft text-primary before:bg-primary'
+            : 'text-foreground before:bg-transparent hover:bg-surface'
+        }`}
+      >
+        <FileText className={`size-4 shrink-0 ${selected ? 'text-primary' : 'text-faint'}`} />
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-sm font-medium">{label}</span>
+          {meta && (
+            <span
+              className={`mt-0.5 block truncate font-mono text-[10px] tracking-wide ${selected ? 'text-primary/70' : 'text-faint'}`}
+            >
+              {meta}
+            </span>
+          )}
+        </span>
+        {Boolean(attentionCount) && (
+          <Badge
+            variant="attention"
+            aria-label={`${attentionCount} attention ${attentionCount === 1 ? 'item' : 'items'}`}
+            className="shrink-0 px-1.5"
           >
-            {meta}
-          </span>
+            {attentionCount}
+          </Badge>
         )}
-      </span>
-      {Boolean(attentionCount) && (
-        <Badge
-          variant="attention"
-          aria-label={`${attentionCount} attention ${attentionCount === 1 ? 'item' : 'items'}`}
-          className="shrink-0 px-1.5"
-        >
-          {attentionCount}
-        </Badge>
+      </button>
+      {tooltip && (
+        <span className="invisible absolute left-3 top-full z-20 mt-1 w-max max-w-80 rounded-md border border-border bg-background px-3 py-2 opacity-0 shadow-lg group-hover:visible group-hover:opacity-100 group-focus-within:visible group-focus-within:opacity-100">
+          {tooltip}
+        </span>
       )}
-    </button>
+    </div>
   )
 }
 

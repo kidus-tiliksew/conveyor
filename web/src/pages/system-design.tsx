@@ -3,6 +3,7 @@ import { Link, useNavigate, useSearch } from '@tanstack/react-router'
 import { Archive, Check, Clock, ExternalLink, History, Layers, RotateCcw, X } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { useWorkspaceCapability, useWorkspaceSelection } from '../components/app-shell'
+import { ArchiveDocumentDialog, type SuccessorCandidate } from '../components/documents/archive-document-dialog'
 import { type AttentionItem, AttentionSurface } from '../components/documents/attention-surface'
 import { compareDocuments, type DocumentSort, type DocumentSortDirection } from '../components/documents/document-sort'
 import {
@@ -13,6 +14,7 @@ import {
   DocumentTreeToolbar,
 } from '../components/documents/document-tree'
 import { DriftResolutionForm } from '../components/documents/drift-resolution-form'
+import { SuccessorLinks } from '../components/documents/successor-links'
 import { VersionDiff } from '../components/documents/version-diff'
 import { VersionDismissDialog } from '../components/documents/version-dismiss-dialog'
 import { LineageExplorer } from '../components/lineage/lineage-explorer'
@@ -26,6 +28,7 @@ import {
   dismissDecisionSupersessionSweep,
   dismissSystemDesignVersion,
   fetchDecisions,
+  fetchRequirements,
   fetchSystemDesign,
   fetchSystemDesigns,
   resolveDecision,
@@ -211,6 +214,16 @@ export function SystemDesignPage() {
                 <DocumentTreeItem
                   key={item.document.id}
                   label={item.document.title}
+                  meta={
+                    item.document.superseded_by?.length
+                      ? `Superseded by ${item.document.superseded_by.join(', ')}`
+                      : undefined
+                  }
+                  title={
+                    item.document.superseded_by?.length
+                      ? `Superseded by ${item.document.superseded_by.join(', ')}`
+                      : undefined
+                  }
                   attentionCount={item.drift_count + item.pending_version_count}
                   selected={selected?.document.id === item.document.id}
                   onClick={() =>
@@ -226,6 +239,17 @@ export function SystemDesignPage() {
                 <DocumentTreeItem
                   key={item.document.id}
                   label={item.document.title}
+                  meta={
+                    item.document.superseded_by?.length
+                      ? `Superseded by ${item.document.superseded_by.join(', ')}`
+                      : undefined
+                  }
+                  title={
+                    item.document.superseded_by?.length
+                      ? `Superseded by ${item.document.superseded_by.join(', ')}`
+                      : undefined
+                  }
+                  tooltip={<SuccessorLinks ids={item.document.superseded_by} compact />}
                   selected={selected?.document.id === item.document.id}
                   onClick={() =>
                     void navigate({ to: '/system-design', search: { document: item.document.id }, replace: true })
@@ -322,6 +346,38 @@ function DesignCanvas({
   const canConfirm = useWorkspaceCapability('confirm_documents')
   const displayed = item.current_version ?? item.pending_versions[0] ?? item.versions[item.versions.length - 1]
   const [dismissTarget, setDismissTarget] = useState<SystemDesignVersion | null>(null)
+  const [archiveDialogOpen, setArchiveDialogOpen] = useState(false)
+  const { data: successorRequirements = [] } = useQuery({
+    queryKey: ['requirements', workspace, { includeArchived: false }],
+    queryFn: () => fetchRequirements(),
+    enabled: Boolean(workspace),
+    staleTime: 60_000,
+  })
+  const { data: successorDesigns = [] } = useQuery({
+    queryKey: ['system-designs', workspace, { includeArchived: false }],
+    queryFn: () => fetchSystemDesigns(),
+    enabled: Boolean(workspace),
+    staleTime: 60_000,
+  })
+  const successorCandidates = useMemo<SuccessorCandidate[]>(
+    () => [
+      ...successorRequirements
+        .filter((candidate) => !candidate.requirement.archived)
+        .map((candidate) => ({
+          id: candidate.requirement.id,
+          title: candidate.requirement.title,
+          kind: 'requirement' as const,
+        })),
+      ...successorDesigns
+        .filter((candidate) => candidate.document.id !== item.document.id && !candidate.document.archived)
+        .map((candidate) => ({
+          id: candidate.document.id,
+          title: candidate.document.title,
+          kind: 'system_design' as const,
+        })),
+    ],
+    [item.document.id, successorDesigns, successorRequirements],
+  )
   const confirm = useMutation({
     mutationFn: (version: number) =>
       confirmSystemDesignVersion(item.document.id, version, item.document.current_version ?? 0),
@@ -350,8 +406,11 @@ function DesignCanvas({
     },
   })
   const archive = useMutation({
-    mutationFn: () =>
-      item.document.archived ? restoreSystemDesign(item.document.id) : archiveSystemDesign(item.document.id),
+    mutationFn: (supersededBy: string[] = []) =>
+      item.document.archived
+        ? restoreSystemDesign(item.document.id)
+        : archiveSystemDesign(item.document.id, supersededBy),
+    onSuccess: () => setArchiveDialogOpen(false),
     onSettled: async () => {
       await Promise.all([
         client.invalidateQueries({ queryKey: ['system-designs', workspace] }),
@@ -456,6 +515,18 @@ function DesignCanvas({
           onConfirm={() => dismiss.mutate(dismissTarget.version)}
         />
       )}
+      {archiveDialogOpen && (
+        <ArchiveDocumentDialog
+          documentTitle={item.document.title}
+          candidates={successorCandidates}
+          pending={archive.isPending}
+          error={
+            archive.error ? errorMessage(archive.error, 'Could not archive this System Design document.') : undefined
+          }
+          onCancel={() => setArchiveDialogOpen(false)}
+          onConfirm={(supersededBy) => archive.mutate(supersededBy)}
+        />
+      )}
       <header className="mb-8 flex items-start gap-4 border-b border-border pb-6">
         <div className="min-w-0 flex-1">
           <span
@@ -502,15 +573,7 @@ function DesignCanvas({
               size="sm"
               variant={item.document.archived ? 'secondary' : 'destructive'}
               disabled={archive.isPending}
-              onClick={() => {
-                if (
-                  item.document.archived ||
-                  window.confirm(
-                    `Archive ${item.document.title}? Its history is kept, and agents will stop reading it.`,
-                  )
-                )
-                  archive.mutate()
-              }}
+              onClick={() => (item.document.archived ? archive.mutate([]) : setArchiveDialogOpen(true))}
             >
               {item.document.archived ? <RotateCcw /> : <Archive />}
               {archive.isPending
@@ -526,7 +589,7 @@ function DesignCanvas({
         </div>
       </header>
 
-      {archive.error && (
+      {archive.error && item.document.archived && (
         <p className="mb-3 rounded-md bg-failure-soft px-3 py-2 text-xs text-failure">
           {errorMessage(
             archive.error,
@@ -539,7 +602,8 @@ function DesignCanvas({
           aria-label="Needs your attention"
           className="rounded-lg border border-border bg-surface/40 px-4 py-3 text-sm text-muted"
         >
-          This System Design document is archived.
+          <p>This System Design document is archived.</p>
+          <SuccessorLinks ids={item.document.superseded_by} />
         </section>
       ) : (
         <AttentionSurface items={attention} />

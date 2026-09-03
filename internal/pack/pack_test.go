@@ -335,6 +335,38 @@ func TestRequirementCitationContractsAreAuthorityAware(t *testing.T) {
 	}
 }
 
+func TestArchivedPinnedAuthorityNamesSuccessorsBeforeContent(t *testing.T) {
+	t.Parallel()
+	requirement := core.ServedRequirementContext{
+		ID: "req-retired", Title: "Retired outcome", Version: 3, Archived: true,
+		SupersededBy: []string{"req-current", "design-current"},
+		Statements:   []core.RequirementStatement{{ID: "REQ-1", Statement: "Old requirement content."}},
+	}
+	requirementContract := WithRequirementCitationContract("implement", core.StageImplement, []core.ServedRequirementContext{requirement})
+	requirementNotice := "Archived; superseded by: req-current, design-current"
+	if noticeAt, contentAt := strings.Index(requirementContract, requirementNotice), strings.Index(requirementContract, "REQ-1: Old requirement content."); noticeAt < 0 || contentAt < 0 || noticeAt > contentAt {
+		t.Fatalf("archived requirement notice must precede content: %s", requirementContract)
+	}
+	requirement.Archived = false
+	if live := WithRequirementCitationContract("implement", core.StageImplement, []core.ServedRequirementContext{requirement}); strings.Contains(live, "Archived; superseded by:") {
+		t.Fatalf("live requirement carries archived notice: %s", live)
+	}
+
+	design := core.GovernanceDesignContext{
+		ID: "design-retired", Title: "Retired mechanism", Category: "Architecture", Version: 4,
+		Content: "# Old design content", Archived: true, SupersededBy: []string{"design-current", "req-current"},
+	}
+	designContract := RenderGovernanceContract(core.StageImplement, core.GovernanceSnapshot{Designs: []core.GovernanceDesignContext{design}})
+	designNotice := "Archived; superseded by: design-current, req-current"
+	if noticeAt, contentAt := strings.Index(designContract, designNotice), strings.Index(designContract, design.Content); noticeAt < 0 || contentAt < 0 || noticeAt > contentAt {
+		t.Fatalf("archived design notice must precede content: %s", designContract)
+	}
+	design.Archived = false
+	if live := RenderGovernanceContract(core.StageImplement, core.GovernanceSnapshot{Designs: []core.GovernanceDesignContext{design}}); strings.Contains(live, "Archived; superseded by:") {
+		t.Fatalf("live design carries archived notice: %s", live)
+	}
+}
+
 func TestGovernanceContractHeadsPinsAndBudgetsAuthority(t *testing.T) {
 	t.Parallel()
 	design := core.GovernanceDesignContext{ID: "DESIGN-runtime", Version: 3, Category: "Architecture", Content: strings.Repeat("mechanism ", MaxGovernanceContractBytes)}

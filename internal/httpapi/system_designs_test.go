@@ -49,6 +49,20 @@ func TestSystemDesignArchiveRESTLifecycle(t *testing.T) {
 	if _, _, err = st.ConfirmSystemDesignVersion(ctx, replacement.ID, replacementVersion.Version); err != nil {
 		t.Fatal(err)
 	}
+	archivedReplacement, archivedVersion, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "design-archive-retired-api", Title: "Archived replacement API", Category: "Architecture"}, core.SystemDesignVersion{Content: "# Archived replacement\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/**\n```", Origin: core.SystemDesignOriginOperator})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmSystemDesignVersion(ctx, archivedReplacement.ID, archivedVersion.Version); err != nil {
+		t.Fatal(err)
+	}
+	if err = st.ArchiveSystemDesign(ctx, archivedReplacement.ID, "archive-operator", nil); err != nil {
+		t.Fatal(err)
+	}
+	unconfirmed, _, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "design-archive-unconfirmed-api", Title: "Unconfirmed replacement API", Category: "Architecture"}, core.SystemDesignVersion{Content: "# Unconfirmed replacement\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/**\n```", Origin: core.SystemDesignOriginOperator})
+	if err != nil {
+		t.Fatal(err)
+	}
 	server := NewServer(st)
 	server.Workspace, server.BearerToken = "demo", "token"
 	handler := server.Handler()
@@ -60,8 +74,8 @@ func TestSystemDesignArchiveRESTLifecycle(t *testing.T) {
 		handler.ServeHTTP(response, req)
 		return response
 	}
-	archiveBody := `{"superseding_document_ids":["` + replacement.ID + `"]}`
-	if response := call(http.MethodPost, "/v1/system-designs/"+document.ID+"/archive", archiveBody); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"superseding_document_ids":["`+replacement.ID+`"]`) {
+	archiveBody := `{"superseded_by":["` + replacement.ID + `"]}`
+	if response := call(http.MethodPost, "/v1/system-designs/"+document.ID+"/archive", archiveBody); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"superseded_by":["`+replacement.ID+`"]`) {
 		t.Fatalf("archive status=%d body=%s", response.Code, response.Body.String())
 	}
 	if response := call(http.MethodGet, "/v1/system-designs", ""); response.Code != http.StatusOK || strings.Contains(response.Body.String(), document.ID) {
@@ -73,11 +87,19 @@ func TestSystemDesignArchiveRESTLifecycle(t *testing.T) {
 	if response := call(http.MethodPost, "/v1/system-designs/"+document.ID+"/versions/1/confirm", ""); response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), `"error":"system_design_archived"`) {
 		t.Fatalf("confirm status=%d body=%s", response.Code, response.Body.String())
 	}
-	if response := call(http.MethodPost, "/v1/system-designs/"+document.ID+"/restore", ""); response.Code != http.StatusOK || strings.Contains(response.Body.String(), `"archived":true`) || strings.Contains(response.Body.String(), `"superseding_document_ids"`) {
+	if response := call(http.MethodPost, "/v1/system-designs/"+document.ID+"/restore", ""); response.Code != http.StatusOK || strings.Contains(response.Body.String(), `"archived":true`) || strings.Contains(response.Body.String(), `"superseded_by"`) {
 		t.Fatalf("restore status=%d body=%s", response.Code, response.Body.String())
 	}
-	if response := call(http.MethodPost, "/v1/system-designs/"+document.ID+"/archive", `{"superseding_document_ids":["missing"]}`); response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), `"error":"invalid_superseding_document"`) || !strings.Contains(response.Body.String(), `"document_id":"missing"`) {
-		t.Fatalf("invalid superseding document status=%d body=%s", response.Code, response.Body.String())
+	for _, test := range []struct{ id, reason string }{
+		{"missing", "unknown in this workspace"},
+		{document.ID, "document being archived"},
+		{archivedReplacement.ID, "is archived"},
+		{unconfirmed.ID, "has no confirmed version"},
+	} {
+		response := call(http.MethodPost, "/v1/system-designs/"+document.ID+"/archive", `{"superseded_by":["`+test.id+`"]}`)
+		if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), `"error":"superseded_by_invalid"`) || !strings.Contains(response.Body.String(), `"document_id":"`+test.id+`"`) || !strings.Contains(response.Body.String(), test.reason) {
+			t.Fatalf("invalid successor %s status=%d body=%s", test.id, response.Code, response.Body.String())
+		}
 	}
 }
 
