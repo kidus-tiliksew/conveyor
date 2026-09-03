@@ -10,6 +10,7 @@ ENV_FILE ?= .env
 CONVEYOR_CONFIG ?= conveyor.yaml
 LISTEN_ADDR ?= 127.0.0.1:8080
 POLL_GITHUB ?= 60s
+IMAGE ?= conveyor:local
 TEST_WORKTREE_PATH := $(shell cd "$(dir $(abspath $(lastword $(MAKEFILE_LIST))))" && pwd -P)
 TEST_POSTGRES_PORT_DERIVED := $(shell printf '%s\n' "$(TEST_WORKTREE_PATH)" | cksum | awk '{print 20000 + ($$1 % 10000)}')
 ifeq ($(origin TEST_POSTGRES_PORT),undefined)
@@ -23,13 +24,22 @@ PLAYWRIGHT_WORKERS ?= 2
 RUN_WEB_TESTS = cd web && npx playwright install $(PLAYWRIGHT_INSTALL_ARGS) chromium && npm run lint && PLAYWRIGHT_WORKERS=$(PLAYWRIGHT_WORKERS) npm run test:e2e -- $(PLAYWRIGHT_ARGS)
 DEV_COMPOSE := docker compose --env-file $(ENV_FILE) -f compose.dev.yaml
 
-.PHONY: all build release release-archives test-release web-deps web-typecheck ui dashboard-fresh test test-web test-ui test-ui-evidence compose-check test-integration test-integration-ci test-postgres test-db-identity test-db-up test-db-down vet plugin-check fmt fmt-check tidy clean db-up db-down run build-run dev
+.PHONY: all build image test-image release release-archives test-release web-deps web-typecheck ui dashboard-fresh test test-web test-ui test-ui-evidence compose-check test-integration test-integration-ci test-postgres test-db-identity test-db-up test-db-down vet plugin-check fmt fmt-check tidy clean db-up db-down run build-run dev
 
 all: build
 
 build: ui
 	go build $(LDFLAGS) -o $(BIN)/conveyor ./cmd/conveyor
 	go build $(LDFLAGS) -o $(BIN)/conveyord ./cmd/conveyord
+
+image:
+	docker build --build-arg VERSION="$(VERSION)" --tag "$(IMAGE)" .
+
+test-image:
+	@version="$$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' "$(IMAGE)")"; \
+		test -n "$$version"; \
+		test "$$(docker run --rm "$(IMAGE)" version)" = "conveyord $$version"
+	docker run --rm --entrypoint /bin/sh "$(IMAGE)" -c 'command -v conveyor >/dev/null && command -v git >/dev/null && command -v gh >/dev/null'
 
 RELEASE_DIR ?= dist
 RELEASE_TARGETS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64

@@ -50,6 +50,42 @@ applies pending embedded database migrations. The binary refuses to start
 against a database that a newer release already migrated, so upgrade the
 binary before the database ever gets ahead of it.
 
+## Run the container image
+
+Release tags are also published as
+`ghcr.io/kidus-tiliksew/conveyor:<version>`. Stable releases additionally
+publish `ghcr.io/kidus-tiliksew/conveyor:latest`; prereleases do not move that
+tag. The image contains both Conveyor binaries plus the `git` and `gh` runtime
+tools, but it contains no credentials or configuration.
+
+Provide a `conveyor.yaml`, persist the default cache directory, and pass a
+container-reachable listen address:
+
+```sh
+docker run --rm \
+  -p 8080:8080 \
+  -v "$PWD/conveyor.yaml:/etc/conveyor/conveyor.yaml:ro" \
+  -v conveyor-cache:/home/conveyor/.conveyor/cache \
+  -e CONVEYOR_API_TOKEN \
+  -e CONVEYOR_DATABASE_URL \
+  -e CONVEYOR_LLM_API_KEY \
+  -e CONVEYOR_FORGE_TOKEN_ENCRYPTION_KEY \
+  -e GH_TOKEN \
+  ghcr.io/kidus-tiliksew/conveyor:v1.2.3 \
+  -config /etc/conveyor/conveyor.yaml -addr 0.0.0.0:8080
+```
+
+`CONVEYOR_API_TOKEN`, `CONVEYOR_DATABASE_URL`, `CONVEYOR_LLM_API_KEY`, and
+`CONVEYOR_FORGE_TOKEN_ENCRYPTION_KEY` are required process environment. Supply
+`GH_TOKEN` when the GitHub monitor is enabled. Secret values should come from
+your container platform's secret facility; do not add them to the image or
+`conveyor.yaml`. PostgreSQL must be reachable from the container.
+
+Once the process starts, `/healthz` is available on the published port. Image
+upgrades use the same protocol as binary upgrades: replace the image and
+restart it. `conveyord` applies embedded database migrations during startup;
+there is no separate container migration command.
+
 ## Build from source
 
 Source development also needs Go 1.24, Node 22 with npm, and Docker with

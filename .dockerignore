@@ -1,0 +1,15 @@
+.git
+.gitignore
+.env
+.env.*
+conveyor.yaml
+
+bin
+dist
+output
+test-results
+web/node_modules
+
+.DS_Store
+*.log
+.codex-cache-*
