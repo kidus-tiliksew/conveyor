@@ -549,15 +549,20 @@ func probeConfiguredHarness(ctx context.Context, local *config.Config, name stri
 func setImplementationField(choice *config.ImplementationSettings, field, value string, harnesses *[]config.Harness) error {
 	switch field {
 	case "harness":
-		return selectTemplateHarness(value, &choice.Harness, harnesses)
+		if err := selectTemplateHarness(value, &choice.Harness, harnesses); err != nil {
+			return err
+		}
+		if suggestedHarnessEffort(choice.Harness) == "" {
+			choice.Effort = ""
+		}
 	case "model":
 		if value == "" {
 			return errors.New("model is required")
 		}
 		choice.Model, choice.ModelPolicy = value, config.ModelPolicyExplicit
 	case "effort":
-		if value != "low" && value != "medium" && value != "high" {
-			return errors.New("effort must be low, medium, or high")
+		if value != "" && value != "low" && value != "medium" && value != "high" {
+			return errors.New("effort must be blank, low, medium, or high")
 		}
 		choice.Effort = value
 	case "timeout":
@@ -572,15 +577,20 @@ func setReviewSeatField(seat *config.ReviewSeat, field, value string, harnesses 
 	value = strings.TrimSpace(value)
 	switch field {
 	case "harness":
-		return selectTemplateHarness(value, &seat.Harness, harnesses)
+		if err := selectTemplateHarness(value, &seat.Harness, harnesses); err != nil {
+			return err
+		}
+		if suggestedHarnessEffort(seat.Harness) == "" {
+			seat.Effort = ""
+		}
 	case "model":
 		if value == "" {
 			return errors.New("model is required")
 		}
 		seat.Model = value
 	case "effort":
-		if value != "low" && value != "medium" && value != "high" {
-			return errors.New("effort must be low, medium, or high")
+		if value != "" && value != "low" && value != "medium" && value != "high" {
+			return errors.New("effort must be blank, low, medium, or high")
 		}
 		seat.Effort = value
 	default:
@@ -605,5 +615,5 @@ func selectTemplateHarness(name string, destination *string, harnesses *[]config
 		*harnesses = append(*harnesses, template.Harness)
 		return nil
 	}
-	return fmt.Errorf("unsupported harness %q; choose codex, claude, or grok", name)
+	return fmt.Errorf("unsupported harness %q; choose codex, claude, grok, or cursor", name)
 }

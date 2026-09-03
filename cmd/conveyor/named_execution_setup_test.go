@@ -109,6 +109,35 @@ func TestNamedSetupDeleteRulesAndCompleteListing(t *testing.T) {
 	}
 }
 
+func TestSelectTemplateHarnessIncludesCursor(t *testing.T) {
+	var destination string
+	var harnesses []config.Harness
+	if err := selectTemplateHarness("cursor", &destination, &harnesses); err != nil {
+		t.Fatal(err)
+	}
+	if destination != "cursor" || len(harnesses) != 1 || harnesses[0].Name != "cursor" || harnesses[0].Command[0] != "cursor-agent" {
+		t.Fatalf("destination=%q harnesses=%+v", destination, harnesses)
+	}
+	if err := selectTemplateHarness("other", &destination, &harnesses); err == nil || !strings.Contains(err.Error(), "codex, claude, grok, or cursor") {
+		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestNamedCursorSelectionClearsUnsupportedEffort(t *testing.T) {
+	harnesses := []config.Harness{config.HarnessTemplates()[0].Harness}
+	implementation := config.ImplementationSettings{Harness: "codex", Effort: "high"}
+	if err := setImplementationField(&implementation, "harness", "cursor", &harnesses); err != nil {
+		t.Fatal(err)
+	}
+	seat := config.ReviewSeat{Harness: "codex", Effort: "high"}
+	if err := setReviewSeatField(&seat, "harness", "cursor", &harnesses); err != nil {
+		t.Fatal(err)
+	}
+	if implementation.Effort != "" || seat.Effort != "" {
+		t.Fatalf("implementation=%+v seat=%+v", implementation, seat)
+	}
+}
+
 func TestNamedReviewSeatsAddRemoveAndMovePreservePriorityOrder(t *testing.T) {
 	path := namedSetupFixture(t)
 	third := config.ReviewSeat{Harness: "local-agent", Model: "third", Effort: "high"}
