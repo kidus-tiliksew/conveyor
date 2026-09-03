@@ -146,6 +146,13 @@ func TestRequirementArchiveRESTLifecycle(t *testing.T) {
 	if _, _, err = st.ConfirmRequirementVersion(ctx, document.ID, version.Version); err != nil {
 		t.Fatal(err)
 	}
+	replacement, replacementVersion, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-archive-replacement-api", Title: "Archive replacement API"}, core.RequirementVersion{Content: "Archive replacement API", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Replace archived authority."}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmRequirementVersion(ctx, replacement.ID, replacementVersion.Version); err != nil {
+		t.Fatal(err)
+	}
 	server := NewServer(st)
 	server.Workspace, server.BearerToken = "demo", "token"
 	handler := server.Handler()
@@ -157,7 +164,8 @@ func TestRequirementArchiveRESTLifecycle(t *testing.T) {
 		handler.ServeHTTP(response, req)
 		return response
 	}
-	if response := call(http.MethodPost, "/v1/requirements/"+document.ID+"/archive", ""); response.Code != http.StatusOK {
+	archiveBody := `{"superseding_document_ids":["` + replacement.ID + `"]}`
+	if response := call(http.MethodPost, "/v1/requirements/"+document.ID+"/archive", archiveBody); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"superseding_document_ids":["`+replacement.ID+`"]`) {
 		t.Fatalf("archive status=%d body=%s", response.Code, response.Body.String())
 	}
 	if response := call(http.MethodGet, "/v1/requirements", ""); response.Code != http.StatusOK || strings.Contains(response.Body.String(), document.ID) {
@@ -187,6 +195,9 @@ func TestRequirementArchiveRESTLifecycle(t *testing.T) {
 	}
 	if response := call(http.MethodPost, "/v1/requirements/"+document.ID+"/restore", ""); response.Code != http.StatusOK || strings.Contains(response.Body.String(), `"archived":true`) {
 		t.Fatalf("restore status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := call(http.MethodPost, "/v1/requirements/"+document.ID+"/archive", `{"superseding_document_ids":["missing"]}`); response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), `"error":"invalid_superseding_document"`) || !strings.Contains(response.Body.String(), `"document_id":"missing"`) {
+		t.Fatalf("invalid superseding document status=%d body=%s", response.Code, response.Body.String())
 	}
 }
 

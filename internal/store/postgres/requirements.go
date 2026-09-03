@@ -128,30 +128,39 @@ func (s *Store) ListRequirements(ctx context.Context, includeArchived bool) ([]c
 	return out, rows.Err()
 }
 
-func (s *Store) ArchiveRequirement(ctx context.Context, id, actor string) error {
-	return s.setRequirementArchived(ctx, id, actor, true)
+func (s *Store) ArchiveRequirement(ctx context.Context, id, actor string, supersedingDocumentIDs []string) error {
+	return s.setRequirementArchived(ctx, id, actor, true, supersedingDocumentIDs)
 }
 
 func (s *Store) RestoreRequirement(ctx context.Context, id, actor string) error {
-	return s.setRequirementArchived(ctx, id, actor, false)
+	return s.setRequirementArchived(ctx, id, actor, false, nil)
 }
 
-func (s *Store) setRequirementArchived(ctx context.Context, id, actor string, archived bool) error {
+func (s *Store) setRequirementArchived(ctx context.Context, id, actor string, archived bool, supersedingDocumentIDs []string) error {
 	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
 		var current *int
 		var archivedAt *time.Time
-		if err := tx.QueryRow(ctx, `SELECT current_version,archived_at FROM requirements WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspace(ctx), id).Scan(&current, &archivedAt); err != nil {
+		var storedSupersedingIDs []string
+		if err := tx.QueryRow(ctx, `SELECT current_version,archived_at,superseding_document_ids FROM requirements WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspace(ctx), id).Scan(&current, &archivedAt, &storedSupersedingIDs); err != nil {
 			return notFound(err, "requirement %s", id)
 		}
 		if (archivedAt != nil) == archived {
 			return nil
 		}
-		now := time.Now().UTC()
+		accepted := append([]string{}, storedSupersedingIDs...)
 		if archived {
-			if _, err := tx.Exec(ctx, `UPDATE requirements SET archived_at=$3,archived_by=$4,updated_at=$3 WHERE workspace_id=$1 AND id=$2`, workspace(ctx), id, now, actor); err != nil {
+			var err error
+			accepted, err = validateSupersedingDocumentIDsTx(ctx, tx, workspace(ctx), id, supersedingDocumentIDs)
+			if err != nil {
 				return err
 			}
-		} else if _, err := tx.Exec(ctx, `UPDATE requirements SET archived_at=NULL,archived_by='',updated_at=$3 WHERE workspace_id=$1 AND id=$2`, workspace(ctx), id, now); err != nil {
+		}
+		now := time.Now().UTC()
+		if archived {
+			if _, err := tx.Exec(ctx, `UPDATE requirements SET archived_at=$3,archived_by=$4,superseding_document_ids=$5,updated_at=$3 WHERE workspace_id=$1 AND id=$2`, workspace(ctx), id, now, actor, accepted); err != nil {
+				return err
+			}
+		} else if _, err := tx.Exec(ctx, `UPDATE requirements SET archived_at=NULL,archived_by='',superseding_document_ids='{}',updated_at=$3 WHERE workspace_id=$1 AND id=$2`, workspace(ctx), id, now); err != nil {
 			return err
 		}
 		version := 0
@@ -162,7 +171,11 @@ func (s *Store) setRequirementArchived(ctx context.Context, id, actor string, ar
 		if archived {
 			kind = "requirement.archived"
 		}
-		return insertRequirementEvent(ctx, q, kind, map[string]any{"workspace_id": workspace(ctx), "requirement_id": id, "version": version, "actor": actor, "at": now})
+		payload := map[string]any{"workspace_id": workspace(ctx), "requirement_id": id, "version": version, "actor": actor, "at": now, "superseding_document_ids": accepted}
+		if !archived {
+			payload["cleared_superseding_document_ids"] = accepted
+		}
+		return insertRequirementEvent(ctx, q, kind, payload)
 	})
 }
 
@@ -974,7 +987,7 @@ func (s *Store) ListPlanningSessionEvents(ctx context.Context, sessionID string)
 	return out, rows.Err()
 }
 
-const requirementSelect = `SELECT workspace_id,id,slug,title,current_version,statement_high_water_mark,archived_at,archived_by,created_at,updated_at FROM requirements`
+const requirementSelect = `SELECT workspace_id,id,slug,title,current_version,statement_high_water_mark,archived_at,archived_by,superseding_document_ids,created_at,updated_at FROM requirements`
 
 const requirementVersionSelect = `SELECT workspace_id,requirement_id,version,content,statements_json,origin,origin_session_id,origin_task_id,origin_drift_id,confirmed,confirmed_by,confirmed_at,retired,retired_by,retired_at,retired_by_version,created_at,derived_from FROM requirement_versions`
 
@@ -989,7 +1002,7 @@ func scanRequirement(row pgx.Row, id string) (core.Requirement, error) {
 	var currentVersion *int32
 	var archivedAt *time.Time
 	if err := row.Scan(&requirement.Workspace, &requirement.ID, &requirement.Slug, &requirement.Title,
-		&currentVersion, &requirement.StatementHighWaterMark, &archivedAt, &requirement.ArchivedBy, &requirement.CreatedAt, &requirement.UpdatedAt); err != nil {
+		&currentVersion, &requirement.StatementHighWaterMark, &archivedAt, &requirement.ArchivedBy, &requirement.SupersedingDocumentIDs, &requirement.CreatedAt, &requirement.UpdatedAt); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return core.Requirement{}, fmt.Errorf("%w: requirement %s", store.ErrNotFound, id)
 		}

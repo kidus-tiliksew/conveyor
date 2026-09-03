@@ -270,7 +270,7 @@ type Store interface {
 	CreateRequirement(ctx context.Context, requirement core.Requirement, first core.RequirementVersion) (core.Requirement, core.RequirementVersion, error)
 	GetRequirement(ctx context.Context, id string) (core.Requirement, error)
 	ListRequirements(ctx context.Context, includeArchived bool) ([]core.Requirement, error)
-	ArchiveRequirement(ctx context.Context, id, actor string) error
+	ArchiveRequirement(ctx context.Context, id, actor string, supersedingDocumentIDs []string) error
 	RestoreRequirement(ctx context.Context, id, actor string) error
 	ListRequirementVersionsByRequirement(ctx context.Context) (map[string][]core.RequirementVersion, error)
 	ProposeRequirementVersion(ctx context.Context, version core.RequirementVersion) (core.RequirementVersion, error)
@@ -296,7 +296,7 @@ type Store interface {
 	CreateSystemDesign(ctx context.Context, document core.SystemDesign, first core.SystemDesignVersion) (core.SystemDesign, core.SystemDesignVersion, error)
 	GetSystemDesign(ctx context.Context, id string) (core.SystemDesign, error)
 	ListSystemDesigns(ctx context.Context, includeArchived bool) ([]core.SystemDesign, error)
-	ArchiveSystemDesign(ctx context.Context, id, actor string) error
+	ArchiveSystemDesign(ctx context.Context, id, actor string, supersedingDocumentIDs []string) error
 	RestoreSystemDesign(ctx context.Context, id, actor string) error
 	ProposeSystemDesignVersion(ctx context.Context, version core.SystemDesignVersion) (core.SystemDesignVersion, error)
 	ConfirmSystemDesignVersion(ctx context.Context, documentID string, version int, expectedCurrentVersion ...int) (core.SystemDesign, core.SystemDesignVersion, error)
@@ -461,6 +461,15 @@ type SystemDesignArchivedError struct{ DocumentID string }
 
 func (e *SystemDesignArchivedError) Error() string {
 	return fmt.Sprintf("system design %s is archived", e.DocumentID)
+}
+
+type SupersedingDocumentReferenceError struct {
+	DocumentID string
+	Reason     string
+}
+
+func (e *SupersedingDocumentReferenceError) Error() string {
+	return fmt.Sprintf("superseding document %s %s", e.DocumentID, e.Reason)
 }
 
 // RequirementVersionSuperseded is the terminal result of addressing an

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -74,7 +75,7 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 		if _, _, err = fixture.Store.ConfirmRequirementVersion(ctx, requirement.ID, version.Version); err != nil {
 			t.Fatal(err)
 		}
-		if err = fixture.Store.ArchiveRequirement(ctx, requirement.ID, requirementConformanceActor); err != nil {
+		if err = fixture.Store.ArchiveRequirement(ctx, requirement.ID, requirementConformanceActor, nil); err != nil {
 			t.Fatal(err)
 		}
 		requirementEvents, err := fixture.Store.ListRequirementEvents(ctx, requirement.ID)
@@ -103,7 +104,7 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 		if _, err = fixture.Store.ProposeRequirementVersion(ctx, core.RequirementVersion{RequirementID: requirement.ID, Content: "Blocked", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Archive intent safely."}}}); err == nil {
 			t.Fatal("proposal against archived requirement succeeded")
 		}
-		if err = fixture.Store.ArchiveRequirement(ctx, requirement.ID, requirementConformanceActor); err != nil {
+		if err = fixture.Store.ArchiveRequirement(ctx, requirement.ID, requirementConformanceActor, nil); err != nil {
 			t.Fatal(err)
 		}
 		requirementEvents, err = fixture.Store.ListRequirementEvents(ctx, requirement.ID)
@@ -137,7 +138,7 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 		if _, _, err = fixture.Store.ConfirmSystemDesignVersion(ctx, design.ID, designVersion.Version); err != nil {
 			t.Fatal(err)
 		}
-		if err = fixture.Store.ArchiveSystemDesign(ctx, design.ID, requirementConformanceActor); err != nil {
+		if err = fixture.Store.ArchiveSystemDesign(ctx, design.ID, requirementConformanceActor, nil); err != nil {
 			t.Fatal(err)
 		}
 		if _, err = fixture.Store.ProposeSystemDesignVersion(ctx, core.SystemDesignVersion{DocumentID: design.ID, Content: designVersion.Content, Origin: core.SystemDesignOriginOperator}); err == nil {
@@ -159,6 +160,173 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 		}
 		if _, err = fixture.Store.ProposeSystemDesignVersion(ctx, core.SystemDesignVersion{DocumentID: design.ID, Content: designVersion.Content, Origin: core.SystemDesignOriginOperator}); err != nil {
 			t.Fatalf("design proposal after restore: %v", err)
+		}
+	})
+
+	t.Run("archive superseding documents are validated persisted and exposed", func(t *testing.T) {
+		fixture := factory(t, requirementConformanceRepos)
+		st := fixture.Store
+		ctx := store.WithActor(fixture.Context, store.Actor{ID: requirementConformanceActor, Role: core.ActorUser})
+		createRequirement := func(id string) core.Requirement {
+			document, version, err := st.CreateRequirement(ctx, core.Requirement{ID: id, Title: id}, core.RequirementVersion{Content: id, Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Preserve archive authority."}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			document, _, err = st.ConfirmRequirementVersion(ctx, document.ID, version.Version)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return document
+		}
+		createDesign := func(id string) core.SystemDesign {
+			document, version, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: id, Title: id, Category: "Architecture"}, core.SystemDesignVersion{Content: "# " + id + "\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/**\n```", Origin: core.SystemDesignOriginOperator})
+			if err != nil {
+				t.Fatal(err)
+			}
+			document, _, err = st.ConfirmSystemDesignVersion(ctx, document.ID, version.Version)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return document
+		}
+
+		targetRequirement := createRequirement("req-archive-target")
+		replacementRequirement := createRequirement("req-archive-replacement")
+		replacementDesign := createDesign("design-archive-replacement")
+		targetDesign := createDesign("design-archive-target")
+		taskID := core.NewTaskID()
+		if err := st.CreateTask(ctx, core.Task{ID: taskID, Workspace: fixture.Workspace, Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-" + taskID, State: core.TaskRunning, CreatedAt: time.Now().UTC()}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := st.UpdateTaskContext(ctx, taskID, store.TaskContextChange{Add: store.TaskContextInput{RequirementIDs: []string{targetRequirement.ID}, DesignIDs: []string{targetDesign.ID}}}); err != nil {
+			t.Fatal(err)
+		}
+
+		valid := []string{replacementRequirement.ID, replacementDesign.ID}
+		if err := st.ArchiveRequirement(ctx, targetRequirement.ID, requirementConformanceActor, valid); err != nil {
+			t.Fatal(err)
+		}
+		archived, err := st.GetRequirement(ctx, targetRequirement.ID)
+		if err != nil || !slices.Equal(archived.SupersedingDocumentIDs, valid) {
+			t.Fatalf("archived requirement=%+v err=%v", archived, err)
+		}
+		context, err := store.TaskContextForTask(ctx, st, taskID)
+		if err != nil || len(context.Requirements) != 1 || !context.Requirements[0].Archived || !slices.Equal(context.Requirements[0].SupersedingDocumentIDs, valid) {
+			t.Fatalf("archived requirement context=%+v err=%v", context.Requirements, err)
+		}
+		served, err := store.ServedRequirementsForTask(ctx, st, taskID)
+		if err != nil || len(served.Requirements) != 1 || !served.Requirements[0].Archived || !slices.Equal(served.Requirements[0].SupersedingDocumentIDs, valid) {
+			t.Fatalf("served archived requirement=%+v err=%v", served.Requirements, err)
+		}
+		assertEventIDs := func(kind string, events []core.Event, want []string) {
+			t.Helper()
+			for _, event := range events {
+				if event.Kind != kind {
+					continue
+				}
+				var payload struct {
+					IDs        []string `json:"superseding_document_ids"`
+					ClearedIDs []string `json:"cleared_superseding_document_ids"`
+				}
+				if json.Unmarshal(event.Payload, &payload) != nil {
+					t.Fatalf("decode %s payload=%s", kind, event.Payload)
+				}
+				got := payload.IDs
+				if strings.HasSuffix(kind, ".restored") {
+					got = payload.ClearedIDs
+				}
+				if !slices.Equal(got, want) {
+					t.Fatalf("%s payload=%s want ids=%v", kind, event.Payload, want)
+				}
+				return
+			}
+			t.Fatalf("missing %s event", kind)
+		}
+		requirementEvents, err := st.ListRequirementEvents(ctx, targetRequirement.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertEventIDs("requirement.archived", requirementEvents, valid)
+		if err = st.RestoreRequirement(ctx, targetRequirement.ID, requirementConformanceActor); err != nil {
+			t.Fatal(err)
+		}
+		restored, err := st.GetRequirement(ctx, targetRequirement.ID)
+		if err != nil || len(restored.SupersedingDocumentIDs) != 0 {
+			t.Fatalf("restored requirement=%+v err=%v", restored, err)
+		}
+		requirementEvents, _ = st.ListRequirementEvents(ctx, targetRequirement.ID)
+		assertEventIDs("requirement.restored", requirementEvents, valid)
+
+		if err = st.ArchiveSystemDesign(ctx, targetDesign.ID, requirementConformanceActor, valid); err != nil {
+			t.Fatal(err)
+		}
+		designEvents, err := st.ListSystemDesignEvents(ctx, targetDesign.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertEventIDs("system_design.archived", designEvents, valid)
+		context, err = store.TaskContextForTask(ctx, st, taskID)
+		if err != nil || len(context.Designs) != 1 || !context.Designs[0].Archived || !slices.Equal(context.Designs[0].SupersedingDocumentIDs, valid) {
+			t.Fatalf("archived design context=%+v err=%v", context.Designs, err)
+		}
+		governance, err := store.GovernanceForTask(ctx, st, taskID, "conveyor")
+		if err != nil {
+			t.Fatal(err)
+		}
+		foundPinned := false
+		for _, design := range governance.Designs {
+			if design.ID == targetDesign.ID {
+				foundPinned = design.Archived && slices.Equal(design.SupersedingDocumentIDs, valid)
+			}
+		}
+		if !foundPinned {
+			t.Fatalf("archived pinned design missing superseding ids: %+v", governance.Designs)
+		}
+
+		archivedCandidate := createRequirement("req-archive-retired-replacement")
+		if err = st.ArchiveRequirement(ctx, archivedCandidate.ID, requirementConformanceActor, nil); err != nil {
+			t.Fatal(err)
+		}
+		otherWorkspace := "archive-other-" + core.NewTaskID()
+		if control, ok := st.(store.WorkspaceControlStore); ok {
+			if _, err = control.CreateWorkspace(ctx, otherWorkspace, "Archive other", &config.Config{Workspace: otherWorkspace, Repos: requirementConformanceRepos}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		otherCtx := store.WithWorkspace(ctx, otherWorkspace)
+		cross, crossVersion, err := st.CreateRequirement(otherCtx, core.Requirement{ID: "req-cross-workspace", Title: "Cross workspace"}, core.RequirementVersion{Content: "Cross workspace", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Stay scoped."}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err = st.ConfirmRequirementVersion(otherCtx, cross.ID, crossVersion.Version); err != nil {
+			t.Fatal(err)
+		}
+		if err = st.RestoreSystemDesign(ctx, targetDesign.ID, requirementConformanceActor); err != nil {
+			t.Fatal(err)
+		}
+		designEvents, _ = st.ListSystemDesignEvents(ctx, targetDesign.ID)
+		assertEventIDs("system_design.restored", designEvents, valid)
+		for _, test := range []struct {
+			name string
+			ids  []string
+			want string
+		}{
+			{name: "unknown", ids: []string{"req-unknown", replacementRequirement.ID}, want: "req-unknown"},
+			{name: "archived", ids: []string{archivedCandidate.ID}, want: archivedCandidate.ID},
+			{name: "self", ids: []string{targetDesign.ID}, want: targetDesign.ID},
+			{name: "duplicate", ids: []string{replacementRequirement.ID, replacementRequirement.ID}, want: replacementRequirement.ID},
+			{name: "cross workspace", ids: []string{cross.ID}, want: cross.ID},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				err := st.ArchiveSystemDesign(ctx, targetDesign.ID, requirementConformanceActor, test.ids)
+				var reference *store.SupersedingDocumentReferenceError
+				if !errors.As(err, &reference) || reference.DocumentID != test.want {
+					t.Fatalf("error=%v reference=%+v", err, reference)
+				}
+				if document, getErr := st.GetSystemDesign(ctx, targetDesign.ID); getErr != nil || document.Archived {
+					t.Fatalf("invalid archive mutated target=%+v err=%v", document, getErr)
+				}
+			})
 		}
 	})
 

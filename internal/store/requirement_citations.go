@@ -88,7 +88,7 @@ func ServedRequirementsForTask(ctx context.Context, st Store, taskID string, aut
 		if !version.Confirmed {
 			continue
 		}
-		result = append(result, core.ServedRequirementContext{ID: requirement.ID, Title: requirement.Title, Version: version.Version, Statements: append([]core.RequirementStatement(nil), version.Statements...)})
+		result = append(result, core.ServedRequirementContext{ID: requirement.ID, Title: requirement.Title, Version: version.Version, Statements: append([]core.RequirementStatement(nil), version.Statements...), Archived: requirement.Archived, SupersedingDocumentIDs: append([]string(nil), requirement.SupersedingDocumentIDs...)})
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].ID < result[j].ID })
 	return ServedRequirementsResult{Requirements: result}, nil

@@ -42,31 +42,42 @@ func TestSystemDesignArchiveRESTLifecycle(t *testing.T) {
 	if _, _, err = st.ConfirmSystemDesignVersion(ctx, document.ID, version.Version); err != nil {
 		t.Fatal(err)
 	}
+	replacement, replacementVersion, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "design-archive-replacement-api", Title: "Archive replacement API", Category: "Architecture"}, core.SystemDesignVersion{Content: "# Replacement\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/**\n```", Origin: core.SystemDesignOriginOperator})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmSystemDesignVersion(ctx, replacement.ID, replacementVersion.Version); err != nil {
+		t.Fatal(err)
+	}
 	server := NewServer(st)
 	server.Workspace, server.BearerToken = "demo", "token"
 	handler := server.Handler()
-	call := func(method, path string) *httptest.ResponseRecorder {
-		req := httptest.NewRequest(method, path, nil)
+	call := func(method, path, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
 		req.Header.Set("Authorization", "Bearer token")
 		req.Header.Set("X-Conveyor-Actor", "archive-operator")
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, req)
 		return response
 	}
-	if response := call(http.MethodPost, "/v1/system-designs/"+document.ID+"/archive"); response.Code != http.StatusOK {
+	archiveBody := `{"superseding_document_ids":["` + replacement.ID + `"]}`
+	if response := call(http.MethodPost, "/v1/system-designs/"+document.ID+"/archive", archiveBody); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"superseding_document_ids":["`+replacement.ID+`"]`) {
 		t.Fatalf("archive status=%d body=%s", response.Code, response.Body.String())
 	}
-	if response := call(http.MethodGet, "/v1/system-designs"); response.Code != http.StatusOK || strings.Contains(response.Body.String(), document.ID) {
+	if response := call(http.MethodGet, "/v1/system-designs", ""); response.Code != http.StatusOK || strings.Contains(response.Body.String(), document.ID) {
 		t.Fatalf("default list status=%d body=%s", response.Code, response.Body.String())
 	}
-	if response := call(http.MethodGet, "/v1/system-designs?include_archived=true"); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"archived":true`) {
+	if response := call(http.MethodGet, "/v1/system-designs?include_archived=true", ""); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"archived":true`) {
 		t.Fatalf("archived list status=%d body=%s", response.Code, response.Body.String())
 	}
-	if response := call(http.MethodPost, "/v1/system-designs/"+document.ID+"/versions/1/confirm"); response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), `"error":"system_design_archived"`) {
+	if response := call(http.MethodPost, "/v1/system-designs/"+document.ID+"/versions/1/confirm", ""); response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), `"error":"system_design_archived"`) {
 		t.Fatalf("confirm status=%d body=%s", response.Code, response.Body.String())
 	}
-	if response := call(http.MethodPost, "/v1/system-designs/"+document.ID+"/restore"); response.Code != http.StatusOK || strings.Contains(response.Body.String(), `"archived":true`) {
+	if response := call(http.MethodPost, "/v1/system-designs/"+document.ID+"/restore", ""); response.Code != http.StatusOK || strings.Contains(response.Body.String(), `"archived":true`) || strings.Contains(response.Body.String(), `"superseding_document_ids"`) {
 		t.Fatalf("restore status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := call(http.MethodPost, "/v1/system-designs/"+document.ID+"/archive", `{"superseding_document_ids":["missing"]}`); response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), `"error":"invalid_superseding_document"`) || !strings.Contains(response.Body.String(), `"document_id":"missing"`) {
+		t.Fatalf("invalid superseding document status=%d body=%s", response.Code, response.Body.String())
 	}
 }
 

@@ -66,7 +66,8 @@ func GovernanceForTask(ctx context.Context, st Store, taskID, repository string)
 			pinnedAtAttachment = true
 		}
 		byID[item.ID] = core.GovernanceDesignContext{ID: item.ID, Title: document.Title, Category: document.Category,
-			Version: version.Version, Content: version.Content, Governs: append([]core.GovernedScope(nil), version.Governs...), PinnedAtAttachment: pinnedAtAttachment}
+			Version: version.Version, Content: version.Content, Governs: append([]core.GovernedScope(nil), version.Governs...), PinnedAtAttachment: pinnedAtAttachment,
+			Archived: document.Archived, SupersedingDocumentIDs: append([]string(nil), document.SupersedingDocumentIDs...)}
 	}
 	snapshot.Designs = snapshot.Designs[:0]
 	for _, design := range byID {

@@ -64,6 +64,7 @@ func (m *memory) GetSystemDesign(ctx context.Context, id string) (core.SystemDes
 	if !ok {
 		return core.SystemDesign{}, fmt.Errorf("%w: system design %s", ErrNotFound, id)
 	}
+	item.SupersedingDocumentIDs = append([]string(nil), item.SupersedingDocumentIDs...)
 	return item, nil
 }
 
@@ -74,6 +75,7 @@ func (m *memory) ListSystemDesigns(ctx context.Context, includeArchived bool) ([
 	out := []core.SystemDesign{}
 	for key, item := range m.systemDesigns {
 		if key.workspace == workspace && (includeArchived || !item.Archived) {
+			item.SupersedingDocumentIDs = append([]string(nil), item.SupersedingDocumentIDs...)
 			out = append(out, item)
 		}
 	}
@@ -89,15 +91,15 @@ func (m *memory) ListSystemDesigns(ctx context.Context, includeArchived bool) ([
 	return out, nil
 }
 
-func (m *memory) ArchiveSystemDesign(ctx context.Context, id, actor string) error {
-	return m.setSystemDesignArchived(ctx, id, actor, true)
+func (m *memory) ArchiveSystemDesign(ctx context.Context, id, actor string, supersedingDocumentIDs []string) error {
+	return m.setSystemDesignArchived(ctx, id, actor, true, supersedingDocumentIDs)
 }
 
 func (m *memory) RestoreSystemDesign(ctx context.Context, id, actor string) error {
-	return m.setSystemDesignArchived(ctx, id, actor, false)
+	return m.setSystemDesignArchived(ctx, id, actor, false, nil)
 }
 
-func (m *memory) setSystemDesignArchived(ctx context.Context, id, actor string, archived bool) error {
+func (m *memory) setSystemDesignArchived(ctx context.Context, id, actor string, archived bool, supersedingDocumentIDs []string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	workspace := workspaceOrDefault(ctx, "")
@@ -109,22 +111,38 @@ func (m *memory) setSystemDesignArchived(ctx context.Context, id, actor string, 
 	if document.Archived == archived {
 		return nil
 	}
+	accepted := []string{}
+	if archived {
+		var err error
+		accepted, err = m.validateSupersedingDocumentIDsLocked(workspace, id, supersedingDocumentIDs)
+		if err != nil {
+			return err
+		}
+	} else {
+		accepted = append([]string(nil), document.SupersedingDocumentIDs...)
+	}
 	now := time.Now().UTC()
 	document.Archived, document.UpdatedAt = archived, now
 	if archived {
 		document.ArchivedBy, document.ArchivedAt = actor, now
+		document.SupersedingDocumentIDs = append([]string(nil), accepted...)
 	} else {
 		document.ArchivedBy, document.ArchivedAt = "", time.Time{}
+		document.SupersedingDocumentIDs = nil
 	}
 	m.systemDesigns[key] = document
 	kind := "system_design.restored"
 	if archived {
 		kind = "system_design.archived"
 	}
-	m.appendEventLocked(ctx, core.Event{Kind: kind, Payload: core.JSONPayload(map[string]any{
+	payload := map[string]any{
 		"workspace_id": workspace, "document_id": id, "version": document.CurrentVersion,
-		"actor": actor, "at": now,
-	})})
+		"actor": actor, "at": now, "superseding_document_ids": accepted,
+	}
+	if !archived {
+		payload["cleared_superseding_document_ids"] = accepted
+	}
+	m.appendEventLocked(ctx, core.Event{Kind: kind, Payload: core.JSONPayload(payload)})
 	return nil
 }
 

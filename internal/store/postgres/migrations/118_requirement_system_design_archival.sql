@@ -1,10 +1,12 @@
 ALTER TABLE requirements
     ADD COLUMN archived_at timestamptz,
-    ADD COLUMN archived_by text NOT NULL DEFAULT '';
+    ADD COLUMN archived_by text NOT NULL DEFAULT '',
+    ADD COLUMN superseding_document_ids text[] NOT NULL DEFAULT '{}';
 
 ALTER TABLE system_designs
     ADD COLUMN archived_at timestamptz,
-    ADD COLUMN archived_by text NOT NULL DEFAULT '';
+    ADD COLUMN archived_by text NOT NULL DEFAULT '',
+    ADD COLUMN superseding_document_ids text[] NOT NULL DEFAULT '{}';
 
 ALTER TABLE events DROP CONSTRAINT events_scope_check;
 ALTER TABLE events ADD CONSTRAINT events_scope_check CHECK (

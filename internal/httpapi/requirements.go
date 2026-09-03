@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"sort"
@@ -434,13 +435,23 @@ func (s *Server) setRequirementArchiveState(w http.ResponseWriter, r *http.Reque
 	actor := store.ActorFromContext(r.Context()).ID
 	var err error
 	if archived {
-		err = s.Store.ArchiveRequirement(r.Context(), id, actor)
+		var input struct {
+			SupersedingDocumentIDs []string `json:"superseding_document_ids"`
+		}
+		if decodeErr := json.NewDecoder(r.Body).Decode(&input); decodeErr != nil && !errors.Is(decodeErr, io.EOF) {
+			http.Error(w, decodeErr.Error(), http.StatusBadRequest)
+			return
+		}
+		err = s.Store.ArchiveRequirement(r.Context(), id, actor, input.SupersedingDocumentIDs)
 	} else {
 		err = s.Store.RestoreRequirement(r.Context(), id, actor)
 	}
 	if err != nil {
+		var reference *store.SupersedingDocumentReferenceError
 		if errors.Is(err, store.ErrNotFound) {
 			http.Error(w, err.Error(), http.StatusNotFound)
+		} else if errors.As(err, &reference) {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "invalid_superseding_document", "document_id": reference.DocumentID, "reason": reference.Reason})
 		} else {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 		}

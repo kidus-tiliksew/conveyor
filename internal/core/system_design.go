@@ -18,17 +18,18 @@ import (
 // document. Content and governed scope live on immutable versions
 // (design-document-corpus).
 type SystemDesign struct {
-	ID             string    `json:"id"`
-	Slug           string    `json:"slug"`
-	Title          string    `json:"title"`
-	Category       string    `json:"category"`
-	CurrentVersion int       `json:"current_version,omitempty"`
-	Archived       bool      `json:"archived"`
-	ArchivedBy     string    `json:"archived_by,omitempty"`
-	ArchivedAt     time.Time `json:"archived_at,omitempty"`
-	Workspace      string    `json:"workspace"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	ID                     string    `json:"id"`
+	Slug                   string    `json:"slug"`
+	Title                  string    `json:"title"`
+	Category               string    `json:"category"`
+	CurrentVersion         int       `json:"current_version,omitempty"`
+	Archived               bool      `json:"archived"`
+	ArchivedBy             string    `json:"archived_by,omitempty"`
+	ArchivedAt             time.Time `json:"archived_at,omitempty"`
+	SupersedingDocumentIDs []string  `json:"superseding_document_ids,omitempty"`
+	Workspace              string    `json:"workspace"`
+	CreatedAt              time.Time `json:"created_at"`
+	UpdatedAt              time.Time `json:"updated_at"`
 }
 
 type SystemDesignOrigin string
@@ -345,13 +346,15 @@ type PendingProposal struct {
 // GovernanceDesignContext is the immutable portion of a confirmed System
 // Design version rendered to and validated for one review claim.
 type GovernanceDesignContext struct {
-	ID                 string          `json:"id"`
-	Title              string          `json:"title"`
-	Category           string          `json:"category"`
-	Version            int             `json:"version"`
-	Content            string          `json:"content"`
-	Governs            []GovernedScope `json:"governs"`
-	PinnedAtAttachment bool            `json:"pinned_at_attachment,omitempty"`
+	ID                     string          `json:"id"`
+	Title                  string          `json:"title"`
+	Category               string          `json:"category"`
+	Version                int             `json:"version"`
+	Content                string          `json:"content"`
+	Governs                []GovernedScope `json:"governs"`
+	PinnedAtAttachment     bool            `json:"pinned_at_attachment,omitempty"`
+	Archived               bool            `json:"archived"`
+	SupersedingDocumentIDs []string        `json:"superseding_document_ids,omitempty"`
 }
 
 // PendingSystemDesignProposal is observable review/implementation context,
