@@ -148,9 +148,14 @@ type childResult struct {
 	err   error
 }
 
-type codexUsageTotals struct {
+type workerUsageTotals struct {
 	TokensIn  int64
 	TokensOut int64
+}
+
+type workerUsageCollector interface {
+	io.Writer
+	Usage() (workerUsageTotals, bool)
 }
 
 // codexUsageCollector accepts only Codex's documented JSONL turn.completed
@@ -159,7 +164,7 @@ type codexUsageTotals struct {
 type codexUsageCollector struct {
 	mu      sync.Mutex
 	pending []byte
-	latest  *codexUsageTotals
+	latest  *workerUsageTotals
 }
 
 func (c *codexUsageCollector) Write(p []byte) (int, error) {
@@ -186,18 +191,67 @@ func (c *codexUsageCollector) Write(p []byte) (int, error) {
 		if json.Unmarshal(line, &event) != nil || event.Type != "turn.completed" || event.Usage == nil || event.Usage.InputTokens < 0 || event.Usage.OutputTokens < 0 {
 			continue
 		}
-		c.latest = &codexUsageTotals{TokensIn: event.Usage.InputTokens, TokensOut: event.Usage.OutputTokens}
+		c.latest = &workerUsageTotals{TokensIn: event.Usage.InputTokens, TokensOut: event.Usage.OutputTokens}
 	}
 }
 
-func (c *codexUsageCollector) Usage() (codexUsageTotals, bool) {
+func (c *codexUsageCollector) Usage() (workerUsageTotals, bool) {
 	if c == nil {
-		return codexUsageTotals{}, false
+		return workerUsageTotals{}, false
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.latest == nil {
-		return codexUsageTotals{}, false
+		return workerUsageTotals{}, false
+	}
+	return *c.latest, true
+}
+
+// cursorUsageCollector accepts only Cursor's documented terminal result event.
+// It does not scrape ordinary stream-json events or fold cache tokens into the
+// provider-reported input and output totals (REQ-2, design-260805-973cd4).
+type cursorUsageCollector struct {
+	mu      sync.Mutex
+	pending []byte
+	latest  *workerUsageTotals
+}
+
+func (c *cursorUsageCollector) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.pending = append(c.pending, p...)
+	for {
+		newline := bytes.IndexByte(c.pending, '\n')
+		if newline < 0 {
+			if len(c.pending) > 64*1024 {
+				c.pending = nil
+			}
+			return len(p), nil
+		}
+		line := bytes.TrimSpace(c.pending[:newline])
+		c.pending = c.pending[newline+1:]
+		var event struct {
+			Type  string `json:"type"`
+			Usage *struct {
+				InputTokens  *int64 `json:"inputTokens"`
+				OutputTokens *int64 `json:"outputTokens"`
+			} `json:"usage"`
+		}
+		if json.Unmarshal(line, &event) != nil || event.Type != "result" || event.Usage == nil || event.Usage.InputTokens == nil || event.Usage.OutputTokens == nil || *event.Usage.InputTokens < 0 || *event.Usage.OutputTokens < 0 {
+			continue
+		}
+		c.latest = &workerUsageTotals{TokensIn: *event.Usage.InputTokens, TokensOut: *event.Usage.OutputTokens}
+	}
+}
+
+func (c *cursorUsageCollector) Usage() (workerUsageTotals, bool) {
+	if c == nil {
+		return workerUsageTotals{}, false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.latest == nil {
+		return workerUsageTotals{}, false
 	}
 	return *c.latest, true
 }
@@ -225,14 +279,29 @@ func enableCodexJSONOutput(harness config.Harness, argv []string) ([]string, *co
 	return withJSON, &codexUsageCollector{}
 }
 
-func reportCodexUsageFallback(c *client, credential, orderID, sessionID string, order core.WorkOrder, usage *codexUsageCollector) {
+func enableHarnessUsageCollection(harness config.Harness, argv []string) ([]string, workerUsageCollector) {
+	withCodexJSON, codexUsage := enableCodexJSONOutput(harness, argv)
+	if codexUsage != nil {
+		return withCodexJSON, codexUsage
+	}
+	if len(harness.Command) > 0 && filepath.Base(harness.Command[0]) == "cursor-agent" {
+		return argv, &cursorUsageCollector{}
+	}
+	return argv, nil
+}
+
+func reportWorkerUsageFallback(c *client, credential, orderID, sessionID string, order core.WorkOrder, usage workerUsageCollector) {
+	if usage == nil {
+		return
+	}
 	totals, ok := usage.Usage()
 	if !ok || order.UsageReported {
 		return
 	}
-	// The terminal Codex usage event is emitted after the agent's terminal MCP
-	// call, so this is intentionally best effort and bounded independently of
-	// the child lifecycle.
+	// Terminal usage events can arrive after the agent's terminal MCP call, so
+	// this is intentionally best effort and bounded independently of the child
+	// lifecycle. The service suppresses this fallback after an agent report
+	// (AC-2.2, design-260805-973cd4).
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = c.reportWorkerFallbackUsageContext(ctx, credential, orderID, sessionID, totals.TokensIn, totals.TokensOut)
@@ -1022,8 +1091,8 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 		argv = expandHarnessWithEffortArgv(item.Harness, item.Model, effortArgv, prompt, mcpConfig)
 		argv = appendContinuationResumeArgv(argv, item.Harness.ResumeCommand, claimed.ContinuationSessionID)
 	}
-	argv, codexUsage := enableCodexJSONOutput(item.Harness, argv)
-	coldArgv, _ = enableCodexJSONOutput(item.Harness, coldArgv)
+	argv, usageCollector := enableHarnessUsageCollection(item.Harness, argv)
+	coldArgv, _ = enableHarnessUsageCollection(item.Harness, coldArgv)
 	childAddress := c.base
 	if item.Harness.MCPTransport == config.MCPTransportEnvironment {
 		childAddress = strings.TrimRight(c.base, "/") + "/mcp"
@@ -1120,8 +1189,8 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 	outputRedactor := redact.New([]string{credential, childCredential, childAddress, sessionID, clientToken, forgeToken})
 	failureTail = &boundedTailWriter{limit: workerservice.FailureDetailLimit}
 	var usageDestination io.Writer
-	if codexUsage != nil {
-		usageDestination = codexUsage
+	if usageCollector != nil {
+		usageDestination = usageCollector
 	}
 	stdoutFanout, renderer := harnessStdoutFanout(stdout, failureTail, usageDestination, item, presentation)
 	terminalRenderer = renderer
@@ -1339,7 +1408,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 		renewed := reconciled.WorkOrder
 		// The service checks current persisted provenance before applying this
 		// fallback, so a report emitted by the agent during the child run wins.
-		reportCodexUsageFallback(c, credential, item.Order.ID, sessionID, renewed, codexUsage)
+		reportWorkerUsageFallback(c, credential, item.Order.ID, sessionID, renewed, usageCollector)
 		if renewed.State == core.WorkOrderClaimed && reconciled.Authorized {
 			reason := "harness exited before completing work order"
 			if waitErr != nil {
@@ -1389,7 +1458,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 				return fmt.Errorf("lingering %s session process group %d survived termination", item.Order.Stage, processGroup.pgid)
 			}
 			flushOutput()
-			reportCodexUsageFallback(c, credential, item.Order.ID, sessionID, finalizedOrder, codexUsage)
+			reportWorkerUsageFallback(c, credential, item.Order.ID, sessionID, finalizedOrder, usageCollector)
 			return nil
 		case <-firstActivityObserved:
 			if !firstActivityTimer.Stop() {

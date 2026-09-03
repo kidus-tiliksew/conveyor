@@ -24,6 +24,18 @@ finishes, which keeps Conveyor's first-activity check and native session resume
 working. `--force --trust` grants the headless run permission to use tools.
 Operator `permissions.deny` rules in `~/.cursor/cli-config.json` still apply.
 
+## Usage
+
+The worker observes Cursor's terminal stream-json `result` event as a
+best-effort usage fallback when the agent does not call `report_usage`. It
+records the event's non-negative integer `usage.inputTokens` and
+`usage.outputTokens` with `worker_fallback` provenance and no estimated cost.
+It does not include `cacheReadTokens` or `cacheWriteTokens`, and it ignores
+ordinary stream events. An agent report always takes precedence over this
+fallback. Cursor selection uses the `cursor-agent` command basename, so an
+absolute command path still enables collection without changing the harness
+arguments.
+
 Cursor has no separate effort argument. Leave effort blank on Cursor routes
 and review seats, and select the desired effort through the model slug. Cursor
 adds a `Co-authored-by: Cursor` trailer to commits by default. Set
