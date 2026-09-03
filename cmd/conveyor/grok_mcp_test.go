@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http/httptest"
 	"os"
 	"os/exec"
@@ -131,6 +132,52 @@ headers = { "Authorization" = "Bearer ${CONVEYOR_API_TOKEN}" }
 	harness.ProbeTimeout = 30 * time.Second
 	if err = validateGrokEnvironmentAttachment(t.Context(), harness, grokTestEnvironment(server.URL+"/mcp"), t.TempDir()); err != nil {
 		t.Fatalf("installed Grok readiness: %v", err)
+	}
+}
+
+func TestCursorEnvironmentReadinessRequiresLifecycleTools(t *testing.T) {
+	harness := config.HarnessTemplates()[3].Harness
+	env := grokTestEnvironment("http://127.0.0.1:9999/mcp")
+	directory := t.TempDir()
+	ready := strings.Join(cursorLifecycleTools, "\n")
+	tests := []struct {
+		name    string
+		output  string
+		runErr  error
+		wantErr bool
+	}{
+		{name: "ready listing", output: ready},
+		{name: "missing server", output: "No MCP server named conveyor", wantErr: true},
+		{name: "non-zero exit", output: ready, runErr: errors.New("exit status 1"), wantErr: true},
+		{name: "incomplete listing", output: strings.Join(cursorLifecycleTools[:len(cursorLifecycleTools)-1], "\n"), wantErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			runner := func(_ context.Context, gotDirectory string, gotEnv []string, binary string, args []string) ([]byte, error) {
+				if gotDirectory != directory || strings.Join(gotEnv, "\x00") != strings.Join(env, "\x00") {
+					t.Fatalf("directory=%q env=%v", gotDirectory, gotEnv)
+				}
+				if binary != "cursor-agent" || strings.Join(args, " ") != "mcp list-tools conveyor" {
+					t.Fatalf("binary=%q args=%v", binary, args)
+				}
+				return []byte(test.output), test.runErr
+			}
+			err := validateCursorEnvironmentAttachmentWithRunner(t.Context(), harness, env, directory, runner)
+			if !test.wantErr && err != nil {
+				t.Fatal(err)
+			}
+			if test.wantErr && (err == nil || !strings.Contains(err.Error(), `attachment "conveyor"`) || !strings.Contains(err.Error(), "~/.cursor/mcp.json") || !strings.Contains(err.Error(), "project-level .cursor/mcp.json")) {
+				t.Fatalf("error=%v", err)
+			}
+		})
+	}
+}
+
+func TestCursorEnvironmentReadinessRejectsIncompleteChildIdentity(t *testing.T) {
+	harness := config.HarnessTemplates()[3].Harness
+	err := validateCursorEnvironmentAttachmentWithRunner(t.Context(), harness, []string{"CONVEYOR_ADDR=http://127.0.0.1:9999/mcp"}, t.TempDir(), nil)
+	if err == nil || !strings.Contains(err.Error(), "child launch identity is incomplete") {
+		t.Fatalf("error=%v", err)
 	}
 }
 

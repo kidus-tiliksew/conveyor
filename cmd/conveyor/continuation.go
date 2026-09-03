@@ -83,10 +83,10 @@ func continuationRecoveryPrompt(prompt string, order core.WorkOrder) string {
 }
 
 func continuationObserverEnabled(harness config.Harness, launchEnvironment string) bool {
-	return harness.Name == "claude" && len(harness.ResumeCommand) > 0 && launchEnvironment != ""
+	return len(harness.ResumeCommand) > 0 && launchEnvironment != ""
 }
 
-// continuationSessionObserver recognizes only Claude's stream-json init
+// continuationSessionObserver recognizes the shared stream-json init
 // envelope. Its buffer is bounded and malformed or oversized lines are
 // discarded without affecting the output path (req-260818-24dd3a AC-1.2).
 type continuationSessionObserver struct {

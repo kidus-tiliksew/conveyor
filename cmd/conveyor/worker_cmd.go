@@ -1105,7 +1105,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 	childEnv := isolatedChildEnvironment(os.Environ(), childValues)
 	childEnv = isolatedChildEnvironment(childEnv, gitEnvironment)
 	if item.Harness.MCPTransport == config.MCPTransportEnvironment {
-		if err = validateGrokEnvironmentAttachment(setupCtx, item.Harness, childEnv, workingDirectory); err != nil {
+		if err = validateEnvironmentAttachment(setupCtx, item.Harness, childEnv, workingDirectory); err != nil {
 			if _, lost := renewal.Stop(); lost != nil {
 				if workerOrderPreempted(lost) {
 					return errWorkerOrderPreempted
