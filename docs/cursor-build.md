@@ -36,11 +36,20 @@ fallback. Cursor selection uses the `cursor-agent` command basename, so an
 absolute command path still enables collection without changing the harness
 arguments.
 
+Attended runs summarize Cursor stream-json events; use `--raw` to print the original JSONL stream.
+
 Cursor has no separate effort argument. Leave effort blank on Cursor routes
 and review seats, and select the desired effort through the model slug. Cursor
 adds a `Co-authored-by: Cursor` trailer to commits by default. Set
 `attribution.attributeCommitsToAgent` to `false` in `cli-config.json` to disable
 that behavior.
+
+## Skills
+
+`conveyor skills install --tool cursor` installs Conveyor's personal skills in
+`~/.cursor/skills/<name>/SKILL.md`. Add `--project` to install them in
+`<project>/.cursor/skills/<name>/SKILL.md` instead. Conveyor never writes
+`~/.cursor/skills-cursor/`, which Cursor reserves for its built-in skills.
 
 ## Global Conveyor registration
 

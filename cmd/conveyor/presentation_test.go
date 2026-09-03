@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -64,6 +65,99 @@ func TestHarnessEventRendererSummarizesRecognizedCodexEvents(t *testing.T) {
 	if strings.Contains(got, "embedded-javascript-bundle") || len(got) >= len(events) {
 		t.Fatalf("rendered output leaked the embedded payload:\n%s", got)
 	}
+}
+
+func TestHarnessEventRendererSummarizesRecognizedCursorEvents(t *testing.T) {
+	var output bytes.Buffer
+	renderer := newHarnessEventRenderer(&output)
+	events := strings.Join([]string{
+		`{"type":"system","subtype":"init","session_id":"f873ed73-0123-4567-89ab-cdef01234567"}`,
+		`{"type":"user","message":{"role":"user","content":[{"type":"text","text":"the full prompt"}]},"session_id":"f873ed73"}`,
+		`{"type":"thinking","subtype":"delta","text":"Running the shell command"}`,
+		`{"type":"thinking","subtype":"delta","text":" with more detail"}`,
+		`{"type":"thinking","subtype":"completed"}`,
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":` + string(mustJSON(t, "I'll run `echo probe-ok`, then reply with exactly `done`.")) + `}]}}`,
+		`{"type":"tool_call","subtype":"started","call_id":"call-2b5b\nfc-46e5","tool_call":{"shellToolCall":{"args":{"command":"echo probe-ok"}}}}`,
+		`{"type":"tool_call","subtype":"completed","call_id":"call-2b5b\nfc-46e5","tool_call":{"shellToolCall":{"args":{"command":"echo probe-ok"},"result":{"success":{"exitCode":0,"stdout":"probe-ok\n"}}}}}`,
+		`{"type":"thinking","subtype":"delta","text":"Finishing"}`,
+		`{"type":"thinking","subtype":"completed"}`,
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}`,
+		`{"type":"result","subtype":"success","is_error":false,"usage":{"inputTokens":13630,"outputTokens":89}}`,
+	}, "\n") + "\n"
+	if _, err := renderer.Write([]byte(events)); err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Split(strings.TrimSpace(output.String()), "\n")
+	want := []string{
+		"session started f873ed73-0123 … [elided]",
+		"thinking…",
+		"I'll run `echo probe-ok`, then reply with exactly `done`.",
+		"› echo probe-ok · running",
+		"✓ echo probe-ok · completed (exit 0)",
+		"thinking…",
+		"done",
+		"✓ agent turn completed · tokens in 13630, out 89",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("rendered lines = %#v, want %#v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("rendered line %d = %q, want %q", i, got[i], want[i])
+		}
+	}
+	if strings.Contains(output.String(), "the full prompt") || strings.Contains(output.String(), "probe-ok\\n") {
+		t.Fatalf("rendered output leaked prompt or tool result: %q", output.String())
+	}
+}
+
+func TestHarnessEventRendererHandlesCursorVariantsAndBoundsValues(t *testing.T) {
+	var output bytes.Buffer
+	renderer := newHarnessEventRenderer(&output)
+	longText := "first line\n" + strings.Repeat("assistant payload ", 100)
+	longCommand := "printf first\n" + strings.Repeat("command ", 100)
+	longCallID := "call first\n" + strings.Repeat("id ", 100)
+	events := strings.Join([]string{
+		`{"type":"tool_call","subtype":"started","call_id":"unknown\ncall","tool_call":{"mcpToolCall":{"arguments":{"secret":"must-not-render"}}}}`,
+		`{"type":"tool_call","subtype":"completed","call_id":"unknown\ncall","tool_call":{"mcpToolCall":{"result":{"secret":"must-not-render"}}}}`,
+		`{"type":"tool_call","subtype":"completed","tool_call":{"shellToolCall":{"args":{"command":"false"},"result":{"failure":{"stderr":"must-not-render"}}}}}`,
+		`{"type":"tool_call","subtype":"completed","tool_call":{"shellToolCall":{"args":{"command":"exit 9"},"result":{"success":{"exitCode":9,"stderr":"must-not-render"}}}}}`,
+		`{"type":"result","subtype":"error","is_error":true,"result":"must-not-render"}`,
+		`{"type":"assistant","message":{"content":[{"type":"text","text":` + string(mustJSON(t, longText)) + `}]}}`,
+		`{"type":"tool_call","subtype":"started","call_id":"` + strings.Repeat("id", 200) + `","tool_call":{"shellToolCall":{"args":{"command":` + string(mustJSON(t, longCommand)) + `}}}}`,
+		`{"type":"tool_call","subtype":"started","call_id":` + string(mustJSON(t, longCallID)) + `,"tool_call":{"shellToolCall":{"args":{}}}}`,
+	}, "\n") + "\n"
+	if _, err := renderer.Write([]byte(events)); err != nil {
+		t.Fatal(err)
+	}
+	got := output.String()
+	for _, want := range []string{
+		"› mcpToolCall · running",
+		"✓ mcpToolCall · completed",
+		"! false · completed",
+		"! exit 9 · completed (exit 9)",
+		"! agent turn completed · error",
+		"› call first id id",
+		presentationElisionTag,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("rendered output missing %q:\n%s", want, got)
+		}
+	}
+	for _, forbidden := range []string{"must-not-render", "first line\nassistant", "printf first\ncommand", "call first\nid"} {
+		if strings.Contains(got, forbidden) {
+			t.Fatalf("rendered output leaked %q:\n%s", forbidden, got)
+		}
+	}
+}
+
+func mustJSON(t *testing.T, value string) []byte {
+	t.Helper()
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return encoded
 }
 
 func TestHarnessEventRendererBoundsUnknownAndOversizedLines(t *testing.T) {

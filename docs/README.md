@@ -26,7 +26,8 @@
 
 ## Playbooks
 
-Agent-facing playbooks, installable as skills with `conveyor skills install`:
+Agent-facing playbooks, installable for Claude Code, Codex, and Cursor with
+`conveyor skills install`:
 
 - [Planning](playbooks/conveyor-planning.md): draft and push documents from a local agent session
 - [Task filing](playbooks/conveyor-task-filing.md): file well-formed tasks and dependency chains

@@ -52,10 +52,6 @@ func mcpInstallCmdWithLookPath(lookPath func(string) (string, error)) *cobra.Com
 	command := &cobra.Command{
 		Use: "install", Short: "Install Conveyor MCP registrations for detected tools", Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			server, err := selectedStoredMCPServer()
-			if err != nil {
-				return err
-			}
 			tools, err := selectSkillTools(selectedTool, lookPath)
 			if err != nil {
 				return err
@@ -69,7 +65,14 @@ func mcpInstallCmdWithLookPath(lookPath func(string) (string, error)) *cobra.Com
 				return fmt.Errorf("resolve MCP destination: %w", err)
 			}
 			targets := mcpTargets(home, tools)
-			results := make([]mcpInstallResult, 0, len(targets))
+			if len(tools) == 1 && len(targets) == 0 {
+				return fmt.Errorf("no native MCP registration target for %s", tools[0].name)
+			}
+			server, err := selectedStoredMCPServer()
+			if err != nil {
+				return err
+			}
+			results := make([]mcpInstallResult, 0, len(tools))
 			for _, target := range targets {
 				result, reconcileErr := reconcileMCPRegistration(home, target, server+"/mcp", adopt, !list)
 				if reconcileErr != nil {
@@ -79,6 +82,18 @@ func mcpInstallCmdWithLookPath(lookPath func(string) (string, error)) *cobra.Com
 					result.status = "not installed (would create)"
 				}
 				results = append(results, result)
+			}
+			for _, tool := range tools {
+				supported := false
+				for _, target := range targets {
+					if target.tool == tool.name {
+						supported = true
+						break
+					}
+				}
+				if !supported {
+					results = append(results, mcpInstallResult{tool: tool.name, status: "unsupported", path: "no native MCP registration target"})
+				}
 			}
 			for _, result := range results {
 				fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\n", result.tool, result.status, result.path)
@@ -90,7 +105,7 @@ func mcpInstallCmdWithLookPath(lookPath func(string) (string, error)) *cobra.Com
 		},
 	}
 	command.Flags().BoolVar(&list, "list", false, "list native registration state without writing")
-	command.Flags().StringVar(&selectedTool, "tool", "", "install only for one detected tool (claude or codex)")
+	command.Flags().StringVar(&selectedTool, "tool", "", "install only for one detected tool (claude, codex, or cursor)")
 	command.Flags().BoolVar(&adopt, "adopt", false, "adopt an unmarked existing Conveyor registration")
 	return command
 }

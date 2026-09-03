@@ -175,8 +175,8 @@ position is review priority.
 
 | Command | What it does |
 |---|---|
-| `conveyor mcp install` | Register the Conveyor MCP server (`<server>/mcp`) with detected Claude Code and Codex clients. `--tool claude\|codex`, `--list` to report without writing, `--adopt` to take over an unmarked existing registration. |
-| `conveyor skills install` | Install the embedded agent skills (`conveyor-work`, `conveyor-plan`, `conveyor-file-tasks`) into `~/.claude/skills` and `~/.codex/skills`. `--project` targets the project directory instead, `--force` allows downgrading skills a newer release installed. |
+| `conveyor mcp install` | Register the Conveyor MCP server (`<server>/mcp`) with detected Claude Code, Codex, and Cursor clients. `--tool claude\|codex\|cursor`, `--list` to report without writing, `--adopt` to take over an unmarked existing registration. Cursor is reported as unsupported until its native MCP target is available. |
+| `conveyor skills install` | Install the embedded agent skills (`conveyor-work`, `conveyor-plan`, `conveyor-file-tasks`) into `~/.claude/skills`, `~/.codex/skills`, and `~/.cursor/skills`. `--project` targets the project directory instead, `--tool` narrows the detected client, and `--force` allows downgrading skills a newer release installed. |
 
 MCP registration writes an environment-backed token reference
 (`CONVEYOR_API_TOKEN`), never a token value. Installs refresh files Conveyor

@@ -34,7 +34,7 @@ func TestMCPInstallWritesNativeShapesWithoutTokenAndPreservesContent(t *testing.
 	if err := command.Execute(); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Count(output.String(), "\tcreated\t") != 2 || !strings.Contains(output.String(), mcpBridgeGuidance) {
+	if strings.Count(output.String(), "\tcreated\t") != 2 || !strings.Contains(output.String(), "cursor\tunsupported\tno native MCP registration target") || !strings.Contains(output.String(), mcpBridgeGuidance) {
 		t.Fatalf("install output:\n%s", output.String())
 	}
 	for _, path := range []string{codexPath, claudePath} {
@@ -74,6 +74,24 @@ bearer_token_env_var = "CONVEYOR_API_TOKEN"`)) {
 	}
 	if got := document.MCPServers["conveyor"]; got.Type != "http" || got.URL != "https://factory.example/base/mcp" || got.Headers["Authorization"] != "Bearer ${CONVEYOR_API_TOKEN}" {
 		t.Fatalf("Claude native registration = %+v", got)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".cursor", "mcp.json")); !os.IsNotExist(err) {
+		t.Fatalf("multi-tool install touched Cursor MCP config: %v", err)
+	}
+}
+
+func TestMCPInstallSelectedCursorHasNoNativeTarget(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CONVEYOR_ADDR", "")
+	setMCPTestConfig(t, localAuthConfig{})
+	command := mcpInstallCmdWithLookPath(func(name string) (string, error) { return "/tools/" + name, nil })
+	command.SetArgs([]string{"--tool", "cursor"})
+	if err := command.Execute(); err == nil || err.Error() != "no native MCP registration target for cursor" {
+		t.Fatalf("Cursor MCP error = %v", err)
+	}
+	if entries, err := os.ReadDir(home); err != nil || len(entries) != 0 {
+		t.Fatalf("selected Cursor MCP install wrote home: %v err=%v", entries, err)
 	}
 }
 
@@ -126,7 +144,7 @@ func TestMCPInstallListIsReadOnlyAndIdempotent(t *testing.T) {
 	if err := list.Execute(); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Count(output.String(), "not installed (would create)") != 2 || strings.Contains(output.String(), mcpBridgeGuidance) {
+	if strings.Count(output.String(), "not installed (would create)") != 2 || !strings.Contains(output.String(), "cursor\tunsupported\tno native MCP registration target") || strings.Contains(output.String(), mcpBridgeGuidance) {
 		t.Fatalf("list output:\n%s", output.String())
 	}
 	if entries, err := os.ReadDir(home); err != nil || len(entries) != 0 {
