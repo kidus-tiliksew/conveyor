@@ -9,9 +9,11 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -49,6 +51,10 @@ func main() {
 	workerRetryDelay := flag.Duration("worker-retry-delay", workerservice.DefaultRetryDelay, "initial supervised-child retry delay")
 	workerRetryMaximum := flag.Duration("worker-retry-max", workerservice.DefaultRetryMaximum, "maximum supervised-child retry delay")
 	flag.Parse()
+	listenAddr, listenAddrSource, err := resolveConveyordListenAddress(*addr, flagWasSet(flag.CommandLine, "addr"), os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
 	if *workerRetryDelay <= 0 || *workerRetryMaximum < *workerRetryDelay {
 		log.Fatal("worker retry delay must be positive and worker retry max must be at least the initial delay")
 	}
@@ -447,7 +453,7 @@ func main() {
 		}()
 	}
 
-	httpSrv := &http.Server{Addr: *addr, Handler: srv.Handler()}
+	httpSrv := &http.Server{Addr: listenAddr, Handler: srv.Handler()}
 	go func() {
 		<-ctx.Done()
 		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -455,10 +461,40 @@ func main() {
 		_ = httpSrv.Shutdown(shutCtx)
 	}()
 
-	log.Printf("conveyord listening on %s (workspace %s, %d repo(s))", *addr, cfg.Workspace, len(cfg.Repos))
+	log.Printf("conveyord listening on %s from %s (workspace %s, %d repo(s))", listenAddr, listenAddrSource, cfg.Workspace, len(cfg.Repos))
 	if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)
 	}
+}
+
+func flagWasSet(fs *flag.FlagSet, name string) bool {
+	set := false
+	fs.Visit(func(current *flag.Flag) {
+		if current.Name == name {
+			set = true
+		}
+	})
+	return set
+}
+
+func resolveConveyordListenAddress(flagAddr string, flagExplicit bool, getenv func(string) string) (string, string, error) {
+	if flagExplicit {
+		return flagAddr, "flag", nil
+	}
+	if value := getenv("CONVEYOR_LISTEN_ADDR"); value != "" {
+		if _, _, err := net.SplitHostPort(value); err != nil {
+			return "", "", fmt.Errorf("invalid CONVEYOR_LISTEN_ADDR %q: expected host:port: %w", value, err)
+		}
+		return value, "CONVEYOR_LISTEN_ADDR", nil
+	}
+	if value := getenv("PORT"); value != "" {
+		port, err := strconv.ParseUint(value, 10, 16)
+		if err != nil || port == 0 {
+			return "", "", fmt.Errorf("invalid PORT %q: expected a decimal port from 1 to 65535", value)
+		}
+		return net.JoinHostPort("0.0.0.0", value), "PORT", nil
+	}
+	return flagAddr, "default", nil
 }
 
 func loadConveyordPack(deployment *config.Config) (*pack.Bundle, error) {
