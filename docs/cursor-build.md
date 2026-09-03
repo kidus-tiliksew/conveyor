@@ -30,6 +30,13 @@ adds a `Co-authored-by: Cursor` trailer to commits by default. Set
 `attribution.attributeCommitsToAgent` to `false` in `cli-config.json` to disable
 that behavior.
 
+## Skills
+
+`conveyor skills install --tool cursor` installs Conveyor's personal skills in
+`~/.cursor/skills/<name>/SKILL.md`. Add `--project` to install them in
+`<project>/.cursor/skills/<name>/SKILL.md` instead. Conveyor never writes
+`~/.cursor/skills-cursor/`, which Cursor reserves for its built-in skills.
+
 ## Global Conveyor registration
 
 Register Conveyor in `~/.cursor/mcp.json` without literal credentials:
