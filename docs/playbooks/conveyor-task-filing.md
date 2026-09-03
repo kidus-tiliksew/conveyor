@@ -22,6 +22,11 @@ plain words and active voice.
   `merge_approval`. Defaults are correct for ordinary work (spec gate on,
   merge gate off).
 - The title is generated from the body; don't write one.
+- When tasks are filed out of order, use the human-only MCP
+  `add_task_dependency` tool with `task_id`, `depends_on_task_id`, an audit
+  `reason`, and a stable `request_id`. It applies the same open-task and
+  same-workspace rules as intake, rejects cycles, and changes ordering only;
+  it never changes branches or interrupts claimed work.
 - **Phase-sized work is never one task.** File a dependency-ordered set —
   each task one coherent slice with its own exit criterion, `depends_on`
   expressing the real order. (Lesson: 8.2 shipped as a single 11-item

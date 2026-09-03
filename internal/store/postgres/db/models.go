@@ -307,6 +307,18 @@ type TaskDependencyRemoval struct {
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
 }
 
+type TaskDependencyAddition struct {
+	WorkspaceID     string             `json:"workspace_id"`
+	RequestID       string             `json:"request_id"`
+	TaskID          string             `json:"task_id"`
+	DependsOnTaskID string             `json:"depends_on_task_id"`
+	Reason          string             `json:"reason"`
+	ActorID         string             `json:"actor_id"`
+	ActorRole       string             `json:"actor_role"`
+	Added           bool               `json:"added"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+}
+
 type TaskSetupChange struct {
 	WorkspaceID string             `json:"workspace_id"`
 	RequestID   string             `json:"request_id"`

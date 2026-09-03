@@ -1,4 +1,4 @@
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import {
   Check,
@@ -8,13 +8,21 @@ import {
   GitBranch,
   GitPullRequest,
   Hand,
+  Link2,
   Link2Off,
   Terminal,
   Trash2,
 } from 'lucide-react'
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import { assigneeName, dependencyRelationLabel, pullRequestURL } from '../../lib/activity'
-import { cancelTask, removeTaskDependency, setTaskAssignee, setTaskHold } from '../../lib/api'
+import {
+  addTaskDependency,
+  cancelTask,
+  fetchTasks,
+  removeTaskDependency,
+  setTaskAssignee,
+  setTaskHold,
+} from '../../lib/api'
 import { findBlueprint } from '../../lib/blueprint'
 import { taskStateLabels } from '../../lib/contracts'
 import { errorMessage } from '../../lib/errors'
@@ -26,7 +34,7 @@ import { Badge } from '../ui/badge'
 import { Button } from '../ui/button'
 import { CopyButton } from '../ui/copy-button'
 import { Dialog } from '../ui/dialog'
-import { Textarea } from '../ui/input'
+import { Input, Textarea } from '../ui/input'
 import { MarkdownProse } from '../ui/markdown-prose'
 import { AssigneeChip } from './assignee-chip'
 
@@ -98,6 +106,7 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
             never belongs in the row the eye reads for state. */}
         {canOperate && (
           <span className="ml-auto flex items-center gap-1">
+            <LinkDependencyControl item={item} />
             <HoldControl item={item} />
             <AssigneeControl item={item} />
             <CancelControl item={item} />
@@ -258,6 +267,139 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
         <Checkout item={item} />
       </div>
     </div>
+  )
+}
+
+function LinkDependencyControl({ item }: { item: ActivityItem }) {
+  const { workspace } = useWorkspaceSelection()
+  const queryClient = useQueryClient()
+  const [open, setOpen] = useState(false)
+  const [search, setSearch] = useState('')
+  const [selectedID, setSelectedID] = useState('')
+  const [reason, setReason] = useState('')
+  const requestID = useRef(crypto.randomUUID())
+  const tasks = useQuery({
+    queryKey: ['tasks', workspace, 'dependency-candidates'],
+    queryFn: fetchTasks,
+    enabled: open && Boolean(workspace),
+  })
+  const existing = new Set(item.task.dependencies?.map((dependency) => dependency.id) ?? [])
+  const query = search.trim().toLowerCase()
+  const candidates = (tasks.data ?? []).filter(
+    (task) =>
+      task.id !== item.task.id &&
+      !existing.has(task.id) &&
+      task.state !== 'merged' &&
+      task.state !== 'closed' &&
+      (!query || task.id.toLowerCase().includes(query) || task.title.toLowerCase().includes(query)),
+  )
+  const selected =
+    candidates.find((task) => task.id === selectedID) ?? tasks.data?.find((task) => task.id === selectedID)
+  const mutation = useMutation({
+    mutationFn: () => addTaskDependency(item.task.id, selectedID, reason.trim(), requestID.current),
+    onSuccess: () => {
+      setOpen(false)
+      setSearch('')
+      setSelectedID('')
+      setReason('')
+      void queryClient.invalidateQueries({ queryKey: ['activity'] })
+      void queryClient.invalidateQueries({ queryKey: ['task', item.task.workspace, item.task.id] })
+    },
+  })
+  const openDialog = () => {
+    requestID.current = crypto.randomUUID()
+    mutation.reset()
+    setSearch('')
+    setSelectedID('')
+    setReason('')
+    setOpen(true)
+  }
+  const closeDialog = () => {
+    mutation.reset()
+    setOpen(false)
+    setSearch('')
+    setSelectedID('')
+    setReason('')
+  }
+  if (item.task.state === 'merged' || item.task.state === 'closed') return null
+  return (
+    <>
+      <button
+        type="button"
+        onClick={openDialog}
+        className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium leading-4 text-muted transition-colors hover:bg-primary-soft hover:text-primary [&_svg]:size-3.5"
+      >
+        <Link2 /> Link dependency
+      </button>
+      {open && (
+        <Dialog label="Link dependency" onClose={() => !mutation.isPending && closeDialog()}>
+          <div className="border-b border-border px-5 py-4">
+            <h2 className="font-semibold">What should this task depend on?</h2>
+            <p className="mt-1 text-sm leading-6 text-muted">
+              Choose an open task. This task will wait for it to merge before future implementation work can start.
+            </p>
+          </div>
+          <div className="space-y-4 px-5 py-4">
+            <label htmlFor="link-dependency-search" className="block text-sm font-medium">
+              Search open tasks
+              <Input
+                id="link-dependency-search"
+                autoFocus
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                placeholder="Task title or ID"
+                className="mt-1.5"
+              />
+            </label>
+            <div className="max-h-48 overflow-y-auto rounded-md border border-border">
+              {tasks.isPending && <p className="p-3 text-sm text-muted">Loading open tasks…</p>}
+              {tasks.error != null && <p className="p-3 text-sm text-failure">Could not load open tasks.</p>}
+              {!tasks.isPending && tasks.error == null && candidates.length === 0 && (
+                <p className="p-3 text-sm text-muted">No matching open tasks.</p>
+              )}
+              {candidates.map((task) => (
+                <button
+                  key={task.id}
+                  type="button"
+                  aria-pressed={selectedID === task.id}
+                  onClick={() => setSelectedID(task.id)}
+                  className={cn(
+                    'block w-full border-b border-border px-3 py-2 text-left last:border-0 hover:bg-surface',
+                    selectedID === task.id && 'bg-primary-soft',
+                  )}
+                >
+                  <span className="block text-sm font-medium">{task.title || task.id}</span>
+                  <span className="block font-mono text-[11px] text-faint">{task.id}</span>
+                </button>
+              ))}
+            </div>
+            {selected && (
+              <p className="text-xs text-muted">This task will depend on {selected.title || selected.id}.</p>
+            )}
+            <label htmlFor="link-dependency-reason" className="block text-sm font-medium">
+              Reason
+              <Textarea
+                id="link-dependency-reason"
+                value={reason}
+                maxLength={200}
+                onChange={(event) => setReason(event.target.value)}
+                placeholder="Why should this task wait for the selected task?"
+                className="mt-1.5"
+              />
+            </label>
+            {mutation.error != null && <p className="text-sm text-failure">{errorMessage(mutation.error)}</p>}
+            <div className="flex justify-end gap-2">
+              <Button variant="secondary" onClick={closeDialog} disabled={mutation.isPending}>
+                Cancel
+              </Button>
+              <Button onClick={() => mutation.mutate()} disabled={mutation.isPending || !selectedID || !reason.trim()}>
+                {mutation.isPending ? 'Linking…' : 'Add dependency'}
+              </Button>
+            </div>
+          </div>
+        </Dialog>
+      )}
+    </>
   )
 }
 

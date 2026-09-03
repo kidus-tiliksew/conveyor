@@ -197,6 +197,14 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 			return nil, err
 		}
 		return map[string]any{"task": result.Task, "created": result.Created}, nil
+	case "add_task_dependency":
+		if workerAuth {
+			return nil, fmt.Errorf("worker credentials cannot add task dependencies")
+		}
+		return s.Store.AddTaskDependency(ctx, store.DependencyAdditionRequest{
+			TaskID: stringArg("task_id"), DependsOnTaskID: stringArg("depends_on_task_id"),
+			Reason: stringArg("reason"), RequestID: stringArg("request_id"),
+		})
 	case "set_assignee":
 		if workerAuth {
 			return nil, fmt.Errorf("worker credentials cannot assign tasks")
@@ -458,7 +466,7 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 
 func humanReservedMCPTool(name string) bool {
 	switch name {
-	case "create_task", "redispatch_work_order", "set_assignee", "report_continuation":
+	case "create_task", "add_task_dependency", "redispatch_work_order", "set_assignee", "report_continuation":
 		return true
 	default:
 		return false
@@ -467,6 +475,7 @@ func humanReservedMCPTool(name string) bool {
 
 var mcpCapabilities = map[string]core.Capability{
 	"create_task":                    core.CapabilityOperateGates,
+	"add_task_dependency":            core.CapabilityOperateGates,
 	"set_assignee":                   core.CapabilitySetAssignee,
 	"list_work_orders":               core.CapabilityViewWorkspace,
 	"claim_work_order":               core.CapabilityClaimWork,
@@ -771,6 +780,7 @@ func mcpTools() []map[string]any {
 	identity := map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str}
 	return []map[string]any{
 		{"name": "create_task", "description": "Create one durable task in an explicit workspace with optional desired-state context, generate its title from body, and enqueue triage. Reusing the same idempotency key returns the original task.", "inputSchema": object(map[string]any{"workspace_id": str, "body": map[string]any{"type": "string", "description": "Task description in GitHub-flavored Markdown. Structured descriptions using headings and lists are encouraged."}, "repo": str, "base_branch": str, "source": str, "depends_on": map[string]any{"type": "array", "items": str, "description": "Optional open task IDs in this workspace that must merge first."}, "requirement_ids": map[string]any{"type": "array", "items": str, "description": "Optional confirmed requirements this task serves."}, "system_design_ids": map[string]any{"type": "array", "items": str, "description": "Optional confirmed System Design documents governing this task."}, "hold": map[string]any{"type": "boolean", "description": "Reserve the task from the worker daemon; claim it yourself (DEC-5)."}, "spec_approval": map[string]string{"type": "boolean"}, "merge_approval": map[string]string{"type": "boolean"}, "idempotency_key": str}, "body", "repo", "idempotency_key")},
+		{"name": "add_task_dependency", "description": "Make one existing open task depend on another as an audited operator act. Existing dependencies are idempotent and cycles are rejected.", "inputSchema": object(map[string]any{"workspace_id": str, "task_id": str, "depends_on_task_id": str, "reason": str, "request_id": str}, "task_id", "depends_on_task_id", "reason", "request_id")},
 		{"name": "set_assignee", "description": "Set or clear a task assignee as an audited operator act. Assignment constrains claim eligibility and never queue order.", "inputSchema": object(map[string]any{"workspace_id": str, "task_id": str, "assignee_user_id": str}, "task_id", "assignee_user_id")},
 		{"name": "list_work_orders", "description": "List active, stale, or execution-timed-out spec, implement, and review work orders in one workspace with distinct queue, execution, and lease clocks.", "inputSchema": object(map[string]any{"workspace_id": str})},
 		{"name": "claim_work_order", "description": "Claim a work order with a bounded lease. Review self-claim is forbidden. claimant_id is accepted for wire compatibility but ignored; claimant identity is derived from the authenticated credential.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "client_token": str, "claimant_id": str, "agent": str, "model": str, "lease_seconds": num}, "work_order_id", "session_id", "client_token", "agent", "model")},

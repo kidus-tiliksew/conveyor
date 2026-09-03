@@ -4575,6 +4575,53 @@ test('unsatisfiable dependency is attention-worthy and can be unlinked with an a
   await expect(page.getByText('Dependency removed')).toBeVisible()
 })
 
+test('task header links an open dependency with one stable audited request', async ({ page }) => {
+  let linked = false
+  let requestCount = 0
+  let linkBody: Record<string, string> | undefined
+  const currentItem = () => {
+    const item = activity('full-header-id', false)
+    if (linked) {
+      item.task.dependencies = [
+        ...(item.task.dependencies ?? []),
+        { id: 'candidate-open', title: 'Candidate API', state: 'running' as const },
+      ]
+      item.task.blocking_task_ids = ['candidate-open']
+    }
+    return item
+  }
+  await page.route('**/v1/tasks/full-header-id/activity*', (route) => route.fulfill({ json: currentItem() }))
+  await page.route(/\/v1\/tasks(?:\?.*)?$/, (route) =>
+    route.fulfill({
+      json: [
+        currentItem().task,
+        { ...currentItem().task, id: 'candidate-open', title: 'Candidate API', state: 'running' },
+        { ...currentItem().task, id: 'candidate-closed', title: 'Closed candidate', state: 'closed' },
+      ],
+    }),
+  )
+  await page.route('**/v1/tasks/full-header-id/dependencies*', async (route) => {
+    requestCount++
+    linkBody = route.request().postDataJSON()
+    linked = true
+    await route.fulfill({ json: { task: currentItem().task, request_id: linkBody?.request_id, added: true } })
+  })
+
+  await page.goto('/tasks/full-header-id')
+  await page.getByRole('button', { name: 'Link dependency' }).click()
+  await page.getByPlaceholder('Task title or ID').fill('candidate')
+  await expect(page.getByRole('button', { name: /Candidate API/ })).toBeVisible()
+  await expect(page.getByRole('button', { name: /Closed candidate/ })).toHaveCount(0)
+  await page.getByRole('button', { name: /Candidate API/ }).click()
+  await page.getByPlaceholder('Why should this task wait for the selected task?').fill('Ship the API first')
+  await page.getByRole('button', { name: 'Add dependency' }).click()
+
+  await expect.poll(() => requestCount).toBe(1)
+  expect(linkBody).toMatchObject({ depends_on_task_id: 'candidate-open', reason: 'Ship the API first' })
+  expect(linkBody?.request_id).toBeTruthy()
+  await expect(page.getByText('Candidate API · Waiting')).toBeVisible()
+})
+
 // The origin-task System Design proposal card. The decision a
 // task raised is confirmable from that task, without leaving for the document.
 function designCollection(originTaskId: string, resolved: boolean) {

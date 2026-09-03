@@ -41,3 +41,24 @@ func TestPhase62RequirementConformanceIntegration(t *testing.T) {
 	storetest.RunRequirementConformance(t, factory)
 	storetest.RunVersionDismissalConformance(t, factory)
 }
+
+func TestPhase62DependencyAdditionConformanceIntegration(t *testing.T) {
+	databaseURL, err := url.Parse(integrationDatabaseURL(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	query := databaseURL.Query()
+	query.Set("pool_max_conns", "1")
+	databaseURL.RawQuery = query.Encode()
+	st, err := Open(t.Context(), databaseURL.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	workspace := "dependency-link-pg-" + core.NewTaskID()
+	ctx := store.WithWorkspace(t.Context(), workspace)
+	if _, err = st.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "conveyor", Base: "main"}}}); err != nil {
+		t.Fatal(err)
+	}
+	storetest.RunDependencyAdditionConformance(t, st, ctx, workspace)
+}

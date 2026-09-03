@@ -955,6 +955,16 @@ export async function removeTaskDependency(taskId: string, dependencyId: string,
   return response.json() as Promise<{ task: Task; request_id: string; removed: boolean }>
 }
 
+export async function addTaskDependency(taskId: string, dependencyId: string, reason: string, requestId: string) {
+  const response = await fetch(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/dependencies`), {
+    method: 'POST',
+    headers: mutationHeaders(),
+    body: JSON.stringify({ depends_on_task_id: dependencyId, reason, request_id: requestId }),
+  })
+  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
+  return response.json() as Promise<{ task: Task; request_id: string; added: boolean }>
+}
+
 export async function redispatchTask(taskId: string) {
   const response = await fetch(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/redispatch`), {
     method: 'POST',

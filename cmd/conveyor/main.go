@@ -371,6 +371,7 @@ func taskCmd() *cobra.Command {
 
 	cmd.AddCommand(newCmd, listCmd, showCmd,
 		closeTaskCmd(),
+		addTaskDependencyCmd(),
 		removeTaskDependencyCmd(),
 		changeTaskSetupCmd(),
 		requestTaskChangesCmd(),
@@ -379,6 +380,31 @@ func taskCmd() *cobra.Command {
 		reviewTaskCmd(core.InterventionRedirect),
 	)
 	return cmd
+}
+
+func addTaskDependencyCmd() *cobra.Command {
+	var reason, requestID string
+	command := &cobra.Command{
+		Use: "link <task-id> <dependency-task-id>", Short: "Make one open task depend on another", Args: cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if strings.TrimSpace(reason) == "" || strings.TrimSpace(requestID) == "" {
+				return fmt.Errorf("--reason and --request-id are required")
+			}
+			result, err := newClient().addTaskDependency(args[0], args[1], reason, requestID)
+			if err != nil {
+				return err
+			}
+			if result.Added {
+				fmt.Fprintf(cmd.OutOrStdout(), "task %s now depends on %s (request %s)\n", args[0], args[1], result.RequestID)
+			} else {
+				fmt.Fprintf(cmd.OutOrStdout(), "task %s already depends on %s (request %s)\n", args[0], args[1], result.RequestID)
+			}
+			return nil
+		},
+	}
+	command.Flags().StringVarP(&reason, "reason", "r", "", "operator reason")
+	command.Flags().StringVar(&requestID, "request-id", "", "idempotency key")
+	return command
 }
 
 func requestTaskChangesCmd() *cobra.Command {

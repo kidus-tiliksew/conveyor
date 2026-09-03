@@ -2292,6 +2292,135 @@ func (s *Store) ListDependencyBlockers(ctx context.Context, taskIDs []string) (m
 	return result, rows.Err()
 }
 
+func (s *Store) AddTaskDependency(ctx context.Context, request store.DependencyAdditionRequest) (store.DependencyAdditionResult, error) {
+	request.TaskID = strings.TrimSpace(request.TaskID)
+	request.DependsOnTaskID = strings.TrimSpace(request.DependsOnTaskID)
+	request.Reason = strings.TrimSpace(request.Reason)
+	request.RequestID = strings.TrimSpace(request.RequestID)
+	if request.TaskID == "" || request.DependsOnTaskID == "" || request.Reason == "" || request.RequestID == "" {
+		return store.DependencyAdditionResult{}, fmt.Errorf("task_id, depends_on_task_id, reason, and request_id are required")
+	}
+	if request.TaskID == request.DependsOnTaskID {
+		return store.DependencyAdditionResult{}, fmt.Errorf("%w: task cannot depend on itself", store.ErrTaskDependencyConflict)
+	}
+	actor := store.ActorFromContext(ctx)
+	added := false
+	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		if err := lockDependencyEdgesTx(ctx, tx, workspace(ctx)); err != nil {
+			return err
+		}
+		var prior store.DependencyAdditionRequest
+		var actorID, actorRole string
+		var priorAdded bool
+		err := tx.QueryRow(ctx, `SELECT task_id,depends_on_task_id,reason,request_id,actor_id,actor_role,added
+			FROM task_dependency_additions WHERE workspace_id=$1 AND request_id=$2`,
+			workspace(ctx), request.RequestID).
+			Scan(&prior.TaskID, &prior.DependsOnTaskID, &prior.Reason, &prior.RequestID, &actorID, &actorRole, &priorAdded)
+		if err == nil {
+			if prior != request || actorID != actor.ID || actorRole != string(actor.Role) {
+				return fmt.Errorf("%w: request_id %s was already used for different dependency addition inputs", store.ErrTaskDependencyConflict, request.RequestID)
+			}
+			added = priorAdded
+			return nil
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+
+		states := map[string]core.TaskState{}
+		rows, err := tx.Query(ctx, `SELECT id,state FROM tasks
+			WHERE workspace_id=$1 AND id=ANY($2::text[]) ORDER BY id FOR UPDATE`,
+			workspace(ctx), []string{request.TaskID, request.DependsOnTaskID})
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var id, state string
+			if err = rows.Scan(&id, &state); err != nil {
+				rows.Close()
+				return err
+			}
+			states[id] = core.TaskState(state)
+		}
+		if err = rows.Err(); err != nil {
+			rows.Close()
+			return err
+		}
+		rows.Close()
+		if _, exists := states[request.TaskID]; !exists {
+			return fmt.Errorf("task %s: %w", request.TaskID, store.ErrNotFound)
+		}
+		if _, exists := states[request.DependsOnTaskID]; !exists {
+			return fmt.Errorf("dependency task %s: %w", request.DependsOnTaskID, store.ErrNotFound)
+		}
+		if core.TaskTerminal(states[request.TaskID]) {
+			return fmt.Errorf("task %s is not open: %w", request.TaskID, store.ErrTaskTerminal)
+		}
+		if core.TaskTerminal(states[request.DependsOnTaskID]) {
+			return fmt.Errorf("dependency task %s is not open: %w", request.DependsOnTaskID, store.ErrTaskTerminal)
+		}
+
+		var exists bool
+		if err = tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM task_dependencies
+			WHERE workspace_id=$1 AND task_id=$2 AND depends_on_task_id=$3)`,
+			workspace(ctx), request.TaskID, request.DependsOnTaskID).Scan(&exists); err != nil {
+			return err
+		}
+		if !exists {
+			var cycle bool
+			if err = tx.QueryRow(ctx, `WITH RECURSIVE reachable(id) AS (
+				SELECT depends_on_task_id FROM task_dependencies WHERE workspace_id=$1 AND task_id=$2
+				UNION
+				SELECT edge.depends_on_task_id FROM task_dependencies edge
+				JOIN reachable ON reachable.id=edge.task_id WHERE edge.workspace_id=$1
+			) SELECT EXISTS (SELECT 1 FROM reachable WHERE id=$3)`,
+				workspace(ctx), request.DependsOnTaskID, request.TaskID).Scan(&cycle); err != nil {
+				return err
+			}
+			if cycle {
+				return fmt.Errorf("%w: %s already reaches %s", store.ErrTaskDependencyCycle, request.DependsOnTaskID, request.TaskID)
+			}
+			if _, err = tx.Exec(ctx, `INSERT INTO task_dependencies (workspace_id,task_id,depends_on_task_id)
+				VALUES ($1,$2,$3)`, workspace(ctx), request.TaskID, request.DependsOnTaskID); err != nil {
+				return err
+			}
+			added = true
+		}
+		now := time.Now().UTC()
+		if _, err = tx.Exec(ctx, `INSERT INTO task_dependency_additions
+			(workspace_id,request_id,task_id,depends_on_task_id,reason,actor_id,actor_role,added,created_at)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+			workspace(ctx), request.RequestID, request.TaskID, request.DependsOnTaskID,
+			request.Reason, actor.ID, actor.Role, added, now); err != nil {
+			return err
+		}
+		if !added {
+			return nil
+		}
+		if err = insertEvent(ctx, q, core.Event{
+			TaskID: request.TaskID, Kind: "task.dependency_added", ActorID: actor.ID, ActorRole: actor.Role, At: now,
+			Payload: core.JSONPayload(map[string]any{
+				"task_id": request.TaskID, "depends_on_task_id": request.DependsOnTaskID,
+				"reason": request.Reason, "request_id": request.RequestID,
+			}),
+		}); err != nil {
+			return err
+		}
+		_, err = tx.Exec(ctx, `UPDATE work_orders SET queue_blocked_at=$1,updated_at=$1
+			WHERE workspace_id=$2 AND task_id=$3 AND stage='implement'
+				AND state='queued' AND queue_blocked_at IS NULL`, now, workspace(ctx), request.TaskID)
+		return err
+	})
+	if err != nil {
+		return store.DependencyAdditionResult{}, err
+	}
+	task, err := s.GetTask(ctx, request.TaskID)
+	if err != nil {
+		return store.DependencyAdditionResult{}, err
+	}
+	return store.DependencyAdditionResult{Task: task, RequestID: request.RequestID, Added: added}, nil
+}
+
 func (s *Store) RemoveTaskDependency(ctx context.Context, request store.DependencyRemovalRequest) (store.DependencyRemovalResult, error) {
 	request.TaskID = strings.TrimSpace(request.TaskID)
 	request.DependsOnTaskID = strings.TrimSpace(request.DependsOnTaskID)

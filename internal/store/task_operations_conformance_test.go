@@ -92,3 +92,10 @@ func TestMemoryTaskAssigneeMembershipConformance(t *testing.T) {
 		Store: st, Context: ctx, TaskID: taskID, ActiveUserID: "usr-active", InactiveUserID: "usr-inactive", NonMemberID: "usr-missing", ViewerUserID: "usr-viewer",
 	})
 }
+
+func TestMemoryDependencyAdditionConformance(t *testing.T) {
+	t.Parallel()
+	workspace := "dependency-link-memory-" + core.NewTaskID()
+	st := store.NewMemoryWithConfig(&config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "conveyor", Base: "main"}}})
+	storetest.RunDependencyAdditionConformance(t, st, store.WithWorkspace(t.Context(), workspace), workspace)
+}
