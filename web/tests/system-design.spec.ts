@@ -722,3 +722,112 @@ test('operators confirm and dismiss proposed decisions with conflict-safe refres
   await expect(page.locator('#decision-dec-2')).toContainText('Dismissed by second-operator')
   await expect.poll(() => decisionReads).toBeGreaterThanOrEqual(3)
 })
+
+test('System Design archives and restores from an archived deep link', async ({ page }) => {
+  await initialize(page)
+  let archived = false
+  let archiveCalls = 0
+  let restoreCalls = 0
+  const archivedAt = '2026-09-02T18:15:00Z'
+  const view = () => ({
+    ...design,
+    document: {
+      ...design.document,
+      archived,
+      archived_by: archived ? 'Operator One' : undefined,
+      archived_at: archived ? archivedAt : undefined,
+    },
+    lineage: archived
+      ? [
+          ...design.lineage,
+          {
+            id: 74,
+            task_id: '',
+            kind: 'system_design.archived',
+            actor_id: 'Operator One',
+            actor_role: 'human',
+            payload: {},
+            at: archivedAt,
+          },
+        ]
+      : design.lineage,
+  })
+
+  await page.route('**/v1/**', async (route) => {
+    const handled = shell(route)
+    if (handled) return await handled
+    const request = route.request()
+    const url = new URL(request.url())
+    if (url.pathname === '/v1/system-designs') {
+      expect(url.searchParams.get('include_archived')).toBe('true')
+      return route.fulfill({ json: [summarizeDesign(view())] })
+    }
+    if (url.pathname === '/v1/system-designs/design-dispatch') return route.fulfill({ json: view() })
+    if (url.pathname === '/v1/system-designs/design-dispatch/archive' && request.method() === 'POST') {
+      archived = true
+      archiveCalls++
+      return route.fulfill({ json: view().document })
+    }
+    if (url.pathname === '/v1/system-designs/design-dispatch/restore' && request.method() === 'POST') {
+      archived = false
+      restoreCalls++
+      return route.fulfill({ json: view().document })
+    }
+    if (url.pathname === '/v1/decisions') return route.fulfill({ json: [] })
+    return route.fulfill({ json: [] })
+  })
+
+  await page.goto('/system-design?document=design-dispatch')
+  page.once('dialog', (dialog) => dialog.accept())
+  await page.getByRole('button', { name: 'Archive' }).click()
+  await expect.poll(() => archiveCalls).toBe(1)
+  await expect(page.getByText('This System Design document is archived.')).toBeVisible()
+  const archivedGroup = page.getByRole('navigation', { name: 'Document tree' }).locator('details')
+  await expect(archivedGroup).not.toHaveAttribute('open', '')
+  await archivedGroup.locator('summary').click()
+  await expect(archivedGroup.getByRole('button', { name: 'Dispatch ownership' })).toBeVisible()
+  await expect(page.getByText('Archived', { exact: true }).last()).toHaveAttribute(
+    'title',
+    /Archived by Operator One on/,
+  )
+  await expect(page.getByText('System Design document archived')).toBeVisible()
+  await expect(page).toHaveURL(/document=design-dispatch/)
+  await expect(page.getByRole('button', { name: /Confirm version/ })).toHaveCount(0)
+  await page.getByRole('button', { name: 'Restore' }).click()
+  await expect.poll(() => restoreCalls).toBe(1)
+  await expect(page.getByRole('button', { name: 'Archive' })).toBeVisible()
+  await expect(page.getByText('This System Design document is archived.')).toHaveCount(0)
+  await expect(page.getByRole('navigation', { name: 'Document tree' }).locator('details')).toHaveCount(0)
+})
+
+test('System Design archive controls are absent without document confirmation capability', async ({ page }) => {
+  await initialize(page)
+  let archived = false
+  const view = () => ({
+    ...design,
+    document: {
+      ...design.document,
+      archived,
+      archived_by: archived ? 'Operator One' : undefined,
+      archived_at: archived ? '2026-09-02T18:15:00Z' : undefined,
+    },
+  })
+  await page.route('**/v1/**', async (route) => {
+    const url = new URL(route.request().url())
+    if (url.pathname === '/v1/me') return route.fulfill({ json: { id: 'usr_contributor', role: 'contributor' } })
+    const handled = shell(route)
+    if (handled) return await handled
+    if (url.pathname === '/v1/system-designs') return route.fulfill({ json: [summarizeDesign(view())] })
+    if (url.pathname === '/v1/system-designs/design-dispatch') return route.fulfill({ json: view() })
+    if (url.pathname === '/v1/decisions') return route.fulfill({ json: [] })
+    return route.fulfill({ json: [] })
+  })
+  await page.goto('/system-design?document=design-dispatch')
+  await expect(page.getByRole('button', { name: 'Archive' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Restore' })).toHaveCount(0)
+  archived = true
+  await page.reload()
+  await expect(page.getByText('This System Design document is archived.')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Archive' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Restore' })).toHaveCount(0)
+})

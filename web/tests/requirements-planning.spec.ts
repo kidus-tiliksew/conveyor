@@ -321,6 +321,117 @@ test('requirements renders a document tree, one attention surface, and confirms 
   await expect(page).toHaveURL(/\/requirements/)
 })
 
+test('requirements archive and restore from the canvas while preserving archived deep links', async ({ page }) => {
+  await initShell(page)
+  let archived = false
+  let archiveCalls = 0
+  let restoreCalls = 0
+  const archivedAt = '2026-09-02T18:00:00Z'
+  const view = () => ({
+    ...requirement,
+    requirement: {
+      ...requirement.requirement,
+      archived,
+      archived_by: archived ? 'Operator One' : undefined,
+      archived_at: archived ? archivedAt : undefined,
+    },
+    lineage: archived
+      ? [
+          ...requirement.lineage,
+          {
+            id: 2,
+            task_id: '',
+            kind: 'requirement.archived',
+            actor_id: 'Operator One',
+            actor_role: 'human',
+            payload: {},
+            at: archivedAt,
+          },
+        ]
+      : requirement.lineage,
+  })
+
+  await page.route('**/v1/**', async (route) => {
+    const handled = shellResponse(route)
+    if (handled) return await handled
+    const request = route.request()
+    const url = new URL(request.url())
+    if (url.pathname === '/v1/requirements') {
+      expect(url.searchParams.get('include_archived')).toBe('true')
+      return route.fulfill({ json: [summarizeRequirement(view())] })
+    }
+    if (url.pathname === '/v1/requirements/req-retries') return route.fulfill({ json: view() })
+    if (url.pathname === '/v1/requirements/req-retries/versions')
+      return route.fulfill({ json: requirement.pending_versions })
+    if (url.pathname === '/v1/requirements/req-retries/archive' && request.method() === 'POST') {
+      archived = true
+      archiveCalls++
+      return route.fulfill({ json: view().requirement })
+    }
+    if (url.pathname === '/v1/requirements/req-retries/restore' && request.method() === 'POST') {
+      archived = false
+      restoreCalls++
+      return route.fulfill({ json: view().requirement })
+    }
+    return route.fulfill({ json: [] })
+  })
+
+  await page.goto('/requirements?requirement=req-retries')
+  page.once('dialog', (dialog) => dialog.accept())
+  await page.getByRole('button', { name: 'Archive' }).click()
+  await expect.poll(() => archiveCalls).toBe(1)
+  await expect(page.getByText('This requirement is archived.')).toBeVisible()
+  const archivedGroup = page.getByRole('navigation', { name: 'Document tree' }).locator('details')
+  await expect(archivedGroup).not.toHaveAttribute('open', '')
+  await archivedGroup.locator('summary').click()
+  await expect(archivedGroup.getByRole('button', { name: 'Retry behavior' })).toBeVisible()
+  await expect(page.getByText('Archived', { exact: true }).last()).toHaveAttribute(
+    'title',
+    /Archived by Operator One on/,
+  )
+  await expect(page).toHaveURL(/requirement=req-retries/)
+  await expect(page.getByRole('button', { name: /Confirm version/ })).toHaveCount(0)
+  await page.getByRole('button', { name: 'Restore' }).click()
+  await expect.poll(() => restoreCalls).toBe(1)
+  await expect(page.getByRole('button', { name: 'Archive' })).toBeVisible()
+  await expect(page.getByText('This requirement is archived.')).toHaveCount(0)
+  await expect(page.getByRole('navigation', { name: 'Document tree' }).locator('details')).toHaveCount(0)
+})
+
+test('requirement archive controls are absent without document confirmation capability', async ({ page }) => {
+  await initShell(page)
+  let archived = false
+  const view = () => ({
+    ...requirement,
+    requirement: {
+      ...requirement.requirement,
+      archived,
+      archived_by: archived ? 'Operator One' : undefined,
+      archived_at: archived ? '2026-09-02T18:00:00Z' : undefined,
+    },
+  })
+  await page.route('**/v1/**', async (route) => {
+    if (new URL(route.request().url()).pathname === '/v1/me')
+      return route.fulfill({ json: { id: 'usr_contributor', role: 'contributor' } })
+    const handled = shellResponse(route)
+    if (handled) return await handled
+    const url = new URL(route.request().url())
+    if (url.pathname === '/v1/requirements') return route.fulfill({ json: [summarizeRequirement(view())] })
+    if (url.pathname === '/v1/requirements/req-retries') return route.fulfill({ json: view() })
+    if (url.pathname === '/v1/requirements/req-retries/versions')
+      return route.fulfill({ json: requirement.pending_versions })
+    return route.fulfill({ json: [] })
+  })
+  await page.goto('/requirements?requirement=req-retries')
+  await expect(page.getByRole('button', { name: 'Archive' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Restore' })).toHaveCount(0)
+  archived = true
+  await page.reload()
+  await expect(page.getByText('This requirement is archived.')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Archive' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Restore' })).toHaveCount(0)
+})
+
 test('requirement dismissal waits for dialog confirmation and preserves cancel', async ({ page }) => {
   await initShell(page)
   let dismissed = false

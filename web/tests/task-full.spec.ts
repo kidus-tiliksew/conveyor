@@ -15,7 +15,7 @@ const detailRequestCounts = new Map<string, number>()
 // The context a task carries. The proposal card is scoped by attachment as well
 // as origin, so which documents these name is what decides whether
 // a task's own pending version reaches its detail at all.
-type AttachedDocument = { id: string; title: string; version: number }
+type AttachedDocument = { id: string; title: string; version: number; archived?: boolean }
 type ContextProposalFixture = {
   task_id: string
   target_kind: 'requirement' | 'system_design'
@@ -35,7 +35,7 @@ const attachedContext: Record<
   { requirements?: AttachedDocument[]; designs?: AttachedDocument[]; proposals?: ContextProposalFixture[] }
 > = {
   'attached-context': {
-    requirements: [{ id: 'req-context', title: 'Confirmed product outcome', version: 3 }],
+    requirements: [{ id: 'req-context', title: 'Confirmed product outcome', version: 3, archived: true }],
     designs: [{ id: 'design-context', title: 'Confirmed technical guidance', version: 2 }],
   },
   'design-proposal': {
@@ -3284,6 +3284,21 @@ test('task detail links attached product and design context', async ({ page }) =
   )
   await expect(context).toContainText('v3')
   await expect(context).toContainText('v2')
+  await expect(context.getByText('Archived', { exact: true })).toBeVisible()
+})
+
+test('task context attachment keeps archived documents out of the picker', async ({ page }) => {
+  await page.goto('/tasks/operator-checkpoint/full')
+  const requirementRequest = page.waitForRequest((request) => new URL(request.url()).pathname === '/v1/requirements')
+  const designRequest = page.waitForRequest((request) => new URL(request.url()).pathname === '/v1/system-designs')
+  await page.getByRole('button', { name: 'Attach context' }).click()
+  const [requirements, designs] = await Promise.all([requirementRequest, designRequest])
+  expect(new URL(requirements.url()).searchParams.has('include_archived')).toBe(false)
+  expect(new URL(designs.url()).searchParams.has('include_archived')).toBe(false)
+  const dialog = page.getByRole('dialog', { name: 'Attach task context' })
+  await dialog.getByRole('combobox', { name: 'Search context' }).click()
+  await expect(dialog.getByText('No confirmed documents yet.')).toBeVisible()
+  await expect(dialog.getByText(/Archived requirement|Archived design/)).toHaveCount(0)
 })
 
 test('task context suggestions show justification and become attachments or disappear when resolved', async ({

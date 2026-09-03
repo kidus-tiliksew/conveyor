@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useSearch } from '@tanstack/react-router'
-import { Check, Clock, ExternalLink, History, Layers, X } from 'lucide-react'
+import { Archive, Check, Clock, ExternalLink, History, Layers, RotateCcw, X } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { useWorkspaceCapability, useWorkspaceSelection } from '../components/app-shell'
 import { type AttentionItem, AttentionSurface } from '../components/documents/attention-surface'
@@ -21,6 +21,7 @@ import { Button } from '../components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import { MarkdownProse } from '../components/ui/markdown-prose'
 import {
+  archiveSystemDesign,
   confirmSystemDesignVersion,
   dismissDecisionSupersessionSweep,
   dismissSystemDesignVersion,
@@ -28,6 +29,7 @@ import {
   fetchSystemDesign,
   fetchSystemDesigns,
   resolveDecision,
+  restoreSystemDesign,
   SystemDesignConflictError,
 } from '../lib/api'
 import { errorMessage } from '../lib/errors'
@@ -64,8 +66,8 @@ export function SystemDesignPage() {
   const [sort, setSort] = useState<DocumentSort>('updated')
   const [direction, setDirection] = useState<DocumentSortDirection>('descending')
   const designs = useQuery({
-    queryKey: ['system-designs', workspace],
-    queryFn: fetchSystemDesigns,
+    queryKey: ['system-designs', workspace, { includeArchived: true }],
+    queryFn: () => fetchSystemDesigns({ includeArchived: true }),
     enabled: Boolean(workspace),
     staleTime: 60_000,
   })
@@ -97,17 +99,18 @@ export function SystemDesignPage() {
   }, [decisions.data])
   useEffect(() => {
     if (!designs.data?.length || selected) return
+    const fallback = designs.data.find((item) => !item.document.archived) ?? designs.data[0]
     void navigate({
       to: '/system-design',
-      search: { document: designs.data[0].document.id },
+      search: { document: fallback.document.id },
       replace: true,
     })
   }, [designs.data, navigate, selected])
   const grouped = useMemo(() => {
     const groups = new Map<string, SystemDesignSummary[]>()
     const needle = query.trim().toLocaleLowerCase()
-    for (const item of (designs.data ?? []).filter((candidate) =>
-      candidate.document.title.toLocaleLowerCase().includes(needle),
+    for (const item of (designs.data ?? []).filter(
+      (candidate) => !candidate.document.archived && candidate.document.title.toLocaleLowerCase().includes(needle),
     )) {
       const list = groups.get(item.document.category) ?? []
       list.push(item)
@@ -121,6 +124,14 @@ export function SystemDesignPage() {
         ] as const,
     )
   }, [designs.data, direction, query, sort])
+  const archived = useMemo(() => {
+    const needle = query.trim().toLocaleLowerCase()
+    return (designs.data ?? [])
+      .filter((item) => item.document.archived && item.document.title.toLocaleLowerCase().includes(needle))
+      .sort((left, right) => compareDocuments(left.document, right.document, sort, direction))
+  }, [designs.data, direction, query, sort])
+  const archivedCount = (designs.data ?? []).filter((item) => item.document.archived).length
+  const liveCount = (designs.data ?? []).length - archivedCount
   const settledDecisions = (decisions.data ?? []).filter((decision) => decision.status !== 'proposed')
   // Decisions are workspace-wide, so they are voiced on whichever document is
   // open — the same place they were surfaced before.
@@ -209,6 +220,21 @@ export function SystemDesignPage() {
               ))}
             </DocumentTreeGroup>
           ))}
+          {archivedCount > 0 && (
+            <DocumentTreeGroup label="Archived" collapsible defaultOpen={false}>
+              {archived.map((item) => (
+                <DocumentTreeItem
+                  key={item.document.id}
+                  label={item.document.title}
+                  selected={selected?.document.id === item.document.id}
+                  onClick={() =>
+                    void navigate({ to: '/system-design', search: { document: item.document.id }, replace: true })
+                  }
+                />
+              ))}
+              {archived.length === 0 && <DocumentTreeNote>No archived documents match your search.</DocumentTreeNote>}
+            </DocumentTreeGroup>
+          )}
           {designs.isLoading && <DocumentTreeNote>Loading documents…</DocumentTreeNote>}
           {designs.error && (
             <DocumentTreeNote>{errorMessage(designs.error, 'Could not load these documents.')}</DocumentTreeNote>
@@ -216,7 +242,7 @@ export function SystemDesignPage() {
           {!designs.isLoading && !designs.data?.length && (
             <DocumentTreeNote>Nothing written down yet.</DocumentTreeNote>
           )}
-          {Boolean(designs.data?.length) && grouped.length === 0 && (
+          {liveCount > 0 && grouped.length === 0 && (
             <DocumentTreeNote>No documents match your search.</DocumentTreeNote>
           )}
         </DocumentTree>
@@ -323,9 +349,23 @@ function DesignCanvas({
       ])
     },
   })
+  const archive = useMutation({
+    mutationFn: () =>
+      item.document.archived ? restoreSystemDesign(item.document.id) : archiveSystemDesign(item.document.id),
+    onSettled: async () => {
+      await Promise.all([
+        client.invalidateQueries({ queryKey: ['system-designs', workspace] }),
+        client.invalidateQueries({ queryKey: ['system-design', workspace, item.document.id] }),
+        client.invalidateQueries({ queryKey: ['pending-proposals', workspace] }),
+      ])
+    },
+  })
   const pending = item.pending_versions.at(-1)
   const deliveryConsultations = item.lineage.filter(
     (event) => event.kind === 'system_design.consulted' && event.payload?.consultation === 'delivery_no_revision',
+  )
+  const archiveActivity = item.lineage.filter(
+    (event) => event.kind === 'system_design.archived' || event.kind === 'system_design.restored',
   )
 
   // Every signal below is already produced by unchanged machinery; the surface
@@ -433,6 +473,18 @@ function DesignCanvas({
               <Badge variant={displayed.confirmed ? 'positive' : 'accent'}>
                 {displayed.confirmed ? 'Confirmed' : 'Proposed'}
               </Badge>
+              {item.document.archived && (
+                <Badge
+                  variant="outline"
+                  title={
+                    item.document.archived_by && item.document.archived_at
+                      ? `Archived by ${item.document.archived_by} on ${formatDate(item.document.archived_at)}`
+                      : 'Archived'
+                  }
+                >
+                  Archived
+                </Badge>
+              )}
               <span className="inline-flex items-center gap-1 text-xs text-faint">
                 <Clock className="size-3" />
                 {formatDate(displayed.created_at)}
@@ -444,10 +496,54 @@ function DesignCanvas({
         </div>
         {/* The document's corner affordance (REQ-3): the code, work, and
             evidence this guide governs, on demand. */}
-        <LineageExplorer type="system_design" id={item.document.id} />
+        <div className="flex shrink-0 items-center gap-2">
+          {canConfirm && (
+            <Button
+              size="sm"
+              variant={item.document.archived ? 'secondary' : 'destructive'}
+              disabled={archive.isPending}
+              onClick={() => {
+                if (
+                  item.document.archived ||
+                  window.confirm(
+                    `Archive ${item.document.title}? Its history is kept, and agents will stop reading it.`,
+                  )
+                )
+                  archive.mutate()
+              }}
+            >
+              {item.document.archived ? <RotateCcw /> : <Archive />}
+              {archive.isPending
+                ? item.document.archived
+                  ? 'Restoring…'
+                  : 'Archiving…'
+                : item.document.archived
+                  ? 'Restore'
+                  : 'Archive'}
+            </Button>
+          )}
+          <LineageExplorer type="system_design" id={item.document.id} />
+        </div>
       </header>
 
-      <AttentionSurface items={attention} />
+      {archive.error && (
+        <p className="mb-3 rounded-md bg-failure-soft px-3 py-2 text-xs text-failure">
+          {errorMessage(
+            archive.error,
+            `Could not ${item.document.archived ? 'restore' : 'archive'} this System Design document.`,
+          )}
+        </p>
+      )}
+      {item.document.archived ? (
+        <section
+          aria-label="Needs your attention"
+          className="rounded-lg border border-border bg-surface/40 px-4 py-3 text-sm text-muted"
+        >
+          This System Design document is archived.
+        </section>
+      ) : (
+        <AttentionSurface items={attention} />
+      )}
 
       <section className="mt-8">
         {displayed && <MarkdownProse>{displayed.content}</MarkdownProse>}
@@ -479,7 +575,7 @@ function DesignCanvas({
               const version = Number(event.payload?.version ?? 0)
               return (
                 <li key={event.id} className="px-3 py-3 text-xs text-muted">
-                  <p className="font-medium text-foreground">Consulted at delivery — no revision warranted</p>
+                  <p className="font-medium text-foreground">{systemDesignEventLabel(event.kind)}</p>
                   <p className="mt-1">
                     {version > 0 && <>Pinned version {version} · </>}
                     task <span className="font-mono">{taskID}</span>
@@ -490,9 +586,26 @@ function DesignCanvas({
                       </>
                     )}
                   </p>
+                  <time className="mt-1 block text-[10px] text-faint">{formatDate(event.at)}</time>
                 </li>
               )
             })}
+          </ol>
+        </section>
+      )}
+
+      {archiveActivity.length > 0 && (
+        <section className="mt-8 border-t border-border pt-5" aria-label="Archive activity">
+          <h3 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.12em] text-muted">
+            <History className="size-3.5" /> Archive activity
+          </h3>
+          <ol className="mt-3 divide-y divide-border rounded-md border border-border">
+            {archiveActivity.map((event) => (
+              <li key={event.id} className="px-3 py-3 text-xs text-muted">
+                <p className="font-medium text-foreground">{systemDesignEventLabel(event.kind)}</p>
+                <time className="mt-1 block text-[10px] text-faint">{formatDate(event.at)}</time>
+              </li>
+            ))}
           </ol>
         </section>
       )}
@@ -652,6 +765,15 @@ function DesignCanvas({
       </section>
     </article>
   )
+}
+
+function systemDesignEventLabel(kind: string) {
+  const labels: Record<string, string> = {
+    'system_design.consulted': 'Consulted at delivery — no revision warranted',
+    'system_design.archived': 'System Design document archived',
+    'system_design.restored': 'System Design document restored',
+  }
+  return labels[kind] ?? kind.replaceAll('_', ' ').replaceAll('.', ' ')
 }
 
 function DecisionLink({ id }: { id: string }) {
