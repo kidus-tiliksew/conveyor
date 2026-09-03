@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useSearch } from '@tanstack/react-router'
 import {
+  Archive,
   ArrowRight,
   Check,
   Clock,
@@ -11,6 +12,7 @@ import {
   History,
   ListChecks,
   Paperclip,
+  RotateCcw,
   Sparkles,
   Trash2,
 } from 'lucide-react'
@@ -36,6 +38,7 @@ import { Dialog } from '../components/ui/dialog'
 import { MarkdownProse } from '../components/ui/markdown-prose'
 import {
   acknowledgeRequirementStaleness,
+  archiveRequirement,
   confirmRequirementVersion,
   createRequirementStalenessFollowUp,
   deleteReferenceDocument,
@@ -48,6 +51,7 @@ import {
   fetchRequirements,
   fetchRequirementVersions,
   fetchSystemDesigns,
+  restoreRequirement,
   updateTaskContext,
   uploadArtifact,
   uploadReferenceDocument,
@@ -124,8 +128,8 @@ export function RequirementsPage() {
     isLoading,
     error,
   } = useQuery({
-    queryKey: ['requirements', workspace],
-    queryFn: fetchRequirements,
+    queryKey: ['requirements', workspace, { includeArchived: true }],
+    queryFn: () => fetchRequirements({ includeArchived: true }),
     enabled: Boolean(workspace),
     staleTime: 60_000,
   })
@@ -138,9 +142,21 @@ export function RequirementsPage() {
   const [query, setQuery] = useState('')
   const [sort, setSort] = useState<DocumentSort>('updated')
   const [direction, setDirection] = useState<DocumentSortDirection>('descending')
+  const liveRequirements = useMemo(
+    () => (requirements ?? []).filter((item) => !item.requirement.archived),
+    [requirements],
+  )
+  const archivedRequirements = useMemo(
+    () => (requirements ?? []).filter((item) => item.requirement.archived),
+    [requirements],
+  )
   const visible = useMemo(
-    () => visibleRequirements(requirements ?? [], query, sort, direction),
-    [direction, query, requirements, sort],
+    () => visibleRequirements(liveRequirements, query, sort, direction),
+    [direction, liveRequirements, query, sort],
+  )
+  const visibleArchived = useMemo(
+    () => visibleRequirements(archivedRequirements, query, sort, direction),
+    [archivedRequirements, direction, query, sort],
   )
 
   // Overviews open on the same canvas as requirements. Their selection lives
@@ -161,9 +177,10 @@ export function RequirementsPage() {
   useEffect(() => {
     if (!requirements?.length) return
     if (requirements.some((item) => item.requirement.id === selectedId)) return
+    const fallback = requirements.find((item) => !item.requirement.archived) ?? requirements[0]
     void navigate({
       to: '/requirements',
-      search: { requirement: requirements[0].requirement.id },
+      search: { requirement: fallback.requirement.id },
       replace: true,
     })
   }, [navigate, requirements, selectedId])
@@ -265,11 +282,26 @@ export function RequirementsPage() {
                 onClick={() => selectRequirement(item.requirement.id)}
               />
             ))}
-            {requirements?.length === 0 && <DocumentTreeNote>No requirements yet.</DocumentTreeNote>}
-            {Boolean(requirements?.length) && visible.length === 0 && (
+            {liveRequirements.length === 0 && !query && <DocumentTreeNote>No active requirements.</DocumentTreeNote>}
+            {Boolean(liveRequirements.length) && visible.length === 0 && (
               <DocumentTreeNote>No requirements match your search.</DocumentTreeNote>
             )}
           </DocumentTreeGroup>
+          {archivedRequirements.length > 0 && (
+            <DocumentTreeGroup label="Archived" collapsible defaultOpen={false}>
+              {visibleArchived.map((item) => (
+                <DocumentTreeItem
+                  key={item.requirement.id}
+                  label={item.requirement.title}
+                  selected={!openOverview && selectedId === item.requirement.id}
+                  onClick={() => selectRequirement(item.requirement.id)}
+                />
+              ))}
+              {visibleArchived.length === 0 && (
+                <DocumentTreeNote>No archived requirements match your search.</DocumentTreeNote>
+              )}
+            </DocumentTreeGroup>
+          )}
         </DocumentTree>
 
         <section aria-label="Requirement document" className="min-w-0 flex-1 overflow-y-auto">
@@ -552,6 +584,17 @@ function RequirementDetailCanvas({ item }: { item: RequirementView }) {
       ])
     },
   })
+  const archive = useMutation({
+    mutationFn: () =>
+      item.requirement.archived ? restoreRequirement(item.requirement.id) : archiveRequirement(item.requirement.id),
+    onSettled: async () => {
+      await Promise.all([
+        client.invalidateQueries({ queryKey: ['requirements', workspace] }),
+        client.invalidateQueries({ queryKey: ['requirement', workspace, item.requirement.id] }),
+        client.invalidateQueries({ queryKey: ['pending-proposals', workspace] }),
+      ])
+    },
+  })
   const upload = useMutation({
     mutationFn: (file: File) => uploadArtifact(file, undefined, item.requirement.id),
     onSuccess: () => {
@@ -778,7 +821,7 @@ function RequirementDetailCanvas({ item }: { item: RequirementView }) {
           onConfirm={() => dismiss.mutate(dismissTarget.version)}
         />
       )}
-      {canOperate && attachmentOffer != null && (
+      {!item.requirement.archived && canOperate && attachmentOffer != null && (
         <CheckpointContextOffer
           requirementId={item.requirement.id}
           requirementTitle={item.requirement.title}
@@ -805,6 +848,18 @@ function RequirementDetailCanvas({ item }: { item: RequirementView }) {
                       : 'Dismissed'
                     : 'Proposed'}
               </Badge>
+              {item.requirement.archived && (
+                <Badge
+                  variant="outline"
+                  title={
+                    item.requirement.archived_by && item.requirement.archived_at
+                      ? `Archived by ${item.requirement.archived_by} on ${formatDate(item.requirement.archived_at)}`
+                      : 'Archived'
+                  }
+                >
+                  Archived
+                </Badge>
+              )}
               <span className="inline-flex items-center gap-1 text-xs text-faint">
                 <Clock className="size-3" />
                 {formatDate(displayed.created_at)}
@@ -815,10 +870,54 @@ function RequirementDetailCanvas({ item }: { item: RequirementView }) {
         </div>
         {/* The document's corner affordance (REQ-3): what this intent reaches
             in work, delivery, and evidence, on demand. */}
-        <LineageExplorer type="requirement" id={item.requirement.id} />
+        <div className="flex shrink-0 items-center gap-2">
+          {canConfirm && (
+            <Button
+              size="sm"
+              variant={item.requirement.archived ? 'secondary' : 'destructive'}
+              disabled={archive.isPending}
+              onClick={() => {
+                if (
+                  item.requirement.archived ||
+                  window.confirm(
+                    `Archive ${item.requirement.title}? Its history is kept, and agents will stop reading it.`,
+                  )
+                )
+                  archive.mutate()
+              }}
+            >
+              {item.requirement.archived ? <RotateCcw /> : <Archive />}
+              {archive.isPending
+                ? item.requirement.archived
+                  ? 'Restoring…'
+                  : 'Archiving…'
+                : item.requirement.archived
+                  ? 'Restore'
+                  : 'Archive'}
+            </Button>
+          )}
+          <LineageExplorer type="requirement" id={item.requirement.id} />
+        </div>
       </header>
 
-      <AttentionSurface items={attention} />
+      {archive.error && (
+        <p className="mb-3 rounded-md bg-failure-soft px-3 py-2 text-xs text-failure">
+          {errorMessage(
+            archive.error,
+            `Could not ${item.requirement.archived ? 'restore' : 'archive'} this requirement.`,
+          )}
+        </p>
+      )}
+      {item.requirement.archived ? (
+        <section
+          aria-label="Needs your attention"
+          className="rounded-lg border border-border bg-surface/40 px-4 py-3 text-sm text-muted"
+        >
+          This requirement is archived.
+        </section>
+      ) : (
+        <AttentionSurface items={attention} />
+      )}
 
       <div className="mt-8">
         {displayed ? (
@@ -1355,6 +1454,8 @@ function eventLabel(event: TaskEvent) {
     'requirement.version_confirmed': 'Revision confirmed',
     'requirement.version_retired': 'Revision superseded',
     'requirement.version_dismissed': 'Revision dismissed',
+    'requirement.archived': 'Requirement archived',
+    'requirement.restored': 'Requirement restored',
     'merge.confirmed': 'Delivery merged',
     'merge.reconciled': 'Merged delivery reconciled',
   }

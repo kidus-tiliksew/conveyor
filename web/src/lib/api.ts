@@ -403,8 +403,13 @@ export async function deleteWorkspaceForgeToken(workspace: string) {
 export function fetchBlueprints() {
   return getJSON<BlueprintView[]>(workspaceURL('/v1/blueprints'))
 }
-export function fetchRequirements() {
-  return getJSON<import('./types').RequirementSummary[]>(workspaceURL('/v1/requirements'))
+export function fetchRequirements(): Promise<import('./types').RequirementSummary[]>
+export function fetchRequirements(options: {
+  includeArchived?: boolean
+}): Promise<import('./types').RequirementSummary[]>
+export function fetchRequirements(options: { includeArchived?: boolean } = {}) {
+  const path = options.includeArchived ? '/v1/requirements?include_archived=true' : '/v1/requirements'
+  return getJSON<import('./types').RequirementSummary[]>(workspaceURL(path))
 }
 export function fetchRequirement(requirementId: string) {
   return getJSON<RequirementView>(workspaceURL(`/v1/requirements/${encodeURIComponent(requirementId)}`))
@@ -436,13 +441,32 @@ export async function confirmRequirementVersion(requirementId: string, version: 
     } catch {
       /* plain-text API error */
     }
-    if (response.status === 409 && code === 'requirement_version_superseded')
+    if (response.status === 409 && code === 'requirement_archived')
+      message = 'This requirement is archived. Restore it before confirming a version.'
+    else if (response.status === 409 && code === 'requirement_version_superseded')
       message = 'This requirement version was superseded by a newer confirmed version and can no longer be confirmed.'
     else if (response.status === 409)
       message = 'This requirement changed while you were reviewing it. Refresh and choose the version again.'
     throw new Error(message)
   }
   return response.json() as Promise<{ requirement: RequirementView['requirement']; version: RequirementVersion }>
+}
+
+async function setRequirementArchived(requirementId: string, action: 'archive' | 'restore') {
+  const response = await fetch(workspaceURL(`/v1/requirements/${encodeURIComponent(requirementId)}/${action}`), {
+    method: 'POST',
+    headers: mutationHeaders(),
+  })
+  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
+  return response.json() as Promise<import('./types').Requirement>
+}
+
+export function archiveRequirement(requirementId: string) {
+  return setRequirementArchived(requirementId, 'archive')
+}
+
+export function restoreRequirement(requirementId: string) {
+  return setRequirementArchived(requirementId, 'restore')
 }
 
 export async function dismissRequirementVersion(requirementId: string, version: number) {
@@ -697,8 +721,13 @@ export async function uploadArtifact(
 export function fetchReferenceDocuments() {
   return getJSON<import('./types').ReferenceDocument[]>(workspaceURL('/v1/reference-documents'))
 }
-export function fetchSystemDesigns() {
-  return getJSON<import('./types').SystemDesignSummary[]>(workspaceURL('/v1/system-designs'))
+export function fetchSystemDesigns(): Promise<import('./types').SystemDesignSummary[]>
+export function fetchSystemDesigns(options: {
+  includeArchived?: boolean
+}): Promise<import('./types').SystemDesignSummary[]>
+export function fetchSystemDesigns(options: { includeArchived?: boolean } = {}) {
+  const path = options.includeArchived ? '/v1/system-designs?include_archived=true' : '/v1/system-designs'
+  return getJSON<import('./types').SystemDesignSummary[]>(workspaceURL(path))
 }
 export function fetchSystemDesign(id: string) {
   return getJSON<import('./types').SystemDesignView>(workspaceURL(`/v1/system-designs/${encodeURIComponent(id)}`))
@@ -716,12 +745,18 @@ export async function confirmSystemDesignVersion(id: string, version: number, ex
   if (!response.ok) {
     const body = await response.text()
     let message = body.trim() || response.statusText
+    let code = ''
     try {
-      const parsed = JSON.parse(body) as { message?: string }
+      const parsed = JSON.parse(body) as { error?: string; message?: string }
+      code = parsed.error ?? ''
       message = parsed.message ?? message
     } catch {
       /* plain-text API error */
     }
+    if (response.status === 409 && code === 'system_design_archived')
+      throw new SystemDesignConflictError(
+        'This System Design document is archived. Restore it before confirming a version.',
+      )
     if (response.status === 409)
       throw new SystemDesignConflictError(
         'This design changed while you were reviewing it. The latest versions are loading; review them and try again.',
@@ -729,6 +764,23 @@ export async function confirmSystemDesignVersion(id: string, version: number, ex
     throw new Error(message)
   }
   return response.json()
+}
+
+async function setSystemDesignArchived(id: string, action: 'archive' | 'restore') {
+  const response = await fetch(workspaceURL(`/v1/system-designs/${encodeURIComponent(id)}/${action}`), {
+    method: 'POST',
+    headers: mutationHeaders(),
+  })
+  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
+  return response.json() as Promise<import('./types').SystemDesign>
+}
+
+export function archiveSystemDesign(id: string) {
+  return setSystemDesignArchived(id, 'archive')
+}
+
+export function restoreSystemDesign(id: string) {
+  return setSystemDesignArchived(id, 'restore')
 }
 
 export async function dismissSystemDesignVersion(id: string, version: number) {

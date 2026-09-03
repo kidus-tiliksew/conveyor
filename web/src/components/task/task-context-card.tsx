@@ -33,6 +33,7 @@ export function TaskContextCard({ taskId, context }: { taskId: string; context?:
                 >
                   {item.title}
                 </Link>
+                {item.archived && <Badge variant="outline">Archived</Badge>}
               </ContextRow>
             ))}
             {designs.map((item) => (
@@ -44,6 +45,7 @@ export function TaskContextCard({ taskId, context }: { taskId: string; context?:
                 >
                   {item.title}
                 </Link>
+                {item.archived && <Badge variant="outline">Archived</Badge>}
               </ContextRow>
             ))}
           </ul>

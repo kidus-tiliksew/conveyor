@@ -1,4 +1,4 @@
-import { ArrowDown, ArrowUp, FileText, Search } from 'lucide-react'
+import { ArrowDown, ArrowUp, ChevronRight, FileText, Search } from 'lucide-react'
 import { type ReactNode, useEffect, useRef, useState } from 'react'
 import { cn } from '../../lib/utils'
 import { Badge } from '../ui/badge'
@@ -97,7 +97,27 @@ export function DocumentTree({ children }: { children: ReactNode }) {
   )
 }
 
-export function DocumentTreeGroup({ label, children }: { label: string; children: ReactNode }) {
+export function DocumentTreeGroup({
+  label,
+  children,
+  collapsible = false,
+  defaultOpen = true,
+}: {
+  label: string
+  children: ReactNode
+  collapsible?: boolean
+  defaultOpen?: boolean
+}) {
+  if (collapsible)
+    return (
+      <details className="group mb-5 px-3 last:mb-0" open={defaultOpen || undefined}>
+        <summary className="flex cursor-pointer list-none items-center gap-1 px-2 pb-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-faint">
+          <ChevronRight className="size-3 transition-transform group-open:rotate-90" />
+          {label}
+        </summary>
+        <div className="space-y-0.5">{children}</div>
+      </details>
+    )
   return (
     <section className="mb-5 px-3 last:mb-0">
       <h2 className="px-2 pb-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-faint">{label}</h2>
