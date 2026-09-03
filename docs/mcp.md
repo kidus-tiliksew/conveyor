@@ -11,9 +11,9 @@ Workspace scope follows the same rule as REST: pass `workspace_id`, or omit
 it only when the credential belongs to exactly one workspace. Worker
 credentials are pinned to their own workspace automatically.
 
-Four tools are reserved for human credentials and refuse dispatched worker
-sessions: `create_task`, `set_assignee`, `redispatch_work_order`, and
-`report_continuation`.
+Five tools are reserved for human credentials and refuse agent and dispatched
+worker sessions: `create_task`, `add_task_dependency`, `set_assignee`,
+`redispatch_work_order`, and `report_continuation`.
 
 The agent-facing discipline for using these tools well is the
 [work playbook](playbooks/conveyor-work.md); this page is the tool
@@ -66,6 +66,7 @@ operator alone confirms, and confirmation never blocks implementation.
 | Tool | What it does |
 |---|---|
 | `create_task` | Create one durable task: `body`, `repo`, and a caller-stable `idempotency_key` required; optional `depends_on`, `requirement_ids`, `system_design_ids`, `hold`, and gate overrides. The title is generated; supplying one is an error. Human credentials only. |
+| `add_task_dependency` | Make an existing open task depend on another. Requires `task_id`, `depends_on_task_id`, an audit `reason`, and caller-stable `request_id`; rejects terminal tasks, self-links, and cycles. Human credentials with `operate_gates` only. |
 | `set_assignee` | Set or clear a task's assignee as an audited act. Constrains claim eligibility, never queue order. Human credentials only. |
 | `redispatch_work_order` | Return a stale queued order to the queue with a fresh deadline. Active and execution-timed-out orders are rejected. Human credentials only. |
 

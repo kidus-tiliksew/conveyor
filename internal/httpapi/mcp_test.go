@@ -895,7 +895,7 @@ func TestMCPToolsListRequiresAuthAndPublishesLifecycle(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"create_task", "set_assignee", "list_work_orders", "claim_work_order", "redispatch_work_order", "renew_work_order", "release_work_order", "request_plan_revision", "get_work_order", "read_artifact", "report_progress", "report_usage", "report_continuation", "propose_system_design_revision", "propose_requirement_revision", "propose_decision", "upload_transcript", "submit_plan", "submit_for_review", "await_review", "submit_review_verdict"}
+	want := []string{"create_task", "add_task_dependency", "set_assignee", "list_work_orders", "claim_work_order", "redispatch_work_order", "renew_work_order", "release_work_order", "request_plan_revision", "get_work_order", "read_artifact", "report_progress", "report_usage", "report_continuation", "propose_system_design_revision", "propose_requirement_revision", "propose_decision", "upload_transcript", "submit_plan", "submit_for_review", "await_review", "submit_review_verdict"}
 	if len(envelope.Result.Tools) != len(want) {
 		t.Fatalf("tools = %d, want %d", len(envelope.Result.Tools), len(want))
 	}
@@ -937,6 +937,42 @@ func TestMCPAgentCredentialCannotInvokeHumanReservedTools(t *testing.T) {
 		if _, err := server.callMCPTool(request, name, map[string]any{"workspace_id": "demo"}); err == nil || !strings.Contains(err.Error(), "operator-scoped user credential") {
 			t.Fatalf("%s error=%v", name, err)
 		}
+	}
+}
+
+func TestMCPAddTaskDependencyRequiresHumanCredential(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	for _, task := range []core.Task{
+		{ID: "mcp-link-dependent", Workspace: "demo", State: core.TaskRunning, CreatedAt: time.Now().UTC()},
+		{ID: "mcp-link-dependency", Workspace: "demo", State: core.TaskRunning, CreatedAt: time.Now().UTC()},
+	} {
+		if err := st.CreateTask(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+	}
+	server := NewServer(st)
+	server.Workspace = "demo"
+	args := map[string]any{
+		"workspace_id": "demo", "task_id": "mcp-link-dependent", "depends_on_task_id": "mcp-link-dependency",
+		"reason": "operator ordering", "request_id": "mcp-link-request",
+	}
+	humanRequest := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	humanRequest = humanRequest.WithContext(store.WithCredential(humanRequest.Context(), core.AuthenticatedCredential{ID: "pat", OwnerUserID: "operator", Kind: core.CredentialUser}))
+	result, err := server.callMCPTool(humanRequest, "add_task_dependency", args)
+	if err != nil || !result.(store.DependencyAdditionResult).Added {
+		t.Fatalf("human result=%+v err=%v", result, err)
+	}
+
+	agentRequest := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	agentRequest = agentRequest.WithContext(store.WithCredential(agentRequest.Context(), core.AuthenticatedCredential{ID: "agent", OwnerUserID: "operator", Kind: core.CredentialAgent}))
+	if _, err = server.callMCPTool(agentRequest, "add_task_dependency", args); err == nil || !strings.Contains(err.Error(), "operator-scoped user credential") {
+		t.Fatalf("agent error=%v", err)
+	}
+	workerRequest := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	workerRequest = workerRequest.WithContext(context.WithValue(workerRequest.Context(), workerContextKey{}, core.Worker{ID: "worker", Workspace: "demo"}))
+	if _, err = server.callMCPTool(workerRequest, "add_task_dependency", args); err == nil || !strings.Contains(err.Error(), "worker credentials") {
+		t.Fatalf("worker error=%v", err)
 	}
 }
 

@@ -638,6 +638,7 @@ func TestViewerReadsWorkspaceAndAllMutationsUseCapabilityRefusal(t *testing.T) {
 
 	for _, route := range []struct{ method, path string }{
 		{http.MethodPost, "/v1/tasks"},
+		{http.MethodPost, "/v1/tasks/task/dependencies"},
 		{http.MethodPut, "/v1/tasks/task/assignee"},
 		{http.MethodPost, "/v1/tasks/task/request-changes"},
 		{http.MethodPost, "/v1/requirements"},
@@ -802,6 +803,7 @@ func TestExecutorAndMaintainerRouteBoundaries(t *testing.T) {
 		{http.MethodPost, "/v1/tasks/task/merge?workspace_id=alpha", `{}`},
 		{http.MethodPost, "/v1/tasks/task/merge-conflict-fix?workspace_id=alpha", `{}`},
 		{http.MethodPost, "/v1/tasks/task/redispatch?workspace_id=alpha", `{}`},
+		{http.MethodPost, "/v1/tasks/task/dependencies?workspace_id=alpha", `{}`},
 		{http.MethodPost, "/v1/work-orders/order/recover?workspace_id=alpha", `{}`},
 		{http.MethodPost, "/v1/work-orders/order/preempt?workspace_id=alpha", `{}`},
 	} {

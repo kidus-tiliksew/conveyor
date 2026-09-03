@@ -51,6 +51,8 @@ var (
 	ErrWorkOrderPreempted          = errors.New("work order was preempted by an operator")
 	ErrWorkOrderPreemptConflict    = errors.New("work order preempt conflict")
 	ErrTaskTerminal                = errors.New("task is already terminal")
+	ErrTaskDependencyCycle         = errors.New("task dependency would create a cycle")
+	ErrTaskDependencyConflict      = errors.New("task dependency request conflicts with current state")
 	ErrLineageRebuildValidation    = errors.New("invalid lineage rebuild request")
 	ErrLineageRebuildConflict      = errors.New("lineage rebuild request conflicts with a prior request")
 	// ErrWorkOrderClaimLost is the order-scoped counterpart to
@@ -197,6 +199,7 @@ type Store interface {
 	ListBlockingTaskIDs(ctx context.Context, taskID string) ([]string, error)
 	ListDependentTaskIDs(ctx context.Context, taskID string) ([]string, error)
 	ListDependencyBlockers(ctx context.Context, taskIDs []string) (map[string]DependencyBlockers, error)
+	AddTaskDependency(ctx context.Context, request DependencyAdditionRequest) (DependencyAdditionResult, error)
 	RemoveTaskDependency(ctx context.Context, request DependencyRemovalRequest) (DependencyRemovalResult, error)
 	QueueGitHubLifecycle(ctx context.Context, lifecycle core.GitHubLifecycle) error
 	GetGitHubLifecycle(ctx context.Context, taskID string) (core.GitHubLifecycle, bool, error)
@@ -889,6 +892,19 @@ type DependencyRemovalRequest struct {
 	RequestID       string `json:"request_id"`
 }
 
+type DependencyAdditionRequest struct {
+	TaskID          string `json:"task_id"`
+	DependsOnTaskID string `json:"depends_on_task_id"`
+	Reason          string `json:"reason"`
+	RequestID       string `json:"request_id"`
+}
+
+type DependencyAdditionResult struct {
+	Task      core.Task `json:"task"`
+	RequestID string    `json:"request_id"`
+	Added     bool      `json:"added"`
+}
+
 type DependencyRemovalResult struct {
 	Task      core.Task `json:"task"`
 	RequestID string    `json:"request_id"`
@@ -1207,6 +1223,7 @@ func NewMemoryWithConfig(cfg *config.Config) Store {
 		interruptedReviewRecoveries: map[string]memoryInterruptedReviewRecovery{},
 		setupChanges:                map[string]memorySetupChange{},
 		preemptions:                 map[string]memoryWorkOrderPreemption{},
+		dependencyAdditions:         map[string]memoryDependencyAddition{},
 		dependencyRemovals:          map[string]memoryDependencyRemoval{},
 		monitorObservations:         map[string]monitor.ObservationRecord{},
 		monitorDrift:                map[string]monitor.Drift{},
@@ -1235,6 +1252,12 @@ type memoryScopedKey struct {
 type memoryDependencyRemoval struct {
 	Request DependencyRemovalRequest
 	Actor   Actor
+}
+
+type memoryDependencyAddition struct {
+	Request DependencyAdditionRequest
+	Actor   Actor
+	Added   bool
 }
 
 type memoryDecisionSweepKey struct {
@@ -1284,6 +1307,7 @@ type memory struct {
 	interruptedReviewRecoveries map[string]memoryInterruptedReviewRecovery
 	setupChanges                map[string]memorySetupChange
 	preemptions                 map[string]memoryWorkOrderPreemption
+	dependencyAdditions         map[string]memoryDependencyAddition
 	dependencyRemovals          map[string]memoryDependencyRemoval
 	monitorObservations         map[string]monitor.ObservationRecord
 	monitorDrift                map[string]monitor.Drift
@@ -4566,6 +4590,97 @@ func (m *memory) ListDependencyBlockers(ctx context.Context, taskIDs []string) (
 		}
 	}
 	return result, nil
+}
+
+func (m *memory) AddTaskDependency(ctx context.Context, request DependencyAdditionRequest) (DependencyAdditionResult, error) {
+	request.TaskID = strings.TrimSpace(request.TaskID)
+	request.DependsOnTaskID = strings.TrimSpace(request.DependsOnTaskID)
+	request.Reason = strings.TrimSpace(request.Reason)
+	request.RequestID = strings.TrimSpace(request.RequestID)
+	if request.TaskID == "" || request.DependsOnTaskID == "" || request.Reason == "" || request.RequestID == "" {
+		return DependencyAdditionResult{}, fmt.Errorf("task_id, depends_on_task_id, reason, and request_id are required")
+	}
+	if request.TaskID == request.DependsOnTaskID {
+		return DependencyAdditionResult{}, fmt.Errorf("%w: task cannot depend on itself", ErrTaskDependencyConflict)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	workspace, _ := WorkspaceFromContext(ctx)
+	task, ok := m.tasks[request.TaskID]
+	if !ok || (workspace != "" && task.Workspace != workspace) {
+		return DependencyAdditionResult{}, fmt.Errorf("task %s: %w", request.TaskID, ErrNotFound)
+	}
+	dependency, ok := m.tasks[request.DependsOnTaskID]
+	if !ok || dependency.Workspace != task.Workspace || (workspace != "" && dependency.Workspace != workspace) {
+		return DependencyAdditionResult{}, fmt.Errorf("dependency task %s: %w", request.DependsOnTaskID, ErrNotFound)
+	}
+	actor := ActorFromContext(ctx)
+	key := task.Workspace + "\x00" + request.RequestID
+	if prior, exists := m.dependencyAdditions[key]; exists {
+		if prior.Request != request || prior.Actor != actor {
+			return DependencyAdditionResult{}, fmt.Errorf("%w: request_id %s was already used for different dependency addition inputs", ErrTaskDependencyConflict, request.RequestID)
+		}
+		return DependencyAdditionResult{Task: m.hydrateTaskLocked(task), RequestID: request.RequestID, Added: prior.Added}, nil
+	}
+	if core.TaskTerminal(task.State) {
+		return DependencyAdditionResult{}, fmt.Errorf("task %s is not open: %w", request.TaskID, ErrTaskTerminal)
+	}
+	if core.TaskTerminal(dependency.State) {
+		return DependencyAdditionResult{}, fmt.Errorf("dependency task %s is not open: %w", request.DependsOnTaskID, ErrTaskTerminal)
+	}
+	if dependencies := m.dependencies[request.TaskID]; dependencies != nil {
+		if _, exists := dependencies[request.DependsOnTaskID]; exists {
+			m.dependencyAdditions[key] = memoryDependencyAddition{Request: request, Actor: actor}
+			return DependencyAdditionResult{Task: m.hydrateTaskLocked(task), RequestID: request.RequestID}, nil
+		}
+	}
+	if m.dependencyPathExistsLocked(request.DependsOnTaskID, request.TaskID) {
+		return DependencyAdditionResult{}, fmt.Errorf("%w: %s already reaches %s", ErrTaskDependencyCycle, request.DependsOnTaskID, request.TaskID)
+	}
+	if m.dependencies[request.TaskID] == nil {
+		m.dependencies[request.TaskID] = map[string]struct{}{}
+	}
+	m.dependencies[request.TaskID][request.DependsOnTaskID] = struct{}{}
+	m.dependencyAdditions[key] = memoryDependencyAddition{Request: request, Actor: actor, Added: true}
+	now := time.Now().UTC()
+	m.appendEventLocked(ctx, core.Event{
+		TaskID: request.TaskID, Kind: "task.dependency_added", ActorID: actor.ID, ActorRole: actor.Role, At: now,
+		Payload: core.JSONPayload(map[string]any{
+			"task_id": request.TaskID, "depends_on_task_id": request.DependsOnTaskID,
+			"reason": request.Reason, "request_id": request.RequestID,
+		}),
+	})
+	for id, order := range m.workOrders {
+		if order.TaskID != request.TaskID || order.Stage != core.StageImplement ||
+			order.State != core.WorkOrderQueued || !order.QueueBlockedAt.IsZero() {
+			continue
+		}
+		order.QueueBlockedAt = now
+		order.Claimable = false
+		order.UpdatedAt = now
+		m.workOrders[id] = order
+	}
+	return DependencyAdditionResult{Task: m.hydrateTaskLocked(task), RequestID: request.RequestID, Added: true}, nil
+}
+
+func (m *memory) dependencyPathExistsLocked(from, target string) bool {
+	seen := map[string]struct{}{}
+	pending := []string{from}
+	for len(pending) > 0 {
+		current := pending[len(pending)-1]
+		pending = pending[:len(pending)-1]
+		if current == target {
+			return true
+		}
+		if _, exists := seen[current]; exists {
+			continue
+		}
+		seen[current] = struct{}{}
+		for dependencyID := range m.dependencies[current] {
+			pending = append(pending, dependencyID)
+		}
+	}
+	return false
 }
 
 func (m *memory) RemoveTaskDependency(ctx context.Context, request DependencyRemovalRequest) (DependencyRemovalResult, error) {

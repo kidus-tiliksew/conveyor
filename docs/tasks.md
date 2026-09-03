@@ -51,6 +51,15 @@ dependency that closes without merging is flagged unsatisfiable, a dead end
 an operator resolves by unlinking it (with a reason) or closing the
 dependent. Time spent blocked does not burn the work order's queue clock.
 
+An operator can add the same ordering constraint after both tasks exist with
+`POST /v1/tasks/{id}/dependencies`, `conveyor task link`, or the MCP
+`add_task_dependency` tool. The operation requires the dependency task ID, an
+audit reason, and a caller-stable request ID. Both tasks must be open in the
+same workspace; self-links and cycles are rejected. A retry with the same
+request is idempotent, and an already-present dependency returns success
+without another audit event. A late dependency pauses queued implementation
+orders in place and affects future claims, but never interrupts claimed work.
+
 `hold` reserves a task from everyone's workers. A held task sits in the queue
 until a person attaches an agent and claims it themselves, typically with
 `conveyor run`. Hold changes nothing else about the task.

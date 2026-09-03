@@ -172,6 +172,16 @@ func (c *client) removeTaskDependency(taskID, dependencyID, reason, requestID st
 	return result, err
 }
 
+func (c *client) addTaskDependency(taskID, dependencyID, reason, requestID string) (store.DependencyAdditionResult, error) {
+	if c.token == "" {
+		return store.DependencyAdditionResult{}, fmt.Errorf("CONVEYOR_API_TOKEN is required for dependency linking")
+	}
+	payload, _ := json.Marshal(map[string]string{"depends_on_task_id": dependencyID, "reason": reason, "request_id": requestID})
+	var result store.DependencyAdditionResult
+	err := c.do(http.MethodPost, "/v1/tasks/"+taskID+"/dependencies", payload, &result)
+	return result, err
+}
+
 func (c *client) getWorkspaceConfig() (config.VersionedDocument, error) {
 	if c.token == "" {
 		return config.VersionedDocument{}, fmt.Errorf("CONVEYOR_API_TOKEN is required for workspace config")

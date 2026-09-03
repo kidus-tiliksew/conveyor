@@ -913,6 +913,56 @@ func TestRemoveTaskDependencyRESTIsAuditedAndIdempotent(t *testing.T) {
 	}
 }
 
+func TestAddTaskDependencyRESTMapsStatusesAndReturnsUpdatedTask(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	for _, task := range []core.Task{
+		{ID: "link-rest-dependent", Workspace: "demo", State: core.TaskRunning, CreatedAt: time.Now().UTC()},
+		{ID: "link-rest-dependency", Workspace: "demo", State: core.TaskRunning, CreatedAt: time.Now().UTC()},
+		{ID: "link-rest-third", Workspace: "demo", State: core.TaskRunning, CreatedAt: time.Now().UTC()},
+		{ID: "link-rest-terminal", Workspace: "demo", State: core.TaskClosed, CreatedAt: time.Now().UTC()},
+	} {
+		if err := st.CreateTask(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+	}
+	server := NewServer(st)
+	server.Workspace, server.BearerToken = "demo", "token"
+	call := func(taskID, body string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodPost, "/v1/tasks/"+taskID+"/dependencies?workspace_id=demo", strings.NewReader(body))
+		request.Header.Set("Authorization", "Bearer token")
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, request)
+		return response
+	}
+	if response := call("link-rest-dependent", `{}`); response.Code != http.StatusBadRequest {
+		t.Fatalf("missing fields status=%d body=%s", response.Code, response.Body.String())
+	}
+	response := call("link-rest-dependent", `{"depends_on_task_id":"link-rest-dependency","reason":"deliver first","request_id":"link-rest-1"}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("link status=%d body=%s", response.Code, response.Body.String())
+	}
+	var result store.DependencyAdditionResult
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil || !result.Added || len(result.Task.Dependencies) != 1 || result.Task.Dependencies[0].ID != "link-rest-dependency" {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	if response = call("link-rest-dependent", `{"depends_on_task_id":"missing","reason":"missing","request_id":"link-rest-missing"}`); response.Code != http.StatusNotFound {
+		t.Fatalf("missing task status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response = call("link-rest-dependent", `{"depends_on_task_id":"link-rest-terminal","reason":"terminal","request_id":"link-rest-terminal"}`); response.Code != http.StatusConflict {
+		t.Fatalf("terminal status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response = call("link-rest-dependent", `{"depends_on_task_id":"link-rest-dependent","reason":"self","request_id":"link-rest-self"}`); response.Code != http.StatusConflict {
+		t.Fatalf("self status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response = call("link-rest-dependency", `{"depends_on_task_id":"link-rest-third","reason":"second","request_id":"link-rest-2"}`); response.Code != http.StatusOK {
+		t.Fatalf("second link status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response = call("link-rest-third", `{"depends_on_task_id":"link-rest-dependent","reason":"cycle","request_id":"link-rest-cycle"}`); response.Code != http.StatusConflict {
+		t.Fatalf("cycle status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
 func TestCreateTaskAlwaysGeneratesTitleBeforePersistenceAndRejectsTitleInput(t *testing.T) {
 	st := store.NewMemory()
 	s := NewServer(st)

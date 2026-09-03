@@ -65,6 +65,7 @@ Create and inspect tasks. Titles are always generated from the body.
 | `conveyor task list` | List tasks: ID, state, repo, source, title. |
 | `conveyor task show <id>` | Show a task and its jobs as JSON. |
 | `conveyor task close <id>` | Cancel a non-terminal task. `--reason` is required. |
+| `conveyor task link <task> <dependency>` | Make an existing open task depend on another open task. `--reason` and `--request-id` are required; cycles are rejected. |
 | `conveyor task unlink <task> <dependency>` | Remove one blocking dependency edge. `--reason` and `--request-id` required. |
 | `conveyor task setup <id>` | Change a task's frozen execution setup for future work only. Exactly one of `--setup <name>` or `--apply-latest`, plus `--reason` and `--request-id`. |
 | `conveyor task approve <id>` | Approve at a human gate. `--reason` defaults to `approved`; `-m` adds a comment. |

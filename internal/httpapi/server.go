@@ -289,6 +289,7 @@ func (s *Server) Handler() http.Handler {
 			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Post("/tasks/{id}/context/proposals/{kind}/{target_id}/confirm", s.confirmTaskContextProposal)
 			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Post("/tasks/{id}/context/proposals/{kind}/{target_id}/dismiss", s.dismissTaskContextProposal)
 			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Post("/tasks/{id}/setup", s.changeTaskSetup)
+			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Post("/tasks/{id}/dependencies", s.addTaskDependency)
 			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Delete("/tasks/{id}/dependencies/{dependency_id}", s.removeTaskDependency)
 			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Post("/tasks/{id}/review-round/retry", s.retryReviewRound)
 			r.With(s.requireMutationCapability(core.CapabilityRecoverWork)).Post("/tasks/{id}/review-round/recover", s.recoverInterruptedReviewRound)
@@ -727,6 +728,38 @@ type closeTaskRequest struct {
 type removeTaskDependencyRequest struct {
 	Reason    string `json:"reason"`
 	RequestID string `json:"request_id"`
+}
+
+type addTaskDependencyRequest struct {
+	DependsOnTaskID string `json:"depends_on_task_id"`
+	Reason          string `json:"reason"`
+	RequestID       string `json:"request_id"`
+}
+
+func (s *Server) addTaskDependency(w http.ResponseWriter, r *http.Request) {
+	var request addTaskDependencyRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	result, err := s.Store.AddTaskDependency(r.Context(), store.DependencyAdditionRequest{
+		TaskID: chi.URLParam(r, "id"), DependsOnTaskID: request.DependsOnTaskID,
+		Reason: request.Reason, RequestID: request.RequestID,
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, store.ErrNotFound):
+			http.Error(w, err.Error(), http.StatusNotFound)
+		case errors.Is(err, store.ErrTaskTerminal), errors.Is(err, store.ErrTaskDependencyCycle), errors.Is(err, store.ErrTaskDependencyConflict):
+			http.Error(w, err.Error(), http.StatusConflict)
+		default:
+			http.Error(w, err.Error(), http.StatusBadRequest)
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (s *Server) removeTaskDependency(w http.ResponseWriter, r *http.Request) {
