@@ -357,7 +357,7 @@ test('requirements archive and restore from the canvas while preserving archived
     const request = route.request()
     const url = new URL(request.url())
     if (url.pathname === '/v1/requirements') {
-      expect(url.searchParams.get('include_archived')).toBe('true')
+      if (url.searchParams.has('include_archived')) expect(url.searchParams.get('include_archived')).toBe('true')
       return route.fulfill({ json: [summarizeRequirement(view())] })
     }
     if (url.pathname === '/v1/requirements/req-retries') return route.fulfill({ json: view() })
@@ -377,8 +377,8 @@ test('requirements archive and restore from the canvas while preserving archived
   })
 
   await page.goto('/requirements?requirement=req-retries')
-  page.once('dialog', (dialog) => dialog.accept())
   await page.getByRole('button', { name: 'Archive' }).click()
+  await page.getByRole('dialog', { name: 'Archive Retry behavior' }).getByRole('button', { name: 'Archive' }).click()
   await expect.poll(() => archiveCalls).toBe(1)
   await expect(page.getByText('This requirement is archived.')).toBeVisible()
   const archivedGroup = page.getByRole('navigation', { name: 'Document tree' }).locator('details')

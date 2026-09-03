@@ -135,6 +135,9 @@ func WithRequirementCitationContract(role string, stage core.Stage, requirements
 	}
 	for _, requirement := range requirements {
 		fmt.Fprintf(&contract, "- %s v%d — %s\n", requirement.ID, requirement.Version, requirement.Title)
+		if requirement.Archived {
+			fmt.Fprintf(&contract, "  - Archived; superseded by: %s\n", successorSummary(requirement.SupersededBy))
+		}
 		for _, statement := range requirement.Statements {
 			fmt.Fprintf(&contract, "  - %s: %s\n", statement.ID, statement.Statement)
 			for _, criterion := range statement.AcceptanceCriteria {
@@ -149,6 +152,13 @@ func WithRequirementCitationContract(role string, stage core.Stage, requirements
 		contract.WriteString("\nValidate requirement statement REQ-n and requirement acceptance-criterion AC-n.m citations against the pinned versions above and the approved governing execution plan. Do not put blueprint acceptance-criterion IDs such as AC-1 in cited_ids. A requirement AC citation is served only when its parent REQ and exact AC exist in its pinned version. Record requirement_citations with applicable=true and four disjoint finding lists: cited_ids — citation IDs present in the pinned versions above; unknown_ids — cited IDs that resolve to no requirement statement at all; unserved_ids — cited IDs that name a real requirement statement outside the pinned served versions above; conflicts — citations contradicting the governing execution plan or pinned authority. An ID present in the pinned versions always belongs in cited_ids and never in unknown_ids or unserved_ids; leave served statements the change does not cite unlisted rather than recording them as unserved. This is a reasoned review assessment, not a claim of exhaustive source parsing.\n")
 	}
 	return contract.String()
+}
+
+func successorSummary(ids []string) string {
+	if len(ids) == 0 {
+		return "none recorded"
+	}
+	return strings.Join(ids, ", ")
 }
 
 const MaxGovernanceContractBytes = 64 * 1024
@@ -183,7 +193,11 @@ func RenderGovernanceContract(stage core.Stage, snapshot core.GovernanceSnapshot
 			if design.PinnedAtAttachment {
 				attachmentPin = " pinned_at_attachment=true"
 			}
-			chunk := fmt.Sprintf("\n%sconveyor:system_design document=%q version=%d category=%q%s\n%s\n%s\n", fence, design.ID, design.Version, design.Category, attachmentPin, design.Content, fence)
+			archiveNotice := ""
+			if design.Archived {
+				archiveNotice = fmt.Sprintf("Archived; superseded by: %s\n", successorSummary(design.SupersededBy))
+			}
+			chunk := fmt.Sprintf("\n%sconveyor:system_design document=%q version=%d category=%q%s\n%s%s\n%s\n", fence, design.ID, design.Version, design.Category, attachmentPin, archiveNotice, design.Content, fence)
 			if design.PinnedAtAttachment {
 				chunk += "This older confirmed version is binding because the task attachment pinned it; newer repository-glob authority for this document does not replace the attachment.\n"
 			}

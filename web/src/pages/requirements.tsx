@@ -18,6 +18,7 @@ import {
 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useWorkspaceCapability, useWorkspaceSelection } from '../components/app-shell'
+import { ArchiveDocumentDialog, type SuccessorCandidate } from '../components/documents/archive-document-dialog'
 import { type AttentionItem, AttentionSurface } from '../components/documents/attention-surface'
 import { compareDocuments, type DocumentSort, type DocumentSortDirection } from '../components/documents/document-sort'
 import {
@@ -28,6 +29,7 @@ import {
   DocumentTreeToolbar,
 } from '../components/documents/document-tree'
 import { DriftResolutionForm } from '../components/documents/drift-resolution-form'
+import { SuccessorLinks } from '../components/documents/successor-links'
 import { VersionDiff } from '../components/documents/version-diff'
 import { VersionDismissDialog } from '../components/documents/version-dismiss-dialog'
 import { LineageExplorer } from '../components/lineage/lineage-explorer'
@@ -293,6 +295,17 @@ export function RequirementsPage() {
                 <DocumentTreeItem
                   key={item.requirement.id}
                   label={item.requirement.title}
+                  meta={
+                    item.requirement.superseded_by?.length
+                      ? `Superseded by ${item.requirement.superseded_by.join(', ')}`
+                      : undefined
+                  }
+                  title={
+                    item.requirement.superseded_by?.length
+                      ? `Superseded by ${item.requirement.superseded_by.join(', ')}`
+                      : undefined
+                  }
+                  tooltip={<SuccessorLinks ids={item.requirement.superseded_by} compact />}
                   selected={!openOverview && selectedId === item.requirement.id}
                   onClick={() => selectRequirement(item.requirement.id)}
                 />
@@ -551,6 +564,31 @@ function RequirementDetailCanvas({ item }: { item: RequirementView }) {
     enabled: Boolean(workspace),
     staleTime: 60_000,
   })
+  const { data: successorRequirements = [] } = useQuery({
+    queryKey: ['requirements', workspace, { includeArchived: false }],
+    queryFn: () => fetchRequirements(),
+    enabled: Boolean(workspace),
+    staleTime: 60_000,
+  })
+  const successorCandidates = useMemo<SuccessorCandidate[]>(
+    () => [
+      ...successorRequirements
+        .filter((candidate) => candidate.requirement.id !== item.requirement.id && !candidate.requirement.archived)
+        .map((candidate) => ({
+          id: candidate.requirement.id,
+          title: candidate.requirement.title,
+          kind: 'requirement' as const,
+        })),
+      ...systemDesigns
+        .filter((candidate) => !candidate.document.archived)
+        .map((candidate) => ({
+          id: candidate.document.id,
+          title: candidate.document.title,
+          kind: 'system_design' as const,
+        })),
+    ],
+    [item.requirement.id, successorRequirements, systemDesigns],
+  )
   useEffect(() => {
     if (!displayed || !/^#(?:req|ac)-/i.test(window.location.hash)) return
     const id = window.location.hash.slice(1).toLowerCase()
@@ -559,6 +597,7 @@ function RequirementDetailCanvas({ item }: { item: RequirementView }) {
   const currentVersion = item.current_version?.version ?? 0
   const [attachmentOffer, setAttachmentOffer] = useState<number | null>(null)
   const [dismissTarget, setDismissTarget] = useState<RequirementVersion | null>(null)
+  const [archiveDialogOpen, setArchiveDialogOpen] = useState(false)
   const confirm = useMutation({
     mutationFn: (version: number) => confirmRequirementVersion(item.requirement.id, version, currentVersion),
     onSuccess: ({ version }) => setAttachmentOffer(version.version),
@@ -585,8 +624,11 @@ function RequirementDetailCanvas({ item }: { item: RequirementView }) {
     },
   })
   const archive = useMutation({
-    mutationFn: () =>
-      item.requirement.archived ? restoreRequirement(item.requirement.id) : archiveRequirement(item.requirement.id),
+    mutationFn: (supersededBy: string[] = []) =>
+      item.requirement.archived
+        ? restoreRequirement(item.requirement.id)
+        : archiveRequirement(item.requirement.id, supersededBy),
+    onSuccess: () => setArchiveDialogOpen(false),
     onSettled: async () => {
       await Promise.all([
         client.invalidateQueries({ queryKey: ['requirements', workspace] }),
@@ -821,6 +863,16 @@ function RequirementDetailCanvas({ item }: { item: RequirementView }) {
           onConfirm={() => dismiss.mutate(dismissTarget.version)}
         />
       )}
+      {archiveDialogOpen && (
+        <ArchiveDocumentDialog
+          documentTitle={item.requirement.title}
+          candidates={successorCandidates}
+          pending={archive.isPending}
+          error={archive.error ? errorMessage(archive.error, 'Could not archive this requirement.') : undefined}
+          onCancel={() => setArchiveDialogOpen(false)}
+          onConfirm={(supersededBy) => archive.mutate(supersededBy)}
+        />
+      )}
       {!item.requirement.archived && canOperate && attachmentOffer != null && (
         <CheckpointContextOffer
           requirementId={item.requirement.id}
@@ -876,15 +928,7 @@ function RequirementDetailCanvas({ item }: { item: RequirementView }) {
               size="sm"
               variant={item.requirement.archived ? 'secondary' : 'destructive'}
               disabled={archive.isPending}
-              onClick={() => {
-                if (
-                  item.requirement.archived ||
-                  window.confirm(
-                    `Archive ${item.requirement.title}? Its history is kept, and agents will stop reading it.`,
-                  )
-                )
-                  archive.mutate()
-              }}
+              onClick={() => (item.requirement.archived ? archive.mutate([]) : setArchiveDialogOpen(true))}
             >
               {item.requirement.archived ? <RotateCcw /> : <Archive />}
               {archive.isPending
@@ -900,7 +944,7 @@ function RequirementDetailCanvas({ item }: { item: RequirementView }) {
         </div>
       </header>
 
-      {archive.error && (
+      {archive.error && item.requirement.archived && (
         <p className="mb-3 rounded-md bg-failure-soft px-3 py-2 text-xs text-failure">
           {errorMessage(
             archive.error,
@@ -913,7 +957,8 @@ function RequirementDetailCanvas({ item }: { item: RequirementView }) {
           aria-label="Needs your attention"
           className="rounded-lg border border-border bg-surface/40 px-4 py-3 text-sm text-muted"
         >
-          This requirement is archived.
+          <p>This requirement is archived.</p>
+          <SuccessorLinks ids={item.requirement.superseded_by} />
         </section>
       ) : (
         <AttentionSurface items={attention} />

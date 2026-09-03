@@ -153,6 +153,20 @@ func TestRequirementArchiveRESTLifecycle(t *testing.T) {
 	if _, _, err = st.ConfirmRequirementVersion(ctx, replacement.ID, replacementVersion.Version); err != nil {
 		t.Fatal(err)
 	}
+	archivedReplacement, archivedVersion, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-archive-retired-api", Title: "Archived replacement API"}, core.RequirementVersion{Content: "Archived replacement API", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Stay archived."}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmRequirementVersion(ctx, archivedReplacement.ID, archivedVersion.Version); err != nil {
+		t.Fatal(err)
+	}
+	if err = st.ArchiveRequirement(ctx, archivedReplacement.ID, "archive-operator", nil); err != nil {
+		t.Fatal(err)
+	}
+	unconfirmed, _, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-archive-unconfirmed-api", Title: "Unconfirmed replacement API"}, core.RequirementVersion{Content: "Unconfirmed replacement API", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Await confirmation."}}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	server := NewServer(st)
 	server.Workspace, server.BearerToken = "demo", "token"
 	handler := server.Handler()
@@ -164,8 +178,8 @@ func TestRequirementArchiveRESTLifecycle(t *testing.T) {
 		handler.ServeHTTP(response, req)
 		return response
 	}
-	archiveBody := `{"superseding_document_ids":["` + replacement.ID + `"]}`
-	if response := call(http.MethodPost, "/v1/requirements/"+document.ID+"/archive", archiveBody); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"superseding_document_ids":["`+replacement.ID+`"]`) {
+	archiveBody := `{"superseded_by":["` + replacement.ID + `"]}`
+	if response := call(http.MethodPost, "/v1/requirements/"+document.ID+"/archive", archiveBody); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"superseded_by":["`+replacement.ID+`"]`) {
 		t.Fatalf("archive status=%d body=%s", response.Code, response.Body.String())
 	}
 	if response := call(http.MethodGet, "/v1/requirements", ""); response.Code != http.StatusOK || strings.Contains(response.Body.String(), document.ID) {
@@ -196,8 +210,16 @@ func TestRequirementArchiveRESTLifecycle(t *testing.T) {
 	if response := call(http.MethodPost, "/v1/requirements/"+document.ID+"/restore", ""); response.Code != http.StatusOK || strings.Contains(response.Body.String(), `"archived":true`) {
 		t.Fatalf("restore status=%d body=%s", response.Code, response.Body.String())
 	}
-	if response := call(http.MethodPost, "/v1/requirements/"+document.ID+"/archive", `{"superseding_document_ids":["missing"]}`); response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), `"error":"invalid_superseding_document"`) || !strings.Contains(response.Body.String(), `"document_id":"missing"`) {
-		t.Fatalf("invalid superseding document status=%d body=%s", response.Code, response.Body.String())
+	for _, test := range []struct{ id, reason string }{
+		{"missing", "unknown in this workspace"},
+		{document.ID, "document being archived"},
+		{archivedReplacement.ID, "is archived"},
+		{unconfirmed.ID, "has no confirmed version"},
+	} {
+		response := call(http.MethodPost, "/v1/requirements/"+document.ID+"/archive", `{"superseded_by":["`+test.id+`"]}`)
+		if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), `"error":"superseded_by_invalid"`) || !strings.Contains(response.Body.String(), `"document_id":"`+test.id+`"`) || !strings.Contains(response.Body.String(), test.reason) {
+			t.Fatalf("invalid successor %s status=%d body=%s", test.id, response.Code, response.Body.String())
+		}
 	}
 }
 

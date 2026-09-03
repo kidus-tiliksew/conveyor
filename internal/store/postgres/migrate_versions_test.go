@@ -33,6 +33,28 @@ func TestEmbeddedMigrationVersionsAreUnique(t *testing.T) {
 	}
 }
 
+func TestKnownVersion118ArchivalLedgerIdentityIsCompatible(t *testing.T) {
+	if !compatibleHistoricalMigration(118, historicalArchivalMigrationName, historicalArchivalMigrationChecksum) {
+		t.Fatal("known archival version-118 identity was rejected")
+	}
+	if !compatibleHistoricalMigration(118, historicalArchivalMigrationName, "") {
+		t.Fatal("known archival version-118 identity with legacy empty checksum was rejected")
+	}
+	for _, test := range []struct {
+		version  int
+		name     string
+		checksum string
+	}{
+		{119, historicalArchivalMigrationName, historicalArchivalMigrationChecksum},
+		{118, "118_other.sql", historicalArchivalMigrationChecksum},
+		{118, historicalArchivalMigrationName, "changed"},
+	} {
+		if compatibleHistoricalMigration(test.version, test.name, test.checksum) {
+			t.Fatalf("unexpected compatibility for version=%d name=%q checksum=%q", test.version, test.name, test.checksum)
+		}
+	}
+}
+
 func TestMigration096RemainsBurnedAndDocumented(t *testing.T) {
 	files, err := fs.Glob(migrationFiles, "migrations/096_*.sql")
 	if err != nil {

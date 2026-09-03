@@ -297,8 +297,8 @@ export async function resendWorkspaceInvitation(workspace: string, email: string
 function apiErrorMessage(body: string, fallback: string) {
   const text = body.trim()
   try {
-    const parsed = JSON.parse(text) as { message?: string; fields?: Array<{ message?: string }> }
-    return parsed.message || parsed.fields?.[0]?.message || text || fallback
+    const parsed = JSON.parse(text) as { detail?: string; message?: string; fields?: Array<{ message?: string }> }
+    return parsed.detail || parsed.message || parsed.fields?.[0]?.message || text || fallback
   } catch {
     return text || fallback
   }
@@ -452,17 +452,22 @@ export async function confirmRequirementVersion(requirementId: string, version: 
   return response.json() as Promise<{ requirement: RequirementView['requirement']; version: RequirementVersion }>
 }
 
-async function setRequirementArchived(requirementId: string, action: 'archive' | 'restore') {
+async function setRequirementArchived(
+  requirementId: string,
+  action: 'archive' | 'restore',
+  supersededBy: string[] = [],
+) {
   const response = await fetch(workspaceURL(`/v1/requirements/${encodeURIComponent(requirementId)}/${action}`), {
     method: 'POST',
     headers: mutationHeaders(),
+    body: action === 'archive' ? JSON.stringify({ superseded_by: supersededBy }) : undefined,
   })
   if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   return response.json() as Promise<import('./types').Requirement>
 }
 
-export function archiveRequirement(requirementId: string) {
-  return setRequirementArchived(requirementId, 'archive')
+export function archiveRequirement(requirementId: string, supersededBy: string[] = []) {
+  return setRequirementArchived(requirementId, 'archive', supersededBy)
 }
 
 export function restoreRequirement(requirementId: string) {
@@ -766,17 +771,18 @@ export async function confirmSystemDesignVersion(id: string, version: number, ex
   return response.json()
 }
 
-async function setSystemDesignArchived(id: string, action: 'archive' | 'restore') {
+async function setSystemDesignArchived(id: string, action: 'archive' | 'restore', supersededBy: string[] = []) {
   const response = await fetch(workspaceURL(`/v1/system-designs/${encodeURIComponent(id)}/${action}`), {
     method: 'POST',
     headers: mutationHeaders(),
+    body: action === 'archive' ? JSON.stringify({ superseded_by: supersededBy }) : undefined,
   })
   if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   return response.json() as Promise<import('./types').SystemDesign>
 }
 
-export function archiveSystemDesign(id: string) {
-  return setSystemDesignArchived(id, 'archive')
+export function archiveSystemDesign(id: string, supersededBy: string[] = []) {
+  return setSystemDesignArchived(id, 'archive', supersededBy)
 }
 
 export function restoreSystemDesign(id: string) {

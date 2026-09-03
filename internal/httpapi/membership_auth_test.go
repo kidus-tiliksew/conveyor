@@ -764,6 +764,8 @@ func TestExecutorAndMaintainerRouteBoundaries(t *testing.T) {
 	}{
 		{http.MethodPost, "/v1/requirements/req/versions/1/confirm?workspace_id=alpha", "", core.CapabilityConfirmDocuments},
 		{http.MethodPost, "/v1/requirements/req/versions/1/dismiss?workspace_id=alpha", "", core.CapabilityConfirmDocuments},
+		{http.MethodPost, "/v1/requirements/req/archive?workspace_id=alpha", `{invalid`, core.CapabilityConfirmDocuments},
+		{http.MethodPost, "/v1/system-designs/design/archive?workspace_id=alpha", `{invalid`, core.CapabilityConfirmDocuments},
 		{http.MethodPost, "/v1/system-designs/design/versions/1/dismiss?workspace_id=alpha", "", core.CapabilityConfirmDocuments},
 		{http.MethodGet, "/v1/workspaces/alpha/invitations?workspace_id=alpha", "", core.CapabilityManageMembership},
 		{http.MethodPost, "/v1/lineage/rebuild?workspace_id=alpha", `{}`, core.CapabilityManageWorkspace},

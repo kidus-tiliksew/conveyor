@@ -5,6 +5,7 @@ import { resolveTaskContextProposal } from '../../lib/api'
 import { errorMessage } from '../../lib/errors'
 import type { TaskContext, TaskContextProposal } from '../../lib/types'
 import { useWorkspaceCapability, useWorkspaceSelection } from '../app-shell'
+import { SuccessorLinks } from '../documents/successor-links'
 import { Badge } from '../ui/badge'
 import { Button } from '../ui/button'
 
@@ -33,7 +34,16 @@ export function TaskContextCard({ taskId, context }: { taskId: string; context?:
                 >
                   {item.title}
                 </Link>
-                {item.archived && <Badge variant="outline">Archived</Badge>}
+                {item.archived && (
+                  <span className="group relative">
+                    <Badge variant="outline">Archived</Badge>
+                    {item.superseded_by?.length && (
+                      <span className="invisible absolute left-0 top-full z-20 mt-1 w-max max-w-80 rounded-md border border-border bg-background px-3 py-2 opacity-0 shadow-lg group-hover:visible group-hover:opacity-100">
+                        <SuccessorLinks ids={item.superseded_by} compact />
+                      </span>
+                    )}
+                  </span>
+                )}
               </ContextRow>
             ))}
             {designs.map((item) => (
@@ -45,7 +55,16 @@ export function TaskContextCard({ taskId, context }: { taskId: string; context?:
                 >
                   {item.title}
                 </Link>
-                {item.archived && <Badge variant="outline">Archived</Badge>}
+                {item.archived && (
+                  <span className="group relative">
+                    <Badge variant="outline">Archived</Badge>
+                    {item.superseded_by?.length && (
+                      <span className="invisible absolute left-0 top-full z-20 mt-1 w-max max-w-80 rounded-md border border-border bg-background px-3 py-2 opacity-0 shadow-lg group-hover:visible group-hover:opacity-100">
+                        <SuccessorLinks ids={item.superseded_by} compact />
+                      </span>
+                    )}
+                  </span>
+                )}
               </ContextRow>
             ))}
           </ul>

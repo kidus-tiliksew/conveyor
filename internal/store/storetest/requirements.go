@@ -207,15 +207,15 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 			t.Fatal(err)
 		}
 		archived, err := st.GetRequirement(ctx, targetRequirement.ID)
-		if err != nil || !slices.Equal(archived.SupersedingDocumentIDs, valid) {
+		if err != nil || !slices.Equal(archived.SupersededBy, valid) {
 			t.Fatalf("archived requirement=%+v err=%v", archived, err)
 		}
 		context, err := store.TaskContextForTask(ctx, st, taskID)
-		if err != nil || len(context.Requirements) != 1 || !context.Requirements[0].Archived || !slices.Equal(context.Requirements[0].SupersedingDocumentIDs, valid) {
+		if err != nil || len(context.Requirements) != 1 || !context.Requirements[0].Archived || !slices.Equal(context.Requirements[0].SupersededBy, valid) {
 			t.Fatalf("archived requirement context=%+v err=%v", context.Requirements, err)
 		}
 		served, err := store.ServedRequirementsForTask(ctx, st, taskID)
-		if err != nil || len(served.Requirements) != 1 || !served.Requirements[0].Archived || !slices.Equal(served.Requirements[0].SupersedingDocumentIDs, valid) {
+		if err != nil || len(served.Requirements) != 1 || !served.Requirements[0].Archived || !slices.Equal(served.Requirements[0].SupersededBy, valid) {
 			t.Fatalf("served archived requirement=%+v err=%v", served.Requirements, err)
 		}
 		assertEventIDs := func(kind string, events []core.Event, want []string) {
@@ -225,17 +225,12 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 					continue
 				}
 				var payload struct {
-					IDs        []string `json:"superseding_document_ids"`
-					ClearedIDs []string `json:"cleared_superseding_document_ids"`
+					IDs []string `json:"superseded_by"`
 				}
 				if json.Unmarshal(event.Payload, &payload) != nil {
 					t.Fatalf("decode %s payload=%s", kind, event.Payload)
 				}
-				got := payload.IDs
-				if strings.HasSuffix(kind, ".restored") {
-					got = payload.ClearedIDs
-				}
-				if !slices.Equal(got, want) {
+				if !slices.Equal(payload.IDs, want) {
 					t.Fatalf("%s payload=%s want ids=%v", kind, event.Payload, want)
 				}
 				return
@@ -251,7 +246,7 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 			t.Fatal(err)
 		}
 		restored, err := st.GetRequirement(ctx, targetRequirement.ID)
-		if err != nil || len(restored.SupersedingDocumentIDs) != 0 {
+		if err != nil || len(restored.SupersededBy) != 0 {
 			t.Fatalf("restored requirement=%+v err=%v", restored, err)
 		}
 		requirementEvents, _ = st.ListRequirementEvents(ctx, targetRequirement.ID)
@@ -266,7 +261,7 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 		}
 		assertEventIDs("system_design.archived", designEvents, valid)
 		context, err = store.TaskContextForTask(ctx, st, taskID)
-		if err != nil || len(context.Designs) != 1 || !context.Designs[0].Archived || !slices.Equal(context.Designs[0].SupersedingDocumentIDs, valid) {
+		if err != nil || len(context.Designs) != 1 || !context.Designs[0].Archived || !slices.Equal(context.Designs[0].SupersededBy, valid) {
 			t.Fatalf("archived design context=%+v err=%v", context.Designs, err)
 		}
 		governance, err := store.GovernanceForTask(ctx, st, taskID, "conveyor")
@@ -276,7 +271,7 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 		foundPinned := false
 		for _, design := range governance.Designs {
 			if design.ID == targetDesign.ID {
-				foundPinned = design.Archived && slices.Equal(design.SupersedingDocumentIDs, valid)
+				foundPinned = design.Archived && slices.Equal(design.SupersededBy, valid)
 			}
 		}
 		if !foundPinned {
@@ -306,6 +301,17 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 		}
 		designEvents, _ = st.ListSystemDesignEvents(ctx, targetDesign.ID)
 		assertEventIDs("system_design.restored", designEvents, valid)
+		duplicates := []string{replacementRequirement.ID, replacementRequirement.ID, replacementDesign.ID}
+		if err = st.ArchiveSystemDesign(ctx, targetDesign.ID, requirementConformanceActor, duplicates); err != nil {
+			t.Fatalf("archive with duplicate successors: %v", err)
+		}
+		deduplicated, err := st.GetSystemDesign(ctx, targetDesign.ID)
+		if err != nil || !slices.Equal(deduplicated.SupersededBy, valid) {
+			t.Fatalf("deduplicated successors=%+v err=%v", deduplicated.SupersededBy, err)
+		}
+		if err = st.RestoreSystemDesign(ctx, targetDesign.ID, requirementConformanceActor); err != nil {
+			t.Fatal(err)
+		}
 		for _, test := range []struct {
 			name string
 			ids  []string
@@ -314,17 +320,24 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 			{name: "unknown", ids: []string{"req-unknown", replacementRequirement.ID}, want: "req-unknown"},
 			{name: "archived", ids: []string{archivedCandidate.ID}, want: archivedCandidate.ID},
 			{name: "self", ids: []string{targetDesign.ID}, want: targetDesign.ID},
-			{name: "duplicate", ids: []string{replacementRequirement.ID, replacementRequirement.ID}, want: replacementRequirement.ID},
 			{name: "cross workspace", ids: []string{cross.ID}, want: cross.ID},
 		} {
 			t.Run(test.name, func(t *testing.T) {
+				before, eventsErr := st.ListSystemDesignEvents(ctx, targetDesign.ID)
+				if eventsErr != nil {
+					t.Fatal(eventsErr)
+				}
 				err := st.ArchiveSystemDesign(ctx, targetDesign.ID, requirementConformanceActor, test.ids)
-				var reference *store.SupersedingDocumentReferenceError
+				var reference *store.SupersededByInvalidError
 				if !errors.As(err, &reference) || reference.DocumentID != test.want {
 					t.Fatalf("error=%v reference=%+v", err, reference)
 				}
 				if document, getErr := st.GetSystemDesign(ctx, targetDesign.ID); getErr != nil || document.Archived {
 					t.Fatalf("invalid archive mutated target=%+v err=%v", document, getErr)
+				}
+				after, eventsErr := st.ListSystemDesignEvents(ctx, targetDesign.ID)
+				if eventsErr != nil || len(after) != len(before) {
+					t.Fatalf("invalid archive appended event: before=%d after=%d err=%v", len(before), len(after), eventsErr)
 				}
 			})
 		}

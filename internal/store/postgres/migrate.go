@@ -144,6 +144,9 @@ CREATE TABLE IF NOT EXISTS conveyor_schema_migrations (
 		}
 		if err == nil {
 			if appliedName != filepath.Base(name) {
+				if compatibleHistoricalMigration(version, appliedName, appliedChecksum) {
+					continue
+				}
 				return fmt.Errorf("migration version %d was recorded as %q, now %q", version, appliedName, filepath.Base(name))
 			}
 			if appliedChecksum == "" {
@@ -215,6 +218,20 @@ CREATE TABLE IF NOT EXISTS conveyor_schema_migrations (
 		return fmt.Errorf("commit control-plane migrations: %w", err)
 	}
 	return nil
+}
+
+const (
+	historicalArchivalMigrationName     = "118_requirement_system_design_archival.sql"
+	historicalArchivalMigrationChecksum = "065f9572d4b23afed5548d861478e1e9a5c84dcaf917a11afd7624cc6a1666df"
+)
+
+// compatibleHistoricalMigration recognizes the one known ledger identity
+// created by the version-118 branch collision. The row remains immutable;
+// migration 119 idempotently establishes both colliding schemas.
+func compatibleHistoricalMigration(version int, name, checksum string) bool {
+	return version == 118 &&
+		name == historicalArchivalMigrationName &&
+		(checksum == "" || checksum == historicalArchivalMigrationChecksum)
 }
 
 func recordDecisionSupersessionSweepBackfillAudit(ctx context.Context, tx pgx.Tx) error {

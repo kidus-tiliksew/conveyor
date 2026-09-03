@@ -77,12 +77,12 @@ type RequirementStatement struct {
 // canonical lineage. It is supplied to implement/review role contracts so
 // REQ-n citations are checked against durable authority, not guessed context.
 type ServedRequirementContext struct {
-	ID                     string                 `json:"id"`
-	Title                  string                 `json:"title"`
-	Version                int                    `json:"version"`
-	Statements             []RequirementStatement `json:"statements"`
-	Archived               bool                   `json:"archived"`
-	SupersedingDocumentIDs []string               `json:"superseding_document_ids,omitempty"`
+	ID           string                 `json:"id"`
+	Title        string                 `json:"title"`
+	Version      int                    `json:"version"`
+	Statements   []RequirementStatement `json:"statements"`
+	Archived     bool                   `json:"archived"`
+	SupersededBy []string               `json:"superseded_by,omitempty"`
 }
 
 // RequirementCitationAssessment is the reviewer's structured assessment of
@@ -123,7 +123,7 @@ type Requirement struct {
 	Archived               bool      `json:"archived"`
 	ArchivedBy             string    `json:"archived_by,omitempty"`
 	ArchivedAt             time.Time `json:"archived_at,omitempty"`
-	SupersedingDocumentIDs []string  `json:"superseding_document_ids,omitempty"`
+	SupersededBy           []string  `json:"superseded_by,omitempty"`
 	Workspace              string    `json:"workspace"`
 	CreatedAt              time.Time `json:"created_at"`
 	UpdatedAt              time.Time `json:"updated_at"`
