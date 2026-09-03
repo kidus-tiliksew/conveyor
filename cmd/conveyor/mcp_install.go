@@ -19,6 +19,7 @@ const (
 	mcpOwnerVersion   = "v1"
 	mcpTokenEnv       = "CONVEYOR_API_TOKEN"
 	mcpBridgeGuidance = "export CONVEYOR_API_TOKEN=$(conveyor auth token)"
+	mcpAddressEnv     = "CONVEYOR_ADDR"
 	codexOwnerMarker  = "# conveyor:mcp-install owner=" + mcpOwnerVersion
 	claudeOwnerKey    = "_conveyor_mcp_install"
 	claudeOwnerValue  = "owner=" + mcpOwnerVersion
@@ -72,8 +73,10 @@ func mcpInstallCmdWithLookPath(lookPath func(string) (string, error)) *cobra.Com
 			if err != nil {
 				return err
 			}
-			results := make([]mcpInstallResult, 0, len(tools))
+			results := make([]mcpInstallResult, 0, len(targets))
+			includesCursor := false
 			for _, target := range targets {
+				includesCursor = includesCursor || target.tool == "cursor"
 				result, reconcileErr := reconcileMCPRegistration(home, target, server+"/mcp", adopt, !list)
 				if reconcileErr != nil {
 					return reconcileErr
@@ -100,6 +103,9 @@ func mcpInstallCmdWithLookPath(lookPath func(string) (string, error)) *cobra.Com
 			}
 			if strings.TrimSpace(os.Getenv(mcpTokenEnv)) == "" {
 				fmt.Fprintln(cmd.OutOrStdout(), mcpBridgeGuidance)
+			}
+			if includesCursor && !strings.HasSuffix(strings.TrimRight(strings.TrimSpace(os.Getenv(mcpAddressEnv)), "/"), "/mcp") {
+				fmt.Fprintf(cmd.OutOrStdout(), "export %s=%s/mcp\n", mcpAddressEnv, server)
 			}
 			return nil
 		},
@@ -156,6 +162,8 @@ func mcpTargets(home string, tools []skillTool) []mcpInstallTarget {
 			targets = append(targets, mcpInstallTarget{tool: tool.name, path: filepath.Join(home, ".codex", "config.toml")})
 		case "claude":
 			targets = append(targets, mcpInstallTarget{tool: tool.name, path: filepath.Join(home, ".claude.json")})
+		case "cursor":
+			targets = append(targets, mcpInstallTarget{tool: tool.name, path: filepath.Join(home, ".cursor", "mcp.json")})
 		}
 	}
 	return targets
@@ -176,6 +184,8 @@ func reconcileMCPRegistration(home string, target mcpInstallTarget, endpoint str
 		next, status, err = reconcileCodexMCP(prior, endpoint, adopt)
 	case "claude":
 		next, status, err = reconcileClaudeMCP(prior, endpoint, adopt)
+	case "cursor":
+		next, status, err = reconcileCursorMCP(prior, adopt)
 	default:
 		err = fmt.Errorf("unsupported MCP tool %q", target.tool)
 	}
@@ -334,6 +344,64 @@ func reconcileClaudeMCP(prior []byte, endpoint string, adopt bool) ([]byte, stri
 		URL     string            `json:"url"`
 		Headers map[string]string `json:"headers"`
 	}{Type: "http", URL: endpoint, Headers: map[string]string{"Authorization": "Bearer ${" + mcpTokenEnv + "}"}})
+	if exists && owned && jsonEquivalent(prior[serversMember.valueStart+conveyorMember.valueStart:serversMember.valueStart+conveyorMember.valueEnd], desiredServer) {
+		return prior, "unchanged", nil
+	}
+	next := append([]byte(nil), prior...)
+	if hasServers {
+		updatedServers, updateErr := setJSONObjectMember(prior[serversMember.valueStart:serversMember.valueEnd], "conveyor", desiredServer)
+		if updateErr != nil {
+			return nil, "", updateErr
+		}
+		next = replaceBytes(next, serversMember.valueStart, serversMember.valueEnd, updatedServers)
+	} else {
+		serverObject := append([]byte(`{"conveyor":`), desiredServer...)
+		serverObject = append(serverObject, '}')
+		next, err = setJSONObjectMember(next, "mcpServers", serverObject)
+		if err != nil {
+			return nil, "", err
+		}
+	}
+	next, err = setJSONObjectMember(next, claudeOwnerKey, []byte(fmt.Sprintf("%q", claudeOwnerValue)))
+	if err != nil {
+		return nil, "", err
+	}
+	status := "created"
+	if exists {
+		status = "refreshed"
+	}
+	return next, status, nil
+}
+
+func reconcileCursorMCP(prior []byte, adopt bool) ([]byte, string, error) {
+	if len(bytes.TrimSpace(prior)) == 0 {
+		prior = []byte("{}\n")
+	}
+	root, err := scanJSONObject(prior)
+	if err != nil {
+		return nil, "", fmt.Errorf("parse JSON: %w", err)
+	}
+	owned := false
+	if member, ok := root.member(claudeOwnerKey); ok {
+		var marker string
+		owned = json.Unmarshal(prior[member.valueStart:member.valueEnd], &marker) == nil && marker == claudeOwnerValue
+	}
+	serversMember, hasServers := root.member("mcpServers")
+	var servers jsonObject
+	if hasServers {
+		servers, err = scanJSONObject(prior[serversMember.valueStart:serversMember.valueEnd])
+		if err != nil {
+			return nil, "", errors.New("mcpServers is not a JSON object")
+		}
+	}
+	conveyorMember, exists := servers.member("conveyor")
+	if exists && !owned && !adopt {
+		return prior, "skipped", nil
+	}
+	desiredServer, _ := json.Marshal(struct {
+		URL     string            `json:"url"`
+		Headers map[string]string `json:"headers"`
+	}{URL: "${env:" + mcpAddressEnv + "}", Headers: map[string]string{"Authorization": "Bearer ${env:" + mcpTokenEnv + "}"}})
 	if exists && owned && jsonEquivalent(prior[serversMember.valueStart+conveyorMember.valueStart:serversMember.valueStart+conveyorMember.valueEnd], desiredServer) {
 		return prior, "unchanged", nil
 	}

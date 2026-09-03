@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -35,6 +34,7 @@ type workerServicePaths struct {
 	ConfigDir  string `json:"-"`
 	Home       string `json:"-"`
 	Definition string `json:"-"`
+	Address    string `json:"-"`
 }
 
 type workerServicePlatform struct {
@@ -213,20 +213,21 @@ func resolveWorkerService(platform workerServicePlatform, workspace, address str
 	if !filepath.IsAbs(platform.Executable) {
 		return workerServicePaths{}, fmt.Errorf("resolved Conveyor executable must be absolute: %s", platform.Executable)
 	}
-	parsed, err := url.Parse(address)
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return workerServicePaths{}, fmt.Errorf("CONVEYOR_ADDR must be an absolute URL without credentials, query, or fragment")
+	address, err := normalizeServerURL(address)
+	if err != nil {
+		return workerServicePaths{}, fmt.Errorf("invalid CONVEYOR_ADDR: %w", err)
 	}
 	identity := workerServiceIdentity(workspace)
 	if platform.GOOS == "darwin" {
 		name := "com.conveyor.worker." + identity
 		logDir := filepath.Join(platform.Home, "Library", "Logs", "Conveyor", "workers", identity)
 		paths := workerServicePaths{
-			Name:   name,
-			Unit:   filepath.Join(platform.Home, "Library", "LaunchAgents", name+".plist"),
-			Stdout: filepath.Join(logDir, "stdout.log"),
-			Stderr: filepath.Join(logDir, "stderr.log"),
-			Home:   platform.Home,
+			Name:    name,
+			Unit:    filepath.Join(platform.Home, "Library", "LaunchAgents", name+".plist"),
+			Stdout:  filepath.Join(logDir, "stdout.log"),
+			Stderr:  filepath.Join(logDir, "stderr.log"),
+			Home:    platform.Home,
+			Address: address,
 		}
 		return paths, nil
 	}
@@ -238,12 +239,16 @@ func resolveWorkerService(platform workerServicePlatform, workspace, address str
 		Stdout:    filepath.Join(logDir, "stdout.log"),
 		Stderr:    filepath.Join(logDir, "stderr.log"),
 		Home:      platform.Home,
+		Address:   address,
 		ConfigDir: platform.ConfigDir,
 	}
 	return paths, nil
 }
 
 func workerServiceDefinition(platform workerServicePlatform, paths workerServicePaths, workspace, address, configPath string) string {
+	if paths.Address != "" {
+		address = paths.Address
+	}
 	if platform.GOOS == "darwin" {
 		return launchdWorkerDefinition(paths, workspace, address, platform.Executable, configPath)
 	}

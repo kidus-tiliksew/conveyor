@@ -278,6 +278,16 @@ func TestNormalizeServerURLRejectsUnsafeComponents(t *testing.T) {
 	if got, err := normalizeServerURL("HTTPS://Factory.Example.Test/base///"); err != nil || got != "https://factory.example.test/base" {
 		t.Fatalf("normalized=%q err=%v", got, err)
 	}
+	for input, want := range map[string]string{
+		"https://factory.example.test/mcp":         "https://factory.example.test",
+		"https://factory.example.test/base/mcp///": "https://factory.example.test/base",
+		"https://factory.example.test/mcp/mcp":     "https://factory.example.test/mcp",
+		"https://factory.example.test/base/mcpx":   "https://factory.example.test/base/mcpx",
+	} {
+		if got, err := normalizeServerURL(input); err != nil || got != want {
+			t.Fatalf("normalizeServerURL(%q)=%q, want %q err=%v", input, got, want, err)
+		}
+	}
 }
 
 func TestLocalAuthConfigPathErrorIsPreserved(t *testing.T) {
