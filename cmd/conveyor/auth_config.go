@@ -61,6 +61,9 @@ func normalizeServerURL(value string) (string, error) {
 	u.Scheme = strings.ToLower(u.Scheme)
 	u.Host = strings.ToLower(u.Host)
 	u.Path = strings.TrimRight(u.Path, "/")
+	if strings.HasSuffix(u.Path, "/mcp") {
+		u.Path = strings.TrimSuffix(u.Path, "/mcp")
+	}
 	u.RawPath = ""
 	return u.String(), nil
 }

@@ -91,8 +91,15 @@ conveyor --server https://factory.example.com mcp install
 ```
 
 The install commands detect Claude Code, Codex, and Cursor. Use `--tool` to
-narrow either command to one client; Cursor MCP registration is reported as
-unsupported until its native target is available.
+narrow either command to one client. Cursor MCP installation writes the owned
+global `~/.cursor/mcp.json` entry and leaves project-level configuration alone.
+Before an operator starts Cursor, bridge the selected server and stored
+credential through the environment:
+
+```sh
+export CONVEYOR_ADDR=https://factory.example.com/mcp
+export CONVEYOR_API_TOKEN=$(conveyor auth token)
+```
 
 4. Create a local execution setup describing the agent CLIs on this machine:
 

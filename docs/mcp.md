@@ -4,8 +4,10 @@ Conveyor's MCP server is the protocol boundary agents work through. It lives
 at `<server>/mcp`, speaks streamable HTTP, and authenticates with a bearer
 token: a personal access token for interactive sessions, or the worker
 credential the launcher injects for dispatched ones. `conveyor mcp install`
-registers it with detected Claude Code and Codex clients using an
-environment-backed token reference.
+registers it with detected Claude Code, Codex, and Cursor clients using
+environment-backed credential references. Cursor's global registration also
+references `CONVEYOR_ADDR=<server>/mcp`; the CLI accepts that value as the same
+server base and never writes a project-level Cursor registration.
 
 Workspace scope follows the same rule as REST: pass `workspace_id`, or omit
 it only when the credential belongs to exactly one workspace. Worker

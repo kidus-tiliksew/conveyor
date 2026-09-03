@@ -90,6 +90,17 @@ func TestWorkerServiceDefinitionsAreWorkspaceSpecificAndSecretFree(t *testing.T)
 	}
 }
 
+func TestWorkerServiceNormalizesTrailingMCPAddress(t *testing.T) {
+	platform := testWorkerServicePlatform(t, "linux", nil)
+	paths := resolveTestWorkerService(t, platform, "demo", "https://control.example/base/mcp")
+	if paths.Address != "https://control.example/base" {
+		t.Fatalf("normalized address=%q", paths.Address)
+	}
+	if !strings.Contains(paths.Definition, "CONVEYOR_ADDR=https://control.example/base") || strings.Contains(paths.Definition, "CONVEYOR_ADDR=https://control.example/base/mcp") {
+		t.Fatalf("worker definition did not use normalized address:\n%s", paths.Definition)
+	}
+}
+
 func TestLinuxWorkerServicePathDirectivesAreUnquoted(t *testing.T) {
 	platform := testWorkerServicePlatform(t, "linux", nil)
 	paths := resolveTestWorkerService(t, platform, "demo", "https://control.example")

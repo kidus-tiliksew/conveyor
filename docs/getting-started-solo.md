@@ -113,16 +113,17 @@ conveyor skills install
 conveyor mcp install
 ```
 
-The install commands configure detected Claude Code, Codex, and Cursor clients; pass
-`--tool` to pick one or `--list` to see what would change. MCP registration
+The install commands configure detected Claude Code, Codex, and Cursor clients;
+pass `--tool` to pick one or `--list` to see what would change. MCP registration
 references the token through the `CONVEYOR_API_TOKEN` environment variable
-rather than writing the value anywhere. Cursor skill installation is supported,
-while Cursor MCP registration is reported as unsupported until its native target
-is available. If that variable is not set in your shell, the command prints the
-line to add:
+rather than writing the value anywhere. Cursor uses the owned global
+`~/.cursor/mcp.json` entry and leaves project-level Cursor configuration alone.
+For operator Cursor sessions, export the selected server's MCP endpoint too.
+The command prints either missing bridge line:
 
 ```sh
 export CONVEYOR_API_TOKEN=$(conveyor auth token)
+export CONVEYOR_ADDR=http://127.0.0.1:8080/mcp
 ```
 
 ## 7. Create an execution setup

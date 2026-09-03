@@ -53,7 +53,9 @@ that behavior.
 
 ## Global Conveyor registration
 
-Register Conveyor in `~/.cursor/mcp.json` without literal credentials:
+Run `conveyor mcp install --tool cursor` to register Conveyor globally in
+`~/.cursor/mcp.json` without literal credentials. The command preserves other
+servers and manages only its ownership-marked `mcpServers.conveyor` entry:
 
 ```json
 {
@@ -72,6 +74,19 @@ Conveyor does not use project-level `.cursor/mcp.json` entries because Cursor
 requires separate approval for them. The global registration loads under the
 child environment without an approval prompt.
 
+Cursor reads the address and credential from its environment. For operator
+sessions, export the MCP endpoint and stored-credential bridge before starting
+Cursor:
+
+```sh
+export CONVEYOR_ADDR=https://factory.example.com/mcp
+export CONVEYOR_API_TOKEN=$(conveyor auth token)
+```
+
+Conveyor commands accept the same `CONVEYOR_ADDR` value and remove one trailing
+`/mcp` segment when resolving the REST server base. Worker children receive the
+matching MCP endpoint from their launcher.
+
 ## Readiness and installation
 
 Before every model turn, Conveyor runs
@@ -79,9 +94,10 @@ Before every model turn, Conveyor runs
 environment. Readiness fails closed unless the command exits successfully and
 lists Conveyor's claim, renewal, release, implementation-submission, and
 review-verdict lifecycle tools. A readiness error means the global registration
-is missing, invalid, or cannot complete the handshake. Repair
-`~/.cursor/mcp.json` and retry the work order; Conveyor never writes Cursor's
-configuration.
+is missing, invalid, or cannot complete the handshake. Run
+`conveyor mcp install --tool cursor`, verify the environment bridge above, and
+retry the work order. Launch and readiness never create or repair Cursor
+configuration; only the explicit install command writes the owned global entry.
 
 Install Cursor CLI so `cursor-agent` is on `PATH`. Use `cursor-agent`, never
 the `agent` alias; the official installer replaces `~/.local/bin/agent`, which
