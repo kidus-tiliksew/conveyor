@@ -97,7 +97,23 @@ func TestRiverClientConvergesLateWorkspaceQueuesIntegration(t *testing.T) {
 	if err = st.CreateTask(taskCtx, child); err != nil {
 		t.Fatal(err)
 	}
-	if err = AddWorkspaceQueues(client, workspaceB); err != nil {
+	registrar := NewWorkspaceQueueRegistrar([]string{workspaceA}, func(workspace string) error {
+		return AddWorkspaceQueues(client, workspace)
+	}, t.Logf)
+	workspaces, err := st.ListWorkspaces(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var convergenceWorkspaces []core.Workspace
+	for _, workspace := range workspaces {
+		if workspace.ID == workspaceA || workspace.ID == workspaceB {
+			convergenceWorkspaces = append(convergenceWorkspaces, workspace)
+		}
+	}
+	if len(convergenceWorkspaces) != 2 {
+		t.Fatalf("convergence workspaces=%v, want %s and %s", convergenceWorkspaces, workspaceA, workspaceB)
+	}
+	if err = registrar.Converge(convergenceWorkspaces); err != nil {
 		t.Fatal(err)
 	}
 

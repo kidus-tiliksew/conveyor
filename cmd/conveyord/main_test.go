@@ -13,6 +13,7 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
 	queueargs "github.com/kidus-tiliksew/conveyor/internal/queue"
 )
 
@@ -23,7 +24,7 @@ func TestWorkspaceQueueRegistrarConvergesOnceAndRetriesFailures(t *testing.T) {
 	wantErr := errors.New("register unavailable")
 	fail := atomic.Bool{}
 	fail.Store(true)
-	registrar := newWorkspaceQueueRegistrar([]string{"startup"}, func(workspace string) error {
+	registrar := dispatch.NewWorkspaceQueueRegistrar([]string{"startup"}, func(workspace string) error {
 		calls.Add(1)
 		if workspace == "retry" && fail.Load() {
 			return wantErr
@@ -35,14 +36,14 @@ func TestWorkspaceQueueRegistrarConvergesOnceAndRetriesFailures(t *testing.T) {
 		lines = append(lines, fmt.Sprintf(format, args...))
 	})
 
-	if added, err := registrar.ensure("startup"); err != nil || added {
+	if added, err := registrar.Ensure("startup"); err != nil || added {
 		t.Fatalf("seeded workspace added=%t err=%v", added, err)
 	}
-	if added, err := registrar.ensure("retry"); !errors.Is(err, wantErr) || added {
+	if added, err := registrar.Ensure("retry"); !errors.Is(err, wantErr) || added {
 		t.Fatalf("failed workspace added=%t err=%v", added, err)
 	}
 	fail.Store(false)
-	if added, err := registrar.ensure("retry"); err != nil || !added {
+	if added, err := registrar.Ensure("retry"); err != nil || !added {
 		t.Fatalf("retried workspace added=%t err=%v", added, err)
 	}
 
@@ -53,7 +54,7 @@ func TestWorkspaceQueueRegistrarConvergesOnceAndRetriesFailures(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			added, err := registrar.ensure("new")
+			added, err := registrar.Ensure("new")
 			if err != nil {
 				t.Errorf("concurrent ensure: %v", err)
 			}
@@ -71,7 +72,7 @@ func TestWorkspaceQueueRegistrarConvergesOnceAndRetriesFailures(t *testing.T) {
 	if addedCount != 1 {
 		t.Fatalf("concurrent additions=%d, want 1", addedCount)
 	}
-	if added, err := registrar.ensure("new"); err != nil || added {
+	if added, err := registrar.Ensure("new"); err != nil || added {
 		t.Fatalf("second pass added=%t err=%v", added, err)
 	}
 	if got := calls.Load(); got != 3 {
