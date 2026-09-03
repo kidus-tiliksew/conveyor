@@ -1541,6 +1541,13 @@ func (s *Store) ApplyTaskCommand(ctx context.Context, lease taskops.TaskLease, i
 		if err := insertEvent(ctx, q, core.Event{TaskID: id, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": before.State, "to": state, "command": command.Kind})}); err != nil {
 			return err
 		}
+		if command.FailureMessage != "" {
+			if err := insertEvent(ctx, q, core.Event{TaskID: id, Kind: "dispatch.failed", Payload: core.JSONPayload(map[string]any{
+				"attempt": command.Attempt, "max_attempts": command.MaxAttempts, "error": command.FailureMessage,
+			})}); err != nil {
+				return err
+			}
+		}
 		if err := s.recordDependencyOutcomeTx(ctx, tx, id, state, time.Now().UTC()); err != nil {
 			return err
 		}
@@ -1804,7 +1811,68 @@ ORDER BY t.created_at, t.id`, workspace(ctx))
 		}
 		return nil
 	})
-	return repaired, err
+	if err != nil {
+		return repaired, err
+	}
+	rows, err := s.pool.Query(ctx, `
+SELECT t.id, t.next_stage, r.attempt, r.max_attempts
+FROM tasks t
+JOIN LATERAL (
+    SELECT attempt, max_attempts
+    FROM river_job
+    WHERE kind = 'dispatch_task'
+      AND args->>'task_id' = t.id
+      AND args->>'workspace_id' = t.workspace_id
+      AND state = 'discarded'
+      AND attempt >= max_attempts
+    ORDER BY finalized_at DESC NULLS LAST, id DESC
+    LIMIT 1
+) r ON true
+WHERE t.workspace_id = $1
+  AND t.state = 'running'
+  AND NOT EXISTS (
+      SELECT 1 FROM river_job active
+      WHERE active.kind = 'dispatch_task'
+        AND active.args->>'task_id' = t.id
+        AND active.args->>'workspace_id' = t.workspace_id
+        AND active.state IN ('available', 'pending', 'running', 'retryable', 'scheduled')
+  )
+ORDER BY t.created_at, t.id`, workspace(ctx))
+	if err != nil {
+		return repaired, err
+	}
+	type discardedTask struct {
+		id          string
+		stage       core.Stage
+		attempt     int
+		maxAttempts int
+	}
+	var discarded []discardedTask
+	for rows.Next() {
+		var candidate discardedTask
+		if err = rows.Scan(&candidate.id, &candidate.stage, &candidate.attempt, &candidate.maxAttempts); err != nil {
+			rows.Close()
+			return repaired, err
+		}
+		discarded = append(discarded, candidate)
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return repaired, err
+	}
+	rows.Close()
+	for _, candidate := range discarded {
+		_, applyErr := taskops.New(s).Perform(ctx, candidate.id, taskops.Command{
+			Kind: core.TaskDispatchFailFinal, RecoveryStage: candidate.stage, ProjectStages: true,
+			FailureMessage: "River rescuer discarded the dispatch job after its final attempt",
+			Attempt:        candidate.attempt, MaxAttempts: candidate.maxAttempts,
+		})
+		if applyErr != nil {
+			return repaired, applyErr
+		}
+		repaired++
+	}
+	return repaired, nil
 }
 
 // ReconcileBlueprintClosures repairs missed close edges for blueprint parents.

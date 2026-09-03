@@ -60,6 +60,11 @@ type Command struct {
 	NextStage     core.Stage
 	RecoveryStage core.Stage
 	ProjectStages bool
+	// Failure fields let a recovery command persist existing dispatch.failed
+	// evidence in the same transaction as its lifecycle transition.
+	FailureMessage string
+	Attempt        int
+	MaxAttempts    int
 }
 
 // WorkOrderMetadataCommand admits updates to progress/cost fields that do not

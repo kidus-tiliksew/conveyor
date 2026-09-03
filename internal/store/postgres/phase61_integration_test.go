@@ -125,6 +125,49 @@ func TestBlueprintAnchorReconciliationStaysQuietIntegration(t *testing.T) {
 	}
 }
 
+func TestReconcileRescuerDiscardParksRunningTaskWithFailureEvidenceIntegration(t *testing.T) {
+	st, ctx, workspace := newPhase61IntegrationStore(t)
+	defer st.Close()
+	task := phase61Task(workspace, "rescuer-discard-"+core.NewTaskID(), core.TaskQueued, "")
+	task.NextStage = core.StageTriage
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := taskops.New(st).Perform(ctx, task.ID, taskops.Command{Kind: core.TaskDispatchStart}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.pool.Exec(ctx, `UPDATE river_job
+		SET state='discarded', attempt=max_attempts, finalized_at=now()
+		WHERE kind='dispatch_task' AND args->>'workspace_id'=$1 AND args->>'task_id'=$2`, workspace, task.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	repaired, err := st.ReconcileQueuedTasks(ctx)
+	if err != nil || repaired != 1 {
+		t.Fatalf("reconciled=%d err=%v, want 1", repaired, err)
+	}
+	current, err := st.GetTask(ctx, task.ID)
+	if err != nil || current.State != core.TaskParked || current.RecoveryStage != core.StageTriage {
+		t.Fatalf("task=%+v err=%v, want recoverable parked triage task", current, err)
+	}
+	events, err := st.ListEvents(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundFailure := false
+	for _, event := range events {
+		if event.Kind == "dispatch.failed" && strings.Contains(string(event.Payload), "River rescuer discarded") {
+			foundFailure = true
+		}
+	}
+	if !foundFailure {
+		t.Fatal("rescuer discard did not retain dispatch.failed evidence")
+	}
+	if repaired, err = st.ReconcileQueuedTasks(ctx); err != nil || repaired != 0 {
+		t.Fatalf("second reconcile=%d err=%v, want idempotent 0", repaired, err)
+	}
+}
+
 func TestBlueprintCloseAfterRecoveryAndPeriodicReconcileIntegration(t *testing.T) {
 	st, ctx, workspace := newPhase61IntegrationStore(t)
 	defer st.Close()

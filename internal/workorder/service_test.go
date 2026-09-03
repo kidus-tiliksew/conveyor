@@ -2752,6 +2752,45 @@ func TestAwaitReviewSubmittedOrderOwnershipTimeoutAndPostLeaseRetry(t *testing.T
 	}
 }
 
+func TestAwaitReviewReturnsWhenBaseContextIsCancelled(t *testing.T) {
+	st := store.NewMemory()
+	ctx := context.Background()
+	task := core.Task{ID: "await-shutdown-task", Workspace: "test", State: core.TaskRunning, CreatedAt: time.Now()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: "await-shutdown-implement", TaskID: task.ID, Stage: core.StageImplement, State: core.JobDone, StartedAt: time.Now()}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement}); err != nil {
+		t.Fatal(err)
+	}
+	order, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "shutdown-owner", ClientToken: "secret", Lease: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	order.State = core.WorkOrderSubmitted
+	if err = storetest.For(st).UpdateWorkOrder(ctx, order); err != nil {
+		t.Fatal(err)
+	}
+	baseCtx, cancelBase := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, awaitErr := (&Service{Store: st}).AwaitReview(baseCtx, order.ID, "shutdown-owner", time.Minute)
+		done <- awaitErr
+	}()
+	cancelBase()
+	select {
+	case err = <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("await error=%v, want context canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("await_review did not return after base-context cancellation")
+	}
+}
+
 func TestAwaitReviewPendingIncludesLatestRoundSeatProgressWithoutMutation(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -16,6 +18,7 @@ import (
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 
+	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	queueargs "github.com/kidus-tiliksew/conveyor/internal/queue"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
@@ -72,6 +75,42 @@ func (r *WorkspaceQueueRegistrar) Converge(workspaces []core.Workspace) error {
 type dispatchTaskWorker struct {
 	river.WorkerDefaults[queueargs.DispatchTaskArgs]
 	dispatcher *Dispatcher
+	shutdown   *ShutdownMarker
+}
+
+const (
+	RiverRescueSafetyMargin = 5 * time.Minute
+	shutdownRetryDelay      = time.Second
+)
+
+// ShutdownMarker distinguishes daemon interruption from a stage-owned
+// deadline. River supplies cancellation for both cases, so the worker also
+// requires this process-scoped marker before it preserves the attempt.
+type ShutdownMarker struct{ stopping atomic.Bool }
+
+func (m *ShutdownMarker) Mark() {
+	if m != nil {
+		m.stopping.Store(true)
+	}
+}
+
+func (m *ShutdownMarker) Stopping() bool { return m != nil && m.stopping.Load() }
+
+// MarkedRiverClient marks hard shutdown before River cancels active work.
+type MarkedRiverClient struct {
+	client   *river.Client[pgx.Tx]
+	shutdown *ShutdownMarker
+}
+
+func NewMarkedRiverClient(client *river.Client[pgx.Tx], shutdown *ShutdownMarker) *MarkedRiverClient {
+	return &MarkedRiverClient{client: client, shutdown: shutdown}
+}
+
+func (c *MarkedRiverClient) Stop(ctx context.Context) error { return c.client.Stop(ctx) }
+
+func (c *MarkedRiverClient) StopAndCancel(ctx context.Context) error {
+	c.shutdown.Mark()
+	return c.client.StopAndCancel(ctx)
 }
 
 type orderClockWorker struct {
@@ -400,6 +439,13 @@ func (w *dispatchTaskWorker) Work(ctx context.Context, job *river.Job[queueargs.
 		}
 		return nil
 	}
+	if w.shutdown.Stopping() && errors.Is(err, context.Canceled) {
+		// Shutdown interruption is not a dispatch failure. Snoozing restores
+		// River's incremented attempt and keeps the same durable row available
+		// for another instance (REQ-6/AC-6.2; design-task-lifecycle).
+		log.Printf("[task %s] River job %d interrupted by daemon shutdown; preserving attempt %d", job.Args.TaskID, job.ID, job.Attempt)
+		return river.JobSnooze(shutdownRetryDelay)
+	}
 	return w.handleFailure(ctx, job, err)
 }
 
@@ -465,9 +511,13 @@ func (w *dispatchTaskWorker) handleFailure(ctx context.Context, job *river.Job[q
 // NewRiverClient binds the durable queue to the dispatcher. The Store owns
 // transactional insertion; this client owns only worker execution (spec
 // §3.1, §17.0).
-func NewRiverClient(pool *pgxpool.Pool, dispatcher *Dispatcher, workspaces []string) (*river.Client[pgx.Tx], error) {
+func NewRiverClient(pool *pgxpool.Pool, dispatcher *Dispatcher, workspaces []string, workspaceConfigs map[string]*config.Config, shutdown *ShutdownMarker) (*river.Client[pgx.Tx], error) {
+	rescueAfter, err := RiverRescueStuckJobsAfter(workspaceConfigs)
+	if err != nil {
+		return nil, err
+	}
 	workers := river.NewWorkers()
-	river.AddWorker(workers, &dispatchTaskWorker{dispatcher: dispatcher})
+	river.AddWorker(workers, &dispatchTaskWorker{dispatcher: dispatcher, shutdown: shutdown})
 	river.AddWorker(workers, &reviewPublicationWorker{dispatcher: dispatcher})
 	river.AddWorker(workers, &githubIssuePublicationWorker{dispatcher: dispatcher})
 	river.AddWorker(workers, &orderClockWorker{dispatcher: dispatcher})
@@ -483,11 +533,81 @@ func NewRiverClient(pool *pgxpool.Pool, dispatcher *Dispatcher, workspaces []str
 		// Dispatcher stage contexts enforce the configured per-stage wall-clock
 		// limits. River's one-minute default would cancel long harness runs and
 		// handoff artifact collection before those limits (DEC-1).
-		JobTimeout:   -1,
-		Queues:       queues,
-		Workers:      workers,
-		PeriodicJobs: periodicJobs,
+		JobTimeout:           -1,
+		RescueStuckJobsAfter: rescueAfter,
+		Queues:               queues,
+		Workers:              workers,
+		PeriodicJobs:         periodicJobs,
 	})
+}
+
+// RiverRescueStuckJobsAfter bounds crash recovery above every stage that may
+// run inside conveyord. The default timeout remains part of the calculation
+// when a route is absent or has not yet been normalized.
+func RiverRescueStuckJobsAfter(workspaceConfigs map[string]*config.Config) (time.Duration, error) {
+	workspaces := make([]string, 0, len(workspaceConfigs))
+	for workspace := range workspaceConfigs {
+		workspaces = append(workspaces, workspace)
+	}
+	sort.Strings(workspaces)
+	maxTimeout := time.Duration(0)
+	routes := make([]riverRouteTimeout, 0, len(workspaces)*2)
+	for _, workspace := range workspaces {
+		cfg := workspaceConfigs[workspace]
+		if cfg == nil {
+			return 0, fmt.Errorf("River rescue threshold: workspace %s has no effective configuration", workspace)
+		}
+		for _, route := range riverInProcessRouteTimeouts(workspace, cfg) {
+			routes = append(routes, route)
+			if route.timeout > maxTimeout {
+				maxTimeout = route.timeout
+			}
+		}
+	}
+	if maxTimeout == 0 {
+		maxTimeout = config.DefaultStageTimeout
+	}
+	if maxTimeout > time.Duration(1<<63-1)-RiverRescueSafetyMargin {
+		return 0, fmt.Errorf("River rescue threshold overflows maximum duration for route timeout %s", maxTimeout)
+	}
+	threshold := maxTimeout + RiverRescueSafetyMargin
+	for _, route := range routes {
+		if route.timeout <= 0 || route.timeout >= threshold {
+			return 0, fmt.Errorf("River route %s timeout %s must be strictly below rescue threshold %s", route.name, route.timeout, threshold)
+		}
+	}
+	return threshold, nil
+}
+
+type riverRouteTimeout struct {
+	name    string
+	timeout time.Duration
+}
+
+func riverInProcessRouteTimeouts(workspace string, cfg *config.Config) []riverRouteTimeout {
+	routes := make([]riverRouteTimeout, 0, 2)
+	for _, stage := range []string{"triage", "spec"} {
+		timeout := config.DefaultStageTimeout
+		if route, ok := cfg.Routing.Stages[stage]; ok && route.Timeout > 0 {
+			timeout = route.Timeout
+		}
+		routes = append(routes, riverRouteTimeout{name: workspace + "/" + stage, timeout: timeout})
+	}
+	return routes
+}
+
+// ValidateRiverRescueStuckJobsAfter prevents a queue added after startup from
+// introducing an in-process route that can be rescued while still live.
+func ValidateRiverRescueStuckJobsAfter(workspace string, cfg *config.Config, threshold time.Duration) error {
+	if cfg == nil {
+		return fmt.Errorf("River rescue threshold: workspace %s has no effective configuration", workspace)
+	}
+	for _, route := range riverInProcessRouteTimeouts(workspace, cfg) {
+		if route.timeout <= 0 || route.timeout >= threshold {
+			return fmt.Errorf("River route %s timeout %s must be strictly below rescue threshold %s", route.name, route.timeout, threshold)
+		}
+	}
+	return nil
 }
 
 func orderClockPeriodicJob(workspace string) *river.PeriodicJob {

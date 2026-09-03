@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -36,6 +37,92 @@ type failingStageOrderStore struct {
 	err error
 }
 
+type blockingDispatchStore struct {
+	store.Store
+	taskID  string
+	started chan struct{}
+	once    sync.Once
+}
+
+func (s *blockingDispatchStore) GetTask(ctx context.Context, id string) (core.Task, error) {
+	if id != s.taskID {
+		return s.Store.GetTask(ctx, id)
+	}
+	s.once.Do(func() { close(s.started) })
+	<-ctx.Done()
+	return core.Task{}, ctx.Err()
+}
+
+func TestRiverShutdownInterruptionPreservesRowAndAttemptIntegration(t *testing.T) {
+	databaseURL := dispatchIntegrationDatabaseURL(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	st, err := storepg.Open(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	suffix := core.NewTaskID()
+	workspace := "shutdown-interrupt-" + suffix
+	cfg := dispatchRaceConfig(workspace)
+	actorCtx := store.WithActor(ctx, store.Actor{ID: "test", Role: core.ActorHuman})
+	if _, err = st.CreateWorkspace(actorCtx, workspace, "Shutdown interrupt "+suffix, cfg); err != nil {
+		t.Fatal(err)
+	}
+	taskCtx := store.WithWorkspace(ctx, workspace)
+	task := core.Task{
+		ID: "shutdown-interrupt-" + suffix, Workspace: workspace, Repo: "repo", Title: "Interrupt dispatch",
+		BaseBranch: "main", Branch: "conveyor/shutdown-interrupt-" + suffix,
+		State: core.TaskQueued, NextStage: core.StageTriage, CreatedAt: time.Now().UTC(),
+	}
+	if err = st.CreateTask(taskCtx, task); err != nil {
+		t.Fatal(err)
+	}
+	blocking := &blockingDispatchStore{Store: st, taskID: task.ID, started: make(chan struct{})}
+	dispatcher := New(blocking, cfg, nil)
+	marker := &ShutdownMarker{}
+	client, err := NewRiverClient(st.Pool(), dispatcher, []string{workspace}, map[string]*config.Config{workspace: cfg}, marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = client.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-blocking.started:
+	case <-ctx.Done():
+		t.Fatal("River dispatch did not start")
+	}
+	var rowID int64
+	if err = st.Pool().QueryRow(ctx, `SELECT id FROM river_job
+		WHERE kind='dispatch_task' AND args->>'workspace_id'=$1 AND args->>'task_id'=$2`, workspace, task.ID).Scan(&rowID); err != nil {
+		t.Fatal(err)
+	}
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer stopCancel()
+	if err = NewMarkedRiverClient(client, marker).StopAndCancel(stopCtx); err != nil {
+		t.Fatal(err)
+	}
+	var persistedID int64
+	var state string
+	var attempt int
+	if err = st.Pool().QueryRow(ctx, `SELECT id, state, attempt FROM river_job
+		WHERE kind='dispatch_task' AND args->>'workspace_id'=$1 AND args->>'task_id'=$2`, workspace, task.ID).Scan(&persistedID, &state, &attempt); err != nil {
+		t.Fatal(err)
+	}
+	if persistedID != rowID || (state != "available" && state != "retryable" && state != "scheduled") || attempt != 0 {
+		t.Fatalf("River row id=%d state=%s attempt=%d, want same id=%d available/retryable with attempt 0", persistedID, state, attempt, rowID)
+	}
+	if count, countErr := st.CountEvents(taskCtx, task.ID, "dispatch.failed"); countErr != nil || count != 0 {
+		t.Fatalf("dispatch.failed events=%d err=%v, want 0", count, countErr)
+	}
+	current, err := st.GetTask(taskCtx, task.ID)
+	if err != nil || current.State != core.TaskQueued {
+		t.Fatalf("task=%+v err=%v, want no failure transition", current, err)
+	}
+}
+
 func TestRiverClientConvergesLateWorkspaceQueuesIntegration(t *testing.T) {
 	databaseURL := dispatchIntegrationDatabaseURL(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
@@ -54,7 +141,7 @@ func TestRiverClientConvergesLateWorkspaceQueuesIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	dispatcher := New(st, dispatchRaceConfig(workspaceA), nil)
-	client, err := NewRiverClient(st.Pool(), dispatcher, []string{workspaceA})
+	client, err := NewRiverClient(st.Pool(), dispatcher, []string{workspaceA}, map[string]*config.Config{workspaceA: dispatchRaceConfig(workspaceA)}, &ShutdownMarker{})
 	if err != nil {
 		t.Fatal(err)
 	}
