@@ -49,18 +49,29 @@ func TestPlanContinuationLaunchEligibilityMatrix(t *testing.T) {
 	}
 }
 
-func TestContinuationObserverIsClaudeResumeContractOnly(t *testing.T) {
+func TestContinuationObserverFollowsResumeCapability(t *testing.T) {
 	contract := []string{"--resume", "{session_id}"}
-	if !continuationObserverEnabled(config.Harness{Name: "claude", ResumeCommand: contract}, "worker:one") {
-		t.Fatal("claude resume contract should enable capture")
+	for _, name := range []string{"claude", "cursor"} {
+		if !continuationObserverEnabled(config.Harness{Name: name, ResumeCommand: contract}, "worker:one") {
+			t.Fatalf("%s resume contract should enable capture", name)
+		}
 	}
-	for _, harness := range []config.Harness{{Name: "claude"}, {Name: "codex", ResumeCommand: contract}} {
+	for _, harness := range []config.Harness{{Name: "claude"}, {Name: "codex"}} {
 		if continuationObserverEnabled(harness, "worker:one") {
 			t.Fatalf("unexpected capture for %+v", harness)
 		}
 	}
 	if continuationObserverEnabled(config.Harness{Name: "claude", ResumeCommand: contract}, "") {
 		t.Fatal("capture without a reportable environment")
+	}
+}
+
+func TestContinuationSessionObserverCapturesCursorInitEnvelope(t *testing.T) {
+	var observed string
+	observer := newContinuationSessionObserver(func(value string) { observed = value })
+	_, _ = observer.Write([]byte(`{"type":"system","subtype":"init","session_id":"cursor-native"}` + "\n"))
+	if observed != "cursor-native" {
+		t.Fatalf("observed=%q", observed)
 	}
 }
 

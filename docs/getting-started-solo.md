@@ -179,8 +179,8 @@ adding a second seat with a different model buys a second opinion on every
 delivery.
 
 The file stays on this machine; the server only learns whether a serviceable
-harness is present. Built-in templates exist for Claude Code, Codex, and
-Grok, so you rarely write a harness entry by hand. Named variants of the
+harness is present. Built-in templates exist for Claude Code, Codex, Grok, and
+Cursor, so you rarely write a harness entry by hand. Named variants of the
 setup are managed with `conveyor setup` and selected per run with
 `conveyor run --setup <name>`; see the [CLI reference](cli.md#setup).
 

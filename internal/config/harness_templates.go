@@ -83,5 +83,21 @@ func HarnessTemplates() []HarnessTemplate {
 				StallTimeoutText: DefaultHarnessStallTimeoutText,
 			},
 		},
+		{
+			ID:          "cursor",
+			Label:       "Cursor CLI",
+			Description: "Cursor's coding agent",
+			Harness: Harness{
+				Name:             "cursor",
+				MCPTransport:     MCPTransportEnvironment,
+				MCPAttachment:    "conveyor",
+				Command:          []string{"cursor-agent", "-p", "{prompt}", "--output-format", "stream-json", "--force", "--trust", "--add-dir", ".."},
+				ResumeCommand:    []string{"--resume", "{session_id}"},
+				ModelArgs:        []string{"--model", "{model}"},
+				ProbeCommand:     []string{"cursor-agent", "--version"},
+				ProbeTimeoutText: "30s",
+				StallTimeoutText: DefaultHarnessStallTimeoutText,
+			},
+		},
 	}
 }

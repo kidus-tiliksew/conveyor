@@ -59,6 +59,20 @@ func validateGrokEnvironmentAttachment(ctx context.Context, harness config.Harne
 	return validateGrokEnvironmentAttachmentWithRunner(ctx, harness, env, directory, runGrokJSON)
 }
 
+func validateEnvironmentAttachment(ctx context.Context, harness config.Harness, env []string, directory string) error {
+	if len(harness.Command) == 0 {
+		return fmt.Errorf("environment MCP harness definition is invalid")
+	}
+	switch filepath.Base(harness.Command[0]) {
+	case "grok":
+		return validateGrokEnvironmentAttachment(ctx, harness, env, directory)
+	case "cursor-agent":
+		return validateCursorEnvironmentAttachment(ctx, harness, env, directory)
+	default:
+		return fmt.Errorf("environment MCP readiness is supported only for the Grok Build and Cursor CLI harnesses")
+	}
+}
+
 type grokJSONRunner func(context.Context, string, []string, string, []string, any) error
 
 func validateGrokEnvironmentAttachmentWithRunner(ctx context.Context, harness config.Harness, env []string, directory string, run grokJSONRunner) error {
@@ -168,6 +182,72 @@ func runGrokJSON(ctx context.Context, directory string, env []string, binary str
 		return err
 	}
 	return runErr
+}
+
+var cursorLifecycleTools = []string{
+	"claim_work_order",
+	"renew_work_order",
+	"release_work_order",
+	"submit_for_review",
+	"submit_review_verdict",
+}
+
+type cursorCommandRunner func(context.Context, string, []string, string, []string) ([]byte, error)
+
+func validateCursorEnvironmentAttachment(ctx context.Context, harness config.Harness, env []string, directory string) error {
+	return validateCursorEnvironmentAttachmentWithRunner(ctx, harness, env, directory, runCursorCommand)
+}
+
+func validateCursorEnvironmentAttachmentWithRunner(ctx context.Context, harness config.Harness, env []string, directory string, run cursorCommandRunner) error {
+	fail := func(detail string) error {
+		return fmt.Errorf("Cursor MCP readiness for attachment %q failed: %s; repair the global ~/.cursor/mcp.json registration; project-level .cursor/mcp.json entries require separate approval and are not used", harness.MCPAttachment, detail)
+	}
+	if len(harness.Command) == 0 || filepath.Base(harness.Command[0]) != "cursor-agent" {
+		return fail("the harness command must use cursor-agent")
+	}
+	if err := config.ValidateHarness(harness); err != nil {
+		return fail("the environment MCP harness definition is invalid")
+	}
+	if environmentValue(env, "CONVEYOR_ADDR") == "" || environmentValue(env, "CONVEYOR_API_TOKEN") == "" ||
+		environmentValue(env, "CONVEYOR_SESSION_ID") == "" || environmentValue(env, "CONVEYOR_CLIENT_TOKEN") == "" {
+		return fail("the child launch identity is incomplete")
+	}
+	timeout := harness.ProbeTimeout
+	if timeout <= 0 {
+		timeout, _ = time.ParseDuration(harness.ProbeTimeoutText)
+	}
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	output, err := run(probeCtx, directory, env, harness.Command[0], []string{"mcp", "list-tools", harness.MCPAttachment})
+	if err != nil {
+		return fail("cursor-agent mcp list-tools did not complete successfully")
+	}
+	listed := make(map[string]bool)
+	for _, field := range strings.FieldsFunc(string(output), func(r rune) bool {
+		return r != '_' && (r < '0' || r > '9') && (r < 'A' || r > 'Z') && (r < 'a' || r > 'z')
+	}) {
+		listed[field] = true
+	}
+	for _, tool := range cursorLifecycleTools {
+		if !listed[tool] {
+			return fail("cursor-agent mcp list-tools did not list the required Conveyor lifecycle tools")
+		}
+	}
+	return nil
+}
+
+func runCursorCommand(ctx context.Context, directory string, env []string, binary string, args []string) ([]byte, error) {
+	command := exec.CommandContext(ctx, binary, args...)
+	command.Dir = directory
+	command.Env = env
+	output := boundedBuffer{remaining: 2 << 20}
+	command.Stdout = &output
+	command.Stderr = &output
+	err := command.Run()
+	return output.Bytes(), err
 }
 
 type boundedBuffer struct {

@@ -118,14 +118,15 @@ func newExecutionWizardState(harnesses []detectedHarness, seats []localStageChoi
 			break
 		}
 	}
+	effort := suggestedHarnessEffort(name)
 	state := &executionWizardState{acceptDefaults: true, confirmSummary: true, seatAction: "continue"}
 	state.choices = localExecutionChoices{
-		Spec:      localStageChoice{Harness: name, Effort: "high", Timeout: "30m"},
-		Implement: localStageChoice{Harness: name, Effort: "high", Timeout: "4h"},
-		Review:    localStageChoice{Harness: name, Effort: "high", Timeout: "1h"},
+		Spec:      localStageChoice{Harness: name, Effort: effort, Timeout: "30m"},
+		Implement: localStageChoice{Harness: name, Effort: effort, Timeout: "4h"},
+		Review:    localStageChoice{Harness: name, Effort: effort, Timeout: "1h"},
 	}
 	if len(seats) == 0 {
-		seats = []localStageChoice{{Harness: name, Effort: "high"}}
+		seats = []localStageChoice{{Harness: name, Effort: effort}}
 	}
 	state.choices.ReviewSeats = append([]localStageChoice(nil), seats...)
 	return state
@@ -326,6 +327,7 @@ var harnessModelSuggestions = map[string]map[string]string{
 	"codex":  {"spec": "gpt-5.6-sol", "implement": "gpt-5.6-sol", "review": "gpt-5.6-terra"},
 	"claude": {"spec": "opus", "implement": "opus", "review": "opus"},
 	"grok":   {"spec": "grok-code-fast-1", "implement": "grok-code-fast-1", "review": "grok-code-fast-1"},
+	"cursor": {"spec": "auto", "implement": "auto", "review": "auto"},
 }
 
 func suggestedHarnessModel(harness, stage string) string {
@@ -333,6 +335,15 @@ func suggestedHarnessModel(harness, stage string) string {
 		return stages[stage]
 	}
 	return ""
+}
+
+func suggestedHarnessEffort(name string) string {
+	for _, template := range config.HarnessTemplates() {
+		if template.Harness.Name == name && len(template.Harness.EffortArgs) == 0 {
+			return ""
+		}
+	}
+	return "high"
 }
 
 func harnessModelPlaceholder(harness, stage string) string {
@@ -347,6 +358,9 @@ func resolvedExecutionChoices(choices localExecutionChoices) localExecutionChoic
 	resolve := func(choice *localStageChoice, stage string) {
 		if strings.TrimSpace(choice.Model) == "" {
 			choice.Model = suggestedHarnessModel(choice.Harness, stage)
+		}
+		if suggestedHarnessEffort(choice.Harness) == "" {
+			choice.Effort = ""
 		}
 	}
 	resolve(&choices.Spec, "spec")
@@ -446,7 +460,7 @@ func runExecutionSetupDefaults(ctx context.Context, output io.Writer, configPath
 
 func noHealthyHarnessError(detected []detectedHarness) error {
 	if len(detected) == 0 {
-		return errors.New("no supported harness was found on PATH (looked for codex, claude, and grok)")
+		return errors.New("no supported harness was found on PATH (looked for codex, claude, grok, and cursor)")
 	}
 	messages := make([]string, 0, len(detected))
 	for _, item := range detected {
@@ -668,9 +682,12 @@ func setLocalExecutionFieldContext(ctx context.Context, path, workspace, key, va
 			}
 		}
 		if selected == nil {
-			return fmt.Errorf("unsupported harness %q; choose codex, claude, or grok", value)
+			return fmt.Errorf("unsupported harness %q; choose codex, claude, grok, or cursor", value)
 		}
 		choice.Harness = value
+		if len(selected.EffortArgs) == 0 {
+			choice.Effort = ""
+		}
 		found := false
 		for index := range harnesses {
 			if harnesses[index].Name == value {
@@ -697,8 +714,8 @@ func setLocalExecutionFieldContext(ctx context.Context, path, workspace, key, va
 		}
 		choice.Model = value
 	case "effort":
-		if value != "low" && value != "medium" && value != "high" {
-			return errors.New("effort must be low, medium, or high")
+		if value != "" && value != "low" && value != "medium" && value != "high" {
+			return errors.New("effort must be blank, low, medium, or high")
 		}
 		choice.Effort = value
 	case "timeout":

@@ -41,6 +41,7 @@ func TestDetectLocalHarnessesOffersOnlyHealthyPresentTemplates(t *testing.T) {
 	directory := t.TempDir()
 	writeProbeFixture(t, directory, "codex", "codex 1.2.3", true)
 	writeProbeFixture(t, directory, "grok", "broken", false)
+	writeProbeFixture(t, directory, "cursor-agent", "broken", false)
 	t.Setenv("PATH", directory)
 
 	harnesses := detectLocalHarnesses(t.Context())
@@ -143,7 +144,30 @@ func TestExecutionWizardModelPlaceholdersFollowEachHarnessSelection(t *testing.T
 			if got := harnessModelPlaceholder(choice.Harness, test.stage); got != suggestedHarnessModel("claude", test.stage) {
 				t.Fatalf("claude placeholder = %q", got)
 			}
+			choice.Harness = "cursor"
+			if got := harnessModelPlaceholder(choice.Harness, test.stage); got != "auto" {
+				t.Fatalf("cursor placeholder = %q", got)
+			}
 		})
+	}
+}
+
+func TestNoHealthyHarnessErrorNamesCursor(t *testing.T) {
+	err := noHealthyHarnessError(nil)
+	if err == nil || !strings.Contains(err.Error(), "codex, claude, grok, and cursor") {
+		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestCursorWizardDefaultsLeaveEffortBlank(t *testing.T) {
+	cursor := config.HarnessTemplates()[3].Harness
+	state := newExecutionWizardState(healthyDetections(cursor), nil)
+	resolved := resolvedExecutionChoices(state.choices)
+	if resolved.Spec.Model != "auto" || resolved.Implement.Model != "auto" || resolved.ReviewSeats[0].Model != "auto" {
+		t.Fatalf("models=%+v", resolved)
+	}
+	if resolved.Spec.Effort != "" || resolved.Implement.Effort != "" || resolved.ReviewSeats[0].Effort != "" {
+		t.Fatalf("efforts=%+v", resolved)
 	}
 }
 
