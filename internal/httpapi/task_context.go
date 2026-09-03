@@ -20,7 +20,13 @@ func (s *Server) updateTaskContext(w http.ResponseWriter, r *http.Request) {
 	context, err := s.Store.UpdateTaskContext(r.Context(), chi.URLParam(r, "id"), request)
 	if err != nil {
 		var referenceErr *store.TaskContextReferenceError
+		var requirementArchived *store.RequirementArchivedError
+		var designArchived *store.SystemDesignArchivedError
 		switch {
+		case errors.As(err, &requirementArchived):
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "requirement_archived", "message": requirementArchived.Error()})
+		case errors.As(err, &designArchived):
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "system_design_archived", "message": designArchived.Error()})
 		case errors.As(err, &referenceErr):
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_context_reference", "message": referenceErr.Error()})
 		case errors.Is(err, store.ErrTaskTerminal):

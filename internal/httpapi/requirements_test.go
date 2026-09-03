@@ -136,6 +136,71 @@ func TestOperatorRequirementProposalRESTLifecycle(t *testing.T) {
 	}
 }
 
+func TestRequirementArchiveRESTLifecycle(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	document, version, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-archive-api", Title: "Archive API"}, core.RequirementVersion{Content: "Archive API", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Archive safely."}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmRequirementVersion(ctx, document.ID, version.Version); err != nil {
+		t.Fatal(err)
+	}
+	replacement, replacementVersion, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-archive-replacement-api", Title: "Archive replacement API"}, core.RequirementVersion{Content: "Archive replacement API", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Replace archived authority."}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmRequirementVersion(ctx, replacement.ID, replacementVersion.Version); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(st)
+	server.Workspace, server.BearerToken = "demo", "token"
+	handler := server.Handler()
+	call := func(method, path, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer token")
+		req.Header.Set("X-Conveyor-Actor", "archive-operator")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, req)
+		return response
+	}
+	archiveBody := `{"superseding_document_ids":["` + replacement.ID + `"]}`
+	if response := call(http.MethodPost, "/v1/requirements/"+document.ID+"/archive", archiveBody); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"superseding_document_ids":["`+replacement.ID+`"]`) {
+		t.Fatalf("archive status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := call(http.MethodGet, "/v1/requirements", ""); response.Code != http.StatusOK || strings.Contains(response.Body.String(), document.ID) {
+		t.Fatalf("default list status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := call(http.MethodGet, "/v1/requirements?include_archived=true", ""); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"archived":true`) {
+		t.Fatalf("archived list status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := call(http.MethodPost, "/v1/requirements/"+document.ID+"/versions/1/confirm", ""); response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), `"error":"requirement_archived"`) {
+		t.Fatalf("confirm status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := call(http.MethodPost, "/v1/requirements/"+document.ID+"/archive", ""); response.Code != http.StatusOK {
+		t.Fatalf("second archive status=%d", response.Code)
+	}
+	events, err := st.ListRequirementEvents(ctx, document.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, event := range events {
+		if event.Kind == "requirement.archived" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("archive events=%d", count)
+	}
+	if response := call(http.MethodPost, "/v1/requirements/"+document.ID+"/restore", ""); response.Code != http.StatusOK || strings.Contains(response.Body.String(), `"archived":true`) {
+		t.Fatalf("restore status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := call(http.MethodPost, "/v1/requirements/"+document.ID+"/archive", `{"superseding_document_ids":["missing"]}`); response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), `"error":"invalid_superseding_document"`) || !strings.Contains(response.Body.String(), `"document_id":"missing"`) {
+		t.Fatalf("invalid superseding document status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
 func TestRequirementReadsExposeImplementationOriginTask(t *testing.T) {
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	st := store.NewMemory()

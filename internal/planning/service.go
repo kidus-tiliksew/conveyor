@@ -980,7 +980,7 @@ type referenceContextResult struct {
 }
 
 func (s *Service) systemDesignContext(ctx context.Context, sessionID, primaryRepo string, budget lineagecontext.Budget) (referenceContextResult, error) {
-	documents, err := s.Store.ListSystemDesigns(ctx)
+	documents, err := s.Store.ListSystemDesigns(ctx, false)
 	if err != nil {
 		return referenceContextResult{}, fmt.Errorf("list planning system designs: %w", err)
 	}

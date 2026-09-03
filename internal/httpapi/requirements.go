@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"sort"
@@ -109,7 +110,7 @@ type blueprintLineage struct {
 }
 
 func (s *Server) listRequirements(w http.ResponseWriter, r *http.Request) {
-	requirements, err := s.Store.ListRequirements(r.Context())
+	requirements, err := s.Store.ListRequirements(r.Context(), r.URL.Query().Get("include_archived") == "true")
 	if err != nil {
 		log.Printf("handle requirement request: %v", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
@@ -343,6 +344,11 @@ func (s *Server) proposeRequirementVersion(w http.ResponseWriter, r *http.Reques
 	}
 	version, err = s.Store.ProposeRequirementVersion(r.Context(), version)
 	if err != nil {
+		var archived *store.RequirementArchivedError
+		if errors.As(err, &archived) {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "requirement_archived", "message": archived.Error()})
+			return
+		}
 		// The store owns content coherence, high-water, and additive AC rules;
 		// violations are safe, specific client errors rather than SQL details.
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -381,6 +387,11 @@ func (s *Server) confirmRequirementVersion(w http.ResponseWriter, r *http.Reques
 		r.Context(), chi.URLParam(r, "id"), version, expected...,
 	)
 	if err != nil {
+		var archived *store.RequirementArchivedError
+		if errors.As(err, &archived) {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "requirement_archived", "message": archived.Error()})
+			return
+		}
 		var superseded *store.RequirementVersionSuperseded
 		if errors.As(err, &superseded) {
 			writeJSON(w, http.StatusConflict, map[string]any{
@@ -409,6 +420,49 @@ func (s *Server) confirmRequirementVersion(w http.ResponseWriter, r *http.Reques
 		"requirement": requirement,
 		"version":     confirmed,
 	})
+}
+
+func (s *Server) archiveRequirement(w http.ResponseWriter, r *http.Request) {
+	s.setRequirementArchiveState(w, r, true)
+}
+
+func (s *Server) restoreRequirement(w http.ResponseWriter, r *http.Request) {
+	s.setRequirementArchiveState(w, r, false)
+}
+
+func (s *Server) setRequirementArchiveState(w http.ResponseWriter, r *http.Request, archived bool) {
+	id := chi.URLParam(r, "id")
+	actor := store.ActorFromContext(r.Context()).ID
+	var err error
+	if archived {
+		var input struct {
+			SupersedingDocumentIDs []string `json:"superseding_document_ids"`
+		}
+		if decodeErr := json.NewDecoder(r.Body).Decode(&input); decodeErr != nil && !errors.Is(decodeErr, io.EOF) {
+			http.Error(w, decodeErr.Error(), http.StatusBadRequest)
+			return
+		}
+		err = s.Store.ArchiveRequirement(r.Context(), id, actor, input.SupersedingDocumentIDs)
+	} else {
+		err = s.Store.RestoreRequirement(r.Context(), id, actor)
+	}
+	if err != nil {
+		var reference *store.SupersedingDocumentReferenceError
+		if errors.Is(err, store.ErrNotFound) {
+			http.Error(w, err.Error(), http.StatusNotFound)
+		} else if errors.As(err, &reference) {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "invalid_superseding_document", "document_id": reference.DocumentID, "reason": reference.Reason})
+		} else {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+		return
+	}
+	document, err := s.Store.GetRequirement(r.Context(), id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, document)
 }
 
 func (s *Server) dismissRequirementVersion(w http.ResponseWriter, r *http.Request) {
@@ -735,6 +789,9 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 		}
 		sort.Slice(view.ServingTasks, func(i, j int) bool { return view.ServingTasks[i].ID < view.ServingTasks[j].ID })
 		effectiveBoundary := requirementAcknowledgedThrough(requirementEvents, confirmedAt)
+		if requirement.Archived {
+			effectiveBoundary = requirementDeliveryWatermark{}
+		}
 		if !effectiveBoundary.At.IsZero() && !view.Staleness.PartialEvaluation {
 			for taskID := range reachableTasks {
 				task, taskErr := loadTask(taskID)
@@ -772,6 +829,9 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 			})
 		}
 		for _, drift := range activeDrift {
+			if requirement.Archived {
+				continue
+			}
 			if drift.RequirementID == requirement.ID || reachableTasks[drift.TaskID] {
 				view.Staleness.ActiveDrift = append(view.Staleness.ActiveDrift, drift)
 			}

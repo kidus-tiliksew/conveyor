@@ -272,7 +272,9 @@ type Store interface {
 	// ConfirmRequirementVersion records an operator's confirmation.
 	CreateRequirement(ctx context.Context, requirement core.Requirement, first core.RequirementVersion) (core.Requirement, core.RequirementVersion, error)
 	GetRequirement(ctx context.Context, id string) (core.Requirement, error)
-	ListRequirements(ctx context.Context) ([]core.Requirement, error)
+	ListRequirements(ctx context.Context, includeArchived bool) ([]core.Requirement, error)
+	ArchiveRequirement(ctx context.Context, id, actor string, supersedingDocumentIDs []string) error
+	RestoreRequirement(ctx context.Context, id, actor string) error
 	ListRequirementVersionsByRequirement(ctx context.Context) (map[string][]core.RequirementVersion, error)
 	ProposeRequirementVersion(ctx context.Context, version core.RequirementVersion) (core.RequirementVersion, error)
 	ConfirmRequirementVersion(ctx context.Context, requirementID string, version int, expectedCurrentVersion ...int) (core.Requirement, core.RequirementVersion, error)
@@ -296,7 +298,9 @@ type Store interface {
 
 	CreateSystemDesign(ctx context.Context, document core.SystemDesign, first core.SystemDesignVersion) (core.SystemDesign, core.SystemDesignVersion, error)
 	GetSystemDesign(ctx context.Context, id string) (core.SystemDesign, error)
-	ListSystemDesigns(ctx context.Context) ([]core.SystemDesign, error)
+	ListSystemDesigns(ctx context.Context, includeArchived bool) ([]core.SystemDesign, error)
+	ArchiveSystemDesign(ctx context.Context, id, actor string, supersedingDocumentIDs []string) error
+	RestoreSystemDesign(ctx context.Context, id, actor string) error
 	ProposeSystemDesignVersion(ctx context.Context, version core.SystemDesignVersion) (core.SystemDesignVersion, error)
 	ConfirmSystemDesignVersion(ctx context.Context, documentID string, version int, expectedCurrentVersion ...int) (core.SystemDesign, core.SystemDesignVersion, error)
 	DismissSystemDesignVersion(ctx context.Context, documentID string, version int) (core.SystemDesign, core.SystemDesignVersion, error)
@@ -448,6 +452,27 @@ type RequirementVersionConflict struct {
 	Requested     int
 	Current       int
 	Expected      *int
+}
+
+type RequirementArchivedError struct{ RequirementID string }
+
+func (e *RequirementArchivedError) Error() string {
+	return fmt.Sprintf("requirement %s is archived", e.RequirementID)
+}
+
+type SystemDesignArchivedError struct{ DocumentID string }
+
+func (e *SystemDesignArchivedError) Error() string {
+	return fmt.Sprintf("system design %s is archived", e.DocumentID)
+}
+
+type SupersedingDocumentReferenceError struct {
+	DocumentID string
+	Reason     string
+}
+
+func (e *SupersedingDocumentReferenceError) Error() string {
+	return fmt.Sprintf("superseding document %s %s", e.DocumentID, e.Reason)
 }
 
 // RequirementVersionSuperseded is the terminal result of addressing an
@@ -4877,6 +4902,9 @@ func (m *memory) validateTaskContextLocked(workspace string, input TaskContextIn
 		if document.CurrentVersion <= 0 {
 			return nil, &TaskContextReferenceError{Kind: "requirement", ID: id, Reason: "has no confirmed version"}
 		}
+		if document.Archived {
+			return nil, &RequirementArchivedError{RequirementID: id}
+		}
 	}
 	versions := map[string]int{}
 	for _, id := range input.DesignIDs {
@@ -4886,6 +4914,9 @@ func (m *memory) validateTaskContextLocked(workspace string, input TaskContextIn
 		}
 		if document.CurrentVersion <= 0 {
 			return nil, &TaskContextReferenceError{Kind: "system design", ID: id, Reason: "has no confirmed version"}
+		}
+		if document.Archived {
+			return nil, &SystemDesignArchivedError{DocumentID: id}
 		}
 		versions[id] = document.CurrentVersion
 	}

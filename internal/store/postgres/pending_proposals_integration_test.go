@@ -98,7 +98,7 @@ func TestDirectVersionDismissalClearsPendingProjectionAndKeepsHistoryIntegration
 	if items, listErr := st.ListPendingProposals(ctx); listErr != nil || len(items) != 0 {
 		t.Fatalf("pending after dismissal=%+v err=%v", items, listErr)
 	}
-	if requirements, listErr := st.ListRequirements(ctx); listErr != nil || len(requirements) != 1 || requirements[0].ID != requirement.ID {
+	if requirements, listErr := st.ListRequirements(ctx, false); listErr != nil || len(requirements) != 1 || requirements[0].ID != requirement.ID {
 		t.Fatalf("requirements after dismissal=%+v err=%v", requirements, listErr)
 	}
 	requirementHistory, err := st.ListRequirementVersions(ctx, requirement.ID)

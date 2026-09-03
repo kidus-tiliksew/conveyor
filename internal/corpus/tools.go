@@ -27,10 +27,10 @@ const (
 // Store is intentionally narrower than store.Store so this package cannot
 // acquire write capabilities as its consumers evolve.
 type Store interface {
-	ListRequirements(context.Context) ([]core.Requirement, error)
+	ListRequirements(context.Context, bool) ([]core.Requirement, error)
 	GetRequirement(context.Context, string) (core.Requirement, error)
 	GetRequirementVersion(context.Context, string, int) (core.RequirementVersion, error)
-	ListSystemDesigns(context.Context) ([]core.SystemDesign, error)
+	ListSystemDesigns(context.Context, bool) ([]core.SystemDesign, error)
 	GetSystemDesign(context.Context, string) (core.SystemDesign, error)
 	GetSystemDesignVersion(context.Context, string, int) (core.SystemDesignVersion, error)
 	ListDecisions(context.Context) ([]core.Decision, error)
@@ -128,7 +128,7 @@ func (e Executor) Execute(ctx context.Context, name, argumentsJSON string) (any,
 		if err := decodeNoArgs(argumentsJSON); err != nil {
 			return nil, err
 		}
-		documents, err := e.Store.ListRequirements(ctx)
+		documents, err := e.Store.ListRequirements(ctx, false)
 		if err != nil {
 			return nil, err
 		}
@@ -177,7 +177,7 @@ func (e Executor) Execute(ctx context.Context, name, argumentsJSON string) (any,
 		if err := decodeNoArgs(argumentsJSON); err != nil {
 			return nil, err
 		}
-		documents, err := e.Store.ListSystemDesigns(ctx)
+		documents, err := e.Store.ListSystemDesigns(ctx, false)
 		if err != nil {
 			return nil, err
 		}
