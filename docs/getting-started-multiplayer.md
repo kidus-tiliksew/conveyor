@@ -90,6 +90,10 @@ conveyor skills install
 conveyor --server https://factory.example.com mcp install
 ```
 
+The install commands detect Claude Code, Codex, and Cursor. Use `--tool` to
+narrow either command to one client; Cursor MCP registration is reported as
+unsupported until its native target is available.
+
 4. Create a local execution setup describing the agent CLIs on this machine:
 
 ```sh

@@ -113,11 +113,13 @@ conveyor skills install
 conveyor mcp install
 ```
 
-The install commands configure detected Claude Code and Codex clients; pass
+The install commands configure detected Claude Code, Codex, and Cursor clients; pass
 `--tool` to pick one or `--list` to see what would change. MCP registration
 references the token through the `CONVEYOR_API_TOKEN` environment variable
-rather than writing the value anywhere. If that variable is not set in your
-shell, the command prints the line to add:
+rather than writing the value anywhere. Cursor skill installation is supported,
+while Cursor MCP registration is reported as unsupported until its native target
+is available. If that variable is not set in your shell, the command prints the
+line to add:
 
 ```sh
 export CONVEYOR_API_TOKEN=$(conveyor auth token)

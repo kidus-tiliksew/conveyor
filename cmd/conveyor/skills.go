@@ -121,9 +121,12 @@ type skillInstallReport struct {
 	target string
 }
 
+// supportedSkillTools maps each detected agent binary to its native skill
+// destination (req-260811-0ee057 AC-12.3).
 var supportedSkillTools = []skillTool{
 	{name: "claude", binary: "claude", root: ".claude/skills"},
 	{name: "codex", binary: "codex", root: ".codex/skills", legacyPath: ".codex/plugins/cache/personal/conveyor/0.1.0"},
+	{name: "cursor", binary: "cursor-agent", root: ".cursor/skills"},
 }
 
 func skillsCmd() *cobra.Command {
@@ -171,7 +174,7 @@ func skillsInstallCmdWithLookPath(lookPath func(string) (string, error)) *cobra.
 	}
 	command.Flags().BoolVar(&project, "project", false, "install under each tool's project skills directory instead of the user-global directory")
 	command.Flags().BoolVar(&list, "list", false, "list embedded files and their installed state without writing")
-	command.Flags().StringVar(&selectedTool, "tool", "", "install only for one detected tool (claude or codex)")
+	command.Flags().StringVar(&selectedTool, "tool", "", "install only for one detected tool (claude, codex, or cursor)")
 	command.Flags().BoolVar(&adopt, "adopt", false, "adopt unmarked skill files in a selected native destination")
 	command.Flags().BoolVar(&force, "force", false, "allow replacing managed skills installed by a newer Conveyor release")
 	return command
@@ -223,10 +226,10 @@ func selectSkillTools(selected string, lookPath func(string) (string, error)) ([
 		}
 	}
 	if selected != "" && !known {
-		return nil, fmt.Errorf("unsupported tool %q; supported tools: claude, codex", selected)
+		return nil, fmt.Errorf("unsupported tool %q; supported tools: claude, codex, cursor", selected)
 	}
 	if len(tools) == 0 {
-		return nil, fmt.Errorf("no supported agent tooling detected on PATH (looked for claude and codex)")
+		return nil, fmt.Errorf("no supported agent tooling detected on PATH (looked for claude, codex, and cursor)")
 	}
 	return tools, nil
 }
