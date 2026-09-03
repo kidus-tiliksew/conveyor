@@ -1,18 +1,101 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
 	"github.com/kidus-tiliksew/conveyor/internal/envfile"
+	queueargs "github.com/kidus-tiliksew/conveyor/internal/queue"
 )
+
+func TestWorkspaceQueueRegistrarConvergesOnceAndRetriesFailures(t *testing.T) {
+	var calls atomic.Int32
+	var logMu sync.Mutex
+	var lines []string
+	wantErr := errors.New("register unavailable")
+	fail := atomic.Bool{}
+	fail.Store(true)
+	registrar := dispatch.NewWorkspaceQueueRegistrar([]string{"startup"}, func(workspace string) error {
+		calls.Add(1)
+		if workspace == "retry" && fail.Load() {
+			return wantErr
+		}
+		return nil
+	}, func(format string, args ...any) {
+		logMu.Lock()
+		defer logMu.Unlock()
+		lines = append(lines, fmt.Sprintf(format, args...))
+	})
+
+	if added, err := registrar.Ensure("startup"); err != nil || added {
+		t.Fatalf("seeded workspace added=%t err=%v", added, err)
+	}
+	if added, err := registrar.Ensure("retry"); !errors.Is(err, wantErr) || added {
+		t.Fatalf("failed workspace added=%t err=%v", added, err)
+	}
+	fail.Store(false)
+	if added, err := registrar.Ensure("retry"); err != nil || !added {
+		t.Fatalf("retried workspace added=%t err=%v", added, err)
+	}
+
+	const concurrentCalls = 16
+	var wg sync.WaitGroup
+	results := make(chan bool, concurrentCalls)
+	for range concurrentCalls {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			added, err := registrar.Ensure("new")
+			if err != nil {
+				t.Errorf("concurrent ensure: %v", err)
+			}
+			results <- added
+		}()
+	}
+	wg.Wait()
+	close(results)
+	addedCount := 0
+	for added := range results {
+		if added {
+			addedCount++
+		}
+	}
+	if addedCount != 1 {
+		t.Fatalf("concurrent additions=%d, want 1", addedCount)
+	}
+	if added, err := registrar.Ensure("new"); err != nil || added {
+		t.Fatalf("second pass added=%t err=%v", added, err)
+	}
+	if got := calls.Load(); got != 3 {
+		t.Fatalf("registration calls=%d, want failed retry plus two successes", got)
+	}
+
+	logMu.Lock()
+	defer logMu.Unlock()
+	if len(lines) != 2 {
+		t.Fatalf("registration logs=%q, want one per successful new workspace", lines)
+	}
+	wantNew := fmt.Sprintf("registered River scheduling for workspace new: queues=%s,%s,%s periodic_job=%s",
+		queueargs.DispatchQueue("new"),
+		queueargs.ReviewPublicationQueue("new"),
+		queueargs.GitHubIssuePublicationQueue("new"),
+		queueargs.OrderClockPeriodicID("new"),
+	)
+	if lines[1] != wantNew {
+		t.Fatalf("new workspace log=%q, want %q", lines[1], wantNew)
+	}
+}
 
 func TestResolveConveyordListenAddress(t *testing.T) {
 	tests := []struct {

@@ -36,6 +36,130 @@ type failingStageOrderStore struct {
 	err error
 }
 
+func TestRiverClientConvergesLateWorkspaceQueuesIntegration(t *testing.T) {
+	databaseURL := dispatchIntegrationDatabaseURL(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	st, err := storepg.Open(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	suffix := core.NewTaskID()
+	workspaceA := "river-converge-a-" + suffix
+	workspaceB := "river-converge-b-" + suffix
+	actorCtx := store.WithActor(ctx, store.Actor{ID: "test", Role: core.ActorHuman})
+	if _, err = st.CreateWorkspace(actorCtx, workspaceA, "River convergence A", dispatchRaceConfig(workspaceA)); err != nil {
+		t.Fatal(err)
+	}
+	dispatcher := New(st, dispatchRaceConfig(workspaceA), nil)
+	client, err := NewRiverClient(st.Pool(), dispatcher, []string{workspaceA})
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, unsubscribe := client.Subscribe(river.EventKindJobCompleted)
+	defer unsubscribe()
+	if err = client.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer stopCancel()
+		if stopErr := client.Stop(stopCtx); stopErr != nil {
+			t.Errorf("stop River client: %v", stopErr)
+		}
+	}()
+
+	waitForRiverJob(t, ctx, events, func(job *rivertype.JobRow) bool {
+		return job.Kind == (queueargs.OrderClockArgs{}).Kind() &&
+			job.Queue == queueargs.ControlQueue && riverJobWorkspace(job) == workspaceA
+	}, "startup workspace order clock")
+
+	if _, err = st.CreateWorkspace(actorCtx, workspaceB, "River convergence B", dispatchRaceConfig(workspaceB)); err != nil {
+		t.Fatal(err)
+	}
+	taskCtx := store.WithWorkspace(ctx, workspaceB)
+	parent := core.Task{
+		ID: "river-converge-parent-" + suffix, Workspace: workspaceB, Repo: "repo", Title: "River convergence parent",
+		BaseBranch: "main", Branch: "conveyor/river-converge-parent-" + suffix,
+		State: core.TaskQueued, NextStage: core.StageImplement, CreatedAt: time.Now().UTC(),
+	}
+	child := core.Task{
+		ID: "river-converge-child-" + suffix, Workspace: workspaceB, Repo: "repo", Title: "River convergence child",
+		BaseBranch: "main", Branch: "conveyor/river-converge-child-" + suffix,
+		State: core.TaskQueued, NextStage: core.StageImplement, ParentTaskID: parent.ID,
+		OriginSpecVersion: 1, OriginSubID: "SUB-1", CreatedAt: time.Now().UTC(),
+	}
+	if err = st.CreateTask(taskCtx, parent); err != nil {
+		t.Fatal(err)
+	}
+	if err = st.CreateTask(taskCtx, child); err != nil {
+		t.Fatal(err)
+	}
+	registrar := NewWorkspaceQueueRegistrar([]string{workspaceA}, func(workspace string) error {
+		return AddWorkspaceQueues(client, workspace)
+	}, t.Logf)
+	workspaces, err := st.ListWorkspaces(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var convergenceWorkspaces []core.Workspace
+	for _, workspace := range workspaces {
+		if workspace.ID == workspaceA || workspace.ID == workspaceB {
+			convergenceWorkspaces = append(convergenceWorkspaces, workspace)
+		}
+	}
+	if len(convergenceWorkspaces) != 2 {
+		t.Fatalf("convergence workspaces=%v, want %s and %s", convergenceWorkspaces, workspaceA, workspaceB)
+	}
+	if err = registrar.Converge(convergenceWorkspaces); err != nil {
+		t.Fatal(err)
+	}
+
+	dispatchWorked := false
+	orderClockWorked := false
+	for !dispatchWorked || !orderClockWorked {
+		select {
+		case <-ctx.Done():
+			t.Fatalf("wait for late workspace jobs: dispatch=%t order_clock=%t: %v", dispatchWorked, orderClockWorked, ctx.Err())
+		case event := <-events:
+			job := event.Job
+			if job == nil || riverJobWorkspace(job) != workspaceB {
+				continue
+			}
+			dispatchWorked = dispatchWorked || (job.Kind == (queueargs.DispatchTaskArgs{}).Kind() &&
+				job.Queue == queueargs.DispatchQueue(workspaceB))
+			orderClockWorked = orderClockWorked || (job.Kind == (queueargs.OrderClockArgs{}).Kind() &&
+				job.Queue == queueargs.ControlQueue)
+		}
+	}
+}
+
+func waitForRiverJob(t *testing.T, ctx context.Context, events <-chan *river.Event, matches func(*rivertype.JobRow) bool, description string) {
+	t.Helper()
+	for {
+		select {
+		case <-ctx.Done():
+			t.Fatalf("wait for %s: %v", description, ctx.Err())
+		case event := <-events:
+			if event.Job != nil && matches(event.Job) {
+				return
+			}
+		}
+	}
+}
+
+func riverJobWorkspace(job *rivertype.JobRow) string {
+	var args struct {
+		WorkspaceID string `json:"workspace_id"`
+	}
+	if json.Unmarshal(job.EncodedArgs, &args) != nil {
+		return ""
+	}
+	return args.WorkspaceID
+}
+
 func TestWorkspaceForgeOperationFailsClosedWithoutTokenIntegration(t *testing.T) {
 	databaseURL := dispatchIntegrationDatabaseURL(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)

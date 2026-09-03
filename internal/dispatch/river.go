@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -21,6 +22,52 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 	"github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 )
+
+// WorkspaceQueueRegistrar converges the River queue set known to one daemon
+// instance with the workspaces persisted in PostgreSQL.
+type WorkspaceQueueRegistrar struct {
+	mu    sync.Mutex
+	known map[string]struct{}
+	add   func(string) error
+	logf  func(string, ...any)
+}
+
+func NewWorkspaceQueueRegistrar(known []string, add func(string) error, logf func(string, ...any)) *WorkspaceQueueRegistrar {
+	registered := make(map[string]struct{}, len(known))
+	for _, workspace := range known {
+		registered[workspace] = struct{}{}
+	}
+	return &WorkspaceQueueRegistrar{known: registered, add: add, logf: logf}
+}
+
+func (r *WorkspaceQueueRegistrar) Ensure(workspace string) (bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.known[workspace]; ok {
+		return false, nil
+	}
+	if err := r.add(workspace); err != nil {
+		return false, err
+	}
+	r.known[workspace] = struct{}{}
+	r.logf("registered River scheduling for workspace %s: queues=%s,%s,%s periodic_job=%s",
+		workspace,
+		queueargs.DispatchQueue(workspace),
+		queueargs.ReviewPublicationQueue(workspace),
+		queueargs.GitHubIssuePublicationQueue(workspace),
+		queueargs.OrderClockPeriodicID(workspace),
+	)
+	return true, nil
+}
+
+func (r *WorkspaceQueueRegistrar) Converge(workspaces []core.Workspace) error {
+	for _, workspace := range workspaces {
+		if _, err := r.Ensure(workspace.ID); err != nil {
+			return fmt.Errorf("register River scheduling for workspace %s: %w", workspace.ID, err)
+		}
+	}
+	return nil
+}
 
 type dispatchTaskWorker struct {
 	river.WorkerDefaults[queueargs.DispatchTaskArgs]

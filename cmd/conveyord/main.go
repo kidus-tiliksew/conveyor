@@ -137,6 +137,7 @@ func main() {
 	d.Pack = packBundle
 	var stopRiver func()
 	var addWorkspaceQueue func(string) error
+	var workspaceQueues *dispatch.WorkspaceQueueRegistrar
 	if pgStore != nil {
 		d.ConfigProvider = func(ctx context.Context) (*config.Config, error) {
 			return pgStore.RuntimeConfig(ctx, deployment)
@@ -156,7 +157,13 @@ func main() {
 		if clientErr = client.Start(ctx); clientErr != nil {
 			log.Fatalf("start River worker: %v", clientErr)
 		}
-		addWorkspaceQueue = func(workspace string) error { return dispatch.AddWorkspaceQueues(client, workspace) }
+		workspaceQueues = dispatch.NewWorkspaceQueueRegistrar(workspaceIDs, func(workspace string) error {
+			return dispatch.AddWorkspaceQueues(client, workspace)
+		}, log.Printf)
+		addWorkspaceQueue = func(workspace string) error {
+			_, err := workspaceQueues.Ensure(workspace)
+			return err
+		}
 		stopRiver = func() {
 			stopCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
@@ -257,6 +264,10 @@ func main() {
 			workspaces, listErr := pgStore.ListWorkspaces(ctx)
 			if listErr != nil {
 				log.Printf("list workspaces for reconciliation: %v", listErr)
+				return
+			}
+			if queueErr := workspaceQueues.Converge(workspaces); queueErr != nil {
+				log.Printf("%v", queueErr)
 				return
 			}
 			for _, workspace := range workspaces {
