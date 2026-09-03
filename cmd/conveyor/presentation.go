@@ -72,9 +72,35 @@ func renderCLIStatusRows(output io.Writer, styled bool, rows ...[2]string) error
 }
 
 type harnessEventRenderer struct {
-	output  io.Writer
-	palette cliPalette
-	pending bytes.Buffer
+	output         io.Writer
+	palette        cliPalette
+	pending        bytes.Buffer
+	cursorThinking bool
+}
+
+type harnessEventMessage struct {
+	Text    string
+	Content []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	} `json:"content"`
+}
+
+func (m *harnessEventMessage) UnmarshalJSON(data []byte) error {
+	var text string
+	if err := json.Unmarshal(data, &text); err == nil {
+		m.Text = text
+		return nil
+	}
+	type message harnessEventMessage
+	return json.Unmarshal(data, (*message)(m))
+}
+
+type cursorToolCall struct {
+	Args struct {
+		Command string `json:"command"`
+	} `json:"args"`
+	Result map[string]json.RawMessage `json:"result"`
 }
 
 type runOutputPresentation struct {
@@ -162,13 +188,21 @@ func (r *harnessEventRenderer) renderLine(line string) error {
 		return nil
 	}
 	var event struct {
-		Type     string          `json:"type"`
-		ThreadID string          `json:"thread_id"`
-		Message  string          `json:"message"`
-		Error    json.RawMessage `json:"error"`
-		Usage    struct {
-			InputTokens  int64 `json:"input_tokens"`
-			OutputTokens int64 `json:"output_tokens"`
+		Type      string                     `json:"type"`
+		Subtype   string                     `json:"subtype"`
+		ThreadID  string                     `json:"thread_id"`
+		SessionID string                     `json:"session_id"`
+		CallID    string                     `json:"call_id"`
+		Text      string                     `json:"text"`
+		Message   harnessEventMessage        `json:"message"`
+		ToolCall  map[string]json.RawMessage `json:"tool_call"`
+		IsError   bool                       `json:"is_error"`
+		Error     json.RawMessage            `json:"error"`
+		Usage     struct {
+			InputTokens        int64 `json:"input_tokens"`
+			OutputTokens       int64 `json:"output_tokens"`
+			CursorInputTokens  int64 `json:"inputTokens"`
+			CursorOutputTokens int64 `json:"outputTokens"`
 		} `json:"usage"`
 		Item struct {
 			Type     string `json:"type"`
@@ -187,6 +221,54 @@ func (r *harnessEventRenderer) renderLine(line string) error {
 
 	var rendered string
 	switch event.Type {
+	case "system":
+		if event.Subtype == "init" {
+			rendered = r.palette.muted.Render("session started " + boundText(event.SessionID, 24))
+		} else {
+			rendered = r.palette.muted.Render(boundText(trimmed, harnessFallbackLimit))
+		}
+	case "user":
+		return nil
+	case "thinking":
+		switch event.Subtype {
+		case "delta":
+			if !r.cursorThinking {
+				r.cursorThinking = true
+				rendered = r.palette.muted.Render("thinking…")
+			}
+		case "completed":
+			r.cursorThinking = false
+		default:
+			rendered = r.palette.muted.Render(boundText(trimmed, harnessFallbackLimit))
+		}
+	case "assistant":
+		var textItems []string
+		for _, content := range event.Message.Content {
+			if content.Type == "text" {
+				textItems = append(textItems, content.Text)
+			}
+		}
+		if text := strings.Join(textItems, ""); strings.TrimSpace(text) != "" {
+			rendered = boundText(text, harnessDetailLimit)
+		}
+	case "tool_call":
+		rendered = r.renderCursorToolCall(event.Subtype, event.CallID, event.ToolCall)
+		if rendered == "" {
+			rendered = r.palette.muted.Render(boundText(trimmed, harnessFallbackLimit))
+		}
+	case "result":
+		detail := "agent turn completed"
+		if event.Usage.CursorInputTokens > 0 || event.Usage.CursorOutputTokens > 0 {
+			detail += fmt.Sprintf(" · tokens in %d, out %d", event.Usage.CursorInputTokens, event.Usage.CursorOutputTokens)
+		}
+		style, mark := r.palette.success, "✓ "
+		if event.IsError {
+			style, mark = r.palette.warning, "! "
+			if subtype := boundText(event.Subtype, harnessDetailLimit); subtype != "" {
+				detail += " · " + subtype
+			}
+		}
+		rendered = style.Render(mark + detail)
 	case "thread.started":
 		rendered = r.palette.muted.Render("session started " + boundText(event.ThreadID, 24))
 	case "turn.started":
@@ -203,7 +285,7 @@ func (r *harnessEventRenderer) renderLine(line string) error {
 		}
 		rendered = r.palette.success.Render("✓ " + detail)
 	case "error":
-		message := event.Message
+		message := event.Message.Text
 		if message == "" && len(event.Error) > 0 {
 			message = string(event.Error)
 		}
@@ -216,6 +298,62 @@ func (r *harnessEventRenderer) renderLine(line string) error {
 	}
 	_, err := fmt.Fprintln(r.output, rendered)
 	return err
+}
+
+func (r *harnessEventRenderer) renderCursorToolCall(eventSubtype, callID string, toolCalls map[string]json.RawMessage) string {
+	callID = boundText(callID, harnessCommandLimit)
+	if len(toolCalls) != 1 || (eventSubtype != "started" && eventSubtype != "completed") {
+		return ""
+	}
+	var key string
+	var payload json.RawMessage
+	for key, payload = range toolCalls {
+	}
+	label := boundText(key, harnessCommandLimit)
+	if key == "shellToolCall" {
+		var toolCall cursorToolCall
+		if err := json.Unmarshal(payload, &toolCall); err != nil {
+			return ""
+		}
+		label = boundText(toolCall.Args.Command, harnessCommandLimit)
+		if label == "" {
+			label = callID
+			if label == "" {
+				label = "command"
+			}
+		}
+	} else if label == "" {
+		label = "tool"
+	}
+	if eventSubtype == "started" {
+		return r.palette.accent.Render("› ") + label + r.palette.muted.Render(" · running")
+	}
+	if key != "shellToolCall" {
+		return r.palette.success.Render("✓ ") + label + r.palette.muted.Render(" · completed")
+	}
+	result := "completed"
+	style, mark := r.palette.success, "✓ "
+	var toolCall cursorToolCall
+	if err := json.Unmarshal(payload, &toolCall); err != nil {
+		return ""
+	}
+	successPayload, ok := toolCall.Result["success"]
+	if !ok {
+		style, mark = r.palette.warning, "! "
+	} else {
+		var success struct {
+			ExitCode *int `json:"exitCode"`
+		}
+		if err := json.Unmarshal(successPayload, &success); err != nil {
+			style, mark = r.palette.warning, "! "
+		} else if success.ExitCode != nil {
+			result += fmt.Sprintf(" (exit %d)", *success.ExitCode)
+			if *success.ExitCode != 0 {
+				style, mark = r.palette.warning, "! "
+			}
+		}
+	}
+	return style.Render(mark) + label + r.palette.muted.Render(" · "+result)
 }
 
 func (r *harnessEventRenderer) renderItem(eventType, itemType, text, command, tool, status string, exitCode *int) string {

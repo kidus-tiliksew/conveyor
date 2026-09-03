@@ -24,6 +24,8 @@ finishes, which keeps Conveyor's first-activity check and native session resume
 working. `--force --trust` grants the headless run permission to use tools.
 Operator `permissions.deny` rules in `~/.cursor/cli-config.json` still apply.
 
+Attended runs summarize Cursor stream-json events; use `--raw` to print the original JSONL stream.
+
 Cursor has no separate effort argument. Leave effort blank on Cursor routes
 and review seats, and select the desired effort through the model slug. Cursor
 adds a `Co-authored-by: Cursor` trailer to commits by default. Set
