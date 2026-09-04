@@ -82,7 +82,7 @@ func TestAppendInsideCallerTransaction(t *testing.T) {
 	store := New(pool)
 	ctx := context.Background()
 	workspace := "tx-" + fmt.Sprint(time.Now().UnixNano())
-	stream := eventlog.TaskStream("t1")
+	stream := eventlog.StreamID("task/t1")
 
 	tx, err := pool.Begin(ctx)
 	if err != nil {
@@ -108,7 +108,7 @@ func TestAppendInsideCallerTransaction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.AppendWith(ctx, tx, workspace, stream, eventlog.ExpectNew, []eventlog.NewEvent{{Kind: "task.created"}}); err != nil {
+	if _, err := store.Append(WithTx(ctx, tx), workspace, stream, eventlog.ExpectNew, []eventlog.NewEvent{{Kind: "task.created"}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -133,12 +133,12 @@ func TestPositionsCommitInOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.AppendWith(ctx, first, workspace, eventlog.TaskStream("a"), eventlog.ExpectNew, []eventlog.NewEvent{{Kind: "a1"}}); err != nil {
+	if _, err := store.Append(WithTx(ctx, first), workspace, eventlog.StreamID("task/a"), eventlog.ExpectNew, []eventlog.NewEvent{{Kind: "a1"}}); err != nil {
 		t.Fatal(err)
 	}
 	blocked := make(chan error, 1)
 	go func() {
-		_, err := store.Append(ctx, workspace, eventlog.TaskStream("b"), eventlog.ExpectNew, []eventlog.NewEvent{{Kind: "b1"}})
+		_, err := store.Append(ctx, workspace, eventlog.StreamID("task/b"), eventlog.ExpectNew, []eventlog.NewEvent{{Kind: "b1"}})
 		blocked <- err
 	}()
 	select {

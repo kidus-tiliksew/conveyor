@@ -87,7 +87,7 @@ CREATE TABLE river_migration (id bigserial PRIMARY KEY)`); err != nil {
 	if riverLeft {
 		t.Fatal("river_job survived migration 121")
 	}
-	st := &Store{pool: pool}
+	st := newStore(pool)
 	want := map[string]bool{
 		"job/dispatch_task:queued-task":           true,
 		"job/dispatch_task:running-task":          true,

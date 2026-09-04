@@ -54,15 +54,6 @@ CREATE TABLE IF NOT EXISTS event_log (
     PRIMARY KEY (workspace_id, position),
     UNIQUE (workspace_id, stream_id, version)
 );
-CREATE TABLE IF NOT EXISTS event_snapshots (
-    workspace_id text NOT NULL,
-    key          text NOT NULL,
-    version      bigint NOT NULL DEFAULT 0,
-    position     bigint NOT NULL DEFAULT 0,
-    blob         bytea NOT NULL DEFAULT ''::bytea,
-    at           timestamptz NOT NULL DEFAULT now(),
-    PRIMARY KEY (workspace_id, key)
-);
 `
 
 // EnsureSchema creates the driver's tables when they are missing.
@@ -134,21 +125,11 @@ func (s *Store) Append(ctx context.Context, workspace string, stream eventlog.St
 	return head, nil
 }
 
-// AppendWith is Append on an executor the caller owns, which must be a
-// transaction for the append to be atomic. It exists so the store can write
-// to the log inside the transaction that wrote its rows.
-func (s *Store) AppendWith(ctx context.Context, exec Executor, workspace string, stream eventlog.StreamID, expected eventlog.Version, events []eventlog.NewEvent) (eventlog.Version, error) {
-	if err := eventlog.ValidateAppend(workspace, stream, events); err != nil {
-		return 0, err
-	}
-	return s.appendTx(ctx, exec, workspace, stream, expected, events)
-}
-
-// LockWorkspace takes the workspace's position row lock inside exec, which
+// lockWorkspace takes the workspace's position row lock inside exec, which
 // must be a transaction, and returns the current position. Every append in
 // the workspace queues behind it until the transaction ends. Lock order is
 // always workspace first, then streams.
-func (s *Store) LockWorkspace(ctx context.Context, exec Executor, workspace string) (eventlog.Position, error) {
+func (s *Store) lockWorkspace(ctx context.Context, exec Executor, workspace string) (eventlog.Position, error) {
 	var position int64
 	if err := exec.QueryRow(ctx, `
 INSERT INTO event_log_positions (workspace_id, position) VALUES ($1, 0)
@@ -159,9 +140,9 @@ RETURNING position`, workspace).Scan(&position); err != nil {
 	return eventlog.Position(position), nil
 }
 
-// LockStream takes the stream's head row lock inside exec, which must be a
-// transaction, and returns the current head. Call LockWorkspace first.
-func (s *Store) LockStream(ctx context.Context, exec Executor, workspace string, stream eventlog.StreamID) (eventlog.Version, error) {
+// lockStream takes the stream's head row lock inside exec, which must be a
+// transaction, and returns the current head. Call lockWorkspace first.
+func (s *Store) lockStream(ctx context.Context, exec Executor, workspace string, stream eventlog.StreamID) (eventlog.Version, error) {
 	var head int64
 	if err := exec.QueryRow(ctx, `
 INSERT INTO event_log_streams (workspace_id, stream_id, version) VALUES ($1, $2, 0)
@@ -176,12 +157,12 @@ func (s *Store) appendTx(ctx context.Context, tx Executor, workspace string, str
 	// Lock order: workspace position row, then stream head row. The upsert
 	// with a no-op update both creates the row on first use and takes the
 	// row lock, so concurrent appends queue here.
-	wsPosition, err := s.LockWorkspace(ctx, tx, workspace)
+	wsPosition, err := s.lockWorkspace(ctx, tx, workspace)
 	if err != nil {
 		return 0, err
 	}
 	position := int64(wsPosition)
-	current, err := s.LockStream(ctx, tx, workspace, stream)
+	current, err := s.lockStream(ctx, tx, workspace, stream)
 	if err != nil {
 		return 0, err
 	}
@@ -273,50 +254,5 @@ func scanEvents(rows pgx.Rows) ([]eventlog.Event, error) {
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("pglog: rows: %w", err)
 	}
-	return out, nil
-}
-
-func (s *Store) PutSnapshot(ctx context.Context, workspace string, snapshot eventlog.Snapshot) error {
-	if workspace == "" {
-		return eventlog.ErrEmptyWorkspace
-	}
-	if snapshot.Key == "" {
-		return eventlog.ErrSnapshotMissing
-	}
-	at := snapshot.At
-	if at.IsZero() {
-		at = s.now()
-	}
-	blob := snapshot.Blob
-	if blob == nil {
-		blob = []byte{}
-	}
-	_, err := s.executor(ctx).Exec(ctx, `
-INSERT INTO event_snapshots (workspace_id, key, version, position, blob, at)
-VALUES ($1, $2, $3, $4, $5, $6)
-ON CONFLICT (workspace_id, key) DO UPDATE
-SET version = EXCLUDED.version, position = EXCLUDED.position, blob = EXCLUDED.blob, at = EXCLUDED.at`,
-		workspace, snapshot.Key, int64(snapshot.Version), int64(snapshot.Position), blob, at.UTC())
-	if err != nil {
-		return fmt.Errorf("pglog: put snapshot: %w", err)
-	}
-	return nil
-}
-
-func (s *Store) GetSnapshot(ctx context.Context, workspace, key string) (eventlog.Snapshot, error) {
-	var out eventlog.Snapshot
-	var version, position int64
-	err := s.executor(ctx).QueryRow(ctx, `
-SELECT key, version, position, blob, at FROM event_snapshots WHERE workspace_id = $1 AND key = $2`, workspace, key).
-		Scan(&out.Key, &version, &position, &out.Blob, &out.At)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return eventlog.Snapshot{}, eventlog.ErrSnapshotMissing
-	}
-	if err != nil {
-		return eventlog.Snapshot{}, fmt.Errorf("pglog: get snapshot: %w", err)
-	}
-	out.Version = eventlog.Version(version)
-	out.Position = eventlog.Position(position)
-	out.At = out.At.UTC()
 	return out, nil
 }

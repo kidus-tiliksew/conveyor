@@ -33,7 +33,6 @@ func Run(t *testing.T, factory Factory) {
 	t.Run("tail_positions", func(t *testing.T) { testTail(t, factory(t)) })
 	t.Run("workspace_isolation", func(t *testing.T) { testWorkspaceIsolation(t, factory(t)) })
 	t.Run("payload_is_copied", func(t *testing.T) { testPayloadCopied(t, factory(t)) })
-	t.Run("snapshots", func(t *testing.T) { testSnapshots(t, factory(t)) })
 	t.Run("concurrent_appends_serialise", func(t *testing.T) { testConcurrentAppends(t, factory(t)) })
 }
 
@@ -64,7 +63,7 @@ func ev(kind string) eventlog.NewEvent {
 func testAppendNewStream(t *testing.T, s eventlog.Store) {
 	ctx := context.Background()
 	w := ws(t)
-	stream := eventlog.TaskStream("t1")
+	stream := eventlog.StreamID("task/t1")
 	head, err := s.Head(ctx, w, stream)
 	if err != nil || head != 0 {
 		t.Fatalf("empty head=%d err=%v", head, err)
@@ -106,7 +105,7 @@ func testAppendNewStream(t *testing.T, s eventlog.Store) {
 func testExpectedMismatch(t *testing.T, s eventlog.Store) {
 	ctx := context.Background()
 	w := ws(t)
-	stream := eventlog.WorkOrderStream("wo1")
+	stream := eventlog.StreamID("work_order/wo1")
 	if _, err := s.Append(ctx, w, stream, eventlog.ExpectNew, []eventlog.NewEvent{ev("work_order.created"), ev("work_order.released")}); err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +136,7 @@ func testExpectedMismatch(t *testing.T, s eventlog.Store) {
 func testExpectNewOnExisting(t *testing.T, s eventlog.Store) {
 	ctx := context.Background()
 	w := ws(t)
-	stream := eventlog.RequirementStream("r1")
+	stream := eventlog.StreamID("requirement/r1")
 	if _, err := s.Append(ctx, w, stream, eventlog.ExpectNew, []eventlog.NewEvent{ev("requirement.created")}); err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +150,7 @@ func testExpectNewOnExisting(t *testing.T, s eventlog.Store) {
 func testExpectAny(t *testing.T, s eventlog.Store) {
 	ctx := context.Background()
 	w := ws(t)
-	stream := eventlog.DecisionStream("DEC-1")
+	stream := eventlog.StreamID("decision/DEC-1")
 	for i := 1; i <= 3; i++ {
 		head, err := s.Append(ctx, w, stream, eventlog.ExpectAny, []eventlog.NewEvent{ev("decision.proposed")})
 		if err != nil || head != eventlog.Version(i) {
@@ -163,7 +162,7 @@ func testExpectAny(t *testing.T, s eventlog.Store) {
 func testBatchAtomic(t *testing.T, s eventlog.Store) {
 	ctx := context.Background()
 	w := ws(t)
-	stream := eventlog.TaskStream("atomic")
+	stream := eventlog.StreamID("task/atomic")
 	if _, err := s.Append(ctx, w, stream, eventlog.ExpectNew, []eventlog.NewEvent{ev("a")}); err != nil {
 		t.Fatal(err)
 	}
@@ -190,18 +189,18 @@ func testValidation(t *testing.T, s eventlog.Store) {
 		events    []eventlog.NewEvent
 		want      error
 	}{
-		{"empty workspace", "", eventlog.TaskStream("x"), []eventlog.NewEvent{ev("a")}, eventlog.ErrEmptyWorkspace},
+		{"empty workspace", "", eventlog.StreamID("task/x"), []eventlog.NewEvent{ev("a")}, eventlog.ErrEmptyWorkspace},
 		{"bad stream", w, eventlog.StreamID("task"), []eventlog.NewEvent{ev("a")}, eventlog.ErrInvalidStream},
 		{"bad stream slash", w, eventlog.StreamID("task/"), []eventlog.NewEvent{ev("a")}, eventlog.ErrInvalidStream},
-		{"no events", w, eventlog.TaskStream("x"), nil, eventlog.ErrEmptyAppend},
-		{"empty kind", w, eventlog.TaskStream("x"), []eventlog.NewEvent{{Kind: " "}}, eventlog.ErrEmptyKind},
+		{"no events", w, eventlog.StreamID("task/x"), nil, eventlog.ErrEmptyAppend},
+		{"empty kind", w, eventlog.StreamID("task/x"), []eventlog.NewEvent{{Kind: " "}}, eventlog.ErrEmptyKind},
 	}
 	for _, tc := range cases {
 		if _, err := s.Append(ctx, tc.workspace, tc.stream, eventlog.ExpectAny, tc.events); !errors.Is(err, tc.want) {
 			t.Errorf("%s: err=%v want %v", tc.name, err, tc.want)
 		}
 	}
-	if head, err := s.Head(ctx, w, eventlog.TaskStream("x")); err != nil || head != 0 {
+	if head, err := s.Head(ctx, w, eventlog.StreamID("task/x")); err != nil || head != 0 {
 		t.Fatalf("invalid appends changed head=%d err=%v", head, err)
 	}
 }
@@ -209,7 +208,7 @@ func testValidation(t *testing.T, s eventlog.Store) {
 func testNormalisation(t *testing.T, s eventlog.Store) {
 	ctx := context.Background()
 	w := ws(t)
-	stream := eventlog.TaskStream("norm")
+	stream := eventlog.StreamID("task/norm")
 	fixed := time.Date(2026, 9, 4, 12, 0, 0, 0, time.FixedZone("x", 3600))
 	before := time.Now().Add(-time.Second)
 	if _, err := s.Append(ctx, w, stream, eventlog.ExpectNew, []eventlog.NewEvent{
@@ -243,7 +242,7 @@ func testNormalisation(t *testing.T, s eventlog.Store) {
 func testReadAfterLimit(t *testing.T, s eventlog.Store) {
 	ctx := context.Background()
 	w := ws(t)
-	stream := eventlog.TaskStream("read")
+	stream := eventlog.StreamID("task/read")
 	batch := make([]eventlog.NewEvent, 5)
 	for i := range batch {
 		batch[i] = ev(fmt.Sprintf("k%d", i+1))
@@ -266,7 +265,7 @@ func testReadAfterLimit(t *testing.T, s eventlog.Store) {
 	if len(events) != 0 {
 		t.Fatalf("read far past head returned %d", len(events))
 	}
-	events, _ = s.Read(ctx, w, eventlog.TaskStream("missing"), 0, 0)
+	events, _ = s.Read(ctx, w, eventlog.StreamID("task/missing"), 0, 0)
 	if len(events) != 0 {
 		t.Fatalf("missing stream returned %d", len(events))
 	}
@@ -275,7 +274,7 @@ func testReadAfterLimit(t *testing.T, s eventlog.Store) {
 func testTail(t *testing.T, s eventlog.Store) {
 	ctx := context.Background()
 	w := ws(t)
-	a, b := eventlog.TaskStream("a"), eventlog.RequirementStream("b")
+	a, b := eventlog.StreamID("task/a"), eventlog.StreamID("requirement/b")
 	if _, err := s.Append(ctx, w, a, eventlog.ExpectNew, []eventlog.NewEvent{ev("a1"), ev("a2")}); err != nil {
 		t.Fatal(err)
 	}
@@ -310,7 +309,7 @@ func testTail(t *testing.T, s eventlog.Store) {
 func testWorkspaceIsolation(t *testing.T, s eventlog.Store) {
 	ctx := context.Background()
 	w1, w2 := ws(t)+"-1", ws(t)+"-2"
-	stream := eventlog.TaskStream("shared-id")
+	stream := eventlog.StreamID("task/shared-id")
 	if _, err := s.Append(ctx, w1, stream, eventlog.ExpectNew, []eventlog.NewEvent{ev("w1")}); err != nil {
 		t.Fatal(err)
 	}
@@ -326,18 +325,12 @@ func testWorkspaceIsolation(t *testing.T, s eventlog.Store) {
 	if fmt.Sprint(kinds(t1)) != "[w1]" || fmt.Sprint(kinds(t2)) != "[w2a w2b]" {
 		t.Fatalf("tails leaked: %v / %v", kinds(t1), kinds(t2))
 	}
-	if err := s.PutSnapshot(ctx, w1, eventlog.Snapshot{Key: "p", Blob: []byte("one")}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.GetSnapshot(ctx, w2, "p"); !errors.Is(err, eventlog.ErrSnapshotMissing) {
-		t.Fatalf("snapshot leaked across workspaces: %v", err)
-	}
 }
 
 func testPayloadCopied(t *testing.T, s eventlog.Store) {
 	ctx := context.Background()
 	w := ws(t)
-	stream := eventlog.TaskStream("copy")
+	stream := eventlog.StreamID("task/copy")
 	payload := []byte(`{"v":1}`)
 	if _, err := s.Append(ctx, w, stream, eventlog.ExpectNew, []eventlog.NewEvent{{Kind: "k", Payload: payload}}); err != nil {
 		t.Fatal(err)
@@ -371,38 +364,10 @@ func jsonEqual(got json.RawMessage, want string) bool {
 	return bytes.Equal(ga, gb)
 }
 
-func testSnapshots(t *testing.T, s eventlog.Store) {
-	ctx := context.Background()
-	w := ws(t)
-	if _, err := s.GetSnapshot(ctx, w, "tasks"); !errors.Is(err, eventlog.ErrSnapshotMissing) {
-		t.Fatalf("missing snapshot err=%v", err)
-	}
-	if err := s.PutSnapshot(ctx, w, eventlog.Snapshot{Key: "tasks", Version: 3, Position: 10, Blob: []byte("v1")}); err != nil {
-		t.Fatal(err)
-	}
-	got, err := s.GetSnapshot(ctx, w, "tasks")
-	if err != nil || got.Key != "tasks" || got.Version != 3 || got.Position != 10 || !bytes.Equal(got.Blob, []byte("v1")) || got.At.IsZero() {
-		t.Fatalf("snapshot=%+v err=%v", got, err)
-	}
-	if err := s.PutSnapshot(ctx, w, eventlog.Snapshot{Key: "tasks", Version: 4, Position: 12, Blob: []byte("v2")}); err != nil {
-		t.Fatal(err)
-	}
-	got, _ = s.GetSnapshot(ctx, w, "tasks")
-	if got.Position != 12 || string(got.Blob) != "v2" {
-		t.Fatalf("overwrite lost: %+v", got)
-	}
-	if err := s.PutSnapshot(ctx, w, eventlog.Snapshot{Key: "other", Blob: nil}); err != nil {
-		t.Fatalf("empty blob rejected: %v", err)
-	}
-	if err := s.PutSnapshot(ctx, "", eventlog.Snapshot{Key: "x"}); !errors.Is(err, eventlog.ErrEmptyWorkspace) {
-		t.Fatalf("empty workspace snapshot err=%v", err)
-	}
-}
-
 func testConcurrentAppends(t *testing.T, s eventlog.Store) {
 	ctx := context.Background()
 	w := ws(t)
-	stream := eventlog.WorkOrderStream("race")
+	stream := eventlog.StreamID("work_order/race")
 	if _, err := s.Append(ctx, w, stream, eventlog.ExpectNew, []eventlog.NewEvent{ev("work_order.released")}); err != nil {
 		t.Fatal(err)
 	}

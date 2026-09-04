@@ -36,7 +36,7 @@ import (
 type Store struct {
 	pool          *pgxpool.Pool
 	queries       *db.Queries
-	queue         dispatchQueue
+	queue         *logDispatchQueue
 	log           *pglog.Store
 	knownTables   sync.Map // table name -> true once seen to exist
 	forgeTokenKey []byte
@@ -82,8 +82,13 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 		pool.Close()
 		return nil, err
 	}
+	return newStore(pool), nil
+}
+
+// newStore assembles a store over a migrated pool.
+func newStore(pool *pgxpool.Pool) *Store {
 	log := pglog.New(pool)
-	return &Store{pool: pool, queries: db.New(pool), queue: newLogDispatchQueue(pool, log), log: log}, nil
+	return &Store{pool: pool, queries: db.New(pool), queue: newLogDispatchQueue(pool, log), log: log}
 }
 
 func (s *Store) Close() { s.pool.Close() }
@@ -92,21 +97,8 @@ func (s *Store) Pool() *pgxpool.Pool { return s.pool }
 
 // Log is the event log the store's queue runs on. Jobs are appended in the
 // same transactions as the rows that demand them.
-func (s *Store) Log() eventlog.Store { return s.logDriver() }
-
-var logDriverInit sync.Mutex
-
-// logDriver returns the store's log driver, creating it on first use for
-// stores assembled without Open (test fixtures build Store literals).
-func (s *Store) logDriver() *pglog.Store {
-	logDriverInit.Lock()
-	defer logDriverInit.Unlock()
-	if s.log == nil {
-		s.log = pglog.New(s.pool)
-	}
-	return s.log
-}
-func (s *Store) IsDurable() bool { return true }
+func (s *Store) Log() eventlog.Store { return s.log }
+func (s *Store) IsDurable() bool     { return true }
 
 // ConfigureForgeTokenEncryptionKey installs a process-only AES-256 key. The
 // copy prevents later caller mutation and the value never enters persisted

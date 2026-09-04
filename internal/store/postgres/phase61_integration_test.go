@@ -17,7 +17,6 @@ import (
 	queueargs "github.com/kidus-tiliksew/conveyor/internal/queue"
 	"github.com/kidus-tiliksew/conveyor/internal/queue/logqueue"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
-	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
@@ -485,7 +484,7 @@ func TestListTasksBatchesRelationHydrationIntegration(t *testing.T) {
 	if err = migrateControlPlane(t.Context(), pool); err != nil {
 		t.Fatal(err)
 	}
-	st := &Store{pool: pool, queries: db.New(pool)}
+	st := newStore(pool)
 	workspace := "relation-batch-" + core.NewTaskID()
 	ctx := store.WithWorkspace(t.Context(), workspace)
 	if _, err = st.BootstrapWorkspaceConfig(ctx, &config.Config{
@@ -671,7 +670,7 @@ func TestLinkProvenanceMigrationPreservesAmbiguousLegacyRowsIntegration(t *testi
 	}
 	workspace := "link-migration-" + core.NewTaskID()
 	ctx := store.WithWorkspace(t.Context(), workspace)
-	st := &Store{pool: pool, queries: db.New(pool)}
+	st := newStore(pool)
 	if _, err = st.BootstrapWorkspaceConfig(ctx, &config.Config{
 		Workspace: workspace,
 		Repos:     []config.Repo{{Name: "conveyor", URL: "https://example.test/conveyor", Base: "main"}},

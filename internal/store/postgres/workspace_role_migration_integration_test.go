@@ -36,7 +36,7 @@ func TestMigration095RenamesWorkspaceRolesAndEnforcesFiveRoleVocabularyIntegrati
 		t.Fatal(err)
 	}
 
-	st := &Store{pool: pool, queries: db.New(pool)}
+	st := newStore(pool)
 	workspace := "role-migration-" + core.NewTaskID()
 	ctx := store.WithWorkspace(t.Context(), workspace)
 	if _, err = st.BootstrapWorkspaceConfig(ctx, isolationConfig(workspace)); err != nil {

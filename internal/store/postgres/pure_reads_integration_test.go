@@ -55,7 +55,7 @@ func TestLineageNeighborhoodBatchesManyRootsInOneScopedQueryIntegration(t *testi
 	if err = Migrate(t.Context(), pool); err != nil {
 		t.Fatal(err)
 	}
-	st := &Store{pool: pool, queries: db.New(pool)}
+	st := newStore(pool)
 	workspace := "lineage-query-" + strings.ToLower(t.Name())
 	if _, err = pool.Exec(t.Context(), `INSERT INTO workspaces (id,name) VALUES ($1,$1) ON CONFLICT DO NOTHING`, workspace); err != nil {
 		t.Fatal(err)
@@ -337,7 +337,7 @@ func TestActivityMarkersForTasksScopeEveryReadToThePageIntegration(t *testing.T)
 	if err = Migrate(t.Context(), pool); err != nil {
 		t.Fatal(err)
 	}
-	st := &Store{pool: pool, queries: db.New(pool)}
+	st := newStore(pool)
 	workspace := "activity-scope-" + core.NewTaskID()
 	ctx := store.WithWorkspace(t.Context(), workspace)
 	if _, err = st.BootstrapWorkspaceConfig(ctx, &config.Config{
@@ -480,7 +480,7 @@ func TestWorkOrderReadsExecuteNoMutationQueriesIntegration(t *testing.T) {
 	if err = Migrate(t.Context(), pool); err != nil {
 		t.Fatal(err)
 	}
-	st := &Store{pool: pool, queries: db.New(pool)}
+	st := newStore(pool)
 	ctx := store.WithWorkspace(t.Context(), "pure-read-"+strings.ToLower(t.Name()))
 	recorder.reset()
 

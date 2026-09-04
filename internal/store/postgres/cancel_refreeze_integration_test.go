@@ -11,7 +11,6 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
-	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 )
 
 func TestInterventionActionMigrationUpgradesVersion35SchemaIntegration(t *testing.T) {
@@ -58,7 +57,7 @@ func TestInterventionActionMigrationUpgradesVersion35SchemaIntegration(t *testin
 
 	workspace := "migration-v35-" + core.NewTaskID()
 	ctx := store.WithWorkspace(t.Context(), workspace)
-	st := &Store{pool: pool, queries: db.New(pool)}
+	st := newStore(pool)
 	cfg := &config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "repo", URL: "https://example.test/repo", Base: "main"}}}
 	if _, err = st.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
 		t.Fatal(err)

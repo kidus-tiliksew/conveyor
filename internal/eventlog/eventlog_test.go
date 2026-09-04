@@ -12,17 +12,8 @@ func TestStreamIDShape(t *testing.T) {
 		typ, id string
 		valid   bool
 	}{
-		{TaskStream("260903-ebf5ec"), "task", "260903-ebf5ec", true},
-		{WorkOrderStream("wo-1"), "work_order", "wo-1", true},
-		{RequirementStream("req-1"), "requirement", "req-1", true},
-		{DesignStream("design-database"), "design", "design-database", true},
-		{DecisionStream("DEC-6"), "decision", "DEC-6", true},
-		{ReferenceDocumentStream("ref-1"), "reference_document", "ref-1", true},
-		{PlanningSessionStream("ps-1"), "planning_session", "ps-1", true},
-		{PlanningBundleStream("pb-1"), "planning_bundle", "pb-1", true},
-		{WorkspaceStream("demo"), "workspace", "demo", true},
-		{UserStream("usr_1"), "user", "usr_1", true},
-		{WorkerStream("worker-1"), "worker", "worker-1", true},
+		{StreamID("task/260903-ebf5ec"), "task", "260903-ebf5ec", true},
+		{StreamID("job/dispatch_task:x"), "job", "dispatch_task:x", true},
 		{StreamID("task"), "task", "", false},
 		{StreamID("task/"), "task", "", false},
 		{StreamID("/x"), "", "x", false},
@@ -38,19 +29,19 @@ func TestStreamIDShape(t *testing.T) {
 
 func TestValidateAppend(t *testing.T) {
 	ok := []NewEvent{{Kind: "k"}}
-	if err := ValidateAppend("ws", TaskStream("t"), ok); err != nil {
+	if err := ValidateAppend("ws", StreamID("task/t"), ok); err != nil {
 		t.Fatalf("valid append rejected: %v", err)
 	}
-	if err := ValidateAppend(" ", TaskStream("t"), ok); err != ErrEmptyWorkspace {
+	if err := ValidateAppend(" ", StreamID("task/t"), ok); err != ErrEmptyWorkspace {
 		t.Fatalf("blank workspace err=%v", err)
 	}
 	if err := ValidateAppend("ws", StreamID("nope"), ok); err == nil {
 		t.Fatal("invalid stream accepted")
 	}
-	if err := ValidateAppend("ws", TaskStream("t"), nil); err != ErrEmptyAppend {
+	if err := ValidateAppend("ws", StreamID("task/t"), nil); err != ErrEmptyAppend {
 		t.Fatalf("empty append err=%v", err)
 	}
-	if err := ValidateAppend("ws", TaskStream("t"), []NewEvent{{Kind: "a"}, {Kind: ""}}); err == nil {
+	if err := ValidateAppend("ws", StreamID("task/t"), []NewEvent{{Kind: "a"}, {Kind: ""}}); err == nil {
 		t.Fatal("blank kind accepted")
 	}
 }
@@ -70,28 +61,8 @@ func TestNormalize(t *testing.T) {
 
 type stubStore struct{ Store }
 
-func TestRouterBindsWorkspacesToStores(t *testing.T) {
-	fallback, singlestore := &stubStore{}, &stubStore{}
-	r := NewRouter(fallback)
-	if r.For("demo") != fallback {
-		t.Fatal("unbound workspace did not use the fallback")
-	}
-	r.Bind("ff-demo-2", singlestore)
-	if r.For("ff-demo-2") != singlestore || r.For("demo") != fallback {
-		t.Fatal("binding not honoured")
-	}
-	stores := r.Stores()
-	if len(stores) != 2 || stores[0] != fallback {
-		t.Fatalf("stores=%v", stores)
-	}
-	r.Bind("ff-demo-2", fallback)
-	if len(r.Stores()) != 1 {
-		t.Fatal("rebinding to the fallback still lists two stores")
-	}
-}
-
 func TestVersionConflictError(t *testing.T) {
-	err := &VersionConflictError{Workspace: "ws", Stream: TaskStream("t"), Expected: 2, Actual: 3}
+	err := &VersionConflictError{Workspace: "ws", Stream: StreamID("task/t"), Expected: 2, Actual: 3}
 	if !IsVersionConflict(err) || IsVersionConflict(ErrEmptyAppend) {
 		t.Fatal("IsVersionConflict misclassified")
 	}

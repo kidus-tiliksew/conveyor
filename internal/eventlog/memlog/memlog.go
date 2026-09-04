@@ -13,10 +13,9 @@ import (
 )
 
 type workspaceLog struct {
-	streams   map[eventlog.StreamID][]eventlog.Event
-	ordered   []eventlog.Event // by position
-	position  eventlog.Position
-	snapshots map[string]eventlog.Snapshot
+	streams  map[eventlog.StreamID][]eventlog.Event
+	ordered  []eventlog.Event // by position
+	position eventlog.Position
 }
 
 // Store is a process-local eventlog.Store. It is safe for concurrent use.
@@ -41,7 +40,7 @@ func (s *Store) WithClock(now func() time.Time) *Store {
 func (s *Store) workspace(id string) *workspaceLog {
 	w, ok := s.workspaces[id]
 	if !ok {
-		w = &workspaceLog{streams: map[eventlog.StreamID][]eventlog.Event{}, snapshots: map[string]eventlog.Snapshot{}}
+		w = &workspaceLog{streams: map[eventlog.StreamID][]eventlog.Event{}}
 		s.workspaces[id] = w
 	}
 	return w
@@ -115,38 +114,6 @@ func (s *Store) Tail(_ context.Context, workspace string, after eventlog.Positio
 		rest = rest[:limit]
 	}
 	return copyEvents(rest), nil
-}
-
-func (s *Store) PutSnapshot(_ context.Context, workspace string, snapshot eventlog.Snapshot) error {
-	if workspace == "" {
-		return eventlog.ErrEmptyWorkspace
-	}
-	if snapshot.Key == "" {
-		return eventlog.ErrSnapshotMissing
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if snapshot.At.IsZero() {
-		snapshot.At = s.now().UTC()
-	}
-	snapshot.Blob = append([]byte(nil), snapshot.Blob...)
-	s.workspace(workspace).snapshots[snapshot.Key] = snapshot
-	return nil
-}
-
-func (s *Store) GetSnapshot(_ context.Context, workspace, key string) (eventlog.Snapshot, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	w, ok := s.workspaces[workspace]
-	if !ok {
-		return eventlog.Snapshot{}, eventlog.ErrSnapshotMissing
-	}
-	snapshot, ok := w.snapshots[key]
-	if !ok {
-		return eventlog.Snapshot{}, eventlog.ErrSnapshotMissing
-	}
-	snapshot.Blob = append([]byte(nil), snapshot.Blob...)
-	return snapshot, nil
 }
 
 func copyEvents(in []eventlog.Event) []eventlog.Event {

@@ -209,7 +209,7 @@ func Fold(workspace string, stream eventlog.StreamID, events []eventlog.Event) (
 }
 
 // Load reads and folds one job stream.
-func Load(ctx context.Context, log eventlog.Log, workspace string, stream eventlog.StreamID) (Job, error) {
+func Load(ctx context.Context, log eventlog.Store, workspace string, stream eventlog.StreamID) (Job, error) {
 	events, err := log.Read(ctx, workspace, stream, 0, 0)
 	if err != nil {
 		return Job{}, err
@@ -221,7 +221,7 @@ func Load(ctx context.Context, log eventlog.Log, workspace string, stream eventl
 // reports whether it enqueued. A version conflict means another writer
 // enqueued first, which counts as "not inserted", the same answer a unique
 // index would give.
-func Enqueue(ctx context.Context, log eventlog.Log, workspace, kind, key string, args any, maxAttempts int, now time.Time) (bool, error) {
+func Enqueue(ctx context.Context, log eventlog.Store, workspace, kind, key string, args any, maxAttempts int, now time.Time) (bool, error) {
 	if maxAttempts <= 0 {
 		return false, errors.New("logqueue: max attempts must be positive")
 	}

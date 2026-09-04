@@ -15,12 +15,10 @@ position.
 
 Two drivers implement the contract. `memlog` is in-process and is the test
 double; `pglog` is PostgreSQL. `logtest` is the conformance suite, and
-passing it is what "implements the contract" means. A `Router` binds
-workspaces to drivers, so one workspace can move to another engine while the
-rest stay put.
+passing it is what "implements the contract" means.
 
-The PostgreSQL driver owns four tables (`event_log`, `event_log_streams`,
-`event_log_positions`, `event_snapshots`). The startup migration runner
+The PostgreSQL driver owns three tables (`event_log`, `event_log_streams`,
+`event_log_positions`). The startup migration runner
 creates them when they are missing. They carry no foreign keys, no CHECK
 constraints, and no triggers. Serialization is two row locks in a fixed
 order: the partition's position row, then the stream's head row. Holding

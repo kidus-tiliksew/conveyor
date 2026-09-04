@@ -10,7 +10,6 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
-	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 )
 
 func TestDecisionSupersessionSweepLifecycleIntegration(t *testing.T) {
@@ -124,7 +123,7 @@ func TestDecisionSupersessionSweepBackfillIntegration(t *testing.T) {
 	}
 	workspace := "backfill-" + core.NewTaskID()
 	ctx := store.WithWorkspace(t.Context(), workspace)
-	st := &Store{pool: pool, queries: db.New(pool)}
+	st := newStore(pool)
 	if _, err = st.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "conveyor", Base: "main"}}}); err != nil {
 		t.Fatal(err)
 	}
