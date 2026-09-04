@@ -6,8 +6,6 @@
 // restart resumes from a position rather than from the first event. Bumping
 // a projector's Version discards its snapshot and rebuilds from zero, which
 // is how a read model changes shape without a schema migration.
-//
-// Log-core migration plan, phase 2, task 2.1.
 package projection
 
 import (

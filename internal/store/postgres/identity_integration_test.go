@@ -17,8 +17,8 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
+	"github.com/kidus-tiliksew/conveyor/internal/eventlog/pglog"
 	"github.com/kidus-tiliksew/conveyor/internal/httpapi"
-	"github.com/kidus-tiliksew/conveyor/internal/queue/riverqueue"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
@@ -1179,14 +1179,6 @@ func newIdentityIntegrationStore(t *testing.T, maxVersion int) *Store {
 	if err := migrateControlPlaneToVersion(t.Context(), pool, maxVersion); err != nil {
 		t.Fatalf("migrate identity fixture to %d: %v", maxVersion, err)
 	}
-	if maxVersion == 0 {
-		if migrateErr := riverqueue.Migrate(t.Context(), pool); migrateErr != nil {
-			t.Fatal(migrateErr)
-		}
-	}
-	queue, err := newRiverDispatchQueue(pool)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return &Store{pool: pool, queries: db.New(pool), queue: queue}
+	log := pglog.New(pool)
+	return &Store{pool: pool, queries: db.New(pool), queue: newLogDispatchQueue(pool, log), log: log}
 }

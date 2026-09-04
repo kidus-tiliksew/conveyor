@@ -9,8 +9,8 @@
 //
 // Drivers implement Store. Nothing above a driver may use engine-specific
 // features; the conformance suite in logtest is the contract's definition.
-// Traceability: log-core migration plan (2026-09-04), phase 1. Supersedes the
-// engine binding in DEC-6 once DEC-35 is confirmed.
+// Traceability: docs/log-core.md. Supersedes the engine binding in DEC-6
+// once the replacing decision is confirmed.
 package eventlog
 
 import (

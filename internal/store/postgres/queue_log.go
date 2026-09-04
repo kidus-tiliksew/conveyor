@@ -14,14 +14,36 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/queue/logqueue"
 )
 
-// logDispatchQueue is dispatchQueue on the event log. Enqueues run inside
-// the caller's transaction by binding it to the log driver's context, so a
-// lifecycle command's rows, its mirrored events, and its job commit
-// together exactly as they did with River. The reconciliation reads keep
-// their SQL over tasks and fold each candidate's job stream for the queue
-// half of the answer.
-//
-// Log-core migration plan, phase 3, task 3.2.
+// dispatchQueue is the store's private view of the durable queue: the
+// transactional enqueues each lifecycle command needs, and the two
+// reconciliation reads. Lifecycle commands know nothing beyond it.
+type dispatchQueue interface {
+	enqueueDispatchTx(ctx context.Context, tx pgx.Tx, workspace, taskID string) (bool, error)
+	enqueueReviewPublicationTx(ctx context.Context, tx pgx.Tx, workspace, reviewWorkOrderID string) error
+	enqueueGitHubIssuePublicationTx(ctx context.Context, tx pgx.Tx, workspace, taskID string) error
+	// queuedTasksWithoutActiveDispatch lists queued tasks with no active
+	// dispatch job, excluding blueprint anchors whose children own
+	// delivery. Runs inside the reconciliation transaction.
+	queuedTasksWithoutActiveDispatch(ctx context.Context, tx pgx.Tx, workspace string) ([]string, error)
+	// exhaustedDispatches lists running tasks whose latest dispatch job was
+	// discarded after its final attempt.
+	exhaustedDispatches(ctx context.Context, workspace string) ([]exhaustedDispatch, error)
+}
+
+type exhaustedDispatch struct {
+	taskID      string
+	stage       core.Stage
+	attempt     int
+	maxAttempts int
+}
+
+var _ dispatchQueue = (*logDispatchQueue)(nil)
+
+// logDispatchQueue is the store's durable queue on the event log. Enqueues
+// run inside the caller's transaction by binding it to the log driver's
+// context, so a lifecycle command's rows, its mirrored events, and its job
+// commit together. The reconciliation reads keep their SQL over tasks and
+// fold each candidate's job stream for the queue half of the answer.
 type logDispatchQueue struct {
 	pool *pgxpool.Pool
 	log  *pglog.Store
@@ -30,12 +52,6 @@ type logDispatchQueue struct {
 
 func newLogDispatchQueue(pool *pgxpool.Pool, log *pglog.Store) *logDispatchQueue {
 	return &logDispatchQueue{pool: pool, log: log, now: time.Now}
-}
-
-// UseLogQueue switches the store's durable queue to the event log. The
-// daemon must run the matching logqueue.Runtime for jobs to execute.
-func (s *Store) UseLogQueue() {
-	s.queue = newLogDispatchQueue(s.pool, s.logDriver())
 }
 
 const publicationMaxAttempts = 5

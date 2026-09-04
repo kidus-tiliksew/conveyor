@@ -128,7 +128,8 @@ func TestLegacyWritesMirrorIntoEventLog(t *testing.T) {
 			t.Fatalf("tail positions not increasing at %d", i)
 		}
 		if e.LegacyID == 0 {
-			if e.Kind != eventlog.StateRecordedKind {
+			// Native appends: recorded state and the queue's own job streams.
+			if e.Kind != eventlog.StateRecordedKind && e.Stream.Type() != "job" {
 				t.Fatalf("tail entry %d has no legacy id: %+v", i, e)
 			}
 			continue

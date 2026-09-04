@@ -29,7 +29,7 @@ type Executor interface {
 }
 
 // Schema is the driver's DDL. Every statement is idempotent so EnsureSchema
-// can run at every startup, the same way River's migrator does.
+// can run at every startup.
 const Schema = `
 CREATE TABLE IF NOT EXISTS event_log_positions (
     workspace_id text PRIMARY KEY,

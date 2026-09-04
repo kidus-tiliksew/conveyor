@@ -14,6 +14,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	queueargs "github.com/kidus-tiliksew/conveyor/internal/queue"
+	"github.com/kidus-tiliksew/conveyor/internal/queue/logqueue"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
@@ -82,11 +84,7 @@ func TestBlueprintAnchorReconciliationStaysQuietIntegration(t *testing.T) {
 	if err := st.CreateTask(ctx, child); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.pool.Exec(ctx, `DELETE FROM river_job
-		WHERE kind='dispatch_task' AND args->>'workspace_id'=$1 AND args->>'task_id'=$2`,
-		workspace, parent.ID); err != nil {
-		t.Fatal(err)
-	}
+	finishDispatchJob(t, st, workspace, parent.ID)
 	for tick := 1; tick <= 2; tick++ {
 		repaired, err := st.ReconcileQueuedTasks(ctx)
 		if err != nil {
@@ -96,29 +94,20 @@ func TestBlueprintAnchorReconciliationStaysQuietIntegration(t *testing.T) {
 			t.Fatalf("tick %d repaired=%d, want 0 for blueprint anchor", tick, repaired)
 		}
 	}
-	var parentJobs, parentEvents int
-	if err := st.pool.QueryRow(ctx, `SELECT count(*) FROM river_job
-		WHERE kind='dispatch_task' AND args->>'workspace_id'=$1 AND args->>'task_id'=$2`,
-		workspace, parent.ID).Scan(&parentJobs); err != nil {
-		t.Fatal(err)
-	}
+	var parentEvents int
 	if err := st.pool.QueryRow(ctx, `SELECT count(*) FROM events
 		WHERE task_id=$1 AND kind='dispatch.reconciled'`, parent.ID).Scan(&parentEvents); err != nil {
 		t.Fatal(err)
 	}
-	if parentJobs != 0 || parentEvents != 0 {
-		t.Fatalf("blueprint parent jobs=%d reconciled events=%d, want 0/0", parentJobs, parentEvents)
+	if parentJob := loadDispatchJob(t, st, workspace, parent.ID); parentJob.Active() || parentEvents != 0 {
+		t.Fatalf("blueprint parent job=%+v reconciled events=%d, want inactive/0", parentJob, parentEvents)
 	}
 
 	ordinary := phase61Task(workspace, "ordinary-"+suffix, core.TaskQueued, "")
 	if err := st.CreateTask(ctx, ordinary); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.pool.Exec(ctx, `DELETE FROM river_job
-		WHERE kind='dispatch_task' AND args->>'workspace_id'=$1 AND args->>'task_id'=$2`,
-		workspace, ordinary.ID); err != nil {
-		t.Fatal(err)
-	}
+	finishDispatchJob(t, st, workspace, ordinary.ID)
 	repaired, err := st.ReconcileQueuedTasks(ctx)
 	if err != nil || repaired != 1 {
 		t.Fatalf("ordinary queued reconcile repaired=%d err=%v, want 1", repaired, err)
@@ -136,11 +125,7 @@ func TestReconcileRescuerDiscardParksRunningTaskWithFailureEvidenceIntegration(t
 	if _, err := taskops.New(st).Perform(ctx, task.ID, taskops.Command{Kind: core.TaskDispatchStart}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.pool.Exec(ctx, `UPDATE river_job
-		SET state='discarded', attempt=max_attempts, finalized_at=now()
-		WHERE kind='dispatch_task' AND args->>'workspace_id'=$1 AND args->>'task_id'=$2`, workspace, task.ID); err != nil {
-		t.Fatal(err)
-	}
+	discardDispatchJob(t, st, workspace, task.ID)
 
 	repaired, err := st.ReconcileQueuedTasks(ctx)
 	if err != nil || repaired != 1 {
@@ -156,7 +141,7 @@ func TestReconcileRescuerDiscardParksRunningTaskWithFailureEvidenceIntegration(t
 	}
 	foundFailure := false
 	for _, event := range events {
-		if event.Kind == "dispatch.failed" && strings.Contains(string(event.Payload), "River rescuer discarded") {
+		if event.Kind == "dispatch.failed" && strings.Contains(string(event.Payload), "discarded the dispatch job") {
 			foundFailure = true
 		}
 	}
@@ -962,4 +947,50 @@ func transitionPhase61TaskToMerged(t *testing.T, ctx context.Context, st store.S
 			t.Fatalf("%s: %v", command.Kind, err)
 		}
 	}
+}
+
+// finishDispatchJob completes a task's dispatch job the way a worker would,
+// leaving the stream inactive.
+func finishDispatchJob(t *testing.T, st *Store, workspace, taskID string) {
+	t.Helper()
+	job := loadDispatchJob(t, st, workspace, taskID)
+	if !job.Active() {
+		return
+	}
+	head := job.Head
+	if job.State != logqueue.StateRunning {
+		appendQueueEvent(t, st, workspace, job.Stream, head, logqueue.KindClaimed, map[string]any{"attempt": job.Attempt + 1, "worker": "test", "claimed_at": time.Now().UTC()})
+		head++
+	}
+	appendQueueEvent(t, st, workspace, job.Stream, head, logqueue.KindCompleted, map[string]any{"attempt": job.Attempt + 1})
+}
+
+// discardDispatchJob exhausts a task's dispatch job: every attempt fails
+// and the last is discarded.
+func discardDispatchJob(t *testing.T, st *Store, workspace, taskID string) {
+	t.Helper()
+	job := loadDispatchJob(t, st, workspace, taskID)
+	head := job.Head
+	attempt := job.Attempt
+	if job.State != logqueue.StateRunning {
+		attempt++
+		appendQueueEvent(t, st, workspace, job.Stream, head, logqueue.KindClaimed, map[string]any{"attempt": attempt, "worker": "test", "claimed_at": time.Now().UTC()})
+		head++
+	}
+	for attempt < job.MaxAttempts {
+		appendQueueEvent(t, st, workspace, job.Stream, head, logqueue.KindFailed, map[string]any{"attempt": attempt, "error": "boom", "next_at": time.Now().UTC()})
+		attempt++
+		appendQueueEvent(t, st, workspace, job.Stream, head+1, logqueue.KindClaimed, map[string]any{"attempt": attempt, "worker": "test", "claimed_at": time.Now().UTC()})
+		head += 2
+	}
+	appendQueueEvent(t, st, workspace, job.Stream, head, logqueue.KindDiscarded, map[string]any{"attempt": attempt, "error": "boom"})
+}
+
+func loadDispatchJob(t *testing.T, st *Store, workspace, taskID string) logqueue.Job {
+	t.Helper()
+	job, err := logqueue.Load(t.Context(), st.Log(), workspace, logqueue.StreamFor(queueargs.DispatchTaskArgs{}.Kind(), taskID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return job
 }

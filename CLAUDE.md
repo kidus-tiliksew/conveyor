@@ -10,8 +10,10 @@ and historical phase status lives in the "Roadmap" reference document.
 ## Conventions
 
 - Backend is Go everywhere: `net/http` + chi for the API and cobra for the CLI.
-  Persistence is pgx + sqlc, and River is the Postgres-backed queue. Do not
-  introduce another persistence or queue dependency.
+  Persistence is pgx + sqlc for the projection schema and the event log
+  (`internal/eventlog`) underneath it; the durable queue is the log itself
+  (`internal/queue/logqueue`). Do not introduce another persistence or queue
+  dependency.
 - The whole `internal/store/postgres/db/` package is maintained by hand
   (`design-database`). `sqlc generate` cannot parse migration 035's
   `{{task_states}}` template before rendering, so PostgreSQL integration tests

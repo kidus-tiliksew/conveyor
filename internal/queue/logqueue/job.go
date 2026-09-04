@@ -7,8 +7,6 @@
 // racing for the same job have exactly one win. Retry, snooze, rescue, and
 // exhaustion are events on the same stream. Nothing here is engine-specific:
 // the package needs only eventlog.Store.
-//
-// Log-core migration plan, phase 3, task 3.2.
 package logqueue
 
 import (

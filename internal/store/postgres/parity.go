@@ -27,8 +27,6 @@ import (
 //
 // Orphans are streams in the catalog whose rows are gone, which the legacy
 // store does by deleting; the log keeps them, as it should.
-//
-// Log-core migration plan, phase 2, task 2.2.
 
 // ParityDrift is one entity whose rows moved on from its snapshot.
 type ParityDrift struct {

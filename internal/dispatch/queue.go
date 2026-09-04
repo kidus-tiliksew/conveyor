@@ -22,8 +22,8 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 )
 
-// WorkspaceQueueRegistrar converges the River queue set known to one daemon
-// instance with the workspaces persisted in PostgreSQL.
+// WorkspaceQueueRegistrar converges the workspaces the queue runtime serves
+// with the workspaces persisted in the store.
 type WorkspaceQueueRegistrar struct {
 	mu    sync.Mutex
 	known map[string]struct{}
@@ -49,20 +49,14 @@ func (r *WorkspaceQueueRegistrar) Ensure(workspace string) (bool, error) {
 		return false, err
 	}
 	r.known[workspace] = struct{}{}
-	r.logf("registered River scheduling for workspace %s: queues=%s,%s,%s periodic_job=%s",
-		workspace,
-		queueargs.DispatchQueue(workspace),
-		queueargs.ReviewPublicationQueue(workspace),
-		queueargs.GitHubIssuePublicationQueue(workspace),
-		queueargs.OrderClockPeriodicID(workspace),
-	)
+	r.logf("registered queue scheduling for workspace %s", workspace)
 	return true, nil
 }
 
 func (r *WorkspaceQueueRegistrar) Converge(workspaces []core.Workspace) error {
 	for _, workspace := range workspaces {
 		if _, err := r.Ensure(workspace.ID); err != nil {
-			return fmt.Errorf("register River scheduling for workspace %s: %w", workspace.ID, err)
+			return fmt.Errorf("register queue scheduling for workspace %s: %w", workspace.ID, err)
 		}
 	}
 	return nil
@@ -74,13 +68,13 @@ type dispatchTaskWorker struct {
 }
 
 const (
-	RiverRescueSafetyMargin = 5 * time.Minute
+	QueueRescueSafetyMargin = 5 * time.Minute
 	shutdownRetryDelay      = time.Second
 )
 
 // ShutdownMarker distinguishes daemon interruption from a stage-owned
-// deadline. River supplies cancellation for both cases, so the worker also
-// requires this process-scoped marker before it preserves the attempt.
+// deadline. The queue supplies cancellation for both cases, so the worker
+// also requires this process-scoped marker before it preserves the attempt.
 type ShutdownMarker struct{ stopping atomic.Bool }
 
 func (m *ShutdownMarker) Mark() {
@@ -117,7 +111,7 @@ func (w *orderClockWorker) Work(ctx context.Context, job queueargs.Job) error {
 	if err != nil {
 		return err
 	}
-	ctx = store.WithActor(ctx, store.Actor{ID: fmt.Sprintf("river:%s", job.ID), Role: core.ActorSystem})
+	ctx = store.WithActor(ctx, store.Actor{ID: fmt.Sprintf("queue:%s", job.ID), Role: core.ActorSystem})
 	ctx = store.WithWorkspace(ctx, args.WorkspaceID)
 	_, err = taskops.New(w.dispatcher.Store).TickOrderClock(ctx, time.Now().UTC())
 	return err
@@ -158,7 +152,7 @@ func (w *githubIssuePublicationWorker) Work(ctx context.Context, job queueargs.J
 	if err != nil {
 		return err
 	}
-	ctx = store.WithActor(ctx, store.Actor{ID: fmt.Sprintf("river:github-issue-publication:%s", job.ID), Role: core.ActorSystem})
+	ctx = store.WithActor(ctx, store.Actor{ID: fmt.Sprintf("queue:github-issue-publication:%s", job.ID), Role: core.ActorSystem})
 	ctx = store.WithWorkspace(ctx, args.WorkspaceID)
 	lifecycle, ok, err := w.dispatcher.Store.GetGitHubLifecycle(ctx, args.TaskID)
 	if err != nil || !ok || lifecycle.State == core.GitHubPublicationPublished {
@@ -255,7 +249,7 @@ func (w *reviewPublicationWorker) Work(ctx context.Context, job queueargs.Job) e
 	if err != nil {
 		return err
 	}
-	ctx = store.WithActor(ctx, store.Actor{ID: fmt.Sprintf("river:review-publication:%s", job.ID), Role: core.ActorSystem})
+	ctx = store.WithActor(ctx, store.Actor{ID: fmt.Sprintf("queue:review-publication:%s", job.ID), Role: core.ActorSystem})
 	ctx = store.WithWorkspace(ctx, args.WorkspaceID)
 	publication, err := w.dispatcher.Store.GetReviewPublication(ctx, args.ReviewWorkOrderID)
 	if err != nil || (publication.State == core.ReviewPublicationPublished && publication.CommentID > 0) {
@@ -438,7 +432,7 @@ func (w *dispatchTaskWorker) Work(ctx context.Context, job queueargs.Job) error 
 	if err != nil {
 		return err
 	}
-	ctx = store.WithActor(ctx, store.Actor{ID: fmt.Sprintf("river:%s", job.ID), Role: core.ActorSystem})
+	ctx = store.WithActor(ctx, store.Actor{ID: fmt.Sprintf("queue:%s", job.ID), Role: core.ActorSystem})
 	ctx = store.WithWorkspace(ctx, args.WorkspaceID)
 	err = w.dispatcher.runTask(ctx, args.TaskID)
 	if err == nil {
@@ -449,21 +443,21 @@ func (w *dispatchTaskWorker) Work(ctx context.Context, job queueargs.Job) error 
 		if task.State == core.TaskQueued {
 			if isBlueprintAnchor(task) {
 				// Blueprint parents are passive batch anchors. Their children
-				// own implementation delivery, so this River row is complete
-				// rather than a staged pipeline row to snooze.
+				// own implementation delivery, so this job is complete rather
+				// than a staged pipeline job to snooze.
 				return nil
 			}
-			// The currently running River row owns this task's pipeline. A
-			// queued stage transition cannot insert a duplicate while this row
-			// is active, so snooze the same row into the next stage.
+			// The running job owns this task's pipeline. A queued stage
+			// transition cannot enqueue a duplicate while this job is active,
+			// so snooze the same job into the next stage.
 			return queueargs.Snooze(time.Second)
 		}
 		return nil
 	}
 	if w.shutdown.Stopping() && errors.Is(err, context.Canceled) {
-		// Shutdown interruption is not a dispatch failure. Snoozing restores
-		// River's incremented attempt and keeps the same durable row available
-		// for another instance (REQ-6/AC-6.2; design-task-lifecycle).
+		// Shutdown interruption is not a dispatch failure. Snoozing hands the
+		// attempt back and keeps the same durable job available for another
+		// instance (REQ-6/AC-6.2; design-task-lifecycle).
 		log.Printf("[task %s] queue job %s interrupted by daemon shutdown; preserving attempt %d", args.TaskID, job.ID, job.Attempt)
 		return queueargs.Snooze(shutdownRetryDelay)
 	}
@@ -494,7 +488,7 @@ func (w *dispatchTaskWorker) handleFailure(ctx context.Context, job queueargs.Jo
 	if eventErr := w.dispatcher.Store.AppendEvent(ctx, core.Event{
 		TaskID: args.TaskID, Kind: "dispatch.failed", Payload: payload,
 	}); eventErr != nil {
-		log.Printf("[task %s] record River failure: %v", args.TaskID, eventErr)
+		log.Printf("[task %s] record dispatch failure: %v", args.TaskID, eventErr)
 	}
 	task, taskErr := w.dispatcher.Store.GetTask(ctx, args.TaskID)
 	if taskErr != nil {
@@ -512,11 +506,11 @@ func (w *dispatchTaskWorker) handleFailure(ctx context.Context, job queueargs.Jo
 			// the canonical queued -> parked edge and records dispatch.fail_final
 			// for operator visibility (design-task-lifecycle).
 			if _, stateErr := taskops.New(w.dispatcher.Store).Perform(ctx, args.TaskID, taskops.Command{Kind: core.TaskStageBounce, NextStage: recoveryStage, ProjectStages: true}); stateErr != nil {
-				return fmt.Errorf("dispatch failed: %v; requeue before final River failure: %w", err, stateErr)
+				return fmt.Errorf("dispatch failed: %v; requeue before final dispatch failure: %w", err, stateErr)
 			}
 		}
 		if _, stateErr := taskops.New(w.dispatcher.Store).Perform(ctx, args.TaskID, taskops.Command{Kind: core.TaskDispatchFailFinal, RecoveryStage: recoveryStage, ProjectStages: true}); stateErr != nil {
-			return fmt.Errorf("dispatch failed: %v; park after final River attempt: %w", err, stateErr)
+			return fmt.Errorf("dispatch failed: %v; park after final dispatch attempt: %w", err, stateErr)
 		}
 	} else {
 		command := core.TaskDispatchFailRetry
@@ -533,23 +527,23 @@ func (w *dispatchTaskWorker) handleFailure(ctx context.Context, job queueargs.Jo
 	return err
 }
 
-// RiverRescueStuckJobsAfter bounds crash recovery above every stage that may
+// QueueRescueThreshold bounds crash recovery above every stage that may
 // run inside conveyord. The default timeout remains part of the calculation
 // when a route is absent or has not yet been normalized.
-func RiverRescueStuckJobsAfter(workspaceConfigs map[string]*config.Config) (time.Duration, error) {
+func QueueRescueThreshold(workspaceConfigs map[string]*config.Config) (time.Duration, error) {
 	workspaces := make([]string, 0, len(workspaceConfigs))
 	for workspace := range workspaceConfigs {
 		workspaces = append(workspaces, workspace)
 	}
 	sort.Strings(workspaces)
 	maxTimeout := time.Duration(0)
-	routes := make([]riverRouteTimeout, 0, len(workspaces)*2)
+	routes := make([]routeTimeout, 0, len(workspaces)*2)
 	for _, workspace := range workspaces {
 		cfg := workspaceConfigs[workspace]
 		if cfg == nil {
-			return 0, fmt.Errorf("River rescue threshold: workspace %s has no effective configuration", workspace)
+			return 0, fmt.Errorf("queue rescue threshold: workspace %s has no effective configuration", workspace)
 		}
-		for _, route := range riverInProcessRouteTimeouts(workspace, cfg) {
+		for _, route := range inProcessRouteTimeouts(workspace, cfg) {
 			routes = append(routes, route)
 			if route.timeout > maxTimeout {
 				maxTimeout = route.timeout
@@ -559,44 +553,44 @@ func RiverRescueStuckJobsAfter(workspaceConfigs map[string]*config.Config) (time
 	if maxTimeout == 0 {
 		maxTimeout = config.DefaultStageTimeout
 	}
-	if maxTimeout > time.Duration(1<<63-1)-RiverRescueSafetyMargin {
-		return 0, fmt.Errorf("River rescue threshold overflows maximum duration for route timeout %s", maxTimeout)
+	if maxTimeout > time.Duration(1<<63-1)-QueueRescueSafetyMargin {
+		return 0, fmt.Errorf("queue rescue threshold overflows maximum duration for route timeout %s", maxTimeout)
 	}
-	threshold := maxTimeout + RiverRescueSafetyMargin
+	threshold := maxTimeout + QueueRescueSafetyMargin
 	for _, route := range routes {
 		if route.timeout <= 0 || route.timeout >= threshold {
-			return 0, fmt.Errorf("River route %s timeout %s must be strictly below rescue threshold %s", route.name, route.timeout, threshold)
+			return 0, fmt.Errorf("route %s timeout %s must be strictly below rescue threshold %s", route.name, route.timeout, threshold)
 		}
 	}
 	return threshold, nil
 }
 
-type riverRouteTimeout struct {
+type routeTimeout struct {
 	name    string
 	timeout time.Duration
 }
 
-func riverInProcessRouteTimeouts(workspace string, cfg *config.Config) []riverRouteTimeout {
-	routes := make([]riverRouteTimeout, 0, 2)
+func inProcessRouteTimeouts(workspace string, cfg *config.Config) []routeTimeout {
+	routes := make([]routeTimeout, 0, 2)
 	for _, stage := range []string{"triage", "spec"} {
 		timeout := config.DefaultStageTimeout
 		if route, ok := cfg.Routing.Stages[stage]; ok && route.Timeout > 0 {
 			timeout = route.Timeout
 		}
-		routes = append(routes, riverRouteTimeout{name: workspace + "/" + stage, timeout: timeout})
+		routes = append(routes, routeTimeout{name: workspace + "/" + stage, timeout: timeout})
 	}
 	return routes
 }
 
-// ValidateRiverRescueStuckJobsAfter prevents a queue added after startup from
+// ValidateQueueRescueThreshold prevents a queue added after startup from
 // introducing an in-process route that can be rescued while still live.
-func ValidateRiverRescueStuckJobsAfter(workspace string, cfg *config.Config, threshold time.Duration) error {
+func ValidateQueueRescueThreshold(workspace string, cfg *config.Config, threshold time.Duration) error {
 	if cfg == nil {
-		return fmt.Errorf("River rescue threshold: workspace %s has no effective configuration", workspace)
+		return fmt.Errorf("queue rescue threshold: workspace %s has no effective configuration", workspace)
 	}
-	for _, route := range riverInProcessRouteTimeouts(workspace, cfg) {
+	for _, route := range inProcessRouteTimeouts(workspace, cfg) {
 		if route.timeout <= 0 || route.timeout >= threshold {
-			return fmt.Errorf("River route %s timeout %s must be strictly below rescue threshold %s", route.name, route.timeout, threshold)
+			return fmt.Errorf("route %s timeout %s must be strictly below rescue threshold %s", route.name, route.timeout, threshold)
 		}
 	}
 	return nil

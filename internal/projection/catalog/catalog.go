@@ -6,7 +6,7 @@
 // entity whose live rows differ from its last snapshot has, by definition,
 // been changed by the events listed in Since; those kinds are the ones a
 // real projector must learn to fold. The parity checker reports exactly
-// that. Log-core migration plan, phase 2.
+// that; see docs/log-core.md.
 package catalog
 
 import (

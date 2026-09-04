@@ -20,7 +20,6 @@ import (
 func TestLogQueueEnqueuesInsideStoreTransactions(t *testing.T) {
 	st, ctx, workspace := newPhase61IntegrationStore(t)
 	t.Cleanup(st.Close)
-	st.UseLogQueue()
 	ctx = store.WithActor(ctx, store.Actor{ID: "operator", Role: core.ActorHuman})
 	log := st.Log()
 	kind := queueargs.DispatchTaskArgs{}.Kind()
@@ -91,11 +90,10 @@ func TestLogQueueEnqueuesInsideStoreTransactions(t *testing.T) {
 
 // TestLogQueueExhaustedDispatchParksRunningTask: a running task whose
 // dispatch job was discarded after its final attempt is parked by
-// reconciliation, the way River's rescuer path did.
+// reconciliation with failure evidence.
 func TestLogQueueExhaustedDispatchParksRunningTask(t *testing.T) {
 	st, ctx, workspace := newPhase61IntegrationStore(t)
 	t.Cleanup(st.Close)
-	st.UseLogQueue()
 	ctx = store.WithActor(ctx, store.Actor{ID: "operator", Role: core.ActorHuman})
 	kind := queueargs.DispatchTaskArgs{}.Kind()
 

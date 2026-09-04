@@ -18,7 +18,7 @@ import (
 //
 // One goroutine per workspace tails the log and folds job streams into an
 // in-memory index; one goroutine per (workspace, kind) drains that index one
-// job at a time, which is the same concurrency River gave each queue. A
+// job at a time, so a workspace never runs two jobs of one kind at once. A
 // claim is an expected-version append, so any number of replicas may run
 // the same runtime against the same log. The periodic order clock runs
 // in-process on a ticker and writes nothing to the log: a tick is not a
@@ -55,10 +55,6 @@ type Options struct {
 	Now func() time.Time
 	// Logf receives operational messages; nil discards them.
 	Logf func(string, ...any)
-	// Observe makes the runtime fold job streams without running anything:
-	// no workers, no clock, no rescue. Shadow mode uses it to ask what the
-	// log queue would claim while River still executes.
-	Observe bool
 }
 
 var _ queueargs.Runtime = (*Runtime)(nil)
@@ -168,11 +164,6 @@ func (rt *Runtime) Start(ctx context.Context) error {
 }
 
 func (rt *Runtime) startWorkspace(ws *workspace) {
-	if rt.opts.Observe {
-		rt.wg.Add(1)
-		go rt.pollLoop(ws)
-		return
-	}
 	kinds := rt.workerKinds()
 	rt.wg.Add(1 + len(kinds))
 	go rt.pollLoop(ws)
@@ -355,10 +346,9 @@ func (rt *Runtime) wakeWorkers(ws *workspace) {
 }
 
 // rescue reschedules or discards jobs whose claim is older than the
-// threshold: their worker is presumed dead. The attempt counts, as River's
-// rescuer counts it.
+// threshold: their worker is presumed dead. The attempt counts.
 func (rt *Runtime) rescue(ctx context.Context, ws *workspace) error {
-	if rt.opts.RescueStuckAfter <= 0 || rt.opts.Observe {
+	if rt.opts.RescueStuckAfter <= 0 {
 		return nil
 	}
 	now := rt.opts.Now().UTC()
@@ -570,60 +560,7 @@ func (rt *Runtime) clockLoop(ws *workspace) {
 	}
 }
 
-// Peek reports which job the runtime would claim next for a kind, without
-// claiming it or marking the kind busy. The shadow asks this at the moment
-// River claims.
-func (rt *Runtime) Peek(workspaceID, kind string, now time.Time) (Job, bool) {
-	rt.mu.Lock()
-	defer rt.mu.Unlock()
-	ws, ok := rt.spaces[workspaceID]
-	if !ok {
-		return Job{}, false
-	}
-	var best *Job
-	for _, job := range ws.jobs {
-		if job.Kind != kind || !job.Claimable(now) {
-			continue
-		}
-		if best == nil || job.EnqueuedAt < best.EnqueuedAt {
-			best = job
-		}
-	}
-	if best == nil {
-		return Job{}, false
-	}
-	return *best, true
-}
-
-// Job returns the runtime's current view of one job stream.
-func (rt *Runtime) Job(workspaceID string, stream eventlog.StreamID) (Job, bool) {
-	rt.mu.Lock()
-	defer rt.mu.Unlock()
-	ws, ok := rt.spaces[workspaceID]
-	if !ok {
-		return Job{}, false
-	}
-	job, ok := ws.jobs[stream]
-	if !ok {
-		return Job{}, false
-	}
-	return *job, true
-}
-
-// CatchUpNow tails a workspace immediately instead of waiting for the next
-// poll, so a caller that just appended can read its own write back.
-func (rt *Runtime) CatchUpNow(ctx context.Context, workspaceID string) error {
-	rt.mu.Lock()
-	ws, ok := rt.spaces[workspaceID]
-	rt.mu.Unlock()
-	if !ok {
-		return nil
-	}
-	return rt.catchUp(ctx, ws)
-}
-
-// Snapshot returns the runtime's view of a workspace's jobs, for tests and
-// the shadow comparison.
+// Snapshot returns the runtime's view of a workspace's jobs, for tests.
 func (rt *Runtime) Snapshot(workspaceID string) []Job {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()

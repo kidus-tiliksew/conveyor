@@ -3,8 +3,9 @@
 Conveyor is moving its persistence from a hand-maintained PostgreSQL schema
 plus River to an append-only event log that any database can host. This page
 describes what exists today, how to run it against a deployment, and what it
-does not yet do. The rollout plan has six phases; phase 1 and the phase 2
-checker are implemented.
+does not yet do. The queue has already moved: River is gone. The state side
+is authoritative on the log through the bridge but is still read from the
+legacy schema.
 
 ## What the log is
 
@@ -87,49 +88,27 @@ workspace's log from the last snapshot position, snapshots at a fixed cadence,
 and rebuilds from zero when a projector's version changes. `catalog` is the
 first projector.
 
-**The queue port.** The durable queue sits behind two small interfaces.
-`queue.Runtime` is the worker side: register a handler per job kind, ensure
-a workspace's queues and clock, start, stop, stop-and-cancel. The store keeps
-a private `dispatchQueue` for the transactional enqueues each lifecycle
-command needs and the two reconciliation reads. River implements both today
-from `internal/queue/riverqueue`, the only package outside the store's
-River-specific file that imports it; the dispatcher's handlers, the daemon,
-and the tests see only the port. A handler completes a job by returning
-nil, reschedules it with `queue.Snooze`, and fails it with any other error;
-the driver owns retries, rescue, and the periodic order clock.
+**The queue.** The durable queue is the log itself, in
+`internal/queue/logqueue`; River is gone. Every job is one stream,
+`job/<kind>:<key>`, so uniqueness per key is the stream itself: enqueue
+appends `job.enqueued` unless the fold says a job is still active. A claim
+is an append of `job.claimed` naming the version the worker observed, so
+replicas racing for one job have exactly one win, with no lock and no
+SKIP LOCKED. Completion, failure with a retry time, snooze (which hands the
+attempt back), rescue of a claim older than the threshold, and discard after
+the last attempt are events on the same stream. The runtime tails each
+workspace's log into an in-memory job index and drains it one job at a time
+per kind. Enqueues from the store run inside the store's own transaction by
+binding it to the log driver, so a lifecycle command's rows, its mirrored
+events, and its job commit together. The order clock is a process-local
+ticker that writes nothing: a tick is not a fact, and its handler is
+idempotent under concurrent replicas.
 
-**The log-backed queue.** `internal/queue/logqueue` is the second driver
-behind both interfaces, and it needs nothing but the log. Every job is one
-stream, `job/<kind>:<key>`, so uniqueness per key is the stream itself:
-enqueue appends `job.enqueued` unless the fold says a job is still active.
-A claim is an append of `job.claimed` naming the version the worker
-observed, so replicas racing for one job have exactly one win. Completion,
-failure with a retry time, snooze (which hands the attempt back), rescue of
-a claim older than the threshold, and discard after the last attempt are
-events on the same stream. The runtime tails each workspace's log into an
-in-memory job index and drains it one job at a time per kind, the
-concurrency River gave each queue. Enqueues from the store run inside the
-store's own transaction by binding it to the log driver, so a lifecycle
-command's rows, its mirrored events, and its job still commit together. The
-order clock is a process-local ticker that writes nothing: a tick is not a
-fact, and its handler is idempotent under concurrent replicas. The store
-switches drivers with one call; the daemon does not switch yet.
-
-**Shadow mode.** `CONVEYOR_QUEUE_SHADOW=on` runs the log queue in
-observe-only mode beside River. Two things happen. The log's job streams
-are kept truthful while River executes: the store enqueues into both in the
-same transaction, and River's adapter mirrors every claim and outcome onto
-the stream, so at cutover the log queue inherits real state rather than a
-backlog it believes is still waiting. And at every claim the log queue's own
-scheduler is asked what it would have picked. Verdicts: `agree`; `order`,
-the job was claimable but not the log's first choice (two schedulers with
-different tie-breaks); `not_claimable`, the log had the job but would not
-run it yet, usually a retry time that differs; and `unknown`, the log had no
-active job for the key, which means a gap in dual-enqueue or a job enqueued
-before shadowing began. Every disagreement is logged as it happens and a
-summary per workspace and kind every five minutes. The phase 3 soak gate is
-a summary with zero `unknown`, zero `not_claimable`, and zero mirror
-errors; `order` counts are reported but do not block.
+The dispatcher sees only `queue.Runtime` and the handler contract: return
+nil to complete a job, `queue.Snooze` to reschedule it, any other error to
+fail it. Migration 121 drops River's tables; the migration runner moves
+every job River still held onto its log stream first, so an upgrade with
+work queued or in flight loses nothing.
 
 ## Operating it
 
@@ -139,13 +118,11 @@ errors; `order` counts are reported but do not block.
    It is safe with the daemon running and safe to repeat.
 3. Run `conveyor log-parity --workspace-id <ws>` and keep running it during
    the soak. Every drifted entity lists the kinds that moved it.
-4. Set `CONVEYOR_QUEUE_SHADOW=on` in the daemon's environment and restart
-   it. Watch the `queue shadow:` summaries in the daemon log; the soak is
-   over when they show no `unknown`, `not_claimable`, or mirror errors
-   across a full cycle of real dispatches, reviews, and publications.
+4. The queue needs no step of its own: the binary's first start moves
+   River's remaining jobs onto the log and drops River's tables.
 
-Rollback of everything above is dropping the four tables. No legacy table
-changed shape.
+Rollback of the log tables is dropping them. River's tables are gone once
+migration 121 has run; the jobs it held are on the log.
 
 ## Measured on the production data
 
@@ -172,9 +149,6 @@ replays the demo log in 3.3 s, and parity is still clean everywhere.
 
 - Serve any read from the log. Phase 2 continues with projectors per entity
   family, driven by the parity report's unfolded kinds.
-- Run the log-backed queue in production. Both drivers exist behind the
-  port and shadow mode compares them; switching a workspace's driver is the
-  phase 4 flag.
 - Cut a workspace over. Phase 4 adds a per-workspace flag.
 - Run on SingleStore or SQLite. Phase 6 adds drivers against the conformance
   suite; the contract needs only a unique key and a transaction.

@@ -28,7 +28,6 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/pack"
 	"github.com/kidus-tiliksew/conveyor/internal/planning"
 	"github.com/kidus-tiliksew/conveyor/internal/queue/logqueue"
-	"github.com/kidus-tiliksew/conveyor/internal/queue/riverqueue"
 	"github.com/kidus-tiliksew/conveyor/internal/releaseinfo"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	postgresstore "github.com/kidus-tiliksew/conveyor/internal/store/postgres"
@@ -134,7 +133,7 @@ func main() {
 		}
 		st = pgStore
 		closeStore = pgStore.Close
-		log.Printf("using durable Postgres store with River schema")
+		log.Printf("using durable Postgres store with the event log")
 	case "memory":
 		st = store.NewMemoryWithConfig(cfg)
 		closeStore = func() {}
@@ -148,7 +147,7 @@ func main() {
 	}
 	d := dispatch.New(st, cfg, agent)
 	d.Pack = packBundle
-	var riverClient shutdownRiverClient
+	var queueRuntime shutdownQueue
 	var addWorkspaceQueue func(string) error
 	var workspaceQueues *dispatch.WorkspaceQueueRegistrar
 	if pgStore != nil {
@@ -167,66 +166,33 @@ func main() {
 		for _, workspaceID := range workspaceIDs {
 			workspaceConfig, configErr := pgStore.RuntimeConfig(store.WithWorkspace(ctx, workspaceID), deployment)
 			if configErr != nil {
-				log.Fatalf("load River route config for workspace %s: %v", workspaceID, configErr)
+				log.Fatalf("load route config for workspace %s: %v", workspaceID, configErr)
 			}
 			workspaceConfigs[workspaceID] = workspaceConfig
 		}
-		rescueAfter, rescueErr := dispatch.RiverRescueStuckJobsAfter(workspaceConfigs)
+		rescueAfter, rescueErr := dispatch.QueueRescueThreshold(workspaceConfigs)
 		if rescueErr != nil {
-			log.Fatalf("validate River rescue threshold: %v", rescueErr)
+			log.Fatalf("validate queue rescue threshold: %v", rescueErr)
 		}
-		log.Printf("River stuck-job rescue threshold %s", rescueAfter)
-		riverShutdown := &dispatch.ShutdownMarker{}
-		// CONVEYOR_QUEUE_SHADOW=on runs the log queue in observe-only mode
-		// beside River: every enqueue, claim, and outcome is mirrored onto
-		// the log's job streams, and each River claim is compared with what
-		// the log queue would have picked. A summary is logged every five
-		// minutes and every disagreement as it happens (log-core plan, 3.3).
-		var queueShadow *logqueue.Shadow
-		if queueShadowEnabled(os.Getenv) {
-			queueShadow = logqueue.NewShadow(pgStore.Log(), logqueue.ShadowOptions{Workspaces: workspaceIDs, Logf: log.Printf})
-			if shadowErr := queueShadow.Start(context.Background()); shadowErr != nil {
-				log.Fatalf("start queue shadow: %v", shadowErr)
-			}
-			pgStore.EnableQueueShadow(log.Printf)
-			go func() {
-				ticker := time.NewTicker(5 * time.Minute)
-				defer ticker.Stop()
-				for {
-					select {
-					case <-ctx.Done():
-						return
-					case <-ticker.C:
-						for _, line := range queueShadow.Summary() {
-							log.Print(line)
-						}
-					}
-				}
-			}()
-			log.Printf("queue shadow enabled: log queue observing River")
-		}
-		runtime, clientErr := riverqueue.NewRuntime(pgStore.Pool(), riverqueue.Options{RescueStuckAfter: rescueAfter, Workspaces: workspaceIDs, Shadow: queueShadow})
-		if clientErr != nil {
-			log.Fatalf("create queue runtime: %v", clientErr)
-		}
-		for _, registration := range d.Registrations(riverShutdown) {
+		log.Printf("queue stuck-job rescue threshold %s", rescueAfter)
+		queueShutdown := &dispatch.ShutdownMarker{}
+		hostname, _ := os.Hostname()
+		runtime := logqueue.NewRuntime(pgStore.Log(), logqueue.Options{
+			Workspaces: workspaceIDs, RescueStuckAfter: rescueAfter, WorkerID: hostname, Logf: log.Printf,
+		})
+		for _, registration := range d.Registrations(queueShutdown) {
 			runtime.Register(registration)
 		}
-		if clientErr = runtime.Start(context.Background()); clientErr != nil {
-			log.Fatalf("start queue runtime: %v", clientErr)
+		if startErr := runtime.Start(context.Background()); startErr != nil {
+			log.Fatalf("start queue runtime: %v", startErr)
 		}
 		workspaceQueues = dispatch.NewWorkspaceQueueRegistrar(workspaceIDs, func(workspace string) error {
 			workspaceConfig, configErr := pgStore.RuntimeConfig(store.WithWorkspace(ctx, workspace), deployment)
 			if configErr != nil {
 				return configErr
 			}
-			if configErr = dispatch.ValidateRiverRescueStuckJobsAfter(workspace, workspaceConfig, rescueAfter); configErr != nil {
+			if configErr = dispatch.ValidateQueueRescueThreshold(workspace, workspaceConfig, rescueAfter); configErr != nil {
 				return configErr
-			}
-			if queueShadow != nil {
-				if shadowErr := queueShadow.EnsureWorkspace(workspace); shadowErr != nil {
-					return shadowErr
-				}
 			}
 			return runtime.EnsureWorkspace(workspace)
 		}, log.Printf)
@@ -234,7 +200,7 @@ func main() {
 			_, err := workspaceQueues.Ensure(workspace)
 			return err
 		}
-		riverClient = dispatch.NewMarkedRuntime(runtime, riverShutdown)
+		queueRuntime = dispatch.NewMarkedRuntime(runtime, queueShutdown)
 		log.Printf("durable pipeline worker active; implementation/review available over MCP")
 	} else {
 		go d.Run(ctx)
@@ -362,7 +328,7 @@ func main() {
 					return
 				}
 				if repaired != 0 {
-					log.Printf("reconciled %d queued task(s) missing River jobs", repaired)
+					log.Printf("reconciled %d queued task(s) missing queue jobs", repaired)
 				}
 				closedBlueprints, closeErr := pgStore.ReconcileBlueprintClosures(workspaceCtx)
 				if closeErr != nil {
@@ -536,7 +502,7 @@ func main() {
 	go func() {
 		<-signalCtx.Done()
 		conveyordShutdown{
-			Timeout: shutdownTimeout, HTTP: httpSrv, River: riverClient,
+			Timeout: shutdownTimeout, HTTP: httpSrv, Queue: queueRuntime,
 			CancelHTTP: cancelHTTP, CancelService: cancelService, CloseStore: closeStore, Logf: log.Printf,
 		}.Run()
 		close(shutdownDone)

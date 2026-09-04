@@ -12,10 +12,10 @@ import (
 	storepg "github.com/kidus-tiliksew/conveyor/internal/store/postgres"
 )
 
-// TestLogQueueShutdownInterruptionPreservesAttemptIntegration is the log
-// queue's twin of the River interruption test: the dispatcher's handler
-// runs from a job on the log, a hard stop interrupts it, and the job is
-// left scheduled with its attempt handed back rather than failed.
+// TestLogQueueShutdownInterruptionPreservesAttemptIntegration: the
+// dispatcher's handler runs from a job on the log, a hard stop interrupts
+// it, and the job is left scheduled with its attempt handed back rather
+// than failed.
 func TestLogQueueShutdownInterruptionPreservesAttemptIntegration(t *testing.T) {
 	databaseURL := dispatchIntegrationDatabaseURL(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
@@ -25,7 +25,6 @@ func TestLogQueueShutdownInterruptionPreservesAttemptIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	st.UseLogQueue()
 
 	suffix := core.NewTaskID()
 	workspace := "logqueue-interrupt-" + suffix

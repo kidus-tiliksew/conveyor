@@ -21,7 +21,6 @@ type genesisImporter interface {
 type openGenesisImporter func(context.Context, string) (genesisImporter, error)
 
 // migrateLogCmd builds the event log for a deployment that predates it.
-// Log-core migration plan, phase 1, task 1.3.
 func migrateLogCmd() *cobra.Command {
 	return newMigrateLogCmd(func(ctx context.Context, databaseURL string) (genesisImporter, error) {
 		return postgresstore.Open(ctx, databaseURL)

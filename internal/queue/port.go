@@ -9,12 +9,10 @@ import (
 
 // The queue port.
 //
-// Everything above a queue driver talks to these types. A driver owns the
-// durable rows, the worker loop, retries, stuck-job rescue, and the periodic
-// clock; the dispatcher owns what a job means. River is the first driver
-// (internal/queue/riverqueue); the log-backed queue is the second.
-//
-// Log-core migration plan, phase 3, task 3.1.
+// Everything above the queue talks to these types. The queue owns the
+// durable job streams, the worker loop, retries, stuck-job rescue, and the
+// periodic clock; the dispatcher owns what a job means. The implementation
+// is internal/queue/logqueue, on the event log.
 
 // Job is one unit of work handed to a handler.
 type Job struct {

@@ -21,7 +21,6 @@ type parityChecker interface {
 type openParityChecker func(context.Context, string) (parityChecker, error)
 
 // logParityCmd compares the event log's catalog with the legacy rows.
-// Log-core migration plan, phase 2, task 2.2.
 func logParityCmd() *cobra.Command {
 	return newLogParityCmd(func(ctx context.Context, databaseURL string) (parityChecker, error) {
 		return postgresstore.Open(ctx, databaseURL)

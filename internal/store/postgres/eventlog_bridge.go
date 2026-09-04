@@ -31,8 +31,7 @@ import (
 // events, and only then commits. A failure anywhere rolls the whole
 // transaction back, rows and log together.
 //
-// Log-core migration plan, phase 2 (bridge), decided by the operator on
-// 2026-09-04.
+// Operator decision of 2026-09-04; see docs/log-core.md.
 
 // stateTx is a pgx.Tx that flushes state events before committing.
 type stateTx struct {

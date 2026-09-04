@@ -29,15 +29,15 @@ func (f fakeShutdownHTTP) Shutdown(ctx context.Context) error {
 	return nil
 }
 
-type fakeShutdownRiver struct{ recorder *shutdownRecorder }
+type fakeShutdownQueue struct{ recorder *shutdownRecorder }
 
-func (f fakeShutdownRiver) Stop(ctx context.Context) error {
-	f.recorder.record("river-soft", ctx)
+func (f fakeShutdownQueue) Stop(ctx context.Context) error {
+	f.recorder.record("queue-soft", ctx)
 	return nil
 }
 
-func (f fakeShutdownRiver) StopAndCancel(ctx context.Context) error {
-	f.recorder.record("river-hard", ctx)
+func (f fakeShutdownQueue) StopAndCancel(ctx context.Context) error {
+	f.recorder.record("queue-hard", ctx)
 	return nil
 }
 
@@ -45,7 +45,7 @@ func TestConveyordShutdownOrdersPhasesAndSharesBudget(t *testing.T) {
 	recorder := &shutdownRecorder{deadlines: map[string]time.Time{}}
 	shutdown := conveyordShutdown{
 		Timeout: 50 * time.Millisecond,
-		HTTP:    fakeShutdownHTTP{recorder}, River: fakeShutdownRiver{recorder},
+		HTTP:    fakeShutdownHTTP{recorder}, Queue: fakeShutdownQueue{recorder},
 		CancelService: func() { recorder.record("service-cancel", context.Background()) },
 		CancelHTTP:    func() { recorder.record("http-cancel", context.Background()) },
 		CloseStore:    func() { recorder.record("store-close", context.Background()) },
@@ -62,21 +62,21 @@ func TestConveyordShutdownOrdersPhasesAndSharesBudget(t *testing.T) {
 		}
 		return -1
 	}
-	for _, step := range []string{"service-cancel", "river-soft", "http-cancel", "http", "river-hard", "store-close"} {
+	for _, step := range []string{"service-cancel", "queue-soft", "http-cancel", "http", "queue-hard", "store-close"} {
 		if position(step) < 0 {
 			t.Fatalf("shutdown steps=%v, missing %s", recorder.steps, step)
 		}
 	}
-	if position("service-cancel") > position("river-soft") || position("http-cancel") > position("http") ||
-		position("river-hard") < position("river-soft") || position("river-hard") < position("http") ||
+	if position("service-cancel") > position("queue-soft") || position("http-cancel") > position("http") ||
+		position("queue-hard") < position("queue-soft") || position("queue-hard") < position("http") ||
 		position("store-close") != len(recorder.steps)-1 {
 		t.Fatalf("shutdown steps=%v", recorder.steps)
 	}
-	if !recorder.deadlines["http"].Equal(recorder.deadlines["river-hard"]) {
-		t.Fatalf("HTTP deadline=%s hard-stop deadline=%s, want one overall budget", recorder.deadlines["http"], recorder.deadlines["river-hard"])
+	if !recorder.deadlines["http"].Equal(recorder.deadlines["queue-hard"]) {
+		t.Fatalf("HTTP deadline=%s hard-stop deadline=%s, want one overall budget", recorder.deadlines["http"], recorder.deadlines["queue-hard"])
 	}
-	if !recorder.deadlines["river-soft"].Before(recorder.deadlines["river-hard"]) {
-		t.Fatalf("soft-stop deadline=%s hard-stop deadline=%s, want hard-stop reserve", recorder.deadlines["river-soft"], recorder.deadlines["river-hard"])
+	if !recorder.deadlines["queue-soft"].Before(recorder.deadlines["queue-hard"]) {
+		t.Fatalf("soft-stop deadline=%s hard-stop deadline=%s, want hard-stop reserve", recorder.deadlines["queue-soft"], recorder.deadlines["queue-hard"])
 	}
 }
 

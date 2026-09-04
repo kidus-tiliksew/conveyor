@@ -12,15 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/riverqueue/river"
-	"github.com/riverqueue/river/riverdriver/riverpgxv5"
-	"github.com/riverqueue/river/rivertest"
-	"github.com/riverqueue/river/rivertype"
-
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	queueargs "github.com/kidus-tiliksew/conveyor/internal/queue"
-	"github.com/kidus-tiliksew/conveyor/internal/queue/riverqueue"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	storepg "github.com/kidus-tiliksew/conveyor/internal/store/postgres"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
@@ -52,200 +46,6 @@ func (s *blockingDispatchStore) GetTask(ctx context.Context, id string) (core.Ta
 	s.once.Do(func() { close(s.started) })
 	<-ctx.Done()
 	return core.Task{}, ctx.Err()
-}
-
-func TestRiverShutdownInterruptionPreservesRowAndAttemptIntegration(t *testing.T) {
-	databaseURL := dispatchIntegrationDatabaseURL(t)
-	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
-	defer cancel()
-	st, err := storepg.Open(ctx, databaseURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer st.Close()
-
-	suffix := core.NewTaskID()
-	workspace := "shutdown-interrupt-" + suffix
-	cfg := dispatchRaceConfig(workspace)
-	actorCtx := store.WithActor(ctx, store.Actor{ID: "test", Role: core.ActorHuman})
-	if _, err = st.CreateWorkspace(actorCtx, workspace, "Shutdown interrupt "+suffix, cfg); err != nil {
-		t.Fatal(err)
-	}
-	taskCtx := store.WithWorkspace(ctx, workspace)
-	task := core.Task{
-		ID: "shutdown-interrupt-" + suffix, Workspace: workspace, Repo: "repo", Title: "Interrupt dispatch",
-		BaseBranch: "main", Branch: "conveyor/shutdown-interrupt-" + suffix,
-		State: core.TaskQueued, NextStage: core.StageTriage, CreatedAt: time.Now().UTC(),
-	}
-	if err = st.CreateTask(taskCtx, task); err != nil {
-		t.Fatal(err)
-	}
-	blocking := &blockingDispatchStore{Store: st, taskID: task.ID, started: make(chan struct{})}
-	dispatcher := New(blocking, cfg, nil)
-	marker := &ShutdownMarker{}
-	client, err := testRuntime(t, st.Pool(), dispatcher, marker, []string{workspace}, map[string]*config.Config{workspace: cfg}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = client.Start(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case <-blocking.started:
-	case <-ctx.Done():
-		t.Fatal("River dispatch did not start")
-	}
-	var rowID int64
-	if err = st.Pool().QueryRow(ctx, `SELECT id FROM river_job
-		WHERE kind='dispatch_task' AND args->>'workspace_id'=$1 AND args->>'task_id'=$2`, workspace, task.ID).Scan(&rowID); err != nil {
-		t.Fatal(err)
-	}
-	stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer stopCancel()
-	if err = NewMarkedRuntime(client, marker).StopAndCancel(stopCtx); err != nil {
-		t.Fatal(err)
-	}
-	var persistedID int64
-	var state string
-	var attempt int
-	if err = st.Pool().QueryRow(ctx, `SELECT id, state, attempt FROM river_job
-		WHERE kind='dispatch_task' AND args->>'workspace_id'=$1 AND args->>'task_id'=$2`, workspace, task.ID).Scan(&persistedID, &state, &attempt); err != nil {
-		t.Fatal(err)
-	}
-	if persistedID != rowID || (state != "available" && state != "retryable" && state != "scheduled") || attempt != 0 {
-		t.Fatalf("River row id=%d state=%s attempt=%d, want same id=%d available/retryable with attempt 0", persistedID, state, attempt, rowID)
-	}
-	if count, countErr := st.CountEvents(taskCtx, task.ID, "dispatch.failed"); countErr != nil || count != 0 {
-		t.Fatalf("dispatch.failed events=%d err=%v, want 0", count, countErr)
-	}
-	current, err := st.GetTask(taskCtx, task.ID)
-	if err != nil || current.State != core.TaskQueued {
-		t.Fatalf("task=%+v err=%v, want no failure transition", current, err)
-	}
-}
-
-func TestRiverClientConvergesLateWorkspaceQueuesIntegration(t *testing.T) {
-	databaseURL := dispatchIntegrationDatabaseURL(t)
-	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
-	defer cancel()
-	st, err := storepg.Open(ctx, databaseURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer st.Close()
-
-	suffix := core.NewTaskID()
-	workspaceA := "river-converge-a-" + suffix
-	workspaceB := "river-converge-b-" + suffix
-	actorCtx := store.WithActor(ctx, store.Actor{ID: "test", Role: core.ActorHuman})
-	if _, err = st.CreateWorkspace(actorCtx, workspaceA, "River convergence A", dispatchRaceConfig(workspaceA)); err != nil {
-		t.Fatal(err)
-	}
-	dispatcher := New(st, dispatchRaceConfig(workspaceA), nil)
-	client, err := testRuntime(t, st.Pool(), dispatcher, &ShutdownMarker{}, []string{workspaceA}, map[string]*config.Config{workspaceA: dispatchRaceConfig(workspaceA)}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	events, unsubscribe := client.Client().Subscribe(river.EventKindJobCompleted)
-	defer unsubscribe()
-	if err = client.Start(ctx); err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		stopCtx, stopCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer stopCancel()
-		if stopErr := client.Stop(stopCtx); stopErr != nil {
-			t.Errorf("stop River client: %v", stopErr)
-		}
-	}()
-
-	waitForRiverJob(t, ctx, events, func(job *rivertype.JobRow) bool {
-		return job.Kind == (queueargs.OrderClockArgs{}).Kind() &&
-			job.Queue == queueargs.ControlQueue && riverJobWorkspace(job) == workspaceA
-	}, "startup workspace order clock")
-
-	if _, err = st.CreateWorkspace(actorCtx, workspaceB, "River convergence B", dispatchRaceConfig(workspaceB)); err != nil {
-		t.Fatal(err)
-	}
-	taskCtx := store.WithWorkspace(ctx, workspaceB)
-	parent := core.Task{
-		ID: "river-converge-parent-" + suffix, Workspace: workspaceB, Repo: "repo", Title: "River convergence parent",
-		BaseBranch: "main", Branch: "conveyor/river-converge-parent-" + suffix,
-		State: core.TaskQueued, NextStage: core.StageImplement, CreatedAt: time.Now().UTC(),
-	}
-	child := core.Task{
-		ID: "river-converge-child-" + suffix, Workspace: workspaceB, Repo: "repo", Title: "River convergence child",
-		BaseBranch: "main", Branch: "conveyor/river-converge-child-" + suffix,
-		State: core.TaskQueued, NextStage: core.StageImplement, ParentTaskID: parent.ID,
-		OriginSpecVersion: 1, OriginSubID: "SUB-1", CreatedAt: time.Now().UTC(),
-	}
-	if err = st.CreateTask(taskCtx, parent); err != nil {
-		t.Fatal(err)
-	}
-	if err = st.CreateTask(taskCtx, child); err != nil {
-		t.Fatal(err)
-	}
-	registrar := NewWorkspaceQueueRegistrar([]string{workspaceA}, func(workspace string) error {
-		return client.EnsureWorkspace(workspace)
-	}, t.Logf)
-	workspaces, err := st.ListWorkspaces(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var convergenceWorkspaces []core.Workspace
-	for _, workspace := range workspaces {
-		if workspace.ID == workspaceA || workspace.ID == workspaceB {
-			convergenceWorkspaces = append(convergenceWorkspaces, workspace)
-		}
-	}
-	if len(convergenceWorkspaces) != 2 {
-		t.Fatalf("convergence workspaces=%v, want %s and %s", convergenceWorkspaces, workspaceA, workspaceB)
-	}
-	if err = registrar.Converge(convergenceWorkspaces); err != nil {
-		t.Fatal(err)
-	}
-
-	dispatchWorked := false
-	orderClockWorked := false
-	for !dispatchWorked || !orderClockWorked {
-		select {
-		case <-ctx.Done():
-			t.Fatalf("wait for late workspace jobs: dispatch=%t order_clock=%t: %v", dispatchWorked, orderClockWorked, ctx.Err())
-		case event := <-events:
-			job := event.Job
-			if job == nil || riverJobWorkspace(job) != workspaceB {
-				continue
-			}
-			dispatchWorked = dispatchWorked || (job.Kind == (queueargs.DispatchTaskArgs{}).Kind() &&
-				job.Queue == queueargs.DispatchQueue(workspaceB))
-			orderClockWorked = orderClockWorked || (job.Kind == (queueargs.OrderClockArgs{}).Kind() &&
-				job.Queue == queueargs.ControlQueue)
-		}
-	}
-}
-
-func waitForRiverJob(t *testing.T, ctx context.Context, events <-chan *river.Event, matches func(*rivertype.JobRow) bool, description string) {
-	t.Helper()
-	for {
-		select {
-		case <-ctx.Done():
-			t.Fatalf("wait for %s: %v", description, ctx.Err())
-		case event := <-events:
-			if event.Job != nil && matches(event.Job) {
-				return
-			}
-		}
-	}
-}
-
-func riverJobWorkspace(job *rivertype.JobRow) string {
-	var args struct {
-		WorkspaceID string `json:"workspace_id"`
-	}
-	if json.Unmarshal(job.EncodedArgs, &args) != nil {
-		return ""
-	}
-	return args.WorkspaceID
 }
 
 func TestWorkspaceForgeOperationFailsClosedWithoutTokenIntegration(t *testing.T) {
@@ -362,163 +162,8 @@ func TestApproverTokenMergeWaitAndRetryIntegration(t *testing.T) {
 	}
 }
 
-func TestRiverDispatchCompletesBlueprintAnchorIntegration(t *testing.T) {
-	databaseURL := dispatchIntegrationDatabaseURL(t)
-	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
-	defer cancel()
-	st, err := storepg.Open(ctx, databaseURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer st.Close()
-
-	suffix := core.NewTaskID()
-	workspace := "dispatch-blueprint-" + suffix
-	cfg := dispatchRaceConfig(workspace)
-	actorCtx := store.WithActor(ctx, store.Actor{ID: "test", Role: core.ActorHuman})
-	if _, err = st.CreateWorkspace(actorCtx, workspace, "Dispatch blueprint "+suffix, cfg); err != nil {
-		t.Fatal(err)
-	}
-	taskCtx := store.WithWorkspace(ctx, workspace)
-	parent := core.Task{
-		ID: "blueprint-parent-" + suffix, Workspace: workspace, Repo: "repo", Title: "Blueprint",
-		BaseBranch: "main", Branch: "conveyor/blueprint-parent-" + suffix,
-		State: core.TaskQueued, NextStage: core.StageImplement, CreatedAt: time.Now().UTC(),
-	}
-	child := core.Task{
-		ID: "blueprint-child-" + suffix, Workspace: workspace, Repo: "repo", Title: "Blueprint child",
-		BaseBranch: "main", Branch: "conveyor/blueprint-child-" + suffix,
-		State: core.TaskQueued, NextStage: core.StageImplement, ParentTaskID: parent.ID,
-		OriginSpecVersion: 1, OriginSubID: "SUB-1", CreatedAt: time.Now().UTC(),
-	}
-	if err = st.CreateTask(taskCtx, parent); err != nil {
-		t.Fatal(err)
-	}
-	if err = st.CreateTask(taskCtx, child); err != nil {
-		t.Fatal(err)
-	}
-
-	tx, err := st.Pool().Begin(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer tx.Rollback(ctx) //nolint:errcheck
-	if _, err = tx.Exec(ctx, `DELETE FROM river_job
-		WHERE kind='dispatch_task' AND args->>'workspace_id'=$1 AND args->>'task_id'=$2`,
-		workspace, parent.ID); err != nil {
-		t.Fatal(err)
-	}
-	dispatcher := New(st, cfg, nil)
-	testWorker := rivertest.NewWorker(t, riverpgxv5.New(nil), &river.Config{ID: "blueprint-anchor"}, riverqueue.WorkerFor[queueargs.DispatchTaskArgs](dispatchRegistration(dispatcher), nil))
-	result, err := testWorker.Work(ctx, t, tx,
-		queueargs.DispatchTaskArgs{WorkspaceID: workspace, TaskID: parent.ID},
-		&river.InsertOpts{MaxAttempts: queueargs.DispatchTaskMaxAttempts})
-	if err != nil {
-		t.Fatalf("blueprint dispatch returned %v, want completion", err)
-	}
-	if result.Job.State != rivertype.JobStateCompleted || result.Job.Attempt != 1 {
-		t.Fatalf("blueprint River row state=%s attempt=%d, want completed attempt 1", result.Job.State, result.Job.Attempt)
-	}
-	persisted, err := st.GetTask(taskCtx, parent.ID)
-	if err != nil || persisted.State != core.TaskQueued {
-		t.Fatalf("blueprint parent=%+v err=%v", persisted, err)
-	}
-	orders, err := st.ListTaskWorkOrders(taskCtx, parent.ID)
-	if err != nil || len(orders) != 0 {
-		t.Fatalf("blueprint parent orders=%+v err=%v", orders, err)
-	}
-}
-
 func (s *failingStageOrderStore) CreateStageWorkOrderCommand(context.Context, taskops.TaskLease, core.Job, core.WorkOrder) (bool, error) {
 	return false, s.err
-}
-
-func TestRiverDispatchPersistsFiveRetriesThenParksIntegration(t *testing.T) {
-	databaseURL := dispatchIntegrationDatabaseURL(t)
-	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
-	defer cancel()
-	st, err := storepg.Open(ctx, databaseURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer st.Close()
-
-	suffix := core.NewTaskID()
-	workspace := "dispatch-retry-" + suffix
-	cfg := dispatchRaceConfig(workspace)
-	actorCtx := store.WithActor(ctx, store.Actor{ID: "test", Role: core.ActorHuman})
-	if _, err = st.CreateWorkspace(actorCtx, workspace, "Dispatch retry "+suffix, cfg); err != nil {
-		t.Fatal(err)
-	}
-	taskCtx := store.WithWorkspace(ctx, workspace)
-	task := core.Task{
-		ID: "dispatch-retry-" + suffix, Workspace: workspace, Repo: "repo", Title: "Retry dispatch",
-		BaseBranch: "main", Branch: "conveyor/dispatch-retry-" + suffix,
-		State: core.TaskQueued, NextStage: core.StageImplement, CreatedAt: time.Now().UTC(),
-	}
-	if err = st.CreateTask(taskCtx, task); err != nil {
-		t.Fatal(err)
-	}
-
-	tx, err := st.Pool().Begin(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer tx.Rollback(ctx) //nolint:errcheck
-
-	wantFailure := errors.New("forced dispatch failure")
-	dispatcher := New(&failingStageOrderStore{Store: st, err: wantFailure}, cfg, nil)
-	testWorker := rivertest.NewWorker(t, riverpgxv5.New(nil), &river.Config{ID: "dispatch-retry-policy"}, riverqueue.WorkerFor[queueargs.DispatchTaskArgs](dispatchRegistration(dispatcher), nil))
-	args := queueargs.DispatchTaskArgs{WorkspaceID: workspace, TaskID: task.ID}
-	opts := &river.InsertOpts{MaxAttempts: queueargs.DispatchTaskMaxAttempts}
-	wants := []time.Duration{10 * time.Second, 20 * time.Second, 40 * time.Second, 80 * time.Second, 160 * time.Second}
-	var result *rivertest.WorkResult
-	for index, want := range wants {
-		attempt := index + 1
-		if index == 0 {
-			result, err = testWorker.Work(ctx, t, tx, args, opts)
-		} else {
-			result, err = testWorker.WorkJob(ctx, t, tx, result.Job)
-		}
-		if !errors.Is(err, wantFailure) {
-			t.Fatalf("attempt %d error=%v, want %v", attempt, err, wantFailure)
-		}
-		if result.Job.Attempt != attempt || result.Job.MaxAttempts != queueargs.DispatchTaskMaxAttempts || result.Job.AttemptedAt == nil {
-			t.Fatalf("attempt %d row=%+v", attempt, result.Job)
-		}
-		if result.Job.State != rivertype.JobStateRetryable {
-			t.Fatalf("attempt %d state=%s, want retryable", attempt, result.Job.State)
-		}
-		if got := result.Job.ScheduledAt.Sub(*result.Job.AttemptedAt); got < want || got > want+2*time.Second {
-			t.Fatalf("attempt %d persisted retry delay=%s, want %s", attempt, got, want)
-		}
-	}
-
-	result, err = testWorker.WorkJob(ctx, t, tx, result.Job)
-	if !errors.Is(err, wantFailure) {
-		t.Fatalf("final attempt error=%v, want %v", err, wantFailure)
-	}
-	if result.Job.Attempt != queueargs.DispatchTaskMaxAttempts || result.Job.MaxAttempts != queueargs.DispatchTaskMaxAttempts ||
-		result.Job.State != rivertype.JobStateDiscarded || len(result.Job.Errors) != queueargs.DispatchTaskMaxAttempts {
-		t.Fatalf("final River row=%+v", result.Job)
-	}
-	parked, err := st.GetTask(taskCtx, task.ID)
-	if err != nil || parked.State != core.TaskParked || parked.RecoveryStage != core.StageImplement {
-		t.Fatalf("parked task=%+v err=%v", parked, err)
-	}
-	events, err := st.ListEvents(taskCtx, task.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, event := range events {
-		var payload struct {
-			Command core.TaskCommand `json:"command"`
-		}
-		if event.Kind == "task.state_changed" && json.Unmarshal(event.Payload, &payload) == nil && payload.Command == core.TaskDispatchFailFinal {
-			return
-		}
-	}
-	t.Fatal("final River execution did not persist dispatch.fail_final")
 }
 
 func (s *observedTaskLockStore) CreateConflictFixCommand(ctx context.Context, lease taskops.TaskLease, request store.ConflictFixRequest) (store.ConflictFixResult, error) {
@@ -533,7 +178,7 @@ func (s *observedTaskLockStore) CreateConflictFixCommand(ctx context.Context, le
 	return result, nil
 }
 
-func TestConflictFixAndRiverDispatchSerializeIntegration(t *testing.T) {
+func TestConflictFixAndQueueDispatchSerializeIntegration(t *testing.T) {
 	databaseURL := dispatchIntegrationDatabaseURL(t)
 	root := t.Context()
 	st, err := storepg.Open(root, databaseURL)
@@ -587,10 +232,10 @@ func TestConflictFixAndRiverDispatchSerializeIntegration(t *testing.T) {
 		t.Fatal("conflict dispatch did not create the work order")
 	}
 
-	riverDone := make(chan error, 1)
+	queueDone := make(chan error, 1)
 	worker := &dispatchTaskWorker{dispatcher: dispatcher}
 	go func() {
-		riverDone <- worker.Work(ctx, testJob(queueargs.DispatchTaskArgs{WorkspaceID: workspace, TaskID: task.ID}, 1, 1, 5))
+		queueDone <- worker.Work(ctx, testJob(queueargs.DispatchTaskArgs{WorkspaceID: workspace, TaskID: task.ID}, 1, 1, 5))
 	}()
 	close(observed.releaseOrder)
 	releasedOrder = true
@@ -603,13 +248,13 @@ func TestConflictFixAndRiverDispatchSerializeIntegration(t *testing.T) {
 		t.Fatal("conflict dispatch did not finish")
 	}
 	select {
-	case err = <-riverDone:
+	case err = <-queueDone:
 		var snooze *queueargs.SnoozeError
 		if !errors.As(err, &snooze) || snooze.Duration != time.Second {
-			t.Fatalf("River dispatch result=%v, want one-second stage snooze", err)
+			t.Fatalf("queue dispatch result=%v, want one-second stage snooze", err)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("River dispatch did not finish")
+		t.Fatal("queue dispatch did not finish")
 	}
 
 	orders, err := st.ListTaskWorkOrders(ctx, task.ID)

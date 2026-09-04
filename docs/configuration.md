@@ -121,10 +121,10 @@ win over file values. `CONVEYOR_API_KEY` and `CONVEYOR_API_BASE_URL` are
 deprecated fallbacks for the `_LLM_` pair and remain only for existing
 installations.
 
-On SIGINT or SIGTERM, `conveyord` stops River from fetching work, cancels HTTP
+On SIGINT or SIGTERM, `conveyord` stops the queue from fetching work, cancels HTTP
 request base contexts, drains HTTP and active jobs, then cancels remaining jobs
 and closes Postgres within the shutdown budget. The hard-stop phase reserves up
-to five seconds, or half of a shorter budget. River crash recovery uses a
+to five seconds, or half of a shorter budget. Queue crash recovery uses a
 stuck-job threshold equal to the largest effective triage or spec route timeout
 across the startup workspaces plus a five-minute safety margin. Startup logs
 both effective values and refuses an invalid route/threshold relationship.

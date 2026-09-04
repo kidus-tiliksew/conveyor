@@ -379,7 +379,7 @@ func (s *cancelledDispatchStore) GetTask(context.Context, string) (core.Task, er
 	return core.Task{}, context.Canceled
 }
 
-func TestRiverRescueStuckJobsAfterUsesLargestRouteAndFallback(t *testing.T) {
+func TestQueueRescueThresholdUsesLargestRouteAndFallback(t *testing.T) {
 	t.Parallel()
 	configs := map[string]*config.Config{
 		"a": {Routing: config.Routing{Stages: map[string]config.StageRoute{
@@ -390,22 +390,22 @@ func TestRiverRescueStuckJobsAfterUsesLargestRouteAndFallback(t *testing.T) {
 			"triage": {Timeout: time.Hour},
 		}}},
 	}
-	got, err := RiverRescueStuckJobsAfter(configs)
-	if err != nil || got != 3*time.Hour+RiverRescueSafetyMargin {
+	got, err := QueueRescueThreshold(configs)
+	if err != nil || got != 3*time.Hour+QueueRescueSafetyMargin {
 		t.Fatalf("rescue threshold=%s err=%v", got, err)
 	}
 	short := map[string]*config.Config{"short": {Routing: config.Routing{Stages: map[string]config.StageRoute{
 		"triage": {Timeout: 20 * time.Minute}, "spec": {Timeout: 30 * time.Minute},
 	}}}}
-	got, err = RiverRescueStuckJobsAfter(short)
-	if err != nil || got != 30*time.Minute+RiverRescueSafetyMargin {
+	got, err = QueueRescueThreshold(short)
+	if err != nil || got != 30*time.Minute+QueueRescueSafetyMargin {
 		t.Fatalf("short-route rescue threshold=%s err=%v", got, err)
 	}
-	if err = ValidateRiverRescueStuckJobsAfter("short", short["short"], 30*time.Minute); err == nil || !strings.Contains(err.Error(), "short/spec") {
+	if err = ValidateQueueRescueThreshold("short", short["short"], 30*time.Minute); err == nil || !strings.Contains(err.Error(), "short/spec") {
 		t.Fatalf("validation error=%v, want offending spec route", err)
 	}
-	got, err = RiverRescueStuckJobsAfter(nil)
-	if err != nil || got != config.DefaultStageTimeout+RiverRescueSafetyMargin {
+	got, err = QueueRescueThreshold(nil)
+	if err != nil || got != config.DefaultStageTimeout+QueueRescueSafetyMargin {
 		t.Fatalf("fallback rescue threshold=%s err=%v", got, err)
 	}
 }

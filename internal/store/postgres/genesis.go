@@ -35,8 +35,6 @@ import (
 // lock before reading the rows, so a concurrent legacy write on the same
 // entity cannot slip between the read and the snapshot. The whole run holds
 // the startup-migrations advisory lock so it cannot overlap daemon startup.
-//
-// Log-core migration plan, phase 1, task 1.3.
 
 // GenesisOptions controls one import run.
 type GenesisOptions struct {

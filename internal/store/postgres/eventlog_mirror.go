@@ -43,8 +43,6 @@ func telemetryKindList() []string {
 // locks) keeps concurrent mirrors ordered. When the executor is a store
 // transaction, the stream is registered so the entity's final rows are
 // recorded at commit (see eventlog_bridge.go).
-//
-// Log-core migration plan, phase 1, task 1.2 (dual-append).
 func mirrorLegacyEvent(ctx context.Context, exec db.DBTX, inserted db.Event) error {
 	if telemetryKinds[inserted.Kind] {
 		return nil
@@ -70,8 +68,8 @@ func mirrorLegacyEvent(ctx context.Context, exec db.DBTX, inserted db.Event) err
 // legacyStream maps a legacy events row onto the stream that owns it in the
 // log core. The mapping is by event family and payload id, falling back to
 // the task the row was bound to and finally to the workspace stream. The
-// genesis import (task 1.3) uses the same function so shadow-mirrored and
-// imported history land on identical streams.
+// genesis import uses the same function so mirrored and imported history
+// land on identical streams.
 func legacyStream(inserted db.Event) eventlog.StreamID {
 	family, _, _ := strings.Cut(inserted.Kind, ".")
 	payload := payloadIDs(inserted.PayloadJson)

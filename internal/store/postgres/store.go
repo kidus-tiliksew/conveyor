@@ -82,21 +82,17 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 		pool.Close()
 		return nil, err
 	}
-	queue, err := newRiverDispatchQueue(pool)
-	if err != nil {
-		pool.Close()
-		return nil, err
-	}
-	return &Store{pool: pool, queries: db.New(pool), queue: queue, log: pglog.New(pool)}, nil
+	log := pglog.New(pool)
+	return &Store{pool: pool, queries: db.New(pool), queue: newLogDispatchQueue(pool, log), log: log}, nil
 }
 
 func (s *Store) Close() { s.pool.Close() }
 
 func (s *Store) Pool() *pgxpool.Pool { return s.pool }
 
-// Log is the event log this store mirrors every legacy event into. Until the
-// cutover phases it is a shadow of the legacy tables: written in the same
-// transactions, read by nothing that serves traffic.
+// Log is the event log this store mirrors every legacy event into and runs
+// its queue on. It is written in the same transactions as the legacy tables;
+// entity reads still come from those tables.
 func (s *Store) Log() eventlog.Store { return s.logDriver() }
 
 var logDriverInit sync.Mutex
@@ -1775,9 +1771,9 @@ func (s *Store) EnsureTaskEnqueued(ctx context.Context, id string) error {
 	})
 }
 
-// ReconcileQueuedTasks repairs projection/queue drift. River remains the
-// execution claim, but a deleted or lost River row must not strand a durable
-// queued task forever.
+// ReconcileQueuedTasks repairs projection/queue drift: a queued task whose
+// job stream is no longer active is enqueued again, and a running task whose
+// job was discarded after its final attempt is parked with evidence.
 func (s *Store) ReconcileQueuedTasks(ctx context.Context) (int, error) {
 	repaired := 0
 	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
@@ -1816,7 +1812,7 @@ func (s *Store) ReconcileQueuedTasks(ctx context.Context) (int, error) {
 	for _, candidate := range discarded {
 		_, applyErr := taskops.New(s).Perform(ctx, candidate.taskID, taskops.Command{
 			Kind: core.TaskDispatchFailFinal, RecoveryStage: candidate.stage, ProjectStages: true,
-			FailureMessage: "River rescuer discarded the dispatch job after its final attempt",
+			FailureMessage: "the queue discarded the dispatch job after its final attempt",
 			Attempt:        candidate.attempt, MaxAttempts: candidate.maxAttempts,
 		})
 		if applyErr != nil {
