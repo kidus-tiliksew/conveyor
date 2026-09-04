@@ -20,7 +20,7 @@ func (s *Store) PreemptWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 		return store.WorkOrderPreemptResult{}, validationErr
 	}
 	workspaceID := workspace(ctx)
-	tx, err := s.pool.Begin(ctx)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return store.WorkOrderPreemptResult{}, err
 	}

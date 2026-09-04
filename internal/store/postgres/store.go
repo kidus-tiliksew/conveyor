@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -41,6 +42,7 @@ type Store struct {
 	queries       *db.Queries
 	river         *river.Client[pgx.Tx]
 	log           *pglog.Store
+	knownTables   sync.Map // table name -> true once seen to exist
 	forgeTokenKey []byte
 }
 
@@ -99,8 +101,21 @@ func (s *Store) Pool() *pgxpool.Pool { return s.pool }
 // Log is the event log this store mirrors every legacy event into. Until the
 // cutover phases it is a shadow of the legacy tables: written in the same
 // transactions, read by nothing that serves traffic.
-func (s *Store) Log() eventlog.Store { return s.log }
-func (s *Store) IsDurable() bool     { return true }
+func (s *Store) Log() eventlog.Store { return s.logDriver() }
+
+var logDriverInit sync.Mutex
+
+// logDriver returns the store's log driver, creating it on first use for
+// stores assembled without Open (test fixtures build Store literals).
+func (s *Store) logDriver() *pglog.Store {
+	logDriverInit.Lock()
+	defer logDriverInit.Unlock()
+	if s.log == nil {
+		s.log = pglog.New(s.pool)
+	}
+	return s.log
+}
+func (s *Store) IsDurable() bool { return true }
 
 // ConfigureForgeTokenEncryptionKey installs a process-only AES-256 key. The
 // copy prevents later caller mutation and the value never enters persisted
@@ -227,13 +242,16 @@ func (s *Store) BootstrapWorkspaceConfig(ctx context.Context, cfg *config.Config
 	if err != nil {
 		return false, err
 	}
-	tx, err := s.pool.Begin(ctx)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return false, err
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 	q := s.queries.WithTx(tx)
 	seeded := true
+	// Bootstrap writes the workspace row without a legacy event; the bridge
+	// still records the resulting state at commit.
+	noteStateChange(tx, cfg.Workspace, eventlog.WorkspaceStream(cfg.Workspace), "workspace.bootstrapped")
 	if _, err := q.InsertWorkspace(ctx, db.InsertWorkspaceParams{
 		ID: cfg.Workspace, Name: cfg.Workspace, ConfigYaml: string(configYAML),
 	}); errors.Is(err, pgx.ErrNoRows) {
@@ -3518,7 +3536,7 @@ func (s *Store) CancelTaskCommand(ctx context.Context, lease taskops.TaskLease, 
 	if intervention.Action != core.InterventionCancel || strings.TrimSpace(intervention.ReasonCode) == "" {
 		return core.Task{}, fmt.Errorf("cancel intervention requires a reason")
 	}
-	tx, err := s.pool.Begin(ctx)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return core.Task{}, err
 	}
@@ -4225,7 +4243,7 @@ func (s *Store) RetryReviewRoundCommand(ctx context.Context, lease taskops.TaskL
 	if len(jobs) == 0 || len(jobs) != len(orders) {
 		return store.ReviewRoundRetryResult{}, fmt.Errorf("review retry requires one job per work order")
 	}
-	tx, err := s.pool.Begin(ctx)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return store.ReviewRoundRetryResult{}, err
 	}
@@ -4380,7 +4398,7 @@ func (s *Store) RecoverInterruptedReviewRoundCommand(ctx context.Context, lease 
 	if request.RequestID == "" || request.TaskID == "" || request.Round <= 0 || queueTimeout <= 0 {
 		return store.InterruptedReviewRecoveryResult{}, fmt.Errorf("interrupted review recovery requires task, request_id, round, and queue timeout")
 	}
-	tx, err := s.pool.Begin(ctx)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return store.InterruptedReviewRecoveryResult{}, err
 	}
@@ -4725,7 +4743,7 @@ func workOrderTaskIDTx(ctx context.Context, tx pgx.Tx, workspaceID, id string) (
 }
 
 func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease taskops.TaskLease, id string, claim core.WorkOrderClaim) (core.WorkOrder, error) {
-	tx, err := s.pool.Begin(ctx)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return core.WorkOrder{}, err
 	}
@@ -5041,7 +5059,7 @@ func (s *Store) RedispatchWorkOrderCommand(ctx context.Context, lease taskops.Ta
 	if queueTimeout <= 0 {
 		return core.WorkOrder{}, fmt.Errorf("work-order queue timeout must be positive")
 	}
-	tx, err := s.pool.Begin(ctx)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return core.WorkOrder{}, err
 	}
@@ -5160,7 +5178,7 @@ func (s *Store) RefreshWorkOrderHarnessSnapshot(ctx context.Context, id string, 
 	if snapshot == nil || snapshot.Name == "" {
 		return core.WorkOrder{}, fmt.Errorf("harness snapshot is required")
 	}
-	tx, err := s.pool.Begin(ctx)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return core.WorkOrder{}, err
 	}
@@ -5214,7 +5232,7 @@ func (s *Store) RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 	if queueTimeout <= 0 {
 		return core.WorkOrder{}, fmt.Errorf("work-order queue timeout must be positive")
 	}
-	tx, err := s.pool.Begin(ctx)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return core.WorkOrder{}, err
 	}
@@ -6450,7 +6468,7 @@ func (s *Store) CreateArtifact(ctx context.Context, artifact core.Artifact, cont
 		artifact.CreatedAt = time.Now().UTC()
 	}
 	artifact.Workspace = workspace(ctx)
-	tx, err := s.pool.Begin(ctx)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return core.Artifact{}, err
 	}
@@ -6496,7 +6514,7 @@ func (s *Store) CreateClaimedVerificationEvidence(ctx context.Context, request s
 	}
 	clientTokenHash := fmt.Sprintf("%x", sha256.Sum256([]byte(request.ClientToken)))
 
-	tx, err := s.pool.Begin(ctx)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return core.Artifact{}, err
 	}
@@ -6650,9 +6668,9 @@ func (s *Store) inTx(ctx context.Context, fn func(pgx.Tx, *db.Queries) error) er
 		// PostgreSQL session. Advisory locks are re-entrant within one session;
 		// starting this transaction through the pool can select another session
 		// and deadlock against the outer task-operation lock.
-		tx, err = conn.Begin(ctx)
+		tx, err = s.beginOn(ctx, conn)
 	} else {
-		tx, err = s.pool.Begin(ctx)
+		tx, err = s.begin(ctx)
 	}
 	if err != nil {
 		return err

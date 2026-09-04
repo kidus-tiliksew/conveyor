@@ -39,6 +39,28 @@ same transaction. The stream is chosen by event family and payload id
 row was bound to and then to the workspace stream. Nothing reads the log to
 serve traffic.
 
+**The state-carrying bridge.** Legacy events do not carry enough to fold:
+`requirement.version_proposed` names the requirement but not the content.
+So during the transition every store transaction records, at commit, the
+final rows of each entity it emitted events for, as one `log.state_recorded`
+event per touched stream, with the same payload shape as an imported snapshot
+plus the kinds that triggered it. A stream whose rows hash the same as its
+last recorded state gets nothing. The log is therefore authoritative for
+state from the first deploy, and fold rules are written for native events
+after cutover rather than for every legacy kind before it. The mechanism is a
+transaction wrapper: the mirror registers touched streams on it, and its
+commit reads the rows, appends the state events, and only then commits, so a
+failure rolls back rows and log together. A write path that changes rows
+without emitting an event registers its stream explicitly; workspace
+bootstrap is the one such path today.
+
+**Telemetry stays out.** `worker.heartbeat` and `work_order.lease_renewed`
+are liveness signals, not facts about an entity, and together were 84% of the
+demo workspace's log. Neither the mirror nor the import carries them, and the
+columns they move (`lease_expires_at`, `last_seen_at`) are excluded from
+snapshot hashes so a renewal is never drift. They remain in the legacy
+`events` table.
+
 **Genesis import.** `conveyor migrate-log` builds the log for a deployment
 whose data predates it. Per workspace it appends legacy events not yet in the
 log, in id order, then writes one `log.snapshot_imported` event per entity
@@ -92,10 +114,11 @@ Taken 2026-09-04 against a restore of the devbox database on a laptop.
 | `event_log` table size | 375 MB, against 361 MB for `events` |
 | Snapshot payloads | 83 MB total, largest 2 MB |
 
-Two kinds account for 84% of the demo log: `worker.heartbeat` (196,062) and
-`work_order.lease_renewed` (77,349). Both are liveness telemetry rather than
-facts about an entity. Whether the mirror and the import should carry them is
-an open decision; excluding them would shrink the log by that share.
+Those numbers were taken before telemetry was excluded. Two kinds accounted
+for 84% of the demo log: `worker.heartbeat` (196,062) and
+`work_order.lease_renewed` (77,349). With them out, the same import writes
+52,204 history events for demo in 29 s, the log table is 187 MB, the catalog
+replays the demo log in 3.3 s, and parity is still clean everywhere.
 
 ## What it does not do yet
 

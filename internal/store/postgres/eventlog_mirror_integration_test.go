@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"testing"
@@ -38,9 +39,17 @@ func TestLegacyWritesMirrorIntoEventLog(t *testing.T) {
 	if len(legacy) == 0 {
 		t.Fatal("no legacy events for task")
 	}
-	mirrored, err := log.Read(ctx, workspace, eventlog.TaskStream(taskID), 0, 0)
+	stream, err := log.Read(ctx, workspace, eventlog.TaskStream(taskID), 0, 0)
 	if err != nil {
 		t.Fatal(err)
+	}
+	var mirrored, states []eventlog.Event
+	for _, e := range stream {
+		if e.Kind == eventlog.StateRecordedKind {
+			states = append(states, e)
+			continue
+		}
+		mirrored = append(mirrored, e)
 	}
 	if len(mirrored) != len(legacy) {
 		t.Fatalf("mirrored %d events for task, legacy has %d", len(mirrored), len(legacy))
@@ -52,15 +61,43 @@ func TestLegacyWritesMirrorIntoEventLog(t *testing.T) {
 		if mirrored[i].Kind != legacy[i].Kind {
 			t.Fatalf("event %d: kind %q vs %q", i, mirrored[i].Kind, legacy[i].Kind)
 		}
-		if mirrored[i].Version != eventlog.Version(i+1) {
-			t.Fatalf("event %d: version %d", i, mirrored[i].Version)
-		}
 		if !mirrored[i].At.Equal(legacy[i].At) {
 			t.Fatalf("event %d: at %v vs %v", i, mirrored[i].At, legacy[i].At)
 		}
 		if mirrored[i].ActorID != legacy[i].ActorID || mirrored[i].ActorRole != string(legacy[i].ActorRole) {
 			t.Fatalf("event %d: actor %s/%s vs %s/%s", i, mirrored[i].ActorID, mirrored[i].ActorRole, legacy[i].ActorID, legacy[i].ActorRole)
 		}
+	}
+
+	// The bridge: each committing transaction that touched the task left
+	// its final rows on the stream, and the stream ends with that state.
+	if len(states) == 0 {
+		t.Fatal("no log.state_recorded events on the task stream")
+	}
+	if stream[len(stream)-1].Kind != eventlog.StateRecordedKind {
+		t.Fatalf("stream head=%s, want state", stream[len(stream)-1].Kind)
+	}
+	var state genesisSnapshot
+	if err := json.Unmarshal(stream[len(stream)-1].Payload, &state); err != nil {
+		t.Fatal(err)
+	}
+	if state.Family != "task" || state.ID != taskID || state.Row["state"] != string(core.TaskQueued) || state.ContentHash == "" {
+		t.Fatalf("recorded state=%+v", state)
+	}
+	if len(state.TriggerKinds) != 1 || state.TriggerKinds[0] != "task.hold_changed" {
+		t.Fatalf("trigger kinds=%v", state.TriggerKinds)
+	}
+
+	// Telemetry never reaches the log, from the mirror or the import.
+	if err := st.AppendEvent(ctx, core.Event{TaskID: taskID, Kind: "work_order.lease_renewed", Payload: core.JSONPayload(map[string]any{"attempt_id": "a1"})}); err != nil {
+		t.Fatal(err)
+	}
+	afterTelemetry, _ := log.Read(ctx, workspace, eventlog.TaskStream(taskID), 0, 0)
+	if len(afterTelemetry) != len(stream) {
+		t.Fatalf("telemetry reached the log: %d events, was %d", len(afterTelemetry), len(stream))
+	}
+	if legacyAfter, _ := st.ListEvents(ctx, taskID); len(legacyAfter) != len(legacy)+1 {
+		t.Fatalf("telemetry missing from the legacy table: %d", len(legacyAfter))
 	}
 
 	// Workspace-scoped family: a reference document gets its own stream.
@@ -74,12 +111,13 @@ func TestLegacyWritesMirrorIntoEventLog(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(docEvents) != 1 || docEvents[0].Kind != "reference_document.created" {
+	if len(docEvents) != 2 || docEvents[0].Kind != "reference_document.created" || docEvents[1].Kind != eventlog.StateRecordedKind {
 		t.Fatalf("reference document stream=%+v", docEvents)
 	}
 
 	// The workspace tail sees everything in commit order with positions
-	// strictly increasing, and the log's legacy ids are unique.
+	// strictly increasing; every mirrored entry has a unique legacy id and
+	// every other entry is recorded state.
 	tail, err := log.Tail(ctx, workspace, 0, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -90,7 +128,10 @@ func TestLegacyWritesMirrorIntoEventLog(t *testing.T) {
 			t.Fatalf("tail positions not increasing at %d", i)
 		}
 		if e.LegacyID == 0 {
-			t.Fatalf("tail entry %d has no legacy id: %+v", i, e)
+			if e.Kind != eventlog.StateRecordedKind {
+				t.Fatalf("tail entry %d has no legacy id: %+v", i, e)
+			}
+			continue
 		}
 		if seen[e.LegacyID] {
 			t.Fatalf("legacy id %d mirrored twice", e.LegacyID)
@@ -98,11 +139,11 @@ func TestLegacyWritesMirrorIntoEventLog(t *testing.T) {
 		seen[e.LegacyID] = true
 	}
 	var legacyCount int
-	if err := st.pool.QueryRow(ctx, `SELECT count(*) FROM events WHERE workspace_id=$1`, workspace).Scan(&legacyCount); err != nil {
+	if err := st.pool.QueryRow(ctx, `SELECT count(*) FROM events WHERE workspace_id=$1 AND NOT (kind = ANY($2))`, workspace, telemetryKindList()).Scan(&legacyCount); err != nil {
 		t.Fatal(err)
 	}
-	if legacyCount != len(tail) {
-		t.Fatalf("legacy events=%d, log tail=%d", legacyCount, len(tail))
+	if legacyCount != len(seen) {
+		t.Fatalf("legacy non-telemetry events=%d, mirrored=%d", legacyCount, len(seen))
 	}
 }
 

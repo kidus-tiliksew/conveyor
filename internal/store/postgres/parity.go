@@ -97,7 +97,7 @@ type ParityOptions struct {
 func (s *Store) LogParity(ctx context.Context, workspace string, opts ParityOptions) (ParityReport, error) {
 	started := time.Now()
 	cat := catalog.New()
-	runner := projection.NewRunner(s.log, workspace, cat)
+	runner := projection.NewRunner(s.logDriver(), workspace, cat)
 	runner.SnapshotEvery = 0
 	if _, err := runner.CatchUp(ctx); err != nil {
 		return ParityReport{}, err

@@ -26,7 +26,7 @@ func (s *Store) ChangeTaskSetupCommand(ctx context.Context, lease taskops.TaskLe
 		return store.SetupChangeResult{}, validationErr
 	}
 	workspaceID := workspace(ctx)
-	tx, err := s.pool.Begin(ctx)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return store.SetupChangeResult{}, err
 	}

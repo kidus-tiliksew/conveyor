@@ -14,14 +14,41 @@ import (
 // opens its own transaction, so it needs no pool.
 var legacyMirror = pglog.New(nil)
 
+// telemetryKinds are liveness signals, not facts about an entity: a lease
+// belongs in state, not in the log. They stay in the legacy events table and
+// never reach the log, from the mirror or from the import. Their columns
+// are excluded from snapshot hashes for the same reason. Operator decision,
+// 2026-09-04: together they were 84% of the demo workspace's log.
+var telemetryKinds = map[string]bool{
+	"worker.heartbeat":         true,
+	"work_order.lease_renewed": true,
+}
+
+// IsTelemetryKind reports whether kind is excluded from the log.
+func IsTelemetryKind(kind string) bool { return telemetryKinds[kind] }
+
+// telemetryKindList is the exclusion in a form SQL can take.
+func telemetryKindList() []string {
+	out := make([]string, 0, len(telemetryKinds))
+	for kind := range telemetryKinds {
+		out = append(out, kind)
+	}
+	return out
+}
+
 // mirrorLegacyEvent appends a just-inserted legacy events row to the event
 // log using the same executor, so the row and its log entry commit or roll
 // back together. Legacy writers do not track stream versions, so the append
 // is ExpectAny; the per-stream serialization they already rely on (advisory
-// locks) keeps concurrent mirrors ordered.
+// locks) keeps concurrent mirrors ordered. When the executor is a store
+// transaction, the stream is registered so the entity's final rows are
+// recorded at commit (see eventlog_bridge.go).
 //
 // Log-core migration plan, phase 1, task 1.2 (dual-append).
 func mirrorLegacyEvent(ctx context.Context, exec db.DBTX, inserted db.Event) error {
+	if telemetryKinds[inserted.Kind] {
+		return nil
+	}
 	stream := legacyStream(inserted)
 	_, err := legacyMirror.AppendWith(ctx, exec, inserted.WorkspaceID, stream, eventlog.ExpectAny, []eventlog.NewEvent{{
 		Kind:      inserted.Kind,
@@ -31,7 +58,13 @@ func mirrorLegacyEvent(ctx context.Context, exec db.DBTX, inserted db.Event) err
 		At:        inserted.At.Time,
 		LegacyID:  inserted.ID,
 	}})
-	return err
+	if err != nil {
+		return err
+	}
+	if tx, ok := exec.(*stateTx); ok {
+		tx.touch(inserted.WorkspaceID, stream, inserted.Kind)
+	}
+	return nil
 }
 
 // legacyStream maps a legacy events row onto the stream that owns it in the

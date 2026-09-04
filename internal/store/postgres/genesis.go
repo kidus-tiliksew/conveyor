@@ -107,7 +107,8 @@ var genesisFamilies = []genesisFamily{
 	},
 	{
 		family: "work_order", table: "work_orders", idColumn: "id", scope: "workspace_id", stream: eventlog.WorkOrderStream,
-		exclude: []string{"client_token_hash"},
+		// lease_expires_at is liveness; renewals are not facts about the order.
+		exclude: []string{"client_token_hash", "lease_expires_at"},
 		children: []genesisChild{
 			{table: "work_order_activity_snapshots", fk: "work_order_id", scoped: true, orderBy: "captured_at, attempt_id"},
 			{table: "work_order_preemptions", fk: "work_order_id", scoped: true, orderBy: "created_at, request_id"},
@@ -140,7 +141,8 @@ var genesisFamilies = []genesisFamily{
 	},
 	{
 		family: "worker", table: "workers", idColumn: "id", scope: "workspace_id", stream: eventlog.WorkerStream,
-		exclude: []string{"credential_hash"},
+		// Heartbeats move lease_expires_at and last_seen_at; both are liveness.
+		exclude: []string{"credential_hash", "lease_expires_at", "last_seen_at"},
 	},
 	{
 		family: "workspace", table: "workspaces", idColumn: "id", scope: "id", stream: eventlog.WorkspaceStream,
@@ -265,7 +267,8 @@ func (s *Store) importLegacyHistory(ctx context.Context, workspace string, batch
 	var alreadyInLog int
 	if err := s.pool.QueryRow(ctx, `
 SELECT count(*) FROM events e
-WHERE e.workspace_id = $1 AND EXISTS (SELECT 1 FROM event_log l WHERE l.legacy_event_id = e.id)`, workspace).Scan(&alreadyInLog); err != nil {
+WHERE e.workspace_id = $1 AND NOT (e.kind = ANY($2))
+  AND EXISTS (SELECT 1 FROM event_log l WHERE l.legacy_event_id = e.id)`, workspace, telemetryKindList()).Scan(&alreadyInLog); err != nil {
 		return 0, 0, fmt.Errorf("count mirrored history: %w", err)
 	}
 	var lastID int64
@@ -291,9 +294,10 @@ func (s *Store) loadHistoryBatch(ctx context.Context, workspace string, afterID 
 SELECT e.id, e.task_id, e.job_id, e.kind, e.actor_id, e.actor_role, e.payload_json, e.at, e.workspace_id
 FROM events e
 WHERE e.workspace_id = $1 AND e.id > $2
+  AND NOT (e.kind = ANY($4))
   AND NOT EXISTS (SELECT 1 FROM event_log l WHERE l.legacy_event_id = e.id)
 ORDER BY e.id
-LIMIT $3`, workspace, afterID, limit)
+LIMIT $3`, workspace, afterID, limit, telemetryKindList())
 	if err != nil {
 		return nil, fmt.Errorf("load history batch: %w", err)
 	}
@@ -316,7 +320,7 @@ func (s *Store) appendHistoryBatch(ctx context.Context, workspace string, batch 
 	}
 	defer tx.Rollback(ctx)
 
-	position, err := s.log.LockWorkspace(ctx, tx, workspace)
+	position, err := s.logDriver().LockWorkspace(ctx, tx, workspace)
 	if err != nil {
 		return err
 	}
@@ -334,7 +338,7 @@ func (s *Store) appendHistoryBatch(ctx context.Context, workspace string, batch 
 	sort.Slice(streams, func(i, j int) bool { return streams[i] < streams[j] })
 	heads := make(map[eventlog.StreamID]int64, len(streams))
 	for _, stream := range streams {
-		head, err := s.log.LockStream(ctx, tx, workspace, stream)
+		head, err := s.logDriver().LockStream(ctx, tx, workspace, stream)
 		if err != nil {
 			return err
 		}
@@ -429,6 +433,9 @@ type genesisSnapshot struct {
 	Row         map[string]any              `json:"row"`
 	Children    map[string][]map[string]any `json:"children,omitempty"`
 	ContentHash string                      `json:"content_hash"`
+	// TriggerKinds lists the legacy kinds whose transaction produced this
+	// state; set by the bridge, empty for imported snapshots.
+	TriggerKinds []string `json:"trigger_kinds,omitempty"`
 }
 
 func (s *Store) snapshotEntity(ctx context.Context, workspace string, family genesisFamily, id string) (bool, error) {
@@ -438,10 +445,10 @@ func (s *Store) snapshotEntity(ctx context.Context, workspace string, family gen
 	}
 	defer tx.Rollback(ctx)
 	stream := family.stream(id)
-	if _, err := s.log.LockWorkspace(ctx, tx, workspace); err != nil {
+	if _, err := s.logDriver().LockWorkspace(ctx, tx, workspace); err != nil {
 		return false, err
 	}
-	head, err := s.log.LockStream(ctx, tx, workspace, stream)
+	head, err := s.logDriver().LockStream(ctx, tx, workspace, stream)
 	if err != nil {
 		return false, err
 	}
@@ -454,11 +461,11 @@ func (s *Store) snapshotEntity(ctx context.Context, workspace string, family gen
 		return false, nil
 	}
 	if head > 0 {
-		last, err := s.log.Read(pglogCtx(ctx, tx), workspace, stream, head-1, 1)
+		last, err := s.logDriver().Read(pglogCtx(ctx, tx), workspace, stream, head-1, 1)
 		if err != nil {
 			return false, err
 		}
-		if len(last) == 1 && last[0].Kind == eventlog.SnapshotImportedKind {
+		if len(last) == 1 && isStateKind(last[0].Kind) {
 			var previous genesisSnapshot
 			if json.Unmarshal(last[0].Payload, &previous) == nil && previous.ContentHash == snapshot.ContentHash {
 				return false, nil
@@ -473,7 +480,7 @@ func (s *Store) snapshotEntity(ctx context.Context, workspace string, family gen
 	if actor.ID == "" {
 		actor = store.Actor{ID: "conveyor:migrate-log", Role: "system"}
 	}
-	if _, err := s.log.AppendWith(ctx, tx, workspace, stream, head, []eventlog.NewEvent{{
+	if _, err := s.logDriver().AppendWith(ctx, tx, workspace, stream, head, []eventlog.NewEvent{{
 		Kind: eventlog.SnapshotImportedKind, ActorID: actor.ID, ActorRole: string(actor.Role), Payload: payload,
 	}}); err != nil {
 		return false, err
@@ -483,7 +490,7 @@ func (s *Store) snapshotEntity(ctx context.Context, workspace string, family gen
 
 // readGenesisSnapshot reads an entity's row and child rows as JSON objects
 // with excluded columns removed, and hashes the canonical encoding.
-func (s *Store) readGenesisSnapshot(ctx context.Context, tx pgx.Tx, workspace string, family genesisFamily, id string) (*genesisSnapshot, error) {
+func (s *Store) readGenesisSnapshot(ctx context.Context, tx db.DBTX, workspace string, family genesisFamily, id string) (*genesisSnapshot, error) {
 	var where string
 	args := []any{id}
 	switch family.scope {
@@ -492,6 +499,12 @@ func (s *Store) readGenesisSnapshot(ctx context.Context, tx pgx.Tx, workspace st
 		args = append(args, workspace)
 	default:
 		where = fmt.Sprintf(`%s = $1`, family.idColumn)
+	}
+	// A schema older than a table (fixtures migrated to a past version)
+	// must not abort the caller's transaction, so existence is checked
+	// before querying rather than by catching the error.
+	if ok, err := s.tableExists(ctx, tx, family.table); err != nil || !ok {
+		return nil, err
 	}
 	row, err := queryJSONRows(ctx, tx, fmt.Sprintf(`SELECT row_to_json(t) FROM %s t WHERE %s`, family.table, where), args, family.exclude)
 	if err != nil {
@@ -505,6 +518,11 @@ func (s *Store) readGenesisSnapshot(ctx context.Context, tx pgx.Tx, workspace st
 	}
 	snapshot := &genesisSnapshot{Family: family.family, Table: family.table, ID: id, Row: row[0]}
 	for _, child := range family.children {
+		if ok, err := s.tableExists(ctx, tx, child.table); err != nil {
+			return nil, err
+		} else if !ok {
+			continue
+		}
 		childArgs := []any{id}
 		childWhere := fmt.Sprintf(`c.%s = $1`, child.fk)
 		if child.scoped {
@@ -534,7 +552,26 @@ func (s *Store) readGenesisSnapshot(ctx context.Context, tx pgx.Tx, workspace st
 	return snapshot, nil
 }
 
-func queryJSONRows(ctx context.Context, tx pgx.Tx, query string, args []any, exclude []string) ([]map[string]any, error) {
+// tableExists reports whether a table is present in the current schema.
+// Presence is cached per store because tables only ever appear (migrations
+// run at startup); absence is re-checked so a fixture that migrates further
+// is seen. The search-path-relative lookup keeps isolated test schemas
+// honest.
+func (s *Store) tableExists(ctx context.Context, exec db.DBTX, table string) (bool, error) {
+	if _, ok := s.knownTables.Load(table); ok {
+		return true, nil
+	}
+	var present bool
+	if err := exec.QueryRow(ctx, `SELECT to_regclass($1) IS NOT NULL`, table).Scan(&present); err != nil {
+		return false, fmt.Errorf("check table %s: %w", table, err)
+	}
+	if present {
+		s.knownTables.Store(table, true)
+	}
+	return present, nil
+}
+
+func queryJSONRows(ctx context.Context, tx db.DBTX, query string, args []any, exclude []string) ([]map[string]any, error) {
 	rows, err := tx.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
@@ -563,7 +600,7 @@ func (s *Store) writeGenesisMarker(ctx context.Context, workspace string, wr Gen
 	if err != nil {
 		return err
 	}
-	_, err = s.log.Append(ctx, workspace, eventlog.GenesisStream, eventlog.ExpectAny, []eventlog.NewEvent{{
+	_, err = s.logDriver().Append(ctx, workspace, eventlog.GenesisStream, eventlog.ExpectAny, []eventlog.NewEvent{{
 		Kind: eventlog.GenesisCompletedKind, ActorID: "conveyor:migrate-log", ActorRole: "system", Payload: payload,
 	}})
 	return err

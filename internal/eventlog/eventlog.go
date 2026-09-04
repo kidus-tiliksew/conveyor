@@ -36,7 +36,17 @@ const (
 	// GenesisCompletedKind marks a workspace stream after an import run that
 	// wrote at least one history entry or snapshot.
 	GenesisCompletedKind = "log.genesis_completed"
+	// StateRecordedKind carries an entity's rows as they stood when a legacy
+	// transaction that touched it committed. Same payload shape as
+	// SnapshotImportedKind; projectors treat both as a state reset.
+	StateRecordedKind = "log.state_recorded"
 )
+
+// IsStateKind reports whether an event of this kind carries full entity
+// state rather than a change.
+func IsStateKind(kind string) bool {
+	return kind == SnapshotImportedKind || kind == StateRecordedKind
+}
 
 // StreamID identifies one entity's stream inside a workspace. The form is
 // "<type>/<id>"; the constructors below are the only sanctioned shapes.

@@ -66,7 +66,7 @@ func (c *Catalog) Apply(event eventlog.Event) error {
 		c.entities[event.Stream] = entity
 	}
 	entity.Head = event.Version
-	if event.Kind == eventlog.SnapshotImportedKind {
+	if eventlog.IsStateKind(event.Kind) {
 		var snapshot Snapshot
 		if err := json.Unmarshal(event.Payload, &snapshot); err != nil {
 			return err

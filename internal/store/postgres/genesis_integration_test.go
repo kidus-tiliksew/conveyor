@@ -27,6 +27,10 @@ func TestGenesisImportBuildsLogFromLegacyState(t *testing.T) {
 	if err := st.AppendEvent(ctx, core.Event{TaskID: taskA, Kind: "task.hold_changed", Payload: core.JSONPayload(map[string]any{"held": true})}); err != nil {
 		t.Fatal(err)
 	}
+	// Telemetry stays in the legacy table and must not be imported.
+	if err := st.AppendEvent(ctx, core.Event{TaskID: taskA, Kind: "work_order.lease_renewed", Payload: core.JSONPayload(map[string]any{"attempt_id": "a1"})}); err != nil {
+		t.Fatal(err)
+	}
 	documentID := "ref-" + core.NewTaskID()
 	if _, _, err := st.CreateReferenceDocument(ctx,
 		core.ReferenceDocument{ID: documentID, Name: "Genesis reference"},
@@ -41,12 +45,15 @@ func TestGenesisImportBuildsLogFromLegacyState(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	var legacyCount int
-	if err := st.pool.QueryRow(ctx, `SELECT count(*) FROM events WHERE workspace_id = $1`, workspace).Scan(&legacyCount); err != nil {
+	var legacyCount, telemetryCount int
+	if err := st.pool.QueryRow(ctx, `SELECT count(*) FROM events WHERE workspace_id = $1 AND NOT (kind = ANY($2))`, workspace, telemetryKindList()).Scan(&legacyCount); err != nil {
 		t.Fatal(err)
 	}
-	if legacyCount == 0 {
-		t.Fatal("fixture produced no legacy events")
+	if err := st.pool.QueryRow(ctx, `SELECT count(*) FROM events WHERE workspace_id = $1 AND kind = ANY($2)`, workspace, telemetryKindList()).Scan(&telemetryCount); err != nil {
+		t.Fatal(err)
+	}
+	if legacyCount == 0 || telemetryCount != 1 {
+		t.Fatalf("fixture legacy=%d telemetry=%d", legacyCount, telemetryCount)
 	}
 
 	report, err := st.ImportGenesis(ctx, GenesisOptions{Workspaces: []string{workspace}, BatchSize: 3})
@@ -69,9 +76,18 @@ func TestGenesisImportBuildsLogFromLegacyState(t *testing.T) {
 	log := st.Log()
 
 	// History landed on the task stream in legacy order, then the snapshot.
-	legacy, err := st.ListEvents(ctx, taskA)
+	allLegacy, err := st.ListEvents(ctx, taskA)
 	if err != nil {
 		t.Fatal(err)
+	}
+	var legacy []core.Event
+	for _, e := range allLegacy {
+		if !IsTelemetryKind(e.Kind) {
+			legacy = append(legacy, e)
+		}
+	}
+	if len(legacy) != len(allLegacy)-1 {
+		t.Fatalf("expected exactly one telemetry event on task A, legacy=%d all=%d", len(legacy), len(allLegacy))
 	}
 	streamA, err := log.Read(ctx, workspace, eventlog.TaskStream(taskA), 0, 0)
 	if err != nil {
@@ -152,8 +168,9 @@ func TestGenesisImportBuildsLogFromLegacyState(t *testing.T) {
 		t.Fatalf("second run appended %d events", len(tailAfter)-len(tailBefore))
 	}
 
-	// A legacy write after the import is mirrored live; the next run skips
-	// it as history and re-snapshots only the entity that changed.
+	// A legacy write after the import is mirrored live and the bridge
+	// records the resulting state at commit, so the next run has nothing to
+	// import and nothing to re-snapshot.
 	if err := st.AppendEvent(ctx, core.Event{TaskID: taskB, Kind: "task.hold_changed", Payload: core.JSONPayload(map[string]any{"held": true})}); err != nil {
 		t.Fatal(err)
 	}
@@ -168,12 +185,36 @@ func TestGenesisImportBuildsLogFromLegacyState(t *testing.T) {
 	if wr.HistoryImported != 0 {
 		t.Fatalf("live-mirrored events re-imported: %+v", wr)
 	}
-	if wr.SnapshotsWritten["task"] != 1 || wr.SnapshotsWritten["reference_document"] != 0 {
-		t.Fatalf("third run snapshots=%v (want exactly the changed task)", wr.SnapshotsWritten)
+	if len(wr.SnapshotsWritten) != 0 {
+		t.Fatalf("third run snapshots=%v (bridge should have kept every entity current)", wr.SnapshotsWritten)
 	}
 	streamB, _ := log.Read(ctx, workspace, eventlog.TaskStream(taskB), 0, 0)
-	if streamB[len(streamB)-1].Kind != eventlog.SnapshotImportedKind || streamB[len(streamB)-2].Kind == eventlog.SnapshotImportedKind {
-		t.Fatalf("task B stream tail=%s,%s", streamB[len(streamB)-2].Kind, streamB[len(streamB)-1].Kind)
+	if streamB[len(streamB)-1].Kind != eventlog.StateRecordedKind {
+		t.Fatalf("task B head=%s, want recorded state", streamB[len(streamB)-1].Kind)
+	}
+	var sawImported, sawHold bool
+	for _, e := range streamB {
+		switch e.Kind {
+		case eventlog.SnapshotImportedKind:
+			sawImported = true
+		case "task.hold_changed":
+			sawHold = sawImported // the live write must come after the import
+		}
+	}
+	if !sawImported || !sawHold {
+		t.Fatalf("task B stream lacks import-then-live ordering: imported=%t hold=%t", sawImported, sawHold)
+	}
+
+	// A write behind the store is the one case the import must repair.
+	if _, err := st.pool.Exec(ctx, `UPDATE tasks SET title = 'edited behind the store' WHERE workspace_id = $1 AND id = $2`, workspace, taskB); err != nil {
+		t.Fatal(err)
+	}
+	fourth, err := st.ImportGenesis(ctx, GenesisOptions{Workspaces: []string{workspace}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wr = fourth.Workspaces[0]; wr.SnapshotsWritten["task"] != 1 || len(wr.SnapshotsWritten) != 1 {
+		t.Fatalf("fourth run snapshots=%v (want exactly the edited task)", wr.SnapshotsWritten)
 	}
 }
 

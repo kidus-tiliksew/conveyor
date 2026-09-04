@@ -273,7 +273,7 @@ func (s *Store) RenewWorkerClaimCommand(ctx context.Context, taskLease taskops.T
 }
 
 func (s *Store) RecordWorkOrderContinuation(ctx context.Context, workOrderID string, claim core.WorkOrderClaimIdentity, continuation core.WorkOrderContinuation) (core.WorkOrder, error) {
-	tx, err := s.pool.Begin(ctx)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return core.WorkOrder{}, err
 	}
@@ -326,7 +326,7 @@ func (s *Store) RecordWorkOrderContinuation(ctx context.Context, workOrderID str
 }
 
 func (s *Store) ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID string, claim core.WorkOrderClaimIdentity, release core.WorkOrderRelease) (core.WorkOrder, error) {
-	tx, err := s.pool.Begin(ctx)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return core.WorkOrder{}, err
 	}
@@ -491,7 +491,7 @@ func (s *Store) RequestPlanRevisionCommand(ctx context.Context, taskLease taskop
 	if rationale == "" {
 		return store.PlanRevisionRequestResult{}, fmt.Errorf("rationale is required")
 	}
-	tx, err := s.pool.Begin(ctx)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return store.PlanRevisionRequestResult{}, err
 	}
@@ -590,7 +590,7 @@ func (s *Store) RequestPlanRevisionCommand(ctx context.Context, taskLease taskop
 }
 
 func (s *Store) CancelPlanRevisionWorkOrderCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID, attemptID string) (core.WorkOrder, error) {
-	tx, err := s.pool.Begin(ctx)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return core.WorkOrder{}, err
 	}
@@ -654,7 +654,7 @@ func (s *Store) CancelPlanRevisionWorkOrderCommand(ctx context.Context, taskLeas
 }
 
 func (s *Store) RecordWorkOrderAttemptCheckpoint(ctx context.Context, workOrderID, workerID string, checkpoint core.WorkOrderAttemptCheckpoint) (bool, error) {
-	tx, err := s.pool.Begin(ctx)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return false, err
 	}
