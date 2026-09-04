@@ -65,8 +65,9 @@ const (
 	ExpectAny Version = ^Version(0)
 )
 
-// NewEvent is what a writer appends. Drivers stamp At when it is zero and
-// normalise a nil Payload to an empty JSON object.
+// NewEvent is what a writer appends. Drivers stamp At when it is zero,
+// keep it to microseconds, and normalise a nil Payload to an empty JSON
+// object.
 type NewEvent struct {
 	Kind      string
 	ActorID   string
@@ -148,12 +149,14 @@ func ValidateAppend(workspace string, stream StreamID, events []NewEvent) error 
 	return nil
 }
 
-// Normalize fills the defaults drivers apply before storing an event.
+// Normalize fills the defaults drivers apply before storing an event. At is
+// kept to microseconds, the precision every supported engine stores, so a
+// reader sees the same instant the writer compared against.
 func Normalize(event NewEvent, now time.Time) NewEvent {
 	if event.At.IsZero() {
 		event.At = now
 	}
-	event.At = event.At.UTC()
+	event.At = event.At.UTC().Truncate(time.Microsecond)
 	if len(event.Payload) == 0 {
 		event.Payload = json.RawMessage(`{}`)
 	}

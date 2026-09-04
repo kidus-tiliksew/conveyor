@@ -55,6 +55,31 @@ func TestEnqueueIsUniqueWhileActiveAndReopensAfterCompletion(t *testing.T) {
 	}
 }
 
+// TestEnqueueIsAvailableWhateverTheClockResolution: an enqueue is immediate
+// however the engine rounds the event time. Linux clocks carry
+// nanoseconds and Postgres stores microseconds; a schedule time that
+// out-resolves the stored event time must not read as "later".
+func TestEnqueueIsAvailableWhateverTheClockResolution(t *testing.T) {
+	ctx := context.Background()
+	log := memlog.New()
+	now := time.Date(2026, 9, 4, 18, 39, 4, 24384203, time.UTC)
+	if _, err := Enqueue(ctx, log, "ws", "demo", "k1", demoArgs{Key: "k1"}, 3, now); err != nil {
+		t.Fatal(err)
+	}
+	job, err := Load(ctx, log, "ws", StreamFor("demo", "k1"))
+	if err != nil || job.State != StateAvailable || !job.ScheduledAt.IsZero() || !job.Claimable(now) {
+		t.Fatalf("job=%+v err=%v, want available now", job, err)
+	}
+	// A row written with a nanosecond schedule time equal to the event
+	// time folds the same way once the event time has been rounded.
+	stream := StreamFor("demo", "k2")
+	appendKind(t, log, "ws", stream, 0, KindEnqueued, enqueuedPayload{Kind: "demo", Key: "k2", Args: []byte(`{}`), MaxAttempts: 3, ScheduledAt: now})
+	job, err = Load(ctx, log, "ws", stream)
+	if err != nil || job.State != StateAvailable {
+		t.Fatalf("nanosecond schedule job=%+v err=%v, want available", job, err)
+	}
+}
+
 func TestFoldTracksAttemptsSnoozeRescueAndDiscard(t *testing.T) {
 	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
 	stream := StreamFor("demo", "k")

@@ -209,7 +209,7 @@ func testNormalisation(t *testing.T, s eventlog.Store) {
 	ctx := context.Background()
 	w := ws(t)
 	stream := eventlog.StreamID("task/norm")
-	fixed := time.Date(2026, 9, 4, 12, 0, 0, 0, time.FixedZone("x", 3600))
+	fixed := time.Date(2026, 9, 4, 12, 0, 0, 123456789, time.FixedZone("x", 3600))
 	before := time.Now().Add(-time.Second)
 	if _, err := s.Append(ctx, w, stream, eventlog.ExpectNew, []eventlog.NewEvent{
 		{Kind: "stamped", ActorID: "a", ActorRole: "human"},
@@ -227,8 +227,8 @@ func testNormalisation(t *testing.T, s eventlog.Store) {
 	if string(events[0].Payload) != `{}` {
 		t.Fatalf("nil payload stored as %q", events[0].Payload)
 	}
-	if !events[1].At.Equal(fixed) {
-		t.Fatalf("At not preserved: %v vs %v", events[1].At, fixed)
+	if !events[1].At.Equal(fixed.Truncate(time.Microsecond)) {
+		t.Fatalf("At not kept to the microsecond: %v vs %v", events[1].At, fixed)
 	}
 	if events[1].At.Location() != time.UTC {
 		t.Fatalf("At not UTC: %v", events[1].At.Location())

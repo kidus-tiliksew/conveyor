@@ -112,7 +112,8 @@ type enqueuedPayload struct {
 	Key         string          `json:"key"`
 	Args        json.RawMessage `json:"args"`
 	MaxAttempts int             `json:"max_attempts"`
-	ScheduledAt time.Time       `json:"scheduled_at"`
+	// ScheduledAt delays the first run; zero means now.
+	ScheduledAt time.Time `json:"scheduled_at,omitempty"`
 }
 
 type claimedPayload struct {
@@ -161,7 +162,7 @@ func (j *Job) Apply(event eventlog.Event) error {
 		j.Attempt = 0
 		j.State = StateAvailable
 		j.ScheduledAt = p.ScheduledAt
-		if !p.ScheduledAt.IsZero() && p.ScheduledAt.After(event.At) {
+		if !p.ScheduledAt.IsZero() && p.ScheduledAt.Truncate(time.Microsecond).After(event.At) {
 			j.State = StateScheduled
 		}
 		j.ClaimedAt, j.ClaimedBy, j.LastError = time.Time{}, "", ""
@@ -242,7 +243,10 @@ func Enqueue(ctx context.Context, log eventlog.Store, workspace, kind, key strin
 	if job.Active() {
 		return false, nil
 	}
-	payload, err := json.Marshal(enqueuedPayload{Kind: kind, Key: key, Args: encoded, MaxAttempts: maxAttempts, ScheduledAt: now.UTC()})
+	// An enqueue is immediate; ScheduledAt is only ever set by a retry,
+	// snooze, or rescue. Writing now here would make the job's state depend
+	// on how the engine rounds the event time.
+	payload, err := json.Marshal(enqueuedPayload{Kind: kind, Key: key, Args: encoded, MaxAttempts: maxAttempts})
 	if err != nil {
 		return false, err
 	}
