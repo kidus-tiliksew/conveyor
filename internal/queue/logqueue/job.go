@@ -130,82 +130,87 @@ type outcomePayload struct {
 
 // Fold derives a job from its stream's events, in version order.
 func Fold(workspace string, stream eventlog.StreamID, events []eventlog.Event) (Job, error) {
-	job := Job{Workspace: workspace, Stream: stream}
-	kind, key, _ := strings.Cut(stream.EntityID(), ":")
-	job.Kind, job.Key = kind, key
+	job := NewJob(workspace, stream)
 	for _, event := range events {
-		job.Head = event.Version
-		switch event.Kind {
-		case KindEnqueued:
-			var p enqueuedPayload
-			if err := json.Unmarshal(event.Payload, &p); err != nil {
-				return job, fmt.Errorf("logqueue: %s@%d: %w", stream, event.Version, err)
-			}
-			job.Kind, job.Key, job.Args = p.Kind, p.Key, p.Args
-			job.MaxAttempts = p.MaxAttempts
-			job.Attempt = 0
-			job.State = StateAvailable
-			job.ScheduledAt = p.ScheduledAt
-			if !p.ScheduledAt.IsZero() && p.ScheduledAt.After(event.At) {
-				job.State = StateScheduled
-			}
-			job.ClaimedAt, job.ClaimedBy, job.LastError = time.Time{}, "", ""
-			job.EnqueuedAt = event.Position
-			job.Generation++
-		case KindClaimed:
-			var p claimedPayload
-			if err := json.Unmarshal(event.Payload, &p); err != nil {
-				return job, fmt.Errorf("logqueue: %s@%d: %w", stream, event.Version, err)
-			}
-			job.State = StateRunning
-			job.Attempt = p.Attempt
-			job.ClaimedAt, job.ClaimedBy = p.ClaimedAt, p.Worker
-		case KindCompleted:
-			job.State = StateCompleted
-			job.ClaimedBy = ""
-		case KindFailed:
-			var p outcomePayload
-			if err := json.Unmarshal(event.Payload, &p); err != nil {
-				return job, fmt.Errorf("logqueue: %s@%d: %w", stream, event.Version, err)
-			}
-			job.LastError = p.Error
-			job.State = StateScheduled
-			job.ScheduledAt = p.NextAt
-			job.ClaimedBy = ""
-		case KindSnoozed:
-			var p outcomePayload
-			if err := json.Unmarshal(event.Payload, &p); err != nil {
-				return job, fmt.Errorf("logqueue: %s@%d: %w", stream, event.Version, err)
-			}
-			// A snooze is not an execution: hand the attempt back.
-			if job.Attempt > 0 {
-				job.Attempt--
-			}
-			job.State = StateScheduled
-			job.ScheduledAt = p.Until
-			job.ClaimedBy = ""
-		case KindRescued:
-			var p outcomePayload
-			if err := json.Unmarshal(event.Payload, &p); err != nil {
-				return job, fmt.Errorf("logqueue: %s@%d: %w", stream, event.Version, err)
-			}
-			job.LastError = p.Error
-			job.State = StateScheduled
-			job.ScheduledAt = p.NextAt
-			job.ClaimedBy = ""
-		case KindDiscarded:
-			var p outcomePayload
-			if err := json.Unmarshal(event.Payload, &p); err != nil {
-				return job, fmt.Errorf("logqueue: %s@%d: %w", stream, event.Version, err)
-			}
-			if p.Error != "" {
-				job.LastError = p.Error
-			}
-			job.State = StateDiscarded
-			job.ClaimedBy = ""
+		if err := job.Apply(event); err != nil {
+			return job, err
 		}
 	}
 	return job, nil
+}
+
+// NewJob is the empty job for a stream, before any event.
+func NewJob(workspace string, stream eventlog.StreamID) Job {
+	job := Job{Workspace: workspace, Stream: stream}
+	job.Kind, job.Key, _ = strings.Cut(stream.EntityID(), ":")
+	return job
+}
+
+// Apply folds one more event of the job's stream into it. Fold and the
+// runtime's tail both go through here, so there is one transition table.
+func (j *Job) Apply(event eventlog.Event) error {
+	j.Head = event.Version
+	switch event.Kind {
+	case KindEnqueued:
+		var p enqueuedPayload
+		if err := json.Unmarshal(event.Payload, &p); err != nil {
+			return fmt.Errorf("logqueue: %s@%d: %w", j.Stream, event.Version, err)
+		}
+		j.Kind, j.Key, j.Args = p.Kind, p.Key, p.Args
+		j.MaxAttempts = p.MaxAttempts
+		j.Attempt = 0
+		j.State = StateAvailable
+		j.ScheduledAt = p.ScheduledAt
+		if !p.ScheduledAt.IsZero() && p.ScheduledAt.After(event.At) {
+			j.State = StateScheduled
+		}
+		j.ClaimedAt, j.ClaimedBy, j.LastError = time.Time{}, "", ""
+		j.EnqueuedAt = event.Position
+		j.Generation++
+	case KindClaimed:
+		var p claimedPayload
+		if err := json.Unmarshal(event.Payload, &p); err != nil {
+			return fmt.Errorf("logqueue: %s@%d: %w", j.Stream, event.Version, err)
+		}
+		j.State = StateRunning
+		j.Attempt = p.Attempt
+		j.ClaimedAt, j.ClaimedBy = p.ClaimedAt, p.Worker
+	case KindCompleted:
+		j.State = StateCompleted
+		j.ClaimedBy = ""
+	case KindFailed, KindRescued:
+		var p outcomePayload
+		if err := json.Unmarshal(event.Payload, &p); err != nil {
+			return fmt.Errorf("logqueue: %s@%d: %w", j.Stream, event.Version, err)
+		}
+		j.LastError = p.Error
+		j.State = StateScheduled
+		j.ScheduledAt = p.NextAt
+		j.ClaimedBy = ""
+	case KindSnoozed:
+		var p outcomePayload
+		if err := json.Unmarshal(event.Payload, &p); err != nil {
+			return fmt.Errorf("logqueue: %s@%d: %w", j.Stream, event.Version, err)
+		}
+		// A snooze is not an execution: hand the attempt back.
+		if j.Attempt > 0 {
+			j.Attempt--
+		}
+		j.State = StateScheduled
+		j.ScheduledAt = p.Until
+		j.ClaimedBy = ""
+	case KindDiscarded:
+		var p outcomePayload
+		if err := json.Unmarshal(event.Payload, &p); err != nil {
+			return fmt.Errorf("logqueue: %s@%d: %w", j.Stream, event.Version, err)
+		}
+		if p.Error != "" {
+			j.LastError = p.Error
+		}
+		j.State = StateDiscarded
+		j.ClaimedBy = ""
+	}
+	return nil
 }
 
 // Load reads and folds one job stream.

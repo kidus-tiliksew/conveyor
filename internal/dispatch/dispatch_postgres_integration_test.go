@@ -61,7 +61,7 @@ func TestWorkspaceForgeOperationFailsClosedWithoutTokenIntegration(t *testing.T)
 	workspace := "forge-fail-closed-" + core.NewTaskID()
 	cfg := dispatchRaceConfig(workspace)
 	actorCtx := store.WithActor(ctx, store.Actor{ID: "test", Role: core.ActorHuman})
-	if _, err = st.CreateWorkspace(actorCtx, workspace, "Forge fail closed", cfg); err != nil {
+	if _, err = st.CreateWorkspace(actorCtx, workspace, "Forge fail closed "+workspace, cfg); err != nil {
 		t.Fatal(err)
 	}
 	dispatcher := New(st, cfg, nil)

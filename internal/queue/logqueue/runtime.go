@@ -4,9 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -276,16 +274,14 @@ func (rt *Runtime) catchUp(ctx context.Context, ws *workspace) error {
 			}
 			job, ok := ws.jobs[event.Stream]
 			if !ok {
-				job = &Job{Workspace: ws.id, Stream: event.Stream}
-				job.Kind, job.Key, _ = strings.Cut(event.Stream.EntityID(), ":")
+				fresh := NewJob(ws.id, event.Stream)
+				job = &fresh
 				ws.jobs[event.Stream] = job
 			}
-			folded, err := Fold(ws.id, event.Stream, []eventlog.Event{event})
-			if err != nil {
+			if err := job.Apply(event); err != nil {
 				rt.mu.Unlock()
 				return err
 			}
-			applyEvent(job, event, folded)
 		}
 		rt.mu.Unlock()
 		rt.wakeWorkers(ws)
@@ -295,85 +291,11 @@ func (rt *Runtime) catchUp(ctx context.Context, ws *workspace) error {
 	}
 }
 
-// applyEvent folds one event into an already-folded job. Fold is written
-// over a whole stream, so this re-derives the single-event effect on top
-// of the job's current state.
-func applyEvent(job *Job, event eventlog.Event, single Job) {
-	job.Head = event.Version
-	switch event.Kind {
-	case KindEnqueued:
-		job.Kind, job.Key, job.Args = single.Kind, single.Key, single.Args
-		job.MaxAttempts = single.MaxAttempts
-		job.Attempt = 0
-		job.State = single.State
-		job.ScheduledAt = single.ScheduledAt
-		job.ClaimedAt, job.ClaimedBy, job.LastError = time.Time{}, "", ""
-		job.EnqueuedAt = event.Position
-		job.Generation++
-	case KindClaimed:
-		job.State = StateRunning
-		job.Attempt = single.Attempt
-		job.ClaimedAt, job.ClaimedBy = single.ClaimedAt, single.ClaimedBy
-	case KindCompleted:
-		job.State = StateCompleted
-		job.ClaimedBy = ""
-	case KindFailed, KindRescued:
-		job.LastError = single.LastError
-		job.State = StateScheduled
-		job.ScheduledAt = single.ScheduledAt
-		job.ClaimedBy = ""
-	case KindSnoozed:
-		if job.Attempt > 0 {
-			job.Attempt--
-		}
-		job.State = StateScheduled
-		job.ScheduledAt = single.ScheduledAt
-		job.ClaimedBy = ""
-	case KindDiscarded:
-		if single.LastError != "" {
-			job.LastError = single.LastError
-		}
-		job.State = StateDiscarded
-		job.ClaimedBy = ""
-	}
-}
-
 func (rt *Runtime) wakeWorkers(ws *workspace) {
 	select {
 	case ws.wake <- struct{}{}:
 	default:
 	}
-}
-
-// rescue reschedules or discards jobs whose claim is older than the
-// threshold: their worker is presumed dead. The attempt counts.
-func (rt *Runtime) rescue(ctx context.Context, ws *workspace) error {
-	if rt.opts.RescueStuckAfter <= 0 {
-		return nil
-	}
-	now := rt.opts.Now().UTC()
-	rt.mu.Lock()
-	var stuck []Job
-	for _, job := range ws.jobs {
-		if job.State == StateRunning && !job.ClaimedAt.IsZero() && now.Sub(job.ClaimedAt) > rt.opts.RescueStuckAfter && !ws.running[job.Kind+"|"+string(job.Stream)] {
-			stuck = append(stuck, *job)
-		}
-	}
-	rt.mu.Unlock()
-	for _, job := range stuck {
-		payload := outcomePayload{Attempt: job.Attempt, Error: "rescued: claim exceeded " + rt.opts.RescueStuckAfter.String()}
-		kind := KindRescued
-		if job.Attempt >= job.MaxAttempts {
-			kind = KindDiscarded
-		} else {
-			payload.NextAt = now.Add(rt.retryDelay(job.Kind, job.Attempt))
-		}
-		if err := rt.appendOutcome(ctx, job, kind, payload, now); err != nil && !eventlog.IsVersionConflict(err) {
-			return err
-		}
-		rt.opts.Logf("logqueue: rescued %s attempt %d/%d as %s", job.ID(), job.Attempt, job.MaxAttempts, kind)
-	}
-	return nil
 }
 
 func (rt *Runtime) retryDelay(kind string, attempt int) time.Duration {
@@ -529,35 +451,6 @@ func (rt *Runtime) refresh(ws *workspace, stream eventlog.StreamID) {
 		delete(ws.jobs, stream)
 	}
 	rt.mu.Unlock()
-}
-
-// clockLoop invokes the order clock handler on a ticker, once at start.
-func (rt *Runtime) clockLoop(ws *workspace) {
-	defer rt.wg.Done()
-	reg, ok := rt.registration(rt.clockKind)
-	if !ok {
-		return
-	}
-	args, _ := json.Marshal(queue.OrderClockArgs{WorkspaceID: ws.id})
-	tick := 0
-	fire := func() {
-		tick++
-		job := queue.Job{ID: fmt.Sprintf("clock/%s@%d", ws.id, tick), Kind: rt.clockKind, Attempt: 1, MaxAttempts: 1, Args: args}
-		if err := reg.Handle(rt.runCtx, job); err != nil && !errors.Is(err, context.Canceled) {
-			rt.opts.Logf("logqueue: order clock %s: %v", ws.id, err)
-		}
-	}
-	fire()
-	ticker := time.NewTicker(rt.opts.ClockInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-rt.loopCtx.Done():
-			return
-		case <-ticker.C:
-			fire()
-		}
-	}
 }
 
 // Snapshot returns the runtime's view of a workspace's jobs, for tests.
