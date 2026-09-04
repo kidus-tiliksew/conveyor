@@ -83,7 +83,7 @@ func TestRiverShutdownInterruptionPreservesRowAndAttemptIntegration(t *testing.T
 	blocking := &blockingDispatchStore{Store: st, taskID: task.ID, started: make(chan struct{})}
 	dispatcher := New(blocking, cfg, nil)
 	marker := &ShutdownMarker{}
-	client, err := testRuntime(t, st.Pool(), dispatcher, marker, []string{workspace}, map[string]*config.Config{workspace: cfg})
+	client, err := testRuntime(t, st.Pool(), dispatcher, marker, []string{workspace}, map[string]*config.Config{workspace: cfg}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +142,7 @@ func TestRiverClientConvergesLateWorkspaceQueuesIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	dispatcher := New(st, dispatchRaceConfig(workspaceA), nil)
-	client, err := testRuntime(t, st.Pool(), dispatcher, &ShutdownMarker{}, []string{workspaceA}, map[string]*config.Config{workspaceA: dispatchRaceConfig(workspaceA)})
+	client, err := testRuntime(t, st.Pool(), dispatcher, &ShutdownMarker{}, []string{workspaceA}, map[string]*config.Config{workspaceA: dispatchRaceConfig(workspaceA)}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -409,7 +409,7 @@ func TestRiverDispatchCompletesBlueprintAnchorIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	dispatcher := New(st, cfg, nil)
-	testWorker := rivertest.NewWorker(t, riverpgxv5.New(nil), &river.Config{ID: "blueprint-anchor"}, riverqueue.WorkerFor[queueargs.DispatchTaskArgs](dispatchRegistration(dispatcher)))
+	testWorker := rivertest.NewWorker(t, riverpgxv5.New(nil), &river.Config{ID: "blueprint-anchor"}, riverqueue.WorkerFor[queueargs.DispatchTaskArgs](dispatchRegistration(dispatcher), nil))
 	result, err := testWorker.Work(ctx, t, tx,
 		queueargs.DispatchTaskArgs{WorkspaceID: workspace, TaskID: parent.ID},
 		&river.InsertOpts{MaxAttempts: queueargs.DispatchTaskMaxAttempts})
@@ -468,7 +468,7 @@ func TestRiverDispatchPersistsFiveRetriesThenParksIntegration(t *testing.T) {
 
 	wantFailure := errors.New("forced dispatch failure")
 	dispatcher := New(&failingStageOrderStore{Store: st, err: wantFailure}, cfg, nil)
-	testWorker := rivertest.NewWorker(t, riverpgxv5.New(nil), &river.Config{ID: "dispatch-retry-policy"}, riverqueue.WorkerFor[queueargs.DispatchTaskArgs](dispatchRegistration(dispatcher)))
+	testWorker := rivertest.NewWorker(t, riverpgxv5.New(nil), &river.Config{ID: "dispatch-retry-policy"}, riverqueue.WorkerFor[queueargs.DispatchTaskArgs](dispatchRegistration(dispatcher), nil))
 	args := queueargs.DispatchTaskArgs{WorkspaceID: workspace, TaskID: task.ID}
 	opts := &river.InsertOpts{MaxAttempts: queueargs.DispatchTaskMaxAttempts}
 	wants := []time.Duration{10 * time.Second, 20 * time.Second, 40 * time.Second, 80 * time.Second, 160 * time.Second}

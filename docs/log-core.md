@@ -115,6 +115,22 @@ order clock is a process-local ticker that writes nothing: a tick is not a
 fact, and its handler is idempotent under concurrent replicas. The store
 switches drivers with one call; the daemon does not switch yet.
 
+**Shadow mode.** `CONVEYOR_QUEUE_SHADOW=on` runs the log queue in
+observe-only mode beside River. Two things happen. The log's job streams
+are kept truthful while River executes: the store enqueues into both in the
+same transaction, and River's adapter mirrors every claim and outcome onto
+the stream, so at cutover the log queue inherits real state rather than a
+backlog it believes is still waiting. And at every claim the log queue's own
+scheduler is asked what it would have picked. Verdicts: `agree`; `order`,
+the job was claimable but not the log's first choice (two schedulers with
+different tie-breaks); `not_claimable`, the log had the job but would not
+run it yet, usually a retry time that differs; and `unknown`, the log had no
+active job for the key, which means a gap in dual-enqueue or a job enqueued
+before shadowing began. Every disagreement is logged as it happens and a
+summary per workspace and kind every five minutes. The phase 3 soak gate is
+a summary with zero `unknown`, zero `not_claimable`, and zero mirror
+errors; `order` counts are reported but do not block.
+
 ## Operating it
 
 1. Deploy a binary that includes the log core. On startup it creates the log
@@ -123,6 +139,10 @@ switches drivers with one call; the daemon does not switch yet.
    It is safe with the daemon running and safe to repeat.
 3. Run `conveyor log-parity --workspace-id <ws>` and keep running it during
    the soak. Every drifted entity lists the kinds that moved it.
+4. Set `CONVEYOR_QUEUE_SHADOW=on` in the daemon's environment and restart
+   it. Watch the `queue shadow:` summaries in the daemon log; the soak is
+   over when they show no `unknown`, `not_claimable`, or mirror errors
+   across a full cycle of real dispatches, reviews, and publications.
 
 Rollback of everything above is dropping the four tables. No legacy table
 changed shape.
@@ -153,8 +173,8 @@ replays the demo log in 3.3 s, and parity is still clean everywhere.
 - Serve any read from the log. Phase 2 continues with projectors per entity
   family, driven by the parity report's unfolded kinds.
 - Run the log-backed queue in production. Both drivers exist behind the
-  port; shadow mode, comparing the log queue's claim decisions with
-  River's on live traffic, is the rest of phase 3.
+  port and shadow mode compares them; switching a workspace's driver is the
+  phase 4 flag.
 - Cut a workspace over. Phase 4 adds a per-workspace flag.
 - Run on SingleStore or SQLite. Phase 6 adds drivers against the conformance
   suite; the contract needs only a unique key and a transaction.

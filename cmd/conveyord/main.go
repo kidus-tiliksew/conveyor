@@ -27,6 +27,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/monitor"
 	"github.com/kidus-tiliksew/conveyor/internal/pack"
 	"github.com/kidus-tiliksew/conveyor/internal/planning"
+	"github.com/kidus-tiliksew/conveyor/internal/queue/logqueue"
 	"github.com/kidus-tiliksew/conveyor/internal/queue/riverqueue"
 	"github.com/kidus-tiliksew/conveyor/internal/releaseinfo"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
@@ -176,7 +177,35 @@ func main() {
 		}
 		log.Printf("River stuck-job rescue threshold %s", rescueAfter)
 		riverShutdown := &dispatch.ShutdownMarker{}
-		runtime, clientErr := riverqueue.NewRuntime(pgStore.Pool(), riverqueue.Options{RescueStuckAfter: rescueAfter, Workspaces: workspaceIDs})
+		// CONVEYOR_QUEUE_SHADOW=on runs the log queue in observe-only mode
+		// beside River: every enqueue, claim, and outcome is mirrored onto
+		// the log's job streams, and each River claim is compared with what
+		// the log queue would have picked. A summary is logged every five
+		// minutes and every disagreement as it happens (log-core plan, 3.3).
+		var queueShadow *logqueue.Shadow
+		if queueShadowEnabled(os.Getenv) {
+			queueShadow = logqueue.NewShadow(pgStore.Log(), logqueue.ShadowOptions{Workspaces: workspaceIDs, Logf: log.Printf})
+			if shadowErr := queueShadow.Start(context.Background()); shadowErr != nil {
+				log.Fatalf("start queue shadow: %v", shadowErr)
+			}
+			pgStore.EnableQueueShadow(log.Printf)
+			go func() {
+				ticker := time.NewTicker(5 * time.Minute)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					case <-ticker.C:
+						for _, line := range queueShadow.Summary() {
+							log.Print(line)
+						}
+					}
+				}
+			}()
+			log.Printf("queue shadow enabled: log queue observing River")
+		}
+		runtime, clientErr := riverqueue.NewRuntime(pgStore.Pool(), riverqueue.Options{RescueStuckAfter: rescueAfter, Workspaces: workspaceIDs, Shadow: queueShadow})
 		if clientErr != nil {
 			log.Fatalf("create queue runtime: %v", clientErr)
 		}
@@ -193,6 +222,11 @@ func main() {
 			}
 			if configErr = dispatch.ValidateRiverRescueStuckJobsAfter(workspace, workspaceConfig, rescueAfter); configErr != nil {
 				return configErr
+			}
+			if queueShadow != nil {
+				if shadowErr := queueShadow.EnsureWorkspace(workspace); shadowErr != nil {
+					return shadowErr
+				}
 			}
 			return runtime.EnsureWorkspace(workspace)
 		}, log.Printf)

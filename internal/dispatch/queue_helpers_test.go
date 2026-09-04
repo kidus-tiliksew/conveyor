@@ -9,6 +9,7 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	queueargs "github.com/kidus-tiliksew/conveyor/internal/queue"
+	"github.com/kidus-tiliksew/conveyor/internal/queue/logqueue"
 	"github.com/kidus-tiliksew/conveyor/internal/queue/riverqueue"
 )
 
@@ -35,13 +36,13 @@ func dispatchRegistration(d *Dispatcher) queueargs.Registration {
 
 // testRuntime builds the River runtime the daemon would, with every
 // registration bound, for integration tests that need real workers.
-func testRuntime(t *testing.T, pool *pgxpool.Pool, d *Dispatcher, shutdown *ShutdownMarker, workspaces []string, configs map[string]*config.Config) (*riverqueue.Runtime, error) {
+func testRuntime(t *testing.T, pool *pgxpool.Pool, d *Dispatcher, shutdown *ShutdownMarker, workspaces []string, configs map[string]*config.Config, shadow *logqueue.Shadow) (*riverqueue.Runtime, error) {
 	t.Helper()
 	rescueAfter, err := RiverRescueStuckJobsAfter(configs)
 	if err != nil {
 		return nil, err
 	}
-	runtime, err := riverqueue.NewRuntime(pool, riverqueue.Options{RescueStuckAfter: rescueAfter, Workspaces: workspaces})
+	runtime, err := riverqueue.NewRuntime(pool, riverqueue.Options{RescueStuckAfter: rescueAfter, Workspaces: workspaces, Shadow: shadow})
 	if err != nil {
 		return nil, err
 	}

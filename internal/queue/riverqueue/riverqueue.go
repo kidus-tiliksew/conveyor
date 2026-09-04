@@ -21,6 +21,7 @@ import (
 	"github.com/riverqueue/river/rivertype"
 
 	queueargs "github.com/kidus-tiliksew/conveyor/internal/queue"
+	"github.com/kidus-tiliksew/conveyor/internal/queue/logqueue"
 )
 
 // Migrate applies River's bundled schema. The store calls it under its
@@ -104,6 +105,9 @@ type Options struct {
 	// Workspaces are registered before the client is built so their queues
 	// and clocks exist from the first poll.
 	Workspaces []string
+	// Shadow, when set, is told of every claim and outcome so the log
+	// queue can mirror River's decisions and compare its own.
+	Shadow *logqueue.Shadow
 }
 
 // Runtime is a queue.Runtime on River.
@@ -111,6 +115,7 @@ type Runtime struct {
 	client *river.Client[pgx.Tx]
 	mu     sync.RWMutex
 	regs   map[string]queueargs.Registration
+	shadow *logqueue.Shadow
 }
 
 var _ queueargs.Runtime = (*Runtime)(nil)
@@ -119,7 +124,7 @@ var _ queueargs.Runtime = (*Runtime)(nil)
 // port knows. Handlers arrive through Register; a job whose kind has no
 // registration fails loudly rather than silently completing.
 func NewRuntime(pool *pgxpool.Pool, opts Options) (*Runtime, error) {
-	rt := &Runtime{regs: map[string]queueargs.Registration{}}
+	rt := &Runtime{regs: map[string]queueargs.Registration{}, shadow: opts.Shadow}
 	workers := river.NewWorkers()
 	river.AddWorker(workers, newAdapter[queueargs.DispatchTaskArgs](rt))
 	river.AddWorker(workers, newAdapter[queueargs.ReviewPublicationArgs](rt))
@@ -212,9 +217,9 @@ func newAdapter[T river.JobArgs](rt *Runtime) *adapter[T] {
 }
 
 // WorkerFor returns a River worker for one registration, for tests that
-// drive a job through rivertest without a runtime.
-func WorkerFor[T river.JobArgs](registration queueargs.Registration) river.Worker[T] {
-	rt := &Runtime{regs: map[string]queueargs.Registration{registration.Kind: registration}}
+// drive a job through rivertest without a runtime. shadow may be nil.
+func WorkerFor[T river.JobArgs](registration queueargs.Registration, shadow *logqueue.Shadow) river.Worker[T] {
+	rt := &Runtime{regs: map[string]queueargs.Registration{registration.Kind: registration}, shadow: shadow}
 	return newAdapter[T](rt)
 }
 
@@ -223,10 +228,27 @@ func (a *adapter[T]) Work(ctx context.Context, job *river.Job[T]) error {
 	if !ok {
 		return fmt.Errorf("riverqueue: no handler registered for kind %q", job.Kind)
 	}
+	// The shadow sees the claim before the handler runs and the outcome
+	// after, on a context that outlives a cancelled job so the mirror is
+	// never left with an open claim.
+	workspace, key, shadowed := "", "", false
+	if a.rt.shadow != nil {
+		workspace, key, shadowed = queueargs.Identity(job.Kind, job.EncodedArgs)
+		if shadowed {
+			a.rt.shadow.Claimed(context.WithoutCancel(ctx), workspace, job.Kind, key, job.EncodedArgs, job.Attempt, job.MaxAttempts)
+		}
+	}
 	err := reg.Handle(ctx, queueargs.Job{
 		ID: strconv.FormatInt(job.ID, 10), Kind: job.Kind,
 		Attempt: job.Attempt, MaxAttempts: job.MaxAttempts, Args: job.EncodedArgs,
 	})
+	if shadowed {
+		var retryAt time.Time
+		if err != nil && reg.RetryDelay != nil {
+			retryAt = time.Now().UTC().Add(reg.RetryDelay(job.Attempt))
+		}
+		a.rt.shadow.Outcome(context.WithoutCancel(ctx), workspace, job.Kind, key, job.Attempt, job.MaxAttempts, err, retryAt)
+	}
 	var snooze *queueargs.SnoozeError
 	if errors.As(err, &snooze) {
 		return river.JobSnooze(snooze.Duration)
