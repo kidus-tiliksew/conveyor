@@ -98,6 +98,23 @@ and the tests see only the port. A handler completes a job by returning
 nil, reschedules it with `queue.Snooze`, and fails it with any other error;
 the driver owns retries, rescue, and the periodic order clock.
 
+**The log-backed queue.** `internal/queue/logqueue` is the second driver
+behind both interfaces, and it needs nothing but the log. Every job is one
+stream, `job/<kind>:<key>`, so uniqueness per key is the stream itself:
+enqueue appends `job.enqueued` unless the fold says a job is still active.
+A claim is an append of `job.claimed` naming the version the worker
+observed, so replicas racing for one job have exactly one win. Completion,
+failure with a retry time, snooze (which hands the attempt back), rescue of
+a claim older than the threshold, and discard after the last attempt are
+events on the same stream. The runtime tails each workspace's log into an
+in-memory job index and drains it one job at a time per kind, the
+concurrency River gave each queue. Enqueues from the store run inside the
+store's own transaction by binding it to the log driver, so a lifecycle
+command's rows, its mirrored events, and its job still commit together. The
+order clock is a process-local ticker that writes nothing: a tick is not a
+fact, and its handler is idempotent under concurrent replicas. The store
+switches drivers with one call; the daemon does not switch yet.
+
 ## Operating it
 
 1. Deploy a binary that includes the log core. On startup it creates the log
@@ -135,8 +152,9 @@ replays the demo log in 3.3 s, and parity is still clean everywhere.
 
 - Serve any read from the log. Phase 2 continues with projectors per entity
   family, driven by the parity report's unfolded kinds.
-- Replace River. The port is in place; the log-backed queue behind it, run
-  in shadow against River's decisions, is the rest of phase 3.
+- Run the log-backed queue in production. Both drivers exist behind the
+  port; shadow mode, comparing the log queue's claim decisions with
+  River's on live traffic, is the rest of phase 3.
 - Cut a workspace over. Phase 4 adds a per-workspace flag.
 - Run on SingleStore or SQLite. Phase 6 adds drivers against the conformance
   suite; the contract needs only a unique key and a transaction.
