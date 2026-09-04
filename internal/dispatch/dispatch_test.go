@@ -19,12 +19,10 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/monitor"
 	"github.com/kidus-tiliksew/conveyor/internal/pack"
 	"github.com/kidus-tiliksew/conveyor/internal/pipeline"
-	queueargs "github.com/kidus-tiliksew/conveyor/internal/queue"
+	"github.com/kidus-tiliksew/conveyor/internal/queue"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 	githubtrigger "github.com/kidus-tiliksew/conveyor/internal/trigger/github"
-	"github.com/riverqueue/river"
-	"github.com/riverqueue/river/rivertype"
 	"gopkg.in/yaml.v3"
 )
 
@@ -2439,7 +2437,7 @@ func TestIssuePublisherRejectsLifecycleFromDifferentConfiguredRepository(t *test
 	}
 	d := New(st, &config.Config{Workspace: "test", Repos: []config.Repo{{Name: "app", GitHub: "acme/app"}}}, nil)
 	worker := &githubIssuePublicationWorker{dispatcher: d}
-	err = worker.Work(ctx, &river.Job[queueargs.GitHubIssuePublicationArgs]{JobRow: &rivertype.JobRow{ID: 1, Attempt: 1, MaxAttempts: 5}, Args: queueargs.GitHubIssuePublicationArgs{WorkspaceID: "test", TaskID: task.ID}})
+	err = worker.Work(ctx, testJob(queue.GitHubIssuePublicationArgs{WorkspaceID: "test", TaskID: task.ID}, 1, 1, 5))
 	if err == nil || !strings.Contains(err.Error(), "does not match configured") {
 		t.Fatalf("error=%v", err)
 	}
@@ -2501,11 +2499,8 @@ func TestIssuePublisherBoundsAmbiguousRecoveryBeforeOneCreateReauthorization(t *
 		}
 	}
 	worker := &githubIssuePublicationWorker{dispatcher: d}
-	job := func(attempt int) *river.Job[queueargs.GitHubIssuePublicationArgs] {
-		return &river.Job[queueargs.GitHubIssuePublicationArgs]{
-			JobRow: &rivertype.JobRow{ID: int64(attempt), Attempt: attempt, MaxAttempts: 5},
-			Args:   queueargs.GitHubIssuePublicationArgs{WorkspaceID: "test", TaskID: task.ID},
-		}
+	job := func(attempt int) queue.Job {
+		return testJob(queue.GitHubIssuePublicationArgs{WorkspaceID: "test", TaskID: task.ID}, int64(attempt), attempt, 5)
 	}
 	if err = worker.Work(ctx, job(1)); err == nil {
 		t.Fatal("first ambiguous publication succeeded")

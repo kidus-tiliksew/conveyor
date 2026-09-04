@@ -60,15 +60,8 @@ func TestUserRequestChangesCreatesHeldImplementOrderIntegration(t *testing.T) {
 	if err = dispatch.New(st, cfg, nil).DispatchNow(ctx, task.ID); err != nil {
 		t.Fatal(err)
 	}
-	var dispatches int
-	if err := st.pool.QueryRow(ctx, `
-SELECT count(*)
-FROM river_job
-WHERE kind = 'dispatch_task'
-  AND args->>'workspace_id' = $1
-  AND args->>'task_id' = $2
-  AND state IN ('available', 'pending', 'running', 'retryable', 'scheduled')`, workspace, task.ID).Scan(&dispatches); err != nil || dispatches != 1 {
-		t.Fatalf("active dispatches=%d err=%v", dispatches, err)
+	if job := loadDispatchJob(t, st, workspace, task.ID); !job.Active() || job.Generation != 1 {
+		t.Fatalf("dispatch job=%+v, want one active dispatch", job)
 	}
 	interventions, err := st.ListInterventions(ctx, task.ID)
 	if err != nil || len(interventions) != 1 || interventions[0].ActorID != store.UserActorID("requester") || interventions[0].Comment != feedback {

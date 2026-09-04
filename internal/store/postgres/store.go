@@ -14,21 +14,20 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/riverqueue/river"
-	"github.com/riverqueue/river/riverdriver/riverpgxv5"
-	"github.com/riverqueue/river/rivertype"
 	"gopkg.in/yaml.v3"
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/eventlog"
+	"github.com/kidus-tiliksew/conveyor/internal/eventlog/pglog"
 	"github.com/kidus-tiliksew/conveyor/internal/gitx"
-	queueargs "github.com/kidus-tiliksew/conveyor/internal/queue"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
@@ -37,7 +36,9 @@ import (
 type Store struct {
 	pool          *pgxpool.Pool
 	queries       *db.Queries
-	river         *river.Client[pgx.Tx]
+	queue         *logDispatchQueue
+	log           *pglog.Store
+	knownTables   sync.Map // table name -> true once seen to exist
 	forgeTokenKey []byte
 }
 
@@ -81,17 +82,22 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 		pool.Close()
 		return nil, err
 	}
-	riverClient, err := river.NewClient(riverpgxv5.New(pool), &river.Config{})
-	if err != nil {
-		pool.Close()
-		return nil, fmt.Errorf("create River insert client: %w", err)
-	}
-	return &Store{pool: pool, queries: db.New(pool), river: riverClient}, nil
+	return newStore(pool), nil
+}
+
+// newStore assembles a store over a migrated pool.
+func newStore(pool *pgxpool.Pool) *Store {
+	log := pglog.New(pool)
+	return &Store{pool: pool, queries: db.New(pool), queue: newLogDispatchQueue(pool, log), log: log}
 }
 
 func (s *Store) Close() { s.pool.Close() }
 
 func (s *Store) Pool() *pgxpool.Pool { return s.pool }
+
+// Log is the event log the store's queue runs on. Jobs are appended in the
+// same transactions as the rows that demand them.
+func (s *Store) Log() eventlog.Store { return s.log }
 func (s *Store) IsDurable() bool     { return true }
 
 // ConfigureForgeTokenEncryptionKey installs a process-only AES-256 key. The
@@ -219,7 +225,7 @@ func (s *Store) BootstrapWorkspaceConfig(ctx context.Context, cfg *config.Config
 	if err != nil {
 		return false, err
 	}
-	tx, err := s.pool.Begin(ctx)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return false, err
 	}
@@ -342,11 +348,12 @@ func (s *Store) CreateWorkspace(ctx context.Context, id, name string, cfg *confi
 			}
 		}
 		actor := store.ActorFromContext(ctx)
-		if _, err := q.InsertWorkspaceEvent(ctx, db.InsertWorkspaceEventParams{
+		_, err = q.InsertWorkspaceEvent(ctx, db.InsertWorkspaceEventParams{
 			WorkspaceID: id, Kind: "workspace.created", ActorID: actor.ID, ActorRole: string(actor.Role),
 			PayloadJson: core.JSONPayload(map[string]any{"id": id, "name": name, "config_version": row.ConfigVersion}),
 			At:          timestamp(time.Now().UTC()),
-		}); err != nil {
+		})
+		if err != nil {
 			return err
 		}
 		created = core.Workspace{ID: row.ID, Name: row.Name, ConfigVersion: row.ConfigVersion, CreatedAt: row.CreatedAt.Time}
@@ -1746,53 +1753,19 @@ func (s *Store) EnsureTaskEnqueued(ctx context.Context, id string) error {
 	})
 }
 
-// ReconcileQueuedTasks repairs projection/queue drift. River remains the
-// execution claim, but a deleted or lost River row must not strand a durable
-// queued task forever.
+// ReconcileQueuedTasks repairs projection/queue drift: a queued task whose
+// job stream is no longer active is enqueued again, and a running task whose
+// job was discarded after its final attempt is parked with evidence.
 func (s *Store) ReconcileQueuedTasks(ctx context.Context) (int, error) {
 	repaired := 0
 	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
 		if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtext($1))", "conveyor:queue-reconcile:"+workspace(ctx)); err != nil {
 			return err
 		}
-		rows, err := tx.Query(ctx, `
-SELECT t.id
-FROM tasks t
-WHERE t.workspace_id = $1
-  AND t.state = 'queued'
-  AND NOT (
-      t.parent_task_id IS NULL
-      AND t.next_stage = 'implement'
-      AND EXISTS (
-          SELECT 1 FROM tasks child
-          WHERE child.workspace_id=t.workspace_id
-            AND child.parent_task_id=t.id
-      )
-  )
-  AND NOT EXISTS (
-      SELECT 1 FROM river_job r
-      WHERE r.kind = 'dispatch_task'
-        AND r.args->>'task_id' = t.id
-        AND r.state IN ('available', 'pending', 'running', 'retryable', 'scheduled')
-  )
-ORDER BY t.created_at, t.id`, workspace(ctx))
+		taskIDs, err := s.queue.queuedTasksWithoutActiveDispatch(ctx, tx, workspace(ctx))
 		if err != nil {
 			return err
 		}
-		var taskIDs []string
-		for rows.Next() {
-			var taskID string
-			if err := rows.Scan(&taskID); err != nil {
-				rows.Close()
-				return err
-			}
-			taskIDs = append(taskIDs, taskID)
-		}
-		if err := rows.Err(); err != nil {
-			rows.Close()
-			return err
-		}
-		rows.Close()
 		for _, taskID := range taskIDs {
 			inserted, err := s.enqueueTaskTx(ctx, tx, taskID, workspace(ctx))
 			if err != nil {
@@ -1814,57 +1787,14 @@ ORDER BY t.created_at, t.id`, workspace(ctx))
 	if err != nil {
 		return repaired, err
 	}
-	rows, err := s.pool.Query(ctx, `
-SELECT t.id, t.next_stage, r.attempt, r.max_attempts
-FROM tasks t
-JOIN LATERAL (
-    SELECT attempt, max_attempts
-    FROM river_job
-    WHERE kind = 'dispatch_task'
-      AND args->>'task_id' = t.id
-      AND args->>'workspace_id' = t.workspace_id
-      AND state = 'discarded'
-      AND attempt >= max_attempts
-    ORDER BY finalized_at DESC NULLS LAST, id DESC
-    LIMIT 1
-) r ON true
-WHERE t.workspace_id = $1
-  AND t.state = 'running'
-  AND NOT EXISTS (
-      SELECT 1 FROM river_job active
-      WHERE active.kind = 'dispatch_task'
-        AND active.args->>'task_id' = t.id
-        AND active.args->>'workspace_id' = t.workspace_id
-        AND active.state IN ('available', 'pending', 'running', 'retryable', 'scheduled')
-  )
-ORDER BY t.created_at, t.id`, workspace(ctx))
+	discarded, err := s.queue.exhaustedDispatches(ctx, workspace(ctx))
 	if err != nil {
 		return repaired, err
 	}
-	type discardedTask struct {
-		id          string
-		stage       core.Stage
-		attempt     int
-		maxAttempts int
-	}
-	var discarded []discardedTask
-	for rows.Next() {
-		var candidate discardedTask
-		if err = rows.Scan(&candidate.id, &candidate.stage, &candidate.attempt, &candidate.maxAttempts); err != nil {
-			rows.Close()
-			return repaired, err
-		}
-		discarded = append(discarded, candidate)
-	}
-	if err = rows.Err(); err != nil {
-		rows.Close()
-		return repaired, err
-	}
-	rows.Close()
 	for _, candidate := range discarded {
-		_, applyErr := taskops.New(s).Perform(ctx, candidate.id, taskops.Command{
+		_, applyErr := taskops.New(s).Perform(ctx, candidate.taskID, taskops.Command{
 			Kind: core.TaskDispatchFailFinal, RecoveryStage: candidate.stage, ProjectStages: true,
-			FailureMessage: "River rescuer discarded the dispatch job after its final attempt",
+			FailureMessage: "the queue discarded the dispatch job after its final attempt",
 			Attempt:        candidate.attempt, MaxAttempts: candidate.maxAttempts,
 		})
 		if applyErr != nil {
@@ -2620,11 +2550,17 @@ func (s *Store) recordDependencyOutcomeTx(ctx context.Context, tx pgx.Tx, depend
 		payload := core.JSONPayload(map[string]any{
 			"task_id": dependentID, "depends_on_task_id": dependencyID, "dependency_state": state,
 		})
-		if _, err = tx.Exec(ctx, `INSERT INTO events
+		var insertedID int64
+		err = tx.QueryRow(ctx, `INSERT INTO events
 			(workspace_id,task_id,job_id,kind,actor_id,actor_role,payload_json,at)
 			VALUES ($1,$2,NULL,'task.dependency_unsatisfiable',$3,$4,$5,$6)
-			ON CONFLICT DO NOTHING`,
-			workspace(ctx), dependentID, actor.ID, actor.Role, payload, now); err != nil {
+			ON CONFLICT DO NOTHING
+			RETURNING id`,
+			workspace(ctx), dependentID, actor.ID, actor.Role, payload, now).Scan(&insertedID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			continue
+		}
+		if err != nil {
 			return err
 		}
 	}
@@ -2667,15 +2603,7 @@ func (s *Store) QueueGitHubLifecycle(ctx context.Context, lifecycle core.GitHubL
 				return err
 			}
 		}
-		_, err = s.river.InsertTx(ctx, tx, queueargs.GitHubIssuePublicationArgs{WorkspaceID: workspace(ctx), TaskID: lifecycle.TaskID}, &river.InsertOpts{
-			MaxAttempts: 5,
-			Queue:       queueargs.GitHubIssuePublicationQueue(workspace(ctx)),
-			UniqueOpts: river.UniqueOpts{ByArgs: true, ByState: []rivertype.JobState{
-				rivertype.JobStateAvailable, rivertype.JobStatePending, rivertype.JobStateRunning,
-				rivertype.JobStateRetryable, rivertype.JobStateScheduled,
-			}},
-		})
-		return err
+		return s.queue.enqueueGitHubIssuePublicationTx(ctx, tx, workspace(ctx), lifecycle.TaskID)
 	})
 }
 
@@ -3201,7 +3129,10 @@ func (s *Store) RebuildLineage(ctx context.Context, request core.LineageRebuildR
 			PayloadJson: core.JSONPayload(map[string]any{"workspace_id": workspace(ctx), "reason": request.Reason, "request_id": request.RequestID, "result": result}),
 			At:          timestamp(time.Now().UTC()),
 		})
-		return err
+		if err != nil {
+			return err
+		}
+		return nil
 	})
 	return result, err
 }
@@ -3487,7 +3418,7 @@ func (s *Store) CancelTaskCommand(ctx context.Context, lease taskops.TaskLease, 
 	if intervention.Action != core.InterventionCancel || strings.TrimSpace(intervention.ReasonCode) == "" {
 		return core.Task{}, fmt.Errorf("cancel intervention requires a reason")
 	}
-	tx, err := s.pool.Begin(ctx)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return core.Task{}, err
 	}
@@ -4194,7 +4125,7 @@ func (s *Store) RetryReviewRoundCommand(ctx context.Context, lease taskops.TaskL
 	if len(jobs) == 0 || len(jobs) != len(orders) {
 		return store.ReviewRoundRetryResult{}, fmt.Errorf("review retry requires one job per work order")
 	}
-	tx, err := s.pool.Begin(ctx)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return store.ReviewRoundRetryResult{}, err
 	}
@@ -4349,7 +4280,7 @@ func (s *Store) RecoverInterruptedReviewRoundCommand(ctx context.Context, lease 
 	if request.RequestID == "" || request.TaskID == "" || request.Round <= 0 || queueTimeout <= 0 {
 		return store.InterruptedReviewRecoveryResult{}, fmt.Errorf("interrupted review recovery requires task, request_id, round, and queue timeout")
 	}
-	tx, err := s.pool.Begin(ctx)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return store.InterruptedReviewRecoveryResult{}, err
 	}
@@ -4694,7 +4625,7 @@ func workOrderTaskIDTx(ctx context.Context, tx pgx.Tx, workspaceID, id string) (
 }
 
 func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease taskops.TaskLease, id string, claim core.WorkOrderClaim) (core.WorkOrder, error) {
-	tx, err := s.pool.Begin(ctx)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return core.WorkOrder{}, err
 	}
@@ -5010,7 +4941,7 @@ func (s *Store) RedispatchWorkOrderCommand(ctx context.Context, lease taskops.Ta
 	if queueTimeout <= 0 {
 		return core.WorkOrder{}, fmt.Errorf("work-order queue timeout must be positive")
 	}
-	tx, err := s.pool.Begin(ctx)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return core.WorkOrder{}, err
 	}
@@ -5129,7 +5060,7 @@ func (s *Store) RefreshWorkOrderHarnessSnapshot(ctx context.Context, id string, 
 	if snapshot == nil || snapshot.Name == "" {
 		return core.WorkOrder{}, fmt.Errorf("harness snapshot is required")
 	}
-	tx, err := s.pool.Begin(ctx)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return core.WorkOrder{}, err
 	}
@@ -5183,7 +5114,7 @@ func (s *Store) RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 	if queueTimeout <= 0 {
 		return core.WorkOrder{}, fmt.Errorf("work-order queue timeout must be positive")
 	}
-	tx, err := s.pool.Begin(ctx)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return core.WorkOrder{}, err
 	}
@@ -5649,15 +5580,7 @@ func (s *Store) queueReviewPublicationTx(ctx context.Context, tx pgx.Tx, q *db.Q
 }
 
 func (s *Store) enqueueReviewPublicationJobTx(ctx context.Context, tx pgx.Tx, reviewWorkOrderID string) error {
-	_, err := s.river.InsertTx(ctx, tx, queueargs.ReviewPublicationArgs{WorkspaceID: workspace(ctx), ReviewWorkOrderID: reviewWorkOrderID}, &river.InsertOpts{
-		MaxAttempts: 5,
-		Queue:       queueargs.ReviewPublicationQueue(workspace(ctx)),
-		UniqueOpts: river.UniqueOpts{ByArgs: true, ByState: []rivertype.JobState{
-			rivertype.JobStateAvailable, rivertype.JobStatePending, rivertype.JobStateRunning,
-			rivertype.JobStateRetryable, rivertype.JobStateScheduled,
-		}},
-	})
-	return err
+	return s.queue.enqueueReviewPublicationTx(ctx, tx, workspace(ctx), reviewWorkOrderID)
 }
 
 // AcceptReviewDecision commits the durable verdict, routing decision, and
@@ -6419,7 +6342,7 @@ func (s *Store) CreateArtifact(ctx context.Context, artifact core.Artifact, cont
 		artifact.CreatedAt = time.Now().UTC()
 	}
 	artifact.Workspace = workspace(ctx)
-	tx, err := s.pool.Begin(ctx)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return core.Artifact{}, err
 	}
@@ -6465,7 +6388,7 @@ func (s *Store) CreateClaimedVerificationEvidence(ctx context.Context, request s
 	}
 	clientTokenHash := fmt.Sprintf("%x", sha256.Sum256([]byte(request.ClientToken)))
 
-	tx, err := s.pool.Begin(ctx)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return core.Artifact{}, err
 	}
@@ -6619,9 +6542,9 @@ func (s *Store) inTx(ctx context.Context, fn func(pgx.Tx, *db.Queries) error) er
 		// PostgreSQL session. Advisory locks are re-entrant within one session;
 		// starting this transaction through the pool can select another session
 		// and deadlock against the outer task-operation lock.
-		tx, err = conn.Begin(ctx)
+		tx, err = s.beginOn(ctx, conn)
 	} else {
-		tx, err = s.pool.Begin(ctx)
+		tx, err = s.begin(ctx)
 	}
 	if err != nil {
 		return err
@@ -6633,28 +6556,12 @@ func (s *Store) inTx(ctx context.Context, fn func(pgx.Tx, *db.Queries) error) er
 	return tx.Commit(ctx)
 }
 
+// enqueueTaskTx enqueues a dispatch inside the caller's transaction and
+// reports whether a row was inserted. Duplicates are suppressed only while
+// a dispatch is active or may retry, so an intentional human redispatch is
+// never a silent no-op.
 func (s *Store) enqueueTaskTx(ctx context.Context, tx pgx.Tx, taskID, workspace string) (bool, error) {
-	result, err := s.river.InsertTx(ctx, tx, queueargs.DispatchTaskArgs{WorkspaceID: workspace, TaskID: taskID}, &river.InsertOpts{
-		MaxAttempts: queueargs.DispatchTaskMaxAttempts,
-		Queue:       queueargs.DispatchQueue(workspace),
-		UniqueOpts: river.UniqueOpts{
-			ByArgs: true,
-			// Suppress duplicate work only while a dispatch is active or may
-			// retry. River's default also includes completed jobs, which makes
-			// an intentional human redispatch a silent no-op until job cleanup.
-			ByState: []rivertype.JobState{
-				rivertype.JobStateAvailable,
-				rivertype.JobStatePending,
-				rivertype.JobStateRunning,
-				rivertype.JobStateRetryable,
-				rivertype.JobStateScheduled,
-			},
-		},
-	})
-	if err != nil {
-		return false, fmt.Errorf("enqueue task %s: %w", taskID, err)
-	}
-	return !result.UniqueSkippedAsDuplicate, nil
+	return s.queue.enqueueDispatchTx(ctx, tx, workspace, taskID)
 }
 
 func insertEvent(ctx context.Context, q *db.Queries, event core.Event) error {

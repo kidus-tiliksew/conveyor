@@ -113,7 +113,7 @@ signal or send follow-up work through the normal gates.
 ```
 
 `conveyord` is one Go binary. PostgreSQL stores the event log, documents,
-lineage projection, and River queue. The worker launches agent CLIs with your
+lineage projection, and the log-backed queue. The worker launches agent CLIs with your
 local credentials.
 
 ## Installation

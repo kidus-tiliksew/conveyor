@@ -23,6 +23,7 @@
 - [Worker operations](worker-operations.md): durable worker enrollment, service install, recovery
 - [GitHub lifecycle](github-lifecycle.md): how issues, PRs, and review statuses are projected onto GitHub
 - [Known limitations](known-limitations.md): accepted boundaries of the current implementation
+- [The log core](log-core.md): the event log and the durable queue that runs on it
 
 ## Playbooks
 

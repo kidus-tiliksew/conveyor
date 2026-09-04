@@ -12,7 +12,6 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
-	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 )
 
@@ -301,7 +300,7 @@ func TestTaskContextTerminalCleanupMigrationIntegration(t *testing.T) {
 	if err = migrateControlPlaneToVersion(t.Context(), pool, 107); err != nil {
 		t.Fatal(err)
 	}
-	st := &Store{pool: pool, queries: db.New(pool)}
+	st := newStore(pool)
 	workspace := "migration-context-" + core.NewTaskID()
 	ctx := store.WithWorkspace(t.Context(), workspace)
 	if _, err = st.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "conveyor", Base: "main"}}}); err != nil {
@@ -396,7 +395,7 @@ func TestPendingProposalsProjectionKeepsTwoStatementsAtProductionCardinalityInte
 	if err = Migrate(t.Context(), pool); err != nil {
 		t.Fatal(err)
 	}
-	st := &Store{pool: pool, queries: db.New(pool)}
+	st := newStore(pool)
 	workspace := "pending-scale-" + core.NewTaskID()
 	ctx := store.WithWorkspace(t.Context(), workspace)
 	if _, err = st.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "conveyor", Base: "main"}}}); err != nil {

@@ -16,7 +16,7 @@ type shutdownHTTPServer interface {
 	Shutdown(context.Context) error
 }
 
-type shutdownRiverClient interface {
+type shutdownQueue interface {
 	Stop(context.Context) error
 	StopAndCancel(context.Context) error
 }
@@ -24,7 +24,7 @@ type shutdownRiverClient interface {
 type conveyordShutdown struct {
 	Timeout       time.Duration
 	HTTP          shutdownHTTPServer
-	River         shutdownRiverClient
+	Queue         shutdownQueue
 	CancelHTTP    context.CancelFunc
 	CancelService context.CancelFunc
 	CloseStore    func()
@@ -90,13 +90,13 @@ func (s conveyordShutdown) Run() {
 	drainDeadline := started.Add(shutdownDrainWindow(s.Timeout))
 	drainCtx, cancelDrain := context.WithDeadline(context.Background(), drainDeadline)
 	defer cancelDrain()
-	riverDone := make(chan error, 1)
-	if s.River != nil {
-		go func() { riverDone <- s.River.Stop(drainCtx) }()
+	queueDone := make(chan error, 1)
+	if s.Queue != nil {
+		go func() { queueDone <- s.Queue.Stop(drainCtx) }()
 	} else {
-		riverDone <- nil
+		queueDone <- nil
 	}
-	phase("river-fetch-stopped", nil)
+	phase("queue-fetch-stopped", nil)
 
 	if s.CancelHTTP != nil {
 		s.CancelHTTP()
@@ -109,13 +109,13 @@ func (s conveyordShutdown) Run() {
 	}
 	phase("http-drain-started", nil)
 
-	var riverErr, httpErr error
-	riverFinished, httpFinished := false, false
-	for !riverFinished || !httpFinished {
+	var queueErr, httpErr error
+	queueFinished, httpFinished := false, false
+	for !queueFinished || !httpFinished {
 		select {
-		case riverErr = <-riverDone:
-			riverFinished = true
-			riverDone = nil
+		case queueErr = <-queueDone:
+			queueFinished = true
+			queueDone = nil
 		case httpErr = <-httpDone:
 			httpFinished = true
 			httpDone = nil
@@ -126,19 +126,19 @@ func (s conveyordShutdown) Run() {
 
 hardStop:
 	cancelDrain()
-	if !riverFinished {
+	if !queueFinished {
 		select {
-		case riverErr = <-riverDone:
-			riverFinished = true
+		case queueErr = <-queueDone:
+			queueFinished = true
 		case <-overallCtx.Done():
-			riverErr = overallCtx.Err()
+			queueErr = overallCtx.Err()
 		}
 	}
-	phase("river-graceful-stop", riverErr)
-	if s.River != nil {
-		phase("river-hard-stop", s.River.StopAndCancel(overallCtx))
+	phase("queue-graceful-stop", queueErr)
+	if s.Queue != nil {
+		phase("queue-hard-stop", s.Queue.StopAndCancel(overallCtx))
 	} else {
-		phase("river-hard-stop", nil)
+		phase("queue-hard-stop", nil)
 	}
 	if !httpFinished {
 		select {

@@ -208,7 +208,7 @@ type Store interface {
 
 	CreateWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, order core.WorkOrder) error
 	// CreateStageWorkOrder atomically creates one non-review stage job and work
-	// order. It returns false when the same order already exists, making River
+	// order. It returns false when the same order already exists, making queue
 	// redelivery and concurrent dispatch idempotent without a session lock.
 	CreateStageWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, job core.Job, order core.WorkOrder) (bool, error)
 	// CreateConflictFixCommand atomically admits one reason-coded conflict-fix
@@ -3201,7 +3201,7 @@ func (m *memory) ListCheckpointContextCandidates(ctx context.Context, requiremen
 }
 
 // ProjectWorkOrderAt applies elapsed clock semantics to a copy for
-// observational responses. It performs no store writes; the River order clock
+// observational responses. It performs no store writes; the queue order clock
 // persists the same canonical commands asynchronously.
 func ProjectWorkOrderAt(order core.WorkOrder, now time.Time) core.WorkOrder {
 	if (order.State == core.WorkOrderQueued || order.State == core.WorkOrderClaimed) &&

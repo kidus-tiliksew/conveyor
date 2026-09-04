@@ -99,7 +99,7 @@ func (s *Store) BootstrapIdentity(ctx context.Context, identity config.FirstOper
 	if legacyToken == "" {
 		return false, errors.New("legacy API token is required for identity bootstrap")
 	}
-	tx, err := s.pool.Begin(ctx)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return false, err
 	}

@@ -35,7 +35,7 @@ func (s *Store) UpsertWorkOrderActivitySnapshot(ctx context.Context, workOrderID
 }
 
 func (s *Store) FinalizeWorkOrderAttemptObservability(ctx context.Context, workOrderID, workerID string, checkpoint core.WorkOrderAttemptCheckpoint) error {
-	tx, err := s.pool.Begin(ctx)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return err
 	}

@@ -17,18 +17,16 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/eventlog/pglog"
 	controlstore "github.com/kidus-tiliksew/conveyor/internal/store"
-	"github.com/riverqueue/river/riverdriver/riverpgxv5"
-	"github.com/riverqueue/river/rivermigrate"
 )
 
 //go:embed migrations/*.sql
 var migrationFiles embed.FS
 
-// Migrate applies Conveyor's versioned schema followed by River's bundled
-// queue migrations. A database-wide session lock serializes the complete
-// sequence because River v0.30.2 discovers pending versions before opening the
-// per-version transaction that records them (design-database).
+// Migrate applies Conveyor's versioned schema. A database-wide session lock
+// serializes concurrent process starts so each applies the sequence once
+// (design-database).
 func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 	pooled, err := pool.Acquire(ctx)
 	if err != nil {
@@ -48,33 +46,7 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 		_ = lockConn.Close(unlockCtx)
 	}()
 
-	if err := migrateControlPlane(ctx, pool); err != nil {
-		return err
-	}
-	migrator, err := rivermigrate.New(riverpgxv5.New(pool), nil)
-	if err != nil {
-		return fmt.Errorf("create River migrator: %w", err)
-	}
-	if _, err := migrator.Migrate(ctx, rivermigrate.DirectionUp, nil); err != nil {
-		return fmt.Errorf("migrate River schema: %w", err)
-	}
-	// v1.10 adds workspace identity to River payloads. Backfill jobs inserted by
-	// v1.8 so an in-place upgrade does not strand queued dispatch or review
-	// publication work with an empty context.
-	if _, err := pool.Exec(ctx, `
-UPDATE river_job r SET args = jsonb_set(r.args, '{workspace_id}', to_jsonb(t.workspace_id), true)
-FROM tasks t
-WHERE r.kind = 'dispatch_task'
-  AND r.args->>'task_id' = t.id
-  AND COALESCE(r.args->>'workspace_id','') = '';
-UPDATE river_job r SET args = jsonb_set(r.args, '{workspace_id}', to_jsonb(p.workspace_id), true)
-FROM review_publications p
-WHERE r.kind = 'review_publication'
-  AND r.args->>'review_work_order_id' = p.review_work_order_id
-  AND COALESCE(r.args->>'workspace_id','') = ''`); err != nil {
-		return fmt.Errorf("backfill River workspace context: %w", err)
-	}
-	return nil
+	return migrateControlPlane(ctx, pool)
 }
 
 func migrateControlPlane(ctx context.Context, pool *pgxpool.Pool) error {
@@ -101,6 +73,12 @@ func migrateControlPlaneToVersion(ctx context.Context, pool *pgxpool.Pool, maxVe
 	defer tx.Rollback(ctx) //nolint:errcheck -- commit below owns the outcome
 	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtext('conveyor:control-plane-migrations'))"); err != nil {
 		return fmt.Errorf("lock control-plane migrations: %w", err)
+	}
+	// The event log's tables are owned by its driver and created
+	// idempotently before any numbered migration runs, because migration
+	// 121 moves River's queue onto the log.
+	if err := pglog.EnsureSchema(ctx, tx); err != nil {
+		return err
 	}
 	if _, err := tx.Exec(ctx, `
 CREATE TABLE IF NOT EXISTS conveyor_schema_migrations (
@@ -169,6 +147,11 @@ CREATE TABLE IF NOT EXISTS conveyor_schema_migrations (
 					limit = 20
 				}
 				return fmt.Errorf("migration %s blocked by %d non-canonical lifecycle edge(s): %+v", name, len(violations), violations[:limit])
+			}
+		}
+		if version == 121 {
+			if err := moveRiverJobsToLog(ctx, tx); err != nil {
+				return fmt.Errorf("move River jobs onto the log before migration %s: %w", name, err)
 			}
 		}
 		sql, err := renderMigration(rawSQL)

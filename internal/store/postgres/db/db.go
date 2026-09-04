@@ -25,6 +25,12 @@ type Queries struct {
 	db DBTX
 }
 
+// DB exposes the executor so hand-maintained callers can run statements in
+// the same transaction as the generated-shaped queries.
+func (q *Queries) DB() DBTX {
+	return q.db
+}
+
 func (q *Queries) WithTx(tx pgx.Tx) *Queries {
 	return &Queries{
 		db: tx,

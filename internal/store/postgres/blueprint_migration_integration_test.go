@@ -10,7 +10,6 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
-	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 )
 
 func TestBlueprintOriginIdentityMigrationRejectsLiveDuplicatesIntegration(t *testing.T) {
@@ -40,7 +39,7 @@ func TestBlueprintOriginIdentityMigrationRejectsLiveDuplicatesIntegration(t *tes
 
 	workspace := "blueprint-migration-" + core.NewTaskID()
 	ctx := store.WithWorkspace(t.Context(), workspace)
-	st := &Store{pool: pool, queries: db.New(pool)}
+	st := newStore(pool)
 	if _, err = st.BootstrapWorkspaceConfig(ctx, &config.Config{
 		Workspace: workspace,
 		Repos:     []config.Repo{{Name: "repo", URL: "https://example.test/repo", Base: "main"}},

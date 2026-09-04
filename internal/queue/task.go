@@ -1,18 +1,16 @@
-// Package queue defines durable River job contracts without importing the
-// dispatcher. Keeping args in a neutral package lets the Postgres store insert
-// jobs transactionally while workers remain in internal/dispatch (design-task-lifecycle).
+// Package queue defines the durable job contracts without importing the
+// dispatcher. Keeping args in a neutral package lets the store enqueue jobs
+// transactionally while handlers remain in internal/dispatch
+// (design-task-lifecycle).
 package queue
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
+	"encoding/json"
 	"time"
 )
 
-const ControlQueue = "control"
-
 const (
-	// River counts the initial execution in MaxAttempts, so five scheduled
+	// The initial execution counts toward MaxAttempts, so five scheduled
 	// retries require six total executions (design-task-lifecycle).
 	DispatchTaskRetryLimit    = 5
 	DispatchTaskMaxAttempts   = DispatchTaskRetryLimit + 1
@@ -37,51 +35,55 @@ func DispatchTaskRetryDelay(attempt int) time.Duration {
 }
 
 type DispatchTaskArgs struct {
-	WorkspaceID string `json:"workspace_id" river:"unique"`
-	TaskID      string `json:"task_id" river:"unique"`
+	WorkspaceID string `json:"workspace_id"`
+	TaskID      string `json:"task_id"`
 }
 
 func (DispatchTaskArgs) Kind() string { return "dispatch_task" }
 
+// UniqueKey is the per-workspace key one active job may hold at a time.
+func (a DispatchTaskArgs) UniqueKey() string { return a.TaskID }
+
 type ReviewPublicationArgs struct {
-	WorkspaceID       string `json:"workspace_id" river:"unique"`
-	ReviewWorkOrderID string `json:"review_work_order_id" river:"unique"`
+	WorkspaceID       string `json:"workspace_id"`
+	ReviewWorkOrderID string `json:"review_work_order_id"`
 }
 
 func (ReviewPublicationArgs) Kind() string { return "review_publication" }
 
+func (a ReviewPublicationArgs) UniqueKey() string { return a.ReviewWorkOrderID }
+
 type GitHubIssuePublicationArgs struct {
-	WorkspaceID string `json:"workspace_id" river:"unique"`
-	TaskID      string `json:"task_id" river:"unique"`
+	WorkspaceID string `json:"workspace_id"`
+	TaskID      string `json:"task_id"`
 }
 
 func (GitHubIssuePublicationArgs) Kind() string { return "github_issue_publication" }
 
+func (a GitHubIssuePublicationArgs) UniqueKey() string { return a.TaskID }
+
 type OrderClockArgs struct {
-	WorkspaceID string `json:"workspace_id" river:"unique"`
+	WorkspaceID string `json:"workspace_id"`
 }
 
 func (OrderClockArgs) Kind() string { return "order_clock" }
 
-// DispatchQueue isolates workers by workspace even when multiple workspace
-// daemons share one Postgres/River cluster. Hashing avoids leaking workspace
-// names into queue identifiers and satisfies River's queue-name grammar.
-func DispatchQueue(workspace string) string {
-	digest := sha256.Sum256([]byte(workspace))
-	return "dispatch_" + hex.EncodeToString(digest[:8])
-}
-
-func ReviewPublicationQueue(workspace string) string {
-	digest := sha256.Sum256([]byte(workspace))
-	return "review_publication_" + hex.EncodeToString(digest[:8])
-}
-
-func GitHubIssuePublicationQueue(workspace string) string {
-	digest := sha256.Sum256([]byte(workspace))
-	return "github_issue_publication_" + hex.EncodeToString(digest[:8])
-}
-
-func OrderClockPeriodicID(workspace string) string {
-	digest := sha256.Sum256([]byte(workspace))
-	return "order_clock_" + hex.EncodeToString(digest[:8])
+// Identity decodes a job's workspace and unique key from its encoded args
+// by kind. The clock has no key: it is periodic, not queued per entity.
+func Identity(kind string, args []byte) (workspace, key string, ok bool) {
+	var decoded struct {
+		WorkspaceID       string `json:"workspace_id"`
+		TaskID            string `json:"task_id"`
+		ReviewWorkOrderID string `json:"review_work_order_id"`
+	}
+	if err := json.Unmarshal(args, &decoded); err != nil {
+		return "", "", false
+	}
+	switch kind {
+	case DispatchTaskArgs{}.Kind(), GitHubIssuePublicationArgs{}.Kind():
+		return decoded.WorkspaceID, decoded.TaskID, decoded.TaskID != ""
+	case ReviewPublicationArgs{}.Kind():
+		return decoded.WorkspaceID, decoded.ReviewWorkOrderID, decoded.ReviewWorkOrderID != ""
+	}
+	return decoded.WorkspaceID, "", false
 }

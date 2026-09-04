@@ -10,12 +10,10 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/riverqueue/river"
-	"github.com/riverqueue/river/rivertype"
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
-	queueargs "github.com/kidus-tiliksew/conveyor/internal/queue"
+	"github.com/kidus-tiliksew/conveyor/internal/queue"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	githubtrigger "github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 )
@@ -118,11 +116,8 @@ func githubIssuePublicationFixture(t *testing.T) (context.Context, store.Store, 
 	return ctx, st, &githubIssuePublicationWorker{dispatcher: dispatcher}, task.ID
 }
 
-func githubIssuePublicationJob(taskID string, attempt int) *river.Job[queueargs.GitHubIssuePublicationArgs] {
-	return &river.Job[queueargs.GitHubIssuePublicationArgs]{
-		JobRow: &rivertype.JobRow{ID: int64(attempt), Attempt: attempt, MaxAttempts: 5},
-		Args:   queueargs.GitHubIssuePublicationArgs{WorkspaceID: "test", TaskID: taskID},
-	}
+func githubIssuePublicationJob(taskID string, attempt int) queue.Job {
+	return testJob(queue.GitHubIssuePublicationArgs{WorkspaceID: "test", TaskID: taskID}, int64(attempt), attempt, 5)
 }
 
 func TestReviewPublicationRequiresAggregateCommentAndIgnoresEventTimestamp(t *testing.T) {
@@ -271,13 +266,8 @@ func reviewPublicationFixture(t *testing.T, verdict string) (context.Context, st
 	return ctx, st, &reviewPublicationWorker{dispatcher: dispatcher}, publication
 }
 
-func reviewPublicationJob(workOrderID string, attempt int) *river.Job[queueargs.ReviewPublicationArgs] {
-	return &river.Job[queueargs.ReviewPublicationArgs]{
-		JobRow: &rivertype.JobRow{ID: int64(attempt), Attempt: attempt, MaxAttempts: 5},
-		Args: queueargs.ReviewPublicationArgs{
-			WorkspaceID: "test", ReviewWorkOrderID: workOrderID,
-		},
-	}
+func reviewPublicationJob(workOrderID string, attempt int) queue.Job {
+	return testJob(queue.ReviewPublicationArgs{WorkspaceID: "test", ReviewWorkOrderID: workOrderID}, int64(attempt), attempt, 5)
 }
 
 func TestDispatchDuplicateWithActiveConflictFixIsAcknowledged(t *testing.T) {
@@ -325,7 +315,7 @@ func TestDispatchFinalRunningFailureParksWithFailFinal(t *testing.T) {
 	ctx, st, worker, taskID := dispatchFailureFixture(t, false)
 	wantErr := errors.New("database unavailable")
 
-	if err := worker.handleFailure(ctx, dispatchTaskJob(taskID, queueargs.DispatchTaskMaxAttempts, queueargs.DispatchTaskMaxAttempts), wantErr); !errors.Is(err, wantErr) {
+	if err := worker.handleFailure(ctx, dispatchTaskJob(taskID, queue.DispatchTaskMaxAttempts, queue.DispatchTaskMaxAttempts), wantErr); !errors.Is(err, wantErr) {
 		t.Fatalf("failure error = %v, want %v", err, wantErr)
 	}
 	current, err := st.GetTask(ctx, taskID)
@@ -346,18 +336,18 @@ func TestDispatchFinalRunningFailureParksWithFailFinal(t *testing.T) {
 
 func TestDispatchRetryDelayTableMatchesSpec(t *testing.T) {
 	t.Parallel()
-	if queueargs.DispatchTaskRetryLimit != 5 || queueargs.DispatchTaskMaxAttempts != 6 {
-		t.Fatalf("retry limit/max attempts = %d/%d, want 5/6", queueargs.DispatchTaskRetryLimit, queueargs.DispatchTaskMaxAttempts)
+	if queue.DispatchTaskRetryLimit != 5 || queue.DispatchTaskMaxAttempts != 6 {
+		t.Fatalf("retry limit/max attempts = %d/%d, want 5/6", queue.DispatchTaskRetryLimit, queue.DispatchTaskMaxAttempts)
 	}
 	wants := []time.Duration{10 * time.Second, 20 * time.Second, 40 * time.Second, 80 * time.Second, 160 * time.Second}
 	for attempt, want := range wants {
 		attempt := attempt + 1
-		if got := queueargs.DispatchTaskRetryDelay(attempt); got != want {
+		if got := queue.DispatchTaskRetryDelay(attempt); got != want {
 			t.Fatalf("attempt %d retry delay = %s, want %s", attempt, got, want)
 		}
 	}
-	if got := queueargs.DispatchTaskRetryDelay(6); got != queueargs.DispatchRetryMaximumDelay {
-		t.Fatalf("retry cap = %s, want %s", got, queueargs.DispatchRetryMaximumDelay)
+	if got := queue.DispatchTaskRetryDelay(6); got != queue.DispatchRetryMaximumDelay {
+		t.Fatalf("retry cap = %s, want %s", got, queue.DispatchRetryMaximumDelay)
 	}
 }
 
@@ -369,8 +359,8 @@ func TestShutdownCancellationSnoozesWithoutFailure(t *testing.T) {
 	worker.shutdown = marker
 	worker.dispatcher.Store = &cancelledDispatchStore{Store: st}
 
-	err := worker.Work(ctx, dispatchTaskJob(taskID, 3, queueargs.DispatchTaskMaxAttempts))
-	var snooze *river.JobSnoozeError
+	err := worker.Work(ctx, dispatchTaskJob(taskID, 3, queue.DispatchTaskMaxAttempts))
+	var snooze *queue.SnoozeError
 	if !errors.As(err, &snooze) || snooze.Duration != shutdownRetryDelay {
 		t.Fatalf("shutdown result=%v, want %s snooze", err, shutdownRetryDelay)
 	}
@@ -389,7 +379,7 @@ func (s *cancelledDispatchStore) GetTask(context.Context, string) (core.Task, er
 	return core.Task{}, context.Canceled
 }
 
-func TestRiverRescueStuckJobsAfterUsesLargestRouteAndFallback(t *testing.T) {
+func TestQueueRescueThresholdUsesLargestRouteAndFallback(t *testing.T) {
 	t.Parallel()
 	configs := map[string]*config.Config{
 		"a": {Routing: config.Routing{Stages: map[string]config.StageRoute{
@@ -400,22 +390,22 @@ func TestRiverRescueStuckJobsAfterUsesLargestRouteAndFallback(t *testing.T) {
 			"triage": {Timeout: time.Hour},
 		}}},
 	}
-	got, err := RiverRescueStuckJobsAfter(configs)
-	if err != nil || got != 3*time.Hour+RiverRescueSafetyMargin {
+	got, err := QueueRescueThreshold(configs)
+	if err != nil || got != 3*time.Hour+QueueRescueSafetyMargin {
 		t.Fatalf("rescue threshold=%s err=%v", got, err)
 	}
 	short := map[string]*config.Config{"short": {Routing: config.Routing{Stages: map[string]config.StageRoute{
 		"triage": {Timeout: 20 * time.Minute}, "spec": {Timeout: 30 * time.Minute},
 	}}}}
-	got, err = RiverRescueStuckJobsAfter(short)
-	if err != nil || got != 30*time.Minute+RiverRescueSafetyMargin {
+	got, err = QueueRescueThreshold(short)
+	if err != nil || got != 30*time.Minute+QueueRescueSafetyMargin {
 		t.Fatalf("short-route rescue threshold=%s err=%v", got, err)
 	}
-	if err = ValidateRiverRescueStuckJobsAfter("short", short["short"], 30*time.Minute); err == nil || !strings.Contains(err.Error(), "short/spec") {
+	if err = ValidateQueueRescueThreshold("short", short["short"], 30*time.Minute); err == nil || !strings.Contains(err.Error(), "short/spec") {
 		t.Fatalf("validation error=%v, want offending spec route", err)
 	}
-	got, err = RiverRescueStuckJobsAfter(nil)
-	if err != nil || got != config.DefaultStageTimeout+RiverRescueSafetyMargin {
+	got, err = QueueRescueThreshold(nil)
+	if err != nil || got != config.DefaultStageTimeout+QueueRescueSafetyMargin {
 		t.Fatalf("fallback rescue threshold=%s err=%v", got, err)
 	}
 }
@@ -442,9 +432,6 @@ func dispatchFailureFixture(t *testing.T, withConflictFix bool) (context.Context
 	return ctx, st, &dispatchTaskWorker{dispatcher: dispatcher}, taskID
 }
 
-func dispatchTaskJob(taskID string, attempt, maxAttempts int) *river.Job[queueargs.DispatchTaskArgs] {
-	return &river.Job[queueargs.DispatchTaskArgs]{
-		JobRow: &rivertype.JobRow{ID: int64(attempt), Attempt: attempt, MaxAttempts: maxAttempts},
-		Args:   queueargs.DispatchTaskArgs{WorkspaceID: "test", TaskID: taskID},
-	}
+func dispatchTaskJob(taskID string, attempt, maxAttempts int) queue.Job {
+	return testJob(queue.DispatchTaskArgs{WorkspaceID: "test", TaskID: taskID}, int64(attempt), attempt, maxAttempts)
 }

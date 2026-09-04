@@ -10,7 +10,6 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
-	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 )
 
 func TestMigration094RetiresSupersededRequirementVersionsIdempotentlyIntegration(t *testing.T) {
@@ -37,7 +36,7 @@ func TestMigration094RetiresSupersededRequirementVersionsIdempotentlyIntegration
 	if err = migrateControlPlaneToVersion(t.Context(), pool, 92); err != nil {
 		t.Fatal(err)
 	}
-	st := &Store{pool: pool, queries: db.New(pool)}
+	st := newStore(pool)
 	workspace := "requirement-retirement-migration-" + core.NewTaskID()
 	ctx := store.WithWorkspace(t.Context(), workspace)
 	if _, err = st.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "conveyor", Base: "main"}}}); err != nil {

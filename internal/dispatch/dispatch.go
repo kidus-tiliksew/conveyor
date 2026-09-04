@@ -233,7 +233,7 @@ func (d *Dispatcher) runTask(ctx context.Context, taskID string) error {
 	if task.NextStage != core.StageImplement && task.NextStage != core.StageSpec {
 		return d.runTaskForSnapshot(ctx, task)
 	}
-	// River is the sole durable production mailbox, so a task row has one
+	// The queue is the sole durable production mailbox, so a task row has one
 	// delivery owner. Lifecycle state writes inside the stage path serialize
 	// through taskops; no session lock is held across ordinary database work.
 	return d.runTaskForSnapshot(ctx, task)
@@ -2017,7 +2017,7 @@ func (d *Dispatcher) DispatchConflictFix(ctx context.Context, task core.Task) (c
 		return core.WorkOrder{}, err
 	}
 	// The forge operation above is observational. Re-enter the task lock and
-	// refresh state before the durable command so watcher and River paths share
+	// refresh state before the durable command so watcher and queue paths share
 	// one serialized admission decision.
 	var result core.WorkOrder
 	err = d.Store.WithTaskSideEffectLock(ctx, current.ID, func(lockedCtx context.Context) error {
@@ -2594,7 +2594,7 @@ func (d *Dispatcher) queueApprovedIssue(ctx context.Context, task core.Task, spe
 }
 
 // ReconcileGitHubLifecycles repairs the narrow approval-to-outbox gap after a
-// process restart. Remote side effects remain owned by the durable River job.
+// process restart. Remote side effects remain owned by the durable queue job.
 func (d *Dispatcher) ReconcileGitHubLifecycles(ctx context.Context) (int, error) {
 	tasks, err := d.Store.ListTasks(ctx)
 	if err != nil {

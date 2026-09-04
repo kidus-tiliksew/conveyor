@@ -17,7 +17,6 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
 	"github.com/kidus-tiliksew/conveyor/internal/envfile"
-	queueargs "github.com/kidus-tiliksew/conveyor/internal/queue"
 )
 
 func TestWorkspaceQueueRegistrarConvergesOnceAndRetriesFailures(t *testing.T) {
@@ -87,12 +86,7 @@ func TestWorkspaceQueueRegistrarConvergesOnceAndRetriesFailures(t *testing.T) {
 	if len(lines) != 2 {
 		t.Fatalf("registration logs=%q, want one per successful new workspace", lines)
 	}
-	wantNew := fmt.Sprintf("registered River scheduling for workspace new: queues=%s,%s,%s periodic_job=%s",
-		queueargs.DispatchQueue("new"),
-		queueargs.ReviewPublicationQueue("new"),
-		queueargs.GitHubIssuePublicationQueue("new"),
-		queueargs.OrderClockPeriodicID("new"),
-	)
+	wantNew := "registered queue scheduling for workspace new"
 	if lines[1] != wantNew {
 		t.Fatalf("new workspace log=%q, want %q", lines[1], wantNew)
 	}

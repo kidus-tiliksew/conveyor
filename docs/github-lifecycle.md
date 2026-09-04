@@ -28,7 +28,7 @@ those two durable misses establish a bounded no-marker window, exactly one new
 create attempt is authorized and the miss counter resets. This also recovers when
 the original command genuinely failed before GitHub created anything, without
 turning every retry into a possible duplicate. Finding the marker advances the
-state to `confirmed` and clears the misses. River's bounded attempts expose a
+state to `confirmed` and clears the misses. The queue's bounded attempts expose a
 durable failure if the remote issue does not converge in time, and startup
 reconciliation resumes the same durable state machine safely.
 
@@ -62,7 +62,7 @@ The durable `review_work_order_id` identifies a publication. Review round and
 seat describe its lifecycle context; row and event timestamps never suppress
 its required comment. An eligible publication reaches `published` only after
 both projections succeed and the comment upsert returns a nonzero
-`comment_id`. Startup reconciliation and River retries rebuild both projections
+`comment_id`. Startup reconciliation and queue retries rebuild both projections
 from durable events and converge on the same task-marked comment. Reconciliation
 also reopens legacy `published` rows whose required comment ID is zero and
 re-enqueues that same publication identity.
