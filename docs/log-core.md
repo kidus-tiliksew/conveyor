@@ -87,6 +87,17 @@ workspace's log from the last snapshot position, snapshots at a fixed cadence,
 and rebuilds from zero when a projector's version changes. `catalog` is the
 first projector.
 
+**The queue port.** The durable queue sits behind two small interfaces.
+`queue.Runtime` is the worker side: register a handler per job kind, ensure
+a workspace's queues and clock, start, stop, stop-and-cancel. The store keeps
+a private `dispatchQueue` for the transactional enqueues each lifecycle
+command needs and the two reconciliation reads. River implements both today
+from `internal/queue/riverqueue`, the only package outside the store's
+River-specific file that imports it; the dispatcher's handlers, the daemon,
+and the tests see only the port. A handler completes a job by returning
+nil, reschedules it with `queue.Snooze`, and fails it with any other error;
+the driver owns retries, rescue, and the periodic order clock.
+
 ## Operating it
 
 1. Deploy a binary that includes the log core. On startup it creates the log
@@ -124,8 +135,8 @@ replays the demo log in 3.3 s, and parity is still clean everywhere.
 
 - Serve any read from the log. Phase 2 continues with projectors per entity
   family, driven by the parity report's unfolded kinds.
-- Replace River. Phase 3 puts the queue behind a store port, then runs a
-  log-backed queue in shadow.
+- Replace River. The port is in place; the log-backed queue behind it, run
+  in shadow against River's decisions, is the rest of phase 3.
 - Cut a workspace over. Phase 4 adds a per-workspace flag.
 - Run on SingleStore or SQLite. Phase 6 adds drivers against the conformance
   suite; the contract needs only a unique key and a transaction.

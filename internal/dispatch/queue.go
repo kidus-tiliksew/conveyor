@@ -12,11 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/riverqueue/river"
-	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
@@ -73,7 +69,6 @@ func (r *WorkspaceQueueRegistrar) Converge(workspaces []core.Workspace) error {
 }
 
 type dispatchTaskWorker struct {
-	river.WorkerDefaults[queueargs.DispatchTaskArgs]
 	dispatcher *Dispatcher
 	shutdown   *ShutdownMarker
 }
@@ -96,47 +91,61 @@ func (m *ShutdownMarker) Mark() {
 
 func (m *ShutdownMarker) Stopping() bool { return m != nil && m.stopping.Load() }
 
-// MarkedRiverClient marks hard shutdown before River cancels active work.
-type MarkedRiverClient struct {
-	client   *river.Client[pgx.Tx]
+// MarkedRuntime marks hard shutdown before the queue cancels active work.
+type MarkedRuntime struct {
+	runtime  queueargs.Runtime
 	shutdown *ShutdownMarker
 }
 
-func NewMarkedRiverClient(client *river.Client[pgx.Tx], shutdown *ShutdownMarker) *MarkedRiverClient {
-	return &MarkedRiverClient{client: client, shutdown: shutdown}
+func NewMarkedRuntime(runtime queueargs.Runtime, shutdown *ShutdownMarker) *MarkedRuntime {
+	return &MarkedRuntime{runtime: runtime, shutdown: shutdown}
 }
 
-func (c *MarkedRiverClient) Stop(ctx context.Context) error { return c.client.Stop(ctx) }
+func (c *MarkedRuntime) Stop(ctx context.Context) error { return c.runtime.Stop(ctx) }
 
-func (c *MarkedRiverClient) StopAndCancel(ctx context.Context) error {
+func (c *MarkedRuntime) StopAndCancel(ctx context.Context) error {
 	c.shutdown.Mark()
-	return c.client.StopAndCancel(ctx)
+	return c.runtime.StopAndCancel(ctx)
 }
 
 type orderClockWorker struct {
-	river.WorkerDefaults[queueargs.OrderClockArgs]
 	dispatcher *Dispatcher
 }
 
-func (w *orderClockWorker) Work(ctx context.Context, job *river.Job[queueargs.OrderClockArgs]) error {
-	ctx = store.WithActor(ctx, store.Actor{ID: fmt.Sprintf("river:%d", job.ID), Role: core.ActorSystem})
-	ctx = store.WithWorkspace(ctx, job.Args.WorkspaceID)
-	_, err := taskops.New(w.dispatcher.Store).TickOrderClock(ctx, time.Now().UTC())
+func (w *orderClockWorker) Work(ctx context.Context, job queueargs.Job) error {
+	args, err := queueargs.DecodeArgs[queueargs.OrderClockArgs](job)
+	if err != nil {
+		return err
+	}
+	ctx = store.WithActor(ctx, store.Actor{ID: fmt.Sprintf("river:%s", job.ID), Role: core.ActorSystem})
+	ctx = store.WithWorkspace(ctx, args.WorkspaceID)
+	_, err = taskops.New(w.dispatcher.Store).TickOrderClock(ctx, time.Now().UTC())
 	return err
 }
 
-func (w *dispatchTaskWorker) NextRetry(job *river.Job[queueargs.DispatchTaskArgs]) time.Time {
-	return time.Now().UTC().Add(queueargs.DispatchTaskRetryDelay(job.Attempt))
-}
-
 type reviewPublicationWorker struct {
-	river.WorkerDefaults[queueargs.ReviewPublicationArgs]
 	dispatcher *Dispatcher
 }
 
 type githubIssuePublicationWorker struct {
-	river.WorkerDefaults[queueargs.GitHubIssuePublicationArgs]
 	dispatcher *Dispatcher
+}
+
+// Registrations binds every job kind to its handler and retry policy. The
+// daemon hands them to whichever queue.Runtime is in use.
+func (d *Dispatcher) Registrations(shutdown *ShutdownMarker) []queueargs.Registration {
+	return []queueargs.Registration{
+		{
+			Kind:   queueargs.DispatchTaskArgs{}.Kind(),
+			Handle: (&dispatchTaskWorker{dispatcher: d, shutdown: shutdown}).Work,
+			// Bounded T12/T13 backoff between failed dispatch attempts
+			// (design-task-lifecycle).
+			RetryDelay: queueargs.DispatchTaskRetryDelay,
+		},
+		{Kind: queueargs.ReviewPublicationArgs{}.Kind(), Handle: (&reviewPublicationWorker{dispatcher: d}).Work},
+		{Kind: queueargs.GitHubIssuePublicationArgs{}.Kind(), Handle: (&githubIssuePublicationWorker{dispatcher: d}).Work},
+		{Kind: queueargs.OrderClockArgs{}.Kind(), Handle: (&orderClockWorker{dispatcher: d}).Work},
+	}
 }
 
 // A create command failure is ambiguous: GitHub may have accepted the issue
@@ -144,10 +153,14 @@ type githubIssuePublicationWorker struct {
 // no-marker passes before authorizing exactly one new create attempt.
 const githubIssueReconciliationMissesBeforeCreate = 2
 
-func (w *githubIssuePublicationWorker) Work(ctx context.Context, job *river.Job[queueargs.GitHubIssuePublicationArgs]) error {
-	ctx = store.WithActor(ctx, store.Actor{ID: fmt.Sprintf("river:github-issue-publication:%d", job.ID), Role: core.ActorSystem})
-	ctx = store.WithWorkspace(ctx, job.Args.WorkspaceID)
-	lifecycle, ok, err := w.dispatcher.Store.GetGitHubLifecycle(ctx, job.Args.TaskID)
+func (w *githubIssuePublicationWorker) Work(ctx context.Context, job queueargs.Job) error {
+	args, err := queueargs.DecodeArgs[queueargs.GitHubIssuePublicationArgs](job)
+	if err != nil {
+		return err
+	}
+	ctx = store.WithActor(ctx, store.Actor{ID: fmt.Sprintf("river:github-issue-publication:%s", job.ID), Role: core.ActorSystem})
+	ctx = store.WithWorkspace(ctx, args.WorkspaceID)
+	lifecycle, ok, err := w.dispatcher.Store.GetGitHubLifecycle(ctx, args.TaskID)
 	if err != nil || !ok || lifecycle.State == core.GitHubPublicationPublished {
 		return err
 	}
@@ -237,10 +250,14 @@ func (w *githubIssuePublicationWorker) Work(ctx context.Context, job *river.Job[
 	return nil
 }
 
-func (w *reviewPublicationWorker) Work(ctx context.Context, job *river.Job[queueargs.ReviewPublicationArgs]) error {
-	ctx = store.WithActor(ctx, store.Actor{ID: fmt.Sprintf("river:review-publication:%d", job.ID), Role: core.ActorSystem})
-	ctx = store.WithWorkspace(ctx, job.Args.WorkspaceID)
-	publication, err := w.dispatcher.Store.GetReviewPublication(ctx, job.Args.ReviewWorkOrderID)
+func (w *reviewPublicationWorker) Work(ctx context.Context, job queueargs.Job) error {
+	args, err := queueargs.DecodeArgs[queueargs.ReviewPublicationArgs](job)
+	if err != nil {
+		return err
+	}
+	ctx = store.WithActor(ctx, store.Actor{ID: fmt.Sprintf("river:review-publication:%s", job.ID), Role: core.ActorSystem})
+	ctx = store.WithWorkspace(ctx, args.WorkspaceID)
+	publication, err := w.dispatcher.Store.GetReviewPublication(ctx, args.ReviewWorkOrderID)
 	if err != nil || (publication.State == core.ReviewPublicationPublished && publication.CommentID > 0) {
 		return err
 	}
@@ -416,12 +433,16 @@ func reviewHistory(events []core.Event) []github.ReviewHistoryItem {
 	return history
 }
 
-func (w *dispatchTaskWorker) Work(ctx context.Context, job *river.Job[queueargs.DispatchTaskArgs]) error {
-	ctx = store.WithActor(ctx, store.Actor{ID: fmt.Sprintf("river:%d", job.ID), Role: core.ActorSystem})
-	ctx = store.WithWorkspace(ctx, job.Args.WorkspaceID)
-	err := w.dispatcher.runTask(ctx, job.Args.TaskID)
+func (w *dispatchTaskWorker) Work(ctx context.Context, job queueargs.Job) error {
+	args, err := queueargs.DecodeArgs[queueargs.DispatchTaskArgs](job)
+	if err != nil {
+		return err
+	}
+	ctx = store.WithActor(ctx, store.Actor{ID: fmt.Sprintf("river:%s", job.ID), Role: core.ActorSystem})
+	ctx = store.WithWorkspace(ctx, args.WorkspaceID)
+	err = w.dispatcher.runTask(ctx, args.TaskID)
 	if err == nil {
-		task, getErr := w.dispatcher.Store.GetTask(ctx, job.Args.TaskID)
+		task, getErr := w.dispatcher.Store.GetTask(ctx, args.TaskID)
 		if getErr != nil {
 			return getErr
 		}
@@ -435,7 +456,7 @@ func (w *dispatchTaskWorker) Work(ctx context.Context, job *river.Job[queueargs.
 			// The currently running River row owns this task's pipeline. A
 			// queued stage transition cannot insert a duplicate while this row
 			// is active, so snooze the same row into the next stage.
-			return river.JobSnooze(time.Second)
+			return queueargs.Snooze(time.Second)
 		}
 		return nil
 	}
@@ -443,19 +464,23 @@ func (w *dispatchTaskWorker) Work(ctx context.Context, job *river.Job[queueargs.
 		// Shutdown interruption is not a dispatch failure. Snoozing restores
 		// River's incremented attempt and keeps the same durable row available
 		// for another instance (REQ-6/AC-6.2; design-task-lifecycle).
-		log.Printf("[task %s] River job %d interrupted by daemon shutdown; preserving attempt %d", job.Args.TaskID, job.ID, job.Attempt)
-		return river.JobSnooze(shutdownRetryDelay)
+		log.Printf("[task %s] queue job %s interrupted by daemon shutdown; preserving attempt %d", args.TaskID, job.ID, job.Attempt)
+		return queueargs.Snooze(shutdownRetryDelay)
 	}
 	return w.handleFailure(ctx, job, err)
 }
 
-func (w *dispatchTaskWorker) handleFailure(ctx context.Context, job *river.Job[queueargs.DispatchTaskArgs], err error) error {
+func (w *dispatchTaskWorker) handleFailure(ctx context.Context, job queueargs.Job, err error) error {
+	args, decodeErr := queueargs.DecodeArgs[queueargs.DispatchTaskArgs](job)
+	if decodeErr != nil {
+		return fmt.Errorf("dispatch failed: %v; decode job: %w", err, decodeErr)
+	}
 	// A duplicate jobs key can be a lost acknowledgement from a dispatch that
 	// already materialized the §21.30 conflict-fix order. Treat that durable
 	// active order as success before emitting failure or requeue activity.
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-		if _, active, lookupErr := w.dispatcher.activeImplementationWorkOrder(ctx, job.Args.TaskID, "merge-conflict"); lookupErr != nil {
+		if _, active, lookupErr := w.dispatcher.activeImplementationWorkOrder(ctx, args.TaskID, "merge-conflict"); lookupErr != nil {
 			return fmt.Errorf("dispatch duplicate recovery: %w", lookupErr)
 		} else if active {
 			return nil
@@ -467,17 +492,17 @@ func (w *dispatchTaskWorker) handleFailure(ctx context.Context, job *river.Job[q
 		"error":        err.Error(),
 	})
 	if eventErr := w.dispatcher.Store.AppendEvent(ctx, core.Event{
-		TaskID: job.Args.TaskID, Kind: "dispatch.failed", Payload: payload,
+		TaskID: args.TaskID, Kind: "dispatch.failed", Payload: payload,
 	}); eventErr != nil {
-		log.Printf("[task %s] record River failure: %v", job.Args.TaskID, eventErr)
+		log.Printf("[task %s] record River failure: %v", args.TaskID, eventErr)
 	}
-	task, taskErr := w.dispatcher.Store.GetTask(ctx, job.Args.TaskID)
+	task, taskErr := w.dispatcher.Store.GetTask(ctx, args.TaskID)
 	if taskErr != nil {
 		return fmt.Errorf("dispatch failed: %v; load recovery transition: %w", err, taskErr)
 	}
 	recoveryStage := task.NextStage
 	if recoveryStage == "" {
-		if latest, ok, latestErr := w.dispatcher.Store.GetLatestJob(ctx, job.Args.TaskID); latestErr == nil && ok {
+		if latest, ok, latestErr := w.dispatcher.Store.GetLatestJob(ctx, args.TaskID); latestErr == nil && ok {
 			recoveryStage = latest.Stage
 		}
 	}
@@ -486,11 +511,11 @@ func (w *dispatchTaskWorker) handleFailure(ctx context.Context, job *river.Job[q
 			// Return the failed stage to queued before applying T13. This preserves
 			// the canonical queued -> parked edge and records dispatch.fail_final
 			// for operator visibility (design-task-lifecycle).
-			if _, stateErr := taskops.New(w.dispatcher.Store).Perform(ctx, job.Args.TaskID, taskops.Command{Kind: core.TaskStageBounce, NextStage: recoveryStage, ProjectStages: true}); stateErr != nil {
+			if _, stateErr := taskops.New(w.dispatcher.Store).Perform(ctx, args.TaskID, taskops.Command{Kind: core.TaskStageBounce, NextStage: recoveryStage, ProjectStages: true}); stateErr != nil {
 				return fmt.Errorf("dispatch failed: %v; requeue before final River failure: %w", err, stateErr)
 			}
 		}
-		if _, stateErr := taskops.New(w.dispatcher.Store).Perform(ctx, job.Args.TaskID, taskops.Command{Kind: core.TaskDispatchFailFinal, RecoveryStage: recoveryStage, ProjectStages: true}); stateErr != nil {
+		if _, stateErr := taskops.New(w.dispatcher.Store).Perform(ctx, args.TaskID, taskops.Command{Kind: core.TaskDispatchFailFinal, RecoveryStage: recoveryStage, ProjectStages: true}); stateErr != nil {
 			return fmt.Errorf("dispatch failed: %v; park after final River attempt: %w", err, stateErr)
 		}
 	} else {
@@ -501,44 +526,11 @@ func (w *dispatchTaskWorker) handleFailure(ctx context.Context, job *river.Job[q
 			// the lifecycle table is amended (design-task-lifecycle).
 			command = core.TaskStageBounce
 		}
-		if _, stateErr := taskops.New(w.dispatcher.Store).Perform(ctx, job.Args.TaskID, taskops.Command{Kind: command, NextStage: recoveryStage, ProjectStages: true}); stateErr != nil {
+		if _, stateErr := taskops.New(w.dispatcher.Store).Perform(ctx, args.TaskID, taskops.Command{Kind: command, NextStage: recoveryStage, ProjectStages: true}); stateErr != nil {
 			return fmt.Errorf("dispatch failed: %v; persist retry transition: %w", err, stateErr)
 		}
 	}
 	return err
-}
-
-// NewRiverClient binds the durable queue to the dispatcher. The Store owns
-// transactional insertion; this client owns only worker execution (spec
-// §3.1, §17.0).
-func NewRiverClient(pool *pgxpool.Pool, dispatcher *Dispatcher, workspaces []string, workspaceConfigs map[string]*config.Config, shutdown *ShutdownMarker) (*river.Client[pgx.Tx], error) {
-	rescueAfter, err := RiverRescueStuckJobsAfter(workspaceConfigs)
-	if err != nil {
-		return nil, err
-	}
-	workers := river.NewWorkers()
-	river.AddWorker(workers, &dispatchTaskWorker{dispatcher: dispatcher, shutdown: shutdown})
-	river.AddWorker(workers, &reviewPublicationWorker{dispatcher: dispatcher})
-	river.AddWorker(workers, &githubIssuePublicationWorker{dispatcher: dispatcher})
-	river.AddWorker(workers, &orderClockWorker{dispatcher: dispatcher})
-	queues := map[string]river.QueueConfig{queueargs.ControlQueue: {MaxWorkers: 1}}
-	periodicJobs := make([]*river.PeriodicJob, 0, len(workspaces))
-	for _, workspace := range workspaces {
-		queues[queueargs.DispatchQueue(workspace)] = river.QueueConfig{MaxWorkers: 1}
-		queues[queueargs.ReviewPublicationQueue(workspace)] = river.QueueConfig{MaxWorkers: 1}
-		queues[queueargs.GitHubIssuePublicationQueue(workspace)] = river.QueueConfig{MaxWorkers: 1}
-		periodicJobs = append(periodicJobs, orderClockPeriodicJob(workspace))
-	}
-	return river.NewClient(riverpgxv5.New(pool), &river.Config{
-		// Dispatcher stage contexts enforce the configured per-stage wall-clock
-		// limits. River's one-minute default would cancel long harness runs and
-		// handoff artifact collection before those limits (DEC-1).
-		JobTimeout:           -1,
-		RescueStuckJobsAfter: rescueAfter,
-		Queues:               queues,
-		Workers:              workers,
-		PeriodicJobs:         periodicJobs,
-	})
 }
 
 // RiverRescueStuckJobsAfter bounds crash recovery above every stage that may
@@ -608,32 +600,4 @@ func ValidateRiverRescueStuckJobsAfter(workspace string, cfg *config.Config, thr
 		}
 	}
 	return nil
-}
-
-func orderClockPeriodicJob(workspace string) *river.PeriodicJob {
-	return river.NewPeriodicJob(
-		river.PeriodicInterval(5*time.Second),
-		func() (river.JobArgs, *river.InsertOpts) {
-			return queueargs.OrderClockArgs{WorkspaceID: workspace}, &river.InsertOpts{Queue: queueargs.ControlQueue}
-		},
-		&river.PeriodicJobOpts{ID: queueargs.OrderClockPeriodicID(workspace), RunOnStart: true},
-	)
-}
-
-func AddWorkspaceQueues(client *river.Client[pgx.Tx], workspace string) error {
-	if err := client.Queues().Add(queueargs.DispatchQueue(workspace), river.QueueConfig{MaxWorkers: 1}); err != nil {
-		if !errors.Is(err, &river.QueueAlreadyAddedError{}) {
-			return err
-		}
-	}
-	err := client.Queues().Add(queueargs.ReviewPublicationQueue(workspace), river.QueueConfig{MaxWorkers: 1})
-	if err != nil && !errors.Is(err, &river.QueueAlreadyAddedError{}) {
-		return err
-	}
-	err = client.Queues().Add(queueargs.GitHubIssuePublicationQueue(workspace), river.QueueConfig{MaxWorkers: 1})
-	if err != nil && !errors.Is(err, &river.QueueAlreadyAddedError{}) {
-		return err
-	}
-	_, err = client.PeriodicJobs().AddSafely(orderClockPeriodicJob(workspace))
-	return err
 }

@@ -20,6 +20,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	queueargs "github.com/kidus-tiliksew/conveyor/internal/queue"
+	"github.com/kidus-tiliksew/conveyor/internal/queue/riverqueue"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	storepg "github.com/kidus-tiliksew/conveyor/internal/store/postgres"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
@@ -82,7 +83,7 @@ func TestRiverShutdownInterruptionPreservesRowAndAttemptIntegration(t *testing.T
 	blocking := &blockingDispatchStore{Store: st, taskID: task.ID, started: make(chan struct{})}
 	dispatcher := New(blocking, cfg, nil)
 	marker := &ShutdownMarker{}
-	client, err := NewRiverClient(st.Pool(), dispatcher, []string{workspace}, map[string]*config.Config{workspace: cfg}, marker)
+	client, err := testRuntime(t, st.Pool(), dispatcher, marker, []string{workspace}, map[string]*config.Config{workspace: cfg})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +102,7 @@ func TestRiverShutdownInterruptionPreservesRowAndAttemptIntegration(t *testing.T
 	}
 	stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer stopCancel()
-	if err = NewMarkedRiverClient(client, marker).StopAndCancel(stopCtx); err != nil {
+	if err = NewMarkedRuntime(client, marker).StopAndCancel(stopCtx); err != nil {
 		t.Fatal(err)
 	}
 	var persistedID int64
@@ -141,11 +142,11 @@ func TestRiverClientConvergesLateWorkspaceQueuesIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	dispatcher := New(st, dispatchRaceConfig(workspaceA), nil)
-	client, err := NewRiverClient(st.Pool(), dispatcher, []string{workspaceA}, map[string]*config.Config{workspaceA: dispatchRaceConfig(workspaceA)}, &ShutdownMarker{})
+	client, err := testRuntime(t, st.Pool(), dispatcher, &ShutdownMarker{}, []string{workspaceA}, map[string]*config.Config{workspaceA: dispatchRaceConfig(workspaceA)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	events, unsubscribe := client.Subscribe(river.EventKindJobCompleted)
+	events, unsubscribe := client.Client().Subscribe(river.EventKindJobCompleted)
 	defer unsubscribe()
 	if err = client.Start(ctx); err != nil {
 		t.Fatal(err)
@@ -185,7 +186,7 @@ func TestRiverClientConvergesLateWorkspaceQueuesIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	registrar := NewWorkspaceQueueRegistrar([]string{workspaceA}, func(workspace string) error {
-		return AddWorkspaceQueues(client, workspace)
+		return client.EnsureWorkspace(workspace)
 	}, t.Logf)
 	workspaces, err := st.ListWorkspaces(ctx)
 	if err != nil {
@@ -408,7 +409,7 @@ func TestRiverDispatchCompletesBlueprintAnchorIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	dispatcher := New(st, cfg, nil)
-	testWorker := rivertest.NewWorker(t, riverpgxv5.New(nil), &river.Config{ID: "blueprint-anchor"}, &dispatchTaskWorker{dispatcher: dispatcher})
+	testWorker := rivertest.NewWorker(t, riverpgxv5.New(nil), &river.Config{ID: "blueprint-anchor"}, riverqueue.WorkerFor[queueargs.DispatchTaskArgs](dispatchRegistration(dispatcher)))
 	result, err := testWorker.Work(ctx, t, tx,
 		queueargs.DispatchTaskArgs{WorkspaceID: workspace, TaskID: parent.ID},
 		&river.InsertOpts{MaxAttempts: queueargs.DispatchTaskMaxAttempts})
@@ -467,7 +468,7 @@ func TestRiverDispatchPersistsFiveRetriesThenParksIntegration(t *testing.T) {
 
 	wantFailure := errors.New("forced dispatch failure")
 	dispatcher := New(&failingStageOrderStore{Store: st, err: wantFailure}, cfg, nil)
-	testWorker := rivertest.NewWorker(t, riverpgxv5.New(nil), &river.Config{ID: "dispatch-retry-policy"}, &dispatchTaskWorker{dispatcher: dispatcher})
+	testWorker := rivertest.NewWorker(t, riverpgxv5.New(nil), &river.Config{ID: "dispatch-retry-policy"}, riverqueue.WorkerFor[queueargs.DispatchTaskArgs](dispatchRegistration(dispatcher)))
 	args := queueargs.DispatchTaskArgs{WorkspaceID: workspace, TaskID: task.ID}
 	opts := &river.InsertOpts{MaxAttempts: queueargs.DispatchTaskMaxAttempts}
 	wants := []time.Duration{10 * time.Second, 20 * time.Second, 40 * time.Second, 80 * time.Second, 160 * time.Second}
@@ -589,10 +590,7 @@ func TestConflictFixAndRiverDispatchSerializeIntegration(t *testing.T) {
 	riverDone := make(chan error, 1)
 	worker := &dispatchTaskWorker{dispatcher: dispatcher}
 	go func() {
-		riverDone <- worker.Work(ctx, &river.Job[queueargs.DispatchTaskArgs]{
-			JobRow: &rivertype.JobRow{ID: 1, Attempt: 1, MaxAttempts: 5},
-			Args:   queueargs.DispatchTaskArgs{WorkspaceID: workspace, TaskID: task.ID},
-		})
+		riverDone <- worker.Work(ctx, testJob(queueargs.DispatchTaskArgs{WorkspaceID: workspace, TaskID: task.ID}, 1, 1, 5))
 	}()
 	close(observed.releaseOrder)
 	releasedOrder = true
@@ -606,7 +604,7 @@ func TestConflictFixAndRiverDispatchSerializeIntegration(t *testing.T) {
 	}
 	select {
 	case err = <-riverDone:
-		var snooze *river.JobSnoozeError
+		var snooze *queueargs.SnoozeError
 		if !errors.As(err, &snooze) || snooze.Duration != time.Second {
 			t.Fatalf("River dispatch result=%v, want one-second stage snooze", err)
 		}
@@ -1069,13 +1067,8 @@ func TestReviewPublicationWorkerPostgresProjectionLifecycleIntegration(t *testin
 	}
 }
 
-func reviewPublicationIntegrationJob(workspace, workOrderID string, attempt int) *river.Job[queueargs.ReviewPublicationArgs] {
-	return &river.Job[queueargs.ReviewPublicationArgs]{
-		JobRow: &rivertype.JobRow{ID: int64(attempt), Attempt: attempt, MaxAttempts: 5},
-		Args: queueargs.ReviewPublicationArgs{
-			WorkspaceID: workspace, ReviewWorkOrderID: workOrderID,
-		},
-	}
+func reviewPublicationIntegrationJob(workspace, workOrderID string, attempt int) queueargs.Job {
+	return testJob(queueargs.ReviewPublicationArgs{WorkspaceID: workspace, ReviewWorkOrderID: workOrderID}, int64(attempt), attempt, 5)
 }
 
 func dispatchIntegrationDatabaseURL(t *testing.T) string {

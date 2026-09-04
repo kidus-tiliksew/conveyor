@@ -27,6 +27,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/monitor"
 	"github.com/kidus-tiliksew/conveyor/internal/pack"
 	"github.com/kidus-tiliksew/conveyor/internal/planning"
+	"github.com/kidus-tiliksew/conveyor/internal/queue/riverqueue"
 	"github.com/kidus-tiliksew/conveyor/internal/releaseinfo"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	postgresstore "github.com/kidus-tiliksew/conveyor/internal/store/postgres"
@@ -175,12 +176,15 @@ func main() {
 		}
 		log.Printf("River stuck-job rescue threshold %s", rescueAfter)
 		riverShutdown := &dispatch.ShutdownMarker{}
-		client, clientErr := dispatch.NewRiverClient(pgStore.Pool(), d, workspaceIDs, workspaceConfigs, riverShutdown)
+		runtime, clientErr := riverqueue.NewRuntime(pgStore.Pool(), riverqueue.Options{RescueStuckAfter: rescueAfter, Workspaces: workspaceIDs})
 		if clientErr != nil {
-			log.Fatalf("create River worker: %v", clientErr)
+			log.Fatalf("create queue runtime: %v", clientErr)
 		}
-		if clientErr = client.Start(context.Background()); clientErr != nil {
-			log.Fatalf("start River worker: %v", clientErr)
+		for _, registration := range d.Registrations(riverShutdown) {
+			runtime.Register(registration)
+		}
+		if clientErr = runtime.Start(context.Background()); clientErr != nil {
+			log.Fatalf("start queue runtime: %v", clientErr)
 		}
 		workspaceQueues = dispatch.NewWorkspaceQueueRegistrar(workspaceIDs, func(workspace string) error {
 			workspaceConfig, configErr := pgStore.RuntimeConfig(store.WithWorkspace(ctx, workspace), deployment)
@@ -190,13 +194,13 @@ func main() {
 			if configErr = dispatch.ValidateRiverRescueStuckJobsAfter(workspace, workspaceConfig, rescueAfter); configErr != nil {
 				return configErr
 			}
-			return dispatch.AddWorkspaceQueues(client, workspace)
+			return runtime.EnsureWorkspace(workspace)
 		}, log.Printf)
 		addWorkspaceQueue = func(workspace string) error {
 			_, err := workspaceQueues.Ensure(workspace)
 			return err
 		}
-		riverClient = dispatch.NewMarkedRiverClient(client, riverShutdown)
+		riverClient = dispatch.NewMarkedRuntime(runtime, riverShutdown)
 		log.Printf("durable pipeline worker active; implementation/review available over MCP")
 	} else {
 		go d.Run(ctx)

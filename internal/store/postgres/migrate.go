@@ -18,9 +18,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/eventlog/pglog"
+	"github.com/kidus-tiliksew/conveyor/internal/queue/riverqueue"
 	controlstore "github.com/kidus-tiliksew/conveyor/internal/store"
-	"github.com/riverqueue/river/riverdriver/riverpgxv5"
-	"github.com/riverqueue/river/rivermigrate"
 )
 
 //go:embed migrations/*.sql
@@ -52,12 +51,8 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 	if err := migrateControlPlane(ctx, pool); err != nil {
 		return err
 	}
-	migrator, err := rivermigrate.New(riverpgxv5.New(pool), nil)
-	if err != nil {
-		return fmt.Errorf("create River migrator: %w", err)
-	}
-	if _, err := migrator.Migrate(ctx, rivermigrate.DirectionUp, nil); err != nil {
-		return fmt.Errorf("migrate River schema: %w", err)
+	if err := riverqueue.Migrate(ctx, pool); err != nil {
+		return err
 	}
 	// The event log's tables are owned by its driver and created the same way
 	// River's are: idempotently, under the startup lock, outside the numbered

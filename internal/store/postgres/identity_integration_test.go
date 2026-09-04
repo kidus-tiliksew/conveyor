@@ -18,14 +18,12 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
 	"github.com/kidus-tiliksew/conveyor/internal/httpapi"
+	"github.com/kidus-tiliksew/conveyor/internal/queue/riverqueue"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
 	"github.com/kidus-tiliksew/conveyor/internal/workorder"
-	"github.com/riverqueue/river"
-	"github.com/riverqueue/river/riverdriver/riverpgxv5"
-	"github.com/riverqueue/river/rivermigrate"
 )
 
 func TestIdentityBootstrapAndPersonalAccessTokenLifecycleIntegration(t *testing.T) {
@@ -1182,17 +1180,13 @@ func newIdentityIntegrationStore(t *testing.T, maxVersion int) *Store {
 		t.Fatalf("migrate identity fixture to %d: %v", maxVersion, err)
 	}
 	if maxVersion == 0 {
-		migrator, migrateErr := rivermigrate.New(riverpgxv5.New(pool), nil)
-		if migrateErr != nil {
-			t.Fatal(migrateErr)
-		}
-		if _, migrateErr = migrator.Migrate(t.Context(), rivermigrate.DirectionUp, nil); migrateErr != nil {
+		if migrateErr := riverqueue.Migrate(t.Context(), pool); migrateErr != nil {
 			t.Fatal(migrateErr)
 		}
 	}
-	riverClient, err := river.NewClient(riverpgxv5.New(pool), &river.Config{})
+	queue, err := newRiverDispatchQueue(pool)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &Store{pool: pool, queries: db.New(pool), river: riverClient}
+	return &Store{pool: pool, queries: db.New(pool), queue: queue}
 }

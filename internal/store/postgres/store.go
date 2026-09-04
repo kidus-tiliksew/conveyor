@@ -21,9 +21,6 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/riverqueue/river"
-	"github.com/riverqueue/river/riverdriver/riverpgxv5"
-	"github.com/riverqueue/river/rivertype"
 	"gopkg.in/yaml.v3"
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
@@ -31,7 +28,6 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/eventlog"
 	"github.com/kidus-tiliksew/conveyor/internal/eventlog/pglog"
 	"github.com/kidus-tiliksew/conveyor/internal/gitx"
-	queueargs "github.com/kidus-tiliksew/conveyor/internal/queue"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
@@ -40,7 +36,7 @@ import (
 type Store struct {
 	pool          *pgxpool.Pool
 	queries       *db.Queries
-	river         *river.Client[pgx.Tx]
+	queue         dispatchQueue
 	log           *pglog.Store
 	knownTables   sync.Map // table name -> true once seen to exist
 	forgeTokenKey []byte
@@ -86,12 +82,12 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 		pool.Close()
 		return nil, err
 	}
-	riverClient, err := river.NewClient(riverpgxv5.New(pool), &river.Config{})
+	queue, err := newRiverDispatchQueue(pool)
 	if err != nil {
 		pool.Close()
-		return nil, fmt.Errorf("create River insert client: %w", err)
+		return nil, err
 	}
-	return &Store{pool: pool, queries: db.New(pool), river: riverClient, log: pglog.New(pool)}, nil
+	return &Store{pool: pool, queries: db.New(pool), queue: queue, log: pglog.New(pool)}, nil
 }
 
 func (s *Store) Close() { s.pool.Close() }
@@ -1788,44 +1784,10 @@ func (s *Store) ReconcileQueuedTasks(ctx context.Context) (int, error) {
 		if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtext($1))", "conveyor:queue-reconcile:"+workspace(ctx)); err != nil {
 			return err
 		}
-		rows, err := tx.Query(ctx, `
-SELECT t.id
-FROM tasks t
-WHERE t.workspace_id = $1
-  AND t.state = 'queued'
-  AND NOT (
-      t.parent_task_id IS NULL
-      AND t.next_stage = 'implement'
-      AND EXISTS (
-          SELECT 1 FROM tasks child
-          WHERE child.workspace_id=t.workspace_id
-            AND child.parent_task_id=t.id
-      )
-  )
-  AND NOT EXISTS (
-      SELECT 1 FROM river_job r
-      WHERE r.kind = 'dispatch_task'
-        AND r.args->>'task_id' = t.id
-        AND r.state IN ('available', 'pending', 'running', 'retryable', 'scheduled')
-  )
-ORDER BY t.created_at, t.id`, workspace(ctx))
+		taskIDs, err := s.queue.queuedTasksWithoutActiveDispatch(ctx, tx, workspace(ctx))
 		if err != nil {
 			return err
 		}
-		var taskIDs []string
-		for rows.Next() {
-			var taskID string
-			if err := rows.Scan(&taskID); err != nil {
-				rows.Close()
-				return err
-			}
-			taskIDs = append(taskIDs, taskID)
-		}
-		if err := rows.Err(); err != nil {
-			rows.Close()
-			return err
-		}
-		rows.Close()
 		for _, taskID := range taskIDs {
 			inserted, err := s.enqueueTaskTx(ctx, tx, taskID, workspace(ctx))
 			if err != nil {
@@ -1847,55 +1809,12 @@ ORDER BY t.created_at, t.id`, workspace(ctx))
 	if err != nil {
 		return repaired, err
 	}
-	rows, err := s.pool.Query(ctx, `
-SELECT t.id, t.next_stage, r.attempt, r.max_attempts
-FROM tasks t
-JOIN LATERAL (
-    SELECT attempt, max_attempts
-    FROM river_job
-    WHERE kind = 'dispatch_task'
-      AND args->>'task_id' = t.id
-      AND args->>'workspace_id' = t.workspace_id
-      AND state = 'discarded'
-      AND attempt >= max_attempts
-    ORDER BY finalized_at DESC NULLS LAST, id DESC
-    LIMIT 1
-) r ON true
-WHERE t.workspace_id = $1
-  AND t.state = 'running'
-  AND NOT EXISTS (
-      SELECT 1 FROM river_job active
-      WHERE active.kind = 'dispatch_task'
-        AND active.args->>'task_id' = t.id
-        AND active.args->>'workspace_id' = t.workspace_id
-        AND active.state IN ('available', 'pending', 'running', 'retryable', 'scheduled')
-  )
-ORDER BY t.created_at, t.id`, workspace(ctx))
+	discarded, err := s.queue.exhaustedDispatches(ctx, workspace(ctx))
 	if err != nil {
 		return repaired, err
 	}
-	type discardedTask struct {
-		id          string
-		stage       core.Stage
-		attempt     int
-		maxAttempts int
-	}
-	var discarded []discardedTask
-	for rows.Next() {
-		var candidate discardedTask
-		if err = rows.Scan(&candidate.id, &candidate.stage, &candidate.attempt, &candidate.maxAttempts); err != nil {
-			rows.Close()
-			return repaired, err
-		}
-		discarded = append(discarded, candidate)
-	}
-	if err = rows.Err(); err != nil {
-		rows.Close()
-		return repaired, err
-	}
-	rows.Close()
 	for _, candidate := range discarded {
-		_, applyErr := taskops.New(s).Perform(ctx, candidate.id, taskops.Command{
+		_, applyErr := taskops.New(s).Perform(ctx, candidate.taskID, taskops.Command{
 			Kind: core.TaskDispatchFailFinal, RecoveryStage: candidate.stage, ProjectStages: true,
 			FailureMessage: "River rescuer discarded the dispatch job after its final attempt",
 			Attempt:        candidate.attempt, MaxAttempts: candidate.maxAttempts,
@@ -2713,15 +2632,7 @@ func (s *Store) QueueGitHubLifecycle(ctx context.Context, lifecycle core.GitHubL
 				return err
 			}
 		}
-		_, err = s.river.InsertTx(ctx, tx, queueargs.GitHubIssuePublicationArgs{WorkspaceID: workspace(ctx), TaskID: lifecycle.TaskID}, &river.InsertOpts{
-			MaxAttempts: 5,
-			Queue:       queueargs.GitHubIssuePublicationQueue(workspace(ctx)),
-			UniqueOpts: river.UniqueOpts{ByArgs: true, ByState: []rivertype.JobState{
-				rivertype.JobStateAvailable, rivertype.JobStatePending, rivertype.JobStateRunning,
-				rivertype.JobStateRetryable, rivertype.JobStateScheduled,
-			}},
-		})
-		return err
+		return s.queue.enqueueGitHubIssuePublicationTx(ctx, tx, workspace(ctx), lifecycle.TaskID)
 	})
 }
 
@@ -5698,15 +5609,7 @@ func (s *Store) queueReviewPublicationTx(ctx context.Context, tx pgx.Tx, q *db.Q
 }
 
 func (s *Store) enqueueReviewPublicationJobTx(ctx context.Context, tx pgx.Tx, reviewWorkOrderID string) error {
-	_, err := s.river.InsertTx(ctx, tx, queueargs.ReviewPublicationArgs{WorkspaceID: workspace(ctx), ReviewWorkOrderID: reviewWorkOrderID}, &river.InsertOpts{
-		MaxAttempts: 5,
-		Queue:       queueargs.ReviewPublicationQueue(workspace(ctx)),
-		UniqueOpts: river.UniqueOpts{ByArgs: true, ByState: []rivertype.JobState{
-			rivertype.JobStateAvailable, rivertype.JobStatePending, rivertype.JobStateRunning,
-			rivertype.JobStateRetryable, rivertype.JobStateScheduled,
-		}},
-	})
-	return err
+	return s.queue.enqueueReviewPublicationTx(ctx, tx, workspace(ctx), reviewWorkOrderID)
 }
 
 // AcceptReviewDecision commits the durable verdict, routing decision, and
@@ -6682,28 +6585,12 @@ func (s *Store) inTx(ctx context.Context, fn func(pgx.Tx, *db.Queries) error) er
 	return tx.Commit(ctx)
 }
 
+// enqueueTaskTx enqueues a dispatch inside the caller's transaction and
+// reports whether a row was inserted. Duplicates are suppressed only while
+// a dispatch is active or may retry, so an intentional human redispatch is
+// never a silent no-op.
 func (s *Store) enqueueTaskTx(ctx context.Context, tx pgx.Tx, taskID, workspace string) (bool, error) {
-	result, err := s.river.InsertTx(ctx, tx, queueargs.DispatchTaskArgs{WorkspaceID: workspace, TaskID: taskID}, &river.InsertOpts{
-		MaxAttempts: queueargs.DispatchTaskMaxAttempts,
-		Queue:       queueargs.DispatchQueue(workspace),
-		UniqueOpts: river.UniqueOpts{
-			ByArgs: true,
-			// Suppress duplicate work only while a dispatch is active or may
-			// retry. River's default also includes completed jobs, which makes
-			// an intentional human redispatch a silent no-op until job cleanup.
-			ByState: []rivertype.JobState{
-				rivertype.JobStateAvailable,
-				rivertype.JobStatePending,
-				rivertype.JobStateRunning,
-				rivertype.JobStateRetryable,
-				rivertype.JobStateScheduled,
-			},
-		},
-	})
-	if err != nil {
-		return false, fmt.Errorf("enqueue task %s: %w", taskID, err)
-	}
-	return !result.UniqueSkippedAsDuplicate, nil
+	return s.queue.enqueueDispatchTx(ctx, tx, workspace, taskID)
 }
 
 func insertEvent(ctx context.Context, q *db.Queries, event core.Event) error {

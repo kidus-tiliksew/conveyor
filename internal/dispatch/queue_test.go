@@ -10,8 +10,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/riverqueue/river"
-	"github.com/riverqueue/river/rivertype"
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
@@ -118,11 +116,8 @@ func githubIssuePublicationFixture(t *testing.T) (context.Context, store.Store, 
 	return ctx, st, &githubIssuePublicationWorker{dispatcher: dispatcher}, task.ID
 }
 
-func githubIssuePublicationJob(taskID string, attempt int) *river.Job[queueargs.GitHubIssuePublicationArgs] {
-	return &river.Job[queueargs.GitHubIssuePublicationArgs]{
-		JobRow: &rivertype.JobRow{ID: int64(attempt), Attempt: attempt, MaxAttempts: 5},
-		Args:   queueargs.GitHubIssuePublicationArgs{WorkspaceID: "test", TaskID: taskID},
-	}
+func githubIssuePublicationJob(taskID string, attempt int) queueargs.Job {
+	return testJob(queueargs.GitHubIssuePublicationArgs{WorkspaceID: "test", TaskID: taskID}, int64(attempt), attempt, 5)
 }
 
 func TestReviewPublicationRequiresAggregateCommentAndIgnoresEventTimestamp(t *testing.T) {
@@ -271,13 +266,8 @@ func reviewPublicationFixture(t *testing.T, verdict string) (context.Context, st
 	return ctx, st, &reviewPublicationWorker{dispatcher: dispatcher}, publication
 }
 
-func reviewPublicationJob(workOrderID string, attempt int) *river.Job[queueargs.ReviewPublicationArgs] {
-	return &river.Job[queueargs.ReviewPublicationArgs]{
-		JobRow: &rivertype.JobRow{ID: int64(attempt), Attempt: attempt, MaxAttempts: 5},
-		Args: queueargs.ReviewPublicationArgs{
-			WorkspaceID: "test", ReviewWorkOrderID: workOrderID,
-		},
-	}
+func reviewPublicationJob(workOrderID string, attempt int) queueargs.Job {
+	return testJob(queueargs.ReviewPublicationArgs{WorkspaceID: "test", ReviewWorkOrderID: workOrderID}, int64(attempt), attempt, 5)
 }
 
 func TestDispatchDuplicateWithActiveConflictFixIsAcknowledged(t *testing.T) {
@@ -370,7 +360,7 @@ func TestShutdownCancellationSnoozesWithoutFailure(t *testing.T) {
 	worker.dispatcher.Store = &cancelledDispatchStore{Store: st}
 
 	err := worker.Work(ctx, dispatchTaskJob(taskID, 3, queueargs.DispatchTaskMaxAttempts))
-	var snooze *river.JobSnoozeError
+	var snooze *queueargs.SnoozeError
 	if !errors.As(err, &snooze) || snooze.Duration != shutdownRetryDelay {
 		t.Fatalf("shutdown result=%v, want %s snooze", err, shutdownRetryDelay)
 	}
@@ -442,9 +432,6 @@ func dispatchFailureFixture(t *testing.T, withConflictFix bool) (context.Context
 	return ctx, st, &dispatchTaskWorker{dispatcher: dispatcher}, taskID
 }
 
-func dispatchTaskJob(taskID string, attempt, maxAttempts int) *river.Job[queueargs.DispatchTaskArgs] {
-	return &river.Job[queueargs.DispatchTaskArgs]{
-		JobRow: &rivertype.JobRow{ID: int64(attempt), Attempt: attempt, MaxAttempts: maxAttempts},
-		Args:   queueargs.DispatchTaskArgs{WorkspaceID: "test", TaskID: taskID},
-	}
+func dispatchTaskJob(taskID string, attempt, maxAttempts int) queueargs.Job {
+	return testJob(queueargs.DispatchTaskArgs{WorkspaceID: "test", TaskID: taskID}, int64(attempt), attempt, maxAttempts)
 }
