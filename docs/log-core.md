@@ -1,95 +1,35 @@
 # The log core
 
-Conveyor is moving its persistence from a hand-maintained PostgreSQL schema
-plus River to an append-only event log that any database can host. This page
-describes what exists today, how to run it against a deployment, and what it
-does not yet do. The queue has already moved: River is gone. The state side
-is authoritative on the log through the bridge but is still read from the
-legacy schema.
+Conveyor's durable queue is an append-only event log. The relational schema
+still holds every entity; the log holds jobs. This page describes the log
+contract, the PostgreSQL driver, and the queue that runs on them.
 
-## What the log is
+## The log
 
-Every entity is one stream inside a workspace: `task/<id>`,
-`work_order/<id>`, `requirement/<id>`, `design/<id>`, `decision/<id>`,
-`reference_document/<id>`, `planning_session/<id>`, `planning_bundle/<id>`,
-`workspace/<id>`, `worker/<id>`, and `user/<id>` under the reserved
-`_deployment` workspace. A write is an append that names the stream version it
-expects; two writers racing on the same stream have exactly one lose. Read
-models fold streams and can be rebuilt by any replica.
+`internal/eventlog` is the contract. A log is partitioned by workspace, and
+inside a partition every entity is one stream, `<type>/<id>`. An append
+names the stream version the writer observed, so two writers racing on one
+stream have exactly one lose. A partition's positions are total and become
+visible in order, so a reader that has seen position N has seen every lower
+position.
 
-The contract is `internal/eventlog`. Two drivers implement it: `memlog`
-(in-process, the test double) and `pglog` (PostgreSQL). `logtest` is the
-conformance suite; passing it is what "implements the contract" means. A
-`Router` binds workspaces to drivers, so one workspace can move to another
-engine while the rest stay put.
+Two drivers implement the contract. `memlog` is in-process and is the test
+double; `pglog` is PostgreSQL. `logtest` is the conformance suite, and
+passing it is what "implements the contract" means. A `Router` binds
+workspaces to drivers, so one workspace can move to another engine while the
+rest stay put.
 
-The PostgreSQL driver uses four tables (`event_log`, `event_log_streams`,
-`event_log_positions`, `event_snapshots`) that it creates itself at startup,
-the way River's migrator does. They carry no foreign keys, no CHECK
+The PostgreSQL driver owns four tables (`event_log`, `event_log_streams`,
+`event_log_positions`, `event_snapshots`). The startup migration runner
+creates them when they are missing. They carry no foreign keys, no CHECK
 constraints, and no triggers. Serialization is two row locks in a fixed
-order: the workspace's position row, then the stream's head row. Holding the
-workspace row until commit means positions become visible in order, so a
-tailer that has seen position N knows every lower position is committed.
+order: the partition's position row, then the stream's head row. Holding
+the position row until commit is what makes positions visible in order. A
+driver for another engine needs only a unique key and a transaction.
 
-## What runs today
+## The queue
 
-**Dual-append.** Every legacy `events` insert also appends to the log in the
-same transaction. The stream is chosen by event family and payload id
-(`requirement.*` by `requirement_id`, `system_design.*` by `document_id`,
-`work_order.*` by `work_order_id`, and so on), falling back to the task the
-row was bound to and then to the workspace stream. Nothing reads the log to
-serve traffic.
-
-**The state-carrying bridge.** Legacy events do not carry enough to fold:
-`requirement.version_proposed` names the requirement but not the content.
-So during the transition every store transaction records, at commit, the
-final rows of each entity it emitted events for, as one `log.state_recorded`
-event per touched stream, with the same payload shape as an imported snapshot
-plus the kinds that triggered it. A stream whose rows hash the same as its
-last recorded state gets nothing. The log is therefore authoritative for
-state from the first deploy, and fold rules are written for native events
-after cutover rather than for every legacy kind before it. The mechanism is a
-transaction wrapper: the mirror registers touched streams on it, and its
-commit reads the rows, appends the state events, and only then commits, so a
-failure rolls back rows and log together. A write path that changes rows
-without emitting an event registers its stream explicitly; workspace
-bootstrap is the one such path today.
-
-**Telemetry stays out.** `worker.heartbeat` and `work_order.lease_renewed`
-are liveness signals, not facts about an entity, and together were 84% of the
-demo workspace's log. Neither the mirror nor the import carries them, and the
-columns they move (`lease_expires_at`, `last_seen_at`) are excluded from
-snapshot hashes so a renewal is never drift. They remain in the legacy
-`events` table.
-
-**Genesis import.** `conveyor migrate-log` builds the log for a deployment
-whose data predates it. Per workspace it appends legacy events not yet in the
-log, in id order, then writes one `log.snapshot_imported` event per entity
-carrying its projection rows verbatim (row plus child rows, minus credential
-columns) with a content hash. Re-running with unchanged rows writes nothing.
-Each snapshot is written while holding the stream's head lock, so a live
-write cannot slip between reading the rows and snapshotting them. The run
-holds the startup-migrations lock and never overlaps a daemon applying
-migrations.
-
-The legacy events table cannot rebuild state by replay: it was task-scoped at
-birth, has no per-stream versions, and document bodies live in version tables.
-That is why the import snapshots current state instead of replaying history,
-and why history is imported for timelines only.
-
-**Parity.** `conveyor log-parity` replays a workspace's log into an
-in-process catalog and compares every entity's last snapshot hash with its
-live rows. `drift` names the entities whose rows changed and the event kinds
-that arrived since; those kinds are the fold rules the next projector has to
-learn. It exits 1 on any drift or missing entity, so it works as a soak gate.
-
-**Projection framework.** `internal/projection` runs projectors over a
-workspace's log from the last snapshot position, snapshots at a fixed cadence,
-and rebuilds from zero when a projector's version changes. `catalog` is the
-first projector.
-
-**The queue.** The durable queue is the log itself, in
-`internal/queue/logqueue`; River is gone. Every job is one stream,
+`internal/queue/logqueue` is the durable queue. Every job is one stream,
 `job/<kind>:<key>`, so uniqueness per key is the stream itself: enqueue
 appends `job.enqueued` unless the fold says a job is still active. A claim
 is an append of `job.claimed` naming the version the worker observed, so
@@ -98,57 +38,22 @@ SKIP LOCKED. Completion, failure with a retry time, snooze (which hands the
 attempt back), rescue of a claim older than the threshold, and discard after
 the last attempt are events on the same stream. The runtime tails each
 workspace's log into an in-memory job index and drains it one job at a time
-per kind. Enqueues from the store run inside the store's own transaction by
-binding it to the log driver, so a lifecycle command's rows, its mirrored
-events, and its job commit together. The order clock is a process-local
-ticker that writes nothing: a tick is not a fact, and its handler is
-idempotent under concurrent replicas.
+per kind.
+
+Enqueues from the store run inside the store's own transaction by binding it
+to the log driver, so a lifecycle command's rows and its job commit together.
+The order clock is a process-local ticker that writes nothing: a tick is not
+a fact, and its handler is idempotent under concurrent replicas.
 
 The dispatcher sees only `queue.Runtime` and the handler contract: return
 nil to complete a job, `queue.Snooze` to reschedule it, any other error to
-fail it. Migration 121 drops River's tables; the migration runner moves
-every job River still held onto its log stream first, so an upgrade with
-work queued or in flight loses nothing.
+fail it. `ReconcileQueuedTasks` repairs a queued task without a live job and
+fails a running task whose job was discarded after its last attempt.
 
 ## Operating it
 
-1. Deploy a binary that includes the log core. On startup it creates the log
-   tables and begins mirroring writes. Nothing else changes.
-2. Take a dump. Run `conveyor migrate-log` with `CONVEYOR_DATABASE_URL` set.
-   It is safe with the daemon running and safe to repeat.
-3. Run `conveyor log-parity --workspace-id <ws>` and keep running it during
-   the soak. Every drifted entity lists the kinds that moved it.
-4. The queue needs no step of its own: the binary's first start moves
-   River's remaining jobs onto the log and drops River's tables.
-
-Rollback of the log tables is dropping them. River's tables are gone once
-migration 121 has run; the jobs it held are on the log.
-
-## Measured on the production data
-
-Taken 2026-09-04 against a restore of the devbox database on a laptop.
-
-| Measure | Value |
-|---|---|
-| Legacy events in the demo workspace | 325,615 |
-| `migrate-log`, first run, all workspaces | 36 s |
-| `migrate-log`, second run (writes nothing) | 11 s |
-| Snapshots written for demo | 2,117 (408 tasks, 1,616 work orders, 93 documents and decisions) |
-| Catalog replay of the demo log | 4.7 s for 327,733 events |
-| `log-parity`, all workspaces | clean |
-| `event_log` table size | 375 MB, against 361 MB for `events` |
-| Snapshot payloads | 83 MB total, largest 2 MB |
-
-Those numbers were taken before telemetry was excluded. Two kinds accounted
-for 84% of the demo log: `worker.heartbeat` (196,062) and
-`work_order.lease_renewed` (77,349). With them out, the same import writes
-52,204 history events for demo in 29 s, the log table is 187 MB, the catalog
-replays the demo log in 3.3 s, and parity is still clean everywhere.
-
-## What it does not do yet
-
-- Serve any read from the log. Phase 2 continues with projectors per entity
-  family, driven by the parity report's unfolded kinds.
-- Cut a workspace over. Phase 4 adds a per-workspace flag.
-- Run on SingleStore or SQLite. Phase 6 adds drivers against the conformance
-  suite; the contract needs only a unique key and a transaction.
+Nothing beyond the ordinary upgrade. The first start of a binary with the
+log core runs migration 121, which moves every job River still held onto its
+log stream and drops River's tables; an upgrade with work queued or in
+flight loses nothing. The log tables are part of the database from then on
+and are dumped and restored with it.

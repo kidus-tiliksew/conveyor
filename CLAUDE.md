@@ -10,9 +10,9 @@ and historical phase status lives in the "Roadmap" reference document.
 ## Conventions
 
 - Backend is Go everywhere: `net/http` + chi for the API and cobra for the CLI.
-  Persistence is pgx + sqlc for the projection schema and the event log
-  (`internal/eventlog`) underneath it; the durable queue is the log itself
-  (`internal/queue/logqueue`). Do not introduce another persistence or queue
+  Persistence is pgx + sqlc for the relational schema; the durable queue is
+  the event log (`internal/eventlog`, driver `pglog`) through
+  `internal/queue/logqueue`. Do not introduce another persistence or queue
   dependency.
 - The whole `internal/store/postgres/db/` package is maintained by hand
   (`design-database`). `sqlc generate` cannot parse migration 035's

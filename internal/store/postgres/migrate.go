@@ -75,9 +75,8 @@ func migrateControlPlaneToVersion(ctx context.Context, pool *pgxpool.Pool, maxVe
 		return fmt.Errorf("lock control-plane migrations: %w", err)
 	}
 	// The event log's tables are owned by its driver and created
-	// idempotently before any numbered migration runs: every legacy event
-	// insert mirrors into the log, and migration 121 moves River's queue
-	// onto it.
+	// idempotently before any numbered migration runs, because migration
+	// 121 moves River's queue onto the log.
 	if err := pglog.EnsureSchema(ctx, tx); err != nil {
 		return err
 	}

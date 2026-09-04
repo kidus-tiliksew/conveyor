@@ -74,7 +74,7 @@ func TestEnsureSchemaIsIdempotent(t *testing.T) {
 	}
 }
 
-// TestAppendInsideCallerTransaction is the mirroring contract: an append
+// TestAppendInsideCallerTransaction is the shared-transaction contract: an append
 // inside a transaction the caller rolls back leaves no trace, and one the
 // caller commits is visible afterwards with the head advanced.
 func TestAppendInsideCallerTransaction(t *testing.T) {
@@ -108,14 +108,14 @@ func TestAppendInsideCallerTransaction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.AppendWith(ctx, tx, workspace, stream, eventlog.ExpectNew, []eventlog.NewEvent{{Kind: "task.created", LegacyID: 7}}); err != nil {
+	if _, err := store.AppendWith(ctx, tx, workspace, stream, eventlog.ExpectNew, []eventlog.NewEvent{{Kind: "task.created"}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
 	events, err := store.Read(ctx, workspace, stream, 0, 0)
-	if err != nil || len(events) != 1 || events[0].LegacyID != 7 || events[0].Position != 1 {
+	if err != nil || len(events) != 1 || events[0].Position != 1 {
 		t.Fatalf("committed append: events=%+v err=%v", events, err)
 	}
 }

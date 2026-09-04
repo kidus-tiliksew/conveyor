@@ -68,23 +68,18 @@ func TestLogQueueEnqueuesInsideStoreTransactions(t *testing.T) {
 		t.Fatalf("dispatch.reconciled events=%d err=%v", count, err)
 	}
 
-	// The job events sit on the workspace's log next to the task's own
-	// stream, in one commit order.
+	// The job events are the workspace's log: nothing else writes to it.
 	tail, err := log.Tail(ctx, workspace, 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var sawTask, sawJob bool
-	for _, e := range tail {
-		switch e.Stream.Type() {
-		case "task":
-			sawTask = true
-		case logqueue.StreamType:
-			sawJob = true
-		}
+	if len(tail) == 0 {
+		t.Fatal("tail is empty")
 	}
-	if !sawTask || !sawJob {
-		t.Fatalf("tail lacks task or job streams: task=%t job=%t", sawTask, sawJob)
+	for _, e := range tail {
+		if e.Stream.Type() != logqueue.StreamType {
+			t.Fatalf("unexpected stream %s on the workspace log", e.Stream)
+		}
 	}
 }
 

@@ -51,11 +51,9 @@ CREATE TABLE IF NOT EXISTS event_log (
     actor_role      text NOT NULL DEFAULT '',
     payload         jsonb NOT NULL DEFAULT '{}'::jsonb,
     at              timestamptz NOT NULL,
-    legacy_event_id bigint,
     PRIMARY KEY (workspace_id, position),
     UNIQUE (workspace_id, stream_id, version)
 );
-CREATE INDEX IF NOT EXISTS event_log_legacy_event_idx ON event_log (legacy_event_id) WHERE legacy_event_id IS NOT NULL;
 CREATE TABLE IF NOT EXISTS event_snapshots (
     workspace_id text NOT NULL,
     key          text NOT NULL,
@@ -79,7 +77,7 @@ type txKey struct{}
 
 // WithTx makes every driver call on ctx run inside tx. The caller owns the
 // transaction; the driver neither commits nor rolls it back. This is how the
-// legacy store mirrors writes into the log atomically with its own rows.
+// store enqueues a job atomically with the rows that demand it.
 func WithTx(ctx context.Context, tx pgx.Tx) context.Context {
 	return context.WithValue(ctx, txKey{}, tx)
 }
@@ -137,8 +135,8 @@ func (s *Store) Append(ctx context.Context, workspace string, stream eventlog.St
 }
 
 // AppendWith is Append on an executor the caller owns, which must be a
-// transaction for the append to be atomic. It exists so the legacy store can
-// mirror a write into the log inside the transaction that wrote its rows.
+// transaction for the append to be atomic. It exists so the store can write
+// to the log inside the transaction that wrote its rows.
 func (s *Store) AppendWith(ctx context.Context, exec Executor, workspace string, stream eventlog.StreamID, expected eventlog.Version, events []eventlog.NewEvent) (eventlog.Version, error) {
 	if err := eventlog.ValidateAppend(workspace, stream, events); err != nil {
 		return 0, err
@@ -196,16 +194,11 @@ func (s *Store) appendTx(ctx context.Context, tx Executor, workspace string, str
 		incoming = eventlog.Normalize(incoming, now)
 		head++
 		position++
-		var legacy *int64
-		if incoming.LegacyID != 0 {
-			id := incoming.LegacyID
-			legacy = &id
-		}
 		if _, err := tx.Exec(ctx, `
-INSERT INTO event_log (workspace_id, position, stream_id, version, kind, actor_id, actor_role, payload, at, legacy_event_id)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+INSERT INTO event_log (workspace_id, position, stream_id, version, kind, actor_id, actor_role, payload, at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
 			workspace, position, string(stream), head, incoming.Kind, incoming.ActorID, incoming.ActorRole,
-			[]byte(incoming.Payload), incoming.At, legacy); err != nil {
+			[]byte(incoming.Payload), incoming.At); err != nil {
 			return 0, fmt.Errorf("pglog: append event %d: %w", i, err)
 		}
 	}
@@ -218,7 +211,7 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
 	return eventlog.Version(head), nil
 }
 
-const selectColumns = `workspace_id, position, stream_id, version, kind, actor_id, actor_role, payload, at, COALESCE(legacy_event_id, 0)`
+const selectColumns = `workspace_id, position, stream_id, version, kind, actor_id, actor_role, payload, at`
 
 func (s *Store) Read(ctx context.Context, workspace string, stream eventlog.StreamID, after eventlog.Version, limit int) ([]eventlog.Event, error) {
 	rows, err := s.executor(ctx).Query(ctx, `
@@ -265,9 +258,9 @@ func scanEvents(rows pgx.Rows) ([]eventlog.Event, error) {
 	for rows.Next() {
 		var e eventlog.Event
 		var stream string
-		var position, version, legacy int64
+		var position, version int64
 		var payload []byte
-		if err := rows.Scan(&e.Workspace, &position, &stream, &version, &e.Kind, &e.ActorID, &e.ActorRole, &payload, &e.At, &legacy); err != nil {
+		if err := rows.Scan(&e.Workspace, &position, &stream, &version, &e.Kind, &e.ActorID, &e.ActorRole, &payload, &e.At); err != nil {
 			return nil, fmt.Errorf("pglog: scan: %w", err)
 		}
 		e.Stream = eventlog.StreamID(stream)
@@ -275,7 +268,6 @@ func scanEvents(rows pgx.Rows) ([]eventlog.Event, error) {
 		e.Version = eventlog.Version(version)
 		e.Payload = payload
 		e.At = e.At.UTC()
-		e.LegacyID = legacy
 		out = append(out, e)
 	}
 	if err := rows.Err(); err != nil {

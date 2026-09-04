@@ -214,7 +214,7 @@ func testNormalisation(t *testing.T, s eventlog.Store) {
 	before := time.Now().Add(-time.Second)
 	if _, err := s.Append(ctx, w, stream, eventlog.ExpectNew, []eventlog.NewEvent{
 		{Kind: "stamped", ActorID: "a", ActorRole: "human"},
-		{Kind: "fixed", ActorID: "a", ActorRole: "human", At: fixed, Payload: json.RawMessage(`{"n":1}`), LegacyID: 42},
+		{Kind: "fixed", ActorID: "a", ActorRole: "human", At: fixed, Payload: json.RawMessage(`{"n":1}`)},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -233,9 +233,6 @@ func testNormalisation(t *testing.T, s eventlog.Store) {
 	}
 	if events[1].At.Location() != time.UTC {
 		t.Fatalf("At not UTC: %v", events[1].At.Location())
-	}
-	if events[1].LegacyID != 42 {
-		t.Fatalf("legacy id=%d", events[1].LegacyID)
 	}
 	var payload map[string]int
 	if err := json.Unmarshal(events[1].Payload, &payload); err != nil || payload["n"] != 1 {

@@ -214,38 +214,6 @@ which is what makes it work as the lockout-recovery path. With
 `CONVEYOR_PUBLIC_URL` set it prints a complete link; otherwise it prints the
 raw token for you to deliver.
 
-## migrate-log
-
-```sh
-conveyor migrate-log [--workspace-id <id>]... [--batch <rows>] [--json]
-```
-
-Build the event log for a deployment whose data predates it. Host-local like
-`user`: it needs `CONVEYOR_DATABASE_URL`. For every workspace it appends
-legacy `events` rows that are not yet in the log, in id order, then writes
-one snapshot per task, work order, requirement, design, decision, reference
-document, planning session and bundle, worker, and workspace, plus one per
-user at the deployment level. Snapshots carry the entity's projection rows
-verbatim, minus credential columns, and are hashed: a re-run with unchanged
-rows writes nothing, so the command is safe to repeat and to resume after an
-interruption. It holds the same lock daemon startup takes, so it never
-overlaps a migration. Each run prints per-workspace counts.
-
-## log-parity
-
-```sh
-conveyor log-parity --workspace-id <id> [--workspace-id <id>]... [--json] [--max-drifts <n>]
-```
-
-Replay a workspace's event log into an in-process catalog and compare every
-entity's last snapshot with its live rows, hashed the same way `migrate-log`
-hashes them. Per family it reports `match` (rows unchanged since the
-snapshot), `drift` (rows changed; the event kinds listed are what a projector
-has to fold), `missing` (rows without a snapshot; run `migrate-log`), and
-`orphans` (streams whose rows are gone). Read-only. Exits 1 on any drift or
-missing entity, so it works as a gate in a soak script. Host-local; needs
-`CONVEYOR_DATABASE_URL`.
-
 ## conveyord
 
 The daemon takes single-dash flags:

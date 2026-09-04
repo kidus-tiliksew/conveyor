@@ -23,7 +23,6 @@ func TestStreamIDShape(t *testing.T) {
 		{WorkspaceStream("demo"), "workspace", "demo", true},
 		{UserStream("usr_1"), "user", "usr_1", true},
 		{WorkerStream("worker-1"), "worker", "worker-1", true},
-		{GenesisStream, "log", "genesis", true},
 		{StreamID("task"), "task", "", false},
 		{StreamID("task/"), "task", "", false},
 		{StreamID("/x"), "", "x", false},

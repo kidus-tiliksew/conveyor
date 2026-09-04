@@ -90,9 +90,8 @@ func (s *Store) Close() { s.pool.Close() }
 
 func (s *Store) Pool() *pgxpool.Pool { return s.pool }
 
-// Log is the event log this store mirrors every legacy event into and runs
-// its queue on. It is written in the same transactions as the legacy tables;
-// entity reads still come from those tables.
+// Log is the event log the store's queue runs on. Jobs are appended in the
+// same transactions as the rows that demand them.
 func (s *Store) Log() eventlog.Store { return s.logDriver() }
 
 var logDriverInit sync.Mutex
@@ -241,9 +240,6 @@ func (s *Store) BootstrapWorkspaceConfig(ctx context.Context, cfg *config.Config
 	defer tx.Rollback(ctx) //nolint:errcheck
 	q := s.queries.WithTx(tx)
 	seeded := true
-	// Bootstrap writes the workspace row without a legacy event; the bridge
-	// still records the resulting state at commit.
-	noteStateChange(tx, cfg.Workspace, eventlog.WorkspaceStream(cfg.Workspace), "workspace.bootstrapped")
 	if _, err := q.InsertWorkspace(ctx, db.InsertWorkspaceParams{
 		ID: cfg.Workspace, Name: cfg.Workspace, ConfigYaml: string(configYAML),
 	}); errors.Is(err, pgx.ErrNoRows) {
@@ -360,15 +356,12 @@ func (s *Store) CreateWorkspace(ctx context.Context, id, name string, cfg *confi
 			}
 		}
 		actor := store.ActorFromContext(ctx)
-		createdEvent, err := q.InsertWorkspaceEvent(ctx, db.InsertWorkspaceEventParams{
+		_, err = q.InsertWorkspaceEvent(ctx, db.InsertWorkspaceEventParams{
 			WorkspaceID: id, Kind: "workspace.created", ActorID: actor.ID, ActorRole: string(actor.Role),
 			PayloadJson: core.JSONPayload(map[string]any{"id": id, "name": name, "config_version": row.ConfigVersion}),
 			At:          timestamp(time.Now().UTC()),
 		})
 		if err != nil {
-			return err
-		}
-		if err := mirrorLegacyEvent(ctx, q.DB(), createdEvent); err != nil {
 			return err
 		}
 		created = core.Workspace{ID: row.ID, Name: row.Name, ConfigVersion: row.ConfigVersion, CreatedAt: row.CreatedAt.Time}
@@ -459,9 +452,6 @@ func (s *Store) UpdateWorkspaceConfig(ctx context.Context, expectedVersion int64
 			}), At: timestamp(time.Now().UTC()),
 		})
 		if err != nil {
-			return err
-		}
-		if err := mirrorLegacyEvent(ctx, q.DB(), event); err != nil {
 			return err
 		}
 		result = config.UpdateReceipt{
@@ -2581,13 +2571,6 @@ func (s *Store) recordDependencyOutcomeTx(ctx context.Context, tx pgx.Tx, depend
 		if err != nil {
 			return err
 		}
-		if err = mirrorLegacyEvent(ctx, tx, db.Event{
-			ID: insertedID, WorkspaceID: workspace(ctx), TaskID: nullableText(dependentID),
-			Kind: "task.dependency_unsatisfiable", ActorID: actor.ID, ActorRole: string(actor.Role),
-			PayloadJson: payload, At: timestamp(now),
-		}); err != nil {
-			return err
-		}
 	}
 	return nil
 }
@@ -3149,7 +3132,7 @@ func (s *Store) RebuildLineage(ctx context.Context, request core.LineageRebuildR
 		result.PreservedUnregenerable = len(preserved)
 		result.Ambiguous = len(ambiguous)
 		actor := store.ActorFromContext(ctx)
-		rebuilt, err := q.InsertWorkspaceEvent(ctx, db.InsertWorkspaceEventParams{
+		_, err = q.InsertWorkspaceEvent(ctx, db.InsertWorkspaceEventParams{
 			WorkspaceID: workspace(ctx), Kind: "lineage.rebuilt", ActorID: actor.ID, ActorRole: string(actor.Role),
 			PayloadJson: core.JSONPayload(map[string]any{"workspace_id": workspace(ctx), "reason": request.Reason, "request_id": request.RequestID, "result": result}),
 			At:          timestamp(time.Now().UTC()),
@@ -3157,7 +3140,7 @@ func (s *Store) RebuildLineage(ctx context.Context, request core.LineageRebuildR
 		if err != nil {
 			return err
 		}
-		return mirrorLegacyEvent(ctx, q.DB(), rebuilt)
+		return nil
 	})
 	return result, err
 }
@@ -6619,9 +6602,6 @@ func insertEventWithID(ctx context.Context, q *db.Queries, event core.Event) (in
 	if err != nil {
 		return 0, err
 	}
-	if err = mirrorLegacyEvent(ctx, q.DB(), inserted); err != nil {
-		return 0, err
-	}
 	event.ID, event.At = inserted.ID, inserted.At.Time
 	projection := store.ProjectLineageEvent(inserted.WorkspaceID, event)
 	for _, link := range projection.Suppresses {
@@ -6667,9 +6647,6 @@ func insertWorkspaceEvent(ctx context.Context, q *db.Queries, event core.Event) 
 		ActorRole: string(event.ActorRole), PayloadJson: event.Payload, At: timestamp(event.At),
 	})
 	if err != nil {
-		return err
-	}
-	if err = mirrorLegacyEvent(ctx, q.DB(), inserted); err != nil {
 		return err
 	}
 	event.ID, event.At = inserted.ID, inserted.At.Time

@@ -26,36 +26,9 @@ import (
 // the deployment rather than to any workspace: users and the organization.
 const DeploymentWorkspace = "_deployment"
 
-// Event kinds the log core itself emits, as opposed to kinds mirrored from
-// or shared with the legacy schema.
-const (
-	// SnapshotImportedKind carries an entity's legacy projection rows
-	// verbatim. A projector folding a stream replaces its state with the
-	// snapshot when it meets one, then folds later events on top.
-	SnapshotImportedKind = "log.snapshot_imported"
-	// GenesisCompletedKind marks a workspace stream after an import run that
-	// wrote at least one history entry or snapshot.
-	GenesisCompletedKind = "log.genesis_completed"
-	// StateRecordedKind carries an entity's rows as they stood when a legacy
-	// transaction that touched it committed. Same payload shape as
-	// SnapshotImportedKind; projectors treat both as a state reset.
-	StateRecordedKind = "log.state_recorded"
-)
-
-// IsStateKind reports whether an event of this kind carries full entity
-// state rather than a change.
-func IsStateKind(kind string) bool {
-	return kind == SnapshotImportedKind || kind == StateRecordedKind
-}
-
 // StreamID identifies one entity's stream inside a workspace. The form is
 // "<type>/<id>"; the constructors below are the only sanctioned shapes.
 type StreamID string
-
-// GenesisStream is the per-workspace bookkeeping stream for import runs. It
-// is separate from entity streams so a marker never sits between an
-// entity's snapshot and its head.
-const GenesisStream StreamID = "log/genesis"
 
 func TaskStream(id string) StreamID              { return StreamID("task/" + id) }
 func WorkOrderStream(id string) StreamID         { return StreamID("work_order/" + id) }
@@ -101,8 +74,8 @@ type Position int64
 const (
 	// ExpectNew requires the stream to have no events yet.
 	ExpectNew Version = 0
-	// ExpectAny skips the version check. Reserved for mirroring legacy writes
-	// that are serialized by other means; new code names the version.
+	// ExpectAny skips the version check, for writers serialized by other
+	// means; new code names the version.
 	ExpectAny Version = ^Version(0)
 )
 
@@ -114,9 +87,6 @@ type NewEvent struct {
 	ActorRole string
 	Payload   json.RawMessage
 	At        time.Time
-	// LegacyID carries the legacy events.id when a write is mirrored from the
-	// pre-log schema. Zero for native appends.
-	LegacyID int64
 }
 
 // Event is one stored entry.
@@ -130,7 +100,6 @@ type Event struct {
 	ActorRole string
 	Payload   json.RawMessage
 	At        time.Time
-	LegacyID  int64
 }
 
 // VersionConflictError reports an append whose expected version did not match

@@ -41,8 +41,7 @@ var _ dispatchQueue = (*logDispatchQueue)(nil)
 
 // logDispatchQueue is the store's durable queue on the event log. Enqueues
 // run inside the caller's transaction by binding it to the log driver's
-// context, so a lifecycle command's rows, its mirrored events, and its job
-// commit together. The reconciliation reads keep their SQL over tasks and
+// context, so a lifecycle command's rows and its job commit together. The reconciliation reads keep their SQL over tasks and
 // fold each candidate's job stream for the queue half of the answer.
 type logDispatchQueue struct {
 	pool *pgxpool.Pool

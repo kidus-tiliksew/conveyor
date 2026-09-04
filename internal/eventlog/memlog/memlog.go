@@ -66,7 +66,7 @@ func (s *Store) Append(_ context.Context, workspace string, stream eventlog.Stre
 		stored := eventlog.Event{
 			Workspace: workspace, Stream: stream, Version: head, Position: w.position,
 			Kind: incoming.Kind, ActorID: incoming.ActorID, ActorRole: incoming.ActorRole,
-			Payload: append([]byte(nil), incoming.Payload...), At: incoming.At, LegacyID: incoming.LegacyID,
+			Payload: append([]byte(nil), incoming.Payload...), At: incoming.At,
 		}
 		w.streams[stream] = append(w.streams[stream], stored)
 		w.ordered = append(w.ordered, stored)
