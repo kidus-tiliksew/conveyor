@@ -26,6 +26,7 @@ func TestTaskLifecycleT1ThroughT22(t *testing.T) {
 		{"T11", TaskRunning, TaskGateMerge, TaskAwaiting},
 		{"T12", TaskQueued, TaskDispatchFailRetry, TaskQueued},
 		{"T13", TaskQueued, TaskDispatchFailFinal, TaskParked},
+		{"T13 rescuer discard", TaskRunning, TaskDispatchFailFinal, TaskParked},
 		{"T14", TaskAwaiting, TaskInterventionReject, TaskClosed},
 		{"T15", TaskAwaiting, TaskInterventionApproveSpec, TaskQueued},
 		{"T16", TaskAwaiting, TaskInterventionApproveReview, TaskApproved},

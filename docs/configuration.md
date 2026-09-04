@@ -98,6 +98,7 @@ Server (read by `conveyord`):
 | `CONVEYOR_PUBLIC_URL` | External dashboard URL; used for sign-in links and origin checks. |
 | `CONVEYOR_LISTEN_ADDR` | Daemon listen address as `host:port`; used when `-addr` is not explicitly set. |
 | `PORT` | Daemon listen port; resolves to `0.0.0.0:<PORT>` when neither `-addr` nor `CONVEYOR_LISTEN_ADDR` is set. |
+| `CONVEYOR_SHUTDOWN_TIMEOUT` | Total daemon shutdown budget (default `25s`); used when `-shutdown-timeout` is not explicitly set. Must be positive. |
 | `CONVEYOR_FORGE_TOKEN_ENCRYPTION_KEY` | Base64 of exactly 32 bytes; encrypts per-user GitHub tokens. Required before anyone can store one. |
 | `CONVEYOR_SMTP_HOST` / `_PORT` / `_USERNAME` / `_PASSWORD` / `_FROM` | Invitation email delivery. Configured only when host and from are both set; otherwise links are surfaced for manual delivery. |
 | `CONVEYOR_ORGANIZATION_NAME`, `CONVEYOR_FIRST_OPERATOR_EMAIL`, `CONVEYOR_FIRST_OPERATOR_DISPLAY_NAME` | First-operator identity at bootstrap. |
@@ -119,6 +120,14 @@ Both binaries load the dotenv file first, and real environment values always
 win over file values. `CONVEYOR_API_KEY` and `CONVEYOR_API_BASE_URL` are
 deprecated fallbacks for the `_LLM_` pair and remain only for existing
 installations.
+
+On SIGINT or SIGTERM, `conveyord` stops River from fetching work, cancels HTTP
+request base contexts, drains HTTP and active jobs, then cancels remaining jobs
+and closes Postgres within the shutdown budget. The hard-stop phase reserves up
+to five seconds, or half of a shorter budget. River crash recovery uses a
+stuck-job threshold equal to the largest effective triage or spec route timeout
+across the startup workspaces plus a five-minute safety margin. Startup logs
+both effective values and refuses an invalid route/threshold relationship.
 
 Dispatched agent sessions additionally receive their assignment in the
 environment (`CONVEYOR_TASK_ID`, `CONVEYOR_TASK_BRANCH`,

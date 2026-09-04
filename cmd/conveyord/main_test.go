@@ -11,6 +11,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
@@ -143,6 +144,44 @@ func TestFlagWasSetRecognizesExplicitDefault(t *testing.T) {
 	}
 	if *addr != "127.0.0.1:8080" || !flagWasSet(fs, "addr") {
 		t.Fatalf("addr=%q explicit=%v, want explicit default", *addr, flagWasSet(fs, "addr"))
+	}
+}
+
+func TestResolveConveyordShutdownTimeout(t *testing.T) {
+	tests := []struct {
+		name         string
+		flagValue    time.Duration
+		flagExplicit bool
+		environment  string
+		want         time.Duration
+		wantSource   string
+		wantError    bool
+	}{
+		{name: "default", flagValue: defaultConveyordShutdownTimeout, want: 25 * time.Second, wantSource: "default"},
+		{name: "environment", flagValue: defaultConveyordShutdownTimeout, environment: "8s", want: 8 * time.Second, wantSource: "CONVEYOR_SHUTDOWN_TIMEOUT"},
+		{name: "flag wins", flagValue: 12 * time.Second, flagExplicit: true, environment: "8s", want: 12 * time.Second, wantSource: "flag"},
+		{name: "invalid environment", flagValue: defaultConveyordShutdownTimeout, environment: "soon", wantError: true},
+		{name: "zero environment", flagValue: defaultConveyordShutdownTimeout, environment: "0s", wantError: true},
+		{name: "negative flag", flagValue: -time.Second, flagExplicit: true, wantError: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, source, err := resolveConveyordShutdownTimeout(tt.flagValue, tt.flagExplicit, func(name string) string {
+				if name == "CONVEYOR_SHUTDOWN_TIMEOUT" {
+					return tt.environment
+				}
+				return ""
+			})
+			if tt.wantError {
+				if err == nil {
+					t.Fatalf("timeout=%s source=%q, want error", got, source)
+				}
+				return
+			}
+			if err != nil || got != tt.want || source != tt.wantSource {
+				t.Fatalf("timeout=%s source=%q err=%v, want %s from %s", got, source, err, tt.want, tt.wantSource)
+			}
+		})
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	"io"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/textproto"
@@ -2895,6 +2896,47 @@ func TestEventStreamUsesIncrementalReads(t *testing.T) {
 	if !bytes.Contains(response.Body.Bytes(), []byte("event: activity")) {
 		t.Fatalf("stream body = %s", response.Body.String())
 	}
+}
+
+func TestEventStreamReturnsWhenServerBaseContextIsCancelled(t *testing.T) {
+	st := store.NewMemory()
+	if err := st.CreateTask(context.Background(), core.Task{ID: "shutdown-stream", State: core.TaskRunning}); err != nil {
+		t.Fatal(err)
+	}
+	baseCtx, cancelBase := context.WithCancel(context.Background())
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(st)
+	httpServer := &http.Server{
+		Handler:     authenticatedMemoryHandler(server),
+		BaseContext: func(net.Listener) context.Context { return baseCtx },
+	}
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- httpServer.Serve(listener) }()
+	response, err := http.Get("http://" + listener.Addr().String() + "/v1/tasks/shutdown-stream/events/stream") //nolint:gosec
+	if err != nil {
+		t.Fatal(err)
+	}
+	readDone := make(chan error, 1)
+	go func() {
+		_, readErr := io.ReadAll(response.Body)
+		readDone <- readErr
+	}()
+	cancelBase()
+	select {
+	case <-readDone:
+	case <-time.After(time.Second):
+		t.Fatal("SSE stream did not return after base-context cancellation")
+	}
+	_ = response.Body.Close()
+	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), time.Second)
+	defer cancelShutdown()
+	if err = httpServer.Shutdown(shutdownCtx); err != nil {
+		t.Fatal(err)
+	}
+	<-serveDone
 }
 
 // taskOperationsResponse decodes the Tasks-view projection for assertions that

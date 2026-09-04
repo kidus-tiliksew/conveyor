@@ -15,6 +15,7 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -50,8 +51,13 @@ func main() {
 	pollGitHub := flag.Duration("poll-github", 0, "poll interval for conveyor:ready issues (0 disables)")
 	workerRetryDelay := flag.Duration("worker-retry-delay", workerservice.DefaultRetryDelay, "initial supervised-child retry delay")
 	workerRetryMaximum := flag.Duration("worker-retry-max", workerservice.DefaultRetryMaximum, "maximum supervised-child retry delay")
+	shutdownTimeoutFlag := flag.Duration("shutdown-timeout", defaultConveyordShutdownTimeout, "total graceful shutdown budget")
 	flag.Parse()
 	listenAddr, listenAddrSource, err := resolveConveyordListenAddress(*addr, flagWasSet(flag.CommandLine, "addr"), os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	shutdownTimeout, shutdownTimeoutSource, err := resolveConveyordShutdownTimeout(*shutdownTimeoutFlag, flagWasSet(flag.CommandLine, "shutdown-timeout"), os.Getenv)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -81,8 +87,12 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
+	signalCtx, stopSignals := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stopSignals()
+	ctx, cancelService := context.WithCancel(context.Background())
+	defer cancelService()
+	httpBaseCtx, cancelHTTP := context.WithCancel(context.Background())
+	defer cancelHTTP()
 
 	var st store.Store
 	var pgStore *postgresstore.Store
@@ -128,6 +138,7 @@ func main() {
 		closeStore = func() {}
 		log.Printf("WARNING: using volatile memory store; set CONVEYOR_DATABASE_URL for Phase 2 durability")
 	}
+	closeStore = sync.OnceFunc(closeStore)
 	defer closeStore()
 	agent := &inprocess.OpenAI{APIKey: llmEnvironment.APIKey, BaseURL: llmEnvironment.BaseURL}
 	if secrets, ok := st.(store.ForgeTokenStore); ok {
@@ -135,7 +146,7 @@ func main() {
 	}
 	d := dispatch.New(st, cfg, agent)
 	d.Pack = packBundle
-	var stopRiver func()
+	var riverClient shutdownRiverClient
 	var addWorkspaceQueue func(string) error
 	var workspaceQueues *dispatch.WorkspaceQueueRegistrar
 	if pgStore != nil {
@@ -150,35 +161,46 @@ func main() {
 		for _, item := range workspaceRecords {
 			workspaceIDs = append(workspaceIDs, item.ID)
 		}
-		client, clientErr := dispatch.NewRiverClient(pgStore.Pool(), d, workspaceIDs)
+		workspaceConfigs := make(map[string]*config.Config, len(workspaceIDs))
+		for _, workspaceID := range workspaceIDs {
+			workspaceConfig, configErr := pgStore.RuntimeConfig(store.WithWorkspace(ctx, workspaceID), deployment)
+			if configErr != nil {
+				log.Fatalf("load River route config for workspace %s: %v", workspaceID, configErr)
+			}
+			workspaceConfigs[workspaceID] = workspaceConfig
+		}
+		rescueAfter, rescueErr := dispatch.RiverRescueStuckJobsAfter(workspaceConfigs)
+		if rescueErr != nil {
+			log.Fatalf("validate River rescue threshold: %v", rescueErr)
+		}
+		log.Printf("River stuck-job rescue threshold %s", rescueAfter)
+		riverShutdown := &dispatch.ShutdownMarker{}
+		client, clientErr := dispatch.NewRiverClient(pgStore.Pool(), d, workspaceIDs, workspaceConfigs, riverShutdown)
 		if clientErr != nil {
 			log.Fatalf("create River worker: %v", clientErr)
 		}
-		if clientErr = client.Start(ctx); clientErr != nil {
+		if clientErr = client.Start(context.Background()); clientErr != nil {
 			log.Fatalf("start River worker: %v", clientErr)
 		}
 		workspaceQueues = dispatch.NewWorkspaceQueueRegistrar(workspaceIDs, func(workspace string) error {
+			workspaceConfig, configErr := pgStore.RuntimeConfig(store.WithWorkspace(ctx, workspace), deployment)
+			if configErr != nil {
+				return configErr
+			}
+			if configErr = dispatch.ValidateRiverRescueStuckJobsAfter(workspace, workspaceConfig, rescueAfter); configErr != nil {
+				return configErr
+			}
 			return dispatch.AddWorkspaceQueues(client, workspace)
 		}, log.Printf)
 		addWorkspaceQueue = func(workspace string) error {
 			_, err := workspaceQueues.Ensure(workspace)
 			return err
 		}
-		stopRiver = func() {
-			stopCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-			defer cancel()
-			if err := client.Stop(stopCtx); err != nil {
-				log.Printf("stop River worker: %v", err)
-			}
-		}
+		riverClient = dispatch.NewMarkedRiverClient(client, riverShutdown)
 		log.Printf("durable pipeline worker active; implementation/review available over MCP")
 	} else {
 		go d.Run(ctx)
 	}
-	if stopRiver != nil {
-		defer stopRiver()
-	}
-
 	srv := httpapi.NewServer(st)
 	srv.Release = releaseinfo.Version
 	srv.Repos = cfg.RepoNames()
@@ -464,18 +486,29 @@ func main() {
 		}()
 	}
 
-	httpSrv := &http.Server{Addr: listenAddr, Handler: srv.Handler()}
-	go func() {
-		<-ctx.Done()
-		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = httpSrv.Shutdown(shutCtx)
-	}()
-
-	log.Printf("conveyord listening on %s from %s (workspace %s, %d repo(s))", listenAddr, listenAddrSource, cfg.Workspace, len(cfg.Repos))
-	if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+	httpSrv := &http.Server{
+		Addr: listenAddr, Handler: srv.Handler(),
+		BaseContext: func(net.Listener) context.Context { return httpBaseCtx },
+	}
+	listener, err := net.Listen("tcp", listenAddr)
+	if err != nil {
 		log.Fatal(err)
 	}
+	shutdownDone := make(chan struct{})
+	go func() {
+		<-signalCtx.Done()
+		conveyordShutdown{
+			Timeout: shutdownTimeout, HTTP: httpSrv, River: riverClient,
+			CancelHTTP: cancelHTTP, CancelService: cancelService, CloseStore: closeStore, Logf: log.Printf,
+		}.Run()
+		close(shutdownDone)
+	}()
+
+	log.Printf("conveyord listening on %s from %s (workspace %s, %d repo(s)); shutdown timeout %s from %s", listenAddr, listenAddrSource, cfg.Workspace, len(cfg.Repos), shutdownTimeout, shutdownTimeoutSource)
+	if err := httpSrv.Serve(listener); err != nil && err != http.ErrServerClosed {
+		log.Fatal(err)
+	}
+	<-shutdownDone
 }
 
 func flagWasSet(fs *flag.FlagSet, name string) bool {

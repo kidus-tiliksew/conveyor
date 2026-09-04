@@ -361,6 +361,65 @@ func TestDispatchRetryDelayTableMatchesSpec(t *testing.T) {
 	}
 }
 
+func TestShutdownCancellationSnoozesWithoutFailure(t *testing.T) {
+	t.Parallel()
+	ctx, st, worker, taskID := dispatchFailureFixture(t, false)
+	marker := &ShutdownMarker{}
+	marker.Mark()
+	worker.shutdown = marker
+	worker.dispatcher.Store = &cancelledDispatchStore{Store: st}
+
+	err := worker.Work(ctx, dispatchTaskJob(taskID, 3, queueargs.DispatchTaskMaxAttempts))
+	var snooze *river.JobSnoozeError
+	if !errors.As(err, &snooze) || snooze.Duration != shutdownRetryDelay {
+		t.Fatalf("shutdown result=%v, want %s snooze", err, shutdownRetryDelay)
+	}
+	if count, countErr := st.CountEvents(ctx, taskID, "dispatch.failed"); countErr != nil || count != 0 {
+		t.Fatalf("dispatch.failed events=%d err=%v, want 0", count, countErr)
+	}
+	current, getErr := st.GetTask(ctx, taskID)
+	if getErr != nil || current.State != core.TaskRunning {
+		t.Fatalf("task=%+v err=%v, want unchanged running task", current, getErr)
+	}
+}
+
+type cancelledDispatchStore struct{ store.Store }
+
+func (s *cancelledDispatchStore) GetTask(context.Context, string) (core.Task, error) {
+	return core.Task{}, context.Canceled
+}
+
+func TestRiverRescueStuckJobsAfterUsesLargestRouteAndFallback(t *testing.T) {
+	t.Parallel()
+	configs := map[string]*config.Config{
+		"a": {Routing: config.Routing{Stages: map[string]config.StageRoute{
+			"triage": {Timeout: 20 * time.Minute},
+			"spec":   {Timeout: 3 * time.Hour},
+		}}},
+		"b": {Routing: config.Routing{Stages: map[string]config.StageRoute{
+			"triage": {Timeout: time.Hour},
+		}}},
+	}
+	got, err := RiverRescueStuckJobsAfter(configs)
+	if err != nil || got != 3*time.Hour+RiverRescueSafetyMargin {
+		t.Fatalf("rescue threshold=%s err=%v", got, err)
+	}
+	short := map[string]*config.Config{"short": {Routing: config.Routing{Stages: map[string]config.StageRoute{
+		"triage": {Timeout: 20 * time.Minute}, "spec": {Timeout: 30 * time.Minute},
+	}}}}
+	got, err = RiverRescueStuckJobsAfter(short)
+	if err != nil || got != 30*time.Minute+RiverRescueSafetyMargin {
+		t.Fatalf("short-route rescue threshold=%s err=%v", got, err)
+	}
+	if err = ValidateRiverRescueStuckJobsAfter("short", short["short"], 30*time.Minute); err == nil || !strings.Contains(err.Error(), "short/spec") {
+		t.Fatalf("validation error=%v, want offending spec route", err)
+	}
+	got, err = RiverRescueStuckJobsAfter(nil)
+	if err != nil || got != config.DefaultStageTimeout+RiverRescueSafetyMargin {
+		t.Fatalf("fallback rescue threshold=%s err=%v", got, err)
+	}
+}
+
 func dispatchFailureFixture(t *testing.T, withConflictFix bool) (context.Context, store.Store, *dispatchTaskWorker, string) {
 	t.Helper()
 	ctx := store.WithWorkspace(t.Context(), "test")

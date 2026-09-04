@@ -86,6 +86,13 @@ upgrades use the same protocol as binary upgrades: replace the image and
 restart it. `conveyord` applies embedded database migrations during startup;
 there is no separate container migration command.
 
+The default shutdown budget is 25 seconds. On Kubernetes, set
+`terminationGracePeriodSeconds` to at least the selected budget plus five
+seconds (30 seconds for the default). Cloud Run has a fixed ten-second
+termination window, so start `conveyord` with `-shutdown-timeout` or
+`CONVEYOR_SHUTDOWN_TIMEOUT` set below ten seconds, such as `8s`. An explicit
+flag takes precedence over the environment value.
+
 ## Build from source
 
 Source development also needs Go 1.24, Node 22 with npm, and Docker with

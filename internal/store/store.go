@@ -5672,6 +5672,11 @@ func (m *memory) ApplyTaskCommand(ctx context.Context, lease taskops.TaskLease, 
 		m.deleteProposedTaskContextLocked(task.ID)
 	}
 	m.appendEventLocked(ctx, core.Event{TaskID: id, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": fromState, "to": state, "command": command.Kind})})
+	if command.FailureMessage != "" {
+		m.appendEventLocked(ctx, core.Event{TaskID: id, Kind: "dispatch.failed", Payload: core.JSONPayload(map[string]any{
+			"attempt": command.Attempt, "max_attempts": command.MaxAttempts, "error": command.FailureMessage,
+		})})
+	}
 	m.recordDependencyOutcomeLocked(ctx, id, state, time.Now().UTC())
 	if command.ProjectStages {
 		m.appendEventLocked(ctx, core.Event{TaskID: id, Kind: "pipeline.transition_decided", Payload: core.JSONPayload(map[string]any{"from_stage": fromStage, "next_stage": command.NextStage, "recovery_stage": command.RecoveryStage, "state": state})})
