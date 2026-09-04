@@ -27,6 +27,8 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/eventlog"
+	"github.com/kidus-tiliksew/conveyor/internal/eventlog/pglog"
 	"github.com/kidus-tiliksew/conveyor/internal/gitx"
 	queueargs "github.com/kidus-tiliksew/conveyor/internal/queue"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
@@ -38,6 +40,7 @@ type Store struct {
 	pool          *pgxpool.Pool
 	queries       *db.Queries
 	river         *river.Client[pgx.Tx]
+	log           *pglog.Store
 	forgeTokenKey []byte
 }
 
@@ -86,12 +89,17 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 		pool.Close()
 		return nil, fmt.Errorf("create River insert client: %w", err)
 	}
-	return &Store{pool: pool, queries: db.New(pool), river: riverClient}, nil
+	return &Store{pool: pool, queries: db.New(pool), river: riverClient, log: pglog.New(pool)}, nil
 }
 
 func (s *Store) Close() { s.pool.Close() }
 
 func (s *Store) Pool() *pgxpool.Pool { return s.pool }
+
+// Log is the event log this store mirrors every legacy event into. Until the
+// cutover phases it is a shadow of the legacy tables: written in the same
+// transactions, read by nothing that serves traffic.
+func (s *Store) Log() eventlog.Store { return s.log }
 func (s *Store) IsDurable() bool     { return true }
 
 // ConfigureForgeTokenEncryptionKey installs a process-only AES-256 key. The
@@ -342,11 +350,15 @@ func (s *Store) CreateWorkspace(ctx context.Context, id, name string, cfg *confi
 			}
 		}
 		actor := store.ActorFromContext(ctx)
-		if _, err := q.InsertWorkspaceEvent(ctx, db.InsertWorkspaceEventParams{
+		createdEvent, err := q.InsertWorkspaceEvent(ctx, db.InsertWorkspaceEventParams{
 			WorkspaceID: id, Kind: "workspace.created", ActorID: actor.ID, ActorRole: string(actor.Role),
 			PayloadJson: core.JSONPayload(map[string]any{"id": id, "name": name, "config_version": row.ConfigVersion}),
 			At:          timestamp(time.Now().UTC()),
-		}); err != nil {
+		})
+		if err != nil {
+			return err
+		}
+		if err := mirrorLegacyEvent(ctx, q.DB(), createdEvent); err != nil {
 			return err
 		}
 		created = core.Workspace{ID: row.ID, Name: row.Name, ConfigVersion: row.ConfigVersion, CreatedAt: row.CreatedAt.Time}
@@ -437,6 +449,9 @@ func (s *Store) UpdateWorkspaceConfig(ctx context.Context, expectedVersion int64
 			}), At: timestamp(time.Now().UTC()),
 		})
 		if err != nil {
+			return err
+		}
+		if err := mirrorLegacyEvent(ctx, q.DB(), event); err != nil {
 			return err
 		}
 		result = config.UpdateReceipt{
@@ -2620,11 +2635,24 @@ func (s *Store) recordDependencyOutcomeTx(ctx context.Context, tx pgx.Tx, depend
 		payload := core.JSONPayload(map[string]any{
 			"task_id": dependentID, "depends_on_task_id": dependencyID, "dependency_state": state,
 		})
-		if _, err = tx.Exec(ctx, `INSERT INTO events
+		var insertedID int64
+		err = tx.QueryRow(ctx, `INSERT INTO events
 			(workspace_id,task_id,job_id,kind,actor_id,actor_role,payload_json,at)
 			VALUES ($1,$2,NULL,'task.dependency_unsatisfiable',$3,$4,$5,$6)
-			ON CONFLICT DO NOTHING`,
-			workspace(ctx), dependentID, actor.ID, actor.Role, payload, now); err != nil {
+			ON CONFLICT DO NOTHING
+			RETURNING id`,
+			workspace(ctx), dependentID, actor.ID, actor.Role, payload, now).Scan(&insertedID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if err = mirrorLegacyEvent(ctx, tx, db.Event{
+			ID: insertedID, WorkspaceID: workspace(ctx), TaskID: nullableText(dependentID),
+			Kind: "task.dependency_unsatisfiable", ActorID: actor.ID, ActorRole: string(actor.Role),
+			PayloadJson: payload, At: timestamp(now),
+		}); err != nil {
 			return err
 		}
 	}
@@ -3196,12 +3224,15 @@ func (s *Store) RebuildLineage(ctx context.Context, request core.LineageRebuildR
 		result.PreservedUnregenerable = len(preserved)
 		result.Ambiguous = len(ambiguous)
 		actor := store.ActorFromContext(ctx)
-		_, err = q.InsertWorkspaceEvent(ctx, db.InsertWorkspaceEventParams{
+		rebuilt, err := q.InsertWorkspaceEvent(ctx, db.InsertWorkspaceEventParams{
 			WorkspaceID: workspace(ctx), Kind: "lineage.rebuilt", ActorID: actor.ID, ActorRole: string(actor.Role),
 			PayloadJson: core.JSONPayload(map[string]any{"workspace_id": workspace(ctx), "reason": request.Reason, "request_id": request.RequestID, "result": result}),
 			At:          timestamp(time.Now().UTC()),
 		})
-		return err
+		if err != nil {
+			return err
+		}
+		return mirrorLegacyEvent(ctx, q.DB(), rebuilt)
 	})
 	return result, err
 }
@@ -6687,6 +6718,9 @@ func insertEventWithID(ctx context.Context, q *db.Queries, event core.Event) (in
 	if err != nil {
 		return 0, err
 	}
+	if err = mirrorLegacyEvent(ctx, q.DB(), inserted); err != nil {
+		return 0, err
+	}
 	event.ID, event.At = inserted.ID, inserted.At.Time
 	projection := store.ProjectLineageEvent(inserted.WorkspaceID, event)
 	for _, link := range projection.Suppresses {
@@ -6732,6 +6766,9 @@ func insertWorkspaceEvent(ctx context.Context, q *db.Queries, event core.Event) 
 		ActorRole: string(event.ActorRole), PayloadJson: event.Payload, At: timestamp(event.At),
 	})
 	if err != nil {
+		return err
+	}
+	if err = mirrorLegacyEvent(ctx, q.DB(), inserted); err != nil {
 		return err
 	}
 	event.ID, event.At = inserted.ID, inserted.At.Time

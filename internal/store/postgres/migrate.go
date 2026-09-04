@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/eventlog/pglog"
 	controlstore "github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 	"github.com/riverqueue/river/rivermigrate"
@@ -57,6 +58,12 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 	}
 	if _, err := migrator.Migrate(ctx, rivermigrate.DirectionUp, nil); err != nil {
 		return fmt.Errorf("migrate River schema: %w", err)
+	}
+	// The event log's tables are owned by its driver and created the same way
+	// River's are: idempotently, under the startup lock, outside the numbered
+	// control-plane sequence (log-core migration plan, phase 1).
+	if err := pglog.EnsureSchema(ctx, pool); err != nil {
+		return err
 	}
 	// v1.10 adds workspace identity to River payloads. Backfill jobs inserted by
 	// v1.8 so an in-place upgrade does not strand queued dispatch or review
@@ -213,6 +220,12 @@ CREATE TABLE IF NOT EXISTS conveyor_schema_migrations (
 		); err != nil {
 			return fmt.Errorf("record migration %s: %w", name, err)
 		}
+	}
+	// Every legacy event insert mirrors into the event log, so the log's
+	// tables must exist wherever the control-plane schema does, including
+	// fixtures migrated to an older version.
+	if err := pglog.EnsureSchema(ctx, tx); err != nil {
+		return err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit control-plane migrations: %w", err)
