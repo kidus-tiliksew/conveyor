@@ -11,7 +11,7 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/eventlog"
-	queueargs "github.com/kidus-tiliksew/conveyor/internal/queue"
+	"github.com/kidus-tiliksew/conveyor/internal/queue"
 	"github.com/kidus-tiliksew/conveyor/internal/queue/logqueue"
 )
 
@@ -63,10 +63,10 @@ CREATE TABLE river_migration (id bigserial PRIMARY KEY)`); err != nil {
 		args        string
 		max         int
 	}{
-		{"dispatch_task", "available", fmt.Sprintf(`{"workspace_id":%q,"task_id":"queued-task"}`, workspace), queueargs.DispatchTaskMaxAttempts},
-		{"dispatch_task", "running", fmt.Sprintf(`{"workspace_id":%q,"task_id":"running-task"}`, workspace), queueargs.DispatchTaskMaxAttempts},
-		{"dispatch_task", "completed", fmt.Sprintf(`{"workspace_id":%q,"task_id":"done-task"}`, workspace), queueargs.DispatchTaskMaxAttempts},
-		{"dispatch_task", "discarded", fmt.Sprintf(`{"workspace_id":%q,"task_id":"dead-task"}`, workspace), queueargs.DispatchTaskMaxAttempts},
+		{"dispatch_task", "available", fmt.Sprintf(`{"workspace_id":%q,"task_id":"queued-task"}`, workspace), queue.DispatchTaskMaxAttempts},
+		{"dispatch_task", "running", fmt.Sprintf(`{"workspace_id":%q,"task_id":"running-task"}`, workspace), queue.DispatchTaskMaxAttempts},
+		{"dispatch_task", "completed", fmt.Sprintf(`{"workspace_id":%q,"task_id":"done-task"}`, workspace), queue.DispatchTaskMaxAttempts},
+		{"dispatch_task", "discarded", fmt.Sprintf(`{"workspace_id":%q,"task_id":"dead-task"}`, workspace), queue.DispatchTaskMaxAttempts},
 		{"review_publication", "retryable", fmt.Sprintf(`{"workspace_id":%q,"review_work_order_id":"wo-review"}`, workspace), 5},
 		{"github_issue_publication", "scheduled", fmt.Sprintf(`{"workspace_id":%q,"task_id":"issue-task"}`, workspace), 5},
 		{"order_clock", "available", fmt.Sprintf(`{"workspace_id":%q}`, workspace), 1},
@@ -110,7 +110,7 @@ CREATE TABLE river_migration (id bigserial PRIMARY KEY)`); err != nil {
 		}
 	}
 	queued, err := logqueue.Load(t.Context(), st.Log(), workspace, eventlog.StreamID("job/dispatch_task:queued-task"))
-	if err != nil || queued.MaxAttempts != queueargs.DispatchTaskMaxAttempts || !strings.Contains(string(queued.Args), `"queued-task"`) {
+	if err != nil || queued.MaxAttempts != queue.DispatchTaskMaxAttempts || !strings.Contains(string(queued.Args), `"queued-task"`) {
 		t.Fatalf("converted job=%+v err=%v", queued, err)
 	}
 	// Running the migration path again is a no-op: 121 is recorded and the

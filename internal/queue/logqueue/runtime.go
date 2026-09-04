@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/eventlog"
-	queueargs "github.com/kidus-tiliksew/conveyor/internal/queue"
+	"github.com/kidus-tiliksew/conveyor/internal/queue"
 )
 
 // Runtime is queue.Runtime on the event log.
@@ -27,7 +27,7 @@ type Runtime struct {
 	log     eventlog.Store
 	opts    Options
 	mu      sync.Mutex
-	regs    map[string]queueargs.Registration
+	regs    map[string]queue.Registration
 	spaces  map[string]*workspace
 	started bool
 	// runCtx is cancelled by StopAndCancel; loopCtx by Stop.
@@ -57,7 +57,7 @@ type Options struct {
 	Logf func(string, ...any)
 }
 
-var _ queueargs.Runtime = (*Runtime)(nil)
+var _ queue.Runtime = (*Runtime)(nil)
 
 type workspace struct {
 	id       string
@@ -100,8 +100,8 @@ func NewRuntime(log eventlog.Store, opts Options) *Runtime {
 	if opts.WorkerID == "" {
 		opts.WorkerID = "conveyord"
 	}
-	rt := &Runtime{log: log, opts: opts, regs: map[string]queueargs.Registration{}, spaces: map[string]*workspace{}}
-	rt.clockKind = queueargs.OrderClockArgs{}.Kind()
+	rt := &Runtime{log: log, opts: opts, regs: map[string]queue.Registration{}, spaces: map[string]*workspace{}}
+	rt.clockKind = queue.OrderClockArgs{}.Kind()
 	for _, id := range opts.Workspaces {
 		rt.spaces[id] = newWorkspace(id)
 	}
@@ -112,13 +112,13 @@ func newWorkspace(id string) *workspace {
 	return &workspace{id: id, jobs: map[eventlog.StreamID]*Job{}, running: map[string]bool{}, wake: make(chan struct{}, 1)}
 }
 
-func (rt *Runtime) Register(registration queueargs.Registration) {
+func (rt *Runtime) Register(registration queue.Registration) {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 	rt.regs[registration.Kind] = registration
 }
 
-func (rt *Runtime) registration(kind string) (queueargs.Registration, bool) {
+func (rt *Runtime) registration(kind string) (queue.Registration, bool) {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 	reg, ok := rt.regs[kind]
@@ -482,11 +482,11 @@ func (rt *Runtime) run(ws *workspace, kind string, job Job) {
 	job.Head = head
 	job.Attempt = attempt
 
-	handlerErr := reg.Handle(rt.runCtx, queueargs.Job{
+	handlerErr := reg.Handle(rt.runCtx, queue.Job{
 		ID: job.ID(), Kind: kind, Attempt: attempt, MaxAttempts: job.MaxAttempts, Args: job.Args,
 	})
 	finished := rt.opts.Now().UTC()
-	var snooze *queueargs.SnoozeError
+	var snooze *queue.SnoozeError
 	outcome := outcomePayload{Attempt: attempt}
 	var outcomeKind string
 	switch {
@@ -538,11 +538,11 @@ func (rt *Runtime) clockLoop(ws *workspace) {
 	if !ok {
 		return
 	}
-	args, _ := json.Marshal(queueargs.OrderClockArgs{WorkspaceID: ws.id})
+	args, _ := json.Marshal(queue.OrderClockArgs{WorkspaceID: ws.id})
 	tick := 0
 	fire := func() {
 		tick++
-		job := queueargs.Job{ID: fmt.Sprintf("clock/%s@%d", ws.id, tick), Kind: rt.clockKind, Attempt: 1, MaxAttempts: 1, Args: args}
+		job := queue.Job{ID: fmt.Sprintf("clock/%s@%d", ws.id, tick), Kind: rt.clockKind, Attempt: 1, MaxAttempts: 1, Args: args}
 		if err := reg.Handle(rt.runCtx, job); err != nil && !errors.Is(err, context.Canceled) {
 			rt.opts.Logf("logqueue: order clock %s: %v", ws.id, err)
 		}

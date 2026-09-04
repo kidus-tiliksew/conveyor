@@ -8,7 +8,7 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/eventlog"
-	queueargs "github.com/kidus-tiliksew/conveyor/internal/queue"
+	"github.com/kidus-tiliksew/conveyor/internal/queue"
 	"github.com/kidus-tiliksew/conveyor/internal/queue/logqueue"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
@@ -22,7 +22,7 @@ func TestLogQueueEnqueuesInsideStoreTransactions(t *testing.T) {
 	t.Cleanup(st.Close)
 	ctx = store.WithActor(ctx, store.Actor{ID: "operator", Role: core.ActorHuman})
 	log := st.Log()
-	kind := queueargs.DispatchTaskArgs{}.Kind()
+	kind := queue.DispatchTaskArgs{}.Kind()
 
 	taskID := core.NewTaskID()
 	if err := st.CreateTask(ctx, phase61Task(workspace, taskID, core.TaskQueued, "")); err != nil {
@@ -32,10 +32,10 @@ func TestLogQueueEnqueuesInsideStoreTransactions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if job.State != logqueue.StateAvailable || job.MaxAttempts != queueargs.DispatchTaskMaxAttempts || job.Generation != 1 {
+	if job.State != logqueue.StateAvailable || job.MaxAttempts != queue.DispatchTaskMaxAttempts || job.Generation != 1 {
 		t.Fatalf("dispatch job after create=%+v", job)
 	}
-	var args queueargs.DispatchTaskArgs
+	var args queue.DispatchTaskArgs
 	if err := json.Unmarshal(job.Args, &args); err != nil || args.TaskID != taskID || args.WorkspaceID != workspace {
 		t.Fatalf("job args=%s err=%v", job.Args, err)
 	}
@@ -90,7 +90,7 @@ func TestLogQueueExhaustedDispatchParksRunningTask(t *testing.T) {
 	st, ctx, workspace := newPhase61IntegrationStore(t)
 	t.Cleanup(st.Close)
 	ctx = store.WithActor(ctx, store.Actor{ID: "operator", Role: core.ActorHuman})
-	kind := queueargs.DispatchTaskArgs{}.Kind()
+	kind := queue.DispatchTaskArgs{}.Kind()
 
 	taskID := core.NewTaskID()
 	if err := st.CreateTask(ctx, phase61Task(workspace, taskID, core.TaskQueued, "")); err != nil {
@@ -108,12 +108,12 @@ func TestLogQueueExhaustedDispatchParksRunningTask(t *testing.T) {
 		t.Fatal(err)
 	}
 	head := job.Head + 1
-	for attempt := 1; attempt < queueargs.DispatchTaskMaxAttempts; attempt++ {
+	for attempt := 1; attempt < queue.DispatchTaskMaxAttempts; attempt++ {
 		appendQueueEvent(t, st, workspace, stream, head, logqueue.KindFailed, map[string]any{"attempt": attempt, "error": "boom", "next_at": time.Now().UTC()})
 		appendQueueEvent(t, st, workspace, stream, head+1, logqueue.KindClaimed, map[string]any{"attempt": attempt + 1, "worker": "test", "claimed_at": time.Now().UTC()})
 		head += 2
 	}
-	appendQueueEvent(t, st, workspace, stream, head, logqueue.KindDiscarded, map[string]any{"attempt": queueargs.DispatchTaskMaxAttempts, "error": "boom"})
+	appendQueueEvent(t, st, workspace, stream, head, logqueue.KindDiscarded, map[string]any{"attempt": queue.DispatchTaskMaxAttempts, "error": "boom"})
 
 	if _, err := st.ReconcileQueuedTasks(ctx); err != nil {
 		t.Fatal(err)

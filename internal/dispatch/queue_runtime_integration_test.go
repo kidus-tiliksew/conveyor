@@ -9,7 +9,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/eventlog"
-	queueargs "github.com/kidus-tiliksew/conveyor/internal/queue"
+	"github.com/kidus-tiliksew/conveyor/internal/queue"
 	"github.com/kidus-tiliksew/conveyor/internal/queue/logqueue"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	storepg "github.com/kidus-tiliksew/conveyor/internal/store/postgres"
@@ -108,7 +108,7 @@ func TestQueueRuntimeConvergesLateWorkspacesIntegration(t *testing.T) {
 	if err = registrar.Converge(convergence); err != nil {
 		t.Fatal(err)
 	}
-	kind := queueargs.DispatchTaskArgs{}.Kind()
+	kind := queue.DispatchTaskArgs{}.Kind()
 	// The child's dispatch ran: an implement-stage task without a work
 	// order is snoozed into its next stage, so the job is scheduled with
 	// the attempt handed back, or completed.
@@ -170,7 +170,7 @@ func TestQueueDispatchCompletesBlueprintAnchorIntegration(t *testing.T) {
 	}
 	dispatcher := New(st, cfg, nil)
 	worker := &dispatchTaskWorker{dispatcher: dispatcher}
-	if err = worker.Work(ctx, testJob(queueargs.DispatchTaskArgs{WorkspaceID: workspace, TaskID: parent.ID}, 1, 1, queueargs.DispatchTaskMaxAttempts)); err != nil {
+	if err = worker.Work(ctx, testJob(queue.DispatchTaskArgs{WorkspaceID: workspace, TaskID: parent.ID}, 1, 1, queue.DispatchTaskMaxAttempts)); err != nil {
 		t.Fatalf("blueprint dispatch returned %v, want completion", err)
 	}
 	persisted, err := st.GetTask(taskCtx, parent.ID)
@@ -214,7 +214,7 @@ func TestQueueDispatchPersistsRetryDelaysThenParksIntegration(t *testing.T) {
 	}
 	wantFailure := errors.New("forced dispatch failure")
 	dispatcher := New(&failingStageOrderStore{Store: st, err: wantFailure}, cfg, nil)
-	stream := logqueue.StreamFor(queueargs.DispatchTaskArgs{}.Kind(), task.ID)
+	stream := logqueue.StreamFor(queue.DispatchTaskArgs{}.Kind(), task.ID)
 
 	// Phase one: the real policy. The first failure schedules the retry ten
 	// seconds out, which the log records without the test waiting for it.
@@ -232,7 +232,7 @@ func TestQueueDispatchPersistsRetryDelaysThenParksIntegration(t *testing.T) {
 	}
 	stopCancel()
 	if delay := failed.ScheduledAt.Sub(failed.ClaimedAt); delay < 10*time.Second || delay > 12*time.Second {
-		t.Fatalf("first retry delay=%s, want %s", delay, queueargs.DispatchTaskRetryDelay(1))
+		t.Fatalf("first retry delay=%s, want %s", delay, queue.DispatchTaskRetryDelay(1))
 	}
 	if failed.LastError != wantFailure.Error() {
 		t.Fatalf("recorded error=%q", failed.LastError)
@@ -243,7 +243,7 @@ func TestQueueDispatchPersistsRetryDelaysThenParksIntegration(t *testing.T) {
 	if _, err := st.Log().Append(ctx, workspace, stream, failed.Head, []eventlog.NewEvent{{Kind: logqueue.KindRescued, Payload: []byte(`{"attempt":1,"next_at":"2000-01-01T00:00:00Z"}`)}}); err != nil {
 		t.Fatal(err)
 	}
-	second, err := testRuntime(t, st.Log(), dispatcher, &ShutdownMarker{}, []string{workspace}, map[string]*config.Config{workspace: cfg}, func(registration *queueargs.Registration) {
+	second, err := testRuntime(t, st.Log(), dispatcher, &ShutdownMarker{}, []string{workspace}, map[string]*config.Config{workspace: cfg}, func(registration *queue.Registration) {
 		registration.RetryDelay = func(int) time.Duration { return 0 }
 	})
 	if err != nil {
@@ -258,7 +258,7 @@ func TestQueueDispatchPersistsRetryDelaysThenParksIntegration(t *testing.T) {
 		_ = second.Stop(stopCtx)
 	}()
 	discarded := waitForJob(t, ctx, st, workspace, stream, func(job logqueue.Job) bool { return job.State == logqueue.StateDiscarded }, "discard after final attempt")
-	if discarded.Attempt != queueargs.DispatchTaskMaxAttempts || discarded.MaxAttempts != queueargs.DispatchTaskMaxAttempts {
+	if discarded.Attempt != queue.DispatchTaskMaxAttempts || discarded.MaxAttempts != queue.DispatchTaskMaxAttempts {
 		t.Fatalf("discarded job=%+v", discarded)
 	}
 	deadline := time.Now().Add(10 * time.Second)
@@ -285,7 +285,7 @@ func TestQueueDispatchPersistsRetryDelaysThenParksIntegration(t *testing.T) {
 			failures++
 		}
 	}
-	if failures != queueargs.DispatchTaskMaxAttempts {
-		t.Fatalf("dispatch.failed events=%d, want %d", failures, queueargs.DispatchTaskMaxAttempts)
+	if failures != queue.DispatchTaskMaxAttempts {
+		t.Fatalf("dispatch.failed events=%d, want %d", failures, queue.DispatchTaskMaxAttempts)
 	}
 }

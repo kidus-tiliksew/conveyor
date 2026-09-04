@@ -16,7 +16,7 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
-	queueargs "github.com/kidus-tiliksew/conveyor/internal/queue"
+	"github.com/kidus-tiliksew/conveyor/internal/queue"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 	"github.com/kidus-tiliksew/conveyor/internal/trigger/github"
@@ -87,11 +87,11 @@ func (m *ShutdownMarker) Stopping() bool { return m != nil && m.stopping.Load() 
 
 // MarkedRuntime marks hard shutdown before the queue cancels active work.
 type MarkedRuntime struct {
-	runtime  queueargs.Runtime
+	runtime  queue.Runtime
 	shutdown *ShutdownMarker
 }
 
-func NewMarkedRuntime(runtime queueargs.Runtime, shutdown *ShutdownMarker) *MarkedRuntime {
+func NewMarkedRuntime(runtime queue.Runtime, shutdown *ShutdownMarker) *MarkedRuntime {
 	return &MarkedRuntime{runtime: runtime, shutdown: shutdown}
 }
 
@@ -106,8 +106,8 @@ type orderClockWorker struct {
 	dispatcher *Dispatcher
 }
 
-func (w *orderClockWorker) Work(ctx context.Context, job queueargs.Job) error {
-	args, err := queueargs.DecodeArgs[queueargs.OrderClockArgs](job)
+func (w *orderClockWorker) Work(ctx context.Context, job queue.Job) error {
+	args, err := queue.DecodeArgs[queue.OrderClockArgs](job)
 	if err != nil {
 		return err
 	}
@@ -127,18 +127,18 @@ type githubIssuePublicationWorker struct {
 
 // Registrations binds every job kind to its handler and retry policy. The
 // daemon hands them to whichever queue.Runtime is in use.
-func (d *Dispatcher) Registrations(shutdown *ShutdownMarker) []queueargs.Registration {
-	return []queueargs.Registration{
+func (d *Dispatcher) Registrations(shutdown *ShutdownMarker) []queue.Registration {
+	return []queue.Registration{
 		{
-			Kind:   queueargs.DispatchTaskArgs{}.Kind(),
+			Kind:   queue.DispatchTaskArgs{}.Kind(),
 			Handle: (&dispatchTaskWorker{dispatcher: d, shutdown: shutdown}).Work,
 			// Bounded T12/T13 backoff between failed dispatch attempts
 			// (design-task-lifecycle).
-			RetryDelay: queueargs.DispatchTaskRetryDelay,
+			RetryDelay: queue.DispatchTaskRetryDelay,
 		},
-		{Kind: queueargs.ReviewPublicationArgs{}.Kind(), Handle: (&reviewPublicationWorker{dispatcher: d}).Work},
-		{Kind: queueargs.GitHubIssuePublicationArgs{}.Kind(), Handle: (&githubIssuePublicationWorker{dispatcher: d}).Work},
-		{Kind: queueargs.OrderClockArgs{}.Kind(), Handle: (&orderClockWorker{dispatcher: d}).Work},
+		{Kind: queue.ReviewPublicationArgs{}.Kind(), Handle: (&reviewPublicationWorker{dispatcher: d}).Work},
+		{Kind: queue.GitHubIssuePublicationArgs{}.Kind(), Handle: (&githubIssuePublicationWorker{dispatcher: d}).Work},
+		{Kind: queue.OrderClockArgs{}.Kind(), Handle: (&orderClockWorker{dispatcher: d}).Work},
 	}
 }
 
@@ -147,8 +147,8 @@ func (d *Dispatcher) Registrations(shutdown *ShutdownMarker) []queueargs.Registr
 // no-marker passes before authorizing exactly one new create attempt.
 const githubIssueReconciliationMissesBeforeCreate = 2
 
-func (w *githubIssuePublicationWorker) Work(ctx context.Context, job queueargs.Job) error {
-	args, err := queueargs.DecodeArgs[queueargs.GitHubIssuePublicationArgs](job)
+func (w *githubIssuePublicationWorker) Work(ctx context.Context, job queue.Job) error {
+	args, err := queue.DecodeArgs[queue.GitHubIssuePublicationArgs](job)
 	if err != nil {
 		return err
 	}
@@ -244,8 +244,8 @@ func (w *githubIssuePublicationWorker) Work(ctx context.Context, job queueargs.J
 	return nil
 }
 
-func (w *reviewPublicationWorker) Work(ctx context.Context, job queueargs.Job) error {
-	args, err := queueargs.DecodeArgs[queueargs.ReviewPublicationArgs](job)
+func (w *reviewPublicationWorker) Work(ctx context.Context, job queue.Job) error {
+	args, err := queue.DecodeArgs[queue.ReviewPublicationArgs](job)
 	if err != nil {
 		return err
 	}
@@ -427,8 +427,8 @@ func reviewHistory(events []core.Event) []github.ReviewHistoryItem {
 	return history
 }
 
-func (w *dispatchTaskWorker) Work(ctx context.Context, job queueargs.Job) error {
-	args, err := queueargs.DecodeArgs[queueargs.DispatchTaskArgs](job)
+func (w *dispatchTaskWorker) Work(ctx context.Context, job queue.Job) error {
+	args, err := queue.DecodeArgs[queue.DispatchTaskArgs](job)
 	if err != nil {
 		return err
 	}
@@ -450,7 +450,7 @@ func (w *dispatchTaskWorker) Work(ctx context.Context, job queueargs.Job) error 
 			// The running job owns this task's pipeline. A queued stage
 			// transition cannot enqueue a duplicate while this job is active,
 			// so snooze the same job into the next stage.
-			return queueargs.Snooze(time.Second)
+			return queue.Snooze(time.Second)
 		}
 		return nil
 	}
@@ -459,13 +459,13 @@ func (w *dispatchTaskWorker) Work(ctx context.Context, job queueargs.Job) error 
 		// attempt back and keeps the same durable job available for another
 		// instance (REQ-6/AC-6.2; design-task-lifecycle).
 		log.Printf("[task %s] queue job %s interrupted by daemon shutdown; preserving attempt %d", args.TaskID, job.ID, job.Attempt)
-		return queueargs.Snooze(shutdownRetryDelay)
+		return queue.Snooze(shutdownRetryDelay)
 	}
 	return w.handleFailure(ctx, job, err)
 }
 
-func (w *dispatchTaskWorker) handleFailure(ctx context.Context, job queueargs.Job, err error) error {
-	args, decodeErr := queueargs.DecodeArgs[queueargs.DispatchTaskArgs](job)
+func (w *dispatchTaskWorker) handleFailure(ctx context.Context, job queue.Job, err error) error {
+	args, decodeErr := queue.DecodeArgs[queue.DispatchTaskArgs](job)
 	if decodeErr != nil {
 		return fmt.Errorf("dispatch failed: %v; decode job: %w", err, decodeErr)
 	}

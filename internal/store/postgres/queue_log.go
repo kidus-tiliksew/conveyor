@@ -10,7 +10,7 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/eventlog/pglog"
-	queueargs "github.com/kidus-tiliksew/conveyor/internal/queue"
+	"github.com/kidus-tiliksew/conveyor/internal/queue"
 	"github.com/kidus-tiliksew/conveyor/internal/queue/logqueue"
 )
 
@@ -39,9 +39,9 @@ const publicationMaxAttempts = 5
 
 func (q *logDispatchQueue) enqueueDispatchTx(ctx context.Context, tx pgx.Tx, workspace, taskID string) (bool, error) {
 	inserted, err := logqueue.Enqueue(pglog.WithTx(ctx, tx), q.log, workspace,
-		queueargs.DispatchTaskArgs{}.Kind(), taskID,
-		queueargs.DispatchTaskArgs{WorkspaceID: workspace, TaskID: taskID},
-		queueargs.DispatchTaskMaxAttempts, q.now().UTC())
+		queue.DispatchTaskArgs{}.Kind(), taskID,
+		queue.DispatchTaskArgs{WorkspaceID: workspace, TaskID: taskID},
+		queue.DispatchTaskMaxAttempts, q.now().UTC())
 	if err != nil {
 		return false, fmt.Errorf("enqueue task %s: %w", taskID, err)
 	}
@@ -50,16 +50,16 @@ func (q *logDispatchQueue) enqueueDispatchTx(ctx context.Context, tx pgx.Tx, wor
 
 func (q *logDispatchQueue) enqueueReviewPublicationTx(ctx context.Context, tx pgx.Tx, workspace, reviewWorkOrderID string) error {
 	_, err := logqueue.Enqueue(pglog.WithTx(ctx, tx), q.log, workspace,
-		queueargs.ReviewPublicationArgs{}.Kind(), reviewWorkOrderID,
-		queueargs.ReviewPublicationArgs{WorkspaceID: workspace, ReviewWorkOrderID: reviewWorkOrderID},
+		queue.ReviewPublicationArgs{}.Kind(), reviewWorkOrderID,
+		queue.ReviewPublicationArgs{WorkspaceID: workspace, ReviewWorkOrderID: reviewWorkOrderID},
 		publicationMaxAttempts, q.now().UTC())
 	return err
 }
 
 func (q *logDispatchQueue) enqueueGitHubIssuePublicationTx(ctx context.Context, tx pgx.Tx, workspace, taskID string) error {
 	_, err := logqueue.Enqueue(pglog.WithTx(ctx, tx), q.log, workspace,
-		queueargs.GitHubIssuePublicationArgs{}.Kind(), taskID,
-		queueargs.GitHubIssuePublicationArgs{WorkspaceID: workspace, TaskID: taskID},
+		queue.GitHubIssuePublicationArgs{}.Kind(), taskID,
+		queue.GitHubIssuePublicationArgs{WorkspaceID: workspace, TaskID: taskID},
 		publicationMaxAttempts, q.now().UTC())
 	return err
 }
@@ -97,7 +97,7 @@ ORDER BY t.created_at, t.id`, workspace)
 		return nil, err
 	}
 	logCtx := pglog.WithTx(ctx, tx)
-	kind := queueargs.DispatchTaskArgs{}.Kind()
+	kind := queue.DispatchTaskArgs{}.Kind()
 	var out []string
 	for _, taskID := range candidates {
 		job, err := logqueue.Load(logCtx, q.log, workspace, logqueue.StreamFor(kind, taskID))
@@ -137,7 +137,7 @@ ORDER BY t.created_at, t.id`, workspace)
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	kind := queueargs.DispatchTaskArgs{}.Kind()
+	kind := queue.DispatchTaskArgs{}.Kind()
 	var out []exhaustedDispatch
 	for _, r := range candidates {
 		job, err := logqueue.Load(ctx, q.log, workspace, logqueue.StreamFor(kind, r.id))

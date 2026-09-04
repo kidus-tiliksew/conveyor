@@ -8,24 +8,24 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/eventlog"
-	queueargs "github.com/kidus-tiliksew/conveyor/internal/queue"
+	"github.com/kidus-tiliksew/conveyor/internal/queue"
 	"github.com/kidus-tiliksew/conveyor/internal/queue/logqueue"
 )
 
 // testJob builds a queue job the way the runtime would hand it to a
 // handler. The args types are plain structs, so marshalling cannot fail.
-func testJob(args interface{ Kind() string }, id int64, attempt, maxAttempts int) queueargs.Job {
+func testJob(args interface{ Kind() string }, id int64, attempt, maxAttempts int) queue.Job {
 	encoded, err := json.Marshal(args)
 	if err != nil {
 		panic(err)
 	}
-	return queueargs.Job{ID: strconv.FormatInt(id, 10), Kind: args.Kind(), Attempt: attempt, MaxAttempts: maxAttempts, Args: encoded}
+	return queue.Job{ID: strconv.FormatInt(id, 10), Kind: args.Kind(), Attempt: attempt, MaxAttempts: maxAttempts, Args: encoded}
 }
 
 // testRuntime builds the queue runtime the daemon would, with every
 // registration bound, polling fast enough for tests. adjust may rewrite a
 // registration before it is bound, for tests that shorten a retry policy.
-func testRuntime(t *testing.T, log eventlog.Store, d *Dispatcher, shutdown *ShutdownMarker, workspaces []string, configs map[string]*config.Config, adjust func(*queueargs.Registration)) (*logqueue.Runtime, error) {
+func testRuntime(t *testing.T, log eventlog.Store, d *Dispatcher, shutdown *ShutdownMarker, workspaces []string, configs map[string]*config.Config, adjust func(*queue.Registration)) (*logqueue.Runtime, error) {
 	t.Helper()
 	rescueAfter, err := QueueRescueThreshold(configs)
 	if err != nil {

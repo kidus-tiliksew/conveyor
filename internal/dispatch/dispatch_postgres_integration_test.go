@@ -14,7 +14,7 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
-	queueargs "github.com/kidus-tiliksew/conveyor/internal/queue"
+	"github.com/kidus-tiliksew/conveyor/internal/queue"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	storepg "github.com/kidus-tiliksew/conveyor/internal/store/postgres"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
@@ -235,7 +235,7 @@ func TestConflictFixAndQueueDispatchSerializeIntegration(t *testing.T) {
 	queueDone := make(chan error, 1)
 	worker := &dispatchTaskWorker{dispatcher: dispatcher}
 	go func() {
-		queueDone <- worker.Work(ctx, testJob(queueargs.DispatchTaskArgs{WorkspaceID: workspace, TaskID: task.ID}, 1, 1, 5))
+		queueDone <- worker.Work(ctx, testJob(queue.DispatchTaskArgs{WorkspaceID: workspace, TaskID: task.ID}, 1, 1, 5))
 	}()
 	close(observed.releaseOrder)
 	releasedOrder = true
@@ -249,7 +249,7 @@ func TestConflictFixAndQueueDispatchSerializeIntegration(t *testing.T) {
 	}
 	select {
 	case err = <-queueDone:
-		var snooze *queueargs.SnoozeError
+		var snooze *queue.SnoozeError
 		if !errors.As(err, &snooze) || snooze.Duration != time.Second {
 			t.Fatalf("queue dispatch result=%v, want one-second stage snooze", err)
 		}
@@ -712,8 +712,8 @@ func TestReviewPublicationWorkerPostgresProjectionLifecycleIntegration(t *testin
 	}
 }
 
-func reviewPublicationIntegrationJob(workspace, workOrderID string, attempt int) queueargs.Job {
-	return testJob(queueargs.ReviewPublicationArgs{WorkspaceID: workspace, ReviewWorkOrderID: workOrderID}, int64(attempt), attempt, 5)
+func reviewPublicationIntegrationJob(workspace, workOrderID string, attempt int) queue.Job {
+	return testJob(queue.ReviewPublicationArgs{WorkspaceID: workspace, ReviewWorkOrderID: workOrderID}, int64(attempt), attempt, 5)
 }
 
 func dispatchIntegrationDatabaseURL(t *testing.T) string {

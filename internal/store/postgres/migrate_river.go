@@ -9,7 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/kidus-tiliksew/conveyor/internal/eventlog/pglog"
-	queueargs "github.com/kidus-tiliksew/conveyor/internal/queue"
+	"github.com/kidus-tiliksew/conveyor/internal/queue"
 	"github.com/kidus-tiliksew/conveyor/internal/queue/logqueue"
 )
 
@@ -57,7 +57,7 @@ ORDER BY id`)
 	log := pglog.New(nil)
 	now := time.Now().UTC()
 	for _, job := range jobs {
-		workspace, key, ok := queueargs.Identity(job.kind, job.args)
+		workspace, key, ok := queue.Identity(job.kind, job.args)
 		if !ok || workspace == "" {
 			// The order clock is periodic and needs no row; anything else
 			// without an identity is not a job the log queue runs.

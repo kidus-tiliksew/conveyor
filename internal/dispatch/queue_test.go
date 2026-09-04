@@ -13,7 +13,7 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
-	queueargs "github.com/kidus-tiliksew/conveyor/internal/queue"
+	"github.com/kidus-tiliksew/conveyor/internal/queue"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	githubtrigger "github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 )
@@ -116,8 +116,8 @@ func githubIssuePublicationFixture(t *testing.T) (context.Context, store.Store, 
 	return ctx, st, &githubIssuePublicationWorker{dispatcher: dispatcher}, task.ID
 }
 
-func githubIssuePublicationJob(taskID string, attempt int) queueargs.Job {
-	return testJob(queueargs.GitHubIssuePublicationArgs{WorkspaceID: "test", TaskID: taskID}, int64(attempt), attempt, 5)
+func githubIssuePublicationJob(taskID string, attempt int) queue.Job {
+	return testJob(queue.GitHubIssuePublicationArgs{WorkspaceID: "test", TaskID: taskID}, int64(attempt), attempt, 5)
 }
 
 func TestReviewPublicationRequiresAggregateCommentAndIgnoresEventTimestamp(t *testing.T) {
@@ -266,8 +266,8 @@ func reviewPublicationFixture(t *testing.T, verdict string) (context.Context, st
 	return ctx, st, &reviewPublicationWorker{dispatcher: dispatcher}, publication
 }
 
-func reviewPublicationJob(workOrderID string, attempt int) queueargs.Job {
-	return testJob(queueargs.ReviewPublicationArgs{WorkspaceID: "test", ReviewWorkOrderID: workOrderID}, int64(attempt), attempt, 5)
+func reviewPublicationJob(workOrderID string, attempt int) queue.Job {
+	return testJob(queue.ReviewPublicationArgs{WorkspaceID: "test", ReviewWorkOrderID: workOrderID}, int64(attempt), attempt, 5)
 }
 
 func TestDispatchDuplicateWithActiveConflictFixIsAcknowledged(t *testing.T) {
@@ -315,7 +315,7 @@ func TestDispatchFinalRunningFailureParksWithFailFinal(t *testing.T) {
 	ctx, st, worker, taskID := dispatchFailureFixture(t, false)
 	wantErr := errors.New("database unavailable")
 
-	if err := worker.handleFailure(ctx, dispatchTaskJob(taskID, queueargs.DispatchTaskMaxAttempts, queueargs.DispatchTaskMaxAttempts), wantErr); !errors.Is(err, wantErr) {
+	if err := worker.handleFailure(ctx, dispatchTaskJob(taskID, queue.DispatchTaskMaxAttempts, queue.DispatchTaskMaxAttempts), wantErr); !errors.Is(err, wantErr) {
 		t.Fatalf("failure error = %v, want %v", err, wantErr)
 	}
 	current, err := st.GetTask(ctx, taskID)
@@ -336,18 +336,18 @@ func TestDispatchFinalRunningFailureParksWithFailFinal(t *testing.T) {
 
 func TestDispatchRetryDelayTableMatchesSpec(t *testing.T) {
 	t.Parallel()
-	if queueargs.DispatchTaskRetryLimit != 5 || queueargs.DispatchTaskMaxAttempts != 6 {
-		t.Fatalf("retry limit/max attempts = %d/%d, want 5/6", queueargs.DispatchTaskRetryLimit, queueargs.DispatchTaskMaxAttempts)
+	if queue.DispatchTaskRetryLimit != 5 || queue.DispatchTaskMaxAttempts != 6 {
+		t.Fatalf("retry limit/max attempts = %d/%d, want 5/6", queue.DispatchTaskRetryLimit, queue.DispatchTaskMaxAttempts)
 	}
 	wants := []time.Duration{10 * time.Second, 20 * time.Second, 40 * time.Second, 80 * time.Second, 160 * time.Second}
 	for attempt, want := range wants {
 		attempt := attempt + 1
-		if got := queueargs.DispatchTaskRetryDelay(attempt); got != want {
+		if got := queue.DispatchTaskRetryDelay(attempt); got != want {
 			t.Fatalf("attempt %d retry delay = %s, want %s", attempt, got, want)
 		}
 	}
-	if got := queueargs.DispatchTaskRetryDelay(6); got != queueargs.DispatchRetryMaximumDelay {
-		t.Fatalf("retry cap = %s, want %s", got, queueargs.DispatchRetryMaximumDelay)
+	if got := queue.DispatchTaskRetryDelay(6); got != queue.DispatchRetryMaximumDelay {
+		t.Fatalf("retry cap = %s, want %s", got, queue.DispatchRetryMaximumDelay)
 	}
 }
 
@@ -359,8 +359,8 @@ func TestShutdownCancellationSnoozesWithoutFailure(t *testing.T) {
 	worker.shutdown = marker
 	worker.dispatcher.Store = &cancelledDispatchStore{Store: st}
 
-	err := worker.Work(ctx, dispatchTaskJob(taskID, 3, queueargs.DispatchTaskMaxAttempts))
-	var snooze *queueargs.SnoozeError
+	err := worker.Work(ctx, dispatchTaskJob(taskID, 3, queue.DispatchTaskMaxAttempts))
+	var snooze *queue.SnoozeError
 	if !errors.As(err, &snooze) || snooze.Duration != shutdownRetryDelay {
 		t.Fatalf("shutdown result=%v, want %s snooze", err, shutdownRetryDelay)
 	}
@@ -432,6 +432,6 @@ func dispatchFailureFixture(t *testing.T, withConflictFix bool) (context.Context
 	return ctx, st, &dispatchTaskWorker{dispatcher: dispatcher}, taskID
 }
 
-func dispatchTaskJob(taskID string, attempt, maxAttempts int) queueargs.Job {
-	return testJob(queueargs.DispatchTaskArgs{WorkspaceID: "test", TaskID: taskID}, int64(attempt), attempt, maxAttempts)
+func dispatchTaskJob(taskID string, attempt, maxAttempts int) queue.Job {
+	return testJob(queue.DispatchTaskArgs{WorkspaceID: "test", TaskID: taskID}, int64(attempt), attempt, maxAttempts)
 }

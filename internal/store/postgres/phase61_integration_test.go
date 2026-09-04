@@ -14,7 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
-	queueargs "github.com/kidus-tiliksew/conveyor/internal/queue"
+	"github.com/kidus-tiliksew/conveyor/internal/queue"
 	"github.com/kidus-tiliksew/conveyor/internal/queue/logqueue"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
@@ -987,7 +987,7 @@ func discardDispatchJob(t *testing.T, st *Store, workspace, taskID string) {
 
 func loadDispatchJob(t *testing.T, st *Store, workspace, taskID string) logqueue.Job {
 	t.Helper()
-	job, err := logqueue.Load(t.Context(), st.Log(), workspace, logqueue.StreamFor(queueargs.DispatchTaskArgs{}.Kind(), taskID))
+	job, err := logqueue.Load(t.Context(), st.Log(), workspace, logqueue.StreamFor(queue.DispatchTaskArgs{}.Kind(), taskID))
 	if err != nil {
 		t.Fatal(err)
 	}

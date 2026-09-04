@@ -19,7 +19,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/monitor"
 	"github.com/kidus-tiliksew/conveyor/internal/pack"
 	"github.com/kidus-tiliksew/conveyor/internal/pipeline"
-	queueargs "github.com/kidus-tiliksew/conveyor/internal/queue"
+	"github.com/kidus-tiliksew/conveyor/internal/queue"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 	githubtrigger "github.com/kidus-tiliksew/conveyor/internal/trigger/github"
@@ -2437,7 +2437,7 @@ func TestIssuePublisherRejectsLifecycleFromDifferentConfiguredRepository(t *test
 	}
 	d := New(st, &config.Config{Workspace: "test", Repos: []config.Repo{{Name: "app", GitHub: "acme/app"}}}, nil)
 	worker := &githubIssuePublicationWorker{dispatcher: d}
-	err = worker.Work(ctx, testJob(queueargs.GitHubIssuePublicationArgs{WorkspaceID: "test", TaskID: task.ID}, 1, 1, 5))
+	err = worker.Work(ctx, testJob(queue.GitHubIssuePublicationArgs{WorkspaceID: "test", TaskID: task.ID}, 1, 1, 5))
 	if err == nil || !strings.Contains(err.Error(), "does not match configured") {
 		t.Fatalf("error=%v", err)
 	}
@@ -2499,8 +2499,8 @@ func TestIssuePublisherBoundsAmbiguousRecoveryBeforeOneCreateReauthorization(t *
 		}
 	}
 	worker := &githubIssuePublicationWorker{dispatcher: d}
-	job := func(attempt int) queueargs.Job {
-		return testJob(queueargs.GitHubIssuePublicationArgs{WorkspaceID: "test", TaskID: task.ID}, int64(attempt), attempt, 5)
+	job := func(attempt int) queue.Job {
+		return testJob(queue.GitHubIssuePublicationArgs{WorkspaceID: "test", TaskID: task.ID}, int64(attempt), attempt, 5)
 	}
 	if err = worker.Work(ctx, job(1)); err == nil {
 		t.Fatal("first ambiguous publication succeeded")

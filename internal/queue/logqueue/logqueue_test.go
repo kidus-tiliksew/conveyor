@@ -12,7 +12,7 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/eventlog"
 	"github.com/kidus-tiliksew/conveyor/internal/eventlog/memlog"
-	queueargs "github.com/kidus-tiliksew/conveyor/internal/queue"
+	"github.com/kidus-tiliksew/conveyor/internal/queue"
 )
 
 func jsonMarshal(v any) ([]byte, error) { return json.Marshal(v) }
@@ -110,8 +110,8 @@ type runtimeFixture struct {
 	log     *memlog.Store
 	rt      *Runtime
 	mu      sync.Mutex
-	calls   []queueargs.Job
-	outcome func(job queueargs.Job) error
+	calls   []queue.Job
+	outcome func(job queue.Job) error
 }
 
 func newRuntimeFixture(t *testing.T, opts Options) *runtimeFixture {
@@ -125,7 +125,7 @@ func newRuntimeFixture(t *testing.T, opts Options) *runtimeFixture {
 		opts.Workspaces = []string{"ws"}
 	}
 	f.rt = NewRuntime(f.log, opts)
-	f.rt.Register(queueargs.Registration{Kind: "demo", Handle: func(_ context.Context, job queueargs.Job) error {
+	f.rt.Register(queue.Registration{Kind: "demo", Handle: func(_ context.Context, job queue.Job) error {
 		f.mu.Lock()
 		f.calls = append(f.calls, job)
 		outcome := f.outcome
@@ -180,7 +180,7 @@ func (f *runtimeFixture) callCount() int {
 func TestRuntimeRunsJobsOneAtATimeInEnqueueOrder(t *testing.T) {
 	f := newRuntimeFixture(t, Options{})
 	var concurrent, peak int32
-	f.outcome = func(queueargs.Job) error {
+	f.outcome = func(queue.Job) error {
 		n := atomic.AddInt32(&concurrent, 1)
 		for {
 			p := atomic.LoadInt32(&peak)
@@ -222,11 +222,11 @@ func TestRuntimeRunsJobsOneAtATimeInEnqueueOrder(t *testing.T) {
 func TestRuntimeRetriesThenDiscardsAndSnoozeDoesNotCount(t *testing.T) {
 	f := newRuntimeFixture(t, Options{})
 	var seen int32
-	f.outcome = func(job queueargs.Job) error {
+	f.outcome = func(job queue.Job) error {
 		// First execution snoozes, which hands the attempt back; the next
 		// two executions fail, and the second of those exhausts max 2.
 		if atomic.AddInt32(&seen, 1) == 1 {
-			return queueargs.Snooze(20 * time.Millisecond)
+			return queue.Snooze(20 * time.Millisecond)
 		}
 		return errors.New("boom")
 	}
@@ -263,7 +263,7 @@ func TestRuntimeRetriesThenDiscardsAndSnoozeDoesNotCount(t *testing.T) {
 func TestRuntimeReplicasClaimEachJobOnce(t *testing.T) {
 	log := memlog.New()
 	var calls int32
-	handler := func(_ context.Context, job queueargs.Job) error {
+	handler := func(_ context.Context, job queue.Job) error {
 		atomic.AddInt32(&calls, 1)
 		time.Sleep(5 * time.Millisecond)
 		return nil
@@ -271,7 +271,7 @@ func TestRuntimeReplicasClaimEachJobOnce(t *testing.T) {
 	var runtimes []*Runtime
 	for i := 0; i < 3; i++ {
 		rt := NewRuntime(log, Options{Workspaces: []string{"ws"}, PollInterval: 10 * time.Millisecond, ClockInterval: -1, WorkerID: fmt.Sprintf("replica-%d", i)})
-		rt.Register(queueargs.Registration{Kind: "demo", Handle: handler})
+		rt.Register(queue.Registration{Kind: "demo", Handle: handler})
 		runtimes = append(runtimes, rt)
 	}
 	const jobs = 12
@@ -335,7 +335,7 @@ func TestRuntimeRescuesStuckClaims(t *testing.T) {
 	appendKind(t, log, "ws", stream, 1, KindClaimed, claimedPayload{Attempt: 1, Worker: "dead", ClaimedAt: now.Add(-time.Hour)})
 	f := &runtimeFixture{log: log}
 	f.rt = NewRuntime(log, Options{Workspaces: []string{"ws"}, PollInterval: 10 * time.Millisecond, ClockInterval: -1, RescueStuckAfter: time.Minute})
-	f.rt.Register(queueargs.Registration{Kind: "demo", Handle: func(_ context.Context, job queueargs.Job) error {
+	f.rt.Register(queue.Registration{Kind: "demo", Handle: func(_ context.Context, job queue.Job) error {
 		f.mu.Lock()
 		f.calls = append(f.calls, job)
 		f.mu.Unlock()
@@ -361,15 +361,15 @@ func TestRuntimeRescuesStuckClaims(t *testing.T) {
 func TestRuntimeStopAndCancelInterruptsHandlerAndRecordsSnooze(t *testing.T) {
 	f := newRuntimeFixture(t, Options{})
 	started := make(chan struct{})
-	f.outcome = func(job queueargs.Job) error {
+	f.outcome = func(job queue.Job) error {
 		close(started)
-		return queueargs.Snooze(time.Second)
+		return queue.Snooze(time.Second)
 	}
 	// Block the handler until cancellation by wrapping it.
-	f.rt.Register(queueargs.Registration{Kind: "demo", Handle: func(ctx context.Context, job queueargs.Job) error {
+	f.rt.Register(queue.Registration{Kind: "demo", Handle: func(ctx context.Context, job queue.Job) error {
 		close(started)
 		<-ctx.Done()
-		return queueargs.Snooze(time.Second)
+		return queue.Snooze(time.Second)
 	}})
 	if _, err := Enqueue(context.Background(), f.log, "ws", "demo", "k", demoArgs{}, 3, time.Now().UTC()); err != nil {
 		t.Fatal(err)
@@ -391,8 +391,8 @@ func TestRuntimeEnsureWorkspaceAfterStartAndClock(t *testing.T) {
 	log := memlog.New()
 	var ticks int32
 	rt := NewRuntime(log, Options{PollInterval: 10 * time.Millisecond, ClockInterval: 15 * time.Millisecond})
-	rt.Register(queueargs.Registration{Kind: queueargs.OrderClockArgs{}.Kind(), Handle: func(_ context.Context, job queueargs.Job) error {
-		args, err := queueargs.DecodeArgs[queueargs.OrderClockArgs](job)
+	rt.Register(queue.Registration{Kind: queue.OrderClockArgs{}.Kind(), Handle: func(_ context.Context, job queue.Job) error {
+		args, err := queue.DecodeArgs[queue.OrderClockArgs](job)
 		if err != nil || args.WorkspaceID != "late" {
 			return fmt.Errorf("clock args=%+v err=%v", args, err)
 		}
@@ -400,7 +400,7 @@ func TestRuntimeEnsureWorkspaceAfterStartAndClock(t *testing.T) {
 		return nil
 	}})
 	var ran int32
-	rt.Register(queueargs.Registration{Kind: "demo", Handle: func(context.Context, queueargs.Job) error { atomic.AddInt32(&ran, 1); return nil }})
+	rt.Register(queue.Registration{Kind: "demo", Handle: func(context.Context, queue.Job) error { atomic.AddInt32(&ran, 1); return nil }})
 	if err := rt.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}

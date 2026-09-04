@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
-	queueargs "github.com/kidus-tiliksew/conveyor/internal/queue"
+	"github.com/kidus-tiliksew/conveyor/internal/queue"
 	"github.com/kidus-tiliksew/conveyor/internal/queue/logqueue"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	storepg "github.com/kidus-tiliksew/conveyor/internal/store/postgres"
@@ -42,7 +42,7 @@ func TestLogQueueShutdownInterruptionPreservesAttemptIntegration(t *testing.T) {
 	if err = st.CreateTask(taskCtx, task); err != nil {
 		t.Fatal(err)
 	}
-	stream := logqueue.StreamFor(queueargs.DispatchTaskArgs{}.Kind(), task.ID)
+	stream := logqueue.StreamFor(queue.DispatchTaskArgs{}.Kind(), task.ID)
 	before, err := logqueue.Load(ctx, st.Log(), workspace, stream)
 	if err != nil || before.State != logqueue.StateAvailable {
 		t.Fatalf("job before dispatch=%+v err=%v", before, err)
