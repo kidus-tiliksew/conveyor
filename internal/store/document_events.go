@@ -51,16 +51,24 @@ func (m *memory) ListDocumentEventPage(ctx context.Context, kind core.LineageNod
 	events := []core.Event{}
 	snapshot := q.SnapshotID
 	for taskID, items := range m.events {
-		if taskID != "" && !tasks[taskID] {
-			continue
+		if taskID != "" {
+			if kind == core.LineageRequirement {
+				if !tasks[taskID] {
+					continue
+				}
+			} else if task, ok := m.tasks[taskID]; !ok || task.Workspace != workspace {
+				continue
+			}
 		}
 		for _, e := range items {
 			if q.SnapshotID > 0 && e.ID > q.SnapshotID {
 				continue
 			}
-			if taskID == "" {
+			// System Design events retain document membership even on task streams.
+			// Task streams use the task's workspace; document streams carry it in payload.
+			if taskID == "" || kind == core.LineageSystemDesign {
 				var p map[string]any
-				if json.Unmarshal(e.Payload, &p) != nil || p["workspace_id"] != workspace {
+				if json.Unmarshal(e.Payload, &p) != nil || (taskID == "" && p["workspace_id"] != workspace) {
 					continue
 				}
 				if kind == core.LineageRequirement {

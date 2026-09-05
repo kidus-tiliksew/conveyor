@@ -76,20 +76,39 @@ and acknowledgment projections. Playwright checks the older-page controls,
 archive refresh, and graph requests made only when the explorer opens.
 
 Verification follows confirmed `component-verification-strategy` v1 and
-`component-document-corpus` v1. The change serves `req-260802-72fc68` v2 AC-5.1
+`component-document-corpus` v2. The change serves `req-260802-72fc68` v2 AC-5.1
 and `req-document-operating-surfaces` v5 REQ-3. Confirm, dismiss, propose,
 archive, staleness decisions, and event persistence keep their existing semantics.
 There is no schema migration. The requirement list handler is unchanged.
 
 The complete governing design revision was proposed through Conveyor as
-`component-document-corpus` v2. It remains pending for the operator and is not
-cited as confirmed authority. Submission proceeds without waiting for it.
+`component-document-corpus` v2 in the first implementation attempt. The contract
+for `260905-5dd580-implement-2` confirms that revision as governing authority.
+
+## Review correction
+
+Work order `260905-5dd580-implement-2` corrects the memory projection's omission
+of task-associated System Design events. Task streams use their task's workspace
+and match the System Design event kind and document id. Requirement history
+membership and the PostgreSQL query are unchanged.
+
+The shared conformance regression adds three task-associated consultation events
+with tied timestamps. Before the fix, memory returned a total of 603 instead of
+606. The case now checks both stores for the added events across two pages,
+excludes unrelated document ids and event kinds, rejects foreign-workspace reads,
+and keeps a later matching append outside the page snapshot.
+
+The PostgreSQL fixture rerun on the corrected branch measured 94,456 bytes and
+18.525250 ms for the requirement detail, and 16,401 bytes and 2.844375 ms for the
+System Design detail. Both remain under 200 KB and one second. These use the same
+fixture and handler measurement method described above, not the devbox database.
 
 Final local gates passed on the submitted sources:
 
 - `make test`, including bundle freshness, Go tests, Biome, and all 241 Playwright cases.
 - `make test-integration`, including the shared PostgreSQL paging conformance case and existing staleness tests.
 - `make vet` and `make fmt-check`.
+- `make build -o ui`, reusing the dashboard bundle verified by `make test`.
 - `git diff --check`.
 
 CI and deployment are separate from this local evidence; neither was awaited or

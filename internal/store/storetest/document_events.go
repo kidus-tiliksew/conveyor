@@ -66,6 +66,60 @@ func SeedDocumentEventMeasurement(t *testing.T, st store.Store, ctx context.Cont
 }
 
 func runDocumentEventPages(t *testing.T, factory RequirementFactory) {
+	t.Run("system design pages include task events with document and workspace filtering", func(t *testing.T) {
+		f := factory(t, requirementConformanceRepos)
+		st, ctx := f.Store, f.Context
+		_, design, tasks := SeedDocumentEventMeasurement(t, st, ctx)
+		baseline, err := st.ListDocumentEventPage(ctx, core.LineageSystemDesign, design, store.DocumentEventQuery{Limit: 2})
+		if err != nil {
+			t.Fatal(err)
+		}
+		at := time.Now().UTC().Add(time.Hour).Truncate(time.Microsecond)
+		for i := 0; i < 3; i++ {
+			if err := st.AppendEvent(ctx, core.Event{TaskID: tasks[0], Kind: "system_design.consulted", At: at, Payload: core.JSONPayload(map[string]any{"document_id": design, "index": i})}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		// Neither a different document nor a different event kind belongs in this history.
+		for _, event := range []core.Event{
+			{TaskID: tasks[0], Kind: "system_design.consulted", At: at, Payload: core.JSONPayload(map[string]any{"document_id": "other-design"})},
+			{TaskID: tasks[0], Kind: "fixture.activity", At: at, Payload: core.JSONPayload(map[string]any{"document_id": design})},
+		} {
+			if err := st.AppendEvent(ctx, event); err != nil {
+				t.Fatal(err)
+			}
+		}
+		first, err := st.ListDocumentEventPage(ctx, core.LineageSystemDesign, design, store.DocumentEventQuery{Limit: 2})
+		if err != nil || first.Total != baseline.Total+3 || len(first.Events) != 2 {
+			t.Fatalf("task-associated first page: total=%d want=%d events=%d err=%v", first.Total, baseline.Total+3, len(first.Events), err)
+		}
+		// A matching task event appended after page one must not shift page two.
+		if err := st.AppendEvent(ctx, core.Event{TaskID: tasks[0], Kind: "system_design.consulted", At: at, Payload: core.JSONPayload(map[string]any{"document_id": design, "index": 3})}); err != nil {
+			t.Fatal(err)
+		}
+		second, err := st.ListDocumentEventPage(ctx, core.LineageSystemDesign, design, store.DocumentEventQuery{Limit: 2, Offset: 2, SnapshotID: first.SnapshotID})
+		if err != nil || second.Total != first.Total || second.SnapshotID != first.SnapshotID || len(second.Events) != 2 {
+			t.Fatalf("task-associated second page: %+v err=%v", second, err)
+		}
+		for i, event := range append(first.Events, second.Events[0]) {
+			var payload struct {
+				Index int `json:"index"`
+			}
+			if err := json.Unmarshal(event.Payload, &payload); err != nil {
+				t.Fatal(err)
+			}
+			if event.TaskID != tasks[0] || event.Kind != "system_design.consulted" || payload.Index != 2-i {
+				t.Fatalf("event %d: %+v", i, event)
+			}
+		}
+		if second.Events[1].ID != baseline.Events[0].ID {
+			t.Fatalf("page two did not resume document history: %+v", second.Events)
+		}
+		foreign, err := st.ListDocumentEventPage(store.WithWorkspace(ctx, "other-"+core.NewTaskID()), core.LineageSystemDesign, design, store.DocumentEventQuery{Limit: 2})
+		if err != nil || foreign.Total != 0 || len(foreign.Events) != 0 {
+			t.Fatalf("foreign task-associated history: %+v err=%v", foreign, err)
+		}
+	})
 	t.Run("document event pages retain history and snapshot across appends", func(t *testing.T) {
 		f := factory(t, requirementConformanceRepos)
 		st, ctx := f.Store, f.Context
