@@ -24,10 +24,7 @@ func (w *dispatchTaskWorker) Work(ctx context.Context, job queue.Job) error {
 	}
 	ctx = store.WithActor(ctx, store.Actor{ID: fmt.Sprintf("queue:%s", job.ID), Role: core.ActorSystem})
 	ctx = store.WithWorkspace(ctx, args.WorkspaceID)
-	before, err := w.dispatcher.Store.GetTask(ctx, args.TaskID)
-	if err == nil {
-		err = w.dispatcher.runTask(ctx, args.TaskID)
-	}
+	err = w.dispatcher.runTask(ctx, args.TaskID)
 	if err == nil {
 		task, getErr := w.dispatcher.Store.GetTask(ctx, args.TaskID)
 		if getErr != nil {
@@ -40,17 +37,19 @@ func (w *dispatchTaskWorker) Work(ctx context.Context, job queue.Job) error {
 				// than a staged pipeline job to snooze.
 				return nil
 			}
-			if before.State == core.TaskQueued && before.NextStage == task.NextStage {
-				// Nothing moved: the task is queued at the same stage it was
-				// dispatched at, waiting on a claim or a gate. The job is done;
-				// the transition that changes that enqueues a fresh one. Snoozing
-				// here would append a claim and a snooze to the log every second
-				// for as long as the task waits.
+			if _, active, activeErr := w.dispatcher.activeWorkOrder(ctx, task.ID, task.NextStage, ""); activeErr != nil {
+				return activeErr
+			} else if active {
+				// The stage has its work order and the task is waiting for a
+				// claimant. The job is done; the claim enqueues nothing and the
+				// transition after it enqueues a fresh job. Snoozing here would
+				// append a claim and a snooze to the log every second for as
+				// long as the task waits.
 				return nil
 			}
-			// The run advanced the task to a new queued stage. A queued stage
-			// transition cannot enqueue a duplicate while this job is active,
-			// so snooze the same job into the next stage.
+			// The run advanced the task to a queued stage that has no order
+			// yet. A queued stage transition cannot enqueue a duplicate while
+			// this job is active, so snooze the same job into the next stage.
 			return queue.Snooze(time.Second)
 		}
 		return nil
