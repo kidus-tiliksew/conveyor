@@ -45,6 +45,13 @@ func TestBackendImportBoundary(t *testing.T) {
 					!strings.HasPrefix(rel, "internal/store/postgres/") && !strings.HasPrefix(rel, "internal/eventlog/pglog/") {
 					t.Errorf("%s imports driver %s outside the backend", rel, importPath)
 				}
+				if importPath == "github.com/go-sql-driver/mysql" && !strings.HasPrefix(rel, "internal/store/singlestore/") && !strings.HasPrefix(rel, "internal/eventlog/s2log/") {
+					t.Errorf("%s imports MySQL outside the backend", rel)
+				}
+				const singleStore = "github.com/kidus-tiliksew/conveyor/internal/store/singlestore"
+				if (importPath == singleStore || strings.HasPrefix(importPath, singleStore+"/")) && !strings.HasPrefix(rel, "internal/store/singlestore/") && filepath.ToSlash(filepath.Dir(rel)) != "internal/store/backend" {
+					t.Errorf("%s imports SingleStore outside the backend factory", rel)
+				}
 				const postgres = "github.com/kidus-tiliksew/conveyor/internal/store/postgres"
 				if (importPath == postgres || strings.HasPrefix(importPath, postgres+"/")) &&
 					!strings.HasPrefix(rel, "internal/store/postgres/") && filepath.ToSlash(filepath.Dir(rel)) != "internal/store/backend" {

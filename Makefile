@@ -85,7 +85,7 @@ dashboard-fresh: ui
 	git diff --exit-code -- internal/httpapi/dashboard
 
 test: compose-check dashboard-fresh test-release
-	CONVEYOR_TEST_DATABASE_URL= go test ./...
+	CONVEYOR_TEST_DATABASE_URL= CONVEYOR_TEST_SINGLESTORE_URL= go test ./...
 	$(RUN_WEB_TESTS)
 
 test-web: web-typecheck
@@ -153,3 +153,12 @@ build-run: build
 
 dev: db-up
 	$(MAKE) build-run
+
+.PHONY: test-integration-singlestore-ci test-singlestore-unit
+
+test-integration-singlestore-ci:
+	@test -n "$$CONVEYOR_TEST_SINGLESTORE_URL" || (echo "CONVEYOR_TEST_SINGLESTORE_URL is required" >&2; exit 1)
+	go test -p=1 ./internal/eventlog/s2log ./internal/store/singlestore -count=1 -timeout=5m
+
+test-singlestore-unit:
+	CONVEYOR_TEST_SINGLESTORE_URL= go test ./internal/eventlog/s2log ./internal/store/singlestore ./internal/store/backend ./internal/store/storetest ./internal/store ./internal/config ./cmd/conveyord
