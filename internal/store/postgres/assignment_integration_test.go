@@ -1,16 +1,15 @@
 package postgres
 
 import (
-	"strings"
-	"testing"
-	"time"
-
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
+	"strings"
+	"testing"
+	"time"
 )
 
 func TestTaskAssignmentClaimEligibilityIntegration(t *testing.T) {
@@ -86,9 +85,16 @@ func TestTaskAssignmentClaimEligibilityIntegration(t *testing.T) {
 	if _, err = st.GrantWorkspaceRole(ctx, viewer.Email, workspace, core.WorkspaceRoleViewer); err != nil {
 		t.Fatal(err)
 	}
-	storetest.RunTaskAssigneeMembershipConformance(t, storetest.TaskAssigneeMembershipFixture{
-		Store: st, Context: ctx, TaskID: task.ID, ActiveUserID: member.ID, InactiveUserID: inactive.ID, NonMemberID: "usr-not-a-member", ViewerUserID: viewer.ID,
-	})
+	// Retain the backend-specific deactivated-account fixture check.
+	if _, err := taskops.New(st).SetAssignee(ctx, task.ID, member.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := taskops.New(st).SetAssignee(ctx, task.ID, inactive.ID); err == nil {
+		t.Fatal("inactive account accepted as assignee")
+	}
+	if _, err := taskops.New(st).SetAssignee(ctx, task.ID, viewer.ID); err == nil {
+		t.Fatal("viewer accepted as assignee")
+	}
 	if err = st.CreateJob(ctx, core.Job{ID: task.ID + "-implement", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}); err != nil {
 		t.Fatal(err)
 	}

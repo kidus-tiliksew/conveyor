@@ -1,16 +1,15 @@
 package postgres
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
-	"sort"
-	"testing"
-	"time"
-
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
-	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
+	"sort"
+	"testing"
+	"time"
 )
 
 func TestListArtifactsForLineagePlanReadsOnlySelectedNodeArtifacts(t *testing.T) {
@@ -297,80 +296,78 @@ func TestLineageRebuildCrossStoreParityIntegration(t *testing.T) {
 	}
 }
 
-func TestPostgresLineageConformance(t *testing.T) {
-	storetest.RunLineageConformance(t, func(t *testing.T, _ []config.Repo) storetest.LineageFixture {
-		st, ctx, workspace := newPhase61IntegrationStore(t)
-		t.Cleanup(st.Close)
-		foreignWorkspace := workspace + "-other"
-		foreignCtx := store.WithWorkspace(t.Context(), foreignWorkspace)
-		if _, err := st.BootstrapWorkspaceConfig(foreignCtx, &config.Config{Workspace: foreignWorkspace, Repos: []config.Repo{{Name: "conveyor", Base: "main"}}}); err != nil {
+func postgresConformanceLegacySeed(st *Store, ctx context.Context, workspace string) func(*testing.T, string) (int, func(*testing.T)) {
+	return func(t *testing.T, taskID string) (int, func(*testing.T)) {
+		session, err := st.CreatePlanningSession(ctx, core.PlanningSession{ID: "session-" + core.NewTaskID(), Title: "Migrated context"})
+		if err != nil {
 			t.Fatal(err)
 		}
-		return storetest.LineageFixture{Store: st, Context: ctx, ForeignContext: foreignCtx, Workspace: workspace,
-			SeedLegacy: func(t *testing.T, taskID string) (int, func(*testing.T)) {
-				session, err := st.CreatePlanningSession(ctx, core.PlanningSession{ID: "session-" + core.NewTaskID(), Title: "Migrated context"})
-				if err != nil {
-					t.Fatal(err)
-				}
-				requirementID := "req-" + core.NewTaskID()
-				_, _, err = st.CreateRequirement(ctx, core.Requirement{ID: requirementID, Title: "Migrated requirement"}, core.RequirementVersion{
-					Content: "Migrated context", Origin: core.RequirementOriginChat, OriginSessionID: session.ID,
-					Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Preserve migrated context."}},
-				})
-				if err != nil {
-					t.Fatal(err)
-				}
-				artifact, err := st.CreateArtifact(ctx, core.Artifact{Name: "migrated.txt", ContentType: "text/plain", Role: core.ArtifactRoleTaskContext, RequirementID: requirementID}, []byte("migrated context"))
-				if err != nil {
-					t.Fatal(err)
-				}
-				var eventID int64
-				if err = st.pool.QueryRow(ctx, `SELECT min(id) FROM events WHERE workspace_id=$1 AND task_id=$2`, workspace, taskID).Scan(&eventID); err != nil {
-					t.Fatal(err)
-				}
-				if _, err = st.pool.Exec(ctx, `INSERT INTO links (workspace_id,src_type,src_id,dst_type,dst_id,kind,legacy_created_by_event)
-					VALUES ($1,'requirement',$2,'task',$3,'historical_feature_assignment','feature.migrated')`, workspace, requirementID, taskID); err != nil {
-					t.Fatal(err)
-				}
-				if _, err = st.pool.Exec(ctx, `INSERT INTO links (workspace_id,src_type,src_id,dst_type,dst_id,kind,created_by_event_id)
-					VALUES ($1,'task',$2,'task',$3,'legacy_event_note',$4)`, workspace, taskID, taskID+"-note", eventID); err != nil {
-					t.Fatal(err)
-				}
-				assert := func(t *testing.T) {
-					root := core.LineageNode{Type: core.LineageTask, ID: taskID}
-					budget := core.LineageTraversalBudget{MaxDepth: config.DefaultLineageContextDepth, MaxNodes: config.DefaultLineageContextNodes, Workspace: workspace}
-					links, err := st.ListLineageNeighborhood(ctx, []core.LineageNode{root}, budget)
-					if err != nil {
-						t.Fatal(err)
-					}
-					graph, err := core.TraverseLineage(links, []core.LineageNode{root}, budget)
-					if err != nil {
-						t.Fatal(err)
-					}
-					artifacts, err := st.ListArtifactsForLineage(ctx, graph.Nodes)
-					if err != nil {
-						t.Fatal(err)
-					}
-					selection, err := core.SelectContextArtifacts(links, []core.LineageNode{root}, artifacts, core.ContextArtifactSelectionOptions{Workspace: workspace, LocalTaskID: taskID})
-					if err != nil {
-						t.Fatal(err)
-					}
-					found := false
-					for _, selected := range selection.Artifacts {
-						found = found || selected.ID == artifact.ID
-					}
-					if !found {
-						t.Fatalf("migrated artifact absent from selection: %+v", selection)
-					}
-					var count int
-					if err = st.pool.QueryRow(ctx, `SELECT count(*) FROM links WHERE workspace_id=$1 AND kind IN ('historical_feature_assignment','legacy_event_note')`, workspace).Scan(&count); err != nil || count != 2 {
-						t.Fatalf("retained legacy count=%d err=%v", count, err)
-					}
-				}
-				return 2, assert
-			},
+		requirementID := "req-" + core.NewTaskID()
+		_, _, err = st.CreateRequirement(ctx, core.Requirement{ID: requirementID, Title: "Migrated requirement"}, core.RequirementVersion{
+			Content: "Migrated context", Origin: core.RequirementOriginChat, OriginSessionID: session.ID,
+			Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Preserve migrated context."}},
+		})
+		if err != nil {
+			t.Fatal(err)
 		}
-	})
+		artifact, err := st.CreateArtifact(ctx, core.Artifact{Name: "migrated.txt", ContentType: "text/plain", Role: core.ArtifactRoleTaskContext, RequirementID: requirementID}, []byte("migrated context"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var eventID int64
+		if err = st.pool.QueryRow(ctx, `SELECT min(id) FROM events WHERE workspace_id=$1 AND task_id=$2`, workspace, taskID).Scan(&eventID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = st.pool.Exec(ctx, `INSERT INTO links (workspace_id,src_type,src_id,dst_type,dst_id,kind,legacy_created_by_event)
+					VALUES ($1,'requirement',$2,'task',$3,'historical_feature_assignment','feature.migrated')`, workspace, requirementID, taskID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = st.pool.Exec(ctx, `INSERT INTO links (workspace_id,src_type,src_id,dst_type,dst_id,kind,created_by_event_id)
+					VALUES ($1,'task',$2,'task',$3,'legacy_event_note',$4)`, workspace, taskID, taskID+"-note", eventID); err != nil {
+			t.Fatal(err)
+		}
+		assert := func(t *testing.T) {
+			root := core.LineageNode{Type: core.LineageTask, ID: taskID}
+			budget := core.LineageTraversalBudget{MaxDepth: config.DefaultLineageContextDepth, MaxNodes: config.DefaultLineageContextNodes, Workspace: workspace}
+			links, err := st.ListLineageNeighborhood(ctx, []core.LineageNode{root}, budget)
+			if err != nil {
+				t.Fatal(err)
+			}
+			graph, err := core.TraverseLineage(links, []core.LineageNode{root}, budget)
+			if err != nil {
+				t.Fatal(err)
+			}
+			artifacts, err := st.ListArtifactsForLineage(ctx, graph.Nodes)
+			if err != nil {
+				t.Fatal(err)
+			}
+			selection, err := core.SelectContextArtifacts(links, []core.LineageNode{root}, artifacts, core.ContextArtifactSelectionOptions{Workspace: workspace, LocalTaskID: taskID})
+			if err != nil {
+				t.Fatal(err)
+			}
+			found := false
+			for _, selected := range selection.Artifacts {
+				found = found || selected.ID == artifact.ID
+			}
+			if !found {
+				t.Fatalf("migrated artifact absent from selection: %+v", selection)
+			}
+			links, err = st.ListLineageLinks(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			count := 0
+			for _, link := range links {
+				if link.Kind == "historical_feature_assignment" || link.Kind == "legacy_event_note" {
+					count++
+				}
+			}
+			if count != 2 {
+				t.Fatalf("retained legacy links=%d", count)
+			}
+		}
+		return 2, assert
+	}
 }
 
 func TestLineageRebuildRepairsHistoricalRequirementSupersession(t *testing.T) {
