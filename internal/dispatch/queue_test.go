@@ -379,6 +379,41 @@ func (s *cancelledDispatchStore) GetTask(context.Context, string) (core.Task, er
 	return core.Task{}, context.Canceled
 }
 
+// TestDispatchJobCompletesWhileTaskWaitsForAClaim: a queued MCP-stage task
+// gets its work order and then waits for a claimant. The job must complete
+// there, not snooze: on the log a snooze is a claim and a snooze appended
+// every second for as long as the task waits.
+func TestDispatchJobCompletesWhileTaskWaitsForAClaim(t *testing.T) {
+	t.Parallel()
+	ctx := store.WithWorkspace(t.Context(), "test")
+	cfg := &config.Config{
+		Workspace: "test",
+		Routing: config.Routing{Stages: map[string]config.StageRoute{
+			"spec": {Model: "planner", Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"},
+		}},
+		Repos: []config.Repo{{Name: "app", URL: "https://example.test/app.git", Base: "main"}},
+	}
+	st := store.NewMemoryWithConfig(cfg)
+	taskID := "dispatch-wait-" + core.NewTaskID()
+	if err := st.CreateTask(ctx, core.Task{ID: taskID, Workspace: "test", Repo: "app", BaseBranch: "main", Branch: "conveyor/task-" + taskID, State: core.TaskQueued, NextStage: core.StageSpec, CreatedAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	worker := &dispatchTaskWorker{dispatcher: New(st, cfg, nil), shutdown: &ShutdownMarker{}}
+	for round := 1; round <= 2; round++ {
+		if err := worker.Work(ctx, dispatchTaskJob(taskID, round, queue.DispatchTaskMaxAttempts)); err != nil {
+			t.Fatalf("round %d: %v, want the job to complete", round, err)
+		}
+	}
+	orders, err := st.ListTaskWorkOrders(ctx, taskID)
+	if err != nil || len(orders) != 1 || orders[0].Stage != core.StageSpec || orders[0].State != core.WorkOrderQueued {
+		t.Fatalf("orders=%+v err=%v, want one queued spec order", orders, err)
+	}
+	task, err := st.GetTask(ctx, taskID)
+	if err != nil || task.State != core.TaskQueued || task.NextStage != core.StageSpec {
+		t.Fatalf("task=%+v err=%v, want still queued at spec", task, err)
+	}
+}
+
 func TestQueueRescueThresholdUsesLargestRouteAndFallback(t *testing.T) {
 	t.Parallel()
 	configs := map[string]*config.Config{
