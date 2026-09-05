@@ -7,8 +7,6 @@ import (
 	"log"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgconn"
-
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/queue"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
@@ -72,8 +70,7 @@ func (w *dispatchTaskWorker) handleFailure(ctx context.Context, job queue.Job, e
 	// A duplicate jobs key can be a lost acknowledgement from a dispatch that
 	// already materialized the §21.30 conflict-fix order. Treat that durable
 	// active order as success before emitting failure or requeue activity.
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+	if errors.Is(err, store.ErrDispatchJobConflict) {
 		if _, active, lookupErr := w.dispatcher.activeImplementationWorkOrder(ctx, args.TaskID, "merge-conflict"); lookupErr != nil {
 			return fmt.Errorf("dispatch duplicate recovery: %w", lookupErr)
 		} else if active {

@@ -27,7 +27,7 @@ func (m *memory) CreateReferenceDocument(ctx context.Context, document core.Refe
 	}
 	for existingKey, existing := range m.referenceDocuments {
 		if existingKey.workspace == workspace && existing.DeletedAt.IsZero() && strings.EqualFold(existing.Name, document.Name) {
-			return document, version, fmt.Errorf("reference document name %q already exists", document.Name)
+			return document, version, fmt.Errorf("%w: %q", ErrReferenceDocumentNameConflict, document.Name)
 		}
 	}
 	now := time.Now().UTC()

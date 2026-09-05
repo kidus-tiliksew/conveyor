@@ -9,7 +9,7 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
-	postgresstore "github.com/kidus-tiliksew/conveyor/internal/store/postgres"
+	"github.com/kidus-tiliksew/conveyor/internal/store/backend"
 	"github.com/spf13/cobra"
 )
 
@@ -22,7 +22,7 @@ type openSignInLinkStore func(context.Context, string) (signInLinkStore, error)
 
 func userCmd() *cobra.Command {
 	return newUserCmd(func(ctx context.Context, databaseURL string) (signInLinkStore, error) {
-		return postgresstore.Open(ctx, databaseURL)
+		return backend.Open(ctx, config.Database{Backend: "postgres", URL: databaseURL})
 	})
 }
 

@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
@@ -109,11 +108,7 @@ func writeReferenceUploadError(w http.ResponseWriter, err error) {
 }
 
 func isReferenceDocumentNameConflict(err error) bool {
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "reference_documents_live_name_idx" {
-		return true
-	}
-	return strings.Contains(strings.ToLower(err.Error()), "reference document name") && strings.Contains(strings.ToLower(err.Error()), "already exists")
+	return errors.Is(err, store.ErrReferenceDocumentNameConflict)
 }
 func (s *Server) deleteReferenceDocument(w http.ResponseWriter, r *http.Request) {
 	if err := s.Store.DeleteReferenceDocument(r.Context(), chi.URLParam(r, "id")); err != nil {

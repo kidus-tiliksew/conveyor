@@ -16,7 +16,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/gitx"
 	"github.com/kidus-tiliksew/conveyor/internal/pack"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
-	postgresstore "github.com/kidus-tiliksew/conveyor/internal/store/postgres"
+	"github.com/kidus-tiliksew/conveyor/internal/store/backend"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
@@ -211,7 +211,7 @@ func initializeDeployment(ctx context.Context, output io.Writer, configPath stri
 	if _, err = pack.Load(validated.PackDir); err != nil {
 		return fmt.Errorf("load deployment role pack: %w", err)
 	}
-	pgStore, err := postgresstore.Open(ctx, databaseURL)
+	pgStore, err := backend.Open(ctx, config.Database{Backend: "postgres", URL: databaseURL})
 	if err != nil {
 		return fmt.Errorf("initialize Postgres store: %w", err)
 	}

@@ -13,7 +13,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
@@ -162,11 +161,11 @@ func TestCreateReferenceDocumentMapsStoreErrors(t *testing.T) {
 }
 
 func TestReferenceDocumentNameConflictClassification(t *testing.T) {
-	conflict := &pgconn.PgError{Code: "23505", ConstraintName: "reference_documents_live_name_idx", Message: "raw constraint detail"}
+	conflict := fmt.Errorf("wrapped: %w", store.ErrReferenceDocumentNameConflict)
 	if !isReferenceDocumentNameConflict(conflict) {
 		t.Fatal("production-store live-name conflict was not classified")
 	}
-	other := &pgconn.PgError{Code: "23505", ConstraintName: "some_other_constraint"}
+	other := errors.New("reference document name already exists")
 	if isReferenceDocumentNameConflict(other) {
 		t.Fatal("unrelated unique violation was classified as a live-name conflict")
 	}

@@ -30,7 +30,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/queue/logqueue"
 	"github.com/kidus-tiliksew/conveyor/internal/releaseinfo"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
-	postgresstore "github.com/kidus-tiliksew/conveyor/internal/store/postgres"
+	"github.com/kidus-tiliksew/conveyor/internal/store/backend"
 	githubtrigger "github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
 	"github.com/kidus-tiliksew/conveyor/internal/workorder"
@@ -95,66 +95,52 @@ func main() {
 	httpBaseCtx, cancelHTTP := context.WithCancel(context.Background())
 	defer cancelHTTP()
 
-	var st store.Store
-	var pgStore *postgresstore.Store
-	var closeStore func()
-	switch deployment.Database.Backend {
-	case "postgres":
-		pgStore, err = postgresstore.Open(ctx, deployment.Database.URL)
-		if err != nil {
-			log.Fatalf("open Postgres store: %v", err)
-		}
-		if forgeKey, keyErr := config.ForgeTokenEncryptionKeyFromEnvironment(); keyErr != nil {
-			log.Printf("forge token encryption unavailable until configured: %v", keyErr)
-		} else {
-			pgStore.ConfigureForgeTokenEncryptionKey(forgeKey)
-		}
-		if _, bootstrapErr := pgStore.BootstrapIdentity(ctx, config.FirstOperatorIdentityFromEnvironment(), apiToken); bootstrapErr != nil {
-			pgStore.Close()
-			log.Fatalf("bootstrap deployment identity: %v", bootstrapErr)
-		}
-		if deployment.Workspace != "" {
-			bootstrapCtx := store.WithWorkspace(ctx, deployment.Workspace)
-			seeded, bootstrapErr := pgStore.BootstrapWorkspaceConfig(bootstrapCtx, deployment)
-			if bootstrapErr != nil {
-				pgStore.Close()
-				log.Fatalf("bootstrap workspace: %v", bootstrapErr)
-			}
-			if !seeded {
-				log.Printf("workspace %q already exists; ignoring workspace sections from %s", deployment.Workspace, *configPath)
-			}
-			cfg, err = pgStore.RuntimeConfig(bootstrapCtx, deployment)
-			if err != nil {
-				pgStore.Close()
-				log.Fatalf("load database workspace config: %v", err)
-			}
-		} else {
-			log.Printf("no bootstrap workspace configured; first-run workspace creation is available")
-		}
-		st = pgStore
-		closeStore = pgStore.Close
-		log.Printf("using durable Postgres store with the event log")
-	case "memory":
-		st = store.NewMemoryWithConfig(cfg)
-		closeStore = func() {}
-		log.Printf("WARNING: using volatile memory store; set CONVEYOR_DATABASE_URL for Phase 2 durability")
+	st, err := backend.Open(ctx, deployment.Database)
+	if err != nil {
+		log.Fatalf("open store: %v", err)
 	}
+	if forgeKey, keyErr := config.ForgeTokenEncryptionKeyFromEnvironment(); keyErr != nil {
+		log.Printf("forge token encryption unavailable until configured: %v", keyErr)
+	} else {
+		st.ConfigureForgeTokenEncryptionKey(forgeKey)
+	}
+	if _, bootstrapErr := st.BootstrapIdentity(ctx, config.FirstOperatorIdentityFromEnvironment(), apiToken); bootstrapErr != nil {
+		st.Close()
+		log.Fatalf("bootstrap deployment identity: %v", bootstrapErr)
+	}
+	if deployment.Workspace != "" {
+		bootstrapCtx := store.WithWorkspace(ctx, deployment.Workspace)
+		seeded, bootstrapErr := st.BootstrapWorkspaceConfig(bootstrapCtx, deployment)
+		if bootstrapErr != nil {
+			st.Close()
+			log.Fatalf("bootstrap workspace: %v", bootstrapErr)
+		}
+		if !seeded {
+			log.Printf("workspace %q already exists; ignoring workspace sections from %s", deployment.Workspace, *configPath)
+		}
+		cfg, err = st.RuntimeConfig(bootstrapCtx, deployment)
+		if err != nil {
+			st.Close()
+			log.Fatalf("load database workspace config: %v", err)
+		}
+	} else {
+		log.Printf("no bootstrap workspace configured; first-run workspace creation is available")
+	}
+	closeStore := st.Close
 	closeStore = sync.OnceFunc(closeStore)
 	defer closeStore()
 	agent := &inprocess.OpenAI{APIKey: llmEnvironment.APIKey, BaseURL: llmEnvironment.BaseURL}
-	if secrets, ok := st.(store.ForgeTokenStore); ok {
-		agent.RedactionSecrets = secrets
-	}
+	agent.RedactionSecrets = st
 	d := dispatch.New(st, cfg, agent)
 	d.Pack = packBundle
 	var queueRuntime shutdownQueue
 	var addWorkspaceQueue func(string) error
 	var workspaceQueues *dispatch.WorkspaceQueueRegistrar
-	if pgStore != nil {
+	if st.IsDurable() {
 		d.ConfigProvider = func(ctx context.Context) (*config.Config, error) {
-			return pgStore.RuntimeConfig(ctx, deployment)
+			return st.RuntimeConfig(ctx, deployment)
 		}
-		workspaceRecords, listErr := pgStore.ListWorkspaces(ctx)
+		workspaceRecords, listErr := st.ListWorkspaces(ctx)
 		if listErr != nil {
 			log.Fatalf("list workspaces: %v", listErr)
 		}
@@ -164,7 +150,7 @@ func main() {
 		}
 		workspaceConfigs := make(map[string]*config.Config, len(workspaceIDs))
 		for _, workspaceID := range workspaceIDs {
-			workspaceConfig, configErr := pgStore.RuntimeConfig(store.WithWorkspace(ctx, workspaceID), deployment)
+			workspaceConfig, configErr := st.RuntimeConfig(store.WithWorkspace(ctx, workspaceID), deployment)
 			if configErr != nil {
 				log.Fatalf("load route config for workspace %s: %v", workspaceID, configErr)
 			}
@@ -177,7 +163,7 @@ func main() {
 		log.Printf("queue stuck-job rescue threshold %s", rescueAfter)
 		queueShutdown := &dispatch.ShutdownMarker{}
 		hostname, _ := os.Hostname()
-		runtime := logqueue.NewRuntime(pgStore.Log(), logqueue.Options{
+		runtime := logqueue.NewRuntime(st.Log(), logqueue.Options{
 			Workspaces: workspaceIDs, RescueStuckAfter: rescueAfter, WorkerID: hostname, Logf: log.Printf,
 		})
 		for _, registration := range d.Registrations(queueShutdown) {
@@ -187,7 +173,7 @@ func main() {
 			log.Fatalf("start queue runtime: %v", startErr)
 		}
 		workspaceQueues = dispatch.NewWorkspaceQueueRegistrar(workspaceIDs, func(workspace string) error {
-			workspaceConfig, configErr := pgStore.RuntimeConfig(store.WithWorkspace(ctx, workspace), deployment)
+			workspaceConfig, configErr := st.RuntimeConfig(store.WithWorkspace(ctx, workspace), deployment)
 			if configErr != nil {
 				return configErr
 			}
@@ -206,6 +192,16 @@ func main() {
 		go d.Run(ctx)
 	}
 	srv := httpapi.NewServer(st)
+	srv.Credentials = st
+	srv.Memberships = st
+	srv.IdentityProvisioner = st
+	srv.CallerIdentities = st
+	srv.OwnProfiles = st
+	srv.PersonalTokens = st
+	srv.AgentCredentials = st
+	srv.ForgeTokens = st
+	srv.WorkspaceForgeTokens = st
+	srv.InvitationSessions = st
 	srv.Release = releaseinfo.Version
 	srv.Repos = cfg.RepoNames()
 	srv.Workspace = cfg.Workspace
@@ -221,34 +217,28 @@ func main() {
 	srv.OnConflictFix = d.DispatchConflictFix
 	srv.ValidateForgeToken = githubtrigger.ValidateTokenIdentity
 	workOrders := &workorder.Service{Store: st, Dispatcher: d, Pack: packBundle, ConfigProvider: func(ctx context.Context) (*config.Config, error) {
-		if pgStore != nil {
-			return pgStore.RuntimeConfig(ctx, deployment)
+		if st.IsDurable() {
+			return st.RuntimeConfig(ctx, deployment)
 		}
 		return cfg, nil
 	}}
-	if tokens, ok := st.(store.ForgeTokenStore); ok {
-		workOrders.ForgeTokens = tokens
-		d.ForgeTokens = tokens
-	}
-	if tokens, ok := st.(store.WorkspaceForgeTokenStore); ok {
-		workOrders.WorkspaceForgeTokens = tokens
-		d.WorkspaceForgeTokens = tokens
-	}
-	if secrets, ok := st.(store.ForgeTokenStore); ok {
-		workOrders.RedactionSecrets = secrets
-	}
+	workOrders.ForgeTokens = st
+	d.ForgeTokens = st
+	workOrders.WorkspaceForgeTokens = st
+	d.WorkspaceForgeTokens = st
+	workOrders.RedactionSecrets = st
 	srv.WorkOrders = workOrders
 	srv.Planning = &planning.Service{
 		Store: st, Agent: agent, ConfigProvider: workOrders.ConfigProvider,
 		Prompt: planningRole,
 	}
-	if monitorStore, ok := st.(monitor.Store); ok {
+	{
 		repositories := make(map[string]struct{}, len(cfg.Monitor.Repositories))
 		for _, repository := range cfg.Monitor.Repositories {
 			repositories[repository] = struct{}{}
 		}
 		srv.Monitor = &monitor.Service{
-			Store: monitorStore, Intake: srv.CreateMonitorTask,
+			Store: st, Intake: srv.CreateMonitorTask,
 			WorkspaceID: cfg.Workspace, Enabled: cfg.Monitor.Enabled,
 			Repositories: repositories,
 			ResolveScope: func(ctx context.Context) (string, bool, map[string]struct{}, error) {
@@ -263,31 +253,25 @@ func main() {
 				return current.Workspace, current.Monitor.Enabled, scoped, nil
 			},
 		}
-		if secrets, ok := st.(store.ForgeTokenStore); ok {
-			srv.Monitor.RedactionSecrets = secrets
-		}
+		srv.Monitor.RedactionSecrets = st
 		d.ObserveDesignMerge = func(ctx context.Context, observation monitor.Observation, taskID string) error {
 			_, err := srv.Monitor.ProcessDesignMerge(ctx, observation, taskID)
 			return err
 		}
 	}
 	srv.Workers = &workerservice.Service{Store: st, WorkOrders: workOrders, ConfigProvider: workOrders.ConfigProvider, RetryDelay: *workerRetryDelay, RetryMaximum: *workerRetryMaximum}
-	if identities, ok := st.(store.CallerIdentityStore); ok {
-		srv.Workers.IdentityUsers = identities
-	}
-	if secrets, ok := st.(store.ForgeTokenStore); ok {
-		srv.Workers.RedactionSecrets = secrets
-		srv.Workers.ForgeTokens = secrets
-	}
-	if pgStore != nil {
-		srv.Workspaces = pgStore
+	srv.Workers.IdentityUsers = st
+	srv.Workers.RedactionSecrets = st
+	srv.Workers.ForgeTokens = st
+	if st.IsDurable() {
+		srv.Workspaces = st
 		srv.EnsureWorkspaceQueues = addWorkspaceQueue
-		srv.ConfigStore = pgStore
+		srv.ConfigStore = st
 		srv.ConfigProvider = func(ctx context.Context) (*config.Config, error) {
-			return pgStore.RuntimeConfig(ctx, deployment)
+			return st.RuntimeConfig(ctx, deployment)
 		}
 		reconcile := func() {
-			workspaces, listErr := pgStore.ListWorkspaces(ctx)
+			workspaces, listErr := st.ListWorkspaces(ctx)
 			if listErr != nil {
 				log.Printf("list workspaces for reconciliation: %v", listErr)
 				return
@@ -314,7 +298,7 @@ func main() {
 				if lifecycles != 0 {
 					log.Printf("reconciled %d approved task GitHub lifecycle intent(s) in workspace %s", lifecycles, workspace.ID)
 				}
-				issueJobs, issueErr := pgStore.ReconcileGitHubLifecycles(workspaceCtx)
+				issueJobs, issueErr := st.ReconcileGitHubLifecycles(workspaceCtx)
 				if issueErr != nil {
 					log.Printf("reconcile GitHub issue publications: %v", issueErr)
 					return
@@ -322,7 +306,7 @@ func main() {
 				if issueJobs != 0 {
 					log.Printf("reconciled %d GitHub issue publication job(s) in workspace %s", issueJobs, workspace.ID)
 				}
-				repaired, err := pgStore.ReconcileQueuedTasks(workspaceCtx)
+				repaired, err := st.ReconcileQueuedTasks(workspaceCtx)
 				if err != nil {
 					log.Printf("reconcile queued tasks: %v", err)
 					return
@@ -330,7 +314,7 @@ func main() {
 				if repaired != 0 {
 					log.Printf("reconciled %d queued task(s) missing queue jobs", repaired)
 				}
-				closedBlueprints, closeErr := pgStore.ReconcileBlueprintClosures(workspaceCtx)
+				closedBlueprints, closeErr := st.ReconcileBlueprintClosures(workspaceCtx)
 				if closeErr != nil {
 					log.Printf("reconcile blueprint closures: %v", closeErr)
 					return
@@ -338,7 +322,7 @@ func main() {
 				if closedBlueprints != 0 {
 					log.Printf("reconciled %d blueprint parent closure(s) in workspace %s", closedBlueprints, workspace.ID)
 				}
-				publications, publicationErr := pgStore.ReconcileReviewPublications(workspaceCtx)
+				publications, publicationErr := st.ReconcileReviewPublications(workspaceCtx)
 				if publicationErr != nil {
 					log.Printf("reconcile review publications: %v", publicationErr)
 					return
@@ -369,8 +353,8 @@ func main() {
 			ticker := time.NewTicker(*pollGitHub)
 			defer ticker.Stop()
 			for {
-				if pgStore != nil {
-					items, listErr := pgStore.ListWorkspaces(ctx)
+				if st.IsDurable() {
+					items, listErr := st.ListWorkspaces(ctx)
 					if listErr == nil {
 						for _, item := range items {
 							d.PollOnce(store.WithWorkspace(ctx, item.ID))
@@ -395,8 +379,8 @@ func main() {
 			defer ticker.Stop()
 			for {
 				var workspaceIDs []string
-				if pgStore != nil {
-					items, listErr := pgStore.ListWorkspaces(ctx)
+				if st.IsDurable() {
+					items, listErr := st.ListWorkspaces(ctx)
 					if listErr != nil {
 						log.Printf("list workspaces for monitor: %v", listErr)
 					} else {
@@ -424,13 +408,7 @@ func main() {
 								"monitored repository requires a GitHub slug", time.Now().Add(current.Monitor.PollInterval))
 							continue
 						}
-						workspaceTokens, ok := st.(store.WorkspaceForgeTokenStore)
-						if !ok {
-							_ = srv.Monitor.Store.RecordMonitorFailure(workspaceCtx, string(githubtrigger.ForgePermission),
-								"workspace "+workspaceID+" forge token is required; add it in workspace settings", time.Now().Add(current.Monitor.PollInterval))
-							continue
-						}
-						credential, tokenErr := workspaceTokens.GetWorkspaceForgeTokenForUse(workspaceCtx, workspaceID)
+						credential, tokenErr := st.GetWorkspaceForgeTokenForUse(workspaceCtx, workspaceID)
 						if tokenErr != nil || strings.TrimSpace(credential.Token) == "" {
 							_ = srv.Monitor.Store.RecordMonitorFailure(workspaceCtx, string(githubtrigger.ForgePermission),
 								"workspace "+workspaceID+" forge token is unavailable; add or replace it in workspace settings", time.Now().Add(current.Monitor.PollInterval))

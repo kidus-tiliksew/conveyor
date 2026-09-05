@@ -160,7 +160,7 @@ func (m *memory) ChangeTaskSetupCommand(ctx context.Context, lease taskops.TaskL
 			return SetupChangeResult{}, fmt.Errorf("invalid setup-change review member %d", i)
 		}
 		if _, _, exists := m.findJobLocked(job.ID); exists {
-			return SetupChangeResult{}, fmt.Errorf("%w: job %s already exists", ErrSetupChangeConflict, job.ID)
+			return SetupChangeResult{}, fmt.Errorf("%w: %w: job %s already exists", ErrSetupChangeConflict, ErrDispatchJobConflict, job.ID)
 		}
 		if _, exists := m.workOrders[order.ID]; exists {
 			return SetupChangeResult{}, fmt.Errorf("%w: work order %s already exists", ErrSetupChangeConflict, order.ID)
