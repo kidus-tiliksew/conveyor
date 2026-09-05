@@ -943,7 +943,6 @@ export interface PlanningMessagePart {
 export interface BlueprintLineage {
   task: Task
   spec?: SpecVersion
-  events: TaskEvent[]
 }
 
 // The blueprint presentation surface. An anchor is an intent
@@ -992,7 +991,8 @@ export interface RequirementView {
   planning_sessions: PlanningSession[]
   artifacts: Artifact[]
   lineage: TaskEvent[]
-  lineage_graph?: LineageGraph
+  lineage_total: number
+  lineage_snapshot_id: number
   staleness?: RequirementStaleness
   migrated_seed: boolean
   confirmation_eligible: boolean
@@ -1086,6 +1086,8 @@ export interface SystemDesignView {
   pending_versions: SystemDesignVersion[]
   versions: SystemDesignVersion[]
   lineage: TaskEvent[]
+  lineage_total: number
+  lineage_snapshot_id: number
   drift: RepositoryDrift[]
 }
 export type SystemDesignVersionSummary = Omit<SystemDesignVersion, 'content' | 'governs'>
@@ -1126,4 +1128,12 @@ export interface DecisionSupersessionSweepEntry {
   detected_at: string
   resolved_by?: string
   resolved_at?: string
+}
+
+export interface DocumentEventPage {
+  events: TaskEvent[]
+  total: number
+  limit: number
+  offset: number
+  snapshot_id: number
 }

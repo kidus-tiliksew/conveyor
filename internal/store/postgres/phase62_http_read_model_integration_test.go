@@ -80,9 +80,9 @@ func TestPhase62RequirementsHTTPIncludesWorkspaceRequirementLineageIntegration(t
 		t.Fatal(err)
 	}
 	wantKinds := []string{
-		"requirement.created",
-		"requirement.version_proposed",
 		"requirement.version_confirmed",
+		"requirement.version_proposed",
+		"requirement.created",
 	}
 	if len(view.Lineage) != len(wantKinds) {
 		t.Fatalf("lineage=%+v", view.Lineage)

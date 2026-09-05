@@ -32,6 +32,7 @@ import { DriftResolutionForm } from '../components/documents/drift-resolution-fo
 import { SuccessorLinks } from '../components/documents/successor-links'
 import { VersionDiff } from '../components/documents/version-diff'
 import { VersionDismissDialog } from '../components/documents/version-dismiss-dialog'
+import { MoreDocumentEvents, useDocumentEvents } from '../components/documents/document-events'
 import { LineageExplorer } from '../components/lineage/lineage-explorer'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
@@ -523,6 +524,7 @@ function RequirementCanvas({ summary }: { summary: RequirementSummary }) {
 }
 
 function RequirementDetailCanvas({ item }: { item: RequirementView }) {
+  const history = useDocumentEvents('requirement', item.requirement.id, item)
   const { workspace } = useWorkspaceSelection()
   const canOperate = useWorkspaceCapability('operate_gates')
   const canManageWorkspace = useWorkspaceCapability('manage_workspace')
@@ -1196,7 +1198,7 @@ function RequirementDetailCanvas({ item }: { item: RequirementView }) {
                 </span>
                 Activity
               </CardTitle>
-              <Badge variant="mono">{item.lineage.length}</Badge>
+              <Badge variant="mono">{history.total}</Badge>
             </CardHeader>
             <CardContent>
               {routineDeliveries.length > 0 && (
@@ -1230,29 +1232,27 @@ function RequirementDetailCanvas({ item }: { item: RequirementView }) {
                   </ul>
                 </section>
               )}
-              {item.lineage.length === 0 && routineDeliveries.length === 0 && (
+              {history.events.length === 0 && routineDeliveries.length === 0 && (
                 <p className="text-sm text-muted">Activity appears as planning and delivery advance.</p>
               )}
-              {item.lineage.length > 0 && (
+              {history.events.length > 0 && (
                 <details>
                   <summary className="cursor-pointer text-sm font-medium">Technical activity</summary>
                   <ol className="mt-3 space-y-3">
-                    {item.lineage
-                      .slice(-8)
-                      .reverse()
-                      .map((event) => (
-                        <li key={`${event.id}-${event.kind}`} className="flex gap-2 text-xs">
-                          <span className="mt-1.5 size-1.5 shrink-0 rounded-full bg-edge" />
-                          <span className="min-w-0 flex-1">
-                            <strong className="font-medium">{eventLabel(event)}</strong>
-                            <span className="mt-0.5 flex items-center gap-2">
-                              <time className="text-[10px] text-faint">{formatDate(event.at)}</time>
-                              {event.payload?.backfilled === true && <Badge variant="mono">Backfilled</Badge>}
-                            </span>
+                    {history.events.map((event) => (
+                      <li key={`${event.id}-${event.kind}`} className="flex gap-2 text-xs">
+                        <span className="mt-1.5 size-1.5 shrink-0 rounded-full bg-edge" />
+                        <span className="min-w-0 flex-1">
+                          <strong className="font-medium">{eventLabel(event)}</strong>
+                          <span className="mt-0.5 flex items-center gap-2">
+                            <time className="text-[10px] text-faint">{formatDate(event.at)}</time>
+                            {event.payload?.backfilled === true && <Badge variant="mono">Backfilled</Badge>}
                           </span>
-                        </li>
-                      ))}
+                        </span>
+                      </li>
+                    ))}
                   </ol>
+                  <MoreDocumentEvents history={history} />
                 </details>
               )}
             </CardContent>

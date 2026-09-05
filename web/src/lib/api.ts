@@ -1159,3 +1159,17 @@ export async function fixMergeConflict(taskId: string) {
   if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   return response.json() as Promise<import('./types').WorkOrder>
 }
+
+export function fetchDocumentEvents(
+  kind: 'requirement' | 'system_design',
+  id: string,
+  offset: number,
+  snapshot: number,
+) {
+  const collection = kind === 'requirement' ? 'requirements' : 'system-designs'
+  return getJSON<import('./types').DocumentEventPage>(
+    workspaceURL(
+      `/v1/${collection}/${encodeURIComponent(id)}/events?limit=50&offset=${offset}&snapshot_id=${snapshot}`,
+    ),
+  )
+}

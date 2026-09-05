@@ -17,6 +17,7 @@ import { DriftResolutionForm } from '../components/documents/drift-resolution-fo
 import { SuccessorLinks } from '../components/documents/successor-links'
 import { VersionDiff } from '../components/documents/version-diff'
 import { VersionDismissDialog } from '../components/documents/version-dismiss-dialog'
+import { MoreDocumentEvents, useDocumentEvents } from '../components/documents/document-events'
 import { LineageExplorer } from '../components/lineage/lineage-explorer'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
@@ -341,6 +342,7 @@ function DesignCanvas({
     >
   >
 }) {
+  const history = useDocumentEvents('system_design', item.document.id, item)
   const client = useQueryClient()
   const canManageWorkspace = useWorkspaceCapability('manage_workspace')
   const canConfirm = useWorkspaceCapability('confirm_documents')
@@ -420,10 +422,10 @@ function DesignCanvas({
     },
   })
   const pending = item.pending_versions.at(-1)
-  const deliveryConsultations = item.lineage.filter(
+  const deliveryConsultations = history.events.filter(
     (event) => event.kind === 'system_design.consulted' && event.payload?.consultation === 'delivery_no_revision',
   )
-  const archiveActivity = item.lineage.filter(
+  const archiveActivity = history.events.filter(
     (event) => event.kind === 'system_design.archived' || event.kind === 'system_design.restored',
   )
 
@@ -673,6 +675,11 @@ function DesignCanvas({
           </ol>
         </section>
       )}
+
+      <section className="mt-4" aria-label="Document activity">
+        <span className="mr-2 text-xs text-muted">{history.total} activity events</span>
+        <MoreDocumentEvents history={history} />
+      </section>
 
       {item.versions.length > 0 && (
         <details className="mt-8 border-t border-border pt-5">

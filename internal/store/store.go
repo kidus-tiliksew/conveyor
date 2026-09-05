@@ -149,6 +149,7 @@ type Store interface {
 	// context, aggregate review-round, and merge events used by
 	// requirement-delivery classification.
 	ListRequirementDeliveryEventsForTasks(ctx context.Context, taskIDs []string) (map[string][]core.Event, error)
+	ListDocumentEventPage(ctx context.Context, kind core.LineageNodeType, id string, query DocumentEventQuery) (DocumentEventPage, error)
 	ListRequirementEvents(ctx context.Context, requirementID string) ([]core.Event, error)
 	ListRequirementEventsByRequirement(ctx context.Context) (map[string][]core.Event, error)
 	AcknowledgeRequirementStaleness(ctx context.Context, acknowledgment core.RequirementStalenessAcknowledgment) (core.RequirementStalenessAcknowledgment, error)

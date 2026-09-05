@@ -64,6 +64,7 @@ var requirementConformanceRepos = []config.Repo{
 // planning-session persistence contract against any Store implementation
 func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 	t.Helper()
+	runDocumentEventPages(t, factory)
 
 	t.Run("requirement and system design archive lifecycle", func(t *testing.T) {
 		fixture := factory(t, requirementConformanceRepos)

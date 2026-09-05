@@ -32,7 +32,6 @@ const requirement = {
         state: 'awaiting_human',
       },
       spec: { task_id: 'blueprint-task', version: 1, approved: false },
-      events: [],
     },
   ],
   planning_sessions: [
@@ -64,29 +63,8 @@ const requirement = {
       at: '2026-07-30T10:05:00Z',
     },
   ],
-  lineage_graph: {
-    roots: [{ type: 'requirement', id: 'req-retries', label: 'Retry behavior' }],
-    nodes: [
-      { type: 'requirement', id: 'req-retries', label: 'Retry behavior' },
-      { type: 'blueprint', id: 'blueprint-task', label: 'Ship bounded retries' },
-    ],
-    links: [
-      {
-        workspace: 'demo',
-        src_type: 'requirement',
-        src_id: 'req-retries',
-        dst_type: 'blueprint',
-        dst_id: 'blueprint-task',
-        kind: 'serves',
-        created_by_event_id: 2,
-        created_at: '2026-07-30T10:05:00Z',
-      },
-    ],
-    truncated: false,
-    omitted_nodes: 0,
-    omitted_links: 0,
-    budget: { max_depth: 5, max_nodes: 256, max_links: 1024 },
-  },
+  lineage_total: 1,
+  lineage_snapshot_id: 1,
   staleness: {
     delivery_after_intent: true,
     deliveries: [
@@ -335,9 +313,10 @@ test('requirements archive and restore from the canvas while preserving archived
       archived_by: archived ? 'Operator One' : undefined,
       archived_at: archived ? archivedAt : undefined,
     },
+    lineage_total: archived ? 2 : 1,
+    lineage_snapshot_id: archived ? 2 : 1,
     lineage: archived
       ? [
-          ...requirement.lineage,
           {
             id: 2,
             task_id: '',
@@ -347,6 +326,7 @@ test('requirements archive and restore from the canvas while preserving archived
             payload: {},
             at: archivedAt,
           },
+          ...requirement.lineage,
         ]
       : requirement.lineage,
   })
@@ -1396,7 +1376,6 @@ test('a requirement voices drift once and collapses to a quiet line when nothing
     requirement: { ...requirement.requirement, id: 'req-calm', slug: 'calm-intent', title: 'Calm intent' },
     serving_blueprints: [],
     planning_sessions: [],
-    lineage_graph: undefined,
     staleness: { delivery_after_intent: false, active_drift: [] },
   }
   await page.route('**/v1/**', async (route) => {
@@ -2386,7 +2365,6 @@ test('a deep link opens the document the URL asked for, not the first in the cor
     },
     serving_blueprints: [],
     planning_sessions: [],
-    lineage_graph: undefined,
   }
   const finished = {
     id: 'session-done',
@@ -2425,4 +2403,59 @@ test('a deep link opens the document the URL asked for, not the first in the cor
   await expect(canvas.getByRole('heading', { name: 'Retry behavior' })).toHaveCount(0)
   // The parked assistant does not reappear for a session named in the URL.
   await expect(page.getByRole('complementary', { name: 'Planning assistant' })).toHaveCount(0)
+})
+
+test('requirement activity pages on demand and opens the explorer independently', async ({ page }) => {
+  await initShell(page)
+  const events = Array.from({ length: 51 }, (_, index) => ({
+    ...requirement.lineage[0],
+    id: 100 - index,
+    kind: index === 50 ? 'fixture.oldest' : 'requirement.version_proposed',
+  }))
+  const item = { ...requirement, lineage: events.slice(0, 50), lineage_total: 51, lineage_snapshot_id: 100 }
+  let eventReads = 0
+  let graphReads = 0
+  await page.route('**/v1/**', async (route) => {
+    const handled = shellResponse(route)
+    if (handled) return await handled
+    const url = new URL(route.request().url())
+    if (url.pathname === '/v1/requirements') return route.fulfill({ json: [summarizeRequirement(item)] })
+    if (url.pathname === '/v1/requirements/req-retries') return route.fulfill({ json: item })
+    if (url.pathname === '/v1/requirements/req-retries/versions') return route.fulfill({ json: item.pending_versions })
+    if (url.pathname === '/v1/requirements/req-retries/events') {
+      eventReads++
+      expect(url.searchParams.get('workspace_id')).toBe('demo')
+      expect(url.searchParams.get('offset')).toBe('50')
+      expect(url.searchParams.get('snapshot_id')).toBe('100')
+      expect(url.searchParams.get('limit')).toBe('50')
+      return route.fulfill({ json: { events: events.slice(50), total: 51, limit: 50, offset: 50, snapshot_id: 100 } })
+    }
+    if (url.pathname === '/v1/lineage/requirement/req-retries') {
+      graphReads++
+      expect(url.searchParams.get('workspace_id')).toBe('demo')
+      return route.fulfill({
+        json: {
+          roots: [],
+          nodes: [{ type: 'requirement', id: 'req-retries', label: 'Retry behavior' }],
+          links: [],
+          truncated: false,
+        },
+      })
+    }
+    return route.fulfill({ json: [] })
+  })
+  await page.goto('/requirements?requirement=req-retries')
+  await expect(page.getByText('Technical activity', { exact: true })).toBeVisible()
+  expect(eventReads).toBe(0)
+  expect(graphReads).toBe(0)
+  await page.getByText('Technical activity', { exact: true }).click()
+  await expect(page.getByText('Revision proposed', { exact: true })).toHaveCount(50)
+  await page.getByRole('button', { name: 'Load older activity' }).click()
+  await expect(page.getByText('Fixture oldest', { exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Load older activity' })).toHaveCount(0)
+  expect(eventReads).toBe(1)
+  expect(graphReads).toBe(0)
+  await page.getByRole('button', { name: 'Knowledge explorer' }).click()
+  await expect(page.getByRole('dialog', { name: 'Knowledge explorer' })).toBeVisible()
+  await expect.poll(() => graphReads).toBe(1)
 })

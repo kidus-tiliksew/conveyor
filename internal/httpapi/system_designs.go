@@ -18,12 +18,14 @@ import (
 )
 
 type systemDesignView struct {
-	Document        core.SystemDesign          `json:"document"`
-	CurrentVersion  *core.SystemDesignVersion  `json:"current_version,omitempty"`
-	PendingVersions []core.SystemDesignVersion `json:"pending_versions"`
-	Versions        []core.SystemDesignVersion `json:"versions"`
-	Lineage         []core.Event               `json:"lineage"`
-	Drift           []monitor.Drift            `json:"drift"`
+	Document          core.SystemDesign          `json:"document"`
+	CurrentVersion    *core.SystemDesignVersion  `json:"current_version,omitempty"`
+	PendingVersions   []core.SystemDesignVersion `json:"pending_versions"`
+	Versions          []core.SystemDesignVersion `json:"versions"`
+	Lineage           []core.Event               `json:"lineage"`
+	LineageTotal      int                        `json:"lineage_total"`
+	LineageSnapshotID int64                      `json:"lineage_snapshot_id"`
+	Drift             []monitor.Drift            `json:"drift"`
 }
 
 // systemDesignSummary is the collection read model. Immutable document
@@ -68,11 +70,13 @@ func (s *Server) systemDesignView(r *http.Request, document core.SystemDesign, d
 	if err != nil {
 		return systemDesignView{}, err
 	}
-	events, err := s.Store.ListSystemDesignEvents(r.Context(), document.ID)
+	page, err := s.Store.ListDocumentEventPage(r.Context(), core.LineageSystemDesign, document.ID, store.DocumentEventQuery{Limit: 50})
 	if err != nil {
 		return systemDesignView{}, err
 	}
-	return buildSystemDesignView(document, versions, events, drift), nil
+	view := buildSystemDesignView(document, versions, page.Events, drift)
+	view.LineageTotal, view.LineageSnapshotID = page.Total, page.SnapshotID
+	return view, nil
 }
 
 func buildSystemDesignView(document core.SystemDesign, versions []core.SystemDesignVersion, events []core.Event, drift []monitor.Drift) systemDesignView {
