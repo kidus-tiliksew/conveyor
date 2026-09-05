@@ -118,7 +118,9 @@ func taskRunHTTPCall(handler http.Handler, method, path, body string) *httptest.
 }
 
 func TestTaskRunHTTPIsExplicitlyTaskScopedAndUsesUserLeaseLifecycle(t *testing.T) {
-	_, st, handler := taskRunHTTPFixture(t)
+	server, st, handler := taskRunHTTPFixture(t)
+	const storedToken = "stored-run-forge-secret"
+	server.Workers.ForgeTokens = &forgeTokenFixture{status: core.ForgeTokenStatus{Configured: true}, token: storedToken}
 	target := createTaskRunOrder(t, st, "target")
 	createTaskRunOrder(t, st, "other")
 
@@ -173,6 +175,7 @@ func TestTaskRunHTTPIsExplicitlyTaskScopedAndUsesUserLeaseLifecycle(t *testing.T
 	if crossTask := taskRunHTTPCall(handler, http.MethodPost, "/v1/tasks/other/run-orders/"+target.ID+"/renew", `{"session_id":"run-session"}`); crossTask.Code != http.StatusConflict {
 		t.Fatalf("cross-task renewal status=%d body=%s", crossTask.Code, crossTask.Body.String())
 	}
+	reconciled := taskRunHTTPCall(handler, http.MethodGet, "/v1/tasks/target/run-orders/"+target.ID+"/reconcile?session_id=run-session", "")
 	release := taskRunHTTPCall(handler, http.MethodPost, "/v1/tasks/target/run-orders/"+target.ID+"/release", `{"session_id":"run-session","reason":"local run ended","outcome":"released"}`)
 	if release.Code != http.StatusOK {
 		t.Fatalf("release status=%d body=%s", release.Code, release.Body.String())
@@ -184,6 +187,15 @@ func TestTaskRunHTTPIsExplicitlyTaskScopedAndUsesUserLeaseLifecycle(t *testing.T
 	if released.State != core.WorkOrderQueued || released.SessionID != "" || released.ClaimantID != "" {
 		t.Fatalf("released=%+v", released)
 	}
+	for kind, response := range map[string]*httptest.ResponseRecorder{"claim": claim, "renew": renew, "reconcile": reconciled, "checkpoint": checkpoint, "release": release} {
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s failed: %s", kind, response.Body.String())
+		}
+		if strings.Contains(response.Body.String(), "forge_token") || strings.Contains(response.Body.String(), storedToken) {
+			t.Fatalf("%s leaked stored token", kind)
+		}
+	}
+
 }
 
 func taskRunHTTPCallAs(handler http.Handler, token, method, path, body string) *httptest.ResponseRecorder {

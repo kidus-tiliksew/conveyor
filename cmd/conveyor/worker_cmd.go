@@ -26,7 +26,6 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/gitx"
-	"github.com/kidus-tiliksew/conveyor/internal/redact"
 	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
 	"github.com/spf13/cobra"
 )
@@ -34,7 +33,7 @@ import (
 var workerAttemptCheckpointer = checkpointAssignedTaskWorktree
 
 func workerCmd() *cobra.Command {
-	cmd := &cobra.Command{Use: "worker", Short: "Enroll and run the operator-owned worker dispatcher"}
+	cmd := &cobra.Command{Use: "worker", Short: "Enroll and run the operator-owned worker dispatcher", Long: "Enroll and run the operator-owned worker dispatcher.\n\n" + localGitCredentialHelp}
 	var ttl time.Duration
 	pair := &cobra.Command{Use: "pair", Short: "Issue a short-lived single-use pairing token", RunE: func(cmd *cobra.Command, _ []string) error {
 		token, expires, err := newClient().issueWorkerPairing(ttl)
@@ -64,7 +63,7 @@ func workerCmd() *cobra.Command {
 	var pairing, name string
 	configPath := defaultLocalExecutionConfigPath()
 	var once bool
-	run := &cobra.Command{Use: "run", Short: "Heartbeat, claim queued work, and supervise configured harnesses", RunE: func(cmd *cobra.Command, _ []string) error {
+	run := &cobra.Command{Use: "run", Short: "Heartbeat, claim queued work, and supervise configured harnesses", Long: "Heartbeat, claim queued work, and supervise configured harnesses.\n\n" + localGitCredentialHelp, RunE: func(cmd *cobra.Command, _ []string) error {
 		resolvedConfig, err := resolveLocalExecutionConfigPath(cmd, configPath)
 		if err != nil {
 			return err
@@ -405,6 +404,12 @@ func runWorkerWithPolicyAndConfig(ctx context.Context, c *client, pairing, name 
 			return err
 		}
 	}
+	var err error
+	c, err = c.withLocalGitCredential()
+	if err != nil {
+		return err
+	}
+	preflights := map[string]error{}
 	saved, err := loadOrEnrollWorker(c, pairing, name)
 	if err != nil {
 		return err
@@ -488,6 +493,26 @@ func runWorkerWithPolicyAndConfig(ctx context.Context, c *client, pairing, name 
 					continue
 				}
 				return localExecutionSetupRemedy(configPath, selectErr)
+			}
+			preflightErr, checked := preflights[selected.Repository.URL]
+			if !checked {
+				preflightErr = c.preflightLocalGitCredential(contextWithLocalExecutionConfig(ctx, setup.Config), selected)
+				preflights[selected.Repository.URL] = preflightErr
+			}
+			if preflightErr != nil {
+				fmt.Fprintf(os.Stderr, "skip work order %s: %v\n", selected.Order.ID, preflightErr)
+				overflowSkipped = true
+				continue
+			}
+			// A bounded Git check can outlast the enrollment's liveness lease.
+			// Refresh it before the first claim that uses this cached result.
+			if !checked {
+				if _, err = c.heartbeatWorkerContext(ctx, credential, probes); err != nil {
+					if retryErr := waitForWorkerReconnect(ctx, reconnect, &retryDelay, "heartbeat after Git preflight", err); retryErr != nil {
+						return retryErr
+					}
+					continue
+				}
 			}
 			mu.Lock()
 			active[selected.Order.ID] = selected.Order.Stage
@@ -800,6 +825,7 @@ func probeHarnessTargets(ctx context.Context, targets []workerservice.HarnessPro
 			}
 			probeCtx, cancel := context.WithTimeout(ctx, timeout)
 			command := exec.CommandContext(probeCtx, harness.ProbeCommand[0], harness.ProbeCommand[1:]...)
+			command.Env = isolatedChildEnvironment(os.Environ(), nil)
 			output, err := command.CombinedOutput()
 			cancel()
 			message := strings.TrimSpace(string(output))
@@ -857,7 +883,17 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunMode(ctx context.Cont
 	return runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(ctx, c, credential, item, firstActivityTimeout, stdout, stderr, runMode, nil)
 }
 
-func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(ctx context.Context, c *client, credential string, item workerservice.DispatchOrder, firstActivityTimeout time.Duration, stdout, stderr io.Writer, runMode string, presentation *runOutputPresentation) error {
+func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(ctx context.Context, c *client, credential string, item workerservice.DispatchOrder, firstActivityTimeout time.Duration, stdout, stderr io.Writer, runMode string, presentation *runOutputPresentation) (resultErr error) {
+	var err error
+	c, err = c.withLocalGitCredential()
+	if err != nil {
+		return err
+	}
+	defer func() { resultErr = c.gitCredentials.scrubError(resultErr) }()
+	diagnostics := c.gitCredentials.outputWriter(stderr, c.gitCredentials.redactor())
+	stderr = diagnostics
+	defer diagnostics.Flush()
+	gitEnvironment := c.gitCredentials.values
 	if firstActivityTimeout <= 0 {
 		return fmt.Errorf("first activity timeout must be positive")
 	}
@@ -883,22 +919,6 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 		return err
 	}
 	claimed := delivery.WorkOrder
-	forgeToken := delivery.ForgeToken
-	// Clear the delivery envelope immediately. The token remains only in the
-	// attempt-local value and child Git environment until this function exits.
-	delivery = workerservice.ClaimDelivery{}
-	var gitEnvironment map[string]string
-	if item.Dispatch == "worker" && strings.TrimSpace(item.Task.Repo) != "" && strings.TrimSpace(item.Repository.URL) != "" && strings.TrimSpace(forgeToken) == "" {
-		releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		_ = c.releaseDispatchOrderContext(releaseCtx, credential, item, core.WorkOrderRelease{
-			SessionID: sessionID,
-			Outcome:   core.WorkOrderOutcomeReleased,
-			Reason:    "worker claim response omitted the executing user forge token",
-			Cause:     core.WorkOrderReleaseCauseSessionExit,
-		})
-		cancel()
-		return fmt.Errorf("worker claim response omitted the executing user forge token")
-	}
 	activityTail := &boundedTailWriter{limit: workerActivitySnapshotLimit}
 	activitySnapshot := func() *core.WorkOrderActivitySnapshotInput {
 		content := activityTail.String()
@@ -937,7 +957,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 			}
 		}()
 	}
-	var redactedStdout, redactedStderr *redact.Writer
+	var redactedStdout, redactedStderr *localGitOutputWriter
 	var failureTail *boundedTailWriter
 	var transcriptSpool *boundedTranscriptSpool
 	var terminalRenderer *harnessEventRenderer
@@ -1124,17 +1144,6 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 		childValues["GIT_COMMITTER_NAME"] = item.GitAuthor.Name
 		childValues["GIT_COMMITTER_EMAIL"] = item.GitAuthor.Email
 	}
-	gitEnvironment, err = childGitCredentialEnvironment(forgeToken)
-	if err != nil {
-		_ = release(core.WorkOrderOutcomeReleased, "prepare child Git credential environment failed", nil)
-		return err
-	}
-	defer func() {
-		for key := range gitEnvironment {
-			gitEnvironment[key] = ""
-		}
-		forgeToken = ""
-	}()
 	workingDirectory := ""
 	if item.Order.Stage == core.StageSpec {
 		if len(gitEnvironment) > 0 {
@@ -1171,8 +1180,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 			return err
 		}
 	}
-	childEnv := isolatedChildEnvironment(os.Environ(), childValues)
-	childEnv = isolatedChildEnvironment(childEnv, gitEnvironment)
+	childEnv := isolatedChildEnvironment(c.gitCredentials.environment(), childValues)
 	if item.Harness.MCPTransport == config.MCPTransportEnvironment {
 		if err = validateEnvironmentAttachment(setupCtx, item.Harness, childEnv, workingDirectory); err != nil {
 			if _, lost := renewal.Stop(); lost != nil {
@@ -1186,7 +1194,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 			return err
 		}
 	}
-	outputRedactor := redact.New([]string{credential, childCredential, childAddress, sessionID, clientToken, forgeToken})
+	outputRedactor := c.gitCredentials.redactor(credential, childCredential, childAddress, sessionID, clientToken)
 	failureTail = &boundedTailWriter{limit: workerservice.FailureDetailLimit}
 	var usageDestination io.Writer
 	if usageCollector != nil {
@@ -1207,8 +1215,8 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 		observabilityDestinations = append(observabilityDestinations, transcriptSpool)
 	}
 	stdoutFanout = io.MultiWriter(append([]io.Writer{stdoutFanout}, observabilityDestinations...)...)
-	redactedStdout = &redact.Writer{Destination: stdoutFanout, Redactor: outputRedactor}
-	redactedStderr = &redact.Writer{Destination: io.MultiWriter(append([]io.Writer{stderr, failureTail}, observabilityDestinations...)...), Redactor: outputRedactor}
+	redactedStdout = c.gitCredentials.outputWriter(stdoutFanout, outputRedactor)
+	redactedStderr = c.gitCredentials.outputWriter(io.MultiWriter(append([]io.Writer{stderr, failureTail}, observabilityDestinations...)...), outputRedactor)
 	// Both redacted streams share one first-write signal; either stream
 	// permanently disarms output-start liveness (design-260805-973cd4).
 	firstActivity := newFirstActivitySignal()
@@ -2343,6 +2351,9 @@ func isolatedChildEnvironment(base []string, values map[string]string) []string 
 	result := make([]string, 0, len(base)+len(values))
 	for _, entry := range base {
 		name, _, found := strings.Cut(entry, "=")
+		if name == localGitTokenEnv {
+			continue
+		}
 		if found {
 			if _, replaced := values[name]; replaced {
 				continue
@@ -2372,7 +2383,7 @@ const (
 // neither the token nor a token-bearing URL enters argv or Git configuration
 // (req-260821-830dbf REQ-6/AC-6.1).
 func childGitCredentialEnvironment(token string) (map[string]string, error) {
-	if strings.TrimSpace(token) == "" {
+	if token == "" {
 		return nil, nil
 	}
 	executable, err := os.Executable()

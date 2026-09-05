@@ -112,6 +112,8 @@ signal or send follow-up work through the normal gates.
                     Git worktrees, repositories, PRs
 ```
 
+`conveyor worker` and `conveyor run` resolve Git credentials locally. Set `CONVEYOR_GIT_TOKEN` in the startup environment to use child-only askpass, or leave it unset to use the host's Git credential configuration. Neither command accepts the token in argv or saves it. Before claiming, a bounded `git ls-remote --heads <repository URL> <base branch>` check runs with terminal prompting disabled; failures leave the order queued and name both credential paths. Repository results are cached for the invocation, so restart after changing credentials. Captured output is scrubbed before display and upload. The stored account forge token remains required for claim eligibility and control-plane pull request writes. Upgrade the worker binary and daemon together; older workers reject token-free claims.
+
 `conveyord` is one Go binary. PostgreSQL stores the event log, documents,
 lineage projection, and the log-backed queue. The worker launches agent CLIs with your
 local credentials.

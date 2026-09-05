@@ -29,6 +29,7 @@ func runCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "run <task-id>",
 		Short: "Explicitly claim and execute one task on this machine",
+		Long:  "Explicitly claim and execute one task on this machine.\n\n" + localGitCredentialHelp,
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			resolvedConfig, err := resolveLocalExecutionConfigPath(cmd, configPath)
@@ -71,6 +72,12 @@ func runTaskWithPresentationAndSetup(ctx context.Context, c *client, taskID, con
 	if err := c.preflightForgeToken(ctx, c.token); err != nil {
 		return err
 	}
+	var err error
+	c, err = c.withLocalGitCredential()
+	if err != nil {
+		return err
+	}
+	preflights := map[string]error{}
 	reader := bufio.NewReader(input)
 	answers := newRunInputSource(reader)
 	runStages := make([]core.Stage, 0, 2)
@@ -226,6 +233,15 @@ func runTaskWithPresentationAndSetup(ctx context.Context, c *client, taskID, con
 				return err
 			}
 			return localExecutionSetupRemedy(configPath, selectErr)
+		}
+		preflightErr, checked := preflights[selected.Repository.URL]
+		if !checked {
+			preflightErr = c.preflightLocalGitCredential(contextWithLocalExecutionConfig(ctx, local), selected)
+			preflights[selected.Repository.URL] = preflightErr
+		}
+		if preflightErr != nil {
+			stopApp()
+			return preflightErr
 		}
 		lastRepository = selected.Repository
 		stageTimeout := local.Routing.Stages[string(selected.Order.Stage)].TimeoutText
