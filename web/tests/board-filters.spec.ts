@@ -227,6 +227,12 @@ function cards(page: Page) {
 }
 
 test('board orders each stage by creation time rather than latest activity', async ({ page }) => {
+  // The fixture's tasks are dated in August 2026 and the board opens on the
+  // last month of activity, so pin the clock near them: otherwise the
+  // oldest card drops off the board thirty days after the fixture was
+  // written and this case fails on the calendar. Only this case pins it;
+  // the polling case below needs a real clock.
+  await page.clock.setFixedTime(new Date('2026-08-20T12:00:00Z'))
   const seen: string[] = []
   await openBoard(page, seen)
 
