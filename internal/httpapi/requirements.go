@@ -35,7 +35,8 @@ type requirementView struct {
 	PlanningSessions     []core.PlanningSession       `json:"planning_sessions"`
 	Artifacts            []core.Artifact              `json:"artifacts"`
 	Lineage              []core.Event                 `json:"lineage"`
-	LineageGraph         core.LineageTraversal        `json:"lineage_graph"`
+	LineageTotal         int                          `json:"lineage_total"`
+	LineageSnapshotID    int64                        `json:"lineage_snapshot_id"`
 	Staleness            requirementStaleness         `json:"staleness"`
 	MigratedSeed         bool                         `json:"migrated_seed"`
 	ConfirmationEligible bool                         `json:"confirmation_eligible"`
@@ -104,9 +105,8 @@ type requirementDeliveryWatermark struct {
 }
 
 type blueprintLineage struct {
-	Task   core.Task         `json:"task"`
-	Spec   *core.SpecVersion `json:"spec,omitempty"`
-	Events []core.Event      `json:"events"`
+	Task core.Task         `json:"task"`
+	Spec *core.SpecVersion `json:"spec,omitempty"`
 }
 
 func (s *Server) listRequirements(w http.ResponseWriter, r *http.Request) {
@@ -532,7 +532,6 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 	// fixed delivery-chain depth even when operators tune agent context lower.
 	deliveryBudget := core.LineageTraversalBudget{MaxDepth: 3, MaxNodes: 256, MaxLinks: 1024, Workspace: workspace}
 	artifactNodes := map[core.LineageNode]bool{}
-	graphs := make(map[string]core.LineageTraversal, len(requirements))
 	deliveryGraphs := make(map[string]core.LineageTraversal, len(requirements))
 	lineageByRequirement := make(map[string][]core.LineageLink, len(requirements))
 	deliveryLineageByRequirement := map[string][]core.LineageLink{}
@@ -561,7 +560,6 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 			for _, node := range graph.Nodes {
 				artifactNodes[node] = true
 			}
-			graphs[root.ID] = graph
 			lineageByRequirement[root.ID] = lineage
 		}
 		deliveryLineage := deliveryLineageByRequirement[requirement.ID]
@@ -580,16 +578,11 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 	}
 	nodes := make([]core.LineageNode, 0, len(artifactNodes))
 	artifacts := []core.Artifact{}
-	lineageLabels := map[core.LineageNode]string{}
 	if includeDetail {
 		for node := range artifactNodes {
 			nodes = append(nodes, node)
 		}
 		artifacts, err = s.Store.ListArtifactsForLineage(r.Context(), nodes)
-		if err != nil {
-			return nil, err
-		}
-		lineageLabels, err = s.lineageNodeLabels(r, nodes, artifacts, sessions)
 		if err != nil {
 			return nil, err
 		}
@@ -614,26 +607,25 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 		activeDrift = status.Drift
 	}
 	eventsByTask := map[string][]core.Event{}
-	if !includeDetail {
-		taskSet := map[string]bool{}
-		for _, requirement := range requirements {
-			deliveryGraph := deliveryGraphs[requirement.ID]
-			for taskID := range deliveryReachableTasks(deliveryGraph.Links, requirement.ID) {
-				taskSet[taskID] = true
-			}
-			for taskID := range directServingTaskIDs(deliveryGraph.Links, requirement.ID) {
-				taskSet[taskID] = true
-			}
+	// Staleness needs delivery/context events, not full blueprint activity.
+	taskSet := map[string]bool{}
+	for _, requirement := range requirements {
+		deliveryGraph := deliveryGraphs[requirement.ID]
+		for taskID := range deliveryReachableTasks(deliveryGraph.Links, requirement.ID) {
+			taskSet[taskID] = true
 		}
-		taskIDs := make([]string, 0, len(taskSet))
-		for taskID := range taskSet {
-			taskIDs = append(taskIDs, taskID)
+		for taskID := range directServingTaskIDs(deliveryGraph.Links, requirement.ID) {
+			taskSet[taskID] = true
 		}
-		sort.Strings(taskIDs)
-		eventsByTask, err = s.Store.ListRequirementDeliveryEventsForTasks(r.Context(), taskIDs)
-		if err != nil {
-			return nil, err
-		}
+	}
+	taskIDs := make([]string, 0, len(taskSet))
+	for taskID := range taskSet {
+		taskIDs = append(taskIDs, taskID)
+	}
+	sort.Strings(taskIDs)
+	eventsByTask, err = s.Store.ListRequirementDeliveryEventsForTasks(r.Context(), taskIDs)
+	if err != nil {
+		return nil, err
 	}
 	loadTaskEvents := func(taskID string) ([]core.Event, error) {
 		if events, ok := eventsByTask[taskID]; ok {
@@ -734,7 +726,12 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 			}
 		}
 		if includeDetail {
-			view.Lineage = append(view.Lineage, annotateBackfilledEvents(requirementEvents)...)
+			page, pageErr := s.Store.ListDocumentEventPage(r.Context(), core.LineageRequirement, requirement.ID, store.DocumentEventQuery{Limit: 50})
+			if pageErr != nil {
+				return nil, pageErr
+			}
+			view.Lineage = annotateBackfilledEvents(page.Events)
+			view.LineageTotal, view.LineageSnapshotID = page.Total, page.SnapshotID
 		}
 		for _, session := range sessions {
 			if session.RequirementContextID != requirement.ID &&
@@ -752,23 +749,13 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 			if getErr != nil {
 				return nil, getErr
 			}
-			events, eventsErr := loadTaskEvents(task.ID)
-			if eventsErr != nil {
-				return nil, eventsErr
-			}
-			item := blueprintLineage{Task: task, Events: events}
+			item := blueprintLineage{Task: task}
 			if spec, exists, specErr := s.Store.GetLatestSpecVersion(r.Context(), task.ID); specErr != nil {
 				return nil, specErr
 			} else if exists {
 				item.Spec = &spec
 			}
 			view.ServingBlueprints = append(view.ServingBlueprints, item)
-			view.Lineage = append(view.Lineage, annotateBackfilledEvents(events)...)
-		}
-		if includeDetail {
-			graph := graphs[requirement.ID]
-			applyLineageLabels(&graph, lineageLabels)
-			view.LineageGraph = graph
 		}
 		deliveryGraph := deliveryGraphs[requirement.ID]
 		view.Staleness.PartialEvaluation = deliveryGraph.Truncated
@@ -836,12 +823,6 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 				view.Staleness.ActiveDrift = append(view.Staleness.ActiveDrift, drift)
 			}
 		}
-		sort.SliceStable(view.Lineage, func(i, j int) bool {
-			if view.Lineage[i].At.Equal(view.Lineage[j].At) {
-				return view.Lineage[i].ID < view.Lineage[j].ID
-			}
-			return view.Lineage[i].At.Before(view.Lineage[j].At)
-		})
 		views = append(views, view)
 	}
 	return views, nil
@@ -1097,7 +1078,8 @@ func deliveryLabel(event core.Event) string {
 }
 
 func annotateBackfilledEvents(events []core.Event) []core.Event {
-	annotated := append([]core.Event(nil), events...)
+	annotated := make([]core.Event, len(events))
+	copy(annotated, events)
 	for index := range annotated {
 		event := &annotated[index]
 		if event.ActorID != "migration-050" || (event.Kind != "requirement.created" && event.Kind != "requirement.version_proposed") {

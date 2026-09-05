@@ -35,6 +35,8 @@ const design = {
   current_version: first,
   pending_versions: [pending],
   versions: [first, pending],
+  lineage_total: 1,
+  lineage_snapshot_id: 73,
   lineage: [
     {
       id: 73,
@@ -741,9 +743,10 @@ test('System Design archives with successors, shows inline rejection, and restor
       archived_at: archived ? archivedAt : undefined,
       superseded_by: archived ? submittedSuccessors : undefined,
     },
+    lineage_total: archived ? 2 : 1,
+    lineage_snapshot_id: archived ? 74 : 73,
     lineage: archived
       ? [
-          ...design.lineage,
           {
             id: 74,
             task_id: '',
@@ -753,6 +756,7 @@ test('System Design archives with successors, shows inline rejection, and restor
             payload: {},
             at: archivedAt,
           },
+          ...design.lineage,
         ]
       : design.lineage,
   })
@@ -880,4 +884,59 @@ test('System Design archive controls are absent without document confirmation ca
   await expect(page.getByText('This System Design document is archived.')).toBeVisible()
   await expect(page.getByRole('button', { name: 'Archive' })).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Restore' })).toHaveCount(0)
+})
+
+test('System Design pages older delivery activity and loads its explorer on open', async ({ page }) => {
+  await initialize(page)
+  const events = Array.from({ length: 51 }, (_, index) => ({
+    ...design.lineage[0],
+    id: 100 - index,
+    payload: {
+      ...design.lineage[0].payload,
+      delivery_task_id: index === 50 ? 'oldest-delivery-task' : `delivery-${index}`,
+    },
+  }))
+  const item = { ...design, lineage: events.slice(0, 50), lineage_total: 51, lineage_snapshot_id: 100 }
+  let eventReads = 0
+  let graphReads = 0
+  await page.route('**/v1/**', async (route) => {
+    const handled = shell(route)
+    if (handled) return await handled
+    const url = new URL(route.request().url())
+    if (url.pathname === '/v1/system-designs') return route.fulfill({ json: [summarizeDesign(item)] })
+    if (url.pathname === '/v1/system-designs/design-dispatch') return route.fulfill({ json: item })
+    if (url.pathname === '/v1/system-designs/design-dispatch/events') {
+      eventReads++
+      expect(url.searchParams.get('workspace_id')).toBe('demo')
+      expect(url.searchParams.get('offset')).toBe('50')
+      expect(url.searchParams.get('snapshot_id')).toBe('100')
+      expect(url.searchParams.get('limit')).toBe('50')
+      return route.fulfill({ json: { events: events.slice(50), total: 51, limit: 50, offset: 50, snapshot_id: 100 } })
+    }
+    if (url.pathname === '/v1/lineage/system_design/design-dispatch') {
+      graphReads++
+      expect(url.searchParams.get('workspace_id')).toBe('demo')
+      return route.fulfill({
+        json: {
+          roots: [],
+          nodes: [{ type: 'system_design', id: 'design-dispatch', label: 'Dispatch ownership' }],
+          links: [],
+          truncated: false,
+        },
+      })
+    }
+    return route.fulfill({ json: [] })
+  })
+  await page.goto('/system-design?document=design-dispatch')
+  await expect(page.getByText('51 activity events')).toBeVisible()
+  expect(eventReads).toBe(0)
+  expect(graphReads).toBe(0)
+  await page.getByRole('button', { name: 'Load older activity' }).click()
+  await expect(page.getByText('oldest-delivery-task', { exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Load older activity' })).toHaveCount(0)
+  expect(eventReads).toBe(1)
+  expect(graphReads).toBe(0)
+  await page.getByRole('button', { name: 'Knowledge explorer' }).click()
+  await expect(page.getByRole('dialog', { name: 'Knowledge explorer' })).toBeVisible()
+  await expect.poll(() => graphReads).toBe(1)
 })

@@ -482,7 +482,7 @@ func TestRequirementsHTTPReplacesFeatureTreeAndConfirmsVersions(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(view.Artifacts) != 1 || view.Artifacts[0].ID != artifact.ID ||
-		len(view.PlanningSessions) != 1 || len(view.Lineage) < 2 || len(view.LineageGraph.Nodes) == 0 {
+		len(view.PlanningSessions) != 1 || len(view.Lineage) < 2 {
 		t.Fatalf("detail requirement view=%+v", view)
 	}
 	if guard.neighborhood != 1 || guard.scopedArtifacts != 1 {
@@ -621,15 +621,27 @@ func TestRequirementStalenessFollowsLineageToChildMerge(t *testing.T) {
 		len(view.Staleness.ActiveDrift) != 1 || view.Staleness.ActiveDrift[0].ID != drift.ID {
 		t.Fatalf("link-aware staleness=%+v", view.Staleness)
 	}
+	// The detail staleness proof above uses the deliberately small display budget.
+	// The explorer independently follows its configured neighborhood budget.
+	server.ConfigProvider = nil
+	graphResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(graphResponse, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/lineage/requirement/"+requirement.ID, nil)))
+	var graph core.LineageTraversal
+	if graphResponse.Code != http.StatusOK {
+		t.Fatal(graphResponse.Body.String())
+	}
+	if err := json.Unmarshal(graphResponse.Body.Bytes(), &graph); err != nil {
+		t.Fatal(err)
+	}
 	foundMaterialization := false
-	for _, link := range view.LineageGraph.Links {
+	for _, link := range graph.Links {
 		foundMaterialization = foundMaterialization || link.Kind == "materializes"
 	}
 	if !foundMaterialization {
-		t.Fatalf("requirement graph does not reach child: %+v", view.LineageGraph)
+		t.Fatalf("requirement graph does not reach child: %+v", graph)
 	}
 	labels := map[string]string{}
-	for _, node := range view.LineageGraph.Nodes {
+	for _, node := range graph.Nodes {
 		labels[string(node.Type)+":"+node.ID] = node.Label
 	}
 	if labels["requirement:"+requirement.ID] != requirement.Title || labels["blueprint:"+blueprint.ID] != blueprint.Title || labels["task:"+child.ID] != child.Title {
@@ -1296,10 +1308,10 @@ func TestRequirementStalenessIgnoresDisplayTruncation(t *testing.T) {
 	if err = json.Unmarshal(response.Body.Bytes(), &view); err != nil {
 		t.Fatal(err)
 	}
-	if !view.LineageGraph.Truncated || view.Staleness.PartialEvaluation || view.Staleness.DeliveryAfterIntent ||
+	if view.Staleness.PartialEvaluation || view.Staleness.DeliveryAfterIntent ||
 		len(view.Staleness.Deliveries) != 1 || view.Staleness.Deliveries[0].TaskID != task.ID ||
 		view.Staleness.Deliveries[0].NeedsAttention || len(view.Staleness.ActiveDrift) != 1 || view.Staleness.ActiveDrift[0].ID != drift.ID {
-		t.Fatalf("display-independent staleness=%+v graph=%+v", view.Staleness, view.LineageGraph)
+		t.Fatalf("display-independent staleness=%+v", view.Staleness)
 	}
 }
 
