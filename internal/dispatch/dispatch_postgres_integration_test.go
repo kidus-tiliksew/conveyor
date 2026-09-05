@@ -249,9 +249,10 @@ func TestConflictFixAndQueueDispatchSerializeIntegration(t *testing.T) {
 	}
 	select {
 	case err = <-queueDone:
-		var snooze *queue.SnoozeError
-		if !errors.As(err, &snooze) || snooze.Duration != time.Second {
-			t.Fatalf("queue dispatch result=%v, want one-second stage snooze", err)
+		// The conflict fix left the task queued with its implement order
+		// waiting for a claimant, so the dispatch job completes.
+		if err != nil {
+			t.Fatalf("queue dispatch result=%v, want completion", err)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("queue dispatch did not finish")

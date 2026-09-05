@@ -37,9 +37,19 @@ func (w *dispatchTaskWorker) Work(ctx context.Context, job queue.Job) error {
 				// than a staged pipeline job to snooze.
 				return nil
 			}
-			// The running job owns this task's pipeline. A queued stage
-			// transition cannot enqueue a duplicate while this job is active,
-			// so snooze the same job into the next stage.
+			if _, active, activeErr := w.dispatcher.activeWorkOrder(ctx, task.ID, task.NextStage, ""); activeErr != nil {
+				return activeErr
+			} else if active {
+				// The stage has its work order and the task is waiting for a
+				// claimant. The job is done; the claim enqueues nothing and the
+				// transition after it enqueues a fresh job. Snoozing here would
+				// append a claim and a snooze to the log every second for as
+				// long as the task waits.
+				return nil
+			}
+			// The run advanced the task to a queued stage that has no order
+			// yet. A queued stage transition cannot enqueue a duplicate while
+			// this job is active, so snooze the same job into the next stage.
 			return queue.Snooze(time.Second)
 		}
 		return nil
