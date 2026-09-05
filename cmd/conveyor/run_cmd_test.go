@@ -90,6 +90,12 @@ type taskRunStats struct {
 
 func runTaskScenario(t *testing.T, input string, auto, terminal bool) (taskRunStats, string, error) {
 	t.Helper()
+	previousDirectory, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture := newGitFixture(t)
+	t.Chdir(previousDirectory)
 	t.Setenv("CONVEYOR_FAKE_TASK_RUN_HARNESS", "1")
 	var mu sync.Mutex
 	stats := taskRunStats{states: map[string]core.WorkOrderState{
@@ -172,9 +178,10 @@ func runTaskScenario(t *testing.T, input string, auto, terminal bool) (taskRunSt
 				return
 			}
 			_ = json.NewEncoder(w).Encode(workerservice.DispatchOrder{
-				Order:    order,
-				Task:     core.Task{ID: "target", Title: "Ship target", State: core.TaskRunning, Repo: "conveyor", Branch: "conveyor/task-target", BaseBranch: "main"},
-				Dispatch: "run", Auth: "user",
+				Order:      order,
+				Repository: config.Repo{Name: "conveyor", URL: fixture.origin, Base: "main"},
+				Task:       core.Task{ID: "target", Title: "Ship target", State: core.TaskRunning, Repo: "conveyor", Branch: "conveyor/task-target", BaseBranch: "main"},
+				Dispatch:   "run", Auth: "user",
 			})
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/claim"):
 			stats.claimCalls++
@@ -218,6 +225,7 @@ func runTaskScenario(t *testing.T, input string, auto, terminal bool) (taskRunSt
 	if err = os.WriteFile(configPath, []byte(localConfig), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	t.Chdir(fixture.primary)
 	c := &client{base: server.URL, token: "user-credential", workspace: "demo"}
 	previousCleanup := cleanupTerminalTaskWorktree
 	cleanupTerminalTaskWorktree = func(context.Context, *config.Config, workerservice.DispatchOrder) (worktreeCleanupResult, error) {

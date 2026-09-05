@@ -177,7 +177,7 @@ func TestListWorkerOrdersMapsSentinelsAndRedactsInternalFailures(t *testing.T) {
 	}
 }
 
-func TestWorkerClaimHTTPReturnsDedicatedOwnerTokenDelivery(t *testing.T) {
+func TestWorkerHTTPExchangesNeverReturnStoredToken(t *testing.T) {
 	now := time.Now().UTC()
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	st := store.NewMemory()
@@ -216,12 +216,35 @@ func TestWorkerClaimHTTPReturnsDedicatedOwnerTokenDelivery(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &delivery); err != nil {
 		t.Fatal(err)
 	}
-	if delivery.WorkOrder.ID != job.ID || delivery.WorkOrder.WorkerID != worker.ID || delivery.ForgeToken != tokens.token {
+	if delivery.WorkOrder.ID != job.ID || delivery.WorkOrder.WorkerID != worker.ID {
 		t.Fatalf("delivery=%+v", delivery)
 	}
-	if strings.Count(response.Body.String(), tokens.token) != 1 {
-		t.Fatalf("claim response did not isolate the token to one dedicated field: %s", response.Body.String())
+	assertClean := func(kind string, response *httptest.ResponseRecorder) {
+		t.Helper()
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s status=%d body=%s", kind, response.Code, response.Body.String())
+		}
+		if strings.Contains(response.Body.String(), "forge_token") || strings.Contains(response.Body.String(), tokens.token) {
+			t.Fatalf("%s leaked a stored credential", kind)
+		}
 	}
+	assertClean("claim", response)
+	for _, exchange := range []struct {
+		name, method, body string
+		handler            http.HandlerFunc
+	}{
+		{"renew", http.MethodPost, `{"session_id":"delivery-session"}`, server.renewWorkerOrder},
+		{"reconcile", http.MethodGet, "", server.reconcileWorkerOrder},
+		{"attempt-checkpoint", http.MethodPost, `{"session_id":"delivery-session","attempt_id":"` + delivery.WorkOrder.AttemptID + `","commit_sha":"` + strings.Repeat("a", 40) + `","push_result":"pushed","termination_reason":"session exited"}`, server.checkpointWorkerOrderAttempt},
+		{"release", http.MethodPost, `{"session_id":"delivery-session","outcome":"released","reason":"test complete","release_cause":"session_exit"}`, server.releaseWorkerOrder},
+	} {
+		request := httptest.NewRequest(exchange.method, "/v1/worker/work-orders/"+job.ID+"/"+exchange.name+"?session_id=delivery-session", strings.NewReader(exchange.body))
+		request = request.WithContext(context.WithValue(context.WithValue(ctx, chi.RouteCtxKey, route), workerContextKey{}, worker))
+		response := httptest.NewRecorder()
+		exchange.handler(response, request)
+		assertClean(exchange.name, response)
+	}
+
 }
 
 func TestWorkerRenewHTTPReportsSameSessionCheckpointRelease(t *testing.T) {

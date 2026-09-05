@@ -119,9 +119,6 @@ func (c *client) claimWorkerOrderContext(ctx context.Context, credential, id, se
 		return workerservice.ClaimDelivery{}, err
 	}
 	if result.WorkOrder.ID == "" {
-		// Decode the old shape only so rolling upgrades and identity-free legacy
-		// fixtures fail at the launch boundary instead of becoming malformed
-		// claims. Current repository-bearing dispatches require ForgeToken.
 		if err := json.Unmarshal(raw, &result.WorkOrder); err != nil {
 			return workerservice.ClaimDelivery{}, err
 		}
@@ -251,7 +248,19 @@ func (c *client) workerDo(method, path string, body []byte, out any, credential 
 	return c.workerDoContext(context.Background(), method, path, body, out, credential)
 }
 
-func (c *client) workerDoContext(ctx context.Context, method, path string, body []byte, out any, credential string) error {
+func (c *client) workerDoContext(ctx context.Context, method, path string, body []byte, out any, credential string) (resultErr error) {
+	defer func() {
+		if c.gitCredentials != nil {
+			resultErr = c.gitCredentials.scrubError(resultErr)
+		}
+	}()
+	if c.gitCredentials != nil && len(body) > 0 {
+		var err error
+		body, err = c.gitCredentials.scrubJSON(body)
+		if err != nil {
+			return fmt.Errorf("scrub worker request: %w", err)
+		}
+	}
 	req, err := http.NewRequestWithContext(ctx, method, c.base+path, bytes.NewReader(body))
 	if err != nil {
 		return err

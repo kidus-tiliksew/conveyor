@@ -475,6 +475,7 @@ func TestRenewDispatchClaimSnapshotTransportFailureFallsBackToPlainRenewal(t *te
 }
 
 func TestRunHarnessChildReportsRedactedSnapshotAndBestEffortTranscript(t *testing.T) {
+	t.Setenv(localGitTokenEnv, "forge-observability-secret")
 	previousInterval := workerClaimRenewInterval
 	workerClaimRenewInterval = 25 * time.Millisecond
 	t.Cleanup(func() { workerClaimRenewInterval = previousInterval })
@@ -501,7 +502,7 @@ func TestRunHarnessChildReportsRedactedSnapshotAndBestEffortTranscript(t *testin
 		}
 		switch parts[4] {
 		case "claim":
-			_ = json.NewEncoder(w).Encode(workerservice.ClaimDelivery{WorkOrder: core.WorkOrder{ID: parts[3], State: core.WorkOrderClaimed, AttemptID: "attempt-observability", LeaseExpiresAt: time.Now().Add(time.Minute)}, ForgeToken: forgeToken})
+			_ = json.NewEncoder(w).Encode(workerservice.ClaimDelivery{WorkOrder: core.WorkOrder{ID: parts[3], State: core.WorkOrderClaimed, AttemptID: "attempt-observability", LeaseExpiresAt: time.Now().Add(time.Minute)}})
 		case "renew":
 			var request workerRenewRequest
 			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
@@ -542,8 +543,11 @@ func TestRunHarnessChildReportsRedactedSnapshotAndBestEffortTranscript(t *testin
 		Repository: config.Repo{Name: "conveyor", URL: "https://example.test/conveyor.git"},
 		Harness:    config.Harness{Name: "helper", Command: []string{os.Args[0], "-test.run=TestWorkerLifecycleHelper", "--", "observability"}},
 	}
+	fixture := newGitFixture(t)
+	mustGit(t, fixture.primary, "remote", "set-url", "origin", item.Repository.URL)
+	local := &config.Config{Repos: []config.Repo{{Name: "conveyor", URL: item.Repository.URL, Checkout: fixture.primary}}}
 	var stdout, stderr bytes.Buffer
-	err := runHarnessChildWithFirstActivityTimeoutAndOutput(t.Context(), &client{base: server.URL, workspace: "demo"}, credential, item, time.Second, &stdout, &stderr)
+	err := runHarnessChildWithFirstActivityTimeoutAndOutput(contextWithLocalExecutionConfig(t.Context(), local), &client{base: server.URL, workspace: "demo"}, credential, item, time.Second, &stdout, &stderr)
 	if err == nil || !strings.Contains(err.Error(), "harness exited before completing work order") {
 		t.Fatalf("child result=%v", err)
 	}
@@ -566,6 +570,12 @@ func TestRunHarnessChildReportsRedactedSnapshotAndBestEffortTranscript(t *testin
 	if !checkpointReceivedToken {
 		t.Fatal("worker-side checkpoint push did not receive the child-only Git credential environment")
 	}
+	for _, output := range []string{stdout.String(), stderr.String()} {
+		if strings.Contains(output, forgeToken) || strings.Contains(output, credential) {
+			t.Fatal("credential reached local display")
+		}
+	}
+
 }
 
 func TestExpandHarnessUsesWholeElementSubstitutionAndOptionalModelArgs(t *testing.T) {
@@ -832,114 +842,131 @@ func TestChildGitCredentialEnvironmentUsesAskPassWithoutPersistentSecrets(t *tes
 	}
 }
 
-func TestChildGitCredentialEnvironmentPushesWithoutAmbientCredential(t *testing.T) {
-	const token = "forge-token-used-only-by-askpass"
-	serverRoot := t.TempDir()
-	bare := filepath.Join(serverRoot, "repository.git")
-	if output, err := exec.Command("git", "init", "--bare", bare).CombinedOutput(); err != nil {
-		t.Fatalf("init bare repository: %v\n%s", err, output)
-	}
-	if output, err := exec.Command("git", "--git-dir", bare, "config", "http.receivepack", "true").CombinedOutput(); err != nil {
-		t.Fatalf("enable HTTP receive-pack: %v\n%s", err, output)
-	}
-	authenticatedRequests := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		username, password, ok := r.BasicAuth()
-		if !ok || username != "x-access-token" || password != token {
-			w.Header().Set("WWW-Authenticate", `Basic realm="conveyor-test"`)
-			http.Error(w, "authentication required", http.StatusUnauthorized)
-			return
-		}
-		authenticatedRequests++
-		command := exec.Command("git", "http-backend")
-		command.Env = append(os.Environ(),
-			"GIT_PROJECT_ROOT="+serverRoot,
-			"GIT_HTTP_EXPORT_ALL=1",
-			"REQUEST_METHOD="+r.Method,
-			"PATH_INFO="+r.URL.Path,
-			"QUERY_STRING="+r.URL.RawQuery,
-			"CONTENT_TYPE="+r.Header.Get("Content-Type"),
-			"CONTENT_LENGTH="+strconv.FormatInt(r.ContentLength, 10),
-			"REMOTE_USER=x-access-token",
-		)
-		command.Stdin = r.Body
-		var response, stderr bytes.Buffer
-		command.Stdout, command.Stderr = &response, &stderr
-		if err := command.Run(); err != nil {
-			http.Error(w, "Git backend failed", http.StatusInternalServerError)
-			return
-		}
-		headerBlock, body, ok := bytes.Cut(response.Bytes(), []byte("\r\n\r\n"))
-		if !ok {
-			http.Error(w, "Git backend returned malformed CGI output", http.StatusInternalServerError)
-			return
-		}
-		status := http.StatusOK
-		for _, line := range strings.Split(string(headerBlock), "\r\n") {
-			name, value, found := strings.Cut(line, ":")
-			if !found {
-				continue
+func TestLocalGitCredentialPushesWithExplicitAndAmbientCredentials(t *testing.T) {
+	for _, mode := range []string{"explicit", "ambient"} {
+		t.Run(mode, func(t *testing.T) {
+			const token = "forge-token-used-only-by-askpass"
+			serverRoot := t.TempDir()
+			bare := filepath.Join(serverRoot, "repository.git")
+			if output, err := exec.Command("git", "init", "--bare", bare).CombinedOutput(); err != nil {
+				t.Fatalf("init bare repository: %v\n%s", err, output)
 			}
-			value = strings.TrimSpace(value)
-			if strings.EqualFold(name, "Status") {
-				if code, parseErr := strconv.Atoi(strings.Fields(value)[0]); parseErr == nil {
-					status = code
+			if output, err := exec.Command("git", "--git-dir", bare, "config", "http.receivepack", "true").CombinedOutput(); err != nil {
+				t.Fatalf("enable HTTP receive-pack: %v\n%s", err, output)
+			}
+			authenticatedRequests := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				username, password, ok := r.BasicAuth()
+				if !ok || username != "x-access-token" || password != token {
+					w.Header().Set("WWW-Authenticate", `Basic realm="conveyor-test"`)
+					http.Error(w, "authentication required", http.StatusUnauthorized)
+					return
 				}
-				continue
-			}
-			w.Header().Add(name, value)
-		}
-		w.WriteHeader(status)
-		_, _ = w.Write(body)
-	}))
-	defer server.Close()
+				authenticatedRequests++
+				command := exec.Command("git", "http-backend")
+				command.Env = append(os.Environ(),
+					"GIT_PROJECT_ROOT="+serverRoot,
+					"GIT_HTTP_EXPORT_ALL=1",
+					"REQUEST_METHOD="+r.Method,
+					"PATH_INFO="+r.URL.Path,
+					"QUERY_STRING="+r.URL.RawQuery,
+					"CONTENT_TYPE="+r.Header.Get("Content-Type"),
+					"CONTENT_LENGTH="+strconv.FormatInt(r.ContentLength, 10),
+					"REMOTE_USER=x-access-token",
+				)
+				command.Stdin = r.Body
+				var response, stderr bytes.Buffer
+				command.Stdout, command.Stderr = &response, &stderr
+				if err := command.Run(); err != nil {
+					http.Error(w, "Git backend failed", http.StatusInternalServerError)
+					return
+				}
+				headerBlock, body, ok := bytes.Cut(response.Bytes(), []byte("\r\n\r\n"))
+				if !ok {
+					http.Error(w, "Git backend returned malformed CGI output", http.StatusInternalServerError)
+					return
+				}
+				status := http.StatusOK
+				for _, line := range strings.Split(string(headerBlock), "\r\n") {
+					name, value, found := strings.Cut(line, ":")
+					if !found {
+						continue
+					}
+					value = strings.TrimSpace(value)
+					if strings.EqualFold(name, "Status") {
+						if code, parseErr := strconv.Atoi(strings.Fields(value)[0]); parseErr == nil {
+							status = code
+						}
+						continue
+					}
+					w.Header().Add(name, value)
+				}
+				w.WriteHeader(status)
+				_, _ = w.Write(body)
+			}))
+			defer server.Close()
 
-	checkout := t.TempDir()
-	if output, err := exec.Command("git", "init", checkout).CombinedOutput(); err != nil {
-		t.Fatalf("init checkout: %v\n%s", err, output)
-	}
-	if err := os.WriteFile(filepath.Join(checkout, "README.md"), []byte("credential fixture\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	for _, args := range [][]string{{"-C", checkout, "add", "README.md"}, {"-C", checkout, "-c", "user.name=Worker", "-c", "user.email=worker@example.test", "commit", "-m", "fixture"}} {
-		if output, err := exec.Command("git", args...).CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, output)
-		}
-	}
-	environment, err := childGitCredentialEnvironment(token)
-	if err != nil {
-		t.Fatal(err)
-	}
-	hostHome := t.TempDir()
-	push := exec.Command("git", "-C", checkout, "push", server.URL+"/repository.git", "HEAD:refs/heads/task")
-	push.Env = isolatedChildEnvironment(os.Environ(), environment)
-	push.Env = isolatedChildEnvironment(push.Env, map[string]string{"HOME": hostHome})
-	output, err := push.CombinedOutput()
-	if err != nil {
-		t.Fatalf("credentialed push: %v\n%s", err, output)
-	}
-	if bytes.Contains(output, []byte(token)) || authenticatedRequests == 0 {
-		t.Fatalf("unsafe push output=%q authenticated_requests=%d", output, authenticatedRequests)
-	}
-	if output, err = exec.Command("git", "--git-dir", bare, "rev-parse", "refs/heads/task").CombinedOutput(); err != nil {
-		t.Fatalf("pushed branch is missing: %v\n%s", err, output)
-	}
-	for _, root := range []string{checkout, serverRoot, hostHome} {
-		if err = filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
-			if walkErr != nil || entry.IsDir() {
-				return walkErr
+			checkout := t.TempDir()
+			if output, err := exec.Command("git", "init", checkout).CombinedOutput(); err != nil {
+				t.Fatalf("init checkout: %v\n%s", err, output)
 			}
-			data, readErr := os.ReadFile(path)
-			if readErr != nil {
-				return readErr
+			if err := os.WriteFile(filepath.Join(checkout, "README.md"), []byte("credential fixture\n"), 0o600); err != nil {
+				t.Fatal(err)
 			}
-			if bytes.Contains(data, []byte(token)) {
-				return fmt.Errorf("forge token persisted in %s", path)
+			for _, args := range [][]string{{"-C", checkout, "add", "README.md"}, {"-C", checkout, "-c", "user.name=Worker", "-c", "user.email=worker@example.test", "commit", "-m", "fixture"}} {
+				if output, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+					t.Fatalf("git %v: %v\n%s", args, err, output)
+				}
 			}
-			return nil
-		}); err != nil {
-			t.Fatal(err)
-		}
+			hostHome := t.TempDir()
+			t.Setenv("HOME", hostHome)
+			t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(hostHome, ".gitconfig"))
+			t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+			t.Setenv("GIT_CONFIG_COUNT", "0")
+			t.Setenv("GIT_TERMINAL_PROMPT", "0")
+			t.Setenv(localGitTokenEnv, "")
+			if mode == "explicit" {
+				t.Setenv(localGitTokenEnv, token)
+			} else {
+				t.Setenv("CONVEYOR_TEST_AMBIENT_TOKEN", token)
+				helper := `!f() { printf '%s\n' 'username=x-access-token' "password=$CONVEYOR_TEST_AMBIENT_TOKEN"; }; f`
+				mustGit(t, "", "config", "--global", "credential.helper", helper)
+			}
+			c, err := (&client{}).withLocalGitCredential()
+			if err != nil {
+				t.Fatal(err)
+			}
+			push := exec.Command("git", "-C", checkout, "push", server.URL+"/repository.git", "HEAD:refs/heads/task")
+			push.Env = c.gitCredentials.environment()
+			push.Env = isolatedChildEnvironment(push.Env, map[string]string{"HOME": hostHome})
+			output, err := push.CombinedOutput()
+			if err != nil {
+				t.Fatalf("credentialed push: %v\n%s", err, output)
+			}
+			if bytes.Contains(output, []byte(token)) || authenticatedRequests == 0 {
+				t.Fatalf("unsafe push output=%q authenticated_requests=%d", output, authenticatedRequests)
+			}
+			if output, err = exec.Command("git", "--git-dir", bare, "rev-parse", "refs/heads/task").CombinedOutput(); err != nil {
+				t.Fatalf("pushed branch is missing: %v\n%s", err, output)
+			}
+			for _, root := range []string{checkout, serverRoot, hostHome} {
+				if err = filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+					if walkErr != nil || entry.IsDir() {
+						return walkErr
+					}
+					data, readErr := os.ReadFile(path)
+					if readErr != nil {
+						return readErr
+					}
+					if bytes.Contains(data, []byte(token)) {
+						return fmt.Errorf("forge token persisted in %s", path)
+					}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+		})
 	}
 }
 
@@ -1131,8 +1158,10 @@ func TestRunWorkerShutdownWaitsForActiveChildCleanup(t *testing.T) {
 	defer finishRelease()
 	t.Setenv("CONVEYOR_CONFIG", writeWorkerLocalExecutionConfig(t,
 		[]string{os.Args[0], "-test.run=TestWorkerLifecycleHelper", "--", "{prompt}", "{mcp_config}", "cancel"}, []string{"true"}))
+	fixture := newGitFixture(t)
 	item := workerservice.DispatchOrder{
-		Order: core.WorkOrder{ID: "shutdown-active-child", Stage: core.StageImplement, Claimable: true},
+		Repository: config.Repo{URL: fixture.origin},
+		Order:      core.WorkOrder{ID: "shutdown-active-child", Stage: core.StageImplement, Claimable: true},
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer worker-credential" {

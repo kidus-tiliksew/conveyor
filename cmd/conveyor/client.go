@@ -14,10 +14,13 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/monitor"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
 )
 
 // client is a thin wrapper over the control-plane API (design-http-api).
 type client struct {
+	gitCredentials      *localGitCredential
+	gitPreflight        func(context.Context, workerservice.DispatchOrder, []string) error
 	base                string
 	token               string
 	workspace           string

@@ -319,7 +319,7 @@ func TestWorkerClaimUsesEnrollmentOwnerForAssignmentEligibility(t *testing.T) {
 	}
 }
 
-func TestWorkerClaimDeliveryResolvesOnlyEnrollmentOwnerAndFailsClosed(t *testing.T) {
+func TestWorkerClaimDeliveryNeverResolvesStoredToken(t *testing.T) {
 	now := time.Now().UTC()
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	st := store.NewMemory()
@@ -354,7 +354,7 @@ func TestWorkerClaimDeliveryResolvesOnlyEnrollmentOwnerAndFailsClosed(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if delivery.WorkOrder.WorkerID != worker.ID || delivery.ForgeToken != tokens.token || !reflect.DeepEqual(tokens.users, []string{"usr-owner"}) {
+	if delivery.WorkOrder.WorkerID != worker.ID || len(tokens.users) != 0 {
 		t.Fatalf("delivery=%+v users=%v", delivery, tokens.users)
 	}
 	queuedJSON, err := json.Marshal(DispatchOrder{Order: first, Task: core.Task{ID: first.TaskID}})
@@ -371,14 +371,45 @@ func TestWorkerClaimDeliveryResolvesOnlyEnrollmentOwnerAndFailsClosed(t *testing
 
 	second := createOrder("owner-token-resolution-failure")
 	tokens.useErr = store.ErrForgeTokenDecrypt
-	_, err = service.ClaimForWorkerDelivery(ctx, worker, second.ID, core.WorkOrderClaim{SessionID: "failed-session", ClientToken: "failed-client"})
-	if !errors.Is(err, store.ErrForgeTokenRequired) || !strings.Contains(err.Error(), "usr-owner") || !strings.Contains(err.Error(), store.ForgeTokenRequiredMessage) {
-		t.Fatalf("resolution error=%v", err)
+	secondDelivery, err := service.ClaimForWorkerDelivery(ctx, worker, second.ID, core.WorkOrderClaim{SessionID: "second-session", ClientToken: "second-client"})
+	if err != nil || secondDelivery.WorkOrder.State != core.WorkOrderClaimed || len(tokens.users) != 0 {
+		t.Fatalf("claim depended on outbound token resolution: state=%s err=%v", secondDelivery.WorkOrder.State, err)
 	}
-	released, getErr := st.GetWorkOrder(ctx, second.ID)
-	if getErr != nil || released.State != core.WorkOrderQueued || released.SessionID != "" || released.LastFailureMessage != "resolve forge token for worker owner usr-owner failed" {
-		t.Fatalf("failed delivery left claim active: order=%+v err=%v", released, getErr)
+	renewed, err := service.Renew(ctx, worker, first.ID, "delivery-session")
+	if err != nil {
+		t.Fatal(err)
 	}
+	reconciled, err := service.Reconcile(ctx, worker, first.ID, "delivery-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpoint, err := service.CheckpointAttempt(ctx, worker, first.ID, core.WorkOrderAttemptCheckpoint{SessionID: "delivery-session", AttemptID: delivery.WorkOrder.AttemptID, CommitSHA: strings.Repeat("a", 40), PushResult: "pushed", TerminationReason: "session exited"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	released, err := service.Release(ctx, worker, first.ID, core.WorkOrderRelease{SessionID: "delivery-session", Outcome: core.WorkOrderOutcomeReleased, Reason: "test complete", Cause: core.WorkOrderReleaseCauseSessionExit})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for kind, value := range map[string]any{"claim": delivery, "renew": renewed, "reconcile": reconciled, "checkpoint": checkpoint, "release": released} {
+		payload, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(payload), "forge_token") || strings.Contains(string(payload), tokens.token) {
+			t.Fatalf("%s leaked a stored credential", kind)
+		}
+	}
+	tokens.status.Configured = false
+	third := createOrder("missing-token")
+	if _, err := service.ClaimForWorkerDelivery(ctx, worker, third.ID, core.WorkOrderClaim{SessionID: "missing", ClientToken: "missing"}); !errors.Is(err, store.ErrForgeTokenRequired) {
+		t.Fatalf("missing token claim: %v", err)
+	}
+	queued, err := st.GetWorkOrder(ctx, third.ID)
+	if err != nil || queued.State != core.WorkOrderQueued || !queued.QueueEnteredAt.Equal(third.QueueEnteredAt) {
+		t.Fatalf("missing token moved queue: %+v %v", queued, err)
+	}
+
 }
 
 func TestAttemptCheckpointIsAttemptScopedAndIdempotent(t *testing.T) {
