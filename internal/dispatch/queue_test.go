@@ -9,8 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgconn"
-
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/queue"
@@ -273,7 +271,7 @@ func reviewPublicationJob(workOrderID string, attempt int) queue.Job {
 func TestDispatchDuplicateWithActiveConflictFixIsAcknowledged(t *testing.T) {
 	t.Parallel()
 	ctx, st, worker, taskID := dispatchFailureFixture(t, true)
-	duplicate := &pgconn.PgError{Code: "23505", ConstraintName: "jobs_pkey"}
+	duplicate := store.ErrDispatchJobConflict
 
 	if err := worker.handleFailure(ctx, dispatchTaskJob(taskID, 1, 5), duplicate); err != nil {
 		t.Fatalf("duplicate recovery error = %v", err)

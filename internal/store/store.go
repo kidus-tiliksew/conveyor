@@ -30,6 +30,8 @@ var (
 	// of the backing store, so callers can distinguish model-supplied bad IDs
 	// from unavailable infrastructure.
 	ErrNotFound                      = errors.New("resource not found")
+	ErrDispatchJobConflict           = errors.New("dispatch job already exists")
+	ErrReferenceDocumentNameConflict = errors.New("reference document name already exists")
 	ErrLastWorkspaceOperator         = errors.New("cannot revoke the sole workspace operator; grant another operator first")
 	ErrWorkspaceConflict             = errors.New("workspace id or name already exists")
 	ErrRequirementSlugConflict       = errors.New("requirement slug already exists")
@@ -2754,7 +2756,7 @@ func (m *memory) CreateReviewRoundCommand(ctx context.Context, lease taskops.Tas
 			return fmt.Errorf("invalid review round member %d", i)
 		}
 		if _, _, exists := m.findJobLocked(job.ID); exists {
-			return fmt.Errorf("job %s already exists", job.ID)
+			return fmt.Errorf("%w: job %s already exists", ErrDispatchJobConflict, job.ID)
 		}
 	}
 	now := time.Now().UTC()
@@ -2809,7 +2811,7 @@ func (m *memory) CreateStageWorkOrderCommand(ctx context.Context, lease taskops.
 		return false, nil
 	}
 	if _, _, exists := m.findJobLocked(job.ID); exists {
-		return false, fmt.Errorf("job %s already exists without work order", job.ID)
+		return false, fmt.Errorf("%w: job %s already exists without work order", ErrDispatchJobConflict, job.ID)
 	}
 	now := time.Now().UTC()
 	m.jobs[job.TaskID] = append(m.jobs[job.TaskID], job)
@@ -2877,7 +2879,7 @@ func (m *memory) CreateConflictFixCommand(ctx context.Context, lease taskops.Tas
 		return ConflictFixResult{}, fmt.Errorf("work order %s already exists", request.WorkOrder.ID)
 	}
 	if _, _, exists := m.findJobLocked(request.Job.ID); exists {
-		return ConflictFixResult{}, fmt.Errorf("job %s already exists", request.Job.ID)
+		return ConflictFixResult{}, fmt.Errorf("%w: job %s already exists", ErrDispatchJobConflict, request.Job.ID)
 	}
 	now := time.Now().UTC()
 	intervention := request.Intervention
@@ -2981,7 +2983,7 @@ func (m *memory) RetryReviewRoundCommand(ctx context.Context, lease taskops.Task
 			return ReviewRoundRetryResult{}, fmt.Errorf("invalid review retry member %d", i)
 		}
 		if _, _, exists := m.findJobLocked(job.ID); exists {
-			return ReviewRoundRetryResult{}, fmt.Errorf("%w: job %s already exists", ErrReviewRetryConflict, job.ID)
+			return ReviewRoundRetryResult{}, fmt.Errorf("%w: %w: job %s already exists", ErrReviewRetryConflict, ErrDispatchJobConflict, job.ID)
 		}
 		if _, exists := m.workOrders[order.ID]; exists {
 			return ReviewRoundRetryResult{}, fmt.Errorf("%w: work order %s already exists", ErrReviewRetryConflict, order.ID)
@@ -5755,7 +5757,7 @@ func (m *memory) CreateJob(ctx context.Context, j core.Job) error {
 		return fmt.Errorf("task %s not found", j.TaskID)
 	}
 	if _, _, ok := m.findJobLocked(j.ID); ok {
-		return fmt.Errorf("job %s already exists", j.ID)
+		return fmt.Errorf("%w: job %s already exists", ErrDispatchJobConflict, j.ID)
 	}
 	m.jobs[j.TaskID] = append(m.jobs[j.TaskID], j)
 	m.appendEventLocked(ctx, core.Event{TaskID: j.TaskID, JobID: j.ID, Kind: "job.created", Payload: core.JSONPayload(j)})

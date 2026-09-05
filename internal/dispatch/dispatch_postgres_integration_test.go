@@ -363,7 +363,7 @@ func TestConflictFixCommandRollsBackPostgresOnOrderCreationFailureIntegration(t 
 	_, err = taskops.ExecuteWorkOrder(systemCtx, st, task.ID, core.WorkOrderCmdCreate, func(lease taskops.TaskLease) (store.ConflictFixResult, error) {
 		return st.CreateConflictFixCommand(systemCtx, lease, request)
 	})
-	if err == nil || !strings.Contains(err.Error(), "duplicate key") {
+	if !errors.Is(err, store.ErrDispatchJobConflict) {
 		t.Fatalf("command error=%v, want duplicate job failure", err)
 	}
 	current, err := st.GetTask(ctx, task.ID)

@@ -6547,13 +6547,13 @@ func (s *Store) inTx(ctx context.Context, fn func(pgx.Tx, *db.Queries) error) er
 		tx, err = s.begin(ctx)
 	}
 	if err != nil {
-		return err
+		return translateBackendConflict(err)
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 	if err := fn(tx, s.queries.WithTx(tx)); err != nil {
-		return err
+		return translateBackendConflict(err)
 	}
-	return tx.Commit(ctx)
+	return translateBackendConflict(tx.Commit(ctx))
 }
 
 // enqueueTaskTx enqueues a dispatch inside the caller's transaction and
