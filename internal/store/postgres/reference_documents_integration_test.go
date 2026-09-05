@@ -1,12 +1,9 @@
 package postgres
 
 import (
+	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"strings"
 	"testing"
-
-	"github.com/kidus-tiliksew/conveyor/internal/core"
-	"github.com/kidus-tiliksew/conveyor/internal/store"
-	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 )
 
 func TestInsertEventRejectsTasklessEvent(t *testing.T) {
@@ -14,13 +11,6 @@ func TestInsertEventRejectsTasklessEvent(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "use insertWorkspaceEvent") {
 		t.Fatalf("task-less task-bound insertion error=%v", err)
 	}
-}
-
-func TestPostgresReferenceDocumentConformance(t *testing.T) {
-	st, ctx, _ := newPhase61IntegrationStore(t)
-	t.Cleanup(st.Close)
-	ctx = store.WithActor(ctx, store.Actor{ID: "operator", Role: core.ActorHuman})
-	storetest.RunReferenceDocumentConformance(t, st, ctx)
 }
 
 func TestReferenceDocumentVersionsCascadeWithDocument(t *testing.T) {

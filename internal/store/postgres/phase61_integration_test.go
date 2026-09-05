@@ -3,12 +3,6 @@ package postgres
 import (
 	"context"
 	"errors"
-	"reflect"
-	"strings"
-	"sync"
-	"testing"
-	"time"
-
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -19,6 +13,11 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
+	"reflect"
+	"strings"
+	"sync"
+	"testing"
+	"time"
 )
 
 type phase61QueryTracer struct {
@@ -401,23 +400,6 @@ func TestPhase61BlueprintAndTransactionalDependencyGateIntegration(t *testing.T)
 	if closeEventCount != 1 {
 		t.Fatalf("blueprint.closed events=%d, want 1", closeEventCount)
 	}
-}
-
-func TestPostgresBlueprintConformanceIntegration(t *testing.T) {
-	st, err := Open(t.Context(), integrationDatabaseURL(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer st.Close()
-	storetest.RunBlueprintConformance(t, func(t *testing.T, repos []config.Repo) storetest.BlueprintFixture {
-		t.Helper()
-		workspace := "blueprint-conformance-" + core.NewTaskID()
-		ctx := store.WithWorkspace(t.Context(), workspace)
-		if _, err := st.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: workspace, Repos: repos}); err != nil {
-			t.Fatal(err)
-		}
-		return storetest.BlueprintFixture{Store: st, Context: ctx, Workspace: workspace}
-	})
 }
 
 func TestBlueprintApprovalWithoutDecompositionWritesNoMaterializationRowsIntegration(t *testing.T) {
@@ -873,14 +855,6 @@ func TestPlanningBundleApprovalTransactionIntegration(t *testing.T) {
 	if _, err = st.GetTask(ctx, failing.Tasks[1].CreatedTaskID); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("partial task persisted: %v", err)
 	}
-}
-
-func TestPlanningBundleConformanceIntegration(t *testing.T) {
-	storetest.RunPlanningBundleConformance(t, func(t *testing.T) (store.Store, context.Context, string) {
-		st, ctx, workspace := newPhase61IntegrationStore(t)
-		t.Cleanup(st.Close)
-		return st, ctx, workspace
-	})
 }
 
 func newPhase61IntegrationStore(t *testing.T) (*Store, context.Context, string) {

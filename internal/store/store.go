@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
@@ -84,16 +85,24 @@ type WorkspaceControlStore interface {
 	GetWorkspace(context.Context, string) (core.Workspace, error)
 	CreateWorkspace(context.Context, string, string, *config.Config) (core.Workspace, error)
 }
+
+// Store composes the existing aggregate contracts without changing callers.
+// DEC-38; component-persistence; component-verification-strategy.
 type Store interface {
-	IsDurable() bool
+	TaskStore
+	WorkOrderStore
+	DocumentStore
+	PlanningStore
+	LineageStore
+	ActivityStore
+	StoreMetadata
+}
+
+// TaskStore owns the task, dependency, job and intervention contract.
+type TaskStore interface {
 	CreateTask(ctx context.Context, t core.Task) error
 	CreateTaskWithDependencies(ctx context.Context, t core.Task, dependencyIDs []string) error
 	CreateTaskWithDependenciesAndContext(ctx context.Context, t core.Task, dependencyIDs []string, attached TaskContextInput) error
-	CreatePlanningBundle(ctx context.Context, bundle core.PlanningBundle) (core.PlanningBundle, error)
-	GetPlanningBundle(ctx context.Context, id string) (core.PlanningBundle, error)
-	ListPlanningBundles(ctx context.Context) ([]core.PlanningBundle, error)
-	ApprovePlanningBundle(ctx context.Context, id string) (core.PlanningBundle, error)
-	RejectPlanningBundle(ctx context.Context, id string) (core.PlanningBundle, error)
 	UpdateTaskContext(ctx context.Context, taskID string, change TaskContextChange) (core.TaskContext, error)
 	ProposeTaskContext(ctx context.Context, input core.TaskContextProposalInput) (core.TaskContextProposal, bool, error)
 	ConfirmTaskContextProposal(ctx context.Context, taskID string, kind core.TaskContextProposalTargetKind, targetID string) (core.TaskContextProposal, error)
@@ -135,7 +144,6 @@ type Store interface {
 	SkipTaskRefresh(ctx context.Context, id, newHeadSHA, reason string) error
 	UpdateTaskClassification(ctx context.Context, id, class string) error
 	EnsureTaskEnqueued(ctx context.Context, id string) error
-
 	CreateJob(ctx context.Context, j core.Job) error
 	UpdateJob(ctx context.Context, j core.Job) error
 	ListJobs(ctx context.Context, taskID string) ([]core.Job, error)
@@ -144,47 +152,6 @@ type Store interface {
 	// concurrent control-plane instances while its callback rechecks durable
 	// state. Implementations must release the lock when the callback returns.
 	WithTaskSideEffectLock(ctx context.Context, taskID string, fn func(context.Context) error) error
-
-	AppendEvent(ctx context.Context, event core.Event) error
-	ListEvents(ctx context.Context, taskID string) ([]core.Event, error)
-	// ListRequirementDeliveryEventsForTasks batches only the ordered task
-	// context, aggregate review-round, and merge events used by
-	// requirement-delivery classification.
-	ListRequirementDeliveryEventsForTasks(ctx context.Context, taskIDs []string) (map[string][]core.Event, error)
-	ListDocumentEventPage(ctx context.Context, kind core.LineageNodeType, id string, query DocumentEventQuery) (DocumentEventPage, error)
-	ListRequirementEvents(ctx context.Context, requirementID string) ([]core.Event, error)
-	ListRequirementEventsByRequirement(ctx context.Context) (map[string][]core.Event, error)
-	AcknowledgeRequirementStaleness(ctx context.Context, acknowledgment core.RequirementStalenessAcknowledgment) (core.RequirementStalenessAcknowledgment, error)
-	ListLineageLinks(ctx context.Context) ([]core.LineageLink, error)
-	LineageNodeExists(ctx context.Context, node core.LineageNode) (bool, error)
-	// ListLineageNeighborhood returns one bounded, workspace-scoped link set
-	// for all roots. Callers may derive several per-root traversals from it
-	// without repeating a workspace-wide scan.
-	ListLineageNeighborhood(ctx context.Context, roots []core.LineageNode, budget core.LineageTraversalBudget) ([]core.LineageLink, error)
-	// ListRequirementDeliveryLineage returns a bounded, workspace-scoped,
-	// directed delivery closure. Only requirement -> task|blueprint `serves`,
-	// blueprint -> blueprint_version `versions`, and blueprint_version -> task
-	// `materializes` edges are eligible.
-	ListRequirementDeliveryLineage(ctx context.Context, requirementID string, budget core.LineageTraversalBudget) ([]core.LineageLink, error)
-	ListRequirementDeliveryLineageByRequirement(ctx context.Context, requirementIDs []string, budget core.LineageTraversalBudget) (map[string][]core.LineageLink, error)
-	// ListLineageNodeRecords resolves label data only for the supplied bounded
-	// graph nodes. Implementations must not replace this with workspace-wide
-	// entity scans.
-	ListLineageNodeRecords(ctx context.Context, nodes []core.LineageNode) (map[core.LineageNode]LineageNodeRecord, error)
-	// ListLineageContextRecords resolves the bounded task outcomes and current
-	// confirmed requirement documents used by agent context assembly. It must
-	// read only the supplied graph nodes and avoid per-node queries.
-	ListLineageContextRecords(ctx context.Context, nodes []core.LineageNode) (LineageContextRecords, error)
-	RebuildLineage(ctx context.Context, request core.LineageRebuildRequest) (core.LineageRebuildResult, error)
-	ListEventsAfter(ctx context.Context, taskID string, afterID int64) ([]core.Event, error)
-	CountEvents(ctx context.Context, taskID, kind string) (int, error)
-	// CountEventsSinceHumanIntervention counts task events of the given kind
-	// recorded after the latest human intervention on the task — the check-in
-	// window since the last human intervention. With no human intervention it counts all events
-	// of that kind.
-	CountEventsSinceHumanIntervention(ctx context.Context, taskID, kind string) (int, error)
-	ListActivityMarkers(ctx context.Context) ([]ActivityMarker, error)
-	ListActivityMarkersForTasks(ctx context.Context, taskIDs []string) ([]ActivityMarker, error)
 	CreateIntervention(ctx context.Context, intervention core.Intervention) error
 	// CancelTask atomically records the human intervention, closes the task,
 	// and cancels every non-terminal work order.
@@ -208,16 +175,28 @@ type Store interface {
 	GetGitHubLifecycle(ctx context.Context, taskID string) (core.GitHubLifecycle, bool, error)
 	UpdateGitHubLifecycle(ctx context.Context, lifecycle core.GitHubLifecycle) error
 	ReconcileGitHubLifecycles(ctx context.Context) (int, error)
+	// CreateConflictFixCommand atomically admits one reason-coded conflict-fix
+	// attempt and persists its redirect, task transition, job, work order, and
+	// dispatch audit. A returned existing order is an idempotent success.
+	CreateConflictFixCommand(ctx context.Context, lease taskops.TaskLease, request ConflictFixRequest) (ConflictFixResult, error)
+	RequestPlanRevisionCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID string, claim core.WorkOrderClaimIdentity, rationale string) (PlanRevisionRequestResult, error)
+	// Feature methods remain only for migration and historical conformance.
+	// Live control-plane surfaces do not expose retired feature-tree mutation.
+	CreateFeature(ctx context.Context, feature core.Feature) error
+	ListFeatures(ctx context.Context) ([]core.Feature, error)
+	AssignTaskFeature(ctx context.Context, taskID, featureID string) error
+	// CreateClaimedVerificationEvidence atomically derives evidence ownership
+	// from an exact live implement claim (req-review-gates-evidence REQ-3/AC-3.1; DEC-29).
+	CreateClaimedVerificationEvidence(ctx context.Context, request ClaimedVerificationEvidenceRequest, content []byte) (core.Artifact, error)
+}
 
+// WorkOrderStore owns the work-order, review-round and worker contract.
+type WorkOrderStore interface {
 	CreateWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, order core.WorkOrder) error
 	// CreateStageWorkOrder atomically creates one non-review stage job and work
 	// order. It returns false when the same order already exists, making queue
 	// redelivery and concurrent dispatch idempotent without a session lock.
 	CreateStageWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, job core.Job, order core.WorkOrder) (bool, error)
-	// CreateConflictFixCommand atomically admits one reason-coded conflict-fix
-	// attempt and persists its redirect, task transition, job, work order, and
-	// dispatch audit. A returned existing order is an idempotent success.
-	CreateConflictFixCommand(ctx context.Context, lease taskops.TaskLease, request ConflictFixRequest) (ConflictFixResult, error)
 	CreateReviewRoundCommand(ctx context.Context, lease taskops.TaskLease, taskID string, jobs []core.Job, orders []core.WorkOrder) error
 	RetryReviewRoundCommand(ctx context.Context, lease taskops.TaskLease, request ReviewRoundRetryRequest, jobs []core.Job, orders []core.WorkOrder) (ReviewRoundRetryResult, error)
 	RecoverInterruptedReviewRoundCommand(ctx context.Context, lease taskops.TaskLease, request InterruptedReviewRecoveryRequest, queueTimeout time.Duration) (InterruptedReviewRecoveryResult, error)
@@ -252,7 +231,6 @@ type Store interface {
 	RevokeWorker(ctx context.Context, id string) error
 	RenewWorkerClaimCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID string, claim core.WorkOrderClaimIdentity, lease time.Duration) (core.WorkOrder, error)
 	ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID string, claim core.WorkOrderClaimIdentity, release core.WorkOrderRelease) (core.WorkOrder, error)
-	RequestPlanRevisionCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID string, claim core.WorkOrderClaimIdentity, rationale string) (PlanRevisionRequestResult, error)
 	// CancelPlanRevisionWorkOrderCommand retires the exact released
 	// implementation order when the operator approves plan re-entry.
 	CancelPlanRevisionWorkOrderCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID, attemptID string) (core.WorkOrder, error)
@@ -262,13 +240,18 @@ type Store interface {
 	GetWorkOrderActivitySnapshot(ctx context.Context, workOrderID string) (core.WorkOrderActivitySnapshot, bool, error)
 	ListWorkOrderTranscriptCaptures(ctx context.Context, workOrderID string) ([]core.WorkOrderTranscriptCapture, error)
 	RecordWorkOrderContinuation(ctx context.Context, workOrderID string, claim core.WorkOrderClaimIdentity, continuation core.WorkOrderContinuation) (core.WorkOrder, error)
+}
 
-	// Feature methods remain only for migration and historical conformance.
-	// Live control-plane surfaces do not expose retired feature-tree mutation.
-	CreateFeature(ctx context.Context, feature core.Feature) error
-	ListFeatures(ctx context.Context) ([]core.Feature, error)
-	AssignTaskFeature(ctx context.Context, taskID, featureID string) error
-
+// DocumentStore owns the document and decision contract.
+type DocumentStore interface {
+	// ListRequirementDeliveryEventsForTasks batches only the ordered task
+	// context, aggregate review-round, and merge events used by
+	// requirement-delivery classification.
+	ListRequirementDeliveryEventsForTasks(ctx context.Context, taskIDs []string) (map[string][]core.Event, error)
+	ListDocumentEventPage(ctx context.Context, kind core.LineageNodeType, id string, query DocumentEventQuery) (DocumentEventPage, error)
+	ListRequirementEvents(ctx context.Context, requirementID string) ([]core.Event, error)
+	ListRequirementEventsByRequirement(ctx context.Context) (map[string][]core.Event, error)
+	AcknowledgeRequirementStaleness(ctx context.Context, acknowledgment core.RequirementStalenessAcknowledgment) (core.RequirementStalenessAcknowledgment, error)
 	// Requirements are living intent documents: versioned and confirmed, never
 	// gated. CreateRequirement commits the document and its
 	// first proposed version together; nothing becomes current intent until
@@ -288,7 +271,6 @@ type Store interface {
 	ConfirmRequirementServes(ctx context.Context, blueprintTaskID, requirementID string) (core.RequirementServesLink, error)
 	DismissRequirementServes(ctx context.Context, blueprintTaskID, requirementID string) (core.RequirementServesLink, error)
 	ListRequirementServes(ctx context.Context) ([]core.RequirementServesLink, error)
-
 	CreateReferenceDocument(ctx context.Context, document core.ReferenceDocument, version core.ReferenceDocumentVersion) (core.ReferenceDocument, core.ReferenceDocumentVersion, error)
 	SupersedeReferenceDocument(ctx context.Context, documentID string, version core.ReferenceDocumentVersion) (core.ReferenceDocumentVersion, error)
 	GetReferenceDocument(ctx context.Context, documentID string) (core.ReferenceDocument, error)
@@ -298,7 +280,6 @@ type Store interface {
 	ListReferenceDocumentEvents(ctx context.Context, documentID string) ([]core.Event, error)
 	DeleteReferenceDocument(ctx context.Context, documentID string) error
 	RecordReferenceDocumentConsulted(ctx context.Context, documentID string, version int, sessionID string) error
-
 	CreateSystemDesign(ctx context.Context, document core.SystemDesign, first core.SystemDesignVersion) (core.SystemDesign, core.SystemDesignVersion, error)
 	GetSystemDesign(ctx context.Context, id string) (core.SystemDesign, error)
 	ListSystemDesigns(ctx context.Context, includeArchived bool) ([]core.SystemDesign, error)
@@ -320,7 +301,6 @@ type Store interface {
 	// the System Design collection; it must not materialize monitor history.
 	ListActiveSystemDesignDriftCounts(ctx context.Context) (map[string]int, error)
 	RecordSystemDesignConsulted(ctx context.Context, documentID string, version int, sessionID, workOrderID string) error
-
 	ProposeDecision(ctx context.Context, decision core.Decision) (core.Decision, error)
 	ConfirmDecision(ctx context.Context, id string) (core.Decision, error)
 	DismissDecision(ctx context.Context, id string) (core.Decision, error)
@@ -334,7 +314,15 @@ type Store interface {
 	// with the exact task-attention count without materializing the general task,
 	// activity, or work-order list projections (REQ-1, REQ-3).
 	PendingProposalsProjection(ctx context.Context) (PendingProposalsProjection, error)
+}
 
+// PlanningStore owns the planning-session, bundle and artifact contract.
+type PlanningStore interface {
+	CreatePlanningBundle(ctx context.Context, bundle core.PlanningBundle) (core.PlanningBundle, error)
+	GetPlanningBundle(ctx context.Context, id string) (core.PlanningBundle, error)
+	ListPlanningBundles(ctx context.Context) ([]core.PlanningBundle, error)
+	ApprovePlanningBundle(ctx context.Context, id string) (core.PlanningBundle, error)
+	RejectPlanningBundle(ctx context.Context, id string) (core.PlanningBundle, error)
 	// Planning sessions are durable chats that produce at most one artifact and
 	// grant no approval authority over it.
 	CreatePlanningSession(ctx context.Context, session core.PlanningSession) (core.PlanningSession, error)
@@ -358,15 +346,56 @@ type Store interface {
 	// AbandonPlanningSession closes a session that produced nothing. A
 	// finalized session cannot be abandoned; that would strand its lineage.
 	AbandonPlanningSession(ctx context.Context, sessionID string, reason ...string) (core.PlanningSession, error)
-
 	CreateArtifact(ctx context.Context, artifact core.Artifact, content []byte) (core.Artifact, error)
-	// CreateClaimedVerificationEvidence atomically derives evidence ownership
-	// from an exact live implement claim (req-review-gates-evidence REQ-3/AC-3.1; DEC-29).
-	CreateClaimedVerificationEvidence(ctx context.Context, request ClaimedVerificationEvidenceRequest, content []byte) (core.Artifact, error)
 	GetArtifact(ctx context.Context, id string) (core.Artifact, []byte, error)
 	GetArtifactForPlanningSession(ctx context.Context, id, sessionID string) (core.Artifact, []byte, error)
 	ListArtifacts(ctx context.Context) ([]core.Artifact, error)
 	ListArtifactsForLineage(ctx context.Context, nodes []core.LineageNode) ([]core.Artifact, error)
+}
+
+// LineageStore owns the lineage graph contract.
+type LineageStore interface {
+	ListLineageLinks(ctx context.Context) ([]core.LineageLink, error)
+	LineageNodeExists(ctx context.Context, node core.LineageNode) (bool, error)
+	// ListLineageNeighborhood returns one bounded, workspace-scoped link set
+	// for all roots. Callers may derive several per-root traversals from it
+	// without repeating a workspace-wide scan.
+	ListLineageNeighborhood(ctx context.Context, roots []core.LineageNode, budget core.LineageTraversalBudget) ([]core.LineageLink, error)
+	// ListRequirementDeliveryLineage returns a bounded, workspace-scoped,
+	// directed delivery closure. Only requirement -> task|blueprint `serves`,
+	// blueprint -> blueprint_version `versions`, and blueprint_version -> task
+	// `materializes` edges are eligible.
+	ListRequirementDeliveryLineage(ctx context.Context, requirementID string, budget core.LineageTraversalBudget) ([]core.LineageLink, error)
+	ListRequirementDeliveryLineageByRequirement(ctx context.Context, requirementIDs []string, budget core.LineageTraversalBudget) (map[string][]core.LineageLink, error)
+	// ListLineageNodeRecords resolves label data only for the supplied bounded
+	// graph nodes. Implementations must not replace this with workspace-wide
+	// entity scans.
+	ListLineageNodeRecords(ctx context.Context, nodes []core.LineageNode) (map[core.LineageNode]LineageNodeRecord, error)
+	// ListLineageContextRecords resolves the bounded task outcomes and current
+	// confirmed requirement documents used by agent context assembly. It must
+	// read only the supplied graph nodes and avoid per-node queries.
+	ListLineageContextRecords(ctx context.Context, nodes []core.LineageNode) (LineageContextRecords, error)
+	RebuildLineage(ctx context.Context, request core.LineageRebuildRequest) (core.LineageRebuildResult, error)
+}
+
+// ActivityStore owns the event and activity projection contract.
+type ActivityStore interface {
+	AppendEvent(ctx context.Context, event core.Event) error
+	ListEvents(ctx context.Context, taskID string) ([]core.Event, error)
+	ListEventsAfter(ctx context.Context, taskID string, afterID int64) ([]core.Event, error)
+	CountEvents(ctx context.Context, taskID, kind string) (int, error)
+	// CountEventsSinceHumanIntervention counts task events of the given kind
+	// recorded after the latest human intervention on the task — the check-in
+	// window since the last human intervention. With no human intervention it counts all events
+	// of that kind.
+	CountEventsSinceHumanIntervention(ctx context.Context, taskID, kind string) (int, error)
+	ListActivityMarkers(ctx context.Context) ([]ActivityMarker, error)
+	ListActivityMarkersForTasks(ctx context.Context, taskIDs []string) ([]ActivityMarker, error)
+}
+
+// StoreMetadata owns the store metadata contract.
+type StoreMetadata interface {
+	IsDurable() bool
 }
 
 // ClaimedVerificationEvidenceRequest carries only claim identity and file
@@ -5490,6 +5519,13 @@ func (m *memory) SetTaskHold(ctx context.Context, id string, hold bool) (core.Ta
 	if t.Hold == hold {
 		return t, nil
 	}
+	// PostgreSQL rolls back the projection when its audit text cannot be
+	// stored. Validate before changing the memory projection (DEC-38;
+	// component-persistence; component-verification-strategy).
+	actor := ActorFromContext(ctx)
+	if !utf8.ValidString(actor.ID) || !utf8.ValidString(string(actor.Role)) || strings.ContainsRune(actor.ID, '\x00') || strings.ContainsRune(string(actor.Role), '\x00') {
+		return core.Task{}, fmt.Errorf("audit actor must be valid UTF-8 without NUL characters")
+	}
 	t.Hold = hold
 	m.tasks[id] = t
 	kind := "task.hold.set"
@@ -5831,11 +5867,16 @@ func (m *memory) ListEvents(_ context.Context, taskID string) ([]core.Event, err
 	return events, nil
 }
 
-func (m *memory) ListRequirementDeliveryEventsForTasks(_ context.Context, taskIDs []string) (map[string][]core.Event, error) {
+func (m *memory) ListRequirementDeliveryEventsForTasks(ctx context.Context, taskIDs []string) (map[string][]core.Event, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	result := make(map[string][]core.Event, len(taskIDs))
+	workspace, scoped := WorkspaceFromContext(ctx)
 	for _, taskID := range taskIDs {
+		task, exists := m.tasks[taskID]
+		if !exists || scoped && task.Workspace != workspace {
+			continue
+		}
 		events := make([]core.Event, 0)
 		for _, event := range m.events[taskID] {
 			switch event.Kind {
@@ -5849,7 +5890,9 @@ func (m *memory) ListRequirementDeliveryEventsForTasks(_ context.Context, taskID
 			}
 			return events[i].At.Before(events[j].At)
 		})
-		result[taskID] = events
+		if len(events) > 0 {
+			result[taskID] = events
+		}
 	}
 	return result, nil
 }

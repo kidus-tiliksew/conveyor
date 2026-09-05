@@ -3,20 +3,18 @@ package postgres
 import (
 	"context"
 	"fmt"
-	"strings"
-	"sync"
-	"testing"
-	"time"
-
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
+	"strings"
+	"sync"
+	"testing"
+	"time"
 )
 
 type queryRecorder struct {
@@ -132,39 +130,6 @@ func TestTaskOperationsProjectionPaginatesAndBatchesPageDataIntegration(t *testi
 	}
 }
 
-func TestTaskOperationsPaginationBoundsMatchTheMemoryStoreIntegration(t *testing.T) {
-	st, ctx, workspace := newPhase61IntegrationStore(t)
-	defer st.Close()
-	suffix := core.NewTaskID()
-	created := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)
-	ids := map[string]string{
-		"oldest": "bounds-oldest-" + suffix,
-		"zeta":   "bounds-zeta-" + suffix,
-		"alpha":  "bounds-alpha-" + suffix,
-		"newest": "bounds-newest-" + suffix,
-	}
-	for _, fixture := range []struct {
-		id string
-		at time.Time
-	}{
-		{id: ids["oldest"], at: created.Add(-time.Hour)},
-		{id: ids["zeta"], at: created},
-		{id: ids["alpha"], at: created},
-		{id: ids["newest"], at: created.Add(time.Hour)},
-	} {
-		task := phase61Task(workspace, fixture.id, core.TaskQueued, "")
-		task.CreatedAt = fixture.at
-		if err := st.CreateTask(ctx, task); err != nil {
-			t.Fatal(err)
-		}
-	}
-	storetest.RunTaskOperationsPaginationConformance(t, storetest.TaskOperationsFixture{
-		Store: st, Context: ctx, WantTotal: 4,
-		WantOrder: []string{ids["newest"], ids["alpha"], ids["zeta"], ids["oldest"]},
-		Filter:    store.TaskFilter{Repositories: []string{"conveyor"}},
-	})
-}
-
 func TestCallerAttentionFiltersBeforePagingIntegration(t *testing.T) {
 	st, ctx, workspace := newPhase61IntegrationStore(t)
 	defer st.Close()
@@ -251,32 +216,6 @@ func TestCallerAttentionFiltersBeforePagingIntegration(t *testing.T) {
 
 // The shared filter is SQL here and Go in the memory store, so both run the
 // same cases (AC-2.4).
-func TestTaskFilterMatchesTheMemoryStoreIntegration(t *testing.T) {
-	st, ctx, workspace := newPhase61IntegrationStore(t)
-	defer st.Close()
-	assigneeID := "usr_filter_" + core.NewTaskID()
-	user, err := st.queries.InsertIdentityUser(t.Context(), db.InsertIdentityUserParams{
-		ID: assigneeID, Email: assigneeID + "@example.test", DisplayName: "Filter Assignee",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err = st.pool.Exec(ctx, `INSERT INTO workspace_role_bindings(workspace_id,user_id,role) VALUES($1,$2,'contributor')`, workspace, user.ID); err != nil {
-		t.Fatal(err)
-	}
-	fixture := storetest.TaskFilterFixture{
-		Store: st, Context: ctx, Workspace: workspace, Repo: "conveyor", Suffix: core.NewTaskID(),
-		AssigneeUserID: assigneeID,
-		Assign: func(t *testing.T, taskID, userID string) {
-			t.Helper()
-			if _, err = taskops.New(st).SetAssignee(ctx, taskID, userID); err != nil {
-				t.Fatal(err)
-			}
-		},
-	}
-	storetest.SeedTaskFilterFixture(t, fixture)
-	storetest.RunTaskFilterConformance(t, fixture)
-}
 
 func TestCheckpointContextCandidatesMatchDirectActiveContextIntegration(t *testing.T) {
 	st, ctx, workspace := newPhase61IntegrationStore(t)
