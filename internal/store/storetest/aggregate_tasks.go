@@ -116,6 +116,7 @@ func runTaskLifecycle(t *testing.T, x Fixture) {
 }
 
 func runTaskEventAtomicity(t *testing.T, x Fixture) {
+	runDurableTaskSideEffectLocks(t, x)
 	st, ctx := x.Backend, x.Context
 	task := newAggregateTask(t, x)
 	before, err := st.ListEvents(ctx, task.ID)

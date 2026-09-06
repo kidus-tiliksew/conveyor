@@ -217,14 +217,15 @@ func TestMigrationRefusalsIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 }
-func TestPartialBackendRefusesPopulatedProjectionIntegration(t *testing.T) {
+func TestImplementedFeatureProjectionIntegration(t *testing.T) {
 	st := integrationStore(t)
 	ctx := store.WithWorkspace(t.Context(), "partial")
 	if _, err := st.db.ExecContext(ctx, `INSERT INTO features(workspace_id,id,name) VALUES('partial','feature','existing')`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.ListFeatures(ctx); !errors.Is(err, store.ErrNotImplemented) {
-		t.Fatalf("populated projection returned false success: %v", err)
+	features, err := st.ListFeatures(ctx)
+	if err != nil || len(features) != 1 || features[0].ID != "feature" || features[0].Name != "existing" {
+		t.Fatalf("populated feature projection: %+v, %v", features, err)
 	}
 }
 
