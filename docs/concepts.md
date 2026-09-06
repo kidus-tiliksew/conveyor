@@ -83,9 +83,9 @@ Conveyor treats the light level as configuration.
 
 Running light, a person is in the loop at every step. Plan approval and
 merge approval are on. Tasks are created with `hold`, so no worker touches
-them; the operator runs `conveyor run <task-id>` and confirms each stage
-before it claims, watches the output live, and answers gates inline. Every
-stage of every task passes under human eyes.
+them; the operator runs `conveyor run <task-id>`, watches the output live,
+and answers gates inline. Claimable stages chain by default. Per-stage
+confirmation is available with `--step`.
 
 Running dark, the queue drives itself. Gates are off (per task or workspace
 default), durable [workers](worker-operations.md) poll and execute around

@@ -79,6 +79,8 @@ func TestConfiguredFirstActivityTimeoutRejectsInvalidAndNonPositiveText(t *testi
 }
 
 type taskRunStats struct {
+	requests                                         int
+	stderr                                           string
 	states                                           map[string]core.WorkOrderState
 	getCalls, claimCalls, planSubmits, reviewSubmits int
 	verdictSubmits, releaseCalls                     int
@@ -88,7 +90,7 @@ type taskRunStats struct {
 	mcpCredentials                                   []string
 }
 
-func runTaskScenario(t *testing.T, input string, auto, terminal bool) (taskRunStats, string, error) {
+func runTaskScenario(t *testing.T, input string, step, terminal bool, commandFlags ...[]string) (taskRunStats, string, error) {
 	t.Helper()
 	previousDirectory, err := os.Getwd()
 	if err != nil {
@@ -111,6 +113,7 @@ func runTaskScenario(t *testing.T, input string, auto, terminal bool) (taskRunSt
 		}
 		mu.Lock()
 		defer mu.Unlock()
+		stats.requests++
 		if r.URL.Path == "/mcp" {
 			stats.mcpCredentials = append(stats.mcpCredentials, authorization)
 			var request struct {
@@ -152,6 +155,8 @@ func runTaskScenario(t *testing.T, input string, auto, terminal bool) (taskRunSt
 			return
 		}
 		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/forge-token":
+			_, _ = io.WriteString(w, `{"configured":true,"forge_login":"owner"}`)
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/tasks/target/worktree-cleanup":
 			stats.cleanupChecks++
 			_ = json.NewEncoder(w).Encode(terminalCleanupStatus{Terminal: true})
@@ -236,13 +241,30 @@ func runTaskScenario(t *testing.T, input string, auto, terminal bool) (taskRunSt
 	}
 	t.Cleanup(func() { cleanupTerminalTaskWorktree = previousCleanup })
 	var output bytes.Buffer
-	err = runTask(t.Context(), c, "target", configPath, strings.NewReader(input), &output, auto, terminal)
+	if len(commandFlags) == 0 {
+		err = runTask(t.Context(), c, "target", configPath, strings.NewReader(input), &output, step, terminal)
+	} else {
+		t.Setenv("CONVEYOR_ADDR", server.URL)
+		t.Setenv("CONVEYOR_API_TOKEN", "user-credential")
+		t.Setenv("CONVEYOR_WORKSPACE", "demo")
+		t.Setenv(localGitTokenEnv, "")
+		command := runCmd()
+		command.SilenceErrors = true
+		command.SilenceUsage = true
+		command.SetArgs(append([]string{"target", "--config", configPath}, commandFlags[0]...))
+		command.SetIn(strings.NewReader(input))
+		command.SetOut(&output)
+		var stderr bytes.Buffer
+		command.SetErr(&stderr)
+		err = command.ExecuteContext(t.Context())
+		stats.stderr = stderr.String()
+	}
 	mu.Lock()
 	defer mu.Unlock()
 	return stats, output.String(), err
 }
 
-func runSpecTaskScenario(t *testing.T, input string, terminal bool) (taskRunStats, string, error) {
+func runSpecTaskScenario(t *testing.T, input string, step, terminal bool) (taskRunStats, string, error) {
 	t.Helper()
 	t.Setenv("CONVEYOR_FAKE_TASK_RUN_HARNESS", "1")
 	origin := filepath.Join(t.TempDir(), "origin.git")
@@ -347,14 +369,14 @@ func runSpecTaskScenario(t *testing.T, input string, terminal bool) (taskRunStat
 	}
 	c := &client{base: server.URL, token: "user-credential", workspace: "demo"}
 	var output bytes.Buffer
-	err = runTask(t.Context(), c, "target", configPath, strings.NewReader(input), &output, false, terminal)
+	err = runTask(t.Context(), c, "target", configPath, strings.NewReader(input), &output, step, terminal)
 	mu.Lock()
 	defer mu.Unlock()
 	return stats, output.String(), err
 }
 
 func TestRunTaskExecutesConfirmedSpecAndStopsAtOperatorGate(t *testing.T) {
-	stats, output, err := runSpecTaskScenario(t, "yes\n", true)
+	stats, output, err := runSpecTaskScenario(t, "yes\n", true, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -412,7 +434,7 @@ func TestAttachedRunApprovesFreshGateWithParentCredentialAndNoClaim(t *testing.T
 
 	c := &client{base: server.URL, token: "parent-user-credential", workspace: "demo"}
 	var output bytes.Buffer
-	err := runTaskWithPresentation(t.Context(), c, "target", filepath.Join(t.TempDir(), "unused.yaml"), strings.NewReader("\nk\n"), &output, true, true, true, false)
+	err := runTaskWithPresentation(t.Context(), c, "target", filepath.Join(t.TempDir(), "unused.yaml"), strings.NewReader("\nk\n"), &output, false, true, true, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -484,7 +506,7 @@ func TestAttachedRunPreservesGateInputAcrossPoll(t *testing.T) {
 	var output bytes.Buffer
 	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
-	if err := runTaskWithPresentation(ctx, c, "target", "unused.yaml", input, &output, true, true, true, false); err != nil {
+	if err := runTaskWithPresentation(ctx, c, "target", "unused.yaml", input, &output, false, true, true, false); err != nil {
 		t.Fatal(err)
 	}
 	mutex.Lock()
@@ -517,7 +539,7 @@ func TestAttachedRawRunKeepsLegacyGatePromptPath(t *testing.T) {
 
 	c := &client{base: server.URL, token: "parent-user-credential", workspace: "demo"}
 	var output bytes.Buffer
-	if err := runTaskWithPresentation(t.Context(), c, "target", "unused.yaml", strings.NewReader("approve\n"), &output, false, true, true, true); err != nil {
+	if err := runTaskWithPresentation(t.Context(), c, "target", "unused.yaml", strings.NewReader("approve\n"), &output, true, true, true, true); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(output.String(), "Gate action [approve/changes/wait]:") || strings.Contains(output.String(), "\x1b[?25l") {
@@ -550,7 +572,7 @@ func TestAttachedRunRequestsMergeGateChangesWithFeedback(t *testing.T) {
 	defer server.Close()
 	c := &client{base: server.URL, token: "parent-user-credential", workspace: "demo"}
 	var output bytes.Buffer
-	if err := runTaskWithPresentation(t.Context(), c, "target", "unused.yaml", strings.NewReader("\n  fix the race  \n"), &output, false, true, true, false); err != nil {
+	if err := runTaskWithPresentation(t.Context(), c, "target", "unused.yaml", strings.NewReader("\n  fix the race  \n"), &output, true, true, true, false); err != nil {
 		t.Fatal(err)
 	}
 	if feedback != "fix the race" || !strings.Contains(output.String(), "merge approval gate") {
@@ -576,7 +598,7 @@ func TestAttachedRunAutoNeverApprovesGate(t *testing.T) {
 	defer cancel()
 	c := &client{base: server.URL, token: "parent-user-credential", workspace: "demo"}
 	var output bytes.Buffer
-	if err := runTaskWithPresentation(ctx, c, "target", "unused.yaml", strings.NewReader(""), &output, true, true, true, false); err != nil {
+	if err := runTaskWithPresentation(ctx, c, "target", "unused.yaml", strings.NewReader(""), &output, false, true, true, false); err != nil {
 		t.Fatal(err)
 	}
 	if decisions != 0 || !strings.Contains(output.String(), "merge approval gate") || !strings.Contains(output.String(), "Ran: none") {
@@ -610,7 +632,7 @@ func TestAttachedRunPollsGateResolvedElsewhereWithoutClaim(t *testing.T) {
 	var output bytes.Buffer
 	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
-	if err := runTaskWithPresentation(ctx, c, "target", "unused.yaml", input, &output, true, true, true, false); err != nil {
+	if err := runTaskWithPresentation(ctx, c, "target", "unused.yaml", input, &output, false, true, true, false); err != nil {
 		t.Fatal(err)
 	}
 	if reads != 3 || mutations != 0 || !strings.Contains(output.String(), "finished in state merged") {
@@ -635,7 +657,7 @@ func TestAttachedRunGateConflictRefreshesRecordedState(t *testing.T) {
 	defer server.Close()
 	c := &client{base: server.URL, token: "parent-user-credential", workspace: "demo"}
 	var output bytes.Buffer
-	if err := runTaskWithPresentation(t.Context(), c, "target", "unused.yaml", strings.NewReader("\nk\n"), &output, false, true, true, false); err != nil {
+	if err := runTaskWithPresentation(t.Context(), c, "target", "unused.yaml", strings.NewReader("\nk\n"), &output, true, true, true, false); err != nil {
 		t.Fatal(err)
 	}
 	if reads != 2 || !strings.Contains(output.String(), "finished in state closed") {
@@ -791,7 +813,7 @@ func TestStageProposalPollingSurfacesAndRefreshesConfirmationRaces(t *testing.T)
 }
 
 func TestRunTaskDeclinesSpecBeforeClaim(t *testing.T) {
-	stats, output, err := runSpecTaskScenario(t, "no\n", true)
+	stats, output, err := runSpecTaskScenario(t, "no\n", true, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -804,7 +826,7 @@ func TestRunTaskDeclinesSpecBeforeClaim(t *testing.T) {
 }
 
 func TestRunTaskExecutesConfirmedImplementReviewChain(t *testing.T) {
-	stats, output, err := runTaskScenario(t, "yes\nyes\n", false, true)
+	stats, output, err := runTaskScenario(t, "yes\nyes\n", true, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -845,7 +867,7 @@ func TestRunTaskAdvancesAfterSubmittedChildrenLinger(t *testing.T) {
 		workerProcessGroupTerminationGrace = previousTerminationGrace
 	})
 
-	stats, output, err := runTaskScenario(t, "yes\nyes\n", false, true)
+	stats, output, err := runTaskScenario(t, "yes\nyes\n", true, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -858,7 +880,7 @@ func TestRunTaskAdvancesAfterSubmittedChildrenLinger(t *testing.T) {
 }
 
 func TestRunTaskDeclinesBeforeFirstClaim(t *testing.T) {
-	stats, output, err := runTaskScenario(t, "no\n", false, true)
+	stats, output, err := runTaskScenario(t, "no\n", true, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -873,7 +895,7 @@ func TestRunTaskDeclinesBeforeFirstClaim(t *testing.T) {
 }
 
 func TestRunTaskDeclinesLaterStageWithoutClaimingIt(t *testing.T) {
-	stats, output, err := runTaskScenario(t, "yes\nno\n", false, true)
+	stats, output, err := runTaskScenario(t, "yes\nno\n", true, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -885,33 +907,37 @@ func TestRunTaskDeclinesLaterStageWithoutClaimingIt(t *testing.T) {
 	}
 }
 
-func TestRunTaskAutoPreservesChainAndRecordsMode(t *testing.T) {
-	stats, output, err := runTaskScenario(t, "", true, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if stats.claimCalls != 2 || stats.reviewSubmits != 1 || stats.verdictSubmits != 1 || stats.releaseCalls != 0 || len(stats.progress) != 2 {
-		t.Fatalf("stats=%+v", stats)
-	}
-	for _, progress := range stats.progress {
-		if progress != "conveyor run mode: auto-chained" {
-			t.Fatalf("progress=%q", stats.progress)
-		}
-	}
-	if strings.Contains(output, "Proceed with") {
-		t.Fatalf("auto output prompted: %q", output)
+func TestRunTaskDefaultChainsAndRecordsMode(t *testing.T) {
+	for _, terminal := range []bool{false, true} {
+		t.Run(fmt.Sprintf("terminal=%t", terminal), func(t *testing.T) {
+			stats, output, err := runTaskScenario(t, "", false, terminal)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if stats.claimCalls != 2 || stats.reviewSubmits != 1 || stats.verdictSubmits != 1 || stats.releaseCalls != 0 || len(stats.progress) != 2 {
+				t.Fatalf("stats=%+v", stats)
+			}
+			for _, progress := range stats.progress {
+				if progress != "conveyor run mode: auto-chained" {
+					t.Fatalf("progress=%q", stats.progress)
+				}
+			}
+			if strings.Contains(output, "Proceed with") {
+				t.Fatalf("default output prompted: %q", output)
+			}
+		})
 	}
 }
 
-func TestRunTaskNonTerminalPresentsAndDoesNotClaim(t *testing.T) {
-	stats, output, err := runTaskScenario(t, "", false, false)
-	if err == nil || !strings.Contains(err.Error(), "conveyor run target --auto") {
+func TestRunTaskNonTerminalStepPresentsAndDoesNotClaim(t *testing.T) {
+	stats, output, err := runTaskScenario(t, "", true, false)
+	if err == nil || !strings.Contains(err.Error(), "--step") {
 		t.Fatalf("err=%v", err)
 	}
 	if stats.claimCalls != 0 || stats.releaseCalls != 0 || len(stats.progress) != 0 {
 		t.Fatalf("stats=%+v", stats)
 	}
-	for _, want := range []string{"Task target: Ship target (state running)", "No work order was claimed", "conveyor run target --auto"} {
+	for _, want := range []string{"Task target: Ship target (state running)", "Next: implement work order target-implement-1", "No work order was claimed", "--step", "Drop --step or attach a terminal"} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("output missing %q: %q", want, output)
 		}
@@ -942,7 +968,7 @@ func TestRunTaskMissingSetupPresentsPendingOrderWithoutClaiming(t *testing.T) {
 
 	c := &client{base: server.URL, token: "user-credential", workspace: "demo"}
 	var output bytes.Buffer
-	err := runTask(t.Context(), c, "target", filepath.Join(t.TempDir(), "missing.yaml"), strings.NewReader(""), &output, true, false)
+	err := runTask(t.Context(), c, "target", filepath.Join(t.TempDir(), "missing.yaml"), strings.NewReader(""), &output, false, false)
 	if err == nil || !strings.Contains(err.Error(), "load local execution config") || !strings.Contains(err.Error(), "missing.yaml") || !strings.Contains(err.Error(), "conveyor config init-execution") {
 		t.Fatalf("err=%v", err)
 	}
@@ -989,7 +1015,7 @@ func runTaskSelectionErrorScenario(t *testing.T, stage core.Stage, reviewSeat in
 	}
 	c := &client{base: server.URL, token: "user-credential", workspace: "demo"}
 	var output bytes.Buffer
-	err = runTask(t.Context(), c, "target", configPath, strings.NewReader(""), &output, true, false)
+	err = runTask(t.Context(), c, "target", configPath, strings.NewReader(""), &output, false, false)
 	return claimCalls, output.String(), err
 }
 
@@ -1124,5 +1150,84 @@ func TestTaskRunHarnessHelper(t *testing.T) {
 	}
 	if os.Getenv("CONVEYOR_FAKE_TASK_RUN_LINGER_AFTER_SUBMIT") == "1" {
 		time.Sleep(30 * time.Second)
+	}
+}
+
+func TestRunCmdDefaultAndHiddenAutoChainIdentically(t *testing.T) {
+	for _, flags := range [][]string{{}, {"--auto"}, {"--auto=false"}} {
+		t.Run(fmt.Sprint(flags), func(t *testing.T) {
+			stats, output, err := runTaskScenario(t, "", false, false, flags)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if stats.claimCalls != 2 || stats.reviewSubmits != 1 || stats.verdictSubmits != 1 || stats.agentRevokes != 2 || len(stats.progress) != 2 {
+				t.Fatalf("stats=%+v", stats)
+			}
+			for _, progress := range stats.progress {
+				if progress != "conveyor run mode: auto-chained" {
+					t.Fatalf("progress=%q", stats.progress)
+				}
+			}
+			wantNotice := ""
+			if len(flags) > 0 {
+				wantNotice = "--auto is now the default and will be removed in a later release\n"
+			}
+			if stats.stderr != wantNotice || strings.Contains(output, "Proceed with") || strings.Contains(output, "--auto is now") {
+				t.Fatalf("stdout=%q stderr=%q", output, stats.stderr)
+			}
+		})
+	}
+}
+
+func TestRunCmdAutoIsHiddenFromHelp(t *testing.T) {
+	command := runCmd()
+	command.SetArgs([]string{"--help"})
+	var output bytes.Buffer
+	command.SetOut(&output)
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(output.String(), "--auto") || !strings.Contains(output.String(), "--step") || !strings.Contains(output.String(), "confirm each stage before it is claimed") {
+		t.Fatalf("help=%q", output.String())
+	}
+}
+
+func TestRunCmdConflictingFlagsFailBeforeAnyRequest(t *testing.T) {
+	for _, flags := range [][]string{{"--auto", "--step"}, {"--step", "--auto"}, {"--auto=false", "--step"}} {
+		t.Run(fmt.Sprint(flags), func(t *testing.T) {
+			stats, _, err := runTaskScenario(t, "", false, false, flags)
+			if err == nil || !strings.Contains(err.Error(), "--auto") || !strings.Contains(err.Error(), "--step") {
+				t.Fatalf("err=%v", err)
+			}
+			if stats.requests != 0 || stats.claimCalls != 0 || stats.agentIssues != 0 || stats.stderr != "" {
+				t.Fatalf("stats=%+v", stats)
+			}
+		})
+	}
+}
+
+func TestRunCmdNonTerminalStepClaimsNothing(t *testing.T) {
+	stats, output, err := runTaskScenario(t, "", true, false, []string{"--step"})
+	if err == nil || !strings.Contains(err.Error(), "--step") || stats.claimCalls != 0 || stats.agentIssues != 0 || len(stats.progress) != 0 {
+		t.Fatalf("err=%v stats=%+v", err, stats)
+	}
+	if !strings.Contains(output, "Next: implement work order target-implement-1") || !strings.Contains(output, "Drop --step or attach a terminal") {
+		t.Fatalf("output=%q", output)
+	}
+}
+
+func TestRunTaskDefaultNonTerminalStopsAtPlanGateWithoutClaim(t *testing.T) {
+	stats, output, err := runSpecTaskScenario(t, "", false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.claimCalls != 1 || stats.planSubmits != 1 || stats.states["target-spec-1"] != core.WorkOrderCompleted || stats.agentRevokes != 1 || stats.releaseCalls != 0 {
+		t.Fatalf("stats=%+v", stats)
+	}
+	if len(stats.progress) != 1 || stats.progress[0] != "conveyor run mode: auto-chained" {
+		t.Fatalf("progress=%q", stats.progress)
+	}
+	if !strings.Contains(output, "pending spec approval gate") || strings.Contains(output, "Proceed with") {
+		t.Fatalf("output=%q", output)
 	}
 }

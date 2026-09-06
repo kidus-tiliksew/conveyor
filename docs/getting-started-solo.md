@@ -219,10 +219,10 @@ Then run it:
 conveyor run <task-id>
 ```
 
-`conveyor run` shows each claimable stage before it claims, and surfaces
-operator gates (plan approval, merge approval) inline so you can decide
-without switching to the browser. Pass `--auto` to chain claimable stages
-without the per-stage prompts; gates still apply.
+`conveyor run` presents each stage and chains claimable stages by default.
+It surfaces operator gates (plan approval, merge approval) inline so you can
+decide without switching to the browser. Pass `--step` to confirm each stage
+before it is claimed; gates apply in every mode.
 
 When you would rather have a machine poll the queue and run work without you
 attached, enroll a durable worker. That flow, including running the worker as
