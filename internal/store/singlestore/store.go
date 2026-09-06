@@ -56,6 +56,11 @@ func connectionConfig(raw string) (*mysql.Config, error) {
 	}
 	cfg.ParseTime = true
 	cfg.Loc = time.UTC
+	// DATETIME(6) rejects nanosecond fractions in strict SingleStore sessions.
+	// Apply this to every write, including future aggregate SQL (component-persistence).
+	if err := cfg.Apply(mysql.TimeTruncate(time.Microsecond)); err != nil {
+		return nil, fmt.Errorf("invalid SingleStore timestamp configuration")
+	}
 	cfg.MultiStatements = false
 	cfg.Timeout = 10 * time.Second
 	cfg.ReadTimeout = 30 * time.Second

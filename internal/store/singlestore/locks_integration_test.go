@@ -230,6 +230,8 @@ func TestPartialBackendRefusesPopulatedProjectionIntegration(t *testing.T) {
 
 func TestGoUniqueWriteRulesSerializeIntegration(t *testing.T) {
 	st := integrationStore(t)
+	// Pin nonzero nanoseconds so macOS clocks cannot conceal Linux write failures.
+	now := time.Date(2026, time.September, 6, 5, 0, 0, 123456789, time.UTC)
 	for _, kind := range []string{"reference", "deployment"} {
 		t.Run(kind, func(t *testing.T) {
 			start := make(chan struct{})
@@ -238,7 +240,6 @@ func TestGoUniqueWriteRulesSerializeIntegration(t *testing.T) {
 				go func() {
 					<-start
 					results <- st.withTx(t.Context(), func(tx *sql.Tx) error {
-						now := time.Now().UTC()
 						var w rowWrite
 						if kind == "reference" {
 							name := "Same"
@@ -250,6 +251,9 @@ func TestGoUniqueWriteRulesSerializeIntegration(t *testing.T) {
 							w = rowWrite{table: "user_tokens", operation: "INSERT", values: map[string]any{"id": fmt.Sprintf("token-%d", i), "user_id": "fixture", "token_hash": []byte(fmt.Sprintf("synthetic-hash-%d", i)), "deployment_credential": true}}
 						}
 						_, err := writeRow(t.Context(), tx, w)
+						if err != nil {
+							t.Logf("fixture %s write: %v", kind, err)
+						}
 						return err
 					})
 				}()
@@ -266,6 +270,15 @@ func TestGoUniqueWriteRulesSerializeIntegration(t *testing.T) {
 			}
 			if successes != 1 {
 				t.Fatalf("%s winners=%d", kind, successes)
+			}
+			if kind == "reference" {
+				var stored time.Time
+				if err := st.db.QueryRowContext(t.Context(), `SELECT created_at FROM reference_documents WHERE workspace_id='rules'`).Scan(&stored); err != nil {
+					t.Fatal(err)
+				}
+				if !stored.Equal(now.Truncate(time.Microsecond)) {
+					t.Fatalf("stored timestamp %s, want microsecond truncation of %s", stored, now)
+				}
 			}
 		})
 	}
@@ -306,5 +319,24 @@ func TestNamedJobConflictCrossesTransactionBoundaryIntegration(t *testing.T) {
 	err := st.withTx(t.Context(), func(tx *sql.Tx) error { _, err := tx.ExecContext(t.Context(), query); return err })
 	if !errors.Is(err, store.ErrDispatchJobConflict) {
 		t.Fatalf("named job conflict escaped: %v", err)
+	}
+}
+
+// component-persistence: workspace sharding must not make the workspace itself
+// unique in a collection. Aggregate writers own artifact ownership uniqueness.
+func TestArtifactLinkSchemaAllowsMultipleLinksIntegration(t *testing.T) {
+	st := integrationStore(t)
+	for _, link := range []struct{ artifact, task string }{
+		{"artifact-a", "task-a"},
+		{"artifact-b", "task-a"},
+		{"artifact-a", "task-b"},
+	} {
+		if _, err := st.db.ExecContext(t.Context(), `INSERT INTO artifact_links(workspace_id,artifact_id,task_id) VALUES('links',?,?)`, link.artifact, link.task); err != nil {
+			t.Fatalf("insert distinct artifact link: %v", err)
+		}
+	}
+	var count int
+	if err := st.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM artifact_links WHERE workspace_id='links'`).Scan(&count); err != nil || count != 3 {
+		t.Fatalf("artifact links: count=%d err=%v", count, err)
 	}
 }

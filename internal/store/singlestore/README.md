@@ -5,7 +5,9 @@ The factory selects this backend only with `backend.AllowExperimental`.
 backend under DEC-38. It is not production-capable.
 
 `Store` owns a bounded `database/sql` pool. Every connection uses `parseTime`,
-UTC and `STRICT_ALL_TABLES`. SingleStore accepts but ignores the MySQL
+UTC, microsecond timestamp truncation and `STRICT_ALL_TABLES`. The driver
+truncates every outgoing `time.Time` to the schema's `DATETIME(6)` precision,
+including clocks that supply nanosecond fractions. SingleStore accepts but ignores the MySQL
 `time_zone` session variable. `Open` verifies that `system_time_zone` is UTC
 and refuses another server time zone rather than silently misreading timestamps. The MySQL driver stays inside this package and
 `internal/eventlog/s2log`. No SQL layer is shared with PostgreSQL.

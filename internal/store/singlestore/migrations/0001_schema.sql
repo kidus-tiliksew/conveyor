@@ -10,7 +10,6 @@ CREATE ROWSTORE TABLE IF NOT EXISTS `artifact_links` (
  `role` LONGTEXT NOT NULL DEFAULT 'task_context',
  `requirement_id` LONGTEXT,
  `planning_session_id` LONGTEXT,
- PRIMARY KEY (`workspace_id`),
  SHARD KEY (`workspace_id`)
 ) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;
 
