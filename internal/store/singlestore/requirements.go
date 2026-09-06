@@ -1,0 +1,1164 @@
+package singlestore
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/go-sql-driver/mysql"
+	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/store"
+)
+
+// Requirement and planning-session persistence. Every mutation commits its projection update and audit
+// event in one transaction, under component-document-corpus and component-persistence.
+
+func (s *Store) CreateRequirement(ctx context.Context, requirement core.Requirement, first core.RequirementVersion) (core.Requirement, core.RequirementVersion, error) {
+	if requirement.ID == "" {
+		return core.Requirement{}, core.RequirementVersion{}, fmt.Errorf("requirement id is required")
+	}
+	if requirement.Title == "" {
+		return core.Requirement{}, core.RequirementVersion{}, fmt.Errorf("requirement title is required")
+	}
+	if requirement.Slug == "" {
+		requirement.Slug = core.RequirementSlug(requirement.Title)
+	}
+	if err := core.ValidateRequirementOrigin(first); err != nil {
+		return core.Requirement{}, core.RequirementVersion{}, err
+	}
+	if err := core.ValidateRequirementStatements(first.Statements); err != nil {
+		return core.Requirement{}, core.RequirementVersion{}, err
+	}
+	if err := store.NormalizeRequirementVersionDocument(&first); err != nil {
+		return core.Requirement{}, core.RequirementVersion{}, err
+	}
+	now := time.Now().UTC()
+	requirement.Workspace = documentWorkspace(ctx)
+	// A new document is visibly pending: current_version stays NULL until an
+	// operator confirms, so nothing is silently authoritative.
+	requirement.CurrentVersion = 0
+	requirement.StatementHighWaterMark = core.RequirementStatementHighWaterMark(first.Statements)
+	if requirement.CreatedAt.IsZero() {
+		requirement.CreatedAt = now
+	}
+	requirement.UpdatedAt = now
+	first.Workspace = requirement.Workspace
+	first.RequirementID = requirement.ID
+	first.Version = 1
+	first.Confirmed = false
+	first.ConfirmedBy = ""
+	first.ConfirmedAt = time.Time{}
+	first.Retired = false
+	first.RetiredBy = ""
+	first.RetiredAt = time.Time{}
+	first.RetiredByVersion = 0
+	if first.CreatedAt.IsZero() {
+		first.CreatedAt = now
+	}
+	statements, err := marshalRequirementStatements(first.Statements)
+	if err != nil {
+		return core.Requirement{}, core.RequirementVersion{}, err
+	}
+	derivedFrom, err := json.Marshal(first.DerivedFrom)
+	if err != nil {
+		return core.Requirement{}, core.RequirementVersion{}, err
+	}
+	err = s.documentTx(ctx, func(tx *sql.Tx) error {
+		var conflicts int
+		if err := documentRow(ctx, tx, `SELECT COUNT(*) FROM requirements WHERE workspace_id=? AND slug=?`, requirement.Workspace, requirement.Slug).Scan(&conflicts); err != nil {
+			return err
+		}
+		if conflicts > 0 {
+			return store.ErrRequirementSlugConflict
+		}
+
+		if _, err := documentExec(ctx, tx, `INSERT INTO requirements
+			(workspace_id,id,slug,title,current_version,statement_high_water_mark,created_at,updated_at)
+			VALUES (?,?,?,?,NULL,?,?,?)`, requirement.Workspace, requirement.ID, requirement.Slug, requirement.Title, requirement.StatementHighWaterMark, requirement.CreatedAt, requirement.UpdatedAt); err != nil {
+			return err
+		}
+		if _, err := documentExec(ctx, tx, `INSERT INTO requirement_versions
+			(workspace_id,requirement_id,version,content,statements_json,origin,origin_session_id,origin_task_id,origin_drift_id,confirmed,created_at,derived_from)
+			VALUES (?,?,?,?,?,?,?,?,?,false,?,?)`, first.Workspace, first.RequirementID, first.Version, first.Content, statements, string(first.Origin), first.OriginSessionID, first.OriginTaskID, first.OriginDriftID, first.CreatedAt, derivedFrom); err != nil {
+			return err
+		}
+		if err := insertRequirementEvent(ctx, tx, "requirement.created", map[string]any{
+			"workspace_id": requirement.Workspace, "requirement_id": requirement.ID,
+			"slug": requirement.Slug, "title": requirement.Title,
+		}); err != nil {
+			return err
+		}
+		return insertRequirementEvent(ctx, tx, "requirement.version_proposed", map[string]any{
+			"workspace_id": requirement.Workspace, "requirement_id": requirement.ID,
+			"version": first.Version, "origin": first.Origin,
+			"origin_session_id": first.OriginSessionID, "origin_task_id": first.OriginTaskID, "origin_drift_id": first.OriginDriftID,
+			"statement_count": len(first.Statements),
+		})
+	})
+	if err != nil {
+		var pgErr *mysql.MySQLError
+		if errors.As(err, &pgErr) && pgErr.Number == 1062 && strings.Contains(pgErr.Message, "requirements_workspace_id_slug_key") {
+			return core.Requirement{}, core.RequirementVersion{}, fmt.Errorf("%w: %s", store.ErrRequirementSlugConflict, requirement.Slug)
+		}
+		return core.Requirement{}, core.RequirementVersion{}, err
+	}
+	return requirement, first, nil
+}
+
+func (s *Store) GetRequirement(ctx context.Context, id string) (core.Requirement, error) {
+	return scanRequirement(documentRow(ctx, s.db, requirementSelect+` WHERE workspace_id=? AND id=?`, documentWorkspace(ctx), id), id)
+}
+
+func (s *Store) ListRequirements(ctx context.Context, includeArchived bool) ([]core.Requirement, error) {
+	rows, err := documentRows(ctx, s.db, requirementSelect+` WHERE workspace_id=? AND (? OR archived_at IS NULL) ORDER BY title,id`, documentWorkspace(ctx), includeArchived)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []core.Requirement{}
+	for rows.Next() {
+		requirement, scanErr := scanRequirement(rows, "")
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		out = append(out, requirement)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) ArchiveRequirement(ctx context.Context, id, actor string, supersededBy []string) error {
+	return s.setRequirementArchived(ctx, id, actor, true, supersededBy)
+}
+
+func (s *Store) RestoreRequirement(ctx context.Context, id, actor string) error {
+	return s.setRequirementArchived(ctx, id, actor, false, nil)
+}
+
+func (s *Store) setRequirementArchived(ctx context.Context, id, actor string, archived bool, supersededBy []string) error {
+	return s.documentTx(ctx, func(tx *sql.Tx) error {
+		var current *int
+		var archivedAt *time.Time
+		var storedSupersedingIDs []string
+		if err := documentRow(ctx, tx, `SELECT current_version,archived_at,superseded_by FROM requirements WHERE workspace_id=? AND id=? FOR UPDATE`, documentWorkspace(ctx), id).Scan(&current, &archivedAt, &storedSupersedingIDs); err != nil {
+			return notFound(err, "requirement %s", id)
+		}
+		if (archivedAt != nil) == archived {
+			return nil
+		}
+		accepted := append([]string{}, storedSupersedingIDs...)
+		if archived {
+			var err error
+			accepted, err = validateSupersededByTx(ctx, tx, documentWorkspace(ctx), id, supersededBy)
+			if err != nil {
+				return err
+			}
+		}
+		now := time.Now().UTC()
+		if archived {
+			if _, err := documentExec(ctx, tx, `UPDATE requirements SET archived_at=?,archived_by=?,superseded_by=?,updated_at=? WHERE workspace_id=? AND id=?`, now, actor, accepted, now, documentWorkspace(ctx), id); err != nil {
+				return err
+			}
+		} else if _, err := documentExec(ctx, tx, `UPDATE requirements SET archived_at=NULL,archived_by='',superseded_by='[]',updated_at=? WHERE workspace_id=? AND id=?`, now, documentWorkspace(ctx), id); err != nil {
+			return err
+		}
+		version := 0
+		if current != nil {
+			version = *current
+		}
+		kind := "requirement.restored"
+		if archived {
+			kind = "requirement.archived"
+		}
+		payload := map[string]any{"workspace_id": documentWorkspace(ctx), "requirement_id": id, "version": version, "actor": actor, "at": now, "superseded_by": accepted}
+		return insertRequirementEvent(ctx, tx, kind, payload)
+	})
+}
+
+func (s *Store) AcknowledgeRequirementStaleness(ctx context.Context, acknowledgment core.RequirementStalenessAcknowledgment) (core.RequirementStalenessAcknowledgment, error) {
+	actor := store.ActorFromContext(ctx)
+	if actor.Role != core.ActorHuman {
+		return core.RequirementStalenessAcknowledgment{}, fmt.Errorf("requirement staleness acknowledgments require a human operator")
+	}
+	if acknowledgment.SignalID == "" || acknowledgment.DeliveryTaskID == "" || acknowledgment.DeliveryEventID <= 0 || acknowledgment.AcknowledgedThrough.IsZero() {
+		return core.RequirementStalenessAcknowledgment{}, fmt.Errorf("complete requirement staleness acknowledgment is required")
+	}
+	acknowledgment.AcknowledgedBy = actor.ID
+	acknowledgment.AcknowledgedAt = time.Now().UTC()
+	err := s.documentTx(ctx, func(tx *sql.Tx) error {
+		var exists bool
+		if err := documentRow(ctx, tx, `SELECT EXISTS (SELECT 1 FROM requirements WHERE workspace_id=? AND id=?)`, documentWorkspace(ctx), acknowledgment.RequirementID).Scan(&exists); err != nil {
+			return err
+		}
+		if !exists {
+			return fmt.Errorf("%w: requirement %s", store.ErrNotFound, acknowledgment.RequirementID)
+		}
+		return insertRequirementEvent(ctx, tx, "requirement.staleness_acknowledged", map[string]any{
+			"workspace_id": documentWorkspace(ctx), "requirement_id": acknowledgment.RequirementID,
+			"signal_id": acknowledgment.SignalID, "delivery_task_id": acknowledgment.DeliveryTaskID,
+			"delivery_event_id": acknowledgment.DeliveryEventID, "acknowledged_through": acknowledgment.AcknowledgedThrough,
+			"acknowledged_by": acknowledgment.AcknowledgedBy, "acknowledged_at": acknowledgment.AcknowledgedAt,
+		})
+	})
+	return acknowledgment, err
+}
+
+func (s *Store) ProposeRequirementVersion(ctx context.Context, version core.RequirementVersion) (core.RequirementVersion, error) {
+	if err := core.ValidateRequirementOrigin(version); err != nil {
+		return core.RequirementVersion{}, err
+	}
+	if err := store.NormalizeRequirementVersionDocument(&version); err != nil {
+		return core.RequirementVersion{}, err
+	}
+	version.Workspace = documentWorkspace(ctx)
+	version.Confirmed = false
+	version.ConfirmedBy = ""
+	version.ConfirmedAt = time.Time{}
+	version.Retired = false
+	version.RetiredBy = ""
+	version.RetiredAt = time.Time{}
+	version.RetiredByVersion = 0
+	if version.CreatedAt.IsZero() {
+		version.CreatedAt = time.Now().UTC()
+	}
+	err := s.documentTx(ctx, func(tx *sql.Tx) error {
+		// Lock the document so concurrent proposals cannot pick the same
+		// version number or race the high-water mark forward.
+		var highWaterMark int
+		if err := documentRow(ctx, tx, `SELECT statement_high_water_mark FROM requirements
+			 WHERE workspace_id=? AND id=? FOR UPDATE`, version.Workspace, version.RequirementID).Scan(&highWaterMark); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return fmt.Errorf("requirement %s not found", version.RequirementID)
+			}
+			return err
+		}
+		if archived, archiveErr := documentArchivedTx(ctx, tx, "requirements", version.Workspace, version.RequirementID); archiveErr != nil {
+			return archiveErr
+		} else if archived {
+			return &store.RequirementArchivedError{RequirementID: version.RequirementID}
+		}
+		// Every REQ-n the document has ever issued, not just its latest
+		// version's, so reinstating a statement that an unconfirmed proposal
+		// dropped is not mistaken for identifier reuse.
+		var latestVersion int
+		var issued []string
+		history, err := documentRows(ctx, tx, `SELECT version,statements_json FROM requirement_versions WHERE workspace_id=? AND requirement_id=? ORDER BY version`, version.Workspace, version.RequirementID)
+		if err != nil {
+			return err
+		}
+		for history.Next() {
+			var n int
+			var raw []byte
+			if err = history.Scan(&n, &raw); err != nil {
+				history.Close()
+				return err
+			}
+			latestVersion = n
+			statements, e := unmarshalRequirementStatements(raw)
+			if e != nil {
+				history.Close()
+				return e
+			}
+			for _, st := range statements {
+				issued = append(issued, st.ID)
+				for _, ac := range st.AcceptanceCriteria {
+					issued = append(issued, ac.ID)
+				}
+			}
+		}
+		err = history.Err()
+		history.Close()
+		if err != nil {
+			return err
+		}
+
+		if version.Origin == core.RequirementOriginImplementation {
+			rows, queryErr := documentRows(ctx, tx, requirementVersionSelect+`
+				WHERE workspace_id=? AND requirement_id=? AND origin=? AND origin_task_id=?
+				  AND NOT confirmed AND NOT retired ORDER BY version`, version.Workspace, version.RequirementID, string(version.Origin), version.OriginTaskID)
+			if queryErr != nil {
+				return queryErr
+			}
+			for rows.Next() {
+				existing, scanErr := scanRequirementVersionRow(rows)
+				if scanErr != nil {
+					rows.Close()
+					return scanErr
+				}
+				if existing.Content == version.Content {
+					rows.Close()
+					existing.Deduplicated = true
+					version = existing
+					return nil
+				}
+			}
+			if rowsErr := rows.Err(); rowsErr != nil {
+				rows.Close()
+				return rowsErr
+			}
+			rows.Close()
+		}
+		if err := core.ValidateRequirementRevision(highWaterMark, issued, version.Statements); err != nil {
+			return err
+		}
+		version.Version = latestVersion + 1
+		statements, err := marshalRequirementStatements(version.Statements)
+		if err != nil {
+			return err
+		}
+		derivedFrom, err := json.Marshal(version.DerivedFrom)
+		if err != nil {
+			return err
+		}
+		if _, err := documentExec(ctx, tx, `INSERT INTO requirement_versions
+			(workspace_id,requirement_id,version,content,statements_json,origin,origin_session_id,origin_task_id,origin_drift_id,confirmed,created_at,derived_from)
+			VALUES (?,?,?,?,?,?,?,?,?,false,?,?)`, version.Workspace, version.RequirementID, version.Version, version.Content, statements, string(version.Origin), version.OriginSessionID, version.OriginTaskID, version.OriginDriftID, version.CreatedAt, derivedFrom); err != nil {
+			return err
+		}
+		if mark := core.RequirementStatementHighWaterMark(version.Statements); mark > highWaterMark {
+			highWaterMark = mark
+		}
+		if _, err := documentExec(ctx, tx, `UPDATE requirements SET statement_high_water_mark=?, updated_at=now()
+			 WHERE workspace_id=? AND id=?`, highWaterMark, version.Workspace, version.RequirementID); err != nil {
+			return err
+		}
+		return insertRequirementEvent(ctx, tx, "requirement.version_proposed", map[string]any{
+			"workspace_id": version.Workspace, "requirement_id": version.RequirementID,
+			"version": version.Version, "origin": version.Origin,
+			"origin_session_id": version.OriginSessionID, "origin_task_id": version.OriginTaskID, "origin_drift_id": version.OriginDriftID,
+			"statement_count": len(version.Statements),
+		})
+	})
+	if err != nil {
+		return core.RequirementVersion{}, err
+	}
+	return version, nil
+}
+
+func (s *Store) ConfirmRequirementVersion(ctx context.Context, requirementID string, version int, expectedCurrentVersion ...int) (core.Requirement, core.RequirementVersion, error) {
+	var (
+		requirement core.Requirement
+		confirmed   core.RequirementVersion
+	)
+	err := s.documentTx(ctx, func(tx *sql.Tx) error {
+		if len(expectedCurrentVersion) > 1 {
+			return fmt.Errorf("at most one expected current requirement version may be supplied")
+		}
+		var currentVersion *int32
+		var highWaterMark int
+		if err := documentRow(ctx, tx, `SELECT current_version, statement_high_water_mark FROM requirements
+			 WHERE workspace_id=? AND id=? FOR UPDATE`, documentWorkspace(ctx), requirementID).Scan(&currentVersion, &highWaterMark); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return fmt.Errorf("requirement %s not found", requirementID)
+			}
+			return err
+		}
+		if archived, archiveErr := documentArchivedTx(ctx, tx, "requirements", documentWorkspace(ctx), requirementID); archiveErr != nil {
+			return archiveErr
+		} else if archived {
+			return &store.RequirementArchivedError{RequirementID: requirementID}
+		}
+		current := 0
+		if currentVersion != nil {
+			current = int(*currentVersion)
+		}
+		if len(expectedCurrentVersion) == 1 && expectedCurrentVersion[0] != current {
+			expected := expectedCurrentVersion[0]
+			return &store.RequirementVersionConflict{
+				RequirementID: requirementID, Requested: version, Current: current, Expected: &expected,
+			}
+		}
+		stored, err := scanRequirementVersion(documentRow(ctx, tx, requirementVersionSelect+
+			` WHERE workspace_id=? AND requirement_id=? AND version=?`, documentWorkspace(ctx), requirementID, version), requirementID, version)
+		if err != nil {
+			return err
+		}
+		if stored.Confirmed && version == current {
+			confirmed = stored
+			requirement, err = getRequirementTx(ctx, tx, requirementID)
+			return err
+		}
+		if stored.Retired {
+			return &store.RequirementVersionSuperseded{
+				RequirementID: requirementID, Requested: version, Current: current,
+				SupersededBy: stored.RetiredByVersion,
+			}
+		}
+		// Confirmation is where a real statement block becomes mandatory, so a
+		// migration seed cannot become current intent unedited.
+		if err := core.ConfirmableRequirementVersion(stored); err != nil {
+			return err
+		}
+		// Confirmation moves forward only: re-confirming a superseded version
+		// would silently revert intent the operator already advanced past.
+		if currentVersion != nil && version < int(*currentVersion) {
+			return &store.RequirementVersionSuperseded{
+				RequirementID: requirementID, Requested: version, Current: int(*currentVersion),
+				SupersededBy: int(*currentVersion),
+			}
+		}
+		actor := store.ActorFromContext(ctx)
+		now := time.Now().UTC()
+		retiredRows, err := documentRows(ctx, tx, `SELECT version FROM requirement_versions WHERE workspace_id=? AND requirement_id=? AND version<? AND NOT confirmed AND NOT retired FOR UPDATE`, documentWorkspace(ctx), requirementID, version)
+		if err != nil {
+			return err
+		}
+		var retiredVersions []int
+		for retiredRows.Next() {
+			var retiredVersion int
+			if err = retiredRows.Scan(&retiredVersion); err != nil {
+				retiredRows.Close()
+				return err
+			}
+			retiredVersions = append(retiredVersions, retiredVersion)
+		}
+		if err = retiredRows.Err(); err != nil {
+			retiredRows.Close()
+			return err
+		}
+		retiredRows.Close()
+		if _, err = documentExec(ctx, tx, `UPDATE requirement_versions SET retired=true,retired_by=?,retired_at=?,retired_by_version=? WHERE workspace_id=? AND requirement_id=? AND version<? AND NOT confirmed AND NOT retired`, actor.ID, now, version, documentWorkspace(ctx), requirementID, version); err != nil {
+			return err
+		}
+		for _, retiredVersion := range retiredVersions {
+			if err = insertRequirementEvent(ctx, tx, "requirement.version_retired", map[string]any{
+				"workspace_id": documentWorkspace(ctx), "requirement_id": requirementID, "version": retiredVersion,
+				"retired_by": actor.ID, "confirmed_version": version,
+			}); err != nil {
+				return err
+			}
+		}
+		if _, err := documentExec(ctx, tx, `UPDATE requirement_versions SET confirmed=true, confirmed_by=?, confirmed_at=?
+			 WHERE workspace_id=? AND requirement_id=? AND version=?`, actor.ID, now, documentWorkspace(ctx), requirementID, version); err != nil {
+			return err
+		}
+		if _, err := documentExec(ctx, tx, `UPDATE requirements SET current_version=?, updated_at=?
+			 WHERE workspace_id=? AND id=?`, version, now, documentWorkspace(ctx), requirementID); err != nil {
+			return err
+		}
+		stored.Confirmed, stored.ConfirmedBy, stored.ConfirmedAt = true, actor.ID, now
+		confirmed = stored
+		if requirement, err = getRequirementTx(ctx, tx, requirementID); err != nil {
+			return err
+		}
+		payload := map[string]any{
+			"workspace_id": documentWorkspace(ctx), "requirement_id": requirementID,
+			"version": version, "origin": stored.Origin, "confirmed_by": actor.ID,
+			"supersedes_version": current,
+		}
+		if stored.DerivedFrom != nil {
+			payload["derived_document_id"], payload["derived_document_version"], payload["derived_section_anchor"], payload["derived_target_id"] = stored.DerivedFrom.DocumentID, stored.DerivedFrom.Version, stored.DerivedFrom.SectionAnchor, stored.DerivedFrom.TargetID
+		}
+		if err = insertRequirementEvent(ctx, tx, "requirement.version_confirmed", payload); err != nil {
+			return err
+		}
+		if err = recomputeDecisionSweepsForDocumentTx(ctx, tx, core.DecisionSweepTierRequirement, requirementID, confirmed.Content); err != nil {
+			return err
+		}
+		return activatePendingTaskContextTx(ctx, tx, documentWorkspace(ctx), requirementID, version, false)
+	})
+	if err != nil {
+		return core.Requirement{}, core.RequirementVersion{}, err
+	}
+	return requirement, confirmed, nil
+}
+
+func (s *Store) DismissRequirementVersion(ctx context.Context, requirementID string, version int) (core.Requirement, core.RequirementVersion, error) {
+	var (
+		requirement core.Requirement
+		dismissed   core.RequirementVersion
+	)
+	err := s.documentTx(ctx, func(tx *sql.Tx) error {
+		var currentVersion *int32
+		if err := documentRow(ctx, tx, `SELECT current_version FROM requirements
+			WHERE workspace_id=? AND id=? FOR UPDATE`, documentWorkspace(ctx), requirementID).Scan(&currentVersion); err != nil {
+			return notFound(err, "requirement %s", requirementID)
+		}
+		current := 0
+		if currentVersion != nil {
+			current = int(*currentVersion)
+		}
+		var err error
+		dismissed, err = scanRequirementVersion(documentRow(ctx, tx, requirementVersionSelect+
+			` WHERE workspace_id=? AND requirement_id=? AND version=?`, documentWorkspace(ctx), requirementID, version), requirementID, version)
+		if err != nil {
+			return err
+		}
+		if dismissed.Confirmed {
+			return &store.RequirementVersionDismissalConflict{RequirementID: requirementID, Requested: version, Current: current, Reason: store.VersionDismissalConfirmed}
+		}
+		if dismissed.Retired {
+			reason := store.VersionDismissalDismissed
+			if dismissed.RetiredByVersion > 0 {
+				reason = store.VersionDismissalSuperseded
+			}
+			return &store.RequirementVersionDismissalConflict{RequirementID: requirementID, Requested: version, Current: current, Reason: reason, SupersededBy: dismissed.RetiredByVersion}
+		}
+		if version < current {
+			return &store.RequirementVersionDismissalConflict{RequirementID: requirementID, Requested: version, Current: current, Reason: store.VersionDismissalSuperseded, SupersededBy: current}
+		}
+		actor, now := store.ActorFromContext(ctx), time.Now().UTC()
+		if _, err = documentExec(ctx, tx, `UPDATE requirement_versions
+			SET retired=true, retired_by=?, retired_at=?, retired_by_version=NULL
+			WHERE workspace_id=? AND requirement_id=? AND version=?`, actor.ID, now, documentWorkspace(ctx), requirementID, version); err != nil {
+			return err
+		}
+		if _, err = documentExec(ctx, tx, `UPDATE requirements SET updated_at=?
+			WHERE workspace_id=? AND id=?`, now, documentWorkspace(ctx), requirementID); err != nil {
+			return err
+		}
+		dismissed.Retired, dismissed.RetiredBy, dismissed.RetiredAt, dismissed.RetiredByVersion = true, actor.ID, now, 0
+		if requirement, err = getRequirementTx(ctx, tx, requirementID); err != nil {
+			return err
+		}
+		return insertRequirementEvent(ctx, tx, "requirement.version_dismissed", map[string]any{
+			"workspace_id": documentWorkspace(ctx), "requirement_id": requirementID, "version": version, "dismissed_by": actor.ID,
+		})
+	})
+	return requirement, dismissed, err
+}
+
+func (s *Store) GetRequirementVersion(ctx context.Context, requirementID string, version int) (core.RequirementVersion, error) {
+	return scanRequirementVersion(documentRow(ctx, s.db, requirementVersionSelect+
+		` WHERE workspace_id=? AND requirement_id=? AND version=?`, documentWorkspace(ctx), requirementID, version), requirementID, version)
+}
+
+func (s *Store) ListRequirementVersions(ctx context.Context, requirementID string) ([]core.RequirementVersion, error) {
+	rows, err := documentRows(ctx, s.db, requirementVersionSelect+
+		` WHERE workspace_id=? AND requirement_id=? ORDER BY version`, documentWorkspace(ctx), requirementID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []core.RequirementVersion{}
+	for rows.Next() {
+		version, err := scanRequirementVersionRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, version)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) ListRequirementVersionsByRequirement(ctx context.Context) (map[string][]core.RequirementVersion, error) {
+	rows, err := documentRows(ctx, s.db, requirementVersionSelect+
+		` WHERE workspace_id=? ORDER BY requirement_id,version`, documentWorkspace(ctx))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string][]core.RequirementVersion{}
+	for rows.Next() {
+		version, err := scanRequirementVersionRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		out[version.RequirementID] = append(out[version.RequirementID], version)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) ProposeRequirementServes(ctx context.Context, blueprintTaskID, requirementID string, source core.RequirementServesSource, confirm bool) (core.RequirementServesLink, error) {
+	proposal, _, err := s.proposeTaskContext(ctx, core.TaskContextProposalInput{TaskID: blueprintTaskID, TargetKind: core.TaskContextProposalRequirement,
+		TargetID: requirementID, Source: core.TaskContextProposalSource(source), Justification: "This confirmed requirement is relevant task context."}, true)
+	if err != nil {
+		return core.RequirementServesLink{}, err
+	}
+	if confirm {
+		proposal, err = s.transitionTaskContextProposal(ctx, blueprintTaskID, core.TaskContextProposalRequirement, requirementID, core.TaskContextProposalConfirmed, true)
+	}
+	return requirementServesFromTaskContextProposal(proposal), err
+}
+
+func (s *Store) ConfirmRequirementServes(ctx context.Context, blueprintTaskID, requirementID string) (core.RequirementServesLink, error) {
+	proposal, err := s.transitionTaskContextProposal(ctx, blueprintTaskID, core.TaskContextProposalRequirement, requirementID, core.TaskContextProposalConfirmed, true)
+	return requirementServesFromTaskContextProposal(proposal), err
+}
+
+func (s *Store) DismissRequirementServes(ctx context.Context, blueprintTaskID, requirementID string) (core.RequirementServesLink, error) {
+	proposal, err := s.transitionTaskContextProposal(ctx, blueprintTaskID, core.TaskContextProposalRequirement, requirementID, core.TaskContextProposalDismissed, true)
+	return requirementServesFromTaskContextProposal(proposal), err
+}
+
+func (s *Store) ListRequirementServes(ctx context.Context) ([]core.RequirementServesLink, error) {
+	proposals, err := s.listDocumentContextProposals(ctx)
+	if err != nil {
+		return nil, err
+	}
+	links := []core.RequirementServesLink{}
+	for _, proposal := range proposals {
+		if proposal.TargetKind == core.TaskContextProposalRequirement {
+			links = append(links, requirementServesFromTaskContextProposal(proposal))
+		}
+	}
+	return links, nil
+}
+
+func requirementServesFromTaskContextProposal(proposal core.TaskContextProposal) core.RequirementServesLink {
+	return core.RequirementServesLink{BlueprintTaskID: proposal.TaskID, RequirementID: proposal.TargetID, State: core.RequirementServesState(proposal.State),
+		Source: core.RequirementServesSource(proposal.Source), CreatedByEventID: proposal.CreatedByEventID, DecisionEventID: proposal.DecisionEventID,
+		ProposedBy: proposal.ProposedBy, DecidedBy: proposal.DecidedBy, Workspace: proposal.Workspace, CreatedAt: proposal.CreatedAt, UpdatedAt: proposal.UpdatedAt}
+}
+
+func (s *Store) CreatePlanningSession(ctx context.Context, session core.PlanningSession) (core.PlanningSession, error) {
+	if session.ID == "" {
+		return core.PlanningSession{}, fmt.Errorf("planning session id is required")
+	}
+	now := time.Now().UTC()
+	session.Workspace = documentWorkspace(ctx)
+	session.Status = core.PlanningSessionActive
+	session.ProducedRequirementID = ""
+	session.ProducedTaskID = ""
+	session.ProducedSystemDesignID = ""
+	session.TranscriptArtifactID = ""
+	session.FinalizedAt = time.Time{}
+	if session.CreatedAt.IsZero() {
+		session.CreatedAt = now
+	}
+	session.UpdatedAt = now
+	if session.PinnedRevisions == nil {
+		session.PinnedRevisions = map[string]string{}
+	}
+	goal, err := core.NormalizePlanningSessionGoal(session.Goal)
+	if err != nil {
+		return core.PlanningSession{}, err
+	}
+	session.Goal = goal
+	pins, err := json.Marshal(session.PinnedRevisions)
+	if err != nil {
+		return core.PlanningSession{}, fmt.Errorf("encode planning revisions: %w", err)
+	}
+	promotion, err := json.Marshal(session.Promotion)
+	if err != nil {
+		return core.PlanningSession{}, fmt.Errorf("encode planning promotion: %w", err)
+	}
+	err = s.documentTx(ctx, func(tx *sql.Tx) error {
+		if err := documentParent(ctx, tx, "requirements", session.RequirementContextID); err != nil {
+			return err
+		}
+		if err := documentParent(ctx, tx, "system_designs", session.SystemDesignContextID); err != nil {
+			return err
+		}
+		if _, err := documentExec(ctx, tx, `INSERT INTO planning_sessions
+			(workspace_id,id,title,status,goal,requirement_context_id,system_design_context_id,model,effort,
+			 exploration_output_tokens,exploration_tokens_used,primary_repo,pinned_revisions,
+			 promotion,created_at,updated_at)
+			VALUES (?,?,?,'active',?,NULLIF(?,''),NULLIF(?,''),?,?,?,?,?,?,?,?,?)`, session.Workspace, session.ID, session.Title, string(session.Goal), session.RequirementContextID, session.SystemDesignContextID, session.Model, session.Effort, session.ExplorationOutputTokens, session.ExplorationTokensUsed, session.PrimaryRepo, pins, promotion, session.CreatedAt, session.UpdatedAt); err != nil {
+			return err
+		}
+		return insertRequirementEvent(ctx, tx, "planning_session.created", map[string]any{
+			"workspace_id": session.Workspace, "session_id": session.ID, "title": session.Title,
+			"requirement_context_id":   session.RequirementContextID,
+			"system_design_context_id": session.SystemDesignContextID,
+			"goal":                     string(session.Goal),
+			"promotion":                session.Promotion,
+			"model":                    session.Model, "effort": session.Effort,
+			"exploration_output_tokens": session.ExplorationOutputTokens,
+			"primary_repo":              session.PrimaryRepo, "pinned_revisions": session.PinnedRevisions,
+		})
+	})
+	if err != nil {
+		return core.PlanningSession{}, err
+	}
+	return session, nil
+}
+
+func (s *Store) GetPlanningSession(ctx context.Context, id string) (core.PlanningSession, error) {
+	return scanPlanningSession(documentRow(ctx, s.db, planningSessionSelect+
+		` WHERE workspace_id=? AND id=?`, documentWorkspace(ctx), id), id)
+}
+
+func (s *Store) ListPlanningSessions(ctx context.Context) ([]core.PlanningSession, error) {
+	rows, err := documentRows(ctx, s.db, planningSessionSelect+
+		` WHERE workspace_id=? ORDER BY updated_at DESC, id`, documentWorkspace(ctx))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []core.PlanningSession{}
+	for rows.Next() {
+		session, err := scanPlanningSessionRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, session)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) PinPlanningSessionRepo(ctx context.Context, sessionID, repo, revision string) (core.PlanningSession, error) {
+	var session core.PlanningSession
+	var conflict error
+	err := s.documentTx(ctx, func(tx *sql.Tx) error {
+		existing, err := scanPlanningSession(documentRow(ctx, tx, planningSessionSelect+
+			` WHERE workspace_id=? AND id=? FOR UPDATE`, documentWorkspace(ctx), sessionID), sessionID)
+		if err != nil {
+			return err
+		}
+		if existing.Status != core.PlanningSessionActive {
+			return fmt.Errorf("planning session %s is %s and cannot pin repositories", sessionID, existing.Status)
+		}
+		if pinned := existing.PinnedRevisions[repo]; pinned != "" {
+			session = existing
+			if pinned != revision {
+				conflict = fmt.Errorf(
+					"planning repository %s is already pinned at %s; cannot repin at %s", repo, pinned, revision)
+			}
+			return nil
+		}
+		if existing.PinnedRevisions == nil {
+			existing.PinnedRevisions = map[string]string{}
+		}
+		existing.PinnedRevisions[repo] = revision
+		pins, err := json.Marshal(existing.PinnedRevisions)
+		if err != nil {
+			return err
+		}
+		if _, err = documentExec(ctx, tx, `UPDATE planning_sessions SET pinned_revisions=?,updated_at=? WHERE workspace_id=? AND id=?`, pins, time.Now().UTC(), documentWorkspace(ctx), sessionID); err != nil {
+			return err
+		}
+		if err = insertRequirementEvent(ctx, tx, "planning_session.repo_pinned", map[string]any{
+			"workspace_id": documentWorkspace(ctx), "session_id": sessionID,
+			"repo": repo, "revision": revision,
+		}); err != nil {
+			return err
+		}
+		session, err = scanPlanningSession(documentRow(ctx, tx, planningSessionSelect+
+			` WHERE workspace_id=? AND id=?`, documentWorkspace(ctx), sessionID), sessionID)
+		return err
+	})
+	if err == nil && conflict != nil {
+		return session, conflict
+	}
+	return session, err
+}
+
+func (s *Store) RecordPlanningExplorationTokens(ctx context.Context, sessionID string, tokens int) (core.PlanningSession, error) {
+	if tokens < 0 {
+		return core.PlanningSession{}, fmt.Errorf("planning exploration tokens must not be negative")
+	}
+	if _, err := documentExec(ctx, s.db, `UPDATE planning_sessions
+		SET exploration_tokens_used=exploration_tokens_used+?, updated_at=now()
+		WHERE workspace_id=? AND id=?`, tokens, documentWorkspace(ctx), sessionID); err != nil {
+		return core.PlanningSession{}, err
+	}
+	return s.GetPlanningSession(ctx, sessionID)
+}
+
+func (s *Store) AppendPlanningMessage(ctx context.Context, message core.PlanningMessage) (core.PlanningMessage, error) {
+	if !message.Role.Valid() {
+		return core.PlanningMessage{}, fmt.Errorf("invalid planning message role %q", message.Role)
+	}
+	message.Workspace = documentWorkspace(ctx)
+	if message.CreatedAt.IsZero() {
+		message.CreatedAt = time.Now().UTC()
+	}
+	if len(message.Parts) == 0 {
+		message.Parts = json.RawMessage(`[]`)
+	}
+	err := s.documentTx(ctx, func(tx *sql.Tx) error {
+		// Lock the session so concurrent appends cannot claim the same sequence.
+		var status string
+		if err := documentRow(ctx, tx, `SELECT status FROM planning_sessions WHERE workspace_id=? AND id=? FOR UPDATE`, message.Workspace, message.SessionID).Scan(&status); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return fmt.Errorf("planning session %s not found", message.SessionID)
+			}
+			return err
+		}
+		if core.PlanningSessionStatus(status) != core.PlanningSessionActive {
+			return fmt.Errorf("planning session %s is %s and accepts no further messages", message.SessionID, status)
+		}
+		if err := documentRow(ctx, tx, `SELECT COALESCE(max(seq),0)+1 FROM planning_messages
+			 WHERE workspace_id=? AND session_id=?`, message.Workspace, message.SessionID).Scan(&message.Seq); err != nil {
+			return err
+		}
+		if _, err := documentExec(ctx, tx, `INSERT INTO planning_messages
+			(workspace_id,session_id,seq,role,content,parts_json,created_at)
+			VALUES (?,?,?,?,?,?,?)`, message.Workspace, message.SessionID, message.Seq, string(message.Role), message.Content, []byte(message.Parts), message.CreatedAt); err != nil {
+			return err
+		}
+		if _, err := documentExec(ctx, tx, `UPDATE planning_sessions SET updated_at=? WHERE workspace_id=? AND id=?`, message.CreatedAt, message.Workspace, message.SessionID); err != nil {
+			return err
+		}
+		return insertRequirementEvent(ctx, tx, "planning_session.message_appended", map[string]any{
+			"workspace_id": message.Workspace, "session_id": message.SessionID,
+			"seq": message.Seq, "role": message.Role,
+		})
+	})
+	if err != nil {
+		return core.PlanningMessage{}, err
+	}
+	return message, nil
+}
+
+func (s *Store) ListPlanningMessages(ctx context.Context, sessionID string) ([]core.PlanningMessage, error) {
+	rows, err := documentRows(ctx, s.db, `SELECT workspace_id,session_id,seq,role,content,parts_json,created_at
+		 FROM planning_messages WHERE workspace_id=? AND session_id=? ORDER BY seq`, documentWorkspace(ctx), sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []core.PlanningMessage{}
+	for rows.Next() {
+		var message core.PlanningMessage
+		var role string
+		var parts []byte
+		if err := rows.Scan(&message.Workspace, &message.SessionID, &message.Seq, &role,
+			&message.Content, &parts, &message.CreatedAt); err != nil {
+			return nil, err
+		}
+		message.Role = core.PlanningMessageRole(role)
+		message.Parts = json.RawMessage(parts)
+		out = append(out, message)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) FinalizePlanningSession(ctx context.Context, request store.PlanningFinalizeRequest) (core.PlanningSession, error) {
+	if err := request.Validate(); err != nil {
+		return core.PlanningSession{}, err
+	}
+	var session core.PlanningSession
+	err := s.documentTx(ctx, func(tx *sql.Tx) error {
+		if err := documentParent(ctx, tx, "requirements", request.RequirementID); err != nil {
+			return err
+		}
+		if err := documentParent(ctx, tx, "system_designs", request.SystemDesignID); err != nil {
+			return err
+		}
+		if err := documentParent(ctx, tx, "tasks", request.TaskID); err != nil {
+			return err
+		}
+		if err := documentParent(ctx, tx, "planning_bundles", request.BundleID); err != nil {
+			return err
+		}
+		if err := documentParent(ctx, tx, "artifacts", request.TranscriptArtifactID); err != nil {
+			return err
+		}
+		existing, err := scanPlanningSession(documentRow(ctx, tx, planningSessionSelect+
+			` WHERE workspace_id=? AND id=? FOR UPDATE`, documentWorkspace(ctx), request.SessionID), request.SessionID)
+		if err != nil {
+			return err
+		}
+		if existing.Status == core.PlanningSessionFinalized {
+			// Idempotent for an identical finalize; any difference in the
+			// recorded lineage — produced artifact or archived transcript — is
+			// a contradiction, not a retry, so the stored lineage stands.
+			if existing.ProducedRequirementID == request.RequirementID &&
+				existing.ProducedTaskID == request.TaskID &&
+				existing.ProducedSystemDesignID == request.SystemDesignID &&
+				existing.ProducedBundleID == request.BundleID &&
+				existing.TranscriptArtifactID == request.TranscriptArtifactID {
+				session = existing
+				return nil
+			}
+			return fmt.Errorf(
+				"planning session %s is already finalized with different lineage", request.SessionID)
+		}
+		if existing.Status != core.PlanningSessionActive {
+			// The row lock serializes finalize against abandon. When abandon
+			// wins, its terminal state must not be overwritten by the
+			// in-flight planning run.
+			return fmt.Errorf(
+				"planning session %s is %s and cannot be finalized", request.SessionID, existing.Status)
+		}
+		now := time.Now().UTC()
+		if _, err := documentExec(ctx, tx, `UPDATE planning_sessions
+			SET status='finalized', produced_requirement_id=NULLIF(?,''),
+			    produced_task_id=NULLIF(?,''), produced_system_design_id=NULLIF(?,''), produced_bundle_id=NULLIF(?,''), transcript_artifact_id=NULLIF(?,''),
+			    title=COALESCE(NULLIF(?,''),title),
+			    finalized_at=?, updated_at=?
+			WHERE workspace_id=? AND id=?`, request.RequirementID, request.TaskID, request.SystemDesignID, request.BundleID, request.TranscriptArtifactID, strings.TrimSpace(request.Title), now, now, documentWorkspace(ctx), request.SessionID); err != nil {
+			return err
+		}
+		if session, err = scanPlanningSession(documentRow(ctx, tx, planningSessionSelect+
+			` WHERE workspace_id=? AND id=?`, documentWorkspace(ctx), request.SessionID), request.SessionID); err != nil {
+			return err
+		}
+		if _, err = documentExec(ctx, tx, `UPDATE artifact_links
+			SET planning_session_id=NULL, requirement_id=NULLIF(?,''), task_id=NULLIF(?,'')
+			WHERE workspace_id=? AND planning_session_id=? AND artifact_id<>?`, session.ProducedRequirementID, session.ProducedTaskID, documentWorkspace(ctx), session.ID, session.TranscriptArtifactID); err != nil {
+			return err
+		}
+		if err = insertRequirementEvent(ctx, tx, "planning_session.finalized", map[string]any{
+			"workspace_id": documentWorkspace(ctx), "session_id": session.ID, "title": session.Title,
+			"produced_requirement_id":   session.ProducedRequirementID,
+			"produced_task_id":          session.ProducedTaskID,
+			"produced_system_design_id": session.ProducedSystemDesignID,
+			"produced_bundle_id":        session.ProducedBundleID,
+			"transcript_artifact_id":    session.TranscriptArtifactID,
+		}); err != nil {
+			return err
+		}
+		if session.RequirementContextID == "" || session.ProducedTaskID == "" {
+			return nil
+		}
+		if _, linkErr := getTaskContextProposalTx(ctx, tx, session.ProducedTaskID, core.TaskContextProposalRequirement, session.RequirementContextID, true); linkErr == nil {
+			return nil
+		} else if !errors.Is(linkErr, sql.ErrNoRows) {
+			return linkErr
+		}
+		var slug, title string
+		if err = documentRow(ctx, tx, `SELECT slug,title FROM requirements WHERE workspace_id=? AND id=?`, documentWorkspace(ctx), session.RequirementContextID).Scan(&slug, &title); err != nil {
+			return err
+		}
+		eventID, err := insertEventWithID(ctx, tx, core.Event{TaskID: session.ProducedTaskID, Kind: "task.requirement_suggested", Payload: core.JSONPayload(map[string]any{
+			"requirement_id": session.RequirementContextID, "requirement_slug": slug,
+			"requirement_title": title, "source": core.RequirementServesPlanning,
+		})})
+		if err != nil {
+			return err
+		}
+		actor := store.ActorFromContext(ctx)
+		_, err = documentExec(ctx, tx, `INSERT INTO task_context_proposals
+			(workspace_id,task_id,target_kind,target_id,target_title,state,source,justification,created_by_event_id,proposed_by,created_at,updated_at)
+			VALUES (?,?,'requirement',?,?,'proposed','planning',?,?,?,?,?)`, documentWorkspace(ctx), session.ProducedTaskID, session.RequirementContextID, title, "This planning requirement is relevant task context.", eventID, actor.ID, now, now)
+		return err
+	})
+	if err != nil {
+		return core.PlanningSession{}, err
+	}
+	return session, nil
+}
+
+func (s *Store) AbandonPlanningSession(ctx context.Context, sessionID string, reasons ...string) (core.PlanningSession, error) {
+	var session core.PlanningSession
+	err := s.withPlanningSessionLock(ctx, sessionID, func(lockedCtx context.Context) error {
+		return s.documentTx(lockedCtx, func(tx *sql.Tx) error {
+			existing, err := scanPlanningSession(documentRow(lockedCtx, tx, planningSessionSelect+
+				` WHERE workspace_id=? AND id=? FOR UPDATE`, documentWorkspace(lockedCtx), sessionID), sessionID)
+			if err != nil {
+				return err
+			}
+			if existing.Status == core.PlanningSessionAbandoned {
+				session = existing
+				return nil
+			}
+			if existing.Status == core.PlanningSessionFinalized {
+				// Abandoning would strand what the session produced.
+				return fmt.Errorf("planning session %s is already finalized", sessionID)
+			}
+			if _, err := documentExec(lockedCtx, tx, `UPDATE planning_sessions
+				SET status='abandoned', updated_at=?
+				WHERE workspace_id=? AND id=?`, time.Now().UTC(), documentWorkspace(lockedCtx), sessionID); err != nil {
+				return err
+			}
+			if session, err = scanPlanningSession(documentRow(lockedCtx, tx, planningSessionSelect+
+				` WHERE workspace_id=? AND id=?`, documentWorkspace(lockedCtx), sessionID), sessionID); err != nil {
+				return err
+			}
+			payload := map[string]any{"workspace_id": documentWorkspace(lockedCtx), "session_id": session.ID}
+			if reason := firstTrimmed(reasons); reason != "" {
+				payload["reason"] = reason
+			}
+			return insertRequirementEvent(lockedCtx, tx, "planning_session.abandoned", payload)
+		})
+	})
+	if err != nil {
+		return core.PlanningSession{}, err
+	}
+	return session, nil
+}
+
+func firstTrimmed(values []string) string {
+	if len(values) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(values[0])
+}
+
+func (s *Store) ListPlanningSessionEvents(ctx context.Context, sessionID string) ([]core.Event, error) {
+	rows, err := documentRows(ctx, s.db, `SELECT id,COALESCE(task_id,''),COALESCE(job_id,''),kind,actor_id,actor_role,payload_json,at
+		FROM events WHERE workspace_id=? AND JSON_EXTRACT_STRING(payload_json,'session_id')=? ORDER BY id`, documentWorkspace(ctx), sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []core.Event
+	for rows.Next() {
+		var event core.Event
+		if err := rows.Scan(&event.ID, &event.TaskID, &event.JobID, &event.Kind, &event.ActorID, &event.ActorRole, &event.Payload, &event.At); err != nil {
+			return nil, err
+		}
+		out = append(out, event)
+	}
+	return out, rows.Err()
+}
+
+const requirementSelect = `SELECT workspace_id,id,slug,title,current_version,statement_high_water_mark,archived_at,archived_by,superseded_by,created_at,updated_at FROM requirements`
+
+const requirementVersionSelect = `SELECT workspace_id,requirement_id,version,content,statements_json,origin,origin_session_id,origin_task_id,origin_drift_id,confirmed,confirmed_by,confirmed_at,retired,retired_by,retired_at,retired_by_version,created_at,derived_from FROM requirement_versions`
+
+const planningSessionSelect = `SELECT workspace_id,id,title,status,goal,COALESCE(requirement_context_id,''),
+	COALESCE(system_design_context_id,''),COALESCE(produced_requirement_id,''),COALESCE(produced_task_id,''),COALESCE(produced_system_design_id,''),COALESCE(produced_bundle_id,''),
+	COALESCE(transcript_artifact_id,''),model,effort,exploration_output_tokens,
+	exploration_tokens_used,primary_repo,pinned_revisions,promotion,created_at,updated_at,finalized_at
+	FROM planning_sessions`
+
+func scanRequirement(row documentScanner, id string) (core.Requirement, error) {
+	var requirement core.Requirement
+	var currentVersion *int32
+	var archivedAt *time.Time
+	if err := row.Scan(&requirement.Workspace, &requirement.ID, &requirement.Slug, &requirement.Title,
+		&currentVersion, &requirement.StatementHighWaterMark, &archivedAt, &requirement.ArchivedBy, &requirement.SupersededBy, &requirement.CreatedAt, &requirement.UpdatedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return core.Requirement{}, fmt.Errorf("%w: requirement %s", store.ErrNotFound, id)
+		}
+		return core.Requirement{}, err
+	}
+	if currentVersion != nil {
+		requirement.CurrentVersion = int(*currentVersion)
+	}
+	if archivedAt != nil {
+		requirement.Archived, requirement.ArchivedAt = true, *archivedAt
+	}
+	return requirement, nil
+}
+
+func getRequirementTx(ctx context.Context, tx *sql.Tx, id string) (core.Requirement, error) {
+	exists, err := archivalColumnExistsTx(ctx, tx, "requirements")
+	if err != nil {
+		return core.Requirement{}, err
+	}
+	if exists {
+		return scanRequirement(documentRow(ctx, tx, requirementSelect+` WHERE workspace_id=? AND id=?`, documentWorkspace(ctx), id), id)
+	}
+	var requirement core.Requirement
+	var currentVersion *int32
+	err = documentRow(ctx, tx, `SELECT workspace_id,id,slug,title,current_version,statement_high_water_mark,created_at,updated_at FROM requirements WHERE workspace_id=? AND id=?`, documentWorkspace(ctx), id).Scan(&requirement.Workspace, &requirement.ID, &requirement.Slug, &requirement.Title, &currentVersion, &requirement.StatementHighWaterMark, &requirement.CreatedAt, &requirement.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return core.Requirement{}, fmt.Errorf("%w: requirement %s", store.ErrNotFound, id)
+	}
+	if currentVersion != nil {
+		requirement.CurrentVersion = int(*currentVersion)
+	}
+	return requirement, err
+}
+
+func scanRequirementVersion(row documentScanner, requirementID string, version int) (core.RequirementVersion, error) {
+	stored, err := scanRequirementVersionRow(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return core.RequirementVersion{}, fmt.Errorf("%w: requirement %s has no version %d", store.ErrNotFound, requirementID, version)
+	}
+	return stored, err
+}
+
+func scanRequirementVersionRow(row documentScanner) (core.RequirementVersion, error) {
+	var stored core.RequirementVersion
+	var origin string
+	var statements []byte
+	var confirmedBy string
+	var confirmedAt *time.Time
+	var retiredBy string
+	var retiredAt *time.Time
+	var retiredByVersion *int32
+	var derivedFrom []byte
+	if err := row.Scan(&stored.Workspace, &stored.RequirementID, &stored.Version, &stored.Content,
+		&statements, &origin, &stored.OriginSessionID, &stored.OriginTaskID, &stored.OriginDriftID,
+		&stored.Confirmed, &confirmedBy, &confirmedAt, &stored.Retired, &retiredBy, &retiredAt,
+		&retiredByVersion, &stored.CreatedAt, &derivedFrom); err != nil {
+		return core.RequirementVersion{}, err
+	}
+	parsed, err := unmarshalRequirementStatements(statements)
+	if err != nil {
+		return core.RequirementVersion{}, err
+	}
+	stored.Statements = parsed
+	stored.Origin = core.RequirementOrigin(origin)
+	if len(derivedFrom) > 0 && string(derivedFrom) != "null" {
+		var derivation core.RequirementDerivation
+		if err := json.Unmarshal(derivedFrom, &derivation); err != nil {
+			return core.RequirementVersion{}, err
+		}
+		stored.DerivedFrom = &derivation
+	}
+	stored.ConfirmedBy = confirmedBy
+	if confirmedAt != nil {
+		stored.ConfirmedAt = *confirmedAt
+	}
+	stored.RetiredBy = retiredBy
+	if retiredAt != nil {
+		stored.RetiredAt = *retiredAt
+	}
+	if retiredByVersion != nil {
+		stored.RetiredByVersion = int(*retiredByVersion)
+	}
+	return stored, nil
+}
+
+func scanPlanningSession(row documentScanner, id string) (core.PlanningSession, error) {
+	session, err := scanPlanningSessionRow(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return core.PlanningSession{}, fmt.Errorf("planning session %s not found", id)
+	}
+	return session, err
+}
+
+func scanPlanningSessionRow(row documentScanner) (core.PlanningSession, error) {
+	var session core.PlanningSession
+	var status string
+	var goal string
+	var finalizedAt *time.Time
+	var pins []byte
+	var promotion []byte
+	if err := row.Scan(&session.Workspace, &session.ID, &session.Title, &status, &goal,
+		&session.RequirementContextID, &session.SystemDesignContextID, &session.ProducedRequirementID, &session.ProducedTaskID, &session.ProducedSystemDesignID, &session.ProducedBundleID,
+		&session.TranscriptArtifactID, &session.Model, &session.Effort,
+		&session.ExplorationOutputTokens, &session.ExplorationTokensUsed,
+		&session.PrimaryRepo, &pins, &promotion, &session.CreatedAt, &session.UpdatedAt, &finalizedAt); err != nil {
+		return core.PlanningSession{}, err
+	}
+	if err := json.Unmarshal(pins, &session.PinnedRevisions); err != nil {
+		return core.PlanningSession{}, fmt.Errorf("decode planning revisions: %w", err)
+	}
+	if len(promotion) > 0 && string(promotion) != "null" {
+		if err := json.Unmarshal(promotion, &session.Promotion); err != nil {
+			return core.PlanningSession{}, fmt.Errorf("decode planning promotion: %w", err)
+		}
+	}
+	session.Status = core.PlanningSessionStatus(status)
+	session.Goal = core.PlanningSessionGoal(goal)
+	if finalizedAt != nil {
+		session.FinalizedAt = *finalizedAt
+	}
+	return session, nil
+}
+
+func marshalRequirementStatements(statements []core.RequirementStatement) ([]byte, error) {
+	if statements == nil {
+		statements = []core.RequirementStatement{}
+	}
+	encoded, err := json.Marshal(statements)
+	if err != nil {
+		return nil, fmt.Errorf("encode requirement statements: %w", err)
+	}
+	return encoded, nil
+}
+
+func unmarshalRequirementStatements(raw []byte) ([]core.RequirementStatement, error) {
+	if len(raw) == 0 {
+		return []core.RequirementStatement{}, nil
+	}
+	statements := []core.RequirementStatement{}
+	if err := json.Unmarshal(raw, &statements); err != nil {
+		return nil, fmt.Errorf("decode requirement statements: %w", err)
+	}
+	return statements, nil
+}
+
+// insertRequirementEvent records a workspace-scoped audit event. Requirement
+// and planning mutations carry no task, so they use the workspace event path
+// and the migration 046 scope allowlist.
+func insertRequirementEvent(ctx context.Context, tx *sql.Tx, kind string, payload map[string]any) error {
+	return insertWorkspaceEvent(ctx, tx, core.Event{Kind: kind, Payload: core.JSONPayload(payload)})
+}
+
+func (s *Store) RequirementExists(ctx context.Context, id string) (bool, error) {
+	var exists bool
+	err := documentRow(ctx, s.db, `SELECT EXISTS(SELECT 1 FROM requirements WHERE workspace_id=? AND id=?)`, documentWorkspace(ctx), id).Scan(&exists)
+	return exists, err
+}
