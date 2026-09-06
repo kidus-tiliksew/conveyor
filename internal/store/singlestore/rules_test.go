@@ -111,3 +111,28 @@ func TestUniqueRuleInputsFailBeforeSQL(t *testing.T) {
 		}
 	}
 }
+
+func TestSingletonOrganization(t *testing.T) {
+	for _, ids := range [][]string{nil, {"deployment"}} {
+		if err := checkSingletonOrganization(ids); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, ids := range [][]string{{"other"}, {"deployment", "other"}, {"deployment", "deployment"}} {
+		if checkSingletonOrganization(ids) == nil {
+			t.Fatal("multiple or foreign organization accepted")
+		}
+	}
+}
+func TestMonitorDriftSaturation(t *testing.T) {
+	for n := 0; n < 5; n++ {
+		if err := checkDriftSaturation("fixture-task", n); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, n := range []int{5, 6, 100} {
+		if checkDriftSaturation("fixture-task", n) == nil {
+			t.Fatal("sixth unresolved drift accepted")
+		}
+	}
+}

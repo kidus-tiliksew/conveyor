@@ -13,19 +13,19 @@ func TestDocumentSuccessorJSONPreservesOrder(t *testing.T) {
 	want := []string{"req-third", "design-second", "req-first"}
 	args := documentArgs([]any{want, []string(nil)})
 	var got []string
-	if err := (jsonStrings{&got}).Scan(args[0]); err != nil {
+	if err := (documentJSONStrings{&got}).Scan(args[0]); err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("successors=%v", got)
 	}
-	if err := (jsonStrings{&got}).Scan(args[1]); err != nil {
+	if err := (documentJSONStrings{&got}).Scan(args[1]); err != nil {
 		t.Fatal(err)
 	}
 	if got == nil || len(got) != 0 {
 		t.Fatalf("restore array=%v", got)
 	}
-	if err := (jsonStrings{&got}).Scan(`{"wrong":"shape"}`); err == nil {
+	if err := (documentJSONStrings{&got}).Scan(`{"wrong":"shape"}`); err == nil {
 		t.Fatal("invalid successor object accepted")
 	}
 }

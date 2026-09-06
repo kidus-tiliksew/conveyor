@@ -56,21 +56,22 @@ func integrationStore(t *testing.T) *Store {
 }
 func TestSingleStoreConformanceIntegration(t *testing.T) {
 	storetest.RunAll(t, storetest.Factory{ProductionCapable: false,
+		Capabilities: storetest.Capabilities{Identity: true, Membership: true, Tokens: true},
 		Skip: []string{
 			// These mixed document suites still call sibling-owned stubs in
 			// unimplemented.go. Implemented document methods alone cannot run
 			// the complete suites. Approved plan v2, Ordering 8, leaves their
 			// removal to 260905-d3c03a after the sibling prerequisites land.
-			"Requirements",       // CreateTask, CreateArtifact, ClaimWorkOrderCommand, RecordDrift.
+			"Requirements",       // CreateTask, CreateArtifact, ClaimWorkOrderCommand.
 			"PlanningReads",      // CreateArtifact, GetArtifactForPlanningSession, ListTasks.
 			"Lineage",            // CreateTaskWithDependencies, CreateArtifact, AcceptReviewDecisionCommand.
 			"ReferenceDocuments", // CreateTask seeds the unrelated task-event isolation case.
 			"PlanningBundles",    // EnsureTaskEnqueued, UpdateTaskContext after document approval.
-			"SystemDesignDrift",  // CreateTask, Observe, LinkTask, MonitorStatus.
+			"SystemDesignDrift",  // CreateTask.
 			// VersionDismissal, SystemDesignProposals, Decisions and
 			// ArchiveRestore have no sibling prerequisites and are enabled.
 			// The remaining suites belong to task, artifact, work-order,
-			// identity, or monitor aggregates.
+			// or monitor aggregates.
 			"ProjectionReads",
 			"CommandRefusals",
 			"ApprovalRefresh",
@@ -92,10 +93,6 @@ func TestSingleStoreConformanceIntegration(t *testing.T) {
 			"Monitor",
 			"TaskFilter",
 			"TaskAssigneeMembership",
-			"Identity",
-			"Membership",
-			"InvitationSessions",
-			"Tokens",
 		},
 		New: func(t *testing.T, repos []config.Repo) storetest.Fixture {
 			st := integrationStore(t)

@@ -46,15 +46,15 @@ func (r documentResult) Scan(dest ...any) error {
 	}
 	for i, d := range dest {
 		if p, ok := d.(*[]string); ok {
-			dest[i] = jsonStrings{p}
+			dest[i] = documentJSONStrings{p}
 		}
 	}
 	return translateBackendConflict(r.documentScanner.Scan(dest...))
 }
 
-type jsonStrings struct{ value *[]string }
+type documentJSONStrings struct{ value *[]string }
 
-func (j jsonStrings) Scan(src any) error {
+func (j documentJSONStrings) Scan(src any) error {
 	if src == nil {
 		*j.value = nil
 		return nil
