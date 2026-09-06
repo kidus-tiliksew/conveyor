@@ -74,3 +74,15 @@ func TestVolatileOptInProvidesBackend(t *testing.T) {
 		t.Fatalf("revoked session accepted: %v", err)
 	}
 }
+
+func TestSingleStoreExperimentalAdmission(t *testing.T) {
+	database := config.Database{Backend: "singlestore", URL: "invalid"}
+	for _, options := range [][]backend.Option{nil, {backend.AllowVolatile}} {
+		if _, err := backend.Open(t.Context(), database, options...); !errors.Is(err, store.ErrBackendNotAdmitted) {
+			t.Fatalf("ungated backend: %v", err)
+		}
+	}
+	if _, err := backend.Open(t.Context(), database, backend.AllowExperimental); err == nil || errors.Is(err, store.ErrBackendNotAdmitted) {
+		t.Fatalf("experimental opt-in did not reach driver: %v", err)
+	}
+}

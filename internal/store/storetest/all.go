@@ -30,6 +30,8 @@ type Factory struct {
 	New               func(*testing.T, []config.Repo) Fixture
 	Capabilities      Capabilities
 	ProductionCapable bool
+	// Skip names incomplete suites only on experimental backends.
+	Skip []string
 }
 
 func (f Factory) fresh(t *testing.T, repos []config.Repo) Fixture {
@@ -65,7 +67,14 @@ func RunAll(t *testing.T, factory Factory) {
 			t.Fatalf("suite %s was registered twice", name)
 		}
 		seen[name] = true
-		t.Run(name, fn)
+		t.Run(name, func(t *testing.T) {
+			for _, skipped := range factory.Skip {
+				if skipped == name {
+					t.Skip("experimental backend: suite not implemented")
+				}
+			}
+			fn(t)
+		})
 	}
 	t.Cleanup(func() {
 		for name := range suiteMethods {
@@ -169,6 +178,14 @@ func RunAll(t *testing.T, factory Factory) {
 }
 
 func (f Factory) validate() error {
+	if len(f.Skip) > 0 && f.ProductionCapable {
+		return fmt.Errorf("production backend cannot skip conformance suites")
+	}
+	for _, name := range f.Skip {
+		if _, ok := suiteMethods[name]; !ok {
+			return fmt.Errorf("unknown skipped conformance suite %q", name)
+		}
+	}
 	if f.New == nil {
 		return fmt.Errorf("conformance factory is required")
 	}

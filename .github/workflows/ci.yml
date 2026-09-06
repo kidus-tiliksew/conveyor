@@ -119,3 +119,53 @@ jobs:
             exit 1
           fi
       - run: make test-integration-ci
+
+  singlestore-integration:
+    name: SingleStore integration tests
+    runs-on: ubuntu-latest
+    services:
+      singlestore:
+        image: ghcr.io/singlestore-labs/singlestoredb-dev:latest
+        env:
+          ROOT_PASSWORD: ${{ secrets.SINGLESTORE_ROOT_PASSWORD }}
+        ports:
+          - 3306:3306
+        options: >-
+          --cpus=4 --memory=4g
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: ${{ env.GO_VERSION_FILE }}
+          cache-dependency-path: go.sum
+      - name: Require test credentials and initialize isolated database
+        env:
+          MYSQL_PWD: ${{ secrets.SINGLESTORE_ROOT_PASSWORD }}
+        run: |
+          test -n "$MYSQL_PWD" || { echo 'SINGLESTORE_ROOT_PASSWORD repository secret is required' >&2; exit 1; }
+          sudo apt-get update
+          sudo apt-get install -y default-mysql-client
+          mysql --protocol=TCP -h 127.0.0.1 -P 3306 -u root -e 'CREATE DATABASE conveyor_test'
+      - name: Verify missing URL fails the integration target
+        run: |
+          if env -u CONVEYOR_TEST_SINGLESTORE_URL make test-integration-singlestore-ci; then
+            echo 'SingleStore target accepted an unset database URL' >&2
+            exit 1
+          fi
+      - name: Verify an integration regression fails the job
+        env:
+          CONVEYOR_TEST_SINGLESTORE_URL: root:${{ secrets.SINGLESTORE_ROOT_PASSWORD }}@tcp(127.0.0.1:3306)/conveyor_test
+        run: |
+          probe=internal/store/singlestore/ci_regression_probe_test.go
+          trap 'rm -f "$probe"' EXIT
+          printf '%s\n' 'package singlestore' 'import "testing"' 'func TestCIRegressionProbe(t *testing.T) { integrationStore(t); t.Fatal("deliberate SingleStore regression") }' > "$probe"
+          if GOFLAGS='-run=TestCIRegressionProbe' make test-integration-singlestore-ci; then
+            echo 'SingleStore target passed a deliberate regression' >&2
+            exit 1
+          fi
+      - run: make test-integration-singlestore-ci
+        env:
+          CONVEYOR_TEST_SINGLESTORE_URL: root:${{ secrets.SINGLESTORE_ROOT_PASSWORD }}@tcp(127.0.0.1:3306)/conveyor_test

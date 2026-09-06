@@ -1213,11 +1213,11 @@ func normalizeLegacy(c *Config, path string) (*Config, error) {
 			c.Database.Backend = "postgres"
 		}
 	}
-	if c.Database.Backend != "postgres" && c.Database.Backend != "memory" {
-		return nil, fmt.Errorf("database.backend must be %q or %q", "postgres", "memory")
+	if c.Database.Backend != "postgres" && c.Database.Backend != "memory" && c.Database.Backend != "singlestore" {
+		return nil, fmt.Errorf("database.backend must be %q, %q or %q", "postgres", "memory", "singlestore")
 	}
-	if c.Database.Backend == "postgres" && c.Database.URL == "" {
-		return nil, fmt.Errorf("database.url or CONVEYOR_DATABASE_URL is required for postgres backend")
+	if (c.Database.Backend == "postgres" || c.Database.Backend == "singlestore") && c.Database.URL == "" {
+		return nil, fmt.Errorf("database.url or CONVEYOR_DATABASE_URL is required for %s backend", c.Database.Backend)
 	}
 	// An absent execution block means the shipped default: both gates on
 	// (§21.12 change 2; the mode axis itself is removed by §21.31).
