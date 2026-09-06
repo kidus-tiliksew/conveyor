@@ -5,8 +5,8 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
-	"fmt"
 	"sync"
+	"sync/atomic"
 )
 
 const lockSchema = "CREATE ROWSTORE TABLE IF NOT EXISTS conveyor_locks (`key` VARCHAR(64) NOT NULL, PRIMARY KEY (`key`), SHARD KEY (`key`))"
@@ -57,15 +57,59 @@ func (s *Store) sessionLock(ctx context.Context, key string) (func() error, erro
 	stop := context.AfterFunc(ctx, func() { _ = release() })
 	return func() error { stop(); return release() }, nil
 }
+
+// taskLockOwner is private to this backend and valid only for the callback's
+// lifetime. An escaped context cannot bypass locking after the callback exits.
+// DEC-38, component-persistence: commands and callbacks share one identity.
+type taskLockOwnerKey struct{}
+type taskLockOwner struct {
+	store           *Store
+	workspace, task string
+	active          atomic.Bool
+	parent          *taskLockOwner
+}
+
+func (s *Store) ownsTaskLock(ctx context.Context, ws, task string) bool {
+	owner, _ := ctx.Value(taskLockOwnerKey{}).(*taskLockOwner)
+	for ; owner != nil; owner = owner.parent {
+		if owner.store == s && owner.workspace == ws && owner.task == task && owner.active.Load() {
+			return true
+		}
+	}
+	return false
+}
+func (s *Store) lockTaskOperation(ctx context.Context, tx *sql.Tx, ws, task string) error {
+	if s.ownsTaskLock(ctx, ws, task) {
+		return nil
+	}
+	return lockKey(ctx, tx, "task-operation:"+ws+":"+task)
+}
 func (s *Store) WithTaskSideEffectLock(ctx context.Context, taskID string, fn func(context.Context) error) error {
 	ws, err := workspace(ctx)
 	if err != nil {
 		return err
 	}
-	release, err := s.sessionLock(ctx, fmt.Sprintf("task-side-effect:%d:%s:%s", len(ws), ws, taskID))
-	if err != nil {
-		return err
+	if s.ownsTaskLock(ctx, ws, taskID) {
+		return fn(ctx)
 	}
-	defer release()
-	return fn(ctx)
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return translateBackendConflict(err)
+	}
+	defer conn.Close()
+	// Acquisition obeys cancellation. Once acquired the transaction survives
+	// cancellation until fn returns, so other commands cannot overlap cleanup.
+	tx, err := conn.BeginTx(context.WithoutCancel(ctx), nil)
+	if err != nil {
+		return translateBackendConflict(err)
+	}
+	defer tx.Rollback()
+	if err = s.lockTaskOperation(ctx, tx, ws, taskID); err != nil {
+		return translateBackendConflict(err)
+	}
+	parent, _ := ctx.Value(taskLockOwnerKey{}).(*taskLockOwner)
+	owner := &taskLockOwner{store: s, workspace: ws, task: taskID, parent: parent}
+	owner.active.Store(true)
+	defer owner.active.Store(false)
+	return fn(context.WithValue(ctx, taskLockOwnerKey{}, owner))
 }

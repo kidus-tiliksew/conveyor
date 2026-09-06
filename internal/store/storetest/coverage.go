@@ -28,7 +28,7 @@ var suiteMethods = map[string][]string{
 	"DependencyAddition":         strings.Fields(`AddTaskDependency ClaimWorkOrderCommand CountEvents CreateJob CreateTask GetWorkOrder ListDependencyBlockers ListEvents`),
 	"TaskOperationsPagination":   strings.Fields(`CreateTask ListTaskOperations ListTasks ListTasksFiltered`),
 	"TaskLifecycle":              strings.Fields(`CancelTaskCommand CreateTask GetTask ListEvents ListInterventions SetTaskHold UpdateTaskClassification`),
-	"TaskEventAtomicity":         strings.Fields(`CreateTask GetTask ListEvents SetTaskHold`),
+	"TaskEventAtomicity":         strings.Fields(`ApplyTaskCommand CreateTask CreateWorkspace GetTask ListEvents SetTaskHold WithTaskSideEffectLock`),
 	"Workers":                    strings.Fields(`AuthenticateWorker ConsumeWorkerPairing CreateWorker CreateWorkerPairing HeartbeatWorker ListEvents ListHarnessModelFailures ListWorkers RevokeWorker`),
 	"WorkOrders":                 strings.Fields(`CancelTaskCommand ClaimWorkOrderCommand CreateStageWorkOrderCommand CreateTask FinalizeWorkOrderAttemptObservability GetWorkOrder GetWorkOrderActivitySnapshot ListTaskWorkOrdersSnapshot ListWorkOrderTranscriptCaptures PreemptWorkOrderCommand RecordWorkOrderAttemptCheckpoint RecordWorkOrderContinuation RecoverWorkOrderCommand ReleaseWorkerClaimCommand RenewWorkerClaimCommand UpsertWorkOrderActivitySnapshot`),
 	"WorkOrderClocks":            strings.Fields(`ApplyWorkOrderClock ClaimWorkOrderCommand CreateStageWorkOrderCommand CreateTask GetWorkOrder ListElapsedWorkOrderTaskIDs RecoverWorkOrderCommand RedispatchWorkOrderCommand UpdateWorkOrderCommand`),
