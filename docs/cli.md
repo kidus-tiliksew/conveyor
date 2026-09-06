@@ -83,17 +83,24 @@ execution settings. They are different objects.
 conveyor run <task-id>
 ```
 
-Explicitly claim and execute one task on this machine, stage by stage. In a
+Explicitly claim and execute one task on this machine. Claimable stages chain
+without per-stage prompts by default; plan and merge gates still apply. In a
 terminal it runs a full-screen view with the stage output, and surfaces
 operator gates and pending document proposals inline so you can approve,
 request changes, or confirm without leaving the run.
 
-- `--auto`: run every claimable stage without per-stage confirmation.
-  Operator gates still apply.
+- `--step`: confirm each stage before it is claimed. Requires terminal stdin.
 - `--setup <name>`: use a named local execution setup for this run only. The
   harness is probed before anything is claimed.
 - `--raw`: print the raw harness event stream instead of the TUI.
 - `--config`: select the local execution config.
+
+Without terminal stdin, the default run chains stages and exits at a pending
+human gate with no claim. With `--step`, it presents the pending stage and
+claims nothing; drop the flag or attach a terminal to proceed.
+
+Deprecated compatibility: hidden `--auto` is accepted as a no-op and prints a
+deprecation notice. It cannot be combined with `--step`.
 
 Requires `CONVEYOR_API_TOKEN` and a stored GitHub token (see
 [Authentication](auth.md#github-forge-tokens)).

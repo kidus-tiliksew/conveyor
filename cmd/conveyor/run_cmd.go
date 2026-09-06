@@ -24,7 +24,7 @@ import (
 func runCmd() *cobra.Command {
 	configPath := defaultLocalExecutionConfigPath()
 	setupName := ""
-	auto := false
+	step := false
 	raw := false
 	cmd := &cobra.Command{
 		Use:   "run <task-id>",
@@ -32,6 +32,12 @@ func runCmd() *cobra.Command {
 		Long:  "Explicitly claim and execute one task on this machine.\n\n" + localGitCredentialHelp,
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if cmd.Flags().Changed("auto") && cmd.Flags().Changed("step") {
+				return fmt.Errorf("--auto and --step cannot be used together")
+			}
+			if cmd.Flags().Changed("auto") {
+				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "--auto is now the default and will be removed in a later release")
+			}
 			resolvedConfig, err := resolveLocalExecutionConfigPath(cmd, configPath)
 			if err != nil {
 				return err
@@ -40,12 +46,14 @@ func runCmd() *cobra.Command {
 			defer stop()
 			input := cmd.InOrStdin()
 			output := cmd.OutOrStdout()
-			return runTaskWithPresentationAndSetup(ctx, newClient(), args[0], resolvedConfig.Path, setupName, input, output, auto, inputIsTerminal(input), outputIsTerminal(output), raw)
+			return runTaskWithPresentationAndSetup(ctx, newClient(), args[0], resolvedConfig.Path, setupName, input, output, step, inputIsTerminal(input), outputIsTerminal(output), raw)
 		},
 	}
 	cmd.Flags().StringVar(&configPath, "config", configPath, "local execution configuration")
 	cmd.Flags().StringVar(&setupName, "setup", "", "named local execution setup (does not change the persisted default)")
-	cmd.Flags().BoolVar(&auto, "auto", false, "run every claimable stage without confirmation")
+	cmd.Flags().BoolVar(&step, "step", false, "confirm each stage before it is claimed")
+	cmd.Flags().Bool("auto", false, "deprecated compatibility flag")
+	_ = cmd.Flags().MarkHidden("auto")
 	cmd.Flags().BoolVar(&raw, "raw", false, "print the raw harness event stream")
 	return cmd
 }
@@ -57,15 +65,15 @@ const (
 
 var runGatePollInterval = 2 * time.Second
 
-func runTask(ctx context.Context, c *client, taskID, configPath string, input io.Reader, output io.Writer, auto, terminal bool) error {
-	return runTaskWithPresentation(ctx, c, taskID, configPath, input, output, auto, terminal, false, false)
+func runTask(ctx context.Context, c *client, taskID, configPath string, input io.Reader, output io.Writer, step, terminal bool) error {
+	return runTaskWithPresentation(ctx, c, taskID, configPath, input, output, step, terminal, false, false)
 }
 
-func runTaskWithPresentation(ctx context.Context, c *client, taskID, configPath string, input io.Reader, output io.Writer, auto, inputTerminal, outputTerminal, raw bool) error {
-	return runTaskWithPresentationAndSetup(ctx, c, taskID, configPath, "", input, output, auto, inputTerminal, outputTerminal, raw)
+func runTaskWithPresentation(ctx context.Context, c *client, taskID, configPath string, input io.Reader, output io.Writer, step, inputTerminal, outputTerminal, raw bool) error {
+	return runTaskWithPresentationAndSetup(ctx, c, taskID, configPath, "", input, output, step, inputTerminal, outputTerminal, raw)
 }
 
-func runTaskWithPresentationAndSetup(ctx context.Context, c *client, taskID, configPath, setupName string, input io.Reader, output io.Writer, auto, inputTerminal, outputTerminal, raw bool) error {
+func runTaskWithPresentationAndSetup(ctx context.Context, c *client, taskID, configPath, setupName string, input io.Reader, output io.Writer, step, inputTerminal, outputTerminal, raw bool) error {
 	if strings.TrimSpace(c.token) == "" {
 		return fmt.Errorf("CONVEYOR_API_TOKEN is required for task execution")
 	}
@@ -250,12 +258,16 @@ func runTaskWithPresentationAndSetup(ctx context.Context, c *client, taskID, con
 				return err
 			}
 		}
+		// req-local-task-runs AC-2.1, AC-2.2: present and chain by default,
+		// including non-terminal runs; component-work-orders governs the loop.
 		mode := runModeAuto
-		if !auto {
+		// req-local-task-runs AC-3.1, AC-3.2: step mode requires terminal
+		// confirmation before each claim and leaves declined stages unclaimed.
+		if step {
 			mode = runModeConfirmed
 			if !inputTerminal {
-				_, _ = fmt.Fprintf(output, "No work order was claimed because stdin is not a terminal.\nRun conveyor run %s --auto to proceed.\n", taskID)
-				return fmt.Errorf("stage confirmation requires a terminal; use conveyor run %s --auto", taskID)
+				_, _ = fmt.Fprintf(output, "No work order was claimed because --step requires a terminal.\nDrop --step or attach a terminal to proceed.\n")
+				return fmt.Errorf("--step requires a terminal; drop --step or attach a terminal")
 			}
 			var confirmed bool
 			var confirmErr error

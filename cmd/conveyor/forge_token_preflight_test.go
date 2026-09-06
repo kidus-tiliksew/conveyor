@@ -41,7 +41,7 @@ func TestRunPreflightStopsBeforeOrderLookup(t *testing.T) {
 		called = true
 		return store.ErrForgeTokenRequired
 	}}
-	err := runTaskWithPresentationAndSetup(t.Context(), c, "task", "unused", "", bytes.NewBuffer(nil), &bytes.Buffer{}, true, false, false, false)
+	err := runTaskWithPresentationAndSetup(t.Context(), c, "task", "unused", "", bytes.NewBuffer(nil), &bytes.Buffer{}, false, false, false, false)
 	if !called || !errors.Is(err, store.ErrForgeTokenRequired) {
 		t.Fatalf("called=%t err=%v", called, err)
 	}

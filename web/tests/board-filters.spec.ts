@@ -337,6 +337,10 @@ test('board pages beyond the 200th activity item and walks back without blanking
 })
 
 test('board opens on the last month and remembers the operator adjustment per workspace', async ({ page }) => {
+  // Same calendar dependency as the ordering case above: the fixture's tasks
+  // are dated in August 2026 and the default window is the last month, so
+  // pin the clock or "Recent conveyor change" ages off the board.
+  await page.clock.setFixedTime(new Date('2026-08-20T12:00:00Z'))
   const seen: string[] = []
   const requests: string[] = []
   page.on('request', (request) => requests.push(new URL(request.url()).pathname))

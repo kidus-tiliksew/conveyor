@@ -57,22 +57,28 @@ func integrationStore(t *testing.T) *Store {
 func TestSingleStoreConformanceIntegration(t *testing.T) {
 	storetest.RunAll(t, storetest.Factory{ProductionCapable: false,
 		Skip: []string{
-			// Remaining aggregate suites require sibling task, artifact,
-			// work-order, identity, or monitor implementations (260905-d3c03a).
+			// These mixed document suites still call sibling-owned stubs in
+			// unimplemented.go. Implemented document methods alone cannot run
+			// the complete suites. Approved plan v2, Ordering 8, leaves their
+			// removal to 260905-d3c03a after the sibling prerequisites land.
+			"Requirements",       // CreateTask, CreateArtifact, ClaimWorkOrderCommand, RecordDrift.
+			"PlanningReads",      // CreateArtifact, GetArtifactForPlanningSession, ListTasks.
+			"Lineage",            // CreateTaskWithDependencies, CreateArtifact, AcceptReviewDecisionCommand.
+			"ReferenceDocuments", // CreateTask seeds the unrelated task-event isolation case.
+			"PlanningBundles",    // EnsureTaskEnqueued, UpdateTaskContext after document approval.
+			"SystemDesignDrift",  // CreateTask, Observe, LinkTask, MonitorStatus.
+			// VersionDismissal, SystemDesignProposals, Decisions and
+			// ArchiveRestore have no sibling prerequisites and are enabled.
+			// The remaining suites belong to task, artifact, work-order,
+			// identity, or monitor aggregates.
 			"ProjectionReads",
 			"CommandRefusals",
 			"ApprovalRefresh",
-			"PlanningReads",
 			"Blueprint",
-			"Requirements",
-			"Lineage",
 			"CheckpointDecisionRequests",
 			"CheckpointRenewal",
 			"ForgeAuthorIdentity",
 			"PlanRevision",
-			"ReferenceDocuments",
-			"PlanningBundles",
-			"SystemDesignDrift",
 			"TaskContextRepin",
 			"DependencyAddition",
 			"TaskOperationsPagination",
