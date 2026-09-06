@@ -5,7 +5,6 @@ import (
 	"context"
 	"time"
 
-	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/monitor"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
@@ -60,26 +59,11 @@ func (s *Store) AssignTaskFeature(ctx context.Context, taskID, featureID string)
 func (s *Store) AttachSubmissionGovernance(ctx context.Context, taskID, repository string, changedPaths []string, attribution store.SubmissionGovernanceAttribution) ([]core.TaskDesignContext, error) {
 	return zero[[]core.TaskDesignContext](), store.ErrNotImplemented
 }
-func (s *Store) AuditMonitor(context.Context, string, map[string]any) error {
-	return store.ErrNotImplemented
-}
-func (s *Store) AuditTask(context.Context, string, string, map[string]any) error {
-	return store.ErrNotImplemented
-}
 func (s *Store) AuthenticateWorker(ctx context.Context, credentialHash string) (core.Worker, error) {
 	return zero[core.Worker](), store.ErrNotImplemented
 }
-func (s *Store) AuthorizeDeployment(context.Context, string, core.Capability) (bool, error) {
-	return zero[bool](), store.ErrNotImplemented
-}
-func (s *Store) AuthorizeWorkspace(context.Context, string, string, core.Capability) (bool, error) {
-	return zero[bool](), store.ErrNotImplemented
-}
 func (s *Store) BindTaskApproval(ctx context.Context, id, headSHA string) error {
 	return store.ErrNotImplemented
-}
-func (s *Store) BootstrapIdentity(context.Context, config.FirstOperatorIdentity, string) (bool, error) {
-	return zero[bool](), store.ErrNotImplemented
 }
 func (s *Store) CancelPlanRevisionWorkOrderCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID, attemptID string) (core.WorkOrder, error) {
 	return zero[core.WorkOrder](), store.ErrNotImplemented
@@ -93,7 +77,6 @@ func (s *Store) ChangeTaskSetupCommand(ctx context.Context, lease taskops.TaskLe
 func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, id string, claim core.WorkOrderClaim) (core.WorkOrder, error) {
 	return zero[core.WorkOrder](), store.ErrNotImplemented
 }
-func (s *Store) ConfigureForgeTokenEncryptionKey([]byte) {}
 func (s *Store) ConfirmDecision(ctx context.Context, id string) (core.Decision, error) {
 	return zero[core.Decision](), store.ErrNotImplemented
 }
@@ -174,11 +157,7 @@ func (s *Store) CreateWorker(ctx context.Context, worker core.Worker) error {
 func (s *Store) CreateWorkerPairing(ctx context.Context, pairing core.WorkerPairing) error {
 	return store.ErrNotImplemented
 }
-func (s *Store) DeleteForgeToken(context.Context, string) error { return store.ErrNotImplemented }
 func (s *Store) DeleteReferenceDocument(ctx context.Context, documentID string) error {
-	return store.ErrNotImplemented
-}
-func (s *Store) DeleteWorkspaceForgeToken(context.Context, string) error {
 	return store.ErrNotImplemented
 }
 func (s *Store) DismissDecision(ctx context.Context, id string) (core.Decision, error) {
@@ -208,9 +187,6 @@ func (s *Store) FinalizePlanningSession(ctx context.Context, request store.Plann
 func (s *Store) FinalizeWorkOrderAttemptObservability(ctx context.Context, workOrderID, workerID string, checkpoint core.WorkOrderAttemptCheckpoint) error {
 	return store.ErrNotImplemented
 }
-func (s *Store) FindOpenMonitorTask(context.Context, string, monitor.SignalKind) (string, bool, error) {
-	return zero[string](), zero[bool](), store.ErrNotImplemented
-}
 func (s *Store) GetApprovedSpecVersion(ctx context.Context, taskID string) (core.SpecVersion, bool, error) {
 	return zero[core.SpecVersion](), zero[bool](), store.ErrNotImplemented
 }
@@ -220,17 +196,8 @@ func (s *Store) GetArtifact(ctx context.Context, id string) (core.Artifact, []by
 func (s *Store) GetArtifactForPlanningSession(ctx context.Context, id, sessionID string) (core.Artifact, []byte, error) {
 	return zero[core.Artifact](), zero[[]byte](), store.ErrNotImplemented
 }
-func (s *Store) GetCallerIdentity(context.Context, string, string) (core.CallerIdentity, error) {
-	return zero[core.CallerIdentity](), store.ErrNotImplemented
-}
 func (s *Store) GetDecision(ctx context.Context, id string) (core.Decision, error) {
 	return zero[core.Decision](), store.ErrNotImplemented
-}
-func (s *Store) GetForgeTokenForUse(context.Context, string) (core.ForgeTokenCredential, error) {
-	return zero[core.ForgeTokenCredential](), store.ErrNotImplemented
-}
-func (s *Store) GetForgeTokenStatus(context.Context, string) (core.ForgeTokenStatus, error) {
-	return zero[core.ForgeTokenStatus](), store.ErrNotImplemented
 }
 func (s *Store) GetGitHubLifecycle(ctx context.Context, taskID string) (core.GitHubLifecycle, bool, error) {
 	return zero[core.GitHubLifecycle](), zero[bool](), store.ErrNotImplemented
@@ -265,32 +232,11 @@ func (s *Store) GetWorkOrder(ctx context.Context, id string) (core.WorkOrder, er
 func (s *Store) GetWorkOrderActivitySnapshot(ctx context.Context, workOrderID string) (core.WorkOrderActivitySnapshot, bool, error) {
 	return zero[core.WorkOrderActivitySnapshot](), zero[bool](), store.ErrNotImplemented
 }
-func (s *Store) GetWorkspaceForgeTokenForUse(context.Context, string) (core.WorkspaceForgeTokenCredential, error) {
-	return zero[core.WorkspaceForgeTokenCredential](), store.ErrNotImplemented
-}
-func (s *Store) GetWorkspaceForgeTokenStatus(context.Context, string) (core.ForgeTokenStatus, error) {
-	return zero[core.ForgeTokenStatus](), store.ErrNotImplemented
-}
-func (s *Store) GrantWorkspaceRole(context.Context, string, string, core.WorkspaceRole) (core.MembershipGrant, error) {
-	return zero[core.MembershipGrant](), store.ErrNotImplemented
-}
 func (s *Store) HeartbeatWorker(ctx context.Context, id string, leaseExpires time.Time, probes []core.HarnessProbe) (core.Worker, error) {
 	return zero[core.Worker](), store.ErrNotImplemented
 }
-func (s *Store) IssueAgentCredential(context.Context, string, string) (store.IssuedAgentCredential, error) {
-	return zero[store.IssuedAgentCredential](), store.ErrNotImplemented
-}
-func (s *Store) IssueOwnPersonalAccessToken(context.Context, string, string) (core.IssuedPersonalAccessToken, error) {
-	return zero[core.IssuedPersonalAccessToken](), store.ErrNotImplemented
-}
-func (s *Store) IssueSignInLink(context.Context, string) (core.IssuedSignInLink, error) {
-	return zero[core.IssuedSignInLink](), store.ErrNotImplemented
-}
 func (s *Store) LineageNodeExists(ctx context.Context, node core.LineageNode) (bool, error) {
 	return zero[bool](), store.ErrNotImplemented
-}
-func (s *Store) LinkTask(context.Context, string, string, string) (monitor.ObservationRecord, error) {
-	return zero[monitor.ObservationRecord](), store.ErrNotImplemented
 }
 func (s *Store) ListArtifacts(ctx context.Context) ([]core.Artifact, error) {
 	return zero[[]core.Artifact](), store.ErrNotImplemented
@@ -319,9 +265,6 @@ func (s *Store) ListEvents(ctx context.Context, taskID string) ([]core.Event, er
 func (s *Store) ListEventsAfter(ctx context.Context, taskID string, afterID int64) ([]core.Event, error) {
 	return zero[[]core.Event](), store.ErrNotImplemented
 }
-func (s *Store) ListForgeTokensForRedaction(context.Context) ([]string, error) {
-	return zero[[]string](), store.ErrNotImplemented
-}
 func (s *Store) ListHarnessModelFailures(ctx context.Context) ([]core.HarnessModelFailure, error) {
 	return zero[[]core.HarnessModelFailure](), store.ErrNotImplemented
 }
@@ -333,9 +276,6 @@ func (s *Store) ListLineageLinks(ctx context.Context) ([]core.LineageLink, error
 }
 func (s *Store) ListLineageNeighborhood(ctx context.Context, roots []core.LineageNode, budget core.LineageTraversalBudget) ([]core.LineageLink, error) {
 	return zero[[]core.LineageLink](), store.ErrNotImplemented
-}
-func (s *Store) ListOwnPersonalAccessTokens(context.Context, string) ([]core.PersonalAccessToken, error) {
-	return zero[[]core.PersonalAccessToken](), store.ErrNotImplemented
 }
 func (s *Store) ListPendingProposals(ctx context.Context) ([]core.PendingProposal, error) {
 	return zero[[]core.PendingProposal](), store.ErrNotImplemented
@@ -412,23 +352,8 @@ func (s *Store) ListWorkOrderTranscriptCaptures(ctx context.Context, workOrderID
 func (s *Store) ListWorkers(ctx context.Context) ([]core.Worker, error) {
 	return zero[[]core.Worker](), store.ErrNotImplemented
 }
-func (s *Store) ListWorkspaceInvitations(context.Context, string) ([]core.WorkspaceInvitation, error) {
-	return zero[[]core.WorkspaceInvitation](), store.ErrNotImplemented
-}
-func (s *Store) ListWorkspaceMembers(context.Context, string, string) ([]core.WorkspaceMembership, error) {
-	return zero[[]core.WorkspaceMembership](), store.ErrNotImplemented
-}
-func (s *Store) ListWorkspacesForUser(context.Context, string) ([]core.Workspace, error) {
-	return zero[[]core.Workspace](), store.ErrNotImplemented
-}
 func (s *Store) MarkTaskApprovalStale(ctx context.Context, id, approvedHeadSHA, newHeadSHA, scope, reason string) (bool, error) {
 	return zero[bool](), store.ErrNotImplemented
-}
-func (s *Store) MonitorStatus(context.Context, bool, time.Time) (monitor.Status, error) {
-	return zero[monitor.Status](), store.ErrNotImplemented
-}
-func (s *Store) Observe(context.Context, monitor.Observation) (monitor.ObservationRecord, bool, error) {
-	return zero[monitor.ObservationRecord](), zero[bool](), store.ErrNotImplemented
 }
 func (s *Store) PendingProposalsProjection(ctx context.Context) (store.PendingProposalsProjection, error) {
 	return zero[store.PendingProposalsProjection](), store.ErrNotImplemented
@@ -454,9 +379,6 @@ func (s *Store) ProposeSystemDesignVersion(ctx context.Context, version core.Sys
 func (s *Store) ProposeTaskContext(ctx context.Context, input core.TaskContextProposalInput) (core.TaskContextProposal, bool, error) {
 	return zero[core.TaskContextProposal](), zero[bool](), store.ErrNotImplemented
 }
-func (s *Store) ProvisionIdentityUser(context.Context, string, string) (core.IdentityUser, error) {
-	return zero[core.IdentityUser](), store.ErrNotImplemented
-}
 func (s *Store) QueueGitHubLifecycle(ctx context.Context, lifecycle core.GitHubLifecycle) error {
 	return store.ErrNotImplemented
 }
@@ -468,18 +390,6 @@ func (s *Store) RebuildLineage(ctx context.Context, request core.LineageRebuildR
 }
 func (s *Store) ReconcileReviewPublications(ctx context.Context) (int, error) {
 	return zero[int](), store.ErrNotImplemented
-}
-func (s *Store) RecordDrift(context.Context, monitor.Drift) (monitor.Drift, bool, error) {
-	return zero[monitor.Drift](), zero[bool](), store.ErrNotImplemented
-}
-func (s *Store) RecordInvitationDelivery(context.Context, string, string) error {
-	return store.ErrNotImplemented
-}
-func (s *Store) RecordMonitorFailure(context.Context, string, string, time.Time) error {
-	return store.ErrNotImplemented
-}
-func (s *Store) RecordMonitorSuccess(context.Context, time.Time) error {
-	return store.ErrNotImplemented
 }
 func (s *Store) RecordPlanningExplorationTokens(ctx context.Context, sessionID string, tokens int) (core.PlanningSession, error) {
 	return zero[core.PlanningSession](), store.ErrNotImplemented
@@ -501,9 +411,6 @@ func (s *Store) RecoverInterruptedReviewRoundCommand(ctx context.Context, lease 
 }
 func (s *Store) RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, id, requestID, direction string, queueTimeout time.Duration, refreeze ...*store.RecoveryRefreeze) (core.WorkOrder, error) {
 	return zero[core.WorkOrder](), store.ErrNotImplemented
-}
-func (s *Store) RedeemSignInLink(context.Context, string) (core.DashboardSession, core.IdentityUser, error) {
-	return zero[core.DashboardSession](), zero[core.IdentityUser](), store.ErrNotImplemented
 }
 func (s *Store) RedispatchWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, id string, queueTimeout time.Duration) (core.WorkOrder, error) {
 	return zero[core.WorkOrder](), store.ErrNotImplemented
@@ -532,9 +439,6 @@ func (s *Store) RequestPlanRevisionCommand(ctx context.Context, taskLease taskop
 func (s *Store) ResolveCausalSystemDesignMerge(context.Context, string, string, string, int64, string, []string, bool) (monitor.SystemDesignMergeJudgment, error) {
 	return zero[monitor.SystemDesignMergeJudgment](), store.ErrNotImplemented
 }
-func (s *Store) ResolveDrift(context.Context, string, string, string) (monitor.Drift, error) {
-	return zero[monitor.Drift](), store.ErrNotImplemented
-}
 func (s *Store) RestoreRequirement(ctx context.Context, id, actor string) error {
 	return store.ErrNotImplemented
 }
@@ -544,45 +448,15 @@ func (s *Store) RestoreSystemDesign(ctx context.Context, id, actor string) error
 func (s *Store) RetryReviewRoundCommand(ctx context.Context, lease taskops.TaskLease, request store.ReviewRoundRetryRequest, jobs []core.Job, orders []core.WorkOrder) (store.ReviewRoundRetryResult, error) {
 	return zero[store.ReviewRoundRetryResult](), store.ErrNotImplemented
 }
-func (s *Store) RevokeDashboardSession(context.Context, string, string) error {
-	return store.ErrNotImplemented
-}
-func (s *Store) RevokeOwnPersonalAccessToken(context.Context, string, string) (core.PersonalAccessToken, error) {
-	return zero[core.PersonalAccessToken](), store.ErrNotImplemented
-}
-func (s *Store) RevokeRunAgentCredential(context.Context, string, string, store.RunAgentCredentialBinding) error {
-	return store.ErrNotImplemented
-}
 func (s *Store) RevokeWorker(ctx context.Context, id string) error { return store.ErrNotImplemented }
-func (s *Store) RevokeWorkspaceInvitation(context.Context, string, string) error {
-	return store.ErrNotImplemented
-}
-func (s *Store) RevokeWorkspaceRole(context.Context, string, string) error {
-	return store.ErrNotImplemented
-}
-func (s *Store) SetOwnDisplayName(context.Context, string, string, string) (core.CallerIdentity, error) {
-	return zero[core.CallerIdentity](), store.ErrNotImplemented
-}
-func (s *Store) SetOwnPassword(context.Context, string, string, string, string) error {
-	return store.ErrNotImplemented
-}
 func (s *Store) SetTaskAssigneeCommand(ctx context.Context, lease taskops.TaskLease, id, assigneeUserID string) (core.Task, error) {
 	return zero[core.Task](), store.ErrNotImplemented
 }
 func (s *Store) SetTaskHold(ctx context.Context, id string, hold bool) (core.Task, error) {
 	return zero[core.Task](), store.ErrNotImplemented
 }
-func (s *Store) SignInWithPassword(context.Context, string, string) (core.DashboardSession, core.IdentityUser, error) {
-	return zero[core.DashboardSession](), zero[core.IdentityUser](), store.ErrNotImplemented
-}
 func (s *Store) SkipTaskRefresh(ctx context.Context, id, newHeadSHA, reason string) error {
 	return store.ErrNotImplemented
-}
-func (s *Store) StoreForgeToken(context.Context, string, string, string) (core.ForgeTokenStatus, error) {
-	return zero[core.ForgeTokenStatus](), store.ErrNotImplemented
-}
-func (s *Store) StoreWorkspaceForgeToken(context.Context, string, string, string) (core.ForgeTokenStatus, error) {
-	return zero[core.ForgeTokenStatus](), store.ErrNotImplemented
 }
 func (s *Store) SupersedeReferenceDocument(ctx context.Context, documentID string, version core.ReferenceDocumentVersion) (core.ReferenceDocumentVersion, error) {
 	return zero[core.ReferenceDocumentVersion](), store.ErrNotImplemented
@@ -610,18 +484,6 @@ func (s *Store) UpsertWorkOrderActivitySnapshot(ctx context.Context, workOrderID
 	return store.ErrNotImplemented
 }
 func (s *Store) ValidateTaskDependencies(ctx context.Context, dependencyIDs []string) error {
-	return store.ErrNotImplemented
-}
-func (s *Store) VerifyCredential(context.Context, string) (core.AuthenticatedCredential, error) {
-	return zero[core.AuthenticatedCredential](), store.ErrNotImplemented
-}
-func (s *Store) VerifyDashboardSession(context.Context, string) (core.AuthenticatedCredential, error) {
-	return zero[core.AuthenticatedCredential](), store.ErrNotImplemented
-}
-func (s *Store) VerifyPersonalAccessToken(context.Context, string) (core.IdentityUser, error) {
-	return zero[core.IdentityUser](), store.ErrNotImplemented
-}
-func (s *Store) WithMonitorSignalClassLock(context.Context, string, monitor.SignalKind, func(context.Context) error) error {
 	return store.ErrNotImplemented
 }
 func (s *Store) WithPlanningSessionFinalization(ctx context.Context, sessionID string, fn func(context.Context) error) error {

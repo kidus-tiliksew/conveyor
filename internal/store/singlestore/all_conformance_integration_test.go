@@ -56,6 +56,7 @@ func integrationStore(t *testing.T) *Store {
 }
 func TestSingleStoreConformanceIntegration(t *testing.T) {
 	storetest.RunAll(t, storetest.Factory{ProductionCapable: false,
+		Capabilities: storetest.Capabilities{Identity: true, Membership: true, Tokens: true},
 		Skip: []string{
 			"ProjectionReads",
 			"CommandRefusals",
@@ -88,10 +89,6 @@ func TestSingleStoreConformanceIntegration(t *testing.T) {
 			"Monitor",
 			"TaskFilter",
 			"TaskAssigneeMembership",
-			"Identity",
-			"Membership",
-			"InvitationSessions",
-			"Tokens",
 		},
 		New: func(t *testing.T, repos []config.Repo) storetest.Fixture {
 			st := integrationStore(t)
