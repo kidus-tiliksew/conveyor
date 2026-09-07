@@ -99,6 +99,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("open store: %v", err)
 	}
+	if deployment.Database.Backend == "singlestore" {
+		log.Printf("using durable SingleStore store with the event log")
+	} else {
+		log.Printf("using durable PostgreSQL store with the event log")
+	}
 	if forgeKey, keyErr := config.ForgeTokenEncryptionKeyFromEnvironment(); keyErr != nil {
 		log.Printf("forge token encryption unavailable until configured: %v", keyErr)
 	} else {

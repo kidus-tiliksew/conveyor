@@ -26,6 +26,7 @@ const AllowVolatile Option = 1
 const AllowExperimental Option = 2
 
 var _ store.Backend = (*postgres.Store)(nil)
+var _ store.Backend = (*singlestore.Store)(nil)
 
 func Open(ctx context.Context, database config.Database, options ...Option) (store.Backend, error) {
 	switch database.Backend {

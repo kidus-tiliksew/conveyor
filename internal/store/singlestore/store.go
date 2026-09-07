@@ -1,4 +1,4 @@
-// Package singlestore is the experimental backend defined by DEC-38.
+// Package singlestore implements the SingleStore backend governed by DEC-39.
 // Its schema, locks and driver types stay within this backend.
 package singlestore
 

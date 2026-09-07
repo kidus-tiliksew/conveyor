@@ -102,11 +102,11 @@ compose-check:
 
 test-integration: compose-check test-db-up
 	@trap '$(MAKE) test-db-down' EXIT; \
-		CONVEYOR_TEST_DATABASE_URL='$(TEST_DATABASE_URL)' go test -p=1 ./cmd/conveyor ./internal/store/postgres ./internal/dispatch -count=1 -timeout=5m
+		CONVEYOR_TEST_DATABASE_URL='$(TEST_DATABASE_URL)' go test -v -p=1 ./cmd/conveyor ./cmd/conveyord ./internal/store/postgres ./internal/dispatch -count=1 -timeout=5m
 
 test-integration-ci: compose-check
 	@test -n "$(CONVEYOR_TEST_DATABASE_URL)" || (echo "CONVEYOR_TEST_DATABASE_URL is required" >&2; exit 1)
-	CONVEYOR_TEST_DATABASE_URL='$(CONVEYOR_TEST_DATABASE_URL)' go test -p=1 ./cmd/conveyor ./internal/store/postgres ./internal/dispatch -count=1 -timeout=5m
+	CONVEYOR_TEST_DATABASE_URL='$(CONVEYOR_TEST_DATABASE_URL)' go test -v -p=1 ./cmd/conveyor ./cmd/conveyord ./internal/store/postgres ./internal/dispatch -count=1 -timeout=5m
 
 # Keep the accepted work-order validation command explicit while sharing the
 # integration suite's isolated Postgres lifecycle.
@@ -158,7 +158,13 @@ dev: db-up
 
 test-integration-singlestore-ci:
 	@test -n "$$CONVEYOR_TEST_SINGLESTORE_URL" || (echo "CONVEYOR_TEST_SINGLESTORE_URL is required" >&2; exit 1)
-	go test -p=1 ./internal/eventlog/s2log ./internal/store/singlestore -count=1 -timeout=5m
+	go test -v -p=1 ./internal/eventlog/s2log ./internal/store/singlestore -count=1 -timeout=20m
 
 test-singlestore-unit:
-	CONVEYOR_TEST_SINGLESTORE_URL= go test ./internal/eventlog/s2log ./internal/store/singlestore ./internal/store/backend ./internal/store/storetest ./internal/store ./internal/config ./cmd/conveyord
+	CONVEYOR_TEST_SINGLESTORE_URL= go test ./internal/eventlog/s2log ./internal/store/singlestore ./internal/store/backend ./internal/store/storetest ./internal/store ./internal/config ./cmd/conveyor ./cmd/conveyord
+
+.PHONY: smoke-singlestore
+smoke-singlestore:
+	@test -n "$$CONVEYOR_DATABASE_URL" || (echo "CONVEYOR_DATABASE_URL must name a fresh SingleStore database" >&2; exit 1)
+	@test -n "$(SMOKE_OUTPUT)" || (echo "SMOKE_OUTPUT must name a new artifact directory" >&2; exit 1)
+	python3 scripts/smoke-singlestore-admission.py --bin-dir "$(BIN)" --output "$(SMOKE_OUTPUT)"

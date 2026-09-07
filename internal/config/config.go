@@ -49,6 +49,20 @@ type MonitorConfig struct {
 	StartupWindowText string        `yaml:"startup_window" json:"startup_window"`
 }
 
+// DatabaseForURL selects the durable backend for host-side CLI commands and
+// configurations that omit an explicit backend. Driver validation stays in
+// the selected backend. PostgreSQL keyword connection strings remain valid.
+func DatabaseForURL(raw string) Database {
+	name := "postgres"
+	normalized := strings.TrimSpace(raw)
+	if normalized == "" {
+		name = "memory"
+	} else if strings.HasPrefix(normalized, "singlestore://") || strings.HasPrefix(normalized, "mysql://") || strings.Contains(normalized, "@tcp(") || strings.Contains(normalized, "@unix(") {
+		name = "singlestore"
+	}
+	return Database{Backend: name, URL: raw}
+}
+
 type Database struct {
 	Backend string `yaml:"backend"`
 	URL     string `yaml:"url"`
@@ -1207,17 +1221,13 @@ func normalizeLegacy(c *Config, path string) (*Config, error) {
 		c.Database.URL = os.Getenv("CONVEYOR_DATABASE_URL")
 	}
 	if c.Database.Backend == "" {
-		if c.Database.URL == "" {
-			c.Database.Backend = "memory"
-		} else {
-			c.Database.Backend = "postgres"
-		}
+		c.Database.Backend = DatabaseForURL(c.Database.URL).Backend
 	}
 	if c.Database.Backend != "postgres" && c.Database.Backend != "memory" && c.Database.Backend != "singlestore" {
 		return nil, fmt.Errorf("database.backend must be %q, %q or %q", "postgres", "memory", "singlestore")
 	}
 	if (c.Database.Backend == "postgres" || c.Database.Backend == "singlestore") && c.Database.URL == "" {
-		return nil, fmt.Errorf("database.url or CONVEYOR_DATABASE_URL is required for %s backend", c.Database.Backend)
+		return nil, fmt.Errorf("database.url or CONVEYOR_DATABASE_URL is required for %s backend (postgres:// for PostgreSQL; singlestore://, mysql:// or a MySQL DSN for SingleStore)", c.Database.Backend)
 	}
 	// An absent execution block means the shipped default: both gates on
 	// (§21.12 change 2; the mode axis itself is removed by §21.31).
