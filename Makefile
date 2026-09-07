@@ -158,7 +158,8 @@ dev: db-up
 
 test-integration-singlestore-ci:
 	@test -n "$$CONVEYOR_TEST_SINGLESTORE_URL" || (echo "CONVEYOR_TEST_SINGLESTORE_URL is required" >&2; exit 1)
-	go test -v -p=1 ./internal/eventlog/s2log ./internal/store/storetest ./internal/store/singlestore ./cmd/conveyor ./cmd/conveyord -count=1 -timeout=20m
+	go test -v -p=1 ./internal/eventlog/s2log ./internal/store/storetest ./internal/store/singlestore -count=1 -timeout=20m
+	go test -v -p=1 ./cmd/conveyor ./cmd/conveyord -run 'TestSingleStoreInitAndUserIntegration|TestConveyordDurableStartupIntegration' -count=1 -timeout=10m
 
 test-singlestore-unit:
 	CONVEYOR_TEST_SINGLESTORE_URL= go test ./internal/eventlog/s2log ./internal/store/singlestore ./internal/store/backend ./internal/store/storetest ./internal/store ./internal/config ./cmd/conveyor ./cmd/conveyord

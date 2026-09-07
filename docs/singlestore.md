@@ -59,12 +59,11 @@ database or external broker.
 ## Verification
 
 `make test-integration-singlestore-ci` requires a MySQL DSN in
-`CONVEYOR_TEST_SINGLESTORE_URL` naming an isolated `_test` database. Fixtures
-create and drop only their own fresh `_test` databases. Store conformance
-fixtures use two partitions and `interpreter_mode=interpret` on their
-connections to avoid compiling plans for short-lived schemas. CLI, daemon
-startup and smoke tests use the default query mode. SingleStore documents these modes in
-[Code generation](https://docs.singlestore.com/db/v9.1/query-data/advanced-query-topics/code-generation/).
+`CONVEYOR_TEST_SINGLESTORE_URL` naming an isolated `_test` database. Tests
+create and drop only their own fresh `_test` databases: the store package
+creates one per test binary and empties its tables between fixtures, and the
+CLI and daemon tests create one each. All connections use the default query
+mode.
 
 The target runs the complete store and event-log conformance packs plus CLI
 initialization and daemon startup tests. It prints suite timings. CI requires

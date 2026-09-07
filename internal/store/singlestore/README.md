@@ -126,11 +126,14 @@ boundary under locks after all intermediate writes, before committing.
 `make test-singlestore-unit` runs the affected unit packages without a database.
 `make test-integration-singlestore-ci` requires `CONVEYOR_TEST_SINGLESTORE_URL`
 as a MySQL DSN and runs `s2log`, this package and the host CLI/daemon tests. The test helper rejects a
-database whose name does not end in `_test`. Each store fixture creates and
-drops only its own timestamp-named `conveyor_*_test` database with two partitions.
-Fixture connections use `interpreter_mode=interpret` to bound compiler memory
-for short-lived schemas. Production connections keep their default query mode. The complete pack
-has a twenty-minute timeout and logs suite timings. Event-log tests
+database whose name does not end in `_test`. The store package creates one
+timestamp-named `conveyor_*_test` database with two partitions per test binary,
+migrates it once, and drops it from `TestMain`; each fixture empties every
+table but the migration ledger with `DELETE` and reuses the one warm pool, so
+compiled query plans survive across fixtures. Creating a database or truncating
+a table is distributed DDL that costs seconds or hundreds of milliseconds on
+SingleStore, which is why fixtures never do either. The complete pack has a
+twenty-minute timeout and logs suite and reset timings. Event-log tests
 use unique workspace IDs. The test account needs CREATE/DROP DATABASE rights
 only on the disposable integration server.
 
