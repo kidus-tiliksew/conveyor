@@ -22,9 +22,6 @@ type Option uint8
 // AllowVolatile permits test callers to select the in-memory backend.
 const AllowVolatile Option = 1
 
-// AllowExperimental permits incomplete backends in tests; daemon wiring never supplies it.
-const AllowExperimental Option = 2
-
 var _ store.Backend = (*postgres.Store)(nil)
 var _ store.Backend = (*singlestore.Store)(nil)
 
@@ -33,12 +30,7 @@ func Open(ctx context.Context, database config.Database, options ...Option) (sto
 	case "postgres":
 		return postgres.Open(ctx, database.URL)
 	case "singlestore":
-		for _, option := range options {
-			if option == AllowExperimental {
-				return singlestore.Open(ctx, database.URL)
-			}
-		}
-		return nil, store.ErrBackendNotAdmitted
+		return singlestore.Open(ctx, database.URL)
 	case "memory":
 		for _, option := range options {
 			if option == AllowVolatile {

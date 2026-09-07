@@ -5,11 +5,12 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"strconv"
+	"time"
+
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/monitor"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
-	"strconv"
-	"time"
 )
 
 func (s *Store) ResolveCausalSystemDesignMerge(ctx context.Context, documentID, repository, commitSHA string, causalEventID int64, driftID string, matchingPaths []string, recordConsulted bool) (monitor.SystemDesignMergeJudgment, error) {
@@ -17,7 +18,9 @@ func (s *Store) ResolveCausalSystemDesignMerge(ctx context.Context, documentID, 
 		return monitor.SystemDesignMergeJudgment{}, nil
 	}
 	var result monitor.SystemDesignMergeJudgment
-	err := s.documentTx(ctx, func(tx *sql.Tx) error {
+	// req-260802-72fc68 AC-1.1: absent causal history produces no judgment.
+	// The corpus writer rejects missing workspaces before this scoped read.
+	err := s.withTx(ctx, func(tx *sql.Tx) error {
 		var causalTaskID string
 		var causalAt time.Time
 		if err := documentRow(ctx, tx, `SELECT causal.task_id,causal.at FROM events causal
@@ -100,7 +103,7 @@ func (s *Store) ResolveCausalSystemDesignMerge(ctx context.Context, documentID, 
 			return err
 		}
 		if !exists {
-			if err := insertEvent(ctx, tx, core.Event{Kind: "system_design.consulted", At: causalAt, Payload: core.JSONPayload(map[string]any{
+			if err := insertWorkspaceEvent(ctx, tx, core.Event{Kind: "system_design.consulted", At: causalAt, Payload: core.JSONPayload(map[string]any{
 				"workspace_id": documentWorkspace(ctx), "document_id": documentID, "version": result.AttachedVersion,
 				"delivery_task_id": causalTaskID, "merge_event_id": causalEventID, "merge_head_sha": commitSHA,
 				"matching_paths": matchingPaths, "consultation": "delivery_no_revision",

@@ -44,6 +44,7 @@ func TestSingleStoreInitAndUserIntegration(t *testing.T) {
 	t.Setenv("CONVEYOR_DATABASE_URL", cfg.FormatDSN())
 	t.Setenv("CONVEYOR_API_TOKEN", "singlestore-init-fixture-token")
 	t.Setenv(config.LLMAPIKeyEnv, "unused-fixture-key")
+	t.Setenv(config.PublicURLEnv, "https://conveyor.example/")
 	answers := initAnswers{Organization: "SingleStore fixture", OperatorName: "Owner", OperatorEmail: "owner@example.test", WorkspaceID: "fresh", WorkspaceName: "Fresh", RepositoryName: "app", RepositoryURL: "https://github.com/example/app", BaseBranch: "main"}
 	path := filepath.Join(t.TempDir(), "conveyor.yaml")
 	var output strings.Builder

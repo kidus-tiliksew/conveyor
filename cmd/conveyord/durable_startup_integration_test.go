@@ -107,6 +107,21 @@ repos:
 			if !ready {
 				t.Fatal("daemon did not become healthy")
 			}
+			client.Timeout = 10 * time.Second
+			request, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+addr+"/v1/workspaces", strings.NewReader(`{"id":"created","name":"Created","document":{"repos":[]}}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			request.Header.Set("Authorization", "Bearer startup-fixture-token")
+			request.Header.Set("Content-Type", "application/json")
+			response, err := client.Do(request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			response.Body.Close()
+			if response.StatusCode != http.StatusCreated {
+				t.Fatalf("create workspace status=%d", response.StatusCode)
+			}
 			if err = cmd.Process.Signal(os.Interrupt); err != nil {
 				t.Fatal(err)
 			}
@@ -141,6 +156,10 @@ repos:
 			if st.Log() == nil {
 				t.Fatal("missing durable event log")
 			}
+			if _, err = st.GetWorkspace(store.WithWorkspace(t.Context(), "created"), "created"); err != nil {
+				t.Fatal(err)
+			}
+
 		})
 	}
 }

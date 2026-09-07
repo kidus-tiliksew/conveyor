@@ -58,7 +58,7 @@ func integrationStore(t *testing.T) *Store {
 	return st
 }
 func TestSingleStoreConformanceIntegration(t *testing.T) {
-	storetest.RunAll(t, storetest.Factory{ProductionCapable: false,
+	storetest.RunAll(t, storetest.Factory{ProductionCapable: true,
 		Capabilities: storetest.Capabilities{Identity: true, Membership: true, Tokens: true},
 		New: func(t *testing.T, repos []config.Repo) storetest.Fixture {
 			st := integrationStore(t)

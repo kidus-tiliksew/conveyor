@@ -75,14 +75,11 @@ func TestVolatileOptInProvidesBackend(t *testing.T) {
 	}
 }
 
-func TestSingleStoreExperimentalAdmission(t *testing.T) {
+func TestSingleStoreAdmission(t *testing.T) {
 	database := config.Database{Backend: "singlestore", URL: "invalid"}
 	for _, options := range [][]backend.Option{nil, {backend.AllowVolatile}} {
-		if _, err := backend.Open(t.Context(), database, options...); !errors.Is(err, store.ErrBackendNotAdmitted) {
-			t.Fatalf("ungated backend: %v", err)
+		if _, err := backend.Open(t.Context(), database, options...); err == nil || errors.Is(err, store.ErrBackendNotAdmitted) || errors.Is(err, backend.ErrUnknownBackend) {
+			t.Fatalf("SingleStore selection did not reach driver validation: %v", err)
 		}
-	}
-	if _, err := backend.Open(t.Context(), database, backend.AllowExperimental); err == nil || errors.Is(err, store.ErrBackendNotAdmitted) {
-		t.Fatalf("experimental opt-in did not reach driver: %v", err)
 	}
 }

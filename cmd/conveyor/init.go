@@ -213,7 +213,7 @@ func initializeDeployment(ctx context.Context, output io.Writer, configPath stri
 	}
 	pgStore, err := backend.Open(ctx, config.DatabaseForURL(databaseURL))
 	if err != nil {
-		return fmt.Errorf("initialize Postgres store: %w", err)
+		return fmt.Errorf("initialize %s store: %w", validated.Database.Backend, err)
 	}
 	defer pgStore.Close()
 	seeded, err := pgStore.BootstrapIdentity(ctx, config.FirstOperatorIdentity{
