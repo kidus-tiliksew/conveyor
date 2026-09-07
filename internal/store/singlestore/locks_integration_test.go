@@ -285,7 +285,7 @@ func TestGoUniqueWriteRulesSerializeIntegration(t *testing.T) {
 	}
 }
 func TestConcurrentStartupAndConnectionSettingsIntegration(t *testing.T) {
-	st := integrationStore(t)
+	st := openOwnedStore(t)
 	results := make(chan error, 2)
 	for range 2 {
 		go func() { results <- st.migrate(t.Context()) }()
