@@ -29,6 +29,9 @@ func integrationStore(t *testing.T) *Store {
 	if !strings.HasSuffix(cfg.DBName, "_test") {
 		t.Fatal("SingleStore integration database must end in _test")
 	}
+	// Fresh schemas have no reusable compiled plans. Interpret fixture queries
+	// to bound compiler memory on the CI dev image; production Open is unchanged.
+	cfg.Params["interpreter_mode"] = "'interpret'"
 	connector, err := mysql.NewConnector(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -36,7 +39,7 @@ func integrationStore(t *testing.T) *Store {
 	admin := sql.OpenDB(connector)
 	t.Cleanup(func() { admin.Close() })
 	name := fmt.Sprintf("conveyor_%d_test", time.Now().UnixNano())
-	if _, err = admin.ExecContext(t.Context(), "CREATE DATABASE `"+name+"`"); err != nil {
+	if _, err = admin.ExecContext(t.Context(), "CREATE DATABASE `"+name+"` PARTITIONS 2"); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
@@ -55,28 +58,8 @@ func integrationStore(t *testing.T) *Store {
 	return st
 }
 func TestSingleStoreConformanceIntegration(t *testing.T) {
-	storetest.RunAll(t, storetest.Factory{ProductionCapable: false,
+	storetest.RunAll(t, storetest.Factory{ProductionCapable: true,
 		Capabilities: storetest.Capabilities{Identity: true, Membership: true, Tokens: true},
-		Skip: []string{
-			// These mixed document suites still call sibling-owned stubs in
-			// unimplemented.go. Implemented document methods alone cannot run
-			// the complete suites. Approved plan v2, Ordering 8, leaves their
-			// removal to 260905-d3c03a after the sibling prerequisites land.
-			"Requirements",       // CreateTask, CreateArtifact, ClaimWorkOrderCommand.
-			"PlanningReads",      // CreateArtifact, GetArtifactForPlanningSession, ListTasks.
-			"Lineage",            // CreateTaskWithDependencies, CreateArtifact, AcceptReviewDecisionCommand.
-			"ReferenceDocuments", // CreateTask seeds the unrelated task-event isolation case.
-			"PlanningBundles",    // EnsureTaskEnqueued, UpdateTaskContext after document approval.
-			"SystemDesignDrift",  // CreateTask.
-			// VersionDismissal, SystemDesignProposals, Decisions and
-			// ArchiveRestore have no sibling prerequisites and are enabled.
-			// The remaining suites belong to task, artifact, work-order,
-			// or monitor aggregates.
-			"ForgeAuthorIdentity",
-			"Monitor",
-			"TaskFilter",
-			"TaskAssigneeMembership",
-		},
 		New: func(t *testing.T, repos []config.Repo) storetest.Fixture {
 			st := integrationStore(t)
 			ws := "conformance-" + core.NewTaskID()

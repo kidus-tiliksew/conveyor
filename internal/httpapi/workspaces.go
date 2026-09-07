@@ -335,7 +335,7 @@ func (s *Server) createWorkspace(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if s.EnsureWorkspaceQueues != nil {
-		if err := s.EnsureWorkspaceQueues(request.ID); err != nil {
+		if err := s.EnsureWorkspaceQueues(request.ID, next); err != nil {
 			log.Printf("handle workspace request: %v", err)
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return

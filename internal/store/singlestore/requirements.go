@@ -812,7 +812,27 @@ func (s *Store) ListPlanningMessages(ctx context.Context, sessionID string) ([]c
 			return nil, err
 		}
 		message.Role = core.PlanningMessageRole(role)
-		message.Parts = json.RawMessage(parts)
+		// Match the stable JSON separator spelling used by the reference store.
+		// SingleStore compacts JSON columns when returning them.
+		var canonical strings.Builder
+		quoted, escaped := false, false
+		for _, ch := range string(parts) {
+			canonical.WriteRune(ch)
+			if quoted {
+				if escaped {
+					escaped = false
+				} else if ch == '\\' {
+					escaped = true
+				} else if ch == '"' {
+					quoted = false
+				}
+			} else if ch == '"' {
+				quoted = true
+			} else if ch == ':' || ch == ',' {
+				canonical.WriteByte(' ')
+			}
+		}
+		message.Parts = json.RawMessage(canonical.String())
 		out = append(out, message)
 	}
 	return out, rows.Err()

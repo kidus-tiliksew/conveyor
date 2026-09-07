@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/backend"
 )
 
@@ -60,7 +59,7 @@ repos:
 	}
 }
 
-func TestConveyordRejectsSingleStoreBackend(t *testing.T) {
+func TestConveyordSelectsSingleStoreBackend(t *testing.T) {
 	if configPath := os.Getenv("CONVEYOR_TEST_SINGLESTORE_CONFIG"); configPath != "" {
 		flag.CommandLine = flag.NewFlagSet("conveyord", flag.ExitOnError)
 		os.Args = []string{"conveyord", "-config", configPath}
@@ -71,7 +70,7 @@ func TestConveyordRejectsSingleStoreBackend(t *testing.T) {
 	configPath := filepath.Join(dir, "conveyor.yaml")
 	envPath := filepath.Join(dir, "empty.env")
 	configuration := `workspace: demo
-database: {backend: singlestore, url: "mysql://localhost/conveyor_test"}
+database: {backend: singlestore, url: "invalid"}
 routing:
   stages:
     triage: {model: fixture, timeout: 20m, execution: in_process}
@@ -89,7 +88,7 @@ repos:
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 	defer cancel()
-	command := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestConveyordRejectsSingleStoreBackend$")
+	command := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestConveyordSelectsSingleStoreBackend$")
 	for _, item := range os.Environ() {
 		if !strings.HasPrefix(item, "CONVEYOR_") {
 			command.Env = append(command.Env, item)
@@ -101,7 +100,7 @@ repos:
 		"CONVEYOR_API_TOKEN=fixture-api-token",
 		"CONVEYOR_LLM_API_KEY=fixture-llm-key")
 	output, err := command.CombinedOutput()
-	if err == nil || ctx.Err() != nil || !strings.Contains(string(output), store.ErrBackendNotAdmitted.Error()) {
-		t.Fatalf("daemon did not reject SingleStore at startup: %v\n%s", err, output)
+	if err == nil || ctx.Err() != nil || !strings.Contains(string(output), "open store: invalid SingleStore DSN") {
+		t.Fatalf("daemon did not reach SingleStore driver validation: %v\n%s", err, output)
 	}
 }

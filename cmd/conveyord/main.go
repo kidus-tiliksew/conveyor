@@ -99,6 +99,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("open store: %v", err)
 	}
+	if deployment.Database.Backend == "singlestore" {
+		log.Printf("using durable SingleStore store with the event log")
+	} else {
+		log.Printf("using durable PostgreSQL store with the event log")
+	}
 	if forgeKey, keyErr := config.ForgeTokenEncryptionKeyFromEnvironment(); keyErr != nil {
 		log.Printf("forge token encryption unavailable until configured: %v", keyErr)
 	} else {
@@ -134,7 +139,7 @@ func main() {
 	d := dispatch.New(st, cfg, agent)
 	d.Pack = packBundle
 	var queueRuntime shutdownQueue
-	var addWorkspaceQueue func(string) error
+	var addWorkspaceQueue func(string, *config.Config) error
 	var workspaceQueues *dispatch.WorkspaceQueueRegistrar
 	if st.IsDurable() {
 		d.ConfigProvider = func(ctx context.Context) (*config.Config, error) {
@@ -182,9 +187,13 @@ func main() {
 			}
 			return runtime.EnsureWorkspace(workspace)
 		}, log.Printf)
-		addWorkspaceQueue = func(workspace string) error {
-			_, err := workspaceQueues.Ensure(workspace)
-			return err
+		addWorkspaceQueue = func(workspace string, candidate *config.Config) error {
+			// req-deployment-and-releases REQ-2: creation preflight runs before
+			// persistence, so validate the candidate rather than reading its row.
+			if err := dispatch.ValidateQueueRescueThreshold(workspace, candidate, rescueAfter); err != nil {
+				return err
+			}
+			return runtime.EnsureWorkspace(workspace)
 		}
 		queueRuntime = dispatch.NewMarkedRuntime(runtime, queueShutdown)
 		log.Printf("durable pipeline worker active; implementation/review available over MCP")

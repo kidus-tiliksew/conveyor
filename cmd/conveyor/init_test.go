@@ -104,3 +104,12 @@ func TestInitializeDeploymentRejectsMissingAPIKeyBeforeWriting(t *testing.T) {
 		t.Fatalf("configuration directory written before API-key failure: %v", statErr)
 	}
 }
+
+func TestDefaultInitConfigSelectsSingleStore(t *testing.T) {
+	for _, raw := range []string{"singlestore://root@localhost/conveyor_test", "mysql://root@localhost/conveyor_test", "root@tcp(localhost:3306)/conveyor_test"} {
+		cfg, err := defaultInitConfig(raw, initAnswers{WorkspaceID: "demo", RepositoryName: "app", RepositoryURL: "https://github.com/example/app", BaseBranch: "main"})
+		if err != nil || cfg.Database.Backend != "singlestore" || cfg.Database.URL != raw {
+			t.Fatalf("init database=%+v err=%v", cfg.Database, err)
+		}
+	}
+}

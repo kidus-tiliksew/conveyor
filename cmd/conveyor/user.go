@@ -22,7 +22,7 @@ type openSignInLinkStore func(context.Context, string) (signInLinkStore, error)
 
 func userCmd() *cobra.Command {
 	return newUserCmd(func(ctx context.Context, databaseURL string) (signInLinkStore, error) {
-		return backend.Open(ctx, config.Database{Backend: "postgres", URL: databaseURL})
+		return backend.Open(ctx, config.DatabaseForURL(databaseURL))
 	})
 }
 
@@ -35,7 +35,7 @@ func newUserCmd(openStore openSignInLinkStore) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			databaseURL := strings.TrimSpace(os.Getenv("CONVEYOR_DATABASE_URL"))
 			if databaseURL == "" {
-				return errors.New("CONVEYOR_DATABASE_URL is required; set it to the deployment Postgres database and retry")
+				return errors.New("CONVEYOR_DATABASE_URL is required; set it to the deployment PostgreSQL or SingleStore database and retry")
 			}
 			st, err := openStore(cmd.Context(), databaseURL)
 			if err != nil {

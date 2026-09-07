@@ -142,7 +142,7 @@ func configUsesInProcessExecution(candidate config.Config) bool {
 func initializeDeployment(ctx context.Context, output io.Writer, configPath string, answers initAnswers) error {
 	databaseURL := strings.TrimSpace(os.Getenv("CONVEYOR_DATABASE_URL"))
 	if databaseURL == "" {
-		return errors.New("CONVEYOR_DATABASE_URL is required; set it to the running Postgres database and rerun `conveyor init`")
+		return errors.New("CONVEYOR_DATABASE_URL is required; set it to the running PostgreSQL or SingleStore database and rerun `conveyor init`")
 	}
 	apiToken := strings.TrimSpace(os.Getenv("CONVEYOR_API_TOKEN"))
 	if apiToken == "" {
@@ -211,9 +211,9 @@ func initializeDeployment(ctx context.Context, output io.Writer, configPath stri
 	if _, err = pack.Load(validated.PackDir); err != nil {
 		return fmt.Errorf("load deployment role pack: %w", err)
 	}
-	pgStore, err := backend.Open(ctx, config.Database{Backend: "postgres", URL: databaseURL})
+	pgStore, err := backend.Open(ctx, config.DatabaseForURL(databaseURL))
 	if err != nil {
-		return fmt.Errorf("initialize Postgres store: %w", err)
+		return fmt.Errorf("initialize %s store: %w", validated.Database.Backend, err)
 	}
 	defer pgStore.Close()
 	seeded, err := pgStore.BootstrapIdentity(ctx, config.FirstOperatorIdentity{
@@ -276,7 +276,7 @@ func defaultInitConfig(databaseURL string, answers initAnswers) (config.Config, 
 	return config.Config{
 		Workspace: answers.WorkspaceID, MaxBounces: 10,
 		WorkOrderQueueTimeoutText: config.DefaultWorkOrderQueueTimeoutText,
-		Database:                  config.Database{Backend: "postgres", URL: databaseURL},
+		Database:                  config.DatabaseForURL(databaseURL),
 		ExecutionSettings:         &settings,
 		Harnesses:                 []config.Harness{harness},
 		Review:                    review,

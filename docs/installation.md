@@ -1,6 +1,6 @@
 # Installation
 
-Conveyor ships as two binaries. `conveyord` is the server: REST API, dashboard, event log, and the Postgres-backed queue. `conveyor` is the CLI
+Conveyor ships as two binaries. `conveyord` is the server: REST API, dashboard, event log, and the durable event-log queue. `conveyor` is the CLI
 that operators and agents use to authenticate, file tasks, check out worktrees,
 and run work.
 
@@ -8,8 +8,9 @@ and run work.
 
 A deployed factory needs:
 
-- PostgreSQL 15 or newer. The server checks the version at startup and refuses
-  older ones.
+- PostgreSQL 15 or newer, or SingleStore. PostgreSQL startup refuses older
+  versions. SingleStore must report UTC as its system time zone; see
+  [SingleStore operations](singlestore.md).
 - Git.
 - An authenticated `gh` CLI, or `GH_TOKEN` for headless use.
 - An API key for an OpenAI-compatible model endpoint (for example OpenRouter).
@@ -79,7 +80,9 @@ docker run --rm \
 `CONVEYOR_FORGE_TOKEN_ENCRYPTION_KEY` are required process environment. Supply
 `GH_TOKEN` when the GitHub monitor is enabled. Secret values should come from
 your container platform's secret facility; do not add them to the image or
-`conveyor.yaml`. PostgreSQL must be reachable from the container.
+`conveyor.yaml`. The selected PostgreSQL or SingleStore database must be
+reachable from the container. Set `database.backend` to `postgres` or
+`singlestore`; [configuration](configuration.md) lists their URL forms.
 
 Once the process starts, `/healthz` is available on the published port. Image
 upgrades use the same protocol as binary upgrades: replace the image and
@@ -112,7 +115,9 @@ Set `CONVEYOR_LLM_API_KEY` in `.env` and generate the operator token with
 
 `make build` alone writes `bin/conveyor` and `bin/conveyord` without starting
 anything. The full local test aggregate is `make test`; integration tests
-against Postgres run with `make test-integration`.
+against PostgreSQL run with `make test-integration`. SingleStore tests use
+`make test-integration-singlestore-ci` with `CONVEYOR_TEST_SINGLESTORE_URL`
+pointing to a disposable database whose name ends in `_test`.
 
 ## What gets installed where
 

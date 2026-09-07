@@ -101,7 +101,13 @@ func TestCreateWorkspaceValidatesAndUsesDefaults(t *testing.T) {
 	srv := NewServer(store.NewMemory())
 	srv.Workspaces, srv.Deployment, srv.BearerToken = control, deployment, "token"
 	queued := ""
-	srv.EnsureWorkspaceQueues = func(id string) error { queued = id; return nil }
+	srv.EnsureWorkspaceQueues = func(id string, candidate *config.Config) error {
+		if candidate == nil || candidate.Workspace != id || candidate.Routing.Stages["triage"].TimeoutText != "1h" || control.created != nil {
+			t.Fatalf("queue preflight must receive the candidate before persistence: %+v", candidate)
+		}
+		queued = id
+		return nil
+	}
 	req := httptest.NewRequest(http.MethodPost, "/v1/workspaces", bytes.NewBufferString(`{"id":"engineering","name":"Engineering"}`))
 	req.Header.Set("Authorization", "Bearer token")
 	w := httptest.NewRecorder()
@@ -118,7 +124,7 @@ func TestCreateWorkspaceDoesNotPersistWhenQueueRegistrationFails(t *testing.T) {
 	control := &fakeWorkspaceControl{}
 	srv := NewServer(store.NewMemory())
 	srv.Workspaces, srv.Deployment, srv.BearerToken = control, &config.Config{}, "token"
-	srv.EnsureWorkspaceQueues = func(string) error { return context.Canceled }
+	srv.EnsureWorkspaceQueues = func(string, *config.Config) error { return context.Canceled }
 	req := httptest.NewRequest(http.MethodPost, "/v1/workspaces", bytes.NewBufferString(`{"id":"engineering","name":"Engineering"}`))
 	req.Header.Set("Authorization", "Bearer token")
 	w := httptest.NewRecorder()

@@ -88,7 +88,7 @@ type Server struct {
 	ValidateForgeToken    func(context.Context, string) (string, error)
 	InvitationSessions    store.InvitationSessionStore
 	InvitationDelivery    config.InvitationDelivery
-	EnsureWorkspaceQueues func(string) error
+	EnsureWorkspaceQueues func(string, *config.Config) error
 	Deployment            *config.Config
 	WorkOrders            *workorder.Service
 	Workers               *workerservice.Service

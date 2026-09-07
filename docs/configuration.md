@@ -48,6 +48,26 @@ which have the same shape as the local execution config below. The
 `workspace:` and `repos:` entries are optional; leave them out to create the
 workspace from the dashboard's first-run prompt instead.
 
+### Database selection
+
+`database.backend` accepts `postgres`, `singlestore`, and `memory`.
+The daemon refuses `memory`, which is only for explicit test callers. Both
+durable backends require `database.url` or `CONVEYOR_DATABASE_URL`.
+
+| Backend | Connection form |
+| --- | --- |
+| PostgreSQL | `postgres://user:password@host:5432/conveyor?sslmode=require` |
+| SingleStore | `singlestore://user:password@host:3306/conveyor?tls=true` |
+| SingleStore | `mysql://user:password@host:3306/conveyor?tls=true` |
+| SingleStore | `user:password@tcp(host:3306)/conveyor?tls=true` |
+
+Keep credentials in the process environment. Percent-encode reserved characters
+in URL passwords. An explicit backend wins over inference. When omitted,
+SingleStore URL schemes and MySQL TCP/socket DSNs select SingleStore; other
+connection strings retain PostgreSQL selection. `conveyor init` and
+`conveyor user issue-link` apply the same inference to `CONVEYOR_DATABASE_URL`.
+See [SingleStore operations](singlestore.md) before creating its database.
+
 ## Local execution config (executor machine)
 
 Read by `conveyor run`, `conveyor worker`, and `conveyor checkout`. Created
@@ -91,7 +111,7 @@ Server (read by `conveyord`):
 
 | Variable | Purpose |
 |---|---|
-| `CONVEYOR_DATABASE_URL` | Postgres connection string. Required. |
+| `CONVEYOR_DATABASE_URL` | PostgreSQL URL or SingleStore URL/DSN. Required unless `database.url` is set. |
 | `CONVEYOR_API_TOKEN` | Bound as the first operator's token at bootstrap. Required. |
 | `CONVEYOR_LLM_API_KEY` | Key for in-process triage and spec stages. Required. |
 | `CONVEYOR_LLM_BASE_URL` | OpenAI-compatible endpoint override. |
@@ -123,7 +143,7 @@ installations.
 
 On SIGINT or SIGTERM, `conveyord` stops the queue from fetching work, cancels HTTP
 request base contexts, drains HTTP and active jobs, then cancels remaining jobs
-and closes Postgres within the shutdown budget. The hard-stop phase reserves up
+and closes the selected database within the shutdown budget. The hard-stop phase reserves up
 to five seconds, or half of a shorter budget. Queue crash recovery uses a
 stuck-job threshold equal to the largest effective triage or spec route timeout
 across the startup workspaces plus a five-minute safety margin. Startup logs

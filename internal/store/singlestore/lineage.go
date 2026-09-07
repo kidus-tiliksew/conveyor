@@ -20,11 +20,9 @@ func (s *Store) LineageNodeExists(ctx context.Context, node core.LineageNode) (b
 	}
 	var exists bool
 	err := documentRow(ctx, s.db, `SELECT EXISTS (
-		SELECT 1 FROM links WHERE workspace_id=? AND src_type=? AND src_id=?
-		UNION ALL
-		SELECT 1 FROM links WHERE workspace_id=? AND dst_type=? AND dst_id=?
-		LIMIT 1
-	)`, documentWorkspace(ctx), string(node.Type), node.ID, documentWorkspace(ctx), string(node.Type), node.ID).Scan(&exists)
+		SELECT 1 FROM links WHERE workspace_id=? AND
+		((src_type=? AND src_id=?) OR (dst_type=? AND dst_id=?))
+	)`, documentWorkspace(ctx), string(node.Type), node.ID, string(node.Type), node.ID).Scan(&exists)
 	return exists, err
 }
 

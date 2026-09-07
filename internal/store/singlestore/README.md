@@ -1,8 +1,8 @@
-# Experimental SingleStore backend
+# SingleStore backend
 
-The factory selects this backend only with `backend.AllowExperimental`.
-`conveyord` does not supply that option. This is the foundation of the second
-backend under DEC-38. It is not production-capable.
+DEC-39 admits this backend under the complete DEC-38 store and event-log
+contract. The factory opens it without an experimental option. The conformance
+factory has all capabilities and no skipped suites.
 
 `Store` owns a bounded `database/sql` pool. Every connection uses `parseTime`,
 UTC, microsecond timestamp truncation and `STRICT_ALL_TABLES`. The driver
@@ -14,18 +14,17 @@ and refuses another server time zone rather than silently misreading timestamps.
 
 ## Implemented behavior
 
-Workspace creation and versioned configuration writes persist repos and audit
-rows in the same transaction. Bootstrap is idempotent. The `WorkspaceControl`
-and `EmptyProjections` conformance suites run. The remaining suites are named
-explicitly in `Factory.Skip`, which is forbidden on production factories.
+The backend implements the complete `store.Backend` interface, including
+identity, membership, tokens, tasks, work orders, document governance, lineage,
+activity, monitor projections and startup reconciliation. Lifecycle projections,
+audit events and event-log queue intents commit in one transaction.
 
-`unimplemented.go` supplies explicit `store.ErrNotImplemented` methods for the
-remaining contract. `ConfigureForgeTokenEncryptionKey` has no error result and
-is inert until the identity aggregate replaces it. `empty_projections.go`
-checks persisted rows before returning an empty result; it refuses populated
-domains with `ErrNotImplemented`. Aggregate tasks must replace those methods
-as well as their stubs when adding populated projections. No reconciliation
-method claims success on a populated task domain.
+The full shared conformance pack exercises each aggregate. `PopulatedProjections`
+covers caller attention and checkpoint candidates with a real task and work
+order, pending and published GitHub lifecycles, terminal blueprint children,
+and missing durable dispatch repair. Empty startup coverage alone cannot prove
+these methods. PostgreSQL defines the expected behavior; volatile queues have
+no durable dispatch or publication jobs to reconcile.
 
 ## Schema and migrations
 
@@ -99,12 +98,11 @@ checks because the schema lacks a PostgreSQL constraint.
 
 Reference updates must pass the complete name/deleted-at projection, including
 restore. Credential writes must pass a boolean `deployment_credential`.
-Task and work-order inserts must pass their canonical state. The foundation
-does not implement those aggregates; their tests must call these write paths
-when the stubs are replaced.
+Task and work-order inserts must pass their canonical state. Aggregate implementations call these write paths or enforce the matching
+checks inside their command transaction.
 
-The remaining partial indexes, expressions and trigger behavior belong to the
-sibling aggregates. Their replacement checks are prerequisites for admission:
+Aggregate commands enforce the following rules where SingleStore cannot
+express the PostgreSQL constraints:
 
 - Artifact-link uniqueness for task, feature, requirement, planning session,
   and workspace-level ownership, plus ownership exclusivity.
@@ -127,9 +125,12 @@ boundary under locks after all intermediate writes, before committing.
 
 `make test-singlestore-unit` runs the affected unit packages without a database.
 `make test-integration-singlestore-ci` requires `CONVEYOR_TEST_SINGLESTORE_URL`
-as a MySQL DSN and runs both `s2log` and this package. The test helper rejects a
+as a MySQL DSN and runs `s2log`, this package and the host CLI/daemon tests. The test helper rejects a
 database whose name does not end in `_test`. Each store fixture creates and
-drops only its own timestamp-named `conveyor_*_test` database. Event-log tests
+drops only its own timestamp-named `conveyor_*_test` database with two partitions.
+Fixture connections use `interpreter_mode=interpret` to bound compiler memory
+for short-lived schemas. Production connections keep their default query mode. The complete pack
+has a twenty-minute timeout and logs suite timings. Event-log tests
 use unique workspace IDs. The test account needs CREATE/DROP DATABASE rights
 only on the disposable integration server.
 
