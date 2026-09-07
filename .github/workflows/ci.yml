@@ -149,7 +149,7 @@ jobs:
           test -n "$MYSQL_PWD" || { echo 'SINGLESTORE_ROOT_PASSWORD repository secret is required' >&2; exit 1; }
           sudo apt-get update
           sudo apt-get install -y default-mysql-client
-          mysql --protocol=TCP -h 127.0.0.1 -P 3306 -u root -e 'CREATE DATABASE conveyor_test'
+          mysql --protocol=TCP -h 127.0.0.1 -P 3306 -u root -e 'CREATE DATABASE conveyor_test PARTITIONS 2'
       - name: Verify missing URL fails the integration target
         run: |
           if env -u CONVEYOR_TEST_SINGLESTORE_URL make test-integration-singlestore-ci; then
