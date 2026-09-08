@@ -86,9 +86,10 @@ func continuationObserverEnabled(harness config.Harness, launchEnvironment strin
 	return len(harness.ResumeCommand) > 0 && launchEnvironment != ""
 }
 
-// continuationSessionObserver recognizes the shared stream-json init
-// envelope. Its buffer is bounded and malformed or oversized lines are
-// discarded without affecting the output path (req-260818-24dd3a AC-1.2).
+// continuationSessionObserver recognizes Claude/Cursor's stream-json init
+// envelope and OpenCode's top-level sessionID. Its buffer is bounded and
+// malformed or oversized lines are discarded without affecting the output
+// path (req-260818-24dd3a AC-1.2).
 type continuationSessionObserver struct {
 	mu       sync.Mutex
 	pending  []byte
@@ -120,6 +121,9 @@ func (w *continuationSessionObserver) Write(p []byte) (int, error) {
 		}
 		if !w.discard && !w.observed {
 			sessionID = claudeInitSessionID(bytes.TrimSpace(w.pending))
+			if sessionID == "" {
+				sessionID = openCodeSessionID(bytes.TrimSpace(w.pending))
+			}
 			if sessionID != "" {
 				w.observed = true
 			}
@@ -133,6 +137,20 @@ func (w *continuationSessionObserver) Write(p []byte) (int, error) {
 		callback(sessionID)
 	}
 	return len(p), nil
+}
+
+func openCodeSessionID(line []byte) string {
+	var event struct {
+		SessionID string `json:"sessionID"`
+	}
+	if len(line) == 0 || json.Unmarshal(line, &event) != nil {
+		return ""
+	}
+	sessionID := strings.TrimSpace(event.SessionID)
+	if sessionID == "" || len([]rune(sessionID)) > core.MaxWorkOrderContinuationSessionIDRunes {
+		return ""
+	}
+	return sessionID
 }
 
 func claudeInitSessionID(line []byte) string {

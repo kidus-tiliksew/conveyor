@@ -324,10 +324,11 @@ func applySeatAction(state *executionWizardState) {
 // harnessModelSuggestions supplies editable placeholders only. It is never a
 // validation list: the selected harness probe remains the source of truth.
 var harnessModelSuggestions = map[string]map[string]string{
-	"codex":  {"spec": "gpt-5.6-sol", "implement": "gpt-5.6-sol", "review": "gpt-5.6-terra"},
-	"claude": {"spec": "opus", "implement": "opus", "review": "opus"},
-	"grok":   {"spec": "grok-code-fast-1", "implement": "grok-code-fast-1", "review": "grok-code-fast-1"},
-	"cursor": {"spec": "auto", "implement": "auto", "review": "auto"},
+	"codex":    {"spec": "gpt-5.6-sol", "implement": "gpt-5.6-sol", "review": "gpt-5.6-terra"},
+	"claude":   {"spec": "opus", "implement": "opus", "review": "opus"},
+	"grok":     {"spec": "grok-code-fast-1", "implement": "grok-code-fast-1", "review": "grok-code-fast-1"},
+	"cursor":   {"spec": "auto", "implement": "auto", "review": "auto"},
+	"opencode": {"spec": "openai/gpt-5.6-sol", "implement": "openai/gpt-5.6-sol", "review": "openai/gpt-5.6-terra"},
 }
 
 func suggestedHarnessModel(harness, stage string) string {
@@ -460,7 +461,7 @@ func runExecutionSetupDefaults(ctx context.Context, output io.Writer, configPath
 
 func noHealthyHarnessError(detected []detectedHarness) error {
 	if len(detected) == 0 {
-		return errors.New("no supported harness was found on PATH (looked for codex, claude, grok, and cursor)")
+		return errors.New("no supported harness was found on PATH (looked for codex, claude, grok, cursor, and opencode)")
 	}
 	messages := make([]string, 0, len(detected))
 	for _, item := range detected {
@@ -682,7 +683,7 @@ func setLocalExecutionFieldContext(ctx context.Context, path, workspace, key, va
 			}
 		}
 		if selected == nil {
-			return fmt.Errorf("unsupported harness %q; choose codex, claude, grok, or cursor", value)
+			return fmt.Errorf("unsupported harness %q; choose codex, claude, grok, cursor, or opencode", value)
 		}
 		choice.Harness = value
 		if len(selected.EffortArgs) == 0 {

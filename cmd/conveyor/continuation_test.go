@@ -51,7 +51,7 @@ func TestPlanContinuationLaunchEligibilityMatrix(t *testing.T) {
 
 func TestContinuationObserverFollowsResumeCapability(t *testing.T) {
 	contract := []string{"--resume", "{session_id}"}
-	for _, name := range []string{"claude", "cursor"} {
+	for _, name := range []string{"claude", "cursor", "opencode"} {
 		if !continuationObserverEnabled(config.Harness{Name: name, ResumeCommand: contract}, "worker:one") {
 			t.Fatalf("%s resume contract should enable capture", name)
 		}
@@ -75,6 +75,16 @@ func TestContinuationSessionObserverCapturesCursorInitEnvelope(t *testing.T) {
 	}
 }
 
+func TestContinuationSessionObserverCapturesOpenCodeSessionOnce(t *testing.T) {
+	var observed []string
+	observer := newContinuationSessionObserver(func(value string) { observed = append(observed, value) })
+	_, _ = observer.Write([]byte(`{"type":"step_start","sessionID":"ses_native"}` + "\n"))
+	_, _ = observer.Write([]byte(`{"type":"text","sessionID":"ses_native"}` + "\n"))
+	if !reflect.DeepEqual(observed, []string{"ses_native"}) {
+		t.Fatalf("observed=%v", observed)
+	}
+}
+
 func TestContinuationSessionObserverIsBoundedAndTolerant(t *testing.T) {
 	var observed []string
 	observer := newContinuationSessionObserver(func(value string) { observed = append(observed, value) })
@@ -86,6 +96,16 @@ func TestContinuationSessionObserverIsBoundedAndTolerant(t *testing.T) {
 	_, _ = observer.Write([]byte(`{"type":"system","subtype":"init","session_id":"later"}` + "\n"))
 	if !reflect.DeepEqual(observed, []string{"claude-native"}) {
 		t.Fatalf("observed=%v", observed)
+	}
+}
+
+func TestContinuationSessionObserverRejectsOversizedOpenCodeID(t *testing.T) {
+	var observed string
+	observer := newContinuationSessionObserver(func(value string) { observed = value })
+	value := strings.Repeat("s", core.MaxWorkOrderContinuationSessionIDRunes+1)
+	_, _ = observer.Write([]byte(`{"type":"step_start","sessionID":"` + value + `"}` + "\n"))
+	if observed != "" {
+		t.Fatalf("observed=%q", observed)
 	}
 }
 

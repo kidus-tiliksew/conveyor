@@ -80,7 +80,7 @@ stage runs:
 - `harnesses`: how each agent CLI is launched. The argv (executed directly,
   never through a shell), the MCP transport it supports, model and effort
   flag mappings, and a probe command. Built-in starting points exist for
-  Codex, Claude, Grok, and Cursor.
+  Codex, Claude, Grok, Cursor, and OpenCode.
 - `execution_settings`: harness, model, effort, and timeout per stage
   (`spec`, `implementation`, `review`).
 - `review.seats`: the ordered review panel; one durable review order is

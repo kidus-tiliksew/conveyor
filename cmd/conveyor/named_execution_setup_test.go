@@ -109,7 +109,7 @@ func TestNamedSetupDeleteRulesAndCompleteListing(t *testing.T) {
 	}
 }
 
-func TestSelectTemplateHarnessIncludesCursor(t *testing.T) {
+func TestSelectTemplateHarnessIncludesCursorAndOpenCode(t *testing.T) {
 	var destination string
 	var harnesses []config.Harness
 	if err := selectTemplateHarness("cursor", &destination, &harnesses); err != nil {
@@ -118,7 +118,13 @@ func TestSelectTemplateHarnessIncludesCursor(t *testing.T) {
 	if destination != "cursor" || len(harnesses) != 1 || harnesses[0].Name != "cursor" || harnesses[0].Command[0] != "cursor-agent" {
 		t.Fatalf("destination=%q harnesses=%+v", destination, harnesses)
 	}
-	if err := selectTemplateHarness("other", &destination, &harnesses); err == nil || !strings.Contains(err.Error(), "codex, claude, grok, or cursor") {
+	if err := selectTemplateHarness("opencode", &destination, &harnesses); err != nil {
+		t.Fatal(err)
+	}
+	if destination != "opencode" || len(harnesses) != 2 || harnesses[1].Name != "opencode" || harnesses[1].Command[0] != "opencode" {
+		t.Fatalf("destination=%q harnesses=%+v", destination, harnesses)
+	}
+	if err := selectTemplateHarness("other", &destination, &harnesses); err == nil || !strings.Contains(err.Error(), "codex, claude, grok, cursor, or opencode") {
 		t.Fatalf("error=%v", err)
 	}
 }

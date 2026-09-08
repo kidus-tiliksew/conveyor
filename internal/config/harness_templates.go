@@ -99,5 +99,26 @@ func HarnessTemplates() []HarnessTemplate {
 				StallTimeoutText: DefaultHarnessStallTimeoutText,
 			},
 		},
+		{
+			ID:          "opencode",
+			Label:       "OpenCode",
+			Description: "SST's open-source coding agent",
+			Harness: Harness{
+				Name:          "opencode",
+				MCPTransport:  MCPTransportEnvironment,
+				MCPAttachment: "conveyor",
+				Command:       []string{"opencode", "run", "{prompt}", "--format", "json", "--dangerously-skip-permissions"},
+				ResumeCommand: []string{"--session", "{session_id}"},
+				ModelArgs:     []string{"--model", "{model}"},
+				EffortArgs: map[string][]string{
+					"low":    {"--variant", "low"},
+					"medium": {"--variant", "medium"},
+					"high":   {"--variant", "high"},
+				},
+				ProbeCommand:     []string{"opencode", "--version"},
+				ProbeTimeoutText: "30s",
+				StallTimeoutText: DefaultHarnessStallTimeoutText,
+			},
+		},
 	}
 }
