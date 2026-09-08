@@ -118,6 +118,11 @@ func (s *Store) migrate(ctx context.Context) error {
 		if applied[file.version] {
 			continue
 		}
+		if file.version == 2 {
+			if err := s.migrateRepositoryInstallColumn(ctx); err != nil {
+				return fmt.Errorf("SingleStore migration %s: %w", file.name, err)
+			}
+		}
 		for _, statement := range strings.Split(file.sql, ";") {
 			if strings.TrimSpace(statement) == "" {
 				continue
@@ -131,4 +136,18 @@ func (s *Store) migrate(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// The startup migration lock serializes this check with other migrators.
+// A retry after implicit DDL commit must preserve any explicit on values.
+func (s *Store) migrateRepositoryInstallColumn(ctx context.Context) error {
+	var exists int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='repos' AND column_name='install_conveyor'`).Scan(&exists); err != nil {
+		return err
+	}
+	if exists != 0 {
+		return nil
+	}
+	_, err := s.db.ExecContext(ctx, `ALTER TABLE repos ADD COLUMN install_conveyor BOOLEAN NOT NULL DEFAULT false`)
+	return err
 }

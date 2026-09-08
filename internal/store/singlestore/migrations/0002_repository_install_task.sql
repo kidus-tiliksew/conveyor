@@ -1,5 +1,5 @@
--- Existing repositories remain off; registration supplies the write default.
-ALTER TABLE repos ADD COLUMN IF NOT EXISTS install_conveyor BOOLEAN NOT NULL DEFAULT false;
+-- migrateRepositoryInstallColumn adds the column with a schema check because
+-- SingleStore does not support ADD COLUMN IF NOT EXISTS.
 CREATE ROWSTORE TABLE IF NOT EXISTS repository_install_tasks (
  workspace_id VARCHAR(255) NOT NULL,
  repository_name VARCHAR(255) NOT NULL,
