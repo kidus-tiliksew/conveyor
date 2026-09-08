@@ -1,7 +1,8 @@
 ## Getting started
 
-- [Installation](installation.md): release installer, source builds, prerequisites
-- [Getting started (solo)](getting-started-solo.md): one person, one machine, end to end
+- [Server setup](server-setup.md): install the binaries, start a database, run the daemon, invite clients
+- [Client setup](client-setup.md): sign in, Git and GitHub access, execution setup, first task
+- [Getting started (solo)](getting-started-solo.md): the quick start, one person, one machine, end to end
 - [Getting started (multiplayer)](getting-started-multiplayer.md): a shared team server
 
 ## Guides

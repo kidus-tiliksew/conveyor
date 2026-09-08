@@ -3,9 +3,11 @@
 Conveyor has three configuration surfaces, and most confusion comes from
 treating them as one. The deployment config describes a server. The local
 execution config describes a machine that runs agents. The credentials file
-remembers who you are per server. On the factory host the first two
-intentionally share one `conveyor.yaml`; everywhere else they are separate
-files with separate owners.
+remembers who you are per server. The setup guides keep the server and
+client files separate, including on a solo machine. A combined
+`conveyor.yaml` is supported, but select the intended file explicitly when a
+host also runs agents. See [Server setup](server-setup.md) and
+[Client setup](client-setup.md).
 
 ## Deployment config (server)
 

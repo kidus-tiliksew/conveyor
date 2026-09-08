@@ -38,7 +38,8 @@ Conveyor applies that answer to agent-written software:
 Conveyor coordinates work, it does not execute it. Agents run on your machines with
 your credentials, edit in ordinary Git worktrees, and deliver through
 ordinary pull requests. There is no hosted sandbox and the server never
-holds your model keys. 
+holds your agent CLI credentials; the only model key it keeps is its own,
+for the in-process triage, spec, and planning stages.
 
 If you deleted Conveyor tomorrow, the repository,
 the PRs, and the review trail would all still be sitting in Git and GitHub,

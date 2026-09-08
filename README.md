@@ -92,31 +92,58 @@ signal or send follow-up work through the normal gates.
 
 ## Architecture
 
-```text
-   Operators in a browser              Agents such as Codex or Claude
-             |                                      |
-      React dashboard                       MCP work-order server
-      board, tasks, docs                    claim, plan, review
-             |                                      |
-             +------------------+-------------------+
-                                |
-                         conveyord in Go
-                  REST API, dashboard, event log
-                                |
-                           PostgreSQL
-                  events, documents, links, queue
-                                |
-                    conveyor worker on your machine
-                       supervises your agent CLIs
-                                |
-                    Git worktrees, repositories, PRs
+```mermaid
+flowchart TB
+    subgraph yours["Your machines"]
+        operator["Operator in a browser"]
+        session["Agent session<br/>Claude Code, Codex, Cursor"]
+        runner["conveyor run / conveyor worker<br/>claims work orders, creates worktrees,<br/>launches your agent CLIs"]
+    end
+
+    subgraph daemon["conveyord, one Go binary"]
+        api["REST API and SSE<br/>embedded React dashboard"]
+        stages["In-process stages<br/>triage, spec, planning chat"]
+        dispatch["Dispatcher and GitHub monitor"]
+        mcp["MCP server<br/>planning tools, work orders"]
+    end
+
+    db[("PostgreSQL or SingleStore<br/>event log, durable queue,<br/>documents, lineage")]
+    llm["OpenAI-compatible<br/>model endpoint"]
+    github["GitHub<br/>repositories, PRs, issues, CI"]
+
+    operator --> api
+    session --> mcp
+    runner --> mcp
+    daemon --> db
+    stages --> llm
+    dispatch <--> github
+    runner --> github
 ```
 
-`conveyor worker` and `conveyor run` resolve Git credentials locally. Set `CONVEYOR_GIT_TOKEN` in the startup environment to use child-only askpass, or leave it unset to use the host's Git credential configuration. Neither command accepts the token in argv or saves it. Before claiming, a bounded `git ls-remote --heads <repository URL> <base branch>` check runs with terminal prompting disabled; failures leave the order queued and name both credential paths. Repository results are cached for the invocation, so restart after changing credentials. Captured output is scrubbed before display and upload. The stored account forge token remains required for claim eligibility and control-plane pull request writes. Upgrade the worker binary and daemon together; older workers reject token-free claims.
+Three things run, in three places:
 
-`conveyord` is one Go binary. PostgreSQL or SingleStore stores the event log, documents,
-lineage projection, and the log-backed queue. The worker launches agent CLIs with your
-local credentials.
+- **`conveyord`** is the control plane. It serves the REST API, the
+  dashboard, and the MCP endpoint that agents use. It runs the small
+  always-on stages itself: triage, spec, and the planning conversation,
+  through the model endpoint you configure. Its dispatcher advances each
+  task through the pipeline and leaves implementation and review as leased
+  work orders for agents to claim. The GitHub monitor turns CI results and
+  merges into ordinary task intake.
+- **The database** is the only state. PostgreSQL or SingleStore holds an
+  append-only, per-workspace event log; the durable queue runs on that log
+  rather than on a separate broker. Documents, links, and the lineage
+  projection are folded from the same events.
+- **Your machines** do the work. `conveyor run` and `conveyor worker` claim
+  work orders over HTTP, check out a Git worktree, and launch your agent
+  CLIs with your credentials. Those CLIs report plans, progress, and review
+  verdicts back over MCP. Delivery is an ordinary pull request. There is no
+  hosted sandbox, and the server never holds your agent CLI credentials;
+  the only model key it keeps is its own, for the in-process stages.
+
+Git and GitHub credentials are resolved on the executor machine, never sent
+to the server. [Client setup](docs/client-setup.md) covers the normal
+credential helper path and [Worker operations](docs/worker-operations.md)
+covers headless credentials, the pre-claim access check, and worker upgrades.
 
 ## Deployment database
 
@@ -135,9 +162,11 @@ explicit test backend and is refused by the daemon. See
 
 ## Installation
 
-A factory host needs PostgreSQL 15 or newer, or SingleStore, plus Git and an authenticated `gh` CLI,
-an API key for an OpenAI-compatible model endpoint, and the agent CLIs you
-plan to run.
+The fastest route is [Getting started (solo)](docs/getting-started-solo.md),
+a single command list that stands up a factory on one machine. A server host
+needs a database and a model API key; each executor machine needs Git
+credentials and an authenticated agent CLI. [Server setup](docs/server-setup.md)
+and [Client setup](docs/client-setup.md) cover each role in full.
 
 Install the latest `conveyor` and `conveyord` binaries into `~/.local/bin`:
 
@@ -146,11 +175,9 @@ curl -fsSL https://raw.githubusercontent.com/kidus-tiliksew/conveyor/main/instal
 ```
 
 The installer verifies the release checksum before replacing either binary
-and does not need `sudo`. Pinning a reviewed version, building from source,
-and upgrades are covered in [Installation](docs/installation.md).
-
-From there, [Getting started (solo)](docs/getting-started-solo.md) stands up
-a factory end to end on one machine, and
+and does not need `sudo`. Pinning a reviewed version, the container image,
+building from source, and upgrades are covered in
+[Server setup](docs/server-setup.md).
 [Getting started (multiplayer)](docs/getting-started-multiplayer.md) covers
 a shared team server.
 
@@ -160,8 +187,9 @@ Full docs live in [docs/](docs/README.md). There's no docs site yet.
 
 **Getting started**
 
-- [Installation](docs/installation.md): release installer, source builds, prerequisites
-- [Getting started (solo)](docs/getting-started-solo.md): one person, one machine, end to end
+- [Server setup](docs/server-setup.md): install the binaries, start a database, run the daemon, invite clients
+- [Client setup](docs/client-setup.md): sign in, Git and GitHub access, execution setup, first task
+- [Getting started (solo)](docs/getting-started-solo.md): the quick start, one person, one machine, end to end
 - [Getting started (multiplayer)](docs/getting-started-multiplayer.md): a shared team server
 
 **Guides**

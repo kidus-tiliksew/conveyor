@@ -1,5 +1,31 @@
 # Durable worker operation
 
+A worker is a client that polls the queue and runs work without you
+attached. Before pairing one, finish [Client setup](client-setup.md) and
+confirm on this machine:
+
+- The server and workspace are selected and `conveyor auth status` succeeds.
+- The execution config has a verified `repos[].checkout` mapping, and you
+  pass its absolute path with `--config` when installing the service.
+- Git credentials and the agent CLI login work in the service account's
+  environment, not only in your interactive shell. Service launches do not
+  inherit shell exports.
+
+Installing a worker does not install `conveyord`.
+
+For headless Git credentials, supply `CONVEYOR_GIT_TOKEN` through the startup
+environment of `conveyor run` or `conveyor worker run`. Conveyor passes it to
+child processes through askpass only; it is never saved and is not accepted
+as a command-line argument. Arrange credentials for the initial clone
+separately. Before claiming, Conveyor runs a bounded
+`git ls-remote --heads <repository URL> <base branch>` with terminal prompting
+disabled; a failure leaves the order queued and names both credential paths.
+The result is cached for the invocation, so restart the worker after changing
+credentials. Captured output is scrubbed before display and upload. The
+stored account GitHub token is still required for claim eligibility and
+control-plane pull request writes. Upgrade the worker binary and the daemon
+together; older workers reject token-free claims.
+
 `conveyor worker run` reuses the owner-only enrollment credential saved by its
 first successful pairing. Restarting an enrolled worker normally needs no new
 pairing token. Pair again only when the credential was revoked, removed, or is
@@ -38,13 +64,13 @@ intervention:
 
 ```sh
 # Pair and enroll once if this workspace has no saved credential yet.
-bin/conveyor --workspace demo worker pair
-bin/conveyor --workspace demo worker run --pairing-token <token> --once
+conveyor --workspace demo worker pair
+conveyor --workspace demo worker run --pairing-token <token> --once
 
 # Install, inspect, and remove the workspace-specific user service.
-bin/conveyor --workspace demo worker install
-bin/conveyor --workspace demo worker status
-bin/conveyor --workspace demo worker uninstall
+conveyor --workspace demo worker install
+conveyor --workspace demo worker status
+conveyor --workspace demo worker uninstall
 ```
 
 `install` requires an existing saved enrollment and a valid local execution
