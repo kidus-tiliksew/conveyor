@@ -68,7 +68,7 @@ func TestEmbeddedSkillsMatchRepositorySources(t *testing.T) {
 func TestConveyorWorkSkillShipsScratchDiscipline(t *testing.T) {
 	t.Parallel()
 	base := t.TempDir()
-	destinations := skillDestinations(base, supportedSkillTools)
+	destinations := skillDestinations(base, supportedSkillTools, false)
 	if _, _, err := installEmbeddedSkillsForDestinations(base, destinations, "v1", false); err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +104,7 @@ func TestConveyorWorkSkillShipsScratchDiscipline(t *testing.T) {
 func TestConveyorWorkSkillShipsStageCheckoutAndExitDiscipline(t *testing.T) {
 	t.Parallel()
 	base := t.TempDir()
-	destinations := skillDestinations(base, supportedSkillTools)
+	destinations := skillDestinations(base, supportedSkillTools, false)
 	if _, _, err := installEmbeddedSkillsForDestinations(base, destinations, "v1", false); err != nil {
 		t.Fatal(err)
 	}
@@ -366,7 +366,8 @@ func TestSkillsInstallDetectsEveryToolAndSupportsNarrowing(t *testing.T) {
 	}
 	if strings.Count(output.String(), "claude\tcreated\t") != len(embeddedSkillManifest) ||
 		strings.Count(output.String(), "codex\tcreated\t") != len(embeddedSkillManifest) ||
-		strings.Count(output.String(), "cursor\tcreated\t") != len(embeddedSkillManifest) {
+		strings.Count(output.String(), "cursor\tcreated\t") != len(embeddedSkillManifest) ||
+		strings.Count(output.String(), "opencode\tcreated\t") != len(embeddedSkillManifest) {
 		t.Fatalf("per-tool output missing:\n%s", output.String())
 	}
 	for _, asset := range embeddedSkillManifest {
@@ -382,7 +383,11 @@ func TestSkillsInstallDetectsEveryToolAndSupportsNarrowing(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !bytes.Equal(claude, codex) || !bytes.Equal(claude, cursor) {
+		opencode, err := os.ReadFile(filepath.Join(home, ".config", "opencode", "skills", filepath.FromSlash(asset.relative)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(claude, codex) || !bytes.Equal(claude, cursor) || !bytes.Equal(claude, opencode) {
 			t.Fatalf("%s differs across editor roots", asset.relative)
 		}
 	}
@@ -403,6 +408,136 @@ func TestSkillsInstallDetectsEveryToolAndSupportsNarrowing(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(narrowedHome, ".codex")); !os.IsNotExist(err) {
 		t.Fatalf("narrowed install touched codex: %v", err)
 	}
+	if _, err := os.Stat(filepath.Join(narrowedHome, ".config", "opencode")); !os.IsNotExist(err) {
+		t.Fatalf("narrowed install touched opencode: %v", err)
+	}
+}
+
+func TestSkillsInstallOpenCodeOnlyListAndProjectScopes(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	opencodeOnly := func(name string) (string, error) {
+		if name == "opencode" {
+			return "/tools/opencode", nil
+		}
+		return "", fs.ErrNotExist
+	}
+
+	list := skillsInstallCmdWithLookPath(opencodeOnly)
+	list.SetArgs([]string{"--list", "--tool", "opencode"})
+	var output bytes.Buffer
+	list.SetOut(&output)
+	if err := list.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	globalRoot := filepath.Join(home, ".config", "opencode", "skills")
+	if strings.Count(output.String(), "opencode\t") != len(embeddedSkillManifest) || !strings.Contains(output.String(), globalRoot) {
+		t.Fatalf("OpenCode list output:\n%s", output.String())
+	}
+	if _, err := os.Stat(filepath.Join(home, ".config")); !os.IsNotExist(err) {
+		t.Fatalf("OpenCode list wrote home: %v", err)
+	}
+
+	install := skillsInstallCmdWithLookPath(opencodeOnly)
+	install.SetArgs([]string{"--tool", "opencode"})
+	output.Reset()
+	install.SetOut(&output)
+	if err := install.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(output.String(), "opencode\tcreated\t") != len(embeddedSkillManifest) {
+		t.Fatalf("OpenCode install output:\n%s", output.String())
+	}
+	for _, asset := range embeddedSkillManifest {
+		content, err := os.ReadFile(filepath.Join(globalRoot, filepath.FromSlash(asset.relative)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, owned := managedSkillVersion(content, asset.sourcePath); !owned {
+			t.Fatalf("OpenCode skill %s has no ownership marker", asset.relative)
+		}
+	}
+	install = skillsInstallCmdWithLookPath(opencodeOnly)
+	install.SetArgs([]string{"--tool", "opencode"})
+	output.Reset()
+	install.SetOut(&output)
+	if err := install.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(output.String(), "opencode\tunchanged\t") != len(embeddedSkillManifest) {
+		t.Fatalf("OpenCode repeat output:\n%s", output.String())
+	}
+	if _, err := os.Stat(filepath.Join(home, ".config", "opencode", "skill")); !os.IsNotExist(err) {
+		t.Fatalf("singular OpenCode skill directory was touched: %v", err)
+	}
+
+	project := t.TempDir()
+	previous, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.Chdir(project); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(previous) })
+	projectInstall := skillsInstallCmdWithLookPath(opencodeOnly)
+	projectInstall.SetArgs([]string{"--project", "--tool", "opencode"})
+	if err := projectInstall.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	for _, asset := range embeddedSkillManifest {
+		if _, err := os.Stat(filepath.Join(project, ".opencode", "skills", filepath.FromSlash(asset.relative))); err != nil {
+			t.Fatalf("project OpenCode skill %s missing: %v", asset.relative, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(project, ".config", "opencode")); !os.IsNotExist(err) {
+		t.Fatalf("project install used the global OpenCode root: %v", err)
+	}
+}
+
+func TestOpenCodeDestinationRefusesUnsafeFiles(t *testing.T) {
+	opencode := supportedSkillTools[len(supportedSkillTools)-1]
+
+	t.Run("unowned collision", func(t *testing.T) {
+		base := t.TempDir()
+		destination := skillDestinations(base, []skillTool{opencode}, false)[0]
+		collision := filepath.Join(destination.root, "conveyor-plan", "SKILL.md")
+		if err := os.MkdirAll(filepath.Dir(collision), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(collision, []byte("operator content\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := installEmbeddedSkillsForDestinations(base, []skillDestination{destination}, "v1", false); err == nil || !strings.Contains(err.Error(), "not owned by Conveyor") {
+			t.Fatalf("OpenCode collision error = %v", err)
+		}
+	})
+
+	t.Run("nested symlink", func(t *testing.T) {
+		base := t.TempDir()
+		destination := skillDestinations(base, []skillTool{opencode}, false)[0]
+		if err := os.MkdirAll(destination.root, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(t.TempDir(), filepath.Join(destination.root, "conveyor-plan")); err != nil {
+			t.Skipf("symlink unavailable: %v", err)
+		}
+		if _, _, err := installEmbeddedSkillsForDestinations(base, []skillDestination{destination}, "v1", false); err == nil || !strings.Contains(err.Error(), "refusing symlink") {
+			t.Fatalf("OpenCode symlink error = %v", err)
+		}
+	})
+
+	t.Run("non-directory ancestor", func(t *testing.T) {
+		base := t.TempDir()
+		destination := skillDestinations(base, []skillTool{opencode}, false)[0]
+		configPath := filepath.Join(base, ".config")
+		if err := os.WriteFile(configPath, []byte("operator content\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := installEmbeddedSkillsForDestinations(base, []skillDestination{destination}, "v1", false); err == nil || !strings.Contains(err.Error(), "non-directory") {
+			t.Fatalf("OpenCode non-directory error = %v", err)
+		}
+	})
 }
 
 func TestSkillsInstallCursorOnlyListAndProjectScopes(t *testing.T) {
@@ -486,12 +621,12 @@ func TestSkillsInstallDetectionErrorsAreReadOnly(t *testing.T) {
 	missing := func(name string) (string, error) { return "", fs.ErrNotExist }
 
 	command := skillsInstallCmdWithLookPath(missing)
-	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "looked for claude, codex, and cursor") {
+	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "looked for claude, codex, cursor, and opencode") {
 		t.Fatalf("no-tool error = %v", err)
 	}
 	command = skillsInstallCmdWithLookPath(func(name string) (string, error) { return "/tools/" + name, nil })
 	command.SetArgs([]string{"--tool", "unknown"})
-	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "supported tools: claude, codex, cursor") {
+	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "supported tools: claude, codex, cursor, opencode") {
 		t.Fatalf("unknown-tool error = %v", err)
 	}
 	command = skillsInstallCmdWithLookPath(missing)
@@ -510,7 +645,7 @@ func TestSkillsInstallDetectionErrorsAreReadOnly(t *testing.T) {
 
 func TestCodexLegacyArtifactIsReportOnlyForDefaultMultiToolInstall(t *testing.T) {
 	base := t.TempDir()
-	destinations := skillDestinations(base, supportedSkillTools)
+	destinations := skillDestinations(base, supportedSkillTools, false)
 	codexDestination := destinations[1]
 	legacyFile := filepath.Join(codexDestination.legacyPath, "plugin.json")
 	if err := os.MkdirAll(filepath.Dir(legacyFile), 0o755); err != nil {
@@ -545,7 +680,7 @@ func TestCodexLegacyArtifactIsReportOnlyForDefaultMultiToolInstall(t *testing.T)
 
 func TestAdoptReplacesOnlyUnmarkedNativeSkillFiles(t *testing.T) {
 	base := t.TempDir()
-	destination := skillDestinations(base, []skillTool{supportedSkillTools[1]})[0]
+	destination := skillDestinations(base, []skillTool{supportedSkillTools[1]}, false)[0]
 	collision := filepath.Join(destination.root, "conveyor-plan", "SKILL.md")
 	if err := os.MkdirAll(filepath.Dir(collision), 0o755); err != nil {
 		t.Fatal(err)
@@ -584,7 +719,7 @@ func TestAdoptReplacesOnlyUnmarkedNativeSkillFiles(t *testing.T) {
 
 func TestManagedCodexInstallRefreshesAlongsideLegacyArtifact(t *testing.T) {
 	base := t.TempDir()
-	destination := skillDestinations(base, []skillTool{supportedSkillTools[1]})[0]
+	destination := skillDestinations(base, []skillTool{supportedSkillTools[1]}, false)[0]
 	if _, _, err := installEmbeddedSkillsForDestinations(base, []skillDestination{destination}, "v1", false); err != nil {
 		t.Fatal(err)
 	}

@@ -103,10 +103,11 @@ type skillInstallFile struct {
 }
 
 type skillTool struct {
-	name       string
-	binary     string
-	root       string
-	legacyPath string
+	name        string
+	binary      string
+	root        string
+	projectRoot string
+	legacyPath  string
 }
 
 type skillDestination struct {
@@ -127,6 +128,7 @@ var supportedSkillTools = []skillTool{
 	{name: "claude", binary: "claude", root: ".claude/skills"},
 	{name: "codex", binary: "codex", root: ".codex/skills", legacyPath: ".codex/plugins/cache/personal/conveyor/0.1.0"},
 	{name: "cursor", binary: "cursor-agent", root: ".cursor/skills"},
+	{name: "opencode", binary: "opencode", root: ".config/opencode/skills", projectRoot: ".opencode/skills"},
 }
 
 func skillsCmd() *cobra.Command {
@@ -155,7 +157,7 @@ func skillsInstallCmdWithLookPath(lookPath func(string) (string, error)) *cobra.
 			if err != nil {
 				return err
 			}
-			destinations := skillDestinations(base, tools)
+			destinations := skillDestinations(base, tools, project)
 			if list {
 				return listEmbeddedSkillsForDestinations(cmd, base, destinations, releaseinfo.Version)
 			}
@@ -174,7 +176,7 @@ func skillsInstallCmdWithLookPath(lookPath func(string) (string, error)) *cobra.
 	}
 	command.Flags().BoolVar(&project, "project", false, "install under each tool's project skills directory instead of the user-global directory")
 	command.Flags().BoolVar(&list, "list", false, "list embedded files and their installed state without writing")
-	command.Flags().StringVar(&selectedTool, "tool", "", "install only for one detected tool (claude, codex, or cursor)")
+	command.Flags().StringVar(&selectedTool, "tool", "", "install only for one detected tool (claude, codex, cursor, or opencode)")
 	command.Flags().BoolVar(&adopt, "adopt", false, "adopt unmarked skill files in a selected native destination")
 	command.Flags().BoolVar(&force, "force", false, "allow replacing managed skills installed by a newer Conveyor release")
 	return command
@@ -226,18 +228,22 @@ func selectSkillTools(selected string, lookPath func(string) (string, error)) ([
 		}
 	}
 	if selected != "" && !known {
-		return nil, fmt.Errorf("unsupported tool %q; supported tools: claude, codex, cursor", selected)
+		return nil, fmt.Errorf("unsupported tool %q; supported tools: claude, codex, cursor, opencode", selected)
 	}
 	if len(tools) == 0 {
-		return nil, fmt.Errorf("no supported agent tooling detected on PATH (looked for claude, codex, and cursor)")
+		return nil, fmt.Errorf("no supported agent tooling detected on PATH (looked for claude, codex, cursor, and opencode)")
 	}
 	return tools, nil
 }
 
-func skillDestinations(base string, tools []skillTool) []skillDestination {
+func skillDestinations(base string, tools []skillTool, project bool) []skillDestination {
 	destinations := make([]skillDestination, 0, len(tools))
 	for _, tool := range tools {
-		destination := skillDestination{tool: tool, root: filepath.Join(base, filepath.FromSlash(tool.root))}
+		root := tool.root
+		if project && tool.projectRoot != "" {
+			root = tool.projectRoot
+		}
+		destination := skillDestination{tool: tool, root: filepath.Join(base, filepath.FromSlash(root))}
 		if tool.legacyPath != "" {
 			destination.legacyPath = filepath.Join(base, filepath.FromSlash(tool.legacyPath))
 		}
