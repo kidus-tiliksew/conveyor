@@ -1,4 +1,4 @@
-export type MCPClient = 'cursor' | 'claude' | 'codex' | 'other'
+export type MCPClient = 'cursor' | 'opencode' | 'claude' | 'codex' | 'other'
 
 export interface MCPClientSetup {
   id: MCPClient
@@ -42,6 +42,27 @@ export function mcpClientSetups(endpoint: string): MCPClientSetup[] {
     "conveyor": {
       "url": "\${env:CONVEYOR_ADDR}",
       "headers": { "Authorization": "Bearer \${env:CONVEYOR_API_TOKEN}" }
+    }
+  }
+}`,
+    },
+    {
+      id: 'opencode',
+      label: 'OpenCode',
+      description: 'Connect OpenCode to this Conveyor deployment.',
+      steps: [
+        'Run conveyor auth login, then conveyor mcp install --tool opencode, or merge the configuration below into ~/.config/opencode/opencode.json.',
+        `Export CONVEYOR_ADDR=${endpoint} and CONVEYOR_API_TOKEN=$(conveyor auth token) in the shell that launches OpenCode.`,
+        'Verify with opencode mcp list; the conveyor line must read connected.',
+        'Do not add keys outside mcp; OpenCode rejects unknown top-level keys and will not start.',
+      ],
+      snippetLabel: '~/.config/opencode/opencode.json',
+      snippet: `{
+  "mcp": {
+    "conveyor": {
+      "type": "remote",
+      "url": "{env:CONVEYOR_ADDR}",
+      "headers": { "Authorization": "Bearer {env:CONVEYOR_API_TOKEN}" }
     }
   }
 }`,

@@ -1,6 +1,7 @@
 import claudeIcon from '@lobehub/icons-static-svg/icons/claude-color.svg?raw'
 import codexIcon from '@lobehub/icons-static-svg/icons/codex.svg?raw'
 import cursorIcon from '@lobehub/icons-static-svg/icons/cursor.svg?raw'
+import opencodeIcon from '@lobehub/icons-static-svg/icons/opencode.svg?raw'
 import { Cable, CheckCircle2, X } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { mcpClientSetups, mcpEndpoint, type MCPClient } from '../../lib/mcp'
@@ -11,6 +12,7 @@ import { Dialog } from '../ui/dialog'
 
 const clientLogos: Partial<Record<MCPClient, string>> = {
   cursor: cursorIcon,
+  opencode: opencodeIcon,
   claude: claudeIcon,
   codex: codexIcon,
 }
@@ -54,7 +56,7 @@ export function MCPSetupDialog({ onClose }: { onClose: () => void }) {
 
       <div className="min-w-0 px-5 py-4">
         <div className="overflow-x-auto rounded-lg bg-surface p-1" role="tablist" aria-label="MCP clients">
-          <div className="grid min-w-[34rem] grid-cols-4 gap-1">
+          <div className="grid min-w-[40rem] grid-cols-5 gap-1">
             {clients.map((client) => {
               const logo = clientLogos[client.id]
               return (

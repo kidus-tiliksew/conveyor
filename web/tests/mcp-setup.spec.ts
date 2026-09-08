@@ -54,14 +54,17 @@ test('Board MCP action offers safe client-specific setup and complete dialog beh
   const endpoint = `${new URL(page.url()).origin}/mcp`
   await expect(dialog).toBeVisible()
   await expect(page.locator('body')).toHaveCSS('overflow', 'hidden')
-  await expect(dialog.getByRole('tab')).toHaveCount(4)
-  for (const label of ['Cursor', 'Claude Code', 'Codex', 'Other']) {
+  await expect(dialog.getByRole('tab')).toHaveCount(5)
+  for (const [index, label] of ['Cursor', 'OpenCode', 'Claude Code', 'Codex', 'Other'].entries()) {
+    await expect(dialog.getByRole('tab').nth(index)).toHaveAccessibleName(label)
+  }
+  for (const label of ['Cursor', 'OpenCode', 'Claude Code', 'Codex', 'Other']) {
     await expect(dialog.getByRole('tab', { name: label, exact: true })).toBeVisible()
   }
-  for (const client of ['cursor', 'claude', 'codex']) {
+  for (const client of ['cursor', 'opencode', 'claude', 'codex']) {
     await expect(dialog.locator(`[data-mcp-client-logo="${client}"] svg`)).toBeVisible()
   }
-  await expect(dialog.locator('[data-mcp-client-logo]')).toHaveCount(3)
+  await expect(dialog.locator('[data-mcp-client-logo]')).toHaveCount(4)
   await expect(dialog.getByRole('tab', { name: 'Other' }).locator('[data-mcp-client-fallback]')).toBeVisible()
   await expect(dialog.getByRole('tab', { name: 'Cursor' })).toHaveAttribute('aria-selected', 'true')
   await expect(dialog).toContainText('~/.cursor/mcp.json')
@@ -83,6 +86,32 @@ test('Board MCP action offers safe client-specific setup and complete dialog beh
   await expect(dialog.locator('pre')).not.toContainText(endpoint)
   await expect(dialog.locator('pre')).not.toContainText('<CONVEYOR_API_TOKEN>')
   await expect(dialog).not.toContainText('test-token-that-must-not-appear')
+
+  await dialog.getByRole('tab', { name: 'OpenCode', exact: true }).click()
+  await expect(dialog).toContainText('Connect OpenCode to this Conveyor deployment.')
+  await expect(dialog).toContainText('~/.config/opencode/opencode.json')
+  await expect(dialog.getByRole('listitem')).toHaveText([
+    'Run conveyor auth login, then conveyor mcp install --tool opencode, or merge the configuration below into ~/.config/opencode/opencode.json.',
+    `Export CONVEYOR_ADDR=${endpoint} and CONVEYOR_API_TOKEN=$(conveyor auth token) in the shell that launches OpenCode.`,
+    'Verify with opencode mcp list; the conveyor line must read connected.',
+    'Do not add keys outside mcp; OpenCode rejects unknown top-level keys and will not start.',
+  ])
+  const openCodeSnippet = `{
+  "mcp": {
+    "conveyor": {
+      "type": "remote",
+      "url": "{env:CONVEYOR_ADDR}",
+      "headers": { "Authorization": "Bearer {env:CONVEYOR_API_TOKEN}" }
+    }
+  }
+}`
+  await expect(dialog.locator('pre')).toHaveText(openCodeSnippet)
+  await expect(dialog.locator('pre')).not.toContainText(endpoint)
+  await expect(dialog).not.toContainText('test-token-that-must-not-appear')
+  await dialog.getByRole('button', { name: 'Copy OpenCode setup' }).click()
+  await expect(dialog.getByRole('button', { name: 'Copied' })).toBeVisible()
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(openCodeSnippet)
+  await expect(dialog.getByRole('button', { name: 'Copy OpenCode setup' })).toBeVisible()
 
   await dialog.getByRole('tab', { name: 'Claude Code' }).click()
   await expect(dialog).toContainText('~/.claude.json')
@@ -125,6 +154,10 @@ test('Tasks MCP action stays usable at a narrow viewport', async ({ page }) => {
   expect(box).not.toBeNull()
   expect(box!.x).toBeGreaterThanOrEqual(0)
   expect(box!.x + box!.width).toBeLessThanOrEqual(390)
+
+  await dialog.getByRole('tab', { name: 'OpenCode', exact: true }).click()
+  await expect(dialog.getByRole('button', { name: 'Copy OpenCode setup' })).toBeVisible()
+  await expect(dialog.locator('pre')).toContainText('{env:CONVEYOR_ADDR}')
 
   await dialog.getByRole('tab', { name: 'Codex' }).click()
   const endpoint = `${new URL(page.url()).origin}/mcp`
