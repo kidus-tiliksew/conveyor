@@ -140,11 +140,6 @@ Three things run, in three places:
   hosted sandbox, and the server never holds your agent CLI credentials;
   the only model key it keeps is its own, for the in-process stages.
 
-Git and GitHub credentials are resolved on the executor machine, never sent
-to the server. [Client setup](docs/client-setup.md) covers the normal
-credential helper path and [Worker operations](docs/worker-operations.md)
-covers headless credentials, the pre-claim access check, and worker upgrades.
-
 ## Deployment database
 
 Choose `database.backend: postgres` or `database.backend: singlestore` and
@@ -153,12 +148,6 @@ supply `CONVEYOR_DATABASE_URL` in the process environment. PostgreSQL uses
 `singlestore://user:password@host:3306/conveyor?tls=true`, `mysql://` with the
 same URL shape, or a MySQL DSN such as
 `user:password@tcp(host:3306)/conveyor?tls=true`. URL passwords must be encoded.
-
-`conveyor init` and `conveyor user issue-link` select the backend from that URL.
-The daemon migrates the selected backend, bootstraps identity and its workspace,
-and runs the durable queue on that backend's event log. Memory remains an
-explicit test backend and is refused by the daemon. See
-[SingleStore operations](docs/singlestore.md) for locks, sharding and migrations.
 
 ## Installation
 
