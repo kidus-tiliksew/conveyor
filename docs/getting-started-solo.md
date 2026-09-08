@@ -1,235 +1,124 @@
 # Getting started: solo
 
 Solo mode is one person running the whole factory on one machine: the server,
-the dashboard, the agents, and the operator judgment are all yours. This guide
-stands that up end to end. If you are joining or hosting a shared server, read
-[Getting started: multiplayer](getting-started-multiplayer.md) instead; the
-first half is the same.
+the dashboard, the agents, and the operator judgment are all yours. This page
+is the whole path as one command list. Each step links to the fuller guide
+when you need the detail; [Server setup](server-setup.md) covers the first
+half and [Client setup](client-setup.md) the second.
 
-## 1. Install
+You need Docker (or a PostgreSQL 15+ you already run), Git, the GitHub CLI,
+an API key for an OpenAI-compatible model endpoint, and an authenticated
+agent CLI such as Claude Code.
 
-Follow [Installation](installation.md). You need both binaries on your PATH,
-a running PostgreSQL 15 or newer, and the environment values in the next step.
-Task execution later requires Git on the worker machine, but initialization
-does not require Git, a forge CLI, or a local repository clone.
+The server and the client keep separate directories even on one machine:
+`~/.conveyor/server` holds the daemon's config and secrets,
+`~/.conveyor/client` holds your execution setup. Treat that as a given and
+the rest is copy and paste.
 
-## 2. Export the environment
-
-The server reads three required variables, plus the key that encrypts stored
-GitHub tokens. Generate the operator token and the encryption key:
+## 1. Install and start a database
 
 ```sh
-openssl rand -hex 32
+curl -fsSL https://raw.githubusercontent.com/kidus-tiliksew/conveyor/main/install.sh | sh
+export PATH="$HOME/.local/bin:$PATH"
+docker run -d --name conveyor-postgres --restart unless-stopped \
+  -e POSTGRES_USER=conveyor -e POSTGRES_PASSWORD=conveyor \
+  -e POSTGRES_DB=conveyor -p 127.0.0.1:5432:5432 \
+  -v conveyor-postgres-data:/var/lib/postgresql/data postgres:16-alpine
 ```
 
-```sh
-openssl rand -base64 32
-```
+Add the `PATH` line to your shell startup file.
+Detail: [Server setup, steps 1 and 2](server-setup.md#1-install-the-binaries).
+
+## 2. Create the server environment and initialize
 
 ```sh
-export CONVEYOR_DATABASE_URL='postgres://conveyor:conveyor@localhost:5432/conveyor?sslmode=disable'
-export CONVEYOR_API_TOKEN='<hex token>'
-export CONVEYOR_LLM_API_KEY='<provider API key>'
-export CONVEYOR_FORGE_TOKEN_ENCRYPTION_KEY='<base64 key>'
-```
-
-Without the encryption key, the server cannot store the GitHub token that
-task execution requires (step 5). Keep it stable; rotating it invalidates
-stored tokens.
-
-Both binaries also load a `.env` file from the working directory, and process
-environment values win over file values. Putting these three lines in a `.env`
-next to your config is the usual arrangement.
-
-## 3. Initialize the factory
-
-```sh
+mkdir -p "$HOME/.conveyor/server" && cd "$HOME/.conveyor/server"
+umask 077
+cat > .env <<EOF
+CONVEYOR_DATABASE_URL=postgres://conveyor:conveyor@127.0.0.1:5432/conveyor?sslmode=disable
+CONVEYOR_API_TOKEN=$(openssl rand -hex 32)
+CONVEYOR_FORGE_TOKEN_ENCRYPTION_KEY=$(openssl rand -base64 32)
+CONVEYOR_LLM_API_KEY=<provider API key>
+CONVEYOR_PUBLIC_URL=http://127.0.0.1:8080
+EOF
 conveyor init
 ```
 
-`conveyor init` prompts for the organization name, your name and email, a
-workspace id, and the repository Conveyor will work on (name, URL, default
-branch). It registers that metadata without inspecting the deployment host's
-filesystem or forge tools, writes `conveyor.yaml`, creates the organization and
-workspace in the database, and binds `CONVEYOR_API_TOKEN` as your operator
-token.
+Edit `.env` to fill in the API key before running `conveyor init`. The
+wizard asks for your organization, name, email, a workspace ID, and your
+repository's name, URL, and default branch. Note the workspace ID and
+repository name for step 4, and keep the printed sign-in link.
+Detail: [Server setup, steps 3 and 4](server-setup.md#3-create-the-server-environment-file).
 
-It ends by printing two things: the command to install the server as a user
-service, and a sign-in link for your new operator account. Keep the link; you
-use it in step 5.
-
-## 4. Start the server
-
-Either install it as a user service (a launchd agent on macOS, a systemd user
-unit on Linux):
+## 3. Start the server and sign in
 
 ```sh
 conveyord install --config ./conveyor.yaml
+curl -fsS http://127.0.0.1:8080/healthz
 ```
 
-or run it in the foreground while you experiment:
+Open the sign-in link, set a password, then on Settings mint a personal
+access token and save a fine-grained GitHub token (Contents and Pull
+requests read/write on your repository).
+Detail: [Server setup, steps 5 and 6](server-setup.md#5-start-and-check-the-server).
+
+## 4. Connect the CLI
+
+Open a new shell outside the server directory:
 
 ```sh
-conveyord -config ./conveyor.yaml
-```
-
-Startup applies database migrations and serves the dashboard at
-`http://127.0.0.1:8080`. `conveyord status` reports the service state and log
-paths.
-
-Before starting, open `conveyor.yaml` and adjust the `harnesses:` entries for
-the agent CLIs actually installed on this machine. The annotated
-[conveyor.example.yaml](../conveyor.example.yaml) explains every field.
-
-## 5. Sign in and mint your tokens
-
-Open the sign-in link that `conveyor init` printed. It lands on an onboarding
-page where you set your display name and a password (at least 12 characters).
-From then on the dashboard uses an ordinary session; sign in at `/sign-in`
-with email and password. If you ever lose the link before onboarding, issue a
-fresh one on the host:
-
-```sh
-conveyor user issue-link you@example.com
-```
-
-Two tokens live on the Settings page:
-
-- A personal access token, for the CLI and MCP clients. Mint one now; the
-  value is shown once.
-- A GitHub token, required before you can execute tasks. Create a
-  fine-grained GitHub token with Contents read and write and Pull requests
-  read and write on your repository, and save it here. Conveyor opens PRs and
-  merges as you, not as a shared bot.
-
-## 6. Connect the CLI, skills, and MCP clients
-
-Authenticate the CLI with the personal access token from Settings, then
-install Conveyor's agent skills and MCP registrations:
-
-```sh
-conveyor --server http://127.0.0.1:8080 auth login
-conveyor skills install
-conveyor mcp install
-```
-
-The install commands configure detected Claude Code, Codex, and Cursor clients;
-pass `--tool` to pick one or `--list` to see what would change. MCP registration
-references the token through the `CONVEYOR_API_TOKEN` environment variable
-rather than writing the value anywhere. Cursor uses the owned global
-`~/.cursor/mcp.json` entry and leaves project-level Cursor configuration alone.
-For operator Cursor sessions, export the selected server's MCP endpoint too.
-The command prints either missing bridge line:
-
-```sh
-export CONVEYOR_API_TOKEN=$(conveyor auth token)
 export CONVEYOR_ADDR=http://127.0.0.1:8080/mcp
+conveyor auth login
+conveyor config set workspace <workspace-id>
+gh auth login
+gh auth setup-git
+git clone <repository-url> ~/src/<repo>
 ```
 
-## 7. Create an execution setup
+Add the `CONVEYOR_ADDR` line to your shell startup file. `auth login`
+prompts for the personal access token.
+Detail: [Client setup, steps 2 and 3](client-setup.md#2-sign-in-and-select-the-server-and-workspace).
 
-A machine that runs tasks needs a local execution configuration. It answers
-the three questions the server never decides for you: which agent CLI runs
-each stage, as what model and effort, and who sits on the review panel. The
-`conveyor.yaml` written by `conveyor init` already qualifies on the factory
-host. To generate one elsewhere, or to redo it:
+## 5. Create the execution setup
 
 ```sh
+mkdir -p "$HOME/.conveyor/client"
+export CONVEYOR_CONFIG="$HOME/.conveyor/client/conveyor.yaml"
 conveyor config init-execution
 ```
 
-The wizard detects installed agent CLIs, probes them, and writes the file.
-For a machine with Claude Code installed, the result looks like this:
+Add the `CONVEYOR_CONFIG` line to your shell startup file, then add your
+repository to the generated file:
 
 ```yaml
-execution_settings:
-  spec:
-    harness: claude
-    model: claude-opus-5
-    effort: high
-    timeout: 30m
-  implementation:
-    harness: claude
-    effort: high
-    timeout: 4h
-  review:
-    timeout: 1h
-
-harnesses:
-  - name: claude
-    mcp_transport: json_file
-    command:
-      [claude, -p, "{prompt}", --mcp-config, "{mcp_config}",
-       --allowedTools, "mcp__conveyor__*", --output-format, stream-json,
-       --verbose, --permission-mode, bypassPermissions, --add-dir, ..]
-    model_args: [--model, "{model}"]
-    effort_args:
-      high: [--effort, high]
-    probe_command: [claude, --version]
-
-review:
-  seats:
-    - {model: claude-opus-5, harness: claude}
+repos:
+  - name: <registered-repository-name>
+    url: <repository-url>
+    checkout: /absolute/path/to/src/<repo>
+    base: main
 ```
 
-Reading it top to bottom: each stage names the harness that runs it, the
-model, and a wall-clock timeout. The harness entry is the launch recipe: the
-exact argv (executed directly, never through a shell) with placeholders for
-the prompt and the generated MCP config, and a probe command Conveyor runs to
-verify the CLI is actually present before claiming anything. The review seats
-are the review panel: one independent review order per seat, in order, so
-adding a second seat with a different model buys a second opinion on every
-delivery.
+Detail: [Client setup, step 4](client-setup.md#4-create-the-local-execution-setup).
 
-The file stays on this machine; the server only learns whether a serviceable
-harness is present. Built-in templates exist for Claude Code, Codex, Grok, and
-Cursor, so you rarely write a harness entry by hand. Named variants of the
-setup are managed with `conveyor setup` and selected per run with
-`conveyor run --setup <name>`; see the [CLI reference](cli.md#setup).
-
-## 8. Build the document corpus
-
-Confirmed documents are what the factory implements and reviews against, so
-write them before filing work. Open an agent session in your project (the
-installed skills wrap the [planning playbook](playbooks/conveyor-planning.md))
-and draft requirements, System Design documents, and decisions. Every push is
-a proposal; confirm each one in the dashboard.
-
-Skipping this step works, in the sense that tasks will run. But an empty
-corpus means reviews have nothing to check deliveries against, and the
-misalignment machinery has nothing to arm. The factory degrades into a plain
-task queue. [The document corpus](document-corpus.md) explains what each
-document tier does.
-
-## 9. File and run a task
-
-File a task from the CLI:
+## 6. Connect agent sessions and run a task
 
 ```sh
-conveyor task new --repo api -m 'fix the typo in README'
-```
-
-or from an agent session with the `create_task` MCP tool, or from the
-dashboard board. Titles are generated from the body; there is no title field
-to fill in.
-
-Then run it:
-
-```sh
+conveyor skills install
+conveyor mcp install
+export CONVEYOR_API_TOKEN=$(conveyor auth token)
+conveyor task new --repo <registered-repository-name> -m 'fix the typo in README'
 conveyor run <task-id>
 ```
 
-`conveyor run` presents each stage and chains claimable stages by default.
-It surfaces operator gates (plan approval, merge approval) inline so you can
-decide without switching to the browser. Pass `--step` to confirm each stage
-before it is claimed; gates apply in every mode.
-
-When you would rather have a machine poll the queue and run work without you
-attached, enroll a durable worker. That flow, including running the worker as
-a user service, is covered in [Worker operations](worker-operations.md).
+`conveyor run` walks the stages and asks you at each operator gate.
+Detail: [Client setup, steps 5 and 6](client-setup.md#5-connect-agent-sessions).
 
 ## Where to go next
 
-- [Tasks](tasks.md) for what actually happens between `queued` and `merged`
-- [Concepts](concepts.md) for the shape of the whole factory, including how
-  far you can push it toward hands-off operation
+- [Client setup, step 7](client-setup.md#7-build-the-document-corpus): write
+  the requirements and designs the factory reviews against before filing
+  real work.
+- [Worker operations](worker-operations.md): run a background worker instead
+  of attaching to each task.
+- [Tasks](tasks.md) for what happens between `queued` and `merged`, and
+  [Concepts](concepts.md) for the shape of the whole factory.

@@ -5,23 +5,23 @@ their own accounts, roles, and GitHub identities, each running agents on their
 own machines. The server setup is the same as solo; what changes is identity,
 credentials, and who may do what.
 
-This guide assumes you have read [Getting started: solo](getting-started-solo.md).
-Steps 1 through 4 there (install, environment, `conveyor init`, start the
-server) apply unchanged to the team host. This page covers what the host needs
-beyond that, and what each contributor does.
+The host follows [Server setup](server-setup.md) once, using the team's public
+HTTPS URL. Every contributor follows [Client setup](client-setup.md)
+on their own machine. Contributors do not initialize a server or database.
+This page covers invitations, roles, and shared GitHub identity settings.
 
 ## Host: extra environment
 
-Beyond the solo environment, a team server needs:
+The server environment file needs the public URL before initialization:
 
 ```sh
-export CONVEYOR_PUBLIC_URL='https://factory.example.com'
+CONVEYOR_PUBLIC_URL=https://factory.example.com
 ```
 
 - `CONVEYOR_PUBLIC_URL` is the address users reach the dashboard at. Sign-in
   links are minted against it, and the server checks request origins against
   it, so set it before inviting anyone.
-- `CONVEYOR_FORGE_TOKEN_ENCRYPTION_KEY`, already part of the solo setup,
+- `CONVEYOR_FORGE_TOKEN_ENCRYPTION_KEY`, already part of server setup,
   carries more weight here: it encrypts every member's stored GitHub token
   (AES-256), and without it nobody can save the token that task execution
   requires. Generate it once and keep it stable; rotating it invalidates
@@ -74,42 +74,11 @@ conveyor user issue-link teammate@example.com
 
 ## Each contributor: sign in and connect
 
-Every contributor, on their own machine:
-
-1. Open the sign-in link, set a display name and password on the onboarding
-   page.
-2. On Settings, mint a personal access token, and save a GitHub token
-   (fine-grained, Contents read/write and Pull requests read/write on the
-   team's repositories). Without the GitHub token the server refuses to let
-   you claim work, because it could not open PRs as you.
-3. Connect the CLI and agent tooling:
-
-```sh
-conveyor --server https://factory.example.com auth login
-conveyor skills install
-conveyor --server https://factory.example.com mcp install
-```
-
-The install commands detect Claude Code, Codex, and Cursor. Use `--tool` to
-narrow either command to one client. Cursor MCP installation writes the owned
-global `~/.cursor/mcp.json` entry and leaves project-level configuration alone.
-Before an operator starts Cursor, bridge the selected server and stored
-credential through the environment:
-
-```sh
-export CONVEYOR_ADDR=https://factory.example.com/mcp
-export CONVEYOR_API_TOKEN=$(conveyor auth token)
-```
-
-4. Create a local execution setup describing the agent CLIs on this machine:
-
-```sh
-conveyor config init-execution
-```
-
-Execution setups are local by design. Your harness commands, models, and
-review seats never leave your machine; the server only learns whether a
-serviceable harness is present.
+Give each contributor their invitation link, server URL, workspace ID,
+registered repository name, and repository URL. They then follow
+[Client setup](client-setup.md), including workspace selection,
+account and local Git credentials, their repository clone, and execution setup.
+The host follows the same client guide if they will operate or execute tasks.
 
 ## Dividing the work
 
