@@ -380,6 +380,8 @@ export interface ReviewVerdictDiagnostic {
 // Unauthenticated display snapshot (GET /v1/workspace). The authenticated
 // config document below is the mutable Postgres-backed source of truth.
 export interface WorkspaceRepo {
+  install_conveyor?: boolean | null
+  install_task?: { id: string; state: string }
   name: string
   url: string
   github?: string
@@ -464,12 +466,7 @@ export interface ForgeTokenStatus {
 // name prevents workspace settings from growing a credential-bearing shape.
 export type WorkspaceForgeTokenStatus = ForgeTokenStatus
 
-export interface WorkspaceConfigRepo {
-  name: string
-  url: string
-  github?: string
-  base: string
-}
+export type WorkspaceConfigRepo = WorkspaceRepo
 
 export type WorkspaceReviewSeat = Record<string, never>
 

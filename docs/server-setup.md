@@ -112,6 +112,17 @@ repository name; clients need them. Initialization registers repository
 metadata and does not clone the repository. It writes `conveyor.yaml`,
 initializes the database, and prints your sign-in link.
 
+A workspace accepts no task until a repository is registered. The dashboard
+shows a notice on the Board and New task sheet until one exists. Register
+repositories on the Workspace page under General.
+
+The dashboard's Install Conveyor switch is on by default. It files one install
+task per repository to add agent instructions and Conveyor's skills through a
+pull request. Run and merge that task like any other task; it is also your first
+end-to-end delivery. `conveyor repo init` is the local equivalent. Run it again
+after a CLI upgrade to refresh the repository guidance and skills. See
+[Prepare the repository](client-setup.md#4-prepare-the-repository).
+
 Review the generated control-plane triage and planning models before starting.
 Use model IDs available through your chosen endpoint; see
 [Configuration](configuration.md) and the [annotated example](../conveyor.example.yaml).

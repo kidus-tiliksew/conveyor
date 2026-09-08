@@ -1,7 +1,7 @@
-import { useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { Paperclip, X } from 'lucide-react'
+import { useRef, useState } from 'react'
 import {
   createTask,
   fetchRequirements,
@@ -17,6 +17,7 @@ import { Input, Select } from '../ui/input'
 import { MarkdownEditor } from '../ui/markdown-editor'
 import { Sheet } from '../ui/sheet'
 import { Switch } from '../ui/switch'
+import { EmptyRepositoryNotice } from '../workspace/empty-repository-notice'
 import { type ContextGroup, TaskContextPicker } from './task-context-picker'
 
 const descriptionScaffold = 'Enter a description ...'
@@ -183,6 +184,7 @@ export function TaskCreateSheet({
       </header>
 
       <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-5 py-4">
+        <EmptyRepositoryNotice onNavigate={onClose} />
         <Field
           label="Description"
           hint="AI generates the task title from this context, which also becomes the triage and plan prompt."
@@ -372,7 +374,10 @@ export function TaskCreateSheet({
 
       <footer className="flex shrink-0 items-center justify-between gap-3 border-t border-border px-5 py-3">
         <p className="text-xs text-faint">Dispatches after every attachment is stored.</p>
-        <Button disabled={!body.trim() || !repoName || mutation.isPending} onClick={() => mutation.mutate()}>
+        <Button
+          disabled={!body.trim() || !repoName || repos.length === 0 || mutation.isPending}
+          onClick={() => mutation.mutate()}
+        >
           {mutation.isPending ? 'Creating…' : 'Create task'}
         </Button>
       </footer>
