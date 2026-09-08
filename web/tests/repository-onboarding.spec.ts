@@ -116,6 +116,7 @@ test('new row defaults on, derives slug while typing and consumes the saved proj
   await page.screenshot({ path: testInfo.outputPath('repository-onboarding.png'), fullPage: true })
   await row.getByRole('switch').click()
   await page.getByRole('button', { name: 'Save changes' }).click()
+  await expect(page.getByText(/Recorded config.updated event 42/)).toBeVisible()
   await expect.poll(() => api.submitted()?.repos[0].install_conveyor).toBe(false)
   await expect(row.getByRole('switch')).not.toBeChecked()
   await expect(row.getByRole('link', { name: installTask.id })).toBeVisible()
