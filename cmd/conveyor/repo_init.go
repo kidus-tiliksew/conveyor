@@ -200,7 +200,7 @@ func prepareRepositoryWithInstaller(root, version, name, base string, out io.Wri
 		}
 		return refuse("repo", root, err)
 	}
-	destinations := skillDestinations(root, supportedSkillTools)
+	destinations := skillDestinations(root, supportedSkillTools, true)
 	var skillPlan []skillInstallFile
 	for _, destination := range destinations {
 		// Unlike user-global skills install, repo init never follows tool roots

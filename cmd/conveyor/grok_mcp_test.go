@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http/httptest"
 	"os"
 	"os/exec"
@@ -177,6 +178,84 @@ func TestCursorEnvironmentReadinessRejectsIncompleteChildIdentity(t *testing.T) 
 	harness := config.HarnessTemplates()[3].Harness
 	err := validateCursorEnvironmentAttachmentWithRunner(t.Context(), harness, []string{"CONVEYOR_ADDR=http://127.0.0.1:9999/mcp"}, t.TempDir(), nil)
 	if err == nil || !strings.Contains(err.Error(), "child launch identity is incomplete") {
+		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestOpenCodeEnvironmentReadiness(t *testing.T) {
+	harness := config.HarnessTemplates()[4].Harness
+	secret := strings.Join([]string{"sensitive", "value"}, "-")
+	address := "http://127.0.0.1:9999/mcp"
+	env := isolatedChildEnvironment(os.Environ(), map[string]string{
+		"CONVEYOR_ADDR": address, "CONVEYOR_API_TOKEN": secret,
+		"CONVEYOR_SESSION_ID": "session", "CONVEYOR_CLIENT_TOKEN": "client",
+	})
+	directory := t.TempDir()
+	validConfig := func(url, authorization string) []byte {
+		return []byte(fmt.Sprintf(`{"mcp":{"conveyor":{"type":"remote","url":%q,"headers":{"Authorization":%q}}}}`, url, authorization))
+	}
+	tests := []struct {
+		name       string
+		listing    string
+		config     []byte
+		configErr  error
+		wantDetail string
+	}{
+		{name: "connected matching configuration", listing: "\x1b[32m✓ conveyor connected\x1b[0m", config: validConfig(address, "Bearer "+secret)},
+		{name: "failed listing", listing: "\x1b[31m✗ conveyor failed\x1b[0m", wantDetail: "reports the attachment as failed"},
+		{name: "missing listing", listing: "✓ other connected", wantDetail: "did not report the attachment as connected"},
+		{name: "failed overrides connected", listing: "✓ conveyor connected\n✗ conveyor failed", wantDetail: "reports the attachment as failed"},
+		{name: "wrong type", listing: "✓ conveyor connected", config: []byte(`{"mcp":{"conveyor":{"type":"local"}}}`), wantDetail: "type mismatched"},
+		{name: "missing attachment", listing: "✓ conveyor connected", config: []byte(`{"mcp":{}}`), wantDetail: "missing the attachment"},
+		{name: "invalid configuration", listing: "✓ conveyor connected", config: []byte(secret), wantDetail: "not valid JSON"},
+		{name: "configuration command failure", listing: "✓ conveyor connected", config: []byte(secret), configErr: fmt.Errorf("%s", secret), wantDetail: "did not complete successfully"},
+		{name: "wrong URL", listing: "✓ conveyor connected", config: validConfig("https://elsewhere.invalid/mcp", "Bearer "+secret), wantDetail: "URL mismatched"},
+		{name: "wrong authorization", listing: "✓ conveyor connected", config: validConfig(address, "Bearer "+strings.ToUpper(secret)), wantDetail: "Authorization header mismatched"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			calls := 0
+			runner := func(_ context.Context, gotDirectory string, gotEnv []string, binary string, args []string) ([]byte, error) {
+				calls++
+				if gotDirectory != directory || strings.Join(gotEnv, "\x00") != strings.Join(env, "\x00") || binary != "opencode" {
+					t.Fatal("runner received an unexpected directory, binary, or child environment")
+				}
+				switch strings.Join(args, " ") {
+				case "mcp list":
+					return []byte(test.listing), nil
+				case "debug config":
+					return test.config, test.configErr
+				default:
+					t.Fatalf("args=%v", args)
+					return nil, nil
+				}
+			}
+			err := validateOpenCodeEnvironmentAttachmentWithRunner(t.Context(), harness, env, directory, runner)
+			if test.wantDetail == "" && err != nil {
+				t.Fatal(err)
+			}
+			if test.wantDetail != "" && (err == nil || !strings.Contains(err.Error(), test.wantDetail)) {
+				t.Fatalf("error=%v", err)
+			}
+			if err != nil && (strings.Contains(err.Error(), secret) || !strings.Contains(err.Error(), `attachment "conveyor"`) || !strings.Contains(err.Error(), "~/.config/opencode/opencode.json") || !strings.Contains(err.Error(), "never creates or repairs")) {
+				t.Fatalf("unsafe or incomplete error=%q", err)
+			}
+			if calls == 0 {
+				t.Fatal("runner was not called")
+			}
+		})
+	}
+}
+
+func TestOpenCodeEnvironmentReadinessRejectsIncompleteIdentityAndWrongBinary(t *testing.T) {
+	harness := config.HarnessTemplates()[4].Harness
+	err := validateOpenCodeEnvironmentAttachmentWithRunner(t.Context(), harness, []string{"CONVEYOR_ADDR=http://127.0.0.1:9999/mcp"}, t.TempDir(), nil)
+	if err == nil || !strings.Contains(err.Error(), "child launch identity is incomplete") {
+		t.Fatalf("error=%v", err)
+	}
+	harness.Command[0] = "/usr/bin/not-opencode"
+	err = validateOpenCodeEnvironmentAttachmentWithRunner(t.Context(), harness, grokTestEnvironment("http://127.0.0.1:9999/mcp"), t.TempDir(), nil)
+	if err == nil || !strings.Contains(err.Error(), "must use opencode") {
 		t.Fatalf("error=%v", err)
 	}
 }

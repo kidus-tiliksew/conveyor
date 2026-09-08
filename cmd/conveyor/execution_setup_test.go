@@ -42,6 +42,7 @@ func TestDetectLocalHarnessesOffersOnlyHealthyPresentTemplates(t *testing.T) {
 	writeProbeFixture(t, directory, "codex", "codex 1.2.3", true)
 	writeProbeFixture(t, directory, "grok", "broken", false)
 	writeProbeFixture(t, directory, "cursor-agent", "broken", false)
+	writeProbeFixture(t, directory, "opencode", "broken", false)
 	t.Setenv("PATH", directory)
 
 	harnesses := detectLocalHarnesses(t.Context())
@@ -148,13 +149,17 @@ func TestExecutionWizardModelPlaceholdersFollowEachHarnessSelection(t *testing.T
 			if got := harnessModelPlaceholder(choice.Harness, test.stage); got != "auto" {
 				t.Fatalf("cursor placeholder = %q", got)
 			}
+			choice.Harness = "opencode"
+			if got := harnessModelPlaceholder(choice.Harness, test.stage); got != suggestedHarnessModel("opencode", test.stage) {
+				t.Fatalf("opencode placeholder = %q", got)
+			}
 		})
 	}
 }
 
-func TestNoHealthyHarnessErrorNamesCursor(t *testing.T) {
+func TestNoHealthyHarnessErrorNamesSupportedHarnesses(t *testing.T) {
 	err := noHealthyHarnessError(nil)
-	if err == nil || !strings.Contains(err.Error(), "codex, claude, grok, and cursor") {
+	if err == nil || !strings.Contains(err.Error(), "codex, claude, grok, cursor, and opencode") {
 		t.Fatalf("error=%v", err)
 	}
 }

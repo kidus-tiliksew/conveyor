@@ -542,7 +542,7 @@ func TestExampleUsesContextualSettingsWithoutLiteralSubscriptionModel(t *testing
 		t.Fatalf("review settings=%+v route=%+v", cfg.Review, cfg.Routing.Stages["review"])
 	}
 	templates := HarnessTemplates()
-	if len(templates) != 4 || !reflect.DeepEqual(templates[1].Harness.Command, []string{"claude", "-p", "{prompt}", "--mcp-config", "{mcp_config}", "--allowedTools", "mcp__conveyor__*", "--output-format", "stream-json", "--verbose", "--permission-mode", "bypassPermissions", "--add-dir", ".."}) || !reflect.DeepEqual(templates[1].Harness.ResumeCommand, []string{"--resume", "{session_id}"}) {
+	if len(templates) != 5 || !reflect.DeepEqual(templates[1].Harness.Command, []string{"claude", "-p", "{prompt}", "--mcp-config", "{mcp_config}", "--allowedTools", "mcp__conveyor__*", "--output-format", "stream-json", "--verbose", "--permission-mode", "bypassPermissions", "--add-dir", ".."}) || !reflect.DeepEqual(templates[1].Harness.ResumeCommand, []string{"--resume", "{session_id}"}) {
 		t.Fatalf("Claude catalog template does not pre-authorize the scoped Conveyor MCP lifecycle: %+v", templates)
 	}
 }
@@ -1039,10 +1039,10 @@ func TestEnvironmentHarnessRequiresNonSecretAttachmentAndTransportAwarePlacehold
 
 func TestHarnessTemplatesMatchValidationContract(t *testing.T) {
 	templates := HarnessTemplates()
-	if len(templates) != 4 {
-		t.Fatalf("template count = %d, want 4", len(templates))
+	if len(templates) != 5 {
+		t.Fatalf("template count = %d, want 5", len(templates))
 	}
-	wantIDs := []string{"codex", "claude", "grok", "cursor"}
+	wantIDs := []string{"codex", "claude", "grok", "cursor", "opencode"}
 	wantEffortArgs := []map[string][]string{
 		{
 			"low":    {"--config", `model_reasoning_effort="low"`},
@@ -1060,6 +1060,11 @@ func TestHarnessTemplatesMatchValidationContract(t *testing.T) {
 			"high":   {"--reasoning-effort", "high"},
 		},
 		nil,
+		{
+			"low":    {"--variant", "low"},
+			"medium": {"--variant", "medium"},
+			"high":   {"--variant", "high"},
+		},
 	}
 	for index, template := range templates {
 		if template.ID != wantIDs[index] {
@@ -1097,6 +1102,14 @@ func TestHarnessTemplatesMatchValidationContract(t *testing.T) {
 		!reflect.DeepEqual(cursor.ModelArgs, []string{"--model", "{model}"}) ||
 		!reflect.DeepEqual(cursor.ProbeCommand, []string{"cursor-agent", "--version"}) || cursor.ProbeTimeoutText != "30s" || cursor.StallTimeoutText != DefaultHarnessStallTimeoutText {
 		t.Fatalf("cursor template = %+v", cursor)
+	}
+	opencode := templates[4].Harness
+	if !reflect.DeepEqual(opencode.EffortArgs, map[string][]string{"low": {"--variant", "low"}, "medium": {"--variant", "medium"}, "high": {"--variant", "high"}}) || opencode.MCPTransport != MCPTransportEnvironment || opencode.MCPAttachment != "conveyor" ||
+		!reflect.DeepEqual(opencode.Command, []string{"opencode", "run", "{prompt}", "--format", "json", "--dangerously-skip-permissions"}) ||
+		!reflect.DeepEqual(opencode.ResumeCommand, []string{"--session", "{session_id}"}) ||
+		!reflect.DeepEqual(opencode.ModelArgs, []string{"--model", "{model}"}) ||
+		!reflect.DeepEqual(opencode.ProbeCommand, []string{"opencode", "--version"}) || opencode.ProbeTimeoutText != "30s" || opencode.StallTimeoutText != DefaultHarnessStallTimeoutText {
+		t.Fatalf("opencode template = %+v", opencode)
 	}
 }
 

@@ -615,5 +615,5 @@ func selectTemplateHarness(name string, destination *string, harnesses *[]config
 		*harnesses = append(*harnesses, template.Harness)
 		return nil
 	}
-	return fmt.Errorf("unsupported harness %q; choose codex, claude, grok, or cursor", name)
+	return fmt.Errorf("unsupported harness %q; choose codex, claude, grok, cursor, or opencode", name)
 }

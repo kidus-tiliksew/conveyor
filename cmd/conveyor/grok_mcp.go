@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -68,8 +69,10 @@ func validateEnvironmentAttachment(ctx context.Context, harness config.Harness, 
 		return validateGrokEnvironmentAttachment(ctx, harness, env, directory)
 	case "cursor-agent":
 		return validateCursorEnvironmentAttachment(ctx, harness, env, directory)
+	case "opencode":
+		return validateOpenCodeEnvironmentAttachment(ctx, harness, env, directory)
 	default:
-		return fmt.Errorf("environment MCP readiness is supported only for the Grok Build and Cursor CLI harnesses")
+		return fmt.Errorf("environment MCP readiness is supported only for the Grok Build, Cursor CLI, and OpenCode harnesses")
 	}
 }
 
@@ -248,6 +251,99 @@ func runCursorCommand(ctx context.Context, directory string, env []string, binar
 	command.Stderr = &output
 	err := command.Run()
 	return output.Bytes(), err
+}
+
+var ansiEscapeSequence = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]`)
+
+type openCodeConfigDocument struct {
+	MCP map[string]struct {
+		Type    string `json:"type"`
+		URL     string `json:"url"`
+		Headers struct {
+			Authorization string `json:"Authorization"`
+		} `json:"headers"`
+	} `json:"mcp"`
+}
+
+func validateOpenCodeEnvironmentAttachment(ctx context.Context, harness config.Harness, env []string, directory string) error {
+	return validateOpenCodeEnvironmentAttachmentWithRunner(ctx, harness, env, directory, runCursorCommand)
+}
+
+func validateOpenCodeEnvironmentAttachmentWithRunner(ctx context.Context, harness config.Harness, env []string, directory string, run cursorCommandRunner) error {
+	fail := func(detail string) error {
+		return fmt.Errorf("OpenCode MCP readiness for attachment %q failed: %s; repair the global ~/.config/opencode/opencode.json registration; launch never creates or repairs it", harness.MCPAttachment, detail)
+	}
+	if len(harness.Command) == 0 || filepath.Base(harness.Command[0]) != "opencode" {
+		return fail("the harness command must use opencode")
+	}
+	if err := config.ValidateHarness(harness); err != nil {
+		return fail("the environment MCP harness definition is invalid")
+	}
+	address := environmentValue(env, "CONVEYOR_ADDR")
+	token := environmentValue(env, "CONVEYOR_API_TOKEN")
+	if address == "" || token == "" || environmentValue(env, "CONVEYOR_SESSION_ID") == "" || environmentValue(env, "CONVEYOR_CLIENT_TOKEN") == "" {
+		return fail("the child launch identity is incomplete")
+	}
+	timeout := harness.ProbeTimeout
+	if timeout <= 0 {
+		timeout, _ = time.ParseDuration(harness.ProbeTimeoutText)
+	}
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	output, err := run(probeCtx, directory, env, harness.Command[0], []string{"mcp", "list"})
+	if err != nil {
+		return fail("opencode mcp list did not complete successfully")
+	}
+	connected := false
+	for _, line := range strings.Split(ansiEscapeSequence.ReplaceAllString(string(output), ""), "\n") {
+		hasAttachment, hasConnected, hasFailed := false, false, false
+		for _, field := range strings.Fields(line) {
+			switch strings.ToLower(strings.Trim(field, "✓✗:[]()")) {
+			case strings.ToLower(harness.MCPAttachment):
+				hasAttachment = true
+			case "connected":
+				hasConnected = true
+			case "failed":
+				hasFailed = true
+			}
+		}
+		if hasAttachment && hasFailed {
+			return fail("opencode mcp list reports the attachment as failed")
+		}
+		if hasAttachment && hasConnected {
+			connected = true
+		}
+	}
+	if !connected {
+		return fail("opencode mcp list did not report the attachment as connected")
+	}
+
+	output, err = run(probeCtx, directory, env, harness.Command[0], []string{"debug", "config"})
+	if err != nil {
+		return fail("opencode debug config did not complete successfully")
+	}
+	var document openCodeConfigDocument
+	if json.Unmarshal(output, &document) != nil {
+		return fail("opencode debug config was not valid JSON")
+	}
+	attachment, ok := document.MCP[harness.MCPAttachment]
+	if !ok {
+		return fail("effective configuration is missing the attachment")
+	}
+	if attachment.Type != "remote" {
+		return fail("effective attachment type mismatched")
+	}
+	if attachment.URL != address {
+		return fail("effective attachment URL mismatched")
+	}
+	if attachment.Headers.Authorization != "Bearer "+token {
+		return fail("effective attachment Authorization header mismatched")
+	}
+	return nil
 }
 
 type boundedBuffer struct {
