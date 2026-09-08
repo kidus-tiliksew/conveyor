@@ -41,7 +41,7 @@ func (s *Store) GetWorkspace(ctx context.Context, id string) (core.Workspace, er
 }
 func upsertRepos(ctx context.Context, tx *sql.Tx, ws string, repos []config.Repo) error {
 	for _, r := range repos {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO repos(workspace_id,name,url,github_slug,default_base) VALUES(?,?,?,?,?) ON DUPLICATE KEY UPDATE url=VALUES(url),github_slug=VALUES(github_slug),default_base=VALUES(default_base)`, ws, r.Name, r.URL, r.GitHub, r.Base); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO repos(workspace_id,name,url,github_slug,default_base,install_conveyor) VALUES(?,?,?,?,?,?) ON DUPLICATE KEY UPDATE url=VALUES(url),github_slug=VALUES(github_slug),default_base=VALUES(default_base),install_conveyor=VALUES(install_conveyor)`, ws, r.Name, r.URL, r.GitHub, r.Base, r.InstallEnabled()); err != nil {
 			return err
 		}
 	}
@@ -162,6 +162,7 @@ func (s *Store) WorkspaceConfig(ctx context.Context) (config.VersionedDocument, 
 	if err = dec.Decode(&doc); err != nil {
 		return config.VersionedDocument{}, err
 	}
+	config.StoredRepositoryDefaults(doc.Repos)
 	if doc.Harnesses == nil {
 		doc.Harnesses = []config.Harness{}
 	}

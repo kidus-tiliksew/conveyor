@@ -10,6 +10,16 @@ import (
 	"strings"
 )
 
+// GitHubSlug derives the canonical github.com owner/repository identity.
+// req-repository-onboarding REQ-1; component-git-delivery.
+func GitHubSlug(repositoryURL string) string {
+	identity, err := NormalizeRepositoryIdentity(repositoryURL)
+	if err != nil || !strings.HasPrefix(identity, "github.com/") {
+		return ""
+	}
+	return strings.TrimPrefix(identity, "github.com/")
+}
+
 // NormalizeRepositoryIdentity canonicalizes the configured and local origin
 // forms used by checkout safety checks. Transport and Git user names are not
 // repository identity; GitHub owner/repository case and a trailing .git are

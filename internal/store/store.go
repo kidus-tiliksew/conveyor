@@ -114,6 +114,7 @@ type TaskStore interface {
 	ListCheckpointContextCandidates(ctx context.Context, requirementID string) ([]CheckpointContextCandidate, error)
 	GetTask(ctx context.Context, id string) (core.Task, error)
 	GetTaskByIntakeKey(ctx context.Context, key string) (core.Task, bool, error)
+	ListRepositoryInstallTasks(context.Context, string) ([]core.RepositoryInstallTask, error)
 	ListTasks(ctx context.Context) ([]core.Task, error)
 	// ListTasksFiltered is ListTasks narrowed by the shared surface predicate,
 	// so the stage-grouped board filters through the same store code as the
@@ -1325,6 +1326,7 @@ type memoryDecisionSweepKey struct {
 }
 
 type memory struct {
+	repositoryInstalls          map[memoryScopedKey][]core.RepositoryInstallTask
 	mu                          sync.RWMutex
 	tasks                       map[string]core.Task
 	repositories                map[string]map[string]string
@@ -4901,6 +4903,21 @@ func (m *memory) CreateTaskWithDependenciesAndContext(ctx context.Context, t cor
 	}
 	if t.NextStage == "" && (t.State == core.TaskQueued || t.State == core.TaskClaiming) {
 		t.NextStage = core.InitialStage(t.Level)
+	}
+	if err := ValidateRepositoryInstallTask(t); err != nil {
+		return err
+	}
+	if t.RepositoryInstallAttempt > 0 {
+		key := memoryScopedKey{workspace: t.Workspace, id: t.Repo}
+		for _, existing := range m.repositoryInstalls[key] {
+			if existing.Attempt == t.RepositoryInstallAttempt {
+				return fmt.Errorf("repository install attempt already exists")
+			}
+		}
+		if m.repositoryInstalls == nil {
+			m.repositoryInstalls = map[memoryScopedKey][]core.RepositoryInstallTask{}
+		}
+		m.repositoryInstalls[key] = append(m.repositoryInstalls[key], core.RepositoryInstallTask{TaskID: t.ID, Attempt: t.RepositoryInstallAttempt})
 	}
 	m.tasks[t.ID] = t
 	if len(seen) > 0 {

@@ -139,13 +139,14 @@ WHERE id = sqlc.arg(id)
 RETURNING *;
 
 -- name: UpsertRepo :exec
-INSERT INTO repos (workspace_id, name, url, github_slug, default_base, devcontainer_path)
-VALUES ($1, $2, $3, $4, $5, $6)
+INSERT INTO repos (workspace_id, name, url, github_slug, default_base, devcontainer_path, install_conveyor)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
 ON CONFLICT (workspace_id, name) DO UPDATE
 SET url = EXCLUDED.url,
     github_slug = EXCLUDED.github_slug,
     default_base = EXCLUDED.default_base,
-    devcontainer_path = EXCLUDED.devcontainer_path;
+    devcontainer_path = EXCLUDED.devcontainer_path,
+    install_conveyor = EXCLUDED.install_conveyor;
 
 -- name: InsertTask :one
 INSERT INTO tasks (

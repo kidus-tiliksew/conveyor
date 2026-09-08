@@ -1035,6 +1035,8 @@ func reviewable(state core.TaskState) bool {
 }
 
 type createTaskReq struct {
+	repositoryInstallAttempt int
+
 	Body            string               `json:"body"`
 	Repo            string               `json:"repo"`
 	BaseBranch      string               `json:"base_branch"`

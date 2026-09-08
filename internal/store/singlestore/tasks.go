@@ -135,6 +135,18 @@ func (s *Store) CreateTaskWithDependenciesAndContext(ctx context.Context, t core
 		if err = insertTaskRow(ctx, tx, t); err != nil {
 			return err
 		}
+		if err := store.ValidateRepositoryInstallTask(t); err != nil {
+			return err
+		}
+		if t.RepositoryInstallAttempt > 0 {
+			var exists int
+			if err := tx.QueryRowContext(ctx, `SELECT 1 FROM repos WHERE workspace_id=? AND name=?`, ws, t.Repo).Scan(&exists); err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx, `INSERT INTO repository_install_tasks(workspace_id,repository_name,attempt,task_id) VALUES(?,?,?,?)`, ws, t.Repo, t.RepositoryInstallAttempt, t.ID); err != nil {
+				return err
+			}
+		}
 		if err = taskEvent(ctx, tx, core.Event{TaskID: t.ID, Kind: "task.created", Payload: core.JSONPayload(t), At: t.CreatedAt}); err != nil {
 			return err
 		}

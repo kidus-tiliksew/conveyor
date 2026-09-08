@@ -23,12 +23,20 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// InstallTask is a read-only repository onboarding projection.
+type InstallTask struct {
+	ID    string `json:"id" yaml:"-"`
+	State string `json:"state" yaml:"-"`
+}
+
 type Repo struct {
-	Name     string `yaml:"name" json:"name"`
-	URL      string `yaml:"url" json:"url"`
-	GitHub   string `yaml:"github,omitempty" json:"github,omitempty"`
-	Base     string `yaml:"base" json:"base"`
-	Checkout string `yaml:"checkout,omitempty" json:"checkout,omitempty"`
+	InstallConveyor *bool        `yaml:"install_conveyor" json:"install_conveyor"`
+	InstallTask     *InstallTask `yaml:"-" json:"install_task,omitempty"`
+	Name            string       `yaml:"name" json:"name"`
+	URL             string       `yaml:"url" json:"url"`
+	GitHub          string       `yaml:"github,omitempty" json:"github"`
+	Base            string       `yaml:"base" json:"base"`
+	Checkout        string       `yaml:"checkout,omitempty" json:"checkout,omitempty"`
 
 	// Accepted only while canonicalizing pre-4.7 stored rows. These fields
 	// are cleared by normalize and never cross the workspace API boundary.
@@ -858,6 +866,11 @@ func ParseStoredWorkspaceDocument(data []byte, deployment *Config, source string
 	}
 	for _, route := range document.Routing.Stages {
 		legacy = legacy || len(route.LegacyHarnesses) != 0 || route.LegacyModelTier != ""
+	}
+	StoredRepositoryDefaults(document.Repos)
+	canonicalData, err = yaml.Marshal(document)
+	if err != nil {
+		return nil, false, err
 	}
 	cfg, err := ParseWorkspaceDocument(canonicalData, deployment, source)
 	return cfg, legacy, err
@@ -1958,7 +1971,12 @@ func MarshalWorkspaceDocument(c *Config) ([]byte, error) {
 // MarshalPolicyDocument is the server persistence boundary. The legacy
 // workspace marshal remains available to client-local execution setup files.
 func MarshalPolicyDocument(c *Config) ([]byte, error) {
-	data, err := yaml.Marshal(c.PolicyDocument())
+	document := c.PolicyDocument()
+	document.Repos = append([]Repo(nil), document.Repos...)
+	for i := range document.Repos {
+		document.Repos[i].InstallConveyor = InstallSwitch(document.Repos[i].InstallEnabled())
+	}
+	data, err := yaml.Marshal(document)
 	if err != nil {
 		return nil, fmt.Errorf("marshal workspace policy: %w", err)
 	}
