@@ -2,15 +2,18 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 )
@@ -31,9 +34,10 @@ type mcpInstallTarget struct {
 }
 
 type mcpInstallResult struct {
-	tool   string
-	status string
-	path   string
+	tool       string
+	status     string
+	path       string
+	validation string
 }
 
 func mcpCmd() *cobra.Command {
@@ -54,6 +58,10 @@ func mcpInstallCmdWithLookPath(lookPath func(string) (string, error)) *cobra.Com
 		Use: "install", Short: "Install Conveyor MCP registrations for detected tools", Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			tools, err := selectSkillTools(selectedTool, lookPath)
+			// An explicit OpenCode install can prepare a machine before the binary is installed.
+			if strings.EqualFold(strings.TrimSpace(selectedTool), "opencode") {
+				tools, err = []skillTool{{name: "opencode", binary: "opencode"}}, nil
+			}
 			if err != nil {
 				return err
 			}
@@ -74,10 +82,10 @@ func mcpInstallCmdWithLookPath(lookPath func(string) (string, error)) *cobra.Com
 				return err
 			}
 			results := make([]mcpInstallResult, 0, len(targets))
-			includesCursor := false
+			needsAddressBridge := false
 			for _, target := range targets {
-				includesCursor = includesCursor || target.tool == "cursor"
-				result, reconcileErr := reconcileMCPRegistration(home, target, server+"/mcp", adopt, !list)
+				needsAddressBridge = needsAddressBridge || (target.tool == "cursor" || target.tool == "opencode")
+				result, reconcileErr := reconcileMCPRegistrationWithLookPath(home, target, server+"/mcp", adopt, !list, lookPath)
 				if reconcileErr != nil {
 					return reconcileErr
 				}
@@ -99,19 +107,23 @@ func mcpInstallCmdWithLookPath(lookPath func(string) (string, error)) *cobra.Com
 				}
 			}
 			for _, result := range results {
-				fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\n", result.tool, result.status, result.path)
+				fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s", result.tool, result.status, result.path)
+				if result.validation != "" {
+					fmt.Fprintf(cmd.OutOrStdout(), "\t%s", result.validation)
+				}
+				fmt.Fprintln(cmd.OutOrStdout())
 			}
 			if strings.TrimSpace(os.Getenv(mcpTokenEnv)) == "" {
 				fmt.Fprintln(cmd.OutOrStdout(), mcpBridgeGuidance)
 			}
-			if includesCursor && !strings.HasSuffix(strings.TrimRight(strings.TrimSpace(os.Getenv(mcpAddressEnv)), "/"), "/mcp") {
+			if needsAddressBridge && !strings.HasSuffix(strings.TrimRight(strings.TrimSpace(os.Getenv(mcpAddressEnv)), "/"), "/mcp") {
 				fmt.Fprintf(cmd.OutOrStdout(), "export %s=%s/mcp\n", mcpAddressEnv, server)
 			}
 			return nil
 		},
 	}
 	command.Flags().BoolVar(&list, "list", false, "list native registration state without writing")
-	command.Flags().StringVar(&selectedTool, "tool", "", "install only for one detected tool (claude, codex, or cursor)")
+	command.Flags().StringVar(&selectedTool, "tool", "", "install only for one detected tool (claude, codex, cursor, or opencode)")
 	command.Flags().BoolVar(&adopt, "adopt", false, "adopt an unmarked existing Conveyor registration")
 	return command
 }
@@ -162,6 +174,12 @@ func mcpTargets(home string, tools []skillTool) []mcpInstallTarget {
 			targets = append(targets, mcpInstallTarget{tool: tool.name, path: filepath.Join(home, ".codex", "config.toml")})
 		case "claude":
 			targets = append(targets, mcpInstallTarget{tool: tool.name, path: filepath.Join(home, ".claude.json")})
+		case "opencode":
+			configRoot := os.Getenv("XDG_CONFIG_HOME")
+			if configRoot == "" {
+				configRoot = filepath.Join(home, ".config")
+			}
+			targets = append(targets, mcpInstallTarget{tool: tool.name, path: filepath.Join(configRoot, "opencode", "opencode.json")})
 		case "cursor":
 			targets = append(targets, mcpInstallTarget{tool: tool.name, path: filepath.Join(home, ".cursor", "mcp.json")})
 		}
@@ -170,8 +188,20 @@ func mcpTargets(home string, tools []skillTool) []mcpInstallTarget {
 }
 
 func reconcileMCPRegistration(home string, target mcpInstallTarget, endpoint string, adopt, write bool) (mcpInstallResult, error) {
+	return reconcileMCPRegistrationWithLookPath(home, target, endpoint, adopt, write, exec.LookPath)
+}
+
+func reconcileMCPRegistrationWithLookPath(home string, target mcpInstallTarget, endpoint string, adopt, write bool, lookPath func(string) (string, error)) (mcpInstallResult, error) {
+	if target.tool == "opencode" {
+		if !filepath.IsAbs(target.path) {
+			return mcpInstallResult{}, fmt.Errorf("OpenCode MCP destination %s must be absolute; set an absolute XDG_CONFIG_HOME", target.path)
+		}
+		// XDG may live outside HOME. Inspect every component from the filesystem
+		// root so a redirected config root cannot bypass symlink refusal.
+		home = filepath.VolumeName(target.path) + string(filepath.Separator)
+	}
 	if err := ensureSafeInstallPath(home, target.path); err != nil {
-		return mcpInstallResult{}, err
+		return mcpInstallResult{}, fmt.Errorf("MCP config %s: %w", target.path, err)
 	}
 	prior, mode, exists, err := readMCPConfig(target.path)
 	if err != nil {
@@ -186,8 +216,10 @@ func reconcileMCPRegistration(home string, target mcpInstallTarget, endpoint str
 		next, status, err = reconcileClaudeMCP(prior, endpoint, adopt)
 	case "cursor":
 		next, status, err = reconcileCursorMCP(prior, adopt)
+	case "opencode":
+		next, status, err = reconcileOpenCodeMCP(prior, adopt)
 	default:
-		err = fmt.Errorf("unsupported MCP tool %q", target.tool)
+		err = fmt.Errorf("unsupported MCP tool %q; supported tools: claude, codex, cursor, opencode", target.tool)
 	}
 	if err != nil {
 		return mcpInstallResult{}, fmt.Errorf("%s %s: %w", target.tool, target.path, err)
@@ -198,10 +230,23 @@ func reconcileMCPRegistration(home string, target mcpInstallTarget, endpoint str
 	if !exists {
 		mode = 0o600
 	}
-	if err = atomicWriteMCPConfig(home, target.path, next, mode); err != nil {
+	var validate func(string) error
+	validation := ""
+	if target.tool == "opencode" {
+		binary, lookupErr := lookPath("opencode")
+		if lookupErr != nil {
+			validation = "validation skipped: opencode is not on PATH"
+		} else {
+			validate = func(staged string) error {
+				return validateOpenCodeMCP(binary, staged, 30*time.Second)
+			}
+			validation = "validated with opencode debug config"
+		}
+	}
+	if err = atomicWriteMCPConfigValidated(home, target.path, next, mode, validate); err != nil {
 		return mcpInstallResult{}, err
 	}
-	return mcpInstallResult{tool: target.tool, status: status, path: target.path}, nil
+	return mcpInstallResult{tool: target.tool, status: status, path: target.path, validation: validation}, nil
 }
 
 func readMCPConfig(path string) ([]byte, fs.FileMode, bool, error) {
@@ -223,6 +268,10 @@ func readMCPConfig(path string) ([]byte, fs.FileMode, bool, error) {
 }
 
 func atomicWriteMCPConfig(home, path string, content []byte, mode fs.FileMode) error {
+	return atomicWriteMCPConfigValidated(home, path, content, mode, nil)
+}
+
+func atomicWriteMCPConfigValidated(home, path string, content []byte, mode fs.FileMode, validate func(string) error) error {
 	if err := ensureSafeInstallPath(home, path); err != nil {
 		return err
 	}
@@ -251,6 +300,11 @@ func atomicWriteMCPConfig(home, path string, content []byte, mode fs.FileMode) e
 	}
 	if err != nil {
 		return fmt.Errorf("stage %s: %w", path, err)
+	}
+	if validate != nil {
+		if err = validate(temporaryPath); err != nil {
+			return fmt.Errorf("validate OpenCode MCP config %s: %w", path, err)
+		}
 	}
 	if err = ensureSafeInstallPath(home, path); err != nil {
 		return err
@@ -429,6 +483,149 @@ func reconcileCursorMCP(prior []byte, adopt bool) ([]byte, string, error) {
 		status = "refreshed"
 	}
 	return next, status, nil
+}
+
+// req-cli-authentication REQ-4/AC-4.1 through AC-4.4;
+// component-harness-execution: Native MCP registrations and stored credentials.
+func reconcileOpenCodeMCP(prior []byte, adopt bool) ([]byte, string, error) {
+	if len(bytes.TrimSpace(prior)) == 0 {
+		prior = []byte("{}\n")
+	}
+	for index := 0; index < len(prior); index++ {
+		if prior[index] == '"' {
+			end, err := scanJSONString(prior, index)
+			if err != nil {
+				return nil, "", fmt.Errorf("parse JSON: %w", err)
+			}
+			index = end - 1
+		} else if prior[index] == '/' && index+1 < len(prior) && (prior[index+1] == '/' || prior[index+1] == '*') {
+			return nil, "", errors.New("refusing comment-bearing OpenCode config; remove comments before installing to preserve other members")
+		}
+	}
+	if !json.Valid(prior) {
+		return nil, "", errors.New("parse JSON: invalid OpenCode config")
+	}
+	root, err := scanJSONObject(prior)
+	if err != nil {
+		return nil, "", fmt.Errorf("parse JSON: %w", err)
+	}
+	member, hasServers := root.member("mcp")
+	serverBytes := []byte("{}")
+	if hasServers {
+		serverBytes = prior[member.valueStart:member.valueEnd]
+	}
+	servers, err := scanJSONObject(serverBytes)
+	if err != nil {
+		return nil, "", errors.New("mcp is not a JSON object")
+	}
+	entry, exists := servers.member("conveyor")
+	owned := false
+	if exists {
+		var fields map[string]json.RawMessage
+		var owner string
+		if json.Unmarshal(serverBytes[entry.valueStart:entry.valueEnd], &fields) == nil {
+			owned = json.Unmarshal(fields[claudeOwnerKey], &owner) == nil && owner == claudeOwnerValue
+		}
+		if !owned && !adopt {
+			return prior, "skipped", nil
+		}
+	}
+	desired := []byte(`{"type":"remote","url":"{env:CONVEYOR_ADDR}","headers":{"Authorization":"Bearer {env:CONVEYOR_API_TOKEN}"},"_conveyor_mcp_install":"owner=` + mcpOwnerVersion + `"}`)
+	if exists && owned && jsonEquivalent(serverBytes[entry.valueStart:entry.valueEnd], desired) {
+		return prior, "unchanged", nil
+	}
+	updated, err := setJSONObjectMember(serverBytes, "conveyor", desired)
+	if err != nil {
+		return nil, "", err
+	}
+	next, err := setJSONObjectMember(prior, "mcp", updated)
+	status := "created"
+	if exists {
+		status = "refreshed"
+	}
+	return next, status, err
+}
+
+// Validate a copy because OpenCode may add $schema while loading a file.
+// Isolation keeps existing global/project configuration and stored accounts out
+// of this config check. Only the original staged bytes can be published.
+func validateOpenCodeMCP(binary, staged string, timeout time.Duration) error {
+	content, err := os.ReadFile(staged)
+	if err != nil {
+		return err
+	}
+	isolated, err := os.MkdirTemp(filepath.Dir(staged), ".conveyor-opencode-*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(isolated)
+	// Keep file references relative to the real config directory.
+	copy, err := os.CreateTemp(filepath.Dir(staged), ".conveyor-opencode-*.json")
+	if err != nil {
+		return err
+	}
+	configPath := copy.Name()
+	defer os.Remove(configPath)
+	_, err = copy.Write(content)
+	closeErr := copy.Close()
+	if err != nil {
+		return err
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, binary, "debug", "config")
+	cmd.Dir = isolated
+	for _, item := range os.Environ() {
+		key, _, _ := strings.Cut(item, "=")
+		if strings.HasPrefix(key, "OPENCODE_") || strings.HasPrefix(key, "XDG_") || key == "HOME" || key == mcpAddressEnv || key == mcpTokenEnv {
+			continue
+		}
+		cmd.Env = append(cmd.Env, item)
+	}
+	cmd.Env = append(cmd.Env,
+		"HOME="+isolated,
+		"XDG_CONFIG_HOME="+filepath.Join(isolated, "config"),
+		"XDG_DATA_HOME="+filepath.Join(isolated, "data"),
+		"XDG_STATE_HOME="+filepath.Join(isolated, "state"),
+		"XDG_CACHE_HOME="+filepath.Join(isolated, "cache"),
+		"OPENCODE_CONFIG="+configPath,
+		"OPENCODE_DISABLE_PROJECT_CONFIG=true",
+		mcpAddressEnv+"=https://conveyor.invalid/mcp",
+		mcpTokenEnv+"=conveyor-install-validation",
+	)
+	// A nil stdin reads from os.DevNull. Debug stdout resolves env values.
+	cmd.Stdout = io.Discard
+	var stderr openCodeValidationStderr
+	cmd.Stderr = &stderr
+	cmd.WaitDelay = time.Second
+	if err = cmd.Run(); ctx.Err() != nil {
+		return errors.New("opencode debug config timed out")
+	} else if err != nil {
+		return fmt.Errorf("opencode debug config failed: %w", err)
+	} else if stderr.invalid {
+		return errors.New("opencode debug config reported an invalid configuration")
+	}
+	return nil
+}
+
+// Retain only enough stderr to recognize markers split across writes. Never
+// include debug output in diagnostics, since it can contain resolved values.
+type openCodeValidationStderr struct {
+	tail    string
+	invalid bool
+}
+
+func (w *openCodeValidationStderr) Write(p []byte) (int, error) {
+	text := w.tail + string(p)
+	w.invalid = w.invalid || strings.Contains(text, "Unrecognized key") || strings.Contains(text, "ConfigInvalid")
+	if len(text) > 32 {
+		text = text[len(text)-32:]
+	}
+	w.tail = text
+	return len(p), nil
 }
 
 type jsonMember struct {
