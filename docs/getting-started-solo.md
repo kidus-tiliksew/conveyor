@@ -79,6 +79,8 @@ Add the `CONVEYOR_ADDR` line to your shell startup file. `auth login`
 prompts for the personal access token.
 Detail: [Client setup, steps 2 and 3](client-setup.md#2-sign-in-and-select-the-server-and-workspace).
 
+After cloning, run `conveyor repo init` in the checkout as described in [Prepare the repository](client-setup.md#4-prepare-the-repository).
+
 ## 5. Create the execution setup
 
 ```sh
@@ -98,7 +100,7 @@ repos:
     base: main
 ```
 
-Detail: [Client setup, step 4](client-setup.md#4-create-the-local-execution-setup).
+Detail: [Client setup, step 5](client-setup.md#5-create-the-local-execution-setup).
 
 ## 6. Connect agent sessions and run a task
 
@@ -111,11 +113,11 @@ conveyor run <task-id>
 ```
 
 `conveyor run` walks the stages and asks you at each operator gate.
-Detail: [Client setup, steps 5 and 6](client-setup.md#5-connect-agent-sessions).
+Detail: [Client setup, steps 6 and 7](client-setup.md#6-connect-agent-sessions).
 
 ## Where to go next
 
-- [Client setup, step 7](client-setup.md#7-build-the-document-corpus): write
+- [Client setup, step 8](client-setup.md#8-build-the-document-corpus): write
   the requirements and designs the factory reviews against before filing
   real work.
 - [Worker operations](worker-operations.md): run a background worker instead
