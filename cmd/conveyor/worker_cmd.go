@@ -255,6 +255,84 @@ func (c *cursorUsageCollector) Usage() (workerUsageTotals, bool) {
 	return *c.latest, true
 }
 
+// opencodeUsageCollector sums per-step input and output counts. Reasoning,
+// cache tokens, and cost are excluded (req-usage-telemetry REQ-2,
+// component-work-orders).
+type opencodeUsageCollector struct {
+	mu       sync.Mutex
+	pending  []byte
+	dropping bool
+	totals   workerUsageTotals
+	seen     bool
+}
+
+func (c *opencodeUsageCollector) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	written := len(p)
+	for len(p) > 0 {
+		newline := bytes.IndexByte(p, '\n')
+		end := len(p)
+		if newline >= 0 {
+			end = newline
+		}
+		if !c.dropping {
+			if len(c.pending)+end > 64*1024 {
+				c.pending = nil
+				c.dropping = true
+			} else {
+				c.pending = append(c.pending, p[:end]...)
+			}
+		}
+		if newline < 0 {
+			break
+		}
+		if !c.dropping {
+			c.collect(c.pending)
+		}
+		c.pending = nil
+		c.dropping = false
+		p = p[newline+1:]
+	}
+	return written, nil
+}
+
+func (c *opencodeUsageCollector) collect(line []byte) {
+	var event struct {
+		Type string `json:"type"`
+		Part struct {
+			Tokens struct {
+				Input  *int64 `json:"input"`
+				Output *int64 `json:"output"`
+			} `json:"tokens"`
+		} `json:"part"`
+	}
+	if json.Unmarshal(line, &event) != nil || event.Type != "step_finish" {
+		return
+	}
+	input, output := event.Part.Tokens.Input, event.Part.Tokens.Output
+	if input == nil || output == nil || *input < 0 || *output < 0 {
+		return
+	}
+	// Skip an unrepresentable step instead of wrapping cumulative totals negative.
+	const maxInt64 = int64(1<<63 - 1)
+	if *input > maxInt64-c.totals.TokensIn || *output > maxInt64-c.totals.TokensOut {
+		return
+	}
+	c.totals.TokensIn += *input
+	c.totals.TokensOut += *output
+	c.seen = true
+}
+
+func (c *opencodeUsageCollector) Usage() (workerUsageTotals, bool) {
+	if c == nil {
+		return workerUsageTotals{}, false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.totals, c.seen
+}
+
 func enableCodexJSONOutput(harness config.Harness, argv []string) ([]string, *codexUsageCollector) {
 	if harness.Name != "codex" {
 		return argv, nil
@@ -285,6 +363,9 @@ func enableHarnessUsageCollection(harness config.Harness, argv []string) ([]stri
 	}
 	if len(harness.Command) > 0 && filepath.Base(harness.Command[0]) == "cursor-agent" {
 		return argv, &cursorUsageCollector{}
+	}
+	if len(harness.Command) > 0 && filepath.Base(harness.Command[0]) == "opencode" {
+		return argv, &opencodeUsageCollector{}
 	}
 	return argv, nil
 }

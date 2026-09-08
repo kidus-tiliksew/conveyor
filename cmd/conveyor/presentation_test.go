@@ -291,3 +291,112 @@ func TestBoundTextNormalizesAndElides(t *testing.T) {
 		t.Fatalf("bound text = %q", got)
 	}
 }
+
+func TestHarnessEventRendererSummarizesOpenCodeEvents(t *testing.T) {
+	var output bytes.Buffer
+	renderer := newHarnessEventRenderer(&output)
+	events := strings.Join([]string{
+		`{"type":"step_start","sessionID":"ses_example","part":{"type":"step-start"}}`,
+		`{"type":"text","sessionID":"ses_example","part":{"type":"text","text":"OK"}}`,
+		`{"type":"reasoning","part":{"text":"Checking the output"}}`,
+		`{"type":"reasoning","part":{}}`,
+		`{"type":"reasoning","part":{}}`,
+		`{"type":"tool_use","part":{"type":"tool","tool":"bash","callID":"call_1","state":{"status":"running","input":{"command":"echo OK"}}}}`,
+		`{"type":"tool_use","part":{"type":"tool","tool":"bash","callID":"call_1","state":{"status":"completed","input":{"command":"echo OK"},"output":"must-not-render","metadata":{"secret":"must-not-render"}}}}`,
+		`{"type":"step_finish","sessionID":"ses_example","part":{"type":"step-finish","reason":"tool-calls","tokens":{"input":7356,"output":15}}}`,
+		`{"type":"step_start","sessionID":"ses_example"}`,
+		`{"type":"reasoning","part":{}}`,
+		`{"type":"tool_use","part":{"tool":"bash","state":{"status":"error","input":{"command":"pwd"},"error":"The user rejected permission…"}}}`,
+		`{"type":"tool_use","part":{"tool":"conveyor.get_work_order","state":{"status":"completed","input":{"command":"must-not-render"},"output":"must-not-render"}}}`,
+		`{"type":"step_finish","sessionID":"ses_example","part":{"reason":"stop","tokens":{"input":97,"output":6},"cost":0}}`,
+		`{"type":"error","sessionID":"ses_example","error":{"name":"UnknownError","data":{"message":"Token refresh failed: 401","extra":"must-not-render"}}}`,
+		`{"type":"error","error":{"name":"UnknownError"}}`,
+		`{"type":"step_finish","part":{"reason":"stop","tokens":{"input":0,"output":0}}}`,
+	}, "\n") + "\n"
+	if _, err := renderer.Write([]byte(events[:65])); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := renderer.Write([]byte(events[65:])); err != nil {
+		t.Fatal(err)
+	}
+	want := strings.Join([]string{
+		"session started ses_example", "agent step started", "OK", "Checking the output", "thinking…",
+		"› bash · echo OK · running", "✓ bash · echo OK · completed", "step finished", "agent step started", "thinking…",
+		"! bash · pwd · error · The user rejected permission…", "✓ conveyor.get_work_order · completed",
+		"✓ agent turn completed · tokens in 97, out 6", "! Token refresh failed: 401", "! UnknownError",
+		"✓ agent turn completed · tokens in 0, out 0",
+	}, "\n") + "\n"
+	if got := output.String(); got != want {
+		t.Fatalf("output:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestOpenCodeRendererBoundsFieldsAndShowsFirstSession(t *testing.T) {
+	long := "first\n" + strings.Repeat("payload ", 500)
+	encoded := string(mustJSON(t, long))
+	for _, test := range []struct{ name, event, want string }{
+		{"text", `{"type":"text","sessionID":` + encoded + `,"part":{"text":` + encoded + `}}`, boundText(long, harnessDetailLimit)},
+		{"reasoning", `{"type":"reasoning","part":{"text":` + encoded + `}}`, boundText(long, harnessDetailLimit)},
+		{"tool name", `{"type":"tool_use","part":{"tool":` + encoded + `,"state":{"status":"completed"}}}`, "✓ " + boundText(long, harnessCommandLimit) + " · completed"},
+		{"command", `{"type":"tool_use","part":{"tool":"bash","state":{"status":"running","input":{"command":` + encoded + `}}}}`, "› " + boundText("bash · "+long, harnessCommandLimit) + " · running"},
+		{"status", `{"type":"tool_use","part":{"tool":"tool","state":{"status":` + encoded + `}}}`, "› tool · " + boundText(long, harnessCommandLimit)},
+		{"call id", `{"type":"tool_use","part":{"callID":` + encoded + `,"state":{"status":"completed"}}}`, "✓ " + boundText(long, harnessCommandLimit) + " · completed"},
+		{"tool error", `{"type":"tool_use","part":{"tool":"bash","state":{"status":"error","error":` + encoded + `}}}`, "! bash · error · " + boundText(long, harnessDetailLimit)},
+		{"error message", `{"type":"error","error":{"name":"UnknownError","data":{"message":` + encoded + `}}}`, "! " + boundText(long, harnessDetailLimit)},
+		{"error name", `{"type":"error","error":{"name":` + encoded + `}}`, "! " + boundText(long, harnessDetailLimit)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var output bytes.Buffer
+			renderer := newHarnessEventRenderer(&output)
+			if _, err := renderer.Write([]byte(test.event)); err != nil {
+				t.Fatal(err)
+			}
+			if err := renderer.Flush(); err != nil {
+				t.Fatal(err)
+			}
+			want := test.want + "\n"
+			if test.name == "text" {
+				want = "session started " + boundText(long, 24) + "\n" + want
+			}
+			if got := output.String(); got != want {
+				t.Fatalf("output=%q want=%q", got, want)
+			}
+		})
+	}
+	var output bytes.Buffer
+	renderer := newHarnessEventRenderer(&output)
+	for _, line := range []string{`{"type":"text","part":{"text":"before session"}}`, `{"type":"text","sessionID":"ses_late","part":{"text":"after session"}}`, `{"type":"step_start","sessionID":"ses_late"}`} {
+		if err := renderer.renderLine(line); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if strings.Count(output.String(), "session started") != 1 || !strings.Contains(output.String(), "before session\nsession started ses_late\nafter session") {
+		t.Fatalf("session not shown on first carrying event: %q", output.String())
+	}
+}
+
+func TestOpenCodeFanoutPreservesRawStream(t *testing.T) {
+	raw := []byte(`{"type":"text","sessionID":"ses_test","part":{"text":"OK"}}` + "\n" + `{"type":"step_finish","part":{"reason":"stop","tokens":{"input":3,"output":2}}}` + "\n")
+	for _, presented := range []bool{false, true} {
+		var console, tail, usage bytes.Buffer
+		presentation := &runOutputPresentation{output: &console, presentEvents: presented}
+		fanout, renderer := harnessStdoutFanout(&console, &tail, &usage, workerservice.DispatchOrder{Dispatch: "run"}, presentation)
+		if _, err := fanout.Write(raw); err != nil {
+			t.Fatal(err)
+		}
+		if renderer != nil {
+			if err := renderer.Flush(); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if !bytes.Equal(tail.Bytes(), raw) || !bytes.Equal(usage.Bytes(), raw) {
+			t.Fatal("internal stream changed")
+		}
+		if !presented && !bytes.Equal(console.Bytes(), raw) {
+			t.Fatal("raw console changed")
+		}
+		if presented && !strings.Contains(console.String(), "✓ agent turn completed · tokens in 3, out 2") {
+			t.Fatalf("missing presentation: %q", console.String())
+		}
+	}
+}

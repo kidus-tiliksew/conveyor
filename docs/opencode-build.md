@@ -26,7 +26,18 @@ On 2026-09-08, the implementation environment reported OpenCode 1.17.11 through 
 
 ## Usage
 
-OpenCode usage collection and attended rendering are owned by the follow-on usage-and-renderer task.
+The worker sums the non-negative integer `part.tokens.input` and
+`part.tokens.output` counts from OpenCode's `step_finish` events across the
+session. It records these totals as a best-effort `worker_fallback` when the
+agent does not call `report_usage`, with no estimated cost. Reasoning and cache
+counts are excluded. Malformed events and missing or negative counts are
+ignored. An agent report always takes precedence over the fallback.
+
+Selection uses the `opencode` command basename, so an absolute command path
+still enables collection without changing the harness arguments.
+
+Attended runs summarize OpenCode's JSON events; use `--raw` to print the
+original JSONL stream.
 
 ## Environment-backed registration
 
