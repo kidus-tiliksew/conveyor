@@ -19,6 +19,7 @@ import {
 } from '../task/task-filters'
 import { Button } from '../ui/button'
 import { Skeleton } from '../ui/skeleton'
+import { EmptyRepositoryNotice } from '../workspace/empty-repository-notice'
 import { BoardColumn } from './board-column'
 
 // The kanban board: the distribution of work across
@@ -89,6 +90,9 @@ export function Board() {
           New task
         </Button>
       </header>
+      <div className="mx-6">
+        <EmptyRepositoryNotice />
+      </div>
       {error != null && (
         <p className="mx-6 mt-4 rounded-lg bg-failure-soft p-3 text-sm text-failure">
           Activity feed unavailable: {String(error)}

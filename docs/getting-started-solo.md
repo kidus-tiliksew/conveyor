@@ -48,6 +48,11 @@ Edit `.env` to fill in the API key before running `conveyor init`. The
 wizard asks for your organization, name, email, a workspace ID, and your
 repository's name, URL, and default branch. Note the workspace ID and
 repository name for step 4, and keep the printed sign-in link.
+
+A workspace accepts no task until a repository is registered. The dashboard
+shows a notice on the Board and New task sheet until one exists. Use the
+Workspace page's General tab to register a repository.
+
 Detail: [Server setup, steps 3 and 4](server-setup.md#3-create-the-server-environment-file).
 
 ## 3. Start the server and sign in

@@ -90,7 +90,12 @@ credentials because that check is cached.
 
 ## 4. Prepare the repository
 
-From the cloned checkout, run:
+The dashboard's Workspace page has an Install Conveyor switch, on by default.
+It files one install task per repository to add agent instructions and Conveyor's
+skills through a pull request. Run and merge it like any other task. This gives
+you a first end-to-end delivery.
+
+`conveyor repo init` is the local equivalent. From the cloned checkout, run:
 
 ```sh
 conveyor repo init

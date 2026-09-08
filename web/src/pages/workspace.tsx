@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { CheckCircle2, Plus, Save, Trash2 } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
 import { useWorkspace, useWorkspaceCapability, useWorkspaceSelection } from '../components/app-shell'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
@@ -18,8 +18,9 @@ import {
   revokeWorker,
   updateWorkspaceConfig,
 } from '../lib/api'
-import { cn } from '../lib/utils'
+import { githubSlug } from '../lib/repository'
 import type { WorkerList, WorkspaceConfigDocument, WorkspaceConfigRepo } from '../lib/types'
+import { cn } from '../lib/utils'
 
 type TabId = 'general' | 'policy' | 'workers' | 'members'
 
@@ -174,7 +175,13 @@ export function WorkspacePage() {
             </div>
 
             <div className="pt-5">
-              {tab === 'general' && <GeneralTab draft={draft} setDraft={setDraft} />}
+              {tab === 'general' && (
+                <GeneralTab
+                  draft={draft}
+                  setDraft={setDraft}
+                  errors={save.error instanceof ConfigValidationError ? save.error.fields : []}
+                />
+              )}
               {tab === 'policy' && <PolicyTab draft={draft} setDraft={setDraft} />}
               {tab === 'workers' && (
                 <WorkersTab
@@ -257,7 +264,9 @@ export function WorkspacePage() {
 function GeneralTab({
   draft,
   setDraft,
+  errors,
 }: {
+  errors: Array<{ field: string; message: string }>
   draft: WorkspaceConfigDocument
   setDraft: (value: WorkspaceConfigDocument) => void
 }) {
@@ -292,7 +301,9 @@ function GeneralTab({
           <Button
             size="sm"
             variant="secondary"
-            onClick={() => update({ repos: [...draft.repos, { name: '', url: '', base: 'main' }] })}
+            onClick={() =>
+              update({ repos: [...draft.repos, { name: '', url: '', base: 'main', install_conveyor: true }] })
+            }
           >
             <Plus />
             Add repository
@@ -302,20 +313,53 @@ function GeneralTab({
           {draft.repos.map((repo, index) => (
             <div
               key={index}
-              className="grid items-end gap-3 rounded-md border border-border p-3 md:grid-cols-[1fr_1.4fr_1fr_auto_auto]"
+              data-testid="repository-row"
+              className="grid items-start gap-3 rounded-md border border-border p-3 md:grid-cols-[1fr_1.4fr_1fr_auto_auto]"
             >
               <Field label="Name">
                 <Input value={repo.name} onChange={(event) => updateRepo(index, { name: event.target.value })} />
               </Field>
               <Field label="URL">
-                <Input value={repo.url} onChange={(event) => updateRepo(index, { url: event.target.value })} />
-              </Field>
-              <Field label="GitHub slug">
                 <Input
-                  value={repo.github ?? ''}
-                  onChange={(event) => updateRepo(index, { github: event.target.value })}
+                  aria-label="URL"
+                  value={repo.url}
+                  onChange={(event) => updateRepo(index, { url: event.target.value, github: undefined })}
                 />
+                {githubSlug(repo.url) && (
+                  <span className="mt-1 block break-all font-mono text-xs text-muted">
+                    GitHub slug: {repo.github ?? githubSlug(repo.url)}
+                  </span>
+                )}
               </Field>
+              <div className="space-y-2">
+                <div className="flex items-center gap-2">
+                  <Switch
+                    aria-label="Install Conveyor"
+                    checked={repo.install_conveyor ?? true}
+                    onChange={(checked) => updateRepo(index, { install_conveyor: checked })}
+                  />
+                  <span className="text-sm font-medium">Install Conveyor</span>
+                </div>
+                <p className="text-xs leading-5 text-muted">
+                  The factory files a task to add agent instructions and Conveyor's skills, delivered as a pull request.
+                </p>
+                {repo.install_task && (
+                  <div
+                    className="flex flex-wrap items-center gap-2 border-l border-border pl-2 text-xs"
+                    title={`Install task ${repo.install_task.id}: ${repo.install_task.state}`}
+                  >
+                    <span className="text-muted">Install task</span>
+                    <Link
+                      to="/tasks/$taskId"
+                      params={{ taskId: repo.install_task.id }}
+                      className="font-mono text-primary hover:underline"
+                    >
+                      {repo.install_task.id}
+                    </Link>
+                    <Badge>{repo.install_task.state}</Badge>
+                  </div>
+                )}
+              </div>
               <Field label="Base">
                 <Input
                   className="w-24"
@@ -332,6 +376,13 @@ function GeneralTab({
               >
                 <Trash2 />
               </Button>
+              {errors
+                .filter((error) => error.field === `repos[${index}]` || error.field.startsWith(`repos[${index}].`))
+                .map((error) => (
+                  <p key={error.field} role="alert" className="text-xs text-failure md:col-span-5">
+                    {error.message}
+                  </p>
+                ))}
             </div>
           ))}
           {draft.repos.length === 0 && <p className="text-sm text-faint">No repositories yet.</p>}
