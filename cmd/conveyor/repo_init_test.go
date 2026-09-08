@@ -279,6 +279,34 @@ func TestRepoInitCommandCheckoutBoundary(t *testing.T) {
 	if !strings.Contains(string(content), "<registered-repository>") || !strings.Contains(string(content), "<base-branch>") {
 		t.Fatalf("missing fallback guidance: %s", content)
 	}
+	claudePath := filepath.Join(root, "CLAUDE.md")
+	if target, err := os.Readlink(claudePath); err != nil || target != "AGENTS.md" {
+		t.Fatalf("fresh-checkout CLAUDE.md link = %q, %v", target, err)
+	}
+	if !strings.Contains(output.String(), "repo\twritten\t"+claudePath+"\n") {
+		t.Fatalf("missing symlink creation report: %s", output.String())
+	}
+	prepared := repoFixtureSnapshot(t, root)
+	output.Reset()
+	command = repoCmd()
+	command.SetArgs([]string{"init"})
+	command.SetOut(&output)
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(prepared, repoFixtureSnapshot(t, root)) {
+		t.Fatal("repeat command changed guidance, skills, symlinks, or Git state")
+	}
+	lines := strings.Split(strings.TrimSpace(output.String()), "\n")
+	if len(lines) != 2+len(supportedSkillTools)*len(embeddedSkillManifest) {
+		t.Fatalf("missing repeat command reports: %s", output.String())
+	}
+	for _, line := range lines {
+		fields := strings.Split(line, "\t")
+		if len(fields) != 3 || fields[1] != "unchanged" {
+			t.Errorf("repeat command report = %q", line)
+		}
+	}
 }
 
 func TestRepoInitRollsBackAfterSkillInstallation(t *testing.T) {

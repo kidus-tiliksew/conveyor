@@ -283,7 +283,12 @@ func prepareRepositoryWithInstaller(root, version, name, base string, out io.Wri
 		return restoreErr
 	}
 	for _, item := range guidance {
-		if item.status == "unchanged" || item.link != "" && item.exists {
+		if item.status == "unchanged" {
+			continue
+		}
+		// An existing supported link follows the AGENTS.md write. A planned
+		// link must reach os.Symlink below when CLAUDE.md is absent.
+		if item.link != "" && item.exists {
 			continue
 		}
 		if err = checkRepoInitPrior(item); err == nil {
