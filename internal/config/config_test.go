@@ -1104,7 +1104,7 @@ func TestHarnessTemplatesMatchValidationContract(t *testing.T) {
 		t.Fatalf("cursor template = %+v", cursor)
 	}
 	opencode := templates[4].Harness
-	if opencode.MCPTransport != MCPTransportEnvironment || opencode.MCPAttachment != "conveyor" ||
+	if !reflect.DeepEqual(opencode.EffortArgs, map[string][]string{"low": {"--variant", "low"}, "medium": {"--variant", "medium"}, "high": {"--variant", "high"}}) || opencode.MCPTransport != MCPTransportEnvironment || opencode.MCPAttachment != "conveyor" ||
 		!reflect.DeepEqual(opencode.Command, []string{"opencode", "run", "{prompt}", "--format", "json", "--dangerously-skip-permissions"}) ||
 		!reflect.DeepEqual(opencode.ResumeCommand, []string{"--session", "{session_id}"}) ||
 		!reflect.DeepEqual(opencode.ModelArgs, []string{"--model", "{model}"}) ||

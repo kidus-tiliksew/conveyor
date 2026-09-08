@@ -20,7 +20,7 @@ harnesses:
     probe_timeout: 30s
 ```
 
-OpenCode 1.17.11 was probed for this integration. Its `opencode run --help` accepts `--dangerously-skip-permissions`, described as auto-approving permissions that are not explicitly denied. The published documentation also uses the name `--auto`; Conveyor pins the spelling accepted by the probed binary. Operator `permission` deny rules in `~/.config/opencode/opencode.json` still apply.
+On 2026-09-08, the implementation environment reported OpenCode 1.17.11 through `opencode --version`. Its `opencode run --help` accepts `--dangerously-skip-permissions`, described as auto-approving permissions that are not explicitly denied. The published documentation also uses the name `--auto`; Conveyor pins the spelling accepted by the probed binary. Operator `permission` deny rules in `~/.config/opencode/opencode.json` still apply.
 
 `--format json` emits JSONL beginning with `step_start`, so stdout flows before the model turn finishes. Every event carries the top-level `sessionID`; Conveyor captures it for `--session` resume. OpenCode reads non-TTY standard input to EOF as a message, so a manually launched worker child must redirect stdin from `/dev/null`.
 

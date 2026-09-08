@@ -204,6 +204,11 @@ func TestOpenCodeEnvironmentReadiness(t *testing.T) {
 		{name: "connected matching configuration", listing: "\x1b[32m✓ conveyor connected\x1b[0m", config: validConfig(address, "Bearer "+secret)},
 		{name: "failed listing", listing: "\x1b[31m✗ conveyor failed\x1b[0m", wantDetail: "reports the attachment as failed"},
 		{name: "missing listing", listing: "✓ other connected", wantDetail: "did not report the attachment as connected"},
+		{name: "failed overrides connected", listing: "✓ conveyor connected\n✗ conveyor failed", wantDetail: "reports the attachment as failed"},
+		{name: "wrong type", listing: "✓ conveyor connected", config: []byte(`{"mcp":{"conveyor":{"type":"local"}}}`), wantDetail: "type mismatched"},
+		{name: "missing attachment", listing: "✓ conveyor connected", config: []byte(`{"mcp":{}}`), wantDetail: "missing the attachment"},
+		{name: "invalid configuration", listing: "✓ conveyor connected", config: []byte(secret), wantDetail: "not valid JSON"},
+		{name: "configuration command failure", listing: "✓ conveyor connected", config: []byte(secret), configErr: fmt.Errorf("%s", secret), wantDetail: "did not complete successfully"},
 		{name: "wrong URL", listing: "✓ conveyor connected", config: validConfig("https://elsewhere.invalid/mcp", "Bearer "+secret), wantDetail: "URL mismatched"},
 		{name: "wrong authorization", listing: "✓ conveyor connected", config: validConfig(address, "Bearer "+strings.ToUpper(secret)), wantDetail: "Authorization header mismatched"},
 	}
@@ -213,7 +218,7 @@ func TestOpenCodeEnvironmentReadiness(t *testing.T) {
 			runner := func(_ context.Context, gotDirectory string, gotEnv []string, binary string, args []string) ([]byte, error) {
 				calls++
 				if gotDirectory != directory || strings.Join(gotEnv, "\x00") != strings.Join(env, "\x00") || binary != "opencode" {
-					t.Fatalf("directory=%q binary=%q env=%v", gotDirectory, binary, gotEnv)
+					t.Fatal("runner received an unexpected directory, binary, or child environment")
 				}
 				switch strings.Join(args, " ") {
 				case "mcp list":
