@@ -170,6 +170,8 @@ const (
 
 // Task is a unit of intended change. One task spans many jobs.
 type Task struct {
+	RepositoryInstallAttempt int `json:"repository_install_attempt,omitempty"`
+
 	ID                 string                `json:"id"`
 	Workspace          string                `json:"workspace"`
 	Source             string                `json:"source"` // provenance: github:<slug>#<n>, cli, cron, monitor

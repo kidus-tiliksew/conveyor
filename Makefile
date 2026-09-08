@@ -169,3 +169,8 @@ smoke-singlestore:
 	@test -n "$$CONVEYOR_DATABASE_URL" || (echo "CONVEYOR_DATABASE_URL must name a fresh SingleStore database" >&2; exit 1)
 	@test -n "$(SMOKE_OUTPUT)" || (echo "SMOKE_OUTPUT must name a new artifact directory" >&2; exit 1)
 	python3 scripts/smoke-singlestore-admission.py --bin-dir "$(BIN)" --output "$(SMOKE_OUTPUT)"
+
+# Focused onboarding checks before the repository-wide delivery gates.
+.PHONY: test-repository-install
+test-repository-install:
+	CONVEYOR_TEST_DATABASE_URL= CONVEYOR_TEST_SINGLESTORE_URL= go test ./internal/config ./internal/gitx ./internal/httpapi ./internal/store ./internal/store/storetest ./internal/store/postgres ./internal/store/singlestore -run 'TestRepository|TestMemoryConformance|TestBackendCoverage|TestEmbeddedMigrationVersionsAreUnique'

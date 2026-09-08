@@ -159,6 +159,7 @@ func RunAll(t *testing.T, factory Factory) {
 		{"ProjectionReads", true, runProjectionReads},
 		{"PopulatedProjections", factory.Capabilities.Membership, runPopulatedProjections},
 		{"WorkspaceControl", true, runWorkspaceControl},
+		{"RepositoryInstall", true, runRepositoryInstall},
 		{"CommandRefusals", true, runCommandRefusals},
 		{"ApprovalRefresh", true, runApprovalRefresh},
 		{"PlanningReads", true, runPlanningReads},

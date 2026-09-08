@@ -147,6 +147,8 @@ func (s *Server) createTaskRecordWithState(ctx context.Context, req createTaskRe
 
 	id := core.NewTaskID()
 	task := core.Task{
+		RepositoryInstallAttempt: req.repositoryInstallAttempt,
+
 		ID:            id,
 		Workspace:     workspace,
 		Source:        req.Source,

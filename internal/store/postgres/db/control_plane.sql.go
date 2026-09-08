@@ -2070,16 +2070,18 @@ func (q *Queries) UpdateWorkspaceConfig(ctx context.Context, arg UpdateWorkspace
 }
 
 const upsertRepo = `-- name: UpsertRepo :exec
-INSERT INTO repos (workspace_id, name, url, github_slug, default_base, devcontainer_path)
-VALUES ($1, $2, $3, $4, $5, $6)
+INSERT INTO repos (workspace_id, name, url, github_slug, default_base, devcontainer_path, install_conveyor)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
 ON CONFLICT (workspace_id, name) DO UPDATE
 SET url = EXCLUDED.url,
     github_slug = EXCLUDED.github_slug,
     default_base = EXCLUDED.default_base,
-    devcontainer_path = EXCLUDED.devcontainer_path
+    devcontainer_path = EXCLUDED.devcontainer_path,
+    install_conveyor = EXCLUDED.install_conveyor
 `
 
 type UpsertRepoParams struct {
+	InstallConveyor  bool   `json:"install_conveyor"`
 	WorkspaceID      string `json:"workspace_id"`
 	Name             string `json:"name"`
 	Url              string `json:"url"`
@@ -2096,6 +2098,7 @@ func (q *Queries) UpsertRepo(ctx context.Context, arg UpsertRepoParams) error {
 		arg.GithubSlug,
 		arg.DefaultBase,
 		arg.DevcontainerPath,
+		arg.InstallConveyor,
 	)
 	return err
 }

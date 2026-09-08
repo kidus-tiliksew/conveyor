@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
+	"github.com/kidus-tiliksew/conveyor/internal/gitx"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"gopkg.in/yaml.v3"
 )
@@ -60,6 +61,11 @@ func (s *Server) getWorkspaceConfig(w http.ResponseWriter, r *http.Request) {
 	if record.Document.Repos == nil {
 		record.Document.Repos = []config.Repo{}
 	}
+	if err := s.attachRepositoryInstallTasks(r.Context(), record.Document.Repos); err != nil {
+		log.Printf("get repository install tasks: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("ETag", fmt.Sprintf("\"%d\"", record.Version))
 	writeJSON(w, http.StatusOK, record)
 }
@@ -74,6 +80,17 @@ type configFieldError struct {
 }
 
 func (s *Server) putWorkspaceConfig(w http.ResponseWriter, r *http.Request) {
+	err := s.Store.WithTaskSideEffectLock(r.Context(), "repository-registration", func(ctx context.Context) error {
+		s.putWorkspaceConfigLocked(w, r.WithContext(ctx))
+		return nil
+	})
+	if err != nil {
+		log.Printf("lock repository registration: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+	}
+}
+
+func (s *Server) putWorkspaceConfigLocked(w http.ResponseWriter, r *http.Request) {
 	if s.ConfigStore == nil || s.Deployment == nil {
 		http.Error(w, "workspace config unavailable", http.StatusNotFound)
 		return
@@ -112,6 +129,22 @@ func (s *Server) putWorkspaceConfig(w http.ResponseWriter, r *http.Request) {
 		writeValidationError(w, "setups", errors.New("setups must contain at least one setup"))
 		return
 	}
+	for i := range request.Document.Repos {
+		repo := &request.Document.Repos[i]
+		derived := gitx.GitHubSlug(repo.URL)
+		if derived != "" && repo.GitHub != "" && repo.GitHub != derived {
+			writeValidationError(w, fmt.Sprintf("repos[%d].github", i), fmt.Errorf("supplied GitHub slug %q differs from derived slug %q", repo.GitHub, derived))
+			return
+		}
+		repo.GitHub = derived
+		repo.InstallConveyor = config.InstallSwitch(repo.InstallEnabled())
+		workspace, _ := store.WorkspaceFromContext(r.Context())
+		if repo.InstallEnabled() && len(store.RepositoryInstallKey(workspace, repo.Name, 1)) > 200 {
+			writeValidationError(w, fmt.Sprintf("repos[%d].name", i), fmt.Errorf("repository install idempotency key exceeds the intake limit of 200 characters"))
+			return
+		}
+		repo.InstallTask = nil
+	}
 	data, err := yaml.Marshal(request.Document)
 	if err != nil {
 		writeValidationError(w, "document", err)
@@ -137,6 +170,15 @@ func (s *Server) putWorkspaceConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		log.Printf("update workspace config: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	if err := s.fileRepositoryInstallTasks(r.Context(), next.Repos); err != nil {
+		log.Printf("file repository install task: %v", err)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "repository_install_pending", "message": "configuration saved; install task filing failed; reload and save the configuration to retry", "version": receipt.Version})
+		return
+	}
+	if err := s.attachRepositoryInstallTasks(r.Context(), receipt.Document.Repos); err != nil {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}

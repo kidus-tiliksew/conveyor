@@ -186,6 +186,7 @@ type MonitorStatus struct {
 }
 
 type Repo struct {
+	InstallConveyor  bool               `json:"install_conveyor"`
 	WorkspaceID      string             `json:"workspace_id"`
 	Name             string             `json:"name"`
 	Url              string             `json:"url"`

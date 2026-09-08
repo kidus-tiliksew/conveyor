@@ -257,7 +257,19 @@ func (s *Store) BootstrapWorkspaceConfig(ctx context.Context, cfg *config.Config
 		return false, err
 	}
 	if seeded {
+		// Historical migration fixtures stop before the new column exists.
+		// Normal startup finishes migrations before bootstrapping configuration.
+		var installSchema bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='repos' AND column_name='install_conveyor')`).Scan(&installSchema); err != nil {
+			return false, err
+		}
 		for _, repo := range cfg.Repos {
+			if !installSchema {
+				if _, err := tx.Exec(ctx, `INSERT INTO repos(workspace_id,name,url,github_slug,default_base) VALUES($1,$2,$3,$4,$5) ON CONFLICT(workspace_id,name) DO UPDATE SET url=EXCLUDED.url,github_slug=EXCLUDED.github_slug,default_base=EXCLUDED.default_base`, cfg.Workspace, repo.Name, repo.URL, repo.GitHub, repo.Base); err != nil {
+					return false, err
+				}
+				continue
+			}
 			if err := upsertRepo(ctx, q, cfg.Workspace, repo); err != nil {
 				return false, err
 			}
@@ -365,7 +377,7 @@ func (s *Store) CreateWorkspace(ctx context.Context, id, name string, cfg *confi
 func upsertRepo(ctx context.Context, q *db.Queries, workspace string, repo config.Repo) error {
 	return q.UpsertRepo(ctx, db.UpsertRepoParams{
 		WorkspaceID: workspace, Name: repo.Name, Url: repo.URL,
-		GithubSlug: repo.GitHub, DefaultBase: repo.Base,
+		GithubSlug: repo.GitHub, DefaultBase: repo.Base, InstallConveyor: repo.InstallEnabled(),
 	})
 }
 
@@ -380,6 +392,7 @@ func (s *Store) WorkspaceConfig(ctx context.Context) (config.VersionedDocument, 
 	if err := decoder.Decode(&document); err != nil {
 		return config.VersionedDocument{}, fmt.Errorf("decode stored workspace config: %w", err)
 	}
+	config.StoredRepositoryDefaults(document.Repos)
 	if document.Harnesses == nil {
 		document.Harnesses = []config.Harness{}
 	}
@@ -542,6 +555,14 @@ func (s *Store) CreateTaskWithDependenciesAndContext(ctx context.Context, task c
 		}
 		if _, err := q.InsertTask(ctx, taskInsertParams(task)); err != nil {
 			return err
+		}
+		if err := store.ValidateRepositoryInstallTask(task); err != nil {
+			return err
+		}
+		if task.RepositoryInstallAttempt > 0 {
+			if _, err := tx.Exec(ctx, `INSERT INTO repository_install_tasks(workspace_id,repository_name,attempt,task_id) VALUES($1,$2,$3,$4)`, task.Workspace, task.Repo, task.RepositoryInstallAttempt, task.ID); err != nil {
+				return err
+			}
 		}
 		_, err = insertEventWithID(ctx, q, core.Event{
 			TaskID:  task.ID,

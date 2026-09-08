@@ -159,6 +159,7 @@ func (m *volatileMemory) WorkspaceConfig(ctx context.Context) (config.VersionedD
 	if err := decoder.Decode(&document); err != nil {
 		return config.VersionedDocument{}, fmt.Errorf("decode stored workspace config: %w", err)
 	}
+	config.StoredRepositoryDefaults(document.Repos)
 	if document.Harnesses == nil {
 		document.Harnesses = []config.Harness{}
 	}

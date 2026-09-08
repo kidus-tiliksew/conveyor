@@ -283,15 +283,11 @@ func defaultInitConfig(databaseURL string, answers initAnswers) (config.Config, 
 		Setups:                    []config.ExecutionSetup{{Name: "default", ExecutionSettings: settings, Review: review, RefreshReview: config.RefreshReviewDelta}},
 		DefaultSetup:              "default",
 		Execution:                 config.ExecutionPolicy{SpecApproval: true, MergeApproval: true, ImplementConcurrency: 1, ReviewConcurrency: 1, FirstActivityTimeoutText: config.DefaultFirstActivityTimeoutText},
-		Repos:                     []config.Repo{{Name: answers.RepositoryName, URL: answers.RepositoryURL, GitHub: initGitHubSlug(answers.RepositoryURL), Base: answers.BaseBranch}},
+		Repos:                     []config.Repo{{Name: answers.RepositoryName, URL: answers.RepositoryURL, GitHub: gitx.GitHubSlug(answers.RepositoryURL), Base: answers.BaseBranch, InstallConveyor: config.InstallSwitch(true)}},
 		Monitor:                   config.MonitorConfig{PollIntervalText: "1m", StartupWindowText: "24h"},
 	}, nil
 }
 
 func initGitHubSlug(repositoryURL string) string {
-	identity, err := gitx.NormalizeRepositoryIdentity(repositoryURL)
-	if err != nil || !strings.HasPrefix(identity, "github.com/") {
-		return ""
-	}
-	return strings.TrimPrefix(identity, "github.com/")
+	return gitx.GitHubSlug(repositoryURL)
 }
