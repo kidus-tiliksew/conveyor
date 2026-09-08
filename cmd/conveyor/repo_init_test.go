@@ -77,7 +77,7 @@ func TestRepoInitGuidanceStatesAndRepeatability(t *testing.T) {
 					t.Errorf("repeat report = %q", line)
 				}
 			}
-			for _, destination := range skillDestinations(root, supportedSkillTools) {
+			for _, destination := range skillDestinations(root, supportedSkillTools, true) {
 				for _, asset := range embeddedSkillManifest {
 					want, _ := renderEmbeddedSkill(asset, "v2.0.0")
 					got, err := os.ReadFile(filepath.Join(destination.root, asset.relative))
@@ -272,7 +272,7 @@ func TestRepoInitCommandCheckoutBoundary(t *testing.T) {
 	if !reflect.DeepEqual(before, repoFixtureSnapshot(t, filepath.Join(root, ".git"))) {
 		t.Fatal("repo init changed Git state")
 	}
-	for _, destination := range skillDestinations(root, supportedSkillTools) {
+	for _, destination := range skillDestinations(root, supportedSkillTools, true) {
 		assertFile(t, filepath.Join(destination.root, "conveyor-work/SKILL.md"))
 	}
 	content, _ := os.ReadFile(filepath.Join(root, "AGENTS.md"))
