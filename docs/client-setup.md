@@ -179,8 +179,12 @@ conveyor mcp install
 export CONVEYOR_API_TOKEN=$(conveyor auth token)
 ```
 
-These configure detected Claude Code, Codex, and Cursor clients. Use `--tool`
-to select a client or `--list` to inspect planned changes. MCP registration
+The skills command configures detected Claude Code, Codex, Cursor, and OpenCode
+clients. OpenCode skills install under `~/.config/opencode/skills`, or under
+`.opencode/skills` with `--project`. OpenCode also reads the Claude skills root,
+so a machine with both tools receives duplicate copies by design; the copies are
+identical and harmless. Use `--tool` to select a client or `--list` to inspect
+planned changes. MCP registration
 references credentials through the environment rather than writing the token
 anywhere, which is why the `CONVEYOR_API_TOKEN` export is needed alongside
 the `CONVEYOR_ADDR` you set in step 2. Launch the agent client from a shell

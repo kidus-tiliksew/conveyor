@@ -183,7 +183,7 @@ position is review priority.
 | Command | What it does |
 |---|---|
 | `conveyor mcp install` | Register the Conveyor MCP server (`<server>/mcp`) with detected Claude Code, Codex, and Cursor clients. `--tool claude\|codex\|cursor`, `--list` to report without writing, `--adopt` to take over an unmarked existing registration. Cursor uses the owned global `~/.cursor/mcp.json` entry and environment-backed address and token references; project-level Cursor configuration is unchanged. |
-| `conveyor skills install` | Install the embedded agent skills (`conveyor-work`, `conveyor-plan`, `conveyor-file-tasks`) into `~/.claude/skills`, `~/.codex/skills`, and `~/.cursor/skills`. `--project` targets the project directory instead, `--tool` narrows the detected client, and `--force` allows downgrading skills a newer release installed. |
+| `conveyor skills install` | Install the embedded agent skills (`conveyor-work`, `conveyor-plan`, `conveyor-file-tasks`, `conveyor-testing-doc`) into the native roots for detected Claude Code, Codex, Cursor, and OpenCode clients. OpenCode uses `~/.config/opencode/skills` globally and `.opencode/skills` with `--project`. `--tool claude\|codex\|cursor\|opencode` narrows the detected client, and `--force` allows downgrading skills a newer release installed. |
 
 MCP registration writes an environment-backed token reference
 (`CONVEYOR_API_TOKEN`), never a token value. Installs refresh files Conveyor
