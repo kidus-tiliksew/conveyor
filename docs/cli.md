@@ -105,6 +105,43 @@ deprecation notice. It cannot be combined with `--step`.
 Requires `CONVEYOR_API_TOKEN` and a stored GitHub token (see
 [Authentication](auth.md#github-forge-tokens)).
 
+## repo init
+
+```sh
+conveyor repo init
+```
+
+Prepare the current Git checkout for factory work. The command writes only
+files at the checkout root and below it; it creates no commit, branch, or push.
+Outside a checkout it refuses with `req-repository-onboarding REQ-4/AC-4.6`.
+
+The command adds or refreshes an owned section in `AGENTS.md` and `CLAUDE.md`,
+leaving every byte outside the markers unchanged. The opening marker is
+`<!-- conveyor:repo-init owner=v1 version=<release> -->`; the closing marker is
+`<!-- /conveyor:repo-init -->`. When `CLAUDE.md` is absent, the command creates
+it as a symlink to `AGENTS.md`. Two regular files receive the same section.
+An existing `CLAUDE.md` symlink to `AGENTS.md` needs one content write. Broken,
+reversed, or other guidance symlinks and malformed or multiple marker spans
+are refused before installation.
+
+The section uses the registered repository name and base branch when origin
+matches one repository in the workspace configuration read with the caller's
+credential. Otherwise it uses `<registered-repository>` and `<base-branch>`.
+The section contains no server address or credential.
+
+Embedded skills install under `.claude/skills`, `.codex/skills`, and
+`.cursor/skills` for every supported tool, regardless of installed binaries.
+Unowned skills, newer managed versions, and unsafe paths are refused. Tool
+root symlinks are refused so all writes stay in the checkout. The command
+preflights guidance and skills together and rolls back changed files on a
+write failure. Each output line has three tab-separated columns: tool, status
+(`written`, `updated`, `unchanged`, or `refused`), and absolute path.
+
+The section and project-scoped skills are versioned with the CLI. Re-run the
+command after an upgrade to refresh them and deliver the refreshed files
+through a task, as DEC-40 defines. `conveyor skills install` retains its
+user-global default, `--project` flag, and tool detection.
+
 ## checkout and done
 
 ```sh

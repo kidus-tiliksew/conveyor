@@ -45,7 +45,7 @@ conveyor auth status
 `auth login` prompts for the token. Replace the example address and workspace
 ID with the host's values; for a local solo factory the address is
 `http://127.0.0.1:8080/mcp`. The `/mcp` suffix is what MCP clients need in
-step 5, and the CLI strips it for its own API calls, so one value serves both.
+step 6, and the CLI strips it for its own API calls, so one value serves both.
 Add the `CONVEYOR_ADDR` line to your shell startup file. Keep the same
 hostname throughout, because credentials are stored per server URL. A one-off
 `--server` flag does not save a default server; the workspace default is saved
@@ -88,7 +88,29 @@ Expect a commit hash and branch reference. Conveyor performs its own bounded
 access check before claiming; restart a run or worker after changing
 credentials because that check is cached.
 
-## 4. Create the local execution setup
+## 4. Prepare the repository
+
+From the cloned checkout, run:
+
+```sh
+conveyor repo init
+```
+
+The command adds a Conveyor section to `AGENTS.md` and `CLAUDE.md` while
+preserving existing text outside its markers. It installs project-scoped
+skills for Claude, Codex, and Cursor even when their CLIs are absent. An
+unowned skill file or unsafe guidance file causes a named refusal before
+installation. Review the generated files and deliver them through a task.
+The command creates no commit, branch, or push.
+
+The section and skills are versioned with the CLI. Re-run `conveyor repo init`
+after an upgrade to refresh the committed copies, as DEC-40 defines. If origin
+cannot be resolved to a registered repository with your credential, the
+section uses `<registered-repository>` and `<base-branch>` placeholders.
+
+<a id="4-create-the-local-execution-setup"></a>
+
+## 5. Create the local execution setup
 
 A machine that runs tasks needs a local execution configuration. It answers
 the three questions the server never decides for you: which agent CLI runs
@@ -169,7 +191,9 @@ Named alternatives are managed with `conveyor setup create <name>`,
 `conveyor setup edit <name>`, and `conveyor setup default <name>`, and
 selected per run with `conveyor run <task-id> --setup <name>`.
 
-## 5. Connect agent sessions
+<a id="5-connect-agent-sessions"></a>
+
+## 6. Connect agent sessions
 
 For sessions that plan documents or operate Conveyor through MCP:
 
@@ -188,7 +212,9 @@ with both variables set; a desktop application launched elsewhere may not
 inherit them. Cursor registration is global in `~/.cursor/mcp.json`. The
 install command prints any missing bridge instruction.
 
-## 6. Run a first task
+<a id="6-run-a-first-task"></a>
+
+## 7. Run a first task
 
 File a small real change and run it:
 
@@ -214,7 +240,9 @@ the clone's remote. For authentication failures, distinguish the Conveyor
 personal token, the stored account GitHub token, local Git credentials, and
 the agent CLI login; they serve different operations.
 
-## 7. Build the document corpus
+<a id="7-build-the-document-corpus"></a>
+
+## 8. Build the document corpus
 
 Confirmed documents are what the factory implements and reviews against, so
 write them before filing real work. Open an agent session in your project

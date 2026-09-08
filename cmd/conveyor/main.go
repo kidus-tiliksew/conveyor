@@ -58,6 +58,7 @@ func main() {
 		userCmd(),
 		mcpCmd(),
 		skillsCmd(),
+		repoCmd(),
 		taskCmd(),
 		configCmd(),
 		setupCmd(),
