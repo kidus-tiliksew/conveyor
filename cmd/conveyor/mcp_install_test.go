@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -345,6 +346,39 @@ func TestOpenCodeMCPTargets(t *testing.T) {
 		if err != nil || result.status != "created" || !strings.Contains(result.validation, "skipped") {
 			t.Fatalf("XDG %q result=%+v err=%v", xdg, result, err)
 		}
+	}
+}
+
+func TestOpenCodeMCPMacOSSystemAlias(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("macOS system alias regression")
+	}
+	// Pin this fixture to /var even when the test runner sets TMPDIR elsewhere.
+	fixture, err := os.MkdirTemp("/var/tmp", "conveyor-opencode-alias-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(fixture) })
+	root, err := filepath.EvalSymlinks(fixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	aliasRoot := strings.TrimPrefix(root, "/private")
+	for _, configRoot := range []string{root, aliasRoot} {
+		t.Setenv("XDG_CONFIG_HOME", configRoot)
+		target := mcpTargets(t.TempDir(), []skillTool{{name: "opencode"}})[0]
+		result, err := reconcileMCPRegistrationWithLookPath(t.TempDir(), target, "unused", false, true, noOpenCodeOnPath)
+		if err != nil || (result.status != "created" && result.status != "unchanged") {
+			t.Fatalf("config root %s: result=%+v err=%v", configRoot, result, err)
+		}
+	}
+	// A user-controlled parent below the system alias must still be refused.
+	if err := os.Symlink(filepath.Join(root, "opencode"), filepath.Join(root, "redirect")); err != nil {
+		t.Fatal(err)
+	}
+	target := mcpInstallTarget{tool: "opencode", path: filepath.Join(aliasRoot, "redirect", "opencode.json")}
+	if _, err := reconcileMCPRegistrationWithLookPath(root, target, "unused", true, true, noOpenCodeOnPath); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("accepted symlink below system alias: %v", err)
 	}
 }
 

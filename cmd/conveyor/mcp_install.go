@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -191,13 +192,24 @@ func reconcileMCPRegistration(home string, target mcpInstallTarget, endpoint str
 	return reconcileMCPRegistrationWithLookPath(home, target, endpoint, adopt, write, exec.LookPath)
 }
 
-func reconcileMCPRegistrationWithLookPath(home string, target mcpInstallTarget, endpoint string, adopt, write bool, lookPath func(string) (string, error)) (mcpInstallResult, error) {
+func reconcileMCPRegistrationWithLookPath(home string, target mcpInstallTarget, endpoint string, adopt, write bool, lookPath func(string) (string, error)) (result mcpInstallResult, err error) {
+	originalPath := target.path
+	defer func() {
+		if target.path != originalPath {
+			if err != nil {
+				err = fmt.Errorf("MCP config %s: %w", originalPath, err)
+			} else {
+				result.path = originalPath
+			}
+		}
+	}()
 	if target.tool == "opencode" {
 		if !filepath.IsAbs(target.path) {
 			return mcpInstallResult{}, fmt.Errorf("OpenCode MCP destination %s must be absolute; set an absolute XDG_CONFIG_HOME", target.path)
 		}
-		// XDG may live outside HOME. Inspect every component from the filesystem
-		// root so a redirected config root cannot bypass symlink refusal.
+		// Resolve only macOS system aliases, never operator-controlled symlinks.
+		// XDG may live outside HOME; inspect all remaining components from root.
+		target.path = canonicalOpenCodeMCPPath(target.path)
 		home = filepath.VolumeName(target.path) + string(filepath.Separator)
 	}
 	if err := ensureSafeInstallPath(home, target.path); err != nil {
@@ -247,6 +259,25 @@ func reconcileMCPRegistrationWithLookPath(home string, target mcpInstallTarget, 
 		return mcpInstallResult{}, err
 	}
 	return mcpInstallResult{tool: target.tool, status: status, path: target.path, validation: validation}, nil
+}
+
+// canonicalOpenCodeMCPPath permits the OS-owned aliases on macOS without
+// resolving symlinks in XDG_CONFIG_HOME, its parents, or the destination.
+func canonicalOpenCodeMCPPath(path string) string {
+	path = filepath.Clean(path)
+	if runtime.GOOS != "darwin" {
+		return path
+	}
+	for _, alias := range []string{"/var", "/tmp", "/etc"} {
+		if !strings.HasPrefix(path, alias+string(filepath.Separator)) {
+			continue
+		}
+		canonical := "/private" + alias
+		if resolved, err := filepath.EvalSymlinks(alias); err == nil && resolved == canonical {
+			return canonical + strings.TrimPrefix(path, alias)
+		}
+	}
+	return path
 }
 
 func readMCPConfig(path string) ([]byte, fs.FileMode, bool, error) {
