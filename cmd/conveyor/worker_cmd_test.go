@@ -3133,3 +3133,160 @@ func TestWorkerHarnessHelper(t *testing.T) {
 		}
 	}
 }
+
+func TestOpenCodeUsageCollectorValidationAndAccumulation(t *testing.T) {
+	collector := &opencodeUsageCollector{}
+	var absent *opencodeUsageCollector
+	if _, ok := absent.Usage(); ok {
+		t.Fatal("nil collector has usage")
+	}
+	ignored := []string{
+		`not-json`, `{"type":"step_finish"}`, `{"type":"step_finish","part":{"tokens":{}}}`,
+		`{"type":"step_finish","part":{"tokens":{"input":1}}}`,
+		`{"type":"step_finish","part":{"tokens":{"output":1}}}`,
+		`{"type":"step_finish","part":{"tokens":{"input":null,"output":1}}}`,
+		`{"type":"step_finish","part":{"tokens":{"input":-1,"output":1}}}`,
+		`{"type":"step_finish","part":{"tokens":{"input":1,"output":-1}}}`,
+		`{"type":"step_finish","part":{"tokens":{"input":1.5,"output":2}}}`,
+		`{"type":"step_finish","part":{"tokens":{"input":1,"output":"2"}}}`,
+	}
+	for _, kind := range []string{"step_start", "text", "reasoning", "tool_use", "error", "result", "unknown"} {
+		ignored = append(ignored, fmt.Sprintf(`{"type":%q,"part":{"tokens":{"input":8,"output":5}}}`, kind))
+	}
+	if _, ok := collector.Usage(); ok {
+		t.Fatal("empty collector has usage")
+	}
+	for _, line := range ignored {
+		_, _ = collector.Write([]byte(line + "\n"))
+		if got, ok := collector.Usage(); ok {
+			t.Fatalf("ignored line %s produced %+v", line, got)
+		}
+	}
+	first := `{"type":"step_finish","sessionID":"ses_test","part":{"type":"step-finish","reason":"tool-calls","tokens":{"total":9163,"input":7356,"output":15,"reasoning":99,"cache":{"write":20,"read":1792}},"cost":2.5}}`
+	second := `{"type":"step_finish","part":{"reason":"stop","tokens":{"input":97,"output":6}}}`
+	// The first write ends mid-event, the second crosses a line boundary, and
+	// the third completes the second event. EOF alone never accepts a line.
+	for i, chunk := range []string{first[:80], first[80:] + "\n" + second[:30], second[30:]} {
+		n, err := collector.Write([]byte(chunk))
+		if n != len(chunk) || err != nil {
+			t.Fatalf("write %d = %d, %v", i, n, err)
+		}
+		got, ok := collector.Usage()
+		if i == 0 && ok || i > 0 && (!ok || got != (workerUsageTotals{TokensIn: 7356, TokensOut: 15})) {
+			t.Fatalf("write %d usage=%+v available=%v", i, got, ok)
+		}
+	}
+	_, _ = collector.Write([]byte("\n"))
+	want := workerUsageTotals{TokensIn: 7453, TokensOut: 21}
+	for _, line := range ignored {
+		_, _ = collector.Write([]byte(line + "\n"))
+	}
+	if got, ok := collector.Usage(); !ok || got != want {
+		t.Fatalf("cumulative usage=%+v available=%v want=%+v", got, ok, want)
+	}
+	zero := &opencodeUsageCollector{}
+	_, _ = zero.Write([]byte(`{"type":"step_finish","part":{"tokens":{"input":0,"output":0}}}` + "\n"))
+	if got, ok := zero.Usage(); !ok || got != (workerUsageTotals{}) {
+		t.Fatalf("valid zero usage=%+v available=%v", got, ok)
+	}
+}
+
+func TestOpenCodeUsageCollectorBoundsLinesAndPreventsOverflow(t *testing.T) {
+	valid := `{"type":"step_finish","part":{"tokens":{"input":3,"output":1}}}` + "\n"
+	for _, split := range []bool{false, true} {
+		collector := &opencodeUsageCollector{}
+		oversized := strings.Repeat(" ", 64*1024+1)
+		if split {
+			_, _ = collector.Write([]byte(oversized))
+			if len(collector.pending) > 64*1024 {
+				t.Fatal("pending exceeds 64 KiB")
+			}
+			_, _ = collector.Write([]byte(valid))
+		} else {
+			_, _ = collector.Write([]byte(oversized + valid))
+		}
+		if got, ok := collector.Usage(); ok {
+			t.Fatalf("oversized line suffix produced usage: %+v", got)
+		}
+		_, _ = collector.Write([]byte(valid))
+		if got, ok := collector.Usage(); !ok || got != (workerUsageTotals{TokensIn: 3, TokensOut: 1}) {
+			t.Fatalf("failed to recover at next line: %+v, %v", got, ok)
+		}
+	}
+	for _, tokens := range []string{`"input":9223372036854775807,"output":0`, `"input":0,"output":9223372036854775807`} {
+		collector := &opencodeUsageCollector{}
+		_, _ = collector.Write([]byte(`{"type":"step_finish","part":{"tokens":{` + tokens + `}}}` + "\n"))
+		want, _ := collector.Usage()
+		_, _ = collector.Write([]byte(valid))
+		if got, _ := collector.Usage(); got != want {
+			t.Fatalf("overflow changed totals: %+v want %+v", got, want)
+		}
+	}
+}
+
+func TestEnableHarnessUsageCollectionSelectsOpenCodeByCommandBasename(t *testing.T) {
+	for _, command := range []string{"opencode", "/opt/bin/opencode"} {
+		argv := []string{command, "run", "prompt", "--format", "json"}
+		got, collector := enableHarnessUsageCollection(config.Harness{Name: "custom", Command: argv}, argv)
+		if _, ok := collector.(*opencodeUsageCollector); !ok || !reflect.DeepEqual(got, argv) {
+			t.Fatalf("argv=%q collector=%T", got, collector)
+		}
+	}
+	for _, command := range [][]string{nil, {"other"}, {"opencode-wrapper"}} {
+		got, collector := enableHarnessUsageCollection(config.Harness{Name: "opencode", Command: command}, command)
+		if collector != nil || !reflect.DeepEqual(got, command) {
+			t.Fatalf("non-opencode argv=%q collector=%T", got, collector)
+		}
+	}
+}
+
+func TestOpenCodeStreamReportsOneSessionFallback(t *testing.T) {
+	for _, reported := range []bool{false, true} {
+		t.Run(fmt.Sprintf("self-reported=%v", reported), func(t *testing.T) {
+			calls := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				var request struct {
+					Params struct {
+						Name      string         `json:"name"`
+						Arguments map[string]any `json:"arguments"`
+					} `json:"params"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+					t.Error(err)
+				}
+				a := request.Params.Arguments
+				if request.Params.Name != "report_usage" || a["source"] != "worker_fallback" || a["session_id"] != "session-open" || a["work_order_id"] != "order-open" || a["workspace_id"] != "demo" || a["tokens_in"] != float64(7453) || a["tokens_out"] != float64(21) {
+					t.Errorf("unexpected report: %+v", request)
+				}
+				if a["cost_usd"] != float64(0) {
+					t.Error("fallback invented cost instead of the existing unknown-cost sentinel")
+				}
+				_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{}}`)
+			}))
+			defer server.Close()
+			argv := []string{"opencode", "run", "prompt", "--format", "json"}
+			_, collector := enableHarnessUsageCollection(config.Harness{Name: "custom", Command: argv}, argv)
+			var console, tail bytes.Buffer
+			fanout, renderer := harnessStdoutFanout(&console, &tail, collector, workerservice.DispatchOrder{Dispatch: "run"}, nil)
+			if renderer != nil {
+				t.Fatal("raw child installed renderer")
+			}
+			stream := `{"type":"step_finish","part":{"tokens":{"input":7356,"output":15},"cost":9}}` + "\n" + `{"type":"step_finish","part":{"tokens":{"input":97,"output":6}}}` + "\n"
+			if _, err := io.Copy(fanout, strings.NewReader(stream)); err != nil {
+				t.Fatal(err)
+			}
+			if console.String() != stream || tail.String() != stream {
+				t.Fatal("child stream changed")
+			}
+			reportWorkerUsageFallback(&client{base: server.URL, workspace: "demo"}, "worker-token", "order-open", "session-open", core.WorkOrder{UsageReported: reported}, collector)
+			want := 1
+			if reported {
+				want = 0
+			}
+			if calls != want {
+				t.Fatalf("reports=%d want=%d", calls, want)
+			}
+		})
+	}
+}

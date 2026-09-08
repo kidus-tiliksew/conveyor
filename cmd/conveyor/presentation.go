@@ -72,10 +72,12 @@ func renderCLIStatusRows(output io.Writer, styled bool, rows ...[2]string) error
 }
 
 type harnessEventRenderer struct {
-	output         io.Writer
-	palette        cliPalette
-	pending        bytes.Buffer
-	cursorThinking bool
+	output               io.Writer
+	palette              cliPalette
+	pending              bytes.Buffer
+	cursorThinking       bool
+	openCodeSessionShown bool
+	openCodeThinking     bool
 }
 
 type harnessEventMessage struct {
@@ -188,17 +190,37 @@ func (r *harnessEventRenderer) renderLine(line string) error {
 		return nil
 	}
 	var event struct {
-		Type      string                     `json:"type"`
-		Subtype   string                     `json:"subtype"`
-		ThreadID  string                     `json:"thread_id"`
-		SessionID string                     `json:"session_id"`
-		CallID    string                     `json:"call_id"`
-		Text      string                     `json:"text"`
-		Message   harnessEventMessage        `json:"message"`
-		ToolCall  map[string]json.RawMessage `json:"tool_call"`
-		IsError   bool                       `json:"is_error"`
-		Error     json.RawMessage            `json:"error"`
-		Usage     struct {
+		Type              string `json:"type"`
+		Subtype           string `json:"subtype"`
+		ThreadID          string `json:"thread_id"`
+		SessionID         string `json:"session_id"`
+		OpenCodeSessionID string `json:"sessionID"`
+		Part              struct {
+			Type   string `json:"type"`
+			Text   string `json:"text"`
+			Reason string `json:"reason"`
+			Tool   string `json:"tool"`
+			CallID string `json:"callID"`
+			State  struct {
+				Status string `json:"status"`
+				Input  struct {
+					Command string `json:"command"`
+				} `json:"input"`
+				Output string `json:"output"`
+				Error  string `json:"error"`
+			} `json:"state"`
+			Tokens struct {
+				Input  int64 `json:"input"`
+				Output int64 `json:"output"`
+			} `json:"tokens"`
+		} `json:"part"`
+		CallID   string                     `json:"call_id"`
+		Text     string                     `json:"text"`
+		Message  harnessEventMessage        `json:"message"`
+		ToolCall map[string]json.RawMessage `json:"tool_call"`
+		IsError  bool                       `json:"is_error"`
+		Error    json.RawMessage            `json:"error"`
+		Usage    struct {
 			InputTokens        int64 `json:"input_tokens"`
 			OutputTokens       int64 `json:"output_tokens"`
 			CursorInputTokens  int64 `json:"inputTokens"`
@@ -219,8 +241,50 @@ func (r *harnessEventRenderer) renderLine(line string) error {
 		return writeErr
 	}
 
+	if event.OpenCodeSessionID != "" && !r.openCodeSessionShown {
+		if _, err := fmt.Fprintln(r.output, r.palette.muted.Render("session started "+boundText(event.OpenCodeSessionID, 24))); err != nil {
+			return err
+		}
+		r.openCodeSessionShown = true
+	}
+
 	var rendered string
 	switch event.Type {
+	case "step_start":
+		r.openCodeThinking = false
+		rendered = r.palette.muted.Render("agent step started")
+	case "text":
+		rendered = boundText(event.Part.Text, harnessDetailLimit)
+	case "reasoning":
+		if text := boundText(event.Part.Text, harnessDetailLimit); text != "" {
+			rendered = r.palette.muted.Render(text)
+		} else if !r.openCodeThinking {
+			r.openCodeThinking = true
+			rendered = r.palette.muted.Render("thinking…")
+		}
+	case "tool_use":
+		label := boundText(firstNonEmpty(event.Part.Tool, event.Part.CallID, "tool"), harnessCommandLimit)
+		if event.Part.Tool == "bash" && strings.TrimSpace(event.Part.State.Input.Command) != "" {
+			label = boundText(label+" · "+event.Part.State.Input.Command, harnessCommandLimit)
+		}
+		eventType := "item.started"
+		if event.Part.State.Status == "completed" || event.Part.State.Status == "error" {
+			eventType = "item.completed"
+		}
+		rendered = r.renderItem(eventType, "mcp_tool_call", "", "", label, boundText(event.Part.State.Status, harnessCommandLimit), nil)
+		if event.Part.State.Status == "error" && strings.TrimSpace(event.Part.State.Error) != "" {
+			rendered += r.palette.warning.Render(" · " + boundText(event.Part.State.Error, harnessDetailLimit))
+		}
+	case "step_finish":
+		r.openCodeThinking = false
+		switch event.Part.Reason {
+		case "stop":
+			rendered = r.palette.success.Render(fmt.Sprintf("✓ agent turn completed · tokens in %d, out %d", event.Part.Tokens.Input, event.Part.Tokens.Output))
+		case "tool-calls":
+			rendered = r.palette.muted.Render("step finished")
+		default:
+			rendered = r.palette.muted.Render(boundText(trimmed, harnessFallbackLimit))
+		}
 	case "system":
 		if event.Subtype == "init" {
 			rendered = r.palette.muted.Render("session started " + boundText(event.SessionID, 24))
@@ -287,7 +351,18 @@ func (r *harnessEventRenderer) renderLine(line string) error {
 	case "error":
 		message := event.Message.Text
 		if message == "" && len(event.Error) > 0 {
-			message = string(event.Error)
+			var openCodeError struct {
+				Name string `json:"name"`
+				Data struct {
+					Message string `json:"message"`
+				} `json:"data"`
+			}
+			if json.Unmarshal(event.Error, &openCodeError) == nil {
+				message = firstNonEmpty(openCodeError.Data.Message, openCodeError.Name)
+			}
+			if message == "" {
+				message = string(event.Error)
+			}
 		}
 		rendered = r.palette.warning.Render("! " + boundText(message, harnessDetailLimit))
 	default:
