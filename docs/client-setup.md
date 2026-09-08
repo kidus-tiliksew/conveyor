@@ -219,7 +219,15 @@ anywhere, which is why the `CONVEYOR_API_TOKEN` export is needed alongside
 the `CONVEYOR_ADDR` you set in step 2. Launch the agent client from a shell
 with both variables set; a desktop application launched elsewhere may not
 inherit them. Cursor registration is global in `~/.cursor/mcp.json`. The
-install command prints any missing bridge instruction.
+install command prints any missing bridge instruction. OpenCode registration is
+global in `~/.config/opencode/opencode.json`, or
+`$XDG_CONFIG_HOME/opencode/opencode.json` when set. Run
+`conveyor mcp install --tool opencode` to install its environment-backed
+`mcp.conveyor` entry. OpenCode needs `CONVEYOR_ADDR=<server>/mcp` and uses
+`{env:VAR}` substitution. The installer keeps its ownership marker inside the
+entry because OpenCode rejects unknown top-level keys. It refuses comments
+and symlinks, skips unmarked entries unless `--adopt` is passed, and validates
+changed config before replacement when OpenCode is on PATH.
 
 <a id="6-run-a-first-task"></a>
 

@@ -68,7 +68,53 @@ export CONVEYOR_API_TOKEN=$(conveyor auth token)
 
 ## Global Conveyor registration
 
-Automated global registration is owned by the follow-on OpenCode MCP-install task.
+Run `conveyor mcp install --tool opencode` after `conveyor auth login`.
+The installer writes the global `~/.config/opencode/opencode.json`, or
+`$XDG_CONFIG_HOME/opencode/opencode.json` when `XDG_CONFIG_HOME` is set to an
+absolute path. It creates new files with mode 0600 and preserves other members.
+
+```json
+{
+  "mcp": {
+    "conveyor": {
+      "type": "remote",
+      "url": "{env:CONVEYOR_ADDR}",
+      "headers": {
+        "Authorization": "Bearer {env:CONVEYOR_API_TOKEN}"
+      },
+      "_conveyor_mcp_install": "owner=v1"
+    }
+  }
+}
+```
+
+OpenCode substitutes `{env:VAR}` in the URL and header values. Shell-style
+`${VAR}` does not work. The ownership marker belongs inside `mcp.conveyor`;
+an unknown top-level key fails OpenCode config loading and can break every
+OpenCode start on the machine.
+
+The installer prints the missing bridge exports. Set them in the shell that
+will launch OpenCode:
+
+```sh
+export CONVEYOR_ADDR=https://factory.example.com/mcp
+export CONVEYOR_API_TOKEN=$(conveyor auth token)
+```
+
+The registration contains no token value and works with the selected server
+through these environment references. An existing unmarked `conveyor` entry is
+`skipped` unless `--adopt` is passed. Matching owned entries are `unchanged`.
+Use `--list` to report without writing. Comment-bearing JSON and symlink paths
+are refused with the destination path in the error.
+
+Before publishing a changed file, the installer runs `opencode debug config`
+on a staged copy with stdin from `/dev/null` and a 30-second timeout. The check
+uses temporary config and data directories and placeholder bridge values.
+Debug output is never printed. A nonzero exit, timeout, `Unrecognized key`, or
+`ConfigInvalid` error leaves the original bytes intact. If OpenCode is absent,
+explicit installation still writes the entry and reports that validation was
+skipped. This check validates configuration; launch readiness still checks the
+actual server connection.
 
 ## Readiness and installation
 
