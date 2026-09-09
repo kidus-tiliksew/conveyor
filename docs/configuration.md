@@ -131,7 +131,7 @@ Client (read by `conveyor`):
 | Variable | Purpose |
 |---|---|
 | `CONVEYOR_ADDR` | Server URL (default `http://localhost:8080`). |
-| `CONVEYOR_API_TOKEN` | Bearer token; overrides the stored credential. |
+| `CONVEYOR_API_TOKEN` | Bearer token for the environment server (normalized `CONVEYOR_ADDR`, else `http://localhost:8080`); ignored for any other resolved server, which uses its stored credential. |
 | `CONVEYOR_WORKSPACE` | Workspace id; overrides the stored default. |
 | `CONVEYOR_CONFIG` | Local execution config path. |
 | `CONVEYOR_WORKTREE_ROOT` | Overrides the worktree root for `checkout`. |

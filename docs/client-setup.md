@@ -52,9 +52,12 @@ hostname throughout, because credentials are stored per server URL. A one-off
 for the selected server.
 
 Work outside the server directory, in a shell without the server's bootstrap
-`CONVEYOR_API_TOKEN` exported. An environment token takes precedence over the
-token saved by `auth login`, and the server's `.env` would be loaded into
-client commands run from that directory.
+`CONVEYOR_API_TOKEN` exported. An environment token is the credential only for
+its environment server — the normalized `CONVEYOR_ADDR`, or
+`http://localhost:8080` when unset — so it wins there over the token saved by
+`auth login`. Pointing `--server` at a different server ignores the
+environment token and uses that server's stored credential instead; the
+server's `.env` would be loaded into client commands run from that directory.
 
 ## 3. Configure GitHub identity and repository access
 

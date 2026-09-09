@@ -218,13 +218,13 @@ func TestClientResolutionPrecedenceAndSingletonFallback(t *testing.T) {
 	}
 
 	c := newClient()
-	if c.token != "stored-token" || c.workspace != "stored-workspace" {
+	if c.token != "stored-token" || c.workspace != "stored-workspace" || c.resolved.Token.Source != "stored file" {
 		t.Fatalf("stored resolution = %+v", c)
 	}
 	t.Setenv("CONVEYOR_API_TOKEN", "environment-token")
 	t.Setenv("CONVEYOR_WORKSPACE", "environment-workspace")
 	c = newClient()
-	if c.token != "environment-token" || c.workspace != "environment-workspace" || c.resolved.Token.Source != "environment" {
+	if c.token != "environment-token" || c.workspace != "environment-workspace" || c.resolved.Token.Source != "environment CONVEYOR_API_TOKEN" {
 		t.Fatalf("environment resolution = %+v", c)
 	}
 	workspaceFlag, workspaceFlagExplicit = "flag-workspace", true
@@ -240,6 +240,146 @@ func TestClientResolutionPrecedenceAndSingletonFallback(t *testing.T) {
 	c = newClient()
 	if c.workspace != "" || c.resolved.Workspace.Source != "singleton fallback" {
 		t.Fatalf("singleton resolution = %+v", c)
+	}
+}
+
+func TestClientTokenResolutionBindsEnvironmentTokenToEnvironmentServer(t *testing.T) {
+	isolateLocalAuthTest(t)
+	envServer := "https://env.example.test"
+	other := "https://other.example.test"
+	t.Setenv("CONVEYOR_ADDR", envServer)
+	for server, token := range map[string]string{envServer: "stored-env-token", other: "tok-b"} {
+		if err := updateLocalServerConfig(server, func(entry *localServerConfig) { entry.Token = token }); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// The environment token is eligible for its own environment server and
+	// wins over the stored credential (req-cli-authentication AC-1.4).
+	t.Setenv("CONVEYOR_API_TOKEN", "environment-token")
+	c := newClient()
+	if c.token != "environment-token" || c.base != envServer || c.resolved.Token.Source != "environment CONVEYOR_API_TOKEN" || !c.resolved.StoredCredential {
+		t.Fatalf("matching environment server = %+v", c)
+	}
+
+	// An explicit server equal to the environment server still uses the
+	// environment token.
+	serverFlag, serverFlagExplicit = envServer+"/", true
+	c = newClient()
+	if c.token != "environment-token" || c.base != envServer || c.resolved.Token.Source != "environment CONVEYOR_API_TOKEN" {
+		t.Fatalf("explicit matching server = %+v", c)
+	}
+
+	// A different explicit server ignores the environment token and falls back
+	// to that server's stored credential, with a redacted explanatory source.
+	serverFlag, serverFlagExplicit = other, true
+	c = newClient()
+	if c.token != "tok-b" || c.base != other || !c.resolved.StoredCredential {
+		t.Fatalf("mismatched explicit server with stored credential = %+v", c)
+	}
+	if c.resolved.Token.Source != "stored file (environment CONVEYOR_API_TOKEN ignored for https://env.example.test)" {
+		t.Fatalf("mismatched source = %q", c.resolved.Token.Source)
+	}
+
+	// Without a stored credential the environment token is still ignored and
+	// the source explains the skipped token without exposing any value.
+	if err := updateLocalServerConfig(other, func(entry *localServerConfig) { entry.Token = "" }); err != nil {
+		t.Fatal(err)
+	}
+	c = newClient()
+	if c.token != "" || c.resolved.StoredCredential || c.resolved.Token.Source != "environment CONVEYOR_API_TOKEN ignored for https://env.example.test" {
+		t.Fatalf("mismatched explicit server without stored credential = %+v", c)
+	}
+
+	// Localhost automation: with CONVEYOR_ADDR unset the environment token
+	// still applies to the default localhost server.
+	serverFlag, serverFlagExplicit = "", false
+	t.Setenv("CONVEYOR_ADDR", "")
+	c = newClient()
+	if c.token != "environment-token" || c.base != "http://localhost:8080" || c.resolved.Token.Source != "environment CONVEYOR_API_TOKEN" {
+		t.Fatalf("localhost automation = %+v", c)
+	}
+}
+
+func TestAuthStatusReportsTokenSourceWithoutRevealingValues(t *testing.T) {
+	isolateLocalAuthTest(t)
+	mismatched := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer stored-secret-token" {
+			t.Fatalf("authorization = %q", r.Header.Get("Authorization"))
+		}
+		_ = json.NewEncoder(w).Encode(core.CallerIdentity{Email: "other@example.test", DisplayName: "Other"})
+	}))
+	defer mismatched.Close()
+	t.Setenv("CONVEYOR_ADDR", "https://env.example.test")
+	t.Setenv("CONVEYOR_API_TOKEN", "environment-secret-token")
+	if err := updateLocalServerConfig(mismatched.URL, func(entry *localServerConfig) { entry.Token = "stored-secret-token" }); err != nil {
+		t.Fatal(err)
+	}
+	serverFlag, serverFlagExplicit = mismatched.URL, true
+
+	var status, stderr bytes.Buffer
+	command := authCmd()
+	command.SetArgs([]string{"status"})
+	command.SetOut(&status)
+	command.SetErr(&stderr)
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	output := status.String() + stderr.String()
+	if !strings.Contains(output, "Token source") ||
+		!strings.Contains(output, "environment CONVEYOR_API_TOKEN ignored for https://env.example.test") {
+		t.Fatalf("status output = %q", output)
+	}
+	for _, secret := range []string{"environment-secret-token", "stored-secret-token"} {
+		if strings.Contains(output, secret) {
+			t.Fatalf("status output disclosed a token value: %q", output)
+		}
+	}
+}
+
+func TestClient401DiagnosticReportsSourceWithoutTokenValues(t *testing.T) {
+	isolateLocalAuthTest(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	}))
+	defer server.Close()
+	t.Setenv("CONVEYOR_API_TOKEN", "environment-secret-token")
+	if err := updateLocalServerConfig(server.URL, func(entry *localServerConfig) { entry.Token = "stored-secret-token" }); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("CONVEYOR_ADDR", server.URL)
+	c := newClient()
+	err := c.do(http.MethodGet, "/v1/me", nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "token from environment CONVEYOR_API_TOKEN") ||
+		!strings.Contains(err.Error(), "a stored credential exists for "+server.URL) {
+		t.Fatalf("401 diagnostic = %v", err)
+	}
+
+	serverFlag, serverFlagExplicit = server.URL, true
+	t.Setenv("CONVEYOR_ADDR", "https://env.example.test")
+	c = newClient()
+	err = c.do(http.MethodGet, "/v1/me", nil, nil)
+	if err == nil || !strings.Contains(err.Error(),
+		"stored file (environment CONVEYOR_API_TOKEN ignored for https://env.example.test)") ||
+		!strings.Contains(err.Error(), "a stored credential exists for "+server.URL) {
+		t.Fatalf("mismatched 401 diagnostic = %v", err)
+	}
+	message := err.Error()
+	for _, secret := range []string{"environment-secret-token", "stored-secret-token"} {
+		if strings.Contains(message, secret) {
+			t.Fatalf("401 diagnostic disclosed a token value: %q", message)
+		}
+	}
+}
+
+func TestClientPreconditionsNameGenericCredentialAndLoginAct(t *testing.T) {
+	isolateLocalAuthTest(t)
+	c := &client{base: "http://localhost:8080"}
+	_, err := c.createTask("body", "repo", "main")
+	if err == nil || !strings.Contains(err.Error(), "a credential is required") ||
+		!strings.Contains(err.Error(), "conveyor auth login") || strings.Contains(err.Error(), "CONVEYOR_API_TOKEN") {
+		t.Fatalf("precondition error = %v", err)
 	}
 }
 
