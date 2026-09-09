@@ -30,7 +30,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var workerAttemptCheckpointer = checkpointAssignedTaskWorktree
+var workerAttemptCheckpointer = checkpointAssignedTaskWorktreeAt
 
 func workerCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "worker", Short: "Enroll and run the operator-owned worker dispatcher", Long: "Enroll and run the operator-owned worker dispatcher.\n\n" + localGitCredentialHelp}
@@ -264,6 +264,37 @@ type opencodeUsageCollector struct {
 	dropping bool
 	totals   workerUsageTotals
 	seen     bool
+	// lastStepReason and errorMessage support ExitDiagnosis: OpenCode ends
+	// the run cleanly when a step finishes with no tool call, even when the
+	// provider stream ended without a result (reason "unknown").
+	lastStepReason string
+	lastStepOutput int64
+	errorMessage   string
+}
+
+// harnessExitDiagnoser is implemented by a usage collector that can name why
+// the child's stream ended without a submission.
+type harnessExitDiagnoser interface {
+	ExitDiagnosis() string
+}
+
+// ExitDiagnosis returns a bounded explanation when the last observed step
+// ended with a reason other than stop or tool-calls, or when the stream
+// carried an error event. It returns "" for a normal ending.
+func (c *opencodeUsageCollector) ExitDiagnosis() string {
+	if c == nil {
+		return ""
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.errorMessage != "" {
+		return "OpenCode reported an error: " + boundText(c.errorMessage, harnessDetailLimit)
+	}
+	switch c.lastStepReason {
+	case "", "stop", "tool-calls":
+		return ""
+	}
+	return fmt.Sprintf("OpenCode's last step ended with reason %q after %d output tokens; the provider stream ended before the agent finished", boundText(c.lastStepReason, harnessCommandLimit), c.lastStepOutput)
 }
 
 func (c *opencodeUsageCollector) Write(p []byte) (int, error) {
@@ -301,19 +332,43 @@ func (c *opencodeUsageCollector) collect(line []byte) {
 	var event struct {
 		Type string `json:"type"`
 		Part struct {
+			Reason string `json:"reason"`
 			Tokens struct {
 				Input  *int64 `json:"input"`
 				Output *int64 `json:"output"`
 			} `json:"tokens"`
 		} `json:"part"`
+		Error struct {
+			Name string `json:"name"`
+			Data struct {
+				Message string `json:"message"`
+			} `json:"data"`
+		} `json:"error"`
 	}
-	if json.Unmarshal(line, &event) != nil || event.Type != "step_finish" {
+	if json.Unmarshal(line, &event) != nil {
 		return
 	}
+	switch event.Type {
+	case "error":
+		message := strings.TrimSpace(event.Error.Data.Message)
+		if message == "" {
+			message = strings.TrimSpace(event.Error.Name)
+		}
+		if message != "" {
+			c.errorMessage = message
+		}
+		return
+	case "step_finish":
+	default:
+		return
+	}
+	c.lastStepReason = strings.TrimSpace(event.Part.Reason)
+	c.lastStepOutput = 0
 	input, output := event.Part.Tokens.Input, event.Part.Tokens.Output
 	if input == nil || output == nil || *input < 0 || *output < 0 {
 		return
 	}
+	c.lastStepOutput = *output
 	// Skip an unrepresentable step instead of wrapping cumulative totals negative.
 	const maxInt64 = int64(1<<63 - 1)
 	if *input > maxInt64-c.totals.TokensIn || *output > maxInt64-c.totals.TokensOut {
@@ -1042,6 +1097,10 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 	var failureTail *boundedTailWriter
 	var transcriptSpool *boundedTranscriptSpool
 	var terminalRenderer *harnessEventRenderer
+	// workingDirectory is the launcher-resolved child checkout. The checkpoint
+	// closure below reads it at call time so a launch started outside the
+	// repository still checkpoints the registered task worktree.
+	var workingDirectory string
 	flushOutput := func() {
 		if redactedStdout != nil {
 			_ = redactedStdout.Flush()
@@ -1080,7 +1139,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 		}
 		checkpointCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		checkpointCtx = contextWithGitEnvironment(checkpointCtx, gitEnvironment)
-		result, checkpointErr := workerAttemptCheckpointer(checkpointCtx, item.Task.Branch, item.Task.Repo, item.Repository.URL, attemptCheckpoint{
+		result, checkpointErr := workerAttemptCheckpointer(checkpointCtx, workingDirectory, item.Task.Branch, item.Task.Repo, item.Repository.URL, attemptCheckpoint{
 			AttemptID: claimed.AttemptID, WorkOrderID: item.Order.ID, TerminationReason: reason,
 		})
 		cancel()
@@ -1225,7 +1284,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 		childValues["GIT_COMMITTER_NAME"] = item.GitAuthor.Name
 		childValues["GIT_COMMITTER_EMAIL"] = item.GitAuthor.Email
 	}
-	workingDirectory := ""
+	workingDirectory = ""
 	if item.Order.Stage == core.StageSpec {
 		if len(gitEnvironment) > 0 {
 			err = requireHTTPSRemote(item.Repository.URL)
@@ -1505,6 +1564,14 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 			}
 			if item.Order.Stage == core.StageReview {
 				reason = "harness exited without terminal verdict submission"
+			}
+			// A harness that ends its turn cleanly after a dropped provider
+			// stream exits 0 with nothing to submit; the collector names that
+			// ending so the release reason and the operator see the cause.
+			if diagnoser, ok := usageCollector.(harnessExitDiagnoser); ok {
+				if diagnosis := diagnoser.ExitDiagnosis(); diagnosis != "" {
+					reason += ": " + diagnosis
+				}
 			}
 			if releaseErr := releaseAfterCheckpoint(core.WorkOrderOutcomeChildFailure, reason, exitStatus); releaseErr != nil {
 				return fmt.Errorf("%s: release claim: %w", reason, releaseErr)

@@ -39,6 +39,18 @@ still enables collection without changing the harness arguments.
 Attended runs summarize OpenCode's JSON events; use `--raw` to print the
 original JSONL stream.
 
+OpenCode ends a run cleanly whenever a step finishes without a tool call,
+including when the provider stream ends without a result. That step carries
+`reason: "unknown"` and zero tokens, and the process exits 0 with nothing
+submitted. The worker records the last `step_finish` reason and any `error`
+event; when the child exits without a submission and the last reason was
+neither `stop` nor `tool-calls`, or an error event appeared, the
+`child_failed` reason ends with that diagnosis, for example `harness exited
+before completing work order: OpenCode's last step ended with reason
+"unknown" after 0 output tokens; the provider stream ended before the agent
+finished`. Attended runs print the same abnormal step end as a warning line.
+The attempt is retried by the ordinary release path.
+
 ## Environment-backed registration
 
 Configure the global `~/.config/opencode/opencode.json` attachment with environment references, not literal credentials:

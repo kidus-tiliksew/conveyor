@@ -282,8 +282,12 @@ func (r *harnessEventRenderer) renderLine(line string) error {
 			rendered = r.palette.success.Render(fmt.Sprintf("✓ agent turn completed · tokens in %d, out %d", event.Part.Tokens.Input, event.Part.Tokens.Output))
 		case "tool-calls":
 			rendered = r.palette.muted.Render("step finished")
-		default:
+		case "":
 			rendered = r.palette.muted.Render(boundText(trimmed, harnessFallbackLimit))
+		default:
+			// "unknown" is how OpenCode reports a provider stream that ended
+			// without a result; the run then exits 0 with nothing submitted.
+			rendered = r.palette.warning.Render(fmt.Sprintf("! agent step ended early · reason %s · tokens in %d, out %d", boundText(event.Part.Reason, harnessCommandLimit), event.Part.Tokens.Input, event.Part.Tokens.Output))
 		}
 	case "system":
 		if event.Subtype == "init" {

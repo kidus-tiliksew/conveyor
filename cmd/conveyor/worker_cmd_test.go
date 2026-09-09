@@ -482,7 +482,7 @@ func TestRunHarnessChildReportsRedactedSnapshotAndBestEffortTranscript(t *testin
 
 	previousCheckpointer := workerAttemptCheckpointer
 	checkpointReceivedToken := false
-	workerAttemptCheckpointer = func(ctx context.Context, _, _, _ string, checkpoint attemptCheckpoint) (*attemptCheckpointResult, error) {
+	workerAttemptCheckpointer = func(ctx context.Context, _, _, _, _ string, checkpoint attemptCheckpoint) (*attemptCheckpointResult, error) {
 		checkpointReceivedToken = gitEnvironmentFromContext(ctx)[gitAskPassTokenEnv] == "forge-observability-secret"
 		return &attemptCheckpointResult{Worktree: "/assigned/observability", CommitSHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Pushed: true}, nil
 	}
@@ -1856,7 +1856,7 @@ func TestRunHarnessChildFirstActivityTimeoutReapsSilentHarnessProcessGroup(t *te
 	releases := make(chan core.WorkOrderRelease, 2)
 	checkpoints := make(chan core.WorkOrderAttemptCheckpoint, 1)
 	previousCheckpointer := workerAttemptCheckpointer
-	workerAttemptCheckpointer = func(_ context.Context, _, _, _ string, checkpoint attemptCheckpoint) (*attemptCheckpointResult, error) {
+	workerAttemptCheckpointer = func(_ context.Context, _, _, _, _ string, checkpoint attemptCheckpoint) (*attemptCheckpointResult, error) {
 		if checkpoint.AttemptID != "attempt-silent" || checkpoint.WorkOrderID != "silent-first-activity" || checkpoint.TerminationReason != workerFirstActivityTimeoutReason {
 			t.Fatalf("checkpoint metadata=%+v", checkpoint)
 		}
@@ -2765,7 +2765,7 @@ func TestRunHarnessChildPreemptAtRenewalTerminatesAndCheckpointsWithoutRelease(t
 	t.Setenv("CONVEYOR_FAKE_HARNESS_PID_FILE", pidFile)
 
 	previousCheckpointer := workerAttemptCheckpointer
-	workerAttemptCheckpointer = func(_ context.Context, _, _, _ string, checkpoint attemptCheckpoint) (*attemptCheckpointResult, error) {
+	workerAttemptCheckpointer = func(_ context.Context, _, _, _, _ string, checkpoint attemptCheckpoint) (*attemptCheckpointResult, error) {
 		if checkpoint.AttemptID != "attempt-preempted" || checkpoint.WorkOrderID != "preempted-order" || checkpoint.TerminationReason != errWorkerOrderPreempted.Error() {
 			t.Fatalf("checkpoint metadata=%+v", checkpoint)
 		}
@@ -3188,6 +3188,89 @@ func TestOpenCodeUsageCollectorValidationAndAccumulation(t *testing.T) {
 	_, _ = zero.Write([]byte(`{"type":"step_finish","part":{"tokens":{"input":0,"output":0}}}` + "\n"))
 	if got, ok := zero.Usage(); !ok || got != (workerUsageTotals{}) {
 		t.Fatalf("valid zero usage=%+v available=%v", got, ok)
+	}
+}
+
+func TestOpenCodeUsageCollectorExitDiagnosis(t *testing.T) {
+	var absent *opencodeUsageCollector
+	if got := absent.ExitDiagnosis(); got != "" {
+		t.Fatalf("nil collector diagnosis = %q", got)
+	}
+	normal := &opencodeUsageCollector{}
+	for _, line := range []string{
+		`{"type":"step_finish","part":{"reason":"tool-calls","tokens":{"input":10,"output":4}}}`,
+		`{"type":"text","part":{"text":"done"}}`,
+		`{"type":"step_finish","part":{"reason":"stop","tokens":{"input":3,"output":2}}}`,
+	} {
+		_, _ = normal.Write([]byte(line + "\n"))
+	}
+	if got := normal.ExitDiagnosis(); got != "" {
+		t.Fatalf("normal ending diagnosis = %q", got)
+	}
+	if got, ok := normal.Usage(); !ok || got != (workerUsageTotals{TokensIn: 13, TokensOut: 6}) {
+		t.Fatalf("usage after normal ending = %+v %v", got, ok)
+	}
+
+	// The live failure on 2026-09-09: a long reasoning step ended with reason
+	// "unknown" and zero tokens, then the child exited 0 without submitting.
+	dropped := &opencodeUsageCollector{}
+	for _, line := range []string{
+		`{"type":"step_finish","part":{"reason":"tool-calls","tokens":{"input":2061,"output":69}}}`,
+		`{"type":"step_start","part":{}}`,
+		`{"type":"step_finish","part":{"reason":"unknown","tokens":{"input":0,"output":0,"reasoning":0}}}`,
+	} {
+		_, _ = dropped.Write([]byte(line + "\n"))
+	}
+	want := `OpenCode's last step ended with reason "unknown" after 0 output tokens; the provider stream ended before the agent finished`
+	if got := dropped.ExitDiagnosis(); got != want {
+		t.Fatalf("dropped-stream diagnosis = %q, want %q", got, want)
+	}
+	if got, ok := dropped.Usage(); !ok || got != (workerUsageTotals{TokensIn: 2061, TokensOut: 69}) {
+		t.Fatalf("usage after dropped stream = %+v %v", got, ok)
+	}
+
+	// A later normal step clears an earlier abnormal one; a step without
+	// counts still records its reason.
+	recovered := &opencodeUsageCollector{}
+	_, _ = recovered.Write([]byte(`{"type":"step_finish","part":{"reason":"length"}}` + "\n"))
+	if got := recovered.ExitDiagnosis(); !strings.Contains(got, `"length"`) {
+		t.Fatalf("length diagnosis = %q", got)
+	}
+	_, _ = recovered.Write([]byte(`{"type":"step_finish","part":{"reason":"stop","tokens":{"input":1,"output":1}}}` + "\n"))
+	if got := recovered.ExitDiagnosis(); got != "" {
+		t.Fatalf("recovered diagnosis = %q", got)
+	}
+
+	failed := &opencodeUsageCollector{}
+	_, _ = failed.Write([]byte(`{"type":"error","sessionID":"ses_x","error":{"name":"UnknownError","data":{"message":"Token refresh failed: 401"}}}` + "\n"))
+	if got := failed.ExitDiagnosis(); got != "OpenCode reported an error: Token refresh failed: 401" {
+		t.Fatalf("error diagnosis = %q", got)
+	}
+	if _, ok := failed.Usage(); ok {
+		t.Fatal("error event produced usage")
+	}
+	named := &opencodeUsageCollector{}
+	_, _ = named.Write([]byte(`{"type":"error","error":{"name":"UnknownError"}}` + "\n"))
+	if got := named.ExitDiagnosis(); got != "OpenCode reported an error: UnknownError" {
+		t.Fatalf("named error diagnosis = %q", got)
+	}
+	empty := &opencodeUsageCollector{}
+	_, _ = empty.Write([]byte(`{"type":"error","error":{}}` + "\n"))
+	if got := empty.ExitDiagnosis(); got != "" {
+		t.Fatalf("empty error diagnosis = %q", got)
+	}
+	long := &opencodeUsageCollector{}
+	_, _ = long.Write([]byte(`{"type":"error","error":{"data":{"message":"` + strings.Repeat("x", 2000) + `"}}}` + "\n"))
+	if got := long.ExitDiagnosis(); len(got) > harnessDetailLimit+64 {
+		t.Fatalf("long error diagnosis not bounded: %d bytes", len(got))
+	}
+	var diagnoser harnessExitDiagnoser = dropped
+	if diagnoser.ExitDiagnosis() == "" {
+		t.Fatal("collector does not satisfy harnessExitDiagnoser")
+	}
+	var nilCollector workerUsageCollector
+	if _, ok := nilCollector.(harnessExitDiagnoser); ok {
+		t.Fatal("nil collector interface asserted as diagnoser")
 	}
 }
 
