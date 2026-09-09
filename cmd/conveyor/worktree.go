@@ -331,9 +331,21 @@ func checkpointTaskWorktreeAtPath(ctx context.Context, path, branch, primary str
 }
 
 func checkpointAssignedTaskWorktree(ctx context.Context, branch, repo, repoURL string, checkpoint attemptCheckpoint) (*attemptCheckpointResult, error) {
-	root, err := repositoryRoot(ctx)
+	return checkpointAssignedTaskWorktreeAt(ctx, "", branch, repo, repoURL, checkpoint)
+}
+
+// checkpointAssignedTaskWorktreeAt anchors the checkpoint at the launcher's
+// resolved primary checkout rather than the process working directory, so an
+// attempt launched from outside the repository still preserves dirty work
+// (component-git-delivery, component-work-orders). An empty checkout keeps
+// the process-directory behavior for `conveyor checkout`.
+func checkpointAssignedTaskWorktreeAt(ctx context.Context, checkout, branch, repo, repoURL string, checkpoint attemptCheckpoint) (*attemptCheckpointResult, error) {
+	root, err := repositoryRootAt(ctx, checkout)
 	if err != nil {
-		return nil, fmt.Errorf("checkpoint must run inside the target repository: %w", err)
+		if strings.TrimSpace(checkout) == "" {
+			return nil, fmt.Errorf("checkpoint must run inside the target repository: %w", err)
+		}
+		return nil, fmt.Errorf("checkpoint checkout %s is not a git repository: %w", checkout, err)
 	}
 	if err = gitx.VerifyRepositoryIdentity(ctx, root, repo, repoURL); err != nil {
 		return nil, err
@@ -451,7 +463,13 @@ func removeTaskWorktreeAtPrimary(ctx context.Context, primary, branch string, st
 }
 
 func repositoryRoot(ctx context.Context) (string, error) {
-	root, err := gitOutput(ctx, "", "rev-parse", "--show-toplevel")
+	return repositoryRootAt(ctx, "")
+}
+
+// repositoryRootAt resolves the repository containing dir; an empty dir means
+// the process working directory.
+func repositoryRootAt(ctx context.Context, dir string) (string, error) {
+	root, err := gitOutput(ctx, strings.TrimSpace(dir), "rev-parse", "--show-toplevel")
 	return strings.TrimSpace(root), err
 }
 

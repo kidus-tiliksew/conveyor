@@ -311,6 +311,8 @@ func TestHarnessEventRendererSummarizesOpenCodeEvents(t *testing.T) {
 		`{"type":"step_finish","sessionID":"ses_example","part":{"reason":"stop","tokens":{"input":97,"output":6},"cost":0}}`,
 		`{"type":"error","sessionID":"ses_example","error":{"name":"UnknownError","data":{"message":"Token refresh failed: 401","extra":"must-not-render"}}}`,
 		`{"type":"error","error":{"name":"UnknownError"}}`,
+		`{"type":"step_finish","sessionID":"ses_example","part":{"reason":"unknown","tokens":{"input":0,"output":0,"reasoning":0},"cost":0}}`,
+		`{"type":"step_finish","part":{"reason":"length","tokens":{"input":12,"output":4096}}}`,
 		`{"type":"step_finish","part":{"reason":"stop","tokens":{"input":0,"output":0}}}`,
 	}, "\n") + "\n"
 	if _, err := renderer.Write([]byte(events[:65])); err != nil {
@@ -324,6 +326,8 @@ func TestHarnessEventRendererSummarizesOpenCodeEvents(t *testing.T) {
 		"› bash · echo OK · running", "✓ bash · echo OK · completed", "step finished", "agent step started", "thinking…",
 		"! bash · pwd · error · The user rejected permission…", "✓ conveyor.get_work_order · completed",
 		"✓ agent turn completed · tokens in 97, out 6", "! Token refresh failed: 401", "! UnknownError",
+		"! agent step ended early · reason unknown · tokens in 0, out 0",
+		"! agent step ended early · reason length · tokens in 12, out 4096",
 		"✓ agent turn completed · tokens in 0, out 0",
 	}, "\n") + "\n"
 	if got := output.String(); got != want {

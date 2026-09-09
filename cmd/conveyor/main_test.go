@@ -272,6 +272,49 @@ func TestCheckoutCheckpointsAttributedPredecessorWorkAndPushes(t *testing.T) {
 	}
 }
 
+// The launcher resolves the child's checkout from the local setup, so a run
+// started from any directory (the 2026-09-09 `conveyor run` from `~`) must
+// still checkpoint the registered task worktree instead of failing on the
+// process working directory.
+func TestCheckpointAssignedTaskWorktreeAtUsesResolvedCheckoutOutsideProcessDirectory(t *testing.T) {
+	fixture := newGitFixture(t)
+	branch := "conveyor/task-checkpoint-elsewhere"
+	path, err := checkoutTask(context.Background(), branch, "main", "conveyor", fixture.origin, "checkpoint-elsewhere", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(path, "interrupted.txt"), "preserve me\n")
+	primaryHead := mustGitOutput(t, fixture.primary, "rev-parse", "HEAD")
+	checkpoint := attemptCheckpoint{AttemptID: "attempt-elsewhere", WorkOrderID: "checkpoint-elsewhere-implement-1", TerminationReason: "harness exited before completing work order"}
+	t.Chdir(t.TempDir())
+
+	if _, err := checkpointAssignedTaskWorktree(context.Background(), branch, "conveyor", fixture.origin, checkpoint); err == nil || !strings.Contains(err.Error(), "checkpoint must run inside the target repository") {
+		t.Fatalf("process-directory checkpoint outside the repository = %v", err)
+	}
+	if status := mustGitOutput(t, path, "status", "--porcelain"); !strings.Contains(status, "interrupted.txt") {
+		t.Fatalf("failed checkpoint changed the worktree: %q", status)
+	}
+
+	result, err := checkpointAssignedTaskWorktreeAt(context.Background(), fixture.primary, branch, "conveyor", fixture.origin, checkpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result == nil || !result.Pushed || result.CommitSHA == "" || result.Worktree != path {
+		t.Fatalf("resolved-checkout checkpoint=%+v", result)
+	}
+	if status := mustGitOutput(t, path, "status", "--porcelain"); status != "" {
+		t.Fatalf("checkpoint left dirty state: %s", status)
+	}
+	if remote := mustGitOutput(t, path, "ls-remote", "--heads", "origin", "refs/heads/"+branch); !strings.HasPrefix(remote, result.CommitSHA+"\t") {
+		t.Fatalf("remote branch = %q, want checkpoint %s", remote, result.CommitSHA)
+	}
+	assertPrimaryUntouched(t, fixture.primary, primaryHead)
+
+	if _, err := checkpointAssignedTaskWorktreeAt(context.Background(), t.TempDir(), branch, "conveyor", fixture.origin, checkpoint); err == nil || !strings.Contains(err.Error(), "is not a git repository") {
+		t.Fatalf("non-repository checkout = %v", err)
+	}
+}
+
 func TestAttemptAuthorityLossPreservesDirtyWorkAndRequiresAuditReconciliation(t *testing.T) {
 	fixture := newGitFixture(t)
 	branch := "conveyor/task-authority-loss"
