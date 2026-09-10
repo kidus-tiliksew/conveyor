@@ -1,5 +1,6 @@
 """Deterministic evidence and actual Make-graph tests; no network or databases."""
 import copy
+import itertools
 import json
 import os
 from pathlib import Path
@@ -259,6 +260,13 @@ class EvidenceTests(unittest.TestCase):
 
 
 class MakeGraphTests(unittest.TestCase):
+    # Exercise both the local default and .github/workflows/ci.yml explicitly,
+    # regardless of the environment that launches this test suite.
+    playwright_installs = (
+        ("", "npx playwright install chromium"),
+        ("--with-deps", "npx playwright install --with-deps chromium"),
+    )
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -273,6 +281,7 @@ class MakeGraphTests(unittest.TestCase):
         run(self.root, "git", "-c", "user.name=Fixture", "-c", "user.email=f@example.invalid", "commit", "-m", "fixture")
         self.log = self.root / "calls"
         self.env = dict(os.environ, INVOCATIONS=str(self.log), PATH=str(self.root / "tools") + os.pathsep + os.environ["PATH"])
+        self.env["PLAYWRIGHT_INSTALL_ARGS"] = ""
         stub = '''#!PYTHON_EXECUTABLE
 import json, os, pathlib, sys, time
 name = pathlib.Path(sys.argv[0]).name
@@ -303,19 +312,19 @@ if name == 'go' and (sys.argv[1] in ['build', 'vet']):
         return [json.loads(x) for x in self.log.read_text().splitlines()]
 
     def test_composite_once_serial_and_parallel_preserves_all_checks(self):
-        for jobs in ("-j1", "-j8"):
-            with self.subTest(jobs=jobs):
+        for jobs, (install_args, install_call) in itertools.product(("-j1", "-j8"), self.playwright_installs):
+            with self.subTest(jobs=jobs, install_args=install_args):
                 self.log.unlink(missing_ok=True)
                 for name in ("installed", "built"):
                     (self.root / name).unlink(missing_ok=True)
-                result = self.make(jobs, "validate", EXPECT_UI="1")
+                result = self.make(jobs, "validate", EXPECT_UI="1", PLAYWRIGHT_INSTALL_ARGS=install_args)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 calls = self.calls()
                 self.assertEqual(calls.count("npm ci"), 1)
                 self.assertEqual(calls.count("npm run build"), 1)
-                for call in ("go vet ./...", "gofmt -l .", "go test ./...", "npm run lint", "npx playwright install chromium", "npm run test:e2e --", "python3 scripts/validate_compose_isolation.py"):
+                for call in ("go vet ./...", "gofmt -l .", "go test ./...", "npm run lint", "npm run test:e2e --", "python3 scripts/validate_compose_isolation.py"):
                     self.assertIn(call, calls)
-                self.assertTrue(any(x.startswith("npx playwright install") for x in calls))
+                self.assertEqual([x for x in calls if x.startswith("npx playwright install")], [install_call])
                 self.assertTrue(any(x.startswith("npm run test:e2e") for x in calls))
                 self.assertEqual(len([x for x in calls if x.startswith("go build")]), 2)
                 self.assertNotIn("npm run typecheck", calls)  # Remains the test-web contract.
@@ -336,9 +345,16 @@ if name == 'go' and (sys.argv[1] in ['build', 'vet']):
         self.assertIn("npm run typecheck", self.calls())
 
     def test_failure_propagates_and_drift_refused(self):
-        for failure in ("npm ci", "npm run build", "go vet ./...", "go test ./...", "npm run lint", "npx playwright install chromium", "npm run test:e2e --", "python3 scripts/validate_compose_isolation.py"):
-            with self.subTest(failure=failure):
-                self.assertNotEqual(self.make("validate", FAIL=failure).returncode, 0)
+        for install_args, install_call in self.playwright_installs:
+            for failure in ("npm ci", "npm run build", "go vet ./...", "go test ./...", "npm run lint", install_call, "npm run test:e2e --", "python3 scripts/validate_compose_isolation.py"):
+                with self.subTest(install_args=install_args, failure=failure):
+                    self.log.unlink(missing_ok=True)
+                    result = self.make("validate", FAIL=failure, PLAYWRIGHT_INSTALL_ARGS=install_args)
+                    self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn(failure, self.calls())
+                    if failure == install_call:
+                        self.assertNotIn("npm run lint", self.calls())
+                        self.assertNotIn("npm run test:e2e --", self.calls())
         self.assertNotEqual(self.make("validate", INSTALL_EXIT="8").returncode, 0)
         self.assertNotEqual(self.make("validate", DRIFT="1").returncode, 0)
         self.assertNotEqual(self.make("test").returncode, 0)
