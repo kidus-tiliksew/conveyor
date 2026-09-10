@@ -3,7 +3,6 @@ package workorder
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
 	"time"
 
@@ -11,21 +10,13 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
-	githubtrigger "github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 )
 
 type claimForgeTokens struct {
 	configured bool
 	credential core.ForgeTokenCredential
 	useErr     error
-}
-
-func TestTaskPRCredentialFailsClosedAndNamesExecutingUser(t *testing.T) {
-	service := &Service{Store: store.NewMemory(), ForgeTokens: &claimForgeTokens{configured: true, useErr: store.ErrForgeTokenDecrypt}}
-	author, token, err := service.taskPRCredential(t.Context(), core.WorkOrder{ID: "order", ClaimantID: core.TaskRunClaimantID("usr-owner")})
-	if err == nil || githubtrigger.ErrorCategory(err) != githubtrigger.ForgePermission || !strings.Contains(err.Error(), "usr-owner") || token != "" || author.Class != core.ForgeAuthorExecutingUser || author.UserID != "usr-owner" {
-		t.Fatalf("author=%+v token=%q err=%v category=%q", author, token, err, githubtrigger.ErrorCategory(err))
-	}
+	useCalls   int
 }
 
 func (*claimForgeTokens) StoreForgeToken(context.Context, string, string, string) (core.ForgeTokenStatus, error) {
@@ -36,6 +27,7 @@ func (f *claimForgeTokens) GetForgeTokenStatus(context.Context, string) (core.Fo
 	return core.ForgeTokenStatus{Configured: f.configured}, nil
 }
 func (f *claimForgeTokens) GetForgeTokenForUse(context.Context, string) (core.ForgeTokenCredential, error) {
+	f.useCalls++
 	return f.credential, f.useErr
 }
 func (*claimForgeTokens) ListForgeTokensForRedaction(context.Context) ([]string, error) {

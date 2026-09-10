@@ -4,12 +4,14 @@
 package github
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
 	"os/exec"
+	"path"
 	"regexp"
 	"sort"
 	"strconv"
@@ -858,13 +860,125 @@ func pullRequestDescriptionForBranch(ctx context.Context, repo, branch string, r
 	return string(out), nil
 }
 
+// CompareChangedPaths reads files only from the first comparison page. GitHub
+// paginates commits, not files, and caps files at 300 without a total count.
+// The conservative policy rejects that ambiguous boundary (req-delivery-and-forge
+// REQ-5; component-git-delivery; approved task 260909-1c19b5 plan v4).
+func CompareChangedPaths(ctx context.Context, repo, base, head string) ([]string, error) {
+	return compareChangedPaths(ctx, repo, base, head, gh)
+}
+
+func compareChangedPaths(ctx context.Context, repo, base, head string, run ghRunner) ([]string, error) {
+	if strings.TrimSpace(head) == "" || strings.TrimSpace(base) == "" {
+		return nil, fmt.Errorf("compare head %q: base and head SHA are required", head)
+	}
+	raw, err := run(ctx, "api", "repos/"+repo+"/compare/"+url.PathEscape(base)+"..."+url.PathEscape(head)+"?per_page=100&page=1")
+	if err != nil {
+		return nil, fmt.Errorf("compare head %s: %w", head, forgeCallError(err))
+	}
+	var comparison struct {
+		Files json.RawMessage `json:"files"`
+	}
+	if json.Unmarshal(raw, &comparison) != nil || len(comparison.Files) == 0 || comparison.Files[0] != '[' {
+		return nil, fmt.Errorf("compare head %s: %w", head, forgeResponseError("missing or malformed files array"))
+	}
+	var files []struct {
+		Filename string `json:"filename"`
+	}
+	if json.Unmarshal(comparison.Files, &files) != nil {
+		return nil, fmt.Errorf("compare head %s: %w", head, forgeResponseError("malformed files array"))
+	}
+	if len(files) >= 300 {
+		return nil, fmt.Errorf("compare head %s: %w", head, forgeResponseError("files count %d reaches GitHub's 300-file limit; completeness cannot be established", len(files)))
+	}
+	paths := make([]string, 0, len(files))
+	for _, file := range files {
+		name := file.Filename
+		if name == "" || name == "." || strings.HasPrefix(name, "/") || strings.ContainsAny(name, "\\\x00") || path.Clean(name) != name || name == ".." || strings.HasPrefix(name, "../") {
+			return nil, fmt.Errorf("compare head %s: %w", head, forgeResponseError("invalid repository-relative filename"))
+		}
+		paths = append(paths, name)
+	}
+	return paths, nil
+}
+
+// SubmissionPullRequest is the existing open PR observed for a submission.
+type SubmissionPullRequest struct {
+	Number int    `json:"number"`
+	URL    string `json:"html_url"`
+	Body   string `json:"body"`
+	Head   struct {
+		SHA string `json:"sha"`
+		Ref string `json:"ref"`
+	} `json:"head"`
+	Base struct {
+		SHA string `json:"sha"`
+		Ref string `json:"ref"`
+	} `json:"base"`
+}
+
+func SubmissionPRForBranch(ctx context.Context, repo, branch string) (SubmissionPullRequest, error) {
+	return submissionPRForBranch(ctx, repo, branch, gh)
+}
+
+func submissionPRForBranch(ctx context.Context, repo, branch string, run ghRunner) (SubmissionPullRequest, error) {
+	var result SubmissionPullRequest
+	owner, _, ok := strings.Cut(repo, "/")
+	if !ok || owner == "" {
+		return result, fmt.Errorf("invalid repository %q", repo)
+	}
+	raw, err := run(ctx, "api", "repos/"+repo+"/pulls?head="+url.QueryEscape(owner+":"+branch)+"&state=open&per_page=100")
+	if err != nil {
+		return result, forgeCallError(err)
+	}
+	raw = bytes.TrimSpace(raw)
+	var prs []SubmissionPullRequest
+	if json.Unmarshal(raw, &prs) != nil || len(raw) == 0 || raw[0] != '[' {
+		return result, forgeResponseError("parse open submission pull request")
+	}
+	if len(prs) == 0 {
+		return result, nil
+	}
+	if len(prs) != 1 || prs[0].Number <= 0 || prs[0].URL == "" || prs[0].Head.SHA == "" || prs[0].Base.SHA == "" || prs[0].Head.Ref != branch || prs[0].Base.Ref == "" {
+		return result, forgeResponseError("invalid or ambiguous open submission pull request")
+	}
+	return prs[0], nil
+}
+
+func ValidateSubmissionPR(pr SubmissionPullRequest, branch, base, head string) error {
+	if pr.Number == 0 {
+		return fmt.Errorf("pull_request_missing: branch %s expected head %s observed head <none>; open the pull request from the executing machine", branch, head)
+	}
+	if pr.Head.SHA != head || pr.Head.Ref != branch {
+		return fmt.Errorf("pull_request_head_mismatch: branch %s expected head %s observed head %s", branch, head, pr.Head.SHA)
+	}
+	if pr.Base.Ref != base {
+		return fmt.Errorf("pull_request_base_mismatch: branch %s expected head %s observed head %s; expected base %s observed base %s", branch, head, pr.Head.SHA, base, pr.Base.Ref)
+	}
+	return nil
+}
+
+// ReconcileSubmissionPR updates only the managed task-link suffix under the
+// workspace credential, after comparison and governance attachment succeed.
+func ReconcileSubmissionPR(ctx context.Context, repo string, pr SubmissionPullRequest, body string) error {
+	reconciled := reconcilePullRequestBody(pr.Body, body)
+	if reconciled == pr.Body {
+		return nil
+	}
+	_, err := gh(ctx, "api", "repos/"+repo+"/pulls/"+strconv.Itoa(pr.Number), "--method", "PATCH", "-f", "body="+reconciled)
+	return err
+}
+
 // DiffBetween returns only the commits introduced after an approved review
 // baseline. GitHub's compare endpoint is the authoritative delta source for
 // refresh reviews (design-git-delivery).
 func DiffBetween(ctx context.Context, repo, baseline, head string) (string, error) {
-	out, err := gh(ctx, "api", "repos/"+repo+"/compare/"+baseline+"..."+head, "-H", "Accept: application/vnd.github.v3.diff")
+	if strings.TrimSpace(head) == "" || strings.TrimSpace(baseline) == "" {
+		return "", fmt.Errorf("compare diff head %q: base and head SHA are required", head)
+	}
+	out, err := gh(ctx, "api", "repos/"+repo+"/compare/"+url.PathEscape(baseline)+"..."+url.PathEscape(head), "-H", "Accept: application/vnd.github.v3.diff")
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("compare diff head %s: %w", head, err)
 	}
 	return string(out), nil
 }
@@ -971,4 +1085,32 @@ func run(ctx context.Context, dir, name string, args ...string) error {
 		return fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, out)
 	}
 	return nil
+}
+
+// EnsureSubmissionPRWithCredential runs only on the executing machine. Reuse
+// never rewrites an existing body; the workspace reconciles it at submission.
+func EnsureSubmissionPRWithCredential(ctx context.Context, repo, branch, base, title, body, token string) (string, error) {
+	run := ghWithTokenAndIdentity(token, "executing machine Git credential")
+	pr, err := submissionPRForBranch(ctx, repo, branch, run)
+	if err != nil {
+		return "", err
+	}
+	if pr.Number != 0 {
+		return pr.URL, nil
+	}
+	raw, err := run(ctx, "api", "repos/"+repo+"/pulls", "--method", "POST", "-f", "head="+branch, "-f", "base="+base, "-f", "title="+title, "-f", "body="+reconcilePullRequestBody("", body))
+	if err != nil {
+		// A concurrent create may win after our lookup. Reuse only an observed PR.
+		if observed, lookupErr := submissionPRForBranch(ctx, repo, branch, run); lookupErr == nil && observed.Number != 0 {
+			return observed.URL, nil
+		}
+		return "", err
+	}
+	var created struct {
+		URL string `json:"html_url"`
+	}
+	if json.Unmarshal(raw, &created) != nil || created.URL == "" {
+		return "", forgeResponseError("parse created pull request")
+	}
+	return created.URL, nil
 }

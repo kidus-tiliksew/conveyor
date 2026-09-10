@@ -22,8 +22,8 @@ separately. Before claiming, Conveyor runs a bounded
 disabled; a failure leaves the order queued and names both credential paths.
 The result is cached for the invocation, so restart the worker after changing
 credentials. Captured output is scrubbed before display and upload. The
-stored account GitHub token is still required for claim eligibility and
-control-plane pull request writes. Upgrade the worker binary and the daemon
+stored account GitHub token is still required for claim eligibility.
+Pull requests are opened on the executing machine by `conveyor submit`. Upgrade the worker binary and the daemon
 together; older workers reject token-free claims.
 
 `conveyor worker run` reuses the owner-only enrollment credential saved by its
@@ -174,3 +174,29 @@ capture, and `--raw` console output is unchanged.
   attempt that needs explicit recovery.
 - **Recover interrupted review round** requeues only interrupted incomplete
   seats in the latest round. Completed verdicts are retained.
+
+## Submit implementation work
+
+After validation and committing in the task worktree, the claimed session runs
+`conveyor submit <task-id>`. The session's `CONVEYOR_WORK_ORDER_ID` and
+`CONVEYOR_SESSION_ID` identify the live order. The command pushes the exact
+commit, fetches the task's pull-request template, opens or reuses the pull
+request against the assigned base, and submits the head SHA for review.
+
+Git and the GitHub API use credentials resolved on this machine:
+`CONVEYOR_GIT_TOKEN`, including its child-only askpass handoff, or the host's
+credential helper through `git credential fill` for `https://github.com`.
+SSH access alone does not supply a GitHub API bearer. Credentials are never
+command arguments or server payloads, and captured errors redact their exact
+and encoded forms. A failure preserves any pushed branch and existing pull
+request; retrying reuses them.
+
+The server reads the existing pull request with the workspace's GitHub App,
+checks its head SHA and base branch, and records it. It does not open pull
+requests. Missing or mismatched pull requests are refused. Review inputs and
+governance paths come from GitHub's comparison of the recorded base and head;
+missing or malformed file data and comparisons with 300 or more files are
+refused because completeness cannot be established. Direct MCP
+`submit_for_review` remains available for an already-open pull request and
+requires `head_sha` along with the work order and session. After submission
+succeeds, report the handoff and exit without polling `await_review`.

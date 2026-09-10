@@ -67,6 +67,7 @@ func main() {
 		initCmd(),
 		runCmd(),
 		checkoutCmd(),
+		submitCmd(),
 		lineageCmd(),
 		doneCmd(),
 	)

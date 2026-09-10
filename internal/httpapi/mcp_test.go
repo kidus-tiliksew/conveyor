@@ -530,7 +530,7 @@ func TestMCPSubmitForReviewReturnsActionableEvidenceGateError(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
 	request = request.WithContext(store.WithCredential(request.Context(), core.AuthenticatedCredential{ID: "owner-token", OwnerUserID: "owner", Kind: core.CredentialUser}))
 	_, err := server.callMCPTool(request, "submit_for_review", map[string]any{
-		"workspace_id": "demo", "work_order_id": job.ID, "session_id": "session",
+		"workspace_id": "demo", "head_sha": "abc123", "work_order_id": job.ID, "session_id": "session",
 	})
 	if err == nil || !strings.Contains(err.Error(), "/v1/worker/work-orders/"+job.ID+"/verification-evidence") ||
 		!strings.Contains(err.Error(), "X-Conveyor-Work-Order-Token") || !strings.Contains(err.Error(), "X-Conveyor-Work-Order-Session") {
@@ -1138,7 +1138,7 @@ func TestMCPClaimantBoundToolsRejectForeignUsersAndWorkers(t *testing.T) {
 			}
 			args := func(orderID string) map[string]any {
 				return map[string]any{
-					"workspace_id": "demo", "work_order_id": orderID, "session_id": "victim-session",
+					"workspace_id": "demo", "work_order_id": orderID, "session_id": "victim-session", "head_sha": "named-head",
 					"message": "progress", "tokens_in": 1.0, "tokens_out": 1.0, "cost_usd": 0.0,
 					"transcript":    "redacted",
 					"markdown":      "## Approach\nUse the approved path.\n\n## Files touched\n- internal/httpapi/mcp.go\n\n## Ordering\n1. Implement.\n\n## Risks\n- Drift.\n\n## Done criteria\n- The change is tested.",

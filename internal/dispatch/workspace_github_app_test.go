@@ -58,6 +58,18 @@ func TestWorkspaceGitHubAppResolverUsesInstallationIdentity(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{"token": "resolver-installation-secret", "expires_at": time.Now().Add(time.Hour).Truncate(time.Second)})
 		case "/installation/repositories":
 			fmt.Fprint(w, `{"repositories":[{"full_name":"org/repo"}]}`)
+		case "/repos/org/repo/compare/base-sha...named-head":
+			if r.Header.Get("Authorization") != "Bearer resolver-installation-secret" {
+				t.Error("compare missing workspace app credential")
+			}
+			if strings.Contains(r.Header.Get("Accept"), ".diff") {
+				fmt.Fprint(w, "diff --git a/internal/change.go b/internal/change.go\n+change\n")
+				return
+			}
+			if r.URL.Query().Get("page") != "1" {
+				t.Error("compare files paginated")
+			}
+			fmt.Fprint(w, `{"files":[{"filename":"internal/change.go"}],"total_commits":1000}`)
 		case "/repos/org/repo/pulls/1/files":
 			forgeCalls++
 			if r.Header.Get("Authorization") != "Bearer resolver-installation-secret" {
@@ -100,6 +112,34 @@ func TestWorkspaceGitHubAppResolverUsesInstallationIdentity(t *testing.T) {
 	}
 	if forgeCalls != 1 {
 		t.Fatal("forge act was not executed")
+	}
+	task := core.Task{ID: "compare-governance", Workspace: "demo", Repo: "repo", Branch: "mutable-branch", BaseBranch: "base-sha", ReviewedHeadSHA: "named-head", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: time.Now()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	design, version, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "compare-design", Title: "Compare", Category: "Architecture"}, core.SystemDesignVersion{Content: "# Compare\n\n```conveyor:governs\n- repo: repo\n  paths:\n    - internal/**\n```", Origin: core.SystemDesignOriginOperator})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmSystemDesignVersion(ctx, design.ID, version.Version); err != nil {
+		t.Fatal(err)
+	}
+	paths, err := d.ReviewChangedPaths(ctx, cfg, task)
+	if err != nil || len(paths) != 1 || paths[0] != "internal/change.go" {
+		t.Fatalf("compare paths=%v err=%v", paths, err)
+	}
+	attached, err := st.AttachSubmissionGovernance(ctx, task.ID, task.Repo, paths, store.SubmissionGovernanceAttribution{})
+	if err != nil || len(attached) != 1 || attached[0].ID != design.ID {
+		t.Fatalf("compare governance=%+v err=%v", attached, err)
+	}
+	if err = st.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]string{"base_sha": "base-sha", "head_sha": "named-head"})}); err != nil {
+		t.Fatal(err)
+	}
+	// Mutating the task's branch/base/head projections cannot change review input.
+	task.BaseBranch, task.ReviewedHeadSHA = "moved-base", "moved-head"
+	diff, err := d.ReviewDiff(ctx, cfg, task)
+	if err != nil || !strings.Contains(diff, "+change") {
+		t.Fatalf("diff=%q err=%v", diff, err)
 	}
 	if _, err = resolve(context.Background(), "org/repo"); github.ErrorCategory(err) != github.ForgePermission {
 		t.Fatal("implicit workspace accepted")
