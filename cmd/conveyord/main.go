@@ -210,6 +210,7 @@ func main() {
 	srv.AgentCredentials = st
 	srv.ForgeTokens = st
 	srv.WorkspaceForgeTokens = st
+	srv.WorkspaceGitHubApps = st
 	srv.InvitationSessions = st
 	srv.Release = releaseinfo.Version
 	srv.Repos = cfg.RepoNames()
@@ -234,7 +235,9 @@ func main() {
 	workOrders.ForgeTokens = st
 	d.ForgeTokens = st
 	workOrders.WorkspaceForgeTokens = st
+	workOrders.WorkspaceGitHubApps = st
 	d.WorkspaceForgeTokens = st
+	d.WorkspaceGitHubApps = st
 	workOrders.RedactionSecrets = st
 	srv.WorkOrders = workOrders
 	srv.Planning = &planning.Service{
@@ -417,17 +420,11 @@ func main() {
 								"monitored repository requires a GitHub slug", time.Now().Add(current.Monitor.PollInterval))
 							continue
 						}
-						credential, tokenErr := st.GetWorkspaceForgeTokenForUse(workspaceCtx, workspaceID)
-						if tokenErr != nil || strings.TrimSpace(credential.Token) == "" {
-							_ = srv.Monitor.Store.RecordMonitorFailure(workspaceCtx, string(githubtrigger.ForgePermission),
-								"workspace "+workspaceID+" forge token is unavailable; add or replace it in workspace settings", time.Now().Add(current.Monitor.PollInterval))
+						runGitHub, tokenErr := workspaceMonitorGitHubRunner(workspaceCtx, st, workspaceID, repository.GitHub, githubtrigger.DefaultAppClient)
+						if tokenErr != nil {
+							_ = srv.Monitor.Store.RecordMonitorFailure(workspaceCtx, string(githubtrigger.ErrorCategory(tokenErr)), tokenErr.Error(), time.Now().Add(current.Monitor.PollInterval))
 							continue
 						}
-						identity := "workspace " + workspaceID + " forge token"
-						if credential.ForgeLogin != "" {
-							identity += " for " + credential.ForgeLogin
-						}
-						runGitHub := githubtrigger.RESTRunner(credential.Token, identity)
 						source := monitor.GitHubSource{
 							WorkspaceID: workspaceID, Repository: repositoryName, GitHubSlug: repository.GitHub, Run: runGitHub,
 							KnownLineage: func(taskID string, pullRequestNumber int, headSHA string) bool {
@@ -548,4 +545,17 @@ func resolveConveyordLLMEnvironment(getenv func(string) string, warnf func(strin
 		return config.LLMEnvironment{}, fmt.Errorf("CONVEYOR_LLM_API_KEY is required for in-process triage and spec stages (CONVEYOR_API_KEY is a deprecated fallback)")
 	}
 	return environment, nil
+}
+
+// DEC-41: production monitor polling resolves the same workspace app identity
+// as dispatch and work-order reads, before constructing GitHubSource.
+func workspaceMonitorGitHubRunner(ctx context.Context, st githubtrigger.AppStore, workspace, repo string, client *githubtrigger.AppClient) (func(context.Context, ...string) ([]byte, error), error) {
+	token, err := client.WorkspaceToken(ctx, st, workspace)
+	if err != nil {
+		return nil, err
+	}
+	if err = client.RequireRepository(ctx, workspace, token, repo); err != nil {
+		return nil, err
+	}
+	return githubtrigger.RESTRunner(token, githubtrigger.AppIdentity(workspace)), nil
 }

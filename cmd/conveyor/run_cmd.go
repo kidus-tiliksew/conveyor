@@ -124,7 +124,7 @@ func runTaskWithPresentationAndSetup(ctx context.Context, c *client, taskID, con
 			stopApp()
 			return err
 		}
-		if item == nil || item.Order.ID == "" {
+		if item == nil || item.Order.ID == "" || taskRunReviewHasPendingProposals(item) {
 			if item != nil && (item.Task.State == core.TaskMerged || item.Task.State == core.TaskClosed || item.Task.State == core.TaskParked) {
 				if setupLoaded && (item.Task.State == core.TaskMerged || item.Task.State == core.TaskClosed) {
 					cleanupItem := *item
@@ -142,6 +142,14 @@ func runTaskWithPresentationAndSetup(ctx context.Context, c *client, taskID, con
 				}
 				stopApp()
 				return printFinalRunSummaryStyled(output, item.Task, runStages, outputTerminal)
+			}
+			if item != nil && len(item.PendingProposals) > 0 && !interactiveTUI {
+				for _, proposal := range item.PendingProposals {
+					_, _ = fmt.Fprintf(output, "Waiting on %s proposal %s v%d; %s\n", proposal.Kind, proposal.DocumentID, proposal.Version, proposal.ActorHint)
+				}
+				if !attached {
+					return nil
+				}
 			}
 			if !attached {
 				if lastStage == core.StageSpec {
@@ -313,6 +321,23 @@ func runTaskWithPresentationAndSetup(ctx context.Context, c *client, taskID, con
 			runErr = runChild()
 		}
 		cancelStage()
+		// A proposal can arrive after the run-order read but before admission.
+		// Only this typed refusal is a wait; unrelated conflicts stay fatal.
+		var response *workerHTTPError
+		if selected.Order.Stage == core.StageReview && errors.As(runErr, &response) && response.StatusCode == http.StatusConflict && response.Code == "review_awaiting_proposal" {
+			if app != nil {
+				app.EndStage("Review is waiting on a task-authored proposal; refreshing task state.")
+			} else {
+				_, _ = fmt.Fprintln(output, "Review is waiting on a task-authored proposal; refreshing task state.")
+			}
+			select {
+			case <-ctx.Done():
+				stopApp()
+				return printRunSummaryStyled(output, selected.Task, runStages, outputTerminal)
+			case <-time.After(runGatePollInterval):
+				continue
+			}
+		}
 		summary := renderRunStageSummary(selected.Order.Stage, time.Since(started), runErr)
 		if app != nil {
 			app.EndStage(summary)
@@ -326,6 +351,10 @@ func runTaskWithPresentationAndSetup(ctx context.Context, c *client, taskID, con
 		runStages = append(runStages, selected.Order.Stage)
 		lastStage = selected.Order.Stage
 	}
+}
+
+func taskRunReviewHasPendingProposals(item *workerservice.DispatchOrder) bool {
+	return item != nil && item.Order.Stage == core.StageReview && len(item.PendingProposals) > 0
 }
 
 func waitAtTaskRunGateAttached(ctx context.Context, c *client, controller *runTUIController, item workerservice.DispatchOrder, stage runTUIStage) (runGateDecision, string, error) {
@@ -363,7 +392,7 @@ func waitAtTaskRunGateAttached(ctx context.Context, c *client, controller *runTU
 			if err != nil {
 				return runGateStop, "", err
 			}
-			if fresh == nil || fresh.Order.ID != "" || fresh.Task.State == core.TaskMerged || fresh.Task.State == core.TaskClosed || fresh.Task.State == core.TaskParked {
+			if fresh == nil || (fresh.Order.ID != "" && !taskRunReviewHasPendingProposals(fresh)) || fresh.Task.State == core.TaskMerged || fresh.Task.State == core.TaskClosed || fresh.Task.State == core.TaskParked {
 				return runGatePoll, "", nil
 			}
 			controller.UpdateProposals(fresh.PendingProposals)

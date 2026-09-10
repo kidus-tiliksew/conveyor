@@ -14,6 +14,23 @@ export interface Proposal {
   expected: number
 }
 
+// req-260820-6a468a AC-2.1 and req-260810-70ce2f AC-1.1:
+// the same review attention surface names every pending document tier.
+export function reviewGateCopy(tiers: readonly string[]) {
+  const noun =
+    tiers.length > 0 && tiers.every((tier) => tier === 'requirement')
+      ? 'requirement'
+      : tiers.length > 0 && tiers.every((tier) => tier === 'system_design')
+        ? 'System Design'
+        : 'document'
+  const proposal = tiers.length > 1 ? 'proposals' : 'proposal'
+  return {
+    headline: `Review is waiting on a ${noun} decision`,
+    explanation: `This review cannot be claimed until you confirm or dismiss the task's pending ${proposal}.`,
+    link: `Confirm or dismiss the ${proposal}`,
+  }
+}
+
 // Document plus version, not the object reference: a refetch rebuilds these
 // records, and the in-flight and failed states have to keep pointing at the
 // same proposal across it.
@@ -84,10 +101,12 @@ export function SystemDesignProposalCard({
   task,
   proposals,
   reviewWaiting = false,
+  gateCopy = reviewGateCopy([]),
 }: {
   task: Task
   proposals: Proposal[]
   reviewWaiting?: boolean
+  gateCopy?: ReturnType<typeof reviewGateCopy>
 }) {
   const canConfirm = useWorkspaceCapability('confirm_documents')
   const { workspace } = useWorkspaceSelection()
@@ -116,8 +135,8 @@ export function SystemDesignProposalCard({
         <div className="flex items-start gap-2">
           <AlertTriangle className="mt-0.5 size-4 shrink-0 text-attention" aria-hidden />
           <div className="text-xs leading-5 text-muted">
-            <p className="font-medium text-attention">Review is waiting on a System Design decision</p>
-            <p>This review cannot be claimed until you confirm or dismiss the task&apos;s pending proposal.</p>
+            <p className="font-medium text-attention">{gateCopy.headline}</p>
+            <p>{gateCopy.explanation}</p>
           </div>
         </div>
       )}
@@ -159,7 +178,7 @@ export function SystemDesignProposalCard({
           search={{ task: task.id }}
           className="inline-block text-xs font-medium text-primary hover:underline"
         >
-          Confirm or dismiss the proposal
+          {gateCopy.link}
         </Link>
       )}
     </section>

@@ -43,6 +43,8 @@ type Service struct {
 	Logf                   func(string, ...any)
 	RedactionSecrets       redact.SecretSource
 	ForgeTokens            store.ForgeTokenStore
+	WorkspaceGitHubApps    store.WorkspaceGitHubAppStore
+	GitHubApps             *github.AppClient
 	WorkspaceForgeTokens   store.WorkspaceForgeTokenStore
 	consultedMu            sync.Mutex
 	consulted              map[string]struct{}
@@ -836,7 +838,7 @@ func (s *Service) reviewDiffForBranch(ctx context.Context, repo, branch string) 
 	if s.ReviewDiffForBranch != nil {
 		return s.ReviewDiffForBranch(ctx, repo, branch)
 	}
-	forgeCtx, err := s.workspaceForgeContext(ctx)
+	forgeCtx, err := s.workspaceForgeContext(ctx, repo)
 	if err != nil {
 		return "", err
 	}
@@ -847,7 +849,7 @@ func (s *Service) reviewDiffBetween(ctx context.Context, repo, baseline, head st
 	if s.ReviewDiffBetween != nil {
 		return s.ReviewDiffBetween(ctx, repo, baseline, head)
 	}
-	forgeCtx, err := s.workspaceForgeContext(ctx)
+	forgeCtx, err := s.workspaceForgeContext(ctx, repo)
 	if err != nil {
 		return "", err
 	}
@@ -858,33 +860,32 @@ func (s *Service) reviewPRDescription(ctx context.Context, repo, branch string) 
 	if s.ReviewPRDescription != nil {
 		return s.ReviewPRDescription(ctx, repo, branch)
 	}
-	forgeCtx, err := s.workspaceForgeContext(ctx)
+	forgeCtx, err := s.workspaceForgeContext(ctx, repo)
 	if err != nil {
 		return "", err
 	}
 	return github.PullRequestDescriptionForBranch(forgeCtx, repo, branch)
 }
 
-func (s *Service) workspaceForgeContext(ctx context.Context) (context.Context, error) {
+func (s *Service) workspaceForgeContext(ctx context.Context, repositories ...string) (context.Context, error) {
 	workspaceID, ok := store.WorkspaceFromContext(ctx)
 	if !ok || strings.TrimSpace(workspaceID) == "" {
-		return nil, github.PermissionError(errors.New("workspace forge token cannot be resolved without an explicit workspace"))
+		return nil, github.AppPermission(workspaceID)
 	}
-	if s.WorkspaceForgeTokens == nil {
-		return nil, github.PermissionError(fmt.Errorf("workspace %s forge token is required; add it in workspace settings", workspaceID))
+	client := s.GitHubApps
+	if client == nil {
+		client = github.DefaultAppClient
 	}
-	credential, err := s.WorkspaceForgeTokens.GetWorkspaceForgeTokenForUse(ctx, workspaceID)
-	if err != nil || strings.TrimSpace(credential.Token) == "" {
-		if err == nil {
-			err = store.ErrForgeTokenRequired
+	token, err := client.WorkspaceToken(ctx, s.WorkspaceGitHubApps, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	for _, repo := range repositories {
+		if err := client.RequireRepository(ctx, workspaceID, token, repo); err != nil {
+			return nil, err
 		}
-		return nil, github.PermissionError(fmt.Errorf("workspace %s forge token is unavailable; add or replace it in workspace settings: %w", workspaceID, err))
 	}
-	identity := fmt.Sprintf("workspace %s forge token", workspaceID)
-	if credential.ForgeLogin != "" {
-		identity += " for " + credential.ForgeLogin
-	}
-	return github.WithCredential(ctx, credential.Token, identity), nil
+	return github.WithCredential(ctx, token, github.AppIdentity(workspaceID)), nil
 }
 
 func (s *Service) planRevisionContextForOrder(ctx context.Context, order core.WorkOrder, events []core.Event) (*PlanRevisionContext, string, error) {

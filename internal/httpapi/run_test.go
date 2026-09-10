@@ -570,6 +570,14 @@ func TestTaskRunHTTPProjectsOnlyTaskAuthoredPendingProposalsWithCapabilities(t *
 		t.Fatal(err)
 	}
 
+	for _, fixture := range []struct{ id, workspace, originTask string }{
+		{"req-run", "demo", "proposal-task"},
+		{"req-other", "demo", "other-task"},
+		{"req-sibling", "sibling", "proposal-task"},
+	} {
+		seedTaskRunRequirement(t, st, fixture.workspace, fixture.id, fixture.originTask)
+	}
+
 	response := taskRunHTTPCall(server.Handler(), http.MethodGet, "/v1/tasks/proposal-task/run-order", "")
 	if response.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
@@ -578,7 +586,7 @@ func TestTaskRunHTTPProjectsOnlyTaskAuthoredPendingProposalsWithCapabilities(t *
 	if err = json.Unmarshal(response.Body.Bytes(), &projection); err != nil {
 		t.Fatal(err)
 	}
-	if projection.Order.ID != order.ID || len(projection.PendingProposals) != 2 {
+	if projection.Order.ID != order.ID || len(projection.PendingProposals) != 3 {
 		t.Fatalf("projection=%+v", projection)
 	}
 	got := map[string]workerservice.TaskRunProposal{}
@@ -588,10 +596,13 @@ func TestTaskRunHTTPProjectsOnlyTaskAuthoredPendingProposalsWithCapabilities(t *
 			t.Fatalf("incomplete operator proposal=%+v", proposal)
 		}
 	}
+	if got["requirement"].DocumentID != "req-run" || got["requirement"].Title != "Run requirement" || got["requirement"].Version != 2 {
+		t.Fatalf("requirement=%+v", got["requirement"])
+	}
 	if got["design"].DocumentID != "design-run-context" || got["decision"].DocumentID != decision.ID || got["decision"].Version != 1 {
 		t.Fatalf("proposals=%+v", projection.PendingProposals)
 	}
-	if strings.Contains(response.Body.String(), "design-other") || strings.Contains(response.Body.String(), "design-sibling") {
+	if strings.Contains(response.Body.String(), "req-other") || strings.Contains(response.Body.String(), "req-sibling") || strings.Contains(response.Body.String(), "design-other") || strings.Contains(response.Body.String(), "design-sibling") {
 		t.Fatalf("cross-task or cross-workspace proposal leaked: %s", response.Body.String())
 	}
 
@@ -693,5 +704,85 @@ func TestTaskRunAbandonedInvocationBecomesClaimableAfterLeaseExpiry(t *testing.T
 	next := taskRunHTTPCall(handler, http.MethodGet, "/v1/tasks/abandoned/run-order", "")
 	if next.Code != http.StatusOK || !strings.Contains(next.Body.String(), `"id":"`+order.ID+`"`) {
 		t.Fatalf("expired run status=%d body=%s", next.Code, next.Body.String())
+	}
+}
+
+func seedTaskRunRequirement(t *testing.T, st store.Store, workspace, id, taskID string) {
+	t.Helper()
+	ctx := store.WithWorkspace(t.Context(), workspace)
+	_, first, err := st.CreateRequirement(ctx, core.Requirement{ID: id, Slug: id, Title: "Run requirement"}, core.RequirementVersion{
+		Content: "Run requirement", Origin: core.RequirementOriginOperator,
+		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Surface proposals."}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmRequirementVersion(ctx, id, first.Version); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.ProposeRequirementVersion(ctx, core.RequirementVersion{
+		RequirementID: id, Content: "Updated run requirement", Origin: core.RequirementOriginImplementation, OriginTaskID: taskID,
+		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Surface requirement proposals."}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTaskRunHTTPRequirementConfirmationCapabilityAndReviewAdmission(t *testing.T) {
+	server, st, _ := taskRunHTTPFixture(t)
+	order := createTaskRunOrderAtStage(t, st, "proposal-review", core.StageReview, time.Now().UTC())
+	seedTaskRunRequirement(t, st, "demo", "req-review", order.TaskID)
+	server.Workspaces = &fakeWorkspaceControl{items: []core.Workspace{{ID: "demo"}}}
+	server.Memberships = &membershipFixture{workspaces: []core.Workspace{{ID: "demo"}}, roles: map[string]map[string]core.WorkspaceRole{
+		"local-operator": {"demo": core.WorkspaceRoleOperator},
+		"executor":       {"demo": core.WorkspaceRoleExecutor},
+	}}
+	server.Credentials = staticCredentialVerifier{
+		"user-token":     {ID: "pat_operator", OwnerUserID: "local-operator", Kind: core.CredentialUser, Scope: core.CredentialScopeUser},
+		"executor-token": {ID: "pat_executor", OwnerUserID: "executor", Kind: core.CredentialUser, Scope: core.CredentialScopeUser},
+		"child-token":    {ID: "agt_child", OwnerUserID: "local-operator", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser, RunWorkspaceID: "demo", RunWorkOrderID: order.ID, RunSessionID: "run-session"},
+	}
+	handler := server.Handler()
+	claimPath := "/v1/tasks/" + order.TaskID + "/run-orders/" + order.ID + "/claim"
+	body := `{"session_id":"review-session","client_token":"review-secret","agent":"codex","model":"gpt"}`
+	refused := taskRunHTTPCall(handler, http.MethodPost, claimPath, body)
+	if refused.Code != http.StatusConflict || refused.Header().Get("X-Conveyor-Error-Code") != "review_awaiting_proposal" || !strings.Contains(refused.Body.String(), "requirement proposal req-review v2") {
+		t.Fatalf("refusal status=%d headers=%v body=%s", refused.Code, refused.Header(), refused.Body.String())
+	}
+	for _, token := range []string{"executor-token", "child-token"} {
+		response := taskRunHTTPCallAs(handler, token, http.MethodPost, "/v1/requirements/req-review/versions/2/confirm", "")
+		if response.Code < 400 {
+			t.Fatalf("%s confirmed: %d %s", token, response.Code, response.Body.String())
+		}
+	}
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	unchanged, err := st.GetWorkOrder(ctx, order.ID)
+	if err != nil || unchanged.State != core.WorkOrderQueued || unchanged.SessionID != "" {
+		t.Fatalf("order=%+v err=%v", unchanged, err)
+	}
+	confirmed := taskRunHTTPCall(handler, http.MethodPost, "/v1/requirements/req-review/versions/2/confirm", "")
+	if confirmed.Code != http.StatusOK {
+		t.Fatalf("confirmation=%d %s", confirmed.Code, confirmed.Body.String())
+	}
+	claimed := taskRunHTTPCall(handler, http.MethodPost, claimPath, body)
+	if claimed.Code != http.StatusOK {
+		t.Fatalf("claim=%d %s", claimed.Code, claimed.Body.String())
+	}
+}
+
+func TestTaskRunHTTPProposalSignalDoesNotMaskUnrelatedClaimConflict(t *testing.T) {
+	server, st, _ := taskRunHTTPFixture(t)
+	order := createTaskRunOrderAtStage(t, st, "assigned-review", core.StageReview, time.Now().UTC())
+	seedTaskRunRequirement(t, st, "demo", "req-assigned", order.TaskID)
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	if err := store.SetMemoryWorkspaceMember(st, "demo", "someone-else", true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := taskops.New(st).SetAssignee(ctx, order.TaskID, "someone-else"); err != nil {
+		t.Fatal(err)
+	}
+	response := taskRunHTTPCall(server.Handler(), http.MethodPost, "/v1/tasks/"+order.TaskID+"/run-orders/"+order.ID+"/claim", `{"session_id":"review-session","client_token":"secret"}`)
+	if response.Code != http.StatusConflict || response.Header().Get("X-Conveyor-Error-Code") != "" || !strings.Contains(response.Body.String(), "assigned") {
+		t.Fatalf("status=%d headers=%v body=%s", response.Code, response.Header(), response.Body.String())
 	}
 }

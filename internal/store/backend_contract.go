@@ -23,6 +23,7 @@ type Backend interface {
 	InvitationSessionStore
 	ForgeTokenStore
 	WorkspaceForgeTokenStore
+	WorkspaceGitHubAppStore
 	PersonalAccessTokenStore
 	AgentCredentialStore
 	WorkspaceControlStore
@@ -38,4 +39,14 @@ type Backend interface {
 	ReconcileQueuedTasks(context.Context) (int, error)
 	ReconcileBlueprintClosures(context.Context) (int, error)
 	Log() eventlog.Store
+}
+
+// WorkspaceGitHubAppStore owns encrypted app identity and secret-free status.
+// Only GetWorkspaceGitHubAppForUse returns the private key (DEC-41).
+type WorkspaceGitHubAppStore interface {
+	StoreWorkspaceGitHubApp(context.Context, string, core.WorkspaceGitHubAppCredential) (core.WorkspaceGitHubAppStatus, error)
+	RecordWorkspaceGitHubAppInstallation(context.Context, string, int64, int64, string) (core.WorkspaceGitHubAppStatus, error)
+	GetWorkspaceGitHubAppStatus(context.Context, string) (core.WorkspaceGitHubAppStatus, error)
+	GetWorkspaceGitHubAppForUse(context.Context, string) (core.WorkspaceGitHubAppCredential, error)
+	DeleteWorkspaceGitHubApp(context.Context, string) error
 }

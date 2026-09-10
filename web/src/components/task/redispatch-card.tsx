@@ -7,6 +7,11 @@ import { Button } from '../ui/button'
 
 export function canRedispatch(item: ActivityItem) {
   if (dependencyBlockedImplementationOrder(item) || unsatisfiableDependencyOrder(item)) return false
+  if (
+    item.pending_authority === true &&
+    (item.work_orders ?? []).some((order) => order.stage === 'review' && order.state === 'queued')
+  )
+    return false
   return item.task.state === 'queued' || item.task.state === 'closed' || item.task.state === 'parked'
 }
 

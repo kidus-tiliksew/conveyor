@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -668,6 +669,9 @@ func TestAttachedRunGateConflictRefreshesRecordedState(t *testing.T) {
 func TestTaskRunProposalClientUsesExistingAuthenticatedEndpoints(t *testing.T) {
 	var paths []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("method=%s", r.Method)
+		}
 		if r.Header.Get("Authorization") != "Bearer parent-user-credential" {
 			http.Error(w, "wrong credential", http.StatusUnauthorized)
 			return
@@ -686,6 +690,7 @@ func TestTaskRunProposalClientUsesExistingAuthenticatedEndpoints(t *testing.T) {
 	defer server.Close()
 	c := &client{base: server.URL, token: "parent-user-credential", workspace: "demo"}
 	for _, proposal := range []workerservice.TaskRunProposal{
+		{Kind: "requirement", DocumentID: "req-run", Version: 2},
 		{Kind: "design", DocumentID: "design-run", Version: 7},
 		{Kind: "decision", DocumentID: "DEC-9", Version: 1},
 		{Kind: "plan_revision", DocumentID: "target", Version: 3},
@@ -695,6 +700,7 @@ func TestTaskRunProposalClientUsesExistingAuthenticatedEndpoints(t *testing.T) {
 		}
 	}
 	want := []string{
+		"/v1/requirements/req-run/versions/2/confirm",
 		"/v1/system-designs/design-run/versions/7/confirm",
 		"/v1/decisions/DEC-9/confirm",
 		"/v1/tasks/target/review",
@@ -1229,5 +1235,162 @@ func TestRunTaskDefaultNonTerminalStopsAtPlanGateWithoutClaim(t *testing.T) {
 	}
 	if !strings.Contains(output, "pending spec approval gate") || strings.Contains(output, "Proceed with") {
 		t.Fatalf("output=%q", output)
+	}
+}
+
+func TestTaskRunClaimPreservesTypedCodeAndConciseDiagnostic(t *testing.T) {
+	for _, code := range []string{"review_awaiting_proposal", "forge_token_required", ""} {
+		t.Run(code, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("X-Conveyor-Error-Code", code)
+				http.Error(w, "claim refused", http.StatusConflict)
+			}))
+			defer server.Close()
+			c := &client{base: server.URL}
+			_, err := c.claimTaskRunOrderContext(t.Context(), "parent-token", workerservice.DispatchOrder{Task: core.Task{ID: "target"}, Order: core.WorkOrder{ID: "review"}}, "session", "secret")
+			var response *workerHTTPError
+			if !errors.As(err, &response) || response.Code != code || response.StatusCode != http.StatusConflict || err.Error() != "claim refused" {
+				t.Fatalf("error=%v response=%+v", err, response)
+			}
+		})
+	}
+}
+
+func TestTaskRunReviewClaimRefusalRefreshesAndWaitsOnlyForProposalCode(t *testing.T) {
+	for _, code := range []string{"review_awaiting_proposal", "other_conflict", ""} {
+		t.Run(code, func(t *testing.T) {
+			previousDirectory, err := os.Getwd()
+			if err != nil {
+				t.Fatal(err)
+			}
+			fixture := newGitFixture(t)
+			t.Chdir(previousDirectory)
+			t.Setenv(localGitTokenEnv, "")
+			template, err := os.ReadFile(filepath.Join("..", "..", "conveyor.example.yaml"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			configPath := filepath.Join(t.TempDir(), "conveyor.yaml")
+			if err = os.WriteFile(configPath, template, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			t.Chdir(fixture.primary)
+			prior := runGatePollInterval
+			runGatePollInterval = 5 * time.Millisecond
+			defer func() { runGatePollInterval = prior }()
+			reads, claims, childCalls := 0, 0, 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Header.Get("Authorization") != "Bearer parent-token" {
+					t.Error("wrong credential")
+				}
+				switch {
+				case r.URL.Path == "/v1/forge-token":
+					_, _ = io.WriteString(w, `{"configured":true}`)
+				case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/run-order"):
+					reads++
+					item := workerservice.DispatchOrder{
+						Order:      core.WorkOrder{ID: "target-review-1", TaskID: "target", Stage: core.StageReview, State: core.WorkOrderQueued, ReviewSeat: 1},
+						Task:       core.Task{ID: "target", State: core.TaskRunning, Repo: "conveyor", Branch: "conveyor/task-target", BaseBranch: "main"},
+						Repository: config.Repo{Name: "conveyor", URL: fixture.origin, Base: "main"}, Dispatch: "run", Auth: "user",
+					}
+					// The first read is stale; a later operator act resolves the
+					// proposal only after two reads prove we waited unclaimed.
+					if reads == 2 || reads == 3 {
+						if claims != 1 {
+							t.Errorf("claimed while proposal pending: %d", claims)
+						}
+						item.PendingProposals = []workerservice.TaskRunProposal{{Kind: "requirement", DocumentID: "req-run", Title: "Run", Version: 2, ActorHint: "an operator can confirm"}}
+					}
+					_ = json.NewEncoder(w).Encode(item)
+				case strings.HasSuffix(r.URL.Path, "/claim"):
+					claims++
+					if claims == 1 {
+						w.Header().Set("X-Conveyor-Error-Code", code)
+						http.Error(w, "review waits for proposal", http.StatusConflict)
+					} else {
+						http.Error(w, "review already claimed elsewhere", http.StatusConflict)
+					}
+				default:
+					childCalls++
+					http.Error(w, "unexpected child lifecycle call", http.StatusBadRequest)
+				}
+			}))
+			defer server.Close()
+			c := &client{base: server.URL, token: "parent-token", workspace: "demo"}
+			var output bytes.Buffer
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+			err = runTaskWithPresentation(ctx, c, "target", configPath, strings.NewReader(""), &output, false, true, true, true)
+			if code == "review_awaiting_proposal" {
+				if err == nil || err.Error() != "review already claimed elsewhere" || reads != 4 || claims != 2 || !strings.Contains(output.String(), "requirement proposal req-run v2") {
+					t.Fatalf("reads=%d claims=%d error=%v output=%s", reads, claims, err, output.String())
+				}
+			} else if err == nil || err.Error() != "review waits for proposal" || reads != 1 || claims != 1 {
+				t.Fatalf("unrelated conflict retried: reads=%d claims=%d error=%v", reads, claims, err)
+			}
+			if childCalls != 0 {
+				t.Fatalf("unclaimed child calls=%d", childCalls)
+			}
+		})
+	}
+}
+
+func TestAttachedRunConfirmsRequirementWhileReviewRemainsQueued(t *testing.T) {
+	prior := runGatePollInterval
+	runGatePollInterval = 5 * time.Millisecond
+	defer func() { runGatePollInterval = prior }()
+	reader, writer := io.Pipe()
+	defer reader.Close()
+	defer writer.Close()
+	var mu sync.Mutex
+	reads, confirmations, claims := 0, 0, 0
+	resolved := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		if r.Header.Get("Authorization") != "Bearer parent-user-credential" {
+			t.Error("wrong credential")
+		}
+		switch {
+		case r.URL.Path == "/v1/forge-token":
+			_, _ = io.WriteString(w, `{"configured":true}`)
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/run-order"):
+			reads++
+			item := workerservice.DispatchOrder{Task: core.Task{ID: "target", State: core.TaskRunning}, Order: core.WorkOrder{ID: "target-review-1", Stage: core.StageReview, State: core.WorkOrderQueued}}
+			if resolved {
+				item.Task.State = core.TaskClosed
+				item.Order = core.WorkOrder{}
+			} else {
+				item.PendingProposals = []workerservice.TaskRunProposal{{Kind: "requirement", DocumentID: "req-run", Title: "Attached run", Version: 2, CanConfirm: true, ActorHint: "an operator can confirm"}}
+			}
+			if reads == 3 {
+				// Confirm only after two pending-state polls, so a queued order
+				// cannot make the wait surface discard or restart the action.
+				go func() { _, _ = io.WriteString(writer, "\nk\n") }()
+			}
+			_ = json.NewEncoder(w).Encode(item)
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/requirements/req-run/versions/2/confirm":
+			confirmations++
+			resolved = true
+			_, _ = io.WriteString(w, `{}`)
+		case strings.HasSuffix(r.URL.Path, "/claim"):
+			claims++
+			http.Error(w, "must not claim pending review", http.StatusConflict)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	c := &client{base: server.URL, token: "parent-user-credential", workspace: "demo"}
+	var output bytes.Buffer
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	if err := runTaskWithPresentation(ctx, c, "target", "unused.yaml", reader, &output, false, true, true, false); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if reads < 4 || confirmations != 1 || claims != 0 || !strings.Contains(output.String(), "Confirm requirement") || !strings.Contains(output.String(), "finished in state closed") {
+		t.Fatalf("reads=%d confirmations=%d claims=%d output=%s", reads, confirmations, claims, output.String())
 	}
 }
