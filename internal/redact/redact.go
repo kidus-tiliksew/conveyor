@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 )
@@ -71,9 +72,12 @@ type needle struct {
 // persist only Stats.
 type Redactor struct {
 	needles []needle
+	source  []string
 }
 
 func New(values []string) *Redactor {
+	source := append([]string(nil), values...)
+	values = append(append([]string(nil), values...), liveSecrets()...)
 	byValue := make(map[string]needle)
 	add := func(value, placeholder, class string) {
 		if value == "" {
@@ -105,7 +109,7 @@ func New(values []string) *Redactor {
 		needles = append(needles, item)
 	}
 	sort.Slice(needles, func(i, j int) bool { return len(needles[i].value) > len(needles[j].value) })
-	return &Redactor{needles: needles}
+	return &Redactor{needles: needles, source: source}
 }
 
 var credentialPatterns = []*regexp.Regexp{
@@ -120,7 +124,9 @@ var assignedSecret = regexp.MustCompile(`(?i)((?:token|secret|password|api[_-]?k
 
 func (r *Redactor) Redact(text string) (string, Stats) {
 	var stats Stats
-	for _, item := range r.needles {
+	// A long-lived diagnostic writer can predate an installation-token mint.
+	// Rebuild the exact-match snapshot at use so it includes every live token.
+	for _, item := range New(r.source).needles {
 		count := strings.Count(text, item.value)
 		if count == 0 {
 			continue
@@ -226,4 +232,38 @@ func (w *Writer) Flush() error {
 	w.pending = ""
 	_, err := io.WriteString(w.Destination, clean)
 	return err
+}
+
+// RegisterSecret retains process-local credentials for centralized redaction.
+// Tokens remain registered through expiry, including tokens replaced in cache.
+// Private keys use a zero expiry so older in-flight diagnostics remain scrubbed.
+var processSecrets = struct {
+	sync.Mutex
+	values map[string]time.Time
+}{values: map[string]time.Time{}}
+
+func RegisterSecret(value string, expires time.Time) {
+	if value == "" {
+		return
+	}
+	processSecrets.Lock()
+	defer processSecrets.Unlock()
+	if old, ok := processSecrets.values[value]; ok && (old.IsZero() || (!expires.IsZero() && old.After(expires))) {
+		return
+	}
+	processSecrets.values[value] = expires
+}
+func liveSecrets() []string {
+	processSecrets.Lock()
+	defer processSecrets.Unlock()
+	values := []string{}
+	now := time.Now()
+	for value, expiry := range processSecrets.values {
+		if !expiry.IsZero() && !now.Before(expiry) {
+			delete(processSecrets.values, value)
+			continue
+		}
+		values = append(values, value)
+	}
+	return values
 }

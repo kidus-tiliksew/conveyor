@@ -1255,6 +1255,14 @@ func (m *volatileMemory) ListForgeTokensForRedaction(context.Context) ([]string,
 		}
 		values = append(values, value)
 	}
+	for _, app := range m.workspaceGitHubApps {
+		value, err := m.openForgeToken(app.sealed)
+		if err != nil {
+			return nil, err
+		}
+		values = append(values, value)
+	}
+
 	sort.Strings(values)
 	return values, nil
 }

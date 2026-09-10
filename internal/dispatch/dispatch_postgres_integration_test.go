@@ -48,7 +48,7 @@ func (s *blockingDispatchStore) GetTask(ctx context.Context, id string) (core.Ta
 	return core.Task{}, ctx.Err()
 }
 
-func TestWorkspaceForgeOperationFailsClosedWithoutTokenIntegration(t *testing.T) {
+func TestWorkspaceForgeOperationFailsClosedWithoutAppIntegration(t *testing.T) {
 	databaseURL := dispatchIntegrationDatabaseURL(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
@@ -71,7 +71,7 @@ func TestWorkspaceForgeOperationFailsClosedWithoutTokenIntegration(t *testing.T)
 	if githubtrigger.ErrorCategory(err) != githubtrigger.ForgePermission {
 		t.Fatalf("category = %q, error = %v", githubtrigger.ErrorCategory(err), err)
 	}
-	if !strings.Contains(err.Error(), "workspace "+workspace+" forge token") || !strings.Contains(err.Error(), "add or replace it in workspace settings") {
+	if !strings.Contains(err.Error(), "workspace "+workspace+" GitHub App") || !strings.Contains(err.Error(), "connect the GitHub App in workspace settings") {
 		t.Fatalf("permission remedy = %v", err)
 	}
 }

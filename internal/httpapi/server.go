@@ -35,6 +35,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/releaseinfo"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
+	"github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
 	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 )
@@ -85,6 +86,10 @@ type Server struct {
 	AgentCredentials      store.AgentCredentialStore
 	ForgeTokens           store.ForgeTokenStore
 	WorkspaceForgeTokens  store.WorkspaceForgeTokenStore
+	WorkspaceGitHubApps   store.WorkspaceGitHubAppStore
+	GitHubApps            *github.AppClient
+	appStates             manifestStates
+	appSetupStates        manifestStates
 	ValidateForgeToken    func(context.Context, string) (string, error)
 	InvitationSessions    store.InvitationSessionStore
 	InvitationDelivery    config.InvitationDelivery
@@ -126,6 +131,9 @@ func NewServer(s store.Store) *Server {
 	if tokens, ok := s.(store.ForgeTokenStore); ok {
 		server.ForgeTokens = tokens
 	}
+	if apps, ok := s.(store.WorkspaceGitHubAppStore); ok {
+		server.WorkspaceGitHubApps = apps
+	}
 	if tokens, ok := s.(store.WorkspaceForgeTokenStore); ok {
 		server.WorkspaceForgeTokens = tokens
 	}
@@ -137,7 +145,7 @@ func NewServer(s store.Store) *Server {
 
 func (s *Server) Handler() http.Handler {
 	r := chi.NewRouter()
-	r.Use(middleware.RequestID, middleware.Logger, middleware.Recoverer)
+	r.Use(middleware.RequestID, githubAppRequestLogger, middleware.Recoverer)
 
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -186,6 +194,11 @@ func (s *Server) Handler() http.Handler {
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityManageWorkspace)).Get("/workspaces/{workspace_id}/forge-token", s.getWorkspaceForgeToken)
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityManageWorkspace)).Put("/workspaces/{workspace_id}/forge-token", s.putWorkspaceForgeToken)
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityManageWorkspace)).Delete("/workspaces/{workspace_id}/forge-token", s.deleteWorkspaceForgeToken)
+		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityManageWorkspace)).Post("/workspaces/{workspace_id}/github-app/manifest", s.createWorkspaceGitHubAppManifest)
+		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityManageWorkspace)).Get("/workspaces/{workspace_id}/github-app/callback", s.workspaceGitHubAppCallback)
+		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityManageWorkspace)).Get("/workspaces/{workspace_id}/github-app/setup", s.workspaceGitHubAppSetup)
+		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityViewWorkspace)).Get("/workspaces/{workspace_id}/github-app", s.getWorkspaceGitHubApp)
+		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityManageWorkspace)).Delete("/workspaces/{workspace_id}/github-app", s.deleteWorkspaceGitHubApp)
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityViewWorkspace)).Get("/workspaces/{workspace_id}/members", s.listWorkspaceMembers)
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityManageMembership)).Post("/workspaces/{workspace_id}/members", s.grantWorkspaceMembership)
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityManageMembership)).Get("/workspaces/{workspace_id}/invitations", s.listWorkspaceInvitations)

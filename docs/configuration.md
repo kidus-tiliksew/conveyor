@@ -121,7 +121,7 @@ Server (read by `conveyord`):
 | `CONVEYOR_LISTEN_ADDR` | Daemon listen address as `host:port`; used when `-addr` is not explicitly set. |
 | `PORT` | Daemon listen port; resolves to `0.0.0.0:<PORT>` when neither `-addr` nor `CONVEYOR_LISTEN_ADDR` is set. |
 | `CONVEYOR_SHUTDOWN_TIMEOUT` | Total daemon shutdown budget (default `25s`); used when `-shutdown-timeout` is not explicitly set. Must be positive. |
-| `CONVEYOR_FORGE_TOKEN_ENCRYPTION_KEY` | Base64 of exactly 32 bytes; encrypts per-user GitHub tokens. Required before anyone can store one. |
+| `CONVEYOR_FORGE_TOKEN_ENCRYPTION_KEY` | Base64 of exactly 32 bytes; encrypts workspace GitHub App private keys and legacy forge tokens. Required before connecting an app. |
 | `CONVEYOR_SMTP_HOST` / `_PORT` / `_USERNAME` / `_PASSWORD` / `_FROM` | Invitation email delivery. Configured only when host and from are both set; otherwise links are surfaced for manual delivery. |
 | `CONVEYOR_ORGANIZATION_NAME`, `CONVEYOR_FIRST_OPERATOR_EMAIL`, `CONVEYOR_FIRST_OPERATOR_DISPLAY_NAME` | First-operator identity at bootstrap. |
 | `CONVEYOR_CONTROL_PLANE_MODEL`, `CONVEYOR_TRIAGE_MODEL`, `CONVEYOR_PLANNING_MODEL` | Process-level model overrides for in-process stages; never change stored config. |
@@ -164,3 +164,25 @@ review seats, setups, execution defaults, monitor) is also editable at
 runtime: through the Workspace page, or round-tripped as YAML with
 `conveyor config export` and `conveyor config import`, which uses optimistic
 concurrency and rejects unknown keys.
+
+## Workspace GitHub App connection
+
+Connect the app through Workspace settings in an authenticated dashboard session.
+GitHub creates it from Conveyor's manifest, then asks you to install it and select
+repositories. The settings status lists coverage for the workspace's registered
+GitHub repository slugs. A missing, revoked, suspended, or uncovered installation
+returns a permission failure directing you to workspace settings.
+
+Set the public URL used for dashboard sign-in before connecting the app. The
+manifest callback state is bound to that session, expires after ten minutes, and
+can be consumed once. Installation returns use separate single-use state. The
+normal session cookie stays Strict; a ten-minute cookie scoped to the app
+endpoints permits the GitHub return navigation. Operator status responses include
+an `installation_url` to resume installation or update access. The server stores only the encrypted private key and app
+metadata. Installation tokens expire within one hour and remain in a process-local
+cache until five minutes before expiry. App replacement and disconnect invalidate
+the cache. No GitHub credential belongs in `conveyor.yaml`.
+
+The dispatcher, work-order reads, and monitor resolve the workspace app without
+host credentials. Legacy forge-token APIs and claim presence checks remain for
+compatibility until their separate retirement release.

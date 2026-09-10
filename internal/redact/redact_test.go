@@ -8,6 +8,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 type testSecretSource struct {
@@ -103,5 +104,23 @@ func TestExactValueWinsOverEquivalentEncoding(t *testing.T) {
 	clean, stats := r.Redact("plainvalue")
 	if clean != exactPlaceholder || stats.Exact != 1 || stats.Encoded != 0 {
 		t.Fatalf("clean=%q stats=%+v", clean, stats)
+	}
+}
+
+func TestAppSecretsReachExistingDiagnosticWriters(t *testing.T) {
+	var output bytes.Buffer
+	writer := &Writer{Destination: &output, Redactor: New(nil)}
+	first := "app-first-live-token-value"
+	second := "app-second-live-token-value"
+	RegisterSecret(first, time.Now().Add(time.Hour))
+	RegisterSecret(second, time.Now().Add(time.Hour))
+	encoded := base64.StdEncoding.EncodeToString([]byte(first))
+	if _, err := writer.Write([]byte(first + " " + second + " " + encoded + "\n")); err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{first, second, encoded} {
+		if strings.Contains(output.String(), secret) {
+			t.Fatal("registered token escaped preexisting writer")
+		}
 	}
 }
