@@ -157,6 +157,12 @@ func newHarnessEventRenderer(output io.Writer) *harnessEventRenderer {
 	return &harnessEventRenderer{output: output, palette: newCLIPalette(output)}
 }
 
+// Observability tails use no terminal styles, even when the launcher has color
+// enabled. Each stream owns its renderer so pending lines cannot interleave.
+func newHarnessTailRenderer(output io.Writer) *harnessEventRenderer {
+	return &harnessEventRenderer{output: output}
+}
+
 func (r *harnessEventRenderer) Write(p []byte) (int, error) {
 	written := len(p)
 	if _, err := r.pending.Write(p); err != nil {

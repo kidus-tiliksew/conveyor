@@ -475,6 +475,13 @@ func TestRenewDispatchClaimSnapshotTransportFailureFallsBackToPlainRenewal(t *te
 }
 
 func TestRunHarnessChildReportsRedactedSnapshotAndBestEffortTranscript(t *testing.T) {
+	for _, format := range []string{"plain", "opencode", "claude", "codex"} {
+		t.Run(format, func(t *testing.T) { testHarnessObservability(t, format) })
+	}
+}
+
+func testHarnessObservability(t *testing.T, format string) {
+	t.Setenv("CONVEYOR_TEST_EVENT_FORMAT", format)
 	t.Setenv(localGitTokenEnv, "forge-observability-secret")
 	previousInterval := workerClaimRenewInterval
 	workerClaimRenewInterval = 25 * time.Millisecond
@@ -493,6 +500,7 @@ func TestRunHarnessChildReportsRedactedSnapshotAndBestEffortTranscript(t *testin
 	var mu sync.Mutex
 	var snapshots []string
 	var transcript *core.WorkOrderAttemptTranscript
+	var failureDetail string
 	checkpointRequests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
@@ -530,6 +538,13 @@ func TestRunHarnessChildReportsRedactedSnapshotAndBestEffortTranscript(t *testin
 			}
 			_ = json.NewEncoder(w).Encode(map[string]bool{"created": true})
 		case "release":
+			var request struct {
+				FailureDetail string `json:"failure_detail"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Error(err)
+			}
+			failureDetail = request.FailureDetail
 			_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: parts[3], State: core.WorkOrderQueued})
 		default:
 			http.NotFound(w, r)
@@ -563,6 +578,22 @@ func TestRunHarnessChildReportsRedactedSnapshotAndBestEffortTranscript(t *testin
 	}
 	if transcript == nil || transcript.Truncated || strings.Contains(transcript.Content, credential) || strings.Contains(transcript.Content, forgeToken) || !strings.Contains(transcript.Content, "[REDACTED:exact]") || !strings.Contains(transcript.Content, "observable activity") {
 		t.Fatalf("unsafe transcript=%+v", transcript)
+	}
+	if strings.Contains(failureDetail, credential) || strings.Contains(failureDetail, forgeToken) || !strings.Contains(failureDetail, "observable activity") || !strings.Contains(failureDetail, "final stderr diagnostic") {
+		t.Fatalf("unsafe or incomplete failure detail=%q", failureDetail)
+	}
+	if format != "plain" {
+		for _, snapshot := range snapshots {
+			if strings.Contains(snapshot, `"type":`) {
+				t.Fatalf("raw event snapshot=%q", snapshot)
+			}
+		}
+		if !strings.Contains(transcript.Content, `"type":`) || strings.Contains(failureDetail, `"type":`) {
+			t.Fatalf("raw transcript or rendered failure lost: transcript=%q failure=%q", transcript.Content, failureDetail)
+		}
+	}
+	if format == "opencode" && !strings.Contains(failureDetail, "! agent step ended early · reason unknown") {
+		t.Fatalf("missing flushed final warning: %q", failureDetail)
 	}
 	if checkpointRequests != 2 || !strings.Contains(stderr.String(), "retrying checkpoint without transcript") {
 		t.Fatalf("checkpoint_requests=%d stderr=%q", checkpointRequests, stderr.String())
@@ -2987,8 +3018,26 @@ func TestWorkerLifecycleHelper(t *testing.T) {
 			time.Sleep(40 * time.Millisecond)
 		}
 	case "observability":
-		fmt.Fprintf(os.Stdout, "token=%s client=%s forge=%s observable activity\n", os.Getenv("CONVEYOR_API_TOKEN"), os.Getenv("CONVEYOR_CLIENT_TOKEN"), os.Getenv(gitAskPassTokenEnv))
+		message := fmt.Sprintf("token=%s client=%s forge=%s observable activity", os.Getenv("CONVEYOR_API_TOKEN"), os.Getenv("CONVEYOR_CLIENT_TOKEN"), os.Getenv(gitAskPassTokenEnv))
+		encoded, _ := json.Marshal(message)
+		switch os.Getenv("CONVEYOR_TEST_EVENT_FORMAT") {
+		case "opencode":
+			fmt.Fprintf(os.Stdout, `{"type":"tool_use","part":{"tool":"bash","state":{"status":"error","input":{"command":"echo observable activity"},"output":%s,"error":%s}}}`+"\n", encoded, encoded)
+		case "claude":
+			fmt.Fprintf(os.Stdout, `{"type":"assistant","message":{"content":[{"type":"text","text":%s}]}}`+"\n", encoded)
+		case "codex":
+			fmt.Fprintf(os.Stdout, `{"type":"item.completed","item":{"type":"agent_message","text":%s}}`+"\n", encoded)
+		default:
+			fmt.Fprintln(os.Stdout, message)
+		}
 		time.Sleep(250 * time.Millisecond)
+		fmt.Fprint(os.Stderr, "final stderr diagnostic")
+		if os.Getenv("CONVEYOR_TEST_EVENT_FORMAT") == "opencode" {
+			fmt.Fprint(os.Stdout, `{"type":"step_finish","part":{"reason":"unknown","tokens":{"input":3,"output":2}}}`)
+		}
+		// Exit directly so the Go test runner does not append PASS to the
+		// deliberately unterminated final harness event.
+		os.Exit(0)
 	case "stall-deadline-race":
 		raceDirectory := os.Getenv("CONVEYOR_FAKE_HARNESS_RACE_DIR")
 		fmt.Fprintln(os.Stdout, "initial activity")
