@@ -103,7 +103,7 @@ func TestOperatorDismissalNotesHTTP(t *testing.T) {
 						}
 						v.RequirementID = id
 						for n := 2; n <= 3; n++ {
-							v.Content = "Next\n" + v.Content
+							v.Content = "# Next\n" + v.Content
 							if _, err := st.ProposeRequirementVersion(ctx, v); err != nil {
 								t.Fatal(err)
 							}
