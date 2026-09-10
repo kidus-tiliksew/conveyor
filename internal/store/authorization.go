@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"strings"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
@@ -58,57 +57,11 @@ type InvitationSessionStore interface {
 }
 
 var (
-	ErrInvalidCurrentPassword  = errors.New("invalid current password")
-	ErrInvalidPassword         = errors.New("password must contain between 12 and 1024 bytes")
-	ErrForgeTokenKey           = errors.New("forge token encryption key unavailable")
-	ErrForgeTokenDecrypt       = errors.New("forge token decryption failed")
-	ErrForgeTokenOwnerInactive = errors.New("forge token owner is inactive")
-	ErrForgeTokenRequired      = errors.New(ForgeTokenRequiredMessage)
+	ErrInvalidCurrentPassword = errors.New("invalid current password")
+	ErrInvalidPassword        = errors.New("password must contain between 12 and 1024 bytes")
+	ErrForgeTokenKey          = errors.New("forge token encryption key unavailable")
+	ErrForgeTokenDecrypt      = errors.New("forge token decryption failed")
 )
-
-const (
-	ForgeTokenRequiredCode    = "forge_token_required"
-	ForgeTokenRequiredMessage = "stored forge token is required; add one in account settings before claiming work"
-)
-
-// RequireForgeTokenPresence is the metadata-only eligibility check shared by
-// read projections and non-durable claim paths. Durable claims repeat this
-// check transactionally without decrypting the token or contacting the forge.
-func RequireForgeTokenPresence(ctx context.Context, tokens ForgeTokenStore, ownerUserID string) error {
-	if tokens == nil || ownerUserID == "" {
-		return ErrForgeTokenRequired
-	}
-	status, err := tokens.GetForgeTokenStatus(ctx, ownerUserID)
-	if errors.Is(err, ErrNotFound) || err == nil && !status.Configured {
-		return ErrForgeTokenRequired
-	}
-	if err != nil {
-		return fmt.Errorf("check stored forge token presence: %w", err)
-	}
-	return nil
-}
-
-// ForgeTokenStore is the sole recoverable-credential boundary. Management
-// methods take a credential-derived owner; presence is metadata-only for later
-// claim/preflight consumers; use and redaction lookups are the only plaintext
-// exits and must fail closed for inactive owners or cipher failures.
-type ForgeTokenStore interface {
-	StoreForgeToken(context.Context, string, string, string) (core.ForgeTokenStatus, error)
-	DeleteForgeToken(context.Context, string) error
-	GetForgeTokenStatus(context.Context, string) (core.ForgeTokenStatus, error)
-	GetForgeTokenForUse(context.Context, string) (core.ForgeTokenCredential, error)
-	ListForgeTokensForRedaction(context.Context) ([]string, error)
-}
-
-// WorkspaceForgeTokenStore owns the single recoverable forge credential for a
-// workspace. Management callers supply a workspace resolved by the HTTP
-// capability boundary; only use and redaction reads may return plaintext.
-type WorkspaceForgeTokenStore interface {
-	StoreWorkspaceForgeToken(context.Context, string, string, string) (core.ForgeTokenStatus, error)
-	DeleteWorkspaceForgeToken(context.Context, string) error
-	GetWorkspaceForgeTokenStatus(context.Context, string) (core.ForgeTokenStatus, error)
-	GetWorkspaceForgeTokenForUse(context.Context, string) (core.WorkspaceForgeTokenCredential, error)
-}
 
 // PersonalAccessTokenStore is the self-service human-credential boundary. Every
 // method takes the owning user resolved from the presented credential, so a

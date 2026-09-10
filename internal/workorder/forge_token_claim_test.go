@@ -2,7 +2,6 @@ package workorder
 
 import (
 	"context"
-	"errors"
 	"testing"
 	"time"
 
@@ -12,29 +11,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 )
 
-type claimForgeTokens struct {
-	configured bool
-	credential core.ForgeTokenCredential
-	useErr     error
-	useCalls   int
-}
-
-func (*claimForgeTokens) StoreForgeToken(context.Context, string, string, string) (core.ForgeTokenStatus, error) {
-	return core.ForgeTokenStatus{}, nil
-}
-func (*claimForgeTokens) DeleteForgeToken(context.Context, string) error { return nil }
-func (f *claimForgeTokens) GetForgeTokenStatus(context.Context, string) (core.ForgeTokenStatus, error) {
-	return core.ForgeTokenStatus{Configured: f.configured}, nil
-}
-func (f *claimForgeTokens) GetForgeTokenForUse(context.Context, string) (core.ForgeTokenCredential, error) {
-	f.useCalls++
-	return f.credential, f.useErr
-}
-func (*claimForgeTokens) ListForgeTokensForRedaction(context.Context) ([]string, error) {
-	return nil, nil
-}
-
-func TestClaimRequiresStoredForgeTokenAndLeavesOrderQueued(t *testing.T) {
+func TestClaimSucceedsWithoutStoredForgeTokens(t *testing.T) {
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	st := store.NewMemory()
 	task := core.Task{ID: "forge-gated", Workspace: "demo", Repo: "conveyor", State: core.TaskRunning, CreatedAt: time.Now().UTC()}
@@ -48,20 +25,15 @@ func TestClaimRequiresStoredForgeTokenAndLeavesOrderQueued(t *testing.T) {
 	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: job.Stage}); err != nil {
 		t.Fatal(err)
 	}
-	tokens := &claimForgeTokens{}
-	service := &Service{Store: st, ForgeTokens: tokens, ConfigProvider: func(context.Context) (*config.Config, error) {
+	service := &Service{Store: st, ConfigProvider: func(context.Context) (*config.Config, error) {
 		return &config.Config{Routing: config.Routing{Stages: map[string]config.StageRoute{"implement": {Timeout: time.Hour}}}}, nil
 	}}
 	claim := core.WorkOrderClaim{SessionID: "session", ClientToken: "secret", ClaimantID: core.TaskRunClaimantID("owner"), OwnerUserID: "owner"}
-	if _, err := service.Claim(ctx, job.ID, claim); !errors.Is(err, store.ErrForgeTokenRequired) {
-		t.Fatalf("missing-token claim error=%v", err)
+	if _, err := service.Claim(ctx, job.ID, claim); err != nil {
+		t.Fatalf("claim without stored credentials: %v", err)
 	}
-	queued, err := st.GetWorkOrder(ctx, job.ID)
-	if err != nil || queued.State != core.WorkOrderQueued {
-		t.Fatalf("refused order=%+v err=%v", queued, err)
-	}
-	tokens.configured = true
-	if _, err = service.Claim(ctx, job.ID, claim); err != nil {
-		t.Fatalf("configured-token claim: %v", err)
+	claimed, err := st.GetWorkOrder(ctx, job.ID)
+	if err != nil || claimed.State != core.WorkOrderClaimed {
+		t.Fatalf("claimed order=%+v err=%v", claimed, err)
 	}
 }

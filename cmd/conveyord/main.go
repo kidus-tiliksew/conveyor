@@ -208,8 +208,6 @@ func main() {
 	srv.OwnProfiles = st
 	srv.PersonalTokens = st
 	srv.AgentCredentials = st
-	srv.ForgeTokens = st
-	srv.WorkspaceForgeTokens = st
 	srv.WorkspaceGitHubApps = st
 	srv.InvitationSessions = st
 	srv.Release = releaseinfo.Version
@@ -225,18 +223,13 @@ func main() {
 	srv.OnMerge = d.MergeApprovedTask
 	srv.OnMergeReadiness = d.ReadMergeReadiness
 	srv.OnConflictFix = d.DispatchConflictFix
-	srv.ValidateForgeToken = githubtrigger.ValidateTokenIdentity
 	workOrders := &workorder.Service{Store: st, Dispatcher: d, Pack: packBundle, ConfigProvider: func(ctx context.Context) (*config.Config, error) {
 		if st.IsDurable() {
 			return st.RuntimeConfig(ctx, deployment)
 		}
 		return cfg, nil
 	}}
-	workOrders.ForgeTokens = st
-	d.ForgeTokens = st
-	workOrders.WorkspaceForgeTokens = st
 	workOrders.WorkspaceGitHubApps = st
-	d.WorkspaceForgeTokens = st
 	d.WorkspaceGitHubApps = st
 	workOrders.RedactionSecrets = st
 	srv.WorkOrders = workOrders
@@ -274,7 +267,6 @@ func main() {
 	srv.Workers = &workerservice.Service{Store: st, WorkOrders: workOrders, ConfigProvider: workOrders.ConfigProvider, RetryDelay: *workerRetryDelay, RetryMaximum: *workerRetryMaximum}
 	srv.Workers.IdentityUsers = st
 	srv.Workers.RedactionSecrets = st
-	srv.Workers.ForgeTokens = st
 	if st.IsDurable() {
 		srv.Workspaces = st
 		srv.EnsureWorkspaceQueues = addWorkspaceQueue
@@ -427,19 +419,8 @@ func main() {
 						}
 						source := monitor.GitHubSource{
 							WorkspaceID: workspaceID, Repository: repositoryName, GitHubSlug: repository.GitHub, Run: runGitHub,
-							KnownLineage: func(taskID string, pullRequestNumber int, headSHA string) bool {
-								task, taskErr := st.GetTask(workspaceCtx, taskID)
-								if taskErr != nil || task.Repo != repositoryName ||
-									task.Branch != "conveyor/task-"+taskID ||
-									(task.GitHub != nil && task.GitHub.Repository != repository.GitHub) {
-									return false
-								}
-								events, eventErr := st.ListEvents(workspaceCtx, taskID)
-								if eventErr != nil {
-									return false
-								}
-								return monitor.RecordedLineage(task, events, repositoryName, repository.GitHub,
-									taskID, pullRequestNumber, headSHA)
+							ReconcileMerged: func(callCtx context.Context, taskID string, pr githubtrigger.PullRequest) (bool, error) {
+								return d.ReconcileObservedPullRequest(callCtx, repositoryName, repository.GitHub, taskID, pr)
 							},
 						}
 						source.OnSuppressed = func(ctx context.Context, payload map[string]any) error {

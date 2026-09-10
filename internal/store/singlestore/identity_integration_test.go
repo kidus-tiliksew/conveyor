@@ -103,10 +103,6 @@ func TestIdentitySecurityIntegration(t *testing.T) {
 	if err != nil || time.Until(auth.SessionExpiresAt) < 6*24*time.Hour {
 		t.Fatal("session did not slide seven days")
 	}
-	s.ConfigureForgeTokenEncryptionKey(bytes.Repeat([]byte{1}, 32))
-	if _, err = s.StoreForgeToken(ctx, owner.ID, "fixture-forge", "owner"); err != nil {
-		t.Fatal(err)
-	}
 	if _, err = s.db.ExecContext(ctx, "UPDATE users SET status='deactivated' WHERE id=?", owner.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -115,9 +111,6 @@ func TestIdentitySecurityIntegration(t *testing.T) {
 	}
 	if _, err = s.VerifyDashboardSession(ctx, session.Value); !errors.Is(err, core.ErrInvalidCredential) {
 		t.Fatal("inactive session authenticates")
-	}
-	if _, err = s.GetForgeTokenForUse(ctx, owner.ID); !errors.Is(err, store.ErrForgeTokenOwnerInactive) {
-		t.Fatal("inactive owner forge token released")
 	}
 }
 func TestSessionAndMembershipConcurrencyIntegration(t *testing.T) {

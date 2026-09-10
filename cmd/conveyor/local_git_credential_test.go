@@ -188,7 +188,7 @@ func TestLocalGitPreflightRunsRealGitAndRefusesBeforeWorkerOrRunClaim(t *testing
 		}
 	}))
 	defer server.Close()
-	c := &client{base: server.URL, workspace: "demo", token: "user", forgeTokenPreflight: func(context.Context, string) error { return nil }}
+	c := &client{base: server.URL, workspace: "demo", token: "user"}
 	var output bytes.Buffer
 	err := runTask(t.Context(), c, "task", configPath, strings.NewReader(""), &output, false, false)
 	if err == nil || !strings.Contains(err.Error(), localGitCredentialRemedy) {

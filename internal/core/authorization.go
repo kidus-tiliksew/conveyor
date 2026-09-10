@@ -167,30 +167,6 @@ type IssuedPersonalAccessToken struct {
 	Value string `json:"value"`
 }
 
-// ForgeTokenStatus is the only forge-credential representation exposed to
-// callers. Ciphertext, nonce, and plaintext never enter this projection.
-type ForgeTokenStatus struct {
-	Configured bool      `json:"configured"`
-	ForgeLogin string    `json:"forge_login,omitempty"`
-	StoredAt   time.Time `json:"stored_at,omitempty"`
-}
-
-// ForgeTokenCredential is restricted to governed outbound-use and redaction
-// boundaries. Token is intentionally omitted from every JSON representation.
-type ForgeTokenCredential struct {
-	ForgeTokenStatus
-	UserID string `json:"-"`
-	Token  string `json:"-"`
-}
-
-// WorkspaceForgeTokenCredential is restricted to governed workspace-level
-// outbound-use boundaries. The token never enters a JSON representation.
-type WorkspaceForgeTokenCredential struct {
-	ForgeTokenStatus
-	WorkspaceID string `json:"-"`
-	Token       string `json:"-"`
-}
-
 // ForgeAuthorClass is the non-secret identity class recorded for a forge
 // write. UserID is present only for user-attributed writes; credentials never
 // enter this value or an event payload (req-260821-830dbf REQ-3/REQ-4).
@@ -203,8 +179,9 @@ const (
 )
 
 type ForgeAuthoringIdentity struct {
-	Class  ForgeAuthorClass `json:"class"`
-	UserID string           `json:"user_id,omitempty"`
+	DisplayName string           `json:"display_name,omitempty"`
+	Class       ForgeAuthorClass `json:"class"`
+	UserID      string           `json:"user_id,omitempty"`
 }
 
 // GitAuthorIdentity is the account identity copied into a dispatched child

@@ -1,7 +1,6 @@
 package storetest
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"slices"
@@ -204,47 +203,5 @@ func runTokens(t *testing.T, x Fixture) {
 	requireOK(t, err)
 	if _, err := st.VerifyPersonalAccessToken(ctx, issued.Value); err == nil {
 		t.Fatal("revoked PAT authenticates")
-	}
-	st.ConfigureForgeTokenEncryptionKey(bytes.Repeat([]byte{1}, 32))
-	_, err = st.StoreForgeToken(ctx, owner.ID, "conformance-user-forge", "owner")
-	requireOK(t, err)
-	status, err := st.GetForgeTokenStatus(ctx, owner.ID)
-	requireOK(t, err)
-	if !status.Configured || status.ForgeLogin != "owner" {
-		t.Fatal("forge metadata differs")
-	}
-	credential, err := st.GetForgeTokenForUse(ctx, owner.ID)
-	requireOK(t, err)
-	if credential.Token != "conformance-user-forge" {
-		t.Fatal("forge token round trip differs")
-	}
-	_, err = st.StoreWorkspaceForgeToken(ctx, x.Workspace, "conformance-workspace-forge", "workspace")
-	requireOK(t, err)
-	status, err = st.GetWorkspaceForgeTokenStatus(ctx, x.Workspace)
-	requireOK(t, err)
-	if !status.Configured {
-		t.Fatal("workspace token metadata missing")
-	}
-	workspaceToken, err := st.GetWorkspaceForgeTokenForUse(ctx, x.Workspace)
-	requireOK(t, err)
-	if workspaceToken.Token != "conformance-workspace-forge" {
-		t.Fatal("workspace token round trip differs")
-	}
-	redaction, err := st.ListForgeTokensForRedaction(ctx)
-	requireOK(t, err)
-	if !slices.Contains(redaction, "conformance-user-forge") || !slices.Contains(redaction, "conformance-workspace-forge") {
-		t.Fatal("redaction list misses configured tokens")
-	}
-	st.ConfigureForgeTokenEncryptionKey(bytes.Repeat([]byte{2}, 32))
-	if _, err := st.GetForgeTokenForUse(ctx, owner.ID); !errors.Is(err, store.ErrForgeTokenDecrypt) {
-		t.Fatalf("wrong encryption key error=%v", err)
-	}
-	st.ConfigureForgeTokenEncryptionKey(bytes.Repeat([]byte{1}, 32))
-	requireOK(t, st.DeleteForgeToken(ctx, owner.ID))
-	requireOK(t, st.DeleteWorkspaceForgeToken(ctx, x.Workspace))
-	redaction, err = st.ListForgeTokensForRedaction(ctx)
-	requireOK(t, err)
-	if len(redaction) != 0 {
-		t.Fatal("deleted forge tokens remain in redaction list")
 	}
 }

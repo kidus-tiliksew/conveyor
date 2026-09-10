@@ -42,10 +42,8 @@ type Service struct {
 	SubmissionChangedPaths func(context.Context, *config.Config, core.Task) ([]string, error)
 	Logf                   func(string, ...any)
 	RedactionSecrets       redact.SecretSource
-	ForgeTokens            store.ForgeTokenStore
 	WorkspaceGitHubApps    store.WorkspaceGitHubAppStore
 	GitHubApps             *github.AppClient
-	WorkspaceForgeTokens   store.WorkspaceForgeTokenStore
 	consultedMu            sync.Mutex
 	consulted              map[string]struct{}
 }
@@ -184,12 +182,6 @@ func (s *Service) Claim(ctx context.Context, id string, claim core.WorkOrderClai
 	}
 	if claim.Lease <= 0 {
 		claim.Lease = core.DefaultWorkOrderClaimLease
-	}
-	if s.ForgeTokens != nil {
-		if err := store.RequireForgeTokenPresence(ctx, s.ForgeTokens, claim.OwnerUserID); err != nil {
-			return core.WorkOrder{}, err
-		}
-		claim.RequireForgeToken = true
 	}
 	order, err := s.Store.GetWorkOrder(ctx, id)
 	if err != nil {

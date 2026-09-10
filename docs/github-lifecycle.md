@@ -41,11 +41,25 @@ second issue manually.
 
 ## PR at submit
 
-The implementing agent still owns commits and pushes. Conveyor creates no ref,
-stub commit, push-event match, or draft PR. At `submit_for_review`, the factory
-requires the approved issue association to be published, then opens or reuses
-the pushed branch PR and reconciles its body to include `Closes #N`. A source
-issue is the same `#N`, so a successful merge closes the original issue.
+The executing machine commits, pushes, and opens or reuses the task pull
+request with its local GitHub credential. At submission, Conveyor reads that
+pull request with the workspace GitHub App, verifies its pushed head and base,
+and records the association. The body includes `Closes #N`; a successful merge
+closes the associated issue.
+
+## Merge from Conveyor or GitHub
+
+Conveyor merges use the workspace GitHub App installation token. The merge
+commit includes `Approved-by: <display name> <email>` for the approving
+operator, whose user ID and display name appear in the merge event. The
+server stores no personal or workspace GitHub token.
+
+If GitHub already merged the pull request, Conveyor records an observed merge
+with its GitHub actor and merge commit SHA. The monitor also reconciles an
+approved task merged on GitHub when its repository, pull request, recorded
+lineage, and approved head match. That observation completes the task without
+filing an external-merge occurrence. Unapproved, mismatched, or changed-head
+merges remain outside the approved pipeline.
 
 ## Review trail and resolutions
 

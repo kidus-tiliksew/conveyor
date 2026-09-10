@@ -19,20 +19,18 @@ import (
 
 // client is a thin wrapper over the control-plane API (design-http-api).
 type client struct {
-	gitCredentials      *localGitCredential
-	gitPreflight        func(context.Context, workerservice.DispatchOrder, []string) error
-	base                string
-	token               string
-	workspace           string
-	configErr           error
-	resolved            resolvedClientConfig
-	forgeTokenPreflight func(context.Context, string) error
+	gitCredentials *localGitCredential
+	gitPreflight   func(context.Context, workerservice.DispatchOrder, []string) error
+	base           string
+	token          string
+	workspace      string
+	configErr      error
+	resolved       resolvedClientConfig
 }
 
 func newClient() *client {
 	resolved, err := resolveClientConfig()
 	c := &client{base: resolved.Server.Value, token: resolved.Token.Value, workspace: resolved.Workspace.Value, configErr: err, resolved: resolved}
-	c.forgeTokenPreflight = c.fetchForgeTokenPreflight
 	return c
 }
 

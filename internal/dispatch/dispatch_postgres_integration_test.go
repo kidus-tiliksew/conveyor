@@ -2,7 +2,6 @@ package dispatch
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	"net/url"
@@ -76,7 +75,7 @@ func TestWorkspaceForgeOperationFailsClosedWithoutAppIntegration(t *testing.T) {
 	}
 }
 
-func TestApproverTokenMergeWaitAndRetryIntegration(t *testing.T) {
+func TestApproverMergeWithoutStoredTokenIntegration(t *testing.T) {
 	databaseURL := dispatchIntegrationDatabaseURL(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
@@ -108,55 +107,19 @@ func TestApproverTokenMergeWaitAndRetryIntegration(t *testing.T) {
 	if err = st.CreateIntervention(taskCtx, core.Intervention{TaskID: task.ID, Action: core.InterventionApprove, ActorID: store.UserActorID("usr-approver"), ActorRole: core.ActorUser}); err != nil {
 		t.Fatal(err)
 	}
-	forgeTokens := &mergeForgeTokens{status: core.ForgeTokenStatus{Configured: false}}
-	dispatcher := New(st, cfg, nil)
-	dispatcher.ForgeTokens = forgeTokens
-	if err = dispatcher.MergeApprovedTask(taskCtx, task); err == nil || !strings.Contains(err.Error(), "account settings") {
-		t.Fatalf("missing-token merge error=%v", err)
-	}
-	current, getErr := st.GetTask(taskCtx, task.ID)
-	if getErr != nil || current.State != core.TaskApproved || !current.MergeApproval {
-		t.Fatalf("approval changed after refusal: task=%+v err=%v", current, getErr)
-	}
-	events, eventErr := st.ListEvents(taskCtx, task.ID)
-	if eventErr != nil {
-		t.Fatal(eventErr)
-	}
-	refusalFound := false
-	for _, event := range events {
-		if event.Kind != "merge.failed" {
-			continue
-		}
-		var author struct {
-			Class  core.ForgeAuthorClass `json:"forge_author_class"`
-			UserID string                `json:"forge_author_user_id"`
-		}
-		if err = json.Unmarshal(event.Payload, &author); err != nil {
-			t.Fatal(err)
-		}
-		refusalFound = author.Class == core.ForgeAuthorApprovingOperator && author.UserID == "usr-approver"
-	}
-	if !refusalFound {
-		t.Fatalf("approver-attributed refusal not found: %+v", events)
-	}
-
-	forgeTokens.status = core.ForgeTokenStatus{Configured: true}
-	forgeTokens.credential = core.ForgeTokenCredential{UserID: "usr-approver", Token: "approver-forge-token"}
+	dispatcher := New(mergeIdentityStore{st}, cfg, nil)
 	views := 0
 	dispatcher.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
 		views++
 		return githubtrigger.PullRequest{Number: 12, State: map[bool]string{false: "open", true: "closed"}[views > 1], Mergeable: "MERGEABLE", Merged: views > 1, BaseSHA: "base", HeadSHA: "approved-head"}, nil
 	}
-	dispatcher.RequestMergeWithCredential = func(_ context.Context, _ string, _ int, token string) error {
-		if token != "approver-forge-token" {
-			t.Fatalf("merge token=%q", token)
-		}
+	dispatcher.RequestMerge = func(_ context.Context, _ string, _ int) error {
 		return nil
 	}
 	if err = dispatcher.MergeApprovedTask(taskCtx, task); err != nil {
 		t.Fatal(err)
 	}
-	current, getErr = st.GetTask(taskCtx, task.ID)
+	current, getErr := st.GetTask(taskCtx, task.ID)
 	if getErr != nil || current.State != core.TaskMerged {
 		t.Fatalf("post-token retry task=%+v err=%v", current, getErr)
 	}

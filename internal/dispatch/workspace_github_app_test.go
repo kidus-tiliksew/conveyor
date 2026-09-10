@@ -34,9 +34,6 @@ func TestWorkspaceGitHubAppResolverUsesInstallationIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	st.ConfigureForgeTokenEncryptionKey(bytes.Repeat([]byte{41}, 32))
-	if _, err := st.StoreWorkspaceForgeToken(ctx, "demo", "legacy-token-must-not-be-used", "legacy"); err != nil {
-		t.Fatal(err)
-	}
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatal(err)
@@ -70,6 +67,18 @@ func TestWorkspaceGitHubAppResolverUsesInstallationIdentity(t *testing.T) {
 				t.Error("compare files paginated")
 			}
 			fmt.Fprint(w, `{"files":[{"filename":"internal/change.go"}],"total_commits":1000}`)
+		case "/repos/org/repo/pulls/12/merge":
+			if r.Method != http.MethodPut || r.Header.Get("Authorization") != "Bearer resolver-installation-secret" {
+				t.Error("merge did not authenticate with the App")
+			}
+			var payload map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Error(err)
+			}
+			if payload["commit_message"] != "Approved-by: Approving Operator <approver@example.com>" {
+				t.Errorf("merge message=%v", payload["commit_message"])
+			}
+			fmt.Fprint(w, `{"merged":true}`)
 		case "/repos/org/repo/pulls/1/files":
 			forgeCalls++
 			if r.Header.Get("Authorization") != "Bearer resolver-installation-secret" {
@@ -146,6 +155,40 @@ func TestWorkspaceGitHubAppResolverUsesInstallationIdentity(t *testing.T) {
 	}
 	if _, err = resolve(ctx, "org/uncovered"); github.ErrorCategory(err) != github.ForgePermission {
 		t.Fatal("uncovered repository accepted")
+	}
+	mergeTask := core.Task{ID: "app-merge", Workspace: "demo", Repo: "repo", BaseBranch: "main", Branch: "conveyor/task-app-merge", State: core.TaskApproved, MergeApproval: true, ReviewedHeadSHA: "head", ApprovedHeadSHA: "head", CreatedAt: time.Now()}
+	if err := st.CreateTask(ctx, mergeTask); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateIntervention(ctx, core.Intervention{TaskID: mergeTask.ID, Action: core.InterventionApprove, ActorID: store.UserActorID("usr-approver"), ActorRole: core.ActorUser}); err != nil {
+		t.Fatal(err)
+	}
+	d.Store = mergeIdentityStore{st}
+	views := 0
+	d.ViewPullRequest = func(context.Context, string, string) (github.PullRequest, error) {
+		views++
+		return github.PullRequest{Number: 12, State: "open", Mergeable: "MERGEABLE", Merged: views > 1, HeadSHA: "head"}, nil
+	}
+	if err := d.MergeApprovedTask(ctx, mergeTask); err != nil {
+		t.Fatal(err)
+	}
+	mergeEvents, err := st.ListEvents(ctx, mergeTask.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, event := range mergeEvents {
+		if event.Kind != "merge.confirmed" {
+			continue
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatal(err)
+		}
+		found = payload["forge_author_class"] == "workspace" && payload["approving_operator_user_id"] == "usr-approver" && payload["approving_operator_display_name"] == "Approving Operator"
+	}
+	if !found {
+		t.Fatal("merge confirmation omitted the approving operator")
 	}
 	if err = st.DeleteWorkspaceGitHubApp(ctx, "demo"); err != nil {
 		t.Fatal(err)

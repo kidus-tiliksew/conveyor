@@ -16,11 +16,11 @@ type testSecretSource struct {
 	err    error
 }
 
-func (s testSecretSource) ListForgeTokensForRedaction(context.Context) ([]string, error) {
+func (s testSecretSource) ListGitHubAppKeysForRedaction(context.Context) ([]string, error) {
 	return s.values, s.err
 }
 
-func TestTextIncludesStoredForgeTokensAndFailsClosed(t *testing.T) {
+func TestTextIncludesGitHubAppKeysAndFailsClosed(t *testing.T) {
 	clean, stats, err := Text(t.Context(), testSecretSource{values: []string{"plain-forge-value"}}, "before plain-forge-value after")
 	if err != nil || clean != "before [REDACTED:exact] after" || stats.Exact != 1 {
 		t.Fatalf("clean=%q stats=%+v err=%v", clean, stats, err)

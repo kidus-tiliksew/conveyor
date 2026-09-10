@@ -1,7 +1,6 @@
 package store
 
 import (
-	"bytes"
 	"errors"
 	"testing"
 
@@ -73,18 +72,6 @@ func TestVolatileCapabilitiesPreserveCredentialAndMembershipBoundaries(t *testin
 	auth, err := st.VerifyCredential(ctx, agent.Value)
 	if err != nil || auth.Scope != core.CredentialScopeUser || auth.Kind != core.CredentialAgent {
 		t.Fatalf("agent scope: %+v %v", auth, err)
-	}
-	st.ConfigureForgeTokenEncryptionKey(bytes.Repeat([]byte{1}, 32))
-	if _, err := st.StoreForgeToken(ctx, invitee.ID, "fixture-forge-token", "invitee"); err != nil {
-		t.Fatal(err)
-	}
-	st.ConfigureForgeTokenEncryptionKey(bytes.Repeat([]byte{2}, 32))
-	if _, err := st.GetForgeTokenForUse(ctx, invitee.ID); !errors.Is(err, ErrForgeTokenDecrypt) {
-		t.Fatalf("wrong key: %v", err)
-	}
-	st.ConfigureForgeTokenEncryptionKey(bytes.Repeat([]byte{1}, 32))
-	if _, err := st.GetForgeTokenForUse(ctx, invitee.ID); err != nil {
-		t.Fatal(err)
 	}
 	if err := st.RevokeWorkspaceRole(ctx, invitee.ID, "one"); err != nil {
 		t.Fatal(err)

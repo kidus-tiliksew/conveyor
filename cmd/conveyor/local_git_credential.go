@@ -20,7 +20,7 @@ import (
 const localGitTokenEnv = "CONVEYOR_GIT_TOKEN"
 const localGitPreflightTimeout = 20 * time.Second
 const localGitCredentialRemedy = "set CONVEYOR_GIT_TOKEN, or configure the host's git credential for that host"
-const localGitCredentialHelp = "Git credentials resolve locally: set CONVEYOR_GIT_TOKEN in the startup environment for child-only askpass, or leave it unset to use the host's Git credentials. The token is never accepted as an argument or saved. Before claiming, Git checks repository access with terminal prompting disabled and a bounded timeout. Repository checks are cached for this invocation; restart after changing credentials. Stored account forge-token presence is still required for control-plane operations."
+const localGitCredentialHelp = "Git credentials resolve locally: set CONVEYOR_GIT_TOKEN in the startup environment for child-only askpass, or leave it unset to use the host's Git credentials. The token is never accepted as an argument or saved. Before claiming, Git checks repository access with terminal prompting disabled and a bounded timeout. Repository checks are cached for this invocation; restart after changing credentials. Control-plane GitHub operations use the workspace GitHub App."
 
 // localGitCredential is invocation-local, shared by run and worker. No stored
 // forge credential crosses the control plane (req-260821-830dbf REQ-6,

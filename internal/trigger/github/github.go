@@ -296,13 +296,15 @@ type ReviewFeedbackPage struct {
 // PullRequest is the authoritative forge view used by the final merge gate.
 // Mergeable mirrors GitHub's MERGEABLE, CONFLICTING, and UNKNOWN values.
 type PullRequest struct {
-	Number    int
-	URL       string
-	State     string
-	Mergeable string
-	Merged    bool
-	HeadSHA   string
-	BaseSHA   string
+	MergedBy       string
+	MergeCommitSHA string
+	Number         int
+	URL            string
+	State          string
+	Mergeable      string
+	Merged         bool
+	HeadSHA        string
+	BaseSHA        string
 }
 
 // PullRequestFiles returns GitHub's authoritative repository-relative file
@@ -353,7 +355,7 @@ func PullRequestForBranch(ctx context.Context, repo, branch string) (PullRequest
 }
 
 func pullRequestForBranch(ctx context.Context, repo, branch string, run ghRunner) (PullRequest, error) {
-	out, err := run(ctx, "pr", "view", branch, "--repo", repo, "--json", "number,url,state,mergedAt,mergeable,headRefOid,baseRefOid")
+	out, err := run(ctx, "pr", "view", branch, "--repo", repo, "--json", "number,url,state,mergedAt,mergeable,headRefOid,baseRefOid,mergedBy,mergeCommit")
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "no pull requests found") || strings.Contains(strings.ToLower(err.Error()), "could not resolve to a pullrequest") {
 			return PullRequest{}, &Error{Category: ForgeStatus, Err: fmt.Errorf("%w for branch %s: %v", ErrPullRequestNotFound, branch, err)}
@@ -361,18 +363,21 @@ func pullRequestForBranch(ctx context.Context, repo, branch string, run ghRunner
 		return PullRequest{}, fmt.Errorf("view pull request for branch %s: %w", branch, forgeCallError(err))
 	}
 	var view struct {
-		Number    int        `json:"number"`
-		URL       string     `json:"url"`
-		State     string     `json:"state"`
-		MergedAt  *time.Time `json:"mergedAt"`
-		Mergeable string     `json:"mergeable"`
-		HeadSHA   string     `json:"headRefOid"`
-		BaseSHA   string     `json:"baseRefOid"`
+		MergedBy       string     `json:"mergedBy"`
+		MergeCommitSHA string     `json:"mergeCommit"`
+		Number         int        `json:"number"`
+		URL            string     `json:"url"`
+		State          string     `json:"state"`
+		MergedAt       *time.Time `json:"mergedAt"`
+		Mergeable      string     `json:"mergeable"`
+		HeadSHA        string     `json:"headRefOid"`
+		BaseSHA        string     `json:"baseRefOid"`
 	}
 	if err := json.Unmarshal(out, &view); err != nil || view.Number == 0 || view.URL == "" || view.State == "" || view.Mergeable == "" || view.HeadSHA == "" {
 		return PullRequest{}, forgeResponseError("parse pull request for branch %s", branch)
 	}
 	return PullRequest{
+		MergedBy: strings.TrimSpace(view.MergedBy), MergeCommitSHA: strings.TrimSpace(view.MergeCommitSHA),
 		Number: view.Number, URL: view.URL, State: strings.ToLower(view.State),
 		Mergeable: strings.ToUpper(view.Mergeable), Merged: view.MergedAt != nil,
 		HeadSHA: strings.TrimSpace(view.HeadSHA), BaseSHA: strings.TrimSpace(view.BaseSHA),
@@ -385,10 +390,18 @@ func MergePullRequest(ctx context.Context, repo string, number int) error {
 	return mergePullRequest(ctx, repo, number, gh)
 }
 
-// MergePullRequestWithCredential performs the user-attributed write with an
+// MergePullRequestWithCredential performs the workspace App write with an
 // explicit per-call token.
 func MergePullRequestWithCredential(ctx context.Context, repo string, number int, token string) error {
-	return mergePullRequest(ctx, repo, number, ghWithTokenAndIdentity(token, "executing user forge token"))
+	return mergePullRequest(ctx, repo, number, ghWithTokenAndIdentity(token, "workspace GitHub App"))
+}
+
+// mergeMessageKey carries a typed per-call message without changing the credential boundary.
+type mergeMessageKey struct{}
+
+// WithMergeMessage binds operator attribution to one merge request (DEC-41).
+func WithMergeMessage(ctx context.Context, message string) context.Context {
+	return context.WithValue(ctx, mergeMessageKey{}, message)
 }
 
 func mergePullRequest(ctx context.Context, repo string, number int, run ghRunner) error {

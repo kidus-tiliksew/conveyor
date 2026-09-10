@@ -78,7 +78,7 @@ without shell `export` prefixes; `.env` is loaded by both binaries from their
 working directory, and existing process environment values take precedence.
 
 - Keep `CONVEYOR_FORGE_TOKEN_ENCRYPTION_KEY` stable. Changing it invalidates
-  every stored GitHub token and app private key.
+  the stored GitHub App private keys.
 - `CONVEYOR_API_TOKEN` is the server bootstrap token. It is separate from the
   personal tokens users mint later and from agent CLI logins on executor
   machines.

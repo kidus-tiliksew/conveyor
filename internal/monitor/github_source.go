@@ -17,13 +17,13 @@ import (
 type CommandRunner func(context.Context, ...string) ([]byte, error)
 
 type GitHubSource struct {
-	WorkspaceID  string
-	Repository   string
-	GitHubSlug   string
-	Run          CommandRunner
-	KnownLineage func(taskID string, pullRequestNumber int, headSHA string) bool
-	LoadHints    func(context.Context, string) (*HintContext, error)
-	OnSuppressed func(context.Context, map[string]any) error
+	WorkspaceID     string
+	Repository      string
+	GitHubSlug      string
+	Run             CommandRunner
+	ReconcileMerged func(context.Context, string, githubtrigger.PullRequest) (bool, error)
+	LoadHints       func(context.Context, string) (*HintContext, error)
+	OnSuppressed    func(context.Context, map[string]any) error
 }
 
 type githubCommit struct {
@@ -44,7 +44,11 @@ type githubPull struct {
 	Number   int        `json:"number"`
 	HTMLURL  string     `json:"html_url"`
 	MergedAt *time.Time `json:"merged_at"`
-	Head     struct {
+	MergedBy struct {
+		Login string `json:"login"`
+	} `json:"merged_by"`
+	MergeCommitSHA string `json:"merge_commit_sha"`
+	Head           struct {
 		Ref string `json:"ref"`
 		SHA string `json:"sha"`
 	} `json:"head"`
@@ -80,11 +84,12 @@ func RecordedLineage(task core.Task, events []core.Event, repository, githubSlug
 			continue
 		}
 		var opened struct {
-			Number  int    `json:"number"`
-			HeadSHA string `json:"head_sha"`
+			Repository string `json:"repository"`
+			Number     int    `json:"number"`
+			HeadSHA    string `json:"head_sha"`
 		}
 		if json.Unmarshal(event.Payload, &opened) == nil &&
-			opened.Number == pullRequestNumber && opened.HeadSHA == headSHA {
+			opened.Number == pullRequestNumber && opened.HeadSHA == headSHA && (opened.Repository == "" || opened.Repository == githubSlug) {
 			return true
 		}
 	}
@@ -93,7 +98,7 @@ func RecordedLineage(task core.Task, events []core.Event, repository, githubSlug
 
 func (s GitHubSource) Observations(ctx context.Context, since time.Time) ([]Observation, error) {
 	if s.Run == nil {
-		return nil, githubtrigger.PermissionError(fmt.Errorf("workspace forge token is required for monitor reads; add it in workspace settings"))
+		return nil, githubtrigger.PermissionError(fmt.Errorf("workspace GitHub App is required for monitor reads; connect it in workspace settings"))
 	}
 	if strings.TrimSpace(s.Repository) == "" || strings.TrimSpace(s.GitHubSlug) == "" {
 		return nil, fmt.Errorf("monitor GitHub repository name and slug are required")
@@ -134,9 +139,24 @@ func (s GitHubSource) Observations(ctx context.Context, since time.Time) ([]Obse
 		lineaged := false
 		for _, pull := range pulls {
 			taskID, ok := strings.CutPrefix(pull.Head.Ref, "conveyor/task-")
-			if ok && pull.MergedAt != nil && s.KnownLineage != nil &&
-				s.KnownLineage(taskID, pull.Number, pull.Head.SHA) {
-				lineaged = true
+			if !ok || pull.MergedAt == nil {
+				continue
+			}
+			if s.ReconcileMerged != nil {
+				detail, err := s.mergedPull(ctx, pull.Number)
+				if err != nil {
+					return nil, err
+				}
+				if detail.MergedAt == nil || detail.Number != pull.Number || detail.Head.SHA != pull.Head.SHA || detail.Head.Ref != pull.Head.Ref {
+					continue
+				}
+				pull = detail
+				lineaged, err = s.ReconcileMerged(ctx, taskID, githubtrigger.PullRequest{Number: pull.Number, URL: pull.HTMLURL, State: "closed", Merged: true, HeadSHA: pull.Head.SHA, MergedBy: strings.TrimSpace(pull.MergedBy.Login), MergeCommitSHA: strings.TrimSpace(pull.MergeCommitSHA)})
+				if err != nil {
+					return nil, err
+				}
+			}
+			if lineaged {
 				break
 			}
 		}
@@ -268,6 +288,20 @@ func (s GitHubSource) differsFromFirstParent(ctx context.Context, parentSHA, com
 		return false, &githubtrigger.Error{Category: githubtrigger.ForgeResponse, Err: fmt.Errorf("parse first-parent comparison: files are missing")}
 	}
 	return len(*comparison.Files) > 0, nil
+}
+
+// The associated-PR endpoint returns pull-request-simple without merged_by.
+// Read the detail before attributing completion (req-delivery-and-forge AC-3.5).
+func (s GitHubSource) mergedPull(ctx context.Context, number int) (githubPull, error) {
+	raw, err := s.Run(ctx, "api", "--method", "GET", "repos/"+s.GitHubSlug+"/pulls/"+strconv.Itoa(number))
+	if err != nil {
+		return githubPull{}, githubtrigger.CategorizeError(err)
+	}
+	var pull githubPull
+	if err := json.Unmarshal(raw, &pull); err != nil || pull.Number == 0 || pull.Head.SHA == "" {
+		return githubPull{}, &githubtrigger.Error{Category: githubtrigger.ForgeResponse, Err: fmt.Errorf("parse monitor pull request detail")}
+	}
+	return pull, nil
 }
 
 func (s GitHubSource) pulls(ctx context.Context, sha string) ([]githubPull, error) {
