@@ -200,7 +200,7 @@ func (s *Store) GetForgeTokenForUse(ctx context.Context, userID string) (core.Fo
 }
 func (s *Store) ListForgeTokensForRedaction(ctx context.Context) ([]string, error) {
 	values := []string{}
-	for _, q := range []string{"SELECT user_id,cipher_nonce,ciphertext FROM user_forge_tokens ORDER BY user_id", "SELECT CONCAT('workspace:',workspace_id),cipher_nonce,ciphertext FROM workspace_forge_tokens ORDER BY workspace_id"} {
+	for _, q := range []string{"SELECT user_id,cipher_nonce,ciphertext FROM user_forge_tokens ORDER BY user_id", "SELECT CONCAT('workspace:',workspace_id),cipher_nonce,ciphertext FROM workspace_forge_tokens ORDER BY workspace_id", "SELECT CONCAT('workspace-app:',workspace_id),private_key_nonce,private_key_ciphertext FROM workspace_github_apps ORDER BY workspace_id"} {
 		rows, err := s.db.QueryContext(ctx, q)
 		if err != nil {
 			return nil, translateBackendConflict(err)

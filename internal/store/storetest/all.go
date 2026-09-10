@@ -169,6 +169,7 @@ func RunAll(t *testing.T, factory Factory) {
 		{"Membership", factory.Capabilities.Membership, runMembership},
 		{"InvitationSessions", factory.Capabilities.Identity && factory.Capabilities.Membership, runInvitationSessions},
 		{"Tokens", factory.Capabilities.Tokens, runTokens},
+		{"GitHubApps", factory.Capabilities.Tokens, runGitHubApps},
 	} {
 		run(suite.name, func(t *testing.T) {
 			if !suite.enabled {

@@ -21,6 +21,7 @@ type volatileMemory struct {
 	sessions             map[string]dashboardSession
 	forgeTokens          map[string]forgeTokenRecord
 	workspaceForgeTokens map[string]forgeTokenRecord
+	workspaceGitHubApps  map[string]workspaceAppRecord
 	orgName              string
 	forgeTokenKey        []byte
 	log                  eventlog.Store

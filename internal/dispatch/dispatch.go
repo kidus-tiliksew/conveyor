@@ -48,6 +48,8 @@ type Dispatcher struct {
 	RequestMergeWithCredential func(context.Context, string, int, string) error
 	ListPullRequestFiles       func(context.Context, string, int) ([]string, error)
 	ForgeTokens                store.ForgeTokenStore
+	WorkspaceGitHubApps        store.WorkspaceGitHubAppStore
+	GitHubApps                 *github.AppClient
 	WorkspaceForgeTokens       store.WorkspaceForgeTokenStore
 	ObserveDesignMerge         func(context.Context, monitor.Observation, string) error
 	// ReviewDiff resolves the pushed task branch's diff against its base for
@@ -64,41 +66,42 @@ func New(st store.Store, cfg *config.Config, agent inprocess.Agent) *Dispatcher 
 	d := &Dispatcher{
 		Store: st, Cfg: cfg, Agent: agent, memoryQueue: make(chan queuedTask, 64), durableQueue: st.IsDurable(),
 		WorkspaceForgeTokens:       workspaceForgeTokenStore(st),
+		WorkspaceGitHubApps:        workspaceGitHubAppStore(st),
 		RequestMergeWithCredential: github.MergePullRequestWithCredential,
 		ReviewDiff:                 reviewBranchDiff,
 		ReviewChangedPaths:         ReviewBranchChangedPaths,
 		Now:                        func() time.Time { return time.Now().UTC() },
 	}
 	d.PublishIssue = func(ctx context.Context, publication github.IssuePublication) (github.IssuePublicationResult, error) {
-		forgeCtx, err := d.workspaceForgeContext(ctx)
+		forgeCtx, err := d.workspaceForgeContext(ctx, publication.Repo)
 		if err != nil {
 			return github.IssuePublicationResult{}, err
 		}
 		return github.PublishIssue(forgeCtx, publication)
 	}
 	d.PublishReview = func(ctx context.Context, publication github.ReviewPublication) (github.ReviewPublicationResult, error) {
-		forgeCtx, err := d.workspaceForgeContext(ctx)
+		forgeCtx, err := d.workspaceForgeContext(ctx, publication.Repo)
 		if err != nil {
 			return github.ReviewPublicationResult{}, err
 		}
 		return github.PublishReview(forgeCtx, publication)
 	}
 	d.ViewPullRequest = func(ctx context.Context, repo, branch string) (github.PullRequest, error) {
-		forgeCtx, err := d.workspaceForgeContext(ctx)
+		forgeCtx, err := d.workspaceForgeContext(ctx, repo)
 		if err != nil {
 			return github.PullRequest{}, err
 		}
 		return github.PullRequestForBranch(forgeCtx, repo, branch)
 	}
 	d.RequestMerge = func(ctx context.Context, repo string, number int) error {
-		forgeCtx, err := d.workspaceForgeContext(ctx)
+		forgeCtx, err := d.workspaceForgeContext(ctx, repo)
 		if err != nil {
 			return err
 		}
 		return github.MergePullRequest(forgeCtx, repo, number)
 	}
 	d.ListPullRequestFiles = func(ctx context.Context, repo string, number int) ([]string, error) {
-		forgeCtx, err := d.workspaceForgeContext(ctx)
+		forgeCtx, err := d.workspaceForgeContext(ctx, repo)
 		if err != nil {
 			return nil, err
 		}
@@ -112,26 +115,25 @@ func workspaceForgeTokenStore(st store.Store) store.WorkspaceForgeTokenStore {
 	return tokens
 }
 
-func (d *Dispatcher) workspaceForgeContext(ctx context.Context) (context.Context, error) {
+func (d *Dispatcher) workspaceForgeContext(ctx context.Context, repositories ...string) (context.Context, error) {
 	workspaceID, ok := store.WorkspaceFromContext(ctx)
 	if !ok || strings.TrimSpace(workspaceID) == "" {
-		return nil, github.PermissionError(errors.New("workspace forge token cannot be resolved without an explicit workspace"))
+		return nil, github.AppPermission(workspaceID)
 	}
-	if d.WorkspaceForgeTokens == nil {
-		return nil, github.PermissionError(fmt.Errorf("workspace %s forge token is required; add it in workspace settings", workspaceID))
+	client := d.GitHubApps
+	if client == nil {
+		client = github.DefaultAppClient
 	}
-	credential, err := d.WorkspaceForgeTokens.GetWorkspaceForgeTokenForUse(ctx, workspaceID)
-	if err != nil || strings.TrimSpace(credential.Token) == "" {
-		if err == nil {
-			err = store.ErrForgeTokenRequired
+	token, err := client.WorkspaceToken(ctx, d.WorkspaceGitHubApps, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	for _, repo := range repositories {
+		if err := client.RequireRepository(ctx, workspaceID, token, repo); err != nil {
+			return nil, err
 		}
-		return nil, github.PermissionError(fmt.Errorf("workspace %s forge token is unavailable; add or replace it in workspace settings: %w", workspaceID, err))
 	}
-	identity := fmt.Sprintf("workspace %s forge token", workspaceID)
-	if credential.ForgeLogin != "" {
-		identity += " for " + credential.ForgeLogin
-	}
-	return github.WithCredential(ctx, credential.Token, identity), nil
+	return github.WithCredential(ctx, token, github.AppIdentity(workspaceID)), nil
 }
 
 // ReviewBranchChangedPaths reads filenames from the same pushed branch/base
@@ -2653,4 +2655,9 @@ func sourceIssueNumber(repository, source string) (int, error) {
 func ComposeReviewOutput(review pipeline.Review) string {
 	data, _ := json.Marshal(review)
 	return "```conveyor:review\n" + string(data) + "\n```"
+}
+
+func workspaceGitHubAppStore(st store.Store) store.WorkspaceGitHubAppStore {
+	apps, _ := st.(store.WorkspaceGitHubAppStore)
+	return apps
 }

@@ -78,7 +78,7 @@ without shell `export` prefixes; `.env` is loaded by both binaries from their
 working directory, and existing process environment values take precedence.
 
 - Keep `CONVEYOR_FORGE_TOKEN_ENCRYPTION_KEY` stable. Changing it invalidates
-  every stored GitHub token.
+  every stored GitHub token and app private key.
 - `CONVEYOR_API_TOKEN` is the server bootstrap token. It is separate from the
   personal tokens users mint later and from agent CLI logins on executor
   machines.
@@ -159,13 +159,23 @@ lost or expired link with:
 conveyor user issue-link you@example.com
 ```
 
-Store the workspace GitHub token in Workspace settings for issue and review
-publication. Grant repository access for the enabled issue and review
-operations, including Issues read/write and Pull requests read/write;
-[GitHub lifecycle](github-lifecycle.md) describes the publication flow.
-Each executor and merge approver also needs their own account GitHub token,
-covered in client setup. Invite other users through
-[Getting started: multiplayer](getting-started-multiplayer.md).
+Connect a GitHub App from Workspace settings. Conveyor sends a manifest to
+GitHub, where you create the app and install it on the account that owns your
+repositories. Select every registered workspace repository and check its
+coverage in Workspace settings. The app requests metadata read access and
+contents, pull requests, issues, and commit statuses write access.
+
+The server encrypts the app private key with
+`CONVEYOR_FORGE_TOKEN_ENCRYPTION_KEY`. It mints installation tokens on demand
+and keeps them only in process memory until five minutes before expiry. Set
+the public server URL before connecting so GitHub can return your browser to
+Conveyor. Use Disconnect in Workspace settings to remove the stored app; manage
+or revoke its GitHub installation on GitHub.
+
+Existing personal and workspace token settings remain available during the
+migration. The current claim and executing-user submission checks still use
+the personal-token contract until their separate retirement release. Invite
+other users through [Getting started: multiplayer](getting-started-multiplayer.md).
 
 Give each person the public server URL, workspace ID, registered repository
 name, repository URL, and invitation link. Then continue with
@@ -204,14 +214,13 @@ docker run --rm \
   -e CONVEYOR_DATABASE_URL \
   -e CONVEYOR_LLM_API_KEY \
   -e CONVEYOR_FORGE_TOKEN_ENCRYPTION_KEY \
-  -e GH_TOKEN \
   ghcr.io/kidus-tiliksew/conveyor:v1.2.3 \
   -config /etc/conveyor/conveyor.yaml -addr 0.0.0.0:8080
 ```
 
 `CONVEYOR_API_TOKEN`, `CONVEYOR_DATABASE_URL`, `CONVEYOR_LLM_API_KEY`, and
-`CONVEYOR_FORGE_TOKEN_ENCRYPTION_KEY` are required process environment. Supply
-`GH_TOKEN` when the GitHub monitor is enabled. Secret values should come from
+`CONVEYOR_FORGE_TOKEN_ENCRYPTION_KEY` are required process environment. The
+GitHub monitor uses the workspace app installation. Secret values should come from
 your container platform's secret facility; do not add them to the image or
 `conveyor.yaml`. The selected PostgreSQL or SingleStore database must be
 reachable from the container. Set `database.backend` to `postgres` or
