@@ -390,14 +390,14 @@ func TestPlanningHTTPBundlePreviewAndOperatorApproval(t *testing.T) {
 	var enqueued []string
 	server.OnCreate = func(_ context.Context, taskID string) { enqueued = append(enqueued, taskID) }
 	ctx := store.WithWorkspace(t.Context(), "demo")
-	requirement, first, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-http-bundle", Title: "HTTP bundle"}, core.RequirementVersion{Content: "HTTP bundle", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Approve a bundle."}}})
+	requirement, first, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-http-bundle", Title: "HTTP bundle"}, core.RequirementVersion{Content: "# HTTP bundle", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Approve a bundle."}}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err = st.ConfirmRequirementVersion(ctx, requirement.ID, first.Version); err != nil {
 		t.Fatal(err)
 	}
-	pending, err := st.ProposeRequirementVersion(ctx, core.RequirementVersion{RequirementID: requirement.ID, Content: "HTTP bundle v2", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Approve a bundle atomically."}}})
+	pending, err := st.ProposeRequirementVersion(ctx, core.RequirementVersion{RequirementID: requirement.ID, Content: "# HTTP bundle v2", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Approve a bundle atomically."}}})
 	if err != nil {
 		t.Fatal(err)
 	}

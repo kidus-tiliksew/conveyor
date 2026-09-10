@@ -94,7 +94,7 @@ func TestDriftRequirementAmendmentIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	requirement, _, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-" + core.NewTaskID(), Title: "Runtime intent"}, core.RequirementVersion{
-		Content: "Runtime behavior remains aligned.", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Outside changes require reconciliation."}},
+		Content: "# Runtime behavior remains aligned.", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Outside changes require reconciliation."}},
 		Origin: core.RequirementOriginChat, OriginSessionID: "session-runtime",
 	})
 	if err != nil {

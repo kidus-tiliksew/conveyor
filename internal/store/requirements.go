@@ -129,6 +129,7 @@ func (m *memory) CreateRequirement(ctx context.Context, requirement core.Require
 	first.Retired = false
 	first.RetiredBy = ""
 	first.RetiredAt = time.Time{}
+	first.DismissalNote = ""
 	first.RetiredByVersion = 0
 	if first.CreatedAt.IsZero() {
 		first.CreatedAt = now
@@ -313,6 +314,7 @@ func (m *memory) ProposeRequirementVersion(ctx context.Context, version core.Req
 	version.Retired = false
 	version.RetiredBy = ""
 	version.RetiredAt = time.Time{}
+	version.DismissalNote = ""
 	version.RetiredByVersion = 0
 	if version.CreatedAt.IsZero() {
 		version.CreatedAt = now
@@ -387,12 +389,13 @@ func (m *memory) ConfirmRequirementVersion(ctx context.Context, requirementID st
 		if retired.Version >= version || retired.Confirmed || retired.Retired {
 			continue
 		}
+		retired.DismissalNote = DocumentDismissalNote(ctx)
 		retired.Retired, retired.RetiredBy, retired.RetiredAt, retired.RetiredByVersion = true, actor.ID, now, version
 		versions[retiredIndex] = retired
-		m.appendEventLocked(ctx, core.Event{Kind: "requirement.version_retired", Payload: core.JSONPayload(map[string]any{
+		m.appendEventLocked(ctx, core.Event{Kind: "requirement.version_retired", Payload: core.JSONPayload(DocumentDismissalEventPayload(ctx, map[string]any{
 			"workspace_id": workspace, "requirement_id": requirementID, "version": retired.Version,
 			"retired_by": actor.ID, "confirmed_version": version,
-		})})
+		}))})
 	}
 	confirmed.Confirmed = true
 	confirmed.ConfirmedBy = actor.ID
@@ -447,14 +450,15 @@ func (m *memory) DismissRequirementVersion(ctx context.Context, requirementID st
 		return core.Requirement{}, core.RequirementVersion{}, &RequirementVersionDismissalConflict{RequirementID: requirementID, Requested: version, Current: requirement.CurrentVersion, Reason: VersionDismissalSuperseded, SupersededBy: requirement.CurrentVersion}
 	}
 	actor, now := ActorFromContext(ctx), time.Now().UTC()
+	dismissed.DismissalNote = DocumentDismissalNote(ctx)
 	dismissed.Retired, dismissed.RetiredBy, dismissed.RetiredAt, dismissed.RetiredByVersion = true, actor.ID, now, 0
 	versions[version-1] = dismissed
 	m.requirementVersions[key] = versions
 	requirement.UpdatedAt = now
 	m.requirements[key] = requirement
-	m.appendEventLocked(ctx, core.Event{Kind: "requirement.version_dismissed", Payload: core.JSONPayload(map[string]any{
+	m.appendEventLocked(ctx, core.Event{Kind: "requirement.version_dismissed", Payload: core.JSONPayload(DocumentDismissalEventPayload(ctx, map[string]any{
 		"workspace_id": workspace, "requirement_id": requirementID, "version": version, "dismissed_by": actor.ID,
-	})})
+	}))})
 	return requirement, dismissed, nil
 }
 

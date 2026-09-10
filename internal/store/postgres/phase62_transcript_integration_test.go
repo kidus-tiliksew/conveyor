@@ -56,7 +56,7 @@ func TestPhase62TranscriptArchivesOntoProducedRequirementIntegration(t *testing.
 	requirement, first, err := st.CreateRequirement(ctx, core.Requirement{
 		ID: "req-" + core.NewTaskID(), Title: "Nightly Reconciliation",
 	}, core.RequirementVersion{
-		Content: "Payments must reconcile nightly.",
+		Content: "# Payments must reconcile nightly.",
 		Statements: []core.RequirementStatement{
 			{ID: "REQ-1", Statement: "Every payment reconciles within 24 hours."},
 		},
@@ -139,7 +139,7 @@ func TestPhase62TranscriptRejectsTwoOwnersIntegration(t *testing.T) {
 	requirement, _, err := st.CreateRequirement(ctx, core.Requirement{
 		ID: "req-" + core.NewTaskID(), Title: "Exclusive Owner",
 	}, core.RequirementVersion{
-		Content:    "Only one owner.",
+		Content:    "# Only one owner.",
 		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "One owner."}},
 		Origin:     core.RequirementOriginFeatureMigration,
 	})

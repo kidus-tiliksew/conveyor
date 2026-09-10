@@ -118,8 +118,12 @@ func (g *localGitCredential) scrub(value string) string {
 func (g *localGitCredential) redactor(additional ...string) *redact.Redactor {
 	// Harness event streams JSON-escape string values before the launcher sees
 	// them. Match that representation before a renderer decodes it for the TUI.
-	encoded, _ := json.Marshal(g.token)
-	return redact.New(append(additional, g.token, string(encoded[1:len(encoded)-1])))
+	values := append(append([]string(nil), additional...), g.token)
+	for _, value := range append([]string(nil), values...) {
+		encoded, _ := json.Marshal(value)
+		values = append(values, string(encoded[1:len(encoded)-1]))
+	}
+	return redact.New(values)
 }
 
 func (g *localGitCredential) scrubJSON(body []byte) ([]byte, error) {

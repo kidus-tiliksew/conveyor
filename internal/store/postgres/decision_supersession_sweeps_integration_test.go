@@ -26,7 +26,7 @@ func TestDecisionSupersessionSweepLifecycleIntegration(t *testing.T) {
 	createRequirement := func(id, content string) (core.Requirement, core.RequirementVersion) {
 		t.Helper()
 		requirement, version, createErr := st.CreateRequirement(ctx, core.Requirement{ID: id, Title: id}, core.RequirementVersion{
-			Content: content, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Keep decision citations current."}}, Origin: core.RequirementOriginOperator,
+			Content: "# " + content, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Keep decision citations current."}}, Origin: core.RequirementOriginOperator,
 		})
 		if createErr != nil {
 			t.Fatal(createErr)
@@ -56,7 +56,7 @@ func TestDecisionSupersessionSweepLifecycleIntegration(t *testing.T) {
 		t.Fatalf("initial sweep=%+v", second.Sweep)
 	}
 
-	proposed, err := st.ProposeRequirementVersion(ctx, core.RequirementVersion{RequirementID: stale.ID, Content: "The replacement governs this requirement.", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Keep decision citations current."}}, Origin: core.RequirementOriginOperator})
+	proposed, err := st.ProposeRequirementVersion(ctx, core.RequirementVersion{RequirementID: stale.ID, Content: "# The replacement governs this requirement.", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Keep decision citations current."}}, Origin: core.RequirementOriginOperator})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +72,7 @@ func TestDecisionSupersessionSweepLifecycleIntegration(t *testing.T) {
 		t.Fatalf("auto-clear events=%d err=%v", clearEvents, err)
 	}
 
-	reopened, err := st.ProposeRequirementVersion(ctx, core.RequirementVersion{RequirementID: stale.ID, Content: "DEC-1 is cited again.", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Keep decision citations current."}}, Origin: core.RequirementOriginOperator})
+	reopened, err := st.ProposeRequirementVersion(ctx, core.RequirementVersion{RequirementID: stale.ID, Content: "# DEC-1 is cited again.", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Keep decision citations current."}}, Origin: core.RequirementOriginOperator})
 	if err != nil {
 		t.Fatal(err)
 	}

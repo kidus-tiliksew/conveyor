@@ -150,14 +150,14 @@ func TestPendingProposalsProjectionIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	requirement, requirementVersion, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-pending", Title: "Pending requirement"}, core.RequirementVersion{
-		Content: "Pending", Origin: core.RequirementOriginChat, OriginSessionID: session.ID,
+		Content: "# Pending", Origin: core.RequirementOriginChat, OriginSessionID: session.ID,
 		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Surface pending authority."}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	newerRequirementVersion, err := st.ProposeRequirementVersion(ctx, core.RequirementVersion{
-		RequirementID: requirement.ID, Content: "Pending newer", Origin: core.RequirementOriginChat, OriginSessionID: session.ID,
+		RequirementID: requirement.ID, Content: "# Pending newer", Origin: core.RequirementOriginChat, OriginSessionID: session.ID,
 		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Surface pending authority promptly."}},
 	})
 	if err != nil {
@@ -222,7 +222,7 @@ func TestTerminalTaskContextProposalsStayOutOfPendingProjectionIntegration(t *te
 		t.Fatal(err)
 	}
 	requirement, version, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-" + core.NewTaskID(), Title: "Pending context"}, core.RequirementVersion{
-		Content: "Pending context", Origin: core.RequirementOriginOperator,
+		Content: "# Pending context", Origin: core.RequirementOriginOperator,
 		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Only decidable context needs attention."}},
 	})
 	if err != nil {
@@ -310,13 +310,18 @@ func TestTaskContextTerminalCleanupMigrationIntegration(t *testing.T) {
 	for index := range targets {
 		var version core.RequirementVersion
 		targets[index], version, err = st.CreateRequirement(ctx, core.Requirement{ID: "req-migration-" + core.NewTaskID(), Title: fmt.Sprintf("Migration context %d", index+1)}, core.RequirementVersion{
-			Content: "Migration context", Origin: core.RequirementOriginOperator,
+			Content: "# Migration context", Origin: core.RequirementOriginOperator,
 			Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Preserve decided context."}},
 		})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, _, err = st.ConfirmRequirementVersion(ctx, targets[index].ID, version.Version); err != nil {
+		// Seed confirmed v107 history directly. Current confirmation also
+		// writes dismissal notes, whose column does not exist until v124.
+		if _, err = pool.Exec(ctx, `UPDATE requirement_versions SET confirmed=true,confirmed_by='operator',confirmed_at=now() WHERE workspace_id=$1 AND requirement_id=$2 AND version=$3`, workspace, targets[index].ID, version.Version); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = pool.Exec(ctx, `UPDATE requirements SET current_version=$3 WHERE workspace_id=$1 AND id=$2`, workspace, targets[index].ID, version.Version); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -545,7 +550,7 @@ func TestPendingProposalsAttentionTruthTableAndWorkspaceIsolationIntegration(t *
 		addOrder(task, candidate.stage, candidate.state, 1, 1, false)
 	}
 	contextRequirement, contextVersion, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-context-" + core.NewTaskID(), Title: "Context attention"}, core.RequirementVersion{
-		Content: "Context attention", Origin: core.RequirementOriginOperator,
+		Content: "# Context attention", Origin: core.RequirementOriginOperator,
 		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Surface open context on its origin task."}},
 	})
 	if err != nil {
@@ -594,7 +599,7 @@ func TestPendingProposalsAttentionTruthTableAndWorkspaceIsolationIntegration(t *
 		t.Fatal(err)
 	}
 	siblingRequirement, siblingVersion, err := st.CreateRequirement(siblingCtx, core.Requirement{ID: "req-sibling-" + core.NewTaskID(), Title: "Sibling context"}, core.RequirementVersion{
-		Content: "Sibling context", Origin: core.RequirementOriginOperator,
+		Content: "# Sibling context", Origin: core.RequirementOriginOperator,
 		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Keep attention workspace scoped."}},
 	})
 	if err != nil {

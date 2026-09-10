@@ -2371,3 +2371,32 @@ func (q *Queries) DeactivateIdentityUser(ctx context.Context, id string) (User, 
 	err := row.Scan(&item.ID, &item.Email, &item.DisplayName, &item.Status, &item.CreatedAt)
 	return item, err
 }
+
+// ListDocumentOperatorNotesForTask reads both document tiers without changing
+// pending-proposal queries or pinned authority (component-work-orders).
+func (q *Queries) ListDocumentOperatorNotesForTask(ctx context.Context, workspaceID, taskID string) ([]DocumentOperatorNote, error) {
+	rows, err := q.db.Query(ctx, `SELECT requirement_id AS document_id, version, 'requirement' AS tier,
+ dismissal_note, retired_at AS dismissed_at
+ FROM requirement_versions
+ WHERE workspace_id=$1 AND origin_task_id=$2 AND origin='implementation'
+ AND retired AND dismissal_note IS NOT NULL AND dismissal_note<>''
+ UNION ALL
+ SELECT document_id, version, 'system_design' AS tier, dismissal_note, dismissed_at
+ FROM system_design_versions
+ WHERE workspace_id=$1 AND origin_task_id=$2 AND origin='implementation_deliberation'
+ AND dismissed AND dismissal_note IS NOT NULL AND dismissal_note<>''
+ ORDER BY tier, document_id, version`, workspaceID, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var notes []DocumentOperatorNote
+	for rows.Next() {
+		var note DocumentOperatorNote
+		if err := rows.Scan(&note.DocumentID, &note.Version, &note.Tier, &note.DismissalNote, &note.DismissedAt); err != nil {
+			return nil, err
+		}
+		notes = append(notes, note)
+	}
+	return notes, rows.Err()
+}

@@ -369,6 +369,12 @@ func requirementMutationStatus(err error) int {
 }
 
 func (s *Server) confirmRequirementVersion(w http.ResponseWriter, r *http.Request) {
+	var decodeErr error
+	r, decodeErr = decodeDocumentDismissalNote(r)
+	if decodeErr != nil {
+		http.Error(w, decodeErr.Error(), http.StatusBadRequest)
+		return
+	}
 	version, err := strconv.Atoi(chi.URLParam(r, "version"))
 	if err != nil || version < 1 {
 		http.Error(w, "requirement version must be a positive integer", http.StatusBadRequest)
@@ -466,6 +472,12 @@ func (s *Server) setRequirementArchiveState(w http.ResponseWriter, r *http.Reque
 }
 
 func (s *Server) dismissRequirementVersion(w http.ResponseWriter, r *http.Request) {
+	var decodeErr error
+	r, decodeErr = decodeDocumentDismissalNote(r)
+	if decodeErr != nil {
+		http.Error(w, decodeErr.Error(), http.StatusBadRequest)
+		return
+	}
 	version, err := strconv.Atoi(chi.URLParam(r, "version"))
 	if err != nil || version < 1 {
 		http.Error(w, "requirement version must be a positive integer", http.StatusBadRequest)

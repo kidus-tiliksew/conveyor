@@ -15,7 +15,7 @@ func runDecisions(t *testing.T, x Fixture) {
 	requireOK(t, err)
 	_, err = st.ConfirmDecision(ctx, first.ID)
 	requireOK(t, err)
-	req, version, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-sweep", Title: "Sweep"}, core.RequirementVersion{Content: first.ID + " governs this requirement.", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Keep citations current."}}, Origin: core.RequirementOriginOperator})
+	req, version, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-sweep", Title: "Sweep"}, core.RequirementVersion{Content: "# " + first.ID + " governs this requirement.", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Keep citations current."}}, Origin: core.RequirementOriginOperator})
 	requireOK(t, err)
 	_, _, err = st.ConfirmRequirementVersion(ctx, req.ID, version.Version)
 	requireOK(t, err)
@@ -31,7 +31,7 @@ func runDecisions(t *testing.T, x Fixture) {
 	if prior.Status != core.DecisionSuperseded || prior.SupersededBy != second.ID {
 		t.Fatal("prior decision was not superseded")
 	}
-	version.Content = "The current choice governs this requirement."
+	version.Content = "# The current choice governs this requirement."
 	version.RequirementID = req.ID
 	version, err = st.ProposeRequirementVersion(ctx, version)
 	requireOK(t, err)
@@ -42,7 +42,7 @@ func runDecisions(t *testing.T, x Fixture) {
 	if !second.Sweep.Clean || second.Sweep.Entries[0].Status != core.DecisionSweepAutoCleared {
 		t.Fatal("removed citation did not clear sweep")
 	}
-	version.Content = first.ID + " is cited again."
+	version.Content = "# " + first.ID + " is cited again."
 	version, err = st.ProposeRequirementVersion(ctx, version)
 	requireOK(t, err)
 	_, _, err = st.ConfirmRequirementVersion(ctx, req.ID, version.Version)
@@ -72,7 +72,7 @@ func runDecisions(t *testing.T, x Fixture) {
 func runArchiveRestore(t *testing.T, x Fixture) {
 	st, ctx := x.Backend, x.Context
 	for _, id := range []string{"old", "new-a", "new-b"} {
-		_, _, err := st.CreateRequirement(ctx, core.Requirement{ID: id, Title: id}, core.RequirementVersion{Content: "Requirement.", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Retain version history."}}, Origin: core.RequirementOriginOperator})
+		_, _, err := st.CreateRequirement(ctx, core.Requirement{ID: id, Title: id}, core.RequirementVersion{Content: "# Requirement.", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Retain version history."}}, Origin: core.RequirementOriginOperator})
 		requireOK(t, err)
 		_, _, err = st.CreateSystemDesign(ctx, core.SystemDesign{ID: id, Title: id, Category: "Component design"}, core.SystemDesignVersion{Content: designContent(id), Origin: core.SystemDesignOriginOperator})
 		requireOK(t, err)

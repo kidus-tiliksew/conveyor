@@ -23,7 +23,7 @@ func TestSingleStoreDocumentsIntegration(t *testing.T) {
 	}
 	create := func(id, text string) core.Requirement {
 		t.Helper()
-		r, v, err := st.CreateRequirement(ctx, core.Requirement{ID: id, Title: id}, core.RequirementVersion{Content: text, Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: text}}})
+		r, v, err := st.CreateRequirement(ctx, core.Requirement{ID: id, Title: id}, core.RequirementVersion{Content: "# " + id + "\n\n" + text, Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: text}}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -161,7 +161,7 @@ func TestSingleStoreDocumentsIntegration(t *testing.T) {
 		if e != nil || first.Total < 4 || len(first.Events) != 2 {
 			t.Fatalf("page: %+v %v", first, e)
 		}
-		if _, e = st.ProposeRequirementVersion(ctx, core.RequirementVersion{RequirementID: r.ID, Content: "Keep a later revision.", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Keep a later revision."}}}); e != nil {
+		if _, e = st.ProposeRequirementVersion(ctx, core.RequirementVersion{RequirementID: r.ID, Content: "# Keep a later revision.", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Keep a later revision."}}}); e != nil {
 			t.Fatal(e)
 		}
 		pinned, e := st.ListDocumentEventPage(ctx, core.LineageRequirement, r.ID, store.DocumentEventQuery{Limit: 2, Offset: 2, SnapshotID: first.SnapshotID})

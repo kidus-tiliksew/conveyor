@@ -42,7 +42,7 @@ func TestTaskIntakeRetryUsesCreateTimeContextAfterLaterEdits(t *testing.T) {
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	for _, id := range []string{"req-original", "req-later"} {
 		requirement, version, err := st.CreateRequirement(ctx, core.Requirement{ID: id, Title: id}, core.RequirementVersion{
-			Content: id, Origin: core.RequirementOriginOperator,
+			Content: "# " + id, Origin: core.RequirementOriginOperator,
 			Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: id}},
 		})
 		if err != nil {

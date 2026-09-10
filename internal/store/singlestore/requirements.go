@@ -55,6 +55,7 @@ func (s *Store) CreateRequirement(ctx context.Context, requirement core.Requirem
 	first.Retired = false
 	first.RetiredBy = ""
 	first.RetiredAt = time.Time{}
+	first.DismissalNote = ""
 	first.RetiredByVersion = 0
 	if first.CreatedAt.IsZero() {
 		first.CreatedAt = now
@@ -220,6 +221,7 @@ func (s *Store) ProposeRequirementVersion(ctx context.Context, version core.Requ
 	version.Retired = false
 	version.RetiredBy = ""
 	version.RetiredAt = time.Time{}
+	version.DismissalNote = ""
 	version.RetiredByVersion = 0
 	if version.CreatedAt.IsZero() {
 		version.CreatedAt = time.Now().UTC()
@@ -420,14 +422,14 @@ func (s *Store) ConfirmRequirementVersion(ctx context.Context, requirementID str
 			return err
 		}
 		retiredRows.Close()
-		if _, err = documentExec(ctx, tx, `UPDATE requirement_versions SET retired=true,retired_by=?,retired_at=?,retired_by_version=? WHERE workspace_id=? AND requirement_id=? AND version<? AND NOT confirmed AND NOT retired`, actor.ID, now, version, documentWorkspace(ctx), requirementID, version); err != nil {
+		if _, err = documentExec(ctx, tx, `UPDATE requirement_versions SET retired=true,retired_by=?,retired_at=?,retired_by_version=?,dismissal_note=NULLIF(?,'') WHERE workspace_id=? AND requirement_id=? AND version<? AND NOT confirmed AND NOT retired`, actor.ID, now, version, store.DocumentDismissalNote(ctx), documentWorkspace(ctx), requirementID, version); err != nil {
 			return err
 		}
 		for _, retiredVersion := range retiredVersions {
-			if err = insertRequirementEvent(ctx, tx, "requirement.version_retired", map[string]any{
+			if err = insertRequirementEvent(ctx, tx, "requirement.version_retired", store.DocumentDismissalEventPayload(ctx, map[string]any{
 				"workspace_id": documentWorkspace(ctx), "requirement_id": requirementID, "version": retiredVersion,
 				"retired_by": actor.ID, "confirmed_version": version,
-			}); err != nil {
+			})); err != nil {
 				return err
 			}
 		}
@@ -502,21 +504,22 @@ func (s *Store) DismissRequirementVersion(ctx context.Context, requirementID str
 		}
 		actor, now := store.ActorFromContext(ctx), time.Now().UTC()
 		if _, err = documentExec(ctx, tx, `UPDATE requirement_versions
-			SET retired=true, retired_by=?, retired_at=?, retired_by_version=NULL
-			WHERE workspace_id=? AND requirement_id=? AND version=?`, actor.ID, now, documentWorkspace(ctx), requirementID, version); err != nil {
+			SET retired=true, retired_by=?, retired_at=?, retired_by_version=NULL,dismissal_note=NULLIF(?,'')
+			WHERE workspace_id=? AND requirement_id=? AND version=?`, actor.ID, now, store.DocumentDismissalNote(ctx), documentWorkspace(ctx), requirementID, version); err != nil {
 			return err
 		}
 		if _, err = documentExec(ctx, tx, `UPDATE requirements SET updated_at=?
 			WHERE workspace_id=? AND id=?`, now, documentWorkspace(ctx), requirementID); err != nil {
 			return err
 		}
+		dismissed.DismissalNote = store.DocumentDismissalNote(ctx)
 		dismissed.Retired, dismissed.RetiredBy, dismissed.RetiredAt, dismissed.RetiredByVersion = true, actor.ID, now, 0
 		if requirement, err = getRequirementTx(ctx, tx, requirementID); err != nil {
 			return err
 		}
-		return insertRequirementEvent(ctx, tx, "requirement.version_dismissed", map[string]any{
+		return insertRequirementEvent(ctx, tx, "requirement.version_dismissed", store.DocumentDismissalEventPayload(ctx, map[string]any{
 			"workspace_id": documentWorkspace(ctx), "requirement_id": requirementID, "version": version, "dismissed_by": actor.ID,
-		})
+		}))
 	})
 	return requirement, dismissed, err
 }
@@ -1011,7 +1014,7 @@ func (s *Store) ListPlanningSessionEvents(ctx context.Context, sessionID string)
 
 const requirementSelect = `SELECT workspace_id,id,slug,title,current_version,statement_high_water_mark,archived_at,archived_by,superseded_by,created_at,updated_at FROM requirements`
 
-const requirementVersionSelect = `SELECT workspace_id,requirement_id,version,content,statements_json,origin,origin_session_id,origin_task_id,origin_drift_id,confirmed,confirmed_by,confirmed_at,retired,retired_by,retired_at,retired_by_version,created_at,derived_from FROM requirement_versions`
+const requirementVersionSelect = `SELECT workspace_id,requirement_id,version,content,statements_json,origin,origin_session_id,origin_task_id,origin_drift_id,confirmed,confirmed_by,confirmed_at,retired,retired_by,retired_at,retired_by_version,created_at,derived_from,COALESCE(dismissal_note,'') FROM requirement_versions`
 
 const planningSessionSelect = `SELECT workspace_id,id,title,status,goal,COALESCE(requirement_context_id,''),
 	COALESCE(system_design_context_id,''),COALESCE(produced_requirement_id,''),COALESCE(produced_task_id,''),COALESCE(produced_system_design_id,''),COALESCE(produced_bundle_id,''),
@@ -1080,7 +1083,7 @@ func scanRequirementVersionRow(row documentScanner) (core.RequirementVersion, er
 	if err := row.Scan(&stored.Workspace, &stored.RequirementID, &stored.Version, &stored.Content,
 		&statements, &origin, &stored.OriginSessionID, &stored.OriginTaskID, &stored.OriginDriftID,
 		&stored.Confirmed, &confirmedBy, &confirmedAt, &stored.Retired, &retiredBy, &retiredAt,
-		&retiredByVersion, &stored.CreatedAt, &derivedFrom); err != nil {
+		&retiredByVersion, &stored.CreatedAt, &derivedFrom, &stored.DismissalNote); err != nil {
 		return core.RequirementVersion{}, err
 	}
 	parsed, err := unmarshalRequirementStatements(statements)

@@ -346,58 +346,38 @@ export async function revokePersonalAccessToken(id: string) {
   if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
 }
 
-export async function fetchForgeToken() {
-  const response = await fetch('/v1/forge-token', { headers: mutationHeaders() })
-  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
-  return response.json() as Promise<import('./types').ForgeTokenStatus>
+// Preserve server remedies, but do not display a machine-only JSON error envelope.
+function githubAppErrorMessage(body: string, fallback: string) {
+  try {
+    const parsed = JSON.parse(body) as { detail?: string; message?: string }
+    return parsed.detail || parsed.message || fallback
+  } catch {
+    return body.trim() || fallback
+  }
 }
 
-// The credential is accepted only as a write body. The returned type cannot
-// represent it, preserving the write-only browser contract from AC-1.2.
-export async function storeForgeToken(forgeToken: string) {
-  const response = await fetch('/v1/forge-token', {
-    method: 'PUT',
+export async function fetchWorkspaceGitHubApp(workspace: string) {
+  const response = await fetch(`/v1/workspaces/${encodeURIComponent(workspace)}/github-app`)
+  if (!response.ok)
+    throw new Error(githubAppErrorMessage(await response.text(), 'Could not load the GitHub connection.'))
+  return response.json() as Promise<import('./types').WorkspaceGitHubAppStatus>
+}
+
+export async function createWorkspaceGitHubAppManifest(workspace: string) {
+  const response = await fetch(`/v1/workspaces/${encodeURIComponent(workspace)}/github-app/manifest`, {
+    method: 'POST',
     headers: mutationHeaders(),
-    body: JSON.stringify({ token: forgeToken }),
   })
-  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
-  return response.json() as Promise<import('./types').ForgeTokenStatus>
+  if (!response.ok) throw new Error(githubAppErrorMessage(await response.text(), 'Could not connect GitHub.'))
+  return response.json() as Promise<import('./types').WorkspaceGitHubAppManifest>
 }
 
-export async function deleteForgeToken() {
-  const response = await fetch('/v1/forge-token', {
+export async function disconnectWorkspaceGitHubApp(workspace: string) {
+  const response = await fetch(`/v1/workspaces/${encodeURIComponent(workspace)}/github-app`, {
     method: 'DELETE',
     headers: mutationHeaders(),
   })
-  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
-}
-
-export async function fetchWorkspaceForgeToken(workspace: string) {
-  const response = await fetch(`/v1/workspaces/${encodeURIComponent(workspace)}/forge-token`, {
-    headers: mutationHeaders(),
-  })
-  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
-  return response.json() as Promise<import('./types').WorkspaceForgeTokenStatus>
-}
-
-// The workspace credential is write-only in browser code. The response carries
-// the same metadata-only shape used by the personal token surface.
-export async function storeWorkspaceForgeToken(workspace: string, forgeToken: string) {
-  const response = await fetch(`/v1/workspaces/${encodeURIComponent(workspace)}/forge-token`, {
-    method: 'PUT',
-    headers: mutationHeaders(),
-    body: JSON.stringify({ token: forgeToken }),
-  })
-  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
-  return response.json() as Promise<import('./types').WorkspaceForgeTokenStatus>
-}
-
-export async function deleteWorkspaceForgeToken(workspace: string) {
-  const response = await fetch(`/v1/workspaces/${encodeURIComponent(workspace)}/forge-token`, {
-    method: 'DELETE',
-    headers: mutationHeaders(),
-  })
-  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
+  if (!response.ok) throw new Error(githubAppErrorMessage(await response.text(), 'Could not disconnect GitHub.'))
 }
 
 export function fetchBlueprints() {

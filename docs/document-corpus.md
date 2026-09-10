@@ -33,13 +33,16 @@ acceptance criteria (DEC-34).
 
 A requirement document has two parts: an explanation written for people, and
 one `conveyor:requirements` code block that Conveyor parses. The explanation
-can say whatever helps a reader; only the code block is validated:
+can say whatever helps a reader.
+At proposal time, the first non-blank line must be a non-empty `# <title>` heading, and lines beginning with `REQ-n:` or `AC-n.m:` or a YAML `- id: REQ-`/`- id: AC-` item must stay inside the requirements fence; inline identifier citations remain legal.
 
 A requirement is a black-box contract and each requirement document covers
 one capability. It does not prescribe storage, services, queries, queues, or
 algorithms unless that mechanism is itself a public contract (DEC-34).
 
 ````markdown
+# Sign-in recovery
+
 Operators need to recover a lost sign-in without database surgery.
 
 ```conveyor:requirements
@@ -226,3 +229,20 @@ against the pinned authority. The result is that `git blame` on a governed file 
 a task, the task leads to the requirement version it served, and the
 requirement leads back to every delivery that served it. That chain is the
 [knowledge graph](concepts.md#the-knowledge-graph).
+
+### Operator dismissal notes
+
+The requirement and System Design confirm and dismiss REST routes accept an
+optional `note` string under the existing `confirm_documents` capability.
+The server trims surrounding whitespace and accepts at most 2000 Unicode
+characters; a longer note returns HTTP 400 before any write. Empty or absent
+notes preserve the existing response and event shapes. MCP mutations do not
+accept notes.
+
+Direct dismissal records the note on that version. Confirmation records it on
+every earlier pending version dismissed by the transaction. History exposes
+`dismissal_note` beside the existing actor and timestamp, without changing
+content or statement identifiers. The existing dismissal events add `note`
+only when present; requirement supersession keeps `requirement.version_retired`.
+These notes are observational task evidence under `component-work-orders`,
+not document authority (req-260810-23b69f AC-5.1, AC-5.2, AC-5.4).

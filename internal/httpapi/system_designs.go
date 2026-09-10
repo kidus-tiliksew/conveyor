@@ -251,6 +251,12 @@ func (s *Server) proposeSystemDesignVersion(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusCreated, version)
 }
 func (s *Server) confirmSystemDesignVersion(w http.ResponseWriter, r *http.Request) {
+	var decodeErr error
+	r, decodeErr = decodeDocumentDismissalNote(r)
+	if decodeErr != nil {
+		http.Error(w, decodeErr.Error(), http.StatusBadRequest)
+		return
+	}
 	version, err := strconv.Atoi(chi.URLParam(r, "version"))
 	if err != nil || version < 1 {
 		http.Error(w, "system design version must be a positive integer", http.StatusBadRequest)
@@ -325,6 +331,12 @@ func (s *Server) setSystemDesignArchiveState(w http.ResponseWriter, r *http.Requ
 }
 
 func (s *Server) dismissSystemDesignVersion(w http.ResponseWriter, r *http.Request) {
+	var decodeErr error
+	r, decodeErr = decodeDocumentDismissalNote(r)
+	if decodeErr != nil {
+		http.Error(w, decodeErr.Error(), http.StatusBadRequest)
+		return
+	}
 	version, err := strconv.Atoi(chi.URLParam(r, "version"))
 	if err != nil || version < 1 {
 		http.Error(w, "system design version must be a positive integer", http.StatusBadRequest)

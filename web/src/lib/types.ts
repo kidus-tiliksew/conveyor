@@ -454,17 +454,28 @@ export interface IssuedPersonalAccessToken extends PersonalAccessToken {
   value: string
 }
 
-// AC-1.2: forge-token reads expose status metadata only; the credential value
-// has no field in the browser's read model.
-export interface ForgeTokenStatus {
-  configured: boolean
-  forge_login?: string
-  stored_at?: string
+// req-delivery-and-forge AC-1.5: the read model contains no app credentials.
+export interface WorkspaceGitHubAppStatus {
+  connected: boolean
+  app_slug: string
+  installation_account: string
+  repositories: Array<{ name: string; covered: boolean }>
+  installation_url?: string
 }
 
-// Workspace token reads use the same secret-free metadata contract. A distinct
-// name prevents workspace settings from growing a credential-bearing shape.
-export type WorkspaceForgeTokenStatus = ForgeTokenStatus
+export interface WorkspaceGitHubAppManifest {
+  manifest: {
+    name: string
+    url: string
+    public: boolean
+    redirect_url: string
+    setup_url: string
+    setup_on_update: boolean
+    hook_attributes: { active: boolean }
+    default_permissions: Record<string, string>
+  }
+  state: string
+}
 
 export type WorkspaceConfigRepo = WorkspaceRepo
 

@@ -88,7 +88,7 @@ func TestTaskContextFeedsRequirementAndGovernanceAuthority(t *testing.T) {
 	ctx := WithWorkspace(t.Context(), "demo")
 	st := NewMemory().(*memory)
 	requirement, proposed, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-task", Title: "Task delivery"}, core.RequirementVersion{
-		Content: "Task delivery", Origin: core.RequirementOriginOperator,
+		Content: "# Task delivery", Origin: core.RequirementOriginOperator,
 		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Deliver task context."}},
 	})
 	if err != nil {

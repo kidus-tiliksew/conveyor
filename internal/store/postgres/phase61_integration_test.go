@@ -767,14 +767,14 @@ func TestConcurrentReciprocalDependencyEdgesCannotBothCommitIntegration(t *testi
 func TestPlanningBundleApprovalTransactionIntegration(t *testing.T) {
 	st, ctx, workspace := newPhase61IntegrationStore(t)
 	defer st.Close()
-	requirement, first, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-bundle-" + core.NewTaskID(), Title: "Bundle"}, core.RequirementVersion{Content: "Bundle", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Create bundled tasks."}}})
+	requirement, first, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-bundle-" + core.NewTaskID(), Title: "Bundle"}, core.RequirementVersion{Content: "# Bundle", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Create bundled tasks."}}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err = st.ConfirmRequirementVersion(ctx, requirement.ID, first.Version); err != nil {
 		t.Fatal(err)
 	}
-	pending, err := st.ProposeRequirementVersion(ctx, core.RequirementVersion{RequirementID: requirement.ID, Content: "Bundle v2", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Create dependency-ordered bundled tasks."}}})
+	pending, err := st.ProposeRequirementVersion(ctx, core.RequirementVersion{RequirementID: requirement.ID, Content: "# Bundle v2", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Create dependency-ordered bundled tasks."}}})
 	if err != nil {
 		t.Fatal(err)
 	}

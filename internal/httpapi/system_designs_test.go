@@ -296,7 +296,7 @@ func TestDecisionSupersessionSweepHTTPProjectionAndDismissal(t *testing.T) {
 	createRequirement := func(id, content string) {
 		t.Helper()
 		requirement, version, err := st.CreateRequirement(ctx, core.Requirement{ID: id, Title: id}, core.RequirementVersion{
-			Content: content, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Keep decision citations current."}}, Origin: core.RequirementOriginOperator,
+			Content: "# " + content, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Keep decision citations current."}}, Origin: core.RequirementOriginOperator,
 		})
 		if err != nil {
 			t.Fatal(err)

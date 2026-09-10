@@ -95,7 +95,7 @@ func TestServiceElidesOldExplorationOnlyFromLivePromptAndStillFinalizes(t *testi
 		t.Fatal(err)
 	}
 	args := requirementArgs{
-		Title: "Context resilience", Prose: "Planning context remains usable.",
+		Title: "Context resilience", Prose: "# Planning context remains usable.",
 		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Old exploration may be elided from the live prompt only."}},
 	}
 	agent := &scriptedAgent{outputs: []string{decisionJSON(t, "", []toolCall{{
@@ -605,7 +605,7 @@ func TestServiceKeepsInfrastructureFailuresTerminal(t *testing.T) {
 		ctx, underlying, session := goalPlanningFixture(t, "session-finalize-store-failure", core.PlanningGoalRequirement)
 		storeErr := errors.New("requirement database unavailable")
 		st := &failingFinalizeRequirementStore{Store: underlying, err: storeErr}
-		args := requirementArgs{Title: "Durable finalization", Prose: "Persist atomically.", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Store failures remain terminal."}}}
+		args := requirementArgs{Title: "Durable finalization", Prose: "# Persist atomically.", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Store failures remain terminal."}}}
 		agent := &scriptedAgent{outputs: []string{decisionJSON(t, "Finalizing.", []toolCall{{ID: "finalize-store-failure", Name: "finalize_requirement", ArgumentsJSON: jsonString(t, args)}})}}
 		service := &Service{Store: st, Agent: agent, Model: "planner", Prompt: testPlanningPrompt}
 		var chunks []map[string]any
@@ -1057,7 +1057,7 @@ func runPlanningGit(t *testing.T, directory string, args ...string) {
 func TestServiceFinalizesUnconfirmedRequirementAndArchivesTranscript(t *testing.T) {
 	ctx, st, session := planningFixture(t, "session-260730-a1b2c3")
 	args := requirementArgs{
-		Title: "Retry policy", Prose: "Retries must remain bounded and explainable.",
+		Title: "Retry policy", Prose: "# Retries must remain bounded and explainable.",
 		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Retry attempts stop at the configured bound."}},
 	}
 	agent := &scriptedAgent{outputs: []string{decisionJSON(t, "", []toolCall{{
@@ -1123,7 +1123,7 @@ func TestPromotionSessionsCreatePendingVersionsAndDeferLineageUntilConfirmation(
 			derivation := &core.RequirementDerivation{DocumentID: document.ID, Version: source.Version, SectionAnchor: "#billing-rule", TargetID: test.targetID}
 			requirementID := ""
 			if test.existing {
-				requirement, baseline, createErr := st.CreateRequirement(ctx, core.Requirement{ID: "req-billing", Title: "Billing"}, core.RequirementVersion{Content: "Baseline", Statements: test.statements, Origin: core.RequirementOriginFeatureMigration})
+				requirement, baseline, createErr := st.CreateRequirement(ctx, core.Requirement{ID: "req-billing", Title: "Billing"}, core.RequirementVersion{Content: "# Baseline", Statements: test.statements, Origin: core.RequirementOriginFeatureMigration})
 				if createErr != nil {
 					t.Fatal(createErr)
 				}
@@ -1137,7 +1137,7 @@ func TestPromotionSessionsCreatePendingVersionsAndDeferLineageUntilConfirmation(
 				t.Fatal(err)
 			}
 			service := &Service{Store: st}
-			args := requirementArgs{RequirementID: requirementID, Title: "Billing", Prose: "Promoted billing behavior.", Statements: test.statements, DerivedFrom: derivation}
+			args := requirementArgs{RequirementID: requirementID, Title: "Billing", Prose: "# Promoted billing behavior.", Statements: test.statements, DerivedFrom: derivation}
 			execution, err := service.requirementTool(ctx, session, toolCall{ID: "promote", Name: "finalize_requirement", ArgumentsJSON: jsonString(t, args)})
 			if err != nil || execution.Produced == nil {
 				t.Fatalf("promotion execution=%+v err=%v", execution, err)
@@ -1180,7 +1180,7 @@ func TestServiceAdoptsRevisedSameSessionRequirementOrphan(t *testing.T) {
 	ctx, st, session := planningFixture(t, "session-260801-adopt")
 	service := &Service{Store: st}
 	first := requirementArgs{
-		Title: "Resumable planning", Prose: "The first draft survives a crash.",
+		Title: "Resumable planning", Prose: "# The first draft survives a crash.",
 		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "A retry adopts its own orphan."}},
 	}
 	orphan, err := service.requirementTool(ctx, session, toolCall{
@@ -1190,7 +1190,7 @@ func TestServiceAdoptsRevisedSameSessionRequirementOrphan(t *testing.T) {
 		t.Fatalf("orphan=%+v err=%v", orphan, err)
 	}
 	revised := first
-	revised.Prose = "The revised draft supersedes the same-session orphan."
+	revised.Prose = "# The revised draft supersedes the same-session orphan."
 	revised.Statements = []core.RequirementStatement{{ID: "REQ-1", Statement: "A revised retry supersedes its own orphan."}}
 	service.Agent = &scriptedAgent{outputs: []string{decisionJSON(t, "", []toolCall{{
 		ID: "retry-finalize", Name: "finalize_requirement", ArgumentsJSON: jsonString(t, revised),
@@ -1235,7 +1235,7 @@ func TestServiceRetryCompletesAfterProducedWritesAndToolResult(t *testing.T) {
 	ctx, underlying, session := planningFixture(t, "session-260801-crash-window")
 	st := &failOnceArtifactStore{Store: underlying}
 	args := requirementArgs{
-		Title: "Crash recovery", Prose: "Produced lineage resumes.",
+		Title: "Crash recovery", Prose: "# Produced lineage resumes.",
 		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Retry completes missing archival."}},
 	}
 	call := toolCall{ID: "first-finalize", Name: "finalize_requirement", ArgumentsJSON: jsonString(t, args)}
@@ -1275,7 +1275,7 @@ func TestServiceAllocatesDeterministicRequirementSlugSuffixes(t *testing.T) {
 		if _, _, err := st.CreateRequirement(ctx, core.Requirement{
 			ID: id, Slug: slug, Title: title,
 		}, core.RequirementVersion{
-			Content:    "Seeded prose.",
+			Content:    "# Seeded prose.",
 			Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Seeded."}},
 			Origin:     core.RequirementOriginFeatureMigration,
 		}); err != nil {
@@ -1286,7 +1286,7 @@ func TestServiceAllocatesDeterministicRequirementSlugSuffixes(t *testing.T) {
 	seed("req-auth-2", "auth-2", "Auth 2")
 	service := &Service{Store: st}
 	version := core.RequirementVersion{
-		Content:    "New prose.",
+		Content:    "# New prose.",
 		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "New."}},
 		Origin:     core.RequirementOriginFeatureMigration,
 	}
@@ -1384,7 +1384,7 @@ func TestServiceAdoptsProducedArtifactTitleOnFinalize(t *testing.T) {
 	t.Run("requirement", func(t *testing.T) {
 		ctx, st, session := goalPlanningFixture(t, "session-260802-title-req", core.PlanningGoalRequirement)
 		args := requirementArgs{
-			Title: "Bounded retries", Prose: "Retries stay explainable.",
+			Title: "Bounded retries", Prose: "# Retries stay explainable.",
 			Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Retries stop at the bound."}},
 		}
 		call := toolCall{ID: "call-final", Name: "finalize_requirement", ArgumentsJSON: jsonString(t, args)}
@@ -1429,7 +1429,7 @@ func TestServiceAdoptsProducedArtifactTitleOnFinalize(t *testing.T) {
 // same run.
 func TestServiceRejectsGoalMismatchedFinalizeRecoverably(t *testing.T) {
 	requirementArgsJSON := jsonString(t, requirementArgs{
-		Title: "Bounded retries", Prose: "Retries stay explainable.",
+		Title: "Bounded retries", Prose: "# Retries stay explainable.",
 		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Retries stop at the bound."}},
 	})
 	bundleArgsJSON := jsonString(t, bundleArgs{
@@ -1527,7 +1527,7 @@ func TestRequirementToolRevisesTheSessionContextDocument(t *testing.T) {
 	existing, _, err := st.CreateRequirement(ctx,
 		core.Requirement{ID: "req-retries", Slug: "retry-behavior", Title: "Retry behavior"},
 		core.RequirementVersion{
-			Content: "Retries stay bounded.\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Retries stop at the bound.\n```",
+			Content: "# Retries stay bounded.\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Retries stop at the bound.\n```",
 			Statements: []core.RequirementStatement{{
 				ID: "REQ-1", Statement: "Retries stop at the bound.",
 			}},
@@ -1545,7 +1545,7 @@ func TestRequirementToolRevisesTheSessionContextDocument(t *testing.T) {
 	}
 	// The model omits requirement_id — the case that used to fork a document.
 	args := requirementArgs{
-		Prose: "Retries stay bounded and observable.",
+		Prose: "# Retries stay bounded and observable.",
 		Statements: []core.RequirementStatement{
 			{ID: "REQ-1", Statement: "Retries stop at the bound."},
 			{ID: "REQ-2", Statement: "Every retry decision is explainable."},
@@ -1590,7 +1590,7 @@ func TestRequirementToolRevisesTheSessionContextDocument(t *testing.T) {
 func TestServiceOpenGoalAcceptsEitherFinalizer(t *testing.T) {
 	ctx, st, session := goalPlanningFixture(t, "session-260802-goal-open", core.PlanningGoalOpen)
 	args := requirementArgs{
-		Title: "Open exploration", Prose: "The operator settled on a requirement.",
+		Title: "Open exploration", Prose: "# The operator settled on a requirement.",
 		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Open sessions still finalize."}},
 	}
 	service := &Service{
@@ -1646,7 +1646,7 @@ func TestServiceTreatsMissingResourceIDsAsRecoverable(t *testing.T) {
 		{"approved spec", toolCall{ID: "call-missing", Name: "read_approved_spec", ArgumentsJSON: `{"task_id":"task-missing"}`}},
 		{"artifact", toolCall{ID: "call-missing", Name: "read_artifact", ArgumentsJSON: `{"artifact_id":"artifact-missing"}`}},
 		{"lineage", toolCall{ID: "call-missing", Name: "read_task_lineage", ArgumentsJSON: `{"task_id":"task-missing"}`}},
-		{"revision", toolCall{ID: "call-missing", Name: "revise_requirement", ArgumentsJSON: `{"requirement_id":"req-missing","prose":"Revised intent.","statements":[{"id":"REQ-1","statement":"It works."}]}`}},
+		{"revision", toolCall{ID: "call-missing", Name: "revise_requirement", ArgumentsJSON: `{"requirement_id":"req-missing","prose":"# Revised intent.","statements":[{"id":"REQ-1","statement":"It works."}]}`}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1678,7 +1678,7 @@ func TestServiceAbandonmentWinsBeforeFinalizationWithoutVisibleOutput(t *testing
 			call: toolCall{
 				ID: "call-final", Name: "finalize_requirement",
 				ArgumentsJSON: jsonString(t, requirementArgs{
-					Title: "Must not survive", Prose: "This output loses the abandonment race.",
+					Title: "Must not survive", Prose: "# This output loses the abandonment race.",
 					Statements: []core.RequirementStatement{{
 						ID: "REQ-1", Statement: "No output remains after abandonment.",
 					}},
@@ -1821,7 +1821,7 @@ func TestServiceLateAbandonmentCannotSplitProducedWritesFromFinalization(t *test
 		Store: underlying, beforeArtifact: make(chan struct{}), continueArtifact: make(chan struct{}),
 	}
 	args := requirementArgs{
-		Title: "Atomic boundary", Prose: "Finalization is serialized.",
+		Title: "Atomic boundary", Prose: "# Finalization is serialized.",
 		Statements: []core.RequirementStatement{{
 			ID: "REQ-1", Statement: "Abandonment cannot split produced lineage.",
 		}},
@@ -1913,14 +1913,14 @@ func goalPlanningFixture(
 
 func TestServiceFinalizesBundleAfterInBandCycleCorrection(t *testing.T) {
 	ctx, st, session := goalPlanningFixture(t, "session-finalize-bundle", core.PlanningGoalBundle)
-	requirement, first, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-planning-bundle", Title: "Bundle"}, core.RequirementVersion{Content: "Bundle", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Deliver a bundle."}}})
+	requirement, first, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-planning-bundle", Title: "Bundle"}, core.RequirementVersion{Content: "# Bundle", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Deliver a bundle."}}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err = st.ConfirmRequirementVersion(ctx, requirement.ID, first.Version); err != nil {
 		t.Fatal(err)
 	}
-	pending, err := st.ProposeRequirementVersion(ctx, core.RequirementVersion{RequirementID: requirement.ID, Content: "Bundle v2", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Deliver a dependency-ordered bundle."}}})
+	pending, err := st.ProposeRequirementVersion(ctx, core.RequirementVersion{RequirementID: requirement.ID, Content: "# Bundle v2", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Deliver a dependency-ordered bundle."}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1950,7 +1950,7 @@ func TestPlanningPromptUsesProvenanceLabelledUntrustedLineageContext(t *testing.
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	st := store.NewMemory()
 	requirement, proposed, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-prompt", Slug: "safe-context", Title: "Safe context"}, core.RequirementVersion{
-		Content: "Planning must retain provenance.", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Frame lineage as untrusted."}}, Origin: core.RequirementOriginFeatureMigration,
+		Content: "# Planning must retain provenance.", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Frame lineage as untrusted."}}, Origin: core.RequirementOriginFeatureMigration,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1975,7 +1975,7 @@ func TestPlanningPromptReservesLargeLineageOverheadBeforeCompaction(t *testing.T
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	st := store.NewMemory()
 	requirement, proposed, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-large-lineage", Slug: "large-lineage", Title: "Large lineage"}, core.RequirementVersion{
-		Content: strings.Repeat("bounded lineage rationale ", 600), Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Keep planning recoverable."}}, Origin: core.RequirementOriginFeatureMigration,
+		Content: "# " + strings.Repeat("bounded lineage rationale ", 600), Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Keep planning recoverable."}}, Origin: core.RequirementOriginFeatureMigration,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -2019,7 +2019,7 @@ func TestReferenceContextContainsFencesSharesBudgetAndDeduplicatesConsultation(t
 		t.Fatal(err)
 	}
 	requirement, proposed, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-context", Title: "Context"}, core.RequirementVersion{
-		Content: strings.Repeat("lineage context ", 20), Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Keep context bounded."}}, Origin: core.RequirementOriginFeatureMigration,
+		Content: "# " + strings.Repeat("lineage context ", 20), Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Keep context bounded."}}, Origin: core.RequirementOriginFeatureMigration,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -2184,7 +2184,7 @@ func TestPromotionFinalizeValidationRecoversInBandThenFinalizesV2(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	base := requirementArgs{Title: "Retry policy", Prose: "Retry behavior.", DerivedFrom: derivation, Statements: []core.RequirementStatement{{
+	base := requirementArgs{Title: "Retry policy", Prose: "# Retry behavior.", DerivedFrom: derivation, Statements: []core.RequirementStatement{{
 		ID: "REQ-1", Statement: "Retries are bounded.", UserStory: &core.RequirementUserStory{AsA: "operator", IWant: "bounded retries", SoThat: "failures terminate"},
 	}}}
 	valid := base
@@ -2269,5 +2269,33 @@ func assertChunkTypes(t *testing.T, chunks []map[string]any, want ...string) {
 	}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("chunk types=%v, want %v", got, want)
+	}
+}
+
+func TestRequirementFinalizationEnforcesProseContract(t *testing.T) {
+	for _, tt := range []struct{ name, prose, want string }{
+		{"preamble", "CLI authentication (proposed v2)\n# CLI authentication", `line 1 is "CLI authentication (proposed v2)"`},
+		{"statement prose", "# CLI authentication\nREQ-1: Duplicate.", `line 2 is "REQ-1: Duplicate.": statement identifiers belong inside the conveyor:requirements fence`},
+		{"corrected", "# CLI authentication\nAuthenticate as REQ-1 requires.", ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, st, session := planningFixture(t, "session-prose-contract")
+			service := &Service{Store: st}
+			args := requirementArgs{Title: "CLI authentication", Prose: tt.prose, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Authenticate safely."}}}
+			execution, err := service.requirementTool(ctx, session, toolCall{ID: "finalize", Name: "finalize_requirement", ArgumentsJSON: jsonString(t, args)})
+			if tt.want != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.want) || execution.Produced != nil {
+					t.Fatalf("execution=%+v err=%v", execution, err)
+				}
+				docs, listErr := st.ListRequirements(ctx, false)
+				if listErr != nil || len(docs) != 0 {
+					t.Fatalf("refusal wrote documents=%+v err=%v", docs, listErr)
+				}
+				return
+			}
+			if err != nil || execution.Produced == nil {
+				t.Fatalf("execution=%+v err=%v", execution, err)
+			}
+		})
 	}
 }

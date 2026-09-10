@@ -45,6 +45,7 @@ func (m *memory) CreateSystemDesign(ctx context.Context, document core.SystemDes
 	}
 	first.Workspace, first.DocumentID, first.Version = workspace, document.ID, 1
 	first.Confirmed, first.ConfirmedBy, first.ConfirmedAt = false, "", time.Time{}
+	first.DismissalNote = ""
 	first.Dismissed, first.DismissedBy, first.DismissedAt = false, "", time.Time{}
 	if first.CreatedAt.IsZero() {
 		first.CreatedAt = now
@@ -170,6 +171,7 @@ func (m *memory) ProposeSystemDesignVersion(ctx context.Context, version core.Sy
 	}
 	version.Workspace, version.Version, version.Confirmed = workspace, len(versions)+1, false
 	version.ConfirmedBy, version.ConfirmedAt = "", time.Time{}
+	version.DismissalNote = ""
 	version.Dismissed, version.DismissedBy, version.DismissedAt = false, "", time.Time{}
 	if version.CreatedAt.IsZero() {
 		version.CreatedAt = time.Now().UTC()
@@ -228,6 +230,7 @@ func (m *memory) ConfirmSystemDesignVersion(ctx context.Context, documentID stri
 	dismissed := make([]int, 0)
 	for index := range versions {
 		if versions[index].Version < version && !versions[index].Confirmed && !versions[index].Dismissed {
+			versions[index].DismissalNote = DocumentDismissalNote(ctx)
 			versions[index].Dismissed, versions[index].DismissedBy, versions[index].DismissedAt = true, actor.ID, now
 			dismissed = append(dismissed, versions[index].Version)
 		}
@@ -239,10 +242,10 @@ func (m *memory) ConfirmSystemDesignVersion(ctx context.Context, documentID stri
 	document.CurrentVersion, document.UpdatedAt = version, now
 	m.systemDesigns[key] = document
 	for _, dismissedVersion := range dismissed {
-		m.appendEventLocked(ctx, core.Event{Kind: "system_design.version_dismissed", Payload: core.JSONPayload(map[string]any{
+		m.appendEventLocked(ctx, core.Event{Kind: "system_design.version_dismissed", Payload: core.JSONPayload(DocumentDismissalEventPayload(ctx, map[string]any{
 			"workspace_id": workspace, "document_id": documentID, "version": dismissedVersion,
 			"dismissed_by": actor.ID, "confirmed_version": version,
-		})})
+		}))})
 	}
 	m.appendEventLocked(ctx, core.Event{Kind: "system_design.version_confirmed", Payload: core.JSONPayload(map[string]any{
 		"workspace_id": workspace, "document_id": documentID, "version": version, "supersedes_version": predecessor,
@@ -279,14 +282,15 @@ func (m *memory) DismissSystemDesignVersion(ctx context.Context, documentID stri
 		return core.SystemDesign{}, core.SystemDesignVersion{}, &SystemDesignVersionDismissalConflict{DocumentID: documentID, Requested: version, Current: document.CurrentVersion, Reason: VersionDismissalDismissed}
 	}
 	actor, now := ActorFromContext(ctx), time.Now().UTC()
+	dismissed.DismissalNote = DocumentDismissalNote(ctx)
 	dismissed.Dismissed, dismissed.DismissedBy, dismissed.DismissedAt = true, actor.ID, now
 	versions[version-1] = dismissed
 	m.systemDesignVersions[key] = versions
 	document.UpdatedAt = now
 	m.systemDesigns[key] = document
-	m.appendEventLocked(ctx, core.Event{Kind: "system_design.version_dismissed", Payload: core.JSONPayload(map[string]any{
+	m.appendEventLocked(ctx, core.Event{Kind: "system_design.version_dismissed", Payload: core.JSONPayload(DocumentDismissalEventPayload(ctx, map[string]any{
 		"workspace_id": workspace, "document_id": documentID, "version": version, "dismissed_by": actor.ID,
-	})})
+	}))})
 	return document, dismissed, nil
 }
 

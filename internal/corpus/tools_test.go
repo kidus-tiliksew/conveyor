@@ -40,7 +40,7 @@ func TestToolsAreReadOnlyAndListsAreConfirmedSummaries(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, _, err = st.CreateRequirement(ctx, core.Requirement{ID: "req-pending", Title: "Pending"}, core.RequirementVersion{
-		Content: "Pending body", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Remain pending."}},
+		Content: "# Pending body", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Remain pending."}},
 	}); err != nil {
 		t.Fatal(err)
 	}

@@ -16,6 +16,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
+	"github.com/kidus-tiliksew/conveyor/internal/pipeline"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
@@ -221,14 +222,63 @@ func TestMCPImplementationGovernanceProposalsBindToClaimedTask(t *testing.T) {
 	if !reusedRequirement.Deduplicated || reusedRequirement.Version != proposedRequirement.Version {
 		t.Fatalf("reused requirement=%+v original=%+v", reusedRequirement, proposedRequirement)
 	}
+
+	// Shared parser refusals must be in-band tool results so the live agent can repair them.
+	withoutPreamble := strings.TrimPrefix(historicalCLIAuthenticationV2, "CLI authentication (proposed v2)\n")
+	_, historicalHeadingErr := pipeline.ParseRequirementDocument(historicalCLIAuthenticationV2)
+	_, historicalStatementErr := pipeline.ParseRequirementDocument(withoutPreamble)
+	if historicalHeadingErr == nil || historicalStatementErr == nil {
+		t.Fatal("historical proposal must be refused")
+	}
+	for _, invalid := range []struct{ content, want string }{
+		{historicalCLIAuthenticationV2, historicalHeadingErr.Error()},
+		{withoutPreamble, historicalStatementErr.Error()},
+		{"CLI authentication (proposed v2)\n" + requirementArgs["content"].(string), `requirement content must begin with its "# <title>" heading; line 1 is "CLI authentication (proposed v2)"`},
+		{requirementArgs["content"].(string) + "\nREQ-1: Duplicate.", `requirement content line 7 is "REQ-1: Duplicate.": statement identifiers belong inside the conveyor:requirements fence`},
+	} {
+		args := maps.Clone(requirementArgs)
+		args["content"] = invalid.content
+		payload, marshalErr := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": "propose_requirement_revision", "arguments": args}})
+		if marshalErr != nil {
+			t.Fatal(marshalErr)
+		}
+		wireRequest := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader(payload)).WithContext(request.Context())
+		response := httptest.NewRecorder()
+		server.handleMCP(response, wireRequest)
+		var envelope struct {
+			Result struct {
+				IsError bool `json:"isError"`
+				Content []struct {
+					Text string `json:"text"`
+				} `json:"content"`
+			} `json:"result"`
+			Error *rpcError `json:"error"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
+			t.Fatal(err)
+		}
+		if response.Code != http.StatusOK || envelope.Error != nil || !envelope.Result.IsError || len(envelope.Result.Content) != 1 || envelope.Result.Content[0].Text != invalid.want {
+			t.Fatalf("refusal status=%d body=%s, want %q", response.Code, response.Body.String(), invalid.want)
+		}
+	}
 	invalidRequirementArgs := maps.Clone(requirementArgs)
-	invalidRequirementArgs["content"] = "missing the conveyor:requirements fence"
+	invalidRequirementArgs["content"] = "# Missing the conveyor:requirements fence"
 	if _, err = server.callMCPTool(request, "propose_requirement_revision", invalidRequirementArgs); err == nil {
 		t.Fatal("invalid requirement proposal was accepted")
 	}
 	versions, listErr := st.ListRequirementVersions(ctx, requirement.ID)
 	if listErr != nil || len(versions) != 2 {
 		t.Fatalf("invalid proposal partially wrote versions=%+v err=%v", versions, listErr)
+	}
+	correctedArgs := maps.Clone(requirementArgs)
+	correctedArgs["content"], _, _ = strings.Cut(withoutPreamble, "\nREQ-1:")
+	correctedResult, err := server.callMCPTool(request, "propose_requirement_revision", correctedArgs)
+	if err != nil {
+		t.Fatalf("corrected historical proposal: %v", err)
+	}
+	correctedVersion := correctedResult.(requirementProposalResult).RequirementVersion
+	if correctedVersion.Version != 3 || correctedVersion.Content != correctedArgs["content"] || len(correctedVersion.Statements) != 4 {
+		t.Fatalf("corrected historical proposal=%+v", correctedVersion)
 	}
 	staleRequirementArgs := maps.Clone(requirementArgs)
 	staleRequirementArgs["session_id"] = "stale-session"
@@ -480,7 +530,7 @@ func TestMCPSubmitForReviewReturnsActionableEvidenceGateError(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
 	request = request.WithContext(store.WithCredential(request.Context(), core.AuthenticatedCredential{ID: "owner-token", OwnerUserID: "owner", Kind: core.CredentialUser}))
 	_, err := server.callMCPTool(request, "submit_for_review", map[string]any{
-		"workspace_id": "demo", "work_order_id": job.ID, "session_id": "session",
+		"workspace_id": "demo", "head_sha": "abc123", "work_order_id": job.ID, "session_id": "session",
 	})
 	if err == nil || !strings.Contains(err.Error(), "/v1/worker/work-orders/"+job.ID+"/verification-evidence") ||
 		!strings.Contains(err.Error(), "X-Conveyor-Work-Order-Token") || !strings.Contains(err.Error(), "X-Conveyor-Work-Order-Session") {
@@ -1088,7 +1138,7 @@ func TestMCPClaimantBoundToolsRejectForeignUsersAndWorkers(t *testing.T) {
 			}
 			args := func(orderID string) map[string]any {
 				return map[string]any{
-					"workspace_id": "demo", "work_order_id": orderID, "session_id": "victim-session",
+					"workspace_id": "demo", "work_order_id": orderID, "session_id": "victim-session", "head_sha": "named-head",
 					"message": "progress", "tokens_in": 1.0, "tokens_out": 1.0, "cost_usd": 0.0,
 					"transcript":    "redacted",
 					"markdown":      "## Approach\nUse the approved path.\n\n## Files touched\n- internal/httpapi/mcp.go\n\n## Ordering\n1. Implement.\n\n## Risks\n- Drift.\n\n## Done criteria\n- The change is tested.",

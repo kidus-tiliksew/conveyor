@@ -127,3 +127,54 @@ func SystemDesignProposalEvidenceForTask(ctx context.Context, st Store, taskID s
 	sort.Strings(notes)
 	return out, notes, nil
 }
+
+// OperatorNotesForTask refreshes only observational evidence, independently of
+// pinned review authority. Never carry snapshot notes past terminal cleanup.
+func OperatorNotesForTask(ctx context.Context, st Store, taskID string) ([]core.OperatorNote, error) {
+	task, err := st.GetTask(ctx, taskID)
+	if err != nil {
+		return nil, err
+	}
+	if core.TaskTerminal(task.State) {
+		return nil, nil
+	}
+	return st.ListDocumentOperatorNotesForTask(ctx, taskID)
+}
+
+func (m *memory) ListDocumentOperatorNotesForTask(ctx context.Context, taskID string) ([]core.OperatorNote, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	workspace := workspaceOrDefault(ctx, "")
+	var notes []core.OperatorNote
+	for key, versions := range m.requirementVersions {
+		if key.workspace != workspace {
+			continue
+		}
+		for _, v := range versions {
+			if v.Origin == core.RequirementOriginImplementation && v.OriginTaskID == taskID && v.Retired && v.DismissalNote != "" {
+				notes = append(notes, core.OperatorNote{DocumentID: v.RequirementID, Version: v.Version, Tier: "requirement", Note: v.DismissalNote, DismissedAt: v.RetiredAt})
+			}
+		}
+	}
+	for key, versions := range m.systemDesignVersions {
+		if key.workspace != workspace {
+			continue
+		}
+		for _, v := range versions {
+			if v.Origin == core.SystemDesignOriginImplementation && v.OriginTaskID == taskID && v.Dismissed && v.DismissalNote != "" {
+				notes = append(notes, core.OperatorNote{DocumentID: v.DocumentID, Version: v.Version, Tier: "system_design", Note: v.DismissalNote, DismissedAt: v.DismissedAt})
+			}
+		}
+	}
+	sort.Slice(notes, func(i, j int) bool {
+		a, b := notes[i], notes[j]
+		if a.Tier != b.Tier {
+			return a.Tier < b.Tier
+		}
+		if a.DocumentID != b.DocumentID {
+			return a.DocumentID < b.DocumentID
+		}
+		return a.Version < b.Version
+	})
+	return notes, nil
+}
