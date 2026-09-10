@@ -73,7 +73,10 @@ propose-confirm boundary; the incidents behind each rule are in the
 
 ## Requirements (normative intent)
 
-Prose + exactly one `conveyor:requirements` fence. Statement schema:
+Prose + exactly one `conveyor:requirements` fence.
+The first non-blank line must be a non-empty `# <title>` heading, and lines beginning with `REQ-n:` or `AC-n.m:` or a YAML `- id: REQ-`/`- id: AC-` item must stay inside that fence; inline identifier citations remain legal.
+
+Statement schema:
 
 ```conveyor:requirements
 - id: REQ-1

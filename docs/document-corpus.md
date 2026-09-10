@@ -33,13 +33,16 @@ acceptance criteria (DEC-34).
 
 A requirement document has two parts: an explanation written for people, and
 one `conveyor:requirements` code block that Conveyor parses. The explanation
-can say whatever helps a reader; only the code block is validated:
+can say whatever helps a reader.
+At proposal time, the first non-blank line must be a non-empty `# <title>` heading, and lines beginning with `REQ-n:` or `AC-n.m:` or a YAML `- id: REQ-`/`- id: AC-` item must stay inside the requirements fence; inline identifier citations remain legal.
 
 A requirement is a black-box contract and each requirement document covers
 one capability. It does not prescribe storage, services, queries, queues, or
 algorithms unless that mechanism is itself a public contract (DEC-34).
 
 ````markdown
+# Sign-in recovery
+
 Operators need to recover a lost sign-in without database surgery.
 
 ```conveyor:requirements

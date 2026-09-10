@@ -15,6 +15,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/monitor"
+	"github.com/kidus-tiliksew/conveyor/internal/pipeline"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 )
@@ -40,7 +41,7 @@ func TestOperatorRequirementProposalRESTLifecycle(t *testing.T) {
 		return response
 	}
 
-	content := "Operator-authored intent.\n\n```conveyor:requirements\n- id: REQ-2\n  statement: The API remains authenticated.\n  user_story:\n    as_a: operator\n    i_want: to propose intent headlessly\n    so_that: confirmation stays explicit\n  acceptance_criteria:\n    - id: AC-2.1\n      statement: The proposal remains pending.\n```"
+	content := "# Operator-authored intent.\n\n```conveyor:requirements\n- id: REQ-2\n  statement: The API remains authenticated.\n  user_story:\n    as_a: operator\n    i_want: to propose intent headlessly\n    so_that: confirmation stays explicit\n  acceptance_criteria:\n    - id: AC-2.1\n      statement: The proposal remains pending.\n```"
 	body, _ := json.Marshal(map[string]any{
 		"id": "req-api", "title": "Requirement proposal API", "content": content,
 		"derived_from": map[string]any{"document_id": "ref-api", "version": source.Version, "section_anchor": "api-contract", "target_id": "AC-2.1"},
@@ -89,18 +90,35 @@ func TestOperatorRequirementProposalRESTLifecycle(t *testing.T) {
 	}
 	assertNoLineage(1)
 
-	revisionJSON, _ := json.Marshal(map[string]string{"content": "Revised intent.\n\n```conveyor:requirements\n- id: REQ-3\n  statement: Revisions preserve high-water discipline.\n```"})
+	revisionJSON, _ := json.Marshal(map[string]string{"content": "# Revised intent.\n\n```conveyor:requirements\n- id: REQ-3\n  statement: Revisions preserve high-water discipline.\n```"})
 	revision := string(revisionJSON)
 	revised := call(http.MethodPost, "/v1/requirements/req-api/versions", revision)
 	if revised.Code != http.StatusCreated || !strings.Contains(revised.Body.String(), `"version":2`) || !strings.Contains(revised.Body.String(), `"origin":"operator"`) {
 		t.Fatalf("revision status=%d body=%s", revised.Code, revised.Body.String())
 	}
-	recycledJSON, _ := json.Marshal(map[string]string{"content": "Bad reuse.\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Recycled identity.\n```"})
+
+	for _, invalid := range []struct{ content, want string }{
+		{"CLI authentication (proposed v2)\n" + content, `requirement content must begin with its "# <title>" heading; line 1 is "CLI authentication (proposed v2)"`},
+		{content + "\nREQ-2: Duplicate.", `statement identifiers belong inside the conveyor:requirements fence`},
+	} {
+		payload, _ := json.Marshal(map[string]string{"content": invalid.content})
+		response := call(http.MethodPost, "/v1/requirements/req-api/versions", string(payload))
+		refusal := strings.TrimSpace(response.Body.String())
+		_, parserErr := pipeline.ParseRequirementDocument(invalid.content)
+		if response.Code != http.StatusBadRequest || parserErr == nil || refusal != parserErr.Error() || !strings.Contains(refusal, invalid.want) {
+			t.Fatalf("refusal status=%d body=%s parser=%v", response.Code, response.Body.String(), parserErr)
+		}
+	}
+	versions, err := st.ListRequirementVersions(ctx, "req-api")
+	if err != nil || len(versions) != 2 {
+		t.Fatalf("refused proposal wrote versions: %+v, %v", versions, err)
+	}
+	recycledJSON, _ := json.Marshal(map[string]string{"content": "# Bad reuse.\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Recycled identity.\n```"})
 	recycled := call(http.MethodPost, "/v1/requirements/req-api/versions", string(recycledJSON))
 	if recycled.Code != http.StatusBadRequest || !strings.Contains(recycled.Body.String(), "reuses a retired identifier") {
 		t.Fatalf("recycled status=%d body=%s", recycled.Code, recycled.Body.String())
 	}
-	invalidFence := call(http.MethodPost, "/v1/requirements/req-api/versions", `{"content":"Missing machine block."}`)
+	invalidFence := call(http.MethodPost, "/v1/requirements/req-api/versions", `{"content":"# Missing machine block."}`)
 	if invalidFence.Code != http.StatusBadRequest || !strings.Contains(invalidFence.Body.String(), "requires one conveyor:requirements block") {
 		t.Fatalf("invalid fence status=%d body=%s", invalidFence.Code, invalidFence.Body.String())
 	}
