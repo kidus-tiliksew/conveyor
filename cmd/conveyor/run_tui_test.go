@@ -413,3 +413,67 @@ func TestRunTUICtrlCInterruptsAndCollapses(t *testing.T) {
 		t.Fatal("Ctrl+C did not notify the run controller")
 	}
 }
+
+func TestRunTUIRequirementPanelUsesYesNoAndReplacesState(t *testing.T) {
+	actions := make(chan runTUIAction, 2)
+	model := newRunTUIModel(runTUIStage{task: core.Task{ID: "target"}}, nil, actions, make(chan struct{}, 1))
+	requirement := workerservice.TaskRunProposal{Kind: "requirement", DocumentID: "req-run", Title: "Attached run", Version: 2, CanConfirm: true, ActorHint: "an operator can confirm"}
+	decision := workerservice.TaskRunProposal{Kind: "decision", DocumentID: "DEC-8", Title: "Keep authority server-side", Version: 1, CanConfirm: true, ActorHint: "an operator can confirm"}
+	updated, _ := model.Update(runTUIProposalsMsg{requirement, decision})
+	model = updated.(runTUIModel)
+	view := model.View()
+	for _, want := range []string{"Choose an action", "Confirm requirement · Attached run v2 · req-run", "Wait", "Enter choose"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("proposal view missing %q: %q", want, view)
+		}
+	}
+	if model.selectedActionKey() != "proposal:"+taskRunProposalKey(requirement) {
+		t.Fatalf("initial proposal = %q, want requirement", model.selectedActionKey())
+	}
+	for _, key := range []tea.KeyMsg{{Type: tea.KeyEnter}, {Type: tea.KeyEnter}} {
+		updated, _ = model.Update(key)
+		model = updated.(runTUIModel)
+	}
+	select {
+	case action := <-actions:
+		t.Fatalf("No confirmation produced action: %+v", action)
+	default:
+	}
+	for _, key := range []tea.KeyMsg{{Type: tea.KeyEnter}, {Type: tea.KeyUp}, {Type: tea.KeyEnter}} {
+		updated, _ = model.Update(key)
+		model = updated.(runTUIModel)
+	}
+	action := <-actions
+	if action.decision != runConfirmProposal || action.proposal == nil || action.proposal.DocumentID != requirement.DocumentID {
+		t.Fatalf("proposal action=%+v", action)
+	}
+	updated, _ = model.Update(runTUIProposalsMsg{decision})
+	model = updated.(runTUIModel)
+	if strings.Contains(model.View(), requirement.DocumentID) || strings.Count(model.View(), decision.DocumentID) != 1 {
+		t.Fatalf("proposal refresh did not replace in place: %q", model.View())
+	}
+	updated, _ = model.Update(runTUIProposalsMsg{})
+	if strings.Contains(updated.(runTUIModel).View(), "Confirm requirement") {
+		t.Fatalf("cleared proposal remained visible: %q", updated.(runTUIModel).View())
+	}
+}
+
+func TestRunTUIRequirementWithoutCapabilityShowsActorAndCannotConfirm(t *testing.T) {
+	actions := make(chan runTUIAction, 1)
+	model := newRunTUIModel(runTUIStage{}, nil, actions, make(chan struct{}, 1))
+	proposal := workerservice.TaskRunProposal{Kind: "requirement", DocumentID: "req-run", Title: "Attached run", Version: 5, ActorHint: "an operator can confirm"}
+	updated, _ := model.Update(runTUIProposalsMsg{proposal})
+	model = updated.(runTUIModel)
+	for _, key := range []tea.KeyMsg{{Type: tea.KeyEnter}} {
+		updated, _ = model.Update(key)
+		model = updated.(runTUIModel)
+	}
+	select {
+	case action := <-actions:
+		t.Fatalf("unauthorized proposal produced action: %+v", action)
+	default:
+	}
+	if !strings.Contains(model.View(), "an operator can confirm") || !strings.Contains(model.View(), "unavailable for this credential") {
+		t.Fatalf("actor guidance missing: %q", model.View())
+	}
+}

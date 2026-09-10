@@ -27,6 +27,10 @@ func (c *client) getTaskRunOrderContext(ctx context.Context, credential, taskID 
 
 func (c *client) confirmTaskRunProposalContext(ctx context.Context, credential, taskID string, proposal workerservice.TaskRunProposal) error {
 	switch proposal.Kind {
+	case "requirement":
+		var result map[string]any
+		path := "/v1/requirements/" + url.PathEscape(proposal.DocumentID) + "/versions/" + fmt.Sprint(proposal.Version) + "/confirm"
+		return c.workerDoContext(ctx, http.MethodPost, path, nil, &result, credential)
 	case "design":
 		var result map[string]any
 		path := "/v1/system-designs/" + url.PathEscape(proposal.DocumentID) + "/versions/" + fmt.Sprint(proposal.Version) + "/confirm"
@@ -85,10 +89,18 @@ func (c *client) claimTaskRunOrderContext(ctx context.Context, credential string
 	err := c.workerDoContext(ctx, http.MethodPost, taskRunOrderPath(item, "/claim"), payload, &result, credential)
 	var response *workerHTTPError
 	if errors.As(err, &response) && response.StatusCode == http.StatusConflict && strings.TrimSpace(response.Message) != "" {
-		return core.WorkOrder{}, errors.New(strings.TrimSpace(response.Message))
+		return core.WorkOrder{}, &taskRunClaimError{response: response}
 	}
 	return result, err
 }
+
+// Keep the concise claim diagnostic while retaining the server's typed code.
+type taskRunClaimError struct {
+	response *workerHTTPError
+}
+
+func (e *taskRunClaimError) Error() string { return strings.TrimSpace(e.response.Message) }
+func (e *taskRunClaimError) Unwrap() error { return e.response }
 
 type issuedTaskRunAgentCredential struct {
 	ID    string `json:"credential_id"`

@@ -169,6 +169,12 @@ Markdown plan with required headings (Approach, Files touched, Ordering,
 Risks, Done criteria). With the gate on, an operator approves or rejects the
 plan; approval also publishes a GitHub issue carrying the approved spec.
 
+An attached `conveyor run` surfaces task-authored requirement proposals alongside
+design proposals and offers inline confirmation to an operator. Review waits
+until those proposals are confirmed or dismissed. If a proposal blocks a
+review claim after the run read its state, the run refreshes and waits without
+holding a claim. A credential without confirmation capability sees who can act.
+
 Implementation works the plan, validates through the repository's Make
 targets, walks the done criteria and acceptance criteria, commits, pushes the
 exact assigned branch, and calls `submit_for_review`. Conveyor then opens or
