@@ -30,6 +30,7 @@ For this repository, the inventory begins with these concrete surfaces:
 
 | Tier | Entrypoint | What it establishes |
 | --- | --- | --- |
+| Supported ordinary session | `make validate` | One shared dependency install and bundle build for build, vet, formatting and the complete ordinary aggregate; standalone target contracts remain intact. |
 | Build and static analysis | `make build`, `make vet`, `make fmt-check` | The Go binaries and dashboard build; Go vet; Go formatting. The dashboard build performs TypeScript checking and Vite compilation. |
 | Ordinary tests | `make test` | Compose-isolation validation, generated-dashboard freshness, release-install fixtures, Go tests with PostgreSQL disabled, Biome lint/format checks, and Playwright browser scenarios. |
 | Focused web checks | `make test-web` and `web/package.json` | Explicit TypeScript typechecking, Biome lint/format checking, and Playwright end-to-end tests. These checks do not establish PostgreSQL behavior. |
@@ -108,6 +109,16 @@ authenticated API, MCP, metrics, logs, or response metadata. Never require
 deployment-host access. If a production-shaped quantity is necessary but not
 surfaced, exposing it or defining a reproducible fixture is work to be planned;
 the reviewer must not demand impossible evidence (REQ-7 and AC-7.1/AC-7.2).
+
+For local evidence equivalence, document the audited input boundary and use the
+record/check/bind workflow in [`conveyor-work.md`](conveyor-work.md). Distinguish
+a fresh execution from a reused result bound to a pushed head. Require matching
+before/after and current inputs, complete tool/runtime and configuration
+inventories, durable logs, and a reason Git metadata is irrelevant before
+carrying evidence across a commit. Unknown inputs, changed dependencies or
+bundles, authored conflicts, or missing evidence require fresh validation.
+Database, CI, and independent-review boundaries remain separate; an evidence
+manifest does not change the permitted verification-evidence artifact role.
 
 ## Be honest about gaps
 

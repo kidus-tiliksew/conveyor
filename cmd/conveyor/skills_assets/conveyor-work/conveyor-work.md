@@ -105,6 +105,124 @@ after creating a probe file. If Git can see the fallback, remove it and stop
 rather than dirtying either checkout. Apply the same guarded cleanup rules to
 this fallback when the claim ends.
 
+## Run one validation session and preserve its evidence
+
+For this repository, `make validate` runs the existing `build`, `vet`,
+`fmt-check`, and complete `test` aggregate in one Make graph. It installs web
+dependencies once with `npm ci` and builds the dashboard once. This is the
+supported form of the existing `make build vet fmt-check test` sharing;
+separate Make invocations prepare dependencies again. Under `make -j validate`,
+vet and the installer wait for the dashboard build because they compile Go
+packages that embed it. Standalone targets retain their own prerequisites.
+The target adds no cache/stamp shortcut and never accepts an existing bundle
+without rebuilding and checking its diff. `make test-validation` exercises the
+orchestration and evidence helper and is also part of `make test`.
+
+The complete ordinary gate still includes Compose isolation, installer checks,
+Go tests, dashboard TypeScript compilation, Biome, and Playwright. Explicit
+capability-parity typechecking remains in `make test-web`. Run configured
+`make test-integration` and `make test-integration-singlestore-ci` separately
+when the contract requires them. An unset backend, skipped suite, narrowed
+command, failed aggregate, or local reuse never satisfies a mandatory fresh
+boundary. Each database run uses disposable isolated fixtures.
+
+`scripts/validation_evidence.py` records a fresh command with `run`, checks an
+existing record with `check`, and associates eligible evidence with the actual
+pushed branch using `bind`. It never skips a Make prerequisite or changes a
+required gate. Run it from the dedicated worktree. Use a new durable directory
+for each execution, under `$XDG_STATE_HOME/conveyor/<task-id>/` (default
+`$HOME/.local/state/conveyor/<task-id>/`), outside both checkouts and all task
+caches. Keep the manifest, private integrity key, log, and head-binding file
+together after disposable caches are removed. The key detects accidental
+corruption; it is not a signature against an author who can rewrite the bundle.
+
+Before `run`, write a JSON policy describing the actual command and every input
+boundary. Schema 1 requires these fields; unknown or omitted fields fail closed:
+
+- `schema`: `1`; `task`: the current task ID; `layer`: `local`, `postgres`, or
+  `singlestore`; `command`: the complete argv, starting with `make`.
+- `environment`: an explicit list of variable names. The child receives only
+  listed variables that are set. Include `PATH` and `HOME`, applicable task-cache
+  variables, flags, backend URLs, and every relevant configuration variable.
+  An absent variable differs from an empty one. Values are stored only as
+  keyed fingerprints; never put credentials in argv or policy prose. The log
+  replaces inventoried environment values before retention. Inspect logs for
+  any application-specific secret encoding before sharing them.
+- `tools`: a map from executable name to its version-probe argv, for example
+  `"go": ["go", "version"]`. Include all invoked tools and nested runtimes,
+  including `make`, `git`, `python3`, and `sh`. A shell probe may use
+  `["sh", "-c", "printf POSIX-shell"]`; the resolved executable is also hashed.
+  Probes must be read-only, deterministic, and receive the same environment.
+- `external_inputs`: absolute file/directory paths covering inputs outside the
+  worktree, including SDK/standard-library files, runtime libraries, loaded
+  configuration, resolved dependency trees, and browsers where consumed.
+  Inventory the configured HOME files or use a clean dedicated HOME. A version
+  string alone does not inventory a runtime or its dependencies.
+- `exclude`: an object giving a reason for each excluded output directory.
+  Only `bin`, `web/playwright-report`, and `web/test-results` can be excluded,
+  and never when tracked or read by the command. All other tracked, untracked,
+  ignored, generated, dependency, and fixture files in the worktree are hashed,
+  including modes and symlink targets. Do not exclude `node_modules`; installed
+  dependencies must be inventoried. Files outside the root reached by symlinks
+  require an explicit external input.
+- `audit`: `inputs_complete` must be a boolean; `input_rationale` explains the
+  reviewed inventory and output exclusions. Set it to `false` for unknown
+  inputs: `run` still records fresh execution, but `check`/`bind` refuse reuse. `git_metadata` is `dependent` by
+  default in author judgment, or `independent` only after inspecting every
+  command and transitive input; `git_rationale` records that inspection.
+  Unknown inputs or external state require another run, not an optimistic
+  audit declaration. Reviewers assess this policy against the actual code.
+- `backend`: `null` for local runs. Database records require an object with
+  `isolation: "disposable-per-run"` and `probe`: a read-only argv returning JSON
+  with nonempty `identity`, `version`, `configuration`, and unique `instance`
+  fields from the configured backend. Probe results are fingerprinted before
+  and after execution. This helper records backend evidence but refuses its
+  reuse: matching configuration cannot prove unchanged mutable database state.
+  Preserve fresh backend results and rerun the isolated target when needed.
+
+For example, after authoring and auditing `policy.json` outside the worktree:
+
+```sh
+python3 scripts/validation_evidence.py run --policy "$policy" --output "$evidence"
+python3 scripts/validation_evidence.py check --policy "$policy" --output "$evidence"
+# After committing and pushing the assigned task branch:
+python3 scripts/validation_evidence.py bind --policy "$policy" --output "$evidence" \
+  --remote origin --branch "conveyor/task-<task-id>"
+```
+
+`run` always executes the command, preserves its full exit status, timestamps,
+redacted log and digest, and captures input fingerprints before and after.
+A successful command whose inputs changed is still recorded as fresh execution,
+but cannot be reused. Dependency installation that changes resolved inputs can
+therefore make a session ineligible. Do not edit an old manifest to claim that
+it tested the final state; rerun the affected validation into a new directory.
+
+`check` refuses missing/corrupt manifests, keys or logs; prior failure;
+before/after drift; changed commands, flags, tools, dependencies, files,
+environment, configuration, host, worktree, or task; and uncertain Git history.
+A refusal exits nonzero: run the affected required target again. No automatic
+skip toggle or cross-task/cross-environment cache exists.
+
+`bind` additionally requires a clean worktree/index and queries the remote to
+prove the assigned branch was pushed at the current head. It writes a separate
+`reused-execution` binding, preserving the original execution time and reason.
+A commit can preserve file content while changing Git inputs. `make validate`
+and `make build` consume `git describe --tags --always --dirty` through
+`VERSION`/`LDFLAGS`; treat their evidence as metadata-dependent. Git/history tests
+may also consume repository state. Only an audited metadata-independent command
+can carry evidence across ordinary linear commits of identical inputs. Even an
+identical-content merge, authored conflict resolution, rebase, reset, missing
+reflog, or Git change during execution requires fresh validation. An ordinary
+`make fmt-check` is a candidate only after auditing the current Makefile and
+resolved gofmt runtime; target names alone do not establish independence.
+
+Local manifests and logs are task-context evidence, not artifacts carrying the
+`verification_evidence` role, whose permitted image/recording types remain
+unchanged. Record fresh exact-head CI independently. Local equivalence never
+makes a prior reviewed-head approval current or replaces independent reviewer
+judgment, mandatory done criteria, or either operator gate (REQ-4/AC-4.1 and
+REQ-7/AC-7.1; `component-verification-strategy`, DEC-29).
+
 ## Keep the lease alive
 
 The claim lease is short-lived and renewable. The repository default is five

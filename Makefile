@@ -28,6 +28,21 @@ DEV_COMPOSE := docker compose --env-file $(ENV_FILE) -f compose.dev.yaml
 
 all: build
 
+# REQ-7/AC-7.1 (component-verification-strategy): one Make graph shares
+# web-deps and ui across the complete ordinary validation session.
+.PHONY: validate test-validation
+validate: build vet fmt-check test
+
+# Go vet and the installer compile embedded dashboard files. During the
+# composite session they must wait for ui even under make -j. Standalone
+# targets retain their existing prerequisite contracts.
+ifneq ($(filter validate,$(MAKECMDGOALS)),)
+vet test-release: ui
+endif
+
+test-validation:
+	PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts -p 'test_validation_evidence.py'
+
 build: ui
 	go build $(LDFLAGS) -o $(BIN)/conveyor ./cmd/conveyor
 	go build $(LDFLAGS) -o $(BIN)/conveyord ./cmd/conveyord
@@ -84,7 +99,7 @@ ui: web-deps
 dashboard-fresh: ui
 	git diff --exit-code -- internal/httpapi/dashboard
 
-test: compose-check dashboard-fresh test-release
+test: compose-check dashboard-fresh test-release test-validation
 	CONVEYOR_TEST_DATABASE_URL= CONVEYOR_TEST_SINGLESTORE_URL= go test ./...
 	$(RUN_WEB_TESTS)
 
