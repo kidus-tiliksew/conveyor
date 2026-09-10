@@ -422,6 +422,34 @@ export function fetchCheckpointContextCandidates(requirementId: string) {
     workspaceURL(`/v1/requirements/${encodeURIComponent(requirementId)}/checkpoint-context-candidates`),
   )
 }
+export async function proposeRequirementVersion(id: string, content: string) {
+  return proposeDocumentVersion<RequirementVersion>('requirements', id, content)
+}
+
+export async function proposeSystemDesignVersion(id: string, content: string) {
+  return proposeDocumentVersion<import('./types').SystemDesignVersion>('system-designs', id, content)
+}
+
+async function proposeDocumentVersion<T>(tier: string, id: string, content: string): Promise<T> {
+  const response = await fetch(workspaceURL(`/v1/${tier}/${encodeURIComponent(id)}/versions`), {
+    method: 'POST',
+    headers: { ...mutationHeaders(), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content, origin: 'operator' }),
+  })
+  if (!response.ok) {
+    const body = await response.text()
+    let message = body.trim() || response.statusText
+    try {
+      const parsed = JSON.parse(body) as { message?: string; error?: string }
+      message = parsed.message ?? parsed.error ?? message
+    } catch {
+      /* plain-text API error */
+    }
+    throw new Error(message)
+  }
+  return response.json() as Promise<T>
+}
+
 export async function confirmRequirementVersion(requirementId: string, version: number, expectedVersion: number) {
   const response = await fetch(
     workspaceURL(`/v1/requirements/${encodeURIComponent(requirementId)}/versions/${version}/confirm`),

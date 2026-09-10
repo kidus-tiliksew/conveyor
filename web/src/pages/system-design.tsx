@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useWorkspaceCapability, useWorkspaceSelection } from '../components/app-shell'
 import { ArchiveDocumentDialog, type SuccessorCandidate } from '../components/documents/archive-document-dialog'
 import { type AttentionItem, AttentionSurface } from '../components/documents/attention-surface'
+import { MoreDocumentEvents, useDocumentEvents } from '../components/documents/document-events'
 import { compareDocuments, type DocumentSort, type DocumentSortDirection } from '../components/documents/document-sort'
 import {
   DocumentTree,
@@ -17,7 +18,7 @@ import { DriftResolutionForm } from '../components/documents/drift-resolution-fo
 import { SuccessorLinks } from '../components/documents/successor-links'
 import { VersionDiff } from '../components/documents/version-diff'
 import { VersionDismissDialog } from '../components/documents/version-dismiss-dialog'
-import { MoreDocumentEvents, useDocumentEvents } from '../components/documents/document-events'
+import { VersionReviseDialog } from '../components/documents/version-revise-dialog'
 import { LineageExplorer } from '../components/lineage/lineage-explorer'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
@@ -348,6 +349,8 @@ function DesignCanvas({
   const canConfirm = useWorkspaceCapability('confirm_documents')
   const displayed = item.current_version ?? item.pending_versions[0] ?? item.versions[item.versions.length - 1]
   const [dismissTarget, setDismissTarget] = useState<SystemDesignVersion | null>(null)
+  const canPropose = useWorkspaceCapability('propose_documents')
+  const [reviseTarget, setReviseTarget] = useState<SystemDesignVersion | null>(null)
   const [archiveDialogOpen, setArchiveDialogOpen] = useState(false)
   const { data: successorRequirements = [] } = useQuery({
     queryKey: ['requirements', workspace, { includeArchived: false }],
@@ -488,6 +491,15 @@ function DesignCanvas({
               ? 'Confirming…'
               : `Confirm version ${version.version}`}
           </Button>
+          {canPropose && (
+            <Button
+              variant="secondary"
+              disabled={confirm.isPending || dismiss.isPending}
+              onClick={() => setReviseTarget(version)}
+            >
+              Revise
+            </Button>
+          )}
           <Button
             variant="destructive"
             disabled={confirm.isPending || dismiss.isPending}
@@ -507,6 +519,17 @@ function DesignCanvas({
 
   return (
     <article className="mx-auto max-w-4xl px-8 py-8">
+      {reviseTarget && (
+        <VersionReviseDialog
+          target={{
+            id: item.document.id,
+            title: item.document.title,
+            tier: 'system_design',
+            version: reviseTarget.version,
+          }}
+          onClose={() => setReviseTarget(null)}
+        />
+      )}
       {dismissTarget && (
         <VersionDismissDialog
           documentTitle={item.document.title}

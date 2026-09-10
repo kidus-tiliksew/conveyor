@@ -229,7 +229,7 @@ test('System Design renders a category tree, one attention surface, and authenti
   // AC-2.2: the assistant column is withdrawn from this surface.
   await expect(page.getByRole('complementary', { name: 'Design assistant' })).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Draft' })).toHaveCount(0)
-  await expect(page.getByRole('button', { name: 'Revise' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Revise', exact: true })).toBeVisible()
   await expect(page.locator('textarea')).toHaveCount(0)
 
   // The diff and the version history stay, subordinated under the document.
@@ -940,3 +940,79 @@ test('System Design pages older delivery activity and loads its explorer on open
   await expect(page.getByRole('dialog', { name: 'Knowledge explorer' })).toBeVisible()
   await expect.poll(() => graphReads).toBe(1)
 })
+
+test('System Design pending attention revises through the shared dialog and refreshes the document', async ({
+  page,
+}) => {
+  await initialize(page)
+  let revised = false
+  const calls: string[] = []
+  const content =
+    '# Corrected dispatch design\n\n```conveyor:governs\n- repo: conveyor\n  paths: [internal/dispatch/**]\n```'
+  await page.route('**/v1/**', async (route) => {
+    const handled = shell(route)
+    if (handled) return await handled
+    const path = new URL(route.request().url()).pathname
+    if (path.endsWith('/events'))
+      return route.fulfill({ json: { events: [], total: 0, limit: 50, offset: 0, snapshot_id: 0 } })
+    const view = revised
+      ? {
+          ...design,
+          document: { ...design.document, current_version: 3 },
+          current_version: { ...first, version: 3, content },
+          pending_versions: [],
+          drift: [],
+        }
+      : { ...design, drift: [] }
+    if (path === '/v1/system-designs') return route.fulfill({ json: [summarizeDesign(view)] })
+    if (path === '/v1/system-designs/design-dispatch') return route.fulfill({ json: view })
+    if (path === '/v1/system-designs/design-dispatch/versions') {
+      calls.push('propose')
+      expect(route.request().postDataJSON()).toEqual({ content, origin: 'operator' })
+      return route.fulfill({ status: 201, json: { ...pending, version: 3, content } })
+    }
+    if (path === '/v1/system-designs/design-dispatch/versions/3/confirm') {
+      calls.push('confirm')
+      expect(route.request().headers()['if-match']).toBe('"1"')
+      revised = true
+      return route.fulfill({ json: {} })
+    }
+    return route.fulfill({ json: [] })
+  })
+  await page.goto('/system-design?document=design-dispatch')
+  await page.getByRole('button', { name: 'Revise', exact: true }).click()
+  const dialog = page.getByRole('dialog')
+  await expect(dialog.getByLabel('Proposal content')).toHaveValue(pending.content)
+  await expect(dialog).toContainText('planning session session-design')
+  await dialog.getByLabel('Proposal content').fill(content)
+  await dialog.getByRole('button', { name: 'Propose and confirm' }).click()
+  await expect(dialog).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Revise', exact: true })).toHaveCount(0)
+  await expect(page.getByText('Corrected dispatch design', { exact: true })).toBeVisible()
+  expect(calls).toEqual(['propose', 'confirm'])
+})
+
+for (const access of ['confirm-only', 'propose-only'] as const) {
+  test(`System Design Revise stays absent for ${access}`, async ({ page }) => {
+    await initialize(page)
+    if (access === 'confirm-only')
+      await page.route('**/src/lib/workspace-capabilities.json*', async (route) => {
+        const response = await route.fetch()
+        await route.fulfill({ response, body: (await response.text()).replace(/"propose_documents",?/g, '') })
+      })
+    await page.route('**/v1/**', async (route) => {
+      const path = new URL(route.request().url()).pathname
+      if (path === '/v1/me')
+        return route.fulfill({ json: { id: 'caller', role: access === 'confirm-only' ? 'operator' : 'contributor' } })
+      const handled = shell(route)
+      if (handled) return await handled
+      if (path === '/v1/system-designs') return route.fulfill({ json: [summarizeDesign(design)] })
+      if (path === '/v1/system-designs/design-dispatch') return route.fulfill({ json: design })
+      return route.fulfill({ json: [] })
+    })
+    await page.goto('/system-design?document=design-dispatch')
+    await expect(page.getByRole('region', { name: 'Needs your attention' })).toContainText('Version 2')
+    await expect(page.getByRole('button', { name: 'Revise', exact: true })).toHaveCount(0)
+    await expect(page.getByRole('button', { name: 'Confirm version 2' })).toHaveCount(access === 'confirm-only' ? 1 : 0)
+  })
+}

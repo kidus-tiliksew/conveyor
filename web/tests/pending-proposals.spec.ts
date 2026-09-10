@@ -416,3 +416,212 @@ test('pending proposal consumers share one active query and hidden documents sto
   await page.context().setOffline(false)
   await expect.poll(() => projectionRequests).toBe(3)
 })
+
+for (const tier of ['requirement', 'system_design'] as const) {
+  for (const outcome of ['success', 'validation', 'conflict'] as const) {
+    test(`Revise ${tier} proposal handles ${outcome} and preserves the reviewed base`, async ({ page }) => {
+      await initialize(page)
+      const endpoint = tier === 'requirement' ? 'requirements' : 'system-designs'
+      const calls: string[] = []
+      let confirmed = false
+      let proposed = false
+      let currentVersion = 1
+      let detailReads = 0
+      const edited =
+        tier === 'requirement'
+          ? '# Corrected proposal\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Keep the complete content.\n```'
+          : '# Corrected proposal\n\n```conveyor:governs\n- repo: conveyor\n  paths: [web/**]\n```'
+      const pending = {
+        version: 2,
+        content: '# Pending content',
+        origin: 'implementation',
+        origin_task_id: 'origin-task',
+      }
+      await page.route('**/v1/**', async (route) => {
+        const request = route.request()
+        const path = new URL(request.url()).pathname
+        if (path === '/v1/workspaces') return route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] })
+        if (path === '/v1/me') return route.fulfill({ json: { id: 'operator', role: 'operator' } })
+        if (path === '/v1/workspace') return route.fulfill({ json: { workspace: 'demo', repos: ['conveyor'] } })
+        if (path === '/v1/tasks/origin-task/activity')
+          return route.fulfill({
+            json: {
+              task: {
+                id: 'origin-task',
+                workspace: 'demo',
+                source: 'mcp',
+                title: 'Origin task',
+                body: 'Pending authority',
+                repo: 'conveyor',
+                base_branch: 'main',
+                branch: 'conveyor/task-origin',
+                state: 'running',
+                created_at: proposedAt,
+              },
+              jobs: [],
+              events: [],
+              interventions: [],
+              work_orders: [],
+              attachments: [],
+              verification_evidence: [],
+              checkout_available: false,
+              checkout_guidance: '',
+              needs_attention: !confirmed,
+              pending_authority: !confirmed,
+            },
+          })
+        if (path.endsWith('/events/stream')) return route.fulfill({ status: 204 })
+        if (path === '/v1/pending-proposals') {
+          const items = confirmed
+            ? []
+            : [
+                {
+                  id: 'document',
+                  title: 'Proposal to correct',
+                  tier,
+                  version: 2,
+                  origin_type: 'task',
+                  origin_id: 'origin-task',
+                  age_seconds: 60,
+                },
+                ...(proposed
+                  ? [
+                      {
+                        id: 'document',
+                        title: 'Proposal to correct',
+                        tier,
+                        version: 3,
+                        origin_type: 'operator',
+                        age_seconds: 0,
+                      },
+                    ]
+                  : []),
+              ]
+          return route.fulfill({
+            json: { items, attention: { pending_proposal_count: items.length, task_count: 0, total: items.length } },
+          })
+        }
+        if (path === `/v1/${endpoint}/document`) {
+          detailReads++
+          return route.fulfill({
+            json: {
+              [tier === 'requirement' ? 'requirement' : 'document']: {
+                id: 'document',
+                current_version: currentVersion,
+              },
+              current_version: { version: currentVersion, content: '# Confirmed content' },
+              pending_versions: [pending],
+            },
+          })
+        }
+        if (path === `/v1/${endpoint}/document/versions`) {
+          expect(request.method()).toBe('POST')
+          expect(request.postDataJSON()).toEqual({ content: edited, origin: 'operator' })
+          expect(request.headers()['x-conveyor-csrf']).toBe('1')
+          expect(request.headers().authorization).toBeUndefined()
+          calls.push('propose')
+          if (outcome === 'validation') return route.fulfill({ status: 400, body: 'Duplicate statement REQ-1' })
+          proposed = true
+          return route.fulfill({ status: 201, json: { version: 3, content: edited, origin: 'operator' } })
+        }
+        if (path === `/v1/${endpoint}/document/versions/3/confirm`) {
+          calls.push('confirm')
+          expect(request.headers()['if-match']).toBe('"1"')
+          if (outcome === 'conflict') return route.fulfill({ status: 409, json: { error: 'current_version_mismatch' } })
+          confirmed = true
+          return route.fulfill({ json: {} })
+        }
+        return route.fulfill({ json: [] })
+      })
+      if (outcome === 'success') {
+        await page.goto('/tasks/origin-task/full')
+        const warning = page.getByRole('region', { name: 'Review is waiting on a document decision' })
+        await warning.getByRole('link', { name: 'Confirm or dismiss the proposal' }).click()
+      } else await page.goto('/pending-proposals')
+      await page.getByRole('button', { name: 'Revise', exact: true }).click()
+      const dialog = page.getByRole('dialog', { name: 'Revise version 2 of Proposal to correct' })
+      await expect(dialog.getByLabel('Proposal content')).toHaveValue(pending.content)
+      await expect(dialog).toContainText('Origin: task origin-task')
+      await expect(dialog).toContainText('# Confirmed content')
+      await dialog.getByLabel('Proposal content').fill(edited)
+      if (outcome === 'conflict') currentVersion = 4 // Another operator changed the reviewed base.
+      await dialog.getByRole('button', { name: 'Propose and confirm' }).click()
+      if (outcome === 'success') {
+        await expect(dialog).toHaveCount(0)
+        await expect(page.getByText('No document decisions are waiting for you.')).toBeVisible()
+        await expect(page.getByRole('link', { name: /Pending proposals/ })).not.toContainText('1')
+        expect(calls).toEqual(['propose', 'confirm'])
+        await page.goBack()
+        await expect(page.getByRole('heading', { name: 'Origin task', exact: true })).toBeVisible()
+        await expect(page.getByRole('region', { name: 'Review is waiting on a document decision' })).toHaveCount(0)
+      } else {
+        await expect(dialog.getByRole('alert')).toContainText(
+          outcome === 'validation'
+            ? 'Duplicate statement REQ-1'
+            : 'Version 3 was proposed, but confirmation failed. It remains pending.',
+        )
+        await expect(dialog.getByLabel('Proposal content')).toHaveValue(edited)
+        expect(calls).toEqual(outcome === 'validation' ? ['propose'] : ['propose', 'confirm'])
+        if (outcome === 'conflict') {
+          await expect(dialog.getByRole('button', { name: 'Propose and confirm' })).toBeDisabled()
+          await dialog.getByRole('button', { name: 'Close', exact: true }).click()
+          await expect(page.getByRole('listitem')).toHaveCount(2)
+          await page.getByRole('listitem').filter({ hasText: 'v2' }).getByRole('button', { name: 'Revise' }).click()
+          await expect(page.getByRole('dialog')).toContainText('Confirmed v4')
+          expect(detailReads).toBeGreaterThan(1)
+        } else {
+          await expect(dialog.getByRole('button', { name: 'Propose and confirm' })).toBeEnabled()
+        }
+      }
+    })
+  }
+}
+
+for (const access of ['both', 'confirm-only', 'propose-only', 'neither'] as const) {
+  test(`Revise capability gate requires both capabilities: ${access}`, async ({ page }) => {
+    await initialize(page)
+    if (access === 'confirm-only') {
+      // Fixed production roles have no confirm-only bundle. Remove propose from
+      // the served client bundle to exercise this independent capability check.
+      await page.route('**/src/lib/workspace-capabilities.json*', async (route) => {
+        const response = await route.fetch()
+        await route.fulfill({ response, body: (await response.text()).replace(/"propose_documents",?/g, '') })
+      })
+    }
+    await page.route('**/v1/**', async (route) => {
+      const path = new URL(route.request().url()).pathname
+      if (path === '/v1/workspaces') return route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] })
+      if (path === '/v1/me')
+        return route.fulfill({
+          json: {
+            id: 'caller',
+            role: access === 'neither' ? 'viewer' : access === 'propose-only' ? 'contributor' : 'operator',
+          },
+        })
+      if (path === '/v1/pending-proposals')
+        return route.fulfill({
+          json: {
+            items: ['requirement', 'system_design', 'decision'].map((tier) => ({
+              id: tier,
+              title: tier,
+              tier,
+              version: 2,
+              origin_type: 'operator',
+              age_seconds: 60,
+            })),
+            attention: { pending_proposal_count: 3, total: 3 },
+          },
+        })
+      return route.fulfill({ json: [] })
+    })
+    await page.goto('/pending-proposals')
+    await expect(page.getByRole('listitem')).toHaveCount(3)
+    await expect(page.getByRole('button', { name: 'Revise', exact: true })).toHaveCount(access === 'both' ? 2 : 0)
+    await expect(page.getByRole('button', { name: 'Confirm', exact: true })).toHaveCount(
+      access === 'both' || access === 'confirm-only' ? 3 : 0,
+    )
+    await expect(
+      page.getByRole('listitem').filter({ hasText: 'Decision' }).getByRole('button', { name: 'Revise' }),
+    ).toHaveCount(0)
+  })
+}

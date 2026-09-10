@@ -166,6 +166,15 @@ attention projections and can never be confirmed later. Direct dismissal does
 not archive or delete the document, and confirmation still resolves earlier
 pending versions as described above.
 
+Operators holding both `propose_documents` and `confirm_documents` can use
+Revise on a pending requirement or System Design proposal in the queue or its
+document attention surface. The dialog loads the full proposal, names its origin
+and version, and compares edits with the confirmed version. Submit proposes a
+new operator-origin version, then confirms it with the reviewed current version
+in `If-Match`; confirmation dismisses earlier pending versions. Validation errors
+keep the edits open. If confirmation fails, the replacement remains pending and
+the dialog directs the operator to review it again. Decisions have no Revise action.
+
 The Pending proposals page collects every undecided proposal, with its age,
 its origin, and confirm and dismiss actions, so an operator can see at a glance how
 much authority the factory is waiting on. A pending task-authored

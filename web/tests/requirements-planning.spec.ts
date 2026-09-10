@@ -276,9 +276,10 @@ test('requirements renders a document tree, one attention surface, and confirms 
   await expect(page.getByText('Code ahead of intent')).toHaveCount(0)
   await expect(page.getByRole('region', { name: 'Requirement alignment' })).toHaveCount(0)
   await expect(tree.getByText('confirmation')).toHaveCount(0)
+  await expect(attention.getByRole('button', { name: 'Revise', exact: true })).toBeVisible()
   // AC-2.2: the assistant column is withdrawn from this surface.
   await expect(page.getByRole('complementary', { name: 'Planning assistant' })).toHaveCount(0)
-  for (const action of ['Draft', 'Revise', 'Q&A', 'Plan work', 'New requirement']) {
+  for (const action of ['Draft', 'Q&A', 'Plan work', 'New requirement']) {
     await expect(page.getByRole('button', { name: action })).toHaveCount(0)
   }
 
@@ -2459,3 +2460,87 @@ test('requirement activity pages on demand and opens the explorer independently'
   await expect(page.getByRole('dialog', { name: 'Knowledge explorer' })).toBeVisible()
   await expect.poll(() => graphReads).toBe(1)
 })
+
+test('Requirement pending attention revises its first version and refreshes history', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('conveyor-workspace', 'demo'))
+  let revised = false
+  const calls: string[] = []
+  const content =
+    '# Corrected retry behavior\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Retries stop after a finite limit.\n```'
+  const replacement = { ...requirement.pending_versions[0], version: 2, content, confirmed: true }
+  await page.route('**/v1/**', async (route) => {
+    const path = new URL(route.request().url()).pathname
+    if (path.endsWith('/events'))
+      return route.fulfill({ json: { events: [], total: 0, limit: 50, offset: 0, snapshot_id: 0 } })
+    if (path === '/v1/workspaces') return route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] })
+    if (path === '/v1/me') return route.fulfill({ json: { id: 'operator', role: 'operator' } })
+    const view = {
+      ...requirement,
+      staleness: { delivery_after_intent: false, deliveries: [], active_drift: [] },
+      ...(revised
+        ? {
+            requirement: { ...requirement.requirement, current_version: 2 },
+            current_version: replacement,
+            pending_versions: [],
+          }
+        : {}),
+    }
+    if (path === '/v1/requirements') return route.fulfill({ json: [view] })
+    if (path === '/v1/requirements/req-retries') return route.fulfill({ json: view })
+    if (path === '/v1/requirements/req-retries/versions') {
+      if (route.request().method() === 'GET')
+        return route.fulfill({
+          json: revised ? [replacement, ...requirement.pending_versions] : requirement.pending_versions,
+        })
+      calls.push('propose')
+      expect(route.request().postDataJSON()).toEqual({ content, origin: 'operator' })
+      return route.fulfill({ status: 201, json: { ...replacement, confirmed: false } })
+    }
+    if (path === '/v1/requirements/req-retries/versions/2/confirm') {
+      calls.push('confirm')
+      expect(route.request().headers()['if-match']).toBe('"0"')
+      revised = true
+      return route.fulfill({ json: { requirement: view.requirement, version: replacement } })
+    }
+    return route.fulfill({ json: [] })
+  })
+  await page.goto('/requirements?requirement=req-retries')
+  await page.getByRole('button', { name: 'Revise', exact: true }).click()
+  const dialog = page.getByRole('dialog')
+  await expect(dialog.getByLabel('Proposal content')).toHaveValue(requirement.pending_versions[0].content)
+  await expect(dialog).toContainText('No confirmed version')
+  await dialog.getByLabel('Proposal content').fill(content)
+  await dialog.getByRole('button', { name: 'Propose and confirm' }).click()
+  await expect(dialog).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Revise', exact: true })).toHaveCount(0)
+  await expect(page.getByText('Corrected retry behavior', { exact: true })).toBeVisible()
+  expect(calls).toEqual(['propose', 'confirm'])
+})
+
+for (const access of ['confirm-only', 'propose-only'] as const) {
+  test(`Requirement Revise stays absent for ${access}`, async ({ page }) => {
+    await initShell(page)
+    if (access === 'confirm-only')
+      await page.route('**/src/lib/workspace-capabilities.json*', async (route) => {
+        const response = await route.fetch()
+        await route.fulfill({ response, body: (await response.text()).replace(/"propose_documents",?/g, '') })
+      })
+    await page.route('**/v1/**', async (route) => {
+      const path = new URL(route.request().url()).pathname
+      if (path === '/v1/me')
+        return route.fulfill({ json: { id: 'caller', role: access === 'confirm-only' ? 'operator' : 'contributor' } })
+      const handled = shellResponse(route)
+      if (handled) return await handled
+      if (path === '/v1/requirements') return route.fulfill({ json: [summarizeRequirement(requirement)] })
+      if (path === '/v1/requirements/req-retries') return route.fulfill({ json: requirement })
+      if (path === '/v1/requirements/req-retries/versions') return route.fulfill({ json: requirement.pending_versions })
+      return route.fulfill({ json: [] })
+    })
+    await page.goto('/requirements?requirement=req-retries')
+    await expect(page.getByRole('region', { name: 'Needs your attention' })).toContainText(
+      'Version 1 is waiting for you',
+    )
+    await expect(page.getByRole('button', { name: 'Revise', exact: true })).toHaveCount(0)
+    await expect(page.getByRole('button', { name: 'Confirm version 1' })).toHaveCount(access === 'confirm-only' ? 1 : 0)
+  })
+}

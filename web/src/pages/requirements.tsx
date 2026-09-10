@@ -20,6 +20,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useWorkspaceCapability, useWorkspaceSelection } from '../components/app-shell'
 import { ArchiveDocumentDialog, type SuccessorCandidate } from '../components/documents/archive-document-dialog'
 import { type AttentionItem, AttentionSurface } from '../components/documents/attention-surface'
+import { MoreDocumentEvents, useDocumentEvents } from '../components/documents/document-events'
 import { compareDocuments, type DocumentSort, type DocumentSortDirection } from '../components/documents/document-sort'
 import {
   DocumentTree,
@@ -32,7 +33,7 @@ import { DriftResolutionForm } from '../components/documents/drift-resolution-fo
 import { SuccessorLinks } from '../components/documents/successor-links'
 import { VersionDiff } from '../components/documents/version-diff'
 import { VersionDismissDialog } from '../components/documents/version-dismiss-dialog'
-import { MoreDocumentEvents, useDocumentEvents } from '../components/documents/document-events'
+import { VersionReviseDialog } from '../components/documents/version-revise-dialog'
 import { LineageExplorer } from '../components/lineage/lineage-explorer'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
@@ -599,6 +600,8 @@ function RequirementDetailCanvas({ item }: { item: RequirementView }) {
   const currentVersion = item.current_version?.version ?? 0
   const [attachmentOffer, setAttachmentOffer] = useState<number | null>(null)
   const [dismissTarget, setDismissTarget] = useState<RequirementVersion | null>(null)
+  const canPropose = useWorkspaceCapability('propose_documents')
+  const [reviseTarget, setReviseTarget] = useState<RequirementVersion | null>(null)
   const [archiveDialogOpen, setArchiveDialogOpen] = useState(false)
   const confirm = useMutation({
     mutationFn: (version: number) => confirmRequirementVersion(item.requirement.id, version, currentVersion),
@@ -837,6 +840,15 @@ function RequirementDetailCanvas({ item }: { item: RequirementView }) {
               ? 'Confirming…'
               : `Confirm version ${version.version}`}
           </Button>
+          {canPropose && (
+            <Button
+              variant="secondary"
+              disabled={confirm.isPending || dismiss.isPending}
+              onClick={() => setReviseTarget(version)}
+            >
+              Revise
+            </Button>
+          )}
           <Button
             variant="destructive"
             disabled={confirm.isPending || dismiss.isPending}
@@ -855,6 +867,17 @@ function RequirementDetailCanvas({ item }: { item: RequirementView }) {
 
   return (
     <div className="min-w-0">
+      {reviseTarget && (
+        <VersionReviseDialog
+          target={{
+            id: item.requirement.id,
+            title: item.requirement.title,
+            tier: 'requirement',
+            version: reviseTarget.version,
+          }}
+          onClose={() => setReviseTarget(null)}
+        />
+      )}
       {dismissTarget && (
         <VersionDismissDialog
           documentTitle={item.requirement.title}
