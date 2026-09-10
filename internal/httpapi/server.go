@@ -164,6 +164,8 @@ func (s *Server) Handler() http.Handler {
 		r.With(s.requireWorkerAuth).Get("/worker/config", s.getWorkerConfig)
 		r.With(s.requireWorkerAuth).Get("/worker/work-orders", s.listWorkerOrders)
 		r.With(s.requireWorkerAuth).Post("/worker/work-orders/{id}/claim", s.claimWorkerOrder)
+		r.With(s.requireWorkerAuth).Get("/worker/work-orders/{id}/pull-request-template", s.getSubmissionTemplate)
+		r.With(s.requireWorkerAuth).Post("/worker/work-orders/{id}/submit-for-review", s.submitWorkOrderReview)
 		r.With(s.requireWorkerAuth).Get("/worker/work-orders/{id}/reconcile", s.reconcileWorkerOrder)
 		r.With(s.requireWorkerAuth).Post("/worker/work-orders/{id}/renew", s.renewWorkerOrder)
 		r.With(s.requireWorkerAuth).Post("/worker/work-orders/{id}/attempt-checkpoint", s.checkpointWorkerOrderAttempt)
@@ -328,6 +330,8 @@ func (s *Server) Handler() http.Handler {
 	// (streamable-HTTP clients probe GET for an SSE stream); registering
 	// only Post would let GET fall through to the SPA catch-all as 200 HTML.
 	r.With(s.requireMCPAuth).HandleFunc("/mcp", s.handleMCP)
+	r.With(s.requireMCPAuth).Get("/v1/work-orders/{id}/pull-request-template", s.getSubmissionTemplate)
+	r.With(s.requireMCPAuth).Post("/v1/work-orders/{id}/submit-for-review", s.submitWorkOrderReview)
 	r.Get("/", serveDashboard)
 	// The SPA router owns all non-API paths; adding a client route no longer
 	// requires duplicating it in the Go server.

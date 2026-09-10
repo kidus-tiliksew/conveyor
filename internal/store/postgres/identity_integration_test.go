@@ -596,7 +596,15 @@ func TestIssuedRunAgentCredentialCompletesMCPStageLifecyclesAndRejectsOperatorAc
 
 	implementTask, implementOrder := createOrder(core.StageImplement)
 	implementSession, implementAgent := claimAndIssue(implementTask, implementOrder)
-	if result := mcpCall(implementAgent, "submit_for_review", baseArgs(implementOrder, implementSession)); result.Result.IsError {
+	implementArgs := baseArgs(implementOrder, implementSession)
+	if result := mcpCall(implementAgent, "submit_for_review", implementArgs); !result.Result.IsError || !strings.Contains(result.Result.Content[0].Text, "head_sha is required") {
+		t.Fatalf("missing head was not refused: %+v", result)
+	}
+	if unchanged, getErr := st.GetWorkOrder(ctx, implementOrder.ID); getErr != nil || unchanged.State != core.WorkOrderClaimed {
+		t.Fatalf("missing head changed order=%+v err=%v", unchanged, getErr)
+	}
+	implementArgs["head_sha"] = "submitted-head"
+	if result := mcpCall(implementAgent, "submit_for_review", implementArgs); result.Result.IsError {
 		t.Fatalf("issued implement credential failed: %+v", result)
 	}
 	if submitted, getErr := st.GetWorkOrder(ctx, implementOrder.ID); getErr != nil || submitted.State != core.WorkOrderSubmitted {

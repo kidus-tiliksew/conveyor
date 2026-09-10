@@ -19,3 +19,9 @@ truthful release, report, and exit; never poll `await_review` from a stage
 session. Executor claims confer proposal capability only; operator
 confirmations, gates, holds, drift resolution, and merge remain outside the
 executor's authority.
+
+For implementation delivery, commit after validation and run
+`conveyor submit <task-id>` in the dedicated worktree. It pushes the exact head,
+opens or reuses the pull request with the executing machine's credential, and
+submits `head_sha`. Direct `submit_for_review` requires that the PR already
+exists and that the call names its pushed head SHA. Report success and exit.

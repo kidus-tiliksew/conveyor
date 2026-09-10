@@ -134,9 +134,14 @@ abandoning the attempt, `release_work_order` with a truthful reason:
 - A plan-stage order ends with `submit_plan`. The current MCP registration
   intentionally rejects the retired `submit_spec` name and directs callers to
   `submit_plan`; use the tool and schema delivered by the live server.
-- An implementation order ends only after validation, commit, and a successful
-  upstream push of the exact assigned task branch, followed by
-  `submit_for_review`. Do not open the pull request or submit review yourself.
+- An implementation order ends after validation, commit, and
+  `conveyor submit <task-id>` from its dedicated task worktree. The command
+  pushes the exact head, opens or reuses the pull request with the executing
+  machine's credential, and calls `submit_for_review` with `head_sha`. Keep
+  `CONVEYOR_WORK_ORDER_ID` and `CONVEYOR_SESSION_ID` from the claimed session.
+  Direct MCP submission remains available when the pull request is already
+  open: supply its pushed `head_sha`, work order, session, and workspace.
+  The server validates head and base, records the PR, and dispatches review.
 - An independently claimed review order ends with `submit_review_verdict`.
   Implementation and review must use separate sessions; an implementer never
   claims or judges its own review order.

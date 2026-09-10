@@ -707,7 +707,8 @@ func TestSubmittedOwnerObservationAndTelemetryAreLeaseExempt(t *testing.T) {
 
 	for name, call := range map[string]func() error{
 		"submit for review": func() error {
-			_, callErr := service.SubmitForReview(ctx, job.ID, "owner-session")
+			prepareSubmissionTest(service)
+			_, callErr := service.SubmitForReview(ctx, job.ID, "owner-session", submissionTestHead(service))
 			return callErr
 		},
 		"submit plan": func() error {
@@ -957,9 +958,9 @@ func TestReviewWorkOrderContextIncludesPullRequestDescriptionBestEffort(t *testi
 			cfg := &config.Config{Repos: []config.Repo{{Name: "app", GitHub: "acme/app"}}}
 			service := &Service{
 				Store: st, Pack: bundle, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil },
-				ReviewDiffForBranch: func(_ context.Context, repo, branch string) (string, error) {
-					if repo != "acme/app" || branch != task.Branch {
-						t.Fatalf("diff repo=%q branch=%q", repo, branch)
+				ReviewDiffBetween: func(_ context.Context, repo, base, head string) (string, error) {
+					if repo != "acme/app" || base != "base123" || head != "abc123" {
+						t.Fatalf("diff repo=%q base=%q head=%q", repo, base, head)
 					}
 					return "branch diff", nil
 				},
@@ -969,6 +970,9 @@ func TestReviewWorkOrderContextIncludesPullRequestDescriptionBestEffort(t *testi
 					}
 					return tt.description, tt.fetchErr
 				},
+			}
+			if err := st.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]string{"base_sha": "base123", "head_sha": "abc123"})}); err != nil {
+				t.Fatal(err)
 			}
 			result, err := service.Get(ctx, job.ID, "review-session")
 			if err != nil {
@@ -2205,7 +2209,8 @@ func TestSubmitForReviewReturnsSynchronousInProcessVerdict(t *testing.T) {
 	if _, err = service.Usage(ctx, claimed.ID, "implement-session", 100_000_000, 25_000_000, 20_000); err != nil {
 		t.Fatalf("high usage report failed: %v", err)
 	}
-	result, err := service.SubmitForReview(ctx, claimed.ID, "implement-session")
+	prepareSubmissionTest(service)
+	result, err := service.SubmitForReview(ctx, claimed.ID, "implement-session", submissionTestHead(service))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2266,7 +2271,7 @@ func TestSubmitForReviewGovernanceFailuresPrecedeReviewSideEffects(t *testing.T)
 			if err = storetest.For(base).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement}); err != nil {
 				t.Fatal(err)
 			}
-			if _, err = storetest.For(base).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "implementer", ClientToken: "secret", Lease: time.Minute}); err != nil {
+			if _, err = storetest.For(base).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "implementer", ClientToken: "secret", ClaimantID: core.TaskRunClaimantID("owner"), OwnerUserID: "owner", Lease: time.Minute}); err != nil {
 				t.Fatal(err)
 			}
 			cfg := &config.Config{Workspace: "test", Repos: []config.Repo{{Name: "app", Base: "main", GitHub: "acme/app"}}, Routing: config.Routing{Stages: map[string]config.StageRoute{"review": {Execution: config.ExecutionMCP, Timeout: time.Hour}}}}
@@ -2281,12 +2286,13 @@ func TestSubmitForReviewGovernanceFailuresPrecedeReviewSideEffects(t *testing.T)
 				SubmissionChangedPaths: func(context.Context, *config.Config, core.Task) ([]string, error) {
 					return []string{"internal/change.go"}, test.pathErr
 				},
-				OpenPR: func(context.Context, string, string, string, string, string, string) (string, error) {
+				ReconcileSubmissionPR: func(context.Context, string, githubtrigger.SubmissionPullRequest, string) error {
 					opened++
-					return "unexpected", nil
+					return errors.New("unexpected reconciliation")
 				},
 			}
-			if _, err = service.SubmitForReview(ctx, job.ID, "implementer"); err == nil || !strings.Contains(err.Error(), test.wantDetail) {
+			prepareSubmissionTest(service)
+			if _, err = service.SubmitForReview(ctx, job.ID, "implementer", submissionTestHead(service)); err == nil || !strings.Contains(err.Error(), test.wantDetail) {
 				t.Fatalf("submit error=%v", err)
 			}
 			order, orderErr := base.GetWorkOrder(ctx, job.ID)
@@ -2336,7 +2342,8 @@ func TestSubmissionDerivedGovernanceEngagesTaskProposalReviewGate(t *testing.T) 
 	service := &Service{Store: st, Dispatcher: dispatcher, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }, SubmissionChangedPaths: func(context.Context, *config.Config, core.Task) ([]string, error) {
 		return []string{"internal/workorder/service.go"}, nil
 	}}
-	if _, err = service.SubmitForReview(ctx, job.ID, "implementer"); err != nil {
+	prepareSubmissionTest(service)
+	if _, err = service.SubmitForReview(ctx, job.ID, "implementer", submissionTestHead(service)); err != nil {
 		t.Fatal(err)
 	}
 	context, err := store.TaskContextForTask(ctx, st, task.ID)
@@ -2410,10 +2417,10 @@ func TestSubmitForReviewEvidenceGateIsSideEffectFreeAndPropagatesToEveryReviewSe
 	service := &Service{
 		Store: st, Dispatcher: dispatcher, Pack: bundle, ForgeTokens: &claimForgeTokens{configured: true, credential: core.ForgeTokenCredential{UserID: "usr-evidence", Token: "evidence-token"}},
 		ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil },
-		OpenPR: func(_ context.Context, _, _, _, _ string, body, _ string) (string, error) {
+		ReconcileSubmissionPR: func(_ context.Context, _ string, _ githubtrigger.SubmissionPullRequest, body string) error {
 			openCalls++
 			prBody = body
-			return "https://github.com/acme/app/pull/54", nil
+			return nil
 		},
 		ReviewTarget: func(context.Context, string, string) (githubtrigger.ReviewTarget, error) {
 			return githubtrigger.ReviewTarget{Number: 54, BaseSHA: "base123", HeadSHA: "abc123"}, nil
@@ -2422,7 +2429,8 @@ func TestSubmitForReviewEvidenceGateIsSideEffectFreeAndPropagatesToEveryReviewSe
 
 	assertRejectedWithoutSideEffects := func() {
 		t.Helper()
-		if _, submitErr := service.SubmitForReview(ctx, job.ID, "implementer"); submitErr == nil ||
+		prepareSubmissionTest(service)
+		if _, submitErr := service.SubmitForReview(ctx, job.ID, "implementer", submissionTestHead(service)); submitErr == nil ||
 			!strings.Contains(submitErr.Error(), "/v1/worker/work-orders/"+job.ID+"/verification-evidence") ||
 			!strings.Contains(submitErr.Error(), "X-Conveyor-Work-Order-Token") ||
 			!strings.Contains(submitErr.Error(), "X-Conveyor-Work-Order-Session") ||
@@ -2467,7 +2475,8 @@ func TestSubmitForReviewEvidenceGateIsSideEffectFreeAndPropagatesToEveryReviewSe
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := service.SubmitForReview(ctx, job.ID, "implementer")
+	prepareSubmissionTest(service)
+	result, err := service.SubmitForReview(ctx, job.ID, "implementer", submissionTestHead(service))
 	if err != nil || result["await_review"] != true || openCalls != 1 {
 		t.Fatalf("submit=%+v open_calls=%d err=%v", result, openCalls, err)
 	}
@@ -2566,7 +2575,8 @@ func TestExpiredWorkerSessionsCannotRenewReleaseOrSubmit(t *testing.T) {
 			t.Fatalf("%s stale release err=%v", stage, err)
 		}
 		if stage == core.StageImplement {
-			if _, err := service.SubmitForReview(ctx, id, session); err == nil {
+			prepareSubmissionTest(service)
+			if _, err := service.SubmitForReview(ctx, id, session, submissionTestHead(service)); err == nil {
 				t.Fatal("expired implementation session submitted")
 			}
 		} else if _, err := service.SubmitVerdict(ctx, id, session, pipeline.Review{Verdict: "approve", ReasonCode: "approved", Summary: "stale"}); err == nil {
@@ -2608,16 +2618,15 @@ func TestSubmitForReviewWaitsForIssueAndPassesClosingReference(t *testing.T) {
 	dispatcher.DisableMemoryQueueForTest()
 	opened := 0
 	var body string
-	var usedToken string
-	service := &Service{Store: st, Dispatcher: dispatcher, ForgeTokens: &claimForgeTokens{configured: true, credential: core.ForgeTokenCredential{UserID: "usr-executor", Token: "executor-forge-token"}}, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }, OpenPR: func(_ context.Context, _, _, _, _ string, value, token string) (string, error) {
+	service := &Service{Store: st, Dispatcher: dispatcher, ForgeTokens: &claimForgeTokens{configured: true, credential: core.ForgeTokenCredential{UserID: "usr-executor", Token: "executor-forge-token"}}, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }, ReconcileSubmissionPR: func(_ context.Context, _ string, _ githubtrigger.SubmissionPullRequest, value string) error {
 		opened++
 		body = value
-		usedToken = token
-		return "https://github.com/acme/app/pull/9", nil
+		return nil
 	}, ReviewTarget: func(context.Context, string, string) (githubtrigger.ReviewTarget, error) {
 		return githubtrigger.ReviewTarget{Number: 9, HeadSHA: "abc"}, nil
 	}}
-	if _, err = service.SubmitForReview(ctx, job.ID, "implementer"); err == nil || !strings.Contains(err.Error(), "retry after publication") || opened != 0 {
+	prepareSubmissionTest(service)
+	if _, err = service.SubmitForReview(ctx, job.ID, "implementer", submissionTestHead(service)); err == nil || !strings.Contains(err.Error(), "retry after publication") || opened != 0 {
 		t.Fatalf("pending issue submit err=%v opened=%d", err, opened)
 	}
 	lifecycle, _, _ = st.GetGitHubLifecycle(ctx, task.ID)
@@ -2627,11 +2636,15 @@ func TestSubmitForReviewWaitsForIssueAndPassesClosingReference(t *testing.T) {
 	if err = st.UpdateGitHubLifecycle(ctx, lifecycle); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = service.SubmitForReview(ctx, job.ID, "implementer"); err != nil {
+	prepareSubmissionTest(service)
+	if _, err = service.SubmitForReview(ctx, job.ID, "implementer", submissionTestHead(service)); err != nil {
 		t.Fatal(err)
 	}
-	if opened != 1 || usedToken != "executor-forge-token" || !strings.Contains(body, "Closes #42") {
-		t.Fatalf("opened=%d token=%q body=%q", opened, usedToken, body)
+	if service.ForgeTokens.(*claimForgeTokens).useCalls != 0 {
+		t.Fatal("submission read an executing-user token from the control plane")
+	}
+	if opened != 1 || !strings.Contains(body, "Closes #42") {
+		t.Fatalf("reconciled=%d body=%q", opened, body)
 	}
 	events, err := st.ListEvents(ctx, task.ID)
 	if err != nil {
@@ -2671,13 +2684,14 @@ func TestSubmitForReviewAdvancesStaleRefreshHead(t *testing.T) {
 	dispatcher := dispatch.New(st, cfg, nil)
 	dispatcher.DisableMemoryQueueForTest()
 	service := &Service{Store: st, Dispatcher: dispatcher, ForgeTokens: &claimForgeTokens{configured: true, credential: core.ForgeTokenCredential{UserID: "usr-refresh", Token: "refresh-token"}}, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil },
-		OpenPR: func(context.Context, string, string, string, string, string, string) (string, error) {
-			return "https://github.com/acme/app/pull/7", nil
+		ReconcileSubmissionPR: func(context.Context, string, githubtrigger.SubmissionPullRequest, string) error {
+			return nil
 		},
 		ReviewTarget: func(context.Context, string, string) (githubtrigger.ReviewTarget, error) {
 			return githubtrigger.ReviewTarget{Number: 7, HeadSHA: "panel-fix-head"}, nil
 		}}
-	if _, err := service.SubmitForReview(ctx, job.ID, "implementer"); err != nil {
+	prepareSubmissionTest(service)
+	if _, err := service.SubmitForReview(ctx, job.ID, "implementer", submissionTestHead(service)); err != nil {
 		t.Fatal(err)
 	}
 	updated, err := st.GetTask(ctx, task.ID)
@@ -3090,16 +3104,17 @@ func TestWarmSessionBounceClaimsNextOrderReusesPRAndCannotSelfReview(t *testing.
 			}
 			return []string{"internal/second/change.go"}, nil
 		},
-		OpenPR: func(context.Context, string, string, string, string, string, string) (string, error) {
+		ReconcileSubmissionPR: func(context.Context, string, githubtrigger.SubmissionPullRequest, string) error {
 			openCalls++
-			return "https://github.com/acme/app/pull/7", nil
+			return nil
 		},
 		ReviewTarget: func(context.Context, string, string) (githubtrigger.ReviewTarget, error) {
 			return githubtrigger.ReviewTarget{Number: 7, URL: "https://github.com/acme/app/pull/7", HeadSHA: "commit-sha"}, nil
 		},
 	}
 
-	firstSubmit, err := service.SubmitForReview(ctx, implementJob.ID, implementSession)
+	prepareSubmissionTest(service)
+	firstSubmit, err := service.SubmitForReview(ctx, implementJob.ID, implementSession, submissionTestHead(service))
 	if err != nil || firstSubmit["pr_url"] != "https://github.com/acme/app/pull/7" {
 		t.Fatalf("first submit=%v err=%v", firstSubmit, err)
 	}
@@ -3154,7 +3169,8 @@ func TestWarmSessionBounceClaimsNextOrderReusesPRAndCannotSelfReview(t *testing.
 	if _, err = service.Claim(ctx, secondImplement.ID, core.WorkOrderClaim{SessionID: implementSession, ClientToken: implementToken, ClaimantID: core.TaskRunClaimantID("usr-loop"), OwnerUserID: "usr-loop", Agent: "codex", Model: "implementer", Lease: time.Minute}); err != nil {
 		t.Fatal(err)
 	}
-	secondSubmit, err := service.SubmitForReview(ctx, secondImplement.ID, implementSession)
+	prepareSubmissionTest(service)
+	secondSubmit, err := service.SubmitForReview(ctx, secondImplement.ID, implementSession, submissionTestHead(service))
 	if err != nil || secondSubmit["pr_url"] != firstSubmit["pr_url"] || openCalls != 2 {
 		t.Fatalf("second submit=%v first=%v calls=%d err=%v", secondSubmit, firstSubmit, openCalls, err)
 	}
@@ -3178,4 +3194,46 @@ func TestWarmSessionBounceClaimsNextOrderReusesPRAndCannotSelfReview(t *testing.
 	if _, err = service.Claim(ctx, secondReview.ID, core.WorkOrderClaim{SessionID: implementSession, ClientToken: implementToken, ClaimantID: "implementer", OwnerUserID: "usr-loop", Agent: "codex", Model: "reviewer", Lease: time.Minute}); err == nil || !strings.Contains(err.Error(), "self-review forbidden") {
 		t.Fatalf("self-review error = %v", err)
 	}
+}
+
+func prepareSubmissionTest(service *Service) {
+	if service.SubmissionPR == nil {
+		service.SubmissionPR = func(ctx context.Context, repo, branch string) (githubtrigger.SubmissionPullRequest, error) {
+			pr := githubtrigger.SubmissionPullRequest{Number: 7, URL: "https://github.com/acme/app/pull/7"}
+			pr.Head.Ref, pr.Head.SHA, pr.Base.Ref, pr.Base.SHA = branch, "abc123", "main", "base123"
+			if service.ReviewTarget != nil {
+				target, err := service.ReviewTarget(ctx, repo, branch)
+				if err != nil {
+					return pr, err
+				}
+				pr.Number = target.Number
+				pr.Head.SHA = target.HeadSHA
+				if target.URL != "" {
+					pr.URL = target.URL
+				} else {
+					pr.URL = fmt.Sprintf("https://github.com/acme/app/pull/%d", target.Number)
+				}
+			}
+			return pr, nil
+		}
+	}
+	if service.SubmissionChangedPaths == nil {
+		service.SubmissionChangedPaths = func(context.Context, *config.Config, core.Task) ([]string, error) { return []string{}, nil }
+	}
+	if service.ReconcileSubmissionPR == nil {
+		service.ReconcileSubmissionPR = func(context.Context, string, githubtrigger.SubmissionPullRequest, string) error { return nil }
+	}
+	if service.ReviewDiffBetween == nil {
+		service.ReviewDiffBetween = func(context.Context, string, string, string) (string, error) { return "diff", nil }
+	}
+}
+
+func submissionTestHead(service *Service) string {
+	if service.ReviewTarget != nil {
+		target, err := service.ReviewTarget(context.Background(), "acme/app", "")
+		if err == nil && target.HeadSHA != "" {
+			return target.HeadSHA
+		}
+	}
+	return "abc123"
 }

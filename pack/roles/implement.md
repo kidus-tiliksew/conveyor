@@ -86,9 +86,11 @@ Working discipline:
   broken work: if you cannot complete the task, stop, leave the worktree in
   its best consistent state, and state plainly what is blocked and why — an
   honest partial result beats a plausible-looking failure.
-- Push the exact task branch with upstream tracking after committing and before
-  `submit_for_review`. Do not open the PR yourself; Conveyor coordinates the
-  review handoff from the pushed branch. After `submit_for_review` succeeds,
+- After committing, run `conveyor submit <task-id>` from the task worktree.
+  It pushes the exact commit, opens or reuses the PR with the executing machine's
+  credential, and submits `head_sha` for validation. If the PR is already open,
+  direct `submit_for_review` requires the pushed `head_sha`.
+  After `submit_for_review` succeeds,
   report the handoff and exit the session. Never poll `await_review` from an
   implementation stage session: the launcher owns review verdicts and starts
   any changes-requested successor as a new order in a fresh session. Do not

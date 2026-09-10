@@ -382,3 +382,67 @@ func (r workOrderAttemptCheckpointRequest) checkpoint() core.WorkOrderAttemptChe
 	}
 	return checkpoint
 }
+
+// submitWorkOrderReview shares the MCP admission and submission contract. Both
+// worker and run channels enforce exact claimant, workspace, and session scope.
+func (s *Server) submitWorkOrderReview(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		SessionID   string `json:"session_id"`
+		HeadSHA     string `json:"head_sha"`
+		WorkspaceID string `json:"workspace_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if request.WorkspaceID == "" {
+		request.WorkspaceID = r.Header.Get("X-Workspace-ID")
+	}
+	result, err := s.callMCPTool(r, "submit_for_review", map[string]any{"work_order_id": chi.URLParam(r, "id"), "session_id": request.SessionID, "head_sha": request.HeadSHA, "workspace_id": request.WorkspaceID})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) getSubmissionTemplate(w http.ResponseWriter, r *http.Request) {
+	if s.WorkOrders == nil {
+		http.Error(w, "work-order service unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	workspace, err := s.resolveMCPWorkspace(r.Context(), r.URL.Query().Get("workspace_id"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusForbidden)
+		return
+	}
+	ctx := store.WithWorkspace(r.Context(), workspace)
+	session := r.URL.Query().Get("session_id")
+	worker, workerAuth := workerFromContext(ctx)
+	if !workerAuth && s.Workspaces != nil {
+		credential, ok := store.CredentialFromContext(ctx)
+		if !ok || s.Memberships == nil {
+			http.Error(w, "workspace_not_found", http.StatusForbidden)
+			return
+		}
+		allowed, authErr := s.Memberships.AuthorizeWorkspace(ctx, credential.OwnerUserID, workspace, core.CapabilityClaimWork)
+		if authErr != nil || !allowed {
+			http.Error(w, "workspace_not_found", http.StatusForbidden)
+			return
+		}
+	}
+	if credential, ok := store.CredentialFromContext(ctx); ok && credential.RunWorkspaceID != "" && credential.RunWorkspaceID != workspace {
+		http.Error(w, "workspace_not_found", http.StatusForbidden)
+		return
+	}
+	if _, err = s.authorizeClaimantSession(ctx, workerAuth, worker, chi.URLParam(r, "id"), session); err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	result, err := s.WorkOrders.PullRequestTemplate(ctx, chi.URLParam(r, "id"), session)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}

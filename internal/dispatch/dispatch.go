@@ -68,9 +68,38 @@ func New(st store.Store, cfg *config.Config, agent inprocess.Agent) *Dispatcher 
 		WorkspaceForgeTokens:       workspaceForgeTokenStore(st),
 		WorkspaceGitHubApps:        workspaceGitHubAppStore(st),
 		RequestMergeWithCredential: github.MergePullRequestWithCredential,
-		ReviewDiff:                 reviewBranchDiff,
-		ReviewChangedPaths:         ReviewBranchChangedPaths,
-		Now:                        func() time.Time { return time.Now().UTC() },
+
+		Now: func() time.Time { return time.Now().UTC() },
+	}
+	d.ReviewChangedPaths = func(ctx context.Context, cfg *config.Config, task core.Task) ([]string, error) {
+		repo, ok := cfg.Repo(task.Repo)
+		if !ok {
+			return nil, fmt.Errorf("repository %q is not configured", task.Repo)
+		}
+		forgeCtx, err := d.workspaceForgeContext(ctx, repo.GitHub)
+		if err != nil {
+			return nil, err
+		}
+		return ReviewBranchChangedPaths(forgeCtx, cfg, task)
+	}
+	d.ReviewDiff = func(ctx context.Context, cfg *config.Config, task core.Task) (string, error) {
+		repo, ok := cfg.Repo(task.Repo)
+		if !ok {
+			return "", fmt.Errorf("repository %q is not configured", task.Repo)
+		}
+		events, err := d.Store.ListEvents(ctx, task.ID)
+		if err != nil {
+			return "", err
+		}
+		comparison, err := RecordedReviewComparison(task, events)
+		if err != nil {
+			return "", err
+		}
+		forgeCtx, err := d.workspaceForgeContext(ctx, repo.GitHub)
+		if err != nil {
+			return "", err
+		}
+		return reviewBranchDiff(forgeCtx, cfg, comparison)
 	}
 	d.PublishIssue = func(ctx context.Context, publication github.IssuePublication) (github.IssuePublicationResult, error) {
 		forgeCtx, err := d.workspaceForgeContext(ctx, publication.Repo)
@@ -143,18 +172,39 @@ func ReviewBranchChangedPaths(ctx context.Context, cfg *config.Config, task core
 	if !ok {
 		return nil, fmt.Errorf("repository %q is not configured", task.Repo)
 	}
-	return gitx.NewManager(cfg.CacheDir, "").BranchChangedPaths(ctx, repo.URL, task.Branch, task.BaseBranch)
+	return github.CompareChangedPaths(ctx, repo.GitHub, task.BaseBranch, task.ReviewedHeadSHA)
 }
 
-// reviewBranchDiff reads the branch diff from the shared bare cache; the
-// implementing agent has already pushed the task branch to origin by the time
-// review dispatches (design-git-delivery).
+// reviewBranchDiff reads the immutable comparison recorded at submission.
 func reviewBranchDiff(ctx context.Context, cfg *config.Config, task core.Task) (string, error) {
 	repo, ok := cfg.Repo(task.Repo)
 	if !ok {
 		return "", fmt.Errorf("repository %q is not configured", task.Repo)
 	}
-	return gitx.NewManager(cfg.CacheDir, "").BranchDiff(ctx, repo.URL, task.Branch, task.BaseBranch)
+	return github.DiffBetween(ctx, repo.GitHub, task.BaseBranch, task.ReviewedHeadSHA)
+}
+
+// RecordedReviewComparison projects the verified commit pair, never mutable
+// branch names, into a transient task used solely for review input reads.
+func RecordedReviewComparison(task core.Task, events []core.Event) (core.Task, error) {
+	if task.ApprovalStale && task.RefreshBaselineSHA != "" && task.RefreshHeadSHA != "" && task.RefreshReviewScope == config.RefreshReviewDelta {
+		task.BaseBranch, task.ReviewedHeadSHA = task.RefreshBaselineSHA, task.RefreshHeadSHA
+		return task, nil
+	}
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Kind != "pull_request.opened" {
+			continue
+		}
+		var target struct {
+			Base string `json:"base_sha"`
+			Head string `json:"head_sha"`
+		}
+		if json.Unmarshal(events[i].Payload, &target) == nil && target.Base != "" && target.Head != "" {
+			task.BaseBranch, task.ReviewedHeadSHA = target.Base, target.Head
+			return task, nil
+		}
+	}
+	return core.Task{}, fmt.Errorf("task %s has no recorded review comparison", task.ID)
 }
 
 type queuedTask struct{ Workspace, TaskID string }
@@ -340,6 +390,17 @@ func (d *Dispatcher) createReviewRound(ctx context.Context, cfg *config.Config, 
 	jobs, orders, err := BuildReviewRound(cfg, task, route, round)
 	if err != nil {
 		return err
+	}
+	if !task.ApprovalStale {
+		events, eventErr := d.Store.ListEvents(ctx, task.ID)
+		if eventErr != nil {
+			return eventErr
+		}
+		if comparison, compareErr := RecordedReviewComparison(task, events); compareErr == nil {
+			for i := range orders {
+				orders[i].BaselineSHA, orders[i].HeadSHA = comparison.BaseBranch, comparison.ReviewedHeadSHA
+			}
+		}
 	}
 	if _, err = taskops.ExecuteWorkOrder(ctx, d.Store, task.ID, core.WorkOrderCmdCreate, func(lease taskops.TaskLease) (struct{}, error) {
 		return struct{}{}, d.Store.CreateReviewRoundCommand(ctx, lease, task.ID, jobs, orders)

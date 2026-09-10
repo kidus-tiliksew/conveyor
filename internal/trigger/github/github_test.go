@@ -758,3 +758,118 @@ func TestReviewPublicationBodyOmitsUnsetLegacyEffort(t *testing.T) {
 		t.Fatalf("legacy publication invented effort: %s", body)
 	}
 }
+
+func TestCompareChangedPathsFirstPageCompleteness(t *testing.T) {
+	for _, tc := range []struct {
+		name, body, cause string
+		status            int
+		count             int
+	}{
+		{name: "empty", body: `{"files":[],"total_commits":500}`, count: 0},
+		{name: "first page only", body: `{"files":[{"filename":"internal/a.go"},{"filename":"web/a b.ts"}],"total_commits":500}`, count: 2},
+		{name: "below limit", count: 299},
+		{name: "at limit", count: 300, cause: "300-file limit"},
+		{name: "over limit", count: 301, cause: "300-file limit"},
+		{name: "406", status: 406, body: `{"message":"comparison too large"}`, cause: "406"},
+		{name: "missing", body: `{"total_commits":1}`, cause: "files"},
+		{name: "null", body: `{"files":null}`, cause: "files"},
+		{name: "object", body: `{"files":{}}`, cause: "files"},
+		{name: "wrong filename type", body: `{"files":[{"filename":3}]}`, cause: "malformed"},
+		{name: "null entry", body: `{"files":[null]}`, cause: "filename"},
+		{name: "traversal", body: `{"files":[{"filename":"../outside"}]}`, cause: "filename"},
+		{name: "absolute", body: `{"files":[{"filename":"/outside"}]}`, cause: "filename"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				if r.Header.Get("Authorization") != "Bearer workspace-token" || r.URL.Path != "/repos/acme/app/compare/base-sha...head-sha" || r.URL.Query().Get("page") != "1" || r.URL.Query().Get("per_page") != "100" {
+					t.Errorf("request %s", r.URL)
+				}
+				// More commit pages carry no files. Following this link would be wrong.
+				w.Header().Set("Link", `<http://`+r.Host+`/second-page>; rel="next"`)
+				if tc.status != 0 {
+					w.WriteHeader(tc.status)
+				}
+				body := tc.body
+				if body == "" {
+					files := make([]string, tc.count)
+					for i := range files {
+						files[i] = fmt.Sprintf(`{"filename":"file-%d"}`, i)
+					}
+					body = `{"files":[` + strings.Join(files, ",") + `],"total_commits":500}`
+				}
+				fmt.Fprint(w, body)
+			}))
+			defer server.Close()
+			paths, err := compareChangedPaths(t.Context(), "acme/app", "base-sha", "head-sha", newRESTRunner(server.Client(), server.URL, "workspace-token", "workspace demo GitHub App"))
+			if calls != 1 {
+				t.Fatalf("read %d pages; files exist only on page one", calls)
+			}
+			if tc.cause != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.cause) || !strings.Contains(err.Error(), "head-sha") {
+					t.Fatalf("err=%v", err)
+				}
+				return
+			}
+			if err != nil || len(paths) != tc.count {
+				t.Fatalf("paths=%v err=%v", paths, err)
+			}
+		})
+	}
+}
+
+func TestSubmissionPRLookupAndImmutableDiff(t *testing.T) {
+	mode := "valid"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer workspace-token" {
+			t.Errorf("missing credential")
+		}
+		if strings.Contains(r.URL.Path, "/compare/") {
+			if r.URL.Path != "/repos/acme/app/compare/base-sha...head-sha" || r.Header.Get("Accept") != "application/vnd.github.v3.diff" {
+				t.Errorf("diff request %s %s", r.URL, r.Header.Get("Accept"))
+			}
+			fmt.Fprint(w, "diff --git a/a b/a\n-old\n+new\n")
+			return
+		}
+		if r.Method != http.MethodGet || r.URL.Query().Get("head") != "acme:conveyor/task-1" || r.URL.Query().Get("state") != "open" {
+			t.Errorf("lookup request %s", r.URL)
+		}
+		if mode == "missing" {
+			fmt.Fprint(w, `[]`)
+			return
+		}
+		head, base := "head-sha", "main"
+		if mode == "head" {
+			head = "moved-sha"
+		}
+		if mode == "base" {
+			base = "other"
+		}
+		fmt.Fprintf(w, `[{"number":7,"html_url":"https://github.com/acme/app/pull/7","head":{"sha":%q,"ref":"conveyor/task-1"},"base":{"sha":"base-sha","ref":%q}}]`, head, base)
+	}))
+	defer server.Close()
+	previousClient, previousURL := defaultRESTHTTPClient, defaultRESTBaseURL
+	defaultRESTHTTPClient, defaultRESTBaseURL = server.Client(), server.URL
+	t.Cleanup(func() { defaultRESTHTTPClient, defaultRESTBaseURL = previousClient, previousURL })
+	ctx := WithCredential(t.Context(), "workspace-token", "workspace demo GitHub App")
+	for _, tc := range []struct{ mode, code string }{{"valid", ""}, {"missing", "pull_request_missing"}, {"head", "pull_request_head_mismatch"}, {"base", "pull_request_base_mismatch"}} {
+		mode = tc.mode
+		pr, err := SubmissionPRForBranch(ctx, "acme/app", "conveyor/task-1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = ValidateSubmissionPR(pr, "conveyor/task-1", "main", "head-sha")
+		if tc.code == "" {
+			if err != nil {
+				t.Fatal(err)
+			}
+		} else if err == nil || !strings.Contains(err.Error(), tc.code) || !strings.Contains(err.Error(), "head-sha") {
+			t.Fatalf("mode=%s err=%v", mode, err)
+		}
+	}
+	diff, err := DiffBetween(ctx, "acme/app", "base-sha", "head-sha")
+	if err != nil || !strings.Contains(diff, "+new") {
+		t.Fatalf("diff=%q err=%v", diff, err)
+	}
+}
