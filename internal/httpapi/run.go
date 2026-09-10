@@ -265,6 +265,8 @@ func (s *Server) taskRunPendingProposals(ctx context.Context, task core.Task) ([
 		}
 		kind := ""
 		switch item.Tier {
+		case "requirement":
+			kind = "requirement"
 		case "system_design":
 			kind = "design"
 		case "decision":
@@ -527,11 +529,33 @@ func (s *Server) claimTaskRunOrder(w http.ResponseWriter, r *http.Request) {
 		// identity owned by the server-side eligibility contract.
 		if errors.Is(err, store.ErrForgeTokenRequired) {
 			w.Header().Set("X-Conveyor-Error-Code", store.ForgeTokenRequiredCode)
+		} else if s.taskRunReviewAwaitingProposal(r.Context(), order, err) {
+			w.Header().Set("X-Conveyor-Error-Code", "review_awaiting_proposal")
 		}
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
 	writeJSON(w, http.StatusOK, claimed)
+}
+
+// taskRunReviewAwaitingProposal recognizes the existing store admission refusal
+// without turning other claim conflicts into waits (req-260820-6a468a AC-2.2;
+// component-mcp-protocol). Read the workspace queue independently of the run
+// projection so a new proposal tier cannot silently bypass this signal.
+func (s *Server) taskRunReviewAwaitingProposal(ctx context.Context, order core.WorkOrder, claimErr error) bool {
+	if order.Stage != core.StageReview || !strings.HasPrefix(claimErr.Error(), fmt.Sprintf("review for task %s is waiting on task-authored ", order.TaskID)) {
+		return false
+	}
+	items, err := s.Store.ListPendingProposals(ctx)
+	if err != nil {
+		return false
+	}
+	for _, item := range items {
+		if item.OriginType == "task" && item.OriginID == order.TaskID {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) authorizeTaskRunOrder(r *http.Request, sessionID string) (core.WorkOrder, bool) {

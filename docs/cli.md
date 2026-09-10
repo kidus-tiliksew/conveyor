@@ -90,7 +90,10 @@ Explicitly claim and execute one task on this machine. Claimable stages chain
 without per-stage prompts by default; plan and merge gates still apply. In a
 terminal it runs a full-screen view with the stage output, and surfaces
 operator gates and pending document proposals inline so you can approve,
-request changes, or confirm without leaving the run.
+request changes, or confirm without leaving the run. Task-authored requirement
+proposals appear alongside design proposals and use the same operator
+confirmation capability. If a proposal arrives just before a review claim,
+the run refreshes the proposals and waits without holding a claim.
 
 - `--step`: confirm each stage before it is claimed. Requires terminal stdin.
 - `--setup <name>`: use a named local execution setup for this run only. The
