@@ -780,27 +780,6 @@ func (s *Store) claimOwnerTx(ctx context.Context, tx *sql.Tx, claim *core.WorkOr
 			}
 		}
 	}
-	if claim.RequireForgeToken {
-		var status string
-		err := tx.QueryRowContext(ctx, `SELECT status FROM users WHERE id=? FOR UPDATE`, claim.OwnerUserID).Scan(&status)
-		if errors.Is(err, sql.ErrNoRows) {
-			return store.ErrForgeTokenRequired
-		}
-		if err != nil {
-			return err
-		}
-		if status != "active" {
-			return store.ErrForgeTokenRequired
-		}
-		var owner string
-		err = tx.QueryRowContext(ctx, `SELECT user_id FROM user_forge_tokens WHERE user_id=? FOR UPDATE`, claim.OwnerUserID).Scan(&owner)
-		if errors.Is(err, sql.ErrNoRows) {
-			return store.ErrForgeTokenRequired
-		}
-		if err != nil {
-			return err
-		}
-	}
 	if task.Assignee != nil && task.Assignee.UserID != claim.OwnerUserID {
 		return fmt.Errorf("task %s is assigned to %s; only that assignee may claim its work orders", task.ID, task.Assignee.UserID)
 	}

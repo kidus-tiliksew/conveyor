@@ -457,7 +457,7 @@ func (c *restClient) pullRequest(ctx context.Context, args ...string) ([]byte, e
 		raw, _, _, err = c.request(ctx, http.MethodPatch, fmt.Sprintf("repos/%s/pulls/%d", repo, number), "application/vnd.github+json", map[string]any{"body": option(args, "--body")})
 		return raw, err
 	case "merge":
-		raw, _, _, err := c.request(ctx, http.MethodPut, fmt.Sprintf("repos/%s/pulls/%s/merge", repo, args[1]), "application/vnd.github+json", map[string]any{"merge_method": "merge"})
+		raw, _, _, err := c.request(ctx, http.MethodPut, fmt.Sprintf("repos/%s/pulls/%s/merge", repo, args[1]), "application/vnd.github+json", mergePayload(ctx))
 		return raw, err
 	case "diff":
 		raw, err := c.pullForBranch(ctx, repo, args[1])
@@ -501,12 +501,24 @@ func (c *restClient) pullForBranch(ctx context.Context, repo, branch string) ([]
 	return raw, err
 }
 
+func mergePayload(ctx context.Context) map[string]any {
+	payload := map[string]any{"merge_method": "merge"}
+	if message, ok := ctx.Value(mergeMessageKey{}).(string); ok && message != "" {
+		payload["commit_message"] = message
+	}
+	return payload
+}
+
 func normalizePull(raw []byte) ([]byte, error) {
 	var pull struct {
-		Number         int    `json:"number"`
-		URL            string `json:"html_url"`
-		State          string `json:"state"`
-		MergedAt       any    `json:"merged_at"`
+		Number   int    `json:"number"`
+		URL      string `json:"html_url"`
+		State    string `json:"state"`
+		MergedAt any    `json:"merged_at"`
+		MergedBy struct {
+			Login string `json:"login"`
+		} `json:"merged_by"`
+		MergeCommitSHA string `json:"merge_commit_sha"`
 		Mergeable      *bool  `json:"mergeable"`
 		MergeableState string `json:"mergeable_state"`
 		Body           string `json:"body"`
@@ -528,7 +540,7 @@ func normalizePull(raw []byte) ([]byte, error) {
 			mergeable = "CONFLICTING"
 		}
 	}
-	return json.Marshal(map[string]any{"number": pull.Number, "url": pull.URL, "state": strings.ToUpper(pull.State), "mergedAt": pull.MergedAt, "mergeable": mergeable, "headRefOid": pull.Head.SHA, "baseRefOid": pull.Base.SHA, "body": pull.Body})
+	return json.Marshal(map[string]any{"number": pull.Number, "url": pull.URL, "state": strings.ToUpper(pull.State), "mergedAt": pull.MergedAt, "mergedBy": strings.TrimSpace(pull.MergedBy.Login), "mergeCommit": strings.TrimSpace(pull.MergeCommitSHA), "mergeable": mergeable, "headRefOid": pull.Head.SHA, "baseRefOid": pull.Base.SHA, "body": pull.Body})
 }
 
 func normalizeIssues(raw []byte) ([]byte, error) {

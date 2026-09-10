@@ -178,3 +178,63 @@ func TestMissingContextCredentialFailsClosed(t *testing.T) {
 		t.Fatalf("category = %q, error = %v", ErrorCategory(err), err)
 	}
 }
+
+func TestAppMergePayloadAttributionAndResponse(t *testing.T) {
+	const token = "installation-test-secret"
+	const message = "Approved-by: Operator Name <operator@example.com>"
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer "+token {
+			t.Error("merge did not use installation credential")
+		}
+		if r.Method == http.MethodPut {
+			calls++
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Error(err)
+			}
+			if body["commit_message"] != message || body["merge_method"] != "merge" {
+				t.Errorf("merge payload=%v", body)
+			}
+			_, _ = w.Write([]byte(`{"merged":true}`))
+			return
+		}
+		if strings.Contains(r.URL.RawQuery, "head=") {
+			_, _ = w.Write([]byte(`[{"number":12}]`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"number":12,"html_url":"https://github.com/org/repo/pull/12","state":"closed","merged_at":"2026-09-10T12:00:00Z","merged_by":{"login":" github-operator "},"merge_commit_sha":" landed-sha ","head":{"sha":"head"},"base":{"sha":"base"}}`))
+	}))
+	defer server.Close()
+	run := newRESTRunner(server.Client(), server.URL, token, "workspace demo GitHub App")
+	if err := mergePullRequest(WithMergeMessage(t.Context(), message), "org/repo", 12, run); err != nil {
+		t.Fatal(err)
+	}
+	pr, err := pullRequestForBranch(t.Context(), "org/repo", "conveyor/task-test", run)
+	if err != nil || !pr.Merged || pr.MergedBy != "github-operator" || pr.MergeCommitSHA != "landed-sha" {
+		t.Fatalf("pull=%+v err=%v", pr, err)
+	}
+	if calls != 1 {
+		t.Fatalf("merge calls=%d", calls)
+	}
+}
+
+func TestAppMergeMessageIsPerCallAndErrorsRedactCredential(t *testing.T) {
+	const token = "installation-secret-in-error"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		if _, exists := body["commit_message"]; exists {
+			t.Error("message escaped its call context")
+		}
+		http.Error(w, token, http.StatusForbidden)
+	}))
+	defer server.Close()
+	run := newRESTRunner(server.Client(), server.URL, token, "workspace demo GitHub App")
+	err := mergePullRequest(t.Context(), "org/repo", 12, run)
+	if err == nil || ErrorCategory(err) != ForgePermission || strings.Contains(err.Error(), token) {
+		t.Fatalf("unsafe merge error: %v", err)
+	}
+}

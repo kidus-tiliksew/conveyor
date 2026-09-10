@@ -188,8 +188,8 @@ func TestWorkerHTTPExchangesNeverReturnStoredToken(t *testing.T) {
 	}}}
 	provider := func(context.Context) (*config.Config, error) { return cfg, nil }
 	workOrders := &workorder.Service{Store: st, ConfigProvider: provider}
-	tokens := &forgeTokenFixture{status: core.ForgeTokenStatus{Configured: true, ForgeLogin: "owner-login"}, token: "owner-forge-secret"}
-	workers := &workerservice.Service{Store: st, WorkOrders: workOrders, ConfigProvider: provider, ForgeTokens: tokens, Now: func() time.Time { return now }}
+	const storedToken = "owner-forge-secret"
+	workers := &workerservice.Service{Store: st, WorkOrders: workOrders, ConfigProvider: provider, Now: func() time.Time { return now }}
 	worker := core.Worker{ID: "worker-a", Workspace: "demo", OwnerUserID: "usr-owner", LeaseExpiresAt: now.Add(time.Minute), Probes: []core.HarnessProbe{{Harness: "codex", Healthy: true}}}
 	task := core.Task{ID: "worker-token-delivery", Workspace: "demo", Repo: "conveyor", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: now}
 	job := core.Job{ID: task.ID + "-implement-1", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
@@ -226,7 +226,7 @@ func TestWorkerHTTPExchangesNeverReturnStoredToken(t *testing.T) {
 		if response.Code != http.StatusOK {
 			t.Fatalf("%s status=%d body=%s", kind, response.Code, response.Body.String())
 		}
-		if strings.Contains(response.Body.String(), "forge_token") || strings.Contains(response.Body.String(), tokens.token) {
+		if strings.Contains(response.Body.String(), "forge_token") || strings.Contains(response.Body.String(), storedToken) {
 			t.Fatalf("%s leaked a stored credential", kind)
 		}
 	}

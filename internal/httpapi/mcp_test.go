@@ -390,7 +390,7 @@ func TestMCPClaimDefaultsToFiveMinuteLease(t *testing.T) {
 	}
 }
 
-func TestMCPClaimRequiresCredentialOwnersStoredForgeToken(t *testing.T) {
+func TestMCPClaimWorksWithoutStoredForgeTokens(t *testing.T) {
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	st := store.NewMemory()
 	task := core.Task{ID: "mcp-forge-token", Workspace: "demo", State: core.TaskRunning, CreatedAt: time.Now()}
@@ -404,7 +404,6 @@ func TestMCPClaimRequiresCredentialOwnersStoredForgeToken(t *testing.T) {
 	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, Claimable: true}); err != nil {
 		t.Fatal(err)
 	}
-	tokens := &forgeTokenFixture{}
 	provider := func(context.Context) (*config.Config, error) {
 		return &config.Config{Workspace: "demo", Routing: config.Routing{Stages: map[string]config.StageRoute{
 			"implement": {Timeout: time.Hour},
@@ -412,8 +411,7 @@ func TestMCPClaimRequiresCredentialOwnersStoredForgeToken(t *testing.T) {
 	}
 	server := NewServer(st)
 	server.Workspace = "demo"
-	server.ForgeTokens = tokens
-	server.WorkOrders = &workorder.Service{Store: st, ConfigProvider: provider, ForgeTokens: tokens}
+	server.WorkOrders = &workorder.Service{Store: st, ConfigProvider: provider}
 	request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
 	request = request.WithContext(store.WithCredential(request.Context(), core.AuthenticatedCredential{ID: "agent-token", OwnerUserID: "usr-owner", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser}))
 	args := map[string]any{
@@ -424,17 +422,9 @@ func TestMCPClaimRequiresCredentialOwnersStoredForgeToken(t *testing.T) {
 		t.Fatal(err)
 	}
 	orders := listed.([]core.WorkOrder)
-	if len(orders) != 1 || orders[0].Claimable || orders[0].ClaimRefusalReason != store.ForgeTokenRequiredMessage {
-		t.Fatalf("missing-token MCP projection=%+v", orders)
+	if len(orders) != 1 || !orders[0].Claimable || orders[0].ClaimRefusalReason != "" {
+		t.Fatalf("claim projection=%+v", orders)
 	}
-	if _, err = server.callMCPTool(request, "claim_work_order", args); !errors.Is(err, store.ErrForgeTokenRequired) {
-		t.Fatalf("missing-token MCP claim error=%v", err)
-	}
-	queued, err := st.GetWorkOrder(ctx, job.ID)
-	if err != nil || queued.State != core.WorkOrderQueued {
-		t.Fatalf("refused MCP order=%+v err=%v", queued, err)
-	}
-	tokens.status.Configured = true
 	result, err := server.callMCPTool(request, "claim_work_order", args)
 	if err != nil {
 		t.Fatalf("configured-token MCP claim: %v", err)

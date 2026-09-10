@@ -29,7 +29,7 @@ func (s *Server) listWorkOrders(w http.ResponseWriter, r *http.Request) {
 	if orders == nil {
 		orders = []core.WorkOrder{}
 	}
-	orders = projectAssigneeClaimability(r.Context(), orders, s.ForgeTokens)
+	orders = projectAssigneeClaimability(r.Context(), orders)
 	orders, err = s.projectWorkOrderSessions(r.Context(), orders, false, core.Worker{})
 	if err != nil {
 		log.Printf("project work order sessions: %v", err)
@@ -74,19 +74,12 @@ func (s *Server) projectWorkOrderSessions(ctx context.Context, orders []core.Wor
 	return orders, nil
 }
 
-func projectAssigneeClaimability(ctx context.Context, orders []core.WorkOrder, tokenSources ...store.ForgeTokenStore) []core.WorkOrder {
+func projectAssigneeClaimability(ctx context.Context, orders []core.WorkOrder) []core.WorkOrder {
 	credential, authenticated := store.CredentialFromContext(ctx)
-	var tokenErr error
-	if authenticated && len(tokenSources) > 0 && tokenSources[0] != nil {
-		tokenErr = store.RequireForgeTokenPresence(ctx, tokenSources[0], credential.OwnerUserID)
-	}
 	for i := range orders {
 		if orders[i].Assignee != nil && (!authenticated || orders[i].Assignee.UserID != credential.OwnerUserID) {
 			orders[i].Claimable = false
 			orders[i].ClaimRefusalReason = fmt.Sprintf("task is assigned to %s; only that assignee may claim its work orders", orders[i].Assignee.UserID)
-		} else if tokenErr != nil && orders[i].State == core.WorkOrderQueued && orders[i].Claimable {
-			orders[i].Claimable = false
-			orders[i].ClaimRefusalReason = store.ForgeTokenRequiredMessage
 		}
 	}
 	return orders

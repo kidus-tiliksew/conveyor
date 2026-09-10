@@ -20,7 +20,7 @@ import (
 // SecretSource resolves recoverable control-plane credentials only for the
 // immediate in-process redaction boundary.
 type SecretSource interface {
-	ListForgeTokensForRedaction(context.Context) ([]string, error)
+	ListGitHubAppKeysForRedaction(context.Context) ([]string, error)
 }
 
 // Text combines pattern/entropy detection with current exact-match secrets.
@@ -40,7 +40,7 @@ func WithSecrets(ctx context.Context, source SecretSource, additional []string) 
 	secrets := append([]string(nil), additional...)
 	var err error
 	if source != nil {
-		stored, sourceErr := source.ListForgeTokensForRedaction(ctx)
+		stored, sourceErr := source.ListGitHubAppKeysForRedaction(ctx)
 		err = sourceErr
 		if err != nil {
 			return nil, err

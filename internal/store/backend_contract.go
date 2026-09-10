@@ -7,6 +7,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/eventlog"
 	"github.com/kidus-tiliksew/conveyor/internal/monitor"
+	"github.com/kidus-tiliksew/conveyor/internal/redact"
 )
 
 // Backend is the complete store contract required by daemon and host CLI
@@ -21,8 +22,7 @@ type Backend interface {
 	OwnProfileStore
 	MembershipStore
 	InvitationSessionStore
-	ForgeTokenStore
-	WorkspaceForgeTokenStore
+	redact.SecretSource
 	WorkspaceGitHubAppStore
 	PersonalAccessTokenStore
 	AgentCredentialStore

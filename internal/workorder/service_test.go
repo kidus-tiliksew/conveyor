@@ -2415,7 +2415,7 @@ func TestSubmitForReviewEvidenceGateIsSideEffectFreeAndPropagatesToEveryReviewSe
 	openCalls := 0
 	var prBody string
 	service := &Service{
-		Store: st, Dispatcher: dispatcher, Pack: bundle, ForgeTokens: &claimForgeTokens{configured: true, credential: core.ForgeTokenCredential{UserID: "usr-evidence", Token: "evidence-token"}},
+		Store: st, Dispatcher: dispatcher, Pack: bundle,
 		ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil },
 		ReconcileSubmissionPR: func(_ context.Context, _ string, _ githubtrigger.SubmissionPullRequest, body string) error {
 			openCalls++
@@ -2618,7 +2618,7 @@ func TestSubmitForReviewWaitsForIssueAndPassesClosingReference(t *testing.T) {
 	dispatcher.DisableMemoryQueueForTest()
 	opened := 0
 	var body string
-	service := &Service{Store: st, Dispatcher: dispatcher, ForgeTokens: &claimForgeTokens{configured: true, credential: core.ForgeTokenCredential{UserID: "usr-executor", Token: "executor-forge-token"}}, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }, ReconcileSubmissionPR: func(_ context.Context, _ string, _ githubtrigger.SubmissionPullRequest, value string) error {
+	service := &Service{Store: st, Dispatcher: dispatcher, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }, ReconcileSubmissionPR: func(_ context.Context, _ string, _ githubtrigger.SubmissionPullRequest, value string) error {
 		opened++
 		body = value
 		return nil
@@ -2639,9 +2639,6 @@ func TestSubmitForReviewWaitsForIssueAndPassesClosingReference(t *testing.T) {
 	prepareSubmissionTest(service)
 	if _, err = service.SubmitForReview(ctx, job.ID, "implementer", submissionTestHead(service)); err != nil {
 		t.Fatal(err)
-	}
-	if service.ForgeTokens.(*claimForgeTokens).useCalls != 0 {
-		t.Fatal("submission read an executing-user token from the control plane")
 	}
 	if opened != 1 || !strings.Contains(body, "Closes #42") {
 		t.Fatalf("reconciled=%d body=%q", opened, body)
@@ -2683,7 +2680,7 @@ func TestSubmitForReviewAdvancesStaleRefreshHead(t *testing.T) {
 	cfg := &config.Config{Workspace: "test", Repos: []config.Repo{{Name: "app", Base: "main", GitHub: "acme/app"}}, Routing: config.Routing{Stages: map[string]config.StageRoute{"review": {Execution: config.ExecutionMCP}}}}
 	dispatcher := dispatch.New(st, cfg, nil)
 	dispatcher.DisableMemoryQueueForTest()
-	service := &Service{Store: st, Dispatcher: dispatcher, ForgeTokens: &claimForgeTokens{configured: true, credential: core.ForgeTokenCredential{UserID: "usr-refresh", Token: "refresh-token"}}, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil },
+	service := &Service{Store: st, Dispatcher: dispatcher, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil },
 		ReconcileSubmissionPR: func(context.Context, string, githubtrigger.SubmissionPullRequest, string) error {
 			return nil
 		},
@@ -3095,7 +3092,7 @@ func TestWarmSessionBounceClaimsNextOrderReusesPRAndCannotSelfReview(t *testing.
 	openCalls := 0
 	submissionDiffCalls := 0
 	service := &Service{
-		Store: st, Dispatcher: dispatcher, ForgeTokens: &claimForgeTokens{configured: true, credential: core.ForgeTokenCredential{UserID: "usr-loop", Token: "loop-token"}},
+		Store: st, Dispatcher: dispatcher,
 		ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil },
 		SubmissionChangedPaths: func(context.Context, *config.Config, core.Task) ([]string, error) {
 			submissionDiffCalls++

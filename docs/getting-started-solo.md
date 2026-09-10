@@ -63,8 +63,9 @@ curl -fsS http://127.0.0.1:8080/healthz
 ```
 
 Open the sign-in link, set a password, then on Settings mint a personal
-access token and save a fine-grained GitHub token (Contents and Pull
-requests read/write on your repository).
+access token for Conveyor. In Workspace settings, connect the GitHub App and
+install it on your repository. Your machine supplies the Git credential used
+to push and open pull requests.
 Detail: [Server setup, steps 5 and 6](server-setup.md#5-start-and-check-the-server).
 
 ## 4. Connect the CLI

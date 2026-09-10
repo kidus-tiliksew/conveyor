@@ -118,9 +118,8 @@ func taskRunHTTPCall(handler http.Handler, method, path, body string) *httptest.
 }
 
 func TestTaskRunHTTPIsExplicitlyTaskScopedAndUsesUserLeaseLifecycle(t *testing.T) {
-	server, st, handler := taskRunHTTPFixture(t)
+	_, st, handler := taskRunHTTPFixture(t)
 	const storedToken = "stored-run-forge-secret"
-	server.Workers.ForgeTokens = &forgeTokenFixture{status: core.ForgeTokenStatus{Configured: true}, token: storedToken}
 	target := createTaskRunOrder(t, st, "target")
 	createTaskRunOrder(t, st, "other")
 

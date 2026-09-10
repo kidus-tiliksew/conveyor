@@ -50,7 +50,7 @@ func runGitHubApps(t *testing.T, x Fixture) {
 	if strings.Contains(string(raw), app.PrivateKey) {
 		t.Fatal("credential serializes key")
 	}
-	secrets, err := st.ListForgeTokensForRedaction(ctx)
+	secrets, err := st.ListGitHubAppKeysForRedaction(ctx)
 	requireOK(t, err)
 	if !strings.Contains(strings.Join(secrets, "\n"), app.PrivateKey) {
 		t.Fatal("stored app absent from restart redaction source")
@@ -59,7 +59,7 @@ func runGitHubApps(t *testing.T, x Fixture) {
 	if _, err = st.GetWorkspaceGitHubAppForUse(ctx, x.Workspace); !errors.Is(err, store.ErrForgeTokenDecrypt) {
 		t.Fatalf("wrong key: %v", err)
 	}
-	if _, err = st.ListForgeTokensForRedaction(ctx); !errors.Is(err, store.ErrForgeTokenDecrypt) {
+	if _, err = st.ListGitHubAppKeysForRedaction(ctx); !errors.Is(err, store.ErrForgeTokenDecrypt) {
 		t.Fatalf("redaction must fail closed: %v", err)
 	}
 	_, err = st.GetWorkspaceGitHubAppStatus(ctx, x.Workspace)

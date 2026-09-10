@@ -34,9 +34,6 @@ func TestWorkspaceGitHubAppResolverUsesInstallationIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	st.ConfigureForgeTokenEncryptionKey(bytes.Repeat([]byte{41}, 32))
-	if _, err := st.StoreWorkspaceForgeToken(ctx, "demo", "legacy-token-must-not-be-used", "legacy"); err != nil {
-		t.Fatal(err)
-	}
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatal(err)

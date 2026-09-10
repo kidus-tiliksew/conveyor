@@ -22,10 +22,8 @@ CONVEYOR_PUBLIC_URL=https://factory.example.com
   links are minted against it, and the server checks request origins against
   it, so set it before inviting anyone.
 - `CONVEYOR_FORGE_TOKEN_ENCRYPTION_KEY`, already part of server setup,
-  carries more weight here: it encrypts every member's stored GitHub token
-  (AES-256), and without it nobody can save the token that task execution
-  requires. Generate it once and keep it stable; rotating it invalidates
-  stored tokens.
+  encrypts the workspace GitHub App private key with AES-256. Generate it
+  once and keep it stable so the server can decrypt connected App keys.
 - Optionally configure SMTP (`CONVEYOR_SMTP_HOST`, `CONVEYOR_SMTP_PORT`,
   `CONVEYOR_SMTP_USERNAME`, `CONVEYOR_SMTP_PASSWORD`, `CONVEYOR_SMTP_FROM`)
   so invitations email themselves. Without SMTP, invitation links are shown
@@ -34,13 +32,16 @@ CONVEYOR_PUBLIC_URL=https://factory.example.com
 
 ## Workspace and user GitHub accounts
 
-Store a workspace GitHub token in Workspace settings for issue and review
-publication. Store each contributor's token in their account settings so task
-pull requests use the executing user's identity. A gated merge uses the stored
-token of the operator who approved it; if that token is missing, Conveyor keeps
-the approval and waits until the operator adds one. The server does not fall
-back to the host identity. Forge-write events record `workspace`,
-`executing_user`, or `approving_operator` without recording token values.
+Connect the workspace GitHub App in Workspace settings and install it on the
+registered repositories. Contributors push and open pull requests using their
+local GitHub credentials. The server uses short-lived App installation tokens
+for its GitHub operations.
+
+An operator can merge an approved task from Conveyor or merge its reviewed pull
+request on GitHub. Conveyor merges name the approving operator in the commit
+message and event. GitHub merges record the GitHub actor and complete the task
+when the pull request and head match its approved lineage. A merge before
+approval remains an out-of-pipeline occurrence for investigation.
 
 ## Host: invite the team
 

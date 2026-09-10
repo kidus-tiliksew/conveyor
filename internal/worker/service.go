@@ -48,7 +48,6 @@ type Service struct {
 	RetryMaximum     time.Duration
 	RetryLimit       int
 	RedactionSecrets redact.SecretSource
-	ForgeTokens      store.ForgeTokenStore
 	IdentityUsers    store.CallerIdentityStore
 }
 
@@ -553,10 +552,6 @@ func (s *Service) ListClaimable(ctx context.Context, worker core.Worker) ([]Disp
 	if !worker.Live(s.now()) {
 		return []DispatchOrder{}, nil
 	}
-	var forgeTokenErr error
-	if s.ForgeTokens != nil {
-		forgeTokenErr = store.RequireForgeTokenPresence(ctx, s.ForgeTokens, worker.OwnerUserID)
-	}
 	var result []DispatchOrder
 	for _, order := range orders {
 		if !order.Claimable || order.State != core.WorkOrderQueued {
@@ -568,10 +563,6 @@ func (s *Service) ListClaimable(ctx context.Context, worker core.Worker) ([]Disp
 		}
 		if task.Assignee != nil && task.Assignee.UserID != worker.OwnerUserID {
 			continue
-		}
-		if forgeTokenErr != nil {
-			order.Claimable = false
-			order.ClaimRefusalReason = store.ForgeTokenRequiredMessage
 		}
 		repository, _ := cfg.Repo(task.Repo)
 		item := DispatchOrder{Order: order, Task: task, Repository: repository, HarnessSelection: "local", Dispatch: "worker", Confinement: "none", Auth: "byoa"}
@@ -646,11 +637,6 @@ func (s *Service) ListVisibleOrders(ctx context.Context, worker core.Worker) ([]
 func (s *Service) ClaimForWorker(ctx context.Context, worker core.Worker, id string, claim core.WorkOrderClaim) (core.WorkOrder, error) {
 	if s.Store.IsDurable() {
 		if _, err := s.Store.AuthenticateWorker(ctx, worker.CredentialHash); err != nil {
-			return core.WorkOrder{}, err
-		}
-	}
-	if s.ForgeTokens != nil {
-		if err := store.RequireForgeTokenPresence(ctx, s.ForgeTokens, worker.OwnerUserID); err != nil {
 			return core.WorkOrder{}, err
 		}
 	}

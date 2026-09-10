@@ -1239,7 +1239,7 @@ func TestRunTaskDefaultNonTerminalStopsAtPlanGateWithoutClaim(t *testing.T) {
 }
 
 func TestTaskRunClaimPreservesTypedCodeAndConciseDiagnostic(t *testing.T) {
-	for _, code := range []string{"review_awaiting_proposal", "forge_token_required", ""} {
+	for _, code := range []string{"review_awaiting_proposal", "unknown_refusal", ""} {
 		t.Run(code, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("X-Conveyor-Error-Code", code)

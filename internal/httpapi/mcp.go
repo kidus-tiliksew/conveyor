@@ -233,7 +233,7 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 		if listErr != nil {
 			return nil, listErr
 		}
-		orders = projectAssigneeClaimability(ctx, orders, s.ForgeTokens)
+		orders = projectAssigneeClaimability(ctx, orders)
 		if credential, ok := store.CredentialFromContext(ctx); ok && credential.Kind == core.CredentialAgent && credential.RunWorkOrderID != "" {
 			filtered := orders[:0]
 			for _, order := range orders {

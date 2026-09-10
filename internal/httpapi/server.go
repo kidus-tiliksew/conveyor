@@ -84,13 +84,10 @@ type Server struct {
 	OwnProfiles           store.OwnProfileStore
 	PersonalTokens        store.PersonalAccessTokenStore
 	AgentCredentials      store.AgentCredentialStore
-	ForgeTokens           store.ForgeTokenStore
-	WorkspaceForgeTokens  store.WorkspaceForgeTokenStore
 	WorkspaceGitHubApps   store.WorkspaceGitHubAppStore
 	GitHubApps            *github.AppClient
 	appStates             manifestStates
 	appSetupStates        manifestStates
-	ValidateForgeToken    func(context.Context, string) (string, error)
 	InvitationSessions    store.InvitationSessionStore
 	InvitationDelivery    config.InvitationDelivery
 	EnsureWorkspaceQueues func(string, *config.Config) error
@@ -128,14 +125,8 @@ func NewServer(s store.Store) *Server {
 	if credentials, ok := s.(store.AgentCredentialStore); ok {
 		server.AgentCredentials = credentials
 	}
-	if tokens, ok := s.(store.ForgeTokenStore); ok {
-		server.ForgeTokens = tokens
-	}
 	if apps, ok := s.(store.WorkspaceGitHubAppStore); ok {
 		server.WorkspaceGitHubApps = apps
-	}
-	if tokens, ok := s.(store.WorkspaceForgeTokenStore); ok {
-		server.WorkspaceForgeTokens = tokens
 	}
 	if sessions, ok := s.(store.InvitationSessionStore); ok {
 		server.InvitationSessions = sessions
@@ -185,17 +176,11 @@ func (s *Server) Handler() http.Handler {
 		r.With(s.requireSelfServiceCredential).Get("/tokens", s.listOwnPersonalAccessTokens)
 		r.With(s.requireSelfServiceCredential).Post("/tokens", s.issueOwnPersonalAccessToken)
 		r.With(s.requireSelfServiceCredential).Delete("/tokens/{token_id}", s.revokeOwnPersonalAccessToken)
-		r.With(s.requireSelfServiceCredential).Get("/forge-token", s.getOwnForgeToken)
-		r.With(s.requireSelfServiceCredential).Put("/forge-token", s.putOwnForgeToken)
-		r.With(s.requireSelfServiceCredential).Delete("/forge-token", s.deleteOwnForgeToken)
 		r.With(s.requireMutationCapability(core.CapabilityManageWorkspace)).Post("/workspaces", s.createWorkspace)
 		r.With(s.requireMutationCapability(core.CapabilityManageWorkspace)).Get("/harness-templates", s.getHarnessTemplates)
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityViewWorkspace)).Get("/workspaces/{workspace_id}", s.getWorkspaceRecord)
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityViewWorkspace)).Get("/workspaces/{workspace_id}/config", s.getWorkspaceConfig)
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityManageWorkspace)).Put("/workspaces/{workspace_id}/config", s.putWorkspaceConfig)
-		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityManageWorkspace)).Get("/workspaces/{workspace_id}/forge-token", s.getWorkspaceForgeToken)
-		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityManageWorkspace)).Put("/workspaces/{workspace_id}/forge-token", s.putWorkspaceForgeToken)
-		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityManageWorkspace)).Delete("/workspaces/{workspace_id}/forge-token", s.deleteWorkspaceForgeToken)
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityManageWorkspace)).Post("/workspaces/{workspace_id}/github-app/manifest", s.createWorkspaceGitHubAppManifest)
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityManageWorkspace)).Get("/workspaces/{workspace_id}/github-app/callback", s.workspaceGitHubAppCallback)
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityManageWorkspace)).Get("/workspaces/{workspace_id}/github-app/setup", s.workspaceGitHubAppSetup)

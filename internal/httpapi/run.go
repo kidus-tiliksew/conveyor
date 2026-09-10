@@ -527,9 +527,7 @@ func (s *Server) claimTaskRunOrder(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		// This is intentionally the original claim error, including the assignee
 		// identity owned by the server-side eligibility contract.
-		if errors.Is(err, store.ErrForgeTokenRequired) {
-			w.Header().Set("X-Conveyor-Error-Code", store.ForgeTokenRequiredCode)
-		} else if s.taskRunReviewAwaitingProposal(r.Context(), order, err) {
+		if s.taskRunReviewAwaitingProposal(r.Context(), order, err) {
 			w.Header().Set("X-Conveyor-Error-Code", "review_awaiting_proposal")
 		}
 		http.Error(w, err.Error(), http.StatusConflict)

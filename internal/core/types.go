@@ -791,18 +791,17 @@ func (w WorkOrder) ClaimableAt(at time.Time) bool {
 }
 
 type WorkOrderClaim struct {
-	SessionID         string
-	ClientToken       string
-	ClaimantID        string
-	Agent             string
-	Model             string
-	Lease             time.Duration
-	ExecutionTimeout  time.Duration
-	WorkerID          string
-	OwnerUserID       string
-	RequireForgeToken bool
-	Requirements      []ServedRequirementContext
-	Governance        *GovernanceSnapshot
+	SessionID        string
+	ClientToken      string
+	ClaimantID       string
+	Agent            string
+	Model            string
+	Lease            time.Duration
+	ExecutionTimeout time.Duration
+	WorkerID         string
+	OwnerUserID      string
+	Requirements     []ServedRequirementContext
+	Governance       *GovernanceSnapshot
 }
 
 // WorkOrderClaimIdentity names the authenticated owner of one active claim.

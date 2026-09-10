@@ -9,14 +9,15 @@ import (
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	githubtrigger "github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 )
 
 func TestGitHubSourceClassifiesLineageFailuresAndOutsideChanges(t *testing.T) {
 	suppressed := 0
 	source := GitHubSource{
 		WorkspaceID: "demo", Repository: "conveyor", GitHubSlug: "acme/conveyor",
-		KnownLineage: func(id string, number int, headSHA string) bool {
-			return id == "known" && number == 1 && headSHA == "known-head"
+		ReconcileMerged: func(_ context.Context, id string, pr githubtrigger.PullRequest) (bool, error) {
+			return id == "known" && pr.Number == 1 && pr.HeadSHA == "known-head", nil
 		},
 		Run: func(_ context.Context, args ...string) ([]byte, error) {
 			path := strings.Join(args, " ")
@@ -30,12 +31,16 @@ func TestGitHubSourceClassifiesLineageFailuresAndOutsideChanges(t *testing.T) {
 {"sha":"masquerade-sha","html_url":"https://example/masquerade","commit":{"message":"external","committer":{"date":"2026-07-28T10:03:00Z"}}},
 {"sha":"revert-sha","html_url":"https://example/revert","commit":{"message":"Revert \"bad\"","committer":{"date":"2026-07-28T10:03:00Z"}}}
 ]`), nil
+			case strings.Contains(path, "/pulls/1"):
+				return []byte(`{"number":1,"html_url":"https://example/pr/1","merged_at":"2026-07-28T09:00:00Z","merged_by":{"login":"operator"},"merge_commit_sha":"known-sha","head":{"ref":"conveyor/task-known","sha":"known-head"}}`), nil
 			case strings.Contains(path, "known-sha/pulls"):
 				return []byte(`[{"number":1,"html_url":"https://example/pr/1","merged_at":"2026-07-28T09:00:00Z","head":{"ref":"conveyor/task-known","sha":"known-head"}}]`), nil
 			case strings.Contains(path, "known-sha/check-runs"):
 				return []byte(`{"check_runs":[{"id":77,"name":"unit","html_url":"https://example/check/77","conclusion":"failure","run_attempt":2},{"id":78,"html_url":"https://example/check/78","conclusion":"success","run_attempt":1}]}`), nil
 			case strings.Contains(path, "pr-sha/pulls"), strings.Contains(path, "pr-sha-2/pulls"):
 				return []byte(`[{"number":2,"html_url":"https://example/pr/2","merged_at":"2026-07-28T09:00:00Z","head":{"ref":"external","sha":"external-head"}}]`), nil
+			case strings.Contains(path, "/pulls/3"):
+				return []byte(`{"number":3,"html_url":"https://example/pr/3","merged_at":"2026-07-28T09:00:00Z","merged_by":{"login":"operator"},"merge_commit_sha":"masquerade-sha","head":{"ref":"conveyor/task-known","sha":"unrecorded-head"}}`), nil
 			case strings.Contains(path, "masquerade-sha/pulls"):
 				return []byte(`[{"number":3,"html_url":"https://example/pr/3","merged_at":"2026-07-28T09:00:00Z","head":{"ref":"conveyor/task-known","sha":"unrecorded-head"}}]`), nil
 			case strings.Contains(path, "/pulls"):
@@ -182,14 +187,16 @@ func TestGitHubSourceSuppressesFirstParentEmptyDirectPush(t *testing.T) {
 func lineagedCheckSource(checks string) GitHubSource {
 	return GitHubSource{
 		WorkspaceID: "demo", Repository: "conveyor", GitHubSlug: "acme/conveyor",
-		KnownLineage: func(id string, number int, headSHA string) bool {
-			return id == "known" && number == 1 && headSHA == "known-head"
+		ReconcileMerged: func(_ context.Context, id string, pr githubtrigger.PullRequest) (bool, error) {
+			return id == "known" && pr.Number == 1 && pr.HeadSHA == "known-head", nil
 		},
 		Run: func(_ context.Context, args ...string) ([]byte, error) {
 			path := strings.Join(args, " ")
 			switch {
 			case strings.Contains(path, "/commits -f"):
 				return []byte(`[{"sha":"known-sha","html_url":"https://example/known","commit":{"message":"merge","committer":{"date":"2026-07-28T10:00:00Z"}}}]`), nil
+			case strings.Contains(path, "/pulls/1"):
+				return []byte(`{"number":1,"html_url":"https://example/pr/1","merged_at":"2026-07-28T09:00:00Z","merged_by":{"login":"operator"},"merge_commit_sha":"known-sha","head":{"ref":"conveyor/task-known","sha":"known-head"}}`), nil
 			case strings.Contains(path, "known-sha/pulls"):
 				return []byte(`[{"number":1,"html_url":"https://example/pr/1","merged_at":"2026-07-28T09:00:00Z","head":{"ref":"conveyor/task-known","sha":"known-head"}}]`), nil
 			case strings.Contains(path, "known-sha/check-runs"):
@@ -255,5 +262,49 @@ func TestRecordedLineageRejectsUnrelatedRepositoryAndUnrecordedHead(t *testing.T
 	}
 	if !RecordedLineage(task, events, "conveyor", "acme/conveyor", "known", 3, "recorded-head") {
 		t.Fatal("recorded repository, pull request, and head were not accepted")
+	}
+}
+
+func TestGitHubSourceReconcilesApprovedMergeAndKeepsUnapprovedOccurrence(t *testing.T) {
+	for _, approved := range []bool{true, false} {
+		t.Run(fmt.Sprint(approved), func(t *testing.T) {
+			calls := 0
+			source := GitHubSource{WorkspaceID: "demo", Repository: "repo", GitHubSlug: "org/repo"}
+			source.ReconcileMerged = func(_ context.Context, taskID string, pr githubtrigger.PullRequest) (bool, error) {
+				calls++
+				if taskID != "task" || pr.Number != 12 || pr.HeadSHA != "reviewed-head" || pr.MergedBy != "operator" || pr.MergeCommitSHA != "landed" || !pr.Merged {
+					t.Fatalf("task=%s pull=%+v", taskID, pr)
+				}
+				return approved, nil
+			}
+			source.Run = func(_ context.Context, args ...string) ([]byte, error) {
+				request := strings.Join(args, " ")
+				switch {
+				case strings.Contains(request, "/commits -f"):
+					return []byte(`[{"sha":"landed","html_url":"https://github.com/org/repo/commit/landed","commit":{"message":"merged","committer":{"date":"2026-09-10T12:00:00Z"}}}]`), nil
+				case strings.Contains(request, "/pulls/12"):
+					return []byte(`{"number":12,"html_url":"https://github.com/org/repo/pull/12","merged_at":"2026-09-10T12:00:00Z","merged_by":{"login":" operator "},"merge_commit_sha":" landed ","head":{"ref":"conveyor/task-task","sha":"reviewed-head"}}`), nil
+				case strings.Contains(request, "/pulls"):
+					return []byte(`[{"number":12,"html_url":"https://github.com/org/repo/pull/12","merged_at":"2026-09-10T12:00:00Z","merge_commit_sha":" landed ","head":{"ref":"conveyor/task-task","sha":"reviewed-head"}}]`), nil
+				case strings.Contains(request, "/check-runs"):
+					return []byte(`{"check_runs":[]}`), nil
+				default:
+					return []byte(`{"files":[]}`), nil
+				}
+			}
+			observations, err := source.Observations(t.Context(), time.Now().Add(-time.Hour))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if calls != 1 {
+				t.Fatalf("reconcile calls=%d", calls)
+			}
+			if approved && len(observations) != 0 {
+				t.Fatalf("approved merge filed occurrence=%+v", observations)
+			}
+			if !approved && (len(observations) != 1 || observations[0].Kind != ExternalPRMerge) {
+				t.Fatalf("unapproved merge observations=%+v", observations)
+			}
+		})
 	}
 }

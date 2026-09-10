@@ -12,19 +12,17 @@ import (
 // request a Backend. NewMemory retains its existing Store and fixture behavior.
 type volatileMemory struct {
 	*memory
-	memberships          map[memoryScopedKey]workspaceBinding
-	invitations          map[memoryScopedKey]workspaceInvitation
-	workspaces           map[string]workspaceRecord
-	users                map[string]identityUser
-	credentials          map[string]identityCredential
-	signInLinks          map[string]signInLink
-	sessions             map[string]dashboardSession
-	forgeTokens          map[string]forgeTokenRecord
-	workspaceForgeTokens map[string]forgeTokenRecord
-	workspaceGitHubApps  map[string]workspaceAppRecord
-	orgName              string
-	forgeTokenKey        []byte
-	log                  eventlog.Store
+	memberships         map[memoryScopedKey]workspaceBinding
+	invitations         map[memoryScopedKey]workspaceInvitation
+	workspaces          map[string]workspaceRecord
+	users               map[string]identityUser
+	credentials         map[string]identityCredential
+	signInLinks         map[string]signInLink
+	sessions            map[string]dashboardSession
+	workspaceGitHubApps map[string]workspaceAppRecord
+	orgName             string
+	forgeTokenKey       []byte
+	log                 eventlog.Store
 }
 
 var _ Backend = (*volatileMemory)(nil)
@@ -33,18 +31,16 @@ var _ Backend = (*volatileMemory)(nil)
 // use backend.Open, which requires an explicit AllowVolatile option.
 func NewVolatileBackend() Backend {
 	return &volatileMemory{
-		memory:               NewMemory().(*memory),
-		memberships:          map[memoryScopedKey]workspaceBinding{},
-		invitations:          map[memoryScopedKey]workspaceInvitation{},
-		workspaces:           map[string]workspaceRecord{},
-		users:                map[string]identityUser{},
-		credentials:          map[string]identityCredential{},
-		signInLinks:          map[string]signInLink{},
-		sessions:             map[string]dashboardSession{},
-		forgeTokens:          map[string]forgeTokenRecord{},
-		workspaceForgeTokens: map[string]forgeTokenRecord{},
-		orgName:              "Conveyor",
-		log:                  memlog.New(),
+		memory:      NewMemory().(*memory),
+		memberships: map[memoryScopedKey]workspaceBinding{},
+		invitations: map[memoryScopedKey]workspaceInvitation{},
+		workspaces:  map[string]workspaceRecord{},
+		users:       map[string]identityUser{},
+		credentials: map[string]identityCredential{},
+		signInLinks: map[string]signInLink{},
+		sessions:    map[string]dashboardSession{},
+		orgName:     "Conveyor",
+		log:         memlog.New(),
 	}
 }
 

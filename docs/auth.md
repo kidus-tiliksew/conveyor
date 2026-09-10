@@ -91,23 +91,21 @@ membership existence is not disclosed.
 Demoting a user below `claim_work` clears their task assignments and revokes
 their enrolled workers in the same operation.
 
-## GitHub (forge) tokens
+## GitHub App and local credentials
 
-Executing tasks requires a stored GitHub token. Conveyor opens task pull
-requests as the executing user and performs a gated merge as the operator who
-approved it. Save a fine-grained token with Contents, Pull requests, and Issues
-read and write under Settings. The server validates it by reading
-the authenticated login, encrypts it with AES-256 under
-`CONVEYOR_FORGE_TOKEN_ENCRYPTION_KEY`, and never returns the value again;
-status reads report only `{configured, forge_login, stored_at}`.
+Connect the workspace GitHub App in Workspace settings and install it on each
+registered repository. The server encrypts the App private key under
+`CONVEYOR_FORGE_TOKEN_ENCRYPTION_KEY` and mints short-lived installation tokens
+for control-plane GitHub operations. It stores no personal GitHub token.
 
-Claiming work is refused without one (the error code is
-`forge_token_required`), and both `conveyor run` and the worker check for it
-before doing anything else. A gated merge waits when the approving operator
-has no stored token; the recorded approval remains in place and reconciliation
-retries after the operator adds the token. Workspace issue and review
-publication uses the workspace token. Every forge-write event records exactly
-one identity class: `executing_user`, `approving_operator`, or `workspace`.
+The executing machine resolves its own Git credential to push and open the
+pull request. Run and worker commands check local repository access before
+claiming. Claims do not depend on a token stored in account settings.
+
+A merge from Conveyor uses the App and records the approving operator in the
+merge event and commit message. An approved pull request merged on GitHub
+completes through reconciliation when its recorded identity and approved head
+match; the event records the GitHub actor.
 
 ## Worker credentials
 

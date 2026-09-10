@@ -61,11 +61,10 @@ server's `.env` would be loaded into client commands run from that directory.
 
 ## 3. Configure GitHub identity and repository access
 
-On account Settings, save a fine-grained GitHub token with Contents read/write
-and Pull requests read/write on the repositories you will execute against.
-Conveyor uses the stored token for claim eligibility and pull request writes,
-so PRs open as you rather than as a shared bot. Merge approvers need their
-own token too.
+Connect the workspace's GitHub App in Workspace settings and install it on
+the repositories Conveyor will use. The App reads pull requests and publishes
+issues, review results, and merges. Conveyor records the approving operator
+in merge events and in the merge commit's `Approved-by` trailer.
 
 Git on your machine needs credentials separately. The quickest route is the
 GitHub CLI, which configures the HTTPS credential helper:
@@ -257,7 +256,7 @@ successful login alone does not verify agent execution or delivery.
 If a run reports `workspace_required`, set the workspace for the effective
 server. If it cannot resolve a primary checkout, check `repos[].checkout` and
 the clone's remote. For authentication failures, distinguish the Conveyor
-personal token, the stored account GitHub token, local Git credentials, and
+personal token, the workspace GitHub App, local Git credentials, and
 the agent CLI login; they serve different operations.
 
 <a id="7-build-the-document-corpus"></a>

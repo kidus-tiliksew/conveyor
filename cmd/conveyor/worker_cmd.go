@@ -532,14 +532,6 @@ func runWorkerWithPolicyAndConfig(ctx context.Context, c *client, pairing, name 
 	if _, err := loadLocalExecutionSetup(configPath); err != nil {
 		return err
 	}
-	if c.forgeTokenPreflight != nil {
-		if strings.TrimSpace(c.token) == "" {
-			return fmt.Errorf("CONVEYOR_API_TOKEN is required for worker enrollment and execution")
-		}
-		if err := c.preflightForgeToken(ctx, c.token); err != nil {
-			return err
-		}
-	}
 	var err error
 	c, err = c.withLocalGitCredential()
 	if err != nil {
