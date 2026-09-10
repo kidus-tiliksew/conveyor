@@ -42,7 +42,7 @@ func (c *client) createTask(body, repo, base string) (core.Task, error) {
 
 func (c *client) createTaskWithLevel(body, repo, base string, level core.EscalationLevel) (core.Task, error) {
 	if c.token == "" {
-		return core.Task{}, fmt.Errorf("CONVEYOR_API_TOKEN is required for task creation")
+		return core.Task{}, fmt.Errorf("a credential is required for task creation; run `conveyor auth login`")
 	}
 	payload, _ := json.Marshal(map[string]string{
 		"body":        body,
@@ -62,7 +62,7 @@ func (c *client) createTaskWithSetup(body, repo, base string, hold bool, specApp
 
 func (c *client) createTaskWithDependencies(body, repo, base string, hold bool, specApproval, mergeApproval *bool, setup string, dependsOn []string) (core.Task, error) {
 	if c.token == "" {
-		return core.Task{}, fmt.Errorf("CONVEYOR_API_TOKEN is required for task creation")
+		return core.Task{}, fmt.Errorf("a credential is required for task creation; run `conveyor auth login`")
 	}
 	payload := map[string]any{"body": body, "repo": repo, "base_branch": base, "source": "cli"}
 	if setup != "" {
@@ -112,7 +112,7 @@ func (c *client) getLatestSpec(taskID string) (core.SpecVersion, error) {
 
 func (c *client) redispatchTask(id string) (core.Task, error) {
 	if c.token == "" {
-		return core.Task{}, fmt.Errorf("CONVEYOR_API_TOKEN is required for redispatch")
+		return core.Task{}, fmt.Errorf("a credential is required for redispatch; run `conveyor auth login`")
 	}
 	var t core.Task
 	err := c.do(http.MethodPost, "/v1/tasks/"+id+"/redispatch", []byte(`{}`), &t)
@@ -121,7 +121,7 @@ func (c *client) redispatchTask(id string) (core.Task, error) {
 
 func (c *client) changeTaskSetup(id, setup, reason, requestID string, applyLatest bool) (store.SetupChangeResult, error) {
 	if c.token == "" {
-		return store.SetupChangeResult{}, fmt.Errorf("CONVEYOR_API_TOKEN is required for setup changes")
+		return store.SetupChangeResult{}, fmt.Errorf("a credential is required for setup changes; run `conveyor auth login`")
 	}
 	payload, _ := json.Marshal(map[string]any{"setup": setup, "reason": reason, "request_id": requestID, "apply_latest": applyLatest})
 	var result store.SetupChangeResult
@@ -131,7 +131,7 @@ func (c *client) changeTaskSetup(id, setup, reason, requestID string, applyLates
 
 func (c *client) reviewTask(id string, action core.InterventionAction, reasonCode, comment string) (core.Task, error) {
 	if c.token == "" {
-		return core.Task{}, fmt.Errorf("CONVEYOR_API_TOKEN is required for review actions")
+		return core.Task{}, fmt.Errorf("a credential is required for review actions; run `conveyor auth login`")
 	}
 	payload, _ := json.Marshal(map[string]string{
 		"action": string(action), "reason_code": reasonCode, "comment": comment,
@@ -145,7 +145,7 @@ func (c *client) reviewTask(id string, action core.InterventionAction, reasonCod
 
 func (c *client) requestTaskChanges(id, feedback string) (core.Task, error) {
 	if c.token == "" {
-		return core.Task{}, fmt.Errorf("CONVEYOR_API_TOKEN is required to request changes")
+		return core.Task{}, fmt.Errorf("a credential is required to request changes; run `conveyor auth login`")
 	}
 	payload, _ := json.Marshal(map[string]string{"feedback": feedback})
 	var response struct {
@@ -157,7 +157,7 @@ func (c *client) requestTaskChanges(id, feedback string) (core.Task, error) {
 
 func (c *client) closeTask(id, reason string) (core.Task, error) {
 	if c.token == "" {
-		return core.Task{}, fmt.Errorf("CONVEYOR_API_TOKEN is required for task close")
+		return core.Task{}, fmt.Errorf("a credential is required for task close; run `conveyor auth login`")
 	}
 	payload, _ := json.Marshal(map[string]string{"reason": reason})
 	var task core.Task
@@ -167,7 +167,7 @@ func (c *client) closeTask(id, reason string) (core.Task, error) {
 
 func (c *client) removeTaskDependency(taskID, dependencyID, reason, requestID string) (store.DependencyRemovalResult, error) {
 	if c.token == "" {
-		return store.DependencyRemovalResult{}, fmt.Errorf("CONVEYOR_API_TOKEN is required for dependency removal")
+		return store.DependencyRemovalResult{}, fmt.Errorf("a credential is required for dependency removal; run `conveyor auth login`")
 	}
 	payload, _ := json.Marshal(map[string]string{"reason": reason, "request_id": requestID})
 	var result store.DependencyRemovalResult
@@ -177,7 +177,7 @@ func (c *client) removeTaskDependency(taskID, dependencyID, reason, requestID st
 
 func (c *client) addTaskDependency(taskID, dependencyID, reason, requestID string) (store.DependencyAdditionResult, error) {
 	if c.token == "" {
-		return store.DependencyAdditionResult{}, fmt.Errorf("CONVEYOR_API_TOKEN is required for dependency linking")
+		return store.DependencyAdditionResult{}, fmt.Errorf("a credential is required for dependency linking; run `conveyor auth login`")
 	}
 	payload, _ := json.Marshal(map[string]string{"depends_on_task_id": dependencyID, "reason": reason, "request_id": requestID})
 	var result store.DependencyAdditionResult
@@ -187,7 +187,7 @@ func (c *client) addTaskDependency(taskID, dependencyID, reason, requestID strin
 
 func (c *client) getWorkspaceConfig() (config.VersionedDocument, error) {
 	if c.token == "" {
-		return config.VersionedDocument{}, fmt.Errorf("CONVEYOR_API_TOKEN is required for workspace config")
+		return config.VersionedDocument{}, fmt.Errorf("a credential is required for workspace config; run `conveyor auth login`")
 	}
 	var record config.VersionedDocument
 	err := c.do(http.MethodGet, "/v1/workspace/config", nil, &record)
@@ -196,7 +196,7 @@ func (c *client) getWorkspaceConfig() (config.VersionedDocument, error) {
 
 func (c *client) updateWorkspaceConfig(document config.WorkspaceDocument, version int64) (config.UpdateReceipt, error) {
 	if c.token == "" {
-		return config.UpdateReceipt{}, fmt.Errorf("CONVEYOR_API_TOKEN is required for workspace config")
+		return config.UpdateReceipt{}, fmt.Errorf("a credential is required for workspace config; run `conveyor auth login`")
 	}
 	payload, err := json.Marshal(map[string]any{"document": document})
 	if err != nil {
@@ -217,7 +217,7 @@ func (c *client) monitorStatus() (monitor.Status, error) {
 
 func (c *client) rebuildLineage(reason, requestID string) (core.LineageRebuildResult, error) {
 	if c.token == "" {
-		return core.LineageRebuildResult{}, fmt.Errorf("CONVEYOR_API_TOKEN is required for lineage rebuild")
+		return core.LineageRebuildResult{}, fmt.Errorf("a credential is required for lineage rebuild; run `conveyor auth login`")
 	}
 	payload, _ := json.Marshal(core.LineageRebuildRequest{Reason: reason, RequestID: requestID})
 	var result core.LineageRebuildResult
@@ -227,7 +227,7 @@ func (c *client) rebuildLineage(reason, requestID string) (core.LineageRebuildRe
 
 func (c *client) resolveMonitorDrift(id, outcome string) (monitor.Drift, error) {
 	if c.token == "" {
-		return monitor.Drift{}, fmt.Errorf("CONVEYOR_API_TOKEN is required for drift reconciliation")
+		return monitor.Drift{}, fmt.Errorf("a credential is required for drift reconciliation; run `conveyor auth login`")
 	}
 	payload, _ := json.Marshal(map[string]string{"outcome": outcome})
 	var drift monitor.Drift
@@ -266,12 +266,35 @@ func (c *client) doHeaders(method, path string, body []byte, out any, headers ma
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
 		msg, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode == http.StatusUnauthorized {
+			return fmt.Errorf("%s: %s (%s)", resp.Status, bytes.TrimSpace(msg), c.credentialDiagnostic())
+		}
 		return fmt.Errorf("%s: %s", resp.Status, bytes.TrimSpace(msg))
 	}
 	if resp.StatusCode == http.StatusNoContent || out == nil {
 		return nil
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+// credentialDiagnostic names the credential source and whether a stored
+// credential exists for the resolved server. It never includes a credential
+// value (req-cli-authentication AC-2.1).
+func (c *client) credentialDiagnostic() string {
+	switch {
+	case c.resolved.Token.Source != "":
+		detail := "token from " + c.resolved.Token.Source
+		if c.resolved.StoredCredential {
+			detail += fmt.Sprintf("; a stored credential exists for %s", c.base)
+		} else {
+			detail += fmt.Sprintf("; no stored credential exists for %s", c.base)
+		}
+		return detail
+	case c.token != "":
+		return "token from an untracked credential source"
+	default:
+		return fmt.Sprintf("no credential is configured for %s; run `conveyor auth login`", c.base)
+	}
 }
 
 func (c *client) callerIdentity() (core.CallerIdentity, error) {

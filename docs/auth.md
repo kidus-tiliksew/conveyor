@@ -23,6 +23,13 @@ the Settings page (or `POST /v1/tokens`), shown once, and stored server-side
 only as a hash. `conveyor auth login` verifies and stores it locally;
 `conveyor auth logout --revoke` removes it on both ends.
 
+The CLI resolves the credential per server. `CONVEYOR_API_TOKEN` in the
+environment is the credential only for its environment server — the normalized
+`CONVEYOR_ADDR`, or `http://localhost:8080` when unset. Any other resolved
+server ignores the environment token and uses its stored credential, and
+`conveyor auth status` plus 401 errors report which source won without ever
+printing a credential value.
+
 Deliberate asymmetries between the two methods:
 
 - Changing your own password or profile requires a session, not a token, so a

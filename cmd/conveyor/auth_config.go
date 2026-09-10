@@ -28,10 +28,21 @@ type resolvedValue struct {
 }
 
 type resolvedClientConfig struct {
-	Server    resolvedValue
-	Token     resolvedValue
-	Workspace resolvedValue
+	Server resolvedValue
+	Token  resolvedValue
+	// Workspace resolves per req-cli-authentication AC-3.2; StoredCredential
+	// reports whether the resolved server has a stored credential without
+	// exposing it (AC-2.1).
+	Workspace        resolvedValue
+	StoredCredential bool
 }
+
+// Credential sources are stable, non-secret strings: they may name variables
+// and server URLs, never credential values (req-cli-authentication AC-2.1).
+const (
+	tokenSourceEnvironment = "environment CONVEYOR_API_TOKEN"
+	tokenSourceStoredFile  = "stored file"
+)
 
 var userConfigDir = os.UserConfigDir
 
@@ -139,6 +150,11 @@ func saveLocalAuthConfig(config localAuthConfig) error {
 	return os.Chmod(path, 0o600)
 }
 
+// resolveClientConfig binds an environment token to its environment server:
+// the normalized CONVEYOR_ADDR when set, else the normalized localhost default
+// (req-cli-authentication AC-1.4). For any other resolved server it falls back
+// to that server's stored credential and records a redacted source for the
+// ignored environment token.
 func resolveClientConfig() (resolvedClientConfig, error) {
 	server := resolvedValue{Value: "http://localhost:8080", Source: "default"}
 	if serverFlagExplicit || (strings.TrimSpace(serverFlag) != "" && strings.TrimSpace(os.Getenv("CONVEYOR_ADDR")) == "") {
@@ -157,11 +173,34 @@ func resolveClientConfig() (resolvedClientConfig, error) {
 		return resolvedClientConfig{}, err
 	}
 	stored := config.Servers[canonical]
-	resolved := resolvedClientConfig{Server: server}
-	if value := strings.TrimSpace(os.Getenv("CONVEYOR_API_TOKEN")); value != "" {
-		resolved.Token = resolvedValue{Value: value, Source: "environment"}
-	} else if stored.Token != "" {
-		resolved.Token = resolvedValue{Value: stored.Token, Source: "stored file"}
+	resolved := resolvedClientConfig{Server: server, StoredCredential: stored.Token != ""}
+	envServer := "http://localhost:8080"
+	if value := strings.TrimSpace(os.Getenv("CONVEYOR_ADDR")); value != "" {
+		envServer = value
+	}
+	// A malformed environment server cannot identify the environment token's
+	// server, so it only makes the token ineligible; it must never block a
+	// valid explicitly resolved server (req-cli-authentication AC-1.4). When
+	// the environment server is itself the resolved server, normalization
+	// already failed above and returned.
+	envServerCanonical, envServerErr := normalizeServerURL(envServer)
+	ignoredEnvironmentSource := fmt.Sprintf("%s ignored for %s", tokenSourceEnvironment, envServerCanonical)
+	if envServerErr != nil {
+		envServerCanonical = ""
+		ignoredEnvironmentSource = fmt.Sprintf("%s ignored because environment CONVEYOR_ADDR is invalid", tokenSourceEnvironment)
+	}
+	switch envToken := strings.TrimSpace(os.Getenv("CONVEYOR_API_TOKEN")); {
+	case envToken != "" && canonical == envServerCanonical:
+		resolved.Token = resolvedValue{Value: envToken, Source: tokenSourceEnvironment}
+	case envToken != "" && stored.Token != "":
+		resolved.Token = resolvedValue{
+			Value:  stored.Token,
+			Source: fmt.Sprintf("%s (%s)", tokenSourceStoredFile, ignoredEnvironmentSource),
+		}
+	case stored.Token != "":
+		resolved.Token = resolvedValue{Value: stored.Token, Source: tokenSourceStoredFile}
+	case envToken != "":
+		resolved.Token = resolvedValue{Source: ignoredEnvironmentSource}
 	}
 	if workspaceFlagExplicit || (strings.TrimSpace(workspaceFlag) != "" && strings.TrimSpace(os.Getenv("CONVEYOR_WORKSPACE")) == "") {
 		resolved.Workspace = resolvedValue{Value: strings.TrimSpace(workspaceFlag), Source: "flag"}

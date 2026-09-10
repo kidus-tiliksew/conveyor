@@ -63,7 +63,11 @@ func authCmd() *cobra.Command {
 				}
 			}
 			output := cmd.OutOrStdout()
-			rows := [][2]string{{"Server", c.base}, {"Identity", fmt.Sprintf("%s <%s>", identity.DisplayName, identity.Email)}}
+			rows := [][2]string{
+				{"Server", c.base},
+				{"Identity", fmt.Sprintf("%s <%s>", identity.DisplayName, identity.Email)},
+				{"Token source", c.resolved.Token.Source},
+			}
 			if label != "" {
 				rows = append(rows, [2]string{"Token label", label})
 			}

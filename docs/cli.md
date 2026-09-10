@@ -19,11 +19,14 @@ source won for each:
 | Value | Order |
 |---|---|
 | server | explicit `--server`, then `CONVEYOR_ADDR`, then `http://localhost:8080` |
-| token | `CONVEYOR_API_TOKEN`, then the stored credential file |
+| token | `CONVEYOR_API_TOKEN` for the environment server (normalized `CONVEYOR_ADDR`, else `http://localhost:8080`); otherwise the stored credential for the resolved server |
 | workspace | explicit `--workspace`, then `CONVEYOR_WORKSPACE`, then the stored file, then the singleton fallback |
 
 An explicitly typed flag beats the environment; an untouched flag default does
-not. Requests carry `Authorization: Bearer <token>` and `X-Workspace-ID`.
+not. An environment token is ignored when `--server` names a different server,
+and the source that won is reported by `conveyor auth status` and in 401
+errors, never the credential itself. Requests carry
+`Authorization: Bearer <token>` and `X-Workspace-ID`.
 
 Executor-side commands (`run`, `worker`, `checkout`, `config`, `setup`) also
 resolve a local execution config file, in this order: explicit `--config`,
@@ -40,7 +43,7 @@ same trust model as `gh` and kubeconfig).
 | Command | What it does |
 |---|---|
 | `conveyor auth login` | Prompt for a personal access token with hidden input, verify it against `/v1/me`, and store it. Refuses piped input; the token never appears in process arguments. |
-| `conveyor auth status` | Show the effective server, your identity, and the token's label. |
+| `conveyor auth status` | Show the effective server, your identity, the resolved token's source, and the token's label. |
 | `conveyor auth token` | Print the stored token, for `export CONVEYOR_API_TOKEN=$(conveyor auth token)`. |
 | `conveyor auth logout [--revoke]` | Remove the local entry; `--revoke` also revokes the token on the server. |
 
