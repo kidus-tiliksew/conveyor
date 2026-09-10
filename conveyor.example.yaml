@@ -12,7 +12,7 @@ workspace: demo
 # each human intervention; hitting it parks the task, it does not fail it.
 max_bounces: 10
 work_order_queue_timeout: 24h
-# cache_dir: ~/.conveyor/cache     # bare repo cache for checkout/diff flows
+# planning_snapshot_max_bytes: 536870912  # cap compressed and extracted snapshot bytes
 
 database:
   # backend: postgres

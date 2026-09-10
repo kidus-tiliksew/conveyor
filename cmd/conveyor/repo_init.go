@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/kidus-tiliksew/conveyor/cmd/conveyor/localgit"
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/gitx"
 	"github.com/kidus-tiliksew/conveyor/internal/releaseinfo"
@@ -51,7 +52,7 @@ func repoInitCmd() *cobra.Command {
 // Unavailable or ambiguous registration leaves placeholders, never raw URLs or errors.
 func repoInitMetadata(ctx context.Context, root string, lookup func() (config.VersionedDocument, error)) (string, string) {
 	const missingName, missingBase = "<registered-repository>", "<base-branch>"
-	origin, err := gitx.RepositoryOriginIdentity(ctx, root)
+	origin, err := localgit.RepositoryOriginIdentity(ctx, root)
 	if err != nil {
 		return missingName, missingBase
 	}

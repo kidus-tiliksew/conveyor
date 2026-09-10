@@ -4,22 +4,16 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"io"
-	"os/exec"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"unicode/utf8"
 )
-
-// Snapshot is an immutable commit inside Conveyor's fetch-only bare cache.
-// The directory is server-owned and never enters a planning tool argument
-// (design-git-delivery).
-type Snapshot struct {
-	Repository string
-	Revision   string
-}
 
 type TreeEntry struct {
 	Path string
@@ -28,320 +22,417 @@ type TreeEntry struct {
 
 const (
 	defaultSnapshotOutputBytes = 1 << 20
-	maxSnapshotStderrBytes     = 32 << 10
 	maxPlanningTextLineBytes   = 1 << 20
 	gitTruncationMarker        = "\n… output truncated at git boundary; refine the query …\n"
 )
 
-// PinSnapshot performs the one allowed repository side effect (the serialized
-// cache fetch) and resolves the configured base to a full commit SHA.
-func (m *Manager) PinSnapshot(ctx context.Context, repoURL, base string) (Snapshot, error) {
-	repository, err := m.EnsureMirror(ctx, repoURL)
-	if err != nil {
-		return Snapshot{}, err
+func safeSnapshotPath(path string) error {
+	if strings.TrimSpace(path) == "" {
+		return fmt.Errorf("path is required")
 	}
-	ref := "refs/remotes/origin/" + base
-	if !refExists(ctx, repository, ref) {
-		ref = base
-	}
-	revision, err := revParse(ctx, repository, ref+"^{commit}")
-	if err != nil {
-		return Snapshot{}, err
-	}
-	return Snapshot{Repository: repository, Revision: revision}, nil
+	return safeSnapshotPathspec(path)
 }
-
-// OpenSnapshot reopens an already-pinned revision without fetching. A session
-// therefore keeps reading the exact stored SHA even when upstream advances.
-func (m *Manager) OpenSnapshot(ctx context.Context, repoURL, revision string) (Snapshot, error) {
-	repository, err := m.mirrorPath(repoURL)
-	if err != nil {
-		return Snapshot{}, err
+func safeSnapshotPathspec(path string) error {
+	if strings.HasPrefix(path, "/") || strings.ContainsAny(path, "\x00\\") {
+		return fmt.Errorf("path must be repository-relative")
 	}
-	revision = strings.TrimSpace(revision)
-	resolved, err := revParse(ctx, repository, revision+"^{commit}")
-	if err != nil {
-		return Snapshot{}, err
-	}
-	if resolved != revision {
-		return Snapshot{}, fmt.Errorf("stored planning revision %q is not a full commit SHA", revision)
-	}
-	return Snapshot{Repository: repository, Revision: revision}, nil
-}
-
-func (m *Manager) ListSnapshotTree(
-	ctx context.Context,
-	snapshot Snapshot,
-	pathspec string,
-	maxBytes int,
-) ([]TreeEntry, bool, error) {
-	args := []string{"ls-tree", "-r", "-l", "-z", snapshot.Revision}
-	if pathspec != "" {
-		if err := safeSnapshotPathspec(pathspec); err != nil {
-			return nil, false, err
+	for _, part := range strings.Split(path, "/") {
+		if part == ".." {
+			return fmt.Errorf("path traversal outside the extracted root is refused")
 		}
-		args = append(args, "--", pathspec)
 	}
-	output, err := snapshotOutput(ctx, snapshot, maxBytes, args...)
+	return nil
+}
+
+// Preserve repository-relative Git pathspecs, including literal, glob,
+// case-insensitive, root-relative and exclusion forms.
+type snapshotPathspec struct {
+	pattern                            string
+	literal, glob, ignoreCase, exclude bool
+}
+
+func parseSnapshotPathspec(value string) (snapshotPathspec, error) {
+	spec := snapshotPathspec{pattern: value}
+	if strings.HasPrefix(value, ":(") {
+		end := strings.IndexByte(value, ')')
+		if end < 0 {
+			return spec, fmt.Errorf("invalid repository pathspec")
+		}
+		for _, flag := range strings.Split(value[2:end], ",") {
+			switch flag {
+			case "top":
+			case "literal":
+				spec.literal = true
+			case "glob":
+				spec.glob = true
+			case "icase":
+				spec.ignoreCase = true
+			case "exclude", "!", "^":
+				spec.exclude = true
+			default:
+				return spec, fmt.Errorf("unsupported repository pathspec magic %q", flag)
+			}
+		}
+		spec.pattern = value[end+1:]
+	} else if strings.HasPrefix(value, ":/") {
+		spec.pattern = value[2:]
+	} else if strings.HasPrefix(value, ":!") || strings.HasPrefix(value, ":^") {
+		spec.exclude = true
+		spec.pattern = value[2:]
+	}
+	if spec.literal && spec.glob {
+		return spec, fmt.Errorf("pathspec literal and glob are incompatible")
+	}
+	if err := safeSnapshotPathspec(spec.pattern); err != nil {
+		return spec, err
+	}
+	spec.pattern = strings.TrimSuffix(strings.TrimPrefix(spec.pattern, "./"), "/")
+	return spec, nil
+}
+func snapshotPathMatcher(value string) (func(string) bool, error) {
+	spec, err := parseSnapshotPathspec(value)
+	if err != nil {
+		return nil, err
+	}
+	pattern := spec.pattern
+	var expression strings.Builder
+	if spec.ignoreCase {
+		expression.WriteString("(?i)")
+	}
+	expression.WriteString("^")
+	if pattern == "" || pattern == "." {
+		expression.WriteString(".*")
+	} else if spec.literal {
+		expression.WriteString(regexp.QuoteMeta(pattern))
+	} else {
+		for i := 0; i < len(pattern); i++ {
+			switch pattern[i] {
+			case '*':
+				if !spec.glob {
+					expression.WriteString(".*")
+					continue
+				}
+				if i+1 < len(pattern) && pattern[i+1] == '*' {
+					i++
+					if i+1 < len(pattern) && pattern[i+1] == '/' {
+						i++
+						expression.WriteString("(?:.*/)?")
+					} else {
+						expression.WriteString(".*")
+					}
+				} else {
+					expression.WriteString("[^/]*")
+				}
+			case '?':
+				if spec.glob {
+					expression.WriteString("[^/]")
+				} else {
+					expression.WriteString(".")
+				}
+			case '[':
+				end := strings.IndexByte(pattern[i+1:], ']')
+				if end < 0 {
+					expression.WriteString(`\[`)
+					continue
+				}
+				end += i + 1
+				group := pattern[i : end+1]
+				if strings.HasPrefix(group, "[!") {
+					group = "[^" + group[2:]
+				}
+				expression.WriteString(group)
+				i = end
+			default:
+				expression.WriteString(regexp.QuoteMeta(pattern[i : i+1]))
+			}
+		}
+	}
+	expression.WriteString("(?:/.*)?$")
+	compiled, err := regexp.Compile(expression.String())
+	if err != nil {
+		return nil, fmt.Errorf("invalid repository pathspec: %w", err)
+	}
+	return func(name string) bool { return compiled.MatchString(name) != spec.exclude }, nil
+}
+func snapshotPathMatch(pattern, name string) bool {
+	match, err := snapshotPathMatcher(pattern)
+	return err == nil && match(name)
+}
+func (m *Manager) walk(ctx context.Context, snapshot Snapshot, pattern string, visit func(string, fs.DirEntry) error) error {
+	match, err := snapshotPathMatcher(pattern)
+	if err != nil {
+		return err
+	}
+	if snapshot.Repository == "" || snapshot.sessionKey == "" || m.closed[snapshot.sessionKey] {
+		return fmt.Errorf("planning snapshot is unavailable or closed")
+	}
+	return filepath.WalkDir(snapshot.Repository, func(file string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if err = ctx.Err(); err != nil {
+			return err
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("snapshot contains a symlink")
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		if !entry.Type().IsRegular() {
+			return fmt.Errorf("snapshot contains a non-regular file")
+		}
+		name, err := filepath.Rel(snapshot.Repository, file)
+		if err != nil {
+			return err
+		}
+		name = filepath.ToSlash(name)
+		if !match(name) {
+			return nil
+		}
+		return visit(name, entry)
+	})
+}
+func (m *Manager) ListSnapshotTree(ctx context.Context, snapshot Snapshot, pathspec string, maxBytes int) ([]TreeEntry, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	writer := newHeadTailWriter(maxBytes)
+	err := m.walk(ctx, snapshot, pathspec, func(name string, entry fs.DirEntry) error {
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(writer, "%d\t%s\x00", info.Size(), name)
+		return nil
+	})
 	if err != nil {
 		return nil, false, err
 	}
-	records := output.records(0)
-	entries := make([]TreeEntry, 0, len(records))
-	for _, record := range records {
-		if record == "" {
-			continue
-		}
-		header, path, ok := strings.Cut(record, "\t")
+	out := writer.result()
+	var entries []TreeEntry
+	for _, record := range out.records(0) {
+		size, name, ok := strings.Cut(record, "\t")
 		if !ok {
-			if output.truncated {
-				continue
-			}
-			return nil, false, fmt.Errorf("unexpected git ls-tree record")
-		}
-		fields := strings.Fields(header)
-		if len(fields) != 4 || fields[1] != "blob" {
 			continue
 		}
-		size, parseErr := strconv.ParseInt(fields[3], 10, 64)
-		if parseErr != nil {
-			return nil, false, fmt.Errorf("parse git tree size for %s: %w", path, parseErr)
+		n, err := strconv.ParseInt(size, 10, 64)
+		if err != nil {
+			return nil, false, err
 		}
-		entries = append(entries, TreeEntry{Path: path, Size: size})
+		entries = append(entries, TreeEntry{Path: name, Size: n})
 	}
-	return entries, output.truncated, nil
+	return entries, out.truncated, nil
 }
-
 func (m *Manager) ReadSnapshotBlob(ctx context.Context, snapshot Snapshot, path string, maxBytes int) ([]byte, error) {
 	return m.readSnapshotBlob(ctx, snapshot, path, maxBytes, false)
 }
-
-// ReadSnapshotTextBlob rejects a Git-binary prefix before loading the complete
-// blob. The size gate still runs first, so a large checked-in binary never
-// reaches cat-file's content path at all.
 func (m *Manager) ReadSnapshotTextBlob(ctx context.Context, snapshot Snapshot, path string, maxBytes int) ([]byte, error) {
 	return m.readSnapshotBlob(ctx, snapshot, path, maxBytes, true)
 }
-
-// ReadSnapshotTextLines streams a text blob and retains only the requested
-// line window. The blob itself is intentionally not bounded by the rendered
-// response cap: pagination is the bound. A finite per-line ceiling prevents a
-// pathological blob without newlines from becoming an unbounded allocation.
-func (m *Manager) ReadSnapshotTextLines(
-	ctx context.Context,
-	snapshot Snapshot,
-	path string,
-	offset int,
-	limit int,
-) ([]string, int, bool, error) {
-	if err := safeSnapshotPath(path); err != nil {
-		return nil, 0, false, err
+func (m *Manager) readSnapshotBlob(ctx context.Context, snapshot Snapshot, path string, maxBytes int, textOnly bool) ([]byte, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
-	object := snapshot.Revision + ":" + path
-	metadata, err := snapshotOutput(ctx, snapshot, 128, "cat-file", "-s", object)
+	f, err := m.snapshotFile(snapshot, path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	if maxBytes <= 0 {
+		maxBytes = defaultSnapshotOutputBytes
+	}
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if info.Size() > int64(maxBytes) {
+		return nil, fmt.Errorf("blob %s is %d bytes; read limit is %d bytes", path, info.Size(), maxBytes)
+	}
+	data, err := io.ReadAll(io.LimitReader(f, int64(maxBytes)+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxBytes {
+		return nil, fmt.Errorf("blob %s exceeded its declared size while reading", path)
+	}
+	if textOnly && bytes.IndexByte(data[:min(len(data), 8<<10)], 0) >= 0 {
+		return nil, fmt.Errorf("blob %s is binary; read_file supports text blobs only", path)
+	}
+	return data, nil
+}
+func (m *Manager) ReadSnapshotTextLines(ctx context.Context, snapshot Snapshot, path string, offset, limit int) ([]string, int, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if offset < 1 || limit < 1 {
+		return nil, 0, false, fmt.Errorf("offset and limit must be positive")
+	}
+	file, err := m.snapshotFile(snapshot, path)
 	if err != nil {
 		return nil, 0, false, err
 	}
-	size, err := strconv.ParseInt(strings.TrimSpace(metadata.text()), 10, 64)
-	if err != nil {
-		return nil, 0, false, fmt.Errorf("parse git blob size for %s: %w", path, err)
-	}
-	if size > 0 {
-		prefix, prefixErr := snapshotBlobPrefix(ctx, snapshot, object, size, 8<<10)
-		if prefixErr != nil {
-			return nil, 0, false, prefixErr
-		}
-		if bytes.IndexByte(prefix, 0) >= 0 {
-			return nil, 0, false, fmt.Errorf("blob %s is binary; read_file supports text blobs only", path)
-		}
-	}
-
-	cmd := exec.CommandContext(ctx, "git", "cat-file", "blob", object)
-	cmd.Dir = snapshot.Repository
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
+	defer file.Close()
+	prefix := make([]byte, 8<<10)
+	n, err := file.Read(prefix)
+	if err != nil && err != io.EOF {
 		return nil, 0, false, err
 	}
-	stderr := &limitedBuffer{limit: maxSnapshotStderrBytes}
-	cmd.Stderr = stderr
-	if err = cmd.Start(); err != nil {
+	if bytes.IndexByte(prefix[:n], 0) >= 0 {
+		return nil, 0, false, fmt.Errorf("blob %s is binary; read_file supports text blobs only", path)
+	}
+	if _, err = file.Seek(0, io.SeekStart); err != nil {
 		return nil, 0, false, err
 	}
-	scanner := bufio.NewScanner(stdout)
+	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 64<<10), maxPlanningTextLineBytes)
-	lines := make([]string, 0, limit)
+	var lines []string
 	total := 0
 	for scanner.Scan() {
+		if err = ctx.Err(); err != nil {
+			return nil, 0, false, err
+		}
 		total++
 		line := scanner.Text()
 		if !utf8.ValidString(line) || strings.IndexByte(line, 0) >= 0 {
-			_ = cmd.Process.Kill()
-			_ = cmd.Wait()
 			return nil, 0, false, fmt.Errorf("blob %s is not valid text; read_file supports text blobs only", path)
 		}
-		if total >= offset && total < offset+limit {
+		if total >= offset && total-offset < limit {
 			lines = append(lines, line)
 		}
-		if total >= offset+limit {
-			// This one-line look-ahead proves that another page exists. Stop the
-			// producer instead of scanning the rest merely to compute a total.
-			_ = cmd.Process.Kill()
-			_ = cmd.Wait()
+		if total >= offset && total-offset >= limit {
 			return lines, total, false, nil
 		}
 	}
-	if scanErr := scanner.Err(); scanErr != nil {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-		return nil, 0, false, fmt.Errorf("blob %s contains a line exceeding the %d-byte read_file ceiling: %w",
-			path, maxPlanningTextLineBytes, scanErr)
-	}
-	if err = cmd.Wait(); err != nil {
-		return nil, 0, false, fmt.Errorf("git cat-file blob %s: %w: %s", path, err, stderr.String())
+	if err = scanner.Err(); err != nil {
+		return nil, 0, false, fmt.Errorf("blob %s contains a line exceeding the %d-byte read_file ceiling: %w", path, maxPlanningTextLineBytes, err)
 	}
 	return lines, total, true, nil
 }
 
-func (m *Manager) readSnapshotBlob(
-	ctx context.Context,
-	snapshot Snapshot,
-	path string,
-	maxBytes int,
-	textOnly bool,
-) ([]byte, error) {
-	if err := safeSnapshotPath(path); err != nil {
-		return nil, err
+func (m *Manager) GrepSnapshot(ctx context.Context, snapshot Snapshot, pattern, path string, contextLines int, filesOnly, caseInsensitive bool, maxResults, maxBytes int) (string, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if contextLines < 0 || contextLines > 100 {
+		return "", false, fmt.Errorf("invalid grep context bound")
 	}
-	if maxBytes <= 0 {
-		maxBytes = defaultSnapshotOutputBytes
-	}
-	object := snapshot.Revision + ":" + path
-	metadata, err := snapshotOutput(ctx, snapshot, 128, "cat-file", "-s", object)
+	matchLine, err := snapshotGrepPattern(ctx, pattern, caseInsensitive)
 	if err != nil {
-		return nil, err
-	}
-	size, err := strconv.ParseInt(strings.TrimSpace(metadata.text()), 10, 64)
-	if err != nil {
-		return nil, fmt.Errorf("parse git blob size for %s: %w", path, err)
-	}
-	if size > int64(maxBytes) {
-		return nil, fmt.Errorf("blob %s is %d bytes; read limit is %d bytes", path, size, maxBytes)
-	}
-	if textOnly && size > 0 {
-		prefix, prefixErr := snapshotBlobPrefix(ctx, snapshot, object, size, 8<<10)
-		if prefixErr != nil {
-			return nil, prefixErr
-		}
-		if bytes.IndexByte(prefix, 0) >= 0 {
-			return nil, fmt.Errorf("blob %s is binary; read_file supports text blobs only", path)
-		}
-	}
-	output, err := snapshotOutput(ctx, snapshot, maxBytes, "cat-file", "blob", object)
-	if err != nil {
-		return nil, err
-	}
-	if output.truncated {
-		return nil, fmt.Errorf("blob %s exceeded its declared size while reading", path)
-	}
-	return []byte(output.text()), nil
-}
-
-func snapshotBlobPrefix(
-	ctx context.Context,
-	snapshot Snapshot,
-	object string,
-	size int64,
-	maxBytes int,
-) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "git", "cat-file", "blob", object)
-	cmd.Dir = snapshot.Repository
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, err
-	}
-	stderr := &limitedBuffer{limit: maxSnapshotStderrBytes}
-	cmd.Stderr = stderr
-	if err = cmd.Start(); err != nil {
-		return nil, err
-	}
-	limit := min(int64(maxBytes), size)
-	prefix, readErr := io.ReadAll(io.LimitReader(stdout, limit))
-	if size > limit && cmd.Process != nil {
-		_ = cmd.Process.Kill()
-	}
-	waitErr := cmd.Wait()
-	if readErr != nil {
-		return nil, fmt.Errorf("git cat-file blob prefix: %w", readErr)
-	}
-	if size > limit {
-		return prefix, nil
-	}
-	if waitErr != nil {
-		return nil, fmt.Errorf("git cat-file blob prefix: %w: %s", waitErr, strings.TrimSpace(stderr.String()))
-	}
-	return prefix, nil
-}
-
-func (m *Manager) GrepSnapshot(
-	ctx context.Context,
-	snapshot Snapshot,
-	pattern, path string,
-	contextLines int,
-	filesOnly, caseInsensitive bool,
-	maxResults, maxBytes int,
-) (string, bool, error) {
-	args := []string{"grep", "-n", "-I", "--no-color"}
-	if maxResults > 0 {
-		args = append(args, "--max-count", strconv.Itoa(maxResults))
-	}
-	if filesOnly {
-		args = append(args, "-l")
-	}
-	if contextLines > 0 {
-		args = append(args, "-C", strconv.Itoa(contextLines))
-	}
-	if caseInsensitive {
-		args = append(args, "-i")
-	}
-	args = append(args, "-e", pattern, snapshot.Revision)
-	if path != "" {
-		if err := safeSnapshotPathspec(path); err != nil {
-			return "", false, err
-		}
-		args = append(args, "--", path)
-	}
-	output, err := snapshotOutput(ctx, snapshot, maxBytes, args...)
-	if err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
-			return "", false, nil
-		}
 		return "", false, err
 	}
-	return output.text(), output.truncated, nil
+	writer := newHeadTailWriter(maxBytes)
+	err = m.walk(ctx, snapshot, path, func(name string, entry fs.DirEntry) error {
+		file, err := m.snapshotFile(snapshot, name)
+		if err != nil {
+			return err
+		}
+		defer file.Close()
+		prefix := make([]byte, 8<<10)
+		n, err := file.Read(prefix)
+		if err != nil && err != io.EOF {
+			return err
+		}
+		if bytes.IndexByte(prefix[:n], 0) >= 0 {
+			return nil
+		}
+		if _, err = file.Seek(0, io.SeekStart); err != nil {
+			return err
+		}
+		scanner := bufio.NewScanner(file)
+		maxLine := int(min(m.MaxBytes, int64(int(^uint(0)>>1)-1))) + 1
+		scanner.Buffer(make([]byte, 64<<10), maxLine)
+		previous := []string{}
+		lineNumber, matches, lastPrinted, after := 0, 0, 0, 0
+		for scanner.Scan() {
+			if err = ctx.Err(); err != nil {
+				return err
+			}
+			lineNumber++
+			line := scanner.Text()
+			match, matchErr := matchLine(line)
+			if matchErr != nil {
+				return matchErr
+			}
+			match = match && (maxResults <= 0 || matches < maxResults)
+			if match {
+				matches++
+				if filesOnly {
+					fmt.Fprintf(writer, "%s:%s\n", snapshot.Revision, name)
+					return nil
+				}
+				if contextLines > 0 && lastPrinted > 0 && lineNumber-len(previous) > lastPrinted+1 {
+					fmt.Fprintln(writer, "--")
+				}
+				for i, prior := range previous {
+					number := lineNumber - len(previous) + i
+					if number > lastPrinted {
+						fmt.Fprintf(writer, "%s-%s-%d-%s\n", snapshot.Revision, name, number, prior)
+						lastPrinted = number
+					}
+				}
+				fmt.Fprintf(writer, "%s:%s:%d:%s\n", snapshot.Revision, name, lineNumber, line)
+				lastPrinted = lineNumber
+				after = contextLines
+			} else if after > 0 {
+				fmt.Fprintf(writer, "%s-%s-%d-%s\n", snapshot.Revision, name, lineNumber, line)
+				lastPrinted = lineNumber
+				after--
+			}
+			if contextLines > 0 {
+				previous = append(previous, line)
+				if len(previous) > contextLines {
+					previous = previous[1:]
+				}
+			}
+			if maxResults > 0 && matches >= maxResults && after == 0 {
+				break
+			}
+		}
+		if err = scanner.Err(); err != nil {
+			return fmt.Errorf("grep line exceeds snapshot size limit: %w", err)
+		}
+		return nil
+	})
+	out := writer.result()
+	return out.text(), out.truncated, err
 }
-
 func (m *Manager) SnapshotHistory(ctx context.Context, snapshot Snapshot, path string, n, maxBytes int) (string, error) {
 	if err := safeSnapshotPath(path); err != nil {
 		return "", err
 	}
-	logResult, err := snapshotOutput(ctx, snapshot, maxBytes/2,
-		"log", "--oneline", "--no-decorate", "-n", strconv.Itoa(n), snapshot.Revision, "--", path)
-	logOutput := logResult.text()
-	if err != nil || strings.TrimSpace(logOutput) == "" {
-		return logOutput, err
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed[snapshot.sessionKey] {
+		return "", fmt.Errorf("planning session is closed")
 	}
-	fields := strings.Fields(strings.SplitN(logOutput, "\n", 2)[0])
-	if len(fields) == 0 {
-		return logOutput, nil
-	}
-	first := fields[0]
-	statResult, err := snapshotOutput(ctx, snapshot, maxBytes/2,
-		"show", "--stat", "--oneline", "--no-renames", "--format=fuller", first, "--", path)
+	commits, err := m.API.History(ctx, snapshot.slug, snapshot.Revision, path, n)
 	if err != nil {
 		return "", err
 	}
-	return strings.TrimRight(logOutput, "\n") + "\n\nLatest commit context:\n" + statResult.text(), nil
+	if len(commits) == 0 {
+		return "", nil
+	}
+	detail, err := m.API.CommitDetail(ctx, snapshot.slug, commits[0].SHA)
+	if err != nil {
+		return "", err
+	}
+	output := newHeadTailWriter(maxBytes)
+	for _, commit := range commits {
+		message, _, _ := strings.Cut(commit.Commit.Message, "\n")
+		fmt.Fprintf(output, "%s %s\n", commit.SHA[:7], message)
+	}
+	fmt.Fprintf(output, "\nLatest commit context:\ncommit %s\nAuthor: %s\nAuthorDate: %s\nCommit: %s\nCommitDate: %s\n\n%s\n\nGitHub-native rename-aware statistics (additions, deletions, changes):\n", detail.SHA, detail.Commit.Author.Name, detail.Commit.Author.Date, detail.Commit.Committer.Name, detail.Commit.Committer.Date, detail.Commit.Message)
+	for _, file := range detail.Files {
+		if !snapshotPathMatch(path, file.Filename) && !snapshotPathMatch(path, file.PreviousFilename) {
+			continue
+		}
+		fmt.Fprintf(output, "%s (%s)", file.Filename, file.Status)
+		if file.PreviousFilename != "" {
+			fmt.Fprintf(output, " from %s", file.PreviousFilename)
+		}
+		fmt.Fprintf(output, " | +%d -%d %d changes\n", *file.Additions, *file.Deletions, *file.Changes)
+	}
+	return output.result().text(), nil
 }
 
 type boundedCommandOutput struct {
@@ -355,10 +446,13 @@ func (o boundedCommandOutput) text() string {
 	if !o.truncated {
 		return string(append(append([]byte(nil), o.head...), o.tail...))
 	}
+	if o.maxBytes < len(gitTruncationMarker) {
+		return snapshotTextHead([]byte(gitTruncationMarker), o.maxBytes)
+	}
 	remaining := max(0, o.maxBytes-len(gitTruncationMarker))
 	headBytes := min(len(o.head), remaining/2)
 	tailBytes := min(len(o.tail), remaining-headBytes)
-	return string(o.head[:headBytes]) + gitTruncationMarker + string(o.tail[len(o.tail)-tailBytes:])
+	return snapshotTextHead(o.head, headBytes) + gitTruncationMarker + snapshotTextTail(o.tail, tailBytes)
 }
 
 func (o boundedCommandOutput) records(separator byte) []string {
@@ -427,49 +521,17 @@ func (w *headTailWriter) result() boundedCommandOutput {
 	return boundedCommandOutput{head: w.head, tail: tail, truncated: true, maxBytes: w.limit}
 }
 
-type limitedBuffer struct {
-	bytes.Buffer
-	limit int
+func snapshotTextHead(data []byte, n int) string {
+	data = data[:min(len(data), max(0, n))]
+	for len(data) > 0 && !utf8.Valid(data) {
+		data = data[:len(data)-1]
+	}
+	return string(data)
 }
-
-func (w *limitedBuffer) Write(p []byte) (int, error) {
-	written := len(p)
-	if remaining := w.limit - w.Len(); remaining > 0 {
-		_, _ = w.Buffer.Write(p[:min(len(p), remaining)])
+func snapshotTextTail(data []byte, n int) string {
+	data = data[len(data)-min(len(data), max(0, n)):]
+	for len(data) > 0 && !utf8.Valid(data) {
+		data = data[1:]
 	}
-	return written, nil
-}
-
-func snapshotOutput(ctx context.Context, snapshot Snapshot, maxBytes int, args ...string) (boundedCommandOutput, error) {
-	if snapshot.Repository == "" || snapshot.Revision == "" {
-		return boundedCommandOutput{}, fmt.Errorf("planning snapshot is incomplete")
-	}
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Dir = snapshot.Repository
-	stdout := newHeadTailWriter(maxBytes)
-	stderr := &limitedBuffer{limit: maxSnapshotStderrBytes}
-	cmd.Stdout, cmd.Stderr = stdout, stderr
-	err := cmd.Run()
-	if err != nil {
-		return boundedCommandOutput{}, fmt.Errorf(
-			"git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
-	}
-	return stdout.result(), nil
-}
-
-func safeSnapshotPath(path string) error {
-	if strings.TrimSpace(path) == "" {
-		return fmt.Errorf("path is required")
-	}
-	if strings.ContainsRune(path, '\x00') || strings.HasPrefix(path, "/") {
-		return fmt.Errorf("path must be repository-relative")
-	}
-	return nil
-}
-
-func safeSnapshotPathspec(path string) error {
-	if strings.ContainsRune(path, '\x00') || strings.HasPrefix(path, "/") {
-		return fmt.Errorf("path must be a repository-relative pathspec")
-	}
-	return nil
+	return string(data)
 }

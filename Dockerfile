@@ -37,7 +37,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10001 conveyor \
     && useradd --uid 10001 --gid conveyor --create-home --home-dir /home/conveyor conveyor \
-    && mkdir -p /etc/conveyor /home/conveyor/.conveyor/cache \
+    && mkdir -p /etc/conveyor \
     && chown -R conveyor:conveyor /home/conveyor
 
 COPY --from=build /out/conveyor /usr/local/bin/conveyor
@@ -47,7 +47,6 @@ COPY --from=github-cli /out-gh /usr/local/bin/gh
 ARG VERSION=dev
 LABEL org.opencontainers.image.version="${VERSION}"
 ENV HOME=/home/conveyor
-VOLUME ["/home/conveyor/.conveyor/cache"]
 USER 10001:10001
 ENTRYPOINT ["/usr/local/bin/conveyord"]
 CMD ["-config", "/etc/conveyor/conveyor.yaml"]

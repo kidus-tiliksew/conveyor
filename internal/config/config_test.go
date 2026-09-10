@@ -1472,3 +1472,32 @@ func TestExecutionSetupsValidateEveryHarnessReferenceAndDefault(t *testing.T) {
 		t.Fatalf("empty setups error=%v", err)
 	}
 }
+
+func TestPlanningSnapshotSizeCap(t *testing.T) {
+	example, err := os.ReadFile("../../conveyor.example.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		suffix  string
+		want    int64
+		invalid bool
+	}{
+		{"", 512 << 20, false}, {"\nplanning_snapshot_max_bytes: 1024\n", 1024, false}, {"\nplanning_snapshot_max_bytes: -1\n", 0, true},
+	} {
+		file := filepath.Join(t.TempDir(), "config.yaml")
+		if err = os.WriteFile(file, append(append([]byte{}, example...), []byte(test.suffix)...), 0600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := Load(file)
+		if test.invalid {
+			if err == nil || !strings.Contains(err.Error(), "planning_snapshot_max_bytes") {
+				t.Fatalf("err=%v", err)
+			}
+			continue
+		}
+		if err != nil || cfg.PlanningSnapshotMaxBytes != test.want {
+			t.Fatalf("cfg=%+v err=%v", cfg, err)
+		}
+	}
+}

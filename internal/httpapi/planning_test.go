@@ -1,7 +1,9 @@
 package httpapi
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,14 +11,18 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/gitx"
 	"github.com/kidus-tiliksew/conveyor/internal/inprocess"
 	"github.com/kidus-tiliksew/conveyor/internal/planning"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 )
 
 func TestPlanningHTTPAttachmentWithoutRequirementHasDurableSessionOwner(t *testing.T) {
@@ -103,7 +109,31 @@ func TestPlanningHTTPAbandonPersistsReason(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var archive bytes.Buffer
+	gz := gzip.NewWriter(&archive)
+	tw := tar.NewWriter(gz)
+	if err = tw.WriteHeader(&tar.Header{Name: "root/file", Mode: 0600, Size: 4}); err != nil {
+		t.Fatal(err)
+	}
+	tw.Write([]byte("data"))
+	tw.Close()
+	gz.Close()
+	fixture := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer fixture" {
+			http.Error(w, "auth", 401)
+			return
+		}
+		w.Write(archive.Bytes())
+	}))
+	defer fixture.Close()
+	manager := gitx.NewManager(github.NewSnapshotClient(fixture.Client(), fixture.URL), 0)
+	manager.Root = filepath.Join(t.TempDir(), "snapshots")
+	snapshot, err := manager.OpenSnapshot(github.WithCredential(ctx, "fixture", "test"), "demo", session.ID, "https://github.com/owner/repo", strings.Repeat("a", 40))
+	if err != nil {
+		t.Fatal(err)
+	}
 	server := NewServer(st)
+	server.Planning = &planning.Service{Store: st, Git: manager}
 	server.Workspace, server.BearerToken = "demo", "token"
 	request := httptest.NewRequest(http.MethodPost, "/v1/planning-sessions/"+session.ID+"/abandon", strings.NewReader(`{"reason":"No longer needed"}`))
 	request.Header.Set("Authorization", "Bearer token")
@@ -111,6 +141,9 @@ func TestPlanningHTTPAbandonPersistsReason(t *testing.T) {
 	server.Handler().ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
 		t.Fatalf("abandon status=%d body=%s", response.Code, response.Body.String())
+	}
+	if _, statErr := os.Stat(snapshot.Repository); !os.IsNotExist(statErr) {
+		t.Fatalf("abandoned snapshot remains: %v", statErr)
 	}
 	events, err := st.(interface {
 		ListPlanningSessionEvents(context.Context, string) ([]core.Event, error)

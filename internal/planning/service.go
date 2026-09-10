@@ -26,6 +26,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/lineagecontext"
 	"github.com/kidus-tiliksew/conveyor/internal/pipeline"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 )
 
 const (
@@ -44,20 +45,23 @@ type UserMessage struct {
 }
 
 type Service struct {
-	Store           store.Store
-	Agent           inprocess.Agent
-	ConfigProvider  func(context.Context) (*config.Config, error)
-	Git             *gitx.Manager
-	Model           string
-	Effort          string
-	Prompt          string
-	MaxSteps        int
-	MaxCallsPerStep int
-	MaxContextBytes int
-	MaxToolBytes    int
-	MaxDuration     time.Duration
-	consultedMu     sync.Mutex
-	consulted       map[string]struct{}
+	Store             store.Store
+	Agent             inprocess.Agent
+	ConfigProvider    func(context.Context) (*config.Config, error)
+	Git               *gitx.Manager
+	GitHubApps        *github.AppClient
+	CredentialContext func(context.Context, string) (context.Context, error)
+	gitMu             sync.Mutex
+	Model             string
+	Effort            string
+	Prompt            string
+	MaxSteps          int
+	MaxCallsPerStep   int
+	MaxContextBytes   int
+	MaxToolBytes      int
+	MaxDuration       time.Duration
+	consultedMu       sync.Mutex
+	consulted         map[string]struct{}
 }
 
 type decision struct {
@@ -189,11 +193,12 @@ func (s *Service) CreateSession(ctx context.Context, input CreateSessionInput) (
 	if len(cfg.Repos) == 0 {
 		return core.PlanningSession{}, fmt.Errorf("planning requires at least one configured repository")
 	}
-	manager := s.Git
-	if manager == nil {
-		manager = gitx.NewManager(cfg.CacheDir, "")
-	}
+	manager := s.snapshotManager(cfg)
 	primary := cfg.Repos[0]
+	ctx, err = s.workspaceCredential(ctx, primary.URL)
+	if err != nil {
+		return core.PlanningSession{}, err
+	}
 	snapshot, err := manager.PinSnapshot(ctx, primary.URL, primary.Base)
 	if err != nil {
 		return core.PlanningSession{}, fmt.Errorf("pin primary planning repository %s: %w", primary.Name, err)
@@ -518,6 +523,11 @@ func (s *Service) runClaimed(ctx context.Context, sessionID string, user UserMes
 			})
 			if err != nil {
 				return err
+			}
+			if executionErr == nil {
+				if cleanupErr := s.CloseSessionSnapshot(runCtx, session.ID); cleanupErr != nil {
+					return cleanupErr
+				}
 			}
 			if executionErr != nil {
 				if errors.Is(executionErr, context.Canceled) || errors.Is(executionErr, context.DeadlineExceeded) || runCtx.Err() != nil {
@@ -1699,12 +1709,13 @@ func (s *Service) executeTool(ctx context.Context, session core.PlanningSession,
 }
 
 type explorationContext struct {
-	session   core.PlanningSession
-	repo      config.Repo
-	manager   *gitx.Manager
-	snapshot  gitx.Snapshot
-	capTokens int
-	lowBudget bool
+	credentialCtx context.Context
+	session       core.PlanningSession
+	repo          config.Repo
+	manager       *gitx.Manager
+	snapshot      gitx.Snapshot
+	capTokens     int
+	lowBudget     bool
 }
 
 func (s *Service) explorationTool(ctx context.Context, original core.PlanningSession, call toolCall) (toolExecution, error) {
@@ -1712,6 +1723,7 @@ func (s *Service) explorationTool(ctx context.Context, original core.PlanningSes
 	if err != nil {
 		return toolExecution{}, s.recordExplorationAttempt(ctx, original.ID, err)
 	}
+	ctx = exploration.credentialCtx
 	var output string
 	var refine string
 	var truncated bool
@@ -1795,9 +1807,17 @@ func (s *Service) resolveExploration(
 			repoName, strings.Join(names, ", "),
 		)
 	}
-	manager := s.Git
-	if manager == nil {
-		manager = gitx.NewManager(cfg.CacheDir, "")
+	manager := s.snapshotManager(cfg)
+	session, err = s.Store.GetPlanningSession(ctx, original.ID)
+	if err != nil {
+		return explorationContext{}, planningStoreError(err)
+	}
+	if session.Status != core.PlanningSessionActive {
+		return explorationContext{}, fmt.Errorf("planning session is closed")
+	}
+	ctx, err = s.workspaceCredential(ctx, selected.URL)
+	if err != nil {
+		return explorationContext{}, &planningInfrastructureError{err: err}
 	}
 	revision := session.PinnedRevisions[selected.Name]
 	var snapshot gitx.Snapshot
@@ -1818,7 +1838,7 @@ func (s *Service) resolveExploration(
 		}
 		revision = session.PinnedRevisions[selected.Name]
 	}
-	snapshot, err = manager.OpenSnapshot(ctx, selected.URL, revision)
+	snapshot, err = manager.OpenSnapshot(ctx, cfg.Workspace, session.ID, selected.URL, revision)
 	if err != nil {
 		return explorationContext{}, &planningInfrastructureError{err: fmt.Errorf("open planning repository %s@%s: %w", selected.Name, revision, err)}
 	}
@@ -1834,7 +1854,7 @@ func (s *Service) resolveExploration(
 		capTokens = max(1, capTokens/2)
 	}
 	return explorationContext{
-		session: session, repo: *selected, manager: manager, snapshot: snapshot,
+		session: session, repo: *selected, manager: manager, snapshot: snapshot, credentialCtx: ctx,
 		capTokens: capTokens, lowBudget: low,
 	}, nil
 }
@@ -2655,4 +2675,64 @@ func textualContentType(contentType string) bool {
 		contentType == "application/xml" ||
 		contentType == "application/yaml" ||
 		contentType == "application/x-yaml"
+}
+
+func (s *Service) snapshotManager(cfg *config.Config) *gitx.Manager {
+	s.gitMu.Lock()
+	defer s.gitMu.Unlock()
+	if s.Git == nil {
+		s.Git = gitx.NewManager(nil, cfg.PlanningSnapshotMaxBytes)
+	}
+	return s.Git
+}
+func (s *Service) workspaceCredential(ctx context.Context, repository string) (context.Context, error) {
+	if s.CredentialContext != nil {
+		return s.CredentialContext(ctx, repository)
+	}
+	workspace, _ := store.WorkspaceFromContext(ctx)
+	slug := gitx.GitHubSlug(repository)
+	client := s.GitHubApps
+	if client == nil {
+		client = github.DefaultAppClient
+	}
+	appStore, _ := s.Store.(github.AppStore)
+	token, err := client.WorkspaceToken(ctx, appStore, workspace)
+	if err != nil {
+		return nil, fmt.Errorf("planning repository %s: %w", repository, err)
+	}
+	if err = client.RequireRepository(ctx, workspace, token, slug); err != nil {
+		return nil, fmt.Errorf("planning repository %s: %w", repository, err)
+	}
+	return github.WithCredential(ctx, token, github.AppIdentity(workspace)), nil
+}
+func (s *Service) CloseSessionSnapshot(ctx context.Context, session string) error {
+	s.gitMu.Lock()
+	manager := s.Git
+	s.gitMu.Unlock()
+	if manager == nil {
+		return nil
+	}
+	workspace, ok := store.WorkspaceFromContext(ctx)
+	if !ok {
+		return fmt.Errorf("snapshot cleanup requires workspace")
+	}
+	return manager.CloseSession(workspace, session)
+}
+func (s *Service) CleanupSnapshots(ctx context.Context, cfg *config.Config) error {
+	openByWorkspace := map[string]map[string]bool{}
+	return s.snapshotManager(cfg).CleanupClosed(ctx, func(ctx context.Context, workspace, session string) (bool, error) {
+		open, loaded := openByWorkspace[workspace]
+		if !loaded {
+			sessions, err := s.Store.ListPlanningSessions(store.WithWorkspace(ctx, workspace))
+			if err != nil {
+				return false, err
+			}
+			open = map[string]bool{}
+			for _, value := range sessions {
+				open[value.ID] = value.Status == core.PlanningSessionActive
+			}
+			openByWorkspace[workspace] = open
+		}
+		return open[session], nil
+	})
 }

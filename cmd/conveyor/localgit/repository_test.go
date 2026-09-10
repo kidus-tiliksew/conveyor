@@ -1,7 +1,8 @@
-package gitx
+package localgit
 
 import (
 	"context"
+	"github.com/kidus-tiliksew/conveyor/internal/gitx"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,7 +17,7 @@ func TestNormalizeRepositoryIdentityAcceptsEquivalentGitHubForms(t *testing.T) {
 		"git://github.com/kidus-tiliksew/conveyor",
 	}
 	for _, form := range forms {
-		identity, err := NormalizeRepositoryIdentity(form)
+		identity, err := gitx.NormalizeRepositoryIdentity(form)
 		if err != nil {
 			t.Fatalf("normalize %q: %v", form, err)
 		}

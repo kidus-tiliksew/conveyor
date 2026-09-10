@@ -1,4 +1,4 @@
-package gitx
+package localgit
 
 import (
 	"context"
