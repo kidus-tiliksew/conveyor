@@ -2870,16 +2870,25 @@ func (s *Store) ListLineageNeighborhood(ctx context.Context, roots []core.Lineag
 		FROM walk w JOIN links l ON l.workspace_id=$1 AND
 			((l.src_type=w.node_type AND l.src_id=w.node_id) OR (l.dst_type=w.node_type AND l.dst_id=w.node_id))
 		WHERE w.depth < $4
-	), nearest AS (
+	), nearest AS MATERIALIZED (
 		SELECT root_no,node_type,node_id,min(depth) AS depth FROM walk GROUP BY root_no,node_type,node_id
-	), parent_edges AS (
-		SELECT n.root_no,n.node_type,n.node_id,n.depth,l.kind,l.created_at,l.created_by_event_id
+	), adjacent AS MATERIALIZED (
+		-- Adjacency first: one index probe per reached node, emitting the far
+		-- endpoint so the parent match below is a plain equality hash join.
+		-- Pairing nearest×nearest before touching links is quadratic in the
+		-- neighborhood size (design-lineage-graph).
+		SELECT n.root_no,n.node_type,n.node_id,n.depth,
+			CASE WHEN l.src_type=n.node_type AND l.src_id=n.node_id THEN l.dst_type ELSE l.src_type END AS other_type,
+			CASE WHEN l.src_type=n.node_type AND l.src_id=n.node_id THEN l.dst_id ELSE l.src_id END AS other_id,
+			l.kind,l.created_at,l.created_by_event_id
 		FROM nearest n
 		JOIN links l ON l.workspace_id=$1 AND
 			((l.src_type=n.node_type AND l.src_id=n.node_id) OR (l.dst_type=n.node_type AND l.dst_id=n.node_id))
-		JOIN nearest p ON p.root_no=n.root_no AND p.depth=n.depth-1 AND
-			((l.src_type=p.node_type AND l.src_id=p.node_id AND l.dst_type=n.node_type AND l.dst_id=n.node_id) OR
-			 (l.dst_type=p.node_type AND l.dst_id=p.node_id AND l.src_type=n.node_type AND l.src_id=n.node_id))
+		WHERE n.depth > 0
+	), parent_edges AS (
+		SELECT a.root_no,a.node_type,a.node_id,a.depth,a.kind,a.created_at,a.created_by_event_id
+		FROM adjacent a
+		JOIN nearest p ON p.root_no=a.root_no AND p.node_type=a.other_type AND p.node_id=a.other_id AND p.depth=a.depth-1
 	), prioritized AS (
 		SELECT n.root_no,n.node_type,n.node_id,n.depth,
 			COALESCE(min(CASE p.kind
