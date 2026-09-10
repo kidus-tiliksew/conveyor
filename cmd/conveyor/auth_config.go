@@ -178,23 +178,29 @@ func resolveClientConfig() (resolvedClientConfig, error) {
 	if value := strings.TrimSpace(os.Getenv("CONVEYOR_ADDR")); value != "" {
 		envServer = value
 	}
-	envServerCanonical, err := normalizeServerURL(envServer)
-	if err != nil {
-		return resolvedClientConfig{}, fmt.Errorf("resolve environment server: %w", err)
+	// A malformed environment server cannot identify the environment token's
+	// server, so it only makes the token ineligible; it must never block a
+	// valid explicitly resolved server (req-cli-authentication AC-1.4). When
+	// the environment server is itself the resolved server, normalization
+	// already failed above and returned.
+	envServerCanonical, envServerErr := normalizeServerURL(envServer)
+	ignoredEnvironmentSource := fmt.Sprintf("%s ignored for %s", tokenSourceEnvironment, envServerCanonical)
+	if envServerErr != nil {
+		envServerCanonical = ""
+		ignoredEnvironmentSource = fmt.Sprintf("%s ignored because environment CONVEYOR_ADDR is invalid", tokenSourceEnvironment)
 	}
 	switch envToken := strings.TrimSpace(os.Getenv("CONVEYOR_API_TOKEN")); {
 	case envToken != "" && canonical == envServerCanonical:
 		resolved.Token = resolvedValue{Value: envToken, Source: tokenSourceEnvironment}
 	case envToken != "" && stored.Token != "":
 		resolved.Token = resolvedValue{
-			Value: stored.Token,
-			Source: fmt.Sprintf("%s (%s ignored for %s)",
-				tokenSourceStoredFile, tokenSourceEnvironment, envServerCanonical),
+			Value:  stored.Token,
+			Source: fmt.Sprintf("%s (%s)", tokenSourceStoredFile, ignoredEnvironmentSource),
 		}
 	case stored.Token != "":
 		resolved.Token = resolvedValue{Value: stored.Token, Source: tokenSourceStoredFile}
 	case envToken != "":
-		resolved.Token = resolvedValue{Source: fmt.Sprintf("%s ignored for %s", tokenSourceEnvironment, envServerCanonical)}
+		resolved.Token = resolvedValue{Source: ignoredEnvironmentSource}
 	}
 	if workspaceFlagExplicit || (strings.TrimSpace(workspaceFlag) != "" && strings.TrimSpace(os.Getenv("CONVEYOR_WORKSPACE")) == "") {
 		resolved.Workspace = resolvedValue{Value: strings.TrimSpace(workspaceFlag), Source: "flag"}

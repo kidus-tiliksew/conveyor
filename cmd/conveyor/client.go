@@ -286,6 +286,8 @@ func (c *client) credentialDiagnostic() string {
 		detail := "token from " + c.resolved.Token.Source
 		if c.resolved.StoredCredential {
 			detail += fmt.Sprintf("; a stored credential exists for %s", c.base)
+		} else {
+			detail += fmt.Sprintf("; no stored credential exists for %s", c.base)
 		}
 		return detail
 	case c.token != "":

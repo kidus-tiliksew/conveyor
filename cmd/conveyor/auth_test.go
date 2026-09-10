@@ -301,6 +301,67 @@ func TestClientTokenResolutionBindsEnvironmentTokenToEnvironmentServer(t *testin
 	}
 }
 
+func TestClientResolutionToleratesMalformedEnvironmentServerWithExplicitServer(t *testing.T) {
+	isolateLocalAuthTest(t)
+	malformed := "not-a-url"
+	explicit := "https://review.invalid"
+	t.Setenv("CONVEYOR_ADDR", malformed)
+	t.Setenv("CONVEYOR_API_TOKEN", "environment-secret-token")
+	if err := updateLocalServerConfig(explicit, func(entry *localServerConfig) { entry.Token = "stored-secret-token" }); err != nil {
+		t.Fatal(err)
+	}
+
+	// A valid explicit --server overrides a malformed environment server
+	// without failing resolution (req-cli-authentication AC-1.4, AC-3.2).
+	serverFlag, serverFlagExplicit = explicit, true
+	c := newClient()
+	if c.base != explicit || c.token != "stored-secret-token" || !c.resolved.StoredCredential {
+		t.Fatalf("malformed environment server resolution = %+v", c)
+	}
+	if c.resolved.Token.Source != "stored file (environment CONVEYOR_API_TOKEN ignored because environment CONVEYOR_ADDR is invalid)" {
+		t.Fatalf("ignored source = %q", c.resolved.Token.Source)
+	}
+
+	// Without a stored credential the environment token stays ignored and the
+	// source explains the skipped token without echoing the malformed value.
+	if err := updateLocalServerConfig(explicit, func(entry *localServerConfig) { entry.Token = "" }); err != nil {
+		t.Fatal(err)
+	}
+	c = newClient()
+	if c.token != "" || c.resolved.StoredCredential ||
+		c.resolved.Token.Source != "environment CONVEYOR_API_TOKEN ignored because environment CONVEYOR_ADDR is invalid" {
+		t.Fatalf("malformed environment server without stored credential = %+v", c)
+	}
+
+	// The command path reaches the actionable credential error instead of a
+	// server resolution failure.
+	var stderr bytes.Buffer
+	command := authCmd()
+	command.SetArgs([]string{"status"})
+	command.SetErr(&stderr)
+	err := command.Execute()
+	combined := stderr.String() + errMessage(err)
+	if err == nil || !strings.Contains(combined, "no credential is configured for "+explicit) ||
+		!strings.Contains(combined, "conveyor auth login") ||
+		strings.Contains(combined, "resolve server") || strings.Contains(combined, malformed) {
+		t.Fatalf("status error = %v stderr = %q", err, stderr.String())
+	}
+
+	// Without an explicit server the malformed environment server is the
+	// resolved server and still fails closed.
+	serverFlag, serverFlagExplicit = "", false
+	if _, err := resolveClientConfig(); err == nil || !strings.Contains(err.Error(), "resolve server") {
+		t.Fatalf("environment-only error = %v", err)
+	}
+}
+
+func errMessage(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
 func TestAuthStatusReportsTokenSourceWithoutRevealingValues(t *testing.T) {
 	isolateLocalAuthTest(t)
 	mismatched := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -370,6 +431,22 @@ func TestClient401DiagnosticReportsSourceWithoutTokenValues(t *testing.T) {
 		if strings.Contains(message, secret) {
 			t.Fatalf("401 diagnostic disclosed a token value: %q", message)
 		}
+	}
+
+	// With no stored credential the 401 diagnostic still reports the
+	// stored-credential absence non-secretly.
+	unbacked := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	}))
+	defer unbacked.Close()
+	serverFlag, serverFlagExplicit = "", false
+	t.Setenv("CONVEYOR_ADDR", unbacked.URL)
+	c = newClient()
+	err = c.do(http.MethodGet, "/v1/me", nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "token from environment CONVEYOR_API_TOKEN") ||
+		!strings.Contains(err.Error(), "no stored credential exists for "+unbacked.URL) ||
+		strings.Contains(err.Error(), "environment-secret-token") {
+		t.Fatalf("unbacked 401 diagnostic = %v", err)
 	}
 }
 
