@@ -75,13 +75,13 @@ func TestOperatorNotesRefreshWithoutChangingPinnedAuthority(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			v := core.RequirementVersion{Content: "Intent", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Preserve intent."}}, Origin: core.RequirementOriginImplementation, OriginTaskID: task.ID}
+			v := core.RequirementVersion{Content: "# Intent", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Preserve intent."}}, Origin: core.RequirementOriginImplementation, OriginTaskID: task.ID}
 			if _, _, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-notes", Title: "Notes"}, v); err != nil {
 				t.Fatal(err)
 			}
 			for n := 2; n <= 3; n++ {
 				v.RequirementID = "req-notes"
-				v.Content = "Next\n" + v.Content
+				v.Content = "# Next\n" + v.Content
 				if _, err := st.ProposeRequirementVersion(ctx, v); err != nil {
 					t.Fatal(err)
 				}

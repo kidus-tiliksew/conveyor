@@ -23,7 +23,7 @@ func TestSingleStoreDocumentsIntegration(t *testing.T) {
 	}
 	create := func(id, text string) core.Requirement {
 		t.Helper()
-		r, v, err := st.CreateRequirement(ctx, core.Requirement{ID: id, Title: id}, core.RequirementVersion{Content: text, Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: text}}})
+		r, v, err := st.CreateRequirement(ctx, core.Requirement{ID: id, Title: id}, core.RequirementVersion{Content: "# " + id + "\n\n" + text, Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: text}}})
 		if err != nil {
 			t.Fatal(err)
 		}

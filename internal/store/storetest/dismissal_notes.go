@@ -46,7 +46,7 @@ func runDismissalNotesConformance(t *testing.T, factory RequirementFactory) {
 					}
 					propose = func(n int) error {
 						v.RequirementID = id
-						v.Content = fmt.Sprintf("Revision %d\n%s", n, content)
+						v.Content = fmt.Sprintf("# Revision %d\n%s", n, content)
 						_, err := st.ProposeRequirementVersion(ctx, v)
 						return err
 					}
@@ -72,7 +72,7 @@ func runDismissalNotesConformance(t *testing.T, factory RequirementFactory) {
 						}
 						expected := content
 						if n > 1 {
-							expected = fmt.Sprintf("Revision %d\n%s", n, content)
+							expected = fmt.Sprintf("# Revision %d\n%s", n, content)
 						}
 						if v.Content != expected {
 							t.Fatal("content changed")
