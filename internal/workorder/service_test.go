@@ -426,7 +426,7 @@ func TestWorkOrderArtifactContextTraversesLineageAndKeepsAuthorizationOrderScope
 		}
 	}
 	requirement, version, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-lineage", Title: "Lineage intent"}, core.RequirementVersion{
-		Content:    "Sibling outcomes inform later work.\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Sibling outcomes inform later work.\n```",
+		Content:    "# Sibling outcomes inform later work.\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Sibling outcomes inform later work.\n```",
 		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Sibling outcomes inform later work."}},
 		Origin:     core.RequirementOriginChat, OriginSessionID: "planning-session",
 	})
@@ -1052,7 +1052,7 @@ func TestQueuedReviewWorkOrderPeekResolvesWithoutPinning(t *testing.T) {
 	if err := st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
 	}
-	requirement, version, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-queued-peek", Title: "Peek authority"}, core.RequirementVersion{Content: "Current", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Render current authority."}}, Origin: core.RequirementOriginChat, OriginSessionID: "peek"})
+	requirement, version, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-queued-peek", Title: "Peek authority"}, core.RequirementVersion{Content: "# Current", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Render current authority."}}, Origin: core.RequirementOriginChat, OriginSessionID: "peek"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1100,7 +1100,7 @@ func TestReviewClaimPinsRequirementVersionRenderedAfterAuthorityMoves(t *testing
 		t.Fatal(err)
 	}
 	requirement, first, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-claim-pin", Title: "Claim pin"}, core.RequirementVersion{
-		Content: "First", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "First", AcceptanceCriteria: []core.AcceptanceCriterion{{ID: "AC-1.1", Statement: "Pinned criterion"}}}},
+		Content: "# First", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "First", AcceptanceCriteria: []core.AcceptanceCriterion{{ID: "AC-1.1", Statement: "Pinned criterion"}}}},
 		Origin: core.RequirementOriginChat, OriginSessionID: "first",
 	})
 	if err != nil {
@@ -1139,7 +1139,7 @@ func TestReviewClaimPinsRequirementVersionRenderedAfterAuthorityMoves(t *testing
 	if claimed.GovernanceSnapshot == nil {
 		t.Fatal("review claim did not pin governance authority")
 	}
-	second, err := st.ProposeRequirementVersion(ctx, core.RequirementVersion{RequirementID: requirement.ID, Content: "Second", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Second"}}, Origin: core.RequirementOriginChat, OriginSessionID: "second"})
+	second, err := st.ProposeRequirementVersion(ctx, core.RequirementVersion{RequirementID: requirement.ID, Content: "# Second", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Second"}}, Origin: core.RequirementOriginChat, OriginSessionID: "second"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1689,7 +1689,7 @@ func TestOperatorRecoveryDirectionIsTrustedContextAndClearsAtLifecycleBoundaries
 		t.Fatal(err)
 	}
 	requirement, first, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-resume", Title: "Resume authority"}, core.RequirementVersion{
-		Content: "Initial", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Re-check current authority."}},
+		Content: "# Initial", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Re-check current authority."}},
 		Origin: core.RequirementOriginChat, OriginSessionID: "initial",
 	})
 	if err != nil {
@@ -1705,7 +1705,7 @@ func TestOperatorRecoveryDirectionIsTrustedContextAndClearsAtLifecycleBoundaries
 	if _, err = st.ConfirmRequirementServes(humanCtx, order.TaskID, requirement.ID); err != nil {
 		t.Fatal(err)
 	}
-	second, err := st.ProposeRequirementVersion(ctx, core.RequirementVersion{RequirementID: requirement.ID, Content: "Amended", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Re-check current authority.", AcceptanceCriteria: []core.AcceptanceCriterion{{ID: "AC-1.1", Statement: "The amendment permits the change."}}}}, Origin: core.RequirementOriginChat, OriginSessionID: "amendment"})
+	second, err := st.ProposeRequirementVersion(ctx, core.RequirementVersion{RequirementID: requirement.ID, Content: "# Amended", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Re-check current authority.", AcceptanceCriteria: []core.AcceptanceCriterion{{ID: "AC-1.1", Statement: "The amendment permits the change."}}}}, Origin: core.RequirementOriginChat, OriginSessionID: "amendment"})
 	if err != nil {
 		t.Fatal(err)
 	}

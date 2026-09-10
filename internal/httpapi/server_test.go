@@ -1242,7 +1242,7 @@ func TestTaskActivityEnrichesAuthorityConflictCheckpoint(t *testing.T) {
 		t.Fatal(err)
 	}
 	requirement, firstRequirement, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-checkpoint", Title: "Checkpoint requirement"}, core.RequirementVersion{
-		Content: "Checkpoint requirement", Origin: core.RequirementOriginOperator,
+		Content: "# Checkpoint requirement", Origin: core.RequirementOriginOperator,
 		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Resolve authority conflicts."}},
 	})
 	if err != nil {
@@ -1252,7 +1252,7 @@ func TestTaskActivityEnrichesAuthorityConflictCheckpoint(t *testing.T) {
 		t.Fatal(err)
 	}
 	secondRequirement, err := st.ProposeRequirementVersion(ctx, core.RequirementVersion{
-		RequirementID: requirement.ID, Content: "Updated checkpoint requirement", Origin: core.RequirementOriginOperator,
+		RequirementID: requirement.ID, Content: "# Updated checkpoint requirement", Origin: core.RequirementOriginOperator,
 		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Resolve authority conflicts with current guidance."}},
 	})
 	if err != nil {
@@ -1362,7 +1362,7 @@ func TestPendingProposalsProjectionAttentionAndTaskWarning(t *testing.T) {
 		t.Fatal(err)
 	}
 	requirement, requirementVersion, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-pending", Title: "Pending requirement"}, core.RequirementVersion{
-		Content: "Pending requirement", Origin: core.RequirementOriginOperator,
+		Content: "# Pending requirement", Origin: core.RequirementOriginOperator,
 		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Surface pending authority."}},
 	})
 	if err != nil {
@@ -1483,7 +1483,7 @@ func TestTaskContextProposalSignalsAttentionWithoutPendingAuthority(t *testing.T
 		t.Fatal(err)
 	}
 	requirement, version, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-context-attention", Title: "Context attention"}, core.RequirementVersion{
-		Content: "Context attention", Origin: core.RequirementOriginOperator,
+		Content: "# Context attention", Origin: core.RequirementOriginOperator,
 		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Surface proposed task context on the origin task."}},
 	})
 	if err != nil {
@@ -3217,7 +3217,7 @@ func TestTaskOperationsLinksAttachedContextAndReportsItsAbsence(t *testing.T) {
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	st := store.NewMemory()
 	requirement, requirementVersion, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-tasks-view", Title: "Task-centric operations view"}, core.RequirementVersion{
-		Content: "Task-centric operations view", Origin: core.RequirementOriginOperator,
+		Content: "# Task-centric operations view", Origin: core.RequirementOriginOperator,
 		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Operators shall manage delivery through a list-first Tasks view."}},
 	})
 	if err != nil {

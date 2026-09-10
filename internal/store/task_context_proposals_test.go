@@ -12,7 +12,7 @@ func TestTaskContextProposalLifecycleAndDeduplication(t *testing.T) {
 	ctx := WithWorkspace(t.Context(), "demo")
 	st := NewMemory()
 	requirement, requirementVersion, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-proposal", Title: "Proposal intent"}, core.RequirementVersion{
-		Content: "Proposal intent", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Confirm proposed context."}},
+		Content: "# Proposal intent", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Confirm proposed context."}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -76,7 +76,7 @@ func TestTaskContextProposalLifecycleAndDeduplication(t *testing.T) {
 func TestTaskContextProposalValidation(t *testing.T) {
 	ctx := WithWorkspace(t.Context(), "demo")
 	st := NewMemory()
-	requirement, _, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-unconfirmed", Title: "Pending"}, core.RequirementVersion{Content: "Pending", Origin: core.RequirementOriginOperator,
+	requirement, _, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-unconfirmed", Title: "Pending"}, core.RequirementVersion{Content: "# Pending", Origin: core.RequirementOriginOperator,
 		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Remain pending."}}})
 	if err != nil {
 		t.Fatal(err)

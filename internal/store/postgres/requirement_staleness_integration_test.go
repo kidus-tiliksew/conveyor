@@ -18,7 +18,7 @@ func TestRequirementStalenessAcknowledgmentSurvivesRestart(t *testing.T) {
 	st, baseCtx, workspace := newPhase61IntegrationStore(t)
 	ctx := store.WithActor(baseCtx, store.Actor{ID: "restart-operator", Role: core.ActorHuman})
 	requirement, v1, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-restart-" + core.NewTaskID(), Title: "Restart-safe acknowledgment"}, core.RequirementVersion{
-		Content: "First intent.", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Acknowledgments survive restart."}}, Origin: core.RequirementOriginOperator,
+		Content: "# First intent.", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Acknowledgments survive restart."}}, Origin: core.RequirementOriginOperator,
 	})
 	if err != nil {
 		st.Close()
@@ -39,7 +39,7 @@ func TestRequirementStalenessAcknowledgmentSurvivesRestart(t *testing.T) {
 		st.Close()
 		t.Fatal(err)
 	}
-	v2, err := st.ProposeRequirementVersion(ctx, core.RequirementVersion{RequirementID: requirement.ID, Content: "Second intent.", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Acknowledgments survive restart and later delivery."}}, Origin: core.RequirementOriginOperator})
+	v2, err := st.ProposeRequirementVersion(ctx, core.RequirementVersion{RequirementID: requirement.ID, Content: "# Second intent.", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Acknowledgments survive restart and later delivery."}}, Origin: core.RequirementOriginOperator})
 	if err != nil {
 		st.Close()
 		t.Fatal(err)
@@ -129,7 +129,7 @@ func TestRequirementReviewedReconciliationSurvivesRestart(t *testing.T) {
 	databaseURL := integrationDatabaseURL(t)
 	st, ctx, workspace := newPhase61IntegrationStore(t)
 	requirement, version, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-reconciled-" + core.NewTaskID(), Title: "Reviewed reconciliation"}, core.RequirementVersion{
-		Content: "Reviewed delivery remains trusted after recovery.", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Classify delivery from review provenance."}}, Origin: core.RequirementOriginOperator,
+		Content: "# Reviewed delivery remains trusted after recovery.", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Classify delivery from review provenance."}}, Origin: core.RequirementOriginOperator,
 	})
 	if err != nil {
 		st.Close()

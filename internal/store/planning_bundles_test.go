@@ -9,14 +9,14 @@ import (
 func TestPlanningBundleApprovalCreatesOneAtomicDependencyOrderedTaskSet(t *testing.T) {
 	ctx := WithWorkspace(t.Context(), "demo")
 	st := NewMemory()
-	requirement, first, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-bundle", Title: "Bundle delivery"}, core.RequirementVersion{Content: "Bundle delivery", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Deliver a task bundle."}}})
+	requirement, first, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-bundle", Title: "Bundle delivery"}, core.RequirementVersion{Content: "# Bundle delivery", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Deliver a task bundle."}}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err = st.ConfirmRequirementVersion(ctx, requirement.ID, first.Version); err != nil {
 		t.Fatal(err)
 	}
-	pending, err := st.ProposeRequirementVersion(ctx, core.RequirementVersion{RequirementID: requirement.ID, Content: "Bundle delivery v2", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Deliver a dependency-ordered task bundle."}}})
+	pending, err := st.ProposeRequirementVersion(ctx, core.RequirementVersion{RequirementID: requirement.ID, Content: "# Bundle delivery v2", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Deliver a dependency-ordered task bundle."}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,14 +84,14 @@ func TestPlanningBundleApprovalCreatesOneAtomicDependencyOrderedTaskSet(t *testi
 func TestPlanningBundleRejectsCyclesAndRejectDecisionCreatesNothing(t *testing.T) {
 	ctx := WithWorkspace(t.Context(), "demo")
 	st := NewMemory()
-	requirement, first, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-reject", Title: "Reject"}, core.RequirementVersion{Content: "Reject", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Reject task sets."}}})
+	requirement, first, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-reject", Title: "Reject"}, core.RequirementVersion{Content: "# Reject", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Reject task sets."}}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err = st.ConfirmRequirementVersion(ctx, requirement.ID, first.Version); err != nil {
 		t.Fatal(err)
 	}
-	pending, err := st.ProposeRequirementVersion(ctx, core.RequirementVersion{RequirementID: requirement.ID, Content: "Reject v2", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Reject task sets atomically."}}})
+	pending, err := st.ProposeRequirementVersion(ctx, core.RequirementVersion{RequirementID: requirement.ID, Content: "# Reject v2", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Reject task sets atomically."}}})
 	if err != nil {
 		t.Fatal(err)
 	}

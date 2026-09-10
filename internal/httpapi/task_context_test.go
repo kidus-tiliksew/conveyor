@@ -16,7 +16,7 @@ func TestTaskIntakeAndOpenTaskContextAction(t *testing.T) {
 	st := store.NewMemory()
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	requirement, requirementVersion, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-context", Title: "Context intent"}, core.RequirementVersion{
-		Content: "Context intent", Origin: core.RequirementOriginOperator,
+		Content: "# Context intent", Origin: core.RequirementOriginOperator,
 		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Use task context."}},
 	})
 	if err != nil {
@@ -89,7 +89,7 @@ func TestTaskContextProposalRESTAndTaskProjection(t *testing.T) {
 	st := store.NewMemory()
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	requirement, version, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-rest-proposal", Title: "REST proposal"}, core.RequirementVersion{
-		Content: "REST proposal", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Expose proposal decisions."}},
+		Content: "# REST proposal", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Expose proposal decisions."}},
 	})
 	if err != nil {
 		t.Fatal(err)

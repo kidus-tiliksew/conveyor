@@ -304,7 +304,7 @@ func postgresConformanceLegacySeed(st *Store, ctx context.Context, workspace str
 		}
 		requirementID := "req-" + core.NewTaskID()
 		_, _, err = st.CreateRequirement(ctx, core.Requirement{ID: requirementID, Title: "Migrated requirement"}, core.RequirementVersion{
-			Content: "Migrated context", Origin: core.RequirementOriginChat, OriginSessionID: session.ID,
+			Content: "# Migrated context", Origin: core.RequirementOriginChat, OriginSessionID: session.ID,
 			Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Preserve migrated context."}},
 		})
 		if err != nil {

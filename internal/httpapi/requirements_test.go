@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -15,6 +16,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/monitor"
+	"github.com/kidus-tiliksew/conveyor/internal/pipeline"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 )
@@ -40,7 +42,7 @@ func TestOperatorRequirementProposalRESTLifecycle(t *testing.T) {
 		return response
 	}
 
-	content := "Operator-authored intent.\n\n```conveyor:requirements\n- id: REQ-2\n  statement: The API remains authenticated.\n  user_story:\n    as_a: operator\n    i_want: to propose intent headlessly\n    so_that: confirmation stays explicit\n  acceptance_criteria:\n    - id: AC-2.1\n      statement: The proposal remains pending.\n```"
+	content := "# Operator-authored intent.\n\n```conveyor:requirements\n- id: REQ-2\n  statement: The API remains authenticated.\n  user_story:\n    as_a: operator\n    i_want: to propose intent headlessly\n    so_that: confirmation stays explicit\n  acceptance_criteria:\n    - id: AC-2.1\n      statement: The proposal remains pending.\n```"
 	body, _ := json.Marshal(map[string]any{
 		"id": "req-api", "title": "Requirement proposal API", "content": content,
 		"derived_from": map[string]any{"document_id": "ref-api", "version": source.Version, "section_anchor": "api-contract", "target_id": "AC-2.1"},
@@ -89,18 +91,37 @@ func TestOperatorRequirementProposalRESTLifecycle(t *testing.T) {
 	}
 	assertNoLineage(1)
 
-	revisionJSON, _ := json.Marshal(map[string]string{"content": "Revised intent.\n\n```conveyor:requirements\n- id: REQ-3\n  statement: Revisions preserve high-water discipline.\n```"})
+	revisionJSON, _ := json.Marshal(map[string]string{"content": "# Revised intent.\n\n```conveyor:requirements\n- id: REQ-3\n  statement: Revisions preserve high-water discipline.\n```"})
 	revision := string(revisionJSON)
 	revised := call(http.MethodPost, "/v1/requirements/req-api/versions", revision)
 	if revised.Code != http.StatusCreated || !strings.Contains(revised.Body.String(), `"version":2`) || !strings.Contains(revised.Body.String(), `"origin":"operator"`) {
 		t.Fatalf("revision status=%d body=%s", revised.Code, revised.Body.String())
 	}
-	recycledJSON, _ := json.Marshal(map[string]string{"content": "Bad reuse.\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Recycled identity.\n```"})
+
+	for _, invalid := range []struct{ content, want string }{
+		{historicalCLIAuthenticationV2, `line 1 is "CLI authentication (proposed v2)"`},
+		{strings.TrimPrefix(historicalCLIAuthenticationV2, "CLI authentication (proposed v2)\n"), `requirement content line 57 is`},
+		{"CLI authentication (proposed v2)\n" + content, `requirement content must begin with its "# <title>" heading; line 1 is "CLI authentication (proposed v2)"`},
+		{content + "\nREQ-2: Duplicate.", `statement identifiers belong inside the conveyor:requirements fence`},
+	} {
+		payload, _ := json.Marshal(map[string]string{"content": invalid.content})
+		response := call(http.MethodPost, "/v1/requirements/req-api/versions", string(payload))
+		refusal := strings.TrimSpace(response.Body.String())
+		_, parserErr := pipeline.ParseRequirementDocument(invalid.content)
+		if response.Code != http.StatusBadRequest || parserErr == nil || refusal != parserErr.Error() || !strings.Contains(refusal, invalid.want) {
+			t.Fatalf("refusal status=%d body=%s parser=%v", response.Code, response.Body.String(), parserErr)
+		}
+	}
+	versions, err := st.ListRequirementVersions(ctx, "req-api")
+	if err != nil || len(versions) != 2 {
+		t.Fatalf("refused proposal wrote versions: %+v, %v", versions, err)
+	}
+	recycledJSON, _ := json.Marshal(map[string]string{"content": "# Bad reuse.\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Recycled identity.\n```"})
 	recycled := call(http.MethodPost, "/v1/requirements/req-api/versions", string(recycledJSON))
 	if recycled.Code != http.StatusBadRequest || !strings.Contains(recycled.Body.String(), "reuses a retired identifier") {
 		t.Fatalf("recycled status=%d body=%s", recycled.Code, recycled.Body.String())
 	}
-	invalidFence := call(http.MethodPost, "/v1/requirements/req-api/versions", `{"content":"Missing machine block."}`)
+	invalidFence := call(http.MethodPost, "/v1/requirements/req-api/versions", `{"content":"# Missing machine block."}`)
 	if invalidFence.Code != http.StatusBadRequest || !strings.Contains(invalidFence.Body.String(), "requires one conveyor:requirements block") {
 		t.Fatalf("invalid fence status=%d body=%s", invalidFence.Code, invalidFence.Body.String())
 	}
@@ -136,24 +157,56 @@ func TestOperatorRequirementProposalRESTLifecycle(t *testing.T) {
 	}
 }
 
+func TestHistoricalRequirementProposalREST(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	server := NewServer(st)
+	server.Workspace, server.BearerToken = "demo", "token"
+	handler := server.Handler()
+	withoutPreamble := strings.TrimPrefix(historicalCLIAuthenticationV2, "CLI authentication (proposed v2)\n")
+	corrected, _, _ := strings.Cut(withoutPreamble, "\nREQ-1:")
+	for _, content := range []string{historicalCLIAuthenticationV2, withoutPreamble, corrected} {
+		payload, err := json.Marshal(map[string]string{"id": "req-cli-authentication", "title": "CLI authentication", "content": content})
+		if err != nil {
+			t.Fatal(err)
+		}
+		request := httptest.NewRequest(http.MethodPost, "/v1/requirements", bytes.NewReader(payload))
+		request.Header.Set("Authorization", "Bearer token")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		_, parserErr := pipeline.ParseRequirementDocument(content)
+		if parserErr != nil {
+			if response.Code != http.StatusBadRequest || strings.TrimSpace(response.Body.String()) != parserErr.Error() {
+				t.Fatalf("status=%d body=%s, want %v", response.Code, response.Body.String(), parserErr)
+			}
+			documents, err := st.ListRequirements(ctx, false)
+			if err != nil || len(documents) != 0 {
+				t.Fatalf("refusal wrote documents=%+v err=%v", documents, err)
+			}
+		} else if response.Code != http.StatusCreated {
+			t.Fatalf("corrected proposal status=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+}
+
 func TestRequirementArchiveRESTLifecycle(t *testing.T) {
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	st := store.NewMemory()
-	document, version, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-archive-api", Title: "Archive API"}, core.RequirementVersion{Content: "Archive API", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Archive safely."}}})
+	document, version, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-archive-api", Title: "Archive API"}, core.RequirementVersion{Content: "# Archive API", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Archive safely."}}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err = st.ConfirmRequirementVersion(ctx, document.ID, version.Version); err != nil {
 		t.Fatal(err)
 	}
-	replacement, replacementVersion, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-archive-replacement-api", Title: "Archive replacement API"}, core.RequirementVersion{Content: "Archive replacement API", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Replace archived authority."}}})
+	replacement, replacementVersion, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-archive-replacement-api", Title: "Archive replacement API"}, core.RequirementVersion{Content: "# Archive replacement API", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Replace archived authority."}}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err = st.ConfirmRequirementVersion(ctx, replacement.ID, replacementVersion.Version); err != nil {
 		t.Fatal(err)
 	}
-	archivedReplacement, archivedVersion, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-archive-retired-api", Title: "Archived replacement API"}, core.RequirementVersion{Content: "Archived replacement API", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Stay archived."}}})
+	archivedReplacement, archivedVersion, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-archive-retired-api", Title: "Archived replacement API"}, core.RequirementVersion{Content: "# Archived replacement API", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Stay archived."}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,7 +216,7 @@ func TestRequirementArchiveRESTLifecycle(t *testing.T) {
 	if err = st.ArchiveRequirement(ctx, archivedReplacement.ID, "archive-operator", nil); err != nil {
 		t.Fatal(err)
 	}
-	unconfirmed, _, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-archive-unconfirmed-api", Title: "Unconfirmed replacement API"}, core.RequirementVersion{Content: "Unconfirmed replacement API", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Await confirmation."}}})
+	unconfirmed, _, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-archive-unconfirmed-api", Title: "Unconfirmed replacement API"}, core.RequirementVersion{Content: "# Unconfirmed replacement API", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Await confirmation."}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -263,7 +316,7 @@ func TestRequirementConfirmationDistinguishesSupersededFromIfMatchConflict(t *te
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	st := store.NewMemory()
 	requirement, _, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-confirm-errors", Title: "Confirmation errors"}, core.RequirementVersion{
-		Content: "First.", Origin: core.RequirementOriginOperator,
+		Content: "# First.", Origin: core.RequirementOriginOperator,
 		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Errors are honest."}},
 	})
 	if err != nil {
@@ -271,7 +324,7 @@ func TestRequirementConfirmationDistinguishesSupersededFromIfMatchConflict(t *te
 	}
 	for _, content := range []string{"Second.", "Third."} {
 		if _, err = st.ProposeRequirementVersion(ctx, core.RequirementVersion{
-			RequirementID: requirement.ID, Content: content, Origin: core.RequirementOriginOperator,
+			RequirementID: requirement.ID, Content: "# " + content, Origin: core.RequirementOriginOperator,
 			Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Errors remain honest."}},
 		}); err != nil {
 			t.Fatal(err)
@@ -312,7 +365,7 @@ func TestCheckpointContextCandidatesREST(t *testing.T) {
 	requirement, proposed, err := st.CreateRequirement(ctx,
 		core.Requirement{ID: "req-confirmed", Title: "Confirmed intent"},
 		core.RequirementVersion{
-			Content:    "Confirmed intent.\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Paused tasks receive confirmed context.\n```",
+			Content:    "# Confirmed intent.\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Paused tasks receive confirmed context.\n```",
 			Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Paused tasks receive confirmed context."}},
 			Origin:     core.RequirementOriginOperator,
 		})
@@ -372,7 +425,7 @@ func TestRequirementsHTTPReplacesFeatureTreeAndConfirmsVersions(t *testing.T) {
 	requirement, proposed, err := st.CreateRequirement(ctx, core.Requirement{
 		ID: "req-retries", Title: "Retry behavior",
 	}, core.RequirementVersion{
-		Content: "Retries stay bounded.",
+		Content: "# Retries stay bounded.",
 		Statements: []core.RequirementStatement{{
 			ID: "REQ-1", Statement: "A retry policy has a finite attempt limit.",
 		}},
@@ -399,7 +452,7 @@ func TestRequirementsHTTPReplacesFeatureTreeAndConfirmsVersions(t *testing.T) {
 	if _, _, err = st.CreateRequirement(sibling, core.Requirement{
 		ID: requirement.ID, Title: "Sibling retries",
 	}, core.RequirementVersion{
-		Content: "Sibling prose.",
+		Content: "# Sibling prose.",
 		Statements: []core.RequirementStatement{{
 			ID: "REQ-1", Statement: "Sibling statement.",
 		}},
@@ -564,7 +617,7 @@ func TestRequirementStalenessFollowsLineageToChildMerge(t *testing.T) {
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	st := store.NewMemory()
 	requirement, proposed, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-linked-stale", Title: "Linked intent"}, core.RequirementVersion{
-		Content: "Delivery follows confirmed intent.", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Delivery remains traceable."}},
+		Content: "# Delivery follows confirmed intent.", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Delivery remains traceable."}},
 		Origin: core.RequirementOriginChat, OriginSessionID: "session-linked-stale",
 	})
 	if err != nil {
@@ -654,7 +707,7 @@ func TestDesignDriftCrossPostsPreserveSubjectAndResolveEverywhere(t *testing.T) 
 	st := store.NewMemory()
 	for _, id := range []string{"req-deployment", "req-lifecycle"} {
 		requirement, version, err := st.CreateRequirement(ctx, core.Requirement{ID: id, Title: id}, core.RequirementVersion{
-			Content: "Confirmed intent.", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Delivery stays aligned."}},
+			Content: "# Confirmed intent.", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Delivery stays aligned."}},
 			Origin: core.RequirementOriginOperator,
 		})
 		if err != nil {
@@ -743,7 +796,7 @@ func TestRequirementStalenessFollowsTaskLevelServesChain(t *testing.T) {
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	st := store.NewMemory()
 	requirement, proposed, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-task-chain", Title: "Task-chain intent"}, core.RequirementVersion{
-		Content:    "Delivery follows the task that serves the requirement.",
+		Content:    "# Delivery follows the task that serves the requirement.",
 		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Task-level service is delivery authority."}},
 		Origin:     core.RequirementOriginChat, OriginSessionID: "session-task-chain",
 	})
@@ -988,7 +1041,7 @@ func TestRequirementStalenessReproducesExecutionConfigurationV3V4Signal(t *testi
 	requirement, proposed, err := st.CreateRequirement(ctx, core.Requirement{
 		ID: "req-execution-configuration", Title: "Execution configuration: harnesses and setups",
 	}, core.RequirementVersion{
-		Content: "Initial execution configuration.",
+		Content: "# Initial execution configuration.",
 		Statements: []core.RequirementStatement{{
 			ID: "REQ-6", Statement: "Serviceability remains advisory.",
 		}}, Origin: core.RequirementOriginOperator,
@@ -1007,7 +1060,7 @@ func TestRequirementStalenessReproducesExecutionConfigurationV3V4Signal(t *testi
 	propose := func(content string, statements []core.RequirementStatement) core.RequirementVersion {
 		t.Helper()
 		version, proposeErr := st.ProposeRequirementVersion(ctx, core.RequirementVersion{
-			RequirementID: requirement.ID, Content: content, Statements: statements, Origin: core.RequirementOriginOperator,
+			RequirementID: requirement.ID, Content: "# " + content, Statements: statements, Origin: core.RequirementOriginOperator,
 		})
 		if proposeErr != nil {
 			t.Fatal(proposeErr)
@@ -1094,7 +1147,7 @@ func TestRequirementStalenessAcknowledgmentAndFollowUpLifecycle(t *testing.T) {
 	ctx := store.WithActor(store.WithWorkspace(t.Context(), "demo"), store.Actor{ID: "alice", Role: core.ActorHuman})
 	st := store.NewMemory()
 	requirement, v1, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-actionable-staleness", Title: "Actionable staleness"}, core.RequirementVersion{
-		Content: "First intent.", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Delivery stays aligned."}}, Origin: core.RequirementOriginOperator,
+		Content: "# First intent.", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Delivery stays aligned."}}, Origin: core.RequirementOriginOperator,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1109,7 +1162,7 @@ func TestRequirementStalenessAcknowledgmentAndFollowUpLifecycle(t *testing.T) {
 	if err = st.AppendEvent(ctx, core.Event{TaskID: deliveryTask.ID, Kind: store.TaskContextRequirementAdded, Payload: core.JSONPayload(map[string]any{"id": requirement.ID, "version": v1.Version})}); err != nil {
 		t.Fatal(err)
 	}
-	v2, err := st.ProposeRequirementVersion(ctx, core.RequirementVersion{RequirementID: requirement.ID, Content: "Second intent.", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Delivery stays aligned with revisions."}}, Origin: core.RequirementOriginOperator})
+	v2, err := st.ProposeRequirementVersion(ctx, core.RequirementVersion{RequirementID: requirement.ID, Content: "# Second intent.", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Delivery stays aligned with revisions."}}, Origin: core.RequirementOriginOperator})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1267,7 +1320,7 @@ func TestRequirementStalenessIgnoresDisplayTruncation(t *testing.T) {
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	base := store.NewMemory()
 	requirement, proposed, err := base.CreateRequirement(ctx, core.Requirement{ID: "req-display-truncated", Title: "Bounded intent"}, core.RequirementVersion{
-		Content: "Bounded intent.", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Display fan-out does not suppress staleness."}},
+		Content: "# Bounded intent.", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Display fan-out does not suppress staleness."}},
 		Origin: core.RequirementOriginOperator,
 	})
 	if err != nil {
@@ -1332,7 +1385,7 @@ func TestRequirementStalenessSurfacesTruncatedDeliveryEvaluation(t *testing.T) {
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	base := store.NewMemory()
 	requirement, proposed, err := base.CreateRequirement(ctx, core.Requirement{ID: "req-partial", Title: "Bounded delivery"}, core.RequirementVersion{
-		Content: "Bounded delivery.", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Partial delivery evaluation is visible."}},
+		Content: "# Bounded delivery.", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Partial delivery evaluation is visible."}},
 		Origin: core.RequirementOriginOperator,
 	})
 	if err != nil {
@@ -1361,7 +1414,7 @@ func TestRequirementStalenessIgnoresDismissedServesProjection(t *testing.T) {
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	st := store.NewMemory()
 	requirement, proposed, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-dismissed-stale", Title: "Dismissed intent"}, core.RequirementVersion{
-		Content: "Dismissed service must not create staleness.", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Dismissed service is not authority."}},
+		Content: "# Dismissed service must not create staleness.", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Dismissed service is not authority."}},
 		Origin: core.RequirementOriginChat, OriginSessionID: "session-dismissed-stale",
 	})
 	if err != nil {
@@ -1408,14 +1461,14 @@ func TestRequirementConfirmationRejectsStaleExpectedAndSupersededVersions(t *tes
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	st := store.NewMemory()
 	requirement, _, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-confirm-race", Title: "Confirm race"}, core.RequirementVersion{
-		Content: "First intent.", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "First intent is explicit."}},
+		Content: "# First intent.", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "First intent is explicit."}},
 		Origin: core.RequirementOriginChat, OriginSessionID: "session-first",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err = st.ProposeRequirementVersion(ctx, core.RequirementVersion{
-		RequirementID: requirement.ID, Content: "Second intent.",
+		RequirementID: requirement.ID, Content: "# Second intent.",
 		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Second intent is explicit."}},
 		Origin:     core.RequirementOriginChat, OriginSessionID: "session-second",
 	}); err != nil {
@@ -1493,7 +1546,7 @@ func TestRequirementsHTTPDistinguishesMigratedSeedFromStaleConfirmableRevision(t
 	}
 	if _, err = st.ProposeRequirementVersion(ctx, core.RequirementVersion{
 		RequirementID: seed.ID,
-		Content:       "Deliberately revised intent.\n\n```conveyor:requirements\n- id: REQ-1\n  statement: The migrated behavior is now explicit.\n```",
+		Content:       "# Deliberately revised intent.\n\n```conveyor:requirements\n- id: REQ-1\n  statement: The migrated behavior is now explicit.\n```",
 		Statements:    []core.RequirementStatement{{ID: "REQ-1", Statement: "The migrated behavior is now explicit."}},
 		Origin:        core.RequirementOriginChat, OriginSessionID: "session-deliberate-revision",
 	}); err != nil {
@@ -1521,7 +1574,7 @@ func TestRequirementsHTTPSurfacesBlueprintSpecGateHandoffAndRemovesFeatureMutati
 	requirement, _, err := st.CreateRequirement(ctx, core.Requirement{
 		ID: "req-planning", Title: "Planning",
 	}, core.RequirementVersion{
-		Content: "Plan in Conveyor.",
+		Content: "# Plan in Conveyor.",
 		Statements: []core.RequirementStatement{{
 			ID: "REQ-1", Statement: "Blueprints enter the ordinary specification gate.",
 		}},
@@ -1616,3 +1669,67 @@ func TestRequirementsHTTPSurfacesBlueprintSpecGateHandoffAndRemovesFeatureMutati
 		}
 	}
 }
+
+// Exact malformed proposal attached to task 260910-fa029e (demo, 2026-09-09).
+
+const historicalCLIAuthenticationV2 = "CLI authentication (proposed v2)\n" +
+	"# CLI authentication\n" +
+	"\n" +
+	"A user who works from a terminal wants to log their machine into the factory once and then have every `conveyor` command, and every agent tool that talks to the factory, work without a token living in a shell profile. Automation that already passes a token through the environment should keep working unchanged.\n" +
+	"\n" +
+	"The CLI offers an explicit login that verifies a pasted personal access token against the server and stores it per server URL in a credential file only the owner can read. A status act reports who is logged in without revealing the token, and logout removes the stored entry, revoking the token on request. A token-print act emits the stored credential for command substitution, so agent and MCP configurations can reference it without a second copy.\n" +
+	"\n" +
+	"A user may also store a default workspace per server. Both the credential and the workspace resolve in the same order everywhere: an explicit flag first, then the environment, then the stored value. A connection act detects the agent tooling present on the machine and writes each tool's native MCP registration for the logged-in server, referencing the credential through the token-print bridge rather than inlining it.\n" +
+	"\n" +
+	"When verification fails at login, nothing is stored. When no credential resolves, a command reports that it is not logged in and names the login act.\n" +
+	"\n" +
+	"```conveyor:requirements\n" +
+	"- id: REQ-1\n" +
+	"  statement: The CLI shall authenticate through an explicit login act that verifies a pasted personal access token against the server and stores it per server URL in an owner-only credential file.\n" +
+	"  user_story:\n" +
+	"    as_a: user\n" +
+	"    i_want: to log my machine into the factory once\n" +
+	"    so_that: tokens stop living in my shell profile and every conveyor command just works\n" +
+	"  acceptance_criteria:\n" +
+	"    - id: AC-1.1\n" +
+	"      statement: When a user logs in, the CLI shall verify the token against the server before storing it and shall report the authenticated identity on success.\n" +
+	"    - id: AC-1.2\n" +
+	"      statement: When verification fails, the CLI shall store nothing.\n" +
+	"    - id: AC-1.3\n" +
+	"      statement: When a token is stored, it shall be keyed by server URL in a file readable and writable only by its owner, and the CLI shall never write it to a shell profile.\n" +
+	"    - id: AC-1.4\n" +
+	"      statement: When a command needs a credential, it shall resolve an explicit flag first, then the environment, then the stored credential; an environment token shall be the credential only for its environment server, the normalized `CONVEYOR_ADDR` or `http://localhost:8080` when unset, and any other resolved server shall fall back to that server's stored credential, so that environment-based automation is unchanged.\n" +
+	"- id: REQ-2\n" +
+	"  statement: The CLI shall provide status, logout, and token-print acts over the stored credential.\n" +
+	"  acceptance_criteria:\n" +
+	"    - id: AC-2.1\n" +
+	"      statement: When a user runs the status act, it shall report the stored identity and server without revealing the credential.\n" +
+	"    - id: AC-2.2\n" +
+	"      statement: When a user logs out, the CLI shall remove the stored entry for that server, and when the user requests it shall also revoke the token server-side through the token self-service surface.\n" +
+	"    - id: AC-2.3\n" +
+	"      statement: When a user runs the token-print act, it shall emit the stored credential for command substitution so agent and MCP configurations can consume it without a second copy.\n" +
+	"    - id: AC-2.4\n" +
+	"      statement: When a command resolves a credential or receives an authentication rejection, it shall report the credential source, and when it ignores an environment token for a mismatched server it shall say so with a redacted explanation that never exposes a credential value.\n" +
+	"- id: REQ-3\n" +
+	"  statement: The CLI shall store a default workspace per server and resolve workspace context identically across every command.\n" +
+	"  acceptance_criteria:\n" +
+	"    - id: AC-3.1\n" +
+	"      statement: When a user runs the workspace configuration act, the CLI shall store the chosen default workspace keyed by server URL.\n" +
+	"    - id: AC-3.2\n" +
+	"      statement: When any command needs a workspace, it shall resolve an explicit flag first, then the environment, then the stored per-server default, then the singleton-workspace fallback.\n" +
+	"- id: REQ-4\n" +
+	"  statement: The CLI shall provide a connection act that writes each detected agent tool's native MCP registration for the logged-in server.\n" +
+	"  acceptance_criteria:\n" +
+	"    - id: AC-4.1\n" +
+	"      statement: When a user runs the connection act, the CLI shall detect the agent tooling present on the machine and write each tool's registration in the shape that tool honors.\n" +
+	"    - id: AC-4.2\n" +
+	"      statement: When a registration is written, it shall reference the credential through the token-print bridge and shall never inline a token value.\n" +
+	"    - id: AC-4.3\n" +
+	"      statement: When the connection act runs again for the same server, it shall update only the entries it marked as its own, keyed per server, leaving other entries unchanged.\n" +
+	"    - id: AC-4.4\n" +
+	"      statement: When the user passes the tool-selection flag, the connection act shall write the registration for that one tool only.\n" +
+	"```\n" +
+	"REQ-1: The CLI shall authenticate through an explicit login act that verifies a pasted personal access token against the server and stores it per server URL in an owner-only credential file.\n" +
+	"REQ-2: The CLI shall provide status, logout, and token-print acts over the stored credential.\n" +
+	"REQ-3: The CLI shall store a default workspace per server and resolve workspace context identically across every command.\n" +
+	"REQ-4: The CLI shall provide a connection act that writes each detected agent tool's native MCP registration for the logged-in server."

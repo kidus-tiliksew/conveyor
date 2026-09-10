@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
@@ -22,7 +23,8 @@ type RequirementDocument struct {
 
 // ParseRequirementDocument validates a requirement document. Unlike ParseSpec
 // it mandates no prose sections: a requirement states intent in the operator's
-// own language, so only the machine block is constrained (design-document-corpus).
+// own language, with an H1 title and statement definitions confined to the
+// machine block (component-document-corpus; req-260820-6a468a AC-1.2).
 //
 // The block is required and must appear exactly once. Its statements may be
 // empty only for a migration seed, which never travels through this parser —
@@ -31,6 +33,9 @@ func ParseRequirementDocument(output string) (RequirementDocument, error) {
 	markdown := strings.TrimSpace(output)
 	if markdown == "" {
 		return RequirementDocument{}, fmt.Errorf("requirement document requires prose")
+	}
+	if err := validateRequirementHeading(output); err != nil {
+		return RequirementDocument{}, err
 	}
 	blocks := fences(markdown, "requirements")
 	if len(blocks) == 0 {
@@ -41,6 +46,9 @@ func ParseRequirementDocument(output string) (RequirementDocument, error) {
 	}
 	if len(blocks) != 1 {
 		return RequirementDocument{}, fmt.Errorf("requirement document requires exactly one conveyor:requirements block; found %d", len(blocks))
+	}
+	if err := validateRequirementStatementProse(output); err != nil {
+		return RequirementDocument{}, err
 	}
 	var statements []RequirementStatement
 	if err := decodeYAMLList(blocks[0], &statements); err != nil {
@@ -58,6 +66,56 @@ func ParseRequirementDocument(output string) (RequirementDocument, error) {
 		return RequirementDocument{}, fmt.Errorf("requirement document requires prose alongside its requirements block")
 	}
 	return RequirementDocument{Markdown: markdown, Statements: statements}, nil
+}
+
+// Scan the submitted lines before trimming so errors retain their source line
+// numbers. Match the same exact opening and closing lines as fences.
+var requirementStatementProse = regexp.MustCompile(`^\s*(?:(?:REQ-\d+|AC-\d+\.\d+)\s*:|-\s*id:\s*(?:REQ|AC)-)`)
+
+func requirementLines(output string) []string {
+	return strings.Split(strings.ReplaceAll(output, "\r\n", "\n"), "\n")
+}
+
+func validateRequirementHeading(output string) error {
+	for index, line := range requirementLines(output) {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		if !strings.HasPrefix(line, "# ") || strings.TrimSpace(line[2:]) == "" {
+			return fmt.Errorf("requirement content must begin with its \"# <title>\" heading; line %d is %q", index+1, boundedRequirementLine(line))
+		}
+		break
+	}
+	return nil
+}
+
+func validateRequirementStatementProse(output string) error {
+	inBlock := false
+	for index, line := range requirementLines(output) {
+		if inBlock {
+			if line == "```" {
+				inBlock = false
+			}
+			continue
+		}
+		if line == "```conveyor:requirements" {
+			inBlock = true
+			continue
+		}
+		if requirementStatementProse.MatchString(line) {
+			return fmt.Errorf("requirement content line %d is %q: statement identifiers belong inside the conveyor:requirements fence", index+1, boundedRequirementLine(line))
+		}
+	}
+	return nil
+}
+
+func boundedRequirementLine(line string) string {
+	const limit = 160
+	runes := []rune(line)
+	if len(runes) > limit {
+		return string(runes[:limit]) + "…"
+	}
+	return line
 }
 
 // RenderRequirementDocument serializes prose plus the canonical machine block.

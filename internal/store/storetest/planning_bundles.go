@@ -18,7 +18,7 @@ func RunPlanningBundleConformance(t *testing.T, factory PlanningBundleFactory) {
 	t.Helper()
 	st, ctx, workspace := factory(t)
 	requirement, pending, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-" + core.NewTaskID(), Title: "Pending bundle intent"}, core.RequirementVersion{
-		Content: "Pending intent", Origin: core.RequirementOriginOperator,
+		Content: "# Pending intent", Origin: core.RequirementOriginOperator,
 		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Create the task set while this revision stays pending."}},
 	})
 	if err != nil {
@@ -172,7 +172,7 @@ func RunPlanningBundleConformance(t *testing.T, factory PlanningBundleFactory) {
 func assertConfirmThenApproveBundle(t *testing.T, st store.Store, ctx context.Context) {
 	t.Helper()
 	requirement, pending, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-" + core.NewTaskID(), Title: "Confirm before approval"}, core.RequirementVersion{
-		Content: "Confirm first", Origin: core.RequirementOriginOperator,
+		Content: "# Confirm first", Origin: core.RequirementOriginOperator,
 		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Activate context when confirmation precedes approval."}},
 	})
 	if err != nil {

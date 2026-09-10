@@ -54,7 +54,7 @@ func TestMonitorObservationUsesNormalIntakeAndExposesDrift(t *testing.T) {
 		t.Fatalf("unknown requirement status=%d body=%s", response.Code, response.Body.String())
 	}
 	if _, _, err := st.CreateRequirement(store.WithWorkspace(t.Context(), "demo"), core.Requirement{ID: "req-runtime", Title: "Runtime"}, core.RequirementVersion{
-		Content:    "Runtime requirement.\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Runtime references are valid.\n```",
+		Content:    "# Runtime requirement.\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Runtime references are valid.\n```",
 		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Runtime references are valid."}},
 		Origin:     core.RequirementOriginChat, OriginSessionID: "monitor-test",
 	}); err != nil {
@@ -231,7 +231,7 @@ func TestResolveDriftAtomicallyProposesRequirementAmendment(t *testing.T) {
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	st := store.NewMemory()
 	requirement, _, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-runtime", Title: "Runtime contract"}, core.RequirementVersion{
-		Content:    "Runtime changes remain aligned.",
+		Content:    "# Runtime changes remain aligned.",
 		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Out-of-pipeline changes are reconciled."}},
 		Origin:     core.RequirementOriginChat, OriginSessionID: "session-runtime",
 	})

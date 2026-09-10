@@ -27,7 +27,7 @@ func TestReferenceDocumentConsultationAndPromotionLineage(t *testing.T) {
 		t.Fatal(err)
 	}
 	statements := []core.RequirementStatement{{ID: "REQ-1", Statement: "Charges retry twice.", AcceptanceCriteria: []core.AcceptanceCriterion{{ID: "AC-1.1", Statement: "When a charge fails, the system shall retry twice."}}}}
-	doc, err := pipeline.RenderRequirementDocument("Billing retries are bounded.", statements)
+	doc, err := pipeline.RenderRequirementDocument("# Billing retries are bounded.", statements)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -122,7 +122,7 @@ func assertRequirementDeliveryLineage(t *testing.T, st store.Store, ctx, foreign
 	t.Helper()
 	requirementID := "req-delivery-" + core.NewTaskID()
 	requirement, version, err := st.CreateRequirement(ctx, core.Requirement{ID: requirementID, Title: "Scoped delivery"}, core.RequirementVersion{
-		Content: "Delivery lineage stays causal.", Origin: core.RequirementOriginOperator,
+		Content: "# Delivery lineage stays causal.", Origin: core.RequirementOriginOperator,
 		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Walk only delivery edges."}},
 	})
 	if err != nil {
@@ -216,7 +216,7 @@ func assertTaskContextLineage(t *testing.T, st store.Store, ctx context.Context,
 	requirementIDs := []string{"req-" + core.NewTaskID(), "req-" + core.NewTaskID()}
 	for _, id := range requirementIDs {
 		document, version, err := st.CreateRequirement(ctx, core.Requirement{ID: id, Title: "Task intent " + id}, core.RequirementVersion{
-			Content: "Task intent", Origin: core.RequirementOriginOperator,
+			Content: "# Task intent", Origin: core.RequirementOriginOperator,
 			Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Deliver the attached intent."}},
 		})
 		if err != nil {
@@ -517,7 +517,7 @@ func assertReferenceDocumentLineage(t *testing.T, st store.Store, ctx context.Co
 	requirement, version, err := st.CreateRequirement(ctx,
 		core.Requirement{ID: requirementID, Title: "Derived reference lineage"},
 		core.RequirementVersion{
-			Content: "Derived reference lineage.", Origin: core.RequirementOriginChat, OriginSessionID: session.ID,
+			Content: "# Derived reference lineage.", Origin: core.RequirementOriginChat, OriginSessionID: session.ID,
 			Statements:  []core.RequirementStatement{{ID: "REQ-1", Statement: "Reference lineage stays durable."}},
 			DerivedFrom: &core.RequirementDerivation{DocumentID: document.ID, Version: second.Version, SectionAnchor: "#overview", TargetID: "REQ-1"},
 		})
@@ -689,7 +689,7 @@ func assertAbandonedDraftSupersession(t *testing.T, st store.Store, ctx context.
 	requirementID := "req-" + core.NewTaskID()
 	version := func(content string, statement int) core.RequirementVersion {
 		return core.RequirementVersion{
-			RequirementID: requirementID, Content: content, Origin: core.RequirementOriginChat, OriginSessionID: session.ID,
+			RequirementID: requirementID, Content: "# " + content, Origin: core.RequirementOriginChat, OriginSessionID: session.ID,
 			Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Intent revision " + content}},
 		}
 	}
