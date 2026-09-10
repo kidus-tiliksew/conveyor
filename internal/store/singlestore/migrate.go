@@ -123,6 +123,11 @@ func (s *Store) migrate(ctx context.Context) error {
 				return fmt.Errorf("SingleStore migration %s: %w", file.name, err)
 			}
 		}
+		if file.version == 4 {
+			if err := s.migrateDocumentDismissalNotes(ctx); err != nil {
+				return fmt.Errorf("SingleStore migration %s: %w", file.name, err)
+			}
+		}
 		for _, statement := range strings.Split(file.sql, ";") {
 			if strings.TrimSpace(statement) == "" {
 				continue
@@ -150,4 +155,21 @@ func (s *Store) migrateRepositoryInstallColumn(ctx context.Context) error {
 	}
 	_, err := s.db.ExecContext(ctx, `ALTER TABLE repos ADD COLUMN install_conveyor BOOLEAN NOT NULL DEFAULT false`)
 	return err
+}
+
+// DDL commits implicitly. Check each column under the startup lock so a retry
+// after adding only one column preserves both historical rows and later notes.
+func (s *Store) migrateDocumentDismissalNotes(ctx context.Context) error {
+	for _, table := range []string{"requirement_versions", "system_design_versions"} {
+		var exists int
+		if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name=? AND column_name='dismissal_note'`, table).Scan(&exists); err != nil {
+			return err
+		}
+		if exists == 0 {
+			if _, err := s.db.ExecContext(ctx, "ALTER TABLE "+table+" ADD COLUMN dismissal_note TEXT"); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }

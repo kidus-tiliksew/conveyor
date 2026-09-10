@@ -670,3 +670,16 @@ FROM decision_supersession_sweeps
 WHERE workspace_id = sqlc.arg(workspace_id)
   AND (sqlc.arg(decision_id)::text = '' OR decision_id = sqlc.arg(decision_id))
 ORDER BY decision_id, document_tier, document_id;
+
+-- name: ListDocumentOperatorNotesForTask :many
+SELECT requirement_id AS document_id, version, 'requirement' AS tier,
+ dismissal_note, retired_at AS dismissed_at
+ FROM requirement_versions
+ WHERE workspace_id=$1 AND origin_task_id=$2 AND origin='implementation'
+ AND retired AND dismissal_note IS NOT NULL AND dismissal_note<>''
+ UNION ALL
+ SELECT document_id, version, 'system_design' AS tier, dismissal_note, dismissed_at
+ FROM system_design_versions
+ WHERE workspace_id=$1 AND origin_task_id=$2 AND origin='implementation_deliberation'
+ AND dismissed AND dismissal_note IS NOT NULL AND dismissal_note<>''
+ ORDER BY tier, document_id, version;

@@ -245,6 +245,8 @@ type WorkOrderStore interface {
 
 // DocumentStore owns the document and decision contract.
 type DocumentStore interface {
+	// ListDocumentOperatorNotesForTask reads dismissed implementation-origin history in this workspace.
+	ListDocumentOperatorNotesForTask(ctx context.Context, taskID string) ([]core.OperatorNote, error)
 	// ListRequirementDeliveryEventsForTasks batches only the ordered task
 	// context, aggregate review-round, and merge events used by
 	// requirement-delivery classification.

@@ -316,7 +316,12 @@ func TestTaskContextTerminalCleanupMigrationIntegration(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, _, err = st.ConfirmRequirementVersion(ctx, targets[index].ID, version.Version); err != nil {
+		// Seed confirmed v107 history directly. Current confirmation also
+		// writes dismissal notes, whose column does not exist until v124.
+		if _, err = pool.Exec(ctx, `UPDATE requirement_versions SET confirmed=true,confirmed_by='operator',confirmed_at=now() WHERE workspace_id=$1 AND requirement_id=$2 AND version=$3`, workspace, targets[index].ID, version.Version); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = pool.Exec(ctx, `UPDATE requirements SET current_version=$3 WHERE workspace_id=$1 AND id=$2`, workspace, targets[index].ID, version.Version); err != nil {
 			t.Fatal(err)
 		}
 	}

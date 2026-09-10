@@ -63,6 +63,7 @@ type SystemDesignVersion struct {
 	Confirmed       bool               `json:"confirmed"`
 	ConfirmedBy     string             `json:"confirmed_by,omitempty"`
 	ConfirmedAt     time.Time          `json:"confirmed_at,omitempty"`
+	DismissalNote   string             `json:"dismissal_note,omitempty"`
 	Dismissed       bool               `json:"dismissed"`
 	DismissedBy     string             `json:"dismissed_by,omitempty"`
 	DismissedAt     time.Time          `json:"dismissed_at,omitempty"`

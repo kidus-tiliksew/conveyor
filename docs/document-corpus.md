@@ -217,3 +217,20 @@ against the pinned authority. The result is that `git blame` on a governed file 
 a task, the task leads to the requirement version it served, and the
 requirement leads back to every delivery that served it. That chain is the
 [knowledge graph](concepts.md#the-knowledge-graph).
+
+### Operator dismissal notes
+
+The requirement and System Design confirm and dismiss REST routes accept an
+optional `note` string under the existing `confirm_documents` capability.
+The server trims surrounding whitespace and accepts at most 2000 Unicode
+characters; a longer note returns HTTP 400 before any write. Empty or absent
+notes preserve the existing response and event shapes. MCP mutations do not
+accept notes.
+
+Direct dismissal records the note on that version. Confirmation records it on
+every earlier pending version dismissed by the transaction. History exposes
+`dismissal_note` beside the existing actor and timestamp, without changing
+content or statement identifiers. The existing dismissal events add `note`
+only when present; requirement supersession keeps `requirement.version_retired`.
+These notes are observational task evidence under `component-work-orders`,
+not document authority (req-260810-23b69f AC-5.1, AC-5.2, AC-5.4).
