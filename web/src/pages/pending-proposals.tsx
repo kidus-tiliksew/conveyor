@@ -4,6 +4,7 @@ import { Check, Clock, FileDiff, X } from 'lucide-react'
 import { useState } from 'react'
 import { usePendingProposals, useWorkspaceCapability, useWorkspaceSelection } from '../components/app-shell'
 import { VersionDismissDialog } from '../components/documents/version-dismiss-dialog'
+import { type ReviseTarget, VersionReviseDialog } from '../components/documents/version-revise-dialog'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import {
@@ -25,6 +26,8 @@ const tierLabels: Record<PendingProposal['tier'], string> = {
 }
 
 export function PendingProposalsPage() {
+  const canProposeDocuments = useWorkspaceCapability('propose_documents')
+  const [reviseTarget, setReviseTarget] = useState<ReviseTarget | null>(null)
   const canConfirmDocuments = useWorkspaceCapability('confirm_documents')
   const { workspace } = useWorkspaceSelection()
   const search = useSearch({ from: '/pending-proposals' })
@@ -68,6 +71,7 @@ export function PendingProposalsPage() {
 
   return (
     <div className="h-full overflow-y-auto">
+      {reviseTarget && <VersionReviseDialog target={reviseTarget} onClose={() => setReviseTarget(null)} />}
       {dismissTarget?.tier !== 'decision' && dismissTarget?.version != null && (
         <VersionDismissDialog
           documentTitle={dismissTarget.title}
@@ -166,6 +170,26 @@ export function PendingProposalsPage() {
                           : 'Confirm'}
                       </Button>
                     )}
+                    {canConfirmDocuments &&
+                      canProposeDocuments &&
+                      proposal.tier !== 'decision' &&
+                      proposal.version != null && (
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          disabled={resolve.isPending}
+                          onClick={() =>
+                            setReviseTarget({
+                              id: proposal.id,
+                              title: proposal.title,
+                              tier: proposal.tier as ReviseTarget['tier'],
+                              version: proposal.version as number,
+                            })
+                          }
+                        >
+                          Revise
+                        </Button>
+                      )}
                     {canDismiss && (
                       <Button
                         size="sm"
