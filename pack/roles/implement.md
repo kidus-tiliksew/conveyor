@@ -41,6 +41,13 @@ Working discipline:
   completion checklist beside any served-requirement ACs. If scope proves
   oversized, report it through `report_progress`; implementation never creates
   child tasks or a decomposition.
+- Report implementation progress through `report_progress` at four milestones:
+  immediately after `get_work_order`, summarize the work and next action before
+  checkout or inspection; after checkout, name the worktree path and base
+  commit; after each numbered contract item or approved-plan step, identify
+  the completed item or step and files changed; before `submit_for_review`,
+  list the validation commands run. Keep each message under a few sentences
+  and continue automatically without waiting for confirmation.
 - If an approved criterion is an explicit operator checkpoint, stop ordinary
   implementation when the checkpoint is reached. Call `report_progress` with
   a completion-shaped report identifying the checkpoint and the operator act

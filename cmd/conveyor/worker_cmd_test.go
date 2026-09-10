@@ -1051,14 +1051,18 @@ func TestImplementationExpansionUsesCapturedEffortArgvAfterHotReload(t *testing.
 	}
 }
 
-func TestWorkerLaunchPromptRequiresNonBlockingImplementationAnnouncement(t *testing.T) {
+func TestWorkerLaunchPromptRequiresNonBlockingImplementationProgressMilestones(t *testing.T) {
 	prompt := workerLaunchPrompt(core.WorkOrder{ID: "implement-order", Stage: core.StageImplement}, "demo", "worker-session")
 	requiredInOrder := []string{
 		"First call get_work_order",
-		"Immediately after get_work_order returns",
+		"Immediately after get_work_order returns, call report_progress",
 		"plain-language summary of what the work order is about and what you will do next",
 		"before running checkout, inspecting files, or starting implementation",
 		"continue automatically without asking for confirmation, waiting for a user response, or pausing",
+		"After conveyor checkout succeeds, call report_progress naming the worktree path and base commit",
+		"After completing each numbered contract item or approved-plan step, call report_progress naming the item or step and the files changed",
+		"Before submit_for_review, call report_progress with the validation commands run",
+		"Keep each progress message under a few sentences",
 		"reporting and exiting after submit_for_review succeeds without polling await_review",
 	}
 	position := -1
@@ -1076,6 +1080,10 @@ func TestWorkerLaunchPromptRequiresNonBlockingImplementationAnnouncement(t *test
 
 func TestWorkerLaunchPromptKeepsSpecInLaunchedReadOnlyCheckout(t *testing.T) {
 	prompt := workerLaunchPrompt(core.WorkOrder{ID: "spec-order", Stage: core.StageSpec}, "demo", "worker-session")
+	want := "Work on Conveyor work order spec-order in workspace demo using session_id worker-session." + " Use the Conveyor MCP server and call get_work_order with that exact session_id. Inspect the launched read-only repository checkout and artifacts without making edits or git changes; do not run conveyor checkout for a spec order. Complete the plan lifecycle by calling submit_plan, observing that the tool call succeeded, reporting the result, and exiting."
+	if prompt != want {
+		t.Fatalf("spec prompt changed: got %q, want %q", prompt, want)
+	}
 	for _, required := range []string{"launched read-only repository checkout", "do not run conveyor checkout for a spec order", "reporting the result, and exiting"} {
 		if !strings.Contains(prompt, required) {
 			t.Fatalf("spec prompt is missing %q: %s", required, prompt)
@@ -1085,6 +1093,10 @@ func TestWorkerLaunchPromptKeepsSpecInLaunchedReadOnlyCheckout(t *testing.T) {
 
 func TestWorkerLaunchPromptDoesNotGiveReviewOrdersImplementationInstructions(t *testing.T) {
 	prompt := workerLaunchPrompt(core.WorkOrder{ID: "review-order", Stage: core.StageReview}, "demo", "worker-session")
+	want := "Work on Conveyor work order review-order in workspace demo using session_id worker-session." + " Use the Conveyor MCP server and call get_work_order with that exact session_id for the approved contract. Complete the standard review lifecycle by calling submit_review_verdict, waiting for its response, and observing that the tool call succeeded before exiting. Printing, returning, or describing verdict JSON is not completion, and a missing or failed tool response is not terminal success."
+	if prompt != want {
+		t.Fatalf("review prompt changed: got %q, want %q", prompt, want)
+	}
 	if strings.Contains(prompt, "plain-language summary") || strings.Contains(prompt, "running checkout") {
 		t.Fatalf("review prompt contains implementation-only announcement instructions: %s", prompt)
 	}

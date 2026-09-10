@@ -34,7 +34,17 @@ the task branch bare.
    `conveyor checkout` for a spec order and never alter that checkout's Git
    state.
 
-Use `report_progress` at meaningful milestones. Usage reporting is
+For implementation orders, call `report_progress` at these milestones:
+
+- Immediately after `get_work_order`, summarize the work order and next action
+  before checkout, file inspection, or implementation. Continue automatically
+  without asking for confirmation or waiting for a response.
+- After `conveyor checkout` succeeds, name the worktree path and base commit.
+- After completing each numbered contract item or approved-plan step, name the
+  completed item or step and the files changed.
+- Before `submit_for_review`, list the validation commands run.
+
+Keep each progress message under a few sentences. Usage reporting is
 observational and best-effort; it does not replace lifecycle completion.
 
 ## Keep scratch data outside checkouts
