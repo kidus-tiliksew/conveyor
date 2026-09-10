@@ -159,22 +159,23 @@ lost or expired link with:
 conveyor user issue-link you@example.com
 ```
 
-Connect a GitHub App from Workspace settings. Conveyor sends a manifest to
+Select your workspace, open **Settings**, and find the **Workspace GitHub App**
+card. Enter an organization name if the app belongs to an organization, then
+choose **Connect GitHub**. Conveyor sends a manifest to
 GitHub, where you create the app and install it on the account that owns your
 repositories. Select every registered workspace repository and check its
-coverage in Workspace settings. The app requests metadata read access and
+coverage on the card. Use **Install on GitHub** beside a repository marked
+**Not covered** to include it. The app requests metadata read access and
 contents, pull requests, issues, and commit statuses write access.
 
 The server encrypts the app private key with
 `CONVEYOR_FORGE_TOKEN_ENCRYPTION_KEY`. It mints installation tokens on demand
 and keeps them only in process memory until five minutes before expiry. Set
 the public server URL before connecting so GitHub can return your browser to
-Conveyor. Use Disconnect in Workspace settings to remove the stored app; manage
+Conveyor. Use **Disconnect** on the card and confirm to remove the stored app; manage
 or revoke its GitHub installation on GitHub.
 
-Existing personal and workspace token settings remain available during the
-migration. The current claim and executing-user submission checks still use
-the personal-token contract until their separate retirement release. Invite
+Settings no longer asks for a personal or workspace GitHub token. Invite
 other users through [Getting started: multiplayer](getting-started-multiplayer.md).
 
 Give each person the public server URL, workspace ID, registered repository

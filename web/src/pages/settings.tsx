@@ -1,15 +1,26 @@
-import { useSearch } from '@tanstack/react-router'
+import { useQuery } from '@tanstack/react-query'
+import { useLocation, useSearch } from '@tanstack/react-router'
 import { CheckCircle2, PlugZap, Terminal } from 'lucide-react'
-import { PersonalTokensCard } from '../components/settings/personal-tokens-card'
-import { ForgeTokenCard } from '../components/settings/forge-token-card'
+import { useEffect } from 'react'
+import { useWorkspaceSelection } from '../components/app-shell'
 import { PasswordCard } from '../components/settings/password-card'
+import { PersonalTokensCard } from '../components/settings/personal-tokens-card'
 import { ProfileCard } from '../components/settings/profile-card'
-import { WorkspaceForgeTokenCard } from '../components/settings/workspace-forge-token-card'
+import { WorkspaceGitHubAppCard } from '../components/settings/workspace-github-app-card'
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import { CopyButton } from '../components/ui/copy-button'
+import { fetchWorkspaces } from '../lib/api'
 import { mcpConnectionConfig, mcpEndpoint } from '../lib/mcp'
 
 export function SettingsPage() {
+  const { workspace, setWorkspace } = useWorkspaceSelection()
+  const searchStr = useLocation({ select: (location) => location.searchStr })
+  const returnedWorkspace = new URLSearchParams(searchStr).get('workspace')
+  const workspaces = useQuery({ queryKey: ['workspaces'], queryFn: fetchWorkspaces })
+  const returnWorkspaceKnown = workspaces.data?.some((item) => item.id === returnedWorkspace)
+  useEffect(() => {
+    if (returnedWorkspace && returnWorkspaceKnown && returnedWorkspace !== workspace) setWorkspace(returnedWorkspace)
+  }, [returnedWorkspace, returnWorkspaceKnown, workspace, setWorkspace])
   const { welcome } = useSearch({ from: '/settings' })
   const cliCommand = 'export CONVEYOR_API_TOKEN="<paste-your-token>"'
   const endpoint = mcpEndpoint(window.location.origin)
@@ -52,8 +63,7 @@ export function SettingsPage() {
         <ProfileCard />
         <PasswordCard />
         <PersonalTokensCard />
-        <ForgeTokenCard />
-        <WorkspaceForgeTokenCard />
+        {(!returnWorkspaceKnown || returnedWorkspace === workspace) && <WorkspaceGitHubAppCard key={workspace} />}
         <Card className="mt-4">
           <CardHeader>
             <CardTitle>MCP work-order server</CardTitle>
