@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"strings"
 	"testing"
 
@@ -401,6 +402,103 @@ func TestOpenCodeFanoutPreservesRawStream(t *testing.T) {
 		}
 		if presented && !strings.Contains(console.String(), "✓ agent turn completed · tokens in 3, out 2") {
 			t.Fatalf("missing presentation: %q", console.String())
+		}
+	}
+}
+
+func TestHarnessTailRendererBoundsAndSplitWrites(t *testing.T) {
+	for _, limit := range []int{workerActivitySnapshotLimit, workerservice.FailureDetailLimit} {
+		tail := &boundedTailWriter{limit: limit}
+		renderer := newHarnessTailRenderer(tail)
+		raw := `{"type":"turn.completed","usage":{"input_tokens":3,"output_tokens":2}}` + "\n"
+		for _, part := range []string{raw[:15], raw[15:]} {
+			if _, err := renderer.Write([]byte(part)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		want := "✓ agent turn completed · tokens in 3, out 2"
+		if got := tail.String(); got != want {
+			t.Fatalf("split event=%q want=%q", got, want)
+		}
+		if _, err := renderer.Write([]byte(`{"type":"user","message":{}}` + "\n")); err != nil {
+			t.Fatal(err)
+		}
+		if got := tail.String(); got != want {
+			t.Fatalf("ignored event erased snapshot: %q", got)
+		}
+		for i := 0; i < 100; i++ {
+			if _, err := renderer.Write([]byte(strings.Repeat("x", 1000) + "\n")); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := renderer.Write([]byte("newest diagnostic")); err != nil {
+			t.Fatal(err)
+		}
+		if err := renderer.Flush(); err != nil {
+			t.Fatal(err)
+		}
+		got := tail.String()
+		if len(got) > limit || len(got) < limit-4 || !strings.HasSuffix(got, "newest diagnostic") || strings.Contains(got, "agent turn completed") || !strings.Contains(got, presentationElisionTag) {
+			t.Fatalf("limit=%d tail length=%d content=%q", limit, len(got), got)
+		}
+		if strings.Contains(got, "\x1b") {
+			t.Fatalf("styled tail=%q", got)
+		}
+		if err := renderer.Flush(); err != nil {
+			t.Fatal(err)
+		}
+		if tail.String() != got {
+			t.Fatal("second flush repeated pending line")
+		}
+	}
+}
+
+func TestHarnessTailRenderersAreIndependentOfTerminalAndRawConsumers(t *testing.T) {
+	const secret = "tool-output-secret"
+	raw := `{"type":"tool_use","part":{"tool":"bash","state":{"status":"error","input":{"command":"rg -n example"},"output":"` + secret + `","error":"` + secret + `"}}}` + "\n" +
+		`{"type":"step_finish","part":{"reason":"unknown","tokens":{"input":3,"output":2}}}`
+	for _, presented := range []bool{false, true} {
+		var console, usage, transcript bytes.Buffer
+		activity := &boundedTailWriter{limit: workerActivitySnapshotLimit}
+		failure := &boundedTailWriter{limit: workerservice.FailureDetailLimit}
+		activityRenderer, failureRenderer := newHarnessTailRenderer(activity), newHarnessTailRenderer(failure)
+		fanout, terminal := harnessStdoutFanout(&console, failureRenderer, &usage, workerservice.DispatchOrder{Dispatch: "run"}, &runOutputPresentation{output: &console, presentEvents: presented})
+		destination := io.MultiWriter(fanout, activityRenderer, &transcript)
+		redacted := &redact.Writer{Destination: destination, Redactor: redact.New([]string{secret})}
+		for _, part := range []string{raw[:41], raw[41:]} {
+			if _, err := redacted.Write([]byte(part)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := redacted.Flush(); err != nil {
+			t.Fatal(err)
+		}
+		before := failure.String()
+		if err := activityRenderer.Flush(); err != nil {
+			t.Fatal(err)
+		}
+		if failure.String() != before {
+			t.Fatal("activity flush mutated failure renderer")
+		}
+		if terminal != nil {
+			if err := terminal.Flush(); err != nil {
+				t.Fatal(err)
+			}
+			if failure.String() != before {
+				t.Fatal("terminal flush mutated failure renderer")
+			}
+		}
+		if err := failureRenderer.Flush(); err != nil {
+			t.Fatal(err)
+		}
+		for _, got := range []string{activity.String(), failure.String()} {
+			if strings.Contains(got, secret) || strings.Contains(got, `"type":`) || strings.Contains(got, "\x1b") || !strings.Contains(got, "[REDACTED:exact]") || !strings.Contains(got, "rg -n example") || !strings.HasSuffix(got, "! agent step ended early · reason unknown · tokens in 3, out 2") {
+				t.Fatalf("unsafe or unrendered tail=%q", got)
+			}
+		}
+		wantRaw := strings.ReplaceAll(raw, secret, "[REDACTED:exact]")
+		if transcript.String() != wantRaw || usage.String() != wantRaw || (!presented && console.String() != wantRaw) {
+			t.Fatalf("raw consumer changed: transcript=%q usage=%q console=%q", transcript.String(), usage.String(), console.String())
 		}
 	}
 }

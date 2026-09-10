@@ -1056,6 +1056,8 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 	}
 	claimed := delivery.WorkOrder
 	activityTail := &boundedTailWriter{limit: workerActivitySnapshotLimit}
+	activityStdoutRenderer := newHarnessTailRenderer(activityTail)
+	activityStderrRenderer := newHarnessTailRenderer(activityTail)
 	activitySnapshot := func() *core.WorkOrderActivitySnapshotInput {
 		content := activityTail.String()
 		if content == "" {
@@ -1097,6 +1099,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 	var failureTail *boundedTailWriter
 	var transcriptSpool *boundedTranscriptSpool
 	var terminalRenderer *harnessEventRenderer
+	var failureRenderer *harnessEventRenderer
 	// workingDirectory is the launcher-resolved child checkout. The checkpoint
 	// closure below reads it at call time so a launch started outside the
 	// repository still checkpoints the registered task worktree.
@@ -1110,6 +1113,11 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 		}
 		if terminalRenderer != nil {
 			_ = terminalRenderer.Flush()
+		}
+		_ = activityStdoutRenderer.Flush()
+		_ = activityStderrRenderer.Flush()
+		if failureRenderer != nil {
+			_ = failureRenderer.Flush()
 		}
 	}
 	release := func(outcome, reason string, exitStatus *int) error {
@@ -1336,11 +1344,12 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 	}
 	outputRedactor := c.gitCredentials.redactor(credential, childCredential, childAddress, sessionID, clientToken)
 	failureTail = &boundedTailWriter{limit: workerservice.FailureDetailLimit}
+	failureRenderer = newHarnessTailRenderer(failureTail)
 	var usageDestination io.Writer
 	if usageCollector != nil {
 		usageDestination = usageCollector
 	}
-	stdoutFanout, renderer := harnessStdoutFanout(stdout, failureTail, usageDestination, item, presentation)
+	stdoutFanout, renderer := harnessStdoutFanout(stdout, failureRenderer, usageDestination, item, presentation)
 	terminalRenderer = renderer
 	if continuationObserverEnabled(item.Harness, launchEnvironment) {
 		reporter := newContinuationReporter(c, credential, item, claimed, launchEnvironment, func(message string) {
@@ -1350,13 +1359,13 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 		observer := newContinuationSessionObserver(reporter.Observe)
 		stdoutFanout = io.MultiWriter(stdoutFanout, observer)
 	}
-	observabilityDestinations := []io.Writer{activityTail}
+	observabilityDestinations := []io.Writer{}
 	if transcriptSpool != nil {
 		observabilityDestinations = append(observabilityDestinations, transcriptSpool)
 	}
-	stdoutFanout = io.MultiWriter(append([]io.Writer{stdoutFanout}, observabilityDestinations...)...)
+	stdoutFanout = io.MultiWriter(append([]io.Writer{stdoutFanout, activityStdoutRenderer}, observabilityDestinations...)...)
 	redactedStdout = c.gitCredentials.outputWriter(stdoutFanout, outputRedactor)
-	redactedStderr = c.gitCredentials.outputWriter(io.MultiWriter(append([]io.Writer{stderr, failureTail}, observabilityDestinations...)...), outputRedactor)
+	redactedStderr = c.gitCredentials.outputWriter(io.MultiWriter(append([]io.Writer{stderr, failureTail, activityStderrRenderer}, observabilityDestinations...)...), outputRedactor)
 	// Both redacted streams share one first-write signal; either stream
 	// permanently disarms output-start liveness (design-260805-973cd4).
 	firstActivity := newFirstActivitySignal()

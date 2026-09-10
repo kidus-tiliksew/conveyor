@@ -157,6 +157,14 @@ the server before accepting further results.
 
 ## What operators should expect
 
+Activity snapshots show the latest 4 KiB of redacted event summaries for
+supported harnesses (OpenCode, Claude, Codex, and Cursor), with bounded raw
+text for other output. Failure details keep the latest 2 KiB of the same
+stdout summaries plus raw stderr diagnostics. Both tails discard oldest
+content first. Renewal retains the last rendered lines when an event has no
+display summary. The transcript remains a separate redacted raw session
+capture, and `--raw` console output is unchanged.
+
 - Brief connection refusal, timeout, or retryable server failure produces a
   bounded reconnect delay; the worker stays alive and remains cancellable.
 - Revoked or invalid credentials and invalid worker configuration terminate
