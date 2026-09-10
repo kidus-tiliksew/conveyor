@@ -43,7 +43,7 @@ import type {
 } from '../../lib/types'
 import { absoluteTime, cn, compactTokens, duration } from '../../lib/utils'
 import { Badge } from '../ui/badge'
-import { useWorkspaceCapability, useWorkspaceMembers } from '../app-shell'
+import { usePendingProposals, useWorkspaceCapability, useWorkspaceMembers } from '../app-shell'
 import { MarkdownProse } from '../ui/markdown-prose'
 import {
   ReviewPanel,
@@ -63,7 +63,7 @@ import {
 } from './work-order-recovery-card'
 import { ReviewRoundRetryCard, hasReviewRoundRetry } from './review-round-retry-card'
 import { InterruptedReviewRecoveryCard, hasInterruptedReviewRecovery } from './interrupted-review-recovery-card'
-import { SystemDesignProposalCard, useSystemDesignProposals } from './system-design-proposal-card'
+import { reviewGateCopy, SystemDesignProposalCard, useSystemDesignProposals } from './system-design-proposal-card'
 import { WorkerStatusCard, hasWorkerAlert } from './worker-status-card'
 import { WorkOrderPreemptControl, claimedWorkOrder } from './work-order-preempt-card'
 
@@ -116,6 +116,12 @@ export function Timeline({
   // §21.62). A blueprint anchor runs no session and proposes nothing, which is
   // why this rides `executionActions` like the rest of the tail.
   const designProposals = useSystemDesignProposals(item.task)
+  const pendingProposals = usePendingProposals()
+  const gateCopy = reviewGateCopy(
+    (pendingProposals.data?.items ?? [])
+      .filter((proposal) => proposal.origin_type === 'task' && proposal.origin_id === item.task.id)
+      .map((proposal) => proposal.tier),
+  )
   const structuredCheckpoint = Boolean(currentExecution?.order.checkpoint?.decision_request?.trim())
   const citedSystemDesigns = new Set(
     structuredCheckpoint && currentExecution?.order.checkpoint?.class === 'authority_conflict'
@@ -173,16 +179,14 @@ export function Timeline({
                   <div className="flex items-start gap-2">
                     <AlertTriangle className="mt-0.5 size-4 shrink-0 text-attention" aria-hidden />
                     <div className="text-xs leading-5 text-muted">
-                      <p className="font-medium text-attention">Review is waiting on a System Design decision</p>
-                      <p>
-                        This review cannot be claimed until you confirm or dismiss the task&apos;s pending proposal.
-                      </p>
+                      <p className="font-medium text-attention">{gateCopy.headline}</p>
+                      <p>{gateCopy.explanation}</p>
                       <Link
                         to="/pending-proposals"
                         search={{ task: item.task.id }}
                         className="mt-1 inline-block font-medium text-primary hover:underline"
                       >
-                        Confirm or dismiss the proposal
+                        {gateCopy.link}
                       </Link>
                     </div>
                   </div>
@@ -228,6 +232,7 @@ export function Timeline({
                   task={item.task}
                   proposals={standaloneDesignProposals}
                   reviewWaiting={item.pending_authority === true}
+                  gateCopy={gateCopy}
                 />
               ),
             },
