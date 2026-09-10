@@ -4903,22 +4903,122 @@ test('task detail renders a proposal-only card without the review-gate headline'
   await expect(card).not.toContainText('Review is waiting on a System Design decision')
 })
 
-test('task detail keeps merged attention ahead of Redispatch in the timeline tail', async ({ page }) => {
-  await page.route('**/v1/workspaces', (route) => route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] }))
-  await page.route('**/v1/system-designs**', (route) =>
-    route.fulfill({ json: designCollection('design-proposal-queued', false) }),
-  )
+for (const withDesignCard of [false, true]) {
+  for (const { tiers, noun } of [
+    { tiers: ['requirement'], noun: 'requirement' },
+    { tiers: ['system_design'], noun: 'System Design' },
+    { tiers: ['requirement', 'system_design'], noun: 'document' },
+    { tiers: ['future_kind'], noun: 'document' },
+    { tiers: ['system_design', 'future_kind'], noun: 'document' },
+    { tiers: [], noun: 'document' },
+  ]) {
+    test(`review gate copy uses ${noun} for ${tiers.join('+') || 'missing kinds'} with design card ${withDesignCard}`, async ({
+      page,
+    }) => {
+      const taskId = 'design-proposal-queued'
+      await page.route('**/v1/workspaces', (route) => route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] }))
+      await page.route('**/v1/system-designs**', (route) =>
+        route.fulfill({ json: withDesignCard ? designCollection(taskId, false) : [] }),
+      )
+      await page.route('**/v1/pending-proposals*', (route) =>
+        route.fulfill({
+          json: {
+            items: [
+              ...tiers.map((tier, index) => ({
+                id: `pending-${index}`,
+                title: 'Pending document',
+                tier,
+                version: 2,
+                origin_type: 'task',
+                origin_id: taskId,
+                proposed_at: createdAt,
+                age_seconds: 1,
+              })),
+              // Neither another task nor a non-task origin changes this gate's copy.
+              ...['task', 'operator'].map((origin_type) => ({
+                id: `unrelated-${origin_type}`,
+                title: 'Unrelated proposal',
+                tier: 'decision',
+                origin_type,
+                origin_id: origin_type === 'task' ? 'other-task' : taskId,
+                proposed_at: createdAt,
+                age_seconds: 1,
+              })),
+            ],
+            attention: { task_count: 1, pending_proposal_count: tiers.length + 2, total: tiers.length + 3 },
+          },
+        }),
+      )
+      await page.route('**/v1/tasks/design-proposal-queued/activity*', (route) =>
+        route.fulfill({
+          json: {
+            ...activity(taskId, false),
+            work_orders: [
+              {
+                id: `${taskId}-review-1`,
+                task_id: taskId,
+                stage: 'review',
+                state: 'queued',
+                review_seat: 1,
+                claimable: false,
+                created_at: createdAt,
+                updated_at: createdAt,
+              },
+            ],
+          },
+        }),
+      )
+      await page.goto(`/tasks/${taskId}/full`)
+      const card = page.getByRole('region', { name: 'Review is waiting on a document decision' })
+      await expect(card.getByText(`Review is waiting on a ${noun} decision`, { exact: true })).toBeVisible()
+      const proposal = tiers.length > 1 ? 'proposals' : 'proposal'
+      await expect(card).toContainText(
+        `This review cannot be claimed until you confirm or dismiss the task's pending ${proposal}.`,
+      )
+      await expect(card.getByRole('link', { name: `Confirm or dismiss the ${proposal}`, exact: true })).toHaveAttribute(
+        'href',
+        /pending-proposals.*task=design-proposal-queued/,
+      )
+      await expect(card.getByText('System Design update proposed')).toHaveCount(withDesignCard ? 1 : 0)
+      await expect(page.getByRole('button', { name: 'Redispatch', exact: true })).toHaveCount(0)
+      await expect(page.getByText('Queued — re-enqueue if dispatch stalled.')).toHaveCount(0)
+    })
+  }
+}
 
-  await page.goto('/tasks/design-proposal-queued/full')
-  const merged = page.getByRole('region', { name: 'Review is waiting on a document decision' })
-  await expect(merged).toContainText('System Design update proposed')
-  await expect(page.getByRole('button', { name: 'Redispatch' })).toBeVisible()
-  const rowText = await page.getByRole('region', { name: 'Activity' }).locator('ol > li').allTextContents()
-  const attentionIndex = rowText.findIndex((text) => text.includes('Review is waiting on a System Design decision'))
-  const redispatchIndex = rowText.findIndex((text) => text.includes('Queued — re-enqueue if dispatch stalled'))
-  expect(attentionIndex).toBeGreaterThanOrEqual(0)
-  expect(redispatchIndex).toBeGreaterThan(attentionIndex)
-})
+for (const { pendingAuthority, stage } of [
+  { pendingAuthority: false, stage: 'review' },
+  { pendingAuthority: true, stage: 'implement' },
+]) {
+  test(`redispatch remains available for queued ${stage} with pending authority ${pendingAuthority}`, async ({
+    page,
+  }) => {
+    const taskId = 'design-proposal-queued'
+    await page.route('**/v1/tasks/design-proposal-queued/activity*', (route) =>
+      route.fulfill({
+        json: {
+          ...activity(taskId, false),
+          pending_authority: pendingAuthority,
+          work_orders: [
+            {
+              id: `${taskId}-${stage}-1`,
+              task_id: taskId,
+              stage,
+              state: 'queued',
+              created_at: createdAt,
+              updated_at: createdAt,
+            },
+          ],
+        },
+      }),
+    )
+    await page.goto(`/tasks/${taskId}/full`)
+    await expect(page.getByRole('button', { name: 'Redispatch', exact: true })).toBeVisible()
+    await expect(page.getByText('Queued — re-enqueue if dispatch stalled.')).toBeVisible()
+    if (!pendingAuthority)
+      await expect(page.getByRole('region', { name: 'Review is waiting on a document decision' })).toHaveCount(0)
+  })
+}
 
 // The read is the workspace-wide collection, so origin alone would carry a
 // proposal onto a task that does not hold the document. Attachment is the other
