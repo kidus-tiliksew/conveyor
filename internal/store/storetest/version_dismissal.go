@@ -14,6 +14,7 @@ import (
 // actor attribution, audit events, and post-dismissal proposal identity.
 func RunVersionDismissalConformance(t *testing.T, factory RequirementFactory) {
 	t.Helper()
+	t.Run("operator dismissal notes", func(t *testing.T) { runDismissalNotesConformance(t, factory) })
 	t.Run("requirement and system design versions dismiss directly", func(t *testing.T) {
 		fixture := factory(t, requirementConformanceRepos)
 		ctx := store.WithActor(fixture.Context, store.Actor{ID: requirementConformanceActor, Role: core.ActorHuman})

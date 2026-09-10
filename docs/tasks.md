@@ -289,3 +289,20 @@ order of 130 event kinds, streamable per task over SSE. The task activity
 endpoint returns the whole picture in one read: jobs, events, work orders
 with checkpoints and transcripts, interventions, review diagnostics, merge
 readiness, and attention state.
+
+### Operator reasons in work-order context
+
+Review orders and later implement attempts receive `operator_notes` when an
+implementation-origin requirement or System Design version from that task
+was dismissed with a note. Each entry contains `document_id`, `version`,
+`tier` (`requirement` or `system_design`), `note`, and `dismissed_at`. Entries
+sort by tier, document ID, then numeric version. The role prompt labels them
+as operator reasons and untrusted observational evidence.
+
+Context assembly refreshes notes even when review authority stays pinned.
+Only the originating task in the same workspace receives them. An empty
+collection is omitted, and terminal tasks drop the collection while version
+history remains readable. Notes do not alter admission, dispatch, claiming,
+gates, or document authority. The claim-bound `get_work_order` response
+projects the same collection (req-260810-23b69f AC-5.2 and AC-5.4;
+`component-work-orders`).

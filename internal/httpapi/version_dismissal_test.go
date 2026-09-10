@@ -77,3 +77,112 @@ func TestVersionDismissalHTTPContracts(t *testing.T) {
 	_ = requirementVersion
 	_ = designVersion
 }
+
+func TestOperatorDismissalNotesHTTP(t *testing.T) {
+	for _, tier := range []string{"requirements", "system-designs"} {
+		for _, action := range []string{"confirm", "dismiss"} {
+			for _, tc := range []struct {
+				name, body, want string
+				status           int
+			}{
+				{"absent", "", "", 200}, {"empty", "{}", "", 200}, {"whitespace", `{"note":"  \n  "}`, "", 200},
+				{"trimmed", `{"note":"  correct intent, malformed proposal  "}`, "correct intent, malformed proposal", 200},
+				{"unicode limit", `{"note":"  ` + strings.Repeat("日", 2000) + `  "}`, strings.Repeat("日", 2000), 200},
+				{"over limit", `{"note":"` + strings.Repeat("日", 2001) + `"}`, "", 400},
+				{"wrong type", `{"note":5}`, "", 400}, {"malformed", `{"note":`, "", 400}, {"trailing", `{"note":"a"}{}`, "", 400},
+			} {
+				t.Run(tier+"/"+action+"/"+tc.name, func(t *testing.T) {
+					ctx := store.WithWorkspace(t.Context(), "demo")
+					st := store.NewMemory()
+					id := "note-doc"
+					var history func() []string
+					if tier == "requirements" {
+						v := core.RequirementVersion{Content: "# Intent\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Preserve intent.\n```", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Preserve intent."}}, Origin: core.RequirementOriginOperator}
+						if _, _, err := st.CreateRequirement(ctx, core.Requirement{ID: id, Title: id}, v); err != nil {
+							t.Fatal(err)
+						}
+						v.RequirementID = id
+						for n := 2; n <= 3; n++ {
+							v.Content = "Next\n" + v.Content
+							if _, err := st.ProposeRequirementVersion(ctx, v); err != nil {
+								t.Fatal(err)
+							}
+						}
+						history = func() []string {
+							vs, err := st.ListRequirementVersions(ctx, id)
+							if err != nil {
+								t.Fatal(err)
+							}
+							var notes []string
+							for _, v := range vs {
+								if tc.status != 200 && (v.Retired || v.Confirmed) {
+									t.Fatal("invalid request mutated version")
+								}
+								notes = append(notes, v.DismissalNote)
+							}
+							return notes
+						}
+					} else {
+						v := core.SystemDesignVersion{Content: "# Intent\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/**\n```", Origin: core.SystemDesignOriginOperator}
+						if _, _, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: id, Title: id, Category: "Architecture"}, v); err != nil {
+							t.Fatal(err)
+						}
+						v.DocumentID = id
+						for n := 2; n <= 3; n++ {
+							v.Content = "Next\n" + v.Content
+							if _, err := st.ProposeSystemDesignVersion(ctx, v); err != nil {
+								t.Fatal(err)
+							}
+						}
+						history = func() []string {
+							vs, err := st.ListSystemDesignVersions(ctx, id)
+							if err != nil {
+								t.Fatal(err)
+							}
+							var notes []string
+							for _, v := range vs {
+								if tc.status != 200 && (v.Dismissed || v.Confirmed) {
+									t.Fatal("invalid request mutated version")
+								}
+								notes = append(notes, v.DismissalNote)
+							}
+							return notes
+						}
+					}
+					server := NewServer(st)
+					server.Workspace, server.BearerToken = "demo", "token"
+					version := "1"
+					if action == "confirm" {
+						version = "3"
+					}
+					req := httptest.NewRequest(http.MethodPost, "/v1/"+tier+"/"+id+"/versions/"+version+"/"+action, strings.NewReader(tc.body))
+					req.Header.Set("Authorization", "Bearer token")
+					response := httptest.NewRecorder()
+					server.Handler().ServeHTTP(response, req)
+					if response.Code != tc.status {
+						t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+					}
+					for i, n := range history() {
+						want := ""
+						if tc.status == 200 && (i == 0 || (i == 1 && action == "confirm")) {
+							want = tc.want
+						}
+						if n != want {
+							t.Fatalf("v%d note=%q want=%q", i+1, n, want)
+						}
+					}
+					get := httptest.NewRequest(http.MethodGet, "/v1/"+tier+"/"+id+"/versions", nil)
+					get.Header.Set("Authorization", "Bearer token")
+					listed := httptest.NewRecorder()
+					server.Handler().ServeHTTP(listed, get)
+					if listed.Code != 200 {
+						t.Fatalf("list status=%d", listed.Code)
+					}
+					if strings.Contains(listed.Body.String(), `"dismissal_note"`) != (tc.status == 200 && tc.want != "") {
+						t.Fatalf("list=%s", listed.Body.String())
+					}
+				})
+			}
+		}
+	}
+}

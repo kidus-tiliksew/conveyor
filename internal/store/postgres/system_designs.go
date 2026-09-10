@@ -35,6 +35,7 @@ func (s *Store) CreateSystemDesign(ctx context.Context, document core.SystemDesi
 	document.CreatedAt, document.UpdatedAt = now, now
 	first.Workspace, first.DocumentID, first.Version = workspace(ctx), document.ID, 1
 	first.Confirmed, first.ConfirmedBy, first.ConfirmedAt, first.CreatedAt = false, "", time.Time{}, now
+	first.DismissalNote = ""
 	first.Dismissed, first.DismissedBy, first.DismissedAt = false, "", time.Time{}
 	governs, _ := json.Marshal(first.Governs)
 	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
@@ -186,6 +187,7 @@ func (s *Store) ProposeSystemDesignVersion(ctx context.Context, version core.Sys
 		}
 		version.Workspace, version.Version, version.Confirmed = workspace(ctx), latest+1, false
 		version.ConfirmedBy, version.ConfirmedAt, version.CreatedAt = "", time.Time{}, time.Now().UTC()
+		version.DismissalNote = ""
 		version.Dismissed, version.DismissedBy, version.DismissedAt = false, "", time.Time{}
 		governs, _ := json.Marshal(version.Governs)
 		if _, err := tx.Exec(ctx, `INSERT INTO system_design_versions (workspace_id,document_id,version,content,governs,origin,origin_session_id,origin_task_id,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`, workspace(ctx), version.DocumentID, version.Version, version.Content, governs, string(version.Origin), nullString(version.OriginSessionID), nullString(version.OriginTaskID), version.CreatedAt); err != nil {
@@ -246,7 +248,7 @@ func (s *Store) ConfirmSystemDesignVersion(ctx context.Context, documentID strin
 			return err
 		}
 		actor, now := store.ActorFromContext(ctx), time.Now().UTC()
-		dismissedRows, dismissErr := tx.Query(ctx, `UPDATE system_design_versions SET dismissed=true,dismissed_by=$4,dismissed_at=$5 WHERE workspace_id=$1 AND document_id=$2 AND version<$3 AND confirmed=false AND dismissed=false RETURNING version`, workspace(ctx), documentID, version, actor.ID, now)
+		dismissedRows, dismissErr := tx.Query(ctx, `UPDATE system_design_versions SET dismissed=true,dismissed_by=$4,dismissed_at=$5,dismissal_note=NULLIF($6,'') WHERE workspace_id=$1 AND document_id=$2 AND version<$3 AND confirmed=false AND dismissed=false RETURNING version`, workspace(ctx), documentID, version, actor.ID, now, store.DocumentDismissalNote(ctx))
 		if dismissErr != nil {
 			return dismissErr
 		}
@@ -276,7 +278,7 @@ func (s *Store) ConfirmSystemDesignVersion(ctx context.Context, documentID strin
 			return err
 		}
 		for _, dismissedVersion := range dismissed {
-			if err = insertWorkspaceEvent(ctx, q, core.Event{Kind: "system_design.version_dismissed", Payload: core.JSONPayload(map[string]any{"workspace_id": workspace(ctx), "document_id": documentID, "version": dismissedVersion, "dismissed_by": actor.ID, "confirmed_version": version})}); err != nil {
+			if err = insertWorkspaceEvent(ctx, q, core.Event{Kind: "system_design.version_dismissed", Payload: core.JSONPayload(store.DocumentDismissalEventPayload(ctx, map[string]any{"workspace_id": workspace(ctx), "document_id": documentID, "version": dismissedVersion, "dismissed_by": actor.ID, "confirmed_version": version}))}); err != nil {
 				return err
 			}
 		}
@@ -326,23 +328,24 @@ func (s *Store) DismissSystemDesignVersion(ctx context.Context, documentID strin
 		}
 		actor, now := store.ActorFromContext(ctx), time.Now().UTC()
 		if _, err = tx.Exec(ctx, `UPDATE system_design_versions
-			SET dismissed=true,dismissed_by=$4,dismissed_at=$5
+			SET dismissed=true,dismissed_by=$4,dismissed_at=$5,dismissal_note=NULLIF($6,'')
 			WHERE workspace_id=$1 AND document_id=$2 AND version=$3`,
-			workspace(ctx), documentID, version, actor.ID, now); err != nil {
+			workspace(ctx), documentID, version, actor.ID, now, store.DocumentDismissalNote(ctx)); err != nil {
 			return err
 		}
 		if _, err = tx.Exec(ctx, `UPDATE system_designs SET updated_at=$3
 			WHERE workspace_id=$1 AND id=$2`, workspace(ctx), documentID, now); err != nil {
 			return err
 		}
+		dismissed.DismissalNote = store.DocumentDismissalNote(ctx)
 		dismissed.Dismissed, dismissed.DismissedBy, dismissed.DismissedAt = true, actor.ID, now
 		if document, err = scanSystemDesign(tx.QueryRow(ctx, systemDesignSelect+
 			` WHERE workspace_id=$1 AND id=$2`, workspace(ctx), documentID), documentID); err != nil {
 			return err
 		}
-		return insertWorkspaceEvent(ctx, q, core.Event{Kind: "system_design.version_dismissed", Payload: core.JSONPayload(map[string]any{
+		return insertWorkspaceEvent(ctx, q, core.Event{Kind: "system_design.version_dismissed", Payload: core.JSONPayload(store.DocumentDismissalEventPayload(ctx, map[string]any{
 			"workspace_id": workspace(ctx), "document_id": documentID, "version": version, "dismissed_by": actor.ID,
-		})})
+		}))})
 	})
 	return document, dismissed, err
 }
@@ -390,7 +393,7 @@ func reconcileConfirmedSystemDesignDriftTx(ctx context.Context, tx pgx.Tx, q *db
 }
 
 const systemDesignSelect = `SELECT workspace_id,id,slug,title,category,current_version,archived_at,archived_by,superseded_by,created_at,updated_at FROM system_designs`
-const systemDesignVersionSelect = `SELECT workspace_id,document_id,version,content,governs,origin,coalesce(origin_session_id,''),coalesce(origin_task_id,''),confirmed,coalesce(confirmed_by,''),confirmed_at,dismissed,coalesce(dismissed_by,''),dismissed_at,created_at FROM system_design_versions`
+const systemDesignVersionSelect = `SELECT workspace_id,document_id,version,content,governs,origin,coalesce(origin_session_id,''),coalesce(origin_task_id,''),confirmed,coalesce(confirmed_by,''),confirmed_at,dismissed,coalesce(dismissed_by,''),dismissed_at,created_at,COALESCE(dismissal_note,'') FROM system_design_versions`
 
 func scanSystemDesign(row pgx.Row, id string) (core.SystemDesign, error) {
 	var item core.SystemDesign
@@ -414,7 +417,7 @@ func scanSystemDesignVersion(row pgx.Row, id string, version int) (core.SystemDe
 	var origin string
 	var confirmedAt *time.Time
 	var dismissedAt *time.Time
-	err := row.Scan(&item.Workspace, &item.DocumentID, &item.Version, &item.Content, &raw, &origin, &item.OriginSessionID, &item.OriginTaskID, &item.Confirmed, &item.ConfirmedBy, &confirmedAt, &item.Dismissed, &item.DismissedBy, &dismissedAt, &item.CreatedAt)
+	err := row.Scan(&item.Workspace, &item.DocumentID, &item.Version, &item.Content, &raw, &origin, &item.OriginSessionID, &item.OriginTaskID, &item.Confirmed, &item.ConfirmedBy, &confirmedAt, &item.Dismissed, &item.DismissedBy, &dismissedAt, &item.CreatedAt, &item.DismissalNote)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return item, fmt.Errorf("%w: system design %s has no version %d", store.ErrNotFound, id, version)
 	}

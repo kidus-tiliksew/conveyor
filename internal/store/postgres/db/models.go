@@ -493,3 +493,12 @@ type Workspace struct {
 	ConfigVersion int64              `json:"config_version"`
 	OrgID         string             `json:"org_id"`
 }
+
+// DocumentOperatorNote is hand-maintained with the task-origin history query.
+type DocumentOperatorNote struct {
+	DocumentID    string
+	Version       int
+	Tier          string
+	DismissalNote string
+	DismissedAt   pgtype.Timestamptz
+}

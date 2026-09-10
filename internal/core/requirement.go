@@ -148,6 +148,7 @@ type RequirementVersion struct {
 	Retired          bool      `json:"retired"`
 	RetiredBy        string    `json:"retired_by,omitempty"`
 	RetiredAt        time.Time `json:"retired_at,omitempty"`
+	DismissalNote    string    `json:"dismissal_note,omitempty"`
 	RetiredByVersion int       `json:"retired_by_version,omitempty"`
 	Workspace        string    `json:"workspace"`
 	CreatedAt        time.Time `json:"created_at"`
