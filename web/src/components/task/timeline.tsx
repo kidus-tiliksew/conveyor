@@ -15,6 +15,7 @@ import claudeIcon from '@lobehub/icons-static-svg/icons/claude-color.svg?raw'
 import geminiIcon from '@lobehub/icons-static-svg/icons/gemini-color.svg?raw'
 import grokIcon from '@lobehub/icons-static-svg/icons/grok.svg?raw'
 import openaiIcon from '@lobehub/icons-static-svg/icons/openai.svg?raw'
+import zhipuIcon from '@lobehub/icons-static-svg/icons/zhipu-color.svg?raw'
 import {
   buildTimeline,
   dependencyRelationLabel,
@@ -1158,6 +1159,7 @@ function providerLogo(model: string): { svg: string; className?: string } | unde
   if (/claude|fable|opus|sonnet|haiku|anthropic/.test(name)) return { svg: claudeIcon }
   if (/gemini|google/.test(name)) return { svg: geminiIcon }
   if (/grok|xai|x\.ai/.test(name)) return { svg: grokIcon, className: 'text-foreground' }
+  if (/(^|[/:])(?:chatglm|glm|zhipu)(?=$|[-/.:\d])/.test(name)) return { svg: zhipuIcon }
   return undefined
 }
 
