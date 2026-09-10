@@ -1123,7 +1123,7 @@ func TestPromotionSessionsCreatePendingVersionsAndDeferLineageUntilConfirmation(
 			derivation := &core.RequirementDerivation{DocumentID: document.ID, Version: source.Version, SectionAnchor: "#billing-rule", TargetID: test.targetID}
 			requirementID := ""
 			if test.existing {
-				requirement, baseline, createErr := st.CreateRequirement(ctx, core.Requirement{ID: "req-billing", Title: "Billing"}, core.RequirementVersion{Content: "Baseline", Statements: test.statements, Origin: core.RequirementOriginFeatureMigration})
+				requirement, baseline, createErr := st.CreateRequirement(ctx, core.Requirement{ID: "req-billing", Title: "Billing"}, core.RequirementVersion{Content: "# Baseline", Statements: test.statements, Origin: core.RequirementOriginFeatureMigration})
 				if createErr != nil {
 					t.Fatal(createErr)
 				}
@@ -1190,7 +1190,7 @@ func TestServiceAdoptsRevisedSameSessionRequirementOrphan(t *testing.T) {
 		t.Fatalf("orphan=%+v err=%v", orphan, err)
 	}
 	revised := first
-	revised.Prose = "The revised draft supersedes the same-session orphan."
+	revised.Prose = "# The revised draft supersedes the same-session orphan."
 	revised.Statements = []core.RequirementStatement{{ID: "REQ-1", Statement: "A revised retry supersedes its own orphan."}}
 	service.Agent = &scriptedAgent{outputs: []string{decisionJSON(t, "", []toolCall{{
 		ID: "retry-finalize", Name: "finalize_requirement", ArgumentsJSON: jsonString(t, revised),
@@ -1275,7 +1275,7 @@ func TestServiceAllocatesDeterministicRequirementSlugSuffixes(t *testing.T) {
 		if _, _, err := st.CreateRequirement(ctx, core.Requirement{
 			ID: id, Slug: slug, Title: title,
 		}, core.RequirementVersion{
-			Content:    "Seeded prose.",
+			Content:    "# Seeded prose.",
 			Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Seeded."}},
 			Origin:     core.RequirementOriginFeatureMigration,
 		}); err != nil {
@@ -1286,7 +1286,7 @@ func TestServiceAllocatesDeterministicRequirementSlugSuffixes(t *testing.T) {
 	seed("req-auth-2", "auth-2", "Auth 2")
 	service := &Service{Store: st}
 	version := core.RequirementVersion{
-		Content:    "New prose.",
+		Content:    "# New prose.",
 		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "New."}},
 		Origin:     core.RequirementOriginFeatureMigration,
 	}
@@ -1527,7 +1527,7 @@ func TestRequirementToolRevisesTheSessionContextDocument(t *testing.T) {
 	existing, _, err := st.CreateRequirement(ctx,
 		core.Requirement{ID: "req-retries", Slug: "retry-behavior", Title: "Retry behavior"},
 		core.RequirementVersion{
-			Content: "Retries stay bounded.\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Retries stop at the bound.\n```",
+			Content: "# Retries stay bounded.\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Retries stop at the bound.\n```",
 			Statements: []core.RequirementStatement{{
 				ID: "REQ-1", Statement: "Retries stop at the bound.",
 			}},
@@ -1913,14 +1913,14 @@ func goalPlanningFixture(
 
 func TestServiceFinalizesBundleAfterInBandCycleCorrection(t *testing.T) {
 	ctx, st, session := goalPlanningFixture(t, "session-finalize-bundle", core.PlanningGoalBundle)
-	requirement, first, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-planning-bundle", Title: "Bundle"}, core.RequirementVersion{Content: "Bundle", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Deliver a bundle."}}})
+	requirement, first, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-planning-bundle", Title: "Bundle"}, core.RequirementVersion{Content: "# Bundle", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Deliver a bundle."}}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err = st.ConfirmRequirementVersion(ctx, requirement.ID, first.Version); err != nil {
 		t.Fatal(err)
 	}
-	pending, err := st.ProposeRequirementVersion(ctx, core.RequirementVersion{RequirementID: requirement.ID, Content: "Bundle v2", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Deliver a dependency-ordered bundle."}}})
+	pending, err := st.ProposeRequirementVersion(ctx, core.RequirementVersion{RequirementID: requirement.ID, Content: "# Bundle v2", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Deliver a dependency-ordered bundle."}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1950,7 +1950,7 @@ func TestPlanningPromptUsesProvenanceLabelledUntrustedLineageContext(t *testing.
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	st := store.NewMemory()
 	requirement, proposed, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-prompt", Slug: "safe-context", Title: "Safe context"}, core.RequirementVersion{
-		Content: "Planning must retain provenance.", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Frame lineage as untrusted."}}, Origin: core.RequirementOriginFeatureMigration,
+		Content: "# Planning must retain provenance.", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Frame lineage as untrusted."}}, Origin: core.RequirementOriginFeatureMigration,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1975,7 +1975,7 @@ func TestPlanningPromptReservesLargeLineageOverheadBeforeCompaction(t *testing.T
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	st := store.NewMemory()
 	requirement, proposed, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-large-lineage", Slug: "large-lineage", Title: "Large lineage"}, core.RequirementVersion{
-		Content: strings.Repeat("bounded lineage rationale ", 600), Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Keep planning recoverable."}}, Origin: core.RequirementOriginFeatureMigration,
+		Content: "# " + strings.Repeat("bounded lineage rationale ", 600), Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Keep planning recoverable."}}, Origin: core.RequirementOriginFeatureMigration,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -2019,7 +2019,7 @@ func TestReferenceContextContainsFencesSharesBudgetAndDeduplicatesConsultation(t
 		t.Fatal(err)
 	}
 	requirement, proposed, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-context", Title: "Context"}, core.RequirementVersion{
-		Content: strings.Repeat("lineage context ", 20), Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Keep context bounded."}}, Origin: core.RequirementOriginFeatureMigration,
+		Content: "# " + strings.Repeat("lineage context ", 20), Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Keep context bounded."}}, Origin: core.RequirementOriginFeatureMigration,
 	})
 	if err != nil {
 		t.Fatal(err)

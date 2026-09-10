@@ -711,7 +711,7 @@ func seedTaskRunRequirement(t *testing.T, st store.Store, workspace, id, taskID 
 	t.Helper()
 	ctx := store.WithWorkspace(t.Context(), workspace)
 	_, first, err := st.CreateRequirement(ctx, core.Requirement{ID: id, Slug: id, Title: "Run requirement"}, core.RequirementVersion{
-		Content: "Run requirement", Origin: core.RequirementOriginOperator,
+		Content: "# Run requirement", Origin: core.RequirementOriginOperator,
 		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Surface proposals."}},
 	})
 	if err != nil {
@@ -721,7 +721,7 @@ func seedTaskRunRequirement(t *testing.T, st store.Store, workspace, id, taskID 
 		t.Fatal(err)
 	}
 	if _, err = st.ProposeRequirementVersion(ctx, core.RequirementVersion{
-		RequirementID: id, Content: "Updated run requirement", Origin: core.RequirementOriginImplementation, OriginTaskID: taskID,
+		RequirementID: id, Content: "# Updated run requirement", Origin: core.RequirementOriginImplementation, OriginTaskID: taskID,
 		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Surface requirement proposals."}},
 	}); err != nil {
 		t.Fatal(err)

@@ -207,7 +207,7 @@ func TestBlueprintsProjectionReportsDeliveryAndDependencyOrder(t *testing.T) {
 	if _, _, err = st.CreateRequirement(ctx, core.Requirement{
 		ID: "req-retries", Slug: "retry-behavior", Title: "Retry behavior",
 	}, core.RequirementVersion{
-		Content: "Retries stay bounded.", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Retries stay bounded."}},
+		Content: "# Retries stay bounded.", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Retries stay bounded."}},
 		Origin: core.RequirementOriginChat, OriginSessionID: intent.ID,
 	}); err != nil {
 		t.Fatal(err)
@@ -311,7 +311,7 @@ func TestBlueprintServesMutationRoutesAreRetired(t *testing.T) {
 	createRequirement := func(id string) {
 		t.Helper()
 		if _, _, err := st.CreateRequirement(ctx, core.Requirement{ID: id, Title: id}, core.RequirementVersion{
-			Content: "Intent for " + id + ".", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "The blueprint serves " + id + "."}},
+			Content: "# Intent for " + id + ".", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "The blueprint serves " + id + "."}},
 			Origin: core.RequirementOriginChat, OriginSessionID: "session-" + id,
 		}); err != nil {
 			t.Fatal(err)

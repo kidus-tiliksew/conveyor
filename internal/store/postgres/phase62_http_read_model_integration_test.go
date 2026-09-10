@@ -31,7 +31,7 @@ func TestPhase62RequirementsHTTPIncludesWorkspaceRequirementLineageIntegration(t
 		requirement, _, err := st.CreateRequirement(requestCtx, core.Requirement{
 			ID: requirementID, Title: title,
 		}, core.RequirementVersion{
-			Content: "Retries stay bounded.",
+			Content: "# Retries stay bounded.",
 			Statements: []core.RequirementStatement{{
 				ID: "REQ-1", Statement: "Retries stop after a finite attempt limit.",
 			}},

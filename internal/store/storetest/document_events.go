@@ -19,7 +19,7 @@ import (
 func SeedDocumentEventMeasurement(t *testing.T, st store.Store, ctx context.Context) (string, string, []string) {
 	t.Helper()
 	ctx = store.WithActor(ctx, store.Actor{ID: "fixture", Role: core.ActorUser})
-	req, _, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-delegated-execution", Title: "Delegated execution"}, core.RequirementVersion{Content: "Fixture", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Preserve history."}}})
+	req, _, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-delegated-execution", Title: "Delegated execution"}, core.RequirementVersion{Content: "# Fixture", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Preserve history."}}})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -67,14 +67,14 @@ func RunVersionDismissalConformance(t *testing.T, factory RequirementFactory) {
 			}
 		}
 		supersededRequirement, err := st.ProposeRequirementVersion(ctx, core.RequirementVersion{
-			RequirementID: requirement.ID, Content: "Superseded pending requirement", Origin: core.RequirementOriginOperator,
+			RequirementID: requirement.ID, Content: "# Superseded pending requirement", Origin: core.RequirementOriginOperator,
 			Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Keep dismissed history current."}},
 		})
 		if err != nil {
 			t.Fatal(err)
 		}
 		newerRequirement, err := st.ProposeRequirementVersion(ctx, core.RequirementVersion{
-			RequirementID: requirement.ID, Content: "Newer requirement", Origin: core.RequirementOriginOperator,
+			RequirementID: requirement.ID, Content: "# Newer requirement", Origin: core.RequirementOriginOperator,
 			Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Keep dismissed history current and explicit."}},
 		})
 		if err != nil {

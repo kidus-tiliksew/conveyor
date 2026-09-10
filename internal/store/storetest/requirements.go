@@ -69,7 +69,7 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 	t.Run("requirement and system design archive lifecycle", func(t *testing.T) {
 		fixture := factory(t, requirementConformanceRepos)
 		ctx := store.WithActor(fixture.Context, store.Actor{ID: requirementConformanceActor, Role: core.ActorUser})
-		requirement, version, err := fixture.Store.CreateRequirement(ctx, core.Requirement{ID: "req-" + core.NewTaskID(), Title: "Archived requirement"}, core.RequirementVersion{Content: "Archived requirement", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Archive intent safely."}}})
+		requirement, version, err := fixture.Store.CreateRequirement(ctx, core.Requirement{ID: "req-" + core.NewTaskID(), Title: "Archived requirement"}, core.RequirementVersion{Content: "# Archived requirement", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Archive intent safely."}}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -102,7 +102,7 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 		if err != nil || len(listed) != 1 || !listed[0].Archived || listed[0].ArchivedBy != requirementConformanceActor || listed[0].ArchivedAt.IsZero() {
 			t.Fatalf("archived requirement = %#v, %v", listed, err)
 		}
-		if _, err = fixture.Store.ProposeRequirementVersion(ctx, core.RequirementVersion{RequirementID: requirement.ID, Content: "Blocked", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Archive intent safely."}}}); err == nil {
+		if _, err = fixture.Store.ProposeRequirementVersion(ctx, core.RequirementVersion{RequirementID: requirement.ID, Content: "# Blocked", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Archive intent safely."}}}); err == nil {
 			t.Fatal("proposal against archived requirement succeeded")
 		}
 		if err = fixture.Store.ArchiveRequirement(ctx, requirement.ID, requirementConformanceActor, nil); err != nil {
@@ -128,7 +128,7 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 		if err != nil || restored.Archived || restored.CurrentVersion != version.Version {
 			t.Fatalf("restored requirement = %#v, %v", restored, err)
 		}
-		if _, err = fixture.Store.ProposeRequirementVersion(ctx, core.RequirementVersion{RequirementID: requirement.ID, Content: "Restored", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Archive intent safely."}}}); err != nil {
+		if _, err = fixture.Store.ProposeRequirementVersion(ctx, core.RequirementVersion{RequirementID: requirement.ID, Content: "# Restored", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Archive intent safely."}}}); err != nil {
 			t.Fatalf("proposal after restore: %v", err)
 		}
 
@@ -169,7 +169,7 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 		st := fixture.Store
 		ctx := store.WithActor(fixture.Context, store.Actor{ID: requirementConformanceActor, Role: core.ActorUser})
 		createRequirement := func(id string) core.Requirement {
-			document, version, err := st.CreateRequirement(ctx, core.Requirement{ID: id, Title: id}, core.RequirementVersion{Content: id, Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Preserve archive authority."}}})
+			document, version, err := st.CreateRequirement(ctx, core.Requirement{ID: id, Title: id}, core.RequirementVersion{Content: "# " + id, Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Preserve archive authority."}}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -290,7 +290,7 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 			}
 		}
 		otherCtx := store.WithWorkspace(ctx, otherWorkspace)
-		cross, crossVersion, err := st.CreateRequirement(otherCtx, core.Requirement{ID: "req-cross-workspace", Title: "Cross workspace"}, core.RequirementVersion{Content: "Cross workspace", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Stay scoped."}}})
+		cross, crossVersion, err := st.CreateRequirement(otherCtx, core.Requirement{ID: "req-cross-workspace", Title: "Cross workspace"}, core.RequirementVersion{Content: "# Cross workspace", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Stay scoped."}}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -348,7 +348,7 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 		fixture := factory(t, requirementConformanceRepos)
 		st, ctx := fixture.Store, store.WithActor(fixture.Context, store.Actor{ID: requirementConformanceActor, Role: core.ActorUser})
 		requirement, version, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-" + core.NewTaskID(), Title: "Context proposal"},
-			core.RequirementVersion{Content: "Context proposal", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Confirm context."}}})
+			core.RequirementVersion{Content: "# Context proposal", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Confirm context."}}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -426,7 +426,7 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 			var err error
 			targets[index], _, err = st.CreateRequirement(ctx,
 				core.Requirement{ID: "req-terminal-context-" + core.NewTaskID(), Title: fmt.Sprintf("Terminal context %d", index+1)},
-				core.RequirementVersion{Content: "Terminal context", Origin: core.RequirementOriginOperator,
+				core.RequirementVersion{Content: "# Terminal context", Origin: core.RequirementOriginOperator,
 					Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Retain only decided context."}}})
 			if err != nil {
 				t.Fatal(err)
@@ -531,7 +531,7 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 	t.Run("requirement staleness acknowledgments are durable audited events", func(t *testing.T) {
 		st, ctx, _ := newRequirementFixture(t, factory)
 		requirement, _, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-staleness-ack", Title: "Staleness acknowledgment"}, core.RequirementVersion{
-			Content: "Audited judgment.", Statements: []core.RequirementStatement{requirementStatement("REQ-1", "Operators can acknowledge a delivery signal.")}, Origin: core.RequirementOriginOperator,
+			Content: "# Audited judgment.", Statements: []core.RequirementStatement{requirementStatement("REQ-1", "Operators can acknowledge a delivery signal.")}, Origin: core.RequirementOriginOperator,
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -720,7 +720,7 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 		st, ctx, _ := newRequirementFixture(t, factory)
 		requirement, first, err := st.CreateRequirement(ctx,
 			core.Requirement{ID: "req-" + core.NewTaskID(), Title: "Operator REST parity"},
-			core.RequirementVersion{Content: "First operator proposal.", Origin: core.RequirementOriginOperator,
+			core.RequirementVersion{Content: "# First operator proposal.", Origin: core.RequirementOriginOperator,
 				Statements: []core.RequirementStatement{requirementStatement("REQ-2", "Initial operator intent.")}})
 		if err != nil {
 			t.Fatal(err)
@@ -733,14 +733,14 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 			t.Fatalf("confirm operator proposal requirement=%+v version=%+v err=%v", confirmed, confirmedVersion, err)
 		}
 		second, err := st.ProposeRequirementVersion(ctx, core.RequirementVersion{
-			RequirementID: requirement.ID, Content: "Second operator proposal.", Origin: core.RequirementOriginOperator,
+			RequirementID: requirement.ID, Content: "# Second operator proposal.", Origin: core.RequirementOriginOperator,
 			Statements: []core.RequirementStatement{requirementStatement("REQ-3", "Later operator intent.")},
 		})
 		if err != nil || second.Version != 2 || second.Confirmed {
 			t.Fatalf("second operator proposal=%+v err=%v", second, err)
 		}
 		if _, err = st.ProposeRequirementVersion(ctx, core.RequirementVersion{
-			RequirementID: requirement.ID, Content: "Recycled operator proposal.", Origin: core.RequirementOriginOperator,
+			RequirementID: requirement.ID, Content: "# Recycled operator proposal.", Origin: core.RequirementOriginOperator,
 			Statements: []core.RequirementStatement{requirementStatement("REQ-1", "Recycled operator intent.")},
 		}); err == nil || !strings.Contains(err.Error(), "reuses a retired identifier") {
 			t.Fatalf("recycled operator proposal error=%v", err)
@@ -796,7 +796,7 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 		_, _, err := st.CreateRequirement(ctx, core.Requirement{
 			ID: "req-" + core.NewTaskID(), Title: "Divergent requirement",
 		}, core.RequirementVersion{
-			Content:    "Operator prose.\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Fence statement.\n```",
+			Content:    "# Operator prose.\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Fence statement.\n```",
 			Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Different supplied statement."}},
 			Origin:     core.RequirementOriginChat, OriginSessionID: "session-divergent",
 		})
@@ -992,7 +992,7 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 		seed, seedVersion, err := st.CreateRequirement(ctx,
 			core.Requirement{ID: "req-" + core.NewTaskID(), Title: "Migrated Feature Node"},
 			core.RequirementVersion{
-				Content:    "Verbatim text carried over from the retired feature tree.",
+				Content:    "# Verbatim text carried over from the retired feature tree.",
 				Statements: statements, Origin: core.RequirementOriginFeatureMigration,
 			})
 		if err != nil {
@@ -1003,7 +1003,7 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 			t.Fatalf("migration seed version=%+v", seedVersion)
 		}
 		operator, err := st.ProposeRequirementVersion(ctx, core.RequirementVersion{
-			RequirementID: seed.ID, Content: "Operator proposal.", Statements: statements,
+			RequirementID: seed.ID, Content: "# Operator proposal.", Statements: statements,
 			Origin: core.RequirementOriginOperator,
 		})
 		if err != nil {
@@ -1018,7 +1018,7 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 		// version carrying its drift record.
 		driftID := "drift-" + core.NewTaskID()
 		amended, err := st.ProposeRequirementVersion(ctx, core.RequirementVersion{
-			RequirementID: seed.ID, Content: "Amended after observed drift.",
+			RequirementID: seed.ID, Content: "# Amended after observed drift.",
 			Statements: statements, Origin: core.RequirementOriginDriftAmendment, OriginDriftID: driftID,
 		})
 		if err != nil {
@@ -1049,7 +1049,7 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 			"implementation carrying a drift":      {Origin: core.RequirementOriginImplementation, OriginTaskID: "task-x", OriginDriftID: "drift-x"},
 			"unrecognised origin":                  {Origin: "operator_hunch", OriginSessionID: "session-x"},
 		} {
-			candidate.Content = "Must not commit."
+			candidate.Content = "# Must not commit."
 			candidate.Statements = statements
 			candidate.RequirementID = seed.ID
 			if _, err = st.ProposeRequirementVersion(ctx, candidate); err == nil {
@@ -2241,7 +2241,7 @@ func requirementStatement(id, statement string) core.RequirementStatement {
 // session that revised the document.
 func chatVersion(content string, statements ...core.RequirementStatement) core.RequirementVersion {
 	return core.RequirementVersion{
-		Content: content, Statements: statements,
+		Content: "# " + content, Statements: statements,
 		Origin: core.RequirementOriginChat, OriginSessionID: "session-" + core.NewTaskID(),
 	}
 }
@@ -2256,7 +2256,7 @@ func chatVersionFor(requirementID, content string, statements ...core.Requiremen
 // carries the drift record instead of a session.
 func driftVersionFor(requirementID, content string, statements ...core.RequirementStatement) core.RequirementVersion {
 	return core.RequirementVersion{
-		RequirementID: requirementID, Content: content, Statements: statements,
+		RequirementID: requirementID, Content: "# " + content, Statements: statements,
 		Origin: core.RequirementOriginDriftAmendment, OriginDriftID: "drift-" + core.NewTaskID(),
 	}
 }

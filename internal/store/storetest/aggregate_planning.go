@@ -37,7 +37,7 @@ func runPlanningReads(t *testing.T, x Fixture) {
 	if _, _, err := st.GetArtifactForPlanningSession(ctx, artifact.ID, "foreign"); err == nil {
 		t.Fatal("another session read artifact")
 	}
-	req, revision, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-bundle", Title: "Bundle intent"}, core.RequirementVersion{Content: "Fixture intent.", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Retain rejected bundle history."}}, Origin: core.RequirementOriginOperator})
+	req, revision, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-bundle", Title: "Bundle intent"}, core.RequirementVersion{Content: "# Fixture intent.", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Retain rejected bundle history."}}, Origin: core.RequirementOriginOperator})
 	requireOK(t, err)
 	bundle, err := st.CreatePlanningBundle(ctx, core.PlanningBundle{ID: "bundle", SessionID: session.ID, Title: "Fixture bundle", Documents: []core.PlanningBundleDocument{{Kind: core.PlanningBundleRequirement, ID: req.ID, Version: revision.Version}}, Tasks: []core.PlanningBundleTask{{MemberID: "one", Title: "One", Body: "Fixture", Repo: "conveyor"}}})
 	requireOK(t, err)

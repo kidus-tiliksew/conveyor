@@ -224,7 +224,7 @@ func TestReleaseCheckpointDecisionValidationAndCitations(t *testing.T) {
 		t.Fatal(err)
 	}
 	statements := []core.RequirementStatement{{ID: "REQ-1", Statement: "Checkpoints name the decision.", AcceptanceCriteria: []core.AcceptanceCriterion{{ID: "AC-1.1", Statement: "The request is distinct."}}}}
-	requirement, version, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-checkpoint", Title: "Checkpoint"}, core.RequirementVersion{Content: "Checkpoint authority.\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Checkpoints name the decision.\n  acceptance_criteria:\n    - id: AC-1.1\n      statement: The request is distinct.\n```", Statements: statements, Origin: core.RequirementOriginOperator})
+	requirement, version, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-checkpoint", Title: "Checkpoint"}, core.RequirementVersion{Content: "# Checkpoint authority.\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Checkpoints name the decision.\n  acceptance_criteria:\n    - id: AC-1.1\n      statement: The request is distinct.\n```", Statements: statements, Origin: core.RequirementOriginOperator})
 	if err != nil {
 		t.Fatal(err)
 	}

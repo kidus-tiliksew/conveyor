@@ -3264,7 +3264,7 @@ func TestReviewCitationValidationUsesInProcessBounceAndExternalRetry(t *testing.
 		t.Fatal(err)
 	}
 	requirement, version, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-citation", Title: "Citation contract"}, core.RequirementVersion{
-		Content:    "Review cites confirmed intent.\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Review cites confirmed intent.\n```",
+		Content:    "# Review cites confirmed intent.\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Review cites confirmed intent.\n```",
 		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Review cites confirmed intent."}},
 		Origin:     core.RequirementOriginChat, OriginSessionID: "planning-citation",
 	})
@@ -3561,7 +3561,7 @@ func TestExternalReviewUsesPinnedRequirementVersionAfterConfirmationMoves(t *tes
 		t.Fatal(err)
 	}
 	requirement, first, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-pinned", Title: "Pinned authority"}, core.RequirementVersion{
-		Content: "Pinned authority", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Stable statement", AcceptanceCriteria: []core.AcceptanceCriterion{{ID: "AC-1.1", Statement: "Retired later"}}}},
+		Content: "# Pinned authority", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Stable statement", AcceptanceCriteria: []core.AcceptanceCriterion{{ID: "AC-1.1", Statement: "Retired later"}}}},
 		Origin: core.RequirementOriginChat, OriginSessionID: "session-first",
 	})
 	if err != nil {
@@ -3590,7 +3590,7 @@ func TestExternalReviewUsesPinnedRequirementVersionAfterConfirmationMoves(t *tes
 		t.Fatal(err)
 	}
 	second, err := st.ProposeRequirementVersion(ctx, core.RequirementVersion{
-		RequirementID: requirement.ID, Content: "Revised authority", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Stable statement"}},
+		RequirementID: requirement.ID, Content: "# Revised authority", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Stable statement"}},
 		Origin: core.RequirementOriginChat, OriginSessionID: "session-second",
 	})
 	if err != nil {

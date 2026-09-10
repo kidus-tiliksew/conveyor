@@ -49,7 +49,7 @@ func TestAssembleBatchesGraphContextRecords(t *testing.T) {
 		t.Fatal(err)
 	}
 	requirement, version, err := base.CreateRequirement(ctx, core.Requirement{ID: "req-batched", Title: "Batched authority"}, core.RequirementVersion{
-		Content: "Load graph context in bounded batches.", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Batch graph context."}}, Origin: core.RequirementOriginChat, OriginSessionID: "planning-session",
+		Content: "# Load graph context in bounded batches.", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Batch graph context."}}, Origin: core.RequirementOriginChat, OriginSessionID: "planning-session",
 	})
 	if err != nil {
 		t.Fatal(err)
