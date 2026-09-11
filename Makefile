@@ -195,6 +195,10 @@ test-repository-install:
 test-github-apps:
 	CONVEYOR_TEST_DATABASE_URL= CONVEYOR_TEST_SINGLESTORE_URL= go test ./internal/trigger/github ./internal/httpapi ./internal/dispatch ./internal/workorder ./internal/redact ./internal/store ./internal/store/storetest ./internal/store/postgres ./internal/store/singlestore ./cmd/conveyord -run 'TestApp|TestGitHubApp|TestWorkspaceGitHubApp|TestWorkspaceForge|TestMemoryConformance|TestBackendCoverage|TestEmbeddedMigrationVersionsAreUnique'
 
+.PHONY: test-task-start-over
+test-task-start-over:
+	CONVEYOR_TEST_DATABASE_URL= CONVEYOR_TEST_SINGLESTORE_URL= go test ./internal/core ./internal/taskops ./internal/store ./internal/store/storetest ./internal/store/postgres ./internal/store/singlestore ./internal/httpapi -run 'TestTaskStartOver|TestStartOver|TestMemoryConformance|TestBackendCoverage|TestEmbeddedMigrationVersionsAreUnique'
+
 .PHONY: test-document-events test-document-event-plans
 # Focused iteration; the full local and configured backend gates remain required.
 test-document-events:

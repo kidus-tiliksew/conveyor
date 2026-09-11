@@ -612,11 +612,11 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 	}
 	activeDrift := []monitor.Drift{}
 	if s.Monitor != nil {
-		status, statusErr := s.Monitor.Status(r.Context())
+		unresolved, statusErr := s.Monitor.ListUnresolvedDrift(r.Context())
 		if statusErr != nil {
 			return nil, fmt.Errorf("resolve requirement drift: %w", statusErr)
 		}
-		activeDrift = status.Drift
+		activeDrift = unresolved
 	}
 	eventsByTask := map[string][]core.Event{}
 	// Staleness needs delivery/context events, not full blueprint activity.

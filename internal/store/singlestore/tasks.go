@@ -45,13 +45,13 @@ func taskEvent(ctx context.Context, tx *sql.Tx, e core.Event) error {
 	return insertEvent(ctx, tx, e)
 }
 
-const taskColumns = `id,workspace_id,source,COALESCE(intake_key,''),title,body,class,escalation_level,mode,hold,spec_approval,merge_approval,policy_version,setup_name,setup_contract,reviewed_head_sha,approved_head_sha,approval_stale,refresh_baseline_sha,refresh_head_sha,refresh_review_scope,repo_name,base_branch,branch,state,next_stage,recovery_stage,COALESCE(parent_task_id,''),origin_spec_version,origin_sub_id,COALESCE(feature_id,''),created_at,COALESCE(assignee_user_id,'')`
+const taskColumns = `id,workspace_id,source,COALESCE(intake_key,''),title,body,class,escalation_level,mode,hold,spec_approval,merge_approval,policy_version,setup_name,setup_contract,reviewed_head_sha,approved_head_sha,approval_stale,refresh_baseline_sha,refresh_head_sha,refresh_review_scope,repo_name,base_branch,branch,state,next_stage,recovery_stage,COALESCE(parent_task_id,''),origin_spec_version,origin_sub_id,COALESCE(feature_id,''),created_at,COALESCE(assignee_user_id,''),COALESCE(supersedes,''),COALESCE(superseded_by,''),intake_operator_direction`
 
 func scanTask(row interface{ Scan(...any) error }) (core.Task, error) {
 	var t core.Task
 	var setup []byte
 	var assignee string
-	err := row.Scan(&t.ID, &t.Workspace, &t.Source, &t.IntakeKey, &t.Title, &t.Body, &t.Class, &t.Level, &t.Mode, &t.Hold, &t.SpecApproval, &t.MergeApproval, &t.PolicyVersion, &t.SetupName, &setup, &t.ReviewedHeadSHA, &t.ApprovedHeadSHA, &t.ApprovalStale, &t.RefreshBaselineSHA, &t.RefreshHeadSHA, &t.RefreshReviewScope, &t.Repo, &t.BaseBranch, &t.Branch, &t.State, &t.NextStage, &t.RecoveryStage, &t.ParentTaskID, &t.OriginSpecVersion, &t.OriginSubID, &t.FeatureID, &t.CreatedAt, &assignee)
+	err := row.Scan(&t.ID, &t.Workspace, &t.Source, &t.IntakeKey, &t.Title, &t.Body, &t.Class, &t.Level, &t.Mode, &t.Hold, &t.SpecApproval, &t.MergeApproval, &t.PolicyVersion, &t.SetupName, &setup, &t.ReviewedHeadSHA, &t.ApprovedHeadSHA, &t.ApprovalStale, &t.RefreshBaselineSHA, &t.RefreshHeadSHA, &t.RefreshReviewScope, &t.Repo, &t.BaseBranch, &t.Branch, &t.State, &t.NextStage, &t.RecoveryStage, &t.ParentTaskID, &t.OriginSpecVersion, &t.OriginSubID, &t.FeatureID, &t.CreatedAt, &assignee, &t.Supersedes, &t.SupersededBy, &t.IntakeOperatorDirection)
 	if err != nil {
 		return core.Task{}, err
 	}
@@ -93,88 +93,94 @@ func (s *Store) CreateTaskWithDependenciesAndContext(ctx context.Context, t core
 	if t.NextStage == "" && (t.State == core.TaskQueued || t.State == core.TaskClaiming) {
 		t.NextStage = core.InitialStage(t.Level)
 	}
-	return s.taskTx(ctx, t.ID, func(tx *sql.Tx) error {
-		if err := workerWorkspaceExists(ctx, tx, ws); err != nil {
+	return s.taskTx(ctx, t.ID, func(tx *sql.Tx) error { return s.createTaskTx(ctx, tx, t, ids, attached, nil) })
+}
+func (s *Store) createTaskTx(ctx context.Context, tx *sql.Tx, t core.Task, ids []string, attached store.TaskContextInput, pinned map[string]int) error {
+	ws := documentWorkspace(ctx)
+	if err := workerWorkspaceExists(ctx, tx, ws); err != nil {
+		return err
+	}
+	if t.ParentTaskID != "" {
+		if err := documentParent(ctx, tx, "tasks", t.ParentTaskID); err != nil {
 			return err
 		}
-		if t.ParentTaskID != "" {
-			if err := documentParent(ctx, tx, "tasks", t.ParentTaskID); err != nil {
-				return err
-			}
+	}
+	if t.FeatureID != "" {
+		var found int
+		if err := tx.QueryRowContext(ctx, `SELECT 1 FROM features WHERE workspace_id=? AND id=?`, ws, t.FeatureID).Scan(&found); err != nil {
+			return notFound(err, "feature %s", t.FeatureID)
 		}
-		if t.FeatureID != "" {
-			var found int
-			if err := tx.QueryRowContext(ctx, `SELECT 1 FROM features WHERE workspace_id=? AND id=?`, ws, t.FeatureID).Scan(&found); err != nil {
-				return notFound(err, "feature %s", t.FeatureID)
-			}
+	}
+	if len(ids) > 0 {
+		if err := lockDependencyEdgesTx(ctx, tx, ws); err != nil {
+			return err
 		}
-		if len(ids) > 0 {
-			if err := lockDependencyEdgesTx(ctx, tx, ws); err != nil {
-				return err
-			}
+	}
+	seen := map[string]bool{}
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" || seen[id] {
+			return fmt.Errorf("depends_on contains an empty or duplicate task id")
 		}
-		seen := map[string]bool{}
-		for _, id := range ids {
-			id = strings.TrimSpace(id)
-			if id == "" || seen[id] {
-				return fmt.Errorf("depends_on contains an empty or duplicate task id")
-			}
-			seen[id] = true
-			d, err := getTaskRow(ctx, tx, id)
-			if err != nil {
-				return err
-			}
-			if core.TaskTerminal(d.State) {
-				return fmt.Errorf("dependency task %s is not open", id)
-			}
-		}
-		versions, err := validateTaskContextTx(ctx, tx, ws, attached)
+		seen[id] = true
+		d, err := getTaskRow(ctx, tx, id)
 		if err != nil {
 			return err
 		}
-		if err = insertTaskRow(ctx, tx, t); err != nil {
-			return err
+		if core.TaskTerminal(d.State) {
+			return fmt.Errorf("dependency task %s is not open", id)
 		}
-		if err := store.ValidateRepositoryInstallTask(t); err != nil {
-			return err
-		}
-		if t.RepositoryInstallAttempt > 0 {
-			var exists int
-			if err := tx.QueryRowContext(ctx, `SELECT 1 FROM repos WHERE workspace_id=? AND name=?`, ws, t.Repo).Scan(&exists); err != nil {
-				return err
-			}
-			if _, err := tx.ExecContext(ctx, `INSERT INTO repository_install_tasks(workspace_id,repository_name,attempt,task_id) VALUES(?,?,?,?)`, ws, t.Repo, t.RepositoryInstallAttempt, t.ID); err != nil {
-				return err
-			}
-		}
-		if err = taskEvent(ctx, tx, core.Event{TaskID: t.ID, Kind: "task.created", Payload: core.JSONPayload(t), At: t.CreatedAt}); err != nil {
-			return err
-		}
-		for _, id := range ids {
-			id = strings.TrimSpace(id)
-			if _, err = tx.ExecContext(ctx, `INSERT INTO task_dependencies(workspace_id,task_id,depends_on_task_id) VALUES (?,?,?)`, ws, t.ID, id); err != nil {
-				return err
-			}
-			if err = taskEvent(ctx, tx, core.Event{TaskID: t.ID, Kind: "task.dependency_added", At: t.CreatedAt, Payload: core.JSONPayload(map[string]string{"task_id": t.ID, "depends_on_task_id": id})}); err != nil {
-				return err
-			}
-		}
-		for _, id := range attached.RequirementIDs {
-			if err = taskEvent(ctx, tx, core.Event{TaskID: t.ID, Kind: store.TaskContextRequirementAdded, At: t.CreatedAt, Payload: core.JSONPayload(map[string]any{"id": id})}); err != nil {
-				return err
-			}
-		}
-		for _, id := range attached.DesignIDs {
-			if err = taskEvent(ctx, tx, core.Event{TaskID: t.ID, Kind: store.TaskContextDesignAdded, At: t.CreatedAt, Payload: core.JSONPayload(map[string]any{"id": id, "version": versions[id]})}); err != nil {
-				return err
-			}
-		}
-		if t.State == core.TaskQueued {
-			_, err = s.enqueueTaskTx(ctx, tx, t.ID, ws)
-		}
+	}
+	versions, err := validateTaskContextTx(ctx, tx, ws, attached)
+	if err != nil {
 		return err
-	})
+	}
+	if pinned != nil {
+		versions = pinned
+	}
+	if err = insertTaskRow(ctx, tx, t); err != nil {
+		return err
+	}
+	if err := store.ValidateRepositoryInstallTask(t); err != nil {
+		return err
+	}
+	if t.RepositoryInstallAttempt > 0 {
+		var exists int
+		if err := tx.QueryRowContext(ctx, `SELECT 1 FROM repos WHERE workspace_id=? AND name=?`, ws, t.Repo).Scan(&exists); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO repository_install_tasks(workspace_id,repository_name,attempt,task_id) VALUES(?,?,?,?)`, ws, t.Repo, t.RepositoryInstallAttempt, t.ID); err != nil {
+			return err
+		}
+	}
+	if err = taskEvent(ctx, tx, core.Event{TaskID: t.ID, Kind: "task.created", Payload: core.JSONPayload(t), At: t.CreatedAt}); err != nil {
+		return err
+	}
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if _, err = tx.ExecContext(ctx, `INSERT INTO task_dependencies(workspace_id,task_id,depends_on_task_id) VALUES (?,?,?)`, ws, t.ID, id); err != nil {
+			return err
+		}
+		if err = taskEvent(ctx, tx, core.Event{TaskID: t.ID, Kind: "task.dependency_added", At: t.CreatedAt, Payload: core.JSONPayload(map[string]string{"task_id": t.ID, "depends_on_task_id": id})}); err != nil {
+			return err
+		}
+	}
+	for _, id := range attached.RequirementIDs {
+		if err = taskEvent(ctx, tx, core.Event{TaskID: t.ID, Kind: store.TaskContextRequirementAdded, At: t.CreatedAt, Payload: core.JSONPayload(map[string]any{"id": id})}); err != nil {
+			return err
+		}
+	}
+	for _, id := range attached.DesignIDs {
+		if err = taskEvent(ctx, tx, core.Event{TaskID: t.ID, Kind: store.TaskContextDesignAdded, At: t.CreatedAt, Payload: core.JSONPayload(map[string]any{"id": id, "version": versions[id]})}); err != nil {
+			return err
+		}
+	}
+	if t.State == core.TaskQueued {
+		_, err = s.enqueueTaskTx(ctx, tx, t.ID, ws)
+	}
+	return err
 }
+
 func insertTaskRow(ctx context.Context, tx *sql.Tx, t core.Task) error {
 	for _, key := range []string{"task-id:" + t.ID, "task-branch:" + t.Branch, "task-intake:" + t.Workspace + ":" + t.IntakeKey} {
 		if err := lockKey(ctx, tx, key); err != nil {
@@ -193,6 +199,7 @@ func insertTaskRow(ctx context.Context, tx *sql.Tx, t core.Task) error {
 		return err
 	}
 	_, err = writeRow(ctx, tx, rowWrite{table: "tasks", operation: "INSERT", values: map[string]any{
+		"supersedes": nullString(t.Supersedes), "superseded_by": nullString(t.SupersededBy), "intake_operator_direction": t.IntakeOperatorDirection,
 		"id":                   t.ID,
 		"workspace_id":         t.Workspace,
 		"source":               t.Source,
@@ -716,6 +723,9 @@ func (s *Store) ApproveSpecVersionAndMaterialize(ctx context.Context, taskID str
 }
 
 func (s *Store) ApplyTaskCommand(ctx context.Context, lease taskops.TaskLease, id string, command taskops.Command) (core.Task, error) {
+	if command.Kind == core.TaskStartOver {
+		return core.Task{}, fmt.Errorf("task start over requires StartOverTaskCommand")
+	}
 	if !lease.ValidFor(id) {
 		return core.Task{}, fmt.Errorf("task lifecycle mutation requires a valid taskops lease")
 	}
@@ -904,98 +914,100 @@ func (s *Store) CancelTaskCommand(ctx context.Context, lease taskops.TaskLease, 
 		return core.Task{}, fmt.Errorf("cancel intervention requires a reason")
 	}
 	i = normalizeIntervention(ctx, i)
-	err := s.taskTx(ctx, i.TaskID, func(tx *sql.Tx) error {
-		before, err := getTaskRow(ctx, tx, i.TaskID)
-		if err != nil {
-			return err
-		}
-		if core.TaskTerminal(before.State) {
-			return store.ErrTaskTerminal
-		}
-		state, err := core.TransitionTask(before.State, core.TaskCancel)
-		if err != nil {
-			return err
-		}
-		if err = insertInterventionTx(ctx, tx, i); err != nil {
-			return err
-		}
-		event := func(kind string, payload any, job string) error {
-			return taskEvent(ctx, tx, core.Event{TaskID: i.TaskID, JobID: job, Kind: kind, ActorID: i.ActorID, ActorRole: i.ActorRole, Payload: core.JSONPayload(payload), At: i.At})
-		}
-		if err = event("intervention.cancel", map[string]any{"reason_code": i.ReasonCode, "comment": i.Comment}, i.JobID); err != nil {
-			return err
-		}
-		rows, err := tx.QueryContext(ctx, `SELECT id,job_id,state,attempt_id,session_id FROM work_orders WHERE workspace_id=? AND task_id=? AND state NOT IN ('completed','cancelled') FOR UPDATE`, documentWorkspace(ctx), i.TaskID)
-		if err != nil {
-			return err
-		}
-		type cancelledOrder struct {
-			id, job, attempt, session string
-			state                     core.WorkOrderState
-		}
-		var orders []cancelledOrder
-		for rows.Next() {
-			var o cancelledOrder
-			if err = rows.Scan(&o.id, &o.job, &o.state, &o.attempt, &o.session); err != nil {
-				rows.Close()
-				return err
-			}
-			if _, err = core.TransitionWorkOrder(o.state, core.WorkOrderCmdCancel); err != nil {
-				rows.Close()
-				return err
-			}
-			orders = append(orders, o)
-		}
-		err = rows.Err()
-		rows.Close()
-		if err != nil {
-			return err
-		}
-		var cancelled []string
-		for _, o := range orders {
-			v := map[string]any{"state": core.WorkOrderCancelled, "attempt_id": "", "updated_at": i.At}
-			if o.state == core.WorkOrderClaimed {
-				v["last_attempt_outcome"] = "cancelled"
-			}
-			if o.attempt != "" {
-				v["last_attempt_id"] = o.attempt
-				for _, key := range []string{"claimant_id", "session_id", "client_token_hash", "agent", "model", "worker_id", "model_enforcement"} {
-					v[key] = ""
-				}
-				for _, key := range []string{"lease_expires_at", "execution_started_at", "execution_deadline"} {
-					v[key] = nil
-				}
-			}
-			if _, err = writeRow(ctx, tx, rowWrite{table: "work_orders", operation: "UPDATE", values: v, where: map[string]any{"workspace_id": documentWorkspace(ctx), "id": o.id}}); err != nil {
-				return err
-			}
-			if _, err = tx.ExecContext(ctx, `UPDATE jobs SET state='failed',ended_at=?,updated_at=? WHERE workspace_id=? AND task_id=? AND id=? AND state<>'done'`, i.At, i.At, documentWorkspace(ctx), i.TaskID, o.job); err != nil {
-				return err
-			}
-			cancelled = append(cancelled, o.id)
-			if err = event("work_order.cancelled", map[string]any{"id": o.id, "attempt_id": o.attempt, "session_id": o.session, "state": core.WorkOrderCancelled, "from": o.state, "command": core.WorkOrderCmdCancel}, o.job); err != nil {
-				return err
-			}
-		}
-		if err = taskWrite(ctx, tx, i.TaskID, map[string]any{"state": state, "next_stage": "", "recovery_stage": ""}); err != nil {
-			return err
-		}
-		if err = deleteProposedTaskContextTx(ctx, tx, i.TaskID); err != nil {
-			return err
-		}
-		if err = event("task.state_changed", map[string]any{"from": before.State, "to": state, "command": core.TaskCancel}, ""); err != nil {
-			return err
-		}
-		if err = event("task.cancelled", map[string]any{"actor": i.ActorID, "reason": i.ReasonCode, "comment": i.Comment, "from": before.State, "cancelled_work_orders": cancelled}, ""); err != nil {
-			return err
-		}
-		return s.recordDependencyOutcomeTx(ctx, tx, i.TaskID, state, i.At)
-	})
+	err := s.taskTx(ctx, i.TaskID, func(tx *sql.Tx) error { return s.cancelTaskTx(ctx, tx, i) })
 	if err != nil {
 		return core.Task{}, err
 	}
 	return s.GetTask(ctx, i.TaskID)
 }
+func (s *Store) cancelTaskTx(ctx context.Context, tx *sql.Tx, i core.Intervention) error {
+	before, err := getTaskRow(ctx, tx, i.TaskID)
+	if err != nil {
+		return err
+	}
+	if core.TaskTerminal(before.State) {
+		return store.ErrTaskTerminal
+	}
+	state, err := core.TransitionTask(before.State, core.TaskCancel)
+	if err != nil {
+		return err
+	}
+	if err = insertInterventionTx(ctx, tx, i); err != nil {
+		return err
+	}
+	event := func(kind string, payload any, job string) error {
+		return taskEvent(ctx, tx, core.Event{TaskID: i.TaskID, JobID: job, Kind: kind, ActorID: i.ActorID, ActorRole: i.ActorRole, Payload: core.JSONPayload(payload), At: i.At})
+	}
+	if err = event("intervention.cancel", map[string]any{"reason_code": i.ReasonCode, "comment": i.Comment}, i.JobID); err != nil {
+		return err
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT id,job_id,state,attempt_id,session_id FROM work_orders WHERE workspace_id=? AND task_id=? AND state NOT IN ('completed','cancelled') FOR UPDATE`, documentWorkspace(ctx), i.TaskID)
+	if err != nil {
+		return err
+	}
+	type cancelledOrder struct {
+		id, job, attempt, session string
+		state                     core.WorkOrderState
+	}
+	var orders []cancelledOrder
+	for rows.Next() {
+		var o cancelledOrder
+		if err = rows.Scan(&o.id, &o.job, &o.state, &o.attempt, &o.session); err != nil {
+			rows.Close()
+			return err
+		}
+		if _, err = core.TransitionWorkOrder(o.state, core.WorkOrderCmdCancel); err != nil {
+			rows.Close()
+			return err
+		}
+		orders = append(orders, o)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	var cancelled []string
+	for _, o := range orders {
+		v := map[string]any{"state": core.WorkOrderCancelled, "attempt_id": "", "updated_at": i.At}
+		if o.state == core.WorkOrderClaimed {
+			v["last_attempt_outcome"] = "cancelled"
+		}
+		if o.attempt != "" {
+			v["last_attempt_id"] = o.attempt
+			for _, key := range []string{"claimant_id", "session_id", "client_token_hash", "agent", "model", "worker_id", "model_enforcement"} {
+				v[key] = ""
+			}
+			for _, key := range []string{"lease_expires_at", "execution_started_at", "execution_deadline"} {
+				v[key] = nil
+			}
+		}
+		if _, err = writeRow(ctx, tx, rowWrite{table: "work_orders", operation: "UPDATE", values: v, where: map[string]any{"workspace_id": documentWorkspace(ctx), "id": o.id}}); err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, `UPDATE jobs SET state='failed',ended_at=?,updated_at=? WHERE workspace_id=? AND task_id=? AND id=? AND state<>'done'`, i.At, i.At, documentWorkspace(ctx), i.TaskID, o.job); err != nil {
+			return err
+		}
+		cancelled = append(cancelled, o.id)
+		if err = event("work_order.cancelled", map[string]any{"id": o.id, "attempt_id": o.attempt, "session_id": o.session, "state": core.WorkOrderCancelled, "from": o.state, "command": core.WorkOrderCmdCancel}, o.job); err != nil {
+			return err
+		}
+	}
+	if err = taskWrite(ctx, tx, i.TaskID, map[string]any{"state": state, "next_stage": "", "recovery_stage": ""}); err != nil {
+		return err
+	}
+	if err = deleteProposedTaskContextTx(ctx, tx, i.TaskID); err != nil {
+		return err
+	}
+	if err = event("task.state_changed", map[string]any{"from": before.State, "to": state, "command": core.TaskCancel}, ""); err != nil {
+		return err
+	}
+	if err = event("task.cancelled", map[string]any{"actor": i.ActorID, "reason": i.ReasonCode, "comment": i.Comment, "from": before.State, "cancelled_work_orders": cancelled}, ""); err != nil {
+		return err
+	}
+	return s.recordDependencyOutcomeTx(ctx, tx, i.TaskID, state, i.At)
+}
+
 func (s *Store) EnsureTaskEnqueued(ctx context.Context, id string) error {
 	return s.taskTx(ctx, id, func(tx *sql.Tx) error {
 		t, err := getTaskRow(ctx, tx, id)

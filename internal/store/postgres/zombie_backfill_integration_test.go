@@ -280,10 +280,12 @@ func TestWorkOrderZombieBackfillMigrationRetiresPassedStageAndIsRerunSafeIntegra
 	if err := st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.CreateJob(ctx, job); err != nil {
+	// Use the historical insert binding without reading the current task projection.
+	if _, err := st.queries.InsertJob(ctx, jobInsertParams(job)); err != nil {
 		t.Fatal(err)
 	}
-	if err := storetest.For(st).CreateWorkOrder(ctx, order); err != nil {
+	// Seed the v98 row directly: current order creation reads v126 intake direction.
+	if _, err := st.pool.Exec(ctx, `INSERT INTO work_orders(id,workspace_id,task_id,job_id,stage,state,queue_entered_at,queue_deadline,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$7,$7)`, order.ID, workspace, task.ID, job.ID, order.Stage, order.State, now, order.QueueDeadline); err != nil {
 		t.Fatal(err)
 	}
 	if err := migrateControlPlaneToVersion(t.Context(), st.pool, 101); err != nil {

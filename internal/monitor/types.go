@@ -214,6 +214,7 @@ type Store interface {
 	RecordDrift(context.Context, Drift) (Drift, bool, error)
 	ResolveDrift(context.Context, string, string, string) (Drift, error)
 	MonitorStatus(context.Context, bool, time.Time) (Status, error)
+	ListUnresolvedDrift(context.Context) ([]Drift, error)
 	RecordMonitorSuccess(context.Context, time.Time) error
 	RecordMonitorFailure(context.Context, string, string, time.Time) error
 	AuditTask(context.Context, string, string, map[string]any) error
@@ -269,6 +270,16 @@ func (s *Service) Status(ctx context.Context) (Status, error) {
 		enabled = resolved
 	}
 	return s.Store.MonitorStatus(ctx, enabled, now)
+}
+
+// ListUnresolvedDrift reads the document attention signal without loading monitor history.
+func (s *Service) ListUnresolvedDrift(ctx context.Context) ([]Drift, error) {
+	if s.ResolveScope != nil {
+		if _, _, _, err := s.ResolveScope(ctx); err != nil {
+			return nil, err
+		}
+	}
+	return s.Store.ListUnresolvedDrift(ctx)
 }
 
 func (s *Service) Resolve(ctx context.Context, id, outcome, requirementID string) (Drift, error) {

@@ -100,11 +100,11 @@ INSERT INTO tasks (
 RETURNING *;
 
 -- name: GetTask :one
-SELECT id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, feature_id, intake_key, mode, spec_approval, merge_approval, policy_version, setup_name, setup_contract, hold, reviewed_head_sha, approved_head_sha, approval_stale, refresh_baseline_sha, refresh_head_sha, refresh_review_scope, origin_spec_version, origin_sub_id
+SELECT id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, feature_id, intake_key, mode, spec_approval, merge_approval, policy_version, setup_name, setup_contract, hold, reviewed_head_sha, approved_head_sha, approval_stale, refresh_baseline_sha, refresh_head_sha, refresh_review_scope, origin_spec_version, origin_sub_id, supersedes, superseded_by, intake_operator_direction
 FROM tasks WHERE id = $1 AND workspace_id = $2;
 
 -- name: GetTaskByIntakeKey :one
-SELECT id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, feature_id, intake_key, mode, spec_approval, merge_approval, policy_version, setup_name, setup_contract, hold, reviewed_head_sha, approved_head_sha, approval_stale, refresh_baseline_sha, refresh_head_sha, refresh_review_scope, origin_spec_version, origin_sub_id
+SELECT id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, feature_id, intake_key, mode, spec_approval, merge_approval, policy_version, setup_name, setup_contract, hold, reviewed_head_sha, approved_head_sha, approval_stale, refresh_baseline_sha, refresh_head_sha, refresh_review_scope, origin_spec_version, origin_sub_id, supersedes, superseded_by, intake_operator_direction
 FROM tasks WHERE workspace_id = $1 AND intake_key = $2;
 
 -- name: ListTasks :many

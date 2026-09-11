@@ -100,6 +100,7 @@ type Store interface {
 
 // TaskStore owns the task, dependency, job and intervention contract.
 type TaskStore interface {
+	StartOverTaskCommand(context.Context, taskops.TaskLease, core.TaskStartOverRequest) (core.TaskStartOverResult, error)
 	CreateTask(ctx context.Context, t core.Task) error
 	CreateTaskWithDependencies(ctx context.Context, t core.Task, dependencyIDs []string) error
 	CreateTaskWithDependenciesAndContext(ctx context.Context, t core.Task, dependencyIDs []string, attached TaskContextInput) error
@@ -2720,6 +2721,7 @@ func (m *memory) CreateWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 	if !order.QueueBlockedAt.IsZero() {
 		order.Claimable = false
 	}
+	order.OperatorDirection = m.firstOrderDirectionLocked(order.TaskID, order.OperatorDirection)
 	m.workOrders[order.ID] = order
 	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.created", Payload: core.JSONPayload(order)})
 	m.retireWorkOrderSiblingsLocked(ctx, order, "superseded by successor creation", now, true)
@@ -2867,6 +2869,7 @@ func (m *memory) CreateStageWorkOrderCommand(ctx context.Context, lease taskops.
 	if order.Stage == core.StageImplement && m.taskBlockedLocked(order.TaskID) {
 		order.QueueBlockedAt, order.Claimable = order.QueueEnteredAt, false
 	}
+	order.OperatorDirection = m.firstOrderDirectionLocked(order.TaskID, order.OperatorDirection)
 	m.workOrders[order.ID] = order
 	m.appendEventLocked(ctx, core.Event{TaskID: job.TaskID, JobID: job.ID, Kind: "work_order.created", Payload: core.JSONPayload(order)})
 	return true, nil
@@ -4866,6 +4869,10 @@ func (m *memory) CreateTaskWithDependencies(ctx context.Context, t core.Task, de
 func (m *memory) CreateTaskWithDependenciesAndContext(ctx context.Context, t core.Task, dependencyIDs []string, attached TaskContextInput) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.createTaskWithContextLocked(ctx, t, dependencyIDs, attached, nil)
+}
+
+func (m *memory) createTaskWithContextLocked(ctx context.Context, t core.Task, dependencyIDs []string, attached TaskContextInput, pinned map[string]int) error {
 	attached, err := NormalizeTaskContextInput(attached)
 	if err != nil {
 		return err
@@ -4899,6 +4906,9 @@ func (m *memory) CreateTaskWithDependenciesAndContext(ctx context.Context, t cor
 	designVersions, err := m.validateTaskContextLocked(t.Workspace, attached)
 	if err != nil {
 		return err
+	}
+	if pinned != nil {
+		designVersions = pinned
 	}
 	if t.CreatedAt.IsZero() {
 		t.CreatedAt = time.Now().UTC()
@@ -5706,6 +5716,9 @@ func (m *memory) SkipTaskRefresh(ctx context.Context, id, newHeadSHA, reason str
 }
 
 func (m *memory) ApplyTaskCommand(ctx context.Context, lease taskops.TaskLease, id string, command taskops.Command) (core.Task, error) {
+	if command.Kind == core.TaskStartOver {
+		return core.Task{}, fmt.Errorf("task start over requires StartOverTaskCommand")
+	}
 	if !lease.ValidFor(id) {
 		return core.Task{}, fmt.Errorf("task lifecycle mutation requires a valid taskops lease")
 	}
@@ -6197,6 +6210,10 @@ func (m *memory) CancelTaskCommand(ctx context.Context, lease taskops.TaskLease,
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.cancelTaskLocked(ctx, intervention)
+}
+
+func (m *memory) cancelTaskLocked(ctx context.Context, intervention core.Intervention) (core.Task, error) {
 	task, ok := m.tasks[intervention.TaskID]
 	if !ok {
 		return core.Task{}, fmt.Errorf("task %s not found", intervention.TaskID)
@@ -6632,4 +6649,16 @@ func sortJobs(jobs []core.Job) {
 		}
 		return jobs[i].StartedAt.Before(jobs[j].StartedAt)
 	})
+}
+
+func (m *memory) firstOrderDirectionLocked(taskID, current string) string {
+	for _, order := range m.workOrders {
+		if order.TaskID == taskID {
+			return current
+		}
+	}
+	if direction := m.tasks[taskID].IntakeOperatorDirection; direction != "" {
+		return direction
+	}
+	return current
 }

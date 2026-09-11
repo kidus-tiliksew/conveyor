@@ -301,6 +301,7 @@ func (s *Server) Handler() http.Handler {
 			r.With(s.requireMutationCapability(core.CapabilityRecoverWork)).Post("/tasks/{id}/review-round/recover", s.recoverInterruptedReviewRound)
 			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Post("/tasks/{id}/review", s.reviewTask)
 			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Post("/tasks/{id}/close", s.closeTask)
+			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Post("/tasks/{id}/restart", s.restartTask)
 			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Post("/tasks/{id}/merge", s.mergeTask)
 			r.With(s.requireMutationCapability(core.CapabilityRecoverWork)).Post("/tasks/{id}/merge-conflict-fix", s.fixMergeConflict)
 			r.Get("/artifacts", s.listArtifacts)
@@ -1317,6 +1318,8 @@ type activityItem struct {
 // execution policy, forge state, and other detail-only fields stay on the
 // per-task activity endpoint (design-web-dashboard).
 type activityTask struct {
+	Supersedes      string              `json:"supersedes,omitempty"`
+	SupersededBy    string              `json:"superseded_by,omitempty"`
 	ID              string              `json:"id"`
 	Title           string              `json:"title"`
 	Repo            string              `json:"repo"`
@@ -1334,6 +1337,7 @@ type activityTask struct {
 
 func summarizeActivityTask(task core.Task) activityTask {
 	return activityTask{
+		Supersedes: task.Supersedes, SupersededBy: task.SupersededBy,
 		ID: task.ID, Title: task.Title, Repo: task.Repo, State: task.State,
 		NextStage: task.NextStage, Hold: task.Hold, Assignee: task.Assignee,
 		ReviewedHeadSHA: task.ReviewedHeadSHA, Dependencies: task.Dependencies,
