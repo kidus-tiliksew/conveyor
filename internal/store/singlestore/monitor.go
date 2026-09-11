@@ -366,24 +366,40 @@ func (s *Store) MonitorStatus(ctx context.Context, enabled bool, now time.Time) 
 	if err != nil {
 		return r, translateBackendConflict(err)
 	}
-	rows, err = s.db.QueryContext(ctx, "SELECT "+driftColumns+" FROM repository_drift WHERE workspace_id=? AND resolved_at IS NULL ORDER BY detected_at,id", ws)
+	r.Drift, err = s.ListUnresolvedDrift(ctx)
 	if err != nil {
-		return r, translateBackendConflict(err)
+		return r, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		d, e := scanDrift(rows, ws)
-		if e != nil {
-			return r, translateBackendConflict(e)
-		}
-		r.Drift = append(r.Drift, d)
-		r.DriftCount++
+	r.DriftCount = len(r.Drift)
+	for _, d := range r.Drift {
 		if age := now.Sub(d.DetectedAt); age > r.OldestDriftAge {
 			r.OldestDriftAge = age
 		}
 	}
-	return r, translateBackendConflict(rows.Err())
+	return r, nil
 }
+
+func (s *Store) ListUnresolvedDrift(ctx context.Context) ([]monitor.Drift, error) {
+	ws, err := workspace(ctx)
+	if err != nil {
+		return nil, translateBackendConflict(err)
+	}
+	rows, err := s.db.QueryContext(ctx, "SELECT "+driftColumns+" FROM repository_drift WHERE workspace_id=? AND resolved_at IS NULL ORDER BY detected_at,id", ws)
+	if err != nil {
+		return nil, translateBackendConflict(err)
+	}
+	defer rows.Close()
+	var result []monitor.Drift
+	for rows.Next() {
+		d, err := scanDrift(rows, ws)
+		if err != nil {
+			return nil, translateBackendConflict(err)
+		}
+		result = append(result, d)
+	}
+	return result, translateBackendConflict(rows.Err())
+}
+
 func (s *Store) ResolveDrift(ctx context.Context, id, outcome, requirementID string) (monitor.Drift, error) {
 	requirementID = strings.TrimSpace(requirementID)
 	if outcome != "requirements_amended" && outcome != "design_document_updated" && outcome != "conflict_resolved" && outcome != "change_reverted" {

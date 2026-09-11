@@ -203,25 +203,28 @@ WHERE workspace_id=$1 AND identity=$2`, workspace(ctx), identity, observation.Ob
 	return record, fresh, err
 }
 
+const observationColumns = `repository,kind,occurrence_id,source_url,commit_sha,pull_request_number,check_run_id,
+	 COALESCE(requirement_id,''),changed_paths,COALESCE(causal_event_id,0),observed_at,context_json,COALESCE(hint_context_json,'null'::jsonb),task_id,task_outcome,state,
+ deduplicated_count,forge_error_category,last_error,created_at,updated_at`
+
 func (s *Store) getObservation(ctx context.Context, identity string) (monitor.ObservationRecord, error) {
+	return scanObservation(s.pool.QueryRow(ctx, "SELECT "+observationColumns+" FROM monitor_observations WHERE workspace_id=$1 AND identity=$2", workspace(ctx), identity), workspace(ctx))
+}
+
+func scanObservation(row interface{ Scan(...any) error }, ws string) (monitor.ObservationRecord, error) {
 	var record monitor.ObservationRecord
 	var kind string
 	var contextJSON []byte
 	var hintsJSON []byte
 	var taskID *string
-	err := s.pool.QueryRow(ctx, `
-SELECT repository,kind,occurrence_id,source_url,commit_sha,pull_request_number,check_run_id,
-	 COALESCE(requirement_id,''),changed_paths,COALESCE(causal_event_id,0),observed_at,context_json,COALESCE(hint_context_json,'null'::jsonb),task_id,task_outcome,state,
- deduplicated_count,forge_error_category,last_error,created_at,updated_at
-FROM monitor_observations WHERE workspace_id=$1 AND identity=$2`, workspace(ctx), identity).
-		Scan(&record.Repository, &kind, &record.OccurrenceID, &record.SourceURL, &record.CommitSHA,
-			&record.PullRequestNumber, &record.CheckRunID, &record.RequirementID, &record.ChangedPaths, &record.CausalEventID, &record.ObservedAt,
-			&contextJSON, &hintsJSON, &taskID, &record.TaskOutcome, &record.State, &record.DeduplicatedCount,
-			&record.ForgeErrorCategory, &record.LastError, &record.CreatedAt, &record.UpdatedAt)
+	err := row.Scan(&record.Repository, &kind, &record.OccurrenceID, &record.SourceURL, &record.CommitSHA,
+		&record.PullRequestNumber, &record.CheckRunID, &record.RequirementID, &record.ChangedPaths, &record.CausalEventID, &record.ObservedAt,
+		&contextJSON, &hintsJSON, &taskID, &record.TaskOutcome, &record.State, &record.DeduplicatedCount,
+		&record.ForgeErrorCategory, &record.LastError, &record.CreatedAt, &record.UpdatedAt)
 	if err != nil {
 		return monitor.ObservationRecord{}, err
 	}
-	record.WorkspaceID, record.Kind = workspace(ctx), monitor.SignalKind(kind)
+	record.WorkspaceID, record.Kind = ws, monitor.SignalKind(kind)
 	if taskID != nil {
 		record.TaskID = *taskID
 	}
@@ -329,19 +332,22 @@ ON CONFLICT (workspace_id,id) DO NOTHING`,
 	return current, fresh, err
 }
 
+const driftColumns = `id,repository,kind,source_url,commit_sha,COALESCE(requirement_id,''),COALESCE(system_design_id,''),COALESCE(system_design_version,0),COALESCE(causal_event_id,0),matching_paths,task_id,detected_at,resolved_at,outcome`
+
 func (s *Store) getDrift(ctx context.Context, id string) (monitor.Drift, error) {
+	return scanDrift(s.pool.QueryRow(ctx, "SELECT "+driftColumns+" FROM repository_drift WHERE workspace_id=$1 AND id=$2", workspace(ctx), id), workspace(ctx))
+}
+
+func scanDrift(row interface{ Scan(...any) error }, ws string) (monitor.Drift, error) {
 	var drift monitor.Drift
 	var kind string
 	var resolvedAt *time.Time
-	err := s.pool.QueryRow(ctx, `
-SELECT id,repository,kind,source_url,commit_sha,COALESCE(requirement_id,''),COALESCE(system_design_id,''),COALESCE(system_design_version,0),COALESCE(causal_event_id,0),matching_paths,task_id,detected_at,resolved_at,outcome
-FROM repository_drift WHERE workspace_id=$1 AND id=$2`, workspace(ctx), id).
-		Scan(&drift.ID, &drift.Repository, &kind, &drift.SourceURL, &drift.CommitSHA,
-			&drift.RequirementID, &drift.SystemDesignID, &drift.SystemDesignVersion, &drift.CausalEventID, &drift.MatchingPaths, &drift.TaskID, &drift.DetectedAt, &resolvedAt, &drift.Outcome)
+	err := row.Scan(&drift.ID, &drift.Repository, &kind, &drift.SourceURL, &drift.CommitSHA,
+		&drift.RequirementID, &drift.SystemDesignID, &drift.SystemDesignVersion, &drift.CausalEventID, &drift.MatchingPaths, &drift.TaskID, &drift.DetectedAt, &resolvedAt, &drift.Outcome)
 	if err != nil {
 		return monitor.Drift{}, err
 	}
-	drift.WorkspaceID, drift.Kind = workspace(ctx), monitor.SignalKind(kind)
+	drift.WorkspaceID, drift.Kind = ws, monitor.SignalKind(kind)
 	if resolvedAt != nil {
 		drift.ResolvedAt = *resolvedAt
 	}
@@ -538,47 +544,51 @@ WHERE workspace_id=$1 ORDER BY at,id`, workspace(ctx))
 		return monitor.Status{}, err
 	}
 	activityRows.Close()
-	rows, err := s.pool.Query(ctx, `
-SELECT identity FROM monitor_observations WHERE workspace_id=$1 ORDER BY created_at`, workspace(ctx))
+	rows, err := s.pool.Query(ctx, "SELECT "+observationColumns+" FROM monitor_observations WHERE workspace_id=$1 ORDER BY created_at,identity", workspace(ctx))
 	if err != nil {
 		return monitor.Status{}, err
 	}
 	for rows.Next() {
-		var identity string
-		if err = rows.Scan(&identity); err != nil {
+		record, scanErr := scanObservation(rows, workspace(ctx))
+		if scanErr != nil {
 			rows.Close()
-			return monitor.Status{}, err
-		}
-		record, getErr := s.getObservation(ctx, identity)
-		if getErr != nil {
-			rows.Close()
-			return monitor.Status{}, getErr
+			return monitor.Status{}, scanErr
 		}
 		status.Observations = append(status.Observations, record)
 	}
+	err = rows.Err()
 	rows.Close()
-	driftRows, err := s.pool.Query(ctx, `
-SELECT id FROM repository_drift WHERE workspace_id=$1 AND resolved_at IS NULL ORDER BY detected_at`, workspace(ctx))
 	if err != nil {
 		return monitor.Status{}, err
 	}
-	defer driftRows.Close()
-	for driftRows.Next() {
-		var id string
-		if err = driftRows.Scan(&id); err != nil {
-			return monitor.Status{}, err
-		}
-		drift, getErr := s.getDrift(ctx, id)
-		if getErr != nil {
-			return monitor.Status{}, getErr
-		}
-		status.Drift = append(status.Drift, drift)
-		status.DriftCount++
+	status.Drift, err = s.ListUnresolvedDrift(ctx)
+	if err != nil {
+		return monitor.Status{}, err
+	}
+	status.DriftCount = len(status.Drift)
+	for _, drift := range status.Drift {
 		if age := now.Sub(drift.DetectedAt); age > status.OldestDriftAge {
 			status.OldestDriftAge = age
 		}
 	}
-	return status, driftRows.Err()
+	return status, nil
+}
+
+func (s *Store) ListUnresolvedDrift(ctx context.Context) ([]monitor.Drift, error) {
+	rows, err := s.pool.Query(ctx, "SELECT "+driftColumns+" FROM repository_drift WHERE workspace_id=$1 AND resolved_at IS NULL ORDER BY detected_at,id", workspace(ctx))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []monitor.Drift
+	for rows.Next() {
+		drift, err := scanDrift(rows, workspace(ctx))
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, drift)
+	}
+	return result, rows.Err()
 }
 
 func (s *Store) ListActiveSystemDesignDriftCounts(ctx context.Context) (map[string]int, error) {

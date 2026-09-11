@@ -38,7 +38,7 @@ var suiteMethods = map[string][]string{
 	"ReviewAcceptance":           strings.Fields(`AcceptReviewDecisionCommand CreateReviewRoundCommand CreateTask GetTask ListEvents`),
 	"Decisions":                  strings.Fields(`ConfirmDecision ConfirmRequirementVersion CreateRequirement DismissDecision DismissDecisionSupersessionSweep GetDecision ListDecisions ProposeDecision ProposeRequirementVersion`),
 	"ArchiveRestore":             strings.Fields(`ArchiveRequirement ArchiveSystemDesign ConfirmRequirementVersion ConfirmSystemDesignVersion CreateRequirement CreateSystemDesign GetRequirement GetSystemDesign ListRequirementVersions ListSystemDesignVersions RestoreRequirement RestoreSystemDesign`),
-	"Monitor":                    strings.Fields(`AuditMonitor AuditTask CreateTask FindOpenMonitorTask LinkTask MonitorStatus Observe RecordDrift RecordMonitorFailure RecordMonitorSuccess ResolveDrift WithMonitorSignalClassLock`),
+	"Monitor":                    strings.Fields(`AuditMonitor AuditTask CreateTask FindOpenMonitorTask LinkTask ListUnresolvedDrift MonitorStatus Observe RecordDrift RecordMonitorFailure RecordMonitorSuccess ResolveDrift WithMonitorSignalClassLock`),
 	"TaskFilter":                 strings.Fields(`AppendEvent BootstrapIdentity CreateTask GrantWorkspaceRole ListTaskOperations ListTasksFiltered ProvisionIdentityUser SetTaskAssigneeCommand VerifyPersonalAccessToken`),
 	"TaskAssigneeMembership":     strings.Fields(`BootstrapIdentity CreateTask GetTask GrantWorkspaceRole ProvisionIdentityUser RevokeWorkspaceRole SetTaskAssigneeCommand VerifyPersonalAccessToken`),
 	"Identity":                   strings.Fields(`BootstrapIdentity GetCallerIdentity ProvisionIdentityUser VerifyCredential VerifyPersonalAccessToken`),
