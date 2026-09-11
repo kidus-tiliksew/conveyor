@@ -615,7 +615,8 @@ function RequirementDetailCanvas({ item }: { item: RequirementView }) {
     },
   })
   const dismiss = useMutation({
-    mutationFn: (version: number) => dismissRequirementVersion(item.requirement.id, version),
+    mutationFn: ({ version, note }: { version: number; note: string }) =>
+      dismissRequirementVersion(item.requirement.id, version, note),
     onSuccess: () => setDismissTarget(null),
     onSettled: async () => {
       await Promise.all([
@@ -885,7 +886,7 @@ function RequirementDetailCanvas({ item }: { item: RequirementView }) {
           pending={dismiss.isPending}
           error={dismiss.error ? errorMessage(dismiss.error, 'Could not dismiss this version.') : undefined}
           onCancel={() => setDismissTarget(null)}
-          onConfirm={() => dismiss.mutate(dismissTarget.version)}
+          onConfirm={(note) => dismiss.mutate({ version: dismissTarget.version, note })}
         />
       )}
       {archiveDialogOpen && (
@@ -1039,6 +1040,11 @@ function RequirementDetailCanvas({ item }: { item: RequirementView }) {
                       version.retired_by &&
                       version.retired_at &&
                       ` · Dismissed by ${version.retired_by} on ${formatDate(version.retired_at)}`}
+                    {version.retired && version.dismissal_note && (
+                      <span className="block whitespace-pre-wrap break-words">
+                        Operator's reason: {version.dismissal_note}
+                      </span>
+                    )}
                   </span>
                 </button>
               )

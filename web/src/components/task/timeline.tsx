@@ -1,5 +1,9 @@
+import claudeIcon from '@lobehub/icons-static-svg/icons/claude-color.svg?raw'
+import geminiIcon from '@lobehub/icons-static-svg/icons/gemini-color.svg?raw'
+import grokIcon from '@lobehub/icons-static-svg/icons/grok.svg?raw'
+import openaiIcon from '@lobehub/icons-static-svg/icons/openai.svg?raw'
+import zhipuIcon from '@lobehub/icons-static-svg/icons/zhipu-color.svg?raw'
 import { Link } from '@tanstack/react-router'
-import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import {
   AlertTriangle,
   Check,
@@ -11,20 +15,16 @@ import {
   Undo2,
   UserRound,
 } from 'lucide-react'
-import claudeIcon from '@lobehub/icons-static-svg/icons/claude-color.svg?raw'
-import geminiIcon from '@lobehub/icons-static-svg/icons/gemini-color.svg?raw'
-import grokIcon from '@lobehub/icons-static-svg/icons/grok.svg?raw'
-import openaiIcon from '@lobehub/icons-static-svg/icons/openai.svg?raw'
-import zhipuIcon from '@lobehub/icons-static-svg/icons/zhipu-color.svg?raw'
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import {
   buildTimeline,
+  type CurrentExecutionState,
   dependencyRelationLabel,
   deriveCurrentExecutionState,
-  technicalActivity,
-  userRequestChangesReason,
-  type CurrentExecutionState,
   type PanelSeat,
   type TimelineEntry,
+  technicalActivity,
+  userRequestChangesReason,
 } from '../../lib/activity'
 import {
   defaultReasonCode,
@@ -42,30 +42,30 @@ import type {
   WorkOrderTranscriptCapture,
 } from '../../lib/types'
 import { absoluteTime, cn, compactTokens, duration } from '../../lib/utils'
-import { Badge } from '../ui/badge'
 import { usePendingProposals, useWorkspaceCapability, useWorkspaceMembers } from '../app-shell'
+import { Badge } from '../ui/badge'
 import { MarkdownProse } from '../ui/markdown-prose'
+import { hasInterruptedReviewRecovery, InterruptedReviewRecoveryCard } from './interrupted-review-recovery-card'
+import { canRedispatch, RedispatchCard } from './redispatch-card'
 import {
-  ReviewPanel,
   changesComposerHint,
+  type GateTone,
   gateNeedsRecoveryCapability,
   gateTone,
   isReviewable,
-  type GateTone,
+  ReviewPanel,
   useCanRequestTaskChanges,
 } from './review-panel'
-import { RedispatchCard, canRedispatch } from './redispatch-card'
+import { hasReviewRoundRetry, ReviewRoundRetryCard } from './review-round-retry-card'
+import { reviewGateCopy, SystemDesignProposalCard, useSystemDesignProposals } from './system-design-proposal-card'
+import { claimedWorkOrder, WorkOrderPreemptControl } from './work-order-preempt-card'
 import {
   CheckpointProposalRecoveryCard,
-  WorkOrderRecoveryCard,
   hasWorkerRecovery,
   isCheckpointReleasedRecovery,
+  WorkOrderRecoveryCard,
 } from './work-order-recovery-card'
-import { ReviewRoundRetryCard, hasReviewRoundRetry } from './review-round-retry-card'
-import { InterruptedReviewRecoveryCard, hasInterruptedReviewRecovery } from './interrupted-review-recovery-card'
-import { reviewGateCopy, SystemDesignProposalCard, useSystemDesignProposals } from './system-design-proposal-card'
-import { WorkerStatusCard, hasWorkerAlert } from './worker-status-card'
-import { WorkOrderPreemptControl, claimedWorkOrder } from './work-order-preempt-card'
+import { hasWorkerAlert, WorkerStatusCard } from './worker-status-card'
 
 // The gate dot pulses — the timeline's one "waiting on you" signal — in the
 // gate card's own tone.
@@ -268,7 +268,12 @@ export function Timeline({
         <h2 className="mb-4 mt-5 text-sm font-semibold tracking-tight">Activity</h2>
         <ol className="relative space-y-4 before:absolute before:bottom-4 before:left-[7px] before:top-4 before:w-px before:bg-border">
           {entries.map((entry) => (
-            <TimelineRow key={keyFor(entry)} entry={entry} usageReportedOrderIDs={usageReportedOrderIDs} />
+            <TimelineRow
+              key={keyFor(entry)}
+              entry={entry}
+              usageReportedOrderIDs={usageReportedOrderIDs}
+              operatorNotes={item.operator_notes}
+            />
           ))}
           {entries.length === 0 && tail.length === 0 && !showGate && (
             <li className="pl-7 text-sm text-muted">Waiting for the first job to start.</li>
@@ -615,7 +620,15 @@ const orderDots: Record<Extract<TimelineEntry, { type: 'order' }>['tone'], strin
   alarm: 'bg-attention-dot',
 }
 
-function TimelineRow({ entry, usageReportedOrderIDs }: { entry: TimelineEntry; usageReportedOrderIDs: Set<string> }) {
+function TimelineRow({
+  entry,
+  usageReportedOrderIDs,
+  operatorNotes,
+}: {
+  entry: TimelineEntry
+  usageReportedOrderIDs: Set<string>
+  operatorNotes?: ActivityItem['operator_notes']
+}) {
   if (entry.type === 'job')
     return (
       <JobEntry
@@ -627,7 +640,8 @@ function TimelineRow({ entry, usageReportedOrderIDs }: { entry: TimelineEntry; u
         usageAvailable={entry.order ? usageReportedOrderIDs.has(entry.order.id) : undefined}
       />
     )
-  if (entry.type === 'panel') return <PanelEntry entry={entry} usageReportedOrderIDs={usageReportedOrderIDs} />
+  if (entry.type === 'panel')
+    return <PanelEntry entry={entry} usageReportedOrderIDs={usageReportedOrderIDs} operatorNotes={operatorNotes} />
   if (entry.type === 'order') {
     return (
       <li className="relative pl-7">
@@ -728,9 +742,11 @@ function TimelineRow({ entry, usageReportedOrderIDs }: { entry: TimelineEntry; u
 function PanelEntry({
   entry,
   usageReportedOrderIDs,
+  operatorNotes,
 }: {
   entry: Extract<TimelineEntry, { type: 'panel' }>
   usageReportedOrderIDs: Set<string>
+  operatorNotes?: ActivityItem['operator_notes']
 }) {
   const { seats, resolution } = entry
   const verdictsIn = seats.filter((seat) => seat.review).length
@@ -798,6 +814,21 @@ function PanelEntry({
             />
           ))}
         </div>
+        {!!operatorNotes?.length && (
+          <section aria-label="Operator notes on this task's proposals" className="border-t border-border px-4 py-3">
+            <h3 className="text-sm font-medium">Operator notes on this task's proposals</h3>
+            <ul className="mt-2 space-y-2 text-sm">
+              {operatorNotes.map((note) => (
+                <li key={`${note.tier}:${note.document_id}:${note.version}`}>
+                  <span className="font-medium">
+                    {note.tier === 'requirement' ? 'Requirement' : 'System Design'} {note.document_id} · v{note.version}
+                  </span>
+                  <p className="whitespace-pre-wrap break-words text-muted">Operator's reason: {note.note}</p>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
         {notes.length > 0 && (
           <div className="border-t border-border px-4 py-3">
             <div className="mb-1.5 flex flex-wrap items-baseline gap-x-3 gap-y-0.5">

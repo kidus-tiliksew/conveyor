@@ -5227,3 +5227,46 @@ test('a claim refusal names the assignee rather than showing the transport sente
   await expect(tray).not.toContainText('only that assignee may claim its work orders')
   await expect(tray).not.toContainText('usr_bo')
 })
+
+for (const withNotes of [true, false]) {
+  test(`review card renders optional operator notes: ${withNotes}`, async ({ page }) => {
+    await page.route('**/v1/tasks/reviews/activity*', (route) =>
+      route.fulfill({
+        json: {
+          ...activity('reviews', false),
+          ...(withNotes
+            ? {
+                operator_notes: [
+                  {
+                    document_id: 'req-intent',
+                    tier: 'requirement',
+                    version: 2,
+                    note: 'Preserve <original> intent.\nKeep the scope.',
+                    dismissed_at: createdAt,
+                  },
+                  {
+                    document_id: 'design-owner',
+                    tier: 'system_design',
+                    version: 4,
+                    note: 'Correct the owner.',
+                    dismissed_at: createdAt,
+                  },
+                ],
+              }
+            : {}),
+        },
+      }),
+    )
+    await page.goto('/tasks/reviews/full')
+    const panel = page.locator('article').filter({ hasText: 'Panel of 2 · unanimous to pass' })
+    await expect(panel).toBeVisible()
+    const notes = panel.getByRole('region', { name: "Operator notes on this task's proposals" })
+    if (withNotes) {
+      await expect(notes).toContainText('Requirement req-intent · v2')
+      await expect(notes).toContainText('System Design design-owner · v4')
+      await expect(notes).toContainText("Operator's reason: Preserve <original> intent.")
+      await expect(notes).toContainText('Keep the scope.')
+      await expect(notes).toContainText("Operator's reason: Correct the owner.")
+    } else await expect(notes).toHaveCount(0)
+  })
+}

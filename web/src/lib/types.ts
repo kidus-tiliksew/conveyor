@@ -629,7 +629,16 @@ export interface WorkspaceConfigReceipt extends VersionedWorkspaceConfig {
   sections: string[]
 }
 
+export interface OperatorNote {
+  document_id: string
+  version: number
+  tier: 'requirement' | 'system_design'
+  note: string
+  dismissed_at: string
+}
+
 export interface ActivityItem {
+  operator_notes?: OperatorNote[]
   task: Task
   jobs: Job[]
   events: TaskEvent[]
@@ -841,6 +850,7 @@ export interface Requirement {
 }
 
 export interface RequirementVersion {
+  dismissal_note?: string
   requirement_id: string
   version: number
   content: string
@@ -1072,6 +1082,7 @@ export interface SystemDesign {
   updated_at: string
 }
 export interface SystemDesignVersion {
+  dismissal_note?: string
   document_id: string
   version: number
   content: string

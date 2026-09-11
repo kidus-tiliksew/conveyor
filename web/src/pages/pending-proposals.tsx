@@ -35,15 +35,23 @@ export function PendingProposalsPage() {
   const proposals = usePendingProposals()
   const [dismissTarget, setDismissTarget] = useState<PendingProposal | null>(null)
   const resolve = useMutation({
-    mutationFn: async ({ proposal, action }: { proposal: PendingProposal; action: 'confirm' | 'dismiss' }) => {
+    mutationFn: async ({
+      proposal,
+      action,
+      note,
+    }: {
+      proposal: PendingProposal
+      action: 'confirm' | 'dismiss'
+      note?: string
+    }) => {
       if (proposal.tier === 'decision') return resolveDecision(proposal.id, action)
       if (proposal.version == null) throw new Error('The proposal did not include a version.')
       if (proposal.tier === 'requirement') {
-        if (action === 'dismiss') return dismissRequirementVersion(proposal.id, proposal.version)
+        if (action === 'dismiss') return dismissRequirementVersion(proposal.id, proposal.version, note)
         const view = await fetchRequirement(proposal.id)
         return confirmRequirementVersion(proposal.id, proposal.version, view.requirement.current_version ?? 0)
       }
-      if (action === 'dismiss') return dismissSystemDesignVersion(proposal.id, proposal.version)
+      if (action === 'dismiss') return dismissSystemDesignVersion(proposal.id, proposal.version, note)
       const view = await fetchSystemDesign(proposal.id)
       return confirmSystemDesignVersion(proposal.id, proposal.version, view.document.current_version ?? 0)
     },
@@ -79,7 +87,7 @@ export function PendingProposalsPage() {
           pending={resolve.isPending}
           error={resolve.error ? errorMessage(resolve.error, 'Could not dismiss this version.') : undefined}
           onCancel={() => setDismissTarget(null)}
-          onConfirm={() => resolve.mutate({ proposal: dismissTarget, action: 'dismiss' })}
+          onConfirm={(note) => resolve.mutate({ proposal: dismissTarget, action: 'dismiss', note })}
         />
       )}
       <div className="mx-auto max-w-5xl px-6 py-8">

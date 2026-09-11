@@ -167,7 +167,8 @@ version directly. The version keeps its immutable content, statement IDs,
 dismissal actor, and dismissal time in history, but leaves pending and
 attention projections and can never be confirmed later. Direct dismissal does
 not archive or delete the document, and confirmation still resolves earlier
-pending versions as described above.
+pending versions as described above. The Dismiss and Revise dialogs accept an optional
+operator note, shown beside the dismissal record in version history.
 
 Operators holding both `propose_documents` and `confirm_documents` can use
 Revise on a pending requirement or System Design proposal in the queue or its

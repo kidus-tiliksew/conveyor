@@ -1016,3 +1016,46 @@ for (const access of ['confirm-only', 'propose-only'] as const) {
     await expect(page.getByRole('button', { name: 'Confirm version 2' })).toHaveCount(access === 'confirm-only' ? 1 : 0)
   })
 }
+
+for (const note of ['', '  Correct the ownership.  ']) {
+  test(`System Design dismissal carries optional note into history ${JSON.stringify(note)}`, async ({ page }) => {
+    await initialize(page)
+    let dismissed = false
+    await page.route('**/v1/**', async (route) => {
+      const handled = shell(route)
+      if (handled) return await handled
+      const path = new URL(route.request().url()).pathname
+      const retired = {
+        ...pending,
+        dismissed: true,
+        dismissed_by: 'operator',
+        dismissed_at: '2026-09-10T12:00:00Z',
+        dismissal_note: note.trim(),
+      }
+      const view = {
+        ...design,
+        drift: [],
+        pending_versions: dismissed ? [] : [pending],
+        versions: [first, dismissed ? retired : pending],
+      }
+      if (path === '/v1/system-designs') return route.fulfill({ json: [summarizeDesign(view)] })
+      if (path === '/v1/system-designs/design-dispatch') return route.fulfill({ json: view })
+      if (path === '/v1/system-designs/design-dispatch/versions') return route.fulfill({ json: view.versions })
+      if (path === '/v1/system-designs/design-dispatch/versions/2/dismiss') {
+        expect(route.request().postData()).toBe(note.trim() ? JSON.stringify({ note: note.trim() }) : null)
+        dismissed = true
+        return route.fulfill({ json: {} })
+      }
+      return route.fulfill({ json: [] })
+    })
+    await page.goto('/system-design')
+    await page.getByRole('button', { name: 'Dismiss', exact: true }).click()
+    await page.getByLabel('Why are you dismissing this?').fill(note)
+    await page.getByRole('button', { name: 'Dismiss version 2' }).click()
+    await expect(page.getByRole('dialog')).toHaveCount(0)
+    await page.getByText('Version history').click()
+    await expect(page.getByText(/Dismissed by operator/)).toBeVisible()
+    if (note.trim()) await expect(page.getByText(`Operator's reason: ${note.trim()}`)).toBeVisible()
+    else await expect(page.getByText(/Operator's reason/)).toHaveCount(0)
+  })
+}
