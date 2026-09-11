@@ -381,6 +381,19 @@ func (s *Store) insertOrderTx(ctx context.Context, tx *sql.Tx, o core.WorkOrder,
 	if count > 0 {
 		return fmt.Errorf("work order %s already exists", o.ID)
 	}
+	var previous int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM work_orders WHERE workspace_id=? AND task_id=?`, documentWorkspace(ctx), o.TaskID).Scan(&previous); err != nil {
+		return err
+	}
+	if previous == 0 {
+		task, err := getTaskRow(ctx, tx, o.TaskID)
+		if err != nil {
+			return err
+		}
+		if task.IntakeOperatorDirection != "" {
+			o.OperatorDirection = task.IntakeOperatorDirection
+		}
+	}
 	values := orderValues(o)
 	values["workspace_id"] = documentWorkspace(ctx)
 	if _, err := writeRow(ctx, tx, rowWrite{table: "work_orders", operation: "INSERT", values: values}); err != nil {

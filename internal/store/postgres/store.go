@@ -525,82 +525,94 @@ func (s *Store) CreateTaskWithDependenciesAndContext(ctx context.Context, task c
 		task.NextStage = core.InitialStage(task.Level)
 	}
 	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
-		if len(dependencyIDs) > 0 {
-			if err := lockDependencyEdgesTx(ctx, tx, task.Workspace); err != nil {
-				return err
-			}
-		}
-		seen := map[string]bool{}
-		for _, dependencyID := range dependencyIDs {
-			dependencyID = strings.TrimSpace(dependencyID)
-			if dependencyID == "" || seen[dependencyID] {
-				return fmt.Errorf("depends_on contains an empty or duplicate task id")
-			}
-			seen[dependencyID] = true
-			var dependencyWorkspace, dependencyState string
-			if err := tx.QueryRow(ctx, `SELECT workspace_id, state FROM tasks WHERE id=$1`, dependencyID).
-				Scan(&dependencyWorkspace, &dependencyState); err != nil {
-				return notFound(err, "dependency task %s", dependencyID)
-			}
-			if dependencyWorkspace != task.Workspace {
-				return fmt.Errorf("dependency task %s belongs to another workspace", dependencyID)
-			}
-			if core.TaskTerminal(core.TaskState(dependencyState)) {
-				return fmt.Errorf("dependency task %s is not open", dependencyID)
-			}
-		}
-		designVersions, err := validateTaskContextTx(ctx, tx, task.Workspace, attached)
-		if err != nil {
-			return err
-		}
-		if _, err := q.InsertTask(ctx, taskInsertParams(task)); err != nil {
-			return err
-		}
-		if err := store.ValidateRepositoryInstallTask(task); err != nil {
-			return err
-		}
-		if task.RepositoryInstallAttempt > 0 {
-			if _, err := tx.Exec(ctx, `INSERT INTO repository_install_tasks(workspace_id,repository_name,attempt,task_id) VALUES($1,$2,$3,$4)`, task.Workspace, task.Repo, task.RepositoryInstallAttempt, task.ID); err != nil {
-				return err
-			}
-		}
-		_, err = insertEventWithID(ctx, q, core.Event{
-			TaskID:  task.ID,
-			Kind:    "task.created",
-			Payload: core.JSONPayload(task),
-			At:      task.CreatedAt,
-		})
-		if err != nil {
-			return err
-		}
-		for dependencyID := range seen {
-			if _, err := tx.Exec(ctx, `INSERT INTO task_dependencies (workspace_id, task_id, depends_on_task_id)
-				VALUES ($1,$2,$3)`, task.Workspace, task.ID, dependencyID); err != nil {
-				return fmt.Errorf("depends_on %s: %w", dependencyID, err)
-			}
-			if err := insertEvent(ctx, q, core.Event{TaskID: task.ID, Kind: "task.dependency_added", At: task.CreatedAt,
-				Payload: core.JSONPayload(map[string]string{"task_id": task.ID, "depends_on_task_id": dependencyID})}); err != nil {
-				return err
-			}
-		}
-		for _, id := range attached.RequirementIDs {
-			if err := insertEvent(ctx, q, core.Event{TaskID: task.ID, Kind: store.TaskContextRequirementAdded, At: task.CreatedAt,
-				Payload: core.JSONPayload(map[string]any{"id": id})}); err != nil {
-				return err
-			}
-		}
-		for _, id := range attached.DesignIDs {
-			if err := insertEvent(ctx, q, core.Event{TaskID: task.ID, Kind: store.TaskContextDesignAdded, At: task.CreatedAt,
-				Payload: core.JSONPayload(map[string]any{"id": id, "version": designVersions[id]})}); err != nil {
-				return err
-			}
-		}
-		if task.State == core.TaskQueued {
-			_, err := s.enqueueTaskTx(ctx, tx, task.ID, task.Workspace)
-			return err
-		}
-		return nil
+		return s.createTaskTx(ctx, tx, q, task, dependencyIDs, attached, nil)
 	})
+}
+
+func (s *Store) createTaskTx(ctx context.Context, tx pgx.Tx, q *db.Queries, task core.Task, dependencyIDs []string, attached store.TaskContextInput, pinned map[string]int) error {
+	if len(dependencyIDs) > 0 {
+		if err := lockDependencyEdgesTx(ctx, tx, task.Workspace); err != nil {
+			return err
+		}
+	}
+	seen := map[string]bool{}
+	for _, dependencyID := range dependencyIDs {
+		dependencyID = strings.TrimSpace(dependencyID)
+		if dependencyID == "" || seen[dependencyID] {
+			return fmt.Errorf("depends_on contains an empty or duplicate task id")
+		}
+		seen[dependencyID] = true
+		var dependencyWorkspace, dependencyState string
+		if err := tx.QueryRow(ctx, `SELECT workspace_id, state FROM tasks WHERE id=$1`, dependencyID).
+			Scan(&dependencyWorkspace, &dependencyState); err != nil {
+			return notFound(err, "dependency task %s", dependencyID)
+		}
+		if dependencyWorkspace != task.Workspace {
+			return fmt.Errorf("dependency task %s belongs to another workspace", dependencyID)
+		}
+		if core.TaskTerminal(core.TaskState(dependencyState)) {
+			return fmt.Errorf("dependency task %s is not open", dependencyID)
+		}
+	}
+	designVersions, err := validateTaskContextTx(ctx, tx, task.Workspace, attached)
+	if err != nil {
+		return err
+	}
+	if pinned != nil {
+		designVersions = pinned
+	}
+	if _, err := q.InsertTask(ctx, taskInsertParams(task)); err != nil {
+		return err
+	}
+	if task.Supersedes != "" || task.SupersededBy != "" || task.IntakeOperatorDirection != "" {
+		if _, err := tx.Exec(ctx, `UPDATE tasks SET supersedes=NULLIF($3,''),superseded_by=NULLIF($4,''),intake_operator_direction=$5 WHERE workspace_id=$1 AND id=$2`, task.Workspace, task.ID, task.Supersedes, task.SupersededBy, task.IntakeOperatorDirection); err != nil {
+			return err
+		}
+	}
+	if err := store.ValidateRepositoryInstallTask(task); err != nil {
+		return err
+	}
+	if task.RepositoryInstallAttempt > 0 {
+		if _, err := tx.Exec(ctx, `INSERT INTO repository_install_tasks(workspace_id,repository_name,attempt,task_id) VALUES($1,$2,$3,$4)`, task.Workspace, task.Repo, task.RepositoryInstallAttempt, task.ID); err != nil {
+			return err
+		}
+	}
+	_, err = insertEventWithID(ctx, q, core.Event{
+		TaskID:  task.ID,
+		Kind:    "task.created",
+		Payload: core.JSONPayload(task),
+		At:      task.CreatedAt,
+	})
+	if err != nil {
+		return err
+	}
+	for dependencyID := range seen {
+		if _, err := tx.Exec(ctx, `INSERT INTO task_dependencies (workspace_id, task_id, depends_on_task_id)
+				VALUES ($1,$2,$3)`, task.Workspace, task.ID, dependencyID); err != nil {
+			return fmt.Errorf("depends_on %s: %w", dependencyID, err)
+		}
+		if err := insertEvent(ctx, q, core.Event{TaskID: task.ID, Kind: "task.dependency_added", At: task.CreatedAt,
+			Payload: core.JSONPayload(map[string]string{"task_id": task.ID, "depends_on_task_id": dependencyID})}); err != nil {
+			return err
+		}
+	}
+	for _, id := range attached.RequirementIDs {
+		if err := insertEvent(ctx, q, core.Event{TaskID: task.ID, Kind: store.TaskContextRequirementAdded, At: task.CreatedAt,
+			Payload: core.JSONPayload(map[string]any{"id": id})}); err != nil {
+			return err
+		}
+	}
+	for _, id := range attached.DesignIDs {
+		if err := insertEvent(ctx, q, core.Event{TaskID: task.ID, Kind: store.TaskContextDesignAdded, At: task.CreatedAt,
+			Payload: core.JSONPayload(map[string]any{"id": id, "version": designVersions[id]})}); err != nil {
+			return err
+		}
+	}
+	if task.State == core.TaskQueued {
+		_, err := s.enqueueTaskTx(ctx, tx, task.ID, task.Workspace)
+		return err
+	}
+	return nil
 }
 
 func (s *Store) GetTask(ctx context.Context, id string) (core.Task, error) {
@@ -1529,6 +1541,9 @@ func (s *Store) SkipTaskRefresh(ctx context.Context, id, newHeadSHA, reason stri
 }
 
 func (s *Store) ApplyTaskCommand(ctx context.Context, lease taskops.TaskLease, id string, command taskops.Command) (core.Task, error) {
+	if command.Kind == core.TaskStartOver {
+		return core.Task{}, fmt.Errorf("task start over requires StartOverTaskCommand")
+	}
 	if !lease.ValidFor(id) {
 		return core.Task{}, fmt.Errorf("task lifecycle mutation requires a valid taskops lease")
 	}
@@ -2722,13 +2737,14 @@ func scanGitHubLifecycle(row interface{ Scan(...any) error }) (core.GitHubLifecy
 }
 
 func (s *Store) AppendEvent(ctx context.Context, event core.Event) error {
-	task, err := s.queries.GetTask(ctx, db.GetTaskParams{ID: event.TaskID, WorkspaceID: workspace(ctx)})
+	var taskID string
+	err := s.pool.QueryRow(ctx, `SELECT id FROM tasks WHERE workspace_id=$1 AND id=$2`, workspace(ctx), event.TaskID).Scan(&taskID)
 	if err != nil {
 		return notFound(err, "task %s", event.TaskID)
 	}
 	if event.JobID != "" {
 		job, err := s.queries.GetJob(ctx, db.GetJobParams{ID: event.JobID, WorkspaceID: workspace(ctx)})
-		if err != nil || job.TaskID != task.ID {
+		if err != nil || job.TaskID != taskID {
 			return fmt.Errorf("job %s does not belong to task %s in workspace %s", event.JobID, event.TaskID, workspace(ctx))
 		}
 	}
@@ -3448,23 +3464,25 @@ func (s *Store) CancelTaskCommand(ctx context.Context, lease taskops.TaskLease, 
 	if intervention.Action != core.InterventionCancel || strings.TrimSpace(intervention.ReasonCode) == "" {
 		return core.Task{}, fmt.Errorf("cancel intervention requires a reason")
 	}
-	tx, err := s.begin(ctx)
+	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error { return s.cancelTaskTx(ctx, tx, q, intervention) })
 	if err != nil {
 		return core.Task{}, err
 	}
-	defer tx.Rollback(ctx) //nolint:errcheck
-	q := s.queries.WithTx(tx)
+	return s.GetTask(ctx, intervention.TaskID)
+}
+
+func (s *Store) cancelTaskTx(ctx context.Context, tx pgx.Tx, q *db.Queries, intervention core.Intervention) error {
 	var priorState string
-	err = tx.QueryRow(ctx, `SELECT state FROM tasks WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspace(ctx), intervention.TaskID).Scan(&priorState)
+	err := tx.QueryRow(ctx, `SELECT state FROM tasks WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspace(ctx), intervention.TaskID).Scan(&priorState)
 	if err != nil {
-		return core.Task{}, notFound(err, "task %s", intervention.TaskID)
+		return notFound(err, "task %s", intervention.TaskID)
 	}
 	if core.TaskTerminal(core.TaskState(priorState)) {
-		return core.Task{}, store.ErrTaskTerminal
+		return store.ErrTaskTerminal
 	}
 	taskState, transitionErr := core.TransitionTask(core.TaskState(priorState), core.TaskCancel)
 	if transitionErr != nil {
-		return core.Task{}, transitionErr
+		return transitionErr
 	}
 	actor := store.ActorFromContext(ctx)
 	if intervention.ActorID == "" {
@@ -3479,18 +3497,18 @@ func (s *Store) CancelTaskCommand(ctx context.Context, lease taskops.TaskLease, 
 	if intervention.JobID != "" {
 		job, getErr := q.GetJob(ctx, db.GetJobParams{ID: intervention.JobID, WorkspaceID: workspace(ctx)})
 		if getErr != nil || job.TaskID != intervention.TaskID {
-			return core.Task{}, fmt.Errorf("job %s does not belong to task %s", intervention.JobID, intervention.TaskID)
+			return fmt.Errorf("job %s does not belong to task %s", intervention.JobID, intervention.TaskID)
 		}
 	}
 	if _, err = q.InsertIntervention(ctx, interventionInsertParams(intervention)); err != nil {
-		return core.Task{}, err
+		return err
 	}
 	if err = insertEvent(ctx, q, core.Event{TaskID: intervention.TaskID, JobID: intervention.JobID, Kind: "intervention.cancel", ActorID: intervention.ActorID, ActorRole: intervention.ActorRole, Payload: core.JSONPayload(map[string]any{"reason_code": intervention.ReasonCode, "comment": intervention.Comment}), At: intervention.At}); err != nil {
-		return core.Task{}, err
+		return err
 	}
 	rows, err := tx.Query(ctx, `SELECT id,job_id,state,attempt_id,session_id FROM work_orders WHERE workspace_id=$1 AND task_id=$2 AND state NOT IN ('completed','cancelled') FOR UPDATE`, workspace(ctx), intervention.TaskID)
 	if err != nil {
-		return core.Task{}, err
+		return err
 	}
 	type cancelledOrder struct {
 		id, jobID, attemptID, sessionID string
@@ -3501,17 +3519,17 @@ func (s *Store) CancelTaskCommand(ctx context.Context, lease taskops.TaskLease, 
 		var order cancelledOrder
 		if err = rows.Scan(&order.id, &order.jobID, &order.state, &order.attemptID, &order.sessionID); err != nil {
 			rows.Close()
-			return core.Task{}, err
+			return err
 		}
 		if _, transitionErr = core.TransitionWorkOrder(order.state, core.WorkOrderCmdCancel); transitionErr != nil {
 			rows.Close()
-			return core.Task{}, transitionErr
+			return transitionErr
 		}
 		orders = append(orders, order)
 	}
 	if err = rows.Err(); err != nil {
 		rows.Close()
-		return core.Task{}, err
+		return err
 	}
 	rows.Close()
 	var cancelled, jobIDs []string
@@ -3531,37 +3549,34 @@ func (s *Store) CancelTaskCommand(ctx context.Context, lease taskops.TaskLease, 
 			execution_started_at=CASE WHEN attempt_id<>'' THEN NULL ELSE execution_started_at END,
 			execution_deadline=CASE WHEN attempt_id<>'' THEN NULL ELSE execution_deadline END,
 			updated_at=$1 WHERE workspace_id=$2 AND id=$3 AND state=$4`, intervention.At, workspace(ctx), order.id, order.state); err != nil {
-			return core.Task{}, err
+			return err
 		}
 		cancelled, jobIDs = append(cancelled, order.id), append(jobIDs, order.jobID)
 		if err = insertEvent(ctx, q, core.Event{TaskID: intervention.TaskID, JobID: order.jobID, Kind: "work_order.cancelled", ActorID: intervention.ActorID, ActorRole: intervention.ActorRole, Payload: core.JSONPayload(map[string]any{"id": order.id, "attempt_id": order.attemptID, "session_id": order.sessionID, "state": core.WorkOrderCancelled, "from": order.state, "command": core.WorkOrderCmdCancel}), At: intervention.At}); err != nil {
-			return core.Task{}, err
+			return err
 		}
 	}
 	if len(jobIDs) != 0 {
 		if _, err = tx.Exec(ctx, `UPDATE jobs SET state='failed',ended_at=$1,updated_at=$1 WHERE task_id=$2 AND id=ANY($3) AND state<>'done'`, intervention.At, intervention.TaskID, jobIDs); err != nil {
-			return core.Task{}, err
+			return err
 		}
 	}
 	if _, err = tx.Exec(ctx, `UPDATE tasks SET state=$1,next_stage='',recovery_stage='',updated_at=$2 WHERE workspace_id=$3 AND id=$4 AND state=$5`, taskState, intervention.At, workspace(ctx), intervention.TaskID, priorState); err != nil {
-		return core.Task{}, err
+		return err
 	}
 	if err = deleteProposedTaskContextTx(ctx, tx, intervention.TaskID); err != nil {
-		return core.Task{}, err
+		return err
 	}
 	if err = insertEvent(ctx, q, core.Event{TaskID: intervention.TaskID, Kind: "task.state_changed", ActorID: intervention.ActorID, ActorRole: intervention.ActorRole, Payload: core.JSONPayload(map[string]any{"from": priorState, "to": taskState, "command": core.TaskCancel}), At: intervention.At}); err != nil {
-		return core.Task{}, err
+		return err
 	}
 	if err = insertEvent(ctx, q, core.Event{TaskID: intervention.TaskID, Kind: "task.cancelled", ActorID: intervention.ActorID, ActorRole: intervention.ActorRole, Payload: core.JSONPayload(map[string]any{"actor": intervention.ActorID, "reason": intervention.ReasonCode, "comment": intervention.Comment, "from": priorState, "cancelled_work_orders": cancelled}), At: intervention.At}); err != nil {
-		return core.Task{}, err
+		return err
 	}
 	if err = s.recordDependencyOutcomeTx(ctx, tx, intervention.TaskID, taskState, intervention.At); err != nil {
-		return core.Task{}, err
+		return err
 	}
-	if err = tx.Commit(ctx); err != nil {
-		return core.Task{}, err
-	}
-	return s.GetTask(ctx, intervention.TaskID)
+	return nil
 }
 
 func (s *Store) ListInterventions(ctx context.Context, taskID string) ([]core.Intervention, error) {
@@ -3760,6 +3775,9 @@ func (s *Store) CreateWorkOrderCommand(ctx context.Context, lease taskops.TaskLe
 			order.RedispatchCount, order.Progress, order.CostUSD, order.TokensIn,
 			order.TokensOut, order.CreatedAt, servedRequirementSnapshotJSON(order.ServedRequirementSnapshot), governanceSnapshotJSON(order.GovernanceSnapshot))
 		if err != nil {
+			return err
+		}
+		if err := firstOrderDirectionTx(ctx, tx, &order); err != nil {
 			return err
 		}
 		if eventErr := insertEvent(ctx, q, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.created", Payload: core.JSONPayload(order)}); eventErr != nil {
@@ -3980,6 +3998,9 @@ func (s *Store) CreateStageWorkOrderCommand(ctx context.Context, lease taskops.T
 			order.ReasonCode, order.BaselineSHA, order.QueueEnteredAt, order.QueueDeadline,
 			nullableTimeValue(order.QueueBlockedAt), order.CreatedAt, servedRequirementSnapshotJSON(order.ServedRequirementSnapshot), governanceSnapshotJSON(order.GovernanceSnapshot))
 		if err != nil {
+			return err
+		}
+		if err := firstOrderDirectionTx(ctx, tx, &order); err != nil {
 			return err
 		}
 		if err = insertEvent(ctx, q, core.Event{TaskID: job.TaskID, JobID: job.ID, Kind: "work_order.created", Payload: core.JSONPayload(order)}); err != nil {
@@ -6704,6 +6725,7 @@ func taskFromDB(task db.Task) core.Task {
 	_ = json.Unmarshal(task.SetupContract, &setup)
 	return core.Task{
 		ID: task.ID, Workspace: task.WorkspaceID, Source: task.Source, IntakeKey: task.IntakeKey.String,
+		Supersedes: task.Supersedes.String, SupersededBy: task.SupersededBy.String, IntakeOperatorDirection: task.IntakeOperatorDirection,
 		Title: task.Title, Body: task.Body, Class: task.Class,
 		Level: core.EscalationLevel(task.EscalationLevel), Repo: task.RepoName,
 		Mode: core.TaskMode(task.Mode), Hold: task.Hold, SpecApproval: task.SpecApproval, MergeApproval: task.MergeApproval,
@@ -6839,3 +6861,20 @@ func notFound(err error, format string, args ...any) error {
 }
 
 var _ store.Store = (*Store)(nil)
+
+func firstOrderDirectionTx(ctx context.Context, tx pgx.Tx, order *core.WorkOrder) error {
+	var direction string
+	err := tx.QueryRow(ctx, `SELECT intake_operator_direction FROM tasks WHERE workspace_id=$1 AND id=$2 AND NOT EXISTS(SELECT 1 FROM work_orders WHERE workspace_id=$1 AND task_id=$2 AND id<>$3)`, workspace(ctx), order.TaskID, order.ID).Scan(&direction)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if direction == "" {
+		return nil
+	}
+	order.OperatorDirection = direction
+	_, err = tx.Exec(ctx, `UPDATE work_orders SET operator_direction=$3 WHERE workspace_id=$1 AND id=$2`, workspace(ctx), order.ID, direction)
+	return err
+}
