@@ -1,5 +1,5 @@
 import { Link } from '@tanstack/react-router'
-import { gateBadge, humanizeClaimRefusal, reviewDiagnosticBadge } from '../../lib/activity'
+import { gateBadge, humanizeClaimRefusal, taskWasRestarted, reviewDiagnosticBadge } from '../../lib/activity'
 import type { ActivitySummary } from '../../lib/types'
 import { cn, relativeTime } from '../../lib/utils'
 import { useWorkspaceMembers } from '../app-shell'
@@ -33,7 +33,8 @@ export function TaskCard({ item, selected }: { item: ActivitySummary; selected: 
   const dependencyExplanation = unsatisfiable
     ? `Needs attention: ${blockingTitles.join(', ')} closed without merging`
     : `Waiting for ${blockingTitles.join(', ')}`
-  const chips = Boolean(gate || reviewDiagnostic || item.task.hold || blockingIDs.length > 0)
+  const restarted = taskWasRestarted(item.task)
+  const chips = Boolean(restarted || gate || reviewDiagnostic || item.task.hold || blockingIDs.length > 0)
   return (
     <Link
       to="/tasks/$taskId"
@@ -61,6 +62,7 @@ export function TaskCard({ item, selected }: { item: ActivitySummary; selected: 
       {item.task.assignee && <AssigneeChip assignee={item.task.assignee} className="mt-1 text-[11px] text-muted" />}
       {chips && (
         <div className="mt-2 flex flex-wrap items-center gap-1.5">
+          {restarted && <Badge variant="mono">restarted</Badge>}
           {gate && <Badge variant={gate.variant}>{gate.label}</Badge>}
           {reviewDiagnostic && <Badge variant={reviewDiagnostic.variant}>{reviewDiagnostic.label}</Badge>}
           {item.task.hold && <Badge variant="mono">Held</Badge>}

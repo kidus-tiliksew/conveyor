@@ -4,6 +4,8 @@ import type {
   ActivitySummary,
   Intervention,
   Job,
+  PendingProposal,
+  Task,
   TaskAssignee,
   TaskEvent,
   TaskRelation,
@@ -1158,4 +1160,51 @@ export function buildTimeline(item: ActivityItem, members: WorkspaceMembership[]
     entries.push({ type: 'intervention', at: intervention.at, intervention })
   }
   return entries.sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime())
+}
+
+export function taskRestartLinks(task: Pick<Task, 'supersedes' | 'superseded_by'>) {
+  return { from: task.supersedes?.trim() || undefined, to: task.superseded_by?.trim() || undefined }
+}
+
+export function taskWasRestarted(task: Pick<Task, 'supersedes' | 'superseded_by'>) {
+  const links = taskRestartLinks(task)
+  return Boolean(links.from || links.to)
+}
+
+// Match cancellation's order selection, including recoverable stale/timed-out orders
+// (req-task-lifecycle-and-queue AC-7.1; component-task-lifecycle).
+export function restartOrderCount(item: ActivityItem): number | undefined {
+  if (!item.work_orders?.length) return undefined
+  return item.work_orders.filter((order) => order.state !== 'completed' && order.state !== 'cancelled').length
+}
+
+export function taskPendingRestartProposals(proposals: PendingProposal[], taskId: string) {
+  return proposals.filter(
+    (proposal) =>
+      proposal.origin_type === 'task' &&
+      proposal.origin_id === taskId &&
+      (proposal.tier === 'requirement' || proposal.tier === 'system_design'),
+  )
+}
+
+export function restartPullRequestURL(item: ActivityItem) {
+  const closeState = item.task.pull_request_close_state?.trim() || item.task.pull_request_close?.state?.trim()
+  if (closeState === 'closed' || closeState === 'skipped' || item.task.state === 'merged') return undefined
+  return pullRequestURL(item.events ?? [])?.trim() || undefined
+}
+
+export function restartPullRequestOutcome(task: Task): string | undefined {
+  const close = task.pull_request_close
+  const state = task.pull_request_close_state?.trim() || close?.state?.trim()
+  const error = close?.last_error?.trim() || close?.forge_error_category?.trim()
+  const labels: Record<string, string> = {
+    closed: 'Pull request closed.',
+    queued: 'Pull request closure is queued.',
+    retrying: 'Pull request closure will be retried.',
+    failed: 'Pull request closure failed; the restart remains complete.',
+    skipped: 'Pull request closure was skipped.',
+  }
+  const label = state ? labels[state] : undefined
+  if (!label && !error) return undefined
+  return [label, error].filter(Boolean).join(' ')
 }

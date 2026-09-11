@@ -31,7 +31,7 @@ import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { Card, CardContent } from '../components/ui/card'
 import { Skeleton } from '../components/ui/skeleton'
-import { humanizeClaimRefusal } from '../lib/activity'
+import { humanizeClaimRefusal, taskWasRestarted } from '../lib/activity'
 import { fetchCallerIdentity, fetchTaskOperations } from '../lib/api'
 import { stageLabels, taskStateLabels } from '../lib/contracts'
 import { errorMessage } from '../lib/errors'
@@ -362,6 +362,7 @@ function TaskRow({
       </div>
       <div className="flex flex-wrap items-center gap-1.5 pr-3">
         <Badge variant="outline">{taskStateLabels[task.state] ?? task.state}</Badge>
+        {taskWasRestarted(task) && <Badge variant="mono">restarted</Badge>}
         {task.hold && <Badge variant="attention">On hold</Badge>}
         {item.needs_attention && <CircleAlert className="size-4 text-attention" aria-label="Needs operator" />}
       </div>
