@@ -471,6 +471,17 @@ func (s *Store) DismissRequirementVersion(ctx context.Context, requirementID str
 		dismissed   core.RequirementVersion
 	)
 	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		var err error
+		requirement, dismissed, err = dismissRequirementVersionTx(ctx, tx, q, requirementID, version)
+		return err
+	})
+	return requirement, dismissed, err
+}
+
+func dismissRequirementVersionTx(ctx context.Context, tx pgx.Tx, q *db.Queries, requirementID string, version int) (core.Requirement, core.RequirementVersion, error) {
+	var requirement core.Requirement
+	var dismissed core.RequirementVersion
+	err := func() error {
 		var currentVersion *int32
 		if err := tx.QueryRow(ctx, `SELECT current_version FROM requirements
 			WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspace(ctx), requirementID).Scan(&currentVersion); err != nil {
@@ -519,7 +530,7 @@ func (s *Store) DismissRequirementVersion(ctx context.Context, requirementID str
 		return insertRequirementEvent(ctx, q, "requirement.version_dismissed", store.DocumentDismissalEventPayload(ctx, map[string]any{
 			"workspace_id": workspace(ctx), "requirement_id": requirementID, "version": version, "dismissed_by": actor.ID,
 		}))
-	})
+	}()
 	return requirement, dismissed, err
 }
 

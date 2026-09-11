@@ -422,6 +422,10 @@ func (m *memory) ConfirmRequirementVersion(ctx context.Context, requirementID st
 func (m *memory) DismissRequirementVersion(ctx context.Context, requirementID string, version int) (core.Requirement, core.RequirementVersion, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.dismissRequirementVersionLocked(ctx, requirementID, version)
+}
+
+func (m *memory) dismissRequirementVersionLocked(ctx context.Context, requirementID string, version int) (core.Requirement, core.RequirementVersion, error) {
 	workspace := workspaceOrDefault(ctx, "")
 	key := memoryScopedKey{workspace: workspace, id: requirementID}
 	requirement, ok := m.requirements[key]

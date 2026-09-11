@@ -302,6 +302,17 @@ func (s *Store) DismissSystemDesignVersion(ctx context.Context, documentID strin
 		dismissed core.SystemDesignVersion
 	)
 	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		var err error
+		document, dismissed, err = dismissSystemDesignVersionTx(ctx, tx, q, documentID, version)
+		return err
+	})
+	return document, dismissed, err
+}
+
+func dismissSystemDesignVersionTx(ctx context.Context, tx pgx.Tx, q *db.Queries, documentID string, version int) (core.SystemDesign, core.SystemDesignVersion, error) {
+	var document core.SystemDesign
+	var dismissed core.SystemDesignVersion
+	err := func() error {
 		var current *int
 		if err := tx.QueryRow(ctx, `SELECT current_version FROM system_designs
 			WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspace(ctx), documentID).Scan(&current); err != nil {
@@ -346,7 +357,7 @@ func (s *Store) DismissSystemDesignVersion(ctx context.Context, documentID strin
 		return insertWorkspaceEvent(ctx, q, core.Event{Kind: "system_design.version_dismissed", Payload: core.JSONPayload(store.DocumentDismissalEventPayload(ctx, map[string]any{
 			"workspace_id": workspace(ctx), "document_id": documentID, "version": version, "dismissed_by": actor.ID,
 		}))})
-	})
+	}()
 	return document, dismissed, err
 }
 

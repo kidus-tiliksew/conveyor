@@ -261,6 +261,10 @@ func (m *memory) ConfirmSystemDesignVersion(ctx context.Context, documentID stri
 func (m *memory) DismissSystemDesignVersion(ctx context.Context, documentID string, version int) (core.SystemDesign, core.SystemDesignVersion, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.dismissSystemDesignVersionLocked(ctx, documentID, version)
+}
+
+func (m *memory) dismissSystemDesignVersionLocked(ctx context.Context, documentID string, version int) (core.SystemDesign, core.SystemDesignVersion, error) {
 	workspace := workspaceOrDefault(ctx, "")
 	key := memoryScopedKey{workspace: workspace, id: documentID}
 	document, ok := m.systemDesigns[key]

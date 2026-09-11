@@ -123,6 +123,11 @@ func (s *Store) migrate(ctx context.Context) error {
 				return fmt.Errorf("SingleStore migration %s: %w", file.name, err)
 			}
 		}
+		if file.version == 6 {
+			if err := s.migrateTaskStartOver(ctx); err != nil {
+				return fmt.Errorf("SingleStore migration %s: %w", file.name, err)
+			}
+		}
 		if file.version == 4 {
 			if err := s.migrateDocumentDismissalNotes(ctx); err != nil {
 				return fmt.Errorf("SingleStore migration %s: %w", file.name, err)
@@ -167,6 +172,23 @@ func (s *Store) migrateDocumentDismissalNotes(ctx context.Context) error {
 		}
 		if exists == 0 {
 			if _, err := s.db.ExecContext(ctx, "ALTER TABLE "+table+" ADD COLUMN dismissal_note TEXT"); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (s *Store) migrateTaskStartOver(ctx context.Context) error {
+	for _, column := range []struct{ name, definition string }{
+		{"supersedes", "VARCHAR(255) NULL"}, {"superseded_by", "VARCHAR(255) NULL"}, {"intake_operator_direction", "LONGTEXT NOT NULL DEFAULT ''"},
+	} {
+		var exists int
+		if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='tasks' AND column_name=?`, column.name).Scan(&exists); err != nil {
+			return err
+		}
+		if exists == 0 {
+			if _, err := s.db.ExecContext(ctx, "ALTER TABLE tasks ADD COLUMN "+column.name+" "+column.definition); err != nil {
 				return err
 			}
 		}

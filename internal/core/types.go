@@ -170,6 +170,10 @@ const (
 
 // Task is a unit of intended change. One task spans many jobs.
 type Task struct {
+	Supersedes              string `json:"supersedes,omitempty"`
+	SupersededBy            string `json:"superseded_by,omitempty"`
+	IntakeOperatorDirection string `json:"intake_operator_direction,omitempty"`
+
 	RepositoryInstallAttempt int `json:"repository_install_attempt,omitempty"`
 
 	ID                 string                `json:"id"`

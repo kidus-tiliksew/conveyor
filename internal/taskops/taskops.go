@@ -232,10 +232,33 @@ func (p *Plane) Perform(ctx context.Context, taskID string, cmd Command) (Outcom
 	if cmd.Kind == "" {
 		return Outcome{}, fmt.Errorf("taskops command is required")
 	}
+	if cmd.Kind == core.TaskStartOver {
+		return Outcome{}, fmt.Errorf("task start over requires Plane.StartOver and its operator input")
+	}
+
 	task, err := p.backend.ApplyTaskCommand(ctx, TaskLease{taskID: taskID, seal: &leaseSeal{}}, taskID, cmd)
 	if err != nil {
 		return Outcome{}, err
 	}
 	durable, _ := p.backend.(durableBackend)
 	return Outcome{Task: task, Command: cmd.Kind, Enqueued: task.State == core.TaskQueued && durable != nil && durable.IsDurable()}, nil
+}
+
+// StartOver admits the compound operator command. The backend checks replay,
+// authorization and state under the same lock as cancellation and creation.
+// req-task-lifecycle-and-queue REQ-7, AC-7.1 through AC-7.5.
+func (p *Plane) StartOver(ctx context.Context, request core.TaskStartOverRequest) (core.TaskStartOverResult, error) {
+	if p == nil || p.backend == nil {
+		return core.TaskStartOverResult{}, fmt.Errorf("taskops plane requires a backend")
+	}
+	if err := request.Validate(); err != nil {
+		return core.TaskStartOverResult{}, err
+	}
+	backend, ok := p.backend.(interface {
+		StartOverTaskCommand(context.Context, TaskLease, core.TaskStartOverRequest) (core.TaskStartOverResult, error)
+	})
+	if !ok {
+		return core.TaskStartOverResult{}, fmt.Errorf("taskops backend does not support start over")
+	}
+	return backend.StartOverTaskCommand(ctx, TaskLease{taskID: request.TaskID, command: string(core.TaskStartOver), seal: &leaseSeal{}}, request)
 }

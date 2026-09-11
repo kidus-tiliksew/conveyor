@@ -203,6 +203,20 @@ removes the local worktree, keeping the branch.
 
 ## Checkpoints, plan revision, recovery
 
+An operator can start an open task over with `POST /v1/tasks/{id}/restart`,
+providing `request_id`, a required `reason` of at most 200 characters, and an
+optional `note` of at most 2000 characters. The request cancels the task and its
+non-terminal work orders, dismisses its own pending requirement and System
+Design proposals with the note, and creates one linked successor carrying its
+body, repository, base branch, open dependencies, attached context, frozen
+policy, and previous approved plan as reference context. The successor starts
+at triage on a new assigned branch and receives the reason and note as operator
+direction on its first work order. The API requires `operate_gates`, plus
+`confirm_documents` when pending proposals must be dismissed. An identical
+request ID replays the original result; terminal tasks otherwise require
+`POST /v1/tasks`. This API never resets or changes the retired branch or
+worktree and does not close its pull request.
+
 Two escape hatches let an agent stop without failing:
 
 An **operator checkpoint** is for authority conflicts: the plan collides with

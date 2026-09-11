@@ -93,6 +93,7 @@ func RunAll(t *testing.T, factory Factory) {
 			return BlueprintFixture{x.Backend, x.Context, x.Workspace}
 		})
 	})
+	run("TaskStartOver", func(t *testing.T) { runTaskStartOver(t, factory) })
 	run("Requirements", func(t *testing.T) { RunRequirementConformance(t, requirements) })
 	run("VersionDismissal", func(t *testing.T) { RunVersionDismissalConformance(t, requirements) })
 	run("Lineage", func(t *testing.T) {
