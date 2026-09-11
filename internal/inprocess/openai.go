@@ -261,7 +261,11 @@ func (client *OpenAI) Run(ctx context.Context, model string, input Input) (Resul
 		attempts = try
 		raw, statusCode, status, requestID, err = attempt()
 		transient := err != nil || statusCode == http.StatusTooManyRequests || statusCode >= 500
-		if !transient && statusCode >= 200 && statusCode < 300 {
+		contextExceeded := responseContextExceeded(raw)
+		if contextExceeded {
+			transient = false
+		}
+		if !contextExceeded && !transient && statusCode >= 200 && statusCode < 300 {
 			if failure, failed := embeddedResponseFailure(raw); failed {
 				if failure.retryable() {
 					transient = true
@@ -306,7 +310,9 @@ func (client *OpenAI) Run(ctx context.Context, model string, input Input) (Resul
 	var decoded responsesBody
 	var decodeErr error
 	outputText := ""
-	if statusCode < 200 || statusCode >= 300 {
+	if responseContextExceeded(raw) {
+		diagnostic.Phase = "context_window_exceeded"
+	} else if statusCode < 200 || statusCode >= 300 {
 		diagnostic.Retryable = statusCode == http.StatusTooManyRequests || statusCode >= 500
 		if input.OutputSchema != nil && structuredOutputRejected(raw) {
 			diagnostic.Phase = "structured_output_unsupported"
@@ -340,6 +346,9 @@ func (client *OpenAI) Run(ctx context.Context, model string, input Input) (Resul
 	transcript, stats, redactErr := client.auditEnvelope(ctx, auditRequestValue, map[string]any{"response": responseValue, "diagnostic": diagnostic})
 	if redactErr != nil {
 		return Result{Diagnostic: &diagnostic}, redactErr
+	}
+	if diagnostic.Phase == "context_window_exceeded" {
+		return Result{Transcript: transcript, Redactions: stats, Diagnostic: &diagnostic}, fmt.Errorf("Responses API (%s) context_window_exceeded for model %q after %d attempt(s): provider rejected input that exceeds its context window; inspect assembled context size and model limits before retrying; preserve governing authority when reducing context", endpointHost, model, attempts)
 	}
 	if statusCode < 200 || statusCode >= 300 {
 		details := ""
@@ -545,13 +554,45 @@ type responseFailure struct {
 // output cap); a failed status without a contradicting code is treated as a
 // server-side fault, matching the provider's own "you can retry" guidance.
 func (f responseFailure) retryable() bool {
-	if f.status == "incomplete" {
+	if f.contextExceeded() || f.status == "incomplete" {
 		return false
 	}
 	if f.code == "" {
 		return true
 	}
 	return strings.Contains(f.code, "server_error") || strings.Contains(f.code, "rate_limit")
+}
+
+// Context-limit failures are deterministic even when a proxy labels them as
+// server_error or rate_limit. Inspect error fields only: successful model output
+// may legitimately discuss context limits and must not be classified as failure.
+func (f responseFailure) contextExceeded() bool {
+	code := strings.ToLower(f.code)
+	for _, marker := range []string{"context_length_exceeded", "context_window_exceeded", "max_context_length_exceeded", "input_too_long", "prompt_too_long"} {
+		if code == marker {
+			return true
+		}
+	}
+	message := strings.ToLower(f.message)
+	for _, marker := range []string{
+		"input exceeds the context window",
+		"exceeds the model's context window",
+		"maximum context length",
+		"context length exceeded",
+		"context window exceeded",
+		"prompt is too long",
+		"input is too long",
+	} {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func responseContextExceeded(raw []byte) bool {
+	failure, failed := embeddedResponseFailure(raw)
+	return failed && failure.contextExceeded()
 }
 
 func (f responseFailure) describe() string {

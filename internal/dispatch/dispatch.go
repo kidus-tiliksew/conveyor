@@ -233,6 +233,8 @@ const (
 	maxTriageRequestsPerTurn   = 16
 	maxTriageToolArgumentBytes = 8 << 10
 	maxTriageToolResultBytes   = 64 << 10
+	maxTriageInitialBytes      = 128 << 10
+	maxTriageInputBytes        = 256 << 10
 )
 
 func (d *Dispatcher) Enqueue(ctx context.Context, taskID string) {
@@ -667,6 +669,15 @@ func (d *Dispatcher) runTriageLoop(ctx context.Context, model string, input inpr
 		if len(history) > 0 || len(pendingOutputs) > 0 {
 			input.Continuation = &inprocess.Continuation{ResponseItems: append([]json.RawMessage(nil), history...), FunctionCallOutputs: append([]inprocess.FunctionCallOutput(nil), pendingOutputs...)}
 		}
+		if size := triageInputBytes(input); size > maxTriageInputBytes {
+			// Corpus-tool history is bounded too. Preserve AC-6.3 fail-open
+			// behavior, with the actual exhaustion cause in the durable audit.
+			audit, _ := json.Marshal(map[string]any{"triage_context_budget": map[string]any{"input_bytes": size, "limit_bytes": maxTriageInputBytes, "provider_call_skipped": true}})
+			transcripts = append(transcripts, audit)
+			fallback := neutralTriageResult(aggregate, transcripts, history, toolCalls)
+			fallback.Output = strings.Replace(fallback.Output, "Corpus grounding was incomplete because the tool loop budget was exhausted.", "Corpus grounding was incomplete because the input byte allowance was exhausted; no oversized continuation was sent.", 1)
+			return fallback, nil
+		}
 		result, err := d.Agent.Run(ctx, model, input)
 		aggregate.Model = result.Model
 		aggregate.TokensIn += result.TokensIn
@@ -729,7 +740,15 @@ func (d *Dispatcher) runTriageLoop(ctx context.Context, model string, input inpr
 				}
 			}
 			encoded, _ := json.Marshal(map[string]any{"result": entry, "untrusted_data": true})
-			pendingOutputs = append(pendingOutputs, inprocess.FunctionCallOutput{CallID: callID, Output: boundedTriagePromptJSON(encoded)})
+			output := inprocess.FunctionCallOutput{CallID: callID, Output: boundedTriagePromptJSON(encoded)}
+			candidate := input
+			candidate.Continuation = &inprocess.Continuation{ResponseItems: history, FunctionCallOutputs: append(append([]inprocess.FunctionCallOutput(nil), pendingOutputs...), output)}
+			// Reserve room for bounded refusal results and the final instruction.
+			if triageInputBytes(candidate) > maxTriageInputBytes-(8<<10) {
+				refusal, _ := json.Marshal(map[string]any{"untrusted_data": true, "result": map[string]any{"id": callID, "name": call.Name, "error": "corpus input byte budget exhausted; body not supplied or read; finish with available evidence"}})
+				output.Output = string(refusal)
+			}
+			pendingOutputs = append(pendingOutputs, output)
 		}
 	}
 	return neutralTriageResult(aggregate, transcripts, history, toolCalls), nil
@@ -751,7 +770,7 @@ func boundedTriagePromptJSON(encoded []byte) string {
 	if len(encoded) <= maxTriageToolResultBytes {
 		return string(encoded)
 	}
-	bounded, _ := json.Marshal(map[string]any{"truncated": true, "original_bytes": len(encoded), "preview": string(encoded[:maxTriageToolResultBytes])})
+	bounded, _ := json.Marshal(map[string]any{"error": "corpus result exceeds the byte budget; body not supplied or read; do not cite this result as authority", "original_bytes": len(encoded)})
 	return string(bounded)
 }
 
@@ -763,7 +782,7 @@ func boundedTriageToolOutput(output any) any {
 	if len(encoded) <= maxTriageToolResultBytes {
 		return output
 	}
-	return map[string]any{"truncated": true, "original_bytes": len(encoded), "preview": string(encoded[:maxTriageToolResultBytes])}
+	return map[string]any{"error": "corpus result exceeds the byte budget; body not supplied or read; do not cite this result as authority", "original_bytes": len(encoded)}
 }
 
 func (d *Dispatcher) modelInputArtifactSummary(ctx context.Context, cfg *config.Config, task core.Task) (int, []string) {
@@ -920,9 +939,17 @@ func (d *Dispatcher) buildStageInput(ctx context.Context, cfg *config.Config, st
 			continue
 		}
 		seen[artifact.ID] = true
+		if stage == core.StageTriage && artifact.TaskID != task.ID && artifact.SizeBytes > maxTriageInitialBytes {
+			fmt.Fprintf(&prompt, "\nContext artifact body omitted by triage byte budget: %s (%s, %d bytes, id %s)\n", artifact.Name, artifact.ContentType, artifact.SizeBytes, artifact.ID)
+			continue
+		}
 		_, content, getErr := d.Store.GetArtifact(ctx, artifact.ID)
 		if getErr != nil {
 			return inprocess.Input{}, fmt.Errorf("read context artifact %s for task %s: %w", artifact.ID, task.ID, getErr)
+		}
+		if stage == core.StageTriage && artifact.TaskID != task.ID && len(content) > maxTriageInitialBytes {
+			fmt.Fprintf(&prompt, "\nContext artifact body omitted by triage byte budget: %s (%s, %d bytes, id %s)\n", artifact.Name, artifact.ContentType, len(content), artifact.ID)
+			continue
 		}
 		if len(content) > maxModelAttachmentBytes {
 			return inprocess.Input{}, fmt.Errorf("context artifact %s (%s) exceeds the %d-byte model attachment limit", artifact.ID, artifact.Name, maxModelAttachmentBytes)
@@ -942,6 +969,9 @@ func (d *Dispatcher) buildStageInput(ctx context.Context, cfg *config.Config, st
 		input.Attachments = append(input.Attachments, inprocess.Attachment{ID: artifact.ID, Name: artifact.Name, ContentType: artifact.ContentType, Kind: kind, Content: content})
 	}
 	input.Prompt = prompt.String()
+	if stage == core.StageTriage {
+		return boundTriageInput(input, artifacts, task.ID)
+	}
 	return input, nil
 }
 

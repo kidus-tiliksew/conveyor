@@ -368,7 +368,7 @@ func TestPipelinePreparesTextImageDocumentAndAudioArtifactInputs(t *testing.T) {
 	if err := st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
 	}
-	largeText := bytes.Repeat([]byte("a"), (1<<20)+17)
+	largeText := bytes.Repeat([]byte("a"), (32<<10)+17)
 	for _, item := range []struct {
 		name, contentType string
 		content           []byte
@@ -445,6 +445,7 @@ func TestPipelineIncludesLineageDerivedSiblingArtifact(t *testing.T) {
 	}{
 		{name: "direct.md", taskID: task.ID, content: "direct context"},
 		{name: "sibling.md", taskID: sibling.ID, content: "sibling outcome"},
+		{name: "oversized-ci.log", taskID: sibling.ID, content: strings.Repeat("x", maxModelAttachmentBytes+1)},
 		{name: "unrelated.md", taskID: unrelated.ID, content: "must stay out"},
 	} {
 		if _, err = st.CreateArtifact(ctx, core.Artifact{Name: item.name, ContentType: "text/markdown", TaskID: item.taskID}, []byte(item.content)); err != nil {
@@ -470,7 +471,7 @@ func TestPipelineIncludesLineageDerivedSiblingArtifact(t *testing.T) {
 	if !names["direct.md"] || !names["sibling.md"] || names["unrelated.md"] || len(names) != 2 {
 		t.Fatalf("lineage-derived attachment names=%v", names)
 	}
-	for _, want := range []string{"untrusted historical context", "sibling_outcome", "Merged sibling [merged]", "```text"} {
+	for _, want := range []string{"untrusted historical context", "sibling_outcome", "Merged sibling [merged]", "```text", "body omitted by triage byte budget: oversized-ci.log"} {
 		if !strings.Contains(agent.input.Prompt, want) {
 			t.Fatalf("dispatch prompt omitted %q:\n%s", want, agent.input.Prompt)
 		}
