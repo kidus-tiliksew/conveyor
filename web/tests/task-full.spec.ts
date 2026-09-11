@@ -3511,6 +3511,7 @@ for (const surface of ['full', 'sheet']) {
     test(`task context card confirms removal of both tiers on ${surface}${archived ? ' when archived' : ''}`, async ({
       page,
     }) => {
+      await page.setViewportSize({ width: 1100, height: 900 })
       const { changes } = await mockContextManagement(page, { archived })
       await page.goto(`/tasks/operator-checkpoint${surface === 'full' ? '/full' : ''}`)
       const card = page.getByRole('region', { name: 'Attached context' })

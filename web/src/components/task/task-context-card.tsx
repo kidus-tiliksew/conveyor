@@ -270,7 +270,7 @@ function ContextRow({
   children: React.ReactNode
 }) {
   return (
-    <li className="flex items-baseline gap-3 py-1.5 text-sm">
+    <li className="flex flex-wrap items-baseline gap-x-3 gap-y-1.5 py-1.5 text-sm">
       <span className="w-16 shrink-0 text-[10px] font-medium uppercase tracking-wider text-faint">{kind}</span>
       {children}
       <span className="ml-auto shrink-0 font-mono text-[11px] text-faint">{meta}</span>
