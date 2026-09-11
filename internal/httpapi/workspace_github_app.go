@@ -127,7 +127,10 @@ func (s *Server) createWorkspaceGitHubAppManifest(w http.ResponseWriter, r *http
 		return
 	}
 	path := base.String() + "/v1/workspaces/" + url.PathEscape(workspace) + "/github-app"
-	manifest := map[string]any{"name": "Conveyor " + record.Name, "url": base.String(), "public": true, "redirect_url": path + "/callback", "setup_url": path + "/setup", "setup_on_update": true, "hook_attributes": map[string]bool{"active": false}, "default_permissions": map[string]string{"metadata": "read", "contents": "write", "pull_requests": "write", "issues": "write", "statuses": "write"}}
+	// GitHub requires hook_attributes.url even when delivery is disabled.
+	// Reuse the public homepage to satisfy the manifest contract; this is
+	// not a webhook receiver and no events are subscribed (DEC-41).
+	manifest := map[string]any{"name": "Conveyor " + record.Name, "url": base.String(), "public": true, "redirect_url": path + "/callback", "setup_url": path + "/setup", "setup_on_update": true, "hook_attributes": map[string]any{"active": false, "url": base.String()}, "default_permissions": map[string]string{"metadata": "read", "contents": "write", "pull_requests": "write", "issues": "write", "statuses": "write"}}
 	s.setAppReturnCookie(w, r, workspace, cookie)
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, map[string]any{"manifest": manifest, "state": state})
