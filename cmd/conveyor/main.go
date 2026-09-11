@@ -3,10 +3,14 @@
 package main
 
 import (
+	"bufio"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"strings"
 	"text/tabwriter"
 
@@ -15,6 +19,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/envfile"
 	"github.com/kidus-tiliksew/conveyor/internal/releaseinfo"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 	"gopkg.in/yaml.v3"
 )
 
@@ -366,12 +371,22 @@ func taskCmd() *cobra.Command {
 				result["spec"] = spec
 			}
 			out, _ := json.MarshalIndent(result, "", "  ")
-			fmt.Println(string(out))
+			fmt.Fprintln(cmd.OutOrStdout(), string(out))
+			if t.SupersededBy != "" {
+				fmt.Fprintf(cmd.ErrOrStderr(), "Started over as %s\n", t.SupersededBy)
+			}
+			if t.Supersedes != "" {
+				fmt.Fprintf(cmd.ErrOrStderr(), "Restarted from %s\n", t.Supersedes)
+				if t.IntakeOperatorDirection != "" {
+					fmt.Fprintln(cmd.ErrOrStderr(), t.IntakeOperatorDirection)
+				}
+			}
 			return nil
 		},
 	}
 
 	cmd.AddCommand(newCmd, listCmd, showCmd,
+		restartTaskCmd(),
 		closeTaskCmd(),
 		addTaskDependencyCmd(),
 		removeTaskDependencyCmd(),
@@ -679,4 +694,139 @@ func doneCmd() *cobra.Command {
 		},
 	}
 	return cmd
+}
+
+func restartTaskCmd() *cobra.Command {
+	var reason, note, noteFile, requestID string
+	var yes bool
+	command := &cobra.Command{
+		Use: "restart <id>", Short: "Retire a task and create a fresh successor", Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if !regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`).MatchString(args[0]) {
+				return fmt.Errorf("invalid task id")
+			}
+			if cmd.Flags().Changed("note") && cmd.Flags().Changed("note-file") {
+				return fmt.Errorf("--note and --note-file are mutually exclusive")
+			}
+			if cmd.Flags().Changed("note-file") {
+				data, err := os.ReadFile(noteFile)
+				if err != nil {
+					return fmt.Errorf("read --note-file: %w", err)
+				}
+				note = string(data)
+			}
+			if !cmd.Flags().Changed("request-id") {
+				var random [16]byte
+				if _, err := rand.Read(random[:]); err != nil {
+					return err
+				}
+				requestID = hex.EncodeToString(random[:])
+			}
+			request := core.TaskStartOverRequest{TaskID: args[0], RequestID: requestID, Reason: reason, Note: note}
+			if err := request.Validate(); err != nil {
+				return err
+			}
+			c := newClient()
+			if c.token == "" {
+				return fmt.Errorf("a credential is required for task restart; run `conveyor auth login`")
+			}
+			return runTaskRestart(cmd, c, request, yes, restartInputIsTerminal(cmd.InOrStdin()))
+		},
+	}
+	command.Flags().StringVar(&reason, "reason", "", "required operator reason (at most 200 characters)")
+	command.Flags().StringVar(&note, "note", "", "operator note (at most 2000 characters)")
+	command.Flags().StringVar(&noteFile, "note-file", "", "read the operator note from a file")
+	command.Flags().StringVar(&requestID, "request-id", "", "idempotency key (generated when omitted; at most 200 characters)")
+	command.Flags().BoolVar(&yes, "yes", false, "confirm the restart after displaying its preview")
+	return command
+}
+
+func restartInputIsTerminal(input io.Reader) bool {
+	file, ok := input.(*os.File)
+	return ok && term.IsTerminal(int(file.Fd()))
+}
+
+// runTaskRestart sends exactly one mutation after a complete preview and
+// explicit operator confirmation (req-task-lifecycle-and-queue REQ-7).
+func runTaskRestart(cmd *cobra.Command, c *client, request core.TaskStartOverRequest, yes, terminal bool) error {
+	out := cmd.OutOrStdout()
+	fmt.Fprintf(out, "Request ID: %s (reuse with --request-id on retry and keep the same reason and note)\n", request.RequestID)
+	task, err := c.getTask(request.TaskID)
+	if err != nil {
+		return fmt.Errorf("read task preview: %w", err)
+	}
+	fmt.Fprintf(out, "Start over task %s: %s\nReason: %s\n", task.ID, task.Title, request.Reason)
+	if request.Note != "" {
+		fmt.Fprintf(out, "Operator note: %s\n", request.Note)
+	}
+	activity, err := c.taskRestartActivity(request.TaskID)
+	if err != nil {
+		return fmt.Errorf("read work-order preview: %w", err)
+	}
+	fmt.Fprintln(out, "Non-terminal work orders to cancel:")
+	count := 0
+	for _, order := range activity.WorkOrders {
+		if order.State == core.WorkOrderCompleted || order.State == core.WorkOrderCancelled {
+			continue
+		}
+		fmt.Fprintf(out, "  %s (%s, %s)\n", order.ID, order.Stage, order.State)
+		count++
+	}
+	if count == 0 {
+		fmt.Fprintln(out, "  none")
+	}
+	proposals, err := c.taskRestartProposals(request.TaskID)
+	if err != nil {
+		return fmt.Errorf("read pending-proposal preview: %w", err)
+	}
+	fmt.Fprintln(out, "Pending task-authored proposals to dismiss:")
+	for _, p := range proposals {
+		fmt.Fprintf(out, "  %s v%d (%s): %s\n", p.ID, p.Version, p.Tier, p.Title)
+	}
+	if len(proposals) == 0 {
+		fmt.Fprintln(out, "  none")
+	}
+	// Recorded events are historical context, not proof of current forge state.
+	for _, event := range activity.Events {
+		if event.Kind != "pull_request.opened" {
+			continue
+		}
+		var recorded struct {
+			URL    string `json:"url"`
+			Number int    `json:"number"`
+		}
+		if json.Unmarshal(event.Payload, &recorded) == nil {
+			fmt.Fprintf(out, "Recorded pull request: #%d %s (historical)\n", recorded.Number, recorded.URL)
+		}
+	}
+	pr, err := c.restartPullRequest(cmd.Context(), task)
+	if err != nil {
+		fmt.Fprintln(out, "Open pull request: unknown")
+		return fmt.Errorf("cannot confirm restart while pull request state is unknown: %w", err)
+	}
+	if pr.Number == 0 {
+		fmt.Fprintln(out, "Open pull request: none")
+	} else {
+		fmt.Fprintf(out, "Open pull request to close: #%d %s\n", pr.Number, pr.URL)
+	}
+	fmt.Fprintln(out, "The task will be cancelled and a successor created on a new branch. The retired branch and worktree are preserved.")
+	if !yes {
+		if !terminal {
+			return fmt.Errorf("stdin is not a terminal; restart was not sent; pass --yes to confirm")
+		}
+		fmt.Fprint(out, "Start over? Type y to confirm: ")
+		answer, err := bufio.NewReader(cmd.InOrStdin()).ReadString('\n')
+		if err != nil && err != io.EOF {
+			return fmt.Errorf("read confirmation: %w", err)
+		}
+		if strings.TrimSpace(answer) != "y" {
+			return fmt.Errorf("restart cancelled; confirmation was not y")
+		}
+	}
+	result, err := c.restartTask(request)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "Successor: %s\nBranch: %s\nRun: conveyor --workspace %s run %s\n", result.Successor.ID, result.Successor.Branch, result.Successor.Workspace, result.Successor.ID)
+	return nil
 }

@@ -66,7 +66,8 @@ Create and inspect tasks. Titles are always generated from the body.
 |---|---|
 | `conveyor task new` | Create a task. `--repo` (required), `-m/--message` for the body, `--base` (default `main`), `--depends-on <id>` (repeatable), `--hold`, `--setup <name>`, `--spec-approval` and `--merge-approval` (`default`, `on`, or `off`). |
 | `conveyor task list` | List tasks: ID, state, repo, source, title. |
-| `conveyor task show <id>` | Show a task and its jobs as JSON. |
+| `conveyor task show <id>` | Show a task and its jobs as JSON on stdout. Supersession links and successor operator reason/note also appear on stderr. |
+| `conveyor task restart <id>` | Start a non-terminal task over. Required `--reason <text>`; optional `--note <text>` or `--note-file <path>`, `--request-id <id>`, and `--yes`. Preview affected orders, proposals, and the open pull request, then require terminal confirmation. |
 | `conveyor task close <id>` | Cancel a non-terminal task. `--reason` is required. |
 | `conveyor task link <task> <dependency>` | Make an existing open task depend on another open task. `--reason` and `--request-id` are required; cycles are rejected. |
 | `conveyor task unlink <task> <dependency>` | Remove one blocking dependency edge. `--reason` and `--request-id` required. |
@@ -75,6 +76,24 @@ Create and inspect tasks. Titles are always generated from the body.
 | `conveyor task request-changes <id>` | Bounce work at the merge gate. `-f/--feedback` is required and goes verbatim to the next implementation order. |
 | `conveyor task reject <id>` | Reject at a human gate. `--reason` required. |
 | `conveyor task redirect <id>` | Redirect at a human gate. `--reason` and `--message` required. |
+
+`task restart` prints a request ID before reading the preview. Reuse it with
+`--request-id` and the same reason and note if the request fails or its response
+is lost. Reasons and request IDs allow at most 200 characters; notes allow 2000.
+The preview reads task activity and pending task-authored document proposals
+through the authenticated API. It reads current open pull request state from
+GitHub using `CONVEYOR_GIT_TOKEN` or the local Git credential helper and the
+workspace's repository configuration. Recorded pull request events are shown
+as history. An unavailable read stops the command; an unknown pull request state
+cannot be confirmed, even with `--yes`.
+
+Without `--yes`, stdin must be a terminal and the operator must type `y`.
+Non-terminal stdin exits without restarting. After confirmation, the CLI sends
+one restart request and prints the successor ID, branch, and `conveyor run`
+command. The server cancels the retired task and its non-terminal orders,
+dismisses its pending document proposals, and attempts to close its open pull
+request. Its branch and worktree are preserved. Server refusals retain the
+server's message and exit non-zero.
 
 Note the naming split: `conveyor task setup` changes a task's frozen
 workspace setup; `conveyor config init-execution` creates your local
