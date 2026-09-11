@@ -7,6 +7,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 
@@ -14,6 +17,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/monitor"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
 )
 
@@ -318,4 +322,103 @@ func matchingPersonalAccessToken(value string, tokens []core.PersonalAccessToken
 		}
 	}
 	return core.PersonalAccessToken{}, false
+}
+
+// Restart preview reads stay on the authenticated operator surfaces
+// (req-task-lifecycle-and-queue AC-7.1 through AC-7.5; component-runtime).
+type taskRestartActivity struct {
+	WorkOrders []core.WorkOrder `json:"work_orders"`
+	Events     []core.Event     `json:"events"`
+}
+
+func (c *client) taskRestartActivity(id string) (taskRestartActivity, error) {
+	var activity taskRestartActivity
+	err := c.do(http.MethodGet, "/v1/tasks/"+url.PathEscape(id)+"/activity", nil, &activity)
+	return activity, err
+}
+
+func (c *client) taskRestartProposals(id string) ([]core.PendingProposal, error) {
+	var response struct {
+		Items []core.PendingProposal `json:"items"`
+	}
+	if err := c.do(http.MethodGet, "/v1/pending-proposals", nil, &response); err != nil {
+		return nil, err
+	}
+	var result []core.PendingProposal
+	for _, p := range response.Items {
+		if p.OriginType == "task" && p.OriginID == id && p.Tier != "task_context" {
+			result = append(result, p)
+		}
+	}
+	return result, nil
+}
+
+func (c *client) restartTask(request core.TaskStartOverRequest) (core.TaskStartOverResult, error) {
+	var result core.TaskStartOverResult
+	if c.token == "" {
+		return result, fmt.Errorf("a credential is required for task restart; run `conveyor auth login`")
+	}
+	if err := request.Validate(); err != nil {
+		return result, err
+	}
+	body, err := json.Marshal(request)
+	if err != nil {
+		return result, err
+	}
+	err = c.do(http.MethodPost, "/v1/tasks/"+url.PathEscape(request.TaskID)+"/restart", body, &result)
+	return result, err
+}
+
+func (c *client) restartPullRequest(ctx context.Context, task core.Task) (github.SubmissionPullRequest, error) {
+	var empty github.SubmissionPullRequest
+	cfg, err := c.getWorkspaceConfig()
+	if err != nil {
+		return empty, fmt.Errorf("read repository configuration: %w", err)
+	}
+	repo := ""
+	for _, entry := range cfg.Document.Repos {
+		if entry.Name == task.Repo {
+			repo = entry.GitHub
+			break
+		}
+	}
+	parts := strings.Split(repo, "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" || strings.ContainsAny(repo, " ?#%\\") || task.Branch == "" {
+		return empty, fmt.Errorf("task repository has no usable GitHub repository or branch in workspace configuration")
+	}
+	local, err := c.withLocalGitCredential()
+	if err != nil {
+		return empty, err
+	}
+	g := local.gitCredentials
+	token := g.token
+	if token == "" && os.Getenv(gitAskPassModeEnv) == "1" {
+		token = os.Getenv(gitAskPassTokenEnv)
+	}
+	ctx, cancel := context.WithTimeout(ctx, localGitPreflightTimeout)
+	defer cancel()
+	if token == "" {
+		fill := exec.CommandContext(ctx, "git", "credential", "fill")
+		fill.Env = isolatedChildEnvironment(g.environment(), map[string]string{"GIT_TERMINAL_PROMPT": "0"})
+		fill.Stdin = strings.NewReader("protocol=https\nhost=github.com\n\n")
+		fill.Stderr = io.Discard
+		raw, err := fill.Output()
+		if err != nil {
+			return empty, fmt.Errorf("resolve GitHub preview credential: %s", submitCredentialRemedy)
+		}
+		for _, line := range strings.Split(string(raw), "\n") {
+			if value, ok := strings.CutPrefix(line, "password="); ok {
+				token = value
+			}
+		}
+	}
+	if token == "" {
+		return empty, fmt.Errorf("resolve GitHub preview credential: %s", submitCredentialRemedy)
+	}
+	pr, err := github.SubmissionPRForBranch(github.WithCredential(ctx, token, "executing machine Git credential"), repo, task.Branch)
+	if err != nil {
+		clean, _ := g.redactor(token, c.token).Redact(err.Error())
+		return empty, fmt.Errorf("read GitHub pull request: %s", clean)
+	}
+	return pr, nil
 }
