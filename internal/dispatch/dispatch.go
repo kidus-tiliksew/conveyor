@@ -1293,46 +1293,7 @@ func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task c
 }
 
 func validateDoneCriteriaCoverage(result *pipeline.Review, hasPlan bool) error {
-	assessment := result.DoneCriteriaCoverage
-	if assessment == nil {
-		if hasPlan {
-			return fmt.Errorf("review done_criteria_coverage assessment is required when an execution plan is present")
-		}
-		result.DoneCriteriaCoverage = &core.DoneCriteriaAssessment{Summary: "No execution plan is available", Satisfied: []string{}, Unsatisfied: []string{}, Unverified: []string{}, Conflicts: []string{}}
-		return nil
-	}
-	if assessment.Applicable != hasPlan {
-		return fmt.Errorf("review done_criteria_coverage applicable=%t does not match execution plan present=%t", assessment.Applicable, hasPlan)
-	}
-	if strings.TrimSpace(assessment.Summary) == "" {
-		return fmt.Errorf("review done_criteria_coverage summary is required")
-	}
-	lists := []struct {
-		name  string
-		items []string
-	}{{"satisfied", assessment.Satisfied}, {"unsatisfied", assessment.Unsatisfied}, {"unverified", assessment.Unverified}, {"conflicts", assessment.Conflicts}}
-	if !hasPlan {
-		for _, list := range lists {
-			if len(list.items) != 0 {
-				return fmt.Errorf("review done_criteria_coverage %s must be empty when no execution plan exists", list.name)
-			}
-		}
-		return nil
-	}
-	seen := map[string]string{}
-	for _, list := range lists {
-		for _, item := range list.items {
-			key := strings.TrimSpace(item)
-			if key == "" {
-				return fmt.Errorf("review done_criteria_coverage %s contains an empty finding", list.name)
-			}
-			if prior, exists := seen[key]; exists {
-				return fmt.Errorf("review done_criteria_coverage finding %q appears in both %s and %s; the finding lists are disjoint", key, prior, list.name)
-			}
-			seen[key] = list.name
-		}
-	}
-	return nil
+	return store.ValidateDoneCriteriaCoverage(&result.DoneCriteriaCoverage, result.Verdict, hasPlan)
 }
 
 func validateReviewCitations(result *pipeline.Review, servedRequirements []core.ServedRequirementContext) error {

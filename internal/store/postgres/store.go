@@ -5643,6 +5643,21 @@ func (s *Store) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.T
 		if err != nil {
 			return notFound(err, "task %s", decision.TaskID)
 		}
+		lookup := store.ExecutionDocumentLookup(func(ctx context.Context, id string, version int) (core.SpecVersion, bool, error) {
+			var spec core.SpecVersion
+			err := tx.QueryRow(ctx, `SELECT s.content,s.approved FROM task_specs s
+JOIN tasks t ON t.id=s.task_id
+WHERE t.workspace_id=$1 AND s.task_id=$2 AND (($3::integer=0 AND s.approved) OR ($3::integer>0 AND s.version=$3))
+ORDER BY s.version DESC LIMIT 1`, workspace(ctx), id, version).Scan(&spec.Content, &spec.Approved)
+			if errors.Is(err, pgx.ErrNoRows) {
+				return core.SpecVersion{}, false, nil
+			}
+			return spec, err == nil, err
+		})
+		if err := store.ValidateReviewAcceptance(ctx, lookup, taskFromDB(before), &decision); err != nil {
+			return err
+		}
+
 		job, err := q.GetJob(ctx, db.GetJobParams{ID: decision.JobID, WorkspaceID: workspace(ctx)})
 		if err != nil || job.TaskID != decision.TaskID {
 			return fmt.Errorf("job %s does not belong to task %s in workspace %s", decision.JobID, decision.TaskID, workspace(ctx))

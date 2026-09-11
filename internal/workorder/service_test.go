@@ -3234,3 +3234,62 @@ func submissionTestHead(service *Service) string {
 	}
 	return "abc123"
 }
+
+func TestSubmitVerdictUnresolvedApprovalRemainsRetryable(t *testing.T) {
+	for _, gate := range []bool{false, true} {
+		t.Run(fmt.Sprintf("merge-gate=%t", gate), func(t *testing.T) {
+			ctx := store.WithWorkspace(t.Context(), "test")
+			st := store.NewMemory()
+			task := core.Task{ID: "unresolved-review", Workspace: "test", Repo: "app", PolicyVersion: 1, MergeApproval: gate, State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: time.Now()}
+			if err := st.CreateTask(ctx, task); err != nil {
+				t.Fatal(err)
+			}
+			spec, err := st.CreateSpecVersion(ctx, core.SpecVersion{TaskID: task.ID, Content: storetest.ReviewDoneCriteriaPlan})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = st.ApproveSpecVersion(ctx, task.ID, spec.Version); err != nil {
+				t.Fatal(err)
+			}
+			job := core.Job{ID: task.ID + "-review-1", TaskID: task.ID, Stage: core.StageReview, State: core.JobRunning}
+			if err = st.CreateJob(ctx, job); err != nil {
+				t.Fatal(err)
+			}
+			if err = storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageReview, ReviewRound: 1, ReviewSeat: 1, ServedRequirementSnapshot: []core.ServedRequirementContext{}, GovernanceSnapshot: &core.GovernanceSnapshot{}}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err = storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "review-session", ClientToken: "token", Lease: time.Minute}); err != nil {
+				t.Fatal(err)
+			}
+			cfg := &config.Config{Workspace: "test", MaxBounces: 2, Repos: []config.Repo{{Name: "app", GitHub: "acme/app"}}}
+			d := dispatch.New(st, cfg, nil)
+			d.DisableMemoryQueueForTest()
+			service := &Service{Store: st, Dispatcher: d, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
+			review := pipeline.Review{Verdict: "approve", ReasonCode: "approved", Summary: "focused tests pass", DoneCriteriaCoverage: &core.DoneCriteriaAssessment{Applicable: true, Summary: "mandatory aggregate unavailable", Unverified: []string{storetest.PR907MandatoryValidation}}}
+			before, _ := st.ListEvents(ctx, task.ID)
+			if _, err = service.SubmitVerdict(ctx, job.ID, "review-session", review); err == nil || !strings.Contains(err.Error(), "blocks approve") {
+				t.Fatalf("error=%v", err)
+			}
+			order, err := st.GetWorkOrder(ctx, job.ID)
+			if err != nil || order.State != core.WorkOrderClaimed || order.SessionID != "review-session" {
+				t.Fatalf("claim consumed: %+v err=%v", order, err)
+			}
+			after, _ := st.ListEvents(ctx, task.ID)
+			if string(core.JSONPayload(before)) != string(core.JSONPayload(after)) {
+				t.Fatal("refusal appended events")
+			}
+			if _, err = st.GetReviewPublication(ctx, job.ID); err == nil {
+				t.Fatal("refusal queued publication")
+			}
+			review.Verdict, review.ReasonCode, review.Feedback = "changes_requested", "validation", "Complete required validation"
+			if _, err = service.SubmitVerdict(ctx, job.ID, "review-session", review); err != nil {
+				t.Fatal(err)
+			}
+			order, _ = st.GetWorkOrder(ctx, job.ID)
+			bounced, _ := st.GetTask(ctx, task.ID)
+			if order.State != core.WorkOrderCompleted || bounced.State != core.TaskQueued || bounced.NextStage != core.StageImplement || bounced.ApprovedHeadSHA != "" {
+				t.Fatalf("truthful correction failed: order=%+v task=%+v", order, bounced)
+			}
+		})
+	}
+}

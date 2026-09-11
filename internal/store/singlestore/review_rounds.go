@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"sort"
@@ -288,6 +289,20 @@ func (s *Store) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.T
 		if err != nil {
 			return err
 		}
+		lookup := store.ExecutionDocumentLookup(func(ctx context.Context, id string, version int) (core.SpecVersion, bool, error) {
+			var spec core.SpecVersion
+			err := tx.QueryRowContext(ctx, `SELECT content,approved FROM task_specs
+WHERE workspace_id=? AND task_id=? AND ((?=0 AND approved) OR (?>0 AND version=?))
+ORDER BY version DESC LIMIT 1`, documentWorkspace(ctx), id, version, version, version).Scan(&spec.Content, &spec.Approved)
+			if errors.Is(err, sql.ErrNoRows) {
+				return core.SpecVersion{}, false, nil
+			}
+			return spec, err == nil, err
+		})
+		if err := store.ValidateReviewAcceptance(ctx, lookup, before, &decision); err != nil {
+			return err
+		}
+
 		job, err := scanJob(documentRow(ctx, tx, `SELECT `+jobColumns+` FROM jobs WHERE workspace_id=? AND id=?`, documentWorkspace(ctx), decision.JobID))
 		if err != nil || job.TaskID != decision.TaskID {
 			return fmt.Errorf("job %s does not belong to task %s in workspace %s", decision.JobID, decision.TaskID, documentWorkspace(ctx))

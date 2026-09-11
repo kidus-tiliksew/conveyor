@@ -2093,3 +2093,82 @@ func TestResolveMCPWorkspaceFallbackFailsClosed(t *testing.T) {
 		t.Fatalf("ambiguous omission error = %v", err)
 	}
 }
+
+func TestMCPApprovalCoverageGuardForUserWorkerAndRun(t *testing.T) {
+	for _, transport := range []string{"user", "worker", "run"} {
+		t.Run(transport, func(t *testing.T) {
+			ctx := store.WithWorkspace(t.Context(), "demo")
+			st := store.NewMemory()
+			task := core.Task{ID: "coverage-" + transport, Workspace: "demo", Repo: "conveyor", State: core.TaskRunning, NextStage: core.StageReview, PolicyVersion: 1, MergeApproval: true, CreatedAt: time.Now()}
+			if err := st.CreateTask(ctx, task); err != nil {
+				t.Fatal(err)
+			}
+			spec, err := st.CreateSpecVersion(ctx, core.SpecVersion{TaskID: task.ID, Content: storetest.ReviewDoneCriteriaPlan})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = st.ApproveSpecVersion(ctx, task.ID, spec.Version); err != nil {
+				t.Fatal(err)
+			}
+			job := core.Job{ID: task.ID + "-review-1", TaskID: task.ID, Stage: core.StageReview, State: core.JobRunning}
+			if err = st.CreateJob(ctx, job); err != nil {
+				t.Fatal(err)
+			}
+			if err = storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageReview, ReviewRound: 1, ReviewSeat: 1, ServedRequirementSnapshot: []core.ServedRequirementContext{}, GovernanceSnapshot: &core.GovernanceSnapshot{}}); err != nil {
+				t.Fatal(err)
+			}
+			claim := core.WorkOrderClaim{SessionID: "coverage-session", ClientToken: "token", ClaimantID: core.TaskRunClaimantID("owner"), Lease: time.Minute}
+			if transport == "worker" {
+				claim.ClaimantID, claim.WorkerID = "worker-a", "worker-a"
+			}
+			if _, err = storetest.For(st).ClaimWorkOrder(ctx, job.ID, claim); err != nil {
+				t.Fatal(err)
+			}
+			cfg := &config.Config{Workspace: "demo", MaxBounces: 2, Repos: []config.Repo{{Name: "conveyor"}}}
+			d := dispatch.New(st, cfg, nil)
+			d.DisableMemoryQueueForTest()
+			server := NewServer(st)
+			server.Workspace = "demo"
+			server.WorkOrders = &workorder.Service{Store: st, Dispatcher: d, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
+			request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+			credential := core.AuthenticatedCredential{ID: "owner", OwnerUserID: "owner", Kind: core.CredentialUser}
+			if transport == "run" {
+				credential.Kind, credential.RunWorkOrderID, credential.RunSessionID, credential.RunWorkspaceID = core.CredentialAgent, job.ID, claim.SessionID, "demo"
+			}
+			request = request.WithContext(store.WithCredential(request.Context(), credential))
+			if transport == "worker" {
+				request = request.WithContext(context.WithValue(request.Context(), workerContextKey{}, core.Worker{ID: "worker-a", Workspace: "demo"}))
+			}
+			args := map[string]any{"workspace_id": "demo", "work_order_id": job.ID, "session_id": claim.SessionID, "verdict": "approve", "reason_code": "approved", "summary": "focused checks pass", "feedback": "", "requirement_citations": map[string]any{"applicable": false}, "governance_assessment": map[string]any{"design_applicable": false, "decision_citable": false}, "done_criteria_coverage": map[string]any{"applicable": true, "summary": "mandatory validation unresolved", "unverified": []string{storetest.PR907MandatoryValidation}}}
+			before, _ := st.ListEvents(ctx, task.ID)
+			unresolved := args["done_criteria_coverage"]
+			for _, assessment := range []struct {
+				value any
+				want  string
+			}{
+				{nil, "assessment is required"},
+				{map[string]any{"summary": "omitted applicability"}, "does not match"},
+				{map[string]any{"summary": "false applicability", "applicable": false}, "does not match"},
+				{unresolved, "blocks approve: unresolved criteria in unverified"},
+			} {
+				args["done_criteria_coverage"] = assessment.value
+				if _, err = server.callMCPTool(request, "submit_review_verdict", args); err == nil || !strings.Contains(err.Error(), assessment.want) {
+					t.Fatalf("error=%v, want %s", err, assessment.want)
+				}
+			}
+			order, _ := st.GetWorkOrder(ctx, job.ID)
+			after, _ := st.ListEvents(ctx, task.ID)
+			if order.State != core.WorkOrderClaimed || string(core.JSONPayload(before)) != string(core.JSONPayload(after)) {
+				t.Fatal("MCP refusal consumed claim or appended events")
+			}
+			args["verdict"], args["reason_code"], args["feedback"] = "changes_requested", "validation", "Complete required validation"
+			if _, err = server.callMCPTool(request, "submit_review_verdict", args); err != nil {
+				t.Fatalf("corrected verdict: %v", err)
+			}
+			order, _ = st.GetWorkOrder(ctx, job.ID)
+			if order.State != core.WorkOrderCompleted {
+				t.Fatalf("corrected verdict order=%+v", order)
+			}
+		})
+	}
+}
