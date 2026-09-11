@@ -3328,11 +3328,259 @@ test('task context attachment keeps archived documents out of the picker', async
   const [requirements, designs] = await Promise.all([requirementRequest, designRequest])
   expect(new URL(requirements.url()).searchParams.has('include_archived')).toBe(false)
   expect(new URL(designs.url()).searchParams.has('include_archived')).toBe(false)
-  const dialog = page.getByRole('dialog', { name: 'Attach task context' })
+  const dialog = page.getByRole('dialog', { name: 'Manage task context' })
   await dialog.getByRole('combobox', { name: 'Search context' }).click()
   await expect(dialog.getByText('No confirmed documents yet.')).toBeVisible()
   await expect(dialog.getByText(/Archived requirement|Archived design/)).toHaveCount(0)
 })
+
+type ContextChange = {
+  add: { requirement_ids?: string[]; system_design_ids?: string[] }
+  remove: { requirement_ids?: string[]; system_design_ids?: string[] }
+}
+
+async function mockContextManagement(
+  page: Page,
+  options: { archived?: boolean; state?: string; failure?: boolean } = {},
+) {
+  const item = activity('operator-checkpoint', false)
+  item.task.state = options.state ?? 'running'
+  item.task.context = {
+    requirements: [{ id: 'req-attached', title: 'Attached requirement', version: 3, archived: options.archived }],
+    designs: [{ id: 'design-attached', title: 'Attached design', version: 2, archived: options.archived }],
+  }
+  const changes: ContextChange[] = []
+  await page.route('**/v1/tasks/operator-checkpoint/activity*', (route) => route.fulfill({ json: item }))
+  await page.route('**/v1/requirements?*', (route) =>
+    route.fulfill({
+      json: [
+        ...(!options.archived
+          ? [
+              {
+                requirement: { id: 'req-attached', title: 'Attached requirement', archived: false },
+                current_version: { version: 3 },
+              },
+            ]
+          : []),
+        { requirement: { id: 'req-new', title: 'New requirement', archived: false }, current_version: { version: 1 } },
+        {
+          requirement: { id: 'req-archived', title: 'Archived picker requirement', archived: true },
+          current_version: { version: 1 },
+        },
+      ],
+    }),
+  )
+  await page.route('**/v1/system-designs?*', (route) =>
+    route.fulfill({
+      json: [
+        ...(!options.archived
+          ? [
+              {
+                document: { id: 'design-attached', title: 'Attached design', archived: false },
+                current_version: { version: 2 },
+              },
+            ]
+          : []),
+        { document: { id: 'design-new', title: 'New design', archived: false }, current_version: { version: 1 } },
+        {
+          document: { id: 'design-archived', title: 'Archived picker design', archived: true },
+          current_version: { version: 1 },
+        },
+      ],
+    }),
+  )
+  await page.route('**/v1/tasks/operator-checkpoint/context?*', async (route) => {
+    const change = route.request().postDataJSON() as ContextChange
+    changes.push(change)
+    if (options.failure) {
+      await route.fulfill({
+        status: 409,
+        json: { error: 'task_terminal', message: 'Task is terminal; context cannot be changed.' },
+      })
+      return
+    }
+    item.task.context = {
+      requirements: [
+        ...(item.task.context?.requirements ?? []).filter((doc) => !change.remove.requirement_ids?.includes(doc.id)),
+        ...(change.add.requirement_ids ?? []).map((id) => ({ id, title: 'New requirement', version: 1 })),
+      ],
+      designs: [
+        ...(item.task.context?.designs ?? []).filter((doc) => !change.remove.system_design_ids?.includes(doc.id)),
+        ...(change.add.system_design_ids ?? []).map((id) => ({ id, title: 'New design', version: 1 })),
+      ],
+    }
+    await route.fulfill({ json: item.task.context })
+  })
+  return { changes }
+}
+
+for (const archived of [false, true]) {
+  test(`task context dialog removes both document tiers${archived ? ' including archived attachments' : ''}`, async ({
+    page,
+  }) => {
+    const { changes } = await mockContextManagement(page, { archived })
+    await page.goto('/tasks/operator-checkpoint/full')
+    await page.getByRole('button', { name: 'Attach context', exact: true }).click()
+    const dialog = page.getByRole('dialog', { name: 'Manage task context' })
+    await expect(dialog.getByRole('button', { name: 'Attach selected context' })).toBeDisabled()
+    if (archived) await expect(dialog.getByText('Archived', { exact: true })).toHaveCount(2)
+    await dialog.getByRole('combobox').click()
+    await expect(dialog.getByRole('option', { name: /Archived picker/ })).toHaveCount(0)
+    await dialog.getByRole('button', { name: 'Remove context Attached requirement', exact: true }).click()
+    await dialog.getByRole('button', { name: 'Remove context Attached design', exact: true }).click()
+    await dialog.getByRole('button', { name: 'Save context', exact: true }).click()
+    await expect(dialog).toHaveCount(0)
+    expect(changes).toEqual([
+      {
+        add: { requirement_ids: [], system_design_ids: [] },
+        remove: { requirement_ids: ['req-attached'], system_design_ids: ['design-attached'] },
+      },
+    ])
+    await expect(page.getByRole('region', { name: 'Attached context' })).toHaveCount(0)
+  })
+}
+
+test('task context dialog saves disjoint additions and removals', async ({ page }) => {
+  const { changes } = await mockContextManagement(page)
+  await page.goto('/tasks/operator-checkpoint/full')
+  await page.getByRole('button', { name: 'Attach context', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: 'Manage task context' })
+  await dialog.getByRole('button', { name: 'Remove context Attached requirement', exact: true }).click()
+  await dialog.getByRole('button', { name: 'Remove context Attached design', exact: true }).click()
+  await dialog.getByRole('combobox').click()
+  await dialog.getByRole('option', { name: /New requirement/ }).click()
+  await dialog.getByRole('option', { name: /New design/ }).click()
+  await dialog.getByRole('combobox').press('Escape')
+  await dialog.getByRole('button', { name: 'Save context', exact: true }).click()
+  await expect(dialog).toHaveCount(0)
+  expect(changes).toEqual([
+    {
+      add: { requirement_ids: ['req-new'], system_design_ids: ['design-new'] },
+      remove: { requirement_ids: ['req-attached'], system_design_ids: ['design-attached'] },
+    },
+  ])
+  const card = page.getByRole('region', { name: 'Attached context' })
+  await expect(card.getByRole('link', { name: 'New requirement' })).toBeVisible()
+  await expect(card.getByRole('link', { name: 'New design' })).toBeVisible()
+  await expect(card.getByRole('link', { name: /Attached/ })).toHaveCount(0)
+})
+
+test('task context dialog cancels removals by keeping or reselecting attached documents', async ({ page }) => {
+  const { changes } = await mockContextManagement(page)
+  await page.goto('/tasks/operator-checkpoint/full')
+  await page.getByRole('button', { name: 'Attach context', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: 'Manage task context' })
+  for (const title of ['Attached requirement', 'Attached design']) {
+    await dialog.getByRole('button', { name: `Remove context ${title}`, exact: true }).click()
+    await dialog.getByRole('button', { name: `Keep context ${title}`, exact: true }).click()
+    await expect(dialog.getByRole('button', { name: 'Attach selected context' })).toBeDisabled()
+    await dialog.getByRole('button', { name: `Remove context ${title}`, exact: true }).click()
+    await dialog.getByRole('combobox').click()
+    await dialog.getByRole('option', { name: new RegExp(title) }).click()
+    await dialog.getByRole('combobox').press('Escape')
+    await expect(dialog.getByRole('button', { name: 'Attach selected context' })).toBeDisabled()
+    await expect(dialog.getByRole('button', { name: `Remove context ${title}`, exact: true })).toBeVisible()
+  }
+  await dialog.getByRole('button', { name: 'Cancel', exact: true }).click()
+  expect(changes).toEqual([])
+})
+
+test('task context dialog still saves additions alone', async ({ page }) => {
+  const { changes } = await mockContextManagement(page)
+  await page.goto('/tasks/operator-checkpoint/full')
+  await page.getByRole('button', { name: 'Attach context', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: 'Manage task context' })
+  await dialog.getByRole('combobox').click()
+  await dialog.getByRole('option', { name: /New requirement/ }).click()
+  await dialog.getByRole('combobox').press('Escape')
+  await dialog.getByRole('button', { name: 'Attach selected context' }).click()
+  await expect(dialog).toHaveCount(0)
+  expect(changes).toEqual([
+    {
+      add: { requirement_ids: ['req-new'], system_design_ids: [] },
+      remove: { requirement_ids: [], system_design_ids: [] },
+    },
+  ])
+  await expect(
+    page.getByRole('region', { name: 'Attached context' }).getByRole('link', { name: 'New requirement' }),
+  ).toBeVisible()
+})
+
+for (const surface of ['full', 'sheet']) {
+  for (const archived of [false, true]) {
+    test(`task context card confirms removal of both tiers on ${surface}${archived ? ' when archived' : ''}`, async ({
+      page,
+    }) => {
+      const { changes } = await mockContextManagement(page, { archived })
+      await page.goto(`/tasks/operator-checkpoint${surface === 'full' ? '/full' : ''}`)
+      const card = page.getByRole('region', { name: 'Attached context' })
+      for (const [title, version] of [
+        ['Attached requirement', 3],
+        ['Attached design', 2],
+      ] as const) {
+        await card.getByRole('button', { name: `Remove context ${title}`, exact: true }).click()
+        const dialog = page.getByRole('dialog', { name: 'Remove task context' })
+        await expect(dialog).toContainText(`${title} · v${version}`)
+        const count = changes.length
+        await dialog.getByRole('button', { name: 'Cancel', exact: true }).click()
+        expect(changes).toHaveLength(count)
+        await expect(card.getByRole('link', { name: title })).toBeVisible()
+        await card.getByRole('button', { name: `Remove context ${title}`, exact: true }).click()
+        await dialog.getByRole('button', { name: 'Remove context', exact: true }).click()
+        await expect(dialog).toHaveCount(0)
+        await expect(card.getByRole('link', { name: title })).toHaveCount(0)
+      }
+      expect(changes).toEqual([
+        { add: {}, remove: { requirement_ids: ['req-attached'] } },
+        { add: {}, remove: { system_design_ids: ['design-attached'] } },
+      ])
+    })
+  }
+}
+
+for (const state of ['running', 'merged', 'closed']) {
+  for (const surface of ['full', 'sheet']) {
+    test(`task context removal is hidden on ${surface} for ${state === 'running' ? 'a viewer' : state + ' tasks'}`, async ({
+      page,
+    }) => {
+      await mockContextManagement(page, { state })
+      if (state === 'running')
+        await page.route('**/v1/me**', (route) => route.fulfill({ json: { id: 'usr_viewer', role: 'viewer' } }))
+      await page.goto(`/tasks/operator-checkpoint${surface === 'full' ? '/full' : ''}`)
+      await expect(page.getByRole('region', { name: 'Attached context' })).toBeVisible()
+      await expect(page.getByRole('button', { name: /^Remove context/ })).toHaveCount(0)
+      if (state === 'running') {
+        await expect(page.getByRole('button', { name: 'Attach context', exact: true })).toHaveCount(0)
+      } else {
+        // Keep the stale checkpoint projection to exercise the dialog's own terminal guard.
+        await page.getByRole('button', { name: 'Attach context', exact: true }).click()
+        const dialog = page.getByRole('dialog', { name: 'Manage task context' })
+        await expect(dialog.getByRole('button', { name: /^Remove context/ })).toHaveCount(0)
+        await expect(dialog.getByRole('button', { name: 'Attach selected context' })).toBeDisabled()
+      }
+    })
+  }
+}
+
+for (const surface of ['dialog', 'card']) {
+  test(`task context ${surface} preserves attachments and reports a refused removal`, async ({ page }) => {
+    const { changes } = await mockContextManagement(page, { failure: true })
+    await page.goto('/tasks/operator-checkpoint/full')
+    const card = page.getByRole('region', { name: 'Attached context' })
+    if (surface === 'dialog') {
+      await page.getByRole('button', { name: 'Attach context', exact: true }).click()
+      const dialog = page.getByRole('dialog', { name: 'Manage task context' })
+      await dialog.getByRole('button', { name: 'Remove context Attached requirement', exact: true }).click()
+      await dialog.getByRole('button', { name: 'Save context', exact: true }).click()
+    } else {
+      await card.getByRole('button', { name: 'Remove context Attached requirement', exact: true }).click()
+      await page.getByRole('dialog').getByRole('button', { name: 'Remove context', exact: true }).click()
+    }
+    await expect(page.getByRole('dialog')).toContainText('Task is terminal; context cannot be changed.')
+    await expect(card.getByRole('link', { name: 'Attached requirement' })).toBeVisible()
+    expect(changes).toHaveLength(1)
+  })
+}
 
 test('task context suggestions show justification and become attachments or disappear when resolved', async ({
   page,

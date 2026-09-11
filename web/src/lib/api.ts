@@ -666,7 +666,10 @@ export function fetchTasks() {
 }
 export async function updateTaskContext(
   taskId: string,
-  change: { add: { requirement_ids?: string[]; system_design_ids?: string[] }; remove: Record<string, never> },
+  change: {
+    add: { requirement_ids?: string[]; system_design_ids?: string[] }
+    remove: { requirement_ids?: string[]; system_design_ids?: string[] }
+  },
 ) {
   const response = await fetch(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/context`), {
     method: 'POST',
