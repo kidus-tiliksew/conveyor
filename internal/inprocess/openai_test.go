@@ -645,3 +645,59 @@ func TestOpenAIRunDoesNotRetryClientErrors(t *testing.T) {
 		t.Fatalf("attempts = %d, want 1", attempts)
 	}
 }
+
+func TestOpenAIRunDoesNotRetryContextWindowErrors(t *testing.T) {
+	t.Parallel()
+	for _, status := range []int{http.StatusOK, http.StatusBadRequest, http.StatusTooManyRequests, http.StatusInternalServerError} {
+		for _, providerCode := range []string{"server_error", "rate_limit_exceeded", "context_length_exceeded"} {
+			t.Run(fmt.Sprintf("%d/%s", status, providerCode), func(t *testing.T) {
+				attempts := 0
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					attempts++
+					w.Header().Set("x-request-id", "context-request")
+					w.WriteHeader(status)
+					_ = json.NewEncoder(w).Encode(map[string]any{
+						"status": "failed",
+						"error":  map[string]any{"code": providerCode, "message": "Your input exceeds the context window of this model. Please adjust your input and try again. secret-provider-key"},
+					})
+				}))
+				defer server.Close()
+				client := &OpenAI{APIKey: "secret-provider-key", BaseURL: server.URL, Client: server.Client(), RetryDelay: time.Millisecond}
+				result, err := client.Run(context.Background(), "gpt-5.6-luna", Input{Prompt: "work"})
+				if err == nil || !strings.Contains(err.Error(), "inspect assembled context size and model limits") || attempts != 1 {
+					t.Fatalf("attempts=%d err=%v", attempts, err)
+				}
+				d := result.Diagnostic
+				if d == nil || d.Phase != "context_window_exceeded" || d.Retryable || d.Attempts != 1 || d.HTTPStatus != status || d.ProviderCode != providerCode || d.UpstreamRequest != "context-request" {
+					t.Fatalf("diagnostic=%+v", d)
+				}
+				if len(result.Transcript) == 0 || !strings.Contains(string(result.Transcript), "context_window_exceeded") || !strings.Contains(string(result.Transcript), providerCode) {
+					t.Fatalf("missing audit diagnosis: %s", result.Transcript)
+				}
+				if strings.Contains(err.Error(), client.APIKey) || strings.Contains(string(result.Transcript), client.APIKey) {
+					t.Fatal("provider error leaked secret")
+				}
+			})
+		}
+	}
+}
+
+func TestResponseContextExceededUsesErrorFields(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		raw  string
+		want bool
+	}{
+		{"code only", `{"error":{"code":"context_length_exceeded"}}`, true},
+		{"maximum context", `{"error":{"code":"server_error","message":"This model's maximum context length is 100 tokens."}}`, true},
+		{"transient", `{"status":"failed","error":{"code":"server_error","message":"An error occurred while processing your request."}}`, false},
+		{"successful discussion", `{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"Your input exceeds the context window of this model."}]}]}`, false},
+		{"unrelated length", `{"error":{"code":"server_error","message":"Invalid output length."}}`, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := responseContextExceeded([]byte(test.raw)); got != test.want {
+				t.Fatalf("contextExceeded=%v want=%v", got, test.want)
+			}
+		})
+	}
+}
