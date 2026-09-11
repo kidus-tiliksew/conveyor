@@ -8,9 +8,9 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/kidus-tiliksew/conveyor/cmd/conveyor/localgit"
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
-	"github.com/kidus-tiliksew/conveyor/internal/gitx"
 )
 
 type registeredWorktree struct {
@@ -78,7 +78,7 @@ func checkoutTaskWithCheckpointAtRoot(ctx context.Context, branch, base, repo, r
 	// Identity precedes fetches, ref inspection, worktree reuse, and creation.
 	// A directory label is never accepted as proof of repository ownership
 	// (design-git-delivery).
-	if err := gitx.VerifyRepositoryIdentity(ctx, root, repo, repoURL); err != nil {
+	if err := localgit.VerifyRepositoryIdentity(ctx, root, repo, repoURL); err != nil {
 		return "", nil, err
 	}
 	worktrees, err := listRegisteredWorktrees(ctx, root)
@@ -347,7 +347,7 @@ func checkpointAssignedTaskWorktreeAt(ctx context.Context, checkout, branch, rep
 		}
 		return nil, fmt.Errorf("checkpoint checkout %s is not a git repository: %w", checkout, err)
 	}
-	if err = gitx.VerifyRepositoryIdentity(ctx, root, repo, repoURL); err != nil {
+	if err = localgit.VerifyRepositoryIdentity(ctx, root, repo, repoURL); err != nil {
 		return nil, err
 	}
 	primary, err := primaryWorktreeRoot(ctx, root)
@@ -458,7 +458,7 @@ func removeTaskWorktreeAtPrimary(ctx context.Context, primary, branch string, st
 	if state != core.TaskMerged && state != core.TaskClosed {
 		return result, fmt.Errorf("task must be merged or closed before worktree cleanup (state %s)", state)
 	}
-	cleanup, err := gitx.CleanupTaskWorktree(ctx, primary, branch)
+	cleanup, err := localgit.CleanupTaskWorktree(ctx, primary, branch)
 	return worktreeCleanupResult(cleanup), err
 }
 

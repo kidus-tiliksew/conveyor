@@ -215,6 +215,12 @@ func (s *Server) abandonPlanningSession(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
+	if s.Planning != nil {
+		if err = s.Planning.CloseSessionSnapshot(r.Context(), session.ID); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
 	writeJSON(w, http.StatusOK, session)
 }
 

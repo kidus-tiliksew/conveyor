@@ -20,7 +20,7 @@ workspace: demo                  # optional bootstrap workspace
 max_bounces: 10                  # review rounds before parking at a human gate
 work_order_queue_timeout: 24h    # unclaimed orders go stale after this
 # pack_dir: /path/to/pack        # strict override of the embedded role prompts
-# cache_dir: ~/.conveyor/cache   # bare repo cache for checkout/diff flows
+# planning_snapshot_max_bytes: 536870912  # cap compressed and extracted snapshot bytes
 
 database:
   url: postgres://conveyor:conveyor@localhost:5432/conveyor?sslmode=disable

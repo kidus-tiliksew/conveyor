@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -17,7 +16,6 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
-	"github.com/kidus-tiliksew/conveyor/internal/gitx"
 	"github.com/kidus-tiliksew/conveyor/internal/inprocess"
 	"github.com/kidus-tiliksew/conveyor/internal/lineagecontext"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
@@ -754,9 +752,6 @@ func TestRecoverableToolErrorUsesCorrectedStatus(t *testing.T) {
 }
 
 func TestExplorationLazilyPinsConfiguredReposAndKeepsImmutableRevision(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not on PATH")
-	}
 	tmp := t.TempDir()
 	primary := createPlanningRepo(t, filepath.Join(tmp, "primary"), "README.md", "primary\n")
 	secondary := createPlanningRepo(t, filepath.Join(tmp, "secondary"), "internal/eligibility.go",
@@ -774,10 +769,8 @@ func TestExplorationLazilyPinsConfiguredReposAndKeepsImmutableRevision(t *testin
 		[]byte(largeText.String()), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	runPlanningGit(t, secondary, "add", ".")
-	runPlanningGit(t, secondary, "commit", "-m", "add binary fixture")
 	cfg := &config.Config{
-		Workspace: "demo", CacheDir: filepath.Join(tmp, "cache"),
+		Workspace: "demo",
 		Repos: []config.Repo{
 			{Name: "primary", URL: "file://" + primary, Base: "main"},
 			{Name: "secondary", URL: "file://" + secondary, Base: "main"},
@@ -792,7 +785,7 @@ func TestExplorationLazilyPinsConfiguredReposAndKeepsImmutableRevision(t *testin
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	st := store.NewMemory()
 	service := &Service{
-		Store: st, Git: gitx.NewManager(cfg.CacheDir, ""),
+		Store: st, Git: planningSnapshotManager(t, cfg), CredentialContext: planningTestCredential,
 		ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil },
 	}
 	if _, err := service.CreateSession(ctx, CreateSessionInput{
@@ -866,8 +859,6 @@ func TestExplorationLazilyPinsConfiguredReposAndKeepsImmutableRevision(t *testin
 		[]byte("package internal\n\nfunc eligible() bool { return false }\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	runPlanningGit(t, secondary, "add", ".")
-	runPlanningGit(t, secondary, "commit", "-m", "advance secondary")
 	read, err := service.explorationTool(ctx, pinned, toolCall{
 		Name: "read_file", ArgumentsJSON: `{"repo":"secondary","path":"internal/eligibility.go","offset":1,"limit":10}`,
 	})
@@ -940,7 +931,7 @@ func TestCreateSessionAcceptsActivePlanningEnvironmentOverrideOnly(t *testing.T)
 	tmp := t.TempDir()
 	primary := createPlanningRepo(t, filepath.Join(tmp, "primary"), "README.md", "primary\n")
 	cfg := &config.Config{
-		Workspace: "demo", CacheDir: filepath.Join(tmp, "cache"),
+		Workspace:      "demo",
 		Repos:          []config.Repo{{Name: "primary", URL: "file://" + primary, Base: "main"}},
 		PlanningModels: []string{"stored-planner"},
 		ExecutionSettings: &config.ContextualExecutionSettings{ControlPlane: config.ControlPlaneSettings{
@@ -949,7 +940,7 @@ func TestCreateSessionAcceptsActivePlanningEnvironmentOverrideOnly(t *testing.T)
 	}
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	service := &Service{
-		Store: store.NewMemory(), Git: gitx.NewManager(cfg.CacheDir, ""),
+		Store: store.NewMemory(), Git: planningSnapshotManager(t, cfg), CredentialContext: planningTestCredential,
 		ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil },
 	}
 	session, err := service.CreateSession(ctx, CreateSessionInput{})
@@ -1030,9 +1021,6 @@ func TestPlanningRoleDocumentsEveryRegisteredTool(t *testing.T) {
 
 func createPlanningRepo(t *testing.T, directory, file, content string) string {
 	t.Helper()
-	runPlanningGit(t, "", "init", "-b", "main", directory)
-	runPlanningGit(t, directory, "config", "user.email", "planning@example.com")
-	runPlanningGit(t, directory, "config", "user.name", "Planning Test")
 	target := filepath.Join(directory, file)
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		t.Fatal(err)
@@ -1040,18 +1028,7 @@ func createPlanningRepo(t *testing.T, directory, file, content string) string {
 	if err := os.WriteFile(target, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	runPlanningGit(t, directory, "add", ".")
-	runPlanningGit(t, directory, "commit", "-m", "initial")
 	return directory
-}
-
-func runPlanningGit(t *testing.T, directory string, args ...string) {
-	t.Helper()
-	command := exec.Command("git", args...)
-	command.Dir = directory
-	if output, err := command.CombinedOutput(); err != nil {
-		t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, output)
-	}
 }
 
 func TestServiceFinalizesUnconfirmedRequirementAndArchivesTranscript(t *testing.T) {
@@ -1323,7 +1300,7 @@ func TestCreateSessionDeclaresGoalWithProvisionalTitle(t *testing.T) {
 	tmp := t.TempDir()
 	repo := createPlanningRepo(t, filepath.Join(tmp, "primary"), "README.md", "planning fixture\n")
 	cfg := &config.Config{
-		Workspace: "demo", CacheDir: filepath.Join(tmp, "cache"),
+		Workspace:      "demo",
 		Repos:          []config.Repo{{Name: "primary", URL: "file://" + repo, Base: "main"}},
 		PlanningModels: []string{"planner"},
 		ExecutionSettings: &config.ContextualExecutionSettings{ControlPlane: config.ControlPlaneSettings{
@@ -1333,7 +1310,7 @@ func TestCreateSessionDeclaresGoalWithProvisionalTitle(t *testing.T) {
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	st := store.NewMemory()
 	service := &Service{
-		Store: st, Git: gitx.NewManager(cfg.CacheDir, ""),
+		Store: st, Git: planningSnapshotManager(t, cfg), CredentialContext: planningTestCredential,
 		ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil },
 	}
 	for _, test := range []struct {

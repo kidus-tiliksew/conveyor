@@ -23,9 +23,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/kidus-tiliksew/conveyor/cmd/conveyor/localgit"
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
-	"github.com/kidus-tiliksew/conveyor/internal/gitx"
 	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
 	"github.com/spf13/cobra"
 )
@@ -734,9 +734,9 @@ func resolveHarnessWorkingDirectory(ctx context.Context, local *config.Config, i
 
 	var configuredErr error
 	if repo, ok := local.Repo(item.Task.Repo); ok && strings.TrimSpace(repo.Checkout) != "" {
-		configuredCheckout, resolveErr := gitx.ResolvePrimaryCheckout(ctx, repo.Checkout, item.Task.Repo, item.Repository.URL)
+		configuredCheckout, resolveErr := localgit.ResolvePrimaryCheckout(ctx, repo.Checkout, item.Task.Repo, item.Repository.URL)
 		if resolveErr == nil {
-			resolveErr = gitx.VerifyRepositoryIdentity(ctx, configuredCheckout, item.Task.Repo, item.Repository.URL)
+			resolveErr = localgit.VerifyRepositoryIdentity(ctx, configuredCheckout, item.Task.Repo, item.Repository.URL)
 		}
 		if resolveErr == nil {
 			return filepath.Clean(configuredCheckout), nil
@@ -744,9 +744,9 @@ func resolveHarnessWorkingDirectory(ctx context.Context, local *config.Config, i
 		configuredErr = fmt.Errorf("configured checkout %q is not verified: %w", repo.Checkout, resolveErr)
 	}
 
-	discovered, discoveredErr := gitx.ResolvePrimaryCheckout(ctx, launcherDirectory, item.Task.Repo, item.Repository.URL)
+	discovered, discoveredErr := localgit.ResolvePrimaryCheckout(ctx, launcherDirectory, item.Task.Repo, item.Repository.URL)
 	if discoveredErr == nil {
-		if verifyErr := gitx.VerifyRepositoryIdentity(ctx, discovered, item.Task.Repo, item.Repository.URL); verifyErr == nil {
+		if verifyErr := localgit.VerifyRepositoryIdentity(ctx, discovered, item.Task.Repo, item.Repository.URL); verifyErr == nil {
 			return discovered, nil
 		} else {
 			discoveredErr = verifyErr

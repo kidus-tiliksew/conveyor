@@ -586,8 +586,8 @@ type UpdateReceipt struct {
 }
 
 // Config combines immutable deployment settings with the current workspace
-// snapshot. CacheDir and WorktreeRoot are client-local filesystem settings;
-// neither crosses the workspace API boundary.
+// snapshot. WorktreeRoot is a client-local filesystem setting;
+// it does not cross the workspace API boundary.
 type Config struct {
 	Workspace                 string                       `yaml:"workspace"`
 	PackDir                   string                       `yaml:"pack_dir,omitempty"`
@@ -595,7 +595,7 @@ type Config struct {
 	MaxBounces                int                          `yaml:"max_bounces"`
 	WorkOrderQueueTimeout     time.Duration                `yaml:"-"`
 	WorkOrderQueueTimeoutText string                       `yaml:"work_order_queue_timeout"`
-	CacheDir                  string                       `yaml:"cache_dir"`
+	PlanningSnapshotMaxBytes  int64                        `yaml:"planning_snapshot_max_bytes,omitempty"`
 	WorktreeRoot              string                       `yaml:"worktree_root,omitempty" json:"-"`
 	Database                  Database                     `yaml:"database"`
 	ExecutionSettings         *ContextualExecutionSettings `yaml:"execution_settings,omitempty"`
@@ -1224,7 +1224,12 @@ func normalizeLegacy(c *Config, path string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	c.CacheDir = expandDefault(c.CacheDir, home, filepath.Join(home, ".conveyor", "cache"))
+	if c.PlanningSnapshotMaxBytes == 0 {
+		c.PlanningSnapshotMaxBytes = 512 << 20
+	}
+	if c.PlanningSnapshotMaxBytes < 0 {
+		return nil, fmt.Errorf("planning_snapshot_max_bytes must be positive")
+	}
 	c.WorktreeRoot = expandDefault(c.WorktreeRoot, home, DefaultWorktreeRoot(home))
 	if !filepath.IsAbs(c.WorktreeRoot) {
 		return nil, fmt.Errorf("worktree_root must be absolute after home expansion")

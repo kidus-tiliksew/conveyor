@@ -237,6 +237,9 @@ func main() {
 		Store: st, Agent: agent, ConfigProvider: workOrders.ConfigProvider,
 		Prompt: planningRole,
 	}
+	if err := srv.Planning.CleanupSnapshots(ctx, cfg); err != nil {
+		log.Fatalf("clean planning snapshots: %v", err)
+	}
 	{
 		repositories := make(map[string]struct{}, len(cfg.Monitor.Repositories))
 		for _, repository := range cfg.Monitor.Repositories {
