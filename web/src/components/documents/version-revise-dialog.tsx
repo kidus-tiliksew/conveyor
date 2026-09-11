@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useId, useState } from 'react'
 import {
   confirmRequirementVersion,
   confirmSystemDesignVersion,
@@ -68,6 +68,8 @@ function ReviseEditor({
 }) {
   // Keep the reviewed base and edits stable across query refreshes.
   const [snapshot] = useState(initial)
+  const [note, setNote] = useState('')
+  const noteCounterId = useId()
   const [content, setContent] = useState(snapshot.pending.content)
   const [proposedVersion, setProposedVersion] = useState<number | null>(null)
   const [phase, setPhase] = useState('Proposing…')
@@ -84,8 +86,8 @@ function ReviseEditor({
       try {
         const expected = snapshot.current?.version ?? 0
         await (target.tier === 'requirement'
-          ? confirmRequirementVersion(target.id, proposed.version, expected)
-          : confirmSystemDesignVersion(target.id, proposed.version, expected))
+          ? confirmRequirementVersion(target.id, proposed.version, expected, note)
+          : confirmSystemDesignVersion(target.id, proposed.version, expected, note))
       } catch (error) {
         throw new Error(
           `Version ${proposed.version} was proposed, but confirmation failed. It remains pending. Close this dialog and review that version on the document or queue before confirming again. ${errorMessage(error)}`,
@@ -158,6 +160,20 @@ function ReviseEditor({
         />
         <p className="text-sm text-muted">
           Submitting proposes a new version and confirms it. Earlier pending versions will be dismissed.
+        </p>
+        <label className="block text-sm font-medium">
+          What was wrong with the original?
+          <span className="ml-1 font-normal text-muted">(optional)</span>
+          <textarea
+            className="mt-2 min-h-24 w-full rounded-md border border-border bg-card p-3 text-sm"
+            value={note}
+            onChange={(event) => setNote(Array.from(event.target.value).slice(0, 2000).join(''))}
+            disabled={submit.isPending || proposedVersion !== null}
+            aria-describedby={noteCounterId}
+          />
+        </label>
+        <p id={noteCounterId} className="text-xs text-muted">
+          {Array.from(note).length} / 2000 characters
         </p>
         {submit.error && (
           <p role="alert" className="rounded-md bg-failure-soft px-3 py-2 text-sm text-failure">

@@ -430,12 +430,23 @@ async function proposeDocumentVersion<T>(tier: string, id: string, content: stri
   return response.json() as Promise<T>
 }
 
-export async function confirmRequirementVersion(requirementId: string, version: number, expectedVersion: number) {
+function operatorNoteBody(note?: string) {
+  const trimmed = note?.trim()
+  return trimmed ? JSON.stringify({ note: trimmed }) : undefined
+}
+
+export async function confirmRequirementVersion(
+  requirementId: string,
+  version: number,
+  expectedVersion: number,
+  note?: string,
+) {
   const response = await fetch(
     workspaceURL(`/v1/requirements/${encodeURIComponent(requirementId)}/versions/${version}/confirm`),
     {
       method: 'POST',
       headers: { ...mutationHeaders(), 'If-Match': `"${expectedVersion}"` },
+      body: operatorNoteBody(note),
     },
   )
   if (!response.ok) {
@@ -482,10 +493,10 @@ export function restoreRequirement(requirementId: string) {
   return setRequirementArchived(requirementId, 'restore')
 }
 
-export async function dismissRequirementVersion(requirementId: string, version: number) {
+export async function dismissRequirementVersion(requirementId: string, version: number, note?: string) {
   const response = await fetch(
     workspaceURL(`/v1/requirements/${encodeURIComponent(requirementId)}/versions/${version}/dismiss`),
-    { method: 'POST', headers: mutationHeaders() },
+    { method: 'POST', headers: mutationHeaders(), body: operatorNoteBody(note) },
   )
   if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   return response.json() as Promise<{ requirement: RequirementView['requirement']; version: RequirementVersion }>
@@ -750,10 +761,10 @@ export function fetchSystemDesignVersions(id: string) {
     workspaceURL(`/v1/system-designs/${encodeURIComponent(id)}/versions`),
   )
 }
-export async function confirmSystemDesignVersion(id: string, version: number, expected: number) {
+export async function confirmSystemDesignVersion(id: string, version: number, expected: number, note?: string) {
   const response = await fetch(
     workspaceURL(`/v1/system-designs/${encodeURIComponent(id)}/versions/${version}/confirm`),
-    { method: 'POST', headers: { ...mutationHeaders(), 'If-Match': `"${expected}"` } },
+    { method: 'POST', headers: { ...mutationHeaders(), 'If-Match': `"${expected}"` }, body: operatorNoteBody(note) },
   )
   if (!response.ok) {
     const body = await response.text()
@@ -797,10 +808,10 @@ export function restoreSystemDesign(id: string) {
   return setSystemDesignArchived(id, 'restore')
 }
 
-export async function dismissSystemDesignVersion(id: string, version: number) {
+export async function dismissSystemDesignVersion(id: string, version: number, note?: string) {
   const response = await fetch(
     workspaceURL(`/v1/system-designs/${encodeURIComponent(id)}/versions/${version}/dismiss`),
-    { method: 'POST', headers: mutationHeaders() },
+    { method: 'POST', headers: mutationHeaders(), body: operatorNoteBody(note) },
   )
   if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   return response.json() as Promise<{

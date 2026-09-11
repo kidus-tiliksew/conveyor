@@ -526,6 +526,9 @@ for (const tier of ['requirement', 'system_design'] as const) {
         }
         if (path === `/v1/${endpoint}/document/versions/3/confirm`) {
           calls.push('confirm')
+          expect(request.postData()).toBe(
+            outcome === 'success' ? JSON.stringify({ note: 'Correct the original scope.' }) : null,
+          )
           expect(request.headers()['if-match']).toBe('"1"')
           if (outcome === 'conflict') return route.fulfill({ status: 409, json: { error: 'current_version_mismatch' } })
           confirmed = true
@@ -544,6 +547,15 @@ for (const tier of ['requirement', 'system_design'] as const) {
       await expect(dialog).toContainText('Origin: task origin-task')
       await expect(dialog).toContainText('# Confirmed content')
       await dialog.getByLabel('Proposal content').fill(edited)
+      if (outcome === 'success') {
+        const note = dialog.getByLabel('What was wrong with the original?')
+        await note.fill('😀'.repeat(2000))
+        await note.press('End')
+        await note.pressSequentially('x')
+        await expect(note).toHaveValue('😀'.repeat(2000))
+        await expect(dialog).toContainText('2000 / 2000 characters')
+        await note.fill('  Correct the original scope.  ')
+      }
       if (outcome === 'conflict') currentVersion = 4 // Another operator changed the reviewed base.
       await dialog.getByRole('button', { name: 'Propose and confirm' }).click()
       if (outcome === 'success') {
@@ -624,4 +636,62 @@ for (const access of ['both', 'confirm-only', 'propose-only', 'neither'] as cons
       page.getByRole('listitem').filter({ hasText: 'Decision' }).getByRole('button', { name: 'Revise' }),
     ).toHaveCount(0)
   })
+}
+
+for (const tier of ['requirement', 'system_design']) {
+  for (const note of ['', '  \n ', '  Preserve the original scope.  ']) {
+    test(`queue dismisses ${tier} with optional note ${JSON.stringify(note)}`, async ({ page }) => {
+      await initialize(page)
+      let body: string | null | undefined
+      await page.route('**/v1/**', async (route) => {
+        const path = new URL(route.request().url()).pathname
+        if (path === '/v1/workspaces') return route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] })
+        if (path === '/v1/me') return route.fulfill({ json: { id: 'operator', role: 'operator' } })
+        if (path === '/v1/workspace') return route.fulfill({ json: { workspace: 'demo', repos: ['conveyor'] } })
+        if (path === '/v1/pending-proposals')
+          return route.fulfill({
+            json: {
+              items:
+                body === undefined
+                  ? [
+                      {
+                        id: 'note-doc',
+                        title: 'Note document',
+                        tier,
+                        version: 2,
+                        origin_type: 'operator',
+                        proposed_at: proposedAt,
+                      },
+                    ]
+                  : [],
+              attention: {
+                task_count: 0,
+                pending_proposal_count: body === undefined ? 1 : 0,
+                total: body === undefined ? 1 : 0,
+              },
+            },
+          })
+        if (path === `/v1/${tier === 'requirement' ? 'requirements' : 'system-designs'}/note-doc/versions/2/dismiss`) {
+          body = route.request().postData()
+          return route.fulfill({ json: {} })
+        }
+        return route.fulfill({ json: [] })
+      })
+      await page.goto('/pending-proposals')
+      await page.getByRole('button', { name: 'Dismiss', exact: true }).click()
+      const dialog = page.getByRole('dialog')
+      const field = dialog.getByLabel('Why are you dismissing this?')
+      await expect(dialog).toContainText('0 / 2000 characters')
+      await field.fill('a'.repeat(2001))
+      await expect(field).toHaveValue('a'.repeat(2000))
+      await field.press('End')
+      await field.pressSequentially('z')
+      await expect(field).toHaveValue('a'.repeat(2000))
+      await expect(dialog).toContainText('2000 / 2000 characters')
+      await field.fill(note)
+      await dialog.getByRole('button', { name: 'Dismiss version 2' }).click()
+      await expect(dialog).toHaveCount(0)
+      expect(body).toBe(note.trim() ? JSON.stringify({ note: note.trim() }) : null)
+    })
+  }
 }

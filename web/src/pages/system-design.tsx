@@ -398,7 +398,8 @@ function DesignCanvas({
     },
   })
   const dismiss = useMutation({
-    mutationFn: (version: number) => dismissSystemDesignVersion(item.document.id, version),
+    mutationFn: ({ version, note }: { version: number; note: string }) =>
+      dismissSystemDesignVersion(item.document.id, version, note),
     onSuccess: () => setDismissTarget(null),
     onSettled: async () => {
       await Promise.all([
@@ -537,7 +538,7 @@ function DesignCanvas({
           pending={dismiss.isPending}
           error={dismiss.error ? errorMessage(dismiss.error, 'Could not dismiss this version.') : undefined}
           onCancel={() => setDismissTarget(null)}
-          onConfirm={() => dismiss.mutate(dismissTarget.version)}
+          onConfirm={(note) => dismiss.mutate({ version: dismissTarget.version, note })}
         />
       )}
       {archiveDialogOpen && (
@@ -722,6 +723,11 @@ function DesignCanvas({
                     {version.dismissed && version.dismissed_by && version.dismissed_at && (
                       <span className="text-faint">
                         Dismissed by {version.dismissed_by} on {formatDate(version.dismissed_at)}
+                      </span>
+                    )}
+                    {version.dismissed && version.dismissal_note && (
+                      <span className="w-full whitespace-pre-wrap break-words text-muted">
+                        Operator's reason: {version.dismissal_note}
                       </span>
                     )}
                     <span className="ml-auto font-medium text-primary hover:underline">Read version</span>

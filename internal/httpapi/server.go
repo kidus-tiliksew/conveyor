@@ -1278,6 +1278,7 @@ func materializedChildrenForSpec(children []core.TaskRelation, version int) []co
 }
 
 type reviewItem struct {
+	OperatorNotes             []core.OperatorNote                   `json:"operator_notes,omitempty"`
 	Task                      core.Task                             `json:"task"`
 	Jobs                      []core.Job                            `json:"jobs"`
 	Events                    []core.Event                          `json:"events"`
@@ -2083,6 +2084,14 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
+	// req-260810-23b69f AC-5.2: refresh observational notes in the authorized
+	// workspace context and suppress them after terminal task cleanup.
+	operatorNotes, err := store.OperatorNotesForTask(r.Context(), s.Store, id)
+	if err != nil {
+		log.Printf("load task operator notes: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
 	pendingAuthority := pendingAuthorityForTask(id, workOrders, proposals)
 	writeJSON(w, http.StatusOK, reviewItem{
 		Task: task, Jobs: jobs, Events: events, Interventions: interventions,
@@ -2101,6 +2110,7 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 		MergeReadiness:            mergeReadiness,
 		Attachments:               attachments,
 		VerificationEvidence:      verificationEvidence,
+		OperatorNotes:             operatorNotes,
 	})
 }
 
