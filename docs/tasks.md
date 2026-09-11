@@ -70,6 +70,18 @@ never affects queue order, and the assignee must be a workspace member whose
 role can claim work. Otherwise, queued work is served oldest-first, with
 review seats taking precedence.
 
+The dashboard's **Start over** action is available on non-terminal tasks to
+members with `operate_gates`. Its dialog requires a reason (up to 200
+characters), accepts an optional note for the next session (up to 2000), and
+previews work-order cancellation, task-authored pending document dismissals,
+and the known pull request to close. Pending proposals must load before
+submission; dismissing them also requires an operator with `confirm_documents`.
+A retry reuses the request ID and input so it returns the same successor. The
+new task starts on a new branch with the same body and pins, carries the
+operator's reason and note, and links back to the retired task; both have a
+`restarted` marker. The retired task links forward and shows the recorded PR
+close outcome. Forge closure can retry or fail without undoing the restart.
+
 ## Triage
 
 Every task passes first through triage, an in-process stage with a small

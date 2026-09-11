@@ -36,7 +36,33 @@ export interface GitHubLifecycle {
   updated_at: string
 }
 
+export interface TaskRestartInput {
+  reason: string
+  note?: string
+  request_id: string
+}
+
+export interface TaskRestartResult {
+  task: Task
+  successor: Task
+  created: boolean
+}
+
+export interface PullRequestClose {
+  state: string
+  url?: string | null
+  number?: number | null
+  last_error?: string | null
+  forge_error_category?: string | null
+  outcome?: string | null
+}
+
 export interface Task {
+  supersedes?: string | null
+  superseded_by?: string | null
+  intake_operator_direction?: string | null
+  pull_request_close?: PullRequestClose | null
+  pull_request_close_state?: string | null
   id: string
   workspace: string
   source: string
@@ -235,6 +261,8 @@ export interface SpecVersion {
 
 export type ActivityTask = Pick<
   Task,
+  | 'supersedes'
+  | 'superseded_by'
   | 'id'
   | 'title'
   | 'repo'

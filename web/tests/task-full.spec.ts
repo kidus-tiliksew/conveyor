@@ -5518,3 +5518,367 @@ for (const withNotes of [true, false]) {
     } else await expect(notes).toHaveCount(0)
   })
 }
+
+function restartFixture(taskId = 'restart-source') {
+  const base = activity(taskId, false)
+  return {
+    ...base,
+    task: { ...base.task, state: 'running' },
+    events: [
+      {
+        id: 1,
+        task_id: taskId,
+        kind: 'pull_request.opened',
+        payload: { url: 'https://github.com/example/conveyor/pull/42', number: 42 },
+        at: createdAt,
+      },
+    ],
+    work_orders: ['claimed', 'queued', 'completed', 'cancelled'].map((state, index) => ({
+      id: `${taskId}-implement-${index}`,
+      task_id: taskId,
+      job_id: `${taskId}-implement-${index}`,
+      stage: 'implement',
+      state,
+      claimable: false,
+      queue_entered_at: createdAt,
+      created_at: createdAt,
+      updated_at: createdAt,
+    })),
+  }
+}
+
+const restartProposal = {
+  id: 'req-restart',
+  title: 'Restart lifecycle',
+  tier: 'requirement',
+  version: 7,
+  origin_type: 'task',
+  origin_id: 'restart-source',
+  proposed_at: createdAt,
+  age_seconds: 10,
+}
+
+async function mockRestart(page: Page, options: { role?: string; proposals?: (typeof restartProposal)[] } = {}) {
+  await page.route('**/v1/me**', (route) =>
+    route.fulfill({ json: { id: 'usr_restart', role: options.role ?? 'operator' } }),
+  )
+  await page.route('**/v1/tasks/restart-source/activity*', (route) => route.fulfill({ json: restartFixture() }))
+  await page.route('**/v1/pending-proposals*', (route) =>
+    route.fulfill({
+      json: {
+        items: options.proposals ?? [restartProposal],
+        attention: { task_count: 0, pending_proposal_count: 1, total: 1 },
+      },
+    }),
+  )
+}
+
+async function openRestart(page: Page) {
+  await page.goto('/tasks/restart-source/full')
+  await page.getByRole('button', { name: 'Start over', exact: true }).click()
+  return page.getByRole('dialog', { name: 'Start over', exact: true })
+}
+
+test('start over previews orders, task-owned proposal versions and the PR, then navigates with one idempotent request', async ({
+  page,
+}) => {
+  await mockRestart(page, {
+    proposals: [
+      restartProposal,
+      { ...restartProposal, id: 'unrelated-task', title: 'Other task proposal', origin_id: 'another-task' },
+      { ...restartProposal, id: 'unrelated-origin', title: 'Operator proposal', origin_type: 'operator' },
+      { ...restartProposal, id: 'unrelated-tier', title: 'Decision proposal', tier: 'decision' },
+    ],
+  })
+  const requests: Array<{ body: Record<string, unknown>; headers: Record<string, string> }> = []
+  const successor = {
+    ...restartFixture('restart-next'),
+    task: {
+      ...restartFixture('restart-next').task,
+      supersedes: 'restart-source',
+      intake_operator_direction: 'Start-over reason: Wrong approach\nOperator note: Keep the confirmed pins.',
+    },
+  }
+  await page.route('**/v1/tasks/restart-next/activity*', (route) => route.fulfill({ json: successor }))
+  await page.route('**/v1/tasks/restart-source/restart*', async (route) => {
+    requests.push({ body: route.request().postDataJSON(), headers: route.request().headers() })
+    if (requests.length === 1) return route.abort('failed')
+    await route.fulfill({
+      status: 201,
+      json: {
+        task: { ...restartFixture().task, state: 'closed', superseded_by: 'restart-next' },
+        successor: successor.task,
+        created: false,
+      },
+    })
+  })
+  const dialog = await openRestart(page)
+  await expect(dialog.getByText('2 non-terminal work orders will be cancelled.')).toBeVisible()
+  await expect(
+    dialog.getByText('1 pending document proposal from this task will be dismissed with your note:'),
+  ).toBeVisible()
+  await expect(dialog.getByText('Restart lifecycle v7')).toBeVisible()
+  await expect(dialog.getByText(/Other task proposal|Operator proposal|Decision proposal/)).toHaveCount(0)
+  await expect(dialog.getByRole('link')).toHaveAttribute('href', 'https://github.com/example/conveyor/pull/42')
+  await expect(dialog.getByText(/new task with a new branch/)).toBeVisible()
+  await dialog.getByLabel('Reason', { exact: false }).fill('  Wrong approach  ')
+  await dialog.getByLabel('What went wrong', { exact: false }).fill('Keep the confirmed pins.')
+  await dialog.getByRole('button', { name: 'Start over', exact: true }).click()
+  await expect(page).toHaveURL(/\/tasks\/restart-next\/full$/)
+  await expect(page.getByRole('status').filter({ hasText: 'Started over as restart-next' })).toBeVisible()
+  await expect(page.getByRole('link', { name: 'restart-source', exact: true })).toHaveAttribute(
+    'href',
+    '/tasks/restart-source/full',
+  )
+  await expect(page.getByRole('region', { name: 'Operator direction', exact: true })).toContainText(
+    'Keep the confirmed pins.',
+  )
+  expect(requests).toHaveLength(2)
+  expect(requests[0].body).toEqual(requests[1].body)
+  expect(requests[0].body).toMatchObject({
+    reason: 'Wrong approach',
+    note: 'Keep the confirmed pins.',
+    request_id: expect.any(String),
+  })
+  expect(requests[0].headers['x-idempotency-key']).toBe(requests[0].body.request_id)
+  expect(requests[1].headers['x-idempotency-key']).toBe(requests[0].body.request_id)
+  expect(requests[0].headers['x-conveyor-csrf']).toBe('1')
+})
+
+for (const role of ['viewer', 'executor', 'contributor']) {
+  test(`start over is hidden without operate_gates for ${role}`, async ({ page }) => {
+    await mockRestart(page, { role })
+    await page.goto('/tasks/restart-source/full')
+    await expect(page.getByRole('heading', { name: 'Short task' })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Start over', exact: true })).toHaveCount(0)
+  })
+}
+for (const state of ['closed', 'merged']) {
+  test(`start over is hidden for terminal ${state} tasks`, async ({ page }) => {
+    await mockRestart(page)
+    const item = restartFixture()
+    item.task.state = state
+    await page.route('**/v1/tasks/restart-source/activity*', (route) => route.fulfill({ json: item }))
+    await page.goto('/tasks/restart-source/full')
+    await expect(page.getByRole('heading', { name: 'Short task' })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Start over', exact: true })).toHaveCount(0)
+  })
+}
+
+test('start over enforces reason and note limits including Unicode character counts', async ({ page }) => {
+  await mockRestart(page)
+  const dialog = await openRestart(page)
+  const submit = dialog.getByRole('button', { name: 'Start over', exact: true })
+  const reason = dialog.getByLabel('Reason', { exact: false })
+  const note = dialog.getByLabel('What went wrong', { exact: false })
+  await expect(submit).toBeDisabled()
+  await reason.fill('   ')
+  await expect(submit).toBeDisabled()
+  await reason.fill('a'.repeat(201))
+  await expect(dialog.getByText('Reason must be at most 200 characters.')).toBeVisible()
+  await expect(submit).toBeDisabled()
+  await reason.fill('😀'.repeat(200))
+  await expect(submit).toBeEnabled()
+  await note.fill('n'.repeat(2001))
+  await expect(dialog.getByText('2001 / 2000 characters')).toBeVisible()
+  await expect(submit).toBeDisabled()
+  await note.fill('😀'.repeat(2000))
+  await expect(dialog.getByText('2000 / 2000 characters')).toBeVisible()
+  await expect(submit).toBeEnabled()
+})
+
+for (const tier of ['requirement', 'system_design']) {
+  test(`start over requires confirm_documents for task-owned ${tier} proposals`, async ({ page }) => {
+    await mockRestart(page, { role: 'maintainer', proposals: [{ ...restartProposal, tier }] })
+    const dialog = await openRestart(page)
+    await dialog.getByLabel('Reason', { exact: false }).fill('Try again')
+    await expect(dialog.getByRole('alert')).toContainText('An operator with confirm_documents')
+    await expect(dialog.getByRole('button', { name: 'Start over', exact: true })).toBeDisabled()
+  })
+}
+
+test('start over permits a maintainer when proposals belong only to other tasks', async ({ page }) => {
+  await mockRestart(page, { role: 'maintainer', proposals: [{ ...restartProposal, origin_id: 'another-task' }] })
+  const dialog = await openRestart(page)
+  await dialog.getByLabel('Reason', { exact: false }).fill('Try again')
+  await expect(dialog.getByRole('button', { name: 'Start over', exact: true })).toBeEnabled()
+})
+
+test('start over blocks loading and failed proposal reads and can retry the preview', async ({ page }) => {
+  await mockRestart(page)
+  let release = () => {}
+  const response = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  let failing = true
+  await page.route('**/v1/pending-proposals*', async (route) => {
+    await response
+    if (failing) return route.fulfill({ status: 503, body: 'Unavailable' })
+    return route.fulfill({ json: { items: [], attention: { task_count: 0, pending_proposal_count: 0, total: 0 } } })
+  })
+  const dialog = await openRestart(page)
+  await dialog.getByLabel('Reason', { exact: false }).fill('Try again')
+  await expect(dialog.getByText('Loading pending proposals…')).toBeVisible()
+  await expect(dialog.getByRole('button', { name: 'Start over', exact: true })).toBeDisabled()
+  release()
+  await expect(dialog.getByText('Pending proposals could not be loaded. Retry before starting over.')).toBeVisible()
+  await expect(dialog.getByRole('button', { name: 'Start over', exact: true })).toBeDisabled()
+  failing = false
+  await dialog.getByRole('button', { name: 'Retry preview' }).click()
+  await expect(dialog.getByRole('button', { name: 'Start over', exact: true })).toBeEnabled()
+})
+
+for (const [status, message] of [
+  [403, 'task has pending proposals: confirm_documents capability is required'],
+  [409, 'request_id was already used with a different reason or note'],
+  [409, 'terminal tasks cannot start over; create a task with POST /v1/tasks'],
+] as const) {
+  test(`start over preserves server refusal: ${message}`, async ({ page }) => {
+    await mockRestart(page)
+    let calls = 0
+    await page.route('**/v1/tasks/restart-source/restart*', (route) => {
+      calls++
+      return route.fulfill({ status, body: message })
+    })
+    const dialog = await openRestart(page)
+    await dialog.getByLabel('Reason', { exact: false }).fill('Try again')
+    await dialog.getByRole('button', { name: 'Start over', exact: true }).click()
+    await expect(dialog.getByRole('alert')).toHaveText(message)
+    expect(calls).toBe(1)
+    await expect(page).toHaveURL(/restart-source\/full$/)
+  })
+}
+
+for (const [state, message] of [
+  ['closed', 'Pull request closed.'],
+  ['retrying', 'Pull request closure will be retried.'],
+  ['failed', 'Pull request closure failed; the restart remains complete.'],
+  ['queued', 'Pull request closure is queued.'],
+  ['skipped', 'Pull request closure was skipped.'],
+]) {
+  test(`start over link survives recorded PR close outcome ${state}`, async ({ page }) => {
+    await mockRestart(page)
+    const base = restartFixture()
+    await page.route('**/v1/tasks/restart-source/activity*', (route) =>
+      route.fulfill({
+        json: {
+          ...base,
+          task: {
+            ...base.task,
+            state: 'closed',
+            superseded_by: 'restart-next',
+            pull_request_close_state: state,
+            pull_request_close: {
+              state,
+              ...(state === 'failed' || state === 'retrying' ? { last_error: 'Forge unavailable' } : {}),
+            },
+          },
+        },
+      }),
+    )
+    await page.goto('/tasks/restart-source/full')
+    await expect(page.getByRole('link', { name: 'Started over as restart-next' })).toHaveAttribute(
+      'href',
+      '/tasks/restart-next/full',
+    )
+    await expect(page.getByText(message, { exact: state !== 'failed' && state !== 'retrying' })).toBeVisible()
+    if (state === 'failed' || state === 'retrying') await expect(page.getByText(/Forge unavailable/)).toBeVisible()
+  })
+}
+
+for (const empty of [undefined, null, '']) {
+  test(`start over omits absent restart facts (${String(empty)})`, async ({ page }) => {
+    await mockRestart(page)
+    const base = restartFixture()
+    await page.route('**/v1/tasks/restart-source/activity*', (route) =>
+      route.fulfill({
+        json: {
+          ...base,
+          work_orders: empty === '' ? [] : empty,
+          events: [],
+          task: {
+            ...base.task,
+            supersedes: empty,
+            superseded_by: empty,
+            intake_operator_direction: empty,
+            pull_request_close_state: empty,
+            pull_request_close: empty === '' ? { state: '' } : empty,
+          },
+        },
+      }),
+    )
+    const dialog = await openRestart(page)
+    await expect(page.getByText(/Started over as|Restarted from|Pull request closed\./)).toHaveCount(0)
+    await expect(page.getByRole('region', { name: 'Operator direction', exact: true })).toHaveCount(0)
+    await expect(dialog.getByText(/non-terminal work orders|Pull request/)).toHaveCount(0)
+  })
+}
+
+test('start over board cards mark both sides and sheet links use sheet routes', async ({ page }) => {
+  await mockRestart(page)
+  await showAllBoardTasks(page)
+  const retired = {
+    ...restartFixture(),
+    task: { ...restartFixture().task, title: 'Retired restart task', state: 'closed', superseded_by: 'restart-next' },
+  }
+  const successor = {
+    ...restartFixture('restart-next'),
+    task: { ...restartFixture('restart-next').task, title: 'Successor restart task', supersedes: 'restart-source' },
+  }
+  await page.route('**/v1/activity*', (route) => route.fulfill({ json: [retired, successor] }))
+  await page.route('**/v1/tasks/restart-source/activity*', (route) => route.fulfill({ json: retired }))
+  await page.route('**/v1/tasks/restart-next/activity*', (route) => route.fulfill({ json: successor }))
+  await page.goto('/')
+  await expect(page.getByRole('link').filter({ hasText: 'Retired restart task' })).toContainText('restarted')
+  await expect(page.getByRole('link').filter({ hasText: 'Successor restart task' })).toContainText('restarted')
+  await page.getByRole('link').filter({ hasText: 'Retired restart task' }).click()
+  await expect(page.getByRole('link', { name: 'Started over as restart-next' })).toHaveAttribute(
+    'href',
+    '/tasks/restart-next',
+  )
+  await page.getByRole('link', { name: 'Started over as restart-next' }).click()
+  await expect(page.getByRole('link', { name: 'restart-source', exact: true })).toHaveAttribute(
+    'href',
+    '/tasks/restart-source',
+  )
+})
+
+test('start over manual retry preserves the request after automatic network retries fail', async ({ page }) => {
+  await mockRestart(page, { proposals: [] })
+  const bodies: Record<string, unknown>[] = []
+  await page.route('**/v1/tasks/restart-source/restart*', (route) => {
+    bodies.push(route.request().postDataJSON())
+    return route.abort('failed')
+  })
+  const dialog = await openRestart(page)
+  await dialog.getByLabel('Reason', { exact: false }).fill('Keep this request')
+  await dialog.getByRole('button', { name: 'Start over', exact: true }).click()
+  await expect(dialog.getByRole('alert')).toBeVisible()
+  expect(bodies).toHaveLength(2)
+  await expect(dialog.getByLabel('Reason', { exact: false })).toBeDisabled()
+  await dialog.getByRole('button', { name: 'Retry start over' }).click()
+  await expect.poll(() => bodies.length).toBe(4)
+  for (const body of bodies) expect(body).toEqual(bodies[0])
+  expect(bodies[0]).not.toHaveProperty('note')
+})
+
+test('start over counts recoverable and submitted orders but excludes cancelled and completed orders', async ({
+  page,
+}) => {
+  await mockRestart(page)
+  const base = restartFixture()
+  await page.route('**/v1/tasks/restart-source/activity*', (route) =>
+    route.fulfill({
+      json: {
+        ...base,
+        work_orders: ['stale', 'timed_out', 'submitted', 'completed', 'cancelled'].map((state, index) => ({
+          ...base.work_orders[0],
+          id: `order-${index}`,
+          state,
+        })),
+      },
+    }),
+  )
+  const dialog = await openRestart(page)
+  await expect(dialog.getByText('3 non-terminal work orders will be cancelled.')).toBeVisible()
+})

@@ -22,6 +22,8 @@ import type {
   Task,
   TaskOperationsItem,
   TaskOperationsPage,
+  TaskRestartInput,
+  TaskRestartResult,
   VersionedWorkspaceConfig,
   WorkerList,
   WorkOrder,
@@ -1194,4 +1196,15 @@ export function fetchDocumentEvents(
       `/v1/${collection}/${encodeURIComponent(id)}/events?limit=50&offset=${offset}&snapshot_id=${snapshot}`,
     ),
   )
+}
+
+// One key covers a submission and its network retries (AC-7.5).
+export async function restartTask(taskId: string, input: TaskRestartInput) {
+  const response = await fetch(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/restart`), {
+    method: 'POST',
+    headers: { ...mutationHeaders(), 'X-Idempotency-Key': input.request_id },
+    body: JSON.stringify(input),
+  })
+  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
+  return response.json() as Promise<TaskRestartResult>
 }

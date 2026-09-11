@@ -14,7 +14,13 @@ import {
   Trash2,
 } from 'lucide-react'
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
-import { assigneeName, dependencyRelationLabel, pullRequestURL } from '../../lib/activity'
+import {
+  assigneeName,
+  dependencyRelationLabel,
+  pullRequestURL,
+  taskRestartLinks,
+  restartPullRequestOutcome,
+} from '../../lib/activity'
 import {
   addTaskDependency,
   cancelTask,
@@ -37,6 +43,7 @@ import { Dialog } from '../ui/dialog'
 import { Input, Textarea } from '../ui/input'
 import { MarkdownProse } from '../ui/markdown-prose'
 import { AssigneeChip } from './assignee-chip'
+import { TaskRestartControl, TaskRestartNotice } from './task-restart-dialog'
 
 // The task-header facts: state badges,
 // the facts a reviewer actually references — where the work lives, where it
@@ -45,6 +52,8 @@ import { AssigneeChip } from './assignee-chip'
 // deliberately absent: the header introduces the task, it does not summarize
 // the whole page.
 export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sheet' | 'full' }) {
+  const restartLinks = taskRestartLinks(item.task)
+  const closeOutcome = restartPullRequestOutcome(item.task)
   const canOperate = useWorkspaceCapability('operate_gates')
   const prURL = pullRequestURL(item.events)
   const Heading = variant === 'full' ? 'h1' : 'h2'
@@ -95,6 +104,11 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
             {item.stalled?.reason ?? `Current task status: ${stateLabel}.`}
           </span>
         </span>
+        {restartLinks.to && (
+          <Link to={relatedRoute} params={{ taskId: restartLinks.to }} className="text-sm text-primary underline">
+            Started over as {restartLinks.to}
+          </Link>
+        )}
         {item.task.hold && <Badge variant="mono">Held</Badge>}
         {unsatisfiableIDs.size > 0 ? (
           <Badge variant="attention">Dependency needs attention</Badge>
@@ -110,9 +124,26 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
             <HoldControl item={item} />
             <AssigneeControl item={item} />
             <CancelControl item={item} />
+            <TaskRestartControl item={item} variant={variant} />
           </span>
         )}
       </div>
+      <TaskRestartNotice taskId={item.task.id} />
+      {restartLinks.from && (
+        <p className="my-2 text-sm text-muted">
+          Restarted from{' '}
+          <Link to={relatedRoute} params={{ taskId: restartLinks.from }} className="text-primary underline">
+            {restartLinks.from}
+          </Link>
+        </p>
+      )}
+      {closeOutcome && <p className="my-2 text-sm text-muted">{closeOutcome}</p>}
+      {item.task.intake_operator_direction?.trim() && (
+        <section aria-label="Operator direction" className="my-3 rounded-md border border-border p-3 text-sm">
+          <p className="font-medium">Operator direction</p>
+          <p className="mt-1 whitespace-pre-wrap">{item.task.intake_operator_direction}</p>
+        </section>
+      )}
       <Heading className={cn('font-semibold leading-snug tracking-tight', variant === 'full' ? 'text-xl' : 'text-lg')}>
         {item.task.title}
       </Heading>

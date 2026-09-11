@@ -862,3 +862,17 @@ test('the returned-with-feedback entry clears once implementation picks it up', 
   // The list itself is untouched by the band above it.
   await expect(rows(page)).toHaveCount(operations.length)
 })
+
+test('start over markers identify both retired and successor Tasks rows', async ({ page }) => {
+  await routeTasksSurface(page)
+  const items = [
+    { ...operations[0], task: { ...operations[0].task, superseded_by: 'task-anchor' } },
+    { ...operations[1], task: { ...operations[1].task, supersedes: 'task-blocked' } },
+    { ...operations[2], task: { ...operations[2].task, supersedes: null, superseded_by: '' } },
+  ]
+  await page.route('**/v1/task-operations?**', (route) => route.fulfill({ json: items }))
+  await page.goto('/tasks')
+  await expect(rows(page).filter({ hasText: 'Wire the Tasks view' })).toContainText('restarted')
+  await expect(rows(page).filter({ hasText: 'Historical anchor' })).toContainText('restarted')
+  await expect(rows(page).filter({ hasText: 'Shipped web change' })).not.toContainText('restarted')
+})
