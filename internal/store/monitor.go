@@ -446,19 +446,48 @@ func (m *memory) MonitorStatus(ctx context.Context, enabled bool, now time.Time)
 			status.Observations = append(status.Observations, record)
 		}
 	}
-	for key, drift := range m.monitorDrift {
-		if strings.HasPrefix(key, prefix) && drift.ResolvedAt.IsZero() {
-			status.Drift = append(status.Drift, drift)
-			status.DriftCount++
-			age := now.Sub(drift.DetectedAt)
-			if age > status.OldestDriftAge {
-				status.OldestDriftAge = age
-			}
+	status.Drift = m.unresolvedDriftLocked(workspace)
+	status.DriftCount = len(status.Drift)
+	for _, drift := range status.Drift {
+		if age := now.Sub(drift.DetectedAt); age > status.OldestDriftAge {
+			status.OldestDriftAge = age
 		}
 	}
-	sort.Slice(status.Observations, func(i, j int) bool { return status.Observations[i].CreatedAt.Before(status.Observations[j].CreatedAt) })
-	sort.Slice(status.Drift, func(i, j int) bool { return status.Drift[i].DetectedAt.Before(status.Drift[j].DetectedAt) })
+	sort.Slice(status.Observations, func(i, j int) bool {
+		if status.Observations[i].CreatedAt.Equal(status.Observations[j].CreatedAt) {
+			return status.Observations[i].Identity() < status.Observations[j].Identity()
+		}
+		return status.Observations[i].CreatedAt.Before(status.Observations[j].CreatedAt)
+	})
 	return status, nil
+}
+
+func (m *memory) ListUnresolvedDrift(ctx context.Context) ([]monitor.Drift, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	workspace, ok := WorkspaceFromContext(ctx)
+	if !ok || workspace == "" {
+		return nil, ErrWorkspaceRequired
+	}
+	return m.unresolvedDriftLocked(workspace), nil
+}
+
+// Caller holds the memory store read lock.
+func (m *memory) unresolvedDriftLocked(workspace string) []monitor.Drift {
+	var result []monitor.Drift
+	prefix := workspace + "\x00"
+	for key, drift := range m.monitorDrift {
+		if strings.HasPrefix(key, prefix) && drift.ResolvedAt.IsZero() {
+			result = append(result, drift)
+		}
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].DetectedAt.Equal(result[j].DetectedAt) {
+			return result[i].ID < result[j].ID
+		}
+		return result[i].DetectedAt.Before(result[j].DetectedAt)
+	})
+	return result
 }
 
 func (m *memory) ListActiveSystemDesignDriftCounts(ctx context.Context) (map[string]int, error) {

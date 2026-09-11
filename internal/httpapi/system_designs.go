@@ -145,12 +145,12 @@ func (s *Server) getSystemDesign(w http.ResponseWriter, r *http.Request) {
 	}
 	var drift []monitor.Drift
 	if s.Monitor != nil {
-		status, statusErr := s.Monitor.Status(r.Context())
+		unresolved, statusErr := s.Monitor.ListUnresolvedDrift(r.Context())
 		if statusErr != nil {
 			http.Error(w, statusErr.Error(), http.StatusInternalServerError)
 			return
 		}
-		drift = status.Drift
+		drift = unresolved
 	}
 	view, err := s.systemDesignView(r, item, drift)
 	if err != nil {

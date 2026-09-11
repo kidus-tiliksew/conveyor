@@ -1,8 +1,11 @@
 package storetest
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"testing"
 	"time"
 
@@ -11,6 +14,26 @@ import (
 
 func runMonitor(t *testing.T, x Fixture) {
 	st, ctx := x.Backend, x.Context
+	assertDrift := func(ctx context.Context, wantIDs ...string) {
+		t.Helper()
+		narrow, err := st.ListUnresolvedDrift(ctx)
+		requireOK(t, err)
+		status, err := st.MonitorStatus(ctx, true, time.Now().UTC())
+		requireOK(t, err)
+		a, err := json.Marshal(narrow)
+		requireOK(t, err)
+		b, err := json.Marshal(status.Drift)
+		requireOK(t, err)
+		if !bytes.Equal(a, b) || len(narrow) != len(wantIDs) || status.DriftCount != len(wantIDs) {
+			t.Fatalf("narrow=%s status=%s want IDs=%v", a, b, wantIDs)
+		}
+		for i, id := range wantIDs {
+			if narrow[i].ID != id || narrow[i].WorkspaceID != x.Workspace || !narrow[i].ResolvedAt.IsZero() {
+				t.Fatalf("unexpected drift at %d: %+v", i, narrow[i])
+			}
+		}
+	}
+	assertDrift(ctx)
 	task := newAggregateTask(t, x)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	observation := monitor.Observation{WorkspaceID: x.Workspace, Repository: "conveyor", Kind: monitor.DirectPush, OccurrenceID: "push-one", SourceURL: "https://example.test/commit", CommitSHA: "fixture-sha", ObservedAt: now}
@@ -65,6 +88,21 @@ func runMonitor(t *testing.T, x Fixture) {
 	if status.DriftCount != 0 {
 		t.Fatal("resolved drift remains active")
 	}
+	assertDrift(ctx)
+	// Insert out of timestamp and ID order, including a timestamp tie.
+	for i, id := range []string{"later", "tie-b", "tie-a"} {
+		at := now.Add(-time.Hour)
+		if i == 0 {
+			at = now
+		}
+		_, _, err := st.RecordDrift(ctx, monitor.Drift{ID: id, WorkspaceID: x.Workspace, Repository: "conveyor", Kind: monitor.DirectPush, TaskID: task.ID, DetectedAt: at, MatchingPaths: []string{"internal/example.go"}})
+		requireOK(t, err)
+	}
+	assertDrift(ctx, "tie-a", "tie-b", "later")
+	assertDrift(store.WithWorkspace(ctx, x.Workspace+"-foreign"))
+	_, err = st.ResolveDrift(ctx, "tie-b", "change_reverted", "")
+	requireOK(t, err)
+	assertDrift(ctx, "tie-a", "later")
 	sentinel := errors.New("callback failure")
 	for range 2 {
 		err := st.WithMonitorSignalClassLock(ctx, "conveyor", monitor.DirectPush, func(context.Context) error { return sentinel })

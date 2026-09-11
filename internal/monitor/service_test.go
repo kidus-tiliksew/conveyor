@@ -333,3 +333,28 @@ func TestPollerRetriesWithBoundedBackoffAndReconcilesStartupWindow(t *testing.T)
 		t.Fatalf("status=%+v", status)
 	}
 }
+
+func TestListUnresolvedDriftResolvesScopeAndFailsClosed(t *testing.T) {
+	service, _, ctx := testService(t)
+	if _, err := service.Process(ctx, monitor.Observation{Repository: "conveyor", Kind: monitor.DirectPush, OccurrenceID: "scope-drift", SourceURL: "https://example.test/commit/scope"}); err != nil {
+		t.Fatal(err)
+	}
+	sentinel := errors.New("scope unavailable")
+	service.ResolveScope = func(context.Context) (string, bool, map[string]struct{}, error) {
+		return "", false, nil, sentinel
+	}
+	if _, err := service.ListUnresolvedDrift(ctx); !errors.Is(err, sentinel) {
+		t.Fatalf("scope failure=%v", err)
+	}
+	called := false
+	service.ResolveScope = func(context.Context) (string, bool, map[string]struct{}, error) {
+		called = true
+		return "demo", false, nil, nil
+	}
+	// Disabled polling does not hide persisted attention signals, just as Status
+	// keeps drift visible when the resolved enabled flag is false.
+	drift, err := service.ListUnresolvedDrift(ctx)
+	if err != nil || !called || len(drift) != 1 {
+		t.Fatalf("drift=%v scope called=%v err=%v", drift, called, err)
+	}
+}
