@@ -22,6 +22,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/gitx"
 	"github.com/kidus-tiliksew/conveyor/internal/monitor"
+	"github.com/kidus-tiliksew/conveyor/internal/pipeline"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
@@ -429,11 +430,101 @@ type PlanRevisionRequestResult struct {
 	Rationale   string         `json:"rationale"`
 }
 
+// ExecutionDocumentReader lets acceptance resolve the canonical approved plan
+// using reads held within the same transaction as the decision.
+type ExecutionDocumentReader interface {
+	GetApprovedSpecVersion(context.Context, string) (core.SpecVersion, bool, error)
+	GetSpecVersion(context.Context, string, int) (core.SpecVersion, bool, error)
+}
+
+// ExecutionDocumentLookup reads the newest approved version when version is
+// zero, and the exact version otherwise. Backends supply transaction-bound reads.
+type ExecutionDocumentLookup func(context.Context, string, int) (core.SpecVersion, bool, error)
+
+func (lookup ExecutionDocumentLookup) GetApprovedSpecVersion(ctx context.Context, id string) (core.SpecVersion, bool, error) {
+	return lookup(ctx, id, 0)
+}
+
+func (lookup ExecutionDocumentLookup) GetSpecVersion(ctx context.Context, id string, version int) (core.SpecVersion, bool, error) {
+	return lookup(ctx, id, version)
+}
+
+// ValidateReviewAcceptance enforces plan coverage before any review acceptance
+// side effect (REQ-4, req-task-centric-delivery; component-work-orders).
+func ValidateReviewAcceptance(ctx context.Context, reader ExecutionDocumentReader, task core.Task, decision *core.ReviewDecision) error {
+	approved, exists, err := ApprovedExecutionDocument(ctx, reader, task)
+	if err != nil {
+		return err
+	}
+	// Match pack.HasExecutionPlan: legacy blueprint documents remain no-plan
+	// cases, while approved markdown execution plans require coverage.
+	_, hasDone := pipeline.PlanDoneCriteria(approved.Content)
+	_, planErr := pipeline.ParsePlan(approved.Content, nil)
+	return ValidateDoneCriteriaCoverage(&decision.DoneCriteriaAssessment, decision.Verdict, exists && hasDone && planErr == nil)
+}
+
+// ValidateDoneCriteriaCoverage preserves assessment-shape diagnostics and rejects
+// an approval that reports unresolved plan criteria. It never changes findings
+// or a verdict; only the supported missing no-plan assessment is normalized.
+func ValidateDoneCriteriaCoverage(coverage **core.DoneCriteriaAssessment, verdict string, hasPlan bool) error {
+	assessment := *coverage
+	if assessment == nil {
+		if hasPlan {
+			return fmt.Errorf("review done_criteria_coverage assessment is required when an execution plan is present")
+		}
+		*coverage = &core.DoneCriteriaAssessment{Summary: "No execution plan is available", Satisfied: []string{}, Unsatisfied: []string{}, Unverified: []string{}, Conflicts: []string{}}
+		return nil
+	}
+	if assessment.Applicable != hasPlan {
+		return fmt.Errorf("review done_criteria_coverage applicable=%t does not match execution plan present=%t", assessment.Applicable, hasPlan)
+	}
+	if strings.TrimSpace(assessment.Summary) == "" {
+		return fmt.Errorf("review done_criteria_coverage summary is required")
+	}
+	lists := []struct {
+		name  string
+		items []string
+	}{{"satisfied", assessment.Satisfied}, {"unsatisfied", assessment.Unsatisfied}, {"unverified", assessment.Unverified}, {"conflicts", assessment.Conflicts}}
+	if !hasPlan {
+		for _, list := range lists {
+			if len(list.items) != 0 {
+				return fmt.Errorf("review done_criteria_coverage %s must be empty when no execution plan exists", list.name)
+			}
+		}
+		return nil
+	}
+	seen := map[string]string{}
+	for _, list := range lists {
+		for _, item := range list.items {
+			key := strings.TrimSpace(item)
+			if key == "" {
+				return fmt.Errorf("review done_criteria_coverage %s contains an empty finding", list.name)
+			}
+			if prior, exists := seen[key]; exists {
+				return fmt.Errorf("review done_criteria_coverage finding %q appears in both %s and %s; the finding lists are disjoint", key, prior, list.name)
+			}
+			seen[key] = list.name
+		}
+	}
+	if verdict == "approve" {
+		var blocking []string
+		for _, list := range lists[1:] {
+			if len(list.items) > 0 {
+				blocking = append(blocking, list.name)
+			}
+		}
+		if len(blocking) > 0 {
+			return fmt.Errorf("review done_criteria_coverage blocks approve: unresolved criteria in %s; correct the assessment or submit changes_requested", strings.Join(blocking, ", "))
+		}
+	}
+	return nil
+}
+
 // ApprovedExecutionDocument resolves the immutable approved document that
 // governs implementation and review. Legacy materialized children inherit the
 // exact parent blueprint version that created them; new task-centric work uses
 // the task's own approved plan.
-func ApprovedExecutionDocument(ctx context.Context, st Store, task core.Task) (core.SpecVersion, bool, error) {
+func ApprovedExecutionDocument(ctx context.Context, st ExecutionDocumentReader, task core.Task) (core.SpecVersion, bool, error) {
 	approved, ok, err := st.GetApprovedSpecVersion(ctx, task.ID)
 	if err != nil || ok || task.ParentTaskID == "" || task.OriginSpecVersion < 1 {
 		return approved, ok, err
@@ -2318,6 +2409,22 @@ func (m *memory) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.
 	task, ok := m.tasks[decision.TaskID]
 	if !ok {
 		return fmt.Errorf("task %s not found", decision.TaskID)
+	}
+	lookup := ExecutionDocumentLookup(func(ctx context.Context, id string, version int) (core.SpecVersion, bool, error) {
+		if selected, scoped := WorkspaceFromContext(ctx); scoped && m.tasks[id].Workspace != selected {
+			return core.SpecVersion{}, false, nil
+		}
+		versions := m.specs[id]
+		for i := len(versions) - 1; i >= 0; i-- {
+			spec := versions[i]
+			if (version == 0 && spec.Approved) || (version > 0 && spec.Version == version) {
+				return spec, true, nil
+			}
+		}
+		return core.SpecVersion{}, false, nil
+	})
+	if err := ValidateReviewAcceptance(ctx, lookup, task, &decision); err != nil {
+		return err
 	}
 	job, _, ok := m.findJobLocked(decision.JobID)
 	if !ok || job.TaskID != decision.TaskID {

@@ -3880,3 +3880,83 @@ func TestReconcileObservedPullRequestApprovalLineageAndIdempotency(t *testing.T)
 		})
 	}
 }
+
+func TestApproveDoneCriteriaConsistency(t *testing.T) {
+	for _, category := range []string{"unverified", "unsatisfied", "conflicts", "all"} {
+		for _, verdict := range []string{"approve", "changes_requested"} {
+			t.Run(category+"/"+verdict, func(t *testing.T) {
+				assessment := &core.DoneCriteriaAssessment{Applicable: true, Summary: "mandatory aggregate remains unresolved despite unrelated timing failure", Satisfied: []string{"focused tests pass"}}
+				switch category {
+				case "unverified":
+					assessment.Unverified = []string{storetest.PR907MandatoryValidation}
+				case "unsatisfied":
+					assessment.Unsatisfied = []string{storetest.PR907MandatoryValidation}
+				case "conflicts":
+					assessment.Conflicts = []string{storetest.PR907MandatoryValidation}
+				case "all":
+					assessment.Unverified, assessment.Unsatisfied, assessment.Conflicts = []string{storetest.PR907MandatoryValidation}, []string{"failed"}, []string{"conflict"}
+				}
+				before := core.JSONPayload(assessment)
+				result := pipeline.Review{Verdict: verdict, DoneCriteriaCoverage: assessment}
+				err := validateDoneCriteriaCoverage(&result, true)
+				if verdict == "approve" {
+					want := category
+					if category == "all" {
+						want = "unsatisfied, unverified, conflicts"
+					}
+					if err == nil || !strings.Contains(err.Error(), "blocks approve: unresolved criteria in "+want) || !strings.Contains(err.Error(), "submit changes_requested") {
+						t.Fatalf("error=%v", err)
+					}
+				} else if err != nil {
+					t.Fatal(err)
+				}
+				if string(before) != string(core.JSONPayload(result.DoneCriteriaCoverage)) || result.Verdict != verdict {
+					t.Fatal("validation changed unfavorable findings or verdict")
+				}
+			})
+		}
+	}
+	result := pipeline.Review{Verdict: "approve", DoneCriteriaCoverage: &core.DoneCriteriaAssessment{Applicable: true, Summary: "all validation passed", Satisfied: []string{storetest.PR907MandatoryValidation}}}
+	if err := validateDoneCriteriaCoverage(&result, true); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestInProcessUnresolvedApprovalUsesInvalidVerdictRepair(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "test")
+	st := store.NewMemory()
+	task := core.Task{ID: "done-criteria-repair", Workspace: "test", Repo: "app", State: core.TaskRunning, NextStage: core.StageReview, PolicyVersion: 1, CreatedAt: time.Now()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	spec, err := st.CreateSpecVersion(ctx, core.SpecVersion{TaskID: task.ID, Content: storetest.ReviewDoneCriteriaPlan})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = st.ApproveSpecVersion(ctx, task.ID, spec.Version); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: task.ID + "-review-1", TaskID: task.ID, Stage: core.StageReview, State: core.JobDone}
+	if err = st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{Workspace: "test", MaxBounces: 2}
+	d := New(st, cfg, nil)
+	d.DisableMemoryQueueForTest()
+	review := pipeline.Review{Verdict: "approve", ReasonCode: "approved", Summary: "focused checks pass", DoneCriteriaCoverage: &core.DoneCriteriaAssessment{Applicable: true, Summary: "required aggregate unverified", Unverified: []string{storetest.PR907MandatoryValidation}}}
+	if err = d.completeOutput(ctx, cfg, task, job, ComposeReviewOutput(review), "in-process", 0); err != nil {
+		t.Fatal(err)
+	}
+	current, _ := st.GetTask(ctx, task.ID)
+	if current.State != core.TaskQueued || current.NextStage != core.StageReview || current.ApprovedHeadSHA != "" {
+		t.Fatalf("repair task=%+v", current)
+	}
+	if count, _ := st.CountEvents(ctx, task.ID, "review.output_invalid"); count != 1 {
+		t.Fatalf("repair events=%d", count)
+	}
+	for _, kind := range []string{"review.completed", "review.accepted", "review.publication_queued", "review.round_completed"} {
+		if count, _ := st.CountEvents(ctx, task.ID, kind); count != 0 {
+			t.Fatalf("invalid approval produced %s", kind)
+		}
+	}
+}
