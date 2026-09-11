@@ -135,3 +135,53 @@ func (s *boundedDocumentDetailStore) ListSystemDesignEvents(context.Context, str
 	s.t.Fatal("detail read full System Design events")
 	return nil, nil
 }
+
+func TestDocumentEventHTTPMixedMembership(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	fixture := storetest.SeedDocumentEventMembership(t, st, ctx)
+	server := NewServer(&boundedDocumentDetailStore{Store: st, t: t})
+	server.Workspace, server.BearerToken = "demo", "token"
+	handler := server.Handler()
+	for _, kind := range []core.LineageNodeType{core.LineageRequirement, core.LineageSystemDesign} {
+		path := "/v1/requirements/" + fixture.Requirement
+		if kind == core.LineageSystemDesign {
+			path = "/v1/system-designs/" + fixture.Design
+		}
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		request.Header.Set("Authorization", "Bearer token")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s: %d %s", path, response.Code, response.Body.String())
+		}
+		var view struct {
+			Lineage    []core.Event `json:"lineage"`
+			Total      int          `json:"lineage_total"`
+			SnapshotID int64        `json:"lineage_snapshot_id"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &view); err != nil {
+			t.Fatal(err)
+		}
+		expected := fixture.Expected[kind]
+		var snapshot int64
+		for _, event := range expected {
+			snapshot = max(snapshot, event.ID)
+		}
+		if kind == core.LineageRequirement {
+			expected = annotateBackfilledEvents(expected)
+		}
+		// Round-trip the expected events so time locations and JSON encoding
+		// match the wire representation, without consulting the page method.
+		encoded, err := json.Marshal(expected)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(encoded, &expected); err != nil {
+			t.Fatal(err)
+		}
+		if view.Total != len(expected) || view.SnapshotID != snapshot || !reflect.DeepEqual(view.Lineage, expected) {
+			t.Fatalf("%s lineage contract differs: total=%d want=%d snapshot=%d want=%d\ngot=%+v\nwant=%+v", kind, view.Total, len(expected), view.SnapshotID, snapshot, view.Lineage, expected)
+		}
+	}
+}

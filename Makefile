@@ -198,3 +198,13 @@ test-github-apps:
 .PHONY: test-task-start-over
 test-task-start-over:
 	CONVEYOR_TEST_DATABASE_URL= CONVEYOR_TEST_SINGLESTORE_URL= go test ./internal/core ./internal/taskops ./internal/store ./internal/store/storetest ./internal/store/postgres ./internal/store/singlestore ./internal/httpapi -run 'TestTaskStartOver|TestStartOver|TestMemoryConformance|TestBackendCoverage|TestEmbeddedMigrationVersionsAreUnique'
+
+.PHONY: test-document-events test-document-event-plans
+# Focused iteration; the full local and configured backend gates remain required.
+test-document-events:
+	go test -v ./internal/store ./internal/httpapi ./internal/store/postgres ./internal/store/singlestore -run 'TestMemoryConformance/Requirements/.*document|TestPostgresConformanceIntegration/Requirements/.*document|TestSingleStoreConformanceIntegration/Requirements/.*document|TestDocumentEvent|TestSystemDesignEventLookupIndexIntegration' -count=1
+
+# Supply the Make-managed disposable database through CONVEYOR_TEST_DATABASE_URL.
+test-document-event-plans:
+	@test -n "$$CONVEYOR_TEST_DATABASE_URL" || (echo "CONVEYOR_TEST_DATABASE_URL is required" >&2; exit 1)
+	CONVEYOR_DOCUMENT_EVENT_MEASUREMENT=370000 go test -v ./internal/store/postgres -run '^TestDocumentEventQueryPlansIntegration$$' -count=1 -timeout=15m

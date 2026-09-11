@@ -66,6 +66,7 @@ func SeedDocumentEventMeasurement(t *testing.T, st store.Store, ctx context.Cont
 }
 
 func runDocumentEventPages(t *testing.T, factory RequirementFactory) {
+	runMixedDocumentEventPages(t, factory)
 	t.Run("system design pages include task events with document and workspace filtering", func(t *testing.T) {
 		f := factory(t, requirementConformanceRepos)
 		st, ctx := f.Store, f.Context
@@ -199,4 +200,181 @@ func runDocumentEventPages(t *testing.T, factory RequirementFactory) {
 			})
 		}
 	})
+}
+
+// DocumentEventMembershipFixture records expected history through the legacy
+// event APIs, independently of ListDocumentEventPage.
+type DocumentEventMembershipFixture struct {
+	Requirement, Design, ConfirmedTask string
+	Expected                           map[core.LineageNodeType][]core.Event
+}
+
+// SeedDocumentEventMembership mixes every membership branch and its exclusions.
+// req-accounts-and-membership AC-4.4; req-260802-72fc68 AC-5.1.
+func SeedDocumentEventMembership(t *testing.T, st store.Store, ctx context.Context) DocumentEventMembershipFixture {
+	t.Helper()
+	ctx = store.WithActor(ctx, store.Actor{ID: "fixture", Role: core.ActorUser})
+	f := DocumentEventMembershipFixture{Expected: map[core.LineageNodeType][]core.Event{}}
+	for i := 0; i < 2; i++ {
+		req, _, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-membership-" + core.NewTaskID(), Title: "Membership " + core.NewTaskID()}, core.RequirementVersion{Content: "# Membership", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Preserve history."}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err = st.ConfirmRequirementVersion(ctx, req.ID, 1); err != nil {
+			t.Fatal(err)
+		}
+		design, _, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "design-membership-" + core.NewTaskID(), Title: "Membership " + core.NewTaskID(), Category: "Architecture"}, core.SystemDesignVersion{Content: "# Membership\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/store/**\n```", Origin: core.SystemDesignOriginOperator})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err = st.ConfirmSystemDesignVersion(ctx, design.ID, 1); err != nil {
+			t.Fatal(err)
+		}
+		if i == 0 {
+			f.Requirement, f.Design = req.ID, design.ID
+		}
+	}
+	var err error
+	f.Expected[core.LineageRequirement], err = st.ListRequirementEvents(ctx, f.Requirement)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Expected[core.LineageSystemDesign], err = st.ListSystemDesignEvents(ctx, f.Design)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws, _ := store.WorkspaceFromContext(ctx)
+	at := time.Date(2027, 1, 1, 12, 0, 0, 0, time.UTC)
+	for _, branch := range []string{"confirmed", "pending", "unrelated"} {
+		taskID := "membership-" + branch + "-" + core.NewTaskID()
+		if err = st.CreateTask(ctx, core.Task{ID: taskID, Workspace: ws, Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/" + taskID, State: core.TaskRunning}); err != nil {
+			t.Fatal(err)
+		}
+		if branch != "unrelated" {
+			proposal, err := st.ProposeRequirementServes(ctx, taskID, f.Requirement, core.RequirementServesOperator, branch == "confirmed")
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := core.RequirementServesProposed
+			if branch == "confirmed" {
+				want = core.RequirementServesConfirmed
+			}
+			if proposal.State != want {
+				t.Fatalf("%s proposal state=%s", branch, proposal.State)
+			}
+		}
+		for _, event := range []core.Event{
+			{Kind: "fixture.activity", Payload: core.JSONPayload(map[string]any{"requirement_id": f.Requirement, "marker": "payload-on-task"})},
+			{Kind: "fixture.activity", Payload: core.JSONPayload(map[string]any{"marker": "without-document"})},
+			{Kind: "system_design.consulted", Payload: core.JSONPayload(map[string]any{"document_id": f.Design, "marker": "target-design"})},
+			{Kind: "system_design.consulted", Payload: core.JSONPayload(map[string]any{"document_id": "other-design", "marker": "other-design"})},
+			{Kind: "fixture.activity", Payload: core.JSONPayload(map[string]any{"document_id": f.Design, "marker": "wrong-kind"})},
+		} {
+			event.TaskID, event.At = taskID, at
+			if err = st.AppendEvent(ctx, event); err != nil {
+				t.Fatal(err)
+			}
+		}
+		events, err := st.ListEvents(ctx, taskID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if branch == "confirmed" {
+			f.ConfirmedTask = taskID
+			f.Expected[core.LineageRequirement] = append(f.Expected[core.LineageRequirement], events...)
+		}
+		for _, event := range events {
+			var payload map[string]any
+			if err := json.Unmarshal(event.Payload, &payload); err != nil {
+				t.Fatal(err)
+			}
+			if payload["marker"] == "target-design" {
+				f.Expected[core.LineageSystemDesign] = append(f.Expected[core.LineageSystemDesign], event)
+			}
+		}
+	}
+	for _, events := range f.Expected {
+		sort.Slice(events, func(i, j int) bool {
+			if events[i].At.Equal(events[j].At) {
+				return events[i].ID > events[j].ID
+			}
+			return events[i].At.After(events[j].At)
+		})
+	}
+	return f
+}
+
+func runMixedDocumentEventPages(t *testing.T, factory RequirementFactory) {
+	t.Run("mixed document event membership", func(t *testing.T) {
+		f := factory(t, requirementConformanceRepos)
+		st, ctx := f.Store, f.Context
+		for _, kind := range []core.LineageNodeType{core.LineageRequirement, core.LineageSystemDesign} {
+			fixture := SeedDocumentEventMembership(t, st, ctx)
+			id := fixture.Requirement
+			if kind == core.LineageSystemDesign {
+				id = fixture.Design
+			}
+			expected := fixture.Expected[kind]
+			var snapshot int64
+			for _, event := range expected {
+				snapshot = max(snapshot, event.ID)
+			}
+			// Pinning uses event identity rather than timestamp or offset. Also
+			// exercise an older snapshot that excludes some original members.
+			for _, pinned := range []int64{0, snapshot, snapshot - 1} {
+				want := []core.Event{}
+				for _, event := range expected {
+					if pinned == 0 || event.ID <= pinned {
+						want = append(want, event)
+					}
+				}
+				for _, offset := range []int{0, 1, 3, len(want), len(want) + 1} {
+					page, err := st.ListDocumentEventPage(ctx, kind, id, store.DocumentEventQuery{Limit: 3, Offset: offset, SnapshotID: pinned})
+					wantSnapshot := snapshot
+					if pinned > 0 {
+						wantSnapshot = pinned
+					}
+					if err != nil || page.Total != len(want) || page.SnapshotID != wantSnapshot || page.Limit != 3 || page.Offset != offset {
+						t.Fatalf("%s pinned=%d offset=%d: %+v err=%v", kind, pinned, offset, page, err)
+					}
+					assertDocumentEventsEqual(t, page.Events, want[min(offset, len(want)):min(offset+3, len(want))])
+				}
+			}
+			for _, at := range []time.Time{time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC), time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)} {
+				if err := st.AppendEvent(ctx, core.Event{TaskID: fixture.ConfirmedTask, Kind: "system_design.consulted", At: at, Payload: core.JSONPayload(map[string]any{"document_id": fixture.Design})}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			page, err := st.ListDocumentEventPage(ctx, kind, id, store.DocumentEventQuery{Limit: 200, SnapshotID: snapshot})
+			if err != nil || page.Total != len(expected) || page.SnapshotID != snapshot {
+				t.Fatalf("%s changed pinned history: %+v err=%v", kind, page, err)
+			}
+			assertDocumentEventsEqual(t, page.Events, expected)
+			for _, pinned := range []int64{0, snapshot} {
+				foreign, err := st.ListDocumentEventPage(store.WithWorkspace(ctx, "other-"+core.NewTaskID()), kind, id, store.DocumentEventQuery{Limit: 3, SnapshotID: pinned})
+				if err != nil || foreign.Total != 0 || len(foreign.Events) != 0 || foreign.SnapshotID != pinned {
+					t.Fatalf("foreign %s: %+v err=%v", kind, foreign, err)
+				}
+			}
+		}
+	})
+}
+
+func assertDocumentEventsEqual(t *testing.T, got, want []core.Event) {
+	t.Helper()
+	normalize := func(events []core.Event) []core.Event {
+		out := append([]core.Event{}, events...)
+		for i := range out {
+			out[i].At = out[i].At.UTC()
+			var payload any
+			if err := json.Unmarshal(out[i].Payload, &payload); err != nil {
+				t.Fatal(err)
+			}
+			out[i].Payload, _ = json.Marshal(payload)
+		}
+		return out
+	}
+	if !reflect.DeepEqual(normalize(got), normalize(want)) {
+		t.Fatalf("document history differs:\ngot: %+v\nwant: %+v", got, want)
+	}
 }
