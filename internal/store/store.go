@@ -174,6 +174,9 @@ type TaskStore interface {
 	ListDependencyBlockers(ctx context.Context, taskIDs []string) (map[string]DependencyBlockers, error)
 	AddTaskDependency(ctx context.Context, request DependencyAdditionRequest) (DependencyAdditionResult, error)
 	RemoveTaskDependency(ctx context.Context, request DependencyRemovalRequest) (DependencyRemovalResult, error)
+	QueuePullRequestClose(context.Context, core.PullRequestClose) error
+	GetPullRequestClose(context.Context, string) (core.PullRequestClose, bool, error)
+	UpdatePullRequestClose(context.Context, core.PullRequestClose) error
 	QueueGitHubLifecycle(ctx context.Context, lifecycle core.GitHubLifecycle) error
 	GetGitHubLifecycle(ctx context.Context, taskID string) (core.GitHubLifecycle, bool, error)
 	UpdateGitHubLifecycle(ctx context.Context, lifecycle core.GitHubLifecycle) error
@@ -1435,6 +1438,7 @@ type memory struct {
 	workOrderActivitySnapshots  map[string]core.WorkOrderActivitySnapshot
 	workOrderTranscriptCaptures map[string][]core.WorkOrderTranscriptCapture
 	publications                map[string]core.ReviewPublication
+	pullRequestCloses           map[string]core.PullRequestClose
 	github                      map[string]core.GitHubLifecycle
 	features                    map[string]core.Feature
 	requirements                map[memoryScopedKey]core.Requirement
@@ -5250,6 +5254,10 @@ func (m *memory) resumeDependencyQueueClocksLocked(taskID string, now time.Time)
 }
 
 func (m *memory) hydrateTaskLocked(task core.Task) core.Task {
+	if p, ok := m.pullRequestCloses[task.ID]; ok {
+		task.PullRequestClose = &p
+		task.PullRequestCloseState = p.State
+	}
 	task.Dependencies = nil
 	task.BlockingTaskIDs = nil
 	task.Children = nil

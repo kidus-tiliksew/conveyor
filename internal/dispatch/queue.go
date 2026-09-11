@@ -131,6 +131,7 @@ func (d *Dispatcher) Registrations(shutdown *ShutdownMarker) []queue.Registratio
 		},
 		{Kind: queue.ReviewPublicationArgs{}.Kind(), Handle: (&reviewPublicationWorker{dispatcher: d}).Work},
 		{Kind: queue.GitHubIssuePublicationArgs{}.Kind(), Handle: (&githubIssuePublicationWorker{dispatcher: d}).Work},
+		{Kind: queue.PullRequestCloseArgs{}.Kind(), Handle: (&pullRequestCloseWorker{dispatcher: d}).Work, RetryDelay: queue.DispatchTaskRetryDelay},
 		{Kind: queue.OrderClockArgs{}.Kind(), Handle: (&orderClockWorker{dispatcher: d}).Work},
 	}
 }

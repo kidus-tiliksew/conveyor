@@ -246,3 +246,17 @@ func writeLifecycleDiagram(out *strings.Builder, label, prefix string, table lif
 	}
 	out.WriteString("  }\n")
 }
+
+// req-task-lifecycle-and-queue AC-7.4: terminal publication outcomes never
+// reopen, including when a discarded queue stream is encountered at startup.
+var pullRequestCloseLifecycleTable = lifecycleTable{
+	"queued":   {"retrying": "retrying", "failed": "failed"},
+	"retrying": {"retrying": "retrying", "closed": "closed", "skipped": "skipped", "failed": "failed"},
+}
+
+func ValidatePullRequestCloseTransition(from, to string) error {
+	if _, ok := pullRequestCloseLifecycleTable[from][to]; !ok {
+		return fmt.Errorf("invalid pull request close transition %s -> %s", from, to)
+	}
+	return nil
+}

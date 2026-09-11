@@ -62,6 +62,14 @@ func (GitHubIssuePublicationArgs) Kind() string { return "github_issue_publicati
 
 func (a GitHubIssuePublicationArgs) UniqueKey() string { return a.TaskID }
 
+type PullRequestCloseArgs struct {
+	WorkspaceID string `json:"workspace_id"`
+	TaskID      string `json:"task_id"`
+}
+
+func (PullRequestCloseArgs) Kind() string        { return "pull_request.close" }
+func (a PullRequestCloseArgs) UniqueKey() string { return a.TaskID }
+
 type OrderClockArgs struct {
 	WorkspaceID string `json:"workspace_id"`
 }
@@ -80,7 +88,7 @@ func Identity(kind string, args []byte) (workspace, key string, ok bool) {
 		return "", "", false
 	}
 	switch kind {
-	case DispatchTaskArgs{}.Kind(), GitHubIssuePublicationArgs{}.Kind():
+	case DispatchTaskArgs{}.Kind(), GitHubIssuePublicationArgs{}.Kind(), PullRequestCloseArgs{}.Kind():
 		return decoded.WorkspaceID, decoded.TaskID, decoded.TaskID != ""
 	case ReviewPublicationArgs{}.Kind():
 		return decoded.WorkspaceID, decoded.ReviewWorkOrderID, decoded.ReviewWorkOrderID != ""

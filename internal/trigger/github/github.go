@@ -1127,3 +1127,95 @@ func EnsureSubmissionPRWithCredential(ctx context.Context, repo, branch, base, t
 	}
 	return created.URL, nil
 }
+
+// ClosePullRequestWithCredential uses only the caller's workspace App token.
+// It reconciles the exact successor comment before retrying an uncertain write
+// (component-git-delivery; req-task-lifecycle-and-queue AC-7.4; DEC-41).
+func ClosePullRequestWithCredential(ctx context.Context, repo string, number int, comment, token string) error {
+	return closePullRequest(ctx, repo, number, comment, ghWithTokenAndIdentity(token, "workspace GitHub App"))
+}
+
+func closePullRequest(ctx context.Context, repo string, number int, comment string, run ghRunner) error {
+	endpoint := fmt.Sprintf("repos/%s/pulls/%d", repo, number)
+	read := func() (string, bool, error) {
+		out, err := run(ctx, "api", endpoint)
+		if err != nil {
+			return "", false, forgeCallError(err)
+		}
+		var pr struct {
+			Number int    `json:"number"`
+			State  string `json:"state"`
+			Merged *bool  `json:"merged"`
+		}
+		if json.Unmarshal(out, &pr) != nil || pr.Number != number || (pr.State != "open" && pr.State != "closed") || pr.Merged == nil {
+			return "", false, forgeResponseError("parse pull request close state")
+		}
+		return pr.State, *pr.Merged, nil
+	}
+	state, merged, err := read()
+	if err != nil {
+		return err
+	}
+	if state != "open" || merged {
+		return nil
+	}
+	commentsEndpoint := fmt.Sprintf("repos/%s/issues/%d/comments", repo, number)
+	out, err := run(ctx, "api", commentsEndpoint+"?per_page=100", "--paginate", "--slurp")
+	if err != nil {
+		return forgeCallError(err)
+	}
+	var pages [][]struct {
+		ID   int64  `json:"id"`
+		Body string `json:"body"`
+	}
+	if json.Unmarshal(out, &pages) != nil || pages == nil {
+		return forgeResponseError("parse pull request close comments")
+	}
+	found := false
+	for _, page := range pages {
+		if page == nil {
+			return forgeResponseError("parse pull request close comment page")
+		}
+		for _, c := range page {
+			if c.ID <= 0 {
+				return forgeResponseError("parse pull request close comment identity")
+			}
+			if c.Body == comment {
+				found = true
+			}
+		}
+	}
+	if !found {
+		out, err = run(ctx, "api", "--method", "POST", commentsEndpoint, "-f", "body="+comment)
+		if err != nil {
+			return forgeCallError(err)
+		}
+		var result struct {
+			ID   int64  `json:"id"`
+			Body string `json:"body"`
+		}
+		if json.Unmarshal(out, &result) != nil || result.ID <= 0 || result.Body != comment {
+			return forgeResponseError("confirm pull request close comment")
+		}
+	}
+	// An external merge between discovery and comment must not lead to a close.
+	state, merged, err = read()
+	if err != nil {
+		return err
+	}
+	if state != "open" || merged {
+		return nil
+	}
+	_, err = run(ctx, "api", "--method", "PATCH", endpoint, "-f", "state=closed")
+	if err != nil {
+		return forgeCallError(err)
+	}
+	state, merged, err = read()
+	if err != nil {
+		return err
+	}
+	if merged || state == "closed" {
+		return nil
+	}
+	return forgeResponseError("GitHub did not confirm pull request closure")
+}

@@ -213,9 +213,11 @@ type Task struct {
 	Context            TaskContext           `json:"context,omitempty"`
 	// FeatureID is deprecated migration history. Live task context and child
 	// materialization use requirement/lineage records instead.
-	FeatureID string           `json:"feature_id,omitempty"`
-	GitHub    *GitHubLifecycle `json:"github,omitempty"` // durable forge projection
-	CreatedAt time.Time        `json:"created_at"`
+	FeatureID             string            `json:"feature_id,omitempty"`
+	PullRequestClose      *PullRequestClose `json:"pull_request_close,omitempty"`
+	PullRequestCloseState string            `json:"pull_request_close_state,omitempty"`
+	GitHub                *GitHubLifecycle  `json:"github,omitempty"` // durable forge projection
+	CreatedAt             time.Time         `json:"created_at"`
 }
 
 // TaskAssignee is the member-safe identity rendered on task and work-order
