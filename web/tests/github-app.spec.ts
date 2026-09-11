@@ -24,7 +24,7 @@ const manifest = {
   redirect_url: 'https://conveyor.example/v1/workspaces/demo/github-app/callback',
   setup_url: 'https://conveyor.example/v1/workspaces/demo/github-app/setup',
   setup_on_update: true,
-  hook_attributes: { active: false },
+  hook_attributes: { active: false, url: 'https://conveyor.example' },
   default_permissions: { contents: 'write' },
 }
 
@@ -51,7 +51,7 @@ async function mockApp(page: Page, role = 'operator') {
       expect(request.method()).toBe('POST')
       expect(request.headers()['x-conveyor-csrf']).toBe('1')
       if (state.failMethod === 'POST')
-        return route.fulfill({ status: 503, json: { error: 'github_app_unavailable', message: state.error } })
+        return route.fulfill({ status: 503, json: { error: 'public_url_required', message: state.error } })
       return route.fulfill({ json: { manifest, state: 'manifest/state+value' } })
     }
     if (path.endsWith('/github-app')) {
@@ -102,7 +102,14 @@ for (const organization of ['', 'demo-org']) {
     expect(submitted?.url).toBe(`${target}?state=manifest%2Fstate%2Bvalue`)
     expect(submitted?.method).toBe('POST')
     expect(submitted?.navigation).toBe(true)
-    expect(JSON.parse(new URLSearchParams(submitted?.body ?? '').get('manifest') ?? '{}')).toEqual(manifest)
+    const posted = JSON.parse(new URLSearchParams(submitted?.body ?? '').get('manifest') ?? '{}')
+    expect(posted).toEqual(manifest)
+    // Check GitHub's required URLs independently of mock/POST equality.
+    expect(posted.url).toBe('https://conveyor.example')
+    expect(posted.redirect_url).toBe('https://conveyor.example/v1/workspaces/demo/github-app/callback')
+    expect(posted.setup_url).toBe('https://conveyor.example/v1/workspaces/demo/github-app/setup')
+    expect(posted.hook_attributes.url).toBe('https://conveyor.example')
+    expect(posted.hook_attributes.active).toBe(false)
     expect(state.posts).toBe(1)
   })
 }
@@ -203,4 +210,24 @@ test('machine-only status errors show readable failure copy', async ({ page }) =
   await page.goto('/settings')
   await expect(page.getByRole('alert')).toHaveText('Could not load the GitHub connection.')
   await expect(page.locator('body')).not.toContainText('github_app_permission')
+})
+
+test('missing public URL refuses connection without navigating to GitHub', async ({ page }) => {
+  const state = await mockApp(page)
+  state.failMethod = 'POST'
+  state.error = 'Configure the public URL before connecting GitHub.'
+  let githubRequests = 0
+  await page.route('https://github.com/**', async (route) => {
+    githubRequests++
+    await route.abort()
+  })
+  await page.goto('/settings')
+  const settingsURL = page.url()
+  await page.getByRole('button', { name: 'Connect GitHub', exact: true }).click()
+  await expect(page.getByRole('alert')).toContainText(state.error)
+  await expect(page.getByRole('button', { name: 'Connect GitHub', exact: true })).toBeEnabled()
+  expect(state.posts).toBe(1)
+  expect(githubRequests).toBe(0)
+  expect(page.url()).toBe(settingsURL)
+  expect(await page.locator('form[action^="https://github.com/"]').count()).toBe(0)
 })

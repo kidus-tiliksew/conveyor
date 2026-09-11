@@ -144,6 +144,30 @@ func TestWorkspaceGitHubAppHTTPFlow(t *testing.T) {
 	if got := call("POST", "/manifest", "", "operator", false); got.Code != 401 {
 		t.Fatal("manifest not session bound")
 	}
+	for _, publicURL := range []string{"", "conveyor.example", "ftp://conveyor.example", "https://conveyor.example?query=1", "https://conveyor.example/#fragment", "https://%"} {
+		t.Run("invalid public URL "+publicURL, func(t *testing.T) {
+			server.InvitationDelivery.PublicURL = publicURL
+			before := len(server.appStates.values)
+			// Exercise URL validation directly: malformed configured origins can
+			// otherwise be refused by CSRF middleware before this handler runs.
+			r := httptest.NewRequest("POST", "/v1/workspaces/alpha/github-app/manifest", nil)
+			r = r.WithContext(store.WithCredential(store.WithWorkspace(r.Context(), "alpha"), sessions.credential))
+			r.AddCookie(&http.Cookie{Name: dashboardSessionCookie, Value: "session-a"})
+			w := httptest.NewRecorder()
+			server.createWorkspaceGitHubAppManifest(w, r)
+			if w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), "public_url_required") {
+				t.Fatalf("invalid public URL: %d %s", w.Code, w.Body.String())
+			}
+			if len(server.appStates.values) != before || len(w.Result().Cookies()) != 0 {
+				t.Fatal("invalid public URL issued state or return cookie")
+			}
+		})
+	}
+	server.InvitationDelivery.PublicURL = ""
+	if w := call("POST", "/manifest", "session-a", "", true); w.Code != http.StatusServiceUnavailable || len(w.Result().Cookies()) != 0 {
+		t.Fatal("missing public URL must refuse through the HTTP router without a return cookie")
+	}
+	server.InvitationDelivery.PublicURL = "https://conveyor.example"
 	manifest := func() string {
 		t.Helper()
 		w := call("POST", "/manifest", "session-a", "", true)
@@ -168,6 +192,18 @@ func TestWorkspaceGitHubAppHTTPFlow(t *testing.T) {
 		}
 		if result.Manifest["name"] != "Conveyor Alpha" || result.Manifest["public"] != true || result.Manifest["setup_on_update"] != true || result.Manifest["redirect_url"] != "https://conveyor.example/v1/workspaces/alpha/github-app/callback" {
 			t.Fatal("manifest contract")
+		}
+		// GitHub requires hook_attributes.url even with active=false.
+		// Assert the serialized HTTP response, not the construction map.
+		hook, ok := result.Manifest["hook_attributes"].(map[string]any)
+		if !ok || hook["active"] != false || hook["url"] != "https://conveyor.example" {
+			t.Fatal("GitHub requires a URL for the disabled webhook")
+		}
+		if result.Manifest["url"] != "https://conveyor.example" || result.Manifest["setup_url"] != "https://conveyor.example/v1/workspaces/alpha/github-app/setup" {
+			t.Fatal("manifest homepage/setup URLs")
+		}
+		if result.State == "" || w.Header().Get("Cache-Control") != "no-store" {
+			t.Fatal("manifest state/cache contract")
 		}
 		return result.State
 	}
