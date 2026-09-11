@@ -16,6 +16,7 @@ import (
 )
 
 func runTaskStartOver(t *testing.T, factory Factory) {
+	t.Run("pull_request_close", func(t *testing.T) { runPullRequestClose(t, factory) })
 	for _, withPlan := range []bool{false, true} {
 		t.Run(map[bool]string{false: "without_plan", true: "with_plan"}[withPlan], func(t *testing.T) {
 			x := factory.fresh(t, nil)

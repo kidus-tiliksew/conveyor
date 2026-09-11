@@ -41,6 +41,8 @@ type Dispatcher struct {
 	Pack                       *pack.Bundle
 	Agent                      inprocess.Agent
 	ConfigProvider             func(context.Context) (*config.Config, error)
+	PullRequestForClose        func(context.Context, string, string) (github.PullRequest, error)
+	ClosePullRequest           func(context.Context, string, int, string, string) error
 	PublishIssue               func(context.Context, github.IssuePublication) (github.IssuePublicationResult, error)
 	PublishReview              func(context.Context, github.ReviewPublication) (github.ReviewPublicationResult, error)
 	ViewPullRequest            func(context.Context, string, string) (github.PullRequest, error)
@@ -98,6 +100,8 @@ func New(st store.Store, cfg *config.Config, agent inprocess.Agent) *Dispatcher 
 		}
 		return reviewBranchDiff(forgeCtx, cfg, comparison)
 	}
+	d.PullRequestForClose = github.PullRequestForBranch
+	d.ClosePullRequest = github.ClosePullRequestWithCredential
 	d.PublishIssue = func(ctx context.Context, publication github.IssuePublication) (github.IssuePublicationResult, error) {
 		forgeCtx, err := d.workspaceForgeContext(ctx, publication.Repo)
 		if err != nil {
@@ -238,6 +242,13 @@ const (
 )
 
 func (d *Dispatcher) Enqueue(ctx context.Context, taskID string) {
+	if task, err := d.Store.GetTask(ctx, taskID); err == nil && task.Supersedes != "" {
+		if retired, err := d.Store.GetTask(ctx, task.Supersedes); err == nil {
+			if err = d.queueStartedOverPR(ctx, retired); err != nil {
+				log.Printf("queue start-over pull request close for %s: %v", retired.ID, err)
+			}
+		}
+	}
 	if !d.durableQueue {
 		workspace, _ := store.WorkspaceFromContext(ctx)
 		d.memoryQueue <- queuedTask{Workspace: workspace, TaskID: taskID}
@@ -2723,6 +2734,11 @@ func (d *Dispatcher) ReconcileGitHubLifecycles(ctx context.Context) (int, error)
 	}
 	repaired := 0
 	for _, task := range tasks {
+		if task.SupersededBy != "" {
+			if err = d.queueStartedOverPR(ctx, task); err != nil {
+				return repaired, err
+			}
+		}
 		spec, ok, getErr := d.Store.GetLatestSpecVersion(ctx, task.ID)
 		if getErr != nil {
 			return repaired, getErr

@@ -100,3 +100,7 @@ PRs on first push, and adds no push-event matching, draft-to-ready transition,
 or orphan-draft cleanup. Phase 5.4 now extends the existing PR body
 reconciliation with one credential-free verification-evidence metadata section;
 it does not publish private artifact URLs or make GitHub the artifact store.
+
+## Starting over
+
+Starting over a task queues a durable follow-up to close its open pull request with one comment naming the successor task, successor branch, and restart reason. The comment and closure use the workspace GitHub App; the retired task records `forge_author_class: workspace` and the restarting operator separately. Conveyor keeps the retired branch. Missing, closed, or merged pull requests require no write. The publication reconciles uncertain writes before retrying and stops after five attempts; task JSON and activity record the PR details, outcome, and forge error category. A missing App or repository permission requires connecting or repairing the App in workspace settings. A forge failure never rolls back the restart or changes the successor.
