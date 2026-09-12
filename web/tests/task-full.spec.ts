@@ -2626,7 +2626,8 @@ test('stalled task is labelled in the operator tray with recover and reasoned ca
   await expect(tray.getByText('harness exited: status 1')).toBeVisible()
   await tray.getByText('Short task').click()
   await expect(page.getByRole('button', { name: 'Recover work order' })).toBeVisible()
-  await page.getByRole('button', { name: 'Cancel task' }).click()
+  await page.getByRole('button', { name: 'Task actions' }).click()
+  await page.getByRole('menuitem', { name: 'Cancel task' }).click()
   await page.getByPlaceholder('Why is this task being cancelled?').fill('provider setup is obsolete')
   await page.getByRole('dialog', { name: 'Cancel task' }).getByRole('button', { name: 'Cancel task' }).click()
   await expect.poll(() => cancelBody).toContain('provider setup is obsolete')
@@ -4859,7 +4860,9 @@ test('unsatisfiable dependency is attention-worthy and can be unlinked with an a
   await expect(page.getByRole('heading', { name: 'Waiting on dependencies' })).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Recover work order' })).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Redispatch' })).toHaveCount(0)
-  await expect(page.getByRole('button', { name: 'Cancel task' })).toBeVisible()
+  await page.getByRole('button', { name: 'Task actions' }).click()
+  await expect(page.getByRole('menuitem', { name: 'Cancel task' })).toBeVisible()
+  await page.keyboard.press('Escape')
   await page.getByRole('button', { name: 'Unlink dependency Retired API plan' }).click()
   const remove = page.getByRole('button', { name: 'Remove dependency' })
   await expect(remove).toBeDisabled()
@@ -4905,7 +4908,8 @@ test('task header links an open dependency with one stable audited request', asy
   })
 
   await page.goto('/tasks/full-header-id')
-  await page.getByRole('button', { name: 'Link dependency' }).click()
+  await page.getByRole('button', { name: 'Task actions' }).click()
+  await page.getByRole('menuitem', { name: 'Link dependency' }).click()
   await page.getByPlaceholder('Task title or ID').fill('candidate')
   await expect(page.getByRole('button', { name: /Candidate API/ })).toBeVisible()
   await expect(page.getByRole('button', { name: /Closed candidate/ })).toHaveCount(0)
@@ -5377,24 +5381,27 @@ test('an operator assigns a task from the member picker and the timeline records
   await routeAssignment(page, { operator: true })
 
   await page.goto('/tasks/assignable/full')
-  await expect(page.getByRole('button', { name: 'Assign', exact: true })).toBeVisible()
+  await page.getByRole('button', { name: 'Task actions' }).click()
+  await expect(page.getByRole('menuitem', { name: 'Assign', exact: true })).toBeVisible()
   // Nothing claims the task yet, so no chip stands in for an assignment.
   await expect(page.getByTitle(/^Assigned to/)).toHaveCount(0)
 
-  await page.getByRole('button', { name: 'Assign', exact: true }).click()
+  await page.getByRole('menuitem', { name: 'Assign', exact: true }).click()
   const picker = page.getByRole('listbox', { name: 'Workspace members' })
   await expect(picker.getByRole('option', { name: 'Ada Owner' })).toBeVisible()
   await picker.getByRole('option', { name: 'Bo Member' }).click()
 
   // The header fact and the control both follow the server's answer.
   await expect(page.getByTitle('Assigned to Bo Member — bo@example.test · usr_bo')).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Reassign', exact: true })).toBeVisible()
+  await page.getByRole('button', { name: 'Task actions' }).click()
+  await expect(page.getByRole('menuitem', { name: 'Reassign', exact: true })).toBeVisible()
   await expect(page.getByRole('region', { name: 'Activity' })).toContainText('Assigned to Bo Member')
 
   // Clearing restores the unassigned presentation rather than leaving a blank.
-  await page.getByRole('button', { name: 'Reassign', exact: true }).click()
+  await page.getByRole('menuitem', { name: 'Reassign', exact: true }).click()
   await page.getByRole('button', { name: 'Clear assignee' }).click()
-  await expect(page.getByRole('button', { name: 'Assign', exact: true })).toBeVisible()
+  await page.getByRole('button', { name: 'Task actions' }).click()
+  await expect(page.getByRole('menuitem', { name: 'Assign', exact: true })).toBeVisible()
   await expect(page.getByTitle(/^Assigned to/)).toHaveCount(0)
   await expect(page.getByRole('region', { name: 'Activity' })).toContainText('Assignee cleared')
 })
@@ -5435,7 +5442,8 @@ test('a non-operator sees the assignee but no set or clear control', async ({ pa
 
   await page.goto('/tasks/assignable/full')
   await expect(page.getByTitle('Assigned to Bo Member — bo@example.test · usr_bo')).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Assign' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Task actions' })).toHaveCount(0)
+  await expect(page.getByRole('menuitem')).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Reassign' })).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Clear assignee' })).toHaveCount(0)
 })
@@ -5576,7 +5584,8 @@ async function mockRestart(page: Page, options: { role?: string; proposals?: (ty
 
 async function openRestart(page: Page) {
   await page.goto('/tasks/restart-source/full')
-  await page.getByRole('button', { name: 'Start over', exact: true }).click()
+  await page.getByRole('button', { name: 'Task actions' }).click()
+  await page.getByRole('menuitem', { name: 'Start over', exact: true }).click()
   return page.getByRole('dialog', { name: 'Start over', exact: true })
 }
 
@@ -5651,7 +5660,8 @@ for (const role of ['viewer', 'executor', 'contributor']) {
     await mockRestart(page, { role })
     await page.goto('/tasks/restart-source/full')
     await expect(page.getByRole('heading', { name: 'Short task' })).toBeVisible()
-    await expect(page.getByRole('button', { name: 'Start over', exact: true })).toHaveCount(0)
+    await expect(page.getByRole('button', { name: 'Task actions' })).toHaveCount(0)
+    await expect(page.getByRole('menuitem')).toHaveCount(0)
   })
 }
 for (const state of ['closed', 'merged']) {
@@ -5662,7 +5672,8 @@ for (const state of ['closed', 'merged']) {
     await page.route('**/v1/tasks/restart-source/activity*', (route) => route.fulfill({ json: item }))
     await page.goto('/tasks/restart-source/full')
     await expect(page.getByRole('heading', { name: 'Short task' })).toBeVisible()
-    await expect(page.getByRole('button', { name: 'Start over', exact: true })).toHaveCount(0)
+    await expect(page.getByRole('button', { name: 'Task actions' })).toHaveCount(0)
+    await expect(page.getByRole('menuitem')).toHaveCount(0)
   })
 }
 
@@ -5882,4 +5893,148 @@ test('start over counts recoverable and submitted orders but excludes cancelled 
   )
   const dialog = await openRestart(page)
   await expect(dialog.getByText('3 non-terminal work orders will be cancelled.')).toBeVisible()
+})
+
+for (const variant of ['sheet', 'full']) {
+  test(`task actions menu supports keyboard navigation and dismissal in ${variant}`, async ({ page }) => {
+    await page.goto(`/tasks/full-header-id${variant === 'full' ? '/full' : ''}`)
+    const trigger = page.getByRole('button', { name: 'Task actions' })
+    const menu = page.getByRole('menu', { name: 'Task actions' })
+    await expect(page.getByRole('button', { name: 'Hold', exact: true })).toHaveCount(0)
+    await trigger.focus()
+    await page.keyboard.press('ArrowDown')
+    await expect(menu.getByRole('menuitem')).toHaveText([
+      'Link dependency',
+      'Hold',
+      'Assign',
+      'Cancel task',
+      'Start over',
+    ])
+    await expect(menu.getByRole('menuitem', { name: 'Link dependency' })).toBeFocused()
+    await page.keyboard.press('End')
+    await expect(menu.getByRole('menuitem', { name: 'Start over' })).toBeFocused()
+    await page.keyboard.press('ArrowDown')
+    await expect(menu.getByRole('menuitem', { name: 'Link dependency' })).toBeFocused()
+    await page.keyboard.press('ArrowUp')
+    await expect(menu.getByRole('menuitem', { name: 'Start over' })).toBeFocused()
+    await page.keyboard.press('Home')
+    await page.keyboard.press('ArrowDown')
+    await page.keyboard.press('Space')
+    const dialog = page.getByRole('dialog', { name: 'Hold task', exact: true })
+    await expect(dialog).toBeVisible()
+    await expect(menu).toHaveCount(0)
+    await dialog.getByRole('button', { name: 'Cancel', exact: true }).click()
+    await expect(trigger).toBeFocused()
+    await page.keyboard.press('ArrowUp')
+    await expect(menu.getByRole('menuitem', { name: 'Start over' })).toBeFocused()
+    await page.keyboard.press('Escape')
+    await expect(trigger).toBeFocused()
+    await expect(menu).toHaveCount(0)
+    await trigger.click()
+    await page.keyboard.press('Tab')
+    await expect(menu).toHaveCount(0)
+    await trigger.click()
+    await page.getByRole('heading', { name: 'Short task', exact: true }).click()
+    await expect(menu).toHaveCount(0)
+    if (variant === 'sheet') await expect(page.getByRole('dialog', { name: 'Task detail', exact: true })).toBeVisible()
+  })
+
+  for (const initialHold of [false, true]) {
+    const action = initialHold ? 'Release' : 'Hold'
+    test(`${action} requires confirmation and refreshes server state in ${variant}`, async ({ page }) => {
+      let hold = initialHold
+      const requests: { method: string; body: unknown; csrf?: string; workspace: string | null }[] = []
+      let reads = 0
+      await page.route('**/v1/tasks/full-header-id/activity*', (route) => {
+        reads++
+        const item = activity('full-header-id', false)
+        return route.fulfill({ json: { ...item, task: { ...item.task, hold } } })
+      })
+      let releaseRequest = () => {}
+      const pending = new Promise<void>((resolve) => {
+        releaseRequest = resolve
+      })
+      await page.route('**/v1/tasks/full-header-id/hold*', async (route) => {
+        const request = route.request()
+        requests.push({
+          method: request.method(),
+          body: request.postDataJSON(),
+          csrf: request.headers()['x-conveyor-csrf'],
+          workspace: new URL(request.url()).searchParams.get('workspace_id'),
+        })
+        await pending
+        hold = !initialHold
+        await route.fulfill({ json: { ...activity('full-header-id', false).task, hold } })
+      })
+      await page.goto(`/tasks/full-header-id${variant === 'full' ? '/full' : ''}`)
+      const trigger = page.getByRole('button', { name: 'Task actions' })
+      const open = async () => {
+        await trigger.click()
+        await page.getByRole('menuitem', { name: action, exact: true }).click()
+      }
+      await open()
+      const dialog = page.getByRole('dialog', { name: `${action} task`, exact: true })
+      await expect(dialog).toContainText('Short task')
+      await expect(dialog).toContainText(initialHold ? 'eligible work orders again' : 'Active work continues')
+      expect(requests).toHaveLength(0)
+      await dialog.getByRole('button', { name: 'Cancel', exact: true }).click()
+      expect(requests).toHaveLength(0)
+      await expect(trigger).toBeFocused()
+      await open()
+      await page.keyboard.press('Escape')
+      await expect(dialog).toHaveCount(0)
+      await expect(trigger).toBeFocused()
+      expect(requests).toHaveLength(0)
+      await open()
+      const before = reads
+      await dialog
+        .getByRole('button', { name: `${action} task`, exact: true })
+        .evaluate((button: HTMLButtonElement) => {
+          button.click()
+          button.click()
+        })
+      await expect.poll(() => requests.length).toBe(1)
+      await expect(dialog.getByRole('button', { name: initialHold ? 'Releasing…' : 'Holding…' })).toBeDisabled()
+      await expect(dialog.getByRole('button', { name: 'Cancel', exact: true })).toBeDisabled()
+      await page.keyboard.press('Escape')
+      await page.keyboard.press('Tab')
+      await expect(dialog).toBeFocused()
+      await dialog
+        .locator('..')
+        .locator('[aria-hidden]')
+        .click({ position: { x: 2, y: 2 } })
+      await expect(dialog).toBeVisible()
+      expect(requests).toEqual([{ method: 'PUT', body: { hold: !initialHold }, csrf: '1', workspace: 'demo' }])
+      releaseRequest()
+      await expect(dialog).toHaveCount(0)
+      await expect.poll(() => reads).toBeGreaterThan(before)
+      await trigger.click()
+      await expect(page.getByRole('menuitem', { name: initialHold ? 'Hold' : 'Release', exact: true })).toBeVisible()
+      expect(requests).toHaveLength(1)
+      if (variant === 'sheet')
+        await expect(page.getByRole('dialog', { name: 'Task detail', exact: true })).toBeVisible()
+    })
+  }
+}
+
+test('hold refusal stays visible and retry preserves the requested transition', async ({ page }) => {
+  let attempts = 0
+  await page.route('**/v1/tasks/full-header-id/hold*', (route) => {
+    attempts++
+    expect(route.request().postDataJSON()).toEqual({ hold: true })
+    return route.fulfill({ status: 409, json: { error: 'Task is no longer open.' } })
+  })
+  await page.goto('/tasks/full-header-id/full')
+  await page.getByRole('button', { name: 'Task actions' }).click()
+  await page.getByRole('menuitem', { name: 'Hold', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: 'Hold task', exact: true })
+  await dialog.getByRole('button', { name: 'Hold task', exact: true }).click()
+  await expect(dialog.getByRole('alert')).toContainText('Task is no longer open.')
+  await expect(dialog.getByRole('button', { name: 'Hold task', exact: true })).toBeEnabled()
+  expect(attempts).toBe(1)
+  await dialog.getByRole('button', { name: 'Hold task', exact: true }).click()
+  await expect.poll(() => attempts).toBe(2)
+  await dialog.getByRole('button', { name: 'Cancel', exact: true }).click()
+  await page.getByRole('button', { name: 'Task actions' }).click()
+  await expect(page.getByRole('menuitem', { name: 'Hold', exact: true })).toBeVisible()
 })
