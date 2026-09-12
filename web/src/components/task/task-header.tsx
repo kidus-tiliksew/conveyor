@@ -303,13 +303,28 @@ function TaskActions({ item, variant }: { item: ActivityItem; variant: 'sheet' |
   const close = () => setAction(null)
   if (item.task.state === 'merged' || item.task.state === 'closed') return null
   return (
-    <div className="relative ml-auto">
-      <DropdownMenu label="Task actions">
+    <div className="ml-auto flex items-center gap-0.5">
+      {/* Hold stays out of the menu: it is the operator act toggled most often
+          and its label doubles as visible state. The rest of the operations
+          live behind the overflow menu so the header stays quieter than the
+          title. Both confirm before acting; the confirmation returns focus to
+          whichever control opened it. */}
+      <button
+        type="button"
+        onClick={() => setHold(!item.task.hold)}
+        title={
+          item.task.hold
+            ? 'Held — your worker won’t claim this task. Release it back to the queue.'
+            : 'Hold this task so your worker won’t claim it; you attach an agent and claim it yourself.'
+        }
+        className="inline-flex h-8 items-center gap-1 rounded-md px-2 text-xs font-medium text-muted transition-colors hover:bg-surface hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary [&_svg]:size-3.5"
+      >
+        <Hand aria-hidden="true" />
+        {item.task.hold ? 'Release' : 'Hold'}
+      </button>
+      <DropdownMenu label="Task actions" trigger="overflow">
         <DropdownMenuItem onSelect={() => setAction('dependency')}>
           <Link2 /> Link dependency
-        </DropdownMenuItem>
-        <DropdownMenuItem onSelect={() => setHold(!item.task.hold)}>
-          <Hand /> {item.task.hold ? 'Release' : 'Hold'}
         </DropdownMenuItem>
         {canAssign && Boolean(workspace) && (
           <DropdownMenuItem onSelect={() => setAction('assign')}>
