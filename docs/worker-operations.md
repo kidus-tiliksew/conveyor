@@ -21,10 +21,11 @@ separately. Before claiming, Conveyor runs a bounded
 `git ls-remote --heads <repository URL> <base branch>` with terminal prompting
 disabled; a failure leaves the order queued and names both credential paths.
 The result is cached for the invocation, so restart the worker after changing
-credentials. Captured output is scrubbed before display and upload. The
-stored account GitHub token is still required for claim eligibility.
-Pull requests are opened on the executing machine by `conveyor submit`. Upgrade the worker binary and the daemon
-together; older workers reject token-free claims.
+credentials. Captured output is scrubbed before display and upload. Claims
+do not depend on a token stored in account settings; the workspace GitHub
+App covers control-plane operations. Pull requests are opened on the
+executing machine by `conveyor submit`. Upgrade the worker binary and the
+daemon together.
 
 `conveyor worker run` reuses the owner-only enrollment credential saved by its
 first successful pairing. Restarting an enrolled worker normally needs no new
