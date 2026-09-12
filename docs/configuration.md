@@ -121,7 +121,7 @@ Server (read by `conveyord`):
 | `CONVEYOR_LISTEN_ADDR` | Daemon listen address as `host:port`; used when `-addr` is not explicitly set. |
 | `PORT` | Daemon listen port; resolves to `0.0.0.0:<PORT>` when neither `-addr` nor `CONVEYOR_LISTEN_ADDR` is set. |
 | `CONVEYOR_SHUTDOWN_TIMEOUT` | Total daemon shutdown budget (default `25s`); used when `-shutdown-timeout` is not explicitly set. Must be positive. |
-| `CONVEYOR_FORGE_TOKEN_ENCRYPTION_KEY` | Base64 of exactly 32 bytes; encrypts workspace GitHub App private keys and legacy forge tokens. Required before connecting an app. |
+| `CONVEYOR_FORGE_TOKEN_ENCRYPTION_KEY` | Base64 of exactly 32 bytes; encrypts workspace GitHub App private keys. Required before connecting an app. |
 | `CONVEYOR_SMTP_HOST` / `_PORT` / `_USERNAME` / `_PASSWORD` / `_FROM` | Invitation email delivery. Configured only when host and from are both set; otherwise links are surfaced for manual delivery. |
 | `CONVEYOR_ORGANIZATION_NAME`, `CONVEYOR_FIRST_OPERATOR_EMAIL`, `CONVEYOR_FIRST_OPERATOR_DISPLAY_NAME` | First-operator identity at bootstrap. |
 | `CONVEYOR_CONTROL_PLANE_MODEL`, `CONVEYOR_TRIAGE_MODEL`, `CONVEYOR_PLANNING_MODEL` | Process-level model overrides for in-process stages; never change stored config. |
@@ -184,5 +184,5 @@ cache until five minutes before expiry. App replacement and disconnect invalidat
 the cache. No GitHub credential belongs in `conveyor.yaml`.
 
 The dispatcher, work-order reads, and monitor resolve the workspace app without
-host credentials. Legacy forge-token APIs and claim presence checks remain for
-compatibility until their separate retirement release.
+host credentials. Stored personal and workspace forge tokens are retired; the
+server keeps no GitHub credential other than the encrypted App private key.

@@ -127,8 +127,9 @@ claims nothing; drop the flag or attach a terminal to proceed.
 Deprecated compatibility: hidden `--auto` is accepted as a no-op and prints a
 deprecation notice. It cannot be combined with `--step`.
 
-Requires `CONVEYOR_API_TOKEN` and a stored GitHub token (see
-[Authentication](auth.md#github-forge-tokens)).
+Requires `CONVEYOR_API_TOKEN` and a local Git credential for the repository
+(`gh auth setup-git` or `CONVEYOR_GIT_TOKEN`; see
+[Authentication](auth.md#github-app-and-local-credentials)).
 
 ## repo init
 
