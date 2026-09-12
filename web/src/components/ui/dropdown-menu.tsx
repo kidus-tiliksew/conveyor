@@ -1,16 +1,25 @@
 import { createContext, useContext, useEffect, useId, useRef, useState, type ReactNode } from 'react'
-import { ChevronDown } from 'lucide-react'
+import { ChevronDown, Ellipsis } from 'lucide-react'
 import { Button } from './button'
 import { cn } from '../../lib/utils'
 
 const MenuSelectionContext = createContext(() => {})
 
+/**
+ * `trigger` picks the button that opens the menu. `label` renders the menu's
+ * name as button text with a chevron — a menu that is the page's main call to
+ * action. `overflow` renders the quiet ellipsis icon button instead, with the
+ * name carried by aria-label and title: the convention for a set of secondary
+ * actions that should never outweigh the content beside it.
+ */
 export function DropdownMenu({
   label,
+  trigger = 'label',
   children,
   className,
 }: {
   label: string
+  trigger?: 'label' | 'overflow'
   children: ReactNode
   className?: string
 }) {
@@ -52,7 +61,10 @@ export function DropdownMenu({
   return (
     <div ref={root} className={cn('relative', className)}>
       <Button
-        size="sm"
+        variant={trigger === 'overflow' ? 'ghost' : 'default'}
+        size={trigger === 'overflow' ? 'icon' : 'sm'}
+        aria-label={trigger === 'overflow' ? label : undefined}
+        title={trigger === 'overflow' ? label : undefined}
         aria-haspopup="menu"
         aria-expanded={open}
         aria-controls={open ? menuID : undefined}
@@ -68,8 +80,14 @@ export function DropdownMenu({
           }
         }}
       >
-        {label}
-        <ChevronDown />
+        {trigger === 'overflow' ? (
+          <Ellipsis aria-hidden="true" />
+        ) : (
+          <>
+            {label}
+            <ChevronDown />
+          </>
+        )}
       </Button>
       {open && (
         <div
