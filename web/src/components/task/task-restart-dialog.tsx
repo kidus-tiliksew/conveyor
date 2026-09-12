@@ -11,18 +11,18 @@ import { Button } from '../ui/button'
 import { Dialog } from '../ui/dialog'
 import { Input, Textarea } from '../ui/input'
 
-export function TaskRestartControl({ item, variant }: { item: ActivityItem; variant: TaskRouteVariant }) {
-  const [open, setOpen] = useState(false)
+export function TaskRestartControl({
+  item,
+  variant,
+  onClose,
+}: {
+  item: ActivityItem
+  variant: TaskRouteVariant
+  onClose: () => void
+}) {
   const canOperate = useWorkspaceCapability('operate_gates')
   if (!canOperate || item.task.state === 'merged' || item.task.state === 'closed') return null
-  return (
-    <>
-      <Button variant="ghost" size="sm" onClick={() => setOpen(true)}>
-        Start over
-      </Button>
-      {open && <TaskRestartDialog item={item} variant={variant} onClose={() => setOpen(false)} />}
-    </>
-  )
+  return <TaskRestartDialog item={item} variant={variant} onClose={onClose} />
 }
 
 function TaskRestartDialog({

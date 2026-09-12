@@ -10,12 +10,13 @@ import {
   Hand,
   Link2,
   Link2Off,
+  RotateCcw,
+  UserRound,
   Terminal,
   Trash2,
 } from 'lucide-react'
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import {
-  assigneeName,
   dependencyRelationLabel,
   pullRequestURL,
   taskRestartLinks,
@@ -40,6 +41,7 @@ import { Badge } from '../ui/badge'
 import { Button } from '../ui/button'
 import { CopyButton } from '../ui/copy-button'
 import { Dialog } from '../ui/dialog'
+import { DropdownMenu, DropdownMenuItem } from '../ui/dropdown-menu'
 import { Input, Textarea } from '../ui/input'
 import { MarkdownProse } from '../ui/markdown-prose'
 import { AssigneeChip } from './assignee-chip'
@@ -118,15 +120,7 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
         {item.task.class && <Badge>{item.task.class}</Badge>}
         {/* Controls sit apart from the status chips: a destructive action
             never belongs in the row the eye reads for state. */}
-        {canOperate && (
-          <span className="ml-auto flex items-center gap-1">
-            <LinkDependencyControl item={item} />
-            <HoldControl item={item} />
-            <AssigneeControl item={item} />
-            <CancelControl item={item} />
-            <TaskRestartControl item={item} variant={variant} />
-          </span>
-        )}
+        {canOperate && <TaskActions key={item.task.id} item={item} variant={variant} />}
       </div>
       <TaskRestartNotice taskId={item.task.id} />
       {restartLinks.from && (
@@ -301,10 +295,47 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
   )
 }
 
-function LinkDependencyControl({ item }: { item: ActivityItem }) {
+function TaskActions({ item, variant }: { item: ActivityItem; variant: 'sheet' | 'full' }) {
+  const [action, setAction] = useState<'dependency' | 'assign' | 'cancel' | 'restart' | null>(null)
+  const [hold, setHold] = useState<boolean | null>(null)
+  const canAssign = useWorkspaceCapability('set_assignee')
+  const { workspace } = useWorkspaceSelection()
+  const close = () => setAction(null)
+  if (item.task.state === 'merged' || item.task.state === 'closed') return null
+  return (
+    <div className="relative ml-auto">
+      <DropdownMenu label="Task actions">
+        <DropdownMenuItem onSelect={() => setAction('dependency')}>
+          <Link2 /> Link dependency
+        </DropdownMenuItem>
+        <DropdownMenuItem onSelect={() => setHold(!item.task.hold)}>
+          <Hand /> {item.task.hold ? 'Release' : 'Hold'}
+        </DropdownMenuItem>
+        {canAssign && Boolean(workspace) && (
+          <DropdownMenuItem onSelect={() => setAction('assign')}>
+            <UserRound /> {item.task.assignee ? 'Reassign' : 'Assign'}
+          </DropdownMenuItem>
+        )}
+        <hr className="my-1 border-border" />
+        <DropdownMenuItem destructive onSelect={() => setAction('cancel')}>
+          <Trash2 /> Cancel task
+        </DropdownMenuItem>
+        <DropdownMenuItem destructive onSelect={() => setAction('restart')}>
+          <RotateCcw /> Start over
+        </DropdownMenuItem>
+      </DropdownMenu>
+      {action === 'dependency' && <LinkDependencyControl item={item} onClose={close} />}
+      {action === 'assign' && <AssigneeControl item={item} onClose={close} />}
+      {action === 'cancel' && <CancelControl item={item} onClose={close} />}
+      {action === 'restart' && <TaskRestartControl item={item} variant={variant} onClose={close} />}
+      {hold !== null && <HoldControl item={item} hold={hold} onClose={() => setHold(null)} />}
+    </div>
+  )
+}
+
+function LinkDependencyControl({ item, onClose }: { item: ActivityItem; onClose: () => void }) {
   const { workspace } = useWorkspaceSelection()
   const queryClient = useQueryClient()
-  const [open, setOpen] = useState(false)
   const [search, setSearch] = useState('')
   const [selectedID, setSelectedID] = useState('')
   const [reason, setReason] = useState('')
@@ -312,7 +343,7 @@ function LinkDependencyControl({ item }: { item: ActivityItem }) {
   const tasks = useQuery({
     queryKey: ['tasks', workspace, 'dependency-candidates'],
     queryFn: fetchTasks,
-    enabled: open && Boolean(workspace),
+    enabled: Boolean(workspace),
   })
   const existing = new Set(item.task.dependencies?.map((dependency) => dependency.id) ?? [])
   const query = search.trim().toLowerCase()
@@ -329,7 +360,7 @@ function LinkDependencyControl({ item }: { item: ActivityItem }) {
   const mutation = useMutation({
     mutationFn: () => addTaskDependency(item.task.id, selectedID, reason.trim(), requestID.current),
     onSuccess: () => {
-      setOpen(false)
+      onClose()
       setSearch('')
       setSelectedID('')
       setReason('')
@@ -337,17 +368,9 @@ function LinkDependencyControl({ item }: { item: ActivityItem }) {
       void queryClient.invalidateQueries({ queryKey: ['task', item.task.workspace, item.task.id] })
     },
   })
-  const openDialog = () => {
-    requestID.current = crypto.randomUUID()
-    mutation.reset()
-    setSearch('')
-    setSelectedID('')
-    setReason('')
-    setOpen(true)
-  }
   const closeDialog = () => {
     mutation.reset()
-    setOpen(false)
+    onClose()
     setSearch('')
     setSelectedID('')
     setReason('')
@@ -355,81 +378,70 @@ function LinkDependencyControl({ item }: { item: ActivityItem }) {
   if (item.task.state === 'merged' || item.task.state === 'closed') return null
   return (
     <>
-      <button
-        type="button"
-        onClick={openDialog}
-        className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium leading-4 text-muted transition-colors hover:bg-primary-soft hover:text-primary [&_svg]:size-3.5"
-      >
-        <Link2 /> Link dependency
-      </button>
-      {open && (
-        <Dialog label="Link dependency" onClose={() => !mutation.isPending && closeDialog()}>
-          <div className="border-b border-border px-5 py-4">
-            <h2 className="font-semibold">What should this task depend on?</h2>
-            <p className="mt-1 text-sm leading-6 text-muted">
-              Choose an open task. This task will wait for it to merge before future implementation work can start.
-            </p>
-          </div>
-          <div className="space-y-4 px-5 py-4">
-            <label htmlFor="link-dependency-search" className="block text-sm font-medium">
-              Search open tasks
-              <Input
-                id="link-dependency-search"
-                autoFocus
-                value={search}
-                onChange={(event) => setSearch(event.target.value)}
-                placeholder="Task title or ID"
-                className="mt-1.5"
-              />
-            </label>
-            <div className="max-h-48 overflow-y-auto rounded-md border border-border">
-              {tasks.isPending && <p className="p-3 text-sm text-muted">Loading open tasks…</p>}
-              {tasks.error != null && <p className="p-3 text-sm text-failure">Could not load open tasks.</p>}
-              {!tasks.isPending && tasks.error == null && candidates.length === 0 && (
-                <p className="p-3 text-sm text-muted">No matching open tasks.</p>
-              )}
-              {candidates.map((task) => (
-                <button
-                  key={task.id}
-                  type="button"
-                  aria-pressed={selectedID === task.id}
-                  onClick={() => setSelectedID(task.id)}
-                  className={cn(
-                    'block w-full border-b border-border px-3 py-2 text-left last:border-0 hover:bg-surface',
-                    selectedID === task.id && 'bg-primary-soft',
-                  )}
-                >
-                  <span className="block text-sm font-medium">{task.title || task.id}</span>
-                  <span className="block font-mono text-[11px] text-faint">{task.id}</span>
-                </button>
-              ))}
-            </div>
-            {selected && (
-              <p className="text-xs text-muted">This task will depend on {selected.title || selected.id}.</p>
+      <Dialog label="Link dependency" onClose={() => !mutation.isPending && closeDialog()}>
+        <div className="border-b border-border px-5 py-4">
+          <h2 className="font-semibold">What should this task depend on?</h2>
+          <p className="mt-1 text-sm leading-6 text-muted">
+            Choose an open task. This task will wait for it to merge before future implementation work can start.
+          </p>
+        </div>
+        <div className="space-y-4 px-5 py-4">
+          <label htmlFor="link-dependency-search" className="block text-sm font-medium">
+            Search open tasks
+            <Input
+              id="link-dependency-search"
+              autoFocus
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="Task title or ID"
+              className="mt-1.5"
+            />
+          </label>
+          <div className="max-h-48 overflow-y-auto rounded-md border border-border">
+            {tasks.isPending && <p className="p-3 text-sm text-muted">Loading open tasks…</p>}
+            {tasks.error != null && <p className="p-3 text-sm text-failure">Could not load open tasks.</p>}
+            {!tasks.isPending && tasks.error == null && candidates.length === 0 && (
+              <p className="p-3 text-sm text-muted">No matching open tasks.</p>
             )}
-            <label htmlFor="link-dependency-reason" className="block text-sm font-medium">
-              Reason
-              <Textarea
-                id="link-dependency-reason"
-                value={reason}
-                maxLength={200}
-                onChange={(event) => setReason(event.target.value)}
-                placeholder="Why should this task wait for the selected task?"
-                className="mt-1.5"
-              />
-            </label>
-            {mutation.error != null && <p className="text-sm text-failure">{errorMessage(mutation.error)}</p>}
-            <div className="flex justify-end gap-2">
-              <Button variant="secondary" onClick={closeDialog} disabled={mutation.isPending}>
-                Cancel
-              </Button>
-              <Button onClick={() => mutation.mutate()} disabled={mutation.isPending || !selectedID || !reason.trim()}>
-                {mutation.isPending ? 'Linking…' : 'Add dependency'}
-              </Button>
-            </div>
+            {candidates.map((task) => (
+              <button
+                key={task.id}
+                type="button"
+                aria-pressed={selectedID === task.id}
+                onClick={() => setSelectedID(task.id)}
+                className={cn(
+                  'block w-full border-b border-border px-3 py-2 text-left last:border-0 hover:bg-surface',
+                  selectedID === task.id && 'bg-primary-soft',
+                )}
+              >
+                <span className="block text-sm font-medium">{task.title || task.id}</span>
+                <span className="block font-mono text-[11px] text-faint">{task.id}</span>
+              </button>
+            ))}
           </div>
-        </Dialog>
-      )}
+          {selected && <p className="text-xs text-muted">This task will depend on {selected.title || selected.id}.</p>}
+          <label htmlFor="link-dependency-reason" className="block text-sm font-medium">
+            Reason
+            <Textarea
+              id="link-dependency-reason"
+              value={reason}
+              maxLength={200}
+              onChange={(event) => setReason(event.target.value)}
+              placeholder="Why should this task wait for the selected task?"
+              className="mt-1.5"
+            />
+          </label>
+          {mutation.error != null && <p className="text-sm text-failure">{errorMessage(mutation.error)}</p>}
+          <div className="flex justify-end gap-2">
+            <Button variant="secondary" onClick={closeDialog} disabled={mutation.isPending}>
+              Cancel
+            </Button>
+            <Button onClick={() => mutation.mutate()} disabled={mutation.isPending || !selectedID || !reason.trim()}>
+              {mutation.isPending ? 'Linking…' : 'Add dependency'}
+            </Button>
+          </div>
+        </div>
+      </Dialog>
     </>
   )
 }
@@ -520,9 +532,13 @@ function UnlinkDependencyControl({ item, dependencyIDs }: { item: ActivityItem; 
 // Cancel is lifecycle, not an execution affordance, so the blueprint detail
 // keeps it while suppressing checkout, branch, and hold. Its
 // consequences for children are whatever the backend does today.
-export function CancelControl({ item }: { item: ActivityItem }) {
+export function CancelControl({ item, onClose }: { item: ActivityItem; onClose?: () => void }) {
   const queryClient = useQueryClient()
-  const [open, setOpen] = useState(false)
+  const [open, setLocalOpen] = useState(Boolean(onClose))
+  const setOpen = (value: boolean) => {
+    setLocalOpen(value)
+    if (!value) onClose?.()
+  }
   const [reason, setReason] = useState('')
   const mutation = useMutation({
     mutationFn: () => cancelTask(item.task.id, reason.trim()),
@@ -537,13 +553,15 @@ export function CancelControl({ item }: { item: ActivityItem }) {
   if (terminal) return null
   return (
     <>
-      <button
-        type="button"
-        onClick={() => setOpen(true)}
-        className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium leading-4 text-muted transition-colors hover:bg-failure-soft hover:text-failure [&_svg]:size-3.5"
-      >
-        <Trash2 /> Cancel task
-      </button>
+      {!onClose && (
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium leading-4 text-muted transition-colors hover:bg-failure-soft hover:text-failure [&_svg]:size-3.5"
+        >
+          <Trash2 /> Cancel task
+        </button>
+      )}
       {open && (
         <Dialog label="Cancel task" onClose={() => !mutation.isPending && setOpen(false)}>
           <div className="border-b border-border px-5 py-4">
@@ -637,32 +655,86 @@ function TaskBody({ body }: { body: string }) {
   )
 }
 
-// Per-task hold toggle: while held, the worker daemon never
-// claims this task's work orders — you attach an agent and claim explicitly.
-function HoldControl({ item }: { item: ActivityItem }) {
+// Hold changes worker claim eligibility only (req-task-lifecycle-and-queue REQ-3).
+function HoldControl({ item, hold, onClose }: { item: ActivityItem; hold: boolean; onClose: () => void }) {
   const queryClient = useQueryClient()
-  const toggle = useMutation({
-    mutationFn: () => setTaskHold(item.task.id, !item.task.hold),
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['activity'] }),
-  })
-  const terminal = item.task.state === 'merged' || item.task.state === 'closed'
-  if (terminal) return null
-  // The badge row already says "Held"; this control says what pressing it does.
-  return (
-    <button
-      type="button"
-      disabled={toggle.isPending}
-      onClick={() => toggle.mutate()}
-      title={
-        item.task.hold
-          ? 'Held — your worker won’t claim this task. Release it back to the queue.'
-          : 'Hold this task so your worker won’t claim it; you attach an agent and claim it yourself.'
+  const submitting = useRef(false)
+  const panel = useRef<HTMLDivElement>(null)
+  const label = hold ? 'Hold' : 'Release'
+  const onCloseRef = useRef(onClose)
+  onCloseRef.current = onClose
+  useEffect(() => {
+    // The confirmation owns Escape even when it is above a task sheet.
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.stopImmediatePropagation()
+        if (!submitting.current) onCloseRef.current()
       }
-      className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium leading-4 text-muted transition-colors hover:bg-raised hover:text-foreground disabled:opacity-40 [&_svg]:size-3.5"
-    >
-      <Hand />
-      {item.task.hold ? 'Release' : 'Hold'}
-    </button>
+      if (event.key === 'Tab') {
+        const buttons = panel.current?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')
+        const first = buttons?.[0]
+        const last = buttons?.[buttons.length - 1]
+        if (!first) {
+          event.preventDefault()
+          panel.current?.parentElement?.focus()
+        } else if (
+          !panel.current?.contains(document.activeElement) ||
+          (event.shiftKey ? document.activeElement === first : document.activeElement === last)
+        ) {
+          event.preventDefault()
+          ;(event.shiftKey ? last : first)?.focus()
+        }
+      }
+    }
+    document.addEventListener('keydown', onKeyDown, true)
+    return () => document.removeEventListener('keydown', onKeyDown, true)
+  }, [])
+  const mutation = useMutation({
+    mutationFn: () => setTaskHold(item.task.id, hold),
+    onSuccess: async () => {
+      await Promise.all(
+        ['activity', 'task', 'task-operations', 'tasks'].map((key) =>
+          queryClient.invalidateQueries({ queryKey: [key, item.task.workspace] }),
+        ),
+      )
+      onClose()
+    },
+    onSettled: () => {
+      submitting.current = false
+    },
+  })
+  return (
+    <Dialog label={`${label} task`} onClose={() => !submitting.current && onClose()}>
+      <div ref={panel} className="space-y-4 p-5">
+        <h2 className="font-semibold">{label} this task?</h2>
+        <p className="text-sm font-medium">{item.task.title}</p>
+        <p className="text-sm leading-6 text-muted">
+          {hold
+            ? 'Workers will not claim this task’s work orders while it is held. Active work continues, an operator-attached agent can still claim explicitly, and approved work can still merge.'
+            : 'Workers can claim this task’s eligible work orders again. Assignment, dependencies, and other queue rules still apply.'}
+        </p>
+        {mutation.error != null && (
+          <p role="alert" className="text-sm text-failure">
+            {errorMessage(mutation.error)}
+          </p>
+        )}
+        <div className="flex justify-end gap-2">
+          <Button variant="secondary" disabled={mutation.isPending} onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            disabled={mutation.isPending}
+            onClick={() => {
+              if (submitting.current) return
+              submitting.current = true
+              mutation.mutate()
+            }}
+          >
+            {mutation.isPending ? (hold ? 'Holding…' : 'Releasing…') : `${label} task`}
+          </Button>
+        </div>
+      </div>
+    </Dialog>
   )
 }
 
@@ -677,10 +749,9 @@ function HoldControl({ item }: { item: ActivityItem }) {
  * control. Every member still reads the assignee wherever it is rendered — the
  * members list itself is a co-member read, never a user directory (AC-3.2).
  */
-function AssigneeControl({ item }: { item: ActivityItem }) {
+function AssigneeControl({ item, onClose }: { item: ActivityItem; onClose: () => void }) {
   const { workspace } = useWorkspaceSelection()
   const queryClient = useQueryClient()
-  const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
   const terminal = item.task.state === 'merged' || item.task.state === 'closed'
   const enabled = Boolean(workspace) && !terminal
@@ -689,7 +760,7 @@ function AssigneeControl({ item }: { item: ActivityItem }) {
   const mutation = useMutation({
     mutationFn: (userId: string) => setTaskAssignee(item.task.id, userId),
     onSuccess: () => {
-      setOpen(false)
+      onClose()
       void queryClient.invalidateQueries({ queryKey: ['activity'] })
       void queryClient.invalidateQueries({ queryKey: ['task', item.task.workspace, item.task.id] })
       // The Tasks rows read their own projection, so they must be told too or
@@ -697,71 +768,73 @@ function AssigneeControl({ item }: { item: ActivityItem }) {
       void queryClient.invalidateQueries({ queryKey: ['task-operations'] })
     },
   })
+  const onCloseRef = useRef(onClose)
+  onCloseRef.current = onClose
   useEffect(() => {
+    const previous = document.activeElement
+    ref.current?.querySelector<HTMLButtonElement>('button')?.focus()
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.stopImmediatePropagation()
+        onCloseRef.current()
+      }
+    }
     const close = (event: MouseEvent) => {
-      if (!ref.current?.contains(event.target as Node)) setOpen(false)
+      if (!ref.current?.contains(event.target as Node)) onCloseRef.current()
     }
     document.addEventListener('mousedown', close)
-    return () => document.removeEventListener('mousedown', close)
+    document.addEventListener('keydown', onKeyDown, true)
+    return () => {
+      document.removeEventListener('mousedown', close)
+      document.removeEventListener('keydown', onKeyDown, true)
+      if (previous instanceof HTMLElement) previous.focus()
+    }
   }, [])
   if (!enabled || !canAssign) return null
   const roster = members.data ?? []
   return (
     <div className="relative" ref={ref}>
-      <button
-        type="button"
-        aria-haspopup="listbox"
-        aria-expanded={open}
-        disabled={mutation.isPending}
-        onClick={() => setOpen(!open)}
-        title={item.task.assignee ? `Assigned to ${assigneeName(item.task.assignee)}` : 'Assign this task to a member'}
-        className="inline-flex items-center rounded-md px-2 py-1 text-xs font-medium leading-4 text-muted transition-colors hover:bg-raised hover:text-foreground disabled:opacity-40"
-      >
-        {item.task.assignee ? 'Reassign' : 'Assign'}
-      </button>
-      {open && (
-        <div className="absolute right-0 z-30 mt-1 w-64 overflow-hidden rounded-xl border border-border bg-surface shadow-2xl">
-          <div role="listbox" aria-label="Workspace members" className="max-h-56 overflow-y-auto p-1">
-            {roster.map((member) => {
-              const name = member.display_name || member.email || member.user_id
-              const current = item.task.assignee?.user_id === member.user_id
-              return (
-                <button
-                  key={member.user_id}
-                  type="button"
-                  role="option"
-                  aria-selected={current}
-                  disabled={mutation.isPending}
-                  onClick={() => mutation.mutate(member.user_id)}
-                  className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-xs hover:bg-raised aria-selected:bg-raised disabled:opacity-40"
-                >
-                  <span className="min-w-0 flex-1 truncate">{name}</span>
-                  {current && <Check className="size-3 shrink-0 text-primary" aria-hidden="true" />}
-                </button>
-              )
-            })}
-            {members.isSuccess && roster.length === 0 && (
-              <p className="px-2.5 py-3 text-xs text-muted">No workspace members to assign.</p>
-            )}
-            {members.isLoading && <p className="px-2.5 py-3 text-xs text-muted">Loading members…</p>}
-          </div>
-          {item.task.assignee && (
-            <button
-              type="button"
-              disabled={mutation.isPending}
-              onClick={() => mutation.mutate('')}
-              className="w-full border-t border-border px-3 py-2 text-left text-xs text-muted transition-colors hover:bg-raised hover:text-foreground disabled:opacity-40"
-            >
-              Clear assignee
-            </button>
+      <div className="absolute right-0 z-30 mt-1 w-64 overflow-hidden rounded-xl border border-border bg-surface shadow-2xl">
+        <div role="listbox" aria-label="Workspace members" className="max-h-56 overflow-y-auto p-1">
+          {roster.map((member) => {
+            const name = member.display_name || member.email || member.user_id
+            const current = item.task.assignee?.user_id === member.user_id
+            return (
+              <button
+                key={member.user_id}
+                type="button"
+                role="option"
+                aria-selected={current}
+                disabled={mutation.isPending}
+                onClick={() => mutation.mutate(member.user_id)}
+                className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-xs hover:bg-raised aria-selected:bg-raised disabled:opacity-40"
+              >
+                <span className="min-w-0 flex-1 truncate">{name}</span>
+                {current && <Check className="size-3 shrink-0 text-primary" aria-hidden="true" />}
+              </button>
+            )
+          })}
+          {members.isSuccess && roster.length === 0 && (
+            <p className="px-2.5 py-3 text-xs text-muted">No workspace members to assign.</p>
           )}
-          {mutation.error != null && (
-            <p role="alert" className="border-t border-border px-3 py-2 text-xs text-failure">
-              {errorMessage(mutation.error, 'Could not update the assignee.')}
-            </p>
-          )}
+          {members.isLoading && <p className="px-2.5 py-3 text-xs text-muted">Loading members…</p>}
         </div>
-      )}
+        {item.task.assignee && (
+          <button
+            type="button"
+            disabled={mutation.isPending}
+            onClick={() => mutation.mutate('')}
+            className="w-full border-t border-border px-3 py-2 text-left text-xs text-muted transition-colors hover:bg-raised hover:text-foreground disabled:opacity-40"
+          >
+            Clear assignee
+          </button>
+        )}
+        {mutation.error != null && (
+          <p role="alert" className="border-t border-border px-3 py-2 text-xs text-failure">
+            {errorMessage(mutation.error, 'Could not update the assignee.')}
+          </p>
+        )}
+      </div>
     </div>
   )
 }
