@@ -3,6 +3,7 @@ package monitor_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +13,86 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 )
+
+// req-260811-228be6 AC-4.3; req-delivery-and-forge AC-4.1;
+// component-monitor-drift v3. The fixture records the exact README occurrence
+// reconciled by task 260915-00ccb2, including its GitHub first parent.
+func TestReadmeDirectPushPreservesGovernedDriftOnRedelivery(t *testing.T) {
+	const sha = "6c76388faf5fe52a8a0421c60ee9d5f407c654b8"
+	const parent = "4864149e29d8db9957eac3b8295875585de606e7"
+	const sourceURL = "https://github.com/kidus-tiliksew/conveyor/commit/" + sha
+	for _, governedPath := range []string{"README.md", "internal/monitor/**"} {
+		t.Run(governedPath, func(t *testing.T) {
+			service, st, ctx := testService(t)
+			content := fmt.Sprintf("# Runtime fixture\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - %s\n```", governedPath)
+			design, version, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "runtime-fixture", Title: "Runtime fixture", Category: "Component design"}, core.SystemDesignVersion{Content: content, Origin: core.SystemDesignOriginOperator})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err = st.ConfirmSystemDesignVersion(ctx, design.ID, version.Version); err != nil {
+				t.Fatal(err)
+			}
+			source := monitor.GitHubSource{
+				WorkspaceID: "demo", Repository: "conveyor", GitHubSlug: "kidus-tiliksew/conveyor",
+				Run: func(_ context.Context, args ...string) ([]byte, error) {
+					request := strings.Join(args, " ")
+					switch {
+					case strings.Contains(request, "/commits -f"):
+						return []byte(fmt.Sprintf(`[{"sha":%q,"html_url":%q,"parents":[{"sha":%q}],"commit":{"message":"docs(readme): clarify Conveyor description","committer":{"date":"2026-09-15T14:08:33Z"}}}]`, sha, sourceURL, parent)), nil
+					case strings.Contains(request, "/commits/"+sha+"/pulls"):
+						return []byte(`[]`), nil
+					case strings.Contains(request, "/compare/"+parent+"..."+sha):
+						return []byte(`{"files":[{"filename":"README.md","status":"modified","additions":14,"deletions":14,"changes":28}]}`), nil
+					default:
+						return nil, fmt.Errorf("unexpected GitHub request: %s", request)
+					}
+				},
+			}
+			for attempt := 0; attempt < 2; attempt++ {
+				// A new poller models restart: the store owns deduplication.
+				poller := monitor.Poller{Service: service, Source: source, StartupWindow: 24 * time.Hour}
+				if err := poller.Poll(ctx); err != nil {
+					t.Fatal(err)
+				}
+			}
+			status, err := service.Status(ctx)
+			if err != nil || len(status.Observations) != 1 {
+				t.Fatalf("status=%+v err=%v", status, err)
+			}
+			observation := status.Observations[0]
+			if observation.WorkspaceID != "demo" || observation.Repository != "conveyor" || observation.Kind != monitor.DirectPush || observation.OccurrenceID != sha || observation.CommitSHA != sha || observation.SourceURL != sourceURL || observation.DeduplicatedCount != 1 {
+				t.Fatalf("lost occurrence provenance or redelivery identity: %+v", observation)
+			}
+			wantDrift := 1 // Repository drift remains until an audited outcome.
+			if governedPath == "README.md" {
+				wantDrift++
+			}
+			if len(status.Drift) != wantDrift {
+				t.Fatalf("drift=%+v want %d records for scope %s", status.Drift, wantDrift, governedPath)
+			}
+			for _, drift := range status.Drift {
+				if drift.SystemDesignID != "" && (drift.SystemDesignID != design.ID || drift.SystemDesignVersion != version.Version || strings.Join(drift.MatchingPaths, ",") != "README.md") {
+					t.Fatalf("incorrect governed drift: %+v", drift)
+				}
+			}
+			tasks, err := st.ListTasks(ctx)
+			if err != nil || len(tasks) != 1 || tasks[0].ID != observation.TaskID || tasks[0].State != core.TaskQueued || tasks[0].NextStage != core.StageTriage || !strings.Contains(tasks[0].Body, sourceURL) {
+				t.Fatalf("ordinary task intake changed: %+v err=%v", tasks, err)
+			}
+			events, err := st.ListEvents(ctx, observation.TaskID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			counts := map[string]int{}
+			for _, event := range events {
+				counts[event.Kind]++
+			}
+			if counts["monitor.occurrence_observed"] != 1 || counts["monitor.observation_deduplicated"] != 1 {
+				t.Fatalf("missing occurrence audit: %+v", counts)
+			}
+		})
+	}
+}
 
 type sourceFunc func(context.Context, time.Time) ([]monitor.Observation, error)
 

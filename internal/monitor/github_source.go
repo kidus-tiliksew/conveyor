@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"path"
 	"sort"
 	"strconv"
 	"strings"
@@ -247,12 +248,14 @@ func (s GitHubSource) Observations(ctx context.Context, since time.Time) ([]Obse
 				}
 			}
 		}
+		var changedPaths []string
 		if kind == DirectPush && len(commit.Parents) > 0 {
-			differs, diffErr := s.differsFromFirstParent(ctx, commit.Parents[0].SHA, commit.SHA)
+			var diffErr error
+			changedPaths, diffErr = s.pathsFromFirstParent(ctx, commit.Parents[0].SHA, commit.SHA)
 			if diffErr != nil {
 				return nil, diffErr
 			}
-			if !differs {
+			if len(changedPaths) == 0 {
 				if s.OnSuppressed != nil {
 					_ = s.OnSuppressed(ctx, map[string]any{
 						"reason": "first_parent_empty", "repository": s.Repository,
@@ -265,29 +268,54 @@ func (s GitHubSource) Observations(ctx context.Context, since time.Time) ([]Obse
 		appendObservation(Observation{
 			WorkspaceID: s.WorkspaceID, Repository: s.Repository, Kind: kind,
 			OccurrenceID: occurrenceID, SourceURL: sourceURL, CommitSHA: commit.SHA,
+			ChangedPaths:      changedPaths,
 			PullRequestNumber: prNumber, ObservedAt: commit.Commit.Committer.Date, Hints: hints,
 		})
 	}
 	return observations, nil
 }
 
-func (s GitHubSource) differsFromFirstParent(ctx context.Context, parentSHA, commitSHA string) (bool, error) {
+// Carry the first-parent paths into governed-scope evaluation instead of only
+// testing for an empty push (req-260811-228be6 AC-4.3; component-monitor-drift).
+func (s GitHubSource) pathsFromFirstParent(ctx context.Context, parentSHA, commitSHA string) ([]string, error) {
 	raw, err := s.Run(ctx, "api", "--method", "GET",
 		"repos/"+s.GitHubSlug+"/compare/"+parentSHA+"..."+commitSHA,
 		"-H", "Accept: application/vnd.github+json")
 	if err != nil {
-		return false, githubtrigger.CategorizeError(err)
+		return nil, githubtrigger.CategorizeError(err)
 	}
 	var comparison struct {
-		Files *[]json.RawMessage `json:"files"`
+		Files *[]struct {
+			Filename         string `json:"filename"`
+			PreviousFilename string `json:"previous_filename"`
+		} `json:"files"`
 	}
 	if err = json.Unmarshal(raw, &comparison); err != nil {
-		return false, &githubtrigger.Error{Category: githubtrigger.ForgeResponse, Err: fmt.Errorf("parse first-parent comparison: %w", err)}
+		return nil, &githubtrigger.Error{Category: githubtrigger.ForgeResponse, Err: fmt.Errorf("parse first-parent comparison: %w", err)}
 	}
 	if comparison.Files == nil {
-		return false, &githubtrigger.Error{Category: githubtrigger.ForgeResponse, Err: fmt.Errorf("parse first-parent comparison: files are missing")}
+		return nil, &githubtrigger.Error{Category: githubtrigger.ForgeResponse, Err: fmt.Errorf("parse first-parent comparison: files are missing")}
 	}
-	return len(*comparison.Files) > 0, nil
+	// Comparison pagination covers commits, not files. At the same limit used
+	// by the delivery comparison reader, completeness cannot be established.
+	if len(*comparison.Files) >= 300 {
+		return nil, &githubtrigger.Error{Category: githubtrigger.ForgeResponse, Err: fmt.Errorf("first-parent comparison for %s reaches GitHub's 300-file limit", commitSHA)}
+	}
+	var paths []string
+	for _, file := range *comparison.Files {
+		names := []string{file.Filename}
+		if file.PreviousFilename != "" {
+			names = append(names, file.PreviousFilename)
+		}
+		for _, name := range names {
+			if name == "" || name == "." || strings.HasPrefix(name, "/") || strings.ContainsAny(name, "\\\x00") || path.Clean(name) != name || name == ".." || strings.HasPrefix(name, "../") {
+				return nil, &githubtrigger.Error{Category: githubtrigger.ForgeResponse, Err: fmt.Errorf("first-parent comparison for %s has an invalid repository-relative filename", commitSHA)}
+			}
+			paths = append(paths, name)
+		}
+	}
+	sort.Strings(paths)
+	return compactStrings(paths), nil
 }
 
 // The associated-PR endpoint returns pull-request-simple without merged_by.

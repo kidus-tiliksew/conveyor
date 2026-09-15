@@ -106,6 +106,9 @@ func writeRPC(w http.ResponseWriter, response rpcResponse) {
 }
 
 func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) (any, error) {
+	if isMCPRead(name) {
+		return s.callMCPRead(r, name, args)
+	}
 	stringArg := func(key string) string { value, _ := args[key].(string); return value }
 	stringSliceArg := func(key string) []string {
 		values, _ := args[key].([]any)
@@ -470,6 +473,9 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 }
 
 func humanReservedMCPTool(name string) bool {
+	if isMCPRead(name) {
+		return true
+	}
 	switch name {
 	case "create_task", "add_task_dependency", "redispatch_work_order", "set_assignee", "report_continuation":
 		return true
@@ -479,6 +485,17 @@ func humanReservedMCPTool(name string) bool {
 }
 
 var mcpCapabilities = map[string]core.Capability{
+	"get_decision":                   core.CapabilityViewWorkspace,
+	"list_decisions":                 core.CapabilityViewWorkspace,
+	"list_document_events":           core.CapabilityViewWorkspace,
+	"get_document":                   core.CapabilityViewWorkspace,
+	"list_documents":                 core.CapabilityViewWorkspace,
+	"get_task_context":               core.CapabilityViewWorkspace,
+	"list_task_events":               core.CapabilityViewWorkspace,
+	"get_task":                       core.CapabilityViewWorkspace,
+	"list_tasks":                     core.CapabilityViewWorkspace,
+	"list_repositories":              core.CapabilityViewWorkspace,
+	"list_workspaces":                core.CapabilityViewWorkspace,
 	"create_task":                    core.CapabilityOperateGates,
 	"add_task_dependency":            core.CapabilityOperateGates,
 	"set_assignee":                   core.CapabilitySetAssignee,
@@ -783,7 +800,7 @@ func mcpTools() []map[string]any {
 		{"required": []string{"applicable"}},
 	}
 	identity := map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str}
-	return []map[string]any{
+	return append(mcpReadTools(), []map[string]any{
 		{"name": "create_task", "description": "Create one durable task in an explicit workspace with optional desired-state context, generate its title from body, and enqueue triage. Reusing the same idempotency key returns the original task.", "inputSchema": object(map[string]any{"workspace_id": str, "body": map[string]any{"type": "string", "description": "Task description in GitHub-flavored Markdown. Structured descriptions using headings and lists are encouraged."}, "repo": str, "base_branch": str, "source": str, "depends_on": map[string]any{"type": "array", "items": str, "description": "Optional open task IDs in this workspace that must merge first."}, "requirement_ids": map[string]any{"type": "array", "items": str, "description": "Optional confirmed requirements this task serves."}, "system_design_ids": map[string]any{"type": "array", "items": str, "description": "Optional confirmed System Design documents governing this task."}, "hold": map[string]any{"type": "boolean", "description": "Reserve the task from the worker daemon; claim it yourself (DEC-5)."}, "spec_approval": map[string]string{"type": "boolean"}, "merge_approval": map[string]string{"type": "boolean"}, "idempotency_key": str}, "body", "repo", "idempotency_key")},
 		{"name": "add_task_dependency", "description": "Make one existing open task depend on another as an audited operator act. Existing dependencies are idempotent and cycles are rejected.", "inputSchema": object(map[string]any{"workspace_id": str, "task_id": str, "depends_on_task_id": str, "reason": str, "request_id": str}, "task_id", "depends_on_task_id", "reason", "request_id")},
 		{"name": "set_assignee", "description": "Set or clear a task assignee as an audited operator act. Assignment constrains claim eligibility and never queue order.", "inputSchema": object(map[string]any{"workspace_id": str, "task_id": str, "assignee_user_id": str}, "task_id", "assignee_user_id")},
@@ -806,5 +823,5 @@ func mcpTools() []map[string]any {
 		{"name": "submit_for_review", "description": "Validate the existing pull request at head_sha, record it, and dispatch independent review.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "head_sha": str}, "work_order_id", "session_id", "head_sha")},
 		{"name": "await_review", "description": "Long-poll for the review verdict so changes requested returns to the warm implementer session.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "timeout_seconds": num}, "work_order_id", "session_id")},
 		{"name": "submit_review_verdict", "description": "Submit a validated independent review verdict, feedback, pinned REQ-n/AC-n.m citations, plan done-criteria coverage, and System Design/DEC governance assessment.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "verdict": map[string]any{"type": "string", "enum": []string{"approve", "changes_requested"}}, "reason_code": str, "summary": str, "feedback": str, "requirement_citations": requirementCitations, "done_criteria_coverage": doneCriteriaCoverage, "governance_assessment": governanceAssessment}, "work_order_id", "session_id", "verdict", "reason_code", "summary", "requirement_citations", "done_criteria_coverage", "governance_assessment")},
-	}
+	}...)
 }

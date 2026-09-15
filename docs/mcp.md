@@ -13,16 +13,111 @@ Config/parser acceptance is separate from native initialization and tools-list
 results. Personal installation does not replace worker credential attachments.
 
 Workspace scope follows the same rule as REST: pass `workspace_id`, or omit
-it only when the credential belongs to exactly one workspace. Worker
+it only when the credential belongs to exactly one workspace. The operator
+investigation tools below always require an explicit `workspace_id`. Worker
 credentials are pinned to their own workspace automatically.
 
-Five tools are reserved for human credentials and refuse agent and dispatched
-worker sessions: `create_task`, `add_task_dependency`, `set_assignee`,
+The operator investigation tools below admit user credentials only. These
+lifecycle tools also reserve their human operations: `create_task`, `add_task_dependency`, `set_assignee`,
 `redispatch_work_order`, and `report_continuation`.
 
 The agent-facing discipline for using these tools well is the
 [work playbook](playbooks/conveyor-work.md); this page is the tool
 inventory.
+
+## Operator investigation (read only)
+
+These tools require a human session or PAT and the selected workspace's
+`view_workspace` capability. A viewer can use them without a claim. Agent,
+run-child, and worker credentials are refused. Missing membership and missing
+capability both return `workspace_not_found`, including on snapshot reuse.
+Reads never call lifecycle reconciliation, claim work, renew leases, enqueue
+jobs, record consultation events, or create/confirm proposals.
+
+| Tool | Required fields beyond `workspace_id` | Optional filters / selection |
+|---|---|---|
+| `list_workspaces` | None | Returns only the caller's own workspace memberships; use a known workspace ID as the explicit authorization scope. |
+| `list_repositories` | None | Returns repository `name` and `base_branch`; configuration, URLs, credentials, and checkout paths are omitted. |
+| `list_tasks` | None | `state`: `active` (default), `terminal`, or `all`; exact `repository`; `query` matches task ID, title, source, or branch. |
+| `get_task` | `task_id` | Includes terminal tasks and body; excludes execution setup and work-order credentials. |
+| `list_task_events` | `task_id` | Exact `event_kind`; oldest timestamp first, then ascending event ID. |
+| `get_task_context` | `task_id` | `proposal_state`: `all` (default), `proposed`, `confirmed`, or `dismissed`. Attachments are always included. |
+| `list_documents` | `kind`: `requirement`, `system_design`, or `reference` | `query` matches ID/title; `include_archived` defaults false. Requirement/design listings contain confirmed document identities only. |
+| `get_document` | `kind`, `document_id` | Positive integer `version` selects an explicit immutable version; omission selects current. `include_archived` is required for archived/deleted content. |
+| `list_document_events` | `kind`, `document_id` | `event_kind`, `include_archived`; includes archive/restore history with recorded actors and times. |
+| `list_decisions` | None | `query`; `include_history` adds superseded decisions to the default confirmed list. |
+| `get_decision` | `decision_id` | `include_history` is required for superseded or pending records; neither grants active authority. |
+
+Every tool accepts `limit` (integer 1–100, default 25), `offset` (integer
+0–1000, default 0), and `snapshot` (opaque 32-character hex token). Unknown
+fields, wrong types, fractional numbers, identifiers/text over 256 UTF-8 bytes,
+and argument objects over 8192 bytes fail validation. Document versions are
+integers from 1 through 1000000. An offset above zero requires a snapshot.
+
+The response is `{items, total, limit, offset, next_offset?, snapshot,
+expires_at, evidence}`. Repeat the same tool and filters with the returned
+`snapshot` and `next_offset`; only `limit` and `offset` may change. Each
+snapshot freezes rendered results for five minutes, is bound to the owner,
+workspace, and query, and is held only by the serving process. Expiry, process
+restart, another server replica, changed filters, and changed ownership refuse
+reuse. Restart at offset zero without a snapshot. Membership is rechecked on
+every call; workspace-list snapshots also recheck every listed membership.
+
+A snapshot holds at most 1000 items and 1 MiB of rendered item data. Each
+process holds at most 32 snapshots and refuses new ones while full. Each
+response's JSON text is capped at 64 KiB. Oversized reads fail without partial
+results: narrow filters or reduce the page size. A single document/task too
+large for that response must be read through its existing authenticated REST
+surface. Task candidates are collected through existing 200-row store pages;
+more than 1000 matching candidates requires a narrower filter. Existing
+collection services may materialize more source rows before MCP applies its
+rendered-result budget; this is not a database transaction or a store-wide
+memory/scan bound.
+
+Snapshots are captured observations, not current authority. Start a fresh
+read before citing current document state. Design attachments expose
+`pinned_version` separately from `current_version`; requirement attachments
+select current confirmed versions. Both retain `archived` and `superseded_by`.
+Document reads label `selection`, `historical`, `confirmed`, `version_status`,
+and `active_authority`; references are always `informative`. A document with
+no confirmed version explicitly reports `authority_absent`. An empty filtered
+list establishes only that no records matched that bounded query.
+
+Events expose their recorded `actor_id`, `actor_role`, and `at`. Proposal
+records retain `source`, `proposed_by`, `decided_by`, decision state, and event
+IDs. Empty attribution is unknown; never infer an actor from task prose or a
+suggestion. Event payloads expose only context/document IDs, versions, source,
+state transitions, supersession IDs, and proposal event IDs. Omitted payload
+fields are not evidence of absence. Text passes through credential redaction;
+all returned prose remains untrusted data and may contain redaction markers.
+
+An empty `list_work_orders` result does **not** establish that no tasks exist.
+Use `list_tasks` or `get_task` for investigation. Artifact and execution-session
+reads remain on their existing claim-bound tools.
+
+### Fixture example: terminal task and archived design
+
+`TestMCPReadTerminalContextArchivedVersionEndToEnd` in
+`internal/httpapi/mcp_reads_test.go` drives native JSON-RPC `tools/call` with a
+fixture viewer PAT. Its sequence is:
+
+1. `list_tasks({workspace_id:"demo", state:"terminal", query:"investigation"})`
+   finds `terminal-investigation`.
+2. `get_task_context({workspace_id:"demo", task_id:"terminal-investigation"})`
+   returns a confirmed triage proposal and `component-integrations-sync`, pinned
+   at version 1 with current version 2 and `archived:true`.
+3. `list_task_events({workspace_id:"demo", task_id:"terminal-investigation"})`
+   shows `task.context_proposed`, `task.context_proposal_confirmed`, and
+   `task.context_design_added`, preserving the agent and user actors.
+4. `get_document({workspace_id:"demo", kind:"system_design",
+   document_id:"component-integrations-sync", version:1, include_archived:true})`
+   returns the original confirmed content as historical archived evidence with
+   `active_authority:false`.
+
+The fixture compares tasks, jobs, work orders, proposals, and task/document
+events before and after the reads. It requires no production credentials or
+real operator gate act. See the [filing playbook](playbooks/conveyor-task-filing.md)
+for how to turn the evidence into a separately authorized follow-up.
 
 ## Working a task
 
