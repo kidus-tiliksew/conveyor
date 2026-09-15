@@ -14,6 +14,41 @@ idea per sentence. Cut generic praise, filler, hedging, ornamental adverbs,
 restating labels, forced groups of three, and conversational framing; prefer
 plain words and active voice.
 
+## Investigate before filing
+
+Use the server-specific native MCP connection already configured for the
+intended factory. Supply its workspace explicitly on every investigation
+call. With a human session or PAT, use `list_workspaces` from a known workspace
+scope and `list_repositories` to verify the destination. These reads require
+`view_workspace`; they do not require a claim. Agent and worker credentials
+must stay within their existing work-order context tools.
+
+Use `get_task` for a known ID or `list_tasks` with `state: terminal` / `all`
+and repository or text filters. An empty `list_work_orders` response says
+nothing about task existence. Read `get_task_context` and `list_task_events`
+to distinguish a suggestion, its confirmation, and the resulting attachment.
+Cite recorded actor/source, event ID, and timestamp; state unknown attribution
+as unknown. Do not infer who attached a document from a task description.
+
+Discover current authority with `list_documents` and `list_decisions`. Read
+an attached design with its explicit `pinned_version` through `get_document`;
+compare that with `current_version`. Set `include_archived:true` only to
+inspect historical evidence. Archived documents and proposed versions grant
+no active authority; reference documents remain informative. Do not replace a
+missing confirmed corpus with task prose.
+
+Follow the returned snapshot and offset for repeatable bounded pages. Keep
+all filters unchanged and restart after snapshot expiry or refusal. A snapshot
+records an observation; refresh document state before citing current authority.
+The full tool schemas, output budgets, and terminal-task/archived-design fixture
+are documented in `docs/mcp.md` in the Conveyor repository.
+
+Investigation uses reads only. Do not create a task, claim, renew, confirm,
+attach, restore, or enqueue work to learn what exists. After the operator
+requests filing, use the separate `create_task` mutation with the evidence and
+confirmed authority IDs. Preserve the task's gate defaults and propose-confirm
+boundary; investigation never grants permission to mutate.
+
 ## Mechanics
 
 - File via MCP `create_task`: `body`, `repo`, `idempotency_key`
