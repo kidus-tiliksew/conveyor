@@ -1,7 +1,10 @@
-import { ArrowDown, ArrowUp, ChevronRight, FileText, Search } from 'lucide-react'
-import { type ReactNode, useEffect, useRef, useState } from 'react'
+import { ArrowDown, ArrowUp, ChevronRight, FileText, PanelLeft, Search, X } from 'lucide-react'
+import { createContext, type ReactNode, useContext, useEffect, useRef, useState } from 'react'
+import { useMediaQuery, wideLayoutQuery } from '../../lib/use-media-query'
 import { cn } from '../../lib/utils'
 import { Badge } from '../ui/badge'
+import { Button } from '../ui/button'
+import { Sheet } from '../ui/sheet'
 import type { DocumentSortDirection } from './document-sort'
 
 export type { DocumentSortDirection } from './document-sort'
@@ -34,14 +37,67 @@ function persistTreeWidth(width: number) {
   }
 }
 
+// Choosing a document inside the narrow-viewport drawer closes the drawer so
+// the canvas it just changed is what the reader sees next.
+const DocumentTreeContext = createContext<{ closeDrawer: () => void }>({ closeDrawer: () => {} })
+
 /**
  * The category navigation tree that stands beside the document canvas on
  * Requirements and System Design. Detailed machinery signals and actions stay
  * on the canvas; callers may also supply a compact aggregate when the
  * governing document contract allows attention in navigation. The right edge
  * is a drag handle: pointer or arrow keys resize, double-click resets.
+ *
+ * Below the lg breakpoint there is no room for a second column, so the tree
+ * folds into a drawer behind a "Documents" button above the canvas.
  */
 export function DocumentTree({ children }: { children: ReactNode }) {
+  const wide = useMediaQuery(wideLayoutQuery)
+  return wide ? (
+    <DocumentTreeColumn>{children}</DocumentTreeColumn>
+  ) : (
+    <DocumentTreeDrawer>{children}</DocumentTreeDrawer>
+  )
+}
+
+function DocumentTreeDrawer({ children }: { children: ReactNode }) {
+  const [open, setOpen] = useState(false)
+  const close = () => setOpen(false)
+  return (
+    <>
+      <div className="flex shrink-0 items-center border-b border-border bg-surface/40 px-4 py-2">
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          aria-haspopup="dialog"
+          aria-expanded={open}
+          onClick={() => setOpen(true)}
+        >
+          <PanelLeft aria-hidden="true" />
+          Documents
+        </Button>
+      </div>
+      {open && (
+        <DocumentTreeContext.Provider value={{ closeDrawer: close }}>
+          <Sheet onClose={close} label="Document tree" side="left" width="w-[min(22rem,90vw)]">
+            <div className="flex shrink-0 items-center justify-between border-b border-border py-2 pl-4 pr-2">
+              <span className="text-sm font-medium">Documents</span>
+              <Button variant="ghost" size="icon" aria-label="Close document list" onClick={close}>
+                <X />
+              </Button>
+            </div>
+            <nav aria-label="Document tree" className="min-h-0 flex-1 overflow-y-auto py-4">
+              {children}
+            </nav>
+          </Sheet>
+        </DocumentTreeContext.Provider>
+      )}
+    </>
+  )
+}
+
+function DocumentTreeColumn({ children }: { children: ReactNode }) {
   const [width, setWidth] = useState(readStoredTreeWidth)
   const dragOrigin = useRef<{ x: number; width: number } | null>(null)
 
@@ -270,14 +326,18 @@ export function DocumentTreeItem({
   selected: boolean
   onClick: () => void
 }) {
+  const { closeDrawer } = useContext(DocumentTreeContext)
   return (
     <div className="group relative">
       <button
         type="button"
         title={title}
         aria-current={selected ? 'true' : undefined}
-        onClick={onClick}
-        className={`relative flex w-full items-center gap-2.5 rounded-md py-2 pl-3 pr-2.5 text-left transition-colors before:absolute before:inset-y-1.5 before:left-0 before:w-0.5 before:rounded-full before:transition-colors ${
+        onClick={() => {
+          onClick()
+          closeDrawer()
+        }}
+        className={`relative flex w-full items-center gap-2.5 rounded-md py-2 pl-3 pr-2.5 text-left transition-colors pointer-coarse:py-2.5 before:absolute before:inset-y-1.5 before:left-0 before:w-0.5 before:rounded-full before:transition-colors ${
           selected
             ? 'bg-primary-soft text-primary before:bg-primary'
             : 'text-foreground before:bg-transparent hover:bg-surface'

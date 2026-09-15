@@ -24,7 +24,7 @@ export function MonitorPage() {
   const confirmedRequirements = requirements.filter((item) => item.current_version?.confirmed)
   return (
     <div className="h-full overflow-y-auto">
-      <div className="mx-auto max-w-5xl px-6 py-8">
+      <div className="mx-auto max-w-5xl px-4 py-6 sm:px-6 sm:py-8">
         <div className="flex items-start justify-between gap-4">
           <div>
             <h1 className="text-xl font-semibold">Repository monitor</h1>

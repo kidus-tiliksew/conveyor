@@ -54,7 +54,10 @@ const MY_TASK_STATES = ['queued', 'running', 'awaiting_human']
 // gracefully. The total is narrower than the table area a 1280px window leaves
 // beside the navigation, so the horizontal scroll below is the fallback for
 // smaller windows rather than the ordinary way this list is read.
-const TASK_COLUMNS = 'grid grid-cols-[minmax(200px,2.2fr)_116px_192px_minmax(150px,1.4fr)_168px]'
+// Below the md breakpoint the same five cells stack into one card-like row;
+// the column header hides there because there are no columns to head.
+const TASK_COLUMNS =
+  'grid-cols-1 gap-y-2 md:grid-cols-[minmax(200px,2.2fr)_116px_192px_minmax(150px,1.4fr)_168px] md:gap-y-0'
 
 // The list-first Tasks view. It reads one
 // paginated projection and renders only what that projection carries: state,
@@ -111,7 +114,7 @@ export function TasksPage() {
 
   return (
     <div className="h-full overflow-y-auto">
-      <div className="mx-auto max-w-5xl px-6 py-8">
+      <div className="mx-auto max-w-5xl px-4 py-6 sm:px-6 sm:py-8">
         <header>
           <div className="flex items-center gap-2">
             <h1 className="text-xl font-semibold tracking-tight">Tasks</h1>
@@ -185,9 +188,9 @@ export function TasksPage() {
                 table past its own viewport and clips the last column instead of
                 offering the scroll it was meant to. */}
             <div className="overflow-x-auto">
-              <div className="min-w-[860px]">
+              <div className="md:min-w-[860px]">
                 <div
-                  className={`${TASK_COLUMNS} border-b border-border bg-background/70 px-4 py-3 text-[11px] font-medium uppercase tracking-[0.12em] text-muted`}
+                  className={`hidden md:grid ${TASK_COLUMNS} border-b border-border bg-background/70 px-4 py-3 text-[11px] font-medium uppercase tracking-[0.12em] text-muted`}
                 >
                   <SortHeader label="Name" />
                   <SortHeader label="State" />
@@ -327,7 +330,7 @@ function TaskRow({
     task.state === 'queued' ? (task.next_stage ?? item.latest_stage) : (item.latest_stage ?? task.next_stage)
   return (
     <li
-      className={`${TASK_COLUMNS} items-center border-b border-border px-4 py-3 transition-colors hover:bg-raised/50 ${selected ? 'bg-primary/5 ring-1 ring-inset ring-primary' : ''}`}
+      className={`grid ${TASK_COLUMNS} items-center border-b border-border px-4 py-3 transition-colors hover:bg-raised/50 ${selected ? 'bg-primary/5 ring-1 ring-inset ring-primary' : ''}`}
     >
       <div className="flex min-w-0 items-center gap-3 pr-4">
         <span className="text-faint" aria-hidden="true">

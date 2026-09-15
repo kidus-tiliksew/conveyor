@@ -182,7 +182,7 @@ export function SystemDesignPage() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <header className="flex shrink-0 items-center gap-3 border-b border-border px-6 py-4">
+      <header className="flex shrink-0 items-center gap-3 border-b border-border px-4 py-3 lg:px-6 lg:py-4">
         <span className="flex size-8 items-center justify-center rounded-lg bg-primary-soft text-primary">
           <Layers className="size-4" />
         </span>
@@ -191,7 +191,7 @@ export function SystemDesignPage() {
           <p className="mt-0.5 text-xs text-muted">How this system works today, written down and confirmed.</p>
         </div>
       </header>
-      <div className="flex min-h-0 flex-1">
+      <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
         <DocumentTree>
           <DocumentTreeToolbar
             searchLabel="Search System Design"
@@ -286,9 +286,9 @@ export function SystemDesignPage() {
               dismissSweep={dismissSweep}
             />
           ) : selected && detail.isLoading ? (
-            <div className="px-8 py-8 text-sm text-muted">Loading document…</div>
+            <div className="px-4 py-6 text-sm text-muted sm:px-8 sm:py-8">Loading document…</div>
           ) : selected && detail.error ? (
-            <div className="px-8 py-8 text-sm text-failure">
+            <div className="px-4 py-6 text-sm text-failure sm:px-8 sm:py-8">
               {errorMessage(detail.error, 'Could not load this System Design document.')}
             </div>
           ) : (
@@ -519,7 +519,7 @@ function DesignCanvas({
   ]
 
   return (
-    <article className="mx-auto max-w-4xl px-8 py-8">
+    <article className="mx-auto max-w-4xl px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
       {reviseTarget && (
         <VersionReviseDialog
           target={{
@@ -553,8 +553,8 @@ function DesignCanvas({
           onConfirm={(supersededBy) => archive.mutate(supersededBy)}
         />
       )}
-      <header className="mb-8 flex items-start gap-4 border-b border-border pb-6">
-        <div className="min-w-0 flex-1">
+      <header className="mb-8 flex flex-wrap items-start gap-4 border-b border-border pb-6">
+        <div className="min-w-[14rem] flex-1">
           <span
             className="inline-flex items-center rounded-md border border-border bg-surface px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-faint"
             title="The group this document belongs to"
@@ -582,7 +582,7 @@ function DesignCanvas({
                   Archived
                 </Badge>
               )}
-              <span className="inline-flex items-center gap-1 text-xs text-faint">
+              <span className="inline-flex items-center gap-1 whitespace-nowrap text-xs text-faint">
                 <Clock className="size-3" />
                 {formatDate(displayed.created_at)}
               </span>
@@ -593,7 +593,7 @@ function DesignCanvas({
         </div>
         {/* The document's corner affordance (REQ-3): the code, work, and
             evidence this guide governs, on demand. */}
-        <div className="flex shrink-0 items-center gap-2">
+        <div className="flex shrink-0 flex-wrap items-center gap-2">
           {canConfirm && (
             <Button
               size="sm"

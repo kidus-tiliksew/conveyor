@@ -105,7 +105,7 @@ export function WorkspacePage() {
 
   return (
     <div className="h-full overflow-y-auto">
-      <div className="mx-auto max-w-5xl px-6 pb-24 pt-8">
+      <div className="mx-auto max-w-5xl px-4 pb-24 pt-6 sm:px-6 sm:pt-8">
         <div className="flex items-start justify-between">
           <div className="flex items-baseline gap-3">
             <h1 className="text-xl font-semibold">Workspace</h1>

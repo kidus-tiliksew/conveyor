@@ -42,11 +42,16 @@
   --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
 
   --animate-sheet-in: sheet-in 200ms cubic-bezier(0.32, 0.72, 0, 1);
+  --animate-sheet-in-left: sheet-in-left 200ms cubic-bezier(0.32, 0.72, 0, 1);
   --animate-overlay-in: overlay-in 150ms ease;
   --animate-dialog-in: dialog-in 160ms cubic-bezier(0.32, 0.72, 0, 1);
 
   @keyframes sheet-in {
     from { transform: translateX(100%); }
+    to { transform: translateX(0); }
+  }
+  @keyframes sheet-in-left {
+    from { transform: translateX(-100%); }
     to { transform: translateX(0); }
   }
   @keyframes overlay-in {

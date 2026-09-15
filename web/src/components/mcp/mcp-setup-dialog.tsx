@@ -55,8 +55,8 @@ export function MCPSetupDialog({ onClose }: { onClose: () => void }) {
       </div>
 
       <div className="min-w-0 px-5 py-4">
-        <div className="overflow-x-auto rounded-lg bg-surface p-1" role="tablist" aria-label="MCP clients">
-          <div className="grid min-w-[40rem] grid-cols-5 gap-1">
+        <div className="rounded-lg bg-surface p-1" role="tablist" aria-label="MCP clients">
+          <div className="grid grid-cols-2 gap-1 sm:grid-cols-3 md:grid-cols-5">
             {clients.map((client) => {
               const logo = clientLogos[client.id]
               return (

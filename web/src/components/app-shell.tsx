@@ -9,6 +9,7 @@ import {
   ListChecks,
   LogOut,
   type LucideIcon,
+  Menu,
   Plus,
   Settings,
   SunMoon,
@@ -25,11 +26,13 @@ import {
   fetchWorkspaces,
   signOutDashboardSession,
 } from '../lib/api'
+import { useMediaQuery, wideLayoutQuery } from '../lib/use-media-query'
 import { roleCapabilities, type WorkspaceCapability } from '../lib/workspace-capabilities'
 import { cn } from '../lib/utils'
 import { ThemeProvider, useTheme } from './theme-provider'
 import { Badge } from './ui/badge'
 import { Button } from './ui/button'
+import { Sheet } from './ui/sheet'
 
 const WorkspaceContext = createContext<{ workspace: string; setWorkspace: (value: string) => void }>({
   workspace: '',
@@ -188,6 +191,7 @@ export function AppShell() {
 
 function AuthenticatedAppShell() {
   const navigate = useNavigate()
+  const wide = useMediaQuery(wideLayoutQuery)
   const workspaces = useQuery({
     queryKey: ['workspaces'],
     queryFn: fetchWorkspaces,
@@ -200,13 +204,25 @@ function AuthenticatedAppShell() {
   return (
     <ThemeProvider>
       {workspaces.isPending || workspaces.isError ? (
-        <div className="grid h-screen place-items-center bg-background text-sm text-muted">Opening Conveyor…</div>
+        <div className="grid h-dvh place-items-center bg-background text-sm text-muted">Opening Conveyor…</div>
       ) : (
         <WorkspaceProvider workspaces={workspaces.data}>
-          <div className="flex h-screen overflow-hidden">
-            <IconRail />
-            <NavSidebar />
-            <main className="min-w-0 flex-1 overflow-hidden bg-background">
+          {/* Desktop keeps the two fixed navigation columns beside the
+              content. Below the lg breakpoint they would leave a phone with
+              no room to read, so the same rail and sidebar move into a
+              drawer behind a top bar (component-web-dashboard). The dynamic
+              viewport unit keeps the shell inside the visible area while a
+              mobile browser shows or hides its own chrome. */}
+          <div className="flex h-dvh flex-col overflow-hidden lg:flex-row">
+            {wide ? (
+              <>
+                <IconRail />
+                <NavSidebar />
+              </>
+            ) : (
+              <MobileNav />
+            )}
+            <main className="min-w-0 min-h-0 flex-1 overflow-hidden bg-background">
               <Outlet />
             </main>
           </div>
@@ -308,9 +324,56 @@ function WorkspaceProvider({
   return <WorkspaceContext.Provider value={{ workspace, setWorkspace }}>{children}</WorkspaceContext.Provider>
 }
 
+// Navigation inside the narrow-viewport drawer closes the drawer once it has
+// done its job; on desktop the same items render in place and this is a no-op.
+const ShellNavContext = createContext<{ closeDrawer: () => void }>({ closeDrawer: () => {} })
+
+// The narrow-viewport shell: a slim bar carrying the workspace name, the
+// attention total, and the menu that opens the rail and sidebar as a drawer.
+function MobileNav() {
+  const [open, setOpen] = useState(false)
+  const { workspace: selected } = useWorkspaceSelection()
+  const { data: workspaces } = useQuery({
+    queryKey: ['workspaces'],
+    queryFn: fetchWorkspaces,
+  })
+  const { data: proposals } = usePendingProposals()
+  const attention = proposals?.attention?.total ?? 0
+  const currentName = workspaces?.find((item) => item.id === selected)?.name ?? 'Conveyor'
+  const close = () => setOpen(false)
+  return (
+    <>
+      <header className="flex h-12 shrink-0 items-center gap-2 border-b border-border bg-rail px-2">
+        <Button variant="ghost" size="icon" aria-label="Open navigation" onClick={() => setOpen(true)}>
+          <Menu />
+        </Button>
+        <p className="min-w-0 flex-1 truncate text-sm font-semibold tracking-tight">{currentName}</p>
+        {attention > 0 && (
+          <Link to="/" aria-label={`${attention} items need attention`}>
+            <Badge variant="attention">{attention}</Badge>
+          </Link>
+        )}
+      </header>
+      {open && (
+        <ShellNavContext.Provider value={{ closeDrawer: close }}>
+          {/* Rail plus sidebar at their desktop widths, so the drawer
+              reads exactly like the columns it stands in for. */}
+          <Sheet onClose={close} label="Navigation" side="left" width="w-auto max-w-[90vw]">
+            <div className="flex min-h-0 flex-1">
+              <IconRail />
+              <NavSidebar className="min-w-0 shrink border-r-0" />
+            </div>
+          </Sheet>
+        </ShellNavContext.Provider>
+      )}
+    </>
+  )
+}
+
 // The rail is the workspace switcher (§21.10: workspace context is explicit
 // everywhere): one initials tile per workspace, "+" creates a new one.
 function IconRail() {
+  const { closeDrawer } = useContext(ShellNavContext)
   const canManageWorkspace = useWorkspaceCapability('manage_workspace')
   const navigate = useNavigate()
   const { workspace: selected, setWorkspace } = useWorkspaceSelection()
@@ -323,6 +386,7 @@ function IconRail() {
   const switchTo = (id: string) => {
     if (id !== selected) setWorkspace(id)
     void navigate({ to: '/' })
+    closeDrawer()
   }
   return (
     <nav
@@ -353,6 +417,7 @@ function IconRail() {
             to="/workspaces/new"
             title="Add workspace"
             aria-label="Add workspace"
+            onClick={closeDrawer}
             className="grid size-8 shrink-0 place-items-center rounded-[9px] text-workspace-tile-foreground transition-colors hover:bg-workspace-tile hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-[5px] focus-visible:outline-primary"
           >
             <Plus className="size-5" aria-hidden="true" />
@@ -369,7 +434,7 @@ function initials(name: string) {
   return name.slice(0, 2).toUpperCase()
 }
 
-function NavSidebar() {
+function NavSidebar({ className }: { className?: string }) {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
   const { workspace: selected } = useWorkspaceSelection()
@@ -399,7 +464,7 @@ function NavSidebar() {
   })
 
   return (
-    <nav className="flex w-64 shrink-0 flex-col border-r border-border bg-rail" aria-label="Primary">
+    <nav className={cn('flex w-64 shrink-0 flex-col border-r border-border bg-rail', className)} aria-label="Primary">
       <div className="px-4 py-4">
         <p className="truncate text-sm font-semibold tracking-tight">{currentName}</p>
         <p className="mt-0.5 text-[11px] text-faint">Conveyor · software factory</p>
@@ -475,6 +540,7 @@ function NavItem({
   children?: ReactNode
 }) {
   const pathname = useRouterState({ select: (state) => state.location.pathname })
+  const { closeDrawer } = useContext(ShellNavContext)
   // The board stays highlighted while any of its overlays (task sheet, full
   // page, workspace modal) is open. A trailing slash keeps the Tasks list
   // itself out of that set — it is its own surface, and the sheets it now hosts
@@ -493,7 +559,8 @@ function NavItem({
       // without this, "/tasks/<id>" would announce the Tasks list as the
       // current page while the Board is the surface actually showing.
       activeOptions={exact ? { exact: true } : undefined}
-      className={`flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm transition-colors ${
+      onClick={closeDrawer}
+      className={`flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm transition-colors pointer-coarse:py-2.5 ${
         active ? 'bg-raised font-medium text-foreground' : 'text-muted hover:bg-raised/60 hover:text-foreground'
       }`}
     >

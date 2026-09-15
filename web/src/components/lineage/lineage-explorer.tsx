@@ -41,7 +41,7 @@ function KnowledgePanel({ type, id, onClose }: { type: LineageNodeType; id: stri
     queryFn: () => fetchLineage(type, id),
   })
   return (
-    <Sheet onClose={onClose} label="Knowledge explorer" width="md:w-[26rem]">
+    <Sheet onClose={onClose} label="Knowledge explorer" width="w-full md:w-[26rem]">
       <header className="flex shrink-0 items-center gap-2 border-b border-border px-4 py-2.5">
         <BookOpenText className="size-4 text-primary" aria-hidden="true" />
         <h2 className="mr-auto text-sm font-medium">Knowledge explorer</h2>

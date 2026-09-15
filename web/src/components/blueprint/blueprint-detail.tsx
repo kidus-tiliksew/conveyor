@@ -20,19 +20,19 @@ import { MarkdownProse } from '../ui/markdown-prose'
 export function BlueprintDetail({ view, item }: { view: BlueprintView; item: ActivityItem }) {
   return (
     <>
-      <div className="shrink-0 border-b border-border px-6 py-4">
+      <div className="shrink-0 border-b border-border px-4 py-4 sm:px-6">
         <BlueprintHeader view={view} />
       </div>
       <div className="grid grid-cols-1 lg:grid-cols-2">
         <section
           aria-label="Blueprint"
-          className="space-y-4 border-b border-border px-6 py-4 lg:border-b-0 lg:border-r"
+          className="space-y-4 border-b border-border px-4 py-4 sm:px-6 lg:border-b-0 lg:border-r"
         >
           <BlueprintSpec view={view} />
           <BlueprintChildren view={view} />
           <OriginalRequest body={view.task.body} />
         </section>
-        <section aria-label="Delivery activity" className="space-y-4 px-6 py-4">
+        <section aria-label="Delivery activity" className="space-y-4 px-4 py-4 sm:px-6">
           <AttachmentsCard attachments={view.artifacts} title="Lineage and artifacts" />
           <Timeline item={item} executionActions={false} />
         </section>

@@ -73,7 +73,7 @@ export function Board() {
 
   return (
     <div className="flex h-full flex-col">
-      <header className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b border-border px-6 py-3.5">
+      <header className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b border-border px-4 py-3 lg:px-6 lg:py-3.5">
         <h1 className="text-lg font-semibold tracking-tight">Board</h1>
         <TaskFilters
           value={filter}
@@ -90,16 +90,16 @@ export function Board() {
           New task
         </Button>
       </header>
-      <div className="mx-6">
+      <div className="mx-4 lg:mx-6">
         <EmptyRepositoryNotice />
       </div>
       {error != null && (
-        <p className="mx-6 mt-4 rounded-lg bg-failure-soft p-3 text-sm text-failure">
+        <p className="mx-4 mt-4 rounded-lg lg:mx-6 bg-failure-soft p-3 text-sm text-failure">
           Activity feed unavailable: {String(error)}
         </p>
       )}
       {data && !isLoading && (
-        <div className="flex shrink-0 items-center justify-end gap-3 border-b border-border px-6 py-2 text-xs text-muted">
+        <div className="flex shrink-0 items-center justify-end gap-3 border-b border-border px-4 py-2 text-xs text-muted lg:px-6">
           <span>
             Showing {data.total === 0 ? 0 : data.offset + 1}–{Math.min(data.offset + data.items.length, data.total)} of{' '}
             {data.total}

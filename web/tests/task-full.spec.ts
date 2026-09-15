@@ -4649,7 +4649,11 @@ test('shared Markdown renders plan diagrams responsively in both themes and fall
   await expect(diagram.locator('svg')).toBeVisible()
   await expect(diagram).toHaveCSS('overflow-x', 'auto')
   for (const theme of ['light', 'dark']) {
-    await page.getByLabel('Theme').selectOption(theme)
+    // At this width the theme control sits in the navigation drawer.
+    await page.getByRole('button', { name: 'Open navigation' }).click()
+    await page.getByRole('dialog', { name: 'Navigation' }).getByLabel('Theme').selectOption(theme)
+    await page.keyboard.press('Escape')
+    await expect(page.getByRole('dialog', { name: 'Navigation' })).toBeHidden()
     await expect(diagram.locator('svg')).toBeVisible()
     await expect(diagram).toBeInViewport()
   }
