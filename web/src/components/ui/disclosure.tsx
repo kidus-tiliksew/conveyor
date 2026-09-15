@@ -1,5 +1,7 @@
-import { type ButtonHTMLAttributes, type ReactNode, useEffect, useId, useRef, useState } from 'react'
+import { type ButtonHTMLAttributes, type ReactNode, useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import { cn } from '../../lib/utils'
+
+const openDisclosures: symbol[] = []
 
 type TriggerProps = ButtonHTMLAttributes<HTMLButtonElement>
 
@@ -11,6 +13,7 @@ export function Disclosure({
   triggerClassName,
   contentClassName,
   label,
+  title,
   renderTrigger,
 }: {
   children?: ReactNode
@@ -19,10 +22,12 @@ export function Disclosure({
   triggerClassName?: string
   contentClassName?: string
   label?: string
+  title?: string
   renderTrigger?: (props: TriggerProps) => ReactNode
 }) {
   const id = useId()
   const root = useRef<HTMLSpanElement>(null)
+  const tooltip = useRef<HTMLSpanElement>(null)
   const touch = useRef(false)
   const [hovered, setHovered] = useState(false)
   const [focused, setFocused] = useState(false)
@@ -34,6 +39,26 @@ export function Disclosure({
     setPinned(false)
   }
 
+  // Keep the caller's placement unless it would put details outside the viewport.
+  useLayoutEffect(() => {
+    if (!open) return
+    const position = () => {
+      const element = tooltip.current
+      if (!element) return
+      element.style.transform = ''
+      const bounds = element.getBoundingClientRect()
+      const shift = Math.max(8 - bounds.left, Math.min(0, window.innerWidth - 8 - bounds.right))
+      if (shift) element.style.transform = `translateX(${shift}px)`
+    }
+    position()
+    window.addEventListener('resize', position)
+    document.addEventListener('scroll', position, true)
+    return () => {
+      window.removeEventListener('resize', position)
+      document.removeEventListener('scroll', position, true)
+    }
+  }, [open])
+
   useEffect(() => {
     if (!open) return
     const outside = (event: PointerEvent) => {
@@ -43,24 +68,45 @@ export function Disclosure({
         setPinned(false)
       }
     }
+    const identity = Symbol('disclosure')
+    openDisclosures.push(identity)
+    const onEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || openDisclosures.at(-1) !== identity) return
+      event.preventDefault()
+      event.stopPropagation()
+      setHovered(false)
+      setFocused(false)
+      setPinned(false)
+    }
     document.addEventListener('pointerdown', outside, true)
-    return () => document.removeEventListener('pointerdown', outside, true)
+    document.addEventListener('keydown', onEscape, true)
+    return () => {
+      openDisclosures.splice(openDisclosures.indexOf(identity), 1)
+      document.removeEventListener('pointerdown', outside, true)
+      document.removeEventListener('keydown', onEscape, true)
+    }
   }, [open])
 
   const trigger: TriggerProps = {
     type: 'button',
     id: `${id}-trigger`,
+    title,
     'aria-label': label,
     'aria-expanded': open,
     'aria-describedby': `${id}-content`,
-    className: cn('inline-flex items-center text-left', triggerClassName),
+    className: cn(
+      'inline-flex min-w-0 items-center text-left pointer-coarse:min-h-10 pointer-coarse:min-w-10',
+      triggerClassName,
+    ),
     onClick: (event) => {
+      event.preventDefault()
       event.stopPropagation()
       if (pinned) dismiss()
       else setPinned(true)
     },
   }
   return (
+    // biome-ignore lint/a11y/noStaticElementInteractions: This wrapper tracks focus and hover across the native button and its linked content.
     <span
       ref={root}
       className={cn('relative inline-flex min-w-0', className)}
@@ -80,26 +126,19 @@ export function Disclosure({
           touch.current = false
         }
       }}
-      onKeyDownCapture={(event) => {
-        touch.current = false
-        if (event.key === 'Escape' && open) {
-          event.stopPropagation()
-          event.preventDefault()
-          dismiss()
-        }
-      }}
     >
       {renderTrigger ? renderTrigger(trigger) : <button {...trigger}>{children}</button>}
       <span
+        ref={tooltip}
         id={`${id}-content`}
         role="tooltip"
         className={cn(
-          'absolute left-0 top-full z-20 w-max max-w-[min(20rem,80vw)] rounded-md border border-border bg-background px-3 py-2 text-xs font-normal text-foreground shadow-lg',
+          'absolute left-0 top-full z-20 w-max max-w-[min(20rem,80vw)] whitespace-normal break-words rounded-md border border-border bg-background px-3 py-2 text-xs font-normal text-foreground shadow-lg',
           contentClassName,
           !open && 'invisible pointer-events-none opacity-0',
         )}
       >
-        {content}
+        {open ? content : null}
       </span>
     </span>
   )

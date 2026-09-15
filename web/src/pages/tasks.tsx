@@ -13,8 +13,8 @@ import {
 } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useWorkspaceCapability, useWorkspaceMembers, useWorkspaceSelection } from '../components/app-shell'
-import { AssigneeChip } from '../components/task/assignee-chip'
 import { MCPSetup } from '../components/mcp/mcp-setup-dialog'
+import { AssigneeChip } from '../components/task/assignee-chip'
 import { ReturnedForChangesAttention } from '../components/task/returned-for-changes'
 import { TaskCreateSheet } from '../components/task/task-create-sheet'
 import type { TaskFilterState } from '../components/task/task-filters'
@@ -30,6 +30,7 @@ import { TaskSheet } from '../components/task/task-sheet'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { Card, CardContent } from '../components/ui/card'
+import { Disclosure } from '../components/ui/disclosure'
 import { Skeleton } from '../components/ui/skeleton'
 import { humanizeClaimRefusal, taskWasRestarted } from '../lib/activity'
 import { fetchCallerIdentity, fetchTaskOperations } from '../lib/api'
@@ -383,13 +384,14 @@ function TaskRow({
       </div>
       {/* The timestamp is one short phrase, so it holds its line rather than
           breaking mid-phrase in the narrowest supported column. */}
-      <div
-        className="flex items-center gap-2 whitespace-nowrap text-xs text-muted"
-        title={new Date(item.last_event_at || task.created_at).toLocaleString()}
+      <Disclosure
+        triggerClassName="gap-2 whitespace-nowrap text-xs text-muted"
+        content={new Date(item.last_event_at || task.created_at).toLocaleString()}
+        contentClassName="left-auto right-0"
       >
         <CalendarDays className="size-4 shrink-0 text-faint" aria-hidden="true" />
         <span>Updated {relativeTime(item.last_event_at || task.created_at)}</span>
-      </div>
+      </Disclosure>
       {item.stalled?.needed && (
         <p className="col-span-full mt-2 border-t border-failure/20 pt-2 text-xs text-failure">
           Stalled — {item.stalled.reason}

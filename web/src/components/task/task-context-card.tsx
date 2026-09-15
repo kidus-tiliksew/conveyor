@@ -10,6 +10,7 @@ import { SuccessorLinks } from '../documents/successor-links'
 import { Badge } from '../ui/badge'
 import { Button } from '../ui/button'
 import { Dialog } from '../ui/dialog'
+import { Disclosure } from '../ui/disclosure'
 
 // The task's pinned authority: the confirmed outcomes and technical guidance
 // the factory serves to this task's sessions. Rows, not prose — the link is
@@ -90,14 +91,12 @@ export function TaskContextCard({
                   {item.title}
                 </Link>
                 {item.archived && (
-                  <span className="group relative">
+                  <Disclosure
+                    content={item.superseded_by?.length ? <SuccessorLinks ids={item.superseded_by} compact /> : null}
+                    contentClassName="mt-1 max-w-80 text-inherit"
+                  >
                     <Badge variant="outline">Archived</Badge>
-                    {item.superseded_by?.length && (
-                      <span className="invisible absolute left-0 top-full z-20 mt-1 w-max max-w-80 rounded-md border border-border bg-background px-3 py-2 opacity-0 shadow-lg group-hover:visible group-hover:opacity-100">
-                        <SuccessorLinks ids={item.superseded_by} compact />
-                      </span>
-                    )}
-                  </span>
+                  </Disclosure>
                 )}
               </ContextRow>
             ))}
@@ -116,14 +115,12 @@ export function TaskContextCard({
                   {item.title}
                 </Link>
                 {item.archived && (
-                  <span className="group relative">
+                  <Disclosure
+                    content={item.superseded_by?.length ? <SuccessorLinks ids={item.superseded_by} compact /> : null}
+                    contentClassName="mt-1 max-w-80 text-inherit"
+                  >
                     <Badge variant="outline">Archived</Badge>
-                    {item.superseded_by?.length && (
-                      <span className="invisible absolute left-0 top-full z-20 mt-1 w-max max-w-80 rounded-md border border-border bg-background px-3 py-2 opacity-0 shadow-lg group-hover:visible group-hover:opacity-100">
-                        <SuccessorLinks ids={item.superseded_by} compact />
-                      </span>
-                    )}
-                  </span>
+                  </Disclosure>
                 )}
               </ContextRow>
             ))}

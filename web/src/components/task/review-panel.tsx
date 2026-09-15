@@ -1,6 +1,6 @@
-import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ExternalLink, GitMerge, ThumbsUp, TriangleAlert, Undo2, UserRound, type LucideIcon } from 'lucide-react'
+import { ExternalLink, GitMerge, type LucideIcon, ThumbsUp, TriangleAlert, Undo2, UserRound } from 'lucide-react'
+import { useState } from 'react'
 import { mergeGateReview, pendingPlanRevisionRequest } from '../../lib/activity'
 import { fetchCallerIdentity, fixMergeConflict, mergeTask, requestTaskChanges, reviewTask } from '../../lib/api'
 import { defaultReasonCode, interventionActions } from '../../lib/contracts'
@@ -8,6 +8,7 @@ import type { ActivityItem, InterventionAction, Task, TaskEvent } from '../../li
 import { cn } from '../../lib/utils'
 import { useWorkspaceCapability, useWorkspaceSelection } from '../app-shell'
 import { Button } from '../ui/button'
+import { Disclosure } from '../ui/disclosure'
 import { Textarea } from '../ui/input'
 import { AttachmentsCard } from './attachments-card'
 import { PlanRevisionDecisionCard } from './plan-revision-decision-card'
@@ -192,9 +193,13 @@ function MergeGateReviewCard({ item }: { item: ActivityItem }) {
           <>
             <dt className="text-muted">Reviewed at</dt>
             <dd className="min-w-0">
-              <span className="font-mono text-foreground/90" title={review.headSHA}>
+              <Disclosure
+                triggerClassName="font-mono text-foreground/90"
+                content={review.headSHA}
+                title={review.headSHA}
+              >
                 {review.headSHA.slice(0, 8)}
-              </span>
+              </Disclosure>
             </dd>
           </>
         )}
@@ -202,9 +207,13 @@ function MergeGateReviewCard({ item }: { item: ActivityItem }) {
           <>
             <dt className="text-muted">Commit range</dt>
             <dd className="min-w-0">
-              <span className="font-mono text-foreground/90" title={`${review.baseSHA} … ${review.headSHA}`}>
+              <Disclosure
+                triggerClassName="font-mono text-foreground/90"
+                content={`${review.baseSHA} … ${review.headSHA}`}
+                title={`${review.baseSHA} … ${review.headSHA}`}
+              >
                 {review.baseSHA.slice(0, 8)} … {review.headSHA.slice(0, 8)}
-              </span>
+              </Disclosure>
             </dd>
           </>
         )}

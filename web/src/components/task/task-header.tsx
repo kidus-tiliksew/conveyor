@@ -11,16 +11,16 @@ import {
   Link2,
   Link2Off,
   RotateCcw,
-  UserRound,
   Terminal,
   Trash2,
+  UserRound,
 } from 'lucide-react'
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import {
   dependencyRelationLabel,
   pullRequestURL,
-  taskRestartLinks,
   restartPullRequestOutcome,
+  taskRestartLinks,
 } from '../../lib/activity'
 import {
   addTaskDependency,
@@ -41,6 +41,7 @@ import { Badge } from '../ui/badge'
 import { Button } from '../ui/button'
 import { CopyButton } from '../ui/copy-button'
 import { Dialog } from '../ui/dialog'
+import { Disclosure } from '../ui/disclosure'
 import { DropdownMenu, DropdownMenuItem } from '../ui/dropdown-menu'
 import { Input, Textarea } from '../ui/input'
 import { MarkdownProse } from '../ui/markdown-prose'
@@ -83,10 +84,11 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
       <div className="mb-2 flex flex-wrap items-center gap-1.5">
         {/* Approved reads as good news even while it waits at the gate —
             amber stays reserved for states that are genuinely stuck. */}
-        <span
-          role="img"
-          className="group/status relative inline-flex rounded-md focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
-          aria-label={`Task status: ${stateLabel}`}
+        <Disclosure
+          label={`Task status: ${stateLabel}`}
+          triggerClassName="rounded-md focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+          content={item.stalled?.reason ?? `Current task status: ${stateLabel}.`}
+          contentClassName="pointer-events-none bottom-full top-auto left-0 z-10 mb-1.5 w-56 border-0 bg-foreground px-2.5 py-1.5 text-[11px] leading-4 text-background shadow-md transition-opacity after:absolute after:left-3 after:top-full after:border-4 after:border-transparent after:border-t-foreground"
         >
           <Badge
             variant={
@@ -99,13 +101,7 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
           >
             {stateLabel}
           </Badge>
-          <span
-            role="tooltip"
-            className="pointer-events-none absolute bottom-full left-0 z-10 mb-1.5 w-56 rounded-md bg-foreground px-2.5 py-1.5 text-[11px] leading-4 text-background opacity-0 shadow-md transition-opacity after:absolute after:left-3 after:top-full after:border-4 after:border-transparent after:border-t-foreground group-hover/status:opacity-100 group-focus/status:opacity-100"
-          >
-            {item.stalled?.reason ?? `Current task status: ${stateLabel}.`}
-          </span>
-        </span>
+        </Disclosure>
         {restartLinks.to && (
           <Link to={relatedRoute} params={{ taskId: restartLinks.to }} className="text-sm text-primary underline">
             Started over as {restartLinks.to}
