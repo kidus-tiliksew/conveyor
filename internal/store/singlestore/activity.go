@@ -291,6 +291,11 @@ func (s *Store) RecordWorkOrderAttemptCheckpoint(ctx context.Context, id, worker
 		if err != nil {
 			return err
 		}
+		for _, event := range events {
+			if event.Kind == "work_order.writer_admitted" {
+				return store.ErrWorkOrderClaimLost
+			}
+		}
 		claimed, exists := checkpointHistory(events, id, worker, c)
 		if !o.AuthorizesAttemptCheckpoint(worker, c, time.Now().UTC()) && !(o.Stage == core.StageImplement && claimed) {
 			return store.ErrWorkOrderClaimLost

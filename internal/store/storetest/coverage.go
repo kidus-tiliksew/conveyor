@@ -33,6 +33,7 @@ var suiteMethods = map[string][]string{
 	"TaskLifecycle":              strings.Fields(`CancelTaskCommand CreateTask GetTask ListEvents ListInterventions SetTaskHold UpdateTaskClassification`),
 	"TaskEventAtomicity":         strings.Fields(`ApplyTaskCommand CreateTask CreateWorkspace GetTask ListEvents SetTaskHold WithTaskSideEffectLock`),
 	"Workers":                    strings.Fields(`AuthenticateWorker ConsumeWorkerPairing CreateWorker CreateWorkerPairing HeartbeatWorker ListEvents ListHarnessModelFailures ListWorkers RevokeWorker`),
+	"WorktreeHandoff":            strings.Fields(`WorktreeHandoffCommand`),
 	"WorkOrders":                 strings.Fields(`CancelTaskCommand ClaimWorkOrderCommand CreateStageWorkOrderCommand CreateTask FinalizeWorkOrderAttemptObservability GetWorkOrder GetWorkOrderActivitySnapshot ListTaskWorkOrdersSnapshot ListWorkOrderTranscriptCaptures PreemptWorkOrderCommand RecordWorkOrderAttemptCheckpoint RecordWorkOrderContinuation RecoverWorkOrderCommand ReleaseWorkerClaimCommand RenewWorkerClaimCommand UpsertWorkOrderActivitySnapshot`),
 	"WorkOrderClocks":            strings.Fields(`ApplyWorkOrderClock ClaimWorkOrderCommand CreateStageWorkOrderCommand CreateTask GetWorkOrder ListElapsedWorkOrderTaskIDs RecoverWorkOrderCommand RedispatchWorkOrderCommand UpdateWorkOrderCommand`),
 	"ReviewRounds":               strings.Fields(`ClaimWorkOrderCommand CreateReviewRoundCommand CreateTask GetWorkOrder ListElapsedWorkOrderTaskIDs ListTaskWorkOrders RecoverInterruptedReviewRoundCommand RetryReviewRoundCommand UpdateWorkOrderCommand`),

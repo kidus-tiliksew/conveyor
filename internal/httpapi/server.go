@@ -160,6 +160,7 @@ func (s *Server) Handler() http.Handler {
 		r.With(s.requireWorkerAuth).Get("/worker/work-orders/{id}/reconcile", s.reconcileWorkerOrder)
 		r.With(s.requireWorkerAuth).Post("/worker/work-orders/{id}/renew", s.renewWorkerOrder)
 		r.With(s.requireWorkerAuth).Post("/worker/work-orders/{id}/attempt-checkpoint", s.checkpointWorkerOrderAttempt)
+		r.With(s.requireWorkerAuth).Post("/worker/work-orders/{id}/worktree-handoff", s.workerWorktreeHandoff)
 		r.With(s.requireWorkerAuth).Post("/worker/work-orders/{id}/release", s.releaseWorkerOrder)
 		r.With(s.requireWorkerAuth).Get("/worker/tasks/{id}/worktree-cleanup", s.getWorktreeCleanupStatus)
 		r.With(s.requireWorkerAuth).Post("/worker/tasks/{id}/worktree-cleanup", s.recordWorktreeCleanup)
@@ -201,6 +202,7 @@ func (s *Server) Handler() http.Handler {
 			r.Use(s.requireTaskRunChildAuth, s.resolveWorkspaceContext, s.requireTaskRunChildCapability(core.CapabilityViewWorkspace), s.requireTaskRunChildCapability(core.CapabilityClaimWork))
 			r.Post("/tasks/{id}/run-orders/{order_id}/renew", s.renewTaskRunOrder)
 			r.Post("/tasks/{id}/run-orders/{order_id}/attempt-checkpoint", s.checkpointTaskRunOrderAttempt)
+			r.Post("/tasks/{id}/run-orders/{order_id}/worktree-handoff", s.runWorktreeHandoff)
 		})
 		r.Group(func(r chi.Router) {
 			r.Use(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityViewWorkspace))

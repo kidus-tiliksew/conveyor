@@ -150,6 +150,7 @@ func RunAll(t *testing.T, factory Factory) {
 		{"TaskEventAtomicity", true, runTaskEventAtomicity},
 		{"Workers", true, runWorkers},
 		{"WorkOrders", true, runWorkOrders},
+		{"WorktreeHandoff", true, runWorktreeHandoff},
 		{"WorkOrderClocks", true, runWorkOrderClocks},
 		{"ReviewRounds", true, runReviewRounds},
 		{"ReviewAcceptance", true, runReviewAcceptance},
