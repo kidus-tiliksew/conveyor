@@ -23,6 +23,7 @@ import { LineageExplorer } from '../components/lineage/lineage-explorer'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
+import { Disclosure } from '../components/ui/disclosure'
 import { MarkdownProse } from '../components/ui/markdown-prose'
 import {
   archiveSystemDesign,
@@ -819,9 +820,12 @@ function DesignCanvas({
                                 <Badge variant={entry.status === 'open' ? 'attention' : 'default'}>
                                   {entry.status}
                                 </Badge>
-                                <time className="text-faint" title={new Date(entry.detected_at).toLocaleString()}>
-                                  Detected {formatDate(entry.detected_at)}
-                                </time>
+                                <Disclosure
+                                  triggerClassName="text-faint"
+                                  content={new Date(entry.detected_at).toLocaleString()}
+                                >
+                                  <time dateTime={entry.detected_at}>Detected {formatDate(entry.detected_at)}</time>
+                                </Disclosure>
                                 {entry.status === 'open' && canConfirmDecisions && (
                                   <Button
                                     className="ml-auto"

@@ -44,6 +44,7 @@ import type {
 import { absoluteTime, cn, compactTokens, duration } from '../../lib/utils'
 import { usePendingProposals, useWorkspaceCapability, useWorkspaceMembers } from '../app-shell'
 import { Badge } from '../ui/badge'
+import { Disclosure } from '../ui/disclosure'
 import { MarkdownProse } from '../ui/markdown-prose'
 import { hasInterruptedReviewRecovery, InterruptedReviewRecoveryCard } from './interrupted-review-recovery-card'
 import { canRedispatch, RedispatchCard } from './redispatch-card'
@@ -393,16 +394,16 @@ function RecentActivity({ snapshot }: { snapshot: WorkOrderActivitySnapshot }) {
   }, [snapshot.content])
 
   return (
-    <section aria-label="Client machine activity" className="mt-3 border-t border-border/60 pt-2.5">
-      <details>
+    <section
+      aria-label="Client machine activity"
+      className="mt-3 grid grid-cols-[auto_minmax(0,1fr)] items-baseline gap-x-2 border-t border-border/60 pt-2.5"
+    >
+      <details className="contents [&::details-content]:col-span-2">
         <summary
           aria-label="Client machine activity"
           className="flex cursor-pointer flex-wrap items-baseline gap-2 rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
         >
           <h3 className="text-xs font-medium text-foreground">Client machine activity</h3>
-          <time className="text-[11px] text-faint" title={absoluteTime(snapshot.captured_at)}>
-            Captured {absoluteTime(snapshot.captured_at)}
-          </time>
         </summary>
         <pre
           ref={outputRef}
@@ -411,6 +412,14 @@ function RecentActivity({ snapshot }: { snapshot: WorkOrderActivitySnapshot }) {
           {snapshot.content}
         </pre>
       </details>
+      {/* Inspecting the capture time must not toggle the output summary. */}
+      <Disclosure
+        className="col-start-2 row-start-1 justify-self-start"
+        triggerClassName="text-[11px] text-faint"
+        content={absoluteTime(snapshot.captured_at)}
+      >
+        <time dateTime={snapshot.captured_at}>Captured {absoluteTime(snapshot.captured_at)}</time>
+      </Disclosure>
     </section>
   )
 }
@@ -1002,16 +1011,17 @@ function SeatState({ seat, index }: { seat: PanelSeat; index: number }) {
     const took = job?.started_at ? duration(job.started_at, job.ended_at ?? review.at) : undefined
     return (
       <span className="flex items-center justify-end gap-2">
-        <span
+        <Disclosure
           title={review.summary.trim() || undefined}
-          className={cn(
+          content={review.summary.trim() || undefined}
+          triggerClassName={cn(
             'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium',
             approved ? 'bg-positive-soft text-positive' : 'bg-attention-soft text-attention',
           )}
         >
           {approved ? <Check className="size-3" /> : <Undo2 className="size-3" />}
           {approved ? 'Approved' : 'Changes'}
-        </span>
+        </Disclosure>
         {took && <span className="font-mono text-[11px] tabular-nums text-muted">{took}</span>}
       </span>
     )
@@ -1241,9 +1251,9 @@ function ModelChip({
       ) : (
         <Cpu aria-hidden className="size-3.5 shrink-0 text-faint" />
       )}
-      <span className="truncate" title={model}>
+      <Disclosure triggerClassName="truncate" title={model} content={model}>
         {model}
-      </span>
+      </Disclosure>
       {usage && (
         <span
           role="tooltip"

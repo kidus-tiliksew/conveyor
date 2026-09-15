@@ -1,5 +1,6 @@
 import { assigneeName } from '../../lib/activity'
 import type { TaskAssignee } from '../../lib/types'
+import { Disclosure } from '../ui/disclosure'
 
 // Two letters is enough to recognise a colleague across a dense list and short
 // enough to hold one width in every row. A single-word name gives its first two
@@ -24,8 +25,10 @@ export function AssigneeChip({ assignee, className = '' }: { assignee?: TaskAssi
   const name = assigneeName(assignee)
   const detail = [assignee.email, assignee.user_id].filter((value) => value && value !== name).join(' · ')
   return (
-    <span
-      className={`inline-flex min-w-0 items-center gap-1.5 ${className}`}
+    <Disclosure
+      className={className}
+      triggerClassName="gap-1.5"
+      content={detail ? `Assigned to ${name} — ${detail}` : `Assigned to ${name}`}
       title={detail ? `Assigned to ${name} — ${detail}` : `Assigned to ${name}`}
     >
       <span
@@ -35,6 +38,6 @@ export function AssigneeChip({ assignee, className = '' }: { assignee?: TaskAssi
         {initials(name)}
       </span>
       <span className="truncate">{name}</span>
-    </span>
+    </Disclosure>
   )
 }

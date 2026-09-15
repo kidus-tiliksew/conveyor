@@ -48,7 +48,7 @@ export function TaskSheet({ taskId, panel }: { taskId: string; panel?: TaskPanel
 
   return (
     <Sheet onClose={close} label="Task detail">
-      <header className="flex shrink-0 items-center gap-1 border-b border-border px-4 py-2.5">
+      <header className="pointer-coarse:[&_button]:min-h-10 pointer-coarse:[&_button]:min-w-10 flex shrink-0 items-center gap-1 border-b border-border px-4 py-2.5">
         <span className="mr-auto truncate text-sm font-medium text-muted">{item?.task.title}</span>
         {/* The same corner affordance the full route carries (REQ-3): the
             panel opens over this one without dismissing it. */}

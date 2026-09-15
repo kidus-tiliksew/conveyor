@@ -39,6 +39,7 @@ import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import { Dialog } from '../components/ui/dialog'
+import { Disclosure } from '../components/ui/disclosure'
 import { MarkdownProse } from '../components/ui/markdown-prose'
 import {
   acknowledgeRequirementStaleness,
@@ -677,8 +678,13 @@ function RequirementDetailCanvas({ item }: { item: RequirementView }) {
       id: `staleness-${delivery.task_id}-${delivery.at}`,
       title: `${delivery.label} may have moved past the confirmed intent`,
       detail: (
-        <div title={`${delivery.label} delivered ${formatDate(delivery.at)}`}>
-          <p>{delivery.reasons.join(' · ')}</p>
+        <div>
+          <Disclosure
+            title={`${delivery.label} delivered ${formatDate(delivery.at)}`}
+            content={`${delivery.label} delivered ${formatDate(delivery.at)}`}
+          >
+            {delivery.reasons.join(' · ')}
+          </Disclosure>
           <p className="mt-1 font-mono text-[10px] text-faint">
             Task {delivery.task_id} · {delivery.event_kind} #{delivery.delivery_event_id}
           </p>
