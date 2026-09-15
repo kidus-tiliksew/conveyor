@@ -44,7 +44,7 @@ same trust model as `gh` and kubeconfig).
 |---|---|
 | `conveyor auth login` | Prompt for a personal access token with hidden input, verify it against `/v1/me`, and store it. Refuses piped input; the token never appears in process arguments. |
 | `conveyor auth status` | Show the effective server, your identity, the resolved token's source, and the token's label. |
-| `conveyor auth token` | Print the stored token, for `export CONVEYOR_API_TOKEN=$(conveyor auth token)`. |
+| `conveyor auth token` | Print the selected stored token for command substitution. `--format http-headers` emits a JSON Authorization header for native MCP helpers; `--credentials-file <absolute-path>` selects their saved-credential file. Both forms are explicit secret output. |
 | `conveyor auth logout [--revoke]` | Remove the local entry; `--revoke` also revokes the token on the server. |
 
 ## init
@@ -245,12 +245,14 @@ position is review priority.
 
 | Command | What it does |
 |---|---|
-| `conveyor mcp install` | Register the Conveyor MCP server (`<server>/mcp`) with detected Claude Code, Codex, Cursor, and OpenCode clients. `--tool claude\|codex\|cursor\|opencode`, `--list` to report without writing, `--adopt` to take over an unmarked existing registration. Cursor uses the owned global `~/.cursor/mcp.json` entry and environment-backed address and token references; project-level Cursor configuration is unchanged. OpenCode uses `mcp.conveyor` in `$XDG_CONFIG_HOME/opencode/opencode.json`, defaulting to `~/.config/opencode/opencode.json`, with `{env:}` references and an in-entry ownership marker. Changed OpenCode configs are staged and validated with `opencode debug config` before replacement; an explicit `--tool opencode` install reports skipped validation when the binary is absent. |
+| `conveyor mcp install` | Install a named personal connection for the selected saved server. `--server <base>`, `--name <name>`, `--tool claude\|codex\|cursor\|opencode`, read-only `--list`, and endpoint-checked `--adopt` are supported. Codex/Claude use native header helpers; Cursor/OpenCode use distinct server-specific token variables and literal endpoints. OpenCode validates staged config with `debug config`. |
 | `conveyor skills install` | Install the embedded agent skills (`conveyor-work`, `conveyor-plan`, `conveyor-file-tasks`, `conveyor-testing-doc`) into the native roots for detected Claude Code, Codex, Cursor, and OpenCode clients. OpenCode uses `~/.config/opencode/skills` globally and `.opencode/skills` with `--project`. `--tool claude\|codex\|cursor\|opencode` narrows the detected client, and `--force` allows downgrading skills a newer release installed. |
 
-MCP registration writes an environment-backed token reference
-(`CONVEYOR_API_TOKEN`), never a token value. Installs refresh files Conveyor
-owns and refuse unrelated collisions.
+See [client setup](client-setup.md#6-connect-agent-sessions) for naming,
+two-server examples, native credential retrieval, migration, restart, and
+troubleshooting. Config publication and parser acceptance are separate from a
+native initialization/tools-list check. Installs contain no token values and
+preserve unrelated entries and nested policies.
 
 ## monitor
 

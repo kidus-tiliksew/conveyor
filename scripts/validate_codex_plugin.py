@@ -70,17 +70,7 @@ def main() -> int:
 
     require(isinstance(mcp, dict), "MCP configuration must be an object")
     servers = mcp.get("mcpServers")
-    require(isinstance(servers, dict) and len(servers) == 1, "plugin must declare exactly one MCP server")
-    server = next(iter(servers.values()))
-    require(
-        server
-        == {
-            "type": "http",
-            "url": "http://127.0.0.1:8080/mcp",
-            "bearer_token_env_var": "CONVEYOR_API_TOKEN",
-        },
-        "MCP server must use the local endpoint and CONVEYOR_API_TOKEN",
-    )
+    require(servers == {}, "plugin must remain connection-neutral; use named native registrations")
 
     require(
         isinstance(marketplace, dict) and marketplace.get("name") == "conveyor-local",
@@ -153,10 +143,10 @@ def main() -> int:
     for required in (
         'display_name: "Conveyor Operator"',
         '$conveyor-operator',
-        'value: "conveyor-plugin"',
-        'url: "http://127.0.0.1:8080/mcp"',
     ):
         require(required in metadata_text, f"skill discovery metadata is missing: {required}")
+
+    require("dependencies:" not in metadata_text, "skill must not depend on a fixed localhost MCP connection")
 
     machine_path = re.compile(r"(?:/Users/|/home/[A-Za-z0-9._-]+/|[A-Za-z]:\\\\Users\\\\)")
     secret_assignment = re.compile(

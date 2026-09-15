@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strings"
@@ -20,13 +20,12 @@ import (
 )
 
 const (
-	mcpOwnerVersion   = "v1"
-	mcpTokenEnv       = "CONVEYOR_API_TOKEN"
-	mcpBridgeGuidance = "export CONVEYOR_API_TOKEN=$(conveyor auth token)"
-	mcpAddressEnv     = "CONVEYOR_ADDR"
-	codexOwnerMarker  = "# conveyor:mcp-install owner=" + mcpOwnerVersion
-	claudeOwnerKey    = "_conveyor_mcp_install"
-	claudeOwnerValue  = "owner=" + mcpOwnerVersion
+	mcpOwnerVersion  = "v1"
+	mcpTokenEnv      = "CONVEYOR_API_TOKEN"
+	mcpAddressEnv    = "CONVEYOR_ADDR"
+	codexOwnerMarker = "# conveyor:mcp-install owner=" + mcpOwnerVersion
+	claudeOwnerKey   = "_conveyor_mcp_install"
+	claudeOwnerValue = "owner=" + mcpOwnerVersion
 )
 
 type mcpInstallTarget struct {
@@ -39,6 +38,7 @@ type mcpInstallResult struct {
 	status     string
 	path       string
 	validation string
+	name       string
 }
 
 func mcpCmd() *cobra.Command {
@@ -54,7 +54,7 @@ func mcpInstallCmd() *cobra.Command { return mcpInstallCmdWithLookPath(exec.Look
 
 func mcpInstallCmdWithLookPath(lookPath func(string) (string, error)) *cobra.Command {
 	var list, adopt bool
-	var selectedTool string
+	var selectedTool, selectedName string
 	command := &cobra.Command{
 		Use: "install", Short: "Install Conveyor MCP registrations for detected tools", Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -82,11 +82,28 @@ func mcpInstallCmdWithLookPath(lookPath func(string) (string, error)) *cobra.Com
 			if err != nil {
 				return err
 			}
+			binary, err := os.Executable()
+			if err != nil {
+				return err
+			}
+			credentials, err := localAuthConfigPath()
+			if err != nil {
+				return err
+			}
+			credentials, err = filepath.Abs(credentials)
+			if err != nil {
+				return err
+			}
+			if cmd.Flags().Changed("name") && strings.TrimSpace(selectedName) == "" {
+				return errors.New("name must not be empty")
+			}
+			identity, err := newMCPIdentity(server, selectedName, binary, credentials)
+			if err != nil {
+				return err
+			}
 			results := make([]mcpInstallResult, 0, len(targets))
-			needsAddressBridge := false
 			for _, target := range targets {
-				needsAddressBridge = needsAddressBridge || (target.tool == "cursor" || target.tool == "opencode")
-				result, reconcileErr := reconcileMCPRegistrationWithLookPath(home, target, server+"/mcp", adopt, !list, lookPath)
+				result, reconcileErr := reconcileNamedMCPRegistration(home, target, identity, adopt, !list, lookPath)
 				if reconcileErr != nil {
 					return reconcileErr
 				}
@@ -108,23 +125,30 @@ func mcpInstallCmdWithLookPath(lookPath func(string) (string, error)) *cobra.Com
 				}
 			}
 			for _, result := range results {
-				fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s", result.tool, result.status, result.path)
-				if result.validation != "" {
-					fmt.Fprintf(cmd.OutOrStdout(), "\t%s", result.validation)
+				fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\n", result.tool, result.status, result.path)
+				if result.name == "" {
+					continue
 				}
-				fmt.Fprintln(cmd.OutOrStdout())
-			}
-			if strings.TrimSpace(os.Getenv(mcpTokenEnv)) == "" {
-				fmt.Fprintln(cmd.OutOrStdout(), mcpBridgeGuidance)
-			}
-			if needsAddressBridge && !strings.HasSuffix(strings.TrimRight(strings.TrimSpace(os.Getenv(mcpAddressEnv)), "/"), "/mcp") {
-				fmt.Fprintf(cmd.OutOrStdout(), "export %s=%s/mcp\n", mcpAddressEnv, server)
+				fmt.Fprintf(cmd.OutOrStdout(), "Registration: %s\nEndpoint: %s\n", result.name, identity.endpoint)
+				source := "stored credential via native header helper (requires client support)"
+				if result.tool == "cursor" || result.tool == "opencode" {
+					source = "stored credential via server-specific environment variable " + identity.tokenEnv
+					fmt.Fprintf(cmd.OutOrStdout(), "export %s=$(%s)\n", identity.tokenEnv, identity.bridge)
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "Credential source: %s\nParser: %s\n", source, result.validation)
+				if list {
+					fmt.Fprintln(cmd.OutOrStdout(), "Restart: not requested (read-only listing)")
+				} else {
+					fmt.Fprintln(cmd.OutOrStdout(), "Restart: restart the client to load this registration")
+				}
+				fmt.Fprintln(cmd.OutOrStdout(), "Native initialize/tools-list: not run; config acceptance is not a connection check")
 			}
 			return nil
 		},
 	}
 	command.Flags().BoolVar(&list, "list", false, "list native registration state without writing")
 	command.Flags().StringVar(&selectedTool, "tool", "", "install only for one detected tool (claude, codex, cursor, or opencode)")
+	command.Flags().StringVar(&selectedName, "name", "", "server-specific registration name (1-63 ASCII letters, digits, underscores or hyphens)")
 	command.Flags().BoolVar(&adopt, "adopt", false, "adopt an unmarked existing Conveyor registration")
 	return command
 }
@@ -193,6 +217,26 @@ func reconcileMCPRegistration(home string, target mcpInstallTarget, endpoint str
 }
 
 func reconcileMCPRegistrationWithLookPath(home string, target mcpInstallTarget, endpoint string, adopt, write bool, lookPath func(string) (string, error)) (result mcpInstallResult, err error) {
+	binary, err := os.Executable()
+	if err != nil {
+		return mcpInstallResult{}, err
+	}
+	credentials, err := localAuthConfigPath()
+	if err != nil {
+		return mcpInstallResult{}, err
+	}
+	credentials, err = filepath.Abs(credentials)
+	if err != nil {
+		return mcpInstallResult{}, err
+	}
+	identity, err := newMCPIdentity(endpoint, "", binary, credentials)
+	if err != nil {
+		return mcpInstallResult{}, err
+	}
+	return reconcileNamedMCPRegistration(home, target, identity, adopt, write, lookPath)
+}
+
+func reconcileNamedMCPRegistration(home string, target mcpInstallTarget, identity mcpIdentity, adopt, write bool, lookPath func(string) (string, error)) (result mcpInstallResult, err error) {
 	originalPath := target.path
 	defer func() {
 		if target.path != originalPath {
@@ -215,35 +259,32 @@ func reconcileMCPRegistrationWithLookPath(home string, target mcpInstallTarget, 
 	if err := ensureSafeInstallPath(home, target.path); err != nil {
 		return mcpInstallResult{}, fmt.Errorf("MCP config %s: %w", target.path, err)
 	}
-	prior, mode, exists, err := readMCPConfig(target.path)
+	prior, priorMode, exists, err := readMCPConfig(target.path)
 	if err != nil {
 		return mcpInstallResult{}, err
 	}
 	var next []byte
-	var status string
+	var status, name string
 	switch target.tool {
 	case "codex":
-		next, status, err = reconcileCodexMCP(prior, endpoint, adopt)
-	case "claude":
-		next, status, err = reconcileClaudeMCP(prior, endpoint, adopt)
-	case "cursor":
-		next, status, err = reconcileCursorMCP(prior, adopt)
-	case "opencode":
-		next, status, err = reconcileOpenCodeMCP(prior, adopt)
+		next, status, name, err = reconcileNamedCodex(prior, identity, adopt)
+	case "claude", "cursor", "opencode":
+		next, status, name, err = reconcileNamedJSON(prior, target.tool, identity, adopt)
 	default:
-		err = fmt.Errorf("unsupported MCP tool %q; supported tools: claude, codex, cursor, opencode", target.tool)
+		err = fmt.Errorf("unsupported MCP tool %q", target.tool)
 	}
 	if err != nil {
 		return mcpInstallResult{}, fmt.Errorf("%s %s: %w", target.tool, target.path, err)
 	}
-	if status == "skipped" || status == "unchanged" || !write {
-		return mcpInstallResult{tool: target.tool, status: status, path: target.path}, nil
+	if !write || (status == "unchanged" && (!exists || priorMode == 0o600)) {
+		return mcpInstallResult{tool: target.tool, status: status, path: target.path, name: name, validation: "not run (no write)"}, nil
 	}
-	if !exists {
-		mode = 0o600
+	if status == "unchanged" {
+		status = "secured"
 	}
+	mode := fs.FileMode(0o600)
 	var validate func(string) error
-	validation := ""
+	validation := "not run (client parser unavailable for this adapter)"
 	if target.tool == "opencode" {
 		binary, lookupErr := lookPath("opencode")
 		if lookupErr != nil {
@@ -255,10 +296,19 @@ func reconcileMCPRegistrationWithLookPath(home string, target mcpInstallTarget, 
 			validation = "validated with opencode debug config"
 		}
 	}
+	if target.tool == "codex" || target.tool == "claude" {
+		binary, lookupErr := lookPath(target.tool)
+		if lookupErr != nil {
+			validation = "skipped: " + target.tool + " is not on PATH"
+		} else {
+			validate = func(staged string) error { return validateMCPParser(binary, target.tool, staged, name) }
+			validation = "accepted by " + target.tool + " mcp get (not a native connection check)"
+		}
+	}
 	if err = atomicWriteMCPConfigValidated(home, target.path, next, mode, validate); err != nil {
 		return mcpInstallResult{}, err
 	}
-	return mcpInstallResult{tool: target.tool, status: status, path: target.path, validation: validation}, nil
+	return mcpInstallResult{tool: target.tool, status: status, path: target.path, validation: validation, name: name}, nil
 }
 
 // canonicalOpenCodeMCPPath permits the OS-owned aliases on macOS without
@@ -334,7 +384,7 @@ func atomicWriteMCPConfigValidated(home, path string, content []byte, mode fs.Fi
 	}
 	if validate != nil {
 		if err = validate(temporaryPath); err != nil {
-			return fmt.Errorf("validate OpenCode MCP config %s: %w", path, err)
+			return fmt.Errorf("validate MCP config %s: %w", path, err)
 		}
 	}
 	if err = ensureSafeInstallPath(home, path); err != nil {
@@ -344,237 +394,6 @@ func atomicWriteMCPConfigValidated(home, path string, content []byte, mode fs.Fi
 		return fmt.Errorf("publish %s: %w", path, err)
 	}
 	return os.Chmod(path, mode.Perm())
-}
-
-func reconcileCodexMCP(prior []byte, endpoint string, adopt bool) ([]byte, string, error) {
-	const section = "[mcp_servers.conveyor]"
-	desired := codexOwnerMarker + "\n" + section + "\nurl = " + fmt.Sprintf("%q", endpoint) + "\nbearer_token_env_var = \"" + mcpTokenEnv + "\"\n"
-	start, end, found, owned := codexSectionRange(prior, section)
-	if !found {
-		prefix := prior
-		if len(prefix) > 0 && prefix[len(prefix)-1] != '\n' {
-			prefix = append(append([]byte(nil), prefix...), '\n')
-		}
-		if len(prefix) > 0 && !bytes.HasSuffix(prefix, []byte("\n\n")) {
-			prefix = append(prefix, '\n')
-		}
-		return append(prefix, desired...), "created", nil
-	}
-	if !owned && !adopt {
-		return prior, "skipped", nil
-	}
-	if string(prior[start:end]) == desired {
-		return prior, "unchanged", nil
-	}
-	next := make([]byte, 0, len(prior)-(end-start)+len(desired))
-	next = append(next, prior[:start]...)
-	next = append(next, desired...)
-	next = append(next, prior[end:]...)
-	return next, "refreshed", nil
-}
-
-func codexSectionRange(content []byte, section string) (start, end int, found, owned bool) {
-	lines := bytes.SplitAfter(content, []byte("\n"))
-	offset := 0
-	for index, line := range lines {
-		trimmed := strings.TrimSpace(string(line))
-		if trimmed != section {
-			offset += len(line)
-			continue
-		}
-		found, start = true, offset
-		if index > 0 && strings.TrimSpace(string(lines[index-1])) == codexOwnerMarker {
-			owned = true
-			start -= len(lines[index-1])
-		}
-		end = offset + len(line)
-		for next := index + 1; next < len(lines); next++ {
-			if strings.HasPrefix(strings.TrimSpace(string(lines[next])), "[") {
-				break
-			}
-			end += len(lines[next])
-		}
-		return
-	}
-	return
-}
-
-func reconcileClaudeMCP(prior []byte, endpoint string, adopt bool) ([]byte, string, error) {
-	if len(bytes.TrimSpace(prior)) == 0 {
-		prior = []byte("{}\n")
-	}
-	root, err := scanJSONObject(prior)
-	if err != nil {
-		return nil, "", fmt.Errorf("parse JSON: %w", err)
-	}
-	owned := false
-	if member, ok := root.member(claudeOwnerKey); ok {
-		var marker string
-		owned = json.Unmarshal(prior[member.valueStart:member.valueEnd], &marker) == nil && marker == claudeOwnerValue
-	}
-	serversMember, hasServers := root.member("mcpServers")
-	var servers jsonObject
-	if hasServers {
-		servers, err = scanJSONObject(prior[serversMember.valueStart:serversMember.valueEnd])
-		if err != nil {
-			return nil, "", errors.New("mcpServers is not a JSON object")
-		}
-	}
-	conveyorMember, exists := servers.member("conveyor")
-	if exists && !owned && !adopt {
-		return prior, "skipped", nil
-	}
-	desiredServer, _ := json.Marshal(struct {
-		Type    string            `json:"type"`
-		URL     string            `json:"url"`
-		Headers map[string]string `json:"headers"`
-	}{Type: "http", URL: endpoint, Headers: map[string]string{"Authorization": "Bearer ${" + mcpTokenEnv + "}"}})
-	if exists && owned && jsonEquivalent(prior[serversMember.valueStart+conveyorMember.valueStart:serversMember.valueStart+conveyorMember.valueEnd], desiredServer) {
-		return prior, "unchanged", nil
-	}
-	next := append([]byte(nil), prior...)
-	if hasServers {
-		updatedServers, updateErr := setJSONObjectMember(prior[serversMember.valueStart:serversMember.valueEnd], "conveyor", desiredServer)
-		if updateErr != nil {
-			return nil, "", updateErr
-		}
-		next = replaceBytes(next, serversMember.valueStart, serversMember.valueEnd, updatedServers)
-	} else {
-		serverObject := append([]byte(`{"conveyor":`), desiredServer...)
-		serverObject = append(serverObject, '}')
-		next, err = setJSONObjectMember(next, "mcpServers", serverObject)
-		if err != nil {
-			return nil, "", err
-		}
-	}
-	next, err = setJSONObjectMember(next, claudeOwnerKey, []byte(fmt.Sprintf("%q", claudeOwnerValue)))
-	if err != nil {
-		return nil, "", err
-	}
-	status := "created"
-	if exists {
-		status = "refreshed"
-	}
-	return next, status, nil
-}
-
-func reconcileCursorMCP(prior []byte, adopt bool) ([]byte, string, error) {
-	if len(bytes.TrimSpace(prior)) == 0 {
-		prior = []byte("{}\n")
-	}
-	root, err := scanJSONObject(prior)
-	if err != nil {
-		return nil, "", fmt.Errorf("parse JSON: %w", err)
-	}
-	owned := false
-	if member, ok := root.member(claudeOwnerKey); ok {
-		var marker string
-		owned = json.Unmarshal(prior[member.valueStart:member.valueEnd], &marker) == nil && marker == claudeOwnerValue
-	}
-	serversMember, hasServers := root.member("mcpServers")
-	var servers jsonObject
-	if hasServers {
-		servers, err = scanJSONObject(prior[serversMember.valueStart:serversMember.valueEnd])
-		if err != nil {
-			return nil, "", errors.New("mcpServers is not a JSON object")
-		}
-	}
-	conveyorMember, exists := servers.member("conveyor")
-	if exists && !owned && !adopt {
-		return prior, "skipped", nil
-	}
-	desiredServer, _ := json.Marshal(struct {
-		URL     string            `json:"url"`
-		Headers map[string]string `json:"headers"`
-	}{URL: "${env:" + mcpAddressEnv + "}", Headers: map[string]string{"Authorization": "Bearer ${env:" + mcpTokenEnv + "}"}})
-	if exists && owned && jsonEquivalent(prior[serversMember.valueStart+conveyorMember.valueStart:serversMember.valueStart+conveyorMember.valueEnd], desiredServer) {
-		return prior, "unchanged", nil
-	}
-	next := append([]byte(nil), prior...)
-	if hasServers {
-		updatedServers, updateErr := setJSONObjectMember(prior[serversMember.valueStart:serversMember.valueEnd], "conveyor", desiredServer)
-		if updateErr != nil {
-			return nil, "", updateErr
-		}
-		next = replaceBytes(next, serversMember.valueStart, serversMember.valueEnd, updatedServers)
-	} else {
-		serverObject := append([]byte(`{"conveyor":`), desiredServer...)
-		serverObject = append(serverObject, '}')
-		next, err = setJSONObjectMember(next, "mcpServers", serverObject)
-		if err != nil {
-			return nil, "", err
-		}
-	}
-	next, err = setJSONObjectMember(next, claudeOwnerKey, []byte(fmt.Sprintf("%q", claudeOwnerValue)))
-	if err != nil {
-		return nil, "", err
-	}
-	status := "created"
-	if exists {
-		status = "refreshed"
-	}
-	return next, status, nil
-}
-
-// req-cli-authentication REQ-4/AC-4.1 through AC-4.4;
-// component-harness-execution: Native MCP registrations and stored credentials.
-func reconcileOpenCodeMCP(prior []byte, adopt bool) ([]byte, string, error) {
-	if len(bytes.TrimSpace(prior)) == 0 {
-		prior = []byte("{}\n")
-	}
-	for index := 0; index < len(prior); index++ {
-		if prior[index] == '"' {
-			end, err := scanJSONString(prior, index)
-			if err != nil {
-				return nil, "", fmt.Errorf("parse JSON: %w", err)
-			}
-			index = end - 1
-		} else if prior[index] == '/' && index+1 < len(prior) && (prior[index+1] == '/' || prior[index+1] == '*') {
-			return nil, "", errors.New("refusing comment-bearing OpenCode config; remove comments before installing to preserve other members")
-		}
-	}
-	if !json.Valid(prior) {
-		return nil, "", errors.New("parse JSON: invalid OpenCode config")
-	}
-	root, err := scanJSONObject(prior)
-	if err != nil {
-		return nil, "", fmt.Errorf("parse JSON: %w", err)
-	}
-	member, hasServers := root.member("mcp")
-	serverBytes := []byte("{}")
-	if hasServers {
-		serverBytes = prior[member.valueStart:member.valueEnd]
-	}
-	servers, err := scanJSONObject(serverBytes)
-	if err != nil {
-		return nil, "", errors.New("mcp is not a JSON object")
-	}
-	entry, exists := servers.member("conveyor")
-	owned := false
-	if exists {
-		var fields map[string]json.RawMessage
-		var owner string
-		if json.Unmarshal(serverBytes[entry.valueStart:entry.valueEnd], &fields) == nil {
-			owned = json.Unmarshal(fields[claudeOwnerKey], &owner) == nil && owner == claudeOwnerValue
-		}
-		if !owned && !adopt {
-			return prior, "skipped", nil
-		}
-	}
-	desired := []byte(`{"type":"remote","url":"{env:CONVEYOR_ADDR}","headers":{"Authorization":"Bearer {env:CONVEYOR_API_TOKEN}"},"_conveyor_mcp_install":"owner=` + mcpOwnerVersion + `"}`)
-	if exists && owned && jsonEquivalent(serverBytes[entry.valueStart:entry.valueEnd], desired) {
-		return prior, "unchanged", nil
-	}
-	updated, err := setJSONObjectMember(serverBytes, "conveyor", desired)
-	if err != nil {
-		return nil, "", err
-	}
-	next, err := setJSONObjectMember(prior, "mcp", updated)
-	status := "created"
-	if exists {
-		status = "refreshed"
-	}
-	return next, status, err
 }
 
 // Validate a copy because OpenCode may add $schema while loading a file.
@@ -611,7 +430,7 @@ func validateOpenCodeMCP(binary, staged string, timeout time.Duration) error {
 	cmd.Dir = isolated
 	for _, item := range os.Environ() {
 		key, _, _ := strings.Cut(item, "=")
-		if strings.HasPrefix(key, "OPENCODE_") || strings.HasPrefix(key, "XDG_") || key == "HOME" || key == mcpAddressEnv || key == mcpTokenEnv {
+		if strings.HasPrefix(key, "OPENCODE_") || strings.HasPrefix(key, "XDG_") || key == "HOME" || key == mcpAddressEnv || key == mcpTokenEnv || strings.HasPrefix(key, "CONVEYOR_MCP_TOKEN_") {
 			continue
 		}
 		cmd.Env = append(cmd.Env, item)
@@ -627,6 +446,9 @@ func validateOpenCodeMCP(binary, staged string, timeout time.Duration) error {
 		mcpAddressEnv+"=https://conveyor.invalid/mcp",
 		mcpTokenEnv+"=conveyor-install-validation",
 	)
+	for _, match := range regexp.MustCompile(`\{env:([A-Za-z_][A-Za-z0-9_]*)\}`).FindAllSubmatch(content, -1) {
+		cmd.Env = append(cmd.Env, string(match[1])+"=conveyor-install-validation")
+	}
 	// A nil stdin reads from os.DevNull. Debug stdout resolves env values.
 	cmd.Stdout = io.Discard
 	var stderr openCodeValidationStderr
