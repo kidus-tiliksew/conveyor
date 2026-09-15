@@ -113,10 +113,14 @@ Detail: [Client setup, step 5](client-setup.md#5-create-the-local-execution-setu
 ```sh
 conveyor skills install
 conveyor mcp install
-export CONVEYOR_API_TOKEN=$(conveyor auth token)
 conveyor task new --repo <registered-repository-name> -m 'fix the typo in README'
 conveyor run <task-id>
 ```
+
+For Cursor or OpenCode, run the server-specific token export printed by the
+installer and restart the client. Codex and Claude retrieve saved credentials
+through native helpers. With multiple saved servers, select `--server <base>`;
+use `--name <connection>` for a recognizable connection name.
 
 `conveyor run` walks the stages and asks you at each operator gate.
 Detail: [Client setup, steps 6 and 7](client-setup.md#6-connect-agent-sessions).

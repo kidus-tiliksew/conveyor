@@ -11,22 +11,28 @@ parallel workflow.
 
 ## Preconditions
 
-- Use the configured Conveyor MCP server at `http://127.0.0.1:8080/mcp`.
-- Read authentication from `CONVEYOR_API_TOKEN` at runtime. Never print, paste,
-  commit, or store the token in source files or transcripts.
-- If the server is unavailable, report the connection problem and expected
-  endpoint. Never simulate successful Conveyor actions.
+- Use the named native Conveyor connection selected by the user. Check its
+  endpoint and workspace; the plugin supplies guidance and registers no server.
+- Set up a connection with `conveyor auth login --server <base>` followed by
+  `conveyor mcp install --server <base> --name <name> --tool <client>`.
+  Follow the installer's credential and restart instructions. Never print,
+  paste, commit, or store token values in source files or transcripts.
+- If the named server is unavailable, report that connection's endpoint and
+  observed error. A failed generic HTTP probe is not a native MCP result.
+- Remove or disable any old plugin-provided `conveyor-plugin` localhost
+  connection separately. It is not the installed remote connection.
 
 ## Create and triage a task
 
 1. Require explicit user intent before calling `create_task`; it creates
    durable state.
-2. Supply the task title, configured repository name, and an idempotency key.
+2. Supply the task body, configured repository name, explicit workspace, and an idempotency key.
    Prefer a stable source key such as `github:owner/repo#123`; otherwise use a
    caller-scoped UUID. Reuse a key only for an exact retry.
 3. Include the issue body and source URL when available. Include a base branch
-   only when required. Omit mode to use the workspace default; request Auto or
-   Manual explicitly only when the caller requires it.
+   only when required. Titles are generated from the body; supply neither a
+   title nor an execution mode. Preserve workspace gate defaults unless the
+   user explicitly asks to change them.
 4. Report the returned task ID. Creation enqueues Conveyor's existing triage
    and specification pipeline; do not run a second triage path in Codex.
 5. If no task-status tool is available, direct the user to Conveyor's dashboard
@@ -69,14 +75,12 @@ parallel workflow.
    secrets.
 9. Commit the completed work in the dedicated worktree, push the assigned
    branch with upstream tracking, and verify the remote push succeeded.
-10. Call `submit_for_review` only after the push and when the user's instruction
-   authorizes the review handoff. Use `await_review` when keeping the
-   implementation session available for feedback.
-11. If `await_review` returns `changes_requested`, keep the same Codex session,
-   list and claim the newly queued implementation order before editing. Return
-   to the original worktree path, add commits to its existing branch, push,
-   resubmit, and reuse the existing PR. Never edit under the submitted order or
-   claim the subsequent review order from the implementation session.
+10. Run `conveyor submit <task-id>` from the task worktree. It pushes the head,
+    opens or reuses the PR, and calls `submit_for_review` with the pushed SHA.
+    Report success and exit. Never poll `await_review` in a stage session.
+11. The launcher starts review bounces as fresh implementation sessions. Claim
+    the successor order before editing, reuse the dedicated task worktree, and
+    add commits to its existing branch. Never review your own implementation.
 
 ### Safe task-worktree setup
 
@@ -164,13 +168,8 @@ Conveyor's review trust boundary.
 - Do not implement Phase 8 multi-repository worktree sets through this local
   single-repository helper.
 
-## Phase 5.1 workers
+## Workers
 
-- `conveyor worker pair` creates a short-lived, single-use enrollment token.
-  Never paste that token or the exchanged worker credential into source,
-  transcripts, or chat.
-- `conveyor worker run` may claim only persisted Auto-mode work. Manual work
-  continues through the implementation/review workflow above unchanged.
-- Worker dispatch is labeled `dispatch: worker`, `confinement: none`, and
-  `auth: byoa`. Harness routing is enforced for worker claims and advisory for
-  manually attached agents.
+Worker enrollment credentials and attempt credentials belong to their launcher.
+Personal-client installation does not configure a worker attachment. Preserve
+server-scoped child credentials, operator gates, and local harness setup rules.
