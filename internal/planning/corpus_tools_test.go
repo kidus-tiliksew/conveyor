@@ -48,3 +48,34 @@ func TestPlanningDelegatesConfirmedCorpusReadsToSharedExecutor(t *testing.T) {
 		t.Fatal("planning accepted historical-version corpus arguments")
 	}
 }
+
+func TestPlanningRejectsArchivedCorpusIDs(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	_, v, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-archived", Title: "Archive"}, core.RequirementVersion{Content: "# Archived", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Exclude archived authority."}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmRequirementVersion(ctx, "req-archived", v.Version); err != nil {
+		t.Fatal(err)
+	}
+	if err = st.ArchiveRequirement(ctx, "req-archived", "operator", nil); err != nil {
+		t.Fatal(err)
+	}
+	_, dv, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "design-archived", Title: "Archive", Category: "Architecture"}, core.SystemDesignVersion{Content: "# Archived\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/**\n```", Origin: core.SystemDesignOriginOperator})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmSystemDesignVersion(ctx, "design-archived", dv.Version); err != nil {
+		t.Fatal(err)
+	}
+	if err = st.ArchiveSystemDesign(ctx, "design-archived", "operator", nil); err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{Store: st}
+	for _, call := range []toolCall{{Name: corpus.ReadRequirement, ArgumentsJSON: `{"requirement_id":"req-archived"}`}, {Name: corpus.ReadSystemDesign, ArgumentsJSON: `{"document_id":"design-archived"}`}} {
+		if _, err = service.executeTool(ctx, core.PlanningSession{}, call, ""); err == nil || !strings.Contains(err.Error(), "is archived") {
+			t.Fatalf("planning read %s: %v", call.Name, err)
+		}
+	}
+}

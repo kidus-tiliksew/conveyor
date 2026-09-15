@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -194,6 +195,10 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 			SystemDesignIDs: stringSliceArg("system_design_ids"),
 		}, stringArg("idempotency_key"), "mcp")
 		if err != nil {
+			var createErr *taskCreateError
+			if errors.As(err, &createErr) && createErr.Code != "" {
+				return nil, fmt.Errorf("%s: %s", createErr.Code, createErr.Message)
+			}
 			return nil, err
 		}
 		return map[string]any{"task": result.Task, "created": result.Created}, nil

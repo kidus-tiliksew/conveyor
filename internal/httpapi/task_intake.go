@@ -190,6 +190,9 @@ func (s *Server) createTaskRecordWithState(ctx context.Context, req createTaskRe
 				return taskCreateResult{}, &taskCreateError{Status: http.StatusConflict, Message: "idempotency_key is already used by a different task"}
 			}
 		}
+		if code := contextArchiveCode(err); code != "" {
+			return taskCreateResult{}, &taskCreateError{Status: http.StatusConflict, Code: code, Message: err.Error()}
+		}
 		var referenceErr *store.TaskContextReferenceError
 		if errors.As(err, &referenceErr) {
 			return taskCreateResult{}, taskContextCreateError(referenceErr)

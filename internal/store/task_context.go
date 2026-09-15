@@ -54,6 +54,28 @@ func (e *TaskContextReferenceError) Error() string {
 	return fmt.Sprintf("%s %s %s", e.Kind, e.ID, e.Reason)
 }
 
+// ValidateContextDocument applies the active-confirmed rule for new authority
+// (component-document-corpus). Historical reads do not use this predicate.
+func ValidateContextDocument(kind, id string, current int, archived bool) error {
+	if archived {
+		if kind == "requirement" {
+			return &RequirementArchivedError{RequirementID: id}
+		}
+		return &SystemDesignArchivedError{DocumentID: id}
+	}
+	if current <= 0 {
+		return &TaskContextReferenceError{Kind: kind, ID: id, Reason: "has no confirmed version"}
+	}
+	return nil
+}
+
+func TaskContextProposalInput(kind core.TaskContextProposalTargetKind, id string) TaskContextInput {
+	if kind == core.TaskContextProposalRequirement {
+		return TaskContextInput{RequirementIDs: []string{id}}
+	}
+	return TaskContextInput{DesignIDs: []string{id}}
+}
+
 func NormalizeTaskContextInput(input TaskContextInput) (TaskContextInput, error) {
 	normalize := func(kind string, values []string) ([]string, error) {
 		seen := map[string]bool{}

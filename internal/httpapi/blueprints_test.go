@@ -212,6 +212,9 @@ func TestBlueprintsProjectionReportsDeliveryAndDependencyOrder(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if _, _, err = st.ConfirmRequirementVersion(ctx, "req-retries", 1); err != nil {
+		t.Fatal(err)
+	}
 	// A session opened from the requirement ("Plan work") and finalized into
 	// this anchor is the confirmed serves link the surface renders.
 	session, err := st.CreatePlanningSession(ctx, core.PlanningSession{

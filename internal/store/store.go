@@ -5071,11 +5071,8 @@ func (m *memory) validateTaskContextLocked(workspace string, input TaskContextIn
 		if !ok {
 			return nil, &TaskContextReferenceError{Kind: "requirement", ID: id, Reason: "was not found in this workspace"}
 		}
-		if document.CurrentVersion <= 0 {
-			return nil, &TaskContextReferenceError{Kind: "requirement", ID: id, Reason: "has no confirmed version"}
-		}
-		if document.Archived {
-			return nil, &RequirementArchivedError{RequirementID: id}
+		if err := ValidateContextDocument("requirement", id, document.CurrentVersion, document.Archived); err != nil {
+			return nil, err
 		}
 	}
 	versions := map[string]int{}
@@ -5084,11 +5081,8 @@ func (m *memory) validateTaskContextLocked(workspace string, input TaskContextIn
 		if !ok {
 			return nil, &TaskContextReferenceError{Kind: "system design", ID: id, Reason: "was not found in this workspace"}
 		}
-		if document.CurrentVersion <= 0 {
-			return nil, &TaskContextReferenceError{Kind: "system design", ID: id, Reason: "has no confirmed version"}
-		}
-		if document.Archived {
-			return nil, &SystemDesignArchivedError{DocumentID: id}
+		if err := ValidateContextDocument("system design", id, document.CurrentVersion, document.Archived); err != nil {
+			return nil, err
 		}
 		versions[id] = document.CurrentVersion
 	}

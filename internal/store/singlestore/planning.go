@@ -51,6 +51,9 @@ func (s *Store) CreatePlanningBundle(ctx context.Context, bundle core.PlanningBu
 		if exists && existing.Status != core.PlanningBundlePending {
 			return &store.PlanningBundleConflictError{Message: fmt.Sprintf("planning bundle %s is %s", bundle.ID, existing.Status)}
 		}
+		if _, validationErr := validatePlanningBundleContextsTx(ctx, tx, bundle); validationErr != nil {
+			return validationErr
+		}
 		for i := range bundle.Documents {
 			doc := &bundle.Documents[i]
 			switch doc.Kind {
@@ -80,9 +83,6 @@ func (s *Store) CreatePlanningBundle(ctx context.Context, bundle core.PlanningBu
 				}
 			}
 			doc.Status = "pending"
-		}
-		if _, validationErr := validatePlanningBundleContextsTx(ctx, tx, bundle); validationErr != nil {
-			return validationErr
 		}
 		bundle.Status, bundle.CreatedBy = core.PlanningBundlePending, actor.ID
 		if exists {
@@ -130,6 +130,26 @@ type bundleContextVersions struct {
 }
 
 func validatePlanningBundleContextsTx(ctx context.Context, tx *sql.Tx, bundle core.PlanningBundle) (map[string]bundleContextVersions, error) {
+	// Pending bundle versions are allowed; lock their parents against archival.
+	for _, ref := range bundle.Documents {
+		var archivedAt *time.Time
+		switch ref.Kind {
+		case core.PlanningBundleRequirement:
+			if err := documentRow(ctx, tx, `SELECT archived_at FROM requirements WHERE workspace_id=? AND id=? FOR UPDATE`, bundle.Workspace, ref.ID).Scan(&archivedAt); err != nil {
+				return nil, notFound(err, "bundle document %s", ref.ID)
+			}
+			if archivedAt != nil {
+				return nil, &store.RequirementArchivedError{RequirementID: ref.ID}
+			}
+		case core.PlanningBundleSystemDesign:
+			if err := documentRow(ctx, tx, `SELECT archived_at FROM system_designs WHERE workspace_id=? AND id=? FOR UPDATE`, bundle.Workspace, ref.ID).Scan(&archivedAt); err != nil {
+				return nil, notFound(err, "bundle document %s", ref.ID)
+			}
+			if archivedAt != nil {
+				return nil, &store.SystemDesignArchivedError{DocumentID: ref.ID}
+			}
+		}
+	}
 	pendingRequirements, pendingDesigns := map[string]int{}, map[string]int{}
 	for _, document := range bundle.Documents {
 		switch document.Kind {
@@ -380,6 +400,9 @@ func (s *Store) proposeTaskContext(ctx context.Context, input core.TaskContextPr
 		if err != nil {
 			return err
 		}
+		if _, err := validateTaskContextTx(ctx, tx, documentWorkspace(ctx), store.TaskContextProposalInput(input.TargetKind, input.TargetID)); err != nil {
+			return err
+		}
 		activeRequirements, activeDesigns := store.ActiveTaskContextReferences(events)
 		if input.TargetKind == core.TaskContextProposalRequirement && activeRequirements[input.TargetID] ||
 			input.TargetKind == core.TaskContextProposalSystemDesign && activeDesigns[input.TargetID] > 0 {
@@ -412,13 +435,6 @@ func (s *Store) proposeTaskContext(ctx context.Context, input core.TaskContextPr
 				return &store.TaskContextReferenceError{Kind: kind, ID: input.TargetID, Reason: "was not found in this workspace"}
 			}
 			return targetErr
-		}
-		if (current == nil || *current <= 0) && !legacyCompatibility {
-			kind := string(input.TargetKind)
-			if input.TargetKind == core.TaskContextProposalSystemDesign {
-				kind = "system design"
-			}
-			return &store.TaskContextReferenceError{Kind: kind, ID: input.TargetID, Reason: "has no confirmed version"}
 		}
 		actor, now := store.ActorFromContext(ctx), time.Now().UTC()
 		eventKind := "task.context_proposed"
@@ -466,6 +482,11 @@ func (s *Store) transitionTaskContextProposal(ctx context.Context, taskID string
 		}
 		if proposal.State != core.TaskContextProposalProposed {
 			return fmt.Errorf("%w: cannot transition %s proposal to %s", store.ErrTaskContextProposalTransition, proposal.State, target)
+		}
+		if target == core.TaskContextProposalConfirmed {
+			if _, err := validateTaskContextTx(ctx, tx, documentWorkspace(ctx), store.TaskContextProposalInput(kind, targetID)); err != nil {
+				return err
+			}
 		}
 		actor, now := store.ActorFromContext(ctx), time.Now().UTC()
 		eventKind := "task.context_proposal_dismissed"
@@ -587,36 +608,30 @@ func validateTaskContextTx(ctx context.Context, tx *sql.Tx, workspaceID string, 
 	for _, id := range input.RequirementIDs {
 		var current sql.NullInt32
 		var archivedAt *time.Time
-		err := documentRow(ctx, tx, `SELECT current_version,archived_at FROM requirements WHERE workspace_id=? AND id=?`, workspaceID, id).Scan(&current, &archivedAt)
+		err := documentRow(ctx, tx, `SELECT current_version,archived_at FROM requirements WHERE workspace_id=? AND id=? FOR UPDATE`, workspaceID, id).Scan(&current, &archivedAt)
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, &store.TaskContextReferenceError{Kind: "requirement", ID: id, Reason: "was not found in this workspace"}
 		}
 		if err != nil {
 			return nil, err
 		}
-		if !current.Valid || current.Int32 <= 0 {
-			return nil, &store.TaskContextReferenceError{Kind: "requirement", ID: id, Reason: "has no confirmed version"}
-		}
-		if archivedAt != nil {
-			return nil, &store.RequirementArchivedError{RequirementID: id}
+		if err := store.ValidateContextDocument("requirement", id, int(current.Int32), archivedAt != nil); err != nil {
+			return nil, err
 		}
 	}
 	versions := map[string]int{}
 	for _, id := range input.DesignIDs {
 		var current sql.NullInt32
 		var archivedAt *time.Time
-		err := documentRow(ctx, tx, `SELECT current_version,archived_at FROM system_designs WHERE workspace_id=? AND id=?`, workspaceID, id).Scan(&current, &archivedAt)
+		err := documentRow(ctx, tx, `SELECT current_version,archived_at FROM system_designs WHERE workspace_id=? AND id=? FOR UPDATE`, workspaceID, id).Scan(&current, &archivedAt)
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, &store.TaskContextReferenceError{Kind: "system design", ID: id, Reason: "was not found in this workspace"}
 		}
 		if err != nil {
 			return nil, err
 		}
-		if !current.Valid || current.Int32 <= 0 {
-			return nil, &store.TaskContextReferenceError{Kind: "system design", ID: id, Reason: "has no confirmed version"}
-		}
-		if archivedAt != nil {
-			return nil, &store.SystemDesignArchivedError{DocumentID: id}
+		if err := store.ValidateContextDocument("system design", id, int(current.Int32), archivedAt != nil); err != nil {
+			return nil, err
 		}
 		versions[id] = int(current.Int32)
 	}
