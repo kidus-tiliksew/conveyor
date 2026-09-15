@@ -39,7 +39,10 @@ test('pending proposal label and attention badge stay on one line at the narrow 
   })
 
   await page.goto('/pending-proposals')
-  const primary = page.getByRole('navigation', { name: 'Primary' })
+  // Below the lg breakpoint the sidebar lives in the navigation drawer, at the
+  // same width it has beside the content on a desktop.
+  await page.getByRole('button', { name: 'Open navigation' }).click()
+  const primary = page.getByRole('dialog', { name: 'Navigation' }).getByRole('navigation', { name: 'Primary' })
   const pending = primary.getByRole('link', { name: /Pending proposals/ })
   const label = pending.getByText('Pending proposals', { exact: true })
   const badge = pending.getByText('1', { exact: true })

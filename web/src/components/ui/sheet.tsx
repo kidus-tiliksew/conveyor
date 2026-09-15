@@ -7,20 +7,25 @@ import { createPortal } from 'react-dom'
 // panel the operator opened *and* the surface underneath it.
 const openSheets: symbol[] = []
 
-// Right-hand overlay sheet: dialog semantics, Escape/overlay close, body
-// scroll lock, and focus capture/restore. Hand-rolled to match the
-// dependency-free component idiom — consumers own the header and content.
+// Overlay sheet: dialog semantics, Escape/overlay close, body scroll lock,
+// and focus capture/restore. Hand-rolled to match the dependency-free
+// component idiom — consumers own the header and content. It slides in from
+// the right by default; navigation drawers on narrow viewports ask for the
+// left edge instead.
 export function Sheet({
   onClose,
   label,
   // A sheet is half the viewport because task detail needs the room. A panel
-  // that is only a list of links does not, so it can ask to stay narrow.
-  width = 'md:w-1/2',
+  // that is only a list of links does not, so it can ask to stay narrow. The
+  // prop owns the whole width story, narrow viewports included.
+  width = 'w-full md:w-1/2',
+  side = 'right',
   children,
 }: {
   onClose: () => void
   label: string
   width?: string
+  side?: 'left' | 'right'
   children: ReactNode
 }) {
   const panelRef = useRef<HTMLElement>(null)
@@ -59,7 +64,11 @@ export function Sheet({
         aria-modal="true"
         aria-label={label}
         tabIndex={-1}
-        className={`absolute inset-y-0 right-0 flex w-full animate-sheet-in flex-col border-l border-border bg-background shadow-xl outline-none ${width}`}
+        className={`absolute inset-y-0 flex flex-col bg-background shadow-xl outline-none ${
+          side === 'left'
+            ? 'left-0 animate-sheet-in-left border-r border-border'
+            : 'right-0 animate-sheet-in border-l border-border'
+        } ${width}`}
       >
         {children}
       </aside>

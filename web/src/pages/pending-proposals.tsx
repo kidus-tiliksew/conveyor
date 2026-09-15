@@ -90,7 +90,7 @@ export function PendingProposalsPage() {
           onConfirm={(note) => resolve.mutate({ proposal: dismissTarget, action: 'dismiss', note })}
         />
       )}
-      <div className="mx-auto max-w-5xl px-6 py-8">
+      <div className="mx-auto max-w-5xl px-4 py-6 sm:px-6 sm:py-8">
         <header className="flex flex-wrap items-start justify-between gap-3 border-b border-border pb-5">
           <div>
             <h1 className="text-xl font-semibold tracking-tight">Pending proposals</h1>

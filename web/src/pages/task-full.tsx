@@ -75,13 +75,13 @@ function FullNavButton({ targetId, label, icon }: { targetId?: string; label: st
 function FullBody({ item }: { item: ActivityItem }) {
   return (
     <section aria-label="Task content" className="min-h-0 flex-1 overflow-y-auto">
-      <div className="shrink-0 border-b border-border px-6 py-4">
+      <div className="shrink-0 border-b border-border px-4 py-4 sm:px-6">
         <TaskHeader item={item} variant="full" />
       </div>
       <div className="grid grid-cols-1 lg:grid-cols-2">
         <section
           aria-label="Execution plan"
-          className="space-y-4 border-b border-border px-6 py-4 lg:border-b-0 lg:border-r"
+          className="space-y-4 border-b border-border px-4 py-4 sm:px-6 lg:border-b-0 lg:border-r"
         >
           <TaskContextCard taskId={item.task.id} taskState={item.task.state} context={item.task.context} />
           {item.spec ? (
@@ -101,7 +101,7 @@ function FullBody({ item }: { item: ActivityItem }) {
         {/* The static relationship graph is gone: relationships are read in
             the explorer panel, and one page does not carry two renderings of
             the same lineage. */}
-        <section aria-label="Activity" className="space-y-4 px-6 py-4">
+        <section aria-label="Activity" className="space-y-4 px-4 py-4 sm:px-6">
           <Timeline item={item} routeVariant="full" />
         </section>
       </div>

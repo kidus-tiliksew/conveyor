@@ -674,8 +674,8 @@ export function TaskFilters({
     value.assignee !== '',
   ].filter(Boolean).length
   return (
-    <div className={`flex items-center gap-2 ${className}`}>
-      <label className="relative w-56" htmlFor={`task-filter-search-${workspace}`}>
+    <div className={`flex flex-wrap items-center gap-2 ${className}`}>
+      <label className="relative w-full sm:w-56" htmlFor={`task-filter-search-${workspace}`}>
         <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-faint" />
         <Input
           id={`task-filter-search-${workspace}`}

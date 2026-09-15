@@ -210,7 +210,7 @@ export function RequirementsPage() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <header className="flex shrink-0 items-center gap-3 border-b border-border px-6 py-4">
+      <header className="flex shrink-0 items-center gap-3 border-b border-border px-4 py-3 lg:px-6 lg:py-4">
         <span className="flex size-8 items-center justify-center rounded-lg bg-primary-soft text-primary">
           <ListChecks className="size-4" />
         </span>
@@ -220,7 +220,7 @@ export function RequirementsPage() {
         </div>
       </header>
 
-      <div className="flex min-h-0 flex-1">
+      <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
         <DocumentTree>
           <DocumentTreeGroup label="Product overviews">
             {overviews.map((document) => (
@@ -320,7 +320,7 @@ export function RequirementsPage() {
         </DocumentTree>
 
         <section aria-label="Requirement document" className="min-w-0 flex-1 overflow-y-auto">
-          <div className="mx-auto max-w-4xl px-8 py-8">
+          <div className="mx-auto max-w-4xl px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
             {!workspace && <EmptyMessage>Choose a workspace to open its requirements.</EmptyMessage>}
             {isLoading && <EmptyMessage>Loading requirements…</EmptyMessage>}
             {error && <EmptyMessage tone="failure">{errorMessage(error, 'Could not load requirements.')}</EmptyMessage>}
@@ -409,8 +409,8 @@ function OverviewCanvas({
     : undefined
   return (
     <article id={selected ? `reference-${document.id}-v${selected.version}` : undefined} className="scroll-mt-6">
-      <header className="mb-8 flex items-start justify-between gap-4 border-b border-border pb-6">
-        <div className="min-w-0">
+      <header className="mb-8 flex flex-wrap items-start justify-between gap-4 border-b border-border pb-6">
+        <div className="min-w-[14rem] flex-1">
           <span className="inline-flex items-center gap-1.5 rounded-md border border-border bg-surface px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-faint">
             <FileText className="size-3" /> Product overview
           </span>
@@ -421,7 +421,7 @@ function OverviewCanvas({
           </div>
         </div>
         {canConfirmDocuments && (
-          <div className="flex shrink-0 items-center gap-2">
+          <div className="flex shrink-0 flex-wrap items-center gap-2">
             <label
               className={`inline-flex h-8 cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-md border border-edge bg-background px-2.5 text-xs font-medium text-foreground transition-colors hover:bg-surface ${uploading ? 'pointer-events-none opacity-40' : ''}`}
             >
@@ -906,8 +906,8 @@ function RequirementDetailCanvas({ item }: { item: RequirementView }) {
           onClose={() => setAttachmentOffer(null)}
         />
       )}
-      <header className="mb-8 flex items-start gap-4 border-b border-border pb-6">
-        <div className="min-w-0 flex-1">
+      <header className="mb-8 flex flex-wrap items-start gap-4 border-b border-border pb-6">
+        <div className="min-w-[14rem] flex-1">
           <span className="inline-flex items-center rounded-md border border-border bg-surface px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.12em] text-faint">
             {item.requirement.slug}
           </span>
@@ -938,7 +938,7 @@ function RequirementDetailCanvas({ item }: { item: RequirementView }) {
                   Archived
                 </Badge>
               )}
-              <span className="inline-flex items-center gap-1 text-xs text-faint">
+              <span className="inline-flex items-center gap-1 whitespace-nowrap text-xs text-faint">
                 <Clock className="size-3" />
                 {formatDate(displayed.created_at)}
               </span>
@@ -948,7 +948,7 @@ function RequirementDetailCanvas({ item }: { item: RequirementView }) {
         </div>
         {/* The document's corner affordance (REQ-3): what this intent reaches
             in work, delivery, and evidence, on demand. */}
-        <div className="flex shrink-0 items-center gap-2">
+        <div className="flex shrink-0 flex-wrap items-center gap-2">
           {canConfirm && (
             <Button
               size="sm"
