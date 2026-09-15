@@ -489,6 +489,7 @@ func TestTaskRunRoutesAlsoRequireClaimWork(t *testing.T) {
 		{http.MethodPost, "/v1/tasks/task/run-orders/order/renew"},
 		{http.MethodGet, "/v1/tasks/task/run-orders/order/reconcile"},
 		{http.MethodPost, "/v1/tasks/task/run-orders/order/attempt-checkpoint"},
+		{http.MethodPost, "/v1/tasks/task/run-orders/order/worktree-handoff"},
 		{http.MethodPost, "/v1/tasks/task/run-orders/order/release"},
 	} {
 		fixture.capabilityCalls = nil
@@ -528,6 +529,7 @@ func TestTaskRunChildRoutesAdmitOnlyBoundRunChildAgents(t *testing.T) {
 	childRoutes := []struct{ method, path string }{
 		{http.MethodPost, "/v1/tasks/task/run-orders/order/renew"},
 		{http.MethodPost, "/v1/tasks/task/run-orders/order/attempt-checkpoint"},
+		{http.MethodPost, "/v1/tasks/task/run-orders/order/worktree-handoff"},
 	}
 	for _, route := range childRoutes {
 		response := call("bound-token", route.method, route.path)
@@ -580,6 +582,7 @@ func TestTaskRunRoutesRejectDashboardSessionsAndAcceptBearerPATs(t *testing.T) {
 		{http.MethodPost, "/v1/tasks/task/run-orders/order/renew"},
 		{http.MethodGet, "/v1/tasks/task/run-orders/order/reconcile"},
 		{http.MethodPost, "/v1/tasks/task/run-orders/order/attempt-checkpoint"},
+		{http.MethodPost, "/v1/tasks/task/run-orders/order/worktree-handoff"},
 		{http.MethodPost, "/v1/tasks/task/run-orders/order/release"},
 	}
 	for _, route := range routes {

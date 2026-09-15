@@ -240,6 +240,7 @@ type WorkOrderStore interface {
 	// CancelPlanRevisionWorkOrderCommand retires the exact released
 	// implementation order when the operator approves plan re-entry.
 	CancelPlanRevisionWorkOrderCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID, attemptID string) (core.WorkOrder, error)
+	WorktreeHandoffCommand(context.Context, taskops.TaskLease, string, core.WorkOrderClaimIdentity, string, core.WorktreeHandoffRequest) (core.WorktreeHandoff, error)
 	RecordWorkOrderAttemptCheckpoint(ctx context.Context, workOrderID, workerID string, checkpoint core.WorkOrderAttemptCheckpoint) (bool, error)
 	UpsertWorkOrderActivitySnapshot(ctx context.Context, workOrderID string, claim core.WorkOrderClaimIdentity, content string) error
 	FinalizeWorkOrderAttemptObservability(ctx context.Context, workOrderID, workerID string, checkpoint core.WorkOrderAttemptCheckpoint) error
@@ -2014,6 +2015,11 @@ func (m *memory) RecordWorkOrderAttemptCheckpoint(ctx context.Context, workOrder
 	order, ok := m.workOrders[workOrderID]
 	if !ok {
 		return false, ErrWorkOrderClaimLost
+	}
+	for _, event := range m.events[order.TaskID] {
+		if event.Kind == "work_order.writer_admitted" {
+			return false, ErrWorkOrderClaimLost
+		}
 	}
 	authorized := order.AuthorizesAttemptCheckpoint(workerID, checkpoint, time.Now().UTC())
 	if !authorized {

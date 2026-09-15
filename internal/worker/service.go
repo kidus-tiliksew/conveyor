@@ -756,9 +756,13 @@ func (s *Service) ReconcileClaim(ctx context.Context, claim core.WorkOrderClaimI
 	}
 	authorized := order.WorkerID == claim.WorkerID && order.ClaimantID == claim.ClaimantID && order.SessionID == sessionID &&
 		order.State == core.WorkOrderClaimed && order.LeaseExpiresAt.After(s.now())
-	releasedAtCheckpoint, err := store.ReleasedCheckpointClaimMatches(ctx, s.Store, order, claim)
+	events, err := s.Store.ListEvents(ctx, order.TaskID)
 	if err != nil {
 		return ClaimReconciliation{}, err
+	}
+	releasedReason, releasedAtCheckpoint := store.CheckpointReleaseForClaim(events, order, claim)
+	if releasedAtCheckpoint {
+		order.LastFailureMessage = releasedReason
 	}
 	reason := "session is no longer the active lease owner"
 	if authorized {

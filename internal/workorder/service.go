@@ -18,6 +18,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
+	"github.com/kidus-tiliksew/conveyor/internal/gitx"
 	"github.com/kidus-tiliksew/conveyor/internal/lineagecontext"
 	"github.com/kidus-tiliksew/conveyor/internal/pack"
 	"github.com/kidus-tiliksew/conveyor/internal/pipeline"
@@ -49,6 +50,7 @@ type Service struct {
 }
 
 type Context struct {
+	Predecessor        *core.WorktreeIdentity          `json:"predecessor,omitempty"`
 	OperatorNotes      []core.OperatorNote             `json:"operator_notes,omitempty"`
 	Order              core.WorkOrder                  `json:"work_order"`
 	Task               core.Task                       `json:"task"`
@@ -748,6 +750,24 @@ func (s *Service) contextForOrder(ctx context.Context, order core.WorkOrder) (Co
 		authoritySource = "pinned"
 	}
 	result := Context{Order: order, Task: task, AuthoritySource: authoritySource, RolePrompt: role, ServedRequirements: servedRequirements, GovernanceSnapshot: governance, PlanRevision: planRevision}
+	if order.Stage == core.StageImplement && order.State == core.WorkOrderClaimed && cfg != nil {
+		for _, repository := range cfg.Repos {
+			if repository.Name != task.Repo {
+				continue
+			}
+			normalized, identityErr := gitx.NormalizeRepositoryIdentity(repository.URL)
+			if identityErr != nil {
+				return Context{}, identityErr
+			}
+			handoff, _, identityErr := store.EvaluateWorktreeHandoff(task, order, core.WorkOrderClaimIdentity{WorkerID: order.WorkerID, ClaimantID: order.ClaimantID, SessionID: order.SessionID}, normalized, events, core.WorktreeHandoffRequest{SessionID: order.SessionID, Generation: order.SessionID, Action: "describe"}, time.Now().UTC())
+			if identityErr != nil {
+				return Context{}, identityErr
+			}
+			result.Predecessor = handoff.Predecessor
+			break
+		}
+	}
+
 	if order.Stage == core.StageReview || order.Stage == core.StageImplement {
 		operatorNotes, noteErr := store.OperatorNotesForTask(ctx, s.Store, task.ID)
 		if noteErr != nil {

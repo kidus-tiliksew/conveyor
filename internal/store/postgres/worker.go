@@ -659,12 +659,26 @@ func (s *Store) RecordWorkOrderAttemptCheckpoint(ctx context.Context, workOrderI
 		return false, err
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
+	taskID, err := workOrderTaskIDTx(ctx, tx, workspace(ctx), workOrderID)
+	if err != nil {
+		return false, err
+	}
+	if err = lockWorkOrderTaskTx(ctx, tx, workspace(ctx), taskID); err != nil {
+		return false, err
+	}
 	order, err := scanWorkOrder(tx.QueryRow(ctx, `SELECT `+workOrderColumns+` FROM work_orders WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspace(ctx), workOrderID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, store.ErrWorkOrderClaimLost
 	}
 	if err != nil {
 		return false, err
+	}
+	var fenced bool
+	if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM events WHERE workspace_id=$1 AND task_id=$2 AND kind='work_order.writer_admitted')`, workspace(ctx), order.TaskID).Scan(&fenced); err != nil {
+		return false, err
+	}
+	if fenced {
+		return false, store.ErrWorkOrderClaimLost
 	}
 	authorized := order.AuthorizesAttemptCheckpoint(workerID, checkpoint, time.Now().UTC())
 	if !authorized {

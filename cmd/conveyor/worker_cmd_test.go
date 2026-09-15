@@ -525,10 +525,14 @@ func testHarnessObservability(t *testing.T, format string) {
 			_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: parts[3], State: core.WorkOrderClaimed, AttemptID: "attempt-observability", LeaseExpiresAt: time.Now().Add(time.Minute)})
 		case "reconcile":
 			_ = json.NewEncoder(w).Encode(workerservice.ClaimReconciliation{WorkOrder: core.WorkOrder{ID: parts[3], State: core.WorkOrderClaimed}, Authorized: true})
-		case "attempt-checkpoint":
-			var request core.WorkOrderAttemptCheckpoint
+		case "worktree-handoff":
+			var request core.WorktreeHandoffRequest
 			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			if request.Action != "audit" {
+				_ = json.NewEncoder(w).Encode(core.WorktreeHandoff{Writer: core.WorktreeIdentity{Workspace: "demo", TaskID: "observability-task", Repository: "example.test/conveyor", Branch: "conveyor/observability", WorkOrderID: "observability-order", AttemptID: "attempt-observability", SessionID: request.SessionID, Generation: request.Generation}})
 				return
 			}
 			checkpointRequests++
@@ -1892,6 +1896,7 @@ func TestRunHarnessChildMaterializesSpecRepositoryOutsideWorkerDirectory(t *test
 }
 
 func TestRunHarnessChildFirstActivityTimeoutReapsSilentHarnessProcessGroup(t *testing.T) {
+	fixture := newGitFixture(t)
 	pidFile := filepath.Join(t.TempDir(), "silent-harness.pid")
 	grandchildPIDFile := filepath.Join(t.TempDir(), "silent-grandchild.pid")
 	t.Setenv("CONVEYOR_FAKE_HARNESS_PID_FILE", pidFile)
@@ -1915,12 +1920,14 @@ func TestRunHarnessChildFirstActivityTimeoutReapsSilentHarnessProcessGroup(t *te
 		switch parts[4] {
 		case "claim", "renew":
 			_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: parts[3], State: core.WorkOrderClaimed, AttemptID: "attempt-silent", LeaseExpiresAt: time.Now().Add(time.Minute)})
-		case "attempt-checkpoint":
-			var checkpoint core.WorkOrderAttemptCheckpoint
-			if err := json.NewDecoder(r.Body).Decode(&checkpoint); err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
+		case "worktree-handoff":
+			var input core.WorktreeHandoffRequest
+			_ = json.NewDecoder(r.Body).Decode(&input)
+			if input.Action != "audit" {
+				_ = json.NewEncoder(w).Encode(core.WorktreeHandoff{Writer: core.WorktreeIdentity{Workspace: "demo", TaskID: "silent-task", Repository: "file:" + fixture.origin, Branch: "conveyor/silent-task", WorkOrderID: "silent-first-activity", AttemptID: "attempt-silent", SessionID: input.SessionID, Generation: input.Generation}})
 				return
 			}
+			checkpoint := core.WorkOrderAttemptCheckpoint{SessionID: input.SessionID, AttemptID: input.Producer.AttemptID, TerminationReason: input.OriginalReason, CommitSHA: input.CommitSHA, PushResult: "pushed"}
 			checkpoints <- checkpoint
 			_ = json.NewEncoder(w).Encode(map[string]bool{"created": true})
 		case "release":
@@ -1940,7 +1947,7 @@ func TestRunHarnessChildFirstActivityTimeoutReapsSilentHarnessProcessGroup(t *te
 	item := workerservice.DispatchOrder{
 		Order:      core.WorkOrder{ID: "silent-first-activity", Stage: core.StageImplement},
 		Task:       core.Task{ID: "silent-task", Branch: "conveyor/silent-task", Repo: "conveyor"},
-		Repository: config.Repo{Name: "conveyor", URL: "https://github.com/kidus-tiliksew/conveyor.git"},
+		Repository: config.Repo{Name: "conveyor", URL: fixture.origin},
 		Harness:    config.Harness{Name: "helper", Command: []string{os.Args[0], "-test.run=TestWorkerLifecycleHelper", "--", "silent-grandchild"}},
 	}
 	var stdout, stderr bytes.Buffer
@@ -2300,7 +2307,7 @@ func TestRunHarnessChildExitClassifiesCheckpointReleaseBeforeRenewal(t *testing.
 					reconcileCalls++
 					call := reconcileCalls
 					mu.Unlock()
-					if call == 1 || test.dispatch == "worker" {
+					if call == 1 {
 						if test.typedConflict {
 							w.Header().Set("X-Conveyor-Error-Code", "work_order_released_checkpoint")
 							http.Error(w, store.ErrWorkOrderReleasedAtCheckpoint.Error(), http.StatusConflict)
@@ -2800,7 +2807,8 @@ func TestRunHarnessChildAuthorityLossDuringPreStartSetupAbortsLaunch(t *testing.
 	}
 }
 
-func TestRunHarnessChildPreemptAtRenewalTerminatesAndCheckpointsWithoutRelease(t *testing.T) {
+func TestRunHarnessChildPreemptAtRenewalTerminatesWithoutStaleCheckpointOrRelease(t *testing.T) {
+	fixture := newGitFixture(t)
 	previousInterval := workerClaimRenewInterval
 	workerClaimRenewInterval = 50 * time.Millisecond
 	t.Cleanup(func() { workerClaimRenewInterval = previousInterval })
@@ -2808,12 +2816,11 @@ func TestRunHarnessChildPreemptAtRenewalTerminatesAndCheckpointsWithoutRelease(t
 	t.Setenv("CONVEYOR_FAKE_HARNESS_PID_FILE", pidFile)
 
 	previousCheckpointer := workerAttemptCheckpointer
-	workerAttemptCheckpointer = func(_ context.Context, _, _, _, _ string, checkpoint attemptCheckpoint) (*attemptCheckpointResult, error) {
-		if checkpoint.AttemptID != "attempt-preempted" || checkpoint.WorkOrderID != "preempted-order" || checkpoint.TerminationReason != errWorkerOrderPreempted.Error() {
-			t.Fatalf("checkpoint metadata=%+v", checkpoint)
-		}
-		return &attemptCheckpointResult{Worktree: "/assigned/preempted", CommitSHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Pushed: true}, nil
+	workerAttemptCheckpointer = func(context.Context, string, string, string, string, attemptCheckpoint) (*attemptCheckpointResult, error) {
+		t.Error("stale launcher attempted Git preservation")
+		return nil, fmt.Errorf("stale writer")
 	}
+
 	t.Cleanup(func() { workerAttemptCheckpointer = previousCheckpointer })
 
 	checkpoints := make(chan core.WorkOrderAttemptCheckpoint, 1)
@@ -2834,6 +2841,12 @@ func TestRunHarnessChildPreemptAtRenewalTerminatesAndCheckpointsWithoutRelease(t
 				return
 			}
 			_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: parts[3], State: core.WorkOrderClaimed, AttemptID: "attempt-preempted", LeaseExpiresAt: time.Now().Add(10 * time.Second)})
+		case "worktree-handoff":
+			if _, err := os.Stat(pidFile); err == nil {
+				http.Error(w, "writer no longer owns preservation authority", 409)
+				return
+			}
+			writeTestWriterAdmission(w, r, core.WorktreeIdentity{Workspace: "demo", TaskID: "preempted-task", Repository: "file:" + fixture.origin, Branch: "conveyor/preempted-task", WorkOrderID: "preempted-order", AttemptID: "attempt-preempted"})
 		case "attempt-checkpoint":
 			var checkpoint core.WorkOrderAttemptCheckpoint
 			if err := json.NewDecoder(r.Body).Decode(&checkpoint); err != nil {
@@ -2856,7 +2869,7 @@ func TestRunHarnessChildPreemptAtRenewalTerminatesAndCheckpointsWithoutRelease(t
 	item := workerservice.DispatchOrder{
 		Order:      core.WorkOrder{ID: "preempted-order", Stage: core.StageImplement},
 		Task:       core.Task{ID: "preempted-task", Branch: "conveyor/preempted-task", Repo: "conveyor"},
-		Repository: config.Repo{Name: "conveyor", URL: "https://example.test/conveyor.git"},
+		Repository: config.Repo{Name: "conveyor", URL: fixture.origin},
 		Harness:    config.Harness{Name: "helper", Command: []string{os.Args[0], "-test.run=TestWorkerLifecycleHelper", "--", "silent"}},
 	}
 	var stdout, stderr bytes.Buffer
@@ -2866,11 +2879,8 @@ func TestRunHarnessChildPreemptAtRenewalTerminatesAndCheckpointsWithoutRelease(t
 	}
 	select {
 	case checkpoint := <-checkpoints:
-		if checkpoint.AttemptID != "attempt-preempted" || checkpoint.SessionID == "" || checkpoint.TerminationReason != errWorkerOrderPreempted.Error() || checkpoint.PushResult != "pushed" {
-			t.Fatalf("checkpoint=%+v", checkpoint)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("preempted attempt was not checkpointed")
+		t.Fatalf("stale checkpoint: %+v", checkpoint)
+	default:
 	}
 	select {
 	case release := <-releases:

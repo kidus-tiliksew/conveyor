@@ -189,6 +189,8 @@ func runTaskScenario(t *testing.T, input string, step, terminal bool, commandFla
 				Task:       core.Task{ID: "target", Title: "Ship target", State: core.TaskRunning, Repo: "conveyor", Branch: "conveyor/task-target", BaseBranch: "main"},
 				Dispatch:   "run", Auth: "user",
 			})
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/worktree-handoff"):
+			writeTestWriterAdmission(w, r, core.WorktreeIdentity{Workspace: "demo", TaskID: "target", Repository: "file:" + fixture.origin, Branch: "conveyor/task-target", WorkOrderID: "target-implement-1", AttemptID: "attempt-target-implement-1"})
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/claim"):
 			stats.claimCalls++
 			var claim struct {

@@ -83,6 +83,14 @@ func TestPlanRevisionApproveReentersPlanAndBindsFreshImplementationToV2(t *testi
 	if err != nil || !ok || approved.Version != 2 || approved.Content != strings.TrimSpace(revised.Markdown) {
 		t.Fatalf("approved plan=%+v ok=%t err=%v", approved, ok, err)
 	}
+	resumed, err := storetest.For(st).ClaimWorkOrder(ctx, orders[2].ID, core.WorkOrderClaim{SessionID: "resumed-implementation", ClientToken: "resumed-token", WorkerID: "implement-worker", Lease: time.Minute, ExecutionTimeout: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumedContext, err := service.Get(ctx, resumed.ID, resumed.SessionID)
+	if err != nil || resumedContext.Predecessor == nil || resumedContext.Predecessor.WorkOrderID != contested.ID || resumedContext.Predecessor.AttemptID != contested.LastAttemptID {
+		t.Fatalf("resumed predecessor=%+v err=%v", resumedContext.Predecessor, err)
+	}
 }
 
 func TestPlanRevisionDeclineRecoversImplementationWithDirection(t *testing.T) {
