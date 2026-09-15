@@ -1,33 +1,30 @@
 # Conveyor Codex plugin
 
-This repository is the source of truth for Conveyor's Codex plugin. The plugin
-connects Codex to the local Conveyor MCP server and provides the
-`conveyor-operator` skill for task intake, implementation, and independent
-review.
+This plugin provides the `conveyor-operator` skill for task intake,
+implementation, and independent review. It registers no default MCP server.
 
 ## Install locally
 
-Requirements:
-
-- Conveyor is running at `http://127.0.0.1:8080`.
-- `CONVEYOR_API_TOKEN` is exported in the environment that launches Codex.
-- The `codex` CLI is available.
-
-From the repository root:
+Install the plugin and a named native connection:
 
 ```sh
-read -r -s CONVEYOR_API_TOKEN
-export CONVEYOR_API_TOKEN
 codex plugin marketplace add .
 codex plugin add conveyor@conveyor-local
+conveyor auth login --server https://factory.example.com
+conveyor mcp install --server https://factory.example.com --name factory-conveyor --tool codex
 ```
 
-The MCP configuration reads the token from `CONVEYOR_API_TOKEN` at runtime. It
-contains no token, home-directory path, or machine-specific configuration.
+Codex uses its native header helper to read the selected saved credential from
+Conveyor at connection time. The generated configuration includes an absolute
+Conveyor executable path and credential-file reference, with no token value.
+Restart Codex after installation. Installation and parser acceptance do not
+prove a native MCP connection: check the named server's native status and tools.
+See [client setup](../../docs/client-setup.md#6-connect-agent-sessions) for
+multiple servers, other clients, rotation, migration, and troubleshooting.
 
-After installation, start a new Codex task so the plugin skill and MCP tools are
-loaded. If the desktop app was already open before the environment variable was
-set, restart it from an environment that supplies the token.
+If an older plugin registered `conveyor-plugin` at localhost, remove or disable
+that plugin connection and reinstall this connection-neutral plugin. The native
+installer does not edit plugin caches or treat localhost as your remote server.
 
 ## Start or resume Conveyor work
 
@@ -66,7 +63,7 @@ git pull --ff-only
 codex plugin add conveyor@conveyor-local
 ```
 
-Start a new Codex task after reinstalling so updated skills and tools are loaded.
+Start a new Codex task after reinstalling so updated skills are loaded.
 
 ## Validate
 

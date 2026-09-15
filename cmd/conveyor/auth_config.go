@@ -80,10 +80,19 @@ func normalizeServerURL(value string) (string, error) {
 }
 
 func loadLocalAuthConfig() (localAuthConfig, error) {
+	return loadLocalAuthConfigFile("")
+}
+
+func loadLocalAuthConfigFile(path string) (localAuthConfig, error) {
 	config := localAuthConfig{Comment: localAuthConfigComment, Servers: map[string]localServerConfig{}}
-	path, err := localAuthConfigPath()
-	if err != nil {
-		return config, err
+	if path == "" {
+		var err error
+		path, err = localAuthConfigPath()
+		if err != nil {
+			return config, err
+		}
+	} else if !filepath.IsAbs(path) {
+		return config, errors.New("credentials-file must be absolute")
 	}
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {

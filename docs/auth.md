@@ -164,3 +164,20 @@ and rejects disagreements between them. The CLI resolves it from `--workspace`,
 workspace entirely is compatible only when you belong to exactly one; with
 zero the server says to create one first, with several it demands explicit
 context.
+
+## Native MCP credentials
+
+After login, `conveyor mcp install --server <base> --name <connection>` binds a
+personal registration to that server's saved credential. Codex and Claude use
+`conveyor auth token --format http-headers` through their native header helpers.
+The installer includes the absolute executable and credential-file paths so
+desktop launches resolve the same store. No secret appears in the registration.
+Cursor and OpenCode use a distinct environment variable per canonical server;
+run the server-specific export printed by the installer before launching them.
+
+The token-print bridge always reads the selected saved entry, including after
+rotation. It does not use an unrelated environment token. After a native
+rejection, log in again for the selected server and reconnect; environment-based
+clients also need their export refreshed. Server-side revocation takes effect
+on use. See [client setup](client-setup.md#6-connect-agent-sessions) for naming,
+legacy migration, client refresh behavior, and separate parser/native checks.
