@@ -3,6 +3,7 @@ package monitor
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -181,6 +182,53 @@ func TestGitHubSourceSuppressesFirstParentEmptyDirectPush(t *testing.T) {
 	}
 	if len(observations) != 1 || observations[0].Kind != DirectPush || observations[0].CommitSHA != "content-push" {
 		t.Fatalf("observations=%+v", observations)
+	}
+	if strings.Join(observations[0].ChangedPaths, ",") != "internal/monitor/types.go" {
+		t.Fatalf("comparison paths were discarded: %+v", observations[0])
+	}
+}
+
+func TestGitHubSourceFirstParentPathsFailClosed(t *testing.T) {
+	limitFiles := make([]map[string]string, 300)
+	for i := range limitFiles {
+		limitFiles[i] = map[string]string{"filename": fmt.Sprintf("file-%d.md", i)}
+	}
+	limit, err := json.Marshal(map[string]any{"files": limitFiles})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name, response, want string
+		invalid              bool
+	}{
+		{name: "empty", response: `{"files":[]}`},
+		{name: "rename and duplicates", response: `{"files":[{"filename":"docs/intro.md","previous_filename":"README.md"},{"filename":"docs/intro.md"}]}`, want: "README.md,docs/intro.md"},
+		{name: "missing files", response: `{}`, invalid: true},
+		{name: "null files", response: `{"files":null}`, invalid: true},
+		{name: "non-array files", response: `{"files":{}}`, invalid: true},
+		{name: "missing filename", response: `{"files":[{}]}`, invalid: true},
+		{name: "invalid filename", response: `{"files":[{"filename":"../README.md"}]}`, invalid: true},
+		{name: "invalid previous filename", response: `{"files":[{"filename":"README.md","previous_filename":"/etc/file"}]}`, invalid: true},
+		{name: "ambiguous limit", response: string(limit), invalid: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			source := GitHubSource{GitHubSlug: "kidus-tiliksew/conveyor", Run: func(_ context.Context, args ...string) ([]byte, error) {
+				if strings.Join(args, " ") != "api --method GET repos/kidus-tiliksew/conveyor/compare/parent...head -H Accept: application/vnd.github+json" {
+					t.Fatalf("unexpected comparison request: %v", args)
+				}
+				return []byte(test.response), nil
+			}}
+			paths, err := source.pathsFromFirstParent(context.Background(), "parent", "head")
+			if test.invalid {
+				if err == nil || githubtrigger.ErrorCategory(err) != githubtrigger.ForgeResponse || len(paths) != 0 {
+					t.Fatalf("incomplete comparison accepted: paths=%v err=%v", paths, err)
+				}
+				return
+			}
+			if err != nil || strings.Join(paths, ",") != test.want {
+				t.Fatalf("paths=%v err=%v want=%s", paths, err, test.want)
+			}
+		})
 	}
 }
 
