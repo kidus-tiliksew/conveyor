@@ -61,6 +61,9 @@ func (s *Server) dismissTaskContextProposal(w http.ResponseWriter, r *http.Reque
 }
 
 func writeTaskContextProposalError(w http.ResponseWriter, err error) {
+	if writeContextArchiveError(w, err) {
+		return
+	}
 	var referenceErr *store.TaskContextReferenceError
 	switch {
 	case errors.As(err, &referenceErr):
@@ -75,4 +78,26 @@ func writeTaskContextProposalError(w http.ResponseWriter, err error) {
 		log.Printf("decide task context proposal: %v", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 	}
+}
+
+// contextArchiveCode is shared by REST intake, proposal and bundle errors.
+// MCP intake carries the same taskCreateError code in its in-band result.
+func contextArchiveCode(err error) string {
+	var requirement *store.RequirementArchivedError
+	var design *store.SystemDesignArchivedError
+	switch {
+	case errors.As(err, &requirement):
+		return "requirement_archived"
+	case errors.As(err, &design):
+		return "system_design_archived"
+	}
+	return ""
+}
+
+func writeContextArchiveError(w http.ResponseWriter, err error) bool {
+	if code := contextArchiveCode(err); code != "" {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": code, "message": err.Error()})
+		return true
+	}
+	return false
 }

@@ -161,3 +161,111 @@ func TestTaskContextProposalRESTAndTaskProjection(t *testing.T) {
 		t.Fatalf("resolved detail status=%d body=%s", detail.Code, detail.Body.String())
 	}
 }
+
+func TestArchivedContextErrorsAcrossRESTAndMCP(t *testing.T) {
+	for _, kind := range []core.TaskContextProposalTargetKind{core.TaskContextProposalRequirement, core.TaskContextProposalSystemDesign} {
+		t.Run(string(kind), func(t *testing.T) {
+			st := store.NewMemory()
+			ctx := store.WithWorkspace(t.Context(), "demo")
+			id := "archive-context"
+			code := "requirement_archived"
+			field := "requirement_ids"
+			archive := func() {}
+			if kind == core.TaskContextProposalRequirement {
+				_, v, err := st.CreateRequirement(ctx, core.Requirement{ID: id, Title: "Archive"}, core.RequirementVersion{Content: "# Archive", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Reject archives."}}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, _, err = st.ConfirmRequirementVersion(ctx, id, v.Version); err != nil {
+					t.Fatal(err)
+				}
+				archive = func() {
+					if err := st.ArchiveRequirement(ctx, id, "operator", nil); err != nil {
+						t.Fatal(err)
+					}
+				}
+			} else {
+				code, field = "system_design_archived", "system_design_ids"
+				_, v, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: id, Title: "Archive", Category: "Architecture"}, core.SystemDesignVersion{Content: "# Archive\n\n```conveyor:governs\n- repo: api\n  paths:\n    - internal/**\n```", Origin: core.SystemDesignOriginOperator})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, _, err = st.ConfirmSystemDesignVersion(ctx, id, v.Version); err != nil {
+					t.Fatal(err)
+				}
+				archive = func() {
+					if err := st.ArchiveSystemDesign(ctx, id, "operator", nil); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			task := core.Task{ID: "context-task", Workspace: "demo", Repo: "api", State: core.TaskRunning}
+			if err := st.CreateTask(ctx, task); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := st.ProposeTaskContext(ctx, core.TaskContextProposalInput{TaskID: task.ID, TargetKind: kind, TargetID: id, Source: core.TaskContextProposalTriage, Justification: "Relevant context."}); err != nil {
+				t.Fatal(err)
+			}
+			session, err := st.CreatePlanningSession(ctx, core.PlanningSession{ID: "archive-session", Goal: core.PlanningGoalBundle})
+			if err != nil {
+				t.Fatal(err)
+			}
+			refs := store.TaskContextProposalInput(kind, id)
+			decision, err := st.ProposeDecision(ctx, core.Decision{Statement: "Keep pending work.", Context: "Bundle fixture.", AlternativesRejected: "None.", Origin: core.DecisionOriginOperator})
+			if err != nil {
+				t.Fatal(err)
+			}
+			bundle, err := st.CreatePlanningBundle(ctx, core.PlanningBundle{ID: "archive-bundle", SessionID: session.ID, Title: "Bundle", Documents: []core.PlanningBundleDocument{{Kind: core.PlanningBundleDecision, ID: decision.ID}}, Tasks: []core.PlanningBundleTask{{MemberID: "one", Repo: "api", Title: "One", Body: "Context", Context: core.PlanningBundleTaskContext{RequirementIDs: refs.RequirementIDs, DesignIDs: refs.DesignIDs}}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			archive()
+			server := NewServer(st)
+			server.BearerToken, server.Workspace, server.Repos = "token", "demo", []string{"api"}
+			server.GenerateTaskTitle = func(context.Context, core.Task) (string, error) { return "Task", nil }
+			request := func(path, body string) *httptest.ResponseRecorder {
+				r := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+				r.Header.Set("Authorization", "Bearer token")
+				w := httptest.NewRecorder()
+				server.Handler().ServeHTTP(w, r)
+				return w
+			}
+			for _, test := range []struct{ path, body string }{
+				{"/v1/tasks/" + task.ID + "/context/proposals/" + string(kind) + "/" + id + "/confirm", ""},
+				{"/v1/tasks/" + task.ID + "/context", `{"add":{"` + field + `":["` + id + `"]}}`},
+				{"/v1/tasks", `{"body":"Context","repo":"api","` + field + `":["` + id + `"]}`},
+				{"/v1/planning-bundles/" + bundle.ID + "/approve", ""},
+			} {
+				w := request(test.path, test.body)
+				if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), `"error":"`+code+`"`) {
+					t.Fatalf("%s: %d %s", test.path, w.Code, w.Body.String())
+				}
+			}
+			mcp := request("/mcp", `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"create_task","arguments":{"body":"Context","repo":"api","idempotency_key":"archive-intake","`+field+`":["`+id+`"]}}}`)
+			if !strings.Contains(mcp.Body.String(), `"isError":true`) || !strings.Contains(mcp.Body.String(), code) {
+				t.Fatalf("MCP archive response: %d %s", mcp.Code, mcp.Body.String())
+			}
+			proposals, err := st.ListTaskContextProposals(ctx, task.ID, core.TaskContextProposalProposed)
+			if err != nil || len(proposals) != 1 {
+				t.Fatalf("proposal changed: %+v %v", proposals, err)
+			}
+			events, err := st.ListEvents(ctx, task.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, e := range events {
+				if e.Kind == "task.context_proposal_confirmed" || e.Kind == store.TaskContextRequirementAdded || e.Kind == store.TaskContextDesignAdded {
+					t.Fatalf("partial write: %+v", e)
+				}
+			}
+			tasks, err := st.ListTasks(ctx)
+			if err != nil || len(tasks) != 1 {
+				t.Fatalf("partial intake/bundle: %+v %v", tasks, err)
+			}
+			dismissed := request("/v1/tasks/"+task.ID+"/context/proposals/"+string(kind)+"/"+id+"/dismiss", "")
+			if dismissed.Code != http.StatusOK {
+				t.Fatalf("dismissal: %d %s", dismissed.Code, dismissed.Body.String())
+			}
+		})
+	}
+}

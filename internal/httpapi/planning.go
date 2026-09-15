@@ -169,6 +169,9 @@ func (s *Server) rejectPlanningBundle(w http.ResponseWriter, r *http.Request) {
 }
 
 func writePlanningBundleError(w http.ResponseWriter, err error) {
+	if writeContextArchiveError(w, err) {
+		return
+	}
 	var referenceErr *store.TaskContextReferenceError
 	var conflictErr *store.PlanningBundleConflictError
 	switch {

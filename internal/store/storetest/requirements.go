@@ -65,6 +65,7 @@ var requirementConformanceRepos = []config.Repo{
 func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 	t.Helper()
 	runDocumentEventPages(t, factory)
+	runContextEligibility(t, factory)
 
 	t.Run("requirement and system design archive lifecycle", func(t *testing.T) {
 		fixture := factory(t, requirementConformanceRepos)
@@ -807,9 +808,12 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 
 	t.Run("serves links remain proposals until an operator decision", func(t *testing.T) {
 		st, ctx, workspace := newRequirementFixture(t, factory)
-		requirement, _, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-" + core.NewTaskID(), Title: "Served intent"},
+		requirement, version, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-" + core.NewTaskID(), Title: "Served intent"},
 			chatVersion("Blueprints serve confirmed intent.", requirementStatement("REQ-1", "Serves links are operator-confirmed.")))
 		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err = st.ConfirmRequirementVersion(ctx, requirement.ID, version.Version); err != nil {
 			t.Fatal(err)
 		}
 		taskID := core.NewTaskID()

@@ -12,6 +12,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 )
 
@@ -327,37 +328,48 @@ func TestTaskContextTerminalCleanupMigrationIntegration(t *testing.T) {
 	}
 	now := time.Now().UTC()
 	taskIDs := map[string]string{}
+	// Seed v107 proposal history directly: current writers require archive
+	// metadata introduced after this fixture's deliberately old schema.
+	seedProposal := func(taskID, targetID string, state core.TaskContextProposalState) {
+		t.Helper()
+		err := st.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+			payload := core.JSONPayload(map[string]any{"target_kind": "requirement", "target_id": targetID, "source": "triage", "justification": "Migration fixture."})
+			created, err := insertEventWithID(ctx, q, core.Event{TaskID: taskID, Kind: "task.context_proposed", Payload: payload})
+			if err != nil {
+				return err
+			}
+			var decision *int64
+			actor := ""
+			if state != core.TaskContextProposalProposed {
+				eventID, err := insertEventWithID(ctx, q, core.Event{TaskID: taskID, Kind: "task.context_proposal_" + string(state), Payload: payload})
+				if err != nil {
+					return err
+				}
+				decision = &eventID
+				actor = "operator"
+				if state == core.TaskContextProposalConfirmed {
+					if err = insertEvent(ctx, q, core.Event{TaskID: taskID, Kind: store.TaskContextRequirementAdded, Payload: core.JSONPayload(map[string]any{"id": targetID})}); err != nil {
+						return err
+					}
+				}
+			}
+			_, err = tx.Exec(ctx, `INSERT INTO task_context_proposals (workspace_id,task_id,target_kind,target_id,target_title,state,source,justification,created_by_event_id,decision_event_id,proposed_by,decided_by) VALUES ($1,$2,'requirement',$3,'Migration context',$4,'triage','Migration fixture.',$5,$6,'operator',$7)`, workspace, taskID, targetID, state, created, decision, actor)
+			return err
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
 	for _, label := range []string{"open", "merged", "closed"} {
 		taskID := label + "-migration-" + core.NewTaskID()
 		taskIDs[label] = taskID
 		if err = st.CreateTask(ctx, core.Task{ID: taskID, Workspace: workspace, Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-" + taskID, State: core.TaskRunning, CreatedAt: now}); err != nil {
 			t.Fatal(err)
 		}
-		if _, suppressed, proposeErr := st.ProposeTaskContext(ctx, core.TaskContextProposalInput{
-			TaskID: taskID, TargetKind: core.TaskContextProposalRequirement, TargetID: targets[0].ID,
-			Source: core.TaskContextProposalTriage, Justification: "Migration cleanup candidate.",
-		}); proposeErr != nil || suppressed {
-			t.Fatalf("propose %s suppressed=%t err=%v", label, suppressed, proposeErr)
-		}
+		seedProposal(taskID, targets[0].ID, core.TaskContextProposalProposed)
 	}
-	if _, suppressed, proposeErr := st.ProposeTaskContext(ctx, core.TaskContextProposalInput{
-		TaskID: taskIDs["merged"], TargetKind: core.TaskContextProposalRequirement, TargetID: targets[1].ID,
-		Source: core.TaskContextProposalTriage, Justification: "Confirmed history.",
-	}); proposeErr != nil || suppressed {
-		t.Fatalf("confirmed candidate suppressed=%t err=%v", suppressed, proposeErr)
-	}
-	if _, err = st.ConfirmTaskContextProposal(ctx, taskIDs["merged"], core.TaskContextProposalRequirement, targets[1].ID); err != nil {
-		t.Fatal(err)
-	}
-	if _, suppressed, proposeErr := st.ProposeTaskContext(ctx, core.TaskContextProposalInput{
-		TaskID: taskIDs["closed"], TargetKind: core.TaskContextProposalRequirement, TargetID: targets[2].ID,
-		Source: core.TaskContextProposalTriage, Justification: "Dismissed history.",
-	}); proposeErr != nil || suppressed {
-		t.Fatalf("dismissed candidate suppressed=%t err=%v", suppressed, proposeErr)
-	}
-	if _, err = st.DismissTaskContextProposal(ctx, taskIDs["closed"], core.TaskContextProposalRequirement, targets[2].ID); err != nil {
-		t.Fatal(err)
-	}
+	seedProposal(taskIDs["merged"], targets[1].ID, core.TaskContextProposalConfirmed)
+	seedProposal(taskIDs["closed"], targets[2].ID, core.TaskContextProposalDismissed)
 	for label, state := range map[string]core.TaskState{"merged": core.TaskMerged, "closed": core.TaskClosed} {
 		if _, err = pool.Exec(ctx, `UPDATE tasks SET state=$1 WHERE workspace_id=$2 AND id=$3`, state, workspace, taskIDs[label]); err != nil {
 			t.Fatal(err)

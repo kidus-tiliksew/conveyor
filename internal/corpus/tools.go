@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
 const (
@@ -134,7 +135,7 @@ func (e Executor) Execute(ctx context.Context, name, argumentsJSON string) (any,
 		}
 		items := make([]RequirementSummary, 0, len(documents))
 		for _, document := range documents {
-			if document.CurrentVersion <= 0 {
+			if document.Archived || document.CurrentVersion <= 0 {
 				continue
 			}
 			version, getErr := e.Store.GetRequirementVersion(ctx, document.ID, document.CurrentVersion)
@@ -162,8 +163,8 @@ func (e Executor) Execute(ctx context.Context, name, argumentsJSON string) (any,
 		if err != nil {
 			return nil, err
 		}
-		if document.CurrentVersion <= 0 {
-			return nil, fmt.Errorf("requirement %s has no confirmed version", document.ID)
+		if err := store.ValidateContextDocument("requirement", document.ID, document.CurrentVersion, document.Archived); err != nil {
+			return nil, err
 		}
 		version, err := e.Store.GetRequirementVersion(ctx, document.ID, document.CurrentVersion)
 		if err != nil {
@@ -183,7 +184,7 @@ func (e Executor) Execute(ctx context.Context, name, argumentsJSON string) (any,
 		}
 		items := make([]SystemDesignSummary, 0, len(documents))
 		for _, document := range documents {
-			if document.CurrentVersion <= 0 {
+			if document.Archived || document.CurrentVersion <= 0 {
 				continue
 			}
 			version, getErr := e.Store.GetSystemDesignVersion(ctx, document.ID, document.CurrentVersion)
@@ -211,8 +212,8 @@ func (e Executor) Execute(ctx context.Context, name, argumentsJSON string) (any,
 		if err != nil {
 			return nil, err
 		}
-		if document.CurrentVersion <= 0 {
-			return nil, fmt.Errorf("system design %s has no confirmed version", document.ID)
+		if err := store.ValidateContextDocument("system design", document.ID, document.CurrentVersion, document.Archived); err != nil {
+			return nil, err
 		}
 		version, err := e.Store.GetSystemDesignVersion(ctx, document.ID, document.CurrentVersion)
 		if err != nil {

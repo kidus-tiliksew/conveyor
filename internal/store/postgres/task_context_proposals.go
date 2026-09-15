@@ -42,6 +42,9 @@ func (s *Store) proposeTaskContext(ctx context.Context, input core.TaskContextPr
 		for i := range rows {
 			events[i] = eventFromDB(rows[i])
 		}
+		if _, err := validateTaskContextTx(ctx, tx, workspace(ctx), store.TaskContextProposalInput(input.TargetKind, input.TargetID)); err != nil {
+			return err
+		}
 		activeRequirements, activeDesigns := store.ActiveTaskContextReferences(events)
 		if input.TargetKind == core.TaskContextProposalRequirement && activeRequirements[input.TargetID] ||
 			input.TargetKind == core.TaskContextProposalSystemDesign && activeDesigns[input.TargetID] > 0 {
@@ -74,13 +77,6 @@ func (s *Store) proposeTaskContext(ctx context.Context, input core.TaskContextPr
 				return &store.TaskContextReferenceError{Kind: kind, ID: input.TargetID, Reason: "was not found in this workspace"}
 			}
 			return targetErr
-		}
-		if (current == nil || *current <= 0) && !legacyCompatibility {
-			kind := string(input.TargetKind)
-			if input.TargetKind == core.TaskContextProposalSystemDesign {
-				kind = "system design"
-			}
-			return &store.TaskContextReferenceError{Kind: kind, ID: input.TargetID, Reason: "has no confirmed version"}
 		}
 		actor, now := store.ActorFromContext(ctx), time.Now().UTC()
 		eventKind := "task.context_proposed"
@@ -135,6 +131,11 @@ func (s *Store) transitionTaskContextProposal(ctx context.Context, taskID string
 		}
 		if proposal.State != core.TaskContextProposalProposed {
 			return fmt.Errorf("%w: cannot transition %s proposal to %s", store.ErrTaskContextProposalTransition, proposal.State, target)
+		}
+		if target == core.TaskContextProposalConfirmed {
+			if _, err := validateTaskContextTx(ctx, tx, workspace(ctx), store.TaskContextProposalInput(kind, targetID)); err != nil {
+				return err
+			}
 		}
 		actor, now := store.ActorFromContext(ctx), time.Now().UTC()
 		eventKind := "task.context_proposal_dismissed"
