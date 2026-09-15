@@ -2160,7 +2160,7 @@ test('Work on this shows, copies, and responsively wraps the task run command', 
   await page.getByRole('button', { name: 'Copy task run command' }).click()
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(expectedCommand)
 
-  await page.setViewportSize({ width: 640, height: 720 })
+  await page.setViewportSize({ width: 390, height: 720 })
   await expect(page.getByRole('button', { name: 'Copied' })).toBeVisible()
   const narrowPanel = await panel.boundingBox()
   expect(narrowPanel!.height).toBeGreaterThan(roomyPanel!.height)
