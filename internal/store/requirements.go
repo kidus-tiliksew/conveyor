@@ -834,6 +834,11 @@ func (m *memory) FinalizePlanningSession(ctx context.Context, request PlanningFi
 			return core.PlanningSession{}, fmt.Errorf("artifact %s not found", request.TranscriptArtifactID)
 		}
 	}
+	if session.RequirementContextID != "" && request.TaskID != "" {
+		if _, err := m.validateTaskContextLocked(workspace, TaskContextInput{RequirementIDs: []string{session.RequirementContextID}}); err != nil {
+			return core.PlanningSession{}, err
+		}
+	}
 	for artifactKey, stored := range m.artifacts {
 		if artifactKey.workspace != workspace {
 			continue

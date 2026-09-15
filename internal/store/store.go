@@ -240,6 +240,7 @@ type WorkOrderStore interface {
 	// CancelPlanRevisionWorkOrderCommand retires the exact released
 	// implementation order when the operator approves plan re-entry.
 	CancelPlanRevisionWorkOrderCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID, attemptID string) (core.WorkOrder, error)
+	WorktreeHandoffCommand(context.Context, taskops.TaskLease, string, core.WorkOrderClaimIdentity, string, core.WorktreeHandoffRequest) (core.WorktreeHandoff, error)
 	RecordWorkOrderAttemptCheckpoint(ctx context.Context, workOrderID, workerID string, checkpoint core.WorkOrderAttemptCheckpoint) (bool, error)
 	UpsertWorkOrderActivitySnapshot(ctx context.Context, workOrderID string, claim core.WorkOrderClaimIdentity, content string) error
 	FinalizeWorkOrderAttemptObservability(ctx context.Context, workOrderID, workerID string, checkpoint core.WorkOrderAttemptCheckpoint) error
@@ -2014,6 +2015,11 @@ func (m *memory) RecordWorkOrderAttemptCheckpoint(ctx context.Context, workOrder
 	order, ok := m.workOrders[workOrderID]
 	if !ok {
 		return false, ErrWorkOrderClaimLost
+	}
+	for _, event := range m.events[order.TaskID] {
+		if event.Kind == "work_order.writer_admitted" {
+			return false, ErrWorkOrderClaimLost
+		}
 	}
 	authorized := order.AuthorizesAttemptCheckpoint(workerID, checkpoint, time.Now().UTC())
 	if !authorized {
@@ -5071,11 +5077,8 @@ func (m *memory) validateTaskContextLocked(workspace string, input TaskContextIn
 		if !ok {
 			return nil, &TaskContextReferenceError{Kind: "requirement", ID: id, Reason: "was not found in this workspace"}
 		}
-		if document.CurrentVersion <= 0 {
-			return nil, &TaskContextReferenceError{Kind: "requirement", ID: id, Reason: "has no confirmed version"}
-		}
-		if document.Archived {
-			return nil, &RequirementArchivedError{RequirementID: id}
+		if err := ValidateContextDocument("requirement", id, document.CurrentVersion, document.Archived); err != nil {
+			return nil, err
 		}
 	}
 	versions := map[string]int{}
@@ -5084,11 +5087,8 @@ func (m *memory) validateTaskContextLocked(workspace string, input TaskContextIn
 		if !ok {
 			return nil, &TaskContextReferenceError{Kind: "system design", ID: id, Reason: "was not found in this workspace"}
 		}
-		if document.CurrentVersion <= 0 {
-			return nil, &TaskContextReferenceError{Kind: "system design", ID: id, Reason: "has no confirmed version"}
-		}
-		if document.Archived {
-			return nil, &SystemDesignArchivedError{DocumentID: id}
+		if err := ValidateContextDocument("system design", id, document.CurrentVersion, document.Archived); err != nil {
+			return nil, err
 		}
 		versions[id] = document.CurrentVersion
 	}

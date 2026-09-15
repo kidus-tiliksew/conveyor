@@ -44,6 +44,9 @@ func (s *Store) CreatePlanningBundle(ctx context.Context, bundle core.PlanningBu
 		if exists && existing.Status != core.PlanningBundlePending {
 			return &store.PlanningBundleConflictError{Message: fmt.Sprintf("planning bundle %s is %s", bundle.ID, existing.Status)}
 		}
+		if _, validationErr := validatePlanningBundleContextsTx(ctx, tx, bundle); validationErr != nil {
+			return validationErr
+		}
 		for i := range bundle.Documents {
 			doc := &bundle.Documents[i]
 			switch doc.Kind {
@@ -73,9 +76,6 @@ func (s *Store) CreatePlanningBundle(ctx context.Context, bundle core.PlanningBu
 				}
 			}
 			doc.Status = "pending"
-		}
-		if _, validationErr := validatePlanningBundleContextsTx(ctx, tx, bundle); validationErr != nil {
-			return validationErr
 		}
 		bundle.Status, bundle.CreatedBy = core.PlanningBundlePending, actor.ID
 		if exists {
@@ -123,6 +123,26 @@ type bundleContextVersions struct {
 }
 
 func validatePlanningBundleContextsTx(ctx context.Context, tx pgx.Tx, bundle core.PlanningBundle) (map[string]bundleContextVersions, error) {
+	// Pending bundle versions are allowed; lock their parents against archival.
+	for _, ref := range bundle.Documents {
+		var archivedAt *time.Time
+		switch ref.Kind {
+		case core.PlanningBundleRequirement:
+			if err := tx.QueryRow(ctx, `SELECT archived_at FROM requirements WHERE workspace_id=$1 AND id=$2 FOR SHARE`, bundle.Workspace, ref.ID).Scan(&archivedAt); err != nil {
+				return nil, notFound(err, "bundle document %s", ref.ID)
+			}
+			if archivedAt != nil {
+				return nil, &store.RequirementArchivedError{RequirementID: ref.ID}
+			}
+		case core.PlanningBundleSystemDesign:
+			if err := tx.QueryRow(ctx, `SELECT archived_at FROM system_designs WHERE workspace_id=$1 AND id=$2 FOR SHARE`, bundle.Workspace, ref.ID).Scan(&archivedAt); err != nil {
+				return nil, notFound(err, "bundle document %s", ref.ID)
+			}
+			if archivedAt != nil {
+				return nil, &store.SystemDesignArchivedError{DocumentID: ref.ID}
+			}
+		}
+	}
 	pendingRequirements, pendingDesigns := map[string]int{}, map[string]int{}
 	for _, document := range bundle.Documents {
 		switch document.Kind {

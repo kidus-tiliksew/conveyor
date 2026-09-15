@@ -112,3 +112,61 @@ func TestSystemDesignAndDecisionListsExcludeUnconfirmedAuthority(t *testing.T) {
 		t.Fatalf("read=%+v err=%v", read, err)
 	}
 }
+
+func TestCorpusRejectsArchivedCurrentReadsButPreservesHistory(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	_, rv, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-archive", Title: "Archive"}, core.RequirementVersion{Content: "# Historical requirement", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Retain history."}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmRequirementVersion(ctx, "req-archive", rv.Version); err != nil {
+		t.Fatal(err)
+	}
+	_, dv, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "design-archive", Title: "Archive", Category: "Architecture"}, core.SystemDesignVersion{Content: "# Historical design\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/**\n```", Origin: core.SystemDesignOriginOperator})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmSystemDesignVersion(ctx, "design-archive", dv.Version); err != nil {
+		t.Fatal(err)
+	}
+	executor := Executor{Store: st}
+	for _, test := range []struct{ name, args string }{{ReadRequirement, `{"requirement_id":"req-archive"}`}, {ReadSystemDesign, `{"document_id":"design-archive"}`}} {
+		if _, err = executor.Execute(ctx, test.name, test.args); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err = st.ArchiveRequirement(ctx, "req-archive", "operator", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err = st.ArchiveSystemDesign(ctx, "design-archive", "operator", nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct{ name, args string }{{ReadRequirement, `{"requirement_id":"req-archive"}`}, {ReadSystemDesign, `{"document_id":"design-archive"}`}} {
+		if _, err = executor.Execute(ctx, test.name, test.args); err == nil || !strings.Contains(err.Error(), "is archived") {
+			t.Fatalf("stale read %s: %v", test.name, err)
+		}
+	}
+	for _, name := range []string{ListRequirements, ListSystemDesigns} {
+		result, err := executor.Execute(ctx, name, `{}`)
+		if err != nil || string(core.JSONPayload(result)) != "[]" {
+			t.Fatalf("archived list: %+v %v", result, err)
+		}
+	}
+	req, err := st.GetRequirement(ctx, "req-archive")
+	if err != nil || !req.Archived || req.CurrentVersion != rv.Version {
+		t.Fatalf("historical metadata=%+v %v", req, err)
+	}
+	historicalReq, err := st.GetRequirementVersion(ctx, req.ID, rv.Version)
+	if err != nil || historicalReq.Content != rv.Content {
+		t.Fatalf("historical requirement=%+v %v", historicalReq, err)
+	}
+	design, err := st.GetSystemDesign(ctx, "design-archive")
+	if err != nil || !design.Archived || design.CurrentVersion != dv.Version {
+		t.Fatalf("historical metadata=%+v %v", design, err)
+	}
+	historicalDesign, err := st.GetSystemDesignVersion(ctx, design.ID, dv.Version)
+	if err != nil || historicalDesign.Content != dv.Content {
+		t.Fatalf("historical design=%+v %v", historicalDesign, err)
+	}
+}

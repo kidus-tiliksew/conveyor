@@ -594,6 +594,27 @@ func checkoutCmd() *cobra.Command {
 				}
 				branch, base, repo = task.Branch, task.BaseBranch, task.Repo
 			}
+			if os.Getenv("CONVEYOR_WRITER_GENERATION") != "" {
+				path, err := checkoutWithWriter(cmd.Context(), newClient(), args[0], branch, base, repo, repoURL, destination, worktreeRoot)
+				if err != nil {
+					return err
+				}
+				fmt.Println(path)
+				return nil
+			}
+			root, err := repositoryRoot(cmd.Context())
+			if err != nil {
+				return err
+			}
+			writerPath, err := worktreeWriterPath(cmd.Context(), root, branch, repo, repoURL)
+			if err != nil {
+				return err
+			}
+			exclusive, err := acquireWorktreeWriter(cmd.Context(), writerPath)
+			if err != nil {
+				return err
+			}
+			defer exclusive.close()
 			checkpoint := assignedPredecessorCheckpointFromEnvironment(args[0])
 			path, checkpointed, err := checkoutTaskWithCheckpointAtRoot(cmd.Context(), branch, base, repo, repoURL, args[0], destination, worktreeRoot, checkpoint)
 			if err != nil {

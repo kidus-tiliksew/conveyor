@@ -208,6 +208,9 @@ func (m *memory) CreatePlanningBundle(ctx context.Context, bundle core.PlanningB
 	if exists && existing.Status != core.PlanningBundlePending {
 		return core.PlanningBundle{}, &PlanningBundleConflictError{Message: fmt.Sprintf("planning bundle %s is %s", bundle.ID, existing.Status)}
 	}
+	if _, err := m.validatePlanningBundleContextsLocked(bundle); err != nil {
+		return core.PlanningBundle{}, err
+	}
 	for i := range bundle.Documents {
 		doc := &bundle.Documents[i]
 		switch doc.Kind {
@@ -233,9 +236,6 @@ func (m *memory) CreatePlanningBundle(ctx context.Context, bundle core.PlanningB
 			doc.Title, doc.Status = decision.Statement, "pending"
 		}
 	}
-	if _, err := m.validatePlanningBundleContextsLocked(bundle); err != nil {
-		return core.PlanningBundle{}, err
-	}
 	bundle.Status = core.PlanningBundlePending
 	bundle.CreatedBy = ActorFromContext(ctx).ID
 	if exists {
@@ -255,6 +255,20 @@ func (m *memory) CreatePlanningBundle(ctx context.Context, bundle core.PlanningB
 }
 
 func (m *memory) validatePlanningBundleContextsLocked(bundle core.PlanningBundle) (map[string]bundleContextVersions, error) {
+	// Bundle documents may still be pending, but archival always excludes new context.
+	for _, ref := range bundle.Documents {
+		key := memoryScopedKey{workspace: bundle.Workspace, id: ref.ID}
+		switch ref.Kind {
+		case core.PlanningBundleRequirement:
+			if m.requirements[key].Archived {
+				return nil, &RequirementArchivedError{RequirementID: ref.ID}
+			}
+		case core.PlanningBundleSystemDesign:
+			if m.systemDesigns[key].Archived {
+				return nil, &SystemDesignArchivedError{DocumentID: ref.ID}
+			}
+		}
+	}
 	pendingRequirements, pendingDesigns := pendingBundleDocuments(bundle)
 	result := map[string]bundleContextVersions{}
 	for _, member := range bundle.Tasks {

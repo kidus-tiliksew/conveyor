@@ -40,6 +40,9 @@ func (m *memory) proposeTaskContext(ctx context.Context, input core.TaskContextP
 	if core.TaskTerminal(task.State) && !legacyCompatibility {
 		return core.TaskContextProposal{}, false, ErrTaskTerminal
 	}
+	if _, err := m.validateTaskContextLocked(task.Workspace, TaskContextProposalInput(input.TargetKind, input.TargetID)); err != nil {
+		return core.TaskContextProposal{}, false, err
+	}
 	activeRequirements, activeDesigns := ActiveTaskContextReferences(m.events[input.TaskID])
 	if input.TargetKind == core.TaskContextProposalRequirement && activeRequirements[input.TargetID] ||
 		input.TargetKind == core.TaskContextProposalSystemDesign && activeDesigns[input.TargetID] > 0 {
@@ -47,23 +50,9 @@ func (m *memory) proposeTaskContext(ctx context.Context, input core.TaskContextP
 	}
 	var title string
 	if input.TargetKind == core.TaskContextProposalRequirement {
-		document, exists := m.requirements[memoryScopedKey{workspace: task.Workspace, id: input.TargetID}]
-		if !exists {
-			return core.TaskContextProposal{}, false, &TaskContextReferenceError{Kind: "requirement", ID: input.TargetID, Reason: "was not found in this workspace"}
-		}
-		if document.CurrentVersion <= 0 && !legacyCompatibility {
-			return core.TaskContextProposal{}, false, &TaskContextReferenceError{Kind: "requirement", ID: input.TargetID, Reason: "has no confirmed version"}
-		}
-		title = document.Title
+		title = m.requirements[memoryScopedKey{workspace: task.Workspace, id: input.TargetID}].Title
 	} else {
-		document, exists := m.systemDesigns[memoryScopedKey{workspace: task.Workspace, id: input.TargetID}]
-		if !exists {
-			return core.TaskContextProposal{}, false, &TaskContextReferenceError{Kind: "system design", ID: input.TargetID, Reason: "was not found in this workspace"}
-		}
-		if document.CurrentVersion <= 0 && !legacyCompatibility {
-			return core.TaskContextProposal{}, false, &TaskContextReferenceError{Kind: "system design", ID: input.TargetID, Reason: "has no confirmed version"}
-		}
-		title = document.Title
+		title = m.systemDesigns[memoryScopedKey{workspace: task.Workspace, id: input.TargetID}].Title
 	}
 	key := proposalKey(input.TaskID, input.TargetKind, input.TargetID)
 	if existing, exists := m.taskContextProposals[key]; exists {
@@ -116,6 +105,11 @@ func (m *memory) transitionTaskContextProposal(ctx context.Context, taskID strin
 	}
 	if proposal.State != core.TaskContextProposalProposed {
 		return core.TaskContextProposal{}, fmt.Errorf("%w: cannot transition %s proposal to %s", ErrTaskContextProposalTransition, proposal.State, target)
+	}
+	if target == core.TaskContextProposalConfirmed {
+		if _, err := m.validateTaskContextLocked(task.Workspace, TaskContextProposalInput(kind, targetID)); err != nil {
+			return core.TaskContextProposal{}, err
+		}
 	}
 	actor, now := ActorFromContext(ctx), time.Now().UTC()
 	eventKind := "task.context_proposal_dismissed"

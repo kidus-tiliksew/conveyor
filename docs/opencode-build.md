@@ -71,62 +71,41 @@ Configure the global `~/.config/opencode/opencode.json` attachment with environm
 
 OpenCode substitutes `{env:VAR}` in both fields; shell-style `${VAR}` is not substituted. An unknown top-level key in `opencode.json` makes every OpenCode start fail.
 
-For an operator session, bridge the REST server to its MCP endpoint before starting OpenCode:
+This environment attachment belongs to worker/run children. Personal MCP
+installation uses a different registration and credential source.
+
+## Global personal registration
 
 ```sh
-export CONVEYOR_ADDR=https://factory.example.com/mcp
-export CONVEYOR_API_TOKEN=$(conveyor auth token)
+conveyor auth login --server https://factory.example.com
+conveyor mcp install --server https://factory.example.com --name factory-conveyor --tool opencode
 ```
 
-## Global Conveyor registration
+The installer writes the global `$XDG_CONFIG_HOME/opencode/opencode.json`,
+defaulting to `~/.config/opencode/opencode.json`. The selected name identifies a
+`type: remote` entry with a literal endpoint, `oauth: false`, and
+`Bearer {env:CONVEYOR_MCP_TOKEN_<HASH>}`. `<HASH>` is the full uppercase SHA-256
+of the canonical base URL. Run the exact export printed by the installer to read
+that server's saved credential, then launch or restart OpenCode from that
+environment. A second server receives a separate name and token variable.
 
-Run `conveyor mcp install --tool opencode` after `conveyor auth login`.
-The installer writes the global `~/.config/opencode/opencode.json`, or
-`$XDG_CONFIG_HOME/opencode/opencode.json` when `XDG_CONFIG_HOME` is set to an
-absolute path. It creates new files with mode 0600 and preserves other members.
+The ownership marker stays inside each entry because OpenCode rejects unknown
+top-level keys. Files remain owner-only. Reinstall preserves other servers and
+nested configuration. Adoption requires a matching endpoint; a shared worker
+attachment additionally requires explicit `--adopt` and an unambiguous
+`CONVEYOR_ADDR` binding. `--list` is read-only. Comments and unsafe symlink paths
+are refused before replacement.
 
-```json
-{
-  "mcp": {
-    "conveyor": {
-      "type": "remote",
-      "url": "{env:CONVEYOR_ADDR}",
-      "headers": {
-        "Authorization": "Bearer {env:CONVEYOR_API_TOKEN}"
-      },
-      "_conveyor_mcp_install": "owner=v1"
-    }
-  }
-}
-```
+Changed configuration is checked with `opencode debug config` on an isolated
+copy in the same directory, using placeholder environment references and a
+30-second timeout. Output is withheld, and the client-modified copy is never
+published. Parser failure preserves the original file. An explicitly selected
+absent binary reports skipped parser validation. Parser acceptance does not
+prove native initialization or tools-list success.
 
-OpenCode substitutes `{env:VAR}` in the URL and header values. Shell-style
-`${VAR}` does not work. The ownership marker belongs inside `mcp.conveyor`;
-an unknown top-level key fails OpenCode config loading and can break every
-OpenCode start on the machine.
-
-The installer prints the missing bridge exports. Set them in the shell that
-will launch OpenCode:
-
-```sh
-export CONVEYOR_ADDR=https://factory.example.com/mcp
-export CONVEYOR_API_TOKEN=$(conveyor auth token)
-```
-
-The registration contains no token value and works with the selected server
-through these environment references. An existing unmarked `conveyor` entry is
-`skipped` unless `--adopt` is passed. Matching owned entries are `unchanged`.
-Use `--list` to report without writing. Comment-bearing JSON and symlink paths
-are refused with the destination path in the error.
-
-Before publishing a changed file, the installer runs `opencode debug config`
-on a staged copy with stdin from `/dev/null` and a 30-second timeout. The check
-uses temporary config and data directories and placeholder bridge values.
-Debug output is never printed. A nonzero exit, timeout, `Unrecognized key`, or
-`ConfigInvalid` error leaves the original bytes intact. If OpenCode is absent,
-explicit installation still writes the entry and reports that validation was
-skipped. This check validates configuration; launch readiness still checks the
-actual server connection.
+After rotating a credential, refresh its printed export and restart OpenCode.
+See [client setup](client-setup.md#6-connect-agent-sessions) for complete naming,
+migration, two-server installation, and native connection troubleshooting.
 
 ## Readiness and installation
 

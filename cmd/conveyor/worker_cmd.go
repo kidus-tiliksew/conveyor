@@ -1126,6 +1126,14 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 		}
 		return c.releaseDispatchOrderContext(releaseCtx, credential, item, core.WorkOrderRelease{SessionID: sessionID, Outcome: outcome, Reason: reason, Cause: cause, ExitStatus: exitStatus, FailureDetail: detail})
 	}
+	var childStopped func() bool
+	var writer *worktreeWriter
+	var handoff core.WorktreeHandoff
+	defer func() {
+		if writer != nil {
+			writer.close()
+		}
+	}()
 	checkpointAttempt := func(reason string) error {
 		if item.Order.Stage != core.StageImplement {
 			return nil
@@ -1137,42 +1145,65 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 		if strings.TrimSpace(item.Task.Branch) == "" || strings.TrimSpace(item.Task.Repo) == "" || strings.TrimSpace(item.Repository.URL) == "" {
 			return nil
 		}
+		if childStopped != nil && !childStopped() {
+			return fmt.Errorf("refusing checkpoint while child process group is alive")
+		}
+		if writer == nil {
+			return fmt.Errorf("checkpoint requires admitted worktree writer")
+		}
 		checkpointCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
 		checkpointCtx = contextWithGitEnvironment(checkpointCtx, gitEnvironment)
+		// Reload the child's atomic record before attributing its edits.
+		joined, joinErr := joinWorktreeWriter(writer.path, sessionID, handoff.Writer.Generation)
+		if joinErr != nil {
+			return joinErr
+		}
+		writer.record = joined.record
+		authorize := func(checkCtx context.Context) error {
+			if err := writer.verify(); err != nil {
+				return err
+			}
+			_, err := c.worktreeHandoffContext(checkCtx, credential, item, core.WorktreeHandoffRequest{SessionID: sessionID, Generation: handoff.Writer.Generation, Action: "preserve"})
+			return err
+		}
+		if err := authorize(checkpointCtx); err != nil {
+			return err
+		}
+		producer := &handoff.Writer
+		if writer.record.Producer != nil && writer.record.Producer.AttemptID != handoff.Writer.AttemptID {
+			if handoff.Predecessor == nil || writer.record.Producer.AttemptID != handoff.Predecessor.AttemptID {
+				return fmt.Errorf("unverifiable producing attempt")
+			}
+			producer = handoff.Predecessor
+			if producer.Reason != "" {
+				reason = producer.Reason
+			}
+		}
 		result, checkpointErr := workerAttemptCheckpointer(checkpointCtx, workingDirectory, item.Task.Branch, item.Task.Repo, item.Repository.URL, attemptCheckpoint{
-			AttemptID: claimed.AttemptID, WorkOrderID: item.Order.ID, TerminationReason: reason,
+			AttemptID: producer.AttemptID, WorkOrderID: producer.WorkOrderID, TerminationReason: reason, Identity: producer, Writer: writer, Authorize: authorize,
 		})
-		cancel()
 		if checkpointErr != nil || result == nil {
 			return checkpointErr
 		}
-		checkpoint := core.WorkOrderAttemptCheckpoint{
-			SessionID: sessionID, AttemptID: claimed.AttemptID, TerminationReason: reason,
-			CommitSHA: result.CommitSHA, PushResult: "pushed",
+		originalReason := result.TerminationReason
+		if originalReason == "" {
+			originalReason = reason
 		}
-		var transcript *core.WorkOrderAttemptTranscript
+		auditRequest := core.WorktreeHandoffRequest{SessionID: sessionID, Generation: handoff.Writer.Generation, Action: "audit", Producer: producer, CommitSHA: result.CommitSHA, OriginalReason: originalReason}
 		if transcriptSpool != nil {
-			content, truncated, readErr := transcriptSpool.Snapshot()
-			if readErr != nil {
-				_, _ = fmt.Fprintf(stderr, "warning: read attempt transcript: %v; continuing without transcript because capture is best-effort\n", readErr)
-			} else {
-				transcript = &core.WorkOrderAttemptTranscript{Content: content, Truncated: truncated}
+			if content, truncated, readErr := transcriptSpool.Snapshot(); readErr == nil {
+				auditRequest.Transcript = &core.WorkOrderAttemptTranscript{Content: content, Truncated: truncated}
 			}
 		}
-		if transcript != nil {
-			transcriptCtx, cancelTranscript := context.WithTimeout(context.Background(), 5*time.Second)
-			transcriptErr := c.checkpointDispatchOrderAttemptContext(transcriptCtx, credential, item, checkpoint, transcript)
-			cancelTranscript()
-			if transcriptErr == nil {
-				return nil
-			}
-			_, _ = fmt.Fprintf(stderr, "warning: upload attempt transcript: %v; retrying checkpoint without transcript because capture is best-effort\n", transcriptErr)
+		_, err := c.worktreeHandoffContext(checkpointCtx, credential, item, auditRequest)
+		if err != nil && auditRequest.Transcript != nil {
+			_, _ = fmt.Fprintf(stderr, "warning: checkpoint response failed: %v; retrying checkpoint without transcript because capture is best-effort\n", err)
+			auditRequest.Transcript = nil
+			_, err = c.worktreeHandoffContext(checkpointCtx, credential, item, auditRequest)
 		}
-		checkpointOnlyCtx, cancelCheckpointOnly := context.WithTimeout(context.Background(), 30*time.Second)
-		err := c.checkpointDispatchOrderAttemptContext(checkpointOnlyCtx, credential, item, checkpoint, nil)
-		cancelCheckpointOnly()
 		if err != nil {
-			return fmt.Errorf("checkpoint commit %s was pushed from %s, but its audit event is not durable; successor reconciliation required: %w", result.CommitSHA, result.Worktree, err)
+			return fmt.Errorf("checkpoint %s pushed but audit pending: %w", result.CommitSHA, err)
 		}
 		return nil
 	}
@@ -1320,6 +1351,38 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 			return err
 		}
 	}
+	if item.Order.Stage == core.StageImplement && item.Task.Branch != "" && item.Repository.URL != "" {
+		lockPath, lockErr := worktreeWriterPath(setupCtx, workingDirectory, item.Task.Branch, item.Task.Repo, item.Repository.URL)
+		if lockErr != nil {
+			return lockErr
+		}
+		writer, err = acquireWorktreeWriter(setupCtx, lockPath)
+		if err != nil {
+			return err
+		}
+		handoff, err = c.worktreeHandoffContext(setupCtx, credential, item, core.WorktreeHandoffRequest{SessionID: sessionID, Generation: sessionID, Action: "admit"})
+		if err != nil {
+			return err
+		}
+		originIdentity, identityErr := localgit.RepositoryOriginIdentity(setupCtx, workingDirectory)
+		if identityErr != nil {
+			return identityErr
+		}
+		if handoff.Writer.Workspace != c.workspace || handoff.Writer.TaskID != item.Task.ID || handoff.Writer.WorkOrderID != item.Order.ID || handoff.Writer.AttemptID != claimed.AttemptID || handoff.Writer.SessionID != sessionID || handoff.Writer.Generation != sessionID || handoff.Writer.Repository != originIdentity || handoff.Writer.Branch != item.Task.Branch {
+			return fmt.Errorf("server writer admission differs from assigned identity")
+		}
+		if err = prepareWorktreeWriter(setupCtx, workingDirectory, writer, handoff); err != nil {
+			return err
+		}
+		childValues["CONVEYOR_WRITER_PATH"] = writer.path
+		childValues["CONVEYOR_WRITER_GENERATION"] = handoff.Writer.Generation
+		if handoff.Predecessor != nil {
+			predecessorJSON, _ := json.Marshal(handoff.Predecessor)
+			childValues["CONVEYOR_PREDECESSOR"] = string(predecessorJSON)
+			childValues["CONVEYOR_PREVIOUS_ATTEMPT_ID"] = handoff.Predecessor.AttemptID
+			childValues["CONVEYOR_PREVIOUS_WORK_ORDER_ID"] = handoff.Predecessor.WorkOrderID
+		}
+	}
 	childEnv := isolatedChildEnvironment(c.gitCredentials.environment(), childValues)
 	if item.Harness.MCPTransport == config.MCPTransportEnvironment {
 		if err = validateEnvironmentAttachment(setupCtx, item.Harness, childEnv, workingDirectory); err != nil {
@@ -1384,6 +1447,9 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 		command.Stdout = &firstActivityWriter{Destination: redactedStdout, Signal: firstActivity}
 		command.Stderr = &firstActivityWriter{Destination: redactedStderr, Signal: firstActivity}
 		command.Env = childEnv
+		if writer != nil {
+			command.ExtraFiles = []*os.File{writer.file}
+		}
 		command.Dir = workingDirectory
 		command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 		return command
@@ -1418,6 +1484,18 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 	done := make(chan error, 1)
 	go func() { done <- command.Wait() }()
 	processGroup := harnessProcessGroup{pgid: command.Process.Pid, done: done}
+	childJoined := false
+	terminateChild := func(completed *error) error {
+		result := processGroup.terminate(completed)
+		childJoined = true
+		return result
+	}
+	defer func() {
+		if !childJoined {
+			_ = terminateChild(nil)
+		}
+	}()
+	childStopped = func() bool { return childJoined && !processGroupAlive(processGroup.pgid) }
 	firstActivityTimer := time.NewTimer(firstActivityTimeout)
 	defer firstActivityTimer.Stop()
 	firstActivityDeadline := firstActivityTimer.C
@@ -1458,47 +1536,47 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 		firstActivityObserved = nil
 		firstActivityDeadline = nil
 		stallDeadline = nil
-		if item.Dispatch == "run" && runTerminalTimer == nil {
+		if runTerminalTimer == nil {
 			runTerminalTimer = time.NewTimer(workerRunTerminalChildGrace)
 			runTerminalDeadline = runTerminalTimer.C
 		}
 	}
 	observeCheckpointRelease := func(conflictErr error) (bool, error) {
 		typedRelease := workerOrderReleasedAtCheckpoint(conflictErr)
-		if !typedRelease && (item.Dispatch != "run" || !workerOrderConflict(conflictErr)) {
-			return false, nil
+		reconcileCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		reconciled, reconcileErr := c.reconcileDispatchOrderContext(reconcileCtx, credential, item, sessionID)
+		cancel()
+		if reconcileErr == nil && (reconciled.WorkOrder.State == core.WorkOrderSubmitted || reconciled.WorkOrder.State == core.WorkOrderCompleted) {
+			observeFinalized(reconciled.WorkOrder)
+			return true, nil
 		}
-		if item.Dispatch == "run" {
-			reconcileCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			reconciled, reconcileErr := c.reconcileTaskRunOrderContext(reconcileCtx, credential, item, sessionID)
-			cancel()
-			if reconcileErr == nil && reconciled.ReleasedAtCheckpoint &&
-				(reconciled.WorkOrder.LastFailureMessage == core.WorkOrderReleaseReasonOperatorCheckpointReached ||
-					reconciled.WorkOrder.LastFailureMessage == core.WorkOrderReleaseReasonPlanRevisionRequested) {
-				checkpointReleaseReason = reconciled.WorkOrder.LastFailureMessage
-				observeFinalized(reconciled.WorkOrder)
-				return true, nil
-			}
-			if typedRelease {
-				// The typed response proves a deliberate self-release but not which
-				// release reason was persisted. Fail closed when the read-only
-				// reconciliation cannot supply that reason rather than relabeling a
-				// plan-revision release as an operator checkpoint. The caller must
-				// not attempt a second release for this already-released claim.
-				if reconcileErr != nil {
-					return false, fmt.Errorf("confirm checkpoint release reason: %w", reconcileErr)
-				}
-				return false, fmt.Errorf("confirm checkpoint release reason: server reported %s (%s)", reconciled.WorkOrder.State, reconciled.Reason)
-			}
+		if reconcileErr == nil && reconciled.ReleasedAtCheckpoint &&
+			(reconciled.WorkOrder.LastFailureMessage == core.WorkOrderReleaseReasonOperatorCheckpointReached ||
+				reconciled.WorkOrder.LastFailureMessage == core.WorkOrderReleaseReasonPlanRevisionRequested) {
+			checkpointReleaseReason = reconciled.WorkOrder.LastFailureMessage
+			observeFinalized(reconciled.WorkOrder)
+			return true, nil
 		}
 		if typedRelease {
-			checkpointReleaseReason = core.WorkOrderReleaseReasonOperatorCheckpointReached
-			observeFinalized(core.WorkOrder{ID: item.Order.ID, State: core.WorkOrderQueued, LastFailureMessage: checkpointReleaseReason})
-			return true, nil
+			// The typed response proves a deliberate self-release but not which
+			// release reason was persisted. Fail closed when the read-only
+			// reconciliation cannot supply that reason rather than relabeling a
+			// plan-revision release as an operator checkpoint. The caller must
+			// not attempt a second release for this already-released claim.
+			if reconcileErr != nil {
+				return false, fmt.Errorf("confirm checkpoint release reason: %w", reconcileErr)
+			}
+			return false, fmt.Errorf("confirm checkpoint release reason: server reported %s (%s)", reconciled.WorkOrder.State, reconciled.Reason)
 		}
 		return false, nil
 	}
 	presentCheckpointRelease := func() error {
+		if checkpointReleaseReason == "" {
+			return nil
+		}
+		if err := checkpointAttempt(checkpointReleaseReason); err != nil {
+			return fmt.Errorf("handoff preserved its release; checkpoint recovery pending: %w", err)
+		}
 		if item.Dispatch != "run" {
 			return nil
 		}
@@ -1508,9 +1586,19 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 		return nil
 	}
 	handleChildExit := func(waitErr error) error {
-		waitErr = processGroup.terminate(&waitErr)
+		waitErr = terminateChild(&waitErr)
 		flushOutput()
 		if ctx.Err() != nil {
+			finalCtx, finalCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			final, finalErr := c.reconcileDispatchOrderContext(finalCtx, credential, item, sessionID)
+			finalCancel()
+			if finalErr == nil && final.ReleasedAtCheckpoint {
+				checkpointReleaseReason = final.WorkOrder.LastFailureMessage
+				return presentCheckpointRelease()
+			}
+			if finalErr == nil && final.Authorized {
+				_ = checkpointAttempt("launcher shutting down")
+			}
 			if item.Dispatch != "run" {
 				_ = release(core.WorkOrderOutcomeCancelled, "worker shutting down", nil)
 			}
@@ -1553,6 +1641,10 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 			}
 			_ = releaseAfterCheckpoint(core.WorkOrderOutcomeChildFailure, "could not confirm work-order completion", exitStatus)
 			return fmt.Errorf("confirm work-order completion: %w", reconcileErr)
+		}
+		if reconciled.ReleasedAtCheckpoint {
+			checkpointReleaseReason = reconciled.WorkOrder.LastFailureMessage
+			return presentCheckpointRelease()
 		}
 		renewed := reconciled.WorkOrder
 		// The service checks current persisted provenance before applying this
@@ -1610,12 +1702,15 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 			} else if err := presentRunChildReapNotice(stdout, presentation, string(item.Order.Stage), string(finalizedOrder.State)); err != nil {
 				return fmt.Errorf("present lingering-child reap: %w", err)
 			}
-			_ = processGroup.terminate(nil)
+			_ = terminateChild(nil)
 			if processGroupAlive(processGroup.pgid) {
 				return fmt.Errorf("lingering %s session process group %d survived termination", item.Order.Stage, processGroup.pgid)
 			}
 			flushOutput()
 			reportWorkerUsageFallback(c, credential, item.Order.ID, sessionID, finalizedOrder, usageCollector)
+			if checkpointReleaseReason != "" {
+				return presentCheckpointRelease()
+			}
 			return nil
 		case <-firstActivityObserved:
 			if !firstActivityTimer.Stop() {
@@ -1657,7 +1752,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 				if observedCheckpoint {
 					continue
 				}
-				_ = processGroup.terminate(nil)
+				_ = terminateChild(nil)
 				if checkpointErr != nil {
 					return checkpointErr
 				}
@@ -1675,7 +1770,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 				continue
 			}
 			if renewed.State != core.WorkOrderClaimed {
-				_ = processGroup.terminate(nil)
+				_ = terminateChild(nil)
 				return attemptAuthorityLoss("claim authority lost: server reports "+string(renewed.State), checkpointAttempt)
 			}
 			leaseExpiresAt = renewed.LeaseExpiresAt
@@ -1692,7 +1787,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 				return handleChildExit(waitErr)
 			default:
 			}
-			waitErr := processGroup.terminate(nil)
+			waitErr := terminateChild(nil)
 			var exitStatus *int
 			var exitErr *exec.ExitError
 			if errors.As(waitErr, &exitErr) {
@@ -1735,7 +1830,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 				if observedCheckpoint {
 					continue
 				}
-				_ = processGroup.terminate(nil)
+				_ = terminateChild(nil)
 				if checkpointErr != nil {
 					return checkpointErr
 				}
@@ -1753,7 +1848,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 				continue
 			}
 			if renewed.State != core.WorkOrderClaimed {
-				_ = processGroup.terminate(nil)
+				_ = terminateChild(nil)
 				return attemptAuthorityLoss("claim authority lost: server reports "+string(renewed.State), checkpointAttempt)
 			}
 			leaseExpiresAt = renewed.LeaseExpiresAt
@@ -1779,7 +1874,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 				stallDeadline = stallTimer.C
 				continue
 			}
-			waitErr := processGroup.terminate(nil)
+			waitErr := terminateChild(nil)
 			var exitStatus *int
 			var exitErr *exec.ExitError
 			if errors.As(waitErr, &exitErr) {
@@ -1800,7 +1895,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 				if observedCheckpoint {
 					continue
 				}
-				_ = processGroup.terminate(nil)
+				_ = terminateChild(nil)
 				if checkpointErr != nil {
 					return checkpointErr
 				}
@@ -1821,12 +1916,22 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 				continue
 			}
 			if renewed.State != core.WorkOrderClaimed {
-				_ = processGroup.terminate(nil)
+				_ = terminateChild(nil)
 				return attemptAuthorityLoss("claim authority lost: server reports "+string(renewed.State), checkpointAttempt)
 			}
 			leaseExpiresAt = renewed.LeaseExpiresAt
 		case <-ctx.Done():
-			_ = processGroup.terminate(nil)
+			_ = terminateChild(nil)
+			finalCtx, finalCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			final, finalErr := c.reconcileDispatchOrderContext(finalCtx, credential, item, sessionID)
+			finalCancel()
+			if finalErr == nil && final.ReleasedAtCheckpoint {
+				checkpointReleaseReason = final.WorkOrder.LastFailureMessage
+				return presentCheckpointRelease()
+			}
+			if finalErr == nil && final.Authorized {
+				_ = checkpointAttempt("launcher shutting down")
+			}
 			if item.Dispatch == "run" {
 				// The explicit invocation owns renewal only for its own lifetime.
 				// Leaving the claim for normal lease expiry makes a killed local run

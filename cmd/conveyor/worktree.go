@@ -31,12 +31,16 @@ type attemptCheckpoint struct {
 	AttemptID         string
 	WorkOrderID       string
 	TerminationReason string
+	Identity          *core.WorktreeIdentity
+	Writer            *worktreeWriter
+	Authorize         func(context.Context) error
 }
 
 type attemptCheckpointResult struct {
-	Worktree  string
-	CommitSHA string
-	Pushed    bool
+	Worktree          string
+	CommitSHA         string
+	Pushed            bool
+	TerminationReason string
 }
 
 type worktreeRootContextKey struct{}
@@ -305,11 +309,46 @@ func checkpointTaskWorktreeAtPath(ctx context.Context, path, branch, primary str
 	if err != nil {
 		return nil, err
 	}
+	if checkpoint.Authorize != nil {
+		if err := checkpoint.Authorize(ctx); err != nil {
+			return nil, err
+		}
+	}
+	if checkpoint.Identity != nil {
+		if err := verifyCheckpointRemoteHistory(ctx, canonicalPath, branch); err != nil {
+			return nil, err
+		}
+	}
 	if strings.TrimSpace(status) == "" {
+		if checkpoint.Writer != nil && checkpoint.Identity != nil && checkpoint.Identity.AttemptID == checkpoint.Writer.record.Writer.AttemptID {
+			head, err := gitOutput(ctx, canonicalPath, "rev-parse", "HEAD")
+			if err != nil {
+				return nil, err
+			}
+			if strings.TrimSpace(head) == checkpoint.Writer.record.Parent {
+				return nil, nil
+			}
+		}
 		return matchingAttemptCheckpointAtHEAD(ctx, canonicalPath, checkpoint)
 	}
 	if checkpoint.AttemptID == "" || checkpoint.WorkOrderID == "" || strings.TrimSpace(checkpoint.TerminationReason) == "" {
 		return nil, fmt.Errorf("attempt ID, work-order ID, and termination reason are required to checkpoint %s", canonicalPath)
+	}
+	if checkpoint.Identity != nil {
+		if checkpoint.Writer == nil || checkpoint.Writer.record.Producer == nil || checkpoint.Writer.record.Producer.AttemptID != checkpoint.AttemptID || checkpoint.Writer.record.Producer.WorkOrderID != checkpoint.WorkOrderID {
+			return nil, fmt.Errorf("dirty worktree lacks proven producing writer")
+		}
+		if checkpoint.Writer.record.Parent == "" || !gitIsAncestor(ctx, canonicalPath, checkpoint.Writer.record.Parent, "HEAD") {
+			return nil, fmt.Errorf("dirty worktree history differs from producing writer record")
+		}
+		if err = checkpoint.Writer.verify(); err != nil {
+			return nil, err
+		}
+	}
+	if checkpoint.Authorize != nil {
+		if err = checkpoint.Authorize(ctx); err != nil {
+			return nil, err
+		}
 	}
 	if _, err = gitOutput(ctx, canonicalPath, "add", "-A"); err != nil {
 		return nil, fmt.Errorf("stage attempt checkpoint in %s: %w", canonicalPath, err)
@@ -324,10 +363,21 @@ func checkpointTaskWorktreeAtPath(ctx context.Context, path, branch, primary str
 		return nil, err
 	}
 	commitSHA = strings.TrimSpace(commitSHA)
+	if checkpoint.Writer != nil {
+		checkpoint.Writer.record.CommitSHA = commitSHA
+		if err = checkpoint.Writer.save(); err != nil {
+			return nil, err
+		}
+	}
+	if checkpoint.Authorize != nil {
+		if err = checkpoint.Authorize(ctx); err != nil {
+			return nil, err
+		}
+	}
 	if _, err = gitOutput(ctx, canonicalPath, "push", "origin", "HEAD:refs/heads/"+branch); err != nil {
 		return nil, fmt.Errorf("checkpoint commit %s preserved locally in %s but push failed: %w", commitSHA, canonicalPath, err)
 	}
-	return &attemptCheckpointResult{Worktree: canonicalPath, CommitSHA: commitSHA, Pushed: true}, nil
+	return &attemptCheckpointResult{Worktree: canonicalPath, CommitSHA: commitSHA, Pushed: true, TerminationReason: oneLine(checkpoint.TerminationReason)}, nil
 }
 
 func checkpointAssignedTaskWorktree(ctx context.Context, branch, repo, repoURL string, checkpoint attemptCheckpoint) (*attemptCheckpointResult, error) {
@@ -390,9 +440,15 @@ func matchingAttemptCheckpointAtHEAD(ctx context.Context, path string, checkpoin
 	if len(lines) == 0 || lines[0] != subject ||
 		checkpointMessageField(lines, "Attempt-ID") != checkpoint.AttemptID ||
 		checkpointMessageField(lines, "Work-Order-ID") != checkpoint.WorkOrderID {
+		if checkpoint.Identity != nil && len(lines) > 0 && strings.HasPrefix(lines[0], "wip(") {
+			return nil, fmt.Errorf("checkpoint at HEAD belongs to a different producing attempt or order")
+		}
 		return nil, nil
 	}
-	if checkpointMessageField(lines, "Termination-Reason") != oneLine(checkpoint.TerminationReason) {
+	if checkpoint.Identity != nil && checkpointMessageField(lines, "Termination-Reason") == "" {
+		return nil, fmt.Errorf("checkpoint termination trailer is missing or ambiguous")
+	}
+	if checkpoint.Identity == nil && checkpointMessageField(lines, "Termination-Reason") != oneLine(checkpoint.TerminationReason) {
 		return nil, fmt.Errorf("checkpoint at HEAD matches attempt %s and work order %s but not termination reason %q; refusing ambiguous reuse", checkpoint.AttemptID, checkpoint.WorkOrderID, oneLine(checkpoint.TerminationReason))
 	}
 	commitSHA, err := gitOutput(ctx, path, "rev-parse", "HEAD")
@@ -408,6 +464,22 @@ func matchingAttemptCheckpointAtHEAD(ctx context.Context, path string, checkpoin
 	if err != nil {
 		return nil, err
 	}
+	if checkpoint.Identity != nil {
+		if checkpoint.Identity.CheckpointEventID == 0 && (checkpoint.Writer == nil || checkpoint.Writer.record.Producer == nil || checkpoint.Writer.record.Producer.AttemptID != checkpoint.AttemptID || checkpoint.Writer.record.Producer.WorkOrderID != checkpoint.WorkOrderID || checkpoint.Writer.record.Parent == "" || !gitIsAncestor(ctx, path, checkpoint.Writer.record.Parent, commitSHA)) {
+			return nil, fmt.Errorf("checkpoint has no durable audit or matching local producer evidence")
+		}
+		if err = verifyCheckpointRemoteHistory(ctx, path, branch); err != nil {
+			return nil, err
+		}
+	}
+	if checkpoint.Identity != nil && checkpoint.Identity.CommitSHA != "" && checkpoint.Identity.CommitSHA != commitSHA {
+		return nil, fmt.Errorf("checkpoint SHA differs from durable audit")
+	}
+	if checkpoint.Authorize != nil {
+		if err = checkpoint.Authorize(ctx); err != nil {
+			return nil, err
+		}
+	}
 	pushed := strings.HasPrefix(strings.TrimSpace(remote), commitSHA+"\t")
 	if !pushed {
 		if _, err = gitOutput(ctx, path, "push", "origin", "HEAD:refs/heads/"+branch); err != nil {
@@ -415,17 +487,23 @@ func matchingAttemptCheckpointAtHEAD(ctx context.Context, path string, checkpoin
 		}
 		pushed = true
 	}
-	return &attemptCheckpointResult{Worktree: path, CommitSHA: commitSHA, Pushed: pushed}, nil
+	return &attemptCheckpointResult{Worktree: path, CommitSHA: commitSHA, Pushed: pushed, TerminationReason: checkpointMessageField(lines, "Termination-Reason")}, nil
 }
 
 func checkpointMessageField(lines []string, name string) string {
 	prefix := name + ": "
+	value := ""
+	found := false
 	for _, line := range lines[1:] {
 		if strings.HasPrefix(line, prefix) {
-			return strings.TrimSpace(strings.TrimPrefix(line, prefix))
+			if found {
+				return ""
+			}
+			value = strings.TrimSpace(strings.TrimPrefix(line, prefix))
+			found = true
 		}
 	}
-	return ""
+	return value
 }
 
 func oneLine(value string) string {
@@ -687,4 +765,23 @@ func contextWithGitEnvironment(ctx context.Context, environment map[string]strin
 func gitEnvironmentFromContext(ctx context.Context) map[string]string {
 	environment, _ := ctx.Value(gitEnvironmentContextKey{}).(map[string]string)
 	return environment
+}
+
+func verifyCheckpointRemoteHistory(ctx context.Context, path, branch string) error {
+	remote, err := gitOutput(ctx, path, "ls-remote", "--heads", "origin", "refs/heads/"+branch)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(remote) == "" {
+		return nil
+	}
+	// Fetch into FETCH_HEAD without changing the task's local ref. Both dirty
+	// preservation and clean-HEAD retry refuse divergence before any Git write.
+	if _, err = gitOutput(ctx, path, "fetch", "origin", "refs/heads/"+branch); err != nil {
+		return err
+	}
+	if !gitIsAncestor(ctx, path, "FETCH_HEAD", "HEAD") {
+		return fmt.Errorf("task branch %s remote is ahead or divergent; refusing checkpoint mutation", branch)
+	}
+	return nil
 }

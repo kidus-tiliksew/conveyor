@@ -36,7 +36,7 @@ Open your invitation, set your display name and password, and mint a personal
 access token on Settings. The value is shown once. In your client shell:
 
 ```sh
-export CONVEYOR_ADDR=https://factory.example.com/mcp
+export CONVEYOR_ADDR=https://factory.example.com
 conveyor auth login
 conveyor config set workspace <workspace-id>
 conveyor auth status
@@ -44,8 +44,9 @@ conveyor auth status
 
 `auth login` prompts for the token. Replace the example address and workspace
 ID with the host's values; for a local solo factory the address is
-`http://127.0.0.1:8080/mcp`. The `/mcp` suffix is what MCP clients need in
-step 6, and the CLI strips it for its own API calls, so one value serves both.
+`http://127.0.0.1:8080`. MCP installation appends `/mcp` to the canonical
+base. An existing `CONVEYOR_ADDR` ending in `/mcp` also works; CLI
+normalization removes that suffix.
 Add the `CONVEYOR_ADDR` line to your shell startup file. Keep the same
 hostname throughout, because credentials are stored per server URL. A one-off
 `--server` flag does not save a default server; the workspace default is saved
@@ -206,30 +207,113 @@ For sessions that plan documents or operate Conveyor through MCP:
 
 ```sh
 conveyor skills install
-conveyor mcp install
-export CONVEYOR_API_TOKEN=$(conveyor auth token)
+conveyor auth login --server https://factory.example.com
+conveyor mcp install --server https://factory.example.com --name factory-conveyor
 ```
 
-The skills command configures detected Claude Code, Codex, Cursor, and OpenCode
-clients. OpenCode skills install under `~/.config/opencode/skills`, or under
-`.opencode/skills` with `--project`. OpenCode also reads the Claude skills root,
-so a machine with both tools receives duplicate copies by design; the copies are
-identical and harmless. Use `--tool` to select a client or `--list` to inspect
-planned changes. MCP registration
-references credentials through the environment rather than writing the token
-anywhere, which is why the `CONVEYOR_API_TOKEN` export is needed alongside
-the `CONVEYOR_ADDR` you set in step 2. Launch the agent client from a shell
-with both variables set; a desktop application launched elsewhere may not
-inherit them. Cursor registration is global in `~/.cursor/mcp.json`. The
-install command prints any missing bridge instruction. OpenCode registration is
-global in `~/.config/opencode/opencode.json`, or
-`$XDG_CONFIG_HOME/opencode/opencode.json` when set. Run
-`conveyor mcp install --tool opencode` to install its environment-backed
-`mcp.conveyor` entry. OpenCode needs `CONVEYOR_ADDR=<server>/mcp` and uses
-`{env:VAR}` substitution. The installer keeps its ownership marker inside the
-entry because OpenCode rejects unknown top-level keys. It refuses comments
-and symlinks, skips unmarked entries unless `--adopt` is passed, and validates
-changed config before replacement when OpenCode is on PATH.
+Use `--tool codex|claude|cursor|opencode` to select one client. `--list` reports
+planned registration changes without writing files, running helpers, or opening
+connections. OpenCode can be selected before its binary is installed; the output
+then reports parser validation as skipped. Skills and MCP registrations are
+separate installations.
+
+### Two servers and stable names
+
+```sh
+conveyor auth login --server https://second.example.com/team
+conveyor mcp install --server https://second.example.com/team --name team-conveyor
+conveyor mcp install --server https://factory.example.com
+```
+
+Both connections and their credentials remain independent. Reinstalling without
+`--name` reuses the sole owned name for that endpoint. Otherwise the default is
+`<host-slug>-<12-character-URL-hash>-conveyor`: the slug uses at most 30 lowercase
+ASCII letters/digits/hyphens, and the hash is the first 12 hex characters of
+SHA-256 over the canonical URL. Scheme, explicit port, and base path participate;
+`https://host`, `https://host:443`, and `https://host/team` are distinct.
+Canonicalization follows login: lowercase scheme/host, remove trailing slashes
+and one terminal `/mcp`, and reject credentials, queries, and fragments.
+
+`--name` trims whitespace, lowercases ASCII letters, and accepts 1–63 letters,
+digits, underscores, or hyphens, starting with a letter or digit. An occupied
+name with a different endpoint is refused, including an installer-owned name.
+A new name for one existing owned endpoint renames that registration and retains
+its policies. Multiple owned matches require an explicit existing name.
+
+### Credential retrieval and client configuration
+
+| Client | Personal config | Credential reference |
+|---|---|---|
+| Codex | `~/.codex/config.toml` | Native `http_headers_helper` command |
+| Claude Code | `~/.claude.json` | Native `headersHelper` command |
+| Cursor | `~/.cursor/mcp.json` | `Bearer ${env:CONVEYOR_MCP_TOKEN_<HASH>}` |
+| OpenCode | `$XDG_CONFIG_HOME/opencode/opencode.json`, default `~/.config/opencode/opencode.json` | `Bearer {env:CONVEYOR_MCP_TOKEN_<HASH>}` with `oauth: false` |
+
+All registrations use a literal canonical endpoint. `<HASH>` in the table is
+the full uppercase SHA-256 of the canonical server URL; use the actual variable
+and export printed by the installer, not the placeholder. Cursor and OpenCode
+require their individual variables in the environment that launches the client.
+A desktop application launched elsewhere may not inherit those exports.
+
+Codex and Claude run the installed Conveyor executable with
+`auth token --server <base> --credentials-file <absolute-path> --format http-headers`.
+The command prints a JSON Authorization header only into the client's private
+pipe. It reads the saved credential afresh and never substitutes the ambient
+`CONVEYOR_API_TOKEN`. The config contains only a quoted command and paths;
+there is no helper script or token copy. The explicit credential-file reference
+also supports a nondefault configuration directory on desktop launches.
+
+The ordinary `auth token` form remains explicit raw-token output for command
+substitution. Never paste either output form into a config, log, or transcript.
+The CLI's normal server-bound environment precedence and worker child
+credentials are unchanged. Personal installation does not set up a worker's
+environment attachment; use the applicable worker guide for that registration.
+
+### Migration and connection checks
+
+Only installer-marked registrations are migrated automatically. A matching
+legacy `conveyor` registration moves to the selected name while nested tool
+policies, timeouts, and enablement survive. Manual registrations remain intact;
+`--name <existing-name> --adopt` permits adoption only when the endpoint matches
+and no conflicting credential source is configured. Unsupported TOML layouts,
+duplicate members, ambiguous endpoints, and name collisions are refused before
+publication. Use conventional `[mcp_servers.name]` tables for Codex adoption.
+
+Legacy Cursor/OpenCode shared-environment registrations may serve a worker.
+Migration requires `--adopt` and a matching `CONVEYOR_ADDR` endpoint; otherwise
+they remain intact. The installer never repairs a worker attachment during a
+launch. Files are written atomically with owner-only permissions, and failed
+validation preserves the prior file. OpenCode keeps its owner marker inside
+each entry and refuses comments it cannot preserve.
+
+Installation reports the name, endpoint, credential source, file result,
+parser result, restart requirement, and native connection result separately.
+Restart the client after installation. Codex/Claude parser checks and OpenCode's
+staged `debug config` check do not initialize MCP. The installer reports native
+initialize/tools-list as **not run**. Inspect the named connection in the client;
+the controlled repository checks exercise actual native initialization and
+`tools/list` without production credentials. Unsupported clients require an
+upgrade, not a shared-token fallback.
+
+After rotation, log in again for that server. Codex caches helper headers for a
+connection and can refresh once after an authentication rejection; Claude reads
+its helper at connection/reconnection. Reconnect or restart when needed. Cursor
+and OpenCode need their individual exports refreshed and the client restarted.
+A missing saved credential produces a non-secret login instruction. A revoked
+credential is rejected by the server on use; a native 401/403 requires checking
+the selected server's saved credential or export, without switching tokens.
+
+Client references: [Codex HTTP helpers](https://learn.chatgpt.com/docs/extend/mcp?surface=cli),
+[Claude dynamic headers](https://code.claude.com/docs/en/mcp#use-dynamic-headers-for-custom-authentication),
+[Cursor MCP](https://cursor.com/docs/mcp), and
+[OpenCode remote MCP](https://opencode.ai/docs/mcp-servers/).
+
+If native MCP receives an external denial, record the actual client error and
+endpoint as an operator checkpoint. A generic HTTP probe is not native MCP
+connection evidence; do not bypass TLS or change Cloudflare policy to hide a
+failure. The plugin provides connection-neutral guidance. Remove or disable an
+old plugin-provided localhost connection separately from native registration
+migration.
 
 <a id="6-run-a-first-task"></a>
 

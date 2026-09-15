@@ -900,6 +900,11 @@ func (s *Store) FinalizePlanningSession(ctx context.Context, request store.Plann
 			return fmt.Errorf(
 				"planning session %s is %s and cannot be finalized", request.SessionID, existing.Status)
 		}
+		if existing.RequirementContextID != "" && request.TaskID != "" {
+			if _, err := validateTaskContextTx(ctx, tx, documentWorkspace(ctx), store.TaskContextInput{RequirementIDs: []string{existing.RequirementContextID}}); err != nil {
+				return err
+			}
+		}
 		now := time.Now().UTC()
 		if _, err := documentExec(ctx, tx, `UPDATE planning_sessions
 			SET status='finalized', produced_requirement_id=NULLIF(?,''),

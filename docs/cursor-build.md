@@ -51,41 +51,41 @@ that behavior.
 `<project>/.cursor/skills/<name>/SKILL.md` instead. Conveyor never writes
 `~/.cursor/skills-cursor/`, which Cursor reserves for its built-in skills.
 
-## Global Conveyor registration
+## Personal and worker registrations
 
-Run `conveyor mcp install --tool cursor` to register Conveyor globally in
-`~/.cursor/mcp.json` without literal credentials. The command preserves other
-servers and manages only its ownership-marked `mcpServers.conveyor` entry:
+For a personal client, run:
+
+```sh
+conveyor auth login --server https://factory.example.com
+conveyor mcp install --server https://factory.example.com --name factory-conveyor --tool cursor
+```
+
+The installer writes a named global entry in `~/.cursor/mcp.json` with a literal
+endpoint and `${env:CONVEYOR_MCP_TOKEN_<HASH>}` authorization reference. It prints
+the exact per-server export using the saved-token bridge. Run that export in the
+client's launch environment and restart Cursor. Repeat with another `--server`
+to retain both personal connections. See [client setup](client-setup.md#6-connect-agent-sessions)
+for naming, migration, rotation, and connection checks.
+
+The worker harness above separately requires a `conveyor` attachment that uses
+the child credential supplied by the launcher. Configure that attachment in the
+worker account's global config:
 
 ```json
 {
   "mcpServers": {
     "conveyor": {
       "url": "${env:CONVEYOR_ADDR}",
-      "headers": {
-        "Authorization": "Bearer ${env:CONVEYOR_API_TOKEN}"
-      }
+      "headers": {"Authorization": "Bearer ${env:CONVEYOR_API_TOKEN}"}
     }
   }
 }
 ```
 
-Conveyor does not use project-level `.cursor/mcp.json` entries because Cursor
-requires separate approval for them. The global registration loads under the
-child environment without an approval prompt.
-
-Cursor reads the address and credential from its environment. For operator
-sessions, export the MCP endpoint and stored-credential bridge before starting
-Cursor:
-
-```sh
-export CONVEYOR_ADDR=https://factory.example.com/mcp
-export CONVEYOR_API_TOKEN=$(conveyor auth token)
-```
-
-Conveyor commands accept the same `CONVEYOR_ADDR` value and remove one trailing
-`/mcp` segment when resolving the REST server base. Worker children receive the
-matching MCP endpoint from their launcher.
+Personal installation does not replace this attachment. It will not migrate a
+legacy shared-environment registration without explicit adoption and a matching
+endpoint. Worker children receive the endpoint and attempt credential from their
+launcher; never substitute the operator's saved personal token in that flow.
 
 ## Readiness and installation
 
@@ -94,10 +94,9 @@ Before every model turn, Conveyor runs
 environment. Readiness fails closed unless the command exits successfully and
 lists Conveyor's claim, renewal, release, implementation-submission, and
 review-verdict lifecycle tools. A readiness error means the global registration
-is missing, invalid, or cannot complete the handshake. Run
-`conveyor mcp install --tool cursor`, verify the environment bridge above, and
-retry the work order. Launch and readiness never create or repair Cursor
-configuration; only the explicit install command writes the owned global entry.
+is missing, invalid, or cannot complete the handshake. Check the worker attachment and its launcher-provided environment above, then
+retry the work order. Personal `mcp install` does not repair worker readiness. Launch and readiness never create or repair Cursor
+configuration; worker attachment changes are an explicit local setup act.
 
 Install Cursor CLI so `cursor-agent` is on `PATH`. Use `cursor-agent`, never
 the `agent` alias; the official installer replaces `~/.local/bin/agent`, which

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -109,14 +110,24 @@ func authCmd() *cobra.Command {
 		},
 	}
 	logout.Flags().BoolVar(&revoke, "revoke", false, "also revoke the stored personal access token on the server")
+	var tokenFormat, credentialsFile string
 	token := &cobra.Command{
 		Use: "token", Short: "Print the stored credential for command substitution", Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			resolved, err := resolveClientConfig()
+			var resolved resolvedClientConfig
+			var err error
+			if strings.TrimSpace(serverFlag) != "" {
+				resolved.Server.Value, err = normalizeServerURL(serverFlag)
+			} else {
+				resolved, err = resolveClientConfig()
+			}
 			if err != nil {
 				return err
 			}
-			config, err := loadLocalAuthConfig()
+			if tokenFormat != "raw" && tokenFormat != "http-headers" {
+				return errors.New("format must be raw or http-headers")
+			}
+			config, err := loadLocalAuthConfigFile(credentialsFile)
 			if err != nil {
 				return err
 			}
@@ -124,10 +135,15 @@ func authCmd() *cobra.Command {
 			if value == "" {
 				return fmt.Errorf("no stored credential for %s; run `conveyor auth login`", resolved.Server.Value)
 			}
+			if tokenFormat == "http-headers" {
+				return json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]string{"Authorization": "Bearer " + value})
+			}
 			_, err = fmt.Fprintln(cmd.OutOrStdout(), value)
 			return err
 		},
 	}
+	token.Flags().StringVar(&tokenFormat, "format", "raw", "output format: raw or http-headers (explicit secret output)")
+	token.Flags().StringVar(&credentialsFile, "credentials-file", "", "absolute saved-credential file used by native MCP helpers")
 	command.AddCommand(login, status, logout, token)
 	return command
 }

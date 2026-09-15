@@ -967,3 +967,65 @@ func loadDispatchJob(t *testing.T, st *Store, workspace, taskID string) logqueue
 	}
 	return job
 }
+
+// The shared conformance suite proves rollback and history for both document
+// kinds. This SQL boundary additionally proves eligibility holds a row lock
+// until the attachment transaction ends, excluding a concurrent archive.
+func TestContextEligibilityLocksDocumentUntilTransactionEndsIntegration(t *testing.T) {
+	st, ctx, ws := newPhase61IntegrationStore(t)
+	defer st.Close()
+	_, rv, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-lock", Title: "Lock"}, core.RequirementVersion{Content: "# Lock", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Serialize authority changes."}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmRequirementVersion(ctx, "req-lock", rv.Version); err != nil {
+		t.Fatal(err)
+	}
+	_, dv, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "design-lock", Title: "Lock", Category: "Architecture"}, core.SystemDesignVersion{Content: "# Lock\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/**\n```", Origin: core.SystemDesignOriginOperator})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmSystemDesignVersion(ctx, "design-lock", dv.Version); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		table, id string
+		kind      core.TaskContextProposalTargetKind
+	}{{"requirements", "req-lock", core.TaskContextProposalRequirement}, {"system_designs", "design-lock", core.TaskContextProposalSystemDesign}} {
+		t.Run(test.table, func(t *testing.T) {
+			tx, err := st.pool.Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback(ctx)
+			if _, err = validateTaskContextTx(ctx, tx, ws, store.TaskContextProposalInput(test.kind, test.id)); err != nil {
+				t.Fatal(err)
+			}
+			competing, err := st.pool.Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer competing.Rollback(ctx)
+			_, err = competing.Exec(ctx, "SELECT id FROM "+test.table+" WHERE workspace_id=$1 AND id=$2 FOR UPDATE NOWAIT", ws, test.id)
+			var pgErr *pgconn.PgError
+			if !errors.As(err, &pgErr) || pgErr.Code != "55P03" {
+				t.Fatalf("document was not protected from archival: %v", err)
+			}
+			if err = competing.Rollback(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if err = tx.Commit(ctx); err != nil {
+				t.Fatal(err)
+			}
+			// Releasing the validation transaction makes the same archive lock available.
+			after, err := st.pool.Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer after.Rollback(ctx)
+			if _, err = after.Exec(ctx, "SELECT id FROM "+test.table+" WHERE workspace_id=$1 AND id=$2 FOR UPDATE NOWAIT", ws, test.id); err != nil {
+				t.Fatalf("lock retained after commit: %v", err)
+			}
+		})
+	}
+}
