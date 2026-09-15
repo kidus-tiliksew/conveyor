@@ -1,22 +1,16 @@
 # Conveyor
 
-Generating code is easier than ever. Checking that the code
-matches product intent is now the bottleneck, and it is a bottleneck that
-gets worse as agents get faster: a queue of unsupervised agents can ship
-more unread code per day than a team can read.
+Coding agents can produce changes faster than a team can review them. The
+harder question is whether those changes match what the team intended to build.
 
-A software factory is the answer to this shape of problem. You do
-not inspect every screw; you fix the process so that inspection happens at
-the points where mistakes can happen, and you make every unit traceable
-so that when something is wrong you know what else is affected.
+Conveyor gives that work a defined process. Humans confirm requirements,
+system designs, and decisions. Agents use those documents to plan, implement,
+and review tasks on your machines, with human approval where required.
 
-Conveyor is a software factory for agent-written code. 
+Requirements traceability gives reviewers a basis for checking the work and
+identifying where it has drifted from the agreed intent.
 
-It queues work from Requirements, System Design documents, and Decisions. Human operators confirm the documents, and approve plans when required. Agents on your machines plan, implement, and review that work.
-
-Conveyor has used this process to build itself since July 2026. 
-
-Contributions go through the factory too. To start contributing, request access first by opening an issue, and you will get a workspace account to plan and pick up work from.
+Conveyor has used this process to build itself since July 2026.
 
 <table>
   <tr>
@@ -206,6 +200,12 @@ Full docs live in [docs/](docs/README.md). There's no docs site yet.
 - [Planning](docs/playbooks/conveyor-planning.md): draft and push documents from a local agent session
 - [Task filing](docs/playbooks/conveyor-task-filing.md): file well-formed tasks and dependency chains
 - [Working a task](docs/playbooks/conveyor-work.md): the claim, checkout, submit, review lifecycle
+
+## Contributing
+
+Contributions go through the factory too. To start contributing, request
+access by opening an issue. You will get a workspace account to plan and
+pick up work.
 
 ## Status
 
