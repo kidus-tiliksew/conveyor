@@ -1621,6 +1621,9 @@ func TestRunHarnessChildCompletesImplementAndReviewMCPFlows(t *testing.T) {
 		if strings.Count(output, "[REDACTED:exact]") < 4 {
 			t.Fatalf("%s child output was not fully redacted: %q", stage, output)
 		}
+		if !strings.Contains(output, "workspace=demo") {
+			t.Fatalf("%s child did not receive the explicit workspace", stage)
+		}
 		if !strings.Contains(output, "worktree_root=/var/lib/conveyor/worktrees") {
 			t.Fatalf("%s child did not receive local worktree root: %q", stage, output)
 		}
@@ -3095,7 +3098,7 @@ func TestWorkerHarnessHelper(t *testing.T) {
 		t.Fatal("missing prompt and MCP config arguments")
 	}
 	if os.Getenv("CONVEYOR_FAKE_HARNESS_EMIT_ENV") == "1" {
-		fmt.Fprintf(os.Stdout, "token=%s address=%s worktree_root=%s\n", os.Getenv("CONVEYOR_API_TOKEN"), os.Getenv("CONVEYOR_ADDR"), os.Getenv("CONVEYOR_WORKTREE_ROOT"))
+		fmt.Fprintf(os.Stdout, "token=%s address=%s worktree_root=%s workspace=%s\n", os.Getenv("CONVEYOR_API_TOKEN"), os.Getenv("CONVEYOR_ADDR"), os.Getenv("CONVEYOR_WORKTREE_ROOT"), os.Getenv("CONVEYOR_WORKSPACE"))
 		fmt.Fprintf(os.Stderr, "session=%s client=%s\n", os.Getenv("CONVEYOR_SESSION_ID"), os.Getenv("CONVEYOR_CLIENT_TOKEN"))
 	}
 	var prompt, configPath string

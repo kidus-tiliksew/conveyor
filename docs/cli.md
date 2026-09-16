@@ -134,7 +134,7 @@ Requires `CONVEYOR_API_TOKEN` and a local Git credential for the repository
 ## repo init
 
 ```sh
-conveyor repo init
+conveyor --server 'https://conveyor.example.com' --workspace 'my-workspace' repo init
 ```
 
 Prepare the current Git checkout for factory work. The command writes only
@@ -150,10 +150,28 @@ An existing `CLAUDE.md` symlink to `AGENTS.md` needs one content write. Broken,
 reversed, or other guidance symlinks and malformed or multiple marker spans
 are refused before installation.
 
-The section uses the registered repository name and base branch when origin
-matches one repository in the workspace configuration read with the caller's
-credential. Otherwise it uses `<registered-repository>` and `<base-branch>`.
-The section contains no server address or credential.
+The command records the canonical server URL, immutable workspace ID, repository
+name, and base branch only after an authenticated workspace configuration read
+matches the selected workspace and exactly one registration matches origin.
+Use explicit flags as above, or the equivalent `CONVEYOR_ADDR` and
+`CONVEYOR_WORKSPACE` supplied to a dispatched install task. Existing credential
+resolution is unchanged. Loopback endpoints, implicit defaults, missing
+credentials, mismatched workspaces, ambiguous registrations, and unsafe values
+leave context unresolved. No credentials or raw lookup errors enter the section.
+
+Generated guidance selects a native MCP connection by matching the recorded
+endpoint and passes the recorded workspace on calls. MCP registration names are
+machine-specific; registering MCP does not set CLI defaults. The section includes
+an explicit `--server`/`--workspace` CLI example. On failure, report the failed
+endpoint and missing context; do not infer another host from localhost defaults,
+SSH configuration, or release instructions.
+
+Rerun the command with explicit verified context to refresh existing repositories,
+including older owned sections. No manual block maintenance is needed. An initial
+unverified installation uses unresolved placeholders. If verification fails during
+a refresh, a structurally valid prior verified section is retained byte for byte,
+and the command reports that it was not reverified. Conflicting or malformed prior
+contexts refuse before writes, including when fresh context is available.
 
 Embedded skills install under `.claude/skills`, `.codex/skills`, and
 `.cursor/skills` for every supported tool, regardless of installed binaries.

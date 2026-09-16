@@ -6,8 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -40,25 +43,34 @@ func repoInitCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			name, base := repoInitMetadata(cmd.Context(), root, func() (config.VersionedDocument, error) {
-				return newClient().getWorkspaceConfig()
-			})
-			return prepareRepository(root, releaseinfo.Version, name, base, cmd.OutOrStdout())
+			c := newClient()
+			connection := repoInitConnection(cmd.Context(), root, c, c.getWorkspaceConfig)
+			return prepareRepositoryWithInstaller(root, releaseinfo.Version, connection.Name, connection.Base, cmd.OutOrStdout(), installEmbeddedSkillsForDestinationsWithForce, connection)
 		},
 	}
 }
 
-// Metadata uses checkout's authenticated config read and origin normalization.
-// Unavailable or ambiguous registration leaves placeholders, never raw URLs or errors.
-func repoInitMetadata(ctx context.Context, root string, lookup func() (config.VersionedDocument, error)) (string, string) {
-	const missingName, missingBase = "<registered-repository>", "<base-branch>"
+// req-repository-onboarding AC-4.7: all fields come from one authenticated
+// registration, never from a singleton fallback or inferred network target.
+type repoInitContext struct{ Server, Workspace, Name, Base string }
+
+func unresolvedRepoInitContext() repoInitContext {
+	return repoInitContext{Name: "<registered-repository>", Base: "<base-branch>"}
+}
+
+func repoInitConnection(ctx context.Context, root string, c *client, lookup func() (config.VersionedDocument, error)) repoInitContext {
+	missing := unresolvedRepoInitContext()
+	server, ok := repoInitServer(c.base)
+	if c.configErr != nil || !ok || server != c.base || c.resolved.Server.Source == "default" || c.resolved.Server.Source == "" || c.token == "" || !repoInitLabel(c.workspace) {
+		return missing
+	}
 	origin, err := localgit.RepositoryOriginIdentity(ctx, root)
 	if err != nil {
-		return missingName, missingBase
+		return missing
 	}
 	record, err := lookup()
-	if err != nil {
-		return missingName, missingBase
+	if err != nil || record.Document.Workspace != c.workspace {
+		return missing
 	}
 	var matches []config.Repo
 	for _, repo := range record.Document.Repos {
@@ -68,16 +80,60 @@ func repoInitMetadata(ctx context.Context, root string, lookup func() (config.Ve
 		}
 	}
 	if len(matches) != 1 || !repoInitLabel(matches[0].Name) || !repoInitLabel(matches[0].Base) {
-		return missingName, missingBase
+		return missing
 	}
-	return matches[0].Name, matches[0].Base
+	result := repoInitContext{Server: server, Workspace: c.workspace, Name: matches[0].Name, Base: matches[0].Base}
+	for _, field := range []string{result.Server, result.Workspace, result.Name, result.Base} {
+		if strings.Contains(field, c.token) {
+			return missing
+		}
+	}
+	return result
 }
 
 func repoInitLabel(value string) bool {
-	return value != "" && !strings.ContainsAny(value, "\r\n\t`<>")
+	if value == "" {
+		return false
+	}
+	for _, c := range value {
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || strings.ContainsRune("._/-", c)) {
+			return false
+		}
+	}
+	return true
 }
 
-func renderRepoInit(version, name, base string) ([]byte, error) {
+func repoInitServer(value string) (string, bool) {
+	// Restrict both raw and decoded URL text before it reaches Markdown or a
+	// single-quoted shell argument. normalizeServerURL supplies CLI parity.
+	safe := func(s string) bool {
+		for _, c := range s {
+			if c <= ' ' || c >= 127 || strings.ContainsRune("'\"`<>$\\", c) {
+				return false
+			}
+		}
+		return true
+	}
+	if !safe(value) {
+		return "", false
+	}
+	canonical, err := normalizeServerURL(value)
+	if err != nil {
+		return "", false
+	}
+	u, err := url.Parse(canonical)
+	if err != nil || !safe(u.Path) || u.ForceQuery || strings.ContainsAny(value, "?#") {
+		return "", false
+	}
+	host := strings.TrimSuffix(u.Hostname(), ".")
+	ip := net.ParseIP(host)
+	if strings.Contains(host, "%") || host == "" || host == "localhost" || strings.HasSuffix(host, ".localhost") || ip != nil && (ip.IsLoopback() || ip.IsUnspecified()) {
+		return "", false
+	}
+	return canonical, true
+}
+
+func renderRepoInit(version, name, base string, connection ...repoInitContext) ([]byte, error) {
 	if err := validMarkerValue(version); err != nil {
 		return nil, err
 	}
@@ -85,7 +141,12 @@ func renderRepoInit(version, name, base string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return []byte(strings.NewReplacer("{{version}}", version, "{{repository}}", name, "{{base}}", base).Replace(string(asset))), nil
+	contextText := "Connection context is unresolved. Obtain an explicit server URL and immutable workspace ID, then rerun `conveyor --server '<server>' --workspace '<workspace-id>' repo init`. Do not use a guessed endpoint."
+	if len(connection) > 0 && connection[0].Server != "" {
+		c := connection[0]
+		contextText = fmt.Sprintf("Server: `%s`. Workspace: `%s`.\nSelect a native MCP connection whose endpoint matches this server and pass workspace `%s` on every call. MCP registration names vary by machine; registering MCP does not set CLI defaults.\nCLI example: `conveyor --server '%s' --workspace '%s' task list`.\nRefresh this owned section and the project-scoped skills through ordinary task delivery with `conveyor --server '%s' --workspace '%s' repo init`.", c.Server, c.Workspace, c.Workspace, c.Server, c.Workspace, c.Server, c.Workspace)
+	}
+	return []byte(strings.NewReplacer("{{version}}", version, "{{repository}}", name, "{{base}}", base, "{{connection}}", contextText).Replace(string(asset))), nil
 }
 
 // Replace only the owned span, including neither the prefix nor the suffix.
@@ -175,6 +236,72 @@ func planRepoGuidance(root string, section []byte) (plan []repoGuidanceFile, err
 	return plan, nil
 }
 
+var repoInitContextLine = regexp.MustCompile("(?m)^Server: `([^`]+)`\\. Workspace: `([^`]+)`\\.$")
+
+// AC-4.9 / component-runtime: validate both prior contexts before staging any
+// file. An unavailable refresh retains the owned bytes, not a reconstructed copy.
+func preserveRepoInitContext(plan []repoGuidanceFile, verified bool) (bool, error) {
+	var priorContext repoInitContext
+	var retainedSection []byte
+	sections := make(map[int][]byte)
+	for i, item := range plan {
+		if item.link != "" {
+			continue
+		}
+		text := string(item.prior)
+		start, end := strings.Index(text, repoInitOwnerPrefix), strings.Index(text, repoInitClose)
+		if start < 0 || end < start {
+			continue
+		}
+		section := text[start : end+len(repoInitClose)]
+		fields := repoInitContextLine.FindAllStringSubmatch(section, -1)
+		if len(fields) == 0 && !strings.Contains(section, "Server:") && !strings.Contains(section, "Workspace:") {
+			continue
+		}
+		if len(fields) != 1 || strings.Count(section, "Server:") != 1 || strings.Count(section, "Workspace:") != 1 {
+			return false, fmt.Errorf("malformed prior Conveyor connection context")
+		}
+		server, ok := repoInitServer(fields[0][1])
+		if !ok || server != fields[0][1] || !repoInitLabel(fields[0][2]) {
+			return false, fmt.Errorf("unsafe prior Conveyor connection context")
+		}
+		current := repoInitContext{Server: server, Workspace: fields[0][2]}
+		if retainedSection != nil && current != priorContext {
+			return false, fmt.Errorf("conflicting prior Conveyor connection contexts")
+		}
+		priorContext, retainedSection = current, []byte(section)
+		sections[i] = retainedSection
+	}
+	if verified || retainedSection == nil {
+		return false, nil
+	}
+	for i := range plan {
+		item := &plan[i]
+		if item.link != "" {
+			if item.exists {
+				item.status = plan[0].status
+			}
+			continue
+		}
+		section := retainedSection
+		if own, ok := sections[i]; ok {
+			section = own
+		}
+		content, err := replaceRepoInit(item.prior, append(append([]byte{}, section...), '\n'))
+		if err != nil {
+			return false, err
+		}
+		item.content = content
+		if item.exists {
+			item.status = "updated"
+			if bytes.Equal(item.prior, content) {
+				item.status = "unchanged"
+			}
+		}
+	}
+	return true, nil
+}
+
 // prepareRepository keeps req-repository-onboarding REQ-4/AC-4.1 through
 // AC-4.5 in one preflight and rollback boundary (component-runtime, DEC-40).
 // The shared skill installer retains ownership and refresh semantics unchanged.
@@ -184,12 +311,12 @@ func prepareRepository(root, version, name, base string, out io.Writer) error {
 	return prepareRepositoryWithInstaller(root, version, name, base, out, installEmbeddedSkillsForDestinationsWithForce)
 }
 
-func prepareRepositoryWithInstaller(root, version, name, base string, out io.Writer, install repoSkillInstaller) error {
+func prepareRepositoryWithInstaller(root, version, name, base string, out io.Writer, install repoSkillInstaller, connection ...repoInitContext) error {
 	refuse := func(tool, target string, err error) error {
 		fmt.Fprintf(out, "%s\trefused\t%s\n", tool, target)
 		return err
 	}
-	section, err := renderRepoInit(version, name, base)
+	section, err := renderRepoInit(version, name, base, connection...)
 	if err != nil {
 		return err
 	}
@@ -200,6 +327,14 @@ func prepareRepositoryWithInstaller(root, version, name, base string, out io.Wri
 			return refuse("repo", pathErr.Path, err)
 		}
 		return refuse("repo", root, err)
+	}
+	verified := len(connection) > 0 && connection[0].Server != ""
+	retained, err := preserveRepoInitContext(guidance, verified)
+	if err != nil {
+		return refuse("repo", root, err)
+	}
+	if retained {
+		fmt.Fprintln(out, "repo\tcontext retained without reverification\tprior verified guidance")
 	}
 	destinations := skillDestinations(root, supportedSkillTools, true)
 	var skillPlan []skillInstallFile
