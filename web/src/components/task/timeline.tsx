@@ -37,12 +37,13 @@ import type {
   ActivityItem,
   InterventionAction,
   Job,
+  TaskAuditKind,
   WorkOrder,
   WorkOrderActivitySnapshot,
   WorkOrderTranscriptCapture,
 } from '../../lib/types'
 import { absoluteTime, cn, compactTokens, duration } from '../../lib/utils'
-import { usePendingProposals, useWorkspaceCapability, useWorkspaceMembers } from '../app-shell'
+import { usePendingProposals, useWorkspaceCapability, useWorkspaceMembers, useWorkspaceSelection } from '../app-shell'
 import { Badge } from '../ui/badge'
 import { Disclosure } from '../ui/disclosure'
 import { MarkdownProse } from '../ui/markdown-prose'
@@ -59,6 +60,7 @@ import {
 } from './review-panel'
 import { hasReviewRoundRetry, ReviewRoundRetryCard } from './review-round-retry-card'
 import { reviewGateCopy, SystemDesignProposalCard, useSystemDesignProposals } from './system-design-proposal-card'
+import { useTaskAudit } from './use-task-detail'
 import { claimedWorkOrder, WorkOrderPreemptControl } from './work-order-preempt-card'
 import {
   CheckpointProposalRecoveryCard,
@@ -497,6 +499,7 @@ function usageText(order: WorkOrder, available: boolean): string {
 }
 
 function TechnicalActivity({ item }: { item: ActivityItem }) {
+  const { workspace } = useWorkspaceSelection()
   const events = technicalActivity(item)
   const reported = reportedUsageOrderIDs(item)
   const orders = item.work_orders ?? []
@@ -530,6 +533,13 @@ function TechnicalActivity({ item }: { item: ActivityItem }) {
                 <span className="text-foreground">{stageLabels[order.stage] ?? order.stage}</span>
                 <code className="text-faint">{order.id}</code>
                 <span className="ml-auto">{usageText(order, reported.has(order.id))}</span>
+                <AuditDisclosure
+                  key={`${workspace}:${item.task.id}:work-order:${order.id}`}
+                  taskId={item.task.id}
+                  kind="work-order"
+                  recordId={order.id}
+                  label={`Work-order audit ${order.id} (current record)`}
+                />
               </li>
             ))}
           </ul>
@@ -540,9 +550,19 @@ function TechnicalActivity({ item }: { item: ActivityItem }) {
           <li key={event.id} className="px-3 py-2">
             <div className="flex flex-wrap items-baseline gap-2">
               <code className="text-[11px] text-foreground">{event.kind}</code>
+              <span className="text-[11px] text-faint">Event {event.id}</span>
               <time className="ml-auto text-[11px] text-faint">{absoluteTime(event.at)}</time>
             </div>
-            {event.payload && Object.keys(event.payload).length > 0 && <EventPayloadDisclosure event={event} />}
+            {(event.audit_available || (event.payload && Object.keys(event.payload).length > 0)) && (
+              <AuditDisclosure
+                key={`${workspace}:${item.task.id}:event:${event.id}`}
+                taskId={item.task.id}
+                kind="event"
+                recordId={String(event.id)}
+                label="Event payload"
+                event={event}
+              />
+            )}
           </li>
         ))}
       </ol>
@@ -550,19 +570,71 @@ function TechnicalActivity({ item }: { item: ActivityItem }) {
   )
 }
 
-function EventPayloadDisclosure({ event }: { event: ActivityItem['events'][number] }) {
+function AuditDisclosure({
+  taskId,
+  kind,
+  recordId,
+  label,
+  event,
+}: {
+  taskId: string
+  kind: TaskAuditKind
+  recordId: string
+  label: string
+  event?: ActivityItem['events'][number]
+}) {
   const [open, setOpen] = useState(false)
   return (
-    <details className="mt-1" onToggle={(toggle) => setOpen(toggle.currentTarget.open)}>
+    <details className="mt-1 w-full" onToggle={(toggle) => setOpen(toggle.currentTarget.open)}>
       <summary className="cursor-pointer rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary">
-        Event payload
+        {label}
       </summary>
-      {open && (
-        <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded border border-border bg-background p-2 font-mono">
-          {JSON.stringify(technicalPayload(event), null, 2)}
-        </pre>
+      {event && !event.audit_available ? (
+        open && <AuditJSON payload={technicalPayload(event)} />
+      ) : (
+        <AuditPayload taskId={taskId} kind={kind} recordId={recordId} open={open} />
       )}
     </details>
+  )
+}
+
+function AuditPayload({
+  taskId,
+  kind,
+  recordId,
+  open,
+}: {
+  taskId: string
+  kind: TaskAuditKind
+  recordId: string
+  open: boolean
+}) {
+  const query = useTaskAudit(taskId, kind, recordId, open)
+  if (!open) return null
+  if (query.isError)
+    return (
+      <div role="alert" className="mt-2">
+        <p>Could not load audit detail: {query.error.message}</p>
+        <button type="button" className="text-primary underline" onClick={() => void query.refetch()}>
+          Retry
+        </button>
+      </div>
+    )
+  if (query.isPending || query.isFetching)
+    return (
+      <p role="status" className="mt-2">
+        Loading audit detail…
+      </p>
+    )
+  const data = query.data
+  return <AuditJSON payload={data.kind === 'event' ? technicalPayload(data.event) : data.work_order} />
+}
+
+function AuditJSON({ payload }: { payload: unknown }) {
+  return (
+    <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded border border-border bg-background p-2 font-mono">
+      {JSON.stringify(payload, null, 2)}
+    </pre>
   )
 }
 

@@ -217,6 +217,7 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/tasks/{id}/events", s.listEvents)
 			r.Get("/tasks/{id}/events/stream", s.streamEvents)
 			r.Get("/tasks/{id}/activity", s.getTaskActivity)
+			r.Get("/tasks/{id}/audit/{kind}/{record_id}", s.getTaskAudit)
 			r.Get("/lineage/{type}/{id}", s.getLineage)
 			r.With(s.requireMutationCapability(core.CapabilityManageWorkspace)).Post("/lineage/rebuild", s.rebuildLineage)
 			r.Get("/tasks/{id}/interventions", s.listInterventions)
@@ -2096,7 +2097,7 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	pendingAuthority := pendingAuthorityForTask(id, workOrders, proposals)
-	writeJSON(w, http.StatusOK, reviewItem{
+	writeJSON(w, http.StatusOK, taskDetailProjection{reviewItem{
 		Task: task, Jobs: jobs, Events: events, Interventions: interventions,
 		CheckoutCommand: checkoutCommand, CheckoutAvailable: checkoutAvailable, CheckoutGuidance: checkoutGuidance,
 		NeedsAttention:            task.State == core.TaskAwaiting || task.State == core.TaskParked || store.LatestForgeFailure(events) != nil || store.ReviewRecoveryNeeded(workOrders, events) != nil || store.InterruptedReviewRecoveryNeeded(task, workOrders, events) != nil || stalled != nil || store.UserRequestChangesPending(events) || pendingAuthority || len(task.Context.Proposals) > 0,
@@ -2114,7 +2115,7 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 		Attachments:               attachments,
 		VerificationEvidence:      verificationEvidence,
 		OperatorNotes:             operatorNotes,
-	})
+	}})
 }
 
 func (s *Server) taskVerificationEvidence(ctx context.Context, taskID string) ([]core.Artifact, error) {
