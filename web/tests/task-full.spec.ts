@@ -6043,3 +6043,183 @@ test('hold refusal stays visible and retry preserves the requested transition', 
   await dialog.getByRole('button', { name: 'Cancel', exact: true }).click()
   await expect(page.getByRole('button', { name: 'Hold', exact: true })).toBeVisible()
 })
+
+// Mirrors component-http-api's lightweight record shape, with the full bodies
+// available only from the selected audit route.
+test('lightweight audit disclosures load on demand, retry, and stay out of SSE refresh', async ({ page }) => {
+  const item = activity('audit-detail', false)
+  const event = {
+    id: 482,
+    task_id: 'audit-detail',
+    kind: 'review.output_invalid',
+    actor_id: 'runner',
+    actor_role: 'runner',
+    at: createdAt,
+    payload: { reason: 'invalid output' },
+    audit_available: true,
+  }
+  const order = {
+    id: 'audit-review-7',
+    task_id: 'audit-detail',
+    job_id: 'audit-review-7',
+    stage: 'review',
+    state: 'completed',
+    created_at: createdAt,
+    tokens_in: 0,
+    tokens_out: 0,
+    audit_available: true,
+  }
+  let details = 0
+  const requests: string[] = []
+  let releaseEvent = () => {}
+  let releaseStream = () => {}
+  const eventGate = new Promise<void>((resolve) => {
+    releaseEvent = resolve
+  })
+  const streamGate = new Promise<void>((resolve) => {
+    releaseStream = resolve
+  })
+  await page.route('**/v1/tasks/audit-detail/activity**', (route) => {
+    details++
+    return route.fulfill({
+      json: {
+        ...item,
+        events: [event],
+        work_orders: [order],
+        task: {
+          ...item.task,
+          dependencies: [{ id: 'dependency', title: 'Required backend', state: 'running' }],
+          blocking_task_ids: ['dependency'],
+        },
+      },
+    })
+  })
+  await page.route('**/v1/tasks/audit-detail/events/stream**', async (route) => {
+    await streamGate
+    await route.fulfill({ contentType: 'text/event-stream', body: 'event: activity\ndata: {}\n\n' })
+  })
+  await page.route('**/v1/tasks/audit-detail/audit/**', async (route) => {
+    const url = new URL(route.request().url())
+    expect(url.searchParams.get('workspace_id')).toBe('demo')
+    requests.push(url.pathname)
+    if (url.pathname.endsWith('/event/482')) {
+      await eventGate
+      if (requests.filter((path) => path.endsWith('/event/482')).length === 1)
+        return route.fulfill({ status: 404, body: 'Not found' })
+      return route.fulfill({
+        json: {
+          kind: 'event',
+          event: {
+            ...event,
+            payload: {
+              governance_snapshot: { designs: [{ content: 'Complete historical authority' }] },
+              evidence: '/v1/artifacts/proof',
+              output: 'REJECTED-OUTPUT-MUST-STAY-HIDDEN',
+            },
+          },
+        },
+      })
+    }
+    expect(url.pathname).toBe('/v1/tasks/audit-detail/audit/work-order/audit-review-7')
+    return route.fulfill({
+      json: {
+        kind: 'work-order',
+        work_order: { ...order, governance_snapshot: { designs: [{ content: 'Complete current authority' }] } },
+      },
+    })
+  })
+  const started = Date.now()
+  await page.goto('/tasks/audit-detail/full')
+  await expect(page.getByText('Regression marker at the bottom of the task content.')).toBeVisible()
+  await expect(page.getByRole('link', { name: /Required backend/ })).toBeVisible()
+  console.log(`seeded lightweight browser render: ${Date.now() - started} ms; mocked response, no live speed claim`)
+  expect(requests).toEqual([])
+  await page.getByText('Show technical activity').click()
+  expect(requests).toEqual([])
+  await expect(page.getByText('Event 482', { exact: true })).toBeVisible()
+  await page.getByText('Event payload', { exact: true }).click()
+  await expect(page.getByRole('status').filter({ hasText: 'Loading audit detail' })).toBeVisible()
+  releaseEvent()
+  await expect(page.getByRole('alert').filter({ hasText: 'Could not load audit detail' })).toBeVisible()
+  expect(requests).toHaveLength(1)
+  await page.getByRole('button', { name: 'Retry', exact: true }).click()
+  await expect(page.locator('pre').filter({ hasText: 'Complete historical authority' })).toBeVisible()
+  await expect(page.locator('pre').filter({ hasText: '/v1/artifacts/proof' })).toBeVisible()
+  await expect(page.getByText('REJECTED-OUTPUT-MUST-STAY-HIDDEN')).toHaveCount(0)
+  await page.getByText('Work-order audit audit-review-7 (current record)', { exact: true }).click()
+  await expect(page.locator('pre').filter({ hasText: 'Complete current authority' })).toBeVisible()
+  expect(requests).toHaveLength(3)
+  releaseStream()
+  await expect.poll(() => details).toBeGreaterThan(1)
+  expect(requests).toHaveLength(3)
+  // Reopening fetches the mutable order afresh; it is not frozen in cache.
+  await page.getByText('Work-order audit audit-review-7 (current record)', { exact: true }).click()
+  await page.getByText('Work-order audit audit-review-7 (current record)', { exact: true }).click()
+  await expect.poll(() => requests.length).toBe(4)
+})
+
+test('seeded full and lightweight task payloads record comparable render observations', async ({ page }) => {
+  const snapshot = { designs: [{ content: 's'.repeat(500_000) }] }
+  const base = activity('audit-measurement', false)
+  const events = Array.from({ length: 482 }, (_, index) => ({
+    id: index + 1,
+    task_id: 'audit-measurement',
+    kind: 'work_order.updated',
+    actor_id: 'runner',
+    actor_role: 'runner',
+    at: createdAt,
+    payload: { message: 'Operational progress', ...(index >= 479 ? { governance_snapshot: snapshot } : {}) },
+  }))
+  const orders = Array.from({ length: 7 }, (_, index) => ({
+    id: `audit-order-${index}`,
+    task_id: 'audit-measurement',
+    job_id: `audit-order-${index}`,
+    stage: 'review',
+    state: 'completed',
+    created_at: createdAt,
+    tokens_in: 0,
+    tokens_out: 0,
+    ...(index === 6 ? { governance_snapshot: snapshot } : {}),
+  }))
+  const full = { ...base, events, work_orders: orders }
+  const project = (record: object) => {
+    let omitted = false
+    const data = JSON.parse(
+      JSON.stringify(record, (key, value) => {
+        if (key === 'governance_snapshot' || key === 'served_requirement_snapshot') {
+          omitted = true
+          return undefined
+        }
+        return value
+      }),
+    )
+    return omitted ? { ...data, audit_available: true } : data
+  }
+  const lightweight = { ...base, events: events.map(project), work_orders: orders.map(project) }
+  let selected = JSON.stringify(full)
+  let audits = 0
+  await page.route('**/v1/tasks/audit-measurement/activity**', (route) =>
+    route.fulfill({ contentType: 'application/json', body: selected }),
+  )
+  await page.route('**/v1/tasks/audit-measurement/audit/**', (route) => {
+    audits++
+    return route.fulfill({ status: 500 })
+  })
+  // Warm the same route before both measured navigations.
+  await page.goto('/tasks/audit-measurement/full')
+  await expect(page.getByText('Regression marker at the bottom of the task content.')).toBeVisible()
+  for (const [label, data] of [
+    ['full', full],
+    ['lightweight', lightweight],
+  ] as const) {
+    selected = JSON.stringify(data)
+    const start = Date.now()
+    await page.goto('/tasks/audit-measurement/full')
+    await expect(page.getByText('Regression marker at the bottom of the task content.')).toBeVisible()
+    console.log(
+      `seeded ${label}: ${Buffer.byteLength(selected)} uncompressed bytes; warm navigation-to-plan ${Date.now() - start} ms (mocked API, same browser/client)`,
+    )
+    expect(audits).toBe(0)
+  }
+  expect(Buffer.byteLength(JSON.stringify(lightweight))).toBeLessThan(Buffer.byteLength(JSON.stringify(full)) * 0.15)
+})

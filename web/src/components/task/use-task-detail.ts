@@ -1,8 +1,9 @@
-import { useMemo } from 'react'
-import { useQuery } from '@tanstack/react-query'
-import { fetchTaskActivity } from '../../lib/api'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useEffect, useMemo } from 'react'
 import { groupForSummary } from '../../lib/activity'
+import { fetchTaskActivity, fetchTaskAudit } from '../../lib/api'
 import { stageGroups } from '../../lib/contracts'
+import type { TaskAuditKind } from '../../lib/types'
 import { useTaskStream } from '../../lib/use-task-stream'
 import { useActivity, useWorkspaceSelection } from '../app-shell'
 
@@ -19,6 +20,30 @@ export function useTaskDetail(taskId: string) {
   })
   useTaskStream(taskId, workspace)
   return query
+}
+
+// Enabled only by an open individual disclosure (component-web-dashboard).
+// The separate family is never invalidated by task SSE or dependency polling.
+export function useTaskAudit(taskId: string, kind: TaskAuditKind, recordId: string, open: boolean) {
+  const { workspace } = useWorkspaceSelection()
+  const queryClient = useQueryClient()
+  useEffect(() => {
+    if (!open) return
+    return () => {
+      void queryClient.cancelQueries({ queryKey: ['task-audit', workspace, taskId, kind, recordId], exact: true })
+    }
+  }, [queryClient, workspace, taskId, kind, recordId, open])
+  return useQuery({
+    queryKey: ['task-audit', workspace, taskId, kind, recordId],
+    queryFn: ({ signal }) => fetchTaskAudit(workspace, taskId, kind, recordId, signal),
+    enabled: Boolean(open && workspace && taskId && recordId),
+    retry: false,
+    staleTime: 0,
+    gcTime: 0,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+    refetchInterval: false,
+  })
 }
 
 // Prev/next follow the board's visual order: columns left to right, cards

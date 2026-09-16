@@ -876,3 +876,62 @@ test('start over markers identify both retired and successor Tasks rows', async 
   await expect(rows(page).filter({ hasText: 'Historical anchor' })).toContainText('restarted')
   await expect(rows(page).filter({ hasText: 'Shipped web change' })).not.toContainText('restarted')
 })
+
+test('Tasks panel renders lightweight detail before requesting selected audit', async ({ page }) => {
+  await openTasks(page)
+  const event = {
+    id: 482,
+    task_id: 'task-blocked',
+    kind: 'work_order.updated',
+    actor_id: 'runner',
+    actor_role: 'runner',
+    at: '2026-08-06T11:00:00Z',
+    payload: { id: 'review-7' },
+    audit_available: true,
+  }
+  let audits = 0
+  await page.route('**/v1/tasks/task-blocked/activity**', (route) =>
+    route.fulfill({
+      json: {
+        task: operations[0].task,
+        jobs: [],
+        events: [event],
+        work_orders: [],
+        interventions: [],
+        needs_attention: false,
+        spec: {
+          task_id: 'task-blocked',
+          version: 1,
+          content: 'Retained approved plan',
+          approved: true,
+          acceptance: [],
+          decomposition: [],
+        },
+      },
+    }),
+  )
+  await page.route('**/v1/tasks/task-blocked/audit/event/482**', (route) => {
+    audits++
+    expect(new URL(route.request().url()).searchParams.get('workspace_id')).toBe('demo')
+    return route.fulfill({
+      json: {
+        kind: 'event',
+        event: { ...event, payload: { governance_snapshot: { content: 'Panel complete authority' } } },
+      },
+    })
+  })
+  await page.getByRole('link', { name: 'Wire the Tasks view' }).click()
+  const panel = page.getByRole('dialog', { name: 'Task detail' })
+  await expect(panel.getByText('Retained approved plan')).toBeVisible()
+  await expect(panel.getByRole('link', { name: /Abandoned prerequisite/ })).toBeVisible()
+  await expect(panel.getByRole('link', { name: 'Open full task page' })).toHaveAttribute(
+    'href',
+    '/tasks/task-blocked/full',
+  )
+  expect(audits).toBe(0)
+  await panel.getByText('Show technical activity').click()
+  expect(audits).toBe(0)
+  await panel.getByText('Event payload', { exact: true }).click()
+  await expect(panel.locator('pre').filter({ hasText: 'Panel complete authority' })).toBeVisible()
+  expect(audits).toBe(1)
+})

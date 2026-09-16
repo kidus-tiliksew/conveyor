@@ -605,3 +605,78 @@ test('board creation opens the new task in the board detail route', async ({ pag
   await expect(detail).toBeVisible()
   await expect(detail.getByRole('heading', { name: 'Created on Board', exact: true })).toBeVisible()
 })
+
+test('Board sheet keeps lazy audit reads isolated across workspace changes', async ({ page }) => {
+  await page.clock.setFixedTime(new Date('2026-08-20T12:00:00Z'))
+  await openBoard(page, [])
+  const event = {
+    id: 482,
+    task_id: 'task-recent',
+    kind: 'work_order.updated',
+    actor_id: 'runner',
+    actor_role: 'runner',
+    at: '2026-08-06T11:00:00Z',
+    payload: { id: 'review-7' },
+    audit_available: true,
+  }
+  const requests: string[] = []
+  let releaseDemo = () => {}
+  const demoGate = new Promise<void>((resolve) => {
+    releaseDemo = resolve
+  })
+  await page.route('**/v1/tasks/task-recent/activity**', (route) =>
+    route.fulfill({
+      json: {
+        task: { ...activity[0].task, workspace: new URL(route.request().url()).searchParams.get('workspace_id') },
+        jobs: [],
+        events: [event],
+        work_orders: [],
+        interventions: [],
+        needs_attention: false,
+        spec: {
+          task_id: 'task-recent',
+          version: 1,
+          content: 'Board retained plan',
+          approved: true,
+          acceptance: [],
+          decomposition: [],
+        },
+      },
+    }),
+  )
+  await page.route('**/v1/tasks/task-recent/events/stream**', (route) => route.fulfill({ status: 204 }))
+  await page.route('**/v1/tasks/task-recent/audit/event/482**', async (route) => {
+    const workspace = new URL(route.request().url()).searchParams.get('workspace_id') ?? ''
+    requests.push(workspace)
+    if (workspace === 'demo') await demoGate
+    await route
+      .fulfill({
+        json: {
+          kind: 'event',
+          event: { ...event, payload: { governance_snapshot: { content: `${workspace} complete authority` } } },
+        },
+      })
+      .catch(() => {})
+  })
+  await cards(page).filter({ hasText: 'Recent conveyor change' }).click()
+  let panel = page.getByRole('dialog', { name: 'Task detail' })
+  await expect(panel.getByText('Board retained plan')).toBeVisible()
+  expect(requests).toEqual([])
+  await panel.getByText('Show technical activity').click()
+  expect(requests).toEqual([])
+  await panel.getByText('Event payload', { exact: true }).click()
+  await expect(panel.getByRole('status').filter({ hasText: 'Loading audit detail' })).toBeVisible()
+  await page.keyboard.press('Escape')
+  await page.getByRole('button', { name: 'Switch to Other', exact: true }).click()
+  releaseDemo()
+  await cards(page).filter({ hasText: 'Recent conveyor change' }).click()
+  panel = page.getByRole('dialog', { name: 'Task detail' })
+  await expect(panel.getByText('Board retained plan')).toBeVisible()
+  await expect(panel.getByText('demo complete authority')).toHaveCount(0)
+  expect(requests).toEqual(['demo'])
+  await panel.getByText('Show technical activity').click()
+  await panel.getByText('Event payload', { exact: true }).click()
+  await expect(panel.locator('pre').filter({ hasText: 'other complete authority' })).toBeVisible()
+  expect(requests).toEqual(['demo', 'other'])
+  await expect(panel.getByText('demo complete authority')).toHaveCount(0)
+})

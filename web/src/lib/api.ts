@@ -20,6 +20,8 @@ import type {
   RequirementVersion,
   RequirementView,
   Task,
+  TaskAuditKind,
+  TaskAuditResponse,
   TaskOperationsItem,
   TaskOperationsPage,
   TaskRestartInput,
@@ -122,6 +124,20 @@ export function fetchPendingProposals() {
 
 export function fetchTaskActivity(taskId: string) {
   return getJSON<ActivityItem>(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/activity`))
+}
+
+// Use the query's workspace and cancellation signal, never a later selection.
+export async function fetchTaskAudit(
+  workspace: string,
+  taskId: string,
+  kind: TaskAuditKind,
+  recordId: string,
+  signal: AbortSignal,
+) {
+  const path = `/v1/tasks/${encodeURIComponent(taskId)}/audit/${kind}/${encodeURIComponent(recordId)}`
+  const response = await fetch(`${path}?workspace_id=${encodeURIComponent(workspace)}`, { signal })
+  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
+  return response.json() as Promise<TaskAuditResponse>
 }
 
 export function fetchWorkspace() {

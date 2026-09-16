@@ -3558,3 +3558,234 @@ func TestTaskOperationsProjectsStalledStateAndDropsItOnTerminalTasks(t *testing.
 		t.Fatalf("terminal row retained stalled state: %+v", shipped.Stalled)
 	}
 }
+
+func TestTaskDetailProjectionPreservesOperationalJSON(t *testing.T) {
+	// Includes integers above JavaScript's exact range, nested arrays, and keys
+	// whose names only resemble the two snapshot body keys.
+	payload := json.RawMessage(`{"id":9007199254740993,"governance_snapshot_id":"pin","nested":[{"governance_snapshot":{"large":"body"},"served_requirement_snapshot":[],"url":"/evidence/1"}],"number":1.234567890123456789}`)
+	item := reviewItem{Task: core.Task{ID: "projection", Body: "body"}, Events: []core.Event{{ID: 9007199254740993, TaskID: "projection", Payload: payload}}, WorkOrders: []workOrderActivityView{}, CheckoutAvailable: true, CheckoutCommand: "conveyor run projection", NeedsAttention: true, AtMergeGate: true, Spec: &core.SpecVersion{Content: "approved plan"}}
+	before, err := json.Marshal(item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projected, err := json.Marshal(taskDetailProjection{item})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`9007199254740993`, `1.234567890123456789`, `"audit_available":true`, `"governance_snapshot_id":"pin"`, `"url":"/evidence/1"`} {
+		if !bytes.Contains(projected, []byte(want)) {
+			t.Fatalf("missing %s: %s", want, projected)
+		}
+	}
+	for _, unwanted := range []string{`"governance_snapshot":`, `"served_requirement_snapshot":`} {
+		if bytes.Contains(projected, []byte(unwanted)) {
+			t.Fatalf("snapshot leaked: %s", projected)
+		}
+	}
+	var fullFields, projectedFields map[string]json.RawMessage
+	_ = json.Unmarshal(before, &fullFields)
+	_ = json.Unmarshal(projected, &projectedFields)
+	for key, value := range fullFields {
+		if key != "events" && !bytes.Equal(value, projectedFields[key]) {
+			t.Fatalf("operational field %s changed", key)
+		}
+	}
+	after, _ := json.Marshal(item)
+	if !bytes.Equal(before, after) {
+		t.Fatal("projection mutated its source")
+	}
+}
+
+func TestTaskDetailAuditSnapshots(t *testing.T) {
+	// Seed the reported event/order shape. All timing and size observations here
+	// are memory-store tests, not live deployment performance measurements.
+	var smallProjectionSize int
+	for _, snapshotSize := range []int{500_000, 1_000_000} {
+		t.Run(strconv.Itoa(snapshotSize), func(t *testing.T) {
+			ctx := store.WithWorkspace(t.Context(), "demo")
+			st := store.NewMemory()
+			// Fixed timestamp precision keeps serialized event sizes comparable.
+			task := core.Task{ID: "audit-task", Workspace: "demo", State: core.TaskRunning, Title: "Audit task", Body: "Keep task context", CreatedAt: time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)}
+			if err := st.CreateTask(ctx, task); err != nil {
+				t.Fatal(err)
+			}
+			for _, foreign := range []core.Task{{ID: "other-task", Workspace: "demo"}, {ID: "foreign-task", Workspace: "foreign"}} {
+				if err := st.CreateTask(store.WithWorkspace(ctx, foreign.Workspace), foreign); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := st.CreateSpecVersion(ctx, core.SpecVersion{TaskID: task.ID, Content: "Keep the plan"}); err != nil {
+				t.Fatal(err)
+			}
+			snapshot := &core.GovernanceSnapshot{ResolutionNotes: []string{strings.Repeat("s", snapshotSize)}}
+			for i := 0; i < 7; i++ {
+				order := core.WorkOrder{ID: fmt.Sprintf("audit-order-%d", i), TaskID: task.ID, JobID: fmt.Sprintf("audit-job-%d", i), Stage: core.StageReview, State: core.WorkOrderQueued, ClientTokenHash: "private-hash"}
+				if i == 6 {
+					order.GovernanceSnapshot = snapshot
+				}
+				if err := st.CreateJob(ctx, core.Job{ID: order.JobID, TaskID: task.ID, Stage: core.StageReview, State: core.JobPending}); err != nil {
+					t.Fatal(err)
+				}
+				createMemoryWorkOrderInState(t, st, ctx, order)
+			}
+			if err := st.CreateJob(ctx, core.Job{ID: "other-job", TaskID: "other-task", Stage: core.StageReview, State: core.JobPending}); err != nil {
+				t.Fatal(err)
+			}
+			createMemoryWorkOrderInState(t, st, ctx, core.WorkOrder{ID: "other-order", JobID: "other-job", TaskID: "other-task", Stage: core.StageReview, State: core.WorkOrderQueued})
+			if err := st.CreateJob(store.WithWorkspace(ctx, "foreign"), core.Job{ID: "foreign-job", TaskID: "foreign-task", Stage: core.StageReview, State: core.JobPending}); err != nil {
+				t.Fatal(err)
+			}
+			createMemoryWorkOrderInState(t, st, store.WithWorkspace(ctx, "foreign"), core.WorkOrder{ID: "foreign-order", JobID: "foreign-job", TaskID: "foreign-task", Stage: core.StageReview, State: core.WorkOrderQueued})
+			foreignEvents, err := st.ListEvents(store.WithWorkspace(ctx, "foreign"), "foreign-task")
+			if err != nil || len(foreignEvents) == 0 {
+				t.Fatalf("foreign event fixture: %v, count=%d", err, len(foreignEvents))
+			}
+			foreignEventID := strconv.FormatInt(foreignEvents[0].ID, 10)
+			// CreateWorkOrder may append its own events; bring the fixture to 482.
+			existing, _ := st.ListEvents(ctx, task.ID)
+			for i := len(existing); i < 482; i++ {
+				payload := json.RawMessage(`{"message":"operational progress","evidence":"/v1/artifacts/proof"}`)
+				if i >= 479 {
+					payload, _ = json.Marshal(map[string]any{"id": "audit-order-6", "governance_snapshot": snapshot, "nested": []any{map[string]any{"served_requirement_snapshot": []any{map[string]any{"content": "requirement authority"}}}}, "evidence": "/v1/artifacts/proof"})
+				}
+				if err := st.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "work_order.updated", Payload: payload, At: task.CreatedAt.Add(time.Duration(i) * time.Second)}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			beforeEvents, _ := st.ListEvents(ctx, task.ID)
+			beforeOrder, _ := st.GetWorkOrder(ctx, "audit-order-6")
+			beforeBytes, _ := json.Marshal(beforeEvents)
+			orderBytes, _ := json.Marshal(beforeOrder)
+			srv := NewServer(st)
+			srv.Workspaces = &fakeWorkspaceControl{items: []core.Workspace{{ID: "demo"}, {ID: "foreign"}}}
+			srv.Memberships = &membershipFixture{workspaces: []core.Workspace{{ID: "demo"}, {ID: "foreign"}}, roles: map[string]map[string]core.WorkspaceRole{"local-operator": {"demo": core.WorkspaceRoleOperator}}}
+			h := authenticatedMemoryHandler(srv)
+			read := func(path string) *httptest.ResponseRecorder {
+				rec := httptest.NewRecorder()
+				h.ServeHTTP(rec, httptest.NewRequest("GET", path, nil))
+				return rec
+			}
+			start := time.Now()
+			detail := read("/v1/tasks/audit-task/activity?workspace_id=demo")
+			elapsed := time.Since(start)
+			if detail.Code != 200 {
+				t.Fatalf("detail: %d %s", detail.Code, detail.Body.String())
+			}
+			var projected map[string]json.RawMessage
+			if err := json.Unmarshal(detail.Body.Bytes(), &projected); err != nil {
+				t.Fatal(err)
+			}
+			// Restore only full records to compare identical response fields.
+			full := map[string]json.RawMessage{}
+			for key, value := range projected {
+				full[key] = value
+			}
+			full["events"] = beforeBytes
+			orders, _ := st.ListTaskWorkOrders(ctx, task.ID)
+			full["work_orders"], _ = json.Marshal(orders)
+			fullBytes, _ := json.Marshal(full)
+			var fullView reviewItem
+			if err := json.Unmarshal(fullBytes, &fullView); err != nil {
+				t.Fatal(err)
+			}
+			for _, sample := range []struct {
+				name  string
+				value any
+			}{{"full", fullView}, {"projected", taskDetailProjection{fullView}}} {
+				start := time.Now()
+				var size int
+				for repeat := 0; repeat < 5; repeat++ {
+					encoded, err := json.Marshal(sample.value)
+					if err != nil {
+						t.Fatal(err)
+					}
+					size = len(encoded)
+				}
+				t.Logf("seeded %s serialization: snapshot=%d bytes=%d mean=%s (same records, 5 samples)", sample.name, snapshotSize, size, time.Since(start)/5)
+			}
+			if snapshotSize == 500_000 {
+				smallProjectionSize = detail.Body.Len()
+			} else if delta := detail.Body.Len() - smallProjectionSize; delta < -64 || delta > 64 {
+				t.Fatalf("doubling snapshot bodies changed initial response size by %d", delta)
+			}
+
+			reduction := 1 - float64(detail.Body.Len())/float64(len(fullBytes))
+			t.Logf("seeded snapshot=%d events=%d orders=%d full=%d projected=%d reduction=%.2f%% HTTP=%s", snapshotSize, len(beforeEvents), len(orders), len(fullBytes), detail.Body.Len(), 100*reduction, elapsed)
+			if reduction < .85 {
+				t.Fatalf("reduction %.2f%% below 85%%", 100*reduction)
+			}
+			if detail.Body.Len() > 200_000 {
+				t.Fatalf("snapshot growth inflated projection: %d", detail.Body.Len())
+			}
+			if bytes.Contains(detail.Body.Bytes(), []byte(`"governance_snapshot":`)) || bytes.Contains(detail.Body.Bytes(), []byte(`"served_requirement_snapshot":`)) {
+				t.Fatal("snapshot bodies leaked")
+			}
+			selected := beforeEvents[len(beforeEvents)-1]
+			for _, selector := range []string{"event/" + strconv.FormatInt(selected.ID, 10), "work-order/audit-order-6"} {
+				rec := read("/v1/tasks/audit-task/audit/" + selector + "?workspace_id=demo")
+				if rec.Code != 200 || rec.Header().Get("Cache-Control") != "no-store" {
+					t.Fatalf("audit %s: %d", selector, rec.Code)
+				}
+				var audit map[string]json.RawMessage
+				_ = json.Unmarshal(rec.Body.Bytes(), &audit)
+				want := orderBytes
+				key := "work_order"
+				if strings.HasPrefix(selector, "event/") {
+					want, _ = json.Marshal(selected)
+					key = "event"
+				}
+				if !bytes.Equal(audit[key], want) {
+					t.Fatalf("incomplete %s audit", selector)
+				}
+				if bytes.Contains(rec.Body.Bytes(), []byte("private-hash")) {
+					t.Fatal("private credential leaked")
+				}
+			}
+			missing := read("/v1/tasks/audit-task/audit/work-order/missing?workspace_id=demo")
+			for _, path := range []string{
+				"/v1/tasks/audit-task/audit/work-order/other-order?workspace_id=demo",
+				"/v1/tasks/audit-task/audit/work-order/foreign-order?workspace_id=demo",
+				"/v1/tasks/other-task/audit/event/" + strconv.FormatInt(selected.ID, 10) + "?workspace_id=demo",
+				"/v1/tasks/foreign-task/audit/work-order/foreign-order?workspace_id=demo",
+				"/v1/tasks/foreign-task/audit/event/" + foreignEventID + "?workspace_id=demo",
+				"/v1/tasks/audit-task/audit/event/" + foreignEventID + "?workspace_id=demo",
+				"/v1/tasks/missing/audit/event/1?workspace_id=demo",
+			} {
+				rec := read(path)
+				if rec.Code != 404 || rec.Body.String() != missing.Body.String() {
+					t.Fatalf("nonuniform refusal %s: %d %s", path, rec.Code, rec.Body.String())
+				}
+			}
+			if rec := read("/v1/tasks/foreign-task/audit/work-order/foreign-order?workspace_id=foreign"); rec.Code != 404 || !strings.Contains(rec.Body.String(), "workspace_not_found") {
+				t.Fatalf("membership refusal: %d %s", rec.Code, rec.Body.String())
+			}
+			for _, selector := range []string{"event/nope", "event/-1", "event/01", "unknown/1"} {
+				if rec := read("/v1/tasks/audit-task/audit/" + selector + "?workspace_id=demo"); rec.Code != 400 {
+					t.Fatalf("invalid selector %s: %d", selector, rec.Code)
+				}
+			}
+			unauthenticated := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(unauthenticated, httptest.NewRequest("GET", "/v1/tasks/audit-task/audit/work-order/audit-order-6?workspace_id=demo", nil))
+			if unauthenticated.Code != http.StatusUnauthorized {
+				t.Fatalf("unauthenticated read: %d", unauthenticated.Code)
+			}
+			for _, kind := range []core.CredentialKind{core.CredentialAgent, core.CredentialKind("worker")} {
+				srv.Credentials = staticCredentialVerifier{"private-token": {ID: "execution", Kind: kind, OwnerUserID: "local-operator"}}
+				rec := httptest.NewRecorder()
+				req := httptest.NewRequest("GET", "/v1/tasks/audit-task/audit/work-order/audit-order-6?workspace_id=demo", nil)
+				req.Header.Set("Authorization", "Bearer private-token")
+				srv.Handler().ServeHTTP(rec, req)
+				if rec.Code != 401 {
+					t.Fatalf("credential %s admitted: %d", kind, rec.Code)
+				}
+			}
+			afterEvents, _ := st.ListEvents(ctx, task.ID)
+			afterBytes, _ := json.Marshal(afterEvents)
+			afterOrder, _ := st.GetWorkOrder(ctx, "audit-order-6")
+			afterOrderBytes, _ := json.Marshal(afterOrder)
+			if !bytes.Equal(beforeBytes, afterBytes) || !bytes.Equal(orderBytes, afterOrderBytes) {
+				t.Fatal("dashboard reads changed stored/execution-facing audit evidence")
+			}
+		})
+	}
+}

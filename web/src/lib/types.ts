@@ -160,7 +160,12 @@ export interface Job {
   ended_at?: string
 }
 
+export type TaskAuditKind = 'event' | 'work-order'
+
+export type TaskAuditResponse = { kind: 'event'; event: TaskEvent } | { kind: 'work-order'; work_order: WorkOrder }
+
 export interface TaskEvent {
+  audit_available?: boolean
   id: number
   task_id: string
   job_id?: string
@@ -716,6 +721,7 @@ export interface PendingProposalsResponse {
 }
 
 export interface WorkOrder {
+  audit_available?: boolean
   id: string
   task_id: string
   job_id: string
