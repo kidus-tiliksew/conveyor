@@ -101,7 +101,7 @@ you a first end-to-end delivery.
 `conveyor repo init` is the local equivalent. From the cloned checkout, run:
 
 ```sh
-conveyor repo init
+conveyor --server 'https://conveyor.example.com' --workspace 'my-workspace' repo init
 ```
 
 The command adds a Conveyor section to `AGENTS.md` and `CLAUDE.md` while
@@ -111,10 +111,27 @@ unowned skill file or unsafe guidance file causes a named refusal before
 installation. Review the generated files and deliver them through a task.
 The command creates no commit, branch, or push.
 
-The section and skills are versioned with the CLI. Re-run `conveyor repo init`
-after an upgrade to refresh the committed copies, as DEC-40 defines. If origin
-cannot be resolved to a registered repository with your credential, the
-section uses `<registered-repository>` and `<base-branch>` placeholders.
+The section and skills are versioned with the CLI. Rerun this command after an
+upgrade or a connection change to refresh the committed copies, as DEC-40 defines.
+The command verifies the selected immutable workspace and a unique repository
+registration before recording the canonical server and workspace. Registration
+install tasks use the same command with the execution child's explicit
+`CONVEYOR_ADDR` and `CONVEYOR_WORKSPACE`; they still authenticate and verify the
+registration. They follow ordinary task gates and delivery.
+
+For native MCP, select a connection whose endpoint matches the recorded server
+and pass the recorded workspace on each call. MCP names vary by machine, and MCP
+registration does not set CLI defaults. Use the section's explicit `--server`
+and `--workspace` CLI example. On connection failure, report the failed endpoint
+and missing context; do not guess another host from defaults, SSH configuration,
+or release instructions.
+
+Missing, unavailable, ambiguous, unsafe, or loopback context produces unresolved
+placeholders on first installation. A failed refresh retains a prior verified
+section byte for byte and reports that it was not reverified. Conflicting or
+malformed prior contexts refuse before any writes. Run again with verified
+context to refresh the owned blocks; do not maintain them manually. Generated
+files contain no credentials or raw lookup errors.
 
 <a id="4-create-the-local-execution-setup"></a>
 

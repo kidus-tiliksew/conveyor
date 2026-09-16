@@ -98,7 +98,7 @@ func TestRepositoryRegistrationValidationAndDefaults(t *testing.T) {
 				if task.Source != core.RepositoryRegistrationSource || task.NextStage != core.StageTriage || task.BaseBranch != "develop" || !task.SpecApproval || !task.MergeApproval {
 					t.Fatalf("task=%+v", task)
 				}
-				for _, text := range []string{"conveyor", "develop", "conveyor repo init", "task worktree", "commit, push, and submit for review"} {
+				for _, text := range []string{"conveyor", "develop", "conveyor repo init", "task worktree", "commit, push, and submit for review", "CONVEYOR_ADDR", "CONVEYOR_WORKSPACE", "--server", "--workspace", "immutable workspace ID", "authenticate and verify", "missing context"} {
 					if !strings.Contains(task.Body, text) {
 						t.Fatalf("body=%s", task.Body)
 					}

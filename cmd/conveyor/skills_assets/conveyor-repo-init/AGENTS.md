@@ -2,6 +2,9 @@
 ## Conveyor factory work
 
 Repository: `{{repository}}`. Base branch: `{{base}}`.
+{{connection}}
+On connection failure, report the failed endpoint and missing context. Do not infer a replacement host from localhost defaults, SSH configuration, or release instructions.
+
 The confirmed document corpus is the design authority: Requirements, System Design documents, and DEC-n decisions.
 Changes are filed as tasks through Conveyor.
 An agent edits only under a live claim in a task worktree resolved by `conveyor checkout <task-id>`, never on the base branch.

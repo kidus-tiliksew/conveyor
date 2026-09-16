@@ -3,9 +3,12 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -98,6 +101,8 @@ func TestRepoInitSectionContract(t *testing.T) {
 	const want = "<!-- conveyor:repo-init owner=v1 version=v1.2.3 -->\n" +
 		"## Conveyor factory work\n\n" +
 		"Repository: `example`. Base branch: `trunk`.\n" +
+		"Connection context is unresolved. Obtain an explicit server URL and immutable workspace ID, then rerun `conveyor --server '<server>' --workspace '<workspace-id>' repo init`. Do not use a guessed endpoint.\n" +
+		"On connection failure, report the failed endpoint and missing context. Do not infer a replacement host from localhost defaults, SSH configuration, or release instructions.\n\n" +
 		"The confirmed document corpus is the design authority: Requirements, System Design documents, and DEC-n decisions.\n" +
 		"Changes are filed as tasks through Conveyor.\n" +
 		"An agent edits only under a live claim in a task worktree resolved by `conveyor checkout <task-id>`, never on the base branch.\n" +
@@ -214,19 +219,21 @@ func TestRepoInitMetadata(t *testing.T) {
 		{"unsafe label", []config.Repo{{Name: "injected\nline", Base: "main", URL: "https://github.com/example/repo"}}, nil, "<registered-repository>", "<base-branch>"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			name, base := repoInitMetadata(context.Background(), root, func() (config.VersionedDocument, error) {
-				return config.VersionedDocument{Document: config.WorkspaceDocument{Repos: test.repos}}, test.err
+			connection := repoInitConnection(context.Background(), root, &client{base: "https://conveyor.example.com", token: "test-secret", workspace: "demo", resolved: resolvedClientConfig{Server: resolvedValue{Source: "flag"}}}, func() (config.VersionedDocument, error) {
+				return config.VersionedDocument{Document: config.WorkspaceDocument{Workspace: "demo", Repos: test.repos}}, test.err
 			})
+			name, base := connection.Name, connection.Base
 			if name != test.wantName || base != test.wantBase {
 				t.Fatalf("metadata = %q, %q", name, base)
 			}
 		})
 	}
 	mustGit(t, root, "remote", "remove", "origin")
-	name, base := repoInitMetadata(context.Background(), root, func() (config.VersionedDocument, error) {
+	connection := repoInitConnection(context.Background(), root, &client{base: "https://conveyor.example.com", token: "test-secret", workspace: "demo", resolved: resolvedClientConfig{Server: resolvedValue{Source: "flag"}}}, func() (config.VersionedDocument, error) {
 		t.Fatal("lookup without origin")
 		return config.VersionedDocument{}, nil
 	})
+	name, base := connection.Name, connection.Base
 	if name != "<registered-repository>" || base != "<base-branch>" {
 		t.Fatalf("missing-origin metadata = %q %q", name, base)
 	}
@@ -247,7 +254,18 @@ func TestRepoInitCommandCheckoutBoundary(t *testing.T) {
 	}
 	mustGit(t, root, "init", "-b", "main")
 	configureGitUser(t, root)
-	mustGit(t, root, "commit", "--allow-empty", "-m", "fixture")
+	// Git 2.55 may detach commit's auto-maintenance after creating
+	// objects/maintenance.lock. Disable that fixture-owned background writer;
+	// retain the complete .git comparison rather than ignoring its lock.
+	mustGit(t, root, "config", "maintenance.auto", "false")
+	writeRepoFixture(t, root, "tracked.txt", "tracked fixture\n")
+	mustGit(t, root, "add", "tracked.txt")
+	mustGit(t, root, "commit", "-m", "fixture")
+	remote := t.TempDir()
+	mustGit(t, remote, "init", "--bare")
+	mustGit(t, root, "remote", "add", "origin", remote)
+	remoteBefore := repoFixtureSnapshot(t, remote)
+	semanticBefore := repoInitGitState(t, root)
 	before := repoFixtureSnapshot(t, filepath.Join(root, ".git"))
 	if err := os.Mkdir(filepath.Join(root, "nested"), 0o755); err != nil {
 		t.Fatal(err)
@@ -269,9 +287,11 @@ func TestRepoInitCommandCheckoutBoundary(t *testing.T) {
 	if err := command.Execute(); err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(before, repoFixtureSnapshot(t, filepath.Join(root, ".git"))) {
-		t.Fatal("repo init changed Git state")
+	assertRepoInitSnapshot(t, before, repoFixtureSnapshot(t, filepath.Join(root, ".git")))
+	if !reflect.DeepEqual(semanticBefore, repoInitGitState(t, root)) {
+		t.Fatal("repo init changed HEAD, branch, worktree, refs, remotes, config, index, or staged state")
 	}
+	assertRepoInitSnapshot(t, remoteBefore, repoFixtureSnapshot(t, remote))
 	for _, destination := range skillDestinations(root, supportedSkillTools, true) {
 		assertFile(t, filepath.Join(destination.root, "conveyor-work/SKILL.md"))
 	}
@@ -297,6 +317,10 @@ func TestRepoInitCommandCheckoutBoundary(t *testing.T) {
 	if !reflect.DeepEqual(prepared, repoFixtureSnapshot(t, root)) {
 		t.Fatal("repeat command changed guidance, skills, symlinks, or Git state")
 	}
+	if !reflect.DeepEqual(semanticBefore, repoInitGitState(t, root)) {
+		t.Fatal("repeat changed semantic Git state")
+	}
+	assertRepoInitSnapshot(t, remoteBefore, repoFixtureSnapshot(t, remote))
 	lines := strings.Split(strings.TrimSpace(output.String()), "\n")
 	if len(lines) != 2+len(supportedSkillTools)*len(embeddedSkillManifest) {
 		t.Fatalf("missing repeat command reports: %s", output.String())
@@ -408,4 +432,306 @@ func repoFixtureSnapshot(t *testing.T, root string) map[string]string {
 		t.Fatal(err)
 	}
 	return result
+}
+
+// AC-4.7/4.10: unresolved input never leaks into owned guidance or reports.
+func TestRepoInitConnectionVerification(t *testing.T) {
+	root := t.TempDir()
+	mustGit(t, root, "init", "-b", "main")
+	mustGit(t, root, "remote", "add", "origin", "git@github.com:Example/Repo.git")
+	for _, name := range []string{"verified", "default", "no source", "no workspace", "no token", "config error", "unavailable", "mismatch", "ambiguous", "unregistered", "unsafe name", "unsafe base", "unsafe workspace", "token in label", "noncanonical endpoint"} {
+		t.Run(name, func(t *testing.T) {
+			c := &client{base: "https://conveyor.example.com", workspace: "demo", token: "secret-value", resolved: resolvedClientConfig{Server: resolvedValue{Source: "environment"}}}
+			record := config.VersionedDocument{Document: config.WorkspaceDocument{Workspace: "demo", Repos: []config.Repo{{Name: "example", Base: "main", URL: "https://credential@github.com/example/repo"}}}}
+			var lookupErr error
+			switch name {
+			case "default":
+				c.resolved.Server.Source = "default"
+			case "no source":
+				c.resolved.Server.Source = ""
+			case "no workspace":
+				c.workspace = ""
+			case "no token":
+				c.token = ""
+			case "config error":
+				c.configErr = errors.New("secret-value raw config error")
+			case "unavailable":
+				lookupErr = errors.New("secret-value raw lookup error")
+			case "mismatch":
+				record.Document.Workspace = "other"
+			case "ambiguous":
+				record.Document.Repos = append(record.Document.Repos, record.Document.Repos[0])
+			case "unregistered":
+				record.Document.Repos = nil
+			case "unsafe name":
+				record.Document.Repos[0].Name = "bad`label"
+			case "unsafe base":
+				record.Document.Repos[0].Base = "bad\nbranch"
+			case "unsafe workspace":
+				c.workspace = "demo'; echo injected"
+			case "noncanonical endpoint":
+				c.base = "https://conveyor.example.com/mcp"
+			case "token in label":
+				record.Document.Repos[0].Name = c.token
+			}
+			got := repoInitConnection(t.Context(), root, c, func() (config.VersionedDocument, error) { return record, lookupErr })
+			if name == "verified" {
+				if got != (repoInitContext{Server: "https://conveyor.example.com", Workspace: "demo", Name: "example", Base: "main"}) {
+					t.Fatalf("context = %+v", got)
+				}
+			} else if got != unresolvedRepoInitContext() {
+				t.Fatalf("unverified context = %+v", got)
+			}
+			rendered, err := renderRepoInit("v1", got.Name, got.Base, got)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, secret := range []string{"secret-value", "credential@", "raw lookup error", "raw config error", "injected"} {
+				if strings.Contains(string(rendered), secret) {
+					t.Fatalf("guidance leaked %q", secret)
+				}
+			}
+		})
+	}
+}
+
+func TestRepoInitPortableServer(t *testing.T) {
+	for _, value := range []string{"http://localhost:8080", "http://LOCALHOST./", "http://foo.localhost", "http://127.0.0.2", "http://[::1]", "http://[::1%25lo]", "http://0.0.0.0", "https://user:secret@example.com", "https://example.com?token=secret", "https://example.com?", "https://example.com#", "https://example.com/#secret", "https://example.com/%0a", "https://example.com/%27", "https://example.com/`injected`", "https://example.com/$(cmd)", "https://example.com/\n", "file:///tmp/local", "not-a-url", ""} {
+		if got, ok := repoInitServer(value); ok {
+			t.Errorf("accepted %q as %q", value, got)
+		}
+	}
+	for _, value := range []string{"https://conveyor.example.com", "https://other.example.com:8443/factory"} {
+		if got, ok := repoInitServer(value + "/mcp/"); !ok || got != value {
+			t.Errorf("canonical %q = %q, %v", value, got, ok)
+		}
+	}
+}
+
+func TestRepoInitVerifiedRefresh(t *testing.T) {
+	first := repoInitContext{Server: "https://conveyor.example.com", Workspace: "demo", Name: "example", Base: "main"}
+	second := repoInitContext{Server: "https://factory.example.org:8443/team", Workspace: "other", Name: "another", Base: "trunk"}
+	for _, form := range []string{"symlink", "regular"} {
+		t.Run(form, func(t *testing.T) {
+			root := t.TempDir()
+			old := "<!-- conveyor:repo-init owner=v1 version=v0 -->\nOld guidance without context.\n<!-- /conveyor:repo-init -->"
+			writeRepoFixture(t, root, "AGENTS.md", "Before\n"+old+"\nAfter")
+			if form == "regular" {
+				writeRepoFixture(t, root, "CLAUDE.md", "Claude before\n"+old+"\nClaude after")
+			}
+			run := func(version string, c repoInitContext) string {
+				t.Helper()
+				var out bytes.Buffer
+				if err := prepareRepositoryWithInstaller(root, version, c.Name, c.Base, &out, installEmbeddedSkillsForDestinationsWithForce, c); err != nil {
+					t.Fatal(err)
+				}
+				return out.String()
+			}
+			run("v1", first)
+			snapshot := repoFixtureSnapshot(t, root)
+			run("v1", first)
+			if !reflect.DeepEqual(snapshot, repoFixtureSnapshot(t, root)) {
+				t.Fatal("verified rerun changed files")
+			}
+			report := run("v2", unresolvedRepoInitContext())
+			for _, file := range []string{"AGENTS.md", "CLAUDE.md"} {
+				if repoFixtureSnapshot(t, root)[file] != snapshot[file] {
+					t.Fatalf("unavailable refresh changed %s", file)
+				}
+			}
+			if !strings.Contains(report, "retained without reverification") {
+				t.Fatal("missing retained-context report")
+			}
+			run("v2", second)
+			for _, file := range []string{"AGENTS.md", "CLAUDE.md"} {
+				data, err := os.ReadFile(filepath.Join(root, file))
+				if err != nil {
+					t.Fatal(err)
+				}
+				text := string(data)
+				for _, want := range []string{second.Server, "Workspace: `other`", "--server '" + second.Server + "' --workspace 'other'", "native MCP", "failed endpoint", "SSH configuration"} {
+					if !strings.Contains(text, want) {
+						t.Errorf("%s missing %q", file, want)
+					}
+				}
+				if strings.Contains(text, first.Server) {
+					t.Error("stale endpoint")
+				}
+			}
+			content, _ := os.ReadFile(filepath.Join(root, "AGENTS.md"))
+			if !strings.HasPrefix(string(content), "Before\n") || !strings.HasSuffix(string(content), "\nAfter") {
+				t.Fatal("outside text changed")
+			}
+		})
+	}
+}
+
+func TestRepoInitPriorContextRefusalBeforeWrites(t *testing.T) {
+	c := repoInitContext{Server: "https://conveyor.example.com", Workspace: "demo", Name: "example", Base: "main"}
+	section, err := renderRepoInit("v1", c.Name, c.Base, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"conflict", "malformed", "unsafe", "duplicate"} {
+		for _, fresh := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/fresh=%v", name, fresh), func(t *testing.T) {
+				root := t.TempDir()
+				writeRepoFixture(t, root, "AGENTS.md", string(section))
+				other := string(section)
+				switch name {
+				case "conflict":
+					other = strings.ReplaceAll(other, "Workspace: `demo`", "Workspace: `other`")
+				case "malformed":
+					other = strings.ReplaceAll(other, "Workspace: `demo`", "Workspace: demo")
+				case "unsafe":
+					other = strings.ReplaceAll(other, c.Server, "http://localhost:8080")
+				case "duplicate":
+					other = strings.ReplaceAll(other, "## Conveyor factory work", "Server: `https://elsewhere.example.com`. Workspace: `demo`.\n## Conveyor factory work")
+				}
+				writeRepoFixture(t, root, "CLAUDE.md", other)
+				before := repoFixtureSnapshot(t, root)
+				input := unresolvedRepoInitContext()
+				if fresh {
+					input = c
+				}
+				err := prepareRepositoryWithInstaller(root, "v2", input.Name, input.Base, io.Discard, installEmbeddedSkillsForDestinationsWithForce, input)
+				if err == nil {
+					t.Fatal("accepted invalid prior context")
+				}
+				if !reflect.DeepEqual(before, repoFixtureSnapshot(t, root)) {
+					t.Fatal("refusal wrote files")
+				}
+			})
+		}
+	}
+}
+
+type repoInitTransport func(*http.Request) (*http.Response, error)
+
+func (f repoInitTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestRepoInitCommandManualAndDispatchedParity(t *testing.T) {
+	oldHTTP := http.DefaultClient
+	http.DefaultClient = &http.Client{Transport: repoInitTransport(func(r *http.Request) (*http.Response, error) {
+		if r.Method != "GET" || r.URL.Path != "/v1/workspace/config" || r.Header.Get("Authorization") != "Bearer fixture-secret" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		workspace := r.Header.Get("X-Workspace-ID")
+		if (r.URL.Host == "one.example.com" && workspace != "one") || (r.URL.Host == "two.example.com" && workspace != "two") {
+			t.Fatal("server/workspace mismatch")
+		}
+		data, _ := json.Marshal(config.VersionedDocument{Document: config.WorkspaceDocument{Workspace: workspace, Repos: []config.Repo{{Name: "example", Base: "main", URL: "https://github.com/example/repo"}}}})
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewReader(data)), Header: make(http.Header)}, nil
+	})}
+	t.Cleanup(func() { http.DefaultClient = oldHTTP })
+	oldServer, oldWorkspace, oldSE, oldWE := serverFlag, workspaceFlag, serverFlagExplicit, workspaceFlagExplicit
+	t.Cleanup(func() {
+		serverFlag, workspaceFlag, serverFlagExplicit, workspaceFlagExplicit = oldServer, oldWorkspace, oldSE, oldWE
+	})
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("CONVEYOR_API_TOKEN", "fixture-secret")
+	for _, workspace := range []string{"one", "two"} {
+		var outputs []string
+		for _, manual := range []bool{true, false} {
+			root := t.TempDir()
+			mustGit(t, root, "init", "-b", "main")
+			mustGit(t, root, "remote", "add", "origin", "git@github.com:example/repo.git")
+			t.Chdir(root)
+			endpoint := "https://" + workspace + ".example.com"
+			// Worker environment transport carries /mcp; CLI canonicalizes to the same base.
+			t.Setenv("CONVEYOR_ADDR", endpoint+"/mcp")
+			t.Setenv("CONVEYOR_WORKSPACE", workspace)
+			serverFlag, workspaceFlag, serverFlagExplicit, workspaceFlagExplicit = "", "", false, false
+			if manual {
+				serverFlag, workspaceFlag, serverFlagExplicit, workspaceFlagExplicit = endpoint, workspace, true, true
+			}
+			command := repoCmd()
+			command.SetArgs([]string{"init"})
+			var out bytes.Buffer
+			command.SetOut(&out)
+			if err := command.Execute(); err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(filepath.Join(root, "AGENTS.md"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(data), "Server: `"+endpoint+"`. Workspace: `"+workspace+"`.") {
+				t.Fatalf("unverified guidance: %s", data)
+			}
+			if strings.Contains(string(data)+out.String(), "fixture-secret") {
+				t.Fatal("credential leaked")
+			}
+			outputs = append(outputs, string(data))
+		}
+		if outputs[0] != outputs[1] {
+			t.Fatal("manual and dispatched guidance differ")
+		}
+	}
+}
+
+// Explicit semantic checks supplement, never replace, the complete byte snapshot.
+func repoInitGitState(t *testing.T, root string) map[string]string {
+	t.Helper()
+	commands := map[string][]string{
+		"HEAD":                         {"rev-parse", "HEAD"},
+		"branch":                       {"symbolic-ref", "HEAD"},
+		"worktrees":                    {"worktree", "list", "--porcelain"},
+		"refs including push tracking": {"show-ref"},
+		"remotes":                      {"remote", "-v"},
+		"config":                       {"config", "--local", "--null", "--list"},
+		"index":                        {"ls-files", "--stage", "--debug"},
+		"staged":                       {"diff", "--cached", "--raw"},
+	}
+	state := map[string]string{}
+	for name, args := range commands {
+		state[name] = mustGitOutput(t, root, args...)
+	}
+	return state
+}
+
+func assertRepoInitSnapshot(t *testing.T, before, after map[string]string) {
+	t.Helper()
+	for path, old := range before {
+		if value, exists := after[path]; !exists || value != old {
+			t.Errorf("Git snapshot changed or removed %s", path)
+		}
+	}
+	for path := range after {
+		if _, exists := before[path]; !exists {
+			t.Errorf("Git snapshot added %s", path)
+		}
+	}
+}
+
+func TestRepoInitRetainedContextMissingPeer(t *testing.T) {
+	c := repoInitContext{Server: "https://conveyor.example.com", Workspace: "demo", Name: "example", Base: "main"}
+	section, err := renderRepoInit("v1", c.Name, c.Base, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, existing := range []string{"AGENTS.md", "CLAUDE.md"} {
+		t.Run(existing, func(t *testing.T) {
+			root := t.TempDir()
+			writeRepoFixture(t, root, existing, string(section))
+			var out bytes.Buffer
+			missing := unresolvedRepoInitContext()
+			if err := prepareRepositoryWithInstaller(root, "v1", missing.Name, missing.Base, &out, installEmbeddedSkillsForDestinationsWithForce, missing); err != nil {
+				t.Fatal(err)
+			}
+			for _, name := range []string{"AGENTS.md", "CLAUDE.md"} {
+				content, err := os.ReadFile(filepath.Join(root, name))
+				if err != nil || !bytes.Equal(content, section) {
+					t.Fatalf("retained %s: %v", name, err)
+				}
+				status := "written"
+				if name == existing {
+					status = "unchanged"
+				}
+				if !strings.Contains(out.String(), "repo\t"+status+"\t"+filepath.Join(root, name)) {
+					t.Fatalf("incorrect report: %s", out.String())
+				}
+			}
+		})
+	}
 }

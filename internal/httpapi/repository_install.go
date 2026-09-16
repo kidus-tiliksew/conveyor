@@ -33,7 +33,7 @@ func (s *Server) fileRepositoryInstallTasks(ctx context.Context, repos []config.
 		if reuse {
 			continue
 		}
-		body := fmt.Sprintf("Prepare repository `%s` on base branch `%s` for Conveyor. In the task worktree, run `conveyor repo init`, commit, push, and submit for review.", repo.Name, repo.Base)
+		body := fmt.Sprintf("Prepare repository `%s` on base branch `%s` for Conveyor. In the task worktree, run `conveyor repo init` using the explicit `CONVEYOR_ADDR` and `CONVEYOR_WORKSPACE` supplied to the execution child (equivalent to `conveyor --server '<server>' --workspace '<workspace-id>' repo init`), commit, push, and submit for review. Use the registration's server and immutable workspace ID; repo init must authenticate and verify the matching repository registration. If that context is absent or unavailable, report the failed endpoint and missing context rather than infer a host from defaults, SSH configuration, or release instructions.", repo.Name, repo.Base)
 		_, err = s.createTaskRecord(ctx, createTaskReq{Body: body, Repo: repo.Name, BaseBranch: repo.Base, Source: core.RepositoryRegistrationSource, repositoryInstallAttempt: next}, store.RepositoryInstallKey(workspace, repo.Name, next), core.RepositoryRegistrationSource)
 		if err != nil {
 			return err
