@@ -3604,7 +3604,8 @@ func TestTaskDetailAuditSnapshots(t *testing.T) {
 		t.Run(strconv.Itoa(snapshotSize), func(t *testing.T) {
 			ctx := store.WithWorkspace(t.Context(), "demo")
 			st := store.NewMemory()
-			task := core.Task{ID: "audit-task", Workspace: "demo", State: core.TaskRunning, Title: "Audit task", Body: "Keep task context", CreatedAt: time.Now().UTC()}
+			// Fixed timestamp precision keeps serialized event sizes comparable.
+			task := core.Task{ID: "audit-task", Workspace: "demo", State: core.TaskRunning, Title: "Audit task", Body: "Keep task context", CreatedAt: time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)}
 			if err := st.CreateTask(ctx, task); err != nil {
 				t.Fatal(err)
 			}
@@ -3635,6 +3636,11 @@ func TestTaskDetailAuditSnapshots(t *testing.T) {
 				t.Fatal(err)
 			}
 			createMemoryWorkOrderInState(t, st, store.WithWorkspace(ctx, "foreign"), core.WorkOrder{ID: "foreign-order", JobID: "foreign-job", TaskID: "foreign-task", Stage: core.StageReview, State: core.WorkOrderQueued})
+			foreignEvents, err := st.ListEvents(store.WithWorkspace(ctx, "foreign"), "foreign-task")
+			if err != nil || len(foreignEvents) == 0 {
+				t.Fatalf("foreign event fixture: %v, count=%d", err, len(foreignEvents))
+			}
+			foreignEventID := strconv.FormatInt(foreignEvents[0].ID, 10)
 			// CreateWorkOrder may append its own events; bring the fixture to 482.
 			existing, _ := st.ListEvents(ctx, task.ID)
 			for i := len(existing); i < 482; i++ {
@@ -3741,6 +3747,8 @@ func TestTaskDetailAuditSnapshots(t *testing.T) {
 				"/v1/tasks/audit-task/audit/work-order/foreign-order?workspace_id=demo",
 				"/v1/tasks/other-task/audit/event/" + strconv.FormatInt(selected.ID, 10) + "?workspace_id=demo",
 				"/v1/tasks/foreign-task/audit/work-order/foreign-order?workspace_id=demo",
+				"/v1/tasks/foreign-task/audit/event/" + foreignEventID + "?workspace_id=demo",
+				"/v1/tasks/audit-task/audit/event/" + foreignEventID + "?workspace_id=demo",
 				"/v1/tasks/missing/audit/event/1?workspace_id=demo",
 			} {
 				rec := read(path)

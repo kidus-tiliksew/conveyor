@@ -5,6 +5,7 @@ import (
 	"strconv"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
 // getTaskAudit shares the human workspace read boundary with task detail.
@@ -13,7 +14,9 @@ import (
 func (s *Server) getTaskAudit(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	taskID := chi.URLParam(r, "id")
-	if _, err := s.Store.GetTask(r.Context(), taskID); err != nil {
+	workspace, scoped := store.WorkspaceFromContext(r.Context())
+	task, err := s.Store.GetTask(r.Context(), taskID)
+	if err != nil || !scoped || task.Workspace != workspace {
 		http.NotFound(w, r)
 		return
 	}
