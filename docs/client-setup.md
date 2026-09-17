@@ -106,10 +106,26 @@ conveyor --server 'https://conveyor.example.com' --workspace 'my-workspace' repo
 
 The command adds a Conveyor section to `AGENTS.md` and `CLAUDE.md` while
 preserving existing text outside its markers. It installs project-scoped
-skills for Claude, Codex, and Cursor even when their CLIs are absent. An
+skills for every supported tool (Claude, Codex, Cursor, and OpenCode) even when
+their CLIs are absent. An
 unowned skill file or unsafe guidance file causes a named refusal before
 installation. Review the generated files and deliver them through a task.
 The command creates no commit, branch, or push.
+
+Repositories with maintained source skill wrappers can refresh guidance directly:
+
+```sh
+conveyor --server 'https://conveyor.example.com' --workspace 'my-workspace' repo init --guidance-only
+```
+
+This explicit mode leaves all project skills untouched and reports only guidance
+and connection status. Default full installation still refuses unowned skills.
+Both direct root guidance symlink directions are supported when the other file
+is regular; the command preserves the link, target permissions, and operator
+text, and updates the target once. The link's status describes the shared content.
+Unsafe links refuse before writes. Both modes use the same context verification,
+retention, atomic replacement, and rollback. No temporary checkout or managed-block
+copy is needed. Registration install tasks continue to use full installation.
 
 The section and skills are versioned with the CLI. Rerun this command after an
 upgrade or a connection change to refresh the committed copies, as DEC-40 defines.

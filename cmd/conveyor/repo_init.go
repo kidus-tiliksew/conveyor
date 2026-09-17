@@ -31,7 +31,8 @@ func repoCmd() *cobra.Command {
 }
 
 func repoInitCmd() *cobra.Command {
-	return &cobra.Command{
+	var guidanceOnly bool
+	cmd := &cobra.Command{
 		Use: "init", Short: "Install repository guidance and project-scoped agent skills",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -45,9 +46,11 @@ func repoInitCmd() *cobra.Command {
 			}
 			c := newClient()
 			connection := repoInitConnection(cmd.Context(), root, c, c.getWorkspaceConfig)
-			return prepareRepositoryWithInstaller(root, releaseinfo.Version, connection.Name, connection.Base, cmd.OutOrStdout(), installEmbeddedSkillsForDestinationsWithForce, connection)
+			return prepareRepositoryWithOptions(root, releaseinfo.Version, connection.Name, connection.Base, cmd.OutOrStdout(), repoInitOptions{guidanceOnly: guidanceOnly}, installEmbeddedSkillsForDestinationsWithForce, connection)
 		},
 	}
+	cmd.Flags().BoolVar(&guidanceOnly, "guidance-only", false, "Refresh root guidance without inspecting or installing project skills")
+	return cmd
 }
 
 // req-repository-onboarding AC-4.7: all fields come from one authenticated
@@ -144,7 +147,7 @@ func renderRepoInit(version, name, base string, connection ...repoInitContext) (
 	contextText := "Connection context is unresolved. Obtain an explicit server URL and immutable workspace ID, then rerun `conveyor --server '<server>' --workspace '<workspace-id>' repo init`. Do not use a guessed endpoint."
 	if len(connection) > 0 && connection[0].Server != "" {
 		c := connection[0]
-		contextText = fmt.Sprintf("Server: `%s`. Workspace: `%s`.\nSelect a native MCP connection whose endpoint matches this server and pass workspace `%s` on every call. MCP registration names vary by machine; registering MCP does not set CLI defaults.\nCLI example: `conveyor --server '%s' --workspace '%s' task list`.\nRefresh this owned section and the project-scoped skills through ordinary task delivery with `conveyor --server '%s' --workspace '%s' repo init`.", c.Server, c.Workspace, c.Workspace, c.Server, c.Workspace, c.Server, c.Workspace)
+		contextText = fmt.Sprintf("Server: `%s`. Workspace: `%s`.\nSelect a native MCP connection whose endpoint matches this server and pass workspace `%s` on every call. MCP registration names vary by machine; registering MCP does not set CLI defaults.\nCLI example: `conveyor --server '%s' --workspace '%s' task list`.\nRefresh this owned section and the project-scoped skills through ordinary task delivery with `conveyor --server '%s' --workspace '%s' repo init`. To preserve maintained source skill wrappers, refresh only guidance with `conveyor --server '%s' --workspace '%s' repo init --guidance-only`.", c.Server, c.Workspace, c.Workspace, c.Server, c.Workspace, c.Server, c.Workspace, c.Server, c.Workspace)
 	}
 	return []byte(strings.NewReplacer("{{version}}", version, "{{repository}}", name, "{{base}}", base, "{{connection}}", contextText).Replace(string(asset))), nil
 }
@@ -193,47 +196,74 @@ func planRepoGuidance(root string, section []byte) (plan []repoGuidanceFile, err
 			err = &os.PathError{Op: "prepare guidance", Path: target, Err: err}
 		}
 	}()
-	plan = make([]repoGuidanceFile, 0, 2)
-	for _, name := range []string{"AGENTS.md", "CLAUDE.md"} {
-		item := repoGuidanceFile{target: filepath.Join(root, name), mode: 0o644, status: "written"}
+	// AC-4.1 / component-runtime: preflight the logical pair before reading
+	// sections. Only a direct link to the other regular root file is supported.
+	names := []string{"AGENTS.md", "CLAUDE.md"}
+	plan = make([]repoGuidanceFile, 2)
+	for i, name := range names {
+		item := &plan[i]
+		*item = repoGuidanceFile{target: filepath.Join(root, name), mode: 0o644, status: "written"}
 		target = item.target
-		info, err := os.Lstat(item.target)
-		if err == nil {
-			item.exists, item.mode = true, info.Mode()
-			if info.Mode()&os.ModeSymlink != 0 {
-				resolved, resolveErr := filepath.EvalSymlinks(item.target)
-				if name != "CLAUDE.md" || resolveErr != nil || resolved != filepath.Join(root, "AGENTS.md") || !plan[0].exists {
-					return nil, fmt.Errorf("refusing %s: broken, reversed, or unsafe guidance symlink", item.target)
-				}
-				item.link, item.status = "AGENTS.md", plan[0].status
-				plan = append(plan, item)
-				continue
+		info, statErr := os.Lstat(item.target)
+		if os.IsNotExist(statErr) {
+			continue
+		}
+		if statErr != nil {
+			return nil, statErr
+		}
+		item.exists, item.mode = true, info.Mode()
+		if info.Mode()&os.ModeSymlink != 0 {
+			item.link, err = os.Readlink(item.target)
+			if err != nil {
+				return nil, err
 			}
-			if !info.Mode().IsRegular() {
-				return nil, fmt.Errorf("refusing %s: guidance must be a regular file", item.target)
+			other := filepath.Join(root, names[1-i])
+			// Do not clean away traversal or resolve intermediate symlinks.
+			if item.link != names[1-i] && item.link != "./"+names[1-i] && item.link != other {
+				return nil, fmt.Errorf("refusing %s: unsafe guidance symlink", item.target)
 			}
+			peer, peerErr := os.Lstat(other)
+			if peerErr != nil || !peer.Mode().IsRegular() {
+				return nil, fmt.Errorf("refusing %s: guidance symlink target must be regular", item.target)
+			}
+		} else if !info.Mode().IsRegular() {
+			return nil, fmt.Errorf("refusing %s: guidance must be a regular file", item.target)
+		}
+	}
+	if !plan[1].exists {
+		plan[1].link = "AGENTS.md"
+	}
+	for i := range plan {
+		item := &plan[i]
+		target = item.target
+		if item.link != "" {
+			continue
+		}
+		if item.exists {
 			item.prior, err = os.ReadFile(item.target)
 			if err != nil {
 				return nil, err
 			}
 			item.status = "updated"
-		} else if !os.IsNotExist(err) {
+		}
+		item.content, err = replaceRepoInit(item.prior, section)
+		if err != nil {
 			return nil, err
-		} else if name == "CLAUDE.md" {
-			item.link = "AGENTS.md"
 		}
-		if item.link == "" {
-			item.content, err = replaceRepoInit(item.prior, section)
-			if err != nil {
-				return nil, fmt.Errorf("refusing %s: %w", item.target, err)
-			}
-			if item.exists && bytes.Equal(item.content, item.prior) {
-				item.status = "unchanged"
-			}
+		if item.exists && bytes.Equal(item.content, item.prior) {
+			item.status = "unchanged"
 		}
-		plan = append(plan, item)
 	}
+	mirrorRepoGuidanceStatus(plan)
 	return plan, nil
+}
+
+func mirrorRepoGuidanceStatus(plan []repoGuidanceFile) {
+	for i := range plan {
+		if plan[i].exists && plan[i].link != "" {
+			plan[i].status = plan[1-i].status
+		}
+	}
 }
 
 var repoInitContextLine = regexp.MustCompile("(?m)^Server: `([^`]+)`\\. Workspace: `([^`]+)`\\.$")
@@ -278,9 +308,6 @@ func preserveRepoInitContext(plan []repoGuidanceFile, verified bool) (bool, erro
 	for i := range plan {
 		item := &plan[i]
 		if item.link != "" {
-			if item.exists {
-				item.status = plan[0].status
-			}
 			continue
 		}
 		section := retainedSection
@@ -299,6 +326,7 @@ func preserveRepoInitContext(plan []repoGuidanceFile, verified bool) (bool, erro
 			}
 		}
 	}
+	mirrorRepoGuidanceStatus(plan)
 	return true, nil
 }
 
@@ -312,6 +340,18 @@ func prepareRepository(root, version, name, base string, out io.Writer) error {
 }
 
 func prepareRepositoryWithInstaller(root, version, name, base string, out io.Writer, install repoSkillInstaller, connection ...repoInitContext) error {
+	return prepareRepositoryWithOptions(root, version, name, base, out, repoInitOptions{}, install, connection...)
+}
+
+type repoInitOptions struct {
+	guidanceOnly bool
+	rename       func(string, string) error
+}
+
+func prepareRepositoryWithOptions(root, version, name, base string, out io.Writer, options repoInitOptions, install repoSkillInstaller, connection ...repoInitContext) error {
+	if options.rename == nil {
+		options.rename = os.Rename
+	}
 	refuse := func(tool, target string, err error) error {
 		fmt.Fprintf(out, "%s\trefused\t%s\n", tool, target)
 		return err
@@ -336,7 +376,11 @@ func prepareRepositoryWithInstaller(root, version, name, base string, out io.Wri
 	if retained {
 		fmt.Fprintln(out, "repo\tcontext retained without reverification\tprior verified guidance")
 	}
-	destinations := skillDestinations(root, supportedSkillTools, true)
+	// AC-4.3: explicit guidance-only mode never inspects skill destinations.
+	var destinations []skillDestination
+	if !options.guidanceOnly {
+		destinations = skillDestinations(root, supportedSkillTools, true)
+	}
 	var skillPlan []skillInstallFile
 	for _, destination := range destinations {
 		// Unlike user-global skills install, repo init never follows tool roots
@@ -400,7 +444,11 @@ func prepareRepositoryWithInstaller(root, version, name, base string, out io.Wri
 			return err
 		}
 	}
-	results, reports, err := install(root, destinations, version, false, false)
+	var results []skillInstallFile
+	var reports []skillInstallReport
+	if !options.guidanceOnly {
+		results, reports, err = install(root, destinations, version, false, false)
+	}
 	if err != nil {
 		return refuse("repo", root, err)
 	}
@@ -418,11 +466,17 @@ func prepareRepositoryWithInstaller(root, version, name, base string, out io.Wri
 		}
 		return restoreErr
 	}
+	// Recheck preserved links as well as all regular preimages before publishing.
+	for _, item := range guidance {
+		if err := checkRepoInitPrior(item); err != nil {
+			return refuse("repo", item.target, errors.Join(err, rollback()))
+		}
+	}
 	for _, item := range guidance {
 		if item.status == "unchanged" {
 			continue
 		}
-		// An existing supported link follows the AGENTS.md write. A planned
+		// An existing supported link shares its regular target write. A planned
 		// link must reach os.Symlink below when CLAUDE.md is absent.
 		if item.link != "" && item.exists {
 			continue
@@ -431,7 +485,7 @@ func prepareRepositoryWithInstaller(root, version, name, base string, out io.Wri
 			if item.link != "" {
 				err = os.Symlink(item.link, item.target)
 			} else {
-				err = os.Rename(item.staged, item.target)
+				err = options.rename(item.staged, item.target)
 			}
 		}
 		if err != nil {
@@ -463,7 +517,13 @@ func checkRepoInitPrior(item repoGuidanceFile) error {
 	if !item.exists && os.IsNotExist(err) {
 		return nil
 	}
-	if err != nil || !item.exists || !info.Mode().IsRegular() {
+	if err == nil && item.exists && item.link != "" && info.Mode()&os.ModeSymlink != 0 {
+		link, linkErr := os.Readlink(item.target)
+		if linkErr == nil && link == item.link {
+			return nil
+		}
+	}
+	if err != nil || !item.exists || !info.Mode().IsRegular() || item.link != "" || info.Mode() != item.mode {
 		return fmt.Errorf("refusing %s: guidance changed during preparation", item.target)
 	}
 	prior, err := os.ReadFile(item.target)

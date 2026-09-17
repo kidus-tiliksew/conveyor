@@ -20,7 +20,7 @@ import (
 )
 
 func TestRepoInitGuidanceStatesAndRepeatability(t *testing.T) {
-	for _, state := range []string{"neither", "agents only", "claude only", "claude symlink", "two regular files"} {
+	for _, state := range []string{"neither", "agents only", "claude only", "claude symlink", "agents symlink", "two regular files"} {
 		t.Run(state, func(t *testing.T) {
 			root := t.TempDir()
 			old, err := renderRepoInit("v1.0.0", "old", "old-base")
@@ -32,11 +32,16 @@ func TestRepoInitGuidanceStatesAndRepeatability(t *testing.T) {
 			if state == "agents only" || state == "claude symlink" || state == "two regular files" {
 				writeRepoFixture(t, root, "AGENTS.md", prior)
 			}
-			if state == "claude only" || state == "two regular files" {
+			if state == "claude only" || state == "agents symlink" || state == "two regular files" {
 				writeRepoFixture(t, root, "CLAUDE.md", prior)
 			}
 			if state == "claude symlink" {
 				if err := os.Symlink("AGENTS.md", filepath.Join(root, "CLAUDE.md")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if state == "agents symlink" {
+				if err := os.Symlink("CLAUDE.md", filepath.Join(root, "AGENTS.md")); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -50,14 +55,14 @@ func TestRepoInitGuidanceStatesAndRepeatability(t *testing.T) {
 				if err != nil || !bytes.Contains(content, bytes.TrimSuffix(section, []byte("\n"))) {
 					t.Fatalf("%s does not carry section: %s, %v", name, content, err)
 				}
-				if state == "two regular files" || state == "claude symlink" || state == "agents only" || state == "claude only" && name == "CLAUDE.md" {
+				if state == "two regular files" || state == "agents symlink" || state == "claude symlink" || state == "agents only" || state == "claude only" && name == "CLAUDE.md" {
 					want := prefix + strings.TrimSuffix(string(section), "\n") + suffix
 					if string(content) != want {
 						t.Fatalf("operator text changed in %s: %q", name, content)
 					}
 				}
 			}
-			if state != "two regular files" && state != "claude only" {
+			if state != "two regular files" && state != "claude only" && state != "agents symlink" {
 				if target, err := os.Readlink(filepath.Join(root, "CLAUDE.md")); err != nil || target != "AGENTS.md" {
 					t.Fatalf("CLAUDE.md link = %q, %v", target, err)
 				}
@@ -106,8 +111,8 @@ func TestRepoInitSectionContract(t *testing.T) {
 		"The confirmed document corpus is the design authority: Requirements, System Design documents, and DEC-n decisions.\n" +
 		"Changes are filed as tasks through Conveyor.\n" +
 		"An agent edits only under a live claim in a task worktree resolved by `conveyor checkout <task-id>`, never on the base branch.\n" +
-		"Follow the installed `conveyor-plan` skill for planning, `conveyor-file-tasks` for filing tasks, and `conveyor-work` for task work.\n" +
-		"This section and the project-scoped skills are versioned with the CLI. Re-run `conveyor repo init` after an upgrade to refresh them.\n" +
+		"Follow the `conveyor-plan` skill for planning, `conveyor-file-tasks` for filing tasks, and `conveyor-work` for task work.\n" +
+		"This section and the project-scoped skills are versioned with the CLI. Re-run `conveyor repo init` after an upgrade to refresh both, or use `conveyor repo init --guidance-only` to preserve maintained source skill wrappers.\n" +
 		"<!-- /conveyor:repo-init -->\n"
 	if string(section) != want || strings.Count(string(section), "\n") >= 20 {
 		t.Fatalf("section contract changed: %s", section)
@@ -135,7 +140,7 @@ func TestRepoInitAppendsAndRefusesSkillDowngrade(t *testing.T) {
 
 func TestRepoInitRefusalsLeaveNoPartialFiles(t *testing.T) {
 	section, _ := renderRepoInit("v1.0.0", "example", "main")
-	for _, state := range []string{"unowned skill", "broken symlink", "reversed symlink", "external symlink", "tool symlink", "skill symlink", "guidance directory", "missing close", "missing open", "multiple spans", "wrong order", "bad version", "unsupported owner"} {
+	for _, state := range []string{"unowned skill", "broken symlink", "external symlink", "tool symlink", "skill symlink", "guidance directory", "missing close", "missing open", "multiple spans", "wrong order", "bad version", "unsupported owner"} {
 		t.Run(state, func(t *testing.T) {
 			root, external := t.TempDir(), t.TempDir()
 			writeRepoFixture(t, root, "AGENTS.md", "Keep my rules")
@@ -152,13 +157,6 @@ func TestRepoInitRefusalsLeaveNoPartialFiles(t *testing.T) {
 				writeRepoFixture(t, root, ".cursor/skills/conveyor-work/SKILL.md", "Operator skill")
 			case "broken symlink":
 				symlink("missing", badPath)
-			case "reversed symlink":
-				badPath = filepath.Join(root, "AGENTS.md")
-				if err := os.Remove(badPath); err != nil {
-					t.Fatal(err)
-				}
-				writeRepoFixture(t, root, "CLAUDE.md", "Operator rules")
-				symlink("CLAUDE.md", badPath)
 			case "external symlink":
 				writeRepoFixture(t, external, "rules", "External rules")
 				symlink(filepath.Join(external, "rules"), badPath)
@@ -511,7 +509,7 @@ func TestRepoInitPortableServer(t *testing.T) {
 func TestRepoInitVerifiedRefresh(t *testing.T) {
 	first := repoInitContext{Server: "https://conveyor.example.com", Workspace: "demo", Name: "example", Base: "main"}
 	second := repoInitContext{Server: "https://factory.example.org:8443/team", Workspace: "other", Name: "another", Base: "trunk"}
-	for _, form := range []string{"symlink", "regular"} {
+	for _, form := range []string{"symlink", "regular", "reverse", "symlink guidance-only", "reverse guidance-only"} {
 		t.Run(form, func(t *testing.T) {
 			root := t.TempDir()
 			old := "<!-- conveyor:repo-init owner=v1 version=v0 -->\nOld guidance without context.\n<!-- /conveyor:repo-init -->"
@@ -519,10 +517,18 @@ func TestRepoInitVerifiedRefresh(t *testing.T) {
 			if form == "regular" {
 				writeRepoFixture(t, root, "CLAUDE.md", "Claude before\n"+old+"\nClaude after")
 			}
+			if strings.HasPrefix(form, "reverse") {
+				if err := os.Rename(filepath.Join(root, "AGENTS.md"), filepath.Join(root, "CLAUDE.md")); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink("./CLAUDE.md", filepath.Join(root, "AGENTS.md")); err != nil {
+					t.Fatal(err)
+				}
+			}
 			run := func(version string, c repoInitContext) string {
 				t.Helper()
 				var out bytes.Buffer
-				if err := prepareRepositoryWithInstaller(root, version, c.Name, c.Base, &out, installEmbeddedSkillsForDestinationsWithForce, c); err != nil {
+				if err := prepareRepositoryWithOptions(root, version, c.Name, c.Base, &out, repoInitOptions{guidanceOnly: strings.Contains(form, "guidance-only")}, installEmbeddedSkillsForDestinationsWithForce, c); err != nil {
 					t.Fatal(err)
 				}
 				return out.String()
@@ -733,5 +739,243 @@ func TestRepoInitRetainedContextMissingPeer(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestRepoInitGuidanceOnlySourceWrappers(t *testing.T) {
+	root := t.TempDir()
+	t.Chdir(root)
+	mustGit(t, root, "init", "-b", "main")
+	writeRepoFixture(t, root, "CLAUDE.md", "Maintained instructions\n")
+	if err := os.Chmod(filepath.Join(root, "CLAUDE.md"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("CLAUDE.md", filepath.Join(root, "AGENTS.md")); err != nil {
+		t.Fatal(err)
+	}
+	writeRepoFixture(t, root, ".claude/skills/conveyor-work/SKILL.md", "Maintained source wrapper\n")
+	if err := os.Chmod(filepath.Join(root, ".claude/skills/conveyor-work/SKILL.md"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before := repoFixtureSnapshot(t, root)
+	if err := prepareRepository(root, "v1", "example", "main", io.Discard); err == nil {
+		t.Fatal("full installation accepted unowned source")
+	}
+	assertRepoInitSnapshot(t, before, repoFixtureSnapshot(t, root))
+	for run := 0; run < 2; run++ {
+		command := repoCmd()
+		command.SetArgs([]string{"init", "--guidance-only"})
+		var out bytes.Buffer
+		command.SetOut(&out)
+		if err := command.Execute(); err != nil {
+			t.Fatal(err)
+		}
+		if len(strings.Split(strings.TrimSpace(out.String()), "\n")) != 2 || strings.Contains(out.String(), "skills") {
+			t.Fatalf("unexpected reports: %s", out.String())
+		}
+		after := repoFixtureSnapshot(t, root)
+		if run == 1 {
+			assertRepoInitSnapshot(t, before, after)
+		}
+		delete(after, "CLAUDE.md")
+		for path, value := range before {
+			if path != "CLAUDE.md" && after[path] != value {
+				t.Fatalf("changed %s", path)
+			}
+		}
+		if len(after) != len(before)-1 {
+			t.Fatal("created unexpected files")
+		}
+		info, err := os.Stat(filepath.Join(root, "CLAUDE.md"))
+		if err != nil || info.Mode().Perm() != 0o640 {
+			t.Fatal("target permissions changed")
+		}
+		before = repoFixtureSnapshot(t, root)
+	}
+}
+
+func TestRepoInitUnsafeGuidancePairs(t *testing.T) {
+	for _, reverse := range []bool{false, true} {
+		for _, only := range []bool{false, true} {
+			for _, kind := range []string{"dangling", "cycle", "indirect", "escaping", "unrelated", "directory", "traversal"} {
+				t.Run(fmt.Sprintf("reverse=%v/only=%v/%s", reverse, only, kind), func(t *testing.T) {
+					root := t.TempDir()
+					link, target := "CLAUDE.md", "AGENTS.md"
+					if reverse {
+						link, target = target, link
+					}
+					writeRepoFixture(t, root, target, "Keep rules")
+					destination := target
+					switch kind {
+					case "dangling":
+						if err := os.Remove(filepath.Join(root, target)); err != nil {
+							t.Fatal(err)
+						}
+					case "cycle":
+						if err := os.Remove(filepath.Join(root, target)); err != nil {
+							t.Fatal(err)
+						}
+						if err := os.Symlink(link, filepath.Join(root, target)); err != nil {
+							t.Fatal(err)
+						}
+					case "indirect":
+						if err := os.Symlink(target, filepath.Join(root, "indirect")); err != nil {
+							t.Fatal(err)
+						}
+						destination = "indirect"
+					case "escaping":
+						external := t.TempDir()
+						writeRepoFixture(t, external, "rules", "External")
+						destination = filepath.Join(external, "rules")
+					case "unrelated":
+						writeRepoFixture(t, root, "other", "Other")
+						destination = "other"
+					case "directory":
+						if err := os.Remove(filepath.Join(root, target)); err != nil {
+							t.Fatal(err)
+						}
+						if err := os.Mkdir(filepath.Join(root, target), 0o755); err != nil {
+							t.Fatal(err)
+						}
+					case "traversal":
+						destination = "nested/../" + target
+					}
+					if err := os.Symlink(destination, filepath.Join(root, link)); err != nil {
+						t.Fatal(err)
+					}
+					before := repoFixtureSnapshot(t, root)
+					if err := prepareRepositoryWithOptions(root, "v1", "example", "main", io.Discard, repoInitOptions{guidanceOnly: only}, installEmbeddedSkillsForDestinationsWithForce); err == nil {
+						t.Fatal("accepted unsafe link")
+					}
+					assertRepoInitSnapshot(t, before, repoFixtureSnapshot(t, root))
+				})
+			}
+		}
+	}
+}
+
+func TestRepoInitGuidancePublicationFailure(t *testing.T) {
+	for _, form := range []string{"regular", "forward", "reverse"} {
+		for _, only := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/only=%v", form, only), func(t *testing.T) {
+				root := t.TempDir()
+				writeRepoFixture(t, root, "AGENTS.md", "Operator text")
+				if form == "regular" {
+					writeRepoFixture(t, root, "CLAUDE.md", "Other text")
+				} else if form == "forward" {
+					if err := os.Symlink("AGENTS.md", filepath.Join(root, "CLAUDE.md")); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					if err := os.Rename(filepath.Join(root, "AGENTS.md"), filepath.Join(root, "CLAUDE.md")); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.Symlink("CLAUDE.md", filepath.Join(root, "AGENTS.md")); err != nil {
+						t.Fatal(err)
+					}
+				}
+				before := repoFixtureSnapshot(t, root)
+				calls := 0
+				options := repoInitOptions{guidanceOnly: only, rename: func(from, to string) error {
+					calls++
+					if form != "regular" || calls == 2 {
+						return errors.New("injected publication failure")
+					}
+					return os.Rename(from, to)
+				}}
+				err := prepareRepositoryWithOptions(root, "v1", "example", "main", io.Discard, options, installEmbeddedSkillsForDestinationsWithForce)
+				if err == nil || !strings.Contains(err.Error(), "injected") {
+					t.Fatalf("error = %v", err)
+				}
+				assertRepoInitSnapshot(t, before, repoFixtureSnapshot(t, root))
+			})
+		}
+	}
+}
+
+func TestRepoInitGuidanceOnlySkipsInstallerAndWritesTargetOnce(t *testing.T) {
+	for _, reverse := range []bool{false, true} {
+		for _, spelling := range []string{"relative", "dot", "absolute"} {
+			t.Run(fmt.Sprintf("reverse=%v/%s", reverse, spelling), func(t *testing.T) {
+				root := t.TempDir()
+				link, target := "CLAUDE.md", "AGENTS.md"
+				if reverse {
+					link, target = target, link
+				}
+				writeRepoFixture(t, root, target, "Operator rules")
+				destination := target
+				if spelling == "dot" {
+					destination = "./" + target
+				}
+				if spelling == "absolute" {
+					destination = filepath.Join(root, target)
+				}
+				if err := os.Symlink(destination, filepath.Join(root, link)); err != nil {
+					t.Fatal(err)
+				}
+				// Even unsafe skill roots must be uninspected in explicit guidance-only mode.
+				if err := os.Symlink("missing", filepath.Join(root, ".claude")); err != nil {
+					t.Fatal(err)
+				}
+				writes := 0
+				options := repoInitOptions{guidanceOnly: true, rename: func(from, to string) error {
+					writes++
+					if to != filepath.Join(root, target) {
+						t.Fatalf("wrote %s", to)
+					}
+					return os.Rename(from, to)
+				}}
+				installer := func(string, []skillDestination, string, bool, bool) ([]skillInstallFile, []skillInstallReport, error) {
+					t.Fatal("called skill installer")
+					return nil, nil, nil
+				}
+				var out bytes.Buffer
+				if err := prepareRepositoryWithOptions(root, "v1", "example", "main", &out, options, installer); err != nil {
+					t.Fatal(err)
+				}
+				if writes != 1 {
+					t.Fatalf("writes = %d", writes)
+				}
+				if got, err := os.Readlink(filepath.Join(root, link)); err != nil || got != destination {
+					t.Fatalf("link changed: %q %v", got, err)
+				}
+				for _, name := range []string{link, target} {
+					if !strings.Contains(out.String(), "repo\tupdated\t"+filepath.Join(root, name)) {
+						t.Fatalf("wrong logical report: %s", out.String())
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestRepoInitPreservedLinkPreimage(t *testing.T) {
+	for _, reverse := range []bool{false, true} {
+		root := t.TempDir()
+		link, target := "CLAUDE.md", "AGENTS.md"
+		if reverse {
+			link, target = target, link
+		}
+		writeRepoFixture(t, root, target, "Operator rules")
+		if err := os.Symlink(target, filepath.Join(root, link)); err != nil {
+			t.Fatal(err)
+		}
+		installer := func(string, []skillDestination, string, bool, bool) ([]skillInstallFile, []skillInstallReport, error) {
+			if err := os.Remove(filepath.Join(root, link)); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink("./"+target, filepath.Join(root, link)); err != nil {
+				t.Fatal(err)
+			}
+			return nil, nil, nil
+		}
+		err := prepareRepositoryWithInstaller(root, "v1", "example", "main", io.Discard, installer)
+		if err == nil || !strings.Contains(err.Error(), "changed during preparation") {
+			t.Fatalf("error = %v", err)
+		}
+		content, err := os.ReadFile(filepath.Join(root, target))
+		if err != nil || string(content) != "Operator rules" {
+			t.Fatal("published after link changed")
+		}
 	}
 }
