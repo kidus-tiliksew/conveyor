@@ -701,3 +701,53 @@ func TestResponseContextExceededUsesErrorFields(t *testing.T) {
 		})
 	}
 }
+
+func TestOpenAIChecksEveryPreparedAudioTextBeforeResponses(t *testing.T) {
+	for _, reject := range []bool{false, true} {
+		t.Run(fmt.Sprintf("reject=%t", reject), func(t *testing.T) {
+			responses, transcriptions := 0, 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/audio/transcriptions" {
+					transcriptions++
+					_, _ = io.WriteString(w, `{"text":"spoken context"}`)
+					return
+				}
+				responses++
+				_, _ = io.WriteString(w, `{"output":[{"type":"message","content":[{"type":"output_text","text":"done"}]}]}`)
+			}))
+			defer server.Close()
+			checked := []string{}
+			failure := fmt.Errorf("text/history allowance exhausted")
+			input := Input{Prompt: "intent", Attachments: []Attachment{
+				{ID: "one", Name: "one.mp3", ContentType: "audio/mpeg", Kind: AttachmentAudio, Content: []byte("one")},
+				{ID: "two", Name: "two.mp3", ContentType: "audio/mpeg", Kind: AttachmentAudio, Content: []byte("two")},
+			}, CheckPreparedText: func(a Attachment, size int) error {
+				checked = append(checked, a.ID)
+				want := len(fmt.Sprintf("# Audio attachment: %s (artifact %s)\n\nspoken context", a.Name, a.ID))
+				if size != want {
+					t.Errorf("prepared bytes=%d want=%d", size, want)
+				}
+				if reject && a.ID == "two" {
+					return failure
+				}
+				return nil
+			}}
+			result, err := (&OpenAI{APIKey: "test", BaseURL: server.URL, Client: server.Client()}).Run(t.Context(), "model", input)
+			wantResponses := 1
+			if reject {
+				wantResponses = 0
+				if err != failure || result.Diagnostic.Phase != "attachment_text_budget" {
+					t.Fatalf("err=%v diagnostic=%+v", err, result.Diagnostic)
+				}
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			if responses != wantResponses || transcriptions != 2 || strings.Join(checked, ",") != "one,two" {
+				t.Fatalf("Responses=%d transcriptions=%d checked=%v", responses, transcriptions, checked)
+			}
+			if strings.Contains(string(result.Transcript), "spoken context") {
+				t.Fatal("transcribed content leaked into audit")
+			}
+		})
+	}
+}

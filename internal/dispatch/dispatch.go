@@ -680,14 +680,23 @@ func (d *Dispatcher) runTriageLoop(ctx context.Context, model string, input inpr
 		if len(history) > 0 || len(pendingOutputs) > 0 {
 			input.Continuation = &inprocess.Continuation{ResponseItems: append([]json.RawMessage(nil), history...), FunctionCallOutputs: append([]inprocess.FunctionCallOutput(nil), pendingOutputs...)}
 		}
-		if size := triageInputBytes(input); size > maxTriageInputBytes {
-			// Corpus-tool history is bounded too. Preserve AC-6.3 fail-open
-			// behavior, with the actual exhaustion cause in the durable audit.
-			audit, _ := json.Marshal(map[string]any{"triage_context_budget": map[string]any{"input_bytes": size, "limit_bytes": maxTriageInputBytes, "provider_call_skipped": true}})
-			transcripts = append(transcripts, audit)
-			fallback := neutralTriageResult(aggregate, transcripts, history, toolCalls)
-			fallback.Output = strings.Replace(fallback.Output, "Corpus grounding was incomplete because the tool loop budget was exhausted.", "Corpus grounding was incomplete because the input byte allowance was exhausted; no oversized continuation was sent.", 1)
-			return fallback, nil
+		textLimit := maxTriageInputBytes
+		if iteration == 0 {
+			textLimit = maxTriageInitialBytes
+		}
+		if overage := checkTriageInput(input, textLimit); overage != nil {
+			if iteration == 0 {
+				return aggregate, overage
+			}
+			return triageBudgetFallback(aggregate, transcripts, history, toolCalls, overage), nil
+		}
+		preparedTextBytes := measureTriageInput(input).TextBytes
+		input.CheckPreparedText = func(attachment inprocess.Attachment, size int) error {
+			preparedTextBytes += size
+			if preparedTextBytes > textLimit {
+				return &triageBudgetError{"text/history", preparedTextBytes, textLimit, attachment.ID, attachment.Name}
+			}
+			return nil
 		}
 		result, err := d.Agent.Run(ctx, model, input)
 		aggregate.Model = result.Model
@@ -701,6 +710,10 @@ func (d *Dispatcher) runTriageLoop(ctx context.Context, model string, input inpr
 			}
 		}
 		if err != nil {
+			var overage *triageBudgetError
+			if iteration > 0 && errors.As(err, &overage) {
+				return triageBudgetFallback(aggregate, transcripts, history, toolCalls, overage), nil
+			}
 			if len(transcripts) > 0 {
 				aggregate.Transcript, _ = json.Marshal(transcripts)
 			}
@@ -755,8 +768,8 @@ func (d *Dispatcher) runTriageLoop(ctx context.Context, model string, input inpr
 			candidate := input
 			candidate.Continuation = &inprocess.Continuation{ResponseItems: history, FunctionCallOutputs: append(append([]inprocess.FunctionCallOutput(nil), pendingOutputs...), output)}
 			// Reserve room for bounded refusal results and the final instruction.
-			if triageInputBytes(candidate) > maxTriageInputBytes-(8<<10) {
-				refusal, _ := json.Marshal(map[string]any{"untrusted_data": true, "result": map[string]any{"id": callID, "name": call.Name, "error": "corpus input byte budget exhausted; body not supplied or read; finish with available evidence"}})
+			if overage := checkTriageInput(candidate, maxTriageInputBytes-(8<<10)-(preparedTextBytes-measureTriageInput(input).TextBytes)); overage != nil {
+				refusal, _ := json.Marshal(map[string]any{"untrusted_data": true, "result": map[string]any{"id": callID, "name": call.Name, "error": overage.Error() + "; body not supplied or read; finish with available evidence"}})
 				output.Output = string(refusal)
 			}
 			pendingOutputs = append(pendingOutputs, output)
@@ -950,31 +963,48 @@ func (d *Dispatcher) buildStageInput(ctx context.Context, cfg *config.Config, st
 			continue
 		}
 		seen[artifact.ID] = true
-		if stage == core.StageTriage && artifact.TaskID != task.ID && artifact.SizeBytes > maxTriageInitialBytes {
-			fmt.Fprintf(&prompt, "\nContext artifact body omitted by triage byte budget: %s (%s, %d bytes, id %s)\n", artifact.Name, artifact.ContentType, artifact.SizeBytes, artifact.ID)
-			continue
+		kind, kindErr := modelAttachmentKind(artifact)
+		if kindErr != nil {
+			return inprocess.Input{}, kindErr
+		}
+		attachment := inprocess.Attachment{ID: artifact.ID, Name: artifact.Name, ContentType: artifact.ContentType, Kind: kind}
+		optional := stage == core.StageTriage && artifact.TaskID != task.ID
+		omit := func(err *triageBudgetError, size int) {
+			fmt.Fprintf(&prompt, "\nContext artifact body omitted by triage byte budget: %s (%s, %d bytes, id %s); %s\n", artifact.Name, artifact.ContentType, size, artifact.ID, err)
+		}
+		if optional {
+			if overage := triageAttachmentOverage(attachment, int(artifact.SizeBytes), maxTriageInitialBytes); overage != nil {
+				omit(overage, int(artifact.SizeBytes))
+				continue
+			}
 		}
 		_, content, getErr := d.Store.GetArtifact(ctx, artifact.ID)
 		if getErr != nil {
 			return inprocess.Input{}, fmt.Errorf("read context artifact %s for task %s: %w", artifact.ID, task.ID, getErr)
 		}
-		if stage == core.StageTriage && artifact.TaskID != task.ID && len(content) > maxTriageInitialBytes {
-			fmt.Fprintf(&prompt, "\nContext artifact body omitted by triage byte budget: %s (%s, %d bytes, id %s)\n", artifact.Name, artifact.ContentType, len(content), artifact.ID)
-			continue
-		}
-		if len(content) > maxModelAttachmentBytes {
-			return inprocess.Input{}, fmt.Errorf("context artifact %s (%s) exceeds the %d-byte model attachment limit", artifact.ID, artifact.Name, maxModelAttachmentBytes)
-		}
-		kind, kindErr := modelAttachmentKind(artifact)
-		if kindErr != nil {
-			return inprocess.Input{}, kindErr
-		}
-		if kind == inprocess.AttachmentImage && len(content) > maxModelImageBytes {
-			return inprocess.Input{}, fmt.Errorf("image artifact %s (%s) exceeds the %d-byte image input limit", artifact.ID, artifact.Name, maxModelImageBytes)
-		}
-		totalBytes += len(content)
-		if totalBytes > maxModelFileBytes {
-			return inprocess.Input{}, fmt.Errorf("context artifact %s (%s) from %s makes task %s exceed the %d-byte combined model input limit", artifact.ID, artifact.Name, contextArtifactSource(artifact), task.ID, maxModelFileBytes)
+		if stage == core.StageTriage {
+			if overage := triageAttachmentOverage(attachment, len(content), maxTriageInitialBytes); overage != nil {
+				if optional {
+					omit(overage, len(content))
+					continue
+				}
+				if overage.Budget != "text/history" {
+					return inprocess.Input{}, fmt.Errorf("mandatory input for task %s: %w; task intent, served authority, and local attachments were not truncated", task.ID, overage)
+				}
+			}
+			// Combined limits are checked after mandatory local attachments have been
+			// reserved, so optional lineage evidence cannot evict them (component-lineage).
+		} else {
+			if len(content) > maxModelAttachmentBytes {
+				return inprocess.Input{}, fmt.Errorf("context artifact %s (%s) exceeds the %d-byte model attachment limit", artifact.ID, artifact.Name, maxModelAttachmentBytes)
+			}
+			if kind == inprocess.AttachmentImage && len(content) > maxModelImageBytes {
+				return inprocess.Input{}, fmt.Errorf("image artifact %s (%s) exceeds the %d-byte image input limit", artifact.ID, artifact.Name, maxModelImageBytes)
+			}
+			totalBytes += len(content)
+			if totalBytes > maxModelFileBytes {
+				return inprocess.Input{}, fmt.Errorf("context artifact %s (%s) from %s makes task %s exceed the %d-byte combined model input limit", artifact.ID, artifact.Name, contextArtifactSource(artifact), task.ID, maxModelFileBytes)
+			}
 		}
 		fmt.Fprintf(&prompt, "\nContext artifact supplied as %s input: %s (%s, %d bytes, id %s)\n", kind, artifact.Name, artifact.ContentType, len(content), artifact.ID)
 		input.Attachments = append(input.Attachments, inprocess.Attachment{ID: artifact.ID, Name: artifact.Name, ContentType: artifact.ContentType, Kind: kind, Content: content})
@@ -1021,7 +1051,7 @@ func contextArtifactSource(artifact core.Artifact) string {
 // modelAttachmentKind is the provider boundary for in-process pipeline context:
 // text/documents use Responses input_file, images use input_image, and audio is
 // transcribed before the stage request. Anything outside that documented set
-// fails before model execution instead of degrading to metadata (design-system-architecture).
+// fails before model execution instead of degrading to metadata (component-runtime).
 func modelAttachmentKind(artifact core.Artifact) (inprocess.AttachmentKind, error) {
 	contentType := strings.ToLower(strings.TrimSpace(strings.Split(artifact.ContentType, ";")[0]))
 	ext := strings.ToLower(filepath.Ext(artifact.Name))
