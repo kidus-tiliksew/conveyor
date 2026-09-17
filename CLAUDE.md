@@ -58,3 +58,26 @@ operator-only acts.
 
 - Memory-store scope is defined by DEC-9.
 - Task priority, phase, assignment, and queue-order scope is defined by DEC-18.
+
+This repository maintains the Conveyor skill sources and uses `AGENTS.md ->
+CLAUDE.md`. The current installer refuses this layout. To refresh the generated
+section below, run the documented command in a temporary checkout with this
+repository's origin and copy only its managed section here; preserve the skill
+sources and existing symlink.
+
+<!-- conveyor:repo-init owner=v1 version=v0.24.1 -->
+## Conveyor factory work
+
+Repository: `conveyor`. Base branch: `main`.
+Server: `https://conveyor.kidus.sh`. Workspace: `demo`.
+Select a native MCP connection whose endpoint matches this server and pass workspace `demo` on every call. MCP registration names vary by machine; registering MCP does not set CLI defaults.
+CLI example: `conveyor --server 'https://conveyor.kidus.sh' --workspace 'demo' task list`.
+Refresh this owned section and the project-scoped skills through ordinary task delivery with `conveyor --server 'https://conveyor.kidus.sh' --workspace 'demo' repo init`.
+On connection failure, report the failed endpoint and missing context. Do not infer a replacement host from localhost defaults, SSH configuration, or release instructions.
+
+The confirmed document corpus is the design authority: Requirements, System Design documents, and DEC-n decisions.
+Changes are filed as tasks through Conveyor.
+An agent edits only under a live claim in a task worktree resolved by `conveyor checkout <task-id>`, never on the base branch.
+Follow the installed `conveyor-plan` skill for planning, `conveyor-file-tasks` for filing tasks, and `conveyor-work` for task work.
+This section and the project-scoped skills are versioned with the CLI. Re-run `conveyor repo init` after an upgrade to refresh them.
+<!-- /conveyor:repo-init -->
