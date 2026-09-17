@@ -935,3 +935,44 @@ test('Tasks panel renders lightweight detail before requesting selected audit', 
   await expect(panel.locator('pre').filter({ hasText: 'Panel complete authority' })).toBeVisible()
   expect(audits).toBe(1)
 })
+
+for (const hasCreator of [true, false]) {
+  test(`Created By in the Tasks panel shows ${hasCreator ? 'the workspace member' : 'Unknown'}`, async ({ page }) => {
+    await routeTasksSurface(page)
+    await page.route('**/v1/tasks/task-shipped/activity**', (route) =>
+      route.fulfill({
+        json: {
+          task: operations[2].task,
+          jobs: [],
+          events: hasCreator
+            ? [
+                {
+                  id: 1,
+                  kind: 'task.created',
+                  actor_role: 'human',
+                  actor_id: 'user:usr-other',
+                  at: '2026-08-04T10:00:00Z',
+                },
+              ]
+            : [],
+          interventions: [],
+          work_orders: [],
+          needs_attention: false,
+        },
+      }),
+    )
+    await page.goto('/tasks?task=task-shipped')
+    const panel = page.getByRole('dialog', { name: 'Task detail' })
+    const label = panel.locator('dt').filter({ hasText: /^Created By$/ })
+    await expect(label).toHaveCount(1)
+    await expect(label.locator('xpath=following-sibling::dd[1]').locator('span').first()).toHaveText(
+      hasCreator ? 'Other Member' : 'Unknown',
+    )
+    await expect(
+      panel
+        .locator('dt')
+        .filter({ hasText: /^Repo$/ })
+        .locator('xpath=following-sibling::dt[1]'),
+    ).toHaveText('Created By')
+  })
+}

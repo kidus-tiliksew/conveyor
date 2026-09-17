@@ -6223,3 +6223,105 @@ test('seeded full and lightweight task payloads record comparable render observa
   }
   expect(Buffer.byteLength(JSON.stringify(lightweight))).toBeLessThan(Buffer.byteLength(JSON.stringify(full)) * 0.15)
 })
+
+const creatorCases = [
+  { name: 'member', role: 'human', id: 'user:usr_ada', label: 'Ada Owner' },
+  { name: 'unprefixed member', role: 'human', id: 'usr_ada', label: 'Ada Owner' },
+  { name: 'email fallback', role: 'human', id: 'user:usr_email', label: 'email@example.test' },
+  { name: 'ID fallback', role: 'human', id: 'user:usr_id', label: 'usr_id' },
+  { name: 'former member', role: 'human', id: 'user:usr_former', label: 'User · usr_former' },
+  { name: 'agent', role: 'agent', id: 'agent:usr_ada', label: 'Agent · usr_ada' },
+  { name: 'runner', role: 'runner', id: 'worker:worker-1', label: 'Runner · worker-1' },
+  { name: 'system', role: 'system', id: 'conveyor', label: 'System · conveyor' },
+  { name: 'missing event', role: 'human', id: 'user:usr_ada', label: 'Unknown', missing: true },
+  { name: 'missing identifier', role: 'human', id: '', label: 'Unknown' },
+  { name: 'empty prefixed identifier', role: 'human', id: 'user:', label: 'Unknown' },
+  { name: 'unknown actor class', role: 'unrecognized', id: 'usr_ada', label: 'Unknown' },
+]
+
+for (const surface of ['full', 'board sheet']) {
+  for (const creator of creatorCases) {
+    test(`Created By shows ${creator.name} on the ${surface}`, async ({ page }) => {
+      await page.route('**/v1/workspaces/demo/members**', (route) =>
+        route.fulfill({
+          json: [
+            ...assignmentMembers,
+            { ...assignmentMembers[0], user_id: 'usr_email', display_name: '', email: 'email@example.test' },
+            { ...assignmentMembers[0], user_id: 'usr_id', display_name: '', email: '' },
+          ],
+        }),
+      )
+      const item = activity('creator', false)
+      const event = {
+        id: 1,
+        task_id: item.task.id,
+        kind: 'task.created',
+        actor_role: creator.role,
+        actor_id: creator.id,
+        payload: {},
+        at: createdAt,
+      }
+      await page.route('**/v1/tasks/creator/activity*', (route) =>
+        route.fulfill({
+          json: {
+            ...item,
+            events: [
+              { ...event, id: 2, kind: 'task.updated', actor_role: 'human', actor_id: 'user:usr_bo' },
+              ...(creator.missing ? [] : [event]),
+              { ...event, id: 3, kind: 'task.created_elsewhere', actor_role: 'human', actor_id: 'user:usr_bo' },
+            ],
+          },
+        }),
+      )
+      await page.goto(`/tasks/creator${surface === 'full' ? '/full' : ''}`)
+      const label = page.locator('dt').filter({ hasText: /^Created By$/ })
+      const value = label.locator('xpath=following-sibling::dd[1]')
+      await expect(label).toHaveCount(1)
+      await expect(value.locator('span').first()).toHaveText(creator.label)
+      if (creator.label !== 'Unknown') {
+        await expect(value.locator('span').first()).toHaveAttribute('title', new RegExp(creator.id))
+        await expect(value.locator('.sr-only')).toContainText(creator.id)
+      }
+      const repo = page.locator('dt').filter({ hasText: /^Repo$/ })
+      await expect(repo.locator('xpath=following-sibling::dt[1]')).toHaveText('Created By')
+      for (const width of [1280, 390]) {
+        await page.setViewportSize({ width, height: 850 })
+        await expect
+          .poll(() =>
+            label.evaluate((element) => {
+              const repo = element.parentElement!.querySelector('dt')!.getBoundingClientRect()
+              const creator = element.getBoundingClientRect()
+              return creator.y > repo.y && Math.abs(creator.x - repo.x) < 1
+            }),
+          )
+          .toBe(true)
+        await expect
+          .poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth))
+          .toBe(true)
+      }
+    })
+  }
+}
+
+test('Created By preserves a long historical identity when the workspace member read fails', async ({ page }) => {
+  const identifier = `user:usr_${'historical'.repeat(30)}`
+  await page.route('**/v1/workspaces/demo/members**', (route) => route.fulfill({ status: 500, json: {} }))
+  const item = activity('creator-long', false)
+  await page.route('**/v1/tasks/creator-long/activity*', (route) =>
+    route.fulfill({
+      json: {
+        ...item,
+        events: [{ id: 1, kind: 'task.created', actor_role: 'human', actor_id: identifier, at: createdAt }],
+      },
+    }),
+  )
+  await page.setViewportSize({ width: 390, height: 850 })
+  await page.goto('/tasks/creator-long/full')
+  const value = page
+    .locator('dt')
+    .filter({ hasText: /^Created By$/ })
+    .locator('xpath=following-sibling::dd[1]')
+  await expect(value.locator('span').first()).toHaveText(`User · ${identifier.slice(5)}`)
+  await expect(value.locator('span').first()).toHaveAttribute('title', `User · ${identifier}`)
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+})
