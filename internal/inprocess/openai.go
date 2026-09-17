@@ -67,6 +67,9 @@ type Attachment struct {
 }
 
 type Input struct {
+	// CheckPreparedText charges generated attachment text before any Responses call.
+	// The caller owns the byte allowance; nil preserves non-triage behavior.
+	CheckPreparedText         func(Attachment, int) error
 	Prompt                    string
 	Effort                    string
 	Attachments               []Attachment
@@ -187,6 +190,16 @@ func (client *OpenAI) Run(ctx context.Context, model string, input Input) (Resul
 				return Result{Transcript: audit, Redactions: stats, Diagnostic: &diagnostic}, failure
 			}
 			text := fmt.Sprintf("# Audio attachment: %s (artifact %s)\n\n%s", attachment.Name, attachment.ID, transcript)
+			if input.CheckPreparedText != nil {
+				if err := input.CheckPreparedText(attachment, len(text)); err != nil {
+					diagnostic.Phase = "attachment_text_budget"
+					audit, stats, redactErr := client.auditEnvelope(ctx, map[string]any{"model": model, "attachment_summary": diagnostic, "store": false}, map[string]any{"diagnostic": diagnostic, "error": err.Error(), "provider_call_skipped": true})
+					if redactErr != nil {
+						return Result{Diagnostic: &diagnostic}, redactErr
+					}
+					return Result{Transcript: audit, Redactions: stats, Diagnostic: &diagnostic}, err
+				}
+			}
 			content = append(content, map[string]any{"type": "input_text", "text": text})
 			auditContent = append(auditContent, map[string]any{"type": "input_text", "text": fmt.Sprintf("# Audio attachment: %s (artifact %s)\n\n[transcript supplied to model; %d characters]", attachment.Name, attachment.ID, len(transcript))})
 		default:
