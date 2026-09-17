@@ -529,6 +529,17 @@ func (s *Store) CreateTaskWithDependenciesAndContext(ctx context.Context, task c
 	})
 }
 
+func occupyingOpenTaskID(ctx context.Context, tx pgx.Tx, repo, branch, exceptID string) (string, error) {
+	if strings.TrimSpace(branch) == "" {
+		return "", nil
+	}
+	var id string
+	err := tx.QueryRow(ctx, `SELECT id FROM tasks WHERE workspace_id=$1 AND repo_name=$2 AND branch=$3 AND state NOT IN ('merged','closed') AND id<>$4 LIMIT 1`, workspace(ctx), repo, branch, exceptID).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	return id, err
+}
 func (s *Store) createTaskTx(ctx context.Context, tx pgx.Tx, q *db.Queries, task core.Task, dependencyIDs []string, attached store.TaskContextInput, pinned map[string]int) error {
 	if len(dependencyIDs) > 0 {
 		if err := lockDependencyEdgesTx(ctx, tx, task.Workspace); err != nil {
@@ -561,7 +572,15 @@ func (s *Store) createTaskTx(ctx context.Context, tx pgx.Tx, q *db.Queries, task
 	if pinned != nil {
 		designVersions = pinned
 	}
+	if occupant, err := occupyingOpenTaskID(ctx, tx, task.Repo, task.Branch, task.ID); err != nil {
+		return err
+	} else if occupant != "" {
+		return store.TaskBranchInUseError(task.Branch, occupant)
+	}
 	if _, err := q.InsertTask(ctx, taskInsertParams(task)); err != nil {
+		if occupant, lookErr := occupyingOpenTaskID(ctx, tx, task.Repo, task.Branch, task.ID); lookErr == nil && occupant != "" {
+			return store.TaskBranchInUseError(task.Branch, occupant)
+		}
 		return err
 	}
 	if task.Supersedes != "" || task.SupersededBy != "" || task.IntakeOperatorDirection != "" {
@@ -1427,6 +1446,54 @@ func (s *Store) SetTaskHold(ctx context.Context, id string, hold bool) (core.Tas
 			kind = "task.hold.cleared"
 		}
 		return insertEvent(ctx, q, core.Event{TaskID: id, Kind: kind, Payload: core.JSONPayload(map[string]any{"hold": hold})})
+	})
+	return result, err
+}
+
+func (s *Store) AttachTaskBranch(ctx context.Context, taskID, branch string) (core.Task, error) {
+	branch = strings.TrimSpace(branch)
+	if branch == "" {
+		return core.Task{}, fmt.Errorf("branch is required")
+	}
+	var result core.Task
+	err := s.WithTaskSideEffectLock(ctx, taskID, func(ctx context.Context) error {
+		return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+			var currentBranch, currentState, currentRepo string
+			err := tx.QueryRow(ctx, `SELECT branch, state, repo_name FROM tasks WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspace(ctx), taskID).Scan(&currentBranch, &currentState, &currentRepo)
+			if err != nil {
+				return notFound(err, "task %s", taskID)
+			}
+			if core.TaskTerminal(core.TaskState(currentState)) {
+				return fmt.Errorf("%w: task %s", store.ErrTaskTerminal, taskID)
+			}
+			if currentBranch == branch {
+				task, err := q.GetTask(ctx, db.GetTaskParams{ID: taskID, WorkspaceID: workspace(ctx)})
+				if err != nil {
+					return err
+				}
+				result = taskFromDB(task)
+				return nil
+			}
+			occupant, err := occupyingOpenTaskID(ctx, tx, currentRepo, branch, taskID)
+			if err != nil {
+				return err
+			}
+			if occupant != "" {
+				return store.TaskBranchInUseError(branch, occupant)
+			}
+			if _, err := tx.Exec(ctx, `UPDATE tasks SET branch=$3 WHERE workspace_id=$1 AND id=$2`, workspace(ctx), taskID, branch); err != nil {
+				if occupant, lookErr := occupyingOpenTaskID(ctx, tx, currentRepo, branch, taskID); lookErr == nil && occupant != "" {
+					return store.TaskBranchInUseError(branch, occupant)
+				}
+				return err
+			}
+			task, err := q.GetTask(ctx, db.GetTaskParams{ID: taskID, WorkspaceID: workspace(ctx)})
+			if err != nil {
+				return err
+			}
+			result = taskFromDB(task)
+			return insertEvent(ctx, q, core.Event{TaskID: taskID, Kind: "task.branch_attached", Payload: core.JSONPayload(map[string]string{"previous": currentBranch, "branch": branch})})
+		})
 	})
 	return result, err
 }
