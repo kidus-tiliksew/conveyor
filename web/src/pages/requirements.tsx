@@ -16,11 +16,12 @@ import {
   Sparkles,
   Trash2,
 } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useWorkspaceCapability, useWorkspaceSelection } from '../components/app-shell'
 import { ArchiveDocumentDialog, type SuccessorCandidate } from '../components/documents/archive-document-dialog'
 import { type AttentionItem, AttentionSurface } from '../components/documents/attention-surface'
 import { MoreDocumentEvents, useDocumentEvents } from '../components/documents/document-events'
+import { DocumentReview, type ReviewSearch, selectedReviewVersion } from '../components/documents/document-review'
 import { compareDocuments, type DocumentSort, type DocumentSortDirection } from '../components/documents/document-sort'
 import {
   DocumentTree,
@@ -115,7 +116,7 @@ function requirementAttentionCount(item: RequirementSummary) {
  * Requirements is a document tree beside a document canvas. The tree groups
  * the product overviews apart from
  * the requirement corpus; whichever document is selected becomes the canvas,
- * with its history and diffs collapsed underneath. Detailed machinery signals
+ * with shared Changes and History views (component-web-dashboard v6). Machinery signals
  * and actions remain in the canvas attention surface; the tree may carry the
  * compact aggregate approved for the Requirements list. The
  * assistant column is withdrawn while in-product planning is parked — nothing
@@ -508,13 +509,14 @@ function OverviewDiff({ prior, current }: { prior: ReferenceDocumentVersion; cur
 
 function RequirementCanvas({ summary }: { summary: RequirementSummary }) {
   const { workspace } = useWorkspaceSelection()
+  const reviewSearch = useSearch({ from: '/requirements' })
   const {
     data: item,
     error,
     isLoading,
   } = useQuery({
     queryKey: ['requirement', workspace, summary.requirement.id],
-    queryFn: () => fetchRequirement(summary.requirement.id),
+    queryFn: ({ signal }) => fetchRequirement(summary.requirement.id, workspace, signal),
   })
 
   if (isLoading) return <EmptyMessage>Loading requirement…</EmptyMessage>
@@ -522,10 +524,22 @@ function RequirementCanvas({ summary }: { summary: RequirementSummary }) {
     return <EmptyMessage tone="failure">{errorMessage(error, 'Could not load this requirement.')}</EmptyMessage>
   if (!item) return <EmptyMessage tone="failure">Could not load this requirement.</EmptyMessage>
 
-  return <RequirementDetailCanvas item={item} />
+  return (
+    <RequirementDetailCanvas
+      key={`${workspace}:${item.requirement.id}:${reviewSearch.tab}:${reviewSearch.base}:${reviewSearch.target}`}
+      item={item}
+      search={reviewSearch}
+    />
+  )
 }
 
-function RequirementDetailCanvas({ item }: { item: RequirementView }) {
+function RequirementDetailCanvas({
+  item,
+  search,
+}: {
+  item: RequirementView
+  search: ReviewSearch & { requirement?: string; session?: string }
+}) {
   const history = useDocumentEvents('requirement', item.requirement.id, item)
   const { workspace } = useWorkspaceSelection()
   const canOperate = useWorkspaceCapability('operate_gates')
@@ -533,30 +547,30 @@ function RequirementDetailCanvas({ item }: { item: RequirementView }) {
   const canConfirm = useWorkspaceCapability('confirm_documents')
   const client = useQueryClient()
   const servingTasks = item.serving_tasks ?? []
-  const { data: versions = [], error: versionsError } = useQuery({
+  const {
+    data: versions = [],
+    error: versionsError,
+    isLoading: versionsLoading,
+  } = useQuery({
     queryKey: ['requirement-versions', workspace, item.requirement.id],
-    queryFn: () => fetchRequirementVersions(item.requirement.id),
+    queryFn: ({ signal }) => fetchRequirementVersions(item.requirement.id, workspace, signal),
   })
-  const orderedVersions = useMemo(() => [...versions].sort((left, right) => right.version - left.version), [versions])
-  const [selectedVersion, setSelectedVersion] = useState<number | null>(null)
-  // A newly proposed revision has to become the displayed version. Only
-  // resetting when the selection disappears is not enough — the older version
-  // is still in the refetched list, so the canvas would keep showing confirmed
-  // intent while a revision waits.
-  const highestSeen = useRef<number | null>(null)
-  useEffect(() => {
-    if (!orderedVersions.length) return
-    const latest = orderedVersions[0].version
-    const arrived = highestSeen.current === null || latest > highestSeen.current
-    highestSeen.current = latest
-    if (arrived || !orderedVersions.some((version) => version.version === selectedVersion)) {
-      setSelectedVersion(latest)
-    }
-  }, [orderedVersions, selectedVersion])
-  const displayed =
-    orderedVersions.find((version) => version.version === selectedVersion) ??
-    item.pending_versions.at(-1) ??
-    item.current_version
+  const navigate = useNavigate()
+  const onReviewChange = (next: ReviewSearch) =>
+    navigate({
+      to: '/requirements',
+      search: { ...search, ...next, base: next.base, target: next.target },
+      hash: window.location.hash.slice(1),
+    })
+  const reviewVersions = [
+    ...new Map(
+      [...versions, ...item.pending_versions, ...(item.current_version ? [item.current_version] : [])].map((v) => [
+        v.version,
+        v,
+      ]),
+    ).values(),
+  ]
+  const displayed = selectedReviewVersion(reviewVersions, item.current_version, search)
   const { data: referenceDocuments = [] } = useQuery({
     queryKey: ['reference-documents', workspace],
     queryFn: fetchReferenceDocuments,
@@ -597,7 +611,7 @@ function RequirementDetailCanvas({ item }: { item: RequirementView }) {
     if (!displayed || !/^#(?:req|ac)-/i.test(window.location.hash)) return
     const id = window.location.hash.slice(1).toLowerCase()
     requestAnimationFrame(() => documentGlobalByID(id)?.scrollIntoView())
-  }, [displayed])
+  }, [displayed, versionsLoading, search.tab])
   const currentVersion = item.current_version?.version ?? 0
   const [attachmentOffer, setAttachmentOffer] = useState<number | null>(null)
   const [dismissTarget, setDismissTarget] = useState<RequirementVersion | null>(null)
@@ -609,6 +623,9 @@ function RequirementDetailCanvas({ item }: { item: RequirementView }) {
     onSuccess: ({ version }) => setAttachmentOffer(version.version),
     onSettled: async () => {
       await Promise.all([
+        client.invalidateQueries({ queryKey: ['pending-proposals', workspace] }),
+        client.invalidateQueries({ queryKey: ['activity', workspace] }),
+        client.invalidateQueries({ queryKey: ['task', workspace] }),
         client.invalidateQueries({ queryKey: ['requirements', workspace] }),
         client.invalidateQueries({ queryKey: ['requirement', workspace, item.requirement.id] }),
         client.invalidateQueries({ queryKey: ['requirement-versions', workspace, item.requirement.id] }),
@@ -820,7 +837,7 @@ function RequirementDetailCanvas({ item }: { item: RequirementView }) {
     }),
     ...item.pending_versions.map((version) => ({
       id: `pending-${version.version}`,
-      title: `Version ${version.version} is waiting for you`,
+      title: `${item.requirement.title} · Version ${version.version} is waiting for you`,
       detail: (
         <>
           {originLabels[version.origin]}
@@ -835,36 +852,51 @@ function RequirementDetailCanvas({ item }: { item: RequirementView }) {
           )}
         </>
       ),
-      action: canConfirm ? (
+      action: (
         <>
           <Button
-            disabled={confirm.isPending || dismiss.isPending || !item.confirmation_eligible}
-            title={!item.confirmation_eligible ? 'Revise this migrated seed before confirming it.' : undefined}
-            onClick={() => confirm.mutate(version.version)}
+            variant="secondary"
+            onClick={() =>
+              onReviewChange({ tab: 'changes', target: version.version, base: item.current_version?.version ?? 0 })
+            }
           >
-            <Check />
-            {confirm.isPending && confirm.variables === version.version
-              ? 'Confirming…'
-              : `Confirm version ${version.version}`}
+            Review changes · v{version.version}
           </Button>
-          {canPropose && (
-            <Button
-              variant="secondary"
-              disabled={confirm.isPending || dismiss.isPending}
-              onClick={() => setReviseTarget(version)}
-            >
-              Revise
-            </Button>
-          )}
-          <Button
-            variant="destructive"
-            disabled={confirm.isPending || dismiss.isPending}
-            onClick={() => setDismissTarget(version)}
-          >
-            <Trash2 /> Dismiss
-          </Button>
+          {canConfirm &&
+          ((search.tab === 'changes' && displayed?.version === version.version) ||
+            ((!search.tab || search.tab === 'document') &&
+              (search.target === undefined || displayed?.version === version.version))) ? (
+            <>
+              <Button
+                disabled={confirm.isPending || dismiss.isPending || !item.confirmation_eligible}
+                title={!item.confirmation_eligible ? 'Revise this migrated seed before confirming it.' : undefined}
+                onClick={() => confirm.mutate(version.version)}
+              >
+                <Check />
+                {confirm.isPending && confirm.variables === version.version
+                  ? 'Confirming…'
+                  : `Confirm version ${version.version}`}
+              </Button>
+              {canPropose && (
+                <Button
+                  variant="secondary"
+                  disabled={confirm.isPending || dismiss.isPending}
+                  onClick={() => setReviseTarget(version)}
+                >
+                  Revise
+                </Button>
+              )}
+              <Button
+                variant="destructive"
+                disabled={confirm.isPending || dismiss.isPending}
+                onClick={() => setDismissTarget(version)}
+              >
+                <Trash2 /> Dismiss
+              </Button>
+            </>
+          ) : null}
         </>
-      ) : undefined,
+      ),
       error:
         confirm.error && confirm.variables === version.version
           ? errorMessage(confirm.error, 'Could not confirm this version.')
@@ -874,27 +906,31 @@ function RequirementDetailCanvas({ item }: { item: RequirementView }) {
 
   return (
     <div className="min-w-0">
-      {reviseTarget && (
-        <VersionReviseDialog
-          target={{
-            id: item.requirement.id,
-            title: item.requirement.title,
-            tier: 'requirement',
-            version: reviseTarget.version,
-          }}
-          onClose={() => setReviseTarget(null)}
-        />
-      )}
-      {dismissTarget && (
-        <VersionDismissDialog
-          documentTitle={item.requirement.title}
-          version={dismissTarget.version}
-          pending={dismiss.isPending}
-          error={dismiss.error ? errorMessage(dismiss.error, 'Could not dismiss this version.') : undefined}
-          onCancel={() => setDismissTarget(null)}
-          onConfirm={(note) => dismiss.mutate({ version: dismissTarget.version, note })}
-        />
-      )}
+      {!item.requirement.archived &&
+        reviseTarget &&
+        item.pending_versions.some((v) => v.version === reviseTarget.version) && (
+          <VersionReviseDialog
+            target={{
+              id: item.requirement.id,
+              title: item.requirement.title,
+              tier: 'requirement',
+              version: reviseTarget.version,
+            }}
+            onClose={() => setReviseTarget(null)}
+          />
+        )}
+      {!item.requirement.archived &&
+        dismissTarget &&
+        item.pending_versions.some((v) => v.version === dismissTarget.version) && (
+          <VersionDismissDialog
+            documentTitle={item.requirement.title}
+            version={dismissTarget.version}
+            pending={dismiss.isPending}
+            error={dismiss.error ? errorMessage(dismiss.error, 'Could not dismiss this version.') : undefined}
+            onCancel={() => setDismissTarget(null)}
+            onConfirm={(note) => dismiss.mutate({ version: dismissTarget.version, note })}
+          />
+        )}
       {archiveDialogOpen && (
         <ArchiveDocumentDialog
           documentTitle={item.requirement.title}
@@ -923,15 +959,7 @@ function RequirementDetailCanvas({ item }: { item: RequirementView }) {
           {displayed && (
             <div className="mt-3 flex flex-wrap items-center gap-1.5">
               <Badge variant="mono">v{displayed.version}</Badge>
-              <Badge variant={displayed.confirmed ? 'positive' : displayed.retired ? 'default' : 'accent'}>
-                {displayed.confirmed
-                  ? 'Confirmed'
-                  : displayed.retired
-                    ? displayed.retired_by_version
-                      ? 'Superseded'
-                      : 'Dismissed'
-                    : 'Proposed'}
-              </Badge>
+              {displayed.confirmed && <Badge variant="positive">Confirmed</Badge>}
               {item.requirement.archived && (
                 <Badge
                   variant="outline"
@@ -984,316 +1012,294 @@ function RequirementDetailCanvas({ item }: { item: RequirementView }) {
           )}
         </p>
       )}
-      {item.requirement.archived ? (
-        <section
-          aria-label="Needs your attention"
-          className="rounded-lg border border-border bg-surface/40 px-4 py-3 text-sm text-muted"
-        >
-          <p>This requirement is archived.</p>
-          <SuccessorLinks ids={item.requirement.superseded_by} />
-        </section>
-      ) : (
-        <AttentionSurface items={attention} />
-      )}
-
-      <div className="mt-8">
-        {displayed ? (
-          <RequirementDocument version={displayed} />
-        ) : (
-          <p className="text-sm text-muted">Nothing has been proposed for this requirement yet.</p>
-        )}
-      </div>
-
-      {versionsError && (
-        <p className="mt-4 rounded-md bg-failure-soft px-3 py-2 text-xs text-failure">
-          {errorMessage(versionsError, 'Could not load version history.')}
-        </p>
-      )}
-
-      {displayed && !displayed.confirmed && !displayed.retired && item.current_version && (
-        <RequirementDiff current={item.current_version} pending={displayed} />
-      )}
-
-      {orderedVersions.length > 0 && (
-        <section className="mt-8 border-t border-border pt-5" aria-label="Requirement versions">
-          <h3 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.12em] text-muted">
-            <History className="size-3.5" /> Version history
-          </h3>
-          <div className="mt-3 flex flex-wrap gap-2">
-            {orderedVersions.map((version) => {
-              const active = displayed?.version === version.version
-              return (
-                <button
-                  key={version.version}
-                  type="button"
-                  aria-pressed={active}
-                  aria-current={active ? 'true' : undefined}
-                  onClick={() => setSelectedVersion(version.version)}
-                  className={`rounded-full border px-3 py-1.5 text-left text-xs transition-colors ${active ? 'border-primary bg-primary text-primary-foreground shadow-sm' : 'border-border hover:border-edge hover:bg-surface'}`}
-                >
-                  <span className="font-medium">v{version.version}</span>
-                  <span className={`ml-1.5 text-[11px] ${active ? 'text-primary-foreground/75' : 'text-faint'}`}>
-                    {version.confirmed
-                      ? 'Confirmed'
-                      : version.retired
-                        ? version.retired_by_version
-                          ? 'Superseded'
-                          : 'Dismissed'
-                        : 'Proposed'}{' '}
-                    · {originLabels[version.origin]}
-                    {version.retired &&
-                      !version.retired_by_version &&
-                      version.retired_by &&
-                      version.retired_at &&
-                      ` · Dismissed by ${version.retired_by} on ${formatDate(version.retired_at)}`}
-                    {version.retired && version.dismissal_note && (
-                      <span className="block whitespace-pre-wrap break-words">
-                        Operator's reason: {version.dismissal_note}
-                      </span>
-                    )}
-                  </span>
-                </button>
-              )
-            })}
-          </div>
-        </section>
-      )}
-
-      <div className="mt-10 space-y-4 border-t border-border pt-8">
-        <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-faint">Delivery &amp; history</h3>
-        {/*
+      <DocumentReview
+        search={search}
+        onChange={onReviewChange}
+        versions={reviewVersions}
+        current={item.current_version}
+        attention={
+          <>
+            {item.requirement.archived ? (
+              <section
+                aria-label="Needs your attention"
+                className="rounded-lg border border-border bg-surface/40 px-4 py-3 text-sm text-muted"
+              >
+                <p>This requirement is archived.</p>
+                <SuccessorLinks ids={item.requirement.superseded_by} />
+              </section>
+            ) : (
+              <AttentionSurface
+                items={
+                  search.tab === 'changes'
+                    ? [...attention].sort(
+                        (a, b) =>
+                          Number(b.id === `pending-${displayed?.version}`) -
+                          Number(a.id === `pending-${displayed?.version}`),
+                      )
+                    : attention
+                }
+              />
+            )}
+          </>
+        }
+        document={
+          <>
+            <div className="mt-8">
+              {displayed ? (
+                <RequirementDocument version={displayed} />
+              ) : (
+                <p className="text-sm text-muted">Nothing has been proposed for this requirement yet.</p>
+              )}
+            </div>
+          </>
+        }
+        history={
+          <>
+            {' '}
+            <div className="mt-10 space-y-4 border-t border-border pt-8">
+              <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-faint">Delivery &amp; history</h3>
+              {/*
           Delivery is task-centric: `serves` sits on the task itself (spec
           §21.58 change 6). Blueprints are retained below as the historical
           lens over records planned before the noun was retired, so they stay
           readable without being mislabelled as newly planned work.
         */}
-        <Card className="rounded-lg">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <span className="flex size-5 items-center justify-center rounded-md bg-primary-soft text-primary">
-                <ListChecks className="size-3" />
-              </span>
-              Delivery
-            </CardTitle>
-            <Badge variant="mono">{servingTasks.length}</Badge>
-          </CardHeader>
-          <CardContent className="space-y-2">
-            {servingTasks.length === 0 && (
-              <p className="text-sm text-muted">No work has been planned against this requirement yet.</p>
-            )}
-            {servingTasks.map((task) => (
-              <Link
-                key={task.id}
-                to="/tasks/$taskId/full"
-                params={{ taskId: task.id }}
-                className="flex items-center gap-3 rounded-lg border border-border p-3 transition-colors hover:border-edge hover:bg-surface"
-              >
-                <span className="min-w-0 flex-1">
-                  <strong className="block truncate text-sm">{task.title}</strong>
-                  <span className="mt-1 flex gap-1.5">
-                    <Badge variant="mono">{taskStateLabels[task.state] ?? humanize(task.state)}</Badge>
-                  </span>
-                </span>
-                <ArrowRight className="size-4 shrink-0 text-faint" />
-              </Link>
-            ))}
-          </CardContent>
-        </Card>
-
-        {item.serving_blueprints.length > 0 && (
-          <Card className="rounded-lg">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <span className="flex size-5 items-center justify-center rounded-md bg-surface text-muted">
-                  <History className="size-3" />
-                </span>
-                Delivery before blueprints retired
-              </CardTitle>
-              <Badge variant="mono">{item.serving_blueprints.length}</Badge>
-            </CardHeader>
-            <CardContent className="space-y-2">
-              {item.serving_blueprints.map(({ task, spec }) => (
-                <Link
-                  key={task.id}
-                  to="/blueprints/$taskId"
-                  params={{ taskId: task.id }}
-                  className="flex items-center gap-3 rounded-lg border border-border p-3 transition-colors hover:border-edge hover:bg-surface"
-                >
-                  <span className="min-w-0 flex-1">
-                    <strong className="block truncate text-sm">{task.title}</strong>
-                    <span className="mt-1 flex gap-1.5">
-                      <Badge variant="mono">{taskStateLabels[task.state] ?? humanize(task.state)}</Badge>
-                      {spec && (
-                        <Badge variant="mono">
-                          Plan v{spec.version} {spec.approved ? 'approved' : 'awaiting approval'}
-                        </Badge>
-                      )}
+              <Card className="rounded-lg">
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <span className="flex size-5 items-center justify-center rounded-md bg-primary-soft text-primary">
+                      <ListChecks className="size-3" />
                     </span>
-                  </span>
-                  <ArrowRight className="size-4 shrink-0 text-faint" />
-                </Link>
-              ))}
-            </CardContent>
-          </Card>
-        )}
-
-        {item.planning_sessions.length > 0 && (
-          <Card className="rounded-lg">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <span className="flex size-5 items-center justify-center rounded-md bg-primary-soft text-primary">
-                  <Sparkles className="size-3" />
-                </span>
-                How this was written
-              </CardTitle>
-              <Badge variant="mono">{item.planning_sessions.length}</Badge>
-            </CardHeader>
-            <CardContent className="space-y-2">
-              {item.planning_sessions.map((session) => (
-                <div key={session.id} className="rounded-md border border-border p-3">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <strong className="text-sm">{session.title || session.id}</strong>
-                    <Badge variant="accent">{sessionGoalLabel(session)}</Badge>
-                    {session.model && (
-                      <Badge variant="mono" title="The model and effort this conversation ran with">
-                        {session.model}
-                        {session.effort ? ` · ${session.effort}` : ''}
-                      </Badge>
-                    )}
-                    {session.exploration_output_tokens && (
-                      <Badge variant="mono" title="Reading budget for each repository lookup">
-                        {session.exploration_output_tokens.toLocaleString()} tokens/call
-                      </Badge>
-                    )}
-                  </div>
-                  <div className="mt-2 flex flex-wrap gap-1.5">
-                    {Object.entries(session.pinned_revisions ?? {})
-                      .sort(([left], [right]) => left.localeCompare(right))
-                      .map(([repo, revision]) => (
-                        <Badge key={repo} variant="mono" title="The exact code this conversation read">
-                          {repo}@{revision.slice(0, 12)}
-                        </Badge>
-                      ))}
-                  </div>
-                </div>
-              ))}
-            </CardContent>
-          </Card>
-        )}
-
-        <div className="grid gap-4 xl:grid-cols-2">
-          <Card className="rounded-lg">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <span className="flex size-5 items-center justify-center rounded-md bg-primary-soft text-primary">
-                  <Paperclip className="size-3" />
-                </span>
-                Attached files
-              </CardTitle>
-              <Badge variant="mono">{item.artifacts.length}</Badge>
-            </CardHeader>
-            <CardContent className="space-y-2">
-              {item.artifacts.map((artifact) => (
-                <button
-                  type="button"
-                  key={`${artifact.id}-${artifact.role}`}
-                  onClick={() => void downloadArtifact(artifact)}
-                  className="flex w-full items-center gap-2 rounded-md border border-border p-2 text-left transition-colors hover:border-edge hover:bg-surface"
-                >
-                  <Download className="size-3.5 shrink-0 text-primary" />
-                  <span className="min-w-0 flex-1 truncate text-xs">{artifact.name}</span>
-                  <span className="font-mono text-[10px] text-faint">{artifact.size_bytes} B</span>
-                </button>
-              ))}
-              {canOperate && (
-                <label className="flex cursor-pointer items-center justify-center gap-2 rounded-md border border-dashed border-edge px-3 py-2 text-xs font-medium text-muted transition-colors hover:border-primary/40 hover:bg-surface hover:text-primary">
-                  <FileUp className="size-4" /> {upload.isPending ? 'Uploading…' : 'Attach context'}
-                  <input
-                    className="hidden"
-                    type="file"
-                    disabled={upload.isPending}
-                    onChange={(event) => {
-                      const file = event.target.files?.[0]
-                      if (file) upload.mutate(file)
-                      event.currentTarget.value = ''
-                    }}
-                  />
-                </label>
-              )}
-              {upload.error && (
-                <p className="text-xs text-failure">{errorMessage(upload.error, 'Could not attach that file.')}</p>
-              )}
-            </CardContent>
-          </Card>
-          <Card className="rounded-lg">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <span className="flex size-5 items-center justify-center rounded-md bg-surface text-muted">
-                  <Clock className="size-3" />
-                </span>
-                Activity
-              </CardTitle>
-              <Badge variant="mono">{history.total}</Badge>
-            </CardHeader>
-            <CardContent>
-              {routineDeliveries.length > 0 && (
-                <section aria-label="Delivery activity" className="mb-4 space-y-2">
-                  <p className="text-xs font-medium text-muted">Delivery activity</p>
-                  <ul className="space-y-2">
-                    {routineDeliveries.map((delivery) => (
-                      <li key={`${delivery.task_id}-${delivery.at}`} className="flex items-start gap-2 text-xs">
-                        <span className="mt-1.5 size-1.5 shrink-0 rounded-full bg-edge" />
-                        <span className="min-w-0 flex-1">
-                          <Link
-                            to="/tasks/$taskId"
-                            params={{ taskId: delivery.task_id }}
-                            className="font-medium hover:underline"
-                          >
-                            {delivery.label}
-                          </Link>
-                          <span className="block text-[10px] text-faint">Delivered {formatDate(delivery.at)}</span>
-                          {delivery.follow_up && (
-                            <Link
-                              to="/tasks/$taskId"
-                              params={{ taskId: delivery.follow_up.task_id }}
-                              className="block text-[10px] font-medium text-primary hover:underline"
-                            >
-                              Follow-up: {delivery.follow_up.title}
-                            </Link>
-                          )}
+                    Delivery
+                  </CardTitle>
+                  <Badge variant="mono">{servingTasks.length}</Badge>
+                </CardHeader>
+                <CardContent className="space-y-2">
+                  {servingTasks.length === 0 && (
+                    <p className="text-sm text-muted">No work has been planned against this requirement yet.</p>
+                  )}
+                  {servingTasks.map((task) => (
+                    <Link
+                      key={task.id}
+                      to="/tasks/$taskId/full"
+                      params={{ taskId: task.id }}
+                      className="flex items-center gap-3 rounded-lg border border-border p-3 transition-colors hover:border-edge hover:bg-surface"
+                    >
+                      <span className="min-w-0 flex-1">
+                        <strong className="block truncate text-sm">{task.title}</strong>
+                        <span className="mt-1 flex gap-1.5">
+                          <Badge variant="mono">{taskStateLabels[task.state] ?? humanize(task.state)}</Badge>
                         </span>
-                      </li>
-                    ))}
-                  </ul>
-                </section>
-              )}
-              {history.events.length === 0 && routineDeliveries.length === 0 && (
-                <p className="text-sm text-muted">Activity appears as planning and delivery advance.</p>
-              )}
-              {history.events.length > 0 && (
-                <details>
-                  <summary className="cursor-pointer text-sm font-medium">Technical activity</summary>
-                  <ol className="mt-3 space-y-3">
-                    {history.events.map((event) => (
-                      <li key={`${event.id}-${event.kind}`} className="flex gap-2 text-xs">
-                        <span className="mt-1.5 size-1.5 shrink-0 rounded-full bg-edge" />
+                      </span>
+                      <ArrowRight className="size-4 shrink-0 text-faint" />
+                    </Link>
+                  ))}
+                </CardContent>
+              </Card>
+
+              {item.serving_blueprints.length > 0 && (
+                <Card className="rounded-lg">
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2">
+                      <span className="flex size-5 items-center justify-center rounded-md bg-surface text-muted">
+                        <History className="size-3" />
+                      </span>
+                      Delivery before blueprints retired
+                    </CardTitle>
+                    <Badge variant="mono">{item.serving_blueprints.length}</Badge>
+                  </CardHeader>
+                  <CardContent className="space-y-2">
+                    {item.serving_blueprints.map(({ task, spec }) => (
+                      <Link
+                        key={task.id}
+                        to="/blueprints/$taskId"
+                        params={{ taskId: task.id }}
+                        className="flex items-center gap-3 rounded-lg border border-border p-3 transition-colors hover:border-edge hover:bg-surface"
+                      >
                         <span className="min-w-0 flex-1">
-                          <strong className="font-medium">{eventLabel(event)}</strong>
-                          <span className="mt-0.5 flex items-center gap-2">
-                            <time className="text-[10px] text-faint">{formatDate(event.at)}</time>
-                            {event.payload?.backfilled === true && <Badge variant="mono">Backfilled</Badge>}
+                          <strong className="block truncate text-sm">{task.title}</strong>
+                          <span className="mt-1 flex gap-1.5">
+                            <Badge variant="mono">{taskStateLabels[task.state] ?? humanize(task.state)}</Badge>
+                            {spec && (
+                              <Badge variant="mono">
+                                Plan v{spec.version} {spec.approved ? 'approved' : 'awaiting approval'}
+                              </Badge>
+                            )}
                           </span>
                         </span>
-                      </li>
+                        <ArrowRight className="size-4 shrink-0 text-faint" />
+                      </Link>
                     ))}
-                  </ol>
-                  <MoreDocumentEvents history={history} />
-                </details>
+                  </CardContent>
+                </Card>
               )}
-            </CardContent>
-          </Card>
-        </div>
-      </div>
+
+              {item.planning_sessions.length > 0 && (
+                <Card className="rounded-lg">
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2">
+                      <span className="flex size-5 items-center justify-center rounded-md bg-primary-soft text-primary">
+                        <Sparkles className="size-3" />
+                      </span>
+                      How this was written
+                    </CardTitle>
+                    <Badge variant="mono">{item.planning_sessions.length}</Badge>
+                  </CardHeader>
+                  <CardContent className="space-y-2">
+                    {item.planning_sessions.map((session) => (
+                      <div key={session.id} className="rounded-md border border-border p-3">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <strong className="text-sm">{session.title || session.id}</strong>
+                          <Badge variant="accent">{sessionGoalLabel(session)}</Badge>
+                          {session.model && (
+                            <Badge variant="mono" title="The model and effort this conversation ran with">
+                              {session.model}
+                              {session.effort ? ` · ${session.effort}` : ''}
+                            </Badge>
+                          )}
+                          {session.exploration_output_tokens && (
+                            <Badge variant="mono" title="Reading budget for each repository lookup">
+                              {session.exploration_output_tokens.toLocaleString()} tokens/call
+                            </Badge>
+                          )}
+                        </div>
+                        <div className="mt-2 flex flex-wrap gap-1.5">
+                          {Object.entries(session.pinned_revisions ?? {})
+                            .sort(([left], [right]) => left.localeCompare(right))
+                            .map(([repo, revision]) => (
+                              <Badge key={repo} variant="mono" title="The exact code this conversation read">
+                                {repo}@{revision.slice(0, 12)}
+                              </Badge>
+                            ))}
+                        </div>
+                      </div>
+                    ))}
+                  </CardContent>
+                </Card>
+              )}
+
+              <div className="grid gap-4 xl:grid-cols-2">
+                <Card className="rounded-lg">
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2">
+                      <span className="flex size-5 items-center justify-center rounded-md bg-primary-soft text-primary">
+                        <Paperclip className="size-3" />
+                      </span>
+                      Attached files
+                    </CardTitle>
+                    <Badge variant="mono">{item.artifacts.length}</Badge>
+                  </CardHeader>
+                  <CardContent className="space-y-2">
+                    {item.artifacts.map((artifact) => (
+                      <button
+                        type="button"
+                        key={`${artifact.id}-${artifact.role}`}
+                        onClick={() => void downloadArtifact(artifact)}
+                        className="flex w-full items-center gap-2 rounded-md border border-border p-2 text-left transition-colors hover:border-edge hover:bg-surface"
+                      >
+                        <Download className="size-3.5 shrink-0 text-primary" />
+                        <span className="min-w-0 flex-1 truncate text-xs">{artifact.name}</span>
+                        <span className="font-mono text-[10px] text-faint">{artifact.size_bytes} B</span>
+                      </button>
+                    ))}
+                    {canOperate && (
+                      <label className="flex cursor-pointer items-center justify-center gap-2 rounded-md border border-dashed border-edge px-3 py-2 text-xs font-medium text-muted transition-colors hover:border-primary/40 hover:bg-surface hover:text-primary">
+                        <FileUp className="size-4" /> {upload.isPending ? 'Uploading…' : 'Attach context'}
+                        <input
+                          className="hidden"
+                          type="file"
+                          disabled={upload.isPending}
+                          onChange={(event) => {
+                            const file = event.target.files?.[0]
+                            if (file) upload.mutate(file)
+                            event.currentTarget.value = ''
+                          }}
+                        />
+                      </label>
+                    )}
+                    {upload.error && (
+                      <p className="text-xs text-failure">
+                        {errorMessage(upload.error, 'Could not attach that file.')}
+                      </p>
+                    )}
+                  </CardContent>
+                </Card>
+                <Card className="rounded-lg">
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2">
+                      <span className="flex size-5 items-center justify-center rounded-md bg-surface text-muted">
+                        <Clock className="size-3" />
+                      </span>
+                      Activity
+                    </CardTitle>
+                    <Badge variant="mono">{history.total}</Badge>
+                  </CardHeader>
+                  <CardContent>
+                    {routineDeliveries.length > 0 && (
+                      <section aria-label="Delivery activity" className="mb-4 space-y-2">
+                        <p className="text-xs font-medium text-muted">Delivery activity</p>
+                        <ul className="space-y-2">
+                          {routineDeliveries.map((delivery) => (
+                            <li key={`${delivery.task_id}-${delivery.at}`} className="flex items-start gap-2 text-xs">
+                              <span className="mt-1.5 size-1.5 shrink-0 rounded-full bg-edge" />
+                              <span className="min-w-0 flex-1">
+                                <Link
+                                  to="/tasks/$taskId"
+                                  params={{ taskId: delivery.task_id }}
+                                  className="font-medium hover:underline"
+                                >
+                                  {delivery.label}
+                                </Link>
+                                <span className="block text-[10px] text-faint">
+                                  Delivered {formatDate(delivery.at)}
+                                </span>
+                                {delivery.follow_up && (
+                                  <Link
+                                    to="/tasks/$taskId"
+                                    params={{ taskId: delivery.follow_up.task_id }}
+                                    className="block text-[10px] font-medium text-primary hover:underline"
+                                  >
+                                    Follow-up: {delivery.follow_up.title}
+                                  </Link>
+                                )}
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                      </section>
+                    )}
+                    {history.events.length === 0 && routineDeliveries.length === 0 && (
+                      <p className="text-sm text-muted">Activity appears as planning and delivery advance.</p>
+                    )}
+                    {history.events.length > 0 && (
+                      <details>
+                        <summary className="cursor-pointer text-sm font-medium">Technical activity</summary>
+                        <ol className="mt-3 space-y-3">
+                          {history.events.map((event) => (
+                            <li key={`${event.id}-${event.kind}`} className="flex gap-2 text-xs">
+                              <span className="mt-1.5 size-1.5 shrink-0 rounded-full bg-edge" />
+                              <span className="min-w-0 flex-1">
+                                <strong className="font-medium">{eventLabel(event)}</strong>
+                                <span className="mt-0.5 flex items-center gap-2">
+                                  <time className="text-[10px] text-faint">{formatDate(event.at)}</time>
+                                  {event.payload?.backfilled === true && <Badge variant="mono">Backfilled</Badge>}
+                                </span>
+                              </span>
+                            </li>
+                          ))}
+                        </ol>
+                        <MoreDocumentEvents history={history} />
+                      </details>
+                    )}
+                  </CardContent>
+                </Card>
+              </div>
+            </div>
+          </>
+        }
+        loading={versionsLoading}
+        error={versionsError ? errorMessage(versionsError, 'Could not load version history.') : undefined}
+      />
     </div>
   )
 }
@@ -1484,47 +1490,8 @@ function RequirementDocument({ version }: { version: RequirementVersion }) {
   )
 }
 
-function RequirementDiff({ current, pending }: { current: RequirementVersion; pending: RequirementVersion }) {
-  return (
-    <details className="mt-6 rounded-lg border border-border bg-surface/40" open>
-      <summary className="cursor-pointer px-4 py-3 text-sm font-medium">
-        Compared with confirmed v{current.version}
-      </summary>
-      <VersionDiff
-        left={{
-          content: documentText(current),
-          label: 'Confirmed today',
-          labelClassName: 'mb-2 text-xs font-medium text-failure',
-          preClassName: 'whitespace-pre-wrap font-sans text-xs leading-5 text-muted',
-        }}
-        right={{
-          content: documentText(pending),
-          label: 'Proposed',
-          labelClassName: 'mb-2 text-xs font-medium text-positive',
-        }}
-      />
-    </details>
-  )
-}
-
 function stripStatementsFence(content: string) {
   return content.replace(/\n?```conveyor:requirements[\s\S]*?```\n?/g, '\n').trim()
-}
-
-function documentText(version: RequirementVersion) {
-  const prose = stripStatementsFence(version.content)
-  const statements = version.statements
-    .flatMap((statement) => [
-      `${statement.id}: ${statement.statement}`,
-      ...(statement.user_story
-        ? [
-            `  As ${statement.user_story.as_a}, I want ${statement.user_story.i_want}, so that ${statement.user_story.so_that}.`,
-          ]
-        : []),
-      ...(statement.acceptance_criteria ?? []).map((criterion) => `  ${criterion.id}: ${criterion.statement}`),
-    ])
-    .join('\n')
-  return [prose, statements].filter(Boolean).join('\n\n')
 }
 
 function eventLabel(event: TaskEvent) {

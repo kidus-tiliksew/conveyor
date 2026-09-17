@@ -234,13 +234,21 @@ function detailLink(proposal: PendingProposal) {
   const className = 'inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline'
   if (proposal.tier === 'requirement')
     return (
-      <Link to="/requirements" search={{ requirement: proposal.id }} className={className}>
+      <Link
+        to="/requirements"
+        search={{ requirement: proposal.id, tab: 'changes', target: proposal.version }}
+        className={className}
+      >
         <FileDiff className="size-3" /> View details
       </Link>
     )
   if (proposal.tier === 'system_design')
     return (
-      <Link to="/system-design" search={{ document: proposal.id }} className={className}>
+      <Link
+        to="/system-design"
+        search={{ document: proposal.id, tab: 'changes', target: proposal.version }}
+        className={className}
+      >
         <FileDiff className="size-3" /> View details
       </Link>
     )

@@ -262,6 +262,7 @@ test('requirements renders a document tree, one attention surface, and confirms 
 
   // AC-1.2: a routine factory-reviewed delivery remains visible as neutral
   // activity and is absent from the attention surface.
+  await page.getByRole('tab', { name: 'history', exact: true }).click()
   const deliveryActivity = page.getByRole('region', { name: 'Delivery activity' })
   await expect(deliveryActivity.getByRole('link', { name: 'Routine delivery' })).toHaveAttribute(
     'href',
@@ -276,6 +277,7 @@ test('requirements renders a document tree, one attention surface, and confirms 
   await expect(page.getByText('Code ahead of intent')).toHaveCount(0)
   await expect(page.getByRole('region', { name: 'Requirement alignment' })).toHaveCount(0)
   await expect(tree.getByText('confirmation')).toHaveCount(0)
+  await page.getByRole('button', { name: 'Review changes · v1', exact: true }).click()
   await expect(attention.getByRole('button', { name: 'Revise', exact: true })).toBeVisible()
   // AC-2.2: the assistant column is withdrawn from this surface.
   await expect(page.getByRole('complementary', { name: 'Planning assistant' })).toHaveCount(0)
@@ -283,6 +285,7 @@ test('requirements renders a document tree, one attention surface, and confirms 
     await expect(page.getByRole('button', { name: action })).toHaveCount(0)
   }
 
+  await page.getByRole('tab', { name: 'history', exact: true }).click()
   await expect(page.getByRole('link', { name: /Ship bounded retries/ })).toHaveAttribute(
     'href',
     '/blueprints/blueprint-task',
@@ -295,6 +298,7 @@ test('requirements renders a document tree, one attention surface, and confirms 
   await expect(page.getByRole('button', { name: 'Knowledge explorer' })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Intent to delivery' })).toHaveCount(0)
 
+  await page.getByRole('button', { name: 'Review changes · v1', exact: true }).click()
   await attention.getByRole('button', { name: 'Confirm version 1' }).click()
   await expect.poll(() => confirmed).toBe(true)
   await expect(page).toHaveURL(/\/requirements/)
@@ -467,7 +471,8 @@ for (const note of ['', '  \n  ', '  Keep the original intent.  ']) {
     await page.getByRole('button', { name: 'Dismiss version 1' }).click()
     await expect.poll(() => dismissRequests).toBe(1)
     await expect(attention.getByText('Version 1 is waiting for you')).toHaveCount(0)
-    const history = page.getByRole('region', { name: 'Requirement versions' })
+    await page.getByRole('tab', { name: 'history', exact: true }).click()
+    const history = page.getByRole('region', { name: 'Version history' })
     if (note.trim()) await expect(history).toContainText(`Operator's reason: ${note.trim()}`)
     else await expect(history).not.toContainText("Operator's reason")
   })
@@ -620,6 +625,7 @@ test('requirement staleness can file one linked follow-up and be dismissed in pl
   const attention = page.getByRole('region', { name: 'Needs your attention' })
   await attention.getByRole('button', { name: 'File a task' }).click()
   await expect.poll(() => followUpRequests).toBe(1)
+  await page.getByRole('tab', { name: 'history', exact: true }).click()
   await expect(
     page
       .getByRole('region', { name: 'Delivery activity' })
@@ -1470,6 +1476,7 @@ test('partial staleness is voiced and delivery is task-centric with blueprints a
   await expect(page.getByText('Staleness partially evaluated')).toHaveCount(0)
   await expect(page.getByText('Intent aligned')).toHaveCount(0)
 
+  await page.getByRole('tab', { name: 'history', exact: true }).click()
   // Delivery counts the serving tasks; the blueprint list reads as history.
   await expect(page.getByRole('link', { name: /Scale task operations queries/ })).toHaveAttribute(
     'href',
@@ -1537,28 +1544,21 @@ test('requirements deep-link exact versions, render statements, diff pending int
     return route.fulfill({ json: [] })
   })
 
-  await page.goto('/requirements?requirement=req-retries')
-  await expect(page).toHaveURL(/requirement=req-retries/)
-  await page.getByText('Version history').click()
-  const history = page.getByRole('region', { name: 'Requirement versions' })
-  const version2 = history.getByRole('button').filter({ hasText: /^v2/ })
-  await expect(version2).toBeVisible()
-  await version2.click()
-  await expect(version2).toHaveAttribute('aria-pressed', 'true')
+  await page.goto('/requirements?requirement=req-retries&tab=changes&target=2')
+  await expect(page.getByLabel('Target version', { exact: true })).toHaveValue('2')
+  await expect(page.getByLabel('Base version', { exact: true })).toHaveValue('1')
   await expect(page.getByText('Written by an operator').first()).toBeVisible()
-  await expect(page.getByText('Compared with confirmed v1')).toBeVisible()
-  await expect(page.locator('.bg-failure-soft').filter({ hasText: 'Keep retries bounded.' })).toBeVisible()
-  await expect(
-    page.locator('.bg-positive-soft').filter({ hasText: 'Keep retries bounded and observable.' }),
-  ).toBeVisible()
+  const diff = page.getByRole('region', { name: 'Version comparison', exact: true })
+  await expect(diff.locator('ins').filter({ hasText: 'and observable' })).toBeVisible()
+  await page.getByRole('tab', { name: 'document', exact: true }).click()
   await expect(
     page.getByRole('region', { name: 'Requirement statements' }).getByRole('link', { name: 'Link to REQ-1' }),
   ).toBeVisible()
   await expect(page.getByText('conveyor:requirements')).toHaveCount(0)
-  // AC-1.1: both proposed versions are listed once, each with its own
-  // confirmation, in the single attention surface.
+  await page.getByRole('tab', { name: 'history', exact: true }).click()
+  await page.getByRole('button', { name: 'Compare version 2', exact: true }).click()
   const attention = page.getByRole('region', { name: 'Needs your attention' })
-  await expect(attention.getByRole('button', { name: /^Confirm version/ })).toHaveCount(2)
+  await expect(attention.getByRole('button', { name: /^Confirm version/ })).toHaveCount(1)
   await attention.getByRole('button', { name: 'Confirm version 2' }).click()
   await expect.poll(() => confirmedVersion).toBe(2)
   expect(ifMatch).toBe('"1"')
@@ -1649,14 +1649,14 @@ test('retired requirement versions stay in history as superseded and leave atten
   await page.goto('/requirements?requirement=req-retries')
   const attention = page.getByRole('region', { name: 'Needs your attention' })
   await expect(attention).not.toContainText('Version 2 is waiting for you')
-  const history = page.getByRole('region', { name: 'Requirement versions' })
-  const version2 = history.getByRole('button').filter({ hasText: /^v2/ })
-  await expect(version2).toContainText('Superseded')
-  await version2.click()
-  await expect(page.getByText('Superseded', { exact: true }).first()).toBeVisible()
+  await page.getByRole('tab', { name: 'history', exact: true }).click()
+  const history = page.getByRole('region', { name: 'Version history' })
+  await expect(history).toContainText('v2 · Superseded by v4')
+  await history.getByRole('button', { name: 'Read version 2', exact: true }).click()
+  await expect(page.getByRole('button', { name: /Confirm version/ })).toHaveCount(0)
 })
 
-test('migrated seeds explain disabled confirmation and requirement switches open the latest version', async ({
+test('migrated seeds explain disabled confirmation and requirement switches reset review selection', async ({
   page,
 }) => {
   await initShell(page)
@@ -1718,10 +1718,10 @@ test('migrated seeds explain disabled confirmation and requirement switches open
     .getByRole('navigation', { name: 'Document tree' })
     .getByRole('button', { name: 'Second intent', exact: false })
     .click()
-  await page.getByText('Version history').click()
-  await expect(
-    page.getByRole('region', { name: 'Requirement versions' }).getByRole('button').filter({ hasText: /^v2/ }),
-  ).toHaveAttribute('aria-pressed', 'true')
+  await expect(page.getByRole('tab', { name: 'document', exact: true })).toHaveAttribute('aria-selected', 'true')
+  await expect(page.getByText('Earlier second document.', { exact: true })).toBeVisible()
+  await page.getByRole('button', { name: 'Review changes · v2', exact: true }).click()
+  await expect(page.getByLabel('Target version', { exact: true })).toHaveValue('2')
 })
 
 test('planning keeps partial text through malformed and error stream frames and resolves pending markers', async ({
@@ -2467,6 +2467,7 @@ test('requirement activity pages on demand and opens the explorer independently'
     return route.fulfill({ json: [] })
   })
   await page.goto('/requirements?requirement=req-retries')
+  await page.getByRole('tab', { name: 'history', exact: true }).click()
   await expect(page.getByText('Technical activity', { exact: true })).toBeVisible()
   expect(eventReads).toBe(0)
   expect(graphReads).toBe(0)

@@ -204,6 +204,15 @@ test('pending proposal queue covers every document tier, resolves rows, updates 
 
   await page.goto('/pending-proposals')
   await expect(page.getByRole('heading', { name: 'Pending proposals' })).toBeVisible()
+  await expect(
+    page.locator(
+      'a[href="/requirements?tab=changes&target=2&requirement=req-attention"], a[href="/requirements?requirement=req-attention&tab=changes&target=2"]',
+    ),
+  ).toHaveCount(1)
+  await expect(
+    page.getByRole('listitem').filter({ hasText: 'v3' }).getByRole('link', { name: 'View details' }),
+  ).toHaveAttribute('href', /target=3/)
+
   await expect(page.getByText('Requirement', { exact: true }).first()).toBeVisible()
   await expect(page.getByText('System Design', { exact: true }).first()).toBeVisible()
   await expect(page.getByText('Decision', { exact: true })).toBeVisible()

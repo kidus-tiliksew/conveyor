@@ -152,7 +152,7 @@ export function SystemDesignProposalCard({
                   Version {proposal.version.version} proposed by this task for{' '}
                   <Link
                     to="/system-design"
-                    search={{ document: proposal.document.id }}
+                    search={{ document: proposal.document.id, tab: 'changes', target: proposal.version.version }}
                     className="text-primary hover:underline"
                   >
                     {proposal.document.title}
