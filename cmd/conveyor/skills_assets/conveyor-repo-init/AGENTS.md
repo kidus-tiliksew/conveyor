@@ -8,6 +8,6 @@ On connection failure, report the failed endpoint and missing context. Do not in
 The confirmed document corpus is the design authority: Requirements, System Design documents, and DEC-n decisions.
 Changes are filed as tasks through Conveyor.
 An agent edits only under a live claim in a task worktree resolved by `conveyor checkout <task-id>`, never on the base branch.
-Follow the installed `conveyor-plan` skill for planning, `conveyor-file-tasks` for filing tasks, and `conveyor-work` for task work.
-This section and the project-scoped skills are versioned with the CLI. Re-run `conveyor repo init` after an upgrade to refresh them.
+Follow the `conveyor-plan` skill for planning, `conveyor-file-tasks` for filing tasks, and `conveyor-work` for task work.
+This section and the project-scoped skills are versioned with the CLI. Re-run `conveyor repo init` after an upgrade to refresh both, or use `conveyor repo init --guidance-only` to preserve maintained source skill wrappers.
 <!-- /conveyor:repo-init -->

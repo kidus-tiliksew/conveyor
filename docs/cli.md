@@ -146,9 +146,26 @@ leaving every byte outside the markers unchanged. The opening marker is
 `<!-- conveyor:repo-init owner=v1 version=<release> -->`; the closing marker is
 `<!-- /conveyor:repo-init -->`. When `CLAUDE.md` is absent, the command creates
 it as a symlink to `AGENTS.md`. Two regular files receive the same section.
-An existing `CLAUDE.md` symlink to `AGENTS.md` needs one content write. Broken,
-reversed, or other guidance symlinks and malformed or multiple marker spans
-are refused before installation.
+Either direct root symlink direction (`CLAUDE.md -> AGENTS.md` or
+`AGENTS.md -> CLAUDE.md`) is supported when its target is regular. The command
+preserves the link and its target text and writes the regular target once.
+Dangling, cyclic, indirect, escaping, unrelated, or nonregular guidance paths
+and malformed or multiple marker spans refuse before any writes.
+
+To refresh guidance while preserving maintained project skill sources, select:
+
+```sh
+conveyor --server 'https://conveyor.example.com' --workspace 'my-workspace' repo init --guidance-only
+```
+
+This explicit mode does not inspect, install, adopt, or copy project skills.
+Default full installation still installs all supported tools and refuses unowned
+skill collisions. Registration-triggered installation uses the default full mode.
+Both modes preserve target permissions and operator text and use the same context
+verification, preimage checks, atomic replacement, and rollback. Guidance-only
+reports guidance and connection status, without skill rows or a legacy-plugin
+notice. A preserved symlink reports its target's logical content status; the
+link itself is not replaced.
 
 The command records the canonical server URL, immutable workspace ID, repository
 name, and base branch only after an authenticated workspace configuration read
@@ -173,10 +190,10 @@ a refresh, a structurally valid prior verified section is retained byte for byte
 and the command reports that it was not reverified. Conflicting or malformed prior
 contexts refuse before writes, including when fresh context is available.
 
-Embedded skills install under `.claude/skills`, `.codex/skills`, and
-`.cursor/skills` for every supported tool, regardless of installed binaries.
+In full mode, embedded skills install under `.claude/skills`, `.codex/skills`,
+`.cursor/skills`, and `.opencode/skills` for every supported tool, regardless of installed binaries.
 Unowned skills, newer managed versions, and unsafe paths are refused. Tool
-root symlinks are refused so all writes stay in the checkout. The command
+root symlinks are refused so all writes stay in the checkout. Full mode
 preflights guidance and skills together and rolls back changed files on a
 write failure. Each output line has three tab-separated columns: tool, status
 (`written`, `updated`, `unchanged`, or `refused`), and absolute path.
