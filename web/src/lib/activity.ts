@@ -9,8 +9,8 @@ import type {
   TaskAssignee,
   TaskEvent,
   TaskRelation,
-  WorkspaceMembership,
   WorkOrder,
+  WorkspaceMembership,
 } from './types'
 
 // The name a person is known by, falling through the identity fields the task
@@ -19,6 +19,27 @@ import type {
 // (REQ-4, AC-4.3).
 export function assigneeName(assignee: TaskAssignee): string {
   return assignee.display_name || assignee.email || assignee.user_id
+}
+
+// req-accounts-and-membership REQ-3 and AC-4.3: keep credential-derived
+// attribution and resolve names only through the current workspace roster.
+export function taskCreator(events: TaskEvent[], members: WorkspaceMembership[] = []) {
+  const event = events.find((entry) => entry.kind === 'task.created')
+  if (!event) return { label: 'Unknown', detail: 'Creator information is unavailable' }
+  const id = typeof event.actor_id === 'string' ? event.actor_id.trim() : ''
+  const role = event.actor_role
+  if (!id || !['human', 'agent', 'runner', 'system'].includes(role)) {
+    return { label: 'Unknown', detail: 'Creator information is unavailable' }
+  }
+  const prefix = { human: 'user:', agent: 'agent:', runner: 'worker:', system: 'system:' }[role]
+  const identifier = id.startsWith(prefix) ? id.slice(prefix.length).trim() : id
+  if (!identifier) return { label: 'Unknown', detail: 'Creator information is unavailable' }
+  if (role === 'human') {
+    const member = members.find((entry) => entry.user_id === identifier)
+    return { label: member ? assigneeName(member) : `User · ${identifier}`, detail: `User · ${id}` }
+  }
+  const actorClass = { agent: 'Agent', runner: 'Runner', system: 'System' }[role]
+  return { label: `${actorClass} · ${identifier}`, detail: `${actorClass} · ${id}` }
 }
 
 // The store refuses a claim on an assigned task by naming the assignee's raw

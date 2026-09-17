@@ -20,6 +20,7 @@ import {
   dependencyRelationLabel,
   pullRequestURL,
   restartPullRequestOutcome,
+  taskCreator,
   taskRestartLinks,
 } from '../../lib/activity'
 import {
@@ -55,6 +56,8 @@ import { TaskRestartControl, TaskRestartNotice } from './task-restart-dialog'
 // deliberately absent: the header introduces the task, it does not summarize
 // the whole page.
 export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sheet' | 'full' }) {
+  const members = useWorkspaceMembers()
+  const creator = taskCreator(item.events, members.data)
   const restartLinks = taskRestartLinks(item.task)
   const closeOutcome = restartPullRequestOutcome(item.task)
   const canOperate = useWorkspaceCapability('operate_gates')
@@ -147,6 +150,16 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
         )}
       >
         <Fact label="Repo" value={item.task.repo} />
+        <Fact
+          label="Created By"
+          startRow
+          value={
+            <>
+              <span title={creator.detail}>{creator.label}</span>
+              <span className="sr-only left-0"> ({creator.detail})</span>
+            </>
+          }
+        />
         <Fact
           label="Branch"
           value={
@@ -852,10 +865,10 @@ function AssigneeControl({ item, onClose }: { item: ActivityItem; onClose: () =>
 
 // One aligned row of the facts grid: dt and dd are sibling grid cells, so
 // every label shares a column and the values line up.
-function Fact({ label, value }: { label: React.ReactNode; value: React.ReactNode }) {
+function Fact({ label, value, startRow }: { label: React.ReactNode; value: React.ReactNode; startRow?: boolean }) {
   return (
     <>
-      <dt className="text-xs leading-5 text-faint">{label}</dt>
+      <dt className={cn('text-xs leading-5 text-faint', startRow && 'col-start-1')}>{label}</dt>
       <dd className="min-w-0 truncate text-foreground/90">{value}</dd>
     </>
   )
