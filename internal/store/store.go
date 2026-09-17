@@ -55,10 +55,14 @@ var (
 	ErrWorkOrderPreempted          = errors.New("work order was preempted by an operator")
 	ErrWorkOrderPreemptConflict    = errors.New("work order preempt conflict")
 	ErrTaskTerminal                = errors.New("task is already terminal")
-	ErrTaskDependencyCycle         = errors.New("task dependency would create a cycle")
-	ErrTaskDependencyConflict      = errors.New("task dependency request conflicts with current state")
-	ErrLineageRebuildValidation    = errors.New("invalid lineage rebuild request")
-	ErrLineageRebuildConflict      = errors.New("lineage rebuild request conflicts with a prior request")
+	// ErrTaskBranchConflict reports that another open task in the same
+	// workspace repository already holds the assigned branch
+	// (req-task-branch-assignment AC-4.1).
+	ErrTaskBranchConflict       = errors.New("open task branch already assigned")
+	ErrTaskDependencyCycle      = errors.New("task dependency would create a cycle")
+	ErrTaskDependencyConflict   = errors.New("task dependency request conflicts with current state")
+	ErrLineageRebuildValidation = errors.New("invalid lineage rebuild request")
+	ErrLineageRebuildConflict   = errors.New("lineage rebuild request conflicts with a prior request")
 	// ErrWorkOrderClaimLost is the order-scoped counterpart to
 	// ErrWorkerUnauthorized: the caller's credential is valid but the order is
 	// no longer claimed by it, typically because the claim lease expired and
@@ -78,6 +82,25 @@ var (
 	// task's ownership.
 	ErrVerificationEvidenceClaimConflict = errors.New("verification evidence upload requires the matching live implement claim")
 )
+
+func TaskBranchInUseError(branch, otherID string) error {
+	return fmt.Errorf("%w: branch %s already belongs to task %s", ErrTaskBranchConflict, branch, otherID)
+}
+
+func openTaskHoldingBranch(tasks map[string]core.Task, workspace, repo, branch, exceptID string) string {
+	if branch == "" {
+		return ""
+	}
+	for _, existing := range tasks {
+		if existing.ID == exceptID {
+			continue
+		}
+		if existing.Workspace == workspace && existing.Repo == repo && existing.Branch == branch && !core.TaskTerminal(existing.State) {
+			return existing.ID
+		}
+	}
+	return ""
+}
 
 // WorkspaceControlStore owns durable workspace resources independently of a
 // workspace-scoped Store operation.
@@ -133,6 +156,9 @@ type TaskStore interface {
 	// SetTaskHold toggles the per-task worker reservation with an audit
 	// event; setting the current value is an idempotent no-op.
 	SetTaskHold(ctx context.Context, id string, hold bool) (core.Task, error)
+	// AttachTaskBranch remaps Task.Branch under WithTaskSideEffectLock.
+	// Same-name is a no-op. A collision names the other open task id.
+	AttachTaskBranch(ctx context.Context, taskID, branch string) (core.Task, error)
 	SetTaskAssigneeCommand(ctx context.Context, lease taskops.TaskLease, id, assigneeUserID string) (core.Task, error)
 	RequestChangesCommand(ctx context.Context, lease taskops.TaskLease, request taskops.RequestChanges) (core.Task, error)
 	ChangeTaskSetupCommand(ctx context.Context, lease taskops.TaskLease, request SetupChangeRequest) (SetupChangeResult, error)
@@ -4997,10 +5023,8 @@ func (m *memory) createTaskWithContextLocked(ctx context.Context, t core.Task, d
 	if _, exists := m.tasks[t.ID]; exists {
 		return fmt.Errorf("task %s already exists", t.ID)
 	}
-	for _, existing := range m.tasks {
-		if existing.Branch != "" && existing.Branch == t.Branch {
-			return fmt.Errorf("branch %s already belongs to task %s", t.Branch, existing.ID)
-		}
+	if other := openTaskHoldingBranch(m.tasks, t.Workspace, t.Repo, t.Branch, t.ID); other != "" {
+		return TaskBranchInUseError(t.Branch, other)
 	}
 	seen := map[string]bool{}
 	for _, dependencyID := range dependencyIDs {
@@ -5678,6 +5702,43 @@ func (m *memory) SetTaskHold(ctx context.Context, id string, hold bool) (core.Ta
 	}
 	m.appendEventLocked(ctx, core.Event{TaskID: id, Kind: kind, Payload: core.JSONPayload(map[string]any{"hold": hold})})
 	return t, nil
+}
+
+func (m *memory) AttachTaskBranch(ctx context.Context, taskID, branch string) (core.Task, error) {
+	branch = strings.TrimSpace(branch)
+	if branch == "" {
+		return core.Task{}, fmt.Errorf("branch is required")
+	}
+	var result core.Task
+	err := m.WithTaskSideEffectLock(ctx, taskID, func(ctx context.Context) error {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		t, ok := m.tasks[taskID]
+		if !ok {
+			return fmt.Errorf("%w: task %s", ErrNotFound, taskID)
+		}
+		if core.TaskTerminal(t.State) {
+			return fmt.Errorf("%w: task %s", ErrTaskTerminal, taskID)
+		}
+		if t.Branch == branch {
+			result = t
+			return nil
+		}
+		if other := openTaskHoldingBranch(m.tasks, t.Workspace, t.Repo, branch, taskID); other != "" {
+			return TaskBranchInUseError(branch, other)
+		}
+		actor := ActorFromContext(ctx)
+		if !utf8.ValidString(actor.ID) || !utf8.ValidString(string(actor.Role)) || strings.ContainsRune(actor.ID, '\x00') || strings.ContainsRune(string(actor.Role), '\x00') {
+			return fmt.Errorf("audit actor must be valid UTF-8 without NUL characters")
+		}
+		previous := t.Branch
+		t.Branch = branch
+		m.tasks[taskID] = t
+		m.appendEventLocked(ctx, core.Event{TaskID: taskID, Kind: "task.branch_attached", Payload: core.JSONPayload(map[string]string{"previous": previous, "branch": branch})})
+		result = t
+		return nil
+	})
+	return result, err
 }
 
 func (m *memory) SetTaskAssigneeCommand(ctx context.Context, lease taskops.TaskLease, id, assigneeUserID string) (core.Task, error) {

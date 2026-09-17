@@ -128,6 +128,11 @@ func (s *Store) migrate(ctx context.Context) error {
 				return fmt.Errorf("SingleStore migration %s: %w", file.name, err)
 			}
 		}
+		if file.version == 8 {
+			if err := s.migrateOpenTaskBranchUnique(ctx); err != nil {
+				return fmt.Errorf("SingleStore migration %s: %w", file.name, err)
+			}
+		}
 		if file.version == 4 {
 			if err := s.migrateDocumentDismissalNotes(ctx); err != nil {
 				return fmt.Errorf("SingleStore migration %s: %w", file.name, err)
@@ -194,4 +199,16 @@ func (s *Store) migrateTaskStartOver(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+func (s *Store) migrateOpenTaskBranchUnique(ctx context.Context) error {
+	var exists int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='tasks' AND index_name='tasks_branch_key'`).Scan(&exists); err != nil {
+		return err
+	}
+	if exists == 0 {
+		return nil
+	}
+	_, err := s.db.ExecContext(ctx, `ALTER TABLE tasks DROP INDEX tasks_branch_key`)
+	return err
 }

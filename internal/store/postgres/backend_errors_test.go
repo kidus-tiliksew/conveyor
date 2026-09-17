@@ -16,6 +16,7 @@ func TestBackendConflictTranslation(t *testing.T) {
 	}{
 		{"23505", "jobs_pkey", store.ErrDispatchJobConflict},
 		{"23505", "reference_documents_live_name_idx", store.ErrReferenceDocumentNameConflict},
+		{"23505", "tasks_open_repo_branch_idx", store.ErrTaskBranchConflict},
 		{"23505", "tasks_pkey", nil},
 		{"23503", "jobs_pkey", nil},
 	} {

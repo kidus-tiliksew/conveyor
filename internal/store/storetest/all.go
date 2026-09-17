@@ -147,6 +147,7 @@ func RunAll(t *testing.T, factory Factory) {
 	}{
 		{"TaskOperationsPagination", true, runTaskPagination},
 		{"TaskLifecycle", true, runTaskLifecycle},
+		{"TaskBranchUniqueness", true, runTaskBranchUniqueness},
 		{"TaskEventAtomicity", true, runTaskEventAtomicity},
 		{"Workers", true, runWorkers},
 		{"WorkOrders", true, runWorkOrders},

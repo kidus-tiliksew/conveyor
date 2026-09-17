@@ -19,6 +19,8 @@ func translateBackendConflict(err error) error {
 		return store.ErrDispatchJobConflict
 	case "reference_documents_live_name_idx":
 		return store.ErrReferenceDocumentNameConflict
+	case "tasks_open_repo_branch_idx":
+		return store.ErrTaskBranchConflict
 	default:
 		return err
 	}
