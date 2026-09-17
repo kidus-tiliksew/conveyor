@@ -1,9 +1,9 @@
-import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { Check, Clock3, FileText, Link2, RotateCcw, TriangleAlert } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { type CurrentExecutionState, deriveCurrentExecutionState, pendingPlanRevisionRequest } from '../../lib/activity'
 import { confirmRequirementVersion, confirmSystemDesignVersion, recoverWorkOrder } from '../../lib/api'
-import { deriveCurrentExecutionState, pendingPlanRevisionRequest, type CurrentExecutionState } from '../../lib/activity'
 import { errorMessage } from '../../lib/errors'
 import type { ActivityItem, WorkOrderCheckpointCitation, WorkOrderCheckpointPendingProposal } from '../../lib/types'
 import { useWorkspaceCapability, useWorkspaceSelection } from '../app-shell'
@@ -119,7 +119,7 @@ export function CheckpointProposalRecoveryCard({
                 Version {proposal.version.version} proposed by this task for{' '}
                 <Link
                   to="/system-design"
-                  search={{ document: proposal.document.id }}
+                  search={{ document: proposal.document.id, tab: 'changes', target: proposal.version.version }}
                   className="text-primary hover:underline"
                 >
                   {proposal.document.title}

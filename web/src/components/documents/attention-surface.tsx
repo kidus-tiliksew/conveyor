@@ -1,5 +1,5 @@
-import type { ReactNode } from 'react'
 import { Check, TriangleAlert } from 'lucide-react'
+import type { ReactNode } from 'react'
 
 /**
  * One document carries exactly one attention surface.
@@ -66,7 +66,7 @@ export function AttentionSurface({ items }: { items: AttentionItem[] }) {
               <p className="text-sm font-medium leading-5">{item.title}</p>
               {item.detail && <div className="mt-1 text-xs leading-5 text-muted">{item.detail}</div>}
             </div>
-            {item.action && <div className="flex shrink-0 flex-wrap items-center gap-2">{item.action}</div>}
+            {item.action && <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2">{item.action}</div>}
             {item.error && <p className="basis-full text-xs text-failure">{item.error}</p>}
           </li>
         ))}

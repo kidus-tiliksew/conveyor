@@ -215,6 +215,7 @@ test('System Design renders a category tree, one attention surface, and authenti
 
   // AC-4.2/AC-4.4: the judged merge remains visible as neutral history and
   // does not enter the document's attention surface or count.
+  await page.getByRole('tab', { name: 'history', exact: true }).click()
   const deliveryHistory = page.getByRole('region', { name: 'Delivery history' })
   await expect(deliveryHistory).toContainText('Consulted at delivery — no revision warranted')
   await expect(deliveryHistory).toContainText('Pinned version 1 · task 260813-delivery · merge reviewed-head')
@@ -229,26 +230,19 @@ test('System Design renders a category tree, one attention surface, and authenti
   // AC-2.2: the assistant column is withdrawn from this surface.
   await expect(page.getByRole('complementary', { name: 'Design assistant' })).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Draft' })).toHaveCount(0)
+  await page.getByRole('button', { name: 'Review changes · v2', exact: true }).click()
   await expect(page.getByRole('button', { name: 'Revise', exact: true })).toBeVisible()
   await expect(page.locator('textarea')).toHaveCount(0)
 
-  // The diff and the version history stay, subordinated under the document.
-  const comparison = page.locator('details').filter({ hasText: 'Compared with confirmed v1' })
-  await expect(comparison).toHaveAttribute('open', '')
-  const diff = comparison.getByRole('region', { name: 'Pending version diff' })
-  await expect(diff).toContainText('Confirmed today')
-  await expect(diff).toContainText('Proposed')
-  await expect(diff.getByText('The dispatcher owns durable stage transitions.', { exact: true })).toHaveClass(
-    /bg-failure-soft/,
-  )
-  await expect(
-    diff.getByText('The dispatcher owns durable stage transitions and work-order leases.', { exact: true }),
-  ).toHaveClass(/bg-positive-soft/)
-  await page.getByText('Version history').click()
-  await page.getByText('Read version').first().click()
-  await expect(
-    page.getByRole('list').getByText('The dispatcher owns durable stage transitions.', { exact: true }),
-  ).toBeVisible()
+  // Review uses the selected versions; history returns to an exact document read.
+  const diff = page.getByRole('region', { name: 'Version comparison', exact: true })
+  await expect(page.getByLabel('Base version', { exact: true })).toHaveValue('1')
+  await expect(page.getByLabel('Target version', { exact: true })).toHaveValue('2')
+  await expect(diff.locator('ins').filter({ hasText: 'and work-order leases' })).toBeVisible()
+  await page.getByRole('tab', { name: 'history', exact: true }).click()
+  await page.getByRole('button', { name: 'Read version 1', exact: true }).click()
+  await expect(page.getByText('The dispatcher owns durable stage transitions.', { exact: true })).toBeVisible()
+  await attention.getByRole('button', { name: 'Review changes · v2', exact: true }).click()
 
   await attention.getByRole('button', { name: 'Confirm version 2' }).click()
   await expect.poll(() => confirmed).toBe(true)
@@ -383,10 +377,11 @@ test('an oversized System Design comparison falls back to plain rendering', asyn
   })
 
   await page.goto('/system-design')
-  const diff = page.getByRole('region', { name: 'Pending version diff' })
-  await expect(diff.getByText('Diff too large; showing both versions without highlighting.')).toBeVisible()
-  await expect(diff.getByText('confirmed line 499', { exact: true })).toBeVisible()
-  await expect(diff.getByText('proposed line 499', { exact: true })).toBeVisible()
+  await page.getByRole('button', { name: 'Review changes · v2', exact: true }).click()
+  const diff = page.getByRole('region', { name: 'Version comparison', exact: true })
+  await expect(diff.getByText(/Diff too large; showing both complete versions without highlighting/)).toBeVisible()
+  await expect(diff.locator('pre').filter({ hasText: 'confirmed line 499' })).toBeVisible()
+  await expect(diff.locator('pre').filter({ hasText: 'proposed line 499' })).toBeVisible()
   await expect(diff.locator('span.bg-failure-soft, span.bg-positive-soft')).toHaveCount(0)
 })
 
@@ -416,6 +411,7 @@ test('a System Design with nothing outstanding says so in one quiet line', async
   const metadata = page.getByRole('heading', { name: 'Dispatch ownership' }).locator('..')
   await expect(metadata.getByText('v1', { exact: true })).toBeVisible()
   await expect(metadata.getByText('Confirmed', { exact: true })).toBeVisible()
+  await page.getByRole('tab', { name: 'history', exact: true }).click()
   await expect(page.getByRole('region', { name: 'Settled decisions' })).toContainText('No settled decisions yet.')
 })
 
@@ -490,6 +486,7 @@ test('System Design links decision supersession and dismisses an unclean sweep s
   })
 
   await page.goto('/system-design?document=design-dispatch#decision-dec-2')
+  await page.getByRole('tab', { name: 'history', exact: true }).click()
   const register = page.getByRole('region', { name: 'Settled decisions' })
   await expect(register.getByRole('link', { name: 'DEC-2' })).toHaveAttribute('href', '#decision-dec-2')
   await expect(register.getByRole('link', { name: 'DEC-1' })).toHaveAttribute('href', '#decision-dec-1')
@@ -527,6 +524,7 @@ test('System Design keeps the document visible when the decision register fails'
 
   await page.goto('/system-design?document=design-dispatch')
   await expect(page.getByRole('heading', { name: 'Dispatch ownership' })).toBeVisible()
+  await page.getByRole('tab', { name: 'history', exact: true }).click()
   await expect(page.getByRole('region', { name: 'Settled decisions' })).toContainText(
     'Decision projection unavailable.',
   )
@@ -721,6 +719,7 @@ test('operators confirm and dismiss proposed decisions with conflict-safe refres
   await page.locator('#decision-dec-1').getByRole('button', { name: 'Confirm' }).click()
   await expect(page.locator('#decision-dec-1')).toContainText('Confirmed by user:operator-test')
   await page.locator('#decision-dec-2').getByRole('button', { name: 'Dismiss' }).click()
+  await page.getByRole('tab', { name: 'history', exact: true }).click()
   await expect(page.locator('#decision-dec-2')).toContainText('Dismissed by second-operator')
   await expect.poll(() => decisionReads).toBeGreaterThanOrEqual(3)
 })
@@ -844,6 +843,7 @@ test('System Design archives with successors, shows inline rejection, and restor
     'title',
     /Archived by Operator One on/,
   )
+  await page.getByRole('tab', { name: 'history', exact: true }).click()
   await expect(page.getByText('System Design document archived')).toBeVisible()
   await expect(page).toHaveURL(/document=design-dispatch/)
   await expect(page.getByRole('button', { name: /Confirm version/ })).toHaveCount(0)
@@ -928,6 +928,7 @@ test('System Design pages older delivery activity and loads its explorer on open
     return route.fulfill({ json: [] })
   })
   await page.goto('/system-design?document=design-dispatch')
+  await page.getByRole('tab', { name: 'history', exact: true }).click()
   await expect(page.getByText('51 activity events')).toBeVisible()
   expect(eventReads).toBe(0)
   expect(graphReads).toBe(0)
@@ -1053,7 +1054,7 @@ for (const note of ['', '  Correct the ownership.  ']) {
     await page.getByLabel('Why are you dismissing this?').fill(note)
     await page.getByRole('button', { name: 'Dismiss version 2' }).click()
     await expect(page.getByRole('dialog')).toHaveCount(0)
-    await page.getByText('Version history').click()
+    await page.getByRole('tab', { name: 'history', exact: true }).click()
     await expect(page.getByText(/Dismissed by operator/)).toBeVisible()
     if (note.trim()) await expect(page.getByText(`Operator's reason: ${note.trim()}`)).toBeVisible()
     else await expect(page.getByText(/Operator's reason/)).toHaveCount(0)

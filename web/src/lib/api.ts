@@ -35,15 +35,14 @@ import type {
   WorkspaceRecord,
 } from './types'
 
-function workspaceURL(path: string) {
-  const workspace = localStorage.getItem('conveyor-workspace') ?? ''
+function workspaceURL(path: string, workspace = localStorage.getItem('conveyor-workspace') ?? '') {
   if (!workspace) return path
   const separator = path.includes('?') ? '&' : '?'
   return `${path}${separator}workspace_id=${encodeURIComponent(workspace)}`
 }
 
-async function getJSON<T>(url: string): Promise<T> {
-  const response = await fetch(url)
+async function getJSON<T>(url: string, signal?: AbortSignal): Promise<T> {
+  const response = await fetch(url, { signal })
   if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   return response.json() as Promise<T>
 }
@@ -409,11 +408,17 @@ export function fetchRequirements(options: { includeArchived?: boolean } = {}) {
   const path = options.includeArchived ? '/v1/requirements?include_archived=true' : '/v1/requirements'
   return getJSON<import('./types').RequirementSummary[]>(workspaceURL(path))
 }
-export function fetchRequirement(requirementId: string) {
-  return getJSON<RequirementView>(workspaceURL(`/v1/requirements/${encodeURIComponent(requirementId)}`))
+export function fetchRequirement(requirementId: string, workspace?: string, signal?: AbortSignal) {
+  return getJSON<RequirementView>(
+    workspaceURL(`/v1/requirements/${encodeURIComponent(requirementId)}`, workspace),
+    signal,
+  )
 }
-export function fetchRequirementVersions(requirementId: string) {
-  return getJSON<RequirementVersion[]>(workspaceURL(`/v1/requirements/${encodeURIComponent(requirementId)}/versions`))
+export function fetchRequirementVersions(requirementId: string, workspace?: string, signal?: AbortSignal) {
+  return getJSON<RequirementVersion[]>(
+    workspaceURL(`/v1/requirements/${encodeURIComponent(requirementId)}/versions`, workspace),
+    signal,
+  )
 }
 export function fetchCheckpointContextCandidates(requirementId: string) {
   return getJSON<import('./types').CheckpointContextCandidate[]>(
@@ -774,8 +779,11 @@ export function fetchSystemDesigns(options: { includeArchived?: boolean } = {}) 
   const path = options.includeArchived ? '/v1/system-designs?include_archived=true' : '/v1/system-designs'
   return getJSON<import('./types').SystemDesignSummary[]>(workspaceURL(path))
 }
-export function fetchSystemDesign(id: string) {
-  return getJSON<import('./types').SystemDesignView>(workspaceURL(`/v1/system-designs/${encodeURIComponent(id)}`))
+export function fetchSystemDesign(id: string, workspace?: string, signal?: AbortSignal) {
+  return getJSON<import('./types').SystemDesignView>(
+    workspaceURL(`/v1/system-designs/${encodeURIComponent(id)}`, workspace),
+    signal,
+  )
 }
 export function fetchSystemDesignVersions(id: string) {
   return getJSON<import('./types').SystemDesignVersion[]>(

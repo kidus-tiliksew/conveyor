@@ -1,21 +1,22 @@
-import { Outlet, createRootRoute, createRoute, createRouter, redirect, useParams } from '@tanstack/react-router'
+import { createRootRoute, createRoute, createRouter, Outlet, redirect, useParams } from '@tanstack/react-router'
 import { AppShell } from './components/app-shell'
 import { Board } from './components/board/board'
+import { type ReviewSearch, validateReviewSearch } from './components/documents/document-review'
 import { TaskSheet } from './components/task/task-sheet'
 import { CreateWorkspaceDialog } from './components/workspace/create-workspace-dialog'
 import { BlueprintDetailPage } from './pages/blueprint-detail'
 import { BlueprintsPage } from './pages/blueprints'
+import { MonitorPage } from './pages/monitor'
+import { OnboardingPage } from './pages/onboarding'
+import { PendingProposalsPage } from './pages/pending-proposals'
+import { PlanningPage } from './pages/planning'
 import { RequirementsPage } from './pages/requirements'
-import { SystemDesignPage } from './pages/system-design'
 import { SettingsPage } from './pages/settings'
 import { SignInPage } from './pages/sign-in'
+import { SystemDesignPage } from './pages/system-design'
 import { TaskFullPage } from './pages/task-full'
 import { TasksPage } from './pages/tasks'
 import { WorkspacePage } from './pages/workspace'
-import { MonitorPage } from './pages/monitor'
-import { OnboardingPage } from './pages/onboarding'
-import { PlanningPage } from './pages/planning'
-import { PendingProposalsPage } from './pages/pending-proposals'
 
 // The board is a layout route: the task sheet mounts into its Outlet, so the
 // board (scroll position, search) stays alive while a task is open.
@@ -119,7 +120,8 @@ const requirementsRoute = createRoute({
   path: '/requirements',
   // `session` deep-links the document-scoped planning sidebar, so a reload
   // restores the assistant beside the same document.
-  validateSearch: (search: Record<string, unknown>): { requirement?: string; session?: string } => ({
+  validateSearch: (search: Record<string, unknown>): { requirement?: string; session?: string } & ReviewSearch => ({
+    ...validateReviewSearch(search),
     requirement: typeof search.requirement === 'string' ? search.requirement : undefined,
     session: typeof search.session === 'string' ? search.session : undefined,
   }),
@@ -128,7 +130,8 @@ const requirementsRoute = createRoute({
 const systemDesignRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/system-design',
-  validateSearch: (search: Record<string, unknown>): { document?: string; session?: string } => ({
+  validateSearch: (search: Record<string, unknown>): { document?: string; session?: string } & ReviewSearch => ({
+    ...validateReviewSearch(search),
     document: typeof search.document === 'string' ? search.document : undefined,
     session: typeof search.session === 'string' ? search.session : undefined,
   }),

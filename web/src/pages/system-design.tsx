@@ -6,6 +6,7 @@ import { useWorkspaceCapability, useWorkspaceSelection } from '../components/app
 import { ArchiveDocumentDialog, type SuccessorCandidate } from '../components/documents/archive-document-dialog'
 import { type AttentionItem, AttentionSurface } from '../components/documents/attention-surface'
 import { MoreDocumentEvents, useDocumentEvents } from '../components/documents/document-events'
+import { DocumentReview, type ReviewSearch, selectedReviewVersion } from '../components/documents/document-review'
 import { compareDocuments, type DocumentSort, type DocumentSortDirection } from '../components/documents/document-sort'
 import {
   DocumentTree,
@@ -16,7 +17,6 @@ import {
 } from '../components/documents/document-tree'
 import { DriftResolutionForm } from '../components/documents/drift-resolution-form'
 import { SuccessorLinks } from '../components/documents/successor-links'
-import { VersionDiff } from '../components/documents/version-diff'
 import { VersionDismissDialog } from '../components/documents/version-dismiss-dialog'
 import { VersionReviseDialog } from '../components/documents/version-revise-dialog'
 import { LineageExplorer } from '../components/lineage/lineage-explorer'
@@ -55,9 +55,9 @@ const originLabels: Record<SystemDesignVersion['origin'], string> = {
 
 /**
  * System Design is a category tree beside a document canvas. The canvas is the
- * hero: the confirmed guide reads
- * first, its history and its diffs sit under it as collapsed detail, and the
- * one attention surface above it carries every signal that needs an operator.
+ * ordinary reading surface. Changes and History share its header and the one
+ * attention surface carries every signal that needs an operator
+ * (component-web-dashboard v6; req-document-operating-surfaces v5 REQ-1/2).
  * The assistant column is withdrawn from presentation while in-product
  * planning is parked — its components and every
  * propose→confirm route stay exactly as they are.
@@ -94,7 +94,7 @@ export function SystemDesignPage() {
   const selected = designs.data?.find((item) => item.document.id === search.document)
   const detail = useQuery({
     queryKey: ['system-design', workspace, selected?.document.id],
-    queryFn: () => fetchSystemDesign(selected?.document.id ?? ''),
+    queryFn: ({ signal }) => fetchSystemDesign(selected?.document.id ?? '', workspace, signal),
     enabled: Boolean(workspace && selected?.document.id),
     staleTime: 60_000,
   })
@@ -109,6 +109,7 @@ export function SystemDesignPage() {
     void navigate({
       to: '/system-design',
       search: { document: fallback.document.id },
+      hash: window.location.hash.slice(1),
       replace: true,
     })
   }, [designs.data, navigate, selected])
@@ -276,7 +277,10 @@ export function SystemDesignPage() {
         <main className="min-w-0 flex-1 overflow-y-auto">
           {detail.data ? (
             <DesignCanvas
-              key={detail.data.document.id}
+              key={`${workspace}:${detail.data.document.id}:${search.tab}:${search.base}:${search.target}`}
+              search={
+                search.tab || !window.location.hash.startsWith('#decision-') ? search : { ...search, tab: 'history' }
+              }
               item={detail.data}
               workspace={workspace}
               decisionItems={decisionItems}
@@ -320,6 +324,7 @@ export function SystemDesignPage() {
 }
 
 function DesignCanvas({
+  search,
   item,
   workspace,
   decisionItems,
@@ -329,6 +334,7 @@ function DesignCanvas({
   canConfirmDecisions,
   dismissSweep,
 }: {
+  search: ReviewSearch & { document?: string; session?: string }
   item: SystemDesignView
   workspace: string
   decisionItems: AttentionItem[]
@@ -344,11 +350,31 @@ function DesignCanvas({
     >
   >
 }) {
+  useEffect(() => {
+    const anchor = window.location.hash.slice(1)
+    if (anchor.startsWith('decision-'))
+      requestAnimationFrame(() => window.document.getElementById(anchor)?.scrollIntoView({ block: 'start' }))
+  }, [search.tab, settledDecisions])
   const history = useDocumentEvents('system_design', item.document.id, item)
   const client = useQueryClient()
   const canManageWorkspace = useWorkspaceCapability('manage_workspace')
   const canConfirm = useWorkspaceCapability('confirm_documents')
-  const displayed = item.current_version ?? item.pending_versions[0] ?? item.versions[item.versions.length - 1]
+  const navigate = useNavigate()
+  const onReviewChange = (next: ReviewSearch) =>
+    navigate({
+      to: '/system-design',
+      search: { ...search, ...next, base: next.base, target: next.target },
+      hash: window.location.hash.slice(1),
+    })
+  const reviewVersions = [
+    ...new Map(
+      [...item.versions, ...item.pending_versions, ...(item.current_version ? [item.current_version] : [])].map((v) => [
+        v.version,
+        v,
+      ]),
+    ).values(),
+  ]
+  const displayed = selectedReviewVersion(reviewVersions, item.current_version, search)
   const [dismissTarget, setDismissTarget] = useState<SystemDesignVersion | null>(null)
   const canPropose = useWorkspaceCapability('propose_documents')
   const [reviseTarget, setReviseTarget] = useState<SystemDesignVersion | null>(null)
@@ -387,6 +413,11 @@ function DesignCanvas({
   const confirm = useMutation({
     mutationFn: (version: number) =>
       confirmSystemDesignVersion(item.document.id, version, item.document.current_version ?? 0),
+    onSettled: () => {
+      void client.invalidateQueries({ queryKey: ['pending-proposals', workspace] })
+      void client.invalidateQueries({ queryKey: ['activity', workspace] })
+      void client.invalidateQueries({ queryKey: ['task', workspace] })
+    },
     onSuccess: () => {
       void client.invalidateQueries({ queryKey: ['system-designs', workspace] })
       void client.invalidateQueries({ queryKey: ['system-design', workspace, item.document.id] })
@@ -426,7 +457,6 @@ function DesignCanvas({
       ])
     },
   })
-  const pending = item.pending_versions.at(-1)
   const deliveryConsultations = history.events.filter(
     (event) => event.kind === 'system_design.consulted' && event.payload?.consultation === 'delivery_no_revision',
   )
@@ -478,39 +508,54 @@ function DesignCanvas({
     })),
     ...item.pending_versions.map((version) => ({
       id: `pending-${version.version}`,
-      title: `Version ${version.version} is waiting for you`,
+      title: `${item.document.title} · Version ${version.version} is waiting for you`,
       detail: (
         <>
           {originLabels[version.origin]} · {formatDate(version.created_at)}
           {item.pending_versions.length > 1 && '. Confirming a later version drops the earlier ones.'}
         </>
       ),
-      action: canConfirm ? (
+      action: (
         <>
-          <Button disabled={confirm.isPending || dismiss.isPending} onClick={() => confirm.mutate(version.version)}>
-            <Check />
-            {confirm.isPending && confirm.variables === version.version
-              ? 'Confirming…'
-              : `Confirm version ${version.version}`}
-          </Button>
-          {canPropose && (
-            <Button
-              variant="secondary"
-              disabled={confirm.isPending || dismiss.isPending}
-              onClick={() => setReviseTarget(version)}
-            >
-              Revise
-            </Button>
-          )}
           <Button
-            variant="destructive"
-            disabled={confirm.isPending || dismiss.isPending}
-            onClick={() => setDismissTarget(version)}
+            variant="secondary"
+            onClick={() =>
+              onReviewChange({ tab: 'changes', target: version.version, base: item.current_version?.version ?? 0 })
+            }
           >
-            <X /> Dismiss
+            Review changes · v{version.version}
           </Button>
+          {canConfirm &&
+          ((search.tab === 'changes' && displayed?.version === version.version) ||
+            ((!search.tab || search.tab === 'document') &&
+              (search.target === undefined || displayed?.version === version.version))) ? (
+            <>
+              <Button disabled={confirm.isPending || dismiss.isPending} onClick={() => confirm.mutate(version.version)}>
+                <Check />
+                {confirm.isPending && confirm.variables === version.version
+                  ? 'Confirming…'
+                  : `Confirm version ${version.version}`}
+              </Button>
+              {canPropose && (
+                <Button
+                  variant="secondary"
+                  disabled={confirm.isPending || dismiss.isPending}
+                  onClick={() => setReviseTarget(version)}
+                >
+                  Revise
+                </Button>
+              )}
+              <Button
+                variant="destructive"
+                disabled={confirm.isPending || dismiss.isPending}
+                onClick={() => setDismissTarget(version)}
+              >
+                <X /> Dismiss
+              </Button>
+            </>
+          ) : null}
         </>
-      ) : undefined,
+      ),
       error:
         confirm.error && confirm.variables === version.version
           ? errorMessage(confirm.error, 'Could not confirm this version.')
@@ -521,27 +566,31 @@ function DesignCanvas({
 
   return (
     <article className="mx-auto max-w-4xl px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
-      {reviseTarget && (
-        <VersionReviseDialog
-          target={{
-            id: item.document.id,
-            title: item.document.title,
-            tier: 'system_design',
-            version: reviseTarget.version,
-          }}
-          onClose={() => setReviseTarget(null)}
-        />
-      )}
-      {dismissTarget && (
-        <VersionDismissDialog
-          documentTitle={item.document.title}
-          version={dismissTarget.version}
-          pending={dismiss.isPending}
-          error={dismiss.error ? errorMessage(dismiss.error, 'Could not dismiss this version.') : undefined}
-          onCancel={() => setDismissTarget(null)}
-          onConfirm={(note) => dismiss.mutate({ version: dismissTarget.version, note })}
-        />
-      )}
+      {!item.document.archived &&
+        reviseTarget &&
+        item.pending_versions.some((v) => v.version === reviseTarget.version) && (
+          <VersionReviseDialog
+            target={{
+              id: item.document.id,
+              title: item.document.title,
+              tier: 'system_design',
+              version: reviseTarget.version,
+            }}
+            onClose={() => setReviseTarget(null)}
+          />
+        )}
+      {!item.document.archived &&
+        dismissTarget &&
+        item.pending_versions.some((v) => v.version === dismissTarget.version) && (
+          <VersionDismissDialog
+            documentTitle={item.document.title}
+            version={dismissTarget.version}
+            pending={dismiss.isPending}
+            error={dismiss.error ? errorMessage(dismiss.error, 'Could not dismiss this version.') : undefined}
+            onCancel={() => setDismissTarget(null)}
+            onConfirm={(note) => dismiss.mutate({ version: dismissTarget.version, note })}
+          />
+        )}
       {archiveDialogOpen && (
         <ArchiveDocumentDialog
           documentTitle={item.document.title}
@@ -568,9 +617,7 @@ function DesignCanvas({
           {displayed ? (
             <div className="mt-3 flex flex-wrap items-center gap-1.5">
               <Badge variant="mono">v{displayed.version}</Badge>
-              <Badge variant={displayed.confirmed ? 'positive' : 'accent'}>
-                {displayed.confirmed ? 'Confirmed' : 'Proposed'}
-              </Badge>
+              {displayed.confirmed && <Badge variant="positive">Confirmed</Badge>}
               {item.document.archived && (
                 <Badge
                   variant="outline"
@@ -624,249 +671,238 @@ function DesignCanvas({
           )}
         </p>
       )}
-      {item.document.archived ? (
-        <section
-          aria-label="Needs your attention"
-          className="rounded-lg border border-border bg-surface/40 px-4 py-3 text-sm text-muted"
-        >
-          <p>This System Design document is archived.</p>
-          <SuccessorLinks ids={item.document.superseded_by} />
-        </section>
-      ) : (
-        <AttentionSurface items={attention} />
-      )}
-
-      <section className="mt-8">
-        {displayed && <MarkdownProse>{displayed.content}</MarkdownProse>}
-        {displayed && displayed.governs.length > 0 && (
-          <div className="mt-8 flex flex-wrap items-center gap-2 border-t border-border pt-4">
-            <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-faint">Covers</span>
-            {displayed.governs.flatMap((scope) =>
-              scope.paths.map((path) => (
-                <Badge key={`${scope.repository}:${path}`} variant="mono" title="Code this document describes">
-                  {scope.repository}:{path}
-                </Badge>
-              )),
+      <DocumentReview
+        search={search}
+        onChange={onReviewChange}
+        versions={reviewVersions}
+        current={item.current_version}
+        attention={
+          <>
+            {item.document.archived ? (
+              <section
+                aria-label="Needs your attention"
+                className="rounded-lg border border-border bg-surface/40 px-4 py-3 text-sm text-muted"
+              >
+                <p>This System Design document is archived.</p>
+                <SuccessorLinks ids={item.document.superseded_by} />
+              </section>
+            ) : (
+              <AttentionSurface
+                items={
+                  search.tab === 'changes'
+                    ? [...attention].sort(
+                        (a, b) =>
+                          Number(b.id === `pending-${displayed?.version}`) -
+                          Number(a.id === `pending-${displayed?.version}`),
+                      )
+                    : attention
+                }
+              />
             )}
-          </div>
-        )}
-      </section>
-
-      {pending && item.current_version && <DesignDiff current={item.current_version} pending={pending} />}
-
-      {deliveryConsultations.length > 0 && (
-        <section className="mt-8 border-t border-border pt-5" aria-label="Delivery history">
-          <h3 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.12em] text-muted">
-            <History className="size-3.5" /> Delivery history
-          </h3>
-          <ol className="mt-3 divide-y divide-border rounded-md border border-border">
-            {deliveryConsultations.map((event) => {
-              const taskID = String(event.payload?.delivery_task_id ?? '')
-              const mergeSHA = String(event.payload?.merge_head_sha ?? '')
-              const version = Number(event.payload?.version ?? 0)
-              return (
-                <li key={event.id} className="px-3 py-3 text-xs text-muted">
-                  <p className="font-medium text-foreground">{systemDesignEventLabel(event.kind)}</p>
-                  <p className="mt-1">
-                    {version > 0 && <>Pinned version {version} · </>}
-                    task <span className="font-mono">{taskID}</span>
-                    {mergeSHA && (
-                      <>
-                        {' '}
-                        · merge <span className="font-mono">{mergeSHA}</span>
-                      </>
-                    )}
-                  </p>
-                  <time className="mt-1 block text-[10px] text-faint">{formatDate(event.at)}</time>
-                </li>
-              )
-            })}
-          </ol>
-        </section>
-      )}
-
-      {archiveActivity.length > 0 && (
-        <section className="mt-8 border-t border-border pt-5" aria-label="Archive activity">
-          <h3 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.12em] text-muted">
-            <History className="size-3.5" /> Archive activity
-          </h3>
-          <ol className="mt-3 divide-y divide-border rounded-md border border-border">
-            {archiveActivity.map((event) => (
-              <li key={event.id} className="px-3 py-3 text-xs text-muted">
-                <p className="font-medium text-foreground">{systemDesignEventLabel(event.kind)}</p>
-                <time className="mt-1 block text-[10px] text-faint">{formatDate(event.at)}</time>
-              </li>
-            ))}
-          </ol>
-        </section>
-      )}
-
-      <section className="mt-4" aria-label="Document activity">
-        <span className="mr-2 text-xs text-muted">{history.total} activity events</span>
-        <MoreDocumentEvents history={history} />
-      </section>
-
-      {item.versions.length > 0 && (
-        <details className="mt-8 border-t border-border pt-5">
-          <summary className="flex cursor-pointer items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.12em] text-muted">
-            <History className="size-3.5" /> Version history
-            <span className="text-faint">({item.versions.length})</span>
-          </summary>
-          <ol className="mt-3 divide-y divide-border rounded-md border border-border">
-            {item.versions.map((version) => (
-              <li key={version.version} className="px-3 py-2 text-xs">
-                <details>
-                  <summary className="flex cursor-pointer flex-wrap items-center gap-2">
-                    <Badge variant="mono">v{version.version}</Badge>
-                    <Badge variant={version.confirmed ? 'positive' : version.dismissed ? 'default' : 'accent'}>
-                      {version.confirmed ? 'Confirmed' : version.dismissed ? 'Dismissed' : 'Proposed'}
-                    </Badge>
-                    {version.dismissed && version.dismissed_by && version.dismissed_at && (
-                      <span className="text-faint">
-                        Dismissed by {version.dismissed_by} on {formatDate(version.dismissed_at)}
-                      </span>
-                    )}
-                    {version.dismissed && version.dismissal_note && (
-                      <span className="w-full whitespace-pre-wrap break-words text-muted">
-                        Operator's reason: {version.dismissal_note}
-                      </span>
-                    )}
-                    <span className="ml-auto font-medium text-primary hover:underline">Read version</span>
-                  </summary>
-                  <div className="mt-2 rounded-md bg-surface p-4">
-                    <MarkdownProse>{version.content}</MarkdownProse>
-                  </div>
-                </details>
-              </li>
-            ))}
-          </ol>
-        </details>
-      )}
-
-      <section className="mt-10 border-t border-border pt-8" aria-label="Settled decisions">
-        {decisionsLoading ? (
-          <p className="text-sm text-muted">Loading decisions…</p>
-        ) : decisionsError ? (
-          <p className="rounded-md bg-failure-soft px-3 py-2 text-sm text-failure">
-            {errorMessage(decisionsError, 'Could not load decisions.')}
-          </p>
-        ) : settledDecisions.length === 0 ? (
-          <p className="text-sm text-muted">No settled decisions yet.</p>
-        ) : (
-          <Card className="rounded-lg">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <span className="flex size-5 items-center justify-center rounded-md bg-primary-soft text-primary">
-                  <Check className="size-3" />
-                </span>
-                Settled decisions
-              </CardTitle>
-              <Badge variant="mono">{settledDecisions.length}</Badge>
-            </CardHeader>
-            <CardContent className="space-y-2">
-              {settledDecisions.map((decision) => (
-                <article
-                  id={`decision-${decision.id.toLowerCase()}`}
-                  key={decision.id}
-                  className="scroll-mt-6 rounded-lg border border-border p-3"
-                >
-                  <div className="flex gap-2">
-                    <Badge variant="mono">{decision.id}</Badge>
-                    <Badge variant={decision.status === 'confirmed' ? 'positive' : 'default'}>{decision.status}</Badge>
-                  </div>
-                  <p className="mt-2 text-sm font-medium">{decision.statement}</p>
-                  <p className="mt-1 text-xs text-muted">{decision.context}</p>
-                  {(decision.supersedes || decision.superseded_by) && (
-                    <p className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted">
-                      {decision.supersedes && (
-                        <span>
-                          Supersedes <DecisionLink id={decision.supersedes} />
-                        </span>
-                      )}
-                      {decision.superseded_by && (
-                        <span>
-                          Superseded by <DecisionLink id={decision.superseded_by} />
-                        </span>
-                      )}
-                    </p>
+          </>
+        }
+        document={
+          <>
+            <section className="mt-8">
+              {displayed && <MarkdownProse>{displayed.content}</MarkdownProse>}
+              {displayed && displayed.governs.length > 0 && (
+                <div className="mt-8 flex flex-wrap items-center gap-2 border-t border-border pt-4">
+                  <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-faint">Covers</span>
+                  {displayed.governs.flatMap((scope) =>
+                    scope.paths.map((path) => (
+                      <Badge key={`${scope.repository}:${path}`} variant="mono" title="Code this document describes">
+                        {scope.repository}:{path}
+                      </Badge>
+                    )),
                   )}
-                  {decision.supersedes && decision.sweep && !decision.sweep.clean && (
-                    <details className="mt-3 rounded-md border border-attention/40 bg-attention-soft/40 p-3">
-                      <summary className="flex cursor-pointer flex-wrap items-center gap-2 text-xs font-medium">
-                        <Badge variant="attention">
-                          {decision.sweep.entries.filter((entry) => entry.status === 'open').length} open
-                        </Badge>
-                        documents still citing {decision.supersedes}
-                      </summary>
-                      <p className="mt-2 text-xs text-muted">
-                        These signals manage operator attention. They do not block delivery, review, or merge.
-                      </p>
-                      <ul
-                        className="mt-2 divide-y divide-border"
-                        aria-label={`Documents still citing ${decision.supersedes}`}
+                </div>
+              )}
+            </section>
+          </>
+        }
+        history={
+          <>
+            {' '}
+            {deliveryConsultations.length > 0 && (
+              <section className="mt-8 border-t border-border pt-5" aria-label="Delivery history">
+                <h3 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.12em] text-muted">
+                  <History className="size-3.5" /> Delivery history
+                </h3>
+                <ol className="mt-3 divide-y divide-border rounded-md border border-border">
+                  {deliveryConsultations.map((event) => {
+                    const taskID = String(event.payload?.delivery_task_id ?? '')
+                    const mergeSHA = String(event.payload?.merge_head_sha ?? '')
+                    const version = Number(event.payload?.version ?? 0)
+                    return (
+                      <li key={event.id} className="px-3 py-3 text-xs text-muted">
+                        <p className="font-medium text-foreground">{systemDesignEventLabel(event.kind)}</p>
+                        <p className="mt-1">
+                          {version > 0 && <>Pinned version {version} · </>}
+                          task <span className="font-mono">{taskID}</span>
+                          {mergeSHA && (
+                            <>
+                              {' '}
+                              · merge <span className="font-mono">{mergeSHA}</span>
+                            </>
+                          )}
+                        </p>
+                        <time className="mt-1 block text-[10px] text-faint">{formatDate(event.at)}</time>
+                      </li>
+                    )
+                  })}
+                </ol>
+              </section>
+            )}
+            {archiveActivity.length > 0 && (
+              <section className="mt-8 border-t border-border pt-5" aria-label="Archive activity">
+                <h3 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.12em] text-muted">
+                  <History className="size-3.5" /> Archive activity
+                </h3>
+                <ol className="mt-3 divide-y divide-border rounded-md border border-border">
+                  {archiveActivity.map((event) => (
+                    <li key={event.id} className="px-3 py-3 text-xs text-muted">
+                      <p className="font-medium text-foreground">{systemDesignEventLabel(event.kind)}</p>
+                      <time className="mt-1 block text-[10px] text-faint">{formatDate(event.at)}</time>
+                    </li>
+                  ))}
+                </ol>
+              </section>
+            )}
+            <section className="mt-4" aria-label="Document activity">
+              <span className="mr-2 text-xs text-muted">{history.total} activity events</span>
+              <MoreDocumentEvents history={history} />
+            </section>
+            <section className="mt-10 border-t border-border pt-8" aria-label="Settled decisions">
+              {decisionsLoading ? (
+                <p className="text-sm text-muted">Loading decisions…</p>
+              ) : decisionsError ? (
+                <p className="rounded-md bg-failure-soft px-3 py-2 text-sm text-failure">
+                  {errorMessage(decisionsError, 'Could not load decisions.')}
+                </p>
+              ) : settledDecisions.length === 0 ? (
+                <p className="text-sm text-muted">No settled decisions yet.</p>
+              ) : (
+                <Card className="rounded-lg">
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2">
+                      <span className="flex size-5 items-center justify-center rounded-md bg-primary-soft text-primary">
+                        <Check className="size-3" />
+                      </span>
+                      Settled decisions
+                    </CardTitle>
+                    <Badge variant="mono">{settledDecisions.length}</Badge>
+                  </CardHeader>
+                  <CardContent className="space-y-2">
+                    {settledDecisions.map((decision) => (
+                      <article
+                        id={`decision-${decision.id.toLowerCase()}`}
+                        key={decision.id}
+                        className="scroll-mt-6 rounded-lg border border-border p-3"
                       >
-                        {decision.sweep.entries.map((entry) => {
-                          const pending =
-                            dismissSweep.isPending &&
-                            dismissSweep.variables?.decisionId === decision.id &&
-                            dismissSweep.variables.entry.document_tier === entry.document_tier &&
-                            dismissSweep.variables.entry.document_id === entry.document_id
-                          const failed = dismissSweep.error && dismissSweep.variables?.entry === entry
-                          return (
-                            <li key={`${entry.document_tier}:${entry.document_id}`} className="py-2 text-xs">
-                              <div className="flex flex-wrap items-center gap-2">
-                                <SweepDocumentLink entry={entry} />
-                                <Badge>{sweepTierLabel(entry.document_tier)}</Badge>
-                                <Badge variant={entry.status === 'open' ? 'attention' : 'default'}>
-                                  {entry.status}
-                                </Badge>
-                                <Disclosure
-                                  triggerClassName="text-faint"
-                                  content={new Date(entry.detected_at).toLocaleString()}
-                                >
-                                  <time dateTime={entry.detected_at}>Detected {formatDate(entry.detected_at)}</time>
-                                </Disclosure>
-                                {entry.status === 'open' && canConfirmDecisions && (
-                                  <Button
-                                    className="ml-auto"
-                                    size="sm"
-                                    variant="secondary"
-                                    disabled={dismissSweep.isPending}
-                                    onClick={() => dismissSweep.mutate({ decisionId: decision.id, entry })}
-                                  >
-                                    {pending ? 'Dismissing…' : 'Dismiss'}
-                                  </Button>
-                                )}
-                              </div>
-                              {failed && (
-                                <p className="mt-1 text-failure">
-                                  {errorMessage(dismissSweep.error, 'Could not dismiss this signal.')}
-                                </p>
-                              )}
-                            </li>
-                          )
-                        })}
-                      </ul>
-                    </details>
-                  )}
-                  {decision.status === 'confirmed' && decision.confirmed_by && decision.confirmed_at && (
-                    <p className="mt-2 flex items-center gap-1 text-xs text-muted">
-                      <Clock className="size-3" /> Confirmed by {decision.confirmed_by} on{' '}
-                      {formatDate(decision.confirmed_at)}
-                    </p>
-                  )}
-                  {decision.status === 'dismissed' && decision.dismissed_by && decision.dismissed_at && (
-                    <p className="mt-2 flex items-center gap-1 text-xs text-muted">
-                      <Clock className="size-3" /> Dismissed by {decision.dismissed_by} on{' '}
-                      {formatDate(decision.dismissed_at)}
-                    </p>
-                  )}
-                </article>
-              ))}
-            </CardContent>
-          </Card>
-        )}
-      </section>
+                        <div className="flex gap-2">
+                          <Badge variant="mono">{decision.id}</Badge>
+                          <Badge variant={decision.status === 'confirmed' ? 'positive' : 'default'}>
+                            {decision.status}
+                          </Badge>
+                        </div>
+                        <p className="mt-2 text-sm font-medium">{decision.statement}</p>
+                        <p className="mt-1 text-xs text-muted">{decision.context}</p>
+                        {(decision.supersedes || decision.superseded_by) && (
+                          <p className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted">
+                            {decision.supersedes && (
+                              <span>
+                                Supersedes <DecisionLink id={decision.supersedes} />
+                              </span>
+                            )}
+                            {decision.superseded_by && (
+                              <span>
+                                Superseded by <DecisionLink id={decision.superseded_by} />
+                              </span>
+                            )}
+                          </p>
+                        )}
+                        {decision.supersedes && decision.sweep && !decision.sweep.clean && (
+                          <details className="mt-3 rounded-md border border-attention/40 bg-attention-soft/40 p-3">
+                            <summary className="flex cursor-pointer flex-wrap items-center gap-2 text-xs font-medium">
+                              <Badge variant="attention">
+                                {decision.sweep.entries.filter((entry) => entry.status === 'open').length} open
+                              </Badge>
+                              documents still citing {decision.supersedes}
+                            </summary>
+                            <p className="mt-2 text-xs text-muted">
+                              These signals manage operator attention. They do not block delivery, review, or merge.
+                            </p>
+                            <ul
+                              className="mt-2 divide-y divide-border"
+                              aria-label={`Documents still citing ${decision.supersedes}`}
+                            >
+                              {decision.sweep.entries.map((entry) => {
+                                const pending =
+                                  dismissSweep.isPending &&
+                                  dismissSweep.variables?.decisionId === decision.id &&
+                                  dismissSweep.variables.entry.document_tier === entry.document_tier &&
+                                  dismissSweep.variables.entry.document_id === entry.document_id
+                                const failed = dismissSweep.error && dismissSweep.variables?.entry === entry
+                                return (
+                                  <li key={`${entry.document_tier}:${entry.document_id}`} className="py-2 text-xs">
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      <SweepDocumentLink entry={entry} />
+                                      <Badge>{sweepTierLabel(entry.document_tier)}</Badge>
+                                      <Badge variant={entry.status === 'open' ? 'attention' : 'default'}>
+                                        {entry.status}
+                                      </Badge>
+                                      <Disclosure
+                                        triggerClassName="text-faint"
+                                        content={new Date(entry.detected_at).toLocaleString()}
+                                      >
+                                        <time dateTime={entry.detected_at}>
+                                          Detected {formatDate(entry.detected_at)}
+                                        </time>
+                                      </Disclosure>
+                                      {entry.status === 'open' && canConfirmDecisions && (
+                                        <Button
+                                          className="ml-auto"
+                                          size="sm"
+                                          variant="secondary"
+                                          disabled={dismissSweep.isPending}
+                                          onClick={() => dismissSweep.mutate({ decisionId: decision.id, entry })}
+                                        >
+                                          {pending ? 'Dismissing…' : 'Dismiss'}
+                                        </Button>
+                                      )}
+                                    </div>
+                                    {failed && (
+                                      <p className="mt-1 text-failure">
+                                        {errorMessage(dismissSweep.error, 'Could not dismiss this signal.')}
+                                      </p>
+                                    )}
+                                  </li>
+                                )
+                              })}
+                            </ul>
+                          </details>
+                        )}
+                        {decision.status === 'confirmed' && decision.confirmed_by && decision.confirmed_at && (
+                          <p className="mt-2 flex items-center gap-1 text-xs text-muted">
+                            <Clock className="size-3" /> Confirmed by {decision.confirmed_by} on{' '}
+                            {formatDate(decision.confirmed_at)}
+                          </p>
+                        )}
+                        {decision.status === 'dismissed' && decision.dismissed_by && decision.dismissed_at && (
+                          <p className="mt-2 flex items-center gap-1 text-xs text-muted">
+                            <Clock className="size-3" /> Dismissed by {decision.dismissed_by} on{' '}
+                            {formatDate(decision.dismissed_at)}
+                          </p>
+                        )}
+                      </article>
+                    ))}
+                  </CardContent>
+                </Card>
+              )}
+            </section>
+          </>
+        }
+      />
     </article>
   )
 }
@@ -913,35 +949,6 @@ function sweepTierLabel(tier: DecisionSupersessionSweepEntry['document_tier']) {
   if (tier === 'system_design') return 'System Design'
   if (tier === 'reference_document') return 'Reference document'
   return 'Requirement'
-}
-
-// The pending-version comparison, presented exactly like the requirement
-// diff: one details block, confirmed on the left in failure red, proposed on
-// the right in positive green. Bounded because design documents run long.
-function DesignDiff({ current, pending }: { current: SystemDesignVersion; pending: SystemDesignVersion }) {
-  return (
-    <details className="mt-6 rounded-lg border border-border bg-surface/40" open>
-      <summary className="cursor-pointer px-4 py-3 text-sm font-medium">
-        Compared with confirmed v{current.version}
-      </summary>
-      <section aria-label="Pending version diff">
-        <VersionDiff
-          left={{
-            content: current.content,
-            label: 'Confirmed today',
-            labelClassName: 'mb-2 text-xs font-medium text-failure',
-            preClassName: 'whitespace-pre-wrap font-sans text-xs leading-5 text-muted',
-          }}
-          right={{
-            content: pending.content,
-            label: 'Proposed',
-            labelClassName: 'mb-2 text-xs font-medium text-positive',
-          }}
-          bounded
-        />
-      </section>
-    </details>
-  )
 }
 
 function formatDate(value: string) {
