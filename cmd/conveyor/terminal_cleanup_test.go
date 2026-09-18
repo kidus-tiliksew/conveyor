@@ -26,6 +26,10 @@ func TestTerminalWorktreeCleanupUsesRunAndWorkerRoutes(t *testing.T) {
 			cleanupCalls := 0
 			recordCalls := 0
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/v1/tasks" && r.Method == http.MethodGet {
+					_ = json.NewEncoder(w).Encode([]core.Task{})
+					return
+				}
 				if r.Header.Get("Authorization") != "Bearer credential" || r.Header.Get("X-Workspace-ID") != "demo" || r.URL.Path != test.path {
 					http.Error(w, "wrong cleanup request", http.StatusBadRequest)
 					return
@@ -102,12 +106,17 @@ func TestTerminalWorktreeCleanupSkipsRecordedAndRetriesNonterminal(t *testing.T)
 func TestTerminalWorktreeCleanupRecordingFailureRemainsRetryable(t *testing.T) {
 	cleanupCalls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/tasks" && r.Method == http.MethodGet {
+			_ = json.NewEncoder(w).Encode([]core.Task{})
+			return
+		}
 		if r.Method == http.MethodGet {
 			_ = json.NewEncoder(w).Encode(terminalCleanupStatus{Terminal: true})
 			return
 		}
 		http.Error(w, "recording unavailable", http.StatusServiceUnavailable)
 	}))
+
 	defer server.Close()
 	previous := cleanupTerminalTaskWorktree
 	cleanupTerminalTaskWorktree = func(_ context.Context, _ *config.Config, _ workerservice.DispatchOrder) (worktreeCleanupResult, error) {
@@ -125,6 +134,10 @@ func TestTerminalWorktreeCleanupRecordingFailureRemainsRetryable(t *testing.T) {
 
 func TestWorkerCleanupPassRemovesCompletedTasksAndRetainsFailures(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/tasks" && r.Method == http.MethodGet {
+			_ = json.NewEncoder(w).Encode([]core.Task{})
+			return
+		}
 		if strings.Contains(r.URL.Path, "retry-task") {
 			http.Error(w, "temporarily unavailable", http.StatusServiceUnavailable)
 			return
@@ -135,6 +148,7 @@ func TestWorkerCleanupPassRemovesCompletedTasksAndRetainsFailures(t *testing.T) 
 		}
 		_ = json.NewEncoder(w).Encode(terminalCleanupReceipt{Completed: true, Recorded: true})
 	}))
+
 	defer server.Close()
 	previous := cleanupTerminalTaskWorktree
 	cleanupTerminalTaskWorktree = func(_ context.Context, _ *config.Config, item workerservice.DispatchOrder) (worktreeCleanupResult, error) {
@@ -152,5 +166,85 @@ func TestWorkerCleanupPassRemovesCompletedTasksAndRetainsFailures(t *testing.T) 
 	}
 	if _, ok := tasks["retry-task"]; !ok || !strings.Contains(output.String(), "worker worktree cleanup task retry-task") {
 		t.Fatalf("retry task was not retained and logged: tasks=%+v output=%q", tasks, output.String())
+	}
+}
+
+func TestTerminalWorktreeCleanupSkipsOccupiedBranch(t *testing.T) {
+	cleanupCalls := 0
+	recordCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/tasks" && r.Method == http.MethodGet {
+			_ = json.NewEncoder(w).Encode([]core.Task{
+				{ID: "task-a", Repo: "conveyor", Branch: "feature/shared", State: core.TaskMerged},
+				{ID: "task-b", Repo: "conveyor", Branch: "feature/shared", State: core.TaskQueued},
+			})
+
+			return
+		}
+		if r.Method == http.MethodGet {
+			_ = json.NewEncoder(w).Encode(terminalCleanupStatus{Terminal: true})
+			return
+		}
+		recordCalls++
+		var record terminalCleanupRecord
+		_ = json.NewDecoder(r.Body).Decode(&record)
+		if record.Worktree != "skipped" || record.BranchResult != "retained" {
+			http.Error(w, "wrong skip record", http.StatusBadRequest)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(terminalCleanupReceipt{Completed: true, Recorded: true})
+	}))
+	defer server.Close()
+	previous := cleanupTerminalTaskWorktree
+	cleanupTerminalTaskWorktree = func(_ context.Context, _ *config.Config, _ workerservice.DispatchOrder) (worktreeCleanupResult, error) {
+		cleanupCalls++
+		return worktreeCleanupResult{Worktree: "removed", Branch: "retained", Path: "/worktrees/task-a"}, nil
+	}
+	t.Cleanup(func() { cleanupTerminalTaskWorktree = previous })
+	item := workerservice.DispatchOrder{
+		Task:     core.Task{ID: "task-a", Repo: "conveyor", Branch: "feature/shared", State: core.TaskMerged},
+		Dispatch: "run",
+	}
+	attempt, err := attemptTerminalWorktreeCleanup(t.Context(), &client{base: server.URL, workspace: "demo"}, "credential", item, &config.Config{})
+	if err != nil || !attempt.Completed || cleanupCalls != 0 || recordCalls != 1 || attempt.Cleanup.Worktree != "skipped" {
+		t.Fatalf("attempt=%+v cleanupCalls=%d recordCalls=%d err=%v", attempt, cleanupCalls, recordCalls, err)
+	}
+}
+
+func TestTerminalWorktreeCleanupSkipsWhenTaskListFails(t *testing.T) {
+	cleanupCalls := 0
+	recordCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/tasks" {
+			http.Error(w, "cannot list", http.StatusUnauthorized)
+			return
+		}
+		if r.Method == http.MethodGet {
+			_ = json.NewEncoder(w).Encode(terminalCleanupStatus{Terminal: true})
+			return
+		}
+		recordCalls++
+		var record terminalCleanupRecord
+		_ = json.NewDecoder(r.Body).Decode(&record)
+		if record.Worktree != "skipped" {
+			http.Error(w, "wrong skip record", http.StatusBadRequest)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(terminalCleanupReceipt{Completed: true, Recorded: true})
+	}))
+	defer server.Close()
+	previous := cleanupTerminalTaskWorktree
+	cleanupTerminalTaskWorktree = func(_ context.Context, _ *config.Config, _ workerservice.DispatchOrder) (worktreeCleanupResult, error) {
+		cleanupCalls++
+		return worktreeCleanupResult{Worktree: "removed", Branch: "retained", Path: "/worktrees/task-a"}, nil
+	}
+	t.Cleanup(func() { cleanupTerminalTaskWorktree = previous })
+	item := workerservice.DispatchOrder{
+		Task:     core.Task{ID: "task-a", Repo: "conveyor", Branch: "conveyor/task-a", State: core.TaskMerged},
+		Dispatch: "worker",
+	}
+	attempt, err := attemptTerminalWorktreeCleanup(t.Context(), &client{base: server.URL, workspace: "demo"}, "credential", item, &config.Config{})
+	if err != nil || !attempt.Completed || cleanupCalls != 0 || recordCalls != 1 || attempt.Cleanup.Worktree != "skipped" {
+		t.Fatalf("attempt=%+v cleanupCalls=%d recordCalls=%d err=%v", attempt, cleanupCalls, recordCalls, err)
 	}
 }
