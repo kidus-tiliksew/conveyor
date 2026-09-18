@@ -100,6 +100,83 @@ func (c *client) getTask(id string) (core.Task, error) {
 	return t, err
 }
 
+type attachBranchError struct {
+	Code        string
+	Message     string
+	OtherTaskID string
+	status      int
+}
+
+func (e *attachBranchError) Error() string {
+	if e == nil {
+		return ""
+	}
+	switch {
+	case e.Code == "branch_in_use" && strings.TrimSpace(e.OtherTaskID) != "":
+		return "branch_in_use: branch already belongs to task " + e.OtherTaskID
+	case e.Code != "" && e.Message != "":
+		if strings.HasPrefix(e.Message, e.Code) {
+			return e.Message
+		}
+		return e.Code + ": " + e.Message
+	case e.Code != "":
+		return e.Code
+	case strings.TrimSpace(e.Message) != "":
+		return e.Message
+	default:
+		return fmt.Sprintf("attach task branch failed: %s", http.StatusText(e.status))
+	}
+}
+
+func (c *client) attachTaskBranch(taskID, branch string) (core.Task, error) {
+	if c.token == "" {
+		return core.Task{}, fmt.Errorf("a credential is required to attach a task branch; run `conveyor auth login`")
+	}
+	payload, err := json.Marshal(map[string]string{"branch": branch})
+	if err != nil {
+		return core.Task{}, err
+	}
+	req, err := http.NewRequest(http.MethodPost, c.base+"/v1/tasks/"+url.PathEscape(taskID)+"/branch", bytes.NewReader(payload))
+	if err != nil {
+		return core.Task{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	if c.workspace != "" {
+		req.Header.Set("X-Workspace-ID", c.workspace)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return core.Task{}, fmt.Errorf("%s (is conveyord running? set CONVEYOR_ADDR if not on :8080)", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return core.Task{}, err
+	}
+	if resp.StatusCode >= 300 {
+		var encoded struct {
+			Error       string `json:"error"`
+			Message     string `json:"message"`
+			OtherTaskID string `json:"other_task_id"`
+		}
+		if json.Unmarshal(body, &encoded) == nil && strings.TrimSpace(encoded.Error) != "" {
+			return core.Task{}, &attachBranchError{
+				Code: encoded.Error, Message: encoded.Message, OtherTaskID: encoded.OtherTaskID, status: resp.StatusCode,
+			}
+		}
+		if resp.StatusCode == http.StatusUnauthorized {
+			return core.Task{}, fmt.Errorf("%s: %s (%s)", resp.Status, bytes.TrimSpace(body), c.credentialDiagnostic())
+		}
+		return core.Task{}, fmt.Errorf("%s: %s", resp.Status, bytes.TrimSpace(body))
+	}
+	var task core.Task
+	if err := json.Unmarshal(body, &task); err != nil {
+		return core.Task{}, err
+	}
+	return task, nil
+}
+
 func (c *client) listJobs(taskID string) ([]core.Job, error) {
 	var js []core.Job
 	err := c.do(http.MethodGet, "/v1/tasks/"+taskID+"/jobs", nil, &js)

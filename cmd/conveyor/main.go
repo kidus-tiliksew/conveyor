@@ -572,14 +572,15 @@ func checkoutCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			branch, base, repo, repoURL, ok := assignedCheckoutFromEnvironment(args[0])
-			if !ok {
-				client := newClient()
-				task, err := client.getTask(args[0])
+			branch, base, repo, repoURL, fromEnv := assignedCheckoutFromEnvironment(args[0])
+			var operatorClient *client
+			if !fromEnv {
+				operatorClient = newClient()
+				task, err := operatorClient.getTask(args[0])
 				if err != nil {
 					return err
 				}
-				record, err := client.getWorkspaceConfig()
+				record, err := operatorClient.getWorkspaceConfig()
 				if err != nil {
 					return fmt.Errorf("load configured identity for repository %q: %w", task.Repo, err)
 				}
@@ -593,7 +594,14 @@ func checkoutCmd() *cobra.Command {
 					return fmt.Errorf("assigned repository %q is missing from workspace configuration", task.Repo)
 				}
 				branch, base, repo = task.Branch, task.BaseBranch, task.Repo
+				checkpoint := assignedPredecessorCheckpointFromEnvironment(args[0])
+				attached, err := maybeAttachOperatorCheckout(cmd.Context(), operatorClient, args[0], branch, repo, repoURL, checkpoint)
+				if err != nil {
+					return err
+				}
+				branch = attached
 			}
+
 			if os.Getenv("CONVEYOR_WRITER_GENERATION") != "" {
 				path, err := checkoutWithWriter(cmd.Context(), newClient(), args[0], branch, base, repo, repoURL, destination, worktreeRoot)
 				if err != nil {
@@ -699,9 +707,18 @@ func doneCmd() *cobra.Command {
 		Short: "Remove a clean task worktree after merge or close (design-git-delivery)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			task, err := newClient().getTask(args[0])
+			client := newClient()
+			task, err := client.getTask(args[0])
 			if err != nil {
 				return err
+			}
+			tasks, err := client.listTasks()
+			if err != nil {
+				return err
+			}
+			if other, occupied := otherOpenTaskHoldingBranch(tasks, task.ID, task.Repo, task.Branch); occupied {
+				fmt.Fprintf(cmd.OutOrStdout(), "worktree=skipped branch=%s path=- other_task=%s\n", task.Branch, other)
+				return nil
 			}
 			result, err := removeTaskWorktree(cmd.Context(), task.Branch, task.State)
 			if err != nil {
@@ -714,6 +731,7 @@ func doneCmd() *cobra.Command {
 			return nil
 		},
 	}
+
 	return cmd
 }
 

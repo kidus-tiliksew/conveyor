@@ -11,6 +11,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/cmd/conveyor/localgit"
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/gitx"
 )
 
 type registeredWorktree struct {
@@ -93,8 +94,27 @@ func checkoutTaskWithCheckpointAtRoot(ctx context.Context, branch, base, repo, r
 	if err != nil {
 		return "", nil, err
 	}
-	if _, err := requireSafeWorktree(ctx, primary); err != nil {
-		return "", nil, fmt.Errorf("primary checkout is unsafe: %w", err)
+	var assigned *registeredWorktree
+	for i := range worktrees {
+		entry := &worktrees[i]
+		if entry.Branch != "refs/heads/"+branch {
+			continue
+		}
+		if assigned != nil {
+			return "", nil, fmt.Errorf("task branch %s is registered in multiple worktrees", branch)
+		}
+		assigned = entry
+	}
+	reusingAssigned := assigned != nil && filepath.Clean(assigned.Path) != filepath.Clean(primary)
+	if operation, err := inProgressGitOperation(ctx, primary); err != nil {
+		return "", nil, err
+	} else if operation != "" {
+		return "", nil, fmt.Errorf("primary checkout is unsafe: Git operation %s is in progress", operation)
+	}
+	if !reusingAssigned {
+		if _, err := requireSafeWorktree(ctx, primary); err != nil {
+			return "", nil, fmt.Errorf("primary checkout is unsafe: %w", err)
+		}
 	}
 	var currentCheckoutErr error
 	if filepath.Clean(root) != filepath.Clean(primary) {
@@ -103,7 +123,7 @@ func checkoutTaskWithCheckpointAtRoot(ctx context.Context, branch, base, repo, r
 
 	implicitDestination := destination == ""
 	if implicitDestination {
-		destination, err = implicitCheckoutDestination(worktreeRoot, repo, taskID)
+		destination, err = implicitCheckoutDestination(worktreeRoot, repo, taskID, branch)
 		if err != nil {
 			return "", nil, err
 		}
@@ -120,23 +140,12 @@ func checkoutTaskWithCheckpointAtRoot(ctx context.Context, branch, base, repo, r
 		}
 	}
 
-	var assigned *registeredWorktree
 	var assignedCheckpoint *attemptCheckpointResult
-	for i := range worktrees {
-		entry := &worktrees[i]
-		if entry.Branch != "refs/heads/"+branch {
-			continue
-		}
-		if assigned != nil {
-			return "", nil, fmt.Errorf("task branch %s is registered in multiple worktrees", branch)
-		}
-		assigned = entry
-	}
 	if currentCheckoutErr != nil && (checkpoint == nil || assigned == nil || filepath.Clean(root) != filepath.Clean(assigned.Path)) {
 		return "", nil, fmt.Errorf("current checkout is unsafe: %w", currentCheckoutErr)
 	}
 	if assigned != nil {
-		if filepath.Clean(assigned.Path) == filepath.Clean(primary) && filepath.Clean(assigned.Path) != destination {
+		if filepath.Clean(assigned.Path) == filepath.Clean(primary) {
 			return "", nil, fmt.Errorf("task branch %s is checked out in the shared primary checkout %s", branch, primary)
 		}
 		if assigned.Locked || assigned.Prunable {
@@ -174,6 +183,13 @@ func checkoutTaskWithCheckpointAtRoot(ctx context.Context, branch, base, repo, r
 			}
 		}
 		assignedCheckpoint = checkpointed
+	}
+	canonicalPrimary, err := canonicalWorktreePath(primary)
+	if err != nil {
+		return "", nil, err
+	}
+	if assigned == nil && filepath.Clean(destination) == canonicalPrimary {
+		return "", nil, fmt.Errorf("refusing to use the primary checkout %s as the task worktree", primary)
 	}
 	baseRef := "refs/remotes/origin/" + base
 	if _, err := gitOutput(ctx, root, "fetch", "origin", "refs/heads/"+base+":"+baseRef); err != nil {
@@ -219,7 +235,11 @@ func checkoutTaskWithCheckpointAtRoot(ctx context.Context, branch, base, repo, r
 
 	for _, entry := range worktrees {
 		if filepath.Clean(entry.Path) == destination {
-			return "", nil, fmt.Errorf("destination %s is already a registered worktree for %s", destination, entry.Branch)
+			occupying := strings.TrimPrefix(entry.Branch, "refs/heads/")
+			if occupying == "" {
+				occupying = entry.Branch
+			}
+			return "", nil, fmt.Errorf("destination %s is already a registered worktree for %s at %s", destination, occupying, entry.Path)
 		}
 	}
 	if _, err := os.Lstat(destination); err == nil {
@@ -231,7 +251,7 @@ func checkoutTaskWithCheckpointAtRoot(ctx context.Context, branch, base, repo, r
 		if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
 			return "", nil, fmt.Errorf("create implicit worktree container: %w", err)
 		}
-		validated, err := implicitCheckoutDestination(worktreeRoot, repo, taskID)
+		validated, err := implicitCheckoutDestination(worktreeRoot, repo, taskID, branch)
 		if err != nil {
 			return "", nil, err
 		}
@@ -275,6 +295,81 @@ func worktreeBranch(ctx context.Context, path string) (string, error) {
 		return "", fmt.Errorf("detached HEAD or unreadable branch")
 	}
 	return strings.TrimSpace(branch), nil
+}
+
+// maybeAttachOperatorCheckout remaps Task.Branch to the current non-primary
+// named HEAD when it differs, then leaves checkout to adopt that worktree
+// (req-task-branch-assignment AC-2.2). Primary checkouts and HEAD matching
+// the current assignment skip attach (AC-2.3, AC-2.6).
+func maybeAttachOperatorCheckout(ctx context.Context, c *client, taskID, assignment, repo, repoURL string, checkpoint *attemptCheckpoint) (string, error) {
+	if c == nil {
+		return assignment, fmt.Errorf("a credential is required to attach a task branch; run `conveyor auth login`")
+	}
+	root, err := repositoryRoot(ctx)
+	if err != nil {
+		return assignment, fmt.Errorf("checkout must run from inside the target repository; change into its primary checkout (dispatched launches may configure repos[].checkout): %w", err)
+	}
+	if err := localgit.VerifyRepositoryIdentity(ctx, root, repo, repoURL); err != nil {
+		return assignment, err
+	}
+	primary, err := primaryWorktreeRoot(ctx, root)
+	if err != nil {
+		return assignment, err
+	}
+	current, err := canonicalWorktreePath(root)
+	if err != nil {
+		return assignment, err
+	}
+	canonicalPrimary, err := canonicalWorktreePath(primary)
+	if err != nil {
+		return assignment, err
+	}
+	if current == canonicalPrimary {
+		return assignment, nil
+	}
+	head, err := gitOutput(ctx, root, "symbolic-ref", "--quiet", "--short", "HEAD")
+	if err != nil {
+		return assignment, fmt.Errorf("detached HEAD or unreadable branch")
+	}
+	head = strings.TrimSpace(head)
+	if head == "" {
+		return assignment, fmt.Errorf("detached HEAD or unreadable branch")
+	}
+	if head == assignment {
+		return assignment, nil
+	}
+	status, err := gitOutput(ctx, root, "status", "--porcelain", "--untracked-files=normal")
+	if err != nil {
+		return assignment, err
+	}
+	if strings.TrimSpace(status) != "" && checkpoint == nil {
+		return assignment, fmt.Errorf("worktree has uncommitted or untracked changes")
+	}
+	task, err := c.attachTaskBranch(taskID, head)
+	if err != nil {
+		return assignment, err
+	}
+	if strings.TrimSpace(task.Branch) != "" {
+		return task.Branch, nil
+	}
+	return head, nil
+}
+
+func otherOpenTaskHoldingBranch(tasks []core.Task, taskID, repo, branch string) (string, bool) {
+	for _, item := range tasks {
+		if item.ID == taskID || item.Repo != repo || item.Branch != branch {
+			continue
+		}
+		if core.TaskTerminal(item.State) {
+			continue
+		}
+		return item.ID, true
+	}
+	return "", false
+}
+
+func skippedOccupiedWorktreeCleanup() worktreeCleanupResult {
+	return worktreeCleanupResult{Worktree: "skipped", Branch: "retained", Path: "-"}
 }
 
 // checkpointTaskWorktreeAtPath preserves dirty state with a normal additive
@@ -585,8 +680,10 @@ func defaultImplicitWorktreeRoot() (string, error) {
 
 // implicitCheckoutDestination keeps the deterministic worktree name beneath
 // one fixed canonical client-local root, independently of the primary
-// checkout location (design-git-delivery).
-func implicitCheckoutDestination(worktreeRoot, repo, taskID string) (string, error) {
+// checkout location (design-git-delivery). Default conveyor/task-<id>
+// assignments keep <root>/<repo>-task-<task-id>; a custom assignment appends
+// a sanitized branch component so a leftover previous-name tree is not reused.
+func implicitCheckoutDestination(worktreeRoot, repo, taskID, branch string) (string, error) {
 	if !safeImplicitCheckoutComponent(repo) {
 		return "", fmt.Errorf("refusing implicit checkout destination: repository name %q is not one safe path component", repo)
 	}
@@ -596,6 +693,14 @@ func implicitCheckoutDestination(worktreeRoot, repo, taskID string) (string, err
 	if !filepath.IsAbs(worktreeRoot) {
 		return "", fmt.Errorf("refusing implicit checkout destination: worktree root %q is not absolute", worktreeRoot)
 	}
+	name := repo + "-task-" + taskID
+	if strings.TrimSpace(branch) != gitx.BranchName(taskID) {
+		component := safeAssignmentPathComponent(branch)
+		if !safeImplicitCheckoutComponent(component) {
+			return "", fmt.Errorf("refusing implicit checkout destination: assignment %q is not one safe path component", branch)
+		}
+		name = name + "-" + component
+	}
 	container := filepath.Clean(worktreeRoot)
 	canonicalContainer, err := canonicalPathThroughExistingParent(container)
 	if err != nil {
@@ -604,7 +709,7 @@ func implicitCheckoutDestination(worktreeRoot, repo, taskID string) (string, err
 	if canonicalContainer != container {
 		return "", fmt.Errorf("refusing implicit checkout destination: worktree root %s resolves outside the canonical path", container)
 	}
-	destination := filepath.Join(container, repo+"-task-"+taskID)
+	destination := filepath.Join(container, name)
 	canonicalDestination, err := canonicalPathThroughExistingParent(destination)
 	if err != nil {
 		return "", fmt.Errorf("resolve worktree path %s: %w", destination, err)
@@ -613,6 +718,27 @@ func implicitCheckoutDestination(worktreeRoot, repo, taskID string) (string, err
 		return "", fmt.Errorf("refusing implicit checkout destination %s: resolved path is not inside canonical container %s", destination, container)
 	}
 	return canonicalDestination, nil
+}
+
+func safeAssignmentPathComponent(branch string) string {
+	if branch == "" {
+		return ""
+	}
+	mapped := make([]byte, len(branch))
+	for i := range len(branch) {
+
+		character := branch[i]
+		if (character >= 'a' && character <= 'z') ||
+			(character >= 'A' && character <= 'Z') ||
+			(character >= '0' && character <= '9') ||
+			character == '.' || character == '_' || character == '-' {
+			mapped[i] = character
+			continue
+		}
+		mapped[i] = '-'
+	}
+
+	return string(mapped)
 }
 
 func canonicalPathThroughExistingParent(path string) (string, error) {

@@ -107,10 +107,40 @@ func attemptTerminalWorktreeCleanup(ctx context.Context, c *client, credential s
 	if item.Task.State != core.TaskMerged && item.Task.State != core.TaskClosed {
 		item.Task.State = core.TaskMerged
 	}
+	tasks, listErr := c.listTasks()
+	if listErr != nil {
+		cleanup := skippedOccupiedWorktreeCleanup()
+		receipt, err := c.recordTerminalCleanupContext(ctx, credential, item.Dispatch, item.Task.ID, terminalCleanupRecord{
+			Repository: item.Task.Repo, Branch: item.Task.Branch,
+			Worktree: cleanup.Worktree, BranchResult: cleanup.Branch, Path: cleanup.Path,
+		})
+		if err != nil {
+			return terminalCleanupAttempt{Cleanup: cleanup}, fmt.Errorf("record completion: %w", err)
+		}
+		if !receipt.Completed {
+			return terminalCleanupAttempt{Cleanup: cleanup}, fmt.Errorf("record completion: server did not confirm completion")
+		}
+		return terminalCleanupAttempt{Completed: true, Cleanup: cleanup}, nil
+	}
+	if _, occupied := otherOpenTaskHoldingBranch(tasks, item.Task.ID, item.Task.Repo, item.Task.Branch); occupied {
+		cleanup := skippedOccupiedWorktreeCleanup()
+		receipt, err := c.recordTerminalCleanupContext(ctx, credential, item.Dispatch, item.Task.ID, terminalCleanupRecord{
+			Repository: item.Task.Repo, Branch: item.Task.Branch,
+			Worktree: cleanup.Worktree, BranchResult: cleanup.Branch, Path: cleanup.Path,
+		})
+		if err != nil {
+			return terminalCleanupAttempt{Cleanup: cleanup}, fmt.Errorf("record completion: %w", err)
+		}
+		if !receipt.Completed {
+			return terminalCleanupAttempt{Cleanup: cleanup}, fmt.Errorf("record completion: server did not confirm completion")
+		}
+		return terminalCleanupAttempt{Completed: true, Cleanup: cleanup}, nil
+	}
 	cleanup, err := cleanupTerminalTaskWorktree(ctx, local, item)
 	if err != nil {
 		return terminalCleanupAttempt{}, fmt.Errorf("remove local task worktree: %w", err)
 	}
+
 	receipt, err := c.recordTerminalCleanupContext(ctx, credential, item.Dispatch, item.Task.ID, terminalCleanupRecord{
 		Repository: item.Task.Repo, Branch: item.Task.Branch,
 		Worktree: cleanup.Worktree, BranchResult: cleanup.Branch, Path: cleanup.Path,

@@ -2,7 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -669,19 +672,257 @@ func TestCheckoutRejectsAssignedBranchInSharedPrimaryCheckout(t *testing.T) {
 func TestCheckoutAdoptsExplicitDedicatedClone(t *testing.T) {
 	fixture := newGitFixture(t)
 	branch := "conveyor/task-dedicated-clone"
-	mustGit(t, fixture.primary, "checkout", "-b", branch, "origin/main")
+	dedicated := filepath.Join(fixture.tmp, "dedicated-clone")
+	mustGit(t, fixture.primary, "worktree", "add", "-b", branch, dedicated, "origin/main")
 
-	got, err := checkoutTask(context.Background(), branch, "main", "conveyor", fixture.origin, "dedicated-clone", fixture.primary)
+	got, err := checkoutTask(context.Background(), branch, "main", "conveyor", fixture.origin, "dedicated-clone", dedicated)
 	if err != nil {
 		t.Fatal(err)
 	}
-	canonicalPrimary, err := filepath.EvalSymlinks(fixture.primary)
+	if got != dedicated {
+		t.Fatalf("dedicated clone path = %q, want %q", got, dedicated)
+	}
+}
+
+func TestCheckoutRefusesPrimaryCheckoutAsDestination(t *testing.T) {
+	fixture := newGitFixture(t)
+	_, err := checkoutTask(context.Background(), "conveyor/task-primary-dest", "main", "conveyor", fixture.origin, "primary-dest", fixture.primary)
+	if err == nil || !strings.Contains(err.Error(), "primary checkout") {
+		t.Fatalf("checkout error = %v", err)
+	}
+}
+
+func TestCheckoutReusesAssignedWorktreeWithDirtyPrimary(t *testing.T) {
+	fixture := newGitFixture(t)
+	branch := "conveyor/task-reuse-dirty-primary"
+	path, err := checkoutTask(context.Background(), branch, "main", "conveyor", fixture.origin, "reuse-dirty-primary", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != canonicalPrimary {
-		t.Fatalf("dedicated clone path = %q, want %q", got, canonicalPrimary)
+	writeFile(t, filepath.Join(fixture.primary, "unrelated.txt"), "primary dirt\n")
+	got, err := checkoutTask(context.Background(), branch, "main", "conveyor", fixture.origin, "reuse-dirty-primary", "")
+	if err != nil {
+		t.Fatalf("reuse with dirty primary: %v", err)
 	}
+	if got != path {
+		t.Fatalf("reuse path = %q want %q", got, path)
+	}
+}
+
+func TestCheckoutReusesAssignedWorktreeBlockedByPrimarySequencer(t *testing.T) {
+	fixture := newGitFixture(t)
+	branch := "conveyor/task-reuse-sequencer"
+	if _, err := checkoutTask(context.Background(), branch, "main", "conveyor", fixture.origin, "reuse-sequencer", ""); err != nil {
+		t.Fatal(err)
+	}
+	marker := mustGitOutput(t, fixture.primary, "rev-parse", "--git-path", "sequencer")
+	if !filepath.IsAbs(marker) {
+		marker = filepath.Join(fixture.primary, marker)
+	}
+	if err := os.MkdirAll(marker, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, err := checkoutTask(context.Background(), branch, "main", "conveyor", fixture.origin, "reuse-sequencer", "")
+	if err == nil || !strings.Contains(err.Error(), "Git operation sequencer is in progress") {
+		t.Fatalf("checkout error = %v", err)
+	}
+}
+
+func TestCheckoutCustomAssignmentUsesDistinctImplicitDestination(t *testing.T) {
+	fixture := newGitFixture(t)
+	taskID := "custom-dest"
+	previous, err := checkoutTask(context.Background(), "conveyor/task-custom-dest", "main", "conveyor", fixture.origin, taskID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	custom, err := checkoutTask(context.Background(), "feature/adopt", "main", "conveyor", fixture.origin, taskID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantCustom := filepath.Join(filepath.Dir(previous), "conveyor-task-custom-dest-feature-adopt")
+	if custom != wantCustom {
+		t.Fatalf("custom dest = %q want %q", custom, wantCustom)
+	}
+	if custom == previous {
+		t.Fatal("custom assignment reused previous-name worktree")
+	}
+	if _, err := os.Stat(previous); err != nil {
+		t.Fatalf("previous-name worktree was removed: %v", err)
+	}
+	if !gitRefExists(context.Background(), fixture.primary, "refs/heads/conveyor/task-custom-dest") {
+		t.Fatal("previous-name branch was deleted")
+	}
+}
+
+func TestCheckoutRefusesDestinationOccupiedByOtherBranch(t *testing.T) {
+	fixture := newGitFixture(t)
+	occupied := filepath.Join(fixture.tmp, "occupied-dest")
+	mustGit(t, fixture.primary, "worktree", "add", "-b", "other/branch", occupied, "origin/main")
+	_, err := checkoutTask(context.Background(), "conveyor/task-collision", "main", "conveyor", fixture.origin, "collision", occupied)
+	if err == nil || !strings.Contains(err.Error(), "already a registered worktree") || !strings.Contains(err.Error(), "other/branch") {
+		t.Fatalf("checkout error = %v", err)
+	}
+}
+
+func TestImplicitCheckoutDestinationKeepsDefaultAndSanitizesCustom(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "worktrees")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got, err := implicitCheckoutDestination(root, "conveyor", "task-1", "conveyor/task-task-1")
+	if err != nil || got != filepath.Join(root, "conveyor-task-task-1") {
+		t.Fatalf("default dest = %q err=%v", got, err)
+	}
+	got, err = implicitCheckoutDestination(root, "conveyor", "task-1", "feature/adopt")
+	if err != nil || got != filepath.Join(root, "conveyor-task-task-1-feature-adopt") {
+		t.Fatalf("custom dest = %q err=%v", got, err)
+	}
+}
+func TestOtherOpenTaskHoldingBranch(t *testing.T) {
+	tasks := []core.Task{
+		{ID: "self", Repo: "conveyor", Branch: "feature/x", State: core.TaskQueued},
+		{ID: "done", Repo: "conveyor", Branch: "feature/x", State: core.TaskMerged},
+		{ID: "other-repo", Repo: "other", Branch: "feature/x", State: core.TaskQueued},
+		{ID: "open", Repo: "conveyor", Branch: "feature/x", State: core.TaskQueued},
+	}
+	other, occupied := otherOpenTaskHoldingBranch(tasks, "self", "conveyor", "feature/x")
+	if !occupied || other != "open" {
+		t.Fatalf("occupancy = %q %v", other, occupied)
+	}
+	if other, occupied := otherOpenTaskHoldingBranch(tasks, "self", "conveyor", "feature/missing"); occupied || other != "" {
+		t.Fatalf("missing branch occupancy = %q %v", other, occupied)
+	}
+}
+
+func TestMaybeAttachOperatorCheckoutFromNonPrimaryThenAdopt(t *testing.T) {
+	fixture := newGitFixture(t)
+	path := filepath.Join(fixture.tmp, "operator-tree")
+	mustGit(t, fixture.primary, "worktree", "add", "-b", "feature/adopt", path, "origin/main")
+	t.Chdir(path)
+
+	var posts int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/tasks/task-1/branch" {
+			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
+		}
+		var body map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body["branch"] != "feature/adopt" {
+			t.Fatalf("branch = %q", body["branch"])
+		}
+		posts++
+		_ = json.NewEncoder(w).Encode(core.Task{ID: "task-1", Branch: "feature/adopt"})
+	}))
+	defer server.Close()
+
+	assigned := "conveyor/task-task-1"
+	got, err := maybeAttachOperatorCheckout(context.Background(), &client{base: server.URL, token: "secret-token", workspace: "demo"}, "task-1", assigned, "conveyor", fixture.origin, nil)
+	if err != nil || got != "feature/adopt" || posts != 1 {
+		t.Fatalf("attach = %q posts=%d err=%v", got, posts, err)
+	}
+	adopted, err := checkoutTask(context.Background(), got, "main", "conveyor", fixture.origin, "task-1", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if adopted != path {
+		t.Fatalf("adopted = %q want %q", adopted, path)
+	}
+	previousName := filepath.Join(fixture.tmp, ".conveyor", "worktrees", "conveyor-task-task-1")
+	if _, err := os.Stat(previousName); !os.IsNotExist(err) {
+		t.Fatalf("created previous-name worktree: %v", err)
+	}
+}
+
+func TestMaybeAttachOperatorCheckoutSkipsPrimaryAndMatchingHead(t *testing.T) {
+	fixture := newGitFixture(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("unexpected attach request %s %s", r.Method, r.URL.Path)
+	}))
+	defer server.Close()
+	c := &client{base: server.URL, token: "secret-token", workspace: "demo"}
+	assigned := "conveyor/task-head-eq"
+	got, err := maybeAttachOperatorCheckout(context.Background(), c, "head-eq", assigned, "conveyor", fixture.origin, nil)
+	if err != nil || got != assigned {
+		t.Fatalf("primary skip = %q err=%v", got, err)
+	}
+
+	path := filepath.Join(fixture.tmp, "matching-head")
+	mustGit(t, fixture.primary, "worktree", "add", "-b", assigned, path, "origin/main")
+	t.Chdir(path)
+	got, err = maybeAttachOperatorCheckout(context.Background(), c, "head-eq", assigned, "conveyor", fixture.origin, nil)
+	if err != nil || got != assigned {
+		t.Fatalf("matching HEAD skip = %q err=%v", got, err)
+	}
+}
+
+func TestCheckoutCmdSkipsAttachForWorkerAssignment(t *testing.T) {
+	fixture := newGitFixture(t)
+	t.Setenv("CONVEYOR_TASK_ID", "env-task")
+	t.Setenv("CONVEYOR_TASK_BRANCH", "conveyor/task-env-task")
+	t.Setenv("CONVEYOR_TASK_BASE_BRANCH", "main")
+	t.Setenv("CONVEYOR_TASK_REPO", "conveyor")
+	t.Setenv("CONVEYOR_TASK_REPO_URL", fixture.origin)
+	t.Setenv("CONVEYOR_ADDR", "http://127.0.0.1:1")
+	t.Setenv("CONVEYOR_CONFIG", filepath.Join(fixture.tmp, "no-such-config.yaml"))
+	cmd := checkoutCmd()
+	cmd.SetArgs([]string{"env-task"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(fixture.tmp, ".conveyor", "worktrees", "conveyor-task-env-task")
+	if _, err := os.Stat(want); err != nil {
+		t.Fatalf("worker checkout dest = %v", err)
+	}
+}
+
+func TestMaybeAttachOperatorCheckoutRefusalsPreserveAssignment(t *testing.T) {
+	fixture := newGitFixture(t)
+	assigned := "conveyor/task-refuse"
+	path := filepath.Join(fixture.tmp, "refuse-tree")
+	mustGit(t, fixture.primary, "worktree", "add", "-b", "feature/refuse", path, "origin/main")
+
+	t.Run("identity", func(t *testing.T) {
+		t.Chdir(path)
+		other := filepath.Join(fixture.tmp, "other-origin.git")
+		mustGit(t, "", "init", "--bare", "--initial-branch=main", other)
+		got, err := maybeAttachOperatorCheckout(context.Background(), &client{token: "secret-token"}, "refuse", assigned, "conveyor", other, nil)
+		if err == nil || !strings.Contains(err.Error(), "repository identity mismatch") || got != assigned {
+			t.Fatalf("identity = %q err=%v", got, err)
+		}
+	})
+	t.Run("dirty", func(t *testing.T) {
+		t.Chdir(path)
+		writeFile(t, filepath.Join(path, "dirty.txt"), "keep\n")
+		t.Cleanup(func() { _ = os.Remove(filepath.Join(path, "dirty.txt")) })
+		got, err := maybeAttachOperatorCheckout(context.Background(), &client{token: "secret-token"}, "refuse", assigned, "conveyor", fixture.origin, nil)
+		if err == nil || !strings.Contains(err.Error(), "uncommitted") || got != assigned {
+			t.Fatalf("dirty = %q err=%v", got, err)
+		}
+	})
+	t.Run("detached", func(t *testing.T) {
+		t.Chdir(path)
+		mustGit(t, path, "checkout", "--detach")
+		t.Cleanup(func() { mustGit(t, path, "checkout", "feature/refuse") })
+		got, err := maybeAttachOperatorCheckout(context.Background(), &client{token: "secret-token"}, "refuse", assigned, "conveyor", fixture.origin, nil)
+		if err == nil || !strings.Contains(err.Error(), "detached HEAD") || got != assigned {
+			t.Fatalf("detached = %q err=%v", got, err)
+		}
+	})
+	t.Run("server refusal", func(t *testing.T) {
+		t.Chdir(path)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusConflict)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "pull_request_recorded", "message": "pull request recorded"})
+		}))
+		defer server.Close()
+		got, err := maybeAttachOperatorCheckout(context.Background(), &client{base: server.URL, token: "secret-token", workspace: "demo"}, "refuse", assigned, "conveyor", fixture.origin, nil)
+		if err == nil || !strings.Contains(err.Error(), "pull_request_recorded") || got != assigned {
+			t.Fatalf("server = %q err=%v", got, err)
+		}
+	})
 }
 
 func TestDoneCleansOnlyClosedTasksAndRetainsBranches(t *testing.T) {

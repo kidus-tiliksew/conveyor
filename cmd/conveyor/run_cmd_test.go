@@ -158,12 +158,15 @@ func runTaskScenario(t *testing.T, input string, step, terminal bool, commandFla
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/forge-token":
 			_, _ = io.WriteString(w, `{"configured":true,"forge_login":"owner"}`)
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/tasks":
+			_ = json.NewEncoder(w).Encode([]core.Task{})
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/tasks/target/worktree-cleanup":
 			stats.cleanupChecks++
 			_ = json.NewEncoder(w).Encode(terminalCleanupStatus{Terminal: true})
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/tasks/target/worktree-cleanup":
 			stats.cleanupRecords++
 			_ = json.NewEncoder(w).Encode(terminalCleanupReceipt{Completed: true, Recorded: true})
+
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/agent-credential"):
 			stats.agentIssues++
 			_ = json.NewEncoder(w).Encode(map[string]string{"credential_id": "agent-id", "credential": "child-agent-credential"})
