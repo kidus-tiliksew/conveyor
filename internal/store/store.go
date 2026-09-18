@@ -58,7 +58,17 @@ var (
 	// ErrTaskBranchConflict reports that another open task in the same
 	// workspace repository already holds the assigned branch
 	// (req-task-branch-assignment AC-4.1).
-	ErrTaskBranchConflict       = errors.New("open task branch already assigned")
+	ErrTaskBranchConflict = errors.New("open task branch already assigned")
+	// ErrInvalidBranch reports an empty or illegal git branch assignment
+	// (req-task-branch-assignment REQ-2).
+	ErrInvalidBranch = errors.New("invalid_branch")
+	// ErrBranchNotAttachable reports a base branch or another task's
+	// default conveyor/task-<id> assignment (AC-2.11, AC-2.12).
+	ErrBranchNotAttachable = errors.New("branch_not_attachable")
+	// ErrWorkOrderClaimed refuses remap while any work order is claimed (AC-2.8).
+	ErrWorkOrderClaimed = errors.New("work_order_claimed")
+	// ErrPullRequestRecorded refuses remap after pull_request.opened (AC-2.7).
+	ErrPullRequestRecorded      = errors.New("pull_request_recorded")
 	ErrTaskDependencyCycle      = errors.New("task dependency would create a cycle")
 	ErrTaskDependencyConflict   = errors.New("task dependency request conflicts with current state")
 	ErrLineageRebuildValidation = errors.New("invalid lineage rebuild request")
@@ -83,8 +93,19 @@ var (
 	ErrVerificationEvidenceClaimConflict = errors.New("verification evidence upload requires the matching live implement claim")
 )
 
+type BranchInUseError struct {
+	Branch      string
+	OtherTaskID string
+}
+
+func (e *BranchInUseError) Error() string {
+	return fmt.Sprintf("%s: branch %s already belongs to task %s", ErrTaskBranchConflict, e.Branch, e.OtherTaskID)
+}
+
+func (e *BranchInUseError) Unwrap() error { return ErrTaskBranchConflict }
+
 func TaskBranchInUseError(branch, otherID string) error {
-	return fmt.Errorf("%w: branch %s already belongs to task %s", ErrTaskBranchConflict, branch, otherID)
+	return &BranchInUseError{Branch: branch, OtherTaskID: otherID}
 }
 
 func openTaskHoldingBranch(tasks map[string]core.Task, workspace, repo, branch, exceptID string) string {
@@ -100,6 +121,38 @@ func openTaskHoldingBranch(tasks map[string]core.Task, workspace, repo, branch, 
 		}
 	}
 	return ""
+}
+
+// EvaluateTaskBranchAttach applies the attach refusal matrix before any row
+// write (req-task-branch-assignment REQ-2, REQ-4; DEC-42). Same-name on a
+// non-terminal task is a no-op even when a pull request is recorded or a
+// work order is claimed.
+func EvaluateTaskBranchAttach(task core.Task, branch string, claimedWorkOrder, pullRequestOpened bool, occupyingOpenTaskID string) error {
+	if !gitx.LegalBranchName(branch) {
+		return fmt.Errorf("%w", ErrInvalidBranch)
+	}
+	if core.TaskTerminal(task.State) {
+		return fmt.Errorf("%w: task %s", ErrTaskTerminal, task.ID)
+	}
+	if task.Branch == branch {
+		return nil
+	}
+	if branch == strings.TrimSpace(task.BaseBranch) {
+		return fmt.Errorf("%w", ErrBranchNotAttachable)
+	}
+	if id, ok := gitx.DefaultAssignmentTaskID(branch); ok && id != task.ID {
+		return fmt.Errorf("%w", ErrBranchNotAttachable)
+	}
+	if claimedWorkOrder {
+		return ErrWorkOrderClaimed
+	}
+	if pullRequestOpened {
+		return ErrPullRequestRecorded
+	}
+	if occupyingOpenTaskID != "" {
+		return TaskBranchInUseError(branch, occupyingOpenTaskID)
+	}
+	return nil
 }
 
 // WorkspaceControlStore owns durable workspace resources independently of a
@@ -5706,8 +5759,8 @@ func (m *memory) SetTaskHold(ctx context.Context, id string, hold bool) (core.Ta
 
 func (m *memory) AttachTaskBranch(ctx context.Context, taskID, branch string) (core.Task, error) {
 	branch = strings.TrimSpace(branch)
-	if branch == "" {
-		return core.Task{}, fmt.Errorf("branch is required")
+	if !gitx.LegalBranchName(branch) {
+		return core.Task{}, fmt.Errorf("%w", ErrInvalidBranch)
 	}
 	var result core.Task
 	err := m.WithTaskSideEffectLock(ctx, taskID, func(ctx context.Context) error {
@@ -5717,15 +5770,27 @@ func (m *memory) AttachTaskBranch(ctx context.Context, taskID, branch string) (c
 		if !ok {
 			return fmt.Errorf("%w: task %s", ErrNotFound, taskID)
 		}
-		if core.TaskTerminal(t.State) {
-			return fmt.Errorf("%w: task %s", ErrTaskTerminal, taskID)
+		claimed := false
+		for _, order := range m.workOrders {
+			if order.TaskID == taskID && order.State == core.WorkOrderClaimed {
+				claimed = true
+				break
+			}
+		}
+		prOpened := false
+		for _, event := range m.events[taskID] {
+			if event.Kind == "pull_request.opened" {
+				prOpened = true
+				break
+			}
+		}
+		occupying := openTaskHoldingBranch(m.tasks, t.Workspace, t.Repo, branch, taskID)
+		if err := EvaluateTaskBranchAttach(t, branch, claimed, prOpened, occupying); err != nil {
+			return err
 		}
 		if t.Branch == branch {
 			result = t
 			return nil
-		}
-		if other := openTaskHoldingBranch(m.tasks, t.Workspace, t.Repo, branch, taskID); other != "" {
-			return TaskBranchInUseError(branch, other)
 		}
 		actor := ActorFromContext(ctx)
 		if !utf8.ValidString(actor.ID) || !utf8.ValidString(string(actor.Role)) || strings.ContainsRune(actor.ID, '\x00') || strings.ContainsRune(string(actor.Role), '\x00') {

@@ -458,6 +458,18 @@ func TestMutationRoutesNameCapabilitiesExplicitly(t *testing.T) {
 	if got := mcpCapability("set_assignee"); got != core.CapabilitySetAssignee {
 		t.Fatalf("MCP assignee capability=%q", got)
 	}
+	if got := mcpCapability("attach_task_branch"); got != core.CapabilityOperateGates {
+		t.Fatalf("MCP attach capability=%q", got)
+	}
+
+	fixture.capabilityCalls = nil
+	request = httptest.NewRequest(http.MethodPost, "/v1/tasks/missing/branch?workspace_id=alpha", strings.NewReader(`{"branch":"feature/demo"}`))
+	request.Header.Set("Authorization", "Bearer operator-token")
+	response = httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if len(fixture.capabilityCalls) < 2 || fixture.capabilityCalls[len(fixture.capabilityCalls)-1] != core.CapabilityOperateGates {
+		t.Fatalf("attach capability calls=%v", fixture.capabilityCalls)
+	}
 
 	fixture.capabilityCalls = nil
 	request = httptest.NewRequest(http.MethodPost, "/v1/reference-documents/missing/versions?workspace_id=alpha", strings.NewReader("invalid multipart"))
@@ -642,6 +654,7 @@ func TestViewerReadsWorkspaceAndAllMutationsUseCapabilityRefusal(t *testing.T) {
 	for _, route := range []struct{ method, path string }{
 		{http.MethodPost, "/v1/tasks"},
 		{http.MethodPost, "/v1/tasks/task/dependencies"},
+		{http.MethodPost, "/v1/tasks/task/branch"},
 		{http.MethodPut, "/v1/tasks/task/assignee"},
 		{http.MethodPost, "/v1/tasks/task/request-changes"},
 		{http.MethodPost, "/v1/requirements"},
@@ -675,7 +688,7 @@ func TestViewerMCPToolsRefuseNamedCapabilities(t *testing.T) {
 	if len(fixture.capabilityCalls) == 0 || fixture.capabilityCalls[len(fixture.capabilityCalls)-1] != core.CapabilityViewWorkspace {
 		t.Fatalf("viewer list_work_orders calls=%v", fixture.capabilityCalls)
 	}
-	for _, tool := range []string{"claim_work_order", "set_assignee", "create_task"} {
+	for _, tool := range []string{"claim_work_order", "set_assignee", "attach_task_branch", "create_task"} {
 		fixture.capabilityCalls = nil
 		_, err := server.callMCPTool(request, tool, map[string]any{"workspace_id": "alpha"})
 		if err == nil {
@@ -802,6 +815,7 @@ func TestExecutorAndMaintainerRouteBoundaries(t *testing.T) {
 	}{
 		{http.MethodPost, "/v1/tasks?workspace_id=alpha", `{}`},
 		{http.MethodPut, "/v1/tasks/task/assignee?workspace_id=alpha", `{}`},
+		{http.MethodPost, "/v1/tasks/task/branch?workspace_id=alpha", `{"branch":"feature/demo"}`},
 		{http.MethodPut, "/v1/tasks/task/hold?workspace_id=alpha", `{}`},
 		{http.MethodPost, "/v1/tasks/task/review?workspace_id=alpha", `{}`},
 		{http.MethodPost, "/v1/tasks/task/close?workspace_id=alpha", `{}`},

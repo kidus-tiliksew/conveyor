@@ -306,6 +306,7 @@ func (s *Server) Handler() http.Handler {
 			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Post("/tasks/{id}/review", s.reviewTask)
 			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Post("/tasks/{id}/close", s.closeTask)
 			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Post("/tasks/{id}/restart", s.restartTask)
+			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Post("/tasks/{id}/branch", s.attachTaskBranch)
 			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Post("/tasks/{id}/merge", s.mergeTask)
 			r.With(s.requireMutationCapability(core.CapabilityRecoverWork)).Post("/tasks/{id}/merge-conflict-fix", s.fixMergeConflict)
 			r.Get("/artifacts", s.listArtifacts)
