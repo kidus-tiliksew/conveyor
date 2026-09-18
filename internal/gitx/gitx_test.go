@@ -363,3 +363,35 @@ func TestSnapshotSizeCapCoversAllSessionRepositories(t *testing.T) {
 		t.Fatalf("unrelated session charged for first session: %v", err)
 	}
 }
+
+func TestLegalBranchNameRefuseList(t *testing.T) {
+	illegal := []string{
+		"", "HEAD", "head", "@", "foo..bar", "a~b", "a^b", "a:b", "a?b", "a*b", "a[b", `a\b`, "a b",
+		"-foo", "foo.lock", "refs/heads/foo", "foo.", "/foo", "foo/", "foo//bar", ".foo", "foo/.bar", "foo@{bar",
+		"foo\nbar",
+	}
+	for _, name := range illegal {
+		if LegalBranchName(name) {
+			t.Fatalf("legal %q", name)
+		}
+	}
+	legal := []string{"main", "feature/demo", "conveyor/task-abc", "heads/foo", "fix-1.2"}
+	for _, name := range legal {
+		if !LegalBranchName(name) {
+			t.Fatalf("illegal %q", name)
+		}
+	}
+}
+
+func TestDefaultAssignmentTaskID(t *testing.T) {
+	id, ok := DefaultAssignmentTaskID("conveyor/task-abc")
+	if !ok || id != "abc" {
+		t.Fatalf("id=%q ok=%v", id, ok)
+	}
+	if _, ok = DefaultAssignmentTaskID("feature/demo"); ok {
+		t.Fatal("custom name decoded as default assignment")
+	}
+	if _, ok = DefaultAssignmentTaskID("conveyor/task-"); ok {
+		t.Fatal("empty id decoded")
+	}
+}
