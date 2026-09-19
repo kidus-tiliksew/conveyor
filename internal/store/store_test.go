@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/kidus-tiliksew/conveyor/internal/testimage"
 	"reflect"
 	"strings"
 	"testing"
@@ -899,7 +900,7 @@ func TestMemoryVerificationEvidenceEnforcesRoleMediaLimitsAndOwnership(t *testin
 	evidence, err := st.CreateArtifact(ctx, core.Artifact{
 		Name: "proof.png", ContentType: "IMAGE/PNG; charset=binary",
 		Role: core.ArtifactRoleVerificationEvidence, TaskID: "task-a",
-	}, []byte("png"))
+	}, testimage.PNG("proof"))
 	if err != nil || evidence.ContentType != "image/png" || !evidence.EligibleVerificationEvidence() {
 		t.Fatalf("evidence=%+v err=%v", evidence, err)
 	}

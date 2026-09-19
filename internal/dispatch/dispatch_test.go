@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
+	"github.com/kidus-tiliksew/conveyor/internal/testimage"
 	"image"
 	"image/png"
 	"io"
@@ -380,7 +381,7 @@ func TestPipelinePreparesTextImageDocumentAndAudioArtifactInputs(t *testing.T) {
 		content           []byte
 	}{
 		{name: "large.txt", contentType: "text/plain", content: largeText},
-		{name: "design.png", contentType: "image/png", content: []byte("png")},
+		{name: "design.png", contentType: "image/png", content: testimage.PNG("png")},
 		{name: "requirements.pdf", contentType: "application/pdf", content: []byte("pdf")},
 		{name: "interview.mp3", contentType: "audio/mpeg", content: []byte("mp3")},
 	} {
@@ -426,7 +427,7 @@ func TestPipelinePreparesTextImageDocumentAndAudioArtifactInputs(t *testing.T) {
 func TestPipelineIncludesLineageDerivedSiblingArtifact(t *testing.T) {
 	t.Parallel()
 	ctx := store.WithWorkspace(context.Background(), "demo")
-	st := store.NewMemory()
+	st := newHistoricalArtifactStore()
 	now := time.Now().UTC()
 	parent := core.Task{ID: "context-blueprint", Workspace: "demo", State: core.TaskAwaiting, CreatedAt: now}
 	if err := st.CreateTask(ctx, parent); err != nil {
@@ -492,7 +493,7 @@ func TestPipelineRetriesKeepGeneratedTranscriptsOutOfStageInput(t *testing.T) {
 	if err := st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.CreateArtifact(ctx, core.Artifact{Name: "original.png", ContentType: "image/png", TaskID: task.ID}, []byte("original-user-image")); err != nil {
+	if _, err := st.CreateArtifact(ctx, core.Artifact{Name: "original.png", ContentType: "image/png", TaskID: task.ID}, testimage.PNG("original")); err != nil {
 		t.Fatal(err)
 	}
 	bundle, err := pack.Load("../../pack")
@@ -3049,7 +3050,7 @@ func TestReviewPathsProjectOnlyEligibleEvidenceSupport(t *testing.T) {
 			if err := st.CreateJob(ctx, job); err != nil {
 				t.Fatal(err)
 			}
-			eligible, err := st.CreateArtifact(ctx, core.Artifact{Name: "evidence.png", ContentType: "image/png", Role: core.ArtifactRoleVerificationEvidence, TaskID: task.ID}, []byte("png"))
+			eligible, err := st.CreateArtifact(ctx, core.Artifact{Name: "evidence.png", ContentType: "image/png", Role: core.ArtifactRoleVerificationEvidence, TaskID: task.ID}, testimage.PNG("png"))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -3989,7 +3990,7 @@ func triageScreenshot(t *testing.T) []byte {
 func triageBudgetDispatcher(t *testing.T, agent inprocess.Agent) (*Dispatcher, store.Store, context.Context, core.Task) {
 	t.Helper()
 	ctx := store.WithWorkspace(t.Context(), "demo")
-	st := store.NewMemory()
+	st := newHistoricalArtifactStore()
 	task := core.Task{ID: "budget-task", Workspace: "demo", Repo: "api", Title: "Preserve screenshot", Body: "Exact task intent.", PolicyVersion: 1, State: core.TaskQueued, NextStage: core.StageTriage, CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
@@ -4079,6 +4080,9 @@ func TestTriageMandatoryBudgetOveragesSuppressAgent(t *testing.T) {
 			d, st, ctx, task := triageBudgetDispatcher(t, agent)
 			for i, size := range tc.sizes {
 				content := bytes.Repeat([]byte{byte('a' + i)}, size)
+				if tc.mime == "image/png" {
+					copy(content, testimage.PNG(fmt.Sprint(i)))
+				}
 				if _, err := st.CreateArtifact(ctx, core.Artifact{Name: tc.name, ContentType: tc.mime, TaskID: task.ID}, content); err != nil {
 					t.Fatal(err)
 				}
@@ -4114,7 +4118,7 @@ func TestTriageAdjacentImageSelectionUsesRawBudgetDuringAssembly(t *testing.T) {
 		if i == 0 {
 			owner = task.ID
 		}
-		if _, err := st.CreateArtifact(ctx, core.Artifact{Name: fmt.Sprintf("image-%d.png", i), ContentType: "image/png", TaskID: owner}, bytes.Repeat([]byte{byte(i)}, size)); err != nil {
+		if _, err := st.CreateArtifact(ctx, core.Artifact{Name: fmt.Sprintf("image-%d.png", i), ContentType: "image/png", TaskID: owner}, paddedArtifactPNG(i, size)); err != nil {
 			t.Fatal(err)
 		}
 	}

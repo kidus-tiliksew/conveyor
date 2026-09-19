@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/kidus-tiliksew/conveyor/internal/testimage"
 	"strings"
 	"sync"
 	"testing"
@@ -446,7 +447,7 @@ func TestArtifactRolePersistenceIntegration(t *testing.T) {
 	evidenceArtifact, err := st.CreateArtifact(ctx, core.Artifact{
 		Name: "proof.png", ContentType: "IMAGE/PNG; charset=binary",
 		Role: core.ArtifactRoleVerificationEvidence, TaskID: task.ID,
-	}, []byte("verification proof"))
+	}, testimage.PNG("verification"))
 	if err != nil || evidenceArtifact.ContentType != "image/png" || !evidenceArtifact.EligibleVerificationEvidence() {
 		t.Fatalf("evidence=%+v err=%v", evidenceArtifact, err)
 	}
@@ -539,7 +540,7 @@ func TestClaimedVerificationEvidenceUploadIntegration(t *testing.T) {
 	}
 	createClaim("claimed-evidence-task", "claimed-evidence-task-implement-1", time.Minute)
 	request := store.ClaimedVerificationEvidenceRequest{WorkOrderID: "claimed-evidence-task-implement-1", WorkerID: "worker-a", SessionID: "session-a", ClientToken: "token-a", Name: "proof.bin", ContentType: "IMAGE/PNG; charset=binary"}
-	content := []byte("same concurrent evidence")
+	content := testimage.PNG("concurrent")
 
 	var wg sync.WaitGroup
 	artifacts := make([]core.Artifact, 2)

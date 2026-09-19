@@ -311,6 +311,7 @@ func (s *Server) Handler() http.Handler {
 			r.With(s.requireMutationCapability(core.CapabilityRecoverWork)).Post("/tasks/{id}/merge-conflict-fix", s.fixMergeConflict)
 			r.Get("/artifacts", s.listArtifacts)
 			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Post("/artifacts", s.uploadArtifact)
+			r.With(requireExplicitArtifactWorkspace, s.requireMutationCapability(core.CapabilityManageWorkspace)).Post("/artifacts/{id}/metadata-repair", s.repairArtifactMetadata)
 			r.Get("/artifacts/{id}", s.downloadArtifact)
 			r.Get("/workers", s.listWorkers)
 			r.With(s.requireMutationCapability(core.CapabilityManageWorkspace)).Post("/workers/pairings", s.issueWorkerPairing)
@@ -1044,6 +1045,8 @@ func reviewable(state core.TaskState) bool {
 
 type createTaskReq struct {
 	repositoryInstallAttempt int
+	attachments              []store.ArtifactUpload
+	multipartIntake          bool
 
 	Body            string               `json:"body"`
 	Repo            string               `json:"repo"`
@@ -1109,50 +1112,42 @@ func (s *Server) createTaskWithAttachments(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "invalid task metadata: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	result, err := s.createTaskRecordWithState(r.Context(), req, r.FormValue("idempotency_key"), "api", core.TaskClaiming)
+	req.multipartIntake = true
+	for _, header := range r.MultipartForm.File["attachments"] {
+		upload, err := readTaskAttachment(header)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("attachment %s: %v", safeFilename(header), err), http.StatusBadRequest)
+			return
+		}
+		req.attachments = append(req.attachments, upload)
+	}
+	result, err := s.createTaskRecord(r.Context(), req, r.FormValue("idempotency_key"), "api")
 	if err != nil {
 		writeTaskCreateError(w, err)
 		return
 	}
-	if !result.Created && result.Task.State != core.TaskClaiming {
-		writeJSON(w, http.StatusOK, result.Task)
-		return
+	status := http.StatusCreated
+	if !result.Created {
+		status = http.StatusOK
 	}
-	for _, header := range r.MultipartForm.File["attachments"] {
-		if _, err = s.storeTaskAttachment(r, result.Task, header); err != nil {
-			http.Error(w, fmt.Sprintf("task %s remains unqueued because attachment %s failed: %v", result.Task.ID, safeFilename(header), err), http.StatusUnprocessableEntity)
-			return
-		}
-	}
-	if _, err = taskops.New(s.Store).Perform(r.Context(), result.Task.ID, taskops.Command{Kind: core.TaskIntakeFinalize}); err != nil {
-		http.Error(w, fmt.Sprintf("task %s remains unqueued because finalization failed: %v", result.Task.ID, err), http.StatusInternalServerError)
-		return
-	}
-	result.Task.State = core.TaskQueued
-	if s.OnCreate != nil {
-		s.OnCreate(r.Context(), result.Task.ID)
-	}
-	writeJSON(w, http.StatusCreated, result.Task)
+	writeJSON(w, status, result.Task)
 }
 
-func (s *Server) storeTaskAttachment(r *http.Request, task core.Task, header *multipart.FileHeader) (core.Artifact, error) {
+func readTaskAttachment(header *multipart.FileHeader) (store.ArtifactUpload, error) {
 	file, err := header.Open()
 	if err != nil {
-		return core.Artifact{}, err
+		return store.ArtifactUpload{}, err
 	}
 	defer file.Close()
 	content, err := io.ReadAll(io.LimitReader(file, maxArtifactBytes+1))
 	if err != nil {
-		return core.Artifact{}, err
+		return store.ArtifactUpload{}, err
 	}
-	if len(content) > maxArtifactBytes {
-		return core.Artifact{}, fmt.Errorf("artifact exceeds 25 MiB")
+	media, err := core.ValidateArtifactMedia(header.Header.Get("Content-Type"), content)
+	if err != nil {
+		return store.ArtifactUpload{}, err
 	}
-	contentType := strings.TrimSpace(header.Header.Get("Content-Type"))
-	if contentType == "" || contentType == "application/octet-stream" {
-		contentType = http.DetectContentType(content)
-	}
-	return s.Store.CreateArtifact(r.Context(), core.Artifact{Workspace: task.Workspace, Name: safeFilename(header), ContentType: contentType, SizeBytes: int64(len(content)), TaskID: task.ID, CreatedAt: time.Now().UTC()}, content)
+	return store.ArtifactUpload{Name: safeFilename(header), ContentType: media, Content: content}, nil
 }
 
 func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {

@@ -17,7 +17,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
-const maxArtifactBytes = 25 << 20
+const maxArtifactBytes = core.MaxArtifactBytes
 
 func (s *Server) listWorkOrders(w http.ResponseWriter, r *http.Request) {
 	orders, err := s.Store.ListWorkOrders(r.Context())
@@ -251,9 +251,9 @@ func readMultipartArtifact(w http.ResponseWriter, r *http.Request) (multipartArt
 	if len(content) > maxArtifactBytes {
 		return multipartArtifactUpload{}, http.StatusRequestEntityTooLarge, fmt.Errorf("artifact exceeds 25 MiB")
 	}
-	contentType := strings.TrimSpace(header.Header.Get("Content-Type"))
-	if contentType == "" || contentType == "application/octet-stream" {
-		contentType = http.DetectContentType(content)
+	contentType, err := core.ValidateArtifactMedia(header.Header.Get("Content-Type"), content)
+	if err != nil {
+		return multipartArtifactUpload{}, http.StatusBadRequest, err
 	}
 	return multipartArtifactUpload{Header: header, Content: content, ContentType: contentType}, 0, nil
 }

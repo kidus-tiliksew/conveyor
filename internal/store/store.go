@@ -435,6 +435,8 @@ type PlanningStore interface {
 	// finalized session cannot be abandoned; that would strand its lineage.
 	AbandonPlanningSession(ctx context.Context, sessionID string, reason ...string) (core.PlanningSession, error)
 	CreateArtifact(ctx context.Context, artifact core.Artifact, content []byte) (core.Artifact, error)
+	CreateTaskWithAttachments(context.Context, core.Task, []string, TaskContextInput, []ArtifactUpload) error
+	RepairArtifactMetadata(context.Context, ArtifactRepairRequest) (ArtifactRepairResult, error)
 	GetArtifact(ctx context.Context, id string) (core.Artifact, []byte, error)
 	GetArtifactForPlanningSession(ctx context.Context, id, sessionID string) (core.Artifact, []byte, error)
 	ListArtifacts(ctx context.Context) ([]core.Artifact, error)
@@ -1534,6 +1536,7 @@ type memory struct {
 	planningBundles             map[memoryScopedKey]core.PlanningBundle
 	planningMessages            map[memoryScopedKey][]core.PlanningMessage
 	artifacts                   map[memoryArtifactKey]memoryArtifact
+	artifactRepairs             map[memoryScopedKey]ArtifactRepairReceipt
 	pairings                    map[string]core.WorkerPairing
 	workers                     map[string]core.Worker
 	workspaceMembers            map[memoryScopedKey]bool
@@ -4356,6 +4359,11 @@ func (m *memory) CreateArtifact(ctx context.Context, artifact core.Artifact, con
 }
 
 func (m *memory) createArtifactLocked(ctx context.Context, artifact core.Artifact, content []byte) (core.Artifact, error) {
+	media, err := core.ValidateArtifactMedia(artifact.ContentType, content)
+	if err != nil {
+		return core.Artifact{}, err
+	}
+	artifact.ContentType = media
 	workspace := workspaceOrDefault(ctx, artifact.Workspace)
 	if artifact.Workspace != "" && artifact.Workspace != workspace {
 		return core.Artifact{}, fmt.Errorf("artifact workspace mismatch")
@@ -4401,6 +4409,7 @@ func (m *memory) createArtifactLocked(ctx context.Context, artifact core.Artifac
 	}
 	key := memoryArtifactKey{workspace: artifact.Workspace, id: artifact.ID}
 	if existing, ok := m.artifacts[key]; ok {
+		artifact.Name, artifact.ContentType, artifact.SizeBytes, artifact.CreatedAt = existing.meta.Name, existing.meta.ContentType, existing.meta.SizeBytes, existing.meta.CreatedAt
 		for _, link := range existing.links {
 			if link.Workspace == artifact.Workspace && link.TaskID == artifact.TaskID && link.FeatureID == artifact.FeatureID && link.RequirementID == artifact.RequirementID && link.PlanningSessionID == artifact.PlanningSessionID && link.Role == artifact.Role {
 				return link, nil

@@ -3,6 +3,7 @@ package storetest
 import (
 	"context"
 	"fmt"
+	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"testing"
 	"time"
 
@@ -17,11 +18,13 @@ type Capabilities struct {
 }
 
 type Fixture struct {
-	Backend    store.Backend
-	Context    context.Context
-	Workspace  string
-	Config     *config.Config
-	SeedLegacy func(*testing.T, string) (int, func(*testing.T))
+	Backend              store.Backend
+	Context              context.Context
+	Workspace            string
+	Config               *config.Config
+	SeedLegacy           func(*testing.T, string) (int, func(*testing.T))
+	SeedArtifact         func(*testing.T, context.Context, core.Artifact, []byte)
+	ArtifactRepairEvents func(context.Context) ([]core.Event, error)
 }
 
 // Factory creates an isolated backend and workspace on every call. Cleanup
@@ -150,6 +153,8 @@ func RunAll(t *testing.T, factory Factory) {
 		{"TaskBranchUniqueness", true, runTaskBranchUniqueness},
 		{"TaskBranchAttach", true, runTaskBranchAttach},
 		{"TaskEventAtomicity", true, runTaskEventAtomicity},
+		{"ArtifactRepair", true, runArtifactRepair},
+		{"ArtifactIntake", true, runArtifactIntake},
 		{"Workers", true, runWorkers},
 		{"WorkOrders", true, runWorkOrders},
 		{"WorktreeHandoff", true, runWorktreeHandoff},

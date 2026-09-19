@@ -213,3 +213,11 @@ test-document-event-plans:
 .PHONY: test-context-eligibility
 test-context-eligibility:
 	CONVEYOR_TEST_DATABASE_URL= CONVEYOR_TEST_SINGLESTORE_URL= go test ./internal/store ./internal/store/storetest ./internal/store/postgres ./internal/store/singlestore ./internal/corpus ./internal/planning ./internal/httpapi
+
+.PHONY: test-artifact-media
+test-artifact-media:
+	go test ./internal/core -run TestArtifactMedia -count=1
+
+.PHONY: test-artifacts
+test-artifacts:
+	CONVEYOR_TEST_DATABASE_URL= CONVEYOR_TEST_SINGLESTORE_URL= go test ./internal/core ./internal/store ./internal/store/storetest ./internal/store/postgres ./internal/store/singlestore ./internal/httpapi ./internal/inprocess ./cmd/conveyor -run 'Artifact|Attachment|Image|Conformance' -count=1

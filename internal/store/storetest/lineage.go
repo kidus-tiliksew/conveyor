@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/kidus-tiliksew/conveyor/internal/testimage"
 	"reflect"
 	"sort"
 	"testing"
@@ -743,7 +744,7 @@ func assertEligibleReviewSupport(t *testing.T, st store.Store, ctx context.Conte
 	if err := For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: taskID, JobID: job.ID, Stage: core.StageReview, ReviewRound: 1, ReviewSeat: 1}); err != nil {
 		t.Fatal(err)
 	}
-	eligible, err := st.CreateArtifact(ctx, core.Artifact{Name: reviewer + ".png", ContentType: "image/png", Role: core.ArtifactRoleVerificationEvidence, TaskID: taskID}, []byte("png"))
+	eligible, err := st.CreateArtifact(ctx, core.Artifact{Name: reviewer + ".png", ContentType: "image/png", Role: core.ArtifactRoleVerificationEvidence, TaskID: taskID}, testimage.PNG("evidence"))
 	if err != nil {
 		t.Fatal(err)
 	}

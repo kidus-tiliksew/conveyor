@@ -152,6 +152,27 @@ func TestSingleStoreConformanceIntegration(t *testing.T) {
 			if _, err := st.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
 				t.Fatal(err)
 			}
-			return storetest.Fixture{Backend: st, Context: ctx, Workspace: ws, Config: cfg}
+			return storetest.Fixture{Backend: st, Context: ctx, Workspace: ws, Config: cfg, ArtifactRepairEvents: func(ctx context.Context) ([]core.Event, error) {
+				ws, _ := store.WorkspaceFromContext(ctx)
+				rows, err := st.db.QueryContext(ctx, `SELECT kind,actor_id,payload_json FROM events WHERE workspace_id=? AND kind='artifact.metadata_repaired' ORDER BY id`, ws)
+				if err != nil {
+					return nil, err
+				}
+				defer rows.Close()
+				var result []core.Event
+				for rows.Next() {
+					var e core.Event
+					if err := rows.Scan(&e.Kind, &e.ActorID, &e.Payload); err != nil {
+						return nil, err
+					}
+					result = append(result, e)
+				}
+				return result, rows.Err()
+			}, SeedArtifact: func(t *testing.T, ctx context.Context, a core.Artifact, b []byte) {
+				_, err := st.db.ExecContext(ctx, `UPDATE artifacts SET content_type=?,size_bytes=?,content=? WHERE workspace_id=? AND id=?`, a.ContentType, a.SizeBytes, b, a.Workspace, a.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}}
 		}})
 }
