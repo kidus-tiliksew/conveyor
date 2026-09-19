@@ -121,6 +121,13 @@ func prepareArtifact(ctx context.Context, a core.Artifact, content []byte) (core
 	if err != nil {
 		return core.Artifact{}, err
 	}
+	if a.Workspace != "" && a.Workspace != ws {
+		return core.Artifact{}, fmt.Errorf("artifact workspace mismatch")
+	}
+	a.ContentType, err = core.ValidateArtifactMedia(a.ContentType, content)
+	if err != nil {
+		return core.Artifact{}, err
+	}
 	a.Workspace = ws
 	if a.Role == "" {
 		a.Role = core.ArtifactRoleTaskContext
@@ -184,7 +191,12 @@ func (s *Store) CreateArtifact(ctx context.Context, a core.Artifact, content []b
 	if err != nil {
 		return core.Artifact{}, err
 	}
-	err = s.withTx(ctx, func(tx *sql.Tx) error { return insertArtifactTx(ctx, tx, a, content) })
+	err = s.withTx(ctx, func(tx *sql.Tx) error {
+		if err := insertArtifactTx(ctx, tx, a, content); err != nil {
+			return err
+		}
+		return tx.QueryRowContext(ctx, `SELECT name,content_type,size_bytes,created_at FROM artifacts WHERE workspace_id=? AND id=?`, a.Workspace, a.ID).Scan(&a.Name, &a.ContentType, &a.SizeBytes, &a.CreatedAt)
+	})
 	if err != nil {
 		return core.Artifact{}, err
 	}
@@ -206,7 +218,10 @@ func (s *Store) CreateClaimedVerificationEvidence(ctx context.Context, r store.C
 		if err != nil {
 			return err
 		}
-		return insertArtifactTx(ctx, tx, a, content)
+		if err := insertArtifactTx(ctx, tx, a, content); err != nil {
+			return err
+		}
+		return tx.QueryRowContext(ctx, `SELECT name,content_type,size_bytes,created_at FROM artifacts WHERE workspace_id=? AND id=?`, a.Workspace, a.ID).Scan(&a.Name, &a.ContentType, &a.SizeBytes, &a.CreatedAt)
 	})
 	if errors.Is(err, store.ErrNotFound) {
 		err = store.ErrVerificationEvidenceClaimConflict

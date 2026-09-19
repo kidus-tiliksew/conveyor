@@ -174,7 +174,32 @@ func TestPostgresConformanceIntegration(t *testing.T) {
 			if _, err := st.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
 				t.Fatal(err)
 			}
-			return storetest.Fixture{Backend: st, Context: ctx, Workspace: workspace, Config: cfg, SeedLegacy: postgresConformanceLegacySeed(st, ctx, workspace)}
+			return storetest.Fixture{Backend: st, Context: ctx, Workspace: workspace, Config: cfg, ArtifactRepairEvents: func(ctx context.Context) ([]core.Event, error) {
+				rows, err := st.pool.Query(ctx, `SELECT kind,actor_id,payload_json FROM events WHERE workspace_id=$1 AND kind='artifact.metadata_repaired' ORDER BY id`, workspaceFromArtifactContext(ctx))
+				if err != nil {
+					return nil, err
+				}
+				defer rows.Close()
+				var result []core.Event
+				for rows.Next() {
+					var e core.Event
+					if err := rows.Scan(&e.Kind, &e.ActorID, &e.Payload); err != nil {
+						return nil, err
+					}
+					result = append(result, e)
+				}
+				return result, rows.Err()
+			}, SeedLegacy: postgresConformanceLegacySeed(st, ctx, workspace), SeedArtifact: func(t *testing.T, ctx context.Context, a core.Artifact, b []byte) {
+				_, err := st.pool.Exec(ctx, `UPDATE artifacts SET content_type=$3,size_bytes=$4,content=$5 WHERE workspace_id=$1 AND id=$2`, a.Workspace, a.ID, a.ContentType, a.SizeBytes, b)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}}
 		},
 	})
+}
+
+func workspaceFromArtifactContext(ctx context.Context) string {
+	ws, _ := store.WorkspaceFromContext(ctx)
+	return ws
 }

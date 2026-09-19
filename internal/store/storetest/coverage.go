@@ -6,6 +6,8 @@ import "strings"
 // its shared fixtures and taskops command adapters. Additions to Backend
 // require an explicit declaration and a behavioral case (DEC-38).
 var suiteMethods = map[string][]string{
+	"ArtifactRepair":             strings.Fields(`RepairArtifactMetadata CreateArtifact GetArtifact ListArtifacts ListEvents`),
+	"ArtifactIntake":             strings.Fields(`CreateTaskWithAttachments GetTask ListArtifacts ListEvents`),
 	"TaskStartOver":              strings.Fields(`StartOverTaskCommand CreateTask GetTask ListTasks ListEvents Log IsDurable QueuePullRequestClose GetPullRequestClose UpdatePullRequestClose`),
 	"PopulatedProjections":       strings.Fields(`CreateTask CreateStageWorkOrderCommand ClaimWorkOrderCommand ReleaseWorkerClaimCommand ListCallerAttentionTaskPage ListCheckpointContextCandidates ReconcileBlueprintClosures ReconcileGitHubLifecycles ReconcileQueuedTasks QueueGitHubLifecycle GetGitHubLifecycle UpdateGitHubLifecycle ListEvents GetTask Log`),
 	"EmptyProjections":           strings.Fields(`GetLatestJob GetReferenceDocument GetReferenceDocumentVersion GetSpecVersion GetSystemDesignVersion GetTaskByIntakeKey GetTranscript ListActiveSystemDesignDriftCounts ListActivityMarkers ListActivityMarkersForTasks ListCallerAttentionTaskPage ListCheckpointContextCandidates ListDependentTaskIDs ListFeatures ListGovernanceDesigns ListJobs ListLineageContextRecords ListLineageNodeRecords ListPlanningBundles ListRequirementDeliveryEventsForTasks ListRequirementDeliveryLineageByRequirement ListRequirementEventsByRequirement ListRequirementVersionsByRequirement ListSystemDesignEventsByDocument ListSystemDesignVersionsByDocument ListTaskPage ListWorkOrders ListWorkOrdersForTasks RequirementExists`),

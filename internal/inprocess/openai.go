@@ -157,6 +157,7 @@ func (client *OpenAI) Run(ctx context.Context, model string, input Input) (Resul
 			return Result{Diagnostic: &diagnostic}, fmt.Errorf("Responses API (%s) client validation failed for model %q: native function tools require type, name, and parameters", endpointHost, model)
 		}
 	}
+	input.Attachments = append([]Attachment(nil), input.Attachments...)
 	if phase, err := validateImageInputs(model, endpointHost, input.Attachments); err != nil {
 		diagnostic.Phase = phase
 		requestValue := map[string]any{"model": model, "attachment_summary": diagnostic, "store": false}
@@ -508,45 +509,38 @@ func responseEndpointHost(endpoint string) string {
 }
 
 func validateImageInputs(model, endpoint string, attachments []Attachment) (string, error) {
-	for _, attachment := range attachments {
+	for i, attachment := range attachments {
 		if attachment.Kind != AttachmentImage {
 			continue
 		}
-		if err := validateImageContent(attachment.ContentType, attachment.Content); err != nil {
+		normalized, err := validateImageContent(attachment.ContentType, attachment.Content)
+		if err != nil {
 			return "attachment_validation", fmt.Errorf("Responses API (%s) image preparation failed for model %q: artifact %s (%s): %w", endpoint, model, attachment.ID, attachment.ContentType, err)
 		}
+		attachments[i].ContentType = normalized
 	}
 	return "", nil
 }
 
-func validateImageContent(contentType string, content []byte) error {
-	contentType = strings.ToLower(strings.TrimSpace(strings.Split(contentType, ";")[0]))
-	validSignature := false
-	switch contentType {
-	case "image/png":
-		validSignature = len(content) >= 8 && bytes.Equal(content[:8], []byte("\x89PNG\r\n\x1a\n"))
-	case "image/jpeg":
-		validSignature = len(content) >= 3 && content[0] == 0xff && content[1] == 0xd8 && content[2] == 0xff
-	case "image/gif":
-		validSignature = len(content) >= 6 && (string(content[:6]) == "GIF87a" || string(content[:6]) == "GIF89a")
-		if validSignature {
-			decoded, err := gif.DecodeAll(bytes.NewReader(content))
-			if err != nil {
-				return fmt.Errorf("invalid GIF image: %w", err)
-			}
-			if len(decoded.Image) != 1 {
-				return fmt.Errorf("animated GIF images are not supported by the OpenAI Responses image-input contract")
-			}
+func validateImageContent(contentType string, content []byte) (string, error) {
+	normalized, err := core.ValidateArtifactMedia(contentType, content)
+	if err != nil {
+		return "", err
+	}
+	if !core.SupportedArtifactImage(normalized) {
+		return "", fmt.Errorf("unsupported image media type")
+	}
+	if normalized == "image/gif" {
+		decoded, err := gif.DecodeAll(bytes.NewReader(content))
+		if err != nil {
+			return "", err
 		}
-	case "image/webp":
-		validSignature = len(content) >= 12 && string(content[:4]) == "RIFF" && string(content[8:12]) == "WEBP"
-	default:
-		return fmt.Errorf("unsupported image media type")
+		if len(decoded.Image) != 1 {
+			return "", fmt.Errorf("animated GIF images are not supported by the OpenAI Responses image-input contract")
+		}
 	}
-	if !validSignature {
-		return fmt.Errorf("content does not match its declared image media type")
-	}
-	return nil
+
+	return normalized, nil
 }
 
 // responseFailure is a failure the provider delivered inside a 2xx transport

@@ -172,7 +172,13 @@ func (s *Server) createTaskRecordWithState(ctx context.Context, req createTaskRe
 	// on its task payload so later context edits do not change the meaning of
 	// an otherwise byte-identical idempotent retry.
 	task.Context = intakeTaskContext(attached)
-	if err := s.Store.CreateTaskWithDependenciesAndContext(ctx, task, req.DependsOn, attached); err != nil {
+	var createErr error
+	if req.multipartIntake {
+		createErr = s.Store.CreateTaskWithAttachments(ctx, task, req.DependsOn, attached, req.attachments)
+	} else {
+		createErr = s.Store.CreateTaskWithDependenciesAndContext(ctx, task, req.DependsOn, attached)
+	}
+	if err := createErr; err != nil {
 		// A concurrent retry may win the unique intake-key race between the
 		// lookup and insert. Resolve that race as the same idempotent result.
 		if intakeKey != "" {

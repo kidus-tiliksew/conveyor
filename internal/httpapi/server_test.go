@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
+	"github.com/kidus-tiliksew/conveyor/internal/testimage"
 	"io"
 	"mime/multipart"
 	"net"
@@ -72,12 +73,6 @@ func createMemoryWorkOrderInState(t *testing.T, st store.Store, ctx context.Cont
 		t.Fatalf("unsupported work-order fixture state %q", target)
 		return core.WorkOrder{}
 	}
-}
-
-type failOnceArtifactStore struct {
-	store.Store
-	calls  int
-	failAt int
 }
 
 type notFoundRaceStore struct {
@@ -183,14 +178,6 @@ func TestCredentialStoreFailureReturnsInternalServerError(t *testing.T) {
 	}
 }
 
-func (st *failOnceArtifactStore) CreateArtifact(ctx context.Context, artifact core.Artifact, content []byte) (core.Artifact, error) {
-	st.calls++
-	if st.calls == st.failAt {
-		return core.Artifact{}, fmt.Errorf("artifact store unavailable")
-	}
-	return st.Store.CreateArtifact(ctx, artifact, content)
-}
-
 func attachmentTaskRequest(t *testing.T, intakeKey string, files map[string][]byte) *http.Request {
 	t.Helper()
 	var body bytes.Buffer
@@ -260,7 +247,7 @@ func TestVerificationEvidenceUploadAndTaskActivityUseExplicitRole(t *testing.T) 
 	server.Workspace = "demo"
 
 	valid := httptest.NewRecorder()
-	server.Handler().ServeHTTP(valid, artifactUploadRequest(t, task.ID, core.ArtifactRoleVerificationEvidence, "proof.png", "IMAGE/PNG; charset=binary", []byte("png evidence")))
+	server.Handler().ServeHTTP(valid, artifactUploadRequest(t, task.ID, core.ArtifactRoleVerificationEvidence, "proof.png", "IMAGE/PNG; charset=binary", testimage.PNG("evidence")))
 	if valid.Code != http.StatusCreated ||
 		!strings.Contains(valid.Body.String(), `"role":"verification_evidence"`) ||
 		!strings.Contains(valid.Body.String(), `"content_type":"image/png"`) {
@@ -289,45 +276,39 @@ func TestVerificationEvidenceUploadAndTaskActivityUseExplicitRole(t *testing.T) 
 	}
 }
 
-func TestAttachmentTaskCreationStoresEveryFileBeforeEnqueueAndRetriesDraft(t *testing.T) {
-	t.Parallel()
+func TestAttachmentTaskCreationIsAtomicAndRetriesAfterInvalidInput(t *testing.T) {
 	base := store.NewMemory()
-	flaky := &failOnceArtifactStore{Store: base, failAt: 2}
-	server := NewServer(flaky)
+	server := NewServer(base)
 	server.BearerToken, server.Workspace, server.Repos = "token", "demo", []string{"api"}
 	server.GenerateTaskTitle = func(context.Context, core.Task) (string, error) { return "Attachment task", nil }
 	enqueued := 0
-	server.OnCreate = func(ctx context.Context, taskID string) {
+	server.OnCreate = func(ctx context.Context, id string) {
 		enqueued++
-		task, err := flaky.GetTask(ctx, taskID)
-		if err != nil || task.State != core.TaskQueued {
-			t.Errorf("task at enqueue=%+v err=%v", task, err)
-		}
-		artifacts, err := flaky.ListArtifacts(ctx)
+		artifacts, err := base.ListArtifacts(ctx)
 		if err != nil || len(artifacts) != 2 {
-			t.Errorf("artifacts at enqueue=%+v err=%v", artifacts, err)
+			t.Errorf("incomplete attachments at enqueue: %v %v", artifacts, err)
 		}
 	}
-	files := map[string][]byte{"brief.txt": []byte("brief"), "design.png": append([]byte("\x89PNG\r\n\x1a\n"), []byte("design")...)}
+	files := map[string][]byte{"brief.txt": []byte("brief"), "design.png": []byte("\x89PNG\r\n\x1a\n")}
 	first := httptest.NewRecorder()
 	server.Handler().ServeHTTP(first, attachmentTaskRequest(t, "attachment-retry", files))
-	if first.Code != http.StatusUnprocessableEntity || !strings.Contains(first.Body.String(), "remains unqueued") || enqueued != 0 {
-		t.Fatalf("first status=%d body=%s enqueued=%d", first.Code, first.Body.String(), enqueued)
+	if first.Code != http.StatusBadRequest || enqueued != 0 {
+		t.Fatalf("invalid intake: %d %s", first.Code, first.Body)
 	}
-	tasks, err := flaky.ListTasks(store.WithWorkspace(t.Context(), "demo"))
-	if err != nil || len(tasks) != 1 || tasks[0].State != core.TaskClaiming {
-		t.Fatalf("draft tasks=%+v err=%v", tasks, err)
+	tasks, err := base.ListTasks(store.WithWorkspace(t.Context(), "demo"))
+	if err != nil || len(tasks) != 0 {
+		t.Fatalf("partial tasks: %+v %v", tasks, err)
 	}
-
+	files["design.png"] = testimage.PNG("design")
 	retry := httptest.NewRecorder()
 	server.Handler().ServeHTTP(retry, attachmentTaskRequest(t, "attachment-retry", files))
 	if retry.Code != http.StatusCreated || enqueued != 1 {
-		t.Fatalf("retry status=%d body=%s enqueued=%d", retry.Code, retry.Body.String(), enqueued)
+		t.Fatalf("retry: %d %s", retry.Code, retry.Body)
 	}
-	tasks, err = flaky.ListTasks(store.WithWorkspace(t.Context(), "demo"))
-	artifacts, artifactErr := flaky.ListArtifacts(store.WithWorkspace(t.Context(), "demo"))
-	if err != nil || artifactErr != nil || len(tasks) != 1 || tasks[0].State != core.TaskQueued || len(artifacts) != 2 {
-		t.Fatalf("tasks=%+v artifacts=%+v errors=%v/%v", tasks, artifacts, err, artifactErr)
+	replay := httptest.NewRecorder()
+	server.Handler().ServeHTTP(replay, attachmentTaskRequest(t, "attachment-retry", files))
+	if replay.Code != http.StatusOK || enqueued != 1 {
+		t.Fatalf("replay: %d %s", replay.Code, replay.Body)
 	}
 }
 
@@ -1845,7 +1826,7 @@ func TestTaskActivitySurfacesAttachmentsExcludingAuditTranscripts(t *testing.T) 
 		t.Fatal(err)
 	}
 	// Operator-supplied attachment (task_context role, defaulted from empty).
-	if _, err := st.CreateArtifact(ctx, core.Artifact{Name: "design.png", ContentType: "image/png", TaskID: task.ID}, []byte("PNGDATA")); err != nil {
+	if _, err := st.CreateArtifact(ctx, core.Artifact{Name: "design.png", ContentType: "image/png", TaskID: task.ID}, testimage.PNG("design")); err != nil {
 		t.Fatal(err)
 	}
 	// Conveyor-generated audit transcript must never appear as an attachment.

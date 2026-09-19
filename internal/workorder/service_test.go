@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/kidus-tiliksew/conveyor/internal/testimage"
 	"reflect"
 	"strings"
 	"testing"
@@ -2457,12 +2458,12 @@ func TestSubmitForReviewEvidenceGateIsSideEffectFreeAndPropagatesToEveryReviewSe
 
 	if _, err = st.CreateArtifact(ctx, core.Artifact{
 		Name: "wrong-role.png", ContentType: "image/png", Role: core.ArtifactRoleTaskContext, TaskID: task.ID,
-	}, []byte("wrong role")); err != nil {
+	}, testimage.PNG("wrong role")); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = st.CreateArtifact(ctx, core.Artifact{
 		Name: "other.png", ContentType: "image/png", Role: core.ArtifactRoleVerificationEvidence, TaskID: otherTask.ID,
-	}, []byte("cross task")); err != nil {
+	}, testimage.PNG("cross task")); err != nil {
 		t.Fatal(err)
 	}
 	assertRejectedWithoutSideEffects()
@@ -2471,7 +2472,7 @@ func TestSubmitForReviewEvidenceGateIsSideEffectFreeAndPropagatesToEveryReviewSe
 		Name: "exercised UI `proof`.png", ContentType: "image/png; charset=binary",
 		Role: core.ArtifactRoleVerificationEvidence, TaskID: task.ID,
 		DownloadURL: "https://control-plane.invalid/private?token=secret",
-	}, []byte("valid evidence"))
+	}, testimage.PNG("valid evidence"))
 	if err != nil {
 		t.Fatal(err)
 	}

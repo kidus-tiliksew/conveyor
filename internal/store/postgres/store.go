@@ -6446,6 +6446,24 @@ func (s *Store) AssignTaskFeature(ctx context.Context, taskID, featureID string)
 }
 
 func (s *Store) CreateArtifact(ctx context.Context, artifact core.Artifact, content []byte) (core.Artifact, error) {
+	var result core.Artifact
+	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		var err error
+		result, err = s.createArtifactTx(ctx, tx, artifact, content)
+		return err
+	})
+	return result, err
+}
+func (s *Store) createArtifactTx(ctx context.Context, tx pgx.Tx, artifact core.Artifact, content []byte) (core.Artifact, error) {
+	media, mediaErr := core.ValidateArtifactMedia(artifact.ContentType, content)
+	if mediaErr != nil {
+		return core.Artifact{}, mediaErr
+	}
+	artifact.ContentType = media
+	if artifact.Workspace != "" && artifact.Workspace != workspace(ctx) {
+		return core.Artifact{}, fmt.Errorf("artifact workspace mismatch")
+	}
+
 	if artifact.Role == "" {
 		artifact.Role = core.ArtifactRoleTaskContext
 	}
@@ -6471,12 +6489,7 @@ func (s *Store) CreateArtifact(ctx context.Context, artifact core.Artifact, cont
 		artifact.CreatedAt = time.Now().UTC()
 	}
 	artifact.Workspace = workspace(ctx)
-	tx, err := s.begin(ctx)
-	if err != nil {
-		return core.Artifact{}, err
-	}
-	defer tx.Rollback(ctx) //nolint:errcheck
-	_, err = tx.Exec(ctx, `INSERT INTO artifacts (id,workspace_id,name,content_type,size_bytes,content,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(workspace_id,id) DO NOTHING`, artifact.ID, workspace(ctx), artifact.Name, artifact.ContentType, artifact.SizeBytes, content, artifact.CreatedAt)
+	_, err := tx.Exec(ctx, `INSERT INTO artifacts (id,workspace_id,name,content_type,size_bytes,content,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(workspace_id,id) DO NOTHING`, artifact.ID, workspace(ctx), artifact.Name, artifact.ContentType, artifact.SizeBytes, content, artifact.CreatedAt)
 	if err != nil {
 		return core.Artifact{}, err
 	}
@@ -6503,10 +6516,8 @@ func (s *Store) CreateArtifact(ctx context.Context, artifact core.Artifact, cont
 			return core.Artifact{}, err
 		}
 	}
-	if err = tx.Commit(ctx); err != nil {
-		return core.Artifact{}, err
-	}
-	return artifact, nil
+	err = tx.QueryRow(ctx, `SELECT name,content_type,size_bytes,created_at FROM artifacts WHERE workspace_id=$1 AND id=$2`, workspace(ctx), artifact.ID).Scan(&artifact.Name, &artifact.ContentType, &artifact.SizeBytes, &artifact.CreatedAt)
+	return artifact, err
 }
 
 func (s *Store) CreateClaimedVerificationEvidence(ctx context.Context, request store.ClaimedVerificationEvidenceRequest, content []byte) (core.Artifact, error) {
@@ -6536,21 +6547,11 @@ func (s *Store) CreateClaimedVerificationEvidence(ctx context.Context, request s
 		}
 		return core.Artifact{}, err
 	}
-	normalized, err := core.NormalizeVerificationEvidenceContentType(artifact.ContentType, artifact.SizeBytes)
+	artifact, err = s.createArtifactTx(ctx, tx, artifact, content)
 	if err != nil {
 		return core.Artifact{}, err
 	}
-	artifact.ContentType = normalized
-	artifact.ID = fmt.Sprintf("%x", sha256.Sum256(content))
-	if _, err = tx.Exec(ctx, `INSERT INTO artifacts (id,workspace_id,name,content_type,size_bytes,content,created_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(workspace_id,id) DO NOTHING`,
-		artifact.ID, workspace(ctx), artifact.Name, artifact.ContentType, artifact.SizeBytes, content, artifact.CreatedAt); err != nil {
-		return core.Artifact{}, err
-	}
-	if _, err = tx.Exec(ctx, `INSERT INTO artifact_links (workspace_id,artifact_id,task_id,role)
-		VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING`, workspace(ctx), artifact.ID, artifact.TaskID, artifact.Role); err != nil {
-		return core.Artifact{}, err
-	}
+
 	if err = tx.Commit(ctx); err != nil {
 		return core.Artifact{}, err
 	}

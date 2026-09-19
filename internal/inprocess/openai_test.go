@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/kidus-tiliksew/conveyor/internal/testimage"
 	"image"
 	"image/color"
 	"image/gif"
@@ -50,7 +51,7 @@ func TestOpenAIRunUsesStructuredBinaryInputsAndTranscribesAudio(t *testing.T) {
 	}))
 	defer server.Close()
 	input := Input{Prompt: "analyze", Attachments: []Attachment{
-		{ID: "image-id", Name: "image.png", ContentType: "image/png", Kind: AttachmentImage, Content: append([]byte("\x89PNG\r\n\x1a\n"), []byte("image-bytes")...)},
+		{ID: "image-id", Name: "image.png", ContentType: "IMAGE/PNG; charset=binary", Kind: AttachmentImage, Content: testimage.PNG("image")},
 		{ID: "pdf-id", Name: "file.pdf", ContentType: "application/pdf", Kind: AttachmentDocument, Content: []byte("pdf-bytes")},
 		{ID: "audio-id", Name: "clip.mp3", ContentType: "audio/mpeg", Kind: AttachmentAudio, Content: []byte("audio-bytes")},
 	}}
@@ -60,7 +61,10 @@ func TestOpenAIRunUsesStructuredBinaryInputsAndTranscribesAudio(t *testing.T) {
 	}
 	encoded, _ := json.Marshal(responseRequest)
 	requestText := string(encoded)
-	for _, expected := range []string{`"type":"input_image"`, `"type":"input_file"`, "spoken context"} {
+	if input.Attachments[0].ContentType != "IMAGE/PNG; charset=binary" {
+		t.Fatal("provider mutated caller attachment metadata")
+	}
+	for _, expected := range []string{"data:image/png;base64,", `"type":"input_image"`, `"type":"input_file"`, "spoken context"} {
 		if !strings.Contains(requestText, expected) {
 			t.Fatalf("request missing %q: %s", expected, requestText)
 		}
@@ -192,7 +196,7 @@ func TestOpenAIRunRejectsMalformedImagesBeforeProviderSubmission(t *testing.T) {
 		want        string
 		phase       string
 	}{
-		{name: "malformed image", model: "gpt-5.6-terra", content: []byte("not-png"), want: "does not match", phase: "attachment_validation"},
+		{name: "malformed image", model: "gpt-5.6-terra", content: []byte("not-png"), want: "declared", phase: "attachment_validation"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()

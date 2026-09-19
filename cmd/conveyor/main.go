@@ -65,6 +65,7 @@ func main() {
 		skillsCmd(),
 		repoCmd(),
 		taskCmd(),
+		artifactCmd(),
 		configCmd(),
 		setupCmd(),
 		monitorCmd(),

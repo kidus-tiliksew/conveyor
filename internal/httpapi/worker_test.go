@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/kidus-tiliksew/conveyor/internal/testimage"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -90,7 +91,7 @@ func TestWorkerVerificationEvidenceUploadIsBoundToLiveClaim(t *testing.T) {
 	handler := server.Handler()
 
 	success := httptest.NewRecorder()
-	handler.ServeHTTP(success, workerEvidenceRequest(t, enrollment.Credential, job.ID, "evidence-session", "evidence-token", "IMAGE/PNG; charset=binary", []byte("png evidence"), nil))
+	handler.ServeHTTP(success, workerEvidenceRequest(t, enrollment.Credential, job.ID, "evidence-session", "evidence-token", "IMAGE/PNG; charset=binary", testimage.PNG("evidence"), nil))
 	if success.Code != http.StatusCreated {
 		t.Fatalf("success status=%d body=%s", success.Code, success.Body.String())
 	}
@@ -103,12 +104,12 @@ func TestWorkerVerificationEvidenceUploadIsBoundToLiveClaim(t *testing.T) {
 	}
 
 	wrongToken := httptest.NewRecorder()
-	handler.ServeHTTP(wrongToken, workerEvidenceRequest(t, enrollment.Credential, job.ID, "evidence-session", "wrong", "image/png", []byte("other"), nil))
+	handler.ServeHTTP(wrongToken, workerEvidenceRequest(t, enrollment.Credential, job.ID, "evidence-session", "wrong", "image/png", testimage.PNG("other"), nil))
 	if wrongToken.Code != http.StatusConflict || wrongToken.Header().Get("X-Conveyor-Error-Code") != "verification_evidence_claim_conflict" {
 		t.Fatalf("wrong token status=%d body=%s", wrongToken.Code, wrongToken.Body.String())
 	}
 	crossTask := httptest.NewRecorder()
-	handler.ServeHTTP(crossTask, workerEvidenceRequest(t, enrollment.Credential, job.ID, "evidence-session", "evidence-token", "image/png", []byte("other"), map[string]string{"task_id": "other-task"}))
+	handler.ServeHTTP(crossTask, workerEvidenceRequest(t, enrollment.Credential, job.ID, "evidence-session", "evidence-token", "image/png", testimage.PNG("other"), map[string]string{"task_id": "other-task"}))
 	if crossTask.Code != http.StatusBadRequest || !strings.Contains(crossTask.Body.String(), "only one file") {
 		t.Fatalf("cross-task status=%d body=%s", crossTask.Code, crossTask.Body.String())
 	}

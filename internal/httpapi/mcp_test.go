@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/kidus-tiliksew/conveyor/internal/testimage"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -52,7 +53,7 @@ func TestMCPReadArtifactSupportsManualSessionsAndEnforcesWorkerOwnership(t *test
 			t.Fatal(err)
 		}
 	}
-	artifact, err := st.CreateArtifact(ctx, core.Artifact{Name: "design.png", ContentType: "image/png", TaskID: "task-a"}, []byte("png"))
+	artifact, err := st.CreateArtifact(ctx, core.Artifact{Name: "design.png", ContentType: "image/png", TaskID: "task-a"}, testimage.PNG("design"))
 	if err != nil {
 		t.Fatal(err)
 	}

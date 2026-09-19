@@ -3,6 +3,7 @@ package lineagecontext
 import (
 	"context"
 	"encoding/json"
+	"github.com/kidus-tiliksew/conveyor/internal/testimage"
 	"strings"
 	"testing"
 	"time"
@@ -155,7 +156,7 @@ func TestAssembleRetainsDirectReviewEvidenceUnderBytePressure(t *testing.T) {
 	if err := st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
 	}
-	evidence, err := st.CreateArtifact(ctx, core.Artifact{Name: "proof.png", ContentType: "image/png", Role: core.ArtifactRoleVerificationEvidence, TaskID: task.ID}, []byte("png"))
+	evidence, err := st.CreateArtifact(ctx, core.Artifact{Name: "proof.png", ContentType: "image/png", Role: core.ArtifactRoleVerificationEvidence, TaskID: task.ID}, testimage.PNG("png"))
 	if err != nil {
 		t.Fatal(err)
 	}
