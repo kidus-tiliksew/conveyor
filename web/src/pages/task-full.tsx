@@ -93,7 +93,7 @@ function FullBody({ item }: { item: ActivityItem }) {
           )}
           {/* While a gate is open the evidence belongs with the decision, and
               the gate card renders it there — not twice on one page. */}
-          {!isReviewable(item.task) && (
+          {!isReviewable(item) && (
             <AttachmentsCard attachments={item.verification_evidence ?? []} title="Verification evidence" />
           )}
           <AttachmentsCard attachments={item.attachments ?? []} />

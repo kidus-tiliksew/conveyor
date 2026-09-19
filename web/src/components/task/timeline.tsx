@@ -21,6 +21,7 @@ import {
   type CurrentExecutionState,
   dependencyRelationLabel,
   deriveCurrentExecutionState,
+  failedTriage,
   type PanelSeat,
   type TimelineEntry,
   technicalActivity,
@@ -48,7 +49,7 @@ import { Badge } from '../ui/badge'
 import { Disclosure } from '../ui/disclosure'
 import { MarkdownProse } from '../ui/markdown-prose'
 import { hasInterruptedReviewRecovery, InterruptedReviewRecoveryCard } from './interrupted-review-recovery-card'
-import { canRedispatch, RedispatchCard } from './redispatch-card'
+import { canRedispatch, FailedTriageCard, RedispatchCard } from './redispatch-card'
 import {
   changesComposerHint,
   type GateTone,
@@ -106,7 +107,7 @@ export function Timeline({
   const currentExecution = deriveCurrentExecutionState(item)
   const technicalEvents = technicalActivity(item)
   const usageReportedOrderIDs = reportedUsageOrderIDs(item)
-  const showGate = isReviewable(item.task)
+  const showGate = isReviewable(item)
   const recoveryGate = gateNeedsRecoveryCapability(item.task, item.events, item.merge_readiness)
   const timelineRef = useRef<HTMLElement>(null)
   const gateRef = useRef<HTMLLIElement>(null)
@@ -239,6 +240,11 @@ export function Timeline({
                 />
               ),
             },
+          Boolean(failedTriage(item)) && {
+            key: 'failed-triage',
+            dot: 'bg-attention-dot',
+            card: <FailedTriageCard key={failedTriage(item)?.jobId} item={item} />,
+          },
           canRecover &&
             canRedispatch(item) && {
               key: 'redispatch',

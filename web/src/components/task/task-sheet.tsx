@@ -138,7 +138,7 @@ function SheetBody({ item }: { item: ActivityItem }) {
       )}
       {/* While a gate is open the evidence belongs with the decision, and the
           gate card renders it there — showing it twice on one page does not. */}
-      {!isReviewable(item.task) && (
+      {!isReviewable(item) && (
         <AttachmentsCard attachments={item.verification_evidence ?? []} title="Verification evidence" />
       )}
       <AttachmentsCard attachments={item.attachments ?? []} />

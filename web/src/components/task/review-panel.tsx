@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ExternalLink, GitMerge, type LucideIcon, ThumbsUp, TriangleAlert, Undo2, UserRound } from 'lucide-react'
 import { useState } from 'react'
-import { mergeGateReview, pendingPlanRevisionRequest } from '../../lib/activity'
+import { failedTriage, mergeGateReview, pendingPlanRevisionRequest } from '../../lib/activity'
 import { fetchCallerIdentity, fixMergeConflict, mergeTask, requestTaskChanges, reviewTask } from '../../lib/api'
 import { defaultReasonCode, interventionActions } from '../../lib/contracts'
 import type { ActivityItem, InterventionAction, Task, TaskEvent } from '../../lib/types'
@@ -26,8 +26,8 @@ export type GateTone = 'positive' | 'neutral' | 'alarm'
 
 // Whether the task is holding at a human gate — the gate card renders (and
 // the timeline opens scrolled to it) only in these states.
-export function isReviewable(task: Task): boolean {
-  return task.state === 'awaiting_human' || task.state === 'approved'
+export function isReviewable(item: ActivityItem): boolean {
+  return !failedTriage(item) && (item.task.state === 'awaiting_human' || item.task.state === 'approved')
 }
 
 // Request changes follows the server's assignee-aware rule. Identity loading

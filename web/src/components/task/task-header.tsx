@@ -18,6 +18,7 @@ import {
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import {
   dependencyRelationLabel,
+  failedTriage,
   pullRequestURL,
   restartPullRequestOutcome,
   taskCreator,
@@ -70,7 +71,12 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
   const parent = findBlueprint(blueprints, item.task.parent_task_id ?? '')?.task
   const blockingIDs = new Set(item.task.blocking_task_ids ?? [])
   const unsatisfiableIDs = new Set(item.stalled?.unsatisfiable_edge ? (item.stalled.blocking_task_ids ?? []) : [])
-  const stateLabel = item.stalled?.needed ? 'Stalled' : (taskStateLabels[item.task.state] ?? item.task.state)
+  const triageFailure = failedTriage(item)
+  const stateLabel = triageFailure
+    ? 'Triage failed'
+    : item.stalled?.needed
+      ? 'Stalled'
+      : (taskStateLabels[item.task.state] ?? item.task.state)
   const mergedChildren = item.task.children?.filter((child) => child.state === 'merged').length ?? 0
   const closedChildren = item.task.children?.filter((child) => child.state === 'closed').length ?? 0
   const openChildren = (item.task.children?.length ?? 0) - mergedChildren - closedChildren
@@ -90,7 +96,7 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
         <Disclosure
           label={`Task status: ${stateLabel}`}
           triggerClassName="rounded-md focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
-          content={item.stalled?.reason ?? `Current task status: ${stateLabel}.`}
+          content={triageFailure?.reason ?? item.stalled?.reason ?? `Current task status: ${stateLabel}.`}
           contentClassName="pointer-events-none bottom-full top-auto left-0 z-10 mb-1.5 w-56 border-0 bg-foreground px-2.5 py-1.5 text-[11px] leading-4 text-background shadow-md transition-opacity after:absolute after:left-3 after:top-full after:border-4 after:border-transparent after:border-t-foreground"
         >
           <Badge

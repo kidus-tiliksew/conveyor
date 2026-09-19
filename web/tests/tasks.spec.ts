@@ -976,3 +976,45 @@ for (const hasCreator of [true, false]) {
     ).toHaveText('Created By')
   })
 }
+
+test('failed triage Tasks row uses recorded stages and keeps truthful plan state', async ({ page }, testInfo) => {
+  await routeTasksSurface(page)
+  const failed = {
+    ...operations[0],
+    task: {
+      ...operations[0].task,
+      id: 'failed-triage',
+      title: 'Triage failed before planning',
+      state: 'awaiting_human',
+      next_stage: '',
+      recovery_stage: 'triage',
+      blocking_task_ids: [],
+      dependencies: [],
+    },
+    latest_stage: 'triage',
+    needs_attention: true,
+    plan: { state: 'none' },
+  }
+  const gate = {
+    ...failed,
+    task: {
+      ...failed.task,
+      id: 'spec-gate',
+      title: 'Plan awaiting approval',
+      next_stage: 'implement',
+      recovery_stage: 'implement',
+    },
+    latest_stage: 'spec',
+    plan: { state: 'pending_gate', version: 1 },
+  }
+  await page.route('**/v1/task-operations?**', (route) => route.fulfill({ json: [failed, gate] }))
+  await page.goto('/tasks')
+  const failedRow = rows(page).filter({ hasText: 'Triage failed before planning' })
+  await expect(failedRow.getByText('Triage failed', { exact: true })).toBeVisible()
+  await expect(failedRow).toContainText('No plan')
+  await expect(failedRow).not.toContainText('Plan awaiting approval')
+  const gateRow = rows(page).filter({ hasText: 'Plan awaiting approval' })
+  await expect(gateRow).not.toContainText('Triage failed')
+  await expect(gateRow).toContainText('Plan awaiting approval')
+  await testInfo.attach('failed-triage-tasks', { body: await page.screenshot(), contentType: 'image/png' })
+})
