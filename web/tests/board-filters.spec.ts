@@ -680,3 +680,59 @@ test('Board sheet keeps lazy audit reads isolated across workspace changes', asy
   expect(requests).toEqual(['demo', 'other'])
   await expect(panel.getByText('demo complete authority')).toHaveCount(0)
 })
+
+test('failed triage Board badge distinguishes failure from genuine review gates', async ({ page }, testInfo) => {
+  await page.addInitScript(() => localStorage.setItem('conveyor-workspace', 'demo'))
+  await routeBoard(page, [])
+  await page.route('**/v1/activity?**', (route) =>
+    route.fulfill({
+      json: [
+        {
+          ...activity[0],
+          task: {
+            ...activity[0].task,
+            id: 'failed-triage',
+            title: 'Image preparation failed',
+            state: 'awaiting_human',
+            next_stage: '',
+          },
+          latest_stage: 'triage',
+          needs_attention: true,
+        },
+        {
+          ...activity[0],
+          task: {
+            ...activity[0].task,
+            id: 'spec-gate',
+            title: 'Plan ready for decision',
+            state: 'awaiting_human',
+            next_stage: 'implement',
+          },
+          latest_stage: 'spec',
+          needs_attention: true,
+        },
+        {
+          ...activity[0],
+          task: {
+            ...activity[0].task,
+            id: 'merge-gate',
+            title: 'Implementation ready for decision',
+            state: 'awaiting_human',
+            next_stage: '',
+          },
+          latest_stage: 'review',
+          needs_attention: true,
+        },
+      ],
+    }),
+  )
+  await page.goto('/')
+  const failed = page.getByRole('link').filter({ hasText: 'Image preparation failed' })
+  await expect(failed).toContainText('Triage failed')
+  await expect(failed).not.toContainText('Awaiting review')
+  await expect(page.getByRole('link').filter({ hasText: 'Plan ready for decision' })).toContainText('Awaiting review')
+  await expect(page.getByRole('link').filter({ hasText: 'Implementation ready for decision' })).toContainText(
+    'Awaiting review',
+  )
+  await testInfo.attach('failed-triage-board', { body: await page.screenshot(), contentType: 'image/png' })
+})

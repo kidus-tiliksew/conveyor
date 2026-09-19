@@ -216,6 +216,7 @@ export function userRunImplementation(events: TaskEvent[]): boolean {
 // Board-card gate chip: says what the gate is waiting for instead of a
 // generic alarm, with tone to match ("Ready to merge" is good news).
 export function gateBadge(item: ActivitySummary): { label: string; variant: 'attention' | 'positive' } | undefined {
+  if (failedTriageSummary(item)) return { label: 'Triage failed', variant: 'attention' }
   if (item.stalled?.needed) return { label: 'Stalled', variant: 'attention' }
   if (item.task.state === 'approved') return { label: 'Ready to merge', variant: 'positive' }
   if (!item.needs_attention) return undefined
@@ -223,6 +224,87 @@ export function gateBadge(item: ActivitySummary): { label: string; variant: 'att
   if (item.task.state === 'parked') return { label: 'Needs a route', variant: 'attention' }
   if (item.task.state === 'awaiting_human') return { label: 'Awaiting review', variant: 'attention' }
   return { label: 'Needs attention', variant: 'attention' }
+}
+
+// req-intake-and-triage REQ-3; req-task-centric-operations-view REQ-2:
+// summary projections carry stages, not execution evidence. Only detail
+// evidence below may suppress a human gate.
+export function failedTriageSummary(item: {
+  task: Pick<Task, 'state' | 'next_stage' | 'recovery_stage'>
+  latest_stage?: Task['next_stage']
+}): boolean {
+  return (
+    item.task.state === 'awaiting_human' &&
+    !item.task.next_stage &&
+    (!item.latest_stage || item.latest_stage === 'triage') &&
+    (!item.task.recovery_stage || item.task.recovery_stage === 'triage') &&
+    (item.latest_stage === 'triage' || item.task.recovery_stage === 'triage')
+  )
+}
+
+export interface FailedTriage {
+  jobId: string
+  reason: string
+  repairRequired: boolean
+  guidance: string
+}
+
+export function failedTriage(item: ActivityItem): FailedTriage | undefined {
+  if (item.task.state !== 'awaiting_human' || item.task.next_stage || item.task.recovery_stage !== 'triage')
+    return undefined
+  const jobs = [...(item.jobs ?? [])].sort(
+    (a, b) => (Date.parse(a.started_at ?? a.ended_at ?? '') || 0) - (Date.parse(b.started_at ?? b.ended_at ?? '') || 0),
+  )
+  const latest = jobs.at(-1)
+  if (!latest || latest.stage !== 'triage') return undefined
+  const events = [...(item.events ?? [])].sort((a, b) => a.id - b.id)
+  const failure = [...events].reverse().find((event) => event.job_id === latest.id && event.kind === 'job.failed')
+  if (latest.state !== 'failed' && !failure) return undefined
+  // A later dispatch or intervention supersedes this incident even while a
+  // separately refreshed task projection still carries its old recovery stage.
+  const failureTime = failure?.at ?? latest.ended_at ?? latest.started_at ?? ''
+  if (
+    events.some(
+      (event) =>
+        (failure ? event.id > failure.id : Date.parse(event.at) > Date.parse(failureTime)) &&
+        (event.kind.startsWith('intervention.') ||
+          event.kind === 'pipeline.dispatched' ||
+          event.kind === 'job.created' ||
+          event.kind === 'work_order.claimed'),
+    ) ||
+    (item.work_orders ?? []).some(
+      (order) => Date.parse(order.created_at ?? order.queue_entered_at) > Date.parse(failureTime),
+    )
+  )
+    return undefined
+  const payload = failure?.payload ?? {}
+  const diagnostic =
+    payload.diagnostic && typeof payload.diagnostic === 'object' ? (payload.diagnostic as Record<string, unknown>) : {}
+  const recorded = typeof payload.error === 'string' ? payload.error.trim() : ''
+  const diagnosticText = [diagnostic.phase, diagnostic.provider_code]
+    .filter((value): value is string => typeof value === 'string' && Boolean(value.trim()))
+    .join(' · ')
+  const reason = recorded || diagnosticText || 'The triage job failed without a recorded explanation.'
+  const budget = /triage.*budget|(?:task context|model input|attachment).*(?:exceeds|exceed|limit)/i.test(reason)
+  const attachment =
+    diagnostic.phase === 'attachment_validation' ||
+    /image preparation|invalid.*(?:image|attachment)|unsupported.*(?:image|attachment|artifact)|content does not match|context artifact|attachment preparation/i.test(
+      reason,
+    )
+  const context = /task.context|context.*(?:invalid|missing|unavailable)|authority.*budget/i.test(reason)
+  const repairRequired = budget || attachment || context
+  return {
+    jobId: latest.id,
+    reason,
+    repairRequired,
+    guidance: budget
+      ? 'Reduce the identified attachment or task context to fit the recorded input limit before retrying triage.'
+      : attachment
+        ? 'Repair or replace the identified attachment and its media type before retrying triage. An unchanged attachment will fail again.'
+        : context
+          ? 'Repair the task context identified in the failure before retrying triage.'
+          : 'Retry triage after resolving the recorded failure. This restarts triage; no plan or implementation is being approved.',
+  }
 }
 
 export function reviewDiagnosticBadge(

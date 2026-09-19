@@ -6325,3 +6325,430 @@ test('Created By preserves a long historical identity when the workspace member 
   await expect(value.locator('span').first()).toHaveAttribute('title', `User · ${identifier}`)
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
 })
+
+const failedTriageReason =
+  'Responses API (api.openai.com) image preparation failed for model "gpt-5": artifact image-1 (image/png): content does not match its declared image media type'
+
+function failedTriageFixture(reason = 'Responses API request failed: upstream service unavailable') {
+  const taskId = 'failed-triage'
+  return {
+    task: {
+      id: taskId,
+      workspace: 'demo',
+      title: 'Recover triage image preparation',
+      body: 'Inspect the supplied image.',
+      source: 'mcp',
+      class: 'bug',
+      level: '',
+      repo: 'conveyor',
+      base_branch: 'main',
+      branch: 'conveyor/task-failed-triage',
+      state: 'awaiting_human',
+      next_stage: '',
+      recovery_stage: 'triage',
+      spec_approval: true,
+      merge_approval: true,
+      policy_version: 1,
+      created_at: createdAt,
+    },
+    jobs: [
+      {
+        id: 'failed-triage-triage-1',
+        task_id: taskId,
+        stage: 'triage',
+        state: 'failed',
+        harness: 'openai-responses',
+        model_tier: 'gpt-5',
+        runner: 'in-process',
+        confinement: 'control-plane',
+        tokens_in: 0,
+        tokens_out: 0,
+        started_at: createdAt,
+        ended_at: '2026-07-15T12:00:01Z',
+      },
+    ],
+    events: [
+      {
+        id: 461070,
+        task_id: taskId,
+        job_id: 'failed-triage-triage-1',
+        kind: 'pipeline.dispatched',
+        actor_id: 'system',
+        actor_role: 'system',
+        payload: { stage: 'triage', execution: 'in_process' },
+        at: createdAt,
+      },
+      {
+        id: 461071,
+        task_id: taskId,
+        job_id: 'failed-triage-triage-1',
+        kind: 'job.failed',
+        actor_id: 'system',
+        actor_role: 'system',
+        payload: {
+          error: reason,
+          diagnostic: {
+            phase: reason === failedTriageReason ? 'attachment_validation' : 'response',
+            provider: 'openai_responses',
+            endpoint: 'api.openai.com',
+            model: 'gpt-5',
+            attachment_count: 1,
+            retryable: false,
+          },
+        },
+        at: '2026-07-15T12:00:01Z',
+      },
+    ],
+    work_orders: [],
+    interventions: [],
+    checkout_available: false,
+    checkout_guidance: '',
+    needs_attention: true,
+    at_merge_gate: false,
+  }
+}
+
+for (const surface of ['full', 'sheet', 'list']) {
+  test(`failed triage ${surface} shows the recorded image failure without approval`, async ({ page }, testInfo) => {
+    const item = failedTriageFixture(failedTriageReason)
+    await page.route('**/v1/tasks/failed-triage/activity*', (route) => route.fulfill({ json: item }))
+    await page.route('**/v1/task-operations*', (route) =>
+      route.fulfill({
+        json: [
+          {
+            task: item.task,
+            latest_stage: 'triage',
+            needs_attention: true,
+            last_event_at: createdAt,
+            plan: { state: 'none' },
+          },
+        ],
+      }),
+    )
+    await page.goto(
+      surface === 'full'
+        ? '/tasks/failed-triage/full'
+        : surface === 'sheet'
+          ? '/tasks/failed-triage'
+          : '/tasks?task=failed-triage',
+    )
+    const recovery = page.getByRole('region', { name: 'Triage recovery' })
+    await expect(recovery).toContainText(failedTriageReason)
+    await expect(recovery).toContainText('Repair or replace the identified attachment')
+    await expect(recovery.getByRole('button', { name: 'Retry triage' })).toBeDisabled()
+    await expect(page.getByRole('button', { name: 'Task status: Triage failed', exact: true })).toBeVisible()
+    await expect(page.getByRole('region', { name: 'Human gate' })).toHaveCount(0)
+    await expect(page.getByText('Your review, please')).toHaveCount(0)
+    await expect(page.getByRole('button', { name: 'Approve', exact: true })).toHaveCount(0)
+    await expect(page.getByText('Factory review approved this')).toHaveCount(0)
+    await recovery.scrollIntoViewIfNeeded()
+    await testInfo.attach(`failed-triage-${surface}`, { body: await page.screenshot(), contentType: 'image/png' })
+  })
+}
+
+for (const [reason, guidance] of [
+  [
+    'triage text/history budget exhausted: 2000000 bytes exceeds 1000000-byte limit; reduce the identified attachment or task context before retrying',
+    'Reduce the identified attachment or task context',
+  ],
+  ['task context is invalid: missing confirmed document', 'Repair the task context'],
+]) {
+  test(`failed triage requires repair for ${guidance}`, async ({ page }) => {
+    await page.route('**/v1/tasks/failed-triage/activity*', (route) =>
+      route.fulfill({ json: failedTriageFixture(reason) }),
+    )
+    await page.goto('/tasks/failed-triage/full')
+    const recovery = page.getByRole('region', { name: 'Triage recovery' })
+    await expect(recovery).toContainText(reason)
+    await expect(recovery).toContainText(guidance)
+    await expect(recovery.getByRole('button', { name: 'Retry triage' })).toBeDisabled()
+  })
+}
+
+test('failed triage retry waits for response and every projection refresh and prevents duplicate clicks', async ({
+  page,
+}, testInfo) => {
+  const item = failedTriageFixture()
+  let accepted = false
+  let requests = 0
+  let releaseRequest = () => {}
+  let releaseRefresh = () => {}
+  const requestGate = new Promise<void>((resolve) => {
+    releaseRequest = resolve
+  })
+  const refreshGate = new Promise<void>((resolve) => {
+    releaseRefresh = resolve
+  })
+  const refreshed = new Set<string>()
+  await page.route('**/v1/tasks/failed-triage/activity*', async (route) => {
+    if (accepted) refreshed.add('detail')
+    await route.fulfill({
+      json: accepted
+        ? { ...item, task: { ...item.task, state: 'queued', next_stage: 'triage' }, needs_attention: false }
+        : item,
+    })
+  })
+  await page.route('**/v1/activity*', async (route) => {
+    if (accepted) {
+      refreshed.add('activity')
+      await refreshGate
+    }
+    await route.fulfill({
+      json: [
+        {
+          task: accepted ? { ...item.task, state: 'queued', next_stage: 'triage' } : item.task,
+          latest_stage: 'triage',
+          needs_attention: !accepted,
+          last_event_at: createdAt,
+        },
+      ],
+    })
+  })
+  await page.route('**/v1/task-operations*', async (route) => {
+    if (accepted) {
+      refreshed.add('list')
+      await refreshGate
+    }
+    await route.fulfill({
+      json: [
+        {
+          task: accepted ? { ...item.task, state: 'queued', next_stage: 'triage' } : item.task,
+          latest_stage: 'triage',
+          needs_attention: !accepted,
+          last_event_at: createdAt,
+          plan: { state: 'none' },
+        },
+      ],
+    })
+  })
+  await page.route('**/v1/tasks/failed-triage/review*', async (route) => {
+    requests++
+    expect(route.request().method()).toBe('POST')
+    expect(new URL(route.request().url()).searchParams.get('workspace_id')).toBe('demo')
+    expect(route.request().headers()['x-conveyor-csrf']).toBe('1')
+    expect(route.request().postDataJSON()).toEqual({
+      action: 'redirect',
+      reason_code: 'changes-requested',
+      comment: expect.stringContaining('Retry triage'),
+    })
+    await requestGate
+    accepted = true
+    await route.fulfill({ json: { task: { ...item.task, state: 'queued', next_stage: 'triage' } } })
+  })
+  await page.goto('/tasks?task=failed-triage')
+  const recovery = page.getByRole('region', { name: 'Triage recovery' })
+  const retry = recovery.getByRole('button')
+  await retry.evaluate((button: HTMLButtonElement) => {
+    button.click()
+    button.click()
+  })
+  await expect.poll(() => requests).toBe(1)
+  await expect(retry).toBeDisabled()
+  releaseRequest()
+  await expect.poll(() => refreshed.has('list')).toBe(true)
+  await expect(recovery).toBeVisible()
+  await expect(retry).toHaveText('Checking recovery…')
+  await expect(retry).toBeDisabled()
+  await testInfo.attach('failed-triage-pending-refresh', { body: await page.screenshot(), contentType: 'image/png' })
+  releaseRefresh()
+  await expect(recovery).toHaveCount(0)
+  await expect.poll(() => refreshed.has('detail')).toBe(true)
+  await expect(page.getByRole('button', { name: 'Task status: Queued', exact: true })).toBeVisible()
+  expect(requests).toBe(1)
+  await page.reload()
+  await expect(page.getByRole('region', { name: 'Triage recovery' })).toHaveCount(0)
+})
+
+for (const status of [500, 409]) {
+  test(`failed triage retry preserves failure after HTTP ${status}`, async ({ page }, testInfo) => {
+    const reason = status === 409 ? 'task is not at a human gate' : 'recovery service unavailable'
+    await page.route('**/v1/tasks/failed-triage/activity*', (route) => route.fulfill({ json: failedTriageFixture() }))
+    await page.route('**/v1/tasks/failed-triage/review*', (route) => route.fulfill({ status, body: reason }))
+    await page.goto('/tasks/failed-triage/full')
+    const recovery = page.getByRole('region', { name: 'Triage recovery' })
+    await recovery.getByRole('button', { name: 'Retry triage' }).click()
+    await expect(recovery.getByRole('alert')).toContainText(reason)
+    await expect(recovery.getByRole('button', { name: 'Retry triage' })).toBeEnabled()
+    await expect(page.getByRole('region', { name: 'Human gate' })).toHaveCount(0)
+    await testInfo.attach(`failed-triage-error-${status}`, { body: await page.screenshot(), contentType: 'image/png' })
+  })
+}
+
+test('failed triage accepted retry with stale detail refreshes status without resubmission', async ({ page }) => {
+  let requests = 0
+  let detailReads = 0
+  await page.route('**/v1/tasks/failed-triage/activity*', (route) => {
+    detailReads++
+    return route.fulfill({ json: failedTriageFixture() })
+  })
+  await page.route('**/v1/tasks/failed-triage/review*', (route) => {
+    requests++
+    return route.fulfill({ json: {} })
+  })
+  await page.goto('/tasks/failed-triage/full')
+  const recovery = page.getByRole('region', { name: 'Triage recovery' })
+  await recovery.getByRole('button', { name: 'Retry triage' }).click()
+  await expect(recovery.getByRole('alert')).toContainText('recovery is not yet confirmed')
+  const previousReads = detailReads
+  await recovery.getByRole('button', { name: 'Refresh status' }).click()
+  await expect.poll(() => detailReads).toBeGreaterThan(previousReads)
+  expect(requests).toBe(1)
+})
+
+test('failed triage capability refusal keeps the reason visible without a retry action', async ({ page }) => {
+  await page.route('**/v1/me*', (route) => route.fulfill({ json: { id: 'reader', role: 'viewer' } }))
+  await page.route('**/v1/tasks/failed-triage/activity*', (route) => route.fulfill({ json: failedTriageFixture() }))
+  await page.goto('/tasks/failed-triage/full')
+  const recovery = page.getByRole('region', { name: 'Triage recovery' })
+  await expect(recovery).toContainText('upstream service unavailable')
+  await expect(recovery).toContainText('An operator with permission')
+  await expect(recovery.getByRole('button')).toHaveCount(0)
+  await expect(page.getByRole('region', { name: 'Human gate' })).toHaveCount(0)
+})
+
+for (const gate of ['spec', 'merge']) {
+  test(`failed triage history does not replace the later ${gate} gate`, async ({ page }, testInfo) => {
+    const item = failedTriageFixture()
+    const stage = gate === 'spec' ? 'spec' : 'review'
+    item.task.next_stage = gate === 'spec' ? 'implement' : ''
+    item.task.recovery_stage = 'implement'
+    item.jobs.push({
+      ...item.jobs[0],
+      id: `later-${stage}`,
+      stage,
+      state: 'done',
+      started_at: '2026-07-15T13:00:00Z',
+      ended_at: '2026-07-15T13:01:00Z',
+    })
+    await page.route('**/v1/tasks/failed-triage/activity*', (route) =>
+      route.fulfill({
+        json: {
+          ...item,
+          at_merge_gate: gate === 'merge',
+          spec: {
+            task_id: item.task.id,
+            version: 1,
+            content: '## Approved work plan',
+            approved: gate === 'merge',
+            created_at: createdAt,
+            acceptance: [],
+            decomposition: [],
+          },
+        },
+      }),
+    )
+    await page.goto('/tasks/failed-triage/full')
+    await expect(page.getByRole('region', { name: 'Triage recovery' })).toHaveCount(0)
+    const humanGate = page.getByRole('region', { name: 'Human gate' })
+    await expect(humanGate).toBeVisible()
+    await expect(humanGate.getByRole('button', { name: 'Approve', exact: true })).toBeVisible()
+    await testInfo.attach(`preserved-${gate}-gate`, { body: await page.screenshot(), contentType: 'image/png' })
+  })
+}
+
+for (const change of ['missing evidence', 'new triage attempt', 'later intervention', 'later dispatch']) {
+  test(`failed triage predicate refuses ${change}`, async ({ page }) => {
+    const item = failedTriageFixture()
+    if (change === 'missing evidence') {
+      item.events = []
+      item.jobs[0].state = 'running'
+    }
+    if (change === 'new triage attempt')
+      item.jobs.push({ ...item.jobs[0], id: 'triage-2', state: 'running', started_at: '2026-07-15T13:00:00Z' })
+    if (change.startsWith('later'))
+      item.events.push({
+        ...item.events[0],
+        id: 461073,
+        kind: change === 'later intervention' ? 'intervention.redirect' : 'pipeline.dispatched',
+        at: '2026-07-15T13:00:00Z',
+      })
+    await page.route('**/v1/tasks/failed-triage/activity*', (route) => route.fulfill({ json: item }))
+    await page.goto('/tasks/failed-triage/full')
+    await expect(page.getByRole('region', { name: 'Human gate' })).toBeVisible()
+    await expect(page.getByRole('region', { name: 'Triage recovery' })).toHaveCount(0)
+  })
+}
+
+test('failed triage retry refreshes the Board projection before clearing the sheet', async ({ page }) => {
+  const item = failedTriageFixture()
+  let accepted = false
+  let boardRefreshed = false
+  await page.route('**/v1/tasks/failed-triage/activity*', (route) =>
+    route.fulfill({
+      json: {
+        ...item,
+        task: accepted ? { ...item.task, state: 'queued', next_stage: 'triage' } : item.task,
+      },
+    }),
+  )
+  await page.route('**/v1/activity*', (route) => {
+    if (accepted) boardRefreshed = true
+    return route.fulfill({
+      json: [
+        {
+          task: accepted ? { ...item.task, state: 'queued', next_stage: 'triage' } : item.task,
+          latest_stage: 'triage',
+          needs_attention: !accepted,
+          last_event_at: createdAt,
+        },
+      ],
+    })
+  })
+  await page.route('**/v1/tasks/failed-triage/review*', (route) => {
+    accepted = true
+    return route.fulfill({ json: {} })
+  })
+  await page.goto('/tasks/failed-triage')
+  await page.getByRole('region', { name: 'Triage recovery' }).getByRole('button', { name: 'Retry triage' }).click()
+  await expect(page.getByRole('region', { name: 'Triage recovery' })).toHaveCount(0)
+  expect(boardRefreshed).toBe(true)
+  await page.getByRole('button', { name: 'Close panel' }).click()
+  await expect(page.getByRole('link').filter({ hasText: 'Recover triage image preparation' })).not.toContainText(
+    'Triage failed',
+  )
+})
+
+test('failed triage accepted retry exposes refresh failure and only retries the read', async ({ page }) => {
+  let accepted = false
+  let readsFail = true
+  let submissions = 0
+  const item = failedTriageFixture()
+  await page.route('**/v1/tasks/failed-triage/activity*', (route) => {
+    if (accepted && readsFail) return route.fulfill({ status: 503, body: 'Task refresh unavailable' })
+    return route.fulfill({
+      json: accepted ? { ...item, task: { ...item.task, state: 'queued', next_stage: 'triage' } } : item,
+    })
+  })
+  await page.route('**/v1/tasks/failed-triage/review*', (route) => {
+    accepted = true
+    submissions++
+    return route.fulfill({ json: {} })
+  })
+  await page.goto('/tasks/failed-triage/full')
+  const recovery = page.getByRole('region', { name: 'Triage recovery' })
+  await recovery.getByRole('button', { name: 'Retry triage' }).click()
+  await expect(recovery.getByRole('alert')).toContainText('Task refresh unavailable')
+  readsFail = false
+  await recovery.getByRole('button', { name: 'Refresh status' }).click()
+  await expect(recovery).toHaveCount(0)
+  expect(submissions).toBe(1)
+})
+
+test('failed triage predicate tolerates absent job evidence', async ({ page }) => {
+  const item = failedTriageFixture()
+  await page.route('**/v1/tasks/failed-triage/activity*', (route) =>
+    route.fulfill({ json: { ...item, jobs: [], events: [] } }),
+  )
+  await page.goto('/tasks/failed-triage/full')
+  await expect(page.getByRole('region', { name: 'Human gate' })).toBeVisible()
+  await expect(page.getByRole('region', { name: 'Triage recovery' })).toHaveCount(0)
+})
+
+test('failed triage predicate orders fractional-second execution timestamps chronologically', async ({ page }) => {
+  const item = failedTriageFixture()
+  item.jobs.push({ ...item.jobs[0], id: 'new-triage', state: 'running', started_at: '2026-07-15T12:00:00.500Z' })
+  await page.route('**/v1/tasks/failed-triage/activity*', (route) => route.fulfill({ json: item }))
+  await page.goto('/tasks/failed-triage/full')
+  await expect(page.getByRole('region', { name: 'Human gate' })).toBeVisible()
+  await expect(page.getByRole('region', { name: 'Triage recovery' })).toHaveCount(0)
+})
