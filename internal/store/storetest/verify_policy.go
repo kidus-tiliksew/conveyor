@@ -138,6 +138,32 @@ func runVerifyAdmission(t *testing.T, x Fixture) {
 	if blocked.QueueBlockedAt.IsZero() {
 		t.Fatal("verify queue clock did not pause")
 	}
+	// A dependency closed without merging must surface on both activity reads,
+	// including the queued verify order's blocker and claimability projection.
+	_, err = taskops.New(st).Cancel(ctx, core.Intervention{TaskID: dependency.ID, Action: core.InterventionCancel, ReasonCode: "operator_cancel", Comment: "verify dependency closed without merging"})
+	requireOK(t, err)
+	for _, scoped := range []bool{false, true} {
+		var markers []store.ActivityMarker
+		if scoped {
+			markers, err = st.ListActivityMarkersForTasks(ctx, []string{order.TaskID})
+		} else {
+			markers, err = st.ListActivityMarkers(ctx)
+		}
+		requireOK(t, err)
+		var stalled *store.StalledState
+		for _, marker := range markers {
+			if marker.TaskID == order.TaskID {
+				stalled = marker.Stalled
+			}
+		}
+		if stalled == nil || !stalled.Needed || !stalled.UnsatisfiableEdge || len(stalled.BlockingTaskIDs) != 1 || stalled.BlockingTaskIDs[0] != dependency.ID {
+			t.Fatalf("scoped=%t: verify activity lost terminal dependency: %+v", scoped, stalled)
+		}
+		projected := stalled.WorkOrder
+		if projected.ID != order.ID || projected.Stage != core.StageVerify || projected.State != core.WorkOrderQueued || projected.Claimable || len(projected.BlockingTaskIDs) != 1 || projected.BlockingTaskIDs[0] != dependency.ID {
+			t.Fatalf("scoped=%t: blocked verify activity order: %+v", scoped, projected)
+		}
+	}
 	_, err = st.RemoveTaskDependency(ctx, store.DependencyRemovalRequest{TaskID: order.TaskID, DependsOnTaskID: dependency.ID, Reason: "remove dependency", RequestID: core.NewTaskID()})
 	requireOK(t, err)
 	resumed, err := st.GetWorkOrder(ctx, order.ID)

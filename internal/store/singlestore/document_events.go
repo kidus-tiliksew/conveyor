@@ -260,7 +260,7 @@ func (s *Store) listActivityMarkers(ctx context.Context, taskIDs []string) ([]st
 	var implementTaskIDs []string
 	seenImplementTask := map[string]bool{}
 	for _, order := range orders {
-		if order.Stage == core.StageImplement && !seenImplementTask[order.TaskID] {
+		if (order.Stage == core.StageImplement || order.Stage == core.StageVerify) && !seenImplementTask[order.TaskID] {
 			implementTaskIDs = append(implementTaskIDs, order.TaskID)
 			seenImplementTask[order.TaskID] = true
 		}
@@ -277,7 +277,7 @@ func (s *Store) listActivityMarkers(ctx context.Context, taskIDs []string) ([]st
 	reviewTaskIDs := make([]string, 0)
 	seenReviewTask := map[string]bool{}
 	for _, order := range orders {
-		if order.Stage == core.StageImplement {
+		if order.Stage == core.StageImplement || order.Stage == core.StageVerify {
 			blockers := blockersByTask[order.TaskID]
 			order.BlockingTaskIDs = append([]string(nil), blockers.BlockingTaskIDs...)
 			order.UnsatisfiableTaskIDs = append([]string(nil), blockers.UnsatisfiableTaskIDs...)
