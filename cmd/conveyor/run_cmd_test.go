@@ -160,6 +160,8 @@ func runTaskScenario(t *testing.T, input string, step, terminal bool, commandFla
 			_, _ = io.WriteString(w, `{"configured":true,"forge_login":"owner"}`)
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/tasks":
 			_ = json.NewEncoder(w).Encode([]core.Task{})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/tasks/target":
+			_ = json.NewEncoder(w).Encode(core.Task{ID: "target", Title: "Ship target", State: core.TaskRunning, Repo: "conveyor", Branch: "conveyor/task-target", BaseBranch: "main"})
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/tasks/target/worktree-cleanup":
 			stats.cleanupChecks++
 			_ = json.NewEncoder(w).Encode(terminalCleanupStatus{Terminal: true})
@@ -325,6 +327,8 @@ func runSpecTaskScenario(t *testing.T, input string, step, terminal bool) (taskR
 			return
 		}
 		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/tasks/target":
+			_ = json.NewEncoder(w).Encode(core.Task{ID: "target", Title: "Plan target", State: core.TaskRunning, Repo: "conveyor", Branch: "conveyor/task-target", BaseBranch: "main"})
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/agent-credential"):
 			stats.agentIssues++
 			_ = json.NewEncoder(w).Encode(map[string]string{"credential_id": "agent-id", "credential": "child-agent-credential"})

@@ -311,15 +311,15 @@ func TestPublishIssueReusesExplicitSourceIssue(t *testing.T) {
 
 func TestPullRequestForBranchReturnsAuthoritativeMergeState(t *testing.T) {
 	pr, err := pullRequestForBranch(context.Background(), "acme/api", "conveyor/task-1", func(_ context.Context, args ...string) ([]byte, error) {
-		if got := strings.Join(args, " "); got != "pr view conveyor/task-1 --repo acme/api --json number,url,state,mergedAt,mergeable,headRefOid,baseRefOid,mergedBy,mergeCommit" {
+		if got := strings.Join(args, " "); got != "pr view conveyor/task-1 --repo acme/api --json number,url,state,mergedAt,mergeable,headRefOid,headRefName,baseRefOid,mergedBy,mergeCommit" {
 			t.Fatalf("args = %s", got)
 		}
-		return []byte(`{"number":12,"url":"https://github.com/acme/api/pull/12","state":"CLOSED","mergedAt":"2026-07-15T10:00:00Z","mergeable":"UNKNOWN","headRefOid":"abc123","baseRefOid":"base123","mergedBy":"merger","mergeCommit":"landed"}`), nil
+		return []byte(`{"number":12,"url":"https://github.com/acme/api/pull/12","state":"CLOSED","mergedAt":"2026-07-15T10:00:00Z","mergeable":"UNKNOWN","headRefOid":"abc123","headRefName":"conveyor/task-1","baseRefOid":"base123","mergedBy":"merger","mergeCommit":"landed"}`), nil
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if pr.Number != 12 || !pr.Merged || pr.State != "closed" || pr.Mergeable != "UNKNOWN" || pr.HeadSHA != "abc123" || pr.BaseSHA != "base123" || pr.MergedBy != "merger" || pr.MergeCommitSHA != "landed" {
+	if pr.Number != 12 || !pr.Merged || pr.State != "closed" || pr.Mergeable != "UNKNOWN" || pr.HeadSHA != "abc123" || pr.HeadRef != "conveyor/task-1" || pr.BaseSHA != "base123" || pr.MergedBy != "merger" || pr.MergeCommitSHA != "landed" {
 		t.Fatalf("pull request = %+v", pr)
 	}
 }
@@ -330,6 +330,35 @@ func TestPullRequestForBranchClassifiesMissingPR(t *testing.T) {
 	})
 	if !errors.Is(err, ErrPullRequestNotFound) {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestPullRequestForNumberMapsMissingAndParsesHeadRef(t *testing.T) {
+	pr, err := pullRequestForNumber(context.Background(), "acme/api", 12, func(_ context.Context, args ...string) ([]byte, error) {
+		if got := strings.Join(args, " "); got != "api repos/acme/api/pulls/12" {
+			t.Fatalf("args = %s", got)
+		}
+		return []byte(`{"number":12,"html_url":"https://github.com/acme/api/pull/12","state":"open","merged_at":null,"mergeable":true,"head":{"sha":"abc123","ref":"conveyor/task-1"},"base":{"sha":"base123"}}`), nil
+	})
+	if err != nil || pr.Number != 12 || pr.HeadRef != "conveyor/task-1" || pr.State != "open" {
+		t.Fatalf("pr=%+v err=%v", pr, err)
+	}
+	_, err = pullRequestForNumber(context.Background(), "acme/api", 99, func(context.Context, ...string) ([]byte, error) {
+		return nil, &Error{Category: ForgeStatus, Err: fmt.Errorf("GitHub REST status 404: Not Found")}
+	})
+	if !errors.Is(err, ErrPullRequestNotFound) {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestMutationUncertainErrorPreservesPermission(t *testing.T) {
+	permission := &Error{Category: ForgePermission, Err: fmt.Errorf("workspace demo GitHub App is expired")}
+	if got := mutationUncertainError(permission); got != permission {
+		t.Fatalf("permission wrapped: %v", got)
+	}
+	uncertain := mutationUncertainError(fmt.Errorf("GitHub REST transport: connection reset"))
+	if ErrorCategory(uncertain) != ForgeMutationUncertain || !errors.Is(uncertain, ErrMutationUncertain) {
+		t.Fatalf("uncertain=%v", uncertain)
 	}
 }
 

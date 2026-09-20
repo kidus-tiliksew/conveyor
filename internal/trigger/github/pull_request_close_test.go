@@ -71,6 +71,9 @@ func TestClosePullRequestReconcilesCommentAndPreservesBranch(t *testing.T) {
 				if err == nil || strings.Contains(err.Error(), "installation-secret") {
 					t.Fatalf("unsafe or missing error: %v", err)
 				}
+				if lost == "close" && ErrorCategory(err) != ForgeMutationUncertain {
+					t.Fatalf("lost close category=%q err=%v", ErrorCategory(err), err)
+				}
 			} else if err != nil {
 				t.Fatal(err)
 			}

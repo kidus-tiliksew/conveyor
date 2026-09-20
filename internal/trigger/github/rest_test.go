@@ -238,3 +238,18 @@ func TestAppMergeMessageIsPerCallAndErrorsRedactCredential(t *testing.T) {
 		t.Fatalf("unsafe merge error: %v", err)
 	}
 }
+
+func TestPullForNumberMapsMissingPullRequest(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/acme/api/pulls/99" {
+			t.Errorf("path=%s", r.URL.Path)
+		}
+		http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
+	}))
+	defer server.Close()
+	client := &restClient{http: server.Client(), baseURL: server.URL, token: "token", identity: "workspace demo GitHub App"}
+	_, err := client.pullForNumber(t.Context(), "acme/api", 99)
+	if !errors.Is(err, ErrPullRequestNotFound) {
+		t.Fatalf("err=%v", err)
+	}
+}

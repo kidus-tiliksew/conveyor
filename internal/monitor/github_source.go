@@ -22,6 +22,7 @@ type GitHubSource struct {
 	Repository      string
 	GitHubSlug      string
 	Run             CommandRunner
+	ResolveTask     func(context.Context, string, int) (string, bool, error)
 	ReconcileMerged func(context.Context, string, githubtrigger.PullRequest) (bool, error)
 	LoadHints       func(context.Context, string) (*HintContext, error)
 	OnSuppressed    func(context.Context, map[string]any) error
@@ -71,11 +72,12 @@ type failedCheckRun struct {
 	URL  string
 }
 
-// RecordedLineage verifies that a branch-shaped pull request is actually the
-// pull request Conveyor recorded for this task in this repository. A task ID
-// embedded in an unrelated external PR is not lineage (design-monitor-drift).
-func RecordedLineage(task core.Task, events []core.Event, repository, githubSlug, taskID string, pullRequestNumber int, headSHA string) bool {
-	if task.ID != taskID || task.Repo != repository || task.Branch != "conveyor/task-"+taskID ||
+// RecordedLineage verifies that an observed pull request is the one Conveyor
+// recorded for this task in this repository. Current Task.Branch must equal
+// the observed head ref; a reconstructed default name is not identity
+// (req-task-branch-assignment AC-3.4; component-monitor-drift).
+func RecordedLineage(task core.Task, events []core.Event, repository, githubSlug, taskID, observedHeadRef string, pullRequestNumber int, headSHA string) bool {
+	if task.ID != taskID || task.Repo != repository || task.Branch != observedHeadRef ||
 		strings.TrimSpace(headSHA) == "" ||
 		(task.GitHub != nil && task.GitHub.Repository != githubSlug) {
 		return false
@@ -95,6 +97,66 @@ func RecordedLineage(task core.Task, events []core.Event, repository, githubSlug
 		}
 	}
 	return false
+}
+
+// MatchObservedTask ranks workspace tasks for an observed pull. Recorded
+// pull_request.opened owners of that number win first (non-terminal over
+// terminal). Branch equality is only used when no recorded owner exists.
+func MatchObservedTask(tasks []core.Task, eventsByID map[string][]core.Event, repository, githubSlug, headRef string, number int) (string, bool) {
+	var recordedLive, recordedTerminal, branchLive, branchTerminal []core.Task
+	for _, task := range tasks {
+		if task.Repo != repository {
+			continue
+		}
+		if task.GitHub != nil && task.GitHub.Repository != githubSlug {
+			continue
+		}
+		recorded := false
+		if number > 0 {
+			for _, event := range eventsByID[task.ID] {
+				if event.Kind != "pull_request.opened" {
+					continue
+				}
+				var opened struct {
+					Repository string `json:"repository"`
+					Number     int    `json:"number"`
+				}
+				if json.Unmarshal(event.Payload, &opened) != nil || opened.Number != number {
+					continue
+				}
+				if opened.Repository == "" || opened.Repository == githubSlug {
+					recorded = true
+					break
+				}
+			}
+		}
+		if recorded {
+			if core.TaskTerminal(task.State) {
+				recordedTerminal = append(recordedTerminal, task)
+			} else {
+				recordedLive = append(recordedLive, task)
+			}
+		}
+		if task.Branch == headRef {
+			if core.TaskTerminal(task.State) {
+				branchTerminal = append(branchTerminal, task)
+			} else {
+				branchLive = append(branchLive, task)
+			}
+		}
+	}
+	switch {
+	case len(recordedLive) > 0:
+		return recordedLive[0].ID, true
+	case len(recordedTerminal) > 0:
+		return recordedTerminal[0].ID, true
+	case len(branchLive) > 0:
+		return branchLive[0].ID, true
+	case len(branchTerminal) > 0:
+		return branchTerminal[0].ID, true
+	default:
+		return "", false
+	}
 }
 
 func (s GitHubSource) Observations(ctx context.Context, since time.Time) ([]Observation, error) {
@@ -139,8 +201,19 @@ func (s GitHubSource) Observations(ctx context.Context, since time.Time) ([]Obse
 		}
 		lineaged := false
 		for _, pull := range pulls {
-			taskID, ok := strings.CutPrefix(pull.Head.Ref, "conveyor/task-")
-			if !ok || pull.MergedAt == nil {
+			if pull.MergedAt == nil {
+				continue
+			}
+			var taskID string
+			ok := false
+			if s.ResolveTask != nil {
+				resolvedID, resolved, resolveErr := s.ResolveTask(ctx, pull.Head.Ref, pull.Number)
+				if resolveErr != nil {
+					return nil, resolveErr
+				}
+				taskID, ok = resolvedID, resolved
+			}
+			if !ok {
 				continue
 			}
 			if s.ReconcileMerged != nil {
@@ -152,7 +225,11 @@ func (s GitHubSource) Observations(ctx context.Context, since time.Time) ([]Obse
 					continue
 				}
 				pull = detail
-				lineaged, err = s.ReconcileMerged(ctx, taskID, githubtrigger.PullRequest{Number: pull.Number, URL: pull.HTMLURL, State: "closed", Merged: true, HeadSHA: pull.Head.SHA, MergedBy: strings.TrimSpace(pull.MergedBy.Login), MergeCommitSHA: strings.TrimSpace(pull.MergeCommitSHA)})
+				lineaged, err = s.ReconcileMerged(ctx, taskID, githubtrigger.PullRequest{
+					Number: pull.Number, URL: pull.HTMLURL, State: "closed", Merged: true,
+					HeadSHA: pull.Head.SHA, HeadRef: pull.Head.Ref,
+					MergedBy: strings.TrimSpace(pull.MergedBy.Login), MergeCommitSHA: strings.TrimSpace(pull.MergeCommitSHA),
+				})
 				if err != nil {
 					return nil, err
 				}

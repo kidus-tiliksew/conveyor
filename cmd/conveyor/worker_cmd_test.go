@@ -39,6 +39,18 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
+func serveDirectTaskGET(w http.ResponseWriter, r *http.Request) bool {
+	if r.Method != http.MethodGet || !strings.HasPrefix(r.URL.Path, "/v1/tasks/") {
+		return false
+	}
+	id := strings.TrimPrefix(r.URL.Path, "/v1/tasks/")
+	if id == "" || strings.Contains(id, "/") {
+		return false
+	}
+	_ = json.NewEncoder(w).Encode(core.Task{ID: id, Branch: "conveyor/" + id, Repo: "conveyor", BaseBranch: "main"})
+	return true
+}
+
 func writeWorkerLocalExecutionConfig(t *testing.T, command, probe []string) string {
 	t.Helper()
 	cfg, err := config.Load(filepath.Join("..", "..", "conveyor.example.yaml"))
@@ -241,6 +253,9 @@ func TestRecoveredHarnessContinuationLaunchAndCapture(t *testing.T) {
 					}
 					mu.Unlock()
 					_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": map[string]any{"content": []map[string]string{{"type": "text", "text": `{"ok":true}`}}}})
+					return
+				}
+				if serveDirectTaskGET(w, r) {
 					return
 				}
 				switch {
@@ -2099,6 +2114,9 @@ func TestRunHarnessChildReapsOnlyAfterAttachedRunObservesTerminalOrder(t *testin
 		t.Run(test.name, func(t *testing.T) {
 			released := make(chan struct{}, 1)
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if serveDirectTaskGET(w, r) {
+					return
+				}
 				switch {
 				case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/agent-credential"):
 					_ = json.NewEncoder(w).Encode(map[string]string{"credential_id": "run-agent", "credential": "run-agent-secret"})
@@ -2203,6 +2221,9 @@ func TestRunHarnessChildExitUsesTerminalOrderObservedByRenewal(t *testing.T) {
 	reconcileCalls := 0
 	releases := make(chan struct{}, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveDirectTaskGET(w, r) {
+			return
+		}
 		switch {
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/agent-credential"):
 			_ = json.NewEncoder(w).Encode(map[string]string{"credential_id": "run-agent", "credential": "run-agent-secret"})
@@ -2296,6 +2317,9 @@ func TestRunHarnessChildExitClassifiesCheckpointReleaseBeforeRenewal(t *testing.
 			reconcileCalls := 0
 			releases := make(chan core.WorkOrderRelease, 1)
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if serveDirectTaskGET(w, r) {
+					return
+				}
 				switch {
 				case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/agent-credential"):
 					_ = json.NewEncoder(w).Encode(map[string]string{"credential_id": "run-agent", "credential": "run-agent-secret"})
@@ -2959,6 +2983,9 @@ func TestRunHarnessChildReadinessFailureReleasesClaimWithoutStartingModel(t *tes
 func TestRunChildAgentCredentialIssuanceFailureReleasesClaim(t *testing.T) {
 	released := make(chan struct{}, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveDirectTaskGET(w, r) {
+			return
+		}
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/claim"):
 			_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: "run-order", State: core.WorkOrderClaimed, LeaseExpiresAt: time.Now().Add(time.Minute)})
@@ -2988,6 +3015,38 @@ func TestRunChildAgentCredentialIssuanceFailureReleasesClaim(t *testing.T) {
 	}
 }
 
+func TestWorkerExecuteUsesClaimedTaskBranch(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/claim"):
+			_ = json.NewEncoder(w).Encode(workerservice.ClaimDelivery{
+				WorkOrder: core.WorkOrder{ID: "claimed-branch-order", TaskID: "claimed-branch-task", State: core.WorkOrderClaimed, AttemptID: "attempt-claimed", LeaseExpiresAt: time.Now().Add(time.Minute)},
+				Task:      core.Task{ID: "claimed-branch-task", Branch: "conveyor/claimed-branch"},
+			})
+		case strings.HasSuffix(r.URL.Path, "/renew"):
+			_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: "claimed-branch-order", State: core.WorkOrderSubmitted, LeaseExpiresAt: time.Now().Add(time.Minute)})
+		case strings.HasSuffix(r.URL.Path, "/release"):
+			_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: "claimed-branch-order"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	item := workerservice.DispatchOrder{
+		Order:    core.WorkOrder{ID: "claimed-branch-order", TaskID: "claimed-branch-task", Stage: core.StageReview},
+		Task:     core.Task{ID: "claimed-branch-task", Branch: "stale-queued-branch"},
+		Dispatch: "worker",
+		Harness:  config.Harness{Name: "helper", Command: []string{os.Args[0], "-test.run=TestWorkerLifecycleHelper", "--", "env-branch"}},
+	}
+	var stdout, stderr bytes.Buffer
+	if err := runHarnessChildWithOutput(t.Context(), &client{base: server.URL, workspace: "demo"}, "worker-credential", item, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout.String(), "branch=conveyor/claimed-branch") {
+		t.Fatalf("stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+}
+
 func TestWorkerLifecycleHelper(t *testing.T) {
 	if len(os.Args) < 2 {
 		return
@@ -2995,7 +3054,7 @@ func TestWorkerLifecycleHelper(t *testing.T) {
 	mode := ""
 	for _, arg := range os.Args {
 		switch arg {
-		case "exit", "brief", "cancel", "silent", "silent-grandchild", "early-output", "early-error", "early-then-silent", "continuous-output", "stall-deadline-race", "observability":
+		case "exit", "brief", "cancel", "silent", "silent-grandchild", "early-output", "early-error", "early-then-silent", "continuous-output", "stall-deadline-race", "observability", "env-branch":
 			mode = arg
 		}
 	}
@@ -3012,6 +3071,8 @@ func TestWorkerLifecycleHelper(t *testing.T) {
 		fmt.Fprintf(os.Stdout, "token=%s address=%s\n", os.Getenv("CONVEYOR_API_TOKEN"), os.Getenv("CONVEYOR_ADDR"))
 		fmt.Fprintf(os.Stderr, "session=%s client=%s\n", os.Getenv("CONVEYOR_SESSION_ID"), os.Getenv("CONVEYOR_CLIENT_TOKEN"))
 		os.Exit(7)
+	case "env-branch":
+		fmt.Fprintf(os.Stdout, "branch=%s\n", os.Getenv("CONVEYOR_TASK_BRANCH"))
 	case "brief":
 		time.Sleep(100 * time.Millisecond)
 	case "cancel":

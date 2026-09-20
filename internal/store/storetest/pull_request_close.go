@@ -41,6 +41,11 @@ func runPullRequestClose(t *testing.T, factory Factory) {
 				t.Fatal("failed intent persisted")
 			}
 
+			numberOnly := intent
+			numberOnly.Number = 7
+			if err = st.QueuePullRequestClose(ctx, numberOnly); err == nil {
+				t.Fatal("partial identity accepted")
+			}
 			for range 2 {
 				if err = st.QueuePullRequestClose(ctx, intent); err != nil {
 					t.Fatal(err)

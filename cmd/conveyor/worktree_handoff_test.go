@@ -126,6 +126,18 @@ func TestCheckpointHandoffLauncherPlanRevision(t *testing.T) {
 				}
 				defer func() { workerAttemptCheckpointer = originalCheckpointer }()
 				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/tasks/") {
+						id := strings.TrimPrefix(r.URL.Path, "/v1/tasks/")
+						if id != "" && !strings.Contains(id, "/") {
+							task, err := st.GetTask(ctx, id)
+							if err != nil {
+								http.NotFound(w, r)
+								return
+							}
+							_ = json.NewEncoder(w).Encode(task)
+							return
+						}
+					}
 					parts := strings.Split(r.URL.Path, "/")
 					id := parts[len(parts)-2]
 					action := parts[len(parts)-1]

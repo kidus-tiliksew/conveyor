@@ -3836,7 +3836,7 @@ func TestReconcileObservedPullRequestApprovalLineageAndIdempotency(t *testing.T)
 				}
 			}
 			d := New(st, &config.Config{Workspace: "demo", Repos: []config.Repo{{Name: "app", GitHub: "org/app"}}}, nil)
-			pr := githubtrigger.PullRequest{Number: 12, URL: "https://github.com/org/app/pull/12", Merged: true, HeadSHA: "head", MergeCommitSHA: "landed", MergedBy: "github-operator"}
+			pr := githubtrigger.PullRequest{Number: 12, URL: "https://github.com/org/app/pull/12", Merged: true, HeadSHA: "head", HeadRef: task.Branch, MergeCommitSHA: "landed", MergedBy: "github-operator"}
 			repository, slug := "app", "org/app"
 			switch scenario {
 			case "wrong-repository":
@@ -3885,6 +3885,29 @@ func TestReconcileObservedPullRequestApprovalLineageAndIdempotency(t *testing.T)
 				}
 			}
 		})
+	}
+}
+
+func TestReconcileObservedPullRequestUsesCurrentAssignedBranch(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	task := core.Task{ID: "observed", Workspace: "demo", Repo: "app", BaseBranch: "main", Branch: "feature/from-ide", State: core.TaskApproved, ReviewedHeadSHA: "head", ApprovedHeadSHA: "head", CreatedAt: time.Now()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]any{"number": 9, "head_sha": "head"})}); err != nil {
+		t.Fatal(err)
+	}
+	d := New(st, &config.Config{Workspace: "demo", Repos: []config.Repo{{Name: "app", GitHub: "org/app"}}}, nil)
+	pr := githubtrigger.PullRequest{Number: 9, URL: "https://github.com/org/app/pull/9", Merged: true, HeadSHA: "head", HeadRef: "feature/from-ide", MergeCommitSHA: "landed", MergedBy: "github-operator"}
+	accepted, err := d.ReconcileObservedPullRequest(ctx, "app", "org/app", task.ID, pr)
+	if err != nil || !accepted {
+		t.Fatalf("custom branch accepted=%t err=%v", accepted, err)
+	}
+	retired := githubtrigger.PullRequest{Number: 9, URL: pr.URL, Merged: true, HeadSHA: "head", HeadRef: "conveyor/task-observed", MergeCommitSHA: "landed", MergedBy: "github-operator"}
+	accepted, err = d.ReconcileObservedPullRequest(ctx, "app", "org/app", task.ID, retired)
+	if err != nil || accepted {
+		t.Fatalf("retired default name after attach-away accepted=%t err=%v", accepted, err)
 	}
 }
 

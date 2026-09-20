@@ -2,25 +2,25 @@ package dispatch
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
-	"reflect"
-	"strings"
-	"testing"
-	"time"
-
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/queue"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 	"github.com/kidus-tiliksew/conveyor/internal/trigger/github"
+	"net/http"
+	"net/http/httptest"
+	"reflect"
+	"strings"
+	"testing"
+	"time"
 )
 
 // This fixture exercises start-over, the post-commit hook/recovery, a minted
@@ -189,6 +189,7 @@ func TestStartOverPullRequestCloseForgeEndToEnd(t *testing.T) {
 					p.Attempts = 5
 					p.Number = 42
 					p.URL = "https://github.com/org/repo/pull/42"
+					p.ForgeErrorCategory = string(github.ForgeMutationUncertain)
 					if err = st.UpdatePullRequestClose(ctx, p); err != nil {
 						t.Fatal(err)
 					}
@@ -283,5 +284,60 @@ func TestStartOverPullRequestCloseForgeEndToEnd(t *testing.T) {
 				t.Fatalf("queued=%d completed=%d", queued, completed)
 			}
 		})
+	}
+}
+
+func TestObservePullRequestPrefersRecordedNumber(t *testing.T) {
+	var sawNumber, sawBranch bool
+	w := pullRequestCloseWorker{dispatcher: &Dispatcher{
+		PullRequestForNumber: func(_ context.Context, repo string, number int) (github.PullRequest, error) {
+			sawNumber = true
+			if repo != "org/repo" || number != 42 {
+				t.Fatalf("number observe repo=%s number=%d", repo, number)
+			}
+			return github.PullRequest{Number: 42, URL: "https://github.com/org/repo/pull/42", State: "open"}, nil
+		},
+		PullRequestForClose: func(context.Context, string, string) (github.PullRequest, error) {
+			sawBranch = true
+			return github.PullRequest{}, fmt.Errorf("branch lookup")
+		},
+	}}
+	pr, err := w.observePullRequest(t.Context(), core.PullRequestClose{Repository: "org/repo", Branch: "other-branch", Number: 42})
+	if err != nil || !sawNumber || sawBranch || pr.Number != 42 {
+		t.Fatalf("pr=%+v sawNumber=%t sawBranch=%t err=%v", pr, sawNumber, sawBranch, err)
+	}
+}
+
+func TestQueueStartedOverPRCopiesOpenedIdentity(t *testing.T) {
+	st := store.NewVolatileBackend()
+	defer st.Close()
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx = store.WithActor(ctx, store.Actor{ID: "user:restarting-operator", Role: core.ActorHuman})
+	cfg := &config.Config{Workspace: "demo", Repos: []config.Repo{{Name: "repo", GitHub: "org/repo", Base: "main"}}}
+	if _, err := st.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	old := core.Task{ID: core.NewTaskID(), Workspace: "demo", Title: "Start over", Repo: "repo", BaseBranch: "main", Branch: "conveyor/task-old", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: time.Now().UTC()}
+	if err := st.CreateTask(ctx, old); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AppendEvent(ctx, core.Event{TaskID: old.ID, Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]any{"number": 42, "url": "https://github.com/org/repo/pull/42"})}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := taskops.New(st).StartOver(ctx, core.TaskStartOverRequest{TaskID: old.ID, RequestID: "restart", Reason: "revised scope"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := New(st, cfg, nil)
+	retired, err := st.GetTask(ctx, old.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = d.queueStartedOverPR(ctx, retired); err != nil {
+		t.Fatal(err)
+	}
+	p, ok, err := st.GetPullRequestClose(ctx, old.ID)
+	if err != nil || !ok || p.Number != 42 || p.URL != "https://github.com/org/repo/pull/42" || p.SuccessorID != result.Successor.ID {
+		t.Fatalf("close=%+v exists=%v err=%v", p, ok, err)
 	}
 }

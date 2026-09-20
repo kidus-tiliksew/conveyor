@@ -422,6 +422,7 @@ func main() {
 						}
 						source := monitor.GitHubSource{
 							WorkspaceID: workspaceID, Repository: repositoryName, GitHubSlug: repository.GitHub, Run: runGitHub,
+							ResolveTask: assignmentResolveTask(st, repositoryName, repository.GitHub),
 							ReconcileMerged: func(callCtx context.Context, taskID string, pr githubtrigger.PullRequest) (bool, error) {
 								return d.ReconcileObservedPullRequest(callCtx, repositoryName, repository.GitHub, taskID, pr)
 							},
