@@ -247,6 +247,12 @@ func runTaskWithPresentationAndSetup(ctx context.Context, c *client, taskID, con
 			}
 			return localExecutionSetupRemedy(configPath, selectErr)
 		}
+		if selected.Order.Stage == core.StageVerify {
+			if err := probeConfiguredHarness(ctx, local, selected.Harness.Name); err != nil {
+				stopApp()
+				return localExecutionSetupRemedy(configPath, err)
+			}
+		}
 		preflightErr, checked := preflights[selected.Repository.URL]
 		if !checked {
 			preflightErr = c.preflightLocalGitCredential(contextWithLocalExecutionConfig(ctx, local), selected)
@@ -321,7 +327,7 @@ func runTaskWithPresentationAndSetup(ctx context.Context, c *client, taskID, con
 		// A proposal can arrive after the run-order read but before admission.
 		// Only this typed refusal is a wait; unrelated conflicts stay fatal.
 		var response *workerHTTPError
-		if selected.Order.Stage == core.StageReview && errors.As(runErr, &response) && response.StatusCode == http.StatusConflict && response.Code == "review_awaiting_proposal" {
+		if (selected.Order.Stage == core.StageReview || selected.Order.Stage == core.StageVerify) && errors.As(runErr, &response) && response.StatusCode == http.StatusConflict && response.Code == "review_awaiting_proposal" {
 			if app != nil {
 				app.EndStage("Review is waiting on a task-authored proposal; refreshing task state.")
 			} else {
@@ -351,7 +357,7 @@ func runTaskWithPresentationAndSetup(ctx context.Context, c *client, taskID, con
 }
 
 func taskRunReviewHasPendingProposals(item *workerservice.DispatchOrder) bool {
-	return item != nil && item.Order.Stage == core.StageReview && len(item.PendingProposals) > 0
+	return item != nil && (item.Order.Stage == core.StageReview || item.Order.Stage == core.StageVerify) && len(item.PendingProposals) > 0
 }
 
 func waitAtTaskRunGateAttached(ctx context.Context, c *client, controller *runTUIController, item workerservice.DispatchOrder, stage runTUIStage) (runGateDecision, string, error) {
@@ -794,6 +800,7 @@ func presentRunStageSummary(output io.Writer, stage core.Stage, duration time.Du
 		core.StageSpec:      "execution plan",
 		core.StageImplement: "implementation for review",
 		core.StageReview:    "review verdict",
+		core.StageVerify:    "verification result",
 	}[stage]
 	if runErr != nil {
 		outcome = "failed"

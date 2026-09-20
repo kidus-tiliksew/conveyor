@@ -101,6 +101,12 @@ const (
 	StageMonitor   Stage = "monitor"
 )
 
+// ValidWorkOrderStage is the closed executor-stage vocabulary (DEC-43;
+// feature-verification-kit-execution VK-2).
+func ValidWorkOrderStage(stage Stage) bool {
+	return stage == StageSpec || stage == StageImplement || stage == StageVerify || stage == StageReview
+}
+
 func InitialStage(level EscalationLevel) Stage {
 	if level == "" {
 		return StageImplement

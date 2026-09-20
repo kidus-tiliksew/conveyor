@@ -463,6 +463,10 @@ func TestWorkerClaimReconciliationIsReadOnlyAndServerAuthoritative(t *testing.T)
 		{id: "active", session: "active-session", lease: time.Minute},
 		{id: "expired", session: "expired-session", lease: time.Nanosecond},
 	} {
+		task.ID = "reconcile-task-" + fixture.id
+		if err = st.CreateTask(ctx, task); err != nil {
+			t.Fatal(err)
+		}
 		if err = st.CreateJob(ctx, core.Job{ID: fixture.id, TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}); err != nil {
 			t.Fatal(err)
 		}

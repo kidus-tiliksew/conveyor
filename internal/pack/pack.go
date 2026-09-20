@@ -20,7 +20,7 @@ import (
 
 type Loader struct{ Dir string }
 
-var pipelineStages = []core.Stage{core.StageTriage, core.StageSpec, core.StageImplement, core.StageReview}
+var pipelineStages = []core.Stage{core.StageTriage, core.StageSpec, core.StageImplement, core.StageVerify, core.StageReview}
 
 type Bundle struct {
 	roles        map[core.Stage]string
