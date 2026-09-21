@@ -54,9 +54,9 @@ func prepareVerificationClaimLoss(ctx context.Context, c VerificationCommand, ro
 	out.Rows = append(out.Rows, row)
 	out.Receipt.State = v.State
 	for _, other := range rows {
-		if other.Table == "verification_operations" && other.TaskID == c.Access.TaskID && other.ContextID == c.ContextID && other.RunID == v.ID && (other.State == "registered" || other.State == "dispatching") {
+		if other.Table == "verification_operations" && other.TaskID == c.Access.TaskID && verificationOperationRun(other) == v.ID && (other.State == "registered" || other.State == "dispatching") {
 			op := verificationDecode[VerificationOperation](other)
-			op.History = append(op.History, VerificationOperationObservation{State: "outcome_unknown", Actor: actor.ID, Source: "claim_lost", CapturedAt: now})
+			op.History = append(op.History, VerificationOperationObservation{State: "outcome_unknown", Actor: actor.ID, Source: "claim_lost", CapturedAt: now, ContextID: c.ContextID, RunID: v.ID, WorkOrderAttemptID: c.Access.WorkOrderAttemptID})
 			other.State, other.Body = "outcome_unknown", verificationJSON(op)
 			out.Rows = append(out.Rows, other)
 		}

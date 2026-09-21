@@ -127,7 +127,7 @@ func runVerificationRetryAndSeal(t *testing.T, v *verificationFixture) {
 		snapshot := v.snapshot(t)
 		op := snapshot.Operations[0]
 		observation := store.VerificationOperationObservation{State: "not_applied", Source: "read-only provider lookup", CapturedAt: time.Now().UTC()}
-		v.apply(t, store.VerificationCommand{Kind: store.VerificationObserveOperation, Operation: &store.VerificationOperation{ID: op.ID}, Observation: &observation})
+		v.apply(t, store.VerificationCommand{Kind: store.VerificationReconcileOperation, Operation: &store.VerificationOperation{ID: op.ID}, Observation: &observation})
 		oldRun := v.runID
 		v.start(t, "start-second")
 		if oldRun == v.runID {
@@ -203,32 +203,27 @@ func runVerificationRetryAndSeal(t *testing.T, v *verificationFixture) {
 		approval.Access.UserID = owner.ID
 		approval.Access.Claim = core.WorkOrderClaimIdentity{}
 		approval.Access.ClientToken = ""
-		receipt, err := v.x.Backend.ApplyVerification(ctx, approval)
-		requireOK(t, err)
-		retry.Attempt.ReplayAuthorizationID = receipt.ID
-		started, err := v.x.Backend.ApplyVerification(v.ctx, retry)
-		requireOK(t, err)
-		v.runID = started.ID
-		v.apply(t, store.VerificationCommand{Kind: store.VerificationTerminateAttempt, Attempt: &store.VerificationAttempt{State: "failed", Explanation: "second interruption"}})
-		retry.Key = "operator-third"
-		retry.RunID = v.runID
-		if _, err = v.x.Backend.ApplyVerification(v.ctx, retry); !errors.Is(err, store.ErrVerificationState) {
-			t.Fatalf("authorization reused: %v", err)
+		if _, err := v.x.Backend.ApplyVerification(ctx, approval); !errors.Is(err, store.ErrVerificationAccess) {
+			t.Fatalf("unbound authorization bypassed recovery: %v", err)
 		}
+
 	})
 	t.Run("SealAndLegacyProvenance", func(t *testing.T) {
 		legacy, err := v.x.Backend.CreateArtifact(v.ctx, core.Artifact{TaskID: v.access.TaskID, Name: "legacy.txt", ContentType: "text/plain", Role: core.ArtifactRoleTaskContext}, []byte("legacy context"))
 		requireOK(t, err)
 		before := v.snapshot(t)
-		if _, err = v.x.Backend.ApplyVerification(v.ctx, v.command(store.VerificationCommand{Kind: store.VerificationSeal})); !errors.Is(err, store.ErrVerificationState) {
+		submission := &store.VerificationSubmission{Outcome: "feedback", Coverage: verificationFixtureCoverage(v.snapshot(t)), Feedback: "Failed fixture requires code correction."}
+		if _, err = v.x.Backend.ApplyVerification(v.ctx, v.command(store.VerificationCommand{Kind: store.VerificationSeal, Submission: submission})); !errors.Is(err, store.ErrVerificationState) {
 			t.Fatalf("sealed running attempt: %v", err)
 		}
 		v.apply(t, store.VerificationCommand{Kind: store.VerificationTerminateAttempt, Attempt: &store.VerificationAttempt{State: "failed", Explanation: "fixture ends without acceptance"}})
-		v.apply(t, store.VerificationCommand{Kind: store.VerificationSeal})
-		if _, err = v.x.Backend.ApplyVerification(v.ctx, v.command(store.VerificationCommand{Kind: store.VerificationStartAttempt, Key: "late-start", Attempt: &store.VerificationAttempt{Subject: v.subject, SafeInputs: map[string]json.RawMessage{}}})); !errors.Is(err, store.ErrVerificationState) {
+		v.apply(t, store.VerificationCommand{Kind: store.VerificationSeal, Submission: submission})
+		if _, err = v.x.Backend.ApplyVerification(v.ctx, v.command(store.VerificationCommand{Kind: store.VerificationStartAttempt, Key: "late-start", Attempt: &store.VerificationAttempt{Subject: v.subject, SafeInputs: map[string]json.RawMessage{}}})); err == nil {
 			t.Fatalf("sealed context accepted mutation: %v", err)
 		}
-		after := v.snapshot(t)
+		ctx, owner := bootstrapOwner(t, v.x)
+		after, err := v.x.Backend.ReadVerification(ctx, store.VerificationAccess{TaskID: v.access.TaskID, UserID: owner.ID}, v.contextID)
+		requireOK(t, err)
 		if after.Contexts[0].SealedAt == nil || len(after.Evidence) != len(before.Evidence) {
 			t.Fatal("seal lost evidence")
 		}

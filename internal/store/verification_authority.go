@@ -34,7 +34,7 @@ func LoadVerificationAuthority(ctx context.Context, b Store, c VerificationComma
 }
 func VerifyVerificationAuthority(c VerificationCommand, a VerificationAuthoritySnapshot, o core.WorkOrder) error {
 	if c.Kind == VerificationCreateContext {
-		if c.Context == nil {
+		if c.Context == nil || c.Context.ReviewScope != o.ReviewScope || c.Context.BaselineSHA != o.BaselineSHA {
 			return ErrVerificationInvalid
 		}
 		pins := []core.VerificationPin{}
@@ -79,6 +79,25 @@ func VerifyVerificationAuthority(c VerificationCommand, a VerificationAuthorityS
 		}
 		if !found {
 			return ErrVerificationAccess
+		}
+	}
+	coverage := c.Coverage
+	if c.Submission != nil {
+		coverage = &c.Submission.Coverage
+	}
+	if coverage != nil {
+		planCovered := a.Plan == nil
+		for _, mapping := range coverage.Sources {
+			if mapping.Source.DocumentID == "approved_plan" {
+				planCovered = true
+			}
+			citation := VerificationCommand{Kind: VerificationRegisterObligation, Obligation: &VerificationObligation{Sources: []VerificationCitation{VerificationCitation(mapping.Source)}}}
+			if err := VerifyVerificationAuthority(citation, a, o); err != nil {
+				return err
+			}
+		}
+		if !planCovered {
+			return ErrVerificationInvalid
 		}
 	}
 	if c.Kind == VerificationRegisterObligation {

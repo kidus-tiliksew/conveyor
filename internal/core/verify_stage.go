@@ -11,9 +11,8 @@ func VerifyStageHead(task Task) string {
 	return task.ReviewedHeadSHA
 }
 
-// VerifyReviewReady is the completion placeholder. The operations-and-sealing
-// slice strengthens this predicate with the sealed result; this slice cannot
-// fabricate completion or accept a result from another revision (VK-2).
+// VerifyReviewReady requires a completed order carrying its sealed context.
+// Backend review acceptance rechecks the referenced result and pins (VK-7).
 func VerifyReviewReady(task Task, orders []WorkOrder) bool {
 	if !task.SetupContract.VerifyStage {
 		return true
@@ -23,7 +22,7 @@ func VerifyReviewReady(task Task, orders []WorkOrder) bool {
 		return false
 	}
 	for _, order := range orders {
-		if order.TaskID == task.ID && order.Stage == StageVerify && order.State == WorkOrderCompleted && order.HeadSHA == head {
+		if order.TaskID == task.ID && order.Stage == StageVerify && order.State == WorkOrderCompleted && order.HeadSHA == head && order.VerificationContextID != "" {
 			return true
 		}
 	}

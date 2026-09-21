@@ -12,7 +12,7 @@ func verifyReviewReadyTx(ctx context.Context, tx pgx.Tx, task core.Task) (bool, 
 		return true, nil
 	}
 	var ready bool
-	err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM work_orders WHERE workspace_id=$1 AND task_id=$2 AND stage='verify' AND state='completed' AND head_sha=$3 AND head_sha<>'')`, workspace(ctx), task.ID, core.VerifyStageHead(task)).Scan(&ready)
+	err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM work_orders WHERE workspace_id=$1 AND task_id=$2 AND stage='verify' AND state='completed' AND head_sha=$3 AND head_sha<>'' AND verification_context_id<>'')`, workspace(ctx), task.ID, core.VerifyStageHead(task)).Scan(&ready)
 	return ready, err
 }
 func requireVerifyReviewTx(ctx context.Context, tx pgx.Tx, task core.Task) error {

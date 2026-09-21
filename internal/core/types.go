@@ -660,6 +660,7 @@ type RateLimitHealth struct {
 // WorkOrder is the durable protocol boundary between Conveyor and an
 // operator-owned spec, implementation, or review agent.
 type WorkOrder struct {
+	VerificationContextID         string               `json:"verification_context_id,omitempty"`
 	ID                            string               `json:"id"`
 	TaskID                        string               `json:"task_id"`
 	JobID                         string               `json:"job_id"`
@@ -1074,6 +1075,7 @@ type ReviewPublication struct {
 // review attempt. GitHub publication is queued in the same store transaction;
 // the external GitHub side effects remain asynchronous.
 type ReviewDecision struct {
+	VerificationAssessment *VerificationAssessment
 	TaskID                 string
 	JobID                  string
 	ReviewWorkOrderID      string

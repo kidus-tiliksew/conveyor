@@ -15,7 +15,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 )
 
-var verificationTools = []string{"get_verification_context", "prepare_verification", "register_verification_obligation", "start_verification_attempt", "report_verification_outcome", "get_evidence_schemas", "submit_verification_evidence", "upload_verification_artifact", "read_verification_evidence", "get_verification_publication"}
+var verificationTools = []string{"prepare_verification_operation", "reconcile_verification_operation", "submit_verification", "get_verification_context", "prepare_verification", "register_verification_obligation", "start_verification_attempt", "report_verification_outcome", "get_evidence_schemas", "submit_verification_evidence", "upload_verification_artifact", "read_verification_evidence", "get_verification_publication"}
 
 func verificationRead(operation string) bool {
 	return operation == "get_verification_context" || operation == "get_evidence_schemas" || operation == "read_verification_evidence" || operation == "get_verification_publication"

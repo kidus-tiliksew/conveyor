@@ -262,3 +262,18 @@ func (p *Plane) StartOver(ctx context.Context, request core.TaskStartOverRequest
 	}
 	return backend.StartOverTaskCommand(ctx, TaskLease{taskID: request.TaskID, command: string(core.TaskStartOver), seal: &leaseSeal{}}, request)
 }
+
+// ExecuteVerification admits only the registered VK command vocabulary. Every
+// backend rechecks this lease under its own task and claim transaction lock.
+func ExecuteVerification[T any](ctx context.Context, backend Backend, taskID, command string, apply func(TaskLease) (T, error)) (T, error) {
+	var zero T
+	switch command {
+	case "context.create", "selection.record", "obligation.register", "attempt.start", "attempt.terminate", "attempt.authorize_retry", "attempt.reconcile_claim_loss", "operation.prepare", "operation.observe", "operation.reconcile", "evidence.write", "artifact.finalize", "chunk.stage", "chunk.expire", "publication.create", "context.seal":
+	default:
+		return zero, fmt.Errorf("unknown verification command %q", command)
+	}
+	if backend == nil || taskID == "" || apply == nil {
+		return zero, fmt.Errorf("verification command requires backend, task and handler")
+	}
+	return apply(TaskLease{taskID: taskID, command: "verification." + command, seal: &leaseSeal{}})
+}

@@ -46,6 +46,7 @@ type VerificationObligationRequest struct {
 	Contract             verification.Exercise `json:"contract"`
 }
 type VerificationStartRequest struct {
+	Coverage              store.VerificationCoverage   `json:"coverage"`
 	ContextID             string                       `json:"context_id"`
 	StartKey              string                       `json:"start_key"`
 	Subject               core.VerificationSubject     `json:"subject"`
@@ -91,10 +92,50 @@ type VerificationReadRequest struct {
 	Offset     int    `json:"offset,omitempty"`
 }
 
+type VerificationOperationRequest struct {
+	IdempotencyScope      string    `json:"idempotency_scope,omitempty"`
+	IdempotencyValidUntil time.Time `json:"idempotency_valid_until,omitempty"`
+	ContextID             string    `json:"context_id"`
+	RunID                 string    `json:"run_id"`
+	Action                string    `json:"action"`
+	OperationID           string    `json:"operation_id,omitempty"`
+	Key                   string    `json:"key,omitempty"`
+	StepID                string    `json:"step_id,omitempty"`
+	Target                string    `json:"target,omitempty"`
+	InputDigest           string    `json:"input_digest,omitempty"`
+	Source                string    `json:"source,omitempty"`
+	CapturedAt            time.Time `json:"captured_at,omitempty"`
+	ProviderReference     string    `json:"provider_reference,omitempty"`
+	ReplayAuthorizationID string    `json:"replay_authorization_id,omitempty"`
+}
+
+type VerificationReconcileRequest struct {
+	ContextID             string    `json:"context_id"`
+	OperationID           string    `json:"operation_id"`
+	Outcome               string    `json:"outcome"`
+	Source                string    `json:"source"`
+	CapturedAt            time.Time `json:"captured_at"`
+	ProviderReference     string    `json:"provider_reference,omitempty"`
+	ReplayAuthorizationID string    `json:"replay_authorization_id,omitempty"`
+}
+
+type VerificationSubmitRequest struct {
+	ContextID string                     `json:"context_id"`
+	Outcome   string                     `json:"outcome"`
+	Coverage  store.VerificationCoverage `json:"coverage"`
+	Feedback  string                     `json:"feedback,omitempty"`
+}
+
 // VerificationRequestType is the shared wire contract for REST, MCP and worker
 // compatibility handlers. Authority and store commands are never wire payloads.
 func VerificationRequestType(operation string) any {
 	switch operation {
+	case "prepare_verification_operation":
+		return &VerificationOperationRequest{}
+	case "reconcile_verification_operation":
+		return &VerificationReconcileRequest{}
+	case "submit_verification":
+		return &VerificationSubmitRequest{}
 	case "prepare_verification":
 		return &VerificationPrepareRequest{}
 	case "get_verification_context", "get_verification_publication":
@@ -169,7 +210,7 @@ func (s *Service) Verification(ctx context.Context, id, session, token, operatio
 	var o core.WorkOrder
 	var err error
 	if operation != "get_evidence_schemas" {
-		backend, a, o, err = s.verificationAccess(ctx, id, session, token, write)
+		backend, a, o, err = s.verificationAccess(ctx, id, session, token, write && operation != "submit_verification")
 		if err != nil {
 			return nil, err
 		}
@@ -186,6 +227,26 @@ func (s *Service) Verification(ctx context.Context, id, session, token, operatio
 	}
 	command := store.VerificationCommand{Access: a}
 	switch r := request.(type) {
+	case *VerificationOperationRequest:
+		command.ContextID, command.RunID, command.Key, command.ReplayAuthorizationID = r.ContextID, r.RunID, r.Key, r.ReplayAuthorizationID
+		command.Operation = &store.VerificationOperation{ID: r.OperationID, StepID: r.StepID, Target: r.Target, InputDigest: r.InputDigest, IdempotencyScope: r.IdempotencyScope, IdempotencyValidUntil: r.IdempotencyValidUntil}
+		switch r.Action {
+		case "prepare":
+			command.Kind = store.VerificationPrepareOperation
+		case "dispatching", "completed":
+			command.Kind = store.VerificationObserveOperation
+			command.Observation = &store.VerificationOperationObservation{State: r.Action, Source: r.Source, CapturedAt: r.CapturedAt, ProviderReference: r.ProviderReference}
+		default:
+			return nil, store.ErrVerificationInvalid
+		}
+	case *VerificationReconcileRequest:
+		command.Kind, command.ContextID, command.ReplayAuthorizationID = store.VerificationReconcileOperation, r.ContextID, r.ReplayAuthorizationID
+		command.Operation = &store.VerificationOperation{ID: r.OperationID}
+		command.Observation = &store.VerificationOperationObservation{State: r.Outcome, Source: r.Source, CapturedAt: r.CapturedAt, ProviderReference: r.ProviderReference}
+	case *VerificationSubmitRequest:
+		command.Kind, command.ContextID = store.VerificationSeal, r.ContextID
+		command.Submission = &store.VerificationSubmission{Outcome: r.Outcome, Coverage: r.Coverage, Feedback: r.Feedback}
+
 	case *VerificationPrepareRequest:
 		return s.prepareVerification(ctx, backend, a, o, *r)
 	case *VerificationContextRequest:
@@ -204,6 +265,7 @@ func (s *Service) Verification(ctx context.Context, id, session, token, operatio
 			command.Obligation.Sources = append(command.Obligation.Sources, store.VerificationCitation{DocumentID: source.DocumentID, Version: source.Version, SectionID: source.SectionID})
 		}
 	case *VerificationStartRequest:
+		command.Coverage = &r.Coverage
 		command.Kind, command.ContextID, command.Key = store.VerificationStartAttempt, r.ContextID, r.StartKey
 		if !validVerificationSubject(r.Subject) {
 			return nil, store.ErrVerificationInvalid
@@ -212,11 +274,7 @@ func (s *Service) Verification(ctx context.Context, id, session, token, operatio
 	case *VerificationOutcomeRequest:
 		command.Kind, command.ContextID, command.RunID = store.VerificationTerminateAttempt, r.ContextID, r.RunID
 		command.Attempt = &store.VerificationAttempt{State: r.State, Explanation: r.Explanation, ExitCode: r.ExitCode}
-		if r.State == "succeeded" {
-			command.ValidateSuccess = func(snapshot store.VerificationSnapshot) error {
-				return ValidateVerificationSuccess(snapshot, r.RunID, r.ExitCode)
-			}
-		}
+
 	case *VerificationEvidenceRequest:
 		command.Kind, command.ContextID, command.RunID, command.Key = store.VerificationWriteEvidence, r.ContextID, r.RunID, r.SubmissionKey
 		for _, raw := range r.Evidence {
@@ -332,7 +390,7 @@ func (s *Service) prepareVerification(ctx context.Context, b store.VerificationS
 		selectionPins[i] = verification.Pin{Kind: p.Kind, DocumentID: p.DocumentID, Version: p.Version}
 	}
 	selection := store.VerificationSelection{Receipt: verification.SelectionReceipt{SchemaVersion: 1, ContextPins: selectionPins, Stage: "verify", ManifestRevision: o.HeadSHA, SourceRevision: o.HeadSHA, Kits: []verification.KitReceipt{}, Diagnostics: []verification.Diagnostic{}}, Subjects: []store.VerificationSubjectContract{}}
-	vc := store.VerificationContext{RequestDigest: scopeHash, GoverningPins: pins, Discovery: []json.RawMessage{}}
+	vc := store.VerificationContext{ReviewScope: o.ReviewScope, BaselineSHA: o.BaselineSHA, RequestDigest: scopeHash, GoverningPins: pins, Discovery: []json.RawMessage{}}
 	seenRepos, seenKits := map[string]bool{}, map[string]bool{}
 	for _, source := range scope {
 		repo, ok := cfg.Repo(source.Repository)
@@ -410,114 +468,7 @@ func validVerificationSubject(s core.VerificationSubject) bool {
 // and attempt. The sealing task also calls this evaluator inside its transaction
 // (feature-verification-kit-execution VK-7.1; req-verification-kits REQ-4).
 func ValidateVerificationSuccess(snapshot store.VerificationSnapshot, runID string, exit *int) error {
-	var attempt *store.VerificationAttempt
-	for i := range snapshot.Attempts {
-		if snapshot.Attempts[i].ID == runID {
-			attempt = &snapshot.Attempts[i]
-		}
-	}
-	if attempt == nil {
-		return store.ErrVerificationAccess
-	}
-	var contract *verification.Exercise
-	for _, s := range snapshot.Selections {
-		for _, subject := range s.Subjects {
-			if subject.Subject == attempt.Subject {
-				v := subject.Contract
-				contract = &v
-			}
-		}
-	}
-	for _, o := range snapshot.Obligations {
-		if attempt.Subject.Kind == "ordinary" && o.ID == attempt.Subject.ObligationID && o.Digest == attempt.Subject.ContractDigest {
-			v := o.Contract
-			contract = &v
-		}
-	}
-	if contract == nil {
-		return store.ErrVerificationState
-	}
-	if (contract.Kind == "script" || contract.Kind == "hybrid") && (exit == nil || *exit != 0) {
-		return store.ErrVerificationState
-	}
-	counts := map[string]int{}
-	assertions := map[string]core.AssertionResultPayload{}
-	evidence := map[string]core.VerificationEvidence{}
-	execution, interaction := false, false
-	for _, record := range snapshot.Evidence {
-		e := record.Envelope
-		if e.RunID != runID || e.Subject != attempt.Subject {
-			continue
-		}
-		evidence[e.ID] = e
-		counts[e.Type]++
-		switch e.Type {
-		case "assertion_result":
-			var p core.AssertionResultPayload
-			if json.Unmarshal(e.Payload, &p) != nil {
-				return store.ErrVerificationInvalid
-			}
-			if _, ok := assertions[p.AssertionID]; ok {
-				return store.ErrVerificationInvalid
-			}
-			assertions[p.AssertionID] = p
-		case "execution_report":
-			var p core.ExecutionReportPayload
-			if json.Unmarshal(e.Payload, &p) == nil && p.ExitCode != nil && *p.ExitCode == 0 && p.TimedOut != nil && !*p.TimedOut && p.Cancelled != nil && !*p.Cancelled {
-				execution = true
-			}
-		case "operator_observation":
-			interaction = true
-		}
-	}
-	if (contract.Kind == "script" || contract.Kind == "hybrid") && !execution {
-		return store.ErrVerificationState
-	}
-	if (contract.Kind == "interactive" || contract.Kind == "hybrid") && !interaction {
-		return store.ErrVerificationState
-	}
-	if contract.Kind == "observation" && len(contract.EvidenceOutputs) == 0 {
-		return store.ErrVerificationState
-	}
-	for _, output := range contract.EvidenceOutputs {
-		if counts[output.Type] < output.MinimumItems {
-			return store.ErrVerificationState
-		}
-	}
-	for _, id := range contract.RequiredAssertions {
-		p, ok := assertions[id]
-		if !ok || p.Outcome != "pass" || len(p.Supporting) == 0 {
-			return store.ErrVerificationState
-		}
-		for _, ref := range p.Supporting {
-			if ref.EvidenceID != "" {
-				if _, ok := evidence[ref.EvidenceID]; !ok {
-					return store.ErrVerificationInvalid
-				}
-			} else {
-				found := false
-				for _, e := range evidence {
-					for _, a := range e.Artifacts {
-						if a.ArtifactID == ref.ArtifactID && a.SHA256 == ref.SHA256 {
-							found = true
-						}
-					}
-				}
-				if !found {
-					return store.ErrVerificationInvalid
-				}
-			}
-		}
-	}
-	for _, op := range snapshot.Operations {
-		if op.RunID == runID && len(op.History) > 0 {
-			state := op.History[len(op.History)-1].State
-			if state != "applied" && state != "not_applied" && state != "completed" {
-				return store.ErrVerificationState
-			}
-		}
-	}
-	return nil
+	return store.ValidateVerificationSuccess(snapshot, runID, exit)
 }
 
 // ReconcileVerificationClaims is called by the daemon workspace reconciliation

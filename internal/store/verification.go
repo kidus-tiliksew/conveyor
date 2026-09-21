@@ -38,6 +38,11 @@ type VerificationAccess struct {
 }
 
 type VerificationContext struct {
+	Coverage    *VerificationCoverage `json:"Coverage,omitempty"`
+	ReviewScope string                `json:"ReviewScope,omitempty"`
+	BaselineSHA string                `json:"BaselineSHA,omitempty"`
+	Result      *VerificationResult   `json:"Result,omitempty"`
+
 	Discovery     []json.RawMessage
 	RequestDigest string
 
@@ -72,11 +77,17 @@ type VerificationObligation struct {
 	CreatedAt                                     time.Time
 }
 type VerificationReplayAuthorization struct {
+	Original                     core.VerificationBinding  `json:"Original,omitzero"`
+	Successor                    *core.VerificationBinding `json:"Successor,omitempty"`
+	RequestDigest                string                    `json:"RequestDigest,omitempty"`
+	Disposition                  string                    `json:"Disposition,omitempty"`
+	InputDigest                  string                    `json:"InputDigest,omitempty"`
 	ID, ContextID, Actor, Reason string
 	At                           time.Time
 }
 
 type VerificationAttempt struct {
+	CoverageDigest                                         string `json:"CoverageDigest,omitempty"`
 	Recovery                                               []VerificationReplayAuthorization
 	ReplayAuthorizationID                                  string
 	ID, ContextID, StartKey, WorkOrderAttemptID, CreatedBy string
@@ -90,11 +101,28 @@ type VerificationAttempt struct {
 	EndedAt                                                *time.Time
 	ExitCode                                               *int
 }
+type VerificationOperationAuthorization struct {
+	ID, RequestID, Actor, Reason, Disposition, InputDigest string
+	Original                                               core.VerificationBinding  `json:"Original,omitzero"`
+	Successor                                              *core.VerificationBinding `json:"Successor,omitempty"`
+	At                                                     time.Time
+}
+
 type VerificationOperationObservation struct {
+	ContextID          string `json:"ContextID,omitempty"`
+	WorkOrderAttemptID string `json:"WorkOrderAttemptID,omitempty"`
+	RunID              string `json:"RunID,omitempty"`
+
 	State, Actor, Source, ProviderReference string
 	CapturedAt                              time.Time
 }
 type VerificationOperation struct {
+	IdempotencyScope      string                               `json:"IdempotencyScope,omitempty"`
+	IdempotencyValidUntil time.Time                            `json:"IdempotencyValidUntil,omitzero"`
+	Original              core.VerificationBinding             `json:"Original,omitzero"`
+	Successors            []core.VerificationBinding           `json:"Successors,omitempty"`
+	Recovery              []VerificationOperationAuthorization `json:"Recovery,omitempty"`
+
 	ID, ContextID, RunID, Key, SubjectKey, StepID, Target, InputDigest, RetryPolicy string
 	CreatedBy                                                                       string
 	CreatedAt                                                                       time.Time
@@ -130,6 +158,8 @@ type VerificationArtifactInput struct {
 	SanitationRecord, MaskingAttestation string
 }
 type VerificationReceipt struct {
+	DispatchAuthorized bool
+
 	State         string
 	ID, Digest    string
 	EvidenceIDs   []string
@@ -138,7 +168,11 @@ type VerificationReceipt struct {
 }
 
 type VerificationCommand struct {
-	ValidateSuccess       func(VerificationSnapshot) error `json:"-"`
+	Coverage   *VerificationCoverage
+	Submission *VerificationSubmission
+
+	ReplayAuthorizationID string
+
 	Access                VerificationAccess
 	Kind                  string
 	ContextID, RunID, Key string
@@ -168,6 +202,7 @@ const (
 	VerificationTerminateAttempt   = "attempt.terminate"
 	VerificationPrepareOperation   = "operation.prepare"
 	VerificationObserveOperation   = "operation.observe"
+	VerificationReconcileOperation = "operation.reconcile"
 	VerificationWriteEvidence      = "evidence.write"
 	VerificationStageChunk         = "chunk.stage"
 	VerificationExpireChunks       = "chunk.expire"

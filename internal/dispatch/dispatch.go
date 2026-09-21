@@ -575,6 +575,7 @@ func (d *Dispatcher) createWorkOrder(ctx context.Context, cfg *config.Config, ta
 	}
 	if task.NextStage == core.StageVerify {
 		order.HeadSHA = core.VerifyStageHead(task)
+		order.ReviewScope, order.BaselineSHA = task.RefreshReviewScope, task.RefreshBaselineSHA
 	}
 	created, err := taskops.ExecuteWorkOrder(ctx, d.Store, task.ID, core.WorkOrderCmdCreate, func(lease taskops.TaskLease) (bool, error) {
 		return d.Store.CreateStageWorkOrderCommand(ctx, lease, job, order)
@@ -1310,11 +1311,11 @@ func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task c
 			}
 		}
 	}
-	if err := taskops.New(d.Store).AcceptReviewDecision(ctx, core.ReviewDecision{
+	decision := core.ReviewDecision{
 		TaskID: task.ID, JobID: job.ID, ReviewWorkOrderID: reviewWorkOrderID,
 		Verdict: result.Verdict, ReasonCode: result.ReasonCode, Summary: result.Summary,
 		Feedback: result.Feedback, ReviewedCommitSHA: reviewedCommitSHA, EvidenceIDs: evidenceIDs,
-		RequirementCitations: result.RequirementCitations, DoneCriteriaAssessment: result.DoneCriteriaCoverage, GovernanceAssessment: result.GovernanceAssessment, Reviewer: reviewer,
+		VerificationAssessment: result.VerificationAssessment, RequirementCitations: result.RequirementCitations, DoneCriteriaAssessment: result.DoneCriteriaCoverage, GovernanceAssessment: result.GovernanceAssessment, Reviewer: reviewer,
 		ReviewerModel: model, ReviewerSession: "distinct", SameModelAsImplementer: same,
 		ClaimSession: func() string {
 			if claimAuthorized {
@@ -1327,9 +1328,24 @@ func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task c
 		RequiredHarness: requiredHarness, RequiredEffort: requiredEffort, ModelEnforcement: enforcement,
 		InterventionActorID: "review:" + session, PublicationEligible: publicationEligible,
 		Level: task.Level, PolicyVersion: task.PolicyVersion, MergeApproval: task.MergeApproval, MaxBounces: cfg.MaxBounces,
-	}); err != nil {
+	}
+	if task.SetupContract.VerifyStage {
+		reader, ok := d.Store.(store.VerificationReviewReader)
+		if !ok {
+			return store.ErrVerificationState
+		}
+		state, err := reader.ReadVerificationReview(ctx, task.ID, reviewWorkOrderID)
+		if err != nil {
+			return err
+		}
+		if err = store.ValidateSealedVerificationReview(task, &decision, state); err != nil {
+			return err
+		}
+	}
+	if err := taskops.New(d.Store).AcceptReviewDecision(ctx, decision); err != nil {
 		return err
 	}
+
 	current, err := d.Store.GetTask(ctx, task.ID)
 	if err != nil {
 		return err

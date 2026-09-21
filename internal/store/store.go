@@ -536,7 +536,18 @@ func (lookup ExecutionDocumentLookup) GetSpecVersion(ctx context.Context, id str
 
 // ValidateReviewAcceptance enforces plan coverage before any review acceptance
 // side effect (REQ-4, req-task-centric-delivery; component-work-orders).
-func ValidateReviewAcceptance(ctx context.Context, reader ExecutionDocumentReader, task core.Task, decision *core.ReviewDecision) error {
+func ValidateReviewAcceptance(ctx context.Context, reader ExecutionDocumentReader, task core.Task, decision *core.ReviewDecision, verification ...VerificationReviewState) error {
+	if decision.VerificationAssessment != nil {
+		decision.VerificationAssessment.Actor = ActorFromContext(ctx).ID
+	}
+	if task.SetupContract.VerifyStage {
+		if len(verification) != 1 {
+			return ErrVerificationState
+		}
+		if err := ValidateSealedVerificationReview(task, decision, verification[0]); err != nil {
+			return err
+		}
+	}
 	approved, exists, err := ApprovedExecutionDocument(ctx, reader, task)
 	if err != nil {
 		return err
@@ -1505,6 +1516,7 @@ type memoryDecisionSweepKey struct {
 }
 
 type memory struct {
+	verificationRows            map[string]VerificationRow
 	repositoryInstalls          map[memoryScopedKey][]core.RepositoryInstallTask
 	mu                          sync.RWMutex
 	tasks                       map[string]core.Task
@@ -2518,7 +2530,7 @@ func (m *memory) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.
 		}
 		return core.SpecVersion{}, false, nil
 	})
-	if err := ValidateReviewAcceptance(ctx, lookup, task, &decision); err != nil {
+	if err := ValidateReviewAcceptance(ctx, lookup, task, &decision, m.verificationReviewStateLocked(task, decision.ReviewWorkOrderID)); err != nil {
 		return err
 	}
 	job, _, ok := m.findJobLocked(decision.JobID)
@@ -2820,11 +2832,12 @@ func reviewDecisionPayload(decision core.ReviewDecision) []byte {
 		"review_work_order_id": decision.ReviewWorkOrderID, "verdict": decision.Verdict,
 		"reason_code": decision.ReasonCode, "summary": decision.Summary, "feedback": decision.Feedback,
 		"reviewed_commit_sha": decision.ReviewedCommitSHA, "reviewer": decision.Reviewer,
-		"evidence_ids":           decision.EvidenceIDs,
-		"requirement_citations":  decision.RequirementCitations,
-		"done_criteria_coverage": decision.DoneCriteriaAssessment,
-		"governance_assessment":  decision.GovernanceAssessment,
-		"reviewer_model":         decision.ReviewerModel, "reviewer_session": decision.ReviewerSession,
+		"evidence_ids":            decision.EvidenceIDs,
+		"requirement_citations":   decision.RequirementCitations,
+		"done_criteria_coverage":  decision.DoneCriteriaAssessment,
+		"governance_assessment":   decision.GovernanceAssessment,
+		"verification_assessment": decision.VerificationAssessment,
+		"reviewer_model":          decision.ReviewerModel, "reviewer_session": decision.ReviewerSession,
 		"same_model_as_implementer": decision.SameModelAsImplementer,
 		"review_round":              decision.ReviewRound, "review_seat": decision.ReviewSeat,
 		"review_kind": decision.ReviewKind, "review_scope": decision.ReviewScope,
@@ -3921,6 +3934,11 @@ func WorkOrderRecoverySupersessionError(task core.Task, order core.WorkOrder, ta
 }
 
 func (m *memory) RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, id, requestID, direction string, queueTimeout time.Duration, refreeze ...*RecoveryRefreeze) (core.WorkOrder, error) {
+	clean, sanitationErr := SanitizeVerificationRecovery(ctx, nil)
+	if sanitationErr != nil {
+		return core.WorkOrder{}, sanitationErr
+	}
+	ctx = clean
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var err error
@@ -3935,6 +3953,23 @@ func (m *memory) RecoverWorkOrderCommand(ctx context.Context, lease taskops.Task
 		return core.WorkOrder{}, fmt.Errorf("work-order queue timeout must be positive")
 	}
 	workspace, _ := WorkspaceFromContext(ctx)
+	var verificationRows []VerificationRow
+	var verificationEvents []core.Event
+	if VerificationRecoveryFromContext(ctx) != nil {
+		actor := ActorFromContext(ctx)
+		member := memoryScopedKey{workspace: workspace, id: strings.TrimPrefix(actor.ID, "user:")}
+		if actor.Role != core.ActorUser || !m.workspaceMembers[member] || !core.RoleAllows(m.workspaceMemberRoles[member], core.CapabilityOperateGates) {
+			return core.WorkOrder{}, ErrVerificationAccess
+		}
+		old := m.workOrders[id]
+		verificationRows, verificationEvents, err = PrepareVerificationRecovery(ctx, m.tasks[old.TaskID], old, m.verificationRowsLocked(workspace, old.TaskID), requestID, time.Now().UTC())
+		if err != nil {
+			return core.WorkOrder{}, err
+		}
+		if err = VerificationFault(ctx, "recovery"); err != nil {
+			return core.WorkOrder{}, err
+		}
+	}
 	key := workspace + "/" + id + "/" + requestID
 	if _, exists := m.recoveries[key]; exists {
 		order, ok := m.workOrders[id]
@@ -3956,7 +3991,9 @@ func (m *memory) RecoverWorkOrderCommand(ctx context.Context, lease taskops.Task
 	if workspace != "" && m.tasks[order.TaskID].Workspace != workspace {
 		return core.WorkOrder{}, fmt.Errorf("work order %s not found", id)
 	}
-	order = m.refreshWorkOrderLocked(ctx, order, time.Now().UTC())
+	if VerificationRecoveryFromContext(ctx) == nil {
+		order = m.refreshWorkOrderLocked(ctx, order, time.Now().UTC())
+	}
 	eligibleQueued := order.State == core.WorkOrderQueued && (order.LastAttemptOutcome != "" || order.RetrySuppressed || !order.NextRetryAt.IsZero())
 	if !eligibleQueued && order.State != core.WorkOrderStale && order.State != core.WorkOrderTimedOut {
 		return core.WorkOrder{}, fmt.Errorf("work order %s is not released, expired, or retry-suppressed", id)
@@ -4022,6 +4059,12 @@ func (m *memory) RecoverWorkOrderCommand(ctx context.Context, lease taskops.Task
 			actor := ActorFromContext(ctx)
 			m.appendEventLocked(ctx, core.Event{TaskID: task.ID, JobID: order.JobID, Kind: "task.setup.refrozen", ActorID: actor.ID, ActorRole: actor.Role, Payload: core.JSONPayload(map[string]any{"prior": priorContract, "new": change.Setup, "request_id": requestID, "work_order_id": order.ID, "actor": actor.ID}), At: now})
 		}
+	}
+	for _, row := range verificationRows {
+		m.verificationRows[workspace+"\x00"+row.Table+"\x00"+row.ID] = row
+	}
+	for _, event := range verificationEvents {
+		m.appendEventLocked(ctx, event)
 	}
 	m.workOrders[id] = order
 	if job, index, exists := m.findJobLocked(order.JobID); exists {
@@ -4172,6 +4215,7 @@ func (m *memory) UpdateWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 	if command == core.WorkOrderCmdSubmitForReview && order.Stage == core.StageImplement && order.HeadSHA != "" {
 		task := m.tasks[order.TaskID]
 		task.ReviewedHeadSHA = order.HeadSHA
+		m.supersedeVerificationLocked(ctx, task.ID, order.HeadSHA)
 		m.tasks[order.TaskID] = task
 	}
 	order.UpdatedAt = time.Now().UTC()
@@ -5982,6 +6026,7 @@ func (m *memory) MarkTaskApprovalStale(ctx context.Context, id, approvedHeadSHA,
 	}
 	task.ApprovedHeadSHA, task.ApprovalStale = approvedHeadSHA, true
 	task.RefreshBaselineSHA, task.RefreshHeadSHA, task.RefreshReviewScope = approvedHeadSHA, newHeadSHA, scope
+	m.supersedeVerificationLocked(ctx, id, newHeadSHA)
 	m.tasks[id] = task
 	m.appendEventLocked(ctx, core.Event{TaskID: id, Kind: "approval.stale", Payload: core.JSONPayload(map[string]any{"workspace": task.Workspace, "task_id": id, "reason_code": reason, "approved_head": approvedHeadSHA, "new_head": newHeadSHA, "review_scope": scope})})
 	return true, nil
@@ -6006,6 +6051,7 @@ func (m *memory) AdvanceTaskRefreshHead(ctx context.Context, id, newHeadSHA stri
 	}
 	prior := task.RefreshHeadSHA
 	task.RefreshHeadSHA = newHeadSHA
+	m.supersedeVerificationLocked(ctx, id, newHeadSHA)
 	m.tasks[id] = task
 	m.appendEventLocked(ctx, core.Event{TaskID: id, Kind: "review.refresh_head_advanced", Payload: core.JSONPayload(map[string]any{"workspace": task.Workspace, "task_id": id, "approved_head": task.RefreshBaselineSHA, "prior_head": prior, "new_head": newHeadSHA, "review_scope": task.RefreshReviewScope})})
 	return nil

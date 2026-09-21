@@ -1083,6 +1083,10 @@ func TestMCPHumanReservedClassificationRejectsOmittedReservedTool(t *testing.T) 
 }
 
 var mcpAgentSafeReasons = map[string]string{
+	"prepare_verification_operation":   "requires the exact live verify claim and retains one-use dispatch receipts",
+	"reconcile_verification_operation": "requires the exact live verify claim and cannot issue operator recovery authorization",
+	"submit_verification":              "seals validated evidence under the exact claim without judging review acceptance",
+
 	"get_verification_context":         "requires exact live verification authority or an authorized workspace read",
 	"prepare_verification":             "requires exact live verification authority or an authorized workspace read",
 	"register_verification_obligation": "requires exact live verification authority or an authorized workspace read",

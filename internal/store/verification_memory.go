@@ -10,6 +10,7 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/queue/logqueue"
+	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
 type verificationSecrets []string
@@ -19,6 +20,13 @@ func (s verificationSecrets) ListGitHubAppKeysForRedaction(context.Context) ([]s
 }
 
 func (m *volatileMemory) ApplyVerification(ctx context.Context, c VerificationCommand) (VerificationReceipt, error) {
+	return taskops.ExecuteVerification(ctx, m, c.Access.TaskID, c.Kind, func(lease taskops.TaskLease) (VerificationReceipt, error) { return m.applyVerification(ctx, lease, c) })
+}
+
+func (m *volatileMemory) applyVerification(ctx context.Context, lease taskops.TaskLease, c VerificationCommand) (VerificationReceipt, error) {
+	if !lease.ValidForCommand(c.Access.TaskID, "verification."+c.Kind) {
+		return VerificationReceipt{}, ErrVerificationAccess
+	}
 	if err := BindVerificationEvidenceAuthority(ctx, m, &c); err != nil {
 		return VerificationReceipt{}, err
 	}
@@ -38,7 +46,7 @@ func (m *volatileMemory) ApplyVerification(ctx context.Context, c VerificationCo
 			return VerificationReceipt{}, err
 		}
 	} else if c.Access.UserID == "" {
-		if err = VerifyVerificationClaim(ctx, c.Access, m.tasks[c.Access.TaskID], m.workOrders[c.Access.WorkOrderID], true, now); err != nil {
+		if err = VerifyVerificationClaim(ctx, c.Access, m.tasks[c.Access.TaskID], m.workOrders[c.Access.WorkOrderID], c.Kind != VerificationSeal, now); err != nil {
 			return VerificationReceipt{}, err
 		}
 	}
@@ -53,6 +61,20 @@ func (m *volatileMemory) ApplyVerification(ctx context.Context, c VerificationCo
 	}
 	if len(mutation.Rows) == 0 && len(mutation.DeleteChunks) == 0 {
 		return mutation.Receipt, nil
+	}
+	var completion *VerificationCompletion
+	var jobIndex int
+	if c.Kind == VerificationSeal {
+		c = VerificationSealedCommand(c, mutation)
+		job, index, ok := m.findJobLocked(m.workOrders[c.Access.WorkOrderID].JobID)
+		if !ok {
+			return VerificationReceipt{}, ErrVerificationState
+		}
+		v, e := PrepareVerificationCompletion(ctx, m.tasks[c.Access.TaskID], m.workOrders[c.Access.WorkOrderID], job, rows, m.events[c.Access.TaskID], c, now)
+		if e != nil {
+			return VerificationReceipt{}, e
+		}
+		completion, jobIndex = &v, index
 	}
 	// Artifact changes are staged against a copied map and rolled back before
 	// releasing the mutex on every failure. All fallible checks precede the one
@@ -104,11 +126,22 @@ func (m *volatileMemory) ApplyVerification(ctx context.Context, c VerificationCo
 	for _, id := range mutation.DeleteChunks {
 		delete(m.verificationRows, ws+"\x00verification_upload_chunks\x00"+id)
 	}
+	if completion != nil {
+		m.tasks[completion.Task.ID] = completion.Task
+		m.workOrders[completion.Order.ID] = completion.Order
+		m.jobs[completion.Job.TaskID][jobIndex] = completion.Job
+		if completion.Intervention != nil {
+			m.interventions[completion.Task.ID] = append(m.interventions[completion.Task.ID], *completion.Intervention)
+		}
+		for _, e := range completion.Events {
+			m.appendEventLocked(ctx, e)
+		}
+	}
 	m.appendEventLocked(ctx, mutation.Event)
 	committed = true
 	return mutation.Receipt, nil
 }
-func (m *volatileMemory) verificationRowsLocked(ws, task string) []VerificationRow {
+func (m *memory) verificationRowsLocked(ws, task string) []VerificationRow {
 	var rows []VerificationRow
 	for key, row := range m.verificationRows {
 		if len(key) > len(ws) && key[:len(ws)+1] == ws+"\x00" && (row.TaskID == task || row.Table == "verification_operations") {
@@ -266,4 +299,12 @@ func (m *volatileMemory) ReconcileVerificationClaims(ctx context.Context) (int, 
 		count++
 	}
 	return count, nil
+}
+
+func (m *volatileMemory) RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, id, requestID, direction string, timeout time.Duration, refreeze ...*RecoveryRefreeze) (core.WorkOrder, error) {
+	clean, err := SanitizeVerificationRecovery(ctx, m)
+	if err != nil {
+		return core.WorkOrder{}, err
+	}
+	return m.memory.RecoverWorkOrderCommand(clean, lease, id, requestID, direction, timeout, refreeze...)
 }

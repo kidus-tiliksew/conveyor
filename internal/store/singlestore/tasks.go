@@ -458,6 +458,9 @@ func (s *Store) MarkTaskApprovalStale(ctx context.Context, id, approved, newHead
 		if err = taskWrite(ctx, tx, id, map[string]any{"approved_head_sha": approved, "approval_stale": true, "refresh_baseline_sha": approved, "refresh_head_sha": newHead, "refresh_review_scope": scope}); err != nil {
 			return err
 		}
+		if err = s.supersedeVerificationTx(ctx, tx, id, newHead); err != nil {
+			return err
+		}
 		created = true
 		return taskEvent(ctx, tx, core.Event{TaskID: id, Kind: "approval.stale", Payload: core.JSONPayload(map[string]any{"workspace": t.Workspace, "task_id": id, "reason_code": reason, "approved_head": approved, "new_head": newHead, "review_scope": scope})})
 	})
@@ -480,6 +483,9 @@ func (s *Store) AdvanceTaskRefreshHead(ctx context.Context, id, head string) err
 			return nil
 		}
 		if err = taskWrite(ctx, tx, id, map[string]any{"refresh_head_sha": head}); err != nil {
+			return err
+		}
+		if err = s.supersedeVerificationTx(ctx, tx, id, head); err != nil {
 			return err
 		}
 		return taskEvent(ctx, tx, core.Event{TaskID: id, Kind: "review.refresh_head_advanced", Payload: core.JSONPayload(map[string]any{"workspace": t.Workspace, "task_id": id, "approved_head": t.RefreshBaselineSHA, "prior_head": t.RefreshHeadSHA, "new_head": head, "review_scope": t.RefreshReviewScope})})
