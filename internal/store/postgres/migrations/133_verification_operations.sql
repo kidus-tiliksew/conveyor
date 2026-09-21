@@ -1,4 +1,4 @@
--- req-verification-kits REQ-4/REQ-7; feature-verification-kit-execution VK-6/VK-7 (DEC-43).
+-- req-verification-kits REQ-4/REQ-7, feature-verification-kit-execution VK-6/VK-7 (DEC-43).
 -- VK-7: only the atomic sealing transaction sets this binding. Existing
 -- completed scaffold orders have no sealed result and remain unapprovable.
 ALTER TABLE work_orders ADD COLUMN verification_context_id TEXT NOT NULL DEFAULT '';
