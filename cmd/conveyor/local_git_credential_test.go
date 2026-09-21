@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -250,31 +251,35 @@ func TestWorkerLocalGitPreflightCachesSuccessfulRepositoryBeforeClaims(t *testin
 	t.Setenv("CONVEYOR_WORKER_TOKEN", "enrolled-worker")
 	configPath := writeWorkerLocalExecutionConfig(t, []string{"true", "{prompt}", "{mcp_config}"}, []string{"true"})
 	var checked, claims atomic.Int32
-	var specClaimed, reviewClaimed atomic.Bool
+	var mu sync.Mutex
+	claimed := map[string]struct{}{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/v1/worker/heartbeat":
 			_ = json.NewEncoder(w).Encode(core.Worker{ID: "worker"})
 		case "/v1/worker/work-orders":
+			mu.Lock()
 			orders := []workerservice.DispatchOrder{}
 			for _, stage := range []core.Stage{core.StageSpec, core.StageReview} {
-				if (stage == core.StageSpec && specClaimed.Load()) || (stage == core.StageReview && reviewClaimed.Load()) {
+				if _, ok := claimed[string(stage)]; ok {
 					continue
 				}
 				orders = append(orders, workerservice.DispatchOrder{Task: core.Task{ID: string(stage), Repo: "repo"}, Repository: config.Repo{URL: "https://example.test/repo.git"}, Order: core.WorkOrder{ID: string(stage), Stage: stage, ReviewSeat: 1, Claimable: true}})
 			}
+			mu.Unlock()
 			_ = json.NewEncoder(w).Encode(orders)
 		default:
 			if strings.HasSuffix(r.URL.Path, "/claim") {
 				if checked.Load() != 1 {
 					t.Error("claimed before successful preflight")
 				}
-				claims.Add(1)
-				if strings.Contains(r.URL.Path, "/spec/") {
-					specClaimed.Store(true)
-				} else {
-					reviewClaimed.Store(true)
+				id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v1/worker/work-orders/"), "/claim")
+				mu.Lock()
+				if _, ok := claimed[id]; !ok {
+					claimed[id] = struct{}{}
+					claims.Add(1)
 				}
+				mu.Unlock()
 				http.Error(w, "another claimant won", http.StatusConflict)
 			} else {
 				http.NotFound(w, r)
