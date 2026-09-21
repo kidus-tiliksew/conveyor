@@ -3047,6 +3047,40 @@ func TestWorkerExecuteUsesClaimedTaskBranch(t *testing.T) {
 	}
 }
 
+func TestWorkerExecuteReleasesClaimOnTaskIDMismatch(t *testing.T) {
+	released := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/claim"):
+			_ = json.NewEncoder(w).Encode(workerservice.ClaimDelivery{
+				WorkOrder: core.WorkOrder{ID: "mismatch-order", TaskID: "claimed-task", State: core.WorkOrderClaimed, AttemptID: "attempt-mismatch", LeaseExpiresAt: time.Now().Add(time.Minute)},
+				Task:      core.Task{ID: "claimed-task", Branch: "conveyor/claimed-task"},
+			})
+		case strings.HasSuffix(r.URL.Path, "/release"):
+			released <- struct{}{}
+			_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: "mismatch-order"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	item := workerservice.DispatchOrder{
+		Order:    core.WorkOrder{ID: "mismatch-order", TaskID: "queued-task", Stage: core.StageReview},
+		Task:     core.Task{ID: "queued-task", Branch: "conveyor/queued-task"},
+		Dispatch: "worker",
+		Harness:  config.Harness{Name: "helper", Command: []string{os.Args[0], "-test.run=TestWorkerLifecycleHelper", "--", "env-branch"}},
+	}
+	err := runHarnessChildWithOutput(t.Context(), &client{base: server.URL, workspace: "demo"}, "worker-credential", item, io.Discard, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), `claimed task identity "claimed-task" does not match queued task "queued-task"`) {
+		t.Fatalf("error=%v", err)
+	}
+	select {
+	case <-released:
+	case <-time.After(time.Second):
+		t.Fatal("claim was not released after task identity mismatch")
+	}
+}
+
 func TestWorkerLifecycleHelper(t *testing.T) {
 	if len(os.Args) < 2 {
 		return
