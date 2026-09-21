@@ -10,11 +10,15 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
-func newAggregateOrder(t *testing.T, x Fixture) core.WorkOrder {
+func newAggregateOrder(t *testing.T, x Fixture, stages ...core.Stage) core.WorkOrder {
 	t.Helper()
-	task := newAggregateTask(t, x)
-	job := core.Job{ID: task.ID + "-implement-1", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
-	order := core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: job.Stage, State: core.WorkOrderQueued, QueueEnteredAt: task.CreatedAt, QueueDeadline: task.CreatedAt.Add(time.Hour), CreatedAt: task.CreatedAt}
+	stage := core.StageImplement
+	if len(stages) > 0 {
+		stage = stages[0]
+	}
+	task := newAggregateTask(t, x, stage)
+	job := core.Job{ID: task.ID + "-" + string(stage) + "-1", TaskID: task.ID, Stage: stage, State: core.JobPending}
+	order := core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: job.Stage, State: core.WorkOrderQueued, HeadSHA: task.ReviewedHeadSHA, QueueEnteredAt: task.CreatedAt, QueueDeadline: task.CreatedAt.Add(time.Hour), CreatedAt: task.CreatedAt}
 	created, err := CreateStageWorkOrder(x.Context, x.Backend, job, order)
 	requireOK(t, err)
 	if !created {
@@ -29,6 +33,8 @@ func newAggregateOrder(t *testing.T, x Fixture) core.WorkOrder {
 }
 
 func runWorkOrders(t *testing.T, x Fixture) {
+	t.Run("VerifyPolicy", func(t *testing.T) { runVerifyPolicy(t, x) })
+	t.Run("VerifyAdmission", func(t *testing.T) { runVerifyAdmission(t, x) })
 	st, ctx := x.Backend, x.Context
 	order := newAggregateOrder(t, x)
 	claim := core.WorkOrderClaim{WorkerID: "worker", ClaimantID: "worker", SessionID: "session", ClientToken: "fixture", Lease: time.Minute, ExecutionTimeout: time.Hour}
@@ -105,8 +111,14 @@ func runWorkOrders(t *testing.T, x Fixture) {
 }
 
 func runWorkOrderClocks(t *testing.T, x Fixture) {
+	for _, stage := range []core.Stage{core.StageImplement, core.StageVerify} {
+		t.Run(string(stage), func(t *testing.T) { runWorkOrderStageClocks(t, x, stage) })
+	}
+}
+
+func runWorkOrderStageClocks(t *testing.T, x Fixture, stage core.Stage) {
 	st, ctx := x.Backend, x.Context
-	stale := newAggregateOrder(t, x)
+	stale := newAggregateOrder(t, x, stage)
 	_, err := taskops.ExecuteWorkOrder(ctx, st, stale.TaskID, core.WorkOrderCmdMarkStale, func(lease taskops.TaskLease) (int, error) {
 		return st.ApplyWorkOrderClock(ctx, lease, stale.TaskID, stale.QueueDeadline.Add(time.Second))
 	})
@@ -121,7 +133,7 @@ func runWorkOrderClocks(t *testing.T, x Fixture) {
 		t.Fatal("redispatch did not renew queue clock")
 	}
 	for _, direction := range []string{"", "Use the existing fixture evidence."} {
-		order := newAggregateOrder(t, x)
+		order := newAggregateOrder(t, x, stage)
 		claim.ExecutionTimeout = time.Nanosecond
 		claimed, err := ClaimWorkOrder(ctx, st, order.ID, claim)
 		requireOK(t, err)

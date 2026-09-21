@@ -491,6 +491,9 @@ func (s *Store) SkipTaskRefresh(ctx context.Context, id, head, reason string) er
 		if err != nil {
 			return err
 		}
+		if t.SetupContract.VerifyStage {
+			return fmt.Errorf("verify-stage tasks cannot skip refresh verification")
+		}
 		if err = taskWrite(ctx, tx, id, approvalValues(head)); err != nil {
 			return err
 		}
@@ -812,6 +815,21 @@ func (s *Store) ApplyTaskCommand(ctx context.Context, lease taskops.TaskLease, i
 		state, err := core.TransitionTask(core.TaskState(before.State), command.Kind)
 		if err != nil {
 			return err
+		}
+		ready, err := verifyReviewReadyTx(ctx, tx, before)
+		if err != nil {
+			return err
+		}
+		if !ready {
+			if state == core.TaskApproved || state == core.TaskMerged {
+				return fmt.Errorf("verification is required before approval or merge")
+			}
+			if command.NextStage == core.StageReview {
+				command.NextStage = core.StageVerify
+			}
+			if command.RecoveryStage == core.StageReview {
+				command.RecoveryStage = core.StageVerify
+			}
 		}
 		values := map[string]any{"state": state}
 		result = before
@@ -1184,6 +1202,9 @@ func (s *Store) RequestChangesCommand(ctx context.Context, lease taskops.TaskLea
 func (s *Store) ChangeTaskSetupCommand(ctx context.Context, lease taskops.TaskLease, raw store.SetupChangeRequest) (store.SetupChangeResult, error) {
 	var result store.SetupChangeResult
 	r, validationErr := store.PrepareSetupChangeRequest(raw)
+	if r.Policy != nil {
+		r.PolicyActor = store.ActorFromContext(ctx)
+	}
 	if !lease.ValidForCommand(r.TaskID, taskops.SetupChangeCommand) {
 		return result, fmt.Errorf("taskops lease does not authorize setup change for task %s", r.TaskID)
 	}
@@ -1229,13 +1250,24 @@ func (s *Store) ChangeTaskSetupCommand(ctx context.Context, lease taskops.TaskLe
 				return fmt.Errorf("%w: task has an in-flight review verdict", store.ErrSetupChangeConflict)
 			}
 		}
+		r, err = store.PlanTaskPolicyChange(t, orders, r)
+		if err != nil {
+			return err
+		}
 		for _, d := range r.WorkOrderUpdates {
 			o, ok := byID[d.ID]
 			if !ok || o.State != core.WorkOrderQueued || o.SessionID != "" || o.WorkerID != "" {
 				return fmt.Errorf("%w: work order %s is not an unclaimed queued order", store.ErrSetupChangeConflict, d.ID)
 			}
 		}
+		fromStage := t.NextStage
 		prior := t.SetupContract
+		if r.Policy != nil {
+			t.NextStage = r.NextStage
+			if err = taskWrite(ctx, tx, t.ID, map[string]any{"next_stage": r.NextStage}); err != nil {
+				return err
+			}
+		}
 		if err = taskWrite(ctx, tx, t.ID, map[string]any{"setup_name": r.Setup.Name, "setup_contract": core.JSONPayload(r.Setup)}); err != nil {
 			return err
 		}
@@ -1244,6 +1276,11 @@ func (s *Store) ChangeTaskSetupCommand(ctx context.Context, lease taskops.TaskLe
 		result = store.SetupChangeResult{RequestID: r.RequestID, Task: t, ReviewTransition: r.ReviewTransition, UpdatedWorkOrders: []string{}, CreatedWorkOrders: []string{}, RetainedWorkOrders: append([]string{}, r.RetainedWorkOrderIDs...), SupersededWorkOrders: append([]string{}, r.SupersedeWorkOrderIDs...)}
 		now := time.Now().UTC()
 		actor := store.ActorFromContext(ctx)
+		if fromStage != t.NextStage {
+			if err = taskEvent(ctx, tx, core.Event{TaskID: t.ID, Kind: "pipeline.transition_decided", ActorID: actor.ID, ActorRole: actor.Role, At: now, Payload: core.JSONPayload(map[string]any{"from_stage": fromStage, "next_stage": t.NextStage, "recovery_stage": t.RecoveryStage, "state": t.State})}); err != nil {
+				return err
+			}
+		}
 		for _, d := range r.WorkOrderUpdates {
 			o := byID[d.ID]
 			o.RequiredModel = d.RequiredModel
@@ -1280,7 +1317,7 @@ func (s *Store) ChangeTaskSetupCommand(ctx context.Context, lease taskops.TaskLe
 				return fmt.Errorf("work order %s not found", id)
 			}
 			old := o.State
-			values := map[string]any{"review_superseded": true, "updated_at": now}
+			values := map[string]any{"review_superseded": o.Stage == core.StageReview, "updated_at": now}
 			if old == core.WorkOrderQueued {
 				next, err := core.TransitionWorkOrder(old, core.WorkOrderCmdCancel)
 				if err != nil {
@@ -1297,6 +1334,9 @@ func (s *Store) ChangeTaskSetupCommand(ctx context.Context, lease taskops.TaskLe
 			}
 			if _, err = writeRow(ctx, tx, rowWrite{table: "work_orders", operation: "UPDATE", values: values, where: map[string]any{"workspace_id": ws, "id": id}}); err != nil {
 				return err
+			}
+			if o.Stage != core.StageReview {
+				continue
 			}
 			if err = taskEvent(ctx, tx, core.Event{TaskID: t.ID, JobID: o.JobID, Kind: "review.seat.setup_superseded", At: now, Payload: core.JSONPayload(map[string]any{"workspace_id": ws, "request_id": r.RequestID, "work_order_id": id, "prior_state": old, "resulting_state": o.State, "outcome": "historical_only", "previous_setup": prior, "new_setup": r.Setup})}); err != nil {
 				return err
@@ -1318,6 +1358,9 @@ func (s *Store) ChangeTaskSetupCommand(ctx context.Context, lease taskops.TaskLe
 				return err
 			}
 			result.CreatedWorkOrders = append(result.CreatedWorkOrders, o.ID)
+			if o.Stage != core.StageReview {
+				continue
+			}
 			if err = taskEvent(ctx, tx, core.Event{TaskID: t.ID, JobID: j.ID, Kind: "review.seat.setup_rebuilt", At: now, Payload: core.JSONPayload(map[string]any{"workspace_id": ws, "request_id": r.RequestID, "review_round": o.ReviewRound, "review_seat": o.ReviewSeat, "work_order_id": o.ID, "outcome": "created_under_new_setup", "previous_setup": prior, "new_setup": r.Setup})}); err != nil {
 				return err
 			}

@@ -136,3 +136,25 @@ func sameReviewAssignment(left, right core.WorkOrder) bool {
 	return left.RequiredHarness == right.RequiredHarness && left.RequiredModel == right.RequiredModel &&
 		left.RequiredEffort == right.RequiredEffort
 }
+
+// ChangeTaskPolicy admits only the operator's explicit frozen-policy exception
+// (DEC-7, DEC-43; feature-verification-kit-execution VK-10.1).
+func (s *Service) ChangeTaskPolicy(ctx context.Context, taskID, reason, requestID string, policy store.TaskPolicyChange) (store.SetupChangeResult, error) {
+	request := store.SetupChangeRequest{TaskID: taskID, Reason: reason, RequestID: requestID, Policy: &policy}
+	request, err := store.PrepareSetupChangeRequest(request)
+	if err != nil {
+		return store.SetupChangeResult{}, err
+	}
+	var result store.SetupChangeResult
+	err = s.Store.WithTaskSideEffectLock(ctx, taskID, func(ctx context.Context) error {
+		var changeErr error
+		result, changeErr = taskops.ExecuteSetupChange(ctx, s.Store, taskID, func(lease taskops.TaskLease) (store.SetupChangeResult, error) {
+			return s.Store.ChangeTaskSetupCommand(ctx, lease, request)
+		})
+		return changeErr
+	})
+	if err == nil && s.Dispatcher != nil {
+		s.Dispatcher.Enqueue(ctx, taskID)
+	}
+	return result, err
+}

@@ -215,7 +215,7 @@ func (s *Store) AddTaskDependency(ctx context.Context, request store.DependencyA
 			return err
 		}
 		_, err = tx.ExecContext(ctx, `UPDATE work_orders SET queue_blocked_at=?,updated_at=?
-			WHERE workspace_id=? AND task_id=? AND stage='implement'
+			WHERE workspace_id=? AND task_id=? AND stage IN ('implement','verify')
 				AND state='queued' AND queue_blocked_at IS NULL`, now, now, documentWorkspace(ctx), request.TaskID)
 		return err
 	})
@@ -316,7 +316,7 @@ func (s *Store) resumeDependencyQueueClocksTx(ctx context.Context, tx *sql.Tx, t
 	_, err := tx.ExecContext(ctx, `UPDATE work_orders
 		SET queue_deadline=TIMESTAMPADD(MICROSECOND,TIMESTAMPDIFF(MICROSECOND,queue_blocked_at,?),queue_deadline),
 			queue_blocked_at=NULL, updated_at=?
-		WHERE workspace_id=? AND task_id=? AND stage='implement'
+		WHERE workspace_id=? AND task_id=? AND stage IN ('implement','verify')
 			AND state='queued' AND queue_blocked_at IS NOT NULL`,
 		now, now, documentWorkspace(ctx), taskID)
 	return err

@@ -53,7 +53,7 @@ func TestExplicitPackOverrideWinsAndNeverFallsBack(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(dir, "roles"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for _, role := range []string{"triage", "planning", "spec", "implement", "review"} {
+	for _, role := range []string{"triage", "planning", "spec", "implement", "verify", "review"} {
 		if err := os.WriteFile(filepath.Join(dir, "roles", role+".md"), []byte("custom "+role), 0o644); err != nil {
 			t.Fatal(err)
 		}

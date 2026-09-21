@@ -2502,6 +2502,9 @@ func (m *memory) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.
 	if !ok {
 		return fmt.Errorf("task %s not found", decision.TaskID)
 	}
+	if !m.verifyReviewReadyLocked(task) {
+		return fmt.Errorf("review requires completed verification for the submitted head")
+	}
 	lookup := ExecutionDocumentLookup(func(ctx context.Context, id string, version int) (core.SpecVersion, bool, error) {
 		if selected, scoped := WorkspaceFromContext(ctx); scoped && m.tasks[id].Workspace != selected {
 			return core.SpecVersion{}, false, nil
@@ -2871,6 +2874,9 @@ func (m *memory) CreateWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 	if !lease.ValidForCommand(order.TaskID, string(core.WorkOrderCmdCreate)) {
 		return fmt.Errorf("work-order create requires a valid taskops lease")
 	}
+	if !core.ValidWorkOrderStage(order.Stage) {
+		return fmt.Errorf("invalid work-order stage %s", order.Stage)
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	task, ok := m.tasks[order.TaskID]
@@ -2910,7 +2916,7 @@ func (m *memory) CreateWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 	} else if order.State != expected {
 		return &core.ErrInvalidTransition{Space: core.WorkOrderLifecycle, From: "", Command: string(core.WorkOrderCmdCreate), Allowed: []core.TransitionAlternative{{Command: string(core.WorkOrderCmdCreate), To: string(expected)}}}
 	}
-	if order.Stage == core.StageImplement && m.taskBlockedLocked(order.TaskID) {
+	if (order.Stage == core.StageImplement || order.Stage == core.StageVerify) && m.taskBlockedLocked(order.TaskID) {
 		order.QueueBlockedAt = order.QueueEnteredAt
 	}
 	if order.Stage == core.StageImplement {
@@ -2970,6 +2976,13 @@ func (m *memory) CreateReviewRoundCommand(ctx context.Context, lease taskops.Tas
 	}
 	if selected, present := WorkspaceFromContext(ctx); present && selected != "" && task.Workspace != selected {
 		return fmt.Errorf("task %s belongs to workspace %s, not %s", taskID, task.Workspace, selected)
+	}
+	var verifyOrders []core.WorkOrder
+	for _, order := range m.workOrders {
+		verifyOrders = append(verifyOrders, order)
+	}
+	if !core.VerifyReviewReady(task, verifyOrders) {
+		return fmt.Errorf("review requires completed verification for the submitted head")
 	}
 	if len(jobs) == 0 || len(jobs) != len(orders) {
 		return fmt.Errorf("review round requires one job per work order")
@@ -3033,8 +3046,11 @@ func (m *memory) CreateStageWorkOrderCommand(ctx context.Context, lease taskops.
 	if selected, present := WorkspaceFromContext(ctx); present && selected != "" && task.Workspace != selected {
 		return false, fmt.Errorf("task %s belongs to workspace %s, not %s", job.TaskID, task.Workspace, selected)
 	}
-	if job.Stage == core.StageReview || order.Stage != job.Stage || order.TaskID != job.TaskID || order.JobID != job.ID || order.ID != job.ID {
+	if !core.ValidWorkOrderStage(order.Stage) || job.Stage == core.StageReview || order.Stage != job.Stage || order.TaskID != job.TaskID || order.JobID != job.ID || order.ID != job.ID {
 		return false, fmt.Errorf("invalid stage work order %s", order.ID)
+	}
+	if err := core.ValidateVerifyDispatch(task, order); err != nil {
+		return false, err
 	}
 	for _, existing := range m.workOrders {
 		if existing.TaskID == job.TaskID && existing.Stage == job.Stage &&
@@ -3065,7 +3081,7 @@ func (m *memory) CreateStageWorkOrderCommand(ctx context.Context, lease taskops.
 		return false, err
 	}
 	order.State, order.Claimable, order.UpdatedAt = state, true, now
-	if order.Stage == core.StageImplement && m.taskBlockedLocked(order.TaskID) {
+	if (order.Stage == core.StageImplement || order.Stage == core.StageVerify) && m.taskBlockedLocked(order.TaskID) {
 		order.QueueBlockedAt, order.Claimable = order.QueueEnteredAt, false
 	}
 	order.OperatorDirection = m.firstOrderDirectionLocked(order.TaskID, order.OperatorDirection)
@@ -3568,8 +3584,19 @@ func (m *memory) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease tasko
 	if task := m.tasks[order.TaskID]; task.Assignee != nil && task.Assignee.UserID != claim.OwnerUserID {
 		return core.WorkOrder{}, fmt.Errorf("task %s is assigned to %s; only that assignee may claim its work orders", order.TaskID, task.Assignee.UserID)
 	}
+	if !core.ValidWorkOrderStage(order.Stage) {
+		return core.WorkOrder{}, fmt.Errorf("invalid work-order stage %s", order.Stage)
+	}
+	if err := core.ValidateVerifyDispatch(m.tasks[order.TaskID], order); err != nil {
+		return core.WorkOrder{}, err
+	}
+	for _, other := range m.workOrders {
+		if core.ConflictingExecutorClaims(order, other) {
+			return core.WorkOrder{}, fmt.Errorf("conflicting claimed order %s", other.ID)
+		}
+	}
 	now := time.Now().UTC()
-	if order.Stage == core.StageImplement && !order.QueueBlockedAt.IsZero() && !m.taskBlockedLocked(order.TaskID) {
+	if (order.Stage == core.StageImplement || order.Stage == core.StageVerify) && !order.QueueBlockedAt.IsZero() && !m.taskBlockedLocked(order.TaskID) {
 		order.QueueDeadline = order.QueueDeadline.Add(now.Sub(order.QueueBlockedAt))
 		order.QueueBlockedAt = time.Time{}
 		m.workOrders[id] = order
@@ -3578,7 +3605,7 @@ func (m *memory) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease tasko
 	if order.Stage == core.StageReview && m.reviewSeatAcceptedLocked(order) {
 		return core.WorkOrder{}, fmt.Errorf("accepted review seat %s is terminal and cannot be claimed", id)
 	}
-	if order.Stage == core.StageReview {
+	if order.Stage == core.StageReview || order.Stage == core.StageVerify {
 		workspace := workspaceOrDefault(ctx, "")
 		for key, versions := range m.systemDesignVersions {
 			if key.workspace != workspace {
@@ -3620,7 +3647,7 @@ func (m *memory) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease tasko
 		}
 		return core.WorkOrder{}, fmt.Errorf("work order %s is in retry backoff until %s", id, order.NextRetryAt.Format(time.RFC3339Nano))
 	}
-	if order.Stage == core.StageImplement {
+	if order.Stage == core.StageImplement || order.Stage == core.StageVerify {
 		var blockingTaskIDs []string
 		for dependencyID := range m.dependencies[order.TaskID] {
 			if dependency, ok := m.tasks[dependencyID]; ok && dependency.State != core.TaskMerged {
@@ -3632,7 +3659,7 @@ func (m *memory) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease tasko
 			return core.WorkOrder{}, fmt.Errorf("task %s is blocked by unmerged dependencies: %s", order.TaskID, strings.Join(blockingTaskIDs, ", "))
 		}
 	}
-	if order.Stage == core.StageReview {
+	if order.Stage == core.StageReview || order.Stage == core.StageVerify {
 		if order.ServedRequirementSnapshot == nil && claim.Requirements != nil {
 			order.ServedRequirementSnapshot = append([]core.ServedRequirementContext{}, claim.Requirements...)
 		}
@@ -3651,6 +3678,8 @@ func (m *memory) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease tasko
 				order.GovernanceSnapshot.ResolutionNotes = append([]string(nil), claim.Governance.ResolutionNotes...)
 			}
 		}
+	}
+	if order.Stage == core.StageReview {
 		for _, candidate := range m.workOrders {
 			if candidate.ID != order.ID && candidate.TaskID == order.TaskID &&
 				(candidate.Stage == core.StageImplement || (candidate.Stage == core.StageReview && candidate.ReviewRound == order.ReviewRound)) &&
@@ -3857,10 +3886,10 @@ func WorkOrderRecoverySupersessionError(task core.Task, order core.WorkOrder, ta
 			if candidate.State == core.WorkOrderCancelled || !laterThanTarget(candidate) {
 				continue
 			}
-			if stage == core.StageSpec && (candidate.Stage == core.StageImplement || candidate.Stage == core.StageReview) {
+			if stage == core.StageSpec && (candidate.Stage == core.StageImplement || candidate.Stage == core.StageVerify || candidate.Stage == core.StageReview) {
 				return true
 			}
-			if stage == core.StageImplement && candidate.Stage == core.StageReview {
+			if (stage == core.StageImplement || stage == core.StageVerify) && candidate.Stage == core.StageReview {
 				return true
 			}
 		}
@@ -3875,12 +3904,16 @@ func WorkOrderRecoverySupersessionError(task core.Task, order core.WorkOrder, ta
 	}
 	switch order.Stage {
 	case core.StageSpec:
-		if pastStage(core.StageSpec) || task.NextStage == core.StageImplement || task.NextStage == core.StageReview ||
-			task.RecoveryStage == core.StageImplement || task.RecoveryStage == core.StageReview {
+		if pastStage(core.StageSpec) || task.NextStage == core.StageImplement || task.NextStage == core.StageVerify || task.NextStage == core.StageReview ||
+			task.RecoveryStage == core.StageImplement || task.RecoveryStage == core.StageVerify || task.RecoveryStage == core.StageReview {
 			return fmt.Errorf("work order %s cannot be recovered because task %s has passed the plan gate", order.ID, task.ID)
 		}
+	case core.StageVerify:
+		if !task.SetupContract.VerifyStage || order.HeadSHA != core.VerifyStageHead(task) || pastStage(core.StageVerify) || task.NextStage == core.StageReview || task.RecoveryStage == core.StageReview {
+			return fmt.Errorf("verify work order %s is superseded", order.ID)
+		}
 	case core.StageImplement:
-		if pastStage(core.StageImplement) || task.NextStage == core.StageReview || task.RecoveryStage == core.StageReview {
+		if pastStage(core.StageImplement) || task.NextStage == core.StageVerify || task.NextStage == core.StageReview || task.RecoveryStage == core.StageVerify || task.RecoveryStage == core.StageReview {
 			return fmt.Errorf("work order %s cannot be recovered because task %s has advanced to review", order.ID, task.ID)
 		}
 	}
@@ -4136,6 +4169,11 @@ func (m *memory) UpdateWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 		order.ContinuationSessionID, order.ContinuationAttemptID = "", ""
 		order.ContinuationHarness, order.ContinuationLaunchEnvironment = "", ""
 	}
+	if command == core.WorkOrderCmdSubmitForReview && order.Stage == core.StageImplement && order.HeadSHA != "" {
+		task := m.tasks[order.TaskID]
+		task.ReviewedHeadSHA = order.HeadSHA
+		m.tasks[order.TaskID] = task
+	}
 	order.UpdatedAt = time.Now().UTC()
 	m.workOrders[order.ID] = order
 	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.updated", Payload: core.JSONPayload(order)})
@@ -4163,6 +4201,8 @@ func InferWorkOrderUpdateCommand(current, next core.WorkOrder) (core.WorkOrderCo
 		return core.WorkOrderCmdSubmitForReview, true
 	case current.State == core.WorkOrderClaimed && next.State == core.WorkOrderCompleted && next.Stage == core.StageSpec:
 		return core.WorkOrderCmdSubmitSpec, true
+	case current.State == core.WorkOrderClaimed && next.State == core.WorkOrderCompleted && next.Stage == core.StageVerify:
+		return core.WorkOrderCmdSubmitVerification, true
 	case current.State == core.WorkOrderClaimed && next.State == core.WorkOrderCompleted && next.Stage == core.StageReview:
 		return core.WorkOrderCmdSubmitReviewVerdict, true
 	case current.State == core.WorkOrderSubmitted && next.State == core.WorkOrderCompleted:
@@ -4920,7 +4960,7 @@ func (m *memory) AddTaskDependency(ctx context.Context, request DependencyAdditi
 		}),
 	})
 	for id, order := range m.workOrders {
-		if order.TaskID != request.TaskID || order.Stage != core.StageImplement ||
+		if order.TaskID != request.TaskID || (order.Stage != core.StageImplement && order.Stage != core.StageVerify) ||
 			order.State != core.WorkOrderQueued || !order.QueueBlockedAt.IsZero() {
 			continue
 		}
@@ -5327,7 +5367,7 @@ func (m *memory) resumeDependencyQueueClocksLocked(taskID string, now time.Time)
 		}
 	}
 	for id, order := range m.workOrders {
-		if order.TaskID != taskID || order.Stage != core.StageImplement ||
+		if order.TaskID != taskID || (order.Stage != core.StageImplement && order.Stage != core.StageVerify) ||
 			order.State != core.WorkOrderQueued || order.QueueBlockedAt.IsZero() {
 			continue
 		}
@@ -5957,6 +5997,9 @@ func (m *memory) SkipTaskRefresh(ctx context.Context, id, newHeadSHA, reason str
 	if !ok {
 		return fmt.Errorf("task %s not found", id)
 	}
+	if task.SetupContract.VerifyStage {
+		return fmt.Errorf("verify-stage tasks cannot skip refresh verification")
+	}
 	baseline := task.ApprovedHeadSHA
 	task.ReviewedHeadSHA, task.ApprovedHeadSHA, task.ApprovalStale = newHeadSHA, newHeadSHA, false
 	task.RefreshBaselineSHA, task.RefreshHeadSHA, task.RefreshReviewScope = "", "", ""
@@ -5982,6 +6025,17 @@ func (m *memory) ApplyTaskCommand(ctx context.Context, lease taskops.TaskLease, 
 	state, err := core.TransitionTask(fromState, command.Kind)
 	if err != nil {
 		return core.Task{}, err
+	}
+	if !m.verifyReviewReadyLocked(task) {
+		if state == core.TaskApproved || state == core.TaskMerged {
+			return core.Task{}, fmt.Errorf("verification is required before approval or merge")
+		}
+		if command.NextStage == core.StageReview {
+			command.NextStage = core.StageVerify
+		}
+		if command.RecoveryStage == core.StageReview {
+			command.RecoveryStage = core.StageVerify
+		}
 	}
 	task.State = state
 	if command.ProjectStages {
@@ -6280,7 +6334,7 @@ func (m *memory) ListActivityMarkers(ctx context.Context) ([]ActivityMarker, err
 	var implementTaskIDs []string
 	seenImplementTask := map[string]bool{}
 	for _, order := range orders {
-		if order.Stage == core.StageImplement && !seenImplementTask[order.TaskID] {
+		if (order.Stage == core.StageImplement || order.Stage == core.StageVerify) && !seenImplementTask[order.TaskID] {
 			implementTaskIDs = append(implementTaskIDs, order.TaskID)
 			seenImplementTask[order.TaskID] = true
 		}
@@ -6291,7 +6345,7 @@ func (m *memory) ListActivityMarkers(ctx context.Context) ([]ActivityMarker, err
 	}
 	ordersByTask := make(map[string][]core.WorkOrder)
 	for _, order := range orders {
-		if order.Stage == core.StageImplement {
+		if order.Stage == core.StageImplement || order.Stage == core.StageVerify {
 			blockers := blockersByTask[order.TaskID]
 			order.BlockingTaskIDs = append([]string(nil), blockers.BlockingTaskIDs...)
 			order.UnsatisfiableTaskIDs = append([]string(nil), blockers.UnsatisfiableTaskIDs...)
@@ -6911,4 +6965,14 @@ func (m *memory) firstOrderDirectionLocked(taskID, current string) string {
 		return direction
 	}
 	return current
+}
+
+func (m *memory) verifyReviewReadyLocked(task core.Task) bool {
+	var orders []core.WorkOrder
+	for _, order := range m.workOrders {
+		if order.TaskID == task.ID {
+			orders = append(orders, order)
+		}
+	}
+	return core.VerifyReviewReady(task, orders)
 }

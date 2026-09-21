@@ -1610,10 +1610,13 @@ func (s *Store) AdvanceTaskRefreshHead(ctx context.Context, id, newHeadSHA strin
 }
 
 func (s *Store) SkipTaskRefresh(ctx context.Context, id, newHeadSHA, reason string) error {
-	return s.inTx(ctx, func(_ pgx.Tx, q *db.Queries) error {
+	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
 		before, err := q.GetTask(ctx, db.GetTaskParams{ID: id, WorkspaceID: workspace(ctx)})
 		if err != nil {
 			return notFound(err, "task %s", id)
+		}
+		if taskFromDB(before).SetupContract.VerifyStage {
+			return fmt.Errorf("verify-stage tasks cannot skip refresh verification")
 		}
 		if _, err = q.SkipTaskRefresh(ctx, db.SkipTaskRefreshParams{ID: id, WorkspaceID: workspace(ctx), HeadSha: newHeadSHA}); err != nil {
 			return err
@@ -1642,6 +1645,21 @@ func (s *Store) ApplyTaskCommand(ctx context.Context, lease taskops.TaskLease, i
 		state, err := core.TransitionTask(core.TaskState(before.State), command.Kind)
 		if err != nil {
 			return err
+		}
+		ready, err := verifyReviewReadyTx(ctx, tx, taskFromDB(before))
+		if err != nil {
+			return err
+		}
+		if !ready {
+			if state == core.TaskApproved || state == core.TaskMerged {
+				return fmt.Errorf("verification is required before approval or merge")
+			}
+			if command.NextStage == core.StageReview {
+				command.NextStage = core.StageVerify
+			}
+			if command.RecoveryStage == core.StageReview {
+				command.RecoveryStage = core.StageVerify
+			}
 		}
 		if command.ProjectStages {
 			updated, updateErr := q.UpdateTaskTransition(ctx, db.UpdateTaskTransitionParams{
@@ -2523,7 +2541,7 @@ func (s *Store) AddTaskDependency(ctx context.Context, request store.DependencyA
 			return err
 		}
 		_, err = tx.Exec(ctx, `UPDATE work_orders SET queue_blocked_at=$1,updated_at=$1
-			WHERE workspace_id=$2 AND task_id=$3 AND stage='implement'
+			WHERE workspace_id=$2 AND task_id=$3 AND stage IN ('implement','verify')
 				AND state='queued' AND queue_blocked_at IS NULL`, now, workspace(ctx), request.TaskID)
 		return err
 	})
@@ -2625,7 +2643,7 @@ func (s *Store) resumeDependencyQueueClocksTx(ctx context.Context, tx pgx.Tx, ta
 	_, err := tx.Exec(ctx, `UPDATE work_orders
 		SET queue_deadline=queue_deadline+($1-queue_blocked_at),
 			queue_blocked_at=NULL, updated_at=$1
-		WHERE workspace_id=$2 AND task_id=$3 AND stage='implement'
+		WHERE workspace_id=$2 AND task_id=$3 AND stage IN ('implement','verify')
 			AND state='queued' AND queue_blocked_at IS NOT NULL`,
 		now, workspace(ctx), taskID)
 	return err
@@ -3375,7 +3393,7 @@ func (s *Store) listActivityMarkers(ctx context.Context, taskIDs []string) ([]st
 	var implementTaskIDs []string
 	seenImplementTask := map[string]bool{}
 	for _, order := range orders {
-		if order.Stage == core.StageImplement && !seenImplementTask[order.TaskID] {
+		if (order.Stage == core.StageImplement || order.Stage == core.StageVerify) && !seenImplementTask[order.TaskID] {
 			implementTaskIDs = append(implementTaskIDs, order.TaskID)
 			seenImplementTask[order.TaskID] = true
 		}
@@ -3389,7 +3407,7 @@ func (s *Store) listActivityMarkers(ctx context.Context, taskIDs []string) ([]st
 	reviewTaskIDs := make([]string, 0)
 	seenReviewTask := map[string]bool{}
 	for _, order := range orders {
-		if order.Stage == core.StageImplement {
+		if order.Stage == core.StageImplement || order.Stage == core.StageVerify {
 			blockers := blockersByTask[order.TaskID]
 			order.BlockingTaskIDs = append([]string(nil), blockers.BlockingTaskIDs...)
 			order.UnsatisfiableTaskIDs = append([]string(nil), blockers.UnsatisfiableTaskIDs...)
@@ -3817,7 +3835,7 @@ func (s *Store) CreateWorkOrderCommand(ctx context.Context, lease taskops.TaskLe
 		if !linked {
 			return fmt.Errorf("work order task %s and job %s are not linked in workspace %s", order.TaskID, order.JobID, workspace(ctx))
 		}
-		if order.Stage == core.StageImplement {
+		if order.Stage == core.StageImplement || order.Stage == core.StageVerify {
 			var blocked bool
 			if err := tx.QueryRow(ctx, `SELECT EXISTS (
 				SELECT 1 FROM task_dependencies edge
@@ -3931,12 +3949,25 @@ func (s *Store) CreateReviewRoundCommand(ctx context.Context, lease taskops.Task
 		return fmt.Errorf("review round requires one job per work order")
 	}
 	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		if err := lockWorkOrderTaskTx(ctx, tx, workspace(ctx), taskID); err != nil {
+			return err
+		}
 		if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtextextended($1,0))", "conveyor:review-round-create:"+workspace(ctx)+":"+taskID); err != nil {
 			return err
 		}
-		_, err := q.GetTask(ctx, db.GetTaskParams{ID: taskID, WorkspaceID: workspace(ctx)})
+		taskRow, err := q.GetTask(ctx, db.GetTaskParams{ID: taskID, WorkspaceID: workspace(ctx)})
 		if err != nil {
 			return notFound(err, "task %s", taskID)
+		}
+		task := taskFromDB(taskRow)
+		if task.SetupContract.VerifyStage {
+			var ready bool
+			if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM work_orders WHERE workspace_id=$1 AND task_id=$2 AND stage='verify' AND state='completed' AND head_sha=$3 AND head_sha<>'')`, workspace(ctx), taskID, core.VerifyStageHead(task)).Scan(&ready); err != nil {
+				return err
+			}
+			if !ready {
+				return fmt.Errorf("review requires completed verification for the submitted head")
+			}
 		}
 		var existing int
 		if err = tx.QueryRow(ctx, `SELECT count(*) FROM work_orders WHERE workspace_id=$1 AND task_id=$2 AND stage='review' AND review_round=$3`, workspace(ctx), taskID, orders[0].ReviewRound).Scan(&existing); err != nil {
@@ -4007,17 +4038,24 @@ func (s *Store) CreateStageWorkOrderCommand(ctx context.Context, lease taskops.T
 	if !lease.ValidForCommand(job.TaskID, string(core.WorkOrderCmdCreate)) {
 		return false, fmt.Errorf("stage work-order create requires a valid taskops lease")
 	}
-	if job.Stage == core.StageReview || order.Stage != job.Stage || order.TaskID != job.TaskID || order.JobID != job.ID || order.ID != job.ID {
+	if !core.ValidWorkOrderStage(order.Stage) || job.Stage == core.StageReview || order.Stage != job.Stage || order.TaskID != job.TaskID || order.JobID != job.ID || order.ID != job.ID {
 		return false, fmt.Errorf("invalid stage work order %s", order.ID)
 	}
 	created := false
 	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
 		workspaceID := workspace(ctx)
+		if err := lockWorkOrderTaskTx(ctx, tx, workspaceID, job.TaskID); err != nil {
+			return err
+		}
 		if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtextextended($1,0))", "conveyor:stage-order:"+workspaceID+":"+job.TaskID); err != nil {
 			return err
 		}
-		if _, err := q.GetTask(ctx, db.GetTaskParams{ID: job.TaskID, WorkspaceID: workspaceID}); err != nil {
+		taskRow, err := q.GetTask(ctx, db.GetTaskParams{ID: job.TaskID, WorkspaceID: workspaceID})
+		if err != nil {
 			return notFound(err, "task %s", job.TaskID)
+		}
+		if err := core.ValidateVerifyDispatch(taskFromDB(taskRow), order); err != nil {
+			return err
 		}
 		var exists bool
 		if err := tx.QueryRow(ctx, `SELECT EXISTS(
@@ -4050,7 +4088,7 @@ func (s *Store) CreateStageWorkOrderCommand(ctx context.Context, lease taskops.T
 			return err
 		}
 		order.State, order.Claimable = state, true
-		if order.Stage == core.StageImplement {
+		if order.Stage == core.StageImplement || order.Stage == core.StageVerify {
 			var blocked bool
 			if err = tx.QueryRow(ctx, `SELECT EXISTS (
 				SELECT 1 FROM task_dependencies edge
@@ -4074,11 +4112,11 @@ func (s *Store) CreateStageWorkOrderCommand(ctx context.Context, lease taskops.T
 			automatic_retry_count, next_retry_at, retry_suppressed,
 			redispatch_count, progress, cost_usd, tokens_in, tokens_out,
 			usage_reported, self_reported, created_at, updated_at, served_requirement_snapshot, governance_snapshot
-		) VALUES ($1,$2,$3,$4,$5,$6,'','','','','','',NULL,0,0,$7,$8,$9,$10,'',$11,'','',$12,'',$13,$14,$15,NULL,NULL,'','',NULL,NULL,0,NULL,false,0,'',0,0,0,false,false,$16,$16,$17,$18)`,
+		) VALUES ($1,$2,$3,$4,$5,$6,'','','','','','',NULL,0,0,$7,$8,$9,$10,'',$11,'','',$12,$19,$13,$14,$15,NULL,NULL,'','',NULL,NULL,0,NULL,false,0,'',0,0,0,false,false,$16,$16,$17,$18)`,
 			order.ID, workspaceID, job.TaskID, job.ID, order.Stage, order.State,
 			order.RequiredModel, order.RequiredHarness, harnessSnapshotJSON(order.RequiredHarnessConfig), order.ExecutionTimeoutText,
 			order.ReasonCode, order.BaselineSHA, order.QueueEnteredAt, order.QueueDeadline,
-			nullableTimeValue(order.QueueBlockedAt), order.CreatedAt, servedRequirementSnapshotJSON(order.ServedRequirementSnapshot), governanceSnapshotJSON(order.GovernanceSnapshot))
+			nullableTimeValue(order.QueueBlockedAt), order.CreatedAt, servedRequirementSnapshotJSON(order.ServedRequirementSnapshot), governanceSnapshotJSON(order.GovernanceSnapshot), order.HeadSHA)
 		if err != nil {
 			return err
 		}
@@ -4744,6 +4782,9 @@ func (s *Store) ListTaskWorkOrdersSnapshot(ctx context.Context, taskID string) (
 }
 
 func lockWorkOrderTaskTx(ctx context.Context, tx pgx.Tx, workspaceID, taskID string) error {
+	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtext($1))", "conveyor:task-operation:"+workspaceID+":"+taskID); err != nil {
+		return err
+	}
 	key := fmt.Sprintf("conveyor:work-order-claim:%s:%s", workspaceID, taskID)
 	_, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtext($1))", key)
 	return err
@@ -4781,10 +4822,20 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease taskop
 	if !lifecycleLease.ValidForCommand(order.TaskID, string(core.WorkOrderCmdClaim)) {
 		return core.WorkOrder{}, fmt.Errorf("work-order claim requires a valid taskops lease")
 	}
+	if !core.ValidWorkOrderStage(order.Stage) {
+		return core.WorkOrder{}, fmt.Errorf("invalid work-order stage %s", order.Stage)
+	}
+	taskRow, err := s.queries.WithTx(tx).GetTask(ctx, db.GetTaskParams{ID: order.TaskID, WorkspaceID: workspace(ctx)})
+	if err != nil {
+		return core.WorkOrder{}, err
+	}
+	if err := core.ValidateVerifyDispatch(taskFromDB(taskRow), order); err != nil {
+		return core.WorkOrder{}, err
+	}
 	if order.Stage != core.StageReview {
 		var activeSiblingID string
 		activeErr := tx.QueryRow(ctx, `SELECT id FROM work_orders
-			WHERE workspace_id=$1 AND task_id=$2 AND stage=$3 AND id<>$4 AND state='claimed'
+			WHERE workspace_id=$1 AND task_id=$2 AND (stage=$3 OR ($3='verify' AND stage='implement') OR ($3='implement' AND stage='verify')) AND id<>$4 AND state='claimed'
 			ORDER BY created_at,id LIMIT 1`, workspace(ctx), order.TaskID, order.Stage, order.ID).Scan(&activeSiblingID)
 		if activeErr == nil {
 			return core.WorkOrder{}, fmt.Errorf("work order %s cannot be claimed while same-stage order %s is actively claimed", order.ID, activeSiblingID)
@@ -4836,7 +4887,7 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease taskop
 	if assigneeUserID.Valid && assigneeUserID.String != claim.OwnerUserID {
 		return core.WorkOrder{}, fmt.Errorf("task %s is assigned to %s; only that assignee may claim its work orders", order.TaskID, assigneeUserID.String)
 	}
-	if order.Stage == core.StageReview {
+	if order.Stage == core.StageReview || order.Stage == core.StageVerify {
 		var pendingDocument string
 		var pendingVersion int
 		pendingErr := tx.QueryRow(ctx, `SELECT document_id,version FROM system_design_versions
@@ -4858,6 +4909,8 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease taskop
 		if !errors.Is(pendingErr, pgx.ErrNoRows) {
 			return core.WorkOrder{}, pendingErr
 		}
+	}
+	if order.Stage == core.StageReview {
 		accepted, acceptedErr := reviewSeatAcceptedTx(ctx, tx, workspace(ctx), order.TaskID, order.ID)
 		if acceptedErr != nil {
 			return core.WorkOrder{}, acceptedErr
@@ -4868,7 +4921,7 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease taskop
 	}
 	now := time.Now().UTC()
 	var blockingTaskIDs []string
-	if order.Stage == core.StageImplement {
+	if order.Stage == core.StageImplement || order.Stage == core.StageVerify {
 		blockingRows, blockingErr := tx.Query(ctx, `SELECT dependency.id
 			FROM task_dependencies edge
 			JOIN tasks dependency ON dependency.workspace_id=edge.workspace_id
@@ -5131,9 +5184,15 @@ func (s *Store) RedispatchWorkOrderCommand(ctx context.Context, lease taskops.Ta
 
 func workOrderSupersessionGuardTx(ctx context.Context, tx pgx.Tx, workspaceID string, order core.WorkOrder) error {
 	var task core.Task
-	if err := tx.QueryRow(ctx, `SELECT id,state,next_stage,recovery_stage FROM tasks WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspaceID, order.TaskID).
-		Scan(&task.ID, &task.State, &task.NextStage, &task.RecoveryStage); err != nil {
+	var policy []byte
+	if err := tx.QueryRow(ctx, `SELECT id,state,next_stage,recovery_stage,setup_contract,reviewed_head_sha,approval_stale,refresh_head_sha FROM tasks WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspaceID, order.TaskID).
+		Scan(&task.ID, &task.State, &task.NextStage, &task.RecoveryStage, &policy, &task.ReviewedHeadSHA, &task.ApprovalStale, &task.RefreshHeadSHA); err != nil {
 		return err
+	}
+	if len(policy) > 0 {
+		if err := json.Unmarshal(policy, &task.SetupContract); err != nil {
+			return err
+		}
 	}
 	rows, err := tx.Query(ctx, `SELECT `+workOrderColumns+` FROM work_orders WHERE workspace_id=$1 AND task_id=$2 ORDER BY created_at,id FOR UPDATE`, workspaceID, order.TaskID)
 	if err != nil {
@@ -5408,7 +5467,7 @@ func (s *Store) ApplyWorkOrderClock(ctx context.Context, lease taskops.TaskLease
 			return err
 		}
 		for _, order := range orders {
-			if order.Stage == core.StageImplement && order.State == core.WorkOrderQueued {
+			if (order.Stage == core.StageImplement || order.Stage == core.StageVerify) && order.State == core.WorkOrderQueued {
 				if dependencyBlocked {
 					if order.QueueBlockedAt.IsZero() {
 						if _, err = tx.Exec(ctx, `UPDATE work_orders SET queue_blocked_at=$1,updated_at=$1
@@ -5597,6 +5656,14 @@ func (s *Store) UpdateWorkOrderCommand(ctx context.Context, lease taskops.TaskLe
 			order.ContinuationSessionID, order.ContinuationAttemptID = "", ""
 			order.ContinuationHarness, order.ContinuationLaunchEnvironment = "", ""
 		}
+		if command == core.WorkOrderCmdSubmitForReview && order.Stage == core.StageImplement && order.HeadSHA != "" {
+			if _, err := tx.Exec(ctx, `UPDATE tasks SET reviewed_head_sha=$1 WHERE workspace_id=$2 AND id=$3`, order.HeadSHA, workspace(ctx), order.TaskID); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(ctx, `UPDATE work_orders SET head_sha=$1 WHERE workspace_id=$2 AND id=$3`, order.HeadSHA, workspace(ctx), order.ID); err != nil {
+				return err
+			}
+		}
 		tag, err := tx.Exec(ctx, `UPDATE work_orders SET state=$1, claimant_id=$2, session_id=$3, attempt_id=$4,
 			client_token_hash=$5, agent=$6, model=$7, lease_expires_at=$8,
 			model_enforcement=$9, queue_entered_at=$10, queue_deadline=$11, execution_started_at=$12,
@@ -5705,6 +5772,9 @@ func (s *Store) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.T
 		return fmt.Errorf("review lifecycle mutation requires a valid taskops lease")
 	}
 	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		if err := lockWorkOrderTaskTx(ctx, tx, workspace(ctx), decision.TaskID); err != nil {
+			return err
+		}
 		lockKey := fmt.Sprintf("conveyor:review:%s:%s:%d", workspace(ctx), decision.TaskID, decision.ReviewRound)
 		if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtext($1))", lockKey); err != nil {
 			return err
@@ -5724,6 +5794,9 @@ func (s *Store) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.T
 		before, err := q.GetTask(ctx, db.GetTaskParams{ID: decision.TaskID, WorkspaceID: workspace(ctx)})
 		if err != nil {
 			return notFound(err, "task %s", decision.TaskID)
+		}
+		if err := requireVerifyReviewTx(ctx, tx, taskFromDB(before)); err != nil {
+			return err
 		}
 		lookup := store.ExecutionDocumentLookup(func(ctx context.Context, id string, version int) (core.SpecVersion, bool, error) {
 			var spec core.SpecVersion

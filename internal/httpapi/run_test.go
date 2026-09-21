@@ -99,7 +99,7 @@ func createTaskRunOrderAtStage(t *testing.T, st store.Store, taskID string, stag
 func TestTaskRunHTTPSelectsSpecImplementReviewInPipelineOrder(t *testing.T) {
 	_, st, handler := taskRunHTTPFixture(t)
 	now := time.Now().UTC()
-	for _, stage := range []core.Stage{core.StageReview, core.StageImplement, core.StageSpec, core.StageTriage, core.StageVerify, core.StageGate, core.StageMerge, core.StageMonitor} {
+	for _, stage := range []core.Stage{core.StageReview, core.StageImplement, core.StageSpec, core.StageVerify} {
 		createTaskRunOrderAtStage(t, st, "target", stage, now.Add(-time.Duration(taskRunStageOrder(stage))*time.Minute))
 	}
 
@@ -783,5 +783,14 @@ func TestTaskRunHTTPProposalSignalDoesNotMaskUnrelatedClaimConflict(t *testing.T
 	response := taskRunHTTPCall(server.Handler(), http.MethodPost, "/v1/tasks/"+order.TaskID+"/run-orders/"+order.ID+"/claim", `{"session_id":"review-session","client_token":"secret"}`)
 	if response.Code != http.StatusConflict || response.Header().Get("X-Conveyor-Error-Code") != "" || !strings.Contains(response.Body.String(), "assigned") {
 		t.Fatalf("status=%d headers=%v body=%s", response.Code, response.Header(), response.Body.String())
+	}
+}
+
+func TestTaskRunHTTPSelectsVerify(t *testing.T) {
+	_, st, handler := taskRunHTTPFixture(t)
+	createTaskRunOrderAtStage(t, st, "verify-run", core.StageVerify, time.Now().UTC())
+	response := taskRunHTTPCall(handler, http.MethodGet, "/v1/tasks/verify-run/run-order", "")
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"stage":"verify"`) {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 }

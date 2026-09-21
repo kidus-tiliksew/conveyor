@@ -346,6 +346,9 @@ func taskBlockedTx(ctx context.Context, tx *sql.Tx, id string) (bool, error) {
 	return blocked, err
 }
 func (s *Store) insertOrderTx(ctx context.Context, tx *sql.Tx, o core.WorkOrder, repin bool) error {
+	if !core.ValidWorkOrderStage(o.Stage) {
+		return fmt.Errorf("invalid work-order stage %s", o.Stage)
+	}
 	if _, err := getTaskRow(ctx, tx, o.TaskID); err != nil {
 		return err
 	}
@@ -356,7 +359,7 @@ func (s *Store) insertOrderTx(ctx context.Context, tx *sql.Tx, o core.WorkOrder,
 	if !linked {
 		return fmt.Errorf("work order task %s and job %s are not linked in workspace %s", o.TaskID, o.JobID, documentWorkspace(ctx))
 	}
-	if o.Stage == core.StageImplement {
+	if o.Stage == core.StageImplement || o.Stage == core.StageVerify {
 		blocked, err := taskBlockedTx(ctx, tx, o.TaskID)
 		if err != nil {
 			return err
@@ -431,12 +434,16 @@ func (s *Store) CreateStageWorkOrderCommand(ctx context.Context, lease taskops.T
 	if !lease.ValidForCommand(j.TaskID, string(core.WorkOrderCmdCreate)) {
 		return false, fmt.Errorf("stage work-order create requires a valid taskops lease")
 	}
-	if j.Stage == core.StageReview || o.Stage != j.Stage || o.TaskID != j.TaskID || o.JobID != j.ID || o.ID != j.ID {
+	if !core.ValidWorkOrderStage(o.Stage) || j.Stage == core.StageReview || o.Stage != j.Stage || o.TaskID != j.TaskID || o.JobID != j.ID || o.ID != j.ID {
 		return false, fmt.Errorf("invalid stage work order %s", o.ID)
 	}
 	created := false
 	err := s.taskTx(ctx, j.TaskID, func(tx *sql.Tx) error {
-		if _, err := getTaskRow(ctx, tx, j.TaskID); err != nil {
+		task, err := getTaskRow(ctx, tx, j.TaskID)
+		if err != nil {
+			return err
+		}
+		if err := core.ValidateVerifyDispatch(task, o); err != nil {
 			return err
 		}
 		var exists bool
@@ -615,7 +622,7 @@ func (s *Store) ApplyWorkOrderClock(ctx context.Context, lease taskops.TaskLease
 			if o.State != core.WorkOrderQueued && o.State != core.WorkOrderClaimed {
 				continue
 			}
-			if o.Stage == core.StageImplement && o.State == core.WorkOrderQueued {
+			if (o.Stage == core.StageImplement || o.Stage == core.StageVerify) && o.State == core.WorkOrderQueued {
 				if blocked {
 					if o.QueueBlockedAt.IsZero() {
 						o.QueueBlockedAt = now
@@ -723,6 +730,14 @@ func (s *Store) UpdateWorkOrderCommand(ctx context.Context, lease taskops.TaskLe
 			order.ContinuationSessionID, order.ContinuationAttemptID = "", ""
 			order.ContinuationHarness, order.ContinuationLaunchEnvironment = "", ""
 		}
+		if command == core.WorkOrderCmdSubmitForReview && order.Stage == core.StageImplement && order.HeadSHA != "" {
+			if err := taskWrite(ctx, tx, order.TaskID, map[string]any{"reviewed_head_sha": order.HeadSHA}); err != nil {
+				return err
+			}
+			if _, err := writeRow(ctx, tx, rowWrite{table: "work_orders", operation: "UPDATE", values: map[string]any{"head_sha": order.HeadSHA}, where: map[string]any{"workspace_id": documentWorkspace(ctx), "id": order.ID}}); err != nil {
+				return err
+			}
+		}
 		values := orderValues(order)
 		allowed := map[string]bool{"state": true, "claimant_id": true, "session_id": true, "attempt_id": true, "client_token_hash": true, "agent": true, "model": true, "lease_expires_at": true, "model_enforcement": true, "queue_entered_at": true, "queue_deadline": true, "execution_started_at": true, "execution_deadline": true, "last_attempt_id": true, "last_attempt_outcome": true, "last_failure_category": true, "last_failure_message": true, "last_failure_detail": true, "last_failure_exit_status": true, "last_failure_at": true, "automatic_retry_count": true, "next_retry_at": true, "retry_suppressed": true, "retry_suppression_reason": true, "redispatch_count": true, "progress": true, "cost_usd": true, "tokens_in": true, "tokens_out": true, "usage_reported": true, "self_reported": true, "operator_direction": true, "continuation_session_id": true, "continuation_attempt_id": true, "continuation_harness": true, "continuation_launch_environment": true, "rate_limit": true, "rate_limit_observed_at": true, "updated_at": true}
 		for key := range values {
@@ -815,6 +830,9 @@ func (s *Store) reviewClaimGuardTx(ctx context.Context, tx *sql.Tx, o core.WorkO
 	if !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
+	if o.Stage == core.StageVerify {
+		return nil
+	}
 	accepted, err := reviewSeatAcceptedTx(ctx, tx, documentWorkspace(ctx), o.TaskID, o.ID)
 	if err != nil {
 		return err
@@ -862,6 +880,25 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lease taskops.TaskLea
 		if !lease.ValidForCommand(o.TaskID, string(core.WorkOrderCmdClaim)) {
 			return fmt.Errorf("work-order claim requires a valid taskops lease")
 		}
+		if !core.ValidWorkOrderStage(o.Stage) {
+			return fmt.Errorf("invalid work-order stage %s", o.Stage)
+		}
+		task, err := getTaskRow(ctx, tx, o.TaskID)
+		if err != nil {
+			return err
+		}
+		if err := core.ValidateVerifyDispatch(task, o); err != nil {
+			return err
+		}
+		siblings, err := s.listOrders(ctx, tx, []string{o.TaskID})
+		if err != nil {
+			return err
+		}
+		for _, other := range siblings {
+			if core.ConflictingExecutorClaims(o, other) {
+				return fmt.Errorf("conflicting claimed order %s", other.ID)
+			}
+		}
 		if o.Stage != core.StageReview {
 			var active string
 			err := tx.QueryRowContext(ctx, `SELECT id FROM work_orders WHERE workspace_id=? AND task_id=? AND stage=? AND id<>? AND state='claimed' ORDER BY created_at,id LIMIT 1`, documentWorkspace(ctx), o.TaskID, o.Stage, id).Scan(&active)
@@ -872,7 +909,7 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lease taskops.TaskLea
 				return err
 			}
 		}
-		task, err := getTaskRow(ctx, tx, o.TaskID)
+		task, err = getTaskRow(ctx, tx, o.TaskID)
 		if err != nil {
 			return err
 		}
@@ -883,7 +920,7 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lease taskops.TaskLea
 		if claim.ClientToken != "" {
 			hash = fmt.Sprintf("%x", sha256.Sum256([]byte(claim.ClientToken)))
 		}
-		if o.Stage == core.StageReview {
+		if o.Stage == core.StageReview || o.Stage == core.StageVerify {
 			if err = s.reviewClaimGuardTx(ctx, tx, o, claim, hash); err != nil {
 				return err
 			}
@@ -894,7 +931,7 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lease taskops.TaskLea
 			}
 		}
 		now := time.Now().UTC()
-		if o.Stage == core.StageImplement {
+		if o.Stage == core.StageImplement || o.Stage == core.StageVerify {
 			blocked, err := taskBlockedTx(ctx, tx, o.TaskID)
 			if err != nil {
 				return err
