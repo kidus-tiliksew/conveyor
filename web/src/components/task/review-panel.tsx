@@ -12,6 +12,7 @@ import { Disclosure } from '../ui/disclosure'
 import { Textarea } from '../ui/input'
 import { AttachmentsCard } from './attachments-card'
 import { PlanRevisionDecisionCard } from './plan-revision-decision-card'
+import { VerificationReviewResult } from './verification-stage'
 
 // The human gate rendered as a verdict, not an alarm: the card
 // leads with what the pipeline is waiting for and one context-matched primary
@@ -391,6 +392,7 @@ function GenericReviewPanel({ item, onDecisionRecorded }: { item: ActivityItem; 
       </div>
       <div className="px-4 py-2.5">
         {mergeGate && <MergeGateReviewCard item={item} />}
+        {mergeGate && <VerificationReviewResult item={item} />}
         <AttachmentsCard attachments={item.verification_evidence ?? []} title="Verification evidence" />
         <fieldset
           className={cn('flex flex-wrap items-center gap-1', (item.verification_evidence?.length ?? 0) > 0 && 'mt-3')}

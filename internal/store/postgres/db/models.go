@@ -9,6 +9,12 @@ import (
 	"time"
 )
 
+// VK-9 bounded metadata binding, maintained by hand.
+type VerificationReadRecord struct {
+	ID, ContextID, RunID, State, At string
+	Metadata                        []byte
+}
+
 type Artifact struct {
 	ID          string             `json:"id"`
 	WorkspaceID string             `json:"workspace_id"`

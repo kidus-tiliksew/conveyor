@@ -1,9 +1,9 @@
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useMemo } from 'react'
 import { groupForSummary } from '../../lib/activity'
-import { fetchTaskActivity, fetchTaskAudit } from '../../lib/api'
+import { fetchTaskActivity, fetchTaskAudit, fetchVerificationPage, fetchVerificationSummary } from '../../lib/api'
 import { stageGroups } from '../../lib/contracts'
-import type { TaskAuditKind } from '../../lib/types'
+import type { TaskAuditKind, VerificationCollection } from '../../lib/types'
 import { useTaskStream } from '../../lib/use-task-stream'
 import { useActivity, useWorkspaceSelection } from '../app-shell'
 
@@ -20,6 +20,41 @@ export function useTaskDetail(taskId: string) {
   })
   useTaskStream(taskId, workspace)
   return query
+}
+
+const verificationQueryOptions = {
+  retry: false,
+  staleTime: Infinity,
+  gcTime: 0,
+  refetchOnWindowFocus: false,
+  refetchOnReconnect: false,
+  refetchInterval: false,
+} as const
+
+// These families are independent of task activity and SSE invalidation.
+export function useTaskVerification(taskId: string) {
+  const { workspace } = useWorkspaceSelection()
+  return useInfiniteQuery({
+    queryKey: ['verification-summary', workspace, taskId],
+    queryFn: ({ pageParam, signal }) => fetchVerificationSummary(workspace, taskId, pageParam, signal),
+    initialPageParam: '',
+    getNextPageParam: (page) => page.contexts.next_cursor || undefined,
+    enabled: Boolean(workspace && taskId),
+    ...verificationQueryOptions,
+  })
+}
+
+export function useVerificationPages(taskId: string, contextId: string, collection: VerificationCollection) {
+  const { workspace } = useWorkspaceSelection()
+  return useInfiniteQuery({
+    queryKey: ['verification-page', workspace, taskId, contextId, collection],
+    queryFn: ({ pageParam, signal }) =>
+      fetchVerificationPage(workspace, taskId, contextId, collection, pageParam, signal),
+    initialPageParam: '',
+    getNextPageParam: (page) => page.next_cursor || undefined,
+    enabled: Boolean(workspace && taskId && contextId),
+    ...verificationQueryOptions,
+  })
 }
 
 // Enabled only by an open individual disclosure (component-web-dashboard).

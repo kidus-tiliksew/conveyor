@@ -208,6 +208,13 @@ func PrepareVerificationMutation(ctx context.Context, source redact.SecretSource
 	if !ok {
 		return out, ErrVerificationAccess
 	}
+	if c.OperatorObservation != nil {
+		var err error
+		c, err = normalizeVerificationObservation(ctx, c, rows, now)
+		if err != nil {
+			return out, err
+		}
+	}
 	actor := ActorFromContext(ctx).ID
 	if strings.ContainsRune(actor, 0) {
 		return out, ErrVerificationInvalid

@@ -9,6 +9,7 @@ import (
 )
 
 type Querier interface {
+	ListVerificationReadPage(context.Context, string, string, string, string, string, string, int) ([]VerificationReadRecord, error)
 	ListVerificationRecords(context.Context, string, string) ([]VerificationRecord, error)
 	PutVerificationRecord(context.Context, VerificationRecord) error
 	DeleteVerificationChunk(context.Context, string, string) error

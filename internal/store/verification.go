@@ -168,8 +168,9 @@ type VerificationReceipt struct {
 }
 
 type VerificationCommand struct {
-	Coverage   *VerificationCoverage
-	Submission *VerificationSubmission
+	OperatorObservation *VerificationOperatorObservation
+	Coverage            *VerificationCoverage
+	Submission          *VerificationSubmission
 
 	ReplayAuthorizationID string
 
