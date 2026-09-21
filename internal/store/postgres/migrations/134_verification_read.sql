@@ -91,11 +91,11 @@ CREATE VIEW verification_read_obligations AS SELECT r.workspace_id,r.task_id,r.i
   'truncated',CASE WHEN CHAR_LENGTH(COALESCE(r.body #>> '{ID}',''))>2048 OR CHAR_LENGTH(COALESCE(r.body #>> '{Description}',''))>2048 OR CHAR_LENGTH(COALESCE(r.body #>> '{Digest}',''))>2048 OR CHAR_LENGTH(COALESCE(r.body #>> '{CreatedBy}',''))>2048 THEN TRUE::text ELSE FALSE::text END) AS metadata
  FROM verification_obligations r;
 
-CREATE VIEW verification_read_selections AS SELECT r.workspace_id,r.task_id,CONCAT(r.id,':',k.value #>> '{kit_id}') AS id,r.context_id,r.run_id,r.state,c.read_at,jsonb_build_object('kit_id',LEFT(COALESCE(k.value #>> '{kit_id}',''),2048),
-  'digest',COALESCE(k.value #>> '{digest}',''),
-  'eligibility',COALESCE(k.value #>> '{eligibility}',''),
+CREATE VIEW verification_read_selections AS SELECT r.workspace_id,r.task_id,CONCAT(r.id,':',LPAD((k.ordinality-1)::text,10,'0')) AS id,r.context_id,r.run_id,r.state,c.read_at,jsonb_build_object('kit_id',LEFT(COALESCE(k.value #>> '{kit_id}',''),2048),
+  'digest',LEFT(COALESCE(k.value #>> '{digest}',''),2048),
+  'eligibility',LEFT(COALESCE(k.value #>> '{eligibility}',''),2048),
   'reasons',LEFT(COALESCE((k.value->'reasons')::text,'[]'),2048),
-  'truncated',CASE WHEN CHAR_LENGTH(COALESCE((k.value->'reasons')::text,'[]'))>2048 THEN TRUE::text ELSE FALSE::text END) AS metadata FROM verification_selections r JOIN verification_contexts c ON c.workspace_id=r.workspace_id AND c.task_id=r.task_id AND c.id=r.context_id CROSS JOIN LATERAL jsonb_array_elements(r.body #> '{Receipt,kits}') k(value);
+  'truncated',CASE WHEN CHAR_LENGTH(COALESCE(k.value #>> '{kit_id}',''))>2048 OR CHAR_LENGTH(COALESCE(k.value #>> '{digest}',''))>2048 OR CHAR_LENGTH(COALESCE(k.value #>> '{eligibility}',''))>2048 OR CHAR_LENGTH(COALESCE((k.value->'reasons')::text,'[]'))>2048 THEN TRUE::text ELSE FALSE::text END) AS metadata FROM verification_selections r JOIN verification_contexts c ON c.workspace_id=r.workspace_id AND c.task_id=r.task_id AND c.id=r.context_id CROSS JOIN LATERAL jsonb_array_elements(r.body #> '{Receipt,kits}') WITH ORDINALITY k(value,ordinality);
 
 -- Required status comes from the frozen subject contract, never an evidence flag.
 CREATE VIEW verification_read_assertions AS

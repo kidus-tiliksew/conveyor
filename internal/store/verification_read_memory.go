@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sort"
 	"strconv"
 	"strings"
@@ -111,10 +112,15 @@ func (m *volatileMemory) ReadVerificationPage(ctx context.Context, a Verificatio
 				return VerificationReadPage{}, err
 			}
 			item.At = verificationReadAt(m.verificationRows[ws+"\x00verification_contexts\x00"+row.ContextID])
-			for _, kit := range selected.Receipt.Kits {
+			for index, kit := range selected.Receipt.Kits {
 				reasons, truncated := verificationReadBound(string(kit.Reasons))
-				item.ID = row.ID + ":" + kit.KitID
-				item.Metadata = verificationJSON(map[string]string{"kit_id": kit.KitID, "digest": kit.Digest, "eligibility": kit.Eligibility, "reasons": reasons, "truncated": strconv.FormatBool(truncated)})
+				kitID, idTruncated := verificationReadBound(kit.KitID)
+				digest, digestTruncated := verificationReadBound(kit.Digest)
+				eligibility, eligibilityTruncated := verificationReadBound(kit.Eligibility)
+				truncated = truncated || idTruncated || digestTruncated || eligibilityTruncated
+				// Receipt order is immutable; kit IDs may be oversized or duplicated.
+				item.ID = fmt.Sprintf("%s:%010d", row.ID, index)
+				item.Metadata = verificationJSON(map[string]string{"kit_id": kitID, "digest": digest, "eligibility": eligibility, "reasons": reasons, "truncated": strconv.FormatBool(truncated)})
 				add(item)
 			}
 			continue

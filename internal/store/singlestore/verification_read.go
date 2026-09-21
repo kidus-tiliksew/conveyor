@@ -163,11 +163,11 @@ func verificationReadProjection(kind string) string {
   'truncated',CASE WHEN CHAR_LENGTH(COALESCE(JSON_EXTRACT_STRING(r.body,'ID'),''))>2048 OR CHAR_LENGTH(COALESCE(JSON_EXTRACT_STRING(r.body,'Description'),''))>2048 OR CHAR_LENGTH(COALESCE(JSON_EXTRACT_STRING(r.body,'Digest'),''))>2048 OR CHAR_LENGTH(COALESCE(JSON_EXTRACT_STRING(r.body,'CreatedBy'),''))>2048 THEN 'true' ELSE 'false' END) AS metadata
  FROM verification_obligations r`
 	case "selections":
-		return `SELECT r.workspace_id,r.task_id,CONCAT(r.id,':',JSON_EXTRACT_STRING(k.table_col,'kit_id')) AS id,r.context_id,r.run_id,r.state,c.read_at,JSON_BUILD_OBJECT('kit_id',LEFT(COALESCE(JSON_EXTRACT_STRING(k.table_col,'kit_id'),''),2048),
-  'digest',COALESCE(JSON_EXTRACT_STRING(k.table_col,'digest'),''),
-  'eligibility',COALESCE(JSON_EXTRACT_STRING(k.table_col,'eligibility'),''),
+		return `SELECT r.workspace_id,r.task_id,CONCAT(r.id,':',LPAD(CAST(k.table_ord AS CHAR),10,'0')) AS id,r.context_id,r.run_id,r.state,c.read_at,JSON_BUILD_OBJECT('kit_id',LEFT(COALESCE(JSON_EXTRACT_STRING(k.table_col,'kit_id'),''),2048),
+  'digest',LEFT(COALESCE(JSON_EXTRACT_STRING(k.table_col,'digest'),''),2048),
+  'eligibility',LEFT(COALESCE(JSON_EXTRACT_STRING(k.table_col,'eligibility'),''),2048),
   'reasons',LEFT(COALESCE(JSON_EXTRACT_STRING(k.table_col,'reasons'),'[]'),2048),
-  'truncated',CASE WHEN CHAR_LENGTH(COALESCE(JSON_EXTRACT_STRING(k.table_col,'reasons'),'[]'))>2048 THEN 'true' ELSE 'false' END) AS metadata FROM verification_selections r JOIN verification_contexts c ON c.workspace_id=r.workspace_id AND c.task_id=r.task_id AND c.id=r.context_id JOIN TABLE(JSON_TO_ARRAY(JSON_EXTRACT_JSON(r.body,'Receipt','kits'))) k`
+  'truncated',CASE WHEN CHAR_LENGTH(COALESCE(JSON_EXTRACT_STRING(k.table_col,'kit_id'),''))>2048 OR CHAR_LENGTH(COALESCE(JSON_EXTRACT_STRING(k.table_col,'digest'),''))>2048 OR CHAR_LENGTH(COALESCE(JSON_EXTRACT_STRING(k.table_col,'eligibility'),''))>2048 OR CHAR_LENGTH(COALESCE(JSON_EXTRACT_STRING(k.table_col,'reasons'),'[]'))>2048 THEN 'true' ELSE 'false' END) AS metadata FROM verification_selections r JOIN verification_contexts c ON c.workspace_id=r.workspace_id AND c.task_id=r.task_id AND c.id=r.context_id JOIN TABLE(JSON_TO_ARRAY(JSON_EXTRACT_JSON(r.body,'Receipt','kits'))) WITH ORDINALITY AS k`
 	}
 	panic("unvalidated verification collection")
 }

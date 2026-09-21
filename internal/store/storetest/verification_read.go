@@ -266,7 +266,7 @@ func RunVerificationRead(t *testing.T, x Fixture) {
 		v := newVerificationFixture(t, x, true)
 		v.contextID = v.apply(t, store.VerificationCommand{Kind: store.VerificationCreateContext, Key: "kit-cycle", Context: &store.VerificationContext{Revisions: v.revisions, GoverningPins: v.pins, Discovery: []json.RawMessage{core.JSONPayload(map[string]any{"repository": "conveyor", "revision": v.revisions[0].SHA, "state": "manifest"})}}}).ID
 		selection := store.VerificationSelection{Receipt: verification.SelectionReceipt{SchemaVersion: 1, Stage: "verify", ContextPins: []verification.Pin{{Kind: "requirement", DocumentID: "req-fixture", Version: 1}}, Kits: []verification.KitReceipt{}}}
-		for _, id := range []string{"kit-a", "kit-c", "kit-b"} {
+		for _, id := range []string{"kit-a", "kit-c", "kit-b", strings.Repeat("x", 3000), strings.Repeat("x", 3000)} {
 			selection.Receipt.Kits = append(selection.Receipt.Kits, verification.KitReceipt{KitID: id, Digest: strings.Repeat("d", 64), Eligibility: "eligible", Reasons: []verification.SelectionReason{{Code: "matching_pin", Message: strings.Repeat("selection reason ", 256)}}})
 		}
 		v.subject = core.VerificationSubject{Kind: "kit", KitID: "kit-a", KitVersion: "1", ContentDigest: strings.Repeat("d", 64), ExerciseID: "kit-check"}
@@ -274,7 +274,7 @@ func RunVerificationRead(t *testing.T, x Fixture) {
 		v.apply(t, store.VerificationCommand{Kind: store.VerificationRecordSelection, Selection: &selection})
 		a := store.VerificationAccess{TaskID: v.access.TaskID, UserID: owner.ID}
 		p := store.VerificationPageRequest{Kind: "selections", ContextID: v.contextID, Limit: 1}
-		for _, id := range []string{"kit-c", "kit-b", "kit-a"} {
+		for _, id := range []string{strings.Repeat("x", 2048), strings.Repeat("x", 2048), "kit-b", "kit-c", "kit-a"} {
 			page, err := r.ReadVerificationPage(ctx, a, p)
 			requireOK(t, err)
 			if len(page.Items) != 1 {
@@ -282,7 +282,7 @@ func RunVerificationRead(t *testing.T, x Fixture) {
 			}
 			var metadata map[string]string
 			requireOK(t, json.Unmarshal(page.Items[0].Metadata, &metadata))
-			if metadata["kit_id"] != id || metadata["truncated"] != "true" || len([]rune(metadata["reasons"])) > 2048 || strings.Contains(string(page.Items[0].Metadata), "private-command") {
+			if len(page.Items[0].ID) > 512 || metadata["kit_id"] != id || metadata["truncated"] != "true" || len([]rune(metadata["reasons"])) > 2048 || strings.Contains(string(page.Items[0].Metadata), "private-command") {
 				t.Fatalf("kit metadata: %+v", metadata)
 			}
 			p.Cursor = page.NextCursor
