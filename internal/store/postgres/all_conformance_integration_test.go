@@ -174,7 +174,15 @@ func TestPostgresConformanceIntegration(t *testing.T) {
 			if _, err := st.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
 				t.Fatal(err)
 			}
-			return storetest.Fixture{Backend: st, Context: ctx, Workspace: workspace, Config: cfg, ArtifactRepairEvents: func(ctx context.Context) ([]core.Event, error) {
+			return storetest.Fixture{ReopenVerification: func(t *testing.T) store.Backend {
+				pool, err := pgxpool.NewWithConfig(t.Context(), st.pool.Config())
+				if err != nil {
+					t.Fatal(err)
+				}
+				reopened := newStore(pool)
+				t.Cleanup(reopened.Close)
+				return reopened
+			}, Backend: st, Context: ctx, Workspace: workspace, Config: cfg, ArtifactRepairEvents: func(ctx context.Context) ([]core.Event, error) {
 				rows, err := st.pool.Query(ctx, `SELECT kind,actor_id,payload_json FROM events WHERE workspace_id=$1 AND kind='artifact.metadata_repaired' ORDER BY id`, workspaceFromArtifactContext(ctx))
 				if err != nil {
 					return nil, err

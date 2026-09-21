@@ -140,6 +140,14 @@ func prepareArtifact(ctx context.Context, a core.Artifact, content []byte) (core
 	if err = a.ValidateAttachmentTarget(); err != nil {
 		return core.Artifact{}, err
 	}
+	if a.Role == core.ArtifactRoleTypedVerificationEvidence {
+		if a.TaskID == "" {
+			return core.Artifact{}, fmt.Errorf("typed evidence requires a task")
+		}
+		if _, err := core.ValidateTypedVerificationArtifact(a.ContentType, content); err != nil {
+			return core.Artifact{}, err
+		}
+	}
 	if a.Role == core.ArtifactRoleVerificationEvidence {
 		if a.TaskID == "" {
 			return core.Artifact{}, fmt.Errorf("verification evidence must be attached directly to one task")
@@ -187,6 +195,9 @@ func insertArtifactTx(ctx context.Context, tx *sql.Tx, a core.Artifact, content 
 	return err
 }
 func (s *Store) CreateArtifact(ctx context.Context, a core.Artifact, content []byte) (core.Artifact, error) {
+	if a.Role == core.ArtifactRoleTypedVerificationEvidence {
+		return core.Artifact{}, store.ErrVerificationAccess
+	}
 	a, err := prepareArtifact(ctx, a, content)
 	if err != nil {
 		return core.Artifact{}, err
@@ -235,9 +246,12 @@ func (s *Store) CreateClaimedVerificationEvidence(ctx context.Context, r store.C
 func (s *Store) GetArtifact(ctx context.Context, id string) (core.Artifact, []byte, error) {
 	var artifact core.Artifact
 	var content []byte
-	err := documentRow(ctx, s.db, `SELECT a.id,a.workspace_id,a.name,a.content_type,a.size_bytes,a.content,a.created_at,COALESCE(l.role,'task_context'),COALESCE(l.task_id,''),COALESCE(l.feature_id,''),COALESCE(l.requirement_id,''),COALESCE(l.planning_session_id,'') FROM artifacts a LEFT JOIN artifact_links l ON l.workspace_id=a.workspace_id AND l.artifact_id=a.id WHERE a.workspace_id=? AND a.id=? ORDER BY l.role LIMIT 1`, documentWorkspace(ctx), id).Scan(&artifact.ID, &artifact.Workspace, &artifact.Name, &artifact.ContentType, &artifact.SizeBytes, &content, &artifact.CreatedAt, &artifact.Role, &artifact.TaskID, &artifact.FeatureID, &artifact.RequirementID, &artifact.PlanningSessionID)
+	err := documentRow(ctx, s.db, `SELECT a.id,a.workspace_id,a.name,a.content_type,a.size_bytes,a.content,a.created_at,COALESCE(l.role,'task_context'),COALESCE(l.task_id,''),COALESCE(l.feature_id,''),COALESCE(l.requirement_id,''),COALESCE(l.planning_session_id,'') FROM artifacts a LEFT JOIN artifact_links l ON l.workspace_id=a.workspace_id AND l.artifact_id=a.id WHERE a.workspace_id=? AND a.id=? ORDER BY (l.role='typed_verification_evidence') DESC,l.role LIMIT 1`, documentWorkspace(ctx), id).Scan(&artifact.ID, &artifact.Workspace, &artifact.Name, &artifact.ContentType, &artifact.SizeBytes, &content, &artifact.CreatedAt, &artifact.Role, &artifact.TaskID, &artifact.FeatureID, &artifact.RequirementID, &artifact.PlanningSessionID)
 	if err != nil {
 		return core.Artifact{}, nil, notFound(err, "artifact %s", id)
+	}
+	if artifact.Role == core.ArtifactRoleTypedVerificationEvidence {
+		return core.Artifact{}, nil, store.ErrVerificationAccess
 	}
 	return artifact, content, nil
 }

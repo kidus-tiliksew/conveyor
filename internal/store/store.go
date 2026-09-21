@@ -4393,6 +4393,9 @@ func (m *memory) AssignTaskFeature(ctx context.Context, taskID, featureID string
 }
 
 func (m *memory) CreateArtifact(ctx context.Context, artifact core.Artifact, content []byte) (core.Artifact, error) {
+	if artifact.Role == core.ArtifactRoleTypedVerificationEvidence {
+		return core.Artifact{}, ErrVerificationAccess
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.createArtifactLocked(ctx, artifact, content)
@@ -4428,6 +4431,14 @@ func (m *memory) createArtifactLocked(ctx context.Context, artifact core.Artifac
 	if artifact.PlanningSessionID != "" {
 		if _, ok := m.planningSessions[memoryScopedKey{workspace: artifact.Workspace, id: artifact.PlanningSessionID}]; !ok {
 			return core.Artifact{}, fmt.Errorf("artifact attachment does not belong to workspace %s", artifact.Workspace)
+		}
+	}
+	if artifact.Role == core.ArtifactRoleTypedVerificationEvidence {
+		if artifact.TaskID == "" {
+			return core.Artifact{}, fmt.Errorf("typed evidence requires a task")
+		}
+		if _, err := core.ValidateTypedVerificationArtifact(artifact.ContentType, content); err != nil {
+			return core.Artifact{}, err
 		}
 	}
 	if artifact.Role == core.ArtifactRoleVerificationEvidence {
@@ -4517,6 +4528,16 @@ func (m *memory) GetArtifact(ctx context.Context, id string) (core.Artifact, []b
 	artifact, ok := m.artifactForRead(ctx, id)
 	if !ok {
 		return core.Artifact{}, nil, fmt.Errorf("%w: artifact %s", ErrNotFound, id)
+	}
+	// Content-addressed bytes may have several roles. Any typed evidence link
+	// requires the provenance-scoped reader, regardless of insertion order.
+	if artifact.meta.Role == core.ArtifactRoleTypedVerificationEvidence {
+		return core.Artifact{}, nil, ErrVerificationAccess
+	}
+	for _, link := range artifact.links {
+		if link.Role == core.ArtifactRoleTypedVerificationEvidence {
+			return core.Artifact{}, nil, ErrVerificationAccess
+		}
 	}
 	return artifact.meta, append([]byte(nil), artifact.content...), nil
 }

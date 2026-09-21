@@ -6,6 +6,7 @@ package db
 
 import (
 	"github.com/jackc/pgx/v5/pgtype"
+	"time"
 )
 
 type Artifact struct {
@@ -488,4 +489,11 @@ type DocumentOperatorNote struct {
 	Tier          string
 	DismissalNote string
 	DismissedAt   pgtype.Timestamptz
+}
+
+// VerificationRecord is maintained by hand with migration 132 (VK-6).
+type VerificationRecord struct {
+	Table, WorkspaceID, ID, TaskID, ContextID, RunID, LogicalKey, KeyHash, State string
+	Body                                                                         []byte
+	ExpiresAt                                                                    *time.Time
 }

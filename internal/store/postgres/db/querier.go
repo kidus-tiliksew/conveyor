@@ -9,6 +9,9 @@ import (
 )
 
 type Querier interface {
+	ListVerificationRecords(context.Context, string, string) ([]VerificationRecord, error)
+	PutVerificationRecord(context.Context, VerificationRecord) error
+	DeleteVerificationChunk(context.Context, string, string) error
 	CountUsers(ctx context.Context) (int64, error)
 	DeactivateIdentityUser(ctx context.Context, id string) (User, error)
 	GetIdentityUser(ctx context.Context, id string) (User, error)
