@@ -36,6 +36,9 @@ func VerificationJSONSchema(t reflect.Type) map[string]any {
 	if t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
+	if t == reflect.TypeOf(time.Time{}) {
+		return map[string]any{"type": "string", "format": "date-time"}
+	}
 	if t == reflect.TypeOf(json.RawMessage{}) {
 		return map[string]any{}
 	}

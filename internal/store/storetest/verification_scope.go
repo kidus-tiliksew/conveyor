@@ -36,7 +36,7 @@ func runVerificationScope(t *testing.T, x Fixture) {
 				current.subject.ContractDigest = registered.Digest
 			}
 			current.start(t, "second-run")
-			op := current.apply(t, store.VerificationCommand{Kind: store.VerificationPrepareOperation, Key: "scope-operation-" + current.runID, Operation: &store.VerificationOperation{StepID: "step", Target: "fixture", InputDigest: verificationSHA([]byte("input"))}})
+			op := current.apply(t, store.VerificationCommand{Kind: store.VerificationPrepareOperation, Key: "scope-operation-" + current.runID, Operation: &store.VerificationOperation{StepID: "step", Target: "fixture", InputDigest: verificationSHA([]byte("{}"))}})
 			observe := store.VerificationCommand{Kind: store.VerificationObserveOperation, Operation: &store.VerificationOperation{ID: op.ID}, Observation: &store.VerificationOperationObservation{State: "dispatching", Source: "fixture", CapturedAt: time.Now().UTC()}}
 			current.apply(t, observe)
 			before := current.snapshot(t)
@@ -59,6 +59,7 @@ func runVerificationScope(t *testing.T, x Fixture) {
 			}
 			current.apply(t, store.VerificationCommand{Kind: store.VerificationTerminateAttempt, Attempt: &store.VerificationAttempt{State: "failed"}})
 			observe.Observation.State = "not_applied"
+			observe.Kind = store.VerificationReconcileOperation
 			current.apply(t, observe) // Reconciliation of the original terminal run remains valid.
 		})
 	}
@@ -86,13 +87,10 @@ func runVerificationScope(t *testing.T, x Fixture) {
 			t.Fatalf("cross-work-order-attempt retry: %v", err)
 		}
 		approval.Access.WorkOrderAttemptID = v.access.WorkOrderAttemptID
-		first, err := x.Backend.ApplyVerification(ctx, approval)
-		requireOK(t, err)
-		again, err := x.Backend.ApplyVerification(ctx, approval)
-		requireOK(t, err)
-		if first.ID == "" || first.ID != again.ID {
-			t.Fatal("authorized retry lost idempotency")
+		if _, err := x.Backend.ApplyVerification(ctx, approval); !errors.Is(err, store.ErrVerificationAccess) {
+			t.Fatalf("unbound retry bypassed recovery: %v", err)
 		}
+
 	})
 	for _, typedFirst := range []bool{false, true} {
 		name := "ContextFirst"
@@ -303,7 +301,7 @@ func runVerificationLimits(t *testing.T, x Fixture) {
 		registered := v.apply(t, store.VerificationCommand{Kind: store.VerificationRegisterObligation, Obligation: &obligation})
 		v.subject = core.VerificationSubject{Kind: "ordinary", ObligationID: obligation.ID, ContractDigest: registered.Digest}
 		v.start(t, "unique-start")
-		v.apply(t, store.VerificationCommand{Kind: store.VerificationPrepareOperation, Key: "operation-" + v.runID, Operation: &store.VerificationOperation{StepID: "step", Target: "fixture", InputDigest: verificationSHA([]byte("input"))}})
+		v.apply(t, store.VerificationCommand{Kind: store.VerificationPrepareOperation, Key: "operation-" + v.runID, Operation: &store.VerificationOperation{StepID: "step", Target: "fixture", InputDigest: verificationSHA([]byte("{}"))}})
 		o, err := x.Backend.GetWorkOrder(x.Context, v.access.WorkOrderID)
 		requireOK(t, err)
 		o.LeaseExpiresAt = time.Now().Add(-time.Second)

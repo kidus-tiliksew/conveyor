@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -467,8 +468,9 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 		payload, marshalErr := json.Marshal(map[string]any{
 			"verdict": args["verdict"], "reason_code": args["reason_code"], "summary": args["summary"],
 			"feedback": args["feedback"], "requirement_citations": args["requirement_citations"],
-			"done_criteria_coverage": args["done_criteria_coverage"],
-			"governance_assessment":  args["governance_assessment"],
+			"done_criteria_coverage":  args["done_criteria_coverage"],
+			"governance_assessment":   args["governance_assessment"],
+			"verification_assessment": args["verification_assessment"],
 		})
 		if marshalErr != nil {
 			return nil, marshalErr
@@ -499,6 +501,9 @@ func humanReservedMCPTool(name string) bool {
 
 var mcpCapabilities = map[string]core.Capability{
 	"get_verification_context":         core.CapabilityViewWorkspace,
+	"prepare_verification_operation":   core.CapabilityClaimWork,
+	"reconcile_verification_operation": core.CapabilityClaimWork,
+	"submit_verification":              core.CapabilityClaimWork,
 	"prepare_verification":             core.CapabilityClaimWork,
 	"register_verification_obligation": core.CapabilityClaimWork,
 	"start_verification_attempt":       core.CapabilityClaimWork,
@@ -848,6 +853,6 @@ func mcpTools() []map[string]any {
 		{"name": "submit_plan", "description": "Validate and submit a Markdown execution plan for a claimed plan-stage order. Include Approach, Files touched, Ordering, Risks, and Done criteria headings. Plans never create child tasks; decomposition must be empty. Validation errors leave the order claimed for correction.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "markdown": map[string]any{"type": "string", "description": "Example: ## Approach\\nImplement the shared handler.\\n\\n## Files touched\\n- internal/httpapi/mcp.go\\n\\n## Ordering\\n1. Validate, then persist.\\n\\n## Risks\\n- Preserve gate events.\\n\\n## Done criteria\\n- submit_plan persists the task execution plan."}, "decomposition": map[string]any{"type": "array", "description": "Must be empty; plans cannot fan out tasks.", "items": map[string]any{"type": "object", "properties": map[string]any{"id": str, "repo": str, "summary": str, "depends_on": map[string]any{"type": "array", "items": str}}, "required": []string{"id", "repo", "summary", "depends_on"}, "additionalProperties": false}}}, "work_order_id", "session_id", "markdown", "decomposition")},
 		{"name": "submit_for_review", "description": "Validate the existing pull request at head_sha, record it, and dispatch independent review.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "head_sha": str}, "work_order_id", "session_id", "head_sha")},
 		{"name": "await_review", "description": "Long-poll for the review verdict so changes requested returns to the warm implementer session.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "timeout_seconds": num}, "work_order_id", "session_id")},
-		{"name": "submit_review_verdict", "description": "Submit a validated independent review verdict, feedback, pinned REQ-n/AC-n.m citations, plan done-criteria coverage, and System Design/DEC governance assessment.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "verdict": map[string]any{"type": "string", "enum": []string{"approve", "changes_requested"}}, "reason_code": str, "summary": str, "feedback": str, "requirement_citations": requirementCitations, "done_criteria_coverage": doneCriteriaCoverage, "governance_assessment": governanceAssessment}, "work_order_id", "session_id", "verdict", "reason_code", "summary", "requirement_citations", "done_criteria_coverage", "governance_assessment")},
+		{"name": "submit_review_verdict", "description": "Submit a validated independent review verdict, feedback, pinned REQ-n/AC-n.m citations, plan done-criteria coverage, and System Design/DEC governance assessment.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "verdict": map[string]any{"type": "string", "enum": []string{"approve", "changes_requested"}}, "reason_code": str, "summary": str, "feedback": str, "requirement_citations": requirementCitations, "done_criteria_coverage": doneCriteriaCoverage, "governance_assessment": governanceAssessment, "verification_assessment": core.VerificationJSONSchema(reflect.TypeOf(core.VerificationAssessment{}))}, "work_order_id", "session_id", "verdict", "reason_code", "summary", "requirement_citations", "done_criteria_coverage", "governance_assessment")},
 	}...)
 }

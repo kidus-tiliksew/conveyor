@@ -277,6 +277,21 @@ func (s *Service) Redispatch(ctx context.Context, id string) (core.WorkOrder, er
 	})
 }
 
+func (s *Service) RecoverVerification(ctx context.Context, id, requestID, direction string, disposition *store.VerificationRecoveryDisposition) (core.WorkOrder, error) {
+	if disposition == nil {
+		return s.Recover(ctx, id, requestID, direction)
+	}
+	membership, ok := s.Store.(store.MembershipStore)
+	if !ok {
+		return core.WorkOrder{}, store.ErrVerificationAccess
+	}
+	ctx = store.WithVerificationRecovery(ctx, disposition)
+	if err := store.AuthorizeVerificationRecovery(ctx, membership); err != nil {
+		return core.WorkOrder{}, err
+	}
+	return s.Recover(ctx, id, requestID, direction)
+}
+
 func (s *Service) Recover(ctx context.Context, id, requestID string, suppliedDirection ...string) (core.WorkOrder, error) {
 	if strings.TrimSpace(requestID) == "" {
 		return core.WorkOrder{}, fmt.Errorf("recovery request_id is required")
@@ -1865,6 +1880,20 @@ func (s *Service) SubmitVerdict(ctx context.Context, id, session string, review 
 	task, err := s.Store.GetTask(ctx, order.TaskID)
 	if err != nil {
 		return nil, err
+	}
+	if task.SetupContract.VerifyStage {
+		reader, ok := s.Store.(store.VerificationReviewReader)
+		if !ok {
+			return nil, store.ErrVerificationState
+		}
+		state, e := reader.ReadVerificationReview(ctx, task.ID, order.ID)
+		if e != nil {
+			return nil, e
+		}
+		decision := core.ReviewDecision{VerificationAssessment: validated.VerificationAssessment, ReviewedCommitSHA: order.HeadSHA, HeadSHA: order.HeadSHA, ReviewScope: order.ReviewScope, BaselineSHA: order.BaselineSHA, Reviewer: store.ActorFromContext(ctx).ID}
+		if e = store.ValidateSealedVerificationReview(task, &decision, state); e != nil {
+			return nil, e
+		}
 	}
 	jobs, err := s.Store.ListJobs(ctx, task.ID)
 	if err != nil {

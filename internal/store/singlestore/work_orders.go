@@ -21,7 +21,7 @@ import (
 const workOrderColumns = `id, task_id, job_id, stage, state, claimant_id,
 session_id, attempt_id, client_token_hash, agent, model, worker_id, lease_expires_at,
 				review_round, review_seat, required_model, required_harness, required_effort, required_harness_config, execution_timeout, model_enforcement,
-				reason_code, review_kind, review_scope, baseline_sha, head_sha,
+				reason_code, review_kind, review_scope, baseline_sha, head_sha, verification_context_id,
 queue_entered_at, queue_deadline, queue_blocked_at, execution_started_at, execution_deadline,
 last_attempt_id, last_attempt_outcome, last_failure_category, last_failure_message, last_failure_detail, last_failure_exit_status, last_failure_at,
 automatic_retry_count, next_retry_at, retry_suppressed, retry_suppression_reason,
@@ -57,7 +57,7 @@ func scanWorkOrder(row interface{ Scan(...any) error }) (core.WorkOrder, error) 
 	err := row.Scan(&order.ID, &order.TaskID, &order.JobID, &stage, &state, &order.ClaimantID,
 		&order.SessionID, &order.AttemptID, &order.ClientTokenHash, &order.Agent, &order.Model, &order.WorkerID, &lease,
 		&order.ReviewRound, &order.ReviewSeat, &order.RequiredModel, &order.RequiredHarness, &order.RequiredEffort, &harnessConfig, &order.ExecutionTimeoutText, &order.ModelEnforcement,
-		&order.ReasonCode, &order.ReviewKind, &order.ReviewScope, &order.BaselineSHA, &order.HeadSHA,
+		&order.ReasonCode, &order.ReviewKind, &order.ReviewScope, &order.BaselineSHA, &order.HeadSHA, &order.VerificationContextID,
 		&queueEntered, &queueDeadline, &queueBlockedAt, &executionStarted, &executionDeadline,
 		&order.LastAttemptID, &order.LastAttemptOutcome, &order.LastFailureCategory, &order.LastFailureMessage, &order.LastFailureDetail, &order.LastFailureExitStatus, &lastFailureAt,
 		&order.AutomaticRetryCount, &nextRetryAt, &order.RetrySuppressed, &order.RetrySuppressionReason,
@@ -182,6 +182,7 @@ func orderValues(o core.WorkOrder) map[string]any {
 		"review_scope":                    o.ReviewScope,
 		"baseline_sha":                    o.BaselineSHA,
 		"head_sha":                        o.HeadSHA,
+		"verification_context_id":         o.VerificationContextID,
 		"queue_entered_at":                nullableTimeValue(o.QueueEnteredAt),
 		"queue_deadline":                  nullableTimeValue(o.QueueDeadline),
 		"queue_blocked_at":                nullableTimeValue(o.QueueBlockedAt),
@@ -731,6 +732,9 @@ func (s *Store) UpdateWorkOrderCommand(ctx context.Context, lease taskops.TaskLe
 			order.ContinuationHarness, order.ContinuationLaunchEnvironment = "", ""
 		}
 		if command == core.WorkOrderCmdSubmitForReview && order.Stage == core.StageImplement && order.HeadSHA != "" {
+			if err := s.supersedeVerificationTx(ctx, tx, order.TaskID, order.HeadSHA); err != nil {
+				return err
+			}
 			if err := taskWrite(ctx, tx, order.TaskID, map[string]any{"reviewed_head_sha": order.HeadSHA}); err != nil {
 				return err
 			}
@@ -1142,6 +1146,14 @@ func (s *Store) RedispatchWorkOrderCommand(ctx context.Context, lease taskops.Ta
 	return result, err
 }
 func (s *Store) RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, id, requestID, direction string, timeout time.Duration, refreeze ...*store.RecoveryRefreeze) (core.WorkOrder, error) {
+	clean, sanitationErr := store.SanitizeVerificationRecovery(ctx, s)
+	if sanitationErr != nil {
+		return core.WorkOrder{}, sanitationErr
+	}
+	ctx = clean
+	if err := store.AuthorizeVerificationRecovery(ctx, s); err != nil {
+		return core.WorkOrder{}, err
+	}
 	direction, err := core.NormalizeWorkOrderOperatorDirection(direction)
 	if err != nil {
 		return core.WorkOrder{}, err
@@ -1157,6 +1169,33 @@ func (s *Store) RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 	err = s.orderTx(ctx, id, func(tx *sql.Tx, o core.WorkOrder) error {
 		if !lease.ValidForCommand(o.TaskID, string(core.WorkOrderCmdRecover)) {
 			return fmt.Errorf("work-order recovery requires a valid taskops lease")
+		}
+		if store.VerificationRecoveryFromContext(ctx) != nil {
+			rows, e := verificationRowsTx(ctx, tx, documentWorkspace(ctx), o.TaskID)
+			if e != nil {
+				return e
+			}
+			task, e := getTaskRow(ctx, tx, o.TaskID)
+			if e != nil {
+				return e
+			}
+			changes, events, e := store.PrepareVerificationRecovery(ctx, task, o, rows, requestID, time.Now().UTC())
+			if e != nil {
+				return e
+			}
+			for _, row := range changes {
+				if e = verificationPutTx(ctx, tx, documentWorkspace(ctx), row); e != nil {
+					return e
+				}
+			}
+			for _, event := range events {
+				if e = taskEvent(ctx, tx, event); e != nil {
+					return e
+				}
+			}
+			if e = store.VerificationFault(ctx, "recovery"); e != nil {
+				return e
+			}
 		}
 		var duplicate bool
 		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM work_order_recoveries WHERE workspace_id=? AND work_order_id=? AND request_id=?)`, documentWorkspace(ctx), id, requestID).Scan(&duplicate); err != nil {

@@ -257,11 +257,12 @@ func reviewDecisionPayload(decision core.ReviewDecision) []byte {
 		"review_work_order_id": decision.ReviewWorkOrderID, "verdict": decision.Verdict,
 		"reason_code": decision.ReasonCode, "summary": decision.Summary, "feedback": decision.Feedback,
 		"reviewed_commit_sha": decision.ReviewedCommitSHA, "reviewer": decision.Reviewer,
-		"evidence_ids":           decision.EvidenceIDs,
-		"requirement_citations":  decision.RequirementCitations,
-		"done_criteria_coverage": decision.DoneCriteriaAssessment,
-		"governance_assessment":  decision.GovernanceAssessment,
-		"reviewer_model":         decision.ReviewerModel, "reviewer_session": decision.ReviewerSession,
+		"evidence_ids":            decision.EvidenceIDs,
+		"requirement_citations":   decision.RequirementCitations,
+		"done_criteria_coverage":  decision.DoneCriteriaAssessment,
+		"governance_assessment":   decision.GovernanceAssessment,
+		"verification_assessment": decision.VerificationAssessment,
+		"reviewer_model":          decision.ReviewerModel, "reviewer_session": decision.ReviewerSession,
 		"same_model_as_implementer": decision.SameModelAsImplementer,
 		"review_round":              decision.ReviewRound, "review_seat": decision.ReviewSeat,
 		"review_kind": decision.ReviewKind, "review_scope": decision.ReviewScope,
@@ -312,7 +313,19 @@ ORDER BY version DESC LIMIT 1`, documentWorkspace(ctx), id, version, version, ve
 			}
 			return spec, err == nil, err
 		})
-		if err := store.ValidateReviewAcceptance(ctx, lookup, before, &decision); err != nil {
+		verificationState := store.VerificationReviewState{}
+		if before.SetupContract.VerifyStage {
+			rows, e := verificationRowsTx(ctx, tx, documentWorkspace(ctx), decision.TaskID)
+			if e != nil {
+				return e
+			}
+			reviewOrder, e := getOrderRow(ctx, tx, decision.ReviewWorkOrderID)
+			if e != nil {
+				return e
+			}
+			verificationState = store.VerificationReviewState{Rows: rows, Order: reviewOrder}
+		}
+		if err := store.ValidateReviewAcceptance(ctx, lookup, before, &decision, verificationState); err != nil {
 			return err
 		}
 

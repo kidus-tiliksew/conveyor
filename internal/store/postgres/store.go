@@ -1564,7 +1564,10 @@ func (s *Store) MarkTaskApprovalStale(ctx context.Context, id, approvedHeadSHA, 
 		return false, fmt.Errorf("distinct approved and new head SHAs are required")
 	}
 	created := false
-	err := s.inTx(ctx, func(_ pgx.Tx, q *db.Queries) error {
+	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		if err := lockWorkOrderTaskTx(ctx, tx, workspace(ctx), id); err != nil {
+			return err
+		}
 		task, err := q.MarkTaskApprovalStale(ctx, db.MarkTaskApprovalStaleParams{ID: id, WorkspaceID: workspace(ctx), ApprovedHeadSha: approvedHeadSHA, NewHeadSha: newHeadSHA, RefreshReviewScope: scope})
 		if errors.Is(err, pgx.ErrNoRows) {
 			if _, getErr := q.GetTask(ctx, db.GetTaskParams{ID: id, WorkspaceID: workspace(ctx)}); getErr != nil {
@@ -1574,6 +1577,9 @@ func (s *Store) MarkTaskApprovalStale(ctx context.Context, id, approvedHeadSHA, 
 		}
 		if err != nil {
 			return notFound(err, "task %s", id)
+		}
+		if err = s.supersedeVerificationTx(ctx, tx, id, newHeadSHA); err != nil {
+			return err
 		}
 		created = true
 		return insertEvent(ctx, q, core.Event{TaskID: id, Kind: "approval.stale", Payload: core.JSONPayload(map[string]any{"workspace": task.WorkspaceID, "task_id": id, "reason_code": reason, "approved_head": approvedHeadSHA, "new_head": newHeadSHA, "review_scope": scope})})
@@ -1592,6 +1598,9 @@ func (s *Store) AdvanceTaskRefreshHead(ctx context.Context, id, newHeadSHA strin
 		return fmt.Errorf("new head SHA is required")
 	}
 	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		if err := lockWorkOrderTaskTx(ctx, tx, workspace(ctx), id); err != nil {
+			return err
+		}
 		task, err := q.GetTask(ctx, db.GetTaskParams{ID: id, WorkspaceID: workspace(ctx)})
 		if err != nil {
 			return notFound(err, "task %s", id)
@@ -1603,6 +1612,9 @@ func (s *Store) AdvanceTaskRefreshHead(ctx context.Context, id, newHeadSHA strin
 			return nil
 		}
 		if _, err = tx.Exec(ctx, `UPDATE tasks SET refresh_head_sha=$1, updated_at=now() WHERE id=$2 AND workspace_id=$3`, newHeadSHA, id, workspace(ctx)); err != nil {
+			return err
+		}
+		if err = s.supersedeVerificationTx(ctx, tx, id, newHeadSHA); err != nil {
 			return err
 		}
 		return insertEvent(ctx, q, core.Event{TaskID: id, Kind: "review.refresh_head_advanced", Payload: core.JSONPayload(map[string]any{"workspace": task.WorkspaceID, "task_id": id, "approved_head": task.RefreshBaselineSha, "prior_head": task.RefreshHeadSha, "new_head": newHeadSHA, "review_scope": task.RefreshReviewScope})})
@@ -3741,7 +3753,7 @@ func (s *Store) GetTranscript(ctx context.Context, jobID string) (core.Transcrip
 const workOrderColumns = `id, task_id, job_id, stage, state, claimant_id,
 session_id, attempt_id, client_token_hash, agent, model, worker_id, lease_expires_at,
 				review_round, review_seat, required_model, required_harness, required_effort, required_harness_config, execution_timeout, model_enforcement,
-				reason_code, review_kind, review_scope, baseline_sha, head_sha,
+				reason_code, review_kind, review_scope, baseline_sha, head_sha, verification_context_id,
 queue_entered_at, queue_deadline, queue_blocked_at, execution_started_at, execution_deadline,
 last_attempt_id, last_attempt_outcome, last_failure_category, last_failure_message, last_failure_detail, last_failure_exit_status, last_failure_at,
 automatic_retry_count, next_retry_at, retry_suppressed, retry_suppression_reason,
@@ -3754,7 +3766,7 @@ rate_limit, rate_limit_observed_at, created_at, updated_at, served_requirement_s
 const activityWorkOrderColumns = `id, task_id, job_id, stage, state, claimant_id,
 session_id, attempt_id, client_token_hash, agent, model, worker_id, lease_expires_at,
 				review_round, review_seat, required_model, required_harness, required_effort, required_harness_config, execution_timeout, model_enforcement,
-				reason_code, review_kind, review_scope, baseline_sha, head_sha,
+				reason_code, review_kind, review_scope, baseline_sha, head_sha, verification_context_id,
 queue_entered_at, queue_deadline, queue_blocked_at, execution_started_at, execution_deadline,
 last_attempt_id, last_attempt_outcome, last_failure_category, last_failure_message, last_failure_detail, last_failure_exit_status, last_failure_at,
 automatic_retry_count, next_retry_at, retry_suppressed, retry_suppression_reason,
@@ -3962,7 +3974,7 @@ func (s *Store) CreateReviewRoundCommand(ctx context.Context, lease taskops.Task
 		task := taskFromDB(taskRow)
 		if task.SetupContract.VerifyStage {
 			var ready bool
-			if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM work_orders WHERE workspace_id=$1 AND task_id=$2 AND stage='verify' AND state='completed' AND head_sha=$3 AND head_sha<>'')`, workspace(ctx), taskID, core.VerifyStageHead(task)).Scan(&ready); err != nil {
+			if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM work_orders WHERE workspace_id=$1 AND task_id=$2 AND stage='verify' AND state='completed' AND head_sha=$3 AND head_sha<>'' AND verification_context_id<>'')`, workspace(ctx), taskID, core.VerifyStageHead(task)).Scan(&ready); err != nil {
 				return err
 			}
 			if !ready {
@@ -5275,6 +5287,14 @@ func (s *Store) RefreshWorkOrderHarnessSnapshot(ctx context.Context, id string, 
 }
 
 func (s *Store) RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, id, requestID, direction string, queueTimeout time.Duration, refreeze ...*store.RecoveryRefreeze) (core.WorkOrder, error) {
+	clean, sanitationErr := store.SanitizeVerificationRecovery(ctx, s)
+	if sanitationErr != nil {
+		return core.WorkOrder{}, sanitationErr
+	}
+	ctx = clean
+	if err := store.AuthorizeVerificationRecovery(ctx, s); err != nil {
+		return core.WorkOrder{}, err
+	}
 	var err error
 	direction, err = core.NormalizeWorkOrderOperatorDirection(direction)
 	if err != nil {
@@ -5305,6 +5325,34 @@ func (s *Store) RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 	}
 	if !lease.ValidForCommand(order.TaskID, string(core.WorkOrderCmdRecover)) {
 		return core.WorkOrder{}, fmt.Errorf("work-order recovery requires a valid taskops lease")
+	}
+	if store.VerificationRecoveryFromContext(ctx) != nil {
+		q := s.queries.WithTx(tx)
+		records, e := q.ListVerificationRecords(ctx, workspace(ctx), taskID)
+		if e != nil {
+			return core.WorkOrder{}, e
+		}
+		task, e := q.GetTask(ctx, db.GetTaskParams{ID: taskID, WorkspaceID: workspace(ctx)})
+		if e != nil {
+			return core.WorkOrder{}, e
+		}
+		changes, events, e := store.PrepareVerificationRecovery(ctx, taskFromDB(task), order, verificationRows(records), requestID, time.Now().UTC())
+		if e != nil {
+			return core.WorkOrder{}, e
+		}
+		for _, r := range changes {
+			if _, e = tx.Exec(ctx, "UPDATE "+r.Table+" SET state=$1,body=$2 WHERE workspace_id=$3 AND id=$4", r.State, r.Body, workspace(ctx), r.ID); e != nil {
+				return core.WorkOrder{}, e
+			}
+		}
+		for _, event := range events {
+			if e = insertEvent(ctx, q, event); e != nil {
+				return core.WorkOrder{}, e
+			}
+		}
+		if e = store.VerificationFault(ctx, "recovery"); e != nil {
+			return core.WorkOrder{}, e
+		}
 	}
 	var duplicate bool
 	if err = tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM work_order_recoveries WHERE workspace_id=$1 AND work_order_id=$2 AND request_id=$3)`, workspace(ctx), id, requestID).Scan(&duplicate); err != nil {
@@ -5657,6 +5705,9 @@ func (s *Store) UpdateWorkOrderCommand(ctx context.Context, lease taskops.TaskLe
 			order.ContinuationHarness, order.ContinuationLaunchEnvironment = "", ""
 		}
 		if command == core.WorkOrderCmdSubmitForReview && order.Stage == core.StageImplement && order.HeadSHA != "" {
+			if err := s.supersedeVerificationTx(ctx, tx, order.TaskID, order.HeadSHA); err != nil {
+				return err
+			}
 			if _, err := tx.Exec(ctx, `UPDATE tasks SET reviewed_head_sha=$1 WHERE workspace_id=$2 AND id=$3`, order.HeadSHA, workspace(ctx), order.TaskID); err != nil {
 				return err
 			}
@@ -5809,7 +5860,19 @@ ORDER BY s.version DESC LIMIT 1`, workspace(ctx), id, version).Scan(&spec.Conten
 			}
 			return spec, err == nil, err
 		})
-		if err := store.ValidateReviewAcceptance(ctx, lookup, taskFromDB(before), &decision); err != nil {
+		verificationState := store.VerificationReviewState{}
+		if taskFromDB(before).SetupContract.VerifyStage {
+			records, e := q.ListVerificationRecords(ctx, workspace(ctx), decision.TaskID)
+			if e != nil {
+				return e
+			}
+			reviewOrder, e := scanWorkOrder(tx.QueryRow(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND id=$2", workspace(ctx), decision.ReviewWorkOrderID))
+			if e != nil {
+				return e
+			}
+			verificationState = store.VerificationReviewState{Rows: verificationRows(records), Order: reviewOrder}
+		}
+		if err := store.ValidateReviewAcceptance(ctx, lookup, taskFromDB(before), &decision, verificationState); err != nil {
 			return err
 		}
 
@@ -6312,11 +6375,12 @@ func reviewDecisionPayload(decision core.ReviewDecision) []byte {
 		"review_work_order_id": decision.ReviewWorkOrderID, "verdict": decision.Verdict,
 		"reason_code": decision.ReasonCode, "summary": decision.Summary, "feedback": decision.Feedback,
 		"reviewed_commit_sha": decision.ReviewedCommitSHA, "reviewer": decision.Reviewer,
-		"evidence_ids":           decision.EvidenceIDs,
-		"requirement_citations":  decision.RequirementCitations,
-		"done_criteria_coverage": decision.DoneCriteriaAssessment,
-		"governance_assessment":  decision.GovernanceAssessment,
-		"reviewer_model":         decision.ReviewerModel, "reviewer_session": decision.ReviewerSession,
+		"evidence_ids":            decision.EvidenceIDs,
+		"requirement_citations":   decision.RequirementCitations,
+		"done_criteria_coverage":  decision.DoneCriteriaAssessment,
+		"governance_assessment":   decision.GovernanceAssessment,
+		"verification_assessment": decision.VerificationAssessment,
+		"reviewer_model":          decision.ReviewerModel, "reviewer_session": decision.ReviewerSession,
 		"same_model_as_implementer": decision.SameModelAsImplementer,
 		"review_round":              decision.ReviewRound, "review_seat": decision.ReviewSeat,
 		"review_kind": decision.ReviewKind, "review_scope": decision.ReviewScope,
@@ -6365,7 +6429,7 @@ func scanWorkOrder(row interface{ Scan(...any) error }) (core.WorkOrder, error) 
 	err := row.Scan(&order.ID, &order.TaskID, &order.JobID, &stage, &state, &order.ClaimantID,
 		&order.SessionID, &order.AttemptID, &order.ClientTokenHash, &order.Agent, &order.Model, &order.WorkerID, &lease,
 		&order.ReviewRound, &order.ReviewSeat, &order.RequiredModel, &order.RequiredHarness, &order.RequiredEffort, &harnessConfig, &order.ExecutionTimeoutText, &order.ModelEnforcement,
-		&order.ReasonCode, &order.ReviewKind, &order.ReviewScope, &order.BaselineSHA, &order.HeadSHA,
+		&order.ReasonCode, &order.ReviewKind, &order.ReviewScope, &order.BaselineSHA, &order.HeadSHA, &order.VerificationContextID,
 		&queueEntered, &queueDeadline, &queueBlockedAt, &executionStarted, &executionDeadline,
 		&order.LastAttemptID, &order.LastAttemptOutcome, &order.LastFailureCategory, &order.LastFailureMessage, &order.LastFailureDetail, &order.LastFailureExitStatus, &lastFailureAt,
 		&order.AutomaticRetryCount, &nextRetryAt, &order.RetrySuppressed, &order.RetrySuppressionReason,

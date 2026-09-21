@@ -13,6 +13,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/queue/logqueue"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
+	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
 func verificationRows(records []db.VerificationRecord) []store.VerificationRow {
@@ -49,11 +50,24 @@ func (s *Store) verificationScopeTx(ctx context.Context, tx pgx.Tx, a store.Veri
 	if len(reconcile) == 1 && reconcile[0] {
 		err = store.VerifyVerificationClaimLoss(ctx, a, core.Task{ID: found, Workspace: ws}, order, time.Now().UTC())
 	} else {
-		err = store.VerifyVerificationClaim(ctx, a, core.Task{ID: found, Workspace: ws}, order, write, time.Now().UTC())
+		task, e := s.queries.WithTx(tx).GetTask(ctx, db.GetTaskParams{ID: found, WorkspaceID: ws})
+		if e != nil {
+			return core.WorkOrder{}, e
+		}
+		err = store.VerifyVerificationClaim(ctx, a, taskFromDB(task), order, write, time.Now().UTC())
 	}
 	return order, err
 }
 func (s *Store) ApplyVerification(ctx context.Context, c store.VerificationCommand) (store.VerificationReceipt, error) {
+	return taskops.ExecuteVerification(ctx, s, c.Access.TaskID, c.Kind, func(lease taskops.TaskLease) (store.VerificationReceipt, error) {
+		return s.applyVerification(ctx, lease, c)
+	})
+}
+
+func (s *Store) applyVerification(ctx context.Context, lease taskops.TaskLease, c store.VerificationCommand) (store.VerificationReceipt, error) {
+	if !lease.ValidForCommand(c.Access.TaskID, "verification."+c.Kind) {
+		return store.VerificationReceipt{}, store.ErrVerificationAccess
+	}
 	// Fetch the redaction source before holding database locks; failure leaves no
 	// staged writes. Prepare reads this snapshot while the claim is locked.
 	if err := store.BindVerificationEvidenceAuthority(ctx, s, &c); err != nil {
@@ -69,7 +83,7 @@ func (s *Store) ApplyVerification(ctx context.Context, c store.VerificationComma
 	}
 	var result store.VerificationReceipt
 	err = s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
-		order, err := s.verificationScopeTx(ctx, tx, c.Access, true, c.Kind == store.VerificationReconcileClaimLoss)
+		order, err := s.verificationScopeTx(ctx, tx, c.Access, c.Kind != store.VerificationSeal, c.Kind == store.VerificationReconcileClaimLoss)
 		if err != nil {
 			return err
 		}
@@ -83,6 +97,12 @@ func (s *Store) ApplyVerification(ctx context.Context, c store.VerificationComma
 		mutation, err := store.PrepareVerificationMutation(ctx, verificationSecretSnapshot(secrets), c, verificationRows(records), time.Now().UTC())
 		if err != nil {
 			return err
+		}
+		if c.Kind == store.VerificationSeal && len(mutation.Rows) > 0 {
+			c = store.VerificationSealedCommand(c, mutation)
+			if err = s.completeVerificationTx(ctx, tx, q, c, order, verificationRows(records)); err != nil {
+				return err
+			}
 		}
 		result = mutation.Receipt
 		if len(mutation.Rows) == 0 && len(mutation.DeleteChunks) == 0 {

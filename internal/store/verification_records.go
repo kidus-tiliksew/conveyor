@@ -113,10 +113,14 @@ func verificationDecode[T any](r VerificationRow) T {
 func VerifyVerificationClaim(ctx context.Context, a VerificationAccess, task core.Task, o core.WorkOrder, write bool, now time.Time) error {
 	ws, ok := WorkspaceFromContext(ctx)
 	actor := ActorFromContext(ctx)
-	if !ok || actor.ID == "conveyor" || a.TaskID == "" || task.ID != a.TaskID || task.Workspace != ws || o.TaskID != a.TaskID || o.ID != a.WorkOrderID || o.AttemptID != a.WorkOrderAttemptID || a.Claim.SessionID == "" || a.Claim.SessionID != o.SessionID || a.Claim.WorkerID != o.WorkerID || a.Claim.ClaimantID != o.ClaimantID || a.ClientToken == "" || verificationHash([]byte(a.ClientToken)) != o.ClientTokenHash || o.State != core.WorkOrderClaimed || !o.LeaseExpiresAt.After(now) || (!o.ExecutionDeadline.IsZero() && !o.ExecutionDeadline.After(now)) {
+	observing := !write && (o.State == core.WorkOrderCompleted || o.State == core.WorkOrderSubmitted)
+	if !ok || actor.ID == "conveyor" || a.TaskID == "" || task.ID != a.TaskID || task.Workspace != ws || o.TaskID != a.TaskID || o.ID != a.WorkOrderID || o.AttemptID != a.WorkOrderAttemptID || a.Claim.SessionID == "" || a.Claim.SessionID != o.SessionID || a.Claim.WorkerID != o.WorkerID || a.Claim.ClaimantID != o.ClaimantID || a.ClientToken == "" || verificationHash([]byte(a.ClientToken)) != o.ClientTokenHash || (!observing && (o.State != core.WorkOrderClaimed || !o.LeaseExpiresAt.After(now) || (!o.ExecutionDeadline.IsZero() && !o.ExecutionDeadline.After(now)))) {
 		return ErrVerificationAccess
 	}
 
+	if o.Stage == core.StageVerify && task.SetupContract.VerifyStage && o.HeadSHA != core.VerifyStageHead(task) {
+		return ErrVerificationAccess
+	}
 	switch actor.Role {
 	case core.ActorWorker:
 		if o.WorkerID == "" || actor.ID != WorkerActorID(o.WorkerID) {
@@ -151,6 +155,15 @@ func VerificationSnapshotFromRows(rows []VerificationRow, contextID string) (Ver
 	var s VerificationSnapshot
 	for _, r := range rows {
 		if r.ContextID != contextID {
+			if r.Table == "verification_operations" {
+				op := verificationDecode[VerificationOperation](r)
+				for _, binding := range op.Successors {
+					if binding.ContextID == contextID {
+						s.Operations = append(s.Operations, op)
+						break
+					}
+				}
+			}
 			continue
 		}
 		switch r.Table {
@@ -210,6 +223,17 @@ func PrepareVerificationMutation(ctx context.Context, source redact.SecretSource
 	}
 	// Keep identity/claim credentials out of redaction input. Submitted contract
 	// fields are sanitized individually below; credentials are never persisted.
+	if c.Submission != nil {
+		data, err := verificationSanitizeJSON(redactor, verificationJSON(c.Submission))
+		if err != nil {
+			return out, err
+		}
+		var submission VerificationSubmission
+		if json.Unmarshal(data, &submission) != nil {
+			return out, ErrVerificationInvalid
+		}
+		c.Submission = &submission
+	}
 	clean := func(v any) ([]byte, error) { return verificationSanitizeJSON(redactor, verificationJSON(v)) }
 	put := func(r VerificationRow) { out.Rows = append(out.Rows, r) }
 	if c.Kind == VerificationReconcileClaimLoss {
@@ -235,6 +259,8 @@ func PrepareVerificationMutation(ctx context.Context, source redact.SecretSource
 		v.CreatedAt = time.Time{}
 		v.CreatedBy = actor
 		v.SealedAt = nil
+		v.Result = nil
+		v.Coverage = nil
 		if len(v.Revisions) == 0 || v.GoverningPins == nil {
 			return out, ErrVerificationInvalid
 		}
@@ -253,6 +279,8 @@ func PrepareVerificationMutation(ctx context.Context, source redact.SecretSource
 				old.ID = ""
 				old.CreatedAt = time.Time{}
 				old.SealedAt = nil
+				old.Result = nil
+				old.Coverage = nil
 				if !verificationEqual(old, v) {
 					return out, ErrVerificationConflict
 				}
@@ -284,6 +312,10 @@ func PrepareVerificationMutation(ctx context.Context, source redact.SecretSource
 			return out, ErrVerificationAccess
 		}
 		if vc.SealedAt != nil {
+			if c.Kind == VerificationSeal && vc.Result != nil && c.Submission != nil && verificationEqual(vc.Result.Submission, *c.Submission) {
+				out.Receipt = VerificationReceipt{ID: vc.ID, State: vc.Result.Submission.Outcome}
+				return out, nil
+			}
 			return out, ErrVerificationState
 		}
 		switch c.Kind {
@@ -371,10 +403,36 @@ func PrepareVerificationMutation(ctx context.Context, source redact.SecretSource
 			put(verificationRow("verification_obligations", id, c.Access.TaskID, c.ContextID, "", id, "", v))
 			out.Receipt = VerificationReceipt{ID: v.ID, Digest: v.Digest}
 		case VerificationStartAttempt, VerificationTerminateAttempt, VerificationAuthorizeRetry:
+			if c.Kind == VerificationStartAttempt {
+				if c.Coverage == nil {
+					return out, ErrVerificationInvalid
+				}
+				snapshot, err := VerificationSnapshotFromRows(rows, c.ContextID)
+				if err != nil {
+					return out, err
+				}
+				if err := ValidateVerificationCoverage(*c.Coverage, snapshot); err != nil {
+					return out, err
+				}
+				data, err := clean(c.Coverage)
+				if err != nil {
+					return out, err
+				}
+				var coverage VerificationCoverage
+				if json.Unmarshal(data, &coverage) != nil {
+					return out, ErrVerificationInvalid
+				}
+				c.Coverage = &coverage
+				if vc.Coverage == nil || !verificationEqual(*vc.Coverage, coverage) {
+					vc.Coverage = &coverage
+					r.Body = verificationJSON(vc)
+					put(r)
+				}
+			}
 			if err := verificationAttemptMutation(c, rows, vc, actor, now, redactor, &out); err != nil {
 				return out, err
 			}
-		case VerificationPrepareOperation, VerificationObserveOperation:
+		case VerificationPrepareOperation, VerificationObserveOperation, VerificationReconcileOperation:
 			if err := verificationOperationMutation(c, rows, actor, now, redactor, &out); err != nil {
 				return out, err
 			}
@@ -436,16 +494,15 @@ func PrepareVerificationMutation(ctx context.Context, source redact.SecretSource
 				return out, err
 			}
 		case VerificationSeal:
-			for _, row := range rows {
-				if row.ContextID == c.ContextID && ((row.Table == "verification_attempts" && (row.State == "running" || row.State == "pending")) || (row.Table == "verification_operations" && !verificationOperationResolved(row.State))) {
-					return out, ErrVerificationState
-				}
+			result, err := ValidateVerificationSeal(c, rows, now, actor)
+			if err != nil {
+				return out, err
 			}
-			vc.SealedAt = &now
-			r.State = "sealed"
-			r.Body = verificationJSON(vc)
+			vc.SealedAt, vc.Result = &now, result
+			r.State, r.Body = "sealed", verificationJSON(vc)
 			put(r)
-			out.Receipt.ID = vc.ID
+			out.Receipt.ID, out.Receipt.State = vc.ID, result.Submission.Outcome
+
 		default:
 			return out, ErrVerificationInvalid
 		}

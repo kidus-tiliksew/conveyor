@@ -98,7 +98,7 @@ func TestVerificationPrematureSuccessRetainsEvidence(t *testing.T) {
 	receipt := f.call(t, "register_verification_obligation", VerificationObligationRequest{ContextID: vc.ID, ObligationID: "ordinary", Description: "Observe state", Sources: []VerificationSource{{DocumentID: "req-fixture", Version: 1, SectionID: "AC-1.1"}}, Contract: contract}).(store.VerificationReceipt)
 	subject := core.VerificationSubject{Kind: "ordinary", ObligationID: "ordinary", ContractDigest: receipt.Digest}
 	environment := core.VerificationEnvironment{Target: "fixture", OS: "unknown", Architecture: "unknown", Runtime: "unknown", Deployment: "unknown"}
-	start := VerificationStartRequest{ContextID: vc.ID, StartKey: "start", Subject: subject, Environment: environment, SafeInputs: map[string]json.RawMessage{}}
+	start := VerificationStartRequest{Coverage: store.VerificationCoverage{ObligationIDs: []string{"ordinary"}, Justification: "Cover the fixture source", Sources: []store.VerificationCoverageSource{{Source: store.VerificationCoverageReference{DocumentID: "req-fixture", Version: 1, SectionID: "AC-1.1"}, Disposition: "covered", Explanation: "Exercise observes the requirement", Subjects: []core.VerificationSubject{subject}}}}, ContextID: vc.ID, StartKey: "start", Subject: subject, Environment: environment, SafeInputs: map[string]json.RawMessage{}}
 	run := f.call(t, "start_verification_attempt", start).(store.VerificationReceipt)
 	if again := f.call(t, "start_verification_attempt", start).(store.VerificationReceipt); again.ID != run.ID {
 		t.Fatal("start replay changed identity")
@@ -160,13 +160,8 @@ func TestVerificationMemberAndSealedReviewReads(t *testing.T) {
 		}
 	}
 	access := store.VerificationAccess{TaskID: f.o.TaskID, WorkOrderID: f.o.ID, WorkOrderAttemptID: f.o.AttemptID, ClientToken: "token", Claim: core.WorkOrderClaimIdentity{WorkerID: "fixture", ClaimantID: "fixture", SessionID: "session"}}
-	if _, err = f.b.ApplyVerification(f.ctx, store.VerificationCommand{Kind: store.VerificationSeal, Access: access, ContextID: vc.ID}); err != nil {
-		t.Fatal(err)
-	}
-	f.o.State = core.WorkOrderCompleted
-	if err = storetest.UpdateWorkOrder(f.ctx, f.b, f.o, core.WorkOrderCmdSubmitVerification); err != nil {
-		t.Fatal(err)
-	}
+	vc = storetest.SealEmptyVerificationFixture(t, f.ctx, f.b, access, vc, "AC-1.1")
+	raw = core.JSONPayload(VerificationContextRequest{ContextID: vc.ID})
 	job := core.Job{ID: f.o.TaskID + "-review-1", TaskID: f.o.TaskID, Stage: core.StageReview, State: core.JobPending}
 	review := core.WorkOrder{ID: job.ID, JobID: job.ID, TaskID: job.TaskID, Stage: core.StageReview, State: core.WorkOrderQueued, HeadSHA: f.o.HeadSHA, CreatedAt: time.Now().UTC()}
 	review.ReviewRound, review.ReviewSeat = 1, 1

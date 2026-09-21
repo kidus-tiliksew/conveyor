@@ -13,7 +13,7 @@ func TestVerifyReviewCompletionBindsCurrentHead(t *testing.T) {
 			t.Fatalf("accepted incomplete or wrong revision: %+v", order)
 		}
 	}
-	order := WorkOrder{TaskID: "task", Stage: StageVerify, State: WorkOrderCompleted, HeadSHA: "head"}
+	order := WorkOrder{TaskID: "task", Stage: StageVerify, State: WorkOrderCompleted, HeadSHA: "head", VerificationContextID: "sealed"}
 	if !VerifyReviewReady(task, []WorkOrder{order}) {
 		t.Fatal("current completion not recognized")
 	}

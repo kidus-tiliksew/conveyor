@@ -113,8 +113,8 @@ func runVerifyPolicy(t *testing.T, x Fixture) {
 	requireOK(t, UpdateWorkOrder(ctx, st, second, core.WorkOrderCmdSubmitVerification))
 	completed, err := st.GetWorkOrder(ctx, second.ID)
 	requireOK(t, err)
-	if !core.VerifyReviewReady(result.Task, []core.WorkOrder{completed}) {
-		t.Fatal("completed verify did not unlock its exact head")
+	if core.VerifyReviewReady(result.Task, []core.WorkOrder{completed}) {
+		t.Fatal("unsealed completed verify unlocked review")
 	}
 	result.Task.ReviewedHeadSHA = "different-head"
 	if core.VerifyReviewReady(result.Task, []core.WorkOrder{completed}) {

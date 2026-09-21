@@ -26,7 +26,7 @@ type verificationFixture struct {
 	pins                     []core.VerificationPin
 }
 
-func newVerificationFixture(t *testing.T, x Fixture) verificationFixture {
+func newVerificationFixture(t *testing.T, x Fixture, empty ...bool) verificationFixture {
 	t.Helper()
 	id := core.NewTaskID()
 	task := core.Task{ID: id, Workspace: x.Workspace, Repo: "conveyor", Title: id, BaseBranch: "main", Branch: "conveyor/task-" + id, State: core.TaskRunning, NextStage: core.StageVerify, ReviewedHeadSHA: strings.Repeat("a", 40), CreatedAt: time.Now().UTC()}
@@ -41,7 +41,7 @@ func newVerificationFixture(t *testing.T, x Fixture) verificationFixture {
 	o, err = ClaimWorkOrder(x.Context, x.Backend, o.ID, claim)
 	requireOK(t, err)
 	v := verificationFixture{x: x, ctx: store.WithActor(x.Context, store.Actor{ID: "worker:worker", Role: core.ActorWorker}), access: store.VerificationAccess{TaskID: o.TaskID, WorkOrderID: o.ID, WorkOrderAttemptID: o.AttemptID, ClientToken: claim.ClientToken, Claim: core.WorkOrderClaimIdentity{WorkerID: claim.WorkerID, ClaimantID: claim.ClaimantID, SessionID: claim.SessionID}}, revisions: []core.VerificationRevision{{Repository: "conveyor", RemoteIdentity: "https://example.test/conveyor", SHA: strings.Repeat("a", 40)}}, pins: []core.VerificationPin{{Kind: "requirement", DocumentID: "req-fixture", Version: 1}}}
-	c := store.VerificationCommand{Kind: store.VerificationCreateContext, Key: "prepare", Context: &store.VerificationContext{Revisions: v.revisions, GoverningPins: v.pins}}
+	c := store.VerificationCommand{Kind: store.VerificationCreateContext, Key: "prepare", Context: &store.VerificationContext{Revisions: v.revisions, GoverningPins: v.pins, Discovery: []json.RawMessage{core.JSONPayload(map[string]any{"repository": "conveyor", "revision": strings.Repeat("a", 40), "state": "no_manifest"})}}}
 	result := v.apply(t, c)
 	v.contextID = result.ID
 	replay := v.apply(t, c)
@@ -59,6 +59,9 @@ func newVerificationFixture(t *testing.T, x Fixture) verificationFixture {
 	if _, err = x.Backend.ApplyVerification(v.ctx, v.command(store.VerificationCommand{Kind: store.VerificationRecordSelection, Selection: &selection})); !errors.Is(err, store.ErrVerificationConflict) {
 		t.Fatalf("selection mutation: %v", err)
 	}
+	if len(empty) > 0 && empty[0] {
+		return v
+	}
 	obligation := store.VerificationObligation{ID: "ordinary", Description: "Observe the test state", Sources: []store.VerificationCitation{{DocumentID: "req-fixture", Version: 1, SectionID: "AC-1.1"}}, Contract: verification.Exercise{ID: "ordinary", Kind: "script", Argv: []string{"true"}, TimeoutSeconds: 30, RequiredAssertions: []string{}, RetryPolicy: "safe_to_replay", SafetyBasis: "read-only observation", Operations: []verification.Operation{{ID: "step", TargetBinding: "fixture"}}}}
 	result = v.apply(t, store.VerificationCommand{Kind: store.VerificationRegisterObligation, Obligation: &obligation})
 	v.digest = result.Digest
@@ -67,6 +70,13 @@ func newVerificationFixture(t *testing.T, x Fixture) verificationFixture {
 	return v
 }
 func (v *verificationFixture) command(c store.VerificationCommand) store.VerificationCommand {
+	if c.Kind == store.VerificationStartAttempt && c.Coverage == nil {
+		snapshot, err := v.x.Backend.ReadVerification(v.ctx, v.access, v.contextID)
+		if err == nil {
+			coverage := verificationFixtureCoverage(snapshot)
+			c.Coverage = &coverage
+		}
+	}
 	c.Access = v.access
 	c.ContextID = v.contextID
 	c.RunID = v.runID
@@ -103,6 +113,7 @@ func verificationBytes(v any) json.RawMessage {
 func verificationSHA(b []byte) string { return fmt.Sprintf("%x", sha256.Sum256(b)) }
 
 func runVerification(t *testing.T, x Fixture) {
+	runVerificationOperations(t, x)
 	runVerificationScope(t, x)
 	runVerificationFinalization(t, x)
 	runVerificationClaimLoss(t, x)
@@ -266,7 +277,7 @@ func runVerification(t *testing.T, x Fixture) {
 	})
 	runVerificationEdges(t, &v)
 	t.Run("OperationHistoryAndTransitions", func(t *testing.T) {
-		op := store.VerificationOperation{StepID: "step", Target: "fixture", InputDigest: verificationSHA([]byte("input"))}
+		op := store.VerificationOperation{StepID: "step", Target: "fixture", InputDigest: verificationSHA([]byte("{}"))}
 		c := store.VerificationCommand{Kind: store.VerificationPrepareOperation, Key: "logical-operation", Operation: &op}
 		first := v.apply(t, c)
 		again := v.apply(t, c)

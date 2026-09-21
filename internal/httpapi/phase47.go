@@ -91,12 +91,20 @@ func (s *Server) recoverWorkOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var request struct {
-		RequestID string `json:"request_id"`
-		Direction string `json:"direction"`
+		Verification *store.VerificationRecoveryDisposition `json:"verification,omitempty"`
+		RequestID    string                                 `json:"request_id"`
+		Direction    string                                 `json:"direction"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil && err != io.EOF {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
+	if err != nil {
+		http.Error(w, "invalid recovery request", http.StatusBadRequest)
 		return
+	}
+	if len(strings.TrimSpace(string(raw))) > 0 {
+		if err := core.DecodeVerificationRequest(raw, &request); err != nil {
+			http.Error(w, "invalid recovery request", http.StatusBadRequest)
+			return
+		}
 	}
 	if request.RequestID == "" {
 		request.RequestID = r.Header.Get("X-Idempotency-Key")
@@ -105,7 +113,7 @@ func (s *Server) recoverWorkOrder(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	order, err := s.WorkOrders.Recover(r.Context(), chi.URLParam(r, "id"), request.RequestID, request.Direction)
+	order, err := s.WorkOrders.RecoverVerification(r.Context(), chi.URLParam(r, "id"), request.RequestID, request.Direction, request.Verification)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusConflict)
 		return

@@ -114,7 +114,7 @@ func PlanTaskPolicyChange(task core.Task, orders []core.WorkOrder, r SetupChange
 			id = fmt.Sprintf("%s-review-%d-seat-%d", task.ID, reviewRound, seat)
 		}
 		job := core.Job{ID: id, TaskID: task.ID, Stage: target, Harness: "external-mcp", AuthMode: "byoa", Runner: "external", Confinement: "none", State: core.JobPending}
-		order := core.WorkOrder{ID: id, TaskID: task.ID, JobID: id, Stage: target, State: core.WorkOrderQueued, Claimable: true, HeadSHA: core.VerifyStageHead(task), ExecutionTimeoutText: timeout, CreatedAt: now, QueueEnteredAt: now, QueueDeadline: now.Add(config.DefaultWorkOrderQueueTimeout)}
+		order := core.WorkOrder{ID: id, TaskID: task.ID, JobID: id, Stage: target, State: core.WorkOrderQueued, Claimable: true, HeadSHA: core.VerifyStageHead(task), ReviewScope: task.RefreshReviewScope, BaselineSHA: task.RefreshBaselineSHA, ExecutionTimeoutText: timeout, CreatedAt: now, QueueEnteredAt: now, QueueDeadline: now.Add(config.DefaultWorkOrderQueueTimeout)}
 		if target == core.StageReview {
 			order.ReviewRound, order.ReviewSeat = reviewRound, seat
 			order.ReviewScope, order.BaselineSHA = task.RefreshReviewScope, task.RefreshBaselineSHA
