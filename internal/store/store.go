@@ -4529,16 +4529,13 @@ func (m *memory) GetArtifact(ctx context.Context, id string) (core.Artifact, []b
 	if !ok {
 		return core.Artifact{}, nil, fmt.Errorf("%w: artifact %s", ErrNotFound, id)
 	}
+	// Content-addressed bytes may have several roles. Any typed evidence link
+	// requires the provenance-scoped reader, regardless of insertion order.
 	if artifact.meta.Role == core.ArtifactRoleTypedVerificationEvidence {
-		allowed := false
-		for _, link := range artifact.links {
-			if link.Role != core.ArtifactRoleTypedVerificationEvidence {
-				artifact.meta.Role = link.Role
-				artifact.meta.TaskID = link.TaskID
-				allowed = true
-			}
-		}
-		if !allowed {
+		return core.Artifact{}, nil, ErrVerificationAccess
+	}
+	for _, link := range artifact.links {
+		if link.Role == core.ArtifactRoleTypedVerificationEvidence {
 			return core.Artifact{}, nil, ErrVerificationAccess
 		}
 	}

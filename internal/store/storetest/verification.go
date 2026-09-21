@@ -103,6 +103,7 @@ func verificationBytes(v any) json.RawMessage {
 func verificationSHA(b []byte) string { return fmt.Sprintf("%x", sha256.Sum256(b)) }
 
 func runVerification(t *testing.T, x Fixture) {
+	runVerificationScope(t, x)
 	v := newVerificationFixture(t, x)
 	t.Run("NestedTaskLock", func(t *testing.T) {
 		if !x.Backend.IsDurable() {

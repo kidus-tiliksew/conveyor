@@ -120,10 +120,13 @@ func verificationAttemptMutation(c VerificationCommand, rows []VerificationRow, 
 			return ErrVerificationAccess
 		}
 		row, ok := verificationFind(rows, "verification_attempts", c.RunID)
-		if !ok || row.TaskID != c.Access.TaskID {
+		if !ok || row.TaskID != c.Access.TaskID || row.ContextID != c.ContextID {
 			return ErrVerificationAccess
 		}
 		old := verificationDecode[VerificationAttempt](row)
+		if old.WorkOrderAttemptID != c.Access.WorkOrderAttemptID {
+			return ErrVerificationAccess
+		}
 		if old.EndedAt == nil {
 			return ErrVerificationState
 		}
@@ -316,6 +319,9 @@ func verificationOperationMutation(c VerificationCommand, rows []VerificationRow
 		return ErrVerificationAccess
 	}
 	attempt := verificationDecode[VerificationAttempt](runRow)
+	if attempt.WorkOrderAttemptID != c.Access.WorkOrderAttemptID {
+		return ErrVerificationAccess
+	}
 	if c.Kind == VerificationPrepareOperation {
 		if _, err := verificationWritableRun(c, rows); err != nil {
 			return err
@@ -381,7 +387,10 @@ func verificationOperationMutation(c VerificationCommand, rows []VerificationRow
 		return ErrVerificationInvalid
 	}
 	row, ok := verificationFind(rows, "verification_operations", c.Operation.ID)
-	if !ok || row.TaskID != c.Access.TaskID {
+	// AC-7.2 / VK-4.1: observations name the original operation context and
+	// run. Reconciliation may inspect a terminal run, but another run cannot
+	// dispatch or append observations by borrowing its logical subject.
+	if !ok || row.TaskID != c.Access.TaskID || row.ContextID != c.ContextID || row.RunID != c.RunID {
 		return ErrVerificationAccess
 	}
 	v := verificationDecode[VerificationOperation](row)
