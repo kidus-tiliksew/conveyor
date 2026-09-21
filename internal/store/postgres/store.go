@@ -6519,6 +6519,9 @@ func (s *Store) AssignTaskFeature(ctx context.Context, taskID, featureID string)
 }
 
 func (s *Store) CreateArtifact(ctx context.Context, artifact core.Artifact, content []byte) (core.Artifact, error) {
+	if artifact.Role == core.ArtifactRoleTypedVerificationEvidence {
+		return core.Artifact{}, store.ErrVerificationAccess
+	}
 	var result core.Artifact
 	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
 		var err error
@@ -6547,6 +6550,14 @@ func (s *Store) createArtifactTx(ctx context.Context, tx pgx.Tx, artifact core.A
 	artifact.SizeBytes = int64(len(content))
 	if err := artifact.ValidateAttachmentTarget(); err != nil {
 		return core.Artifact{}, err
+	}
+	if artifact.Role == core.ArtifactRoleTypedVerificationEvidence {
+		if artifact.TaskID == "" {
+			return core.Artifact{}, fmt.Errorf("typed evidence requires a task")
+		}
+		if _, err := core.ValidateTypedVerificationArtifact(artifact.ContentType, content); err != nil {
+			return core.Artifact{}, err
+		}
 	}
 	if artifact.Role == core.ArtifactRoleVerificationEvidence {
 		if artifact.TaskID == "" {
@@ -6634,9 +6645,12 @@ func (s *Store) CreateClaimedVerificationEvidence(ctx context.Context, request s
 func (s *Store) GetArtifact(ctx context.Context, id string) (core.Artifact, []byte, error) {
 	var artifact core.Artifact
 	var content []byte
-	err := s.pool.QueryRow(ctx, `SELECT a.id,a.workspace_id,a.name,a.content_type,a.size_bytes,a.content,a.created_at,COALESCE(l.role,'task_context'),COALESCE(l.task_id,''),COALESCE(l.feature_id,''),COALESCE(l.requirement_id,''),COALESCE(l.planning_session_id,'') FROM artifacts a LEFT JOIN artifact_links l ON l.workspace_id=a.workspace_id AND l.artifact_id=a.id WHERE a.workspace_id=$1 AND a.id=$2 ORDER BY l.role LIMIT 1`, workspace(ctx), id).Scan(&artifact.ID, &artifact.Workspace, &artifact.Name, &artifact.ContentType, &artifact.SizeBytes, &content, &artifact.CreatedAt, &artifact.Role, &artifact.TaskID, &artifact.FeatureID, &artifact.RequirementID, &artifact.PlanningSessionID)
+	err := s.pool.QueryRow(ctx, `SELECT a.id,a.workspace_id,a.name,a.content_type,a.size_bytes,a.content,a.created_at,COALESCE(l.role,'task_context'),COALESCE(l.task_id,''),COALESCE(l.feature_id,''),COALESCE(l.requirement_id,''),COALESCE(l.planning_session_id,'') FROM artifacts a LEFT JOIN artifact_links l ON l.workspace_id=a.workspace_id AND l.artifact_id=a.id WHERE a.workspace_id=$1 AND a.id=$2 ORDER BY (l.role='typed_verification_evidence'),l.role LIMIT 1`, workspace(ctx), id).Scan(&artifact.ID, &artifact.Workspace, &artifact.Name, &artifact.ContentType, &artifact.SizeBytes, &content, &artifact.CreatedAt, &artifact.Role, &artifact.TaskID, &artifact.FeatureID, &artifact.RequirementID, &artifact.PlanningSessionID)
 	if err != nil {
 		return core.Artifact{}, nil, notFound(err, "artifact %s", id)
+	}
+	if artifact.Role == core.ArtifactRoleTypedVerificationEvidence {
+		return core.Artifact{}, nil, store.ErrVerificationAccess
 	}
 	return artifact, content, nil
 }

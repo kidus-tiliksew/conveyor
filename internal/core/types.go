@@ -1133,11 +1133,14 @@ const (
 	// ArtifactRoleVerificationEvidence is implementer-supplied proof of an
 	// exercised change. It is a review aid, never model input or CI authority
 	ArtifactRoleVerificationEvidence ArtifactRole = "verification_evidence"
+	// ArtifactRoleTypedVerificationEvidence stores VK-6 bytes without granting
+	// model input eligibility or satisfying the legacy visual-only gate.
+	ArtifactRoleTypedVerificationEvidence ArtifactRole = "typed_verification_evidence"
 )
 
 func (r ArtifactRole) Valid() bool {
 	return r == ArtifactRoleTaskContext || r == ArtifactRoleGeneratedAudit ||
-		r == ArtifactRoleGeneratedOutput || r == ArtifactRoleVerificationEvidence
+		r == ArtifactRoleGeneratedOutput || r == ArtifactRoleVerificationEvidence || r == ArtifactRoleTypedVerificationEvidence
 }
 
 func (r ArtifactRole) ModelInputEligible() bool {

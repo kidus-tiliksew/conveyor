@@ -11,6 +11,7 @@ import (
 // volatileMemory adds deployment capabilities only for tests which explicitly
 // request a Backend. NewMemory retains its existing Store and fixture behavior.
 type volatileMemory struct {
+	verificationRows map[string]VerificationRow
 	*memory
 	memberships         map[memoryScopedKey]workspaceBinding
 	invitations         map[memoryScopedKey]workspaceInvitation

@@ -18,6 +18,7 @@ type Capabilities struct {
 }
 
 type Fixture struct {
+	ReopenVerification   func(*testing.T) store.Backend
 	Backend              store.Backend
 	Context              context.Context
 	Workspace            string
@@ -154,6 +155,7 @@ func RunAll(t *testing.T, factory Factory) {
 		{"TaskBranchAttach", true, runTaskBranchAttach},
 		{"TaskEventAtomicity", true, runTaskEventAtomicity},
 		{"ArtifactRepair", true, runArtifactRepair},
+		{"Verification", true, runVerification},
 		{"ArtifactIntake", true, runArtifactIntake},
 		{"Workers", true, runWorkers},
 		{"WorkOrders", true, runWorkOrders},

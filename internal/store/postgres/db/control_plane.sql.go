@@ -7,6 +7,7 @@ package db
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/jackc/pgx/v5/pgtype"
 )
@@ -2399,4 +2400,57 @@ func (q *Queries) ListDocumentOperatorNotesForTask(ctx context.Context, workspac
 		notes = append(notes, note)
 	}
 	return notes, rows.Err()
+}
+
+// VK-6 bindings are hand-maintained; the table allowlist is never caller SQL.
+func verificationTable(table string) bool {
+	switch table {
+	case "verification_contexts", "verification_selections", "verification_obligations", "verification_attempts", "verification_operations", "verification_evidence", "verification_evidence_links", "verification_publications", "verification_upload_chunks":
+		return true
+	}
+	return false
+}
+func (q *Queries) ListVerificationRecords(ctx context.Context, workspaceID, taskID string) ([]VerificationRecord, error) {
+	tables := []string{"verification_contexts", "verification_selections", "verification_obligations", "verification_attempts", "verification_operations", "verification_evidence", "verification_evidence_links", "verification_publications", "verification_upload_chunks"}
+	var out []VerificationRecord
+	for _, table := range tables {
+		condition := "task_id=$2"
+		if table == "verification_operations" {
+			condition = "(task_id=$2 OR true)"
+		}
+		rows, err := q.db.Query(ctx, "SELECT id,task_id,context_id,run_id,logical_key,key_hash,state,body,expires_at FROM "+table+" WHERE workspace_id=$1 AND "+condition+" ORDER BY id", workspaceID, taskID)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			v := VerificationRecord{Table: table, WorkspaceID: workspaceID}
+			if err = rows.Scan(&v.ID, &v.TaskID, &v.ContextID, &v.RunID, &v.LogicalKey, &v.KeyHash, &v.State, &v.Body, &v.ExpiresAt); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			out = append(out, v)
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+func (q *Queries) PutVerificationRecord(ctx context.Context, v VerificationRecord) error {
+	if !verificationTable(v.Table) {
+		return fmt.Errorf("invalid verification table")
+	}
+	suffix := ""
+	switch v.Table {
+	case "verification_contexts", "verification_attempts", "verification_operations":
+		suffix = " ON CONFLICT(workspace_id,id) DO UPDATE SET state=EXCLUDED.state,body=EXCLUDED.body"
+	}
+	_, err := q.db.Exec(ctx, "INSERT INTO "+v.Table+" (workspace_id,id,task_id,context_id,run_id,logical_key,key_hash,state,body,expires_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)"+suffix, v.WorkspaceID, v.ID, v.TaskID, v.ContextID, v.RunID, v.LogicalKey, v.KeyHash, v.State, v.Body, v.ExpiresAt)
+	return err
+}
+func (q *Queries) DeleteVerificationChunk(ctx context.Context, workspaceID, id string) error {
+	_, err := q.db.Exec(ctx, "DELETE FROM verification_upload_chunks WHERE workspace_id=$1 AND id=$2", workspaceID, id)
+	return err
 }
