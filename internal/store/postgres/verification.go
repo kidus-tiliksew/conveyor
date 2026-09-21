@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"time"
 
@@ -21,7 +22,7 @@ func verificationRows(records []db.VerificationRecord) []store.VerificationRow {
 	}
 	return rows
 }
-func (s *Store) verificationScopeTx(ctx context.Context, tx pgx.Tx, a store.VerificationAccess, write bool) (core.WorkOrder, error) {
+func (s *Store) verificationScopeTx(ctx context.Context, tx pgx.Tx, a store.VerificationAccess, write bool, reconcile ...bool) (core.WorkOrder, error) {
 	ws, ok := store.WorkspaceFromContext(ctx)
 	if !ok {
 		return core.WorkOrder{}, store.ErrVerificationAccess
@@ -45,7 +46,11 @@ func (s *Store) verificationScopeTx(ctx context.Context, tx pgx.Tx, a store.Veri
 	if err != nil {
 		return core.WorkOrder{}, store.ErrVerificationAccess
 	}
-	err = store.VerifyVerificationClaim(ctx, a, core.Task{ID: found, Workspace: ws}, order, write, time.Now().UTC())
+	if len(reconcile) == 1 && reconcile[0] {
+		err = store.VerifyVerificationClaimLoss(ctx, a, core.Task{ID: found, Workspace: ws}, order, time.Now().UTC())
+	} else {
+		err = store.VerifyVerificationClaim(ctx, a, core.Task{ID: found, Workspace: ws}, order, write, time.Now().UTC())
+	}
 	return order, err
 }
 func (s *Store) ApplyVerification(ctx context.Context, c store.VerificationCommand) (store.VerificationReceipt, error) {
@@ -64,7 +69,7 @@ func (s *Store) ApplyVerification(ctx context.Context, c store.VerificationComma
 	}
 	var result store.VerificationReceipt
 	err = s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
-		order, err := s.verificationScopeTx(ctx, tx, c.Access, true)
+		order, err := s.verificationScopeTx(ctx, tx, c.Access, true, c.Kind == store.VerificationReconcileClaimLoss)
 		if err != nil {
 			return err
 		}
@@ -192,4 +197,36 @@ func (s *Store) ReadVerificationArtifact(ctx context.Context, a store.Verificati
 		return core.Artifact{}, nil, err
 	}
 	return artifact, content, nil
+}
+
+func (s *Store) ReconcileVerificationClaims(ctx context.Context) (int, error) {
+	if _, err := store.VerificationReconciliationCommands(ctx, nil); err != nil {
+		return 0, err
+	}
+	tasks, err := s.ListTasks(ctx)
+	if err != nil {
+		return 0, err
+	}
+	count := 0
+	for _, task := range tasks {
+		records, err := s.queries.ListVerificationRecords(ctx, workspace(ctx), task.ID)
+		if err != nil {
+			return count, err
+		}
+		rows := verificationRows(records)
+		commands, err := store.VerificationReconciliationCommands(ctx, rows)
+		if err != nil {
+			return count, err
+		}
+		for _, c := range commands {
+			if _, err = s.ApplyVerification(ctx, c); err != nil {
+				if errors.Is(err, store.ErrVerificationState) {
+					continue
+				}
+				return count, err
+			}
+			count++
+		}
+	}
+	return count, nil
 }

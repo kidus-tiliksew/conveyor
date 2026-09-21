@@ -15,6 +15,7 @@ import (
 // from submitted evidence. Each command commits its records, artifacts, audit
 // event and publication queue intent together; a replay never repeats a write.
 type VerificationStore interface {
+	ReconcileVerificationClaims(context.Context) (int, error)
 	ApplyVerification(context.Context, VerificationCommand) (VerificationReceipt, error)
 	ReadVerification(context.Context, VerificationAccess, string) (VerificationSnapshot, error)
 	ReadVerificationArtifact(context.Context, VerificationAccess, string, string) (core.Artifact, []byte, error)
@@ -37,6 +38,9 @@ type VerificationAccess struct {
 }
 
 type VerificationContext struct {
+	Discovery     []json.RawMessage
+	RequestDigest string
+
 	ID, WorkspaceID, TaskID, WorkOrderID, WorkOrderAttemptID string
 	RequestKey, CreatedBy                                    string
 	Revisions                                                []core.VerificationRevision
@@ -61,6 +65,7 @@ type VerificationCitation struct {
 	SectionID  string
 }
 type VerificationObligation struct {
+	ObservationProcedure                          string
 	ID, ContextID, Description, Digest, CreatedBy string
 	Sources                                       []VerificationCitation
 	Contract                                      verification.Exercise
@@ -133,6 +138,7 @@ type VerificationReceipt struct {
 }
 
 type VerificationCommand struct {
+	ValidateSuccess       func(VerificationSnapshot) error `json:"-"`
 	Access                VerificationAccess
 	Kind                  string
 	ContextID, RunID, Key string
@@ -152,6 +158,8 @@ type VerificationCommand struct {
 }
 
 const (
+	VerificationReconcileClaimLoss = "attempt.reconcile_claim_loss"
+	VerificationFinalizeArtifact   = "artifact.finalize"
 	VerificationAuthorizeRetry     = "attempt.authorize_retry"
 	VerificationCreateContext      = "context.create"
 	VerificationRecordSelection    = "selection.record"

@@ -323,6 +323,10 @@ func (s *Server) Handler() http.Handler {
 	// (streamable-HTTP clients probe GET for an SSE stream); registering
 	// only Post would let GET fall through to the SPA catch-all as 200 HTML.
 	r.With(s.requireMCPAuth).HandleFunc("/mcp", s.handleMCP)
+	r.With(s.requireMCPAuth).Post("/v1/work-orders/{id}/verification/{operation}", s.verificationOrder)
+	r.With(s.requireMCPAuth).Get("/v1/work-orders/{id}/verification/{operation}", s.verificationOrder)
+	r.With(s.requireWorkerAuth).Post("/v1/worker/work-orders/{id}/verification/{operation}", s.verificationOrder)
+	r.With(s.requireWorkerAuth).Get("/v1/worker/work-orders/{id}/verification/{operation}", s.verificationOrder)
 	r.With(s.requireMCPAuth).Get("/v1/work-orders/{id}/pull-request-template", s.getSubmissionTemplate)
 	r.With(s.requireMCPAuth).Post("/v1/work-orders/{id}/submit-for-review", s.submitWorkOrderReview)
 	r.Get("/", serveDashboard)

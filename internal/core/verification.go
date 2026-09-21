@@ -168,6 +168,17 @@ func DecodeVerificationEvidence(data []byte, authority VerificationEvidenceAutho
 	if err := e.Validate(authority); err != nil {
 		return nil, err
 	}
+	var value any
+	if err := json.Unmarshal(data, &value); err != nil {
+		return nil, err
+	}
+	schema, ok := VerificationEvidenceSchemas()[e.Type].(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("unknown evidence schema")
+	}
+	if err := validateVerificationSchema(value, schema); err != nil {
+		return nil, err
+	}
 	return &e, nil
 }
 func (e VerificationEvidence) Validate(authority VerificationEvidenceAuthority) error {
@@ -506,6 +517,11 @@ func VerifyVerificationBytes(data []byte, expected string) error {
 		return fmt.Errorf("verification bytes: SHA-256 mismatch")
 	}
 	return nil
+}
+
+// DecodeVerificationRequest applies the shared strict JSON boundary.
+func DecodeVerificationRequest(data []byte, out any) error {
+	return decodeVerificationJSON(data, out)
 }
 
 func decodeVerificationJSON(data []byte, out any) error {

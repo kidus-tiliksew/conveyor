@@ -27,7 +27,11 @@ func SupportedArtifactImage(mediaType string) bool {
 // ValidateArtifactMedia enforces ART-HTTP-1 and ART-STORE-1
 // (component-http-api, component-persistence; req-intake-and-triage REQ-1).
 // Explicit non-image declarations retain their existing behavior.
-func ValidateArtifactMedia(declared string, content []byte) (string, error) {
+type ArtifactMediaPolicy int
+
+const TypedVerificationMedia ArtifactMediaPolicy = 1
+
+func ValidateArtifactMedia(declared string, content []byte, policy ...ArtifactMediaPolicy) (string, error) {
 	detected := strings.Split(http.DetectContentType(content), ";")[0]
 	fail := func(err error) (string, error) {
 		return "", fmt.Errorf("artifact media declared %q, detected %q: %w", declared, detected, err)
@@ -47,6 +51,9 @@ func ValidateArtifactMedia(declared string, content []byte) (string, error) {
 	inferred := normalized == "" || normalized == "application/octet-stream"
 	if inferred {
 		normalized = detected
+	}
+	if len(policy) == 1 && policy[0] == TypedVerificationMedia && strings.HasPrefix(normalized, "video/") {
+		return validateVerificationRecording(normalized, content)
 	}
 	if !strings.HasPrefix(normalized, "image/") {
 		if !inferred {

@@ -282,6 +282,15 @@ func verificationAttemptMutation(c VerificationCommand, rows []VerificationRow, 
 		return nil
 	}
 	if next == "succeeded" {
+		if c.ValidateSuccess != nil {
+			snapshot, err := VerificationSnapshotFromRows(rows, c.ContextID)
+			if err != nil {
+				return err
+			}
+			if err = c.ValidateSuccess(snapshot); err != nil {
+				return err
+			}
+		}
 		for _, other := range rows {
 			if other.Table == "verification_operations" && other.RunID == v.ID && !verificationOperationResolved(other.State) {
 				return ErrVerificationState
@@ -469,4 +478,49 @@ func verificationPublicationMutation(c VerificationCommand, v VerificationPublic
 
 func verificationSortChunks(chunks []VerificationUploadChunk) {
 	sort.Slice(chunks, func(i, j int) bool { return chunks[i].Index < chunks[j].Index })
+}
+
+func validateVerificationObligation(v VerificationObligation) error {
+	c := v.Contract
+	switch c.Kind {
+	case "script", "hybrid":
+		if len(c.Argv) == 0 || strings.TrimSpace(c.Argv[0]) == "" {
+			return ErrVerificationInvalid
+		}
+	case "interactive":
+		if len(c.Argv) == 0 && strings.TrimSpace(v.ObservationProcedure) == "" {
+			return ErrVerificationInvalid
+		}
+	case "observation":
+		if strings.TrimSpace(v.ObservationProcedure) == "" || len(c.EvidenceOutputs) == 0 {
+			return ErrVerificationInvalid
+		}
+	default:
+		return ErrVerificationInvalid
+	}
+	switch c.RetryPolicy {
+	case "safe_to_replay":
+		if strings.TrimSpace(c.SafetyBasis) == "" {
+			return ErrVerificationInvalid
+		}
+	case "", "operator_action_required", "reconciliation_required":
+	default:
+		return ErrVerificationInvalid
+	}
+	seen := map[string]bool{}
+	for _, id := range c.RequiredAssertions {
+		if !verificationIdentifier(id) || seen[id] {
+			return ErrVerificationInvalid
+		}
+		seen[id] = true
+	}
+	types := map[string]bool{"api_exchange": true, "state_observation": true, "assertion_result": true, "execution_report": true, "visual_capture": true, "operator_observation": true}
+	seen = map[string]bool{}
+	for _, output := range c.EvidenceOutputs {
+		if !types[output.Type] || output.SchemaVersion != 1 || output.MinimumItems < 1 || seen[output.Type] {
+			return ErrVerificationInvalid
+		}
+		seen[output.Type] = true
+	}
+	return nil
 }

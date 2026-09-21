@@ -34,6 +34,19 @@ func ValidateTypedVerificationArtifact(contentType string, content []byte) (stri
 		if _, err = ValidateArtifactMedia(media, content); err != nil {
 			return "", err
 		}
+	case "video/mp4", "video/webm":
+		if _, err = ValidateArtifactMedia(media, content, TypedVerificationMedia); err != nil {
+			return "", err
+		}
+	default:
+		return "", fmt.Errorf("unsupported typed verification media")
+	}
+	return media, nil
+}
+
+// validateVerificationRecording sniffs bounded container structure, not codecs.
+func validateVerificationRecording(media string, content []byte) (string, error) {
+	switch media {
 	case "video/mp4":
 		// ISO BMFF boxes must cover the complete retained byte sequence. The first
 		// box is a file type box; an ftyp label alone is not a recording.
@@ -62,7 +75,7 @@ func ValidateTypedVerificationArtifact(contentType string, content []byte) (stri
 			return "", fmt.Errorf("invalid WebM container")
 		}
 	default:
-		return "", fmt.Errorf("unsupported typed verification media")
+		return "", fmt.Errorf("unsupported verification recording")
 	}
 	return media, nil
 }
