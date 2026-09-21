@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -58,7 +59,7 @@ func verificationPutTx(ctx context.Context, tx *sql.Tx, ws string, v store.Verif
 	_, err := tx.ExecContext(ctx, "INSERT INTO "+v.Table+" (workspace_id,id,task_id,context_id,run_id,logical_key,key_hash,state,body,expires_at) VALUES (?,?,?,?,?,?,?,?,?,?)"+suffix, ws, v.ID, v.TaskID, v.ContextID, v.RunID, v.LogicalKey, fmt.Sprintf("%x", sha256.Sum256([]byte(store.VerificationStorageKey(v)))), v.State, []byte(v.Body), v.ExpiresAt)
 	return err
 }
-func (s *Store) verificationScopeTx(ctx context.Context, tx *sql.Tx, a store.VerificationAccess, write bool) (core.WorkOrder, error) {
+func (s *Store) verificationScopeTx(ctx context.Context, tx *sql.Tx, a store.VerificationAccess, write bool, reconcile ...bool) (core.WorkOrder, error) {
 	ws, err := workspace(ctx)
 	if err != nil {
 		return core.WorkOrder{}, store.ErrVerificationAccess
@@ -80,7 +81,11 @@ func (s *Store) verificationScopeTx(ctx context.Context, tx *sql.Tx, a store.Ver
 	if err != nil {
 		return core.WorkOrder{}, store.ErrVerificationAccess
 	}
-	err = store.VerifyVerificationClaim(ctx, a, core.Task{ID: found, Workspace: ws}, order, write, time.Now().UTC())
+	if len(reconcile) == 1 && reconcile[0] {
+		err = store.VerifyVerificationClaimLoss(ctx, a, core.Task{ID: found, Workspace: ws}, order, time.Now().UTC())
+	} else {
+		err = store.VerifyVerificationClaim(ctx, a, core.Task{ID: found, Workspace: ws}, order, write, time.Now().UTC())
+	}
 	return order, err
 }
 
@@ -103,7 +108,7 @@ func (s *Store) ApplyVerification(ctx context.Context, c store.VerificationComma
 	}
 	var result store.VerificationReceipt
 	err = s.withTx(ctx, func(tx *sql.Tx) error {
-		order, err := s.verificationScopeTx(ctx, tx, c.Access, true)
+		order, err := s.verificationScopeTx(ctx, tx, c.Access, true, c.Kind == store.VerificationReconcileClaimLoss)
 		if err != nil {
 			return err
 		}
@@ -231,4 +236,40 @@ func (s *Store) ReadVerificationArtifact(ctx context.Context, a store.Verificati
 		return core.Artifact{}, nil, err
 	}
 	return artifact, content, nil
+}
+
+func (s *Store) ReconcileVerificationClaims(ctx context.Context) (int, error) {
+	if _, err := store.VerificationReconciliationCommands(ctx, nil); err != nil {
+		return 0, err
+	}
+	tasks, err := s.ListTasks(ctx)
+	if err != nil {
+		return 0, err
+	}
+	count := 0
+	for _, task := range tasks {
+		var rows []store.VerificationRow
+		err = s.withTx(ctx, func(tx *sql.Tx) error {
+			var e error
+			rows, e = verificationRowsTx(ctx, tx, documentWorkspace(ctx), task.ID)
+			return e
+		})
+		if err != nil {
+			return count, err
+		}
+		commands, err := store.VerificationReconciliationCommands(ctx, rows)
+		if err != nil {
+			return count, err
+		}
+		for _, c := range commands {
+			if _, err = s.ApplyVerification(ctx, c); err != nil {
+				if errors.Is(err, store.ErrVerificationState) {
+					continue
+				}
+				return count, err
+			}
+			count++
+		}
+	}
+	return count, nil
 }

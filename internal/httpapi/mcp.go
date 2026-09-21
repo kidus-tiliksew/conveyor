@@ -15,6 +15,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/releaseinfo"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
+	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 )
 
 type rpcRequest struct {
@@ -83,7 +84,7 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 			Name      string         `json:"name"`
 			Arguments map[string]any `json:"arguments"`
 		}
-		if err := json.Unmarshal(request.Params, &call); err != nil {
+		if err := core.DecodeVerificationRequest(request.Params, &call); err != nil {
 			response.Error = &rpcError{Code: -32602, Message: "invalid tool arguments"}
 			break
 		}
@@ -106,6 +107,9 @@ func writeRPC(w http.ResponseWriter, response rpcResponse) {
 }
 
 func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) (any, error) {
+	if workorder.VerificationRequestType(name) != nil {
+		return s.callVerificationMCP(r, name, args)
+	}
 	if isMCPRead(name) {
 		return s.callMCPRead(r, name, args)
 	}
@@ -494,6 +498,17 @@ func humanReservedMCPTool(name string) bool {
 }
 
 var mcpCapabilities = map[string]core.Capability{
+	"get_verification_context":         core.CapabilityViewWorkspace,
+	"prepare_verification":             core.CapabilityClaimWork,
+	"register_verification_obligation": core.CapabilityClaimWork,
+	"start_verification_attempt":       core.CapabilityClaimWork,
+	"report_verification_outcome":      core.CapabilityClaimWork,
+	"get_evidence_schemas":             core.CapabilityViewWorkspace,
+	"submit_verification_evidence":     core.CapabilityClaimWork,
+	"upload_verification_artifact":     core.CapabilityClaimWork,
+	"read_verification_evidence":       core.CapabilityViewWorkspace,
+	"get_verification_publication":     core.CapabilityViewWorkspace,
+
 	"get_decision":                   core.CapabilityViewWorkspace,
 	"list_decisions":                 core.CapabilityViewWorkspace,
 	"list_document_events":           core.CapabilityViewWorkspace,
@@ -810,7 +825,7 @@ func mcpTools() []map[string]any {
 		{"required": []string{"applicable"}},
 	}
 	identity := map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str}
-	return append(mcpReadTools(), []map[string]any{
+	return append(append(mcpReadTools(), verificationMCPTools()...), []map[string]any{
 		{"name": "create_task", "description": "Create one durable task in an explicit workspace with optional desired-state context, generate its title from body, and enqueue triage. Reusing the same idempotency key returns the original task.", "inputSchema": object(map[string]any{"workspace_id": str, "body": map[string]any{"type": "string", "description": "Task description in GitHub-flavored Markdown. Structured descriptions using headings and lists are encouraged."}, "repo": str, "base_branch": str, "source": str, "depends_on": map[string]any{"type": "array", "items": str, "description": "Optional open task IDs in this workspace that must merge first."}, "requirement_ids": map[string]any{"type": "array", "items": str, "description": "Optional confirmed requirements this task serves."}, "system_design_ids": map[string]any{"type": "array", "items": str, "description": "Optional confirmed System Design documents governing this task."}, "hold": map[string]any{"type": "boolean", "description": "Reserve the task from the worker daemon; claim it yourself (DEC-5)."}, "spec_approval": map[string]string{"type": "boolean"}, "merge_approval": map[string]string{"type": "boolean"}, "idempotency_key": str}, "body", "repo", "idempotency_key")},
 		{"name": "add_task_dependency", "description": "Make one existing open task depend on another as an audited operator act. Existing dependencies are idempotent and cycles are rejected.", "inputSchema": object(map[string]any{"workspace_id": str, "task_id": str, "depends_on_task_id": str, "reason": str, "request_id": str}, "task_id", "depends_on_task_id", "reason", "request_id")},
 		{"name": "set_assignee", "description": "Set or clear a task assignee as an audited operator act. Assignment constrains claim eligibility and never queue order.", "inputSchema": object(map[string]any{"workspace_id": str, "task_id": str, "assignee_user_id": str}, "task_id", "assignee_user_id")},

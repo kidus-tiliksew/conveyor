@@ -21,7 +21,8 @@ type verificationAcceptedUpload struct {
 }
 
 func verificationEvidenceMutation(c VerificationCommand, rows []VerificationRow, vc VerificationContext, actor string, now time.Time, r *redact.Redactor, out *VerificationMutation) error {
-	if c.Key == "" || len(c.Evidence) == 0 || len(c.Evidence) > 100 {
+	standalone := c.Kind == VerificationFinalizeArtifact
+	if c.Key == "" || (!standalone && len(c.Evidence) == 0) || len(c.Evidence) > 100 || (standalone && (len(c.Artifacts) != 1 || len(c.Evidence) != 0 || len(c.Links) != 0 || c.Publication != nil)) {
 		return ErrVerificationInvalid
 	}
 	runRow, found := verificationFind(rows, "verification_attempts", c.RunID)
@@ -70,6 +71,9 @@ func verificationEvidenceMutation(c VerificationCommand, rows []VerificationRow,
 		items = append(items, submitted)
 	}
 	batchID := "submission:" + c.RunID + ":" + c.Key
+	if standalone {
+		batchID = "finalization:" + c.RunID + ":" + c.Artifacts[0].UploadID
+	}
 	var prior *verificationBatch
 	if old, ok := verificationFind(rows, "verification_evidence", batchID); ok {
 		value := verificationDecode[verificationBatch](old)
@@ -78,7 +82,7 @@ func verificationEvidenceMutation(c VerificationCommand, rows []VerificationRow,
 	out.Receipt = VerificationReceipt{ID: verificationID(), EvidenceIDs: []string{}, ArtifactIDs: []string{}}
 	var uploads []verificationAcceptedUpload
 	var canonicalArtifacts []VerificationArtifactInput
-	// Finalization consumes all contiguous chunks only in the evidence transaction.
+	// Finalization consumes contiguous chunks in this transaction.
 	// Until commit these bytes remain inaccessible staging records.
 	replacements := map[string]core.VerificationArtifactReference{}
 	for _, input := range c.Artifacts {
@@ -173,6 +177,29 @@ func verificationEvidenceMutation(c VerificationCommand, rows []VerificationRow,
 		normalized.SizeBytes = 0
 		canonicalArtifacts = append(canonicalArtifacts, normalized)
 	}
+	if standalone {
+		digest := verificationHash(verificationJSON(canonicalArtifacts))
+		if prior != nil {
+			if prior.Digest != digest {
+				return ErrVerificationConflict
+			}
+			*out = VerificationMutation{Receipt: prior.Receipt}
+			return nil
+		}
+		if _, err := verificationWritableRun(c, rows); err != nil {
+			return err
+		}
+		out.Receipt.Digest = digest
+		out.Rows = append(out.Rows, verificationRow("verification_evidence", batchID, c.Access.TaskID, c.ContextID, c.RunID, batchID, "finalized", verificationBatch{Digest: digest, Receipt: out.Receipt, Uploads: uploads}))
+		return nil
+	}
+	// Only this attempt can attach a standalone upload. Until attachment, the
+	// typed-artifact read policy continues to require an evidence envelope.
+	for _, row := range rows {
+		if row.Table == "verification_evidence" && row.State == "finalized" && row.TaskID == c.Access.TaskID && row.ContextID == c.ContextID && row.RunID == c.RunID {
+			uploads = append(uploads, verificationDecode[verificationBatch](row).Uploads...)
+		}
+	}
 	links := append([]VerificationEvidenceLink{}, c.Links...)
 	for i := range items {
 		e := &items[i]
@@ -184,6 +211,11 @@ func verificationEvidenceMutation(c VerificationCommand, rows []VerificationRow,
 				// Reusing bytes requires a same-task accepted evidence link, never merely
 				// knowledge of a content hash (VK-6). The adapter verifies retained bytes.
 				known := false
+				for _, upload := range uploads {
+					if verificationEqual(a, upload.Reference) {
+						known = true
+					}
+				}
 				for _, row := range rows {
 					if row.Table == "verification_evidence" && row.State == "evidence" {
 						old := verificationDecode[VerificationEvidenceRecord](row)

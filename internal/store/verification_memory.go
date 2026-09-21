@@ -2,8 +2,10 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
@@ -31,7 +33,11 @@ func (m *volatileMemory) ApplyVerification(ctx context.Context, c VerificationCo
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	now := time.Now().UTC()
-	if c.Access.UserID == "" {
+	if c.Kind == VerificationReconcileClaimLoss {
+		if err = VerifyVerificationClaimLoss(ctx, c.Access, m.tasks[c.Access.TaskID], m.workOrders[c.Access.WorkOrderID], now); err != nil {
+			return VerificationReceipt{}, err
+		}
+	} else if c.Access.UserID == "" {
 		if err = VerifyVerificationClaim(ctx, c.Access, m.tasks[c.Access.TaskID], m.workOrders[c.Access.WorkOrderID], true, now); err != nil {
 			return VerificationReceipt{}, err
 		}
@@ -192,6 +198,14 @@ func AuthorizeVerificationUserRead(ctx context.Context, b MembershipStore, a Ver
 	return nil
 }
 func VerificationReadSnapshot(rows []VerificationRow, a VerificationAccess, id string, stage core.Stage) (VerificationSnapshot, error) {
+	if strings.HasPrefix(id, "request:") && a.UserID == "" && stage == core.StageVerify {
+		for _, r := range rows {
+			if r.Table == "verification_contexts" && r.TaskID == a.TaskID && r.LogicalKey == a.WorkOrderID+":"+strings.TrimPrefix(id, "request:") {
+				id = r.ID
+				break
+			}
+		}
+	}
 	row, ok := verificationFind(rows, "verification_contexts", id)
 	if !ok || row.TaskID != a.TaskID {
 		return VerificationSnapshot{}, ErrVerificationAccess
@@ -222,4 +236,34 @@ func VerificationArtifactAccess(rows []VerificationRow, a VerificationAccess, ev
 		}
 	}
 	return ErrVerificationAccess
+}
+
+func (m *volatileMemory) ReconcileVerificationClaims(ctx context.Context) (int, error) {
+	ws, ok := WorkspaceFromContext(ctx)
+	if !ok {
+		return 0, ErrVerificationAccess
+	}
+	m.mu.RLock()
+	var rows []VerificationRow
+	for _, task := range m.tasks {
+		if task.Workspace == ws {
+			rows = append(rows, m.verificationRowsLocked(ws, task.ID)...)
+		}
+	}
+	commands, err := VerificationReconciliationCommands(ctx, rows)
+	m.mu.RUnlock()
+	if err != nil {
+		return 0, err
+	}
+	count := 0
+	for _, c := range commands {
+		if _, err = m.ApplyVerification(ctx, c); err != nil {
+			if errors.Is(err, ErrVerificationState) {
+				continue
+			}
+			return count, err
+		}
+		count++
+	}
+	return count, nil
 }

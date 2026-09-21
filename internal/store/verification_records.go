@@ -212,6 +212,9 @@ func PrepareVerificationMutation(ctx context.Context, source redact.SecretSource
 	// fields are sanitized individually below; credentials are never persisted.
 	clean := func(v any) ([]byte, error) { return verificationSanitizeJSON(redactor, verificationJSON(v)) }
 	put := func(r VerificationRow) { out.Rows = append(out.Rows, r) }
+	if c.Kind == VerificationReconcileClaimLoss {
+		return prepareVerificationClaimLoss(ctx, c, rows, now)
+	}
 	if c.Kind == VerificationExpireChunks {
 		for _, row := range rows {
 			if row.Table == "verification_upload_chunks" && row.TaskID == c.Access.TaskID && row.ExpiresAt != nil && !row.ExpiresAt.After(now) {
@@ -261,6 +264,16 @@ func PrepareVerificationMutation(ctx context.Context, source redact.SecretSource
 		v.CreatedAt = now
 		put(verificationRow("verification_contexts", v.ID, c.Access.TaskID, v.ID, "", c.Access.WorkOrderID+":"+c.Key, "open", v))
 		out.Receipt.ID = v.ID
+		if c.Selection != nil {
+			selectionCommand := c
+			selectionCommand.Kind, selectionCommand.ContextID = VerificationRecordSelection, v.ID
+			selected, err := PrepareVerificationMutation(ctx, source, selectionCommand, append(append([]VerificationRow{}, rows...), out.Rows...), now)
+			if err != nil {
+				return VerificationMutation{}, err
+			}
+			out.Rows = append(out.Rows, selected.Rows...)
+		}
+
 	} else {
 		r, ok := verificationFind(rows, "verification_contexts", c.ContextID)
 		if !ok || r.TaskID != c.Access.TaskID {
@@ -331,6 +344,9 @@ func PrepareVerificationMutation(ctx context.Context, source redact.SecretSource
 					return out, ErrVerificationInvalid
 				}
 			}
+			if err := validateVerificationObligation(v); err != nil {
+				return out, err
+			}
 			if v.Contract.RetryPolicy == "" {
 				v.Contract.RetryPolicy = "operator_action_required"
 			}
@@ -369,6 +385,15 @@ func PrepareVerificationMutation(ctx context.Context, source redact.SecretSource
 			if _, err := verificationWritableRun(c, rows); err != nil {
 				return out, err
 			}
+			for _, saved := range rows {
+				if saved.Table == "verification_evidence" && saved.State == "finalized" {
+					for _, upload := range verificationDecode[verificationBatch](saved).Uploads {
+						if upload.Input.UploadID == c.Chunk.UploadID {
+							return out, ErrVerificationConflict
+						}
+					}
+				}
+			}
 			v := *c.Chunk
 			v.ContextID = c.ContextID
 			v.RunID = c.RunID
@@ -399,7 +424,7 @@ func PrepareVerificationMutation(ctx context.Context, source redact.SecretSource
 			nr.ExpiresAt = &v.ExpiresAt
 			put(nr)
 			out.Receipt.ID = v.UploadID
-		case VerificationWriteEvidence:
+		case VerificationWriteEvidence, VerificationFinalizeArtifact:
 			if err := verificationEvidenceMutation(c, rows, vc, actor, now, redactor, &out); err != nil {
 				return out, err
 			}
@@ -426,7 +451,11 @@ func PrepareVerificationMutation(ctx context.Context, source redact.SecretSource
 		}
 	}
 	if len(out.Rows) > 0 || len(out.DeleteChunks) > 0 {
-		out.Event = core.Event{TaskID: c.Access.TaskID, Kind: "verification." + c.Kind, ActorID: actor, ActorRole: ActorFromContext(ctx).Role, Payload: verificationJSON(out.Receipt)}
+		eventKind := c.Kind
+		if eventKind == VerificationFinalizeArtifact {
+			eventKind = VerificationWriteEvidence
+		}
+		out.Event = core.Event{TaskID: c.Access.TaskID, Kind: "verification." + eventKind, ActorID: actor, ActorRole: ActorFromContext(ctx).Role, Payload: verificationJSON(out.Receipt)}
 	}
 	return out, nil
 }
