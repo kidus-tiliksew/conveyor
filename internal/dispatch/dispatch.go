@@ -578,6 +578,21 @@ func (d *Dispatcher) createWorkOrder(ctx context.Context, cfg *config.Config, ta
 	if task.NextStage == core.StageVerify {
 		order.HeadSHA = core.VerifyStageHead(task)
 		order.ReviewScope, order.BaselineSHA = task.RefreshReviewScope, task.RefreshBaselineSHA
+		if !task.ApprovalStale {
+			events, err := d.Store.ListEvents(ctx, task.ID)
+			if err != nil {
+				return err
+			}
+			comparison, err := RecordedReviewComparison(task, events)
+			if err != nil {
+				return err
+			}
+			if comparison.ReviewedHeadSHA != order.HeadSHA {
+				return fmt.Errorf("task %s recorded comparison does not match submitted head", task.ID)
+			}
+			// VK-7: verification and normal review consume the same commit pair.
+			order.BaselineSHA = comparison.BaseBranch
+		}
 	}
 	created, err := taskops.ExecuteWorkOrder(ctx, d.Store, task.ID, core.WorkOrderCmdCreate, func(lease taskops.TaskLease) (bool, error) {
 		return d.Store.CreateStageWorkOrderCommand(ctx, lease, job, order)

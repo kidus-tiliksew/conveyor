@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>VK-10 fixture verification</title>
+<h1>Conveyor fixture verification</h1>
+<dl>
+<dt>Repository</dt><dd>conveyor</dd>
+<dt>Kit</dt><dd>vk10-loopback-ui</dd>
+<dt>Version</dt><dd>1</dd>
+<dt>Governing pins</dt><dd>req-verification-kits v1; feature-verification-kit-execution v5</dd>
+<dt>Run</dt><dd id="run">{{RUN}}</dd>
+<dt>Context</dt><dd id="context">{{CONTEXT}}</dd>
+</dl>
+<button id="observe">Observe fixture API</button>
+<pre id="result" role="status" aria-live="polite">Waiting for observation</pre>
+<script>
+document.querySelector("#observe").addEventListener("click", async () => {
+  const result = document.querySelector("#result");
+  try {
+    const response = await fetch("/observe");
+    if (!response.ok) throw new Error("Fixture API unavailable");
+    const value = await response.json();
+    result.textContent = JSON.stringify(value);
+    result.dataset.observed = String(value.observed === true);
+  } catch (error) {
+    result.textContent = "Missing evidence: " + error.message;
+    result.dataset.observed = "false";
+  }
+});
+</script>
+</html>

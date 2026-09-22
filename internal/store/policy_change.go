@@ -84,6 +84,28 @@ func PlanTaskPolicyChange(task core.Task, orders []core.WorkOrder, r SetupChange
 	if core.VerifyStageHead(task) == "" {
 		return r, fmt.Errorf("%w: submitted head is required for policy handoff", ErrSetupChangeConflict)
 	}
+	baseline := task.RefreshBaselineSHA
+	if task.ApprovalStale {
+		if baseline == "" || task.RefreshHeadSHA == "" || (task.RefreshReviewScope != config.RefreshReviewDelta && task.RefreshReviewScope != config.RefreshReviewFull) {
+			return r, fmt.Errorf("%w: refresh binding is required for policy handoff", ErrSetupChangeConflict)
+		}
+	} else {
+		// VK-7: inherit the trusted current-stage binding, never a branch name
+		// or an approved head from a different review cycle.
+		baseline = ""
+		for _, order := range orders {
+			if order.TaskID != task.ID || order.Stage != task.NextStage || order.HeadSHA != task.ReviewedHeadSHA || order.ReviewScope != task.RefreshReviewScope || order.BaselineSHA == "" || (order.State != core.WorkOrderQueued && order.State != core.WorkOrderCompleted) {
+				continue
+			}
+			if baseline != "" && baseline != order.BaselineSHA {
+				return r, fmt.Errorf("%w: conflicting policy handoff baselines", ErrSetupChangeConflict)
+			}
+			baseline = order.BaselineSHA
+		}
+		if baseline == "" {
+			return r, fmt.Errorf("%w: current order binding is required for policy handoff", ErrSetupChangeConflict)
+		}
+	}
 	verifyAttempt, reviewRound := 1, 1
 	for _, order := range orders {
 		if order.Stage == core.StageVerify {
@@ -114,10 +136,9 @@ func PlanTaskPolicyChange(task core.Task, orders []core.WorkOrder, r SetupChange
 			id = fmt.Sprintf("%s-review-%d-seat-%d", task.ID, reviewRound, seat)
 		}
 		job := core.Job{ID: id, TaskID: task.ID, Stage: target, Harness: "external-mcp", AuthMode: "byoa", Runner: "external", Confinement: "none", State: core.JobPending}
-		order := core.WorkOrder{ID: id, TaskID: task.ID, JobID: id, Stage: target, State: core.WorkOrderQueued, Claimable: true, HeadSHA: core.VerifyStageHead(task), ReviewScope: task.RefreshReviewScope, BaselineSHA: task.RefreshBaselineSHA, ExecutionTimeoutText: timeout, CreatedAt: now, QueueEnteredAt: now, QueueDeadline: now.Add(config.DefaultWorkOrderQueueTimeout)}
+		order := core.WorkOrder{ID: id, TaskID: task.ID, JobID: id, Stage: target, State: core.WorkOrderQueued, Claimable: true, HeadSHA: core.VerifyStageHead(task), ReviewScope: task.RefreshReviewScope, BaselineSHA: baseline, ExecutionTimeoutText: timeout, CreatedAt: now, QueueEnteredAt: now, QueueDeadline: now.Add(config.DefaultWorkOrderQueueTimeout)}
 		if target == core.StageReview {
 			order.ReviewRound, order.ReviewSeat = reviewRound, seat
-			order.ReviewScope, order.BaselineSHA = task.RefreshReviewScope, task.RefreshBaselineSHA
 			if task.ApprovalStale {
 				order.ReviewKind = "refresh"
 			}

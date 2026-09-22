@@ -1,0 +1,213 @@
+{
+  "schema_version": 1,
+  "kits": [
+    {
+      "id": "vk10-script",
+      "name": "VK-10 script",
+      "version": "1",
+      "path": ".conveyor/kits/vk10-script",
+      "governing_pins": {
+        "requirements": [
+          {
+            "document_id": "req-verification-kits",
+            "version": 1
+          }
+        ],
+        "system_designs": [
+          {
+            "document_id": "feature-verification-kit-execution",
+            "version": 5
+          }
+        ]
+      },
+      "exercises": [
+        {
+          "id": "observe",
+          "stages": [
+            "verify"
+          ],
+          "kind": "script",
+          "argv": [
+            "sh",
+            "run.sh",
+            "exercise"
+          ],
+          "cwd": ".",
+          "timeout_seconds": 60,
+          "prerequisites": [
+            {
+              "id": "python",
+              "kind": "executable",
+              "environment_binding": "python3"
+            },
+            {
+              "id": "api",
+              "kind": "service",
+              "environment_binding": "fixture"
+            }
+          ],
+          "permissions": [
+            {
+              "kind": "network",
+              "target_binding": "fixture"
+            }
+          ],
+          "inputs": [
+            {
+              "name": "context",
+              "type": "string",
+              "required": true,
+              "sensitive": false
+            }
+          ],
+          "required_assertions": [
+            "fixture-observed"
+          ],
+          "retry_policy": "safe_to_replay",
+          "safety_basis": "Only reads a disposable local fixture.",
+          "operations": [],
+          "evidence_outputs": [
+            {
+              "type": "api_exchange",
+              "schema_version": 1,
+              "minimum_items": 1
+            },
+            {
+              "type": "state_observation",
+              "schema_version": 1,
+              "minimum_items": 1
+            },
+            {
+              "type": "assertion_result",
+              "schema_version": 1,
+              "minimum_items": 1
+            },
+            {
+              "type": "execution_report",
+              "schema_version": 1,
+              "minimum_items": 1
+            }
+          ],
+          "supports": [
+            {
+              "document_id": "req-verification-kits",
+              "version": 1,
+              "acceptance_criterion_id": "AC-3.1"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "vk10-loopback-ui",
+      "name": "VK-10 loopback UI",
+      "version": "1",
+      "path": ".conveyor/kits/vk10-loopback-ui",
+      "governing_pins": {
+        "requirements": [
+          {
+            "document_id": "req-verification-kits",
+            "version": 1
+          }
+        ],
+        "system_designs": [
+          {
+            "document_id": "feature-verification-kit-execution",
+            "version": 5
+          }
+        ]
+      },
+      "exercises": [
+        {
+          "id": "observe",
+          "stages": [
+            "verify"
+          ],
+          "kind": "script",
+          "argv": [
+            "sh",
+            "server.sh",
+            "exercise"
+          ],
+          "cwd": ".",
+          "timeout_seconds": 60,
+          "prerequisites": [
+            {
+              "id": "python",
+              "kind": "executable",
+              "environment_binding": "python3"
+            },
+            {
+              "id": "api",
+              "kind": "service",
+              "environment_binding": "fixture"
+            }
+          ],
+          "permissions": [
+            {
+              "kind": "network",
+              "target_binding": "fixture"
+            },
+            {
+              "kind": "operator_interaction"
+            }
+          ],
+          "inputs": [
+            {
+              "name": "context",
+              "type": "string",
+              "required": true,
+              "sensitive": false
+            }
+          ],
+          "required_assertions": [
+            "fixture-observed"
+          ],
+          "retry_policy": "safe_to_replay",
+          "safety_basis": "Only reads a disposable local fixture.",
+          "operations": [],
+          "evidence_outputs": [
+            {
+              "type": "api_exchange",
+              "schema_version": 1,
+              "minimum_items": 1
+            },
+            {
+              "type": "state_observation",
+              "schema_version": 1,
+              "minimum_items": 1
+            },
+            {
+              "type": "assertion_result",
+              "schema_version": 1,
+              "minimum_items": 1
+            },
+            {
+              "type": "execution_report",
+              "schema_version": 1,
+              "minimum_items": 1
+            }
+          ],
+          "supports": [
+            {
+              "document_id": "req-verification-kits",
+              "version": 1,
+              "acceptance_criterion_id": "AC-3.1"
+            }
+          ]
+        }
+      ],
+      "ui": {
+        "argv": [
+          "sh",
+          "server.sh",
+          "serve"
+        ],
+        "port": 18743,
+        "assets": [
+          "index.html"
+        ]
+      }
+    }
+  ]
+}

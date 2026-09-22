@@ -33,6 +33,7 @@ type kitExecutionFixture struct {
 	mu              sync.Mutex
 	snapshot        store.VerificationSnapshot
 	outcome         string
+	refuseOutcome   bool
 	uploads         int
 	loseClaim       bool
 	offline         bool
@@ -132,6 +133,11 @@ func newKitExecutionFixture(t *testing.T, e verification.Exercise) *kitExecution
 		case "report_verification_outcome":
 			var args workorder.VerificationOutcomeRequest
 			_ = json.Unmarshal(request.Params.Arguments, &args)
+			if f.refuseOutcome {
+				failed = true
+				result = "outcome refused"
+				break
+			}
 			f.outcome = args.State
 			result = store.VerificationReceipt{ID: "run", State: args.State}
 		default:
@@ -297,13 +303,17 @@ func TestKitRunnerUninstrumentedMutationIsBlocked(t *testing.T) {
 }
 
 func TestKitVerifyOrdinaryObligationsAndReplay(t *testing.T) {
-	for _, discovery := range []string{"no_manifest", "no_eligible_kits"} {
+	for _, discovery := range []string{"no_manifest", "no_eligible_kits", "no_manifest_missing_executable"} {
 		t.Run(discovery, func(t *testing.T) {
 			e := verification.Exercise{ID: "ordinary", Kind: "script", Argv: []string{"true"}, Cwd: ".", TimeoutSeconds: 5, RequiredAssertions: []string{}, Operations: []verification.Operation{}}
+			missing := discovery == "no_manifest_missing_executable"
+			if missing {
+				e.Argv = []string{"kit-unavailable-fixture"}
+			}
 			f := newKitExecutionFixture(t, e)
 			subject := f.snapshot.Attempts[0].Subject
 			f.snapshot.Attempts = nil
-			if discovery == "no_manifest" {
+			if strings.HasPrefix(discovery, "no_manifest") {
 				if _, err := localKitGit(t.Context(), f.v.root, "rm", ".conveyor/kits/manifest.yaml"); err != nil {
 					t.Fatal(err)
 				}
@@ -339,16 +349,21 @@ func TestKitVerifyOrdinaryObligationsAndReplay(t *testing.T) {
 				t.Fatal(err)
 			}
 			options := kitVerifyOptions{configPath: cfgPath, coveragePath: coveragePath, attemptRoot: filepath.Join(dir, "attempts")}
-			if err := verifyKits(t.Context(), f.v.rpc, f.v.root, "task", options, &f.output); err != nil {
-				t.Fatal(err)
+			err = verifyKits(t.Context(), f.v.rpc, f.v.root, "task", options, &f.output)
+			if (err != nil) != missing {
+				t.Fatalf("missing=%t: %v", missing, err)
 			}
-			if f.starts != 1 || f.uploads != 1 || f.outcome != "succeeded" {
+			wantUploads, wantOutcome := 1, "succeeded"
+			if missing {
+				wantUploads, wantOutcome = 0, "blocked"
+			}
+			if f.starts != 1 || f.uploads != wantUploads || f.outcome != wantOutcome {
 				t.Fatalf("ordinary execution missing: starts %d uploads %d state %s", f.starts, f.uploads, f.outcome)
 			}
 			if err := verifyKits(t.Context(), f.v.rpc, f.v.root, "task", options, &f.output); err == nil {
 				t.Fatal("replayed start launched again")
 			}
-			if f.starts != 1 || f.uploads != 1 {
+			if f.starts != 1 || f.uploads != wantUploads {
 				t.Fatal("replay mutated execution")
 			}
 		})
@@ -514,5 +529,62 @@ func TestKitRunnerRejectsParentCredentialInOrdinaryInput(t *testing.T) {
 	}
 	if _, _, _, _, err := kitInputValues(e, map[string]json.RawMessage{"message": json.RawMessage(`"ordinary message"`)}, nil); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// VK-4: no child, execution evidence, or provider action exists before launch.
+func TestKitRunnerPrelaunchBlocked(t *testing.T) {
+	for _, name := range []string{"missing", "digest", "report-failure", "authority-loss", "prepared-operation"} {
+		t.Run(name, func(t *testing.T) {
+			e := verification.Exercise{ID: "check", Kind: "script", Argv: []string{"missing-credential-secret-fixture"}, TimeoutSeconds: 5}
+			if name == "prepared-operation" {
+				e.Operations = []verification.Operation{{ID: "create", TargetBinding: "fixture"}}
+			}
+			f := newKitExecutionFixture(t, e)
+			if name == "digest" {
+				e.Argv = []string{f.v.root}
+			} // Directory resolves but cannot be hashed as a file.
+			f.refuseOutcome = name == "report-failure"
+			f.loseClaim = name == "authority-loss"
+			root := t.TempDir()
+			env := core.VerificationEnvironment{Attributes: map[string]string{}}
+			err := f.v.launch(t.Context(), e, f.v.root, root, "run", "grant", f.snapshot.Attempts[0].Subject, env, nil)
+			if err == nil {
+				t.Fatal("pre-launch error returned success")
+			}
+			want := "blocked"
+			if f.refuseOutcome || f.loseClaim {
+				want = ""
+			}
+			if f.outcome != want {
+				t.Fatalf("outcome %q want %q: %v", f.outcome, want, err)
+			}
+			if f.refuseOutcome && !strings.Contains(err.Error(), "outcome reporting failed") {
+				t.Fatalf("lost reporting error: %v", err)
+			}
+			if strings.Contains(err.Error(), "credential-secret-fixture") {
+				t.Fatal("diagnostic exposed argv")
+			}
+			if f.uploads != 0 || f.mutations != 0 {
+				t.Fatal("pre-launch failure fabricated execution or mutated provider")
+			}
+			if name == "prepared-operation" && strings.Join(f.operations, ",") != "prepare" {
+				t.Fatalf("operation state changed: %v", f.operations)
+			}
+			if !f.loseClaim {
+				data, readErr := os.ReadFile(filepath.Join(root, "run", "prelaunch.json"))
+				if readErr != nil || !strings.Contains(string(data), "diagnostic") || strings.Contains(string(data), "credential-secret-fixture") {
+					t.Fatalf("unsafe or missing diagnostic: %s %v", data, readErr)
+				}
+			}
+			// Reusing the same attempt directory cannot launch or report again.
+			before := len(f.operations)
+			if err := f.v.launch(t.Context(), e, f.v.root, root, "run", "grant", f.snapshot.Attempts[0].Subject, env, nil); err == nil {
+				t.Fatal("attempt replay accepted")
+			}
+			if f.uploads != 0 || f.mutations != 0 || len(f.operations) != before {
+				t.Fatal("replay performed work")
+			}
+		})
 	}
 }

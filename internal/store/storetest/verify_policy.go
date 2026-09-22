@@ -30,6 +30,25 @@ func runVerifyPolicy(t *testing.T, x Fixture) {
 	if _, err := change(bad); err == nil {
 		t.Fatal("policy change accepted blank reason")
 	}
+	if _, err := change(request); err == nil {
+		t.Fatal("policy handoff accepted missing source binding")
+	}
+	source := core.WorkOrder{ID: task.ID + "-review-1", JobID: task.ID + "-review-1", TaskID: task.ID, Stage: core.StageReview, State: core.WorkOrderQueued, BaselineSHA: "submitted-base", HeadSHA: task.ReviewedHeadSHA, ReviewRound: 1, CreatedAt: time.Now().UTC()}
+	requireOK(t, st.CreateJob(ctx, core.Job{ID: source.JobID, TaskID: task.ID, Stage: source.Stage, State: core.JobPending}))
+	requireOK(t, CreateWorkOrder(ctx, st, source))
+	ambiguous := source
+	ambiguous.ID, ambiguous.JobID = task.ID+"-review-2", task.ID+"-review-2"
+	ambiguous.ReviewRound, ambiguous.BaselineSHA = 2, "conflicting-base"
+	requireOK(t, st.CreateJob(ctx, core.Job{ID: ambiguous.JobID, TaskID: task.ID, Stage: ambiguous.Stage, State: core.JobPending}))
+	requireOK(t, CreateWorkOrder(ctx, st, ambiguous))
+	if _, err := change(request); err == nil {
+		t.Fatal("policy handoff accepted conflicting source bindings")
+	}
+	// Preserve the queue timestamps populated by the persistence boundary.
+	ambiguous, err := st.GetWorkOrder(ctx, ambiguous.ID)
+	requireOK(t, err)
+	ambiguous.State = core.WorkOrderCancelled
+	requireOK(t, UpdateWorkOrder(ctx, st, ambiguous, core.WorkOrderCmdCancel))
 	result, err := change(request)
 	requireOK(t, err)
 	if !result.Task.SetupContract.VerifyStage || result.Task.NextStage != core.StageVerify || len(result.CreatedWorkOrders) != 1 {
@@ -37,7 +56,7 @@ func runVerifyPolicy(t *testing.T, x Fixture) {
 	}
 	verify, err := st.GetWorkOrder(ctx, result.CreatedWorkOrders[0])
 	requireOK(t, err)
-	if verify.ID != task.ID+"-verify-1" || verify.HeadSHA != "submitted-head" || verify.ReviewSeat != 0 || verify.ExecutionTimeoutText != "45m" {
+	if verify.ID != task.ID+"-verify-1" || verify.HeadSHA != "submitted-head" || verify.BaselineSHA != "submitted-base" || verify.ReviewSeat != 0 || verify.ExecutionTimeoutText != "45m" {
 		t.Fatalf("verify handoff: %+v", verify)
 	}
 	before, err := st.ListEvents(ctx, task.ID)
@@ -99,6 +118,11 @@ func runVerifyPolicy(t *testing.T, x Fixture) {
 	if result.Task.NextStage != core.StageReview || len(result.CreatedWorkOrders) != 1 {
 		t.Fatalf("disabled handoff: %+v", result)
 	}
+	review, err := st.GetWorkOrder(ctx, result.CreatedWorkOrders[0])
+	requireOK(t, err)
+	if review.HeadSHA != source.HeadSHA || review.BaselineSHA != source.BaselineSHA {
+		t.Fatalf("disable lost binding: %+v", review)
+	}
 	retired, err := st.GetWorkOrder(ctx, verify.ID)
 	requireOK(t, err)
 	if retired.State != core.WorkOrderCancelled {
@@ -109,6 +133,9 @@ func runVerifyPolicy(t *testing.T, x Fixture) {
 	requireOK(t, err)
 	second, err := ClaimWorkOrder(ctx, st, result.CreatedWorkOrders[0], core.WorkOrderClaim{ClaimantID: "worker", SessionID: "verify-session-2", ClientToken: "verify-token-2", Lease: time.Minute})
 	requireOK(t, err)
+	if second.HeadSHA != source.HeadSHA || second.BaselineSHA != source.BaselineSHA {
+		t.Fatalf("re-enable lost binding: %+v", second)
+	}
 	second.State = core.WorkOrderCompleted
 	requireOK(t, UpdateWorkOrder(ctx, st, second, core.WorkOrderCmdSubmitVerification))
 	completed, err := st.GetWorkOrder(ctx, second.ID)
