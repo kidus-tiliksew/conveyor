@@ -41,6 +41,7 @@ import (
 )
 
 type fixture struct {
+	unavailable                                  bool
 	t                                            *testing.T
 	b                                            store.Backend
 	ctx                                          context.Context
@@ -418,6 +419,9 @@ func (f *fixture) prepareRunner() (string, string, string) {
 		must(t, json.Unmarshal(data, &m))
 		contract := m.Kits[0].Exercises[0]
 		contract.Argv = []string{"sh", ".conveyor/kits/vk10-script/run.sh"}
+		if f.unavailable {
+			contract.Argv = []string{"vk10-unavailable-integration"}
+		}
 		version := 1
 		for _, pin := range vc.GoverningPins {
 			if pin.DocumentID == "req-verification-kits" {
@@ -613,7 +617,7 @@ func (f *fixture) publish() {
 	f.t.Fatal("publication worker unavailable")
 }
 
-func (f *fixture) review() {
+func (f *fixture) review(changes ...bool) {
 	t := f.t
 	verifyOrder := f.order
 	f.claim(core.StageReview)
@@ -649,6 +653,11 @@ func (f *fixture) review() {
 		RequirementCitations: &core.RequirementCitationAssessment{Applicable: true, CitedIDs: []string{"REQ-3", "AC-3.1"}, UnknownIDs: []string{}, UnservedIDs: []string{}, Conflicts: []string{}},
 		DoneCriteriaCoverage: &core.DoneCriteriaAssessment{Applicable: false, Summary: "Fixture has no execution plan.", Satisfied: []string{}, Unsatisfied: []string{}, Unverified: []string{}, Conflicts: []string{}},
 		GovernanceAssessment: &core.GovernanceAssessment{DesignApplicable: &yes, DecisionCitable: &no, CitedIDs: []string{"feature-verification-kit-execution"}, UnknownIDs: []string{}, UngovernedIDs: []string{}, SupersededIDs: []string{}, Conflicts: []string{}}}
+	if len(changes) > 0 && changes[0] {
+		review.Verdict = "changes_requested"
+		review.ReasonCode = "tests"
+		review.Feedback = "Fixture requires a new source revision and fresh verification."
+	}
 	if err := f.rpc("submit_review_verdict", review, nil); err != nil {
 		actual, getErr := f.b.GetWorkOrder(f.ctx, f.order.ID)
 		must(t, getErr)
@@ -664,6 +673,33 @@ func (f *fixture) review() {
 	}
 	if !found {
 		t.Fatal("review decision lost sealed evidence references")
+	}
+}
+
+func (f *fixture) runUI(coverage, inputs, cfg string) {
+	t := f.t
+	c := f.runner(coverage, inputs, cfg, true)
+	var output bytes.Buffer
+	c.Stdout = &output
+	c.Stderr = &output
+	must(t, c.Start())
+	done := false
+	t.Cleanup(func() {
+		if !done {
+			_ = c.Process.Kill()
+			_ = c.Wait()
+			t.Logf("CLI output: %s", output.String())
+		}
+	})
+	capture := f.browser()
+	f.addCaptures(capture)
+	f.mu.Lock()
+	f.uiComplete = true
+	f.mu.Unlock()
+	err := c.Wait()
+	done = true
+	if err != nil {
+		t.Fatalf("CLI: %v: %s", err, output.String())
 	}
 }
 
@@ -683,29 +719,39 @@ func Run(t *testing.T, factory func(*testing.T) store.Backend) {
 		if err := f.rpc("submit_verification", workorder.VerificationSubmitRequest{ContextID: f.snapshot.Contexts[0].ID, Outcome: "succeeded", Coverage: f.coverage}, nil); err == nil {
 			t.Fatal("review admitted before exercises")
 		}
-		c := f.runner(coverage, inputs, cfg, true)
-		var output bytes.Buffer
-		c.Stdout = &output
-		c.Stderr = &output
-		must(t, c.Start())
-		done := false
-		t.Cleanup(func() {
-			if !done {
-				_ = c.Process.Kill()
-				_ = c.Wait()
-				t.Logf("CLI output: %s", output.String())
-			}
-		})
-		capture := f.browser()
-		f.addCaptures(capture)
+		f.runUI(coverage, inputs, cfg)
+		must(t, f.rpc("submit_verification", workorder.VerificationSubmitRequest{ContextID: f.snapshot.Contexts[0].ID, Outcome: "succeeded", Coverage: f.coverage}, nil))
+		f.publish()
+		old := f.snapshot
+		f.review(true)
+		f.claim(core.StageImplement)
+		write(t, filepath.Join(f.root, "fixture.txt"), []byte(core.NewTaskID()))
+		git(t, f.root, "add", ".")
+		git(t, f.root, "commit", "-m", "fixture: next revision")
+		f.head = strings.TrimSpace(string(git(t, f.root, "rev-parse", "HEAD")))
 		f.mu.Lock()
-		f.uiComplete = true
+		f.pr.Head.SHA = f.head
+		f.uiObserved = false
+		f.uiComplete = false
 		f.mu.Unlock()
-		err := c.Wait()
-		done = true
-		if err != nil {
-			t.Fatalf("CLI: %v: %s", err, output.String())
+		must(t, f.rpc("submit_for_review", map[string]string{"head_sha": f.head}, nil))
+		f.claim(core.StageVerify)
+		must(t, f.rpc("prepare_verification", workorder.VerificationPrepareRequest{RequestKey: "new-head"}, &f.snapshot))
+		if f.snapshot.Contexts[0].ID == old.Contexts[0].ID || f.snapshot.Contexts[0].Revisions[0].SHA == old.Contexts[0].Revisions[0].SHA {
+			t.Fatal("new head reused old context")
 		}
+		if err := f.rpc("submit_verification", workorder.VerificationSubmitRequest{ContextID: old.Contexts[0].ID, Outcome: "succeeded", Coverage: f.coverage}, nil); err == nil {
+			t.Fatal("old seal satisfied new head")
+		}
+		e := old.Evidence[0].Envelope
+		if err := f.rpc("submit_verification_evidence", workorder.VerificationEvidenceRequest{ContextID: f.snapshot.Contexts[0].ID, RunID: e.RunID, SubmissionKey: "old-head", Evidence: []json.RawMessage{core.JSONPayload(e)}}, nil); err == nil {
+			t.Fatal("old evidence accepted for new head")
+		}
+		coverage, inputs, cfg = f.prepareRunner()
+		if err := f.rpc("submit_verification", workorder.VerificationSubmitRequest{ContextID: f.snapshot.Contexts[0].ID, Outcome: "succeeded", Coverage: f.coverage}, nil); err == nil {
+			t.Fatal("historical success satisfied fresh context")
+		}
+		f.runUI(coverage, inputs, cfg)
 		must(t, f.rpc("submit_verification", workorder.VerificationSubmitRequest{ContextID: f.snapshot.Contexts[0].ID, Outcome: "succeeded", Coverage: f.coverage}, nil))
 		f.publish()
 		f.review()
@@ -738,6 +784,84 @@ func Run(t *testing.T, factory func(*testing.T) store.Backend) {
 			f.refresh()
 			if len(f.snapshot.Attempts) != 1 || f.snapshot.Attempts[0].Subject.Kind != "ordinary" || f.snapshot.Attempts[0].State != "succeeded" {
 				t.Fatal("ordinary attempt missing")
+			}
+			must(t, f.rpc("submit_verification", workorder.VerificationSubmitRequest{ContextID: f.snapshot.Contexts[0].ID, Outcome: "succeeded", Coverage: f.coverage}, nil))
+			f.review()
+		})
+	}
+	for _, mode := range []string{"FailedExercise", "UnavailableIntegration"} {
+		t.Run(mode, func(t *testing.T) {
+			f := newFixture(t, factory(t), "absent")
+			f.claim(core.StageImplement)
+			must(t, f.rpc("submit_for_review", map[string]string{"head_sha": f.head}, nil))
+			f.claim(core.StageVerify)
+			must(t, f.rpc("prepare_verification", workorder.VerificationPrepareRequest{RequestKey: "control"}, &f.snapshot))
+			f.unavailable = mode == "UnavailableIntegration"
+			f.mu.Lock()
+			f.fail = !f.unavailable
+			f.mu.Unlock()
+			coverage, inputs, cfg := f.prepareRunner()
+			out, err := f.runner(coverage, inputs, cfg, false).CombinedOutput()
+			if err == nil {
+				t.Fatalf("unavailable or failed exercise passed: %s", out)
+			}
+			f.refresh()
+			if len(f.snapshot.Attempts) != 1 {
+				t.Fatalf("expected one attempt: %+v", f.snapshot.Attempts)
+			}
+			oldRun := f.snapshot.Attempts[0]
+			outcome := "feedback"
+			expected := "failed"
+			if f.unavailable {
+				outcome = "operator_action_required"
+				expected = "blocked"
+			}
+			if oldRun.State != expected {
+				t.Fatalf("outcome=%s expected=%s", oldRun.State, expected)
+			}
+			if err := f.rpc("submit_verification", workorder.VerificationSubmitRequest{ContextID: f.snapshot.Contexts[0].ID, Outcome: "succeeded", Coverage: f.coverage}, nil); err == nil {
+				t.Fatal("missing or failed evidence passed")
+			}
+			must(t, f.rpc("submit_verification", workorder.VerificationSubmitRequest{ContextID: f.snapshot.Contexts[0].ID, Outcome: outcome, Coverage: f.coverage, Feedback: "Fixture exercise requires correction or restoration of its unavailable integration."}, nil))
+			task, err := f.b.GetTask(f.ctx, f.task.ID)
+			must(t, err)
+			if f.unavailable {
+				if task.NextStage != core.StageVerify {
+					t.Fatal("blocked exercise advanced")
+				}
+				orders, err := f.b.ListTaskWorkOrders(f.ctx, f.task.ID)
+				must(t, err)
+				for _, o := range orders {
+					if o.Stage == core.StageReview {
+						t.Fatal("review started before recovery")
+					}
+				}
+				id := f.order.ID
+				if err := f.rpc("claim_work_order", map[string]any{"lease_seconds": 3600}, nil); err == nil {
+					t.Fatal("blocked order reclaimed without recovery")
+				}
+				must(t, f.rest("POST", "/v1/work-orders/"+id+"/recover?workspace_id="+f.ws, map[string]string{"request_id": core.NewTaskID(), "direction": "Fixture integration restored; perform fresh verification."}, nil))
+			} else {
+				if task.NextStage != core.StageImplement {
+					t.Fatal("failure did not return to implement")
+				}
+				f.claim(core.StageImplement)
+				must(t, f.rpc("submit_for_review", map[string]string{"head_sha": f.head}, nil))
+			}
+			f.unavailable = false
+			f.mu.Lock()
+			f.fail = false
+			f.mu.Unlock()
+			f.claim(core.StageVerify)
+			must(t, f.rpc("prepare_verification", workorder.VerificationPrepareRequest{RequestKey: "recovered"}, &f.snapshot))
+			coverage, inputs, cfg = f.prepareRunner()
+			out, err = f.runner(coverage, inputs, cfg, false).CombinedOutput()
+			if err != nil {
+				t.Fatalf("recovered CLI: %v: %s", err, out)
+			}
+			f.refresh()
+			if len(f.snapshot.Attempts) != 1 || f.snapshot.Attempts[0].ID == oldRun.ID || f.snapshot.Attempts[0].State != "succeeded" {
+				t.Fatal("recovery reused prior attempt")
 			}
 			must(t, f.rpc("submit_verification", workorder.VerificationSubmitRequest{ContextID: f.snapshot.Contexts[0].ID, Outcome: "succeeded", Coverage: f.coverage}, nil))
 			f.review()

@@ -217,3 +217,62 @@ func TestVerificationPublicationWorkspaceEnvelope(t *testing.T) {
 		t.Fatal("refused adapter accessed store")
 	}
 }
+
+// VK-7: both producers must freeze the same trusted comparison before claim.
+func TestVerificationDispatchReviewBinding(t *testing.T) {
+	for _, scope := range []string{"", config.RefreshReviewDelta, config.RefreshReviewFull} {
+		t.Run(scope, func(t *testing.T) {
+			ctx := store.WithWorkspace(t.Context(), "demo")
+			st := store.NewMemory()
+			defer st.Close()
+			task := core.Task{ID: core.NewTaskID(), Workspace: "demo", Repo: "repo", State: core.TaskQueued, NextStage: core.StageVerify, ReviewedHeadSHA: "head"}
+			task.SetupContract.VerifyStage = true
+			base, head := "base", "head"
+			if scope != "" {
+				task.ApprovalStale = true
+				task.RefreshReviewScope = scope
+				task.RefreshBaselineSHA = "approved"
+				task.RefreshHeadSHA = "new"
+				base, head = "approved", "new"
+			}
+			if err := st.CreateTask(ctx, task); err != nil {
+				t.Fatal(err)
+			}
+			if err := st.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]string{"base_sha": "base", "head_sha": "head"})}); err != nil {
+				t.Fatal(err)
+			}
+			cfg := &config.Config{Workspace: "demo"}
+			d := New(st, cfg, nil)
+			route := config.StageRoute{Execution: config.ExecutionMCP, TimeoutText: "1h"}
+			if err := d.createWorkOrder(ctx, cfg, task, route, ""); err != nil {
+				t.Fatal(err)
+			}
+			orders, err := st.ListTaskWorkOrders(ctx, task.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(orders) != 1 || orders[0].HeadSHA != head || orders[0].BaselineSHA != base || orders[0].ReviewScope != scope {
+				t.Fatalf("verify binding: %+v", orders)
+			}
+			if err := d.createReviewRound(ctx, cfg, task, route); err != nil {
+				t.Fatal(err)
+			}
+			orders, err = st.ListTaskWorkOrders(ctx, task.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			found := false
+			for _, o := range orders {
+				if o.Stage == core.StageReview {
+					found = true
+					if o.HeadSHA != head || o.BaselineSHA != base || o.ReviewScope != scope {
+						t.Fatalf("review binding: %+v", o)
+					}
+				}
+			}
+			if !found {
+				t.Fatal("review producer did not create an order")
+			}
+		})
+	}
+}
