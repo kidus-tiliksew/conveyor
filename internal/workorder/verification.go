@@ -46,14 +46,16 @@ type VerificationObligationRequest struct {
 	Contract             verification.Exercise `json:"contract"`
 }
 type VerificationStartRequest struct {
-	Coverage              store.VerificationCoverage   `json:"coverage"`
-	ContextID             string                       `json:"context_id"`
-	StartKey              string                       `json:"start_key"`
-	Subject               core.VerificationSubject     `json:"subject"`
-	Environment           core.VerificationEnvironment `json:"environment"`
-	EffectivePermissions  []verification.Permission    `json:"effective_permissions"`
-	SafeInputs            map[string]json.RawMessage   `json:"safe_inputs"`
-	ReplayAuthorizationID string                       `json:"replay_authorization_id,omitempty"`
+	GrantID               string                        `json:"grant_id"`
+	EffectiveActions      []core.VerificationPermission `json:"effective_actions"`
+	Coverage              store.VerificationCoverage    `json:"coverage"`
+	ContextID             string                        `json:"context_id"`
+	StartKey              string                        `json:"start_key"`
+	Subject               core.VerificationSubject      `json:"subject"`
+	Environment           core.VerificationEnvironment  `json:"environment"`
+	EffectivePermissions  []verification.Permission     `json:"effective_permissions"`
+	SafeInputs            map[string]json.RawMessage    `json:"safe_inputs"`
+	ReplayAuthorizationID string                        `json:"replay_authorization_id,omitempty"`
 }
 type VerificationOutcomeRequest struct {
 	ContextID   string `json:"context_id"`
@@ -270,7 +272,7 @@ func (s *Service) Verification(ctx context.Context, id, session, token, operatio
 		if !validVerificationSubject(r.Subject) {
 			return nil, store.ErrVerificationInvalid
 		}
-		command.Attempt = &store.VerificationAttempt{Subject: r.Subject, Environment: r.Environment, SafeInputs: r.SafeInputs, EffectivePermissions: r.EffectivePermissions, ReplayAuthorizationID: r.ReplayAuthorizationID}
+		command.Attempt = &store.VerificationAttempt{GrantID: r.GrantID, EffectiveActions: r.EffectiveActions, Subject: r.Subject, Environment: r.Environment, SafeInputs: r.SafeInputs, EffectivePermissions: r.EffectivePermissions, ReplayAuthorizationID: r.ReplayAuthorizationID}
 	case *VerificationOutcomeRequest:
 		command.Kind, command.ContextID, command.RunID = store.VerificationTerminateAttempt, r.ContextID, r.RunID
 		command.Attempt = &store.VerificationAttempt{State: r.State, Explanation: r.Explanation, ExitCode: r.ExitCode}

@@ -73,6 +73,15 @@ func (v *verificationFixture) command(c store.VerificationCommand) store.Verific
 	if c.Kind == store.VerificationStartAttempt && c.Coverage == nil {
 		snapshot, err := v.x.Backend.ReadVerification(v.ctx, v.access, v.contextID)
 		if err == nil {
+			if c.Attempt != nil && c.Attempt.GrantID == "" {
+				for _, g := range snapshot.PermissionGrants {
+					if g.Subject == c.Attempt.Subject {
+						c.Attempt.GrantID = g.ID
+						c.Attempt.EffectiveActions = []core.VerificationPermission{}
+						break
+					}
+				}
+			}
 			coverage := verificationFixtureCoverage(snapshot)
 			c.Coverage = &coverage
 		}
@@ -84,6 +93,10 @@ func (v *verificationFixture) command(c store.VerificationCommand) store.Verific
 }
 func (v *verificationFixture) apply(t *testing.T, c store.VerificationCommand) store.VerificationReceipt {
 	t.Helper()
+	if c.Kind == store.VerificationStartAttempt && c.Attempt != nil && c.Attempt.GrantID == "" {
+		c.Attempt.GrantID = GrantVerificationFixture(t, v.x.Backend, v.x.Context, v.access.TaskID, v.access.WorkOrderID, v.contextID, "grant-"+c.Key, c.Attempt.Subject, nil)
+		c.Attempt.EffectiveActions = []core.VerificationPermission{}
+	}
 	r, err := v.x.Backend.ApplyVerification(v.ctx, v.command(c))
 	requireOK(t, err)
 	return r
@@ -117,6 +130,7 @@ func runVerification(t *testing.T, x Fixture) {
 	runVerificationScope(t, x)
 	runVerificationFinalization(t, x)
 	runVerificationClaimLoss(t, x)
+	runVerificationPermissions(t, x)
 	runVerificationLimits(t, x)
 	runVerificationTerminalRace(t, x)
 	v := newVerificationFixture(t, x)

@@ -149,7 +149,7 @@ func BindVerificationEvidenceAuthority(ctx context.Context, b MembershipStore, c
 	if c.Access.UserID == "" {
 		return nil
 	}
-	if actor.Role != core.ActorUser || actor.ID != UserActorID(c.Access.UserID) || (c.Kind != VerificationWriteEvidence && c.Kind != VerificationStageChunk && c.Kind != VerificationObserveOperation && c.Kind != VerificationAuthorizeRetry) {
+	if actor.Role != core.ActorUser || actor.ID != UserActorID(c.Access.UserID) || (c.Kind != VerificationWriteEvidence && c.Kind != VerificationStageChunk && c.Kind != VerificationObserveOperation && c.Kind != VerificationAuthorizeRetry && !VerificationPermissionCommand(*c)) {
 		return ErrVerificationAccess
 	}
 	ws, ok := WorkspaceFromContext(ctx)

@@ -50,6 +50,9 @@ func (m *volatileMemory) applyVerification(ctx context.Context, lease taskops.Ta
 			return VerificationReceipt{}, err
 		}
 	}
+	if err = BindVerificationPermissionOrder(ctx, &c, m.tasks[c.Access.TaskID], m.workOrders[c.Access.WorkOrderID], now); err != nil {
+		return VerificationReceipt{}, err
+	}
 	if err = VerifyVerificationAuthority(c, authority, m.workOrders[c.Access.WorkOrderID]); err != nil {
 		return VerificationReceipt{}, err
 	}

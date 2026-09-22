@@ -2,6 +2,7 @@ package store
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/url"
 	"sort"
 	"strings"
@@ -102,6 +103,13 @@ func verificationWritableRun(c VerificationCommand, rows []VerificationRow) (Ver
 		return VerificationAttempt{}, ErrVerificationAccess
 	}
 	v := verificationDecode[VerificationAttempt](r)
+	cr, ok := verificationFind(rows, "verification_contexts", c.ContextID)
+	if !ok {
+		return v, ErrVerificationAccess
+	}
+	if _, err := verificationLiveGrant(rows, verificationDecode[VerificationContext](cr), v.GrantID, v.Subject); err != nil {
+		return v, err
+	}
 	if v.WorkOrderAttemptID != c.Access.WorkOrderAttemptID {
 		return VerificationAttempt{}, ErrVerificationAccess
 	}
@@ -141,6 +149,20 @@ func verificationAttemptMutation(c VerificationCommand, rows []VerificationRow, 
 		contract, err := verificationContract(rows, c.ContextID, v.Subject)
 		if err != nil {
 			return err
+		}
+		v.EffectivePermissions = contract.Permissions // A manifest declaration is not execution authority.
+		grant, err := verificationLiveGrant(rows, vc, v.GrantID, v.Subject)
+		if err != nil {
+			return err
+		}
+		effective, err := verification.RequireVerificationPermissions(v.EffectiveActions, grant.Actions, grant.Actions)
+		if err != nil {
+			return fmt.Errorf("%w: %v", ErrVerificationAccess, err)
+		}
+		v.GrantSnapshot = &grant
+		v.EffectiveActions = effective
+		if len(v.EffectiveActions) == 0 {
+			v.EffectiveActions = nil
 		}
 		b, err := verificationSanitizeJSON(r, verificationJSON(v))
 		if err != nil {
