@@ -47,6 +47,82 @@ async function getJSON<T>(url: string, signal?: AbortSignal): Promise<T> {
   return response.json() as Promise<T>
 }
 
+export function fetchVerificationSummary(workspace: string, taskId: string, cursor = '', signal?: AbortSignal) {
+  return getJSON<import('./types').VerificationSummary>(
+    workspaceURL(
+      `/v1/tasks/${encodeURIComponent(taskId)}/verification?cursor=${encodeURIComponent(cursor)}`,
+      workspace,
+    ),
+    signal,
+  )
+}
+
+export function fetchVerificationPage(
+  workspace: string,
+  taskId: string,
+  contextId: string,
+  collection: import('./types').VerificationCollection,
+  cursor = '',
+  signal?: AbortSignal,
+) {
+  return getJSON<import('./types').VerificationPage>(
+    workspaceURL(
+      `/v1/tasks/${encodeURIComponent(taskId)}/verification/contexts/${encodeURIComponent(contextId)}/${collection}?cursor=${encodeURIComponent(cursor)}`,
+      workspace,
+    ),
+    signal,
+  )
+}
+
+function verificationEvidencePath(taskId: string, contextId: string, evidenceId: string) {
+  return `/v1/tasks/${encodeURIComponent(taskId)}/verification/contexts/${encodeURIComponent(contextId)}/evidence/${encodeURIComponent(evidenceId)}`
+}
+
+export function fetchVerificationEvidence(
+  workspace: string,
+  taskId: string,
+  contextId: string,
+  evidenceId: string,
+  signal?: AbortSignal,
+) {
+  return getJSON<import('./types').VerificationEvidence>(
+    workspaceURL(verificationEvidencePath(taskId, contextId, evidenceId), workspace),
+    signal,
+  )
+}
+
+export async function fetchVerificationArtifact(
+  workspace: string,
+  taskId: string,
+  contextId: string,
+  evidenceId: string,
+  artifactId: string,
+  signal?: AbortSignal,
+) {
+  const response = await fetch(
+    workspaceURL(
+      `${verificationEvidencePath(taskId, contextId, evidenceId)}/artifacts/${encodeURIComponent(artifactId)}`,
+      workspace,
+    ),
+    { signal },
+  )
+  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
+  return response.blob()
+}
+
+export async function recordVerificationObservation(
+  workspace: string,
+  taskId: string,
+  input: import('./types').VerificationObservation,
+) {
+  const response = await fetch(
+    workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/verification/observations`, workspace),
+    { method: 'POST', headers: mutationHeaders(), body: JSON.stringify(input) },
+  )
+  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
+  return response.json() as Promise<{ ID: string; EvidenceIDs: string[] }>
+}
+
 // The Board sends the shared Tasks/Board filter family to the same store
 // predicate the Tasks list uses (AC-2.4), so the two surfaces cannot narrow
 // differently and neither one narrows a fully-loaded workspace in the browser.

@@ -12,6 +12,30 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+// ListVerificationReadPage selects only view projections, never retained bodies.
+// The relation is selected from a closed set; all identities are parameters.
+func (q *Queries) ListVerificationReadPage(ctx context.Context, ws, task, kind, contextID, at, id string, limit int) ([]VerificationReadRecord, error) {
+	switch kind {
+	case "contexts", "attempts", "assertions", "evidence", "operations", "publications", "selections", "obligations":
+	default:
+		return nil, fmt.Errorf("invalid verification read collection")
+	}
+	rows, err := q.db.Query(ctx, `SELECT id,context_id,run_id,state,read_at,metadata FROM verification_read_`+kind+` WHERE workspace_id=$1 AND task_id=$2 AND ($3::text='' OR context_id=$3) AND ($4::text='' OR read_at<$4 OR (read_at=$4 AND id COLLATE "C"<$5)) ORDER BY read_at DESC,id COLLATE "C" DESC LIMIT $6`, ws, task, contextID, at, id, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []VerificationReadRecord{}
+	for rows.Next() {
+		var v VerificationReadRecord
+		if err = rows.Scan(&v.ID, &v.ContextID, &v.RunID, &v.State, &v.At, &v.Metadata); err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
 const listDecisionSupersessionSweeps = `-- name: ListDecisionSupersessionSweeps :many
 SELECT workspace_id, decision_id, superseded_decision_id, document_tier,
        document_id, status, detected_by, detected_at, resolved_by, resolved_at
