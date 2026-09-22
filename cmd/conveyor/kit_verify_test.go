@@ -504,8 +504,9 @@ func TestKitRunnerInteractiveCompletionUsesOperatorEvidence(t *testing.T) {
 
 func TestKitRunnerRejectsParentCredentialInOrdinaryInput(t *testing.T) {
 	t.Setenv("GH_TOKEN", "forge-input-fixture")
+	t.Setenv("CONVEYOR_KIT_SECRET_API", "kit-input-fixture")
 	e := verification.Exercise{Inputs: []verification.Input{{Name: "message", Type: "string"}}}
-	for _, value := range []string{"forge-input-fixture", "Bearer forge-input-fixture"} {
+	for _, value := range []string{"forge-input-fixture", "Bearer forge-input-fixture", "kit-input-fixture", "Bearer kit-input-fixture"} {
 		raw, _ := json.Marshal(value)
 		if _, _, _, _, err := kitInputValues(e, map[string]json.RawMessage{"message": raw}, nil); err == nil {
 			t.Fatal("parent credential reached ordinary inputs")

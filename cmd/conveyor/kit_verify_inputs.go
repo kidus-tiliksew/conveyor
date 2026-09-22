@@ -89,6 +89,14 @@ func kitInputValues(e verification.Exercise, provided map[string]json.RawMessage
 					return nil, nil, nil, nil, fmt.Errorf("factory or forge credential refused as input %s", input.Name)
 				}
 			}
+			if !input.Sensitive {
+				for _, entry := range os.Environ() {
+					name, secret, _ := strings.Cut(entry, "=")
+					if strings.HasPrefix(name, "CONVEYOR_KIT_SECRET_") && secret != "" && strings.Contains(text, secret) {
+						return nil, nil, nil, nil, fmt.Errorf("credential value refused in safe input %s", input.Name)
+					}
+				}
+			}
 		}
 		actual[input.Name] = value
 		if input.Sensitive {
