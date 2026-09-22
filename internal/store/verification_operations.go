@@ -206,6 +206,31 @@ func reconcileVerificationOperation(c VerificationCommand, rows []VerificationRo
 	if op.Original.ContextID == "" || !sameVerificationAuthority(op.Original, binding) {
 		return ErrVerificationConflict
 	}
+	// VK-4 / VK-WO-2: claim-bound reconciliation needs fresh subject
+	// authority, even before a successor execution attempt can be started.
+	// Operator recovery and the internal claim-loss reconciler do not pass here.
+	cr, ok := verificationFind(rows, "verification_contexts", c.ContextID)
+	if !ok {
+		return ErrVerificationAccess
+	}
+	vc := verificationDecode[VerificationContext](cr)
+	granted := false
+	for _, candidate := range rows {
+		if candidate.Table != "verification_permission_grants" || candidate.ContextID != vc.ID {
+			continue
+		}
+		grant := verificationDecode[VerificationPermissionGrant](candidate)
+		if verificationSubjectKey(grant.Subject) != op.SubjectKey {
+			continue
+		}
+		if _, err := verificationLiveGrant(rows, vc, grant.ID, grant.Subject); err == nil {
+			granted = true
+			break
+		}
+	}
+	if !granted {
+		return ErrVerificationAccess
+	}
 	if op.RetryPolicy == "operator_action_required" {
 		authorized := false
 		for _, a := range op.Recovery {

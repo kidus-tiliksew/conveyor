@@ -75,12 +75,15 @@ func (s *Store) verificationScopeTx(ctx context.Context, tx *sql.Tx, a store.Ver
 	if err = tx.QueryRowContext(ctx, "SELECT id FROM tasks WHERE workspace_id=? AND id=? FOR UPDATE", ws, a.TaskID).Scan(&found); err != nil {
 		return core.WorkOrder{}, store.ErrVerificationAccess
 	}
-	if a.UserID != "" {
+	if a.UserID != "" && a.WorkOrderID == "" {
 		return core.WorkOrder{}, nil
 	}
 	order, err := getOrderRow(ctx, tx, a.WorkOrderID)
 	if err != nil {
 		return core.WorkOrder{}, store.ErrVerificationAccess
+	}
+	if a.UserID != "" {
+		return order, nil
 	}
 	if len(reconcile) == 1 && reconcile[0] {
 		err = store.VerifyVerificationClaimLoss(ctx, a, core.Task{ID: found, Workspace: ws}, order, time.Now().UTC())
@@ -125,6 +128,15 @@ func (s *Store) applyVerification(ctx context.Context, lease taskops.TaskLease, 
 		order, err := s.verificationScopeTx(ctx, tx, c.Access, c.Kind != store.VerificationSeal, c.Kind == store.VerificationReconcileClaimLoss)
 		if err != nil {
 			return err
+		}
+		if store.VerificationPermissionCommand(c) {
+			tr, e := getTaskRow(ctx, tx, c.Access.TaskID)
+			if e != nil {
+				return e
+			}
+			if e = store.BindVerificationPermissionOrder(ctx, &c, tr, order, time.Now().UTC()); e != nil {
+				return e
+			}
 		}
 		if err = store.VerifyVerificationAuthority(c, authority, order); err != nil {
 			return err

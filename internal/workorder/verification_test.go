@@ -53,6 +53,11 @@ func newVerificationServiceFixture(t *testing.T) verificationServiceFixture {
 }
 func (f verificationServiceFixture) call(t *testing.T, name string, input any) any {
 	t.Helper()
+	if start, ok := input.(VerificationStartRequest); ok && start.GrantID == "" {
+		start.GrantID = storetest.GrantVerificationFixture(t, f.b, f.ctx, f.o.TaskID, f.o.ID, start.ContextID, "grant-"+start.StartKey, start.Subject, nil)
+		start.EffectiveActions = []core.VerificationPermission{}
+		input = start
+	}
 	raw, err := json.Marshal(input)
 	if err != nil {
 		t.Fatal(err)

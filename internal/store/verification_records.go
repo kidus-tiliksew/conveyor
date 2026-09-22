@@ -26,7 +26,7 @@ type VerificationRow struct {
 	ExpiresAt                                              *time.Time
 }
 
-var VerificationTables = []string{"verification_contexts", "verification_selections", "verification_obligations", "verification_attempts", "verification_operations", "verification_evidence", "verification_evidence_links", "verification_publications", "verification_upload_chunks"}
+var VerificationTables = []string{"verification_contexts", "verification_selections", "verification_obligations", "verification_attempts", "verification_operations", "verification_evidence", "verification_evidence_links", "verification_publications", "verification_upload_chunks", "verification_permission_grants", "verification_permission_revocations"}
 
 type VerificationMutation struct {
 	ArtifactReferences []core.VerificationArtifactReference
@@ -167,6 +167,10 @@ func VerificationSnapshotFromRows(rows []VerificationRow, contextID string) (Ver
 			continue
 		}
 		switch r.Table {
+		case "verification_permission_grants":
+			s.PermissionGrants = append(s.PermissionGrants, verificationDecode[VerificationPermissionGrant](r))
+		case "verification_permission_revocations":
+			s.PermissionRevocations = append(s.PermissionRevocations, verificationDecode[VerificationPermissionRevocation](r))
 		case "verification_contexts":
 			s.Contexts = append(s.Contexts, verificationDecode[VerificationContext](r))
 		case "verification_selections":
@@ -325,7 +329,30 @@ func PrepareVerificationMutation(ctx context.Context, source redact.SecretSource
 			}
 			return out, ErrVerificationState
 		}
+		if c.Access.UserID == "" && c.RunID != "" && (c.Kind == VerificationWriteEvidence || c.Kind == VerificationFinalizeArtifact || c.Kind == VerificationStageChunk || c.Kind == VerificationTerminateAttempt || c.Kind == VerificationPrepareOperation || c.Kind == VerificationObserveOperation) {
+			rr, exists := verificationFind(rows, "verification_attempts", c.RunID)
+			if !exists || rr.ContextID != vc.ID {
+				return out, ErrVerificationAccess
+			}
+			run := verificationDecode[VerificationAttempt](rr)
+			if _, e := verificationLiveGrant(rows, vc, run.GrantID, run.Subject); e != nil {
+				return out, e
+			}
+		}
 		switch c.Kind {
+		case VerificationGrantPermissions, VerificationRevokePermissions:
+			data, e := clean(c.Permissions)
+			if e != nil {
+				return out, e
+			}
+			var permissions VerificationPermissionRequest
+			if json.Unmarshal(data, &permissions) != nil {
+				return out, ErrVerificationInvalid
+			}
+			c.Permissions = &permissions
+			if err := verificationPermissionMutation(c, rows, vc, actor, now, &out); err != nil {
+				return out, err
+			}
 		case VerificationRecordSelection:
 			if c.Selection == nil {
 				return out, ErrVerificationInvalid
@@ -605,4 +632,9 @@ func WithVerificationClockForTest(ctx context.Context, now func() time.Time) con
 
 func verificationIdentifier(id string) bool {
 	return id != "" && len(id) <= 128 && utf8.ValidString(id) && !strings.ContainsRune(id, 0)
+}
+
+// VerificationSafeInputDigest uses the same canonical JSON as operation admission.
+func VerificationSafeInputDigest(inputs map[string]json.RawMessage) string {
+	return verificationHash(verificationJSON(inputs))
 }

@@ -87,7 +87,11 @@ type VerificationReplayAuthorization struct {
 }
 
 type VerificationAttempt struct {
-	CoverageDigest                                         string `json:"CoverageDigest,omitempty"`
+	LocalActions                                           []core.VerificationPermission `json:"LocalActions,omitempty"`
+	GrantID                                                string                        `json:"GrantID,omitempty"`
+	GrantSnapshot                                          *VerificationPermissionGrant  `json:"GrantSnapshot,omitempty"`
+	EffectiveActions                                       []core.VerificationPermission `json:"EffectiveActions,omitempty"`
+	CoverageDigest                                         string                        `json:"CoverageDigest,omitempty"`
 	Recovery                                               []VerificationReplayAuthorization
 	ReplayAuthorizationID                                  string
 	ID, ContextID, StartKey, WorkOrderAttemptID, CreatedBy string
@@ -158,6 +162,7 @@ type VerificationArtifactInput struct {
 	SanitationRecord, MaskingAttestation string
 }
 type VerificationReceipt struct {
+	LaunchAuthorized   bool
 	DispatchAuthorized bool
 
 	State         string
@@ -168,6 +173,7 @@ type VerificationReceipt struct {
 }
 
 type VerificationCommand struct {
+	Permissions         *VerificationPermissionRequest
 	OperatorObservation *VerificationOperatorObservation
 	Coverage            *VerificationCoverage
 	Submission          *VerificationSubmission
@@ -212,12 +218,14 @@ const (
 )
 
 type VerificationSnapshot struct {
-	Contexts     []VerificationContext
-	Selections   []VerificationSelection
-	Obligations  []VerificationObligation
-	Attempts     []VerificationAttempt
-	Operations   []VerificationOperation
-	Evidence     []VerificationEvidenceRecord
-	Links        []VerificationEvidenceLink
-	Publications []VerificationPublication
+	PermissionGrants      []VerificationPermissionGrant
+	PermissionRevocations []VerificationPermissionRevocation
+	Contexts              []VerificationContext
+	Selections            []VerificationSelection
+	Obligations           []VerificationObligation
+	Attempts              []VerificationAttempt
+	Operations            []VerificationOperation
+	Evidence              []VerificationEvidenceRecord
+	Links                 []VerificationEvidenceLink
+	Publications          []VerificationPublication
 }

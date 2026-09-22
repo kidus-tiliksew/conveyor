@@ -268,7 +268,7 @@ func (p *Plane) StartOver(ctx context.Context, request core.TaskStartOverRequest
 func ExecuteVerification[T any](ctx context.Context, backend Backend, taskID, command string, apply func(TaskLease) (T, error)) (T, error) {
 	var zero T
 	switch command {
-	case "context.create", "selection.record", "obligation.register", "attempt.start", "attempt.terminate", "attempt.authorize_retry", "attempt.reconcile_claim_loss", "operation.prepare", "operation.observe", "operation.reconcile", "evidence.write", "artifact.finalize", "chunk.stage", "chunk.expire", "publication.create", "context.seal":
+	case "permissions.grant", "permissions.revoke", "context.create", "selection.record", "obligation.register", "attempt.start", "attempt.terminate", "attempt.authorize_retry", "attempt.reconcile_claim_loss", "operation.prepare", "operation.observe", "operation.reconcile", "evidence.write", "artifact.finalize", "chunk.stage", "chunk.expire", "publication.create", "context.seal":
 	default:
 		return zero, fmt.Errorf("unknown verification command %q", command)
 	}

@@ -2429,13 +2429,13 @@ func (q *Queries) ListDocumentOperatorNotesForTask(ctx context.Context, workspac
 // VK-6 bindings are hand-maintained; the table allowlist is never caller SQL.
 func verificationTable(table string) bool {
 	switch table {
-	case "verification_contexts", "verification_selections", "verification_obligations", "verification_attempts", "verification_operations", "verification_evidence", "verification_evidence_links", "verification_publications", "verification_upload_chunks":
+	case "verification_contexts", "verification_selections", "verification_obligations", "verification_attempts", "verification_operations", "verification_evidence", "verification_evidence_links", "verification_publications", "verification_upload_chunks", "verification_permission_grants", "verification_permission_revocations":
 		return true
 	}
 	return false
 }
 func (q *Queries) ListVerificationRecords(ctx context.Context, workspaceID, taskID string) ([]VerificationRecord, error) {
-	tables := []string{"verification_contexts", "verification_selections", "verification_obligations", "verification_attempts", "verification_operations", "verification_evidence", "verification_evidence_links", "verification_publications", "verification_upload_chunks"}
+	tables := []string{"verification_contexts", "verification_selections", "verification_obligations", "verification_attempts", "verification_operations", "verification_evidence", "verification_evidence_links", "verification_publications", "verification_upload_chunks", "verification_permission_grants", "verification_permission_revocations"}
 	var out []VerificationRecord
 	for _, table := range tables {
 		condition := "task_id=$2"
