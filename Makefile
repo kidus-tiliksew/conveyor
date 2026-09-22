@@ -43,9 +43,21 @@ endif
 test-validation:
 	PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts -p 'test_validation_evidence.py'
 
-build: ui
-	go build $(LDFLAGS) -o $(BIN)/conveyor ./cmd/conveyor
+build: conveyor-cli
 	go build $(LDFLAGS) -o $(BIN)/conveyord ./cmd/conveyord
+
+.PHONY: conveyor-cli vk10-runtime test-vk10
+conveyor-cli: ui
+	go build $(LDFLAGS) -o $(BIN)/conveyor ./cmd/conveyor
+
+# VK-10: each gate builds its own CLI and prepares the browser before fixtures.
+export CONVEYOR_VK10_CLI := $(abspath $(BIN)/conveyor)
+export CONVEYOR_VK10_SOURCE := $(CURDIR)
+vk10-runtime: conveyor-cli web-deps
+	cd web && npx playwright install $(PLAYWRIGHT_INSTALL_ARGS) chromium
+
+test-vk10: vk10-runtime
+	CONVEYOR_TEST_DATABASE_URL= CONVEYOR_TEST_SINGLESTORE_URL= go test -v ./internal/verification -run '^TestVK10Scenario$$' -count=1
 
 image:
 	docker build --build-arg VERSION="$(VERSION)" --tag "$(IMAGE)" .
@@ -99,7 +111,7 @@ ui: web-deps
 dashboard-fresh: ui
 	git diff --exit-code -- internal/httpapi/dashboard
 
-test: compose-check dashboard-fresh test-release test-validation
+test: compose-check dashboard-fresh test-release test-validation vk10-runtime
 	CONVEYOR_TEST_DATABASE_URL= CONVEYOR_TEST_SINGLESTORE_URL= go test ./...
 	$(RUN_WEB_TESTS)
 
@@ -115,11 +127,11 @@ test-ui-evidence: ui
 compose-check:
 	python3 scripts/validate_compose_isolation.py
 
-test-integration: compose-check test-db-up
+test-integration: compose-check vk10-runtime test-db-up
 	@trap '$(MAKE) test-db-down' EXIT; \
 		CONVEYOR_TEST_DATABASE_URL='$(TEST_DATABASE_URL)' go test -v -p=1 ./cmd/conveyor ./cmd/conveyord ./internal/store/postgres ./internal/dispatch -count=1 -timeout=5m
 
-test-integration-ci: compose-check
+test-integration-ci: compose-check vk10-runtime
 	@test -n "$(CONVEYOR_TEST_DATABASE_URL)" || (echo "CONVEYOR_TEST_DATABASE_URL is required" >&2; exit 1)
 	CONVEYOR_TEST_DATABASE_URL='$(CONVEYOR_TEST_DATABASE_URL)' go test -v -p=1 ./cmd/conveyor ./cmd/conveyord ./internal/store/postgres ./internal/dispatch -count=1 -timeout=5m
 
@@ -171,7 +183,7 @@ dev: db-up
 
 .PHONY: test-integration-singlestore-ci test-singlestore-unit
 
-test-integration-singlestore-ci:
+test-integration-singlestore-ci: vk10-runtime
 	@test -n "$$CONVEYOR_TEST_SINGLESTORE_URL" || (echo "CONVEYOR_TEST_SINGLESTORE_URL is required" >&2; exit 1)
 	go test -v -p=1 ./internal/eventlog/s2log ./internal/store/storetest ./internal/store/singlestore -count=1 -timeout=20m
 	go test -v -p=1 ./cmd/conveyor ./cmd/conveyord -run 'TestSingleStoreInitAndUserIntegration|TestConveyordDurableStartupIntegration' -count=1 -timeout=10m
