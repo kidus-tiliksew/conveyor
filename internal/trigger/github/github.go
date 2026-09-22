@@ -6,6 +6,8 @@ package github
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1037,6 +1039,7 @@ func openPR(ctx context.Context, worktreeDir, repo, branch, base, title, body st
 }
 
 func reconcilePullRequestBody(existing, lifecycle string) string {
+	existing, verificationRegions := preserveVerificationRegions(existing)
 	existing = strings.TrimSpace(existing)
 	lifecycle = strings.TrimSpace(lifecycle)
 	before, after := existing, ""
@@ -1058,7 +1061,7 @@ func reconcilePullRequestBody(existing, lifecycle string) string {
 			parts = append(parts, part)
 		}
 	}
-	return strings.Join(parts, "\n\n")
+	return strings.Join(append(parts, verificationRegions...), "\n\n")
 }
 
 func legacyPullRequestLifecycleEnd(body string) int {
@@ -1218,4 +1221,126 @@ func closePullRequest(ctx context.Context, repo string, number int, comment stri
 		return nil
 	}
 	return forgeResponseError("GitHub did not confirm pull request closure")
+}
+
+// VerificationRegionMarkers identifies only the VK-9 region owned by this task.
+func VerificationRegionMarkers(workspace, task string) (string, string) {
+	sum := sha256.Sum256([]byte(workspace + "\x00" + task))
+	key := fmt.Sprintf("%x", sum)
+	return "<!-- conveyor:verification:" + key + " -->", "<!-- /conveyor:verification:" + key + " -->"
+}
+
+// ComposeVerificationBody preserves bytes outside the task's explicit factory
+// region, including legacy evidence. Unpaired delimiters lose only their marker
+// token; unknown text is never treated as generated content.
+func ComposeVerificationBody(existing, workspace, task, summary string) string {
+	start, end := VerificationRegionMarkers(workspace, task)
+	region := start + "\n" + summary + "\n" + end
+	first := true
+	var result strings.Builder
+	for {
+		i := strings.Index(existing, start)
+		if i < 0 {
+			break
+		}
+		result.WriteString(existing[:i])
+		existing = existing[i+len(start):]
+		j := strings.Index(existing, end)
+		next := strings.Index(existing, start)
+		if j < 0 || next >= 0 && next < j {
+			continue
+		}
+		if first {
+			result.WriteString(region)
+			first = false
+		}
+		existing = existing[j+len(end):]
+	}
+	result.WriteString(strings.ReplaceAll(existing, end, ""))
+	if first {
+		if result.Len() > 0 {
+			result.WriteString("\n\n")
+		}
+		result.WriteString(region)
+	}
+	return result.String()
+}
+
+func VerificationBodyDigest(body, workspace, task string) string {
+	start, end := VerificationRegionMarkers(workspace, task)
+	i := strings.Index(body, start+"\n")
+	if i < 0 {
+		return ""
+	}
+	rest := body[i+len(start)+1:]
+	j := strings.Index(rest, "\n"+end)
+	if j < 0 || strings.Contains(rest[:j], start) || strings.Contains(rest[j+len(end)+1:], start) {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(rest[:j]))
+	return fmt.Sprintf("%x", sum)
+}
+
+type VerificationPullRequest struct {
+	Number int    `json:"number"`
+	Body   string `json:"body"`
+	Head   struct {
+		SHA string `json:"sha"`
+	} `json:"head"`
+}
+
+func ReadVerificationPullRequest(ctx context.Context, repo string, number int) (VerificationPullRequest, error) {
+	var pr VerificationPullRequest
+	raw, err := gh(ctx, "api", "repos/"+repo+"/pulls/"+strconv.Itoa(number))
+	if err != nil {
+		return pr, err
+	}
+	if json.Unmarshal(raw, &pr) != nil || pr.Number != number || !ValidSnapshotSHA(pr.Head.SHA) {
+		return pr, forgeResponseError("invalid verification pull request")
+	}
+	return pr, nil
+}
+func WriteVerificationPullRequest(ctx context.Context, repo string, number int, body string) error {
+	_, err := gh(ctx, "api", "repos/"+repo+"/pulls/"+strconv.Itoa(number), "--method", "PATCH", "-f", "body="+body)
+	return err
+}
+
+// preserveVerificationRegions keeps typed publication independent of the legacy
+// task-link writer, including migration from bodies with no lifecycle end marker.
+func preserveVerificationRegions(body string) (string, []string) {
+	var regions []string
+	const prefix = "<!-- conveyor:verification:"
+	offset := 0
+	for {
+		i := strings.Index(body[offset:], prefix)
+		if i < 0 {
+			break
+		}
+		i += offset
+		tail := body[i+len(prefix):]
+		if len(tail) < 68 {
+			break
+		}
+		key := tail[:64]
+		if _, err := hex.DecodeString(key); err != nil {
+			offset = i + len(prefix)
+			continue
+		}
+		start := prefix + key + " -->"
+		end := "<!-- /conveyor:verification:" + key + " -->"
+		if !strings.HasPrefix(body[i:], start) {
+			offset = i + len(prefix)
+			continue
+		}
+		j := strings.Index(body[i+len(start):], end)
+		if j < 0 {
+			offset = i + len(start)
+			continue
+		}
+		stop := i + len(start) + j + len(end)
+		regions = append(regions, body[i:stop])
+		body = body[:i] + body[stop:]
+		offset = i
+	}
+	return body, regions
 }

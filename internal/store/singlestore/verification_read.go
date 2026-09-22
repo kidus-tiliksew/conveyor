@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 
+	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
@@ -45,6 +46,20 @@ func (s *Store) ReadVerificationPage(ctx context.Context, a store.VerificationAc
 		}
 		if err = rows.Err(); err != nil {
 			return err
+		}
+		rows.Close()
+		if p.Kind == "publications" {
+			for i := range items {
+				d, found, e := readDeliveryMetadataTx(ctx, tx, a.TaskID, items[i].ContextID, items[i].ID)
+				if e != nil {
+					return e
+				}
+				if found {
+					if e = store.JoinVerificationDelivery(&items[i], d); e != nil {
+						return e
+					}
+				}
+			}
 		}
 		result = store.VerificationPageResult(ctx, a, p, items)
 		return nil
@@ -170,4 +185,18 @@ func verificationReadProjection(kind string) string {
   'truncated',CASE WHEN CHAR_LENGTH(COALESCE(JSON_EXTRACT_STRING(k.table_col,'kit_id'),''))>2048 OR CHAR_LENGTH(COALESCE(JSON_EXTRACT_STRING(k.table_col,'digest'),''))>2048 OR CHAR_LENGTH(COALESCE(JSON_EXTRACT_STRING(k.table_col,'eligibility'),''))>2048 OR CHAR_LENGTH(COALESCE(JSON_EXTRACT_STRING(k.table_col,'reasons'),'[]'))>2048 THEN 'true' ELSE 'false' END) AS metadata FROM verification_selections r JOIN verification_contexts c ON c.workspace_id=r.workspace_id AND c.task_id=r.task_id AND c.id=r.context_id JOIN TABLE(JSON_TO_ARRAY(JSON_EXTRACT_JSON(r.body,'Receipt','kits'))) WITH ORDINALITY AS k`
 	}
 	panic("unvalidated verification collection")
+}
+
+func readDeliveryMetadataTx(ctx context.Context, tx *sql.Tx, task, contextID, source string) (core.VerificationDelivery, bool, error) {
+	var d core.VerificationDelivery
+	var raw []byte
+	err := tx.QueryRowContext(ctx, `SELECT JSON_BUILD_OBJECT('WorkspaceID',LEFT(JSON_EXTRACT_STRING(body,'WorkspaceID'),2048),'Repository',LEFT(JSON_EXTRACT_STRING(body,'Repository'),2048),'TaskID',LEFT(JSON_EXTRACT_STRING(body,'TaskID'),2048),'ContextID',LEFT(JSON_EXTRACT_STRING(body,'ContextID'),2048),'SourcePublicationID',LEFT(JSON_EXTRACT_STRING(body,'SourcePublicationID'),2048),'ID',LEFT(JSON_EXTRACT_STRING(body,'ID'),2048),'IdempotencyKey',LEFT(JSON_EXTRACT_STRING(body,'IdempotencyKey'),2048),'TargetHead',LEFT(JSON_EXTRACT_STRING(body,'TargetHead'),2048),'ObservedHead',LEFT(JSON_EXTRACT_STRING(body,'ObservedHead'),2048),'TargetDigest',LEFT(JSON_EXTRACT_STRING(body,'TargetDigest'),2048),'ObservedDigest',LEFT(JSON_EXTRACT_STRING(body,'ObservedDigest'),2048),'State',LEFT(JSON_EXTRACT_STRING(body,'State'),2048),'ErrorClass',LEFT(JSON_EXTRACT_STRING(body,'ErrorClass'),2048),'ErrorMessage',LEFT(JSON_EXTRACT_STRING(body,'ErrorMessage'),2048),'CreatedAt',LEFT(JSON_EXTRACT_STRING(body,'CreatedAt'),2048),'UpdatedAt',LEFT(JSON_EXTRACT_STRING(body,'UpdatedAt'),2048),'Generation',JSON_EXTRACT_BIGINT(body,'Generation'),'SourceGeneration',JSON_EXTRACT_BIGINT(body,'SourceGeneration'),'PullRequestNumber',JSON_EXTRACT_BIGINT(body,'PullRequestNumber'),'Attempts',JSON_EXTRACT_BIGINT(body,'Attempts'),'CycleAttempts',JSON_EXTRACT_BIGINT(body,'CycleAttempts'),'LastAttemptAt',JSON_EXTRACT_JSON(body,'LastAttemptAt'),'NextAttemptAt',JSON_EXTRACT_JSON(body,'NextAttemptAt')) FROM verification_publication_deliveries WHERE workspace_id=? AND task_id=? AND context_id=? AND source_publication_id=? ORDER BY generation DESC LIMIT 1`, documentWorkspace(ctx), task, contextID, source).Scan(&raw)
+	if err == sql.ErrNoRows {
+		return d, false, nil
+	}
+	if err != nil {
+		return d, false, err
+	}
+	err = json.Unmarshal(raw, &d)
+	return d, err == nil, err
 }

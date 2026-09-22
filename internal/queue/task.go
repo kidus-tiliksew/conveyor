@@ -6,6 +6,8 @@ package queue
 
 import (
 	"encoding/json"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -94,4 +96,37 @@ func Identity(kind string, args []byte) (workspace, key string, ok bool) {
 		return decoded.WorkspaceID, decoded.ReviewWorkOrderID, decoded.ReviewWorkOrderID != ""
 	}
 	return decoded.WorkspaceID, "", false
+}
+
+// VerificationPublicationArgs names the single VK-9 stream for a PR. The
+// runtime envelope is authoritative; persisted legacy args are handled separately.
+type VerificationPublicationArgs struct {
+	WorkspaceID       string `json:"workspace_id"`
+	Repository        string `json:"repository"`
+	PullRequestNumber int    `json:"pull_request_number"`
+}
+
+func (VerificationPublicationArgs) Kind() string { return "verification_publication_delivery" }
+func (a VerificationPublicationArgs) UniqueKey() string {
+	return a.Repository + "#" + strconv.Itoa(a.PullRequestNumber)
+}
+func (a VerificationPublicationArgs) ValidWorkspace(trusted string) bool {
+	if trusted == "" || a.WorkspaceID != trusted || a.PullRequestNumber <= 0 || len(a.Repository) > 255 {
+		return false
+	}
+	parts := strings.Split(a.Repository, "/")
+	if len(parts) != 2 {
+		return false
+	}
+	for _, part := range parts {
+		if part == "" || part == "." || part == ".." {
+			return false
+		}
+		for _, r := range part {
+			if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("._-", r)) {
+				return false
+			}
+		}
+	}
+	return true
 }

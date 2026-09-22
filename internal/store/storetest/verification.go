@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/queue"
+	"github.com/kidus-tiliksew/conveyor/internal/queue/logqueue"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/verification"
 )
@@ -126,6 +128,8 @@ func verificationBytes(v any) json.RawMessage {
 func verificationSHA(b []byte) string { return fmt.Sprintf("%x", sha256.Sum256(b)) }
 
 func runVerification(t *testing.T, x Fixture) {
+	runVerificationPublicationDelivery(t, x)
+	runVerificationPublicationLegacyAndRace(t, x)
 	runVerificationOperations(t, x)
 	runVerificationScope(t, x)
 	runVerificationFinalization(t, x)
@@ -333,6 +337,267 @@ func runVerification(t *testing.T, x Fixture) {
 		} else {
 			if !reflect.DeepEqual(before, v.snapshot(t)) {
 				t.Fatal("volatile retrieval changed records")
+			}
+		}
+	})
+}
+
+func runVerificationPublicationDelivery(t *testing.T, x Fixture) {
+	for index, evidenceFirst := range []bool{true, false} {
+		t.Run(fmt.Sprintf("PublicationDelivery/evidenceFirst=%t", evidenceFirst), func(t *testing.T) {
+			v := newVerificationFixture(t, x)
+			number := 4201 + index
+			pr := core.Event{TaskID: v.access.TaskID, JobID: v.access.WorkOrderID, Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]any{"repository": "fixture/publication", "number": number, "head_sha": strings.Repeat("a", 40)})}
+			e := v.envelope("publication-evidence-"+fmt.Sprint(index), "publication-evidence", "private-provider-response https://private.example.test/artifact?token=secret")
+			cmd := store.VerificationCommand{Kind: store.VerificationWriteEvidence, Key: e.SubmissionKey, Evidence: []json.RawMessage{verificationBytes(e)}}
+			if evidenceFirst {
+				v.apply(t, cmd)
+			} else {
+				requireOK(t, x.Backend.RecordVerificationPullRequest(v.ctx, pr))
+			}
+			if len(v.snapshot(t).Publications) != 0 {
+				t.Fatal("published without both PR and evidence")
+			}
+			if evidenceFirst {
+				requireOK(t, x.Backend.RecordVerificationPullRequest(v.ctx, pr))
+			} else {
+				v.apply(t, cmd)
+			}
+			first := v.snapshot(t)
+			if len(first.Publications) != 1 || first.Publications[0].Delivery == nil {
+				t.Fatalf("intent missing: %+v", first.Publications)
+			}
+			original := first.Publications[0]
+			original.Delivery = nil
+			beforeEvidence := verificationBytes(first.Evidence)
+			beforeAttempts := verificationBytes(first.Attempts)
+			args := store.VerificationDeliveryArgs(*first.Publications[0].Delivery)
+			var current core.VerificationDelivery
+			read := func() {
+				t.Helper()
+				requireOK(t, x.Backend.RunVerificationDelivery(v.ctx, args, func(d *core.VerificationDelivery, _ func(string, core.VerificationDelivery) error) error {
+					current = *d
+					return nil
+				}))
+			}
+			read()
+			if current.State != "pending" || current.Generation != 1 || strings.Contains(current.Summary, "private-provider") || strings.Contains(current.Summary, "private.example") {
+				t.Fatalf("unsafe intent: %+v", current)
+			}
+			requireOK(t, x.Backend.RecordVerificationPullRequest(v.ctx, pr))
+			v.apply(t, cmd)
+			requireOK(t, x.Backend.TranslateVerificationPublication(v.ctx, original))
+			requireOK(t, x.Backend.ReconcileVerificationDeliveries(v.ctx))
+			read()
+			if current.Generation != 1 || len(v.snapshot(t).Publications) != 1 {
+				t.Fatal("replay advanced generation")
+			}
+			interrupted := errors.New("simulated crash before forge")
+			err := x.Backend.RunVerificationDelivery(v.ctx, args, func(d *core.VerificationDelivery, save func(string, core.VerificationDelivery) error) error {
+				if err := save("attempt", *d); err != nil {
+					return err
+				}
+				return interrupted
+			})
+			if !errors.Is(err, interrupted) {
+				t.Fatal(err)
+			}
+			read()
+			if current.State != "retrying" || current.Attempts != 1 {
+				t.Fatal("attempt did not survive interrupted delivery")
+			}
+
+			requireOK(t, x.Backend.RunVerificationDelivery(v.ctx, args, func(d *core.VerificationDelivery, save func(string, core.VerificationDelivery) error) error {
+				if err := save("attempt", *d); err != nil {
+					return err
+				}
+				next := *d
+				next.ErrorClass = "forge"
+				next.ErrorMessage = "private-provider-response"
+				return save("fail", next)
+			}))
+			read()
+			if current.State != "failed" || current.Attempts != 2 || strings.Contains(current.ErrorMessage, "private-provider") {
+				t.Fatalf("failure metadata: %+v", current)
+			}
+			failed := v.snapshot(t)
+			if string(verificationBytes(failed.Evidence)) != string(beforeEvidence) || string(verificationBytes(failed.Attempts)) != string(beforeAttempts) {
+				t.Fatal("publication changed exercise/evidence")
+			}
+			retained := failed.Publications[0]
+			retained.Delivery = nil
+			if string(verificationBytes(retained)) != string(verificationBytes(original)) {
+				t.Fatal("publication ledger changed")
+			}
+			ctx, owner := bootstrapOwner(t, x)
+			page, err := x.Backend.(store.VerificationReader).ReadVerificationPage(ctx, store.VerificationAccess{TaskID: v.access.TaskID, UserID: owner.ID}, store.VerificationPageRequest{Kind: "publications", ContextID: v.contextID, Limit: 1})
+			requireOK(t, err)
+			if len(page.Items) != 1 || page.Items[0].ID != original.ID || page.Items[0].State != "failed" || strings.Contains(string(page.Items[0].Metadata), "private-provider") {
+				t.Fatalf("delivery read: %+v", page)
+			}
+			_, err = x.Backend.(store.VerificationReader).ReadVerificationPage(ctx, store.VerificationAccess{TaskID: v.access.TaskID, UserID: owner.ID}, store.VerificationPageRequest{Kind: "publications", Limit: 1})
+			if !errors.Is(err, store.ErrVerificationInvalid) {
+				t.Fatalf("publication context boundary changed: %v", err)
+			}
+			requireOK(t, x.Backend.RunVerificationDelivery(v.ctx, args, func(d *core.VerificationDelivery, save func(string, core.VerificationDelivery) error) error {
+				if err := save("retry", *d); err != nil {
+					return err
+				}
+				if err := save("attempt", *d); err != nil {
+					return err
+				}
+				next := *d
+				next.ObservedHead = d.TargetHead
+				next.ObservedDigest = d.TargetDigest
+				next.ErrorClass = ""
+				return save("publish", next)
+			}))
+			e2 := v.envelope("publication-new-"+fmt.Sprint(index), "publication-new", "new evidence")
+			v.apply(t, store.VerificationCommand{Kind: store.VerificationWriteEvidence, Key: e2.SubmissionKey, Evidence: []json.RawMessage{verificationBytes(e2)}})
+			read()
+			if current.Generation != 2 || current.State != "pending" {
+				t.Fatalf("new generation: %+v", current)
+			}
+			requireOK(t, x.Backend.TranslateVerificationPublication(v.ctx, original))
+			read()
+			if current.Generation != 2 {
+				t.Fatal("legacy retry replaced latest")
+			}
+			snapshot := v.snapshot(t)
+			if len(snapshot.Publications) != 2 {
+				t.Fatal("source generation missing")
+			}
+			for _, p := range snapshot.Publications {
+				if p.ID == original.ID && (p.Delivery == nil || p.Delivery.State != "superseded") {
+					t.Fatal("old source not superseded")
+				}
+			}
+			if err := x.Backend.RunVerificationDelivery(store.WithWorkspace(v.ctx, "foreign"), args, func(*core.VerificationDelivery, func(string, core.VerificationDelivery) error) error { return nil }); err == nil {
+				t.Fatal("foreign workspace accepted")
+			}
+			// Callback mutation cannot smuggle a different immutable identity into a save.
+			if err := x.Backend.RunVerificationDelivery(v.ctx, args, func(d *core.VerificationDelivery, save func(string, core.VerificationDelivery) error) error {
+				d.TaskID = "foreign"
+				return save("attempt", *d)
+			}); err == nil {
+				t.Fatal("forged delivery identity accepted")
+			}
+			read()
+			if current.TaskID != v.access.TaskID || current.Attempts != 0 {
+				t.Fatal("refused write leaked")
+			}
+			requireOK(t, x.Backend.RunVerificationDelivery(v.ctx, args, func(d *core.VerificationDelivery, save func(string, core.VerificationDelivery) error) error {
+				if err := save("attempt", *d); err != nil {
+					return err
+				}
+				next := *d
+				next.ErrorClass = "forge"
+				past := time.Now().UTC().Add(-time.Minute)
+				next.NextAttemptAt = &past
+				return save("fail", next)
+			}))
+			requireOK(t, x.Backend.ReconcileVerificationDeliveries(v.ctx))
+			read()
+			if current.State != "pending" || current.Attempts != 1 || current.CycleAttempts != 0 {
+				t.Fatal("failed delivery did not retry independently")
+			}
+
+		})
+	}
+}
+
+func runVerificationPublicationLegacyAndRace(t *testing.T, x Fixture) {
+	t.Run("PublicationLegacyAndRace", func(t *testing.T) {
+		v := newVerificationFixture(t, x)
+		p := store.VerificationPublication{PullRequestNumber: 4301, HeadSHA: strings.Repeat("a", 40), BodyDigest: verificationSHA([]byte("legacy digest"))}
+		receipt := v.apply(t, store.VerificationCommand{Kind: store.VerificationCreatePublication, Publication: &p})
+		original := v.snapshot(t).Publications[0]
+		if original.ID != receipt.PublicationID {
+			t.Fatal("source identity missing")
+		}
+		_, err := logqueue.Enqueue(v.ctx, x.Backend.Log(), x.Workspace, "verification_publication", original.ID, original, 5, time.Now())
+		requireOK(t, err)
+		legacyBefore, err := logqueue.Load(v.ctx, x.Backend.Log(), x.Workspace, logqueue.StreamFor("verification_publication", original.ID))
+		requireOK(t, err)
+		e := v.envelope("legacy-race-evidence", "legacy-race-evidence", "private payload")
+		v.apply(t, store.VerificationCommand{Kind: store.VerificationWriteEvidence, Key: e.SubmissionKey, Evidence: []json.RawMessage{verificationBytes(e)}})
+		pr := core.Event{TaskID: v.access.TaskID, Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]any{"repository": "fixture/publication", "number": 4301, "head_sha": p.HeadSHA})}
+		injected := errors.New("queue rollback")
+		err = x.Backend.RecordVerificationPullRequest(store.WithVerificationFault(v.ctx, func(point string) error {
+			if point == "queue" {
+				return injected
+			}
+			return nil
+		}), pr)
+		if !errors.Is(err, injected) {
+			t.Fatal("PR transaction ignored injected failure")
+		}
+		if len(v.snapshot(t).Publications) != 1 {
+			t.Fatal("failed PR transaction left source rows")
+		}
+		requireOK(t, x.Backend.RecordVerificationPullRequest(v.ctx, pr))
+		requireOK(t, x.Backend.TranslateVerificationPublication(v.ctx, original))
+		legacyAfter, err := logqueue.Load(v.ctx, x.Backend.Log(), x.Workspace, logqueue.StreamFor("verification_publication", original.ID))
+		requireOK(t, err)
+		if !reflect.DeepEqual(legacyBefore, legacyAfter) {
+			t.Fatal("adapter rewrote legacy queue history")
+		}
+		args := queue.VerificationPublicationArgs{WorkspaceID: x.Workspace, Repository: "fixture/publication", PullRequestNumber: 4301}
+		locked := make(chan struct{})
+		release := make(chan struct{})
+		done := make(chan error, 1)
+		go func() {
+			done <- x.Backend.RunVerificationDelivery(v.ctx, args, func(d *core.VerificationDelivery, save func(string, core.VerificationDelivery) error) error {
+				if err := save("attempt", *d); err != nil {
+					return err
+				}
+				close(locked)
+				<-release
+				if err := save("check", *d); err != nil {
+					return err
+				}
+				next := *d
+				next.ObservedHead = d.TargetHead
+				next.ObservedDigest = d.TargetDigest
+				return save("publish", next)
+			})
+		}()
+		select {
+		case <-locked:
+		case err := <-done:
+			t.Fatalf("worker failed before lock: %v", err)
+		case <-time.After(5 * time.Second):
+			t.Fatal("worker did not acquire lock")
+		}
+		newer := v.envelope("race-new-evidence", "race-new-evidence", "newer payload")
+		evidenceDone := make(chan error, 1)
+		go func() {
+			_, err := x.Backend.ApplyVerification(v.ctx, v.command(store.VerificationCommand{Kind: store.VerificationWriteEvidence, Key: newer.SubmissionKey, Evidence: []json.RawMessage{verificationBytes(newer)}}))
+			evidenceDone <- err
+		}()
+		select {
+		case err := <-evidenceDone:
+			close(release)
+			t.Fatalf("evidence crossed held delivery lock: %v", err)
+		case <-time.After(50 * time.Millisecond):
+		}
+		close(release)
+		requireOK(t, <-done)
+		requireOK(t, <-evidenceDone)
+		var latest core.VerificationDelivery
+		requireOK(t, x.Backend.RunVerificationDelivery(v.ctx, args, func(d *core.VerificationDelivery, _ func(string, core.VerificationDelivery) error) error {
+			latest = *d
+			return nil
+		}))
+		if latest.State != "pending" || latest.SourceGeneration != 3 {
+			t.Fatalf("concurrent evidence acknowledged as published: %+v", latest)
+		}
+		for _, p := range v.snapshot(t).Publications {
+			if p.ID == original.ID {
+				p.Delivery = nil
+				if !reflect.DeepEqual(p, original) {
+					t.Fatal("legacy ledger bytes changed")
+				}
 			}
 		}
 	})

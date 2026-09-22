@@ -1506,7 +1506,11 @@ func (s *Service) submitForReviewLocked(ctx context.Context, id, session, headSH
 		for _, item := range evidence {
 			evidenceIDs = append(evidenceIDs, item.ID)
 		}
-		if err = s.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, JobID: order.JobID, Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]any{
+		recordPR := s.Store.AppendEvent
+		if publications, ok := s.Store.(store.VerificationDeliveryStore); ok {
+			recordPR = publications.RecordVerificationPullRequest
+		}
+		if err = recordPR(ctx, core.Event{TaskID: task.ID, JobID: order.JobID, Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]any{
 			"url": prURL, "number": target.Number, "base_sha": target.Base.SHA, "head_sha": headSHA,
 			"repository": repo.GitHub, "work_order_id": order.ID, "evidence_ids": evidenceIDs,
 			"forge_author_class": core.ForgeAuthorExecutingUser, "forge_author_user_id": authorID,

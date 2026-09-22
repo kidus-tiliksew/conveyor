@@ -1263,3 +1263,18 @@ func JSONPayload(value any) json.RawMessage {
 	}
 	return data
 }
+
+// VerificationDelivery is the mutable VK-9 projection; source publication rows remain immutable.
+type VerificationDelivery struct {
+	WorkspaceID, Repository, TaskID, ContextID, SourcePublicationID            string
+	ID, IdempotencyKey, TargetHead, ObservedHead, TargetDigest, ObservedDigest string
+	Generation                                                                 int
+	SourceGeneration                                                           int
+	PullRequestNumber                                                          int
+	State                                                                      string
+	CycleAttempts, Attempts                                                    int
+	ErrorClass, ErrorMessage                                                   string
+	CreatedAt, UpdatedAt                                                       time.Time
+	LastAttemptAt, NextAttemptAt                                               *time.Time
+	Summary                                                                    string
+}
