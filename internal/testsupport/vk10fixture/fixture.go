@@ -22,6 +22,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -538,9 +539,17 @@ await page.locator('#result[data-observed="true"]').waitFor();
 await page.screenshot({path:process.argv[2]});
 await page.request.get(process.argv[3]+'/ui-done');
 }finally{await browser.close()}})().catch(e=>{console.error(e);process.exit(1)});`
+	// Resolve Playwright's installed cache before giving the browser a fresh
+	// HOME. CI normally uses the platform cache without an explicit override.
+	browserCache := os.Getenv("PLAYWRIGHT_BROWSERS_PATH")
+	if browserCache == "" {
+		cache, err := os.UserCacheDir()
+		must(t, err)
+		browserCache = filepath.Join(cache, "ms-playwright")
+	}
 	c := exec.CommandContext(t.Context(), "node", "-e", program, fmt.Sprintf("http://127.0.0.1:%d", port), shot, f.provider.URL, f.snapshot.Contexts[0].ID)
 	c.Dir = filepath.Join(os.Getenv("CONVEYOR_VK10_SOURCE"), "web")
-	c.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + t.TempDir(), "PLAYWRIGHT_BROWSERS_PATH=" + os.Getenv("PLAYWRIGHT_BROWSERS_PATH"), "TMPDIR=" + os.Getenv("TMPDIR")}
+	c.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + t.TempDir(), "PLAYWRIGHT_BROWSERS_PATH=" + browserCache, "TMPDIR=" + os.Getenv("TMPDIR")}
 	out, err := c.CombinedOutput()
 	if err != nil {
 		t.Fatalf("missing browser evidence: %v: %s", err, out)
@@ -803,6 +812,14 @@ func (f *fixture) runUI(coverage, inputs, cfg string) {
 func Run(t *testing.T, factory func(*testing.T) store.Backend) {
 	t.Helper()
 	t.Run("Primary", func(t *testing.T) {
+		// Exercise CI's unset-override path even when the local gate uses an
+		// explicit task cache. The link targets this gate's prepared browser.
+		if cache := os.Getenv("PLAYWRIGHT_BROWSERS_PATH"); runtime.GOOS == "linux" && filepath.IsAbs(cache) {
+			platformCache := t.TempDir()
+			must(t, os.Symlink(cache, filepath.Join(platformCache, "ms-playwright")))
+			t.Setenv("XDG_CACHE_HOME", platformCache)
+			t.Setenv("PLAYWRIGHT_BROWSERS_PATH", "")
+		}
 		f := newFixture(t, factory(t), "primary")
 		f.claim(core.StageImplement)
 		must(t, f.rpc("submit_for_review", map[string]string{"head_sha": f.head}, nil))
