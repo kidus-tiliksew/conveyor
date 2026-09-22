@@ -18,6 +18,7 @@ func TestVerificationPermissionRouteIsOperatorOnly(t *testing.T) {
 	s, worker, id := verificationHTTPFixture(t)
 	s.Workspace = "demo"
 	b := s.Store.(store.Backend)
+	s.Workspaces = b
 	call := func(name string, input any) any {
 		t.Helper()
 		out, err := s.WorkOrders.Verification(worker, id, "session", "token", name, core.JSONPayload(input))
