@@ -44,6 +44,9 @@ func runVerifyPolicy(t *testing.T, x Fixture) {
 	if _, err := change(request); err == nil {
 		t.Fatal("policy handoff accepted conflicting source bindings")
 	}
+	// Preserve the queue timestamps populated by the persistence boundary.
+	ambiguous, err := st.GetWorkOrder(ctx, ambiguous.ID)
+	requireOK(t, err)
 	ambiguous.State = core.WorkOrderCancelled
 	requireOK(t, UpdateWorkOrder(ctx, st, ambiguous, core.WorkOrderCmdCancel))
 	result, err := change(request)
