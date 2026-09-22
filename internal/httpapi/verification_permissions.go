@@ -17,7 +17,7 @@ func (s *Server) grantVerificationPermissions(w http.ResponseWriter, r *http.Req
 		return
 	}
 	credential, ok := store.CredentialFromContext(r.Context())
-	if !ok || credential.Kind != core.CredentialUser || credential.Scope != core.CredentialScopeOperator || credential.OwnerUserID == "" {
+	if !ok || credential.Kind != core.CredentialUser || credential.OwnerUserID == "" {
 		verificationReadError(w, store.ErrVerificationAccess)
 		return
 	}

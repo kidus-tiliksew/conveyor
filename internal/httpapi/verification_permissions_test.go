@@ -37,7 +37,7 @@ func TestVerificationPermissionRouteIsOperatorOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	user := func(id string) context.Context {
-		return store.WithActor(store.WithCredential(ctx, core.AuthenticatedCredential{ID: "route-user", Kind: core.CredentialUser, Scope: core.CredentialScopeOperator, OwnerUserID: id}), store.Actor{ID: store.UserActorID(id), Role: core.ActorUser})
+		return store.WithActor(store.WithCredential(ctx, core.AuthenticatedCredential{ID: "route-user", Kind: core.CredentialUser, Scope: core.CredentialScopeUser, OwnerUserID: id}), store.Actor{ID: store.UserActorID(id), Role: core.ActorUser})
 	}
 	operator := user(owner.ID)
 	member, err := b.ProvisionIdentityUser(operator, "maintainer@example.test", "Maintainer")

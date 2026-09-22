@@ -501,3 +501,17 @@ func TestKitRunnerInteractiveCompletionUsesOperatorEvidence(t *testing.T) {
 		t.Fatal("operator completion was not honored")
 	}
 }
+
+func TestKitRunnerRejectsParentCredentialInOrdinaryInput(t *testing.T) {
+	t.Setenv("GH_TOKEN", "forge-input-fixture")
+	e := verification.Exercise{Inputs: []verification.Input{{Name: "message", Type: "string"}}}
+	for _, value := range []string{"forge-input-fixture", "Bearer forge-input-fixture"} {
+		raw, _ := json.Marshal(value)
+		if _, _, _, _, err := kitInputValues(e, map[string]json.RawMessage{"message": raw}, nil); err == nil {
+			t.Fatal("parent credential reached ordinary inputs")
+		}
+	}
+	if _, _, _, _, err := kitInputValues(e, map[string]json.RawMessage{"message": json.RawMessage(`"ordinary message"`)}, nil); err != nil {
+		t.Fatal(err)
+	}
+}

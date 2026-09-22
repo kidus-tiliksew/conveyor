@@ -41,7 +41,7 @@ func kitInputValues(e verification.Exercise, provided map[string]json.RawMessage
 						return nil, nil, nil, nil, fmt.Errorf("ambiguous sensitive input binding %s", input.Name)
 					}
 					for _, parentSecret := range kitParentSecrets() {
-						if secret == parentSecret {
+						if strings.Contains(secret, parentSecret) {
 							return nil, nil, nil, nil, fmt.Errorf("factory credential refused as input %s", input.Name)
 						}
 					}
@@ -82,6 +82,13 @@ func kitInputValues(e verification.Exercise, provided map[string]json.RawMessage
 		}
 		if !valid {
 			return nil, nil, nil, nil, fmt.Errorf("input %s requires %s", input.Name, input.Type)
+		}
+		if text, ok := decoded.(string); ok {
+			for _, parentSecret := range kitParentSecrets() {
+				if strings.Contains(text, parentSecret) {
+					return nil, nil, nil, nil, fmt.Errorf("factory or forge credential refused as input %s", input.Name)
+				}
+			}
 		}
 		actual[input.Name] = value
 		if input.Sensitive {

@@ -79,7 +79,7 @@ func kitExerciseActions(e verification.Exercise, root, repository string, local 
 				return nil, nil, nil, fmt.Errorf("missing credential %s", p.EnvironmentBinding)
 			}
 			for _, parentSecret := range kitParentSecrets() {
-				if value == parentSecret {
+				if strings.Contains(value, parentSecret) {
 					return nil, nil, nil, fmt.Errorf("factory or forge credential refused for %s", p.EnvironmentBinding)
 				}
 			}
