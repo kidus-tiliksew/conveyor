@@ -2478,3 +2478,24 @@ func (q *Queries) DeleteVerificationChunk(ctx context.Context, workspaceID, id s
 	_, err := q.db.Exec(ctx, "DELETE FROM verification_upload_chunks WHERE workspace_id=$1 AND id=$2", workspaceID, id)
 	return err
 }
+
+func (q *Queries) PutVerificationPublicationDelivery(ctx context.Context, r VerificationPublicationDeliveryRecord) error {
+	_, err := q.db.Exec(ctx, `INSERT INTO verification_publication_deliveries(workspace_id,id,task_id,context_id,source_publication_id,pr_key,generation,state,body,next_attempt_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(workspace_id,id) DO UPDATE SET state=EXCLUDED.state,body=EXCLUDED.body,next_attempt_at=EXCLUDED.next_attempt_at WHERE verification_publication_deliveries.task_id=EXCLUDED.task_id AND verification_publication_deliveries.context_id=EXCLUDED.context_id AND verification_publication_deliveries.source_publication_id=EXCLUDED.source_publication_id AND verification_publication_deliveries.pr_key=EXCLUDED.pr_key AND verification_publication_deliveries.generation=EXCLUDED.generation`, r.WorkspaceID, r.ID, r.TaskID, r.ContextID, r.SourcePublicationID, r.PRKey, r.Generation, r.State, r.Body, r.NextAttemptAt)
+	return err
+}
+func (q *Queries) ListVerificationPublicationDeliveries(ctx context.Context, ws, key string) ([]VerificationPublicationDeliveryRecord, error) {
+	rows, err := q.db.Query(ctx, `SELECT workspace_id,id,task_id,context_id,source_publication_id,pr_key,generation,state,body FROM verification_publication_deliveries WHERE workspace_id=$1 AND pr_key=$2 ORDER BY generation`, ws, key)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []VerificationPublicationDeliveryRecord
+	for rows.Next() {
+		var r VerificationPublicationDeliveryRecord
+		if err = rows.Scan(&r.WorkspaceID, &r.ID, &r.TaskID, &r.ContextID, &r.SourcePublicationID, &r.PRKey, &r.Generation, &r.State, &r.Body); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}

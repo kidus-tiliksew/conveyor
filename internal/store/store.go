@@ -1516,6 +1516,7 @@ type memoryDecisionSweepKey struct {
 }
 
 type memory struct {
+	verificationDeliveries      map[string]core.VerificationDelivery
 	verificationRows            map[string]VerificationRow
 	repositoryInstalls          map[memoryScopedKey][]core.RepositoryInstallTask
 	mu                          sync.RWMutex

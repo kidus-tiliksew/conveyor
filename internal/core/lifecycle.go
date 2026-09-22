@@ -261,3 +261,15 @@ func ValidatePullRequestCloseTransition(from, to string) error {
 	}
 	return nil
 }
+
+// TransitionVerificationDelivery implements feature-verification-kit-execution VK-9.
+func TransitionVerificationDelivery(from, command string) (string, error) {
+	table := map[string]map[string]string{
+		"pending":    {"attempt": "retrying", "supersede": "superseded"},
+		"retrying":   {"retry_error": "retrying", "attempt": "retrying", "publish": "published", "fail": "failed", "supersede": "superseded"},
+		"published":  {"retry": "pending", "supersede": "superseded"},
+		"failed":     {"retry": "pending", "supersede": "superseded"},
+		"superseded": {},
+	}
+	return transition(LifecycleSpace("verification_delivery"), table, from, command)
+}

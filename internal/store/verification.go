@@ -15,6 +15,7 @@ import (
 // from submitted evidence. Each command commits its records, artifacts, audit
 // event and publication queue intent together; a replay never repeats a write.
 type VerificationStore interface {
+	VerificationDeliveryStore
 	ReconcileVerificationClaims(context.Context) (int, error)
 	ApplyVerification(context.Context, VerificationCommand) (VerificationReceipt, error)
 	ReadVerification(context.Context, VerificationAccess, string) (VerificationSnapshot, error)
@@ -143,6 +144,7 @@ type VerificationEvidenceRecord struct {
 }
 type VerificationEvidenceLink struct{ From, To string }
 type VerificationPublication struct {
+	Delivery                                          *core.VerificationDelivery `json:"Delivery,omitempty"`
 	ID, ContextID, TaskID, State, BodyDigest, HeadSHA string
 	Generation                                        int
 	PullRequestNumber                                 int

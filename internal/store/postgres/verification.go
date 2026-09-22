@@ -3,8 +3,10 @@ package postgres
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/kidus-tiliksew/conveyor/internal/queue"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -156,11 +158,17 @@ func (s *Store) applyVerification(ctx context.Context, lease taskops.TaskLease, 
 		if err = store.VerificationFault(ctx, "event"); err != nil {
 			return err
 		}
-		if p := mutation.Publication; p != nil {
-			if _, err = logqueue.Enqueue(pglog.WithTx(ctx, tx), s.log, workspace(ctx), "verification_publication", p.ID, p, 5, time.Now().UTC()); err != nil {
+
+		if c.Kind == store.VerificationWriteEvidence || mutation.Publication != nil {
+			sourceID := ""
+			if mutation.Publication != nil {
+				sourceID = mutation.Publication.ID
+			}
+			if err = s.deliveryIntentTx(ctx, tx, q, c.Access.TaskID, append(verificationRows(records), mutation.Rows...), sourceID); err != nil {
 				return err
 			}
 		}
+
 		return store.VerificationFault(ctx, "queue")
 	})
 	if err != nil {
@@ -189,7 +197,20 @@ func (s *Store) ReadVerification(ctx context.Context, a store.VerificationAccess
 			return err
 		}
 		result, err = store.VerificationReadSnapshot(verificationRows(records), a, id, order.Stage)
-		return err
+		if err != nil {
+			return err
+		}
+		for i := range result.Publications {
+			p := &result.Publications[i]
+			d, found, e := readDeliveryMetadataTx(ctx, tx, a.TaskID, p.ContextID, p.ID)
+			if e != nil {
+				return e
+			}
+			if found {
+				p.Delivery = &d
+			}
+		}
+		return nil
 	})
 	return result, err
 }
@@ -261,4 +282,251 @@ func (s *Store) ReconcileVerificationClaims(ctx context.Context) (int, error) {
 		}
 	}
 	return count, nil
+}
+
+func deliveryRecords(records []db.VerificationPublicationDeliveryRecord) ([]core.VerificationDelivery, error) {
+	out := make([]core.VerificationDelivery, 0, len(records))
+	for _, r := range records {
+		var d core.VerificationDelivery
+		if err := json.Unmarshal(r.Body, &d); err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, nil
+}
+func putDelivery(ctx context.Context, q *db.Queries, d core.VerificationDelivery) error {
+	body, err := json.Marshal(d)
+	if err != nil {
+		return err
+	}
+	if len(body) > 32768 {
+		return store.ErrVerificationInvalid
+	}
+	return q.PutVerificationPublicationDelivery(ctx, db.VerificationPublicationDeliveryRecord{WorkspaceID: d.WorkspaceID, ID: d.ID, TaskID: d.TaskID, ContextID: d.ContextID, SourcePublicationID: d.SourcePublicationID, PRKey: store.VerificationDeliveryKey(d.Repository, d.PullRequestNumber), Generation: int64(d.Generation), State: d.State, Body: body, NextAttemptAt: d.NextAttemptAt})
+}
+func (s *Store) deliveryIntentTx(ctx context.Context, tx pgx.Tx, q *db.Queries, task string, rows []store.VerificationRow, sourceID string) error {
+	events, err := q.ListEvents(ctx, db.ListEventsParams{WorkspaceID: workspace(ctx), TaskID: nullableText(task)})
+	if err != nil {
+		return err
+	}
+	es := make([]core.Event, len(events))
+	for i, e := range events {
+		es[i] = eventFromDB(e)
+	}
+	pr, found := store.VerificationPRFromEvents(es)
+	if !found {
+		return nil
+	}
+	if _, err = tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtext($1))", "conveyor:verification-publication:"+workspace(ctx)+":"+store.VerificationDeliveryKey(pr.Repository, pr.Number)); err != nil {
+		return err
+	}
+	records, err := q.ListVerificationPublicationDeliveries(ctx, workspace(ctx), store.VerificationDeliveryKey(pr.Repository, pr.Number))
+	if err != nil {
+		return err
+	}
+	prior, err := deliveryRecords(records)
+	if err != nil {
+		return err
+	}
+	added, updates, err := store.PrepareVerificationDelivery(workspace(ctx), task, pr, rows, prior, sourceID, time.Now().UTC())
+	if err != nil {
+		return err
+	}
+	for _, v := range added {
+		if err = q.PutVerificationRecord(ctx, db.VerificationRecord{Table: v.Table, WorkspaceID: workspace(ctx), ID: v.ID, TaskID: v.TaskID, ContextID: v.ContextID, RunID: v.RunID, LogicalKey: v.LogicalKey, KeyHash: fmt.Sprintf("%x", sha256.Sum256([]byte(store.VerificationStorageKey(v)))), State: v.State, Body: v.Body}); err != nil {
+			return err
+		}
+	}
+	for _, d := range updates {
+		if err = putDelivery(ctx, q, d); err != nil {
+			return err
+		}
+		if d.State == "pending" {
+			a := store.VerificationDeliveryArgs(d)
+			if _, err = logqueue.Enqueue(pglog.WithTx(ctx, tx), s.log, workspace(ctx), a.Kind(), a.UniqueKey(), a, 5, time.Now().UTC()); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+func (s *Store) RecordVerificationPullRequest(ctx context.Context, e core.Event) error {
+	if _, ok := store.WorkspaceFromContext(ctx); !ok || e.Kind != "pull_request.opened" {
+		return store.ErrVerificationAccess
+	}
+	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		if _, err := s.verificationScopeTx(ctx, tx, store.VerificationAccess{TaskID: e.TaskID, UserID: "internal-publication"}, false); err != nil {
+			return err
+		}
+		if e.JobID != "" {
+			j, err := q.GetJob(ctx, db.GetJobParams{WorkspaceID: workspace(ctx), ID: e.JobID})
+			if err != nil || j.TaskID != e.TaskID {
+				return store.ErrVerificationAccess
+			}
+		}
+		if err := insertEvent(ctx, q, e); err != nil {
+			return err
+		}
+		records, err := q.ListVerificationRecords(ctx, workspace(ctx), e.TaskID)
+		if err != nil {
+			return err
+		}
+		if err = s.deliveryIntentTx(ctx, tx, q, e.TaskID, verificationRows(records), ""); err != nil {
+			return err
+		}
+		return store.VerificationFault(ctx, "queue")
+	})
+}
+func (s *Store) TranslateVerificationPublication(ctx context.Context, p store.VerificationPublication) error {
+	if _, ok := store.WorkspaceFromContext(ctx); !ok {
+		return store.ErrVerificationAccess
+	}
+	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		if _, err := s.verificationScopeTx(ctx, tx, store.VerificationAccess{TaskID: p.TaskID, UserID: "internal-publication"}, false); err != nil {
+			return err
+		}
+		records, err := q.ListVerificationRecords(ctx, workspace(ctx), p.TaskID)
+		if err != nil {
+			return err
+		}
+		return s.deliveryIntentTx(ctx, tx, q, p.TaskID, verificationRows(records), p.ID)
+	})
+}
+func (s *Store) RunVerificationDelivery(ctx context.Context, a queue.VerificationPublicationArgs, fn func(*core.VerificationDelivery, func(string, core.VerificationDelivery) error) error) error {
+	if !a.ValidWorkspace(workspace(ctx)) {
+		return store.ErrVerificationAccess
+	}
+	var tx pgx.Tx
+	var q *db.Queries
+	key := store.VerificationDeliveryKey(a.Repository, a.PullRequestNumber)
+	begin := func() error {
+		var err error
+		tx, err = s.pool.Begin(ctx)
+		if err != nil {
+			return err
+		}
+		q = s.queries.WithTx(tx)
+		_, err = tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtext($1))", "conveyor:verification-publication:"+workspace(ctx)+":"+key)
+		return err
+	}
+	defer func() {
+		if tx != nil {
+			_ = tx.Rollback(context.Background())
+		}
+	}()
+	if err := begin(); err != nil {
+		return err
+	}
+	load := func() (core.VerificationDelivery, bool, error) {
+		rs, e := q.ListVerificationPublicationDeliveries(ctx, workspace(ctx), key)
+		if e != nil {
+			return core.VerificationDelivery{}, false, e
+		}
+		ds, e := deliveryRecords(rs)
+		if e != nil {
+			return core.VerificationDelivery{}, false, e
+		}
+		d, ok := store.VerificationDeliveryLatest(ds)
+		return d, ok, nil
+	}
+	current, ok, err := load()
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return tx.Commit(ctx)
+	}
+	view := current
+	check := func() error {
+		latest, ok, e := load()
+		if e != nil {
+			return e
+		}
+		if !ok || latest.ID != current.ID || latest.Generation != current.Generation {
+			return store.ErrVerificationConflict
+		}
+		return nil
+	}
+	save := func(command string, next core.VerificationDelivery) error {
+		if command == "check" {
+			return check()
+		}
+		updated, e := store.AdvanceVerificationDelivery(current, command, next, time.Now().UTC())
+		if e != nil {
+			return e
+		}
+		if e = putDelivery(ctx, q, updated); e != nil {
+			return e
+		}
+		current = updated
+		view = updated
+		if command == "attempt" {
+			// Commit retrying before network access. Reacquire the PR lock and verify
+			// the target again, so a generation committed in this gap wins safely.
+			if e = tx.Commit(ctx); e != nil {
+				return e
+			}
+			tx = nil
+			if e = begin(); e != nil {
+				return e
+			}
+			return check()
+		}
+		return nil
+	}
+	if err = fn(&view, save); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+func (s *Store) ReconcileVerificationDeliveries(ctx context.Context) error {
+	if _, ok := store.WorkspaceFromContext(ctx); !ok {
+		return store.ErrVerificationAccess
+	}
+	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtext($1))", "conveyor:verification:"+workspace(ctx)); err != nil {
+			return err
+		}
+		rows, err := tx.Query(ctx, `SELECT body FROM verification_publication_deliveries WHERE workspace_id=$1 AND (state IN ('pending','retrying') OR state='failed' AND next_attempt_at<=$2) ORDER BY pr_key,generation LIMIT 100`, workspace(ctx), time.Now().UTC())
+		if err != nil {
+			return err
+		}
+		var ds []core.VerificationDelivery
+		for rows.Next() {
+			var raw []byte
+			if err = rows.Scan(&raw); err != nil {
+				rows.Close()
+				return err
+			}
+			var d core.VerificationDelivery
+			if err = json.Unmarshal(raw, &d); err != nil {
+				rows.Close()
+				return err
+			}
+			ds = append(ds, d)
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return err
+		}
+		for _, d := range ds {
+			if d.State == "failed" {
+				next, e := store.AdvanceVerificationDelivery(d, "retry", d, time.Now().UTC())
+				if e != nil {
+					return e
+				}
+				if e = putDelivery(ctx, q, next); e != nil {
+					return e
+				}
+				d = next
+			}
+			a := store.VerificationDeliveryArgs(d)
+			if _, err = logqueue.Enqueue(pglog.WithTx(ctx, tx), s.log, workspace(ctx), a.Kind(), a.UniqueKey(), a, 5, time.Now().UTC()); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }

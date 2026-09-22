@@ -362,7 +362,7 @@ func verificationOperationResolved(state string) bool {
 }
 
 func verificationPublicationMutation(c VerificationCommand, v VerificationPublication, rows []VerificationRow, now time.Time, out *VerificationMutation) error {
-	if v.PullRequestNumber <= 0 || v.HeadSHA == "" || v.BodyDigest == "" {
+	if v.Delivery != nil || v.PullRequestNumber <= 0 || v.HeadSHA == "" || v.BodyDigest == "" {
 		return ErrVerificationInvalid
 	}
 	v.ID = verificationID()

@@ -21,7 +21,7 @@ func (rt *Runtime) clockLoop(ws *workspace) {
 	tick := 0
 	fire := func() {
 		tick++
-		job := queue.Job{ID: fmt.Sprintf("clock/%s@%d", ws.id, tick), Kind: rt.clockKind, Attempt: 1, MaxAttempts: 1, Args: args}
+		job := queue.Job{WorkspaceID: ws.id, ID: fmt.Sprintf("clock/%s@%d", ws.id, tick), Kind: rt.clockKind, Attempt: 1, MaxAttempts: 1, Args: args}
 		if err := reg.Handle(rt.runCtx, job); err != nil && !errors.Is(err, context.Canceled) {
 			rt.opts.Logf("logqueue: order clock %s: %v", ws.id, err)
 		}

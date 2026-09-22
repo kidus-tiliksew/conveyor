@@ -16,6 +16,8 @@ import (
 
 // Job is one unit of work handed to a handler.
 type Job struct {
+	// WorkspaceID is supplied by the partitioned runtime, never decoded from Args.
+	WorkspaceID string
 	// ID is the driver's identity for the row, opaque to handlers.
 	ID string
 	// Kind matches the registration the driver routed the job to.
@@ -56,8 +58,11 @@ func Snooze(d time.Duration) error { return &SnoozeError{Duration: d} }
 
 // Registration binds a kind to its handler and retry policy.
 type Registration struct {
-	Kind   string
-	Handle Handler
+	// Reconcile repairs durable intents suppressed by an active stream. It runs
+	// on the existing poll loop without recording timer ticks.
+	Reconcile func(context.Context, string) error
+	Kind      string
+	Handle    Handler
 	// RetryDelay, when set, decides how long after a failed attempt the next
 	// one runs. Nil uses the driver's default backoff.
 	RetryDelay func(attempt int) time.Duration

@@ -36,6 +36,8 @@ import (
 var ErrReviewedHeadUnavailable = errors.New("reviewed head SHA is unavailable")
 
 type Dispatcher struct {
+	ReadVerificationPR         func(context.Context, string, int) (github.VerificationPullRequest, error)
+	WriteVerificationPR        func(context.Context, string, int, string) error
 	Store                      store.Store
 	Cfg                        *config.Config
 	Pack                       *pack.Bundle

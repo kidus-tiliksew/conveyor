@@ -418,7 +418,7 @@ func TestRuntimeEnsureWorkspaceAfterStartAndClock(t *testing.T) {
 	rt := NewRuntime(log, Options{PollInterval: 10 * time.Millisecond, ClockInterval: 15 * time.Millisecond})
 	rt.Register(queue.Registration{Kind: queue.OrderClockArgs{}.Kind(), Handle: func(_ context.Context, job queue.Job) error {
 		args, err := queue.DecodeArgs[queue.OrderClockArgs](job)
-		if err != nil || args.WorkspaceID != "late" {
+		if err != nil || args.WorkspaceID != "late" || job.WorkspaceID != "late" {
 			return fmt.Errorf("clock args=%+v err=%v", args, err)
 		}
 		atomic.AddInt32(&ticks, 1)
@@ -461,5 +461,46 @@ func TestDefaultRetryDelayDoublesAndCaps(t *testing.T) {
 	}
 	if defaultRetryDelay(40) != time.Hour {
 		t.Fatalf("cap=%s", defaultRetryDelay(40))
+	}
+}
+
+func TestRuntimeTrustedWorkspaceAndPublicationWakeup(t *testing.T) {
+	log := memlog.New()
+	var completed atomic.Int32
+	var pending atomic.Bool
+	pending.Store(true)
+	rt := NewRuntime(log, Options{Workspaces: []string{"alpha"}, PollInterval: time.Millisecond * 5})
+	rt.Register(queue.Registration{Kind: "publication", Handle: func(ctx context.Context, job queue.Job) error {
+		if job.WorkspaceID != "alpha" {
+			t.Errorf("untrusted partition: %q", job.WorkspaceID)
+		}
+		pending.Store(false)
+		if completed.Add(1) == 1 {
+			// New evidence commits after reconciliation but before queue completion.
+			pending.Store(true)
+			inserted, err := Enqueue(ctx, log, "alpha", "publication", "same-pr", map[string]string{"workspace_id": "forged"}, 5, time.Now())
+			if err != nil || inserted {
+				t.Errorf("active enqueue=%t err=%v", inserted, err)
+			}
+		}
+		return nil
+	}, Reconcile: func(ctx context.Context, ws string) error {
+		if pending.Load() {
+			_, err := Enqueue(ctx, log, ws, "publication", "same-pr", map[string]string{"workspace_id": "forged"}, 5, time.Now())
+			return err
+		}
+		return nil
+	}})
+	if err := rt.Start(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	defer rt.Stop(context.Background())
+	deadline := time.After(3 * time.Second)
+	for completed.Load() < 2 {
+		select {
+		case <-deadline:
+			t.Fatal("suppressed generation lost its wakeup")
+		case <-time.After(time.Millisecond * 5):
+		}
 	}
 }

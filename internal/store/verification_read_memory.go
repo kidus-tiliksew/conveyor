@@ -177,6 +177,16 @@ func (m *volatileMemory) ReadVerificationPage(ctx context.Context, a Verificatio
 			metadata["attempt_count"] = strconv.Itoa(count)
 		}
 		item.Metadata = verificationJSON(metadata)
+		if p.Kind == "publications" {
+			for _, d := range m.verificationDeliveries {
+				if d.WorkspaceID == ws && d.TaskID == a.TaskID && d.ContextID == p.ContextID && d.SourcePublicationID == item.ID {
+					if err = JoinVerificationDelivery(&item, d); err != nil {
+						return VerificationReadPage{}, err
+					}
+					break
+				}
+			}
+		}
 		add(item)
 	}
 	return VerificationPageResult(ctx, a, p, items), nil

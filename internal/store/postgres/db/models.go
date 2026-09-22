@@ -503,3 +503,11 @@ type VerificationRecord struct {
 	Body                                                                         []byte
 	ExpiresAt                                                                    *time.Time
 }
+
+// VerificationPublicationDeliveryRecord is the separate VK-9 delivery projection.
+type VerificationPublicationDeliveryRecord struct {
+	WorkspaceID, ID, TaskID, ContextID, SourcePublicationID, PRKey, State string
+	Generation                                                            int64
+	NextAttemptAt                                                         *time.Time
+	Body                                                                  []byte
+}
