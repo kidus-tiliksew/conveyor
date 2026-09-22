@@ -52,6 +52,20 @@ func TestEmbeddedSkillsMatchRepositorySources(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	// VK-8: both wrappers and their canonical playbooks must be released.
+	for _, name := range []string{"conveyor-kit", "conveyor-kit-verify"} {
+		for _, required := range []string{".claude/skills/" + name + "/SKILL.md", "docs/playbooks/" + name + ".md"} {
+			count := 0
+			for _, source := range manifestSources {
+				if source == required {
+					count++
+				}
+			}
+			if count != 1 {
+				t.Errorf("manifest contains %d copies of %s, want 1", count, required)
+			}
+		}
+	}
 	sort.Strings(manifestSources)
 	sort.Strings(repositorySkills)
 	wantedSkills := make([]string, 0, len(manifestSources))
@@ -62,6 +76,35 @@ func TestEmbeddedSkillsMatchRepositorySources(t *testing.T) {
 	}
 	if strings.Join(repositorySkills, "\n") != strings.Join(wantedSkills, "\n") {
 		t.Fatalf("embedded skill set does not match repository skill set\nrepository:\n%s\nembedded:\n%s", strings.Join(repositorySkills, "\n"), strings.Join(wantedSkills, "\n"))
+	}
+}
+
+func TestVerificationKitSkillsInstallWithSiblingPlaybooks(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	destinations := skillDestinations(base, supportedSkillTools, true)
+	if _, _, err := installEmbeddedSkillsForDestinations(base, destinations, "v1", false); err != nil {
+		t.Fatal(err)
+	}
+	for _, destination := range destinations {
+		for _, name := range []string{"conveyor-kit", "conveyor-kit-verify"} {
+			root := filepath.Join(destination.root, name)
+			wrapper, err := os.ReadFile(filepath.Join(root, "SKILL.md"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			link := "[" + name + ".md](" + name + ".md)"
+			if !bytes.Contains(wrapper, []byte(link)) || bytes.Contains(wrapper, []byte("../../../docs/")) {
+				t.Errorf("%s installed %s does not link to its sibling playbook", destination.tool.name, name)
+			}
+			playbook, err := os.ReadFile(filepath.Join(root, name+".md"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, owned := managedSkillVersion(playbook, "docs/playbooks/"+name+".md"); !owned {
+				t.Errorf("%s installed %s playbook has no ownership marker", destination.tool.name, name)
+			}
+		}
 	}
 }
 
