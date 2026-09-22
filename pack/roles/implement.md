@@ -90,6 +90,10 @@ Working discipline:
   It pushes the exact commit, opens or reuses the PR with the executing machine's
   credential, and submits `head_sha` for validation. If the PR is already open,
   direct `submit_for_review` requires the pushed `head_sha`.
+  The frozen `verify_stage` policy routes this submission to verification when
+  enabled, or directly to review when disabled (DEC-43;
+  feature-verification-kit-execution VK-2/VK-8). Implementation validation
+  remains required; its attachments do not replace a verify-stage result.
   After `submit_for_review` succeeds,
   report the handoff and exit the session. Never poll `await_review` from an
   implementation stage session: the launcher owns review verdicts and starts
@@ -111,6 +115,7 @@ Working discipline:
 Stage exit discipline:
 
 - A successful `submit_for_review` is the end of this stage session. Report it
-  and exit so an attached run or worker can schedule the independent review.
+  and exit so an attached run or worker can schedule the next stage. Do not
+  run verification or judge acceptance under the implementation claim.
 - A review bounce never revives this submitted order. It creates a successor
   implementation order with its own fresh session and delivered feedback.
