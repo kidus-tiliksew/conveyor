@@ -250,18 +250,23 @@ func TestWorkerLocalGitPreflightCachesSuccessfulRepositoryBeforeClaims(t *testin
 	t.Setenv("CONVEYOR_WORKER_TOKEN", "enrolled-worker")
 	configPath := writeWorkerLocalExecutionConfig(t, []string{"true", "{prompt}", "{mcp_config}"}, []string{"true"})
 	var checked, claims atomic.Int32
-	var specClaimed, reviewClaimed atomic.Bool
+	// Both orders are listed exactly once. Dropping an order from the list only
+	// after its claim was rejected leaves a window in which the worker's poll
+	// snapshot still names the order while its rejected child has already left
+	// the active set, so the worker legitimately claims it again and the count
+	// depends on scheduling. Listing once bounds the claims at one per order,
+	// and once mode exits on the first empty poll after both children finish.
+	var listed atomic.Bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/v1/worker/heartbeat":
 			_ = json.NewEncoder(w).Encode(core.Worker{ID: "worker"})
 		case "/v1/worker/work-orders":
 			orders := []workerservice.DispatchOrder{}
-			for _, stage := range []core.Stage{core.StageSpec, core.StageReview} {
-				if (stage == core.StageSpec && specClaimed.Load()) || (stage == core.StageReview && reviewClaimed.Load()) {
-					continue
+			if listed.CompareAndSwap(false, true) {
+				for _, stage := range []core.Stage{core.StageSpec, core.StageReview} {
+					orders = append(orders, workerservice.DispatchOrder{Task: core.Task{ID: string(stage), Repo: "repo"}, Repository: config.Repo{URL: "https://example.test/repo.git"}, Order: core.WorkOrder{ID: string(stage), Stage: stage, ReviewSeat: 1, Claimable: true}})
 				}
-				orders = append(orders, workerservice.DispatchOrder{Task: core.Task{ID: string(stage), Repo: "repo"}, Repository: config.Repo{URL: "https://example.test/repo.git"}, Order: core.WorkOrder{ID: string(stage), Stage: stage, ReviewSeat: 1, Claimable: true}})
 			}
 			_ = json.NewEncoder(w).Encode(orders)
 		default:
@@ -270,11 +275,6 @@ func TestWorkerLocalGitPreflightCachesSuccessfulRepositoryBeforeClaims(t *testin
 					t.Error("claimed before successful preflight")
 				}
 				claims.Add(1)
-				if strings.Contains(r.URL.Path, "/spec/") {
-					specClaimed.Store(true)
-				} else {
-					reviewClaimed.Store(true)
-				}
 				http.Error(w, "another claimant won", http.StatusConflict)
 			} else {
 				http.NotFound(w, r)
@@ -283,9 +283,7 @@ func TestWorkerLocalGitPreflightCachesSuccessfulRepositoryBeforeClaims(t *testin
 	}))
 	defer server.Close()
 	c := &client{base: server.URL, workspace: "demo", gitPreflight: func(context.Context, workerservice.DispatchOrder, []string) error { checked.Add(1); return nil }}
-	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
-	defer cancel()
-	if err := runWorkerWithPolicyAndConfig(ctx, c, "", "test", true, defaultWorkerReconnectPolicy, configPath); err != nil {
+	if err := runWorkerWithPolicyAndConfig(t.Context(), c, "", "test", true, defaultWorkerReconnectPolicy, configPath); err != nil {
 		t.Fatal(err)
 	}
 	if checked.Load() != 1 || claims.Load() != 2 {
