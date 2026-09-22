@@ -21,6 +21,10 @@ func TestVK10PostgresScenarioIntegration(t *testing.T) {
 	if raw == "" {
 		t.Skip("missing PostgreSQL evidence: CONVEYOR_TEST_DATABASE_URL is unset")
 	}
+	parsed, err := url.Parse(raw)
+	if err != nil || !strings.HasSuffix(strings.TrimPrefix(parsed.Path, "/"), "_test") {
+		t.Fatal("VK-10 PostgreSQL requires a disposable database ending in _test")
+	}
 	vk10fixture.Run(t, func(t *testing.T) store.Backend {
 		admin, err := pgxpool.New(t.Context(), raw)
 		if err != nil {

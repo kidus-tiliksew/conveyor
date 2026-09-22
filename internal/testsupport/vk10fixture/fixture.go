@@ -17,6 +17,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -42,6 +43,7 @@ import (
 
 type fixture struct {
 	unavailable                                  bool
+	skipped                                      bool
 	t                                            *testing.T
 	b                                            store.Backend
 	ctx                                          context.Context
@@ -138,6 +140,8 @@ func newFixture(t *testing.T, b store.Backend, mode string) *fixture {
 	f.ctx = store.WithWorkspace(t.Context(), f.ws)
 	f.root, f.base, f.head = repository(t, mode)
 	f.cfg = &config.Config{Workspace: f.ws, Repos: []config.Repo{{Name: "conveyor", URL: "https://github.com/fixture/conveyor", GitHub: "fixture/conveyor", Base: "main"}}, Routing: config.Routing{Stages: map[string]config.StageRoute{}}}
+	f.cfg.Execution.VerifyStage = mode != "toggle-off"
+	f.cfg.MaxBounces = 3
 	for _, stage := range []string{"implement", "verify", "review"} {
 		f.cfg.Routing.Stages[stage] = config.StageRoute{Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"}
 	}
@@ -235,19 +239,20 @@ func newFixture(t *testing.T, b store.Backend, mode string) *fixture {
 		f.pr.Body = body
 		return nil
 	}
-	f.d.ReadVerificationPR = func(context.Context, string, int) (github.VerificationPullRequest, error) {
-		f.mu.Lock()
-		defer f.mu.Unlock()
+	forgeCall := apps.Runner("fixture-installation-token", github.AppIdentity(f.ws))
+	f.d.ReadVerificationPR = func(ctx context.Context, repo string, number int) (github.VerificationPullRequest, error) {
 		var pr github.VerificationPullRequest
-		pr.Number, pr.Body, pr.Head.SHA = f.pr.Number, f.pr.Body, f.pr.Head.SHA
-		return pr, nil
+		data, err := forgeCall(ctx, "api", fmt.Sprintf("repos/%s/pulls/%d", repo, number))
+		if err == nil {
+			err = json.Unmarshal(data, &pr)
+		}
+		return pr, err
 	}
-	f.d.WriteVerificationPR = func(_ context.Context, _ string, _ int, body string) error {
-		f.mu.Lock()
-		defer f.mu.Unlock()
-		f.pr.Body = body
-		return nil
+	f.d.WriteVerificationPR = func(ctx context.Context, repo string, number int, body string) error {
+		_, err := forgeCall(ctx, "api", fmt.Sprintf("repos/%s/pulls/%d", repo, number), "--method", "PATCH", "-f", "body="+body)
+		return err
 	}
+
 	server := httpapi.NewServer(b)
 	server.WorkOrders, server.Workspaces, server.Workspace = f.s, b, f.ws
 	server.Workers = &worker.Service{Store: b, WorkOrders: f.s}
@@ -256,6 +261,7 @@ func newFixture(t *testing.T, b store.Backend, mode string) *fixture {
 	t.Cleanup(f.api.Close)
 	f.task = core.Task{ID: core.NewTaskID(), Workspace: f.ws, Repo: "conveyor", Title: "VK-10 disposable fixture", Branch: "conveyor/fixture", BaseBranch: "main", State: core.TaskQueued, NextStage: core.StageImplement, MergeApproval: true, CreatedAt: time.Now().UTC()}
 	f.task.SetupContract.VerifyStage = mode != "toggle-off"
+	f.task.SetupContract.MaxBounces = 3
 	must(t, b.CreateTaskWithDependenciesAndContext(f.ctx, f.task, nil, store.TaskContextInput{RequirementIDs: []string{"req-verification-kits"}, DesignIDs: []string{"feature-verification-kit-execution"}}))
 	f.pr.Number, f.pr.URL, f.pr.Head.Ref, f.pr.Head.SHA, f.pr.Base.Ref, f.pr.Base.SHA = 42, "https://github.com/fixture/conveyor/pull/42", f.task.Branch, f.head, "main", f.base
 	return f
@@ -264,6 +270,24 @@ func newFixture(t *testing.T, b store.Backend, mode string) *fixture {
 func (f *fixture) serveForge(w http.ResponseWriter, r *http.Request) {
 	var value any
 	switch {
+	case r.URL.Path == "/repos/fixture/conveyor/pulls/42":
+		if r.Header.Get("Authorization") != "Bearer fixture-installation-token" {
+			http.Error(w, "fixture token required", 401)
+			return
+		}
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		if r.Method == "PATCH" {
+			var update struct {
+				Body string `json:"body"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&update); err != nil {
+				http.Error(w, "invalid body", 400)
+				return
+			}
+			f.pr.Body = update.Body
+		}
+		value = f.pr
 	case r.URL.Path == "/app/installations/12":
 		value = map[string]any{"id": 12, "app_id": 41, "account": map[string]string{"login": "fixture"}}
 	case r.URL.Path == "/app/installations/12/access_tokens":
@@ -419,6 +443,9 @@ func (f *fixture) prepareRunner() (string, string, string) {
 		must(t, json.Unmarshal(data, &m))
 		contract := m.Kits[0].Exercises[0]
 		contract.Argv = []string{"sh", ".conveyor/kits/vk10-script/run.sh"}
+		if f.skipped {
+			contract.Argv = []string{"true"}
+		} // A skipped integration emits no required observations.
 		if f.unavailable {
 			contract.Argv = []string{"vk10-unavailable-integration"}
 		}
@@ -545,7 +572,7 @@ func (f *fixture) addCaptures(png []byte) {
 	}
 	hash := fmt.Sprintf("%x", sha256.Sum256(png))
 	index := 0
-	request := workorder.VerificationArtifactRequest{ContextID: template.ContextID, RunID: template.RunID, UploadID: "screenshot", Index: &index, Content: png}
+	request := workorder.VerificationArtifactRequest{ContextID: template.ContextID, RunID: template.RunID, UploadID: "screenshot-" + template.RunID, Index: &index, Content: png}
 	must(t, f.rpc("upload_verification_artifact", request, nil))
 	request.Index, request.Content = nil, nil
 	request.Finalize = &workorder.VerificationArtifactFinalize{Name: "vk10.png", ContentType: "image/png", SizeBytes: int64(len(png)), SHA256: hash, SanitationRecord: "Disposable fixture UI contains only fixture identity and API observations.", MaskingAttestation: "No production identities, credentials or provider data are rendered."}
@@ -571,6 +598,17 @@ func (f *fixture) addCaptures(png []byte) {
 		if e.WorkspaceID != f.ws || e.TaskID != f.task.ID || e.WorkOrderID != f.order.ID || e.WorkOrderAttemptID != f.order.AttemptID || e.ContextID != template.ContextID || e.Revisions[0].SHA != f.head {
 			t.Fatal("evidence lost exact provenance")
 		}
+		if e.Type == "assertion_result" {
+			var assertion core.AssertionResultPayload
+			must(t, json.Unmarshal(e.Payload, &assertion))
+			for _, ref := range assertion.Supporting {
+				var support store.VerificationEvidenceRecord
+				must(t, f.rpc("read_verification_evidence", workorder.VerificationReadRequest{ContextID: e.ContextID, EvidenceID: ref.EvidenceID}, &support))
+				if support.Envelope.RunID != e.RunID {
+					t.Fatal("assertion support belongs to another run")
+				}
+			}
+		}
 		var read store.VerificationEvidenceRecord
 		must(t, f.rpc("read_verification_evidence", workorder.VerificationReadRequest{ContextID: e.ContextID, EvidenceID: e.ID}, &read))
 		var before, after any
@@ -595,6 +633,38 @@ func (f *fixture) addCaptures(png []byte) {
 	}
 }
 
+func (f *fixture) checkEvidencePages() {
+	t := f.t
+	f.refresh()
+	// Exercise the paginated dashboard read boundary independently of MCP.
+	seen := map[string]bool{}
+	cursor := ""
+	for {
+		var page store.VerificationReadPage
+		path := "/v1/tasks/" + f.task.ID + "/verification/contexts/" + f.snapshot.Contexts[0].ID + "/evidence?workspace_id=" + f.ws + "&limit=2"
+		if cursor != "" {
+			path += "&cursor=" + url.QueryEscape(cursor)
+		}
+		must(t, f.rest("GET", path, nil, &page))
+		for _, item := range page.Items {
+			if seen[item.ID] {
+				t.Fatal("duplicate evidence page item")
+			}
+			seen[item.ID] = true
+		}
+		if page.NextCursor == "" {
+			break
+		}
+		if page.NextCursor == cursor {
+			t.Fatal("evidence cursor did not advance")
+		}
+		cursor = page.NextCursor
+	}
+	if len(seen) != len(f.snapshot.Evidence) {
+		t.Fatal("dashboard pagination lost evidence")
+	}
+}
+
 func (f *fixture) publish() {
 	args := queue.VerificationPublicationArgs{WorkspaceID: f.ws, Repository: "fixture/conveyor", PullRequestNumber: 42}
 	for _, r := range f.d.Registrations(nil) {
@@ -610,6 +680,28 @@ func (f *fixture) publish() {
 			f.mu.Unlock()
 			if before != after || !strings.Contains(after, "conveyor:verification") {
 				f.t.Fatalf("publication not marked or idempotent: %s", after)
+			}
+			var publications store.VerificationReadPage
+			must(f.t, f.rest("GET", "/v1/tasks/"+f.task.ID+"/verification/contexts/"+f.snapshot.Contexts[0].ID+"/publications?workspace_id="+f.ws, nil, &publications))
+			if len(publications.Items) == 0 {
+				f.t.Fatal("publication durable status missing")
+			}
+			current := 0
+			for _, item := range publications.Items {
+				var metadata map[string]string
+				must(f.t, json.Unmarshal(item.Metadata, &metadata))
+				if metadata["current"] == "true" {
+					current++
+					if item.State != "published" || metadata["head_sha"] != f.head {
+						f.t.Fatalf("current publication state: %+v", item)
+					}
+				}
+			}
+			if current != 1 {
+				f.t.Fatalf("current publication count: %d", current)
+			}
+			if !strings.Contains(after, f.head) {
+				f.t.Fatal("publication lost source revision")
 			}
 			return
 		}
@@ -668,6 +760,9 @@ func (f *fixture) review(changes ...bool) {
 	found := false
 	for _, e := range events {
 		if strings.Contains(string(e.Payload), vc.ID) && strings.Contains(string(e.Payload), "verification_assessment") {
+			if e.ActorID == "" {
+				t.Fatal("review decision lost actor attribution")
+			}
 			found = true
 		}
 	}
@@ -701,6 +796,7 @@ func (f *fixture) runUI(coverage, inputs, cfg string) {
 	if err != nil {
 		t.Fatalf("CLI: %v: %s", err, output.String())
 	}
+	f.checkEvidencePages()
 }
 
 // Run executes the same scenario adapter against an isolated backend.
@@ -714,6 +810,13 @@ func Run(t *testing.T, factory func(*testing.T) store.Backend) {
 		must(t, f.rpc("prepare_verification", workorder.VerificationPrepareRequest{RequestKey: "scenario"}, &f.snapshot))
 		if len(f.snapshot.Contexts) != 1 || len(f.snapshot.Selections) != 1 || len(f.snapshot.Selections[0].Subjects) != 2 {
 			t.Fatalf("kit discovery: %+v", f.snapshot)
+		}
+		orders, err := f.b.ListTaskWorkOrders(f.ctx, f.task.ID)
+		must(t, err)
+		for _, order := range orders {
+			if order.Stage == core.StageReview {
+				t.Fatal("review order created before verification")
+			}
 		}
 		coverage, inputs, cfg := f.prepareRunner()
 		if err := f.rpc("submit_verification", workorder.VerificationSubmitRequest{ContextID: f.snapshot.Contexts[0].ID, Outcome: "succeeded", Coverage: f.coverage}, nil); err == nil {
@@ -766,6 +869,21 @@ func Run(t *testing.T, factory func(*testing.T) store.Backend) {
 			if len(f.snapshot.Selections) != 1 || len(f.snapshot.Selections[0].Subjects) != 0 || f.snapshot.Selections[0].Receipt.Invalid() {
 				t.Fatal("expected valid no-kit receipt")
 			}
+			var discovery struct {
+				State    string `json:"state"`
+				Revision string `json:"revision"`
+			}
+			if len(f.snapshot.Contexts[0].Discovery) != 1 {
+				t.Fatal("missing exact-revision discovery")
+			}
+			must(t, json.Unmarshal(f.snapshot.Contexts[0].Discovery[0], &discovery))
+			wantState := "present"
+			if mode == "absent" {
+				wantState = "no_manifest"
+			}
+			if discovery.State != wantState || discovery.Revision != f.head {
+				t.Fatalf("discovery: %+v", discovery)
+			}
 			if mode == "ineligible" {
 				for _, kit := range f.snapshot.Selections[0].Receipt.Kits {
 					if kit.Eligibility != "ineligible" || len(kit.Reasons) == 0 {
@@ -785,11 +903,38 @@ func Run(t *testing.T, factory func(*testing.T) store.Backend) {
 			if len(f.snapshot.Attempts) != 1 || f.snapshot.Attempts[0].Subject.Kind != "ordinary" || f.snapshot.Attempts[0].State != "succeeded" {
 				t.Fatal("ordinary attempt missing")
 			}
+			firstRun := f.snapshot.Attempts[0]
+			if _, err := f.runner(coverage, inputs, cfg, false).CombinedOutput(); err == nil {
+				t.Fatal("same start key relaunched ordinary exercise")
+			}
+			f.refresh()
+			if len(f.snapshot.Attempts) != 1 {
+				t.Fatal("replay created an attempt")
+			}
+			out, err = f.runner(coverage, inputs, cfg, false, "--retry-key", "fresh-read").CombinedOutput()
+			if err != nil {
+				t.Fatalf("safe read retry: %v: %s", err, out)
+			}
+			f.refresh()
+			if len(f.snapshot.Attempts) != 2 {
+				t.Fatal("retry did not retain both attempts")
+			}
+			foundOld, foundNew := false, false
+			for _, run := range f.snapshot.Attempts {
+				if run.ID == firstRun.ID {
+					foundOld = run.State == firstRun.State
+				} else {
+					foundNew = run.State == "succeeded"
+				}
+			}
+			if !foundOld || !foundNew {
+				t.Fatal("retry lost history or fresh success")
+			}
 			must(t, f.rpc("submit_verification", workorder.VerificationSubmitRequest{ContextID: f.snapshot.Contexts[0].ID, Outcome: "succeeded", Coverage: f.coverage}, nil))
 			f.review()
 		})
 	}
-	for _, mode := range []string{"FailedExercise", "UnavailableIntegration"} {
+	for _, mode := range []string{"FailedExercise", "UnavailableIntegration", "SkippedIntegration"} {
 		t.Run(mode, func(t *testing.T) {
 			f := newFixture(t, factory(t), "absent")
 			f.claim(core.StageImplement)
@@ -797,8 +942,9 @@ func Run(t *testing.T, factory func(*testing.T) store.Backend) {
 			f.claim(core.StageVerify)
 			must(t, f.rpc("prepare_verification", workorder.VerificationPrepareRequest{RequestKey: "control"}, &f.snapshot))
 			f.unavailable = mode == "UnavailableIntegration"
+			f.skipped = mode == "SkippedIntegration"
 			f.mu.Lock()
-			f.fail = !f.unavailable
+			f.fail = !f.unavailable && !f.skipped
 			f.mu.Unlock()
 			coverage, inputs, cfg := f.prepareRunner()
 			out, err := f.runner(coverage, inputs, cfg, false).CombinedOutput()
@@ -810,11 +956,24 @@ func Run(t *testing.T, factory func(*testing.T) store.Backend) {
 				t.Fatalf("expected one attempt: %+v", f.snapshot.Attempts)
 			}
 			oldRun := f.snapshot.Attempts[0]
+			if f.unavailable && len(f.snapshot.Evidence) != 0 {
+				t.Fatal("unavailable integration fabricated evidence")
+			}
+			if f.skipped {
+				for _, item := range f.snapshot.Evidence {
+					if item.Envelope.Type != "execution_report" {
+						t.Fatal("skipped integration fabricated observations")
+					}
+				}
+			}
 			outcome := "feedback"
 			expected := "failed"
-			if f.unavailable {
+			if f.unavailable || f.skipped {
 				outcome = "operator_action_required"
 				expected = "blocked"
+			}
+			if f.skipped {
+				expected = "waiting"
 			}
 			if oldRun.State != expected {
 				t.Fatalf("outcome=%s expected=%s", oldRun.State, expected)
@@ -825,7 +984,7 @@ func Run(t *testing.T, factory func(*testing.T) store.Backend) {
 			must(t, f.rpc("submit_verification", workorder.VerificationSubmitRequest{ContextID: f.snapshot.Contexts[0].ID, Outcome: outcome, Coverage: f.coverage, Feedback: "Fixture exercise requires correction or restoration of its unavailable integration."}, nil))
 			task, err := f.b.GetTask(f.ctx, f.task.ID)
 			must(t, err)
-			if f.unavailable {
+			if f.unavailable || f.skipped {
 				if task.NextStage != core.StageVerify {
 					t.Fatal("blocked exercise advanced")
 				}
@@ -849,6 +1008,7 @@ func Run(t *testing.T, factory func(*testing.T) store.Backend) {
 				must(t, f.rpc("submit_for_review", map[string]string{"head_sha": f.head}, nil))
 			}
 			f.unavailable = false
+			f.skipped = false
 			f.mu.Lock()
 			f.fail = false
 			f.mu.Unlock()
@@ -879,9 +1039,13 @@ func Run(t *testing.T, factory func(*testing.T) store.Backend) {
 				t.Fatal("toggle-off created verify order")
 			}
 		}
-		var summary json.RawMessage
+		var summary struct {
+			Current  string                                `json:"current_context_id"`
+			Contexts store.VerificationReadPage            `json:"contexts"`
+			Overview map[string]store.VerificationReadPage `json:"overview"`
+		}
 		must(t, f.rest("GET", "/v1/tasks/"+f.task.ID+"/verification?workspace_id="+f.ws, nil, &summary))
-		if strings.Contains(string(summary), "selected_kits") {
+		if summary.Current != "" || len(summary.Contexts.Items) != 0 || len(summary.Overview) != 0 {
 			t.Fatal("toggle-off created verification result")
 		}
 	})

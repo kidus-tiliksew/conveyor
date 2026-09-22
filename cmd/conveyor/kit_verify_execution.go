@@ -286,11 +286,11 @@ func (v *kitVerifier) launch(ctx context.Context, e verification.Exercise, cwd, 
 	stdout, stderr := &kitBoundedOutput{limit: 1 << 20}, &kitBoundedOutput{limit: 1 << 20}
 	tool, err := kitExecutable(e.Argv[0], cwd)
 	if err != nil {
-		return err
+		return v.prelaunchBlocked(launchCtx, dir, runID, grantID, "exercise executable is unavailable")
 	}
 	before, err := kitToolDigest(tool)
 	if err != nil {
-		return err
+		return v.prelaunchBlocked(launchCtx, dir, runID, grantID, "exercise executable digest could not be prepared")
 	}
 	environment.Attributes["tool_sha256_before"] = before
 	command := exec.Command(tool, e.Argv[1:]...)
@@ -486,6 +486,30 @@ func (v *kitVerifier) launch(ctx context.Context, e verification.Exercise, cwd, 
 		return fmt.Errorf("exercise %s: %s %s", e.ID, state, explanation)
 	}
 	return nil
+}
+
+// VK-4 / VK-10: an authorized attempt that cannot launch stays missing
+// execution evidence. Report only while the original authority remains valid;
+// leave prepared operations untouched for the server's reconciliation rules.
+func (v *kitVerifier) prelaunchBlocked(ctx context.Context, dir, runID, grantID, diagnostic string) error {
+	// Callers supply fixed diagnostics, never raw paths, argv, or credentials.
+	if err := v.checkCheckout(ctx); err != nil {
+		return fmt.Errorf("%s; outcome not reported: %w", diagnostic, err)
+	}
+	if err := v.live(ctx, grantID); err != nil {
+		return fmt.Errorf("%s; outcome not reported: %w", diagnostic, err)
+	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("%s; outcome not reported: %w", diagnostic, err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "prelaunch.json"), core.JSONPayload(map[string]string{"diagnostic": diagnostic}), 0600); err != nil {
+		return fmt.Errorf("%s; retain diagnostic: %w", diagnostic, err)
+	}
+	if err := v.rpc.call(ctx, "report_verification_outcome", workorder.VerificationOutcomeRequest{ContextID: v.snapshot.Contexts[0].ID, RunID: runID, State: "blocked", Explanation: diagnostic}, nil); err != nil {
+		return fmt.Errorf("%s; outcome reporting failed: %w", diagnostic, err)
+	}
+	_, _ = fmt.Fprintf(v.output, "%s: blocked (attempt %s)\n", diagnostic, runID)
+	return fmt.Errorf("%s", diagnostic)
 }
 
 func (v *kitVerifier) evidenceBatch(runID string, subject core.VerificationSubject, environment core.VerificationEnvironment, key, kind string, payload json.RawMessage, captured ...time.Time) ([]byte, error) {

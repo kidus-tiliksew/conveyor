@@ -223,7 +223,7 @@ func TestVerificationDispatchReviewBinding(t *testing.T) {
 	for _, scope := range []string{"", config.RefreshReviewDelta, config.RefreshReviewFull} {
 		t.Run(scope, func(t *testing.T) {
 			ctx := store.WithWorkspace(t.Context(), "demo")
-			st := store.NewMemory()
+			st := store.NewVolatileBackend()
 			defer st.Close()
 			task := core.Task{ID: core.NewTaskID(), Workspace: "demo", Repo: "repo", State: core.TaskQueued, NextStage: core.StageVerify, ReviewedHeadSHA: "head"}
 			task.SetupContract.VerifyStage = true
@@ -254,10 +254,22 @@ func TestVerificationDispatchReviewBinding(t *testing.T) {
 			if len(orders) != 1 || orders[0].HeadSHA != head || orders[0].BaselineSHA != base || orders[0].ReviewScope != scope {
 				t.Fatalf("verify binding: %+v", orders)
 			}
-			if err := d.createReviewRound(ctx, cfg, task, route); err != nil {
+			// Compare the review producer on an independent toggle-off control.
+			// The end-to-end VK-10 scenario proves the sealed verify-to-review path.
+			control := task
+			control.ID = core.NewTaskID()
+			control.NextStage = core.StageReview
+			control.SetupContract.VerifyStage = false
+			if err := st.CreateTask(ctx, control); err != nil {
 				t.Fatal(err)
 			}
-			orders, err = st.ListTaskWorkOrders(ctx, task.ID)
+			if err := st.AppendEvent(ctx, core.Event{TaskID: control.ID, Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]string{"base_sha": "base", "head_sha": "head"})}); err != nil {
+				t.Fatal(err)
+			}
+			if err := d.createReviewRound(ctx, cfg, control, route); err != nil {
+				t.Fatal(err)
+			}
+			orders, err = st.ListTaskWorkOrders(ctx, control.ID)
 			if err != nil {
 				t.Fatal(err)
 			}

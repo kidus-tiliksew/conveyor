@@ -21,7 +21,7 @@ TEST_DATABASE_URL ?= postgres://conveyor:conveyor@127.0.0.1:$(TEST_POSTGRES_PORT
 PLAYWRIGHT_ARGS ?=
 PLAYWRIGHT_INSTALL_ARGS ?=
 PLAYWRIGHT_WORKERS ?= 2
-RUN_WEB_TESTS = cd web && npx playwright install $(PLAYWRIGHT_INSTALL_ARGS) chromium && npm run lint && PLAYWRIGHT_WORKERS=$(PLAYWRIGHT_WORKERS) npm run test:e2e -- $(PLAYWRIGHT_ARGS)
+RUN_WEB_TESTS = cd web && npm run lint && PLAYWRIGHT_WORKERS=$(PLAYWRIGHT_WORKERS) npm run test:e2e -- $(PLAYWRIGHT_ARGS)
 DEV_COMPOSE := docker compose --env-file $(ENV_FILE) -f compose.dev.yaml
 
 .PHONY: all build image test-image release release-archives test-release web-deps web-typecheck ui dashboard-fresh test test-web test-ui test-ui-evidence compose-check test-integration test-integration-ci test-postgres test-db-identity test-db-up test-db-down vet plugin-check fmt fmt-check tidy clean db-up db-down run build-run dev
@@ -46,18 +46,21 @@ test-validation:
 build: conveyor-cli
 	go build $(LDFLAGS) -o $(BIN)/conveyord ./cmd/conveyord
 
-.PHONY: conveyor-cli vk10-runtime test-vk10
+.PHONY: conveyor-cli browser-runtime vk10-runtime test-vk10
 conveyor-cli: ui
 	go build $(LDFLAGS) -o $(BIN)/conveyor ./cmd/conveyor
 
 # VK-10: each gate builds its own CLI and prepares the browser before fixtures.
 export CONVEYOR_VK10_CLI := $(abspath $(BIN)/conveyor)
 export CONVEYOR_VK10_SOURCE := $(CURDIR)
-vk10-runtime: conveyor-cli web-deps
+vk10-runtime: conveyor-cli browser-runtime
+
+browser-runtime: web-deps
 	cd web && npx playwright install $(PLAYWRIGHT_INSTALL_ARGS) chromium
 
 test-vk10: vk10-runtime
 	CONVEYOR_TEST_DATABASE_URL= CONVEYOR_TEST_SINGLESTORE_URL= go test -v ./internal/verification -run '^TestVK10Scenario$$' -count=1
+	CONVEYOR_TEST_DATABASE_URL= CONVEYOR_TEST_SINGLESTORE_URL= go test ./cmd/conveyor ./internal/dispatch ./internal/store -run 'TestKitRunner|TestKitVerifyOrdinary|TestVerificationDispatchReviewBinding|TestPolicyHandoffVerificationBinding|TestMemoryConformance/WorkOrders/VerifyPolicy' -count=1
 
 image:
 	docker build --build-arg VERSION="$(VERSION)" --tag "$(IMAGE)" .
@@ -115,7 +118,7 @@ test: compose-check dashboard-fresh test-release test-validation vk10-runtime
 	CONVEYOR_TEST_DATABASE_URL= CONVEYOR_TEST_SINGLESTORE_URL= go test ./...
 	$(RUN_WEB_TESTS)
 
-test-web: web-typecheck
+test-web: web-typecheck browser-runtime
 	$(RUN_WEB_TESTS)
 
 test-ui: ui
