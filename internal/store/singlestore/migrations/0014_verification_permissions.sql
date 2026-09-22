@@ -1,4 +1,4 @@
--- VK-4; req-verification-kits REQ-7/AC-7.3. Immutable grants and append-only revocations.
+-- VK-4. req-verification-kits REQ-7/AC-7.3. Immutable grants and append-only revocations.
 CREATE ROWSTORE TABLE IF NOT EXISTS verification_permission_grants (
  workspace_id VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
  id VARCHAR(512) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,

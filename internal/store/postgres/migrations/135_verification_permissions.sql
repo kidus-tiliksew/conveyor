@@ -1,4 +1,4 @@
--- VK-4; req-verification-kits REQ-7/AC-7.3. Immutable grants and append-only revocations.
+-- VK-4. req-verification-kits REQ-7/AC-7.3. Immutable grants and append-only revocations.
 CREATE TABLE verification_permission_grants (
  workspace_id TEXT NOT NULL REFERENCES workspaces(id),
  id TEXT NOT NULL,
