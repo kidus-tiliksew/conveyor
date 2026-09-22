@@ -87,6 +87,7 @@ type VerificationReplayAuthorization struct {
 }
 
 type VerificationAttempt struct {
+	LocalActions                                           []core.VerificationPermission `json:"LocalActions,omitempty"`
 	GrantID                                                string                        `json:"GrantID,omitempty"`
 	GrantSnapshot                                          *VerificationPermissionGrant  `json:"GrantSnapshot,omitempty"`
 	EffectiveActions                                       []core.VerificationPermission `json:"EffectiveActions,omitempty"`
@@ -161,6 +162,7 @@ type VerificationArtifactInput struct {
 	SanitationRecord, MaskingAttestation string
 }
 type VerificationReceipt struct {
+	LaunchAuthorized   bool
 	DispatchAuthorized bool
 
 	State         string

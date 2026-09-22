@@ -155,9 +155,19 @@ func verificationAttemptMutation(c VerificationCommand, rows []VerificationRow, 
 		if err != nil {
 			return err
 		}
-		effective, err := verification.RequireVerificationPermissions(v.EffectiveActions, grant.Actions, grant.Actions)
+		if v.LocalActions == nil {
+			v.LocalActions = []core.VerificationPermission{}
+		}
+		effective, err := verification.RequireVerificationPermissions(v.EffectiveActions, grant.Actions, v.LocalActions)
 		if err != nil {
 			return fmt.Errorf("%w: %v", ErrVerificationAccess, err)
+		}
+		if err := verification.ValidateRequestedActions(contract, effective); err != nil {
+			return fmt.Errorf("%w: %v", ErrVerificationAccess, err)
+		}
+		v.LocalActions, err = verification.NormalizeVerificationPermissions(v.LocalActions)
+		if err != nil {
+			return ErrVerificationInvalid
 		}
 		v.GrantSnapshot = &grant
 		v.EffectiveActions = effective
@@ -276,6 +286,7 @@ func verificationAttemptMutation(c VerificationCommand, rows []VerificationRow, 
 			row.Body = verificationJSON(latest)
 			out.Rows = append(out.Rows, row)
 		}
+		out.Receipt.LaunchAuthorized = true
 		v.Ordinal = ordinal
 		v.StartedAt = now
 		out.Rows = append(out.Rows, verificationRow("verification_attempts", v.ID, c.Access.TaskID, c.ContextID, v.ID, c.ContextID+":"+c.Key, v.State, v))

@@ -141,3 +141,69 @@ func RequireVerificationPermissions(requested, authorized, local []VerificationP
 	}
 	return r, nil
 }
+
+// ValidateRequestedActions checks the closed action kinds and bindings declared
+// by the frozen contract. The host resolves paths and bindings; the server
+// independently checks that those actions are covered by the exact grant.
+func ValidateRequestedActions(e Exercise, actions []VerificationPermission) error {
+	type identity struct{ kind, binding, path string }
+	required := map[identity]bool{}
+	for _, p := range e.Permissions {
+		required[identity{p.Kind, p.TargetBinding, p.Path}] = true
+	}
+	for _, p := range e.Prerequisites {
+		if p.Kind == "credential" {
+			required[identity{"credential", p.EnvironmentBinding, ""}] = true
+		}
+		if p.Kind == "operator_interaction" {
+			required[identity{"operator_interaction", "", ""}] = true
+		}
+	}
+	if e.Kind == "interactive" || e.Kind == "hybrid" {
+		required[identity{"operator_interaction", "", ""}] = true
+	}
+	for _, input := range e.Inputs {
+		if input.Sensitive {
+			required[identity{"credential", input.Name, ""}] = input.Required
+		}
+	}
+	matches := func(key identity, a VerificationPermission) bool {
+		if a.Kind != key.kind || (key.binding != "" && a.Binding != key.binding) {
+			return false
+		}
+		if key.kind == "filesystem_read" || key.kind == "filesystem_write" {
+			path := filepath.Clean(key.path)
+			if path != "." && !strings.HasSuffix(a.Target, string(filepath.Separator)+path) {
+				return false
+			}
+		}
+		return true
+	}
+	for key, needed := range required {
+		if !needed {
+			continue
+		}
+		found := false
+		for _, a := range actions {
+			if matches(key, a) {
+				found = true
+			}
+		}
+		if !found {
+			return fmt.Errorf("missing requested action %s binding %s", key.kind, key.binding)
+		}
+	}
+	for _, a := range actions {
+		// Optional UI launch adds interactive admission to a script contract.
+		found := a.Kind == "operator_interaction"
+		for key := range required {
+			if matches(key, a) {
+				found = true
+			}
+		}
+		if !found {
+			return fmt.Errorf("undeclared requested action %s binding %s", a.Kind, a.Binding)
+		}
+	}
+	return nil
+}

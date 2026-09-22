@@ -40,8 +40,8 @@ func kitInputValues(e verification.Exercise, provided map[string]json.RawMessage
 					if present {
 						return nil, nil, nil, nil, fmt.Errorf("ambiguous sensitive input binding %s", input.Name)
 					}
-					for _, name := range []string{"CONVEYOR_API_TOKEN", "CONVEYOR_CLIENT_TOKEN", "CONVEYOR_GIT_TOKEN", gitAskPassTokenEnv, "CONVEYOR_WORKER_TOKEN"} {
-						if secret == os.Getenv(name) {
+					for _, parentSecret := range kitParentSecrets() {
+						if secret == parentSecret {
 							return nil, nil, nil, nil, fmt.Errorf("factory credential refused as input %s", input.Name)
 						}
 					}
@@ -184,4 +184,21 @@ func (v *kitVerifier) observe(ctx context.Context, e verification.Exercise, runI
 		return fmt.Errorf("%s", explanation)
 	}
 	return nil
+}
+
+// An approved kit handle cannot alias an ambient factory, forge or harness
+// credential. No ambient credential names or values enter the child environment.
+func kitParentSecrets() []string {
+	var secrets []string
+	for _, entry := range os.Environ() {
+		name, value, ok := strings.Cut(entry, "=")
+		upper := strings.ToUpper(name)
+		if !ok || value == "" || strings.HasPrefix(upper, "CONVEYOR_KIT_SECRET_") {
+			continue
+		}
+		if strings.Contains(upper, "TOKEN") || strings.Contains(upper, "SECRET") || strings.Contains(upper, "PASSWORD") || strings.Contains(upper, "API_KEY") || strings.Contains(upper, "PRIVATE_KEY") {
+			secrets = append(secrets, value)
+		}
+	}
+	return secrets
 }

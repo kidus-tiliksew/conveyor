@@ -14,26 +14,31 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/redact"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/verification"
 	"github.com/kidus-tiliksew/conveyor/internal/workorder"
+	"gopkg.in/yaml.v3"
 )
 
 type kitExecutionFixture struct {
-	order          core.WorkOrder
-	starts         int
-	operations     []string
-	mutations      int
-	refuseDispatch bool
-	v              *kitVerifier
-	mu             sync.Mutex
-	snapshot       store.VerificationSnapshot
-	outcome        string
-	uploads        int
-	loseClaim      bool
-	output         bytes.Buffer
+	order           core.WorkOrder
+	starts          int
+	operations      []string
+	mutations       int
+	refuseDispatch  bool
+	v               *kitVerifier
+	mu              sync.Mutex
+	snapshot        store.VerificationSnapshot
+	outcome         string
+	uploads         int
+	loseClaim       bool
+	offline         bool
+	renewDelayAfter int
+	renewCalls      int
+	output          bytes.Buffer
 }
 
 func newKitExecutionFixture(t *testing.T, e verification.Exercise) *kitExecutionFixture {
@@ -72,10 +77,18 @@ func newKitExecutionFixture(t *testing.T, e verification.Exercise) *kitExecution
 			w.WriteHeader(400)
 			return
 		}
+		if f.offline {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
 		var result any
 		failed := false
 		switch request.Params.Name {
 		case "renew_work_order":
+			f.renewCalls++
+			if f.renewDelayAfter > 0 && f.renewCalls > f.renewDelayAfter {
+				time.Sleep(1500 * time.Millisecond)
+			}
 			result = f.order
 			failed = f.loseClaim
 		case "get_work_order":
@@ -87,7 +100,7 @@ func newKitExecutionFixture(t *testing.T, e verification.Exercise) *kitExecution
 			_ = json.Unmarshal(request.Params.Arguments, &args)
 			f.starts++
 			f.snapshot.Attempts = append(f.snapshot.Attempts, store.VerificationAttempt{ID: "run", ContextID: "context", StartKey: args.StartKey, Subject: args.Subject, GrantID: args.GrantID, State: "running"})
-			result = store.VerificationReceipt{ID: "run", State: "running"}
+			result = store.VerificationReceipt{ID: "run", State: "running", LaunchAuthorized: true}
 		case "report_progress":
 			result = f.order
 		case "get_verification_context":
@@ -171,7 +184,9 @@ func TestKitRunnerCancellationAndClaimLoss(t *testing.T) {
 		t.Run(fmt.Sprint(lost), func(t *testing.T) {
 			e := verification.Exercise{ID: "check", Kind: "script", Argv: []string{"sh", "-c", "sleep 30 & wait"}, TimeoutSeconds: 10, RequiredAssertions: []string{}}
 			f := newKitExecutionFixture(t, e)
-			f.loseClaim = lost
+			if lost {
+				time.AfterFunc(200*time.Millisecond, func() { f.mu.Lock(); f.loseClaim = true; f.mu.Unlock() })
+			}
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 			if !lost {
@@ -218,8 +233,8 @@ func TestKitRunnerChildEnvironmentAndMissingCredentials(t *testing.T) {
 func TestKitRunnerRedactsBeforeSpool(t *testing.T) {
 	e := verification.Exercise{ID: "check"}
 	f := newKitExecutionFixture(t, e)
-	payload := core.JSONPayload(map[string]any{"url": "https://user:password@example.test/path?token=credential-secret-fixture", "request_headers": map[string]string{"Authorization": "credential-secret-fixture"}, "response_summary": "credential-secret-fixture"})
-	data, err := f.v.evidenceBatch("run", f.snapshot.Attempts[0].Subject, core.VerificationEnvironment{}, "exchange", "api_exchange", payload)
+	payload := core.JSONPayload(map[string]any{"method": "GET", "request_at": time.Now().UTC().Format(time.RFC3339Nano), "response_at": time.Now().UTC().Format(time.RFC3339Nano), "request_summary": "fixture", "response_status": 200, "response_headers": map[string]string{}, "url": "https://user:password@example.test/path?token=credential-secret-fixture", "request_headers": map[string]string{"Authorization": "credential-secret-fixture"}, "response_summary": "credential-secret-fixture"})
+	data, err := f.v.evidenceBatch("run", f.snapshot.Attempts[0].Subject, core.VerificationEnvironment{Target: "fixture", OS: "unknown", Architecture: "unknown", Runtime: "fixture", Deployment: "unknown"}, "exchange", "api_exchange", payload)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -278,5 +293,211 @@ func TestKitRunnerUninstrumentedMutationIsBlocked(t *testing.T) {
 	env := core.VerificationEnvironment{Target: "fixture", OS: "unknown", Architecture: "unknown", Runtime: "fixture", Deployment: "unknown", Attributes: map[string]string{}}
 	if err := f.v.launch(t.Context(), e, f.v.root, t.TempDir(), "run", "grant", f.snapshot.Attempts[0].Subject, env, []string{"PATH=/usr/bin:/bin"}); err == nil || f.outcome != "blocked" {
 		t.Fatalf("uninstrumented mutation: %s %v", f.outcome, err)
+	}
+}
+
+func TestKitVerifyOrdinaryObligationsAndReplay(t *testing.T) {
+	for _, discovery := range []string{"no_manifest", "no_eligible_kits"} {
+		t.Run(discovery, func(t *testing.T) {
+			e := verification.Exercise{ID: "ordinary", Kind: "script", Argv: []string{"true"}, Cwd: ".", TimeoutSeconds: 5, RequiredAssertions: []string{}, Operations: []verification.Operation{}}
+			f := newKitExecutionFixture(t, e)
+			subject := f.snapshot.Attempts[0].Subject
+			f.snapshot.Attempts = nil
+			if discovery == "no_manifest" {
+				if _, err := localKitGit(t.Context(), f.v.root, "rm", ".conveyor/kits/manifest.yaml"); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := localKitGit(t.Context(), f.v.root, "commit", "-qm", "no manifest"); err != nil {
+					t.Fatal(err)
+				}
+				head, err := localKitGit(t.Context(), f.v.root, "rev-parse", "HEAD")
+				if err != nil {
+					t.Fatal(err)
+				}
+				f.order.HeadSHA = strings.TrimSpace(string(head))
+				f.snapshot.Contexts[0].Revisions[0].SHA = f.order.HeadSHA
+			} else {
+				f.snapshot.Selections = []store.VerificationSelection{{Receipt: verification.SelectionReceipt{Kits: []verification.KitReceipt{{KitID: "sample", Eligibility: "ineligible", Reasons: []verification.SelectionReason{{Code: "pin_mismatch"}}}}}}}
+			}
+			f.snapshot.PermissionGrants = []store.VerificationPermissionGrant{{ID: "grant", Subject: subject, Actions: []core.VerificationPermission{}}}
+			cfg := config.Config{KitPermissions: []config.KitPermissionGrant{{Server: f.v.rpc.client.base, Workspace: "demo", Repository: "repo", Binding: "repo", Actions: []verification.VerificationPermission{}}}}
+			harness := config.HarnessTemplates()[0].Harness
+			document := localExecutionDocument("demo", newExecutionWizardState(healthyDetections(harness), nil).choices, []config.Harness{harness})
+			cfg.ExecutionSettings, cfg.Harnesses, cfg.Review = document.ExecutionSettings, document.Harnesses, document.Review
+			cfgBytes, err := yaml.Marshal(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			dir := t.TempDir()
+			cfgPath := filepath.Join(dir, "config.yaml")
+			if err := os.WriteFile(cfgPath, cfgBytes, 0600); err != nil {
+				t.Fatal(err)
+			}
+			coverage := store.VerificationCoverage{ObligationIDs: []string{"ordinary"}, Justification: "ordinary checks remain required", Sources: []store.VerificationCoverageSource{{Source: store.VerificationCoverageReference{DocumentID: "fixture", Version: 1, SectionID: "REQ-1"}, Disposition: "covered", Explanation: "ordinary command", Subjects: []core.VerificationSubject{subject}}}}
+			coveragePath := filepath.Join(dir, "coverage.json")
+			if err := os.WriteFile(coveragePath, core.JSONPayload(coverage), 0600); err != nil {
+				t.Fatal(err)
+			}
+			options := kitVerifyOptions{configPath: cfgPath, coveragePath: coveragePath, attemptRoot: filepath.Join(dir, "attempts")}
+			if err := verifyKits(t.Context(), f.v.rpc, f.v.root, "task", options, &f.output); err != nil {
+				t.Fatal(err)
+			}
+			if f.starts != 1 || f.uploads != 1 || f.outcome != "succeeded" {
+				t.Fatalf("ordinary execution missing: starts %d uploads %d state %s", f.starts, f.uploads, f.outcome)
+			}
+			if err := verifyKits(t.Context(), f.v.rpc, f.v.root, "task", options, &f.output); err == nil {
+				t.Fatal("replayed start launched again")
+			}
+			if f.starts != 1 || f.uploads != 1 {
+				t.Fatal("replay mutated execution")
+			}
+		})
+	}
+}
+
+func TestKitRunnerUIExecutionReport(t *testing.T) {
+	e := verification.Exercise{ID: "check", Kind: "script", Argv: []string{"sh", "-c", "sleep 0.2"}, TimeoutSeconds: 5, RequiredAssertions: []string{}, Operations: []verification.Operation{}}
+	f := newKitExecutionFixture(t, e)
+	f.v.ui = &verification.UI{Argv: []string{"sh", "-c", "sleep 30 & wait"}, Port: 8765}
+	f.v.uiRoot = f.v.root
+	environment := core.VerificationEnvironment{Target: "fixture", OS: "unknown", Architecture: "unknown", Runtime: "fixture", Deployment: "unknown", Attributes: map[string]string{}}
+	if err := f.v.launch(t.Context(), e, f.v.root, t.TempDir(), "run", "grant", f.snapshot.Attempts[0].Subject, environment, []string{"PATH=/usr/bin:/bin"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.snapshot.Evidence) != 2 {
+		t.Fatal("missing child or UI execution report")
+	}
+	for _, item := range f.snapshot.Evidence {
+		if item.Envelope.Type != "execution_report" {
+			t.Fatal("wrong report type")
+		}
+	}
+}
+
+func TestKitRunnerOfflineEvidenceRetentionAndRetry(t *testing.T) {
+	e := verification.Exercise{ID: "offline", Kind: "script", Argv: []string{"sh", "-c", "sleep 5"}, TimeoutSeconds: 10, RequiredAssertions: []string{}, Operations: []verification.Operation{}}
+	f := newKitExecutionFixture(t, e)
+	root := t.TempDir()
+	time.AfterFunc(200*time.Millisecond, func() { f.mu.Lock(); f.offline = true; f.mu.Unlock() })
+	environment := core.VerificationEnvironment{Target: "fixture", OS: "unknown", Architecture: "unknown", Runtime: "fixture", Deployment: "unknown", Attributes: map[string]string{}}
+	err := f.v.launch(t.Context(), e, f.v.root, root, "run", "grant", f.snapshot.Attempts[0].Subject, environment, []string{"PATH=/usr/bin:/bin"})
+	if err == nil || !strings.Contains(err.Error(), "retained") {
+		t.Fatalf("offline output not retained: %v", err)
+	}
+	path := filepath.Join(root, "run", "spool", "execution.json")
+	if _, err := os.Stat(path); err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	f.offline = false
+	f.mu.Unlock()
+	if err := f.v.resumeSpool(t.Context(), root, f.snapshot.Attempts[0]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatal("acknowledged spool not removed")
+	}
+	if f.uploads != 1 || f.starts != 0 {
+		t.Fatal("spool retry relaunched execution")
+	}
+}
+
+func TestKitRunnerRevocationAndExpiryDuringRequest(t *testing.T) {
+	for _, revoke := range []bool{false, true} {
+		t.Run(fmt.Sprint(revoke), func(t *testing.T) {
+			e := verification.Exercise{ID: "stop", Kind: "script", Argv: []string{"sh", "-c", "sleep 20 & wait"}, TimeoutSeconds: 30, RequiredAssertions: []string{}, Operations: []verification.Operation{}}
+			f := newKitExecutionFixture(t, e)
+			if revoke {
+				time.AfterFunc(200*time.Millisecond, func() {
+					f.mu.Lock()
+					f.snapshot.PermissionRevocations = append(f.snapshot.PermissionRevocations, store.VerificationPermissionRevocation{GrantID: "grant"})
+					f.mu.Unlock()
+				})
+			} else {
+				f.order.LeaseExpiresAt = time.Now().Add(1200 * time.Millisecond)
+				f.v.order = f.order
+				f.renewDelayAfter = 1
+			}
+			environment := core.VerificationEnvironment{Target: "fixture", OS: "unknown", Architecture: "unknown", Runtime: "fixture", Deployment: "unknown", Attributes: map[string]string{}}
+			started := time.Now()
+			err := f.v.launch(t.Context(), e, f.v.root, t.TempDir(), "run", "grant", f.snapshot.Attempts[0].Subject, environment, []string{"PATH=/usr/bin:/bin"})
+			if err == nil || time.Since(started) > 4*time.Second {
+				t.Fatalf("teardown %v after %s", err, time.Since(started))
+			}
+			if f.uploads != 0 || f.outcome != "" {
+				t.Fatal("worker wrote after revoked or expired authority")
+			}
+		})
+	}
+}
+
+func TestKitRunnerRejectsParentCredentialAlias(t *testing.T) {
+	t.Setenv("GH_TOKEN", "forge-alias-fixture")
+	t.Setenv("CONVEYOR_KIT_SECRET_API", "forge-alias-fixture")
+	e := verification.Exercise{Argv: []string{"true"}, Prerequisites: []verification.Prerequisite{{ID: "api", Kind: "credential", EnvironmentBinding: "api"}}}
+	local := []verification.VerificationPermission{{Kind: "credential", Binding: "api", Target: "CONVEYOR_KIT_SECRET_API"}}
+	if _, _, _, err := kitExerciseActions(e, t.TempDir(), "repo", local); err == nil {
+		t.Fatal("forge credential alias reached child")
+	}
+}
+
+func TestKitRunnerRetainsSanitizedOutput(t *testing.T) {
+	e := verification.Exercise{ID: "output", Kind: "script", Argv: []string{"sh", "-c", `printf '%s\n' "$KIT_VALUE" 'https://example.test/path?password=unknown-secret' 'Authorization: unknown-header'`}, TimeoutSeconds: 5, RequiredAssertions: []string{}, Operations: []verification.Operation{}}
+	f := newKitExecutionFixture(t, e)
+	root := t.TempDir()
+	env := core.VerificationEnvironment{Target: "fixture", OS: "unknown", Architecture: "unknown", Runtime: "fixture", Deployment: "unknown", Attributes: map[string]string{}}
+	if err := f.v.launch(t.Context(), e, f.v.root, root, "run", "grant", f.snapshot.Attempts[0].Subject, env, []string{"PATH=/usr/bin:/bin", "KIT_VALUE=credential-secret-fixture"}); err != nil {
+		t.Fatal(err)
+	}
+	output, err := os.ReadFile(filepath.Join(root, "run", "output.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{"credential-secret-fixture", "unknown-secret", "unknown-header"} {
+		if bytes.Contains(output, []byte(secret)) {
+			t.Fatal("sensitive output retained")
+		}
+	}
+}
+
+func TestKitRunnerDigestAndMissingGrantAdmission(t *testing.T) {
+	f := newKitExecutionFixture(t, verification.Exercise{ID: "observe"})
+	f.v.snapshot.Contexts[0].GoverningPins = []core.VerificationPin{{Kind: "requirement", DocumentID: "req-sample", Version: 1}}
+	subject := store.VerificationSubjectContract{Subject: core.VerificationSubject{Kind: "kit", KitID: "sample", KitVersion: "1", ExerciseID: "observe", ContentDigest: strings.Repeat("b", 64)}, Contract: verification.Exercise{ID: "observe"}}
+	if err := f.v.run(t.Context(), subject, t.TempDir()); err == nil || !strings.Contains(err.Error(), "digest") {
+		t.Fatalf("changed kit admitted: %v", err)
+	}
+	subject = store.VerificationSubjectContract{Subject: f.snapshot.Attempts[0].Subject, Contract: verification.Exercise{ID: "observe", Permissions: []verification.Permission{{Kind: "network", TargetBinding: "fixture"}}}}
+	if err := f.v.run(t.Context(), subject, t.TempDir()); err == nil || !strings.Contains(err.Error(), "network fixture") {
+		t.Fatalf("missing action not named: %v", err)
+	}
+	if f.starts != 0 || f.uploads != 0 {
+		t.Fatal("refused admission launched exercise")
+	}
+	if _, err := localKitGit(t.Context(), f.v.root, "checkout", "--detach"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.v.checkCheckout(t.Context()); err == nil {
+		t.Fatal("detached checkout admitted")
+	}
+}
+
+func TestKitRunnerInteractiveCompletionUsesOperatorEvidence(t *testing.T) {
+	e := verification.Exercise{ID: "interactive", Kind: "interactive", Argv: []string{"true"}, TimeoutSeconds: 5, RequiredAssertions: []string{}, Operations: []verification.Operation{}}
+	f := newKitExecutionFixture(t, e)
+	subject := f.snapshot.Attempts[0].Subject
+	at := time.Now().UTC().Format(time.RFC3339Nano)
+	observation := core.VerificationEvidence{SchemaVersion: 1, ID: "operator-observation", SubmissionKey: "operator", Type: "operator_observation", CapturedAt: at, ReceivedAt: at, SubmittedBy: "user:operator", CapturedBy: core.VerificationCaptureActor{Identity: "user:operator", Kind: "operator", Version: "1", Attribution: "authenticated_operator"}, WorkspaceID: "demo", TaskID: "task", WorkOrderID: "order", WorkOrderAttemptID: "claim", ContextID: "context", RunID: "run", Subject: subject, Revisions: f.snapshot.Contexts[0].Revisions, GoverningPins: []core.VerificationPin{}, SafeInputs: map[string]json.RawMessage{}, Environment: core.VerificationEnvironment{Target: "fixture", OS: "unknown", Architecture: "unknown", Runtime: "fixture", Deployment: "unknown"}, Payload: core.JSONPayload(core.OperatorObservationPayload{OperatorID: "user:operator", Fact: "Completed the fixture interaction", CapturedAt: at, Supporting: []core.VerificationReference{{EvidenceID: "run-execution"}}})}
+	if err := observation.Validate(core.VerificationEvidenceAuthority{SubmittedBy: observation.SubmittedBy, OperateGates: true}); err != nil {
+		t.Fatal(err)
+	}
+	f.snapshot.Evidence = append(f.snapshot.Evidence, store.VerificationEvidenceRecord{Envelope: observation})
+	env := observation.Environment
+	env.Attributes = map[string]string{}
+	if err := f.v.launch(t.Context(), e, f.v.root, t.TempDir(), "run", "grant", subject, env, []string{"PATH=/usr/bin:/bin"}); err != nil {
+		t.Fatal(err)
+	}
+	if f.outcome != "succeeded" {
+		t.Fatal("operator completion was not honored")
 	}
 }

@@ -54,6 +54,9 @@ func TestKitOperationChannelAcknowledgementAndOrigin(t *testing.T) {
 func TestKitEvidenceSpoolRetentionAndLoss(t *testing.T) {
 	lost := false
 	dir := t.TempDir()
+	if err := os.Chmod(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
 	s := EvidenceSpool{Directory: dir, Limit: 32, Check: func(context.Context) error {
 		if lost {
 			return errors.New("lost")
@@ -82,5 +85,20 @@ func TestKitEvidenceSpoolRetentionAndLoss(t *testing.T) {
 	}
 	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
 		t.Fatal("acknowledged spool retained")
+	}
+}
+
+func TestKitSpoolRejectsSymlinkDirectory(t *testing.T) {
+	root, other := t.TempDir(), t.TempDir()
+	link := filepath.Join(root, "spool")
+	if err := os.Symlink(other, link); err != nil {
+		t.Fatal(err)
+	}
+	spool := EvidenceSpool{Directory: link, Limit: 1024, Check: func(context.Context) error { return nil }}
+	if err := spool.Put(t.Context(), "one", []byte(`{}`)); err == nil {
+		t.Fatal("spool followed symlink")
+	}
+	if err := spool.Flush(t.Context(), func(context.Context, []byte) error { t.Fatal("uploaded through symlink"); return nil }); err == nil {
+		t.Fatal("spool read symlink directory")
 	}
 }

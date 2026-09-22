@@ -53,6 +53,7 @@ type kitVerifier struct {
 	inputs                        map[string]map[string]json.RawMessage
 	safeInputs                    map[string]json.RawMessage
 	withUI                        bool
+	uiRoot                        string
 	ui                            *verification.UI
 	rpc                           kitRPC
 	root                          string
@@ -71,7 +72,7 @@ func verifyKits(ctx context.Context, rpc kitRPC, root, taskID string, o kitVerif
 	if rpc.order == "" || rpc.session == "" || rpc.claimToken == "" || rpc.client.workspace == "" {
 		return fmt.Errorf("kit verify requires the exact launcher work order, session, claim token and workspace")
 	}
-	v := &kitVerifier{retryKey: o.retryKey, replayAuthorization: o.replayAuthorization, inputs: map[string]map[string]json.RawMessage{}, withUI: o.withUI, rpc: rpc, root: root, output: output, redactor: redact.New([]string{rpc.client.token, rpc.claimToken, os.Getenv("CONVEYOR_GIT_TOKEN"), os.Getenv(gitAskPassTokenEnv)})}
+	v := &kitVerifier{retryKey: o.retryKey, replayAuthorization: o.replayAuthorization, inputs: map[string]map[string]json.RawMessage{}, withUI: o.withUI, rpc: rpc, root: root, output: output, redactor: redact.New(append(kitParentSecrets(), rpc.client.token, rpc.claimToken))}
 	var contract struct {
 		Order core.WorkOrder `json:"work_order"`
 		Task  core.Task      `json:"task"`
@@ -182,7 +183,7 @@ func verifyKits(ctx context.Context, rpc kitRPC, root, taskID string, o kitVerif
 	}
 	var subjects []store.VerificationSubjectContract
 	for _, s := range v.snapshot.Selections {
-		if len(s.Receipt.Diagnostics) > 0 {
+		if s.Receipt.Invalid() {
 			return fmt.Errorf("manifest discovery is invalid or unavailable")
 		}
 		subjects = append(subjects, s.Subjects...)
@@ -247,21 +248,27 @@ func (v *kitVerifier) live(ctx context.Context, grantID string) error {
 		v.lost = true
 		return fmt.Errorf("verification claim lost or expired")
 	}
+	deadline := v.order.LeaseExpiresAt
+	if !v.order.ExecutionDeadline.IsZero() && v.order.ExecutionDeadline.Before(deadline) {
+		deadline = v.order.ExecutionDeadline
+	}
+	ctx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
 	var order core.WorkOrder
 	if err := v.rpc.call(ctx, "renew_work_order", nil, &order); err != nil {
-		if ctx.Err() == nil {
+		if ctx.Err() == nil && !transientWorkerError(err) {
 			v.lost = true
 		}
 		return err
 	}
-	if order.State != core.WorkOrderClaimed || order.SessionID != v.rpc.session || order.AttemptID != v.order.AttemptID {
+	if order.State != core.WorkOrderClaimed || order.SessionID != v.rpc.session || order.AttemptID != v.order.AttemptID || !order.LeaseExpiresAt.After(time.Now()) {
 		v.lost = true
 		return fmt.Errorf("verification claim changed")
 	}
-	v.order = order
+	v.order.LeaseExpiresAt = order.LeaseExpiresAt
 	var snapshot store.VerificationSnapshot
 	if err := v.rpc.call(ctx, "get_verification_context", workorder.VerificationContextRequest{ContextID: v.snapshot.Contexts[0].ID}, &snapshot); err != nil {
-		if ctx.Err() == nil {
+		if ctx.Err() == nil && !transientWorkerError(err) {
 			v.lost = true
 		}
 		return err
@@ -320,26 +327,31 @@ func (v *kitVerifier) run(ctx context.Context, subject store.VerificationSubject
 				kitRoot = filepath.Join(v.root, k.Path)
 				if v.withUI {
 					v.ui = k.UI
+					v.uiRoot = kitRoot
 				}
 			}
 		}
 	}
 	var grant *store.VerificationPermissionGrant
+	revoked := map[string]bool{}
+	for _, r := range v.snapshot.PermissionRevocations {
+		revoked[r.GrantID] = true
+	}
 	for i := range v.snapshot.PermissionGrants {
 		g := &v.snapshot.PermissionGrants[i]
-		if g.Subject == subject.Subject {
+		if g.Subject == subject.Subject && !revoked[g.ID] && (grant == nil || g.CreatedAt.After(grant.CreatedAt)) {
 			grant = g
 		}
 	}
 	if grant == nil {
-		return fmt.Errorf("blocked: missing work-order authorization for exercise %s", e.ID)
+		return fmt.Errorf("blocked: missing work-order authorization for exercise %s; required actions: %s", e.ID, kitRequiredActions(e))
 	}
 	if err := v.live(ctx, grant.ID); err != nil {
 		return err
 	}
 	local, err := v.config.KitActions(v.rpc.client.base, v.rpc.client.workspace, v.task.Repo)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w; required actions: %s", err, kitRequiredActions(e))
 	}
 	actions, env, secrets, err := kitExerciseActions(e, kitRoot, v.task.Repo, local)
 	if err != nil {
@@ -360,7 +372,7 @@ func (v *kitVerifier) run(ctx context.Context, subject store.VerificationSubject
 	if err != nil {
 		return err
 	}
-	v.redactor = redact.New(append(secrets, v.rpc.client.token, v.rpc.claimToken, os.Getenv("CONVEYOR_GIT_TOKEN"), os.Getenv(gitAskPassTokenEnv)))
+	v.redactor = redact.New(append(append(secrets, kitParentSecrets()...), v.rpc.client.token, v.rpc.claimToken))
 
 	cwd, err := verification.ResolvePermissionPath(kitRoot, e.Cwd)
 	if err != nil {
@@ -380,11 +392,28 @@ func (v *kitVerifier) run(ctx context.Context, subject store.VerificationSubject
 		}
 	}
 	var receipt store.VerificationReceipt
-	if err = v.rpc.call(ctx, "start_verification_attempt", workorder.VerificationStartRequest{ContextID: vc.ID, StartKey: startKey, Subject: subject.Subject, GrantID: grant.ID, EffectiveActions: effective, EffectivePermissions: e.Permissions, SafeInputs: v.safeInputs, Environment: environment, Coverage: v.coverage, ReplayAuthorizationID: v.replayAuthorization}, &receipt); err != nil {
+	if err = v.rpc.call(ctx, "start_verification_attempt", workorder.VerificationStartRequest{ContextID: vc.ID, StartKey: startKey, Subject: subject.Subject, LocalActions: local, GrantID: grant.ID, EffectiveActions: effective, EffectivePermissions: e.Permissions, SafeInputs: v.safeInputs, Environment: environment, Coverage: v.coverage, ReplayAuthorizationID: v.replayAuthorization}, &receipt); err != nil {
 		return err
+	}
+	if !receipt.LaunchAuthorized {
+		return fmt.Errorf("attempt %s already exists; start replay cannot launch a child", receipt.ID)
 	}
 	if len(e.Argv) == 0 {
 		return v.observe(ctx, e, receipt.ID, grant.ID)
 	}
 	return v.launch(ctx, e, cwd, attemptRoot, receipt.ID, grant.ID, subject.Subject, environment, env)
+}
+
+func kitRequiredActions(e verification.Exercise) string {
+	var actions []string
+	for _, p := range e.Permissions {
+		actions = append(actions, p.Kind+" "+p.TargetBinding+" "+p.Path)
+	}
+	for _, p := range e.Prerequisites {
+		actions = append(actions, p.Kind+" "+p.EnvironmentBinding)
+	}
+	if len(actions) == 0 {
+		return "exercise launch"
+	}
+	return strings.Join(actions, ", ")
 }

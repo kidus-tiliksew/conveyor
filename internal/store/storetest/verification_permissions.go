@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/kidus-tiliksew/conveyor/internal/verification"
+	"reflect"
 	"testing"
+	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
@@ -26,6 +29,75 @@ func GrantVerificationFixture(t *testing.T, b store.Backend, ctx context.Context
 }
 
 func runVerificationPermissions(t *testing.T, x Fixture) {
+	t.Run("GrantBindingIntersectionAndLaunchReplay", func(t *testing.T) {
+		v := newVerificationFixture(t, x)
+		obligation := store.VerificationObligation{ID: "network", Description: "read fixture API", Sources: []store.VerificationCitation{{DocumentID: "req-fixture", Version: 1, SectionID: "AC-1.1"}}, Contract: verification.Exercise{ID: "network", Kind: "script", Argv: []string{"fixture"}, TimeoutSeconds: 30, RequiredAssertions: []string{}, RetryPolicy: "safe_to_replay", SafetyBasis: "read-only fixture", Permissions: []verification.Permission{{Kind: "network", TargetBinding: "api"}}}}
+		registered := v.apply(t, store.VerificationCommand{Kind: store.VerificationRegisterObligation, Obligation: &obligation})
+		subject := core.VerificationSubject{Kind: "ordinary", ObligationID: obligation.ID, ContractDigest: registered.Digest}
+		actions := []core.VerificationPermission{{Kind: "network", Binding: "api", Target: "https://api.test:443"}}
+		grant := GrantVerificationFixture(t, x.Backend, x.Context, v.access.TaskID, v.access.WorkOrderID, v.contextID, "network-grant", subject, actions)
+		start := store.VerificationCommand{Kind: store.VerificationStartAttempt, Key: "network-start", Attempt: &store.VerificationAttempt{Subject: subject, GrantID: grant, EffectiveActions: actions, LocalActions: actions, SafeInputs: map[string]json.RawMessage{}}}
+		before := verificationPublicState(t, &v)
+		for _, mutate := range []func(*store.VerificationAttempt){
+			func(a *store.VerificationAttempt) { a.LocalActions = nil },
+			func(a *store.VerificationAttempt) { a.EffectiveActions = []core.VerificationPermission{} },
+			func(a *store.VerificationAttempt) { a.Subject.ContractDigest = "foreign" },
+			func(a *store.VerificationAttempt) { a.GrantID = v.snapshot(t).Attempts[0].GrantID },
+		} {
+			copy := *start.Attempt
+			mutate(&copy)
+			bad := start
+			bad.Attempt = &copy
+			if _, err := x.Backend.ApplyVerification(v.ctx, v.command(bad)); err == nil {
+				t.Fatal("invalid permission admission succeeded")
+			}
+			if !reflect.DeepEqual(before, verificationPublicState(t, &v)) {
+				t.Fatal("permission refusal mutated aggregate")
+			}
+		}
+		first := v.apply(t, start)
+		second := v.apply(t, start)
+		if first.ID != second.ID || !first.LaunchAuthorized || second.LaunchAuthorized {
+			t.Fatal("start replay authorizes duplicate child")
+		}
+		var run store.VerificationAttempt
+		for _, a := range v.snapshot(t).Attempts {
+			if a.ID == first.ID {
+				run = a
+			}
+		}
+		if run.GrantSnapshot == nil || len(run.LocalActions) != 1 || !reflect.DeepEqual(run.EffectiveActions, actions) {
+			t.Fatal("intersection snapshot absent")
+		}
+	})
+	t.Run("ExpiredClaimCannotGrantOrReconcile", func(t *testing.T) {
+		v := newVerificationFixture(t, x)
+		obligation := v.snapshot(t).Obligations[0]
+		obligation.ID = "expiry-" + v.access.TaskID
+		registered := v.apply(t, store.VerificationCommand{Kind: store.VerificationRegisterObligation, Obligation: &obligation})
+		v.subject = core.VerificationSubject{Kind: "ordinary", ObligationID: obligation.ID, ContractDigest: registered.Digest}
+		v.start(t, "expiry-run")
+		op := v.apply(t, store.VerificationCommand{Kind: store.VerificationPrepareOperation, Key: "expiry-op", Operation: &store.VerificationOperation{StepID: "step", Target: "fixture", InputDigest: verificationSHA([]byte("{}"))}})
+		order, err := x.Backend.GetWorkOrder(v.ctx, v.access.WorkOrderID)
+		requireOK(t, err)
+		order.LeaseExpiresAt = time.Now().Add(-time.Second)
+		requireOK(t, UpdateWorkOrder(x.Context, x.Backend, order, core.WorkOrderCmdRenew))
+		operator, owner := bootstrapOwner(t, x)
+		cmd := store.VerificationCommand{Access: store.VerificationAccess{UserID: owner.ID, TaskID: v.access.TaskID, WorkOrderID: v.access.WorkOrderID}, Kind: store.VerificationGrantPermissions, ContextID: v.contextID, Key: "expired", Permissions: &store.VerificationPermissionRequest{Subject: v.subject, Actions: []core.VerificationPermission{}}}
+		if _, err = x.Backend.ApplyVerification(operator, cmd); !errors.Is(err, store.ErrVerificationAccess) {
+			t.Fatalf("expired grant: %v", err)
+		}
+		reconciliation := v.command(store.VerificationCommand{Kind: store.VerificationReconcileOperation, Operation: &store.VerificationOperation{ID: op.ID}, Observation: &store.VerificationOperationObservation{State: "unknown", Source: "worker", CapturedAt: time.Now().UTC()}})
+		if _, err = x.Backend.ApplyVerification(v.ctx, reconciliation); !errors.Is(err, store.ErrVerificationAccess) {
+			t.Fatalf("expired reconciliation: %v", err)
+		}
+		// Internal claim-loss reconciliation still cancels abandoned attempts.
+		internal := store.WithActor(x.Context, store.Actor{ID: "verification-reconciler", Role: core.ActorSystem})
+		if _, err = x.Backend.ReconcileVerificationClaims(internal); err != nil {
+			t.Fatal(err)
+		}
+	})
+
 	t.Run("PermissionGrantAuthorityAndRevocation", func(t *testing.T) {
 		v := newVerificationFixture(t, x)
 		snapshot := v.snapshot(t)

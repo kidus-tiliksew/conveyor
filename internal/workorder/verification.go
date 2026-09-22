@@ -46,6 +46,7 @@ type VerificationObligationRequest struct {
 	Contract             verification.Exercise `json:"contract"`
 }
 type VerificationStartRequest struct {
+	LocalActions          []core.VerificationPermission `json:"local_actions,omitempty"`
 	GrantID               string                        `json:"grant_id"`
 	EffectiveActions      []core.VerificationPermission `json:"effective_actions"`
 	Coverage              store.VerificationCoverage    `json:"coverage"`
@@ -272,7 +273,7 @@ func (s *Service) Verification(ctx context.Context, id, session, token, operatio
 		if !validVerificationSubject(r.Subject) {
 			return nil, store.ErrVerificationInvalid
 		}
-		command.Attempt = &store.VerificationAttempt{GrantID: r.GrantID, EffectiveActions: r.EffectiveActions, Subject: r.Subject, Environment: r.Environment, SafeInputs: r.SafeInputs, EffectivePermissions: r.EffectivePermissions, ReplayAuthorizationID: r.ReplayAuthorizationID}
+		command.Attempt = &store.VerificationAttempt{LocalActions: r.LocalActions, GrantID: r.GrantID, EffectiveActions: r.EffectiveActions, Subject: r.Subject, Environment: r.Environment, SafeInputs: r.SafeInputs, EffectivePermissions: r.EffectivePermissions, ReplayAuthorizationID: r.ReplayAuthorizationID}
 	case *VerificationOutcomeRequest:
 		command.Kind, command.ContextID, command.RunID = store.VerificationTerminateAttempt, r.ContextID, r.RunID
 		command.Attempt = &store.VerificationAttempt{State: r.State, Explanation: r.Explanation, ExitCode: r.ExitCode}

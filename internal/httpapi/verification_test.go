@@ -97,6 +97,13 @@ func TestVerificationMCPRESTParityAndScope(t *testing.T) {
 		var left, right any
 		json.Unmarshal(encoded, &left)
 		json.Unmarshal(response.Body.Bytes(), &right)
+		if name == "start_verification_attempt" && response.Code == 200 {
+			l, r := left.(map[string]any), right.(map[string]any)
+			if l["LaunchAuthorized"] != true || r["LaunchAuthorized"] != false {
+				t.Fatal("start receipt replay authorized another launch")
+			}
+			l["LaunchAuthorized"] = false
+		}
 		if response.Code != 200 || !reflect.DeepEqual(left, right) {
 			t.Fatalf("%s parity: %d %s", name, response.Code, response.Body)
 		}

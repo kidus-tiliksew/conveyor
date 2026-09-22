@@ -50,6 +50,17 @@ func runVerificationOperations(t *testing.T, x Fixture) {
 		key := "recovery-operation-" + v.runID
 		op := v.apply(t, store.VerificationCommand{Kind: store.VerificationPrepareOperation, Key: key, Operation: &store.VerificationOperation{StepID: "step", Target: "fixture", InputDigest: verificationSHA([]byte("{}"))}})
 		v.apply(t, store.VerificationCommand{Kind: store.VerificationTerminateAttempt, Attempt: &store.VerificationAttempt{State: "failed", Explanation: "provider acknowledgement lost"}})
+		// Revoked grants remain historical evidence. They cannot block the
+		// separate operator recovery command after claim loss (v4 recovery split).
+		originalGrant := v.snapshot(t).Attempts
+		for _, run := range originalGrant {
+			if run.ID != v.runID {
+				continue
+			}
+			operator, owner := bootstrapOwner(t, x)
+			_, err := x.Backend.ApplyVerification(operator, store.VerificationCommand{Access: store.VerificationAccess{UserID: owner.ID, TaskID: v.access.TaskID, WorkOrderID: v.access.WorkOrderID}, Kind: store.VerificationRevokePermissions, ContextID: v.contextID, Key: "revoke-before-recovery", Permissions: &store.VerificationPermissionRequest{RevokeGrantID: run.GrantID, Reason: "stop execution"}})
+			requireOK(t, err)
+		}
 		oldAccess, oldContext, oldRun := v.access, v.contextID, v.runID
 		order, err := x.Backend.GetWorkOrder(v.ctx, v.access.WorkOrderID)
 		requireOK(t, err)
@@ -109,6 +120,7 @@ func runVerificationOperations(t *testing.T, x Fixture) {
 		if _, err = x.Backend.ApplyVerification(v.ctx, v.command(start)); err == nil {
 			t.Fatal("disposition silently replaced reconciliation")
 		}
+		GrantVerificationFixture(t, x.Backend, x.Context, v.access.TaskID, v.access.WorkOrderID, v.contextID, "successor-reconciliation", v.subject, nil)
 		v.apply(t, store.VerificationCommand{Kind: store.VerificationReconcileOperation, Operation: &store.VerificationOperation{ID: op.ID}, ReplayAuthorizationID: authorization, Observation: &store.VerificationOperationObservation{State: "not_applied", Source: "fresh provider read", CapturedAt: time.Now().UTC()}})
 		started := v.apply(t, start)
 		v.runID = started.ID

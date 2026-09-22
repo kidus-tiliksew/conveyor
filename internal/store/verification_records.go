@@ -329,7 +329,7 @@ func PrepareVerificationMutation(ctx context.Context, source redact.SecretSource
 			}
 			return out, ErrVerificationState
 		}
-		if c.RunID != "" && (c.Kind == VerificationWriteEvidence || c.Kind == VerificationFinalizeArtifact || c.Kind == VerificationStageChunk || c.Kind == VerificationTerminateAttempt || c.Kind == VerificationPrepareOperation || c.Kind == VerificationObserveOperation) {
+		if c.Access.UserID == "" && c.RunID != "" && (c.Kind == VerificationWriteEvidence || c.Kind == VerificationFinalizeArtifact || c.Kind == VerificationStageChunk || c.Kind == VerificationTerminateAttempt || c.Kind == VerificationPrepareOperation || c.Kind == VerificationObserveOperation) {
 			rr, exists := verificationFind(rows, "verification_attempts", c.RunID)
 			if !exists || rr.ContextID != vc.ID {
 				return out, ErrVerificationAccess
@@ -632,4 +632,9 @@ func WithVerificationClockForTest(ctx context.Context, now func() time.Time) con
 
 func verificationIdentifier(id string) bool {
 	return id != "" && len(id) <= 128 && utf8.ValidString(id) && !strings.ContainsRune(id, 0)
+}
+
+// VerificationSafeInputDigest uses the same canonical JSON as operation admission.
+func VerificationSafeInputDigest(inputs map[string]json.RawMessage) string {
+	return verificationHash(verificationJSON(inputs))
 }

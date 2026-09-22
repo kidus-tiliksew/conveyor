@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"syscall"
@@ -77,8 +78,8 @@ func kitExerciseActions(e verification.Exercise, root, repository string, local 
 			if value == "" {
 				return nil, nil, nil, fmt.Errorf("missing credential %s", p.EnvironmentBinding)
 			}
-			for _, name := range []string{"CONVEYOR_API_TOKEN", "CONVEYOR_CLIENT_TOKEN", "CONVEYOR_GIT_TOKEN", gitAskPassTokenEnv, "CONVEYOR_WORKER_TOKEN"} {
-				if value == os.Getenv(name) {
+			for _, parentSecret := range kitParentSecrets() {
+				if value == parentSecret {
 					return nil, nil, nil, fmt.Errorf("factory or forge credential refused for %s", p.EnvironmentBinding)
 				}
 			}
@@ -91,7 +92,7 @@ func kitExerciseActions(e verification.Exercise, root, repository string, local 
 			env = append(env, handle+"="+value)
 			actions = append(actions, verification.VerificationPermission{Kind: "credential", Binding: p.EnvironmentBinding, Target: handle})
 		case "executable":
-			if _, err := exec.LookPath(p.EnvironmentBinding); err != nil {
+			if _, err := kitExecutable(p.EnvironmentBinding, root); err != nil {
 				return nil, nil, nil, fmt.Errorf("missing executable prerequisite %s", p.ID)
 			}
 		case "service":
@@ -149,13 +150,16 @@ func (v *kitVerifier) launch(ctx context.Context, e verification.Exercise, cwd, 
 	barrier := func(ctx context.Context) error {
 		v.mu.Lock()
 		defer v.mu.Unlock()
-		if v.lost || !v.order.LeaseExpiresAt.After(time.Now()) {
+		if v.lost || !v.order.LeaseExpiresAt.After(time.Now()) || (!v.order.ExecutionDeadline.IsZero() && !v.order.ExecutionDeadline.After(time.Now())) {
 			return fmt.Errorf("verification authority lost")
 		}
 		return nil
 	}
 	spool := verification.EvidenceSpool{Directory: spoolDir, Limit: 8 << 20, Check: barrier}
 	upload := func(ctx context.Context, data []byte) error {
+		if err := v.live(ctx, grantID); err != nil {
+			return err
+		}
 		var receipt store.VerificationReceipt
 		clean, _, err := v.redactor.RedactJSON(data)
 		if err != nil {
@@ -233,19 +237,20 @@ func (v *kitVerifier) launch(ctx context.Context, e verification.Exercise, cwd, 
 		}
 		operationID := operations[signal.StepID]
 		if operationID == "" {
-			if signal.Type != "operation.dispatching" {
-				return nil, fmt.Errorf("operation was not dispatched")
-			}
-			key := fmt.Sprintf("%x", sha256.Sum256(core.JSONPayload([]any{v.task.ID, subject, signal.StepID})))
-			var receipt store.VerificationReceipt
-			if err := v.rpc.call(requestCtx, "prepare_verification_operation", workorder.VerificationOperationRequest{ContextID: vc.ID, RunID: runID, Action: "prepare", Key: key, StepID: signal.StepID, Target: declared.TargetBinding, InputDigest: fmt.Sprintf("%x", sha256.Sum256(core.JSONPayload(v.safeInputValues())))}, &receipt); err != nil {
-				return nil, err
-			}
-			operationID = receipt.ID
-			operations[signal.StepID] = operationID
+			return nil, fmt.Errorf("operation was not registered before launch")
 		}
+
+		if completed[signal.StepID] && signal.Type == "operation.dispatching" {
+			return map[string]any{"ID": operationID, "State": "applied", "DispatchAuthorized": false}, nil
+		}
+		signal.ProviderReference = kitSafeReference(signal.ProviderReference)
+		signal.ProviderReference, _ = v.redactor.Redact(signal.ProviderReference)
 		var receipt store.VerificationReceipt
 		if err := v.rpc.call(requestCtx, "prepare_verification_operation", workorder.VerificationOperationRequest{ContextID: vc.ID, RunID: runID, Action: strings.TrimPrefix(signal.Type, "operation."), OperationID: operationID, Source: "kit-child", CapturedAt: signal.CapturedAt, ProviderReference: signal.ProviderReference}, &receipt); err != nil {
+			// Resolve the durable record before replying to an uncertain request.
+			// A recorded dispatch is evidence, never renewed provider-call authority.
+			var current store.VerificationSnapshot
+			_ = v.rpc.call(requestCtx, "get_verification_context", workorder.VerificationContextRequest{ContextID: vc.ID}, &current)
 			return nil, err
 		}
 		if signal.Type == "operation.dispatching" && !receipt.DispatchAuthorized {
@@ -260,7 +265,23 @@ func (v *kitVerifier) launch(ctx context.Context, e verification.Exercise, cwd, 
 		return err
 	}
 	defer channel.Close()
-	connection, _ := json.Marshal(map[string]string{"url": channel.URL + "/operations", "nonce": channel.Nonce})
+	// Register the entire closed operation set before any child starts (VK-4.1).
+	// A child that exits without signalling must still leave durable uncertainty.
+	for _, op := range e.Operations {
+		if err := v.live(launchCtx, grantID); err != nil {
+			return err
+		}
+		key := fmt.Sprintf("%x", sha256.Sum256(core.JSONPayload([]any{v.task.ID, core.VerificationOperationSubject(subject), op.ID, op.TargetBinding, vc.Revisions})))
+		var receipt store.VerificationReceipt
+		if err := v.rpc.call(launchCtx, "prepare_verification_operation", workorder.VerificationOperationRequest{ContextID: vc.ID, RunID: runID, Action: "prepare", Key: key, StepID: op.ID, Target: op.TargetBinding, InputDigest: store.VerificationSafeInputDigest(v.safeInputValues()), ReplayAuthorizationID: v.replayAuthorization}, &receipt); err != nil {
+			return err
+		}
+		operations[op.ID] = receipt.ID
+		if receipt.State == "applied" || receipt.State == "completed" {
+			completed[op.ID] = true
+		}
+	}
+	connection, _ := json.Marshal(map[string]any{"url": channel.URL + "/operations", "nonce": channel.Nonce, "operations": operations})
 	env = append(env, "CONVEYOR_KIT_OPERATIONS="+string(connection), "CONVEYOR_KIT_ATTEMPT_DIR="+dir, "HOME="+dir, "TMPDIR="+dir)
 	stdout, stderr := &kitBoundedOutput{limit: 1 << 20}, &kitBoundedOutput{limit: 1 << 20}
 	tool, err := kitExecutable(e.Argv[0], cwd)
@@ -284,6 +305,20 @@ func (v *kitVerifier) launch(ctx context.Context, e verification.Exercise, cwd, 
 			return fmt.Errorf("sensitive argv refused")
 		}
 	}
+	if v.ui != nil {
+		for _, arg := range v.ui.Argv {
+			clean, _ := v.redactor.Redact(arg)
+			if clean != arg {
+				return fmt.Errorf("sensitive UI argv refused")
+			}
+		}
+	}
+	if err := v.live(launchCtx, grantID); err != nil {
+		return err
+	}
+	if err := launchCtx.Err(); err != nil {
+		return err
+	}
 	started := time.Now().UTC()
 	if err = command.Start(); err != nil {
 		_ = v.rpc.call(ctx, "report_verification_outcome", workorder.VerificationOutcomeRequest{ContextID: vc.ID, RunID: runID, State: "blocked", Explanation: "exercise executable could not start"}, nil)
@@ -295,7 +330,7 @@ func (v *kitVerifier) launch(ctx context.Context, e verification.Exercise, cwd, 
 	var ui *kitUIProcess
 	var uiStartErr error
 	if v.ui != nil {
-		ui, uiStartErr = startKitUI(v.ui, cwd, append(env, "CONVEYOR_KIT_UI_HOST=127.0.0.1"))
+		ui, uiStartErr = startKitUI(v.ui, v.uiRoot, append(env, "CONVEYOR_KIT_UI_HOST=127.0.0.1", fmt.Sprintf("CONVEYOR_KIT_UI_PORT=%d", v.ui.Port)))
 		if uiStartErr != nil {
 			cancel()
 		}
@@ -335,6 +370,9 @@ func (v *kitVerifier) launch(ctx context.Context, e verification.Exercise, cwd, 
 	defer finishCancel()
 	after, hashErr := kitToolDigest(tool)
 	environment.Attributes["tool_sha256_after"] = after
+	if hashErr != nil {
+		environment.Attributes["tool_sha256_after"] = "unknown"
+	}
 	sourceErr := v.checkCheckout(ctx)
 	if sourceErr != nil {
 		environment.Attributes["source_state"] = "changed"
@@ -343,8 +381,16 @@ func (v *kitVerifier) launch(ctx context.Context, e verification.Exercise, cwd, 
 	timedOut := errors.Is(launchCtx.Err(), context.DeadlineExceeded)
 	cancelled := launchCtx.Err() != nil && !timedOut
 	exit := command.ProcessState.ExitCode()
-	cleanOut, _ := v.redactor.Redact(stdout.String())
-	cleanErr, _ := v.redactor.Redact(stderr.String())
+	cleanOut, _ := v.redactor.Redact(kitSanitizeText(stdout.String()))
+	cleanErr, _ := v.redactor.Redact(kitSanitizeText(stderr.String()))
+	// A truncated secret may no longer match its complete credential value.
+	// Retain a marker instead of persisting a potentially revealing prefix.
+	if stdout.truncated {
+		cleanOut = "[output exceeded capture limit]"
+	}
+	if stderr.truncated {
+		cleanErr = "[output exceeded capture limit]"
+	}
 	report := core.ExecutionReportPayload{Argv: e.Argv, Tool: tool, ToolVersion: "sha256:" + before, Runtime: environment.Runtime, StartedAt: started.Format(time.RFC3339Nano), EndedAt: ended.Format(time.RFC3339Nano), ExitCode: &exit, TimedOut: &timedOut, Cancelled: &cancelled, StdoutSHA256: fmt.Sprintf("%x", sha256.Sum256([]byte(cleanOut))), StderrSHA256: fmt.Sprintf("%x", sha256.Sum256([]byte(cleanErr))), StdoutTruncated: &stdout.truncated, StderrTruncated: &stderr.truncated}
 	data, err := v.evidenceBatch(runID, subject, environment, "execution", "execution_report", core.JSONPayload(report))
 	if err != nil {
@@ -357,6 +403,13 @@ func (v *kitVerifier) launch(ctx context.Context, e verification.Exercise, cwd, 
 			_, _ = fmt.Fprintln(v.output, string(uiData))
 		}
 		return fmt.Errorf("exercise stopped; report upload refused after authority loss: %w", err)
+	}
+	// Keep bounded sanitized output beside the spool for offline diagnosis.
+	// The execution report hashes these exact bytes; output is never promoted
+	// into another attempt or uploaded as a different evidence type.
+	outputSpool := verification.EvidenceSpool{Directory: dir, Limit: 16 << 20, Check: barrier}
+	if err := outputSpool.Put(ctx, "output", core.JSONPayload(map[string]string{"stdout": cleanOut, "stderr": cleanErr})); err != nil {
+		return err
 	}
 	if uiReport != nil {
 		uiData, e := v.evidenceBatch(runID, subject, environment, "execution-ui", "execution_report", core.JSONPayload(uiReport))
@@ -387,7 +440,9 @@ func (v *kitVerifier) launch(ctx context.Context, e verification.Exercise, cwd, 
 	relayMu.Lock()
 	for _, op := range e.Operations {
 		if !completed[op.ID] {
-			state = "blocked"
+			if state != "timed_out" && state != "cancelled" {
+				state = "blocked"
+			}
 			explanation = "declared operation " + op.ID + " has no acknowledged completion; reconcile before retry"
 		}
 	}
@@ -456,7 +511,7 @@ func (v *kitVerifier) evidenceBatch(runID string, subject core.VerificationSubje
 					x[k] = map[string]any{}
 					continue
 				}
-				if strings.Contains(lower, "credential") || strings.Contains(lower, "password") || strings.Contains(lower, "token") {
+				if strings.Contains(lower, "credential") || strings.Contains(lower, "password") || strings.Contains(lower, "token") || strings.Contains(lower, "secret") || lower == "api_key" || lower == "authorization" || lower == "cookie" || lower == "set-cookie" {
 					delete(x, k)
 					continue
 				}
@@ -467,19 +522,33 @@ func (v *kitVerifier) evidenceBatch(runID string, subject core.VerificationSubje
 				x[i] = sanitize(v)
 			}
 		case string:
-			if u, err := url.Parse(x); err == nil && (u.Scheme == "http" || u.Scheme == "https") {
-				u.User = nil
-				u.RawQuery = ""
-				u.Fragment = ""
-				return u.String()
-			}
+			return kitSanitizeText(x)
 		}
 		return value
 	}
 	e.Payload = core.JSONPayload(sanitize(value))
 	data := core.JSONPayload(workorder.VerificationEvidenceRequest{ContextID: vc.ID, RunID: runID, SubmissionKey: key, Evidence: []json.RawMessage{core.JSONPayload(e)}})
 	clean, _, err := v.redactor.RedactJSON(data)
-	return clean, err
+	if err != nil {
+		return nil, err
+	}
+	var batch workorder.VerificationEvidenceRequest
+	if err := json.Unmarshal(clean, &batch); err != nil {
+		return nil, err
+	}
+	for _, raw := range batch.Evidence {
+		var check core.VerificationEvidence
+		if err := core.DecodeVerificationRequest(raw, &check); err != nil {
+			return nil, err
+		}
+		// The server replaces submission attribution from its authenticated
+		// context. This local identity is used only to validate the envelope.
+		check.SubmittedBy = "runner-local-validation"
+		if err := check.Validate(core.VerificationEvidenceAuthority{SubmittedBy: check.SubmittedBy}); err != nil {
+			return nil, err
+		}
+	}
+	return clean, nil
 }
 
 var _ io.Writer = (*kitBoundedOutput)(nil)
@@ -511,4 +580,20 @@ func kitToolDigest(path string) (string, error) {
 		return "", err
 	}
 	return fmt.Sprintf("%x", h.Sum(nil)), nil
+}
+
+func kitSafeReference(raw string) string {
+	if u, err := url.Parse(raw); err == nil && (u.Scheme == "http" || u.Scheme == "https") {
+		u.User, u.RawQuery, u.Fragment = nil, "", ""
+		return u.String()
+	}
+	return raw
+}
+
+var kitURLPattern = regexp.MustCompile(`https?://[^\s"<>]+`)
+var kitHeaderPattern = regexp.MustCompile(`(?im)(?:authorization|proxy-authorization|cookie|set-cookie|x-api-key)\s*:[^\r\n]*`)
+
+func kitSanitizeText(raw string) string {
+	clean := kitURLPattern.ReplaceAllStringFunc(raw, kitSafeReference)
+	return kitHeaderPattern.ReplaceAllString(clean, "[redacted header]")
 }

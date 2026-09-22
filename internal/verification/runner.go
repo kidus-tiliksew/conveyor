@@ -134,6 +134,9 @@ type EvidenceSpool struct {
 func (s *EvidenceSpool) Put(ctx context.Context, key string, data []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.checkDirectory(); err != nil {
+		return err
+	}
 	if !VerificationBindingName(key) {
 		return fmt.Errorf("invalid spool identity")
 	}
@@ -185,6 +188,9 @@ func (s *EvidenceSpool) Put(ctx context.Context, key string, data []byte) error 
 func (s *EvidenceSpool) Flush(ctx context.Context, upload func(context.Context, []byte) error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.checkDirectory(); err != nil {
+		return err
+	}
 	entries, err := os.ReadDir(s.Directory)
 	if err != nil {
 		return err
@@ -235,4 +241,26 @@ func (s *EvidenceSpool) read(path string) ([]byte, error) {
 		return nil, fmt.Errorf("spool entry exceeds limit")
 	}
 	return b, nil
+}
+
+func (s *EvidenceSpool) checkDirectory() error {
+	absolute, err := filepath.Abs(s.Directory)
+	if err != nil {
+		return err
+	}
+	resolved, err := filepath.EvalSymlinks(absolute)
+	if err != nil {
+		return err
+	}
+	if absolute != resolved {
+		return fmt.Errorf("spool directory symlink refused")
+	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() || info.Mode().Perm()&0077 != 0 {
+		return fmt.Errorf("spool directory must be private")
+	}
+	return nil
 }

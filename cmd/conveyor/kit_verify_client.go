@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"time"
 )
 
 // kitRPC uses the same claim-bound native tool contract as other verifiers.
@@ -15,6 +16,10 @@ type kitRPC struct {
 }
 
 func (k kitRPC) call(ctx context.Context, name string, input any, result any) error {
+	// Bound every control-plane request by the current lease at the caller and
+	// by a short transport deadline so child teardown cannot wait indefinitely.
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
 	args := map[string]any{}
 	if input != nil {
 		b, err := json.Marshal(input)

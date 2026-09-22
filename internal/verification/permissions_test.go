@@ -64,3 +64,26 @@ func TestKitPermissionSymlinkEscape(t *testing.T) {
 		t.Fatalf("%s %v", got, err)
 	}
 }
+
+func TestKitRequestedPermissionContract(t *testing.T) {
+	e := Exercise{Permissions: []Permission{{Kind: "network", TargetBinding: "api"}}, Prerequisites: []Prerequisite{{Kind: "credential", EnvironmentBinding: "key"}}}
+	actions := []VerificationPermission{{Kind: "network", Binding: "api", Target: "https://api.test"}, {Kind: "credential", Binding: "key", Target: "CONVEYOR_KIT_SECRET_API"}}
+	if err := ValidateRequestedActions(e, actions); err != nil {
+		t.Fatal(err)
+	}
+	for _, invalid := range [][]VerificationPermission{actions[:1], actions[1:], append(append([]VerificationPermission{}, actions...), VerificationPermission{Kind: "filesystem_write", Binding: "repo", Target: "/"})} {
+		if err := ValidateRequestedActions(e, invalid); err == nil {
+			t.Fatal("missing or undeclared action accepted")
+		}
+	}
+}
+
+func TestKitRequestedFilesystemCannotExpandToParent(t *testing.T) {
+	e := Exercise{Permissions: []Permission{{Kind: "filesystem_write", Path: "output"}}}
+	if err := ValidateRequestedActions(e, []VerificationPermission{{Kind: "filesystem_write", Binding: "repo", Target: "/checkout"}}); err == nil {
+		t.Fatal("requested child path expanded to parent")
+	}
+	if err := ValidateRequestedActions(e, []VerificationPermission{{Kind: "filesystem_write", Binding: "repo", Target: "/checkout/output"}}); err != nil {
+		t.Fatal(err)
+	}
+}

@@ -55,8 +55,14 @@ func (u *kitUIProcess) stop(redactor *redact.Redactor) core.ExecutionReportPaylo
 	default:
 	}
 	_ = u.group.terminate(finished)
-	stdout, _ := redactor.Redact(u.stdout.String())
-	stderr, _ := redactor.Redact(u.stderr.String())
+	stdout, _ := redactor.Redact(kitSanitizeText(u.stdout.String()))
+	stderr, _ := redactor.Redact(kitSanitizeText(u.stderr.String()))
+	if u.stdout.truncated {
+		stdout = "[output exceeded capture limit]"
+	}
+	if u.stderr.truncated {
+		stderr = "[output exceeded capture limit]"
+	}
 	zero := false
 	cancelled := finished == nil
 	exit := u.command.ProcessState.ExitCode()
