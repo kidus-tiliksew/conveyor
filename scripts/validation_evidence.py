@@ -336,37 +336,117 @@ def bind(root, p, output, remote, branch):
 
 
 DISPOSABLE_CACHE_CHILDREN = ("go-build", "go-tmp", "tmp", "playwright", "npm")
+CACHE_ENVIRONMENT = ("GOCACHE", "GOTMPDIR", "TMPDIR", "PLAYWRIGHT_BROWSERS_PATH", "npm_config_cache")
 
 
-def active_cache_users(path):
-    """Return live processes whose cwd/root/open descriptors resolve inside path."""
-    proc = Path("/proc")
+def _inside(path, parent):
+    return path == parent or path.is_relative_to(parent)
+
+
+def _process_still_live(process):
+    try:
+        process.stat()
+        return True
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return None
+
+
+def _inspection_failure(process, label):
+    live = _process_still_live(process)
+    if live is False:
+        return None
+    return process.name + ":ambiguous:" + label
+
+
+def active_cache_users(path, proc=Path("/proc")):
+    """Return live or ambiguously inspected processes that may use path."""
+    path = Path(path).resolve()
     require(proc.is_dir(), "active cache ownership inspection requires /proc")
     users = []
-    for process in proc.iterdir():
+    try:
+        processes = list(proc.iterdir())
+    except OSError as exc:
+        raise Refused("active cache ownership inspection is ambiguous: /proc") from exc
+    for process in processes:
         if not process.name.isdigit() or int(process.name) == os.getpid():
             continue
+        try:
+            process.stat()
+        except FileNotFoundError:
+            continue
+        except OSError:
+            users.append(process.name + ":ambiguous:process")
+            continue
+        process_cwd = None
         for label in ("cwd", "root"):
             candidate = process / label
             try:
                 target = candidate.resolve(strict=True)
-            except (FileNotFoundError, PermissionError, OSError):
+            except OSError:
+                failure = _inspection_failure(process, label)
+                if failure:
+                    users.append(failure)
                 continue
-            if target == path or target.is_relative_to(path):
+            if label == "cwd":
+                process_cwd = target
+            if _inside(target, path):
                 users.append(process.name + ":" + label)
         descriptors = process / "fd"
         try:
             entries = list(descriptors.iterdir())
-        except (FileNotFoundError, PermissionError, OSError):
+        except OSError:
+            failure = _inspection_failure(process, "fd")
+            if failure:
+                users.append(failure)
             entries = []
         for descriptor in entries:
             try:
-                target = descriptor.resolve(strict=True)
-            except (FileNotFoundError, PermissionError, OSError):
+                raw_target = os.readlink(descriptor)
+            except OSError:
+                failure = _inspection_failure(process, "fd:" + descriptor.name)
+                if failure:
+                    users.append(failure)
                 continue
-            if target == path or target.is_relative_to(path):
+            # Sockets, pipes, eventfds, and anonymous inodes are readable proc
+            # entries but not filesystem paths and therefore cannot name cache
+            # ownership. Absolute descriptor targets are inspected canonically.
+            if not raw_target.startswith("/"):
+                continue
+            try:
+                target = Path(raw_target.removesuffix(" (deleted)")).resolve()
+            except OSError:
+                users.append(process.name + ":ambiguous:fd:" + descriptor.name)
+                continue
+            if _inside(target, path):
                 users.append(process.name + ":fd:" + descriptor.name)
-    return sorted(set(users))
+        try:
+            environment = (process / "environ").read_bytes()
+        except OSError:
+            failure = _inspection_failure(process, "environ")
+            if failure:
+                users.append(failure)
+            continue
+        for entry in environment.split(b"\0"):
+            name, separator, value = entry.partition(b"=")
+            if not separator or os.fsdecode(name) not in CACHE_ENVIRONMENT or not value:
+                continue
+            variable = os.fsdecode(name)
+            candidate = Path(os.fsdecode(value))
+            if not candidate.is_absolute():
+                if process_cwd is None:
+                    users.append(process.name + ":ambiguous:env:" + variable)
+                    continue
+                candidate = process_cwd / candidate
+            try:
+                target = candidate.resolve()
+            except OSError:
+                users.append(process.name + ":ambiguous:env:" + variable)
+                continue
+            if _inside(target, path):
+                users.append(process.name + ":env:" + variable)
+    return sorted(set(users), key=lambda value: (":ambiguous:" in value, value))
 
 
 def cleanup_cache(task, task_cache, references):
@@ -391,7 +471,10 @@ def cleanup_cache(task, task_cache, references):
         require(not any(ref == resolved or ref.is_relative_to(resolved) for ref in refs),
                 "referenced evidence is inside disposable cache child: " + name)
         users = active_cache_users(resolved)
-        require(not users, "disposable cache child is active: " + name + " (" + ", ".join(users) + ")")
+        detail = users[:20]
+        if len(users) > len(detail):
+            detail.append("... " + str(len(users) - len(detail)) + " more")
+        require(not users, "disposable cache child is active: " + name + " (" + ", ".join(detail) + ")")
         removable.append((name, resolved))
     for _, child in removable:
         shutil.rmtree(child)

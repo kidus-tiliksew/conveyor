@@ -224,7 +224,9 @@ class EvidenceTests(unittest.TestCase):
         task_cache = self.base / ".cache" / "conveyor" / "fixture-task"
         (task_cache / "tmp").mkdir(parents=True)
         (task_cache / "tmp" / "scratch").write_text("disposable")
-        self.assertEqual(evidence.cleanup_cache("fixture-task", task_cache, [path / "command.log" for path in outputs]), ["tmp"])
+        with patch.object(evidence, "active_cache_users", return_value=[]):
+            self.assertEqual(evidence.cleanup_cache("fixture-task", task_cache,
+                                                   [path / "command.log" for path in outputs]), ["tmp"])
         for output in outputs:
             self.assertTrue((output / "manifest.json").is_file())
             self.assertTrue((output / "command.log").is_file())
@@ -251,7 +253,8 @@ class EvidenceTests(unittest.TestCase):
         finally:
             process.terminate()
             process.wait(timeout=5)
-        self.assertEqual(evidence.cleanup_cache("fixture-task", task_cache, []), ["tmp"])
+        with patch.object(evidence, "active_cache_users", return_value=[]):
+            self.assertEqual(evidence.cleanup_cache("fixture-task", task_cache, []), ["tmp"])
         self.assertFalse(child.exists())
 
         target = self.base / "elsewhere"
@@ -261,11 +264,41 @@ class EvidenceTests(unittest.TestCase):
         guarded = task_cache / "go-build"
         guarded.mkdir()
         (task_cache / "tmp").symlink_to(target, target_is_directory=True)
-        with self.assertRaisesRegex(evidence.Refused, "symlink"):
-            evidence.cleanup_cache("fixture-task", task_cache, [])
+        with patch.object(evidence, "active_cache_users", return_value=[]):
+            with self.assertRaisesRegex(evidence.Refused, "symlink"):
+                evidence.cleanup_cache("fixture-task", task_cache, [])
         self.assertTrue(target.exists())
         self.assertTrue(unknown.exists())
         self.assertTrue(guarded.exists())
+
+    def test_cleanup_refuses_environment_only_live_cache_user(self):
+        os.environ["XDG_CACHE_HOME"] = str(self.base / "cache-home")
+        task_cache = self.base / "cache-home" / "conveyor" / "fixture-task"
+        child = task_cache / "go-build"
+        child.mkdir(parents=True)
+        process = subprocess.Popen(["sleep", "30"], cwd=self.base,
+                                   env=dict(os.environ, GOCACHE=str(child)))
+        try:
+            users = evidence.active_cache_users(child)
+            self.assertIn(str(process.pid) + ":env:GOCACHE", users)
+            with self.assertRaisesRegex(evidence.Refused, "env:GOCACHE"):
+                evidence.cleanup_cache("fixture-task", task_cache, [])
+        finally:
+            process.terminate()
+            process.wait(timeout=5)
+        with patch.object(evidence, "active_cache_users", return_value=[]):
+            self.assertEqual(evidence.cleanup_cache("fixture-task", task_cache, []), ["go-build"])
+
+    def test_active_cache_users_reports_inaccessible_proc_inspection(self):
+        proc = self.base / "proc"
+        process = proc / "4242"
+        (process / "fd").mkdir(parents=True)
+        (process / "cwd").symlink_to(self.base, target_is_directory=True)
+        (process / "root").symlink_to(Path("/"), target_is_directory=True)
+        # A directory cannot be read as environ and models an unreadable proc entry.
+        (process / "environ").mkdir()
+        users = evidence.active_cache_users(self.base / "cache", proc)
+        self.assertIn("4242:ambiguous:environ", users)
 
     def test_authored_conflict_resolution_even_when_content_matches(self):
         self.record()
