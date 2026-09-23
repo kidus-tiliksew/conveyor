@@ -138,9 +138,9 @@ func (c *restClient) request(ctx context.Context, method, endpoint, accept strin
 			category = ForgePermission
 		}
 		if category == ForgePermission {
-			return nil, response.Header, response.StatusCode, &Error{Category: category, Err: fmt.Errorf("%s is expired, revoked, or lacks permission; replace it in settings (GitHub HTTP %d)", c.identityLabel(), response.StatusCode)}
+			return nil, response.Header, response.StatusCode, &Error{Category: category, status: response.StatusCode, Err: fmt.Errorf("%s is expired, revoked, or lacks permission; replace it in settings (GitHub HTTP %d)", c.identityLabel(), response.StatusCode)}
 		}
-		return nil, response.Header, response.StatusCode, &Error{Category: category, Err: fmt.Errorf("GitHub REST status %d: %s", response.StatusCode, c.secretSafe(secretSafeMessage(raw)))}
+		return nil, response.Header, response.StatusCode, &Error{Category: category, status: response.StatusCode, Err: fmt.Errorf("GitHub REST status %d: %s", response.StatusCode, c.secretSafe(secretSafeMessage(raw)))}
 	}
 	return raw, response.Header, response.StatusCode, nil
 }

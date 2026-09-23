@@ -10,6 +10,13 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 )
 
+// BranchCloseLockKey coordinates attach with branch-derived close attempts.
+// AC-3.5 / AC-4.2 (component-git-delivery): repo is the task config name,
+// not the forge slug. Callers hold the task lock before taking this key.
+func BranchCloseLockKey(repo, branch string) string {
+	return "branch-close:" + repo + ":" + branch
+}
+
 func ValidatePullRequestCloseActor(ctx context.Context) error {
 	actor := ActorFromContext(ctx)
 	if !utf8.ValidString(actor.ID) || !utf8.ValidString(string(actor.Role)) || strings.ContainsRune(actor.ID, 0) || strings.ContainsRune(string(actor.Role), 0) {

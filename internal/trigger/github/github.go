@@ -71,18 +71,18 @@ func ValidateTokenIdentity(ctx context.Context, token string) (string, error) {
 type ForgeErrorCategory string
 
 const (
-	ForgeRequest           ForgeErrorCategory = "forge_request"
-	ForgeStatus            ForgeErrorCategory = "forge_status"
-	ForgeResponse          ForgeErrorCategory = "forge_response"
-	ForgeRateLimited       ForgeErrorCategory = "forge_rate_limited"
-	ForgePermission        ForgeErrorCategory = "forge_permission"
-	ForgeMutationUncertain ForgeErrorCategory = "mutation_uncertain"
+	ForgeRequest     ForgeErrorCategory = "forge_request"
+	ForgeStatus      ForgeErrorCategory = "forge_status"
+	ForgeResponse    ForgeErrorCategory = "forge_response"
+	ForgeRateLimited ForgeErrorCategory = "forge_rate_limited"
+	ForgePermission  ForgeErrorCategory = "forge_permission"
 )
 
 // Error carries a stable category while preserving the underlying GitHub
 // failure detail and errors.Is/errors.As behavior.
 type Error struct {
 	Category ForgeErrorCategory
+	status   int // REST status, used only to distinguish definitive PATCH refusal.
 	Err      error
 }
 
@@ -1259,7 +1259,7 @@ func closePullRequest(ctx context.Context, repo string, number int, comment stri
 	}
 	_, err = run(ctx, "api", "--method", "PATCH", endpoint, "-f", "state=closed")
 	if err != nil {
-		return mutationUncertainError(err)
+		return closePatchError(err)
 	}
 	state, merged, err = read()
 	if err != nil {
@@ -1271,10 +1271,27 @@ func closePullRequest(ctx context.Context, repo string, number int, comment stri
 	return forgeResponseError("GitHub did not confirm pull request closure")
 }
 
+// closeMutationUncertain is narrow PATCH-phase evidence, not a forge category.
+// Pre-PATCH errors and validated-open results return their ordinary errors.
+// AC-3.5 (component-git-delivery): only this evidence permits reconciliation.
+type closeMutationUncertain struct{ cause error }
+
+func (e *closeMutationUncertain) Error() string        { return e.cause.Error() }
+func (e *closeMutationUncertain) Unwrap() error        { return e.cause }
+func (e *closeMutationUncertain) Is(target error) bool { return target == ErrMutationUncertain }
+
 func mutationUncertainError(err error) error {
+	return &closeMutationUncertain{cause: forgeCallError(err)}
+}
+
+func closePatchError(err error) error {
 	categorized := forgeCallError(err)
-	if ErrorCategory(categorized) == ForgePermission {
+	var response *Error
+	if errors.As(categorized, &response) && response.status >= 400 && response.status < 500 && response.status != 408 {
 		return categorized
 	}
-	return &Error{Category: ForgeMutationUncertain, Err: fmt.Errorf("%w: %v", ErrMutationUncertain, categorized)}
+	if ErrorCategory(categorized) == ForgePermission || ErrorCategory(categorized) == ForgeRateLimited {
+		return categorized
+	}
+	return mutationUncertainError(categorized)
 }

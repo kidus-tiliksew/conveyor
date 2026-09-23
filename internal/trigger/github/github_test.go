@@ -353,11 +353,11 @@ func TestPullRequestForNumberMapsMissingAndParsesHeadRef(t *testing.T) {
 
 func TestMutationUncertainErrorPreservesPermission(t *testing.T) {
 	permission := &Error{Category: ForgePermission, Err: fmt.Errorf("workspace demo GitHub App is expired")}
-	if got := mutationUncertainError(permission); got != permission {
+	if got := closePatchError(permission); got != permission {
 		t.Fatalf("permission wrapped: %v", got)
 	}
 	uncertain := mutationUncertainError(fmt.Errorf("GitHub REST transport: connection reset"))
-	if ErrorCategory(uncertain) != ForgeMutationUncertain || !errors.Is(uncertain, ErrMutationUncertain) {
+	if ErrorCategory(uncertain) != ForgeRequest || !errors.Is(uncertain, ErrMutationUncertain) {
 		t.Fatalf("uncertain=%v", uncertain)
 	}
 }

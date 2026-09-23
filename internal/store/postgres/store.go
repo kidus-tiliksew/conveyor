@@ -165,6 +165,23 @@ func (s *Store) withPlanningSessionLock(ctx context.Context, sessionID string, f
 }
 
 func (s *Store) withAdvisoryLock(ctx context.Context, key string, fn func(context.Context) error) error {
+	// Keep nested branch and task advisories on one session. inTx must keep
+	// using the connection that owns the outer task lock (AC-3.5).
+	if conn, ok := ctx.Value(sideEffectConnKey{}).(*pgxpool.Conn); ok {
+		if _, err := conn.Exec(ctx, "SELECT pg_advisory_lock(hashtext($1))", key); err != nil {
+			return err
+		}
+		defer func() {
+			unlockCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if _, err := conn.Exec(unlockCtx, "SELECT pg_advisory_unlock(hashtext($1))", key); err != nil {
+				// The outer owner releases the pool slot; close the underlying
+				// session so a held lock can never return to the pool.
+				_ = conn.Conn().Close(unlockCtx)
+			}
+		}()
+		return fn(ctx)
+	}
 	conn, err := s.pool.Acquire(ctx)
 	if err != nil {
 		return err
@@ -1457,46 +1474,52 @@ func (s *Store) AttachTaskBranch(ctx context.Context, taskID, branch string) (co
 	}
 	var result core.Task
 	err := s.WithTaskSideEffectLock(ctx, taskID, func(ctx context.Context) error {
-		return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
-			var currentBranch, currentState, currentRepo, currentBase string
-			err := tx.QueryRow(ctx, `SELECT branch, state, repo_name, base_branch FROM tasks WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspace(ctx), taskID).Scan(&currentBranch, &currentState, &currentRepo, &currentBase)
-			if err != nil {
-				return notFound(err, "task %s", taskID)
-			}
-			task := core.Task{ID: taskID, State: core.TaskState(currentState), Repo: currentRepo, Branch: currentBranch, BaseBranch: currentBase}
-			var claimed, prOpened bool
-			if err := tx.QueryRow(ctx, `SELECT
+		task, err := s.GetTask(ctx, taskID)
+		if err != nil {
+			return err
+		}
+		return s.WithTaskSideEffectLock(ctx, store.BranchCloseLockKey(task.Repo, branch), func(ctx context.Context) error {
+			return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+				var currentBranch, currentState, currentRepo, currentBase string
+				err := tx.QueryRow(ctx, `SELECT branch, state, repo_name, base_branch FROM tasks WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspace(ctx), taskID).Scan(&currentBranch, &currentState, &currentRepo, &currentBase)
+				if err != nil {
+					return notFound(err, "task %s", taskID)
+				}
+				task := core.Task{ID: taskID, State: core.TaskState(currentState), Repo: currentRepo, Branch: currentBranch, BaseBranch: currentBase}
+				var claimed, prOpened bool
+				if err := tx.QueryRow(ctx, `SELECT
 				EXISTS (SELECT 1 FROM work_orders WHERE workspace_id=$1 AND task_id=$2 AND state='claimed'),
 				EXISTS (SELECT 1 FROM events WHERE workspace_id=$1 AND task_id=$2 AND kind='pull_request.opened')`, workspace(ctx), taskID).Scan(&claimed, &prOpened); err != nil {
-				return err
-			}
-			occupant, err := occupyingOpenTaskID(ctx, tx, currentRepo, branch, taskID)
-			if err != nil {
-				return err
-			}
-			if err := store.EvaluateTaskBranchAttach(task, branch, claimed, prOpened, occupant); err != nil {
-				return err
-			}
-			if currentBranch == branch {
+					return err
+				}
+				occupant, err := occupyingOpenTaskID(ctx, tx, currentRepo, branch, taskID)
+				if err != nil {
+					return err
+				}
+				if err := store.EvaluateTaskBranchAttach(task, branch, claimed, prOpened, occupant); err != nil {
+					return err
+				}
+				if currentBranch == branch {
+					loaded, err := q.GetTask(ctx, db.GetTaskParams{ID: taskID, WorkspaceID: workspace(ctx)})
+					if err != nil {
+						return err
+					}
+					result = taskFromDB(loaded)
+					return nil
+				}
+				if _, err := tx.Exec(ctx, `UPDATE tasks SET branch=$3 WHERE workspace_id=$1 AND id=$2`, workspace(ctx), taskID, branch); err != nil {
+					if occupant, lookErr := occupyingOpenTaskID(ctx, tx, currentRepo, branch, taskID); lookErr == nil && occupant != "" {
+						return store.TaskBranchInUseError(branch, occupant)
+					}
+					return err
+				}
 				loaded, err := q.GetTask(ctx, db.GetTaskParams{ID: taskID, WorkspaceID: workspace(ctx)})
 				if err != nil {
 					return err
 				}
 				result = taskFromDB(loaded)
-				return nil
-			}
-			if _, err := tx.Exec(ctx, `UPDATE tasks SET branch=$3 WHERE workspace_id=$1 AND id=$2`, workspace(ctx), taskID, branch); err != nil {
-				if occupant, lookErr := occupyingOpenTaskID(ctx, tx, currentRepo, branch, taskID); lookErr == nil && occupant != "" {
-					return store.TaskBranchInUseError(branch, occupant)
-				}
-				return err
-			}
-			loaded, err := q.GetTask(ctx, db.GetTaskParams{ID: taskID, WorkspaceID: workspace(ctx)})
-			if err != nil {
-				return err
-			}
-			result = taskFromDB(loaded)
-			return insertEvent(ctx, q, core.Event{TaskID: taskID, Kind: "task.branch_attached", Payload: core.JSONPayload(map[string]string{"previous": currentBranch, "branch": branch})})
+				return insertEvent(ctx, q, core.Event{TaskID: taskID, Kind: "task.branch_attached", Payload: core.JSONPayload(map[string]string{"previous": currentBranch, "branch": branch})})
+			})
 		})
 	})
 	return result, err

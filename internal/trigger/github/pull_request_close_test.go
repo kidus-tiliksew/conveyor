@@ -2,6 +2,7 @@ package github
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -71,7 +72,7 @@ func TestClosePullRequestReconcilesCommentAndPreservesBranch(t *testing.T) {
 				if err == nil || strings.Contains(err.Error(), "installation-secret") {
 					t.Fatalf("unsafe or missing error: %v", err)
 				}
-				if lost == "close" && ErrorCategory(err) != ForgeMutationUncertain {
+				if lost == "close" && !errors.Is(err, ErrMutationUncertain) {
 					t.Fatalf("lost close category=%q err=%v", ErrorCategory(err), err)
 				}
 			} else if err != nil {
@@ -148,4 +149,92 @@ func TestClosePullRequestErrorsDoNotLeakToken(t *testing.T) {
 			t.Fatalf("error=%v", err)
 		}
 	})
+}
+
+func TestClosePullRequestMutationEvidence(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		uncertain bool
+	}{
+		{"initial_read", false}, {"comment_read", false}, {"comment_write", false}, {"second_read", false},
+		{"patch_400", false}, {"patch_403", false}, {"patch_422", false}, {"patch_429", false},
+		{"patch_500", true}, {"patch_transport", true}, {"confirmation_403", true}, {"confirmation_malformed", true}, {"confirmed_open", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reads, patches := 0, 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodPatch {
+					patches++
+					switch tc.name {
+					case "patch_400":
+						w.WriteHeader(400)
+						return
+					case "patch_403":
+						w.WriteHeader(403)
+						return
+					case "patch_422":
+						w.WriteHeader(422)
+						return
+					case "patch_429":
+						w.WriteHeader(429)
+						return
+					case "patch_500":
+						w.WriteHeader(500)
+						return
+					case "patch_transport":
+						conn, _, err := w.(http.Hijacker).Hijack()
+						if err != nil {
+							t.Error(err)
+							return
+						}
+						conn.Close()
+						return
+					}
+					fmt.Fprint(w, `{}`)
+					return
+				}
+				if strings.Contains(r.URL.Path, "comments") {
+					if tc.name == "comment_read" {
+						w.WriteHeader(500)
+						return
+					}
+					if tc.name == "comment_write" {
+						if r.Method == http.MethodGet {
+							fmt.Fprint(w, `[]`)
+						} else {
+							w.WriteHeader(500)
+						}
+						return
+					}
+					fmt.Fprint(w, `[{"id":1,"body":"comment"}]`)
+					return
+				}
+				reads++
+				if reads == 1 && tc.name == "initial_read" || reads == 2 && tc.name == "second_read" {
+					w.WriteHeader(500)
+					return
+				}
+				if reads == 3 && tc.name == "confirmation_403" {
+					w.WriteHeader(403)
+					return
+				}
+				if reads == 3 && tc.name == "confirmation_malformed" {
+					fmt.Fprint(w, `{}`)
+					return
+				}
+				fmt.Fprint(w, `{"number":42,"state":"open","merged":false}`)
+			}))
+			defer server.Close()
+			err := closePullRequest(t.Context(), "acme/app", 42, "comment", newRESTRunner(server.Client(), server.URL, "token", "workspace App"))
+			if err == nil || errors.Is(err, ErrMutationUncertain) != tc.uncertain {
+				t.Fatalf("uncertain=%v want=%v err=%v", errors.Is(err, ErrMutationUncertain), tc.uncertain, err)
+			}
+			if tc.uncertain && patches != 1 {
+				t.Fatalf("uncertainty without PATCH: %d", patches)
+			}
+			if (tc.name == "initial_read" || tc.name == "comment_read" || tc.name == "comment_write" || tc.name == "second_read") && patches != 0 {
+				t.Fatal("pre-mutation failure sent PATCH")
+			}
+		})
+	}
 }
