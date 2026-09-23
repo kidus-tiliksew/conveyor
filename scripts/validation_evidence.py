@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import secrets
 import shutil
 import stat
 import subprocess
@@ -54,7 +55,8 @@ def policy_read(path):
     require(set(p) == {"schema", "task", "layer", "command", "environment",
                       "tools", "external_inputs", "exclude", "audit", "backend"},
             "policy fields missing or unknown")
-    require(p["schema"] == 1 and isinstance(p["task"], str) and p["task"].strip(), "invalid policy identity")
+    require(p["schema"] == 1 and isinstance(p["task"], str) and p["task"].strip()
+            and Path(p["task"]).name == p["task"] and p["task"] not in (".", ".."), "invalid policy identity")
     require(p["layer"] in ("local", "postgres", "singlestore"), "invalid evidence layer")
     require(isinstance(p["command"], list) and len(p["command"]) >= 2
             and p["command"][0] == "make"
@@ -209,6 +211,14 @@ def location(root, output):
     return output
 
 
+def default_output(root, p):
+    state_home = Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local" / "state")))
+    require(state_home.is_absolute(), "XDG_STATE_HOME must be absolute")
+    parent = location(root, state_home / "conveyor" / p["task"])
+    attempt = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    return parent / ("attempt-" + attempt + "-" + str(os.getpid()) + "-" + secrets.token_hex(6))
+
+
 def record(root, p, output):
     output = location(root, output)
     output.mkdir(mode=0o700, parents=True, exist_ok=False)
@@ -240,9 +250,11 @@ def record(root, p, output):
         after = snapshot(root, p, key)
     except (Refused, OSError, ValueError) as exc:
         error = str(exc)
-    r = {"schema": 1, "kind": "fresh-execution", "policy": p, "before": before, "after": after,
+    r = {"schema": 1, "kind": "fresh-execution", "outcome": "success" if status == 0 else "failure",
+         "policy": p, "before": before, "after": after,
          "started": started, "finished": finished, "exit_status": status,
-         "log": {"path": str(log_path), "sha256": digest(log)}, "snapshot_error": error}
+         "log": {"path": str(log_path), "sha256": digest(log), "bytes": len(log), "completeness": "complete"},
+         "snapshot_error": error}
     write_record(output / "manifest.json", r, key)
     return status
 
@@ -264,13 +276,21 @@ def check(root, p, output):
     key = (output / "key").read_bytes()
     require(len(key) == 32, "missing/corrupt evidence key")
     r = read_record(output / "manifest.json", key)
-    require(set(r) == {"schema", "kind", "policy", "before", "after", "started", "finished",
+    require(set(r) == {"schema", "kind", "outcome", "policy", "before", "after", "started", "finished",
                        "exit_status", "log", "snapshot_error"}, "incomplete manifest")
     require(r["schema"] == 1 and r["kind"] == "fresh-execution" and r["policy"] == p, "changed command/policy/task/layer")
+    require(r["outcome"] in ("success", "failure")
+            and r["outcome"] == ("success" if r["exit_status"] == 0 else "failure"), "invalid execution outcome")
     require(type(r["exit_status"]) is int and r["exit_status"] == 0 and r["snapshot_error"] is None
             and r["finished"] >= r["started"], "failed/incomplete execution")
-    require(r["log"]["path"] == str(output / "command.log")
-            and digest((output / "command.log").read_bytes()) == r["log"]["sha256"], "missing/corrupt durable log")
+    require(set(r["log"]) == {"path", "sha256", "bytes", "completeness"}
+            and r["log"]["path"] == str(output / "command.log")
+            and r["log"]["completeness"] == "complete", "incomplete log record")
+    log_path = output / "command.log"
+    require(log_path.is_file(), "missing durable log")
+    log = log_path.read_bytes()
+    require(len(log) == r["log"]["bytes"], "truncated durable log")
+    require(digest(log) == r["log"]["sha256"], "corrupt durable log")
     equivalent(r["before"], r["after"], p)
     current = snapshot(root, p, key)
     equivalent(r["after"], current, p)
@@ -315,19 +335,179 @@ def bind(root, p, output, remote, branch):
     return head
 
 
+DISPOSABLE_CACHE_CHILDREN = ("go-build", "go-tmp", "tmp", "playwright", "npm")
+CACHE_ENVIRONMENT = ("GOCACHE", "GOTMPDIR", "TMPDIR", "PLAYWRIGHT_BROWSERS_PATH", "npm_config_cache")
+
+
+def _inside(path, parent):
+    return path == parent or path.is_relative_to(parent)
+
+
+def _process_still_live(process):
+    try:
+        process.stat()
+        return True
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return None
+
+
+def _inspection_failure(process, label):
+    live = _process_still_live(process)
+    if live is False:
+        return None
+    return process.name + ":ambiguous:" + label
+
+
+def active_cache_users(path, proc=Path("/proc")):
+    """Return live or ambiguously inspected processes that may use path."""
+    path = Path(path).resolve()
+    require(proc.is_dir(), "active cache ownership inspection requires /proc")
+    users = []
+    try:
+        processes = list(proc.iterdir())
+    except OSError as exc:
+        raise Refused("active cache ownership inspection is ambiguous: /proc") from exc
+    for process in processes:
+        if not process.name.isdigit() or int(process.name) == os.getpid():
+            continue
+        try:
+            process.stat()
+        except FileNotFoundError:
+            continue
+        except OSError:
+            users.append(process.name + ":ambiguous:process")
+            continue
+        process_cwd = None
+        for label in ("cwd", "root"):
+            candidate = process / label
+            try:
+                target = candidate.resolve(strict=True)
+            except OSError:
+                failure = _inspection_failure(process, label)
+                if failure:
+                    users.append(failure)
+                continue
+            if label == "cwd":
+                process_cwd = target
+            if _inside(target, path):
+                users.append(process.name + ":" + label)
+        descriptors = process / "fd"
+        try:
+            entries = list(descriptors.iterdir())
+        except OSError:
+            failure = _inspection_failure(process, "fd")
+            if failure:
+                users.append(failure)
+            entries = []
+        for descriptor in entries:
+            try:
+                raw_target = os.readlink(descriptor)
+            except OSError:
+                failure = _inspection_failure(process, "fd:" + descriptor.name)
+                if failure:
+                    users.append(failure)
+                continue
+            # Sockets, pipes, eventfds, and anonymous inodes are readable proc
+            # entries but not filesystem paths and therefore cannot name cache
+            # ownership. Absolute descriptor targets are inspected canonically.
+            if not raw_target.startswith("/"):
+                continue
+            try:
+                target = Path(raw_target.removesuffix(" (deleted)")).resolve()
+            except OSError:
+                users.append(process.name + ":ambiguous:fd:" + descriptor.name)
+                continue
+            if _inside(target, path):
+                users.append(process.name + ":fd:" + descriptor.name)
+        try:
+            environment = (process / "environ").read_bytes()
+        except OSError:
+            failure = _inspection_failure(process, "environ")
+            if failure:
+                users.append(failure)
+            continue
+        for entry in environment.split(b"\0"):
+            name, separator, value = entry.partition(b"=")
+            if not separator or os.fsdecode(name) not in CACHE_ENVIRONMENT or not value:
+                continue
+            variable = os.fsdecode(name)
+            candidate = Path(os.fsdecode(value))
+            if not candidate.is_absolute():
+                if process_cwd is None:
+                    users.append(process.name + ":ambiguous:env:" + variable)
+                    continue
+                candidate = process_cwd / candidate
+            try:
+                target = candidate.resolve()
+            except OSError:
+                users.append(process.name + ":ambiguous:env:" + variable)
+                continue
+            if _inside(target, path):
+                users.append(process.name + ":env:" + variable)
+    return sorted(set(users), key=lambda value: (":ambiguous:" in value, value))
+
+
+def cleanup_cache(task, task_cache, references):
+    require(Path(task).name == task and task not in ("", ".", ".."), "invalid task identity")
+    cache_home = Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache")))
+    require(cache_home.is_absolute(), "XDG_CACHE_HOME must be absolute")
+    expected = (cache_home / "conveyor" / task).resolve()
+    supplied = Path(task_cache)
+    require(not supplied.is_symlink(), "task cache cannot be a symlink")
+    require(supplied.resolve() == expected, "task cache must be the current task child of the Conveyor cache base")
+    require(expected.is_dir() and expected.stat().st_uid == os.getuid(), "task cache ownership is missing or ambiguous")
+    refs = [Path(value).resolve() for value in references]
+    removable = []
+    for name in DISPOSABLE_CACHE_CHILDREN:
+        child = expected / name
+        if not child.exists() and not child.is_symlink():
+            continue
+        require(not child.is_symlink(), "disposable cache child cannot be a symlink: " + name)
+        resolved = child.resolve()
+        require(resolved.parent == expected and resolved.is_dir() and resolved.stat().st_uid == os.getuid(),
+                "disposable cache child ownership is missing or ambiguous: " + name)
+        require(not any(ref == resolved or ref.is_relative_to(resolved) for ref in refs),
+                "referenced evidence is inside disposable cache child: " + name)
+        users = active_cache_users(resolved)
+        detail = users[:20]
+        if len(users) > len(detail):
+            detail.append("... " + str(len(users) - len(detail)) + " more")
+        require(not users, "disposable cache child is active: " + name + " (" + ", ".join(detail) + ")")
+        removable.append((name, resolved))
+    for _, child in removable:
+        shutil.rmtree(child)
+    return [name for name, _ in removable]
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("run", "check", "bind"))
-    parser.add_argument("--policy", required=True)
-    parser.add_argument("--output", required=True)
+    parser.add_argument("action", choices=("run", "check", "bind", "cleanup"))
+    parser.add_argument("--policy")
+    parser.add_argument("--output")
     parser.add_argument("--remote", default="origin")
     parser.add_argument("--branch")
+    parser.add_argument("--task")
+    parser.add_argument("--task-cache")
+    parser.add_argument("--reference", action="append", default=[])
     args = parser.parse_args()
     try:
+        if args.action == "cleanup":
+            require(args.task and args.task_cache, "cleanup requires --task and --task-cache")
+            removed = cleanup_cache(args.task, args.task_cache, args.reference)
+            print("Removed disposable cache children: " + (", ".join(removed) if removed else "none"))
+            return 0
+        require(args.policy, args.action + " requires --policy")
         root = Path(git(Path.cwd(), "rev-parse", "--show-toplevel").decode().strip()).resolve()
         p = policy_read(args.policy)
         if args.action == "run":
-            return record(root, p, args.output)
+            output = Path(args.output).resolve() if args.output else default_output(root, p)
+            status = record(root, p, output)
+            print("Retained validation evidence: manifest=" + str(output / "manifest.json")
+                  + " log=" + str(output / "command.log") + " outcome=" + ("success" if status == 0 else "failure"))
+            return status
+        require(args.output, args.action + " requires --output")
         if args.action == "check":
             check(root, p, args.output)
             print("Eligible local evidence; no command was rerun.")

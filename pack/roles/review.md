@@ -37,6 +37,11 @@ Method:
 - Run repository validation only through Make targets, including `make test`
   and `make test-integration` when relevant. Never run raw
   `docker compose down` commands in this repository.
+- For every claimed mandatory run, require resolvable retained manifest and
+  complete-log references. Resolve and inspect those references, match their
+  recorded command and outcome to the claim, and disclose missing, corrupt, or
+  truncated evidence. A transcript tail is diagnostic context, not the
+  original complete log and not proof that the mandatory run passed.
 - Enforce Non-goals verbatim: changes outside them are scope creep even
   when useful.
 - Check every acceptance criterion against the implementation agent's actual

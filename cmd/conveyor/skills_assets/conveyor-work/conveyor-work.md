@@ -81,17 +81,28 @@ export npm_config_cache="$CONVEYOR_TASK_CACHE/npm"
 
 `PLAYWRIGHT_BROWSERS_PATH` controls the browser download used by this
 repository's `npx playwright install` command, while `npm_config_cache` routes
-npm/npx package cache data. Generated logs, reports, archives, review clones,
-and other disposable artifacts belong under `CONVEYOR_TASK_CACHE` too, unless
-the work-order contract requires a tracked repository output.
+npm/npx package cache data. The task cache contains only unreferenced scratch.
+Any complete success or failure log, report, or other file relied upon for
+acceptance belongs in a durable per-attempt evidence bundle described below;
+copying a tail into a transcript does not preserve the original log.
 
-Register cleanup for normal exit, command failure, and catchable interruption,
-and also remove the directory explicitly when the claim concludes. Before a
-recursive removal, canonicalize and verify that the target is exactly the
-current task's child of the selected `conveyor` cache base; never remove the
-base or another task's directory. A process killed without a catchable signal
-cannot run cleanup, so at the next claim entry inspect and remove only a stale
-directory for the same task after confirming no live process uses it.
+Register the supported cleanup command for normal exit, command failure, and
+catchable interruption, and run it explicitly when the claim concludes. Pass
+every retained reference named in progress, submission, or review material:
+
+```sh
+python3 scripts/validation_evidence.py cleanup --task "$task_id" \
+  --task-cache "$CONVEYOR_TASK_CACHE" --reference "$retained_manifest" \
+  --reference "$retained_log"
+```
+
+The command canonicalizes the cache root, requires the exact current task child
+of the selected `conveyor` cache base, checks local ownership, refuses symlinks,
+referenced files, and children used by live processes, and removes only the
+known disposable children. It never removes the task root, a sibling task
+cache, an unknown child, or durable state. On systems without `/proc`, active
+ownership cannot be established and cleanup refuses. A process killed before
+cleanup leaves scratch for the next claim to inspect with the same command.
 
 If a confined sandbox denies the sanctioned external path, first request
 write permission scoped only to that exact task cache directory. Only when
@@ -129,12 +140,16 @@ boundary. Each database run uses disposable isolated fixtures.
 `scripts/validation_evidence.py` records a fresh command with `run`, checks an
 existing record with `check`, and associates eligible evidence with the actual
 pushed branch using `bind`. It never skips a Make prerequisite or changes a
-required gate. Run it from the dedicated worktree. Use a new durable directory
-for each execution, under `$XDG_STATE_HOME/conveyor/<task-id>/` (default
+required gate. Run it from the dedicated worktree. By default, `run` exclusively
+creates a unique attempt directory under
+`$XDG_STATE_HOME/conveyor/<task-id>/` (default
 `$HOME/.local/state/conveyor/<task-id>/`), outside both checkouts and all task
-caches. Keep the manifest, private integrity key, log, and head-binding file
-together after disposable caches are removed. The key detects accidental
-corruption; it is not a signature against an author who can rewrite the bundle.
+caches. It prints absolute retained manifest and complete-log references plus
+the success or failure outcome. Keep the manifest, private integrity key, log,
+and head-binding file together after disposable caches are removed. The
+manifest distinguishes a nonzero execution from a missing, truncated, or
+corrupt log. The key detects accidental corruption; it is not a signature
+against an author who can rewrite the bundle.
 
 Before `run`, write a JSON policy describing the actual command and every input
 boundary. Schema 1 requires these fields; unknown or omitted fields fail closed:
@@ -180,10 +195,13 @@ boundary. Schema 1 requires these fields; unknown or omitted fields fail closed:
   reuse: matching configuration cannot prove unchanged mutable database state.
   Preserve fresh backend results and rerun the isolated target when needed.
 
-For example, after authoring and auditing `policy.json` outside the worktree:
+For example, after authoring and auditing `policy.json` outside the worktree,
+let `run` select the collision-safe attempt directory. Copy the printed attempt
+directory into `evidence` for later checks and binding:
 
 ```sh
-python3 scripts/validation_evidence.py run --policy "$policy" --output "$evidence"
+python3 scripts/validation_evidence.py run --policy "$policy"
+evidence='<printed manifest parent directory>'
 python3 scripts/validation_evidence.py check --policy "$policy" --output "$evidence"
 # After committing and pushing the assigned task branch:
 python3 scripts/validation_evidence.py bind --policy "$policy" --output "$evidence" \
