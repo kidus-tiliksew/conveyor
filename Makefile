@@ -21,7 +21,7 @@ TEST_DATABASE_URL ?= postgres://conveyor:conveyor@127.0.0.1:$(TEST_POSTGRES_PORT
 PLAYWRIGHT_ARGS ?=
 PLAYWRIGHT_INSTALL_ARGS ?=
 PLAYWRIGHT_WORKERS ?= 2
-RUN_WEB_TESTS = cd web && npx playwright install $(PLAYWRIGHT_INSTALL_ARGS) chromium && npm run lint && PLAYWRIGHT_WORKERS=$(PLAYWRIGHT_WORKERS) npm run test:e2e -- $(PLAYWRIGHT_ARGS)
+RUN_WEB_TESTS = cd web && npm run lint && PLAYWRIGHT_WORKERS=$(PLAYWRIGHT_WORKERS) npm run test:e2e -- $(PLAYWRIGHT_ARGS)
 DEV_COMPOSE := docker compose --env-file $(ENV_FILE) -f compose.dev.yaml
 
 .PHONY: all build image test-image release release-archives test-release web-deps web-typecheck ui dashboard-fresh test test-web test-ui test-ui-evidence compose-check test-integration test-integration-ci test-postgres test-db-identity test-db-up test-db-down vet plugin-check fmt fmt-check tidy clean db-up db-down run build-run dev
@@ -43,9 +43,24 @@ endif
 test-validation:
 	PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts -p 'test_validation_evidence.py'
 
-build: ui
-	go build $(LDFLAGS) -o $(BIN)/conveyor ./cmd/conveyor
+build: conveyor-cli
 	go build $(LDFLAGS) -o $(BIN)/conveyord ./cmd/conveyord
+
+.PHONY: conveyor-cli browser-runtime vk10-runtime test-vk10
+conveyor-cli: ui
+	go build $(LDFLAGS) -o $(BIN)/conveyor ./cmd/conveyor
+
+# VK-10: each gate builds its own CLI and prepares the browser before fixtures.
+export CONVEYOR_VK10_CLI := $(abspath $(BIN)/conveyor)
+export CONVEYOR_VK10_SOURCE := $(CURDIR)
+vk10-runtime: conveyor-cli browser-runtime
+
+browser-runtime: web-deps
+	cd web && npx playwright install $(PLAYWRIGHT_INSTALL_ARGS) chromium
+
+test-vk10: vk10-runtime
+	CONVEYOR_TEST_DATABASE_URL= CONVEYOR_TEST_SINGLESTORE_URL= go test -v ./internal/verification -run '^TestVK10Scenario$$' -count=1
+	CONVEYOR_TEST_DATABASE_URL= CONVEYOR_TEST_SINGLESTORE_URL= go test ./cmd/conveyor ./internal/dispatch ./internal/store -run 'TestKitRunner|TestKitVerifyOrdinary|TestVerificationDispatchReviewBinding|TestPolicyHandoffVerificationBinding|TestMemoryConformance/WorkOrders/VerifyPolicy' -count=1
 
 image:
 	docker build --build-arg VERSION="$(VERSION)" --tag "$(IMAGE)" .
@@ -99,11 +114,11 @@ ui: web-deps
 dashboard-fresh: ui
 	git diff --exit-code -- internal/httpapi/dashboard
 
-test: compose-check dashboard-fresh test-release test-validation
+test: compose-check dashboard-fresh test-release test-validation vk10-runtime
 	CONVEYOR_TEST_DATABASE_URL= CONVEYOR_TEST_SINGLESTORE_URL= go test ./...
 	$(RUN_WEB_TESTS)
 
-test-web: web-typecheck
+test-web: web-typecheck browser-runtime
 	$(RUN_WEB_TESTS)
 
 test-ui: ui
@@ -115,11 +130,11 @@ test-ui-evidence: ui
 compose-check:
 	python3 scripts/validate_compose_isolation.py
 
-test-integration: compose-check test-db-up
+test-integration: compose-check vk10-runtime test-db-up
 	@trap '$(MAKE) test-db-down' EXIT; \
 		CONVEYOR_TEST_DATABASE_URL='$(TEST_DATABASE_URL)' go test -v -p=1 ./cmd/conveyor ./cmd/conveyord ./internal/store/postgres ./internal/dispatch -count=1 -timeout=5m
 
-test-integration-ci: compose-check
+test-integration-ci: compose-check vk10-runtime
 	@test -n "$(CONVEYOR_TEST_DATABASE_URL)" || (echo "CONVEYOR_TEST_DATABASE_URL is required" >&2; exit 1)
 	CONVEYOR_TEST_DATABASE_URL='$(CONVEYOR_TEST_DATABASE_URL)' go test -v -p=1 ./cmd/conveyor ./cmd/conveyord ./internal/store/postgres ./internal/dispatch -count=1 -timeout=5m
 
@@ -171,7 +186,7 @@ dev: db-up
 
 .PHONY: test-integration-singlestore-ci test-singlestore-unit
 
-test-integration-singlestore-ci:
+test-integration-singlestore-ci: vk10-runtime
 	@test -n "$$CONVEYOR_TEST_SINGLESTORE_URL" || (echo "CONVEYOR_TEST_SINGLESTORE_URL is required" >&2; exit 1)
 	go test -v -p=1 ./internal/eventlog/s2log ./internal/store/storetest ./internal/store/singlestore -count=1 -timeout=20m
 	go test -v -p=1 ./cmd/conveyor ./cmd/conveyord -run 'TestSingleStoreInitAndUserIntegration|TestConveyordDurableStartupIntegration' -count=1 -timeout=10m

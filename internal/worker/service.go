@@ -356,7 +356,7 @@ func (s *Service) ActiveHarnesses(ctx context.Context) ([]HarnessProbeTarget, er
 	}
 	byFingerprint := map[string]HarnessProbeTarget{}
 	for _, order := range orders {
-		workerDispatched := order.Stage == core.StageSpec || order.Stage == core.StageImplement || order.Stage == core.StageReview
+		workerDispatched := core.ValidWorkOrderStage(order.Stage)
 		if !workerDispatched || (order.State != core.WorkOrderQueued && order.State != core.WorkOrderClaimed) || order.RequiredHarnessConfig == nil {
 			continue
 		}
@@ -629,7 +629,7 @@ func (s *Service) ListVisibleOrders(ctx context.Context, worker core.Worker) ([]
 		return nil, err
 	}
 	for _, order := range orders {
-		if order.State == core.WorkOrderQueued && order.Stage == core.StageImplement &&
+		if order.State == core.WorkOrderQueued && (order.Stage == core.StageImplement || order.Stage == core.StageVerify) &&
 			!order.Claimable && len(order.BlockingTaskIDs) > 0 {
 			task, getErr := s.Store.GetTask(ctx, order.TaskID)
 			if getErr != nil || task.Hold || task.Assignee != nil && task.Assignee.UserID != worker.OwnerUserID {
@@ -673,7 +673,7 @@ func (s *Service) ClaimForWorker(ctx context.Context, worker core.Worker, id str
 	if task.Hold {
 		return core.WorkOrder{}, fmt.Errorf("task is held for operator claiming")
 	}
-	if order.Stage == core.StageImplement && len(task.BlockingTaskIDs) > 0 {
+	if (order.Stage == core.StageImplement || order.Stage == core.StageVerify) && len(task.BlockingTaskIDs) > 0 {
 		return core.WorkOrder{}, fmt.Errorf("task %s is blocked by unmerged dependencies: %s", task.ID, strings.Join(task.BlockingTaskIDs, ", "))
 	}
 	if !worker.Live(s.now()) {

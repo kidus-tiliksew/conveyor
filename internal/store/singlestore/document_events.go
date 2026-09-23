@@ -257,17 +257,17 @@ func (s *Store) listActivityMarkers(ctx context.Context, taskIDs []string) ([]st
 	if err != nil {
 		return nil, err
 	}
-	var implementTaskIDs []string
-	seenImplementTask := map[string]bool{}
+	var dependencyTaskIDs []string
+	seenDependencyTask := map[string]bool{}
 	for _, order := range orders {
-		if order.Stage == core.StageImplement && !seenImplementTask[order.TaskID] {
-			implementTaskIDs = append(implementTaskIDs, order.TaskID)
-			seenImplementTask[order.TaskID] = true
+		if (order.Stage == core.StageImplement || order.Stage == core.StageVerify) && !seenDependencyTask[order.TaskID] {
+			dependencyTaskIDs = append(dependencyTaskIDs, order.TaskID)
+			seenDependencyTask[order.TaskID] = true
 		}
 	}
 	blockersByTask := map[string]store.DependencyBlockers{}
-	if len(implementTaskIDs) > 0 {
-		blockersByTask, err = s.ListDependencyBlockers(ctx, implementTaskIDs)
+	if len(dependencyTaskIDs) > 0 {
+		blockersByTask, err = s.ListDependencyBlockers(ctx, dependencyTaskIDs)
 		if err != nil {
 			return nil, err
 		}
@@ -277,7 +277,7 @@ func (s *Store) listActivityMarkers(ctx context.Context, taskIDs []string) ([]st
 	reviewTaskIDs := make([]string, 0)
 	seenReviewTask := map[string]bool{}
 	for _, order := range orders {
-		if order.Stage == core.StageImplement {
+		if order.Stage == core.StageImplement || order.Stage == core.StageVerify {
 			blockers := blockersByTask[order.TaskID]
 			order.BlockingTaskIDs = append([]string(nil), blockers.BlockingTaskIDs...)
 			order.UnsatisfiableTaskIDs = append([]string(nil), blockers.UnsatisfiableTaskIDs...)

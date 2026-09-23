@@ -27,8 +27,18 @@ func (s *Store) CreateReviewRoundCommand(ctx context.Context, lease taskops.Task
 		return fmt.Errorf("review round requires one job per work order")
 	}
 	return s.taskTx(ctx, id, func(tx *sql.Tx) error {
-		if _, err := getTaskRow(ctx, tx, id); err != nil {
+		task, err := getTaskRow(ctx, tx, id)
+		if err != nil {
 			return err
+		}
+		if task.SetupContract.VerifyStage {
+			var ready bool
+			if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM work_orders WHERE workspace_id=? AND task_id=? AND stage='verify' AND state='completed' AND head_sha=? AND head_sha<>'')`, documentWorkspace(ctx), id, core.VerifyStageHead(task)).Scan(&ready); err != nil {
+				return err
+			}
+			if !ready {
+				return fmt.Errorf("review requires completed verification for the submitted head")
+			}
 		}
 		var count int
 		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM work_orders WHERE workspace_id=? AND task_id=? AND stage='review' AND review_round=?`, documentWorkspace(ctx), id, orders[0].ReviewRound).Scan(&count); err != nil {
@@ -247,11 +257,12 @@ func reviewDecisionPayload(decision core.ReviewDecision) []byte {
 		"review_work_order_id": decision.ReviewWorkOrderID, "verdict": decision.Verdict,
 		"reason_code": decision.ReasonCode, "summary": decision.Summary, "feedback": decision.Feedback,
 		"reviewed_commit_sha": decision.ReviewedCommitSHA, "reviewer": decision.Reviewer,
-		"evidence_ids":           decision.EvidenceIDs,
-		"requirement_citations":  decision.RequirementCitations,
-		"done_criteria_coverage": decision.DoneCriteriaAssessment,
-		"governance_assessment":  decision.GovernanceAssessment,
-		"reviewer_model":         decision.ReviewerModel, "reviewer_session": decision.ReviewerSession,
+		"evidence_ids":            decision.EvidenceIDs,
+		"requirement_citations":   decision.RequirementCitations,
+		"done_criteria_coverage":  decision.DoneCriteriaAssessment,
+		"governance_assessment":   decision.GovernanceAssessment,
+		"verification_assessment": decision.VerificationAssessment,
+		"reviewer_model":          decision.ReviewerModel, "reviewer_session": decision.ReviewerSession,
 		"same_model_as_implementer": decision.SameModelAsImplementer,
 		"review_round":              decision.ReviewRound, "review_seat": decision.ReviewSeat,
 		"review_kind": decision.ReviewKind, "review_scope": decision.ReviewScope,
@@ -289,6 +300,9 @@ func (s *Store) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.T
 		if err != nil {
 			return err
 		}
+		if err := requireVerifyReviewTx(ctx, tx, before); err != nil {
+			return err
+		}
 		lookup := store.ExecutionDocumentLookup(func(ctx context.Context, id string, version int) (core.SpecVersion, bool, error) {
 			var spec core.SpecVersion
 			err := tx.QueryRowContext(ctx, `SELECT content,approved FROM task_specs
@@ -299,7 +313,19 @@ ORDER BY version DESC LIMIT 1`, documentWorkspace(ctx), id, version, version, ve
 			}
 			return spec, err == nil, err
 		})
-		if err := store.ValidateReviewAcceptance(ctx, lookup, before, &decision); err != nil {
+		verificationState := store.VerificationReviewState{}
+		if before.SetupContract.VerifyStage {
+			rows, e := verificationRowsTx(ctx, tx, documentWorkspace(ctx), decision.TaskID)
+			if e != nil {
+				return e
+			}
+			reviewOrder, e := getOrderRow(ctx, tx, decision.ReviewWorkOrderID)
+			if e != nil {
+				return e
+			}
+			verificationState = store.VerificationReviewState{Rows: rows, Order: reviewOrder}
+		}
+		if err := store.ValidateReviewAcceptance(ctx, lookup, before, &decision, verificationState); err != nil {
 			return err
 		}
 

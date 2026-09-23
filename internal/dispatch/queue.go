@@ -121,7 +121,10 @@ type githubIssuePublicationWorker struct {
 // Registrations binds every job kind to its handler and retry policy. The
 // daemon hands them to whichever queue.Runtime is in use.
 func (d *Dispatcher) Registrations(shutdown *ShutdownMarker) []queue.Registration {
+	publications := &verificationPublicationWorker{dispatcher: d}
 	return []queue.Registration{
+		{Kind: queue.VerificationPublicationArgs{}.Kind(), Handle: publications.Work, Reconcile: publications.Reconcile},
+		{Kind: "verification_publication", Handle: publications.Legacy},
 		{
 			Kind:   queue.DispatchTaskArgs{}.Kind(),
 			Handle: (&dispatchTaskWorker{dispatcher: d, shutdown: shutdown}).Work,

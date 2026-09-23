@@ -327,6 +327,8 @@ type ReviewPanel struct {
 }
 
 type ExecutionPolicy struct {
+	VerifyStage       bool `yaml:"verify_stage" json:"verify_stage"`
+	VerifyConcurrency int  `yaml:"verify_concurrency,omitempty" json:"verify_concurrency,omitempty"`
 	// DefaultMode is deprecated (DEC-5): parsed from legacy documents
 	// and seeds for compatibility, never read for behavior, dropped on save.
 	DefaultMode          string `yaml:"default_mode,omitempty" json:"default_mode,omitempty"`
@@ -436,6 +438,7 @@ type ReviewExecutionSettings struct {
 // additive compatibility data and is never a second source of truth when this
 // object is present (design-harness-execution).
 type ContextualExecutionSettings struct {
+	Verify         ImplementationSettings  `yaml:"verify,omitempty" json:"verify,omitempty"`
 	ControlPlane   ControlPlaneSettings    `yaml:"control_plane" json:"control_plane"`
 	Spec           ImplementationSettings  `yaml:"spec" json:"spec"`
 	Implementation ImplementationSettings  `yaml:"implementation" json:"implementation"`
@@ -446,6 +449,7 @@ type ContextualExecutionSettings struct {
 // workspace-scoped; the settings and review panel are frozen onto a task at
 // intake (design-harness-execution; DEC-7).
 type ExecutionSetup struct {
+	VerifyStage       bool                        `yaml:"verify_stage,omitempty" json:"verify_stage,omitempty"`
 	Name              string                      `yaml:"name" json:"name"`
 	MaxBounces        int                         `yaml:"max_bounces,omitempty" json:"max_bounces,omitempty"`
 	ExecutionSettings ContextualExecutionSettings `yaml:"execution_settings" json:"execution_settings"`
@@ -459,6 +463,7 @@ type ExecutionSetup struct {
 func (s ExecutionSetup) MarshalJSON() ([]byte, error) {
 	seats := make([]struct{}, len(s.Review.Seats))
 	return json.Marshal(struct {
+		VerifyStage   bool              `json:"verify_stage,omitempty"`
 		MaxBounces    int               `json:"max_bounces"`
 		StageTimeouts map[string]string `json:"stage_timeouts"`
 		Review        struct {
@@ -466,8 +471,10 @@ func (s ExecutionSetup) MarshalJSON() ([]byte, error) {
 		} `json:"review"`
 		RefreshReview string `json:"refresh_review,omitempty"`
 	}{
-		MaxBounces: s.MaxBounces,
+		VerifyStage: s.VerifyStage,
+		MaxBounces:  s.MaxBounces,
 		StageTimeouts: map[string]string{
+			"verify":    s.ExecutionSettings.Verify.TimeoutText,
 			"spec":      s.ExecutionSettings.Spec.TimeoutText,
 			"implement": s.ExecutionSettings.Implementation.TimeoutText,
 			"review":    s.ExecutionSettings.Review.TimeoutText,
@@ -494,6 +501,7 @@ func (s *ExecutionSetup) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 	var policy struct {
+		VerifyStage   bool              `json:"verify_stage,omitempty"`
 		MaxBounces    int               `json:"max_bounces"`
 		StageTimeouts map[string]string `json:"stage_timeouts"`
 		Review        struct {
@@ -504,6 +512,8 @@ func (s *ExecutionSetup) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &policy); err != nil {
 		return err
 	}
+	s.VerifyStage = policy.VerifyStage
+	s.ExecutionSettings.Verify.TimeoutText = policy.StageTimeouts["verify"]
 	s.ExecutionSettings.Spec.TimeoutText = policy.StageTimeouts["spec"]
 	s.ExecutionSettings.Implementation.TimeoutText = policy.StageTimeouts["implement"]
 	s.ExecutionSettings.Review.TimeoutText = policy.StageTimeouts["review"]
@@ -516,7 +526,7 @@ func (s *ExecutionSetup) UnmarshalJSON(data []byte) error {
 // HasFrozenPolicy distinguishes the policy carrier from a zero-value legacy
 // contract without relying on the retired setup name.
 func (s ExecutionSetup) HasFrozenPolicy() bool {
-	return s.Name != "" || s.MaxBounces > 0 || s.ExecutionSettings.Spec.TimeoutText != "" ||
+	return s.VerifyStage || s.ExecutionSettings.Verify.TimeoutText != "" || s.Name != "" || s.MaxBounces > 0 || s.ExecutionSettings.Spec.TimeoutText != "" ||
 		s.ExecutionSettings.Implementation.TimeoutText != "" || s.ExecutionSettings.Review.TimeoutText != "" ||
 		s.Review.Seats != nil || s.RefreshReview != ""
 }
@@ -589,6 +599,7 @@ type UpdateReceipt struct {
 // snapshot. WorktreeRoot is a client-local filesystem setting;
 // it does not cross the workspace API boundary.
 type Config struct {
+	KitPermissions            []KitPermissionGrant         `yaml:"kit_permissions,omitempty" json:"-"`
 	Workspace                 string                       `yaml:"workspace"`
 	PackDir                   string                       `yaml:"pack_dir,omitempty"`
 	packDirSet                bool                         `yaml:"-"`
@@ -799,10 +810,10 @@ func normalizePolicy(next *Config, document WorkspaceDocument) (*Config, error) 
 	if next.Routing.Stages == nil {
 		next.Routing.Stages = map[string]StageRoute{}
 	}
-	for _, stage := range []string{"spec", "implement", "review"} {
+	for _, stage := range []string{"spec", "implement", "review", "verify"} {
 		timeout := strings.TrimSpace(document.StageTimeouts[stage])
 		if timeout == "" {
-			timeout = map[string]string{"spec": "30m", "implement": "4h", "review": "1h"}[stage]
+			timeout = map[string]string{"spec": "30m", "implement": "4h", "review": "1h", "verify": "1h"}[stage]
 		}
 		parsed, parseErr := time.ParseDuration(timeout)
 		if parseErr != nil || parsed <= 0 {
@@ -990,6 +1001,9 @@ func applyContextualExecutionSettings(c *Config) {
 		TimeoutText: settings.Implementation.TimeoutText,
 		Execution:   ExecutionMCP,
 	}
+	if settings.Verify != (ImplementationSettings{}) {
+		c.Routing.Stages["verify"] = StageRoute{Model: settings.Verify.Model, Harness: settings.Verify.Harness, Effort: settings.Verify.Effort, ModelPolicy: settings.Verify.ModelPolicy, TimeoutText: settings.Verify.TimeoutText, Execution: ExecutionMCP}
+	}
 	c.Routing.Stages["review"] = StageRoute{
 		Model: settings.Review.FallbackModel, Harness: settings.Review.FallbackHarness,
 		TimeoutText: settings.Review.TimeoutText, Execution: settings.Review.Execution,
@@ -1018,6 +1032,7 @@ func contextualExecutionSettings(routing Routing) *ContextualExecutionSettings {
 	if spec.TimeoutText == "" {
 		spec.TimeoutText = implement.TimeoutText
 	}
+	verify := routing.Stages["verify"]
 	review := routing.Stages["review"]
 	return &ContextualExecutionSettings{
 		ControlPlane: ControlPlaneSettings{
@@ -1027,7 +1042,8 @@ func contextualExecutionSettings(routing Routing) *ContextualExecutionSettings {
 				ExplorationOutputTokens: DefaultPlanningExplorationOutputTokens,
 			},
 		},
-		Spec: ImplementationSettings{Harness: spec.Harness, Model: spec.Model, ModelPolicy: spec.ModelPolicy, Effort: spec.Effort, TimeoutText: spec.TimeoutText},
+		Verify: ImplementationSettings{Harness: verify.Harness, Model: verify.Model, ModelPolicy: verify.ModelPolicy, Effort: verify.Effort, TimeoutText: verify.TimeoutText},
+		Spec:   ImplementationSettings{Harness: spec.Harness, Model: spec.Model, ModelPolicy: spec.ModelPolicy, Effort: spec.Effort, TimeoutText: spec.TimeoutText},
 		Implementation: ImplementationSettings{
 			Harness: implement.Harness, Model: implement.Model,
 			ModelPolicy: implement.ModelPolicy, Effort: implement.Effort,
@@ -1098,6 +1114,11 @@ func normalizeHarnessModel(route StageRoute, harnesses []Harness) (string, error
 }
 
 func normalize(c *Config, path string) (*Config, error) {
+	for _, grant := range c.KitPermissions {
+		if err := grant.Validate(); err != nil {
+			return nil, err
+		}
+	}
 	setups := append([]ExecutionSetup(nil), c.Setups...)
 	defaultSetup := strings.TrimSpace(c.DefaultSetup)
 	if c.Setups == nil {
@@ -1261,6 +1282,12 @@ func normalizeLegacy(c *Config, path string) (*Config, error) {
 	// Legacy documents keep their stored value readable, but it is never
 	// re-emitted or consulted; normalization drops it.
 	c.Execution.DefaultMode = ""
+	if c.Execution.VerifyConcurrency == 0 {
+		c.Execution.VerifyConcurrency = 1
+	}
+	if c.Execution.VerifyConcurrency < 1 {
+		return nil, fmt.Errorf("execution.verify_concurrency must be at least 1")
+	}
 	if c.Execution.ImplementConcurrency == 0 {
 		c.Execution.ImplementConcurrency = 1
 	}
@@ -1320,7 +1347,7 @@ func normalizeLegacy(c *Config, path string) (*Config, error) {
 			}
 		}
 		route.Effort = strings.TrimSpace(route.Effort)
-		if stage != "triage" && stage != "spec" && stage != "implement" && route.Effort != "" {
+		if stage != "triage" && stage != "spec" && stage != "implement" && stage != "verify" && route.Effort != "" {
 			return nil, fmt.Errorf("routing stage %s: effort is not supported", stage)
 		}
 		if route.Model == "" {
@@ -1363,7 +1390,7 @@ func normalizeLegacy(c *Config, path string) (*Config, error) {
 		if stage == "triage" && route.Execution != ExecutionInProcess {
 			return nil, fmt.Errorf("routing stage triage: execution is fixed to in_process")
 		}
-		if (stage == "spec" || stage == "implement") && route.Execution != ExecutionMCP {
+		if (stage == "spec" || stage == "implement" || stage == "verify") && route.Execution != ExecutionMCP {
 			return nil, fmt.Errorf("routing stage %s: execution is fixed to mcp", stage)
 		}
 		if stage == "triage" {
@@ -1378,7 +1405,7 @@ func normalizeLegacy(c *Config, path string) (*Config, error) {
 			if route.Harness != "" {
 				return nil, fmt.Errorf("routing stage review: in_process execution cannot select a harness")
 			}
-		} else if stage == "spec" || stage == "implement" {
+		} else if stage == "spec" || stage == "implement" || stage == "verify" {
 			if route.Harness == "" && len(c.Harnesses) == 1 {
 				route.Harness = c.Harnesses[0].Name
 			}
@@ -1486,7 +1513,7 @@ func normalizeLegacy(c *Config, path string) (*Config, error) {
 		// explicit; it is retained only for compatibility (design-harness-execution).
 		c.Routing.Stages["review"] = reviewRoute
 	}
-	for _, stage := range []string{"spec", "implement", "review"} {
+	for _, stage := range []string{"spec", "implement", "review", "verify"} {
 		route := c.Routing.Stages[stage]
 		if route.Execution == ExecutionMCP && c.Execution.FirstActivityTimeout >= route.Timeout {
 			return nil, fmt.Errorf("execution.first_activity_timeout must be shorter than %s execution timeout", stageName(stage))
@@ -1662,7 +1689,7 @@ func (c *Config) WorkspaceDocument() WorkspaceDocument {
 		PlanningModels:            append([]string(nil), c.PlanningModels...),
 	}
 	document.StageTimeouts = make(map[string]string, 3)
-	for _, stage := range []string{"spec", "implement", "review"} {
+	for _, stage := range []string{"spec", "implement", "review", "verify"} {
 		if timeout := c.Routing.Stages[stage].TimeoutText; timeout != "" {
 			document.StageTimeouts[stage] = timeout
 		}
@@ -1691,6 +1718,7 @@ func (c *Config) PolicyDocument() WorkspaceDocument {
 	document.Setups = nil
 	document.DefaultSetup = ""
 	document.PlanningModels = nil
+	document.Execution.VerifyConcurrency = 0
 	document.Execution.FirstActivityTimeout = 0
 	document.Execution.FirstActivityTimeoutText = ""
 	for i := range document.Review.Seats {
@@ -1702,6 +1730,10 @@ func (c *Config) PolicyDocument() WorkspaceDocument {
 // FreezePolicy projects the current default policy into the legacy task
 // contract carrier without retaining execution selection or routing detail.
 func (c *Config) FreezePolicy() ExecutionSetup {
+	verifyTimeout := c.Routing.Stages["verify"].TimeoutText
+	if verifyTimeout == "" {
+		verifyTimeout = "1h"
+	}
 	setup, ok := c.Setup("")
 	if !ok {
 		setup.ExecutionSettings.Spec.TimeoutText = c.Routing.Stages["spec"].TimeoutText
@@ -1711,8 +1743,10 @@ func (c *Config) FreezePolicy() ExecutionSetup {
 		setup.RefreshReview = RefreshReviewDelta
 	}
 	return ExecutionSetup{
-		MaxBounces: c.MaxBounces,
+		VerifyStage: c.Execution.VerifyStage,
+		MaxBounces:  c.MaxBounces,
 		ExecutionSettings: ContextualExecutionSettings{
+			Verify:         ImplementationSettings{TimeoutText: verifyTimeout},
 			Spec:           ImplementationSettings{TimeoutText: setup.ExecutionSettings.Spec.TimeoutText},
 			Implementation: ImplementationSettings{TimeoutText: setup.ExecutionSettings.Implementation.TimeoutText},
 			Review:         ReviewExecutionSettings{TimeoutText: setup.ExecutionSettings.Review.TimeoutText},
@@ -1765,7 +1799,7 @@ func (c *Config) WithSetup(setup ExecutionSetup) *Config {
 	applyContextualExecutionSettings(&next)
 	for stage, route := range next.Routing.Stages {
 		route.Timeout, _ = time.ParseDuration(route.TimeoutText)
-		if stage == "implement" {
+		if stage == "implement" || stage == "verify" {
 			route.EffectiveModel, _ = normalizeHarnessModel(route, next.Harnesses)
 		}
 		next.Routing.Stages[stage] = route
@@ -1777,6 +1811,7 @@ func (c *Config) WithSetup(setup ExecutionSetup) *Config {
 // deployment's control-plane routes or a client's local execution detail.
 func (c *Config) WithPolicy(policy ExecutionSetup) *Config {
 	next := *c
+	next.Execution.VerifyStage = policy.VerifyStage
 	if policy.MaxBounces > 0 {
 		next.MaxBounces = policy.MaxBounces
 	}
@@ -1785,6 +1820,7 @@ func (c *Config) WithPolicy(policy ExecutionSetup) *Config {
 		next.Routing.Stages[stage] = route
 	}
 	timeouts := map[string]string{
+		"verify":    policy.ExecutionSettings.Verify.TimeoutText,
 		"spec":      policy.ExecutionSettings.Spec.TimeoutText,
 		"implement": policy.ExecutionSettings.Implementation.TimeoutText,
 		"review":    policy.ExecutionSettings.Review.TimeoutText,
@@ -1795,6 +1831,9 @@ func (c *Config) WithPolicy(policy ExecutionSetup) *Config {
 		}
 		route := next.Routing.Stages[stage]
 		route.TimeoutText = timeout
+		if stage == "verify" {
+			route.Execution = ExecutionMCP
+		}
 		route.Timeout, _ = time.ParseDuration(timeout)
 		next.Routing.Stages[stage] = route
 	}

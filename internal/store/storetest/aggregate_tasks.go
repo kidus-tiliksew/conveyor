@@ -9,10 +9,15 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
-func newAggregateTask(t *testing.T, x Fixture) core.Task {
+func newAggregateTask(t *testing.T, x Fixture, stages ...core.Stage) core.Task {
 	t.Helper()
 	id := core.NewTaskID()
 	task := core.Task{ID: id, Workspace: x.Workspace, Repo: "conveyor", Title: id, BaseBranch: "main", Branch: "conveyor/task-" + id, State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: time.Now().UTC().Truncate(time.Microsecond)}
+	if len(stages) > 0 && stages[0] == core.StageVerify {
+		task.NextStage = core.StageVerify
+		task.ReviewedHeadSHA = "submitted-head"
+		task.SetupContract.VerifyStage = true
+	}
 	requireOK(t, x.Backend.CreateTask(x.Context, task))
 	return task
 }

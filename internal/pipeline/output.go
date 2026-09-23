@@ -38,13 +38,14 @@ type TriageBrief struct {
 }
 
 type Review struct {
-	Verdict              string                              `json:"verdict"`
-	ReasonCode           string                              `json:"reason_code"`
-	Summary              string                              `json:"summary"`
-	Feedback             string                              `json:"feedback"`
-	RequirementCitations *core.RequirementCitationAssessment `json:"requirement_citations,omitempty"`
-	DoneCriteriaCoverage *core.DoneCriteriaAssessment        `json:"done_criteria_coverage,omitempty"`
-	GovernanceAssessment *core.GovernanceAssessment          `json:"governance_assessment,omitempty"`
+	VerificationAssessment *core.VerificationAssessment        `json:"verification_assessment,omitempty"`
+	Verdict                string                              `json:"verdict"`
+	ReasonCode             string                              `json:"reason_code"`
+	Summary                string                              `json:"summary"`
+	Feedback               string                              `json:"feedback"`
+	RequirementCitations   *core.RequirementCitationAssessment `json:"requirement_citations,omitempty"`
+	DoneCriteriaCoverage   *core.DoneCriteriaAssessment        `json:"done_criteria_coverage,omitempty"`
+	GovernanceAssessment   *core.GovernanceAssessment          `json:"governance_assessment,omitempty"`
 }
 
 type AcceptanceCriterion struct {

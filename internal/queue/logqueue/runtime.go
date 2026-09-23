@@ -245,6 +245,19 @@ func (rt *Runtime) pollLoop(ws *workspace) {
 		if err := rt.rescue(rt.loopCtx, ws); err != nil && !errors.Is(err, context.Canceled) {
 			rt.opts.Logf("logqueue: workspace %s: rescue: %v", ws.id, err)
 		}
+		rt.mu.Lock()
+		var reconcilers []func(context.Context, string) error
+		for _, reg := range rt.regs {
+			if reg.Reconcile != nil {
+				reconcilers = append(reconcilers, reg.Reconcile)
+			}
+		}
+		rt.mu.Unlock()
+		for _, reconcile := range reconcilers {
+			if err := reconcile(rt.loopCtx, ws.id); err != nil && !errors.Is(err, context.Canceled) {
+				rt.opts.Logf("logqueue: workspace %s: reconcile: %v", ws.id, err)
+			}
+		}
 		select {
 		case <-rt.loopCtx.Done():
 			return
@@ -405,7 +418,7 @@ func (rt *Runtime) run(ws *workspace, kind string, job Job) {
 	job.Attempt = attempt
 
 	handlerErr := reg.Handle(rt.runCtx, queue.Job{
-		ID: job.ID(), Kind: kind, Attempt: attempt, MaxAttempts: job.MaxAttempts, Args: job.Args,
+		WorkspaceID: ws.id, ID: job.ID(), Kind: kind, Attempt: attempt, MaxAttempts: job.MaxAttempts, Args: job.Args,
 	})
 	finished := rt.opts.Now().UTC()
 	var snooze *queue.SnoozeError

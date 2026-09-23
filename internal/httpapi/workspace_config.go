@@ -188,7 +188,7 @@ func (s *Server) putWorkspaceConfigLocked(w http.ResponseWriter, r *http.Request
 
 func forbiddenExecutionField(value any) string {
 	forbidden := map[string]struct{}{
-		"execution_settings": {}, "routing": {}, "harnesses": {}, "setups": {}, "default_setup": {},
+		"verify_concurrency": {}, "execution_settings": {}, "routing": {}, "harnesses": {}, "setups": {}, "default_setup": {},
 		"planning_models": {}, "model": {}, "model_policy": {}, "harness": {}, "effort": {}, "argv": {},
 		"command": {}, "model_args": {}, "effort_args": {}, "probe_command": {}, "mcp_transport": {},
 	}

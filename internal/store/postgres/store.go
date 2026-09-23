@@ -1587,7 +1587,10 @@ func (s *Store) MarkTaskApprovalStale(ctx context.Context, id, approvedHeadSHA, 
 		return false, fmt.Errorf("distinct approved and new head SHAs are required")
 	}
 	created := false
-	err := s.inTx(ctx, func(_ pgx.Tx, q *db.Queries) error {
+	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		if err := lockWorkOrderTaskTx(ctx, tx, workspace(ctx), id); err != nil {
+			return err
+		}
 		task, err := q.MarkTaskApprovalStale(ctx, db.MarkTaskApprovalStaleParams{ID: id, WorkspaceID: workspace(ctx), ApprovedHeadSha: approvedHeadSHA, NewHeadSha: newHeadSHA, RefreshReviewScope: scope})
 		if errors.Is(err, pgx.ErrNoRows) {
 			if _, getErr := q.GetTask(ctx, db.GetTaskParams{ID: id, WorkspaceID: workspace(ctx)}); getErr != nil {
@@ -1597,6 +1600,9 @@ func (s *Store) MarkTaskApprovalStale(ctx context.Context, id, approvedHeadSHA, 
 		}
 		if err != nil {
 			return notFound(err, "task %s", id)
+		}
+		if err = s.supersedeVerificationTx(ctx, tx, id, newHeadSHA); err != nil {
+			return err
 		}
 		created = true
 		return insertEvent(ctx, q, core.Event{TaskID: id, Kind: "approval.stale", Payload: core.JSONPayload(map[string]any{"workspace": task.WorkspaceID, "task_id": id, "reason_code": reason, "approved_head": approvedHeadSHA, "new_head": newHeadSHA, "review_scope": scope})})
@@ -1615,6 +1621,9 @@ func (s *Store) AdvanceTaskRefreshHead(ctx context.Context, id, newHeadSHA strin
 		return fmt.Errorf("new head SHA is required")
 	}
 	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		if err := lockWorkOrderTaskTx(ctx, tx, workspace(ctx), id); err != nil {
+			return err
+		}
 		task, err := q.GetTask(ctx, db.GetTaskParams{ID: id, WorkspaceID: workspace(ctx)})
 		if err != nil {
 			return notFound(err, "task %s", id)
@@ -1628,15 +1637,21 @@ func (s *Store) AdvanceTaskRefreshHead(ctx context.Context, id, newHeadSHA strin
 		if _, err = tx.Exec(ctx, `UPDATE tasks SET refresh_head_sha=$1, updated_at=now() WHERE id=$2 AND workspace_id=$3`, newHeadSHA, id, workspace(ctx)); err != nil {
 			return err
 		}
+		if err = s.supersedeVerificationTx(ctx, tx, id, newHeadSHA); err != nil {
+			return err
+		}
 		return insertEvent(ctx, q, core.Event{TaskID: id, Kind: "review.refresh_head_advanced", Payload: core.JSONPayload(map[string]any{"workspace": task.WorkspaceID, "task_id": id, "approved_head": task.RefreshBaselineSha, "prior_head": task.RefreshHeadSha, "new_head": newHeadSHA, "review_scope": task.RefreshReviewScope})})
 	})
 }
 
 func (s *Store) SkipTaskRefresh(ctx context.Context, id, newHeadSHA, reason string) error {
-	return s.inTx(ctx, func(_ pgx.Tx, q *db.Queries) error {
+	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
 		before, err := q.GetTask(ctx, db.GetTaskParams{ID: id, WorkspaceID: workspace(ctx)})
 		if err != nil {
 			return notFound(err, "task %s", id)
+		}
+		if taskFromDB(before).SetupContract.VerifyStage {
+			return fmt.Errorf("verify-stage tasks cannot skip refresh verification")
 		}
 		if _, err = q.SkipTaskRefresh(ctx, db.SkipTaskRefreshParams{ID: id, WorkspaceID: workspace(ctx), HeadSha: newHeadSHA}); err != nil {
 			return err
@@ -1665,6 +1680,21 @@ func (s *Store) ApplyTaskCommand(ctx context.Context, lease taskops.TaskLease, i
 		state, err := core.TransitionTask(core.TaskState(before.State), command.Kind)
 		if err != nil {
 			return err
+		}
+		ready, err := verifyReviewReadyTx(ctx, tx, taskFromDB(before))
+		if err != nil {
+			return err
+		}
+		if !ready {
+			if state == core.TaskApproved || state == core.TaskMerged {
+				return fmt.Errorf("verification is required before approval or merge")
+			}
+			if command.NextStage == core.StageReview {
+				command.NextStage = core.StageVerify
+			}
+			if command.RecoveryStage == core.StageReview {
+				command.RecoveryStage = core.StageVerify
+			}
 		}
 		if command.ProjectStages {
 			updated, updateErr := q.UpdateTaskTransition(ctx, db.UpdateTaskTransitionParams{
@@ -2546,7 +2576,7 @@ func (s *Store) AddTaskDependency(ctx context.Context, request store.DependencyA
 			return err
 		}
 		_, err = tx.Exec(ctx, `UPDATE work_orders SET queue_blocked_at=$1,updated_at=$1
-			WHERE workspace_id=$2 AND task_id=$3 AND stage='implement'
+			WHERE workspace_id=$2 AND task_id=$3 AND stage IN ('implement','verify')
 				AND state='queued' AND queue_blocked_at IS NULL`, now, workspace(ctx), request.TaskID)
 		return err
 	})
@@ -2648,7 +2678,7 @@ func (s *Store) resumeDependencyQueueClocksTx(ctx context.Context, tx pgx.Tx, ta
 	_, err := tx.Exec(ctx, `UPDATE work_orders
 		SET queue_deadline=queue_deadline+($1-queue_blocked_at),
 			queue_blocked_at=NULL, updated_at=$1
-		WHERE workspace_id=$2 AND task_id=$3 AND stage='implement'
+		WHERE workspace_id=$2 AND task_id=$3 AND stage IN ('implement','verify')
 			AND state='queued' AND queue_blocked_at IS NOT NULL`,
 		now, workspace(ctx), taskID)
 	return err
@@ -3398,7 +3428,7 @@ func (s *Store) listActivityMarkers(ctx context.Context, taskIDs []string) ([]st
 	var implementTaskIDs []string
 	seenImplementTask := map[string]bool{}
 	for _, order := range orders {
-		if order.Stage == core.StageImplement && !seenImplementTask[order.TaskID] {
+		if (order.Stage == core.StageImplement || order.Stage == core.StageVerify) && !seenImplementTask[order.TaskID] {
 			implementTaskIDs = append(implementTaskIDs, order.TaskID)
 			seenImplementTask[order.TaskID] = true
 		}
@@ -3412,7 +3442,7 @@ func (s *Store) listActivityMarkers(ctx context.Context, taskIDs []string) ([]st
 	reviewTaskIDs := make([]string, 0)
 	seenReviewTask := map[string]bool{}
 	for _, order := range orders {
-		if order.Stage == core.StageImplement {
+		if order.Stage == core.StageImplement || order.Stage == core.StageVerify {
 			blockers := blockersByTask[order.TaskID]
 			order.BlockingTaskIDs = append([]string(nil), blockers.BlockingTaskIDs...)
 			order.UnsatisfiableTaskIDs = append([]string(nil), blockers.UnsatisfiableTaskIDs...)
@@ -3746,7 +3776,7 @@ func (s *Store) GetTranscript(ctx context.Context, jobID string) (core.Transcrip
 const workOrderColumns = `id, task_id, job_id, stage, state, claimant_id,
 session_id, attempt_id, client_token_hash, agent, model, worker_id, lease_expires_at,
 				review_round, review_seat, required_model, required_harness, required_effort, required_harness_config, execution_timeout, model_enforcement,
-				reason_code, review_kind, review_scope, baseline_sha, head_sha,
+				reason_code, review_kind, review_scope, baseline_sha, head_sha, verification_context_id,
 queue_entered_at, queue_deadline, queue_blocked_at, execution_started_at, execution_deadline,
 last_attempt_id, last_attempt_outcome, last_failure_category, last_failure_message, last_failure_detail, last_failure_exit_status, last_failure_at,
 automatic_retry_count, next_retry_at, retry_suppressed, retry_suppression_reason,
@@ -3759,7 +3789,7 @@ rate_limit, rate_limit_observed_at, created_at, updated_at, served_requirement_s
 const activityWorkOrderColumns = `id, task_id, job_id, stage, state, claimant_id,
 session_id, attempt_id, client_token_hash, agent, model, worker_id, lease_expires_at,
 				review_round, review_seat, required_model, required_harness, required_effort, required_harness_config, execution_timeout, model_enforcement,
-				reason_code, review_kind, review_scope, baseline_sha, head_sha,
+				reason_code, review_kind, review_scope, baseline_sha, head_sha, verification_context_id,
 queue_entered_at, queue_deadline, queue_blocked_at, execution_started_at, execution_deadline,
 last_attempt_id, last_attempt_outcome, last_failure_category, last_failure_message, last_failure_detail, last_failure_exit_status, last_failure_at,
 automatic_retry_count, next_retry_at, retry_suppressed, retry_suppression_reason,
@@ -3840,7 +3870,7 @@ func (s *Store) CreateWorkOrderCommand(ctx context.Context, lease taskops.TaskLe
 		if !linked {
 			return fmt.Errorf("work order task %s and job %s are not linked in workspace %s", order.TaskID, order.JobID, workspace(ctx))
 		}
-		if order.Stage == core.StageImplement {
+		if order.Stage == core.StageImplement || order.Stage == core.StageVerify {
 			var blocked bool
 			if err := tx.QueryRow(ctx, `SELECT EXISTS (
 				SELECT 1 FROM task_dependencies edge
@@ -3954,12 +3984,25 @@ func (s *Store) CreateReviewRoundCommand(ctx context.Context, lease taskops.Task
 		return fmt.Errorf("review round requires one job per work order")
 	}
 	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		if err := lockWorkOrderTaskTx(ctx, tx, workspace(ctx), taskID); err != nil {
+			return err
+		}
 		if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtextextended($1,0))", "conveyor:review-round-create:"+workspace(ctx)+":"+taskID); err != nil {
 			return err
 		}
-		_, err := q.GetTask(ctx, db.GetTaskParams{ID: taskID, WorkspaceID: workspace(ctx)})
+		taskRow, err := q.GetTask(ctx, db.GetTaskParams{ID: taskID, WorkspaceID: workspace(ctx)})
 		if err != nil {
 			return notFound(err, "task %s", taskID)
+		}
+		task := taskFromDB(taskRow)
+		if task.SetupContract.VerifyStage {
+			var ready bool
+			if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM work_orders WHERE workspace_id=$1 AND task_id=$2 AND stage='verify' AND state='completed' AND head_sha=$3 AND head_sha<>'' AND verification_context_id<>'')`, workspace(ctx), taskID, core.VerifyStageHead(task)).Scan(&ready); err != nil {
+				return err
+			}
+			if !ready {
+				return fmt.Errorf("review requires completed verification for the submitted head")
+			}
 		}
 		var existing int
 		if err = tx.QueryRow(ctx, `SELECT count(*) FROM work_orders WHERE workspace_id=$1 AND task_id=$2 AND stage='review' AND review_round=$3`, workspace(ctx), taskID, orders[0].ReviewRound).Scan(&existing); err != nil {
@@ -4030,17 +4073,24 @@ func (s *Store) CreateStageWorkOrderCommand(ctx context.Context, lease taskops.T
 	if !lease.ValidForCommand(job.TaskID, string(core.WorkOrderCmdCreate)) {
 		return false, fmt.Errorf("stage work-order create requires a valid taskops lease")
 	}
-	if job.Stage == core.StageReview || order.Stage != job.Stage || order.TaskID != job.TaskID || order.JobID != job.ID || order.ID != job.ID {
+	if !core.ValidWorkOrderStage(order.Stage) || job.Stage == core.StageReview || order.Stage != job.Stage || order.TaskID != job.TaskID || order.JobID != job.ID || order.ID != job.ID {
 		return false, fmt.Errorf("invalid stage work order %s", order.ID)
 	}
 	created := false
 	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
 		workspaceID := workspace(ctx)
+		if err := lockWorkOrderTaskTx(ctx, tx, workspaceID, job.TaskID); err != nil {
+			return err
+		}
 		if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtextextended($1,0))", "conveyor:stage-order:"+workspaceID+":"+job.TaskID); err != nil {
 			return err
 		}
-		if _, err := q.GetTask(ctx, db.GetTaskParams{ID: job.TaskID, WorkspaceID: workspaceID}); err != nil {
+		taskRow, err := q.GetTask(ctx, db.GetTaskParams{ID: job.TaskID, WorkspaceID: workspaceID})
+		if err != nil {
 			return notFound(err, "task %s", job.TaskID)
+		}
+		if err := core.ValidateVerifyDispatch(taskFromDB(taskRow), order); err != nil {
+			return err
 		}
 		var exists bool
 		if err := tx.QueryRow(ctx, `SELECT EXISTS(
@@ -4073,7 +4123,7 @@ func (s *Store) CreateStageWorkOrderCommand(ctx context.Context, lease taskops.T
 			return err
 		}
 		order.State, order.Claimable = state, true
-		if order.Stage == core.StageImplement {
+		if order.Stage == core.StageImplement || order.Stage == core.StageVerify {
 			var blocked bool
 			if err = tx.QueryRow(ctx, `SELECT EXISTS (
 				SELECT 1 FROM task_dependencies edge
@@ -4097,11 +4147,11 @@ func (s *Store) CreateStageWorkOrderCommand(ctx context.Context, lease taskops.T
 			automatic_retry_count, next_retry_at, retry_suppressed,
 			redispatch_count, progress, cost_usd, tokens_in, tokens_out,
 			usage_reported, self_reported, created_at, updated_at, served_requirement_snapshot, governance_snapshot
-		) VALUES ($1,$2,$3,$4,$5,$6,'','','','','','',NULL,0,0,$7,$8,$9,$10,'',$11,'','',$12,'',$13,$14,$15,NULL,NULL,'','',NULL,NULL,0,NULL,false,0,'',0,0,0,false,false,$16,$16,$17,$18)`,
+		) VALUES ($1,$2,$3,$4,$5,$6,'','','','','','',NULL,0,0,$7,$8,$9,$10,'',$11,'','',$12,$19,$13,$14,$15,NULL,NULL,'','',NULL,NULL,0,NULL,false,0,'',0,0,0,false,false,$16,$16,$17,$18)`,
 			order.ID, workspaceID, job.TaskID, job.ID, order.Stage, order.State,
 			order.RequiredModel, order.RequiredHarness, harnessSnapshotJSON(order.RequiredHarnessConfig), order.ExecutionTimeoutText,
 			order.ReasonCode, order.BaselineSHA, order.QueueEnteredAt, order.QueueDeadline,
-			nullableTimeValue(order.QueueBlockedAt), order.CreatedAt, servedRequirementSnapshotJSON(order.ServedRequirementSnapshot), governanceSnapshotJSON(order.GovernanceSnapshot))
+			nullableTimeValue(order.QueueBlockedAt), order.CreatedAt, servedRequirementSnapshotJSON(order.ServedRequirementSnapshot), governanceSnapshotJSON(order.GovernanceSnapshot), order.HeadSHA)
 		if err != nil {
 			return err
 		}
@@ -4767,6 +4817,9 @@ func (s *Store) ListTaskWorkOrdersSnapshot(ctx context.Context, taskID string) (
 }
 
 func lockWorkOrderTaskTx(ctx context.Context, tx pgx.Tx, workspaceID, taskID string) error {
+	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtext($1))", "conveyor:task-operation:"+workspaceID+":"+taskID); err != nil {
+		return err
+	}
 	key := fmt.Sprintf("conveyor:work-order-claim:%s:%s", workspaceID, taskID)
 	_, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtext($1))", key)
 	return err
@@ -4804,10 +4857,20 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease taskop
 	if !lifecycleLease.ValidForCommand(order.TaskID, string(core.WorkOrderCmdClaim)) {
 		return core.WorkOrder{}, fmt.Errorf("work-order claim requires a valid taskops lease")
 	}
+	if !core.ValidWorkOrderStage(order.Stage) {
+		return core.WorkOrder{}, fmt.Errorf("invalid work-order stage %s", order.Stage)
+	}
+	taskRow, err := s.queries.WithTx(tx).GetTask(ctx, db.GetTaskParams{ID: order.TaskID, WorkspaceID: workspace(ctx)})
+	if err != nil {
+		return core.WorkOrder{}, err
+	}
+	if err := core.ValidateVerifyDispatch(taskFromDB(taskRow), order); err != nil {
+		return core.WorkOrder{}, err
+	}
 	if order.Stage != core.StageReview {
 		var activeSiblingID string
 		activeErr := tx.QueryRow(ctx, `SELECT id FROM work_orders
-			WHERE workspace_id=$1 AND task_id=$2 AND stage=$3 AND id<>$4 AND state='claimed'
+			WHERE workspace_id=$1 AND task_id=$2 AND (stage=$3 OR ($3='verify' AND stage='implement') OR ($3='implement' AND stage='verify')) AND id<>$4 AND state='claimed'
 			ORDER BY created_at,id LIMIT 1`, workspace(ctx), order.TaskID, order.Stage, order.ID).Scan(&activeSiblingID)
 		if activeErr == nil {
 			return core.WorkOrder{}, fmt.Errorf("work order %s cannot be claimed while same-stage order %s is actively claimed", order.ID, activeSiblingID)
@@ -4859,7 +4922,7 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease taskop
 	if assigneeUserID.Valid && assigneeUserID.String != claim.OwnerUserID {
 		return core.WorkOrder{}, fmt.Errorf("task %s is assigned to %s; only that assignee may claim its work orders", order.TaskID, assigneeUserID.String)
 	}
-	if order.Stage == core.StageReview {
+	if order.Stage == core.StageReview || order.Stage == core.StageVerify {
 		var pendingDocument string
 		var pendingVersion int
 		pendingErr := tx.QueryRow(ctx, `SELECT document_id,version FROM system_design_versions
@@ -4881,6 +4944,8 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease taskop
 		if !errors.Is(pendingErr, pgx.ErrNoRows) {
 			return core.WorkOrder{}, pendingErr
 		}
+	}
+	if order.Stage == core.StageReview {
 		accepted, acceptedErr := reviewSeatAcceptedTx(ctx, tx, workspace(ctx), order.TaskID, order.ID)
 		if acceptedErr != nil {
 			return core.WorkOrder{}, acceptedErr
@@ -4891,7 +4956,7 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease taskop
 	}
 	now := time.Now().UTC()
 	var blockingTaskIDs []string
-	if order.Stage == core.StageImplement {
+	if order.Stage == core.StageImplement || order.Stage == core.StageVerify {
 		blockingRows, blockingErr := tx.Query(ctx, `SELECT dependency.id
 			FROM task_dependencies edge
 			JOIN tasks dependency ON dependency.workspace_id=edge.workspace_id
@@ -5154,9 +5219,15 @@ func (s *Store) RedispatchWorkOrderCommand(ctx context.Context, lease taskops.Ta
 
 func workOrderSupersessionGuardTx(ctx context.Context, tx pgx.Tx, workspaceID string, order core.WorkOrder) error {
 	var task core.Task
-	if err := tx.QueryRow(ctx, `SELECT id,state,next_stage,recovery_stage FROM tasks WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspaceID, order.TaskID).
-		Scan(&task.ID, &task.State, &task.NextStage, &task.RecoveryStage); err != nil {
+	var policy []byte
+	if err := tx.QueryRow(ctx, `SELECT id,state,next_stage,recovery_stage,setup_contract,reviewed_head_sha,approval_stale,refresh_head_sha FROM tasks WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspaceID, order.TaskID).
+		Scan(&task.ID, &task.State, &task.NextStage, &task.RecoveryStage, &policy, &task.ReviewedHeadSHA, &task.ApprovalStale, &task.RefreshHeadSHA); err != nil {
 		return err
+	}
+	if len(policy) > 0 {
+		if err := json.Unmarshal(policy, &task.SetupContract); err != nil {
+			return err
+		}
 	}
 	rows, err := tx.Query(ctx, `SELECT `+workOrderColumns+` FROM work_orders WHERE workspace_id=$1 AND task_id=$2 ORDER BY created_at,id FOR UPDATE`, workspaceID, order.TaskID)
 	if err != nil {
@@ -5239,6 +5310,14 @@ func (s *Store) RefreshWorkOrderHarnessSnapshot(ctx context.Context, id string, 
 }
 
 func (s *Store) RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, id, requestID, direction string, queueTimeout time.Duration, refreeze ...*store.RecoveryRefreeze) (core.WorkOrder, error) {
+	clean, sanitationErr := store.SanitizeVerificationRecovery(ctx, s)
+	if sanitationErr != nil {
+		return core.WorkOrder{}, sanitationErr
+	}
+	ctx = clean
+	if err := store.AuthorizeVerificationRecovery(ctx, s); err != nil {
+		return core.WorkOrder{}, err
+	}
 	var err error
 	direction, err = core.NormalizeWorkOrderOperatorDirection(direction)
 	if err != nil {
@@ -5269,6 +5348,34 @@ func (s *Store) RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 	}
 	if !lease.ValidForCommand(order.TaskID, string(core.WorkOrderCmdRecover)) {
 		return core.WorkOrder{}, fmt.Errorf("work-order recovery requires a valid taskops lease")
+	}
+	if store.VerificationRecoveryFromContext(ctx) != nil {
+		q := s.queries.WithTx(tx)
+		records, e := q.ListVerificationRecords(ctx, workspace(ctx), taskID)
+		if e != nil {
+			return core.WorkOrder{}, e
+		}
+		task, e := q.GetTask(ctx, db.GetTaskParams{ID: taskID, WorkspaceID: workspace(ctx)})
+		if e != nil {
+			return core.WorkOrder{}, e
+		}
+		changes, events, e := store.PrepareVerificationRecovery(ctx, taskFromDB(task), order, verificationRows(records), requestID, time.Now().UTC())
+		if e != nil {
+			return core.WorkOrder{}, e
+		}
+		for _, r := range changes {
+			if _, e = tx.Exec(ctx, "UPDATE "+r.Table+" SET state=$1,body=$2 WHERE workspace_id=$3 AND id=$4", r.State, r.Body, workspace(ctx), r.ID); e != nil {
+				return core.WorkOrder{}, e
+			}
+		}
+		for _, event := range events {
+			if e = insertEvent(ctx, q, event); e != nil {
+				return core.WorkOrder{}, e
+			}
+		}
+		if e = store.VerificationFault(ctx, "recovery"); e != nil {
+			return core.WorkOrder{}, e
+		}
 	}
 	var duplicate bool
 	if err = tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM work_order_recoveries WHERE workspace_id=$1 AND work_order_id=$2 AND request_id=$3)`, workspace(ctx), id, requestID).Scan(&duplicate); err != nil {
@@ -5431,7 +5538,7 @@ func (s *Store) ApplyWorkOrderClock(ctx context.Context, lease taskops.TaskLease
 			return err
 		}
 		for _, order := range orders {
-			if order.Stage == core.StageImplement && order.State == core.WorkOrderQueued {
+			if (order.Stage == core.StageImplement || order.Stage == core.StageVerify) && order.State == core.WorkOrderQueued {
 				if dependencyBlocked {
 					if order.QueueBlockedAt.IsZero() {
 						if _, err = tx.Exec(ctx, `UPDATE work_orders SET queue_blocked_at=$1,updated_at=$1
@@ -5620,6 +5727,17 @@ func (s *Store) UpdateWorkOrderCommand(ctx context.Context, lease taskops.TaskLe
 			order.ContinuationSessionID, order.ContinuationAttemptID = "", ""
 			order.ContinuationHarness, order.ContinuationLaunchEnvironment = "", ""
 		}
+		if command == core.WorkOrderCmdSubmitForReview && order.Stage == core.StageImplement && order.HeadSHA != "" {
+			if err := s.supersedeVerificationTx(ctx, tx, order.TaskID, order.HeadSHA); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(ctx, `UPDATE tasks SET reviewed_head_sha=$1 WHERE workspace_id=$2 AND id=$3`, order.HeadSHA, workspace(ctx), order.TaskID); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(ctx, `UPDATE work_orders SET head_sha=$1 WHERE workspace_id=$2 AND id=$3`, order.HeadSHA, workspace(ctx), order.ID); err != nil {
+				return err
+			}
+		}
 		tag, err := tx.Exec(ctx, `UPDATE work_orders SET state=$1, claimant_id=$2, session_id=$3, attempt_id=$4,
 			client_token_hash=$5, agent=$6, model=$7, lease_expires_at=$8,
 			model_enforcement=$9, queue_entered_at=$10, queue_deadline=$11, execution_started_at=$12,
@@ -5728,6 +5846,9 @@ func (s *Store) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.T
 		return fmt.Errorf("review lifecycle mutation requires a valid taskops lease")
 	}
 	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		if err := lockWorkOrderTaskTx(ctx, tx, workspace(ctx), decision.TaskID); err != nil {
+			return err
+		}
 		lockKey := fmt.Sprintf("conveyor:review:%s:%s:%d", workspace(ctx), decision.TaskID, decision.ReviewRound)
 		if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtext($1))", lockKey); err != nil {
 			return err
@@ -5748,6 +5869,9 @@ func (s *Store) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.T
 		if err != nil {
 			return notFound(err, "task %s", decision.TaskID)
 		}
+		if err := requireVerifyReviewTx(ctx, tx, taskFromDB(before)); err != nil {
+			return err
+		}
 		lookup := store.ExecutionDocumentLookup(func(ctx context.Context, id string, version int) (core.SpecVersion, bool, error) {
 			var spec core.SpecVersion
 			err := tx.QueryRow(ctx, `SELECT s.content,s.approved FROM task_specs s
@@ -5759,7 +5883,19 @@ ORDER BY s.version DESC LIMIT 1`, workspace(ctx), id, version).Scan(&spec.Conten
 			}
 			return spec, err == nil, err
 		})
-		if err := store.ValidateReviewAcceptance(ctx, lookup, taskFromDB(before), &decision); err != nil {
+		verificationState := store.VerificationReviewState{}
+		if taskFromDB(before).SetupContract.VerifyStage {
+			records, e := q.ListVerificationRecords(ctx, workspace(ctx), decision.TaskID)
+			if e != nil {
+				return e
+			}
+			reviewOrder, e := scanWorkOrder(tx.QueryRow(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND id=$2", workspace(ctx), decision.ReviewWorkOrderID))
+			if e != nil {
+				return e
+			}
+			verificationState = store.VerificationReviewState{Rows: verificationRows(records), Order: reviewOrder}
+		}
+		if err := store.ValidateReviewAcceptance(ctx, lookup, taskFromDB(before), &decision, verificationState); err != nil {
 			return err
 		}
 
@@ -6262,11 +6398,12 @@ func reviewDecisionPayload(decision core.ReviewDecision) []byte {
 		"review_work_order_id": decision.ReviewWorkOrderID, "verdict": decision.Verdict,
 		"reason_code": decision.ReasonCode, "summary": decision.Summary, "feedback": decision.Feedback,
 		"reviewed_commit_sha": decision.ReviewedCommitSHA, "reviewer": decision.Reviewer,
-		"evidence_ids":           decision.EvidenceIDs,
-		"requirement_citations":  decision.RequirementCitations,
-		"done_criteria_coverage": decision.DoneCriteriaAssessment,
-		"governance_assessment":  decision.GovernanceAssessment,
-		"reviewer_model":         decision.ReviewerModel, "reviewer_session": decision.ReviewerSession,
+		"evidence_ids":            decision.EvidenceIDs,
+		"requirement_citations":   decision.RequirementCitations,
+		"done_criteria_coverage":  decision.DoneCriteriaAssessment,
+		"governance_assessment":   decision.GovernanceAssessment,
+		"verification_assessment": decision.VerificationAssessment,
+		"reviewer_model":          decision.ReviewerModel, "reviewer_session": decision.ReviewerSession,
 		"same_model_as_implementer": decision.SameModelAsImplementer,
 		"review_round":              decision.ReviewRound, "review_seat": decision.ReviewSeat,
 		"review_kind": decision.ReviewKind, "review_scope": decision.ReviewScope,
@@ -6315,7 +6452,7 @@ func scanWorkOrder(row interface{ Scan(...any) error }) (core.WorkOrder, error) 
 	err := row.Scan(&order.ID, &order.TaskID, &order.JobID, &stage, &state, &order.ClaimantID,
 		&order.SessionID, &order.AttemptID, &order.ClientTokenHash, &order.Agent, &order.Model, &order.WorkerID, &lease,
 		&order.ReviewRound, &order.ReviewSeat, &order.RequiredModel, &order.RequiredHarness, &order.RequiredEffort, &harnessConfig, &order.ExecutionTimeoutText, &order.ModelEnforcement,
-		&order.ReasonCode, &order.ReviewKind, &order.ReviewScope, &order.BaselineSHA, &order.HeadSHA,
+		&order.ReasonCode, &order.ReviewKind, &order.ReviewScope, &order.BaselineSHA, &order.HeadSHA, &order.VerificationContextID,
 		&queueEntered, &queueDeadline, &queueBlockedAt, &executionStarted, &executionDeadline,
 		&order.LastAttemptID, &order.LastAttemptOutcome, &order.LastFailureCategory, &order.LastFailureMessage, &order.LastFailureDetail, &order.LastFailureExitStatus, &lastFailureAt,
 		&order.AutomaticRetryCount, &nextRetryAt, &order.RetrySuppressed, &order.RetrySuppressionReason,
@@ -6469,6 +6606,9 @@ func (s *Store) AssignTaskFeature(ctx context.Context, taskID, featureID string)
 }
 
 func (s *Store) CreateArtifact(ctx context.Context, artifact core.Artifact, content []byte) (core.Artifact, error) {
+	if artifact.Role == core.ArtifactRoleTypedVerificationEvidence {
+		return core.Artifact{}, store.ErrVerificationAccess
+	}
 	var result core.Artifact
 	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
 		var err error
@@ -6497,6 +6637,14 @@ func (s *Store) createArtifactTx(ctx context.Context, tx pgx.Tx, artifact core.A
 	artifact.SizeBytes = int64(len(content))
 	if err := artifact.ValidateAttachmentTarget(); err != nil {
 		return core.Artifact{}, err
+	}
+	if artifact.Role == core.ArtifactRoleTypedVerificationEvidence {
+		if artifact.TaskID == "" {
+			return core.Artifact{}, fmt.Errorf("typed evidence requires a task")
+		}
+		if _, err := core.ValidateTypedVerificationArtifact(artifact.ContentType, content); err != nil {
+			return core.Artifact{}, err
+		}
 	}
 	if artifact.Role == core.ArtifactRoleVerificationEvidence {
 		if artifact.TaskID == "" {
@@ -6584,9 +6732,12 @@ func (s *Store) CreateClaimedVerificationEvidence(ctx context.Context, request s
 func (s *Store) GetArtifact(ctx context.Context, id string) (core.Artifact, []byte, error) {
 	var artifact core.Artifact
 	var content []byte
-	err := s.pool.QueryRow(ctx, `SELECT a.id,a.workspace_id,a.name,a.content_type,a.size_bytes,a.content,a.created_at,COALESCE(l.role,'task_context'),COALESCE(l.task_id,''),COALESCE(l.feature_id,''),COALESCE(l.requirement_id,''),COALESCE(l.planning_session_id,'') FROM artifacts a LEFT JOIN artifact_links l ON l.workspace_id=a.workspace_id AND l.artifact_id=a.id WHERE a.workspace_id=$1 AND a.id=$2 ORDER BY l.role LIMIT 1`, workspace(ctx), id).Scan(&artifact.ID, &artifact.Workspace, &artifact.Name, &artifact.ContentType, &artifact.SizeBytes, &content, &artifact.CreatedAt, &artifact.Role, &artifact.TaskID, &artifact.FeatureID, &artifact.RequirementID, &artifact.PlanningSessionID)
+	err := s.pool.QueryRow(ctx, `SELECT a.id,a.workspace_id,a.name,a.content_type,a.size_bytes,a.content,a.created_at,COALESCE(l.role,'task_context'),COALESCE(l.task_id,''),COALESCE(l.feature_id,''),COALESCE(l.requirement_id,''),COALESCE(l.planning_session_id,'') FROM artifacts a LEFT JOIN artifact_links l ON l.workspace_id=a.workspace_id AND l.artifact_id=a.id WHERE a.workspace_id=$1 AND a.id=$2 ORDER BY (l.role='typed_verification_evidence') DESC,l.role LIMIT 1`, workspace(ctx), id).Scan(&artifact.ID, &artifact.Workspace, &artifact.Name, &artifact.ContentType, &artifact.SizeBytes, &content, &artifact.CreatedAt, &artifact.Role, &artifact.TaskID, &artifact.FeatureID, &artifact.RequirementID, &artifact.PlanningSessionID)
 	if err != nil {
 		return core.Artifact{}, nil, notFound(err, "artifact %s", id)
+	}
+	if artifact.Role == core.ArtifactRoleTypedVerificationEvidence {
+		return core.Artifact{}, nil, store.ErrVerificationAccess
 	}
 	return artifact, content, nil
 }

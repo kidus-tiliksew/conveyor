@@ -101,6 +101,12 @@ const (
 	StageMonitor   Stage = "monitor"
 )
 
+// ValidWorkOrderStage is the closed executor-stage vocabulary (DEC-43;
+// feature-verification-kit-execution VK-2).
+func ValidWorkOrderStage(stage Stage) bool {
+	return stage == StageSpec || stage == StageImplement || stage == StageVerify || stage == StageReview
+}
+
 func InitialStage(level EscalationLevel) Stage {
 	if level == "" {
 		return StageImplement
@@ -654,6 +660,7 @@ type RateLimitHealth struct {
 // WorkOrder is the durable protocol boundary between Conveyor and an
 // operator-owned spec, implementation, or review agent.
 type WorkOrder struct {
+	VerificationContextID         string               `json:"verification_context_id,omitempty"`
 	ID                            string               `json:"id"`
 	TaskID                        string               `json:"task_id"`
 	JobID                         string               `json:"job_id"`
@@ -1068,6 +1075,7 @@ type ReviewPublication struct {
 // review attempt. GitHub publication is queued in the same store transaction;
 // the external GitHub side effects remain asynchronous.
 type ReviewDecision struct {
+	VerificationAssessment *VerificationAssessment
 	TaskID                 string
 	JobID                  string
 	ReviewWorkOrderID      string
@@ -1127,11 +1135,14 @@ const (
 	// ArtifactRoleVerificationEvidence is implementer-supplied proof of an
 	// exercised change. It is a review aid, never model input or CI authority
 	ArtifactRoleVerificationEvidence ArtifactRole = "verification_evidence"
+	// ArtifactRoleTypedVerificationEvidence stores VK-6 bytes without granting
+	// model input eligibility or satisfying the legacy visual-only gate.
+	ArtifactRoleTypedVerificationEvidence ArtifactRole = "typed_verification_evidence"
 )
 
 func (r ArtifactRole) Valid() bool {
 	return r == ArtifactRoleTaskContext || r == ArtifactRoleGeneratedAudit ||
-		r == ArtifactRoleGeneratedOutput || r == ArtifactRoleVerificationEvidence
+		r == ArtifactRoleGeneratedOutput || r == ArtifactRoleVerificationEvidence || r == ArtifactRoleTypedVerificationEvidence
 }
 
 func (r ArtifactRole) ModelInputEligible() bool {
@@ -1251,4 +1262,19 @@ func JSONPayload(value any) json.RawMessage {
 		return json.RawMessage(`{"marshal_error":true}`)
 	}
 	return data
+}
+
+// VerificationDelivery is the mutable VK-9 projection; source publication rows remain immutable.
+type VerificationDelivery struct {
+	WorkspaceID, Repository, TaskID, ContextID, SourcePublicationID            string
+	ID, IdempotencyKey, TargetHead, ObservedHead, TargetDigest, ObservedDigest string
+	Generation                                                                 int
+	SourceGeneration                                                           int
+	PullRequestNumber                                                          int
+	State                                                                      string
+	CycleAttempts, Attempts                                                    int
+	ErrorClass, ErrorMessage                                                   string
+	CreatedAt, UpdatedAt                                                       time.Time
+	LastAttemptAt, NextAttemptAt                                               *time.Time
+	Summary                                                                    string
 }

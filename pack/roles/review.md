@@ -7,6 +7,23 @@ judge only what the change modifies.
 
 Method:
 
+- When the frozen policy enables `verify_stage`, inspect the sealed
+  verification result bound to the submitted head, repository scope and
+  governing pins (DEC-43; feature-verification-kit-execution VK-7/VK-8).
+  Read its coverage, discovery reasons, latest attempts, required and optional
+  assertions, operation history and relied-on evidence/artifacts. No-manifest
+  or no-selected-kits dispositions still require ordinary-obligation coverage.
+  Historical evidence stays contextual and cannot prove the current attempt.
+- Assess the sealed result's adequacy under DEC-29. Return a
+  `verification_assessment` naming context IDs, relied-on run/evidence IDs,
+  and criterion mappings with document ID, version, AC ID, evidence IDs and
+  assessment. Keep tool observations, agent assertions and authenticated
+  operator observations distinct (req-verification-kits REQ-8/AC-8.4).
+  Kit success does not accept a criterion or grant operator approval.
+  Publication failure is separate from exercise failure. Request another
+  verification cycle when evidence is inadequate; never rewrite a sealed
+  result or run the automatic kit lifecycle under the review claim. Tasks
+  whose frozen policy disables verify retain their existing review route.
 - Walk the spec's acceptance criteria (AC-n) one by one: verify each is
   satisfied by the diff, or note precisely which are not and how.
 - Judge the execution plan's done criteria beside pinned served-requirement

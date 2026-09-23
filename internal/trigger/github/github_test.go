@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -900,5 +901,75 @@ func TestSubmissionPRLookupAndImmutableDiff(t *testing.T) {
 	diff, err := DiffBetween(ctx, "acme/app", "base-sha", "head-sha")
 	if err != nil || !strings.Contains(diff, "+new") {
 		t.Fatalf("diff=%q err=%v", diff, err)
+	}
+}
+
+func TestVerificationBodyPreservesLegacyAndAgentText(t *testing.T) {
+	start, end := VerificationRegionMarkers("demo", "task")
+	legacy := "<!-- conveyor:task-link -->\nConveyor task `task`\n\nSource: fixture\n<!-- conveyor:verification-evidence -->\nlegacy evidence\n" + verificationEvidenceFooter
+	for _, body := range []string{"agent before\n" + legacy + "\nagent after", "agent before\n" + start + "\nold\n" + end + "\nagent after", "agent before\n" + start + "\nunknown text\nagent after", "agent before\n" + end + "\nagent after", "agent before\n" + start + "\n" + start + "\nold\n" + end + "\nagent after"} {
+		got := ComposeVerificationBody(body, "demo", "task", "safe summary")
+		if !strings.Contains(got, "agent before") || !strings.Contains(got, "agent after") {
+			t.Fatalf("agent content lost: %s", got)
+		}
+		if strings.Contains(body, legacy) && !strings.Contains(got, legacy) {
+			t.Fatal("legacy evidence lost")
+		}
+		if strings.Contains(body, "unknown text") && !strings.Contains(got, "unknown text") {
+			t.Fatal("unknown content lost")
+		}
+		if strings.Count(got, start) != 1 || strings.Count(got, end) != 1 {
+			t.Fatalf("duplicate markers: %s", got)
+		}
+		if twice := ComposeVerificationBody(got, "demo", "task", "safe summary"); twice != got {
+			t.Fatal("composition not idempotent")
+		}
+		if VerificationBodyDigest(got, "demo", "task") == "" || VerificationBodyDigest(got, "other", "task") != "" {
+			t.Fatal("region identity not scoped")
+		}
+		reconciled := reconcilePullRequestBody(got, "<!-- conveyor:task-link -->\nConveyor task `task`\n\nSource: renewed")
+		if VerificationBodyDigest(reconciled, "demo", "task") != VerificationBodyDigest(got, "demo", "task") {
+			t.Fatal("task-link writer erased typed summary")
+		}
+	}
+}
+
+func TestVerificationForgeUsesAppCredentialAndReadback(t *testing.T) {
+	body := "agent text"
+	var writes int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/org/repo/pulls/42" || r.Header.Get("Authorization") != "Bearer fixture-app-token" {
+			t.Errorf("wrong forge request: %s", r.URL.Path)
+			w.WriteHeader(403)
+			return
+		}
+		if r.Method == http.MethodPatch {
+			var payload struct {
+				Body string `json:"body"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Error(err)
+			}
+			body = payload.Body
+			writes++
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"number": 42, "body": body, "head": map[string]string{"sha": strings.Repeat("a", 40)}})
+	}))
+	defer server.Close()
+	previousClient, previousURL := defaultRESTHTTPClient, defaultRESTBaseURL
+	defaultRESTHTTPClient, defaultRESTBaseURL = server.Client(), server.URL
+	t.Cleanup(func() { defaultRESTHTTPClient, defaultRESTBaseURL = previousClient, previousURL })
+	ctx := WithCredential(t.Context(), "fixture-app-token", AppIdentity("demo"))
+	pr, err := ReadVerificationPullRequest(ctx, "org/repo", 42)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := ComposeVerificationBody(pr.Body, "demo", "task", "metadata only")
+	if err = WriteVerificationPullRequest(ctx, "org/repo", 42, want); err != nil {
+		t.Fatal(err)
+	}
+	pr, err = ReadVerificationPullRequest(ctx, "org/repo", 42)
+	if err != nil || pr.Body != want || writes != 1 {
+		t.Fatalf("readback: %+v %v writes=%d", pr, err, writes)
 	}
 }

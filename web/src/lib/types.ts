@@ -13,6 +13,62 @@ export type TaskState =
 
 export type Stage = 'triage' | 'spec' | 'implement' | 'review' | 'verify' | 'gate' | 'merge' | 'monitor'
 
+// Verification is independently queried. Full evidence never enters ActivityItem.
+export interface VerificationMetadata {
+  id: string
+  context_id: string
+  run_id: string
+  state: string
+  at: string
+  metadata: Record<string, string>
+}
+export interface VerificationPage {
+  items: VerificationMetadata[]
+  next_cursor?: string
+}
+export type VerificationCollection =
+  | 'contexts'
+  | 'attempts'
+  | 'evidence'
+  | 'assertions'
+  | 'selections'
+  | 'obligations'
+  | 'operations'
+  | 'publications'
+export interface VerificationSummary {
+  head_sha: string
+  current_context_id: string
+  contexts: VerificationPage
+  overview: Partial<Record<VerificationCollection, VerificationPage>>
+}
+export interface VerificationEvidence {
+  Digest: string
+  Envelope: {
+    id: string
+    type: string
+    context_id: string
+    run_id: string
+    submitted_by: string
+    captured_at: string
+    captured_by: { identity: string; attribution: string }
+    payload: unknown
+    artifacts: Array<{ artifact_id: string; sha256: string; media_type: string }> | null
+  }
+}
+export interface VerificationObservation {
+  context_id: string
+  run_id: string
+  idempotency_key: string
+  fact: string
+  supporting: Array<{ evidence_id: string }>
+}
+export interface VerificationAssessment {
+  context_ids: string[]
+  run_ids: string[]
+  evidence_ids: string[]
+  actor?: string
+}
+
 export type JobState = 'pending' | 'running' | 'done' | 'failed'
 
 export type EscalationLevel = 'L0' | 'L1' | 'L2' | 'L3'
@@ -524,6 +580,7 @@ export interface ExecutionPolicy {
 }
 
 export interface TaskPolicyContract {
+  verify_stage?: boolean
   max_bounces: number
   stage_timeouts: Record<'spec' | 'implement' | 'review', string>
   review: { seats: WorkspaceReviewSeat[] }
@@ -725,7 +782,7 @@ export interface WorkOrder {
   id: string
   task_id: string
   job_id: string
-  stage: 'spec' | 'implement' | 'review'
+  stage: 'spec' | 'implement' | 'verify' | 'review'
   state: 'queued' | 'claimed' | 'submitted' | 'completed' | 'cancelled' | 'stale' | 'timed_out'
   claimable: boolean
   blocking_task_ids?: string[]

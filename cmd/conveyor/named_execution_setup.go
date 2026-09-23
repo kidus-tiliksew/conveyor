@@ -278,6 +278,9 @@ func printNamedExecutionSetups(output io.Writer, path string) error {
 		return fmt.Errorf("load local execution config: %w", err)
 	}
 	styled := outputIsTerminal(output)
+	if err := renderCLIConfigRow(output, styled, "execution.verify_concurrency", strconv.Itoa(local.Execution.VerifyConcurrency), "stored file "+path); err != nil {
+		return err
+	}
 	for _, setup := range local.Setups {
 		marker := ""
 		if setup.Name == local.DefaultSetup {
@@ -291,6 +294,7 @@ func printNamedExecutionSetups(output io.Writer, path string) error {
 			item localStageChoice
 		}{
 			{"spec", localStageChoice{Harness: setup.ExecutionSettings.Spec.Harness, Model: setup.ExecutionSettings.Spec.Model, Effort: setup.ExecutionSettings.Spec.Effort, Timeout: setup.ExecutionSettings.Spec.TimeoutText}},
+			{"verify", localStageChoice{Harness: setup.ExecutionSettings.Verify.Harness, Model: setup.ExecutionSettings.Verify.Model, Effort: setup.ExecutionSettings.Verify.Effort, Timeout: setup.ExecutionSettings.Verify.TimeoutText}},
 			{"implement", localStageChoice{Harness: setup.ExecutionSettings.Implementation.Harness, Model: setup.ExecutionSettings.Implementation.Model, Effort: setup.ExecutionSettings.Implementation.Effort, Timeout: setup.ExecutionSettings.Implementation.TimeoutText}},
 		}
 		for _, stage := range stages {
@@ -365,6 +369,9 @@ func runNamedExecutionSetupWizard(ctx context.Context, input io.Reader, output i
 		prefillExecutionWizard(state, setup)
 		state.acceptDefaults = false
 	}
+	if local != nil {
+		state.choices.VerifyConcurrency = strconv.Itoa(local.Execution.VerifyConcurrency)
+	}
 	for {
 		completed, err := runExecutionWizardUI(newExecutionWizardModel(state, detected), input, output)
 		if err != nil {
@@ -404,9 +411,11 @@ func runNamedExecutionSetupWizard(ctx context.Context, input io.Reader, output i
 
 func prefillExecutionWizard(state *executionWizardState, setup config.ExecutionSetup) {
 	choices := localExecutionChoices{
-		Spec:      localStageChoice{Harness: setup.ExecutionSettings.Spec.Harness, Model: setup.ExecutionSettings.Spec.Model, Effort: setup.ExecutionSettings.Spec.Effort, Timeout: setup.ExecutionSettings.Spec.TimeoutText},
-		Implement: localStageChoice{Harness: setup.ExecutionSettings.Implementation.Harness, Model: setup.ExecutionSettings.Implementation.Model, Effort: setup.ExecutionSettings.Implementation.Effort, Timeout: setup.ExecutionSettings.Implementation.TimeoutText},
-		Review:    localStageChoice{Harness: setup.ExecutionSettings.Review.FallbackHarness, Model: setup.ExecutionSettings.Review.FallbackModel, Timeout: setup.ExecutionSettings.Review.TimeoutText},
+		VerifyConcurrency: state.choices.VerifyConcurrency,
+		Spec:              localStageChoice{Harness: setup.ExecutionSettings.Spec.Harness, Model: setup.ExecutionSettings.Spec.Model, Effort: setup.ExecutionSettings.Spec.Effort, Timeout: setup.ExecutionSettings.Spec.TimeoutText},
+		Verify:            localStageChoice{Harness: setup.ExecutionSettings.Verify.Harness, Model: setup.ExecutionSettings.Verify.Model, Effort: setup.ExecutionSettings.Verify.Effort, Timeout: setup.ExecutionSettings.Verify.TimeoutText},
+		Implement:         localStageChoice{Harness: setup.ExecutionSettings.Implementation.Harness, Model: setup.ExecutionSettings.Implementation.Model, Effort: setup.ExecutionSettings.Implementation.Effort, Timeout: setup.ExecutionSettings.Implementation.TimeoutText},
+		Review:            localStageChoice{Harness: setup.ExecutionSettings.Review.FallbackHarness, Model: setup.ExecutionSettings.Review.FallbackModel, Timeout: setup.ExecutionSettings.Review.TimeoutText},
 	}
 	if len(setup.Review.Seats) > 0 {
 		choices.Review.Harness = setup.Review.Seats[0].Harness
@@ -427,6 +436,9 @@ func writeNamedExecutionSetup(path string, local *config.Config, workspace, name
 		document.DefaultSetup = name
 		return writeValidatedLocalExecutionConfig(path, document)
 	}
+	if choices.VerifyConcurrency != "" {
+		local.Execution.VerifyConcurrency = document.Execution.VerifyConcurrency
+	}
 	local.Harnesses = mergeLocalHarnesses(local.Harnesses, selected)
 	if edit {
 		_, index, err := namedSetup(local, name)
@@ -445,6 +457,10 @@ func setNamedLocalExecutionField(path, name, key, value string) error {
 }
 
 func setNamedLocalExecutionFieldContext(ctx context.Context, path, name, key, value string, requireProbe bool) error {
+	if key == "execution.verify_concurrency" {
+		return setLocalExecutionFieldContext(ctx, path, "", key, value, requireProbe)
+	}
+
 	local, err := config.Load(path)
 	if err != nil {
 		return fmt.Errorf("load local execution config: %w", err)
@@ -486,6 +502,8 @@ func setNamedLocalExecutionFieldContext(ctx context.Context, path, name, key, va
 	switch stage {
 	case "spec":
 		choice = &setup.ExecutionSettings.Spec
+	case "verify":
+		choice = &setup.ExecutionSettings.Verify
 	case "implement":
 		choice = &setup.ExecutionSettings.Implementation
 	case "review":
@@ -502,7 +520,7 @@ func setNamedLocalExecutionFieldContext(ctx context.Context, path, name, key, va
 			setup.ExecutionSettings.Review.FallbackModel = setup.Review.Seats[0].Model
 		}
 	default:
-		return errors.New("execution stage must be spec, implement, or review")
+		return errors.New("execution stage must be spec, implement, verify, or review")
 	}
 	if choice != nil {
 		if err = setImplementationField(choice, field, value, &local.Harnesses); err != nil {

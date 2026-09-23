@@ -9,6 +9,12 @@ import (
 )
 
 type Querier interface {
+	PutVerificationPublicationDelivery(context.Context, VerificationPublicationDeliveryRecord) error
+	ListVerificationPublicationDeliveries(context.Context, string, string) ([]VerificationPublicationDeliveryRecord, error)
+	ListVerificationReadPage(context.Context, string, string, string, string, string, string, int) ([]VerificationReadRecord, error)
+	ListVerificationRecords(context.Context, string, string) ([]VerificationRecord, error)
+	PutVerificationRecord(context.Context, VerificationRecord) error
+	DeleteVerificationChunk(context.Context, string, string) error
 	CountUsers(ctx context.Context) (int64, error)
 	DeactivateIdentityUser(ctx context.Context, id string) (User, error)
 	GetIdentityUser(ctx context.Context, id string) (User, error)

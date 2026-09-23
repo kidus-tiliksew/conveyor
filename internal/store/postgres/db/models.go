@@ -6,7 +6,14 @@ package db
 
 import (
 	"github.com/jackc/pgx/v5/pgtype"
+	"time"
 )
+
+// VK-9 bounded metadata binding, maintained by hand.
+type VerificationReadRecord struct {
+	ID, ContextID, RunID, State, At string
+	Metadata                        []byte
+}
 
 type Artifact struct {
 	ID          string             `json:"id"`
@@ -488,4 +495,19 @@ type DocumentOperatorNote struct {
 	Tier          string
 	DismissalNote string
 	DismissedAt   pgtype.Timestamptz
+}
+
+// VerificationRecord is maintained by hand with migration 132 (VK-6).
+type VerificationRecord struct {
+	Table, WorkspaceID, ID, TaskID, ContextID, RunID, LogicalKey, KeyHash, State string
+	Body                                                                         []byte
+	ExpiresAt                                                                    *time.Time
+}
+
+// VerificationPublicationDeliveryRecord is the separate VK-9 delivery projection.
+type VerificationPublicationDeliveryRecord struct {
+	WorkspaceID, ID, TaskID, ContextID, SourcePublicationID, PRKey, State string
+	Generation                                                            int64
+	NextAttemptAt                                                         *time.Time
+	Body                                                                  []byte
 }

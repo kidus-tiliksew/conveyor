@@ -13,6 +13,7 @@ import { SpecCard } from './spec-card'
 import { TaskContextCard } from './task-context-card'
 import { TaskHeader } from './task-header'
 import { Timeline } from './timeline'
+import { VerificationStage } from './verification-stage'
 import { useTaskDetail, useTaskOrder } from './use-task-detail'
 
 // How a surface other than the board mounts this same composition as its own
@@ -144,6 +145,7 @@ function SheetBody({ item }: { item: ActivityItem }) {
       <AttachmentsCard attachments={item.attachments ?? []} />
       {/* Relationships are read in the explorer panel, not inline: the panel
           is the one rendering of this task's lineage. */}
+      <VerificationStage item={item} />
       <Timeline item={item} routeVariant="sheet" />
     </div>
   )

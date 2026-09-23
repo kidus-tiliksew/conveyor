@@ -20,7 +20,7 @@ import (
 
 func kitCmd() *cobra.Command {
 	command := &cobra.Command{Use: "kit", Short: "Inspect repository verification kits"}
-	command.AddCommand(kitValidateCmd())
+	command.AddCommand(kitValidateCmd(), kitVerifyCmd())
 	return command
 }
 

@@ -37,6 +37,32 @@ type embeddedSkillFile struct {
 
 var embeddedSkillManifest = []embeddedSkillFile{
 	{
+		assetPath:   "skills_assets/conveyor-kit/SKILL.md",
+		sourcePath:  ".claude/skills/conveyor-kit/SKILL.md",
+		relative:    "conveyor-kit/SKILL.md",
+		rewriteFrom: "[docs/playbooks/conveyor-kit.md](../../../docs/playbooks/conveyor-kit.md)",
+		rewriteTo:   "[conveyor-kit.md](conveyor-kit.md)",
+		skill:       true,
+	},
+	{
+		assetPath:  "skills_assets/conveyor-kit/conveyor-kit.md",
+		sourcePath: "docs/playbooks/conveyor-kit.md",
+		relative:   "conveyor-kit/conveyor-kit.md",
+	},
+	{
+		assetPath:   "skills_assets/conveyor-kit-verify/SKILL.md",
+		sourcePath:  ".claude/skills/conveyor-kit-verify/SKILL.md",
+		relative:    "conveyor-kit-verify/SKILL.md",
+		rewriteFrom: "[docs/playbooks/conveyor-kit-verify.md](../../../docs/playbooks/conveyor-kit-verify.md)",
+		rewriteTo:   "[conveyor-kit-verify.md](conveyor-kit-verify.md)",
+		skill:       true,
+	},
+	{
+		assetPath:  "skills_assets/conveyor-kit-verify/conveyor-kit-verify.md",
+		sourcePath: "docs/playbooks/conveyor-kit-verify.md",
+		relative:   "conveyor-kit-verify/conveyor-kit-verify.md",
+	},
+	{
 		assetPath:   "skills_assets/conveyor-testing-doc/SKILL.md",
 		sourcePath:  ".claude/skills/conveyor-testing-doc/SKILL.md",
 		relative:    "conveyor-testing-doc/SKILL.md",

@@ -36,6 +36,8 @@ import (
 var ErrReviewedHeadUnavailable = errors.New("reviewed head SHA is unavailable")
 
 type Dispatcher struct {
+	ReadVerificationPR         func(context.Context, string, int) (github.VerificationPullRequest, error)
+	WriteVerificationPR        func(context.Context, string, int, string) error
 	Store                      store.Store
 	Cfg                        *config.Config
 	Pack                       *pack.Bundle
@@ -330,6 +332,15 @@ func (d *Dispatcher) runTaskForSnapshot(ctx context.Context, task core.Task) err
 	if !ok {
 		return fmt.Errorf("no route for stage %s", task.NextStage)
 	}
+	if task.NextStage == core.StageReview && task.SetupContract.VerifyStage {
+		orders, err := d.Store.ListWorkOrders(ctx)
+		if err != nil {
+			return err
+		}
+		if !core.VerifyReviewReady(task, orders) {
+			return fmt.Errorf("review requires completed verification for the submitted head")
+		}
+	}
 	if task.NextStage == core.StageReview && route.Execution == config.ExecutionMCP {
 		return d.createReviewRound(ctx, cfg, task, route)
 	}
@@ -337,7 +348,7 @@ func (d *Dispatcher) runTaskForSnapshot(ctx context.Context, task core.Task) err
 	// pre-§21.33 route snapshot still says in_process. The remaining StageSpec
 	// handling in runInProcess is only for completion of calls that were already
 	// in flight when the execution contract changed (design-harness-execution).
-	if task.NextStage == core.StageImplement || task.NextStage == core.StageSpec {
+	if task.NextStage == core.StageImplement || task.NextStage == core.StageSpec || task.NextStage == core.StageVerify {
 		if _, active, activeErr := d.activeWorkOrder(ctx, task.ID, task.NextStage, ""); activeErr != nil {
 			return activeErr
 		} else if active {
@@ -508,7 +519,7 @@ func reviewHarnessSnapshot(cfg *config.Config, name string) (*core.HarnessSnapsh
 // inputs as ordinary dispatch without creating a second routing shape
 // (design-harness-execution; DEC-7).
 func BuildFutureWorkOrderRouting(cfg *config.Config, task core.Task, stage core.Stage) (core.WorkOrder, error) {
-	if cfg == nil || (stage != core.StageSpec && stage != core.StageImplement) {
+	if cfg == nil || (stage != core.StageSpec && stage != core.StageImplement && stage != core.StageVerify) {
 		return core.WorkOrder{}, fmt.Errorf("future work routing requires spec or implementation stage")
 	}
 	if task.SetupContract.HasFrozenPolicy() {
@@ -565,6 +576,25 @@ func (d *Dispatcher) createWorkOrder(ctx context.Context, cfg *config.Config, ta
 		ReasonCode: reasonCode, BaselineSHA: task.ApprovedHeadSHA,
 		ExecutionTimeoutText: route.TimeoutText,
 		QueueEnteredAt:       now, QueueDeadline: now.Add(queueTimeout), CreatedAt: now,
+	}
+	if task.NextStage == core.StageVerify {
+		order.HeadSHA = core.VerifyStageHead(task)
+		order.ReviewScope, order.BaselineSHA = task.RefreshReviewScope, task.RefreshBaselineSHA
+		if !task.ApprovalStale {
+			events, err := d.Store.ListEvents(ctx, task.ID)
+			if err != nil {
+				return err
+			}
+			comparison, err := RecordedReviewComparison(task, events)
+			if err != nil {
+				return err
+			}
+			if comparison.ReviewedHeadSHA != order.HeadSHA {
+				return fmt.Errorf("task %s recorded comparison does not match submitted head", task.ID)
+			}
+			// VK-7: verification and normal review consume the same commit pair.
+			order.BaselineSHA = comparison.BaseBranch
+		}
 	}
 	created, err := taskops.ExecuteWorkOrder(ctx, d.Store, task.ID, core.WorkOrderCmdCreate, func(lease taskops.TaskLease) (bool, error) {
 		return d.Store.CreateStageWorkOrderCommand(ctx, lease, job, order)
@@ -1300,11 +1330,11 @@ func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task c
 			}
 		}
 	}
-	if err := taskops.New(d.Store).AcceptReviewDecision(ctx, core.ReviewDecision{
+	decision := core.ReviewDecision{
 		TaskID: task.ID, JobID: job.ID, ReviewWorkOrderID: reviewWorkOrderID,
 		Verdict: result.Verdict, ReasonCode: result.ReasonCode, Summary: result.Summary,
 		Feedback: result.Feedback, ReviewedCommitSHA: reviewedCommitSHA, EvidenceIDs: evidenceIDs,
-		RequirementCitations: result.RequirementCitations, DoneCriteriaAssessment: result.DoneCriteriaCoverage, GovernanceAssessment: result.GovernanceAssessment, Reviewer: reviewer,
+		VerificationAssessment: result.VerificationAssessment, RequirementCitations: result.RequirementCitations, DoneCriteriaAssessment: result.DoneCriteriaCoverage, GovernanceAssessment: result.GovernanceAssessment, Reviewer: reviewer,
 		ReviewerModel: model, ReviewerSession: "distinct", SameModelAsImplementer: same,
 		ClaimSession: func() string {
 			if claimAuthorized {
@@ -1317,9 +1347,24 @@ func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task c
 		RequiredHarness: requiredHarness, RequiredEffort: requiredEffort, ModelEnforcement: enforcement,
 		InterventionActorID: "review:" + session, PublicationEligible: publicationEligible,
 		Level: task.Level, PolicyVersion: task.PolicyVersion, MergeApproval: task.MergeApproval, MaxBounces: cfg.MaxBounces,
-	}); err != nil {
+	}
+	if task.SetupContract.VerifyStage {
+		reader, ok := d.Store.(store.VerificationReviewReader)
+		if !ok {
+			return store.ErrVerificationState
+		}
+		state, err := reader.ReadVerificationReview(ctx, task.ID, reviewWorkOrderID)
+		if err != nil {
+			return err
+		}
+		if err = store.ValidateSealedVerificationReview(task, &decision, state); err != nil {
+			return err
+		}
+	}
+	if err := taskops.New(d.Store).AcceptReviewDecision(ctx, decision); err != nil {
 		return err
 	}
+
 	current, err := d.Store.GetTask(ctx, task.ID)
 	if err != nil {
 		return err
@@ -1874,14 +1919,18 @@ func (d *Dispatcher) beginRefreshLocked(ctx context.Context, task core.Task, new
 	if !created {
 		return nil
 	}
-	if scope == config.RefreshReviewNone && !conflict {
+	if scope == config.RefreshReviewNone && !conflict && !task.SetupContract.VerifyStage {
 		return d.Store.SkipTaskRefresh(ctx, task.ID, newHead, "clean-update")
 	}
 	command := core.TaskRefreshReview
 	if task.State != core.TaskApproved {
 		command = core.TaskRecoverRefresh
 	}
-	if err := d.transition(ctx, task.ID, command, core.StageReview, ""); err != nil {
+	nextStage := core.StageReview
+	if task.SetupContract.VerifyStage {
+		nextStage = core.StageVerify
+	}
+	if err := d.transition(ctx, task.ID, command, nextStage, ""); err != nil {
 		return err
 	}
 	current, err := d.Store.GetTask(ctx, task.ID)
@@ -1894,6 +1943,9 @@ func (d *Dispatcher) beginRefreshLocked(ctx context.Context, task core.Task, new
 	}
 	if current.SetupContract.HasFrozenPolicy() {
 		cfg = cfg.WithPolicy(current.SetupContract)
+	}
+	if current.NextStage == core.StageVerify {
+		return d.runTaskForSnapshot(ctx, current)
 	}
 	return d.createReviewRound(ctx, cfg, current, cfg.Routing.Stages[string(core.StageReview)])
 }

@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -84,8 +85,9 @@ type localStageChoice struct {
 }
 
 type localExecutionChoices struct {
-	Spec, Implement, Review localStageChoice
-	ReviewSeats             []localStageChoice
+	Spec, Implement, Verify, Review localStageChoice
+	ReviewSeats                     []localStageChoice
+	VerifyConcurrency               string
 }
 
 type executionWizardModel struct {
@@ -121,9 +123,11 @@ func newExecutionWizardState(harnesses []detectedHarness, seats []localStageChoi
 	effort := suggestedHarnessEffort(name)
 	state := &executionWizardState{acceptDefaults: true, confirmSummary: true, seatAction: "continue"}
 	state.choices = localExecutionChoices{
-		Spec:      localStageChoice{Harness: name, Effort: effort, Timeout: "30m"},
-		Implement: localStageChoice{Harness: name, Effort: effort, Timeout: "4h"},
-		Review:    localStageChoice{Harness: name, Effort: effort, Timeout: "1h"},
+		VerifyConcurrency: "1",
+		Spec:              localStageChoice{Harness: name, Effort: effort, Timeout: "30m"},
+		Implement:         localStageChoice{Harness: name, Effort: effort, Timeout: "4h"},
+		Verify:            localStageChoice{Harness: name, Effort: effort, Timeout: "1h"},
+		Review:            localStageChoice{Harness: name, Effort: effort, Timeout: "1h"},
 	}
 	if len(seats) == 0 {
 		seats = []localStageChoice{{Harness: name, Effort: effort}}
@@ -141,6 +145,14 @@ func newExecutionWizardModel(state *executionWizardState, harnesses []detectedHa
 		huh.NewGroup(huh.NewConfirm().Title("Use detected defaults?").Description(defaultsSummary(state.choices)).Affirmative("Use defaults").Negative("Customize").Value(&state.acceptDefaults)).Title("Local execution setup").WithHideFunc(func() bool { return state.skipDefaults }),
 		stageGroup("Spec", "spec", &state.choices.Spec, options, harnesses).WithHideFunc(func() bool { return state.acceptDefaults || state.focusSeats }),
 		stageGroup("Implement", "implement", &state.choices.Implement, options, harnesses).WithHideFunc(func() bool { return state.acceptDefaults || state.focusSeats }),
+		stageGroup("Verify", "verify", &state.choices.Verify, options, harnesses).WithHideFunc(func() bool { return state.acceptDefaults || state.focusSeats }),
+		huh.NewGroup(huh.NewInput().Title("Verify concurrency").Value(&state.choices.VerifyConcurrency).Validate(func(value string) error {
+			count, err := strconv.Atoi(value)
+			if err != nil || count < 1 {
+				return errors.New("verify concurrency must be a positive integer")
+			}
+			return nil
+		})).WithHideFunc(func() bool { return state.acceptDefaults || state.focusSeats }),
 		reviewStageGroup(state, options, harnesses).WithHideFunc(func() bool { return state.acceptDefaults }),
 		seatManagementGroup(state).WithHideFunc(func() bool { return state.acceptDefaults }),
 		huh.NewGroup(huh.NewConfirm().Title("Write this execution setup?").DescriptionFunc(func() string { return choicesSummary(state.choices) }, nil).Affirmative("Write setup").Negative("Back to edit").Value(&state.confirmSummary)).Title("Summary").WithHideFunc(func() bool { return state.acceptDefaults || state.seatAction != "continue" }),
@@ -274,9 +286,10 @@ func choicesSummary(choices localExecutionChoices) string {
 	for _, stage := range []struct {
 		name   string
 		choice localStageChoice
-	}{{"spec", choices.Spec}, {"implement", choices.Implement}} {
+	}{{"spec", choices.Spec}, {"implement", choices.Implement}, {"verify", choices.Verify}} {
 		fmt.Fprintf(&summary, "%s: harness=%s model=%s effort=%s timeout=%s\n", stage.name, stage.choice.Harness, stage.choice.Model, stage.choice.Effort, stage.choice.Timeout)
 	}
+	fmt.Fprintf(&summary, "verify concurrency: %d\n", verifyConcurrency(choices))
 	fmt.Fprintf(&summary, "review: timeout=%s\n", choices.Review.Timeout)
 	for index, seat := range choices.ReviewSeats {
 		fmt.Fprintf(&summary, "  seat %d: harness=%s model=%s effort=%s\n", index+1, seat.Harness, seat.Model, seat.Effort)
@@ -333,6 +346,9 @@ var harnessModelSuggestions = map[string]map[string]string{
 
 func suggestedHarnessModel(harness, stage string) string {
 	if stages, ok := harnessModelSuggestions[harness]; ok {
+		if stage == "verify" {
+			stage = "implement"
+		}
 		return stages[stage]
 	}
 	return ""
@@ -366,6 +382,9 @@ func resolvedExecutionChoices(choices localExecutionChoices) localExecutionChoic
 	}
 	resolve(&choices.Spec, "spec")
 	resolve(&choices.Implement, "implement")
+	if choices.Verify.Harness != "" {
+		resolve(&choices.Verify, "verify")
+	}
 	resolve(&choices.Review, "review")
 	for index := range choices.ReviewSeats {
 		resolve(&choices.ReviewSeats[index], "review")
@@ -517,7 +536,7 @@ func mergeLocalHarnesses(existing, selected []config.Harness) []config.Harness {
 }
 
 func selectedHarnesses(choices localExecutionChoices, available []config.Harness) []config.Harness {
-	wanted := map[string]bool{choices.Spec.Harness: true, choices.Implement.Harness: true, choices.Review.Harness: true}
+	wanted := map[string]bool{choices.Spec.Harness: true, choices.Implement.Harness: true, choices.Verify.Harness: true, choices.Review.Harness: true}
 	for _, seat := range choices.ReviewSeats {
 		wanted[seat.Harness] = true
 	}
@@ -529,6 +548,14 @@ func selectedHarnesses(choices localExecutionChoices, available []config.Harness
 	}
 	sort.Slice(selected, func(i, j int) bool { return selected[i].Name < selected[j].Name })
 	return selected
+}
+
+func verifyConcurrency(choices localExecutionChoices) int {
+	count, _ := strconv.Atoi(choices.VerifyConcurrency)
+	if count < 1 {
+		return 1
+	}
+	return count
 }
 
 func localExecutionDocument(workspace string, choices localExecutionChoices, harnesses []config.Harness) config.WorkspaceDocument {
@@ -549,13 +576,14 @@ func localExecutionDocument(workspace string, choices localExecutionChoices, har
 			Planning: config.PlanningSettings{Model: "gpt-5.6-luna", TimeoutText: "20m"},
 		},
 		Spec:           config.ImplementationSettings{Harness: choices.Spec.Harness, Model: choices.Spec.Model, ModelPolicy: config.ModelPolicyExplicit, Effort: choices.Spec.Effort, TimeoutText: choices.Spec.Timeout},
+		Verify:         config.ImplementationSettings{Harness: choices.Verify.Harness, Model: choices.Verify.Model, Effort: choices.Verify.Effort, TimeoutText: choices.Verify.Timeout},
 		Implementation: config.ImplementationSettings{Harness: choices.Implement.Harness, Model: choices.Implement.Model, ModelPolicy: config.ModelPolicyExplicit, Effort: choices.Implement.Effort, TimeoutText: choices.Implement.Timeout},
 		Review:         config.ReviewExecutionSettings{Execution: config.ExecutionMCP, FallbackHarness: choices.Review.Harness, FallbackModel: choices.Review.Model, TimeoutText: choices.Review.Timeout},
 	}
 	return config.WorkspaceDocument{
 		Workspace: workspace, ExecutionSettings: &settings, Harnesses: harnesses,
 		Review:    config.ReviewPanel{Seats: reviewSeats},
-		Execution: config.ExecutionPolicy{SpecApproval: true, MergeApproval: true, ImplementConcurrency: 1, ReviewConcurrency: 1, FirstActivityTimeoutText: config.DefaultFirstActivityTimeoutText},
+		Execution: config.ExecutionPolicy{SpecApproval: true, MergeApproval: true, ImplementConcurrency: 1, ReviewConcurrency: 1, VerifyConcurrency: verifyConcurrency(choices), FirstActivityTimeoutText: config.DefaultFirstActivityTimeoutText},
 	}
 }
 
@@ -573,6 +601,7 @@ func writeUpdatedLocalExecutionConfig(path string, existing *config.Config, choi
 		document.ExecutionSettings.Implementation.ModelPolicy = existing.ExecutionSettings.Implementation.ModelPolicy
 	}
 	existing.ExecutionSettings = document.ExecutionSettings
+	existing.Execution.VerifyConcurrency = document.Execution.VerifyConcurrency
 	existing.Harnesses = harnesses
 	existing.Review = document.Review
 	for index := range existing.Setups {
@@ -629,13 +658,26 @@ func setLocalExecutionField(path, workspace, key, value string) error {
 }
 
 func setLocalExecutionFieldContext(ctx context.Context, path, workspace, key, value string, requireProbe bool) error {
+	if key == "execution.verify_concurrency" {
+		count, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || count < 1 {
+			return errors.New("execution.verify_concurrency must be at least 1")
+		}
+		local, err := config.Load(path)
+		if err != nil {
+			return err
+		}
+		local.Execution.VerifyConcurrency = count
+		return writeValidatedLocalExecutionConfig(path, local)
+	}
+
 	parts := strings.Split(key, ".")
 	if len(parts) != 3 || parts[0] != "execution" {
 		return errors.New("field must be execution.<stage>.<field>")
 	}
 	stage, field := parts[1], parts[2]
-	if stage != "spec" && stage != "implement" && stage != "review" {
-		return errors.New("execution stage must be spec, implement, or review")
+	if stage != "spec" && stage != "implement" && stage != "verify" && stage != "review" {
+		return errors.New("execution stage must be spec, implement, verify, or review")
 	}
 	if field != "harness" && field != "model" && field != "effort" && field != "timeout" {
 		return errors.New("execution field must be harness, model, effort, or timeout")
@@ -668,6 +710,8 @@ func setLocalExecutionFieldContext(ctx context.Context, path, workspace, key, va
 	choice := &choices.Spec
 	if stage == "implement" {
 		choice = &choices.Implement
+	} else if stage == "verify" {
+		choice = &choices.Verify
 	} else if stage == "review" {
 		choice = &choices.Review
 	}
@@ -755,9 +799,11 @@ func readLocalExecutionConfig(path string) (localExecutionChoices, []config.Harn
 		}
 	}
 	return localExecutionChoices{
-		Spec:      localStageChoice{Harness: settings.Spec.Harness, Model: settings.Spec.Model, Effort: settings.Spec.Effort, Timeout: settings.Spec.TimeoutText},
-		Implement: localStageChoice{Harness: settings.Implementation.Harness, Model: settings.Implementation.Model, Effort: settings.Implementation.Effort, Timeout: settings.Implementation.TimeoutText},
-		Review:    review,
+		VerifyConcurrency: strconv.Itoa(loaded.Execution.VerifyConcurrency),
+		Spec:              localStageChoice{Harness: settings.Spec.Harness, Model: settings.Spec.Model, Effort: settings.Spec.Effort, Timeout: settings.Spec.TimeoutText},
+		Implement:         localStageChoice{Harness: settings.Implementation.Harness, Model: settings.Implementation.Model, Effort: settings.Implementation.Effort, Timeout: settings.Implementation.TimeoutText},
+		Verify:            localStageChoice{Harness: settings.Verify.Harness, Model: settings.Verify.Model, Effort: settings.Verify.Effort, Timeout: settings.Verify.TimeoutText},
+		Review:            review,
 	}, append([]config.Harness(nil), loaded.Harnesses...), loaded.Workspace, nil
 }
 
@@ -773,12 +819,12 @@ func printLocalExecutionConfig(output io.Writer, path string) error {
 	for _, item := range []struct {
 		stage  string
 		choice localStageChoice
-	}{{"spec", choices.Spec}, {"implement", choices.Implement}, {"review", choices.Review}} {
+	}{{"spec", choices.Spec}, {"implement", choices.Implement}, {"verify", choices.Verify}, {"review", choices.Review}} {
 		for _, field := range []struct{ name, value string }{{"harness", item.choice.Harness}, {"model", item.choice.Model}, {"effort", item.choice.Effort}, {"timeout", item.choice.Timeout}} {
 			if err := renderCLIConfigRow(output, styled, "execution."+item.stage+"."+field.name, field.value, "stored file "+path); err != nil {
 				return err
 			}
 		}
 	}
-	return nil
+	return renderCLIConfigRow(output, styled, "execution.verify_concurrency", strconv.Itoa(verifyConcurrency(choices)), "stored file "+path)
 }

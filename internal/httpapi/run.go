@@ -413,7 +413,7 @@ func (s *Server) nextTaskRunOrder(ctx context.Context, task core.Task) (workerse
 	eligible := orders[:0]
 	for _, order := range orders {
 		if order.TaskID == task.ID && order.State == core.WorkOrderQueued && order.Claimable &&
-			(order.Stage == core.StageSpec || order.Stage == core.StageImplement || order.Stage == core.StageReview) {
+			core.ValidWorkOrderStage(order.Stage) {
 			eligible = append(eligible, order)
 		}
 	}
@@ -456,10 +456,12 @@ func taskRunStageOrder(stage core.Stage) int {
 		return 0
 	case core.StageImplement:
 		return 1
-	case core.StageReview:
+	case core.StageVerify:
 		return 2
-	default:
+	case core.StageReview:
 		return 3
+	default:
+		return 4
 	}
 }
 
@@ -541,7 +543,7 @@ func (s *Server) claimTaskRunOrder(w http.ResponseWriter, r *http.Request) {
 // component-mcp-protocol). Read the workspace queue independently of the run
 // projection so a new proposal tier cannot silently bypass this signal.
 func (s *Server) taskRunReviewAwaitingProposal(ctx context.Context, order core.WorkOrder, claimErr error) bool {
-	if order.Stage != core.StageReview || !strings.HasPrefix(claimErr.Error(), fmt.Sprintf("review for task %s is waiting on task-authored ", order.TaskID)) {
+	if (order.Stage != core.StageReview && order.Stage != core.StageVerify) || !strings.HasPrefix(claimErr.Error(), fmt.Sprintf("review for task %s is waiting on task-authored ", order.TaskID)) {
 		return false
 	}
 	items, err := s.Store.ListPendingProposals(ctx)

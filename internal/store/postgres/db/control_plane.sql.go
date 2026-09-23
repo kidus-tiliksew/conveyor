@@ -7,9 +7,34 @@ package db
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/jackc/pgx/v5/pgtype"
 )
+
+// ListVerificationReadPage selects only view projections, never retained bodies.
+// The relation is selected from a closed set; all identities are parameters.
+func (q *Queries) ListVerificationReadPage(ctx context.Context, ws, task, kind, contextID, at, id string, limit int) ([]VerificationReadRecord, error) {
+	switch kind {
+	case "contexts", "attempts", "assertions", "evidence", "operations", "publications", "selections", "obligations":
+	default:
+		return nil, fmt.Errorf("invalid verification read collection")
+	}
+	rows, err := q.db.Query(ctx, `SELECT id,context_id,run_id,state,read_at,metadata FROM verification_read_`+kind+` WHERE workspace_id=$1 AND task_id=$2 AND ($3::text='' OR context_id=$3) AND ($4::text='' OR read_at<$4 OR (read_at=$4 AND id COLLATE "C"<$5)) ORDER BY read_at DESC,id COLLATE "C" DESC LIMIT $6`, ws, task, contextID, at, id, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []VerificationReadRecord{}
+	for rows.Next() {
+		var v VerificationReadRecord
+		if err = rows.Scan(&v.ID, &v.ContextID, &v.RunID, &v.State, &v.At, &v.Metadata); err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
 
 const listDecisionSupersessionSweeps = `-- name: ListDecisionSupersessionSweeps :many
 SELECT workspace_id, decision_id, superseded_decision_id, document_tier,
@@ -2399,4 +2424,78 @@ func (q *Queries) ListDocumentOperatorNotesForTask(ctx context.Context, workspac
 		notes = append(notes, note)
 	}
 	return notes, rows.Err()
+}
+
+// VK-6 bindings are hand-maintained; the table allowlist is never caller SQL.
+func verificationTable(table string) bool {
+	switch table {
+	case "verification_contexts", "verification_selections", "verification_obligations", "verification_attempts", "verification_operations", "verification_evidence", "verification_evidence_links", "verification_publications", "verification_upload_chunks", "verification_permission_grants", "verification_permission_revocations":
+		return true
+	}
+	return false
+}
+func (q *Queries) ListVerificationRecords(ctx context.Context, workspaceID, taskID string) ([]VerificationRecord, error) {
+	tables := []string{"verification_contexts", "verification_selections", "verification_obligations", "verification_attempts", "verification_operations", "verification_evidence", "verification_evidence_links", "verification_publications", "verification_upload_chunks", "verification_permission_grants", "verification_permission_revocations"}
+	var out []VerificationRecord
+	for _, table := range tables {
+		condition := "task_id=$2"
+		if table == "verification_operations" {
+			condition = "(task_id=$2 OR true)"
+		}
+		rows, err := q.db.Query(ctx, "SELECT id,task_id,context_id,run_id,logical_key,key_hash,state,body,expires_at FROM "+table+" WHERE workspace_id=$1 AND "+condition+" ORDER BY id", workspaceID, taskID)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			v := VerificationRecord{Table: table, WorkspaceID: workspaceID}
+			if err = rows.Scan(&v.ID, &v.TaskID, &v.ContextID, &v.RunID, &v.LogicalKey, &v.KeyHash, &v.State, &v.Body, &v.ExpiresAt); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			out = append(out, v)
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+func (q *Queries) PutVerificationRecord(ctx context.Context, v VerificationRecord) error {
+	if !verificationTable(v.Table) {
+		return fmt.Errorf("invalid verification table")
+	}
+	suffix := ""
+	switch v.Table {
+	case "verification_contexts", "verification_attempts", "verification_operations":
+		suffix = " ON CONFLICT(workspace_id,id) DO UPDATE SET state=EXCLUDED.state,body=EXCLUDED.body"
+	}
+	_, err := q.db.Exec(ctx, "INSERT INTO "+v.Table+" (workspace_id,id,task_id,context_id,run_id,logical_key,key_hash,state,body,expires_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)"+suffix, v.WorkspaceID, v.ID, v.TaskID, v.ContextID, v.RunID, v.LogicalKey, v.KeyHash, v.State, v.Body, v.ExpiresAt)
+	return err
+}
+func (q *Queries) DeleteVerificationChunk(ctx context.Context, workspaceID, id string) error {
+	_, err := q.db.Exec(ctx, "DELETE FROM verification_upload_chunks WHERE workspace_id=$1 AND id=$2", workspaceID, id)
+	return err
+}
+
+func (q *Queries) PutVerificationPublicationDelivery(ctx context.Context, r VerificationPublicationDeliveryRecord) error {
+	_, err := q.db.Exec(ctx, `INSERT INTO verification_publication_deliveries(workspace_id,id,task_id,context_id,source_publication_id,pr_key,generation,state,body,next_attempt_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(workspace_id,id) DO UPDATE SET state=EXCLUDED.state,body=EXCLUDED.body,next_attempt_at=EXCLUDED.next_attempt_at WHERE verification_publication_deliveries.task_id=EXCLUDED.task_id AND verification_publication_deliveries.context_id=EXCLUDED.context_id AND verification_publication_deliveries.source_publication_id=EXCLUDED.source_publication_id AND verification_publication_deliveries.pr_key=EXCLUDED.pr_key AND verification_publication_deliveries.generation=EXCLUDED.generation`, r.WorkspaceID, r.ID, r.TaskID, r.ContextID, r.SourcePublicationID, r.PRKey, r.Generation, r.State, r.Body, r.NextAttemptAt)
+	return err
+}
+func (q *Queries) ListVerificationPublicationDeliveries(ctx context.Context, ws, key string) ([]VerificationPublicationDeliveryRecord, error) {
+	rows, err := q.db.Query(ctx, `SELECT workspace_id,id,task_id,context_id,source_publication_id,pr_key,generation,state,body FROM verification_publication_deliveries WHERE workspace_id=$1 AND pr_key=$2 ORDER BY generation`, ws, key)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []VerificationPublicationDeliveryRecord
+	for rows.Next() {
+		var r VerificationPublicationDeliveryRecord
+		if err = rows.Scan(&r.WorkspaceID, &r.ID, &r.TaskID, &r.ContextID, &r.SourcePublicationID, &r.PRKey, &r.Generation, &r.State, &r.Body); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }

@@ -289,6 +289,9 @@ func main() {
 			}
 			for _, workspace := range workspaces {
 				workspaceCtx := store.WithWorkspace(ctx, workspace.ID)
+				if _, verificationErr := workOrders.ReconcileVerificationClaims(workspaceCtx); verificationErr != nil {
+					log.Printf("reconcile verification claims: %v", verificationErr)
+				}
 				mergeReadiness, mergeErr := d.ReconcileMergeReadiness(workspaceCtx)
 				if mergeErr != nil {
 					log.Printf("reconcile merge readiness: %v", mergeErr)

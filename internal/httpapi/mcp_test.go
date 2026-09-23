@@ -937,6 +937,7 @@ func TestMCPToolsListRequiresAuthAndPublishesLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []string{"list_workspaces", "list_repositories", "list_tasks", "get_task", "list_task_events", "get_task_context", "list_documents", "get_document", "list_document_events", "list_decisions", "get_decision", "create_task", "add_task_dependency", "set_assignee", "attach_task_branch", "list_work_orders", "claim_work_order", "redispatch_work_order", "renew_work_order", "release_work_order", "request_plan_revision", "get_work_order", "read_artifact", "report_progress", "report_usage", "report_continuation", "propose_system_design_revision", "propose_requirement_revision", "propose_decision", "upload_transcript", "submit_plan", "submit_for_review", "await_review", "submit_review_verdict"}
+	want = append(append(append([]string{}, want[:11]...), verificationTools...), want[11:]...)
 	if len(envelope.Result.Tools) != len(want) {
 		t.Fatalf("tools = %d, want %d", len(envelope.Result.Tools), len(want))
 	}
@@ -1082,23 +1083,37 @@ func TestMCPHumanReservedClassificationRejectsOmittedReservedTool(t *testing.T) 
 }
 
 var mcpAgentSafeReasons = map[string]string{
-	"list_work_orders":               "read-only discovery of work the caller may claim",
-	"claim_work_order":               "begins only an eligible bounded execution lease",
-	"renew_work_order":               "extends only the caller's exact execution lease",
-	"release_work_order":             "releases only the caller's exact execution lease",
-	"request_plan_revision":          "requests an operator-gated plan decision without deciding it",
-	"get_work_order":                 "reads only context authorized for the caller's claimed order",
-	"read_artifact":                  "reads only an artifact authorized by claimed-order context",
-	"report_progress":                "records self-reported progress only after claimant-bound admission",
-	"report_usage":                   "records self-reported observational usage only after claimant-bound admission",
-	"propose_system_design_revision": "creates an unconfirmed proposal that grants no authority",
-	"propose_requirement_revision":   "creates an unconfirmed proposal that grants no authority",
-	"propose_decision":               "creates an unconfirmed proposal that grants no authority",
-	"upload_transcript":              "attaches redacted evidence only after claimant-bound admission",
-	"submit_plan":                    "submits a plan-stage deliverable only after claimant-bound admission",
-	"submit_for_review":              "submits an implementation only after claimant-bound admission",
-	"await_review":                   "observes review state only after claimant-bound admission",
-	"submit_review_verdict":          "acts only after claimant-bound admission to an independently claimed review order",
+	"prepare_verification_operation":   "requires the exact live verify claim and retains one-use dispatch receipts",
+	"reconcile_verification_operation": "requires the exact live verify claim and cannot issue operator recovery authorization",
+	"submit_verification":              "seals validated evidence under the exact claim without judging review acceptance",
+
+	"get_verification_context":         "requires exact live verification authority or an authorized workspace read",
+	"prepare_verification":             "requires exact live verification authority or an authorized workspace read",
+	"register_verification_obligation": "requires exact live verification authority or an authorized workspace read",
+	"start_verification_attempt":       "requires exact live verification authority or an authorized workspace read",
+	"report_verification_outcome":      "requires exact live verification authority or an authorized workspace read",
+	"get_evidence_schemas":             "requires exact live verification authority or an authorized workspace read",
+	"submit_verification_evidence":     "requires exact live verification authority or an authorized workspace read",
+	"upload_verification_artifact":     "requires exact live verification authority or an authorized workspace read",
+	"read_verification_evidence":       "requires exact live verification authority or an authorized workspace read",
+	"get_verification_publication":     "requires exact live verification authority or an authorized workspace read",
+	"list_work_orders":                 "read-only discovery of work the caller may claim",
+	"claim_work_order":                 "begins only an eligible bounded execution lease",
+	"renew_work_order":                 "extends only the caller's exact execution lease",
+	"release_work_order":               "releases only the caller's exact execution lease",
+	"request_plan_revision":            "requests an operator-gated plan decision without deciding it",
+	"get_work_order":                   "reads only context authorized for the caller's claimed order",
+	"read_artifact":                    "reads only an artifact authorized by claimed-order context",
+	"report_progress":                  "records self-reported progress only after claimant-bound admission",
+	"report_usage":                     "records self-reported observational usage only after claimant-bound admission",
+	"propose_system_design_revision":   "creates an unconfirmed proposal that grants no authority",
+	"propose_requirement_revision":     "creates an unconfirmed proposal that grants no authority",
+	"propose_decision":                 "creates an unconfirmed proposal that grants no authority",
+	"upload_transcript":                "attaches redacted evidence only after claimant-bound admission",
+	"submit_plan":                      "submits a plan-stage deliverable only after claimant-bound admission",
+	"submit_for_review":                "submits an implementation only after claimant-bound admission",
+	"await_review":                     "observes review state only after claimant-bound admission",
+	"submit_review_verdict":            "acts only after claimant-bound admission to an independently claimed review order",
 }
 
 func TestEveryRegisteredMCPToolHasExplicitCapability(t *testing.T) {

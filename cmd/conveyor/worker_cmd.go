@@ -590,6 +590,10 @@ func runWorkerWithPolicyAndConfig(ctx context.Context, c *client, pairing, name 
 		if reviewLimit < 1 {
 			reviewLimit = 1
 		}
+		verifyLimit := document.Execution.VerifyConcurrency
+		if verifyLimit < 1 {
+			verifyLimit = 1
+		}
 		counts := map[core.Stage]int{}
 		overflowSkipped := false
 		mu.Lock()
@@ -608,6 +612,9 @@ func runWorkerWithPolicyAndConfig(ctx context.Context, c *client, pairing, name 
 				continue
 			}
 			limit := implementLimit
+			if item.Order.Stage == core.StageVerify {
+				limit = verifyLimit
+			}
 			if item.Order.Stage == core.StageReview {
 				limit = reviewLimit
 			}
@@ -620,7 +627,19 @@ func runWorkerWithPolicyAndConfig(ctx context.Context, c *client, pairing, name 
 					overflowSkipped = true
 					continue
 				}
+				if item.Order.Stage == core.StageVerify {
+					fmt.Fprintf(os.Stderr, "skip work order %s: %v\n", item.Order.ID, localExecutionSetupRemedy(configPath, selectErr))
+					overflowSkipped = true
+					continue
+				}
 				return localExecutionSetupRemedy(configPath, selectErr)
+			}
+			if selected.Order.Stage == core.StageVerify {
+				if err := probeConfiguredHarness(ctx, setup.Config, selected.Harness.Name); err != nil {
+					fmt.Fprintf(os.Stderr, "skip work order %s: %v\n", selected.Order.ID, localExecutionSetupRemedy(configPath, err))
+					overflowSkipped = true
+					continue
+				}
 			}
 			preflightErr, checked := preflights[selected.Repository.URL]
 			if !checked {
@@ -799,7 +818,7 @@ func validateWorkerConfig(document workerservice.WorkerConfig) error {
 	if err != nil || firstActivityTimeout <= 0 {
 		return fmt.Errorf("execution.first_activity_timeout must be a positive duration")
 	}
-	for _, stage := range []string{"spec", "implement", "review"} {
+	for _, stage := range []string{"spec", "implement", "verify", "review"} {
 		route, ok := document.Routing.Stages[stage]
 		if !ok || route.Execution != config.ExecutionMCP {
 			continue
