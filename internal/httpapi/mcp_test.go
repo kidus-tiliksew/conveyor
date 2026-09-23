@@ -25,6 +25,41 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 )
 
+func TestMCPToolCallEnvelopeStrictMetadataBoundary(t *testing.T) {
+	t.Parallel()
+	for name, tc := range map[string]struct {
+		wire string
+		ok   bool
+	}{
+		"plain call":         {wire: `{"name":"list_tasks","arguments":{"workspace_id":"demo"}}`, ok: true},
+		"standard metadata":  {wire: `{"name":"list_tasks","arguments":{"workspace_id":"demo"},"_meta":{"progressToken":1,"trace":"fixture"}}`, ok: true},
+		"unknown field":      {wire: `{"name":"list_tasks","arguments":{},"extra":true}`},
+		"duplicate name":     {wire: `{"name":"list_tasks","name":"get_document","arguments":{}}`},
+		"duplicate metadata": {wire: `{"name":"list_tasks","arguments":{},"_meta":{"progressToken":1,"progressToken":2}}`},
+		"metadata is scalar": {wire: `{"name":"list_tasks","arguments":{},"_meta":1}`},
+		"not an object":      {wire: `[]`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var call mcpToolCallEnvelope
+			err := core.DecodeVerificationRequest([]byte(tc.wire), &call)
+			if tc.ok && err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if !tc.ok && err == nil {
+				t.Fatal("malformed envelope accepted")
+			}
+			if tc.ok && call.Name != "list_tasks" {
+				t.Fatalf("name=%q", call.Name)
+			}
+			if tc.ok {
+				if _, leaked := call.Arguments["_meta"]; leaked {
+					t.Fatal("envelope metadata leaked into tool arguments")
+				}
+			}
+		})
+	}
+}
+
 func TestMCPReadArtifactSupportsManualSessionsAndEnforcesWorkerOwnership(t *testing.T) {
 	t.Parallel()
 	ctx := store.WithWorkspace(context.Background(), "demo")

@@ -45,8 +45,15 @@ func newMCPReadFixture(t *testing.T) (*Server, context.Context) {
 	return s, ctx
 }
 func mcpReadCall(t *testing.T, s *Server, token, name string, args map[string]any) (mcpReadPage, string) {
+	return mcpReadCallWithMeta(t, s, token, name, args, nil)
+}
+func mcpReadCallWithMeta(t *testing.T, s *Server, token, name string, args map[string]any, meta map[string]any) (mcpReadPage, string) {
 	t.Helper()
-	wire, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": name, "arguments": args}})
+	params := map[string]any{"name": name, "arguments": args}
+	if meta != nil {
+		params["_meta"] = meta
+	}
+	wire, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": params})
 	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(string(wire)))
 	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
@@ -80,6 +87,40 @@ func mcpReadCall(t *testing.T, s *Server, token, name string, args map[string]an
 		t.Fatal(e)
 	}
 	return page, ""
+}
+
+func TestMCPReadCallsAcceptEnvelopeMetadataWithoutRelaxingArguments(t *testing.T) {
+	s, ctx := newMCPReadFixture(t)
+	if err := s.Store.CreateTask(ctx, core.Task{ID: "metadata-task", Workspace: "demo", Title: "Metadata", State: core.TaskQueued}); err != nil {
+		t.Fatal(err)
+	}
+	document, version, err := s.Store.CreateSystemDesign(ctx, core.SystemDesign{ID: "component-metadata", Title: "Metadata", Category: "Component"}, core.SystemDesignVersion{Content: "# Metadata\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/httpapi/**\n```", Origin: core.SystemDesignOriginOperator})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = s.Store.ConfirmSystemDesignVersion(ctx, document.ID, version.Version); err != nil {
+		t.Fatal(err)
+	}
+	meta := map[string]any{"progressToken": float64(1), "trace": "native-fixture"}
+	listed, toolErr := mcpReadCallWithMeta(t, s, "reader", "list_tasks", map[string]any{"workspace_id": "demo", "state": "active", "limit": float64(2)}, meta)
+	if toolErr != "" || listed.Total != 1 || readItem(t, listed, 0)["id"] != "metadata-task" {
+		t.Fatalf("list_tasks with metadata: page=%+v error=%q", listed, toolErr)
+	}
+	got, toolErr := mcpReadCallWithMeta(t, s, "reader", "get_document", map[string]any{"workspace_id": "demo", "kind": "system_design", "document_id": document.ID}, meta)
+	if toolErr != "" || got.Total != 1 || readItem(t, got, 0)["id"] != document.ID {
+		t.Fatalf("get_document with metadata: page=%+v error=%q", got, toolErr)
+	}
+	for name, args := range map[string]map[string]any{
+		"list_tasks":   {"workspace_id": "demo", "limit": "2"},
+		"get_document": {"workspace_id": "demo", "kind": "system_design", "document_id": document.ID, "unexpected": true},
+	} {
+		if _, toolErr = mcpReadCallWithMeta(t, s, "reader", name, args, meta); toolErr == "" {
+			t.Fatalf("%s accepted malformed tool arguments", name)
+		}
+	}
+	if _, toolErr = mcpReadCallWithMeta(t, s, "denied", "list_tasks", map[string]any{"workspace_id": "demo"}, meta); !strings.Contains(toolErr, "workspace_not_found") {
+		t.Fatalf("metadata changed authorization: %q", toolErr)
+	}
 }
 func readItem(t *testing.T, p mcpReadPage, index int) map[string]any {
 	t.Helper()
