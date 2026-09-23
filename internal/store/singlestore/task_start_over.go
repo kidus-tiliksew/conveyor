@@ -100,7 +100,7 @@ func (s *Store) StartOverTaskCommand(ctx context.Context, lease taskops.TaskLeas
 		if len(proposals) > 0 && !r.CanConfirmDocuments {
 			return store.ErrStartOverConfirmDocuments
 		}
-		rows, err := tx.QueryContext(ctx, `SELECT kind,payload_json FROM events WHERE workspace_id=? AND task_id=? ORDER BY id`, ws, r.TaskID)
+		rows, err := tx.QueryContext(ctx, `SELECT kind,payload_json FROM events WHERE workspace_id=? AND task_id=? ORDER BY at,id`, ws, r.TaskID)
 		if err != nil {
 			return err
 		}

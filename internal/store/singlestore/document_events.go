@@ -182,15 +182,19 @@ func insertEventWithID(ctx context.Context, tx *sql.Tx, e core.Event) (int64, er
 	return id, err
 }
 func documentTaskEvents(ctx context.Context, db s2log.Executor, taskID string) ([]core.Event, error) {
-	rows, err := documentRows(ctx, db, `SELECT id,COALESCE(task_id,''),COALESCE(job_id,''),kind,actor_id,actor_role,payload_json,at FROM events WHERE workspace_id=? AND task_id=? ORDER BY id`, documentWorkspace(ctx), taskID)
+	rows, err := documentRows(ctx, db, `SELECT id,COALESCE(task_id,''),COALESCE(job_id,''),kind,actor_id,actor_role,payload_json,at FROM events WHERE workspace_id=? AND task_id=? ORDER BY at,id`, documentWorkspace(ctx), taskID)
 	if err != nil {
 		return nil, err
 	}
+	return scanDocumentEvents(rows)
+}
+
+func scanDocumentEvents(rows *documentResultSet) ([]core.Event, error) {
 	defer rows.Close()
 	out := []core.Event{}
 	for rows.Next() {
 		var e core.Event
-		if err = rows.Scan(&e.ID, &e.TaskID, &e.JobID, &e.Kind, &e.ActorID, &e.ActorRole, &e.Payload, &e.At); err != nil {
+		if err := rows.Scan(&e.ID, &e.TaskID, &e.JobID, &e.Kind, &e.ActorID, &e.ActorRole, &e.Payload, &e.At); err != nil {
 			return nil, err
 		}
 		out = append(out, e)
@@ -387,14 +391,11 @@ func (s *Store) ListEvents(ctx context.Context, id string) ([]core.Event, error)
 	return documentTaskEvents(ctx, s.db, id)
 }
 func (s *Store) ListEventsAfter(ctx context.Context, id string, after int64) ([]core.Event, error) {
-	events, err := s.ListEvents(ctx, id)
-	out := []core.Event{}
-	for _, e := range events {
-		if e.ID > after {
-			out = append(out, e)
-		}
+	rows, err := documentRows(ctx, s.db, `SELECT id,COALESCE(task_id,''),COALESCE(job_id,''),kind,actor_id,actor_role,payload_json,at FROM events WHERE workspace_id=? AND task_id=? AND id>? ORDER BY id`, documentWorkspace(ctx), id, after)
+	if err != nil {
+		return nil, err
 	}
-	return out, err
+	return scanDocumentEvents(rows)
 }
 func (s *Store) CountEvents(ctx context.Context, id, kind string) (int, error) {
 	var n int
@@ -451,7 +452,7 @@ func (s *Store) ListMonitorPullRequestEventsForTasks(ctx context.Context, ids []
 	if len(ids) == 0 {
 		return out, nil
 	}
-	rows, err := documentBatchRows(ctx, s.db, `SELECT id,task_id,COALESCE(job_id,''),kind,actor_id,actor_role,payload_json,at FROM events WHERE workspace_id=? AND task_id IN (%s) AND kind='pull_request.opened' ORDER BY task_id,id`, documentWorkspace(ctx), ids)
+	rows, err := documentBatchRows(ctx, s.db, `SELECT id,task_id,COALESCE(job_id,''),kind,actor_id,actor_role,payload_json,at FROM events WHERE workspace_id=? AND task_id IN (%s) AND kind='pull_request.opened' ORDER BY task_id,at,id`, documentWorkspace(ctx), ids)
 	if err != nil {
 		return nil, err
 	}
