@@ -17,12 +17,16 @@ import (
 
 type CommandRunner func(context.Context, ...string) ([]byte, error)
 
+type TaskResolver func(context.Context, string, int) (string, bool, error)
+
 type GitHubSource struct {
-	WorkspaceID     string
-	Repository      string
-	GitHubSlug      string
-	Run             CommandRunner
-	ResolveTask     func(context.Context, string, int) (string, bool, error)
+	WorkspaceID string
+	Repository  string
+	GitHubSlug  string
+	Run         CommandRunner
+	ResolveTask TaskResolver
+	// NewTaskResolver loads a fresh snapshot for each poll and takes precedence over ResolveTask.
+	NewTaskResolver func(context.Context) (TaskResolver, error)
 	ReconcileMerged func(context.Context, string, githubtrigger.PullRequest) (bool, error)
 	LoadHints       func(context.Context, string) (*HintContext, error)
 	OnSuppressed    func(context.Context, map[string]any) error
@@ -166,6 +170,14 @@ func (s GitHubSource) Observations(ctx context.Context, since time.Time) ([]Obse
 	if strings.TrimSpace(s.Repository) == "" || strings.TrimSpace(s.GitHubSlug) == "" {
 		return nil, fmt.Errorf("monitor GitHub repository name and slug are required")
 	}
+	resolveTask := s.ResolveTask
+	if s.NewTaskResolver != nil {
+		var err error
+		resolveTask, err = s.NewTaskResolver(ctx)
+		if err != nil {
+			return nil, err
+		}
+	}
 	var commits []githubCommit
 	for page := 1; ; page++ {
 		raw, err := s.Run(ctx, "api", "--method", "GET",
@@ -206,8 +218,8 @@ func (s GitHubSource) Observations(ctx context.Context, since time.Time) ([]Obse
 			}
 			var taskID string
 			ok := false
-			if s.ResolveTask != nil {
-				resolvedID, resolved, resolveErr := s.ResolveTask(ctx, pull.Head.Ref, pull.Number)
+			if resolveTask != nil {
+				resolvedID, resolved, resolveErr := resolveTask(ctx, pull.Head.Ref, pull.Number)
 				if resolveErr != nil {
 					return nil, resolveErr
 				}

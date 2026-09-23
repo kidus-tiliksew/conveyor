@@ -426,3 +426,38 @@ func TestGitHubSourceResolveTaskErrorAbortsObservations(t *testing.T) {
 		t.Fatalf("emitted observations after resolve error: %+v", observations)
 	}
 }
+
+func TestGitHubSourceResolverFactoryIsPollLocal(t *testing.T) {
+	factories, resolutions := 0, 0
+	source := GitHubSource{Repository: "repo", GitHubSlug: "org/repo",
+		ResolveTask: func(context.Context, string, int) (string, bool, error) {
+			t.Fatal("factory must take precedence")
+			return "", false, nil
+		},
+		NewTaskResolver: func(context.Context) (TaskResolver, error) {
+			factories++
+			poll := factories
+			return func(context.Context, string, int) (string, bool, error) {
+				if poll != factories {
+					t.Fatal("stale resolver reused")
+				}
+				resolutions++
+				return "", false, nil
+			}, nil
+		},
+		Run: func(_ context.Context, args ...string) ([]byte, error) {
+			if strings.HasSuffix(args[3], "/commits") {
+				return []byte(`[{"sha":"first"},{"sha":"second"}]`), nil
+			}
+			return []byte(`[{"number":1,"merged_at":"2026-09-23T00:00:00Z","head":{"ref":"feature/a"}},{"number":2,"merged_at":"2026-09-23T00:00:00Z","head":{"ref":"feature/b"}}]`), nil
+		},
+	}
+	for poll := 1; poll <= 2; poll++ {
+		if _, err := source.Observations(t.Context(), time.Time{}); err != nil {
+			t.Fatal(err)
+		}
+		if factories != poll || resolutions != poll*4 {
+			t.Fatalf("factories=%d resolutions=%d", factories, resolutions)
+		}
+	}
+}

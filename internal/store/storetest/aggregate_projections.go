@@ -5,6 +5,7 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
@@ -206,6 +207,58 @@ func runWorkspaceControl(t *testing.T, x Fixture) {
 		requireOK(t, err)
 		if count != 0 {
 			t.Fatalf("empty %s reconciliation=%d", name, count)
+		}
+	}
+}
+
+// runMonitorPullRequestEvents holds all backends to the monitor's narrow read
+// contract (component-monitor-drift; component-verification-strategy).
+func runMonitorPullRequestEvents(t *testing.T, x Fixture) {
+	st, ctx := x.Backend, x.Context
+	first, second, excluded := newAggregateTask(t, x), newAggregateTask(t, x), newAggregateTask(t, x)
+	at := time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)
+	for _, event := range []core.Event{
+		{TaskID: first.ID, Kind: "pull_request.opened", At: at.Add(time.Second), Payload: core.JSONPayload(map[string]any{"number": 2})},
+		{TaskID: first.ID, Kind: "pull_request.opened", At: at, Payload: core.JSONPayload(map[string]any{"number": 1})},
+		{TaskID: first.ID, Kind: "pull_request.opened", At: at, Payload: core.JSONPayload(map[string]any{"number": 3})},
+		{TaskID: first.ID, Kind: "merge.confirmed", At: at, Payload: core.JSONPayload(map[string]any{})},
+		{TaskID: second.ID, Kind: "pull_request.opened", At: at, Payload: core.JSONPayload(map[string]any{"number": 4})},
+		{TaskID: excluded.ID, Kind: "pull_request.opened", At: at, Payload: core.JSONPayload(map[string]any{"number": 5})},
+	} {
+		requireOK(t, st.AppendEvent(ctx, event))
+	}
+	ids := []string{second.ID, first.ID, first.ID, "absent"}
+	got, err := st.ListMonitorPullRequestEventsForTasks(ctx, ids)
+	requireOK(t, err)
+	if len(got) != 2 || len(got[first.ID]) != 3 || len(got[second.ID]) != 1 {
+		t.Fatalf("candidate/kind filter returned %v", got)
+	}
+	for _, id := range []string{first.ID, second.ID} {
+		all, err := st.ListEvents(ctx, id)
+		requireOK(t, err)
+		var want []core.Event
+		for _, event := range all {
+			if event.Kind == "pull_request.opened" {
+				want = append(want, event)
+			}
+		}
+		if !reflect.DeepEqual(got[id], want) {
+			t.Fatalf("batch events differ from ordered ledger: got=%v want=%v", got[id], want)
+		}
+	}
+	for _, foreign := range []bool{false, true} {
+		readCtx := ctx
+		if foreign {
+			readCtx = store.WithWorkspace(ctx, x.Workspace+"-foreign")
+		}
+		candidates := ids
+		if !foreign {
+			candidates = nil
+		}
+		empty, err := st.ListMonitorPullRequestEventsForTasks(readCtx, candidates)
+		requireOK(t, err)
+		if len(empty) != 0 {
+			t.Fatalf("empty or foreign read returned %v", empty)
 		}
 	}
 }

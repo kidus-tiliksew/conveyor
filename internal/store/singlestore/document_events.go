@@ -446,6 +446,25 @@ func (s *Store) ListRequirementDeliveryEventsForTasks(ctx context.Context, ids [
 	}
 	return out, rows.Err()
 }
+func (s *Store) ListMonitorPullRequestEventsForTasks(ctx context.Context, ids []string) (map[string][]core.Event, error) {
+	out := map[string][]core.Event{}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	rows, err := documentBatchRows(ctx, s.db, `SELECT id,task_id,COALESCE(job_id,''),kind,actor_id,actor_role,payload_json,at FROM events WHERE workspace_id=? AND task_id IN (%s) AND kind='pull_request.opened' ORDER BY task_id,at,id`, documentWorkspace(ctx), ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var e core.Event
+		if err = rows.Scan(&e.ID, &e.TaskID, &e.JobID, &e.Kind, &e.ActorID, &e.ActorRole, &e.Payload, &e.At); err != nil {
+			return nil, err
+		}
+		out[e.TaskID] = append(out[e.TaskID], e)
+	}
+	return out, rows.Err()
+}
 func (s *Store) ListDocumentEventPage(ctx context.Context, kind core.LineageNodeType, id string, q store.DocumentEventQuery) (store.DocumentEventPage, error) {
 	page := store.DocumentEventPage{Events: []core.Event{}, Limit: q.Limit, Offset: q.Offset}
 	if err := store.ValidateDocumentEventQuery(kind, q); err != nil {
