@@ -1,5 +1,6 @@
 """Deterministic evidence and actual Make-graph tests; no network or databases."""
 import copy
+from io import StringIO
 import itertools
 import json
 import os
@@ -123,7 +124,7 @@ class EvidenceTests(unittest.TestCase):
         log = self.output / "command.log"
         data = log.read_bytes()
         log.unlink()
-        with self.assertRaises(OSError):
+        with self.assertRaisesRegex(evidence.Refused, "missing durable log"):
             evidence.check(self.root, self.policy, self.output)
         log.write_bytes(data)
         key = (self.output / "key").read_bytes()
@@ -178,6 +179,8 @@ class EvidenceTests(unittest.TestCase):
         key = (self.output / "key").read_bytes()
         manifest = self.output / "manifest.json"
         r = evidence.read_record(manifest, key)
+        self.assertEqual(r["outcome"], "failure")
+        self.assertEqual(r["log"]["completeness"], "complete")
         for field in ("before", "after", "exit_status", "log"):
             with self.subTest(field=field):
                 changed = copy.deepcopy(r)
@@ -190,8 +193,79 @@ class EvidenceTests(unittest.TestCase):
 
     def test_corrupt_log(self):
         self.record()
-        (self.output / "command.log").write_text("fabricated success")
-        self.refused("log")
+        log = self.output / "command.log"
+        contents = log.read_bytes()
+        log.write_bytes(contents[:-1])
+        self.refused("truncated durable log")
+        log.write_bytes(b"x" * len(contents))
+        self.refused("corrupt durable log")
+
+    def test_default_output_is_unique_and_prints_retained_references_for_each_outcome(self):
+        policy = self.base / "policy.json"
+        policy.write_text(json.dumps(self.policy))
+        os.environ["XDG_STATE_HOME"] = str(self.base / "state")
+        outputs = []
+        for expected in (0, 2):
+            if expected:
+                (self.root / "Makefile").write_text("check:\n\t@exit 9\n")
+            stdout = StringIO()
+            with patch.object(sys, "argv", ["validation_evidence.py", "run", "--policy", str(policy)]), \
+                    patch("sys.stdout", stdout), patch("pathlib.Path.cwd", return_value=self.root):
+                self.assertEqual(evidence.main(), expected)
+            message = stdout.getvalue().strip()
+            self.assertIn("manifest=", message)
+            self.assertIn("log=", message)
+            self.assertIn("outcome=" + ("success" if expected == 0 else "failure"), message)
+            manifest = Path(message.split("manifest=", 1)[1].split(" log=", 1)[0])
+            outputs.append(manifest.parent)
+            self.assertTrue(manifest.is_file())
+            self.assertEqual(manifest.parent.parent, self.base / "state" / "conveyor" / "fixture-task")
+        self.assertNotEqual(outputs[0], outputs[1])
+        task_cache = self.base / ".cache" / "conveyor" / "fixture-task"
+        (task_cache / "tmp").mkdir(parents=True)
+        (task_cache / "tmp" / "scratch").write_text("disposable")
+        self.assertEqual(evidence.cleanup_cache("fixture-task", task_cache, [path / "command.log" for path in outputs]), ["tmp"])
+        for output in outputs:
+            self.assertTrue((output / "manifest.json").is_file())
+            self.assertTrue((output / "command.log").is_file())
+
+    def test_cleanup_refuses_siblings_symlinks_references_and_active_users(self):
+        os.environ["XDG_CACHE_HOME"] = str(self.base / "cache-home")
+        task_cache = self.base / "cache-home" / "conveyor" / "fixture-task"
+        child = task_cache / "tmp"
+        child.mkdir(parents=True)
+        retained = child / "claimed.log"
+        retained.write_text("keep")
+        sibling = task_cache.parent / "sibling-task"
+        sibling.mkdir()
+        with self.assertRaisesRegex(evidence.Refused, "current task child"):
+            evidence.cleanup_cache("fixture-task", sibling, [])
+        with self.assertRaisesRegex(evidence.Refused, "referenced evidence"):
+            evidence.cleanup_cache("fixture-task", task_cache, [retained])
+        self.assertTrue(retained.exists())
+
+        process = subprocess.Popen(["sleep", "30"], cwd=child)
+        try:
+            with self.assertRaisesRegex(evidence.Refused, "active"):
+                evidence.cleanup_cache("fixture-task", task_cache, [])
+        finally:
+            process.terminate()
+            process.wait(timeout=5)
+        self.assertEqual(evidence.cleanup_cache("fixture-task", task_cache, []), ["tmp"])
+        self.assertFalse(child.exists())
+
+        target = self.base / "elsewhere"
+        target.mkdir()
+        unknown = task_cache / "retained-unknown-child"
+        unknown.mkdir()
+        guarded = task_cache / "go-build"
+        guarded.mkdir()
+        (task_cache / "tmp").symlink_to(target, target_is_directory=True)
+        with self.assertRaisesRegex(evidence.Refused, "symlink"):
+            evidence.cleanup_cache("fixture-task", task_cache, [])
+        self.assertTrue(target.exists())
+        self.assertTrue(unknown.exists())
+        self.assertTrue(guarded.exists())
 
     def test_authored_conflict_resolution_even_when_content_matches(self):
         self.record()
