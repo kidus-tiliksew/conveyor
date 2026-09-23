@@ -109,15 +109,32 @@ func (w *pullRequestCloseWorker) Work(ctx context.Context, job queue.Job) error 
 		// attempt count alone never proves that a PATCH was sent (AC-3.5).
 		closeInvoked := false
 		recordedNumber := 0
+		recordedURL := ""
+		recorded, originSeen := false, false
 		for _, event := range events {
-			if event.Kind == "pull_request.opened" {
+			if !originSeen && event.Kind == "pull_request.opened" {
 				var opened struct {
-					Number int `json:"number"`
+					Number int    `json:"number"`
+					URL    string `json:"url"`
 				}
 				if err := json.Unmarshal(event.Payload, &opened); err != nil {
 					return err
 				}
-				recordedNumber = opened.Number
+				recordedNumber, recordedURL = opened.Number, opened.URL
+			}
+			// AC-3.5: the append-only queued intent fixes provenance. Later
+			// opened events cannot promote an identity discovered by branch lookup.
+			// Missing origin evidence conservatively retains branch protection.
+			if !originSeen && event.Kind == "pull_request.close_queued" {
+				originSeen = true
+				var intent core.PullRequestClose
+				if err := json.Unmarshal(event.Payload, &intent); err != nil {
+					return err
+				}
+				recorded = intent.WorkspaceID == p.WorkspaceID && intent.TaskID == p.TaskID &&
+					intent.Repository == p.Repository && intent.Branch == p.Branch &&
+					intent.Number > 0 && intent.Number == recordedNumber && intent.URL == recordedURL &&
+					intent.Number == p.Number && intent.URL == p.URL
 			}
 			if strings.HasPrefix(event.Kind, "pull_request.close_") {
 				var progress core.PullRequestClose
@@ -182,7 +199,6 @@ func (w *pullRequestCloseWorker) Work(ctx context.Context, job queue.Job) error 
 		}
 		// Recorded-task provenance is distinct from a number discovered by an
 		// earlier branch lookup. Retries of the latter keep the branch lock.
-		recorded := p.Number > 0 && p.Number == recordedNumber
 		attempt := func(ctx context.Context) error {
 			guard := func() error { return w.checkCloseOwnership(ctx, task, p, !recorded) }
 			if !recorded {

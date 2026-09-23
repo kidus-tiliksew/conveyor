@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -496,6 +497,89 @@ func TestStartOverCloseOwnership(t *testing.T) {
 						t.Fatalf("reads=%d want=%d", branchReads+numberReads, wantReads)
 					}
 				}
+			}
+		})
+	}
+}
+
+type closeLockTrackingStore struct {
+	store.Store
+	branchLocked bool
+}
+
+func (s *closeLockTrackingStore) WithTaskSideEffectLock(ctx context.Context, key string, fn func(context.Context) error) error {
+	return s.Store.WithTaskSideEffectLock(ctx, key, func(ctx context.Context) error {
+		if strings.HasPrefix(key, "branch-close:") {
+			s.branchLocked = true
+			defer func() { s.branchLocked = false }()
+		}
+		return fn(ctx)
+	})
+}
+
+// A late opened event must not convert a branch-discovered retry into the
+// recorded-number path, even when its number and URL match exactly.
+func TestStartOverCloseRetryPreservesBranchOrigin(t *testing.T) {
+	for _, holder := range []bool{false, true} {
+		t.Run(fmt.Sprintf("holder=%t", holder), func(t *testing.T) {
+			ctx, st, d, old, other := closeOwnershipFixture(t, false)
+			locks := &closeLockTrackingStore{Store: st}
+			d.Store = locks
+			assertBranchLock := func() {
+				t.Helper()
+				if !locks.branchLocked {
+					t.Fatal("branch-derived forge operation escaped branch ownership lock")
+				}
+			}
+			pr := github.PullRequest{Number: 42, URL: "https://github.com/org/repo/pull/42", State: "open"}
+			branchReads, numberReads, closes := 0, 0, 0
+			d.PullRequestForClose = func(context.Context, string, string) (github.PullRequest, error) {
+				assertBranchLock()
+				branchReads++
+				return pr, nil
+			}
+			d.PullRequestForNumber = func(context.Context, string, int) (github.PullRequest, error) {
+				assertBranchLock()
+				numberReads++
+				return pr, nil
+			}
+			d.ClosePullRequest = func(context.Context, string, int, string, string) error {
+				assertBranchLock()
+				closes++
+				return errors.New("pre-mutation failure")
+			}
+			worker := pullRequestCloseWorker{d}
+			job := testJob(queue.PullRequestCloseArgs{WorkspaceID: "demo", TaskID: old.ID}, 1, 1, 5)
+			if err := worker.Work(ctx, job); err == nil {
+				t.Fatal("first attempt should fail")
+			}
+			p, _, err := st.GetPullRequestClose(ctx, old.ID)
+			if err != nil || p.State != "retrying" || p.Number != 42 || p.Attempts != 1 {
+				t.Fatalf("first attempt: %+v, %v", p, err)
+			}
+			if err := st.AppendEvent(ctx, core.Event{TaskID: old.ID, Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]any{"number": pr.Number, "url": pr.URL})}); err != nil {
+				t.Fatal(err)
+			}
+			if holder {
+				if _, err := st.AttachTaskBranch(ctx, other.ID, old.Branch); err != nil {
+					t.Fatal(err)
+				}
+			}
+			branchReads, numberReads, closes = 0, 0, 0
+			d.ClosePullRequest = func(context.Context, string, int, string, string) error {
+				assertBranchLock()
+				closes++
+				pr.State = "closed"
+				return nil
+			}
+			err = worker.Work(ctx, testJob(queue.PullRequestCloseArgs{WorkspaceID: "demo", TaskID: old.ID}, 2, 2, 5))
+			p, _, _ = st.GetPullRequestClose(ctx, old.ID)
+			if holder {
+				if err == nil || p.State != "retrying" || closes != 0 || numberReads != 0 || branchReads != 0 || p.LastError == closeUncertainMarker {
+					t.Fatalf("branch origin lost: %+v err=%v calls=%d/%d/%d", p, err, closes, branchReads, numberReads)
+				}
+			} else if err != nil || p.State != "closed" || closes != 1 || numberReads != 2 || branchReads != 0 {
+				t.Fatalf("retry did not address persisted number: %+v err=%v calls=%d/%d/%d", p, err, closes, branchReads, numberReads)
 			}
 		})
 	}
