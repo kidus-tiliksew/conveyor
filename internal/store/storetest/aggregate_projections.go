@@ -262,3 +262,94 @@ func runMonitorPullRequestEvents(t *testing.T, x Fixture) {
 		}
 	}
 }
+
+// runTaskEventOrdering holds every backend to the per-task ledger order owned
+// by component-persistence and exercised through the two filtered batch reads.
+func runTaskEventOrdering(t *testing.T, x Fixture) {
+	st, ctx := x.Backend, x.Context
+	task, excluded := newAggregateTask(t, x), newAggregateTask(t, x)
+	at := time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)
+	events := []core.Event{
+		{TaskID: task.ID, Kind: "merge.confirmed", At: at.Add(time.Second), Payload: core.JSONPayload(map[string]any{"marker": "delivery-late"})},
+		{TaskID: task.ID, Kind: "pull_request.opened", At: at.Add(time.Second), Payload: core.JSONPayload(map[string]any{"marker": "monitor-late"})},
+		{TaskID: task.ID, Kind: "merge.confirmed", At: at, Payload: core.JSONPayload(map[string]any{"marker": "delivery-first"})},
+		{TaskID: task.ID, Kind: "pull_request.opened", At: at, Payload: core.JSONPayload(map[string]any{"marker": "monitor-first"})},
+		{TaskID: task.ID, Kind: "merge.confirmed", At: at, Payload: core.JSONPayload(map[string]any{"marker": "delivery-second"})},
+		{TaskID: task.ID, Kind: "pull_request.opened", At: at, Payload: core.JSONPayload(map[string]any{"marker": "monitor-second"})},
+		{TaskID: excluded.ID, Kind: "merge.confirmed", At: at, Payload: core.JSONPayload(map[string]any{"marker": "excluded-delivery"})},
+		{TaskID: excluded.ID, Kind: "pull_request.opened", At: at, Payload: core.JSONPayload(map[string]any{"marker": "excluded-monitor"})},
+	}
+	for _, event := range events {
+		requireOK(t, st.AppendEvent(ctx, event))
+	}
+
+	assertOrdered := func(name string, got []core.Event, wantKinds []string) {
+		t.Helper()
+		if len(got) != len(wantKinds) {
+			t.Fatalf("%s event count=%d want=%d: %v", name, len(got), len(wantKinds), got)
+		}
+		for i, event := range got {
+			if event.Kind != wantKinds[i] {
+				t.Fatalf("%s event %d kind=%q want=%q: %v", name, i, event.Kind, wantKinds[i], got)
+			}
+			if i == 0 {
+				continue
+			}
+			previous := got[i-1]
+			if event.At.Before(previous.At) || (event.At.Equal(previous.At) && event.ID <= previous.ID) {
+				t.Fatalf("%s is not ordered by at,id: %v", name, got)
+			}
+		}
+	}
+
+	ledger, err := st.ListEvents(ctx, task.ID)
+	requireOK(t, err)
+	orderedFixture := make([]core.Event, 0, 6)
+	for _, event := range ledger {
+		if event.Kind == "merge.confirmed" || event.Kind == "pull_request.opened" {
+			orderedFixture = append(orderedFixture, event)
+		}
+	}
+	assertOrdered("ListEvents", orderedFixture, []string{"merge.confirmed", "pull_request.opened", "merge.confirmed", "pull_request.opened", "merge.confirmed", "pull_request.opened"})
+
+	ids := []string{task.ID, task.ID, "absent"}
+	delivery, err := st.ListRequirementDeliveryEventsForTasks(ctx, ids)
+	requireOK(t, err)
+	if len(delivery) != 1 {
+		t.Fatalf("requirement-delivery task filter returned %v", delivery)
+	}
+	assertOrdered("ListRequirementDeliveryEventsForTasks", delivery[task.ID], []string{"merge.confirmed", "merge.confirmed", "merge.confirmed"})
+
+	monitor, err := st.ListMonitorPullRequestEventsForTasks(ctx, ids)
+	requireOK(t, err)
+	if len(monitor) != 1 {
+		t.Fatalf("monitor task filter returned %v", monitor)
+	}
+	assertOrdered("ListMonitorPullRequestEventsForTasks", monitor[task.ID], []string{"pull_request.opened", "pull_request.opened", "pull_request.opened"})
+
+	foreignCtx := store.WithWorkspace(ctx, x.Workspace+"-foreign")
+	for name, got := range map[string]map[string][]core.Event{
+		"foreign requirement-delivery": mustRequirementDeliveryEvents(t, st, foreignCtx, []string{task.ID}),
+		"foreign monitor":              mustMonitorPullRequestEvents(t, st, foreignCtx, []string{task.ID}),
+		"absent requirement-delivery":  mustRequirementDeliveryEvents(t, st, ctx, []string{"absent"}),
+		"absent monitor":               mustMonitorPullRequestEvents(t, st, ctx, []string{"absent"}),
+	} {
+		if len(got) != 0 {
+			t.Fatalf("%s returned %v", name, got)
+		}
+	}
+}
+
+func mustRequirementDeliveryEvents(t *testing.T, st store.Store, ctx context.Context, taskIDs []string) map[string][]core.Event {
+	t.Helper()
+	events, err := st.ListRequirementDeliveryEventsForTasks(ctx, taskIDs)
+	requireOK(t, err)
+	return events
+}
+
+func mustMonitorPullRequestEvents(t *testing.T, st store.Store, ctx context.Context, taskIDs []string) map[string][]core.Event {
+	t.Helper()
+	events, err := st.ListMonitorPullRequestEventsForTasks(ctx, taskIDs)
+	requireOK(t, err)
+	return events
+}

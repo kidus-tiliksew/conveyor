@@ -575,7 +575,7 @@ func (s *Store) ListLineageContextRecords(ctx context.Context, nodes []core.Line
 		for id := range taskIDs {
 			ids = append(ids, id)
 		}
-		rows, err := documentBatchRows(ctx, s.db, `SELECT task_id,payload_json FROM events WHERE workspace_id=? AND task_id IN (%s) AND kind IN ('review.completed','review.round_completed') ORDER BY id`, documentWorkspace(ctx), ids)
+		rows, err := documentBatchRows(ctx, s.db, `SELECT task_id,payload_json FROM events WHERE workspace_id=? AND task_id IN (%s) AND kind IN ('review.completed','review.round_completed') ORDER BY task_id,at,id`, documentWorkspace(ctx), ids)
 		if err != nil {
 			return result, err
 		}

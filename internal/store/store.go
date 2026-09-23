@@ -475,6 +475,8 @@ type LineageStore interface {
 // ActivityStore owns the event and activity projection contract.
 type ActivityStore interface {
 	AppendEvent(ctx context.Context, event core.Event) error
+	// ListEvents returns the per-task ledger ordered by event time, then ID;
+	// ID-cursor readers retain ID order for pagination.
 	ListEvents(ctx context.Context, taskID string) ([]core.Event, error)
 	ListEventsAfter(ctx context.Context, taskID string, afterID int64) ([]core.Event, error)
 	CountEvents(ctx context.Context, taskID, kind string) (int, error)

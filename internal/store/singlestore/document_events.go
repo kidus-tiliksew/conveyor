@@ -182,7 +182,7 @@ func insertEventWithID(ctx context.Context, tx *sql.Tx, e core.Event) (int64, er
 	return id, err
 }
 func documentTaskEvents(ctx context.Context, db s2log.Executor, taskID string) ([]core.Event, error) {
-	rows, err := documentRows(ctx, db, `SELECT id,COALESCE(task_id,''),COALESCE(job_id,''),kind,actor_id,actor_role,payload_json,at FROM events WHERE workspace_id=? AND task_id=? ORDER BY id`, documentWorkspace(ctx), taskID)
+	rows, err := documentRows(ctx, db, `SELECT id,COALESCE(task_id,''),COALESCE(job_id,''),kind,actor_id,actor_role,payload_json,at FROM events WHERE workspace_id=? AND task_id=? ORDER BY at,id`, documentWorkspace(ctx), taskID)
 	if err != nil {
 		return nil, err
 	}
@@ -451,7 +451,7 @@ func (s *Store) ListMonitorPullRequestEventsForTasks(ctx context.Context, ids []
 	if len(ids) == 0 {
 		return out, nil
 	}
-	rows, err := documentBatchRows(ctx, s.db, `SELECT id,task_id,COALESCE(job_id,''),kind,actor_id,actor_role,payload_json,at FROM events WHERE workspace_id=? AND task_id IN (%s) AND kind='pull_request.opened' ORDER BY task_id,id`, documentWorkspace(ctx), ids)
+	rows, err := documentBatchRows(ctx, s.db, `SELECT id,task_id,COALESCE(job_id,''),kind,actor_id,actor_role,payload_json,at FROM events WHERE workspace_id=? AND task_id IN (%s) AND kind='pull_request.opened' ORDER BY task_id,at,id`, documentWorkspace(ctx), ids)
 	if err != nil {
 		return nil, err
 	}
