@@ -73,6 +73,13 @@ type nativeMCPFixture struct {
 	mu                            sync.Mutex
 	initialized, listed, rejected int
 	token                         string
+	toolCalls                     []nativeMCPToolCall
+}
+
+type nativeMCPToolCall struct {
+	Name      string
+	Arguments map[string]any
+	Meta      map[string]any
 }
 
 func (f *nativeMCPFixture) serve(w http.ResponseWriter, r *http.Request) {
@@ -111,7 +118,33 @@ func (f *nativeMCPFixture) serve(w http.ResponseWriter, r *http.Request) {
 		result = map[string]any{"protocolVersion": params.ProtocolVersion, "capabilities": map[string]any{"tools": map[string]any{}}, "serverInfo": map[string]string{"name": "conveyor-fixture", "version": "1"}}
 	case "tools/list":
 		f.listed++
-		result = map[string]any{"tools": []any{map[string]any{"name": "fixture_ping", "description": "Controlled fixture", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{}}}}}
+		object := func(properties map[string]any, required ...string) map[string]any {
+			return map[string]any{"type": "object", "properties": properties, "required": required, "additionalProperties": false}
+		}
+		str := map[string]any{"type": "string"}
+		result = map[string]any{"tools": []any{
+			map[string]any{"name": "list_tasks", "description": "Controlled list fixture", "inputSchema": object(map[string]any{"workspace_id": str, "state": str, "limit": map[string]any{"type": "integer"}}, "workspace_id")},
+			map[string]any{"name": "get_document", "description": "Controlled document fixture", "inputSchema": object(map[string]any{"workspace_id": str, "kind": str, "document_id": str}, "workspace_id", "kind", "document_id")},
+		}}
+	case "tools/call":
+		var params struct {
+			Name      string         `json:"name"`
+			Arguments map[string]any `json:"arguments"`
+			Meta      map[string]any `json:"_meta"`
+		}
+		if err := json.Unmarshal(call.Params, &params); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		f.toolCalls = append(f.toolCalls, nativeMCPToolCall{Name: params.Name, Arguments: params.Arguments, Meta: params.Meta})
+		malformed := false
+		if params.Name == "list_tasks" {
+			_, malformed = params.Arguments["limit"].(string)
+		}
+		if params.Name == "get_document" {
+			_, malformed = params.Arguments["unexpected"]
+		}
+		result = map[string]any{"content": []map[string]string{{"type": "text", "text": `{}`}}, "isError": malformed}
 	case "resources/list":
 		result = map[string]any{"resources": []any{}}
 	case "resources/templates/list":
@@ -181,7 +214,7 @@ func TestMCPNativeClients(t *testing.T) {
 				ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 				defer cancel()
 				if tool == "codex" {
-					runNativeCodexFixture(t, ctx, binary, home, env)
+					runNativeCodexFixture(t, ctx, binary, home, env, []string{ids[0].name, ids[1].name}, expectRejection)
 					return
 				}
 				calls := [][]string{{"mcp", "list"}}
@@ -206,10 +239,22 @@ func TestMCPNativeClients(t *testing.T) {
 			run(false)
 			for i, f := range []*nativeMCPFixture{one, two} {
 				f.mu.Lock()
-				initialized, listed, rejected := f.initialized, f.listed, f.rejected
+				initialized, listed, rejected, toolCalls := f.initialized, f.listed, f.rejected, append([]nativeMCPToolCall(nil), f.toolCalls...)
 				f.mu.Unlock()
 				if initialized == 0 || listed == 0 || rejected != 0 {
 					t.Fatalf("server %d native evidence: initialize=%d tools/list=%d rejected=%d", i, initialized, listed, rejected)
+				}
+				if tool == "codex" {
+					seen := map[string]int{}
+					for _, call := range toolCalls {
+						seen[call.Name]++
+						if call.Arguments["workspace_id"] != "demo" || len(call.Meta) == 0 {
+							t.Fatalf("server %d native call %s missing bounded arguments or metadata", i, call.Name)
+						}
+					}
+					if seen["list_tasks"] != 2 || seen["get_document"] != 2 {
+						t.Fatalf("server %d missing affected native calls: %v", i, seen)
+					}
 				}
 			}
 			t.Log("two distinct saved servers: native initialize and tools/list passed; unrelated environment credential never arrived")
@@ -219,6 +264,7 @@ func TestMCPNativeClients(t *testing.T) {
 				f.token += "-rotated"
 				f.initialized = 0
 				f.listed = 0
+				f.toolCalls = nil
 				f.mu.Unlock()
 			}
 			config.Servers[a.URL] = localServerConfig{Token: one.token}
@@ -260,7 +306,7 @@ func TestMCPNativeClients(t *testing.T) {
 	}
 }
 
-func runNativeCodexFixture(t *testing.T, ctx context.Context, binary, home string, env []string) {
+func runNativeCodexFixture(t *testing.T, ctx context.Context, binary, home string, env, servers []string, expectRejection bool) {
 	t.Helper()
 	cmd := exec.CommandContext(ctx, binary, "app-server", "--stdio")
 	cmd.Env = env
@@ -285,24 +331,60 @@ func runNativeCodexFixture(t *testing.T, ctx context.Context, binary, home strin
 		b, _ := json.Marshal(map[string]any{"id": id, "method": method, "params": params})
 		_, _ = fmt.Fprintln(input, string(b))
 	}
-	receive := func(id int) {
+	receive := func(id int) json.RawMessage {
 		for scanner.Scan() {
 			var reply struct {
-				ID    int             `json:"id"`
-				Error json.RawMessage `json:"error"`
+				ID     int             `json:"id"`
+				Error  json.RawMessage `json:"error"`
+				Result json.RawMessage `json:"result"`
 			}
 			if json.Unmarshal(scanner.Bytes(), &reply) == nil && reply.ID == id {
 				if len(reply.Error) > 0 {
 					t.Fatalf("native Codex %d request rejected (output withheld)", id)
 				}
-				return
+				return reply.Result
 			}
 		}
 		t.Fatalf("native Codex stopped before response %d: %v", id, ctx.Err())
+		return nil
 	}
 	send(1, "initialize", map[string]any{"clientInfo": map[string]string{"name": "conveyor-fixture", "version": "1"}, "capabilities": map[string]any{"experimentalApi": true}})
-	receive(1)
+	_ = receive(1)
 	_, _ = fmt.Fprintln(input, `{"method":"initialized","params":{}}`)
 	send(2, "mcpServerStatus/list", map[string]any{})
-	receive(2)
+	_ = receive(2)
+	if expectRejection {
+		return
+	}
+	send(3, "thread/start", map[string]any{"cwd": home, "ephemeral": true})
+	var started struct {
+		Thread struct {
+			ID string `json:"id"`
+		} `json:"thread"`
+	}
+	if err := json.Unmarshal(receive(3), &started); err != nil || started.Thread.ID == "" {
+		t.Fatalf("native Codex thread start: %v", err)
+	}
+	id := 4
+	for _, server := range servers {
+		for _, call := range []struct {
+			tool      string
+			arguments map[string]any
+			wantError bool
+		}{
+			{tool: "list_tasks", arguments: map[string]any{"workspace_id": "demo", "state": "all", "limit": 2}},
+			{tool: "list_tasks", arguments: map[string]any{"workspace_id": "demo", "limit": "2"}, wantError: true},
+			{tool: "get_document", arguments: map[string]any{"workspace_id": "demo", "kind": "system_design", "document_id": "component-mcp-protocol"}},
+			{tool: "get_document", arguments: map[string]any{"workspace_id": "demo", "kind": "system_design", "document_id": "component-mcp-protocol", "unexpected": true}, wantError: true},
+		} {
+			send(id, "mcpServer/tool/call", map[string]any{"server": server, "threadId": started.Thread.ID, "tool": call.tool, "arguments": call.arguments, "_meta": map[string]any{"progressToken": id}})
+			var result struct {
+				IsError bool `json:"isError"`
+			}
+			if err := json.Unmarshal(receive(id), &result); err != nil || result.IsError != call.wantError {
+				t.Fatalf("native Codex %s response classification: isError=%t want=%t error=%v", call.tool, result.IsError, call.wantError, err)
+			}
+			id++
+		}
+	}
 }

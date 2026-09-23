@@ -36,6 +36,16 @@ type rpcError struct {
 	Message string `json:"message"`
 }
 
+// mcpToolCallEnvelope is the protocol-level tools/call envelope. Metadata is
+// admitted here because MCP clients use it for request-scoped concerns such as
+// progress tokens, but it is deliberately not forwarded to tool arguments.
+// DecodeVerificationRequest keeps unknown and duplicate envelope fields strict.
+type mcpToolCallEnvelope struct {
+	Name      string         `json:"name"`
+	Arguments map[string]any `json:"arguments"`
+	Meta      map[string]any `json:"_meta,omitempty"`
+}
+
 const (
 	systemDesignProposalGuidance = "This System Design proposal is fire-and-forget and confers no authority. Do not checkpoint, pause, or wait for operator confirmation. Proceed now to commit, push, and `submit_for_review`; review dispatch waits on the operator's decision automatically."
 	requirementProposalGuidance  = "This requirement proposal is fire-and-forget and confers no authority. Do not checkpoint, pause, or wait for operator confirmation. Proceed now to commit, push, and `submit_for_review`; review dispatch waits on the operator's decision automatically."
@@ -81,10 +91,7 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 	case "tools/list":
 		response.Result = map[string]any{"tools": mcpTools()}
 	case "tools/call":
-		var call struct {
-			Name      string         `json:"name"`
-			Arguments map[string]any `json:"arguments"`
-		}
+		var call mcpToolCallEnvelope
 		if err := core.DecodeVerificationRequest(request.Params, &call); err != nil {
 			response.Error = &rpcError{Code: -32602, Message: "invalid tool arguments"}
 			break
