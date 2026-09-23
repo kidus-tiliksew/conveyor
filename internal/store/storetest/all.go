@@ -168,6 +168,7 @@ func RunAll(t *testing.T, factory Factory) {
 		{"Monitor", true, runMonitor},
 		{"EmptyProjections", true, runEmptyProjections},
 		{"ProjectionReads", true, runProjectionReads},
+		{"MonitorPullRequestEvents", true, runMonitorPullRequestEvents},
 		{"PopulatedProjections", factory.Capabilities.Membership, runPopulatedProjections},
 		{"WorkspaceControl", true, runWorkspaceControl},
 		{"RepositoryInstall", true, runRepositoryInstall},

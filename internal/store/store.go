@@ -336,6 +336,10 @@ type DocumentStore interface {
 	// context, aggregate review-round, and merge events used by
 	// requirement-delivery classification.
 	ListRequirementDeliveryEventsForTasks(ctx context.Context, taskIDs []string) (map[string][]core.Event, error)
+	// ListMonitorPullRequestEventsForTasks returns only pull_request.opened events
+	// in the current workspace, ordered by time and ID per task. Empty IDs
+	// return an empty map without a database read.
+	ListMonitorPullRequestEventsForTasks(ctx context.Context, taskIDs []string) (map[string][]core.Event, error)
 	ListDocumentEventPage(ctx context.Context, kind core.LineageNodeType, id string, query DocumentEventQuery) (DocumentEventPage, error)
 	ListRequirementEvents(ctx context.Context, requirementID string) ([]core.Event, error)
 	ListRequirementEventsByRequirement(ctx context.Context) (map[string][]core.Event, error)
@@ -6293,6 +6297,36 @@ func (m *memory) ListRequirementDeliveryEventsForTasks(ctx context.Context, task
 		for _, event := range m.events[taskID] {
 			switch event.Kind {
 			case "merge.confirmed", "merge.reconciled", "review.round_completed", TaskContextRequirementAdded, TaskContextRequirementActive, TaskContextRequirementRemoved:
+				events = append(events, event)
+			}
+		}
+		sort.Slice(events, func(i, j int) bool {
+			if events[i].At.Equal(events[j].At) {
+				return events[i].ID < events[j].ID
+			}
+			return events[i].At.Before(events[j].At)
+		})
+		if len(events) > 0 {
+			result[taskID] = events
+		}
+	}
+	return result, nil
+}
+
+func (m *memory) ListMonitorPullRequestEventsForTasks(ctx context.Context, taskIDs []string) (map[string][]core.Event, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	result := make(map[string][]core.Event, len(taskIDs))
+	workspace, scoped := WorkspaceFromContext(ctx)
+	for _, taskID := range taskIDs {
+		task, exists := m.tasks[taskID]
+		if !exists || scoped && task.Workspace != workspace {
+			continue
+		}
+		events := make([]core.Event, 0)
+		for _, event := range m.events[taskID] {
+			switch event.Kind {
+			case "pull_request.opened":
 				events = append(events, event)
 			}
 		}
