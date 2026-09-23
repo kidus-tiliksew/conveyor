@@ -2,6 +2,7 @@ package storetest
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"testing"
@@ -311,6 +312,31 @@ func runTaskEventOrdering(t *testing.T, x Fixture) {
 		}
 	}
 	assertOrdered("ListEvents", orderedFixture, []string{"merge.confirmed", "pull_request.opened", "merge.confirmed", "pull_request.opened", "merge.confirmed", "pull_request.opened"})
+
+	cursorEvents, err := st.ListEventsAfter(ctx, task.ID, 0)
+	requireOK(t, err)
+	cursorMarkers := make([]string, 0, 6)
+	var previousID int64
+	for _, event := range cursorEvents {
+		var payload struct {
+			Marker string `json:"marker"`
+		}
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatalf("ListEventsAfter payload: %v", err)
+		}
+		if payload.Marker == "" {
+			continue
+		}
+		if event.ID <= previousID {
+			t.Fatalf("ListEventsAfter is not ordered by id: %v", cursorEvents)
+		}
+		previousID = event.ID
+		cursorMarkers = append(cursorMarkers, payload.Marker)
+	}
+	wantCursorMarkers := []string{"delivery-late", "monitor-late", "delivery-first", "monitor-first", "delivery-second", "monitor-second"}
+	if !reflect.DeepEqual(cursorMarkers, wantCursorMarkers) {
+		t.Fatalf("ListEventsAfter markers=%v want=%v", cursorMarkers, wantCursorMarkers)
+	}
 
 	ids := []string{task.ID, task.ID, "absent"}
 	delivery, err := st.ListRequirementDeliveryEventsForTasks(ctx, ids)
