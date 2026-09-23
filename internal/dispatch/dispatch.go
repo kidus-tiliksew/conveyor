@@ -44,6 +44,7 @@ type Dispatcher struct {
 	Agent                      inprocess.Agent
 	ConfigProvider             func(context.Context) (*config.Config, error)
 	PullRequestForClose        func(context.Context, string, string) (github.PullRequest, error)
+	PullRequestForNumber       func(context.Context, string, int) (github.PullRequest, error)
 	ClosePullRequest           func(context.Context, string, int, string, string) error
 	PublishIssue               func(context.Context, github.IssuePublication) (github.IssuePublicationResult, error)
 	PublishReview              func(context.Context, github.ReviewPublication) (github.ReviewPublicationResult, error)
@@ -103,6 +104,7 @@ func New(st store.Store, cfg *config.Config, agent inprocess.Agent) *Dispatcher 
 		return reviewBranchDiff(forgeCtx, cfg, comparison)
 	}
 	d.PullRequestForClose = github.PullRequestForBranch
+	d.PullRequestForNumber = github.PullRequestForNumber
 	d.ClosePullRequest = github.ClosePullRequestWithCredential
 	d.PublishIssue = func(ctx context.Context, publication github.IssuePublication) (github.IssuePublicationResult, error) {
 		forgeCtx, err := d.workspaceForgeContext(ctx, publication.Repo)
@@ -2464,7 +2466,7 @@ func (d *Dispatcher) ReconcileObservedPullRequest(ctx context.Context, repositor
 			return err
 		}
 		repo, ok := cfg.Repo(repository)
-		if !ok || repo.GitHub != githubRepo || !monitor.RecordedLineage(task, events, repository, githubRepo, taskID, pr.Number, pr.HeadSHA) {
+		if !ok || repo.GitHub != githubRepo || !monitor.RecordedLineage(task, events, repository, githubRepo, taskID, pr.HeadRef, pr.Number, pr.HeadSHA) {
 			return nil
 		}
 		head := task.ApprovedHeadSHA

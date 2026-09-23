@@ -10,6 +10,13 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 )
 
+// BranchCloseLockKey coordinates attach with branch-derived close attempts.
+// AC-3.5 / AC-4.2 (component-git-delivery): repo is the task config name,
+// not the forge slug. Callers hold the task lock before taking this key.
+func BranchCloseLockKey(repo, branch string) string {
+	return "branch-close:" + repo + ":" + branch
+}
+
 func ValidatePullRequestCloseActor(ctx context.Context) error {
 	actor := ActorFromContext(ctx)
 	if !utf8.ValidString(actor.ID) || !utf8.ValidString(string(actor.Role)) || strings.ContainsRune(actor.ID, 0) || strings.ContainsRune(string(actor.Role), 0) {
@@ -19,7 +26,8 @@ func ValidatePullRequestCloseActor(ctx context.Context) error {
 }
 
 func ValidatePullRequestCloseIntent(p core.PullRequestClose, task core.Task) error {
-	if p.WorkspaceID == "" || p.WorkspaceID != task.Workspace || p.TaskID != task.ID || task.State != core.TaskClosed || p.SuccessorID == "" || p.SuccessorID != task.SupersededBy || p.Branch != task.Branch || p.SuccessorBranch == "" || p.Repository == "" || p.Reason == "" || p.RestartingOperatorID == "" || p.ForgeAuthorClass != core.ForgeAuthorWorkspace || p.State != "queued" || p.Attempts != 0 || p.Number != 0 || p.URL != "" || p.ForgeErrorCategory != "" || p.Outcome != "" || p.LastError != "" {
+	identityOK := (p.Number == 0 && p.URL == "") || (p.Number > 0 && strings.TrimSpace(p.URL) != "")
+	if p.WorkspaceID == "" || p.WorkspaceID != task.Workspace || p.TaskID != task.ID || task.State != core.TaskClosed || p.SuccessorID == "" || p.SuccessorID != task.SupersededBy || p.Branch != task.Branch || p.SuccessorBranch == "" || p.Repository == "" || p.Reason == "" || p.RestartingOperatorID == "" || p.ForgeAuthorClass != core.ForgeAuthorWorkspace || p.State != "queued" || p.Attempts != 0 || !identityOK || p.ForgeErrorCategory != "" || p.Outcome != "" || p.LastError != "" {
 		return fmt.Errorf("invalid pull request close intent for task %s", p.TaskID)
 	}
 	return nil

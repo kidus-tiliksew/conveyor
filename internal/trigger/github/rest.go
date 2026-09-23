@@ -138,9 +138,9 @@ func (c *restClient) request(ctx context.Context, method, endpoint, accept strin
 			category = ForgePermission
 		}
 		if category == ForgePermission {
-			return nil, response.Header, response.StatusCode, &Error{Category: category, Err: fmt.Errorf("%s is expired, revoked, or lacks permission; replace it in settings (GitHub HTTP %d)", c.identityLabel(), response.StatusCode)}
+			return nil, response.Header, response.StatusCode, &Error{Category: category, status: response.StatusCode, Err: fmt.Errorf("%s is expired, revoked, or lacks permission; replace it in settings (GitHub HTTP %d)", c.identityLabel(), response.StatusCode)}
 		}
-		return nil, response.Header, response.StatusCode, &Error{Category: category, Err: fmt.Errorf("GitHub REST status %d: %s", response.StatusCode, c.secretSafe(secretSafeMessage(raw)))}
+		return nil, response.Header, response.StatusCode, &Error{Category: category, status: response.StatusCode, Err: fmt.Errorf("GitHub REST status %d: %s", response.StatusCode, c.secretSafe(secretSafeMessage(raw)))}
 	}
 	return raw, response.Header, response.StatusCode, nil
 }
@@ -497,8 +497,21 @@ func (c *restClient) pullForBranch(ctx context.Context, repo, branch string) ([]
 	if json.Unmarshal(pulls[0], &summary) != nil || summary.Number == 0 {
 		return nil, forgeResponseError("parse pull request for branch %s", branch)
 	}
-	raw, _, _, err = c.request(ctx, http.MethodGet, fmt.Sprintf("repos/%s/pulls/%d", repo, summary.Number), "application/vnd.github+json", nil)
-	return raw, err
+	return c.pullForNumber(ctx, repo, summary.Number)
+}
+
+func (c *restClient) pullForNumber(ctx context.Context, repo string, number int) ([]byte, error) {
+	if number <= 0 || strings.Count(repo, "/") != 1 {
+		return nil, &Error{Category: ForgeRequest, Err: fmt.Errorf("invalid GitHub repository or pull request")}
+	}
+	raw, _, status, err := c.request(ctx, http.MethodGet, fmt.Sprintf("repos/%s/pulls/%d", repo, number), "application/vnd.github+json", nil)
+	if err != nil {
+		if status == http.StatusNotFound {
+			return nil, &Error{Category: ForgeStatus, Err: fmt.Errorf("%w for pull request %d", ErrPullRequestNotFound, number)}
+		}
+		return nil, err
+	}
+	return raw, nil
 }
 
 func mergePayload(ctx context.Context) map[string]any {
@@ -524,6 +537,7 @@ func normalizePull(raw []byte) ([]byte, error) {
 		Body           string `json:"body"`
 		Head           struct {
 			SHA string `json:"sha"`
+			Ref string `json:"ref"`
 		} `json:"head"`
 		Base struct {
 			SHA string `json:"sha"`
@@ -540,7 +554,7 @@ func normalizePull(raw []byte) ([]byte, error) {
 			mergeable = "CONFLICTING"
 		}
 	}
-	return json.Marshal(map[string]any{"number": pull.Number, "url": pull.URL, "state": strings.ToUpper(pull.State), "mergedAt": pull.MergedAt, "mergedBy": strings.TrimSpace(pull.MergedBy.Login), "mergeCommit": strings.TrimSpace(pull.MergeCommitSHA), "mergeable": mergeable, "headRefOid": pull.Head.SHA, "baseRefOid": pull.Base.SHA, "body": pull.Body})
+	return json.Marshal(map[string]any{"number": pull.Number, "url": pull.URL, "state": strings.ToUpper(pull.State), "mergedAt": pull.MergedAt, "mergedBy": strings.TrimSpace(pull.MergedBy.Login), "mergeCommit": strings.TrimSpace(pull.MergeCommitSHA), "mergeable": mergeable, "headRefOid": pull.Head.SHA, "headRefName": pull.Head.Ref, "baseRefOid": pull.Base.SHA, "body": pull.Body})
 }
 
 func normalizeIssues(raw []byte) ([]byte, error) {

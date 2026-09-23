@@ -5879,44 +5879,52 @@ func (m *memory) AttachTaskBranch(ctx context.Context, taskID, branch string) (c
 	}
 	var result core.Task
 	err := m.WithTaskSideEffectLock(ctx, taskID, func(ctx context.Context) error {
-		m.mu.Lock()
-		defer m.mu.Unlock()
-		t, ok := m.tasks[taskID]
-		if !ok {
-			return fmt.Errorf("%w: task %s", ErrNotFound, taskID)
+		m.mu.RLock()
+		task, exists := m.tasks[taskID]
+		m.mu.RUnlock()
+		if !exists {
+			return ErrNotFound
 		}
-		claimed := false
-		for _, order := range m.workOrders {
-			if order.TaskID == taskID && order.State == core.WorkOrderClaimed {
-				claimed = true
-				break
+		return m.WithTaskSideEffectLock(ctx, BranchCloseLockKey(task.Repo, branch), func(ctx context.Context) error {
+			m.mu.Lock()
+			defer m.mu.Unlock()
+			t, ok := m.tasks[taskID]
+			if !ok {
+				return fmt.Errorf("%w: task %s", ErrNotFound, taskID)
 			}
-		}
-		prOpened := false
-		for _, event := range m.events[taskID] {
-			if event.Kind == "pull_request.opened" {
-				prOpened = true
-				break
+			claimed := false
+			for _, order := range m.workOrders {
+				if order.TaskID == taskID && order.State == core.WorkOrderClaimed {
+					claimed = true
+					break
+				}
 			}
-		}
-		occupying := openTaskHoldingBranch(m.tasks, t.Workspace, t.Repo, branch, taskID)
-		if err := EvaluateTaskBranchAttach(t, branch, claimed, prOpened, occupying); err != nil {
-			return err
-		}
-		if t.Branch == branch {
+			prOpened := false
+			for _, event := range m.events[taskID] {
+				if event.Kind == "pull_request.opened" {
+					prOpened = true
+					break
+				}
+			}
+			occupying := openTaskHoldingBranch(m.tasks, t.Workspace, t.Repo, branch, taskID)
+			if err := EvaluateTaskBranchAttach(t, branch, claimed, prOpened, occupying); err != nil {
+				return err
+			}
+			if t.Branch == branch {
+				result = t
+				return nil
+			}
+			actor := ActorFromContext(ctx)
+			if !utf8.ValidString(actor.ID) || !utf8.ValidString(string(actor.Role)) || strings.ContainsRune(actor.ID, '\x00') || strings.ContainsRune(string(actor.Role), '\x00') {
+				return fmt.Errorf("audit actor must be valid UTF-8 without NUL characters")
+			}
+			previous := t.Branch
+			t.Branch = branch
+			m.tasks[taskID] = t
+			m.appendEventLocked(ctx, core.Event{TaskID: taskID, Kind: "task.branch_attached", Payload: core.JSONPayload(map[string]string{"previous": previous, "branch": branch})})
 			result = t
 			return nil
-		}
-		actor := ActorFromContext(ctx)
-		if !utf8.ValidString(actor.ID) || !utf8.ValidString(string(actor.Role)) || strings.ContainsRune(actor.ID, '\x00') || strings.ContainsRune(string(actor.Role), '\x00') {
-			return fmt.Errorf("audit actor must be valid UTF-8 without NUL characters")
-		}
-		previous := t.Branch
-		t.Branch = branch
-		m.tasks[taskID] = t
-		m.appendEventLocked(ctx, core.Event{TaskID: taskID, Kind: "task.branch_attached", Payload: core.JSONPayload(map[string]string{"previous": previous, "branch": branch})})
-		result = t
-		return nil
+		})
 	})
 	return result, err
 }

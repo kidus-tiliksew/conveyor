@@ -1066,6 +1066,27 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 		return err
 	}
 	claimed := delivery.WorkOrder
+	if delivery.Task.ID != "" && item.Task.ID != "" && delivery.Task.ID != item.Task.ID {
+		releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = c.releaseDispatchOrderContext(releaseCtx, credential, item, core.WorkOrderRelease{
+			SessionID: sessionID, Outcome: core.WorkOrderOutcomeReleased,
+			Reason: "claimed task identity mismatch", Cause: core.WorkOrderReleaseCauseSessionExit,
+		})
+		cancel()
+		return fmt.Errorf("claimed task identity %q does not match queued task %q", delivery.Task.ID, item.Task.ID)
+	}
+	if delivery.Task.ID != "" && (item.Task.ID == "" || delivery.Task.ID == item.Task.ID) {
+		item.Task = delivery.Task
+	}
+	if delivery.Task.ID != "" && (strings.TrimSpace(item.Task.ID) == "" || strings.TrimSpace(item.Task.Branch) == "") {
+		releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = c.releaseDispatchOrderContext(releaseCtx, credential, item, core.WorkOrderRelease{
+			SessionID: sessionID, Outcome: core.WorkOrderOutcomeReleased,
+			Reason: "claimed task identity is incomplete", Cause: core.WorkOrderReleaseCauseSessionExit,
+		})
+		cancel()
+		return fmt.Errorf("claimed task identity is incomplete")
+	}
 	activityTail := &boundedTailWriter{limit: workerActivitySnapshotLimit}
 	activityStdoutRenderer := newHarnessTailRenderer(activityTail)
 	activityStderrRenderer := newHarnessTailRenderer(activityTail)

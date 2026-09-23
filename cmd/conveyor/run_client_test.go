@@ -123,3 +123,52 @@ func TestDeliverCheckoutAttemptCheckpointReportsBothRefusals(t *testing.T) {
 		t.Fatalf("paths=%v", *paths)
 	}
 }
+
+func TestClaimDispatchOrderFillsRunTaskFromDirectRead(t *testing.T) {
+	var released bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/tasks/task-1/run-orders/order-1/claim":
+			_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: "order-1", TaskID: "task-1", State: core.WorkOrderClaimed})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/tasks/task-1":
+			_ = json.NewEncoder(w).Encode(core.Task{ID: "task-1", Branch: "conveyor/task-1"})
+		case strings.HasSuffix(r.URL.Path, "/release"):
+			released = true
+			http.Error(w, "unexpected release", http.StatusInternalServerError)
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	c := &client{base: server.URL}
+	item := workerservice.DispatchOrder{Dispatch: "run", Task: core.Task{ID: "task-1"}, Order: core.WorkOrder{ID: "order-1", TaskID: "task-1"}}
+	delivery, err := c.claimDispatchOrderContext(t.Context(), "credential", item, "session", "client")
+	if err != nil || delivery.Task.Branch != "conveyor/task-1" || released {
+		t.Fatalf("delivery=%+v released=%t err=%v", delivery, released, err)
+	}
+}
+
+func TestClaimDispatchOrderReleasesRunClaimWhenTaskReadFails(t *testing.T) {
+	var released bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/tasks/task-1/run-orders/order-1/claim":
+			_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: "order-1", TaskID: "task-1", State: core.WorkOrderClaimed})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/tasks/task-1":
+			http.NotFound(w, r)
+		case strings.HasSuffix(r.URL.Path, "/release"):
+			released = true
+			_ = json.NewEncoder(w).Encode(core.WorkOrder{ID: "order-1"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	c := &client{base: server.URL}
+	item := workerservice.DispatchOrder{Dispatch: "run", Task: core.Task{ID: "task-1"}, Order: core.WorkOrder{ID: "order-1", TaskID: "task-1"}}
+	_, err := c.claimDispatchOrderContext(t.Context(), "credential", item, "session", "client")
+	if err == nil || !strings.Contains(err.Error(), "post-claim task read failed") || !released {
+		t.Fatalf("err=%v released=%t", err, released)
+	}
+}

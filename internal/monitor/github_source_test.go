@@ -13,10 +13,16 @@ import (
 	githubtrigger "github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 )
 
+func resolvePrefixID(_ context.Context, headRef string, _ int) (string, bool, error) {
+	id, ok := strings.CutPrefix(headRef, "conveyor/task-")
+	return id, ok && id != "", nil
+}
+
 func TestGitHubSourceClassifiesLineageFailuresAndOutsideChanges(t *testing.T) {
 	suppressed := 0
 	source := GitHubSource{
 		WorkspaceID: "demo", Repository: "conveyor", GitHubSlug: "acme/conveyor",
+		ResolveTask: resolvePrefixID,
 		ReconcileMerged: func(_ context.Context, id string, pr githubtrigger.PullRequest) (bool, error) {
 			return id == "known" && pr.Number == 1 && pr.HeadSHA == "known-head", nil
 		},
@@ -235,6 +241,7 @@ func TestGitHubSourceFirstParentPathsFailClosed(t *testing.T) {
 func lineagedCheckSource(checks string) GitHubSource {
 	return GitHubSource{
 		WorkspaceID: "demo", Repository: "conveyor", GitHubSlug: "acme/conveyor",
+		ResolveTask: resolvePrefixID,
 		ReconcileMerged: func(_ context.Context, id string, pr githubtrigger.PullRequest) (bool, error) {
 			return id == "known" && pr.Number == 1 && pr.HeadSHA == "known-head", nil
 		},
@@ -301,15 +308,22 @@ func TestRecordedLineageRejectsUnrelatedRepositoryAndUnrecordedHead(t *testing.T
 			"number": 3, "head_sha": "recorded-head",
 		}),
 	}}
-	if RecordedLineage(task, events, "conveyor", "acme/conveyor", "known", 3, "recorded-head") {
+	if RecordedLineage(task, events, "conveyor", "acme/conveyor", "known", task.Branch, 3, "recorded-head") {
 		t.Fatal("unrelated repository task was accepted as Conveyor lineage")
 	}
 	task.Repo, task.GitHub.Repository = "conveyor", "acme/conveyor"
-	if RecordedLineage(task, events, "conveyor", "acme/conveyor", "known", 3, "unrecorded-head") {
+	if RecordedLineage(task, events, "conveyor", "acme/conveyor", "known", task.Branch, 3, "unrecorded-head") {
 		t.Fatal("unrecorded pull-request head was accepted as Conveyor lineage")
 	}
-	if !RecordedLineage(task, events, "conveyor", "acme/conveyor", "known", 3, "recorded-head") {
+	if !RecordedLineage(task, events, "conveyor", "acme/conveyor", "known", task.Branch, 3, "recorded-head") {
 		t.Fatal("recorded repository, pull request, and head were not accepted")
+	}
+	task.Branch = "feature/from-ide"
+	if RecordedLineage(task, events, "conveyor", "acme/conveyor", "known", "conveyor/task-known", 3, "recorded-head") {
+		t.Fatal("retired default name after attach-away was accepted as lineage")
+	}
+	if !RecordedLineage(task, events, "conveyor", "acme/conveyor", "known", "feature/from-ide", 3, "recorded-head") {
+		t.Fatal("custom assigned branch with recorded PR was not accepted")
 	}
 }
 
@@ -317,7 +331,7 @@ func TestGitHubSourceReconcilesApprovedMergeAndKeepsUnapprovedOccurrence(t *test
 	for _, approved := range []bool{true, false} {
 		t.Run(fmt.Sprint(approved), func(t *testing.T) {
 			calls := 0
-			source := GitHubSource{WorkspaceID: "demo", Repository: "repo", GitHubSlug: "org/repo"}
+			source := GitHubSource{WorkspaceID: "demo", Repository: "repo", GitHubSlug: "org/repo", ResolveTask: resolvePrefixID}
 			source.ReconcileMerged = func(_ context.Context, taskID string, pr githubtrigger.PullRequest) (bool, error) {
 				calls++
 				if taskID != "task" || pr.Number != 12 || pr.HeadSHA != "reviewed-head" || pr.MergedBy != "operator" || pr.MergeCommitSHA != "landed" || !pr.Merged {
@@ -354,5 +368,61 @@ func TestGitHubSourceReconcilesApprovedMergeAndKeepsUnapprovedOccurrence(t *test
 				t.Fatalf("unapproved merge observations=%+v", observations)
 			}
 		})
+	}
+}
+
+func TestMatchObservedTaskPrefersRecordedOwnerThenOpenBranch(t *testing.T) {
+	opened := func(number int) []core.Event {
+		return []core.Event{{Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]any{"number": number, "repository": "acme/conveyor"})}}
+	}
+	merged := core.Task{ID: "A", Repo: "conveyor", Branch: "feature/x", State: core.TaskMerged}
+	openHolder := core.Task{ID: "B", Repo: "conveyor", Branch: "feature/x", State: core.TaskRunning}
+	events := map[string][]core.Event{"A": opened(4), "B": nil}
+	id, ok := MatchObservedTask([]core.Task{openHolder, merged}, events, "conveyor", "acme/conveyor", "feature/x", 4)
+	if !ok || id != "A" {
+		t.Fatalf("recorded owner lost to open holder: id=%s ok=%t", id, ok)
+	}
+	openHolder.State = core.TaskRunning
+	events["B"] = opened(4)
+	id, ok = MatchObservedTask([]core.Task{merged, openHolder}, events, "conveyor", "acme/conveyor", "feature/x", 4)
+	if !ok || id != "B" {
+		t.Fatalf("both-recorded did not prefer open B: id=%s ok=%t", id, ok)
+	}
+	closed := core.Task{ID: "A", Repo: "conveyor", Branch: "feature/x", State: core.TaskClosed}
+	id, ok = MatchObservedTask([]core.Task{closed, openHolder}, events, "conveyor", "acme/conveyor", "feature/x", 4)
+	if !ok || id != "B" {
+		t.Fatalf("closed A and open B both recording 4 should resolve B: id=%s ok=%t", id, ok)
+	}
+	otherRepo := core.Task{ID: "C", Repo: "other", Branch: "feature/x", State: core.TaskRunning, GitHub: &core.GitHubLifecycle{Repository: "acme/other"}}
+	id, ok = MatchObservedTask([]core.Task{otherRepo}, map[string][]core.Event{"C": opened(4)}, "conveyor", "acme/conveyor", "feature/x", 4)
+	if ok {
+		t.Fatalf("sibling repository matched: %s", id)
+	}
+}
+
+func TestGitHubSourceResolveTaskErrorAbortsObservations(t *testing.T) {
+	source := GitHubSource{
+		WorkspaceID: "demo", Repository: "conveyor", GitHubSlug: "acme/conveyor",
+		ResolveTask: func(context.Context, string, int) (string, bool, error) {
+			return "", false, fmt.Errorf("list tasks failed")
+		},
+		Run: func(_ context.Context, args ...string) ([]byte, error) {
+			path := strings.Join(args, " ")
+			switch {
+			case strings.Contains(path, "/commits -f"):
+				return []byte(`[{"sha":"sha","html_url":"https://example/sha","commit":{"message":"merge","committer":{"date":"2026-07-28T10:00:00Z"}}}]`), nil
+			case strings.Contains(path, "/pulls"):
+				return []byte(`[{"number":4,"html_url":"https://example/pr/4","merged_at":"2026-07-28T09:00:00Z","head":{"ref":"feature/x","sha":"head"}}]`), nil
+			default:
+				return nil, fmt.Errorf("unexpected args %v", args)
+			}
+		},
+	}
+	observations, err := source.Observations(context.Background(), time.Now().Add(-time.Hour))
+	if err == nil || !strings.Contains(err.Error(), "list tasks failed") {
+		t.Fatalf("err=%v observations=%+v", err, observations)
+	}
+	if observations != nil {
+		t.Fatalf("emitted observations after resolve error: %+v", observations)
 	}
 }

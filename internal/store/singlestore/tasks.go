@@ -373,40 +373,46 @@ func (s *Store) AttachTaskBranch(ctx context.Context, taskID, branch string) (co
 	}
 	var result core.Task
 	err := s.WithTaskSideEffectLock(ctx, taskID, func(ctx context.Context) error {
-		return s.taskTx(ctx, taskID, func(tx *sql.Tx) error {
-			var err error
-			result, err = getTaskRow(ctx, tx, taskID)
-			if err != nil {
-				return err
-			}
-			ws := documentWorkspace(ctx)
-			var claimed, prOpened bool
-			if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM work_orders WHERE workspace_id=? AND task_id=? AND state='claimed'), EXISTS(SELECT 1 FROM events WHERE workspace_id=? AND task_id=? AND kind='pull_request.opened')`, ws, taskID, ws, taskID).Scan(&claimed, &prOpened); err != nil {
-				return err
-			}
-			if err := lockKey(ctx, tx, "task-open-branch:"+ws+":"+result.Repo+":"+branch); err != nil {
-				return err
-			}
-			var occupant string
-			err = tx.QueryRowContext(ctx, `SELECT id FROM tasks WHERE workspace_id=? AND repo_name=? AND branch=? AND state NOT IN ('merged','closed') AND id<>? LIMIT 1`, ws, result.Repo, branch, taskID).Scan(&occupant)
-			if err != nil && !errors.Is(err, sql.ErrNoRows) {
-				return err
-			}
-			if errors.Is(err, sql.ErrNoRows) {
-				occupant = ""
-			}
-			if err := store.EvaluateTaskBranchAttach(result, branch, claimed, prOpened, occupant); err != nil {
-				return err
-			}
-			if result.Branch == branch {
-				return nil
-			}
-			if err = taskWrite(ctx, tx, taskID, map[string]any{"branch": branch}); err != nil {
-				return err
-			}
-			previous := result.Branch
-			result.Branch = branch
-			return taskEvent(ctx, tx, core.Event{TaskID: taskID, Kind: "task.branch_attached", Payload: core.JSONPayload(map[string]string{"previous": previous, "branch": branch})})
+		task, err := s.GetTask(ctx, taskID)
+		if err != nil {
+			return err
+		}
+		return s.WithTaskSideEffectLock(ctx, store.BranchCloseLockKey(task.Repo, branch), func(ctx context.Context) error {
+			return s.taskTx(ctx, taskID, func(tx *sql.Tx) error {
+				var err error
+				result, err = getTaskRow(ctx, tx, taskID)
+				if err != nil {
+					return err
+				}
+				ws := documentWorkspace(ctx)
+				var claimed, prOpened bool
+				if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM work_orders WHERE workspace_id=? AND task_id=? AND state='claimed'), EXISTS(SELECT 1 FROM events WHERE workspace_id=? AND task_id=? AND kind='pull_request.opened')`, ws, taskID, ws, taskID).Scan(&claimed, &prOpened); err != nil {
+					return err
+				}
+				if err := lockKey(ctx, tx, "task-open-branch:"+ws+":"+result.Repo+":"+branch); err != nil {
+					return err
+				}
+				var occupant string
+				err = tx.QueryRowContext(ctx, `SELECT id FROM tasks WHERE workspace_id=? AND repo_name=? AND branch=? AND state NOT IN ('merged','closed') AND id<>? LIMIT 1`, ws, result.Repo, branch, taskID).Scan(&occupant)
+				if err != nil && !errors.Is(err, sql.ErrNoRows) {
+					return err
+				}
+				if errors.Is(err, sql.ErrNoRows) {
+					occupant = ""
+				}
+				if err := store.EvaluateTaskBranchAttach(result, branch, claimed, prOpened, occupant); err != nil {
+					return err
+				}
+				if result.Branch == branch {
+					return nil
+				}
+				if err = taskWrite(ctx, tx, taskID, map[string]any{"branch": branch}); err != nil {
+					return err
+				}
+				previous := result.Branch
+				result.Branch = branch
+				return taskEvent(ctx, tx, core.Event{TaskID: taskID, Kind: "task.branch_attached", Payload: core.JSONPayload(map[string]string{"previous": previous, "branch": branch})})
+			})
 		})
 	})
 	return result, err

@@ -48,6 +48,7 @@ var (
 	ErrPullRequestNotFound        = errors.New("pull request not found")
 	ErrIssueReconciliationPending = errors.New("GitHub issue reconciliation pending")
 	ErrAuthenticatedIdentityRead  = errors.New("authenticated forge identity read failed")
+	ErrMutationUncertain          = errors.New("forge mutation outcome is uncertain")
 )
 
 // ValidateTokenIdentity validates a candidate with an authenticated REST read.
@@ -83,6 +84,7 @@ const (
 // failure detail and errors.Is/errors.As behavior.
 type Error struct {
 	Category ForgeErrorCategory
+	status   int // REST status, used only to distinguish definitive PATCH refusal.
 	Err      error
 }
 
@@ -306,6 +308,7 @@ type PullRequest struct {
 	Mergeable      string
 	Merged         bool
 	HeadSHA        string
+	HeadRef        string
 	BaseSHA        string
 }
 
@@ -357,13 +360,48 @@ func PullRequestForBranch(ctx context.Context, repo, branch string) (PullRequest
 }
 
 func pullRequestForBranch(ctx context.Context, repo, branch string, run ghRunner) (PullRequest, error) {
-	out, err := run(ctx, "pr", "view", branch, "--repo", repo, "--json", "number,url,state,mergedAt,mergeable,headRefOid,baseRefOid,mergedBy,mergeCommit")
+	out, err := run(ctx, "pr", "view", branch, "--repo", repo, "--json", "number,url,state,mergedAt,mergeable,headRefOid,headRefName,baseRefOid,mergedBy,mergeCommit")
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "no pull requests found") || strings.Contains(strings.ToLower(err.Error()), "could not resolve to a pullrequest") {
 			return PullRequest{}, &Error{Category: ForgeStatus, Err: fmt.Errorf("%w for branch %s: %v", ErrPullRequestNotFound, branch, err)}
 		}
 		return PullRequest{}, fmt.Errorf("view pull request for branch %s: %w", branch, forgeCallError(err))
 	}
+	pr, err := decodeViewedPullRequest(out)
+	if err != nil {
+		return PullRequest{}, forgeResponseError("parse pull request for branch %s", branch)
+	}
+	return pr, nil
+}
+
+// PullRequestForNumber resolves one pull request by its recorded GitHub number.
+func PullRequestForNumber(ctx context.Context, repo string, number int) (PullRequest, error) {
+	return pullRequestForNumber(ctx, repo, number, gh)
+}
+
+func pullRequestForNumber(ctx context.Context, repo string, number int, run ghRunner) (PullRequest, error) {
+	if number <= 0 || strings.Count(repo, "/") != 1 {
+		return PullRequest{}, &Error{Category: ForgeRequest, Err: fmt.Errorf("invalid GitHub repository or pull request")}
+	}
+	out, err := run(ctx, "api", fmt.Sprintf("repos/%s/pulls/%d", repo, number))
+	if err != nil {
+		if pullRequestMissing(err) {
+			return PullRequest{}, &Error{Category: ForgeStatus, Err: fmt.Errorf("%w for pull request %d", ErrPullRequestNotFound, number)}
+		}
+		return PullRequest{}, fmt.Errorf("view pull request %d: %w", number, forgeCallError(err))
+	}
+	normalized, err := normalizePull(out)
+	if err != nil {
+		return PullRequest{}, err
+	}
+	pr, err := decodeViewedPullRequest(normalized)
+	if err != nil {
+		return PullRequest{}, forgeResponseError("parse pull request %d", number)
+	}
+	return pr, nil
+}
+
+func decodeViewedPullRequest(out []byte) (PullRequest, error) {
 	var view struct {
 		MergedBy       string     `json:"mergedBy"`
 		MergeCommitSHA string     `json:"mergeCommit"`
@@ -373,17 +411,30 @@ func pullRequestForBranch(ctx context.Context, repo, branch string, run ghRunner
 		MergedAt       *time.Time `json:"mergedAt"`
 		Mergeable      string     `json:"mergeable"`
 		HeadSHA        string     `json:"headRefOid"`
+		HeadRef        string     `json:"headRefName"`
 		BaseSHA        string     `json:"baseRefOid"`
 	}
 	if err := json.Unmarshal(out, &view); err != nil || view.Number == 0 || view.URL == "" || view.State == "" || view.Mergeable == "" || view.HeadSHA == "" {
-		return PullRequest{}, forgeResponseError("parse pull request for branch %s", branch)
+		return PullRequest{}, fmt.Errorf("incomplete pull request view")
 	}
 	return PullRequest{
 		MergedBy: strings.TrimSpace(view.MergedBy), MergeCommitSHA: strings.TrimSpace(view.MergeCommitSHA),
 		Number: view.Number, URL: view.URL, State: strings.ToLower(view.State),
 		Mergeable: strings.ToUpper(view.Mergeable), Merged: view.MergedAt != nil,
-		HeadSHA: strings.TrimSpace(view.HeadSHA), BaseSHA: strings.TrimSpace(view.BaseSHA),
+		HeadSHA: strings.TrimSpace(view.HeadSHA), HeadRef: strings.TrimSpace(view.HeadRef),
+		BaseSHA: strings.TrimSpace(view.BaseSHA),
 	}, nil
+}
+
+func pullRequestMissing(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, ErrPullRequestNotFound) {
+		return true
+	}
+	detail := strings.ToLower(err.Error())
+	return strings.Contains(detail, "status 404") || strings.Contains(detail, "http 404")
 }
 
 // MergePullRequest asks GitHub for a normal merge commit. Branch protections
@@ -1211,16 +1262,41 @@ func closePullRequest(ctx context.Context, repo string, number int, comment stri
 	}
 	_, err = run(ctx, "api", "--method", "PATCH", endpoint, "-f", "state=closed")
 	if err != nil {
-		return forgeCallError(err)
+		return closePatchError(err)
 	}
 	state, merged, err = read()
 	if err != nil {
-		return err
+		return mutationUncertainError(err)
 	}
 	if merged || state == "closed" {
 		return nil
 	}
 	return forgeResponseError("GitHub did not confirm pull request closure")
+}
+
+// closeMutationUncertain is narrow PATCH-phase evidence, not a forge category.
+// Pre-PATCH errors and validated-open results return their ordinary errors.
+// AC-3.5 (component-git-delivery): only this evidence permits reconciliation.
+type closeMutationUncertain struct{ cause error }
+
+func (e *closeMutationUncertain) Error() string        { return e.cause.Error() }
+func (e *closeMutationUncertain) Unwrap() error        { return e.cause }
+func (e *closeMutationUncertain) Is(target error) bool { return target == ErrMutationUncertain }
+
+func mutationUncertainError(err error) error {
+	return &closeMutationUncertain{cause: forgeCallError(err)}
+}
+
+func closePatchError(err error) error {
+	categorized := forgeCallError(err)
+	var response *Error
+	if errors.As(categorized, &response) && response.status >= 400 && response.status < 500 && response.status != 408 {
+		return categorized
+	}
+	if ErrorCategory(categorized) == ForgePermission || ErrorCategory(categorized) == ForgeRateLimited {
+		return categorized
+	}
+	return mutationUncertainError(categorized)
 }
 
 // VerificationRegionMarkers identifies only the VK-9 region owned by this task.

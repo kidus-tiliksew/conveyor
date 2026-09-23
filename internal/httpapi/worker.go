@@ -225,6 +225,11 @@ func (s *Server) claimWorkerOrder(w http.ResponseWriter, r *http.Request) {
 	}
 	delivery, err := s.Workers.ClaimForWorkerDelivery(r.Context(), worker, chi.URLParam(r, "id"), core.WorkOrderClaim{SessionID: request.SessionID, ClientToken: request.ClientToken, Lease: time.Duration(request.LeaseSeconds) * time.Second})
 	if err != nil {
+		var compensation *workerservice.ClaimDeliveryCompensationError
+		if errors.As(err, &compensation) {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}

@@ -4,8 +4,18 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"github.com/go-chi/chi/v5"
+	"github.com/kidus-tiliksew/conveyor/internal/config"
+	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
+	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	"github.com/kidus-tiliksew/conveyor/internal/testimage"
+	githubtrigger "github.com/kidus-tiliksew/conveyor/internal/trigger/github"
+	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
+	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -13,16 +23,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/go-chi/chi/v5"
-	"github.com/kidus-tiliksew/conveyor/internal/config"
-	"github.com/kidus-tiliksew/conveyor/internal/core"
-	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
-	"github.com/kidus-tiliksew/conveyor/internal/store"
-	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
-	githubtrigger "github.com/kidus-tiliksew/conveyor/internal/trigger/github"
-	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
-	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 )
 
 func workerEvidenceRequest(t *testing.T, credential, orderID, session, token, contentType string, content []byte, extra map[string]string) *http.Request {
@@ -192,7 +192,7 @@ func TestWorkerHTTPExchangesNeverReturnStoredToken(t *testing.T) {
 	const storedToken = "owner-forge-secret"
 	workers := &workerservice.Service{Store: st, WorkOrders: workOrders, ConfigProvider: provider, Now: func() time.Time { return now }}
 	worker := core.Worker{ID: "worker-a", Workspace: "demo", OwnerUserID: "usr-owner", LeaseExpiresAt: now.Add(time.Minute), Probes: []core.HarnessProbe{{Harness: "codex", Healthy: true}}}
-	task := core.Task{ID: "worker-token-delivery", Workspace: "demo", Repo: "conveyor", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: now}
+	task := core.Task{ID: "worker-token-delivery", Workspace: "demo", Repo: "conveyor", Branch: "conveyor/worker-token-delivery", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: now}
 	job := core.Job{ID: task.ID + "-implement-1", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
 	if err := st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
@@ -219,7 +219,7 @@ func TestWorkerHTTPExchangesNeverReturnStoredToken(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &delivery); err != nil {
 		t.Fatal(err)
 	}
-	if delivery.WorkOrder.ID != job.ID || delivery.WorkOrder.WorkerID != worker.ID {
+	if delivery.WorkOrder.ID != job.ID || delivery.WorkOrder.WorkerID != worker.ID || delivery.Task.ID != task.ID || delivery.Task.Branch != task.Branch {
 		t.Fatalf("delivery=%+v", delivery)
 	}
 	assertClean := func(kind string, response *httptest.ResponseRecorder) {
@@ -248,6 +248,54 @@ func TestWorkerHTTPExchangesNeverReturnStoredToken(t *testing.T) {
 		assertClean(exchange.name, response)
 	}
 
+}
+
+type failingSecondGetTaskStore struct {
+	store.Store
+	n int
+}
+
+func (s *failingSecondGetTaskStore) GetTask(ctx context.Context, id string) (core.Task, error) {
+	s.n++
+	if s.n > 1 {
+		return core.Task{}, errors.New("task lookup failed")
+	}
+	return s.Store.GetTask(ctx, id)
+}
+
+func TestClaimWorkerOrderCompensationIsNotConflict(t *testing.T) {
+	now := time.Now().UTC()
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	cfg := &config.Config{Workspace: "demo", Routing: config.Routing{Stages: map[string]config.StageRoute{
+		"implement": {Execution: config.ExecutionMCP, Timeout: time.Hour},
+	}}}
+	provider := func(context.Context) (*config.Config, error) { return cfg, nil }
+	workOrders := &workorder.Service{Store: st, ConfigProvider: provider}
+	workers := &workerservice.Service{Store: &failingSecondGetTaskStore{Store: st}, WorkOrders: workOrders, ConfigProvider: provider, Now: func() time.Time { return now }}
+	worker := core.Worker{ID: "worker-a", Workspace: "demo", OwnerUserID: "usr-owner", LeaseExpiresAt: now.Add(time.Minute), Probes: []core.HarnessProbe{{Harness: "codex", Healthy: true}}}
+	task := core.Task{ID: "worker-compensation", Workspace: "demo", Repo: "conveyor", Branch: "conveyor/worker-compensation", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: now}
+	job := core.Job{ID: task.ID + "-implement-1", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, Claimable: true, QueueEnteredAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(st)
+	server.Workers = workers
+	route := chi.NewRouteContext()
+	route.URLParams.Add("id", job.ID)
+	request := httptest.NewRequest(http.MethodPost, "/v1/worker/work-orders/"+job.ID+"/claim", strings.NewReader(`{"session_id":"delivery-session","client_token":"delivery-client","lease_seconds":60}`))
+	request = request.WithContext(context.WithValue(context.WithValue(ctx, chi.RouteCtxKey, route), workerContextKey{}, worker))
+	response := httptest.NewRecorder()
+	server.claimWorkerOrder(response, request)
+	if response.Code != http.StatusInternalServerError || !strings.Contains(response.Body.String(), "post-claim task read failed") {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
 }
 
 func TestWorkerRenewHTTPReportsSameSessionCheckpointRelease(t *testing.T) {

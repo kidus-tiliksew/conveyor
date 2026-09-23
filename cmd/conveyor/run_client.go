@@ -169,7 +169,26 @@ func (c *client) checkpointTaskRunOrderAttemptByIDContext(ctx context.Context, c
 func (c *client) claimDispatchOrderContext(ctx context.Context, credential string, item workerservice.DispatchOrder, session, clientToken string) (workerservice.ClaimDelivery, error) {
 	if item.Dispatch == "run" {
 		order, err := c.claimTaskRunOrderContext(ctx, credential, item, session, clientToken)
-		return workerservice.ClaimDelivery{WorkOrder: order}, err
+		if err != nil {
+			return workerservice.ClaimDelivery{}, err
+		}
+		taskID := strings.TrimSpace(order.TaskID)
+		if taskID == "" {
+			taskID = strings.TrimSpace(item.Task.ID)
+		}
+		task, err := c.getTask(taskID)
+		if err != nil || strings.TrimSpace(task.ID) == "" || strings.TrimSpace(task.Branch) == "" {
+			if err == nil {
+				err = fmt.Errorf("claimed task identity is incomplete")
+			}
+			_ = c.releaseTaskRunOrderContext(ctx, credential, item, core.WorkOrderRelease{
+				SessionID: session, Outcome: core.WorkOrderOutcomeReleased,
+				Reason: "post-claim task read failed", Cause: core.WorkOrderReleaseCauseSessionExit,
+				FailureDetail: err.Error(),
+			})
+			return workerservice.ClaimDelivery{}, fmt.Errorf("post-claim task read failed: %w", err)
+		}
+		return workerservice.ClaimDelivery{WorkOrder: order, Task: task}, nil
 	}
 	return c.claimWorkerOrderContext(ctx, credential, item.Order.ID, session, clientToken)
 }

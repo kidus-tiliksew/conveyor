@@ -305,7 +305,7 @@ func TestWorkerClaimDeliveryWithoutStoredToken(t *testing.T) {
 
 	createOrder := func(taskID string) core.WorkOrder {
 		t.Helper()
-		task := core.Task{ID: taskID, Workspace: "demo", Repo: "conveyor", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: now}
+		task := core.Task{ID: taskID, Workspace: "demo", Repo: "conveyor", Branch: "conveyor/" + taskID, State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: now}
 		if err := st.CreateTask(ctx, task); err != nil {
 			t.Fatal(err)
 		}
@@ -325,7 +325,7 @@ func TestWorkerClaimDeliveryWithoutStoredToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if delivery.WorkOrder.WorkerID != worker.ID {
+	if delivery.WorkOrder.WorkerID != worker.ID || delivery.Task.ID != first.TaskID || delivery.Task.Branch != "conveyor/"+first.TaskID {
 		t.Fatalf("delivery=%+v", delivery)
 	}
 	queuedJSON, err := json.Marshal(DispatchOrder{Order: first, Task: core.Task{ID: first.TaskID}})
@@ -340,6 +340,49 @@ func TestWorkerClaimDeliveryWithoutStoredToken(t *testing.T) {
 		t.Fatalf("forge token escaped secret-free projections: queued=%s order=%s", queuedJSON, orderJSON)
 	}
 
+}
+
+type failingSecondGetTaskStore struct {
+	store.Store
+	n int
+}
+
+func (s *failingSecondGetTaskStore) GetTask(ctx context.Context, id string) (core.Task, error) {
+	s.n++
+	if s.n > 1 {
+		return core.Task{}, errors.New("task lookup failed")
+	}
+	return s.Store.GetTask(ctx, id)
+}
+
+func TestWorkerClaimDeliveryReleasesWhenTaskReadFails(t *testing.T) {
+	now := time.Now().UTC()
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	cfg := workerTestConfig()
+	workOrders := &workorder.Service{Store: st, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
+	service := &Service{Store: &failingSecondGetTaskStore{Store: st}, WorkOrders: workOrders, ConfigProvider: workOrders.ConfigProvider, Now: func() time.Time { return now }}
+	worker := core.Worker{ID: "worker-owner", Workspace: "demo", OwnerUserID: "usr-owner", LeaseExpiresAt: now.Add(time.Minute), Probes: []core.HarnessProbe{{Harness: "codex", Healthy: true}}}
+	task := core.Task{ID: "owner-token-fail", Workspace: "demo", Repo: "conveyor", Branch: "conveyor/owner-token-fail", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: now}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: task.ID + "-implement-1", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, Claimable: true, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := service.ClaimForWorkerDelivery(ctx, worker, job.ID, core.WorkOrderClaim{SessionID: "fail-session", ClientToken: "fail-client"})
+	var compensation *ClaimDeliveryCompensationError
+	if err == nil || !errors.As(err, &compensation) {
+		t.Fatalf("err=%v", err)
+	}
+	order, err := st.GetWorkOrder(ctx, job.ID)
+	if err != nil || order.State == core.WorkOrderClaimed {
+		t.Fatalf("order=%+v err=%v", order, err)
+	}
 }
 
 func TestAttemptCheckpointIsAttemptScopedAndIdempotent(t *testing.T) {

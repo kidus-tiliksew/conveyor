@@ -1,7 +1,10 @@
 package storetest
 
 import (
+	"context"
+
 	"encoding/json"
+	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"reflect"
 	"testing"
 	"time"
@@ -14,6 +17,95 @@ import (
 )
 
 func runPullRequestClose(t *testing.T, factory Factory) {
+	t.Run("attach_contends_with_branch_close", func(t *testing.T) {
+		x := factory.fresh(t, []config.Repo{{Name: "local-config", GitHub: "org/different-slug", URL: "https://github.com/org/different-slug", Base: "main"}})
+		st, ctx := x.Backend, x.Context
+		old := core.Task{ID: core.NewTaskID(), Workspace: x.Workspace, Title: "retired", Repo: "local-config", BaseBranch: "main", Branch: "feature/shared", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: time.Now().UTC()}
+		requireOK(t, st.CreateTask(ctx, old))
+		_, err := taskops.New(st).StartOver(ctx, core.TaskStartOverRequest{TaskID: old.ID, RequestID: "restart", Reason: "replace"})
+		requireOK(t, err)
+		other := core.Task{ID: core.NewTaskID(), Workspace: x.Workspace, Title: "new holder", Repo: old.Repo, BaseBranch: "main", Branch: "feature/other", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: time.Now().UTC()}
+		requireOK(t, st.CreateTask(ctx, other))
+		locked, release := make(chan struct{}), make(chan struct{})
+		done := make(chan error, 1)
+		go func() {
+			done <- st.WithTaskSideEffectLock(ctx, old.ID, func(ctx context.Context) error {
+				return st.WithTaskSideEffectLock(ctx, store.BranchCloseLockKey(old.Repo, old.Branch), func(ctx context.Context) error {
+					close(locked)
+					<-release
+					return nil
+				})
+			})
+		}()
+		select {
+		case <-locked:
+		case <-time.After(5 * time.Second):
+			close(release)
+			t.Fatal("nested branch lock deadlocked")
+		}
+		attached := make(chan error, 1)
+		go func() { _, err := st.AttachTaskBranch(ctx, other.ID, old.Branch); attached <- err }()
+		select {
+		case err := <-attached:
+			close(release)
+			t.Fatalf("attach bypassed close lock: %v", err)
+		case <-time.After(150 * time.Millisecond):
+		}
+		// An attach waiting for the branch key cannot monopolize memory's global
+		// mutex. Ordinary reads must continue during the external side effect.
+		read := make(chan error, 1)
+		go func() { _, err := st.GetTask(ctx, old.ID); read <- err }()
+		select {
+		case err := <-read:
+			requireOK(t, err)
+		case <-time.After(5 * time.Second):
+			close(release)
+			t.Fatal("waiting attach blocked task reads")
+		}
+		close(release)
+		select {
+		case err := <-done:
+			requireOK(t, err)
+		case <-time.After(5 * time.Second):
+			t.Fatal("close lock did not release")
+		}
+		select {
+		case err := <-attached:
+			requireOK(t, err)
+		case <-time.After(5 * time.Second):
+			t.Fatal("attach did not resume")
+		}
+		current, err := st.GetTask(ctx, other.ID)
+		requireOK(t, err)
+		if current.Branch != old.Branch {
+			t.Fatalf("assignment=%s", current.Branch)
+		}
+		t.Logf("attach/close shared-key contention executed; durable=%v config=%s forge=%s", st.IsDurable(), old.Repo, x.Config.Repos[0].GitHub)
+	})
+	t.Run("coherent_recorded_identity", func(t *testing.T) {
+		x := factory.fresh(t, nil)
+		st, ctx := x.Backend, x.Context
+		old := core.Task{ID: core.NewTaskID(), Workspace: x.Workspace, Title: "recorded", Repo: "conveyor", BaseBranch: "main", Branch: "feature/recorded", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: time.Now().UTC()}
+		requireOK(t, st.CreateTask(ctx, old))
+		requireOK(t, st.AppendEvent(ctx, core.Event{TaskID: old.ID, Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]any{"number": 42, "url": "https://github.com/acme/app/pull/42"})}))
+		result, err := taskops.New(st).StartOver(ctx, core.TaskStartOverRequest{TaskID: old.ID, RequestID: "restart", Reason: "replace"})
+		requireOK(t, err)
+		successor, err := st.GetTask(ctx, result.Successor.ID)
+		requireOK(t, err)
+		p := core.PullRequestClose{WorkspaceID: x.Workspace, TaskID: old.ID, Repository: "acme/app", Branch: old.Branch, SuccessorID: successor.ID, SuccessorBranch: successor.Branch, Reason: "replace", RestartingOperatorID: "operator", ForgeAuthorClass: core.ForgeAuthorWorkspace, State: "queued", Number: 42, URL: "https://github.com/acme/app/pull/42"}
+		bad := p
+		bad.Number = 0
+		if err := st.QueuePullRequestClose(ctx, bad); err == nil {
+			t.Fatal("URL without number accepted")
+		}
+		requireOK(t, st.QueuePullRequestClose(ctx, p))
+		got, ok, err := st.GetPullRequestClose(ctx, old.ID)
+		requireOK(t, err)
+		if !ok || got.Number != 42 || got.URL != p.URL {
+			t.Fatalf("recorded intent=%+v", got)
+		}
+	})
+
 	for _, outcome := range []string{"closed", "failed", "skipped"} {
 		t.Run(outcome, func(t *testing.T) {
 			x := factory.fresh(t, nil)
@@ -41,6 +133,11 @@ func runPullRequestClose(t *testing.T, factory Factory) {
 				t.Fatal("failed intent persisted")
 			}
 
+			numberOnly := intent
+			numberOnly.Number = 7
+			if err = st.QueuePullRequestClose(ctx, numberOnly); err == nil {
+				t.Fatal("partial identity accepted")
+			}
 			for range 2 {
 				if err = st.QueuePullRequestClose(ctx, intent); err != nil {
 					t.Fatal(err)

@@ -104,6 +104,28 @@ type DispatchOrder struct {
 // worker host (req-260821-830dbf REQ-6/AC-6.1, DEC-33; component-work-orders).
 type ClaimDelivery struct {
 	WorkOrder core.WorkOrder `json:"work_order"`
+	Task      core.Task      `json:"task"`
+}
+
+// ClaimDeliveryCompensationError is returned after a successful claim whose
+// post-claim task read failed and the exact claim was released.
+type ClaimDeliveryCompensationError struct {
+	OrderID string
+	Err     error
+}
+
+func (e *ClaimDeliveryCompensationError) Error() string {
+	if e == nil || e.Err == nil {
+		return "post-claim task read failed after releasing the claim"
+	}
+	return "post-claim task read failed after releasing claim " + e.OrderID + ": " + e.Err.Error()
+}
+
+func (e *ClaimDeliveryCompensationError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
 }
 
 // TaskRunProposal is the task-scoped, read-only authority projection shown by
@@ -674,7 +696,22 @@ func (s *Service) ClaimForWorker(ctx context.Context, worker core.Worker, id str
 // resolving its value for outbound use (req-260821-830dbf REQ-2, AC-6.1).
 func (s *Service) ClaimForWorkerDelivery(ctx context.Context, worker core.Worker, id string, claim core.WorkOrderClaim) (ClaimDelivery, error) {
 	order, err := s.ClaimForWorker(ctx, worker, id, claim)
-	return ClaimDelivery{WorkOrder: order}, err
+	if err != nil {
+		return ClaimDelivery{}, err
+	}
+	task, err := s.Store.GetTask(ctx, order.TaskID)
+	if err != nil || strings.TrimSpace(task.ID) == "" || strings.TrimSpace(task.Branch) == "" {
+		if err == nil {
+			err = fmt.Errorf("claimed task identity is incomplete")
+		}
+		_, _ = s.ReleaseClaim(ctx, core.WorkOrderClaimIdentity{WorkerID: worker.ID, ClaimantID: worker.ID, SessionID: claim.SessionID}, order.ID, core.WorkOrderRelease{
+			SessionID: claim.SessionID, Outcome: core.WorkOrderOutcomeReleased,
+			Reason: "post-claim task read failed", Cause: core.WorkOrderReleaseCauseSessionExit,
+			FailureDetail: err.Error(),
+		})
+		return ClaimDelivery{}, &ClaimDeliveryCompensationError{OrderID: order.ID, Err: err}
+	}
+	return ClaimDelivery{WorkOrder: order, Task: task}, nil
 }
 
 func harnessFromSnapshot(snapshot *core.HarnessSnapshot) config.Harness {
