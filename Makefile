@@ -21,7 +21,32 @@ TEST_DATABASE_URL ?= postgres://conveyor:conveyor@127.0.0.1:$(TEST_POSTGRES_PORT
 PLAYWRIGHT_ARGS ?=
 PLAYWRIGHT_INSTALL_ARGS ?=
 PLAYWRIGHT_WORKERS ?= 2
-RUN_WEB_TESTS = cd web && npm run lint && PLAYWRIGHT_WORKERS=$(PLAYWRIGHT_WORKERS) npm run test:e2e -- $(PLAYWRIGHT_ARGS)
+# Repository validation children must not inherit the launching worker's claim,
+# assignment, handoff, or checkout-root metadata. Keep this denylist exact so
+# backend URLs, tool paths, task caches, HOME, PATH, and other validation inputs
+# continue to reach the child process.
+VALIDATION_WORKER_ENV_VARS = \
+	CONVEYOR_ADDR \
+	CONVEYOR_API_TOKEN \
+	CONVEYOR_CLIENT_TOKEN \
+	CONVEYOR_CURRENT_ATTEMPT_ID \
+	CONVEYOR_PREVIOUS_ATTEMPT_ID \
+	CONVEYOR_PREVIOUS_ATTEMPT_REASON \
+	CONVEYOR_PREDECESSOR \
+	CONVEYOR_PREVIOUS_WORK_ORDER_ID \
+	CONVEYOR_SESSION_ID \
+	CONVEYOR_TASK_BASE_BRANCH \
+	CONVEYOR_TASK_BRANCH \
+	CONVEYOR_TASK_ID \
+	CONVEYOR_TASK_REPO \
+	CONVEYOR_TASK_REPO_URL \
+	CONVEYOR_WORKSPACE \
+	CONVEYOR_WORKTREE_ROOT \
+	CONVEYOR_WORK_ORDER_ID \
+	CONVEYOR_WRITER_GENERATION \
+	CONVEYOR_WRITER_PATH
+VALIDATION_CHILD_ENV = env $(foreach name,$(VALIDATION_WORKER_ENV_VARS),-u $(name))
+RUN_WEB_TESTS = cd web && $(VALIDATION_CHILD_ENV) npm run lint && PLAYWRIGHT_WORKERS=$(PLAYWRIGHT_WORKERS) $(VALIDATION_CHILD_ENV) npm run test:e2e -- $(PLAYWRIGHT_ARGS)
 DEV_COMPOSE := docker compose --env-file $(ENV_FILE) -f compose.dev.yaml
 
 .PHONY: all build image test-image release release-archives test-release web-deps web-typecheck ui dashboard-fresh test test-web test-ui test-ui-evidence compose-check test-integration test-integration-ci test-postgres test-db-identity test-db-up test-db-down vet plugin-check fmt fmt-check tidy clean db-up db-down run build-run dev
@@ -30,7 +55,7 @@ all: build
 
 # REQ-7/AC-7.1 (component-verification-strategy): one Make graph shares
 # web-deps and ui across the complete ordinary validation session.
-.PHONY: validate test-validation
+.PHONY: validate test-validation test-validation-environment test-worker-environment
 validate: build vet fmt-check test
 
 # Go vet and the installer compile embedded dashboard files. During the
@@ -41,7 +66,18 @@ vet test-release: ui
 endif
 
 test-validation:
-	PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts -p 'test_validation_evidence.py'
+	PYTHONDONTWRITEBYTECODE=1 $(VALIDATION_CHILD_ENV) python3 -m unittest discover -s scripts -p 'test_validation_evidence.py'
+
+test-validation-environment:
+	@env $(foreach name,$(VALIDATION_WORKER_ENV_VARS),$(name)=polluted) \
+		CONVEYOR_TEST_DATABASE_URL=backend-marker GOCACHE=cache-marker \
+		$(VALIDATION_CHILD_ENV) sh -eu -c 'for name in $(VALIDATION_WORKER_ENV_VARS); do \
+			if env | grep -q "^$${name}="; then echo "validation child inherited $$name" >&2; exit 1; fi; \
+		done; test "$$CONVEYOR_TEST_DATABASE_URL" = backend-marker; test "$$GOCACHE" = cache-marker'
+
+test-worker-environment:
+	CONVEYOR_TEST_DATABASE_URL= CONVEYOR_TEST_SINGLESTORE_URL= $(VALIDATION_CHILD_ENV) go test ./cmd/conveyor \
+		-run '^(TestCheckoutCmdSkipsAttachForWorkerAssignment|TestIsolatedChildEnvironmentReplacesLaunchIdentity)$$' -count=1
 
 build: conveyor-cli
 	go build $(LDFLAGS) -o $(BIN)/conveyord ./cmd/conveyord
@@ -59,8 +95,8 @@ browser-runtime: web-deps
 	cd web && npx playwright install $(PLAYWRIGHT_INSTALL_ARGS) chromium
 
 test-vk10: vk10-runtime
-	CONVEYOR_TEST_DATABASE_URL= CONVEYOR_TEST_SINGLESTORE_URL= go test -v ./internal/verification -run '^TestVK10Scenario$$' -count=1
-	CONVEYOR_TEST_DATABASE_URL= CONVEYOR_TEST_SINGLESTORE_URL= go test ./cmd/conveyor ./internal/dispatch ./internal/store -run 'TestKitRunner|TestKitVerifyOrdinary|TestVerificationDispatchReviewBinding|TestPolicyHandoffVerificationBinding|TestMemoryConformance/WorkOrders/VerifyPolicy' -count=1
+	CONVEYOR_TEST_DATABASE_URL= CONVEYOR_TEST_SINGLESTORE_URL= $(VALIDATION_CHILD_ENV) go test -v ./internal/verification -run '^TestVK10Scenario$$' -count=1
+	CONVEYOR_TEST_DATABASE_URL= CONVEYOR_TEST_SINGLESTORE_URL= $(VALIDATION_CHILD_ENV) go test ./cmd/conveyor ./internal/dispatch ./internal/store -run 'TestKitRunner|TestKitVerifyOrdinary|TestVerificationDispatchReviewBinding|TestPolicyHandoffVerificationBinding|TestMemoryConformance/WorkOrders/VerifyPolicy' -count=1
 
 image:
 	docker build --build-arg VERSION="$(VERSION)" --tag "$(IMAGE)" .
@@ -100,7 +136,7 @@ release-archives:
 		if command -v sha256sum >/dev/null 2>&1; then sha256sum *.tar.gz > checksums.txt; else shasum -a 256 *.tar.gz > checksums.txt; fi
 
 test-release:
-	sh scripts/test-install.sh
+	$(VALIDATION_CHILD_ENV) sh scripts/test-install.sh
 
 web-deps:
 	cd web && npm ci
@@ -114,29 +150,29 @@ ui: web-deps
 dashboard-fresh: ui
 	git diff --exit-code -- internal/httpapi/dashboard
 
-test: compose-check dashboard-fresh test-release test-validation vk10-runtime
-	CONVEYOR_TEST_DATABASE_URL= CONVEYOR_TEST_SINGLESTORE_URL= go test ./...
+test: compose-check dashboard-fresh test-release test-validation test-validation-environment vk10-runtime
+	CONVEYOR_TEST_DATABASE_URL= CONVEYOR_TEST_SINGLESTORE_URL= $(VALIDATION_CHILD_ENV) go test ./...
 	$(RUN_WEB_TESTS)
 
 test-web: web-typecheck browser-runtime
 	$(RUN_WEB_TESTS)
 
 test-ui: ui
-	cd web && PLAYWRIGHT_WORKERS=$(PLAYWRIGHT_WORKERS) npm run test:e2e -- $(PLAYWRIGHT_ARGS)
+	cd web && PLAYWRIGHT_WORKERS=$(PLAYWRIGHT_WORKERS) $(VALIDATION_CHILD_ENV) npm run test:e2e -- $(PLAYWRIGHT_ARGS)
 
 test-ui-evidence: ui
-	cd web && PLAYWRIGHT_WORKERS=$(PLAYWRIGHT_WORKERS) npm run test:e2e -- tests/task-full.spec.ts --grep "review card renders authorized verification evidence"
+	cd web && PLAYWRIGHT_WORKERS=$(PLAYWRIGHT_WORKERS) $(VALIDATION_CHILD_ENV) npm run test:e2e -- tests/task-full.spec.ts --grep "review card renders authorized verification evidence"
 
 compose-check:
-	python3 scripts/validate_compose_isolation.py
+	$(VALIDATION_CHILD_ENV) python3 scripts/validate_compose_isolation.py
 
 test-integration: compose-check vk10-runtime test-db-up
 	@trap '$(MAKE) test-db-down' EXIT; \
-		CONVEYOR_TEST_DATABASE_URL='$(TEST_DATABASE_URL)' go test -v -p=1 ./cmd/conveyor ./cmd/conveyord ./internal/store/postgres ./internal/dispatch -count=1 -timeout=5m
+		CONVEYOR_TEST_DATABASE_URL='$(TEST_DATABASE_URL)' $(VALIDATION_CHILD_ENV) go test -v -p=1 ./cmd/conveyor ./cmd/conveyord ./internal/store/postgres ./internal/dispatch -count=1 -timeout=5m
 
 test-integration-ci: compose-check vk10-runtime
 	@test -n "$(CONVEYOR_TEST_DATABASE_URL)" || (echo "CONVEYOR_TEST_DATABASE_URL is required" >&2; exit 1)
-	CONVEYOR_TEST_DATABASE_URL='$(CONVEYOR_TEST_DATABASE_URL)' go test -v -p=1 ./cmd/conveyor ./cmd/conveyord ./internal/store/postgres ./internal/dispatch -count=1 -timeout=5m
+	CONVEYOR_TEST_DATABASE_URL='$(CONVEYOR_TEST_DATABASE_URL)' $(VALIDATION_CHILD_ENV) go test -v -p=1 ./cmd/conveyor ./cmd/conveyord ./internal/store/postgres ./internal/dispatch -count=1 -timeout=5m
 
 # Keep the accepted work-order validation command explicit while sharing the
 # integration suite's isolated Postgres lifecycle.
@@ -152,16 +188,16 @@ test-db-down:
 	CONVEYOR_TEST_POSTGRES_PORT=$(TEST_POSTGRES_PORT) docker compose -p $(TEST_COMPOSE_PROJECT) --profile test rm -s -f postgres-test
 
 vet:
-	go vet ./...
+	$(VALIDATION_CHILD_ENV) go vet ./...
 
 plugin-check:
-	python3 scripts/validate_codex_plugin.py
+	$(VALIDATION_CHILD_ENV) python3 scripts/validate_codex_plugin.py
 
 fmt:
 	gofmt -l -w .
 
 fmt-check:
-	@files="$$(gofmt -l .)"; test -z "$$files" || (echo "$$files"; exit 1)
+	@files="$$($(VALIDATION_CHILD_ENV) gofmt -l .)"; test -z "$$files" || (echo "$$files"; exit 1)
 
 tidy:
 	go mod tidy
@@ -188,11 +224,11 @@ dev: db-up
 
 test-integration-singlestore-ci: vk10-runtime
 	@test -n "$$CONVEYOR_TEST_SINGLESTORE_URL" || (echo "CONVEYOR_TEST_SINGLESTORE_URL is required" >&2; exit 1)
-	go test -v -p=1 ./internal/eventlog/s2log ./internal/store/storetest ./internal/store/singlestore -count=1 -timeout=20m
-	go test -v -p=1 ./cmd/conveyor ./cmd/conveyord -run 'TestSingleStoreInitAndUserIntegration|TestConveyordDurableStartupIntegration' -count=1 -timeout=10m
+	$(VALIDATION_CHILD_ENV) go test -v -p=1 ./internal/eventlog/s2log ./internal/store/storetest ./internal/store/singlestore -count=1 -timeout=20m
+	$(VALIDATION_CHILD_ENV) go test -v -p=1 ./cmd/conveyor ./cmd/conveyord -run 'TestSingleStoreInitAndUserIntegration|TestConveyordDurableStartupIntegration' -count=1 -timeout=10m
 
 test-singlestore-unit:
-	CONVEYOR_TEST_SINGLESTORE_URL= go test ./internal/eventlog/s2log ./internal/store/singlestore ./internal/store/backend ./internal/store/storetest ./internal/store ./internal/config ./cmd/conveyor ./cmd/conveyord
+	CONVEYOR_TEST_SINGLESTORE_URL= $(VALIDATION_CHILD_ENV) go test ./internal/eventlog/s2log ./internal/store/singlestore ./internal/store/backend ./internal/store/storetest ./internal/store ./internal/config ./cmd/conveyor ./cmd/conveyord
 
 .PHONY: smoke-singlestore
 smoke-singlestore:
