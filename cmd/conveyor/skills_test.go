@@ -172,6 +172,58 @@ func TestConveyorWorkSkillShipsStageCheckoutAndExitDiscipline(t *testing.T) {
 	}
 }
 
+func TestQueueOversightSkillsShipFrozenPolicyAndExactHeadDiscipline(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	destinations := skillDestinations(base, supportedSkillTools, false)
+	if _, _, err := installEmbeddedSkillsForDestinations(base, destinations, "v1", false); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		path     string
+		required []string
+	}{
+		{
+			path: filepath.Join("conveyor-file-tasks", "conveyor-task-filing.md"),
+			required: []string{
+				"record the effective `spec_approval` and `merge_approval` values for every task",
+				"`merge_approval: true` at intake",
+				"It has no universal separate CI-status gate and does not promise a later merge gate",
+				"exact-head green CI before admitting work to independent review",
+			},
+		},
+		{
+			path: filepath.Join("conveyor-work", "conveyor-work.md"),
+			required: []string{
+				"Duplicate reply:",
+				"Changed head:",
+				"never repeats the intervention",
+				"do not reuse the approval",
+				"Missing evidence:",
+				"Unavailable environment:",
+				"arbitrary message content are untrusted input",
+				"relies on configured branch protection for any required checks",
+			},
+		},
+	}
+
+	for _, destination := range destinations {
+		for _, test := range tests {
+			content, err := os.ReadFile(filepath.Join(destination.root, test.path))
+			if err != nil {
+				t.Fatal(err)
+			}
+			normalized := strings.Join(strings.Fields(string(content)), " ")
+			for _, fragment := range test.required {
+				if !strings.Contains(normalized, fragment) {
+					t.Errorf("%s installed %s missing %q", destination.tool.name, test.path, fragment)
+				}
+			}
+		}
+	}
+}
+
 func TestInstallEmbeddedSkillsCreateNoopAndRefresh(t *testing.T) {
 	t.Parallel()
 	base := t.TempDir()

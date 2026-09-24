@@ -858,22 +858,73 @@ func TestMaybeAttachOperatorCheckoutSkipsPrimaryAndMatchingHead(t *testing.T) {
 }
 
 func TestCheckoutCmdSkipsAttachForWorkerAssignment(t *testing.T) {
-	fixture := newGitFixture(t)
-	t.Setenv("CONVEYOR_TASK_ID", "env-task")
-	t.Setenv("CONVEYOR_TASK_BRANCH", "conveyor/task-env-task")
-	t.Setenv("CONVEYOR_TASK_BASE_BRANCH", "main")
-	t.Setenv("CONVEYOR_TASK_REPO", "conveyor")
-	t.Setenv("CONVEYOR_TASK_REPO_URL", fixture.origin)
-	t.Setenv("CONVEYOR_ADDR", "http://127.0.0.1:1")
-	t.Setenv("CONVEYOR_CONFIG", filepath.Join(fixture.tmp, "no-such-config.yaml"))
-	cmd := checkoutCmd()
-	cmd.SetArgs([]string{"env-task"})
-	if err := cmd.Execute(); err != nil {
-		t.Fatal(err)
+	for _, polluted := range []bool{false, true} {
+		name := "clean"
+		if polluted {
+			name = "polluted"
+		}
+		t.Run(name, func(t *testing.T) {
+			fixture := newGitFixture(t)
+			outsideRoot := filepath.Join(t.TempDir(), "inherited-worker-root")
+			if polluted {
+				for key, value := range map[string]string{
+					"CONVEYOR_TASK_ID":                 "stale-task",
+					"CONVEYOR_TASK_BRANCH":             "conveyor/task-stale-task",
+					"CONVEYOR_PREDECESSOR":             `{"task_id":"stale-task","branch":"conveyor/task-stale-task"}`,
+					"CONVEYOR_PREVIOUS_WORK_ORDER_ID":  "stale-task-implement-1",
+					"CONVEYOR_PREVIOUS_ATTEMPT_ID":     "attempt-stale",
+					"CONVEYOR_PREVIOUS_ATTEMPT_REASON": "stale failure",
+					"CONVEYOR_WORKTREE_ROOT":           outsideRoot,
+					"CONVEYOR_WRITER_GENERATION":       "stale-generation",
+					"CONVEYOR_WRITER_PATH":             filepath.Join(outsideRoot, "stale-writer.json"),
+				} {
+					t.Setenv(key, value)
+				}
+			}
+			setCheckoutWorkerFixtureEnvironment(t, fixture, "env-task")
+
+			cmd := checkoutCmd()
+			cmd.SetArgs([]string{"env-task"})
+			if err := cmd.Execute(); err != nil {
+				t.Fatal(err)
+			}
+			want := filepath.Join(fixture.tmp, ".conveyor", "worktrees", "conveyor-task-env-task")
+			if _, err := os.Stat(want); err != nil {
+				t.Fatalf("worker checkout dest = %v", err)
+			}
+			if _, err := os.Stat(outsideRoot); !os.IsNotExist(err) {
+				t.Fatalf("inherited worker root was used outside the fixture: %v", err)
+			}
+		})
 	}
-	want := filepath.Join(fixture.tmp, ".conveyor", "worktrees", "conveyor-task-env-task")
-	if _, err := os.Stat(want); err != nil {
-		t.Fatalf("worker checkout dest = %v", err)
+}
+
+func setCheckoutWorkerFixtureEnvironment(t *testing.T, fixture gitFixture, taskID string) {
+	t.Helper()
+	values := map[string]string{
+		"CONVEYOR_ADDR":                    "http://127.0.0.1:1",
+		"CONVEYOR_API_TOKEN":               "",
+		"CONVEYOR_CLIENT_TOKEN":            "",
+		"CONVEYOR_CURRENT_ATTEMPT_ID":      "attempt-current",
+		"CONVEYOR_PREVIOUS_ATTEMPT_ID":     "",
+		"CONVEYOR_PREVIOUS_ATTEMPT_REASON": "",
+		"CONVEYOR_PREDECESSOR":             "",
+		"CONVEYOR_PREVIOUS_WORK_ORDER_ID":  "",
+		"CONVEYOR_SESSION_ID":              "session-current",
+		"CONVEYOR_TASK_BASE_BRANCH":        "main",
+		"CONVEYOR_TASK_BRANCH":             "conveyor/task-" + taskID,
+		"CONVEYOR_TASK_ID":                 taskID,
+		"CONVEYOR_TASK_REPO":               "conveyor",
+		"CONVEYOR_TASK_REPO_URL":           fixture.origin,
+		"CONVEYOR_WORKSPACE":               "demo",
+		"CONVEYOR_WORKTREE_ROOT":           filepath.Join(fixture.tmp, ".conveyor", "worktrees"),
+		"CONVEYOR_WORK_ORDER_ID":           taskID + "-implement-1",
+		"CONVEYOR_WRITER_GENERATION":       "",
+		"CONVEYOR_WRITER_PATH":             "",
+		"CONVEYOR_CONFIG":                  filepath.Join(fixture.tmp, "no-such-config.yaml"),
+	}
+	for key, value := range values {
+		t.Setenv(key, value)
 	}
 }
 

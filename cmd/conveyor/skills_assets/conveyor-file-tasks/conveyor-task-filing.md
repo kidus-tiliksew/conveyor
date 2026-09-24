@@ -71,6 +71,32 @@ boundary; investigation never grants permission to mutate.
   — sibling task NNN owns it") and where migration numbering starts
   ("migrations start at NNN; the duplicate-version guard enforces this").
 
+## Record the frozen gate policy at intake
+
+Before filing a task or a dependency-ordered queue, record the effective
+`spec_approval` and `merge_approval` values for every task. Display both values
+and their consequences in the filing summary so the operator can correct the
+choice before intake freezes it. Preserve explicit per-task choices; workspace
+default changes apply only to later tasks and never rewrite an in-flight
+contract.
+
+- `spec_approval: true` pauses after planning for operator approval;
+  `spec_approval: false` permits the next stage without that plan gate.
+- `merge_approval: true` makes an approved review wait for an authenticated
+  operator or user merge decision.
+- `merge_approval: false` sends an approved review directly to the runtime
+  auto-merge path. That path checks the approved head and forge mergeability,
+  then issues the ordinary `gh pr merge` request and relies on configured
+  branch protection for any required checks. It has no universal separate
+  CI-status gate and does not promise a later merge gate.
+
+A queue that requires one decision per pull request must set
+`merge_approval: true` at intake. A coordinator may require exact-head green CI
+before admitting work to independent review, but that queue procedure is not a
+new runtime gate and does not change the frozen merge policy. Never manually
+hold a gate-off queue while describing it as waiting for a later merge
+decision.
+
 ## Body house style
 
 Structure that has survived contact with the agents:
