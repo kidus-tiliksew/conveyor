@@ -75,9 +75,10 @@ type Context struct {
 	// VerificationEvidence is repeated explicitly for review agents so every
 	// seat receives the same task-owned metadata and scoped read_artifact
 	// capability without treating an artifact id as a bearer token.
-	VerificationEvidence   []ArtifactReference `json:"verification_evidence,omitempty"`
-	Diff                   string              `json:"diff,omitempty"`
-	PullRequestDescription string              `json:"pull_request_description"`
+	VerificationEvidence   []ArtifactReference        `json:"verification_evidence,omitempty"`
+	ReviewComparison       *dispatch.ReviewComparison `json:"review_comparison,omitempty"`
+	Diff                   string                     `json:"diff,omitempty"`
+	PullRequestDescription string                     `json:"pull_request_description"`
 }
 
 // PlanRevisionContext carries the durable request that caused a plan-stage
@@ -868,26 +869,23 @@ func (s *Service) contextForOrder(ctx context.Context, order core.WorkOrder) (Co
 	if order.Stage == core.StageReview {
 		cfg, _ := s.config(ctx)
 		if repo, ok := cfg.Repo(task.Repo); ok && repo.GitHub != "" {
+			var comparison dispatch.ReviewComparison
 			if order.ReviewKind == "refresh" && order.ReviewScope == config.RefreshReviewDelta && order.BaselineSHA != "" && order.HeadSHA != "" {
-				result.Diff, err = s.reviewDiffBetween(ctx, repo.GitHub, order.BaselineSHA, order.HeadSHA)
-				if err != nil {
-					return Context{}, err
-				}
+				comparison = dispatch.ReviewComparison{Source: dispatch.ReviewComparisonSourceGitHub, BaselineSHA: order.BaselineSHA, HeadSHA: order.HeadSHA, Scope: config.RefreshReviewDelta}
 			} else if order.ReviewKind != "refresh" && order.BaselineSHA != "" && order.HeadSHA != "" {
-				result.Diff, err = s.reviewDiffBetween(ctx, repo.GitHub, order.BaselineSHA, order.HeadSHA)
-				if err != nil {
-					return Context{}, err
-				}
+				comparison = dispatch.ReviewComparison{Source: dispatch.ReviewComparisonSourceGitHub, BaselineSHA: order.BaselineSHA, HeadSHA: order.HeadSHA, Scope: config.RefreshReviewFull}
 			} else {
-				comparison, compareErr := dispatch.RecordedReviewComparison(task, events)
+				var compareErr error
+				comparison, compareErr = dispatch.RecordedReviewComparisonContext(task, events)
 				if compareErr != nil {
 					return Context{}, compareErr
 				}
-				result.Diff, err = s.reviewDiffBetween(ctx, repo.GitHub, comparison.BaseBranch, comparison.ReviewedHeadSHA)
-				if err != nil {
-					return Context{}, err
-				}
 			}
+			result.Diff, err = s.reviewDiffBetween(ctx, repo.GitHub, comparison.BaselineSHA, comparison.HeadSHA)
+			if err != nil {
+				return Context{}, err
+			}
+			result.ReviewComparison = &comparison
 			if len(result.Diff) > 25<<20 {
 				return Context{}, fmt.Errorf("review diff exceeds the 25 MiB input limit")
 			}

@@ -130,6 +130,27 @@ func TestReviewRoleCompletionContractMatchesExecutionPath(t *testing.T) {
 	}
 }
 
+func TestReviewRoleRequiresAuthoritativeComparisonEvidence(t *testing.T) {
+	role, err := (Loader{Dir: filepath.Join("..", "..", "pack")}).Role(core.StageReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	normalized := strings.Join(strings.Fields(role), " ")
+	for _, required := range []string{
+		"authoritative review comparison as the scope of change",
+		"immutable baseline SHA",
+		"full or delta scope",
+		"supporting changed-path evidence before alleging a deletion",
+		"added only on the baseline side is not a deletion",
+		"genuine deletion must appear in the authoritative changed-path evidence",
+		"comparison context is unavailable, report the affected finding as unverified",
+	} {
+		if !strings.Contains(normalized, required) {
+			t.Fatalf("review role is missing %q: %s", required, role)
+		}
+	}
+}
+
 func TestDoneCriteriaContractRendersPlanAndTaskFallback(t *testing.T) {
 	t.Parallel()
 	plan := "## Approach\nShip.\n\n## Files touched\n- file.go\n\n## Ordering\n1. Edit.\n\n## Risks\n- None.\n\n## Done criteria\n- Tests pass."
