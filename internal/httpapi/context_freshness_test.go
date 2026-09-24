@@ -135,4 +135,9 @@ func TestContextRefreshStrictWireArguments(t *testing.T) {
 	if w.Code != http.StatusBadRequest {
 		t.Fatal("duplicate fields accepted")
 	}
+	w = httptest.NewRecorder()
+	server.handleMCP(w, httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"refresh_work_order_context","arguments":{`+strings.Repeat(" ", 8193)+`"workspace_id":"demo","work_order_id":"order","session_id":"session"}}}`)))
+	if !strings.Contains(w.Body.String(), `"code":-32602`) {
+		t.Fatal("oversized raw arguments admitted", w.Body.String())
+	}
 }

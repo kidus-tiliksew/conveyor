@@ -96,6 +96,10 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 			response.Error = &rpcError{Code: -32602, Message: "invalid tool arguments"}
 			break
 		}
+		if call.Name == "refresh_work_order_context" && len(request.Params) > 8192 {
+			response.Error = &rpcError{Code: -32602, Message: "invalid tool arguments"}
+			break
+		}
 		result, err := s.callMCPTool(r, call.Name, call.Arguments)
 		if err != nil {
 			response.Result = map[string]any{"content": []map[string]string{{"type": "text", "text": err.Error()}}, "isError": true}
