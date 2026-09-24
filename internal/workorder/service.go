@@ -124,6 +124,22 @@ func (s *Service) List(ctx context.Context) ([]core.WorkOrder, error) {
 	if err != nil {
 		return nil, err
 	}
+	return s.projectList(ctx, orders)
+}
+
+// ListForTask derives the same public work-order projection as List while
+// reading only one task. It remains observational: clock-derived state is
+// projected by the store and no lifecycle reconciliation or claim occurs.
+func (s *Service) ListForTask(ctx context.Context, taskID string) ([]core.WorkOrder, error) {
+	orders, err := s.Store.ListTaskWorkOrders(ctx, taskID)
+	if err != nil {
+		return nil, err
+	}
+	return s.projectList(ctx, orders)
+}
+
+func (s *Service) projectList(ctx context.Context, orders []core.WorkOrder) ([]core.WorkOrder, error) {
+	var err error
 	var queuedImplementTaskIDs []string
 	seenTask := map[string]bool{}
 	for _, order := range orders {

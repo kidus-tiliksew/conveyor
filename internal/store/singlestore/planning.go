@@ -727,6 +727,49 @@ func (s *Store) ListPendingProposals(ctx context.Context) ([]core.PendingProposa
 	return out, rows.Err()
 }
 
+func (s *Store) ListPendingAuthorityProposalsForTask(ctx context.Context, taskID string) ([]core.PendingProposal, error) {
+	rows, err := documentRows(ctx, s.db, `
+		SELECT proposal_id,title,tier,version,origin_type,origin_id,target_kind,justification,proposed_at
+		FROM (
+			SELECT v.document_id AS proposal_id,d.title,'system_design' AS tier,v.version,
+				'task' AS origin_type,v.origin_task_id AS origin_id,'' AS target_kind,'' AS justification,v.created_at AS proposed_at
+			FROM system_design_versions v
+			JOIN system_designs d ON d.workspace_id=v.workspace_id AND d.id=v.document_id
+			WHERE v.workspace_id=? AND v.origin_task_id=? AND d.archived_at IS NULL AND NOT v.confirmed AND NOT v.dismissed
+			UNION ALL
+			SELECT v.requirement_id,r.title,'requirement' AS tier,v.version,
+				'task',v.origin_task_id,'','',v.created_at
+			FROM requirement_versions v
+			JOIN requirements r ON r.workspace_id=v.workspace_id AND r.id=v.requirement_id
+			WHERE v.workspace_id=? AND v.origin_task_id=? AND r.archived_at IS NULL AND NOT v.confirmed AND NOT v.retired
+			  AND v.version > coalesce(r.current_version,0)
+			UNION ALL
+			SELECT d.id,d.statement,'decision' AS tier,NULL,
+				'task',d.origin_task_id,'','',d.created_at
+			FROM decisions d
+			WHERE d.workspace_id=? AND d.origin_task_id=? AND d.status='proposed'
+		) pending
+		ORDER BY proposed_at,tier,proposal_id,version`,
+		documentWorkspace(ctx), taskID, documentWorkspace(ctx), taskID, documentWorkspace(ctx), taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]core.PendingProposal, 0)
+	for rows.Next() {
+		var item core.PendingProposal
+		var version *int
+		if err = rows.Scan(&item.ID, &item.Title, &item.Tier, &version, &item.OriginType, &item.OriginID, &item.TargetKind, &item.Justification, &item.ProposedAt); err != nil {
+			return nil, err
+		}
+		if version != nil {
+			item.Version = *version
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) PendingProposalsProjection(ctx context.Context) (store.PendingProposalsProjection, error) {
 	items, err := s.ListPendingProposals(ctx)
 	result := store.PendingProposalsProjection{Items: items}

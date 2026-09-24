@@ -7,17 +7,88 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
 	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 )
+
+type taskRunReadCounter struct {
+	store.Store
+	mu                                                       sync.Mutex
+	getTask, workspaceOrders, taskOrders, workspaceProposals int
+	taskProposals, dependencyReads, pendingDesignReads       int
+}
+
+func (s *taskRunReadCounter) GetTask(ctx context.Context, id string) (core.Task, error) {
+	s.mu.Lock()
+	s.getTask++
+	s.mu.Unlock()
+	return s.Store.GetTask(ctx, id)
+}
+
+func (s *taskRunReadCounter) ListWorkOrders(ctx context.Context) ([]core.WorkOrder, error) {
+	s.mu.Lock()
+	s.workspaceOrders++
+	s.mu.Unlock()
+	return s.Store.ListWorkOrders(ctx)
+}
+
+func (s *taskRunReadCounter) ListTaskWorkOrders(ctx context.Context, id string) ([]core.WorkOrder, error) {
+	s.mu.Lock()
+	s.taskOrders++
+	s.mu.Unlock()
+	return s.Store.ListTaskWorkOrders(ctx, id)
+}
+
+func (s *taskRunReadCounter) ListPendingProposals(ctx context.Context) ([]core.PendingProposal, error) {
+	s.mu.Lock()
+	s.workspaceProposals++
+	s.mu.Unlock()
+	return s.Store.ListPendingProposals(ctx)
+}
+
+func (s *taskRunReadCounter) ListPendingAuthorityProposalsForTask(ctx context.Context, id string) ([]core.PendingProposal, error) {
+	s.mu.Lock()
+	s.taskProposals++
+	s.mu.Unlock()
+	return s.Store.ListPendingAuthorityProposalsForTask(ctx, id)
+}
+
+func (s *taskRunReadCounter) ListDependencyBlockers(ctx context.Context, ids []string) (map[string]store.DependencyBlockers, error) {
+	s.mu.Lock()
+	s.dependencyReads++
+	s.mu.Unlock()
+	return s.Store.ListDependencyBlockers(ctx, ids)
+}
+
+func (s *taskRunReadCounter) ListPendingSystemDesignVersionsForTask(ctx context.Context, id string) ([]core.SystemDesignVersion, error) {
+	s.mu.Lock()
+	s.pendingDesignReads++
+	s.mu.Unlock()
+	return s.Store.ListPendingSystemDesignVersionsForTask(ctx, id)
+}
+
+func (s *taskRunReadCounter) reset() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.getTask, s.workspaceOrders, s.taskOrders, s.workspaceProposals = 0, 0, 0, 0
+	s.taskProposals, s.dependencyReads, s.pendingDesignReads = 0, 0, 0
+}
+
+func (s *taskRunReadCounter) operations() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.getTask + s.workspaceOrders + s.taskOrders + s.workspaceProposals + s.taskProposals + s.dependencyReads + s.pendingDesignReads
+}
 
 func taskRunHTTPFixture(t *testing.T) (*Server, store.Store, http.Handler) {
 	t.Helper()
@@ -107,6 +178,64 @@ func TestTaskRunHTTPSelectsSpecImplementReviewInPipelineOrder(t *testing.T) {
 	if next.Code != http.StatusOK || !strings.Contains(next.Body.String(), `"stage":"spec"`) || !strings.Contains(next.Body.String(), `"id":"target-spec-1"`) {
 		t.Fatalf("next status=%d body=%s", next.Code, next.Body.String())
 	}
+}
+
+func TestTaskRunEightIdleLauncherBenchmark(t *testing.T) {
+	server, underlying, _ := taskRunHTTPFixture(t)
+	targets := make([]string, 8)
+	for index := range targets {
+		targets[index] = fmt.Sprintf("idle-%d", index)
+		createTaskRunOrderAtStage(t, underlying, targets[index], core.StageReview, time.Now().UTC().Add(time.Duration(index)*time.Millisecond))
+	}
+
+	counter := &taskRunReadCounter{Store: underlying}
+	server.Store = counter
+	server.WorkOrders = &workorder.Service{Store: counter, ConfigProvider: server.ConfigProvider}
+	server.Workers = &workerservice.Service{Store: counter, WorkOrders: server.WorkOrders, ConfigProvider: server.ConfigProvider}
+	handler := server.Handler()
+	runRequests := func() int {
+		requests := 0
+		for _, taskID := range targets {
+			response := taskRunHTTPCall(handler, http.MethodGet, "/v1/tasks/"+taskID+"/run-order", "")
+			requests++
+			if response.Code != http.StatusOK {
+				t.Fatalf("task=%s status=%d body=%s", taskID, response.Code, response.Body.String())
+			}
+		}
+		return requests
+	}
+	requests := runRequests()
+	afterWithoutUnrelated := counter.operations()
+
+	for index := 0; index < 64; index++ {
+		createTaskRunOrderAtStage(t, underlying, fmt.Sprintf("unrelated-%d", index), core.StageReview, time.Now().UTC().Add(time.Duration(index)*time.Millisecond))
+	}
+	counter.reset()
+	legacy := &workorder.Service{Store: counter, ConfigProvider: server.ConfigProvider}
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	for _, taskID := range targets {
+		if _, err := counter.GetTask(ctx, taskID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := counter.ListPendingProposals(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := dispatch.PendingPlanRevisionGate(ctx, counter, taskID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := legacy.List(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before := counter.operations()
+
+	counter.reset()
+	requests += runRequests()
+	after := counter.operations()
+	if requests != 16 || before != 608 || afterWithoutUnrelated != 40 || after != 40 || counter.workspaceOrders != 0 || counter.workspaceProposals != 0 || counter.taskOrders != 8 || counter.taskProposals != 8 {
+		t.Fatalf("requests=%d store_operations_before=%d after_without_unrelated=%d after=%d counters=%+v", requests, before, afterWithoutUnrelated, after, counter)
+	}
+	t.Logf("eight_idle_launchers requests_per_sample=8 store_operations_before=%d store_operations_after=%d unrelated_tasks=64 scoped_operations_without_unrelated=%d", before, after, afterWithoutUnrelated)
 }
 
 func taskRunHTTPCall(handler http.Handler, method, path, body string) *httptest.ResponseRecorder {

@@ -650,6 +650,98 @@ func TestAttachedRunPollsGateResolvedElsewhereWithoutClaim(t *testing.T) {
 	}
 }
 
+func TestAdaptiveTaskRunPollingBacksOffAndObservesTransitionWithinBound(t *testing.T) {
+	priorInterval, priorJitter := runGatePollInterval, runPollJitter
+	runGatePollInterval = 5 * time.Millisecond
+	runPollJitter = func(delay, _ time.Duration) time.Duration { return delay }
+	defer func() {
+		runGatePollInterval = priorInterval
+		runPollJitter = priorJitter
+	}()
+
+	var mutex sync.Mutex
+	var requests []time.Time
+	var changedAt time.Time
+	proposal := workerservice.TaskRunProposal{Kind: "design", DocumentID: "adaptive", Version: 2}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		mutex.Lock()
+		requests = append(requests, time.Now())
+		count := len(requests)
+		if count == 3 {
+			changedAt = time.Now()
+		}
+		changed := count >= 4
+		mutex.Unlock()
+		item := workerservice.DispatchOrder{Task: core.Task{ID: "target"}}
+		if changed {
+			item.PendingProposals = []workerservice.TaskRunProposal{proposal}
+		}
+		_ = json.NewEncoder(w).Encode(item)
+	}))
+	defer server.Close()
+
+	appeared := make(chan struct{})
+	var once sync.Once
+	presentation := taskProposalPresentation{
+		actions: make(chan runTUIAction),
+		update: func(items []workerservice.TaskRunProposal) {
+			if len(items) != 0 {
+				once.Do(func() { close(appeared) })
+			}
+		},
+		notice: func(string) {},
+	}
+	c := &client{base: server.URL, token: "parent-user-credential", workspace: "demo"}
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	if err := runStageWithTaskProposalPresentation(ctx, c, c.token, "target", nil, presentation, func() error {
+		select {
+		case <-appeared:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	mutex.Lock()
+	defer mutex.Unlock()
+	if len(requests) != 4 {
+		t.Fatalf("requests=%d times=%v", len(requests), requests)
+	}
+	intervals := []time.Duration{requests[1].Sub(requests[0]), requests[2].Sub(requests[1]), requests[3].Sub(requests[2])}
+	if intervals[1] < intervals[0]+3*time.Millisecond || intervals[2] < intervals[1]+7*time.Millisecond {
+		t.Fatalf("unchanged polls did not back off: %v", intervals)
+	}
+	if latency := requests[3].Sub(changedAt); latency > runGatePollInterval*8+10*time.Millisecond {
+		t.Fatalf("transition latency=%s exceeds documented bound=%s", latency, runGatePollInterval*8)
+	}
+}
+
+func TestStageProposalPollingReturnsAuthenticationFailure(t *testing.T) {
+	priorInterval, priorJitter := runGatePollInterval, runPollJitter
+	runGatePollInterval = 5 * time.Millisecond
+	runPollJitter = func(delay, _ time.Duration) time.Duration { return delay }
+	defer func() {
+		runGatePollInterval = priorInterval
+		runPollJitter = priorJitter
+	}()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "expired", http.StatusUnauthorized)
+	}))
+	defer server.Close()
+	c := &client{base: server.URL, token: "expired", workspace: "demo"}
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	err := runStageWithTaskProposalPresentation(ctx, c, c.token, "target", nil, taskProposalPresentation{
+		actions: make(chan runTUIAction), update: func([]workerservice.TaskRunProposal) {}, notice: func(string) {},
+	}, func() error { <-ctx.Done(); return ctx.Err() })
+	var response *workerHTTPError
+	if !errors.As(err, &response) || response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("error=%v response=%+v", err, response)
+	}
+}
+
 func TestAttachedRunGateConflictRefreshesRecordedState(t *testing.T) {
 	reads := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

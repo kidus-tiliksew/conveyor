@@ -311,6 +311,60 @@ func TestListBatchesBlockersOnlyForQueuedImplementationOrders(t *testing.T) {
 	}
 }
 
+type scopedListObservationStore struct {
+	store.Store
+	orders                                 []core.WorkOrder
+	workspaceReads, taskReads, designReads int
+	blockerTaskIDs                         [][]string
+}
+
+func (s *scopedListObservationStore) ListWorkOrders(context.Context) ([]core.WorkOrder, error) {
+	s.workspaceReads++
+	return nil, fmt.Errorf("workspace work-order read must not be used")
+}
+
+func (s *scopedListObservationStore) ListTaskWorkOrders(_ context.Context, taskID string) ([]core.WorkOrder, error) {
+	s.taskReads++
+	result := make([]core.WorkOrder, 0, len(s.orders))
+	for _, order := range s.orders {
+		if order.TaskID == taskID {
+			result = append(result, order)
+		}
+	}
+	return result, nil
+}
+
+func (s *scopedListObservationStore) ListDependencyBlockers(_ context.Context, taskIDs []string) (map[string]store.DependencyBlockers, error) {
+	s.blockerTaskIDs = append(s.blockerTaskIDs, append([]string(nil), taskIDs...))
+	return map[string]store.DependencyBlockers{"task-a": {BlockingTaskIDs: []string{"dependency"}}}, nil
+}
+
+func (s *scopedListObservationStore) ListPendingSystemDesignVersionsForTask(_ context.Context, taskID string) ([]core.SystemDesignVersion, error) {
+	s.designReads++
+	if taskID != "task-a" {
+		return nil, fmt.Errorf("unexpected design lookup for %s", taskID)
+	}
+	return []core.SystemDesignVersion{{DocumentID: "pending-design"}}, nil
+}
+
+func TestListForTaskUsesOnlyScopedReadsAndPreservesProjection(t *testing.T) {
+	st := &scopedListObservationStore{orders: []core.WorkOrder{
+		{ID: "queued-implement", TaskID: "task-a", Stage: core.StageImplement, State: core.WorkOrderQueued, Claimable: true},
+		{ID: "queued-review", TaskID: "task-a", Stage: core.StageReview, State: core.WorkOrderQueued, Claimable: true},
+		{ID: "unrelated-review", TaskID: "task-b", Stage: core.StageReview, State: core.WorkOrderQueued, Claimable: true},
+	}}
+	orders, err := (&Service{Store: st}).ListForTask(t.Context(), "task-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.workspaceReads != 0 || st.taskReads != 1 || st.designReads != 1 || !reflect.DeepEqual(st.blockerTaskIDs, [][]string{{"task-a"}}) {
+		t.Fatalf("workspace=%d task=%d design=%d blockers=%v", st.workspaceReads, st.taskReads, st.designReads, st.blockerTaskIDs)
+	}
+	if len(orders) != 2 || orders[0].TaskID != "task-a" || orders[1].TaskID != "task-a" || orders[0].Claimable || orders[1].Claimable {
+		t.Fatalf("scoped projection=%+v", orders)
+	}
+}
+
 func TestReadArtifactIsBoundToClaimedWorkOrderContext(t *testing.T) {
 	t.Parallel()
 	ctx := store.WithWorkspace(context.Background(), "demo")
