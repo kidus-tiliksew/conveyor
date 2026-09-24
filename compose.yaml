@@ -1,5 +1,10 @@
 name: conveyor-test
 
+networks:
+  default:
+    name: ${CONVEYOR_TEST_NETWORK_NAME:-conveyor-test-p${CONVEYOR_TEST_POSTGRES_PORT:-5433}_default}
+    external: ${CONVEYOR_TEST_NETWORK_EXTERNAL:-false}
+
 services:
   postgres-test:
     image: postgres:16-alpine

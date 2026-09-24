@@ -375,7 +375,7 @@ class EvidenceTests(unittest.TestCase):
         real_snapshot = evidence.snapshot
         calls = itertools.count()
 
-        def snapshot(root, policy, key):
+        def snapshot(root, policy, key, runtime_env=None):
             if next(calls) == 0:
                 return real_snapshot(root, policy, key)
             raise evidence.Refused("after snapshot failed")
@@ -388,6 +388,83 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(record["exit_status"], 0)
         self.assertIn("after: after snapshot failed", record["snapshot_error"])
         self.refused("invalid execution outcome")
+
+    def test_fixture_lifecycle_wraps_snapshots_and_gate_then_tears_down(self):
+        self.policy["layer"] = "postgres"
+        self.policy["environment"].append("CONVEYOR_TEST_DATABASE_URL")
+        self.policy["backend"] = {"isolation": "disposable-per-run", "probe": ["python3", "-c", 'print("{}")']}
+        self.policy["fixture"] = {
+            "backend": "postgres", "url_env": "CONVEYOR_TEST_DATABASE_URL",
+            "prepared_url_env": "CONVEYOR_TEST_DATABASE_URL",
+            "external_network_env": "CONVEYOR_TEST_EXTERNAL_NETWORK",
+            "database_prefix": "conveyor", "minimum_free_bytes": 1, "timeout": "1s",
+        }
+        os.environ["CONVEYOR_TEST_DATABASE_URL"] = "postgres://root:secret@db/conveyor_test"
+        order = []
+        ownership = {"backend": "postgres", "database": "conveyor_a1_test", "endpoint": "db:5432"}
+
+        def prepare(*_args):
+            order.append("prepare")
+            return ownership, evidence.environment(self.policy)
+
+        def snapshot(*_args):
+            order.append("snapshot")
+            return {"files": {}, "environment": {}, "tools": {}, "backend": {}, "git": {}, "runtime": {}}
+
+        def teardown(*_args):
+            order.append("teardown")
+
+        with patch.object(evidence.validation_fixtures, "prepare", side_effect=prepare), \
+             patch.object(evidence.validation_fixtures, "teardown", side_effect=teardown), \
+             patch.object(evidence, "snapshot", side_effect=snapshot):
+            self.assertEqual(evidence.record(self.root, self.policy, self.output), 0)
+        self.assertEqual(order, ["prepare", "snapshot", "snapshot", "teardown"])
+        record = evidence.read_record(self.output / "manifest.json", (self.output / "key").read_bytes())
+        self.assertEqual(record["outcome"], "success")
+        self.assertEqual(record["fixture"]["before_snapshot_outcome"], "success")
+        self.assertEqual(record["fixture"]["after_snapshot_outcome"], "success")
+        self.assertEqual(record["fixture"]["teardown_outcome"], "success")
+
+    def test_fixture_failure_is_not_command_failure_or_skipped_coverage(self):
+        marker = self.base / "command-ran"
+        (self.root / "Makefile").write_text("check:\n\t@touch " + str(marker) + "\n")
+        self.policy["layer"] = "postgres"
+        self.policy["environment"].append("CONVEYOR_TEST_DATABASE_URL")
+        self.policy["backend"] = {"isolation": "disposable-per-run", "probe": ["python3", "-c", 'print("{}")']}
+        self.policy["fixture"] = {
+            "backend": "postgres", "url_env": "CONVEYOR_TEST_DATABASE_URL",
+            "prepared_url_env": "CONVEYOR_TEST_DATABASE_URL",
+            "external_network_env": "CONVEYOR_TEST_EXTERNAL_NETWORK",
+            "database_prefix": "conveyor", "minimum_free_bytes": 1, "timeout": "1s",
+        }
+        os.environ["CONVEYOR_TEST_DATABASE_URL"] = "postgres://db/conveyor_test"
+        with patch.object(evidence.validation_fixtures, "prepare", side_effect=evidence.validation_fixtures.FixtureError("capacity unavailable")):
+            self.assertEqual(evidence.record(self.root, self.policy, self.output), 2)
+        self.assertFalse(marker.exists())
+        record = evidence.read_record(self.output / "manifest.json", (self.output / "key").read_bytes())
+        self.assertEqual(record["outcome"], "fixture-failure")
+        self.assertIn("capacity unavailable", record["fixture_error"])
+
+    def test_teardown_failure_keeps_gate_outcome_but_fails_the_run(self):
+        self.policy["layer"] = "postgres"
+        self.policy["environment"].append("CONVEYOR_TEST_DATABASE_URL")
+        self.policy["backend"] = {"isolation": "disposable-per-run", "probe": ["python3", "-c", 'print("{}")']}
+        self.policy["fixture"] = {
+            "backend": "postgres", "url_env": "CONVEYOR_TEST_DATABASE_URL",
+            "prepared_url_env": "CONVEYOR_TEST_DATABASE_URL",
+            "external_network_env": "CONVEYOR_TEST_EXTERNAL_NETWORK",
+            "database_prefix": "conveyor", "minimum_free_bytes": 1, "timeout": "1s",
+        }
+        os.environ["CONVEYOR_TEST_DATABASE_URL"] = "postgres://db/conveyor_test"
+        ownership = {"backend": "postgres", "database": "conveyor_a1_test", "endpoint": "db:5432"}
+        with patch.object(evidence.validation_fixtures, "prepare", return_value=(ownership, evidence.environment(self.policy))), \
+             patch.object(evidence.validation_fixtures, "teardown", side_effect=evidence.validation_fixtures.FixtureError("owned drop failed")), \
+             patch.object(evidence, "snapshot", return_value={"files": {}, "environment": {}, "tools": {}, "backend": {}, "git": {}, "runtime": {}}):
+            self.assertEqual(evidence.record(self.root, self.policy, self.output), 2)
+        record = evidence.read_record(self.output / "manifest.json", (self.output / "key").read_bytes())
+        self.assertEqual(record["outcome"], "success")
+        self.assertEqual(record["fixture"]["teardown_outcome"], "failure")
+        self.assertEqual(evidence.inspect_record(self.root, self.output)["classification"], "teardown-failure-after-success")
 
     def test_inspect_reports_crash_left_incomplete_without_replay(self):
         (self.root / "Makefile").write_text("check:\n\t@sleep 30\n")

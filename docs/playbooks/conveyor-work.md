@@ -176,6 +176,28 @@ when the contract requires them. An unset backend, skipped suite, narrowed
 command, failed aggregate, or local reuse never satisfies a mandatory fresh
 boundary. Each database run uses disposable isolated fixtures.
 
+Each required database run uses the repository fixture lifecycle. Preparation
+checks the configured endpoint, repository Go driver, optional external Docker
+network, and configured disk threshold, then creates a unique database ending in
+`_test` and writes a task-owned ownership record without a DSN or credential.
+The external network is inspected and used as configuration only; validation
+never creates, prunes, or removes shared networks, volumes, containers, or
+foreign databases. Missing configuration, capacity, client, network/readiness,
+or database creation is fixture failure and missing evidence, never a skip.
+
+When a database policy contains the optional `fixture` object, the evidence
+helper owns the complete order: prepare, authenticated before snapshot,
+unchanged full Make gate once, authenticated after snapshot, then teardown of
+only the database named by the unchanged ownership record. The same ordering
+applies to command failure and catchable interruption. Snapshot and teardown
+failures remain separately recorded; teardown never rewrites the preceding gate
+outcome. Phase records, ownership state, complete redacted log, manifest and key
+remain together in durable task state. Make's PostgreSQL and SingleStore
+integration targets use the same lifecycle when invoked directly and accept an
+already-prepared owned fixture from the evidence helper without nesting another
+fixture. The PostgreSQL target may start and stop only its task-scoped Compose
+service; long-lived host containers are never cleanup candidates.
+
 `scripts/validation_evidence.py` records a fresh command with `run`, checks an
 existing record with `check`, and associates eligible evidence with the actual
 pushed branch using `bind`. It never skips a Make prerequisite or changes a
@@ -233,6 +255,13 @@ boundary. Schema 1 requires these fields; unknown or omitted fields fail closed:
   and after execution. This helper records backend evidence but refuses its
   reuse: matching configuration cannot prove unchanged mutable database state.
   Preserve fresh backend results and rerun the isolated target when needed.
+- `fixture`: optional and valid only for a `postgres` or `singlestore` layer.
+  It names the matching backend, the inventoried source and prepared URL
+  variable names, the optional external-network variable, a safe database-name
+  prefix, a positive minimum-free-bytes threshold, and an operation timeout.
+  It contains no DSN or credential. When present, `run` owns preparation,
+  before/after snapshots, and teardown; the Make command still names the full
+  unchanged backend gate.
 
 For example, after authoring and auditing `policy.json` outside the worktree,
 let `run` select the collision-safe attempt directory. Copy the printed attempt

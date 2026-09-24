@@ -142,14 +142,10 @@ jobs:
         with:
           go-version-file: ${{ env.GO_VERSION_FILE }}
           cache-dependency-path: go.sum
-      - name: Require test credentials and initialize isolated database
+      - name: Require test credentials
         env:
-          MYSQL_PWD: ${{ secrets.SINGLESTORE_ROOT_PASSWORD }}
-        run: |
-          test -n "$MYSQL_PWD" || { echo 'SINGLESTORE_ROOT_PASSWORD repository secret is required' >&2; exit 1; }
-          sudo apt-get update
-          sudo apt-get install -y default-mysql-client
-          mysql --protocol=TCP -h 127.0.0.1 -P 3306 -u root -e 'CREATE DATABASE conveyor_test PARTITIONS 2'
+          SINGLESTORE_ROOT_PASSWORD: ${{ secrets.SINGLESTORE_ROOT_PASSWORD }}
+        run: test -n "$SINGLESTORE_ROOT_PASSWORD" || { echo 'SINGLESTORE_ROOT_PASSWORD repository secret is required' >&2; exit 1; }
       - name: Verify missing URL fails the integration target
         run: |
           if env -u CONVEYOR_TEST_SINGLESTORE_URL make test-integration-singlestore-ci; then
