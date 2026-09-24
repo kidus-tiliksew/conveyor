@@ -821,35 +821,63 @@ func TestPrepareMCPConfigPreservesJSONFileSecurityAndBuildsSecretFreeTOML(t *tes
 }
 
 func TestIsolatedChildEnvironmentReplacesLaunchIdentity(t *testing.T) {
-	env := isolatedChildEnvironment([]string{"PATH=/bin", "CONVEYOR_API_TOKEN=stale", "CONVEYOR_SESSION_ID=stale", "CONVEYOR_TASK_ID=stale-task", "GIT_AUTHOR_NAME=Host", "GIT_AUTHOR_EMAIL=host@example.test", "GIT_COMMITTER_NAME=Host", "GIT_COMMITTER_EMAIL=host@example.test"}, map[string]string{
-		"CONVEYOR_API_TOKEN": "fresh", "CONVEYOR_ADDR": "endpoint", "CONVEYOR_WORKSPACE": "demo",
-		"CONVEYOR_WORK_ORDER_ID": "order", "CONVEYOR_SESSION_ID": "session", "CONVEYOR_CLIENT_TOKEN": "client",
-		"CONVEYOR_TASK_ID": "task-1", "CONVEYOR_TASK_BRANCH": "conveyor/task-1",
-		"CONVEYOR_TASK_BASE_BRANCH": "main", "CONVEYOR_TASK_REPO": "conveyor",
-		"CONVEYOR_TASK_REPO_URL": "https://github.com/kidus-tiliksew/conveyor.git",
-		"GIT_AUTHOR_NAME":        "Executing User", "GIT_AUTHOR_EMAIL": "executor@example.test",
-		"GIT_COMMITTER_NAME": "Executing User", "GIT_COMMITTER_EMAIL": "executor@example.test",
-		"CONVEYOR_WORKTREE_ROOT": "/var/lib/conveyor/worktrees",
-	})
-	for name, want := range map[string]string{
-		"CONVEYOR_API_TOKEN": "fresh", "CONVEYOR_ADDR": "endpoint", "CONVEYOR_WORKSPACE": "demo",
-		"CONVEYOR_WORK_ORDER_ID": "order", "CONVEYOR_SESSION_ID": "session", "CONVEYOR_CLIENT_TOKEN": "client",
-		"CONVEYOR_TASK_ID": "task-1", "CONVEYOR_TASK_BRANCH": "conveyor/task-1",
-		"CONVEYOR_TASK_BASE_BRANCH": "main", "CONVEYOR_TASK_REPO": "conveyor",
-		"CONVEYOR_TASK_REPO_URL": "https://github.com/kidus-tiliksew/conveyor.git",
-		"GIT_AUTHOR_NAME":        "Executing User", "GIT_AUTHOR_EMAIL": "executor@example.test",
-		"GIT_COMMITTER_NAME": "Executing User", "GIT_COMMITTER_EMAIL": "executor@example.test",
-		"CONVEYOR_WORKTREE_ROOT": "/var/lib/conveyor/worktrees",
-	} {
+	childValues := map[string]string{
+		"CONVEYOR_ADDR":                    "endpoint",
+		"CONVEYOR_API_TOKEN":               "fresh-token",
+		"CONVEYOR_CLIENT_TOKEN":            "fresh-client",
+		"CONVEYOR_CURRENT_ATTEMPT_ID":      "attempt-current",
+		"CONVEYOR_PREVIOUS_ATTEMPT_ID":     "attempt-previous",
+		"CONVEYOR_PREVIOUS_ATTEMPT_REASON": "previous harness exit",
+		"CONVEYOR_PREDECESSOR":             `{"task_id":"task-1","attempt_id":"attempt-previous"}`,
+		"CONVEYOR_PREVIOUS_WORK_ORDER_ID":  "task-1-implement-0",
+		"CONVEYOR_SESSION_ID":              "session-current",
+		"CONVEYOR_TASK_BASE_BRANCH":        "main",
+		"CONVEYOR_TASK_BRANCH":             "conveyor/task-1",
+		"CONVEYOR_TASK_ID":                 "task-1",
+		"CONVEYOR_TASK_REPO":               "conveyor",
+		"CONVEYOR_TASK_REPO_URL":           "https://github.com/kidus-tiliksew/conveyor.git",
+		"CONVEYOR_WORKSPACE":               "demo",
+		"CONVEYOR_WORKTREE_ROOT":           "/var/lib/conveyor/worktrees",
+		"CONVEYOR_WORK_ORDER_ID":           "task-1-implement-1",
+		"CONVEYOR_WRITER_GENERATION":       "session-current",
+		"CONVEYOR_WRITER_PATH":             "/var/lib/conveyor/writers/task-1.json",
+		"GIT_AUTHOR_NAME":                  "Executing User",
+		"GIT_AUTHOR_EMAIL":                 "executor@example.test",
+		"GIT_COMMITTER_NAME":               "Executing User",
+		"GIT_COMMITTER_EMAIL":              "executor@example.test",
+	}
+	base := []string{
+		"PATH=/bin", "GOCACHE=/cache/go", "CONVEYOR_TEST_DATABASE_URL=postgres://fixture",
+		localGitTokenEnv + "=parent-forge-token",
+		"GIT_AUTHOR_NAME=Host", "GIT_AUTHOR_EMAIL=host@example.test",
+		"GIT_COMMITTER_NAME=Host", "GIT_COMMITTER_EMAIL=host@example.test",
+	}
+	for name := range childValues {
+		base = append(base, name+"=stale-"+strings.ToLower(name))
+	}
+	env := isolatedChildEnvironment(base, childValues)
+	for name, want := range childValues {
 		if got := environmentValue(env, name); got != want {
 			t.Fatalf("%s=%q want=%q", name, got, want)
 		}
+	}
+	for name, want := range map[string]string{
+		"PATH":                       "/bin",
+		"GOCACHE":                    "/cache/go",
+		"CONVEYOR_TEST_DATABASE_URL": "postgres://fixture",
+	} {
+		if got := environmentValue(env, name); got != want {
+			t.Fatalf("preserved %s=%q want=%q", name, got, want)
+		}
+	}
+	if got := environmentValue(env, localGitTokenEnv); got != "" {
+		t.Fatalf("parent forge token escaped into child environment: %q", got)
 	}
 	other := isolatedChildEnvironment(env, map[string]string{
 		"CONVEYOR_API_TOKEN": "other-token", "CONVEYOR_ADDR": "other-endpoint", "CONVEYOR_WORKSPACE": "demo",
 		"CONVEYOR_WORK_ORDER_ID": "other-order", "CONVEYOR_SESSION_ID": "other-session", "CONVEYOR_CLIENT_TOKEN": "other-client",
 	})
-	if environmentValue(env, "CONVEYOR_SESSION_ID") != "session" || environmentValue(other, "CONVEYOR_SESSION_ID") != "other-session" || environmentValue(other, "CONVEYOR_CLIENT_TOKEN") != "other-client" {
+	if environmentValue(env, "CONVEYOR_SESSION_ID") != "session-current" || environmentValue(other, "CONVEYOR_SESSION_ID") != "other-session" || environmentValue(other, "CONVEYOR_CLIENT_TOKEN") != "other-client" {
 		t.Fatalf("concurrent child environments shared launch identity")
 	}
 }
