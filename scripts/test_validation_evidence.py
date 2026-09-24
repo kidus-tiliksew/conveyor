@@ -6,9 +6,11 @@ import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -58,6 +60,11 @@ class EvidenceTests(unittest.TestCase):
 
     def record(self):
         self.assertEqual(evidence.record(self.root, self.policy, self.output), 0)
+
+    def write_policy(self):
+        path = self.base / "policy.json"
+        path.write_text(json.dumps(self.policy))
+        return path
 
     def refused(self, reason=None):
         with self.assertRaisesRegex(evidence.Refused, reason or "."):
@@ -341,6 +348,118 @@ class EvidenceTests(unittest.TestCase):
             evidence.record(self.root, self.policy, cache / "evidence")
         shutil.rmtree(cache)
         evidence.check(self.root, self.policy, self.output)
+
+    def test_chunked_secret_redaction_is_bounded(self):
+        redactor = evidence.Redactor([b"private-value", b"second-secret"])
+        retained = bytearray()
+        for chunk in (b"prefix private-", b"val", b"ue middle second-", b"secret suffix"):
+            retained.extend(redactor.feed(chunk))
+            self.assertLessEqual(len(redactor.pending), len(b"private-value") - 1)
+        retained.extend(redactor.finish())
+        self.assertEqual(bytes(retained), b"prefix [REDACTED] middle [REDACTED] suffix")
+        self.assertNotIn(b"private-value", retained)
+
+    def test_snapshot_failure_is_final_and_command_does_not_run(self):
+        marker = self.base / "command-ran"
+        (self.root / "Makefile").write_text("check:\n\t@touch " + str(marker) + "\n")
+        with patch.object(evidence, "snapshot", side_effect=evidence.Refused("fixture snapshot failed")):
+            self.assertEqual(evidence.record(self.root, self.policy, self.output), 2)
+        record = evidence.read_record(self.output / "manifest.json", (self.output / "key").read_bytes())
+        self.assertEqual(record["state"], "complete")
+        self.assertEqual(record["outcome"], "snapshot-failure")
+        self.assertIn("before: fixture snapshot failed", record["snapshot_error"])
+        self.assertFalse(marker.exists())
+        self.refused("invalid execution outcome")
+
+    def test_after_snapshot_failure_stays_distinct_from_command_success(self):
+        real_snapshot = evidence.snapshot
+        calls = itertools.count()
+
+        def snapshot(root, policy, key):
+            if next(calls) == 0:
+                return real_snapshot(root, policy, key)
+            raise evidence.Refused("after snapshot failed")
+
+        with patch.object(evidence, "snapshot", side_effect=snapshot):
+            self.assertEqual(evidence.record(self.root, self.policy, self.output), 2)
+        record = evidence.read_record(self.output / "manifest.json", (self.output / "key").read_bytes())
+        self.assertEqual(record["state"], "complete")
+        self.assertEqual(record["outcome"], "snapshot-failure")
+        self.assertEqual(record["exit_status"], 0)
+        self.assertIn("after: after snapshot failed", record["snapshot_error"])
+        self.refused("invalid execution outcome")
+
+    def test_inspect_reports_crash_left_incomplete_without_replay(self):
+        (self.root / "Makefile").write_text("check:\n\t@sleep 30\n")
+        policy = self.write_policy()
+        command = [sys.executable, str(REPO / "scripts" / "validation_evidence.py"), "run",
+                   "--policy", str(policy), "--output", str(self.output)]
+        process = subprocess.Popen(command, cwd=self.root, env=dict(os.environ),
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            if (self.output / "manifest.json").is_file():
+                key = (self.output / "key").read_bytes()
+                current = evidence.read_record(self.output / "manifest.json", key)
+                if current["state"] == "running":
+                    break
+            time.sleep(0.02)
+        else:
+            process.kill()
+            self.fail("runner did not persist its running record")
+        children_file = Path("/proc") / str(process.pid) / "task" / str(process.pid) / "children"
+        child_group = int(children_file.read_text().split()[0])
+        process.kill()
+        process.communicate(timeout=5)
+        inspected = evidence.inspect_record(self.root, self.output)
+        self.assertEqual(inspected["classification"], "abandoned-or-incomplete")
+        self.assertFalse(inspected["reusable"])
+        self.refused("abandoned/incomplete")
+        # SIGKILL cannot run the runner's group teardown; clean the fixture.
+        try:
+            os.killpg(child_group, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+    def test_catchable_cancellation_reaps_descendant_and_retains_redacted_output(self):
+        pid_file = self.base / "descendant.pid"
+        child = self.root / "child.py"
+        child.write_text("""import pathlib, subprocess, sys, time
+p = subprocess.Popen([\"sleep\", \"30\"])
+pathlib.Path(sys.argv[1]).write_text(str(p.pid))
+sys.stdout.write(\"private-\"); sys.stdout.flush()
+time.sleep(0.2)
+sys.stdout.write(\"value\\n\"); sys.stdout.flush()
+time.sleep(30)
+""")
+        (self.root / "Makefile").write_text("check:\n\t@python3 child.py " + str(pid_file) + "\n")
+        self.policy["environment"].append("PID_FILE")
+        policy = self.write_policy()
+        command = [sys.executable, str(REPO / "scripts" / "validation_evidence.py"), "run",
+                   "--policy", str(policy), "--output", str(self.output)]
+        process = subprocess.Popen(command, cwd=self.root, env=dict(os.environ),
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        deadline = time.time() + 5
+        while time.time() < deadline and not pid_file.is_file():
+            time.sleep(0.02)
+        self.assertTrue(pid_file.is_file(), "descendant was not launched")
+        time.sleep(0.3)
+        os.kill(process.pid, signal.SIGTERM)
+        stdout, stderr = process.communicate(timeout=8)
+        self.assertEqual(process.returncode, 128 + signal.SIGTERM, stderr)
+        descendant = int(pid_file.read_text())
+        deadline = time.time() + 2
+        while time.time() < deadline and (Path("/proc") / str(descendant)).exists():
+            time.sleep(0.02)
+        self.assertFalse(Path("/proc").joinpath(str(descendant)).exists())
+        record = evidence.read_record(self.output / "manifest.json", (self.output / "key").read_bytes())
+        self.assertEqual(record["outcome"], "interrupted")
+        self.assertEqual(record["interruption"], {"signal": signal.SIGTERM})
+        retained = (self.output / "command.log").read_text()
+        self.assertNotIn("private-value", retained)
+        self.assertIn("[REDACTED]", retained)
+        self.assertIn("outcome=interrupted", stdout)
+        self.refused("invalid execution outcome")
 
     def test_no_tracked_exclusion_or_unknown_symlink(self):
         self.policy["exclude"]["generated"] = "claimed output"
