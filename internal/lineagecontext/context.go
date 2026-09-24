@@ -56,7 +56,9 @@ type Item struct {
 }
 
 type Result struct {
-	Snapshot          core.ContextSnapshot  `json:"snapshot"`
+	// Only ContextFreshness exposes this through its 64-KiB envelope. Do not
+	// serialize an additional, untrimmed copy in the legacy lineage response.
+	Snapshot          core.ContextSnapshot  `json:"-"`
 	Untrusted         bool                  `json:"untrusted"`
 	Items             []Item                `json:"items"`
 	Artifacts         []core.Artifact       `json:"-"`

@@ -1,6 +1,7 @@
 package lineagecontext
 
 import (
+	"encoding/json"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"testing"
@@ -31,6 +32,17 @@ func TestSelectionFreshnessAfterAttachmentAndZeroBudget(t *testing.T) {
 		t.Fatal(e)
 	}
 	next := read(budget)
+	wire, e := json.Marshal(next)
+	if e != nil {
+		t.Fatal(e)
+	}
+	var legacy map[string]json.RawMessage
+	if e = json.Unmarshal(wire, &legacy); e != nil {
+		t.Fatal(e)
+	}
+	if _, duplicated := legacy["snapshot"]; duplicated {
+		t.Fatal("internal snapshot bypassed the bounded freshness envelope")
+	}
 	delta := core.CompareContext(next.Snapshot, &first.Snapshot)
 	if delta.Additions.Count != 1 || delta.Additions.Items[0].ArtifactID != a.ID || next.Snapshot.Revision == first.Snapshot.Revision {
 		t.Fatal(delta)
