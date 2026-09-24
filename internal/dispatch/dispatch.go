@@ -241,8 +241,8 @@ const (
 	maxTriageRequestsPerTurn   = 16
 	maxTriageToolArgumentBytes = 8 << 10
 	maxTriageToolResultBytes   = 64 << 10
-	maxTriageInitialBytes      = 128 << 10
-	maxTriageInputBytes        = 256 << 10
+	maxTriageInitialBytes      = 512 << 10
+	maxTriageInputBytes        = 512 << 10
 )
 
 func (d *Dispatcher) Enqueue(ctx context.Context, taskID string) {

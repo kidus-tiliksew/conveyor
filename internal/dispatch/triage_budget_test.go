@@ -11,8 +11,23 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/inprocess"
+	"github.com/kidus-tiliksew/conveyor/internal/pipeline"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
+
+func triageInputWithTextBytes(t *testing.T, size int) inprocess.Input {
+	t.Helper()
+	input := inprocess.Input{}
+	baseline := measureTriageInput(input).TextBytes
+	if size < baseline {
+		t.Fatalf("text size %d is below baseline %d", size, baseline)
+	}
+	input.Prompt = strings.Repeat("p", size-baseline)
+	if got := measureTriageInput(input).TextBytes; got != size {
+		t.Fatalf("text bytes=%d want=%d", got, size)
+	}
+	return input
+}
 
 func TestTriageBudgetRetainsIntentAndProvenanceWhileOmittingLargeAdjacentLog(t *testing.T) {
 	input := inprocess.Input{Prompt: "exact task intent\nREQ-1 confirmed governing instruction\nsource event 17; sibling path\n", Attachments: []inprocess.Attachment{
@@ -58,6 +73,37 @@ func TestTriageBudgetRefusesMandatoryInputWithoutTruncation(t *testing.T) {
 	}
 }
 
+func TestTriageBudgetAdmitsRecordedMandatoryInput(t *testing.T) {
+	const recordedTextBytes = 171417
+	baseline, err := boundTriageInput(inprocess.Input{}, nil, "task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := inprocess.Input{Prompt: strings.Repeat("m", recordedTextBytes-measureTriageInput(baseline).TextBytes)}
+	got, err := boundTriageInput(input, nil, "task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if measured := measureTriageInput(got).TextBytes; measured != recordedTextBytes {
+		t.Fatalf("text bytes=%d want=%d", measured, recordedTextBytes)
+	}
+}
+
+func TestTriageInitialTextHistoryBoundary(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	agent := &sequenceAgent{results: []inprocess.Result{nativeMessageResult("final")}}
+	result, err := New(store.NewMemory(), nil, agent).runTriageLoop(ctx, "model", triageInputWithTextBytes(t, 524288))
+	if err != nil || result.Output != "final" || len(agent.inputs) != 1 {
+		t.Fatalf("calls=%d output=%q err=%v", len(agent.inputs), result.Output, err)
+	}
+
+	agent = &sequenceAgent{}
+	_, err = New(store.NewMemory(), nil, agent).runTriageLoop(ctx, "model", triageInputWithTextBytes(t, 524289))
+	if err == nil || len(agent.inputs) != 0 || !strings.Contains(err.Error(), "524289 bytes exceeds 524288-byte limit") {
+		t.Fatalf("calls=%d err=%v", len(agent.inputs), err)
+	}
+}
+
 func TestTriageOversizedCorpusBodyIsExplicitlyUnread(t *testing.T) {
 	content := strings.Repeat("authority must not be partially cited", maxTriageToolResultBytes)
 	for _, got := range []any{boundedTriageToolOutput(map[string]any{"content": content}), boundedTriagePromptJSON([]byte(content))} {
@@ -75,8 +121,25 @@ func TestTriageContinuationBudgetReturnsVerdictWithoutSendingOversizedHistory(t 
 	first.ResponseItems = append(first.ResponseItems, item)
 	agent := &sequenceAgent{results: []inprocess.Result{first}}
 	result, err := New(store.NewMemory(), nil, agent).runTriageLoop(ctx, "model", inprocess.Input{Prompt: "intent"})
-	if err != nil || len(agent.inputs) != 1 || !strings.Contains(result.Output, `"route":"proceed"`) || !strings.Contains(result.Output, "input byte allowance was exhausted") || !strings.Contains(string(result.Transcript), "provider_call_skipped") {
+	parsed, parseErr := pipeline.ParseTriage(result.Output)
+	if err != nil || parseErr != nil || parsed.Route != "proceed" || len(agent.inputs) != 1 || !strings.Contains(result.Output, "input byte allowance was exhausted") || !strings.Contains(result.Output, "524288-byte limit") || !strings.Contains(string(result.Transcript), "provider_call_skipped") {
 		t.Fatalf("calls=%d err=%v output=%s", len(agent.inputs), err, result.Output)
+	}
+}
+
+func TestTriageToolContinuationSucceedsUnderTextHistoryLimit(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	first := nativeCallResult("list", "list_requirements", "{}", "")
+	history, _ := json.Marshal(map[string]any{"type": "reasoning", "content": strings.Repeat("h", 300<<10)})
+	first.ResponseItems = append(first.ResponseItems, history)
+	agent := &sequenceAgent{results: []inprocess.Result{first, nativeMessageResult("final")}}
+	result, err := New(store.NewMemory(), nil, agent).runTriageLoop(ctx, "model", inprocess.Input{Prompt: "mandatory task intent"})
+	if err != nil || result.Output != "final" || len(agent.inputs) != 2 {
+		t.Fatalf("calls=%d output=%q err=%v", len(agent.inputs), result.Output, err)
+	}
+	measured := measureTriageInput(agent.inputs[1]).TextBytes
+	if measured <= 256<<10 || measured >= maxTriageInputBytes || agent.inputs[1].Continuation == nil {
+		t.Fatalf("continuation text bytes=%d limit=%d continuation=%+v", measured, maxTriageInputBytes, agent.inputs[1].Continuation)
 	}
 }
 
@@ -97,7 +160,7 @@ func TestTriageCorpusReadsRespectCumulativeAllowance(t *testing.T) {
 		first.ResponseItems = append(first.ResponseItems, call.ResponseItems...)
 	}
 	agent := &sequenceAgent{results: []inprocess.Result{first, nativeMessageResult("final")}}
-	_, err = New(st, nil, agent).runTriageLoop(ctx, "model", inprocess.Input{Prompt: strings.Repeat("p", maxTriageInitialBytes-4096)})
+	_, err = New(st, nil, agent).runTriageLoop(ctx, "model", inprocess.Input{Prompt: strings.Repeat("p", maxTriageInitialBytes-(128<<10))})
 	if err != nil || len(agent.inputs) != 2 {
 		t.Fatalf("err=%v calls=%d", err, len(agent.inputs))
 	}

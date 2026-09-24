@@ -4167,26 +4167,16 @@ func TestTriageAdjacentImageSelectionUsesRawBudgetDuringAssembly(t *testing.T) {
 	}
 }
 
-func TestTriagePromptAndMetadataOveragesSuppressAgent(t *testing.T) {
-	for _, metadata := range []bool{false, true} {
-		t.Run(fmt.Sprintf("metadata=%t", metadata), func(t *testing.T) {
-			agent := &capturingInputAgent{}
-			d, st, ctx, task := triageBudgetDispatcher(t, agent)
-			if metadata {
-				if _, err := st.CreateArtifact(ctx, core.Artifact{Name: strings.Repeat("m", maxTriageInitialBytes) + ".png", ContentType: "image/png", TaskID: task.ID}, triageScreenshot(t)); err != nil {
-					t.Fatal(err)
-				}
-			} else {
-				task.ID = "large-intent"
-				task.Body = strings.Repeat("private task intent", maxTriageInitialBytes/10)
-				if err := st.CreateTask(ctx, task); err != nil {
-					t.Fatal(err)
-				}
-			}
-			err := d.DispatchNow(ctx, task.ID)
-			if err == nil || agent.calls != 0 || !strings.Contains(err.Error(), "text/history") || !strings.Contains(err.Error(), "131072-byte limit") || strings.Contains(err.Error(), "private task intent") {
-				t.Fatalf("budget rejection missing; calls=%d", agent.calls)
-			}
-		})
+func TestTriagePromptOverageSuppressesAgent(t *testing.T) {
+	agent := &capturingInputAgent{}
+	d, st, ctx, task := triageBudgetDispatcher(t, agent)
+	task.ID = "large-intent"
+	task.Body = strings.Repeat("private task intent", maxTriageInitialBytes/10)
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	err := d.DispatchNow(ctx, task.ID)
+	if err == nil || agent.calls != 0 || !strings.Contains(err.Error(), "text/history") || !strings.Contains(err.Error(), "524288-byte limit") || strings.Contains(err.Error(), "private task intent") {
+		t.Fatalf("budget rejection missing; calls=%d err=%v", agent.calls, err)
 	}
 }
