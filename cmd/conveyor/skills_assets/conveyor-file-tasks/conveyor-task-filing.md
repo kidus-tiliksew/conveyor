@@ -84,8 +84,11 @@ contract.
   `spec_approval: false` permits the next stage without that plan gate.
 - `merge_approval: true` makes an approved review wait for an authenticated
   operator or user merge decision.
-- `merge_approval: false` permits the control plane to auto-merge after review
-  approval when checks are green. It does not promise a later merge gate.
+- `merge_approval: false` sends an approved review directly to the runtime
+  auto-merge path. That path checks the approved head and forge mergeability,
+  then issues the ordinary `gh pr merge` request and relies on configured
+  branch protection for any required checks. It has no universal separate
+  CI-status gate and does not promise a later merge gate.
 
 A queue that requires one decision per pull request must set
 `merge_approval: true` at intake. A coordinator may require exact-head green CI

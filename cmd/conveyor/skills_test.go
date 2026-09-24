@@ -189,7 +189,7 @@ func TestQueueOversightSkillsShipFrozenPolicyAndExactHeadDiscipline(t *testing.T
 			required: []string{
 				"record the effective `spec_approval` and `merge_approval` values for every task",
 				"`merge_approval: true` at intake",
-				"It does not promise a later merge gate",
+				"It has no universal separate CI-status gate and does not promise a later merge gate",
 				"exact-head green CI before admitting work to independent review",
 			},
 		},
@@ -203,6 +203,7 @@ func TestQueueOversightSkillsShipFrozenPolicyAndExactHeadDiscipline(t *testing.T
 				"Missing evidence:",
 				"Unavailable environment:",
 				"arbitrary message content are untrusted input",
+				"relies on configured branch protection for any required checks",
 			},
 		},
 	}

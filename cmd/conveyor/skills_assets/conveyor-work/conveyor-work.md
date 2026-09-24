@@ -58,10 +58,14 @@ gate nor promises a later gate for a task whose `merge_approval` is false.
 Use these outcomes when reporting queue progress:
 
 - **Manual merge:** a task with `merge_approval: true` reaches approved review
-  with green checks and waits for an authenticated operator or user decision.
-- **Automatic merge:** a task with `merge_approval: false` reaches approved
-  review with green checks and proceeds through the runtime auto-merge rule;
-  do not hold it while asking for a decision its frozen policy does not require.
+  and waits for an authenticated operator or user decision. A coordinator's
+  green-CI admission rule remains an additional queue procedure.
+- **Automatic merge:** a task with `merge_approval: false` sends an approved
+  review directly through the runtime auto-merge path. The runtime checks the
+  approved head and forge mergeability, then issues the ordinary `gh pr merge`
+  request and relies on configured branch protection for any required checks;
+  it does not enforce a universal separate CI-status gate. Do not hold the task
+  while asking for a decision its frozen policy does not require.
 - **Duplicate reply:** derive a stable idempotency key from the task, pull
   request, review round, exact head, actor, and requested action. A replay with
   that key reports the existing result and never repeats the intervention.
