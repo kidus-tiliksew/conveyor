@@ -2,6 +2,8 @@ import { expect, test } from '@playwright/test'
 import {
   alignedParagraphs,
   compareDocuments,
+  formattedParagraph,
+  formattedParagraphChanges,
   headingBlocks,
   reviewBlocks,
   wordChanges,
@@ -60,6 +62,32 @@ test('review model preserves stable identifiers, headings, moves and bounded com
   expect(fallback.rightText).toBe(large)
   expect(fallback.rows).toEqual([])
   expect(compareDocuments({ content: 'one '.repeat(300) }, { content: 'two '.repeat(300) }).limited).toBe(true)
+  const formatted = formattedParagraphChanges(
+    'Keep `unavailable`, *slow*, **manual**, and [the guide](https://example.test/old).',
+    'Keep `unavailable`, *fast*, **automatic**, and [the guide](https://example.test/new).',
+  )
+  expect(formatted).toContainEqual({ text: 'unavailable', kind: 'same', style: 'code' })
+  expect(formatted).toContainEqual({ text: 'slow', kind: 'removed', style: 'emphasis' })
+  expect(formatted).toContainEqual({ text: 'fast', kind: 'added', style: 'emphasis' })
+  expect(formatted).toContainEqual({ text: 'manual', kind: 'removed', style: 'strong' })
+  expect(formatted).toContainEqual({ text: 'automatic', kind: 'added', style: 'strong' })
+  expect(formatted).toContainEqual({
+    text: 'the guide',
+    kind: 'removed',
+    style: 'link',
+    href: 'https://example.test/old',
+  })
+  expect(formatted).toContainEqual({
+    text: 'the guide',
+    kind: 'added',
+    style: 'link',
+    href: 'https://example.test/new',
+  })
+  expect(formattedParagraph('[unsafe](javascript:alert(1))')).toBeUndefined()
+  expect(formattedParagraph('*unterminated')).toBeUndefined()
+  expect(formattedParagraph('- list item')).toBeUndefined()
+  expect(formattedParagraph('<script>window.injected = true</script>')).toBeUndefined()
+  expect(formattedParagraphChanges('one '.repeat(300), 'two '.repeat(300))).toBeUndefined()
 })
 
 import type { Page } from '@playwright/test'
@@ -68,7 +96,15 @@ type Tier = 'requirements' | 'system-design'
 async function seedReview(
   page: Page,
   tier: Tier,
-  options: { first?: boolean; archived?: boolean; reader?: boolean; content?: string; same?: boolean } = {},
+  options: {
+    first?: boolean
+    archived?: boolean
+    reader?: boolean
+    content?: string
+    baseContent?: string
+    targetContent?: string
+    same?: boolean
+  } = {},
 ) {
   await page.addInitScript(() => localStorage.setItem('conveyor-workspace', 'demo'))
   const base =
@@ -112,13 +148,14 @@ async function seedReview(
   const versions = options.first
     ? [makeVersion(2, options.content ?? proposal)]
     : [
-        makeVersion(1, options.content ?? base),
-        makeVersion(2, options.content ?? (options.same ? base : proposal)),
+        makeVersion(1, options.baseContent ?? options.content ?? base),
+        makeVersion(2, options.targetContent ?? options.content ?? (options.same ? base : proposal)),
         makeVersion(3, '# Newest proposal\n\nUnrelated newest text.'),
         makeVersion(4, '# Historical\n\nDismissed proposal.'),
       ]
   if (options.same) versions[1].statements = versions[0].statements
-  if (options.content !== undefined) for (const v of versions) v.statements = []
+  if (options.content !== undefined || options.baseContent !== undefined || options.targetContent !== undefined)
+    for (const v of versions) v.statements = []
   let current = options.first ? undefined : versions[0]
   const calls: Array<{ path: string; body: unknown }> = []
   let refuse = false
@@ -370,6 +407,36 @@ for (const tier of ['requirements', 'system-design'] as const) {
       await page.getByRole('tab', { name: 'changes', exact: true }).click()
     }
   })
+
+  test(`${tier}: seeded formatted paragraphs retain semantics in both comparison modes`, async ({ page }, testInfo) => {
+    const base =
+      '# Fail-open entitlement policy\n\nIf Billing returns nil or `unavailable`, AI and Middleware proceed. Only a confirmed usable subscription that lacks the named feature takes the fallback path.\n\nUse `legacy`, *slow*, **manual**, and [the old guide](https://example.test/old).'
+    const target =
+      '# Fail-open entitlement policy\n\nIf Billing returns nil or `unavailable`, AI and Middleware proceed under the visitor fail-open policy. Only a confirmed usable subscription that lacks the named feature takes the fallback path.\n\nUse `current`, *fast*, **automatic**, and [the new guide](https://example.test/new).'
+    const seed = await seedReview(page, tier, { baseContent: base, targetContent: target })
+    await page.goto(seed.url)
+    const comparison = page.getByRole('region', { name: 'Version comparison', exact: true })
+    const unchangedCode = comparison.locator('code').filter({ hasText: 'unavailable' }).first()
+    await expect(unchangedCode).toBeVisible()
+    expect(await unchangedCode.evaluate((node) => node.closest('ins, del') === null)).toBe(true)
+    await expect(comparison.locator('ins').filter({ hasText: 'under the visitor fail-open policy' })).toBeVisible()
+    await expect(comparison.locator('del code').filter({ hasText: 'legacy' })).toBeVisible()
+    await expect(comparison.locator('ins code').filter({ hasText: 'current' })).toBeVisible()
+    await expect(comparison.locator('del em').filter({ hasText: 'slow' })).toBeVisible()
+    await expect(comparison.locator('ins em').filter({ hasText: 'fast' })).toBeVisible()
+    await expect(comparison.locator('del strong').filter({ hasText: 'manual' })).toBeVisible()
+    await expect(comparison.locator('ins strong').filter({ hasText: 'automatic' })).toBeVisible()
+    await expect(comparison.locator('del a[href="https://example.test/old"]')).toHaveText('the old guide')
+    await expect(comparison.locator('ins a[href="https://example.test/new"]')).toHaveText('the new guide')
+    await page.screenshot({ path: testInfo.outputPath(`${tier}-seeded-formatted-inline.png`), fullPage: true })
+    await page.getByRole('button', { name: 'Side by side', exact: true }).click()
+    await expect(comparison.locator('del code').filter({ hasText: 'legacy' })).toBeVisible()
+    await expect(comparison.locator('ins code').filter({ hasText: 'current' })).toBeVisible()
+    await page.screenshot({
+      path: testInfo.outputPath(`${tier}-seeded-formatted-before-after-side-by-side.png`),
+      fullPage: true,
+    })
+  })
 }
 
 for (const tier of ['requirements', 'system-design'] as const) {
@@ -411,6 +478,7 @@ for (const tier of ['requirements', 'system-design'] as const) {
     await expect(comparison.getByRole('table')).toBeVisible()
     await expect(comparison.locator('[data-mermaid] svg')).toBeVisible()
     await expect(comparison.locator('script')).toHaveCount(0)
+    await expect(comparison).toContainText('Detailed highlighting unavailable for this block')
     await page.getByRole('tab', { name: 'document', exact: true }).click()
     await page.getByRole('tab', { name: 'changes', exact: true }).click()
     await page.getByRole('button', { name: 'Dismiss', exact: true }).click()
