@@ -1620,4 +1620,12 @@ func TestContextFreshnessSummaryDoesNotAcknowledgeOrPoll(t *testing.T) {
 	if f.AcknowledgementSupported || f.Deliveries[0].Fetched {
 		t.Fatal("display changed delivery state")
 	}
+	f.Diagnostic = "observation_unavailable"
+	f.Deliveries[0].Omitted = true
+	f.Deliveries[0].Truncated = true
+	f.Truncated = true
+	changed, summary := contextFreshnessSummary(f)
+	if changed == key || !strings.Contains(summary, "4 omissions, 1 truncated inputs") || !strings.Contains(summary, "incomplete coverage true") || !strings.Contains(summary, "observation_unavailable") {
+		t.Fatal(summary)
+	}
 }

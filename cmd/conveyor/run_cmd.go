@@ -1026,12 +1026,20 @@ func contextFreshnessSummary(f core.ContextFreshness) (string, string) {
 		return f.Diagnostic, "Context freshness: " + f.Diagnostic
 	}
 	failures := 0
+	omissions, truncated := f.Snapshot.OmittedCount, 0
 	for _, d := range f.Deliveries {
 		if d.Failed {
 			failures++
 		}
+		if d.Omitted {
+			omissions++
+		}
+		if d.Truncated {
+			truncated++
+		}
 	}
-	summary := fmt.Sprintf("Context %s: %d additions not fetched in this attempt, %d fetch failures, %d omissions (comparison %s).", f.SelectionRevision, f.UnfetchedAdditions, failures, f.Snapshot.OmittedCount, f.ComparisonStatus)
+	incomplete := f.Truncated || f.Snapshot.IncompleteCoverage || f.Snapshot.Artifacts.Truncated || f.Snapshot.Omissions.Truncated
+	summary := fmt.Sprintf("Context %s: %d additions not fetched in this attempt, %d fetch failures, %d omissions, %d truncated inputs (comparison %s; incomplete coverage %t).", f.SelectionRevision, f.UnfetchedAdditions, failures, omissions, truncated, f.ComparisonStatus, incomplete)
 	if f.Diagnostic != "" {
 		summary += " Diagnostic: " + f.Diagnostic + "."
 	}
