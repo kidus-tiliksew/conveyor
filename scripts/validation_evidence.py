@@ -14,6 +14,7 @@ from pathlib import Path
 import platform
 import secrets
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -24,12 +25,26 @@ class Refused(ValueError):
     pass
 
 
+class RunInterrupted(Exception):
+    def __init__(self, signum):
+        super().__init__("validation interrupted by signal " + str(signum))
+        self.signum = signum
+
+
 def canonical(value):
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
 
 
 def digest(data):
     return hashlib.sha256(data).hexdigest()
+
+
+def digest_file(path):
+    value = hashlib.sha256()
+    with Path(path).open("rb") as source:
+        while chunk := source.read(64 * 1024):
+            value.update(chunk)
+    return value.hexdigest()
 
 
 def require(condition, reason):
@@ -181,13 +196,23 @@ def snapshot(root, p, key):
                         "root": str(root)}}
 
 
-def write_record(path, value, key):
+def write_record(path, value, key, replace=False):
     envelope = {"record": value, "hmac_sha256": mac(key, value)}
-    with path.open("xb") as f:
-        os.chmod(path, 0o600)
+    target = path
+    if replace:
+        target = path.with_name("." + path.name + "." + secrets.token_hex(6) + ".tmp")
+    with target.open("xb") as f:
+        os.chmod(target, 0o600)
         f.write(canonical(envelope) + b"\n")
         f.flush()
         os.fsync(f.fileno())
+    if replace:
+        os.replace(target, path)
+    directory = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
 
 
 def read_record(path, key):
@@ -219,6 +244,96 @@ def default_output(root, p):
     return parent / ("attempt-" + attempt + "-" + str(os.getpid()) + "-" + secrets.token_hex(6))
 
 
+PUBLIC_ENVIRONMENT = {
+    "PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "GOCACHE", "GOTMPDIR",
+    "npm_config_cache", "PLAYWRIGHT_BROWSERS_PATH", "PYTHONDONTWRITEBYTECODE",
+}
+
+
+class Redactor:
+    """Incrementally redact byte strings without retaining the whole output."""
+
+    def __init__(self, values):
+        self.values = sorted({value for value in values if value}, key=len, reverse=True)
+        self.keep = max((len(value) for value in self.values), default=1) - 1
+        self.pending = b""
+
+    def _replace(self, value):
+        for secret in self.values:
+            value = value.replace(secret, b"[REDACTED]")
+        return value
+
+    def feed(self, chunk):
+        data = self.pending + chunk
+        emitted = bytearray()
+        cursor = 0
+        safe = max(0, len(data) - self.keep)
+        while cursor < safe:
+            match = next((secret for secret in self.values if data.startswith(secret, cursor)), None)
+            if match is not None:
+                emitted.extend(b"[REDACTED]")
+                cursor += len(match)
+            else:
+                emitted.append(data[cursor])
+                cursor += 1
+        self.pending = data[cursor:]
+        return bytes(emitted)
+
+    def finish(self):
+        emitted = self._replace(self.pending)
+        self.pending = b""
+        return emitted
+
+
+def _record_template(p, log_path, started):
+    return {"schema": 1, "kind": "fresh-execution", "state": "incomplete", "outcome": "incomplete",
+            "policy": p, "before": None, "after": None, "started": started, "finished": None,
+            "exit_status": None,
+            "log": {"path": str(log_path), "sha256": None, "bytes": 0, "completeness": "incomplete"},
+            "snapshot_error": None, "interruption": None}
+
+
+def _terminate_process_group(process):
+    if process.poll() is not None:
+        process.wait()
+        return
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    try:
+        process.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.wait()
+    else:
+        # The direct child may honor TERM while a descendant ignores it and
+        # keeps the inherited output descriptor open.
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+
+def _install_interrupt_handlers():
+    previous = {}
+
+    def interrupt(signum, _frame):
+        raise RunInterrupted(signum)
+
+    for signum in (signal.SIGINT, signal.SIGTERM):
+        previous[signum] = signal.signal(signum, interrupt)
+    return previous
+
+
+def _restore_interrupt_handlers(previous):
+    for signum, handler in previous.items():
+        signal.signal(signum, handler)
+
+
 def record(root, p, output):
     output = location(root, output)
     output.mkdir(mode=0o700, parents=True, exist_ok=False)
@@ -227,36 +342,89 @@ def record(root, p, output):
     with key_path.open("xb") as f:
         os.chmod(key_path, 0o600)
         f.write(key)
-    before = snapshot(root, p, key)
+        f.flush()
+        os.fsync(f.fileno())
     started = time.time()
     env = environment(p)
-    # Buffer on disk, redact every inventoried non-public environment value
-    # before keeping the durable log. Do not stream raw command output to chat.
-    import tempfile
-    with tempfile.TemporaryFile() as raw:
-        status = subprocess.run(p["command"], cwd=root, env=env, stdout=raw, stderr=subprocess.STDOUT).returncode
-        raw.seek(0)
-        log = raw.read()
-    for name, value in env.items():
-        if value and name not in ("PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "GOCACHE", "GOTMPDIR", "npm_config_cache", "PLAYWRIGHT_BROWSERS_PATH", "PYTHONDONTWRITEBYTECODE"):
-            log = log.replace(value.encode(), b"[REDACTED]")
     log_path = output / "command.log"
-    log_path.write_bytes(log)
-    log_path.chmod(0o600)
-    finished = time.time()
-    after = None
-    error = None
+    with log_path.open("xb") as log_file:
+        os.chmod(log_path, 0o600)
+        log_file.flush()
+        os.fsync(log_file.fileno())
+    manifest = output / "manifest.json"
+    state = _record_template(p, log_path, started)
+    write_record(manifest, state, key)
+    process = None
+    redactor = Redactor([])
+    previous_handlers = _install_interrupt_handlers()
     try:
-        after = snapshot(root, p, key)
-    except (Refused, OSError, ValueError) as exc:
-        error = str(exc)
-    r = {"schema": 1, "kind": "fresh-execution", "outcome": "success" if status == 0 else "failure",
-         "policy": p, "before": before, "after": after,
-         "started": started, "finished": finished, "exit_status": status,
-         "log": {"path": str(log_path), "sha256": digest(log), "bytes": len(log), "completeness": "complete"},
-         "snapshot_error": error}
-    write_record(output / "manifest.json", r, key)
-    return status
+        try:
+            state["before"] = snapshot(root, p, key)
+        except (Refused, OSError, ValueError) as exc:
+            state.update(state="complete", outcome="snapshot-failure", finished=time.time(),
+                         snapshot_error="before: " + str(exc))
+            state["log"].update(sha256=digest(b""), completeness="complete")
+            write_record(manifest, state, key, replace=True)
+            return 2
+        state["state"] = "running"
+        write_record(manifest, state, key, replace=True)
+        secrets_to_redact = [value.encode() for name, value in env.items()
+                             if value and name not in PUBLIC_ENVIRONMENT]
+        redactor = Redactor(secrets_to_redact)
+        process = subprocess.Popen(p["command"], cwd=root, env=env, stdout=subprocess.PIPE,
+                                   stderr=subprocess.STDOUT, start_new_session=True)
+        with log_path.open("ab", buffering=0) as log_file:
+            while True:
+                chunk = os.read(process.stdout.fileno(), 64 * 1024)
+                if not chunk:
+                    break
+                redacted = redactor.feed(chunk)
+                if redacted:
+                    log_file.write(redacted)
+            tail = redactor.finish()
+            if tail:
+                log_file.write(tail)
+            log_file.flush()
+            os.fsync(log_file.fileno())
+        status = process.wait()
+        state["state"] = "finalizing"
+        state["exit_status"] = status
+        write_record(manifest, state, key, replace=True)
+        try:
+            state["after"] = snapshot(root, p, key)
+        except (Refused, OSError, ValueError) as exc:
+            state["snapshot_error"] = "after: " + str(exc)
+        state["log"].update(sha256=digest_file(log_path), bytes=log_path.stat().st_size,
+                            completeness="complete")
+        state.update(state="complete", finished=time.time(),
+                     outcome="snapshot-failure" if state["snapshot_error"] else ("success" if status == 0 else "failure"))
+        write_record(manifest, state, key, replace=True)
+        return status if state["outcome"] != "snapshot-failure" else 2
+    except (RunInterrupted, KeyboardInterrupt) as exc:
+        if process is not None:
+            _terminate_process_group(process)
+            if process.stdout is not None:
+                with log_path.open("ab", buffering=0) as log_file:
+                    while remainder := os.read(process.stdout.fileno(), 64 * 1024):
+                        log_file.write(redactor.feed(remainder))
+                    log_file.write(redactor.finish())
+                    log_file.flush()
+                    os.fsync(log_file.fileno())
+        state["log"].update(sha256=digest_file(log_path), bytes=log_path.stat().st_size,
+                            completeness="complete")
+        state.update(state="complete", outcome="interrupted", finished=time.time(),
+                     exit_status=process.returncode if process is not None else None,
+                     interruption={"signal": getattr(exc, "signum", signal.SIGINT)})
+        try:
+            state["after"] = snapshot(root, p, key)
+        except (Refused, OSError, ValueError) as snapshot_exc:
+            state["snapshot_error"] = "after interruption: " + str(snapshot_exc)
+        write_record(manifest, state, key, replace=True)
+        return 128 + int(getattr(exc, "signum", signal.SIGINT))
+    finally:
+        if process is not None and process.stdout is not None:
+            process.stdout.close()
+        _restore_interrupt_handlers(previous_handlers)
 
 
 def equivalent(old, new, p):
@@ -270,27 +438,58 @@ def equivalent(old, new, p):
         require(old["git"] == new["git"], "changed Git metadata (including VERSION/history/state)")
 
 
+def inspect_record(root, output):
+    output = location(root, output)
+    manifest = output / "manifest.json"
+    log_path = output / "command.log"
+    if not manifest.is_file():
+        return {"classification": "missing-evidence", "reusable": False,
+                "detail": "manifest is missing"}
+    key_path = output / "key"
+    if not key_path.is_file() or len(key_path.read_bytes()) != 32:
+        return {"classification": "missing-evidence", "reusable": False,
+                "detail": "integrity key is missing or invalid"}
+    try:
+        record_value = read_record(manifest, key_path.read_bytes())
+    except (Refused, OSError, ValueError, KeyError, TypeError) as exc:
+        return {"classification": "corrupt-evidence", "reusable": False, "detail": str(exc)}
+    state = record_value.get("state")
+    outcome = record_value.get("outcome")
+    if state != "complete" or outcome == "incomplete":
+        classification = "abandoned-or-incomplete"
+    elif outcome in ("success", "failure", "interrupted", "snapshot-failure"):
+        classification = outcome
+    else:
+        classification = "unknown"
+    detail = "recorded outcome; command was not replayed"
+    log = record_value.get("log")
+    if not isinstance(log, dict) or not log_path.is_file():
+        detail = "durable log is missing; command was not replayed"
+    return {"classification": classification, "reusable": False, "detail": detail}
+
+
 def check(root, p, output):
     output = location(root, output)
     require(p["audit"]["inputs_complete"] is True, "unknown inputs: fresh execution only")
     key = (output / "key").read_bytes()
     require(len(key) == 32, "missing/corrupt evidence key")
     r = read_record(output / "manifest.json", key)
-    require(set(r) == {"schema", "kind", "outcome", "policy", "before", "after", "started", "finished",
-                       "exit_status", "log", "snapshot_error"}, "incomplete manifest")
+    require(set(r) == {"schema", "kind", "state", "outcome", "policy", "before", "after", "started", "finished",
+                       "exit_status", "log", "snapshot_error", "interruption"}, "incomplete manifest")
     require(r["schema"] == 1 and r["kind"] == "fresh-execution" and r["policy"] == p, "changed command/policy/task/layer")
+    require(r["state"] == "complete", "abandoned/incomplete execution")
     require(r["outcome"] in ("success", "failure")
             and r["outcome"] == ("success" if r["exit_status"] == 0 else "failure"), "invalid execution outcome")
     require(type(r["exit_status"]) is int and r["exit_status"] == 0 and r["snapshot_error"] is None
+            and r["interruption"] is None
             and r["finished"] >= r["started"], "failed/incomplete execution")
     require(set(r["log"]) == {"path", "sha256", "bytes", "completeness"}
             and r["log"]["path"] == str(output / "command.log")
             and r["log"]["completeness"] == "complete", "incomplete log record")
     log_path = output / "command.log"
     require(log_path.is_file(), "missing durable log")
-    log = log_path.read_bytes()
-    require(len(log) == r["log"]["bytes"], "truncated durable log")
-    require(digest(log) == r["log"]["sha256"], "corrupt durable log")
+    require(log_path.stat().st_size == r["log"]["bytes"], "truncated durable log")
+    require(digest_file(log_path) == r["log"]["sha256"], "corrupt durable log")
     equivalent(r["before"], r["after"], p)
     current = snapshot(root, p, key)
     equivalent(r["after"], current, p)
@@ -483,7 +682,7 @@ def cleanup_cache(task, task_cache, references):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("run", "check", "bind", "cleanup"))
+    parser.add_argument("action", choices=("run", "inspect", "check", "bind", "cleanup"))
     parser.add_argument("--policy")
     parser.add_argument("--output")
     parser.add_argument("--remote", default="origin")
@@ -498,14 +697,19 @@ def main():
             removed = cleanup_cache(args.task, args.task_cache, args.reference)
             print("Removed disposable cache children: " + (", ".join(removed) if removed else "none"))
             return 0
-        require(args.policy, args.action + " requires --policy")
         root = Path(git(Path.cwd(), "rev-parse", "--show-toplevel").decode().strip()).resolve()
+        if args.action == "inspect":
+            require(args.output, "inspect requires --output")
+            print(json.dumps(inspect_record(root, args.output), sort_keys=True))
+            return 0
+        require(args.policy, args.action + " requires --policy")
         p = policy_read(args.policy)
         if args.action == "run":
             output = Path(args.output).resolve() if args.output else default_output(root, p)
             status = record(root, p, output)
             print("Retained validation evidence: manifest=" + str(output / "manifest.json")
-                  + " log=" + str(output / "command.log") + " outcome=" + ("success" if status == 0 else "failure"))
+                  + " log=" + str(output / "command.log") + " outcome="
+                  + inspect_record(root, output)["classification"])
             return status
         require(args.output, args.action + " requires --output")
         if args.action == "check":
