@@ -396,19 +396,33 @@ class EvidenceTests(unittest.TestCase):
                    "--policy", str(policy), "--output", str(self.output)]
         process = subprocess.Popen(command, cwd=self.root, env=dict(os.environ),
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        children_file = Path("/proc") / str(process.pid) / "task" / str(process.pid) / "children"
         deadline = time.time() + 5
+        child_group = None
+        last_record = None
+        last_children = None
         while time.time() < deadline:
             if (self.output / "manifest.json").is_file():
                 key = (self.output / "key").read_bytes()
-                current = evidence.read_record(self.output / "manifest.json", key)
-                if current["state"] == "running":
-                    break
+                last_record = evidence.read_record(self.output / "manifest.json", key)
+            if children_file.is_file():
+                last_children = children_file.read_text()
+                children = last_children.split()
+                if (last_record and last_record["state"] == "running" and children):
+                    candidate = int(children[0])
+                    try:
+                        if os.getpgid(candidate) == candidate:
+                            child_group = candidate
+                            break
+                    except ProcessLookupError:
+                        pass
             time.sleep(0.02)
-        else:
+        if child_group is None:
             process.kill()
-            self.fail("runner did not persist its running record")
-        children_file = Path("/proc") / str(process.pid) / "task" / str(process.pid) / "children"
-        child_group = int(children_file.read_text().split()[0])
+            stdout, stderr = process.communicate(timeout=5)
+            self.fail("runner did not launch a ready child process group within 5 seconds; "
+                      f"record={last_record!r}, children={last_children!r}, "
+                      f"stdout={stdout!r}, stderr={stderr!r}, returncode={process.returncode}")
         process.kill()
         process.communicate(timeout=5)
         inspected = evidence.inspect_record(self.root, self.output)
