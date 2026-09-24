@@ -694,7 +694,7 @@ func TestAdaptiveTaskRunPollingBacksOffAndObservesTransitionWithinBound(t *testi
 	c := &client{base: server.URL, token: "parent-user-credential", workspace: "demo"}
 	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
-	if err := runStageWithTaskProposalPresentation(ctx, c, c.token, "target", nil, presentation, func() error {
+	if err := runStageWithTaskProposalPresentation(ctx, cancel, c, c.token, "target", nil, presentation, func() error {
 		select {
 		case <-appeared:
 			return nil
@@ -733,12 +733,30 @@ func TestStageProposalPollingReturnsAuthenticationFailure(t *testing.T) {
 	c := &client{base: server.URL, token: "expired", workspace: "demo"}
 	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
-	err := runStageWithTaskProposalPresentation(ctx, c, c.token, "target", nil, taskProposalPresentation{
+	childStarted := make(chan struct{})
+	childCleanedUp := make(chan struct{})
+	err := runStageWithTaskProposalPresentation(ctx, cancel, c, c.token, "target", nil, taskProposalPresentation{
 		actions: make(chan runTUIAction), update: func([]workerservice.TaskRunProposal) {}, notice: func(string) {},
-	}, func() error { <-ctx.Done(); return ctx.Err() })
+	}, func() error {
+		close(childStarted)
+		<-ctx.Done()
+		time.Sleep(20 * time.Millisecond)
+		close(childCleanedUp)
+		return ctx.Err()
+	})
 	var response *workerHTTPError
 	if !errors.As(err, &response) || response.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("error=%v response=%+v", err, response)
+	}
+	select {
+	case <-childStarted:
+	default:
+		t.Fatal("stage child did not start")
+	}
+	select {
+	case <-childCleanedUp:
+	default:
+		t.Fatal("authentication failure returned before the stage child completed cleanup")
 	}
 }
 
@@ -884,7 +902,7 @@ func TestStageProposalPollingSurfacesAndRefreshesConfirmationRaces(t *testing.T)
 			c := &client{base: server.URL, token: "parent-user-credential", workspace: "demo"}
 			ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 			defer cancel()
-			err := runStageWithTaskProposalPresentation(ctx, c, c.token, "target", nil, presentation, func() error {
+			err := runStageWithTaskProposalPresentation(ctx, cancel, c, c.token, "target", nil, presentation, func() error {
 				select {
 				case <-finished:
 					return nil

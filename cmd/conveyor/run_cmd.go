@@ -365,7 +365,7 @@ func runTaskWithPresentationAndSetup(ctx context.Context, c *client, taskID, con
 		}
 		var runErr error
 		if interactiveTUI {
-			runErr = runStageWithTaskProposalPolling(stageCtx, c, c.token, selected.Task.ID, selected.PendingProposals, ensureApp(selected.Task), runChild)
+			runErr = runStageWithTaskProposalPolling(stageCtx, cancelStage, c, c.token, selected.Task.ID, selected.PendingProposals, ensureApp(selected.Task), runChild)
 		} else {
 			runErr = runChild()
 		}
@@ -468,10 +468,10 @@ func waitAtTaskRunGateAttached(ctx context.Context, c *client, controller *runTU
 	}
 }
 
-func runStageWithTaskProposalPolling(ctx context.Context, c *client, credential, taskID string, initial []workerservice.TaskRunProposal, controller *runTUIController, run func() error) error {
+func runStageWithTaskProposalPolling(ctx context.Context, cancelRun context.CancelFunc, c *client, credential, taskID string, initial []workerservice.TaskRunProposal, controller *runTUIController, run func() error) error {
 	controller.drainActions()
 	presentation := taskProposalPresentation{actions: controller.actions, update: controller.UpdateProposals, notice: controller.Notice}
-	return runStageWithTaskProposalPresentation(ctx, c, credential, taskID, initial, presentation, run)
+	return runStageWithTaskProposalPresentation(ctx, cancelRun, c, credential, taskID, initial, presentation, run)
 }
 
 type taskProposalPresentation struct {
@@ -480,10 +480,15 @@ type taskProposalPresentation struct {
 	notice  func(string)
 }
 
-func runStageWithTaskProposalPresentation(ctx context.Context, c *client, credential, taskID string, initial []workerservice.TaskRunProposal, presentation taskProposalPresentation, run func() error) error {
+func runStageWithTaskProposalPresentation(ctx context.Context, cancelRun context.CancelFunc, c *client, credential, taskID string, initial []workerservice.TaskRunProposal, presentation taskProposalPresentation, run func() error) error {
 	presentation.update(initial)
 	result := make(chan error, 1)
 	go func() { result <- run() }()
+	cancelAndJoin := func(cause error) error {
+		cancelRun()
+		<-result
+		return cause
+	}
 	poller := newRunAdaptivePoller()
 	previous := append([]workerservice.TaskRunProposal(nil), initial...)
 	for {
@@ -492,19 +497,22 @@ func runStageWithTaskProposalPresentation(ctx context.Context, c *client, creden
 		case err := <-result:
 			timer.Stop()
 			return err
+		case <-ctx.Done():
+			timer.Stop()
+			return cancelAndJoin(ctx.Err())
 		case action := <-presentation.actions:
 			timer.Stop()
 			if action.decision == runConfirmProposal && action.proposal != nil {
 				poller.observe(true)
 				if err := confirmTaskRunProposal(ctx, c, credential, taskID, *action.proposal, presentation); err != nil {
-					return err
+					return cancelAndJoin(err)
 				}
 			}
 		case <-timer.C:
 			fresh, err := c.getTaskRunOrderContext(ctx, credential, taskID)
 			if err != nil {
 				if taskRunPollingFatal(err) {
-					return err
+					return cancelAndJoin(err)
 				}
 				poller.observe(false)
 				presentation.notice("Pending proposal refresh failed; the run is continuing: " + err.Error())
