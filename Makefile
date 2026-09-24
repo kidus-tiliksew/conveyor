@@ -180,14 +180,14 @@ test-integration: compose-check vk10-runtime
 		else \
 			$(MAKE) test-db-up; \
 			trap '$(MAKE) test-db-down' EXIT; \
-			state="$${XDG_STATE_HOME:-$$HOME/.local/state}/conveyor/$${CONVEYOR_TASK_ID:-manual-validation}/fixtures/postgres-$$(date -u +%Y%m%dT%H%M%SZ)-$$$$"; \
+			state="$${CONVEYOR_FIXTURE_STATE:-$${XDG_STATE_HOME:-$$HOME/.local/state}/conveyor/$${CONVEYOR_TASK_ID:-manual-validation}/fixtures/postgres-$$(date -u +%Y%m%dT%H%M%SZ)-$$$$}"; \
 			$(VALIDATION_CHILD_ENV) python3 scripts/validation_fixtures.py run --backend postgres --url-env TEST_DATABASE_URL --prepared-url-env CONVEYOR_TEST_DATABASE_URL --state "$$state" -- $(MAKE) _test-integration-postgres; \
 		fi
 
 test-integration-ci: compose-check vk10-runtime
 	@test -n "$(CONVEYOR_TEST_DATABASE_URL)" || (echo "CONVEYOR_TEST_DATABASE_URL is required" >&2; exit 1)
 	@if test "$${CONVEYOR_FIXTURE_PREPARED:-}" = 1; then $(MAKE) _test-integration-postgres; else \
-		state="$${XDG_STATE_HOME:-$$HOME/.local/state}/conveyor/$${CONVEYOR_TASK_ID:-ci-validation}/fixtures/postgres-$$(date -u +%Y%m%dT%H%M%SZ)-$$$$"; \
+		state="$${CONVEYOR_FIXTURE_STATE:-$${XDG_STATE_HOME:-$$HOME/.local/state}/conveyor/$${CONVEYOR_TASK_ID:-ci-validation}/fixtures/postgres-$$(date -u +%Y%m%dT%H%M%SZ)-$$$$}"; \
 		$(VALIDATION_CHILD_ENV) python3 scripts/validation_fixtures.py run --backend postgres --url-env CONVEYOR_TEST_DATABASE_URL --prepared-url-env CONVEYOR_TEST_DATABASE_URL --state "$$state" -- $(MAKE) _test-integration-postgres; \
 	fi
 
@@ -248,7 +248,7 @@ dev: db-up
 test-integration-singlestore-ci: vk10-runtime
 	@test -n "$$CONVEYOR_TEST_SINGLESTORE_URL" || (echo "CONVEYOR_TEST_SINGLESTORE_URL is required" >&2; exit 1)
 	@if test "$${CONVEYOR_FIXTURE_PREPARED:-}" = 1; then $(MAKE) _test-integration-singlestore; else \
-		state="$${XDG_STATE_HOME:-$$HOME/.local/state}/conveyor/$${CONVEYOR_TASK_ID:-ci-validation}/fixtures/singlestore-$$(date -u +%Y%m%dT%H%M%SZ)-$$$$"; \
+		state="$${CONVEYOR_FIXTURE_STATE:-$${XDG_STATE_HOME:-$$HOME/.local/state}/conveyor/$${CONVEYOR_TASK_ID:-ci-validation}/fixtures/singlestore-$$(date -u +%Y%m%dT%H%M%SZ)-$$$$}"; \
 		$(VALIDATION_CHILD_ENV) python3 scripts/validation_fixtures.py run --backend singlestore --url-env CONVEYOR_TEST_SINGLESTORE_URL --prepared-url-env CONVEYOR_TEST_SINGLESTORE_URL --state "$$state" -- $(MAKE) _test-integration-singlestore; \
 	fi
 

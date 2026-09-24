@@ -7,7 +7,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import validation_fixtures as fixtures
 
@@ -128,6 +128,14 @@ class FixtureTests(unittest.TestCase):
         self.assertIn("not enough disk", str(error))
         self.assertNotIn("exit status", str(error))
 
+    def test_diagnostic_redacts_driver_username(self):
+        error = fixtures._diagnostic(
+            "postgres", "database creation", "127.0.0.1:5432",
+            "failed to connect to `user=fixture-admin database=postgres`: connection refused",
+        )
+        self.assertNotIn("fixture-admin", str(error))
+        self.assertIn("user=[redacted]", str(error))
+
     def test_lifecycle_orders_snapshots_around_gate_and_teardown_on_failure(self):
         order = []
         ownership = {"backend": "postgres", "database": "conveyor_a1_test",
@@ -155,6 +163,21 @@ class FixtureTests(unittest.TestCase):
         fixtures._terminate_process_group(process)
         self.assertIsNotNone(process.poll())
 
+    def test_run_action_parses_options_before_reaching_fixture_preparation(self):
+        lifecycle = Mock(return_value=7)
+        state = self.root / "direct-make-entrypoint"
+        with patch.object(fixtures, "run_lifecycle", lifecycle):
+            status = fixtures.main([
+                "run", "--backend", "postgres", "--url-env", "ROOT_URL",
+                "--prepared-url-env", "CONVEYOR_TEST_DATABASE_URL",
+                "--state", str(state), "--", "make", "_test-integration-postgres",
+            ])
+        self.assertEqual(status, 7)
+        config, parsed_state, command = lifecycle.call_args.args
+        self.assertEqual(config["backend"], "postgres")
+        self.assertEqual(parsed_state, state.resolve())
+        self.assertEqual(command, ["make", "_test-integration-postgres"])
+
     def test_postgres_target_leaves_outer_owned_fixture_reachable_for_after_snapshot(self):
         makefile = (fixtures.ROOT / "Makefile").read_text()
         target = makefile.split("test-integration: compose-check vk10-runtime", 1)[1].split(
@@ -166,6 +189,7 @@ class FixtureTests(unittest.TestCase):
         self.assertNotIn("test-db-down", prepared)
         self.assertIn("test-db-up", standalone)
         self.assertIn("test-db-down", standalone)
+        self.assertIn("CONVEYOR_FIXTURE_STATE", standalone)
 
     def test_postgres_teardown_removes_only_the_scoped_project_topology(self):
         makefile = (fixtures.ROOT / "Makefile").read_text()

@@ -112,12 +112,15 @@ jobs:
       - name: Verify a PostgreSQL-only regression fails the integration job
         run: |
           probe=internal/store/postgres/ci_regression_probe_test.go
+          state="$RUNNER_TEMP/postgres-regression-fixture"
           trap 'rm -f "$probe"' EXIT
           printf '%s\n' 'package postgres' 'import "testing"' 'func TestCIRegressionProbe(t *testing.T) { t.Fatal("deliberate PostgreSQL regression probe") }' > "$probe"
-          if GOFLAGS='-run=TestCIRegressionProbe' make test-integration-ci; then
+          if CONVEYOR_FIXTURE_STATE="$state" GOFLAGS='-run=TestCIRegressionProbe' make test-integration-ci; then
             echo "test-integration-ci unexpectedly passed a failing PostgreSQL-only test" >&2
             exit 1
           fi
+          grep -F '"outcome": "success", "phase": "prepare"' "$state/phases.jsonl"
+          grep -F '"outcome": "failure", "phase": "gate"' "$state/phases.jsonl"
       - run: make test-integration-ci
 
   singlestore-integration:
@@ -157,12 +160,15 @@ jobs:
           CONVEYOR_TEST_SINGLESTORE_URL: root:${{ secrets.SINGLESTORE_ROOT_PASSWORD }}@tcp(127.0.0.1:3306)/conveyor_test
         run: |
           probe=internal/store/singlestore/ci_regression_probe_test.go
+          state="$RUNNER_TEMP/singlestore-regression-fixture"
           trap 'rm -f "$probe"' EXIT
           printf '%s\n' 'package singlestore' 'import "testing"' 'func TestCIRegressionProbe(t *testing.T) { integrationStore(t); t.Fatal("deliberate SingleStore regression") }' > "$probe"
-          if GOFLAGS='-run=TestCIRegressionProbe' make test-integration-singlestore-ci; then
+          if CONVEYOR_FIXTURE_STATE="$state" GOFLAGS='-run=TestCIRegressionProbe' make test-integration-singlestore-ci; then
             echo 'SingleStore target passed a deliberate regression' >&2
             exit 1
           fi
+          grep -F '"outcome": "success", "phase": "prepare"' "$state/phases.jsonl"
+          grep -F '"outcome": "failure", "phase": "gate"' "$state/phases.jsonl"
       - run: make test-integration-singlestore-ci
         env:
           CONVEYOR_TEST_SINGLESTORE_URL: root:${{ secrets.SINGLESTORE_ROOT_PASSWORD }}@tcp(127.0.0.1:3306)/conveyor_test

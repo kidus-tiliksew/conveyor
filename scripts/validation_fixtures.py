@@ -71,6 +71,8 @@ def _diagnostic(backend: str, operation: str, endpoint: str, detail: str) -> Fix
     safe = (actionable or lines or ["no detail returned"])[-1]
     if "://" in safe or "password=" in safe.lower() or "@tcp(" in safe.lower():
         safe = "protected client detail was redacted"
+    else:
+        safe = re.sub(r"(?i)\b(user|username)=\S+", r"\1=[redacted]", safe)
     return FixtureError(f"{backend} {operation} failed for {endpoint}: {safe}")
 
 
@@ -308,23 +310,29 @@ def config_from_args(args) -> dict:
     }
 
 
-def main() -> int:
+def parse_args(argv: list[str] | None = None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("run",))
-    parser.add_argument("--backend", choices=("postgres", "singlestore"), required=True)
-    parser.add_argument("--url-env", required=True)
-    parser.add_argument("--prepared-url-env", required=True)
-    parser.add_argument("--state", type=Path, required=True)
-    parser.add_argument("--external-network-env", default="CONVEYOR_TEST_EXTERNAL_NETWORK")
-    parser.add_argument("--database-prefix", default="conveyor")
-    parser.add_argument("--minimum-free-bytes", type=int, default=0)
-    parser.add_argument("--timeout", default="20s")
-    parser.add_argument("command", nargs=argparse.REMAINDER)
-    args = parser.parse_args()
+    actions = parser.add_subparsers(dest="action", required=True)
+    run = actions.add_parser("run", help="prepare a fixture, run a gate, and tear the fixture down")
+    run.add_argument("--backend", choices=("postgres", "singlestore"), required=True)
+    run.add_argument("--url-env", required=True)
+    run.add_argument("--prepared-url-env", required=True)
+    run.add_argument("--state", type=Path, required=True)
+    run.add_argument("--external-network-env", default="CONVEYOR_TEST_EXTERNAL_NETWORK")
+    run.add_argument("--database-prefix", default="conveyor")
+    run.add_argument("--minimum-free-bytes", type=int, default=0)
+    run.add_argument("--timeout", default="20s")
+    run.add_argument("command", nargs=argparse.REMAINDER)
+    args = parser.parse_args(argv)
     if args.command[:1] == ["--"]:
         args.command = args.command[1:]
     if not args.command:
-        parser.error("run requires a command after --")
+        run.error("run requires a command after --")
+    return args
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
     try:
         return run_lifecycle(config_from_args(args), args.state.resolve(), args.command)
     except (FixtureError, OSError, ValueError) as exc:
