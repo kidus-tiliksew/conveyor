@@ -157,6 +157,64 @@ class FixtureTests(unittest.TestCase):
             self.assertEqual(fixtures.run_lifecycle(self.config, self.root / "run", ["make", "gate"]), 7)
         self.assertEqual(order, ["prepare", "before-snapshot", "gate", "after-snapshot", "teardown"])
 
+    def test_postgres_production_parent_is_refused_before_any_client_or_capacity_probe(self):
+        for database in ("production", "postgres", "", "production?dbname=conveyor_test"):
+            with self.subTest(database=database), \
+                 patch.object(fixtures, "_run") as client, \
+                 patch.object(fixtures, "_check_capacity") as capacity:
+                unsafe = {"ROOT_URL": "postgres://admin:private@foreign.example:5432/" + database}
+                with self.assertRaisesRegex(fixtures.FixtureError, "must end in _test"):
+                    fixtures.prepare(self.config, unsafe, self.root / ("unsafe-" + str(len(database))))
+                client.assert_not_called()
+                capacity.assert_not_called()
+
+    def test_before_probe_failure_retains_after_snapshot_before_owned_teardown(self):
+        state = self.root / "before-failure"
+        original = self.completed
+        probes = 0
+
+        def client(argv, env, capture=True):
+            nonlocal probes
+            if "probe" in argv:
+                probes += 1
+                if probes == 1:
+                    return subprocess.CompletedProcess(argv, 2, "", "connection refused")
+            return original(argv, env, capture)
+
+        with patch.dict(os.environ, self.env), \
+             patch.object(fixtures, "_run", side_effect=client), \
+             patch("subprocess.Popen") as gate:
+            self.assertEqual(fixtures.run_lifecycle(self.config, state, ["make", "gate"]), 2)
+            gate.assert_not_called()
+        phases = [json.loads(line) for line in (state / "phases.jsonl").read_text().splitlines()]
+        self.assertEqual([(p["phase"], p["outcome"]) for p in phases if p["outcome"] in
+                          ("started", "not-run")], [
+            ("prepare", "started"), ("before-snapshot", "started"), ("gate", "not-run"),
+            ("after-snapshot", "started"), ("teardown", "started"),
+        ])
+        self.assertEqual(json.loads((state / "ownership.json").read_text())["state"], "released")
+        self.assertTrue(json.loads((state / "after-snapshot.json").read_text())["instance"].endswith("_test"))
+        self.assertNotIn("private", (state / "phases.jsonl").read_text())
+
+    def test_preparation_failures_include_client_timeout_and_safe_actionable_detail(self):
+        for kind in ("client", "network", "capacity"):
+            with self.subTest(kind=kind):
+                if kind == "client":
+                    failure = patch.object(fixtures, "_run", side_effect=FileNotFoundError("go executable unavailable"))
+                elif kind == "network":
+                    failure = patch.object(fixtures, "_run", return_value=subprocess.CompletedProcess([], 2, "", "connection refused"))
+                else:
+                    failure = patch.object(fixtures, "_check_capacity", side_effect=fixtures.FixtureError("capacity probe failed: 1 bytes free, 20 required"))
+                with failure, self.assertRaises(fixtures.FixtureError) as caught:
+                    fixtures.prepare(self.config, self.env, self.root / kind)
+                diagnostic = str(caught.exception)
+                self.assertIn("client=repository-go-driver", diagnostic)
+                self.assertIn("tool=go-run", diagnostic)
+                self.assertIn("timeout=1s", diagnostic)
+                self.assertNotIn("private", diagnostic)
+                self.assertIn({"client": "go executable unavailable", "network": "connection refused",
+                               "capacity": "1 bytes free, 20 required"}[kind], diagnostic)
+
     def test_owned_process_group_is_terminated(self):
         process = subprocess.Popen(["sh", "-c", "sleep 30 & wait"], start_new_session=True)
         self.addCleanup(lambda: process.poll() is None and process.kill())

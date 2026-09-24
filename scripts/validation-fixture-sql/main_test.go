@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"context"
+	"strings"
+	"testing"
+)
 
 func TestOwnedDatabaseName(t *testing.T) {
 	for _, name := range []string{"conveyor_ab12_test", "a12_test"} {
@@ -23,5 +27,22 @@ func TestSanitizeCredentialShapedErrors(t *testing.T) {
 	}
 	if got := sanitize("connection refused at 127.0.0.1:3306"); got != "connection refused at 127.0.0.1:3306" {
 		t.Fatalf("actionable safe diagnostic changed: %q", got)
+	}
+}
+
+func TestProductionParentRefusedBeforeConnection(t *testing.T) {
+	for _, backend := range []string{"postgres", "singlestore"} {
+		for _, action := range []string{"create", "drop", "probe"} {
+			o := options{backend: backend, action: action, database: "conveyor_owned_test"}
+			var err error
+			if backend == "postgres" {
+				err = postgres(context.Background(), o, "postgres://admin:secret@foreign.invalid/production")
+			} else {
+				err = singlestore(context.Background(), o, "admin:secret@tcp(foreign.invalid:3306)/production")
+			}
+			if err == nil || !strings.Contains(err.Error(), "must end in _test") {
+				t.Fatalf("%s %s did not refuse before network access: %v", backend, action, err)
+			}
+		}
 	}
 }

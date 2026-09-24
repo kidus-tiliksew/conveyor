@@ -387,6 +387,27 @@ def _record(root, p, output):
     fixture_state = output / "fixture"
     redactor = Redactor([])
     previous_handlers = _install_interrupt_handlers()
+
+    def phase(name, outcome, detail=""):
+        if fixture_config is not None:
+            validation_fixtures._phase(fixture_state, name, outcome, detail)
+
+    def after_snapshot():
+        phase("after-snapshot", "started")
+        try:
+            state["after"] = snapshot(root, p, key, runtime_env)
+            if state["fixture"] is not None:
+                state["fixture"]["after_snapshot_outcome"] = "success"
+            phase("after-snapshot", "success")
+        except (Refused, OSError, ValueError) as exc:
+            error = "after: " + str(exc)
+            state["snapshot_error"] = (state["snapshot_error"] + "; " + error
+                                       if state["snapshot_error"] else error)
+            if state["fixture"] is not None:
+                state["fixture"]["after_snapshot_outcome"] = "failure"
+            phase("after-snapshot", "failure")
+        write_record(manifest, state, key, replace=True)
+
     try:
         if fixture_config is not None:
             try:
@@ -412,15 +433,19 @@ def _record(root, p, output):
                 state["log"].update(sha256=digest(b""), completeness="complete")
                 write_record(manifest, state, key, replace=True)
                 return 2
+        phase("before-snapshot", "started")
         try:
             state["before"] = snapshot(root, p, key, runtime_env)
             if state["fixture"] is not None:
                 state["fixture"]["before_snapshot_outcome"] = "success"
+            phase("before-snapshot", "success")
         except (Refused, OSError, ValueError) as exc:
             state.update(state="complete", outcome="snapshot-failure", finished=time.time(),
                          snapshot_error="before: " + str(exc))
             if state["fixture"] is not None:
                 state["fixture"]["before_snapshot_outcome"] = "failure"
+            phase("before-snapshot", "failure")
+            phase("gate", "not-run", "before snapshot failed")
             state["log"].update(sha256=digest(b""), completeness="complete")
             write_record(manifest, state, key, replace=True)
             return 2
@@ -429,6 +454,7 @@ def _record(root, p, output):
         secrets_to_redact = [value.encode() for name, value in runtime_env.items()
                              if value and name not in PUBLIC_ENVIRONMENT]
         redactor = Redactor(secrets_to_redact)
+        phase("gate", "started")
         process = subprocess.Popen(p["command"], cwd=root, env=runtime_env, stdout=subprocess.PIPE,
                                    stderr=subprocess.STDOUT, start_new_session=True)
         with log_path.open("ab", buffering=0) as log_file:
@@ -445,17 +471,11 @@ def _record(root, p, output):
             log_file.flush()
             os.fsync(log_file.fileno())
         status = process.wait()
+        phase("gate", "success" if status == 0 else "failure", f"exit_status={status}")
         state["state"] = "finalizing"
         state["exit_status"] = status
         write_record(manifest, state, key, replace=True)
-        try:
-            state["after"] = snapshot(root, p, key, runtime_env)
-            if state["fixture"] is not None:
-                state["fixture"]["after_snapshot_outcome"] = "success"
-        except (Refused, OSError, ValueError) as exc:
-            state["snapshot_error"] = "after: " + str(exc)
-            if state["fixture"] is not None:
-                state["fixture"]["after_snapshot_outcome"] = "failure"
+        after_snapshot()
         state["log"].update(sha256=digest_file(log_path), bytes=log_path.stat().st_size,
                             completeness="complete")
         state.update(state="complete", finished=time.time(),
@@ -477,14 +497,8 @@ def _record(root, p, output):
         state.update(state="complete", outcome="interrupted", finished=time.time(),
                      exit_status=process.returncode if process is not None else None,
                      interruption={"signal": getattr(exc, "signum", signal.SIGINT)})
-        try:
-            state["after"] = snapshot(root, p, key, runtime_env)
-            if state["fixture"] is not None:
-                state["fixture"]["after_snapshot_outcome"] = "success"
-        except (Refused, OSError, ValueError) as snapshot_exc:
-            state["snapshot_error"] = "after interruption: " + str(snapshot_exc)
-            if state["fixture"] is not None:
-                state["fixture"]["after_snapshot_outcome"] = "failure"
+        phase("gate", "interrupted" if process is not None else "not-run")
+        after_snapshot()
         write_record(manifest, state, key, replace=True)
         return 128 + int(getattr(exc, "signum", signal.SIGINT))
     finally:
@@ -492,6 +506,8 @@ def _record(root, p, output):
             process.stdout.close()
         teardown_failed = False
         if fixture_config is not None and ownership is not None:
+            if state["fixture"]["after_snapshot_outcome"] == "pending":
+                after_snapshot()
             try:
                 validation_fixtures.teardown(fixture_config, env, ownership, fixture_state)
                 state["fixture"]["teardown_outcome"] = "success"
@@ -502,6 +518,8 @@ def _record(root, p, output):
             # Teardown happens after the after-snapshot and never rewrites the
             # gate outcome. Persist its independent result into the manifest.
             if manifest.exists():
+                if state["state"] == "complete":
+                    state["finished"] = time.time()
                 write_record(manifest, state, key, replace=True)
         _restore_interrupt_handlers(previous_handlers)
         if teardown_failed:

@@ -39,7 +39,7 @@ func main() {
 	flag.DurationVar(&o.timeout, "timeout", 20*time.Second, "operation timeout")
 	flag.Parse()
 	if err := run(o); err != nil {
-		fmt.Fprintf(os.Stderr, "validation fixture %s %s failed: %s\n", o.backend, o.action, sanitize(err.Error()))
+		fmt.Fprintf(os.Stderr, "validation fixture %s %s failed (client=repository-go-driver timeout=%s): %s\n", o.backend, o.action, o.timeout, sanitize(err.Error()))
 		os.Exit(2)
 	}
 }
@@ -73,6 +73,9 @@ func postgres(ctx context.Context, o options, dsn string) error {
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
 		return errors.New("invalid PostgreSQL URL")
+	}
+	if !strings.HasSuffix(cfg.ConnConfig.Database, "_test") {
+		return errors.New("PostgreSQL configured database must end in _test")
 	}
 	if o.action != "probe" {
 		cfg.ConnConfig.Database = "postgres"
@@ -112,6 +115,9 @@ func singlestore(ctx context.Context, o options, dsn string) error {
 	cfg, err := mysql.ParseDSN(dsn)
 	if err != nil {
 		return errors.New("invalid SingleStore DSN")
+	}
+	if !strings.HasSuffix(cfg.DBName, "_test") {
+		return errors.New("SingleStore configured database must end in _test")
 	}
 	if o.action != "probe" {
 		cfg.DBName = ""

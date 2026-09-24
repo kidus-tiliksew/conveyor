@@ -65,7 +65,7 @@ def _run(argv: list[str], env: dict[str, str], *, capture: bool = True) -> subpr
                           stderr=subprocess.PIPE if capture else None)
 
 
-def _diagnostic(backend: str, operation: str, endpoint: str, detail: str) -> FixtureError:
+def _diagnostic(backend: str, operation: str, endpoint: str, detail: str, timeout: str = "20s") -> FixtureError:
     lines = [line.strip() for line in detail.splitlines() if line.strip()]
     actionable = [line for line in lines if not re.fullmatch(r"exit status [0-9]+", line)]
     safe = (actionable or lines or ["no detail returned"])[-1]
@@ -73,7 +73,8 @@ def _diagnostic(backend: str, operation: str, endpoint: str, detail: str) -> Fix
         safe = "protected client detail was redacted"
     else:
         safe = re.sub(r"(?i)\b(user|username)=\S+", r"\1=[redacted]", safe)
-    return FixtureError(f"{backend} {operation} failed for {endpoint}: {safe}")
+    return FixtureError(f"{backend} {operation} failed for {endpoint} "
+                        f"(client=repository-go-driver tool=go-run timeout={timeout}): {safe}")
 
 
 def _phase(state: Path, phase: str, outcome: str, detail: str = "") -> None:
@@ -123,6 +124,20 @@ def _check_external_network(name: str | None, env: dict[str, str]) -> None:
 
 
 def prepare(config: dict, base_env: dict[str, str], state: Path) -> tuple[dict, dict[str, str]]:
+    _phase(state, "prepare", "started")
+    endpoint = "configured endpoint"
+    try:
+        if base_env.get(config["url_env"]):
+            endpoint = _safe_endpoint(config["backend"], base_env[config["url_env"]])
+        return _prepare(config, base_env, state)
+    except (FixtureError, OSError, ValueError) as exc:
+        error = _diagnostic(config["backend"], "preparation", endpoint,
+                            str(exc), config.get("timeout", "20s"))
+        _phase(state, "prepare", "failure", str(error))
+        raise error from exc
+
+
+def _prepare(config: dict, base_env: dict[str, str], state: Path) -> tuple[dict, dict[str, str]]:
     backend = config["backend"]
     url_env = config["url_env"]
     prepared_env = config["prepared_url_env"]
@@ -132,9 +147,9 @@ def prepare(config: dict, base_env: dict[str, str], state: Path) -> tuple[dict, 
         raise FixtureError(f"{backend} required configuration {url_env} is unset; coverage was not run")
     endpoint = _safe_endpoint(backend, dsn)
     base_database = _database_from_dsn(backend, dsn)
-    if backend == "singlestore" and not base_database.endswith("_test"):
+    if not base_database.endswith("_test"):
         _phase(state, "prepare", "safety-refusal", "configured database is not a _test parent")
-        raise FixtureError("SingleStore configured database must end in _test; refusing a production-shaped endpoint")
+        raise FixtureError(f"{backend} configured database must end in _test; refusing a production-shaped endpoint")
     configured_minimum = int(config.get("minimum_free_bytes", 0))
     minimum = configured_minimum or (
         SINGLESTORE_MINIMUM_BYTES if backend == "singlestore" else DEFAULT_MINIMUM_BYTES
@@ -166,7 +181,7 @@ def prepare(config: dict, base_env: dict[str, str], state: Path) -> tuple[dict, 
         ownership["state"] = "creation-failed"
         _write_owner(owner, ownership)
         _phase(state, "prepare", "creation-failure", f"endpoint={endpoint} client=repository-go-driver free_bytes={free}")
-        raise _diagnostic(backend, "database creation", endpoint, result.stderr)
+        raise _diagnostic(backend, "database creation", endpoint, result.stderr, config.get("timeout", "20s"))
     ownership["state"] = "owned"
     try:
         _write_owner(owner, ownership)
@@ -187,6 +202,17 @@ def prepare(config: dict, base_env: dict[str, str], state: Path) -> tuple[dict, 
 
 
 def probe(config: dict, env: dict[str, str], ownership: dict, state: Path, label: str) -> dict:
+    _phase(state, label, "started")
+    try:
+        return _probe(config, env, ownership, state, label)
+    except (FixtureError, OSError, ValueError) as exc:
+        error = _diagnostic(ownership["backend"], label, ownership["endpoint"],
+                            str(exc), config.get("timeout", "20s"))
+        _phase(state, label, "failure", str(error))
+        raise error from exc
+
+
+def _probe(config: dict, env: dict[str, str], ownership: dict, state: Path, label: str) -> dict:
     backend = ownership["backend"]
     prepared_env = ownership["prepared_url_env"]
     argv = ["go", "run", HELPER, "--backend", backend, "--action", "probe",
@@ -194,16 +220,29 @@ def probe(config: dict, env: dict[str, str], ownership: dict, state: Path, label
     result = _run(argv, env)
     if result.returncode:
         _phase(state, label, "snapshot-failure", f"backend={backend} endpoint={ownership['endpoint']}")
-        raise _diagnostic(backend, label + " snapshot", ownership["endpoint"], result.stderr)
+        raise _diagnostic(backend, label + " snapshot", ownership["endpoint"], result.stderr, config.get("timeout", "20s"))
     try:
         value = json.loads(result.stdout)
     except json.JSONDecodeError as exc:
         raise FixtureError(f"{backend} {label} snapshot returned invalid JSON") from exc
+    # The maintained SQL helper returns only non-secret backend metadata.
+    _write_owner(state / (label + ".json"), value)
     _phase(state, label, "success", f"backend={backend} instance={ownership['database']}")
     return value
 
 
 def teardown(config: dict, base_env: dict[str, str], ownership: dict, state: Path) -> None:
+    _phase(state, "teardown", "started")
+    try:
+        _teardown(config, base_env, ownership, state)
+    except (FixtureError, OSError, ValueError) as exc:
+        error = _diagnostic(ownership["backend"], "owned teardown", ownership["endpoint"],
+                            str(exc), config.get("timeout", "20s"))
+        _phase(state, "teardown", "failure", str(error))
+        raise error from exc
+
+
+def _teardown(config: dict, base_env: dict[str, str], ownership: dict, state: Path) -> None:
     owner_path = state / "ownership.json"
     try:
         current = json.loads(owner_path.read_text())
@@ -219,7 +258,7 @@ def teardown(config: dict, base_env: dict[str, str], ownership: dict, state: Pat
     result = _run(argv, env)
     if result.returncode:
         _phase(state, "teardown", "failure", f"backend={ownership['backend']} database={ownership['database']}")
-        raise _diagnostic(ownership["backend"], "owned teardown", ownership["endpoint"], result.stderr)
+        raise _diagnostic(ownership["backend"], "owned teardown", ownership["endpoint"], result.stderr, config.get("timeout", "20s"))
     current["state"] = "released"
     current["released_at"] = time.time()
     _write_owner(owner_path, current)
@@ -267,34 +306,41 @@ def run_lifecycle(config: dict, state: Path, command: list[str]) -> int:
 
     for signum in (signal.SIGINT, signal.SIGTERM):
         previous[signum] = signal.signal(signum, handle)
+    gate_started = False
     try:
         probe(config, child_env, ownership, state, "before-snapshot")
-        _phase(state, "gate", "started", "argv begins with " + command[0])
-        process = subprocess.Popen(command, cwd=ROOT, env=child_env, start_new_session=True)
-        status = process.wait()
-        _phase(state, "gate", "success" if status == 0 else "failure", f"exit_status={status}")
-        try:
-            probe(config, child_env, ownership, state, "after-snapshot")
-        except FixtureError as exc:
-            print(str(exc), file=sys.stderr)
-            status = 2
-        if interrupted is not None:
-            status = 128 + interrupted
+        if interrupted is None:
+            _phase(state, "gate", "started", "argv begins with " + command[0])
+            gate_started = True
+            process = subprocess.Popen(command, cwd=ROOT, env=child_env, start_new_session=True)
+            status = process.wait()
+            _phase(state, "gate", "interrupted" if interrupted else ("success" if status == 0 else "failure"),
+                   f"exit_status={status}")
+    except (FixtureError, OSError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
+        if gate_started:
+            _phase(state, "gate", "failure", "gate could not complete")
     finally:
         if process is not None and process.poll() is None:
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            process.wait()
+            _terminate_process_group(process)
+        if not gate_started:
+            _phase(state, "gate", "not-run", "before snapshot failed or execution interrupted")
+        # The owned fixture is still reachable even when the before probe failed.
+        try:
+            probe(config, child_env, ownership, state, "after-snapshot")
+        except (FixtureError, OSError, ValueError) as exc:
+            print(str(exc), file=sys.stderr)
+            status = 2
         try:
             teardown(config, base_env, ownership, state)
-        except FixtureError as exc:
+        except (FixtureError, OSError, ValueError) as exc:
             print(str(exc), file=sys.stderr)
             if status == 0:
                 status = 2
         for signum, handler in previous.items():
             signal.signal(signum, handler)
+    if interrupted is not None:
+        status = 128 + interrupted
     return status
 
 

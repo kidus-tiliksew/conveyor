@@ -425,6 +425,48 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(record["fixture"]["after_snapshot_outcome"], "success")
         self.assertEqual(record["fixture"]["teardown_outcome"], "success")
 
+    def test_before_snapshot_failure_attempts_after_and_durably_orders_phases(self):
+        self.policy["layer"] = "postgres"
+        self.policy["fixture"] = {"backend": "postgres"}
+        ownership = {"backend": "postgres", "database": "conveyor_a1_test", "endpoint": "db:5432"}
+        after = {"files": {}, "environment": {}, "tools": {}, "backend": {"retained": True}, "git": {}, "runtime": {}}
+        order = []
+
+        def prepare(*args):
+            evidence.validation_fixtures._phase(args[-1], "prepare", "success")
+            order.append("prepare")
+            return ownership, evidence.environment(self.policy)
+
+        def snapshot(*args):
+            order.append("snapshot")
+            if order.count("snapshot") == 1:
+                raise evidence.Refused("injected before failure")
+            return after
+
+        def teardown(*args):
+            order.append("teardown")
+            evidence.validation_fixtures._phase(args[-1], "teardown", "success")
+
+        marker = self.base / "gate-ran"
+        (self.root / "Makefile").write_text("check:\n\t@touch " + str(marker) + "\n")
+        with patch.object(evidence.validation_fixtures, "prepare", side_effect=prepare), \
+             patch.object(evidence.validation_fixtures, "teardown", side_effect=teardown), \
+             patch.object(evidence, "snapshot", side_effect=snapshot):
+            self.assertEqual(evidence.record(self.root, self.policy, self.output), 2)
+        self.assertFalse(marker.exists())
+        self.assertEqual(order, ["prepare", "snapshot", "snapshot", "teardown"])
+        record = evidence.read_record(self.output / "manifest.json", (self.output / "key").read_bytes())
+        self.assertEqual(record["outcome"], "snapshot-failure")
+        self.assertIn("before: injected before failure", record["snapshot_error"])
+        self.assertEqual(record["after"], after)
+        self.assertEqual(record["fixture"]["after_snapshot_outcome"], "success")
+        phases = [json.loads(line) for line in (self.output / "fixture" / "phases.jsonl").read_text().splitlines()]
+        self.assertEqual([(p["phase"], p["outcome"]) for p in phases], [
+            ("prepare", "success"), ("before-snapshot", "started"), ("before-snapshot", "failure"),
+            ("gate", "not-run"), ("after-snapshot", "started"), ("after-snapshot", "success"),
+            ("teardown", "success"),
+        ])
+
     def test_fixture_failure_is_not_command_failure_or_skipped_coverage(self):
         marker = self.base / "command-ran"
         (self.root / "Makefile").write_text("check:\n\t@touch " + str(marker) + "\n")
