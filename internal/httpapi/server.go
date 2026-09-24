@@ -1996,7 +1996,7 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 		spec.MaterializedChildren = materializedChildrenForSpec(task.Children, spec.Version)
 		specPointer = &spec
 	}
-	workOrders, err := s.Store.ListTaskWorkOrders(r.Context(), id)
+	workOrders, err := s.Store.ListTaskWorkOrders(store.WithWorkspace(r.Context(), task.Workspace), id)
 	if err != nil {
 		log.Printf("handle API request: %v", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)

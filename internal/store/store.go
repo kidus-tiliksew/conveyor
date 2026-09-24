@@ -3522,12 +3522,12 @@ func ProjectWorkOrderAt(order core.WorkOrder, now time.Time) core.WorkOrder {
 func (m *memory) ListTaskWorkOrders(ctx context.Context, taskID string) ([]core.WorkOrder, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	workspace := workspaceOrDefault(ctx, "")
+	workspace, workspaceSelected := WorkspaceFromContext(ctx)
 	now := time.Now().UTC()
 	out := make([]core.WorkOrder, 0)
 	for _, order := range m.workOrders {
 		task, ok := m.tasks[order.TaskID]
-		if !ok || order.TaskID != taskID || task.Workspace != workspace {
+		if !ok || order.TaskID != taskID || workspaceSelected && workspace != "" && task.Workspace != workspace {
 			continue
 		}
 		order.Assignee = task.Assignee
