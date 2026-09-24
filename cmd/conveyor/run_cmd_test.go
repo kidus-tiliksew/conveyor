@@ -1609,3 +1609,15 @@ func TestAttachedRunConfirmsRequirementWhileReviewRemainsQueued(t *testing.T) {
 		t.Fatalf("reads=%d confirmations=%d claims=%d output=%s", reads, confirmations, claims, output.String())
 	}
 }
+
+func TestContextFreshnessSummaryDoesNotAcknowledgeOrPoll(t *testing.T) {
+	f := core.ContextFreshness{SelectionRevision: strings.Repeat("a", 64), ObservationRevision: strings.Repeat("b", 64), ComparisonStatus: "changed", UnfetchedAdditions: 2, Snapshot: core.ContextSnapshot{OmittedCount: 3}, Deliveries: []core.ContextDelivery{{Failed: true}}}
+	key, text := contextFreshnessSummary(f)
+	again, repeated := contextFreshnessSummary(f)
+	if key != again || text != repeated || !strings.Contains(text, "2 additions not fetched") || !strings.Contains(text, "1 fetch failures") || !strings.Contains(text, "3 omissions") {
+		t.Fatal(text)
+	}
+	if f.AcknowledgementSupported || f.Deliveries[0].Fetched {
+		t.Fatal("display changed delivery state")
+	}
+}

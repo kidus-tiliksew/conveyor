@@ -1190,3 +1190,13 @@ func (s *Service) refreshReleasedHarnessSnapshot(ctx context.Context, order core
 	}
 	return refreshed
 }
+
+// RefreshContext retains worker ownership while using the same claim-scoped
+// selection and observation service as MCP and task-run children (CF-H1).
+func (s *Service) RefreshContext(ctx context.Context, worker core.Worker, id, session, prior string) (core.ContextFreshness, error) {
+	order, err := s.Store.GetWorkOrder(ctx, id)
+	if err != nil || order.WorkerID != worker.ID || order.WorkerID == "" || order.SessionID != session {
+		return core.ContextFreshness{}, store.ErrWorkOrderClaimUnauthorized
+	}
+	return s.WorkOrders.RefreshContext(store.WithActor(ctx, store.Actor{ID: store.WorkerActorID(worker.ID), Role: core.ActorWorker}), id, session, prior)
+}

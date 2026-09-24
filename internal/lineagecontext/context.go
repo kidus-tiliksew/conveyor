@@ -18,14 +18,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
-type Budget struct {
-	Depth           int `json:"depth"`
-	Nodes           int `json:"nodes"`
-	Links           int `json:"links"`
-	RenderableBytes int `json:"renderable_bytes"`
-	ArtifactRefs    int `json:"artifact_refs"`
-	AuthorityNodes  int `json:"authority_nodes"`
-}
+type Budget = core.ContextBudget
 
 func BudgetFromConfig(cfg *config.Config) Budget {
 	result := Budget{Depth: config.DefaultLineageContextDepth, Nodes: config.DefaultLineageContextNodes, RenderableBytes: config.DefaultLineageContextRenderableBytes, ArtifactRefs: config.DefaultLineageContextArtifactRefs, AuthorityNodes: config.DefaultServedRequirementAuthorityNodes}
@@ -63,6 +56,7 @@ type Item struct {
 }
 
 type Result struct {
+	Snapshot          core.ContextSnapshot  `json:"snapshot"`
 	Untrusted         bool                  `json:"untrusted"`
 	Items             []Item                `json:"items"`
 	Artifacts         []core.Artifact       `json:"-"`
@@ -221,8 +215,20 @@ func AssembleWithBudget(ctx context.Context, st store.Store, budget Budget, root
 			local := localTaskID != "" && artifact.TaskID == localTaskID
 			if reachable[artifactNode(artifact)] && (artifact.Role.ModelInputEligible() || (includeLocalEvidence && local && artifact.EligibleVerificationEvidence())) {
 				artifactSelection.Omitted++
+				artifactSelection.OmittedArtifacts = append(artifactSelection.OmittedArtifacts, artifact)
 			}
 		}
+	}
+	sort.Slice(artifactSelection.OmittedArtifacts, func(i, j int) bool {
+		left, right := artifactSelection.OmittedArtifacts[i], artifactSelection.OmittedArtifacts[j]
+		return left.ID+string(left.Role)+string(artifactNode(left).Type)+artifactNode(left).ID < right.ID+string(right.Role)+string(artifactNode(right).Type)+artifactNode(right).ID
+	})
+	var omissions []core.ContextDescriptor
+	for _, a := range artifactSelection.OmittedArtifacts {
+		d := artifactDescriptor(a, graph, localTaskID)
+		d.Available = false
+		d.OmissionReason = "artifact_refs"
+		omissions = append(omissions, d)
 	}
 	result.OmittedArtifacts = artifactSelection.Omitted
 	result.OmittedCount += artifactSelection.Omitted
@@ -264,6 +270,13 @@ func AssembleWithBudget(ctx context.Context, st store.Store, budget Budget, root
 		renderedBytes := len(renderItem(selected.item))
 		if used+renderedBytes > budget.RenderableBytes {
 			result.OmittedCount++
+			d := itemDescriptor(selected.item)
+			if selected.artifact != nil {
+				d = artifactDescriptor(*selected.artifact, graph, localTaskID)
+			}
+			d.Available = false
+			d.OmissionReason = "renderable_bytes"
+			omissions = append(omissions, d)
 			if selected.artifact != nil {
 				result.OmittedArtifacts++
 			}
@@ -277,6 +290,7 @@ func AssembleWithBudget(ctx context.Context, st store.Store, budget Budget, root
 		}
 	}
 	result.RenderedBytes = used
+	result.Snapshot = selectionSnapshot(workspace, roots, localTaskID, includeLocalEvidence, result, omissions)
 	return result, nil
 }
 

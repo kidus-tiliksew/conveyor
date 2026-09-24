@@ -67,6 +67,7 @@ type Attachment struct {
 }
 
 type Input struct {
+	ContextFreshness core.ContextFreshness
 	// CheckPreparedText charges generated attachment text before any Responses call.
 	// The caller owns the byte allowance; nil preserves non-triage behavior.
 	CheckPreparedText         func(Attachment, int) error

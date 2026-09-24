@@ -2319,61 +2319,83 @@ func TestClaimRejectsEmptyClaimantIdentity(t *testing.T) {
 
 func TestSubmitForReviewReturnsSynchronousInProcessVerdict(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
-	st := store.NewMemory()
-	task := core.Task{ID: "task-sync", Workspace: "test", Repo: "app", Title: "Change", Branch: "conveyor/task-sync", BaseBranch: "main", Level: core.L0, State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: time.Now()}
-	if err := st.CreateTask(ctx, task); err != nil {
-		t.Fatal(err)
-	}
-	if err := st.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]string{"base_sha": "base123", "head_sha": "abc123"})}); err != nil {
-		t.Fatal(err)
-	}
-	job := core.Job{ID: "implement-1", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending, ModelTier: "implementer", StartedAt: time.Now()}
-	if err := st.CreateJob(ctx, job); err != nil {
-		t.Fatal(err)
-	}
-	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued}); err != nil {
-		t.Fatal(err)
-	}
-	claimed, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "implement-session", ClientToken: "implement-token", Agent: "codex", Model: "implementer", Lease: time.Minute})
-	if err != nil {
-		t.Fatal(err)
-	}
-	bundle, err := pack.Load("../../pack")
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg := &config.Config{Workspace: "test", MaxBounces: 2, Repos: []config.Repo{{Name: "app", Base: "main"}}, Routing: config.Routing{Stages: map[string]config.StageRoute{
-		"review": {Model: "reviewer", Execution: config.ExecutionInProcess, Timeout: time.Minute},
-	}}}
-	agent := &staticAgent{output: "```conveyor:review\n{\"verdict\":\"approve\",\"reason_code\":\"approved\",\"summary\":\"all criteria pass\",\"feedback\":\"\"}\n```"}
-	dispatcher := dispatch.New(st, cfg, agent)
-	dispatcher.Pack = bundle
-	dispatcher.ReviewDiff = func(context.Context, *config.Config, core.Task) (string, error) {
-		return "diff --git a/app.txt b/app.txt\n-v1\n+v2\n", nil
-	}
-	service := &Service{Store: st, Dispatcher: dispatcher, Pack: bundle, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
+	for _, recording := range []bool{true, false} {
+		t.Run(fmt.Sprint(recording), func(t *testing.T) {
+			ctx := store.WithActor(store.WithWorkspace(context.Background(), "test"), store.Actor{ID: "user:owner", Role: core.ActorUser})
+			st := store.NewMemory()
+			task := core.Task{ID: "task-sync", Workspace: "test", Repo: "app", Title: "Change", Branch: "conveyor/task-sync", BaseBranch: "main", Level: core.L0, State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: time.Now()}
+			if err := st.CreateTask(ctx, task); err != nil {
+				t.Fatal(err)
+			}
+			if err := st.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]string{"base_sha": "base123", "head_sha": "abc123"})}); err != nil {
+				t.Fatal(err)
+			}
+			job := core.Job{ID: "implement-1", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending, ModelTier: "implementer", StartedAt: time.Now()}
+			if err := st.CreateJob(ctx, job); err != nil {
+				t.Fatal(err)
+			}
+			if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued}); err != nil {
+				t.Fatal(err)
+			}
+			claimed, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{ClaimantID: core.TaskRunClaimantID("owner"), SessionID: "implement-session", ClientToken: "implement-token", Agent: "codex", Model: "implementer", Lease: time.Minute})
+			if err != nil {
+				t.Fatal(err)
+			}
+			bundle, err := pack.Load("../../pack")
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg := &config.Config{Workspace: "test", MaxBounces: 2, Repos: []config.Repo{{Name: "app", Base: "main"}}, Routing: config.Routing{Stages: map[string]config.StageRoute{
+				"review": {Model: "reviewer", Execution: config.ExecutionInProcess, Timeout: time.Minute},
+			}}}
+			agent := &staticAgent{output: "```conveyor:review\n{\"verdict\":\"approve\",\"reason_code\":\"approved\",\"summary\":\"all criteria pass\",\"feedback\":\"\"}\n```"}
+			dispatcher := dispatch.New(st, cfg, agent)
+			dispatcher.Pack = bundle
+			dispatcher.ReviewDiff = func(context.Context, *config.Config, core.Task) (string, error) {
+				return "diff --git a/app.txt b/app.txt\n-v1\n+v2\n", nil
+			}
+			service := &Service{Store: st, Dispatcher: dispatcher, Pack: bundle, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
 
-	if _, err = service.Usage(ctx, claimed.ID, "implement-session", 100_000_000, 25_000_000, 20_000); err != nil {
-		t.Fatalf("high usage report failed: %v", err)
-	}
-	prepareSubmissionTest(service)
-	result, err := service.SubmitForReview(ctx, claimed.ID, "implement-session", submissionTestHead(service))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result["await_review"] != false || result["verdict"] != "approve" {
-		t.Fatalf("result = %+v", result)
-	}
-	if !strings.Contains(agent.input.Prompt, "```conveyor:review") || strings.Contains(agent.input.Prompt, "submit_review_verdict") {
-		t.Fatalf("in-process review prompt has the wrong terminal contract: %s", agent.input.Prompt)
-	}
-	if !strings.Contains(agent.input.Prompt, "diff --git a/app.txt b/app.txt") {
-		t.Fatalf("in-process review prompt is missing the branch diff: %s", agent.input.Prompt)
-	}
-	updated, err := st.GetTask(ctx, task.ID)
-	if err != nil || updated.State != core.TaskApproved {
-		t.Fatalf("task = %+v err=%v", updated, err)
+			if _, err = service.Usage(ctx, claimed.ID, "implement-session", 100_000_000, 25_000_000, 20_000); err != nil {
+				t.Fatalf("high usage report failed: %v", err)
+			}
+			baseline, getErr := service.RefreshContext(ctx, claimed.ID, "implement-session", "")
+			if getErr != nil {
+				t.Fatal(getErr)
+			}
+			if !baseline.ObservationRecorded {
+				t.Fatal(baseline)
+			}
+			correction, attachErr := st.CreateArtifact(ctx, core.Artifact{Name: "late-correction.md", ContentType: "text/markdown", TaskID: task.ID}, []byte("late correction"))
+			if attachErr != nil {
+				t.Fatal(attachErr)
+			}
+			if !recording {
+				service.Store = &freshnessFixtureStore{Store: st, failObservation: true}
+			}
+			prepareSubmissionTest(service)
+			result, err := service.SubmitForReview(ctx, claimed.ID, "implement-session", submissionTestHead(service))
+			if err != nil {
+				t.Fatal(err)
+			}
+			freshness, ok := result["context_freshness"].(core.ContextFreshness)
+			if !ok || freshness.UnfetchedAdditions != 1 || freshness.ObservationRecorded != recording || freshness.Additions.Items[0].ArtifactID != correction.ID {
+				t.Fatalf("submission freshness=%+v", result["context_freshness"])
+			}
+			if result["await_review"] != false || result["verdict"] != "approve" {
+				t.Fatalf("result = %+v", result)
+			}
+			if !strings.Contains(agent.input.Prompt, "```conveyor:review") || strings.Contains(agent.input.Prompt, "submit_review_verdict") {
+				t.Fatalf("in-process review prompt has the wrong terminal contract: %s", agent.input.Prompt)
+			}
+			if !strings.Contains(agent.input.Prompt, "diff --git a/app.txt b/app.txt") {
+				t.Fatalf("in-process review prompt is missing the branch diff: %s", agent.input.Prompt)
+			}
+			updated, err := st.GetTask(ctx, task.ID)
+			if err != nil || updated.State != core.TaskApproved {
+				t.Fatalf("task = %+v err=%v", updated, err)
+			}
+		})
 	}
 }
 

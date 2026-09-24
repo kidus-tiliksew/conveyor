@@ -50,6 +50,7 @@ type Service struct {
 }
 
 type Context struct {
+	ContextFreshness   core.ContextFreshness           `json:"context_freshness"`
 	Predecessor        *core.WorktreeIdentity          `json:"predecessor,omitempty"`
 	OperatorNotes      []core.OperatorNote             `json:"operator_notes,omitempty"`
 	Order              core.WorkOrder                  `json:"work_order"`
@@ -108,9 +109,11 @@ type ArtifactReference struct {
 }
 
 type ArtifactContent struct {
-	Artifact core.Artifact `json:"artifact"`
-	Encoding string        `json:"encoding"`
-	Data     string        `json:"data"`
+	ContextFreshness core.ContextFreshness    `json:"context_freshness"`
+	FetchReceipt     *core.ContextObservation `json:"fetch_receipt,omitempty"`
+	Artifact         core.Artifact            `json:"artifact"`
+	Encoding         string                   `json:"encoding"`
+	Data             string                   `json:"data"`
 }
 
 func (s *Service) config(ctx context.Context) (*config.Config, error) {
@@ -870,6 +873,8 @@ func (s *Service) contextForOrder(ctx context.Context, order core.WorkOrder) (Co
 		return Context{}, err
 	}
 	result.LineageContext = lineage
+	snapshot := core.WithContextAuthority(lineage.Snapshot, authoritySource, servedRequirements, governance)
+	result.ContextFreshness = s.observeContext(ctx, order, snapshot, "", "context.baseline_observed")
 	artifacts := artifactReferences(order.ID, lineage.Artifacts)
 	result.Artifacts = artifacts
 	result.ContextTruncated = lineage.Traversal.Truncated || lineage.OmittedCount > 0
@@ -1116,28 +1121,79 @@ func (s *Service) ReadArtifact(ctx context.Context, id, session, artifactID stri
 	if err != nil {
 		return ArtifactContent{}, err
 	}
-	references, err := s.artifactsForOrder(ctx, order)
+	lineage, err := s.lineageForOrder(ctx, order)
 	if err != nil {
 		return ArtifactContent{}, err
 	}
 	var authorized *core.Artifact
-	for i := range references {
-		if references[i].ID == artifactID {
-			artifact := references[i].Artifact
-			authorized = &artifact
+	for _, a := range lineage.Artifacts {
+		if a.ID == artifactID {
+			copy := a
+			authorized = &copy
 			break
 		}
 	}
 	if authorized == nil {
-		// Keep unauthorized ownership mismatches indistinguishable from missing
-		// artifacts; artifact ids alone are never bearer capabilities (design-http-api).
-		return ArtifactContent{}, fmt.Errorf("artifact %s not found for work order %s", artifactID, id)
+		return ArtifactContent{}, fmt.Errorf("artifact not found for work order")
 	}
-	_, content, err := s.Store.GetArtifact(ctx, artifactID)
+	snapshot, err := s.freshnessSnapshot(ctx, order, lineage.Snapshot)
 	if err != nil {
-		return ArtifactContent{}, fmt.Errorf("artifact %s not found for work order %s", artifactID, id)
+		return ArtifactContent{}, fmt.Errorf("refresh_unavailable")
 	}
-	return ArtifactContent{Artifact: *authorized, Encoding: "base64", Data: base64.StdEncoding.EncodeToString(content)}, nil
+	result := ArtifactContent{Artifact: *authorized, Encoding: "base64"}
+	_, content, readErr := s.Store.GetArtifact(ctx, artifactID)
+	outcome := "fetched"
+	if readErr != nil || int64(len(content)) != authorized.SizeBytes || core.ContextBytesDigest(content) != artifactID {
+		outcome = "fetch_failed"
+	}
+	// Recheck exact claim and current eligibility after storage I/O; a removed
+	// attachment cannot retain authority just because its ID was selected earlier.
+	latest, authErr := s.authorizedForObservation(ctx, id, session)
+	if authErr != nil || latest.AttemptID != order.AttemptID || (latest.State == core.WorkOrderClaimed && !latest.ExecutionDeadline.IsZero() && !latest.ExecutionDeadline.After(time.Now())) {
+		return ArtifactContent{}, store.ErrWorkOrderClaimUnauthorized
+	}
+	current, err := s.artifactsForOrder(ctx, order)
+	if err != nil {
+		return ArtifactContent{}, store.ErrWorkOrderClaimUnauthorized
+	}
+	eligible := false
+	for _, a := range current {
+		if a.ID == artifactID {
+			eligible = true
+			break
+		}
+	}
+	if !eligible {
+		return ArtifactContent{}, store.ErrWorkOrderClaimUnauthorized
+	}
+	boundedSnapshot := core.BoundContextFreshness(core.ContextFreshness{Snapshot: snapshot}).Snapshot
+	observation := core.ContextObservation{Snapshot: &boundedSnapshot, Kind: "context.artifact_fetch_observed", SelectionRevision: snapshot.Revision, ArtifactID: artifactID, Outcome: outcome}
+	if outcome == "fetched" {
+		observation.ContentDigest = core.ContextBytesDigest(content)
+		observation.ReturnedBytes = int64(len(content))
+		result.Data = base64.StdEncoding.EncodeToString(content)
+	}
+	receipt, recordErr := s.recordContext(ctx, order, observation)
+	events, eventsErr := s.Store.ListEvents(ctx, order.TaskID)
+	result.ContextFreshness = store.ProjectContext(snapshot, store.ContextHistory(events, order), snapshot.Revision)
+	if recordErr == nil && eventsErr == nil {
+		result.ContextFreshness.ObservationRecorded = true
+		result.ContextFreshness.ObservationID = receipt.ID
+		result.ContextFreshness.ObservedAt = receipt.ObservedAt
+		result.FetchReceipt = &receipt
+	} else {
+		result.ContextFreshness.Diagnostic = "observation_unavailable"
+		if order.State == core.WorkOrderSubmitted {
+			result.ContextFreshness.Diagnostic = "observation_not_recorded"
+		}
+	}
+	if outcome != "fetched" {
+		result.ContextFreshness.Diagnostic = "fetch_failed"
+		result.Data = ""
+		result.Encoding = ""
+	}
+	result.ContextFreshness = core.BoundContextFreshness(result.ContextFreshness)
+	return result, nil
 }
 
 func (s *Service) artifactsForOrder(ctx context.Context, order core.WorkOrder) ([]ArtifactReference, error) {
@@ -1532,6 +1588,7 @@ func (s *Service) submitForReviewLocked(ctx context.Context, id, session, headSH
 			return nil, fmt.Errorf("record reviewed PR head: %w", err)
 		}
 	}
+	freshness := s.refreshContext(ctx, order, "", "context.verdict_refresh_observed")
 	order.State = core.WorkOrderSubmitted
 	order.HeadSHA = headSHA
 	if err = guardedUpdateWorkOrder(ctx, s.Store, order, core.WorkOrderCmdSubmitForReview); err != nil {
@@ -1581,13 +1638,14 @@ func (s *Service) submitForReviewLocked(ctx context.Context, id, session, headSH
 		if resultErr != nil {
 			return nil, resultErr
 		}
+		result["context_freshness"] = freshness
 		result["pr_url"] = prURL
 		result["review_execution"] = reviewExecution
 		result["await_review"] = false
 		return result, nil
 	}
 	s.Dispatcher.Enqueue(ctx, task.ID)
-	result := map[string]any{"pr_url": prURL, "review_execution": reviewExecution, "await_review": true}
+	result := map[string]any{"pr_url": prURL, "review_execution": reviewExecution, "await_review": true, "context_freshness": freshness}
 	if nextStage == core.StageVerify {
 		result["next_stage"] = nextStage
 	}
@@ -1928,10 +1986,11 @@ func (s *Service) SubmitVerdict(ctx context.Context, id, session string, review 
 	if !found {
 		return nil, fmt.Errorf("review job unavailable")
 	}
+	freshness := s.refreshContext(ctx, order, "", "context.verdict_refresh_observed")
 	if err = s.Dispatcher.ApplyExternalReviewPinned(ctx, task, job, validated, order.ID, session, order.Model, order.ServedRequirementSnapshot, order.GovernanceSnapshot, true); err != nil {
 		return nil, err
 	}
-	result := map[string]any{"verdict": validated.Verdict, "task_id": task.ID, "review_round": order.ReviewRound, "review_seat": order.ReviewSeat, "model_enforcement": order.ModelEnforcement}
+	result := map[string]any{"context_freshness": freshness, "verdict": validated.Verdict, "task_id": task.ID, "review_round": order.ReviewRound, "review_seat": order.ReviewSeat, "model_enforcement": order.ModelEnforcement}
 	if order.RequiredEffort != "" {
 		result["required_effort"] = order.RequiredEffort
 	}

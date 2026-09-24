@@ -92,11 +92,15 @@ func TestMCPReadArtifactSupportsManualSessionsAndEnforcesWorkerOwnership(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err = st.CreateWorker(ctx, core.Worker{ID: "worker-a", Workspace: "demo", OwnerUserID: "owner-a"}); err != nil {
+		t.Fatal(err)
+	}
 	server := NewServer(st)
 	server.Workspace = "demo"
 	server.WorkOrders = &workorder.Service{Store: st}
 	args := map[string]any{"workspace_id": "demo", "work_order_id": "order-a", "session_id": "session-a", "artifact_id": artifact.ID}
 	request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	request = request.WithContext(store.WithCredential(request.Context(), core.AuthenticatedCredential{ID: "manual-agent", OwnerUserID: "owner-a", Kind: core.CredentialAgent}))
 	if _, err = server.callMCPTool(request, "read_artifact", args); err != nil {
 		t.Fatalf("manual read: %v", err)
 	}
@@ -971,7 +975,7 @@ func TestMCPToolsListRequiresAuthAndPublishesLifecycle(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"list_workspaces", "list_repositories", "list_tasks", "get_task", "list_task_events", "get_task_context", "list_documents", "get_document", "list_document_events", "list_decisions", "get_decision", "create_task", "add_task_dependency", "set_assignee", "attach_task_branch", "list_work_orders", "claim_work_order", "redispatch_work_order", "renew_work_order", "release_work_order", "request_plan_revision", "get_work_order", "read_artifact", "report_progress", "report_usage", "report_continuation", "propose_system_design_revision", "propose_requirement_revision", "propose_decision", "upload_transcript", "submit_plan", "submit_for_review", "await_review", "submit_review_verdict"}
+	want := []string{"list_workspaces", "list_repositories", "list_tasks", "get_task", "list_task_events", "get_task_context", "list_documents", "get_document", "list_document_events", "list_decisions", "get_decision", "create_task", "add_task_dependency", "set_assignee", "attach_task_branch", "list_work_orders", "claim_work_order", "redispatch_work_order", "renew_work_order", "release_work_order", "request_plan_revision", "get_work_order", "refresh_work_order_context", "read_artifact", "report_progress", "report_usage", "report_continuation", "propose_system_design_revision", "propose_requirement_revision", "propose_decision", "upload_transcript", "submit_plan", "submit_for_review", "await_review", "submit_review_verdict"}
 	want = append(append(append([]string{}, want[:11]...), verificationTools...), want[11:]...)
 	if len(envelope.Result.Tools) != len(want) {
 		t.Fatalf("tools = %d, want %d", len(envelope.Result.Tools), len(want))
@@ -1118,6 +1122,7 @@ func TestMCPHumanReservedClassificationRejectsOmittedReservedTool(t *testing.T) 
 }
 
 var mcpAgentSafeReasons = map[string]string{
+	"refresh_work_order_context":       "Exact live-claim bounded observation; no authority or lifecycle mutation.",
 	"prepare_verification_operation":   "requires the exact live verify claim and retains one-use dispatch receipts",
 	"reconcile_verification_operation": "requires the exact live verify claim and cannot issue operator recovery authorization",
 	"submit_verification":              "seals validated evidence under the exact claim without judging review acceptance",

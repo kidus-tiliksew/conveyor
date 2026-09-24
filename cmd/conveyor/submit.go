@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/gitx"
 	"github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 	"github.com/kidus-tiliksew/conveyor/internal/workorder"
@@ -34,6 +35,16 @@ func submitCmd() *cobra.Command {
 		result, err := c.submitTask(cmd.Context(), args[0], os.Getenv("CONVEYOR_WORK_ORDER_ID"), os.Getenv("CONVEYOR_SESSION_ID"), directory)
 		if err != nil {
 			return err
+		}
+		if raw, ok := result["context_freshness"]; ok {
+			data, _ := json.Marshal(raw)
+			var f core.ContextFreshness
+			if json.Unmarshal(data, &f) == nil {
+				_, summary := contextFreshnessSummary(f)
+				if summary != "" {
+					fmt.Fprintln(cmd.ErrOrStderr(), summary)
+				}
+			}
 		}
 		return json.NewEncoder(cmd.OutOrStdout()).Encode(result)
 	}}

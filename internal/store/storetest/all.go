@@ -160,6 +160,7 @@ func RunAll(t *testing.T, factory Factory) {
 		{"Workers", true, runWorkers},
 		{"WorkOrders", true, runWorkOrders},
 		{"WorktreeHandoff", true, runWorktreeHandoff},
+		{"ContextFreshness", true, runContextFreshness},
 		{"WorkOrderClocks", true, runWorkOrderClocks},
 		{"ReviewRounds", true, runReviewRounds},
 		{"ReviewAcceptance", true, runReviewAcceptance},
