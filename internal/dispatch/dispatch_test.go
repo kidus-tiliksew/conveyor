@@ -582,6 +582,9 @@ func TestInProcessReviewEmbedsBranchDiff(t *testing.T) {
 	if err := st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
 	}
+	if err := st.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]string{"base_sha": "base-sha", "head_sha": "head-sha"})}); err != nil {
+		t.Fatal(err)
+	}
 	bundle, err := pack.Load("../../pack")
 	if err != nil {
 		t.Fatal(err)
@@ -600,7 +603,7 @@ func TestInProcessReviewEmbedsBranchDiff(t *testing.T) {
 	if agent.calls != 1 {
 		t.Fatalf("calls = %d, want 1", agent.calls)
 	}
-	for _, expected := range []string{"# Branch diff (conveyor/task-review-diff vs main)", "````diff", "diff --git a/app.txt b/app.txt", "+v2"} {
+	for _, expected := range []string{"# Authoritative review comparison", "github_base_head_compare", "Scope: full", "Baseline SHA: `base-sha`", "Reviewed head SHA: `head-sha`", "# Branch diff (base-sha...head-sha)", "supporting changed-path evidence", "````diff", "diff --git a/app.txt b/app.txt", "+v2"} {
 		if !strings.Contains(agent.input.Prompt, expected) {
 			t.Fatalf("review prompt missing %q:\n%s", expected, agent.input.Prompt)
 		}
@@ -613,6 +616,9 @@ func TestInProcessReviewStatesWhenBranchHasNoChanges(t *testing.T) {
 	st := store.NewMemory()
 	task := core.Task{ID: "review-empty", Workspace: "demo", Repo: "api", Title: "Review nothing", Mode: core.TaskModeAuto, PolicyVersion: 1, State: core.TaskQueued, NextStage: core.StageReview, Branch: "conveyor/task-review-empty", BaseBranch: "main", CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]string{"base_sha": "empty-base", "head_sha": "empty-head"})}); err != nil {
 		t.Fatal(err)
 	}
 	bundle, err := pack.Load("../../pack")
@@ -628,8 +634,43 @@ func TestInProcessReviewStatesWhenBranchHasNoChanges(t *testing.T) {
 	if agent.calls != 1 {
 		t.Fatalf("calls = %d, want 1", agent.calls)
 	}
-	if !strings.Contains(agent.input.Prompt, "Branch conveyor/task-review-empty contains no changes against base main.") {
-		t.Fatalf("review prompt missing empty-diff statement:\n%s", agent.input.Prompt)
+	for _, expected := range []string{"Baseline SHA: `empty-base`", "Reviewed head SHA: `empty-head`", "completed successfully and contains no changes"} {
+		if !strings.Contains(agent.input.Prompt, expected) {
+			t.Fatalf("review prompt missing %q:\n%s", expected, agent.input.Prompt)
+		}
+	}
+}
+
+func TestInProcessReviewRendersFrozenRefreshDeltaComparison(t *testing.T) {
+	t.Parallel()
+	ctx := store.WithWorkspace(context.Background(), "demo")
+	st := store.NewMemory()
+	task := core.Task{
+		ID: "review-refresh-delta", Workspace: "demo", Repo: "api", Title: "Review the delta", Mode: core.TaskModeAuto,
+		PolicyVersion: 1, State: core.TaskQueued, NextStage: core.StageReview, Branch: "conveyor/task-review-refresh-delta", BaseBranch: "main",
+		ApprovalStale: true, RefreshBaselineSHA: "approved-head", RefreshHeadSHA: "replacement-head", RefreshReviewScope: config.RefreshReviewDelta,
+		CreatedAt: time.Now(),
+	}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := pack.Load("../../pack")
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent := &capturingInputAgent{}
+	cfg := &config.Config{Workspace: "demo", MaxBounces: 2, Routing: config.Routing{Stages: map[string]config.StageRoute{"review": {Model: "gpt", Timeout: time.Minute}}}}
+	dispatcher := New(st, cfg, agent)
+	dispatcher.Pack = bundle
+	dispatcher.ReviewDiff = func(context.Context, *config.Config, core.Task) (string, error) { return "delta", nil }
+	_ = dispatcher.DispatchNow(ctx, task.ID)
+	if agent.calls != 1 {
+		t.Fatalf("calls = %d, want 1", agent.calls)
+	}
+	for _, expected := range []string{"Scope: delta", "Baseline SHA: `approved-head`", "Reviewed head SHA: `replacement-head`", "# Branch diff (approved-head...replacement-head)"} {
+		if !strings.Contains(agent.input.Prompt, expected) {
+			t.Fatalf("refresh prompt missing %q:\n%s", expected, agent.input.Prompt)
+		}
 	}
 }
 
@@ -639,6 +680,9 @@ func TestInProcessReviewDiffFailuresStopBeforeModelExecution(t *testing.T) {
 	st := store.NewMemory()
 	task := core.Task{ID: "review-diff-fail", Workspace: "demo", Repo: "api", Title: "Review the change", Mode: core.TaskModeAuto, PolicyVersion: 1, State: core.TaskQueued, NextStage: core.StageReview, Branch: "conveyor/task-review-diff-fail", BaseBranch: "main", CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]string{"base_sha": "failure-base", "head_sha": "failure-head"})}); err != nil {
 		t.Fatal(err)
 	}
 	bundle, err := pack.Load("../../pack")
@@ -3184,6 +3228,9 @@ func TestReviewCitationValidationUsesInProcessBounceAndExternalRetry(t *testing.
 	if err := st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
 	}
+	if err := st.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]string{"base_sha": "citation-base", "head_sha": "citation-head"})}); err != nil {
+		t.Fatal(err)
+	}
 	requirement, version, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-citation", Title: "Citation contract"}, core.RequirementVersion{
 		Content:    "# Review cites confirmed intent.\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Review cites confirmed intent.\n```",
 		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Review cites confirmed intent."}},
@@ -3365,6 +3412,9 @@ func TestLegacyDoneHeadingPromptAndValidatorAgreeNoExecutionPlan(t *testing.T) {
 	if err := st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
 	}
+	if err := st.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]string{"base_sha": "legacy-base", "head_sha": "legacy-head"})}); err != nil {
+		t.Fatal(err)
+	}
 	legacy := "## Definition of done\n\n- Legacy checks pass.\n\n```conveyor:spec\n{\"acceptance\":[]}\n```"
 	spec, err := st.CreateSpecVersion(ctx, core.SpecVersion{TaskID: task.ID, Content: legacy})
 	if err != nil {
@@ -3421,6 +3471,9 @@ func TestInProcessReviewUsesTaskScopedGovernanceForPromptAndValidation(t *testin
 	}
 	task := core.Task{ID: "inprocess-task-governance", Workspace: "test", Repo: "app", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: time.Now().UTC()}
 	if err = st.CreateTaskWithDependenciesAndContext(ctx, task, nil, store.TaskContextInput{DesignIDs: []string{design.ID}}); err != nil {
+		t.Fatal(err)
+	}
+	if err = st.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]string{"base_sha": "governance-base", "head_sha": "governance-head"})}); err != nil {
 		t.Fatal(err)
 	}
 	newer, err := st.ProposeSystemDesignVersion(ctx, core.SystemDesignVersion{DocumentID: design.ID, Content: "# Newer v2\n\n```conveyor:governs\n- repo: app\n  paths:\n    - internal/v2/**\n```", Origin: core.SystemDesignOriginOperator})

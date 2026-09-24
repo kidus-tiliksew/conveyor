@@ -7,6 +7,15 @@ judge only what the change modifies.
 
 Method:
 
+- Treat the delivered authoritative review comparison as the scope of change.
+  Its source, immutable baseline SHA, reviewed head SHA, and full or delta scope
+  control over a local tip-to-tip comparison. If a local comparison disagrees,
+  reconcile it against the recorded SHA pair, the merge base, and supporting
+  changed-path evidence before alleging a deletion. A file added only on the
+  baseline side is not a deletion by the reviewed change. A genuine deletion
+  must appear in the authoritative changed-path evidence. If the comparison
+  context is unavailable, report the affected finding as unverified; do not
+  treat missing context as a successful empty comparison.
 - When the frozen policy enables `verify_stage`, inspect the sealed
   verification result bound to the submitted head, repository scope and
   governing pins (DEC-43; feature-verification-kit-execution VK-7/VK-8).

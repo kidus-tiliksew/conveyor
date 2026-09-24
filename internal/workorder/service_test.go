@@ -982,6 +982,10 @@ func TestReviewWorkOrderContextIncludesPullRequestDescriptionBestEffort(t *testi
 			if result.Diff != "branch diff" || result.PullRequestDescription != tt.description {
 				t.Fatalf("diff=%q description=%q", result.Diff, result.PullRequestDescription)
 			}
+			wantComparison := &dispatch.ReviewComparison{Source: dispatch.ReviewComparisonSourceGitHub, BaselineSHA: "base123", HeadSHA: "abc123", Scope: config.RefreshReviewFull}
+			if result.ReviewComparison == nil || *result.ReviewComparison != *wantComparison {
+				t.Fatalf("review comparison=%+v want %+v", result.ReviewComparison, wantComparison)
+			}
 			encoded, err := json.Marshal(result)
 			if err != nil {
 				t.Fatal(err)
@@ -989,10 +993,96 @@ func TestReviewWorkOrderContextIncludesPullRequestDescriptionBestEffort(t *testi
 			if !strings.Contains(string(encoded), `"pull_request_description":`) {
 				t.Fatalf("review context does not label the PR description: %s", encoded)
 			}
+			if !strings.Contains(string(encoded), `"review_comparison":{"source":"github_base_head_compare","baseline_sha":"base123","head_sha":"abc123","scope":"full"}`) {
+				t.Fatalf("review context does not serialize authoritative comparison metadata: %s", encoded)
+			}
 			if len(result.VerificationEvidence) != 0 {
 				t.Fatalf("PR description changed verification-evidence eligibility: %+v", result.VerificationEvidence)
 			}
 		})
+	}
+}
+
+func TestReviewWorkOrderContextPreservesRefreshDeltaAndEmptyDiffMetadata(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "test")
+	st := store.NewMemory()
+	task := core.Task{
+		ID: "refresh-delta-context", Workspace: "test", Repo: "app", Branch: "conveyor/task-refresh-delta-context",
+		State: core.TaskRunning, NextStage: core.StageReview, ApprovalStale: true,
+		RefreshBaselineSHA: "approved-head", RefreshHeadSHA: "replacement-head", RefreshReviewScope: config.RefreshReviewDelta,
+		CreatedAt: time.Now(),
+	}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: task.ID + "-review-2", TaskID: task.ID, Stage: core.StageReview, State: core.JobPending}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	emptyGovernance := &core.GovernanceSnapshot{Designs: []core.GovernanceDesignContext{}, Decisions: []core.Decision{}}
+	order := core.WorkOrder{
+		ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageReview,
+		ReviewKind: "refresh", ReviewScope: config.RefreshReviewDelta, BaselineSHA: "approved-head", HeadSHA: "replacement-head",
+		ServedRequirementSnapshot: []core.ServedRequirementContext{}, GovernanceSnapshot: emptyGovernance,
+	}
+	if err := storetest.For(st).CreateWorkOrder(ctx, order); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "refresh-review-session", ClientToken: "refresh-review-token", Lease: time.Minute}); err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := pack.Load("../../pack")
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{
+		Store: st, Pack: bundle,
+		ConfigProvider: func(context.Context) (*config.Config, error) {
+			return &config.Config{Repos: []config.Repo{{Name: "app", GitHub: "acme/app"}}}, nil
+		},
+		ReviewDiffBetween: func(_ context.Context, repo, base, head string) (string, error) {
+			if repo != "acme/app" || base != "approved-head" || head != "replacement-head" {
+				t.Fatalf("diff repo=%q base=%q head=%q", repo, base, head)
+			}
+			return "\n", nil
+		},
+	}
+	result, err := service.Get(ctx, job.ID, "refresh-review-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := dispatch.ReviewComparison{Source: dispatch.ReviewComparisonSourceGitHub, BaselineSHA: "approved-head", HeadSHA: "replacement-head", Scope: config.RefreshReviewDelta}
+	if result.ReviewComparison == nil || *result.ReviewComparison != want || strings.TrimSpace(result.Diff) != "" {
+		t.Fatalf("review comparison=%+v diff=%q want %+v and successful empty diff", result.ReviewComparison, result.Diff, want)
+	}
+}
+
+func TestReviewWorkOrderContextFailsClosedWhenComparisonUnavailable(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "test")
+	st := store.NewMemory()
+	task := core.Task{ID: "comparison-unavailable", Workspace: "test", Repo: "app", Branch: "conveyor/task-comparison-unavailable", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: time.Now()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: task.ID + "-review-1", TaskID: task.ID, Stage: core.StageReview, State: core.JobPending}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageReview, ServedRequirementSnapshot: []core.ServedRequirementContext{}, GovernanceSnapshot: &core.GovernanceSnapshot{Designs: []core.GovernanceDesignContext{}, Decisions: []core.Decision{}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "review-session", ClientToken: "review-token", Lease: time.Minute}); err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := pack.Load("../../pack")
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{Store: st, Pack: bundle, ConfigProvider: func(context.Context) (*config.Config, error) {
+		return &config.Config{Repos: []config.Repo{{Name: "app", GitHub: "acme/app"}}}, nil
+	}}
+	if _, err = service.Get(ctx, job.ID, "review-session"); err == nil || !strings.Contains(err.Error(), "no recorded review comparison") {
+		t.Fatalf("Get error=%v, want unavailable comparison failure", err)
 	}
 }
 
@@ -2179,6 +2269,9 @@ func TestSubmitForReviewReturnsSynchronousInProcessVerdict(t *testing.T) {
 	st := store.NewMemory()
 	task := core.Task{ID: "task-sync", Workspace: "test", Repo: "app", Title: "Change", Branch: "conveyor/task-sync", BaseBranch: "main", Level: core.L0, State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]string{"base_sha": "base123", "head_sha": "abc123"})}); err != nil {
 		t.Fatal(err)
 	}
 	job := core.Job{ID: "implement-1", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending, ModelTier: "implementer", StartedAt: time.Now()}

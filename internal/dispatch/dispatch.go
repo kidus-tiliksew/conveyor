@@ -196,6 +196,38 @@ func reviewBranchDiff(ctx context.Context, cfg *config.Config, task core.Task) (
 	return github.DiffBetween(ctx, repo.GitHub, task.BaseBranch, task.ReviewedHeadSHA)
 }
 
+const ReviewComparisonSourceGitHub = "github_base_head_compare"
+
+// ReviewComparison identifies the immutable GitHub comparison that defines a
+// review's scope. The diff bytes remain a separate field so an empty successful
+// comparison cannot be confused with unavailable comparison context.
+type ReviewComparison struct {
+	Source      string `json:"source"`
+	BaselineSHA string `json:"baseline_sha"`
+	HeadSHA     string `json:"head_sha"`
+	Scope       string `json:"scope"`
+}
+
+// RecordedReviewComparisonContext labels the same recorded SHA pair consumed
+// by review diff resolution. Full reviews compare the submitted base and head;
+// delta refresh reviews compare the frozen approved head and replacement head.
+func RecordedReviewComparisonContext(task core.Task, events []core.Event) (ReviewComparison, error) {
+	comparison, err := RecordedReviewComparison(task, events)
+	if err != nil {
+		return ReviewComparison{}, err
+	}
+	scope := config.RefreshReviewFull
+	if task.ApprovalStale && task.RefreshReviewScope == config.RefreshReviewDelta {
+		scope = config.RefreshReviewDelta
+	}
+	return ReviewComparison{
+		Source:      ReviewComparisonSourceGitHub,
+		BaselineSHA: comparison.BaseBranch,
+		HeadSHA:     comparison.ReviewedHeadSHA,
+		Scope:       scope,
+	}, nil
+}
+
 // RecordedReviewComparison projects the verified commit pair, never mutable
 // branch names, into a transient task used solely for review input reads.
 func RecordedReviewComparison(task core.Task, events []core.Event) (core.Task, error) {
@@ -936,6 +968,10 @@ func (d *Dispatcher) buildStageInput(ctx context.Context, cfg *config.Config, st
 		if d.ReviewDiff == nil {
 			return inprocess.Input{}, fmt.Errorf("in-process review for task %s requires a branch diff resolver", task.ID)
 		}
+		comparison, comparisonErr := RecordedReviewComparisonContext(task, events)
+		if comparisonErr != nil {
+			return inprocess.Input{}, fmt.Errorf("resolve review comparison for task %s: %w", task.ID, comparisonErr)
+		}
 		diff, diffErr := d.ReviewDiff(ctx, cfg, task)
 		if diffErr != nil {
 			return inprocess.Input{}, fmt.Errorf("resolve branch diff for task %s: %w", task.ID, diffErr)
@@ -943,12 +979,13 @@ func (d *Dispatcher) buildStageInput(ctx context.Context, cfg *config.Config, st
 		if len(diff) > maxModelDiffBytes {
 			return inprocess.Input{}, fmt.Errorf("branch diff for task %s (%d bytes) exceeds the %d-byte model input limit", task.ID, len(diff), maxModelDiffBytes)
 		}
+		fmt.Fprintf(&prompt, "\n# Authoritative review comparison\n\nSource: GitHub base...head compare (`%s`)\nScope: %s\nBaseline SHA: `%s`\nReviewed head SHA: `%s`\n\nUse this immutable comparison as the scope of change. Reconcile any local comparison discrepancy against this SHA pair, its merge base, and supporting changed-path evidence before alleging a deletion. A path present only on the baseline side is not a deletion by this change.\n", comparison.Source, comparison.Scope, comparison.BaselineSHA, comparison.HeadSHA)
 		if strings.TrimSpace(diff) == "" {
-			fmt.Fprintf(&prompt, "\n# Branch diff\n\nBranch %s contains no changes against base %s.\n", task.Branch, task.BaseBranch)
+			fmt.Fprint(&prompt, "\n# Branch diff\n\nThe authoritative comparison completed successfully and contains no changes.\n")
 		} else {
 			// Four-backtick fence so diff hunks that themselves contain
 			// three-backtick lines cannot terminate the block early.
-			fmt.Fprintf(&prompt, "\n# Branch diff (%s vs %s)\n\nThe change under review:\n\n````diff\n%s\n````\n", task.Branch, task.BaseBranch, strings.TrimRight(diff, "\n"))
+			fmt.Fprintf(&prompt, "\n# Branch diff (%s...%s)\n\nThe change under review:\n\n````diff\n%s\n````\n", comparison.BaselineSHA, comparison.HeadSHA, strings.TrimRight(diff, "\n"))
 		}
 	}
 	if stage == core.StageSpec {
