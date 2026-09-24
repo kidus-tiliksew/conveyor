@@ -3,6 +3,7 @@ package storetest
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -40,6 +41,17 @@ func runContextFreshness(t *testing.T, x Fixture) {
 	if first.ActorID != store.UserActorID(owner.ID) || first.AttemptID != order.AttemptID || first.ObservedAt.IsZero() {
 		t.Fatal(first)
 	}
+	// Submission already holds this outer lock. The durable writer must reuse
+	// that lock's session rather than wait for itself on another connection.
+	lockedCtx, cancelLock := context.WithTimeout(ctx, 15*time.Second)
+	defer cancelLock()
+	requireOK(t, st.WithTaskSideEffectLock(lockedCtx, order.TaskID, func(inner context.Context) error {
+		replayed, err := record(inner, observation)
+		if err == nil && replayed.ID != first.ID {
+			return fmt.Errorf("nested observation changed receipt")
+		}
+		return err
+	}))
 	var wg sync.WaitGroup
 	results := make(chan core.ContextObservation, 8)
 	errs := make(chan error, 8)
@@ -129,6 +141,12 @@ func runContextFreshness(t *testing.T, x Fixture) {
 	}
 	_, err = recordInput(internalCtx)
 	requireOK(t, err)
+	inputCtx, cancelInput := context.WithTimeout(internalCtx, 15*time.Second)
+	defer cancelInput()
+	requireOK(t, st.WithTaskSideEffectLock(inputCtx, order.TaskID, func(inner context.Context) error {
+		_, err := recordInput(inner)
+		return err
+	}))
 	_, err = recordInput(internalCtx)
 	requireOK(t, err)
 	if _, err = recordInput(ctx); err == nil {
