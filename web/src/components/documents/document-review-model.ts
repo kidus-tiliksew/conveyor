@@ -2,6 +2,8 @@ import type { RequirementVersion } from '../../lib/types'
 
 export type ReviewBlock = { id: string; title: string; content: string }
 export type WordChange = { text: string; kind: 'same' | 'added' | 'removed' }
+export type InlineStyle = 'text' | 'code' | 'emphasis' | 'strong' | 'link'
+export type FormattedChange = WordChange & { style: InlineStyle; href?: string }
 export type ReviewRow = {
   id: string
   title: string
@@ -130,6 +132,144 @@ export function wordChanges(before: string, after: string): WordChange[] | undef
   return result
 }
 
+type InlineRun = { text: string; style: InlineStyle; href?: string }
+type InlineToken = InlineRun & { key: string }
+
+function safeLinkDestination(destination: string) {
+  if (
+    !destination ||
+    [...destination].some((character) => character.charCodeAt(0) <= 0x20 || character.charCodeAt(0) === 0x7f) ||
+    destination.startsWith('//')
+  )
+    return false
+  const scheme = destination.match(/^([A-Za-z][A-Za-z\d+.-]*):/)?.[1].toLowerCase()
+  return !scheme || scheme === 'http' || scheme === 'https' || scheme === 'mailto'
+}
+
+function plainInlineContent(text: string) {
+  return text.length > 0 && !/[`*_[\]<>\\]/.test(text)
+}
+
+// Parse only the bounded, ordinary inline subset owned by the document review
+// renderer. Block Markdown and ambiguous/malformed inline syntax deliberately
+// return undefined so callers can render both complete sources with MarkdownProse.
+export function formattedParagraph(text: string): InlineRun[] | undefined {
+  if (
+    /(^|\n)\s{0,3}(?:#{1,6}\s|>|[-+*]\s|\d+[.)]\s|`{3,}|~{3,})/.test(text) ||
+    /(^|\n)\s{0,3}(?:=+|-+)\s*(?:\n|$)/.test(text) ||
+    /(^|\n).*\|.*(?:\n|$)/.test(text) ||
+    /<|>|~|\\|!\[/.test(text)
+  )
+    return undefined
+  const runs: InlineRun[] = []
+  const append = (run: InlineRun) => {
+    const last = runs.at(-1)
+    if (last?.style === run.style && last.href === run.href) last.text += run.text
+    else runs.push(run)
+  }
+  let cursor = 0
+  while (cursor < text.length) {
+    if (text[cursor] === '`') {
+      if (text.startsWith('``', cursor)) return undefined
+      const end = text.indexOf('`', cursor + 1)
+      const content = end < 0 ? '' : text.slice(cursor + 1, end)
+      if (!content || content.includes('\n') || /^\s|\s$/.test(content)) return undefined
+      append({ text: content, style: 'code' })
+      cursor = end + 1
+      continue
+    }
+    if (text.startsWith('**', cursor) || text.startsWith('__', cursor)) {
+      const marker = text.slice(cursor, cursor + 2)
+      const end = text.indexOf(marker, cursor + 2)
+      const content = end < 0 ? '' : text.slice(cursor + 2, end)
+      if (!plainInlineContent(content) || /^\s|\s$/.test(content)) return undefined
+      append({ text: content, style: 'strong' })
+      cursor = end + 2
+      continue
+    }
+    if (text[cursor] === '*' || text[cursor] === '_') {
+      const marker = text[cursor]
+      const previous = text[cursor - 1]
+      const next = text[cursor + 1]
+      if (marker === '_' && /[\p{L}\p{N}]/u.test(previous ?? '') && /[\p{L}\p{N}]/u.test(next ?? '')) {
+        append({ text: marker, style: 'text' })
+        cursor++
+        continue
+      }
+      const end = text.indexOf(marker, cursor + 1)
+      const content = end < 0 ? '' : text.slice(cursor + 1, end)
+      if (!plainInlineContent(content) || /^\s|\s$/.test(content)) return undefined
+      append({ text: content, style: 'emphasis' })
+      cursor = end + 1
+      continue
+    }
+    if (text[cursor] === '[') {
+      const labelEnd = text.indexOf('](', cursor + 1)
+      const destinationEnd = labelEnd < 0 ? -1 : text.indexOf(')', labelEnd + 2)
+      if (labelEnd < 0 || destinationEnd < 0) return undefined
+      const label = text.slice(cursor + 1, labelEnd)
+      const href = text.slice(labelEnd + 2, destinationEnd)
+      if (
+        !plainInlineContent(label) ||
+        !safeLinkDestination(href) ||
+        href.includes('(') ||
+        text[destinationEnd + 1] === ')'
+      )
+        return undefined
+      append({ text: label, style: 'link', href })
+      cursor = destinationEnd + 1
+      continue
+    }
+    if (text[cursor] === ']') return undefined
+    let end = cursor + 1
+    while (end < text.length && !'`*_[\\<>'.includes(text[end]) && !text.startsWith('![', end)) end++
+    append({ text: text.slice(cursor, end), style: 'text' })
+    cursor = end
+  }
+  return runs
+}
+
+function inlineTokens(runs: InlineRun[]): InlineToken[] {
+  return runs.flatMap((run) =>
+    tokens(run.text).map((text) => ({
+      ...run,
+      text,
+      key: `${run.style}\u0000${run.href ?? ''}\u0000${text}`,
+    })),
+  )
+}
+
+export function formattedParagraphChanges(before: string, after: string): FormattedChange[] | undefined {
+  const beforeRuns = formattedParagraph(before)
+  const afterRuns = formattedParagraph(after)
+  if (!beforeRuns || !afterRuns) return undefined
+  const left = inlineTokens(beforeRuns)
+  const right = inlineTokens(afterRuns)
+  if ((left.length + 1) * (right.length + 1) > maxCells) return undefined
+  const matrix = Array.from({ length: left.length + 1 }, () => new Uint32Array(right.length + 1))
+  for (let i = left.length - 1; i >= 0; i--)
+    for (let j = right.length - 1; j >= 0; j--)
+      matrix[i][j] =
+        left[i].key === right[j].key ? matrix[i + 1][j + 1] + 1 : Math.max(matrix[i + 1][j], matrix[i][j + 1])
+  const changes: FormattedChange[] = []
+  const append = (token: InlineToken, kind: WordChange['kind']) => {
+    const last = changes.at(-1)
+    if (last?.kind === kind && last.style === token.style && last.href === token.href) last.text += token.text
+    else changes.push({ text: token.text, kind, style: token.style, ...(token.href ? { href: token.href } : {}) })
+  }
+  let i = 0
+  let j = 0
+  while (i < left.length || j < right.length) {
+    if (i < left.length && j < right.length && left[i].key === right[j].key) {
+      append(left[i++], 'same')
+      j++
+    } else if (i < left.length && (j === right.length || matrix[i + 1][j] >= matrix[i][j + 1]))
+      append(left[i++], 'removed')
+    else append(right[j++], 'added')
+  }
+  return changes
+}
+
 export function compareDocuments(before: ReviewSource, after: ReviewSource) {
   const leftText = reviewText(before)
   const rightText = reviewText(after)
@@ -169,12 +309,6 @@ export function compareDocuments(before: ReviewSource, after: ReviewSource) {
     if (work > maxCells) return fallback
   }
   return { limited: false, leftText, rightText, rows }
-}
-
-// Plain prose supports semantic word annotations. Markdown structures retain
-// their complete safe before/after rendering rather than splicing syntax.
-export function plainProse(text: string) {
-  return !/[`~*_[\]<>|\\]|^\s*(?:#{1,6}\s|>|[-+]\s|\d+[.)]\s)/m.test(text)
 }
 
 function paragraphs(content: string) {

@@ -1,13 +1,13 @@
-import { useId, useMemo, useState } from 'react'
+import { type ReactNode, useId, useMemo, useState } from 'react'
 import { Button } from '../ui/button'
 import { MarkdownProse } from '../ui/markdown-prose'
 import {
   alignedParagraphs,
   compareDocuments,
-  plainProse,
+  type FormattedChange,
+  formattedParagraphChanges,
   type ReviewRow,
   type ReviewSource,
-  wordChanges,
 } from './document-review-model'
 
 type DiffLine = { text: string; changed: boolean }
@@ -213,8 +213,10 @@ export function DocumentComparison({ before, after }: { before: ReviewSource; af
         <div className="min-w-0 space-y-4">
           {changed.length > 0 && (
             <p className="text-xs text-muted">
+              Where detailed paragraph highlighting is available:{' '}
               <del className="bg-failure-soft text-failure">Removed text</del>{' '}
-              <ins className="bg-positive-soft text-positive">Added text</ins>
+              <ins className="bg-positive-soft text-positive">Added text</ins>. Blocks labeled unavailable show complete
+              content instead.
             </p>
           )}
           {!comparison.rows.length && <p className="text-sm text-muted">Both versions are empty.</p>}
@@ -279,21 +281,34 @@ function ReviewParagraph({
 }) {
   const before = beforeSource ?? ''
   const after = afterSource ?? ''
-  const words = plainProse(before) && plainProse(after) ? wordChanges(before, after) : undefined
+  const words = formattedParagraphChanges(before, after)
+  const styled = (word: FormattedChange) => {
+    let content: ReactNode = word.text
+    if (word.style === 'code') content = <code>{content}</code>
+    else if (word.style === 'emphasis') content = <em>{content}</em>
+    else if (word.style === 'strong') content = <strong>{content}</strong>
+    else if (word.style === 'link')
+      content = (
+        <a href={word.href} className="text-primary underline underline-offset-2">
+          {content}
+        </a>
+      )
+    return content
+  }
   const renderWords = (side?: 'before' | 'after') =>
     words?.map((word, index) => {
       if ((side === 'before' && word.kind === 'added') || (side === 'after' && word.kind === 'removed')) return null
       const key = `${index}-${word.kind}`
       return word.kind === 'added' ? (
         <ins key={key} className="bg-positive-soft text-positive">
-          {word.text}
+          {styled(word)}
         </ins>
       ) : word.kind === 'removed' ? (
         <del key={key} className="bg-failure-soft text-failure">
-          {word.text}
+          {styled(word)}
         </del>
       ) : (
-        <span key={key}>{word.text}</span>
+        <span key={key}>{styled(word)}</span>
       )
     })
   if (mode === 'inline' && words)
@@ -305,7 +320,11 @@ function ReviewParagraph({
     )
   return (
     <div>
-      {!words && <p className="px-4 pt-3 text-xs text-muted">Formatted block · complete before and after</p>}
+      {!words && (
+        <p className="px-4 pt-3 text-xs text-muted">
+          Detailed highlighting unavailable for this block · showing complete before and after
+        </p>
+      )}
       <div
         className={
           mode === 'side'
