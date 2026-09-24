@@ -226,7 +226,7 @@ func TestContextRefreshPreservesPinnedAuthorityAndReportsReferenceChanges(t *tes
 	}
 	changed := core.WithContextAuthority(lineage.Snapshot, "live", []core.ServedRequirementContext{{ID: "req-pin", Version: 4}}, gov)
 	f := core.CompareContext(changed, &pinned)
-	if !f.AuthorityReferenceChanged || order.ServedRequirementSnapshot[0].Version != 2 || order.GovernanceSnapshot.Designs[0].Version != 3 {
+	if !f.AuthorityReferenceChanged || f.PriorAuthoritySource != "pinned" || f.PriorAuthorityDigest != pinned.AuthorityDigest || len(f.PriorAuthorityReferences) != 2 || order.ServedRequirementSnapshot[0].Version != 2 || order.GovernanceSnapshot.Designs[0].Version != 3 {
 		t.Fatal("authority drift changed pins")
 	}
 	_ = st

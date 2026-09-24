@@ -115,6 +115,9 @@ type ContextFreshness struct {
 	ObservationRecorded       bool               `json:"observation_recorded"`
 	AcknowledgementSupported  bool               `json:"acknowledgement_supported"`
 	AuthorityReferenceChanged bool               `json:"authority_reference_changed"`
+	PriorAuthoritySource      string             `json:"prior_authority_source,omitempty"`
+	PriorAuthorityReferences  []string           `json:"prior_authority_references,omitempty"`
+	PriorAuthorityDigest      string             `json:"prior_authority_digest,omitempty"`
 	Diagnostic                string             `json:"diagnostic,omitempty"`
 	Truncated                 bool               `json:"truncated"`
 }
@@ -125,6 +128,11 @@ func CompareContext(current ContextSnapshot, prior *ContextSnapshot) ContextFres
 	if prior != nil {
 		f.BaselineRevision = prior.Revision
 		f.AuthorityReferenceChanged = current.AuthoritySource != prior.AuthoritySource || current.AuthorityDigest != prior.AuthorityDigest
+		if f.AuthorityReferenceChanged {
+			f.PriorAuthoritySource = prior.AuthoritySource
+			f.PriorAuthorityReferences = append([]string{}, prior.AuthorityReferences...)
+			f.PriorAuthorityDigest = prior.AuthorityDigest
+		}
 		if current.Revision == prior.Revision {
 			f.ComparisonStatus = "unchanged"
 		} else {
@@ -190,6 +198,10 @@ func BoundContextFreshness(f ContextFreshness) ContextFreshness {
 		}
 		if len(f.Deliveries) > 0 {
 			f.Deliveries = f.Deliveries[:len(f.Deliveries)-1]
+			continue
+		}
+		if len(f.PriorAuthorityReferences) > 0 {
+			f.PriorAuthorityReferences = f.PriorAuthorityReferences[:len(f.PriorAuthorityReferences)-1]
 			continue
 		}
 		if len(f.Snapshot.AuthorityReferences) > 0 {
