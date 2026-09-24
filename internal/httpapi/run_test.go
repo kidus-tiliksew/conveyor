@@ -235,7 +235,7 @@ func TestTaskRunEightIdleLauncherBenchmark(t *testing.T) {
 	if requests != 16 || before != 608 || afterWithoutUnrelated != 40 || after != 40 || counter.workspaceOrders != 0 || counter.workspaceProposals != 0 || counter.taskOrders != 8 || counter.taskProposals != 8 {
 		t.Fatalf("requests=%d store_operations_before=%d after_without_unrelated=%d after=%d counters=%+v", requests, before, afterWithoutUnrelated, after, counter)
 	}
-	t.Logf("eight_idle_launchers requests_per_sample=8 store_operations_before=%d store_operations_after=%d unrelated_tasks=64 scoped_operations_without_unrelated=%d", before, after, afterWithoutUnrelated)
+	t.Logf("eight_idle_launchers one_shot_projection_requests_per_sample=8 store_operations_before=%d store_operations_after=%d unrelated_tasks=64 scoped_operations_without_unrelated=%d", before, after, afterWithoutUnrelated)
 }
 
 func taskRunHTTPCall(handler http.Handler, method, path, body string) *httptest.ResponseRecorder {

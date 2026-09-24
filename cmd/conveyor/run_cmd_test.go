@@ -718,6 +718,102 @@ func TestAdaptiveTaskRunPollingBacksOffAndObservesTransitionWithinBound(t *testi
 	}
 }
 
+func TestEightIdleLauncherPollingRequestBenchmark(t *testing.T) {
+	const (
+		launchers      = 8
+		adaptiveBase   = 10 * time.Millisecond
+		legacyInterval = adaptiveBase * 8
+		idleInterval   = 190 * time.Millisecond
+	)
+	priorInterval, priorJitter := runGatePollInterval, runPollJitter
+	runGatePollInterval = adaptiveBase
+	runPollJitter = func(delay, _ time.Duration) time.Duration { return delay }
+	defer func() {
+		runGatePollInterval = priorInterval
+		runPollJitter = priorJitter
+	}()
+
+	measure := func(t *testing.T, adaptive bool) int {
+		t.Helper()
+		var mutex sync.Mutex
+		requests := 0
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			mutex.Lock()
+			requests++
+			mutex.Unlock()
+			_ = json.NewEncoder(w).Encode(workerservice.DispatchOrder{Task: core.Task{ID: "idle"}})
+		}))
+		defer server.Close()
+
+		start := make(chan struct{})
+		var ready, done sync.WaitGroup
+		ready.Add(launchers)
+		done.Add(launchers)
+		errs := make(chan error, launchers)
+		var idleCtx context.Context
+		for index := 0; index < launchers; index++ {
+			go func(taskID string) {
+				defer done.Done()
+				ready.Done()
+				<-start
+				c := &client{base: server.URL, token: "parent-user-credential", workspace: "demo"}
+				if _, err := c.getTaskRunOrderContext(idleCtx, c.token, taskID); err != nil {
+					errs <- err
+					return
+				}
+				if !adaptive {
+					ticker := time.NewTicker(legacyInterval)
+					defer ticker.Stop()
+					for {
+						select {
+						case <-idleCtx.Done():
+							return
+						case <-ticker.C:
+							if _, err := c.getTaskRunOrderContext(idleCtx, c.token, taskID); err != nil && !errors.Is(err, context.DeadlineExceeded) {
+								errs <- err
+								return
+							}
+						}
+					}
+				}
+
+				stageCtx, cancelStage := context.WithCancel(idleCtx)
+				err := runStageWithTaskProposalPresentation(stageCtx, cancelStage, c, c.token, taskID, nil, taskProposalPresentation{
+					actions: make(chan runTUIAction), update: func([]workerservice.TaskRunProposal) {}, notice: func(string) {},
+				}, func() error {
+					<-stageCtx.Done()
+					return stageCtx.Err()
+				})
+				if !errors.Is(err, context.DeadlineExceeded) {
+					errs <- err
+				}
+			}(fmt.Sprintf("idle-%d", index))
+		}
+		ready.Wait()
+		var cancel context.CancelFunc
+		idleCtx, cancel = context.WithTimeout(t.Context(), idleInterval)
+		close(start)
+		done.Wait()
+		cancel()
+		close(errs)
+		for err := range errs {
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		mutex.Lock()
+		defer mutex.Unlock()
+		return requests
+	}
+
+	before := measure(t, false)
+	after := measure(t, true)
+	if before != 24 || after != 40 {
+		t.Fatalf("requests_before=%d requests_after=%d, want 24 and 40", before, after)
+	}
+	t.Logf("eight_idle_launcher_polling interval=%s concurrency=%d startup=immediate_request warmup=none jitter=disabled_for_reproducibility timing_scale=1/25 legacy_fixed_interval=%s adaptive_base=%s adaptive_max=%s requests_before=%d requests_after=%d observation=request_increase", idleInterval, launchers, legacyInterval, adaptiveBase, adaptiveBase*8, before, after)
+}
+
 func TestStageProposalPollingReturnsAuthenticationFailure(t *testing.T) {
 	priorInterval, priorJitter := runGatePollInterval, runPollJitter
 	runGatePollInterval = 5 * time.Millisecond
