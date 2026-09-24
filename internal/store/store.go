@@ -402,6 +402,11 @@ type DocumentStore interface {
 	// ListPendingProposals normalizes unresolved proposals across the
 	// requirement, System Design, and decision tiers (REQ-1, AC-1.2).
 	ListPendingProposals(ctx context.Context) ([]core.PendingProposal, error)
+	// ListPendingAuthorityProposalsForTask returns only unresolved requirement,
+	// System Design, and decision proposals authored by one task. The workspace
+	// and task predicates belong to the store boundary so task-run polling never
+	// materializes the workspace proposal queue.
+	ListPendingAuthorityProposalsForTask(ctx context.Context, taskID string) ([]core.PendingProposal, error)
 	// PendingProposalsProjection returns the workspace proposal queue together
 	// with the exact task-attention count without materializing the general task,
 	// activity, or work-order list projections (REQ-1, REQ-3).
@@ -3515,13 +3520,25 @@ func ProjectWorkOrderAt(order core.WorkOrder, now time.Time) core.WorkOrder {
 }
 
 func (m *memory) ListTaskWorkOrders(ctx context.Context, taskID string) ([]core.WorkOrder, error) {
-	orders, _ := m.ListWorkOrders(ctx)
-	out := orders[:0]
-	for _, order := range orders {
-		if order.TaskID == taskID {
-			out = append(out, order)
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	workspace, workspaceSelected := WorkspaceFromContext(ctx)
+	now := time.Now().UTC()
+	out := make([]core.WorkOrder, 0)
+	for _, order := range m.workOrders {
+		task, ok := m.tasks[order.TaskID]
+		if !ok || order.TaskID != taskID || workspaceSelected && workspace != "" && task.Workspace != workspace {
+			continue
 		}
+		order.Assignee = task.Assignee
+		out = append(out, ProjectWorkOrderAt(order, now))
 	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].ID < out[j].ID
+		}
+		return out[i].CreatedAt.Before(out[j].CreatedAt)
+	})
 	return out, nil
 }
 

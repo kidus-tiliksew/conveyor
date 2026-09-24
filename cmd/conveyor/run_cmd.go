@@ -7,9 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net/http"
 	"os"
 	"os/signal"
+	"reflect"
 	"strings"
 	"syscall"
 	"time"
@@ -63,7 +65,45 @@ const (
 	runModeAuto      = "auto-chained"
 )
 
-var runGatePollInterval = 2 * time.Second
+// Task-run reads are immediate, then unchanged projections back off from 250ms
+// to a hard two-second ceiling. Jitter avoids synchronized idle launchers while
+// keeping a real transition's observation latency bounded by that ceiling.
+var runGatePollInterval = 250 * time.Millisecond
+
+type runAdaptivePoller struct {
+	base, maximum, current time.Duration
+	jitter                 func(time.Duration, time.Duration) time.Duration
+}
+
+func newRunAdaptivePoller() *runAdaptivePoller {
+	base := runGatePollInterval
+	if base <= 0 {
+		base = time.Millisecond
+	}
+	return &runAdaptivePoller{base: base, maximum: base * 8, current: base, jitter: runPollJitter}
+}
+
+var runPollJitter = func(delay, maximum time.Duration) time.Duration {
+	spread := delay / 10
+	if spread <= 0 {
+		return delay
+	}
+	delay += time.Duration(rand.Int64N(int64(spread)*2+1)) - spread
+	if delay > maximum {
+		return maximum
+	}
+	return delay
+}
+
+func (p *runAdaptivePoller) delay() time.Duration { return p.jitter(p.current, p.maximum) }
+
+func (p *runAdaptivePoller) observe(changed bool) {
+	if changed {
+		p.current = p.base
+		return
+	}
+	p.current = min(p.current*2, p.maximum)
+}
 
 func runTask(ctx context.Context, c *client, taskID, configPath string, input io.Reader, output io.Writer, step, terminal bool) error {
 	return runTaskWithPresentation(ctx, c, taskID, configPath, input, output, step, terminal, false, false)
@@ -96,6 +136,8 @@ func runTaskWithPresentationAndSetup(ctx context.Context, c *client, taskID, con
 	// One persistent program owns the terminal for the whole attached run;
 	// every attached-path print below must route through it while it lives.
 	var app *runTUIController
+	statusPoller := newRunAdaptivePoller()
+	var previousProjection *workerservice.DispatchOrder
 	stopApp := func() {
 		if app != nil {
 			_ = app.Stop()
@@ -121,6 +163,8 @@ func runTaskWithPresentationAndSetup(ctx context.Context, c *client, taskID, con
 			stopApp()
 			return err
 		}
+		statusPoller.observe(!reflect.DeepEqual(previousProjection, item))
+		previousProjection = item
 		if item == nil || item.Order.ID == "" || taskRunReviewHasPendingProposals(item) {
 			if item != nil && (item.Task.State == core.TaskMerged || item.Task.State == core.TaskClosed || item.Task.State == core.TaskParked) {
 				if setupLoaded && (item.Task.State == core.TaskMerged || item.Task.State == core.TaskClosed) {
@@ -171,7 +215,7 @@ func runTaskWithPresentationAndSetup(ctx context.Context, c *client, taskID, con
 				case <-ctx.Done():
 					stopApp()
 					return printRunSummaryStyled(output, item.Task, runStages, outputTerminal)
-				case <-time.After(runGatePollInterval):
+				case <-time.After(statusPoller.delay()):
 					continue
 				}
 			}
@@ -181,7 +225,7 @@ func runTaskWithPresentationAndSetup(ctx context.Context, c *client, taskID, con
 			if interactiveTUI {
 				decision, feedback, waitErr = waitAtTaskRunGateAttached(ctx, c, ensureApp(item.Task), *item, lastTUIStage)
 			} else {
-				decision, feedback, waitErr = waitAtTaskRunGate(ctx, answers, output, *item, outputTerminal)
+				decision, feedback, waitErr = waitAtTaskRunGate(ctx, answers, output, *item, outputTerminal, statusPoller.delay())
 			}
 			if waitErr != nil {
 				stopApp()
@@ -194,8 +238,10 @@ func runTaskWithPresentationAndSetup(ctx context.Context, c *client, taskID, con
 			case runGatePoll:
 				continue
 			case runGateApprove:
+				statusPoller.observe(true)
 				err = c.approveTaskRunGateContext(ctx, c.token, *item)
 			case runGateRequestChanges:
+				statusPoller.observe(true)
 				err = c.requestTaskRunGateChangesContext(ctx, c.token, *item, feedback)
 			}
 			if err != nil {
@@ -319,7 +365,7 @@ func runTaskWithPresentationAndSetup(ctx context.Context, c *client, taskID, con
 		}
 		var runErr error
 		if interactiveTUI {
-			runErr = runStageWithTaskProposalPolling(stageCtx, c, c.token, selected.Task.ID, selected.PendingProposals, ensureApp(selected.Task), runChild)
+			runErr = runStageWithTaskProposalPolling(stageCtx, cancelStage, c, c.token, selected.Task.ID, selected.PendingProposals, ensureApp(selected.Task), runChild)
 		} else {
 			runErr = runChild()
 		}
@@ -328,6 +374,7 @@ func runTaskWithPresentationAndSetup(ctx context.Context, c *client, taskID, con
 		// Only this typed refusal is a wait; unrelated conflicts stay fatal.
 		var response *workerHTTPError
 		if (selected.Order.Stage == core.StageReview || selected.Order.Stage == core.StageVerify) && errors.As(runErr, &response) && response.StatusCode == http.StatusConflict && response.Code == "review_awaiting_proposal" {
+			statusPoller.observe(true)
 			if app != nil {
 				app.EndStage("Review is waiting on a task-authored proposal; refreshing task state.")
 			} else {
@@ -337,7 +384,7 @@ func runTaskWithPresentationAndSetup(ctx context.Context, c *client, taskID, con
 			case <-ctx.Done():
 				stopApp()
 				return printRunSummaryStyled(output, selected.Task, runStages, outputTerminal)
-			case <-time.After(runGatePollInterval):
+			case <-time.After(statusPoller.delay()):
 				continue
 			}
 		}
@@ -372,25 +419,33 @@ func waitAtTaskRunGateAttached(ctx context.Context, c *client, controller *runTU
 	} else {
 		controller.ClearGate()
 	}
-	ticker := time.NewTicker(runGatePollInterval)
-	defer ticker.Stop()
+	poller := newRunAdaptivePoller()
+	previous := item
 	for {
+		timer := time.NewTimer(poller.delay())
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return runGateStop, "", nil
 		case <-controller.interrupt:
+			timer.Stop()
 			return runGateStop, "", nil
 		case <-controller.finished:
+			timer.Stop()
 			if err := controller.result; err != nil && err != context.Canceled {
 				return runGateStop, "", err
 			}
 			return runGateStop, "", nil
 		case action := <-presentation.actions:
+			timer.Stop()
 			if action.decision != runConfirmProposal || action.proposal == nil {
 				return action.decision, action.feedback, nil
 			}
-			confirmTaskRunProposal(ctx, c, c.token, item.Task.ID, *action.proposal, presentation)
-		case <-ticker.C:
+			poller.observe(true)
+			if err := confirmTaskRunProposal(ctx, c, c.token, item.Task.ID, *action.proposal, presentation); err != nil {
+				return runGateStop, "", err
+			}
+		case <-timer.C:
 			fresh, err := c.getTaskRunOrderContext(ctx, c.token, item.Task.ID)
 			if err != nil {
 				return runGateStop, "", err
@@ -398,6 +453,8 @@ func waitAtTaskRunGateAttached(ctx context.Context, c *client, controller *runTU
 			if fresh == nil || (fresh.Order.ID != "" && !taskRunReviewHasPendingProposals(fresh)) || fresh.Task.State == core.TaskMerged || fresh.Task.State == core.TaskClosed || fresh.Task.State == core.TaskParked {
 				return runGatePoll, "", nil
 			}
+			poller.observe(!reflect.DeepEqual(previous, *fresh))
+			previous = *fresh
 			controller.UpdateProposals(fresh.PendingProposals)
 			if fresh.Gate != nil {
 				controller.UpdateGate(runTUIGate{task: fresh.Task, gate: *fresh.Gate})
@@ -411,10 +468,10 @@ func waitAtTaskRunGateAttached(ctx context.Context, c *client, controller *runTU
 	}
 }
 
-func runStageWithTaskProposalPolling(ctx context.Context, c *client, credential, taskID string, initial []workerservice.TaskRunProposal, controller *runTUIController, run func() error) error {
+func runStageWithTaskProposalPolling(ctx context.Context, cancelRun context.CancelFunc, c *client, credential, taskID string, initial []workerservice.TaskRunProposal, controller *runTUIController, run func() error) error {
 	controller.drainActions()
 	presentation := taskProposalPresentation{actions: controller.actions, update: controller.UpdateProposals, notice: controller.Notice}
-	return runStageWithTaskProposalPresentation(ctx, c, credential, taskID, initial, presentation, run)
+	return runStageWithTaskProposalPresentation(ctx, cancelRun, c, credential, taskID, initial, presentation, run)
 }
 
 type taskProposalPresentation struct {
@@ -423,38 +480,69 @@ type taskProposalPresentation struct {
 	notice  func(string)
 }
 
-func runStageWithTaskProposalPresentation(ctx context.Context, c *client, credential, taskID string, initial []workerservice.TaskRunProposal, presentation taskProposalPresentation, run func() error) error {
+func runStageWithTaskProposalPresentation(ctx context.Context, cancelRun context.CancelFunc, c *client, credential, taskID string, initial []workerservice.TaskRunProposal, presentation taskProposalPresentation, run func() error) error {
 	presentation.update(initial)
 	result := make(chan error, 1)
 	go func() { result <- run() }()
-	ticker := time.NewTicker(runGatePollInterval)
-	defer ticker.Stop()
+	cancelAndJoin := func(cause error) error {
+		cancelRun()
+		<-result
+		return cause
+	}
+	poller := newRunAdaptivePoller()
+	previous := append([]workerservice.TaskRunProposal(nil), initial...)
 	for {
+		timer := time.NewTimer(poller.delay())
 		select {
 		case err := <-result:
+			timer.Stop()
 			return err
+		case <-ctx.Done():
+			timer.Stop()
+			return cancelAndJoin(ctx.Err())
 		case action := <-presentation.actions:
+			timer.Stop()
 			if action.decision == runConfirmProposal && action.proposal != nil {
-				confirmTaskRunProposal(ctx, c, credential, taskID, *action.proposal, presentation)
+				poller.observe(true)
+				if err := confirmTaskRunProposal(ctx, c, credential, taskID, *action.proposal, presentation); err != nil {
+					return cancelAndJoin(err)
+				}
 			}
-		case <-ticker.C:
+		case <-timer.C:
 			fresh, err := c.getTaskRunOrderContext(ctx, credential, taskID)
 			if err != nil {
+				if taskRunPollingFatal(err) {
+					return cancelAndJoin(err)
+				}
+				poller.observe(false)
 				presentation.notice("Pending proposal refresh failed; the run is continuing: " + err.Error())
 				continue
 			}
 			if fresh == nil {
+				poller.observe(len(previous) != 0)
+				previous = nil
 				presentation.update(nil)
 				continue
 			}
+			poller.observe(!reflect.DeepEqual(previous, fresh.PendingProposals))
+			previous = append(previous[:0], fresh.PendingProposals...)
 			presentation.update(fresh.PendingProposals)
 		}
 	}
 }
 
-func confirmTaskRunProposal(ctx context.Context, c *client, credential, taskID string, proposal workerservice.TaskRunProposal, presentation taskProposalPresentation) {
+func taskRunPollingFatal(err error) bool {
+	var response *workerHTTPError
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) ||
+		errors.As(err, &response) && (response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden)
+}
+
+func confirmTaskRunProposal(ctx context.Context, c *client, credential, taskID string, proposal workerservice.TaskRunProposal, presentation taskProposalPresentation) error {
 	err := c.confirmTaskRunProposalContext(ctx, credential, taskID, proposal)
 	if err != nil {
+		if taskRunPollingFatal(err) {
+			return err
+		}
 		var response *workerHTTPError
 		if errors.As(err, &response) && (response.StatusCode == http.StatusConflict || response.StatusCode == http.StatusNotFound) {
 			presentation.notice("Proposal state changed before confirmation; refreshing pending proposals.")
@@ -466,14 +554,18 @@ func confirmTaskRunProposal(ctx context.Context, c *client, credential, taskID s
 	}
 	fresh, refreshErr := c.getTaskRunOrderContext(ctx, credential, taskID)
 	if refreshErr != nil {
+		if taskRunPollingFatal(refreshErr) {
+			return refreshErr
+		}
 		presentation.notice("Pending proposal refresh failed; the run is continuing: " + refreshErr.Error())
-		return
+		return nil
 	}
 	if fresh == nil {
 		presentation.update(nil)
-		return
+		return nil
 	}
 	presentation.update(fresh.PendingProposals)
+	return nil
 }
 
 type runGateDecision int
@@ -487,7 +579,7 @@ const (
 	runConfirmProposal
 )
 
-func waitAtTaskRunGate(ctx context.Context, answers *runInputSource, output io.Writer, item workerservice.DispatchOrder, styled bool) (runGateDecision, string, error) {
+func waitAtTaskRunGate(ctx context.Context, answers *runInputSource, output io.Writer, item workerservice.DispatchOrder, styled bool, pollDelay time.Duration) (runGateDecision, string, error) {
 	gate := item.Gate
 	if gate == nil {
 		return runGatePoll, "", nil
@@ -500,7 +592,7 @@ func waitAtTaskRunGate(ctx context.Context, answers *runInputSource, output io.W
 		select {
 		case <-ctx.Done():
 			return runGateStop, "", nil
-		case <-time.After(runGatePollInterval):
+		case <-time.After(pollDelay):
 			return runGatePoll, "", nil
 		}
 	}
@@ -512,7 +604,7 @@ func waitAtTaskRunGate(ctx context.Context, answers *runInputSource, output io.W
 		actions = "changes/wait"
 	}
 	for {
-		answer, polled, err := readRunPromptOrPoll(ctx, answers, output, fmt.Sprintf("Gate action [%s]: ", actions), styled, runGatePollInterval)
+		answer, polled, err := readRunPromptOrPoll(ctx, answers, output, fmt.Sprintf("Gate action [%s]: ", actions), styled, pollDelay)
 		if err != nil {
 			return runGateStop, "", err
 		}
@@ -526,7 +618,7 @@ func waitAtTaskRunGate(ctx context.Context, answers *runInputSource, output io.W
 			select {
 			case <-ctx.Done():
 				return runGateStop, "", nil
-			case <-time.After(runGatePollInterval):
+			case <-time.After(pollDelay):
 				return runGatePoll, "", nil
 			}
 		case "approve":

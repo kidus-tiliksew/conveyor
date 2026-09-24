@@ -748,6 +748,74 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 		}
 	})
 
+	t.Run("task-scoped authority proposals preserve ownership ordering and empty results", func(t *testing.T) {
+		fixture := factory(t, requirementConformanceRepos)
+		st := fixture.Store
+		ctx := store.WithActor(fixture.Context, store.Actor{ID: requirementConformanceActor, Role: core.ActorUser})
+		targetID, otherID := "scoped-authority-"+core.NewTaskID(), "other-authority-"+core.NewTaskID()
+		for _, taskID := range []string{targetID, otherID} {
+			if err := st.CreateTask(ctx, core.Task{ID: taskID, Workspace: fixture.Workspace, Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-" + taskID, State: core.TaskRunning, CreatedAt: time.Now().UTC()}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if items, err := st.ListPendingAuthorityProposalsForTask(ctx, targetID); err != nil || len(items) != 0 {
+			t.Fatalf("initial scoped proposals=%+v err=%v", items, err)
+		}
+
+		base := time.Now().UTC().Add(-time.Minute)
+		for index, taskID := range []string{targetID, otherID} {
+			requirement, initial, err := st.CreateRequirement(ctx,
+				core.Requirement{ID: fmt.Sprintf("req-scoped-%d-%s", index, core.NewTaskID()), Title: fmt.Sprintf("Scoped requirement %d", index)},
+				core.RequirementVersion{Content: "# Scoped requirement\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Read one task.\n```", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Read one task."}}, Origin: core.RequirementOriginOperator})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err = st.ConfirmRequirementVersion(ctx, requirement.ID, initial.Version); err != nil {
+				t.Fatal(err)
+			}
+			if _, err = st.ProposeRequirementVersion(ctx, core.RequirementVersion{RequirementID: requirement.ID, Content: "# Scoped requirement successor\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Read one task.\n```", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Read one task."}}, Origin: core.RequirementOriginImplementation, OriginTaskID: taskID, CreatedAt: base.Add(time.Duration(index) * time.Second)}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		design, designVersion, err := st.CreateSystemDesign(ctx,
+			core.SystemDesign{ID: "design-scoped-" + core.NewTaskID(), Title: "Scoped design", Category: "Architecture"},
+			core.SystemDesignVersion{Content: "# Scoped design\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/**\n```", Origin: core.SystemDesignOriginOperator})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err = st.ConfirmSystemDesignVersion(ctx, design.ID, designVersion.Version); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = st.ProposeSystemDesignVersion(ctx, core.SystemDesignVersion{DocumentID: design.ID, Content: designVersion.Content + "\n\nThe task-run reader uses task predicates at the store boundary.\n", Origin: core.SystemDesignOriginImplementation, OriginTaskID: targetID, CreatedAt: base.Add(2 * time.Second)}); err != nil {
+			t.Fatal(err)
+		}
+		decision, err := st.ProposeDecision(ctx, core.Decision{Statement: "Use the scoped proposal read.", Context: "Task runs poll one task.", AlternativesRejected: "Workspace scans grow with unrelated work.", Origin: core.DecisionOriginImplementation, OriginTaskID: targetID, CreatedAt: base.Add(3 * time.Second)})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		items, err := st.ListPendingAuthorityProposalsForTask(ctx, targetID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(items) != 3 || items[0].Tier != "requirement" || items[1].Tier != "system_design" || items[2].Tier != "decision" || items[2].ID != decision.ID {
+			t.Fatalf("scoped ordered proposals=%+v", items)
+		}
+		for _, item := range items {
+			if item.OriginType != "task" || item.OriginID != targetID || item.Tier == "task_context" {
+				t.Fatalf("foreign or non-authority proposal=%+v", item)
+			}
+		}
+		other, err := st.ListPendingAuthorityProposalsForTask(ctx, otherID)
+		if err != nil || len(other) != 1 || other[0].OriginID != otherID {
+			t.Fatalf("other scoped proposals=%+v err=%v", other, err)
+		}
+		sibling := store.WithWorkspace(ctx, "sibling")
+		if items, err = st.ListPendingAuthorityProposalsForTask(sibling, targetID); err != nil || len(items) != 0 {
+			t.Fatalf("cross-workspace scoped proposals=%+v err=%v", items, err)
+		}
+	})
+
 	t.Run("monitor requirement references are validated before persistence", func(t *testing.T) {
 		st, ctx, workspace := newRequirementFixture(t, factory)
 		monitorStore, ok := st.(monitor.Store)

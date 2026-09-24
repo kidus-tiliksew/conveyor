@@ -246,7 +246,7 @@ func (s *Server) getTaskRunOrder(w http.ResponseWriter, r *http.Request) {
 // Capability flags are server-derived and grant no new mutation surface
 // (req-260811-0ee057 AC-1.5, AC-2.2, AC-5.8; design-260805-973cd4).
 func (s *Server) taskRunPendingProposals(ctx context.Context, task core.Task) ([]workerservice.TaskRunProposal, error) {
-	items, err := s.Store.ListPendingProposals(ctx)
+	items, err := s.Store.ListPendingAuthorityProposalsForTask(ctx, task.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -406,7 +406,7 @@ func latestTaskGateCommand(ctx context.Context, st store.Store, taskID string) (
 }
 
 func (s *Server) nextTaskRunOrder(ctx context.Context, task core.Task) (workerservice.DispatchOrder, bool, error) {
-	orders, err := s.WorkOrders.List(ctx)
+	orders, err := s.WorkOrders.ListForTask(ctx, task.ID)
 	if err != nil {
 		return workerservice.DispatchOrder{}, false, err
 	}

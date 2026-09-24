@@ -10,7 +10,16 @@ import (
 func (m *memory) ListPendingProposals(ctx context.Context) ([]core.PendingProposal, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	workspace := workspaceOrDefault(ctx, "")
+	return m.listPendingProposalsLocked(workspaceOrDefault(ctx, ""), "", false), nil
+}
+
+func (m *memory) ListPendingAuthorityProposalsForTask(ctx context.Context, taskID string) ([]core.PendingProposal, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.listPendingProposalsLocked(workspaceOrDefault(ctx, ""), taskID, true), nil
+}
+
+func (m *memory) listPendingProposalsLocked(workspace, taskID string, authorityOnly bool) []core.PendingProposal {
 	out := make([]core.PendingProposal, 0)
 	for key, versions := range m.systemDesignVersions {
 		if key.workspace != workspace {
@@ -22,6 +31,9 @@ func (m *memory) ListPendingProposals(ctx context.Context) ([]core.PendingPropos
 		}
 		for _, version := range versions {
 			if version.Confirmed || version.Dismissed {
+				continue
+			}
+			if authorityOnly && version.OriginTaskID != taskID {
 				continue
 			}
 			originType, originID := "operator", ""
@@ -48,6 +60,9 @@ func (m *memory) ListPendingProposals(ctx context.Context) ([]core.PendingPropos
 			if version.Confirmed || version.Retired || version.Version <= document.CurrentVersion {
 				continue
 			}
+			if authorityOnly && version.OriginTaskID != taskID {
+				continue
+			}
 			originType, originID := string(version.Origin), ""
 			if version.OriginTaskID != "" {
 				originType, originID = "task", version.OriginTaskID
@@ -63,6 +78,9 @@ func (m *memory) ListPendingProposals(ctx context.Context) ([]core.PendingPropos
 		if key.workspace != workspace || decision.Status != core.DecisionProposed {
 			continue
 		}
+		if authorityOnly && decision.OriginTaskID != taskID {
+			continue
+		}
 		originType, originID := "operator", ""
 		if decision.OriginTaskID != "" {
 			originType, originID = "task", decision.OriginTaskID
@@ -72,6 +90,9 @@ func (m *memory) ListPendingProposals(ctx context.Context) ([]core.PendingPropos
 		out = append(out, core.PendingProposal{ID: decision.ID, Title: decision.Statement, Tier: "decision", OriginType: originType, OriginID: originID, ProposedAt: decision.CreatedAt})
 	}
 	for _, proposal := range m.taskContextProposals {
+		if authorityOnly {
+			continue
+		}
 		if proposal.Workspace != workspace || proposal.State != core.TaskContextProposalProposed {
 			continue
 		}
@@ -83,7 +104,7 @@ func (m *memory) ListPendingProposals(ctx context.Context) ([]core.PendingPropos
 			TargetKind: string(proposal.TargetKind), Justification: proposal.Justification, ProposedAt: proposal.CreatedAt})
 	}
 	sortPendingProposals(out)
-	return out, nil
+	return out
 }
 
 func (m *memory) PendingProposalsProjection(ctx context.Context) (PendingProposalsProjection, error) {
