@@ -3,6 +3,7 @@
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -58,6 +59,18 @@ class FixtureTests(unittest.TestCase):
         missing = (self.root / "missing" / "phases.jsonl").read_text()
         self.assertIn("configuration-failure", missing)
 
+    def test_singlestore_default_requires_usable_creation_headroom(self):
+        self.config.update(
+            backend="singlestore", url_env="SS_URL",
+            prepared_url_env="CONVEYOR_TEST_SINGLESTORE_URL", minimum_free_bytes=0,
+        )
+        safe = {"SS_URL": "root:private@tcp(127.0.0.1:3306)/conveyor_test"}
+        usage = shutil.disk_usage(self.root)
+        simulated = usage.__class__(usage.total, usage.used, fixtures.SINGLESTORE_MINIMUM_BYTES - 1)
+        with patch.object(fixtures.shutil, "disk_usage", return_value=simulated):
+            with self.assertRaisesRegex(fixtures.FixtureError, "capacity probe failed"):
+                fixtures.prepare(self.config, safe, self.root / "headroom")
+
     def test_external_network_is_inspected_but_never_pruned(self):
         self.env["EXTERNAL_NETWORK"] = "shared-ci"
 
@@ -107,6 +120,14 @@ class FixtureTests(unittest.TestCase):
         self.assertIn("database creation", str(error))
         self.assertIn("127.0.0.1:5432", str(error))
 
+    def test_diagnostic_ignores_go_run_exit_trailer(self):
+        error = fixtures._diagnostic(
+            "singlestore", "database creation", "127.0.0.1:3306",
+            "validation fixture singlestore create failed: not enough disk\nexit status 2\n",
+        )
+        self.assertIn("not enough disk", str(error))
+        self.assertNotIn("exit status", str(error))
+
     def test_lifecycle_orders_snapshots_around_gate_and_teardown_on_failure(self):
         order = []
         ownership = {"backend": "postgres", "database": "conveyor_a1_test",
@@ -133,6 +154,24 @@ class FixtureTests(unittest.TestCase):
         self.addCleanup(lambda: process.poll() is None and process.kill())
         fixtures._terminate_process_group(process)
         self.assertIsNotNone(process.poll())
+
+    def test_postgres_target_leaves_outer_owned_fixture_reachable_for_after_snapshot(self):
+        makefile = (fixtures.ROOT / "Makefile").read_text()
+        target = makefile.split("test-integration: compose-check vk10-runtime", 1)[1].split(
+            "test-integration-ci:", 1
+        )[0]
+        self.assertNotIn("test-integration: compose-check vk10-runtime test-db-up", makefile)
+        prepared, standalone = target.split("else", 1)
+        self.assertIn("_test-integration-postgres", prepared)
+        self.assertNotIn("test-db-down", prepared)
+        self.assertIn("test-db-up", standalone)
+        self.assertIn("test-db-down", standalone)
+
+    def test_postgres_teardown_removes_only_the_scoped_project_topology(self):
+        makefile = (fixtures.ROOT / "Makefile").read_text()
+        target = makefile.split("test-db-down:", 1)[1].split("\n\n", 1)[0]
+        self.assertIn("docker compose -p $(TEST_COMPOSE_PROJECT) --profile test down", target)
+        self.assertNotIn("prune", target)
 
 
 if __name__ == "__main__":

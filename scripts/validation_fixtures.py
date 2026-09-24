@@ -22,6 +22,7 @@ ROOT = Path(__file__).resolve().parent.parent
 HELPER = "./scripts/validation-fixture-sql"
 SAFE_DATABASE = re.compile(r"^[a-z][a-z0-9_]{2,62}_test$")
 DEFAULT_MINIMUM_BYTES = 1024 * 1024 * 1024
+SINGLESTORE_MINIMUM_BYTES = 5 * 1024 * 1024 * 1024
 
 
 class FixtureError(RuntimeError):
@@ -65,7 +66,9 @@ def _run(argv: list[str], env: dict[str, str], *, capture: bool = True) -> subpr
 
 
 def _diagnostic(backend: str, operation: str, endpoint: str, detail: str) -> FixtureError:
-    safe = detail.strip().splitlines()[-1] if detail.strip() else "no detail returned"
+    lines = [line.strip() for line in detail.splitlines() if line.strip()]
+    actionable = [line for line in lines if not re.fullmatch(r"exit status [0-9]+", line)]
+    safe = (actionable or lines or ["no detail returned"])[-1]
     if "://" in safe or "password=" in safe.lower() or "@tcp(" in safe.lower():
         safe = "protected client detail was redacted"
     return FixtureError(f"{backend} {operation} failed for {endpoint}: {safe}")
@@ -130,7 +133,10 @@ def prepare(config: dict, base_env: dict[str, str], state: Path) -> tuple[dict, 
     if backend == "singlestore" and not base_database.endswith("_test"):
         _phase(state, "prepare", "safety-refusal", "configured database is not a _test parent")
         raise FixtureError("SingleStore configured database must end in _test; refusing a production-shaped endpoint")
-    minimum = int(config.get("minimum_free_bytes", DEFAULT_MINIMUM_BYTES))
+    configured_minimum = int(config.get("minimum_free_bytes", 0))
+    minimum = configured_minimum or (
+        SINGLESTORE_MINIMUM_BYTES if backend == "singlestore" else DEFAULT_MINIMUM_BYTES
+    )
     free = _check_capacity(state, minimum, backend)
     _check_external_network(base_env.get(config.get("external_network_env", "")), base_env)
     token = secrets.token_hex(6)
@@ -311,7 +317,7 @@ def main() -> int:
     parser.add_argument("--state", type=Path, required=True)
     parser.add_argument("--external-network-env", default="CONVEYOR_TEST_EXTERNAL_NETWORK")
     parser.add_argument("--database-prefix", default="conveyor")
-    parser.add_argument("--minimum-free-bytes", type=int, default=DEFAULT_MINIMUM_BYTES)
+    parser.add_argument("--minimum-free-bytes", type=int, default=0)
     parser.add_argument("--timeout", default="20s")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()

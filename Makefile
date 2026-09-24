@@ -174,9 +174,12 @@ test-ui-evidence: ui
 compose-check:
 	$(VALIDATION_CHILD_ENV) python3 scripts/validate_compose_isolation.py
 
-test-integration: compose-check vk10-runtime test-db-up
-	@trap '$(MAKE) test-db-down' EXIT; \
-		if test "$${CONVEYOR_FIXTURE_PREPARED:-}" = 1; then $(MAKE) _test-integration-postgres; else \
+test-integration: compose-check vk10-runtime
+	@if test "$${CONVEYOR_FIXTURE_PREPARED:-}" = 1; then \
+			$(MAKE) _test-integration-postgres; \
+		else \
+			$(MAKE) test-db-up; \
+			trap '$(MAKE) test-db-down' EXIT; \
 			state="$${XDG_STATE_HOME:-$$HOME/.local/state}/conveyor/$${CONVEYOR_TASK_ID:-manual-validation}/fixtures/postgres-$$(date -u +%Y%m%dT%H%M%SZ)-$$$$"; \
 			$(VALIDATION_CHILD_ENV) python3 scripts/validation_fixtures.py run --backend postgres --url-env TEST_DATABASE_URL --prepared-url-env CONVEYOR_TEST_DATABASE_URL --state "$$state" -- $(MAKE) _test-integration-postgres; \
 		fi
@@ -205,7 +208,7 @@ test-db-up:
 	$(TEST_COMPOSE_NETWORK_ENV) CONVEYOR_TEST_POSTGRES_PORT=$(TEST_POSTGRES_PORT) docker compose -p $(TEST_COMPOSE_PROJECT) --profile test up -d --wait postgres-test
 
 test-db-down:
-	$(TEST_COMPOSE_NETWORK_ENV) CONVEYOR_TEST_POSTGRES_PORT=$(TEST_POSTGRES_PORT) docker compose -p $(TEST_COMPOSE_PROJECT) --profile test rm -s -f postgres-test
+	$(TEST_COMPOSE_NETWORK_ENV) CONVEYOR_TEST_POSTGRES_PORT=$(TEST_POSTGRES_PORT) docker compose -p $(TEST_COMPOSE_PROJECT) --profile test down --remove-orphans
 
 vet:
 	$(VALIDATION_CHILD_ENV) go vet ./...
