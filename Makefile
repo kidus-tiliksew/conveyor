@@ -18,6 +18,8 @@ TEST_POSTGRES_PORT := $(if $(strip $(CONVEYOR_TEST_POSTGRES_PORT)),$(CONVEYOR_TE
 endif
 TEST_COMPOSE_PROJECT := conveyor-test-p$(TEST_POSTGRES_PORT)
 TEST_DATABASE_URL ?= postgres://conveyor:conveyor@127.0.0.1:$(TEST_POSTGRES_PORT)/conveyor_test?sslmode=disable
+export TEST_DATABASE_URL
+TEST_COMPOSE_NETWORK_ENV = CONVEYOR_TEST_NETWORK_NAME="$${CONVEYOR_TEST_EXTERNAL_NETWORK:-$(TEST_COMPOSE_PROJECT)_default}" CONVEYOR_TEST_NETWORK_EXTERNAL="$$(if test -n "$${CONVEYOR_TEST_EXTERNAL_NETWORK:-}"; then printf true; else printf false; fi)"
 PLAYWRIGHT_ARGS ?=
 PLAYWRIGHT_INSTALL_ARGS ?=
 PLAYWRIGHT_WORKERS ?= 2
@@ -49,7 +51,7 @@ VALIDATION_CHILD_ENV = env $(foreach name,$(VALIDATION_WORKER_ENV_VARS),-u $(nam
 RUN_WEB_TESTS = cd web && $(VALIDATION_CHILD_ENV) npm run lint && PLAYWRIGHT_WORKERS=$(PLAYWRIGHT_WORKERS) $(VALIDATION_CHILD_ENV) npm run test:e2e -- $(PLAYWRIGHT_ARGS)
 DEV_COMPOSE := docker compose --env-file $(ENV_FILE) -f compose.dev.yaml
 
-.PHONY: all build image test-image release release-archives test-release web-deps web-typecheck ui dashboard-fresh test test-web test-ui test-ui-evidence compose-check test-integration test-integration-ci test-postgres test-db-identity test-db-up test-db-down vet plugin-check fmt fmt-check tidy clean db-up db-down run build-run dev
+.PHONY: all build image test-image release release-archives test-release web-deps web-typecheck ui dashboard-fresh test test-web test-ui test-ui-evidence compose-check test-integration test-integration-ci test-postgres test-db-identity test-db-up test-db-down vet plugin-check fmt fmt-check tidy clean db-up db-down run build-run dev test-validation-fixtures
 
 all: build
 
@@ -67,6 +69,12 @@ endif
 
 test-validation:
 	PYTHONDONTWRITEBYTECODE=1 $(VALIDATION_CHILD_ENV) python3 -m unittest discover -s scripts -p 'test_validation_evidence.py'
+	PYTHONDONTWRITEBYTECODE=1 $(VALIDATION_CHILD_ENV) python3 -m unittest discover -s scripts -p 'test_validation_fixtures.py'
+	$(VALIDATION_CHILD_ENV) go test ./scripts/validation-fixture-sql
+
+test-validation-fixtures:
+	PYTHONDONTWRITEBYTECODE=1 $(VALIDATION_CHILD_ENV) python3 -m unittest discover -s scripts -p 'test_validation_fixtures.py'
+	$(VALIDATION_CHILD_ENV) go test ./scripts/validation-fixture-sql
 
 test-validation-environment:
 	@env $(foreach name,$(VALIDATION_WORKER_ENV_VARS),$(name)=polluted) \
@@ -166,13 +174,28 @@ test-ui-evidence: ui
 compose-check:
 	$(VALIDATION_CHILD_ENV) python3 scripts/validate_compose_isolation.py
 
-test-integration: compose-check vk10-runtime test-db-up
-	@trap '$(MAKE) test-db-down' EXIT; \
-		CONVEYOR_TEST_DATABASE_URL='$(TEST_DATABASE_URL)' $(VALIDATION_CHILD_ENV) go test -v -p=1 ./cmd/conveyor ./cmd/conveyord ./internal/store/postgres ./internal/dispatch -count=1 -timeout=5m
+test-integration: compose-check vk10-runtime
+	@if test "$${CONVEYOR_FIXTURE_PREPARED:-}" = 1; then \
+			$(MAKE) _test-integration-postgres; \
+		else \
+			$(MAKE) test-db-up; \
+			trap '$(MAKE) test-db-down' EXIT; \
+			state="$${CONVEYOR_FIXTURE_STATE:-$${XDG_STATE_HOME:-$$HOME/.local/state}/conveyor/$${CONVEYOR_TASK_ID:-manual-validation}/fixtures/postgres-$$(date -u +%Y%m%dT%H%M%SZ)-$$$$}"; \
+			$(VALIDATION_CHILD_ENV) python3 scripts/validation_fixtures.py run --backend postgres --url-env TEST_DATABASE_URL --prepared-url-env CONVEYOR_TEST_DATABASE_URL --state "$$state" -- $(MAKE) _test-integration-postgres; \
+		fi
 
 test-integration-ci: compose-check vk10-runtime
 	@test -n "$(CONVEYOR_TEST_DATABASE_URL)" || (echo "CONVEYOR_TEST_DATABASE_URL is required" >&2; exit 1)
-	CONVEYOR_TEST_DATABASE_URL='$(CONVEYOR_TEST_DATABASE_URL)' $(VALIDATION_CHILD_ENV) go test -v -p=1 ./cmd/conveyor ./cmd/conveyord ./internal/store/postgres ./internal/dispatch -count=1 -timeout=5m
+	@if test "$${CONVEYOR_FIXTURE_PREPARED:-}" = 1; then $(MAKE) _test-integration-postgres; else \
+		state="$${CONVEYOR_FIXTURE_STATE:-$${XDG_STATE_HOME:-$$HOME/.local/state}/conveyor/$${CONVEYOR_TASK_ID:-ci-validation}/fixtures/postgres-$$(date -u +%Y%m%dT%H%M%SZ)-$$$$}"; \
+		$(VALIDATION_CHILD_ENV) python3 scripts/validation_fixtures.py run --backend postgres --url-env CONVEYOR_TEST_DATABASE_URL --prepared-url-env CONVEYOR_TEST_DATABASE_URL --state "$$state" -- $(MAKE) _test-integration-postgres; \
+	fi
+
+.PHONY: _test-integration-postgres
+_test-integration-postgres:
+	@test "$${CONVEYOR_FIXTURE_PREPARED:-}" = 1 || (echo "PostgreSQL fixture was not prepared" >&2; exit 1)
+	@test -n "$$CONVEYOR_TEST_DATABASE_URL" || (echo "CONVEYOR_TEST_DATABASE_URL is required" >&2; exit 1)
+	$(VALIDATION_CHILD_ENV) go test -v -p=1 ./cmd/conveyor ./cmd/conveyord ./internal/store/postgres ./internal/dispatch -count=1 -timeout=5m
 
 # Keep the accepted work-order validation command explicit while sharing the
 # integration suite's isolated Postgres lifecycle.
@@ -182,10 +205,10 @@ test-db-identity:
 	@printf '%s\t%s\n' '$(TEST_POSTGRES_PORT)' '$(TEST_COMPOSE_PROJECT)'
 
 test-db-up:
-	CONVEYOR_TEST_POSTGRES_PORT=$(TEST_POSTGRES_PORT) docker compose -p $(TEST_COMPOSE_PROJECT) --profile test up -d --wait postgres-test
+	$(TEST_COMPOSE_NETWORK_ENV) CONVEYOR_TEST_POSTGRES_PORT=$(TEST_POSTGRES_PORT) docker compose -p $(TEST_COMPOSE_PROJECT) --profile test up -d --wait postgres-test
 
 test-db-down:
-	CONVEYOR_TEST_POSTGRES_PORT=$(TEST_POSTGRES_PORT) docker compose -p $(TEST_COMPOSE_PROJECT) --profile test rm -s -f postgres-test
+	$(TEST_COMPOSE_NETWORK_ENV) CONVEYOR_TEST_POSTGRES_PORT=$(TEST_POSTGRES_PORT) docker compose -p $(TEST_COMPOSE_PROJECT) --profile test down --remove-orphans
 
 vet:
 	$(VALIDATION_CHILD_ENV) go vet ./...
@@ -223,6 +246,15 @@ dev: db-up
 .PHONY: test-integration-singlestore-ci test-singlestore-unit
 
 test-integration-singlestore-ci: vk10-runtime
+	@test -n "$$CONVEYOR_TEST_SINGLESTORE_URL" || (echo "CONVEYOR_TEST_SINGLESTORE_URL is required" >&2; exit 1)
+	@if test "$${CONVEYOR_FIXTURE_PREPARED:-}" = 1; then $(MAKE) _test-integration-singlestore; else \
+		state="$${CONVEYOR_FIXTURE_STATE:-$${XDG_STATE_HOME:-$$HOME/.local/state}/conveyor/$${CONVEYOR_TASK_ID:-ci-validation}/fixtures/singlestore-$$(date -u +%Y%m%dT%H%M%SZ)-$$$$}"; \
+		$(VALIDATION_CHILD_ENV) python3 scripts/validation_fixtures.py run --backend singlestore --url-env CONVEYOR_TEST_SINGLESTORE_URL --prepared-url-env CONVEYOR_TEST_SINGLESTORE_URL --state "$$state" -- $(MAKE) _test-integration-singlestore; \
+	fi
+
+.PHONY: _test-integration-singlestore
+_test-integration-singlestore:
+	@test "$${CONVEYOR_FIXTURE_PREPARED:-}" = 1 || (echo "SingleStore fixture was not prepared" >&2; exit 1)
 	@test -n "$$CONVEYOR_TEST_SINGLESTORE_URL" || (echo "CONVEYOR_TEST_SINGLESTORE_URL is required" >&2; exit 1)
 	$(VALIDATION_CHILD_ENV) go test -v -p=1 ./internal/eventlog/s2log ./internal/store/storetest ./internal/store/singlestore -count=1 -timeout=20m
 	$(VALIDATION_CHILD_ENV) go test -v -p=1 ./cmd/conveyor ./cmd/conveyord -run 'TestSingleStoreInitAndUserIntegration|TestConveyordDurableStartupIntegration' -count=1 -timeout=10m

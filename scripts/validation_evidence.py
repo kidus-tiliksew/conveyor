@@ -20,6 +20,9 @@ import subprocess
 import sys
 import time
 
+sys.dont_write_bytecode = True
+import validation_fixtures
+
 
 class Refused(ValueError):
     pass
@@ -29,6 +32,10 @@ class RunInterrupted(Exception):
     def __init__(self, signum):
         super().__init__("validation interrupted by signal " + str(signum))
         self.signum = signum
+
+
+class FixtureTeardownFailed(Exception):
+    pass
 
 
 def canonical(value):
@@ -67,8 +74,9 @@ def git(root, *args):
 
 def policy_read(path):
     p = json.loads(Path(path).read_bytes())
-    require(set(p) == {"schema", "task", "layer", "command", "environment",
-                      "tools", "external_inputs", "exclude", "audit", "backend"},
+    required = {"schema", "task", "layer", "command", "environment",
+                "tools", "external_inputs", "exclude", "audit", "backend"}
+    require(set(p) in (required, required | {"fixture"}),
             "policy fields missing or unknown")
     require(p["schema"] == 1 and isinstance(p["task"], str) and p["task"].strip()
             and Path(p["task"]).name == p["task"] and p["task"] not in (".", ".."), "invalid policy identity")
@@ -102,12 +110,29 @@ def policy_read(path):
                 and p["backend"]["isolation"] == "disposable-per-run"
                 and isinstance(p["backend"]["probe"], list) and p["backend"]["probe"],
                 "backend needs an identity/version/configuration probe and disposable isolation")
+    fixture = p.get("fixture")
+    if fixture is not None:
+        require(p["layer"] in ("postgres", "singlestore"), "local evidence cannot own a database fixture")
+        require(isinstance(fixture, dict) and set(fixture) == {
+            "backend", "url_env", "prepared_url_env", "external_network_env",
+            "database_prefix", "minimum_free_bytes", "timeout",
+        }, "fixture fields missing or unknown")
+        require(fixture["backend"] == p["layer"], "fixture backend must match evidence layer")
+        require(fixture["url_env"] in p["environment"]
+                and fixture["prepared_url_env"] in p["environment"],
+                "fixture URL variables must be inventoried")
+        require(isinstance(fixture["minimum_free_bytes"], int)
+                and fixture["minimum_free_bytes"] > 0, "fixture capacity threshold must be positive")
     return p
 
 
-def environment(p):
+def environment(p, extra=None):
     # No ambient inheritance. Only fingerprints, never values, enter records.
-    return {name: os.environ[name] for name in p["environment"] if name in os.environ}
+    result = {name: os.environ[name] for name in p["environment"] if name in os.environ}
+    for name, value in (extra or {}).items():
+        if name in p["environment"]:
+            result[name] = value
+    return result
 
 
 def mac(key, value):
@@ -170,8 +195,8 @@ def git_state(root):
             "reflog": git(root, "reflog", "--format=%H %gs").decode().splitlines()}
 
 
-def snapshot(root, p, key):
-    env = environment(p)
+def snapshot(root, p, key, runtime_env=None):
+    env = environment(p, runtime_env)
     require({"PATH", "HOME"} <= set(env), "PATH/HOME absent")
     tools = {}
     for name, command in p["tools"].items():
@@ -290,7 +315,8 @@ def _record_template(p, log_path, started):
             "policy": p, "before": None, "after": None, "started": started, "finished": None,
             "exit_status": None,
             "log": {"path": str(log_path), "sha256": None, "bytes": 0, "completeness": "incomplete"},
-            "snapshot_error": None, "interruption": None}
+            "snapshot_error": None, "interruption": None,
+            "fixture": None, "fixture_error": None}
 
 
 def _terminate_process_group(process):
@@ -334,7 +360,7 @@ def _restore_interrupt_handlers(previous):
         signal.signal(signum, handler)
 
 
-def record(root, p, output):
+def _record(root, p, output):
     output = location(root, output)
     output.mkdir(mode=0o700, parents=True, exist_ok=False)
     key = os.urandom(32)
@@ -346,6 +372,7 @@ def record(root, p, output):
         os.fsync(f.fileno())
     started = time.time()
     env = environment(p)
+    runtime_env = env
     log_path = output / "command.log"
     with log_path.open("xb") as log_file:
         os.chmod(log_path, 0o600)
@@ -355,23 +382,80 @@ def record(root, p, output):
     state = _record_template(p, log_path, started)
     write_record(manifest, state, key)
     process = None
+    ownership = None
+    fixture_config = p.get("fixture")
+    fixture_state = output / "fixture"
     redactor = Redactor([])
     previous_handlers = _install_interrupt_handlers()
-    try:
+
+    def phase(name, outcome, detail=""):
+        if fixture_config is not None:
+            validation_fixtures._phase(fixture_state, name, outcome, detail)
+
+    def after_snapshot():
+        phase("after-snapshot", "started")
         try:
-            state["before"] = snapshot(root, p, key)
+            state["after"] = snapshot(root, p, key, runtime_env)
+            if state["fixture"] is not None:
+                state["fixture"]["after_snapshot_outcome"] = "success"
+            phase("after-snapshot", "success")
+        except (Refused, OSError, ValueError) as exc:
+            error = "after: " + str(exc)
+            state["snapshot_error"] = (state["snapshot_error"] + "; " + error
+                                       if state["snapshot_error"] else error)
+            if state["fixture"] is not None:
+                state["fixture"]["after_snapshot_outcome"] = "failure"
+            phase("after-snapshot", "failure")
+        write_record(manifest, state, key, replace=True)
+
+    try:
+        if fixture_config is not None:
+            try:
+                ownership, runtime_env = validation_fixtures.prepare(
+                    fixture_config, env, fixture_state
+                )
+                state["fixture"] = {
+                    "backend": ownership["backend"],
+                    "database": ownership["database"],
+                    "endpoint": ownership["endpoint"],
+                    "ownership": str(fixture_state / "ownership.json"),
+                    "phases": str(fixture_state / "phases.jsonl"),
+                    "prepare_outcome": "success",
+                    "before_snapshot_outcome": "pending",
+                    "after_snapshot_outcome": "pending",
+                    "teardown_outcome": "pending",
+                }
+            except (validation_fixtures.FixtureError, OSError, ValueError) as exc:
+                state.update(state="complete", outcome="fixture-failure", finished=time.time(),
+                             fixture_error="prepare: " + str(exc))
+                state["fixture"] = {"backend": fixture_config["backend"],
+                                    "prepare_outcome": "failure"}
+                state["log"].update(sha256=digest(b""), completeness="complete")
+                write_record(manifest, state, key, replace=True)
+                return 2
+        phase("before-snapshot", "started")
+        try:
+            state["before"] = snapshot(root, p, key, runtime_env)
+            if state["fixture"] is not None:
+                state["fixture"]["before_snapshot_outcome"] = "success"
+            phase("before-snapshot", "success")
         except (Refused, OSError, ValueError) as exc:
             state.update(state="complete", outcome="snapshot-failure", finished=time.time(),
                          snapshot_error="before: " + str(exc))
+            if state["fixture"] is not None:
+                state["fixture"]["before_snapshot_outcome"] = "failure"
+            phase("before-snapshot", "failure")
+            phase("gate", "not-run", "before snapshot failed")
             state["log"].update(sha256=digest(b""), completeness="complete")
             write_record(manifest, state, key, replace=True)
             return 2
         state["state"] = "running"
         write_record(manifest, state, key, replace=True)
-        secrets_to_redact = [value.encode() for name, value in env.items()
+        secrets_to_redact = [value.encode() for name, value in runtime_env.items()
                              if value and name not in PUBLIC_ENVIRONMENT]
         redactor = Redactor(secrets_to_redact)
-        process = subprocess.Popen(p["command"], cwd=root, env=env, stdout=subprocess.PIPE,
+        phase("gate", "started")
+        process = subprocess.Popen(p["command"], cwd=root, env=runtime_env, stdout=subprocess.PIPE,
                                    stderr=subprocess.STDOUT, start_new_session=True)
         with log_path.open("ab", buffering=0) as log_file:
             while True:
@@ -387,13 +471,11 @@ def record(root, p, output):
             log_file.flush()
             os.fsync(log_file.fileno())
         status = process.wait()
+        phase("gate", "success" if status == 0 else "failure", f"exit_status={status}")
         state["state"] = "finalizing"
         state["exit_status"] = status
         write_record(manifest, state, key, replace=True)
-        try:
-            state["after"] = snapshot(root, p, key)
-        except (Refused, OSError, ValueError) as exc:
-            state["snapshot_error"] = "after: " + str(exc)
+        after_snapshot()
         state["log"].update(sha256=digest_file(log_path), bytes=log_path.stat().st_size,
                             completeness="complete")
         state.update(state="complete", finished=time.time(),
@@ -415,16 +497,40 @@ def record(root, p, output):
         state.update(state="complete", outcome="interrupted", finished=time.time(),
                      exit_status=process.returncode if process is not None else None,
                      interruption={"signal": getattr(exc, "signum", signal.SIGINT)})
-        try:
-            state["after"] = snapshot(root, p, key)
-        except (Refused, OSError, ValueError) as snapshot_exc:
-            state["snapshot_error"] = "after interruption: " + str(snapshot_exc)
+        phase("gate", "interrupted" if process is not None else "not-run")
+        after_snapshot()
         write_record(manifest, state, key, replace=True)
         return 128 + int(getattr(exc, "signum", signal.SIGINT))
     finally:
         if process is not None and process.stdout is not None:
             process.stdout.close()
+        teardown_failed = False
+        if fixture_config is not None and ownership is not None:
+            if state["fixture"]["after_snapshot_outcome"] == "pending":
+                after_snapshot()
+            try:
+                validation_fixtures.teardown(fixture_config, env, ownership, fixture_state)
+                state["fixture"]["teardown_outcome"] = "success"
+            except (validation_fixtures.FixtureError, OSError, ValueError) as exc:
+                teardown_failed = True
+                state["fixture"]["teardown_outcome"] = "failure"
+                state["fixture_error"] = "teardown: " + str(exc)
+            # Teardown happens after the after-snapshot and never rewrites the
+            # gate outcome. Persist its independent result into the manifest.
+            if manifest.exists():
+                if state["state"] == "complete":
+                    state["finished"] = time.time()
+                write_record(manifest, state, key, replace=True)
         _restore_interrupt_handlers(previous_handlers)
+        if teardown_failed:
+            raise FixtureTeardownFailed
+
+
+def record(root, p, output):
+    try:
+        return _record(root, p, output)
+    except FixtureTeardownFailed:
+        return 2
 
 
 def equivalent(old, new, p):
@@ -455,9 +561,12 @@ def inspect_record(root, output):
         return {"classification": "corrupt-evidence", "reusable": False, "detail": str(exc)}
     state = record_value.get("state")
     outcome = record_value.get("outcome")
-    if state != "complete" or outcome == "incomplete":
+    fixture = record_value.get("fixture")
+    if isinstance(fixture, dict) and fixture.get("teardown_outcome") == "failure":
+        classification = "teardown-failure-after-" + str(outcome)
+    elif state != "complete" or outcome == "incomplete":
         classification = "abandoned-or-incomplete"
-    elif outcome in ("success", "failure", "interrupted", "snapshot-failure"):
+    elif outcome in ("success", "failure", "interrupted", "snapshot-failure", "fixture-failure"):
         classification = outcome
     else:
         classification = "unknown"
@@ -475,7 +584,8 @@ def check(root, p, output):
     require(len(key) == 32, "missing/corrupt evidence key")
     r = read_record(output / "manifest.json", key)
     require(set(r) == {"schema", "kind", "state", "outcome", "policy", "before", "after", "started", "finished",
-                       "exit_status", "log", "snapshot_error", "interruption"}, "incomplete manifest")
+                       "exit_status", "log", "snapshot_error", "interruption", "fixture", "fixture_error"},
+            "incomplete manifest")
     require(r["schema"] == 1 and r["kind"] == "fresh-execution" and r["policy"] == p, "changed command/policy/task/layer")
     require(r["state"] == "complete", "abandoned/incomplete execution")
     require(r["outcome"] in ("success", "failure")
