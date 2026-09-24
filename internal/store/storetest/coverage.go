@@ -40,6 +40,7 @@ var suiteMethods = map[string][]string{
 	"TaskBranchAttach":           strings.Fields(`AttachTaskBranch CancelTaskCommand CreateTask GetTask ListEvents AppendEvent CreateJob CreateWorkOrderCommand ClaimWorkOrderCommand`),
 	"TaskEventAtomicity":         strings.Fields(`ApplyTaskCommand CreateTask CreateWorkspace GetTask ListEvents SetTaskHold WithTaskSideEffectLock`),
 	"Workers":                    strings.Fields(`AuthenticateWorker ConsumeWorkerPairing CreateWorker CreateWorkerPairing HeartbeatWorker ListEvents ListHarnessModelFailures ListWorkers RevokeWorker`),
+	"ContextFreshness":           strings.Fields(`RecordContextObservation RecordInProcessContextObservation ListEvents GetWorkOrder`),
 	"WorktreeHandoff":            strings.Fields(`WorktreeHandoffCommand`),
 	"WorkOrders":                 strings.Fields(`CancelTaskCommand ClaimWorkOrderCommand CreateStageWorkOrderCommand CreateTask FinalizeWorkOrderAttemptObservability GetWorkOrder GetWorkOrderActivitySnapshot ListTaskWorkOrdersSnapshot ListWorkOrderTranscriptCaptures PreemptWorkOrderCommand RecordWorkOrderAttemptCheckpoint RecordWorkOrderContinuation RecoverWorkOrderCommand ReleaseWorkerClaimCommand RenewWorkerClaimCommand UpsertWorkOrderActivitySnapshot`),
 	"WorkOrderClocks":            strings.Fields(`ApplyWorkOrderClock ClaimWorkOrderCommand CreateStageWorkOrderCommand CreateTask GetWorkOrder ListElapsedWorkOrderTaskIDs RecoverWorkOrderCommand RedispatchWorkOrderCommand UpdateWorkOrderCommand`),

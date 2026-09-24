@@ -15,6 +15,7 @@ import (
 // component-persistence). Optional capability discovery is not deployment
 // validation.
 type Backend interface {
+	ContextObservationStore
 	VerificationStore
 	Store
 	monitor.Store

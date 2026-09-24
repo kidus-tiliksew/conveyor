@@ -130,10 +130,11 @@ type LineageTraversal struct {
 // one pure domain function prevents those context paths from granting
 // different reachability (design-lineage-graph).
 type ContextArtifactSelection struct {
-	Nodes     []LineageNode
-	Artifacts []Artifact
-	Truncated bool
-	Omitted   int
+	OmittedArtifacts []Artifact
+	Nodes            []LineageNode
+	Artifacts        []Artifact
+	Truncated        bool
+	Omitted          int
 }
 
 type ContextArtifactSelectionOptions struct {
@@ -228,6 +229,11 @@ func SelectContextArtifacts(links []LineageLink, roots []LineageNode, artifacts 
 		if len(selection.Artifacts) < maxRefs {
 			selection.Artifacts = append(selection.Artifacts, item.artifact)
 			selected[item.artifact.ID] = true
+		}
+	}
+	for _, item := range ordered {
+		if !selected[item.artifact.ID] {
+			selection.OmittedArtifacts = append(selection.OmittedArtifacts, item.artifact)
 		}
 	}
 	selection.Omitted = len(ordered) - len(selection.Artifacts)

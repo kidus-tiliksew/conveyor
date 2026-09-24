@@ -1015,3 +1015,33 @@ func probeLocalExecutionConfig(ctx context.Context, local *config.Config) error 
 func (e *reviewSeatCapacityError) Error() string {
 	return fmt.Sprintf("review round requires seat %d but local setup configures %d seat(s)", e.Required, e.Configured)
 }
+
+// contextFreshnessSummary is display-only. Proposal polling neither fetches
+// nor acknowledges artifacts; repeated receipts have the same display key.
+func contextFreshnessSummary(f core.ContextFreshness) (string, string) {
+	if f.SelectionRevision == "" {
+		if f.Diagnostic == "" {
+			return "", ""
+		}
+		return f.Diagnostic, "Context freshness: " + f.Diagnostic
+	}
+	failures := 0
+	omissions, truncated := f.Snapshot.OmittedCount, 0
+	for _, d := range f.Deliveries {
+		if d.Failed {
+			failures++
+		}
+		if d.Omitted {
+			omissions++
+		}
+		if d.Truncated {
+			truncated++
+		}
+	}
+	incomplete := f.Truncated || f.Snapshot.IncompleteCoverage || f.Snapshot.Artifacts.Truncated || f.Snapshot.Omissions.Truncated
+	summary := fmt.Sprintf("Context %s: %d additions not fetched in this attempt, %d fetch failures, %d omissions, %d truncated inputs (comparison %s; incomplete coverage %t).", f.SelectionRevision, f.UnfetchedAdditions, failures, omissions, truncated, f.ComparisonStatus, incomplete)
+	if f.Diagnostic != "" {
+		summary += " Diagnostic: " + f.Diagnostic + "."
+	}
+	return core.ContextDigest([]string{f.ObservationRevision, summary}), summary
+}

@@ -96,6 +96,10 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 			response.Error = &rpcError{Code: -32602, Message: "invalid tool arguments"}
 			break
 		}
+		if call.Name == "refresh_work_order_context" && len(request.Params) > 8192 {
+			response.Error = &rpcError{Code: -32602, Message: "invalid tool arguments"}
+			break
+		}
 		result, err := s.callMCPTool(r, call.Name, call.Arguments)
 		if err != nil {
 			response.Result = map[string]any{"content": []map[string]string{{"type": "text", "text": err.Error()}}, "isError": true}
@@ -115,6 +119,11 @@ func writeRPC(w http.ResponseWriter, response rpcResponse) {
 }
 
 func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) (any, error) {
+	if name == "refresh_work_order_context" {
+		if err := validateContextRefreshArgs(args); err != nil {
+			return nil, err
+		}
+	}
 	if workorder.VerificationRequestType(name) != nil {
 		return s.callVerificationMCP(r, name, args)
 	}
@@ -359,6 +368,14 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 			return nil, store.ErrWorkOrderClaimLost
 		}
 		return s.WorkOrders.Get(ctx, stringArg("work_order_id"), session)
+	case "refresh_work_order_context":
+		if _, err := s.authorizeClaimMutation(ctx, workerAuth, worker, stringArg("work_order_id"), session); err != nil {
+			return nil, err
+		}
+		if workerAuth {
+			return s.Workers.RefreshContext(ctx, worker, stringArg("work_order_id"), session, stringArg("prior_revision"))
+		}
+		return s.WorkOrders.RefreshContext(ctx, stringArg("work_order_id"), session, stringArg("prior_revision"))
 	case "read_artifact":
 		if err := s.authorizeWorkerOrder(ctx, workerAuth, worker, stringArg("work_order_id")); err != nil {
 			return nil, err
@@ -544,6 +561,7 @@ var mcpCapabilities = map[string]core.Capability{
 	"request_plan_revision":          core.CapabilityViewWorkspace,
 	"get_work_order":                 core.CapabilityClaimWork,
 	"read_artifact":                  core.CapabilityClaimWork,
+	"refresh_work_order_context":     core.CapabilityClaimWork,
 	"report_progress":                core.CapabilityClaimWork,
 	"report_usage":                   core.CapabilityClaimWork,
 	"report_continuation":            core.CapabilityClaimWork,
@@ -560,13 +578,15 @@ var mcpCapabilities = map[string]core.Capability{
 func mcpCapability(name string) core.Capability { return mcpCapabilities[name] }
 
 var claimantBoundMCPTools = map[string]bool{
-	"report_progress":       true,
-	"report_usage":          true,
-	"upload_transcript":     true,
-	"submit_plan":           true,
-	"submit_for_review":     true,
-	"await_review":          true,
-	"submit_review_verdict": true,
+	"read_artifact":              true,
+	"refresh_work_order_context": true,
+	"report_progress":            true,
+	"report_usage":               true,
+	"upload_transcript":          true,
+	"submit_plan":                true,
+	"submit_for_review":          true,
+	"await_review":               true,
+	"submit_review_verdict":      true,
 }
 
 // authorizeWorkerOrder scopes worker-credentialed MCP calls to orders the
@@ -849,6 +869,7 @@ func mcpTools() []map[string]any {
 		{"name": "release_work_order", "description": "Release the exact execution child session without allowing a stale child to alter a newer claim. Operator checkpoints require checkpoint.decision_request.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "reason": str, "checkpoint": object(map[string]any{"decision_request": str, "class": map[string]any{"type": "string", "enum": []string{core.WorkOrderCheckpointClassAuthorityConflict}}, "citations": map[string]any{"type": "array", "items": object(map[string]any{"document_id": str, "cited_version": num, "statement_or_section_id": str}, "document_id", "cited_version")}})}, "work_order_id", "session_id")},
 		{"name": "request_plan_revision", "description": "Request operator-gated revision of the approved execution plan for the exact claimed implement session.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "rationale": str}, "work_order_id", "session_id", "rationale")},
 		{"name": "get_work_order", "description": "Get the claimed order contract, spec, branch, feedback, artifacts, and review diff. The authority_source response field is live for a provisional queued-review peek and pinned for claim-time snapshot authority.", "inputSchema": object(identity, "work_order_id", "session_id")},
+		{"name": "refresh_work_order_context", "description": "Refresh bounded artifact context for the exact live claim. Returns nonblocking delivery diagnostics; does not acknowledge understanding or change authority pins.", "inputSchema": object(map[string]any{"workspace_id": map[string]any{"type": "string", "minLength": 1, "maxLength": 256}, "work_order_id": map[string]any{"type": "string", "minLength": 1, "maxLength": 256}, "session_id": map[string]any{"type": "string", "minLength": 1, "maxLength": 256}, "prior_revision": map[string]any{"type": "string", "pattern": "^([0-9a-f]{64})?$"}}, "workspace_id", "work_order_id", "session_id")},
 		{"name": "read_artifact", "description": "Read one artifact authorized for the claimed work order. The workspace, work order, session, and artifact ownership must all match; content is returned as base64.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "artifact_id": str}, "workspace_id", "work_order_id", "session_id", "artifact_id")},
 		{"name": "report_progress", "description": "Record self-reported progress for a claimed order.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "message": str}, "work_order_id", "session_id", "message")},
 		{"name": "report_usage", "description": "Record best-effort cumulative self-reported token, cost, and optional provider rate-limit status as observational audit telemetry. Report at natural checkpoints and immediately before the stage's terminal lifecycle tool when figures are available; missing usage never blocks lifecycle progress (DEC-1).", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "tokens_in": num, "tokens_out": num, "cost_usd": num, "rate_limit": rateLimit, "source": map[string]any{"type": "string", "enum": []string{"self_reported", "worker_fallback"}, "description": "Reserved worker provenance; agents omit this or use self_reported."}}, "work_order_id", "session_id", "tokens_in", "tokens_out", "cost_usd")},
