@@ -8,7 +8,6 @@ import { SpecCard } from '../components/task/spec-card'
 import { TaskContextCard } from '../components/task/task-context-card'
 import { TaskHeader } from '../components/task/task-header'
 import { Timeline } from '../components/task/timeline'
-import { VerificationStage } from '../components/task/verification-stage'
 import { useTaskDetail, useTaskOrder } from '../components/task/use-task-detail'
 import { Button } from '../components/ui/button'
 import { Skeleton } from '../components/ui/skeleton'
@@ -103,7 +102,6 @@ function FullBody({ item }: { item: ActivityItem }) {
             the explorer panel, and one page does not carry two renderings of
             the same lineage. */}
         <section aria-label="Activity" className="space-y-4 px-4 py-4 sm:px-6">
-          <VerificationStage item={item} />
           <Timeline item={item} routeVariant="full" />
         </section>
       </div>

@@ -18,12 +18,34 @@ export function VerificationEvidenceDisclosure({
   taskId,
   contextId,
   evidenceId,
+  compact = false,
 }: {
   taskId: string
   contextId: string
   evidenceId: string
+  // A table row has no room for the id: the row already names the run.
+  compact?: boolean
 }) {
   const [open, setOpen] = useState(false)
+  if (compact)
+    return (
+      <span className="min-w-0">
+        <button
+          type="button"
+          aria-expanded={open}
+          onClick={() => setOpen(!open)}
+          className="text-xs text-primary hover:underline"
+          title={evidenceId}
+        >
+          {open ? 'Hide evidence' : 'Show evidence'}
+        </button>
+        {open && (
+          <span className="mt-2 block basis-full">
+            <EvidenceContent taskId={taskId} contextId={contextId} evidenceId={evidenceId} />
+          </span>
+        )}
+      </span>
+    )
   return (
     <div className="min-w-0">
       <Button variant="ghost" size="sm" aria-expanded={open} onClick={() => setOpen(!open)}>
