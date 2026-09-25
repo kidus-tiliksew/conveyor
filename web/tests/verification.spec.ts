@@ -17,6 +17,8 @@ const metadata = (
   metadata: values,
 })
 const report = 'All four fixtures passed; evidence read back from the factory.'
+// A 1×1 PNG: enough for the browser to decode a retained capture.
+const pixel = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='
 const current = metadata(
   'current',
   {
@@ -211,8 +213,57 @@ async function fixture(page: Page, options: { viewer?: boolean; active?: boolean
         return route.fulfill({ status: 500, body: 'Response was unavailable; retry the same observation.' })
       return route.fulfill({ json: { ID: 'receipt-1', EvidenceIDs: ['observation-1'] } })
     }
+    if (path.includes('/evidence/cap-1/artifacts/'))
+      return route.fulfill({ contentType: 'image/png', body: Buffer.from(pixel, 'base64') })
     if (path.includes('/artifacts/'))
       return route.fulfill({ contentType: 'text/plain', body: 'Retained artifact content' })
+    if (path.endsWith('/evidence/cap-1'))
+      return route.fulfill({
+        json: {
+          Digest: 'digest-cap',
+          Envelope: {
+            id: 'cap-1',
+            type: 'visual_capture',
+            context_id: 'current',
+            run_id: 'run-1',
+            submitted_by: 'worker-verifier',
+            captured_at: at,
+            captured_by: { identity: 'fixture-browser', attribution: 'self_reported' },
+            payload: {
+              artifact: { artifact_id: 'shot-1' },
+              media_type: 'image/png',
+              capture_tool: 'playwright',
+              target: 'Integrations page',
+              captured_at: at,
+            },
+            artifacts: [{ artifact_id: 'shot-1', sha256: 'a'.repeat(64), media_type: 'image/png' }],
+          },
+        },
+      })
+    if (path.endsWith('/evidence/assert-required'))
+      return route.fulfill({
+        json: {
+          Digest: 'digest-assert',
+          Envelope: {
+            id: 'assert-required',
+            type: 'assertion_result',
+            context_id: 'current',
+            run_id: 'run-1',
+            submitted_by: 'worker-verifier',
+            captured_at: at,
+            captured_by: { identity: 'fixture-tool', attribution: 'self_reported' },
+            payload: {
+              assertion_id: 'required-state',
+              text: 'Selected account is shown',
+              expected: 'One selected account',
+              actual: '{"accounts":1}',
+              outcome: 'pass',
+              supporting: [{ evidence_id: 'cap-1' }, { evidence_id: 'e1' }],
+            },
+            artifacts: null,
+          },
+        },
+      })
     if (path.endsWith('/evidence/e1') || path.endsWith('/evidence/e2'))
       return route.fulfill({
         json: {
@@ -263,7 +314,7 @@ async function fixture(page: Page, options: { viewer?: boolean; active?: boolean
               assertion_id: 'required-state',
               outcome: 'pass',
               required: 'true',
-              evidence_id: 'e1',
+              evidence_id: 'assert-required',
             }),
             metadata('assert-optional', { assertion_id: 'optional-detail', outcome: 'fail', required: 'false' }),
           ],
@@ -310,7 +361,10 @@ async function fixture(page: Page, options: { viewer?: boolean; active?: boolean
         json: url.searchParams.get('cursor')
           ? { items: [metadata('e2', { type: 'state_observation', digest: 'digest-2' })] }
           : {
-              items: [metadata('e1', { type: 'state_observation', digest: 'digest-1' })],
+              items: [
+                metadata('e1', { type: 'state_observation', digest: 'digest-1' }),
+                metadata('cap-1', { type: 'visual_capture', digest: 'digest-cap', captured_at: at }),
+              ],
               next_cursor: 'evidence-page-2',
             },
       })
@@ -344,9 +398,15 @@ for (const width of [1366, 390]) {
     await expect(superseded).toHaveCount(2)
     await expect(superseded.filter({ hasText: `at ${'b'.repeat(7)}` })).toBeVisible()
     await expect(superseded.filter({ hasText: `at ${'c'.repeat(7)}` })).toBeVisible()
+    // Retained screenshots are the first thing shown; the strip reads the
+    // bounded evidence list and each capture on its own.
+    const strip = entry.getByRole('list', { name: 'Retained screenshots' })
+    await expect(strip.getByRole('img')).toHaveCount(1)
+    await expect(strip.getByRole('img')).toHaveAttribute('alt', /Integrations page/)
     const root = '/v1/tasks/verification-fixture/verification'
-    expect(counts.get(`${root}/contexts/current/evidence`)).toBeUndefined()
+    expect(counts.get(`${root}/contexts/current/evidence/cap-1/artifacts/shot-1`)).toBeTruthy()
     expect(counts.get(`${root}/contexts/current/evidence/e1`)).toBeUndefined()
+    expect(counts.get(`${root}/contexts/current/evidence/assert-required`)).toBeUndefined()
     const initialSummaryRequests = counts.get(root)
     release()
     await expect.poll(() => counts.get('/v1/tasks/verification-fixture/activity') ?? 0).toBeGreaterThan(1)
@@ -359,10 +419,24 @@ for (const width of [1366, 390]) {
     await expect(entry).toContainText(sha)
     await entry.locator('summary', { hasText: /^Attempts$/ }).click()
     await expect(entry).toContainText('1.2.0')
-    // Evidence is read on demand: the assertion row opens its own record.
+    // An assertion opens to what it checked and the evidence it cites: the
+    // capture as an image, the observation as its value, the record behind a fold.
     await entry.getByRole('button', { name: 'Show evidence', exact: true }).first().click()
-    await expect(entry.getByLabel('Structured evidence').first()).toContainText('Structured retained observation')
+    await expect(entry).toContainText('Selected account is shown')
+    await expect(entry).toContainText('One selected account')
+    await expect(entry.getByRole('figure').getByRole('img')).toHaveAttribute('alt', 'Integrations page')
+    await expect(entry).toContainText('Structured retained observation')
     expect(counts.get(`${root}/contexts/current/evidence/e1`)).toBeTruthy()
+    expect(counts.get(`${root}/contexts/current/evidence/assert-required`)).toBeTruthy()
+    await expect(entry.getByLabel('Structured evidence')).toBeHidden()
+    await entry.locator('summary', { hasText: /^Raw record$/ }).click()
+    await expect(entry.getByLabel('Structured evidence')).toBeVisible()
+    await expect(entry.getByLabel('Structured evidence')).toContainText('required-state')
+    // A thumbnail opens the full capture in a lightbox.
+    await strip.getByRole('button').first().click()
+    await expect(entry.locator('dialog[open]').getByRole('img')).toBeVisible()
+    await page.keyboard.press('Escape')
+    await expect(entry.locator('dialog[open]')).toHaveCount(0)
     await entry.locator('summary', { hasText: /^Evidence$/ }).click()
     await entry.getByRole('button', { name: 'Load more evidence', exact: true }).click()
     await entry.getByRole('button', { name: 'Open evidence e2', exact: true }).click()

@@ -1,10 +1,22 @@
 import { AlertTriangle, Check, ChevronRight, X } from 'lucide-react'
-import { type ReactNode, useEffect, useState } from 'react'
-import type { ActivityItem, Job, VerificationCollection, VerificationMetadata, WorkOrder } from '../../lib/types'
+import { type ReactNode, useEffect, useRef, useState } from 'react'
+import type {
+  ActivityItem,
+  Job,
+  VerificationCollection,
+  VerificationEvidence,
+  VerificationMetadata,
+  WorkOrder,
+} from '../../lib/types'
 import { absoluteTime, cn, duration } from '../../lib/utils'
 import { Badge } from '../ui/badge'
 import { useTaskVerification, useVerificationPages } from './use-task-detail'
-import { VerificationEvidenceDisclosure, VerificationObservationForm } from './verification-evidence'
+import {
+  EvidenceImage,
+  imageArtifactOf,
+  useVerificationEvidence,
+  VerificationObservationForm,
+} from './verification-evidence'
 import { CollectionPages } from './verification-stage'
 
 // The verify stage is a structured result, not a narration, so like the
@@ -188,6 +200,7 @@ function ContextBody({
             </span>
           </Row>
         )}
+        <CaptureGallery taskId={taskId} contextId={context.id} attemptByRun={attemptByRun} />
         {(assertionList.length > 0 || attemptList.length > 0) && (
           <Row label="Assertions">
             {assertions.isPending || attempts.isPending ? (
@@ -324,6 +337,156 @@ function Row({ label, children }: { label: string; children: ReactNode }) {
   )
 }
 
+// Screenshots the kit retained, one strip above the assertions so the
+// browser evidence is the first thing an operator sees. The list projection
+// names the type; the capture itself is read per thumbnail, on demand.
+const galleryPageLimit = 50
+const galleryPageCap = 4
+
+function CaptureGallery({
+  taskId,
+  contextId,
+  attemptByRun,
+}: {
+  taskId: string
+  contextId: string
+  attemptByRun: Map<string, VerificationMetadata>
+}) {
+  const evidence = useVerificationPages(taskId, contextId, 'evidence', galleryPageLimit)
+  const { hasNextPage, isFetchingNextPage, fetchNextPage } = evidence
+  const pages = evidence.data?.pages.length ?? 0
+  useEffect(() => {
+    if (hasNextPage && !isFetchingNextPage && pages < galleryPageCap) void fetchNextPage()
+  }, [hasNextPage, isFetchingNextPage, pages, fetchNextPage])
+  const captures = items(evidence)
+    .filter((entry) => entry.metadata.type === 'visual_capture')
+    .sort((a, b) => (a.metadata.captured_at || a.at).localeCompare(b.metadata.captured_at || b.at))
+  if (captures.length === 0) return null
+  // One exercise capturing several times is the common case; naming it on
+  // every tile says nothing, so the caption falls back to the capture time.
+  const exercises = new Set(captures.map((capture) => exerciseName(attemptByRun.get(capture.run_id)) ?? ''))
+  return (
+    <Row label="Screenshots">
+      <ul className="flex flex-wrap gap-2" aria-label="Retained screenshots">
+        {captures.map((capture) => (
+          <li key={capture.id}>
+            <CaptureThumb
+              taskId={taskId}
+              contextId={contextId}
+              capture={capture}
+              exercise={exercises.size > 1 ? exerciseName(attemptByRun.get(capture.run_id)) : undefined}
+            />
+          </li>
+        ))}
+        {hasNextPage && pages >= galleryPageCap && (
+          <li className="self-center text-[11px] text-faint">More captures under Details.</li>
+        )}
+      </ul>
+    </Row>
+  )
+}
+
+function clockTime(value: string) {
+  const at = new Date(value)
+  if (!Number.isFinite(at.getTime())) return ''
+  return at.toLocaleTimeString('en', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+}
+
+function captureTarget(evidence: VerificationEvidence | undefined) {
+  const payload = evidence?.Envelope.payload as { target?: string } | null | undefined
+  return payload?.target?.trim() || undefined
+}
+
+function CaptureThumb({
+  taskId,
+  contextId,
+  capture,
+  exercise,
+}: {
+  taskId: string
+  contextId: string
+  capture: VerificationMetadata
+  exercise?: string
+}) {
+  const query = useVerificationEvidence(taskId, contextId, capture.id)
+  const artifact = imageArtifactOf(query.data)
+  const target = captureTarget(query.data)
+  const capturedAt = capture.metadata.captured_at || capture.at
+  const caption = [exercise, clockTime(capturedAt)].filter(Boolean).join(' · ') || capture.id
+  const detail = [caption, target].filter(Boolean).join(' · ')
+  const dialog = useRef<HTMLDialogElement>(null)
+  const [lightbox, setLightbox] = useState(false)
+  if (query.error)
+    return (
+      <p role="alert" className="text-xs text-attention">
+        {query.error.message}
+      </p>
+    )
+  if (!artifact)
+    return (
+      <span
+        role="status"
+        aria-label="Loading capture"
+        className="block h-24 w-36 animate-pulse rounded border border-border bg-surface"
+      />
+    )
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => {
+          setLightbox(true)
+          dialog.current?.showModal()
+        }}
+        className="group block w-36 overflow-hidden rounded border border-border bg-surface text-left hover:border-edge"
+        title={detail}
+      >
+        <EvidenceImage
+          taskId={taskId}
+          contextId={contextId}
+          evidenceId={capture.id}
+          artifactId={artifact.artifact_id}
+          mediaType={artifact.media_type}
+          alt={detail}
+          className="h-24 w-36 object-cover object-top"
+        />
+        <span className="block truncate px-1.5 py-1 text-[11px] text-muted group-hover:text-foreground">{caption}</span>
+      </button>
+      <dialog
+        ref={dialog}
+        onClose={() => setLightbox(false)}
+        className="m-auto max-h-[92vh] max-w-[92vw] rounded-lg border border-border bg-background p-0 text-foreground backdrop:bg-black/70"
+      >
+        <div className="flex items-center gap-3 border-b border-border px-4 py-2 text-sm">
+          <span className="min-w-0 flex-1 truncate" title={detail}>
+            {detail}
+          </span>
+          <button
+            type="button"
+            className="text-xs text-muted hover:text-foreground"
+            onClick={() => dialog.current?.close()}
+          >
+            Close
+          </button>
+        </div>
+        <div className="max-h-[80vh] overflow-auto p-2">
+          {lightbox && (
+            <EvidenceImage
+              taskId={taskId}
+              contextId={contextId}
+              evidenceId={capture.id}
+              artifactId={artifact.artifact_id}
+              mediaType={artifact.media_type}
+              alt={detail}
+              className="max-h-[78vh]"
+            />
+          )}
+        </div>
+      </dialog>
+    </>
+  )
+}
+
 function AssertionTable({
   taskId,
   contextId,
@@ -349,33 +512,15 @@ function AssertionTable({
   )
   return (
     <ul className="divide-y divide-border/60 text-sm">
-      {rows.map((assertion) => {
-        const attempt = attemptByRun.get(assertion.run_id)
-        const name = exerciseName(attempt)
-        const pass = assertion.metadata.outcome === 'pass'
-        const evidenceId = assertion.metadata.evidence_id || assertion.id
-        return (
-          <li key={assertion.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-1.5 first:pt-0 last:pb-0">
-            <span
-              className={cn(
-                'inline-flex size-4 shrink-0 items-center justify-center rounded-full',
-                pass ? 'bg-positive-soft text-positive' : 'bg-failure-soft text-failure',
-              )}
-            >
-              {pass ? <Check className="size-3" /> : <X className="size-3" />}
-              <span className="sr-only">{pass ? 'Passed' : 'Failed'}</span>
-            </span>
-            <span className="min-w-0 flex-1 break-words">
-              {name ? <span className="font-medium">{name}</span> : <span className="text-muted">Unnamed run</span>}
-              <span className="text-muted"> · {assertion.metadata.assertion_id}</span>
-            </span>
-            {assertion.metadata.required !== 'true' && <span className="text-[11px] text-faint">optional</span>}
-            <span className="ml-auto text-xs">
-              <VerificationEvidenceDisclosure taskId={taskId} contextId={contextId} evidenceId={evidenceId} compact />
-            </span>
-          </li>
-        )
-      })}
+      {rows.map((assertion) => (
+        <AssertionRow
+          key={assertion.id}
+          taskId={taskId}
+          contextId={contextId}
+          assertion={assertion}
+          exercise={exerciseName(attemptByRun.get(assertion.run_id))}
+        />
+      ))}
       {silent.map((attempt) => (
         <li key={attempt.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-1.5 text-muted">
           <span
@@ -394,6 +539,218 @@ function AssertionTable({
       ))}
     </ul>
   )
+}
+
+function AssertionRow({
+  taskId,
+  contextId,
+  assertion,
+  exercise,
+}: {
+  taskId: string
+  contextId: string
+  assertion: VerificationMetadata
+  exercise?: string
+}) {
+  const [open, setOpen] = useState(false)
+  const pass = assertion.metadata.outcome === 'pass'
+  const evidenceId = assertion.metadata.evidence_id || assertion.id
+  return (
+    <li className="py-1.5 first:pt-0 last:pb-0">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+        <span
+          className={cn(
+            'inline-flex size-4 shrink-0 items-center justify-center rounded-full',
+            pass ? 'bg-positive-soft text-positive' : 'bg-failure-soft text-failure',
+          )}
+        >
+          {pass ? <Check className="size-3" /> : <X className="size-3" />}
+          <span className="sr-only">{pass ? 'Passed' : 'Failed'}</span>
+        </span>
+        <span className="min-w-0 flex-1 break-words">
+          {exercise ? <span className="font-medium">{exercise}</span> : <span className="text-muted">Unnamed run</span>}
+          <span className="text-muted"> · {assertion.metadata.assertion_id}</span>
+        </span>
+        {assertion.metadata.required !== 'true' && <span className="text-[11px] text-faint">optional</span>}
+        <button
+          type="button"
+          aria-expanded={open}
+          onClick={() => setOpen(!open)}
+          className="ml-auto text-xs text-primary hover:underline"
+          title={evidenceId}
+        >
+          {open ? 'Hide evidence' : 'Show evidence'}
+        </button>
+      </div>
+      {open && <AssertionEvidence taskId={taskId} contextId={contextId} evidenceId={evidenceId} />}
+    </li>
+  )
+}
+
+type AssertionPayload = {
+  text?: string
+  expected?: string
+  actual?: string
+  supporting?: Array<{ evidence_id?: string }>
+}
+
+// What the assertion checked and what it was judged on: the captures and
+// observations it cites render in place, with the raw record behind a fold.
+function AssertionEvidence({
+  taskId,
+  contextId,
+  evidenceId,
+}: {
+  taskId: string
+  contextId: string
+  evidenceId: string
+}) {
+  const query = useVerificationEvidence(taskId, contextId, evidenceId)
+  if (query.isPending)
+    return (
+      <p role="status" className="mt-2 text-xs text-muted">
+        Loading evidence…
+      </p>
+    )
+  if (query.error)
+    return (
+      <p role="alert" className="mt-2 text-xs text-attention">
+        Evidence could not be loaded: {query.error.message}
+      </p>
+    )
+  const envelope = query.data.Envelope
+  const payload = (envelope.payload ?? {}) as AssertionPayload
+  const supporting = (payload.supporting ?? []).map((ref) => ref.evidence_id).filter((id): id is string => Boolean(id))
+  return (
+    <div className="mt-2 space-y-2 rounded border border-border bg-background p-3 text-xs">
+      {envelope.type === 'assertion_result' ? (
+        <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
+          {payload.text && (
+            <>
+              <dt className="text-muted">Checked</dt>
+              <dd className="whitespace-pre-wrap break-words">{payload.text}</dd>
+            </>
+          )}
+          {payload.expected && (
+            <>
+              <dt className="text-muted">Expected</dt>
+              <dd className="whitespace-pre-wrap break-words">{payload.expected}</dd>
+            </>
+          )}
+          {payload.actual && (
+            <>
+              <dt className="text-muted">Actual</dt>
+              <dd className="whitespace-pre-wrap break-all font-mono">{prettyValue(payload.actual)}</dd>
+            </>
+          )}
+        </dl>
+      ) : (
+        <RawPayload envelope={query.data} />
+      )}
+      {supporting.length > 0 && (
+        <div className="space-y-2 border-t border-border pt-2">
+          <p className="text-[10px] uppercase tracking-[0.08em] text-faint">Judged on</p>
+          {supporting.map((id) => (
+            <SupportingEvidence key={id} taskId={taskId} contextId={contextId} evidenceId={id} />
+          ))}
+        </div>
+      )}
+      {envelope.type === 'assertion_result' && (
+        <details className="group">
+          <summary className="cursor-pointer select-none text-muted hover:text-foreground [&::-webkit-details-marker]:hidden">
+            Raw record
+          </summary>
+          <RawPayload envelope={query.data} />
+        </details>
+      )}
+    </div>
+  )
+}
+
+// A JSON-encoded string reads better re-indented; anything else stays as is.
+function prettyValue(value: string) {
+  try {
+    const parsed = JSON.parse(value)
+    if (parsed && typeof parsed === 'object') return JSON.stringify(parsed, null, 2)
+  } catch {
+    // not JSON
+  }
+  return value
+}
+
+function RawPayload({ envelope }: { envelope: VerificationEvidence }) {
+  return (
+    <section aria-label="Structured evidence" className="mt-1">
+      <p className="mb-1 break-all text-muted">
+        {envelope.Envelope.type} · {envelope.Envelope.id} · captured by {envelope.Envelope.captured_by.identity}
+      </p>
+      <pre className="max-h-96 overflow-auto whitespace-pre-wrap break-all rounded bg-surface p-2">
+        {JSON.stringify(envelope.Envelope.payload, null, 2)}
+      </pre>
+    </section>
+  )
+}
+
+function SupportingEvidence({
+  taskId,
+  contextId,
+  evidenceId,
+}: {
+  taskId: string
+  contextId: string
+  evidenceId: string
+}) {
+  const query = useVerificationEvidence(taskId, contextId, evidenceId)
+  if (query.isPending)
+    return (
+      <p role="status" className="text-muted">
+        Loading {evidenceId}…
+      </p>
+    )
+  if (query.error)
+    return (
+      <p role="alert" className="text-attention">
+        {evidenceId}: {query.error.message}
+      </p>
+    )
+  const envelope = query.data.Envelope
+  const image = imageArtifactOf(query.data)
+  if (envelope.type === 'visual_capture' && image) {
+    const caption = captureTarget(query.data) ?? 'Screenshot'
+    return (
+      <figure className="space-y-1">
+        <EvidenceImage
+          taskId={taskId}
+          contextId={contextId}
+          evidenceId={evidenceId}
+          artifactId={image.artifact_id}
+          mediaType={image.media_type}
+          alt={caption}
+          className="max-h-96 rounded border border-border"
+        />
+        <figcaption className="text-muted">
+          {caption} · {envelope.captured_at}
+        </figcaption>
+      </figure>
+    )
+  }
+  if (envelope.type === 'state_observation') {
+    const payload = envelope.payload as { target?: string; method?: string; value?: unknown }
+    return (
+      <div>
+        <p className="text-muted">
+          Observed {payload.target ?? 'state'}
+          {payload.method ? ` via ${payload.method}` : ''}
+        </p>
+        {payload.value !== undefined && (
+          <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap break-all rounded bg-surface p-2">
+            {typeof payload.value === 'string' ? prettyValue(payload.value) : JSON.stringify(payload.value, null, 2)}
+          </pre>
+        )}
+      </div>
+    )
+  }
+  return <RawPayload envelope={query.data} />
 }
 
 const deliveryBadge: Record<string, 'positive' | 'attention' | 'failure' | 'default'> = {

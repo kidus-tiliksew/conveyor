@@ -1,6 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useId, useState } from 'react'
 import { fetchVerificationArtifact, fetchVerificationEvidence, recordVerificationObservation } from '../../lib/api'
+import type { VerificationEvidence } from '../../lib/types'
+import { cn } from '../../lib/utils'
 import { useWorkspaceCapability, useWorkspaceSelection } from '../app-shell'
 import { Button } from '../ui/button'
 import { Textarea } from '../ui/input'
@@ -14,38 +16,115 @@ const disclosureQuery = {
   refetchInterval: false,
 } as const
 
-export function VerificationEvidenceDisclosure({
+// One retained evidence envelope, read on demand. Nothing here is fetched
+// until a component that shows it mounts (component-web-dashboard).
+export function useVerificationEvidence(taskId: string, contextId: string, evidenceId: string) {
+  const { workspace } = useWorkspaceSelection()
+  return useQuery({
+    queryKey: ['verification-evidence', workspace, taskId, contextId, evidenceId],
+    queryFn: ({ signal }) => fetchVerificationEvidence(workspace, taskId, contextId, evidenceId, signal),
+    enabled: Boolean(workspace && taskId && contextId && evidenceId),
+    ...disclosureQuery,
+  })
+}
+
+// A retained artifact as an object URL (and its text when it is readable).
+// The URL is revoked when the component that asked for it goes away.
+export function useVerificationArtifact(
+  taskId: string,
+  contextId: string,
+  evidenceId: string,
+  artifactId: string,
+  mediaType: string,
+) {
+  const { workspace } = useWorkspaceSelection()
+  const [url, setURL] = useState('')
+  const [text, setText] = useState('')
+  const query = useQuery({
+    queryKey: ['verification-artifact', workspace, taskId, contextId, evidenceId, artifactId],
+    queryFn: ({ signal }) => fetchVerificationArtifact(workspace, taskId, contextId, evidenceId, artifactId, signal),
+    enabled: Boolean(workspace && taskId && contextId && evidenceId && artifactId),
+    ...disclosureQuery,
+  })
+  useEffect(() => {
+    if (!query.data) return
+    const objectURL = URL.createObjectURL(query.data)
+    let active = true
+    setURL(objectURL)
+    if (mediaType === 'application/json' || mediaType === 'text/plain')
+      void query.data.text().then((value) => {
+        if (active) setText(value)
+      })
+    return () => {
+      active = false
+      URL.revokeObjectURL(objectURL)
+    }
+  }, [query.data, mediaType])
+  return { url, text, isPending: query.isPending, error: query.error }
+}
+
+export function isImageMediaType(mediaType?: string) {
+  return Boolean(mediaType?.startsWith('image/'))
+}
+
+// The first image artifact an envelope carries, whether it is declared on
+// the envelope or only referenced from a visual_capture payload.
+export function imageArtifactOf(evidence: VerificationEvidence | undefined) {
+  if (!evidence) return undefined
+  const envelope = evidence.Envelope
+  const declared = (envelope.artifacts ?? []).find((artifact) => isImageMediaType(artifact.media_type))
+  if (declared) return declared
+  const payload = envelope.payload as { artifact?: { artifact_id?: string }; media_type?: string } | null
+  if (payload?.artifact?.artifact_id && isImageMediaType(payload.media_type))
+    return { artifact_id: payload.artifact.artifact_id, sha256: '', media_type: payload.media_type ?? '' }
+  return undefined
+}
+
+export function EvidenceImage({
   taskId,
   contextId,
   evidenceId,
-  compact = false,
+  artifactId,
+  mediaType,
+  alt,
+  className,
 }: {
   taskId: string
   contextId: string
   evidenceId: string
-  // A table row has no room for the id: the row already names the run.
-  compact?: boolean
+  artifactId: string
+  mediaType: string
+  alt: string
+  className?: string
+}) {
+  const artifact = useVerificationArtifact(taskId, contextId, evidenceId, artifactId, mediaType)
+  if (artifact.error)
+    return (
+      <p role="alert" className="text-xs text-attention">
+        Capture could not be loaded: {artifact.error.message}
+      </p>
+    )
+  if (!artifact.url)
+    return (
+      <span
+        role="status"
+        aria-label="Loading capture"
+        className={cn('block animate-pulse rounded bg-surface', className)}
+      />
+    )
+  return <img src={artifact.url} alt={alt} className={cn('max-w-full object-contain', className)} />
+}
+
+export function VerificationEvidenceDisclosure({
+  taskId,
+  contextId,
+  evidenceId,
+}: {
+  taskId: string
+  contextId: string
+  evidenceId: string
 }) {
   const [open, setOpen] = useState(false)
-  if (compact)
-    return (
-      <span className="min-w-0">
-        <button
-          type="button"
-          aria-expanded={open}
-          onClick={() => setOpen(!open)}
-          className="text-xs text-primary hover:underline"
-          title={evidenceId}
-        >
-          {open ? 'Hide evidence' : 'Show evidence'}
-        </button>
-        {open && (
-          <span className="mt-2 block basis-full">
-            <EvidenceContent taskId={taskId} contextId={contextId} evidenceId={evidenceId} />
-          </span>
-        )}
-      </span>
-    )
   return (
     <div className="min-w-0">
       <Button variant="ghost" size="sm" aria-expanded={open} onClick={() => setOpen(!open)}>
@@ -57,12 +136,7 @@ export function VerificationEvidenceDisclosure({
 }
 
 function EvidenceContent({ taskId, contextId, evidenceId }: { taskId: string; contextId: string; evidenceId: string }) {
-  const { workspace } = useWorkspaceSelection()
-  const query = useQuery({
-    queryKey: ['verification-evidence', workspace, taskId, contextId, evidenceId],
-    queryFn: ({ signal }) => fetchVerificationEvidence(workspace, taskId, contextId, evidenceId, signal),
-    ...disclosureQuery,
-  })
+  const query = useVerificationEvidence(taskId, contextId, evidenceId)
   if (query.isPending) return <p role="status">Loading evidence…</p>
   if (query.error) return <p role="alert">Evidence could not be loaded: {query.error.message}</p>
   const evidence = query.data.Envelope
@@ -124,30 +198,9 @@ function ArtifactContent({
   artifactId: string
   mediaType: string
 }) {
-  const { workspace } = useWorkspaceSelection()
-  const [url, setURL] = useState('')
-  const [text, setText] = useState('')
-  const query = useQuery({
-    queryKey: ['verification-artifact', workspace, taskId, contextId, evidenceId, artifactId],
-    queryFn: ({ signal }) => fetchVerificationArtifact(workspace, taskId, contextId, evidenceId, artifactId, signal),
-    ...disclosureQuery,
-  })
-  useEffect(() => {
-    if (!query.data) return
-    const objectURL = URL.createObjectURL(query.data)
-    let active = true
-    setURL(objectURL)
-    if (mediaType === 'application/json' || mediaType === 'text/plain')
-      void query.data.text().then((value) => {
-        if (active) setText(value)
-      })
-    return () => {
-      active = false
-      URL.revokeObjectURL(objectURL)
-    }
-  }, [query.data, mediaType])
-  if (query.isPending) return <p role="status">Loading artifact…</p>
-  if (query.error) return <p role="alert">Artifact could not be loaded: {query.error.message}</p>
+  const { url, text, isPending, error } = useVerificationArtifact(taskId, contextId, evidenceId, artifactId, mediaType)
+  if (isPending) return <p role="status">Loading artifact…</p>
+  if (error) return <p role="alert">Artifact could not be loaded: {error.message}</p>
   return (
     <div className="space-y-2 py-2">
       {url && mediaType.startsWith('image/') && (

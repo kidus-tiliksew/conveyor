@@ -64,10 +64,11 @@ export function fetchVerificationPage(
   collection: import('./types').VerificationCollection,
   cursor = '',
   signal?: AbortSignal,
+  limit?: number,
 ) {
   return getJSON<import('./types').VerificationPage>(
     workspaceURL(
-      `/v1/tasks/${encodeURIComponent(taskId)}/verification/contexts/${encodeURIComponent(contextId)}/${collection}?cursor=${encodeURIComponent(cursor)}`,
+      `/v1/tasks/${encodeURIComponent(taskId)}/verification/contexts/${encodeURIComponent(contextId)}/${collection}?cursor=${encodeURIComponent(cursor)}${limit ? `&limit=${limit}` : ''}`,
       workspace,
     ),
     signal,

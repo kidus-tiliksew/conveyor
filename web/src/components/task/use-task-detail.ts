@@ -44,12 +44,17 @@ export function useTaskVerification(taskId: string) {
   })
 }
 
-export function useVerificationPages(taskId: string, contextId: string, collection: VerificationCollection) {
+export function useVerificationPages(
+  taskId: string,
+  contextId: string,
+  collection: VerificationCollection,
+  limit?: number,
+) {
   const { workspace } = useWorkspaceSelection()
   return useInfiniteQuery({
-    queryKey: ['verification-page', workspace, taskId, contextId, collection],
+    queryKey: ['verification-page', workspace, taskId, contextId, collection, limit ?? 0],
     queryFn: ({ pageParam, signal }) =>
-      fetchVerificationPage(workspace, taskId, contextId, collection, pageParam, signal),
+      fetchVerificationPage(workspace, taskId, contextId, collection, pageParam, signal, limit),
     initialPageParam: '',
     getNextPageParam: (page) => page.next_cursor || undefined,
     enabled: Boolean(workspace && taskId && contextId),
