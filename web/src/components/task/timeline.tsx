@@ -62,6 +62,7 @@ import {
 import { hasReviewRoundRetry, ReviewRoundRetryCard } from './review-round-retry-card'
 import { reviewGateCopy, SystemDesignProposalCard, useSystemDesignProposals } from './system-design-proposal-card'
 import { useTaskAudit } from './use-task-detail'
+import { VerificationEntry } from './verification-entry'
 import { claimedWorkOrder, WorkOrderPreemptControl } from './work-order-preempt-card'
 import {
   CheckpointProposalRecoveryCard,
@@ -280,6 +281,7 @@ export function Timeline({
             <TimelineRow
               key={keyFor(entry)}
               entry={entry}
+              item={item}
               usageReportedOrderIDs={usageReportedOrderIDs}
               operatorNotes={item.operator_notes}
             />
@@ -709,13 +711,35 @@ const orderDots: Record<Extract<TimelineEntry, { type: 'order' }>['tone'], strin
 
 function TimelineRow({
   entry,
+  item,
   usageReportedOrderIDs,
   operatorNotes,
 }: {
   entry: TimelineEntry
+  item: ActivityItem
   usageReportedOrderIDs: Set<string>
   operatorNotes?: ActivityItem['operator_notes']
 }) {
+  // The verify stage is a structured result, so like review it gets its own
+  // entry: the sealed outcome, the assertions by exercise, and the pull
+  // request publication, with the collection pages folded away.
+  if (entry.type === 'job' && entry.job.stage === 'verify' && entry.job.started_at)
+    return (
+      <VerificationEntry
+        item={item}
+        job={entry.job}
+        order={entry.order}
+        dotSlot={(className) => <TimelineDot className={className} />}
+        footer={
+          <JobFooter
+            job={entry.job}
+            model={entry.model}
+            order={entry.order}
+            usageAvailable={entry.order ? usageReportedOrderIDs.has(entry.order.id) : undefined}
+          />
+        }
+      />
+    )
   if (entry.type === 'job')
     return (
       <JobEntry
@@ -1184,16 +1208,6 @@ function JobEntry({
   const warning = tone === 'warning'
   const providerUsage = job.runner === 'in-process'
   const stage = stageLabels[job.stage] ?? job.stage
-  const note = [
-    order?.required_effort ? `effort ${order.required_effort}` : undefined,
-    order?.model_enforcement === 'worker-pinned'
-      ? 'model pinned by your worker'
-      : order?.model_enforcement === 'self-reported'
-        ? 'model self-reported by the agent'
-        : undefined,
-  ]
-    .filter(Boolean)
-    .join(' · ')
   const dot = (
     <TimelineDot
       className={cn(
@@ -1249,29 +1263,58 @@ function JobEntry({
             <TranscriptCaptures captures={order.transcript_captures} />
           </div>
         ) : null}
-        <footer className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-border px-4 py-2 font-mono text-[11px] tabular-nums text-muted">
-          <span>{duration(job.started_at, job.ended_at)}</span>
-          <span className="ml-auto min-w-0">
-            <ModelChip
-              model={model}
-              tokensIn={job.tokens_in}
-              tokensOut={job.tokens_out}
-              note={note || undefined}
-              usageAvailable={
-                providerUsage
-                  ? job.tokens_in + job.tokens_out > 0
-                  : order
-                    ? usageAvailable
-                    : job.tokens_in + job.tokens_out > 0
-              }
-              usageProvenance={
-                providerUsage ? 'provider-reported' : order ? usageProvenance(order) : 'provider-reported'
-              }
-            />
-          </span>
-        </footer>
+        <JobFooter job={job} model={model} order={order} usageAvailable={usageAvailable} />
       </article>
     </li>
+  )
+}
+
+// The job footer keeps the operator-facing duration and model, while the model
+// chip retains usage and dispatch detail on hover. Harness, auth mode,
+// confinement, and actor plumbing stay in the API.
+function JobFooter({
+  job,
+  model,
+  order,
+  usageAvailable,
+}: {
+  job: Job
+  model: string
+  order?: WorkOrder
+  usageAvailable?: boolean
+}) {
+  if (!job.started_at) return null
+  const providerUsage = job.runner === 'in-process'
+  const note = [
+    order?.required_effort ? `effort ${order.required_effort}` : undefined,
+    order?.model_enforcement === 'worker-pinned'
+      ? 'model pinned by your worker'
+      : order?.model_enforcement === 'self-reported'
+        ? 'model self-reported by the agent'
+        : undefined,
+  ]
+    .filter(Boolean)
+    .join(' · ')
+  return (
+    <footer className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-border px-4 py-2 font-mono text-[11px] tabular-nums text-muted">
+      <span>{duration(job.started_at, job.ended_at)}</span>
+      <span className="ml-auto min-w-0">
+        <ModelChip
+          model={model}
+          tokensIn={job.tokens_in}
+          tokensOut={job.tokens_out}
+          note={note || undefined}
+          usageAvailable={
+            providerUsage
+              ? job.tokens_in + job.tokens_out > 0
+              : order
+                ? usageAvailable
+                : job.tokens_in + job.tokens_out > 0
+          }
+          usageProvenance={providerUsage ? 'provider-reported' : order ? usageProvenance(order) : 'provider-reported'}
+        />
+      </span>
+    </footer>
   )
 }
 

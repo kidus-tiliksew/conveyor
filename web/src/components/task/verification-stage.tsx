@@ -4,33 +4,15 @@ import type {
   VerificationAssessment,
   VerificationCollection,
   VerificationMetadata,
-  VerificationPage,
 } from '../../lib/types'
 import { useWorkspaceSelection } from '../app-shell'
 import { Button } from '../ui/button'
-import { useTaskAudit, useTaskVerification, useVerificationPages } from './use-task-detail'
+import { useTaskAudit, useVerificationPages } from './use-task-detail'
 import { VerificationEvidenceDisclosure, VerificationObservationForm } from './verification-evidence'
 
-const collections: Array<[VerificationCollection, string]> = [
-  ['selections', 'Kit selection'],
-  ['obligations', 'Ordinary obligations'],
-  ['assertions', 'Assertion outcomes'],
-  ['operations', 'External operations'],
-  ['publications', 'Publication status'],
-  ['attempts', 'Attempts'],
-  ['evidence', 'Evidence'],
-]
-
-export function VerificationStage({ item }: { item: ActivityItem }) {
-  const { workspace } = useWorkspaceSelection()
-  if (
-    !item.task.policy_contract?.verify_stage &&
-    !(item.work_orders ?? []).some((order) => order.stage === 'verify') &&
-    item.task.next_stage !== 'verify'
-  )
-    return null
-  return <VerificationStageBody key={`${workspace}:${item.task.id}`} item={item} />
-}
+// Paged collection reads for one verification context. The timeline entry
+// (verification-entry.tsx) owns the summary; these pages sit behind its
+// details fold and are only fetched once a person opens one.
 
 function elapsed(start: string, end?: string) {
   const ms = (end ? Date.parse(end) : Date.now()) - Date.parse(start)
@@ -39,149 +21,7 @@ function elapsed(start: string, end?: string) {
   return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`
 }
 
-function VerificationStageBody({ item }: { item: ActivityItem }) {
-  const query = useTaskVerification(item.task.id)
-  const [historyOpen, setHistoryOpen] = useState(false)
-  const first = query.data?.pages[0]
-  const contexts = query.data?.pages.flatMap((page) => page.contexts?.items ?? []) ?? []
-  const current = contexts.find((context) => context.id === first?.current_context_id)
-  const historical = contexts.filter((context) => context.id !== first?.current_context_id)
-  const order = [...(item.work_orders ?? [])]
-    .filter((order) => order.stage === 'verify')
-    .sort((a, b) => (Date.parse(b.created_at ?? '') || 0) - (Date.parse(a.created_at ?? '') || 0))[0]
-  const state =
-    current?.metadata.outcome === 'operator_action_required'
-      ? 'blocked'
-      : current?.metadata.sealed_at
-        ? 'completed'
-        : order?.state === 'claimed'
-          ? 'running'
-          : order?.state === 'queued'
-            ? 'queued'
-            : order?.state === 'completed'
-              ? 'completed'
-              : order
-                ? 'blocked'
-                : 'queued'
-  return (
-    <section aria-label="Verification" className="min-w-0 space-y-3 rounded-lg border border-border bg-surface p-4">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 className="text-sm font-semibold">Verify · {state}</h2>
-        <Button variant="ghost" size="sm" onClick={() => void query.refetch()} disabled={query.isFetching}>
-          Refresh verification
-        </Button>
-      </div>
-      <p className="break-words text-xs text-muted">
-        Claimant: {order?.claimed_by || current?.metadata.claimant || 'Unclaimed'} · Attempts:{' '}
-        {current?.metadata.attempt_count ?? '0'}
-        {current && ` · Elapsed: ${elapsed(current.at, current.metadata.sealed_at)}`}
-      </p>
-      {query.isPending && <p role="status">Loading verification summary…</p>}
-      {query.error && <p role="alert">Verification could not be loaded: {query.error.message}</p>}
-      {!query.isPending && !query.error && contexts.length === 0 && (
-        <p className="text-xs text-muted">No verification context recorded yet.</p>
-      )}
-      {current && <ContextCard taskId={item.task.id} context={current} overview={first?.overview} />}
-      {(historical.length > 0 || query.hasNextPage) && (
-        <div>
-          <Button variant="ghost" size="sm" aria-expanded={historyOpen} onClick={() => setHistoryOpen(!historyOpen)}>
-            Historical verification ({historical.length}
-            {query.hasNextPage ? '+' : ''})
-          </Button>
-          {historyOpen && (
-            <div className="space-y-3 pt-2">
-              {historical.map((context) => (
-                <ContextCard key={context.id} taskId={item.task.id} context={context} historical />
-              ))}
-              {query.hasNextPage && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => void query.fetchNextPage()}
-                  disabled={query.isFetchingNextPage}
-                >
-                  Load earlier contexts
-                </Button>
-              )}
-            </div>
-          )}
-        </div>
-      )}
-    </section>
-  )
-}
-
-function ContextCard({
-  taskId,
-  context,
-  overview,
-  historical = false,
-}: {
-  taskId: string
-  context: VerificationMetadata
-  overview?: Partial<Record<VerificationCollection, VerificationPage>>
-  historical?: boolean
-}) {
-  return (
-    <article className="min-w-0 space-y-2 rounded border border-border p-3">
-      <h3 className="break-all text-xs font-semibold">
-        {historical ? 'Historical revision' : 'Current revision'} · {context.metadata.source_sha || 'Unknown SHA'}
-      </h3>
-      <p className="break-all text-xs text-muted">
-        Context {context.id} · {context.at}
-      </p>
-      {context.metadata.sealed_at && (
-        <p className="break-words text-xs">
-          Sealed result: <strong>{context.metadata.outcome}</strong> · {context.metadata.disposition} · Deciding actor:{' '}
-          {context.metadata.deciding_actor}
-        </p>
-      )}
-      {context.metadata.required_action && (
-        <p className="break-words text-xs">Required action: {context.metadata.required_action}</p>
-      )}
-      {collections.map(([kind, label]) => (
-        <CollectionDisclosure
-          key={kind}
-          taskId={taskId}
-          contextId={context.id}
-          kind={kind}
-          label={label}
-          preview={overview?.[kind]}
-        />
-      ))}
-    </article>
-  )
-}
-
-function CollectionDisclosure({
-  taskId,
-  contextId,
-  kind,
-  label,
-  preview,
-}: {
-  taskId: string
-  contextId: string
-  kind: VerificationCollection
-  label: string
-  preview?: VerificationPage
-}) {
-  const [open, setOpen] = useState(false)
-  return (
-    <div className="min-w-0 border-t border-border pt-2">
-      <Button variant="ghost" size="sm" aria-expanded={open} onClick={() => setOpen(!open)}>
-        {open ? 'Hide' : 'Show'} {label.toLowerCase()}
-      </Button>
-      {!open && preview && preview.items.length > 0 && (
-        <MetadataList taskId={taskId} contextId={contextId} kind={kind} items={preview.items} />
-      )}
-      {!open && preview?.next_cursor && <p className="text-xs text-muted">More {label.toLowerCase()} available.</p>}
-      {open && <CollectionPages taskId={taskId} contextId={contextId} kind={kind} label={label} />}
-    </div>
-  )
-}
-
-function CollectionPages({
+export function CollectionPages({
   taskId,
   contextId,
   kind,
@@ -216,6 +56,22 @@ function CollectionPages({
   )
 }
 
+// Fields the summary row already states, or that only the store cares about.
+const hiddenFields = new Set([
+  'truncated',
+  'type',
+  'outcome',
+  'required',
+  'assertion_id',
+  'evidence_id',
+  'kit_id',
+  'obligation_id',
+  'step_id',
+  'eligibility',
+  'current',
+  'delivery_state',
+])
+
 function MetadataList({
   taskId,
   contextId,
@@ -232,32 +88,30 @@ function MetadataList({
       {items.map((item) => (
         <li key={item.id} className="min-w-0 rounded bg-background p-2 text-xs">
           <p className="break-all font-medium">
-            {item.metadata.kit_id ||
+            {item.metadata.exercise_id ||
+              item.metadata.kit_id ||
               item.metadata.obligation_id ||
               item.metadata.assertion_id ||
               item.metadata.type ||
               item.metadata.step_id ||
               item.id}{' '}
-            · {item.metadata.outcome || item.metadata.eligibility || item.state}
+            · {item.metadata.outcome || item.metadata.eligibility || item.metadata.delivery_state || item.state}
+            {kind === 'assertions' && item.metadata.required === 'true' && (
+              <span className="font-normal text-muted"> · required</span>
+            )}
           </p>
-          {kind === 'assertions' && (
-            <p>{item.metadata.required === 'true' ? 'Required assertion' : 'Optional assertion'}</p>
-          )}
-          <dl className="min-w-0 space-y-1">
+          <dl className="mt-1 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5">
             {Object.entries(item.metadata)
-              .filter(
-                ([key, value]) =>
-                  value && !['truncated', 'type', 'outcome', 'required', 'assertion_id', 'evidence_id'].includes(key),
-              )
+              .filter(([key, value]) => value && value !== '[]' && !hiddenFields.has(key))
               .map(([key, value]) => (
-                <div key={key} className="min-w-0">
-                  <dt className="inline text-muted">{key.replaceAll('_', ' ')}: </dt>
-                  <dd className="inline whitespace-pre-wrap break-all">{value}</dd>
+                <div key={key} className="contents">
+                  <dt className="text-muted">{key.replaceAll('_', ' ')}</dt>
+                  <dd className="min-w-0 whitespace-pre-wrap break-all font-mono">{value}</dd>
                 </div>
               ))}
           </dl>
           {item.metadata.truncated === 'true' && (
-            <p className="text-muted">Long metadata is shortened in this summary.</p>
+            <p className="mt-1 text-muted">Long metadata is shortened in this summary.</p>
           )}
           {(kind === 'evidence' || item.metadata.evidence_id) && (
             <VerificationEvidenceDisclosure
@@ -266,7 +120,9 @@ function MetadataList({
               evidenceId={item.metadata.evidence_id || item.id}
             />
           )}
-          {kind === 'attempts' && <p>Elapsed: {elapsed(item.metadata.started_at, item.metadata.ended_at)}</p>}
+          {kind === 'attempts' && (
+            <p className="mt-1">Elapsed: {elapsed(item.metadata.started_at, item.metadata.ended_at)}</p>
+          )}
           {kind === 'attempts' && ['running', 'pending'].includes(item.state) && (
             <VerificationObservationForm taskId={taskId} contextId={contextId} runId={item.id} />
           )}
