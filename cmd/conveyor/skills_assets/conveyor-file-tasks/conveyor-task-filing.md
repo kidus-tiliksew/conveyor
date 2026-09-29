@@ -120,6 +120,15 @@ Structure that has survived contact with the agents:
    gates: `make test` (and `make test-integration` when stores/migrations
    are touched) green.
 
+Task bodies are read by people and agents who never saw the filing session
+(DEC-28). Attribute actions and observations to people by name, never by
+personal host aliases, SSH config names, home-directory paths, or IP addresses.
+Carry evidence inline in the body, or cite an uploaded artifact or a PR/task/event
+reference. Never point at a file that only one machine can read. Do not tell the
+implementer to preserve or rely on state that exists only on the filer's machine.
+For example, replace “verified on `<personal SSH alias>`” with “verified by
+`<operator name>` on their development server”.
+
 ## Authority boundary in acceptance criteria
 
 Never write a criterion requiring an operator-only act (gate approval,
