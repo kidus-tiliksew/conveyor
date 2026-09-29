@@ -719,7 +719,9 @@ test('requirements search and deterministic sorting preserve the selected canvas
       .allTextContents()
 
   // Most recently updated first is the default ordering.
-  await expect.poll(rowOrder).toEqual(['Alpha2', 'Gamma', 'Beta', 'alpha'])
+  await expect
+    .poll(rowOrder)
+    .toEqual(['Alphanot yet confirmed2', 'Gammanot yet confirmed', 'Betanot yet confirmed', 'alphanot yet confirmed'])
   await expect(group.getByRole('button', { name: /Alpha/ }).getByLabel('2 attention items')).toBeVisible()
 
   // The sort control is one menu on the search field: choosing an option
@@ -731,19 +733,27 @@ test('requirements search and deterministic sorting preserve the selected canvas
   }
 
   await chooseSort('Updated')
-  await expect.poll(rowOrder).toEqual(['alpha', 'Beta', 'Gamma', 'Alpha2'])
+  await expect
+    .poll(rowOrder)
+    .toEqual(['alphanot yet confirmed', 'Betanot yet confirmed', 'Gammanot yet confirmed', 'Alphanot yet confirmed2'])
 
   await chooseSort('Name')
-  await expect.poll(rowOrder).toEqual(['Alpha2', 'alpha', 'Beta', 'Gamma'])
+  await expect
+    .poll(rowOrder)
+    .toEqual(['Alphanot yet confirmed2', 'alphanot yet confirmed', 'Betanot yet confirmed', 'Gammanot yet confirmed'])
   await chooseSort('Name')
-  await expect.poll(rowOrder).toEqual(['Gamma', 'Beta', 'Alpha2', 'alpha'])
+  await expect
+    .poll(rowOrder)
+    .toEqual(['Gammanot yet confirmed', 'Betanot yet confirmed', 'Alphanot yet confirmed2', 'alphanot yet confirmed'])
 
   await chooseSort('Created')
-  await expect.poll(rowOrder).toEqual(['Beta', 'Alpha2', 'alpha', 'Gamma'])
+  await expect
+    .poll(rowOrder)
+    .toEqual(['Betanot yet confirmed', 'Alphanot yet confirmed2', 'alphanot yet confirmed', 'Gammanot yet confirmed'])
 
   const search = group.getByRole('searchbox', { name: 'Search requirements' })
   await search.fill('bEt')
-  await expect.poll(rowOrder).toEqual(['Beta'])
+  await expect.poll(rowOrder).toEqual(['Betanot yet confirmed'])
   await search.fill('missing')
   await expect(group.getByText('No requirements match your search.')).toBeVisible()
   await expect(
@@ -2564,5 +2574,146 @@ for (const access of ['confirm-only', 'propose-only'] as const) {
     )
     await expect(page.getByRole('button', { name: 'Revise', exact: true })).toHaveCount(0)
     await expect(page.getByRole('button', { name: 'Confirm version 1' })).toHaveCount(access === 'confirm-only' ? 1 : 0)
+  })
+}
+
+// Seeded projections prove presentation, not server dismissal/archive behavior.
+for (const state of [
+  'first proposal',
+  'dismissal archive',
+  'operator archive',
+  'unknown archive',
+  'confirmed revision',
+  'multiple proposals',
+] as const) {
+  test(`requirements: lifecycle presentation for ${state}`, async ({ page }, testInfo) => {
+    await initShell(page)
+    const archived = state.includes('archive')
+    const confirmed = state === 'confirmed revision' || state === 'operator archive' || state === 'unknown archive'
+    const version = {
+      ...requirement.pending_versions[0],
+      version: 1,
+      content: '# Document intent\n\nPreserved proposal content.',
+      confirmed,
+      retired: state === 'dismissal archive',
+      dismissed: state === 'dismissal archive',
+    }
+    const proposals = archived
+      ? []
+      : confirmed
+        ? [{ ...version, version: 2, confirmed: false }]
+        : state === 'multiple proposals'
+          ? [version, { ...version, version: 2 }]
+          : [version]
+    const view = {
+      ...requirement,
+      requirement: {
+        ...requirement.requirement,
+        current_version: confirmed ? 1 : undefined,
+        archived,
+        archived_by: archived ? 'Operator One' : undefined,
+        archived_at: archived ? '2026-09-28T13:47:33Z' : undefined,
+        archive_reason:
+          state === 'dismissal archive'
+            ? 'only_proposal_dismissed'
+            : state === 'unknown archive'
+              ? 'future_reason'
+              : undefined,
+        archive_note:
+          state === 'dismissal archive' ? 'No need for a separate document. <script>unsafe</script>' : undefined,
+      },
+      current_version: confirmed ? version : undefined,
+      pending_versions: proposals,
+      versions: archived || confirmed ? [version, ...proposals] : proposals,
+      drift: [],
+      staleness: { deliveries: [], active_drift: [] },
+      confirmation_eligible: true,
+    }
+    let mutations = 0
+    await page.route('**/v1/**', async (route) => {
+      const handled = shellResponse(route)
+      if (handled) return await handled
+      if (route.request().method() === 'POST') mutations++
+      const path = new URL(route.request().url()).pathname
+      if (path === '/v1/requirements')
+        return route.fulfill({ json: [{ ...view, pending_version_count: proposals.length, drift_count: 0 }] })
+      if (path === '/v1/requirements/req-retries') return route.fulfill({ json: view })
+      if (path === '/v1/requirements/req-retries/versions') return route.fulfill({ json: view.versions })
+      return route.fulfill({ json: [] })
+    })
+    await page.goto('/requirements?requirement=req-retries')
+    const header = page.getByRole('heading', { name: 'Retry behavior', exact: true }).locator('..')
+    const tree = page.getByRole('navigation', { name: 'Document tree' })
+    const attention = page.getByRole('region', { name: 'Needs your attention', exact: true })
+    await expect(attention).toHaveCount(1)
+    if (!confirmed) {
+      await expect(header.getByText('No confirmed version', { exact: true })).toBeVisible()
+      await expect(
+        header.getByText(state === 'dismissal archive' ? 'v1 · Dismissed' : 'v1 · Proposed', { exact: true }),
+      ).toBeVisible()
+    } else {
+      await expect(header.getByText('No confirmed version', { exact: true })).toHaveCount(0)
+      await expect(header.getByText('v1', { exact: true })).toBeVisible()
+      await expect(tree.getByText('not yet confirmed')).toHaveCount(0)
+    }
+    if (archived) {
+      await tree.locator('details summary').click()
+      if (state === 'dismissal archive') {
+        for (const surface of [attention, tree.getByRole('button', { name: /Retry behavior/ })]) {
+          await expect(surface).toContainText('Archived because its only proposal was dismissed.')
+          await expect(surface).toContainText(
+            'Dismissal note: No need for a separate document. <script>unsafe</script>',
+          )
+        }
+        await expect(page.getByRole('button', { name: 'Restore', exact: true })).toHaveCount(0)
+        await tree.getByRole('button', { name: 'Document details' }).click()
+        await expect(
+          tree
+            .getByText(
+              'Archived because its only proposal was dismissed. Dismissal note: No need for a separate document. <script>unsafe</script>',
+              { exact: true },
+            )
+            .last(),
+        ).toBeVisible()
+        const noteBounds = await tree.getByRole('tooltip').boundingBox()
+        const treeBounds = await tree.boundingBox()
+        expect(noteBounds).not.toBeNull()
+        expect(treeBounds).not.toBeNull()
+        expect((noteBounds?.x ?? 0) + (noteBounds?.width ?? 0)).toBeLessThanOrEqual(
+          (treeBounds?.x ?? 0) + (treeBounds?.width ?? 0),
+        )
+        await page.screenshot({ path: testInfo.outputPath('dismissal-archive.png'), fullPage: true })
+      } else {
+        await expect(attention).toContainText('This requirement is archived.')
+        await expect(page.getByRole('button', { name: 'Restore', exact: true })).toBeVisible()
+        await expect(attention).not.toContainText('Dismissal note:')
+        await expect(header.getByText('Archived', { exact: true })).toHaveAttribute(
+          'title',
+          /Archived by Operator One on/,
+        )
+      }
+    } else {
+      const warning = 'Dismissing this version archives the document.'
+      if (!confirmed) {
+        await expect(tree.getByRole('button', { name: /Retry behavior/ })).toContainText('not yet confirmed')
+        await expect(attention).toContainText('This document has no confirmed version.')
+      }
+      if (state === 'first proposal') {
+        await expect(attention).toContainText(warning)
+        await page.screenshot({ path: testInfo.outputPath('first-proposal.png'), fullPage: true })
+      } else await expect(attention).not.toContainText(warning)
+      await attention.getByRole('button', { name: 'Dismiss', exact: true }).first().click()
+      const dialog = page.getByRole('dialog')
+      if (state === 'first proposal') await expect(dialog).toContainText(warning)
+      else await expect(dialog).not.toContainText(warning)
+      await dialog.getByRole('button', { name: 'Cancel', exact: true }).click()
+      expect(mutations).toBe(0)
+    }
+    if (state === 'first proposal' || state === 'dismissal archive') {
+      await page.setViewportSize({ width: 390, height: 844 })
+      await expect(header.getByText('No confirmed version', { exact: true })).toBeVisible()
+      expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390)
+      await page.screenshot({ path: testInfo.outputPath('lifecycle-narrow.png'), fullPage: true })
+    }
   })
 }

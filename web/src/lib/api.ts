@@ -485,7 +485,11 @@ export function fetchRequirements(options: { includeArchived?: boolean } = {}) {
   const path = options.includeArchived ? '/v1/requirements?include_archived=true' : '/v1/requirements'
   return getJSON<import('./types').RequirementSummary[]>(workspaceURL(path))
 }
-export function fetchRequirement(requirementId: string, workspace?: string, signal?: AbortSignal) {
+export function fetchRequirement(
+  requirementId: string,
+  workspace?: string,
+  signal?: AbortSignal,
+): Promise<RequirementView> {
   return getJSON<RequirementView>(
     workspaceURL(`/v1/requirements/${encodeURIComponent(requirementId)}`, workspace),
     signal,
@@ -585,11 +589,14 @@ async function setRequirementArchived(
   return response.json() as Promise<import('./types').Requirement>
 }
 
-export function archiveRequirement(requirementId: string, supersededBy: string[] = []) {
+export function archiveRequirement(
+  requirementId: string,
+  supersededBy: string[] = [],
+): Promise<import('./types').Requirement> {
   return setRequirementArchived(requirementId, 'archive', supersededBy)
 }
 
-export function restoreRequirement(requirementId: string) {
+export function restoreRequirement(requirementId: string): Promise<import('./types').Requirement> {
   return setRequirementArchived(requirementId, 'restore')
 }
 
@@ -856,7 +863,11 @@ export function fetchSystemDesigns(options: { includeArchived?: boolean } = {}) 
   const path = options.includeArchived ? '/v1/system-designs?include_archived=true' : '/v1/system-designs'
   return getJSON<import('./types').SystemDesignSummary[]>(workspaceURL(path))
 }
-export function fetchSystemDesign(id: string, workspace?: string, signal?: AbortSignal) {
+export function fetchSystemDesign(
+  id: string,
+  workspace?: string,
+  signal?: AbortSignal,
+): Promise<import('./types').SystemDesignView> {
   return getJSON<import('./types').SystemDesignView>(
     workspaceURL(`/v1/system-designs/${encodeURIComponent(id)}`, workspace),
     signal,
@@ -906,11 +917,11 @@ async function setSystemDesignArchived(id: string, action: 'archive' | 'restore'
   return response.json() as Promise<import('./types').SystemDesign>
 }
 
-export function archiveSystemDesign(id: string, supersededBy: string[] = []) {
+export function archiveSystemDesign(id: string, supersededBy: string[] = []): Promise<import('./types').SystemDesign> {
   return setSystemDesignArchived(id, 'archive', supersededBy)
 }
 
-export function restoreSystemDesign(id: string) {
+export function restoreSystemDesign(id: string): Promise<import('./types').SystemDesign> {
   return setSystemDesignArchived(id, 'restore')
 }
 

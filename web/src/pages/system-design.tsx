@@ -6,7 +6,15 @@ import { useWorkspaceCapability, useWorkspaceSelection } from '../components/app
 import { ArchiveDocumentDialog, type SuccessorCandidate } from '../components/documents/archive-document-dialog'
 import { type AttentionItem, AttentionSurface } from '../components/documents/attention-surface'
 import { MoreDocumentEvents, useDocumentEvents } from '../components/documents/document-events'
-import { DocumentReview, type ReviewSearch, selectedReviewVersion } from '../components/documents/document-review'
+import {
+  archivedByDismissal,
+  dismissalArchiveConsequence,
+  dismissalArchiveDescription,
+  DocumentReview,
+  reviewVersionLabel,
+  type ReviewSearch,
+  selectedReviewVersion,
+} from '../components/documents/document-review'
 import { compareDocuments, type DocumentSort, type DocumentSortDirection } from '../components/documents/document-sort'
 import {
   DocumentTree,
@@ -219,9 +227,11 @@ export function SystemDesignPage() {
                   key={item.document.id}
                   label={item.document.title}
                   meta={
-                    item.document.superseded_by?.length
-                      ? `Superseded by ${item.document.superseded_by.join(', ')}`
-                      : undefined
+                    !item.current_version
+                      ? 'not yet confirmed'
+                      : item.document.superseded_by?.length
+                        ? `Superseded by ${item.document.superseded_by.join(', ')}`
+                        : undefined
                   }
                   title={
                     item.document.superseded_by?.length
@@ -244,16 +254,25 @@ export function SystemDesignPage() {
                   key={item.document.id}
                   label={item.document.title}
                   meta={
-                    item.document.superseded_by?.length
+                    dismissalArchiveDescription(item.document) ??
+                    (item.document.superseded_by?.length
                       ? `Superseded by ${item.document.superseded_by.join(', ')}`
-                      : undefined
+                      : undefined)
                   }
                   title={
-                    item.document.superseded_by?.length
+                    dismissalArchiveDescription(item.document) ??
+                    (item.document.superseded_by?.length
                       ? `Superseded by ${item.document.superseded_by.join(', ')}`
-                      : undefined
+                      : undefined)
                   }
-                  tooltip={<SuccessorLinks ids={item.document.superseded_by} compact />}
+                  tooltip={
+                    <>
+                      <p className="max-w-36 whitespace-pre-wrap break-words">
+                        {dismissalArchiveDescription(item.document)}
+                      </p>
+                      <SuccessorLinks ids={item.document.superseded_by} compact />
+                    </>
+                  }
                   selected={selected?.document.id === item.document.id}
                   onClick={() =>
                     void navigate({ to: '/system-design', search: { document: item.document.id }, replace: true })
@@ -511,6 +530,12 @@ function DesignCanvas({
       title: `${item.document.title} · Version ${version.version} is waiting for you`,
       detail: (
         <>
+          {!item.current_version && (
+            <span className="block">
+              This document has no confirmed version.
+              {item.pending_versions.length === 1 && ` ${dismissalArchiveConsequence}`}
+            </span>
+          )}
           {originLabels[version.origin]} · {formatDate(version.created_at)}
           {item.pending_versions.length > 1 && '. Confirming a later version drops the earlier ones.'}
         </>
@@ -585,6 +610,7 @@ function DesignCanvas({
           <VersionDismissDialog
             documentTitle={item.document.title}
             version={dismissTarget.version}
+            archivesDocument={!item.current_version && item.pending_versions.length === 1}
             pending={dismiss.isPending}
             error={dismiss.error ? errorMessage(dismiss.error, 'Could not dismiss this version.') : undefined}
             onCancel={() => setDismissTarget(null)}
@@ -614,9 +640,10 @@ function DesignCanvas({
           <h2 className="mt-3 text-[28px] font-semibold leading-tight tracking-tight text-balance">
             {item.document.title}
           </h2>
+          {!item.current_version && <p className="mt-2 text-sm text-muted">No confirmed version</p>}
           {displayed ? (
             <div className="mt-3 flex flex-wrap items-center gap-1.5">
-              <Badge variant="mono">v{displayed.version}</Badge>
+              <Badge variant="mono">{reviewVersionLabel(displayed, Boolean(item.current_version))}</Badge>
               {displayed.confirmed && <Badge variant="positive">Confirmed</Badge>}
               {item.document.archived && (
                 <Badge
@@ -642,7 +669,7 @@ function DesignCanvas({
         {/* The document's corner affordance (REQ-3): the code, work, and
             evidence this guide governs, on demand. */}
         <div className="flex shrink-0 flex-wrap items-center gap-2">
-          {canConfirm && (
+          {canConfirm && !archivedByDismissal(item.document) && (
             <Button
               size="sm"
               variant={item.document.archived ? 'secondary' : 'destructive'}
@@ -683,7 +710,9 @@ function DesignCanvas({
                 aria-label="Needs your attention"
                 className="rounded-lg border border-border bg-surface/40 px-4 py-3 text-sm text-muted"
               >
-                <p>This System Design document is archived.</p>
+                <p className="whitespace-pre-wrap break-words">
+                  {dismissalArchiveDescription(item.document) ?? 'This System Design document is archived.'}
+                </p>
                 <SuccessorLinks ids={item.document.superseded_by} />
               </section>
             ) : (

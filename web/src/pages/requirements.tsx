@@ -21,7 +21,15 @@ import { useWorkspaceCapability, useWorkspaceSelection } from '../components/app
 import { ArchiveDocumentDialog, type SuccessorCandidate } from '../components/documents/archive-document-dialog'
 import { type AttentionItem, AttentionSurface } from '../components/documents/attention-surface'
 import { MoreDocumentEvents, useDocumentEvents } from '../components/documents/document-events'
-import { DocumentReview, type ReviewSearch, selectedReviewVersion } from '../components/documents/document-review'
+import {
+  archivedByDismissal,
+  dismissalArchiveConsequence,
+  dismissalArchiveDescription,
+  DocumentReview,
+  reviewVersionLabel,
+  type ReviewSearch,
+  selectedReviewVersion,
+} from '../components/documents/document-review'
 import { compareDocuments, type DocumentSort, type DocumentSortDirection } from '../components/documents/document-sort'
 import {
   DocumentTree,
@@ -283,6 +291,7 @@ export function RequirementsPage() {
               <DocumentTreeItem
                 key={item.requirement.id}
                 label={item.requirement.title}
+                meta={!item.current_version ? 'not yet confirmed' : undefined}
                 attentionCount={requirementAttentionCount(item)}
                 selected={!openOverview && selectedId === item.requirement.id}
                 onClick={() => selectRequirement(item.requirement.id)}
@@ -300,16 +309,25 @@ export function RequirementsPage() {
                   key={item.requirement.id}
                   label={item.requirement.title}
                   meta={
-                    item.requirement.superseded_by?.length
+                    dismissalArchiveDescription(item.requirement) ??
+                    (item.requirement.superseded_by?.length
                       ? `Superseded by ${item.requirement.superseded_by.join(', ')}`
-                      : undefined
+                      : undefined)
                   }
                   title={
-                    item.requirement.superseded_by?.length
+                    dismissalArchiveDescription(item.requirement) ??
+                    (item.requirement.superseded_by?.length
                       ? `Superseded by ${item.requirement.superseded_by.join(', ')}`
-                      : undefined
+                      : undefined)
                   }
-                  tooltip={<SuccessorLinks ids={item.requirement.superseded_by} compact />}
+                  tooltip={
+                    <>
+                      <p className="max-w-36 whitespace-pre-wrap break-words">
+                        {dismissalArchiveDescription(item.requirement)}
+                      </p>
+                      <SuccessorLinks ids={item.requirement.superseded_by} compact />
+                    </>
+                  }
                   selected={!openOverview && selectedId === item.requirement.id}
                   onClick={() => selectRequirement(item.requirement.id)}
                 />
@@ -840,6 +858,12 @@ function RequirementDetailCanvas({
       title: `${item.requirement.title} · Version ${version.version} is waiting for you`,
       detail: (
         <>
+          {!item.current_version && (
+            <span className="block">
+              This document has no confirmed version.
+              {item.pending_versions.length === 1 && ` ${dismissalArchiveConsequence}`}
+            </span>
+          )}
           {originLabels[version.origin]}
           {version.origin_task_id && ` ${version.origin_task_id}`} · {formatDate(version.created_at)}
           {!item.confirmation_eligible && (
@@ -925,6 +949,7 @@ function RequirementDetailCanvas({
           <VersionDismissDialog
             documentTitle={item.requirement.title}
             version={dismissTarget.version}
+            archivesDocument={!item.current_version && item.pending_versions.length === 1}
             pending={dismiss.isPending}
             error={dismiss.error ? errorMessage(dismiss.error, 'Could not dismiss this version.') : undefined}
             onCancel={() => setDismissTarget(null)}
@@ -956,9 +981,10 @@ function RequirementDetailCanvas({
           <h2 className="mt-3 text-[28px] font-semibold leading-tight tracking-tight text-balance">
             {item.requirement.title}
           </h2>
+          {!item.current_version && <p className="mt-2 text-sm text-muted">No confirmed version</p>}
           {displayed && (
             <div className="mt-3 flex flex-wrap items-center gap-1.5">
-              <Badge variant="mono">v{displayed.version}</Badge>
+              <Badge variant="mono">{reviewVersionLabel(displayed, Boolean(item.current_version))}</Badge>
               {displayed.confirmed && <Badge variant="positive">Confirmed</Badge>}
               {item.requirement.archived && (
                 <Badge
@@ -983,7 +1009,7 @@ function RequirementDetailCanvas({
         {/* The document's corner affordance (REQ-3): what this intent reaches
             in work, delivery, and evidence, on demand. */}
         <div className="flex shrink-0 flex-wrap items-center gap-2">
-          {canConfirm && (
+          {canConfirm && !archivedByDismissal(item.requirement) && (
             <Button
               size="sm"
               variant={item.requirement.archived ? 'secondary' : 'destructive'}
@@ -1024,7 +1050,9 @@ function RequirementDetailCanvas({
                 aria-label="Needs your attention"
                 className="rounded-lg border border-border bg-surface/40 px-4 py-3 text-sm text-muted"
               >
-                <p>This requirement is archived.</p>
+                <p className="whitespace-pre-wrap break-words">
+                  {dismissalArchiveDescription(item.requirement) ?? 'This requirement is archived.'}
+                </p>
                 <SuccessorLinks ids={item.requirement.superseded_by} />
               </section>
             ) : (

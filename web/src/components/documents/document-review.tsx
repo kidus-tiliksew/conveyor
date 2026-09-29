@@ -44,6 +44,26 @@ export function versionState(version: ReviewVersion) {
         ? 'Confirmed'
         : 'Proposed'
 }
+// Lifecycle identity is neutral metadata; pending actions stay in AttentionSurface.
+export function reviewVersionLabel(version: ReviewVersion, hasConfirmedVersion: boolean) {
+  return `v${version.version}${hasConfirmedVersion ? '' : ` · ${versionState(version)}`}`
+}
+
+export const dismissalArchiveConsequence = 'Dismissing this version archives the document.'
+
+export function archivedByDismissal(document: { archived?: boolean; archive_reason?: string }) {
+  return document.archived && document.archive_reason === 'only_proposal_dismissed'
+}
+
+export function dismissalArchiveDescription(document: {
+  archived?: boolean
+  archive_reason?: string
+  archive_note?: string
+}) {
+  if (!archivedByDismissal(document)) return undefined
+  return `Archived because its only proposal was dismissed.${document.archive_note ? ` Dismissal note: ${document.archive_note}` : ''}`
+}
+
 export function selectedReviewVersion<T extends ReviewVersion>(
   versions: T[],
   current: T | undefined,
