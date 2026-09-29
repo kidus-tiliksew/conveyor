@@ -10,6 +10,8 @@ import { Input } from '../components/ui/input'
 import { Switch } from '../components/ui/switch'
 import { Field } from '../components/workspace/field'
 import { MembersSection } from '../components/workspace/members-section'
+import { VerificationKits } from '../components/workspace/verification-kits'
+import { VerificationSettings } from '../components/workspace/verification-settings'
 import {
   ConfigValidationError,
   fetchWorkers,
@@ -22,23 +24,34 @@ import { githubSlug } from '../lib/repository'
 import type { WorkerList, WorkspaceConfigDocument, WorkspaceConfigRepo } from '../lib/types'
 import { cn } from '../lib/utils'
 
-type TabId = 'general' | 'policy' | 'workers' | 'members'
+type TabId = 'general' | 'policy' | 'verification' | 'workers' | 'members'
 
 const TABS: Array<{ id: TabId; label: string }> = [
   { id: 'general', label: 'General' },
   { id: 'policy', label: 'Policy' },
+  { id: 'verification', label: 'Verification' },
   { id: 'workers', label: 'Workers' },
   { id: 'members', label: 'Members' },
 ]
 
 // Which tab owns a config section, for dirty markers and validation-error routing.
+// The two verification switches live in execution but belong to the
+// Verification tab, so the policy slice compares execution without them.
 const TAB_SLICES: Record<Exclude<TabId, 'workers' | 'members'>, (document: WorkspaceConfigDocument) => unknown> = {
   general: (document) => [document.work_order_queue_timeout, document.repos, document.monitor],
-  policy: (document) => [document.max_bounces, document.stage_timeouts, document.review, document.execution],
+  policy: (document) => {
+    const { verify_stage: _verify, require_verification_evidence: _evidence, ...execution } = document.execution
+    return [document.max_bounces, document.stage_timeouts, document.review, execution]
+  },
+  verification: (document) => [
+    document.execution.verify_stage ?? false,
+    document.execution.require_verification_evidence,
+  ],
 }
 
 function tabForField(field: string): TabId {
   if (/^(work_order_queue_timeout|repos|monitor)/.test(field)) return 'general'
+  if (/^execution\.(verify_stage|require_verification_evidence)/.test(field)) return 'verification'
   return 'policy'
 }
 
@@ -139,7 +152,11 @@ export function WorkspacePage() {
 
         {draft && canManageWorkspace ? (
           <>
-            <div role="tablist" className="mt-6 flex gap-1 border-b border-border">
+            {/* Five tabs exceed a phone width; the row scrolls inside itself. */}
+            <div
+              role="tablist"
+              className="mt-6 flex gap-1 overflow-x-auto border-b border-border [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+            >
               {TABS.map((entry) => {
                 const dirty = dirtyTabs.includes(entry.id)
                 const errored = errorTabs.includes(entry.id)
@@ -151,7 +168,7 @@ export function WorkspacePage() {
                     aria-selected={tab === entry.id}
                     onClick={() => setTab(entry.id)}
                     className={cn(
-                      '-mb-px flex items-center gap-2 border-b-2 px-3.5 py-2.5 text-sm font-medium transition-colors focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary',
+                      '-mb-px flex shrink-0 items-center gap-2 whitespace-nowrap border-b-2 px-3.5 py-2.5 text-sm font-medium transition-colors focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary',
                       tab === entry.id
                         ? 'border-primary text-foreground'
                         : 'border-transparent text-muted hover:text-foreground',
@@ -183,6 +200,12 @@ export function WorkspacePage() {
                 />
               )}
               {tab === 'policy' && <PolicyTab draft={draft} setDraft={setDraft} />}
+              {tab === 'verification' && (
+                <div className="space-y-4">
+                  <VerificationSettings draft={draft} setDraft={setDraft} />
+                  <VerificationKits key={workspace} workspace={workspace} />
+                </div>
+              )}
               {tab === 'workers' && (
                 <WorkersTab
                   data={workers.data}
@@ -251,6 +274,11 @@ export function WorkspacePage() {
           // member may see who else is here, without the management controls.
           <>
             <ReadOnly snapshot={snapshot} />
+            {workspace && (
+              <div className="mt-4">
+                <VerificationKits key={workspace} workspace={workspace} />
+              </div>
+            )}
             <div className="mt-4">
               <MembersSection />
             </div>
@@ -525,19 +553,6 @@ function PolicyTab({
               <div>
                 <p className="text-sm font-medium">Pause before merge</p>
                 <p className="text-xs text-faint">Require operator approval before the reviewed change lands</p>
-              </div>
-            </div>
-            <div className="flex items-center gap-3">
-              <Switch
-                aria-label="Require verification evidence"
-                checked={draft.execution.require_verification_evidence}
-                onChange={(checked) =>
-                  update({ execution: { ...draft.execution, require_verification_evidence: checked } })
-                }
-              />
-              <div>
-                <p className="text-sm font-medium">Require verification evidence</p>
-                <p className="text-xs text-faint">Require an eligible screenshot or short recording before review</p>
               </div>
             </div>
           </div>

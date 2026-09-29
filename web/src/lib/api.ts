@@ -457,6 +457,90 @@ export async function fetchWorkspaceGitHubApp(workspace: string) {
   return response.json() as Promise<import('./types').WorkspaceGitHubAppStatus>
 }
 
+export async function fetchWorkspaceVerificationKits(workspace: string, signal?: AbortSignal) {
+  const response = await fetch(`/v1/workspaces/${encodeURIComponent(workspace)}/verification-kits`, { signal })
+  if (!response.ok) throw new Error((await response.text()).trim() || 'Could not load verification kits.')
+  return normalizeVerificationKitRegistry(await response.json())
+}
+
+// The registry reflects repository-authored manifests, so the dashboard
+// normalizes its shape once: a missing or null string or list becomes empty
+// instead of crashing the Workspace page.
+function normalizeVerificationKitRegistry(raw: unknown): import('./types').VerificationKitRegistry {
+  const text = (value: unknown) => (typeof value === 'string' ? value : '')
+  const list = <T>(value: unknown, map: (item: Record<string, unknown>) => T): T[] =>
+    Array.isArray(value) ? value.filter((item) => item && typeof item === 'object').map((item) => map(item)) : []
+  const record = (value: unknown) => (value && typeof value === 'object' ? (value as Record<string, unknown>) : {})
+  const diagnostics = (value: unknown) => list(value, (d) => ({ path: text(d.path), message: text(d.message) }))
+  const number = (value: unknown) => (typeof value === 'number' ? value : 0)
+  return {
+    repositories: list(record(raw).repositories, (repo) => ({
+      repository: text(repo.repository),
+      base: text(repo.base),
+      commit_sha: text(repo.commit_sha),
+      state: text(repo.state) as import('./types').VerificationKitRepositoryState,
+      reason: (text(repo.reason) || undefined) as import('./types').VerificationKitUnavailableReason | undefined,
+      schema_version: typeof repo.schema_version === 'number' ? repo.schema_version : undefined,
+      diagnostics: diagnostics(repo.diagnostics),
+      kits: list(repo.kits, (kit) => ({
+        id: text(kit.id),
+        name: text(kit.name) || text(kit.id),
+        version: text(kit.version),
+        description: text(kit.description),
+        path: text(kit.path),
+        digest: text(kit.digest),
+        stages: Array.isArray(kit.stages) ? kit.stages.filter((s): s is string => typeof s === 'string') : [],
+        status: (text(kit.status) || 'unresolved') as import('./types').VerificationKitStatus,
+        pins: list(kit.pins, (pin) => ({
+          kind: (text(pin.kind) === 'system_design' ? 'system_design' : 'requirement') as
+            | 'requirement'
+            | 'system_design',
+          document_id: text(pin.document_id),
+          version: number(pin.version),
+          status: (text(pin.status) || 'unresolved') as import('./types').VerificationKitPinStatus,
+          current_version: typeof pin.current_version === 'number' ? pin.current_version : undefined,
+        })),
+        diagnostics: diagnostics(kit.diagnostics),
+        exercises: list(kit.exercises, (exercise) => ({
+          id: text(exercise.id),
+          description: text(exercise.description),
+          stages: Array.isArray(exercise.stages)
+            ? exercise.stages.filter((s): s is string => typeof s === 'string')
+            : [],
+          kind: text(exercise.kind),
+          prerequisites: list(exercise.prerequisites, (p) => ({
+            id: text(p.id),
+            kind: text(p.kind),
+            environment_binding: text(p.environment_binding),
+          })),
+          permissions: list(exercise.permissions, (p) => ({
+            kind: text(p.kind),
+            target_binding: text(p.target_binding) || undefined,
+            path: text(p.path) || undefined,
+          })),
+          required_assertions: list(exercise.required_assertions, (a) => ({
+            id: text(a.id),
+            description: text(a.description),
+          })),
+          retry_policy: text(exercise.retry_policy),
+          safety_basis: text(exercise.safety_basis),
+          operations: list(exercise.operations, (o) => ({ id: text(o.id), target_binding: text(o.target_binding) })),
+          evidence_outputs: list(exercise.evidence_outputs, (o) => ({
+            type: text(o.type),
+            schema_version: number(o.schema_version),
+            minimum_items: number(o.minimum_items),
+          })),
+          supports: list(exercise.supports, (s) => ({
+            document_id: text(s.document_id),
+            version: number(s.version),
+            acceptance_criterion_id: text(s.acceptance_criterion_id),
+          })),
+        })),
+      })),
+    })),
+  }
+}
+
 export async function createWorkspaceGitHubAppManifest(workspace: string) {
   const response = await fetch(`/v1/workspaces/${encodeURIComponent(workspace)}/github-app/manifest`, {
     method: 'POST',
