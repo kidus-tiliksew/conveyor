@@ -143,7 +143,7 @@ const registry = {
   ],
 }
 
-async function mockAPIs(page: Page, role = 'operator') {
+async function mockAPIs(page: Page, role = 'operator', body: unknown = registry) {
   const calls = { registry: 0 }
   let submitted: Record<string, unknown> | undefined
   await page.addInitScript(() => localStorage.setItem('conveyor-workspace', 'demo'))
@@ -153,7 +153,7 @@ async function mockAPIs(page: Page, role = 'operator') {
     if (path === '/v1/me') return route.fulfill({ json: { id: `usr_${role}`, role } })
     if (path === '/v1/workspaces/demo/verification-kits') {
       calls.registry++
-      return route.fulfill({ json: registry })
+      return route.fulfill({ json: body })
     }
     if (path === '/v1/workspace/config') {
       if (route.request().method() === 'PUT') {
@@ -287,6 +287,41 @@ test('members see the kit list without verification switches', async ({ page }) 
   await expect(page.getByLabel('Require verification evidence')).toHaveCount(0)
 })
 
+test('null manifest fields render without crashing the page', async ({ page }) => {
+  const errors: string[] = []
+  page.on('pageerror', (error) => errors.push(error.message))
+  await mockAPIs(page, 'operator', {
+    repositories: [
+      {
+        repository: 'reporting',
+        base: 'main',
+        commit_sha: 'c'.repeat(40),
+        state: 'ok',
+        diagnostics: null,
+        kits: [
+          {
+            id: 'nullish',
+            name: 'Nullish kit',
+            version: '1',
+            description: null,
+            status: 'current',
+            pins: null,
+            stages: null,
+            diagnostics: null,
+            exercises: [{ id: 'check', description: null, required_assertions: null, supports: null, stages: null }],
+          },
+        ],
+      },
+      null,
+    ],
+  })
+  await openVerification(page)
+  await page.getByRole('button', { name: 'Nullish kit 1' }).click()
+  await page.getByRole('button', { name: /check/ }).click()
+  await expect(page.getByText('No required assertions')).toBeVisible()
+  expect(errors).toEqual([])
+})
+
 test('member view screenshot', async ({ page }) => {
   await mockAPIs(page, 'viewer')
   await page.setViewportSize({ width: 1280, height: 900 })
@@ -305,10 +340,20 @@ test('narrow layout stacks kit rows without horizontal overflow', async ({ page 
     .getByRole('button', { name: /create-and-read/ })
     .first()
     .click()
-  const overflow = await page.evaluate(
-    () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
-  )
-  expect(overflow).toBeLessThanOrEqual(0)
+  // The page scrolls inside its own container, so check that container and
+  // the document; only the tab row itself may scroll sideways.
+  const overflow = await page.evaluate(() => {
+    const scroller = document.querySelector('[role="tablist"]')?.closest('.overflow-y-auto')
+    return [
+      document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      scroller ? scroller.scrollWidth - scroller.clientWidth : 0,
+    ]
+  })
+  expect(overflow[0]).toBeLessThanOrEqual(0)
+  expect(overflow[1]).toBeLessThanOrEqual(0)
+  expect(await page.getByRole('tablist').evaluate((element) => getComputedStyle(element).overflowX)).toBe('auto')
+  await page.getByRole('tab', { name: 'Members' }).click()
+  await expect(page.getByRole('tab', { name: 'Members' })).toHaveAttribute('aria-selected', 'true')
 })
 
 test('operator review screenshots', async ({ page }) => {
