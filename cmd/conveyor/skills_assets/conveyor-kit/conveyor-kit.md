@@ -6,16 +6,19 @@ claim. Kit outcomes supply evidence; they never grant acceptance or operator
 approval. A manifest's `supports` references route evidence to criteria without
 marking those criteria satisfied.
 
-Authority: `req-verification-kits` v1 REQ-8/AC-8.1 and REQ-8/AC-8.4;
-`feature-verification-kit-execution` v5 VK-2, VK-3, VK-4, VK-4.1, VK-5,
-VK-5.1, VK-7.1, VK-8 and VK-9; DEC-40 and DEC-43. The shipped parser and
+Authority: `req-verification-kits` v2 REQ-8/AC-8.1, REQ-8/AC-8.4 and REQ-10;
+`feature-verification-kit-execution` v6 VK-2, VK-3, VK-3.1, VK-4, VK-4.1,
+VK-5, VK-5.1, VK-7.1, VK-8 and VK-9; DEC-40 and DEC-43. The shipped parser and
 runner live in `internal/verification`, `internal/core/verification.go`, and
 `cmd/conveyor/kit_*.go`. This playbook describes those interfaces.
 
 ## Manifest and selection
 
-Put one schema-1 YAML document in `.conveyor/kits/manifest.yaml`. The top-level
-fields are `schema_version: 1` and `kits`. The parser rejects unknown fields,
+Put one YAML document in `.conveyor/kits/manifest.yaml`. The top-level fields
+are `schema_version` and `kits`. Write `schema_version: 2` for a new manifest.
+When you extend a schema-1 manifest, convert it to schema 2: add a description
+to every existing kit, exercise and required assertion in the same change
+(AC-10.5). The parser still accepts schema 1, which has no descriptions. The parser rejects unknown fields,
 duplicate keys, aliases, anchors, duplicate identities, unsupported schemas,
 absolute paths and traversal. Limits are 1 MiB, 100 kits and 100 exercises per
 kit. Paths must remain inside the repository and the kit root after symlink
@@ -26,6 +29,7 @@ Each kit declares these fields:
 | Field | Contract |
 | --- | --- |
 | `id`, `name`, `version` | Nonempty kit identity, display name and readable content version. |
+| `description` | Schema 2 only, required: plain text of 1 to 1000 characters after trimming. |
 | `path` | Repository-relative kit root containing committed files. |
 | `governing_pins` | `requirements` and `system_designs` lists of `{document_id, version}` with positive immutable versions. |
 | `exercises` | One or more exercise contracts described below. |
@@ -49,13 +53,14 @@ readable `version` alone does not identify the bytes or replace the source SHA.
 | Field | Contract |
 | --- | --- |
 | `id`, `stages` | Unique exercise ID and `stages: [verify]`. |
+| `description` | Schema 2 only, required: plain text of 1 to 1000 characters after trimming. |
 | `kind` | `script`, `interactive` or `hybrid`. |
 | `argv`, `cwd` | Direct argument vector and kit-relative working directory; no implicit shell expansion or package installation. |
 | `timeout_seconds` | Positive timeout, bounded again by the work-order deadline. |
 | `prerequisites` | Unique `{id, kind, environment_binding}` entries; kinds are `executable`, `service`, `credential`, `operator_interaction`. |
 | `permissions` | `filesystem_read`/`filesystem_write` with kit-relative `path`, `network` with `target_binding`, or `operator_interaction`. |
 | `inputs` | Unique `{name, type, required, sensitive}` entries; types are `string`, `boolean`, `integer`, `number`. |
-| `required_assertions` | Explicit unique assertion-ID list, including `[]` when none are required. |
+| `required_assertions` | Explicit list with unique IDs, including `[]` when none are required. Schema 2 entries are `{id, description}` with a description of 1 to 500 characters; schema 1 entries are bare ID strings. |
 | `retry_policy` | `safe_to_replay`, `reconciliation_required`, or `operator_action_required`. |
 | `safety_basis` | Required nonempty explanation for `safe_to_replay`. |
 | `operations` | Explicit list of every external mutation, or `[]` for none. |
@@ -66,10 +71,11 @@ Example with illustrative document IDs; replace the pins with the approved
 contract and commit the referenced executable before local validation:
 
 ```yaml
-schema_version: 1
+schema_version: 2
 kits:
   - id: fixture-read
     name: Fixture read check
+    description: Reads the committed fixture and reports what it contains.
     version: "1.0.0"
     path: .conveyor/kits/fixture-read
     governing_pins:
@@ -79,6 +85,7 @@ kits:
       system_designs: []
     exercises:
       - id: read
+        description: Runs read.sh against the committed fixture file.
         stages: [verify]
         kind: script
         argv: ["./read.sh"]
@@ -104,6 +111,30 @@ kits:
 An empty assertion list makes this a process/output check. It does not prove
 the cited AC. For a behavior assertion, declare its stable ID before execution
 and emit an `assertion_result` supported by actual observations.
+
+Descriptions state in plain language what the kit, exercise or assertion
+observes, for a reader who has not opened the scripts. The dashboard shows
+them as literal text, so do not rely on Markdown or links. Evidence and
+assertion results key on the assertion `id` alone. A description-only edit
+changes the kit content digest but never its selection (AC-10.3). Schema-2
+fields from the design example:
+
+```yaml
+schema_version: 2
+kits:
+  - id: reporting-api
+    name: Reporting API exercises
+    description: Creates a report through the public API and reads it back.
+    exercises:
+      - id: create-and-read
+        description: Posts a report fixture and polls the read endpoint until it appears.
+        required_assertions:
+          - id: created-record-readable
+            description: The created report is returned by GET with identical fields.
+```
+
+A missing, empty or over-length description, a bare-string assertion under
+schema 2, or any description under schema 1 makes that kit an invalid entry.
 
 ## Permissions and child inputs
 

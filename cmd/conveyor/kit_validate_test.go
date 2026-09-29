@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -122,6 +123,38 @@ func TestKitValidateInvalidReceipt(t *testing.T) {
 	r, err = runKitCLI(t, manifest)
 	if err == nil || !r.Invalid() {
 		t.Fatalf("dirty kit: %+v %v", r, err)
+	}
+}
+
+// Schema 2 (feature-verification-kit-execution VK-3.1) validates offline
+// and reports description diagnostics as invalid entries.
+func TestKitValidateSchema2(t *testing.T) {
+	root, manifest := kitCLIRepo(t)
+	v2 := strings.NewReplacer(
+		"schema_version: 1", "schema_version: 2",
+		"    name: Sample\n", "    name: Sample\n    description: Runs the sample check script.\n",
+		"      - id: observe\n", "      - id: observe\n        description: Exits with the fixture status.\n",
+		"required_assertions: []", "required_assertions: [{id: exits-cleanly, description: The check script exits with status zero.}]",
+	).Replace(cliKitManifest)
+	if err := os.WriteFile(manifest, []byte(v2), 0600); err != nil {
+		t.Fatal(err)
+	}
+	r, err := runKitCLI(t, root, "--pin", "requirement:req-sample:1")
+	if err != nil || len(r.Kits) != 1 || r.Kits[0].Eligibility != "eligible" || len(r.Kits[0].Digest) != 64 {
+		t.Fatalf("schema 2: %+v %v", r, err)
+	}
+	for _, tc := range []struct{ old, new, want string }{
+		{"    description: Runs the sample check script.\n", "", "kits[0].description"},
+		{"description: The check script exits with status zero.", "description: \"\"", "required_assertions[0].description"},
+		{"[{id: exits-cleanly, description: The check script exits with status zero.}]", "[exits-cleanly]", "required_assertions[0]"},
+	} {
+		if err := os.WriteFile(manifest, []byte(strings.Replace(v2, tc.old, tc.new, 1)), 0600); err != nil {
+			t.Fatal(err)
+		}
+		r, err := runKitCLI(t, root, "--pin", "requirement:req-sample:1")
+		if err == nil || !r.Invalid() || r.Kits[0].Eligibility != "invalid" || !strings.Contains(fmt.Sprint(r.Kits[0].Reasons), tc.want) {
+			t.Fatalf("%s: %+v %v", tc.want, r, err)
+		}
 	}
 }
 func TestKitValidatePins(t *testing.T) {
