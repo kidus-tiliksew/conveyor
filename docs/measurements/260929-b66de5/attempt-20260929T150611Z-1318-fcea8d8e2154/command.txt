@@ -1,0 +1,1030 @@
+cd web && npm ci
+
+added 289 packages, and audited 290 packages in 5s
+
+108 packages are looking for funding
+  run `npm fund` for details
+
+10 vulnerabilities (7 moderate, 3 high)
+
+To address all issues, run:
+  npm audit fix
+
+Run `npm audit` for details.
+npm warn allow-scripts 2 packages have install scripts not yet covered by allowScripts:
+npm warn allow-scripts   fsevents@2.3.3 (install: (install scripts present))
+npm warn allow-scripts   fsevents@2.3.2 (install: (install scripts present))
+npm warn allow-scripts
+npm warn allow-scripts Run `npm approve-scripts --allow-scripts-pending` to review, or `npm approve-scripts <pkg>` to allow.
+cd web && npm run build
+
+> conveyor-dashboard@0.1.0 build
+> tsc --noEmit && vite build
+
+vite v8.1.4 building client environment for production...
+[2Ktransforming...✓ 5910 modules transformed.
+rendering chunks...
+computing gzip size...
+../internal/httpapi/dashboard/index.html                                                       2.42 kB │ gzip:   0.86 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-vietnamese-400-normal-fK1oJ5dG.woff         6.39 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-vietnamese-700-normal-BV5B8Are.woff         6.42 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-vietnamese-600-normal-DgdngZtN.woff         6.58 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-vietnamese-500-normal-BEb3_waV.woff         6.58 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-vietnamese-400-normal-DG4YqDda.woff2        8.20 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-vietnamese-700-normal-CkEo6LDy.woff2        8.22 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-vietnamese-500-normal-e4dixQRQ.woff2        8.41 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-vietnamese-600-normal-DpPYBSTl.woff2        8.46 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-greek-700-normal-CkZN0sRy.woff              8.74 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-greek-400-normal-D9ESIMu3.woff              8.76 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-greek-500-normal-CuWXN6rf.woff              9.14 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-greek-600-normal-D-CqTdkO.woff              9.22 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-greek-700-normal-wyJ6jzdA.woff2             9.92 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-greek-400-normal-_efipK4i.woff2             9.94 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-cyrillic-ext-700-normal-DCQwxkRk.woff      10.16 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-cyrillic-ext-400-normal-Dsrv2Tcn.woff      10.28 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-greek-600-normal-DzTrcv_p.woff2            10.36 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-greek-500-normal-JMMifIXV.woff2            10.37 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-cyrillic-ext-500-normal-DB5PtV2g.woff      10.59 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-cyrillic-ext-600-normal-Bz0x94Yp.woff      10.61 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-cyrillic-ext-700-normal-BmRLXWpJ.woff2     12.05 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-cyrillic-ext-400-normal-g30qAdWV.woff2     12.14 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-cyrillic-ext-600-normal-DUMzJB7m.woff2     12.30 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-cyrillic-ext-500-normal-Cs5J6C77.woff2     12.30 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-cyrillic-700-normal-RFb1v-CK.woff          13.32 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-cyrillic-400-normal-BTotfTJu.woff          13.51 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-cyrillic-500-normal-ByOcLdNv.woff          13.85 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-cyrillic-600-normal-BGq0mW3O.woff          13.88 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-latin-ext-400-normal-RBey6euL.woff         14.36 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-latin-ext-700-normal-DZH6Xh-4.woff         14.42 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-cyrillic-700-normal-D_uavGvn.woff2         14.57 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-latin-ext-500-normal-D0aIdm-b.woff         14.73 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-latin-ext-600-normal-DIrixKbi.woff         14.77 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-cyrillic-400-normal-DZqxrq2p.woff2         14.80 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-cyrillic-500-normal-CocWQlwt.woff2         15.00 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-cyrillic-600-normal-71GNu3SW.woff2         15.04 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-latin-ext-400-normal-C5H60-Va.woff2        15.98 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-latin-ext-700-normal-aMgXseD4.woff2        16.18 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-latin-ext-600-normal-DOrvGEcy.woff2        16.44 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-latin-ext-500-normal-DakdToA3.woff2        16.45 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-latin-400-normal-CYLoc0-x.woff             22.10 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-latin-700-normal-Bth3BMcD.woff             22.28 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-latin-400-normal-CDDApCn2.woff2            22.58 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-latin-700-normal-Bxkt5Cjx.woff2            22.83 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-latin-600-normal-Cu4Hd6ag.woff             23.87 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-latin-500-normal-BgVn5rGT.woff             23.91 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-latin-500-normal-6ng42L7E.woff2            24.18 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-latin-600-normal-CuJfVYMP.woff2            24.25 kB
+../internal/httpapi/dashboard/assets/index-Bt9TQmmI.css                                       70.14 kB │ gzip:  12.71 kB
+../internal/httpapi/dashboard/assets/clone-BUfi2Pl4.js                                         0.09 kB │ gzip:   0.10 kB
+../internal/httpapi/dashboard/assets/array-BifhSqXX.js                                         0.10 kB │ gzip:   0.11 kB
+../internal/httpapi/dashboard/assets/channel-dJZX9sTl.js                                       0.11 kB │ gzip:   0.12 kB
+../internal/httpapi/dashboard/assets/pie-7BOR55EZ-DjyPtjYF.js                                  0.12 kB │ gzip:   0.13 kB
+../internal/httpapi/dashboard/assets/info-NVLQJR56-03gO31tG.js                                 0.12 kB │ gzip:   0.13 kB
+../internal/httpapi/dashboard/assets/radar-NHE76QYJ-SZuSzqjF.js                                0.12 kB │ gzip:   0.13 kB
+../internal/httpapi/dashboard/assets/packet-BFZMPI3H-keyxY-jt.js                               0.12 kB │ gzip:   0.13 kB
+../internal/httpapi/dashboard/assets/treemap-KMMF4GRG-CoGFoTSJ.js                              0.12 kB │ gzip:   0.13 kB
+../internal/httpapi/dashboard/assets/gitGraph-F6HP7TQM-C6Jkrh0s.js                             0.12 kB │ gzip:   0.13 kB
+../internal/httpapi/dashboard/assets/architecture-U656AL7Q-CQq0X95u.js                         0.13 kB │ gzip:   0.13 kB
+../internal/httpapi/dashboard/assets/init-D6jRqBbL.js                                          0.14 kB │ gzip:   0.12 kB
+../internal/httpapi/dashboard/assets/chunk-QZHKN3VN-o04pXPxB.js                                0.18 kB │ gzip:   0.15 kB
+../internal/httpapi/dashboard/assets/chunk-4BX2VUAB-Brg8AIlA.js                                0.21 kB │ gzip:   0.15 kB
+../internal/httpapi/dashboard/assets/chunk-55IACEB6-BT2lAxK4.js                                0.22 kB │ gzip:   0.19 kB
+../internal/httpapi/dashboard/assets/chunk-CVBHYZKI-D4_XQyp2.js                                0.26 kB │ gzip:   0.17 kB
+../internal/httpapi/dashboard/assets/math-Bi_r_ZWc.js                                          0.31 kB │ gzip:   0.20 kB
+../internal/httpapi/dashboard/assets/chunk-FMBD7UC4-DXlQxyGJ.js                                0.34 kB │ gzip:   0.25 kB
+../internal/httpapi/dashboard/assets/chunk-QN33PNHL-BPM0p80r.js                                0.53 kB │ gzip:   0.38 kB
+../internal/httpapi/dashboard/assets/flatten-KMUfs_09.js                                       0.57 kB │ gzip:   0.34 kB
+../internal/httpapi/dashboard/assets/infoDiagram-WHAUD3N6-CoLPDwoX.js                          0.61 kB │ gzip:   0.39 kB
+../internal/httpapi/dashboard/assets/stateDiagram-v2-4FDKWEC3-CbpGHOZR.js                      0.62 kB │ gzip:   0.38 kB
+../internal/httpapi/dashboard/assets/classDiagram-2ON5EDUG-QJN1GLE0.js                         0.66 kB │ gzip:   0.40 kB
+../internal/httpapi/dashboard/assets/classDiagram-v2-WZHVMYZB-QJN1GLE0.js                      0.66 kB │ gzip:   0.40 kB
+../internal/httpapi/dashboard/assets/rolldown-runtime-BUR9erT_.js                              0.75 kB │ gzip:   0.44 kB
+../internal/httpapi/dashboard/assets/line-Y_p8XNRY.js                                          0.94 kB │ gzip:   0.47 kB
+../internal/httpapi/dashboard/assets/ordinal-hYBb2elL.js                                       1.17 kB │ gzip:   0.56 kB
+../internal/httpapi/dashboard/assets/chunk-TZMSLE5B-CB6b2nsE.js                                1.48 kB │ gzip:   0.67 kB
+../internal/httpapi/dashboard/assets/chunk-ATLVNIR6-CNy3VDGU.js                                1.83 kB │ gzip:   0.89 kB
+../internal/httpapi/dashboard/assets/dist-lGJOKRcB.js                                          1.87 kB │ gzip:   0.83 kB
+../internal/httpapi/dashboard/assets/chunk-HN2XXSSU-CQ70shJB.js                                1.88 kB │ gzip:   0.71 kB
+../internal/httpapi/dashboard/assets/path-BWPyau1x.js                                          2.31 kB │ gzip:   0.99 kB
+../internal/httpapi/dashboard/assets/arc-Bi22H63W.js                                           3.47 kB │ gzip:   1.46 kB
+../internal/httpapi/dashboard/assets/diagram-S2PKOQOG-BuG_-pvo.js                              4.23 kB │ gzip:   1.82 kB
+../internal/httpapi/dashboard/assets/defaultLocale-C8Fc0cco.js                                 4.64 kB │ gzip:   2.12 kB
+../internal/httpapi/dashboard/assets/pieDiagram-ADFJNKIX-CoF-o31A.js                           5.10 kB │ gzip:   2.21 kB
+../internal/httpapi/dashboard/assets/linear-ClMpZjRT.js                                        5.52 kB │ gzip:   2.25 kB
+../internal/httpapi/dashboard/assets/diagram-QEK2KX5R-Cdf8wC65.js                              5.76 kB │ gzip:   2.37 kB
+../internal/httpapi/dashboard/assets/identity-Co3Kha3t.js                                      7.51 kB │ gzip:   2.81 kB
+../internal/httpapi/dashboard/assets/mermaid-parser.core-DWKWlFga.js                           7.60 kB │ gzip:   2.34 kB
+../internal/httpapi/dashboard/assets/reduce-C7tWu4KQ.js                                        8.58 kB │ gzip:   3.57 kB
+../internal/httpapi/dashboard/assets/graphlib-DL9kvvJv.js                                      9.36 kB │ gzip:   3.18 kB
+../internal/httpapi/dashboard/assets/stateDiagram-FKZM4ZOC-BBdaToTJ.js                        10.44 kB │ gzip:   3.65 kB
+../internal/httpapi/dashboard/assets/dagre-6UL2VRFP-jhTFzzHW.js                               11.08 kB │ gzip:   4.15 kB
+../internal/httpapi/dashboard/assets/diagram-PSM6KHXK-oDZCiJZ-.js                             15.48 kB │ gzip:   5.38 kB
+../internal/httpapi/dashboard/assets/kanban-definition-3W4ZIXB7-AeroY2KS.js                   20.07 kB │ gzip:   7.06 kB
+../internal/httpapi/dashboard/assets/mindmap-definition-VGOIOE7T-B829eYOe.js                  21.10 kB │ gzip:   7.38 kB
+../internal/httpapi/dashboard/assets/sankeyDiagram-TZEHDZUN-Did5m8hO.js                       21.69 kB │ gzip:   7.81 kB
+../internal/httpapi/dashboard/assets/journeyDiagram-XKPGCS4Q-DJFUXHMq.js                      23.13 kB │ gzip:   8.14 kB
+../internal/httpapi/dashboard/assets/timeline-definition-IT6M3QCI-BuwpRhpH.js                 23.20 kB │ gzip:   8.03 kB
+../internal/httpapi/dashboard/assets/gitGraphDiagram-NY62KEGX-BphkOxS0.js                     23.65 kB │ gzip:   7.20 kB
+../internal/httpapi/dashboard/assets/erDiagram-Q2GNP2WA-DBQumYa9.js                           25.19 kB │ gzip:   8.81 kB
+../internal/httpapi/dashboard/assets/chunk-S3R3BYOJ-bSHSQdmK.js                               28.19 kB │ gzip:   8.14 kB
+../internal/httpapi/dashboard/assets/requirementDiagram-UZGBJVZJ-pz1oW-Mu.js                  30.01 kB │ gzip:   9.42 kB
+../internal/httpapi/dashboard/assets/dagre-SCPfte1J.js                                        30.42 kB │ gzip:  10.93 kB
+../internal/httpapi/dashboard/assets/quadrantDiagram-AYHSOK5B-BANGYPjG.js                     33.34 kB │ gzip:   9.70 kB
+../internal/httpapi/dashboard/assets/chunk-DI55MBZ5-lQYb_bd3.js                               35.94 kB │ gzip:  11.60 kB
+../internal/httpapi/dashboard/assets/xychartDiagram-PRI3JC2R-WWXR2asy.js                      39.85 kB │ gzip:  11.12 kB
+../internal/httpapi/dashboard/assets/chunk-B4BG7PRW-u7V5iQZ6.js                               44.97 kB │ gzip:  14.72 kB
+../internal/httpapi/dashboard/assets/src-D8lb_dTm.js                                          45.83 kB │ gzip:  16.06 kB
+../internal/httpapi/dashboard/assets/chunk-JA3XYJ7Z-Ctdajxzi.js                               51.83 kB │ gzip:  16.90 kB
+../internal/httpapi/dashboard/assets/flowDiagram-NV44I4VS-Bs2kRkXG.js                         60.08 kB │ gzip:  19.50 kB
+../internal/httpapi/dashboard/assets/ganttDiagram-JELNMOA3-BlzaIZft.js                        68.00 kB │ gzip:  22.37 kB
+../internal/httpapi/dashboard/assets/c4Diagram-YG6GDRKO-Oano0D07.js                           69.36 kB │ gzip:  19.38 kB
+../internal/httpapi/dashboard/assets/blockDiagram-VD42YOAC-Dee_8I6R.js                        70.79 kB │ gzip:  19.94 kB
+../internal/httpapi/dashboard/assets/cose-bilkent-S5V4N54A-UA-OYhXZ.js                        81.40 kB │ gzip:  21.57 kB
+../internal/httpapi/dashboard/assets/sequenceDiagram-WL72ISMW-BWKeGuGa.js                     96.70 kB │ gzip:  26.39 kB
+../internal/httpapi/dashboard/assets/chunk-JZLCHNYA-ONGaW-Zt.js                              120.24 kB │ gzip:  30.82 kB
+../internal/httpapi/dashboard/assets/chunk-ABZYJK2D-Cknu6i9v.js                              131.14 kB │ gzip:  29.87 kB
+../internal/httpapi/dashboard/assets/architectureDiagram-VXUJARFQ-ut8OCvRN.js                146.05 kB │ gzip:  40.14 kB
+../internal/httpapi/dashboard/assets/katex-B7rAX3Vi.js                                       258.87 kB │ gzip:  77.46 kB
+../internal/httpapi/dashboard/assets/chunk-FPAJGGOC-5z23a9TW.js                              360.98 kB │ gzip:  87.50 kB
+../internal/httpapi/dashboard/assets/cytoscape.esm-CQFVGiJu.js                               435.23 kB │ gzip: 137.86 kB
+../internal/httpapi/dashboard/assets/index-D70KwB3s.js                                     1,130.78 kB │ gzip: 321.60 kB
+
+✓ built in 544ms
+[plugin builtin:vite-reporter] 
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rolldownOptions.output.codeSplitting to improve chunking: https://rolldown.rs/reference/OutputOptions.codeSplitting
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+go build -ldflags "-X github.com/kidus-tiliksew/conveyor/internal/releaseinfo.Version=v0.30.0-26-ge0857378" -o bin/conveyor ./cmd/conveyor
+go build -ldflags "-X github.com/kidus-tiliksew/conveyor/internal/releaseinfo.Version=v0.30.0-26-ge0857378" -o bin/conveyord ./cmd/conveyord
+env -u CONVEYOR_ADDR -u CONVEYOR_API_TOKEN -u CONVEYOR_CLIENT_TOKEN -u CONVEYOR_CURRENT_ATTEMPT_ID -u CONVEYOR_PREVIOUS_ATTEMPT_ID -u CONVEYOR_PREVIOUS_ATTEMPT_REASON -u CONVEYOR_PREDECESSOR -u CONVEYOR_PREVIOUS_WORK_ORDER_ID -u CONVEYOR_SESSION_ID -u CONVEYOR_TASK_BASE_BRANCH -u CONVEYOR_TASK_BRANCH -u CONVEYOR_TASK_ID -u CONVEYOR_TASK_REPO -u CONVEYOR_TASK_REPO_URL -u CONVEYOR_WORKSPACE -u CONVEYOR_WORKTREE_ROOT -u CONVEYOR_WORK_ORDER_ID -u CONVEYOR_WRITER_GENERATION -u CONVEYOR_WRITER_PATH go vet ./...
+env -u CONVEYOR_ADDR -u CONVEYOR_API_TOKEN -u CONVEYOR_CLIENT_TOKEN -u CONVEYOR_CURRENT_ATTEMPT_ID -u CONVEYOR_PREVIOUS_ATTEMPT_ID -u CONVEYOR_PREVIOUS_ATTEMPT_REASON -u CONVEYOR_PREDECESSOR -u CONVEYOR_PREVIOUS_WORK_ORDER_ID -u CONVEYOR_SESSION_ID -u CONVEYOR_TASK_BASE_BRANCH -u CONVEYOR_TASK_BRANCH -u CONVEYOR_TASK_ID -u CONVEYOR_TASK_REPO -u CONVEYOR_TASK_REPO_URL -u CONVEYOR_WORKSPACE -u CONVEYOR_WORKTREE_ROOT -u CONVEYOR_WORK_ORDER_ID -u CONVEYOR_WRITER_GENERATION -u CONVEYOR_WRITER_PATH python3 scripts/validate_compose_isolation.py
+compose isolation check passed
+git diff --exit-code -- internal/httpapi/dashboard
+env -u CONVEYOR_ADDR -u CONVEYOR_API_TOKEN -u CONVEYOR_CLIENT_TOKEN -u CONVEYOR_CURRENT_ATTEMPT_ID -u CONVEYOR_PREVIOUS_ATTEMPT_ID -u CONVEYOR_PREVIOUS_ATTEMPT_REASON -u CONVEYOR_PREDECESSOR -u CONVEYOR_PREVIOUS_WORK_ORDER_ID -u CONVEYOR_SESSION_ID -u CONVEYOR_TASK_BASE_BRANCH -u CONVEYOR_TASK_BRANCH -u CONVEYOR_TASK_ID -u CONVEYOR_TASK_REPO -u CONVEYOR_TASK_REPO_URL -u CONVEYOR_WORKSPACE -u CONVEYOR_WORKTREE_ROOT -u CONVEYOR_WORK_ORDER_ID -u CONVEYOR_WRITER_GENERATION -u CONVEYOR_WRITER_PATH sh scripts/test-install.sh
+installer test fixture: /Users/kidusteshome/.cache/conveyor/260929-b66de5/tmp/conveyor-release-test.yCQtyH
+Installed Conveyor v9.8.7-test to /Users/kidusteshome/.cache/conveyor/260929-b66de5/tmp/conveyor-release-test.yCQtyH/latest-bin
+Next: conveyor init
+Ensure /Users/kidusteshome/.cache/conveyor/260929-b66de5/tmp/conveyor-release-test.yCQtyH/latest-bin is on PATH.
+Installed Conveyor v9.8.7-test to /Users/kidusteshome/.cache/conveyor/260929-b66de5/tmp/conveyor-release-test.yCQtyH/pinned-bin
+Next: conveyor init
+Ensure /Users/kidusteshome/.cache/conveyor/260929-b66de5/tmp/conveyor-release-test.yCQtyH/pinned-bin is on PATH.
+conveyor install: checksum manifest does not contain conveyor_v9.8.7-test_darwin_arm64.tar.gz
+conveyor install: checksum verification failed for conveyor_v9.8.7-test_darwin_arm64.tar.gz; nothing was installed
+installer pipe safety, release pinning, checksum failure, and prerequisite checks passed
+PYTHONDONTWRITEBYTECODE=1 env -u CONVEYOR_ADDR -u CONVEYOR_API_TOKEN -u CONVEYOR_CLIENT_TOKEN -u CONVEYOR_CURRENT_ATTEMPT_ID -u CONVEYOR_PREVIOUS_ATTEMPT_ID -u CONVEYOR_PREVIOUS_ATTEMPT_REASON -u CONVEYOR_PREDECESSOR -u CONVEYOR_PREVIOUS_WORK_ORDER_ID -u CONVEYOR_SESSION_ID -u CONVEYOR_TASK_BASE_BRANCH -u CONVEYOR_TASK_BRANCH -u CONVEYOR_TASK_ID -u CONVEYOR_TASK_REPO -u CONVEYOR_TASK_REPO_URL -u CONVEYOR_WORKSPACE -u CONVEYOR_WORKTREE_ROOT -u CONVEYOR_WORK_ORDER_ID -u CONVEYOR_WRITER_GENERATION -u CONVEYOR_WRITER_PATH python3 -m unittest discover -s scripts -p 'test_validation_evidence.py'
+...........s....................
+----------------------------------------------------------------------
+Ran 32 tests in 45.154s
+
+OK (skipped=1)
+PYTHONDONTWRITEBYTECODE=1 env -u CONVEYOR_ADDR -u CONVEYOR_API_TOKEN -u CONVEYOR_CLIENT_TOKEN -u CONVEYOR_CURRENT_ATTEMPT_ID -u CONVEYOR_PREVIOUS_ATTEMPT_ID -u CONVEYOR_PREVIOUS_ATTEMPT_REASON -u CONVEYOR_PREDECESSOR -u CONVEYOR_PREVIOUS_WORK_ORDER_ID -u CONVEYOR_SESSION_ID -u CONVEYOR_TASK_BASE_BRANCH -u CONVEYOR_TASK_BRANCH -u CONVEYOR_TASK_ID -u CONVEYOR_TASK_REPO -u CONVEYOR_TASK_REPO_URL -u CONVEYOR_WORKSPACE -u CONVEYOR_WORKTREE_ROOT -u CONVEYOR_WORK_ORDER_ID -u CONVEYOR_WRITER_GENERATION -u CONVEYOR_WRITER_PATH python3 -m unittest discover -s scripts -p 'test_validation_fixtures.py'
+postgres before-snapshot failed for 127.0.0.1:5432 (client=repository-go-driver tool=go-run timeout=1s): postgres before-snapshot snapshot failed for 127.0.0.1:5432 (client=repository-go-driver tool=go-run timeout=1s): connection refused
+.................
+----------------------------------------------------------------------
+Ran 17 tests in 0.018s
+
+OK
+env -u CONVEYOR_ADDR -u CONVEYOR_API_TOKEN -u CONVEYOR_CLIENT_TOKEN -u CONVEYOR_CURRENT_ATTEMPT_ID -u CONVEYOR_PREVIOUS_ATTEMPT_ID -u CONVEYOR_PREVIOUS_ATTEMPT_REASON -u CONVEYOR_PREDECESSOR -u CONVEYOR_PREVIOUS_WORK_ORDER_ID -u CONVEYOR_SESSION_ID -u CONVEYOR_TASK_BASE_BRANCH -u CONVEYOR_TASK_BRANCH -u CONVEYOR_TASK_ID -u CONVEYOR_TASK_REPO -u CONVEYOR_TASK_REPO_URL -u CONVEYOR_WORKSPACE -u CONVEYOR_WORKTREE_ROOT -u CONVEYOR_WORK_ORDER_ID -u CONVEYOR_WRITER_GENERATION -u CONVEYOR_WRITER_PATH go test ./scripts/validation-fixture-sql
+ok  	github.com/kidus-tiliksew/conveyor/scripts/validation-fixture-sql	(cached)
+cd web && npx playwright install  chromium
+CONVEYOR_TEST_DATABASE_URL= CONVEYOR_TEST_SINGLESTORE_URL= env -u CONVEYOR_ADDR -u CONVEYOR_API_TOKEN -u CONVEYOR_CLIENT_TOKEN -u CONVEYOR_CURRENT_ATTEMPT_ID -u CONVEYOR_PREVIOUS_ATTEMPT_ID -u CONVEYOR_PREVIOUS_ATTEMPT_REASON -u CONVEYOR_PREDECESSOR -u CONVEYOR_PREVIOUS_WORK_ORDER_ID -u CONVEYOR_SESSION_ID -u CONVEYOR_TASK_BASE_BRANCH -u CONVEYOR_TASK_BRANCH -u CONVEYOR_TASK_ID -u CONVEYOR_TASK_REPO -u CONVEYOR_TASK_REPO_URL -u CONVEYOR_WORKSPACE -u CONVEYOR_WORKTREE_ROOT -u CONVEYOR_WORK_ORDER_ID -u CONVEYOR_WRITER_GENERATION -u CONVEYOR_WRITER_PATH go test ./...
+ok  	github.com/kidus-tiliksew/conveyor/cmd/conveyor	173.967s
+ok  	github.com/kidus-tiliksew/conveyor/cmd/conveyor/localgit	3.285s
+ok  	github.com/kidus-tiliksew/conveyor/cmd/conveyord	2.391s
+ok  	github.com/kidus-tiliksew/conveyor/internal/config	(cached)
+ok  	github.com/kidus-tiliksew/conveyor/internal/core	(cached)
+ok  	github.com/kidus-tiliksew/conveyor/internal/corpus	(cached)
+ok  	github.com/kidus-tiliksew/conveyor/internal/dispatch	6.445s
+ok  	github.com/kidus-tiliksew/conveyor/internal/envfile	(cached)
+ok  	github.com/kidus-tiliksew/conveyor/internal/eventlog	(cached)
+?   	github.com/kidus-tiliksew/conveyor/internal/eventlog/logtest	[no test files]
+ok  	github.com/kidus-tiliksew/conveyor/internal/eventlog/memlog	(cached)
+ok  	github.com/kidus-tiliksew/conveyor/internal/eventlog/pglog	(cached)
+ok  	github.com/kidus-tiliksew/conveyor/internal/eventlog/s2log	(cached)
+ok  	github.com/kidus-tiliksew/conveyor/internal/gitx	(cached)
+ok  	github.com/kidus-tiliksew/conveyor/internal/httpapi	14.362s
+ok  	github.com/kidus-tiliksew/conveyor/internal/inprocess	(cached)
+ok  	github.com/kidus-tiliksew/conveyor/internal/lineagecontext	(cached)
+ok  	github.com/kidus-tiliksew/conveyor/internal/monitor	(cached)
+ok  	github.com/kidus-tiliksew/conveyor/internal/pack	(cached)
+ok  	github.com/kidus-tiliksew/conveyor/internal/pipeline	(cached)
+ok  	github.com/kidus-tiliksew/conveyor/internal/planning	(cached)
+?   	github.com/kidus-tiliksew/conveyor/internal/queue	[no test files]
+ok  	github.com/kidus-tiliksew/conveyor/internal/queue/logqueue	(cached)
+ok  	github.com/kidus-tiliksew/conveyor/internal/redact	(cached)
+?   	github.com/kidus-tiliksew/conveyor/internal/releaseinfo	[no test files]
+?   	github.com/kidus-tiliksew/conveyor/internal/serviceunit	[no test files]
+ok  	github.com/kidus-tiliksew/conveyor/internal/store	5.536s
+ok  	github.com/kidus-tiliksew/conveyor/internal/store/backend	(cached)
+ok  	github.com/kidus-tiliksew/conveyor/internal/store/postgres	(cached)
+?   	github.com/kidus-tiliksew/conveyor/internal/store/postgres/db	[no test files]
+ok  	github.com/kidus-tiliksew/conveyor/internal/store/singlestore	(cached)
+ok  	github.com/kidus-tiliksew/conveyor/internal/store/storetest	(cached)
+ok  	github.com/kidus-tiliksew/conveyor/internal/taskops	4.935s
+?   	github.com/kidus-tiliksew/conveyor/internal/testimage	[no test files]
+?   	github.com/kidus-tiliksew/conveyor/internal/testsupport/vk10fixture	[no test files]
+ok  	github.com/kidus-tiliksew/conveyor/internal/trigger/github	(cached)
+ok  	github.com/kidus-tiliksew/conveyor/internal/verification	22.692s
+ok  	github.com/kidus-tiliksew/conveyor/internal/worker	(cached)
+ok  	github.com/kidus-tiliksew/conveyor/internal/workorder	5.975s
+?   	github.com/kidus-tiliksew/conveyor/pack	[no test files]
+ok  	github.com/kidus-tiliksew/conveyor/scripts/validation-fixture-sql	(cached)
+?   	github.com/kidus-tiliksew/conveyor/web/scripts	[no test files]
+cd web && env -u CONVEYOR_ADDR -u CONVEYOR_API_TOKEN -u CONVEYOR_CLIENT_TOKEN -u CONVEYOR_CURRENT_ATTEMPT_ID -u CONVEYOR_PREVIOUS_ATTEMPT_ID -u CONVEYOR_PREVIOUS_ATTEMPT_REASON -u CONVEYOR_PREDECESSOR -u CONVEYOR_PREVIOUS_WORK_ORDER_ID -u CONVEYOR_SESSION_ID -u CONVEYOR_TASK_BASE_BRANCH -u CONVEYOR_TASK_BRANCH -u CONVEYOR_TASK_ID -u CONVEYOR_TASK_REPO -u CONVEYOR_TASK_REPO_URL -u CONVEYOR_WORKSPACE -u CONVEYOR_WORKTREE_ROOT -u CONVEYOR_WORK_ORDER_ID -u CONVEYOR_WRITER_GENERATION -u CONVEYOR_WRITER_PATH npm run lint && PLAYWRIGHT_WORKERS=2 env -u CONVEYOR_ADDR -u CONVEYOR_API_TOKEN -u CONVEYOR_CLIENT_TOKEN -u CONVEYOR_CURRENT_ATTEMPT_ID -u CONVEYOR_PREVIOUS_ATTEMPT_ID -u CONVEYOR_PREVIOUS_ATTEMPT_REASON -u CONVEYOR_PREDECESSOR -u CONVEYOR_PREVIOUS_WORK_ORDER_ID -u CONVEYOR_SESSION_ID -u CONVEYOR_TASK_BASE_BRANCH -u CONVEYOR_TASK_BRANCH -u CONVEYOR_TASK_ID -u CONVEYOR_TASK_REPO -u CONVEYOR_TASK_REPO_URL -u CONVEYOR_WORKSPACE -u CONVEYOR_WORKTREE_ROOT -u CONVEYOR_WORK_ORDER_ID -u CONVEYOR_WRITER_GENERATION -u CONVEYOR_WRITER_PATH npm run test:e2e -- 
+
+> conveyor-dashboard@0.1.0 lint
+> biome lint --max-diagnostics=100 ./src ./tests ./playwright.config.ts && biome format --max-diagnostics=100 ./src ./tests ./playwright.config.ts
+
+Checked 131 files in 94ms. No fixes applied.
+Checked 131 files in 47ms. No fixes applied.
+
+> conveyor-dashboard@0.1.0 test:e2e
+> playwright test
+
+
+Running 494 tests using 2 workers
+
+[WebServer] 6:10:35 PM [vite] http proxy error: /v1/me?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+  ✓    1 tests/board-filters.spec.ts:229:1 › board orders each stage by creation time rather than latest activity (660ms)
+  ✓    2 tests/blueprints.spec.ts:271:1 › the board excludes the blueprint anchor from cards and column counts (670ms)
+[WebServer] 6:10:35 PM [vite] http proxy error: /v1/me?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+  ✓    4 tests/blueprints.spec.ts:306:1 › a blueprint awaiting its spec gate stays in the review inbox (358ms)
+  ✓    3 tests/board-filters.spec.ts:246:1 › running cards use the in-flight stage when latest stage is stale (367ms)
+[WebServer] 6:10:36 PM [vite] http proxy error: /v1/me?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+  ✓    5 tests/blueprints.spec.ts:330:1 › the blueprints surface is parked out of navigation and reads as history (555ms)
+  ✓    6 tests/board-filters.spec.ts:280:1 › board pages beyond the 200th activity item and walks back without blanking (681ms)
+  ✓    7 tests/blueprints.spec.ts:349:1 › the blueprints list reports delivery, governing version, and served requirements (297ms)
+[WebServer] 6:10:36 PM [vite] http proxy error: /v1/me?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+[WebServer] 6:10:36 PM [vite] http proxy error: /v1/me?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+  ✓    9 tests/blueprints.spec.ts:373:1 › the blueprints list opens the canonical detail route with the spec first (442ms)
+[WebServer] 6:10:37 PM [vite] http proxy error: /v1/me?workspace_id=other
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+  ✓    8 tests/board-filters.spec.ts:339:1 › board opens on the last month and remembers the operator adjustment per workspace (905ms)
+  ✓   10 tests/blueprints.spec.ts:420:1 › the canonical blueprint detail suppresses execution affordances and demotes the intake body (443ms)
+[WebServer] 6:10:37 PM [vite] http proxy error: /v1/me?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+  ✓   11 tests/board-filters.spec.ts:386:1 › board migrates a saved Updated window and persists only the Created shape (390ms)
+[WebServer] 6:10:37 PM [vite] http proxy error: /v1/me?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+  ✓   12 tests/blueprints.spec.ts:460:1 › task routes for a blueprint anchor redirect to the canonical blueprint route (588ms)
+  ✓   13 tests/board-filters.spec.ts:408:1 › board sends the shared filter family to the whole-workspace activity query (713ms)
+  ✓   14 tests/blueprints.spec.ts:479:1 › child task routes stay usable and link back to the canonical blueprint (648ms)
+[WebServer] 6:10:38 PM [vite] http proxy error: /v1/me?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+  ✓   16 tests/blueprints.spec.ts:514:1 › a completed blueprint reads as completed, and a missing serves link is a normal empty state (330ms)
+  ✓   17 tests/blueprints.spec.ts:540:1 › the blueprint route explains itself for a task that is not a blueprint (259ms)
+  ✓   15 tests/board-filters.spec.ts:457:1 › activity polling is serialized, pauses while hidden, and cold-refreshes on resume (1.1s)
+[WebServer] 6:10:40 PM [vite] http proxy error: /v1/me?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+[WebServer] 6:10:40 PM [vite] http proxy error: /v1/tasks/task-recent/events/stream?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+[WebServer] 6:10:40 PM [vite] http proxy error: /v1/tasks/task-recent/events/stream?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+[WebServer] 6:10:40 PM [vite] http proxy error: /v1/me?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+[WebServer] 6:10:40 PM [vite] http proxy error: /v1/blueprints?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+  ✓   19 tests/board-filters.spec.ts:528:1 › simultaneous filtered Board and task-order consumers share one serialized refresh lifecycle (1.1s)
+[WebServer] 6:10:40 PM [vite] http proxy error: /v1/me?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+  ✓   18 tests/blueprints.spec.ts:549:1 › the blueprint detail route renders a projection fetch failure (1.5s)
+  ✓   20 tests/board-filters.spec.ts:580:1 › board opens and closes task creation without leaving the board (605ms)
+[WebServer] 6:10:41 PM [vite] http proxy error: /v1/me?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+[WebServer] 6:10:41 PM [vite] http proxy error: /v1/tasks/task-created-on-board/events/stream?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+[WebServer] 6:10:41 PM [vite] http proxy error: /v1/me?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+[WebServer] 6:10:41 PM [vite] http proxy error: /v1/blueprints?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+  ✓   22 tests/board-filters.spec.ts:593:1 › board creation opens the new task in the board detail route (576ms)
+[WebServer] 6:10:42 PM [vite] http proxy error: /v1/me?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+[WebServer] 6:10:42 PM [vite] http proxy error: /v1/me?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+[WebServer] 6:10:42 PM [vite] http proxy error: /v1/blueprints?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+[WebServer] 6:10:42 PM [vite] http proxy error: /v1/me?workspace_id=other
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+[WebServer] 6:10:42 PM [vite] http proxy error: /v1/me?workspace_id=other
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+[WebServer] 6:10:42 PM [vite] http proxy error: /v1/blueprints?workspace_id=other
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+  ✓   23 tests/board-filters.spec.ts:609:1 › Board sheet keeps lazy audit reads isolated across workspace changes (1.2s)
+[WebServer] 6:10:43 PM [vite] http proxy error: /v1/me?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+  ✓   24 tests/board-filters.spec.ts:684:1 › failed triage Board badge distinguishes failure from genuine review gates (322ms)
+  ✓   25 tests/document-review.spec.ts:12:1 › review model preserves stable identifiers, headings, moves and bounded complete sources (7ms)
+  ✓   26 tests/document-review.spec.ts:266:3 › requirements: exact proposal, selectors, comparison navigation, history and workspace isolation (643ms)
+  ✓   21 tests/design-harness.spec.ts:755:3 › design harness light (4.0s)
+  ✓   27 tests/document-review.spec.ts:308:3 › requirements: dismiss cancel, optional note, refusal and successful selected-version mutation (968ms)
+  ✓   29 tests/document-review.spec.ts:333:3 › requirements: first proposal, no-note dismissal, invalid selection and keyboard tabs (827ms)
+  ✓   30 tests/document-review.spec.ts:373:5 › requirements: header names dismissed selected history without confirmed authority (389ms)
+  ✓   31 tests/document-review.spec.ts:373:5 › requirements: header names superseded selected history without confirmed authority (284ms)
+  ✓   32 tests/document-review.spec.ts:392:5 › requirements: reader selection remains readable without proposal mutations (317ms)
+  ✓   33 tests/document-review.spec.ts:392:5 › requirements: archived selection remains readable without proposal mutations (384ms)
+  ✓   34 tests/document-review.spec.ts:399:3 › requirements: empty, identical, rich Markdown and complete large fallback (1.2s)
+  ✓   28 tests/design-harness.spec.ts:755:3 › design harness dark (4.1s)
+  ✓   36 tests/github-app.spec.ts:79:3 › connect posts a top-level manifest form for a personal account (365ms)
+  ✓   35 tests/document-review.spec.ts:429:3 › requirements: desktop and narrow review evidence (936ms)
+  ✓   37 tests/github-app.spec.ts:79:3 › connect posts a top-level manifest form for demo-org (375ms)
+  ✓   38 tests/document-review.spec.ts:458:3 › requirements: seeded formatted paragraphs retain semantics in both comparison modes (544ms)
+  ✓   39 tests/github-app.spec.ts:117:1 › connected status shows mixed coverage and disconnect requires confirmation and refetches (744ms)
+  ✓   40 tests/document-review.spec.ts:266:3 › system-design: exact proposal, selectors, comparison navigation, history and workspace isolation (642ms)
+  ✓   41 tests/github-app.spec.ts:149:1 › setup return selects the returned workspace and refreshes status, including a restored page (503ms)
+  ✓   43 tests/github-app.spec.ts:166:1 › an app without an installation offers the server installation remedy (271ms)
+  ✓   44 tests/github-app.spec.ts:179:3 › GET failure shows the server remedy and preserves connection state (267ms)
+  ✓   42 tests/document-review.spec.ts:308:3 › system-design: dismiss cancel, optional note, refusal and successful selected-version mutation (918ms)
+  ✓   45 tests/github-app.spec.ts:179:3 › POST failure shows the server remedy and preserves connection state (368ms)
+  ✓   47 tests/github-app.spec.ts:179:3 › DELETE failure shows the server remedy and preserves connection state (319ms)
+  ✓   46 tests/document-review.spec.ts:333:3 › system-design: first proposal, no-note dismissal, invalid selection and keyboard tabs (866ms)
+  ✓   48 tests/github-app.spec.ts:198:1 › members cannot see or fetch the workspace GitHub App card (323ms)
+  ✓   49 tests/document-review.spec.ts:373:5 › system-design: header names dismissed selected history without confirmed authority (309ms)
+  ✓   50 tests/github-app.spec.ts:207:1 › machine-only status errors show readable failure copy (296ms)
+  ✓   51 tests/document-review.spec.ts:373:5 › system-design: header names superseded selected history without confirmed authority (312ms)
+  ✓   52 tests/github-app.spec.ts:215:1 › missing public URL refuses connection without navigating to GitHub (366ms)
+  ✓   53 tests/document-review.spec.ts:392:5 › system-design: reader selection remains readable without proposal mutations (313ms)
+  ✓   55 tests/document-review.spec.ts:392:5 › system-design: archived selection remains readable without proposal mutations (311ms)
+  ✓   54 tests/lineage-explorer.spec.ts:273:1 › the task Knowledge explorer shows its focused hierarchy and canonical bounded read (648ms)
+  ✓   57 tests/lineage-explorer.spec.ts:340:3 › the explorer on task detail accurately communicates an empty focused result (383ms)
+  ✓   58 tests/lineage-explorer.spec.ts:340:3 › the explorer on requirement detail accurately communicates an empty focused result (394ms)
+  ✓   56 tests/document-review.spec.ts:399:3 › system-design: empty, identical, rich Markdown and complete large fallback (1.1s)
+  ✓   59 tests/lineage-explorer.spec.ts:340:3 › the explorer on System Design detail accurately communicates an empty focused result (366ms)
+  ✓   61 tests/lineage-explorer.spec.ts:355:1 › the explorer opens from the task detail panel without closing it (515ms)
+  ✓   60 tests/document-review.spec.ts:429:3 › system-design: desktop and narrow review evidence (882ms)
+  ✓   62 tests/lineage-explorer.spec.ts:376:1 › the requirement canvas opens the explorer for its own document (344ms)
+  ✓   63 tests/document-review.spec.ts:458:3 › system-design: seeded formatted paragraphs retain semantics in both comparison modes (453ms)
+  ✓   64 tests/lineage-explorer.spec.ts:393:1 › the System Design canvas opens the explorer for its own document (349ms)
+  ✓   65 tests/document-review.spec.ts:490:3 › requirements: late document response cannot replace the selected document (394ms)
+  ✓   67 tests/document-review.spec.ts:517:3 › requirements: selection changes discard dialogs and changed rich blocks retain safe Markdown (496ms)
+  ✓   68 tests/document-review.spec.ts:490:3 › system-design: late document response cannot replace the selected document (354ms)
+  ✓   69 tests/document-review.spec.ts:517:3 › system-design: selection changes discard dialogs and changed rich blocks retain safe Markdown (522ms)
+  ✓   66 tests/lineage-explorer.spec.ts:412:1 › the Knowledge explorer exposes loading and error states with updated accessible names (2.1s)
+  ✓   71 tests/lineage-explorer.spec.ts:424:1 › primary navigation shows exactly the accepted operating surfaces (264ms)
+  ✓   72 tests/lineage-explorer.spec.ts:446:1 › the parked routes stay reachable by deep link and from blueprint-era task detail (698ms)
+  ✓   73 tests/membership-and-tokens.spec.ts:173:1 › an operator invites a member, sees the pending invitation, and revokes it (491ms)
+  ✓   74 tests/membership-and-tokens.spec.ts:198:1 › an operator sends existing-member sign-in links for sent and fallback delivery (398ms)
+  ✓   70 tests/mcp-setup.spec.ts:44:1 › Board MCP action offers safe client-specific setup and complete dialog behavior (2.5s)
+  ✓   75 tests/membership-and-tokens.spec.ts:216:1 › inviting an existing member with a different role is presented as a role change (390ms)
+  ✓   77 tests/membership-and-tokens.spec.ts:233:1 › a sole-operator role-change refusal names the existing account and attempted roles (374ms)
+  ✓   76 tests/mcp-setup.spec.ts:142:1 › Tasks MCP action stays usable at a narrow viewport (727ms)
+[WebServer] 6:11:01 PM [vite] http proxy error: /v1/pending-proposals?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+  ✓   78 tests/membership-and-tokens.spec.ts:249:1 › an operator can invite executors and maintainers and sees their role labels (529ms)
+  ✓   79 tests/monitor.spec.ts:3:1 › monitor page renders health, deduplication, task links, and drift age (363ms)
+  ✓   81 tests/pending-proposals.spec.ts:11:1 › pending proposal label and attention badge stay on one line at the narrow reference viewport (413ms)
+  ✓   80 tests/membership-and-tokens.spec.ts:268:1 › a signed-in viewer sees the workspace and role but no mutation affordances (730ms)
+  ✓   83 tests/membership-and-tokens.spec.ts:293:1 › revoking the last operator explains what to do instead (537ms)
+  ✓   84 tests/membership-and-tokens.spec.ts:303:1 › a member sees the roster read-only, with no management controls (423ms)
+  ✓   82 tests/pending-proposals.spec.ts:74:1 › pending proposal queue covers every document tier, resolves rows, updates the badge, and clears the task warning (1.6s)
+  ✓   86 tests/pending-proposals.spec.ts:260:1 › pending proposals keeps task context suggestions off the workspace queue and its count (595ms)
+  ✓   85 tests/membership-and-tokens.spec.ts:317:1 › a token secret is shown once, is never re-rendered, and the token can be revoked (1.1s)
+  ✓   88 tests/repository-onboarding.spec.ts:81:3 › normalizes https://github.com/Owner/Repo.git (0ms)
+  ✓   89 tests/repository-onboarding.spec.ts:81:3 › normalizes http://github.com:80/Owner/Repo.git/ (1ms)
+  ✓   90 tests/repository-onboarding.spec.ts:81:3 › normalizes ssh://git@github.com:22/Owner/Repo.git (1ms)
+  ✓   91 tests/repository-onboarding.spec.ts:81:3 › normalizes git@github.com:Owner/Repo.git (0ms)
+  ✓   92 tests/repository-onboarding.spec.ts:81:3 › normalizes https://github.com:443/Owner/Repo.git (0ms)
+  ✓   93 tests/repository-onboarding.spec.ts:81:3 › normalizes git://github.com:9418/Owner/Repo.git (0ms)
+  ✓   94 tests/repository-onboarding.spec.ts:81:3 › normalizes   https://GITHUB.COM/Owner/Repo.git   (0ms)
+  ✓   95 tests/repository-onboarding.spec.ts:93:3 › omits a slug for https://gitlab.com/owner/repo.git (0ms)
+  ✓   96 tests/repository-onboarding.spec.ts:93:3 › omits a slug for https://github.com:444/owner/repo (0ms)
+  ✓   97 tests/repository-onboarding.spec.ts:93:3 › omits a slug for ssh://git@github.com:2222/owner/repo (0ms)
+  ✓   98 tests/repository-onboarding.spec.ts:93:3 › omits a slug for /local/repo (0ms)
+  ✓   99 tests/repository-onboarding.spec.ts:93:3 › omits a slug for https://github.com/ (0ms)
+  ✓  100 tests/repository-onboarding.spec.ts:93:3 › omits a slug for https://github.com/a%ZZ (0ms)
+  ✓  101 tests/repository-onboarding.spec.ts:93:3 › omits a slug for https://github.com/a%5Cb (0ms)
+  ✓  102 tests/repository-onboarding.spec.ts:93:3 › omits a slug for not a URL (0ms)
+  ✓  103 tests/repository-onboarding.spec.ts:95:1 › preserves Go normalization of path escapes, dot segments and suffix case (1ms)
+  ✓   87 tests/pending-proposals.spec.ts:310:1 › attention navigation omits requirement and pending proposal badges when projection fails or is empty (791ms)
+  ✓  104 tests/repository-onboarding.spec.ts:101:1 › new row defaults on, derives slug while typing and consumes the saved projection (712ms)
+  ✓  105 tests/pending-proposals.spec.ts:344:1 › maintainer can read pending decisions without corpus-authority controls (412ms)
+  ✓  106 tests/repository-onboarding.spec.ts:127:1 › existing stored false and install task remain visible; validation is shown on the row (530ms)
+  ✓  108 tests/repository-onboarding.spec.ts:153:1 › registration clears board and sheet notices through the shared cache without reload (1.0s)
+  ✓  109 tests/repository-onboarding.spec.ts:184:1 › task list creation sheet links to repository registration (549ms)
+  ✓  110 tests/requirements-planning.spec.ts:198:1 › requirements renders a document tree, one attention surface, and confirms from the canvas (638ms)
+  ✓  111 tests/requirements-planning.spec.ts:307:1 › requirements archive and restore from the canvas while preserving archived deep links (709ms)
+  ✓  112 tests/requirements-planning.spec.ts:386:1 › requirement archive controls are absent without document confirmation capability (421ms)
+  ✓  113 tests/requirements-planning.spec.ts:421:3 › requirement dismissal waits for confirmation and preserves cancel with note "" (908ms)
+  ✓  114 tests/requirements-planning.spec.ts:421:3 › requirement dismissal waits for confirmation and preserves cancel with note "  \n  " (922ms)
+  ✓  115 tests/requirements-planning.spec.ts:421:3 › requirement dismissal waits for confirmation and preserves cancel with note "  Keep the original intent.  " (942ms)
+  ✓  116 tests/requirements-planning.spec.ts:481:1 › viewer can read requirement detail without the Attach context control (311ms)
+  ✓  117 tests/requirements-planning.spec.ts:502:1 › requirements resolves attributed drift inline and refreshes its pending amendment (407ms)
+  ✓  118 tests/requirements-planning.spec.ts:573:1 › requirement staleness can file one linked follow-up and be dismissed in place (647ms)
+  ✓  119 tests/requirements-planning.spec.ts:644:1 › requirements search and deterministic sorting preserve the selected canvas and show attention counts (573ms)
+  ✓  120 tests/requirements-planning.spec.ts:764:1 › design drift names its subject, counts once, and clears every rendering from a requirement (937ms)
+  ✓  121 tests/requirements-planning.spec.ts:887:1 › requirement confirmation offers explicit attachment to eligible checkpoint-paused tasks (873ms)
+  ✓  122 tests/requirements-planning.spec.ts:924:1 › planning uses deployment configuration and sends no execution detail (287ms)
+  ✓  123 tests/requirements-planning.spec.ts:962:1 › finalize immediately reveals a complete bundle preview, approval, and created tasks (383ms)
+  ✓  124 tests/requirements-planning.spec.ts:1077:1 › a viewer can read planning and a pending bundle without mutation affordances (255ms)
+  ✓  125 tests/requirements-planning.spec.ts:1154:1 › planning restores durable messages, tool markers, and streams a new turn (382ms)
+  ✓  126 tests/requirements-planning.spec.ts:1390:1 › a requirement voices drift once and collapses to a quiet line when nothing is outstanding (381ms)
+  ✓  127 tests/requirements-planning.spec.ts:1458:1 › partial staleness is voiced and delivery is task-centric with blueprints as history (363ms)
+  ✓  128 tests/requirements-planning.spec.ts:1502:1 › requirements deep-link exact versions, render statements, diff pending intent, and guard confirmation (440ms)
+  ✓  129 tests/requirements-planning.spec.ts:1577:1 › requirement confirmation explains superseded versions separately from If-Match races (474ms)
+  ✓  130 tests/requirements-planning.spec.ts:1627:1 › retired requirement versions stay in history as superseded and leave attention (421ms)
+  ✓  131 tests/requirements-planning.spec.ts:1669:1 › migrated seeds explain disabled confirmation and requirement switches reset review selection (412ms)
+  ✓  132 tests/requirements-planning.spec.ts:1737:1 › planning keeps partial text through malformed and error stream frames and resolves pending markers (324ms)
+  ✓  133 tests/requirements-planning.spec.ts:1791:1 › planning explains run conflicts and surfaces abandon failures without configuration controls (590ms)
+  ✓  134 tests/requirements-planning.spec.ts:1848:1 › planning sends attachments as file parts without smuggling them into message text (370ms)
+  ✓  135 tests/requirements-planning.spec.ts:1918:1 › planning restores the selected session independently in each workspace (459ms)
+  ✓  136 tests/requirements-planning.spec.ts:1986:1 › requirements and planning render fetch failures instead of indefinite loading (3.0s)
+  ✓  137 tests/requirements-planning.spec.ts:2011:1 › a historical finalized blueprint session remains readable (307ms)
+  ✓  138 tests/requirements-planning.spec.ts:2040:1 › reference documents upload safely, load history on demand, compare both sides, and confirm deletion (509ms)
+  ✓  139 tests/requirements-planning.spec.ts:2136:1 › upload then supersede uses the version endpoint and bounds oversized comparison (630ms)
+  ✓  140 tests/requirements-planning.spec.ts:2235:1 › pending derivation links to its pinned source and requirement anchors scroll after rendering (455ms)
+  ✓  141 tests/requirements-planning.spec.ts:2308:1 › session lists label goals and the requirements surface has no freehand editor (396ms)
+  ✓  142 tests/requirements-planning.spec.ts:2388:1 › a deep link opens the document the URL asked for, not the first in the corpus (278ms)
+  ✓  107 tests/pending-proposals.spec.ts:378:1 › pending proposal consumers share one active query and hidden documents stop interval polling (21.7s)
+  ✓  143 tests/requirements-planning.spec.ts:2440:1 › requirement activity pages on demand and opens the explorer independently (522ms)
+  ✓  144 tests/pending-proposals.spec.ts:434:5 › Revise requirement proposal handles success and preserves the reviewed base (657ms)
+  ✓  145 tests/requirements-planning.spec.ts:2496:1 › Requirement pending attention revises its first version and refreshes history (617ms)
+  ✓  147 tests/requirements-planning.spec.ts:2553:3 › Requirement Revise stays absent for confirm-only (320ms)
+  ✓  146 tests/pending-proposals.spec.ts:434:5 › Revise requirement proposal handles validation and preserves the reviewed base (537ms)
+  ✓  148 tests/requirements-planning.spec.ts:2553:3 › Requirement Revise stays absent for propose-only (343ms)
+  ✓  149 tests/pending-proposals.spec.ts:434:5 › Revise requirement proposal handles conflict and preserves the reviewed base (651ms)
+  ✓  150 tests/requirements-planning.spec.ts:2589:3 › requirements: lifecycle presentation for first proposal (610ms)
+  ✓  151 tests/pending-proposals.spec.ts:434:5 › Revise system_design proposal handles success and preserves the reviewed base (641ms)
+  ✓  152 tests/requirements-planning.spec.ts:2589:3 › requirements: lifecycle presentation for dismissal archive (447ms)
+  ✓  154 tests/requirements-planning.spec.ts:2589:3 › requirements: lifecycle presentation for operator archive (338ms)
+  ✓  153 tests/pending-proposals.spec.ts:434:5 › Revise system_design proposal handles validation and preserves the reviewed base (537ms)
+  ✓  155 tests/requirements-planning.spec.ts:2589:3 › requirements: lifecycle presentation for unknown archive (326ms)
+  ✓  156 tests/pending-proposals.spec.ts:434:5 › Revise system_design proposal handles conflict and preserves the reviewed base (582ms)
+  ✓  157 tests/requirements-planning.spec.ts:2589:3 › requirements: lifecycle presentation for confirmed revision (529ms)
+  ✓  158 tests/pending-proposals.spec.ts:605:3 › Revise capability gate requires both capabilities: both (288ms)
+  ✓  160 tests/pending-proposals.spec.ts:605:3 › Revise capability gate requires both capabilities: confirm-only (273ms)
+  ✓  159 tests/requirements-planning.spec.ts:2589:3 › requirements: lifecycle presentation for multiple proposals (550ms)
+  ✓  161 tests/pending-proposals.spec.ts:605:3 › Revise capability gate requires both capabilities: propose-only (276ms)
+  ✓  163 tests/pending-proposals.spec.ts:605:3 › Revise capability gate requires both capabilities: neither (299ms)
+  ✓  162 tests/responsive.spec.ts:143:3 › phone › the shell folds the rail and sidebar into a drawer behind a top bar (446ms)
+  ✓  165 tests/responsive.spec.ts:165:3 › phone › the tasks list stacks each row and keeps the page inside the viewport (380ms)
+  ✓  164 tests/pending-proposals.spec.ts:655:5 › queue dismisses requirement with optional note "" (568ms)
+  ✓  166 tests/responsive.spec.ts:182:3 › phone › the document tree opens as a drawer above the canvas (388ms)
+  ✓  167 tests/pending-proposals.spec.ts:655:5 › queue dismisses requirement with optional note "  \n " (551ms)
+  ✓  168 tests/responsive.spec.ts:204:3 › tablet › portrait folds navigation; landscape keeps the desktop columns (652ms)
+  ✓  169 tests/pending-proposals.spec.ts:655:5 › queue dismisses requirement with optional note "  Preserve the original scope.  " (562ms)
+  ✓  171 tests/pending-proposals.spec.ts:655:5 › queue dismisses system_design with optional note "" (549ms)
+  ✓  170 tests/sign-in-and-session.spec.ts:6:1 › an invitation opens a scoped session, guides first token setup, and signs out safely (1.0s)
+  ✓  172 tests/pending-proposals.spec.ts:655:5 › queue dismisses system_design with optional note "  \n " (574ms)
+  ✓  173 tests/sign-in-and-session.spec.ts:219:1 › a returning user signs in with a password and resets it through an operator link (763ms)
+  ✓  174 tests/pending-proposals.spec.ts:655:5 › queue dismisses system_design with optional note "  Preserve the original scope.  " (586ms)
+  ✓  176 tests/task-create.spec.ts:216:1 › new task removes title input and submits description for AI title generation (564ms)
+  ✓  175 tests/system-design.spec.ts:105:1 › System Design renders a category tree, one attention surface, and authenticated confirmation (802ms)
+  ✓  178 tests/system-design.spec.ts:253:1 › System Design search and deterministic sorting preserve categories and the selected canvas (596ms)
+  ✓  177 tests/task-create.spec.ts:238:1 › intake attaches confirmed product and design context with authenticated reads (707ms)
+  ✓  179 tests/system-design.spec.ts:355:1 › an oversized System Design comparison falls back to plain rendering (443ms)
+  ✓  180 tests/task-create.spec.ts:260:1 › context dropdown searches, keeps selections visible, and removes them (688ms)
+  ✓  181 tests/system-design.spec.ts:388:1 › a System Design with nothing outstanding says so in one quiet line (402ms)
+  ✓  182 tests/task-create.spec.ts:306:1 › context dropdown never offers unconfirmed documents (631ms)
+  ✓  183 tests/system-design.spec.ts:418:1 › System Design links decision supersession and dismisses an unclean sweep signal (521ms)
+  ✓  184 tests/task-create.spec.ts:317:1 › intake offers a hold toggle and advisory worker warning instead of modes (610ms)
+  ✓  186 tests/task-create.spec.ts:331:1 › pull-only intake stays quiet when no enrolled worker is expected (242ms)
+  ✓  187 tests/task-create.spec.ts:340:1 › dependency candidates load lazily and selected cross-repository chips survive repository changes (790ms)
+  ✓  185 tests/system-design.spec.ts:512:1 › System Design keeps the document visible when the decision register fails (1.7s)
+  ✓  189 tests/system-design.spec.ts:533:1 › System Design resolves drift inline, restricts outcomes, and shows the confirmed-version precondition (508ms)
+  ✓  190 tests/system-design.spec.ts:585:1 › the System Design surface never starts a planning session on its own (341ms)
+  ✓  191 tests/system-design.spec.ts:614:1 › stale System Design confirmation refreshes the list and explains the retry (391ms)
+  ✓  192 tests/system-design.spec.ts:646:1 › operators confirm and dismiss proposed decisions with conflict-safe refresh and attribution (442ms)
+  ✓  193 tests/system-design.spec.ts:727:1 › System Design archives with successors, shows inline rejection, and restores from an archived deep link (785ms)
+  ✓  194 tests/system-design.spec.ts:857:1 › System Design archive controls are absent without document confirmation capability (469ms)
+  ✓  188 tests/task-create.spec.ts:365:1 › dependency candidates distinguish loading, request failure, empty results, and bounded results (3.4s)
+  ✓  195 tests/system-design.spec.ts:889:1 › System Design pages older delivery activity and loads its explorer on open (510ms)
+  ✓  196 tests/task-create.spec.ts:406:1 › structured dependency validation opens Advanced options and renders the error once (685ms)
+  ✓  197 tests/system-design.spec.ts:945:1 › System Design pending attention revises through the shared dialog and refreshes the document (600ms)
+  ✓  199 tests/system-design.spec.ts:997:3 › System Design Revise stays absent for confirm-only (318ms)
+  ✓  200 tests/system-design.spec.ts:997:3 › System Design Revise stays absent for propose-only (294ms)
+  ✓  198 tests/task-create.spec.ts:419:1 › intake markdown editor formats, toggles, previews, and restores selection (1.1s)
+  ✓  201 tests/system-design.spec.ts:1022:3 › System Design dismissal carries optional note into history "" (589ms)
+  ✓  202 tests/task-full.spec.ts:2112:1 › task detail headers show the task name while routes and API lookup keep using the task ID (530ms)
+  ✓  204 tests/task-full.spec.ts:2140:1 › task metadata presents stored spec versions as plan versions (288ms)
+  ✓  203 tests/system-design.spec.ts:1022:3 › System Design dismissal carries optional note into history "  Correct the ownership.  " (711ms)
+  ✓  205 tests/task-full.spec.ts:2146:1 › Work on this shows, copies, and responsively wraps the task run command (379ms)
+  ✓  206 tests/system-design.spec.ts:1073:3 › system-design: lifecycle presentation for first proposal (633ms)
+  ✓  207 tests/task-full.spec.ts:2170:1 › task sheet adds bottom clearance without changing full-page task spacing (434ms)
+  ✓  209 tests/task-full.spec.ts:2179:1 › new task detail tolerates a null work-order list from the API (305ms)
+  ✓  208 tests/system-design.spec.ts:1073:3 › system-design: lifecycle presentation for dismissal archive (411ms)
+  ✓  211 tests/system-design.spec.ts:1073:3 › system-design: lifecycle presentation for operator archive (397ms)
+  ✓  210 tests/task-full.spec.ts:2185:1 › task detail omits the frozen policy projection and retired controls (565ms)
+  ✓  212 tests/system-design.spec.ts:1073:3 › system-design: lifecycle presentation for unknown archive (357ms)
+  ✓  213 tests/task-full.spec.ts:2201:1 › a claimed attempt exposes reasoned operator preemption with the renewal grace bound (415ms)
+  ✓  215 tests/task-full.spec.ts:2241:1 › preemption is rendered as attributed activity rather than a failure (299ms)
+  ✓  214 tests/system-design.spec.ts:1073:3 › system-design: lifecycle presentation for confirmed revision (556ms)
+  ✓  216 tests/task-full.spec.ts:2259:1 › task detail tolerates null required harnesses from a legacy worker status (323ms)
+  ✓  217 tests/system-design.spec.ts:1073:3 › system-design: lifecycle presentation for multiple proposals (572ms)
+  ✓  218 tests/task-full.spec.ts:2266:1 › suppressed worker order exposes failure state and audited recovery action (328ms)
+[WebServer] 6:11:49 PM [vite] http proxy error: /v1/pending-proposals?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+  ✓  219 tests/tasks.spec.ts:278:1 › tasks view preserves newest-created-first API order (383ms)
+  ✓  220 tests/task-full.spec.ts:2283:1 › ordinary recovery permits an empty operator direction (418ms)
+[WebServer] 6:11:49 PM [vite] http proxy error: /v1/pending-proposals?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+  ✓  222 tests/task-full.spec.ts:2298:1 › recovery authorization refusal renders the API message instead of its JSON envelope (460ms)
+  ✓  221 tests/tasks.spec.ts:292:1 › tasks view lists every task and filters by state, repository, and free text (768ms)
+  ✓  223 tests/task-full.spec.ts:2317:1 › checkpoint recovery requires and submits operator direction (443ms)
+[WebServer] 6:11:50 PM [vite] http proxy error: /v1/pending-proposals?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+  ✓  224 tests/tasks.spec.ts:331:1 › tasks view shows child rollup state (363ms)
+  ✓  225 tests/task-full.spec.ts:2339:1 › checkpoint recovery keeps the generic copy when no progress report exists (344ms)
+[WebServer] 6:11:50 PM [vite] http proxy error: /v1/pending-proposals?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+  ✓  226 tests/tasks.spec.ts:343:1 › tasks view links attached requirements and design documents (339ms)
+  ✓  227 tests/task-full.spec.ts:2348:1 › task timeline expands the complete agent progress report (352ms)
+[WebServer] 6:11:50 PM [vite] http proxy error: /v1/pending-proposals?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+  ✓  228 tests/tasks.spec.ts:369:1 › tasks view reports actionable plan status and stays quiet about approved plans (321ms)
+  ✓  229 tests/task-full.spec.ts:2358:1 › checkpoint recovery summarizes attached requirement and design context (318ms)
+[WebServer] 6:11:51 PM [vite] http proxy error: /v1/pending-proposals?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+  ✓  230 tests/tasks.spec.ts:386:1 › the all-tasks group header offers no expand control (337ms)
+[WebServer] 6:11:51 PM [vite] http proxy error: /v1/pending-proposals?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+  ✓  232 tests/tasks.spec.ts:399:1 › tasks table stays aligned and readable at a constrained width (331ms)
+  ✓  231 tests/task-full.spec.ts:2369:1 › structured authority checkpoint leads with the decision and resolves through cited proposals (587ms)
+[WebServer] 6:11:51 PM [vite] http proxy error: /v1/me?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+[WebServer] 6:11:51 PM [vite] http proxy error: /v1/pending-proposals?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+[WebServer] 6:11:51 PM [vite] http proxy error: /v1/requirements?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+[WebServer] 6:11:51 PM [vite] http proxy error: /v1/system-designs?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+[WebServer] 6:11:51 PM [vite] http proxy error: /v1/workspaces/demo/members
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+[WebServer] 6:11:52 PM [vite] http proxy error: /v1/me?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+[WebServer] 6:11:52 PM [vite] http proxy error: /v1/pending-proposals?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+[WebServer] 6:11:52 PM [vite] http proxy error: /v1/requirements?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+[WebServer] 6:11:52 PM [vite] http proxy error: /v1/system-designs?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+[WebServer] 6:11:52 PM [vite] http proxy error: /v1/workspaces/demo/members
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+  ✓  234 tests/task-full.spec.ts:2535:1 › structured authority checkpoint omits the standalone card when every proposal is cited (345ms)
+  ✓  235 tests/task-full.spec.ts:2580:1 › stalled task is labelled in the operator tray with recover and reasoned cancel controls (772ms)
+[WebServer] 6:11:53 PM [vite] http proxy error: /v1/pending-proposals?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+[WebServer] 6:11:53 PM [vite] http proxy error: /v1/requirements?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+[WebServer] 6:11:53 PM [vite] http proxy error: /v1/system-designs?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+  ✓  236 tests/task-full.spec.ts:2640:1 › pending authority moves a live task to Needs operator until the proposal is resolved (442ms)
+  ✓  233 tests/tasks.spec.ts:433:1 › tasks view distinguishes an empty workspace from a failed load (1.7s)
+[WebServer] 6:11:53 PM [vite] http proxy error: /v1/pending-proposals?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+  ✓  238 tests/tasks.spec.ts:467:1 › tasks view reports why a stalled task cannot move on its own (342ms)
+  ✓  237 tests/task-full.spec.ts:2687:1 › forge failure categories render in the needs-operator tray and task activity evidence (399ms)
+[WebServer] 6:11:53 PM [vite] http proxy error: /v1/pending-proposals?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+  ✓  239 tests/tasks.spec.ts:483:1 › tasks rows carry an assignee chip only where someone holds the task (349ms)
+  ✓  240 tests/task-full.spec.ts:2714:1 › checkout-blocked recovery explains the safe operator sequence before recovery (390ms)
+[WebServer] 6:11:54 PM [vite] http proxy error: /v1/pending-proposals?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+  ✓  241 tests/tasks.spec.ts:499:1 › tasks view exposes no priority or declared-phase field (308ms)
+  ✓  242 tests/task-full.spec.ts:2733:1 › attempt recovery keeps the later checkout blocker authoritative without a standalone attempt list (426ms)
+[WebServer] 6:11:54 PM [vite] http proxy error: /v1/pending-proposals?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+[WebServer] 6:11:54 PM [vite] http proxy error: /v1/workers?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+  ✓  244 tests/task-full.spec.ts:2758:1 › provider-limit retry states expose only the correct action (510ms)
+[WebServer] 6:11:55 PM [vite] http proxy error: /v1/pending-proposals?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+[WebServer] 6:11:55 PM [vite] http proxy error: /v1/pending-proposals?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+[WebServer] 6:11:55 PM [vite] http proxy error: /v1/workers?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+  ✓  243 tests/tasks.spec.ts:510:1 › tasks view is where a task is created (1.1s)
+[WebServer] 6:11:55 PM [vite] http proxy error: /v1/pending-proposals?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+  ✓  245 tests/task-full.spec.ts:2775:1 › a running attempt becoming paused is announced through the live region (635ms)
+[WebServer] 6:11:55 PM [vite] http proxy error: /v1/tasks/task-shipped/events/stream?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+[WebServer] 6:11:55 PM [vite] http proxy error: /v1/tasks/task-shipped/events/stream?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+[WebServer] 6:11:55 PM [vite] http proxy error: /v1/blueprints?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+[WebServer] 6:11:56 PM [vite] http proxy error: /v1/tasks/task-anchor/events/stream?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+[WebServer] 6:11:56 PM [vite] http proxy error: /v1/pending-proposals?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+[WebServer] 6:11:56 PM [vite] http proxy error: /v1/tasks/task-bounced/events/stream?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+  ✓  247 tests/task-full.spec.ts:2830:1 › client machine activity is collapsed, refreshes, and disappears after termination (762ms)
+[WebServer] 6:11:56 PM [vite] http proxy error: /v1/pending-proposals?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+[WebServer] 6:11:56 PM [vite] http proxy error: /v1/tasks/task-bounced/events/stream?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+[WebServer] 6:11:56 PM [vite] http proxy error: /v1/tasks/task-bounced/events/stream?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+  ✓  246 tests/tasks.spec.ts:540:1 › selecting a row opens the task detail panel with a permalink (1.0s)
+[WebServer] 6:11:56 PM [vite] http proxy error: /v1/pending-proposals?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+[WebServer] 6:11:56 PM [vite] http proxy error: /v1/tasks/task-shipped/events/stream?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+[WebServer] 6:11:56 PM [vite] http proxy error: /v1/tasks/task-shipped/events/stream?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+[WebServer] 6:11:56 PM [vite] http proxy error: /v1/blueprints?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+  ✓  249 tests/tasks.spec.ts:578:1 › full task detail identifies a task outside the loaded Board page (334ms)
+  ✓  248 tests/task-full.spec.ts:2888:1 › terminated attempt transcripts stay collapsed until opened and absence stays silent (591ms)
+[WebServer] 6:11:57 PM [vite] http proxy error: /v1/pending-proposals?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+[WebServer] 6:11:57 PM [vite] http proxy error: /v1/tasks/task-anchor/events/stream?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+[WebServer] 6:11:57 PM [vite] http proxy error: /v1/tasks/task-anchor/events/stream?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+[WebServer] 6:11:57 PM [vite] http proxy error: /v1/tasks/task-anchor/events/stream?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+  ✓  250 tests/tasks.spec.ts:589:1 › an anchor opened in the panel is sent to its canonical blueprint route (427ms)
+  ✓  251 tests/task-full.spec.ts:2922:1 › timed-out review round exposes a reasoned full-round retry and preserves history (433ms)
+[WebServer] 6:11:57 PM [vite] http proxy error: /v1/pending-proposals?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+[WebServer] 6:11:57 PM [vite] http proxy error: /v1/pending-proposals?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+  ✓  252 tests/tasks.spec.ts:617:1 › tasks view pages through server-side results (580ms)
+  ✓  253 tests/task-full.spec.ts:2952:1 › contradictory completed review round surfaces a needs-operator retry card (359ms)
+[WebServer] 6:11:58 PM [vite] http proxy error: /v1/pending-proposals?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+  ✓  255 tests/task-full.spec.ts:2959:1 › interrupted review round offers one same-round recovery and retains completed verdicts (435ms)
+  ✓  254 tests/tasks.spec.ts:654:1 › tasks view filters by created-at range, served requirement, and governing design (704ms)
+  ✓  256 tests/task-full.spec.ts:2985:1 › merged task retains historical approval without interrupted review recovery (309ms)
+[WebServer] 6:11:58 PM [vite] http proxy error: /v1/pending-proposals?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+  ✓  258 tests/task-full.spec.ts:2992:1 › interrupted review recovery tolerates legacy null empty collections (330ms)
+  ✓  257 tests/tasks.spec.ts:693:1 › tasks view filters by assignee and by unassigned (477ms)
+[WebServer] 6:12:01 PM [vite] http proxy error: /v1/pending-proposals?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+  ✓  259 tests/task-full.spec.ts:2999:1 › timeout timeline and duration use the execution deadline (2.2s)
+  ✓  260 tests/tasks.spec.ts:717:1 › My tasks shows only the signed-in user assignments that still need them (2.3s)
+  ✓  261 tests/task-full.spec.ts:3014:1 › work-order cards use their actual stage and technical activity exposes captured failure detail (354ms)
+[WebServer] 6:12:01 PM [vite] http proxy error: /v1/pending-proposals?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+  ✓  262 tests/tasks.spec.ts:835:1 › a run-claimed bounce tells the signed-in user to resume it regardless of hold (372ms)
+  ✓  263 tests/task-full.spec.ts:3044:3 › implementation job cards preserve provider logo and narrow footer for gpt-implement-with-an-intentionally-long-model-name (352ms)
+[WebServer] 6:12:01 PM [vite] http proxy error: /v1/pending-proposals?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+  ✓  264 tests/tasks.spec.ts:848:1 › operator-held worker-pipeline work says the factory continues it once released (382ms)
+  ✓  265 tests/task-full.spec.ts:3044:3 › implementation job cards preserve provider logo and narrow footer for claude-sonnet-4 (349ms)
+[WebServer] 6:12:02 PM [vite] http proxy error: /v1/pending-proposals?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+  ✓  266 tests/tasks.spec.ts:859:1 › the returned-with-feedback entry clears once implementation picks it up (300ms)
+  ✓  267 tests/task-full.spec.ts:3044:3 › implementation job cards preserve provider logo and narrow footer for gemini-2.5-pro (347ms)
+[WebServer] 6:12:02 PM [vite] http proxy error: /v1/pending-proposals?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+  ✓  268 tests/tasks.spec.ts:866:1 › start over markers identify both retired and successor Tasks rows (314ms)
+  ✓  269 tests/task-full.spec.ts:3044:3 › implementation job cards preserve provider logo and narrow footer for grok-4 (332ms)
+[WebServer] 6:12:02 PM [vite] http proxy error: /v1/pending-proposals?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+[WebServer] 6:12:03 PM [vite] http proxy error: /v1/tasks/task-blocked/events/stream?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+[WebServer] 6:12:03 PM [vite] http proxy error: /v1/tasks/task-blocked/events/stream?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+[WebServer] 6:12:03 PM [vite] http proxy error: /v1/blueprints?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+  ✓  271 tests/task-full.spec.ts:3044:3 › implementation job cards preserve provider logo and narrow footer for opencode-go/glm-5.3-flash (330ms)
+  ✓  270 tests/tasks.spec.ts:880:1 › Tasks panel renders lightweight detail before requesting selected audit (653ms)
+  ✓  272 tests/task-full.spec.ts:3044:3 › implementation job cards preserve provider logo and narrow footer for OpenCode-Go/GLM-5.3-FLASH (330ms)
+[WebServer] 6:12:03 PM [vite] http proxy error: /v1/pending-proposals?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+[WebServer] 6:12:03 PM [vite] http proxy error: /v1/tasks/task-shipped/events/stream?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+[WebServer] 6:12:03 PM [vite] http proxy error: /v1/blueprints?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+  ✓  273 tests/tasks.spec.ts:940:3 › Created By in the Tasks panel shows the workspace member (367ms)
+  ✓  274 tests/task-full.spec.ts:3044:3 › implementation job cards preserve provider logo and narrow footer for glm-5 (346ms)
+[WebServer] 6:12:03 PM [vite] http proxy error: /v1/pending-proposals?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+[WebServer] 6:12:04 PM [vite] http proxy error: /v1/tasks/task-shipped/events/stream?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+[WebServer] 6:12:04 PM [vite] http proxy error: /v1/blueprints?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+  ✓  275 tests/tasks.spec.ts:940:3 › Created By in the Tasks panel shows Unknown (357ms)
+  ✓  276 tests/task-full.spec.ts:3044:3 › implementation job cards preserve provider logo and narrow footer for chatglm3 (347ms)
+[WebServer] 6:12:04 PM [vite] http proxy error: /v1/pending-proposals?workspace_id=demo
+[WebServer] Error: connect ECONNREFUSED 127.0.0.1:8080
+[WebServer]     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1706:16)
+  ✓  277 tests/tasks.spec.ts:980:1 › failed triage Tasks row uses recorded stages and keeps truthful plan state (332ms)
+  ✓  278 tests/task-full.spec.ts:3044:3 › implementation job cards preserve provider logo and narrow footer for zhipu/model (335ms)
+  ✓  280 tests/task-full.spec.ts:3044:3 › implementation job cards preserve provider logo and narrow footer for unknown/model (327ms)
+  ✓  279 tests/theme.spec.ts:25:1 › theme choice is accessible, persists, and System follows preference changes (615ms)
+  ✓  282 tests/theme.spec.ts:91:1 › bootstrap applies saved choice before the React entrypoint loads (63ms)
+  ✓  281 tests/task-full.spec.ts:3044:3 › implementation job cards preserve provider logo and narrow footer for unknown/notglm-5 (306ms)
+  ✓  283 tests/theme.spec.ts:115:1 › malformed or inaccessible theme storage falls back to System (117ms)
+  ✓  284 tests/task-full.spec.ts:3044:3 › implementation job cards preserve provider logo and narrow footer for unknown/glmodel (362ms)
+  ✓  285 tests/touch-disclosures.spec.ts:131:5 › touch disclosures › assignee detail opens by tap and supports all dismissals (498ms)
+  ✓  286 tests/task-full.spec.ts:3143:1 › task detail aggregates reported work-order usage and distinguishes reported zero from unavailable (354ms)
+  ✓  287 tests/touch-disclosures.spec.ts:131:5 › touch disclosures › archived outcome opens by tap and supports all dismissals (416ms)
+  ✓  288 tests/task-full.spec.ts:3211:1 › in-process jobs retain provider usage when the matching work order has no telemetry report (322ms)
+  ✓  289 tests/touch-disclosures.spec.ts:131:5 › touch disclosures › archived guidance opens by tap and supports all dismissals (422ms)
+  ✓  290 tests/task-full.spec.ts:3264:1 › overflowing full-screen task content scrolls from top to bottom (682ms)
+  ✓  291 tests/touch-disclosures.spec.ts:131:5 › touch disclosures › stalled status opens by tap and supports all dismissals (397ms)
+  ✓  292 tests/task-full.spec.ts:3296:1 › short full-screen task content does not create a nested vertical scrollbar (349ms)
+  ✓  293 tests/touch-disclosures.spec.ts:131:5 › touch disclosures › updated timestamp opens by tap and supports all dismissals (529ms)
+  ✓  294 tests/task-full.spec.ts:3308:1 › task detail links attached product and design context (306ms)
+  ✓  295 tests/touch-disclosures.spec.ts:158:3 › touch disclosures › assignee details do not navigate the containing board card (307ms)
+  ✓  297 tests/touch-disclosures.spec.ts:168:3 › touch disclosures › successor links remain actionable by tap (358ms)
+  ✓  296 tests/task-full.spec.ts:3324:1 › task context attachment keeps archived documents out of the picker (580ms)
+  ✓  298 tests/touch-disclosures.spec.ts:176:3 › touch disclosures › Escape dismisses the disclosure before its task sheet (668ms)
+  ✓  299 tests/task-full.spec.ts:3419:3 › task context dialog removes both document tiers (764ms)
+  ✓  300 tests/touch-disclosures.spec.ts:193:3 › touch disclosures › document icon reveals successors without closing the drawer (694ms)
+  ✓  301 tests/task-full.spec.ts:3419:3 › task context dialog removes both document tiers including archived attachments (682ms)
+  ✓  302 tests/touch-disclosures.spec.ts:219:5 › desktop disclosures › assignee detail still opens with hover and keyboard focus (406ms)
+  ✓  304 tests/touch-disclosures.spec.ts:219:5 › desktop disclosures › archived outcome still opens with hover and keyboard focus (366ms)
+  ✓  303 tests/task-full.spec.ts:3444:1 › task context dialog saves disjoint additions and removals (771ms)
+  ✓  305 tests/touch-disclosures.spec.ts:219:5 › desktop disclosures › archived guidance still opens with hover and keyboard focus (321ms)
+  ✓  307 tests/touch-disclosures.spec.ts:219:5 › desktop disclosures › stalled status still opens with hover and keyboard focus (410ms)
+  ✓  306 tests/task-full.spec.ts:3469:1 › task context dialog cancels removals by keeping or reselecting attached documents (760ms)
+  ✓  308 tests/touch-disclosures.spec.ts:219:5 › desktop disclosures › updated timestamp still opens with hover and keyboard focus (351ms)
+  ✓  310 tests/verification-kits.spec.ts:179:1 › manager tab orders tabs, moves the evidence switch and saves both switches (449ms)
+  ✓  309 tests/task-full.spec.ts:3489:1 › task context dialog still saves additions alone (680ms)
+  ✓  311 tests/verification-kits.spec.ts:201:1 › repository sections render every state, reason and status chip (436ms)
+  ✓  313 tests/verification-kits.spec.ts:228:1 › kit, exercise and run details expand without exposing hidden run fields (423ms)
+  ✓  314 tests/verification-kits.spec.ts:266:1 › descriptions render literally and schema-1 assertions show IDs alone (371ms)
+  ✓  312 tests/task-full.spec.ts:3512:5 › task context card confirms removal of both tiers on full (1.3s)
+  ✓  315 tests/verification-kits.spec.ts:282:1 › members see the kit list without verification switches (351ms)
+  ✓  317 tests/verification-kits.spec.ts:291:1 › null manifest fields render without crashing the page (372ms)
+  ✓  316 tests/task-full.spec.ts:3512:5 › task context card confirms removal of both tiers on full when archived (1.3s)
+  ✓  318 tests/verification-kits.spec.ts:326:1 › member view screenshot (713ms)
+  ✓  320 tests/verification-kits.spec.ts:335:1 › narrow layout stacks kit rows without horizontal overflow (401ms)
+  ✓  319 tests/task-full.spec.ts:3512:5 › task context card confirms removal of both tiers on sheet (1.4s)
+  ✓  321 tests/verification-kits.spec.ts:360:1 › operator review screenshots (1.7s)
+  ✓  322 tests/task-full.spec.ts:3512:5 › task context card confirms removal of both tiers on sheet when archived (1.4s)
+  ✓  324 tests/task-full.spec.ts:3545:5 › task context removal is hidden on full for a viewer (308ms)
+  ✓  323 tests/verification.spec.ts:380:3 › verification entry, folds and history at 1366px (1.2s)
+  ✓  325 tests/task-full.spec.ts:3545:5 › task context removal is hidden on sheet for a viewer (332ms)
+  ✓  327 tests/task-full.spec.ts:3545:5 › task context removal is hidden on full for merged tasks (344ms)
+  ✓  328 tests/task-full.spec.ts:3545:5 › task context removal is hidden on sheet for merged tasks (512ms)
+  ✓  326 tests/verification.spec.ts:380:3 › verification entry, folds and history at 390px (1.2s)
+  ✓  329 tests/task-full.spec.ts:3545:5 › task context removal is hidden on full for closed tasks (463ms)
+  ✓  330 tests/verification.spec.ts:450:1 › task sheet shows a running verification and viewer has no observation action (471ms)
+  ✓  331 tests/task-full.spec.ts:3545:5 › task context removal is hidden on sheet for closed tasks (581ms)
+  ✓  332 tests/verification.spec.ts:459:1 › operator observation retries retain one key and exclude server provenance (587ms)
+  ✓  334 tests/verification.spec.ts:475:1 › merge gate shows one verdict line and loads cited evidence independently (443ms)
+  ✓  333 tests/task-full.spec.ts:3568:3 › task context dialog preserves attachments and reports a refused removal (649ms)
+  ✓  336 tests/workspace-policy.spec.ts:56:1 › workspace edits policy only and sends no retired execution detail (398ms)
+  ✓  335 tests/task-full.spec.ts:3568:3 › task context card preserves attachments and reports a refused removal (628ms)
+  ✓  337 tests/workspace-policy.spec.ts:78:1 › workspace surfaces named policy rejections verbatim (317ms)
+  ✓  339 tests/workspace-policy.spec.ts:86:1 › workspace retains operational worker health and provider limits (387ms)
+  ✓  340 tests/workspace-policy.spec.ts:115:1 › scoped configuration sources contain no retired vocabulary or API paths (3ms)
+  ✓  338 tests/task-full.spec.ts:3587:1 › task context suggestions show justification and become attachments or disappear when resolved (615ms)
+  ✓  341 tests/workspace-rail.spec.ts:30:1 › workspace rail uses Slack-like tiles and preserves switching and creation (410ms)
+  ✓  342 tests/task-full.spec.ts:3695:1 › task context suggestions remain visible without decision controls for non-operators (309ms)
+  ✓  343 tests/workspace-screenshots.spec.ts:65:1 › capture workspace policy screenshots (534ms)
+  ✓  344 tests/task-full.spec.ts:3727:1 › task sheet bounds an overflowing spec and expands and collapses it accessibly (678ms)
+  ✓  345 tests/task-full.spec.ts:3752:1 › task body renders safe GFM in sheet and full-page headers (474ms)
+  ✓  346 tests/task-full.spec.ts:3764:1 › activity job summaries render inline code without enabling raw HTML (277ms)
+  ✓  347 tests/task-full.spec.ts:3779:1 › long task body is constrained and expands accessibly in both header variants (715ms)
+  ✓  348 tests/task-full.spec.ts:3800:1 › short side-view specs and full-page specs remain unbounded (454ms)
+  ✓  349 tests/task-full.spec.ts:3813:1 › review panel replaces duplicate review and bounce activity notes (305ms)
+  ✓  350 tests/task-full.spec.ts:3841:1 › review card renders authorized verification evidence with accessible preview and download fallback (740ms)
+  ✓  351 tests/task-full.spec.ts:3893:1 › spec approval keeps the human marker without a duplicate versioned event (324ms)
+  ✓  352 tests/task-full.spec.ts:3904:1 › output-validation rejections show job-specific errors with warning tone and preserve accepted narration (316ms)
+  ✓  353 tests/task-full.spec.ts:3943:1 › active review claim diagnostics stay in the review panel instead of standalone history rows (477ms)
+  ✓  354 tests/task-full.spec.ts:3975:1 › review panel hides generated metadata while preserving reported zero usage and meaningful progress (288ms)
+  ✓  355 tests/task-full.spec.ts:4012:1 › human gate renders as the event timeline tail and the page opens scrolled to it (338ms)
+  ✓  356 tests/task-full.spec.ts:4062:3 › plan revision gate renders request context and submits approve revision (448ms)
+  ✓  357 tests/task-full.spec.ts:4062:3 › plan revision gate renders request context and submits decline with direction (453ms)
+  ✓  358 tests/task-full.spec.ts:4062:3 › plan revision gate renders request context and submits reject (453ms)
+  ✓  359 tests/task-full.spec.ts:4172:1 › the revision chain reads as request, decision, and the plan version it produced (302ms)
+  ✓  360 tests/task-full.spec.ts:4244:1 › worker warning is scoped to actionable task-owned work at the human gate (447ms)
+  ✓  361 tests/task-full.spec.ts:4257:1 › pull-only queued work waits for an operator agent without a worker alarm or route chip (273ms)
+  ✓  362 tests/task-full.spec.ts:4265:1 › parked task offers recovery instead of an invalid approval verdict (274ms)
+  ✓  363 tests/task-full.spec.ts:4281:1 › merge gate renders pending readiness without offering merge (263ms)
+  ✓  364 tests/task-full.spec.ts:4289:1 › merge gate fails closed when readiness is absent (270ms)
+  ✓  365 tests/task-full.spec.ts:4297:1 › merge gate stays pending until the post-success task and activity refreshes settle (311ms)
+  ✓  366 tests/task-full.spec.ts:4329:1 › failed merge restores the existing error and retry action (329ms)
+  ✓  367 tests/task-full.spec.ts:4350:1 › the merge gate names the reviewed head, pull request, and factory verdict (283ms)
+  ✓  368 tests/task-full.spec.ts:4383:1 › merge gate sends user feedback through request changes (327ms)
+  ✓  369 tests/task-full.spec.ts:4406:1 › contributor assignee can request merge-gate changes without gate approval controls (321ms)
+  ✓  370 tests/task-full.spec.ts:4442:1 › non-assignee contributor cannot request changes at another user's merge gate (218ms)
+  ✓  371 tests/task-full.spec.ts:4470:1 › the recorded return reads back in the timeline with its feedback (361ms)
+  ✓  372 tests/task-full.spec.ts:4509:1 › approved state keeps request changes on the legacy review route (309ms)
+  ✓  373 tests/task-full.spec.ts:4531:1 › conflicting readiness makes the idempotent fix dispatch primary (287ms)
+  ✓  374 tests/task-full.spec.ts:4545:1 › new task events preserve the task sheet scroll position (624ms)
+  ✓  375 tests/task-full.spec.ts:4568:3 › successful approve scrolls the task sheet to the refreshed timeline tail (643ms)
+  ✓  376 tests/task-full.spec.ts:4568:3 › successful redirect scrolls the task sheet to the refreshed timeline tail (654ms)
+  ✓  377 tests/task-full.spec.ts:4632:1 › task sheet opens scrolled to the human gate for reviewable tasks (338ms)
+  ✓  378 tests/task-full.spec.ts:4639:1 › board activity surfaces expired-without-verdict state (263ms)
+  ✓  379 tests/task-full.spec.ts:4645:1 › shared Markdown renders plan diagrams responsively in both themes and falls back to source (530ms)
+  ✓  380 tests/task-full.spec.ts:4668:1 › blueprint and dependency details remain linked and read only (456ms)
+  ✓  381 tests/task-full.spec.ts:4710:1 › blueprint history describes a missing stored spec as a missing plan version (263ms)
+  ✓  382 tests/task-full.spec.ts:4729:1 › blocked detail polling clears waiting state without a reload and stays off when unblocked (649ms)
+  ✓  383 tests/task-full.spec.ts:4749:1 › dependency links follow the detail route variant and spec claiming stays available (486ms)
+  ✓  384 tests/task-full.spec.ts:4763:1 › a pending decision blocker links directly to its System Design decision card (341ms)
+  ✓  385 tests/task-full.spec.ts:4772:1 › recovery-needing work stays primary when dependencies are also unresolved (279ms)
+  ✓  386 tests/task-full.spec.ts:4783:1 › board cards show a neutral, keyboard-reachable dependency chip using titles (260ms)
+  ✓  387 tests/task-full.spec.ts:4798:1 › unsatisfiable dependency is attention-worthy and can be unlinked with an audited reason only from detail (790ms)
+  ✓  388 tests/task-full.spec.ts:4882:1 › task header links an open dependency with one stable audited request (789ms)
+  ✓  389 tests/task-full.spec.ts:4984:1 › checkpoint proposal confirmation completes before recovery with an audited direction (453ms)
+  ✓  390 tests/task-full.spec.ts:5028:1 › checkpoint proposal confirmation failure is visible and does not recover (409ms)
+  ✓  391 tests/task-full.spec.ts:5054:1 › a task's own System Design proposal is confirmable from its detail and clears in place (762ms)
+  ✓  392 tests/task-full.spec.ts:5117:1 › maintainer sees a pending task System Design proposal without an enabled Confirm action (299ms)
+  ✓  393 tests/task-full.spec.ts:5137:1 › task detail renders no proposal card for a pending version another task raised (281ms)
+  ✓  394 tests/task-full.spec.ts:5150:1 › task detail renders a proposal-only card without the review-gate headline (320ms)
+  ✓  395 tests/task-full.spec.ts:5172:5 › review gate copy uses requirement for requirement with design card false (293ms)
+  ✓  396 tests/task-full.spec.ts:5172:5 › review gate copy uses System Design for system_design with design card false (285ms)
+  ✓  397 tests/task-full.spec.ts:5172:5 › review gate copy uses document for requirement+system_design with design card false (286ms)
+  ✓  398 tests/task-full.spec.ts:5172:5 › review gate copy uses document for future_kind with design card false (286ms)
+  ✓  399 tests/task-full.spec.ts:5172:5 › review gate copy uses document for system_design+future_kind with design card false (288ms)
+  ✓  400 tests/task-full.spec.ts:5172:5 › review gate copy uses document for missing kinds with design card false (281ms)
+  ✓  401 tests/task-full.spec.ts:5172:5 › review gate copy uses requirement for requirement with design card true (282ms)
+  ✓  402 tests/task-full.spec.ts:5172:5 › review gate copy uses System Design for system_design with design card true (285ms)
+  ✓  403 tests/task-full.spec.ts:5172:5 › review gate copy uses document for requirement+system_design with design card true (281ms)
+  ✓  404 tests/task-full.spec.ts:5172:5 › review gate copy uses document for future_kind with design card true (282ms)
+  ✓  405 tests/task-full.spec.ts:5172:5 › review gate copy uses document for system_design+future_kind with design card true (277ms)
+  ✓  406 tests/task-full.spec.ts:5172:5 › review gate copy uses document for missing kinds with design card true (283ms)
+  ✓  407 tests/task-full.spec.ts:5250:3 › redispatch remains available for queued review with pending authority false (272ms)
+  ✓  408 tests/task-full.spec.ts:5250:3 › redispatch remains available for queued implement with pending authority true (277ms)
+  ✓  409 tests/task-full.spec.ts:5285:1 › task detail renders no proposal card for a document the task does not carry (314ms)
+  ✓  410 tests/task-full.spec.ts:5384:1 › an operator assigns a task from the member picker and the timeline records it (429ms)
+  ✓  411 tests/task-full.spec.ts:5413:1 › assignment history resolves a prior assignee from the workspace roster (326ms)
+  ✓  412 tests/task-full.spec.ts:5439:1 › a non-operator sees the assignee but no set or clear control (269ms)
+  ✓  413 tests/task-full.spec.ts:5458:1 › a claim refusal names the assignee rather than showing the transport sentence (269ms)
+  ✓  414 tests/task-full.spec.ts:5493:3 › review card renders optional operator notes: true (291ms)
+  ✓  415 tests/task-full.spec.ts:5493:3 › review card renders optional operator notes: false (303ms)
+  ✓  416 tests/task-full.spec.ts:5596:1 › start over previews orders, task-owned proposal versions and the PR, then navigates with one idempotent request (1.9s)
+  ✓  417 tests/task-full.spec.ts:5663:3 › start over is hidden without operate_gates for viewer (339ms)
+  ✓  418 tests/task-full.spec.ts:5663:3 › start over is hidden without operate_gates for executor (277ms)
+  ✓  419 tests/task-full.spec.ts:5663:3 › start over is hidden without operate_gates for contributor (274ms)
+  ✓  420 tests/task-full.spec.ts:5672:3 › start over is hidden for terminal closed tasks (281ms)
+  ✓  421 tests/task-full.spec.ts:5672:3 › start over is hidden for terminal merged tasks (273ms)
+  ✓  422 tests/task-full.spec.ts:5684:1 › start over enforces reason and note limits including Unicode character counts (339ms)
+  ✓  423 tests/task-full.spec.ts:5707:3 › start over requires confirm_documents for task-owned requirement proposals (312ms)
+  ✓  424 tests/task-full.spec.ts:5707:3 › start over requires confirm_documents for task-owned system_design proposals (318ms)
+  ✓  425 tests/task-full.spec.ts:5716:1 › start over permits a maintainer when proposals belong only to other tasks (322ms)
+  ✓  426 tests/task-full.spec.ts:5723:1 › start over blocks loading and failed proposal reads and can retry the preview (1.7s)
+  ✓  427 tests/task-full.spec.ts:5752:3 › start over preserves server refusal: task has pending proposals: confirm_documents capability is required (550ms)
+  ✓  428 tests/task-full.spec.ts:5752:3 › start over preserves server refusal: request_id was already used with a different reason or note (578ms)
+  ✓  429 tests/task-full.spec.ts:5752:3 › start over preserves server refusal: terminal tasks cannot start over; create a task with POST /v1/tasks (542ms)
+  ✓  430 tests/task-full.spec.ts:5775:3 › start over link survives recorded PR close outcome closed (284ms)
+  ✓  431 tests/task-full.spec.ts:5775:3 › start over link survives recorded PR close outcome retrying (295ms)
+  ✓  432 tests/task-full.spec.ts:5775:3 › start over link survives recorded PR close outcome failed (278ms)
+  ✓  433 tests/task-full.spec.ts:5775:3 › start over link survives recorded PR close outcome queued (278ms)
+  ✓  434 tests/task-full.spec.ts:5775:3 › start over link survives recorded PR close outcome skipped (283ms)
+  ✓  435 tests/task-full.spec.ts:5806:3 › start over omits absent restart facts (undefined) (306ms)
+  ✓  436 tests/task-full.spec.ts:5806:3 › start over omits absent restart facts (null) (315ms)
+  ✓  437 tests/task-full.spec.ts:5806:3 › start over omits absent restart facts () (307ms)
+  ✓  438 tests/task-full.spec.ts:5833:1 › start over board cards mark both sides and sheet links use sheet routes (574ms)
+  ✓  439 tests/task-full.spec.ts:5862:1 › start over manual retry preserves the request after automatic network retries fail (3.6s)
+  ✓  440 tests/task-full.spec.ts:5881:1 › start over counts recoverable and submitted orders but excludes cancelled and completed orders (323ms)
+  ✓  441 tests/task-full.spec.ts:5903:3 › task actions menu supports keyboard navigation and dismissal in sheet (790ms)
+  ✓  442 tests/task-full.spec.ts:5955:5 › Hold requires confirmation and refreshes server state in sheet (905ms)
+  ✓  443 tests/task-full.spec.ts:5955:5 › Release requires confirmation and refreshes server state in sheet (997ms)
+  ✓  444 tests/task-full.spec.ts:5903:3 › task actions menu supports keyboard navigation and dismissal in full (815ms)
+  ✓  445 tests/task-full.spec.ts:5955:5 › Hold requires confirmation and refreshes server state in full (769ms)
+  ✓  446 tests/task-full.spec.ts:5955:5 › Release requires confirmation and refreshes server state in full (661ms)
+  ✓  447 tests/task-full.spec.ts:6027:1 › hold refusal stays visible and retry preserves the requested transition (566ms)
+seeded lightweight browser render: 245 ms; mocked response, no live speed claim
+  ✓  448 tests/task-full.spec.ts:6049:1 › lightweight audit disclosures load on demand, retry, and stay out of SSE refresh (950ms)
+seeded full: 2091057 uncompressed bytes; warm navigation-to-plan 341 ms (mocked API, same browser/client)
+seeded lightweight: 90945 uncompressed bytes; warm navigation-to-plan 295 ms (mocked API, same browser/client)
+  ✓  449 tests/task-full.spec.ts:6161:1 › seeded full and lightweight task payloads record comparable render observations (1.0s)
+  ✓  450 tests/task-full.spec.ts:6244:5 › Created By shows member on the full (310ms)
+  ✓  451 tests/task-full.spec.ts:6244:5 › Created By shows unprefixed member on the full (290ms)
+  ✓  452 tests/task-full.spec.ts:6244:5 › Created By shows email fallback on the full (288ms)
+  ✓  453 tests/task-full.spec.ts:6244:5 › Created By shows ID fallback on the full (288ms)
+  ✓  454 tests/task-full.spec.ts:6244:5 › Created By shows former member on the full (300ms)
+  ✓  455 tests/task-full.spec.ts:6244:5 › Created By shows agent on the full (305ms)
+  ✓  456 tests/task-full.spec.ts:6244:5 › Created By shows runner on the full (286ms)
+  ✓  457 tests/task-full.spec.ts:6244:5 › Created By shows system on the full (293ms)
+  ✓  458 tests/task-full.spec.ts:6244:5 › Created By shows missing event on the full (289ms)
+  ✓  459 tests/task-full.spec.ts:6244:5 › Created By shows missing identifier on the full (296ms)
+  ✓  460 tests/task-full.spec.ts:6244:5 › Created By shows empty prefixed identifier on the full (295ms)
+  ✓  461 tests/task-full.spec.ts:6244:5 › Created By shows unknown actor class on the full (294ms)
+  ✓  462 tests/task-full.spec.ts:6244:5 › Created By shows member on the board sheet (329ms)
+  ✓  463 tests/task-full.spec.ts:6244:5 › Created By shows unprefixed member on the board sheet (312ms)
+  ✓  464 tests/task-full.spec.ts:6244:5 › Created By shows email fallback on the board sheet (330ms)
+  ✓  465 tests/task-full.spec.ts:6244:5 › Created By shows ID fallback on the board sheet (329ms)
+  ✓  466 tests/task-full.spec.ts:6244:5 › Created By shows former member on the board sheet (323ms)
+  ✓  467 tests/task-full.spec.ts:6244:5 › Created By shows agent on the board sheet (324ms)
+  ✓  468 tests/task-full.spec.ts:6244:5 › Created By shows runner on the board sheet (331ms)
+  ✓  469 tests/task-full.spec.ts:6244:5 › Created By shows system on the board sheet (324ms)
+  ✓  470 tests/task-full.spec.ts:6244:5 › Created By shows missing event on the board sheet (327ms)
+  ✓  471 tests/task-full.spec.ts:6244:5 › Created By shows missing identifier on the board sheet (327ms)
+  ✓  472 tests/task-full.spec.ts:6244:5 › Created By shows empty prefixed identifier on the board sheet (335ms)
+  ✓  473 tests/task-full.spec.ts:6244:5 › Created By shows unknown actor class on the board sheet (330ms)
+  ✓  474 tests/task-full.spec.ts:6306:1 › Created By preserves a long historical identity when the workspace member read fails (273ms)
+  ✓  475 tests/task-full.spec.ts:6412:3 › failed triage full shows the recorded image failure without approval (352ms)
+  ✓  476 tests/task-full.spec.ts:6412:3 › failed triage sheet shows the recorded image failure without approval (527ms)
+  ✓  477 tests/task-full.spec.ts:6412:3 › failed triage list shows the recorded image failure without approval (538ms)
+  ✓  478 tests/task-full.spec.ts:6456:3 › failed triage requires repair for Reduce the identified attachment or task context (284ms)
+  ✓  479 tests/task-full.spec.ts:6456:3 › failed triage requires repair for Repair the task context (276ms)
+  ✓  480 tests/task-full.spec.ts:6468:1 › failed triage retry waits for response and every projection refresh and prevents duplicate clicks (708ms)
+  ✓  481 tests/task-full.spec.ts:6563:3 › failed triage retry preserves failure after HTTP 500 (363ms)
+  ✓  482 tests/task-full.spec.ts:6563:3 › failed triage retry preserves failure after HTTP 409 (345ms)
+  ✓  483 tests/task-full.spec.ts:6577:1 › failed triage accepted retry with stale detail refreshes status without resubmission (446ms)
+  ✓  484 tests/task-full.spec.ts:6598:1 › failed triage capability refusal keeps the reason visible without a retry action (293ms)
+  ✓  485 tests/task-full.spec.ts:6610:3 › failed triage history does not replace the later spec gate (305ms)
+  ✓  486 tests/task-full.spec.ts:6610:3 › failed triage history does not replace the later merge gate (313ms)
+  ✓  487 tests/task-full.spec.ts:6650:3 › failed triage predicate refuses missing evidence (268ms)
+  ✓  488 tests/task-full.spec.ts:6650:3 › failed triage predicate refuses new triage attempt (272ms)
+  ✓  489 tests/task-full.spec.ts:6650:3 › failed triage predicate refuses later intervention (270ms)
+  ✓  490 tests/task-full.spec.ts:6650:3 › failed triage predicate refuses later dispatch (273ms)
+  ✓  491 tests/task-full.spec.ts:6672:1 › failed triage retry refreshes the Board projection before clearing the sheet (580ms)
+  ✓  492 tests/task-full.spec.ts:6711:1 › failed triage accepted retry exposes refresh failure and only retries the read (1.7s)
+  ✓  493 tests/task-full.spec.ts:6737:1 › failed triage predicate tolerates absent job evidence (283ms)
+  ✓  494 tests/task-full.spec.ts:6747:1 › failed triage predicate orders fractional-second execution timestamps chronologically (275ms)
+
+  494 passed (2.9m)
+cd web && npm run typecheck
+
+> conveyor-dashboard@0.1.0 typecheck
+> node ./scripts/check-capabilities.mjs && tsc --noEmit --pretty false
+
