@@ -131,7 +131,7 @@ const registry = {
         }),
       ],
     },
-    ...(['no_app', 'permission', 'unknown_revision', 'transport'] as const).map((reason) => ({
+    ...(['no_app', 'permission', 'unknown_revision', 'truncated', 'transport'] as const).map((reason) => ({
       repository: `blocked-${reason}`,
       base: 'main',
       commit_sha: '',
@@ -221,6 +221,7 @@ test('repository sections render every state, reason and status chip', async ({ 
   await expect(page.getByRole('region', { name: 'blocked-unknown_revision' })).toContainText(
     'base branch was not found',
   )
+  await expect(page.getByRole('region', { name: 'blocked-truncated' })).toContainText('GitHub read failed')
   await expect(page.getByRole('region', { name: 'blocked-transport' })).toContainText('GitHub read failed')
 })
 
