@@ -2,9 +2,11 @@ import { X } from 'lucide-react'
 import { useId, useState } from 'react'
 import { Button } from '../ui/button'
 import { Dialog } from '../ui/dialog'
+import { dismissalArchiveConsequence } from './document-review'
 
 export function VersionDismissDialog({
   documentTitle,
+  archivesDocument = false,
   version,
   pending,
   error,
@@ -12,6 +14,7 @@ export function VersionDismissDialog({
   onConfirm,
 }: {
   documentTitle: string
+  archivesDocument?: boolean
   version: number
   pending: boolean
   error?: string
@@ -30,6 +33,7 @@ export function VersionDismissDialog({
         <p className="text-sm leading-6 text-muted">
           This version's content will stay in version history, but it cannot be confirmed later.
         </p>
+        {archivesDocument && <p className="text-sm leading-6 text-muted">{dismissalArchiveConsequence}</p>}
         <label className="block text-sm font-medium">
           Why are you dismissing this?
           <span className="ml-1 font-normal text-muted">(optional)</span>

@@ -98,6 +98,7 @@ async function seedReview(
   tier: Tier,
   options: {
     first?: boolean
+    historicalState?: 'dismissed' | 'superseded'
     archived?: boolean
     reader?: boolean
     content?: string
@@ -153,6 +154,12 @@ async function seedReview(
         makeVersion(3, '# Newest proposal\n\nUnrelated newest text.'),
         makeVersion(4, '# Historical\n\nDismissed proposal.'),
       ]
+  if (options.historicalState)
+    Object.assign(versions[0], {
+      retired: true,
+      dismissed: true,
+      retired_by_version: options.historicalState === 'superseded' ? 3 : undefined,
+    })
   if (options.same) versions[1].statements = versions[0].statements
   if (options.content !== undefined || options.baseContent !== undefined || options.targetContent !== undefined)
     for (const v of versions) v.statements = []
@@ -326,6 +333,21 @@ for (const tier of ['requirements', 'system-design'] as const) {
   test(`${tier}: first proposal, no-note dismissal, invalid selection and keyboard tabs`, async ({ page }) => {
     const seed = await seedReview(page, tier, { first: true })
     await page.goto(seed.url)
+    await expect(
+      page
+        .getByRole('heading', { name: 'Claim ownership', exact: true })
+        .locator('..')
+        .getByText('No confirmed version', { exact: true }),
+    ).toBeVisible()
+    await expect(
+      page
+        .getByRole('heading', { name: 'Claim ownership', exact: true })
+        .locator('..')
+        .getByText('v2 · Proposed', { exact: true }),
+    ).toBeVisible()
+    await expect(page.getByRole('region', { name: 'Needs your attention' })).toContainText(
+      'Dismissing this version archives the document.',
+    )
     await expect(page.getByText('Comparing against an empty base: no confirmed version exists yet.')).toBeVisible()
     await page.getByRole('tab', { name: 'changes', exact: true }).focus()
     await page.keyboard.press('ArrowRight')
@@ -334,12 +356,37 @@ for (const tier of ['requirements', 'system-design'] as const) {
     await page.getByRole('button', { name: 'Dismiss', exact: true }).click()
     await page.getByRole('dialog').getByRole('button', { name: 'Dismiss version 2', exact: true }).click()
     expect(seed.calls[0]?.body ?? {}).toEqual({})
+    await expect(
+      page
+        .getByRole('heading', { name: 'Claim ownership', exact: true })
+        .locator('..')
+        .getByText('v2 · Dismissed', { exact: true }),
+    ).toBeVisible()
     await page.goto(`${seed.url.replace('target=2', 'target=99')}`)
     await expect(page.getByRole('alert')).toContainText('selected version is unavailable')
     await expect(page.getByRole('button', { name: /Confirm version/ })).toHaveCount(0)
     await page.getByRole('button', { name: 'Reset version selection' }).click()
     await expect(page.getByRole('alert')).toHaveCount(0)
   })
+
+  for (const historicalState of ['dismissed', 'superseded'] as const)
+    test(`${tier}: header names ${historicalState} selected history without confirmed authority`, async ({ page }) => {
+      const seed = await seedReview(page, tier, { first: true, archived: true, historicalState })
+      await page.goto(seed.url.replace('tab=changes', 'tab=document'))
+      await expect(
+        page
+          .getByRole('heading', { name: 'Claim ownership', exact: true })
+          .locator('..')
+          .getByText('No confirmed version', { exact: true }),
+      ).toBeVisible()
+      await expect(
+        page
+          .getByRole('heading', { name: 'Claim ownership', exact: true })
+          .locator('..')
+          .getByText(historicalState === 'dismissed' ? 'v2 · Dismissed' : 'v2 · Superseded by v3', { exact: true }),
+      ).toBeVisible()
+      await expect(page.getByRole('tabpanel')).toContainText('Renew every 10 seconds.')
+    })
 
   for (const state of ['reader', 'archived'] as const)
     test(`${tier}: ${state} selection remains readable without proposal mutations`, async ({ page }) => {

@@ -934,6 +934,8 @@ export interface Requirement {
   archived: boolean
   archived_by?: string
   archived_at?: string
+  archive_reason?: string
+  archive_note?: string
   superseded_by?: string[]
   workspace: string
   created_at: string
@@ -1167,6 +1169,8 @@ export interface SystemDesign {
   archived: boolean
   archived_by?: string
   archived_at?: string
+  archive_reason?: string
+  archive_note?: string
   superseded_by?: string[]
   workspace: string
   created_at: string
