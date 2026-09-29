@@ -1,0 +1,466 @@
+cd web && npm ci
+
+added 289 packages, and audited 290 packages in 49s
+
+108 packages are looking for funding
+  run `npm fund` for details
+
+10 vulnerabilities (7 moderate, 3 high)
+
+To address all issues, run:
+  npm audit fix
+
+Run `npm audit` for details.
+npm warn allow-scripts 2 packages have install scripts not yet covered by allowScripts:
+npm warn allow-scripts   fsevents@2.3.3 (install: (install scripts present))
+npm warn allow-scripts   fsevents@2.3.2 (install: (install scripts present))
+npm warn allow-scripts
+npm warn allow-scripts Run `npm approve-scripts --allow-scripts-pending` to review, or `npm approve-scripts <pkg>` to allow.
+npm notice
+npm notice New major version of npm available! 11.16.0 -> 12.1.0
+npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.1.0
+npm notice To update run: npm install -g npm@12.1.0
+npm notice
+cd web && npm run build
+
+> conveyor-dashboard@0.1.0 build
+> tsc --noEmit && vite build
+
+vite v8.1.4 building client environment for production...
+[2Ktransforming...✓ 5910 modules transformed.
+rendering chunks...
+computing gzip size...
+../internal/httpapi/dashboard/index.html                                                       2.42 kB │ gzip:   0.86 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-vietnamese-400-normal-fK1oJ5dG.woff         6.39 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-vietnamese-700-normal-BV5B8Are.woff         6.42 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-vietnamese-600-normal-DgdngZtN.woff         6.58 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-vietnamese-500-normal-BEb3_waV.woff         6.58 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-vietnamese-400-normal-DG4YqDda.woff2        8.20 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-vietnamese-700-normal-CkEo6LDy.woff2        8.22 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-vietnamese-500-normal-e4dixQRQ.woff2        8.41 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-vietnamese-600-normal-DpPYBSTl.woff2        8.46 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-greek-700-normal-CkZN0sRy.woff              8.74 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-greek-400-normal-D9ESIMu3.woff              8.76 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-greek-500-normal-CuWXN6rf.woff              9.14 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-greek-600-normal-D-CqTdkO.woff              9.22 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-greek-700-normal-wyJ6jzdA.woff2             9.92 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-greek-400-normal-_efipK4i.woff2             9.94 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-cyrillic-ext-700-normal-DCQwxkRk.woff      10.16 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-cyrillic-ext-400-normal-Dsrv2Tcn.woff      10.28 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-greek-600-normal-DzTrcv_p.woff2            10.36 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-greek-500-normal-JMMifIXV.woff2            10.37 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-cyrillic-ext-500-normal-DB5PtV2g.woff      10.59 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-cyrillic-ext-600-normal-Bz0x94Yp.woff      10.61 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-cyrillic-ext-700-normal-BmRLXWpJ.woff2     12.05 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-cyrillic-ext-400-normal-g30qAdWV.woff2     12.14 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-cyrillic-ext-600-normal-DUMzJB7m.woff2     12.30 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-cyrillic-ext-500-normal-Cs5J6C77.woff2     12.30 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-cyrillic-700-normal-RFb1v-CK.woff          13.32 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-cyrillic-400-normal-BTotfTJu.woff          13.51 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-cyrillic-500-normal-ByOcLdNv.woff          13.85 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-cyrillic-600-normal-BGq0mW3O.woff          13.88 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-latin-ext-400-normal-RBey6euL.woff         14.36 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-latin-ext-700-normal-DZH6Xh-4.woff         14.42 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-cyrillic-700-normal-D_uavGvn.woff2         14.57 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-latin-ext-500-normal-D0aIdm-b.woff         14.73 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-latin-ext-600-normal-DIrixKbi.woff         14.77 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-cyrillic-400-normal-DZqxrq2p.woff2         14.80 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-cyrillic-500-normal-CocWQlwt.woff2         15.00 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-cyrillic-600-normal-71GNu3SW.woff2         15.04 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-latin-ext-400-normal-C5H60-Va.woff2        15.98 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-latin-ext-700-normal-aMgXseD4.woff2        16.18 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-latin-ext-600-normal-DOrvGEcy.woff2        16.44 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-latin-ext-500-normal-DakdToA3.woff2        16.45 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-latin-400-normal-CYLoc0-x.woff             22.10 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-latin-700-normal-Bth3BMcD.woff             22.28 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-latin-400-normal-CDDApCn2.woff2            22.58 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-latin-700-normal-Bxkt5Cjx.woff2            22.83 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-latin-600-normal-Cu4Hd6ag.woff             23.87 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-latin-500-normal-BgVn5rGT.woff             23.91 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-latin-500-normal-6ng42L7E.woff2            24.18 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-latin-600-normal-CuJfVYMP.woff2            24.25 kB
+../internal/httpapi/dashboard/assets/index-Bt9TQmmI.css                                       70.14 kB │ gzip:  12.71 kB
+../internal/httpapi/dashboard/assets/clone-BUfi2Pl4.js                                         0.09 kB │ gzip:   0.10 kB
+../internal/httpapi/dashboard/assets/array-BifhSqXX.js                                         0.10 kB │ gzip:   0.11 kB
+../internal/httpapi/dashboard/assets/channel-dJZX9sTl.js                                       0.11 kB │ gzip:   0.12 kB
+../internal/httpapi/dashboard/assets/pie-7BOR55EZ-DjyPtjYF.js                                  0.12 kB │ gzip:   0.13 kB
+../internal/httpapi/dashboard/assets/info-NVLQJR56-03gO31tG.js                                 0.12 kB │ gzip:   0.13 kB
+../internal/httpapi/dashboard/assets/radar-NHE76QYJ-SZuSzqjF.js                                0.12 kB │ gzip:   0.13 kB
+../internal/httpapi/dashboard/assets/packet-BFZMPI3H-keyxY-jt.js                               0.12 kB │ gzip:   0.13 kB
+../internal/httpapi/dashboard/assets/treemap-KMMF4GRG-CoGFoTSJ.js                              0.12 kB │ gzip:   0.13 kB
+../internal/httpapi/dashboard/assets/gitGraph-F6HP7TQM-C6Jkrh0s.js                             0.12 kB │ gzip:   0.13 kB
+../internal/httpapi/dashboard/assets/architecture-U656AL7Q-CQq0X95u.js                         0.13 kB │ gzip:   0.13 kB
+../internal/httpapi/dashboard/assets/init-D6jRqBbL.js                                          0.14 kB │ gzip:   0.12 kB
+../internal/httpapi/dashboard/assets/chunk-QZHKN3VN-o04pXPxB.js                                0.18 kB │ gzip:   0.15 kB
+../internal/httpapi/dashboard/assets/chunk-4BX2VUAB-Brg8AIlA.js                                0.21 kB │ gzip:   0.15 kB
+../internal/httpapi/dashboard/assets/chunk-55IACEB6-BT2lAxK4.js                                0.22 kB │ gzip:   0.19 kB
+../internal/httpapi/dashboard/assets/chunk-CVBHYZKI-D4_XQyp2.js                                0.26 kB │ gzip:   0.17 kB
+../internal/httpapi/dashboard/assets/math-Bi_r_ZWc.js                                          0.31 kB │ gzip:   0.20 kB
+../internal/httpapi/dashboard/assets/chunk-FMBD7UC4-DXlQxyGJ.js                                0.34 kB │ gzip:   0.25 kB
+../internal/httpapi/dashboard/assets/chunk-QN33PNHL-BPM0p80r.js                                0.53 kB │ gzip:   0.38 kB
+../internal/httpapi/dashboard/assets/flatten-KMUfs_09.js                                       0.57 kB │ gzip:   0.34 kB
+../internal/httpapi/dashboard/assets/infoDiagram-WHAUD3N6-CoLPDwoX.js                          0.61 kB │ gzip:   0.39 kB
+../internal/httpapi/dashboard/assets/stateDiagram-v2-4FDKWEC3-CbpGHOZR.js                      0.62 kB │ gzip:   0.38 kB
+../internal/httpapi/dashboard/assets/classDiagram-2ON5EDUG-QJN1GLE0.js                         0.66 kB │ gzip:   0.40 kB
+../internal/httpapi/dashboard/assets/classDiagram-v2-WZHVMYZB-QJN1GLE0.js                      0.66 kB │ gzip:   0.40 kB
+../internal/httpapi/dashboard/assets/rolldown-runtime-BUR9erT_.js                              0.75 kB │ gzip:   0.44 kB
+../internal/httpapi/dashboard/assets/line-Y_p8XNRY.js                                          0.94 kB │ gzip:   0.47 kB
+../internal/httpapi/dashboard/assets/ordinal-hYBb2elL.js                                       1.17 kB │ gzip:   0.56 kB
+../internal/httpapi/dashboard/assets/chunk-TZMSLE5B-CB6b2nsE.js                                1.48 kB │ gzip:   0.67 kB
+../internal/httpapi/dashboard/assets/chunk-ATLVNIR6-CNy3VDGU.js                                1.83 kB │ gzip:   0.89 kB
+../internal/httpapi/dashboard/assets/dist-lGJOKRcB.js                                          1.87 kB │ gzip:   0.83 kB
+../internal/httpapi/dashboard/assets/chunk-HN2XXSSU-CQ70shJB.js                                1.88 kB │ gzip:   0.71 kB
+../internal/httpapi/dashboard/assets/path-BWPyau1x.js                                          2.31 kB │ gzip:   0.99 kB
+../internal/httpapi/dashboard/assets/arc-Bi22H63W.js                                           3.47 kB │ gzip:   1.46 kB
+../internal/httpapi/dashboard/assets/diagram-S2PKOQOG-BuG_-pvo.js                              4.23 kB │ gzip:   1.82 kB
+../internal/httpapi/dashboard/assets/defaultLocale-C8Fc0cco.js                                 4.64 kB │ gzip:   2.12 kB
+../internal/httpapi/dashboard/assets/pieDiagram-ADFJNKIX-CoF-o31A.js                           5.10 kB │ gzip:   2.21 kB
+../internal/httpapi/dashboard/assets/linear-ClMpZjRT.js                                        5.52 kB │ gzip:   2.25 kB
+../internal/httpapi/dashboard/assets/diagram-QEK2KX5R-Cdf8wC65.js                              5.76 kB │ gzip:   2.37 kB
+../internal/httpapi/dashboard/assets/identity-Co3Kha3t.js                                      7.51 kB │ gzip:   2.81 kB
+../internal/httpapi/dashboard/assets/mermaid-parser.core-DWKWlFga.js                           7.60 kB │ gzip:   2.34 kB
+../internal/httpapi/dashboard/assets/reduce-C7tWu4KQ.js                                        8.58 kB │ gzip:   3.57 kB
+../internal/httpapi/dashboard/assets/graphlib-DL9kvvJv.js                                      9.36 kB │ gzip:   3.18 kB
+../internal/httpapi/dashboard/assets/stateDiagram-FKZM4ZOC-BBdaToTJ.js                        10.44 kB │ gzip:   3.65 kB
+../internal/httpapi/dashboard/assets/dagre-6UL2VRFP-jhTFzzHW.js                               11.08 kB │ gzip:   4.15 kB
+../internal/httpapi/dashboard/assets/diagram-PSM6KHXK-oDZCiJZ-.js                             15.48 kB │ gzip:   5.38 kB
+../internal/httpapi/dashboard/assets/kanban-definition-3W4ZIXB7-AeroY2KS.js                   20.07 kB │ gzip:   7.06 kB
+../internal/httpapi/dashboard/assets/mindmap-definition-VGOIOE7T-B829eYOe.js                  21.10 kB │ gzip:   7.38 kB
+../internal/httpapi/dashboard/assets/sankeyDiagram-TZEHDZUN-Did5m8hO.js                       21.69 kB │ gzip:   7.81 kB
+../internal/httpapi/dashboard/assets/journeyDiagram-XKPGCS4Q-DJFUXHMq.js                      23.13 kB │ gzip:   8.14 kB
+../internal/httpapi/dashboard/assets/timeline-definition-IT6M3QCI-BuwpRhpH.js                 23.20 kB │ gzip:   8.03 kB
+../internal/httpapi/dashboard/assets/gitGraphDiagram-NY62KEGX-BphkOxS0.js                     23.65 kB │ gzip:   7.20 kB
+../internal/httpapi/dashboard/assets/erDiagram-Q2GNP2WA-DBQumYa9.js                           25.19 kB │ gzip:   8.81 kB
+../internal/httpapi/dashboard/assets/chunk-S3R3BYOJ-bSHSQdmK.js                               28.19 kB │ gzip:   8.14 kB
+../internal/httpapi/dashboard/assets/requirementDiagram-UZGBJVZJ-pz1oW-Mu.js                  30.01 kB │ gzip:   9.42 kB
+../internal/httpapi/dashboard/assets/dagre-SCPfte1J.js                                        30.42 kB │ gzip:  10.93 kB
+../internal/httpapi/dashboard/assets/quadrantDiagram-AYHSOK5B-BANGYPjG.js                     33.34 kB │ gzip:   9.70 kB
+../internal/httpapi/dashboard/assets/chunk-DI55MBZ5-lQYb_bd3.js                               35.94 kB │ gzip:  11.60 kB
+../internal/httpapi/dashboard/assets/xychartDiagram-PRI3JC2R-WWXR2asy.js                      39.85 kB │ gzip:  11.12 kB
+../internal/httpapi/dashboard/assets/chunk-B4BG7PRW-u7V5iQZ6.js                               44.97 kB │ gzip:  14.72 kB
+../internal/httpapi/dashboard/assets/src-D8lb_dTm.js                                          45.83 kB │ gzip:  16.06 kB
+../internal/httpapi/dashboard/assets/chunk-JA3XYJ7Z-Ctdajxzi.js                               51.83 kB │ gzip:  16.90 kB
+../internal/httpapi/dashboard/assets/flowDiagram-NV44I4VS-Bs2kRkXG.js                         60.08 kB │ gzip:  19.50 kB
+../internal/httpapi/dashboard/assets/ganttDiagram-JELNMOA3-BlzaIZft.js                        68.00 kB │ gzip:  22.37 kB
+../internal/httpapi/dashboard/assets/c4Diagram-YG6GDRKO-Oano0D07.js                           69.36 kB │ gzip:  19.38 kB
+../internal/httpapi/dashboard/assets/blockDiagram-VD42YOAC-Dee_8I6R.js                        70.79 kB │ gzip:  19.94 kB
+../internal/httpapi/dashboard/assets/cose-bilkent-S5V4N54A-UA-OYhXZ.js                        81.40 kB │ gzip:  21.57 kB
+../internal/httpapi/dashboard/assets/sequenceDiagram-WL72ISMW-BWKeGuGa.js                     96.70 kB │ gzip:  26.39 kB
+../internal/httpapi/dashboard/assets/chunk-JZLCHNYA-ONGaW-Zt.js                              120.24 kB │ gzip:  30.82 kB
+../internal/httpapi/dashboard/assets/chunk-ABZYJK2D-Cknu6i9v.js                              131.14 kB │ gzip:  29.87 kB
+../internal/httpapi/dashboard/assets/architectureDiagram-VXUJARFQ-ut8OCvRN.js                146.05 kB │ gzip:  40.14 kB
+../internal/httpapi/dashboard/assets/katex-B7rAX3Vi.js                                       258.87 kB │ gzip:  77.46 kB
+../internal/httpapi/dashboard/assets/chunk-FPAJGGOC-5z23a9TW.js                              360.98 kB │ gzip:  87.50 kB
+../internal/httpapi/dashboard/assets/cytoscape.esm-CQFVGiJu.js                               435.23 kB │ gzip: 137.86 kB
+../internal/httpapi/dashboard/assets/index-D70KwB3s.js                                     1,130.78 kB │ gzip: 321.60 kB
+
+✓ built in 627ms
+[plugin builtin:vite-reporter] 
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rolldownOptions.output.codeSplitting to improve chunking: https://rolldown.rs/reference/OutputOptions.codeSplitting
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+go build -ldflags "-X github.com/kidus-tiliksew/conveyor/internal/releaseinfo.Version=v0.30.0-25-g369c4dbf-dirty" -o bin/conveyor ./cmd/conveyor
+go build -ldflags "-X github.com/kidus-tiliksew/conveyor/internal/releaseinfo.Version=v0.30.0-25-g369c4dbf-dirty" -o bin/conveyord ./cmd/conveyord
+env -u CONVEYOR_ADDR -u CONVEYOR_API_TOKEN -u CONVEYOR_CLIENT_TOKEN -u CONVEYOR_CURRENT_ATTEMPT_ID -u CONVEYOR_PREVIOUS_ATTEMPT_ID -u CONVEYOR_PREVIOUS_ATTEMPT_REASON -u CONVEYOR_PREDECESSOR -u CONVEYOR_PREVIOUS_WORK_ORDER_ID -u CONVEYOR_SESSION_ID -u CONVEYOR_TASK_BASE_BRANCH -u CONVEYOR_TASK_BRANCH -u CONVEYOR_TASK_ID -u CONVEYOR_TASK_REPO -u CONVEYOR_TASK_REPO_URL -u CONVEYOR_WORKSPACE -u CONVEYOR_WORKTREE_ROOT -u CONVEYOR_WORK_ORDER_ID -u CONVEYOR_WRITER_GENERATION -u CONVEYOR_WRITER_PATH go vet ./...
+env -u CONVEYOR_ADDR -u CONVEYOR_API_TOKEN -u CONVEYOR_CLIENT_TOKEN -u CONVEYOR_CURRENT_ATTEMPT_ID -u CONVEYOR_PREVIOUS_ATTEMPT_ID -u CONVEYOR_PREVIOUS_ATTEMPT_REASON -u CONVEYOR_PREDECESSOR -u CONVEYOR_PREVIOUS_WORK_ORDER_ID -u CONVEYOR_SESSION_ID -u CONVEYOR_TASK_BASE_BRANCH -u CONVEYOR_TASK_BRANCH -u CONVEYOR_TASK_ID -u CONVEYOR_TASK_REPO -u CONVEYOR_TASK_REPO_URL -u CONVEYOR_WORKSPACE -u CONVEYOR_WORKTREE_ROOT -u CONVEYOR_WORK_ORDER_ID -u CONVEYOR_WRITER_GENERATION -u CONVEYOR_WRITER_PATH python3 scripts/validate_compose_isolation.py
+compose isolation check passed
+git diff --exit-code -- internal/httpapi/dashboard
+env -u CONVEYOR_ADDR -u CONVEYOR_API_TOKEN -u CONVEYOR_CLIENT_TOKEN -u CONVEYOR_CURRENT_ATTEMPT_ID -u CONVEYOR_PREVIOUS_ATTEMPT_ID -u CONVEYOR_PREVIOUS_ATTEMPT_REASON -u CONVEYOR_PREDECESSOR -u CONVEYOR_PREVIOUS_WORK_ORDER_ID -u CONVEYOR_SESSION_ID -u CONVEYOR_TASK_BASE_BRANCH -u CONVEYOR_TASK_BRANCH -u CONVEYOR_TASK_ID -u CONVEYOR_TASK_REPO -u CONVEYOR_TASK_REPO_URL -u CONVEYOR_WORKSPACE -u CONVEYOR_WORKTREE_ROOT -u CONVEYOR_WORK_ORDER_ID -u CONVEYOR_WRITER_GENERATION -u CONVEYOR_WRITER_PATH sh scripts/test-install.sh
+installer test fixture: /Users/kidusteshome/.cache/conveyor/260929-b66de5/tmp/conveyor-release-test.g8QqJO
+Installed Conveyor v9.8.7-test to /Users/kidusteshome/.cache/conveyor/260929-b66de5/tmp/conveyor-release-test.g8QqJO/latest-bin
+Next: conveyor init
+Ensure /Users/kidusteshome/.cache/conveyor/260929-b66de5/tmp/conveyor-release-test.g8QqJO/latest-bin is on PATH.
+Installed Conveyor v9.8.7-test to /Users/kidusteshome/.cache/conveyor/260929-b66de5/tmp/conveyor-release-test.g8QqJO/pinned-bin
+Next: conveyor init
+Ensure /Users/kidusteshome/.cache/conveyor/260929-b66de5/tmp/conveyor-release-test.g8QqJO/pinned-bin is on PATH.
+conveyor install: checksum manifest does not contain conveyor_v9.8.7-test_darwin_arm64.tar.gz
+conveyor install: checksum verification failed for conveyor_v9.8.7-test_darwin_arm64.tar.gz; nothing was installed
+installer pipe safety, release pinning, checksum failure, and prerequisite checks passed
+PYTHONDONTWRITEBYTECODE=1 env -u CONVEYOR_ADDR -u CONVEYOR_API_TOKEN -u CONVEYOR_CLIENT_TOKEN -u CONVEYOR_CURRENT_ATTEMPT_ID -u CONVEYOR_PREVIOUS_ATTEMPT_ID -u CONVEYOR_PREVIOUS_ATTEMPT_REASON -u CONVEYOR_PREDECESSOR -u CONVEYOR_PREVIOUS_WORK_ORDER_ID -u CONVEYOR_SESSION_ID -u CONVEYOR_TASK_BASE_BRANCH -u CONVEYOR_TASK_BRANCH -u CONVEYOR_TASK_ID -u CONVEYOR_TASK_REPO -u CONVEYOR_TASK_REPO_URL -u CONVEYOR_WORKSPACE -u CONVEYOR_WORKTREE_ROOT -u CONVEYOR_WORK_ORDER_ID -u CONVEYOR_WRITER_GENERATION -u CONVEYOR_WRITER_PATH python3 -m unittest discover -s scripts -p 'test_validation_evidence.py'
+...........s....................
+----------------------------------------------------------------------
+Ran 32 tests in 45.735s
+
+OK (skipped=1)
+PYTHONDONTWRITEBYTECODE=1 env -u CONVEYOR_ADDR -u CONVEYOR_API_TOKEN -u CONVEYOR_CLIENT_TOKEN -u CONVEYOR_CURRENT_ATTEMPT_ID -u CONVEYOR_PREVIOUS_ATTEMPT_ID -u CONVEYOR_PREVIOUS_ATTEMPT_REASON -u CONVEYOR_PREDECESSOR -u CONVEYOR_PREVIOUS_WORK_ORDER_ID -u CONVEYOR_SESSION_ID -u CONVEYOR_TASK_BASE_BRANCH -u CONVEYOR_TASK_BRANCH -u CONVEYOR_TASK_ID -u CONVEYOR_TASK_REPO -u CONVEYOR_TASK_REPO_URL -u CONVEYOR_WORKSPACE -u CONVEYOR_WORKTREE_ROOT -u CONVEYOR_WORK_ORDER_ID -u CONVEYOR_WRITER_GENERATION -u CONVEYOR_WRITER_PATH python3 -m unittest discover -s scripts -p 'test_validation_fixtures.py'
+postgres before-snapshot failed for 127.0.0.1:5432 (client=repository-go-driver tool=go-run timeout=1s): postgres before-snapshot snapshot failed for 127.0.0.1:5432 (client=repository-go-driver tool=go-run timeout=1s): connection refused
+.................
+----------------------------------------------------------------------
+Ran 17 tests in 0.019s
+
+OK
+env -u CONVEYOR_ADDR -u CONVEYOR_API_TOKEN -u CONVEYOR_CLIENT_TOKEN -u CONVEYOR_CURRENT_ATTEMPT_ID -u CONVEYOR_PREVIOUS_ATTEMPT_ID -u CONVEYOR_PREVIOUS_ATTEMPT_REASON -u CONVEYOR_PREDECESSOR -u CONVEYOR_PREVIOUS_WORK_ORDER_ID -u CONVEYOR_SESSION_ID -u CONVEYOR_TASK_BASE_BRANCH -u CONVEYOR_TASK_BRANCH -u CONVEYOR_TASK_ID -u CONVEYOR_TASK_REPO -u CONVEYOR_TASK_REPO_URL -u CONVEYOR_WORKSPACE -u CONVEYOR_WORKTREE_ROOT -u CONVEYOR_WORK_ORDER_ID -u CONVEYOR_WRITER_GENERATION -u CONVEYOR_WRITER_PATH go test ./scripts/validation-fixture-sql
+ok  	github.com/kidus-tiliksew/conveyor/scripts/validation-fixture-sql	0.892s
+cd web && npx playwright install  chromium
+Downloading Chrome for Testing 149.0.7827.55 (playwright chromium v1228) from https://cdn.playwright.dev/builds/cft/149.0.7827.55/mac-arm64/chrome-mac-arm64.zip
+|                                                                                |   0% of 171 MiB
+|■■■■■■■■                                                                        |  10% of 171 MiB
+|■■■■■■■■■■■■■■■■                                                                |  20% of 171 MiB
+|■■■■■■■■■■■■■■■■■■■■■■■■                                                        |  30% of 171 MiB
+|■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■                                                |  40% of 171 MiB
+|■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■                                        |  50% of 171 MiB
+|■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■                                |  60% of 171 MiB
+|■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■                        |  70% of 171 MiB
+|■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■                |  80% of 171 MiB
+|■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■        |  90% of 171 MiB
+|■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■| 100% of 171 MiB
+Chrome for Testing 149.0.7827.55 (playwright chromium v1228) downloaded to /Users/kidusteshome/.cache/conveyor/260929-b66de5/playwright/chromium-1228
+Downloading FFmpeg (playwright ffmpeg v1011) from https://cdn.playwright.dev/dbazure/download/playwright/builds/ffmpeg/1011/ffmpeg-mac-arm64.zip
+|                                                                                |   1% of 1 MiB
+|■■■■■■■■                                                                        |  10% of 1 MiB
+|■■■■■■■■■■■■■■■■                                                                |  21% of 1 MiB
+|■■■■■■■■■■■■■■■■■■■■■■■■                                                        |  30% of 1 MiB
+|■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■                                                |  40% of 1 MiB
+|■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■                                        |  51% of 1 MiB
+|■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■                                |  60% of 1 MiB
+|■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■                        |  71% of 1 MiB
+|■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■                |  80% of 1 MiB
+|■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■        |  90% of 1 MiB
+|■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■| 100% of 1 MiB
+FFmpeg (playwright ffmpeg v1011) downloaded to /Users/kidusteshome/.cache/conveyor/260929-b66de5/playwright/ffmpeg-1011
+Downloading Chrome Headless Shell 149.0.7827.55 (playwright chromium-headless-shell v1228) from https://cdn.playwright.dev/builds/cft/149.0.7827.55/mac-arm64/chrome-headless-shell-mac-arm64.zip
+|                                                                                |   0% of 93.5 MiB
+|■■■■■■■■                                                                        |  10% of 93.5 MiB
+|■■■■■■■■■■■■■■■■                                                                |  20% of 93.5 MiB
+|■■■■■■■■■■■■■■■■■■■■■■■■                                                        |  30% of 93.5 MiB
+|■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■                                                |  40% of 93.5 MiB
+|■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■                                        |  50% of 93.5 MiB
+|■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■                                |  60% of 93.5 MiB
+|■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■                        |  70% of 93.5 MiB
+|■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■                |  80% of 93.5 MiB
+|■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■        |  90% of 93.5 MiB
+|■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■| 100% of 93.5 MiB
+Chrome Headless Shell 149.0.7827.55 (playwright chromium-headless-shell v1228) downloaded to /Users/kidusteshome/.cache/conveyor/260929-b66de5/playwright/chromium_headless_shell-1228
+CONVEYOR_TEST_DATABASE_URL= CONVEYOR_TEST_SINGLESTORE_URL= env -u CONVEYOR_ADDR -u CONVEYOR_API_TOKEN -u CONVEYOR_CLIENT_TOKEN -u CONVEYOR_CURRENT_ATTEMPT_ID -u CONVEYOR_PREVIOUS_ATTEMPT_ID -u CONVEYOR_PREVIOUS_ATTEMPT_REASON -u CONVEYOR_PREDECESSOR -u CONVEYOR_PREVIOUS_WORK_ORDER_ID -u CONVEYOR_SESSION_ID -u CONVEYOR_TASK_BASE_BRANCH -u CONVEYOR_TASK_BRANCH -u CONVEYOR_TASK_ID -u CONVEYOR_TASK_REPO -u CONVEYOR_TASK_REPO_URL -u CONVEYOR_WORKSPACE -u CONVEYOR_WORKTREE_ROOT -u CONVEYOR_WORK_ORDER_ID -u CONVEYOR_WRITER_GENERATION -u CONVEYOR_WRITER_PATH go test ./...
+Error: credential verification failed: 401 Unauthorized
+Usage:
+  auth login [flags]
+
+Flags:
+  -h, --help   help for login
+
+Error: auth login requires an interactive terminal for hidden token input; pipe is not accepted
+Usage:
+  auth login [flags]
+
+Flags:
+  -h, --help   help for login
+
+Logged out of http://127.0.0.1:62148
+Logged out of http://127.0.0.1:1
+Usage:
+  auth status [flags]
+
+Flags:
+  -h, --help   help for status
+
+Set workspace engineering for https://factory.example.test
+Error: --reason and --request-id are required
+Usage:
+  link <task-id> <dependency-task-id> [flags]
+
+Flags:
+  -h, --help                help for link
+  -r, --reason string       operator reason
+      --request-id string   idempotency key
+
+--- FAIL: TestDetectLocalHarnessesOffersOnlyHealthyPresentTemplates (10.01s)
+    execution_setup_test.go:50: detected harnesses = []
+2026/09/29 17:45:29 [MacBook-Pro.local/5nQBsD5nFh-000001] "POST http://127.0.0.1:63218/mcp HTTP/1.1" from 127.0.0.1:63223 - 200 163B in 190.541µs
+2026/09/29 17:45:29 [MacBook-Pro.local/5nQBsD5nFh-000002] "POST http://127.0.0.1:63218/mcp HTTP/1.1" from 127.0.0.1:63223 - 202 0B in 15.458µs
+2026/09/29 17:45:29 [MacBook-Pro.local/5nQBsD5nFh-000003] "POST http://127.0.0.1:63218/mcp HTTP/1.1" from 127.0.0.1:63223 - 200 42171B in 721.083µs
+2026/09/29 17:45:29 deprecated LLM environment configuration: CONVEYOR_API_KEY is deprecated; falling back to it because CONVEYOR_LLM_API_KEY is empty
+Error: accepts 1 arg(s), received 0
+Usage:
+  kit validate <path> [flags]
+
+Flags:
+  -h, --help              help for validate
+      --pin stringArray   authoritative kind:document_id:version (repeat; kind is requirement or system_design)
+      --stage string      stage to evaluate (default "verify")
+
+skip work order order: local Git credential preflight failed for repository repo: exit status 128; set CONVEYOR_GIT_TOKEN, or configure the host's git credential for that host; work order left queued
+skip work order one: local Git credential preflight failed for repository repo: no access; set CONVEYOR_GIT_TOKEN, or configure the host's git credential for that host; work order left queued
+skip work order two: local Git credential preflight failed for repository repo: no access; set CONVEYOR_GIT_TOKEN, or configure the host's git credential for that host; work order left queued
+skip work order three: local Git credential preflight failed for repository repo: no access; set CONVEYOR_GIT_TOKEN, or configure the host's git credential for that host; work order left queued
+worker child: 409 Conflict: another claimant won
+worker worktree cleanup task review: check recorded completion: 404 Not Found: 404 page not found
+worker worktree cleanup task spec: check recorded completion: 404 Not Found: 404 page not found
+/Users/kidusteshome/.cache/conveyor/260929-b66de5/tmp/TestCheckoutCmdSkipsAttachForWorkerAssignmentclean1222997195/001/.conveyor/worktrees/conveyor-task-env-task
+/Users/kidusteshome/.cache/conveyor/260929-b66de5/tmp/TestCheckoutCmdSkipsAttachForWorkerAssignmentpolluted1198576844/001/.conveyor/worktrees/conveyor-task-env-task
+cursor	created	/Users/kidusteshome/.cache/conveyor/260929-b66de5/tmp/TestMCPInstallSelectedCursorNarrowsTargetAndPreservesOtherServers3195680389/001/.cursor/mcp.json
+Registration: factory-example-983b7fb4a348-conveyor
+Endpoint: https://factory.example/mcp
+export CONVEYOR_MCP_TOKEN_983B7FB4A3480B47F5A8F942BA52B475D4389C88D4E25D3DD320630CB23F6134=$('/Users/kidusteshome/.cache/conveyor/260929-b66de5/go-tmp/go-build2910008751/b001/conveyor.test' auth token --server 'https://factory.example' --credentials-file '/Users/kidusteshome/.cache/conveyor/260929-b66de5/tmp/TestMCPInstallSelectedCursorNarrowsTargetAndPreservesOtherServers3195680389/002/conveyor/credentials.json')
+Credential source: stored credential via server-specific environment variable CONVEYOR_MCP_TOKEN_983B7FB4A3480B47F5A8F942BA52B475D4389C88D4E25D3DD320630CB23F6134
+Parser: not run (client parser unavailable for this adapter)
+Restart: restart the client to load this registration
+Native initialize/tools-list: not run; config acceptance is not a connection check
+codex	created	/Users/kidusteshome/.cache/conveyor/260929-b66de5/tmp/TestMCPInstallFixtureIsolatesAmbientServerSelection3048639528/001/.codex/config.toml
+Registration: factory-example-983b7fb4a348-conveyor
+Endpoint: https://factory.example/mcp
+Credential source: stored credential via native header helper (requires client support)
+Parser: accepted by codex mcp get (not a native connection check)
+Restart: restart the client to load this registration
+Native initialize/tools-list: not run; config acceptance is not a connection check
+PASS
+PASS
+PASS
+PASS
+PASS
+PASS
+PASS
+PASS
+PASS
+PASS
+PASS
+PASS
+PASS
+PASS
+PASS
+task task-1 now freezes setup ; affects future work only (none)
+cursor	created	/Users/kidusteshome/.cache/conveyor/260929-b66de5/tmp/TestSkillsInstallDetectsEveryToolAndSupportsNarrowing1141203665/002/.cursor/skills/conveyor-file-tasks/SKILL.md
+cursor	created	/Users/kidusteshome/.cache/conveyor/260929-b66de5/tmp/TestSkillsInstallDetectsEveryToolAndSupportsNarrowing1141203665/002/.cursor/skills/conveyor-file-tasks/conveyor-task-filing.md
+cursor	created	/Users/kidusteshome/.cache/conveyor/260929-b66de5/tmp/TestSkillsInstallDetectsEveryToolAndSupportsNarrowing1141203665/002/.cursor/skills/conveyor-kit-verify/SKILL.md
+cursor	created	/Users/kidusteshome/.cache/conveyor/260929-b66de5/tmp/TestSkillsInstallDetectsEveryToolAndSupportsNarrowing1141203665/002/.cursor/skills/conveyor-kit-verify/conveyor-kit-verify.md
+cursor	created	/Users/kidusteshome/.cache/conveyor/260929-b66de5/tmp/TestSkillsInstallDetectsEveryToolAndSupportsNarrowing1141203665/002/.cursor/skills/conveyor-kit/SKILL.md
+cursor	created	/Users/kidusteshome/.cache/conveyor/260929-b66de5/tmp/TestSkillsInstallDetectsEveryToolAndSupportsNarrowing1141203665/002/.cursor/skills/conveyor-kit/conveyor-kit.md
+cursor	created	/Users/kidusteshome/.cache/conveyor/260929-b66de5/tmp/TestSkillsInstallDetectsEveryToolAndSupportsNarrowing1141203665/002/.cursor/skills/conveyor-plan/SKILL.md
+cursor	created	/Users/kidusteshome/.cache/conveyor/260929-b66de5/tmp/TestSkillsInstallDetectsEveryToolAndSupportsNarrowing1141203665/002/.cursor/skills/conveyor-plan/conveyor-planning.md
+cursor	created	/Users/kidusteshome/.cache/conveyor/260929-b66de5/tmp/TestSkillsInstallDetectsEveryToolAndSupportsNarrowing1141203665/002/.cursor/skills/conveyor-testing-doc/SKILL.md
+cursor	created	/Users/kidusteshome/.cache/conveyor/260929-b66de5/tmp/TestSkillsInstallDetectsEveryToolAndSupportsNarrowing1141203665/002/.cursor/skills/conveyor-testing-doc/conveyor-testing-doc.md
+cursor	created	/Users/kidusteshome/.cache/conveyor/260929-b66de5/tmp/TestSkillsInstallDetectsEveryToolAndSupportsNarrowing1141203665/002/.cursor/skills/conveyor-work/SKILL.md
+cursor	created	/Users/kidusteshome/.cache/conveyor/260929-b66de5/tmp/TestSkillsInstallDetectsEveryToolAndSupportsNarrowing1141203665/002/.cursor/skills/conveyor-work/conveyor-work.md
+opencode	created	/Users/kidusteshome/.cache/conveyor/260929-b66de5/tmp/TestSkillsInstallOpenCodeOnlyListAndProjectScopes3410798194/002/.opencode/skills/conveyor-file-tasks/SKILL.md
+opencode	created	/Users/kidusteshome/.cache/conveyor/260929-b66de5/tmp/TestSkillsInstallOpenCodeOnlyListAndProjectScopes3410798194/002/.opencode/skills/conveyor-file-tasks/conveyor-task-filing.md
+opencode	created	/Users/kidusteshome/.cache/conveyor/260929-b66de5/tmp/TestSkillsInstallOpenCodeOnlyListAndProjectScopes3410798194/002/.opencode/skills/conveyor-kit-verify/SKILL.md
+opencode	created	/Users/kidusteshome/.cache/conveyor/260929-b66de5/tmp/TestSkillsInstallOpenCodeOnlyListAndProjectScopes3410798194/002/.opencode/skills/conveyor-kit-verify/conveyor-kit-verify.md
+opencode	created	/Users/kidusteshome/.cache/conveyor/260929-b66de5/tmp/TestSkillsInstallOpenCodeOnlyListAndProjectScopes3410798194/002/.opencode/skills/conveyor-kit/SKILL.md
+opencode	created	/Users/kidusteshome/.cache/conveyor/260929-b66de5/tmp/TestSkillsInstallOpenCodeOnlyListAndProjectScopes3410798194/002/.opencode/skills/conveyor-kit/conveyor-kit.md
+opencode	created	/Users/kidusteshome/.cache/conveyor/260929-b66de5/tmp/TestSkillsInstallOpenCodeOnlyListAndProjectScopes3410798194/002/.opencode/skills/conveyor-plan/SKILL.md
+opencode	created	/Users/kidusteshome/.cache/conveyor/260929-b66de5/tmp/TestSkillsInstallOpenCodeOnlyListAndProjectScopes3410798194/002/.opencode/skills/conveyor-plan/conveyor-planning.md
+opencode	created	/Users/kidusteshome/.cache/conveyor/260929-b66de5/tmp/TestSkillsInstallOpenCodeOnlyListAndProjectScopes3410798194/002/.opencode/skills/conveyor-testing-doc/SKILL.md
+opencode	created	/Users/kidusteshome/.cache/conveyor/260929-b66de5/tmp/TestSkillsInstallOpenCodeOnlyListAndProjectScopes3410798194/002/.opencode/skills/conveyor-testing-doc/conveyor-testing-doc.md
+opencode	created	/Users/kidusteshome/.cache/conveyor/260929-b66de5/tmp/TestSkillsInstallOpenCodeOnlyListAndProjectScopes3410798194/002/.opencode/skills/conveyor-work/SKILL.md
+opencode	created	/Users/kidusteshome/.cache/conveyor/260929-b66de5/tmp/TestSkillsInstallOpenCodeOnlyListAndProjectScopes3410798194/002/.opencode/skills/conveyor-work/conveyor-work.md
+Error: no supported agent tooling detected on PATH (looked for claude, codex, cursor, and opencode)
+Usage:
+  install [flags]
+
+Flags:
+      --adopt         adopt unmarked skill files in a selected native destination
+      --force         allow replacing managed skills installed by a newer Conveyor release
+  -h, --help          help for install
+      --list          list embedded files and their installed state without writing
+      --project       install under each tool's project skills directory instead of the user-global directory
+      --tool string   install only for one detected tool (claude, codex, cursor, or opencode)
+
+Error: unsupported tool "unknown"; supported tools: claude, codex, cursor, opencode
+Usage:
+  install [flags]
+
+Flags:
+      --adopt         adopt unmarked skill files in a selected native destination
+      --force         allow replacing managed skills installed by a newer Conveyor release
+  -h, --help          help for install
+      --list          list embedded files and their installed state without writing
+      --project       install under each tool's project skills directory instead of the user-global directory
+      --tool string   install only for one detected tool (claude, codex, cursor, or opencode)
+
+Error: selected tool "codex" is not available on PATH
+Usage:
+  install [flags]
+
+Flags:
+      --adopt         adopt unmarked skill files in a selected native destination
+      --force         allow replacing managed skills installed by a newer Conveyor release
+  -h, --help          help for install
+      --list          list embedded files and their installed state without writing
+      --project       install under each tool's project skills directory instead of the user-global directory
+      --tool string   install only for one detected tool (claude, codex, cursor, or opencode)
+
+Error: cannot issue sign-in link: no active account or pending invitation has that email
+Usage:
+  user issue-link <email> [flags]
+
+Flags:
+  -h, --help   help for issue-link
+
+Error: CONVEYOR_DATABASE_URL is required; set it to the deployment PostgreSQL or SingleStore database and retry
+Usage:
+  user issue-link <email> [flags]
+
+Flags:
+  -h, --help   help for issue-link
+
+worker reconnect: heartbeat worker failed transiently: 503 Service Unavailable: restarting; retrying
+worker reconnect: poll work orders failed transiently: 503 Service Unavailable: restarting; retrying
+worker reconnect: heartbeat worker failed transiently: 503 Service Unavailable: restarting; retrying
+PASS
+--- FAIL: TestWorkerHarnessHelper (0.00s)
+    worker_cmd_test.go:3329: fake review harness failed after verdict submission
+FAIL
+{"verdict":"approve","reason_code":"approved","summary":"printed but not submitted"}
+PASS
+PASS
+--- FAIL: TestWorkerHarnessHelper (0.00s)
+    worker_cmd_test.go:3322: fake review harness failed before verdict submission
+FAIL
+PASS
+--- FAIL: TestWorkerHarnessHelper (0.00s)
+    worker_cmd_test.go:3329: fake review harness failed after verdict submission
+FAIL
+{"verdict":"approve","reason_code":"approved","summary":"printed but not submitted"}
+PASS
+PASS
+--- FAIL: TestWorkerHarnessHelper (0.00s)
+    worker_cmd_test.go:3322: fake review harness failed before verdict submission
+FAIL
+PASS
+PASS
+FAIL
+FAIL	github.com/kidus-tiliksew/conveyor/cmd/conveyor	197.850s
+ok  	github.com/kidus-tiliksew/conveyor/cmd/conveyor/localgit	2.706s
+ok  	github.com/kidus-tiliksew/conveyor/cmd/conveyord	3.721s
+ok  	github.com/kidus-tiliksew/conveyor/internal/config	5.687s
+ok  	github.com/kidus-tiliksew/conveyor/internal/core	5.004s
+ok  	github.com/kidus-tiliksew/conveyor/internal/corpus	0.838s
+ok  	github.com/kidus-tiliksew/conveyor/internal/dispatch	12.316s
+ok  	github.com/kidus-tiliksew/conveyor/internal/envfile	7.381s
+ok  	github.com/kidus-tiliksew/conveyor/internal/eventlog	9.044s
+?   	github.com/kidus-tiliksew/conveyor/internal/eventlog/logtest	[no test files]
+ok  	github.com/kidus-tiliksew/conveyor/internal/eventlog/memlog	5.551s
+ok  	github.com/kidus-tiliksew/conveyor/internal/eventlog/pglog	8.238s
+ok  	github.com/kidus-tiliksew/conveyor/internal/eventlog/s2log	9.826s
+ok  	github.com/kidus-tiliksew/conveyor/internal/gitx	10.584s
+ok  	github.com/kidus-tiliksew/conveyor/internal/httpapi	18.425s
+ok  	github.com/kidus-tiliksew/conveyor/internal/inprocess	9.186s
+ok  	github.com/kidus-tiliksew/conveyor/internal/lineagecontext	8.263s
+ok  	github.com/kidus-tiliksew/conveyor/internal/monitor	9.504s
+ok  	github.com/kidus-tiliksew/conveyor/internal/pack	9.890s
+ok  	github.com/kidus-tiliksew/conveyor/internal/pipeline	8.942s
+ok  	github.com/kidus-tiliksew/conveyor/internal/planning	8.814s
+?   	github.com/kidus-tiliksew/conveyor/internal/queue	[no test files]
+ok  	github.com/kidus-tiliksew/conveyor/internal/queue/logqueue	9.201s
+ok  	github.com/kidus-tiliksew/conveyor/internal/redact	8.894s
+?   	github.com/kidus-tiliksew/conveyor/internal/releaseinfo	[no test files]
+?   	github.com/kidus-tiliksew/conveyor/internal/serviceunit	[no test files]
+ok  	github.com/kidus-tiliksew/conveyor/internal/store	11.185s
+ok  	github.com/kidus-tiliksew/conveyor/internal/store/backend	10.298s
+ok  	github.com/kidus-tiliksew/conveyor/internal/store/postgres	9.204s
+?   	github.com/kidus-tiliksew/conveyor/internal/store/postgres/db	[no test files]
+ok  	github.com/kidus-tiliksew/conveyor/internal/store/singlestore	9.284s
+ok  	github.com/kidus-tiliksew/conveyor/internal/store/storetest	10.083s
+ok  	github.com/kidus-tiliksew/conveyor/internal/taskops	10.985s
+?   	github.com/kidus-tiliksew/conveyor/internal/testimage	[no test files]
+?   	github.com/kidus-tiliksew/conveyor/internal/testsupport/vk10fixture	[no test files]
+ok  	github.com/kidus-tiliksew/conveyor/internal/trigger/github	11.821s
+ok  	github.com/kidus-tiliksew/conveyor/internal/verification	32.923s
+ok  	github.com/kidus-tiliksew/conveyor/internal/worker	11.019s
+ok  	github.com/kidus-tiliksew/conveyor/internal/workorder	11.245s
+?   	github.com/kidus-tiliksew/conveyor/pack	[no test files]
+ok  	github.com/kidus-tiliksew/conveyor/scripts/validation-fixture-sql	(cached)
+?   	github.com/kidus-tiliksew/conveyor/web/scripts	[no test files]
+FAIL
+make: *** [test] Error 1

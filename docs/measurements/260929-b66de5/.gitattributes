@@ -1,0 +1,2 @@
+# Preserve complete command output exactly, including tool-emitted whitespace.
+attempt-*/command.txt -text -whitespace

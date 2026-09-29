@@ -1,0 +1,13 @@
+{
+  "source": "get_work_order",
+  "workspace": "demo",
+  "work_order": "260929-b66de5-implement-2",
+  "observed_at": "2026-09-29T15:02:59.501302788Z",
+  "proposal": {
+    "document_id": "component-harness-execution",
+    "version": 11,
+    "proposal_event_id": 562766,
+    "origin_task_id": "260929-b66de5",
+    "confirmed": true
+  }
+}
