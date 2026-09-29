@@ -339,10 +339,21 @@ func TestInstallEmbeddedSkillsRefusesCollisionBeforeWriting(t *testing.T) {
 	}
 }
 
+// resolvedTempDir returns t.TempDir() with symlinks resolved. The installer
+// reports resolved targets, and macOS temp dirs live behind /var -> /private/var.
+func resolvedTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
 func TestInstallEmbeddedSkillsResolvesEditorSymlinkAndRejectsNestedSymlink(t *testing.T) {
 	t.Parallel()
 	base := t.TempDir()
-	managedRoot := t.TempDir()
+	managedRoot := resolvedTempDir(t)
 	if err := os.Symlink(managedRoot, filepath.Join(base, ".claude")); err != nil {
 		t.Skipf("symlink unavailable: %v", err)
 	}
@@ -789,7 +800,7 @@ func TestCodexLegacyArtifactIsReportOnlyForDefaultMultiToolInstall(t *testing.T)
 }
 
 func TestAdoptReplacesOnlyUnmarkedNativeSkillFiles(t *testing.T) {
-	base := t.TempDir()
+	base := resolvedTempDir(t)
 	destination := skillDestinations(base, []skillTool{supportedSkillTools[1]}, false)[0]
 	collision := filepath.Join(destination.root, "conveyor-plan", "SKILL.md")
 	if err := os.MkdirAll(filepath.Dir(collision), 0o755); err != nil {
