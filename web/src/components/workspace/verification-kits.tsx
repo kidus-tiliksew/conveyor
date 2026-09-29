@@ -111,6 +111,8 @@ export function VerificationKits({ workspace }: { workspace: string }) {
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
   })
+  // Tolerate a malformed body: an absent list renders as no repositories.
+  const repositories = Array.isArray(query.data?.repositories) ? query.data.repositories : []
   return (
     <Card>
       <CardHeader>
@@ -137,10 +139,10 @@ export function VerificationKits({ workspace }: { workspace: string }) {
             {query.error.message}
           </p>
         )}
-        {query.data?.repositories.length === 0 && (
+        {query.isSuccess && repositories.length === 0 && (
           <p className="text-sm text-muted">No repositories are configured for this workspace.</p>
         )}
-        {query.data?.repositories.map((repo) => (
+        {repositories.map((repo) => (
           <RepositorySection key={repo.repository} repo={repo} />
         ))}
       </CardContent>
