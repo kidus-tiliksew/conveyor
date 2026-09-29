@@ -124,19 +124,19 @@ func (s *Server) getWorkspaceVerificationKits(w http.ResponseWriter, r *http.Req
 			defer wg.Done()
 			slots <- struct{}{}
 			defer func() { <-slots }()
+			// Discovery and pin resolution share one repository budget.
 			ctx, cancel := context.WithTimeout(r.Context(), kitRegistryRepositoryLimit)
 			defer cancel()
-			result.Repositories[i] = s.readRepositoryKits(ctx, workspace, repo)
+			out := s.readRepositoryKits(ctx, workspace, repo)
+			// Pin status reads the corpus at request time, so a newly confirmed
+			// version shows without any cache invalidation.
+			for j := range out.Kits {
+				pins.apply(ctx, &out.Kits[j])
+			}
+			result.Repositories[i] = out
 		}(i, repo)
 	}
 	wg.Wait()
-	// Pin status reads the corpus at request time, after discovery, so a
-	// newly confirmed version shows without any cache invalidation.
-	for i := range result.Repositories {
-		for j := range result.Repositories[i].Kits {
-			pins.apply(r.Context(), &result.Repositories[i].Kits[j])
-		}
-	}
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, result)
 }
@@ -267,6 +267,7 @@ func nonNil[T any](v []T) []T {
 // request (AC-11.3).
 type kitPinResolver struct {
 	store        store.Store
+	mu           sync.Mutex
 	requirements map[string]kitDocumentVersions
 	designs      map[string]kitDocumentVersions
 }
@@ -284,15 +285,20 @@ func newKitPinResolver(st store.Store) *kitPinResolver {
 	return &kitPinResolver{store: st, requirements: map[string]kitDocumentVersions{}, designs: map[string]kitDocumentVersions{}}
 }
 
+// document is safe for the concurrent repository workers. Concurrent misses may
+// read the same document twice; the cached value is identical either way.
 func (p *kitPinResolver) document(ctx context.Context, kind, id string) kitDocumentVersions {
 	cache := p.requirements
 	if kind == verification.PinSystemDesign {
 		cache = p.designs
 	}
-	if d, ok := cache[id]; ok {
+	p.mu.Lock()
+	d, ok := cache[id]
+	p.mu.Unlock()
+	if ok {
 		return d
 	}
-	d := kitDocumentVersions{versions: map[int]string{}}
+	d = kitDocumentVersions{versions: map[int]string{}}
 	if p.store != nil {
 		switch kind {
 		case verification.PinRequirement:
@@ -315,7 +321,11 @@ func (p *kitPinResolver) document(ctx context.Context, kind, id string) kitDocum
 			}
 		}
 	}
-	cache[id] = d
+	if ctx.Err() == nil {
+		p.mu.Lock()
+		cache[id] = d
+		p.mu.Unlock()
+	}
 	return d
 }
 
