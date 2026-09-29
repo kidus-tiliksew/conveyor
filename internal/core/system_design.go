@@ -25,6 +25,8 @@ type SystemDesign struct {
 	CurrentVersion int       `json:"current_version,omitempty"`
 	Archived       bool      `json:"archived"`
 	ArchivedBy     string    `json:"archived_by,omitempty"`
+	ArchiveReason  string    `json:"archive_reason,omitempty"`
+	ArchiveNote    string    `json:"archive_note,omitempty"`
 	ArchivedAt     time.Time `json:"archived_at,omitempty"`
 	SupersededBy   []string  `json:"superseded_by,omitempty"`
 	Workspace      string    `json:"workspace"`

@@ -142,8 +142,12 @@ func (s *Store) setRequirementArchived(ctx context.Context, id, actor string, ar
 		var current *int
 		var archivedAt *time.Time
 		var storedSupersedingIDs []string
-		if err := tx.QueryRow(ctx, `SELECT current_version,archived_at,superseded_by FROM requirements WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspace(ctx), id).Scan(&current, &archivedAt, &storedSupersedingIDs); err != nil {
+		var archiveReason string
+		if err := tx.QueryRow(ctx, `SELECT current_version,archived_at,superseded_by,archive_reason FROM requirements WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspace(ctx), id).Scan(&current, &archivedAt, &storedSupersedingIDs, &archiveReason); err != nil {
 			return notFound(err, "requirement %s", id)
+		}
+		if !archived && archiveReason == core.ArchiveReasonOnlyProposalDismissed {
+			return &store.DocumentRestoreConflict{DocumentID: id}
 		}
 		if (archivedAt != nil) == archived {
 			return nil
@@ -161,7 +165,7 @@ func (s *Store) setRequirementArchived(ctx context.Context, id, actor string, ar
 			if _, err := tx.Exec(ctx, `UPDATE requirements SET archived_at=$3,archived_by=$4,superseded_by=$5,updated_at=$3 WHERE workspace_id=$1 AND id=$2`, workspace(ctx), id, now, actor, accepted); err != nil {
 				return err
 			}
-		} else if _, err := tx.Exec(ctx, `UPDATE requirements SET archived_at=NULL,archived_by='',superseded_by='{}',updated_at=$3 WHERE workspace_id=$1 AND id=$2`, workspace(ctx), id, now); err != nil {
+		} else if _, err := tx.Exec(ctx, `UPDATE requirements SET archived_at=NULL,archived_by='',archive_reason='',archive_note='',superseded_by='{}',updated_at=$3 WHERE workspace_id=$1 AND id=$2`, workspace(ctx), id, now); err != nil {
 			return err
 		}
 		version := 0
@@ -524,12 +528,17 @@ func dismissRequirementVersionTx(ctx context.Context, tx pgx.Tx, q *db.Queries, 
 		}
 		dismissed.DismissalNote = store.DocumentDismissalNote(ctx)
 		dismissed.Retired, dismissed.RetiredBy, dismissed.RetiredAt, dismissed.RetiredByVersion = true, actor.ID, now, 0
-		if requirement, err = getRequirementTx(ctx, tx, requirementID); err != nil {
+
+		if err = insertRequirementEvent(ctx, q, "requirement.version_dismissed", store.DocumentDismissalEventPayload(ctx, map[string]any{
+			"workspace_id": workspace(ctx), "requirement_id": requirementID, "version": version, "dismissed_by": actor.ID,
+		})); err != nil {
 			return err
 		}
-		return insertRequirementEvent(ctx, q, "requirement.version_dismissed", store.DocumentDismissalEventPayload(ctx, map[string]any{
-			"workspace_id": workspace(ctx), "requirement_id": requirementID, "version": version, "dismissed_by": actor.ID,
-		}))
+		if _, err = archiveDismissedDocumentTx(ctx, tx, q, "requirement", requirementID, now); err != nil {
+			return err
+		}
+		requirement, err = getRequirementTx(ctx, tx, requirementID)
+		return err
 	}()
 	return requirement, dismissed, err
 }
@@ -1003,7 +1012,7 @@ func (s *Store) ListPlanningSessionEvents(ctx context.Context, sessionID string)
 	return out, rows.Err()
 }
 
-const requirementSelect = `SELECT workspace_id,id,slug,title,current_version,statement_high_water_mark,archived_at,archived_by,superseded_by,created_at,updated_at FROM requirements`
+const requirementSelect = `SELECT workspace_id,id,slug,title,current_version,statement_high_water_mark,archived_at,archived_by,archive_reason,archive_note,superseded_by,created_at,updated_at FROM requirements`
 
 const requirementVersionSelect = `SELECT workspace_id,requirement_id,version,content,statements_json,origin,origin_session_id,origin_task_id,origin_drift_id,confirmed,confirmed_by,confirmed_at,retired,retired_by,retired_at,retired_by_version,created_at,derived_from,COALESCE(dismissal_note,'') FROM requirement_versions`
 
@@ -1018,7 +1027,7 @@ func scanRequirement(row pgx.Row, id string) (core.Requirement, error) {
 	var currentVersion *int32
 	var archivedAt *time.Time
 	if err := row.Scan(&requirement.Workspace, &requirement.ID, &requirement.Slug, &requirement.Title,
-		&currentVersion, &requirement.StatementHighWaterMark, &archivedAt, &requirement.ArchivedBy, &requirement.SupersededBy, &requirement.CreatedAt, &requirement.UpdatedAt); err != nil {
+		&currentVersion, &requirement.StatementHighWaterMark, &archivedAt, &requirement.ArchivedBy, &requirement.ArchiveReason, &requirement.ArchiveNote, &requirement.SupersededBy, &requirement.CreatedAt, &requirement.UpdatedAt); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return core.Requirement{}, fmt.Errorf("%w: requirement %s", store.ErrNotFound, id)
 		}
@@ -1039,7 +1048,16 @@ func getRequirementTx(ctx context.Context, tx pgx.Tx, id string) (core.Requireme
 		return core.Requirement{}, err
 	}
 	if exists {
-		return scanRequirement(tx.QueryRow(ctx, requirementSelect+` WHERE workspace_id=$1 AND id=$2`, workspace(ctx), id), id)
+		// Historical migration fixtures may predate the dismissal archive fields.
+		var reasonExists bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='requirements' AND column_name='archive_reason')`).Scan(&reasonExists); err != nil {
+			return core.Requirement{}, err
+		}
+		selection := requirementSelect
+		if !reasonExists {
+			selection = strings.Replace(selection, "archive_reason,archive_note", "'',''", 1)
+		}
+		return scanRequirement(tx.QueryRow(ctx, selection+` WHERE workspace_id=$1 AND id=$2`, workspace(ctx), id), id)
 	}
 	var requirement core.Requirement
 	var currentVersion *int32

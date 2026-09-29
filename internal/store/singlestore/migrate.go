@@ -133,6 +133,11 @@ func (s *Store) migrate(ctx context.Context) error {
 				return fmt.Errorf("SingleStore migration %s: %w", file.name, err)
 			}
 		}
+		if file.version == 16 {
+			if err := s.migrateDocumentDismissalArchival(ctx); err != nil {
+				return fmt.Errorf("SingleStore migration %s: %w", file.name, err)
+			}
+		}
 		if file.version == 4 {
 			if err := s.migrateDocumentDismissalNotes(ctx); err != nil {
 				return fmt.Errorf("SingleStore migration %s: %w", file.name, err)

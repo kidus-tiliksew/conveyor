@@ -4,7 +4,10 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 	"unicode/utf8"
+
+	"github.com/kidus-tiliksew/conveyor/internal/core"
 )
 
 type documentDismissalNoteKey struct{}
@@ -32,4 +35,21 @@ func DocumentDismissalEventPayload(ctx context.Context, payload map[string]any) 
 		payload["note"] = note
 	}
 	return payload
+}
+
+// DocumentRestoreConflict preserves the previously-confirmed-version boundary
+// of req-document-operating-surfaces AC-5.5.
+type DocumentRestoreConflict struct{ DocumentID string }
+
+func (e *DocumentRestoreConflict) Error() string {
+	return fmt.Sprintf("document %s has no confirmed version to restore to", e.DocumentID)
+}
+
+// DismissalArchiveEventPayload retains the dismissal note and distinguishes an
+// automatic archive from an operator archive (component-document-corpus).
+func DismissalArchiveEventPayload(ctx context.Context, workspace, idKey, id, actor string, at time.Time) map[string]any {
+	return DocumentDismissalEventPayload(ctx, map[string]any{
+		"workspace_id": workspace, idKey: id, "version": 0, "actor": actor, "at": at,
+		"superseded_by": []string{}, "reason": core.ArchiveReasonOnlyProposalDismissed,
+	})
 }

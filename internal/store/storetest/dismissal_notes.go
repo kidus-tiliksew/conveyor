@@ -137,13 +137,13 @@ func runDismissalNotesConformance(t *testing.T, factory RequirementFactory) {
 					}
 					events = func() ([]core.Event, error) { return st.ListSystemDesignEvents(ctx, id) }
 				}
-				if err := dismiss(noteCtx, 1); err != nil {
-					t.Fatal(err)
-				}
 				for n := 2; n <= 4; n++ {
 					if err := propose(n); err != nil {
 						t.Fatal(err)
 					}
+				}
+				if err := dismiss(noteCtx, 1); err != nil {
+					t.Fatal(err)
 				}
 				if err := confirm(noteCtx, 4); err != nil {
 					t.Fatal(err)

@@ -61,14 +61,14 @@ func TestOperatorNotesRefreshWithoutChangingPinnedAuthority(t *testing.T) {
 				if _, _, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: id, Title: id, Category: "Architecture"}, v); err != nil {
 					t.Fatal(err)
 				}
-				if _, _, err := st.DismissSystemDesignVersion(nctx, id, 1); err != nil {
-					t.Fatal(err)
-				}
 				v.DocumentID = id
 				v.Content = "Replacement\n" + v.Content
 				v.Origin = core.SystemDesignOriginOperator
 				v.OriginTaskID = ""
 				if _, err := st.ProposeSystemDesignVersion(ctx, v); err != nil {
+					t.Fatal(err)
+				}
+				if _, _, err := st.DismissSystemDesignVersion(nctx, id, 1); err != nil {
 					t.Fatal(err)
 				}
 				if _, _, err := st.ConfirmSystemDesignVersion(ctx, id, 2); err != nil {
