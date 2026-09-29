@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
 	"strings"
@@ -227,4 +228,68 @@ func (c *AppClient) DiscoverVerification(ctx context.Context, st AppStore, works
 		}
 	}
 	return d
+}
+
+// ResolveBranchHead reads the commit a branch currently names through the
+// workspace GitHub App, a DEC-41 forge read act (DEC-43). The workspace kit
+// registry reads manifests at that commit (feature-verification-kit-execution
+// VK-11); no local checkout participates. States are present, permission,
+// unknown_revision or transport.
+func (c *AppClient) ResolveBranchHead(ctx context.Context, st AppStore, workspace, slug, branch string) (string, string) {
+	parts := strings.Split(slug, "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" || strings.ContainsAny(slug, "?#%\\") {
+		return "", "transport"
+	}
+	segments := strings.Split(branch, "/")
+	for i, s := range segments {
+		if s == "" || s == "." || s == ".." || strings.ContainsAny(s, "?#%\\ ") {
+			return "", "unknown_revision"
+		}
+		segments[i] = url.PathEscape(s)
+	}
+	token, err := c.WorkspaceToken(ctx, st, workspace)
+	if err != nil {
+		if ErrorCategory(err) == ForgePermission {
+			return "", "permission"
+		}
+		return "", "transport"
+	}
+	if err = c.RequireRepository(ctx, workspace, token, slug); err != nil {
+		if ErrorCategory(err) == ForgePermission {
+			return "", "permission"
+		}
+		return "", "transport"
+	}
+	client, base := c.HTTP, c.BaseURL
+	if client == nil {
+		client = http.DefaultClient
+	}
+	if base == "" {
+		base = "https://api.github.com"
+	}
+	r := &restClient{http: client, baseURL: strings.TrimRight(base, "/"), token: token, identity: AppIdentity(workspace)}
+	raw, _, status, err := r.request(ctx, http.MethodGet, "/repos/"+slug+"/git/ref/heads/"+strings.Join(segments, "/"), "application/vnd.github+json", nil)
+	switch {
+	case err == nil:
+	case status == 401 || status == 403:
+		return "", "permission"
+	case status == 404 || status == 422:
+		return "", "unknown_revision"
+	default:
+		return "", "transport"
+	}
+	var ref struct {
+		Object struct {
+			SHA  string `json:"sha"`
+			Type string `json:"type"`
+		} `json:"object"`
+	}
+	if json.Unmarshal(raw, &ref) != nil || ref.Object.Type != "commit" {
+		return "", "transport"
+	}
+	sha, err := hex.DecodeString(ref.Object.SHA)
+	if err != nil || (len(sha) != 20 && len(sha) != 32) || strings.ToLower(ref.Object.SHA) != ref.Object.SHA {
+		return "", "transport"
+	}
+	return ref.Object.SHA, "present"
 }
