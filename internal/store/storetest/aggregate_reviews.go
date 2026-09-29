@@ -81,6 +81,7 @@ func runReviewRounds(t *testing.T, x Fixture) {
 
 func runReviewAcceptance(t *testing.T, x Fixture) {
 	t.Run("DoneCriteria", func(t *testing.T) { RunReviewDoneCriteriaAcceptance(t, x) })
+	t.Run("SubmittedImplementationContinuation", func(t *testing.T) { runSubmittedImplementationContinuationAcceptance(t, x) })
 	st, ctx := x.Backend, x.Context
 	task := newAggregateTask(t, x)
 	jobs, orders := reviewRound(task.ID, 1)
@@ -105,6 +106,84 @@ func runReviewAcceptance(t *testing.T, x Fixture) {
 	if count != 1 {
 		t.Fatalf("round completion events=%d", count)
 	}
+}
+
+// runSubmittedImplementationContinuationAcceptance proves review acceptance
+// clears continuation still carried by the submitted implement order and
+// appends exactly one work_order.updated event for it (req-260818-24dd3a
+// AC-1.3, AC-3.2).
+func runSubmittedImplementationContinuationAcceptance(t *testing.T, x Fixture) {
+	st, ctx := x.Backend, x.Context
+	for _, verdict := range []string{"approve", "changes_requested"} {
+		t.Run(verdict, func(t *testing.T) {
+			id := core.NewTaskID()
+			task := core.Task{ID: id, Workspace: x.Workspace, Repo: "conveyor", Title: id, BaseBranch: "main", Branch: "conveyor/task-" + id, State: core.TaskRunning, NextStage: core.StageReview, PolicyVersion: 1, CreatedAt: time.Now().UTC()}
+			requireOK(t, st.CreateTask(ctx, task))
+			job := core.Job{ID: id + "-implement-1", TaskID: id, Stage: core.StageImplement, State: core.JobPending}
+			requireOK(t, st.CreateJob(ctx, job))
+			requireOK(t, CreateWorkOrder(ctx, st, core.WorkOrder{ID: job.ID, JobID: job.ID, TaskID: id, Stage: core.StageImplement}))
+			claimed, err := ClaimWorkOrder(ctx, st, job.ID, core.WorkOrderClaim{WorkerID: "worker", ClaimantID: "worker", SessionID: "implement-" + id, ClientToken: "implement-token-" + id, Lease: time.Minute, ExecutionTimeout: time.Hour})
+			requireOK(t, err)
+			identity := core.WorkOrderClaimIdentity{WorkerID: claimed.WorkerID, ClaimantID: claimed.ClaimantID, SessionID: claimed.SessionID}
+			want := core.WorkOrderContinuation{SessionID: "native-session", AttemptID: claimed.AttemptID, Harness: "claude", LaunchEnvironment: "worker/env"}
+			_, err = st.RecordWorkOrderContinuation(ctx, claimed.ID, identity, want)
+			requireOK(t, err)
+			// Submit the persisted row; the claim-time value would overwrite the
+			// recorded continuation and make acceptance clear nothing.
+			implement, err := st.GetWorkOrder(ctx, claimed.ID)
+			requireOK(t, err)
+			implement.State = core.WorkOrderSubmitted
+			requireOK(t, UpdateWorkOrder(ctx, st, implement, core.WorkOrderCmdSubmitForReview))
+			submitted, err := st.GetWorkOrder(ctx, implement.ID)
+			requireOK(t, err)
+			if submitted.State != core.WorkOrderSubmitted || submitted.ContinuationSessionID != want.SessionID || submitted.ContinuationAttemptID != want.AttemptID ||
+				submitted.ContinuationHarness != want.Harness || submitted.ContinuationLaunchEnvironment != want.LaunchEnvironment {
+				t.Fatalf("submitted implementation lost continuation before review acceptance: %+v", submitted)
+			}
+			job.State = core.JobDone
+			requireOK(t, st.UpdateJob(ctx, job))
+			before := countWorkOrderUpdated(t, x, id, implement.ID)
+
+			jobs, orders := reviewRound(id, 1)
+			requireOK(t, CreateReviewRound(ctx, st, id, jobs[:1], orders[:1]))
+			session := "review-" + id
+			_, err = ClaimWorkOrder(ctx, st, orders[0].ID, core.WorkOrderClaim{SessionID: session, ClientToken: session + "-token", Lease: time.Minute, ExecutionTimeout: time.Hour})
+			requireOK(t, err)
+			decision := core.ReviewDecision{TaskID: id, JobID: jobs[0].ID, ReviewWorkOrderID: orders[0].ID, ReviewRound: 1, ReviewSeat: 1, ClaimSession: session, Verdict: verdict, ReasonCode: "verified", Summary: "continuation fixture", PolicyVersion: 1, MaxBounces: 3}
+			if verdict == "changes_requested" {
+				decision.ReasonCode, decision.Feedback = "defect", "Fix the defect"
+			}
+			requireOK(t, taskops.New(st).AcceptReviewDecision(ctx, decision))
+
+			persisted, err := st.GetWorkOrder(ctx, implement.ID)
+			requireOK(t, err)
+			if persisted.State != core.WorkOrderSubmitted || persisted.ContinuationSessionID != "" || persisted.ContinuationAttemptID != "" ||
+				persisted.ContinuationHarness != "" || persisted.ContinuationLaunchEnvironment != "" {
+				t.Fatalf("review acceptance did not clear submitted implementation continuation: %+v", persisted)
+			}
+			if after := countWorkOrderUpdated(t, x, id, implement.ID); after != before+1 {
+				t.Fatalf("implementation work_order.updated events before=%d after=%d, want one clearing event", before, after)
+			}
+			review, err := st.GetWorkOrder(ctx, decision.ReviewWorkOrderID)
+			requireOK(t, err)
+			if review.State != core.WorkOrderCompleted {
+				t.Fatalf("review did not complete: %+v", review)
+			}
+		})
+	}
+}
+
+func countWorkOrderUpdated(t *testing.T, x Fixture, taskID, jobID string) int {
+	t.Helper()
+	events, err := x.Backend.ListEvents(x.Context, taskID)
+	requireOK(t, err)
+	count := 0
+	for _, event := range events {
+		if event.Kind == "work_order.updated" && event.JobID == jobID {
+			count++
+		}
+	}
+	return count
 }
 
 // PR907MandatoryValidation is the exact unresolved entry from the accepted
