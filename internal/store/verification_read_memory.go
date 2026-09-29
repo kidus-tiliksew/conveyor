@@ -147,7 +147,7 @@ func (m *volatileMemory) ReadVerificationPage(ctx context.Context, a Verificatio
 			}
 			assertionID := verificationReadScalar(row.Body, []string{"Envelope", "payload", "assertion_id"})
 			required := false
-			for _, id := range contract.RequiredAssertions {
+			for _, id := range contract.AssertionIDs() {
 				if id == assertionID {
 					required = true
 				}

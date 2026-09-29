@@ -43,7 +43,7 @@ func runVerificationOperations(t *testing.T, x Fixture) {
 	t.Run("SealedReviewAcceptance", func(t *testing.T) { runSealedVerificationReview(t, x) })
 	t.Run("OperatorRecoveryBindsSuccessorAndConsumesAuthorization", func(t *testing.T) {
 		v := newVerificationFixture(t, x)
-		obligation := store.VerificationObligation{ID: "recovery-" + v.access.TaskID, Description: "Recover one external mutation", Sources: []store.VerificationCitation{{DocumentID: "req-fixture", Version: 1, SectionID: "AC-1.1"}}, Contract: verification.Exercise{ID: "recovery", Kind: "script", Argv: []string{"fixture"}, TimeoutSeconds: 30, RequiredAssertions: []string{}, RetryPolicy: "operator_action_required", Operations: []verification.Operation{{ID: "step", TargetBinding: "fixture"}}}}
+		obligation := store.VerificationObligation{ID: "recovery-" + v.access.TaskID, Description: "Recover one external mutation", Sources: []store.VerificationCitation{{DocumentID: "req-fixture", Version: 1, SectionID: "AC-1.1"}}, Contract: verification.Exercise{ID: "recovery", Kind: "script", Argv: []string{"fixture"}, TimeoutSeconds: 30, RequiredAssertions: []verification.Assertion{}, RetryPolicy: "operator_action_required", Operations: []verification.Operation{{ID: "step", TargetBinding: "fixture"}}}}
 		registered := v.apply(t, store.VerificationCommand{Kind: store.VerificationRegisterObligation, Obligation: &obligation})
 		v.subject = core.VerificationSubject{Kind: "ordinary", ObligationID: obligation.ID, ContractDigest: registered.Digest}
 		v.start(t, "operator-original")
@@ -360,7 +360,7 @@ func runSealedVerificationReview(t *testing.T, x Fixture) {
 
 func runVerificationReconciliation(t *testing.T, x Fixture) {
 	v := newVerificationFixture(t, x, true)
-	obligation := store.VerificationObligation{ID: "reconcile-" + v.access.TaskID, Description: "Inspect provider state", Sources: []store.VerificationCitation{{DocumentID: "req-fixture", Version: 1, SectionID: "AC-1.1"}}, Contract: verification.Exercise{ID: "reconcile", Kind: "script", Argv: []string{"check"}, TimeoutSeconds: 30, RequiredAssertions: []string{}, RetryPolicy: "reconciliation_required", Operations: []verification.Operation{{ID: "step", TargetBinding: "fixture"}}}}
+	obligation := store.VerificationObligation{ID: "reconcile-" + v.access.TaskID, Description: "Inspect provider state", Sources: []store.VerificationCitation{{DocumentID: "req-fixture", Version: 1, SectionID: "AC-1.1"}}, Contract: verification.Exercise{ID: "reconcile", Kind: "script", Argv: []string{"check"}, TimeoutSeconds: 30, RequiredAssertions: []verification.Assertion{}, RetryPolicy: "reconciliation_required", Operations: []verification.Operation{{ID: "step", TargetBinding: "fixture"}}}}
 	registered := v.apply(t, store.VerificationCommand{Kind: store.VerificationRegisterObligation, Obligation: &obligation})
 	v.subject = core.VerificationSubject{Kind: "ordinary", ObligationID: obligation.ID, ContractDigest: registered.Digest}
 	v.start(t, "original")
@@ -400,7 +400,7 @@ func runVerificationReconciliation(t *testing.T, x Fixture) {
 
 func runVerificationCheckpoint(t *testing.T, x Fixture) {
 	v := newVerificationFixture(t, x, true)
-	obligation := store.VerificationObligation{ID: "checkpoint-" + v.access.TaskID, Description: "External action", Sources: []store.VerificationCitation{{DocumentID: "req-fixture", Version: 1, SectionID: "AC-1.1"}}, Contract: verification.Exercise{ID: "action", Kind: "script", Argv: []string{"action"}, TimeoutSeconds: 30, RequiredAssertions: []string{}, RetryPolicy: "operator_action_required", Operations: []verification.Operation{{ID: "step", TargetBinding: "fixture"}}}}
+	obligation := store.VerificationObligation{ID: "checkpoint-" + v.access.TaskID, Description: "External action", Sources: []store.VerificationCitation{{DocumentID: "req-fixture", Version: 1, SectionID: "AC-1.1"}}, Contract: verification.Exercise{ID: "action", Kind: "script", Argv: []string{"action"}, TimeoutSeconds: 30, RequiredAssertions: []verification.Assertion{}, RetryPolicy: "operator_action_required", Operations: []verification.Operation{{ID: "step", TargetBinding: "fixture"}}}}
 	r := v.apply(t, store.VerificationCommand{Kind: store.VerificationRegisterObligation, Obligation: &obligation})
 	v.subject = core.VerificationSubject{Kind: "ordinary", ObligationID: obligation.ID, ContractDigest: r.Digest}
 	v.start(t, "action")

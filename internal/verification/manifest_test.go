@@ -81,7 +81,7 @@ func TestManifestRefusals(t *testing.T) {
 		{"missing assertion list", "        required_assertions: [readable]\n", "", "required_assertions:"},
 		{"duplicate assertion", "required_assertions: [readable]", "required_assertions: [readable, readable]", "required_assertions:"},
 		{"wrong scalar type", "version: \"1.0\"", "version: 1", ".version:"},
-		{"unknown schema", "schema_version: 1", "schema_version: 2", "schema_version:"},
+		{"unknown schema", "schema_version: 1", "schema_version: 3", "schema_version:"},
 		{"multiple documents", "schema_version: 1", "schema_version: 1\n---\nschema_version: 1", "exactly one"},
 	}
 	for _, tt := range tests {

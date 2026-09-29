@@ -186,7 +186,7 @@ func runVerificationRetryAndSeal(t *testing.T, v *verificationFixture) {
 	t.Run("OperatorAuthorizedRetry", func(t *testing.T) {
 		savedSubject, savedRun := v.subject, v.runID
 		defer func() { v.subject = savedSubject; v.runID = savedRun }()
-		obligation := store.VerificationObligation{ID: "operator-required", Description: "An external observation requiring recovery approval", Sources: []store.VerificationCitation{{DocumentID: "req-fixture", Version: 1, SectionID: "AC-1.1"}}, Contract: verification.Exercise{ID: "operator-required", Kind: "script", Argv: []string{"fixture"}, TimeoutSeconds: 30, RequiredAssertions: []string{}}}
+		obligation := store.VerificationObligation{ID: "operator-required", Description: "An external observation requiring recovery approval", Sources: []store.VerificationCitation{{DocumentID: "req-fixture", Version: 1, SectionID: "AC-1.1"}}, Contract: verification.Exercise{ID: "operator-required", Kind: "script", Argv: []string{"fixture"}, TimeoutSeconds: 30, RequiredAssertions: []verification.Assertion{}}}
 		registered := v.apply(t, store.VerificationCommand{Kind: store.VerificationRegisterObligation, Obligation: &obligation})
 		v.subject = core.VerificationSubject{Kind: "ordinary", ObligationID: obligation.ID, ContractDigest: registered.Digest}
 		v.start(t, "operator-first")

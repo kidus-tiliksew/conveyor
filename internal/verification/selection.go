@@ -83,7 +83,7 @@ func Evaluate(m *Manifest, context SelectionContext, trees map[string][]TreeEntr
 	if len(m.Kits) > MaxKits {
 		r.Diagnostics = append(r.Diagnostics, Diagnostic{"manifest.kits", "exceeds 100 kits"})
 	}
-	if m.SchemaVersion != 1 {
+	if !SupportedSchema(m.SchemaVersion) {
 		r.Diagnostics = append(r.Diagnostics, Diagnostic{"manifest.schema_version", "unsupported schema"})
 	}
 	if strings.TrimSpace(context.Stage) == "" {

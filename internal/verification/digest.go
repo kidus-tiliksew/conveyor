@@ -17,8 +17,10 @@ type TreeEntry struct {
 	BlobOID string `json:"blob_oid"`
 }
 
-// NormalizeKit is the schema-1 digest encoding: compact UTF-8 JSON of the typed
-// entry in declared field order, no trailing newline, preserving array order.
+// NormalizeKit is the digest encoding: compact UTF-8 JSON of the typed entry in
+// declared field order, no trailing newline, preserving array order. Schema-1
+// entries omit descriptions and encode assertions as bare IDs, so their bytes
+// match the original schema-1 encoding; schema-2 entries encode descriptions.
 // YAML comments, key ordering and scalar spelling do not affect this encoding.
 // Optional omitted fields are omitted; nil contract lists normalize to [].
 func NormalizeKit(kit Kit) ([]byte, error) {
@@ -52,7 +54,7 @@ func NormalizeKit(kit Kit) ([]byte, error) {
 			e.Inputs = []Input{}
 		}
 		if e.RequiredAssertions == nil {
-			e.RequiredAssertions = []string{}
+			e.RequiredAssertions = []Assertion{}
 		}
 		if e.Operations == nil {
 			e.Operations = []Operation{}

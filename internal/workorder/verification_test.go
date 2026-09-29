@@ -99,7 +99,7 @@ func TestVerificationPrematureSuccessRetainsEvidence(t *testing.T) {
 	f := newVerificationServiceFixture(t)
 	snapshot := f.call(t, "prepare_verification", VerificationPrepareRequest{RequestKey: "prepare"}).(store.VerificationSnapshot)
 	vc := snapshot.Contexts[0]
-	contract := verification.Exercise{ID: "ordinary", Kind: "script", Argv: []string{"check"}, TimeoutSeconds: 30, RequiredAssertions: []string{"observed"}, RetryPolicy: "safe_to_replay", SafetyBasis: "read-only", EvidenceOutputs: []verification.EvidenceOutput{{Type: "state_observation", SchemaVersion: 1, MinimumItems: 1}}}
+	contract := verification.Exercise{ID: "ordinary", Kind: "script", Argv: []string{"check"}, TimeoutSeconds: 30, RequiredAssertions: []verification.Assertion{{ID: "observed"}}, RetryPolicy: "safe_to_replay", SafetyBasis: "read-only", EvidenceOutputs: []verification.EvidenceOutput{{Type: "state_observation", SchemaVersion: 1, MinimumItems: 1}}}
 	receipt := f.call(t, "register_verification_obligation", VerificationObligationRequest{ContextID: vc.ID, ObligationID: "ordinary", Description: "Observe state", Sources: []VerificationSource{{DocumentID: "req-fixture", Version: 1, SectionID: "AC-1.1"}}, Contract: contract}).(store.VerificationReceipt)
 	subject := core.VerificationSubject{Kind: "ordinary", ObligationID: "ordinary", ContractDigest: receipt.Digest}
 	environment := core.VerificationEnvironment{Target: "fixture", OS: "unknown", Architecture: "unknown", Runtime: "unknown", Deployment: "unknown"}

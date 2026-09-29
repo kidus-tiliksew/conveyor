@@ -233,7 +233,7 @@ func RunVerificationRead(t *testing.T, x Fixture) {
 	})
 	t.Run("RequiredAndOptionalAssertions", func(t *testing.T) {
 		v := newVerificationFixture(t, x, true)
-		obligation := v.apply(t, store.VerificationCommand{Kind: store.VerificationRegisterObligation, Obligation: &store.VerificationObligation{ID: "assertions", Description: "Assert observed state", Sources: []store.VerificationCitation{{DocumentID: "req-fixture", Version: 1, SectionID: "AC-1.1"}}, Contract: verification.Exercise{ID: "assertions", Kind: "script", Argv: []string{"true"}, TimeoutSeconds: 30, RequiredAssertions: []string{"required-check"}, RetryPolicy: "safe_to_replay", SafetyBasis: "read only"}}})
+		obligation := v.apply(t, store.VerificationCommand{Kind: store.VerificationRegisterObligation, Obligation: &store.VerificationObligation{ID: "assertions", Description: "Assert observed state", Sources: []store.VerificationCitation{{DocumentID: "req-fixture", Version: 1, SectionID: "AC-1.1"}}, Contract: verification.Exercise{ID: "assertions", Kind: "script", Argv: []string{"true"}, TimeoutSeconds: 30, RequiredAssertions: []verification.Assertion{{ID: "required-check"}}, RetryPolicy: "safe_to_replay", SafetyBasis: "read only"}}})
 		v.subject = core.VerificationSubject{Kind: "ordinary", ObligationID: "assertions", ContractDigest: obligation.Digest}
 		v.start(t, "assertion-start")
 		observed := v.envelope("assertion-support", "support", "observed")
@@ -270,7 +270,7 @@ func RunVerificationRead(t *testing.T, x Fixture) {
 			selection.Receipt.Kits = append(selection.Receipt.Kits, verification.KitReceipt{KitID: id, Digest: strings.Repeat("d", 64), Eligibility: "eligible", Reasons: []verification.SelectionReason{{Code: "matching_pin", Message: strings.Repeat("selection reason ", 256)}}})
 		}
 		v.subject = core.VerificationSubject{Kind: "kit", KitID: "kit-a", KitVersion: "1", ContentDigest: strings.Repeat("d", 64), ExerciseID: "kit-check"}
-		selection.Subjects = []store.VerificationSubjectContract{{Subject: v.subject, Contract: verification.Exercise{ID: "kit-check", Kind: "script", Argv: []string{"private-command"}, TimeoutSeconds: 30, RequiredAssertions: []string{"kit-assertion"}, RetryPolicy: "safe_to_replay", SafetyBasis: "read only"}}}
+		selection.Subjects = []store.VerificationSubjectContract{{Subject: v.subject, Contract: verification.Exercise{ID: "kit-check", Kind: "script", Argv: []string{"private-command"}, TimeoutSeconds: 30, RequiredAssertions: []verification.Assertion{{ID: "kit-assertion"}}, RetryPolicy: "safe_to_replay", SafetyBasis: "read only"}}}
 		v.apply(t, store.VerificationCommand{Kind: store.VerificationRecordSelection, Selection: &selection})
 		a := store.VerificationAccess{TaskID: v.access.TaskID, UserID: owner.ID}
 		p := store.VerificationPageRequest{Kind: "selections", ContextID: v.contextID, Limit: 1}

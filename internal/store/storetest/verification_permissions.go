@@ -31,7 +31,7 @@ func GrantVerificationFixture(t *testing.T, b store.Backend, ctx context.Context
 func runVerificationPermissions(t *testing.T, x Fixture) {
 	t.Run("GrantBindingIntersectionAndLaunchReplay", func(t *testing.T) {
 		v := newVerificationFixture(t, x)
-		obligation := store.VerificationObligation{ID: "network", Description: "read fixture API", Sources: []store.VerificationCitation{{DocumentID: "req-fixture", Version: 1, SectionID: "AC-1.1"}}, Contract: verification.Exercise{ID: "network", Kind: "script", Argv: []string{"fixture"}, TimeoutSeconds: 30, RequiredAssertions: []string{}, RetryPolicy: "safe_to_replay", SafetyBasis: "read-only fixture", Permissions: []verification.Permission{{Kind: "network", TargetBinding: "api"}}}}
+		obligation := store.VerificationObligation{ID: "network", Description: "read fixture API", Sources: []store.VerificationCitation{{DocumentID: "req-fixture", Version: 1, SectionID: "AC-1.1"}}, Contract: verification.Exercise{ID: "network", Kind: "script", Argv: []string{"fixture"}, TimeoutSeconds: 30, RequiredAssertions: []verification.Assertion{}, RetryPolicy: "safe_to_replay", SafetyBasis: "read-only fixture", Permissions: []verification.Permission{{Kind: "network", TargetBinding: "api"}}}}
 		registered := v.apply(t, store.VerificationCommand{Kind: store.VerificationRegisterObligation, Obligation: &obligation})
 		subject := core.VerificationSubject{Kind: "ordinary", ObligationID: obligation.ID, ContractDigest: registered.Digest}
 		actions := []core.VerificationPermission{{Kind: "network", Binding: "api", Target: "https://api.test:443"}}

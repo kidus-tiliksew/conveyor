@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/redact"
@@ -421,11 +422,11 @@ func validateVerificationObligation(v VerificationObligation) error {
 		return ErrVerificationInvalid
 	}
 	seen := map[string]bool{}
-	for _, id := range c.RequiredAssertions {
-		if !verificationIdentifier(id) || seen[id] {
+	for _, a := range c.RequiredAssertions {
+		if !verificationIdentifier(a.ID) || seen[a.ID] || utf8.RuneCountInString(strings.TrimSpace(a.Description)) > verification.MaxAssertionDescription {
 			return ErrVerificationInvalid
 		}
-		seen[id] = true
+		seen[a.ID] = true
 	}
 	types := map[string]bool{"api_exchange": true, "state_observation": true, "assertion_result": true, "execution_report": true, "visual_capture": true, "operator_observation": true}
 	seen = map[string]bool{}

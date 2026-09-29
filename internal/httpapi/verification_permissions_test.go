@@ -67,7 +67,7 @@ func TestVerificationPermissionRouteIsOperatorOnly(t *testing.T) {
 	if code := serve(operator, path, core.JSONPayload(request)); code < 400 {
 		t.Fatal("unregistered subject accepted")
 	}
-	obligation := call("register_verification_obligation", workorder.VerificationObligationRequest{ContextID: request.ContextID, ObligationID: "ordinary", Description: "read-only fixture", Sources: []workorder.VerificationSource{{DocumentID: "req-fixture", Version: 1, SectionID: "REQ-1"}}, Contract: verification.Exercise{ID: "ordinary", Kind: "script", Argv: []string{"true"}, TimeoutSeconds: 1, RequiredAssertions: []string{}, RetryPolicy: "safe_to_replay", SafetyBasis: "read only"}}).(store.VerificationReceipt)
+	obligation := call("register_verification_obligation", workorder.VerificationObligationRequest{ContextID: request.ContextID, ObligationID: "ordinary", Description: "read-only fixture", Sources: []workorder.VerificationSource{{DocumentID: "req-fixture", Version: 1, SectionID: "REQ-1"}}, Contract: verification.Exercise{ID: "ordinary", Kind: "script", Argv: []string{"true"}, TimeoutSeconds: 1, RequiredAssertions: []verification.Assertion{}, RetryPolicy: "safe_to_replay", SafetyBasis: "read only"}}).(store.VerificationReceipt)
 	request.Subject = core.VerificationSubject{Kind: "ordinary", ObligationID: "ordinary", ContractDigest: obligation.Digest}
 	for i := 0; i < 2; i++ {
 		if code := serve(operator, path, core.JSONPayload(request)); code != 200 {
