@@ -70,6 +70,9 @@ func TestSubmitTaskPushCreateReuseAndRedaction(t *testing.T) {
 	t.Setenv(gitAskPassTokenEnv, "")
 	t.Setenv("GIT_CONFIG_COUNT", "")
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	// Xcode's system gitconfig sets credential.helper=osxkeychain, which would
+	// answer before the fixture helper.
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	exists, failSubmit, failPR := false, true, false
 	creates, submits := 0, 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

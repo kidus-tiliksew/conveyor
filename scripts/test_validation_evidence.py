@@ -1,5 +1,6 @@
 """Deterministic evidence and actual Make-graph tests; no network or databases."""
 import copy
+import functools
 from io import StringIO
 import itertools
 import json
@@ -23,11 +24,38 @@ def run(root, *args, env=None):
     return subprocess.run(args, cwd=root, env=env, capture_output=True, text=True, check=True).stdout
 
 
+# Live cache-user detection reads Linux /proc; hosts without it refuse cleanup
+# instead (component-verification-strategy).
+HAS_PROC = Path("/proc").is_dir()
+
+
+def _child_pids(parent_pid):
+    """Return the ps listing and the PIDs whose parent is parent_pid, without /proc."""
+    listing = subprocess.run(["ps", "-A", "-o", "pid=,ppid="], capture_output=True, text=True, check=True).stdout
+    children = []
+    for line in listing.splitlines():
+        fields = line.split()
+        if len(fields) >= 2 and fields[1] == str(parent_pid):
+            children.append(int(fields[0]))
+    return listing, children
+
+
+def _pid_alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
 class EvidenceTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.base = Path(self.tmp.name)
+        # The helper resolves output paths; macOS temp dirs live behind /var -> /private/var.
+        self.base = Path(self.tmp.name).resolve()
         self.root = self.base / "repo"
         self.root.mkdir()
         run(self.root, "git", "init", "-b", "task")
@@ -255,7 +283,8 @@ class EvidenceTests(unittest.TestCase):
 
         process = subprocess.Popen(["sleep", "30"], cwd=child)
         try:
-            with self.assertRaisesRegex(evidence.Refused, "active"):
+            expected = "disposable cache child is active: tmp" if HAS_PROC else "requires /proc"
+            with self.assertRaisesRegex(evidence.Refused, expected):
                 evidence.cleanup_cache("fixture-task", task_cache, [])
         finally:
             process.terminate()
@@ -278,6 +307,8 @@ class EvidenceTests(unittest.TestCase):
         self.assertTrue(unknown.exists())
         self.assertTrue(guarded.exists())
 
+    @unittest.skipUnless(HAS_PROC, "live cache-user detection reads Linux /proc; cleanup refuses without it; "
+                                   "Ubuntu CI is the run of record")
     def test_cleanup_refuses_environment_only_live_cache_user(self):
         os.environ["XDG_CACHE_HOME"] = str(self.base / "cache-home")
         task_cache = self.base / "cache-home" / "conveyor" / "fixture-task"
@@ -306,6 +337,20 @@ class EvidenceTests(unittest.TestCase):
         (process / "environ").mkdir()
         users = evidence.active_cache_users(self.base / "cache", proc)
         self.assertIn("4242:ambiguous:environ", users)
+
+    def test_cache_ownership_inspection_refuses_without_proc(self):
+        absent = self.base / "absent-proc"
+        with self.assertRaisesRegex(evidence.Refused, "requires /proc"):
+            evidence.active_cache_users(self.base / "cache", absent)
+        os.environ["XDG_CACHE_HOME"] = str(self.base / "cache-home")
+        task_cache = self.base / "cache-home" / "conveyor" / "fixture-task"
+        child = task_cache / "tmp"
+        child.mkdir(parents=True)
+        without_proc = functools.partial(evidence.active_cache_users, proc=absent)
+        with patch.object(evidence, "active_cache_users", without_proc):
+            with self.assertRaisesRegex(evidence.Refused, "requires /proc"):
+                evidence.cleanup_cache("fixture-task", task_cache, [])
+        self.assertTrue(child.is_dir())
 
     def test_authored_conflict_resolution_even_when_content_matches(self):
         self.record()
@@ -515,7 +560,6 @@ class EvidenceTests(unittest.TestCase):
                    "--policy", str(policy), "--output", str(self.output)]
         process = subprocess.Popen(command, cwd=self.root, env=dict(os.environ),
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        children_file = Path("/proc") / str(process.pid) / "task" / str(process.pid) / "children"
         deadline = time.time() + 5
         child_group = None
         last_record = None
@@ -524,11 +568,10 @@ class EvidenceTests(unittest.TestCase):
             if (self.output / "manifest.json").is_file():
                 key = (self.output / "key").read_bytes()
                 last_record = evidence.read_record(self.output / "manifest.json", key)
-            if children_file.is_file():
-                last_children = children_file.read_text()
-                children = last_children.split()
-                if (last_record and last_record["state"] == "running" and children):
-                    candidate = int(children[0])
+            if last_record and last_record["state"] == "running":
+                last_children, children = _child_pids(process.pid)
+                if children:
+                    candidate = children[0]
                     try:
                         if os.getpgid(candidate) == candidate:
                             child_group = candidate
@@ -582,9 +625,9 @@ time.sleep(30)
         self.assertEqual(process.returncode, 128 + signal.SIGTERM, stderr)
         descendant = int(pid_file.read_text())
         deadline = time.time() + 2
-        while time.time() < deadline and (Path("/proc") / str(descendant)).exists():
+        while time.time() < deadline and _pid_alive(descendant):
             time.sleep(0.02)
-        self.assertFalse(Path("/proc").joinpath(str(descendant)).exists())
+        self.assertFalse(_pid_alive(descendant), "descendant was not reaped")
         record = evidence.read_record(self.output / "manifest.json", (self.output / "key").read_bytes())
         self.assertEqual(record["outcome"], "interrupted")
         self.assertEqual(record["interruption"], {"signal": signal.SIGTERM})
