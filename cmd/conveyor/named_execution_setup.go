@@ -191,6 +191,9 @@ func configuredSetupNames(local *config.Config) []string {
 
 func namedSetup(local *config.Config, name string) (config.ExecutionSetup, int, error) {
 	name = strings.TrimSpace(name)
+	if name == "" {
+		name = local.DefaultSetup
+	}
 	for index, setup := range local.Setups {
 		if setup.Name == name {
 			return setup, index, nil
@@ -441,15 +444,29 @@ func writeNamedExecutionSetup(path string, local *config.Config, workspace, name
 	}
 	local.Harnesses = mergeLocalHarnesses(local.Harnesses, selected)
 	if edit {
-		_, index, err := namedSetup(local, name)
+		previous, index, err := namedSetup(local, name)
 		if err != nil {
 			return err
 		}
-		local.Setups[index] = setup
+		// The wizard captures stage choices and seats, not planning or fallback
+		// policy (req-execution-configuration AC-10.2).
+		updateWizardStage(&previous.ExecutionSettings.Spec, setup.ExecutionSettings.Spec)
+		updateWizardStage(&previous.ExecutionSettings.Verify, setup.ExecutionSettings.Verify)
+		updateWizardStage(&previous.ExecutionSettings.Implementation, setup.ExecutionSettings.Implementation)
+		previous.ExecutionSettings.Review.TimeoutText = setup.ExecutionSettings.Review.TimeoutText
+		previous.Review.Seats = setup.Review.Seats
+		local.Setups[index] = previous
 	} else {
 		local.Setups = append(local.Setups, setup)
 	}
 	return writeNamedLocalExecutionConfig(path, local)
+}
+
+func updateWizardStage(previous *config.ImplementationSettings, selected config.ImplementationSettings) {
+	if previous.Model != selected.Model {
+		previous.ModelPolicy = selected.ModelPolicy
+	}
+	previous.Harness, previous.Model, previous.Effort, previous.TimeoutText = selected.Harness, selected.Model, selected.Effort, selected.TimeoutText
 }
 
 func setNamedLocalExecutionField(path, name, key, value string) error {
@@ -516,8 +533,6 @@ func setNamedLocalExecutionFieldContext(ctx context.Context, path, name, key, va
 			if err = setReviewSeatField(&setup.Review.Seats[0], field, value, &local.Harnesses); err != nil {
 				return err
 			}
-			setup.ExecutionSettings.Review.FallbackHarness = setup.Review.Seats[0].Harness
-			setup.ExecutionSettings.Review.FallbackModel = setup.Review.Seats[0].Model
 		}
 	default:
 		return errors.New("execution stage must be spec, implement, verify, or review")

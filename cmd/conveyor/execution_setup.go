@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -593,28 +594,270 @@ func writeLocalExecutionConfig(path, workspace string, choices localExecutionCho
 }
 
 func writeUpdatedLocalExecutionConfig(path string, existing *config.Config, choices localExecutionChoices, harnesses []config.Harness) error {
-	document := localExecutionDocument(existing.Workspace, choices, harnesses)
-	if choices.Spec.Model == "" && suggestedHarnessModel(choices.Spec.Harness, "spec") == "" && existing.ExecutionSettings != nil {
-		document.ExecutionSettings.Spec.ModelPolicy = existing.ExecutionSettings.Spec.ModelPolicy
+	return writeNamedExecutionSetup(path, existing, existing.Workspace, existing.DefaultSetup, choices, harnesses, true)
+}
+
+// marshalAuthoredExecutionConfig applies only the caller's changes to authored
+// nodes. Normalized defaults are comparison inputs, never the output document
+// (req-execution-configuration AC-10.2, AC-10.6; component-harness-execution).
+func marshalAuthoredExecutionConfig(path string, updated *config.Config) ([]byte, error) {
+	original, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
 	}
-	if choices.Implement.Model == "" && suggestedHarnessModel(choices.Implement.Harness, "implement") == "" && existing.ExecutionSettings != nil {
-		document.ExecutionSettings.Implementation.ModelPolicy = existing.ExecutionSettings.Implementation.ModelPolicy
+	baseline, err := config.Load(path)
+	if err != nil {
+		return nil, err
 	}
-	existing.ExecutionSettings = document.ExecutionSettings
-	existing.Execution.VerifyConcurrency = document.Execution.VerifyConcurrency
-	existing.Harnesses = harnesses
-	existing.Review = document.Review
-	for index := range existing.Setups {
-		if existing.Setups[index].Name == existing.DefaultSetup {
-			existing.Setups[index].ExecutionSettings = *document.ExecutionSettings
-			existing.Setups[index].Review = document.Review
+	var document, before, after yaml.Node
+	if err = yaml.Unmarshal(original, &document); err != nil {
+		return nil, err
+	}
+	if err = before.Encode(baseline); err != nil {
+		return nil, err
+	}
+	if err = after.Encode(updated); err != nil {
+		return nil, err
+	}
+	aliases := map[*yaml.Node]*yaml.Node{}
+	expandExecutionAliases(&document, aliases)
+	root := document.Content[0]
+	// A legacy singleton's normalized synthetic setup is not authored content.
+	// Materialize it only when a setup is actually created alongside it.
+	if inheritedExecutionYAML(root, "setups") == nil && len(updated.Setups) == 1 {
+		removeExecutionYAMLField(&before, "setups")
+		removeExecutionYAMLField(&after, "setups")
+	}
+	if inheritedExecutionYAML(root, "setups") != nil && baseline.DefaultSetup == updated.DefaultSetup {
+		for _, key := range []string{"execution_settings", "review"} {
+			if inheritedExecutionYAML(root, key) == nil {
+				removeExecutionYAMLField(&before, key)
+				removeExecutionYAMLField(&after, key)
+			}
 		}
 	}
-	return writeValidatedLocalExecutionConfig(path, existing)
+	patchExecutionYAML(root, &before, &after)
+	if inheritedExecutionYAML(root, "setups") != nil && inheritedExecutionYAML(root, "default_setup") == nil {
+		setExecutionYAMLField(root, "default_setup", &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: updated.DefaultSetup})
+	}
+	if baseline.DefaultSetup != updated.DefaultSetup {
+		// A default switch projects the selected authored setup, including omissions.
+		// Copy before replacing either projection, since aliases may refer to it.
+		setups := inheritedExecutionYAML(root, "setups")
+		if setups != nil {
+			for _, setup := range setups.Content {
+				if name := inheritedExecutionYAML(setup, "name"); name != nil && name.Value == updated.DefaultSetup {
+					settings := cloneExecutionYAML(inheritedExecutionYAML(setup, "execution_settings"))
+					review := cloneExecutionYAML(inheritedExecutionYAML(setup, "review"))
+					setExecutionYAMLField(root, "execution_settings", settings)
+					setExecutionYAMLField(root, "review", review)
+					break
+				}
+			}
+		}
+	}
+	restoreExecutionAliases(&document, aliases, map[*yaml.Node]bool{})
+	return yaml.Marshal(&document)
+}
+
+func executionYAMLField(node *yaml.Node, key string) *yaml.Node {
+	if node == nil || node.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i < len(node.Content); i += 2 {
+		if node.Content[i].Value == key {
+			return node.Content[i+1]
+		}
+	}
+	return nil
+}
+
+func removeExecutionYAMLField(node *yaml.Node, key string) {
+	for i := 0; i < len(node.Content); i += 2 {
+		if node.Content[i].Value == key {
+			node.Content = append(node.Content[:i], node.Content[i+2:]...)
+			return
+		}
+	}
+}
+
+func setExecutionYAMLField(node *yaml.Node, key string, value *yaml.Node) {
+	if value == nil {
+		removeExecutionYAMLField(node, key)
+		return
+	}
+	if current := executionYAMLField(node, key); current != nil {
+		// Keep pointer identity for anchors referenced elsewhere in the document.
+		anchor, head, line, foot := current.Anchor, current.HeadComment, current.LineComment, current.FootComment
+		*current = *value
+		current.Anchor, current.HeadComment, current.LineComment, current.FootComment = anchor, head, line, foot
+		return
+	}
+	node.Content = append(node.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key}, value)
+}
+
+func cloneExecutionYAML(node *yaml.Node) *yaml.Node {
+	if node == nil {
+		return nil
+	}
+	if node.Kind == yaml.AliasNode {
+		return cloneExecutionYAML(node.Alias)
+	}
+	clone := *node
+	clone.Anchor = ""
+	clone.Content = make([]*yaml.Node, len(node.Content))
+	for i, child := range node.Content {
+		clone.Content[i] = cloneExecutionYAML(child)
+	}
+	return &clone
+}
+
+func expandExecutionAliases(node *yaml.Node, aliases map[*yaml.Node]*yaml.Node) {
+	if node.Kind == yaml.AliasNode {
+		target := node.Alias
+		head, line, foot := node.HeadComment, node.LineComment, node.FootComment
+		*node = *cloneExecutionYAML(target)
+		node.HeadComment, node.LineComment, node.FootComment = head, line, foot
+		aliases[node] = target
+		return
+	}
+	for _, child := range node.Content {
+		expandExecutionAliases(child, aliases)
+	}
+}
+
+func equalExecutionYAML(a, b *yaml.Node) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	var av, bv any
+	return a.Decode(&av) == nil && b.Decode(&bv) == nil && reflect.DeepEqual(av, bv)
+}
+
+func restoreExecutionAliases(node *yaml.Node, aliases map[*yaml.Node]*yaml.Node, seen map[*yaml.Node]bool) {
+	if target := aliases[node]; target != nil && seen[target] && target.Anchor != "" && equalExecutionYAML(node, target) {
+		node.Kind, node.Tag, node.Value, node.Content, node.Alias = yaml.AliasNode, "", target.Anchor, nil, target
+		return
+	}
+	seen[node] = true
+	for _, child := range node.Content {
+		restoreExecutionAliases(child, aliases, seen)
+	}
+}
+
+// Inherited merge values need a local override, not a mutation of the merge
+// source. The expanded copy still retains the merge key and all its comments.
+func inheritedExecutionYAML(node *yaml.Node, key string) *yaml.Node {
+	if direct := executionYAMLField(node, key); direct != nil {
+		return direct
+	}
+	merge := executionYAMLField(node, "<<")
+	if merge == nil {
+		return nil
+	}
+	if merge.Kind == yaml.MappingNode {
+		return inheritedExecutionYAML(merge, key)
+	}
+	for _, item := range merge.Content {
+		if value := inheritedExecutionYAML(item, key); value != nil {
+			return value
+		}
+	}
+	return nil
+}
+
+func patchExecutionYAML(authored, before, after *yaml.Node) {
+	if equalExecutionYAML(before, after) {
+		return
+	}
+	if after.Kind == yaml.MappingNode {
+		if authored.Kind != yaml.MappingNode {
+			*authored = yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+		}
+		for i := 0; i < len(after.Content); i += 2 {
+			key, next := after.Content[i].Value, after.Content[i+1]
+			previous := executionYAMLField(before, key)
+			if equalExecutionYAML(previous, next) {
+				continue
+			}
+			current := executionYAMLField(authored, key)
+			if current == nil {
+				current = cloneExecutionYAML(inheritedExecutionYAML(authored, key))
+				if current == nil {
+					current = &yaml.Node{}
+				}
+				setExecutionYAMLField(authored, key, current)
+			}
+			patchExecutionYAML(current, previous, next)
+		}
+		if before != nil && before.Kind == yaml.MappingNode {
+			for i := 0; i < len(before.Content); i += 2 {
+				key := before.Content[i].Value
+				if executionYAMLField(after, key) == nil {
+					previous := before.Content[i+1]
+					if previous.Kind == yaml.ScalarNode && previous.Tag == "!!str" {
+						// omitempty is a serialization detail. Clearing a string
+						// needs an explicit override when a merge supplies its value.
+						setExecutionYAMLField(authored, key, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: ""})
+						continue
+					}
+					removeExecutionYAMLField(authored, key)
+				}
+			}
+		}
+		return
+	}
+	if after.Kind == yaml.SequenceNode && before != nil && before.Kind == yaml.SequenceNode && authored.Kind == yaml.SequenceNode && len(authored.Content) == len(before.Content) {
+		// Match named setups/harnesses by name and unchanged seats by value so
+		// insertion, removal and reordering carry their authored nodes and comments.
+		used := make([]bool, len(before.Content))
+		matches := make([]int, len(after.Content))
+		for i, next := range after.Content {
+			matches[i] = -1
+			for j, previous := range before.Content {
+				if used[j] {
+					continue
+				}
+				name, oldName := executionYAMLField(next, "name"), executionYAMLField(previous, "name")
+				if (name != nil && oldName != nil && name.Value == oldName.Value) || equalExecutionYAML(previous, next) {
+					matches[i], used[j] = j, true
+					break
+				}
+			}
+		}
+		var content []*yaml.Node
+		for i, next := range after.Content {
+			j := matches[i]
+			if j < 0 && i < len(used) && !used[i] && executionYAMLField(next, "name") == nil {
+				j, used[i] = i, true
+			}
+			if j < 0 {
+				content = append(content, cloneExecutionYAML(next))
+				continue
+			}
+			current := authored.Content[j]
+			patchExecutionYAML(current, before.Content[j], next)
+			content = append(content, current)
+		}
+		authored.Content = content
+		return
+	}
+	replacement := cloneExecutionYAML(after)
+	replacement.Anchor, replacement.HeadComment, replacement.LineComment, replacement.FootComment = authored.Anchor, authored.HeadComment, authored.LineComment, authored.FootComment
+	if authored.Kind == replacement.Kind {
+		replacement.Style = authored.Style
+	}
+	*authored = *replacement
 }
 
 func writeValidatedLocalExecutionConfig(path string, value any) error {
-	data, err := yaml.Marshal(value)
+	var data []byte
+	var err error
+	if local, ok := value.(*config.Config); ok {
+		data, err = marshalAuthoredExecutionConfig(path, local)
+	} else {
+		data, err = yaml.Marshal(value)
+	}
 	if err != nil {
 		return err
 	}
@@ -683,7 +926,6 @@ func setLocalExecutionFieldContext(ctx context.Context, path, workspace, key, va
 		return errors.New("execution field must be harness, model, effort, or timeout")
 	}
 	choices, harnesses, currentWorkspace, err := readLocalExecutionConfig(path)
-	var existing *config.Config
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
@@ -696,10 +938,7 @@ func setLocalExecutionFieldContext(ctx context.Context, path, workspace, key, va
 			Review:    localStageChoice{Harness: defaultHarness.Name, Model: "gpt-5.6", Effort: "high", Timeout: "1h"},
 		}
 	} else {
-		existing, err = config.Load(path)
-		if err != nil {
-			return err
-		}
+		return setNamedLocalExecutionFieldContext(ctx, path, "", key, value, requireProbe)
 	}
 	if strings.TrimSpace(workspace) == "" {
 		workspace = currentWorkspace
@@ -769,9 +1008,6 @@ func setLocalExecutionFieldContext(ctx context.Context, path, workspace, key, va
 			return fmt.Errorf("timeout must be greater than %s", config.DefaultFirstActivityTimeoutText)
 		}
 		choice.Timeout = value
-	}
-	if existing != nil {
-		return writeUpdatedLocalExecutionConfig(path, existing, choices, harnesses)
 	}
 	return writeLocalExecutionConfig(path, workspace, choices, selectedHarnesses(choices, harnesses))
 }
