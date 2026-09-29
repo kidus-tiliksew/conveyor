@@ -99,6 +99,7 @@ CREATE TABLE IF NOT EXISTS conveyor_schema_migrations (
 	if storeVersion > embeddedVersion {
 		return fmt.Errorf("store schema version %d is newer than this Conveyor binary (latest embedded migration %d); install a Conveyor release at least as new as the one that upgraded this database before restarting", storeVersion, embeddedVersion)
 	}
+	var dismissalArchives map[string][]string
 	for _, name := range files {
 		version, err := migrationVersion(name)
 		if err != nil {
@@ -165,6 +166,12 @@ CREATE TABLE IF NOT EXISTS conveyor_schema_migrations (
 		if _, err := tx.Exec(ctx, string(sql)); err != nil {
 			return fmt.Errorf("apply migration %s: %w", name, err)
 		}
+		if version == 137 {
+			dismissalArchives, err = repairDismissalArchives(ctx, tx)
+			if err != nil {
+				return fmt.Errorf("repair dismissal archives: %w", err)
+			}
+		}
 		if version == 57 {
 			if err := recordLineageRepairAudit(ctx, tx); err != nil {
 				return fmt.Errorf("record lineage repair audit: %w", err)
@@ -200,6 +207,7 @@ CREATE TABLE IF NOT EXISTS conveyor_schema_migrations (
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit control-plane migrations: %w", err)
 	}
+	logDismissalArchiveRepair(dismissalArchives)
 	return nil
 }
 

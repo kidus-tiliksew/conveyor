@@ -109,6 +109,9 @@ func (m *memory) setSystemDesignArchived(ctx context.Context, id, actor string, 
 	if !ok {
 		return fmt.Errorf("%w: system design %s", ErrNotFound, id)
 	}
+	if !archived && document.ArchiveReason == core.ArchiveReasonOnlyProposalDismissed {
+		return &DocumentRestoreConflict{DocumentID: id}
+	}
 	if document.Archived == archived {
 		return nil
 	}
@@ -124,6 +127,7 @@ func (m *memory) setSystemDesignArchived(ctx context.Context, id, actor string, 
 	}
 	now := time.Now().UTC()
 	document.Archived, document.UpdatedAt = archived, now
+	document.ArchiveReason, document.ArchiveNote = "", ""
 	if archived {
 		document.ArchivedBy, document.ArchivedAt = actor, now
 		document.SupersededBy = append([]string(nil), accepted...)
@@ -295,6 +299,22 @@ func (m *memory) dismissSystemDesignVersionLocked(ctx context.Context, documentI
 	m.appendEventLocked(ctx, core.Event{Kind: "system_design.version_dismissed", Payload: core.JSONPayload(DocumentDismissalEventPayload(ctx, map[string]any{
 		"workspace_id": workspace, "document_id": documentID, "version": version, "dismissed_by": actor.ID,
 	}))})
+	if document.CurrentVersion == 0 && !document.Archived {
+		pending := false
+		for _, candidate := range versions {
+			if !candidate.Confirmed && !candidate.Dismissed {
+				pending = true
+				break
+			}
+		}
+		if !pending {
+			document.Archived, document.ArchivedBy, document.ArchivedAt = true, actor.ID, now
+			document.ArchiveReason, document.ArchiveNote = core.ArchiveReasonOnlyProposalDismissed, DocumentDismissalNote(ctx)
+			document.SupersededBy = nil
+			m.systemDesigns[key] = document
+			m.appendEventLocked(ctx, core.Event{Kind: "system_design.archived", Payload: core.JSONPayload(DismissalArchiveEventPayload(ctx, workspace, "document_id", documentID, actor.ID, now))})
+		}
+	}
 	return document, dismissed, nil
 }
 

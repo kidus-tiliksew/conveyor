@@ -187,10 +187,25 @@ func TestQueueOversightSkillsShipFrozenPolicyAndExactHeadDiscipline(t *testing.T
 		{
 			path: filepath.Join("conveyor-file-tasks", "conveyor-task-filing.md"),
 			required: []string{
+				"Task bodies are read by people and agents who never saw the filing session (DEC-28)",
+				"Attribute actions and observations to people by name, never by personal host aliases, SSH config names, home-directory paths, or IP addresses",
+				"Carry evidence inline in the body, or cite an uploaded artifact or a PR/task/event reference",
+				"Never point at a file that only one machine can read",
+				"Do not tell the implementer to preserve or rely on state that exists only on the filer's machine",
+				"replace “verified on `<personal SSH alias>`” with “verified by `<operator name>` on their development server”",
 				"record the effective `spec_approval` and `merge_approval` values for every task",
 				"`merge_approval: true` at intake",
 				"It has no universal separate CI-status gate and does not promise a later merge gate",
 				"exact-head green CI before admitting work to independent review",
+			},
+		},
+		{
+			path: filepath.Join("conveyor-file-tasks", "SKILL.md"),
+			required: []string{
+				"Write task bodies for people and agents who never saw the filing session:",
+				"attribute actions and observations to people by name, never personal host aliases, SSH config names, home-directory paths, or IP addresses",
+				"carry evidence inline or cite an uploaded artifact or a PR/task/event reference",
+				"never point to a file only one machine can read or require preserving or relying on filer-only machine state (DEC-28)",
 			},
 		},
 		{

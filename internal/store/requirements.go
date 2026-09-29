@@ -197,6 +197,9 @@ func (m *memory) setRequirementArchived(ctx context.Context, id, actor string, a
 	if !ok {
 		return fmt.Errorf("%w: requirement %s", ErrNotFound, id)
 	}
+	if !archived && document.ArchiveReason == core.ArchiveReasonOnlyProposalDismissed {
+		return &DocumentRestoreConflict{DocumentID: id}
+	}
 	if document.Archived == archived {
 		return nil
 	}
@@ -212,6 +215,7 @@ func (m *memory) setRequirementArchived(ctx context.Context, id, actor string, a
 	}
 	now := time.Now().UTC()
 	document.Archived, document.UpdatedAt = archived, now
+	document.ArchiveReason, document.ArchiveNote = "", ""
 	if archived {
 		document.ArchivedBy, document.ArchivedAt = actor, now
 		document.SupersededBy = append([]string(nil), accepted...)
@@ -432,7 +436,7 @@ func (m *memory) dismissRequirementVersionLocked(ctx context.Context, requiremen
 	if !ok {
 		return core.Requirement{}, core.RequirementVersion{}, fmt.Errorf("%w: requirement %s", ErrNotFound, requirementID)
 	}
-	if requirement.Archived {
+	if requirement.Archived && requirement.ArchiveReason != core.ArchiveReasonOnlyProposalDismissed {
 		return core.Requirement{}, core.RequirementVersion{}, &RequirementArchivedError{RequirementID: requirementID}
 	}
 	versions := m.requirementVersions[key]
@@ -463,6 +467,22 @@ func (m *memory) dismissRequirementVersionLocked(ctx context.Context, requiremen
 	m.appendEventLocked(ctx, core.Event{Kind: "requirement.version_dismissed", Payload: core.JSONPayload(DocumentDismissalEventPayload(ctx, map[string]any{
 		"workspace_id": workspace, "requirement_id": requirementID, "version": version, "dismissed_by": actor.ID,
 	}))})
+	if requirement.CurrentVersion == 0 && !requirement.Archived {
+		pending := false
+		for _, candidate := range versions {
+			if !candidate.Confirmed && !candidate.Retired {
+				pending = true
+				break
+			}
+		}
+		if !pending {
+			requirement.Archived, requirement.ArchivedBy, requirement.ArchivedAt = true, actor.ID, now
+			requirement.ArchiveReason, requirement.ArchiveNote = core.ArchiveReasonOnlyProposalDismissed, DocumentDismissalNote(ctx)
+			requirement.SupersededBy = nil
+			m.requirements[key] = requirement
+			m.appendEventLocked(ctx, core.Event{Kind: "requirement.archived", Payload: core.JSONPayload(DismissalArchiveEventPayload(ctx, workspace, "requirement_id", requirementID, actor.ID, now))})
+		}
+	}
 	return requirement, dismissed, nil
 }
 

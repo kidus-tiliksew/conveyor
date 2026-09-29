@@ -1733,3 +1733,55 @@ const historicalCLIAuthenticationV2 = "CLI authentication (proposed v2)\n" +
 	"REQ-2: The CLI shall provide status, logout, and token-print acts over the stored credential.\n" +
 	"REQ-3: The CLI shall store a default workspace per server and resolve workspace context identically across every command.\n" +
 	"REQ-4: The CLI shall provide a connection act that writes each detected agent tool's native MCP registration for the logged-in server."
+
+func TestRequirementOnlyProposalDismissalArchiveHTTP(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	id := "only-proposal"
+	_, _, err := st.CreateRequirement(ctx, core.Requirement{ID: id, Title: id}, core.RequirementVersion{Content: "# Proposal", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Preserve history."}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := NewServer(st)
+	s.Workspace, s.BearerToken = "demo", "token"
+	handler := s.Handler()
+	call := func(method, path, body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, path, strings.NewReader(body))
+		r.Header.Set("Authorization", "Bearer token")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		return w
+	}
+	base := "/v1/requirements/" + id
+	response := call(http.MethodPost, base+"/versions/1/dismiss", `{"note":"No longer needed"}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("dismiss=%d %s", response.Code, response.Body)
+	}
+	var body map[string]json.RawMessage
+	if err = json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	if err = json.Unmarshal(body["requirement"], &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc["archived"] != true || doc["archive_reason"] != core.ArchiveReasonOnlyProposalDismissed || doc["archive_note"] != "No longer needed" {
+		t.Fatalf("projection=%v", doc)
+	}
+	response = call(http.MethodGet, base, "")
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"archive_reason":"only_proposal_dismissed"`) {
+		t.Fatalf("get=%d %s", response.Code, response.Body)
+	}
+	response = call(http.MethodGet, "/v1/requirements", "")
+	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), id) {
+		t.Fatalf("live list=%d %s", response.Code, response.Body)
+	}
+	response = call(http.MethodGet, "/v1/requirements?include_archived=true", "")
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), id) {
+		t.Fatalf("archive list=%d %s", response.Code, response.Body)
+	}
+	response = call(http.MethodPost, base+"/restore", "")
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "no confirmed version to restore to") {
+		t.Fatalf("restore=%d %s", response.Code, response.Body)
+	}
+}

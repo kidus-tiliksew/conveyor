@@ -68,7 +68,7 @@ func (s *Store) GetSystemDesign(ctx context.Context, id string) (core.SystemDesi
 	item := core.SystemDesign{Workspace: workspace(ctx), ID: id}
 	var current *int
 	var archivedAt *time.Time
-	err := s.pool.QueryRow(ctx, `SELECT slug,title,category,current_version,archived_at,archived_by,superseded_by,created_at,updated_at FROM system_designs WHERE workspace_id=$1 AND id=$2`, workspace(ctx), id).Scan(&item.Slug, &item.Title, &item.Category, &current, &archivedAt, &item.ArchivedBy, &item.SupersededBy, &item.CreatedAt, &item.UpdatedAt)
+	err := s.pool.QueryRow(ctx, `SELECT slug,title,category,current_version,archived_at,archived_by,archive_reason,archive_note,superseded_by,created_at,updated_at FROM system_designs WHERE workspace_id=$1 AND id=$2`, workspace(ctx), id).Scan(&item.Slug, &item.Title, &item.Category, &current, &archivedAt, &item.ArchivedBy, &item.ArchiveReason, &item.ArchiveNote, &item.SupersededBy, &item.CreatedAt, &item.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return item, fmt.Errorf("%w: system design %s", store.ErrNotFound, id)
 	}
@@ -109,8 +109,12 @@ func (s *Store) setSystemDesignArchived(ctx context.Context, id, actor string, a
 		var current *int
 		var archivedAt *time.Time
 		var storedSupersedingIDs []string
-		if err := tx.QueryRow(ctx, `SELECT current_version,archived_at,superseded_by FROM system_designs WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspace(ctx), id).Scan(&current, &archivedAt, &storedSupersedingIDs); err != nil {
+		var archiveReason string
+		if err := tx.QueryRow(ctx, `SELECT current_version,archived_at,superseded_by,archive_reason FROM system_designs WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspace(ctx), id).Scan(&current, &archivedAt, &storedSupersedingIDs, &archiveReason); err != nil {
 			return notFound(err, "system design %s", id)
+		}
+		if !archived && archiveReason == core.ArchiveReasonOnlyProposalDismissed {
+			return &store.DocumentRestoreConflict{DocumentID: id}
 		}
 		if (archivedAt != nil) == archived {
 			return nil
@@ -128,7 +132,7 @@ func (s *Store) setSystemDesignArchived(ctx context.Context, id, actor string, a
 			if _, err := tx.Exec(ctx, `UPDATE system_designs SET archived_at=$3,archived_by=$4,superseded_by=$5,updated_at=$3 WHERE workspace_id=$1 AND id=$2`, workspace(ctx), id, now, actor, accepted); err != nil {
 				return err
 			}
-		} else if _, err := tx.Exec(ctx, `UPDATE system_designs SET archived_at=NULL,archived_by='',superseded_by='{}',updated_at=$3 WHERE workspace_id=$1 AND id=$2`, workspace(ctx), id, now); err != nil {
+		} else if _, err := tx.Exec(ctx, `UPDATE system_designs SET archived_at=NULL,archived_by='',archive_reason='',archive_note='',superseded_by='{}',updated_at=$3 WHERE workspace_id=$1 AND id=$2`, workspace(ctx), id, now); err != nil {
 			return err
 		}
 		version := 0
@@ -350,13 +354,17 @@ func dismissSystemDesignVersionTx(ctx context.Context, tx pgx.Tx, q *db.Queries,
 		}
 		dismissed.DismissalNote = store.DocumentDismissalNote(ctx)
 		dismissed.Dismissed, dismissed.DismissedBy, dismissed.DismissedAt = true, actor.ID, now
-		if document, err = scanSystemDesign(tx.QueryRow(ctx, systemDesignSelect+
-			` WHERE workspace_id=$1 AND id=$2`, workspace(ctx), documentID), documentID); err != nil {
+
+		if err = insertWorkspaceEvent(ctx, q, core.Event{Kind: "system_design.version_dismissed", Payload: core.JSONPayload(store.DocumentDismissalEventPayload(ctx, map[string]any{
+			"workspace_id": workspace(ctx), "document_id": documentID, "version": version, "dismissed_by": actor.ID,
+		}))}); err != nil {
 			return err
 		}
-		return insertWorkspaceEvent(ctx, q, core.Event{Kind: "system_design.version_dismissed", Payload: core.JSONPayload(store.DocumentDismissalEventPayload(ctx, map[string]any{
-			"workspace_id": workspace(ctx), "document_id": documentID, "version": version, "dismissed_by": actor.ID,
-		}))})
+		if _, err = archiveDismissedDocumentTx(ctx, tx, q, "system_design", documentID, now); err != nil {
+			return err
+		}
+		document, err = scanSystemDesign(tx.QueryRow(ctx, systemDesignSelect+` WHERE workspace_id=$1 AND id=$2`, workspace(ctx), documentID), documentID)
+		return err
 	}()
 	return document, dismissed, err
 }
@@ -403,14 +411,14 @@ func reconcileConfirmedSystemDesignDriftTx(ctx context.Context, tx pgx.Tx, q *db
 	return nil
 }
 
-const systemDesignSelect = `SELECT workspace_id,id,slug,title,category,current_version,archived_at,archived_by,superseded_by,created_at,updated_at FROM system_designs`
+const systemDesignSelect = `SELECT workspace_id,id,slug,title,category,current_version,archived_at,archived_by,archive_reason,archive_note,superseded_by,created_at,updated_at FROM system_designs`
 const systemDesignVersionSelect = `SELECT workspace_id,document_id,version,content,governs,origin,coalesce(origin_session_id,''),coalesce(origin_task_id,''),confirmed,coalesce(confirmed_by,''),confirmed_at,dismissed,coalesce(dismissed_by,''),dismissed_at,created_at,COALESCE(dismissal_note,'') FROM system_design_versions`
 
 func scanSystemDesign(row pgx.Row, id string) (core.SystemDesign, error) {
 	var item core.SystemDesign
 	var current *int
 	var archivedAt *time.Time
-	err := row.Scan(&item.Workspace, &item.ID, &item.Slug, &item.Title, &item.Category, &current, &archivedAt, &item.ArchivedBy, &item.SupersededBy, &item.CreatedAt, &item.UpdatedAt)
+	err := row.Scan(&item.Workspace, &item.ID, &item.Slug, &item.Title, &item.Category, &current, &archivedAt, &item.ArchivedBy, &item.ArchiveReason, &item.ArchiveNote, &item.SupersededBy, &item.CreatedAt, &item.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return item, fmt.Errorf("%w: system design %s", store.ErrNotFound, id)
 	}
