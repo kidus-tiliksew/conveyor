@@ -98,8 +98,11 @@ func TestDirectVersionDismissalClearsPendingProjectionAndKeepsHistoryIntegration
 	if items, listErr := st.ListPendingProposals(ctx); listErr != nil || len(items) != 0 {
 		t.Fatalf("pending after dismissal=%+v err=%v", items, listErr)
 	}
-	if requirements, listErr := st.ListRequirements(ctx, false); listErr != nil || len(requirements) != 1 || requirements[0].ID != requirement.ID {
-		t.Fatalf("requirements after dismissal=%+v err=%v", requirements, listErr)
+	if requirements, listErr := st.ListRequirements(ctx, false); listErr != nil || len(requirements) != 0 {
+		t.Fatalf("live requirements after dismissal=%+v err=%v", requirements, listErr)
+	}
+	if requirements, listErr := st.ListRequirements(ctx, true); listErr != nil || len(requirements) != 1 || requirements[0].ID != requirement.ID || !requirements[0].Archived || requirements[0].ArchiveReason != core.ArchiveReasonOnlyProposalDismissed {
+		t.Fatalf("archived requirements after dismissal=%+v err=%v", requirements, listErr)
 	}
 	requirementHistory, err := st.ListRequirementVersions(ctx, requirement.ID)
 	if err != nil || len(requirementHistory) != 1 || !requirementHistory[0].Retired || requirementHistory[0].RetiredByVersion != 0 {
@@ -110,17 +113,18 @@ func TestDirectVersionDismissalClearsPendingProjectionAndKeepsHistoryIntegration
 		t.Fatalf("design history=%+v err=%v", designHistory, err)
 	}
 	requirementEvents, err := st.ListRequirementEvents(ctx, requirement.ID)
-	if err != nil || requirementEvents[len(requirementEvents)-1].Kind != "requirement.version_dismissed" {
+	if err != nil || len(requirementEvents) < 2 || requirementEvents[len(requirementEvents)-2].Kind != "requirement.version_dismissed" || requirementEvents[len(requirementEvents)-1].Kind != "requirement.archived" {
 		t.Fatalf("requirement events=%+v err=%v", requirementEvents, err)
 	}
 	designEvents, err := st.ListSystemDesignEvents(ctx, design.ID)
-	if err != nil || designEvents[len(designEvents)-1].Kind != "system_design.version_dismissed" {
+	if err != nil || len(designEvents) < 2 || designEvents[len(designEvents)-2].Kind != "system_design.version_dismissed" || designEvents[len(designEvents)-1].Kind != "system_design.archived" {
 		t.Fatalf("design events=%+v err=%v", designEvents, err)
 	}
 	reproposed, err := st.ProposeSystemDesignVersion(ctx, core.SystemDesignVersion{
 		DocumentID: design.ID, Content: designContent, Origin: designVersion.Origin, OriginTaskID: designVersion.OriginTaskID,
 	})
-	if err != nil || reproposed.Version != 2 || reproposed.Deduplicated {
+	var archived *store.SystemDesignArchivedError
+	if !errors.As(err, &archived) {
 		t.Fatalf("design reproposal=%+v err=%v", reproposed, err)
 	}
 }

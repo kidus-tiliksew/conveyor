@@ -25,8 +25,10 @@ func (s *Server) mcpDocumentList(ctx context.Context, a map[string]any) ([]any, 
 			return nil, e
 		}
 		for _, v := range values {
-			if v.CurrentVersion > 0 && readMatches(a, v.ID+" "+v.Title) {
-				result = append(result, documentReadIdentity(kind, v.ID, v.Title, v.CurrentVersion, v.Archived, v.SupersededBy))
+			if (v.CurrentVersion > 0 || (archived && v.Archived)) && readMatches(a, v.ID+" "+v.Title) {
+				identity := documentReadIdentity(kind, v.ID, v.Title, v.CurrentVersion, v.Archived, v.SupersededBy)
+				addDocumentArchiveReason(identity, v.ArchiveReason, v.ArchiveNote)
+				result = append(result, identity)
 			}
 		}
 	case "system_design":
@@ -35,8 +37,10 @@ func (s *Server) mcpDocumentList(ctx context.Context, a map[string]any) ([]any, 
 			return nil, e
 		}
 		for _, v := range values {
-			if v.CurrentVersion > 0 && readMatches(a, v.ID+" "+v.Title) {
-				result = append(result, documentReadIdentity(kind, v.ID, v.Title, v.CurrentVersion, v.Archived, v.SupersededBy))
+			if (v.CurrentVersion > 0 || (archived && v.Archived)) && readMatches(a, v.ID+" "+v.Title) {
+				identity := documentReadIdentity(kind, v.ID, v.Title, v.CurrentVersion, v.Archived, v.SupersededBy)
+				addDocumentArchiveReason(identity, v.ArchiveReason, v.ArchiveNote)
+				result = append(result, identity)
 			}
 		}
 	case "reference":
@@ -65,12 +69,14 @@ func (s *Server) mcpDocumentIdentity(ctx context.Context, a map[string]any) (map
 			return nil, store.ErrNotFound
 		}
 		p = documentReadIdentity(kind, v.ID, v.Title, v.CurrentVersion, v.Archived, v.SupersededBy)
+		addDocumentArchiveReason(p, v.ArchiveReason, v.ArchiveNote)
 	case "system_design":
 		v, e := s.Store.GetSystemDesign(ctx, id)
 		if e != nil {
 			return nil, store.ErrNotFound
 		}
 		p = documentReadIdentity(kind, v.ID, v.Title, v.CurrentVersion, v.Archived, v.SupersededBy)
+		addDocumentArchiveReason(p, v.ArchiveReason, v.ArchiveNote)
 	case "reference":
 		v, e := s.Store.GetReferenceDocument(ctx, id)
 		if e != nil {
@@ -160,4 +166,13 @@ func (s *Server) mcpDocumentRead(ctx context.Context, a map[string]any) (map[str
 	}
 	p["active_authority"] = p["active_authority"] == true && confirmed && !retired && p["historical"] == false
 	return p, nil
+}
+
+func addDocumentArchiveReason(p map[string]any, reason, note string) {
+	if reason != "" {
+		p["archive_reason"] = reason
+	}
+	if note != "" {
+		p["archive_note"] = note
+	}
 }

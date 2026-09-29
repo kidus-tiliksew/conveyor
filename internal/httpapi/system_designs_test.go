@@ -359,3 +359,55 @@ func TestDecisionSupersessionSweepHTTPProjectionAndDismissal(t *testing.T) {
 		t.Fatalf("clean detail status=%d body=%s", detail.Code, detail.Body.String())
 	}
 }
+
+func TestSystemDesignOnlyProposalDismissalArchiveHTTP(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	id := "only-proposal"
+	_, _, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: id, Title: id, Category: "Architecture"}, core.SystemDesignVersion{Content: "# Proposal\n\n```conveyor:governs\n- repo: conveyor\n  paths: [internal/**]\n```", Origin: core.SystemDesignOriginOperator})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := NewServer(st)
+	s.Workspace, s.BearerToken = "demo", "token"
+	handler := s.Handler()
+	call := func(method, path, body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, path, strings.NewReader(body))
+		r.Header.Set("Authorization", "Bearer token")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		return w
+	}
+	base := "/v1/system-designs/" + id
+	response := call(http.MethodPost, base+"/versions/1/dismiss", `{"note":"No longer needed"}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("dismiss=%d %s", response.Code, response.Body)
+	}
+	var body map[string]json.RawMessage
+	if err = json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	if err = json.Unmarshal(body["document"], &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc["archived"] != true || doc["archive_reason"] != core.ArchiveReasonOnlyProposalDismissed || doc["archive_note"] != "No longer needed" {
+		t.Fatalf("projection=%v", doc)
+	}
+	response = call(http.MethodGet, base, "")
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"archive_reason":"only_proposal_dismissed"`) {
+		t.Fatalf("get=%d %s", response.Code, response.Body)
+	}
+	response = call(http.MethodGet, "/v1/system-designs", "")
+	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), id) {
+		t.Fatalf("live list=%d %s", response.Code, response.Body)
+	}
+	response = call(http.MethodGet, "/v1/system-designs?include_archived=true", "")
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), id) {
+		t.Fatalf("archive list=%d %s", response.Code, response.Body)
+	}
+	response = call(http.MethodPost, base+"/restore", "")
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "no confirmed version to restore to") {
+		t.Fatalf("restore=%d %s", response.Code, response.Body)
+	}
+}

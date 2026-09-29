@@ -454,8 +454,11 @@ func (s *Server) setRequirementArchiveState(w http.ResponseWriter, r *http.Reque
 	}
 	if err != nil {
 		var reference *store.SupersededByInvalidError
+		var restoreConflict *store.DocumentRestoreConflict
 		if errors.Is(err, store.ErrNotFound) {
 			http.Error(w, err.Error(), http.StatusNotFound)
+		} else if errors.As(err, &restoreConflict) {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "no_confirmed_version", "detail": restoreConflict.Error(), "document_id": restoreConflict.DocumentID})
 		} else if errors.As(err, &reference) {
 			writeJSON(w, http.StatusConflict, map[string]string{"error": "superseded_by_invalid", "detail": reference.Error(), "document_id": reference.DocumentID, "reason": reference.Reason})
 		} else {

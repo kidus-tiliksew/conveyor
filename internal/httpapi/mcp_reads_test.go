@@ -505,3 +505,57 @@ func TestMCPReadChronologicalTieBreakAndUnknownActor(t *testing.T) {
 		}
 	}
 }
+
+func TestMCPReadDismissalArchive(t *testing.T) {
+	for _, tier := range []string{"requirement", "system_design"} {
+		t.Run(tier, func(t *testing.T) {
+			s, ctx := newMCPReadFixture(t)
+			st := s.Store
+			id := "dismissed-only"
+			var err error
+			ctx, err = store.WithDocumentDismissalNote(ctx, "Not needed")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tier == "requirement" {
+				_, _, err = st.CreateRequirement(ctx, core.Requirement{ID: id, Title: id}, core.RequirementVersion{Content: "# Proposal", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Keep history."}}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, _, err = st.DismissRequirementVersion(ctx, id, 1)
+			} else {
+				_, _, err = st.CreateSystemDesign(ctx, core.SystemDesign{ID: id, Title: id, Category: "Architecture"}, core.SystemDesignVersion{Content: "# Proposal\n\n```conveyor:governs\n- repo: conveyor\n  paths: [internal/**]\n```", Origin: core.SystemDesignOriginOperator})
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, _, err = st.DismissSystemDesignVersion(ctx, id, 1)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			a := map[string]any{"workspace_id": "demo", "kind": tier, "query": id}
+			if p := mustRead(t, s, "list_documents", a); p.Total != 0 {
+				t.Fatalf("live list=%+v", p)
+			}
+			a["include_archived"] = true
+			p := mustRead(t, s, "list_documents", a)
+			if p.Total != 1 {
+				t.Fatalf("archive list=%+v", p)
+			}
+			d := readItem(t, p, 0)
+			if d["archived"] != true || d["archive_reason"] != core.ArchiveReasonOnlyProposalDismissed || d["archive_note"] != "Not needed" || d["active_authority"] != false {
+				t.Fatalf("archive=%v", d)
+			}
+			a = map[string]any{"workspace_id": "demo", "kind": tier, "document_id": id, "include_archived": true}
+			d = readItem(t, mustRead(t, s, "get_document", a), 0)
+			if d["authority_absent"] != true || d["archive_reason"] != core.ArchiveReasonOnlyProposalDismissed || d["active_authority"] != false {
+				t.Fatalf("read=%v", d)
+			}
+			a["version"] = 1
+			d = readItem(t, mustRead(t, s, "get_document", a), 0)
+			if d["active_authority"] != false || !strings.Contains(fmt.Sprint(d["content"]), "# Proposal") {
+				t.Fatalf("history=%v", d)
+			}
+		})
+	}
+}

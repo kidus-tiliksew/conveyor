@@ -108,6 +108,9 @@ type DoneCriteriaAssessment struct {
 	Conflicts   []string `json:"conflicts"`
 }
 
+// ArchiveReasonOnlyProposalDismissed marks an archive with no prior authority.
+const ArchiveReasonOnlyProposalDismissed = "only_proposal_dismissed"
+
 // Requirement is the document identity. Prose and statements live on versions;
 // the row records only which version is currently confirmed.
 type Requirement struct {
@@ -122,6 +125,8 @@ type Requirement struct {
 	StatementHighWaterMark int       `json:"statement_high_water_mark"`
 	Archived               bool      `json:"archived"`
 	ArchivedBy             string    `json:"archived_by,omitempty"`
+	ArchiveReason          string    `json:"archive_reason,omitempty"`
+	ArchiveNote            string    `json:"archive_note,omitempty"`
 	ArchivedAt             time.Time `json:"archived_at,omitempty"`
 	SupersededBy           []string  `json:"superseded_by,omitempty"`
 	Workspace              string    `json:"workspace"`
