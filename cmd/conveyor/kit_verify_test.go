@@ -164,7 +164,7 @@ func TestKitRunnerExecutionOutcomes(t *testing.T) {
 		{"changed source", "touch changed-source", "script", "blocked", 5},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			e := verification.Exercise{ID: "check", Kind: tc.kind, Argv: []string{"sh", "-c", tc.script}, TimeoutSeconds: tc.timeout, RequiredAssertions: []string{}, Operations: []verification.Operation{}}
+			e := verification.Exercise{ID: "check", Kind: tc.kind, Argv: []string{"sh", "-c", tc.script}, TimeoutSeconds: tc.timeout, RequiredAssertions: []verification.Assertion{}, Operations: []verification.Operation{}}
 			f := newKitExecutionFixture(t, e)
 			subject := f.snapshot.Attempts[0].Subject
 			environment := core.VerificationEnvironment{Target: "fixture", OS: "unknown", Architecture: "unknown", Runtime: "fixture", Deployment: "unknown", Attributes: map[string]string{}}
@@ -188,7 +188,7 @@ func TestKitRunnerExecutionOutcomes(t *testing.T) {
 func TestKitRunnerCancellationAndClaimLoss(t *testing.T) {
 	for _, lost := range []bool{false, true} {
 		t.Run(fmt.Sprint(lost), func(t *testing.T) {
-			e := verification.Exercise{ID: "check", Kind: "script", Argv: []string{"sh", "-c", "sleep 30 & wait"}, TimeoutSeconds: 10, RequiredAssertions: []string{}}
+			e := verification.Exercise{ID: "check", Kind: "script", Argv: []string{"sh", "-c", "sleep 30 & wait"}, TimeoutSeconds: 10, RequiredAssertions: []verification.Assertion{}}
 			f := newKitExecutionFixture(t, e)
 			if lost {
 				time.AfterFunc(200*time.Millisecond, func() { f.mu.Lock(); f.loseClaim = true; f.mu.Unlock() })
@@ -220,7 +220,7 @@ func TestKitRunnerChildEnvironmentAndMissingCredentials(t *testing.T) {
 	t.Setenv("CONVEYOR_CLIENT_TOKEN", "claim-secret-fixture")
 	t.Setenv("GH_TOKEN", "forge-secret-fixture")
 	t.Setenv("OPENAI_API_KEY", "parent-secret-fixture")
-	e := verification.Exercise{ID: "check", Kind: "script", Argv: []string{"sh", "-c", `test -z "$CONVEYOR_API_TOKEN$CONVEYOR_CLIENT_TOKEN$GH_TOKEN$OPENAI_API_KEY" && test -n "$CONVEYOR_KIT_OPERATIONS"`}, TimeoutSeconds: 5, RequiredAssertions: []string{}}
+	e := verification.Exercise{ID: "check", Kind: "script", Argv: []string{"sh", "-c", `test -z "$CONVEYOR_API_TOKEN$CONVEYOR_CLIENT_TOKEN$GH_TOKEN$OPENAI_API_KEY" && test -n "$CONVEYOR_KIT_OPERATIONS"`}, TimeoutSeconds: 5, RequiredAssertions: []verification.Assertion{}}
 	f := newKitExecutionFixture(t, e)
 	env := core.VerificationEnvironment{Target: "fixture", OS: "unknown", Architecture: "unknown", Runtime: "fixture", Deployment: "unknown", Attributes: map[string]string{}}
 	if err := f.v.launch(t.Context(), e, f.v.root, t.TempDir(), "run", "grant", f.snapshot.Attempts[0].Subject, env, []string{"PATH=/usr/bin:/bin"}); err != nil {
@@ -277,7 +277,7 @@ func TestKitRunnerDurableOperationRelay(t *testing.T) {
 	}
 	for _, refused := range []bool{false, true} {
 		t.Run(fmt.Sprint(refused), func(t *testing.T) {
-			e := verification.Exercise{ID: "check", Kind: "script", Argv: []string{"python3", fixture}, TimeoutSeconds: 10, RequiredAssertions: []string{}, Operations: []verification.Operation{{ID: "create", TargetBinding: "fixture"}}}
+			e := verification.Exercise{ID: "check", Kind: "script", Argv: []string{"python3", fixture}, TimeoutSeconds: 10, RequiredAssertions: []verification.Assertion{}, Operations: []verification.Operation{{ID: "create", TargetBinding: "fixture"}}}
 			f := newKitExecutionFixture(t, e)
 			f.refuseDispatch = refused
 			env := core.VerificationEnvironment{Target: "fixture", OS: "unknown", Architecture: "unknown", Runtime: "fixture", Deployment: "unknown", Attributes: map[string]string{}}
@@ -294,7 +294,7 @@ func TestKitRunnerDurableOperationRelay(t *testing.T) {
 }
 
 func TestKitRunnerUninstrumentedMutationIsBlocked(t *testing.T) {
-	e := verification.Exercise{ID: "check", Kind: "script", Argv: []string{"sh", "-c", "exit 0"}, TimeoutSeconds: 5, RequiredAssertions: []string{}, Operations: []verification.Operation{{ID: "create", TargetBinding: "fixture"}}}
+	e := verification.Exercise{ID: "check", Kind: "script", Argv: []string{"sh", "-c", "exit 0"}, TimeoutSeconds: 5, RequiredAssertions: []verification.Assertion{}, Operations: []verification.Operation{{ID: "create", TargetBinding: "fixture"}}}
 	f := newKitExecutionFixture(t, e)
 	env := core.VerificationEnvironment{Target: "fixture", OS: "unknown", Architecture: "unknown", Runtime: "fixture", Deployment: "unknown", Attributes: map[string]string{}}
 	if err := f.v.launch(t.Context(), e, f.v.root, t.TempDir(), "run", "grant", f.snapshot.Attempts[0].Subject, env, []string{"PATH=/usr/bin:/bin"}); err == nil || f.outcome != "blocked" {
@@ -305,7 +305,7 @@ func TestKitRunnerUninstrumentedMutationIsBlocked(t *testing.T) {
 func TestKitVerifyOrdinaryObligationsAndReplay(t *testing.T) {
 	for _, discovery := range []string{"no_manifest", "no_eligible_kits", "no_manifest_missing_executable"} {
 		t.Run(discovery, func(t *testing.T) {
-			e := verification.Exercise{ID: "ordinary", Kind: "script", Argv: []string{"true"}, Cwd: ".", TimeoutSeconds: 5, RequiredAssertions: []string{}, Operations: []verification.Operation{}}
+			e := verification.Exercise{ID: "ordinary", Kind: "script", Argv: []string{"true"}, Cwd: ".", TimeoutSeconds: 5, RequiredAssertions: []verification.Assertion{}, Operations: []verification.Operation{}}
 			missing := discovery == "no_manifest_missing_executable"
 			if missing {
 				e.Argv = []string{"kit-unavailable-fixture"}
@@ -371,7 +371,7 @@ func TestKitVerifyOrdinaryObligationsAndReplay(t *testing.T) {
 }
 
 func TestKitRunnerUIExecutionReport(t *testing.T) {
-	e := verification.Exercise{ID: "check", Kind: "script", Argv: []string{"sh", "-c", "sleep 0.2"}, TimeoutSeconds: 5, RequiredAssertions: []string{}, Operations: []verification.Operation{}}
+	e := verification.Exercise{ID: "check", Kind: "script", Argv: []string{"sh", "-c", "sleep 0.2"}, TimeoutSeconds: 5, RequiredAssertions: []verification.Assertion{}, Operations: []verification.Operation{}}
 	f := newKitExecutionFixture(t, e)
 	f.v.ui = &verification.UI{Argv: []string{"sh", "-c", "sleep 30 & wait"}, Port: 8765}
 	f.v.uiRoot = f.v.root
@@ -390,7 +390,7 @@ func TestKitRunnerUIExecutionReport(t *testing.T) {
 }
 
 func TestKitRunnerOfflineEvidenceRetentionAndRetry(t *testing.T) {
-	e := verification.Exercise{ID: "offline", Kind: "script", Argv: []string{"sh", "-c", "sleep 5"}, TimeoutSeconds: 10, RequiredAssertions: []string{}, Operations: []verification.Operation{}}
+	e := verification.Exercise{ID: "offline", Kind: "script", Argv: []string{"sh", "-c", "sleep 5"}, TimeoutSeconds: 10, RequiredAssertions: []verification.Assertion{}, Operations: []verification.Operation{}}
 	f := newKitExecutionFixture(t, e)
 	root := t.TempDir()
 	time.AfterFunc(200*time.Millisecond, func() { f.mu.Lock(); f.offline = true; f.mu.Unlock() })
@@ -420,7 +420,7 @@ func TestKitRunnerOfflineEvidenceRetentionAndRetry(t *testing.T) {
 func TestKitRunnerRevocationAndExpiryDuringRequest(t *testing.T) {
 	for _, revoke := range []bool{false, true} {
 		t.Run(fmt.Sprint(revoke), func(t *testing.T) {
-			e := verification.Exercise{ID: "stop", Kind: "script", Argv: []string{"sh", "-c", "sleep 20 & wait"}, TimeoutSeconds: 30, RequiredAssertions: []string{}, Operations: []verification.Operation{}}
+			e := verification.Exercise{ID: "stop", Kind: "script", Argv: []string{"sh", "-c", "sleep 20 & wait"}, TimeoutSeconds: 30, RequiredAssertions: []verification.Assertion{}, Operations: []verification.Operation{}}
 			f := newKitExecutionFixture(t, e)
 			if revoke {
 				time.AfterFunc(200*time.Millisecond, func() {
@@ -457,7 +457,7 @@ func TestKitRunnerRejectsParentCredentialAlias(t *testing.T) {
 }
 
 func TestKitRunnerRetainsSanitizedOutput(t *testing.T) {
-	e := verification.Exercise{ID: "output", Kind: "script", Argv: []string{"sh", "-c", `printf '%s\n' "$KIT_VALUE" 'https://example.test/path?password=unknown-secret' 'Authorization: unknown-header'`}, TimeoutSeconds: 5, RequiredAssertions: []string{}, Operations: []verification.Operation{}}
+	e := verification.Exercise{ID: "output", Kind: "script", Argv: []string{"sh", "-c", `printf '%s\n' "$KIT_VALUE" 'https://example.test/path?password=unknown-secret' 'Authorization: unknown-header'`}, TimeoutSeconds: 5, RequiredAssertions: []verification.Assertion{}, Operations: []verification.Operation{}}
 	f := newKitExecutionFixture(t, e)
 	root := t.TempDir()
 	env := core.VerificationEnvironment{Target: "fixture", OS: "unknown", Architecture: "unknown", Runtime: "fixture", Deployment: "unknown", Attributes: map[string]string{}}
@@ -498,7 +498,7 @@ func TestKitRunnerDigestAndMissingGrantAdmission(t *testing.T) {
 }
 
 func TestKitRunnerInteractiveCompletionUsesOperatorEvidence(t *testing.T) {
-	e := verification.Exercise{ID: "interactive", Kind: "interactive", Argv: []string{"true"}, TimeoutSeconds: 5, RequiredAssertions: []string{}, Operations: []verification.Operation{}}
+	e := verification.Exercise{ID: "interactive", Kind: "interactive", Argv: []string{"true"}, TimeoutSeconds: 5, RequiredAssertions: []verification.Assertion{}, Operations: []verification.Operation{}}
 	f := newKitExecutionFixture(t, e)
 	subject := f.snapshot.Attempts[0].Subject
 	at := time.Now().UTC().Format(time.RFC3339Nano)

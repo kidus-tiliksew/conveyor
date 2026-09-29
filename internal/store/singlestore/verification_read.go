@@ -98,6 +98,9 @@ func (s *Store) ReadVerificationDetail(ctx context.Context, a store.Verification
 func verificationReadProjection(kind string) string {
 	switch kind {
 	case "assertions":
+		// A described required assertion is stored as {"id","description"}
+		// (feature-verification-kit-execution VK-3.1); undescribed ones stay
+		// bare ID strings, so required status matches either form.
 		return `SELECT r.workspace_id,r.task_id,r.id,r.context_id,r.run_id,r.state,r.read_at,
  JSON_BUILD_OBJECT('type','assertion_result','assertion_id',LEFT(JSON_EXTRACT_STRING(r.body,'Envelope','payload','assertion_id'),2048),
  'outcome',JSON_EXTRACT_STRING(r.body,'Envelope','payload','outcome'),'evidence_id',r.id,
@@ -105,10 +108,19 @@ func verificationReadProjection(kind string) string {
  EXISTS(SELECT 1 FROM verification_obligations o WHERE o.workspace_id=r.workspace_id AND o.task_id=r.task_id AND o.context_id=r.context_id
  AND JSON_EXTRACT_STRING(o.body,'ID')=JSON_EXTRACT_STRING(r.body,'Envelope','subject','obligation_id') AND JSON_EXTRACT_STRING(o.body,'Digest')=JSON_EXTRACT_STRING(r.body,'Envelope','subject','contract_digest')
  AND JSON_ARRAY_CONTAINS_STRING(JSON_EXTRACT_JSON(o.body,'Contract','required_assertions'),JSON_EXTRACT_STRING(r.body,'Envelope','payload','assertion_id')))
+ OR EXISTS(SELECT 1 FROM verification_obligations o JOIN TABLE(JSON_TO_ARRAY(JSON_EXTRACT_JSON(o.body,'Contract','required_assertions'))) a
+ WHERE o.workspace_id=r.workspace_id AND o.task_id=r.task_id AND o.context_id=r.context_id
+ AND JSON_EXTRACT_STRING(o.body,'ID')=JSON_EXTRACT_STRING(r.body,'Envelope','subject','obligation_id') AND JSON_EXTRACT_STRING(o.body,'Digest')=JSON_EXTRACT_STRING(r.body,'Envelope','subject','contract_digest')
+ AND JSON_EXTRACT_STRING(a.table_col,'id')=JSON_EXTRACT_STRING(r.body,'Envelope','payload','assertion_id'))
  OR EXISTS(SELECT 1 FROM verification_selections s JOIN TABLE(JSON_TO_ARRAY(JSON_EXTRACT_JSON(s.body,'Subjects'))) k
  WHERE s.workspace_id=r.workspace_id AND s.task_id=r.task_id AND s.context_id=r.context_id
  AND JSON_EXTRACT_JSON(k.table_col,'Subject')=JSON_EXTRACT_JSON(r.body,'Envelope','subject')
  AND JSON_ARRAY_CONTAINS_STRING(JSON_EXTRACT_JSON(k.table_col,'Contract','required_assertions'),JSON_EXTRACT_STRING(r.body,'Envelope','payload','assertion_id')))
+ OR EXISTS(SELECT 1 FROM verification_selections s JOIN TABLE(JSON_TO_ARRAY(JSON_EXTRACT_JSON(s.body,'Subjects'))) k
+ JOIN TABLE(JSON_TO_ARRAY(JSON_EXTRACT_JSON(k.table_col,'Contract','required_assertions'))) a
+ WHERE s.workspace_id=r.workspace_id AND s.task_id=r.task_id AND s.context_id=r.context_id
+ AND JSON_EXTRACT_JSON(k.table_col,'Subject')=JSON_EXTRACT_JSON(r.body,'Envelope','subject')
+ AND JSON_EXTRACT_STRING(a.table_col,'id')=JSON_EXTRACT_STRING(r.body,'Envelope','payload','assertion_id'))
  THEN 'true' ELSE 'false' END) AS metadata
  FROM verification_evidence r WHERE r.state='evidence' AND JSON_EXTRACT_STRING(r.body,'Envelope','type')='assertion_result'`
 

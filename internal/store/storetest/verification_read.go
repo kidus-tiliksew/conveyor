@@ -233,12 +233,12 @@ func RunVerificationRead(t *testing.T, x Fixture) {
 	})
 	t.Run("RequiredAndOptionalAssertions", func(t *testing.T) {
 		v := newVerificationFixture(t, x, true)
-		obligation := v.apply(t, store.VerificationCommand{Kind: store.VerificationRegisterObligation, Obligation: &store.VerificationObligation{ID: "assertions", Description: "Assert observed state", Sources: []store.VerificationCitation{{DocumentID: "req-fixture", Version: 1, SectionID: "AC-1.1"}}, Contract: verification.Exercise{ID: "assertions", Kind: "script", Argv: []string{"true"}, TimeoutSeconds: 30, RequiredAssertions: []string{"required-check"}, RetryPolicy: "safe_to_replay", SafetyBasis: "read only"}}})
+		obligation := v.apply(t, store.VerificationCommand{Kind: store.VerificationRegisterObligation, Obligation: &store.VerificationObligation{ID: "assertions", Description: "Assert observed state", Sources: []store.VerificationCitation{{DocumentID: "req-fixture", Version: 1, SectionID: "AC-1.1"}}, Contract: verification.Exercise{ID: "assertions", Kind: "script", Argv: []string{"true"}, TimeoutSeconds: 30, RequiredAssertions: []verification.Assertion{{ID: "required-check"}, {ID: "described-check", Description: "The observed state matches the expected state."}}, RetryPolicy: "safe_to_replay", SafetyBasis: "read only"}}})
 		v.subject = core.VerificationSubject{Kind: "ordinary", ObligationID: "assertions", ContractDigest: obligation.Digest}
 		v.start(t, "assertion-start")
 		observed := v.envelope("assertion-support", "support", "observed")
 		v.apply(t, store.VerificationCommand{Kind: store.VerificationWriteEvidence, Key: "support", Evidence: []json.RawMessage{verificationBytes(observed)}})
-		for _, id := range []string{"required-check", "optional-check"} {
+		for _, id := range []string{"required-check", "described-check", "optional-check"} {
 			e := v.envelope(id, id, "")
 			e.Type = "assertion_result"
 			e.Payload = verificationBytes(core.AssertionResultPayload{AssertionID: id, Text: "Check state", Expected: "expected", Actual: "observed", Outcome: "fail", Supporting: []core.VerificationReference{{EvidenceID: "assertion-support"}}})
@@ -247,14 +247,16 @@ func RunVerificationRead(t *testing.T, x Fixture) {
 		a := store.VerificationAccess{TaskID: v.access.TaskID, UserID: owner.ID}
 		page, err := r.ReadVerificationPage(ctx, a, store.VerificationPageRequest{Kind: "assertions", ContextID: v.contextID})
 		requireOK(t, err)
-		if len(page.Items) != 2 {
+		if len(page.Items) != 3 {
 			t.Fatalf("assertion projection: %+v", page)
 		}
 		for _, item := range page.Items {
 			var metadata map[string]string
 			requireOK(t, json.Unmarshal(item.Metadata, &metadata))
+			// A described assertion is stored in object form (VK-3.1) and
+			// must read as required exactly like a bare-string assertion.
 			want := "false"
-			if metadata["assertion_id"] == "required-check" {
+			if metadata["assertion_id"] == "required-check" || metadata["assertion_id"] == "described-check" {
 				want = "true"
 			}
 			if metadata["required"] != want || metadata["outcome"] != "fail" {
@@ -270,7 +272,7 @@ func RunVerificationRead(t *testing.T, x Fixture) {
 			selection.Receipt.Kits = append(selection.Receipt.Kits, verification.KitReceipt{KitID: id, Digest: strings.Repeat("d", 64), Eligibility: "eligible", Reasons: []verification.SelectionReason{{Code: "matching_pin", Message: strings.Repeat("selection reason ", 256)}}})
 		}
 		v.subject = core.VerificationSubject{Kind: "kit", KitID: "kit-a", KitVersion: "1", ContentDigest: strings.Repeat("d", 64), ExerciseID: "kit-check"}
-		selection.Subjects = []store.VerificationSubjectContract{{Subject: v.subject, Contract: verification.Exercise{ID: "kit-check", Kind: "script", Argv: []string{"private-command"}, TimeoutSeconds: 30, RequiredAssertions: []string{"kit-assertion"}, RetryPolicy: "safe_to_replay", SafetyBasis: "read only"}}}
+		selection.Subjects = []store.VerificationSubjectContract{{Subject: v.subject, Contract: verification.Exercise{ID: "kit-check", Kind: "script", Argv: []string{"private-command"}, TimeoutSeconds: 30, RequiredAssertions: []verification.Assertion{{ID: "kit-assertion", Description: "The kit observes the fixture state."}}, RetryPolicy: "safe_to_replay", SafetyBasis: "read only"}}}
 		v.apply(t, store.VerificationCommand{Kind: store.VerificationRecordSelection, Selection: &selection})
 		a := store.VerificationAccess{TaskID: v.access.TaskID, UserID: owner.ID}
 		p := store.VerificationPageRequest{Kind: "selections", ContextID: v.contextID, Limit: 1}

@@ -2,7 +2,10 @@ package core
 
 import (
 	"encoding/json"
+	"reflect"
 	"testing"
+
+	"github.com/kidus-tiliksew/conveyor/internal/verification"
 )
 
 func TestVerificationEvidenceSchemaRuntimeParity(t *testing.T) {
@@ -46,6 +49,36 @@ func TestArtifactMediaVerificationRecordingPolicy(t *testing.T) {
 		}
 		if _, err := ValidateArtifactMedia(media, []byte("legacy explicit declaration")); err != nil {
 			t.Fatal("legacy explicit non-image policy changed")
+		}
+	}
+}
+
+// Bare-string required assertions stay valid MCP input beside the schema-2
+// {id, description} form (feature-verification-kit-execution VK-3.1).
+func TestVerificationAssertionSchemaAcceptsBothForms(t *testing.T) {
+	schema := VerificationJSONSchema(reflect.TypeOf(verification.Exercise{}))
+	items := schema["properties"].(map[string]any)["required_assertions"].(map[string]any)["items"].(map[string]any)
+	if _, ok := items["anyOf"]; !ok {
+		t.Fatalf("assertion schema = %+v", items)
+	}
+	for _, tc := range []struct {
+		raw string
+		ok  bool
+	}{
+		{`["bare"]`, true},
+		{`[{"id":"described","description":"Observed."}]`, true},
+		{`[{"id":"described"}]`, true},
+		{`[{"description":"missing id"}]`, false},
+		{`[{"id":"x","severity":"high"}]`, false},
+		{`[5]`, false},
+	} {
+		var value any
+		if err := json.Unmarshal([]byte(tc.raw), &value); err != nil {
+			t.Fatal(err)
+		}
+		err := validateVerificationSchema(value, schema["properties"].(map[string]any)["required_assertions"].(map[string]any))
+		if (err == nil) != tc.ok {
+			t.Fatalf("%s: err = %v", tc.raw, err)
 		}
 	}
 }

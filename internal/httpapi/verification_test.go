@@ -252,7 +252,7 @@ func TestVerificationOperationToolsAndSealing(t *testing.T) {
 		t.Fatal(err)
 	}
 	vc := out.(store.VerificationSnapshot).Contexts[0]
-	contract := verification.Exercise{ID: "mutate", Kind: "script", Argv: []string{"fixture"}, TimeoutSeconds: 30, RequiredAssertions: []string{}, RetryPolicy: "reconciliation_required", Operations: []verification.Operation{{ID: "step", TargetBinding: "fixture"}}}
+	contract := verification.Exercise{ID: "mutate", Kind: "script", Argv: []string{"fixture"}, TimeoutSeconds: 30, RequiredAssertions: []verification.Assertion{}, RetryPolicy: "reconciliation_required", Operations: []verification.Operation{{ID: "step", TargetBinding: "fixture"}}}
 	out, _, err = invoke("register_verification_obligation", workorder.VerificationObligationRequest{ContextID: vc.ID, ObligationID: "mutate", Description: "Fixture action", Sources: []workorder.VerificationSource{{DocumentID: "req-fixture", Version: 1, SectionID: "REQ-1"}}, Contract: contract})
 	if err != nil {
 		t.Fatal(err)

@@ -467,7 +467,7 @@ func (v *kitVerifier) launch(ctx context.Context, e verification.Exercise, cwd, 
 				if record.Envelope.RunID == runID && record.Envelope.Type == "assertion_result" {
 					var assertion core.AssertionResultPayload
 					if json.Unmarshal(record.Envelope.Payload, &assertion) == nil && assertion.Outcome == "fail" {
-						for _, id := range e.RequiredAssertions {
+						for _, id := range e.AssertionIDs() {
 							if assertion.AssertionID == id {
 								state = "failed"
 								explanation = "required assertion " + id + " failed"

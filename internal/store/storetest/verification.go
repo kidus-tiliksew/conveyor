@@ -64,7 +64,7 @@ func newVerificationFixture(t *testing.T, x Fixture, empty ...bool) verification
 	if len(empty) > 0 && empty[0] {
 		return v
 	}
-	obligation := store.VerificationObligation{ID: "ordinary", Description: "Observe the test state", Sources: []store.VerificationCitation{{DocumentID: "req-fixture", Version: 1, SectionID: "AC-1.1"}}, Contract: verification.Exercise{ID: "ordinary", Kind: "script", Argv: []string{"true"}, TimeoutSeconds: 30, RequiredAssertions: []string{}, RetryPolicy: "safe_to_replay", SafetyBasis: "read-only observation", Operations: []verification.Operation{{ID: "step", TargetBinding: "fixture"}}}}
+	obligation := store.VerificationObligation{ID: "ordinary", Description: "Observe the test state", Sources: []store.VerificationCitation{{DocumentID: "req-fixture", Version: 1, SectionID: "AC-1.1"}}, Contract: verification.Exercise{ID: "ordinary", Kind: "script", Argv: []string{"true"}, TimeoutSeconds: 30, RequiredAssertions: []verification.Assertion{}, RetryPolicy: "safe_to_replay", SafetyBasis: "read-only observation", Operations: []verification.Operation{{ID: "step", TargetBinding: "fixture"}}}}
 	result = v.apply(t, store.VerificationCommand{Kind: store.VerificationRegisterObligation, Obligation: &obligation})
 	v.digest = result.Digest
 	v.subject = core.VerificationSubject{Kind: "ordinary", ObligationID: "ordinary", ContractDigest: result.Digest}

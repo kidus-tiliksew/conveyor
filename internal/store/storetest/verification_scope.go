@@ -298,7 +298,7 @@ func runVerificationLimits(t *testing.T, x Fixture) {
 	})
 	t.Run("ClaimLossOperationHistory", func(t *testing.T) {
 		v := newVerificationFixture(t, x)
-		obligation := store.VerificationObligation{ID: "unique-" + v.access.TaskID, Description: "Observe claim loss", Sources: []store.VerificationCitation{{DocumentID: "req-fixture", Version: 1, SectionID: "AC-1.1"}}, Contract: verification.Exercise{ID: "claim-loss", Kind: "script", Argv: []string{"true"}, TimeoutSeconds: 30, RequiredAssertions: []string{}, RetryPolicy: "safe_to_replay", SafetyBasis: "read-only", Operations: []verification.Operation{{ID: "step", TargetBinding: "fixture"}}}}
+		obligation := store.VerificationObligation{ID: "unique-" + v.access.TaskID, Description: "Observe claim loss", Sources: []store.VerificationCitation{{DocumentID: "req-fixture", Version: 1, SectionID: "AC-1.1"}}, Contract: verification.Exercise{ID: "claim-loss", Kind: "script", Argv: []string{"true"}, TimeoutSeconds: 30, RequiredAssertions: []verification.Assertion{}, RetryPolicy: "safe_to_replay", SafetyBasis: "read-only", Operations: []verification.Operation{{ID: "step", TargetBinding: "fixture"}}}}
 		registered := v.apply(t, store.VerificationCommand{Kind: store.VerificationRegisterObligation, Obligation: &obligation})
 		v.subject = core.VerificationSubject{Kind: "ordinary", ObligationID: obligation.ID, ContractDigest: registered.Digest}
 		v.start(t, "unique-start")

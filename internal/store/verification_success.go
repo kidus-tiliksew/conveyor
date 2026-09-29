@@ -81,7 +81,7 @@ func ValidateVerificationSuccess(snapshot VerificationSnapshot, runID string, ex
 			return ErrVerificationState
 		}
 	}
-	for _, id := range contract.RequiredAssertions {
+	for _, id := range contract.AssertionIDs() {
 		p, ok := assertions[id]
 		if !ok || p.Outcome != "pass" || len(p.Supporting) == 0 {
 			return ErrVerificationState

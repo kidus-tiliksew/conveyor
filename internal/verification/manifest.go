@@ -4,6 +4,7 @@ package verification
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -13,6 +14,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
 )
@@ -20,6 +22,10 @@ import (
 const MaxManifestBytes = 1 << 20
 const MaxKits = 100
 const MaxExercises = 100
+
+// Description limits in Unicode code points after trimming (VK-3.1).
+const MaxDescription = 1000
+const MaxAssertionDescription = 500
 
 type Manifest struct {
 	SchemaVersion int   `yaml:"schema_version" json:"schema_version"`
@@ -43,17 +49,24 @@ type GoverningPins struct {
 	SystemDesigns []DocumentPin `yaml:"system_designs" json:"system_designs"`
 }
 type Kit struct {
-	ID            string        `yaml:"id" json:"id"`
-	Name          string        `yaml:"name" json:"name"`
+	ID   string `yaml:"id" json:"id"`
+	Name string `yaml:"name" json:"name"`
+	// Description is required by schema 2 and forbidden by schema 1; the
+	// omitted empty value keeps schema-1 digest bytes unchanged (VK-3.1).
+	Description   string        `yaml:"description,omitempty" json:"description,omitempty"`
 	Version       string        `yaml:"version" json:"version"`
 	Path          string        `yaml:"path" json:"path"`
 	GoverningPins GoverningPins `yaml:"governing_pins" json:"governing_pins"`
 	Exercises     []Exercise    `yaml:"exercises" json:"exercises"`
 	UI            *UI           `yaml:"ui,omitempty" json:"ui,omitempty"`
 	Diagnostics   []Diagnostic  `yaml:"-" json:"-"`
+	// SchemaVersion is the declaring manifest's version, recorded by Parse so
+	// validation applies that schema's description rules. Zero means schema 1.
+	SchemaVersion int `yaml:"-" json:"-"`
 }
 type Exercise struct {
 	ID                 string           `yaml:"id" json:"id"`
+	Description        string           `yaml:"description,omitempty" json:"description,omitempty"`
 	Stages             []string         `yaml:"stages" json:"stages"`
 	Kind               string           `yaml:"kind" json:"kind"`
 	Argv               []string         `yaml:"argv" json:"argv"`
@@ -62,13 +75,93 @@ type Exercise struct {
 	Prerequisites      []Prerequisite   `yaml:"prerequisites" json:"prerequisites"`
 	Permissions        []Permission     `yaml:"permissions" json:"permissions"`
 	Inputs             []Input          `yaml:"inputs" json:"inputs"`
-	RequiredAssertions []string         `yaml:"required_assertions" json:"required_assertions"`
+	RequiredAssertions []Assertion      `yaml:"required_assertions" json:"required_assertions"`
 	RetryPolicy        string           `yaml:"retry_policy" json:"retry_policy"`
 	SafetyBasis        string           `yaml:"safety_basis,omitempty" json:"safety_basis,omitempty"`
 	Operations         []Operation      `yaml:"operations" json:"operations"`
 	EvidenceOutputs    []EvidenceOutput `yaml:"evidence_outputs" json:"evidence_outputs"`
 	Supports           []Support        `yaml:"supports" json:"supports"`
 }
+
+// Assertion is one required assertion. Schema 1 declares it as a bare ID
+// string; schema 2 as a mapping with id and description (VK-3.1).
+type Assertion struct {
+	ID          string `yaml:"id" json:"id"`
+	Description string `yaml:"description" json:"description"`
+}
+
+// MarshalJSON keeps an undescribed assertion a bare string, so schema-1
+// digests, stored contracts and obligation contract digests keep their bytes.
+func (a Assertion) MarshalJSON() ([]byte, error) {
+	if a.Description == "" {
+		return json.Marshal(a.ID)
+	}
+	return json.Marshal(struct {
+		ID          string `json:"id"`
+		Description string `json:"description"`
+	}{a.ID, a.Description})
+}
+
+// UnmarshalJSON accepts both forms; unknown object fields are refused.
+func (a *Assertion) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) > 0 && trimmed[0] == '"' {
+		*a = Assertion{}
+		return json.Unmarshal(trimmed, &a.ID)
+	}
+	var v struct {
+		ID          string `json:"id"`
+		Description string `json:"description"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(trimmed))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&v); err != nil {
+		return err
+	}
+	*a = Assertion{ID: v.ID, Description: v.Description}
+	return nil
+}
+
+// UnmarshalYAML accepts a scalar ID or an id/description mapping; validateNode
+// has already enforced the closed shape and validateKit the schema rule.
+func (a *Assertion) UnmarshalYAML(n *yaml.Node) error {
+	if n.Kind == yaml.ScalarNode {
+		*a = Assertion{ID: n.Value}
+		return nil
+	}
+	var v struct {
+		ID          string `yaml:"id"`
+		Description string `yaml:"description"`
+	}
+	if err := n.Decode(&v); err != nil {
+		return err
+	}
+	*a = Assertion{ID: v.ID, Description: v.Description}
+	return nil
+}
+
+// MarshalYAML mirrors MarshalJSON so a marshalled manifest reparses under
+// the schema its assertions were declared in.
+func (a Assertion) MarshalYAML() (any, error) {
+	if a.Description == "" {
+		return a.ID, nil
+	}
+	return struct {
+		ID          string `yaml:"id"`
+		Description string `yaml:"description"`
+	}{a.ID, a.Description}, nil
+}
+
+// AssertionIDs returns the required assertion IDs in declared order. Evidence,
+// assertion results and required-assertion checks key on the ID alone.
+func (e Exercise) AssertionIDs() []string {
+	ids := make([]string, 0, len(e.RequiredAssertions))
+	for _, a := range e.RequiredAssertions {
+		ids = append(ids, a.ID)
+	}
+	return ids
+}
+
 type Prerequisite struct {
 	ID                 string `yaml:"id" json:"id"`
 	Kind               string `yaml:"kind" json:"kind"`
@@ -144,6 +237,9 @@ func Parse(r io.Reader, check PathCheck) (*Manifest, error) {
 	if root.Anchor != "" {
 		return nil, fmt.Errorf("manifest: anchors are forbidden")
 	}
+	// Kits may precede schema_version, so read the declared schema first; kit
+	// description rules depend on it (VK-3.1).
+	schema := declaredSchema(root)
 	// Validate top-level structure separately so a bad kit does not erase siblings.
 	seen := map[string]bool{}
 	for i := 0; i < len(root.Content); i += 2 {
@@ -182,6 +278,7 @@ func Parse(r io.Reader, check PathCheck) (*Manifest, error) {
 				kp := fmt.Sprintf("manifest.kits[%d]", j)
 				kit := Kit{}
 				ds := validateNode(n, reflect.TypeOf(kit), kp)
+				ds = append(ds, schemaNodeDiagnostics(n, schema, kp)...)
 				if len(ds) == 0 {
 					if err := n.Decode(&kit); err != nil {
 						ds = append(ds, Diagnostic{kp, err.Error()})
@@ -197,6 +294,7 @@ func Parse(r io.Reader, check PathCheck) (*Manifest, error) {
 						}
 					}
 				}
+				kit.SchemaVersion = schema
 				if len(ds) == 0 {
 					ds = validateKit(kit, kp, check)
 				}
@@ -207,8 +305,8 @@ func Parse(r io.Reader, check PathCheck) (*Manifest, error) {
 			m.Diagnostics = append(m.Diagnostics, Diagnostic{p, "unknown field"})
 		}
 	}
-	if m.SchemaVersion != 1 {
-		m.Diagnostics = append(m.Diagnostics, Diagnostic{"manifest.schema_version", "unsupported schema; expected 1"})
+	if !SupportedSchema(m.SchemaVersion) {
+		m.Diagnostics = append(m.Diagnostics, Diagnostic{"manifest.schema_version", "unsupported schema; expected 1 or 2"})
 	}
 	if !seen["kits"] {
 		m.Diagnostics = append(m.Diagnostics, Diagnostic{"manifest.kits", "required field"})
@@ -239,6 +337,76 @@ func Parse(r io.Reader, check PathCheck) (*Manifest, error) {
 	return m, errors.Join(errs...)
 }
 
+// SupportedSchema reports whether a manifest schema version is accepted.
+func SupportedSchema(v int) bool { return v == 1 || v == 2 }
+
+// declaredSchema returns the supported schema_version declared by the root
+// mapping, or zero when it is absent, malformed or unsupported.
+func declaredSchema(root *yaml.Node) int {
+	for i := 0; i+1 < len(root.Content); i += 2 {
+		k, v := root.Content[i], root.Content[i+1]
+		if k.Kind != yaml.ScalarNode || k.Value != "schema_version" || v.Kind != yaml.ScalarNode || v.Tag != "!!int" {
+			continue
+		}
+		var n int
+		if v.Decode(&n) == nil && SupportedSchema(n) {
+			return n
+		}
+		return 0
+	}
+	return 0
+}
+
+// mappingValue returns the value node for key in a mapping node.
+func mappingValue(n *yaml.Node, key string) *yaml.Node {
+	if n == nil || n.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		if n.Content[i].Kind == yaml.ScalarNode && n.Content[i].Value == key {
+			return n.Content[i+1]
+		}
+	}
+	return nil
+}
+
+// schemaNodeDiagnostics applies the schema-specific shape rules that decoded
+// values cannot express: schema 1 forbids any description key, including an
+// empty one, and bare-string versus mapping assertions differ by schema.
+func schemaNodeDiagnostics(kit *yaml.Node, schema int, kp string) []Diagnostic {
+	if schema == 0 || kit.Kind != yaml.MappingNode {
+		return nil
+	}
+	var ds []Diagnostic
+	if schema == 1 && mappingValue(kit, "description") != nil {
+		ds = append(ds, Diagnostic{kp + ".description", "description requires schema_version 2"})
+	}
+	exercises := mappingValue(kit, "exercises")
+	if exercises == nil || exercises.Kind != yaml.SequenceNode {
+		return ds
+	}
+	for j, e := range exercises.Content {
+		ep := fmt.Sprintf("%s.exercises[%d]", kp, j)
+		if schema == 1 && mappingValue(e, "description") != nil {
+			ds = append(ds, Diagnostic{ep + ".description", "description requires schema_version 2"})
+		}
+		assertions := mappingValue(e, "required_assertions")
+		if assertions == nil || assertions.Kind != yaml.SequenceNode {
+			continue
+		}
+		for i, a := range assertions.Content {
+			ap := fmt.Sprintf("%s.required_assertions[%d]", ep, i)
+			switch {
+			case schema == 1 && a.Kind == yaml.MappingNode:
+				ds = append(ds, Diagnostic{ap, "schema 1 requires an assertion ID string"})
+			case schema == 2 && a.Kind == yaml.ScalarNode:
+				ds = append(ds, Diagnostic{ap, "expected mapping with id and description"})
+			}
+		}
+	}
+	return ds
+}
+
 // validateNode enforces a closed shape before Decode, including aliases and
 // duplicate keys that ordinary struct decoding cannot safely normalize.
 func validateNode(n *yaml.Node, t reflect.Type, p string) []Diagnostic {
@@ -248,6 +416,14 @@ func validateNode(n *yaml.Node, t reflect.Type, p string) []Diagnostic {
 	}
 	if t.Kind() == reflect.Pointer {
 		t = t.Elem()
+	}
+	// An assertion is a bare ID string or an id/description mapping; which
+	// form a schema permits is checked by schemaNodeDiagnostics.
+	if t == reflect.TypeOf(Assertion{}) && n.Kind != yaml.MappingNode {
+		if n.Kind != yaml.ScalarNode || n.Tag != "!!str" {
+			return bad("expected assertion ID string or mapping")
+		}
+		return nil
 	}
 	switch t.Kind() {
 	case reflect.Struct:
@@ -393,6 +569,23 @@ func validateKit(k Kit, p string, check PathCheck) []Diagnostic {
 	required("id", k.ID)
 	required("name", k.Name)
 	required("version", k.Version)
+	// Schema 2 requires descriptions within VK-3.1 limits; schema 1 forbids them.
+	schema2 := k.SchemaVersion == 2
+	describe := func(field, s string, limit int) {
+		if !schema2 {
+			if s != "" {
+				add(field, "description requires schema_version 2")
+			}
+			return
+		}
+		n := utf8.RuneCountInString(strings.TrimSpace(s))
+		if n == 0 {
+			add(field, "required description")
+		} else if n > limit {
+			add(field, fmt.Sprintf("description exceeds %d characters", limit))
+		}
+	}
+	describe("description", k.Description, MaxDescription)
 	ref("path", ".", k.Path)
 	for kind, pins := range map[string][]DocumentPin{"requirements": k.GoverningPins.Requirements, "system_designs": k.GoverningPins.SystemDesigns} {
 		seen := map[string]bool{}
@@ -453,15 +646,17 @@ func validateKit(k Kit, p string, check PathCheck) []Diagnostic {
 		if e.TimeoutSeconds <= 0 {
 			add(ep+".timeout_seconds", "positive timeout required")
 		}
+		describe(ep+".description", e.Description, MaxDescription)
 		if e.RequiredAssertions == nil {
 			add(ep+".required_assertions", "explicit list required")
 		}
 		seen := map[string]bool{}
-		for _, a := range e.RequiredAssertions {
-			if strings.TrimSpace(a) == "" || seen[a] {
+		for j, a := range e.RequiredAssertions {
+			if strings.TrimSpace(a.ID) == "" || seen[a.ID] {
 				add(ep+".required_assertions", "empty or duplicate assertion ID")
 			}
-			seen[a] = true
+			seen[a.ID] = true
+			describe(fmt.Sprintf("%s.required_assertions[%d].description", ep, j), a.Description, MaxAssertionDescription)
 		}
 		switch e.RetryPolicy {
 		case "safe_to_replay":
