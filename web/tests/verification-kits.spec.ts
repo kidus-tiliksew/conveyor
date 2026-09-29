@@ -190,7 +190,9 @@ test('manager tab orders tabs, moves the evidence switch and saves both switches
   const registryCalls = api.calls.registry
   await page.getByRole('button', { name: 'Save changes' }).click()
   await expect(page.getByText('Recorded config.updated event 7')).toBeVisible()
-  const execution = (api.submitted()?.document as typeof config).execution
+  const submitted = api.submitted()
+  expect(submitted).toBeDefined()
+  const execution = (submitted!.document as typeof config).execution
   expect(execution.verify_stage).toBe(true)
   expect(execution.require_verification_evidence).toBe(true)
   expect(api.calls.registry).toBe(registryCalls)
