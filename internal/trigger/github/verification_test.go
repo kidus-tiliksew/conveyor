@@ -136,3 +136,69 @@ kits:
 		})
 	}
 }
+
+func TestResolveBranchHead(t *testing.T) {
+	_, private := appTestKey(t)
+	sha := strings.Repeat("d", 40)
+	for _, mode := range []string{"present", "unknown_revision", "permission", "transport", "malformed", "nested"} {
+		t.Run(mode, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/app/installations/12":
+					fmt.Fprint(w, `{"id":12,"app_id":41,"account":{"login":"org"},"suspended_at":null}`)
+				case "/app/installations/12/access_tokens":
+					json.NewEncoder(w).Encode(map[string]any{"token": "fixture-secret", "expires_at": time.Now().Add(time.Hour)})
+				case "/installation/repositories":
+					if mode == "permission" {
+						w.WriteHeader(403)
+						return
+					}
+					fmt.Fprint(w, `{"repositories":[{"full_name":"org/repo"}]}`)
+				case "/repos/org/repo/git/ref/heads/main", "/repos/org/repo/git/ref/heads/release/1.2":
+					switch mode {
+					case "unknown_revision":
+						w.WriteHeader(404)
+					case "transport":
+						w.WriteHeader(503)
+					case "malformed":
+						fmt.Fprint(w, `{"object":{"sha":"not-a-sha","type":"commit"}}`)
+					default:
+						json.NewEncoder(w).Encode(map[string]any{"ref": "refs/heads/main", "object": map[string]string{"sha": sha, "type": "commit"}})
+					}
+				default:
+					t.Errorf("unexpected path %s", r.URL.Path)
+					w.WriteHeader(404)
+				}
+			}))
+			defer server.Close()
+			client := NewAppClient(server.Client(), server.URL)
+			app := verificationAppFixture{core.WorkspaceGitHubAppCredential{PrivateKey: private}}
+			app.credential.AppID = 41
+			app.credential.InstallationID = 12
+			app.credential.WorkspaceID = "demo"
+			app.credential.Connected = true
+			branch, want, wantSHA := "main", mode, ""
+			switch mode {
+			case "present":
+				wantSHA = sha
+			case "nested":
+				branch, want, wantSHA = "release/1.2", "present", sha
+			case "malformed":
+				want = "transport"
+			}
+			got, state := client.ResolveBranchHead(t.Context(), app, "demo", "org/repo", branch)
+			if state != want || got != wantSHA {
+				t.Fatalf("got %q %q, want %q %q", got, state, wantSHA, want)
+			}
+		})
+	}
+	client := NewAppClient(http.DefaultClient, "http://127.0.0.1:1")
+	for _, branch := range []string{"", "../main", "a b", "main?x"} {
+		if _, state := client.ResolveBranchHead(t.Context(), verificationAppFixture{}, "demo", "org/repo", branch); state != "unknown_revision" {
+			t.Fatalf("branch %q state %s", branch, state)
+		}
+	}
+	if _, state := client.ResolveBranchHead(t.Context(), verificationAppFixture{}, "demo", "not-a-slug", "main"); state != "transport" {
+		t.Fatalf("slug state %s", state)
+	}
+}

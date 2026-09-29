@@ -76,17 +76,20 @@ type Server struct {
 	WorkspaceInfo *WorkspaceInfo
 	// ConfigProvider resolves current database-backed workspace scope while
 	// preserving file-backed deployment fields.
-	ConfigProvider        func(context.Context) (*config.Config, error)
-	ConfigStore           WorkspaceConfigStore
-	Workspaces            store.WorkspaceControlStore
-	Memberships           store.MembershipStore
-	IdentityProvisioner   store.IdentityProvisioner
-	CallerIdentities      store.CallerIdentityStore
-	OwnProfiles           store.OwnProfileStore
-	PersonalTokens        store.PersonalAccessTokenStore
-	AgentCredentials      store.AgentCredentialStore
-	WorkspaceGitHubApps   store.WorkspaceGitHubAppStore
-	GitHubApps            *github.AppClient
+	ConfigProvider      func(context.Context) (*config.Config, error)
+	ConfigStore         WorkspaceConfigStore
+	Workspaces          store.WorkspaceControlStore
+	Memberships         store.MembershipStore
+	IdentityProvisioner store.IdentityProvisioner
+	CallerIdentities    store.CallerIdentityStore
+	OwnProfiles         store.OwnProfileStore
+	PersonalTokens      store.PersonalAccessTokenStore
+	AgentCredentials    store.AgentCredentialStore
+	WorkspaceGitHubApps store.WorkspaceGitHubAppStore
+	GitHubApps          *github.AppClient
+	// verificationKitMemo caches exact-commit kit discovery for the workspace
+	// kit registry (feature-verification-kit-execution VK-11).
+	verificationKitMemo   kitRegistryMemo
 	appStates             manifestStates
 	appSetupStates        manifestStates
 	InvitationSessions    store.InvitationSessionStore
@@ -188,6 +191,7 @@ func (s *Server) Handler() http.Handler {
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityManageWorkspace)).Get("/workspaces/{workspace_id}/github-app/callback", s.workspaceGitHubAppCallback)
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityManageWorkspace)).Get("/workspaces/{workspace_id}/github-app/setup", s.workspaceGitHubAppSetup)
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityViewWorkspace)).Get("/workspaces/{workspace_id}/github-app", s.getWorkspaceGitHubApp)
+		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityViewWorkspace)).Get("/workspaces/{workspace_id}/verification-kits", s.getWorkspaceVerificationKits)
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityManageWorkspace)).Delete("/workspaces/{workspace_id}/github-app", s.deleteWorkspaceGitHubApp)
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityViewWorkspace)).Get("/workspaces/{workspace_id}/members", s.listWorkspaceMembers)
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityManageMembership)).Post("/workspaces/{workspace_id}/members", s.grantWorkspaceMembership)
