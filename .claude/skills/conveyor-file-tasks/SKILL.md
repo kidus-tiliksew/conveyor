@@ -19,3 +19,9 @@ operator confirmation. For web-only work, allow the DEC-16 generated
 `internal/httpapi/dashboard` bundle rather than banning `internal/**`; if
 implementation discovers an approved-plan conflict, require the operator-gated
 `request_plan_revision` path rather than an acceptance-criteria exception.
+Write task bodies for people and agents who never saw the filing session:
+attribute actions and observations to people by name, never personal host aliases,
+SSH config names, home-directory paths, or IP addresses; carry evidence inline or
+cite an uploaded artifact or a PR/task/event reference; never point to a file only
+one machine can read or require preserving or relying on filer-only machine state
+(DEC-28).
