@@ -11,13 +11,30 @@ export type ReviewRow = {
   after?: ReviewBlock
   moved: boolean
   changed: boolean
+  // Set when the section's detailed comparison exceeds the section budget; the
+  // renderer shows its complete before and after content instead.
+  limited: boolean
 }
 export type ReviewSource = { content: string; statements?: RequirementVersion['statements'] }
 
-// component-web-dashboard v6: bound work before allocating matrices or parsing Markdown.
+// component-web-dashboard "Block comparison and bounded work": bound work before
+// allocating matrices or parsing Markdown.
 const maxCharacters = 120_000
 const maxBlocks = 400
+// Largest single matrix: one paragraph alignment or one paragraph token diff.
 const maxCells = 250_000
+// Work is counted in the matrix cells the review renderer allocates. The shared
+// LCS loop measured about 7-11 ns per cell on a desktop core (Node 22); assume
+// a phone core is about five times slower. A section at the section limit
+// costs about 5 ms on desktop and falls back alone, keeping its navigator
+// entry. The document ceiling costs about 20 ms on desktop and 100 ms on a
+// phone per render, and the renderer repeats paragraph diffs when the mode
+// changes. Measured full rewrites of a 25-section design cost about 0.6M
+// cells at 15k characters and 1.7M at 42k, so they keep detailed comparison;
+// an 87k-character rewrite exceeds the ceiling and takes the document-wide
+// fallback.
+const maxSectionCells = 500_000
+const maxDocumentCells = 2_000_000
 
 export function reviewText(source: ReviewSource) {
   if (!source.statements?.length) return source.content
@@ -239,18 +256,38 @@ function inlineTokens(runs: InlineRun[]): InlineToken[] {
   )
 }
 
-export function formattedParagraphChanges(before: string, after: string): FormattedChange[] | undefined {
+function formattedTokens(before: string, after: string) {
   const beforeRuns = formattedParagraph(before)
   const afterRuns = formattedParagraph(after)
   if (!beforeRuns || !afterRuns) return undefined
-  const left = inlineTokens(beforeRuns)
-  const right = inlineTokens(afterRuns)
-  if ((left.length + 1) * (right.length + 1) > maxCells) return undefined
-  const matrix = Array.from({ length: left.length + 1 }, () => new Uint32Array(right.length + 1))
-  for (let i = left.length - 1; i >= 0; i--)
-    for (let j = right.length - 1; j >= 0; j--)
-      matrix[i][j] =
-        left[i].key === right[j].key ? matrix[i + 1][j + 1] + 1 : Math.max(matrix[i + 1][j], matrix[i][j + 1])
+  return [inlineTokens(beforeRuns), inlineTokens(afterRuns)] as const
+}
+
+// Cells formattedParagraphChanges allocates for one aligned pair. Identical
+// text needs no matrix; unsafe Markdown and pairs above maxCells allocate none
+// and render complete content instead.
+export function paragraphCells(before: string, after: string) {
+  if (before === after) return 0
+  const pair = formattedTokens(before, after)
+  if (!pair) return 0
+  const cells = (pair[0].length + 1) * (pair[1].length + 1)
+  return cells > maxCells ? 0 : cells
+}
+
+export function formattedParagraphChanges(before: string, after: string): FormattedChange[] | undefined {
+  const pair = formattedTokens(before, after)
+  if (!pair) return undefined
+  const [left, right] = pair
+  // Identical tokens always take the matching branch below, so skip the matrix.
+  let matrix: Uint32Array[] = []
+  if (before !== after) {
+    if ((left.length + 1) * (right.length + 1) > maxCells) return undefined
+    matrix = Array.from({ length: left.length + 1 }, () => new Uint32Array(right.length + 1))
+    for (let i = left.length - 1; i >= 0; i--)
+      for (let j = right.length - 1; j >= 0; j--)
+        matrix[i][j] =
+          left[i].key === right[j].key ? matrix[i + 1][j + 1] + 1 : Math.max(matrix[i + 1][j], matrix[i][j + 1])
+  }
   const changes: FormattedChange[] = []
   const append = (token: InlineToken, kind: WordChange['kind']) => {
     const last = changes.at(-1)
@@ -292,6 +329,7 @@ export function compareDocuments(before: ReviewSource, after: ReviewSource) {
       after: block,
       moved,
       changed: !old || old.content !== block.content || moved,
+      limited: false,
     }
   })
   // Keep removed sections next to their next surviving neighbour.
@@ -300,15 +338,53 @@ export function compareDocuments(before: ReviewSource, after: ReviewSource) {
     if (nextIDs.has(block.id)) continue
     const next = left.slice(i + 1).find((candidate) => nextIDs.has(candidate.id))
     const index = next ? rows.findIndex((row) => row.id === next.id) : rows.length
-    rows.splice(index, 0, { id: block.id, title: block.title, before: block, moved: false, changed: true })
+    rows.splice(index, 0, {
+      id: block.id,
+      title: block.title,
+      before: block,
+      moved: false,
+      changed: true,
+      limited: false,
+    })
   }
   let work = 0
   for (const row of rows) {
-    if (!row.changed || !row.before || !row.after) continue
-    work += (tokens(row.before.content).length + 1) * (tokens(row.after.content).length + 1)
-    if (work > maxCells) return fallback
+    if (!row.changed) continue
+    const cells = sectionCells(row)
+    // A limited section renders complete content and allocates no matrix.
+    if (cells > maxSectionCells) row.limited = true
+    else work += cells
+    if (work > maxDocumentCells) return fallback
   }
   return { limited: false, leftText, rightText, rows }
+}
+
+// Section bodies compared by the renderer; a heading block's own heading line
+// is already shown as the row title. An absent side stays undefined.
+export function reviewRowBodies(row: ReviewRow) {
+  const body = (block?: ReviewBlock) =>
+    block && row.id.startsWith('heading:') ? block.content.replace(/^\s{0,3}#{1,6}\s+[^\n]+\n?/, '') : block?.content
+  return { before: body(row.before), after: body(row.after) }
+}
+
+export function reviewRowParagraphs(row: ReviewRow) {
+  const { before = '', after = '' } = reviewRowBodies(row)
+  return alignedParagraphs(before, after)
+}
+
+// Cells the renderer allocates for one changed row: the paragraph-alignment
+// matrix plus each aligned pair's token matrix. Returns Infinity when the
+// alignment itself exceeds maxCells, because the pairs would then be unbounded.
+function sectionCells(row: ReviewRow) {
+  const { before = '', after = '' } = reviewRowBodies(row)
+  const alignment = (paragraphs(before).length + 1) * (paragraphs(after).length + 1)
+  if (alignment > maxCells) return Number.POSITIVE_INFINITY
+  let cells = alignment
+  for (const pair of alignedParagraphs(before, after)) {
+    cells += paragraphCells(pair.before ?? '', pair.after ?? '')
+    if (cells > maxSectionCells) break
+  }
+  return cells
 }
 
 function paragraphs(content: string) {
@@ -334,8 +410,8 @@ function paragraphs(content: string) {
 export function alignedParagraphs(before: string, after: string): Array<{ before?: string; after?: string }> {
   const left = paragraphs(before)
   const right = paragraphs(after)
-  // Each section already passed the aggregate token-work bound. This guard
-  // also makes this helper safe for standalone callers.
+  // compareDocuments marks a section limited before this guard applies. The
+  // guard also makes this helper safe for standalone callers.
   if ((left.length + 1) * (right.length + 1) > maxCells) return [{ before, after }]
   const matrix = Array.from({ length: left.length + 1 }, () => new Uint32Array(right.length + 1))
   for (let i = left.length - 1; i >= 0; i--)

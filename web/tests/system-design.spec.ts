@@ -352,7 +352,7 @@ test('System Design search and deterministic sorting preserve categories and the
   await expect(page.getByRole('heading', { name: 'Alpha' })).toBeVisible()
 })
 
-test('an oversized System Design comparison falls back to plain rendering', async ({ page }) => {
+test('an oversized System Design paragraph falls back to complete content in its section', async ({ page }) => {
   await initialize(page)
   const longCurrent = Array.from({ length: 500 }, (_, index) => `confirmed line ${index}`).join('\n')
   const longPending = Array.from({ length: 500 }, (_, index) => `proposed line ${index}`).join('\n')
@@ -379,10 +379,13 @@ test('an oversized System Design comparison falls back to plain rendering', asyn
   await page.goto('/system-design')
   await page.getByRole('button', { name: 'Review changes · v2', exact: true }).click()
   const diff = page.getByRole('region', { name: 'Version comparison', exact: true })
-  await expect(diff.getByText(/Diff too large; showing both complete versions without highlighting/)).toBeVisible()
-  await expect(diff.locator('pre').filter({ hasText: 'confirmed line 499' })).toBeVisible()
-  await expect(diff.locator('pre').filter({ hasText: 'proposed line 499' })).toBeVisible()
-  await expect(diff.locator('span.bg-failure-soft, span.bg-positive-soft')).toHaveCount(0)
+  // Input size and block count are within bounds, so only the oversized paragraph loses highlighting.
+  await expect(diff).not.toContainText('Diff too large')
+  await expect(page.getByRole('navigation', { name: 'Changed sections' })).toBeVisible()
+  await expect(diff.getByText(/Detailed highlighting unavailable for this block/)).toBeVisible()
+  await expect(diff).toContainText('confirmed line 499')
+  await expect(diff).toContainText('proposed line 499')
+  await expect(diff.getByRole('region', { name: 'Overview', exact: true }).locator('ins, del')).toHaveCount(0)
 })
 
 test('a System Design with nothing outstanding says so in one quiet line', async ({ page }) => {
