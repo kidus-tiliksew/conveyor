@@ -457,6 +457,12 @@ export async function fetchWorkspaceGitHubApp(workspace: string) {
   return response.json() as Promise<import('./types').WorkspaceGitHubAppStatus>
 }
 
+export async function fetchWorkspaceVerificationKits(workspace: string, signal?: AbortSignal) {
+  const response = await fetch(`/v1/workspaces/${encodeURIComponent(workspace)}/verification-kits`, { signal })
+  if (!response.ok) throw new Error((await response.text()).trim() || 'Could not load verification kits.')
+  return response.json() as Promise<import('./types').VerificationKitRegistry>
+}
+
 export async function createWorkspaceGitHubAppManifest(workspace: string) {
   const response = await fetch(`/v1/workspaces/${encodeURIComponent(workspace)}/github-app/manifest`, {
     method: 'POST',

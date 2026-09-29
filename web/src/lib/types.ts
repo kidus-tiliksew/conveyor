@@ -573,6 +573,8 @@ export type WorkspaceReviewSeat = Record<string, never>
 export interface ExecutionPolicy {
   spec_approval: boolean
   merge_approval: boolean
+  // Absent on older documents; absent reads as off (DEC-43).
+  verify_stage?: boolean
   require_verification_evidence: boolean
   implement_concurrency: number
   review_concurrency: number
@@ -1250,4 +1252,67 @@ export interface DocumentEventPage {
   limit: number
   offset: number
   snapshot_id: number
+}
+
+// Workspace verification kit registry (feature-verification-kit-execution VK-11).
+export type VerificationKitRepositoryState = 'ok' | 'no_manifest' | 'invalid' | 'unavailable'
+export type VerificationKitUnavailableReason = 'no_app' | 'permission' | 'unknown_revision' | 'truncated' | 'transport'
+export type VerificationKitStatus = 'current' | 'behind' | 'pending' | 'unresolved' | 'unpinned' | 'invalid'
+export type VerificationKitPinStatus = 'current' | 'behind' | 'pending' | 'unresolved'
+
+export interface VerificationKitDiagnostic {
+  path: string
+  message: string
+}
+
+export interface VerificationKitPin {
+  kind: 'requirement' | 'system_design'
+  document_id: string
+  version: number
+  status: VerificationKitPinStatus
+  current_version?: number
+}
+
+export interface VerificationKitExercise {
+  id: string
+  description: string
+  stages: string[]
+  kind: string
+  prerequisites: Array<{ id: string; kind: string; environment_binding: string }>
+  permissions: Array<{ kind: string; target_binding?: string; path?: string }>
+  required_assertions: Array<{ id: string; description: string }>
+  retry_policy: string
+  safety_basis: string
+  operations: Array<{ id: string; target_binding: string }>
+  evidence_outputs: Array<{ type: string; schema_version: number; minimum_items: number }>
+  supports: Array<{ document_id: string; version: number; acceptance_criterion_id: string }>
+}
+
+export interface VerificationKit {
+  id: string
+  name: string
+  version: string
+  description: string
+  path: string
+  digest: string
+  stages: string[]
+  status: VerificationKitStatus
+  pins: VerificationKitPin[]
+  diagnostics: VerificationKitDiagnostic[]
+  exercises: VerificationKitExercise[]
+}
+
+export interface VerificationKitRepository {
+  repository: string
+  base: string
+  commit_sha: string
+  state: VerificationKitRepositoryState
+  reason?: VerificationKitUnavailableReason
+  schema_version?: number
+  diagnostics: VerificationKitDiagnostic[]
+  kits: VerificationKit[]
+}
+
+export interface VerificationKitRegistry {
+  repositories: VerificationKitRepository[]
 }
