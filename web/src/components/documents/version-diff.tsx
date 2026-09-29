@@ -2,12 +2,13 @@ import { type ReactNode, useId, useMemo, useState } from 'react'
 import { Button } from '../ui/button'
 import { MarkdownProse } from '../ui/markdown-prose'
 import {
-  alignedParagraphs,
   compareDocuments,
   type FormattedChange,
   formattedParagraphChanges,
   type ReviewRow,
   type ReviewSource,
+  reviewRowBodies,
+  reviewRowParagraphs,
 } from './document-review-model'
 
 type DiffLine = { text: string; changed: boolean }
@@ -253,9 +254,16 @@ export function DocumentComparison({ before, after }: { before: ReviewSource; af
 }
 
 function ReviewRowContent({ row, mode }: { row: ReviewRow; mode: 'inline' | 'side' }) {
-  const body = (content = '') =>
-    row.id.startsWith('heading:') ? content.replace(/^\s{0,3}#{1,6}\s+[^\n]+\n?/, '') : content
-  const pairs = alignedParagraphs(body(row.before?.content), body(row.after?.content))
+  // A limited section exceeded the section budget: show both complete sources.
+  if (row.limited) {
+    const { before, after } = reviewRowBodies(row)
+    return (
+      <div className="min-w-0">
+        <ReviewParagraph before={before} after={after} mode={mode} complete />
+      </div>
+    )
+  }
+  const pairs = reviewRowParagraphs(row)
   return (
     <div className="min-w-0">
       {pairs.map((pair, index) => (
@@ -274,14 +282,16 @@ function ReviewParagraph({
   before: beforeSource,
   after: afterSource,
   mode,
+  complete = false,
 }: {
   before?: string
   after?: string
   mode: 'inline' | 'side'
+  complete?: boolean
 }) {
   const before = beforeSource ?? ''
   const after = afterSource ?? ''
-  const words = formattedParagraphChanges(before, after)
+  const words = complete ? undefined : formattedParagraphChanges(before, after)
   const styled = (word: FormattedChange) => {
     let content: ReactNode = word.text
     if (word.style === 'code') content = <code>{content}</code>

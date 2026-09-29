@@ -5,9 +5,41 @@ import {
   formattedParagraph,
   formattedParagraphChanges,
   headingBlocks,
+  paragraphCells,
   reviewBlocks,
+  reviewRowParagraphs,
   wordChanges,
 } from '../src/components/documents/document-review-model'
+
+const vocabulary =
+  'the worker renews its claim before the lease expires and reports progress while review waits for delivery evidence from each attempt'.split(
+    ' ',
+  )
+// Deterministic prose: `words` words in sentences of twelve, varied by `seed`.
+function prose(seed: number, words: number) {
+  const list = Array.from({ length: words }, (_, i) => vocabulary[(seed * 31 + i * 7 + (i >> 3)) % vocabulary.length])
+  return Array.from({ length: Math.ceil(words / 12) }, (_, n) => `${list.slice(n * 12, n * 12 + 12).join(' ')}.`).join(
+    ' ',
+  )
+}
+// A realistic design: eight sections of four 100-word paragraphs (400 words).
+function longDesign(edit?: (section: number, paragraph: number, text: string) => string) {
+  return Array.from(
+    { length: 8 },
+    (_, section) =>
+      `## Section ${section + 1}\n\n${Array.from({ length: 4 }, (_, paragraph) => {
+        const text = prose(section * 4 + paragraph, 100)
+        return edit ? edit(section, paragraph, text) : text
+      }).join('\n\n')}`,
+  ).join('\n\n')
+}
+const changedSentence = (section: number, paragraph: number, text: string) =>
+  section === 5 && paragraph === 1 ? `${text} Operators confirm every pending revision.` : text
+// One paragraph pair costs 470 x 470 = 220,900 token cells, under the
+// per-matrix guard; three pairs exceed the section limit and two do not.
+const heavyParagraph = (word: string) => `${word} `.repeat(235).trim()
+const heavySection = (title: string, word: string, count: number) =>
+  `## ${title}\n\n${Array.from({ length: count }, (_, n) => `${heavyParagraph(word)} ${n}`).join('\n\n')}`
 
 test('review model preserves stable identifiers, headings, moves and bounded complete sources', () => {
   const before = {
@@ -61,7 +93,10 @@ test('review model preserves stable identifiers, headings, moves and bounded com
   expect(fallback.limited).toBe(true)
   expect(fallback.rightText).toBe(large)
   expect(fallback.rows).toEqual([])
-  expect(compareDocuments({ content: 'one '.repeat(300) }, { content: 'two '.repeat(300) }).limited).toBe(true)
+  // One oversized paragraph pair takes its per-block fallback; the document keeps detailed comparison.
+  const single = compareDocuments({ content: 'one '.repeat(300) }, { content: 'two '.repeat(300) })
+  expect(single.limited).toBe(false)
+  expect(single.rows).toMatchObject([{ id: 'heading:Overview:1', changed: true, limited: false }])
   const formatted = formattedParagraphChanges(
     'Keep `unavailable`, *slow*, **manual**, and [the guide](https://example.test/old).',
     'Keep `unavailable`, *fast*, **automatic**, and [the guide](https://example.test/new).',
@@ -88,6 +123,73 @@ test('review model preserves stable identifiers, headings, moves and bounded com
   expect(formattedParagraph('- list item')).toBeUndefined()
   expect(formattedParagraph('<script>window.injected = true</script>')).toBeUndefined()
   expect(formattedParagraphChanges('one '.repeat(300), 'two '.repeat(300))).toBeUndefined()
+  expect(paragraphCells('one '.repeat(300), 'one '.repeat(300))).toBe(0)
+  expect(formattedParagraphChanges('one '.repeat(300), 'one '.repeat(300))).toEqual([
+    { text: 'one '.repeat(300), kind: 'same', style: 'text' },
+  ])
+})
+
+test('review model budgets renderer work per changed section', () => {
+  const base = longDesign()
+  const target = longDesign(changedSentence)
+  const realistic = compareDocuments({ content: base }, { content: target })
+  expect(realistic.limited).toBe(false)
+  expect(realistic.rows).toHaveLength(8)
+  expect(realistic.rows.filter((row) => row.changed).map((row) => row.title)).toEqual(['Section 6'])
+  const edited = realistic.rows.find((row) => row.title === 'Section 6')
+  expect(edited).toMatchObject({ changed: true, limited: false })
+  const pairs = edited ? reviewRowParagraphs(edited) : []
+  expect(pairs).toHaveLength(4)
+  const changedPair = pairs.find((pair) => pair.before !== pair.after)
+  expect(formattedParagraphChanges(changedPair?.before ?? '', changedPair?.after ?? '')).toContainEqual({
+    text: ' Operators confirm every pending revision.',
+    kind: 'added',
+    style: 'text',
+  })
+
+  // Alignment and identical paragraphs cost only the paragraph matrix; each
+  // changed pair adds its token matrix.
+  expect(paragraphCells('Renew every 30 seconds.', 'Renew every 30 seconds.')).toBe(0)
+  expect(paragraphCells('Renew every 30 seconds.', 'Renew every 10 seconds.')).toBe(9 * 9)
+  expect(paragraphCells('', 'Added.')).toBe(3)
+  expect(paragraphCells('- list item', '- other item')).toBe(0)
+  expect(paragraphCells(heavyParagraph('a'), heavyParagraph('b'))).toBe(470 * 470)
+
+  const isolated = compareDocuments(
+    {
+      content: `${heavySection('Oversized', 'alpha', 3)}\n\n## Sibling\n\nRenew every 30 seconds.\n\n## Stable\n\nSame.`,
+    },
+    {
+      content: `${heavySection('Oversized', 'beta', 3)}\n\n## Sibling\n\nRenew every 10 seconds.\n\n## Stable\n\nSame.`,
+    },
+  )
+  expect(isolated.limited).toBe(false)
+  expect(isolated.rows.map(({ title, changed, limited }) => ({ title, changed, limited }))).toEqual([
+    { title: 'Oversized', changed: true, limited: true },
+    { title: 'Sibling', changed: true, limited: false },
+    { title: 'Stable', changed: false, limited: false },
+  ])
+  expect(isolated.rows[0].before?.content).toContain(heavyParagraph('alpha'))
+  expect(isolated.rows[0].after?.content).toContain(heavyParagraph('beta'))
+  const sibling = reviewRowParagraphs(isolated.rows[1])
+  expect(formattedParagraphChanges(sibling[0].before ?? '', sibling[0].after ?? '')).toContainEqual({
+    text: '10',
+    kind: 'added',
+    style: 'text',
+  })
+
+  // Five sections under the section limit together exceed the document ceiling.
+  const heavyDocument = (word: string) =>
+    Array.from({ length: 5 }, (_, n) => heavySection(`Heavy ${n}`, word, 2)).join('\n\n')
+  const aggregate = compareDocuments({ content: heavyDocument('alpha') }, { content: heavyDocument('beta') })
+  expect(aggregate.limited).toBe(true)
+  expect(aggregate.leftText).toBe(heavyDocument('alpha'))
+  expect(aggregate.rightText).toBe(heavyDocument('beta'))
+  expect(aggregate.rows).toEqual([])
+  const four = (word: string) => Array.from({ length: 4 }, (_, n) => heavySection(`Heavy ${n}`, word, 2)).join('\n\n')
+  const underCeiling = compareDocuments({ content: four('alpha') }, { content: four('beta') })
+  expect(underCeiling.limited).toBe(false)
+  expect(underCeiling.rows.every((row) => row.changed && !row.limited)).toBe(true)
 })
 
 import type { Page } from '@playwright/test'
@@ -483,6 +585,45 @@ for (const tier of ['requirements', 'system-design'] as const) {
       path: testInfo.outputPath(`${tier}-seeded-formatted-before-after-side-by-side.png`),
       fullPage: true,
     })
+  })
+
+  test(`${tier}: long-section revisions keep navigation and section-local fallback`, async ({ page }, testInfo) => {
+    const longSeed = await seedReview(page, tier, {
+      baseContent: longDesign(),
+      targetContent: longDesign(changedSentence),
+    })
+    await page.goto(longSeed.url)
+    const comparison = page.getByRole('region', { name: 'Version comparison', exact: true })
+    const navigator = page.getByRole('navigation', { name: 'Changed sections' })
+    await expect(
+      comparison.locator('ins').filter({ hasText: 'Operators confirm every pending revision.' }),
+    ).toBeVisible()
+    await expect(comparison).not.toContainText('Diff too large')
+    await expect(navigator.getByRole('button', { name: /^Section / })).toHaveText(['Section 6'])
+    await expect(comparison.getByText('Show unchanged section · Section 1', { exact: true })).toBeVisible()
+    await page.screenshot({ path: testInfo.outputPath(`${tier}-long-section-revision.png`), fullPage: true })
+
+    await page.unrouteAll({ behavior: 'wait' })
+    const mixedSeed = await seedReview(page, tier, {
+      baseContent: `${heavySection('Oversized', 'alpha', 3)}\n\n## Sibling\n\nRenew every 30 seconds.`,
+      targetContent: `${heavySection('Oversized', 'beta', 3)}\n\n## Sibling\n\nRenew every 10 seconds.`,
+    })
+    await page.goto(mixedSeed.url)
+    await expect(navigator.getByRole('button', { name: /^(Oversized|Sibling)$/ })).toHaveText(['Oversized', 'Sibling'])
+    const oversized = comparison.getByRole('region', { name: 'Oversized', exact: true })
+    await expect(oversized).toContainText('Detailed highlighting unavailable for this block')
+    await expect(oversized).toContainText(`${heavyParagraph('alpha')} 2`)
+    await expect(oversized).toContainText(`${heavyParagraph('beta')} 2`)
+    await expect(oversized.locator('ins, del')).toHaveCount(0)
+    const sibling = comparison.getByRole('region', { name: 'Sibling', exact: true })
+    await expect(sibling.locator('ins').filter({ hasText: '10' })).toBeVisible()
+    await expect(sibling.locator('del').filter({ hasText: '30' })).toBeVisible()
+    await navigator.getByRole('button', { name: 'Sibling', exact: true }).click()
+    await expect(sibling).toBeFocused()
+    await page.getByRole('button', { name: 'Side by side', exact: true }).click()
+    await expect(oversized).toContainText('Detailed highlighting unavailable for this block')
+    await expect(sibling.locator('ins').filter({ hasText: '10' })).toBeVisible()
+    await page.screenshot({ path: testInfo.outputPath(`${tier}-section-local-fallback.png`), fullPage: true })
   })
 }
 
