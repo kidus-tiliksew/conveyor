@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -29,16 +30,19 @@ import (
 // kitForgeRepo is one fixture repository: the commit its base branch names
 // and, per commit, the manifest text and the kit roots present in the tree.
 type kitForgeRepo struct {
+	truncated bool
 	head      string
 	manifests map[string]string
 	roots     map[string][]string
 }
 
 type kitForge struct {
-	mu     sync.Mutex
-	repos  map[string]*kitForgeRepo
-	trees  atomic.Int64
-	server *httptest.Server
+	mu    sync.Mutex
+	repos map[string]*kitForgeRepo
+	trees atomic.Int64
+	// kitsTrees counts tree reads for org/kits alone, whose results are cached.
+	kitsTrees atomic.Int64
+	server    *httptest.Server
 }
 
 func fixtureSHA(parts ...string) string {
@@ -95,6 +99,9 @@ func newKitForge(t *testing.T, private string, repos map[string]*kitForgeRepo) *
 			_ = json.NewEncoder(w).Encode(map[string]any{"sha": sha, "tree": map[string]string{"sha": fixtureSHA("tree", slug, sha)}})
 		case strings.HasPrefix(tail, "/git/trees/"):
 			f.trees.Add(1)
+			if slug == "org/kits" {
+				f.kitsTrees.Add(1)
+			}
 			tree := strings.TrimPrefix(tail, "/git/trees/")
 			for sha, manifest := range repo.manifests {
 				if fixtureSHA("tree", slug, sha) != tree {
@@ -109,7 +116,7 @@ func newKitForge(t *testing.T, private string, repos map[string]*kitForgeRepo) *
 						map[string]string{"path": root, "mode": "040000", "type": "tree", "sha": fixtureSHA("dir", root)},
 						map[string]string{"path": root + "/check.sh", "mode": "100755", "type": "blob", "sha": fixtureSHA("script", root)})
 				}
-				_ = json.NewEncoder(w).Encode(map[string]any{"sha": tree, "truncated": false, "tree": entries})
+				_ = json.NewEncoder(w).Encode(map[string]any{"sha": tree, "truncated": repo.truncated, "tree": entries})
 				return
 			}
 			w.WriteHeader(404)
@@ -169,6 +176,46 @@ func (g kitRegistryGuardStore) AppendEvent(context.Context, core.Event) error {
 	return nil
 }
 
+// Corpus failures for the pin-resolution timeout and error paths: a failing
+// requirement read, a failing requirement version list, a design read that
+// blocks until the repository deadline, and a failing design version list.
+var errKitCorpusUnavailable = errors.New("corpus store unavailable")
+
+func (g kitRegistryGuardStore) GetRequirement(ctx context.Context, id string) (core.Requirement, error) {
+	switch id {
+	case "req-fail":
+		return core.Requirement{}, errKitCorpusUnavailable
+	case "req-versions-fail":
+		return core.Requirement{ID: id, CurrentVersion: 1}, nil
+	}
+	return g.Store.GetRequirement(ctx, id)
+}
+
+func (g kitRegistryGuardStore) ListRequirementVersions(ctx context.Context, id string) ([]core.RequirementVersion, error) {
+	if id == "req-versions-fail" {
+		return nil, errKitCorpusUnavailable
+	}
+	return g.Store.ListRequirementVersions(ctx, id)
+}
+
+func (g kitRegistryGuardStore) GetSystemDesign(ctx context.Context, id string) (core.SystemDesign, error) {
+	switch id {
+	case "design-slow":
+		<-ctx.Done()
+		return core.SystemDesign{}, ctx.Err()
+	case "design-versions-fail":
+		return core.SystemDesign{ID: id, CurrentVersion: 1}, nil
+	}
+	return g.Store.GetSystemDesign(ctx, id)
+}
+
+func (g kitRegistryGuardStore) ListSystemDesignVersions(ctx context.Context, id string) ([]core.SystemDesignVersion, error) {
+	if id == "design-versions-fail" {
+		return nil, errKitCorpusUnavailable
+	}
+	return g.Store.ListSystemDesignVersions(ctx, id)
+}
+
 func TestWorkspaceVerificationKits(t *testing.T) {
 	st := store.NewVolatileBackend()
 	defer st.Close()
@@ -182,6 +229,11 @@ func TestWorkspaceVerificationKits(t *testing.T) {
 		{Name: "gone", GitHub: "org/gone", Base: "release"},
 		{Name: "denied", GitHub: "org/denied", Base: "main"},
 		{Name: "flaky", GitHub: "org/flaky", Base: "main"},
+		{Name: "cut", GitHub: "org/cut", Base: "main"},
+		{Name: "pin-fail", GitHub: "org/pin-fail", Base: "main"},
+		{Name: "pin-versions", GitHub: "org/pin-versions", Base: "main"},
+		{Name: "pin-slow", GitHub: "org/pin-slow", Base: "main"},
+		{Name: "pin-design-versions", GitHub: "org/pin-design-versions", Base: "main"},
 	}}
 	if _, err := st.BootstrapWorkspaceConfig(t.Context(), cfg); err != nil {
 		t.Fatal(err)
@@ -244,15 +296,28 @@ func TestWorkspaceVerificationKits(t *testing.T) {
 	for _, id := range []string{"k-current", "k-behind", "k-pending", "k-missing-doc", "k-dismissed", "k-precedence", "k-unpinned"} {
 		roots = append(roots, ".conveyor/kits/"+id)
 	}
+	pinRepo := func(name, pins string) *kitForgeRepo {
+		head := fixtureSHA(name)
+		return &kitForgeRepo{head: head, manifests: map[string]string{head: kitManifest(2, [2]string{"k-" + name, pins})}, roots: map[string][]string{head: {".conveyor/kits/k-" + name}}}
+	}
+	// A short budget keeps the deadline-bound design read fast.
+	previousLimit := kitRegistryRepositoryLimit
+	kitRegistryRepositoryLimit = 2 * time.Second
+	t.Cleanup(func() { kitRegistryRepositoryLimit = previousLimit })
 	legacyHead, emptyHead, brokenHead, futureHead := fixtureSHA("legacy"), fixtureSHA("empty"), fixtureSHA("broken"), fixtureSHA("future")
 	forge := newKitForge(t, private, map[string]*kitForgeRepo{
-		"org/kits":   {head: headA, manifests: map[string]string{headA: kitsV2, headB: strings.Replace(kitsV2, "id: k-current\n    name: Kit k-current", "id: k-current\n    name: Kit k-current advanced", 1)}, roots: map[string][]string{headA: roots, headB: roots}},
-		"org/legacy": {head: legacyHead, manifests: map[string]string{legacyHead: kitManifest(1, [2]string{"k-legacy", pinsYAML("{document_id: req-a, version: 2}", "")})}, roots: map[string][]string{legacyHead: {".conveyor/kits/k-legacy"}}},
-		"org/empty":  {head: emptyHead, manifests: map[string]string{emptyHead: ""}, roots: map[string][]string{}},
-		"org/broken": {head: brokenHead, manifests: map[string]string{brokenHead: "schema_version: [broken"}, roots: map[string][]string{}},
-		"org/gone":   {head: fixtureSHA("gone"), manifests: map[string]string{}, roots: map[string][]string{}},
-		"org/flaky":  {manifests: map[string]string{}, roots: map[string][]string{}},
-		"org/future": {head: futureHead, manifests: map[string]string{futureHead: strings.Replace(kitManifest(2, [2]string{"k-future", pinsYAML("{document_id: req-a, version: 2}", "")}), "schema_version: 2", "schema_version: 3", 1)}, roots: map[string][]string{futureHead: {".conveyor/kits/k-future"}}},
+		"org/kits":                {head: headA, manifests: map[string]string{headA: kitsV2, headB: strings.Replace(kitsV2, "id: k-current\n    name: Kit k-current", "id: k-current\n    name: Kit k-current advanced", 1)}, roots: map[string][]string{headA: roots, headB: roots}},
+		"org/legacy":              {head: legacyHead, manifests: map[string]string{legacyHead: kitManifest(1, [2]string{"k-legacy", pinsYAML("{document_id: req-a, version: 2}", "")})}, roots: map[string][]string{legacyHead: {".conveyor/kits/k-legacy"}}},
+		"org/empty":               {head: emptyHead, manifests: map[string]string{emptyHead: ""}, roots: map[string][]string{}},
+		"org/broken":              {head: brokenHead, manifests: map[string]string{brokenHead: "schema_version: [broken"}, roots: map[string][]string{}},
+		"org/gone":                {head: fixtureSHA("gone"), manifests: map[string]string{}, roots: map[string][]string{}},
+		"org/flaky":               {manifests: map[string]string{}, roots: map[string][]string{}},
+		"org/cut":                 {truncated: true, head: fixtureSHA("cut"), manifests: map[string]string{fixtureSHA("cut"): kitManifest(2, [2]string{"k-cut", pinsYAML("", "")})}, roots: map[string][]string{fixtureSHA("cut"): {".conveyor/kits/k-cut"}}},
+		"org/pin-fail":            pinRepo("pin-fail", pinsYAML("{document_id: req-fail, version: 1}", "")),
+		"org/pin-versions":        pinRepo("pin-versions", pinsYAML("{document_id: req-versions-fail, version: 1}", "")),
+		"org/pin-slow":            pinRepo("pin-slow", pinsYAML("", "{document_id: design-slow, version: 1}")),
+		"org/pin-design-versions": pinRepo("pin-design-versions", pinsYAML("", "{document_id: design-versions-fail, version: 1}")),
+		"org/future":              {head: futureHead, manifests: map[string]string{futureHead: strings.Replace(kitManifest(2, [2]string{"k-future", pinsYAML("{document_id: req-a, version: 2}", "")}), "schema_version: 2", "schema_version: 3", 1)}, roots: map[string][]string{futureHead: {".conveyor/kits/k-future"}}},
 	})
 
 	memberships := &membershipFixture{workspaces: []core.Workspace{{ID: "alpha", Name: "Alpha"}}, roles: map[string]map[string]core.WorkspaceRole{"operator": {"alpha": core.WorkspaceRoleOperator}, "maintainer": {"alpha": core.WorkspaceRoleMaintainer}}}
@@ -333,7 +398,9 @@ func TestWorkspaceVerificationKits(t *testing.T) {
 	t.Run("RepositoryStates", func(t *testing.T) {
 		for name, want := range map[string][2]string{
 			"kits": {"invalid", ""}, "legacy": {"ok", ""}, "empty": {"no_manifest", ""}, "broken": {"invalid", ""}, "future": {"invalid", ""},
-			"gone": {"unavailable", "unknown_revision"}, "denied": {"unavailable", "permission"}, "flaky": {"unavailable", "transport"},
+			"gone": {"unavailable", "unknown_revision"}, "denied": {"unavailable", "permission"}, "flaky": {"unavailable", "transport"}, "cut": {"unavailable", "truncated"},
+			"pin-fail": {"unavailable", "transport"}, "pin-versions": {"unavailable", "transport"},
+			"pin-slow": {"unavailable", "transport"}, "pin-design-versions": {"unavailable", "transport"},
 		} {
 			repo := byName[name]
 			if repo.State != want[0] || repo.Reason != want[1] {
@@ -342,6 +409,14 @@ func TestWorkspaceVerificationKits(t *testing.T) {
 		}
 		if byName["kits"].CommitSHA != headA || byName["gone"].CommitSHA != "" || byName["denied"].CommitSHA != "" {
 			t.Fatal("commit SHA not reported exactly")
+		}
+		// A corpus read failure or an expired budget during pin resolution
+		// reports the resolved commit and no kits, never derived statuses.
+		for _, name := range []string{"pin-fail", "pin-versions", "pin-slow", "pin-design-versions"} {
+			repo := byName[name]
+			if repo.CommitSHA != fixtureSHA(name) || len(repo.Kits) != 0 {
+				t.Fatalf("%s: %+v", name, repo)
+			}
 		}
 		// k-no-root makes discovery malformed; only that kit is invalid and
 		// the repository carries no manifest-level diagnostic.
@@ -410,12 +485,12 @@ func TestWorkspaceVerificationKits(t *testing.T) {
 	})
 
 	t.Run("BaseAdvance", func(t *testing.T) {
-		trees := forge.trees.Load()
+		trees := forge.kitsTrees.Load()
 		if _, again := call(server, "maintainer"); again.Repositories[0].CommitSHA != headA {
 			t.Fatal("repeat read changed head")
 		}
-		if forge.trees.Load() != trees {
-			t.Fatalf("memoized commits re-read the forge tree: %d -> %d", trees, forge.trees.Load())
+		if forge.kitsTrees.Load() != trees {
+			t.Fatalf("memoized commits re-read the forge tree: %d -> %d", trees, forge.kitsTrees.Load())
 		}
 		forge.mu.Lock()
 		forge.repos["org/kits"].head = headB
@@ -424,7 +499,7 @@ func TestWorkspaceVerificationKits(t *testing.T) {
 		if advanced.Repositories[0].CommitSHA != headB || advanced.Repositories[0].Kits[0].Name != "Kit k-current advanced" {
 			t.Fatalf("base advance not read: %+v", advanced.Repositories[0])
 		}
-		if server.verificationKitMemo.size() != 6 {
+		if server.verificationKitMemo.size() != 10 {
 			t.Fatalf("memo holds %d entries", server.verificationKitMemo.size())
 		}
 	})

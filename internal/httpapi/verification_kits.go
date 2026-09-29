@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
+	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 	"github.com/kidus-tiliksew/conveyor/internal/verification"
@@ -21,10 +22,13 @@ import (
 // currently confirmed corpus. It is display-only: verify-stage selection keeps
 // using the frozen work-order snapshot (AC-11.5) and this handler writes nothing.
 
+// kitRegistryRepositoryLimit bounds discovery and pin resolution for one
+// repository. Tests shorten it to exercise the timeout path.
+var kitRegistryRepositoryLimit = 20 * time.Second
+
 const (
-	kitRegistryMemoSize        = 64
-	kitRegistryConcurrency     = 4
-	kitRegistryRepositoryLimit = 20 * time.Second
+	kitRegistryMemoSize    = 64
+	kitRegistryConcurrency = 4
 )
 
 type kitRegistryResponse struct {
@@ -129,9 +133,17 @@ func (s *Server) getWorkspaceVerificationKits(w http.ResponseWriter, r *http.Req
 			defer cancel()
 			out := s.readRepositoryKits(ctx, workspace, repo)
 			// Pin status reads the corpus at request time, so a newly confirmed
-			// version shows without any cache invalidation.
+			// version shows without any cache invalidation. A failed corpus read
+			// or an expired budget makes the repository unavailable rather than
+			// reporting statuses derived from missing data (AC-11.4).
+			var err error
 			for j := range out.Kits {
-				pins.apply(ctx, &out.Kits[j])
+				if err = pins.apply(ctx, &out.Kits[j]); err != nil {
+					break
+				}
+			}
+			if err != nil || ctx.Err() != nil {
+				out = kitRegistryUnavailable(repo, out.CommitSHA, "transport")
 			}
 			result.Repositories[i] = out
 		}(i, repo)
@@ -287,7 +299,9 @@ func newKitPinResolver(st store.Store) *kitPinResolver {
 
 // document is safe for the concurrent repository workers. Concurrent misses may
 // read the same document twice; the cached value is identical either way.
-func (p *kitPinResolver) document(ctx context.Context, kind, id string) kitDocumentVersions {
+// ErrNotFound means the document is absent; any other read failure is returned
+// and never cached, so it cannot masquerade as an unresolved pin.
+func (p *kitPinResolver) document(ctx context.Context, kind, id string) (kitDocumentVersions, error) {
 	cache := p.requirements
 	if kind == verification.PinSystemDesign {
 		cache = p.designs
@@ -296,37 +310,46 @@ func (p *kitPinResolver) document(ctx context.Context, kind, id string) kitDocum
 	d, ok := cache[id]
 	p.mu.Unlock()
 	if ok {
-		return d
+		return d, nil
 	}
 	d = kitDocumentVersions{versions: map[int]string{}}
 	if p.store != nil {
+		var err error
 		switch kind {
 		case verification.PinRequirement:
-			if doc, err := p.store.GetRequirement(ctx, id); err == nil {
+			var doc core.Requirement
+			if doc, err = p.store.GetRequirement(ctx, id); err == nil {
 				d.found, d.archived, d.current = true, doc.Archived, doc.CurrentVersion
-				if versions, err := p.store.ListRequirementVersions(ctx, id); err == nil {
+				var versions []core.RequirementVersion
+				if versions, err = p.store.ListRequirementVersions(ctx, id); err == nil {
 					for _, v := range versions {
 						d.versions[v.Version] = versionStatus(v.Confirmed, v.Retired)
 					}
 				}
 			}
 		case verification.PinSystemDesign:
-			if doc, err := p.store.GetSystemDesign(ctx, id); err == nil {
+			var doc core.SystemDesign
+			if doc, err = p.store.GetSystemDesign(ctx, id); err == nil {
 				d.found, d.archived, d.current = true, doc.Archived, doc.CurrentVersion
-				if versions, err := p.store.ListSystemDesignVersions(ctx, id); err == nil {
+				var versions []core.SystemDesignVersion
+				if versions, err = p.store.ListSystemDesignVersions(ctx, id); err == nil {
 					for _, v := range versions {
 						d.versions[v.Version] = versionStatus(v.Confirmed, v.Dismissed)
 					}
 				}
 			}
 		}
+		if err != nil && !(errors.Is(err, store.ErrNotFound) && !d.found) {
+			return kitDocumentVersions{}, err
+		}
 	}
-	if ctx.Err() == nil {
-		p.mu.Lock()
-		cache[id] = d
-		p.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return kitDocumentVersions{}, err
 	}
-	return d
+	p.mu.Lock()
+	cache[id] = d
+	p.mu.Unlock()
+	return d, nil
 }
 
 func versionStatus(confirmed, withdrawn bool) string {
@@ -342,30 +365,34 @@ func versionStatus(confirmed, withdrawn bool) string {
 // kitStatusOrder is the VK-11 precedence among pin statuses.
 var kitStatusOrder = []string{"unresolved", "behind", "pending", "current"}
 
-func (p *kitPinResolver) apply(ctx context.Context, kit *kitRegistryKit) {
+func (p *kitPinResolver) apply(ctx context.Context, kit *kitRegistryKit) error {
 	for i := range kit.Pins {
 		pin := &kit.Pins[i]
-		d := p.document(ctx, pin.Kind, pin.DocumentID)
+		d, err := p.document(ctx, pin.Kind, pin.DocumentID)
+		if err != nil {
+			return err
+		}
 		pin.Status = pinStatus(d, pin.Version)
 		if pin.Status == "behind" {
 			pin.CurrentVersion = d.current
 		}
 	}
 	if kit.Status == "invalid" {
-		return
+		return nil
 	}
 	if len(kit.Pins) == 0 {
 		kit.Status = "unpinned"
-		return
+		return nil
 	}
 	for _, status := range kitStatusOrder {
 		for _, pin := range kit.Pins {
 			if pin.Status == status {
 				kit.Status = status
-				return
+				return nil
 			}
 		}
 	}
+	return nil
 }
 
 func pinStatus(d kitDocumentVersions, version int) string {
