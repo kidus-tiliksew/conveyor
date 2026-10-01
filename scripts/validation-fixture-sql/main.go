@@ -23,19 +23,21 @@ import (
 var safeDatabase = regexp.MustCompile(`^[a-z][a-z0-9_]{2,62}_test$`)
 
 type options struct {
-	backend  string
-	action   string
-	dsnEnv   string
-	database string
-	timeout  time.Duration
+	backend           string
+	action            string
+	dsnEnv            string
+	database          string
+	expectIncarnation string
+	timeout           time.Duration
 }
 
 func main() {
 	var o options
 	flag.StringVar(&o.backend, "backend", "", "postgres or singlestore")
-	flag.StringVar(&o.action, "action", "", "create, drop, or probe")
+	flag.StringVar(&o.action, "action", "", "create, drop, incarnation, or probe")
 	flag.StringVar(&o.dsnEnv, "dsn-env", "", "environment variable containing the DSN")
 	flag.StringVar(&o.database, "database", "", "owned validation database")
+	flag.StringVar(&o.expectIncarnation, "expect-incarnation", "", "drop only when the database still has this PostgreSQL OID")
 	flag.DurationVar(&o.timeout, "timeout", 20*time.Second, "operation timeout")
 	flag.Parse()
 	if err := run(o); err != nil {
@@ -48,8 +50,11 @@ func run(o options) error {
 	if o.backend != "postgres" && o.backend != "singlestore" {
 		return errors.New("backend must be postgres or singlestore")
 	}
-	if o.action != "create" && o.action != "drop" && o.action != "probe" {
-		return errors.New("action must be create, drop, or probe")
+	if o.action != "create" && o.action != "drop" && o.action != "incarnation" && o.action != "probe" {
+		return errors.New("action must be create, drop, incarnation, or probe")
+	}
+	if o.expectIncarnation != "" && (o.backend != "postgres" || o.action != "drop") {
+		return errors.New("expect-incarnation applies only to a PostgreSQL drop")
 	}
 	if o.dsnEnv == "" {
 		return errors.New("dsn-env is required")
@@ -95,10 +100,33 @@ func postgres(ctx context.Context, o options, dsn string) error {
 			return fmt.Errorf("database creation: %w", err)
 		}
 	case "drop":
+		if o.expectIncarnation != "" {
+			// Recovery drops only the database incarnation it sealed. A
+			// database recreated under the same name has a different OID.
+			oid, found, err := postgresIncarnation(ctx, pool, o.database)
+			if err != nil {
+				return err
+			}
+			if !found {
+				return json.NewEncoder(os.Stdout).Encode(map[string]string{"state": "absent"})
+			}
+			if oid != o.expectIncarnation {
+				return errors.New("incarnation mismatch: database was recreated")
+			}
+		}
 		_, err = pool.Exec(ctx, "DROP DATABASE IF EXISTS "+pgx.Identifier{o.database}.Sanitize()+" WITH (FORCE)")
 		if err != nil {
 			return fmt.Errorf("owned database teardown: %w", err)
 		}
+	case "incarnation":
+		oid, found, err := postgresIncarnation(ctx, pool, o.database)
+		if err != nil {
+			return err
+		}
+		if !found {
+			return errors.New("owned database is absent")
+		}
+		return json.NewEncoder(os.Stdout).Encode(map[string]string{"incarnation": oid})
 	case "probe":
 		var version, current string
 		if err = pool.QueryRow(ctx, "SELECT version(), current_database()").Scan(&version, &current); err != nil {
@@ -111,6 +139,18 @@ func postgres(ctx context.Context, o options, dsn string) error {
 	return nil
 }
 
+func postgresIncarnation(ctx context.Context, pool *pgxpool.Pool, database string) (string, bool, error) {
+	var oid uint32
+	err := pool.QueryRow(ctx, "SELECT oid FROM pg_database WHERE datname = $1", database).Scan(&oid)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("database incarnation lookup: %w", err)
+	}
+	return fmt.Sprint(oid), true, nil
+}
+
 func singlestore(ctx context.Context, o options, dsn string) error {
 	cfg, err := mysql.ParseDSN(dsn)
 	if err != nil {
@@ -118,6 +158,9 @@ func singlestore(ctx context.Context, o options, dsn string) error {
 	}
 	if !strings.HasSuffix(cfg.DBName, "_test") {
 		return errors.New("SingleStore configured database must end in _test")
+	}
+	if o.action == "incarnation" {
+		return errors.New("SingleStore exposes no database incarnation identity")
 	}
 	if o.action != "probe" {
 		cfg.DBName = ""

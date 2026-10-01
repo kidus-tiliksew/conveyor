@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import platform
 import secrets
+import select
 import shutil
 import signal
 import stat
@@ -22,6 +23,7 @@ import time
 
 sys.dont_write_bytecode = True
 import validation_fixtures
+import validation_resources
 
 
 class Refused(ValueError):
@@ -35,7 +37,7 @@ class RunInterrupted(Exception):
 
 
 class FixtureTeardownFailed(Exception):
-    pass
+    """Fixture teardown or owned resource cleanup failed after the gate outcome was recorded."""
 
 
 def canonical(value):
@@ -113,11 +115,16 @@ def policy_read(path):
     fixture = p.get("fixture")
     if fixture is not None:
         require(p["layer"] in ("postgres", "singlestore"), "local evidence cannot own a database fixture")
-        require(isinstance(fixture, dict) and set(fixture) == {
+        required_fixture = {
             "backend", "url_env", "prepared_url_env", "external_network_env",
             "database_prefix", "minimum_free_bytes", "timeout",
-        }, "fixture fields missing or unknown")
+        }
+        require(isinstance(fixture, dict) and set(fixture) in (required_fixture, required_fixture | {"managed_postgres"}),
+                "fixture fields missing or unknown")
         require(fixture["backend"] == p["layer"], "fixture backend must match evidence layer")
+        require(type(fixture.get("managed_postgres", False)) is bool
+                and (not fixture.get("managed_postgres") or fixture["backend"] == "postgres"),
+                "managed_postgres must be a boolean and applies only to the postgres layer")
         require(fixture["url_env"] in p["environment"]
                 and fixture["prepared_url_env"] in p["environment"],
                 "fixture URL variables must be inventoried")
@@ -258,6 +265,9 @@ def location(root, output):
     require(not output.is_relative_to(cache), "evidence cannot live in disposable cache")
     task_cache = os.environ.get("CONVEYOR_TASK_CACHE")
     require(not task_cache or not output.is_relative_to(Path(task_cache).resolve()), "evidence cannot live in task cache")
+    tmp_root = os.environ.get(validation_resources.TMP_ROOT)
+    require(not tmp_root or not output.is_relative_to(Path(tmp_root).resolve()),
+            "evidence cannot live in the disposable validation temporary root")
     return output
 
 
@@ -272,6 +282,9 @@ def default_output(root, p):
 PUBLIC_ENVIRONMENT = {
     "PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "GOCACHE", "GOTMPDIR",
     "npm_config_cache", "PLAYWRIGHT_BROWSERS_PATH", "PYTHONDONTWRITEBYTECODE",
+    # Fixture metadata set by the helper itself; redacting "1" would corrupt
+    # every digit in the retained log.
+    "CONVEYOR_FIXTURE_PREPARED", "CONVEYOR_FIXTURE_OWNERSHIP",
 }
 
 
@@ -310,38 +323,21 @@ class Redactor:
         return emitted
 
 
-def _record_template(p, log_path, started):
+LEGACY_MANIFEST_FIELDS = {"schema", "kind", "state", "outcome", "policy", "before", "after", "started", "finished",
+                          "exit_status", "log", "snapshot_error", "interruption", "fixture", "fixture_error"}
+# Records written with an invocation inventory also name it, the configured
+# timeout, and the owned resource cleanup outcome. Older records stay readable.
+MANIFEST_FIELDS = LEGACY_MANIFEST_FIELDS | {"invocation", "timeout", "resource_cleanup"}
+
+
+def _record_template(p, log_path, started, invocation=None, timeout=None):
     return {"schema": 1, "kind": "fresh-execution", "state": "incomplete", "outcome": "incomplete",
             "policy": p, "before": None, "after": None, "started": started, "finished": None,
             "exit_status": None,
             "log": {"path": str(log_path), "sha256": None, "bytes": 0, "completeness": "incomplete"},
             "snapshot_error": None, "interruption": None,
-            "fixture": None, "fixture_error": None}
-
-
-def _terminate_process_group(process):
-    if process.poll() is not None:
-        process.wait()
-        return
-    try:
-        os.killpg(process.pid, signal.SIGTERM)
-    except ProcessLookupError:
-        pass
-    try:
-        process.wait(timeout=2)
-    except subprocess.TimeoutExpired:
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        process.wait()
-    else:
-        # The direct child may honor TERM while a descendant ignores it and
-        # keeps the inherited output descriptor open.
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+            "fixture": None, "fixture_error": None,
+            "invocation": invocation, "timeout": timeout, "resource_cleanup": None}
 
 
 def _install_interrupt_handlers():
@@ -360,8 +356,64 @@ def _restore_interrupt_handlers(previous):
         signal.signal(signum, handler)
 
 
-def _record(root, p, output):
+# Readiness waits stay short so the leader and deadline are checked even
+# while output is continuously readable; the final drain is bounded.
+OUTPUT_POLL_SECONDS = 0.1
+OUTPUT_DRAIN_SECONDS = 10.0
+
+
+def _bounded_wait(deadline):
+    if deadline is None:
+        return OUTPUT_POLL_SECONDS
+    return min(OUTPUT_POLL_SECONDS, max(0.0, deadline - time.monotonic()))
+
+
+def _drain_step(descriptor, log_file, redactor, drain_until, deadline):
+    """Copy at most one ready chunk; False at EOF or when the drain bound expires."""
+    if drain_until is not None:
+        wait = drain_until - time.monotonic()
+        if wait <= 0:
+            return False  # A member that survived teardown still holds the output open.
+        wait = min(wait, OUTPUT_POLL_SECONDS)
+    else:
+        wait = _bounded_wait(deadline)
+    ready, _, _ = select.select([descriptor], [], [], wait)
+    if not ready:
+        return True
+    chunk = os.read(descriptor, 64 * 1024)
+    if not chunk:
+        return False
+    redacted = redactor.feed(chunk)
+    if redacted:
+        log_file.write(redacted)
+    return True
+
+
+def _record(root, p, output, timeout=None):
     output = location(root, output)
+    try:
+        invocation = validation_resources.Invocation.enter(
+            p["task"], root, p["command"], {"layer": p["layer"], "evidence": str(output)})
+    except validation_resources.ResourceError as exc:
+        raise Refused(str(exc)) from exc
+    try:
+        # Record the output on the invocation before it exists, so owner
+        # teardown and default recovery never remove it; a joined runner's
+        # binding may name disposable paths this environment does not.
+        invocation.retain(output)
+    except validation_resources.ResourceError as exc:
+        if invocation.owner:
+            invocation.finish(outcome="refused: " + str(exc))
+        raise Refused(str(exc)) from exc
+    try:
+        return _record_owned(root, p, output, invocation, timeout)
+    except BaseException:
+        if invocation.owner and invocation.inventory["state"] == "active":
+            invocation.finish(outcome="evidence-error")
+        raise
+
+
+def _record_owned(root, p, output, invocation, timeout):
     output.mkdir(mode=0o700, parents=True, exist_ok=False)
     key = os.urandom(32)
     key_path = output / "key"
@@ -379,9 +431,10 @@ def _record(root, p, output):
         log_file.flush()
         os.fsync(log_file.fileno())
     manifest = output / "manifest.json"
-    state = _record_template(p, log_path, started)
+    state = _record_template(p, log_path, started, str(invocation.path), timeout)
     write_record(manifest, state, key)
     process = None
+    supervised = None
     ownership = None
     fixture_config = p.get("fixture")
     fixture_state = output / "fixture"
@@ -411,8 +464,17 @@ def _record(root, p, output):
     try:
         if fixture_config is not None:
             try:
+                server = {"server": "external"}
+                if fixture_config.get("managed_postgres"):
+                    phase("managed-container", "started")
+                    managed = validation_resources.start_managed_postgres(
+                        invocation, root, env,
+                        external_network=env.get(fixture_config["external_network_env"]))
+                    env = dict(env, **{fixture_config["url_env"]: managed["url"]})
+                    server = {"server": "invocation-container", "container": managed["container"]}
+                    phase("managed-container", "success", "project=" + managed["project"])
                 ownership, runtime_env = validation_fixtures.prepare(
-                    fixture_config, env, fixture_state
+                    fixture_config, env, fixture_state, invocation=invocation, server=server
                 )
                 state["fixture"] = {
                     "backend": ownership["backend"],
@@ -425,7 +487,7 @@ def _record(root, p, output):
                     "after_snapshot_outcome": "pending",
                     "teardown_outcome": "pending",
                 }
-            except (validation_fixtures.FixtureError, OSError, ValueError) as exc:
+            except (validation_fixtures.FixtureError, validation_resources.ResourceError, OSError, ValueError) as exc:
                 state.update(state="complete", outcome="fixture-failure", finished=time.time(),
                              fixture_error="prepare: " + str(exc))
                 state["fixture"] = {"backend": fixture_config["backend"],
@@ -455,23 +517,62 @@ def _record(root, p, output):
                              if value and name not in PUBLIC_ENVIRONMENT]
         redactor = Redactor(secrets_to_redact)
         phase("gate", "started")
-        process = subprocess.Popen(p["command"], cwd=root, env=runtime_env, stdout=subprocess.PIPE,
-                                   stderr=subprocess.STDOUT, start_new_session=True)
+        # Snapshots fingerprint the inventoried environment. The managed
+        # binding and invocation temporary directories reach only the child.
+        child_env = dict(runtime_env, **invocation.managed_env())
+        supervised = validation_resources.start_process(
+            invocation, p["command"], env=child_env, cwd=root, role="gate",
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        process = supervised.process
+        deadline = time.monotonic() + timeout if timeout else None
+        timed_out = False
+        status = None
+        drain_until = None
+        output_open = True
         with log_path.open("ab", buffering=0) as log_file:
-            while True:
-                chunk = os.read(process.stdout.fileno(), 64 * 1024)
-                if not chunk:
-                    break
-                redacted = redactor.feed(chunk)
-                if redacted:
-                    log_file.write(redacted)
+            descriptor = process.stdout.fileno()
+            # Output is drained with bounded waits so neither an exited leader
+            # nor a configured deadline depends on output EOF: a descendant
+            # holding the inherited pipe cannot postpone cleanup, and a leader
+            # that closed its output is still awaited under the deadline.
+            while output_open or (status is None and drain_until is None):
+                if status is None and drain_until is None:
+                    status = process.poll()
+                    if status is not None:
+                        # The direct command exited. Stop the verified
+                        # survivors of its sealed group, keeping its status.
+                        stopped, detail = supervised.stop()
+                        if not stopped:
+                            phase("gate-processes", "cleanup-failure", detail)
+                        drain_until = time.monotonic() + OUTPUT_DRAIN_SECONDS
+                    elif deadline is not None and time.monotonic() >= deadline:
+                        timed_out = True
+                        stopped, detail = supervised.stop()
+                        if not stopped:
+                            phase("gate-processes", "cleanup-failure", detail)
+                        drain_until = time.monotonic() + OUTPUT_DRAIN_SECONDS
+                if output_open:
+                    output_open = _drain_step(descriptor, log_file, redactor, drain_until, deadline)
+                elif drain_until is None:
+                    time.sleep(_bounded_wait(deadline))
             tail = redactor.finish()
             if tail:
                 log_file.write(tail)
             log_file.flush()
             os.fsync(log_file.fileno())
-        status = process.wait()
-        phase("gate", "success" if status == 0 else "failure", f"exit_status={status}")
+        if process.poll() is None:
+            # Only a refused or failed group stop leaves the leader running.
+            supervised.stop()
+            try:
+                process.wait(timeout=OUTPUT_DRAIN_SECONDS)
+            except subprocess.TimeoutExpired:
+                pass
+        if status is None:
+            status = process.returncode
+        if status is None:
+            status = 2  # The leader could not be stopped; its own status is unknown.
+        outcome = "timeout" if timed_out else ("success" if status == 0 else "failure")
+        phase("gate", outcome, f"exit_status={status}")
         state["state"] = "finalizing"
         state["exit_status"] = status
         write_record(manifest, state, key, replace=True)
@@ -479,16 +580,19 @@ def _record(root, p, output):
         state["log"].update(sha256=digest_file(log_path), bytes=log_path.stat().st_size,
                             completeness="complete")
         state.update(state="complete", finished=time.time(),
-                     outcome="snapshot-failure" if state["snapshot_error"] else ("success" if status == 0 else "failure"))
+                     outcome="snapshot-failure" if state["snapshot_error"] else outcome)
         write_record(manifest, state, key, replace=True)
+        if timed_out:
+            return 124
         return status if state["outcome"] != "snapshot-failure" else 2
     except (RunInterrupted, KeyboardInterrupt) as exc:
         if process is not None:
-            _terminate_process_group(process)
+            supervised.stop()
             if process.stdout is not None:
                 with log_path.open("ab", buffering=0) as log_file:
-                    while remainder := os.read(process.stdout.fileno(), 64 * 1024):
-                        log_file.write(redactor.feed(remainder))
+                    drain_until = time.monotonic() + OUTPUT_DRAIN_SECONDS
+                    while _drain_step(process.stdout.fileno(), log_file, redactor, drain_until, None):
+                        pass
                     log_file.write(redactor.finish())
                     log_file.flush()
                     os.fsync(log_file.fileno())
@@ -502,6 +606,8 @@ def _record(root, p, output):
         write_record(manifest, state, key, replace=True)
         return 128 + int(getattr(exc, "signum", signal.SIGINT))
     finally:
+        if supervised is not None and process.poll() is None:
+            supervised.stop()
         if process is not None and process.stdout is not None:
             process.stdout.close()
         teardown_failed = False
@@ -509,7 +615,7 @@ def _record(root, p, output):
             if state["fixture"]["after_snapshot_outcome"] == "pending":
                 after_snapshot()
             try:
-                validation_fixtures.teardown(fixture_config, env, ownership, fixture_state)
+                validation_fixtures.teardown(fixture_config, env, ownership, fixture_state, invocation=invocation)
                 state["fixture"]["teardown_outcome"] = "success"
             except (validation_fixtures.FixtureError, OSError, ValueError) as exc:
                 teardown_failed = True
@@ -521,14 +627,24 @@ def _record(root, p, output):
                 if state["state"] == "complete":
                     state["finished"] = time.time()
                 write_record(manifest, state, key, replace=True)
+        # Owned resources (process groups, managed container and network,
+        # temporary paths) are removed by sealed identity. Their outcome is
+        # recorded beside, never instead of, the gate outcome.
+        if invocation.owner:
+            failures = invocation.finish(outcome=state["outcome"], references=[str(output)])
+        else:
+            failures = invocation.cleanup(rids=invocation.registered, references=[str(output)])
+        state["resource_cleanup"] = {"outcome": "failure" if failures else "success", "detail": failures}
+        if manifest.exists():
+            write_record(manifest, state, key, replace=True)
         _restore_interrupt_handlers(previous_handlers)
-        if teardown_failed:
+        if teardown_failed or failures:
             raise FixtureTeardownFailed
 
 
-def record(root, p, output):
+def record(root, p, output, timeout=None):
     try:
-        return _record(root, p, output)
+        return _record(root, p, output, timeout)
     except FixtureTeardownFailed:
         return 2
 
@@ -562,11 +678,14 @@ def inspect_record(root, output):
     state = record_value.get("state")
     outcome = record_value.get("outcome")
     fixture = record_value.get("fixture")
+    cleanup = record_value.get("resource_cleanup")
     if isinstance(fixture, dict) and fixture.get("teardown_outcome") == "failure":
         classification = "teardown-failure-after-" + str(outcome)
+    elif isinstance(cleanup, dict) and cleanup.get("outcome") == "failure":
+        classification = "cleanup-failure-after-" + str(outcome)
     elif state != "complete" or outcome == "incomplete":
         classification = "abandoned-or-incomplete"
-    elif outcome in ("success", "failure", "interrupted", "snapshot-failure", "fixture-failure"):
+    elif outcome in ("success", "failure", "interrupted", "timeout", "snapshot-failure", "fixture-failure"):
         classification = outcome
     else:
         classification = "unknown"
@@ -583,9 +702,7 @@ def check(root, p, output):
     key = (output / "key").read_bytes()
     require(len(key) == 32, "missing/corrupt evidence key")
     r = read_record(output / "manifest.json", key)
-    require(set(r) == {"schema", "kind", "state", "outcome", "policy", "before", "after", "started", "finished",
-                       "exit_status", "log", "snapshot_error", "interruption", "fixture", "fixture_error"},
-            "incomplete manifest")
+    require(set(r) in (LEGACY_MANIFEST_FIELDS, MANIFEST_FIELDS), "incomplete manifest")
     require(r["schema"] == 1 and r["kind"] == "fresh-execution" and r["policy"] == p, "changed command/policy/task/layer")
     require(r["state"] == "complete", "abandoned/incomplete execution")
     require(r["outcome"] in ("success", "failure")
@@ -593,6 +710,9 @@ def check(root, p, output):
     require(type(r["exit_status"]) is int and r["exit_status"] == 0 and r["snapshot_error"] is None
             and r["interruption"] is None
             and r["finished"] >= r["started"], "failed/incomplete execution")
+    if set(r) == MANIFEST_FIELDS:
+        require(isinstance(r["resource_cleanup"], dict) and r["resource_cleanup"].get("outcome") == "success",
+                "owned resource cleanup did not succeed")
     require(set(r["log"]) == {"path", "sha256", "bytes", "completeness"}
             and r["log"]["path"] == str(output / "command.log")
             and r["log"]["completeness"] == "complete", "incomplete log record")
@@ -645,117 +765,14 @@ def bind(root, p, output, remote, branch):
 
 
 DISPOSABLE_CACHE_CHILDREN = ("go-build", "go-tmp", "tmp", "playwright", "npm")
-CACHE_ENVIRONMENT = ("GOCACHE", "GOTMPDIR", "TMPDIR", "PLAYWRIGHT_BROWSERS_PATH", "npm_config_cache")
-
-
-def _inside(path, parent):
-    return path == parent or path.is_relative_to(parent)
-
-
-def _process_still_live(process):
-    try:
-        process.stat()
-        return True
-    except FileNotFoundError:
-        return False
-    except OSError:
-        return None
-
-
-def _inspection_failure(process, label):
-    live = _process_still_live(process)
-    if live is False:
-        return None
-    return process.name + ":ambiguous:" + label
 
 
 def active_cache_users(path, proc=Path("/proc")):
     """Return live or ambiguously inspected processes that may use path."""
-    path = Path(path).resolve()
-    require(proc.is_dir(), "active cache ownership inspection requires /proc")
-    users = []
     try:
-        processes = list(proc.iterdir())
-    except OSError as exc:
-        raise Refused("active cache ownership inspection is ambiguous: /proc") from exc
-    for process in processes:
-        if not process.name.isdigit() or int(process.name) == os.getpid():
-            continue
-        try:
-            process.stat()
-        except FileNotFoundError:
-            continue
-        except OSError:
-            users.append(process.name + ":ambiguous:process")
-            continue
-        process_cwd = None
-        for label in ("cwd", "root"):
-            candidate = process / label
-            try:
-                target = candidate.resolve(strict=True)
-            except OSError:
-                failure = _inspection_failure(process, label)
-                if failure:
-                    users.append(failure)
-                continue
-            if label == "cwd":
-                process_cwd = target
-            if _inside(target, path):
-                users.append(process.name + ":" + label)
-        descriptors = process / "fd"
-        try:
-            entries = list(descriptors.iterdir())
-        except OSError:
-            failure = _inspection_failure(process, "fd")
-            if failure:
-                users.append(failure)
-            entries = []
-        for descriptor in entries:
-            try:
-                raw_target = os.readlink(descriptor)
-            except OSError:
-                failure = _inspection_failure(process, "fd:" + descriptor.name)
-                if failure:
-                    users.append(failure)
-                continue
-            # Sockets, pipes, eventfds, and anonymous inodes are readable proc
-            # entries but not filesystem paths and therefore cannot name cache
-            # ownership. Absolute descriptor targets are inspected canonically.
-            if not raw_target.startswith("/"):
-                continue
-            try:
-                target = Path(raw_target.removesuffix(" (deleted)")).resolve()
-            except OSError:
-                users.append(process.name + ":ambiguous:fd:" + descriptor.name)
-                continue
-            if _inside(target, path):
-                users.append(process.name + ":fd:" + descriptor.name)
-        try:
-            environment = (process / "environ").read_bytes()
-        except OSError:
-            failure = _inspection_failure(process, "environ")
-            if failure:
-                users.append(failure)
-            continue
-        for entry in environment.split(b"\0"):
-            name, separator, value = entry.partition(b"=")
-            if not separator or os.fsdecode(name) not in CACHE_ENVIRONMENT or not value:
-                continue
-            variable = os.fsdecode(name)
-            candidate = Path(os.fsdecode(value))
-            if not candidate.is_absolute():
-                if process_cwd is None:
-                    users.append(process.name + ":ambiguous:env:" + variable)
-                    continue
-                candidate = process_cwd / candidate
-            try:
-                target = candidate.resolve()
-            except OSError:
-                users.append(process.name + ":ambiguous:env:" + variable)
-                continue
-            if _inside(target, path):
-                users.append(process.name + ":env:" + variable)
-    return sorted(set(users), key=lambda value: (":ambiguous:" in value, value))
+        return validation_resources.active_cache_users(path, proc)
+    except validation_resources.Refusal as exc:
+        raise Refused(str(exc)) from exc
 
 
 def cleanup_cache(task, task_cache, references):
@@ -800,6 +817,8 @@ def main():
     parser.add_argument("--task")
     parser.add_argument("--task-cache")
     parser.add_argument("--reference", action="append", default=[])
+    parser.add_argument("--timeout", type=float, default=0,
+                        help="run only: stop the supervised gate after this many seconds")
     args = parser.parse_args()
     try:
         if args.action == "cleanup":
@@ -816,10 +835,17 @@ def main():
         p = policy_read(args.policy)
         if args.action == "run":
             output = Path(args.output).resolve() if args.output else default_output(root, p)
-            status = record(root, p, output)
+            status = record(root, p, output, args.timeout or None)
             print("Retained validation evidence: manifest=" + str(output / "manifest.json")
                   + " log=" + str(output / "command.log") + " outcome="
                   + inspect_record(root, output)["classification"])
+            if (output / "manifest.json").is_file():
+                try:
+                    invocation = read_record(output / "manifest.json", (output / "key").read_bytes()).get("invocation")
+                except (Refused, OSError, ValueError):
+                    invocation = None
+                if invocation:
+                    print("Invocation inventory: " + invocation)
             return status
         require(args.output, args.action + " requires --output")
         if args.action == "check":

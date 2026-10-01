@@ -4,12 +4,25 @@ import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import subprocess
 import tempfile
+import threading
+import time
 import unittest
 from unittest.mock import Mock, patch
 
 import validation_fixtures as fixtures
+import validation_resources as resources
+
+
+def _alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    stat = Path(f"/proc/{pid}/stat")
+    return not stat.exists() or stat.read_text().rsplit(")", 1)[1].split()[0] != "Z"
 
 
 class FixtureTests(unittest.TestCase):
@@ -28,9 +41,20 @@ class FixtureTests(unittest.TestCase):
         }
         self.env = {"ROOT_URL": "postgres://user:private@127.0.0.1:5432/conveyor_test?sslmode=disable"}
         self.calls = []
+        # Invocation inventories and temporary children stay inside the fixture.
+        isolation = patch.dict(os.environ, {
+            "XDG_STATE_HOME": str(self.root / "state"),
+            resources.TMP_ROOT: str(self.root / "cache"),
+            resources.ALLOW_RAM_TMP: "1",
+        })
+        isolation.start()
+        self.addCleanup(isolation.stop)
+        os.environ.pop(resources.BINDING, None)
 
     def completed(self, argv, env, capture=True):
         self.calls.append((list(argv), dict(env)))
+        if "incarnation" in argv:
+            return subprocess.CompletedProcess(argv, 0, json.dumps({"incarnation": "16384"}), "")
         if "probe" in argv:
             database = fixtures._database_from_dsn(self.config["backend"], env[self.config["prepared_url_env"]])
             return subprocess.CompletedProcess(argv, 0, json.dumps({
@@ -136,26 +160,99 @@ class FixtureTests(unittest.TestCase):
         self.assertNotIn("fixture-admin", str(error))
         self.assertIn("user=[redacted]", str(error))
 
-    def test_lifecycle_orders_snapshots_around_gate_and_teardown_on_failure(self):
-        order = []
+    def lifecycle_doubles(self, order, child_env=None):
         ownership = {"backend": "postgres", "database": "conveyor_a1_test",
                      "prepared_url_env": "CONVEYOR_TEST_DATABASE_URL", "url_env": "ROOT_URL"}
-        child_env = dict(self.env, CONVEYOR_TEST_DATABASE_URL=self.env["ROOT_URL"])
+        child_env = child_env or dict(os.environ, CONVEYOR_TEST_DATABASE_URL=self.env["ROOT_URL"])
+        return (
+            patch.object(fixtures, "prepare", side_effect=lambda *a, **k: (order.append("prepare") or (ownership, dict(child_env)))),
+            patch.object(fixtures, "probe", side_effect=lambda c, e, o, s, label: order.append(label) or {}),
+            patch.object(fixtures, "teardown", side_effect=lambda *a, **k: order.append("teardown")),
+        )
 
-        class Process:
-            returncode = 7
-            def wait(self):
-                order.append("gate")
-                return 7
-            def poll(self):
-                return 7
+    def test_lifecycle_orders_snapshots_around_gate_and_teardown_on_failure(self):
+        order = []
+        marker = self.root / "gate-ran"
+        prepare, probe, teardown = self.lifecycle_doubles(order)
+        with prepare, probe, teardown:
+            status = fixtures.run_lifecycle(self.config, self.root / "run",
+                                            ["sh", "-c", f"touch {marker}; exit 7"])
+        self.assertEqual(status, 7)
+        self.assertTrue(marker.exists())
+        self.assertEqual(order, ["prepare", "before-snapshot", "after-snapshot", "teardown"])
+        phases = [json.loads(line) for line in (self.root / "run" / "phases.jsonl").read_text().splitlines()]
+        self.assertIn(("gate", "failure"), [(p["phase"], p["outcome"]) for p in phases])
+        self.assertIn(("resource-cleanup", "success"), [(p["phase"], p["outcome"]) for p in phases])
+        inventories = list((self.root / "state" / "conveyor" / "manual-validation" / "invocations").iterdir())
+        self.assertEqual(len(inventories), 1)
+        inventory = resources.load_inventory(inventories[0])
+        self.assertEqual(inventory["state"], "completed")
+        self.assertTrue(all(entry["state"] in ("removed", "absent") for entry in inventory["resources"]))
 
-        with patch.object(fixtures, "prepare", side_effect=lambda *a: (order.append("prepare") or (ownership, child_env))), \
-             patch.object(fixtures, "probe", side_effect=lambda c, e, o, s, label: order.append(label) or {}), \
-             patch.object(fixtures, "teardown", side_effect=lambda *a: order.append("teardown")), \
-             patch("subprocess.Popen", return_value=Process()):
-            self.assertEqual(fixtures.run_lifecycle(self.config, self.root / "run", ["make", "gate"]), 7)
-        self.assertEqual(order, ["prepare", "before-snapshot", "gate", "after-snapshot", "teardown"])
+    def test_gate_timeout_and_signal_stop_descendants_that_outlive_the_gate(self):
+        for mode in ("timeout", "sigterm"):
+            with self.subTest(mode=mode):
+                order = []
+                pid_file = self.root / (mode + ".pid")
+                command = ["python3", "-c", "import subprocess, sys, time; "
+                           "p = subprocess.Popen(['sleep', '30']); open(sys.argv[1], 'w').write(str(p.pid)); "
+                           "time.sleep(30)", str(pid_file)]
+                prepare, probe, teardown = self.lifecycle_doubles(order)
+                timer = None
+                if mode == "sigterm":
+                    def interrupt():
+                        deadline = time.time() + 5
+                        while not pid_file.exists() and time.time() < deadline:
+                            time.sleep(0.02)
+                        os.kill(os.getpid(), signal.SIGTERM)
+                    timer = threading.Thread(target=interrupt)
+                    timer.start()
+                with prepare, probe, teardown:
+                    status = fixtures.run_lifecycle(self.config, self.root / mode, command,
+                                                    gate_timeout=1.5 if mode == "timeout" else 0)
+                if timer is not None:
+                    timer.join()
+                self.assertEqual(status, 124 if mode == "timeout" else 128 + signal.SIGTERM)
+                self.assertFalse(_alive(int(pid_file.read_text())), "descendant survived the gate")
+                self.assertEqual(order[-2:], ["after-snapshot", "teardown"])
+                phases = [json.loads(line) for line in (self.root / mode / "phases.jsonl").read_text().splitlines()]
+                gate = [p["outcome"] for p in phases if p["phase"] == "gate"]
+                self.assertEqual(gate[-1], "timeout" if mode == "timeout" else "interrupted")
+
+    def test_managed_postgres_feeds_owned_container_into_fixture_preparation(self):
+        seen = {}
+
+        def managed(invocation, checkout, env, external_network=None):
+            return {"url": "postgres://conveyor:conveyor@127.0.0.1:20001/conveyor_test?sslmode=disable",
+                    "port": 20001, "project": "conveyor-test-" + invocation.id, "container": "c" * 64,
+                    "budget": {"memory": "2g", "tmpfs": "1g"}}
+
+        def prepare(config, base_env, state, invocation=None, server=None):
+            seen.update(url=base_env[config["url_env"]], server=server, invocation=invocation)
+            raise fixtures.FixtureError("stop after preparation")
+
+        with patch.object(resources, "start_managed_postgres", side_effect=managed), \
+                patch.object(fixtures, "prepare", side_effect=prepare):
+            status = fixtures.run_lifecycle(self.config, self.root / "managed", ["true"], managed_postgres=True)
+        self.assertEqual(status, 2)
+        self.assertIn("127.0.0.1:20001", seen["url"])
+        self.assertEqual(seen["server"], {"server": "invocation-container", "container": "c" * 64})
+        phases = (self.root / "managed" / "phases.jsonl").read_text()
+        self.assertIn('"managed-container"', phases)
+        self.assertIn('"not-run"', phases)
+
+    def test_owned_database_is_registered_sealed_and_released_in_the_inventory(self):
+        invocation = resources.Invocation.create("fixture-task", fixtures.ROOT, ["test"], tmp=False)
+        self.addCleanup(lambda: invocation.owner and invocation.finish())
+        with patch.object(fixtures, "_run", side_effect=self.completed):
+            ownership, _ = fixtures.prepare(self.config, self.env, self.root / "inventory", invocation=invocation)
+            entry = invocation.resource(ownership["resource"])
+            self.assertEqual(entry["state"], "sealed")
+            self.assertEqual(entry["identity"]["incarnation"], "16384")
+            self.assertEqual(entry["identity"]["server"], "external")
+            self.assertNotIn("private", json.dumps(invocation.inventory))
+            fixtures.teardown(self.config, self.env, ownership, self.root / "inventory", invocation=invocation)
+        self.assertEqual(invocation.resource(ownership["resource"])["state"], "removed")
 
     def test_postgres_production_parent_is_refused_before_any_client_or_capacity_probe(self):
         for database in ("production", "postgres", "", "production?dbname=conveyor_test"):
@@ -215,12 +312,6 @@ class FixtureTests(unittest.TestCase):
                 self.assertIn({"client": "go executable unavailable", "network": "connection refused",
                                "capacity": "1 bytes free, 20 required"}[kind], diagnostic)
 
-    def test_owned_process_group_is_terminated(self):
-        process = subprocess.Popen(["sh", "-c", "sleep 30 & wait"], start_new_session=True)
-        self.addCleanup(lambda: process.poll() is None and process.kill())
-        fixtures._terminate_process_group(process)
-        self.assertIsNotNone(process.poll())
-
     def test_run_action_parses_options_before_reaching_fixture_preparation(self):
         lifecycle = Mock(return_value=7)
         state = self.root / "direct-make-entrypoint"
@@ -235,25 +326,40 @@ class FixtureTests(unittest.TestCase):
         self.assertEqual(config["backend"], "postgres")
         self.assertEqual(parsed_state, state.resolve())
         self.assertEqual(command, ["make", "_test-integration-postgres"])
+        self.assertFalse(lifecycle.call_args.kwargs["managed_postgres"])
 
-    def test_postgres_target_leaves_outer_owned_fixture_reachable_for_after_snapshot(self):
+    def test_postgres_target_owns_its_container_through_one_managed_invocation(self):
         makefile = (fixtures.ROOT / "Makefile").read_text()
-        target = makefile.split("test-integration: compose-check vk10-runtime", 1)[1].split(
+        target = makefile.split("test-integration: compose-check test-validation-docker vk10-runtime", 1)[1].split(
             "test-integration-ci:", 1
         )[0]
-        self.assertNotIn("test-integration: compose-check vk10-runtime test-db-up", makefile)
         prepared, standalone = target.split("else", 1)
         self.assertIn("_test-integration-postgres", prepared)
-        self.assertNotIn("test-db-down", prepared)
-        self.assertIn("test-db-up", standalone)
-        self.assertIn("test-db-down", standalone)
+        self.assertNotIn("validation_fixtures.py", prepared)
+        self.assertIn("--managed-postgres", standalone)
         self.assertIn("CONVEYOR_FIXTURE_STATE", standalone)
+        for retired in ("test-db-up", "test-db-down", "trap", "docker compose"):
+            self.assertNotIn(retired, target)
 
-    def test_postgres_teardown_removes_only_the_scoped_project_topology(self):
+    def test_database_targets_mutate_only_a_named_invocation(self):
         makefile = (fixtures.ROOT / "Makefile").read_text()
-        target = makefile.split("test-db-down:", 1)[1].split("\n\n", 1)[0]
-        self.assertIn("docker compose -p $(TEST_COMPOSE_PROJECT) --profile test down", target)
-        self.assertNotIn("prune", target)
+        down = makefile.split("test-db-down:", 1)[1].split("\n\n", 1)[0]
+        self.assertIn('validation_resources.py recover --invocation "$(INVOCATION)"', down)
+        self.assertIn("INVOCATION=", down)
+        for forbidden in ("docker compose", "--remove-orphans", "prune"):
+            self.assertNotIn(forbidden, down)
+        up = makefile.split("test-db-up:", 1)[1].split("\n\n", 1)[0]
+        self.assertIn("validation_fixtures.py up", up)
+
+    def test_identity_reports_pins_and_recorded_containers(self):
+        self.assertTrue(fixtures.database_identity(None, {}).startswith("auto\tconveyor-test-<invocation-id>"))
+        self.assertTrue(fixtures.database_identity(None, {"TEST_POSTGRES_PORT": "25432"}).startswith("25432\t"))
+        invocation = resources.Invocation.create("fixture-task", fixtures.ROOT, ["test"], tmp=False)
+        rid = invocation.register("container", {"project": "conveyor-test-x", "port": 25433}, role="postgres")
+        invocation.seal(rid, {"id": "f" * 64})
+        invocation.finish(detached=True)
+        self.assertEqual(fixtures.database_identity(str(invocation.path), {}),
+                         "25433\tconveyor-test-x\t" + "f" * 64)
 
 
 if __name__ == "__main__":

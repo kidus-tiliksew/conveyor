@@ -166,7 +166,10 @@ vet and the installer wait for the dashboard build because they compile Go
 packages that embed it. Standalone targets retain their own prerequisites.
 The target adds no cache/stamp shortcut and never accepts an existing bundle
 without rebuilding and checking its diff. `make test-validation` exercises the
-orchestration and evidence helper and is also part of `make test`.
+orchestration, evidence, and resource helpers with real local processes and is
+also part of `make test`. `make test-validation-docker` runs the real Docker
+and PostgreSQL resource-lifecycle fixtures; `make test-integration` depends on
+it, and missing Docker fails it as missing evidence rather than skipping.
 
 The complete ordinary gate still includes Compose isolation, installer checks,
 Go tests, dashboard TypeScript compilation, Biome, and Playwright. Explicit
@@ -195,8 +198,130 @@ outcome. Phase records, ownership state, complete redacted log, manifest and key
 remain together in durable task state. Make's PostgreSQL and SingleStore
 integration targets use the same lifecycle when invoked directly and accept an
 already-prepared owned fixture from the evidence helper without nesting another
-fixture. The PostgreSQL target may start and stop only its task-scoped Compose
-service; long-lived host containers are never cleanup candidates.
+fixture. The PostgreSQL target creates and removes only its own invocation's
+sealed container and network; long-lived host containers are never cleanup
+candidates.
+
+## Own and recover validation resources
+
+Every managed validation launch records what it owns before it starts work,
+so cleanup and recovery never guess. `scripts/validation_resources.py` is the
+shared helper behind `validation_fixtures.py`, `validation_evidence.py`, the
+Makefile, and the Playwright web server.
+
+- **Inventory.** Each invocation exclusively creates an owner-only directory at
+  `$XDG_STATE_HOME/conveyor/<task-id>/invocations/<invocation-id>/` holding
+  `inventory.json`, an owner lock, and an append-only `recovery.jsonl`. The
+  inventory records the task, checkout, host, owning user, owner PID and birth
+  identity, sanitized argv, non-secret configuration, temporary-root decision,
+  and each resource. It never stores a DSN, password, token, or environment
+  dump. The owner lock is the liveness signal and is released even after
+  `SIGKILL`.
+- **Sealed identities.** A resource is registered as `pending` before creation
+  and sealed before any workload uses it. A process group is sealed by PGID,
+  leader PID, and process birth identity through a launch handshake: the child
+  waits until its record is durable and never executes when sealing fails. The
+  managed PostgreSQL container and its network are created without starting,
+  sealed by Docker ID and the `sh.conveyor.validation.invocation` label, then
+  started. A database on an external server is sealed with its name and, for
+  PostgreSQL, its OID. A temporary child is sealed by path, device, and inode.
+- **Binding.** Child processes receive `CONVEYOR_VALIDATION_INVOCATION`. Recursive
+  Make, the evidence helper's prepared fixture, and Playwright's Vite server
+  register into that same inventory, so one owner performs teardown. The
+  validation child boundary passes this variable. A binding joins only an
+  active owner of the same user and checkout; an inherited binding from
+  another checkout starts a separate owned invocation instead.
+- **Retained references.** Before writing anything, the evidence helper
+  records its output directory in the inventory's `references` list, whether
+  it owns the invocation or joined one. Output inside the configured
+  `CONVEYOR_VALIDATION_TMP_ROOT`, the task cache, or any disposable path of the
+  bound inventory is refused before creation. Owned teardown and recovery
+  always honor recorded references (and an older record's
+  `configuration.evidence`) without repeated `--reference` arguments.
+- **Owned teardown.** Cleanup runs after success, failure, configured timeout,
+  `SIGINT`, and `SIGTERM`, in the order process groups, container, network,
+  external databases, temporary paths. Process groups receive bounded `TERM`
+  then `KILL`, including descendants that outlive the direct child. Each
+  signal follows a check of every remaining member's birth identity or
+  invocation binding. Containers and networks are removed by ID only after
+  their labels and project match. Nothing runs `docker compose down`,
+  `--remove-orphans`, prune, or name-pattern deletion. External PostgreSQL and
+  SingleStore servers and external networks are configuration and are never
+  stopped, capped, or removed.
+- **Separate outcomes.** Cleanup outcome is recorded beside the gate outcome.
+  A cleanup failure fails the invocation but never rewrites a recorded gate
+  success or failure. Evidence manifests name their invocation inventory and
+  a `resource_cleanup` result. `check` and `bind` refuse a record whose owned
+  cleanup failed.
+
+Inspect without mutation, then recover one named invocation after an owner
+was killed:
+
+```sh
+python3 scripts/validation_resources.py inspect --task "$task_id"
+python3 scripts/validation_resources.py inspect --invocation "$invocation"
+python3 scripts/validation_resources.py recover --invocation "$invocation"
+```
+
+Recorded references always apply; add `--reference "$path"` only for retained
+material the inventory does not already name.
+
+Inspection reports each resource as `pending`, `active`, `abandoned`,
+`completed`, `ambiguous`, or `cleanup-failed`, and lists the recorded retained
+references. Recovery refuses while the owner
+lock is held or the recorded owner still runs, on another host or user, and
+for corrupt or legacy inventories. Immediately before each mutation it
+rechecks that resource's identity and refuses a changed process birth or
+binding, a changed container or network ID or label, a changed database
+incarnation, a symlink or substituted path, a path in use, a path that
+contains or is named by a recorded or `--reference` retained reference, a
+malformed reference list, and an unknown resource kind. Pending and ambiguous
+entries have no sealed identity and are never removed. Recovery is
+idempotent, appends every action and refusal to `recovery.jsonl`, and never
+edits an evidence manifest or log: an interrupted attempt stays incomplete and
+nonreusable. Resources created before this inventory existed, such as
+historical Vite servers or verification SingleStore containers, have no
+sealed identity and remain operator work. No daemon or sweep discovers
+cleanup candidates by name, prefix, or age.
+
+Database lifecycle commands name an invocation explicitly:
+
+```sh
+make test-db-identity                     # port (auto or pinned) and project form
+make test-db-up                           # prints INVOCATION, port, container, URL
+make test-db-down INVOCATION="$invocation"  # removes only that invocation's resources
+```
+
+Each invocation gets its own project `conveyor-test-<invocation-id>` and a free
+loopback port, so concurrent runs in one checkout never share a database.
+`CONVEYOR_TEST_POSTGRES_PORT` or `TEST_POSTGRES_PORT` pins the port; an
+occupied pin fails rather than attaching to another server. The managed
+container defaults to `CONVEYOR_TEST_POSTGRES_MEMORY=2g` with a
+`CONVEYOR_TEST_POSTGRES_TMPFS_SIZE=1g` data `tmpfs`. Overrides must be a
+positive integer with an `m` or `g` suffix, and the `tmpfs` must stay smaller
+than the memory limit because its pages count against it.
+
+Large disposable outputs of managed launches use invocation children of
+`CONVEYOR_VALIDATION_TMP_ROOT`, defaulting to `CONVEYOR_TASK_CACHE` and then
+`${XDG_CACHE_HOME:-$HOME/.cache}/conveyor/<task-id>`. The children receive
+`TMPDIR` and `GOTMPDIR`; `HOME` and `XDG_CACHE_HOME` are unchanged. The root
+must be disk-backed: a `tmpfs`, `ramfs`, or unknown filesystem refuses with a
+diagnostic naming the override. Set `CONVEYOR_VALIDATION_ALLOW_RAM_TMP=1` only
+to accept a RAM-backed root deliberately; the inventory and log record it.
+`PLAYWRIGHT_OUTPUT_DIR` and `PLAYWRIGHT_REPORT_DIR` move Playwright's test
+output and HTML report. Copy any report relied upon for acceptance into
+durable state before its disposable directory is removed.
+
+Run a dashboard dev server for review through the same supervisor so a killed
+session cannot leave it running unrecorded:
+
+```sh
+cd web && python3 ../scripts/validation_resources.py launch --task "$task_id" \
+  --role review-vite -- npm run dev -- --host 127.0.0.1 --strictPort
+```
+
+The launcher stops its group when it receives `SIGINT`, `SIGTERM`, or
+`SIGHUP`, when its parent exits, or after `--timeout`.
 
 `scripts/validation_evidence.py` records a fresh command with `run`, checks an
 existing record with `check`, and associates eligible evidence with the actual
@@ -261,7 +386,16 @@ boundary. Schema 1 requires these fields; unknown or omitted fields fail closed:
   prefix, a positive minimum-free-bytes threshold, and an operation timeout.
   It contains no DSN or credential. When present, `run` owns preparation,
   before/after snapshots, and teardown; the Make command still names the full
-  unchanged backend gate.
+  unchanged backend gate. The optional boolean `managed_postgres` (postgres
+  layer only) makes `run` start the invocation's own PostgreSQL container and
+  point the source URL variable at it.
+
+`run --timeout <seconds>` stops the supervised gate after that time and
+records a distinct, nonreusable `timeout` outcome. The deadline is checked
+while output remains readable. `run` never waits for output end-of-file
+before cleanup: when the direct command exits, it stops verified surviving
+members that still hold the inherited output and records the direct command's
+own exit status. Final output drains are bounded.
 
 For example, after authoring and auditing `policy.json` outside the worktree,
 let `run` select the collision-safe attempt directory. Copy the printed attempt

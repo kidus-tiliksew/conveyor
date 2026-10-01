@@ -44,16 +44,27 @@ if (configuredPort === undefined) {
   process.env.PLAYWRIGHT_PORT = String(port)
 }
 
+// Disposable outputs are configurable so large runs can use a disk-backed
+// task cache. Reports relied upon for acceptance are copied to durable state.
+const outputDir = process.env.PLAYWRIGHT_OUTPUT_DIR ?? 'test-results'
+const reportDir = process.env.PLAYWRIGHT_REPORT_DIR
+
 export default defineConfig({
   testDir: './tests',
+  outputDir,
+  ...(reportDir === undefined ? {} : { reporter: [['list'], ['html', { outputFolder: reportDir, open: 'never' }]] }),
   workers,
   use: {
     baseURL: `http://127.0.0.1:${port}`,
     ...devices['Desktop Chrome'],
   },
   webServer: {
-    command: `npm run dev -- --host 127.0.0.1 --port ${port} --strictPort`,
+    // Vite runs in a sealed process group recorded in the validation
+    // invocation inventory (component-verification-strategy). Owned cleanup
+    // or explicit recovery removes a server orphaned by forced termination.
+    command: `python3 ../scripts/validation_resources.py launch --role vite -- npm run dev -- --host 127.0.0.1 --port ${port} --strictPort`,
     url: `http://127.0.0.1:${port}`,
     reuseExistingServer: false,
+    gracefulShutdown: { signal: 'SIGTERM', timeout: 10000 },
   },
 })
