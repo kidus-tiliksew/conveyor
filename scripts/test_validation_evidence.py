@@ -474,6 +474,28 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(record["fixture"]["after_snapshot_outcome"], "success")
         self.assertEqual(record["fixture"]["teardown_outcome"], "success")
 
+    def test_fixture_metadata_is_not_redacted_from_the_retained_log(self):
+        self.policy["layer"] = "postgres"
+        self.policy["environment"].append("CONVEYOR_TEST_DATABASE_URL")
+        self.policy["backend"] = {"isolation": "disposable-per-run", "probe": ["python3", "-c", 'print("{}")']}
+        self.policy["fixture"] = {"backend": "postgres", "url_env": "CONVEYOR_TEST_DATABASE_URL",
+                                  "prepared_url_env": "CONVEYOR_TEST_DATABASE_URL",
+                                  "external_network_env": "CONVEYOR_TEST_EXTERNAL_NETWORK",
+                                  "database_prefix": "conveyor", "minimum_free_bytes": 1, "timeout": "1s"}
+        os.environ["CONVEYOR_TEST_DATABASE_URL"] = "postgres://root:secret-value@db/conveyor_test"
+        (self.root / "Makefile").write_text('check:\n\t@echo "ok 1.10s $$CONVEYOR_TEST_DATABASE_URL"\n')
+        prepared = dict(evidence.environment(self.policy), CONVEYOR_FIXTURE_PREPARED="1",
+                        CONVEYOR_FIXTURE_OWNERSHIP=str(self.base / "ownership.json"))
+        ownership = {"backend": "postgres", "database": "conveyor_a1_test", "endpoint": "db:5432"}
+        with patch.object(evidence.validation_fixtures, "prepare", return_value=(ownership, prepared)), \
+             patch.object(evidence.validation_fixtures, "teardown"), \
+             patch.object(evidence, "snapshot", return_value={"files": {}, "environment": {}, "tools": {},
+                                                              "backend": {}, "git": {}, "runtime": {}}):
+            self.assertEqual(evidence.record(self.root, self.policy, self.output), 0)
+        retained = (self.output / "command.log").read_text()
+        self.assertIn("ok 1.10s [REDACTED]", retained)
+        self.assertNotIn("secret-value", retained)
+
     def test_before_snapshot_failure_attempts_after_and_durably_orders_phases(self):
         self.policy["layer"] = "postgres"
         self.policy["fixture"] = {"backend": "postgres"}

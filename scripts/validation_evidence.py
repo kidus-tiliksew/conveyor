@@ -279,6 +279,9 @@ def default_output(root, p):
 PUBLIC_ENVIRONMENT = {
     "PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "GOCACHE", "GOTMPDIR",
     "npm_config_cache", "PLAYWRIGHT_BROWSERS_PATH", "PYTHONDONTWRITEBYTECODE",
+    # Fixture metadata set by the helper itself; redacting "1" would corrupt
+    # every digit in the retained log.
+    "CONVEYOR_FIXTURE_PREPARED", "CONVEYOR_FIXTURE_OWNERSHIP",
 }
 
 
