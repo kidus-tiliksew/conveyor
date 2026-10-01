@@ -25,6 +25,7 @@ func main() {
 		core.CapabilitySetAssignee,
 		core.CapabilityOperateGates,
 		core.CapabilityRecoverWork,
+		core.CapabilityManageReferenceDocuments,
 		core.CapabilityManageWorkspace,
 	}
 	matrix := make(map[core.WorkspaceRole][]core.Capability, len(roles))

@@ -76,14 +76,16 @@ just bundles of capabilities, each strictly containing the previous:
 | `viewer` | `view_workspace` |
 | `executor` | `claim_work`, `request_changes` |
 | `contributor` | `propose_documents` |
-| `maintainer` | `set_assignee`, `operate_gates`, `recover_work` |
+| `maintainer` | `set_assignee`, `operate_gates`, `recover_work`, `manage_reference_documents` |
 | `operator` | `confirm_documents`, `manage_membership`, `manage_workspace` |
 
 Two boundaries are worth internalizing. Confirming documents is operator-only,
 and it is deliberately not bundled with `operate_gates`: a maintainer can
 approve plans and merges all day without ever being able to change what the
-factory considers confirmed intent. And a workspace can never lose its last
-operator; the server refuses the demotion.
+factory considers confirmed intent. Reference documents are informative, so
+maintainers upload, revise, and remove them through
+`manage_reference_documents` without gaining confirmation authority. And a
+workspace can never lose its last operator; the server refuses the demotion.
 
 Requests against a workspace you are not a member of return 404, not 403, so
 membership existence is not disclosed.
