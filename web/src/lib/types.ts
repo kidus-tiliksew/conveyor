@@ -62,6 +62,96 @@ export interface VerificationObservation {
   fact: string
   supporting: Array<{ evidence_id: string }>
 }
+// Operator grant projection (component-http-api VK-HTTP-8). Field names
+// mirror store.VerificationPermissionView; no payloads, tokens or credential
+// values are present.
+export interface VerificationSubjectRef {
+  kind: 'kit' | 'ordinary'
+  kit_id?: string
+  kit_version?: string
+  content_digest?: string
+  exercise_id?: string
+  obligation_id?: string
+  contract_digest?: string
+}
+export interface VerificationGrantAction {
+  kind: string
+  binding: string
+  target?: string
+}
+export interface VerificationActionRequirement {
+  kind: string
+  binding: string
+  path?: string
+  required: boolean
+}
+export interface VerificationPermissionSubject {
+  subject: VerificationSubjectRef
+  description: string
+  exercise_kind: string
+  permissions: Array<{ kind: string; target_binding?: string; path?: string }>
+  action_requirements: VerificationActionRequirement[]
+  prerequisites: Array<{ id: string; kind: string; environment_binding: string }>
+  inputs: Array<{ name: string; type: string; required: boolean; sensitive: boolean }>
+  retry_policy: string
+  grant_ids: string[]
+}
+export interface VerificationRevisionRef {
+  repository: string
+  remote_identity: string
+  sha: string
+}
+export interface VerificationPermissionGrant {
+  id: string
+  request_key: string
+  context_id: string
+  work_order_id: string
+  work_order_attempt_id: string
+  subject: VerificationSubjectRef
+  actions: VerificationGrantAction[]
+  contract_digest: string
+  revisions: VerificationRevisionRef[]
+  actor: string
+  created_at: string
+  revocation?: { id: string; request_key: string; reason: string; actor: string; created_at: string }
+}
+export type VerificationGrantEligibility =
+  | 'eligible'
+  | 'not_claimed'
+  | 'claim_expired'
+  | 'head_changed'
+  | 'context_missing'
+  | 'context_stale'
+export interface VerificationPermissionView {
+  task_id: string
+  work_order_id: string
+  order_state: string
+  work_order_attempt_id: string
+  observed_at: string
+  lease_expires_at?: string
+  execution_deadline?: string
+  submitted_head: string
+  context: {
+    id: string
+    work_order_attempt_id: string
+    revisions: VerificationRevisionRef[]
+    governing_pins: Array<{ kind: string; document_id: string; version: number }>
+    sealed: boolean
+    created_at: string
+  } | null
+  eligibility: { state: VerificationGrantEligibility; reason?: string; recovery?: string }
+  subjects: VerificationPermissionSubject[]
+  grants: VerificationPermissionGrant[]
+  next_cursor?: string
+}
+export interface VerificationPermissionRequest {
+  context_id: string
+  request_key: string
+  subject?: VerificationSubjectRef
+  actions?: VerificationGrantAction[]
+  revoke_grant_id?: string
+  reason?: string
+}
 export interface VerificationAssessment {
   context_ids: string[]
   run_ids: string[]
