@@ -2232,6 +2232,105 @@ test('upload then supersede uses the version endpoint and bounds oversized compa
   await expect(page.getByText('Prior line 599')).toBeVisible()
 })
 
+// req-accounts-and-membership AC-2.6 and AC-2.7: reference-document controls
+// follow manage_reference_documents, while requirement confirmation stays on
+// the operator-only confirm_documents capability.
+for (const role of ['viewer', 'executor', 'contributor', 'maintainer', 'operator'] as const) {
+  test(`reference document controls follow manage_reference_documents for ${role}`, async ({ page }) => {
+    await initShell(page)
+    const manages = role === 'maintainer' || role === 'operator'
+    const confirms = role === 'operator'
+    const writes: string[] = []
+    let currentVersion = 1
+    let live = true
+    await page.route('**/v1/**', async (route) => {
+      const request = route.request()
+      const url = new URL(request.url())
+      if (url.pathname === '/v1/me') return route.fulfill({ json: { id: `usr_${role}`, role } })
+      const shell = shellResponse(route)
+      if (shell) return await shell
+      if (url.pathname.startsWith('/v1/reference-documents') && request.method() !== 'GET') {
+        expect(url.searchParams.get('workspace_id')).toBe('demo')
+        writes.push(`${request.method()} ${url.pathname}`)
+      }
+      if (url.pathname === '/v1/reference-documents' && request.method() === 'GET') {
+        return route.fulfill({
+          json: live
+            ? [{ id: 'ref-overview', name: 'Product overview', current_version: currentVersion, workspace: 'demo' }]
+            : [],
+        })
+      }
+      if (url.pathname === '/v1/reference-documents' && request.method() === 'POST') {
+        return route.fulfill({ status: 201, json: { document: { id: 'ref-personas' }, version: { version: 1 } } })
+      }
+      if (url.pathname === '/v1/reference-documents/ref-overview/versions' && request.method() === 'POST') {
+        currentVersion = 2
+        return route.fulfill({ status: 201, json: { document_id: 'ref-overview', version: 2, supersedes_version: 1 } })
+      }
+      if (url.pathname === '/v1/reference-documents/ref-overview/versions') {
+        return route.fulfill({
+          json: Array.from({ length: currentVersion }, (_, index) => ({
+            document_id: 'ref-overview',
+            version: index + 1,
+            filename: 'overview.md',
+            content_type: 'text/markdown',
+            content: `# Overview\n\nVersion ${index + 1}.`,
+            supersedes_version: index || undefined,
+            workspace: 'demo',
+          })),
+        })
+      }
+      if (url.pathname === '/v1/reference-documents/ref-overview' && request.method() === 'DELETE') {
+        live = false
+        return route.fulfill({ status: 204 })
+      }
+      if (url.pathname === '/v1/requirements') return route.fulfill({ json: [summarizeRequirement(requirement)] })
+      if (url.pathname === '/v1/requirements/req-retries') return route.fulfill({ json: requirement })
+      if (url.pathname === '/v1/requirements/req-retries/versions')
+        return route.fulfill({ json: requirement.pending_versions })
+      return route.fulfill({ json: [] })
+    })
+
+    await page.goto('/requirements?requirement=req-retries')
+    const canvas = page.getByRole('region', { name: 'Requirement document' })
+    await expect(canvas.getByRole('heading', { name: 'Retry behavior' })).toBeVisible()
+    await page.getByRole('button', { name: 'Review changes · v1', exact: true }).click()
+    await expect(page.getByRole('button', { name: 'Confirm version 1' })).toHaveCount(confirms ? 1 : 0)
+    await expect(page.getByRole('button', { name: 'Archive' })).toHaveCount(confirms ? 1 : 0)
+
+    const tree = page.getByRole('navigation', { name: 'Document tree' })
+    const addMarkdown = tree.locator('label').filter({ hasText: 'Add Markdown' })
+    await tree.getByRole('button', { name: /Product overview/ }).click()
+    await expect(page.getByRole('heading', { level: 2, name: 'Product overview', exact: true })).toBeVisible()
+    await expect(page.getByText('Version 1.')).toBeVisible()
+    const reupload = page.locator('label').filter({ hasText: 'Re-upload' })
+    const remove = page.getByRole('button', { name: 'Delete' })
+    if (!manages) {
+      await expect(addMarkdown).toHaveCount(0)
+      await expect(reupload).toHaveCount(0)
+      await expect(remove).toHaveCount(0)
+      expect(writes).toEqual([])
+      return
+    }
+
+    await addMarkdown
+      .locator('input[type=file]')
+      .setInputFiles({ name: 'personas.md', mimeType: 'text/markdown', buffer: Buffer.from('# Personas') })
+    await expect.poll(() => writes).toEqual(['POST /v1/reference-documents'])
+    await reupload
+      .locator('input[type=file]')
+      .setInputFiles({ name: 'overview.md', mimeType: 'text/markdown', buffer: Buffer.from('# Overview') })
+    await expect.poll(() => writes.length).toBe(2)
+    expect(writes[1]).toBe('POST /v1/reference-documents/ref-overview/versions')
+    await expect(canvas.getByText('v2', { exact: true })).toBeVisible()
+    page.once('dialog', (dialog) => dialog.accept())
+    await remove.click()
+    await expect.poll(() => writes.length).toBe(3)
+    expect(writes[2]).toBe('DELETE /v1/reference-documents/ref-overview')
+    await expect(tree.getByRole('button', { name: /Product overview/ })).toHaveCount(0)
+  })
+}
+
 test('pending derivation links to its pinned source and requirement anchors scroll after rendering', async ({
   page,
 }) => {

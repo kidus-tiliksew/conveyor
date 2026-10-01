@@ -30,6 +30,12 @@ const (
 	CapabilityOperateGates    Capability = "operate_gates"
 	CapabilityRecoverWork     Capability = "recover_work"
 	CapabilityManageWorkspace Capability = "manage_workspace"
+	// ManageReferenceDocuments covers uploading, revising, and removing
+	// informative reference documents, which never gate work (DEC-34). It is
+	// deliberately distinct from confirm_documents, which keeps confirming or
+	// dismissing normative documents operator-only (req-accounts-and-membership
+	// AC-2.6, AC-2.7).
+	CapabilityManageReferenceDocuments Capability = "manage_reference_documents"
 )
 
 // roleCapabilities is the single role-to-capability decision table (REQ-8,
@@ -50,25 +56,27 @@ var roleCapabilities = map[WorkspaceRole]map[Capability]bool{
 		CapabilityProposeDocuments: true,
 	},
 	WorkspaceRoleMaintainer: {
-		CapabilityViewWorkspace:    true,
-		CapabilityClaimWork:        true,
-		CapabilityRequestChanges:   true,
-		CapabilityProposeDocuments: true,
-		CapabilitySetAssignee:      true,
-		CapabilityOperateGates:     true,
-		CapabilityRecoverWork:      true,
+		CapabilityViewWorkspace:            true,
+		CapabilityClaimWork:                true,
+		CapabilityRequestChanges:           true,
+		CapabilityProposeDocuments:         true,
+		CapabilitySetAssignee:              true,
+		CapabilityOperateGates:             true,
+		CapabilityRecoverWork:              true,
+		CapabilityManageReferenceDocuments: true,
 	},
 	WorkspaceRoleOperator: {
-		CapabilityViewWorkspace:    true,
-		CapabilityClaimWork:        true,
-		CapabilityRequestChanges:   true,
-		CapabilityProposeDocuments: true,
-		CapabilityConfirmDocuments: true,
-		CapabilityManageMembership: true,
-		CapabilitySetAssignee:      true,
-		CapabilityOperateGates:     true,
-		CapabilityRecoverWork:      true,
-		CapabilityManageWorkspace:  true,
+		CapabilityViewWorkspace:            true,
+		CapabilityClaimWork:                true,
+		CapabilityRequestChanges:           true,
+		CapabilityProposeDocuments:         true,
+		CapabilityConfirmDocuments:         true,
+		CapabilityManageMembership:         true,
+		CapabilitySetAssignee:              true,
+		CapabilityOperateGates:             true,
+		CapabilityRecoverWork:              true,
+		CapabilityManageReferenceDocuments: true,
+		CapabilityManageWorkspace:          true,
 	},
 }
 

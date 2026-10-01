@@ -132,7 +132,7 @@ function requirementAttentionCount(item: RequirementSummary) {
  * arrive as proposed versions an operator confirms here.
  */
 export function RequirementsPage() {
-  const canConfirmDocuments = useWorkspaceCapability('confirm_documents')
+  const canManageReferenceDocuments = useWorkspaceCapability('manage_reference_documents')
   const { workspace } = useWorkspaceSelection()
   const navigate = useNavigate()
   const client = useQueryClient()
@@ -244,7 +244,7 @@ export function RequirementsPage() {
             {overviews.length === 0 && (
               <DocumentTreeNote>Add a product overview, personas, or a glossary.</DocumentTreeNote>
             )}
-            {canConfirmDocuments && (
+            {canManageReferenceDocuments && (
               <div className="px-2 pt-2">
                 <label className="flex cursor-pointer items-center justify-center gap-2 rounded-md border border-dashed border-edge px-2 py-2 text-xs font-medium text-muted transition-colors hover:border-primary/40 hover:bg-surface hover:text-primary">
                   <FileUp className="size-3.5" /> {upload.isPending ? 'Uploading…' : 'Add Markdown'}
@@ -409,7 +409,7 @@ function OverviewCanvas({
   remove: () => void
   removing: boolean
 }) {
-  const canConfirmDocuments = useWorkspaceCapability('confirm_documents')
+  const canManageReferenceDocuments = useWorkspaceCapability('manage_reference_documents')
   const [selectedVersion, setSelectedVersion] = useState(initialVersion ?? document.current_version)
   useEffect(
     () => setSelectedVersion(initialVersion ?? document.current_version),
@@ -440,7 +440,7 @@ function OverviewCanvas({
             <Badge variant="outline">Reference material</Badge>
           </div>
         </div>
-        {canConfirmDocuments && (
+        {canManageReferenceDocuments && (
           <div className="flex shrink-0 flex-wrap items-center gap-2">
             <label
               className={`inline-flex h-8 cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-md border border-edge bg-background px-2.5 text-xs font-medium text-foreground transition-colors hover:bg-surface ${uploading ? 'pointer-events-none opacity-40' : ''}`}

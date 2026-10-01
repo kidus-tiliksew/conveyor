@@ -476,7 +476,7 @@ func TestMutationRoutesNameCapabilitiesExplicitly(t *testing.T) {
 	request.Header.Set("Authorization", "Bearer operator-token")
 	response = httptest.NewRecorder()
 	server.Handler().ServeHTTP(response, request)
-	if len(fixture.capabilityCalls) < 2 || fixture.capabilityCalls[len(fixture.capabilityCalls)-1] != core.CapabilityConfirmDocuments {
+	if len(fixture.capabilityCalls) < 2 || fixture.capabilityCalls[len(fixture.capabilityCalls)-1] != core.CapabilityManageReferenceDocuments {
 		t.Fatalf("reference supersession capability calls=%v", fixture.capabilityCalls)
 	}
 }
@@ -778,19 +778,25 @@ func TestExecutorAndMaintainerRouteBoundaries(t *testing.T) {
 		method, path, body string
 		capability         core.Capability
 	}{
+		// Every confirm_documents route stays operator-only
+		// (req-accounts-and-membership AC-2.6).
 		{http.MethodPost, "/v1/requirements/req/versions/1/confirm?workspace_id=alpha", "", core.CapabilityConfirmDocuments},
 		{http.MethodPost, "/v1/requirements/req/versions/1/dismiss?workspace_id=alpha", "", core.CapabilityConfirmDocuments},
 		{http.MethodPost, "/v1/requirements/req/archive?workspace_id=alpha", `{invalid`, core.CapabilityConfirmDocuments},
-		{http.MethodPost, "/v1/system-designs/design/archive?workspace_id=alpha", `{invalid`, core.CapabilityConfirmDocuments},
+		{http.MethodPost, "/v1/requirements/req/restore?workspace_id=alpha", `{invalid`, core.CapabilityConfirmDocuments},
+		{http.MethodPost, "/v1/system-designs/design/versions/1/confirm?workspace_id=alpha", "", core.CapabilityConfirmDocuments},
 		{http.MethodPost, "/v1/system-designs/design/versions/1/dismiss?workspace_id=alpha", "", core.CapabilityConfirmDocuments},
+		{http.MethodPost, "/v1/system-designs/design/archive?workspace_id=alpha", `{invalid`, core.CapabilityConfirmDocuments},
+		{http.MethodPost, "/v1/system-designs/design/restore?workspace_id=alpha", `{invalid`, core.CapabilityConfirmDocuments},
+		{http.MethodPost, "/v1/decisions/DEC-1/confirm?workspace_id=alpha", `{}`, core.CapabilityConfirmDocuments},
+		{http.MethodPost, "/v1/decisions/DEC-1/dismiss?workspace_id=alpha", `{}`, core.CapabilityConfirmDocuments},
+		{http.MethodPost, "/v1/decisions/DEC-1/sweep/requirement/req/dismiss?workspace_id=alpha", `{}`, core.CapabilityConfirmDocuments},
+		{http.MethodPost, "/v1/planning-bundles/bundle/approve?workspace_id=alpha", `{}`, core.CapabilityConfirmDocuments},
+		{http.MethodPost, "/v1/planning-bundles/bundle/reject?workspace_id=alpha", `{}`, core.CapabilityConfirmDocuments},
 		{http.MethodGet, "/v1/workspaces/alpha/invitations?workspace_id=alpha", "", core.CapabilityManageMembership},
 		{http.MethodPost, "/v1/lineage/rebuild?workspace_id=alpha", `{}`, core.CapabilityManageWorkspace},
 		{http.MethodPost, "/v1/requirements/req/staleness/signal/acknowledge?workspace_id=alpha", `{}`, core.CapabilityManageWorkspace},
 		{http.MethodPost, "/v1/requirements/req/staleness/signal/follow-up?workspace_id=alpha", `{}`, core.CapabilityManageWorkspace},
-		{http.MethodPost, "/v1/reference-documents?workspace_id=alpha", `{}`, core.CapabilityConfirmDocuments},
-		{http.MethodPost, "/v1/reference-documents/ref/versions?workspace_id=alpha", `{}`, core.CapabilityConfirmDocuments},
-		{http.MethodDelete, "/v1/reference-documents/ref?workspace_id=alpha", "", core.CapabilityConfirmDocuments},
-		{http.MethodPost, "/v1/decisions/DEC-1/dismiss?workspace_id=alpha", `{}`, core.CapabilityConfirmDocuments},
 		{http.MethodPost, "/v1/monitor/observations?workspace_id=alpha", `{}`, core.CapabilityManageWorkspace},
 		{http.MethodPost, "/v1/monitor/drift/drift/resolve?workspace_id=alpha", `{}`, core.CapabilityManageWorkspace},
 		{http.MethodPost, "/v1/workers/pairings?workspace_id=alpha", `{}`, core.CapabilityManageWorkspace},
@@ -833,39 +839,77 @@ func TestExecutorAndMaintainerRouteBoundaries(t *testing.T) {
 	}
 }
 
-func TestReferenceDocumentSupersessionRequiresOperator(t *testing.T) {
-	st := store.NewMemory()
-	ctx := store.WithWorkspace(t.Context(), "alpha")
-	document, _, err := st.CreateReferenceDocument(ctx, core.ReferenceDocument{ID: "ref-overview", Name: "Overview"}, core.ReferenceDocumentVersion{Filename: "overview.md", ContentType: "text/markdown", Content: "# One"})
-	if err != nil {
-		t.Fatal(err)
+// Reference-document writes name manage_reference_documents: maintainers and
+// operators are admitted, while contributor and lower roles receive the
+// canonical capability refusal (req-accounts-and-membership AC-2.7).
+func TestReferenceDocumentWritesRequireManageReferenceDocuments(t *testing.T) {
+	for _, role := range []core.WorkspaceRole{core.WorkspaceRoleViewer, core.WorkspaceRoleExecutor, core.WorkspaceRoleContributor, core.WorkspaceRoleMaintainer, core.WorkspaceRoleOperator} {
+		t.Run(string(role), func(t *testing.T) {
+			harness := newReferenceDocumentRoleHarness(t)
+			admitted := role == core.WorkspaceRoleMaintainer || role == core.WorkspaceRoleOperator
+			token := harness.member(role)
+			for _, write := range harness.writes(t) {
+				harness.fixture.capabilityCalls = nil
+				response := harness.serve(write.request(token))
+				calls := harness.fixture.capabilityCalls
+				if len(calls) == 0 || calls[len(calls)-1] != core.CapabilityManageReferenceDocuments {
+					t.Fatalf("%s %s capability calls=%v", role, write.name, calls)
+				}
+				refused := response.Code == http.StatusNotFound && response.Body.String() == canonicalWorkspaceNotFoundBody()
+				if refused == admitted {
+					t.Fatalf("%s %s status=%d body=%q admitted=%v", role, write.name, response.Code, response.Body.String(), admitted)
+				}
+				if admitted && response.Code != write.wantStatus {
+					t.Fatalf("%s %s status=%d body=%q want %d", role, write.name, response.Code, response.Body.String(), write.wantStatus)
+				}
+			}
+			documents, err := harness.store.ListReferenceDocuments(harness.ctx, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			versions, err := harness.store.ListReferenceDocumentVersions(harness.ctx, harness.document.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if admitted {
+				// Created, superseded, then removed: the seeded document leaves the
+				// active set and keeps both versions readable.
+				if len(documents) != 1 || documents[0].Name != "Created" || len(versions) != 2 {
+					t.Fatalf("%s writes documents=%+v versions=%d", role, documents, len(versions))
+				}
+				return
+			}
+			if len(documents) != 1 || documents[0].ID != harness.document.ID || documents[0].CurrentVersion != 1 || len(versions) != 1 {
+				t.Fatalf("refused %s writes changed documents=%+v versions=%d", role, documents, len(versions))
+			}
+		})
 	}
-	fixture := &membershipFixture{
-		workspaces: []core.Workspace{{ID: "alpha"}},
-		roles: map[string]map[string]core.WorkspaceRole{
-			"user":     {"alpha": core.WorkspaceRoleContributor},
-			"operator": {"alpha": core.WorkspaceRoleOperator},
-		},
+}
+
+// Execution credentials stay at user scope and never reach reference writes,
+// even when their owner is a workspace operator (req-accounts-and-membership
+// AC-3.3).
+func TestReferenceDocumentWritesRefuseExecutionCredentials(t *testing.T) {
+	harness := newReferenceDocumentRoleHarness(t)
+	harness.credentials["agent-token"] = core.AuthenticatedCredential{ID: "agt_operator", OwnerUserID: "operator", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser}
+	harness.credentials["run-child-token"] = core.AuthenticatedCredential{ID: "agt_child", OwnerUserID: "operator", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser,
+		RunWorkspaceID: "demo", RunWorkOrderID: "order", RunSessionID: "session"}
+	// Worker credentials authenticate only through the worker surface, so the
+	// human credential boundary does not recognize them.
+	for _, token := range []string{"agent-token", "run-child-token", "worker-token"} {
+		for _, write := range harness.writes(t) {
+			harness.fixture.capabilityCalls = nil
+			if response := harness.serve(write.request(token)); response.Code != http.StatusUnauthorized {
+				t.Fatalf("%s %s status=%d body=%q", token, write.name, response.Code, response.Body.String())
+			}
+			if len(harness.fixture.capabilityCalls) != 0 {
+				t.Fatalf("%s %s reached capability checks: %v", token, write.name, harness.fixture.capabilityCalls)
+			}
+		}
 	}
-	server := NewServer(st)
-	server.Workspaces, server.Memberships = fixture, fixture
-	server.Credentials = staticCredentialVerifier{
-		"user-token":     {ID: "pat_user", OwnerUserID: "user", Kind: core.CredentialUser, Scope: core.CredentialScopeUser},
-		"operator-token": {ID: "pat_operator", OwnerUserID: "operator", Kind: core.CredentialUser, Scope: core.CredentialScopeOperator},
-	}
-	call := func(token string) *httptest.ResponseRecorder {
-		request := referenceDocumentUploadRequest(t, "/v1/reference-documents/"+document.ID+"/versions", "", "overview.md", "text/markdown", []byte("# Two"))
-		request.URL.RawQuery = "workspace_id=alpha"
-		request.Header.Set("Authorization", "Bearer "+token)
-		response := httptest.NewRecorder()
-		server.Handler().ServeHTTP(response, request)
-		return response
-	}
-	if response := call("user-token"); response.Code != http.StatusNotFound || response.Body.String() != canonicalWorkspaceNotFoundBody() {
-		t.Fatalf("user supersession status=%d body=%q", response.Code, response.Body.String())
-	}
-	if response := call("operator-token"); response.Code != http.StatusCreated {
-		t.Fatalf("operator supersession status=%d body=%q", response.Code, response.Body.String())
+	versions, err := harness.store.ListReferenceDocumentVersions(harness.ctx, harness.document.ID)
+	if err != nil || len(versions) != 1 {
+		t.Fatalf("execution credentials changed versions=%d err=%v", len(versions), err)
 	}
 }
 

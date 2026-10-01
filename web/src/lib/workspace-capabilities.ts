@@ -11,6 +11,7 @@ export type WorkspaceCapability =
   | 'set_assignee'
   | 'operate_gates'
   | 'recover_work'
+  | 'manage_reference_documents'
   | 'manage_workspace'
 
 export const roleCapabilities = capabilityBundles as Record<WorkspaceRole, readonly WorkspaceCapability[]>
