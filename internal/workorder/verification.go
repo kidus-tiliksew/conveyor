@@ -123,10 +123,11 @@ type VerificationReconcileRequest struct {
 }
 
 type VerificationSubmitRequest struct {
-	ContextID string                     `json:"context_id"`
-	Outcome   string                     `json:"outcome"`
-	Coverage  store.VerificationCoverage `json:"coverage"`
-	Feedback  string                     `json:"feedback,omitempty"`
+	ContextID      string                     `json:"context_id"`
+	Outcome        string                     `json:"outcome"`
+	Coverage       store.VerificationCoverage `json:"coverage"`
+	Feedback       string                     `json:"feedback,omitempty"`
+	RequiredAction string                     `json:"required_action,omitempty"`
 }
 
 // VerificationRequestType is the shared wire contract for REST, MCP and worker
@@ -248,7 +249,11 @@ func (s *Service) Verification(ctx context.Context, id, session, token, operatio
 		command.Observation = &store.VerificationOperationObservation{State: r.Outcome, Source: r.Source, CapturedAt: r.CapturedAt, ProviderReference: r.ProviderReference}
 	case *VerificationSubmitRequest:
 		command.Kind, command.ContextID = store.VerificationSeal, r.ContextID
-		command.Submission = &store.VerificationSubmission{Outcome: r.Outcome, Coverage: r.Coverage, Feedback: r.Feedback}
+		command.Submission = &store.VerificationSubmission{Outcome: r.Outcome, Coverage: r.Coverage, Feedback: r.Feedback, RequiredAction: r.RequiredAction}
+		// VK-13.1: scope is already authenticated; refuse before any staged write.
+		if err := store.ValidateVerificationOutcome(*command.Submission); err != nil {
+			return nil, err
+		}
 
 	case *VerificationPrepareRequest:
 		return s.prepareVerification(ctx, backend, a, o, *r)

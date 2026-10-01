@@ -853,6 +853,26 @@ type WorkOrderCheckpoint struct {
 	DecisionRequest string                               `json:"decision_request,omitempty"`
 	Class           string                               `json:"class,omitempty"`
 	Citations       []WorkOrderAuthorityConflictCitation `json:"citations,omitempty"`
+	Verification    *WorkOrderVerificationCheckpoint     `json:"verification,omitempty"`
+}
+
+// WorkOrderVerificationCheckpoint references the sealed operator checkpoint of
+// feature-verification-kit-execution VK-13.3. It never satisfies review admission.
+type WorkOrderVerificationCheckpoint struct {
+	ContextID      string                                  `json:"context_id"`
+	HeadSHA        string                                  `json:"head_sha"`
+	Reason         string                                  `json:"reason"`
+	RequiredAction string                                  `json:"required_action"`
+	Summary        string                                  `json:"summary,omitempty"`
+	Grounds        []WorkOrderVerificationCheckpointGround `json:"grounds"`
+	OperationIDs   []string                                `json:"operation_ids,omitempty"`
+}
+
+type WorkOrderVerificationCheckpointGround struct {
+	Kind           string              `json:"kind"`
+	Subject        VerificationSubject `json:"subject"`
+	AttemptID      string              `json:"attempt_id,omitempty"`
+	ServerVerified bool                `json:"server_verified"`
 }
 
 type WorkOrderAuthorityConflictCitation struct {

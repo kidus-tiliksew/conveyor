@@ -7,7 +7,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 )
 
-// req-verification-kits REQ-4/REQ-7; feature-verification-kit-execution VK-2/VK-7 and component-task-lifecycle.
+// req-verification-kits REQ-4/REQ-7; feature-verification-kit-execution VK-2/VK-7/VK-13 and component-task-lifecycle.
 
 type VerificationCompletion struct {
 	Task         core.Task
@@ -79,6 +79,9 @@ func PrepareVerificationCompletion(ctx context.Context, task core.Task, order co
 		next, recovery = core.StageVerify, ""
 		order.LastAttemptID, order.LastAttemptOutcome = order.AttemptID, "released"
 		order.LastFailureMessage = core.WorkOrderReleaseReasonOperatorCheckpointReached
+		if c.SealedCheckpoint == nil {
+			return out, ErrVerificationState
+		}
 		order.LastFailureDetail, order.LastFailureCategory, order.LastFailureExitStatus = c.Submission.Feedback, "", nil
 		order.LastFailureAt, order.NextRetryAt = now, time.Time{}
 		queueWindow := order.QueueDeadline.Sub(order.QueueEnteredAt)
@@ -87,7 +90,13 @@ func PrepareVerificationCompletion(ctx context.Context, task core.Task, order co
 		}
 		order.QueueEnteredAt, order.QueueDeadline = now, now.Add(queueWindow)
 		order.RetrySuppressed, order.RetrySuppressionReason = true, "operator checkpoint reached"
-		order.Checkpoint = &core.WorkOrderCheckpoint{DecisionRequest: c.Submission.Feedback}
+		// VK-13.3: the context reference is resolvable but success-only
+		// verification_context_id stays empty, so review admission is impossible.
+		reference := &core.WorkOrderVerificationCheckpoint{ContextID: c.ContextID, HeadSHA: order.HeadSHA, Reason: c.SealedCheckpoint.Reason, RequiredAction: c.SealedCheckpoint.RequiredAction, Summary: c.SealedCheckpoint.Summary, Grounds: []core.WorkOrderVerificationCheckpointGround{}, OperationIDs: c.SealedCheckpoint.OperationIDs}
+		for _, g := range c.SealedCheckpoint.Grounds {
+			reference.Grounds = append(reference.Grounds, core.WorkOrderVerificationCheckpointGround{Kind: g.Kind, Subject: g.Subject, AttemptID: g.AttemptID, ServerVerified: g.ServerVerified})
+		}
+		order.Checkpoint = &core.WorkOrderCheckpoint{DecisionRequest: c.SealedCheckpoint.Reason + "\nRequired operator action: " + c.SealedCheckpoint.RequiredAction, Verification: reference}
 		clearActiveAttempt(&order)
 	case "succeeded":
 		order.VerificationContextID = c.ContextID
@@ -120,7 +129,7 @@ func PrepareVerificationCompletion(ctx context.Context, task core.Task, order co
 	kind := "work_order.updated"
 	orderPayload := core.JSONPayload(order)
 	if orderCommand == core.WorkOrderCmdRelease {
-		orderPayload = core.JSONPayload(map[string]any{"attempt_id": originalAttempt, "session_id": originalSession, "reason": core.WorkOrderReleaseReasonOperatorCheckpointReached, "release_cause": core.WorkOrderReleaseCauseOperatorAction, "outcome": core.WorkOrderOutcomeReleased, "checkpoint": order.Checkpoint, "retry_suppressed": true, "suppression_reason": order.RetrySuppressionReason, "verification_context_id": c.ContextID})
+		orderPayload = core.JSONPayload(map[string]any{"attempt_id": originalAttempt, "session_id": originalSession, "reason": core.WorkOrderReleaseReasonOperatorCheckpointReached, "release_cause": core.WorkOrderReleaseCauseOperatorAction, "outcome": core.WorkOrderOutcomeReleased, "checkpoint": order.Checkpoint, "retry_suppressed": true, "suppression_reason": order.RetrySuppressionReason, "verification_context_id": c.ContextID, "head_sha": order.HeadSHA})
 		kind = "work_order.released"
 	}
 	out.Events = append(out.Events,
