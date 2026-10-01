@@ -67,6 +67,7 @@ func main() {
 		taskCmd(),
 		artifactCmd(),
 		kitCmd(),
+		verificationCmd(),
 		configCmd(),
 		setupCmd(),
 		monitorCmd(),

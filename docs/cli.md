@@ -309,6 +309,28 @@ Replay every workspace event and repair the lineage projection in one
 transaction. Rows that cannot be regenerated from events are preserved and
 reported, never deleted.
 
+## verification permissions
+
+Operator grants for a claimed verify work order. The commands use your user
+credential and an explicit `--workspace`. Agent, worker and launcher
+credentials are refused.
+
+| Command | What it does |
+|---|---|
+| `conveyor verification permissions inspect <work-order-id> [--context-id <id>] [--json]` | Show the claim bounds, submitted head, context and revisions, eligibility with recovery text, each subject with its exact digests and required actions, and existing grants. |
+| `conveyor verification permissions grant <work-order-id> --subject <ref> (--action kind:binding=target ... \| --no-actions) --request-key <key> [--yes] [--json]` | Copy the subject from the projection, print the exact request, send it after confirmation and read the receipt back. `<ref>` is `kit:<kit-id>/<exercise-id>` or `ordinary:<obligation-id>`. `operator_interaction:<binding>` takes no target. |
+| `conveyor verification permissions revoke <work-order-id> --grant-id <id> --reason <text> --request-key <key> [--yes] [--json]` | Revoke one grant and read back the revocation. |
+
+Grants can be issued only while the verifier holds and renews its claim, after
+it prepares the context and registers ordinary obligations. A filesystem root,
+network origin or credential handle comes only from your `--action` argument.
+A grant is one input to the runner's intersection with the executing machine's
+local `kit_permissions`, so it never authorizes execution by itself. Reuse the
+request key to retry an uncertain response: an unchanged retry returns the
+same grant, and a changed request under that key is refused with
+`request_conflict`. A refusal exits nonzero with a stable reason and recovery
+text. See the [verification playbook](playbooks/conveyor-kit-verify.md).
+
 ## user
 
 ```sh

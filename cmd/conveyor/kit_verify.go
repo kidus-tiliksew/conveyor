@@ -344,7 +344,8 @@ func (v *kitVerifier) run(ctx context.Context, subject store.VerificationSubject
 		}
 	}
 	if grant == nil {
-		return fmt.Errorf("blocked: missing work-order authorization for exercise %s; required actions: %s", e.ID, kitRequiredActions(e))
+		// VK-12.2: name the exact operator act that opens the grant window.
+		return fmt.Errorf("blocked: missing work-order authorization for exercise %s; required actions: %s; an operator runs `conveyor verification permissions inspect %s` (context %s) and grants while this claim is live", e.ID, kitRequiredActions(e), v.order.ID, vc.ID)
 	}
 	if err := v.live(ctx, grant.ID); err != nil {
 		return err
