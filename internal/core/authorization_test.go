@@ -15,6 +15,19 @@ func TestRoleCapabilitiesAreBundles(t *testing.T) {
 	if !RoleAllows(WorkspaceRoleMaintainer, CapabilityOperateGates) || !RoleAllows(WorkspaceRoleMaintainer, CapabilitySetAssignee) || RoleAllows(WorkspaceRoleMaintainer, CapabilityConfirmDocuments) || RoleAllows(WorkspaceRoleMaintainer, CapabilityManageMembership) || RoleAllows(WorkspaceRoleMaintainer, CapabilityManageWorkspace) {
 		t.Fatal("maintainer capability bundle is incorrect")
 	}
+	// Reference documents are informative: maintainers manage them without
+	// gaining normative confirmation (req-accounts-and-membership AC-2.6, AC-2.7).
+	for role, allowed := range map[WorkspaceRole]bool{
+		WorkspaceRoleViewer:      false,
+		WorkspaceRoleExecutor:    false,
+		WorkspaceRoleContributor: false,
+		WorkspaceRoleMaintainer:  true,
+		WorkspaceRoleOperator:    true,
+	} {
+		if RoleAllows(role, CapabilityManageReferenceDocuments) != allowed {
+			t.Fatalf("role %q manage_reference_documents = %v, want %v", role, !allowed, allowed)
+		}
+	}
 	if !RoleAllows(WorkspaceRoleOperator, CapabilityClaimWork) || !RoleAllows(WorkspaceRoleOperator, CapabilityConfirmDocuments) || !RoleAllows(WorkspaceRoleOperator, CapabilityManageMembership) || !RoleAllows(WorkspaceRoleOperator, CapabilityManageWorkspace) {
 		t.Fatal("operator must subsume contributor and operator capabilities")
 	}
