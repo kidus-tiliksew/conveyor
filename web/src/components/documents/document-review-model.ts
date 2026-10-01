@@ -22,7 +22,10 @@ export type ReviewSource = { content: string; statements?: RequirementVersion['s
 const maxCharacters = 120_000
 const maxBlocks = 400
 // Largest single matrix: one paragraph alignment or one paragraph token diff.
-const maxCells = 250_000
+// A 2.5M-cell Uint32 matrix holds about 10 MB before row and token overhead.
+// Paragraph matrices above maxSectionCells still make their section fall back
+// alone; pairs above this guard render complete content in their own block.
+const maxCells = 2_500_000
 // Work is counted in the matrix cells the review renderer allocates. The shared
 // LCS loop measured about 7-11 ns per cell on a desktop core (Node 22); assume
 // a phone core is about five times slower. A section at the section limit
