@@ -16,6 +16,7 @@ import unittest
 from unittest.mock import patch
 
 import validation_evidence as evidence
+import validation_resources
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -74,6 +75,9 @@ class EvidenceTests(unittest.TestCase):
         self.patch = patch.dict(os.environ, self.env, clear=True)
         self.patch.start()
         self.addCleanup(self.patch.stop)
+        # Invocation temporary children follow HOME's cache; accept a RAM-backed
+        # test host explicitly. This is helper metadata, not a policy input.
+        os.environ[validation_resources.ALLOW_RAM_TMP] = "1"
         self.policy = {"schema": 1, "task": "fixture-task", "layer": "local", "command": ["make", "check"],
                        "environment": list(self.env), "tools": {"make": ["make", "--version"], "git": ["git", "--version"],
                        "python3": ["python3", "--version"], "sh": ["sh", "-c", "printf POSIX-shell"]},
@@ -448,7 +452,7 @@ class EvidenceTests(unittest.TestCase):
         order = []
         ownership = {"backend": "postgres", "database": "conveyor_a1_test", "endpoint": "db:5432"}
 
-        def prepare(*_args):
+        def prepare(*_args, **_kwargs):
             order.append("prepare")
             return ownership, evidence.environment(self.policy)
 
@@ -456,7 +460,7 @@ class EvidenceTests(unittest.TestCase):
             order.append("snapshot")
             return {"files": {}, "environment": {}, "tools": {}, "backend": {}, "git": {}, "runtime": {}}
 
-        def teardown(*_args):
+        def teardown(*_args, **_kwargs):
             order.append("teardown")
 
         with patch.object(evidence.validation_fixtures, "prepare", side_effect=prepare), \
@@ -470,6 +474,28 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(record["fixture"]["after_snapshot_outcome"], "success")
         self.assertEqual(record["fixture"]["teardown_outcome"], "success")
 
+    def test_fixture_metadata_is_not_redacted_from_the_retained_log(self):
+        self.policy["layer"] = "postgres"
+        self.policy["environment"].append("CONVEYOR_TEST_DATABASE_URL")
+        self.policy["backend"] = {"isolation": "disposable-per-run", "probe": ["python3", "-c", 'print("{}")']}
+        self.policy["fixture"] = {"backend": "postgres", "url_env": "CONVEYOR_TEST_DATABASE_URL",
+                                  "prepared_url_env": "CONVEYOR_TEST_DATABASE_URL",
+                                  "external_network_env": "CONVEYOR_TEST_EXTERNAL_NETWORK",
+                                  "database_prefix": "conveyor", "minimum_free_bytes": 1, "timeout": "1s"}
+        os.environ["CONVEYOR_TEST_DATABASE_URL"] = "postgres://root:secret-value@db/conveyor_test"
+        (self.root / "Makefile").write_text('check:\n\t@echo "ok 1.10s $$CONVEYOR_TEST_DATABASE_URL"\n')
+        prepared = dict(evidence.environment(self.policy), CONVEYOR_FIXTURE_PREPARED="1",
+                        CONVEYOR_FIXTURE_OWNERSHIP=str(self.base / "ownership.json"))
+        ownership = {"backend": "postgres", "database": "conveyor_a1_test", "endpoint": "db:5432"}
+        with patch.object(evidence.validation_fixtures, "prepare", return_value=(ownership, prepared)), \
+             patch.object(evidence.validation_fixtures, "teardown"), \
+             patch.object(evidence, "snapshot", return_value={"files": {}, "environment": {}, "tools": {},
+                                                              "backend": {}, "git": {}, "runtime": {}}):
+            self.assertEqual(evidence.record(self.root, self.policy, self.output), 0)
+        retained = (self.output / "command.log").read_text()
+        self.assertIn("ok 1.10s [REDACTED]", retained)
+        self.assertNotIn("secret-value", retained)
+
     def test_before_snapshot_failure_attempts_after_and_durably_orders_phases(self):
         self.policy["layer"] = "postgres"
         self.policy["fixture"] = {"backend": "postgres"}
@@ -477,7 +503,7 @@ class EvidenceTests(unittest.TestCase):
         after = {"files": {}, "environment": {}, "tools": {}, "backend": {"retained": True}, "git": {}, "runtime": {}}
         order = []
 
-        def prepare(*args):
+        def prepare(*args, **_kwargs):
             evidence.validation_fixtures._phase(args[-1], "prepare", "success")
             order.append("prepare")
             return ownership, evidence.environment(self.policy)
@@ -488,7 +514,7 @@ class EvidenceTests(unittest.TestCase):
                 raise evidence.Refused("injected before failure")
             return after
 
-        def teardown(*args):
+        def teardown(*args, **_kwargs):
             order.append("teardown")
             evidence.validation_fixtures._phase(args[-1], "teardown", "success")
 
@@ -591,11 +617,114 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(inspected["classification"], "abandoned-or-incomplete")
         self.assertFalse(inspected["reusable"])
         self.refused("abandoned/incomplete")
-        # SIGKILL cannot run the runner's group teardown; clean the fixture.
-        try:
-            os.killpg(child_group, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+        # SIGKILL cannot run the runner's group teardown. Explicit recovery of
+        # the named invocation stops the orphaned group and leaves the
+        # evidence incomplete and nonreusable.
+        self.addCleanup(lambda: _pid_alive(child_group) and os.killpg(child_group, signal.SIGKILL))
+        invocation = Path(last_record["invocation"])
+        self.assertEqual({r["classification"] for r in validation_resources.inspect_invocation(invocation)["resources"]},
+                         {"abandoned"})
+        complete, actions = validation_resources.recover(invocation, [str(self.output)], grace=0.3)
+        self.assertTrue(complete, actions)
+        deadline = time.time() + 2
+        while time.time() < deadline and _pid_alive(child_group):
+            time.sleep(0.02)
+        self.assertFalse(_pid_alive(child_group), "recovery did not stop the orphaned gate")
+        self.assertEqual(evidence.inspect_record(self.root, self.output)["classification"], "abandoned-or-incomplete")
+        self.assertTrue((self.output / "command.log").is_file())
+        self.refused("abandoned/incomplete")
+
+    def joined_owner(self):
+        """An owner with a custom disk temporary root and a runner bound to it."""
+        os.environ[validation_resources.TMP_ROOT] = str(self.base / "custom-disposable")
+        owner = validation_resources.Invocation.create("fixture-task", self.root, ["make", "check"])
+        self.addCleanup(lambda: owner.owner and owner.finish())
+        os.environ[validation_resources.BINDING] = str(owner.path)
+        return owner
+
+    def test_evidence_inside_any_disposable_root_is_refused_before_creation(self):
+        owner = self.joined_owner()
+        tmp = Path(owner.managed_env()["TMPDIR"])
+        # The configured root is known to this environment.
+        with self.assertRaisesRegex(evidence.Refused, "disposable validation temporary root"):
+            evidence.record(self.root, self.policy, tmp / "retained-evidence")
+        # A joined runner may not know the owner's root; the bound inventory does.
+        del os.environ[validation_resources.TMP_ROOT]
+        with self.assertRaisesRegex(evidence.Refused, "cannot live in disposable path"):
+            evidence.record(self.root, self.policy, tmp / "retained-evidence")
+        self.assertFalse((tmp / "retained-evidence").exists())
+        inventory = validation_resources.load_inventory(owner.path)
+        self.assertEqual(inventory["references"], [])
+        self.assertTrue(validation_resources.owner_active(owner.path, inventory), "a joined refusal ended its owner")
+        self.assertEqual(owner.finish(), [])
+        self.assertFalse(tmp.exists())
+
+    def test_joined_runner_records_its_reference_and_owner_cleanup_keeps_evidence(self):
+        owner = self.joined_owner()
+        self.record()
+        record = evidence.read_record(self.output / "manifest.json", (self.output / "key").read_bytes())
+        self.assertEqual(record["invocation"], str(owner.path))
+        self.assertEqual(validation_resources.load_inventory(owner.path)["references"], [str(self.output)])
+        retained = {name: (self.output / name).read_bytes() for name in ("manifest.json", "command.log", "key")}
+        self.assertEqual(owner.finish(outcome="success"), [])
+        self.assertEqual({name: (self.output / name).read_bytes() for name in retained}, retained)
+        self.assertFalse(Path(owner.managed_env()["TMPDIR"]).exists())
+        evidence.check(self.root, self.policy, self.output)
+
+    def test_default_recovery_after_owner_sigkill_keeps_joined_incomplete_evidence(self):
+        (self.root / "Makefile").write_text(".PHONY: check\ncheck:\n\t@sleep 30\n")
+        policy = self.write_policy()
+        info = self.base / "owner.json"
+        os.environ[validation_resources.TMP_ROOT] = str(self.base / "custom-disposable")
+        # The owner and its joined evidence runner share one process, as in a
+        # wrapper that binds the runner; SIGKILL ends both without cleanup.
+        child = "\n".join([
+            "import json, os, pathlib, sys",
+            "sys.path.insert(0, sys.argv[1])",
+            "import validation_evidence as e, validation_resources as r",
+            "root, policy, output, info = (pathlib.Path(value) for value in sys.argv[2:6])",
+            "owner = r.Invocation.create('fixture-task', root, ['make', 'check'])",
+            "os.environ[r.BINDING] = str(owner.path)",
+            "info.write_text(json.dumps({'invocation': str(owner.path), 'tmp': owner.managed_env()['TMPDIR']}))",
+            "sys.exit(e.record(root, json.loads(policy.read_text()), output))",
+        ])
+        process = subprocess.Popen([sys.executable, "-c", child, str(REPO / "scripts"), str(self.root), str(policy),
+                                    str(self.output), str(info)], cwd=self.root, env=dict(os.environ),
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.addCleanup(lambda: process.poll() is None and process.kill())
+        deadline = time.time() + 10
+        group = None
+        while time.time() < deadline and group is None:
+            if (self.output / "manifest.json").is_file():
+                record = evidence.read_record(self.output / "manifest.json", (self.output / "key").read_bytes())
+                inventory = validation_resources.load_inventory(Path(record["invocation"]))
+                groups = [entry["identity"]["pgid"] for entry in inventory["resources"]
+                          if entry["kind"] == "process-group" and entry["state"] == "sealed"]
+                if record["state"] == "running" and groups:
+                    group = groups[0]
+            time.sleep(0.02)
+        self.assertIsNotNone(group, "evidence gate did not reach a sealed running group")
+        self.addCleanup(lambda: _pid_alive(group) and os.killpg(group, signal.SIGKILL))
+        process.kill()
+        process.wait(timeout=5)
+        details = json.loads(info.read_text())
+        invocation = Path(details["invocation"])
+        self.assertEqual(validation_resources.load_inventory(invocation)["references"], [str(self.output)])
+        retained = {name: (self.output / name).read_bytes() for name in ("manifest.json", "command.log", "key")}
+        # The default recovery command names only the invocation.
+        result = subprocess.run([sys.executable, str(REPO / "scripts" / "validation_resources.py"), "recover",
+                                 "--invocation", str(invocation), "--grace", "0.3"],
+                                env=dict(os.environ), capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        deadline = time.time() + 2
+        while time.time() < deadline and _pid_alive(group):
+            time.sleep(0.02)
+        self.assertFalse(_pid_alive(group), "recovery did not stop the orphaned gate")
+        self.assertFalse(Path(details["tmp"]).exists(), "recovery left the verified temporary child")
+        self.assertEqual({name: (self.output / name).read_bytes() for name in retained}, retained)
+        self.assertEqual(evidence.inspect_record(self.root, self.output)["classification"], "abandoned-or-incomplete")
+        self.assertFalse(evidence.inspect_record(self.root, self.output)["reusable"])
+        self.refused("abandoned/incomplete")
 
     def test_catchable_cancellation_reaps_descendant_and_retains_redacted_output(self):
         pid_file = self.base / "descendant.pid"
@@ -636,6 +765,174 @@ time.sleep(30)
         self.assertIn("[REDACTED]", retained)
         self.assertIn("outcome=interrupted", stdout)
         self.refused("invalid execution outcome")
+
+    def test_timeout_stops_the_supervised_group_and_is_not_reusable(self):
+        (self.root / "Makefile").write_text("check:\n\t@echo started; sleep 30\n")
+        started = time.monotonic()
+        self.assertEqual(evidence.record(self.root, self.policy, self.output, timeout=0.5), 124)
+        self.assertLess(time.monotonic() - started, 20)
+        record = evidence.read_record(self.output / "manifest.json", (self.output / "key").read_bytes())
+        self.assertEqual((record["outcome"], record["timeout"]), ("timeout", 0.5))
+        self.assertEqual(record["resource_cleanup"]["outcome"], "success")
+        self.assertIn("started", (self.output / "command.log").read_text())
+        self.assertEqual(evidence.inspect_record(self.root, self.output)["classification"], "timeout")
+        self.refused("invalid execution outcome")
+
+    def _run_bounded(self, *extra, limit=30):
+        """Run the evidence entrypoint; a supervision regression fails instead of hanging the suite."""
+        policy = self.write_policy()
+        command = [sys.executable, str(REPO / "scripts" / "validation_evidence.py"), "run",
+                   "--policy", str(policy), "--output", str(self.output), *extra]
+        started = time.monotonic()
+        process = subprocess.Popen(command, cwd=self.root, env=dict(os.environ),
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            stdout, stderr = process.communicate(timeout=limit)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            stdout, stderr = process.communicate()
+            self.fail(f"evidence run did not finish within {limit}s: {stdout}{stderr}")
+        return process.returncode, stdout, stderr, time.monotonic() - started
+
+    def _descendant_holds_output(self, exit_code):
+        """make check exits while a descendant that inherited stdout keeps running."""
+        pid_file = self.base / "descendant.pid"
+        (self.root / "child.py").write_text(f"""import pathlib, subprocess, sys
+p = subprocess.Popen([\"sleep\", \"60\"])
+pathlib.Path(sys.argv[1]).write_text(str(p.pid))
+print(\"direct command done\", flush=True)
+sys.exit({exit_code})
+""")
+        (self.root / "Makefile").write_text("check:\n\t@python3 child.py " + str(pid_file) + "\n")
+        self.addCleanup(lambda: pid_file.is_file() and _pid_alive(int(pid_file.read_text()))
+                        and os.kill(int(pid_file.read_text()), signal.SIGKILL))
+        return pid_file
+
+    def _assert_reaped(self, pid_file):
+        self.assertTrue(pid_file.is_file(), "descendant was not launched")
+        self.assertFalse(_pid_alive(int(pid_file.read_text())), "descendant holding the output survived")
+
+    @unittest.skipUnless(HAS_PROC, "surviving members are verified through Linux /proc; "
+                         "without it the supervisor refuses to signal them")
+    def test_successful_command_reaps_descendant_holding_output_and_keeps_status(self):
+        pid_file = self._descendant_holds_output(0)
+        status, stdout, stderr, elapsed = self._run_bounded()
+        self.assertEqual(status, 0, stderr)
+        self.assertLess(elapsed, 25)
+        self._assert_reaped(pid_file)
+        record = evidence.read_record(self.output / "manifest.json", (self.output / "key").read_bytes())
+        self.assertEqual((record["outcome"], record["exit_status"], record["interruption"]), ("success", 0, None))
+        self.assertEqual(record["resource_cleanup"]["outcome"], "success")
+        self.assertEqual(record["log"]["completeness"], "complete")
+        self.assertIn("direct command done", (self.output / "command.log").read_text())
+        self.assertIn("outcome=success", stdout)
+        evidence.check(self.root, self.policy, self.output)
+
+    @unittest.skipUnless(HAS_PROC, "surviving members are verified through Linux /proc; "
+                         "without it the supervisor refuses to signal them")
+    def test_failed_command_reaps_descendant_holding_output_and_keeps_status(self):
+        pid_file = self._descendant_holds_output(3)
+        status, stdout, stderr, elapsed = self._run_bounded()
+        self.assertEqual(status, 2, stderr)  # Make's own status for a failed recipe.
+        self.assertLess(elapsed, 25)
+        self._assert_reaped(pid_file)
+        record = evidence.read_record(self.output / "manifest.json", (self.output / "key").read_bytes())
+        self.assertEqual((record["outcome"], record["exit_status"]), ("failure", 2))
+        self.assertEqual(record["resource_cleanup"]["outcome"], "success")
+        self.assertIn("direct command done", (self.output / "command.log").read_text())
+        self.refused("failed/incomplete execution")
+
+    def test_timeout_is_enforced_while_output_stays_readable(self):
+        # The producer outpaces the redacting reader, so the pipe never drains.
+        (self.root / "chatter.py").write_text("""import sys
+burst = b"tick\\n" * 16384
+while True:
+    sys.stdout.buffer.write(burst)
+    sys.stdout.flush()
+""")
+        (self.root / "Makefile").write_text("check:\n\t@python3 chatter.py\n")
+        status, stdout, stderr, elapsed = self._run_bounded("--timeout", "0.5")
+        self.assertEqual(status, 124, stderr)
+        self.assertLess(elapsed, 25)
+        record = evidence.read_record(self.output / "manifest.json", (self.output / "key").read_bytes())
+        self.assertEqual((record["outcome"], record["timeout"]), ("timeout", 0.5))
+        self.assertEqual(record["resource_cleanup"]["outcome"], "success")
+        self.assertEqual(record["log"]["completeness"], "complete")
+        self.assertIn("tick", (self.output / "command.log").read_text())
+        self.refused("invalid execution outcome")
+
+    def test_command_that_closes_output_is_still_awaited(self):
+        (self.root / "Makefile").write_text("check:\n\t@echo closing; exec >/dev/null 2>&1; sleep 1; exit 0\n")
+        self.record()
+        record = evidence.read_record(self.output / "manifest.json", (self.output / "key").read_bytes())
+        self.assertEqual((record["outcome"], record["exit_status"]), ("success", 0))
+        self.assertIn("closing", (self.output / "command.log").read_text())
+
+    def test_resource_cleanup_failure_is_recorded_beside_the_gate_outcome(self):
+        with patch.object(validation_resources.Invocation, "finish", return_value=["path-x: injected refusal"]):
+            self.assertEqual(evidence.record(self.root, self.policy, self.output), 2)
+        record = evidence.read_record(self.output / "manifest.json", (self.output / "key").read_bytes())
+        self.assertEqual(record["outcome"], "success")
+        self.assertEqual(record["exit_status"], 0)
+        self.assertEqual(record["resource_cleanup"], {"outcome": "failure", "detail": ["path-x: injected refusal"]})
+        self.assertEqual(evidence.inspect_record(self.root, self.output)["classification"],
+                         "cleanup-failure-after-success")
+        self.refused("owned resource cleanup")
+
+    def test_managed_binding_reaches_the_child_without_changing_reusable_inputs(self):
+        (self.root / "Makefile").write_text('check:\n\t@printf "%s|%s" "$$CONVEYOR_VALIDATION_INVOCATION" "$$TMPDIR"\n')
+        self.record()
+        record = evidence.read_record(self.output / "manifest.json", (self.output / "key").read_bytes())
+        invocation = Path(record["invocation"])
+        binding, tmpdir = (self.output / "command.log").read_text().split("|")
+        self.assertEqual(binding, str(invocation))
+        self.assertIn(invocation.name, tmpdir)
+        self.assertFalse(Path(tmpdir).exists(), "invocation temporary child was not removed")
+        inventory = validation_resources.load_inventory(invocation)
+        self.assertEqual(inventory["state"], "completed")
+        self.assertEqual(inventory["configuration"]["evidence"], str(self.output))
+        self.assertNotIn(validation_resources.BINDING, record["before"]["environment"])
+        evidence.check(self.root, self.policy, self.output)
+
+    def test_legacy_manifest_without_invocation_fields_remains_checkable(self):
+        self.record()
+        key = (self.output / "key").read_bytes()
+        record = evidence.read_record(self.output / "manifest.json", key)
+        for field in ("invocation", "timeout", "resource_cleanup"):
+            del record[field]
+        evidence.write_record(self.output / "manifest.json", record, key, replace=True)
+        evidence.check(self.root, self.policy, self.output)
+        self.assertEqual(evidence.inspect_record(self.root, self.output)["classification"], "success")
+
+    def test_ram_backed_temporary_root_refuses_before_recording(self):
+        del os.environ[validation_resources.ALLOW_RAM_TMP]
+        with patch.object(validation_resources, "backing_filesystem", return_value="tmpfs"):
+            with self.assertRaisesRegex(evidence.Refused, "RAM-backed.*CONVEYOR_VALIDATION_ALLOW_RAM_TMP=1"):
+                evidence.record(self.root, self.policy, self.output)
+        self.assertFalse(self.output.exists())
+
+    def test_managed_postgres_fixture_field_is_validated(self):
+        path = self.base / "policy.json"
+        self.policy["layer"] = "postgres"
+        self.policy["environment"].append("TEST_DATABASE_URL")
+        self.policy["backend"] = {"isolation": "disposable-per-run", "probe": ["python3", "-c", 'print("{}")']}
+        fixture = {"backend": "postgres", "url_env": "TEST_DATABASE_URL", "prepared_url_env": "TEST_DATABASE_URL",
+                   "external_network_env": "CONVEYOR_TEST_EXTERNAL_NETWORK", "database_prefix": "conveyor",
+                   "minimum_free_bytes": 1, "timeout": "20s"}
+        for value, accepted in ((True, True), (False, True), ("yes", False)):
+            with self.subTest(value=value):
+                self.policy["fixture"] = dict(fixture, managed_postgres=value)
+                path.write_text(json.dumps(self.policy))
+                if accepted:
+                    evidence.policy_read(path)
+                else:
+                    with self.assertRaises(evidence.Refused):
+                        evidence.policy_read(path)
+        self.policy["layer"] = "singlestore"
+        self.policy["fixture"] = dict(fixture, backend="singlestore", managed_postgres=True)
+        path.write_text(json.dumps(self.policy))
+        with self.assertRaisesRegex(evidence.Refused, "managed_postgres"):
+            evidence.policy_read(path)
 
     def test_no_tracked_exclusion_or_unknown_symlink(self):
         self.policy["exclude"]["generated"] = "claimed output"

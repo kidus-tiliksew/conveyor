@@ -1,8 +1,16 @@
-# Local integration tests derive a stable identity from the canonical worktree
-# path: POSIX cksum selects port 20000-29999, and the port suffix scopes the
-# Compose project. Hash collisions fail at port binding instead of sharing a
-# database. CONVEYOR_TEST_POSTGRES_PORT or TEST_POSTGRES_PORT pins both values.
-# Run `make test-db-down` in a worktree to remove only that worktree's database.
+# Local integration tests run against a PostgreSQL container owned by one
+# managed validation invocation (component-verification-strategy, "Validation
+# resource ownership and recovery"). Each invocation gets its own Compose
+# project conveyor-test-<invocation-id>, a free loopback port, and a durable
+# inventory under $XDG_STATE_HOME/conveyor/<task>/invocations/. Teardown and
+# `make test-db-down INVOCATION=<dir>` remove only that inventory's sealed
+# container and network by ID. CONVEYOR_TEST_POSTGRES_PORT or
+# TEST_POSTGRES_PORT pins the port; an occupied pin fails instead of attaching.
+# The container budget defaults to CONVEYOR_TEST_POSTGRES_MEMORY=2g with a
+# CONVEYOR_TEST_POSTGRES_TMPFS_SIZE=1g data tmpfs; overrides must stay
+# finite and keep the tmpfs smaller than the memory limit. Large disposable
+# outputs use CONVEYOR_VALIDATION_TMP_ROOT (default: the task cache), which
+# must be disk-backed unless CONVEYOR_VALIDATION_ALLOW_RAM_TMP=1.
 BIN := bin
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -ldflags "-X github.com/kidus-tiliksew/conveyor/internal/releaseinfo.Version=$(VERSION)"
@@ -11,15 +19,10 @@ CONVEYOR_CONFIG ?= conveyor.yaml
 LISTEN_ADDR ?= 127.0.0.1:8080
 POLL_GITHUB ?= 60s
 IMAGE ?= conveyor:local
-TEST_WORKTREE_PATH := $(shell cd "$(dir $(abspath $(lastword $(MAKEFILE_LIST))))" && pwd -P)
-TEST_POSTGRES_PORT_DERIVED := $(shell printf '%s\n' "$(TEST_WORKTREE_PATH)" | cksum | awk '{print 20000 + ($$1 % 10000)}')
-ifeq ($(origin TEST_POSTGRES_PORT),undefined)
-TEST_POSTGRES_PORT := $(if $(strip $(CONVEYOR_TEST_POSTGRES_PORT)),$(CONVEYOR_TEST_POSTGRES_PORT),$(TEST_POSTGRES_PORT_DERIVED))
-endif
-TEST_COMPOSE_PROJECT := conveyor-test-p$(TEST_POSTGRES_PORT)
-TEST_DATABASE_URL ?= postgres://conveyor:conveyor@127.0.0.1:$(TEST_POSTGRES_PORT)/conveyor_test?sslmode=disable
-export TEST_DATABASE_URL
-TEST_COMPOSE_NETWORK_ENV = CONVEYOR_TEST_NETWORK_NAME="$${CONVEYOR_TEST_EXTERNAL_NETWORK:-$(TEST_COMPOSE_PROJECT)_default}" CONVEYOR_TEST_NETWORK_EXTERNAL="$$(if test -n "$${CONVEYOR_TEST_EXTERNAL_NETWORK:-}"; then printf true; else printf false; fi)"
+# Durable invocation inventories and fixture state are grouped by task. The
+# validation child boundary removes CONVEYOR_TASK_ID, so pass it explicitly.
+VALIDATION_TASK ?= $(if $(strip $(CONVEYOR_TASK_ID)),$(CONVEYOR_TASK_ID),manual-validation)
+CI_VALIDATION_TASK ?= $(if $(strip $(CONVEYOR_TASK_ID)),$(CONVEYOR_TASK_ID),ci-validation)
 PLAYWRIGHT_ARGS ?=
 PLAYWRIGHT_INSTALL_ARGS ?=
 PLAYWRIGHT_WORKERS ?= 2
@@ -48,7 +51,7 @@ VALIDATION_WORKER_ENV_VARS = \
 	CONVEYOR_WRITER_GENERATION \
 	CONVEYOR_WRITER_PATH
 VALIDATION_CHILD_ENV = env $(foreach name,$(VALIDATION_WORKER_ENV_VARS),-u $(name))
-RUN_WEB_TESTS = cd web && $(VALIDATION_CHILD_ENV) npm run lint && PLAYWRIGHT_WORKERS=$(PLAYWRIGHT_WORKERS) $(VALIDATION_CHILD_ENV) npm run test:e2e -- $(PLAYWRIGHT_ARGS)
+RUN_WEB_TESTS = cd web && $(VALIDATION_CHILD_ENV) npm run lint && CONVEYOR_VALIDATION_TASK=$(VALIDATION_TASK) PLAYWRIGHT_WORKERS=$(PLAYWRIGHT_WORKERS) $(VALIDATION_CHILD_ENV) npm run test:e2e -- $(PLAYWRIGHT_ARGS)
 DEV_COMPOSE := docker compose --env-file $(ENV_FILE) -f compose.dev.yaml
 
 .PHONY: all build image test-image release release-archives test-release web-deps web-typecheck ui dashboard-fresh test test-web test-ui test-ui-evidence compose-check test-integration test-integration-ci test-postgres test-db-identity test-db-up test-db-down vet plugin-check fmt fmt-check tidy clean db-up db-down run build-run dev test-validation-fixtures
@@ -57,7 +60,7 @@ all: build
 
 # REQ-7/AC-7.1 (component-verification-strategy): one Make graph shares
 # web-deps and ui across the complete ordinary validation session.
-.PHONY: validate test-validation test-validation-environment test-worker-environment
+.PHONY: validate test-validation test-validation-docker test-validation-environment test-worker-environment
 validate: build vet fmt-check test
 
 # Go vet and the installer compile embedded dashboard files. During the
@@ -70,7 +73,13 @@ endif
 test-validation:
 	PYTHONDONTWRITEBYTECODE=1 $(VALIDATION_CHILD_ENV) python3 -m unittest discover -s scripts -p 'test_validation_evidence.py'
 	PYTHONDONTWRITEBYTECODE=1 $(VALIDATION_CHILD_ENV) python3 -m unittest discover -s scripts -p 'test_validation_fixtures.py'
+	PYTHONDONTWRITEBYTECODE=1 $(VALIDATION_CHILD_ENV) python3 -m unittest discover -s scripts -p 'test_validation_resources.py'
 	$(VALIDATION_CHILD_ENV) go test ./scripts/validation-fixture-sql
+
+# Real Docker and PostgreSQL lifecycle fixtures for owned containers. Missing
+# Docker fails this target as missing evidence; it is never a skip.
+test-validation-docker:
+	cd scripts && CONVEYOR_VALIDATION_DOCKER=1 PYTHONDONTWRITEBYTECODE=1 $(VALIDATION_CHILD_ENV) python3 -m unittest -v test_validation_resources.DockerLifecycleTests
 
 test-validation-fixtures:
 	PYTHONDONTWRITEBYTECODE=1 $(VALIDATION_CHILD_ENV) python3 -m unittest discover -s scripts -p 'test_validation_fixtures.py'
@@ -166,29 +175,27 @@ test-web: web-typecheck browser-runtime
 	$(RUN_WEB_TESTS)
 
 test-ui: ui
-	cd web && PLAYWRIGHT_WORKERS=$(PLAYWRIGHT_WORKERS) $(VALIDATION_CHILD_ENV) npm run test:e2e -- $(PLAYWRIGHT_ARGS)
+	cd web && CONVEYOR_VALIDATION_TASK=$(VALIDATION_TASK) PLAYWRIGHT_WORKERS=$(PLAYWRIGHT_WORKERS) $(VALIDATION_CHILD_ENV) npm run test:e2e -- $(PLAYWRIGHT_ARGS)
 
 test-ui-evidence: ui
-	cd web && PLAYWRIGHT_WORKERS=$(PLAYWRIGHT_WORKERS) $(VALIDATION_CHILD_ENV) npm run test:e2e -- tests/task-full.spec.ts --grep "review card renders authorized verification evidence"
+	cd web && CONVEYOR_VALIDATION_TASK=$(VALIDATION_TASK) PLAYWRIGHT_WORKERS=$(PLAYWRIGHT_WORKERS) $(VALIDATION_CHILD_ENV) npm run test:e2e -- tests/task-full.spec.ts --grep "review card renders authorized verification evidence"
 
 compose-check:
 	$(VALIDATION_CHILD_ENV) python3 scripts/validate_compose_isolation.py
 
-test-integration: compose-check vk10-runtime
+test-integration: compose-check test-validation-docker vk10-runtime
 	@if test "$${CONVEYOR_FIXTURE_PREPARED:-}" = 1; then \
 			$(MAKE) _test-integration-postgres; \
 		else \
-			$(MAKE) test-db-up; \
-			trap '$(MAKE) test-db-down' EXIT; \
-			state="$${CONVEYOR_FIXTURE_STATE:-$${XDG_STATE_HOME:-$$HOME/.local/state}/conveyor/$${CONVEYOR_TASK_ID:-manual-validation}/fixtures/postgres-$$(date -u +%Y%m%dT%H%M%SZ)-$$$$}"; \
-			$(VALIDATION_CHILD_ENV) python3 scripts/validation_fixtures.py run --backend postgres --url-env TEST_DATABASE_URL --prepared-url-env CONVEYOR_TEST_DATABASE_URL --state "$$state" -- $(MAKE) _test-integration-postgres; \
+			state="$${CONVEYOR_FIXTURE_STATE:-$${XDG_STATE_HOME:-$$HOME/.local/state}/conveyor/$(VALIDATION_TASK)/fixtures/postgres-$$(date -u +%Y%m%dT%H%M%SZ)-$$$$}"; \
+			$(VALIDATION_CHILD_ENV) python3 scripts/validation_fixtures.py run --task "$(VALIDATION_TASK)" --managed-postgres --backend postgres --url-env TEST_DATABASE_URL --prepared-url-env CONVEYOR_TEST_DATABASE_URL --state "$$state" -- $(MAKE) _test-integration-postgres; \
 		fi
 
 test-integration-ci: compose-check vk10-runtime
 	@test -n "$(CONVEYOR_TEST_DATABASE_URL)" || (echo "CONVEYOR_TEST_DATABASE_URL is required" >&2; exit 1)
 	@if test "$${CONVEYOR_FIXTURE_PREPARED:-}" = 1; then $(MAKE) _test-integration-postgres; else \
-		state="$${CONVEYOR_FIXTURE_STATE:-$${XDG_STATE_HOME:-$$HOME/.local/state}/conveyor/$${CONVEYOR_TASK_ID:-ci-validation}/fixtures/postgres-$$(date -u +%Y%m%dT%H%M%SZ)-$$$$}"; \
-		$(VALIDATION_CHILD_ENV) python3 scripts/validation_fixtures.py run --backend postgres --url-env CONVEYOR_TEST_DATABASE_URL --prepared-url-env CONVEYOR_TEST_DATABASE_URL --state "$$state" -- $(MAKE) _test-integration-postgres; \
+		state="$${CONVEYOR_FIXTURE_STATE:-$${XDG_STATE_HOME:-$$HOME/.local/state}/conveyor/$(CI_VALIDATION_TASK)/fixtures/postgres-$$(date -u +%Y%m%dT%H%M%SZ)-$$$$}"; \
+		$(VALIDATION_CHILD_ENV) python3 scripts/validation_fixtures.py run --task "$(CI_VALIDATION_TASK)" --backend postgres --url-env CONVEYOR_TEST_DATABASE_URL --prepared-url-env CONVEYOR_TEST_DATABASE_URL --state "$$state" -- $(MAKE) _test-integration-postgres; \
 	fi
 
 .PHONY: _test-integration-postgres
@@ -201,14 +208,18 @@ _test-integration-postgres:
 # integration suite's isolated Postgres lifecycle.
 test-postgres: test-integration
 
+# Without INVOCATION, prints the port and project a new invocation would use.
 test-db-identity:
-	@printf '%s\t%s\n' '$(TEST_POSTGRES_PORT)' '$(TEST_COMPOSE_PROJECT)'
+	@$(VALIDATION_CHILD_ENV) python3 scripts/validation_fixtures.py identity $(if $(INVOCATION),--invocation "$(INVOCATION)")
 
+# Starts a detached managed invocation and prints its INVOCATION reference.
 test-db-up:
-	$(TEST_COMPOSE_NETWORK_ENV) CONVEYOR_TEST_POSTGRES_PORT=$(TEST_POSTGRES_PORT) docker compose -p $(TEST_COMPOSE_PROJECT) --profile test up -d --wait postgres-test
+	$(VALIDATION_CHILD_ENV) python3 scripts/validation_fixtures.py up --task "$(VALIDATION_TASK)"
 
+# Removes only the sealed resources of the named invocation after identity checks.
 test-db-down:
-	$(TEST_COMPOSE_NETWORK_ENV) CONVEYOR_TEST_POSTGRES_PORT=$(TEST_POSTGRES_PORT) docker compose -p $(TEST_COMPOSE_PROJECT) --profile test down --remove-orphans
+	@test -n "$(INVOCATION)" || (echo "INVOCATION=<invocation directory printed by make test-db-up> is required" >&2; exit 1)
+	$(VALIDATION_CHILD_ENV) python3 scripts/validation_resources.py recover --invocation "$(INVOCATION)"
 
 vet:
 	$(VALIDATION_CHILD_ENV) go vet ./...
@@ -248,8 +259,8 @@ dev: db-up
 test-integration-singlestore-ci: vk10-runtime
 	@test -n "$$CONVEYOR_TEST_SINGLESTORE_URL" || (echo "CONVEYOR_TEST_SINGLESTORE_URL is required" >&2; exit 1)
 	@if test "$${CONVEYOR_FIXTURE_PREPARED:-}" = 1; then $(MAKE) _test-integration-singlestore; else \
-		state="$${CONVEYOR_FIXTURE_STATE:-$${XDG_STATE_HOME:-$$HOME/.local/state}/conveyor/$${CONVEYOR_TASK_ID:-ci-validation}/fixtures/singlestore-$$(date -u +%Y%m%dT%H%M%SZ)-$$$$}"; \
-		$(VALIDATION_CHILD_ENV) python3 scripts/validation_fixtures.py run --backend singlestore --url-env CONVEYOR_TEST_SINGLESTORE_URL --prepared-url-env CONVEYOR_TEST_SINGLESTORE_URL --state "$$state" -- $(MAKE) _test-integration-singlestore; \
+		state="$${CONVEYOR_FIXTURE_STATE:-$${XDG_STATE_HOME:-$$HOME/.local/state}/conveyor/$(CI_VALIDATION_TASK)/fixtures/singlestore-$$(date -u +%Y%m%dT%H%M%SZ)-$$$$}"; \
+		$(VALIDATION_CHILD_ENV) python3 scripts/validation_fixtures.py run --task "$(CI_VALIDATION_TASK)" --backend singlestore --url-env CONVEYOR_TEST_SINGLESTORE_URL --prepared-url-env CONVEYOR_TEST_SINGLESTORE_URL --state "$$state" -- $(MAKE) _test-integration-singlestore; \
 	fi
 
 .PHONY: _test-integration-singlestore
