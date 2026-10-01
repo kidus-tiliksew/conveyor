@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs'
-import { expect, type Page, type Route, test } from '@playwright/test'
+import { expect, type Locator, type Page, type Route, test } from '@playwright/test'
 
 const createdAt = '2026-07-15T12:00:00Z'
 
@@ -2636,6 +2636,213 @@ test('stalled task is labelled in the operator tray with recover and reasoned ca
   await expect(page.getByRole('dialog', { name: 'Task detail' }).getByText('Closed', { exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Cancel task' })).toHaveCount(0)
 })
+
+// A stale or timed-out order with a later non-cancelled same-stage successor is
+// historical: the store refuses its recovery (store.WorkOrderRecoverySupersessionError),
+// so the timeline must not offer it (req-task-lifecycle-and-queue REQ-6 AC-6.2).
+const supersessionTaskId = 'superseded-recovery'
+
+type SupersessionOrder = {
+  id: string
+  stage: 'spec' | 'implement'
+  state: 'queued' | 'stale' | 'timed_out' | 'submitted' | 'completed' | 'cancelled'
+  created_at?: string
+  updated_at?: string
+}
+
+function supersessionActivity(orders: SupersessionOrder[], nextStage: 'spec' | 'implement' = 'spec') {
+  const base = activity(supersessionTaskId, false)
+  const workOrders = orders.map((order) => ({
+    task_id: supersessionTaskId,
+    job_id: order.id,
+    claimable: order.state === 'queued',
+    queue_entered_at: order.created_at ?? createdAt,
+    queue_deadline: '2026-10-02T00:00:00Z',
+    redispatch_count: 0,
+    cost_usd: 0,
+    tokens_in: 0,
+    tokens_out: 0,
+    usage_reported: false,
+    self_reported: true,
+    ...order,
+    updated_at: order.updated_at ?? order.created_at,
+  }))
+  return {
+    ...base,
+    task: { ...base.task, state: 'queued', next_stage: nextStage },
+    work_orders: workOrders,
+    stalled: {
+      needed: true,
+      reason: 'work order went stale before it was claimed',
+      work_order: workOrders.find((order) => order.state === 'stale' || order.state === 'timed_out'),
+      last_failure: 'queue retention elapsed before an agent claimed the order',
+    },
+  }
+}
+
+async function routeSupersession(page: Page, orders: SupersessionOrder[], nextStage?: 'spec' | 'implement') {
+  const recovered: string[] = []
+  await page.route(`**/v1/tasks/${supersessionTaskId}/activity*`, (route) =>
+    route.fulfill({ json: supersessionActivity(orders, nextStage) }),
+  )
+  await page.route('**/v1/work-orders/*/recover*', async (route) => {
+    recovered.push(decodeURIComponent(new URL(route.request().url()).pathname.split('/').at(-2) ?? ''))
+    await route.fulfill({ json: { id: 'recovered', state: 'queued', claimable: true } })
+  })
+  return recovered
+}
+
+// The observed deployment shape: two plan orders went stale, then a third was
+// queued and is claimable with no attempt yet.
+const observedSupersession: SupersessionOrder[] = [
+  { id: `${supersessionTaskId}-spec-1`, stage: 'spec', state: 'stale', created_at: '2026-09-28T09:00:00Z' },
+  { id: `${supersessionTaskId}-spec-2`, stage: 'spec', state: 'stale', created_at: '2026-09-29T10:00:00.5Z' },
+  { id: `${supersessionTaskId}-spec-3`, stage: 'spec', state: 'queued', created_at: '2026-09-30T12:26:00.123456Z' },
+]
+
+async function expectSupersededStaleHistory(scope: Page | Locator) {
+  await expect(scope.getByText('Plan — waiting for an operator agent')).toBeVisible()
+  await expect(scope.getByText('Plan — went stale in the queue')).toHaveCount(2)
+  await expect(scope.getByRole('button', { name: 'Redispatch', exact: true })).toBeVisible()
+  await expect(scope.getByRole('button', { name: 'Recover work order' })).toHaveCount(0)
+  await expect(scope.getByText('Plan paused — recovery needed')).toHaveCount(0)
+}
+
+test('superseded stale plan orders offer Redispatch for the queued successor instead of recovery', async ({ page }) => {
+  const recovered = await routeSupersession(page, observedSupersession)
+  await page.goto(`/tasks/${supersessionTaskId}/full`)
+  await expectSupersededStaleHistory(page)
+  expect(recovered).toEqual([])
+})
+
+test('the board keeps a superseded task stalled while its sheet offers only Redispatch', async ({ page }) => {
+  await showAllBoardTasks(page)
+  const item = supersessionActivity(observedSupersession)
+  await routeSupersession(page, observedSupersession)
+  await page.route('**/v1/activity*', (route) =>
+    route.fulfill({
+      json: [
+        {
+          task: item.task,
+          latest_stage: 'spec',
+          last_event_at: createdAt,
+          needs_attention: true,
+          stalled: item.stalled,
+        },
+      ],
+    }),
+  )
+  await page.goto('/')
+  const tray = page.getByRole('region', { name: 'Needs operator' })
+  await expect(tray.getByText('Stalled')).toBeVisible()
+  await tray.getByText('Short task').click()
+  await expectSupersededStaleHistory(page.getByRole('dialog', { name: 'Task detail' }))
+})
+
+const stale = (id: string, created_at: string, extra: Partial<SupersessionOrder> = {}): SupersessionOrder => ({
+  id: `${supersessionTaskId}-${id}`,
+  stage: 'spec',
+  state: 'stale',
+  created_at,
+  ...extra,
+})
+const successor = (id: string, created_at: string, extra: Partial<SupersessionOrder> = {}): SupersessionOrder => ({
+  id: `${supersessionTaskId}-${id}`,
+  stage: 'spec',
+  state: 'queued',
+  created_at,
+  ...extra,
+})
+
+for (const { name, orders, nextStage, recoverable } of [
+  {
+    name: 'a lone stale order',
+    orders: [stale('spec-1', '2026-09-28T09:00:00Z')],
+    recoverable: `${supersessionTaskId}-spec-1`,
+  },
+  {
+    name: 'a stale order whose only later successor was cancelled',
+    orders: [
+      stale('spec-1', '2026-09-28T09:00:00Z'),
+      successor('spec-2', '2026-09-29T09:00:00Z', { state: 'cancelled' }),
+    ],
+    recoverable: `${supersessionTaskId}-spec-1`,
+  },
+  {
+    name: 'an equal creation instant with a smaller successor ID',
+    orders: [stale('spec-b', '2026-09-28T09:00:00.123456Z'), successor('spec-a', '2026-09-28T09:00:00.123456Z')],
+    recoverable: `${supersessionTaskId}-spec-b`,
+  },
+  {
+    name: 'a microsecond-earlier successor that millisecond parsing would tie and order by ID',
+    orders: [stale('spec-a', '2026-09-28T09:00:00.123457Z'), successor('spec-b', '2026-09-28T09:00:00.123456Z')],
+    recoverable: `${supersessionTaskId}-spec-a`,
+  },
+  {
+    name: 'a later order of another stage only',
+    orders: [
+      stale('implement-1', '2026-09-28T09:00:00Z', { stage: 'implement' }),
+      successor('spec-9', '2026-09-29T09:00:00Z'),
+    ],
+    nextStage: 'implement' as const,
+    recoverable: `${supersessionTaskId}-implement-1`,
+  },
+  {
+    name: 'a timed-out predecessor with a queued successor',
+    orders: [
+      stale('spec-1', '2026-09-28T09:00:00Z', { state: 'timed_out' }),
+      successor('spec-2', '2026-09-29T09:00:00Z'),
+    ],
+  },
+  {
+    name: 'an equal creation instant with a greater successor ID',
+    orders: [stale('spec-a', '2026-09-28T09:00:00.123456Z'), successor('spec-b', '2026-09-28T09:00:00.123456Z')],
+  },
+  {
+    name: 'an equal instant written with another offset and a greater successor ID',
+    orders: [stale('spec-a', '2026-09-28T09:00:00Z'), successor('spec-b', '2026-09-28T11:00:00.000+02:00')],
+  },
+  {
+    name: 'a microsecond-later successor that millisecond parsing would tie and order by ID',
+    orders: [stale('spec-b', '2026-09-28T09:00:00.123456Z'), successor('spec-a', '2026-09-28T09:00:00.123457Z')],
+  },
+  {
+    name: 'a later completed successor',
+    orders: [
+      stale('spec-1', '2026-09-28T09:00:00Z'),
+      successor('spec-2', '2026-09-29T09:00:00Z', { state: 'completed' }),
+    ],
+  },
+  {
+    name: 'a later submitted successor',
+    orders: [
+      stale('spec-1', '2026-09-28T09:00:00Z'),
+      successor('spec-2', '2026-09-29T09:00:00Z', { state: 'submitted' }),
+    ],
+  },
+  {
+    name: 'a predecessor whose activity is more recent than its successor',
+    orders: [
+      stale('spec-1', '2026-09-28T09:00:00Z', { updated_at: '2026-09-30T18:00:00Z' }),
+      successor('spec-2', '2026-09-29T09:00:00Z', { updated_at: '2026-09-29T09:00:00Z' }),
+    ],
+  },
+] as { name: string; orders: SupersessionOrder[]; nextStage?: 'spec' | 'implement'; recoverable?: string }[]) {
+  test(`recovery ${recoverable ? 'remains offered' : 'is withheld'} for ${name}`, async ({ page }) => {
+    const recovered = await routeSupersession(page, orders, nextStage)
+    await page.goto(`/tasks/${supersessionTaskId}/full`)
+    await expect(page.getByRole('button', { name: 'Redispatch', exact: true })).toBeVisible()
+    const action = page.getByRole('button', { name: 'Recover work order' })
+    if (!recoverable) {
+      await expect(page.getByText(/went stale in the queue|timed out/).first()).toBeVisible()
+      await expect(action).toHaveCount(0)
+      await expect(page.getByText(/paused — recovery needed/)).toHaveCount(0)
+      return
+    }
+    await action.click()
+    await expect.poll(() => recovered).toEqual([recoverable])
+  })
+}
 
 test('pending authority moves a live task to Needs operator until the proposal is resolved', async ({ page }) => {
   await showAllBoardTasks(page)
