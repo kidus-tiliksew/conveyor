@@ -1,80 +1,63 @@
 #!/usr/bin/env python3
-"""Fail if the default Compose topology can address development PostgreSQL."""
+"""Fail if the test Compose topology could share, adopt, or broadly remove resources.
+
+Checks (component-verification-strategy, "Validation resource ownership and
+recovery"): the default topology cannot address development PostgreSQL;
+each managed invocation renders its own project, labels, and port; the
+container has finite memory and tmpfs budgets that match the helper defaults;
+and Make recipes never use `compose down`, `--remove-orphans`, or prune.
+"""
 
 import json
 import os
 from pathlib import Path
-import shutil
+import re
 import subprocess
 import sys
-import tempfile
+
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import validation_resources as resources  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parent.parent
 TEST_PORT = "55433"
+INVOCATIONS = ("20261001t000000z-aaaaaaaaaaaa", "20261001t000000z-bbbbbbbbbbbb")
 
 
-def render(compose_file: Path, project_directory: Path, port: str, project: str) -> dict:
+def render(compose_file: Path, project: str, overrides: dict[str, str] | None = None) -> dict:
     env = os.environ.copy()
-    env["CONVEYOR_TEST_POSTGRES_PORT"] = port
+    for name in ("CONVEYOR_TEST_POSTGRES_MEMORY", "CONVEYOR_TEST_POSTGRES_TMPFS_SIZE",
+                 "CONVEYOR_TEST_NETWORK_NAME", "CONVEYOR_TEST_NETWORK_EXTERNAL"):
+        env.pop(name, None)
+    env.update(overrides or {})
     result = subprocess.run(
-        [
-            "docker",
-            "compose",
-            "-p",
-            project,
-            "-f",
-            str(compose_file),
-            "--project-directory",
-            str(project_directory),
-            "--profile",
-            "test",
-            "config",
-            "--format",
-            "json",
-        ],
-        check=True,
-        capture_output=True,
-        env=env,
-        text=True,
+        ["docker", "compose", "-p", project, "-f", str(compose_file), "--project-directory", str(ROOT),
+         "--profile", "test", "config", "--format", "json"],
+        check=True, capture_output=True, env=env, text=True,
     )
     return json.loads(result.stdout)
 
 
-def make_command(
-    project_directory: Path,
-    targets: list[str],
-    env_overrides: dict[str, str] | None = None,
-    dry_run: bool = False,
-) -> str:
+def invocation_env(invocation: str, port: str) -> dict[str, str]:
+    project = "conveyor-test-" + invocation
+    return {
+        "CONVEYOR_TEST_POSTGRES_PORT": port,
+        "CONVEYOR_TEST_NETWORK_NAME": project + "_default",
+        "CONVEYOR_TEST_NETWORK_EXTERNAL": "false",
+        "CONVEYOR_VALIDATION_INVOCATION_ID": invocation,
+        "CONVEYOR_VALIDATION_TASK_LABEL": "compose-check",
+    }
+
+
+def make(targets: list[str], overrides: dict[str, str] | None = None, dry_run: bool = False,
+         check: bool = True) -> subprocess.CompletedProcess:
     env = os.environ.copy()
-    env.pop("CONVEYOR_TEST_POSTGRES_PORT", None)
-    env.pop("TEST_POSTGRES_PORT", None)
-    env.update(env_overrides or {})
-    makefile = project_directory / "Makefile"
-    if project_directory != ROOT:
-        shutil.copyfile(ROOT / "Makefile", makefile)
-    args = ["make", "--no-print-directory", "-s"]
-    if dry_run:
-        args.append("-n")
-    args.extend(["-C", str(project_directory), "-f", str(makefile), *targets])
-    result = subprocess.run(
-        args,
-        check=True,
-        capture_output=True,
-        env=env,
-        text=True,
-    )
-    return result.stdout.strip()
-
-
-def make_identity(
-    project_directory: Path, env_overrides: dict[str, str] | None = None
-) -> tuple[str, str]:
-    port, project = make_command(
-        project_directory, ["test-db-identity"], env_overrides
-    ).split("\t")
-    return port, project
+    for name in ("CONVEYOR_TEST_POSTGRES_PORT", "TEST_POSTGRES_PORT", "INVOCATION"):
+        env.pop(name, None)
+    env.update(overrides or {})
+    args = ["make", "--no-print-directory", "-s", *(["-n"] if dry_run else []), "-C", str(ROOT), *targets]
+    return subprocess.run(args, check=check, capture_output=True, env=env, text=True)
 
 
 def fail(message: str) -> None:
@@ -82,112 +65,105 @@ def fail(message: str) -> None:
     raise SystemExit(1)
 
 
-def check_test_topology(config: dict, context: str, port: str, project: str) -> None:
+def tmpfs_size(service: dict, context: str) -> str:
+    for entry in service.get("tmpfs", []):
+        path, _, options = entry.partition(":")
+        if path == "/var/lib/postgresql/data":
+            match = re.search(r"(?:^|,)size=([^,]+)", options)
+            if not match:
+                fail(f"{context}: postgres-test data tmpfs has no size bound")
+            return match.group(1)
+    fail(f"{context}: postgres-test data is not tmpfs-backed")
+    return ""
+
+
+def check_test_topology(config: dict, context: str, invocation: str, port: str,
+                        memory: str, tmpfs: str) -> None:
+    project = "conveyor-test-" + invocation
     if config.get("name") != project:
         fail(f"{context}: project name is {config.get('name')!r}, want {project!r}")
-
     services = config.get("services", {})
     if set(services) != {"postgres-test"}:
         fail(f"{context}: services are {sorted(services)}, want only postgres-test")
-
     if config.get("volumes"):
         fail(f"{context}: default topology declares persistent volumes")
-
     rendered = json.dumps(config, sort_keys=True)
     for forbidden in ("conveyor-postgres", "conveyor-postgres-data"):
         if forbidden in rendered:
             fail(f"{context}: rendered config contains {forbidden!r}")
-
-    postgres_test = services["postgres-test"]
-    if "/var/lib/postgresql/data" not in postgres_test.get("tmpfs", []):
-        fail(f"{context}: postgres-test data is not tmpfs-backed")
-
-    published_ports = {
-        str(port.get("published")) for port in postgres_test.get("ports", [])
-    }
-    if port not in published_ports:
+    service = services["postgres-test"]
+    labels = service.get("labels", {})
+    if labels.get(resources.LABEL_INVOCATION) != invocation:
+        fail(f"{context}: container does not carry the invocation label")
+    network = config.get("networks", {}).get("default", {})
+    if network.get("name") != project + "_default" or network.get("labels", {}).get(resources.LABEL_INVOCATION) != invocation:
+        fail(f"{context}: network is not scoped and labelled for the invocation")
+    if str(service.get("mem_limit")) != str(resources.parse_size(memory, "memory")):
+        fail(f"{context}: mem_limit is {service.get('mem_limit')!r}, want finite {memory}")
+    if tmpfs_size(service, context) != tmpfs:
+        fail(f"{context}: data tmpfs size is not {tmpfs}")
+    published = {str(entry.get("published")) for entry in service.get("ports", [])}
+    if port not in published:
         fail(f"{context}: port {port!r} was not rendered")
 
 
-def check_identity(path: Path, port: str, project: str) -> None:
-    numeric_port = int(port)
-    if not 20000 <= numeric_port <= 29999:
-        fail(f"{path}: derived port {port!r} is outside 20000-29999")
-    if project != f"conveyor-test-p{port}":
-        fail(f"{path}: project {project!r} does not match derived port {port}")
-
-    check_lifecycle(path, port, project)
-
-
-def check_lifecycle(
-    path: Path,
-    port: str,
-    project: str,
-    env_overrides: dict[str, str] | None = None,
-) -> None:
-
-    lifecycle = make_command(
-        path,
-        ["test-db-up", "test-db-down"],
-        env_overrides,
-        dry_run=True,
-    ).splitlines()
-    expected_scope = f"docker compose -p {project} --profile test"
-    if len(lifecycle) != 2 or any(expected_scope not in line for line in lifecycle):
-        fail(f"{path}: database lifecycle is not scoped to {project!r}")
-    expected_port = f"CONVEYOR_TEST_POSTGRES_PORT={port}"
-    if any(expected_port not in line for line in lifecycle):
-        fail(f"{path}: database lifecycle does not consistently use port {port}")
+def check_make_lifecycle() -> None:
+    text = (ROOT / "Makefile").read_text()
+    for target in re.findall(r"^(test[\w-]*|_test[\w-]*):", text, flags=re.M):
+        body = text.split("\n" + target + ":", 1)[1].split("\n\n", 1)[0]
+        if "--remove-orphans" in body or re.search(r"docker compose[^\n]*\bdown\b", body) or "prune" in body:
+            fail(f"Make target {target} uses broad Compose/Docker cleanup")
+    up = make(["test-db-up"], dry_run=True).stdout
+    if "validation_fixtures.py up" not in up:
+        fail("test-db-up does not create a managed invocation")
+    down = make(["test-db-down", "INVOCATION=/state/invocations/example"], dry_run=True).stdout
+    if 'validation_resources.py recover --invocation "/state/invocations/example"' not in down:
+        fail("test-db-down does not recover the named invocation")
+    if make(["test-db-down"], check=False).returncode == 0:
+        fail("test-db-down accepted a missing INVOCATION reference")
+    # Text inspection: a dry run would still execute recipe lines naming $(MAKE).
+    integration = text.split("\ntest-integration:", 1)[1].split("\n\n", 1)[0]
+    if "--managed-postgres" not in integration or "test-db-up" in integration or "trap" in integration:
+        fail("test-integration does not own its PostgreSQL container through the managed invocation")
+    auto = make(["test-db-identity"]).stdout.split("\t")
+    if auto[:2] != ["auto", "conveyor-test-<invocation-id>"]:
+        fail(f"test-db-identity default is {auto!r}")
+    for variable in ("CONVEYOR_TEST_POSTGRES_PORT", "TEST_POSTGRES_PORT"):
+        pinned = make(["test-db-identity"], {variable: TEST_PORT}).stdout.split("\t")
+        if pinned[0] != TEST_PORT:
+            fail(f"{variable}: pinned identity is {pinned!r}")
 
 
 def check_dev_topology(config: dict) -> None:
     if config.get("name") != "conveyor":
         fail(f"dev: project name is {config.get('name')!r}, want 'conveyor'")
-
     services = config.get("services", {})
     if set(services) != {"postgres"}:
         fail(f"dev: services are {sorted(services)}, want only postgres")
     if services["postgres"].get("container_name") != "conveyor-postgres":
         fail("dev: persistent database container identity changed")
-
     volumes = config.get("volumes", {})
     if volumes.get("postgres-data", {}).get("name") != "conveyor-postgres-data":
         fail("dev: persistent database volume identity changed")
 
 
 def main() -> None:
-    with tempfile.TemporaryDirectory(prefix="conveyor-compose-a-") as first_dir:
-        with tempfile.TemporaryDirectory(prefix="conveyor-compose-b-") as second_dir:
-            first_path = Path(first_dir).resolve()
-            second_path = Path(second_dir).resolve()
-            first = make_identity(first_path)
-            second = make_identity(second_path)
-            check_identity(first_path, *first)
-            check_identity(second_path, *second)
-            if first == second:
-                fail("two distinct canonical worktree paths derived the same identity")
-            check_test_topology(
-                render(ROOT / "compose.yaml", first_path, *first),
-                "first worktree",
-                *first,
-            )
-            check_test_topology(
-                render(ROOT / "compose.yaml", second_path, *second),
-                "second worktree",
-                *second,
-            )
-
-    for variable in ("CONVEYOR_TEST_POSTGRES_PORT", "TEST_POSTGRES_PORT"):
-        identity = make_identity(ROOT, {variable: TEST_PORT})
-        expected = (TEST_PORT, f"conveyor-test-p{TEST_PORT}")
-        if identity != expected:
-            fail(f"{variable}: identity is {identity!r}, want {expected!r}")
-        check_lifecycle(ROOT, *identity, {variable: TEST_PORT})
-        check_test_topology(
-            render(ROOT / "compose.yaml", ROOT, *identity), variable, *identity
-        )
-
-    check_dev_topology(render(ROOT / "compose.dev.yaml", ROOT, TEST_PORT, "conveyor"))
+    default_memory = resources.DEFAULT_POSTGRES_MEMORY
+    default_tmpfs = resources.DEFAULT_POSTGRES_TMPFS
+    resources.postgres_budget({})
+    first, second = INVOCATIONS
+    configs = [render(ROOT / "compose.yaml", "conveyor-test-" + ident, invocation_env(ident, port))
+               for ident, port in ((first, "20001"), (second, "20002"))]
+    check_test_topology(configs[0], "first invocation", first, "20001", default_memory, default_tmpfs)
+    check_test_topology(configs[1], "second invocation", second, "20002", default_memory, default_tmpfs)
+    if configs[0]["name"] == configs[1]["name"]:
+        fail("two invocations in one checkout rendered the same project")
+    overridden = render(ROOT / "compose.yaml", "conveyor-test-" + first,
+                        dict(invocation_env(first, TEST_PORT), CONVEYOR_TEST_POSTGRES_MEMORY="3g",
+                             CONVEYOR_TEST_POSTGRES_TMPFS_SIZE="1536m"))
+    check_test_topology(overridden, "budget override", first, TEST_PORT, "3g", "1536m")
+    check_make_lifecycle()
+    check_dev_topology(render(ROOT / "compose.dev.yaml", "conveyor", {"CONVEYOR_TEST_POSTGRES_PORT": TEST_PORT}))
     print("compose isolation check passed")
 
 

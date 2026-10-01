@@ -1,14 +1,24 @@
 name: conveyor-test
 
+# Template for the managed integration-test database. scripts/validation_resources.py
+# creates it under a per-invocation project, seals the container and network
+# IDs in the invocation inventory, and removes only those IDs. The fallbacks
+# below match its default budget (component-verification-strategy).
 networks:
   default:
-    name: ${CONVEYOR_TEST_NETWORK_NAME:-conveyor-test-p${CONVEYOR_TEST_POSTGRES_PORT:-5433}_default}
+    name: ${CONVEYOR_TEST_NETWORK_NAME:-conveyor-test-unmanaged_default}
     external: ${CONVEYOR_TEST_NETWORK_EXTERNAL:-false}
+    labels:
+      sh.conveyor.validation.invocation: ${CONVEYOR_VALIDATION_INVOCATION_ID:-unmanaged}
+      sh.conveyor.validation.task: ${CONVEYOR_VALIDATION_TASK_LABEL:-unmanaged}
 
 services:
   postgres-test:
     image: postgres:16-alpine
     profiles: ["test"]
+    labels:
+      sh.conveyor.validation.invocation: ${CONVEYOR_VALIDATION_INVOCATION_ID:-unmanaged}
+      sh.conveyor.validation.task: ${CONVEYOR_VALIDATION_TASK_LABEL:-unmanaged}
     environment:
       POSTGRES_USER: conveyor
       POSTGRES_PASSWORD: conveyor
@@ -20,5 +30,7 @@ services:
       interval: 2s
       timeout: 5s
       retries: 15
+    # tmpfs pages count against mem_limit, so the data size stays below it.
+    mem_limit: ${CONVEYOR_TEST_POSTGRES_MEMORY:-2g}
     tmpfs:
-      - /var/lib/postgresql/data
+      - /var/lib/postgresql/data:size=${CONVEYOR_TEST_POSTGRES_TMPFS_SIZE:-1g}

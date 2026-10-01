@@ -16,6 +16,7 @@ import unittest
 from unittest.mock import patch
 
 import validation_evidence as evidence
+import validation_resources
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -74,6 +75,9 @@ class EvidenceTests(unittest.TestCase):
         self.patch = patch.dict(os.environ, self.env, clear=True)
         self.patch.start()
         self.addCleanup(self.patch.stop)
+        # Invocation temporary children follow HOME's cache; accept a RAM-backed
+        # test host explicitly. This is helper metadata, not a policy input.
+        os.environ[validation_resources.ALLOW_RAM_TMP] = "1"
         self.policy = {"schema": 1, "task": "fixture-task", "layer": "local", "command": ["make", "check"],
                        "environment": list(self.env), "tools": {"make": ["make", "--version"], "git": ["git", "--version"],
                        "python3": ["python3", "--version"], "sh": ["sh", "-c", "printf POSIX-shell"]},
@@ -448,7 +452,7 @@ class EvidenceTests(unittest.TestCase):
         order = []
         ownership = {"backend": "postgres", "database": "conveyor_a1_test", "endpoint": "db:5432"}
 
-        def prepare(*_args):
+        def prepare(*_args, **_kwargs):
             order.append("prepare")
             return ownership, evidence.environment(self.policy)
 
@@ -456,7 +460,7 @@ class EvidenceTests(unittest.TestCase):
             order.append("snapshot")
             return {"files": {}, "environment": {}, "tools": {}, "backend": {}, "git": {}, "runtime": {}}
 
-        def teardown(*_args):
+        def teardown(*_args, **_kwargs):
             order.append("teardown")
 
         with patch.object(evidence.validation_fixtures, "prepare", side_effect=prepare), \
@@ -477,7 +481,7 @@ class EvidenceTests(unittest.TestCase):
         after = {"files": {}, "environment": {}, "tools": {}, "backend": {"retained": True}, "git": {}, "runtime": {}}
         order = []
 
-        def prepare(*args):
+        def prepare(*args, **_kwargs):
             evidence.validation_fixtures._phase(args[-1], "prepare", "success")
             order.append("prepare")
             return ownership, evidence.environment(self.policy)
@@ -488,7 +492,7 @@ class EvidenceTests(unittest.TestCase):
                 raise evidence.Refused("injected before failure")
             return after
 
-        def teardown(*args):
+        def teardown(*args, **_kwargs):
             order.append("teardown")
             evidence.validation_fixtures._phase(args[-1], "teardown", "success")
 
@@ -591,11 +595,22 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(inspected["classification"], "abandoned-or-incomplete")
         self.assertFalse(inspected["reusable"])
         self.refused("abandoned/incomplete")
-        # SIGKILL cannot run the runner's group teardown; clean the fixture.
-        try:
-            os.killpg(child_group, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+        # SIGKILL cannot run the runner's group teardown. Explicit recovery of
+        # the named invocation stops the orphaned group and leaves the
+        # evidence incomplete and nonreusable.
+        self.addCleanup(lambda: _pid_alive(child_group) and os.killpg(child_group, signal.SIGKILL))
+        invocation = Path(last_record["invocation"])
+        self.assertEqual({r["classification"] for r in validation_resources.inspect_invocation(invocation)["resources"]},
+                         {"abandoned"})
+        complete, actions = validation_resources.recover(invocation, [str(self.output)], grace=0.3)
+        self.assertTrue(complete, actions)
+        deadline = time.time() + 2
+        while time.time() < deadline and _pid_alive(child_group):
+            time.sleep(0.02)
+        self.assertFalse(_pid_alive(child_group), "recovery did not stop the orphaned gate")
+        self.assertEqual(evidence.inspect_record(self.root, self.output)["classification"], "abandoned-or-incomplete")
+        self.assertTrue((self.output / "command.log").is_file())
+        self.refused("abandoned/incomplete")
 
     def test_catchable_cancellation_reaps_descendant_and_retains_redacted_output(self):
         pid_file = self.base / "descendant.pid"
@@ -636,6 +651,84 @@ time.sleep(30)
         self.assertIn("[REDACTED]", retained)
         self.assertIn("outcome=interrupted", stdout)
         self.refused("invalid execution outcome")
+
+    def test_timeout_stops_the_supervised_group_and_is_not_reusable(self):
+        (self.root / "Makefile").write_text("check:\n\t@echo started; sleep 30\n")
+        started = time.monotonic()
+        self.assertEqual(evidence.record(self.root, self.policy, self.output, timeout=0.5), 124)
+        self.assertLess(time.monotonic() - started, 20)
+        record = evidence.read_record(self.output / "manifest.json", (self.output / "key").read_bytes())
+        self.assertEqual((record["outcome"], record["timeout"]), ("timeout", 0.5))
+        self.assertEqual(record["resource_cleanup"]["outcome"], "success")
+        self.assertIn("started", (self.output / "command.log").read_text())
+        self.assertEqual(evidence.inspect_record(self.root, self.output)["classification"], "timeout")
+        self.refused("invalid execution outcome")
+
+    def test_resource_cleanup_failure_is_recorded_beside_the_gate_outcome(self):
+        with patch.object(validation_resources.Invocation, "finish", return_value=["path-x: injected refusal"]):
+            self.assertEqual(evidence.record(self.root, self.policy, self.output), 2)
+        record = evidence.read_record(self.output / "manifest.json", (self.output / "key").read_bytes())
+        self.assertEqual(record["outcome"], "success")
+        self.assertEqual(record["exit_status"], 0)
+        self.assertEqual(record["resource_cleanup"], {"outcome": "failure", "detail": ["path-x: injected refusal"]})
+        self.assertEqual(evidence.inspect_record(self.root, self.output)["classification"],
+                         "cleanup-failure-after-success")
+        self.refused("owned resource cleanup")
+
+    def test_managed_binding_reaches_the_child_without_changing_reusable_inputs(self):
+        (self.root / "Makefile").write_text('check:\n\t@printf "%s|%s" "$$CONVEYOR_VALIDATION_INVOCATION" "$$TMPDIR"\n')
+        self.record()
+        record = evidence.read_record(self.output / "manifest.json", (self.output / "key").read_bytes())
+        invocation = Path(record["invocation"])
+        binding, tmpdir = (self.output / "command.log").read_text().split("|")
+        self.assertEqual(binding, str(invocation))
+        self.assertIn(invocation.name, tmpdir)
+        self.assertFalse(Path(tmpdir).exists(), "invocation temporary child was not removed")
+        inventory = validation_resources.load_inventory(invocation)
+        self.assertEqual(inventory["state"], "completed")
+        self.assertEqual(inventory["configuration"]["evidence"], str(self.output))
+        self.assertNotIn(validation_resources.BINDING, record["before"]["environment"])
+        evidence.check(self.root, self.policy, self.output)
+
+    def test_legacy_manifest_without_invocation_fields_remains_checkable(self):
+        self.record()
+        key = (self.output / "key").read_bytes()
+        record = evidence.read_record(self.output / "manifest.json", key)
+        for field in ("invocation", "timeout", "resource_cleanup"):
+            del record[field]
+        evidence.write_record(self.output / "manifest.json", record, key, replace=True)
+        evidence.check(self.root, self.policy, self.output)
+        self.assertEqual(evidence.inspect_record(self.root, self.output)["classification"], "success")
+
+    def test_ram_backed_temporary_root_refuses_before_recording(self):
+        del os.environ[validation_resources.ALLOW_RAM_TMP]
+        with patch.object(validation_resources, "backing_filesystem", return_value="tmpfs"):
+            with self.assertRaisesRegex(evidence.Refused, "RAM-backed.*CONVEYOR_VALIDATION_ALLOW_RAM_TMP=1"):
+                evidence.record(self.root, self.policy, self.output)
+        self.assertFalse(self.output.exists())
+
+    def test_managed_postgres_fixture_field_is_validated(self):
+        path = self.base / "policy.json"
+        self.policy["layer"] = "postgres"
+        self.policy["environment"].append("TEST_DATABASE_URL")
+        self.policy["backend"] = {"isolation": "disposable-per-run", "probe": ["python3", "-c", 'print("{}")']}
+        fixture = {"backend": "postgres", "url_env": "TEST_DATABASE_URL", "prepared_url_env": "TEST_DATABASE_URL",
+                   "external_network_env": "CONVEYOR_TEST_EXTERNAL_NETWORK", "database_prefix": "conveyor",
+                   "minimum_free_bytes": 1, "timeout": "20s"}
+        for value, accepted in ((True, True), (False, True), ("yes", False)):
+            with self.subTest(value=value):
+                self.policy["fixture"] = dict(fixture, managed_postgres=value)
+                path.write_text(json.dumps(self.policy))
+                if accepted:
+                    evidence.policy_read(path)
+                else:
+                    with self.assertRaises(evidence.Refused):
+                        evidence.policy_read(path)
+        self.policy["layer"] = "singlestore"
+        self.policy["fixture"] = dict(fixture, backend="singlestore", managed_postgres=True)
+        path.write_text(json.dumps(self.policy))
+        with self.assertRaisesRegex(evidence.Refused, "managed_postgres"):
+            evidence.policy_read(path)
 
     def test_no_tracked_exclusion_or_unknown_symlink(self):
         self.policy["exclude"]["generated"] = "claimed output"
