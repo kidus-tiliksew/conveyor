@@ -425,11 +425,69 @@ function withDependencyContext(state: CurrentExecutionState, item: ActivityItem)
   }
 }
 
+// A Go time.Time JSON instant with its full fractional precision, so ordering
+// agrees with the store even where millisecond Date parsing would collapse two
+// creation times into one.
+const creationInstantPattern =
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?(?:Z|([+-])(\d{2}):(\d{2}))$/
+
+// Accepts only the field ranges Go's RFC 3339 parser accepts. Date arithmetic
+// would otherwise normalize an out-of-range field such as minute 60 into a
+// different, valid-looking instant.
+function creationInstant(value: string | undefined): { seconds: number; nanos: number } | undefined {
+  const match = value ? creationInstantPattern.exec(value) : null
+  if (!match) return undefined
+  const [, year, month, day, hour, minute, second, fraction = '', sign, zoneHour = '0', zoneMinute = '0'] = match
+  const [y, mo, d, h, mi, s, zh, zm] = [year, month, day, hour, minute, second, zoneHour, zoneMinute].map(Number)
+  const lastDay = new Date(0)
+  lastDay.setUTCFullYear(y, mo, 0)
+  if (mo < 1 || mo > 12 || d < 1 || d > lastDay.getUTCDate() || h > 23 || mi > 59 || s > 59 || zh > 23 || zm > 59)
+    return undefined
+  const date = new Date(0)
+  date.setUTCFullYear(y, mo - 1, d)
+  date.setUTCHours(h, mi, s, 0)
+  const offset = (sign === '-' ? -1 : 1) * (zh * 3600 + zm * 60)
+  return { seconds: date.getTime() / 1000 - offset, nanos: Number(fraction.padEnd(9, '0')) }
+}
+
+// Go compares string IDs bytewise; code-point order is the same as UTF-8 byte
+// order, unlike UTF-16 comparison or locale collation.
+function compareOrderIDs(a: string, b: string) {
+  const left = Array.from(a, (char) => char.codePointAt(0) ?? 0)
+  const right = Array.from(b, (char) => char.codePointAt(0) ?? 0)
+  for (let index = 0; index < Math.min(left.length, right.length); index++) {
+    if (left[index] !== right[index]) return left[index] - right[index]
+  }
+  return left.length - right.length
+}
+
+// Mirrors the same-stage branch of store.WorkOrderRecoverySupersessionError:
+// a non-cancelled order of the same stage created later, or at the same
+// instant with a greater ID, makes the target historical. The server refuses
+// recovery of such an order, so it must not become the current execution state
+// or a recovery target (req-task-lifecycle-and-queue REQ-6 AC-6.2;
+// component-web-dashboard). Missing or unparseable creation times establish no
+// ordering.
+function hasSameStageSuccessor(order: WorkOrder, orders: WorkOrder[]) {
+  const target = creationInstant(order.created_at)
+  if (!target) return false
+  return orders.some((candidate) => {
+    if (candidate.id === order.id || candidate.stage !== order.stage || candidate.state === 'cancelled') return false
+    const created = creationInstant(candidate.created_at)
+    if (!created) return false
+    if (created.seconds !== target.seconds) return created.seconds > target.seconds
+    if (created.nanos !== target.nanos) return created.nanos > target.nanos
+    return compareOrderIDs(candidate.id, order.id) > 0
+  })
+}
+
 export function deriveCurrentExecutionState(item: ActivityItem): CurrentExecutionState | undefined {
   const dependencyBlockedOrder = dependencyBlockedImplementationOrder(item)
-  const candidates = [...(item.work_orders ?? [])]
+  const orders = item.work_orders ?? []
+  const candidates = [...orders]
     .filter((candidate) => !(candidate.stage === 'review' && (candidate.review_round ?? 0) > 0))
     .filter((candidate) => candidate.state === 'claimed' || ['queued', 'stale', 'timed_out'].includes(candidate.state))
+    .filter((candidate) => candidate.state === 'claimed' || !hasSameStageSuccessor(candidate, orders))
     .sort((a, b) => orderActivityTime(b) - orderActivityTime(a))
   const order =
     candidates.find((candidate) => candidate.state === 'claimed') ??
