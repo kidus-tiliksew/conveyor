@@ -891,6 +891,7 @@ func TestReferenceDocumentWritesRequireManageReferenceDocuments(t *testing.T) {
 // AC-3.3).
 func TestReferenceDocumentWritesRefuseExecutionCredentials(t *testing.T) {
 	harness := newReferenceDocumentRoleHarness(t)
+	harness.member(core.WorkspaceRoleOperator)
 	harness.credentials["agent-token"] = core.AuthenticatedCredential{ID: "agt_operator", OwnerUserID: "operator", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser}
 	harness.credentials["run-child-token"] = core.AuthenticatedCredential{ID: "agt_child", OwnerUserID: "operator", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser,
 		RunWorkspaceID: "demo", RunWorkOrderID: "order", RunSessionID: "session"}
