@@ -265,6 +265,9 @@ def location(root, output):
     require(not output.is_relative_to(cache), "evidence cannot live in disposable cache")
     task_cache = os.environ.get("CONVEYOR_TASK_CACHE")
     require(not task_cache or not output.is_relative_to(Path(task_cache).resolve()), "evidence cannot live in task cache")
+    tmp_root = os.environ.get(validation_resources.TMP_ROOT)
+    require(not tmp_root or not output.is_relative_to(Path(tmp_root).resolve()),
+            "evidence cannot live in the disposable validation temporary root")
     return output
 
 
@@ -359,6 +362,15 @@ def _record(root, p, output, timeout=None):
         invocation = validation_resources.Invocation.enter(
             p["task"], root, p["command"], {"layer": p["layer"], "evidence": str(output)})
     except validation_resources.ResourceError as exc:
+        raise Refused(str(exc)) from exc
+    try:
+        # Record the output on the invocation before it exists, so owner
+        # teardown and default recovery never remove it; a joined runner's
+        # binding may name disposable paths this environment does not.
+        invocation.retain(output)
+    except validation_resources.ResourceError as exc:
+        if invocation.owner:
+            invocation.finish(outcome="refused: " + str(exc))
         raise Refused(str(exc)) from exc
     try:
         return _record_owned(root, p, output, invocation, timeout)

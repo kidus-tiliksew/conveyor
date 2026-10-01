@@ -228,7 +228,16 @@ Makefile, and the Playwright web server.
 - **Binding.** Child processes receive `CONVEYOR_VALIDATION_INVOCATION`. Recursive
   Make, the evidence helper's prepared fixture, and Playwright's Vite server
   register into that same inventory, so one owner performs teardown. The
-  validation child boundary passes this variable.
+  validation child boundary passes this variable. A binding joins only an
+  active owner of the same user and checkout; an inherited binding from
+  another checkout starts a separate owned invocation instead.
+- **Retained references.** Before writing anything, the evidence helper
+  records its output directory in the inventory's `references` list, whether
+  it owns the invocation or joined one. Output inside the configured
+  `CONVEYOR_VALIDATION_TMP_ROOT`, the task cache, or any disposable path of the
+  bound inventory is refused before creation. Owned teardown and recovery
+  always honor recorded references (and an older record's
+  `configuration.evidence`) without repeated `--reference` arguments.
 - **Owned teardown.** Cleanup runs after success, failure, configured timeout,
   `SIGINT`, and `SIGTERM`, in the order process groups, container, network,
   external databases, temporary paths. Process groups receive bounded `TERM`
@@ -251,9 +260,11 @@ was killed:
 ```sh
 python3 scripts/validation_resources.py inspect --task "$task_id"
 python3 scripts/validation_resources.py inspect --invocation "$invocation"
-python3 scripts/validation_resources.py recover --invocation "$invocation" \
-  --reference "$retained_manifest"
+python3 scripts/validation_resources.py recover --invocation "$invocation"
 ```
+
+Recorded references always apply; add `--reference "$path"` only for retained
+material the inventory does not already name.
 
 Inspection reports each resource as `pending`, `active`, `abandoned`,
 `completed`, `ambiguous`, or `cleanup-failed`. Recovery refuses while the owner
@@ -262,7 +273,8 @@ for corrupt or legacy inventories. Immediately before each mutation it
 rechecks that resource's identity and refuses a changed process birth or
 binding, a changed container or network ID or label, a changed database
 incarnation, a symlink or substituted path, a path in use, a path that
-contains a `--reference`, and an unknown resource kind. Pending and ambiguous
+contains or is named by a recorded or `--reference` retained reference, a
+malformed reference list, and an unknown resource kind. Pending and ambiguous
 entries have no sealed identity and are never removed. Recovery is
 idempotent, appends every action and refusal to `recovery.jsonl`, and never
 edits an evidence manifest or log: an interrupted attempt stays incomplete and

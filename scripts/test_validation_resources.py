@@ -363,6 +363,97 @@ class ResourceTests(IsolatedState):
         self.assertFalse(complete)
         self.assertEqual({action["action"] for action in actions}, {"refused"})
 
+    def test_default_recovery_honors_recorded_retained_references(self):
+        # Recovery named only by its invocation must protect references the
+        # inventory records, in both the current list and legacy configuration.
+        for mode in ("references", "configuration"):
+            with self.subTest(mode=mode):
+                path, child = self.orphaned_invocation("recorded-" + mode)
+                tmp = Path(next(entry for entry in resources.load_inventory(path)["resources"]
+                                if entry["kind"] == "path")["identity"]["path"])
+                sentinel = tmp / "tmp" / "evidence" / "manifest.json"
+                sentinel.parent.mkdir()
+                sentinel.write_text("retained")
+
+                def record_reference(value, reference=str(sentinel.parent)):
+                    if mode == "references":
+                        value["references"] = [reference]
+                    else:
+                        value.pop("references", None)
+                        value["configuration"]["evidence"] = reference
+                self.rewrite(path, record_reference)
+                result = subprocess.run([sys.executable, str(HELPER), "recover", "--invocation", str(path),
+                                         "--grace", "0.3"], env=self.env, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertIn("retained reference", result.stdout)
+                self.assertTrue(wait_for(lambda: not alive(child), 2), "verified process group was not recovered")
+                self.assertEqual(sentinel.read_text(), "retained")
+                actions = [json.loads(line) for line in (path / "recovery.jsonl").read_text().splitlines()]
+                self.assertEqual([(a["kind"], a["action"]) for a in actions if a["action"] == "refused"],
+                                 [("path", "refused")])
+                self.assertEqual(resources.load_inventory(path)["state"], "recovery-incomplete")
+
+    def test_owner_cleanup_reads_references_recorded_after_it_loaded(self):
+        owner = resources.Invocation.create("resource-task", self.checkout, ["owner"])
+        tmp = Path(owner.managed_env()["TMPDIR"]).parent
+        sentinel = tmp / "tmp" / "evidence.log"
+        sentinel.write_text("retained")
+        # Another writer (a joined launcher, or a record from before durable
+        # references) adds a reference the owner's in-memory view lacks.
+        value = json.loads((owner.path / "inventory.json").read_text())
+        value["references"] = [str(sentinel)]
+        resources.write_json(owner.path / "inventory.json", value)
+        self.assertEqual(owner.inventory["references"], [])
+        failures = owner.finish(outcome="success")
+        self.assertEqual(len(failures), 1)
+        self.assertIn("retained reference", failures[0])
+        self.assertEqual(sentinel.read_text(), "retained")
+        self.assertEqual(resources.load_inventory(owner.path)["state"], "cleanup-failed")
+
+    def test_retain_records_durably_and_refuses_disposable_placement(self):
+        owner = resources.Invocation.create("resource-task", self.checkout, ["owner"])
+        self.addCleanup(lambda: owner.owner and owner.finish())
+        env = dict(os.environ, **{resources.BINDING: str(owner.path)})
+        env.pop(resources.TMP_ROOT)  # The joined runner need not know the owner's root.
+        joined = resources.Invocation.enter("resource-task", self.checkout, ["joined"], env=env)
+        self.assertFalse(joined.owner)
+        tmp = Path(owner.managed_env()["TMPDIR"])
+        for disposable in (tmp / "evidence", tmp.parent, self.base / "cache" / "other", self.base):
+            with self.subTest(reference=disposable):
+                with self.assertRaisesRegex(resources.Refusal, "cannot live in disposable path"):
+                    joined.retain(disposable)
+        self.assertEqual(resources.load_inventory(owner.path)["references"], [])
+        durable = self.base / "durable" / "evidence"
+        self.assertEqual(joined.retain(durable), str(durable))
+        joined.retain(durable)
+        self.assertEqual(resources.load_inventory(owner.path)["references"], [str(durable)])
+        self.assertEqual(owner.finish(), [])
+        self.assertFalse(tmp.exists())
+
+    def test_inherited_binding_from_another_checkout_is_never_joined(self):
+        owner = resources.Invocation.create("resource-task", self.checkout, ["owner"])
+        self.addCleanup(owner.finish)
+        other = self.base / "other-checkout"
+        other.mkdir()
+        with self.assertRaisesRegex(resources.Refusal, "belongs to checkout"):
+            resources.Invocation.join(owner.path, other)
+        env = dict(os.environ, **{resources.BINDING: str(owner.path)})
+        separate = resources.Invocation.enter("resource-task", other, ["separate"], env=env)
+        self.addCleanup(separate.finish)
+        self.assertTrue(separate.owner)
+        self.assertNotEqual(separate.path, owner.path)
+        # A different task label in the same checkout joins the one owner.
+        nested = resources.Invocation.enter("manual-validation", self.checkout, ["nested"], env=env)
+        self.assertFalse(nested.owner)
+        self.assertEqual(nested.path, owner.path)
+
+    def test_malformed_recorded_references_fail_closed(self):
+        path, child = self.orphaned_invocation("malformed")
+        self.rewrite(path, lambda value: value.update(references="not-a-list"))
+        with self.assertRaisesRegex(resources.Refusal, "malformed retained references"):
+            resources.recover(path, grace=0.3)
+        self.assertTrue(alive(child), "recovery mutated resources of a malformed inventory")
+
     def test_join_requires_an_active_owner_and_binding_reaches_descendants(self):
         owner = resources.Invocation.create("resource-task", self.checkout, ["owner"])
         env = dict(os.environ, **{resources.BINDING: str(owner.path)})

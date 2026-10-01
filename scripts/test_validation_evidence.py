@@ -634,6 +634,98 @@ class EvidenceTests(unittest.TestCase):
         self.assertTrue((self.output / "command.log").is_file())
         self.refused("abandoned/incomplete")
 
+    def joined_owner(self):
+        """An owner with a custom disk temporary root and a runner bound to it."""
+        os.environ[validation_resources.TMP_ROOT] = str(self.base / "custom-disposable")
+        owner = validation_resources.Invocation.create("fixture-task", self.root, ["make", "check"])
+        self.addCleanup(lambda: owner.owner and owner.finish())
+        os.environ[validation_resources.BINDING] = str(owner.path)
+        return owner
+
+    def test_evidence_inside_any_disposable_root_is_refused_before_creation(self):
+        owner = self.joined_owner()
+        tmp = Path(owner.managed_env()["TMPDIR"])
+        # The configured root is known to this environment.
+        with self.assertRaisesRegex(evidence.Refused, "disposable validation temporary root"):
+            evidence.record(self.root, self.policy, tmp / "retained-evidence")
+        # A joined runner may not know the owner's root; the bound inventory does.
+        del os.environ[validation_resources.TMP_ROOT]
+        with self.assertRaisesRegex(evidence.Refused, "cannot live in disposable path"):
+            evidence.record(self.root, self.policy, tmp / "retained-evidence")
+        self.assertFalse((tmp / "retained-evidence").exists())
+        inventory = validation_resources.load_inventory(owner.path)
+        self.assertEqual(inventory["references"], [])
+        self.assertTrue(validation_resources.owner_active(owner.path, inventory), "a joined refusal ended its owner")
+        self.assertEqual(owner.finish(), [])
+        self.assertFalse(tmp.exists())
+
+    def test_joined_runner_records_its_reference_and_owner_cleanup_keeps_evidence(self):
+        owner = self.joined_owner()
+        self.record()
+        record = evidence.read_record(self.output / "manifest.json", (self.output / "key").read_bytes())
+        self.assertEqual(record["invocation"], str(owner.path))
+        self.assertEqual(validation_resources.load_inventory(owner.path)["references"], [str(self.output)])
+        retained = {name: (self.output / name).read_bytes() for name in ("manifest.json", "command.log", "key")}
+        self.assertEqual(owner.finish(outcome="success"), [])
+        self.assertEqual({name: (self.output / name).read_bytes() for name in retained}, retained)
+        self.assertFalse(Path(owner.managed_env()["TMPDIR"]).exists())
+        evidence.check(self.root, self.policy, self.output)
+
+    def test_default_recovery_after_owner_sigkill_keeps_joined_incomplete_evidence(self):
+        (self.root / "Makefile").write_text(".PHONY: check\ncheck:\n\t@sleep 30\n")
+        policy = self.write_policy()
+        info = self.base / "owner.json"
+        os.environ[validation_resources.TMP_ROOT] = str(self.base / "custom-disposable")
+        # The owner and its joined evidence runner share one process, as in a
+        # wrapper that binds the runner; SIGKILL ends both without cleanup.
+        child = "\n".join([
+            "import json, os, pathlib, sys",
+            "sys.path.insert(0, sys.argv[1])",
+            "import validation_evidence as e, validation_resources as r",
+            "root, policy, output, info = (pathlib.Path(value) for value in sys.argv[2:6])",
+            "owner = r.Invocation.create('fixture-task', root, ['make', 'check'])",
+            "os.environ[r.BINDING] = str(owner.path)",
+            "info.write_text(json.dumps({'invocation': str(owner.path), 'tmp': owner.managed_env()['TMPDIR']}))",
+            "sys.exit(e.record(root, json.loads(policy.read_text()), output))",
+        ])
+        process = subprocess.Popen([sys.executable, "-c", child, str(REPO / "scripts"), str(self.root), str(policy),
+                                    str(self.output), str(info)], cwd=self.root, env=dict(os.environ),
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.addCleanup(lambda: process.poll() is None and process.kill())
+        deadline = time.time() + 10
+        group = None
+        while time.time() < deadline and group is None:
+            if (self.output / "manifest.json").is_file():
+                record = evidence.read_record(self.output / "manifest.json", (self.output / "key").read_bytes())
+                inventory = validation_resources.load_inventory(Path(record["invocation"]))
+                groups = [entry["identity"]["pgid"] for entry in inventory["resources"]
+                          if entry["kind"] == "process-group" and entry["state"] == "sealed"]
+                if record["state"] == "running" and groups:
+                    group = groups[0]
+            time.sleep(0.02)
+        self.assertIsNotNone(group, "evidence gate did not reach a sealed running group")
+        self.addCleanup(lambda: _pid_alive(group) and os.killpg(group, signal.SIGKILL))
+        process.kill()
+        process.wait(timeout=5)
+        details = json.loads(info.read_text())
+        invocation = Path(details["invocation"])
+        self.assertEqual(validation_resources.load_inventory(invocation)["references"], [str(self.output)])
+        retained = {name: (self.output / name).read_bytes() for name in ("manifest.json", "command.log", "key")}
+        # The default recovery command names only the invocation.
+        result = subprocess.run([sys.executable, str(REPO / "scripts" / "validation_resources.py"), "recover",
+                                 "--invocation", str(invocation), "--grace", "0.3"],
+                                env=dict(os.environ), capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        deadline = time.time() + 2
+        while time.time() < deadline and _pid_alive(group):
+            time.sleep(0.02)
+        self.assertFalse(_pid_alive(group), "recovery did not stop the orphaned gate")
+        self.assertFalse(Path(details["tmp"]).exists(), "recovery left the verified temporary child")
+        self.assertEqual({name: (self.output / name).read_bytes() for name in retained}, retained)
+        self.assertEqual(evidence.inspect_record(self.root, self.output)["classification"], "abandoned-or-incomplete")
+        self.assertFalse(evidence.inspect_record(self.root, self.output)["reusable"])
+        self.refused("abandoned/incomplete")
+
     def test_catchable_cancellation_reaps_descendant_and_retains_redacted_output(self):
         pid_file = self.base / "descendant.pid"
         child = self.root / "child.py"

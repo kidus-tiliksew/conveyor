@@ -189,7 +189,36 @@ def load_inventory(path: Path) -> dict:
                 or not {"id", "kind", "state", "identity"} <= set(resource)
                 or not isinstance(resource["identity"], dict)):
             raise Refusal("invocation inventory has a resource without identity")
+    # Retained evidence references were added after the first schema 1
+    # records; their absence reads as none, a malformed list fails closed.
+    references = value.get("references", [])
+    if not isinstance(references, list) or not all(isinstance(item, str) and item for item in references):
+        raise Refusal("invocation inventory has malformed retained references")
     return value
+
+
+def retained_references(inventory: dict, extra=()) -> list[str]:
+    """Durably recorded retained evidence references plus explicit ones.
+
+    Records written before the references list named their evidence output
+    only in configuration.evidence, which is honored as a reference too.
+    """
+    values = list(inventory.get("references") or [])
+    evidence = (inventory.get("configuration") or {}).get("evidence")
+    if isinstance(evidence, str) and evidence:
+        values.append(evidence)
+    values += [str(value) for value in extra]
+    return list(dict.fromkeys(values))
+
+
+def disposable_paths(inventory: dict) -> list[Path]:
+    """The temporary root and every path an invocation may remove."""
+    paths = [Path(entry["identity"]["path"]) for entry in inventory["resources"]
+             if entry["kind"] == "path" and entry["identity"].get("path")]
+    root = (inventory.get("tmp_root") or {}).get("path")
+    if root:
+        paths.append(Path(root))
+    return paths
 
 
 def _lock_held(path: Path) -> bool:
@@ -465,7 +494,7 @@ class Invocation:
             "owner": {"uid": os.getuid(), "pid": pid, "birth": process_birth(pid)},
             "argv": sanitize_argv(argv), "configuration": configuration or {},
             "tmp_root": None, "tmp": None, "state": "active", "detached": False,
-            "finished_at": None, "outcome": None, "cleanup": None, "resources": [],
+            "finished_at": None, "outcome": None, "cleanup": None, "resources": [], "references": [],
         }
         write_json(path / "inventory.json", inventory, create=True)
         invocation = cls(path, inventory, lock)
@@ -478,13 +507,20 @@ class Invocation:
         return invocation
 
     @classmethod
-    def join(cls, reference) -> "Invocation":
+    def join(cls, reference, checkout=None) -> "Invocation":
         path = Path(reference)
         if not path.is_absolute() or path.is_symlink() or not path.is_dir():
             raise Refusal(f"{BINDING} must name an existing invocation directory")
         inventory = load_inventory(path)
         if not owner_active(path, inventory):
             raise Refusal(f"bound invocation {path} has no active owner")
+        if inventory["owner"].get("uid") != os.getuid():
+            raise Refusal(f"bound invocation {path} is owned by another user")
+        # Nested launches in one checkout share a single owner even when their
+        # task labels differ (recursive Make defaults to manual-validation).
+        # An inherited binding from another checkout never adopts this run.
+        if checkout is not None and inventory["checkout"] != str(Path(checkout).resolve()):
+            raise Refusal(f"bound invocation {path} belongs to checkout {inventory['checkout']}")
         return cls(path, inventory, None)
 
     @classmethod
@@ -494,7 +530,7 @@ class Invocation:
         reference = env.get(BINDING)
         if reference:
             try:
-                return cls.join(reference)
+                return cls.join(reference, checkout)
             except Refusal as exc:
                 print(f"warning: ignoring {BINDING}: {exc}; creating a new invocation", file=sys.stderr)
         return cls.create(task, checkout, argv, configuration, env, tmp)
@@ -521,17 +557,42 @@ class Invocation:
         values.update(self.inventory.get("tmp") or {})
         return values
 
-    def _mutate(self, change):
+    def _mutate(self, change, write: bool = True):
         descriptor = os.open(self.path / "inventory.lock", os.O_RDWR | os.O_CLOEXEC)
         try:
             fcntl.flock(descriptor, fcntl.LOCK_EX)
             current = load_inventory(self.path)
             result = change(current)
-            write_json(self.path / "inventory.json", current)
+            if write:
+                write_json(self.path / "inventory.json", current)
             self.inventory = current
             return result
         finally:
             os.close(descriptor)
+
+    def refresh(self) -> dict:
+        """Reload the inventory, including entries written by joined launchers."""
+        return self._mutate(lambda inventory: inventory, write=False)
+
+    def retain(self, reference) -> str:
+        """Durably record a retained evidence reference before it is written.
+
+        Owners and joined launchers both record here, so normal teardown and
+        explicit recovery protect it without repeated --reference arguments.
+        Evidence inside a disposable path is refused before anything exists.
+        """
+        target = Path(reference).resolve()
+
+        def change(inventory):
+            for disposable in disposable_paths(inventory):
+                disposable = disposable.resolve()
+                if _inside(target, disposable) or _inside(disposable, target):
+                    raise Refusal(f"retained evidence {target} cannot live in disposable path {disposable}")
+            references = inventory.setdefault("references", [])
+            if str(target) not in references:
+                references.append(str(target))
+        self._mutate(change)
+        return str(target)
 
     def register(self, kind: str, identity: dict, role: str | None = None) -> str:
         if kind not in RESOURCE_KINDS:
@@ -570,7 +631,12 @@ class Invocation:
         return self._update_resource(rid, state=state, detail=detail, finished_at=time.time())
 
     def cleanup(self, rids=None, references=(), grace: float = 5.0) -> list[str]:
-        """Tear down sealed resources in teardown order. Return failure details."""
+        """Tear down sealed resources in teardown order. Return failure details.
+
+        Durably recorded retained references always join the explicit ones.
+        """
+        self.refresh()
+        references = retained_references(self.inventory, references)
         selected = [entry for entry in self.inventory["resources"]
                     if (rids is None or entry["id"] in rids) and entry["state"] in ("sealed", "cleanup-failed")]
         ordered = sorted(enumerate(selected), key=lambda item: (TEARDOWN_ORDER[item[1]["kind"]], -item[0]))
@@ -1158,6 +1224,10 @@ def recover(reference, references=(), grace: float = 5.0) -> tuple[bool, list[di
         if _owner_process_running(inventory):
             raise Refusal("invocation owner process is still running; recovery refused")
         invocation = Invocation(path, inventory, None)
+        invocation.refresh()
+        # Recorded references protect retained evidence even when the
+        # operator repeats none on the command line.
+        references = retained_references(invocation.inventory, references)
         actions = []
 
         def log(entry, action, detail):
@@ -1268,7 +1338,8 @@ def parse_args(argv=None):
     recover_parser = actions.add_parser("recover", help="recover one named abandoned invocation")
     recover_parser.add_argument("--invocation", required=True)
     recover_parser.add_argument("--reference", action="append", default=[],
-                                help="retained evidence path that recovery must not remove")
+                                help="additional retained evidence path that recovery must not remove; "
+                                     "references recorded in the inventory always apply")
     recover_parser.add_argument("--grace", type=float, default=5.0)
     launch_parser = actions.add_parser("launch", help="run a command in a sealed, supervised process group")
     launch_parser.add_argument("--task")
