@@ -267,7 +267,8 @@ Recorded references always apply; add `--reference "$path"` only for retained
 material the inventory does not already name.
 
 Inspection reports each resource as `pending`, `active`, `abandoned`,
-`completed`, `ambiguous`, or `cleanup-failed`. Recovery refuses while the owner
+`completed`, `ambiguous`, or `cleanup-failed`, and lists the recorded retained
+references. Recovery refuses while the owner
 lock is held or the recorded owner still runs, on another host or user, and
 for corrupt or legacy inventories. Immediately before each mutation it
 rechecks that resource's identity and refuses a changed process birth or

@@ -382,6 +382,7 @@ class ResourceTests(IsolatedState):
                         value.pop("references", None)
                         value["configuration"]["evidence"] = reference
                 self.rewrite(path, record_reference)
+                self.assertEqual(resources.inspect_invocation(path)["references"], [str(sentinel.parent)])
                 result = subprocess.run([sys.executable, str(HELPER), "recover", "--invocation", str(path),
                                          "--grace", "0.3"], env=self.env, capture_output=True, text=True)
                 self.assertEqual(result.returncode, 2, result.stdout + result.stderr)

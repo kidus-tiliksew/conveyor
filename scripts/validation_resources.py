@@ -1179,7 +1179,8 @@ def inspect_invocation(path) -> dict:
     return {"invocation": str(path), "task": inventory["task"], "state": inventory["state"],
             "owner_active": active, "detached": inventory.get("detached", False),
             "outcome": inventory.get("outcome"), "cleanup": inventory.get("cleanup"),
-            "tmp_root": inventory.get("tmp_root"), "resources": resources,
+            "tmp_root": inventory.get("tmp_root"), "references": retained_references(inventory),
+            "resources": resources,
             "recovery_entries": len(recovery.read_text().splitlines()) if recovery.is_file() else 0}
 
 
