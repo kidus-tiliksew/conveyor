@@ -356,6 +356,39 @@ def _restore_interrupt_handlers(previous):
         signal.signal(signum, handler)
 
 
+# Readiness waits stay short so the leader and deadline are checked even
+# while output is continuously readable; the final drain is bounded.
+OUTPUT_POLL_SECONDS = 0.1
+OUTPUT_DRAIN_SECONDS = 10.0
+
+
+def _bounded_wait(deadline):
+    if deadline is None:
+        return OUTPUT_POLL_SECONDS
+    return min(OUTPUT_POLL_SECONDS, max(0.0, deadline - time.monotonic()))
+
+
+def _drain_step(descriptor, log_file, redactor, drain_until, deadline):
+    """Copy at most one ready chunk; False at EOF or when the drain bound expires."""
+    if drain_until is not None:
+        wait = drain_until - time.monotonic()
+        if wait <= 0:
+            return False  # A member that survived teardown still holds the output open.
+        wait = min(wait, OUTPUT_POLL_SECONDS)
+    else:
+        wait = _bounded_wait(deadline)
+    ready, _, _ = select.select([descriptor], [], [], wait)
+    if not ready:
+        return True
+    chunk = os.read(descriptor, 64 * 1024)
+    if not chunk:
+        return False
+    redacted = redactor.feed(chunk)
+    if redacted:
+        log_file.write(redacted)
+    return True
+
+
 def _record(root, p, output, timeout=None):
     output = location(root, output)
     try:
@@ -493,33 +526,51 @@ def _record_owned(root, p, output, invocation, timeout):
         process = supervised.process
         deadline = time.monotonic() + timeout if timeout else None
         timed_out = False
+        status = None
+        drain_until = None
+        output_open = True
         with log_path.open("ab", buffering=0) as log_file:
             descriptor = process.stdout.fileno()
-            while True:
-                if deadline is not None:
-                    ready, _, _ = select.select([descriptor], [], [], max(0.0, deadline - time.monotonic()))
-                    if not ready and timed_out:
-                        break  # A member that survived teardown still holds the output open.
-                    if not ready:
-                        # Stop the sealed group; its closed output ends a bounded drain.
+            # Output is drained with bounded waits so neither an exited leader
+            # nor a configured deadline depends on output EOF: a descendant
+            # holding the inherited pipe cannot postpone cleanup, and a leader
+            # that closed its output is still awaited under the deadline.
+            while output_open or (status is None and drain_until is None):
+                if status is None and drain_until is None:
+                    status = process.poll()
+                    if status is not None:
+                        # The direct command exited. Stop the verified
+                        # survivors of its sealed group, keeping its status.
+                        stopped, detail = supervised.stop()
+                        if not stopped:
+                            phase("gate-processes", "cleanup-failure", detail)
+                        drain_until = time.monotonic() + OUTPUT_DRAIN_SECONDS
+                    elif deadline is not None and time.monotonic() >= deadline:
                         timed_out = True
-                        supervised.stop()
-                        deadline = time.monotonic() + 10
-                        continue
-                chunk = os.read(descriptor, 64 * 1024)
-                if not chunk:
-                    break
-                redacted = redactor.feed(chunk)
-                if redacted:
-                    log_file.write(redacted)
+                        stopped, detail = supervised.stop()
+                        if not stopped:
+                            phase("gate-processes", "cleanup-failure", detail)
+                        drain_until = time.monotonic() + OUTPUT_DRAIN_SECONDS
+                if output_open:
+                    output_open = _drain_step(descriptor, log_file, redactor, drain_until, deadline)
+                elif drain_until is None:
+                    time.sleep(_bounded_wait(deadline))
             tail = redactor.finish()
             if tail:
                 log_file.write(tail)
             log_file.flush()
             os.fsync(log_file.fileno())
-        status = process.wait()
-        # Descendants that outlived the direct child are stopped by identity.
-        supervised.stop()
+        if process.poll() is None:
+            # Only a refused or failed group stop leaves the leader running.
+            supervised.stop()
+            try:
+                process.wait(timeout=OUTPUT_DRAIN_SECONDS)
+            except subprocess.TimeoutExpired:
+                pass
+        if status is None:
+            status = process.returncode
+        if status is None:
+            status = 2  # The leader could not be stopped; its own status is unknown.
         outcome = "timeout" if timed_out else ("success" if status == 0 else "failure")
         phase("gate", outcome, f"exit_status={status}")
         state["state"] = "finalizing"
@@ -539,8 +590,9 @@ def _record_owned(root, p, output, invocation, timeout):
             supervised.stop()
             if process.stdout is not None:
                 with log_path.open("ab", buffering=0) as log_file:
-                    while remainder := os.read(process.stdout.fileno(), 64 * 1024):
-                        log_file.write(redactor.feed(remainder))
+                    drain_until = time.monotonic() + OUTPUT_DRAIN_SECONDS
+                    while _drain_step(process.stdout.fileno(), log_file, redactor, drain_until, None):
+                        pass
                     log_file.write(redactor.finish())
                     log_file.flush()
                     os.fsync(log_file.fileno())

@@ -391,7 +391,11 @@ boundary. Schema 1 requires these fields; unknown or omitted fields fail closed:
   point the source URL variable at it.
 
 `run --timeout <seconds>` stops the supervised gate after that time and
-records a distinct, nonreusable `timeout` outcome.
+records a distinct, nonreusable `timeout` outcome. The deadline is checked
+while output remains readable. `run` never waits for output end-of-file
+before cleanup: when the direct command exits, it stops verified surviving
+members that still hold the inherited output and records the direct command's
+own exit status. Final output drains are bounded.
 
 For example, after authoring and auditing `policy.json` outside the worktree,
 let `run` select the collision-safe attempt directory. Copy the printed attempt

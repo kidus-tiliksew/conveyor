@@ -778,6 +778,96 @@ time.sleep(30)
         self.assertEqual(evidence.inspect_record(self.root, self.output)["classification"], "timeout")
         self.refused("invalid execution outcome")
 
+    def _run_bounded(self, *extra, limit=30):
+        """Run the evidence entrypoint; a supervision regression fails instead of hanging the suite."""
+        policy = self.write_policy()
+        command = [sys.executable, str(REPO / "scripts" / "validation_evidence.py"), "run",
+                   "--policy", str(policy), "--output", str(self.output), *extra]
+        started = time.monotonic()
+        process = subprocess.Popen(command, cwd=self.root, env=dict(os.environ),
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            stdout, stderr = process.communicate(timeout=limit)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            stdout, stderr = process.communicate()
+            self.fail(f"evidence run did not finish within {limit}s: {stdout}{stderr}")
+        return process.returncode, stdout, stderr, time.monotonic() - started
+
+    def _descendant_holds_output(self, exit_code):
+        """make check exits while a descendant that inherited stdout keeps running."""
+        pid_file = self.base / "descendant.pid"
+        (self.root / "child.py").write_text(f"""import pathlib, subprocess, sys
+p = subprocess.Popen([\"sleep\", \"60\"])
+pathlib.Path(sys.argv[1]).write_text(str(p.pid))
+print(\"direct command done\", flush=True)
+sys.exit({exit_code})
+""")
+        (self.root / "Makefile").write_text("check:\n\t@python3 child.py " + str(pid_file) + "\n")
+        self.addCleanup(lambda: pid_file.is_file() and _pid_alive(int(pid_file.read_text()))
+                        and os.kill(int(pid_file.read_text()), signal.SIGKILL))
+        return pid_file
+
+    def _assert_reaped(self, pid_file):
+        self.assertTrue(pid_file.is_file(), "descendant was not launched")
+        self.assertFalse(_pid_alive(int(pid_file.read_text())), "descendant holding the output survived")
+
+    @unittest.skipUnless(HAS_PROC, "surviving members are verified through Linux /proc; "
+                         "without it the supervisor refuses to signal them")
+    def test_successful_command_reaps_descendant_holding_output_and_keeps_status(self):
+        pid_file = self._descendant_holds_output(0)
+        status, stdout, stderr, elapsed = self._run_bounded()
+        self.assertEqual(status, 0, stderr)
+        self.assertLess(elapsed, 25)
+        self._assert_reaped(pid_file)
+        record = evidence.read_record(self.output / "manifest.json", (self.output / "key").read_bytes())
+        self.assertEqual((record["outcome"], record["exit_status"], record["interruption"]), ("success", 0, None))
+        self.assertEqual(record["resource_cleanup"]["outcome"], "success")
+        self.assertEqual(record["log"]["completeness"], "complete")
+        self.assertIn("direct command done", (self.output / "command.log").read_text())
+        self.assertIn("outcome=success", stdout)
+        evidence.check(self.root, self.policy, self.output)
+
+    @unittest.skipUnless(HAS_PROC, "surviving members are verified through Linux /proc; "
+                         "without it the supervisor refuses to signal them")
+    def test_failed_command_reaps_descendant_holding_output_and_keeps_status(self):
+        pid_file = self._descendant_holds_output(3)
+        status, stdout, stderr, elapsed = self._run_bounded()
+        self.assertEqual(status, 2, stderr)  # Make's own status for a failed recipe.
+        self.assertLess(elapsed, 25)
+        self._assert_reaped(pid_file)
+        record = evidence.read_record(self.output / "manifest.json", (self.output / "key").read_bytes())
+        self.assertEqual((record["outcome"], record["exit_status"]), ("failure", 2))
+        self.assertEqual(record["resource_cleanup"]["outcome"], "success")
+        self.assertIn("direct command done", (self.output / "command.log").read_text())
+        self.refused("failed/incomplete execution")
+
+    def test_timeout_is_enforced_while_output_stays_readable(self):
+        # The producer outpaces the redacting reader, so the pipe never drains.
+        (self.root / "chatter.py").write_text("""import sys
+burst = b"tick\\n" * 16384
+while True:
+    sys.stdout.buffer.write(burst)
+    sys.stdout.flush()
+""")
+        (self.root / "Makefile").write_text("check:\n\t@python3 chatter.py\n")
+        status, stdout, stderr, elapsed = self._run_bounded("--timeout", "0.5")
+        self.assertEqual(status, 124, stderr)
+        self.assertLess(elapsed, 25)
+        record = evidence.read_record(self.output / "manifest.json", (self.output / "key").read_bytes())
+        self.assertEqual((record["outcome"], record["timeout"]), ("timeout", 0.5))
+        self.assertEqual(record["resource_cleanup"]["outcome"], "success")
+        self.assertEqual(record["log"]["completeness"], "complete")
+        self.assertIn("tick", (self.output / "command.log").read_text())
+        self.refused("invalid execution outcome")
+
+    def test_command_that_closes_output_is_still_awaited(self):
+        (self.root / "Makefile").write_text("check:\n\t@echo closing; exec >/dev/null 2>&1; sleep 1; exit 0\n")
+        self.record()
+        record = evidence.read_record(self.output / "manifest.json", (self.output / "key").read_bytes())
+        self.assertEqual((record["outcome"], record["exit_status"]), ("success", 0))
+        self.assertIn("closing", (self.output / "command.log").read_text())
+
     def test_resource_cleanup_failure_is_recorded_beside_the_gate_outcome(self):
         with patch.object(validation_resources.Invocation, "finish", return_value=["path-x: injected refusal"]):
             self.assertEqual(evidence.record(self.root, self.policy, self.output), 2)
