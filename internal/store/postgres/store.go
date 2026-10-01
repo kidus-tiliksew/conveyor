@@ -6131,18 +6131,25 @@ func (s *Store) settleAcceptedReviewTx(ctx context.Context, tx pgx.Tx, q *db.Que
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
+	// pgx refuses another statement on the transaction connection while this
+	// result set is open, so drain it before appending events.
+	var cleared []core.WorkOrder
 	for rows.Next() {
 		implementation, scanErr := scanWorkOrder(rows)
 		if scanErr != nil {
+			rows.Close()
 			return scanErr
 		}
-		if eventErr := insertEvent(ctx, q, core.Event{TaskID: implementation.TaskID, JobID: implementation.JobID, Kind: "work_order.updated", Payload: core.JSONPayload(implementation), At: now}); eventErr != nil {
-			return eventErr
-		}
+		cleared = append(cleared, implementation)
 	}
+	rows.Close()
 	if err = rows.Err(); err != nil {
 		return err
+	}
+	for _, implementation := range cleared {
+		if err = insertEvent(ctx, q, core.Event{TaskID: implementation.TaskID, JobID: implementation.JobID, Kind: "work_order.updated", Payload: core.JSONPayload(implementation), At: now}); err != nil {
+			return err
+		}
 	}
 	return nil
 }

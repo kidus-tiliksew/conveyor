@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -103,6 +104,10 @@ func TestPostgresWorkOrderContinuationIntegration(t *testing.T) {
 	}
 }
 
+// TestPostgresAcceptedReviewClearsSubmittedImplementationContinuationIntegration
+// submits the persisted implement order so all four continuation fields reach
+// review acceptance, which must clear them in the same transaction
+// (req-260818-24dd3a AC-1.3).
 func TestPostgresAcceptedReviewClearsSubmittedImplementationContinuationIntegration(t *testing.T) {
 	databaseURL := integrationDatabaseURL(t)
 	st, err := Open(t.Context(), databaseURL)
@@ -115,50 +120,91 @@ func TestPostgresAcceptedReviewClearsSubmittedImplementationContinuationIntegrat
 	if _, err = st.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "app", URL: "https://example.test/app.git", Base: "main"}}}); err != nil {
 		t.Fatal(err)
 	}
-	now := time.Now().UTC()
-	task := core.Task{ID: core.NewTaskID(), Workspace: workspace, Repo: "app", Branch: "conveyor/task-review-continuation", State: core.TaskRunning, NextStage: core.StageReview, PolicyVersion: 1, CreatedAt: now}
-	if err = st.CreateTask(ctx, task); err != nil {
-		t.Fatal(err)
+	for _, verdict := range []string{"approve", "changes_requested"} {
+		t.Run(verdict, func(t *testing.T) {
+			now := time.Now().UTC()
+			task := core.Task{ID: core.NewTaskID(), Workspace: workspace, Repo: "app", Branch: "conveyor/task-review-continuation-" + verdict, State: core.TaskRunning, NextStage: core.StageReview, PolicyVersion: 1, CreatedAt: now}
+			if err := st.CreateTask(ctx, task); err != nil {
+				t.Fatal(err)
+			}
+			implementJob := core.Job{ID: task.ID + "-implement-1", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
+			if err := st.CreateJob(ctx, implementJob); err != nil {
+				t.Fatal(err)
+			}
+			if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: implementJob.ID, TaskID: task.ID, JobID: implementJob.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now}); err != nil {
+				t.Fatal(err)
+			}
+			claimed, err := storetest.For(st).ClaimWorkOrder(ctx, implementJob.ID, core.WorkOrderClaim{SessionID: "implement-session-" + verdict, ClientToken: "implement-token-" + verdict, ClaimantID: "run:implementer", WorkerID: "worker-implement", Agent: "claude", Lease: time.Minute, ExecutionTimeout: time.Hour})
+			if err != nil {
+				t.Fatal(err)
+			}
+			identity := core.WorkOrderClaimIdentity{WorkerID: claimed.WorkerID, ClaimantID: claimed.ClaimantID, SessionID: claimed.SessionID}
+			if _, err = st.RecordWorkOrderContinuation(ctx, claimed.ID, identity, core.WorkOrderContinuation{SessionID: "native-session", AttemptID: claimed.AttemptID, Harness: "claude", LaunchEnvironment: "worker-implement/env"}); err != nil {
+				t.Fatal(err)
+			}
+			// Submit the persisted row; the claim-time struct would overwrite
+			// the recorded continuation with empty values.
+			implement, err := st.GetWorkOrder(ctx, claimed.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			implement.State = core.WorkOrderSubmitted
+			if err = storetest.For(st).UpdateWorkOrder(ctx, implement, core.WorkOrderCmdSubmitForReview); err != nil {
+				t.Fatal(err)
+			}
+			submitted, err := st.GetWorkOrder(ctx, implement.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if submitted.State != core.WorkOrderSubmitted || submitted.ContinuationSessionID != "native-session" || submitted.ContinuationAttemptID != claimed.AttemptID ||
+				submitted.ContinuationHarness != "claude" || submitted.ContinuationLaunchEnvironment != "worker-implement/env" {
+				t.Fatalf("submitted implementation lost continuation before review acceptance: %+v", submitted)
+			}
+			before := countWorkOrderUpdates(t, st, ctx, task.ID, implement.ID)
+			reviewJob := core.Job{ID: task.ID + "-review-1-seat-1", TaskID: task.ID, Stage: core.StageReview, State: core.JobPending}
+			reviewOrder := core.WorkOrder{ID: reviewJob.ID, TaskID: task.ID, JobID: reviewJob.ID, Stage: core.StageReview, State: core.WorkOrderQueued, ReviewRound: 1, ReviewSeat: 1, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now}
+			if err = st.CreateJob(ctx, reviewJob); err != nil {
+				t.Fatal(err)
+			}
+			if err = storetest.For(st).CreateWorkOrder(ctx, reviewOrder); err != nil {
+				t.Fatal(err)
+			}
+			claimedReview, err := storetest.For(st).ClaimWorkOrder(ctx, reviewOrder.ID, core.WorkOrderClaim{SessionID: "review-session-" + verdict, ClientToken: "review-token-" + verdict, ClaimantID: "run:reviewer", WorkerID: "worker-review", Agent: "codex", Lease: time.Minute, ExecutionTimeout: time.Hour})
+			if err != nil {
+				t.Fatal(err)
+			}
+			decision := core.ReviewDecision{TaskID: task.ID, JobID: reviewJob.ID, ReviewWorkOrderID: reviewOrder.ID, ClaimSession: claimedReview.SessionID, ReviewRound: 1, ReviewSeat: 1, Verdict: verdict, ReasonCode: "approved", Summary: "accepted", PolicyVersion: 1, MaxBounces: 3}
+			if verdict == "changes_requested" {
+				decision.ReasonCode, decision.Feedback = "defect", "Fix the defect"
+			}
+			if err = storetest.For(st).AcceptReviewDecision(ctx, decision); err != nil {
+				t.Fatal(err)
+			}
+			persisted, err := st.GetWorkOrder(ctx, implement.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if persisted.State != core.WorkOrderSubmitted || persisted.ContinuationSessionID != "" || persisted.ContinuationAttemptID != "" || persisted.ContinuationHarness != "" || persisted.ContinuationLaunchEnvironment != "" {
+				t.Fatalf("submitted implementation continuation was not cleared: %+v", persisted)
+			}
+			if after := countWorkOrderUpdates(t, st, ctx, task.ID, implement.ID); after != before+1 {
+				t.Fatalf("implementation work_order.updated events before=%d after=%d, want one clearing event", before, after)
+			}
+		})
 	}
-	implementJob := core.Job{ID: task.ID + "-implement-1", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
-	if err = st.CreateJob(ctx, implementJob); err != nil {
-		t.Fatal(err)
-	}
-	if err = storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: implementJob.ID, TaskID: task.ID, JobID: implementJob.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now}); err != nil {
-		t.Fatal(err)
-	}
-	implement, err := storetest.For(st).ClaimWorkOrder(ctx, implementJob.ID, core.WorkOrderClaim{SessionID: "implement-session", ClientToken: "implement-token", ClaimantID: "run:implementer", WorkerID: "worker-implement", Agent: "codex", Lease: time.Minute, ExecutionTimeout: time.Hour})
+}
+
+func countWorkOrderUpdates(t *testing.T, st *Store, ctx context.Context, taskID, workOrderID string) int {
+	t.Helper()
+	events, err := st.ListEvents(ctx, taskID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	identity := core.WorkOrderClaimIdentity{WorkerID: implement.WorkerID, ClaimantID: implement.ClaimantID, SessionID: implement.SessionID}
-	if _, err = st.RecordWorkOrderContinuation(ctx, implement.ID, identity, core.WorkOrderContinuation{SessionID: "native-session", AttemptID: implement.AttemptID, Harness: "codex", LaunchEnvironment: "worker-implement/env"}); err != nil {
-		t.Fatal(err)
+	count := 0
+	for _, event := range events {
+		if event.Kind == "work_order.updated" && event.JobID == workOrderID {
+			count++
+		}
 	}
-	implement.State = core.WorkOrderSubmitted
-	if err = storetest.For(st).UpdateWorkOrder(ctx, implement, core.WorkOrderCmdSubmitForReview); err != nil {
-		t.Fatal(err)
-	}
-	reviewJob := core.Job{ID: task.ID + "-review-1-seat-1", TaskID: task.ID, Stage: core.StageReview, State: core.JobPending}
-	reviewOrder := core.WorkOrder{ID: reviewJob.ID, TaskID: task.ID, JobID: reviewJob.ID, Stage: core.StageReview, State: core.WorkOrderQueued, ReviewRound: 1, ReviewSeat: 1, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now}
-	if err = st.CreateJob(ctx, reviewJob); err != nil {
-		t.Fatal(err)
-	}
-	if err = storetest.For(st).CreateWorkOrder(ctx, reviewOrder); err != nil {
-		t.Fatal(err)
-	}
-	claimedReview, err := storetest.For(st).ClaimWorkOrder(ctx, reviewOrder.ID, core.WorkOrderClaim{SessionID: "review-session", ClientToken: "review-token", ClaimantID: "run:reviewer", WorkerID: "worker-review", Agent: "codex", Lease: time.Minute, ExecutionTimeout: time.Hour})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = storetest.For(st).AcceptReviewDecision(ctx, core.ReviewDecision{TaskID: task.ID, JobID: reviewJob.ID, ReviewWorkOrderID: reviewOrder.ID, ClaimSession: claimedReview.SessionID, ReviewRound: 1, ReviewSeat: 1, Verdict: "approve", ReasonCode: "approved", Summary: "accepted", PolicyVersion: 1, MergeApproval: false}); err != nil {
-		t.Fatal(err)
-	}
-	persisted, err := st.GetWorkOrder(ctx, implement.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if persisted.ContinuationSessionID != "" || persisted.ContinuationAttemptID != "" || persisted.ContinuationHarness != "" || persisted.ContinuationLaunchEnvironment != "" {
-		t.Fatalf("submitted implementation continuation was not cleared: %+v", persisted)
-	}
+	return count
 }
