@@ -124,6 +124,78 @@ export async function recordVerificationObservation(
   return response.json() as Promise<{ ID: string; EvidenceIDs: string[] }>
 }
 
+function verificationPermissionsPath(orderId: string) {
+  return `/v1/work-orders/${encodeURIComponent(orderId)}/verification/permissions`
+}
+
+/** A grant refusal; reason and recovery are present only for an authorized operator. */
+export class VerificationGrantRefusal extends Error {
+  constructor(
+    message: string,
+    readonly reason?: string,
+    readonly recovery?: string,
+  ) {
+    super(message)
+  }
+}
+
+async function verificationGrantRefusal(response: Response) {
+  const text = await response.text()
+  try {
+    const parsed = JSON.parse(text) as { error?: string; reason?: string; recovery?: string }
+    if (parsed.reason)
+      return new VerificationGrantRefusal(parsed.error || parsed.reason, parsed.reason, parsed.recovery)
+  } catch {
+    // Plain-text refusals carry no reason.
+  }
+  return new VerificationGrantRefusal(apiErrorMessage(text, response.statusText))
+}
+
+// Reads every page of one context projection (component-http-api VK-HTTP-8).
+export async function fetchVerificationPermissions(
+  workspace: string,
+  orderId: string,
+  input: { contextId?: string; grantId?: string } = {},
+  signal?: AbortSignal,
+) {
+  let view: import('./types').VerificationPermissionView | undefined
+  let cursor = ''
+  for (let page = 0; page < 400; page++) {
+    const query = new URLSearchParams({ limit: '50' })
+    if (input.contextId) query.set('context_id', input.contextId)
+    if (input.grantId) query.set('grant_id', input.grantId)
+    if (cursor) query.set('cursor', cursor)
+    const response = await fetch(workspaceURL(`${verificationPermissionsPath(orderId)}?${query}`, workspace), {
+      signal,
+    })
+    if (!response.ok) throw await verificationGrantRefusal(response)
+    const next = (await response.json()) as import('./types').VerificationPermissionView
+    if (!view) view = next
+    else {
+      view.subjects.push(...next.subjects)
+      view.grants.push(...next.grants)
+    }
+    if (!next.next_cursor || input.grantId) break
+    cursor = next.next_cursor
+  }
+  if (view) view.next_cursor = undefined
+  return view as import('./types').VerificationPermissionView
+}
+
+export async function sendVerificationPermissionRequest(
+  workspace: string,
+  orderId: string,
+  input: import('./types').VerificationPermissionRequest,
+) {
+  const response = await fetch(workspaceURL(verificationPermissionsPath(orderId), workspace), {
+    method: 'POST',
+    headers: mutationHeaders(),
+    body: JSON.stringify(input),
+  })
+  if (!response.ok) throw await verificationGrantRefusal(response)
+  return response.json() as Promise<{ ID: string }>
+}
+
 // The Board sends the shared Tasks/Board filter family to the same store
 // predicate the Tasks list uses (AC-2.4), so the two surfaces cannot narrow
 // differently and neither one narrows a fully-loaded workspace in the browser.
