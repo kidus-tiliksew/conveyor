@@ -428,21 +428,25 @@ function withDependencyContext(state: CurrentExecutionState, item: ActivityItem)
 // A Go time.Time JSON instant with its full fractional precision, so ordering
 // agrees with the store even where millisecond Date parsing would collapse two
 // creation times into one.
-const creationInstantPattern = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?(Z|[+-]\d{2}:\d{2})$/i
+const creationInstantPattern =
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?(?:Z|([+-])(\d{2}):(\d{2}))$/
 
+// Accepts only the field ranges Go's RFC 3339 parser accepts. Date arithmetic
+// would otherwise normalize an out-of-range field such as minute 60 into a
+// different, valid-looking instant.
 function creationInstant(value: string | undefined): { seconds: number; nanos: number } | undefined {
   const match = value ? creationInstantPattern.exec(value) : null
   if (!match) return undefined
-  const [, year, month, day, hour, minute, second, fraction = '', zone] = match
-  const date = new Date(0)
-  date.setUTCFullYear(Number(year), Number(month) - 1, Number(day))
-  date.setUTCHours(Number(hour), Number(minute), Number(second), 0)
-  if (Number.isNaN(date.getTime()) || date.getUTCDate() !== Number(day) || date.getUTCMonth() !== Number(month) - 1)
+  const [, year, month, day, hour, minute, second, fraction = '', sign, zoneHour = '0', zoneMinute = '0'] = match
+  const [y, mo, d, h, mi, s, zh, zm] = [year, month, day, hour, minute, second, zoneHour, zoneMinute].map(Number)
+  const lastDay = new Date(0)
+  lastDay.setUTCFullYear(y, mo, 0)
+  if (mo < 1 || mo > 12 || d < 1 || d > lastDay.getUTCDate() || h > 23 || mi > 59 || s > 59 || zh > 23 || zm > 59)
     return undefined
-  const offset =
-    zone.toUpperCase() === 'Z'
-      ? 0
-      : (zone.startsWith('-') ? -1 : 1) * (Number(zone.slice(1, 3)) * 3600 + Number(zone.slice(4, 6)) * 60)
+  const date = new Date(0)
+  date.setUTCFullYear(y, mo - 1, d)
+  date.setUTCHours(h, mi, s, 0)
+  const offset = (sign === '-' ? -1 : 1) * (zh * 3600 + zm * 60)
   return { seconds: date.getTime() / 1000 - offset, nanos: Number(fraction.padEnd(9, '0')) }
 }
 

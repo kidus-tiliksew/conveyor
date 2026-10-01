@@ -2788,6 +2788,79 @@ for (const { name, orders, nextStage, recoverable } of [
     recoverable: `${supersessionTaskId}-implement-1`,
   },
   {
+    name: 'a nanosecond-earlier successor with a greater ID',
+    orders: [stale('spec-a', '2026-09-28T09:00:00.123456789Z'), successor('spec-b', '2026-09-28T09:00:00.123456788Z')],
+    recoverable: `${supersessionTaskId}-spec-a`,
+  },
+  // Absent or invalid creation information establishes no ordering, so the
+  // existing derivation keeps recovery rather than normalizing a bad field.
+  {
+    name: 'a successor without a creation time',
+    orders: [
+      stale('spec-1', '2026-09-28T09:00:00Z'),
+      successor('spec-2', '2026-09-29T09:00:00Z', { created_at: undefined }),
+    ],
+    recoverable: `${supersessionTaskId}-spec-1`,
+  },
+  {
+    name: 'a predecessor without a creation time',
+    orders: [
+      stale('spec-1', '2026-09-28T09:00:00Z', { created_at: undefined }),
+      successor('spec-2', '2026-09-29T09:00:00Z'),
+    ],
+    recoverable: `${supersessionTaskId}-spec-1`,
+  },
+  {
+    name: 'a completed successor whose overflowing minutes would normalize later',
+    orders: [
+      stale('spec-1', '2026-09-28T09:30:00Z'),
+      successor('spec-2', '2026-09-28T09:60:00Z', { state: 'completed' }),
+    ],
+    recoverable: `${supersessionTaskId}-spec-1`,
+  },
+  {
+    name: 'a successor whose overflowing seconds would normalize later',
+    orders: [stale('spec-1', '2026-09-28T09:30:00Z'), successor('spec-2', '2026-09-28T09:30:60Z')],
+    recoverable: `${supersessionTaskId}-spec-1`,
+  },
+  {
+    name: 'a successor whose overflowing hour would normalize later',
+    orders: [stale('spec-1', '2026-09-28T09:30:00Z'), successor('spec-2', '2026-09-28T24:00:00Z')],
+    recoverable: `${supersessionTaskId}-spec-1`,
+  },
+  {
+    name: 'a successor whose invalid offset minutes would normalize later',
+    orders: [stale('spec-1', '2026-09-28T10:00:00Z'), successor('spec-2', '2026-09-28T09:00:00-02:60')],
+    recoverable: `${supersessionTaskId}-spec-1`,
+  },
+  {
+    name: 'a predecessor whose overflowing minutes would normalize earlier',
+    orders: [stale('spec-1', '2026-09-28T08:60:00Z'), successor('spec-2', '2026-09-28T09:30:00Z')],
+    recoverable: `${supersessionTaskId}-spec-1`,
+  },
+  {
+    name: 'a predecessor whose invalid offset hour would normalize earlier',
+    orders: [stale('spec-1', '2026-09-28T09:00:00+24:00'), successor('spec-2', '2026-09-28T08:00:00Z')],
+    recoverable: `${supersessionTaskId}-spec-1`,
+  },
+  {
+    name: 'a lowercase zone designator that Go rejects',
+    orders: [stale('spec-1', '2026-09-28T09:00:00Z'), successor('spec-2', '2026-09-29T09:00:00z')],
+    recoverable: `${supersessionTaskId}-spec-1`,
+  },
+  {
+    name: 'a nanosecond-later successor with a smaller ID',
+    orders: [stale('spec-b', '2026-09-28T09:00:00.123456788Z'), successor('spec-a', '2026-09-28T09:00:00.123456789Z')],
+  },
+  {
+    name: 'a successor on the day after a leap day',
+    orders: [stale('spec-1', '2024-02-29T23:59:59Z'), successor('spec-2', '2024-03-01T00:00:00Z')],
+  },
+  {
+    name: 'a predecessor at the largest offset Go accepts',
+    orders: [stale('spec-1', '2026-09-28T09:00:00+23:59'), successor('spec-2', '2026-09-28T09:00:00Z')],
+  },
+  {
     name: 'a timed-out predecessor with a queued successor',
     orders: [
       stale('spec-1', '2026-09-28T09:00:00Z', { state: 'timed_out' }),
