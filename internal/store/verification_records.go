@@ -320,12 +320,18 @@ func PrepareVerificationMutation(ctx context.Context, source redact.SecretSource
 		}
 		vc := verificationDecode[VerificationContext](r)
 		if vc.WorkOrderID != c.Access.WorkOrderID || vc.WorkOrderAttemptID != c.Access.WorkOrderAttemptID {
+			if VerificationPermissionCommand(c) {
+				return out, verificationRefuse(ErrVerificationAccess, VerificationRefusalContextStale)
+			}
 			return out, ErrVerificationAccess
 		}
 		if vc.SealedAt != nil {
 			if c.Kind == VerificationSeal && vc.Result != nil && c.Submission != nil && verificationEqual(vc.Result.Submission, *c.Submission) {
 				out.Receipt = VerificationReceipt{ID: vc.ID, State: vc.Result.Submission.Outcome}
 				return out, nil
+			}
+			if VerificationPermissionCommand(c) {
+				return out, verificationRefuse(ErrVerificationState, VerificationRefusalContextStale)
 			}
 			return out, ErrVerificationState
 		}

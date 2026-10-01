@@ -145,4 +145,62 @@ func runVerificationPermissions(t *testing.T, x Fixture) {
 			t.Fatalf("effective actions escalate grant: %v", err)
 		}
 	})
+	// VK-12.2 / VK-HTTP-8: an authorized operator receives a stable reason for
+	// every claim-window and request refusal, while the sentinel is unchanged.
+	t.Run("GrantRefusalReasons", func(t *testing.T) {
+		v := newVerificationFixture(t, x)
+		operator, owner := bootstrapOwner(t, x)
+		apply := func(contextID, key string, request store.VerificationPermissionRequest) (store.VerificationReceipt, string, error) {
+			request.ContextID, request.RequestKey = contextID, key
+			kind := store.VerificationGrantPermissions
+			if request.RevokeGrantID != "" {
+				kind = store.VerificationRevokePermissions
+			}
+			r, err := x.Backend.ApplyVerification(operator, store.VerificationCommand{Access: store.VerificationAccess{UserID: owner.ID, TaskID: v.access.TaskID, WorkOrderID: v.access.WorkOrderID}, Kind: kind, ContextID: contextID, Key: key, Permissions: &request})
+			reason, _, _, _ := store.VerificationRefusalDetail(err)
+			return r, reason, err
+		}
+		grant := store.VerificationPermissionRequest{Subject: v.subject, Actions: []core.VerificationPermission{}}
+		unregistered := grant
+		unregistered.Subject.ContractDigest = "unregistered"
+		if _, reason, err := apply(v.contextID, "unregistered", unregistered); reason != store.VerificationRefusalSubjectUnregistered || err == nil {
+			t.Fatalf("unregistered subject: %s %v", reason, err)
+		}
+		first, _, err := apply(v.contextID, "reasons", grant)
+		requireOK(t, err)
+		changed := grant
+		changed.Actions = []core.VerificationPermission{{Kind: "operator_interaction", Binding: "conveyor"}}
+		if _, reason, err := apply(v.contextID, "reasons", changed); reason != store.VerificationRefusalRequestConflict || !errors.Is(err, store.ErrVerificationConflict) {
+			t.Fatalf("changed request: %s %v", reason, err)
+		}
+		if _, reason, err := apply(v.contextID, "revoke-unknown", store.VerificationPermissionRequest{RevokeGrantID: v.contextID + ":absent", Reason: "fixture"}); reason != store.VerificationRefusalGrantUnknown || !errors.Is(err, store.ErrVerificationAccess) {
+			t.Fatalf("unknown revocation: %s %v", reason, err)
+		}
+		if _, _, err := apply(v.contextID, "revoke-blank", store.VerificationPermissionRequest{RevokeGrantID: first.ID}); !errors.Is(err, store.ErrVerificationInvalid) {
+			t.Fatalf("blank revocation reason: %v", err)
+		}
+		_, _, err = apply(v.contextID, "revoke", store.VerificationPermissionRequest{RevokeGrantID: first.ID, Reason: "fixture"})
+		requireOK(t, err)
+		if _, reason, err := apply(v.contextID, "reasons", grant); reason != store.VerificationRefusalGrantRevoked || err == nil {
+			t.Fatalf("revoked replay: %s %v", reason, err)
+		}
+		requireOK(t, func() error {
+			_, err := ReleaseWorkerClaim(x.Context, x.Backend, v.access.WorkOrderID, v.access.Claim.WorkerID, core.WorkOrderRelease{SessionID: v.access.Claim.SessionID, Reason: "fixture handoff"})
+			return err
+		}())
+		if _, reason, err := apply(v.contextID, "released", grant); reason != store.VerificationRefusalNotClaimed || !errors.Is(err, store.ErrVerificationAccess) {
+			t.Fatalf("released claim: %s %v", reason, err)
+		}
+		if _, err = RecoverWorkOrder(x.Context, x.Backend, v.access.WorkOrderID, "reasons-recover", time.Hour); err != nil {
+			t.Fatal(err)
+		}
+		claim := core.WorkOrderClaim{WorkerID: "worker", ClaimantID: "worker", SessionID: "successor", ClientToken: "successor-token", Lease: time.Hour, ExecutionTimeout: time.Hour}
+		claim.Requirements = []core.ServedRequirementContext{{ID: "req-fixture", Version: 1, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Observe the state", AcceptanceCriteria: []core.AcceptanceCriterion{{ID: "AC-1.1", Statement: "Retain the observation"}}}}}}
+		if _, err = ClaimWorkOrder(x.Context, x.Backend, v.access.WorkOrderID, claim); err != nil {
+			t.Fatal(err)
+		}
+		if _, reason, err := apply(v.contextID, "successor", grant); reason != store.VerificationRefusalContextStale || !errors.Is(err, store.ErrVerificationAccess) {
+			t.Fatalf("predecessor context: %s %v", reason, err)
+		}
+	})
 }

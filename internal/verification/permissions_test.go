@@ -3,6 +3,7 @@ package verification
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -85,5 +86,22 @@ func TestKitRequestedFilesystemCannotExpandToParent(t *testing.T) {
 	}
 	if err := ValidateRequestedActions(e, []VerificationPermission{{Kind: "filesystem_write", Binding: "repo", Target: "/checkout/output"}}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// VK-12.1: operator surfaces present the same action slots that
+// ValidateRequestedActions enforces, with no machine-specific targets.
+func TestActionRequirementsMatchValidation(t *testing.T) {
+	e := Exercise{Kind: "hybrid", Permissions: []Permission{{Kind: "network", TargetBinding: "api"}, {Kind: "filesystem_write", Path: "out"}}, Prerequisites: []Prerequisite{{ID: "token", Kind: "credential", EnvironmentBinding: "api-token"}}, Inputs: []Input{{Name: "secret", Sensitive: true}, {Name: "plain"}}}
+	want := []ActionRequirement{{Kind: "network", Binding: "api", Required: true}, {Kind: "filesystem_write", Path: "out", Required: true}, {Kind: "credential", Binding: "api-token", Required: true}, {Kind: "operator_interaction", Required: true}, {Kind: "credential", Binding: "secret"}}
+	if got := ActionRequirements(e); !reflect.DeepEqual(got, want) {
+		t.Fatalf("requirements: %+v", got)
+	}
+	actions := []VerificationPermission{{Kind: "network", Binding: "api", Target: "https://api.example.test:443"}, {Kind: "filesystem_write", Binding: "repo", Target: "/kits/out"}, {Kind: "credential", Binding: "api-token", Target: "CONVEYOR_KIT_SECRET_API"}, {Kind: "operator_interaction", Binding: "repo"}}
+	if err := ValidateRequestedActions(e, actions); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateRequestedActions(e, actions[1:]); err == nil {
+		t.Fatal("missing required network action accepted")
 	}
 }
