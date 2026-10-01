@@ -9,7 +9,10 @@ Authority: `req-verification-kits` v1 REQ-8/AC-8.1 and REQ-8/AC-8.4;
 `feature-verification-kit-execution` v5 VK-2 through VK-9, including VK-4.1,
 VK-5.1 and VK-7.1; DEC-29, DEC-40 and DEC-43. The `conveyor-kit` skill covers
 the full authoring contract. This playbook describes the shipped CLI and MCP
-protocol, including ordinary checks when no kit is selected.
+protocol, including ordinary checks when no kit is selected. The operator grant
+flow and the grant wait follow `req-verification-kits` v2 REQ-3/AC-3.2,
+REQ-7/AC-7.3 and REQ-8/AC-8.2 and `feature-verification-kit-execution` v9
+VK-12.
 
 ## Establish the exact context
 
@@ -28,7 +31,8 @@ protocol, including ordinary checks when no kit is selected.
    the exact forge revision. Never substitute local discovery for that receipt.
 4. Call `get_evidence_schemas` for current payload and provenance schemas.
    Register ordinary obligations and build coverage before execution. Obtain
-   operator-issued grants and inspect the local execution configuration.
+   operator-issued grants through the grant wait below and inspect the local
+   execution configuration.
 
 The runner needs launcher-provided `CONVEYOR_WORK_ORDER_ID`,
 `CONVEYOR_SESSION_ID`, `CONVEYOR_CLIENT_TOKEN` and explicit workspace context.
@@ -94,6 +98,71 @@ recorded coverage. If no checks apply, supply an explicit empty-set assessment
 with source dispositions and scope justification. Manifest absence alone is
 insufficient. The reviewer judges the adequacy of this interpretation under
 DEC-29; mechanical coverage validation does not infer all governing prose.
+
+## Operator grants and the claim-bound window
+
+An operator grant binds the context's workspace, task, order, claim attempt,
+revision set and subject contract digest. The server admits a grant only while
+this verify claim is live at the submitted head. Grants become possible after
+`prepare_verification` and, for an ordinary subject, after
+`register_verification_obligation`. Renewal keeps the window open without
+changing the attempt; the execution deadline stays fixed. Release, lease
+lapse, deadline expiry, a changed head and a successor claim close the window.
+A successor claim prepares a new context, and earlier grants never authorize
+it. Preparation, queued orders and manifests confer no permission.
+
+When a selected subject lacks a matching unrevoked grant, wait for it instead
+of releasing at once:
+
+1. Call `report_progress` naming the work-order ID, context ID, each subject
+   (`kit:<kit-id>/<exercise-id>` or `ordinary:<obligation-id>`) with its
+   declared action kinds and bindings, and the operator command
+   `conveyor verification permissions inspect <work-order-id>`.
+2. Keep renewing the claim. Reread `get_verification_context` at most every
+   30 seconds.
+3. Continue when every selected subject has a grant. Stop waiting when the
+   remaining execution time falls below the longest declared timeout among the
+   ungranted subjects plus ten minutes. Then record blocked outcomes that name
+   each missing grant and release at the operator checkpoint.
+
+Never issue, request through MCP or simulate a grant yourself. No MCP tool or
+worker route grants or revokes; only an authenticated operator user with
+`operate_gates` can.
+
+The operator works from the projection of
+`GET /v1/work-orders/{id}/verification/permissions`:
+
+```sh
+conveyor --server '<server>' --workspace '<workspace>' \
+  verification permissions inspect '<work-order-id>'
+conveyor --server '<server>' --workspace '<workspace>' \
+  verification permissions grant '<work-order-id>' \
+  --subject 'kit:<kit-id>/<exercise-id>' \
+  --action 'network:<binding>=https://<host>:<port>' \
+  --request-key '<stable-key>'
+conveyor --server '<server>' --workspace '<workspace>' \
+  verification permissions revoke '<work-order-id>' \
+  --grant-id '<grant-id>' --reason '<why>' --request-key '<stable-key>'
+```
+
+The task's Verify entry offers the same flow under Permissions. Both surfaces
+copy the exact subject and digests from the frozen context. They show the
+submitted revisions, the declared action kinds and bindings, the claim's lease
+expiry and fixed deadline, and whether a grant can be issued. A filesystem
+root, network origin or credential handle depends on the executing machine,
+so it stays unresolved until the operator supplies it. A subject without
+declared actions takes `--no-actions`, an explicit empty list. The operator
+reviews the exact request before sending it and reads the receipt back by
+grant ID. Reusing the request key after an uncertain response returns the same
+grant; a changed request under that key is refused.
+
+An authorized operator's refusal names a stable reason with recovery text:
+`not_claimed`, `claim_expired`, `head_changed`, `context_missing`,
+`context_stale`, `subject_unregistered`, `request_conflict`, `grant_unknown`
+or `grant_revoked`. Foreign and unauthorized callers receive a generic
+refusal. If the window closed before the grant arrived, the operator recovers
+the verify order; the next verifier claim prepares a new context and repeats
+the wait, and the operator grants against that context.
 
 ## Permission admission and invocation
 
