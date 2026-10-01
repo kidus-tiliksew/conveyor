@@ -40,6 +40,19 @@ const changedSentence = (section: number, paragraph: number, text: string) =>
 const heavyParagraph = (word: string) => `${word} `.repeat(235).trim()
 const heavySection = (title: string, word: string, count: number) =>
   `## ${title}\n\n${Array.from({ length: count }, (_, n) => `${heavyParagraph(word)} ${n}`).join('\n\n')}`
+// A changed pair of 621 tokens a side costs 622 x 622 = 386,884 token cells:
+// above the former 250,000-cell matrix guard, below the 500,000-cell section
+// budget, so it keeps detailed highlighting. The 1,621-token pair costs
+// 2,630,884 cells, above the 2,500,000-cell guard, and renders complete content
+// in its own block.
+const detailedCells = 622 * 622
+const oversizedCells = 1622 * 1622
+const guardParagraph = (side: 'base' | 'target') =>
+  `Shared opening for the matrix guard. ${(side === 'base' ? 'one ' : 'two ').repeat(300)}${side === 'base' ? 'Base' : 'Target'} detailed ending sentinel.`
+const oversizedParagraph = (side: 'base' | 'target') =>
+  `Shared opening for the oversized block. ${(side === 'base' ? 'one ' : 'two ').repeat(800)}${side === 'base' ? 'Base' : 'Target'} oversized ending sentinel.`
+const guardDocument = (side: 'base' | 'target') =>
+  `# Overview\n\nShared unchanged introduction.\n\n## Detailed revision\n\n${guardParagraph(side)}\n\n## Oversized block\n\n${oversizedParagraph(side)}\n\n## Sibling\n\nRenew every ${side === 'base' ? 30 : 10} seconds.\n\n## Stable\n\nSame.`
 
 test('review model preserves stable identifiers, headings, moves and bounded complete sources', () => {
   const before = {
@@ -94,7 +107,7 @@ test('review model preserves stable identifiers, headings, moves and bounded com
   expect(fallback.rightText).toBe(large)
   expect(fallback.rows).toEqual([])
   // One oversized paragraph pair takes its per-block fallback; the document keeps detailed comparison.
-  const single = compareDocuments({ content: 'one '.repeat(300) }, { content: 'two '.repeat(300) })
+  const single = compareDocuments({ content: 'one '.repeat(800) }, { content: 'two '.repeat(800) })
   expect(single.limited).toBe(false)
   expect(single.rows).toMatchObject([{ id: 'heading:Overview:1', changed: true, limited: false }])
   const formatted = formattedParagraphChanges(
@@ -122,7 +135,7 @@ test('review model preserves stable identifiers, headings, moves and bounded com
   expect(formattedParagraph('*unterminated')).toBeUndefined()
   expect(formattedParagraph('- list item')).toBeUndefined()
   expect(formattedParagraph('<script>window.injected = true</script>')).toBeUndefined()
-  expect(formattedParagraphChanges('one '.repeat(300), 'two '.repeat(300))).toBeUndefined()
+  expect(formattedParagraphChanges('one '.repeat(800), 'two '.repeat(800))).toBeUndefined()
   expect(paragraphCells('one '.repeat(300), 'one '.repeat(300))).toBe(0)
   expect(formattedParagraphChanges('one '.repeat(300), 'one '.repeat(300))).toEqual([
     { text: 'one '.repeat(300), kind: 'same', style: 'text' },
@@ -190,6 +203,70 @@ test('review model budgets renderer work per changed section', () => {
   const underCeiling = compareDocuments({ content: four('alpha') }, { content: four('beta') })
   expect(underCeiling.limited).toBe(false)
   expect(underCeiling.rows.every((row) => row.changed && !row.limited)).toBe(true)
+})
+
+test('review model consumers share the 2,500,000-cell matrix guard', () => {
+  // Plain 300-word pairs cost 601 x 601 = 361,201 cells; 800-word pairs cost 1601 x 1601 = 2,563,201.
+  expect(paragraphCells('one '.repeat(300), 'two '.repeat(300))).toBe(601 * 601)
+  expect(paragraphCells('one '.repeat(800), 'two '.repeat(800))).toBe(0)
+  // Separating spaces match, so each word is removed and replaced in place.
+  expect(wordChanges('one '.repeat(300), 'two '.repeat(300))).toEqual(
+    Array.from({ length: 300 }, () => [
+      { text: 'one', kind: 'removed' },
+      { text: 'two', kind: 'added' },
+      { text: ' ', kind: 'same' },
+    ]).flat(),
+  )
+  expect(wordChanges('one '.repeat(800), 'two '.repeat(800))).toBeUndefined()
+
+  expect(paragraphCells(guardParagraph('base'), guardParagraph('target'))).toBe(detailedCells)
+  expect(detailedCells).toBeGreaterThan(250_000)
+  expect(detailedCells).toBeLessThan(500_000)
+  const detailed = formattedParagraphChanges(guardParagraph('base'), guardParagraph('target'))
+  expect(detailed).toContainEqual({ text: 'Shared opening for the matrix guard. ', kind: 'same', style: 'text' })
+  expect(detailed).toContainEqual({ text: 'Target', kind: 'added', style: 'text' })
+  expect(detailed).toContainEqual({ text: 'Base', kind: 'removed', style: 'text' })
+  expect(paragraphCells(oversizedParagraph('base'), oversizedParagraph('target'))).toBe(0)
+  expect(oversizedCells).toBeGreaterThan(2_500_000)
+  expect(formattedParagraphChanges(oversizedParagraph('base'), oversizedParagraph('target'))).toBeUndefined()
+
+  // Formatted-inline pairs: a styled run on both sides of the guard.
+  const styled = (words: number, word: string) => `Use \`renew\` and **${word}**. ${`${word} `.repeat(words)}`
+  expect(formattedParagraphChanges(styled(300, 'slow'), styled(300, 'fast'))).toContainEqual({
+    text: 'fast',
+    kind: 'added',
+    style: 'strong',
+  })
+  expect(formattedParagraphChanges(styled(800, 'slow'), styled(800, 'fast'))).toBeUndefined()
+
+  // Paragraph alignment: 600 paragraphs a side (361,201 cells) align; 1,600
+  // paragraphs a side (2,563,201 cells) return the complete sources as one pair.
+  const numbered = (prefix: string, count: number) =>
+    Array.from({ length: count }, (_, n) => `${prefix}${n}`).join('\n\n')
+  const aligned = alignedParagraphs(numbered('a', 600), numbered('a', 599))
+  expect(aligned).toHaveLength(600)
+  expect(aligned.at(-1)).toEqual({ before: 'a599', after: undefined })
+  expect(alignedParagraphs(numbered('a', 1600), numbered('b', 1600))).toEqual([
+    { before: numbered('a', 1600), after: numbered('b', 1600) },
+  ])
+  const sectionOf = (count: number, prefix: string) => `## Many\n\n${numbered(prefix, count)}`
+  const manyAligned = compareDocuments({ content: sectionOf(600, 'a') }, { content: sectionOf(600, 'b') })
+  expect(manyAligned.rows).toMatchObject([{ title: 'Many', changed: true, limited: false }])
+  const manyLimited = compareDocuments({ content: sectionOf(1600, 'a') }, { content: sectionOf(1600, 'b') })
+  expect(manyLimited.rows).toMatchObject([{ title: 'Many', changed: true, limited: true }])
+
+  // The guard document keeps detailed comparison: only the detailed pair adds
+  // token cells, so the section and document budgets are not what decides it.
+  const guard = compareDocuments({ content: guardDocument('base') }, { content: guardDocument('target') })
+  expect(guard.limited).toBe(false)
+  expect(guard.rows.map(({ title, changed, limited }) => ({ title, changed, limited }))).toEqual([
+    { title: 'Overview', changed: false, limited: false },
+    { title: 'Detailed revision', changed: true, limited: false },
+    { title: 'Oversized block', changed: true, limited: false },
+    { title: 'Sibling', changed: true, limited: false },
+    { title: 'Stable', changed: false, limited: false },
+  ])
+  expect(guardDocument('base').length + guardDocument('target').length).toBe(9366)
 })
 
 import type { Page } from '@playwright/test'
@@ -625,6 +702,58 @@ for (const tier of ['requirements', 'system-design'] as const) {
     await expect(sibling.locator('ins').filter({ hasText: '10' })).toBeVisible()
     await page.screenshot({ path: testInfo.outputPath(`${tier}-section-local-fallback.png`), fullPage: true })
   })
+
+  test(`${tier}: paragraph pairs above the former matrix guard keep highlighting and navigation`, async ({
+    page,
+  }, testInfo) => {
+    const seed = await seedReview(page, tier, {
+      baseContent: guardDocument('base'),
+      targetContent: guardDocument('target'),
+    })
+    await page.goto(seed.url)
+    const comparison = page.getByRole('region', { name: 'Version comparison', exact: true })
+    const navigator = page.getByRole('navigation', { name: 'Changed sections' })
+    const detailed = comparison.getByRole('region', { name: 'Detailed revision', exact: true })
+    const oversized = comparison.getByRole('region', { name: 'Oversized block', exact: true })
+    const sibling = comparison.getByRole('region', { name: 'Sibling', exact: true })
+    await expect(comparison).not.toContainText('Diff too large')
+    await expect(navigator.getByRole('button', { name: /^(Detailed revision|Oversized block|Sibling)$/ })).toHaveText([
+      'Detailed revision',
+      'Oversized block',
+      'Sibling',
+    ])
+    for (const mode of ['Inline', 'Side by side'] as const) {
+      await page.getByRole('button', { name: mode, exact: true }).click()
+      await expect(page.getByRole('button', { name: mode, exact: true })).toHaveAttribute('aria-pressed', 'true')
+      // 386,884 token cells: detailed highlighting above the former 250,000-cell guard.
+      await expect(detailed).not.toContainText('Detailed highlighting unavailable')
+      await expect(detailed.locator('ins').filter({ hasText: /^two$/ })).toHaveCount(300)
+      await expect(detailed.locator('del').filter({ hasText: /^one$/ })).toHaveCount(300)
+      await expect(detailed.locator('ins').filter({ hasText: /^Target$/ })).toBeVisible()
+      await expect(detailed.locator('del').filter({ hasText: /^Base$/ })).toBeVisible()
+      await expect(detailed).toContainText('detailed ending sentinel.')
+      // 2,630,884 token cells: above the 2,500,000-cell guard, complete content in its own block.
+      await expect(oversized).toContainText('Detailed highlighting unavailable for this block')
+      await expect(oversized).toContainText(oversizedParagraph('base'))
+      await expect(oversized).toContainText(oversizedParagraph('target'))
+      await expect(oversized).toContainText('Base oversized ending sentinel.')
+      await expect(oversized).toContainText('Target oversized ending sentinel.')
+      await expect(oversized.locator('ins, del')).toHaveCount(0)
+      await expect(sibling.locator('ins').filter({ hasText: '10' })).toBeVisible()
+      await navigator.getByRole('button', { name: 'Sibling', exact: true }).click()
+      await expect(sibling).toBeFocused()
+      await navigator.getByRole('button', { name: 'Detailed revision', exact: true }).click()
+      await expect(detailed).toBeFocused()
+      await page.getByRole('button', { name: 'Next', exact: true }).click()
+      await expect(oversized).toBeFocused()
+      await page.getByRole('button', { name: 'Previous', exact: true }).click()
+      await expect(detailed).toBeFocused()
+      await page.screenshot({
+        path: testInfo.outputPath(`${tier}-matrix-guard-${mode === 'Inline' ? 'inline' : 'side-by-side'}.png`),
+        fullPage: true,
+      })
+    }
+  })
 }
 
 for (const tier of ['requirements', 'system-design'] as const) {
@@ -677,3 +806,199 @@ for (const tier of ['requirements', 'system-design'] as const) {
     expect(seed.calls).toHaveLength(0)
   })
 }
+
+// Records Chromium timing and heap observations for the representative guard
+// comparison. Durations depend on the host, so they are attached as evidence
+// rather than asserted.
+test('system-design: guard comparison timing and heap observations', async ({ page, browser }, testInfo) => {
+  const samples = 10
+  const seed = await seedReview(page, 'system-design', {
+    baseContent: guardDocument('base'),
+    targetContent: guardDocument('target'),
+  })
+  await page.goto(seed.url)
+  const detailedSelector = 'section[aria-label="Detailed revision"]'
+  await expect(page.locator(`${detailedSelector} ins`).first()).toBeVisible()
+  const cdp = await page.context().newCDPSession(page)
+  const heap = async (collect: boolean) => {
+    if (collect) await cdp.send('HeapProfiler.collectGarbage')
+    return cdp.send('Runtime.getHeapUsage')
+  }
+  const heapBefore = await heap(true)
+
+  // Model work the renderer performs, executed in the browser through the dev server's module graph.
+  const model = await page.evaluate(
+    async ({ base, target, samples }) => {
+      const path = '/src/components/documents/document-review-model.ts'
+      const m = (await import(
+        /* @vite-ignore */ path
+      )) as typeof import('../src/components/documents/document-review-model')
+      const time = (work: () => void) =>
+        Array.from({ length: samples }, () => {
+          const start = performance.now()
+          work()
+          return performance.now() - start
+        })
+      const comparison = m.compareDocuments({ content: base }, { content: target })
+      const changed = comparison.rows.filter((row) => row.changed && !row.limited)
+      const detailedPair = m.reviewRowParagraphs(comparison.rows.find((row) => row.title === 'Detailed revision')!)[0]
+      return {
+        compareDocuments: time(() => m.compareDocuments({ content: base }, { content: target })),
+        renderParagraphs: time(() => {
+          for (const row of changed)
+            for (const pair of m.reviewRowParagraphs(row))
+              m.formattedParagraphChanges(pair.before ?? '', pair.after ?? '')
+        }),
+        detailedPair: time(() => m.formattedParagraphChanges(detailedPair.before ?? '', detailedPair.after ?? '')),
+      }
+    },
+    { base: guardDocument('base'), target: guardDocument('target'), samples },
+  )
+  const heapAfterModel = await heap(false)
+
+  // Click inside the page and resolve when the DOM satisfies `ready`, then after the next frame.
+  const measureClick = (button: string, ready: string) =>
+    page.evaluate(
+      ({ button, ready }) =>
+        new Promise<{ dom: number; frame: number }>((resolve, reject) => {
+          const target = [...document.querySelectorAll<HTMLElement>('[role="tab"], button')].find(
+            (node) => node.textContent?.trim().toLowerCase() === button,
+          )
+          if (!target) return reject(new Error(`missing ${button}`))
+          const check = () => {
+            const section = document.querySelector('section[aria-label="Detailed revision"]')
+            if (!section) return false
+            if (ready === 'highlighted') return section.querySelector('ins') !== null
+            const labeled = [...section.querySelectorAll('p')].some((node) => node.textContent === 'Base')
+            return ready === 'side' ? labeled : !labeled && section.querySelector('ins') !== null
+          }
+          const start = performance.now()
+          const finish = () => {
+            const dom = performance.now() - start
+            requestAnimationFrame(() => setTimeout(() => resolve({ dom, frame: performance.now() - start })))
+          }
+          const observer = new MutationObserver(() => {
+            if (!check()) return
+            observer.disconnect()
+            finish()
+          })
+          observer.observe(document.body, { childList: true, subtree: true, attributes: true })
+          target.click()
+          if (check()) {
+            observer.disconnect()
+            finish()
+          }
+        }),
+      { button, ready },
+    )
+  const readiness = []
+  for (let n = 0; n < samples; n++) {
+    await page.getByRole('tab', { name: 'document', exact: true }).click()
+    await expect(page.locator(detailedSelector)).toHaveCount(0)
+    readiness.push(await measureClick('changes', 'highlighted'))
+  }
+  const modeSwitch = []
+  for (let n = 0; n < samples; n++) {
+    const side = n % 2 === 0
+    modeSwitch.push({
+      to: side ? 'side' : 'inline',
+      ...(await measureClick(side ? 'side by side' : 'inline', side ? 'side' : 'inline')),
+    })
+  }
+  const heapAfterUi = await heap(false)
+  const heapAfterCollect = await heap(true)
+  await cdp.detach()
+
+  const summary = (values: number[]) => {
+    const sorted = [...values].sort((a, b) => a - b)
+    const middle = sorted.length >> 1
+    return {
+      samples: values.length,
+      durations_ms: values,
+      median_ms: sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2,
+      max_ms: sorted.at(-1),
+    }
+  }
+  const base = guardDocument('base')
+  const target = guardDocument('target')
+  const comparison = compareDocuments({ content: base }, { content: target })
+  const os = await import('node:os')
+  const measurements = {
+    fixture: {
+      characters: { base: base.length, target: target.length, total: base.length + target.length },
+      blocks: { base: reviewBlocks({ content: base }).length, target: reviewBlocks({ content: target }).length },
+      limits: {
+        characters: 120_000,
+        blocks: 400,
+        matrix_cells: 2_500_000,
+        section_cells: 500_000,
+        document_cells: 2_000_000,
+      },
+      token_cells: Object.fromEntries(
+        comparison.rows
+          .filter((row) => row.changed)
+          .map((row) => [
+            row.title,
+            reviewRowParagraphs(row).reduce(
+              (sum, pair) => sum + paragraphCells(pair.before ?? '', pair.after ?? ''),
+              0,
+            ),
+          ]),
+      ),
+      detailed_pair_cells: detailedCells,
+      oversized_pair_cells: oversizedCells,
+      alignment_cells_per_single_paragraph_section: 4,
+      document_limited: comparison.limited,
+    },
+    model_ms: {
+      compare_documents: summary(model.compareDocuments),
+      render_changed_paragraphs: summary(model.renderParagraphs),
+      detailed_pair_formatted_changes: summary(model.detailedPair),
+    },
+    ui_ms: {
+      initial_comparison_readiness_dom: summary(readiness.map((sample) => sample.dom)),
+      initial_comparison_readiness_next_frame: summary(readiness.map((sample) => sample.frame)),
+      mode_switch_dom: summary(modeSwitch.map((sample) => sample.dom)),
+      mode_switch_next_frame: summary(modeSwitch.map((sample) => sample.frame)),
+      mode_switch_directions: modeSwitch.map((sample) => sample.to),
+    },
+    heap_bytes: {
+      note: 'Runtime.getHeapUsage observations of the JS heap at the listed points; deltas are not peak allocation.',
+      before_after_gc: heapBefore,
+      after_model_samples: heapAfterModel,
+      after_ui_samples: heapAfterUi,
+      after_ui_samples_after_gc: heapAfterCollect,
+    },
+    matrix_estimate_bytes: {
+      note: 'Uint32Array storage only, before row objects and token arrays.',
+      detailed_pair: detailedCells * 4,
+      matrix_guard: 2_500_000 * 4,
+    },
+    environment: {
+      browser: browser.browserType().name(),
+      browser_version: browser.version(),
+      viewport: page.viewportSize(),
+      host: {
+        platform: os.platform(),
+        release: os.release(),
+        arch: os.arch(),
+        cpu: os.cpus()[0]?.model,
+        cpus: os.cpus().length,
+        memory_bytes: os.totalmem(),
+        node: process.version,
+      },
+      playwright_workers: process.env.PLAYWRIGHT_WORKERS ?? '2',
+    },
+  }
+  expect(measurements.fixture.token_cells).toEqual({
+    'Detailed revision': detailedCells,
+    'Oversized block': 0,
+    Sibling: 9 * 9,
+  })
+  expect(readiness).toHaveLength(samples)
+  expect(modeSwitch).toHaveLength(samples)
+  const output = testInfo.outputPath('guard-comparison-measurements.json')
+  const { writeFile } = await import('node:fs/promises')
+  await writeFile(output, `${JSON.stringify(measurements, null, 2)}\n`)
+  await testInfo.attach('guard-comparison-measurements', { path: output, contentType: 'application/json' })
+})
