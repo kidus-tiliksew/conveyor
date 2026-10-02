@@ -2,7 +2,9 @@ package main
 
 import (
 	"crypto/sha256"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -24,6 +26,44 @@ var kitDefaultSearchPaths = []string{"/usr/local/bin", "/usr/bin", "/bin"}
 // input or credential fields may supply them.
 var kitRunnerEnvironmentKeys = []string{"CONVEYOR_KIT_OPERATIONS", "CONVEYOR_KIT_ATTEMPT_DIR", "CONVEYOR_KIT_UI_HOST", "CONVEYOR_KIT_UI_PORT"}
 
+// kitOperatorConfigSources are the local configuration sources an operator
+// selects explicitly or by user default. Only these may select a
+// verification_toolchains record (feature-verification-kit-execution VK-4.2;
+// req-verification-kits REQ-7/AC-7.3).
+var kitOperatorConfigSources = map[string]bool{"flag": true, "environment CONVEYOR_CONFIG": true, "user default": true}
+
+// kitToolchainConfigRefusal explains why verification_toolchains records in
+// the loaded configuration cannot select a profile, or returns "" when an
+// operator selected a file outside every checkout input. A working-directory
+// conveyor.yaml or any file inside the verified checkout is repository content,
+// so it can never widen PATH, HOME or tool settings. Other configuration keeps
+// its existing precedence.
+func kitToolchainConfigRefusal(path, source string, checkouts []string) string {
+	if !kitOperatorConfigSources[source] {
+		if source == "" {
+			source = "an unidentified source"
+		}
+		return fmt.Sprintf("was loaded from %s, not operator-selected configuration", source)
+	}
+	resolved, err := filepath.EvalSymlinks(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return ""
+	}
+	if err != nil {
+		return "cannot be located outside the verified checkout"
+	}
+	for _, checkout := range checkouts {
+		if real, e := filepath.EvalSymlinks(checkout); e == nil {
+			checkout = real
+		}
+		rel, e := filepath.Rel(checkout, resolved)
+		if e == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return "is repository content inside the verified checkout"
+		}
+	}
+	return ""
+}
+
 // kitToolchain is the immutable toolchain snapshot resolved once per subject.
 // Executable lookup, preflight, provenance and launch all read this value
 // (feature-verification-kit-execution VK-4.2; component-harness-execution
@@ -41,12 +81,22 @@ type kitResolvedTool struct {
 	role, label, name, path, digest string
 }
 
-// kitToolResolution holds the executable identities chosen by preflight. Launch
-// and the post-execution check compare against these exact paths and digests.
+// kitConfiguredLocation is the preflight identity of one explicitly configured
+// toolchain location. A file carries its content digest; a directory carries
+// only its resolved path and inode because tools legitimately change contents.
+type kitConfiguredLocation struct {
+	field, path, resolved, identity, digest string
+	file                                    bool
+}
+
+// kitToolResolution holds the executable identities and configured-location
+// fingerprints chosen by preflight. Launch and the post-execution check compare
+// against these exact paths and digests.
 type kitToolResolution struct {
 	entrypoint    *kitResolvedTool
 	prerequisites []kitResolvedTool
 	ui            *kitResolvedTool
+	configuration []kitConfiguredLocation
 }
 
 // kitPreflightError is a predictable refusal before any attempt exists. Its
@@ -60,8 +110,10 @@ func kitDefaultToolchain() kitToolchain {
 }
 
 // resolveKitToolchain selects the scoped record or the minimal default. A
-// configured value equal to a credential value is refused without echo.
-func resolveKitToolchain(cfg *config.Config, configPath, server, workspace, repository string, secrets []string) (kitToolchain, error) {
+// record from configuration that is not operator-selected (refusal non-empty)
+// is refused before any attempt. A configured value equal to a credential value
+// is refused without echo.
+func resolveKitToolchain(cfg *config.Config, configPath, refusal, server, workspace, repository string, secrets []string) (kitToolchain, error) {
 	t := kitDefaultToolchain()
 	t.configPath, t.server, t.workspace, t.repository = configPath, server, workspace, repository
 	if cfg == nil {
@@ -73,6 +125,9 @@ func resolveKitToolchain(cfg *config.Config, configPath, server, workspace, repo
 	}
 	if record == nil {
 		return t, nil
+	}
+	if refusal != "" {
+		return kitToolchain{}, &kitPreflightError{message: fmt.Sprintf("toolchain preflight refused: the verification_toolchains record for server %s workspace %s repository %s in %s %s; no attempt was started; remedy: move the record to operator configuration outside the checkout and select it with --config, CONVEYOR_CONFIG or the user default", server, workspace, repository, configPath, refusal)}
 	}
 	t.configured, t.searchPaths, t.home, t.settings = true, record.SearchPaths, record.Home, record.Settings
 	values := map[string]string{"home": t.home}
@@ -274,6 +329,13 @@ func (t kitToolchain) preflight(subject string, e verification.Exercise, cwd str
 				return out, t.refuse(subject, fmt.Sprintf("verification_toolchains settings.%s %s", key, err.Error()))
 			}
 		}
+		for _, location := range t.configuredLocations() {
+			fingerprinted, err := location.fingerprint(redactor)
+			if err != nil {
+				return out, t.refuse(subject, fmt.Sprintf("verification_toolchains %s %s", location.field, err.Error()))
+			}
+			out.configuration = append(out.configuration, fingerprinted)
+		}
 	}
 	resolve := func(role, label, name, dir string) (*kitResolvedTool, error) {
 		path, err := t.lookPath(name, dir)
@@ -366,8 +428,77 @@ func (r kitToolResolution) tools() []kitResolvedTool {
 	return all
 }
 
-// recheck re-resolves every preflight identity through the same snapshot. A
-// changed path or digest refuses the launch or invalidates the result.
+// kitMaxConfigurationFile bounds a fingerprinted configuration file.
+const kitMaxConfigurationFile = 1 << 20
+
+// configuredLocations lists the explicitly configured configuration locations
+// whose identity is fixed for the attempt: HOME, GOROOT, XDG_CONFIG_HOME and a
+// GOENV file. Caches and GOPATH are excluded because tools create and fill
+// them; their contents and other transitive inputs remain unknown.
+func (t kitToolchain) configuredLocations() []kitConfiguredLocation {
+	var out []kitConfiguredLocation
+	if t.home != "" {
+		out = append(out, kitConfiguredLocation{field: "home", path: t.home})
+	}
+	for _, key := range []string{"GOENV", "GOROOT", "XDG_CONFIG_HOME"} {
+		value, ok := t.settings[key]
+		if !ok || (key == "GOENV" && value == "off") {
+			continue
+		}
+		out = append(out, kitConfiguredLocation{field: "settings." + key, path: value, file: key == "GOENV"})
+	}
+	return out
+}
+
+// fingerprint resolves the location and records its identity. A configuration
+// file's content is read once, refused when it carries a credential value or
+// credential pattern, and digested; credentials therefore never reach a child
+// through tool configuration, and the digest is not a credential-value hash.
+func (l kitConfiguredLocation) fingerprint(redactor *redact.Redactor) (kitConfiguredLocation, error) {
+	resolved, err := filepath.EvalSymlinks(l.path)
+	if err != nil {
+		return l, fmt.Errorf("cannot be resolved")
+	}
+	info, err := os.Stat(resolved)
+	if err != nil || info.Mode().IsRegular() != l.file || (!l.file && !info.IsDir()) {
+		return l, fmt.Errorf("is not the expected file type")
+	}
+	l.resolved, l.identity = resolved, kitFileIdentity(info)
+	if !l.file {
+		return l, nil
+	}
+	f, err := os.Open(resolved)
+	if err != nil {
+		return l, fmt.Errorf("is not a readable file")
+	}
+	defer func() { _ = f.Close() }()
+	content, err := io.ReadAll(io.LimitReader(f, kitMaxConfigurationFile+1))
+	if err != nil {
+		return l, fmt.Errorf("is not a readable file")
+	}
+	if len(content) > kitMaxConfigurationFile {
+		return l, fmt.Errorf("exceeds %d bytes", kitMaxConfigurationFile)
+	}
+	if redactor != nil {
+		if clean, _ := redactor.Redact(string(content)); clean != string(content) {
+			return l, fmt.Errorf("contains a credential value; deliver credentials only through approved CONVEYOR_KIT_SECRET_* grants")
+		}
+	}
+	l.digest = fmt.Sprintf("%x", sha256.Sum256(content))
+	return l, nil
+}
+
+func kitFileIdentity(info os.FileInfo) string {
+	identity := info.Mode().Type().String()
+	if st, ok := info.Sys().(*syscall.Stat_t); ok {
+		identity += fmt.Sprintf(":%d:%d", st.Dev, st.Ino)
+	}
+	return identity
+}
+
+// recheck re-resolves every preflight identity through the same snapshot and
+// re-fingerprints every configured location. A changed path, digest or
+// configured identity refuses the launch or invalidates the result.
 func (r kitToolResolution) recheck(t kitToolchain, cwd, uiRoot string) error {
 	for _, tool := range r.tools() {
 		dir := cwd
@@ -383,6 +514,12 @@ func (r kitToolResolution) recheck(t kitToolchain, cwd, uiRoot string) error {
 			return fmt.Errorf("%s changed after preflight", tool.label)
 		}
 	}
+	for _, location := range r.configuration {
+		current, err := kitConfiguredLocation{field: location.field, path: location.path, file: location.file}.fingerprint(nil)
+		if err != nil || current.resolved != location.resolved || current.identity != location.identity || current.digest != location.digest {
+			return fmt.Errorf("configured toolchain %s changed after preflight", location.field)
+		}
+	}
 	return nil
 }
 
@@ -391,8 +528,9 @@ func kitFingerprint(value string) string {
 }
 
 // attributes records the selected scope, search order, HOME mode, setting
-// fingerprints and resolved executable identities. Credential values never
-// enter configuration, so no credential value or hash is recorded.
+// fingerprints, configuration-file digests and resolved executable identities.
+// Credential values never enter configuration, so no credential value or hash
+// is recorded. Directory contents stay explicitly unknown.
 func (t kitToolchain) attributes(r kitToolResolution) map[string]string {
 	out := map[string]string{"toolchain_scope": t.scope(), "toolchain_search_path": t.searchPath(), "toolchain_home": "attempt", "transitive_dependencies": "unknown"}
 	if t.home != "" {
@@ -408,6 +546,14 @@ func (t kitToolchain) attributes(r kitToolResolution) map[string]string {
 	for _, tool := range r.tools() {
 		out[tool.role+"_path"] = tool.path
 		out[tool.role+"_sha256"] = tool.digest
+	}
+	for _, location := range r.configuration {
+		if location.file {
+			out["toolchain_config_"+strings.TrimPrefix(location.field, "settings.")+"_sha256"] = location.digest
+		}
+	}
+	if len(r.configuration) > 0 {
+		out["toolchain_directory_contents"] = "unknown"
 	}
 	return out
 }

@@ -191,6 +191,14 @@ workspace and repository (VK-4.2). The default is
 `HOME` and `TMPDIR`. Repository content, workspace or task policy, and the
 parent environment cannot select, create or widen a record.
 
+Records are honored only from operator-selected configuration: the file named
+by `--config`, by `CONVEYOR_CONFIG`, or the user default, located outside the
+verified checkout. A working-directory `conveyor.yaml` keeps its existing
+precedence for other settings, but a matching `verification_toolchains` record
+in it, or in any configuration file inside the checkout, is refused with
+`toolchain preflight refused` before any attempt starts. The remedy moves the
+record to operator configuration outside the checkout.
+
 ```yaml
 verification_toolchains:
   - server: https://conveyor.example
@@ -223,14 +231,19 @@ the runner preflights each subject. It resolves the entrypoint, every
 `executable` prerequisite and a requested UI entrypoint through the snapshot.
 For a configured record it also checks the search directories, `home`,
 `GOROOT`, the `GOENV` file and `XDG_CONFIG_HOME`, and each configured cache
-location that already exists. A failure prints `toolchain preflight refused`
+location that already exists. It fingerprints the `GOENV` file's content and
+file identity and the resolved identity of `home`, `GOROOT` and
+`XDG_CONFIG_HOME`; a `GOENV` file containing a credential value or credential
+pattern is refused, because credentials travel only through approved
+`CONVEYOR_KIT_SECRET_*` handles. A failure prints `toolchain preflight refused`
 with the subject, the failed prerequisite or configuration field, the search
 path and the `verification_toolchains` remedy. It starts no attempt, registers
 no operation, launches no child and reports no execution. Report that
 diagnostic and the operator act it names. With a matching unrevoked grant, it
 is the runner's admission refusal for that subject (VK-13.2
-`admission_refused`). A tool that changes after preflight or during execution
-blocks the attempt through the existing outcome path.
+`admission_refused`). A tool or fingerprinted configured location that changes
+after preflight or during execution blocks the attempt through the existing
+outcome path.
 
 A configured `home` exposes operator-approved tool configuration and can make
 caches shared between runs. A configured directory is neither a filesystem or
@@ -269,11 +282,14 @@ environment, approved bindings, JSON `CONVEYOR_KIT_INPUTS`, and a private
 `CONVEYOR_KIT_ATTEMPT_DIR`. Each child environment key is unique; a collision
 with a toolchain or runner key is refused. Evidence environment attributes
 record the toolchain scope and search path, the `HOME` mode, fingerprints of
-`home` and setting values, the child environment key names, and the resolved
-entrypoint, prerequisite and UI paths with SHA-256 digests. The runner checks
-those identities again after execution. No credential value or credential
-hash is recorded. Transitive dependencies and deployment/external state stay
-`unknown`.
+`home` and setting values, the `GOENV` content digest
+(`toolchain_config_GOENV_sha256`), the child environment key names, and the
+resolved entrypoint, prerequisite and UI paths with SHA-256 digests. The runner
+checks those identities and configured locations again after execution and
+records `toolchain_after` as `unchanged` or `changed`. No credential value or
+credential hash is recorded. Configured directory contents
+(`toolchain_directory_contents`), transitive dependencies and
+deployment/external state stay `unknown`.
 
 ## Evidence and success
 

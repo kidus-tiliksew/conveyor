@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,14 +14,17 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/verification"
+	"gopkg.in/yaml.v3"
 )
 
 // toolchainHost is a synthetic host: a Homebrew-shaped prefix whose bin entry
 // is a symlink into Cellar, a custom Go bin, an operator HOME with config, and
 // an absent cache. No installed package manager or real user HOME is used.
 type toolchainHost struct {
-	dir, brew, cellarTool, gobin, gopath, home, xdg, cache, observed string
+	dir, brew, cellarTool, gobin, gopath, home, xdg, goenv, cache, observed string
 }
+
+const toolchainGoenv = "GOFLAGS=-mod=mod\n"
 
 const toolchainMainScript = `#!/bin/sh
 env > "$1/main.env"
@@ -31,15 +35,18 @@ fi
 if [ "$2" = mutate ]; then
 	printf 'exit 0\n' >> "$3"
 fi
+if [ "$2" = replace ]; then
+	cp "$3" "$3.new" && mv "$3.new" "$3"
+fi
 fixture-lint > "$1/lint.out" || exit 3
 `
 
 func newToolchainHost(t *testing.T) toolchainHost {
 	t.Helper()
 	dir := t.TempDir()
-	h := toolchainHost{dir: dir, brew: filepath.Join(dir, "opt/homebrew/bin"), gopath: filepath.Join(dir, "operator/go"), gobin: filepath.Join(dir, "operator/go/bin"), home: filepath.Join(dir, "operator"), xdg: filepath.Join(dir, "operator/.config"), cache: filepath.Join(dir, "cache/go-build"), observed: filepath.Join(dir, "observed")}
+	h := toolchainHost{dir: dir, brew: filepath.Join(dir, "opt/homebrew/bin"), gopath: filepath.Join(dir, "operator/go"), gobin: filepath.Join(dir, "operator/go/bin"), home: filepath.Join(dir, "operator"), xdg: filepath.Join(dir, "operator/.config"), goenv: filepath.Join(dir, "operator/.config/go/env"), cache: filepath.Join(dir, "cache/go-build"), observed: filepath.Join(dir, "observed")}
 	cellar := filepath.Join(dir, "opt/homebrew/Cellar/fixture-go/1.0/bin")
-	for _, d := range []string{h.brew, cellar, h.gobin, h.xdg, h.observed} {
+	for _, d := range []string{h.brew, cellar, h.gobin, filepath.Dir(h.goenv), h.observed} {
 		if err := os.MkdirAll(d, 0o700); err != nil {
 			t.Fatal(err)
 		}
@@ -56,6 +63,7 @@ func newToolchainHost(t *testing.T) toolchainHost {
 		t.Fatal(err)
 	}
 	write(filepath.Join(h.gobin, "fixture-lint"), "#!/bin/sh\necho lint-ok\n")
+	write(h.goenv, toolchainGoenv)
 	write(filepath.Join(h.brew, "fixture-ui"), "#!/bin/sh\nenv > \"$1/ui.env\"\nsleep 30 & wait\n")
 	resolved, err := filepath.EvalSymlinks(h.cellarTool)
 	if err != nil {
@@ -337,8 +345,198 @@ func TestKitToolchainChangeDuringExecution(t *testing.T) {
 	f := newKitExecutionFixture(t, e)
 	subject := store.VerificationSubjectContract{Subject: f.snapshot.Attempts[0].Subject, Contract: e}
 	grantToolchainSubject(f, subject, []config.VerificationToolchain{h.record(f.v.rpc.client.base)})
-	if err := f.v.run(t.Context(), subject, t.TempDir()); err == nil || f.outcome != "blocked" || !strings.Contains(err.Error(), "resolved tool changed") {
+	if err := f.v.run(t.Context(), subject, t.TempDir()); err == nil || f.outcome != "blocked" || !strings.Contains(err.Error(), "changed during execution") {
 		t.Fatalf("changed prerequisite accepted: outcome=%s err=%v", f.outcome, err)
+	}
+}
+
+// VK-4.2: an explicitly configured GOENV file is fingerprinted at preflight.
+// Editing it in place, or replacing it with identical content, during
+// execution invalidates the result although every executable is unchanged.
+func TestKitToolchainConfigurationChangeDuringExecution(t *testing.T) {
+	for _, mode := range []string{"mutate", "replace"} {
+		t.Run(mode, func(t *testing.T) {
+			h := newToolchainHost(t)
+			e := h.exercise(mode, h.goenv)
+			f := newKitExecutionFixture(t, e)
+			subject := store.VerificationSubjectContract{Subject: f.snapshot.Attempts[0].Subject, Contract: e}
+			record := h.record(f.v.rpc.client.base)
+			record.Settings["GOENV"] = h.goenv
+			grantToolchainSubject(f, subject, []config.VerificationToolchain{record})
+			if err := f.v.run(t.Context(), subject, t.TempDir()); err == nil || f.outcome != "blocked" || !strings.Contains(err.Error(), "configured toolchain location changed during execution") {
+				t.Fatalf("changed GOENV accepted: outcome=%s err=%v", f.outcome, err)
+			}
+			if env := h.observedEnv(t, "main.env"); env["GOENV"] != h.goenv {
+				t.Fatalf("child GOENV = %q", env["GOENV"])
+			}
+			want := fmt.Sprintf("%x", sha256.Sum256([]byte(toolchainGoenv)))
+			if got := f.started[0].Environment.Attributes["toolchain_config_GOENV_sha256"]; got != want {
+				t.Fatalf("GOENV content fingerprint %q, want %q", got, want)
+			}
+			if len(f.snapshot.Evidence) != 1 || f.snapshot.Evidence[0].Envelope.Environment.Attributes["toolchain_after"] != "changed" {
+				t.Fatalf("execution evidence does not record the changed configuration: %+v", f.snapshot.Evidence)
+			}
+		})
+	}
+}
+
+// Configured locations are rechecked before launch: a GOENV file or a
+// configured HOME replaced after preflight blocks the attempt without a
+// fabricated execution report, and the unchanged control launches.
+func TestKitToolchainConfigurationChangedAfterPreflight(t *testing.T) {
+	for _, change := range []string{"none", "goenv", "home"} {
+		t.Run(change, func(t *testing.T) {
+			h := newToolchainHost(t)
+			e := h.exercise()
+			f := newKitExecutionFixture(t, e)
+			record := h.record("https://factory.test")
+			record.Settings["GOENV"] = h.goenv
+			toolchain, err := resolveKitToolchain(&config.Config{VerificationToolchains: []config.VerificationToolchain{record}}, "/operator/conveyor.yaml", "", "https://factory.test", "demo", "repo", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tools, err := toolchain.preflight("ordinary:build-all", e, f.v.root, nil, "", f.v.redactor)
+			if err != nil {
+				t.Fatal(err)
+			}
+			switch change {
+			case "goenv":
+				if err := os.WriteFile(h.goenv, []byte(toolchainGoenv+"GOTOOLCHAIN=local\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			case "home":
+				if err := os.Rename(h.home, h.home+".old"); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.MkdirAll(h.home, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			err = tools.recheck(toolchain, f.v.root, "")
+			if (err == nil) != (change == "none") {
+				t.Fatalf("recheck after %s change: %v", change, err)
+			}
+			if change == "none" {
+				return
+			}
+			f.v.toolchain, f.v.tools = &toolchain, &tools
+			env := core.VerificationEnvironment{Attributes: map[string]string{}}
+			if err := f.v.launch(t.Context(), e, f.v.root, t.TempDir(), "run", "grant", f.snapshot.Attempts[0].Subject, env, nil); err == nil || !strings.Contains(err.Error(), "changed after preflight") {
+				t.Fatalf("launch accepted changed configuration: %v", err)
+			}
+			if f.outcome != "blocked" || f.uploads != 0 {
+				t.Fatalf("changed configuration: outcome=%s uploads=%d", f.outcome, f.uploads)
+			}
+		})
+	}
+}
+
+// A configured GOENV file carrying a credential would bypass the approved
+// CONVEYOR_KIT_SECRET_* transport; preflight refuses it without echo.
+func TestKitToolchainConfigurationCredentialRefused(t *testing.T) {
+	secrets := setParentCredentials(t)
+	h := newToolchainHost(t)
+	if err := os.WriteFile(h.goenv, []byte("GOPROXY=https://user:forge-secret-fixture@proxy.example\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	e := h.exercise()
+	f := newKitExecutionFixture(t, e)
+	subject := store.VerificationSubjectContract{Subject: f.snapshot.Attempts[0].Subject, Contract: e}
+	record := h.record(f.v.rpc.client.base)
+	record.Settings["GOENV"] = h.goenv
+	grantToolchainSubject(f, subject, []config.VerificationToolchain{record})
+	err := f.v.run(t.Context(), subject, t.TempDir())
+	assertPreflightRefusal(t, f, err, "settings.GOENV contains a credential value")
+	assertNoCredentials(t, secrets, err.Error(), f.output.String())
+}
+
+// REQ-7/AC-7.3, VK-4.2: repository content never selects a toolchain profile.
+// A matching record in a tracked working-directory conveyor.yaml, or in a file
+// inside the checkout named explicitly, cannot widen PATH/HOME/settings or start
+// an attempt; the same record in operator-selected configuration succeeds.
+func TestKitToolchainRepositoryConfigurationRefused(t *testing.T) {
+	h := newToolchainHost(t)
+	e := h.exercise()
+	f := newKitExecutionFixture(t, e)
+	subject := f.snapshot.Attempts[0].Subject
+	f.snapshot.Attempts = nil
+	f.snapshot.Selections = []store.VerificationSelection{{Receipt: verification.SelectionReceipt{Kits: []verification.KitReceipt{{KitID: "sample", Eligibility: "ineligible", Reasons: []verification.SelectionReason{{Code: "pin_mismatch"}}}}}}}
+	f.snapshot.PermissionGrants = []store.VerificationPermissionGrant{{ID: "grant", Subject: subject, Actions: []core.VerificationPermission{}}}
+	cfg := config.Config{KitPermissions: []config.KitPermissionGrant{{Server: f.v.rpc.client.base, Workspace: "demo", Repository: "repo", Binding: "repo", Actions: []verification.VerificationPermission{}}}, VerificationToolchains: []config.VerificationToolchain{h.record(f.v.rpc.client.base)}}
+	harness := config.HarnessTemplates()[0].Harness
+	document := localExecutionDocument("demo", newExecutionWizardState(healthyDetections(harness), nil).choices, []config.Harness{harness})
+	cfg.ExecutionSettings, cfg.Harnesses, cfg.Review = document.ExecutionSettings, document.Harnesses, document.Review
+	cfgBytes, err := yaml.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repoConfig := filepath.Join(f.v.root, localExecutionConfigName)
+	if err := os.WriteFile(repoConfig, cfgBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"add", localExecutionConfigName}, {"commit", "-qm", "repository toolchain"}} {
+		if _, err := localKitGit(t.Context(), f.v.root, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	head, err := localKitGit(t.Context(), f.v.root, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.order.HeadSHA = strings.TrimSpace(string(head))
+	f.snapshot.Contexts[0].Revisions[0].SHA = f.order.HeadSHA
+
+	// kit verify run in the checkout without --config or CONVEYOR_CONFIG
+	// selects the working-directory file, which is not operator-selected.
+	t.Setenv("CONVEYOR_CONFIG", "")
+	t.Chdir(f.v.root)
+	cmd := kitVerifyCmd()
+	selected, err := resolveLocalExecutionConfigPath(cmd, cmd.Flags().Lookup("config").Value.String())
+	if err != nil || selected.Source != "working-directory file" {
+		t.Fatalf("default config selection: %+v %v", selected, err)
+	}
+
+	dir := t.TempDir()
+	coverage := store.VerificationCoverage{ObligationIDs: []string{e.ID}, Justification: "ordinary checks remain required", Sources: []store.VerificationCoverageSource{{Source: store.VerificationCoverageReference{DocumentID: "fixture", Version: 1, SectionID: "REQ-1"}, Disposition: "covered", Explanation: "ordinary command", Subjects: []core.VerificationSubject{subject}}}}
+	coveragePath := filepath.Join(dir, "coverage.json")
+	if err := os.WriteFile(coveragePath, core.JSONPayload(coverage), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, refused := range []struct{ path, source, want string }{
+		{selected.Path, selected.Source, "not operator-selected configuration"},
+		{repoConfig, "flag", "repository content inside the verified checkout"},
+		{repoConfig, "environment CONVEYOR_CONFIG", "repository content inside the verified checkout"},
+	} {
+		options := kitVerifyOptions{configPath: refused.path, configSource: refused.source, coveragePath: coveragePath, attemptRoot: filepath.Join(dir, "attempts")}
+		err := verifyKits(t.Context(), f.v.rpc, f.v.root, "task", options, &f.output)
+		var preflight *kitPreflightError
+		if !errors.As(err, &preflight) || !strings.Contains(err.Error(), refused.want) || !strings.Contains(err.Error(), "no attempt was started") {
+			t.Fatalf("%s %s: repository toolchain accepted: %v", refused.source, refused.path, err)
+		}
+		if f.starts != 0 || len(f.operations) != 0 || f.uploads != 0 || f.outcome != "" {
+			t.Fatalf("repository toolchain consumed work: starts=%d uploads=%d outcome=%q", f.starts, f.uploads, f.outcome)
+		}
+		if _, err := os.Stat(filepath.Join(h.observed, "main.env")); !os.IsNotExist(err) {
+			t.Fatal("repository toolchain launched a child")
+		}
+	}
+
+	operatorConfig := filepath.Join(dir, "operator", localExecutionConfigName)
+	if err := os.MkdirAll(filepath.Dir(operatorConfig), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(operatorConfig, cfgBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	options := kitVerifyOptions{configPath: operatorConfig, configSource: "flag", coveragePath: coveragePath, attemptRoot: filepath.Join(dir, "attempts")}
+	if err := verifyKits(t.Context(), f.v.rpc, f.v.root, "task", options, &f.output); err != nil {
+		t.Fatal(err)
+	}
+	if f.starts != 1 || f.outcome != "succeeded" {
+		t.Fatalf("operator toolchain: starts=%d outcome=%s", f.starts, f.outcome)
+	}
+	if env := h.observedEnv(t, "main.env"); env["HOME"] != h.home || !strings.HasPrefix(env["PATH"], h.brew) {
+		t.Fatalf("operator toolchain environment: %+v", env)
 	}
 }
 
@@ -348,7 +546,7 @@ func TestKitToolchainChangedAfterPreflight(t *testing.T) {
 	h := newToolchainHost(t)
 	e := h.exercise()
 	f := newKitExecutionFixture(t, e)
-	toolchain, err := resolveKitToolchain(&config.Config{VerificationToolchains: []config.VerificationToolchain{h.record("https://factory.test")}}, "/operator/conveyor.yaml", "https://factory.test", "demo", "repo", nil)
+	toolchain, err := resolveKitToolchain(&config.Config{VerificationToolchains: []config.VerificationToolchain{h.record("https://factory.test")}}, "/operator/conveyor.yaml", "", "https://factory.test", "demo", "repo", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -377,7 +575,7 @@ func TestKitToolchainLookupAndConfigurationRefusals(t *testing.T) {
 	record := h.record("https://factory.test")
 	cfg := &config.Config{VerificationToolchains: []config.VerificationToolchain{record}}
 	resolve := func(cfg *config.Config, secrets ...string) (kitToolchain, error) {
-		return resolveKitToolchain(cfg, "/operator/conveyor.yaml", "https://factory.test", "demo", "repo", secrets)
+		return resolveKitToolchain(cfg, "/operator/conveyor.yaml", "", "https://factory.test", "demo", "repo", secrets)
 	}
 	toolchain, err := resolve(cfg)
 	if err != nil {

@@ -309,7 +309,7 @@ func (v *kitVerifier) launch(ctx context.Context, e verification.Exercise, cwd, 
 			return v.prelaunchBlocked(launchCtx, dir, runID, grantID, "exercise executable changed after preflight")
 		}
 		if tools.recheck(toolchain, cwd, v.uiRoot) != nil {
-			return v.prelaunchBlocked(launchCtx, dir, runID, grantID, "resolved tool changed after preflight")
+			return v.prelaunchBlocked(launchCtx, dir, runID, grantID, "resolved tool or configured toolchain location changed after preflight")
 		}
 	}
 	environment.Attributes["tool_sha256_before"] = before
@@ -405,6 +405,10 @@ func (v *kitVerifier) launch(ctx context.Context, e verification.Exercise, cwd, 
 	var toolErr error
 	if tools != nil {
 		toolErr = tools.recheck(toolchain, cwd, v.uiRoot)
+		environment.Attributes["toolchain_after"] = "unchanged"
+		if toolErr != nil {
+			environment.Attributes["toolchain_after"] = "changed"
+		}
 	}
 	ended := time.Now().UTC()
 	timedOut := errors.Is(launchCtx.Err(), context.DeadlineExceeded)
@@ -482,7 +486,7 @@ func (v *kitVerifier) launch(ctx context.Context, e verification.Exercise, cwd, 
 	}
 	if sourceErr != nil || hashErr != nil || after != before || toolErr != nil {
 		state = "blocked"
-		explanation = "source checkout or resolved tool changed during execution"
+		explanation = "source checkout, resolved tool or configured toolchain location changed during execution"
 	}
 	if state == "succeeded" {
 		var snapshot store.VerificationSnapshot

@@ -25,7 +25,10 @@ import (
 type kitVerifyOptions struct {
 	inputsPath, retryKey, replayAuthorization        string
 	configPath, contextID, coveragePath, attemptRoot string
-	withUI                                           bool
+	// configSource records how configPath was selected; only operator-selected
+	// sources may supply verification_toolchains records.
+	configSource string
+	withUI       bool
 }
 
 func kitVerifyCmd() *cobra.Command {
@@ -35,6 +38,11 @@ func kitVerifyCmd() *cobra.Command {
 		if err != nil {
 			return err
 		}
+		selected, err := resolveLocalExecutionConfigPath(cmd, o.configPath)
+		if err != nil {
+			return err
+		}
+		o.configPath, o.configSource = selected.Path, selected.Source
 		return verifyKits(cmd.Context(), kitRPC{newClient(), os.Getenv("CONVEYOR_WORK_ORDER_ID"), os.Getenv("CONVEYOR_SESSION_ID"), os.Getenv("CONVEYOR_CLIENT_TOKEN")}, root, args[0], o, cmd.OutOrStdout())
 	}}
 	c.Flags().StringVar(&o.inputsPath, "inputs", "", "JSON safe input maps keyed by kit:<id>:<exercise> or ordinary:<id>")
@@ -62,6 +70,7 @@ type kitVerifier struct {
 	snapshot                      store.VerificationSnapshot
 	config                        *config.Config
 	configPath                    string
+	toolchainRefusal              string
 	toolchain                     *kitToolchain
 	tools                         *kitToolResolution
 	coverage                      store.VerificationCoverage
@@ -178,6 +187,7 @@ func verifyKits(ctx context.Context, rpc kitRPC, root, taskID string, o kitVerif
 			return fmt.Errorf("attempt directory must be outside all checkout inputs")
 		}
 	}
+	v.toolchainRefusal = kitToolchainConfigRefusal(v.configPath, o.configSource, roots)
 	if err = os.MkdirAll(attemptRoot, 0700); err != nil {
 		return err
 	}
@@ -402,14 +412,14 @@ func (v *kitVerifier) run(ctx context.Context, subject store.VerificationSubject
 	// VK-EXEC-3).
 	credentials := append(append(append([]string{}, secrets...), kitParentSecrets()...), kitApprovedSecrets()...)
 	credentials = append(credentials, v.rpc.client.token, v.rpc.claimToken)
-	toolchain, err := resolveKitToolchain(v.config, v.configPath, v.rpc.client.base, v.rpc.client.workspace, v.task.Repo, credentials)
+	toolchain, err := resolveKitToolchain(v.config, v.configPath, v.toolchainRefusal, v.rpc.client.base, v.rpc.client.workspace, v.task.Repo, credentials)
 	if err != nil {
 		return err
 	}
 	if err = toolchain.checkEnvironmentKeys(env); err != nil {
 		return err
 	}
-	tools, err := toolchain.preflight(core.VerificationOperationSubject(subject.Subject), e, cwd, v.ui, v.uiRoot, v.redactor)
+	tools, err := toolchain.preflight(core.VerificationOperationSubject(subject.Subject), e, cwd, v.ui, v.uiRoot, redact.New(credentials))
 	if err != nil {
 		return err
 	}

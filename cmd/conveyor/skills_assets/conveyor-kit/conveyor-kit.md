@@ -179,13 +179,15 @@ attempt has started.
 
 Tools outside the default path, such as a Homebrew prefix or a Go bin
 directory, need an operator-owned `verification_toolchains` record in the
-local execution configuration. The kit cannot select or widen it. The
-`conveyor-kit-verify` playbook gives the schema. Never ask an operator to copy
-a user HOME or install tools for a kit.
+operator-selected local execution configuration outside the checkout. The kit
+cannot select or widen it; a record in a repository `conveyor.yaml` is
+refused. The `conveyor-kit-verify` playbook gives the schema. Never ask an
+operator to copy a user HOME or install tools for a kit.
 
 Write output beneath `CONVEYOR_KIT_ATTEMPT_DIR`, outside checkout inputs.
 Without a configured `home`, child `HOME` is that private directory; `TMPDIR`
-always is. Source changes or resolved executable changes during execution
+always is. Source changes, resolved executable changes, or changes to a
+fingerprinted configured location such as the `GOENV` file during execution
 block the result. Report unavailable deployment or external-state information
 as `unknown`; executable hashes do not prove all external dependencies stayed
 unchanged.
