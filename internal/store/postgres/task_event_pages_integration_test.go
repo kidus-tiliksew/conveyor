@@ -128,10 +128,12 @@ func TestTaskEventWindowFetchBoundsIntegration(t *testing.T) {
 	}
 	at := time.Date(2026, 10, 2, 6, 0, 0, 0, time.UTC)
 	huge := strings.Repeat("x", 2<<20)
-	insert := `INSERT INTO events (workspace_id, task_id, kind, actor_id, actor_role, payload_json, at) VALUES ($1, $2, $3, $4, 'system', '{}', $5) RETURNING id`
+	// kind is btree-indexed and cannot hold megabytes here, so the unindexed
+	// actor columns carry the oversized non-payload text.
+	insert := `INSERT INTO events (workspace_id, task_id, kind, actor_id, actor_role, payload_json, at) VALUES ($1, $2, $3, $4, $5, '{}', $6) RETURNING id`
 	ids := make([]int64, 4)
-	for i, row := range []struct{ kind, actor string }{{"test.fetch", "fixture"}, {"test.fetch", "fixture"}, {"test.fetch", huge}, {huge, "fixture"}} {
-		if err = st.pool.QueryRow(ctx, insert, workspace, task.ID, row.kind, row.actor, at.Add(time.Duration(i)*time.Second)).Scan(&ids[i]); err != nil {
+	for i, row := range []struct{ kind, actor, role string }{{"test.fetch", "fixture", "system"}, {"test.fetch", "fixture", "system"}, {"test.fetch", huge, "system"}, {"test.other", "fixture", huge}} {
+		if err = st.pool.QueryRow(ctx, insert, workspace, task.ID, row.kind, row.actor, row.role, at.Add(time.Duration(i)*time.Second)).Scan(&ids[i]); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -175,8 +177,8 @@ func TestTaskEventWindowFetchBoundsIntegration(t *testing.T) {
 		t.Fatalf("over-budget candidate fetched variable-width bytes: %v", got)
 	}
 
-	// Oversized actor and kind columns refuse explicitly without advancing or
-	// transferring the oversized event.
+	// Oversized actor ID and role columns refuse explicitly without advancing
+	// or transferring the oversized event.
 	for i, q := range []store.TaskEventWindowQuery{
 		{TaskID: task.ID, Kind: "test.fetch", Boundary: &window.Boundary, After: &store.TaskEventPosition{At: window.Events[1].At, ID: window.Events[1].ID}},
 		{TaskID: task.ID, Boundary: &boundary, After: &store.TaskEventPosition{At: at.Add(2 * time.Second), ID: ids[2]}},
