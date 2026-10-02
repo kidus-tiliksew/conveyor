@@ -194,8 +194,10 @@ func runVerificationMissingGrantCheckpoint(t *testing.T, x Fixture) {
 // submitted head when an additional repository sorts first in the scope
 // (VK-13.3; req-verification-kits REQ-5/AC-5.2).
 func runVerificationCheckpointTaskRepositoryHead(t *testing.T, x Fixture) {
-	primary := core.VerificationRevision{Repository: "zzz-primary", RemoteIdentity: "https://example.test/zzz-primary", SHA: strings.Repeat("a", 40)}
-	secondary := core.VerificationRevision{Repository: "aaa-secondary", RemoteIdentity: "https://example.test/aaa-secondary", SHA: strings.Repeat("b", 40)}
+	// Both repositories are registered by the conformance factory; the
+	// additional repository "app" sorts before the task repository "conveyor".
+	primary := core.VerificationRevision{Repository: "conveyor", RemoteIdentity: "https://example.test/conveyor", SHA: strings.Repeat("a", 40)}
+	secondary := core.VerificationRevision{Repository: "app", RemoteIdentity: "https://example.test/app", SHA: strings.Repeat("b", 40)}
 	v := registerUngrantedObligation(t, newVerificationFixtureIn(t, x, []core.VerificationRevision{primary, secondary}, true))
 	if v.revisions[0] != secondary {
 		t.Fatalf("fixture scope order = %+v", v.revisions)
