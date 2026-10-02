@@ -147,19 +147,50 @@ These checks admit execution into an operator-authorized environment; they do
 not sandbox arbitrary scripts. Block execution if required restrictions cannot
 be enforced there (VK-4, REQ-7/AC-7.3).
 
-The runner supplies a minimal environment. It resolves bare executable names
-from `/usr/local/bin`, `/usr/bin`, and `/bin`. It passes typed values as JSON
-in `CONVEYOR_KIT_INPUTS` and network bindings as
-`CONVEYOR_KIT_BINDING_<UPPERCASE_BINDING>` with hyphens replaced by underscores.
-Sensitive inputs use approved `CONVEYOR_KIT_SECRET_*` credential handles, not
-the inputs JSON file. Factory, forge and parent-session credentials must not
-enter the child, argv, browser assets or evidence.
+The runner builds the child environment from the subject's toolchain snapshot
+(VK-4.2). It passes typed values as JSON in `CONVEYOR_KIT_INPUTS` and network
+bindings as `CONVEYOR_KIT_BINDING_<UPPERCASE_BINDING>` with hyphens replaced by
+underscores. Sensitive inputs use approved `CONVEYOR_KIT_SECRET_*` credential
+handles, not the inputs JSON file. Factory, forge and parent-session
+credentials must not enter the child, argv, browser assets or evidence.
 
-Write output beneath `CONVEYOR_KIT_ATTEMPT_DIR`, outside checkout inputs. The
-runner also points child `HOME` and `TMPDIR` there. Source changes or resolved
-executable changes during execution block the result. Report unavailable
-deployment or external-state information as `unknown`; executable hashes do
-not prove all external dependencies stayed unchanged.
+## Toolchain environment and executable prerequisites
+
+The default toolchain is `PATH=/usr/local/bin:/usr/bin:/bin`,
+`LANG=C.UTF-8`, and an attempt-private `HOME` and `TMPDIR`. The runner
+resolves bare entrypoint, prerequisite and UI executable names through that
+`PATH` in order. A name containing `/` resolves against the exercise `cwd`.
+Each resolved file must be a regular file with an execute bit after symlink
+resolution.
+
+Declare every tool the script runs as an `executable` prerequisite, with the
+command name in `environment_binding`:
+
+```yaml
+        argv: ["go", "test", "./..."]
+        prerequisites:
+          - {id: go, kind: executable, environment_binding: go}
+          - {id: golangci-lint, kind: executable, environment_binding: golangci-lint}
+```
+
+The runner cannot read script text to discover tools. An undeclared tool that
+is missing fails inside the child as an ordinary execution failure, after the
+attempt has started.
+
+Tools outside the default path, such as a Homebrew prefix or a Go bin
+directory, need an operator-owned `verification_toolchains` record in the
+operator-selected local execution configuration outside the checkout. The kit
+cannot select or widen it; a record in a repository `conveyor.yaml` is
+refused. The `conveyor-kit-verify` playbook gives the schema. Never ask an
+operator to copy a user HOME or install tools for a kit.
+
+Write output beneath `CONVEYOR_KIT_ATTEMPT_DIR`, outside checkout inputs.
+Without a configured `home`, child `HOME` is that private directory; `TMPDIR`
+always is. Source changes, resolved executable changes, or changes to a
+fingerprinted configured location such as the `GOENV` file during execution
+block the result. Report unavailable deployment or external-state information
+as `unknown`; executable hashes do not prove all external dependencies stayed
+unchanged.
 
 ## Operations and uncertain execution
 

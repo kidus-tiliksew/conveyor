@@ -26,11 +26,14 @@ import (
 
 // kitExerciseActions resolves the exercise's local actions. Refusals that an
 // operator resolves on this host (local bindings, credential handles and
-// values, executable and service prerequisites) are admission refusals for the
-// VK-13.2 checkpoint; invalid contract declarations stay ordinary refusals.
+// values, service prerequisites) are admission refusals for the VK-13.2
+// checkpoint; invalid contract declarations stay ordinary refusals. Executable
+// prerequisites are resolved by toolchain preflight.
 func kitExerciseActions(e verification.Exercise, root, repository string, local []verification.VerificationPermission) ([]verification.VerificationPermission, []string, []string, error) {
 	actions := []verification.VerificationPermission{}
-	env := []string{"PATH=/usr/local/bin:/usr/bin:/bin", "LANG=C.UTF-8"}
+	// PATH, LANG, HOME and TMPDIR come from the subject's resolved toolchain
+	// snapshot (feature-verification-kit-execution VK-4.2).
+	env := []string{}
 	secrets := []string{}
 	for _, p := range e.Permissions {
 		a := verification.VerificationPermission{Kind: p.Kind, Binding: p.TargetBinding}
@@ -96,9 +99,8 @@ func kitExerciseActions(e verification.Exercise, root, repository string, local 
 			env = append(env, handle+"="+value)
 			actions = append(actions, verification.VerificationPermission{Kind: "credential", Binding: p.EnvironmentBinding, Target: handle})
 		case "executable":
-			if _, err := kitExecutable(p.EnvironmentBinding, root); err != nil {
-				return nil, nil, nil, kitAdmission("missing executable prerequisite %s", p.ID)
-			}
+			// Toolchain preflight resolves executable prerequisites through the
+			// same snapshot used for launch.
 		case "service":
 			found := false
 			for _, a := range actions {
@@ -143,6 +145,10 @@ func (b *kitBoundedOutput) Write(p []byte) (int, error) {
 
 func (v *kitVerifier) launch(ctx context.Context, e verification.Exercise, cwd, attemptRoot, runID, grantID string, subject core.VerificationSubject, environment core.VerificationEnvironment, env []string) error {
 	vc := v.snapshot.Contexts[0]
+	toolchain, tools := kitDefaultToolchain(), v.tools
+	if v.toolchain != nil {
+		toolchain = *v.toolchain
+	}
 	dir := filepath.Join(attemptRoot, runID)
 	if err := os.Mkdir(dir, 0700); err != nil {
 		return err
@@ -286,9 +292,16 @@ func (v *kitVerifier) launch(ctx context.Context, e verification.Exercise, cwd, 
 		}
 	}
 	connection, _ := json.Marshal(map[string]any{"url": channel.URL + "/operations", "nonce": channel.Nonce, "operations": operations})
-	env = append(env, "CONVEYOR_KIT_OPERATIONS="+string(connection), "CONVEYOR_KIT_ATTEMPT_DIR="+dir, "HOME="+dir, "TMPDIR="+dir)
+	// Attempt-private HOME/TMPDIR materialization never re-reads configuration
+	// or overwrites an explicit home or setting (component-harness-execution
+	// VK-EXEC-3).
+	env, err = kitMergeEnvironment(toolchain.environment(dir), env, []string{"CONVEYOR_KIT_OPERATIONS=" + string(connection), "CONVEYOR_KIT_ATTEMPT_DIR=" + dir})
+	if err != nil {
+		return v.prelaunchBlocked(launchCtx, dir, runID, grantID, "child environment keys collide")
+	}
+	environment.Attributes["child_environment_keys"] = kitEnvironmentKeys(env)
 	stdout, stderr := &kitBoundedOutput{limit: 1 << 20}, &kitBoundedOutput{limit: 1 << 20}
-	tool, err := kitExecutable(e.Argv[0], cwd)
+	tool, err := toolchain.lookPath(e.Argv[0], cwd)
 	if err != nil {
 		return v.prelaunchBlocked(launchCtx, dir, runID, grantID, "exercise executable is unavailable")
 	}
@@ -296,8 +309,17 @@ func (v *kitVerifier) launch(ctx context.Context, e verification.Exercise, cwd, 
 	if err != nil {
 		return v.prelaunchBlocked(launchCtx, dir, runID, grantID, "exercise executable digest could not be prepared")
 	}
+	if tools != nil {
+		if tools.entrypoint == nil || tools.entrypoint.path != tool || tools.entrypoint.digest != before {
+			return v.prelaunchBlocked(launchCtx, dir, runID, grantID, "exercise executable changed after preflight")
+		}
+		if tools.recheck(toolchain, cwd, v.uiRoot) != nil {
+			return v.prelaunchBlocked(launchCtx, dir, runID, grantID, "resolved tool or configured toolchain location changed after preflight")
+		}
+	}
 	environment.Attributes["tool_sha256_before"] = before
 	command := exec.Command(tool, e.Argv[1:]...)
+	command.Args[0] = e.Argv[0]
 	command.Dir = cwd
 	command.Env = env
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -334,7 +356,11 @@ func (v *kitVerifier) launch(ctx context.Context, e verification.Exercise, cwd, 
 	var ui *kitUIProcess
 	var uiStartErr error
 	if v.ui != nil {
-		ui, uiStartErr = startKitUI(v.ui, v.uiRoot, append(env, "CONVEYOR_KIT_UI_HOST=127.0.0.1", fmt.Sprintf("CONVEYOR_KIT_UI_PORT=%d", v.ui.Port)))
+		var expected *kitResolvedTool
+		if tools != nil {
+			expected = tools.ui
+		}
+		ui, uiStartErr = startKitUI(v.ui, v.uiRoot, append(append([]string(nil), env...), "CONVEYOR_KIT_UI_HOST=127.0.0.1", fmt.Sprintf("CONVEYOR_KIT_UI_PORT=%d", v.ui.Port)), toolchain, expected)
 		if uiStartErr != nil {
 			cancel()
 		}
@@ -380,6 +406,14 @@ func (v *kitVerifier) launch(ctx context.Context, e verification.Exercise, cwd, 
 	sourceErr := v.checkCheckout(ctx)
 	if sourceErr != nil {
 		environment.Attributes["source_state"] = "changed"
+	}
+	var toolErr error
+	if tools != nil {
+		toolErr = tools.recheck(toolchain, cwd, v.uiRoot)
+		environment.Attributes["toolchain_after"] = "unchanged"
+		if toolErr != nil {
+			environment.Attributes["toolchain_after"] = "changed"
+		}
 	}
 	ended := time.Now().UTC()
 	timedOut := errors.Is(launchCtx.Err(), context.DeadlineExceeded)
@@ -455,9 +489,9 @@ func (v *kitVerifier) launch(ctx context.Context, e verification.Exercise, cwd, 
 		state = "blocked"
 		explanation = "optional UI could not start"
 	}
-	if sourceErr != nil || hashErr != nil || after != before {
+	if sourceErr != nil || hashErr != nil || after != before || toolErr != nil {
 		state = "blocked"
-		explanation = "source checkout or resolved tool changed during execution"
+		explanation = "source checkout, resolved tool or configured toolchain location changed during execution"
 	}
 	if state == "succeeded" {
 		var snapshot store.VerificationSnapshot
@@ -581,22 +615,6 @@ func (v *kitVerifier) evidenceBatch(runID string, subject core.VerificationSubje
 
 var _ io.Writer = (*kitBoundedOutput)(nil)
 
-func kitExecutable(name, cwd string) (string, error) {
-	if strings.ContainsRune(name, filepath.Separator) {
-		if !filepath.IsAbs(name) {
-			name = filepath.Join(cwd, name)
-		}
-		return filepath.EvalSymlinks(name)
-	}
-	for _, dir := range []string{"/usr/local/bin", "/usr/bin", "/bin"} {
-		candidate := filepath.Join(dir, name)
-		info, err := os.Stat(candidate)
-		if err == nil && !info.IsDir() && info.Mode().Perm()&0111 != 0 {
-			return filepath.EvalSymlinks(candidate)
-		}
-	}
-	return "", fmt.Errorf("executable %s is unavailable in the approved runtime path", name)
-}
 func kitToolDigest(path string) (string, error) {
 	f, err := os.Open(path)
 	if err != nil {

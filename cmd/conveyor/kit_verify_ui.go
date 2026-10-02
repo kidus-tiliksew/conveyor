@@ -21,11 +21,14 @@ type kitUIProcess struct {
 	digest         string
 }
 
-func startKitUI(ui *verification.UI, cwd string, env []string) (*kitUIProcess, error) {
+// startKitUI launches the optional loopback UI with the subject's toolchain
+// snapshot and child environment. When preflight resolved the UI entrypoint,
+// the launched identity must match it (feature-verification-kit-execution VK-4.2).
+func startKitUI(ui *verification.UI, cwd string, env []string, toolchain kitToolchain, expected *kitResolvedTool) (*kitUIProcess, error) {
 	if ui.Port < 1 || ui.Port > 65535 || len(ui.Argv) == 0 {
 		return nil, fmt.Errorf("invalid loopback UI contract")
 	}
-	tool, err := kitExecutable(ui.Argv[0], cwd)
+	tool, err := toolchain.lookPath(ui.Argv[0], cwd)
 	if err != nil {
 		return nil, err
 	}
@@ -33,7 +36,11 @@ func startKitUI(ui *verification.UI, cwd string, env []string) (*kitUIProcess, e
 	if err != nil {
 		return nil, err
 	}
+	if expected != nil && (expected.path != tool || expected.digest != digest) {
+		return nil, fmt.Errorf("UI entrypoint changed after preflight")
+	}
 	u := &kitUIProcess{command: exec.Command(tool, ui.Argv[1:]...), stdout: &kitBoundedOutput{limit: 1 << 20}, stderr: &kitBoundedOutput{limit: 1 << 20}, started: time.Now().UTC(), digest: digest}
+	u.command.Args[0] = ui.Argv[0]
 	u.command.Dir = cwd
 	u.command.Env = env
 	u.command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}

@@ -41,6 +41,7 @@ type kitExecutionFixture struct {
 	renewDelayAfter int
 	renewCalls      int
 	output          bytes.Buffer
+	started         []workorder.VerificationStartRequest
 }
 
 func newKitExecutionFixture(t *testing.T, e verification.Exercise) *kitExecutionFixture {
@@ -101,6 +102,7 @@ func newKitExecutionFixture(t *testing.T, e verification.Exercise) *kitExecution
 			var args workorder.VerificationStartRequest
 			_ = json.Unmarshal(request.Params.Arguments, &args)
 			f.starts++
+			f.started = append(f.started, args)
 			f.snapshot.Attempts = append(f.snapshot.Attempts, store.VerificationAttempt{ID: "run", ContextID: "context", StartKey: args.StartKey, Subject: args.Subject, GrantID: args.GrantID, State: "running"})
 			result = store.VerificationReceipt{ID: "run", State: "running", LaunchAuthorized: true}
 		case "report_progress":
@@ -169,7 +171,7 @@ func TestKitRunnerExecutionOutcomes(t *testing.T) {
 			f := newKitExecutionFixture(t, e)
 			subject := f.snapshot.Attempts[0].Subject
 			environment := core.VerificationEnvironment{Target: "fixture", OS: "unknown", Architecture: "unknown", Runtime: "fixture", Deployment: "unknown", Attributes: map[string]string{}}
-			err := f.v.launch(t.Context(), e, f.v.root, t.TempDir(), "run", "grant", subject, environment, []string{"PATH=/usr/bin:/bin"})
+			err := f.v.launch(t.Context(), e, f.v.root, t.TempDir(), "run", "grant", subject, environment, nil)
 			if f.outcome != tc.want {
 				t.Fatalf("outcome %q want %q: %v", f.outcome, tc.want, err)
 			}
@@ -201,7 +203,7 @@ func TestKitRunnerCancellationAndClaimLoss(t *testing.T) {
 			}
 			env := core.VerificationEnvironment{Target: "fixture", OS: "unknown", Architecture: "unknown", Runtime: "fixture", Deployment: "unknown", Attributes: map[string]string{}}
 			started := time.Now()
-			err := f.v.launch(ctx, e, f.v.root, t.TempDir(), "run", "grant", f.snapshot.Attempts[0].Subject, env, []string{"PATH=/usr/bin:/bin"})
+			err := f.v.launch(ctx, e, f.v.root, t.TempDir(), "run", "grant", f.snapshot.Attempts[0].Subject, env, nil)
 			if err == nil || time.Since(started) > 8*time.Second {
 				t.Fatalf("teardown: %v duration %s", err, time.Since(started))
 			}
@@ -224,7 +226,7 @@ func TestKitRunnerChildEnvironmentAndMissingCredentials(t *testing.T) {
 	e := verification.Exercise{ID: "check", Kind: "script", Argv: []string{"sh", "-c", `test -z "$CONVEYOR_API_TOKEN$CONVEYOR_CLIENT_TOKEN$GH_TOKEN$OPENAI_API_KEY" && test -n "$CONVEYOR_KIT_OPERATIONS"`}, TimeoutSeconds: 5, RequiredAssertions: []verification.Assertion{}}
 	f := newKitExecutionFixture(t, e)
 	env := core.VerificationEnvironment{Target: "fixture", OS: "unknown", Architecture: "unknown", Runtime: "fixture", Deployment: "unknown", Attributes: map[string]string{}}
-	if err := f.v.launch(t.Context(), e, f.v.root, t.TempDir(), "run", "grant", f.snapshot.Attempts[0].Subject, env, []string{"PATH=/usr/bin:/bin"}); err != nil {
+	if err := f.v.launch(t.Context(), e, f.v.root, t.TempDir(), "run", "grant", f.snapshot.Attempts[0].Subject, env, nil); err != nil {
 		t.Fatal(err)
 	}
 	e.Prerequisites = []verification.Prerequisite{{ID: "api", Kind: "credential", EnvironmentBinding: "api"}}
@@ -282,7 +284,7 @@ func TestKitRunnerDurableOperationRelay(t *testing.T) {
 			f := newKitExecutionFixture(t, e)
 			f.refuseDispatch = refused
 			env := core.VerificationEnvironment{Target: "fixture", OS: "unknown", Architecture: "unknown", Runtime: "fixture", Deployment: "unknown", Attributes: map[string]string{}}
-			err := f.v.launch(t.Context(), e, f.v.root, t.TempDir(), "run", "grant", f.snapshot.Attempts[0].Subject, env, []string{"PATH=/usr/bin:/bin", "FIXTURE_PROVIDER_URL=" + f.v.rpc.client.base + "/provider"})
+			err := f.v.launch(t.Context(), e, f.v.root, t.TempDir(), "run", "grant", f.snapshot.Attempts[0].Subject, env, []string{"FIXTURE_PROVIDER_URL=" + f.v.rpc.client.base + "/provider"})
 			if refused {
 				if err == nil || f.mutations != 0 || f.outcome != "blocked" {
 					t.Fatalf("refused dispatch: mutations=%d state=%s err=%v", f.mutations, f.outcome, err)
@@ -298,7 +300,7 @@ func TestKitRunnerUninstrumentedMutationIsBlocked(t *testing.T) {
 	e := verification.Exercise{ID: "check", Kind: "script", Argv: []string{"sh", "-c", "exit 0"}, TimeoutSeconds: 5, RequiredAssertions: []verification.Assertion{}, Operations: []verification.Operation{{ID: "create", TargetBinding: "fixture"}}}
 	f := newKitExecutionFixture(t, e)
 	env := core.VerificationEnvironment{Target: "fixture", OS: "unknown", Architecture: "unknown", Runtime: "fixture", Deployment: "unknown", Attributes: map[string]string{}}
-	if err := f.v.launch(t.Context(), e, f.v.root, t.TempDir(), "run", "grant", f.snapshot.Attempts[0].Subject, env, []string{"PATH=/usr/bin:/bin"}); err == nil || f.outcome != "blocked" {
+	if err := f.v.launch(t.Context(), e, f.v.root, t.TempDir(), "run", "grant", f.snapshot.Attempts[0].Subject, env, nil); err == nil || f.outcome != "blocked" {
 		t.Fatalf("uninstrumented mutation: %s %v", f.outcome, err)
 	}
 }
@@ -317,17 +319,23 @@ func TestKitVerifyOrdinaryObligationsAndReplay(t *testing.T) {
 			if (err != nil) != missing {
 				t.Fatalf("missing=%t: %v", missing, err)
 			}
-			wantUploads, wantOutcome := 1, "succeeded"
+			// VK-4.2: a missing entrypoint fails toolchain preflight before any
+			// attempt; the same claim can run again once the tool is configured.
+			wantStarts, wantUploads, wantOutcome := 1, 1, "succeeded"
 			if missing {
-				wantUploads, wantOutcome = 0, "blocked"
+				wantStarts, wantUploads, wantOutcome = 0, 0, ""
+				var refused *kitPreflightError
+				if !errors.As(err, &refused) || !strings.Contains(err.Error(), "verification_toolchains") || !strings.Contains(err.Error(), options.configPath) {
+					t.Fatalf("preflight diagnostic lacks its remedy: %v", err)
+				}
 			}
-			if f.starts != 1 || f.uploads != wantUploads || f.outcome != wantOutcome {
-				t.Fatalf("ordinary execution missing: starts %d uploads %d state %s", f.starts, f.uploads, f.outcome)
+			if f.starts != wantStarts || f.uploads != wantUploads || f.outcome != wantOutcome {
+				t.Fatalf("ordinary execution: starts %d uploads %d state %s", f.starts, f.uploads, f.outcome)
 			}
 			if err := verifyKits(t.Context(), f.v.rpc, f.v.root, "task", options, &f.output); err == nil {
 				t.Fatal("replayed start launched again")
 			}
-			if f.starts != 1 || f.uploads != wantUploads {
+			if f.starts != wantStarts || f.uploads != wantUploads {
 				t.Fatal("replay mutated execution")
 			}
 		})
@@ -405,7 +413,7 @@ func TestKitVerifyPreStartRefusalsPrintCheckpoint(t *testing.T) {
 		}, nil, "missing local grant for network binding provider", true},
 		{"missing executable prerequisite", func(e *verification.Exercise) {
 			e.Prerequisites = []verification.Prerequisite{{ID: "tool", Kind: "executable", EnvironmentBinding: "kit-unavailable-fixture"}}
-		}, nil, "missing executable prerequisite tool", true},
+		}, nil, "executable prerequisite tool kit-unavailable-fixture is unavailable", true},
 		{"missing sensitive input binding", func(e *verification.Exercise) {
 			e.Inputs = []verification.Input{{Name: "password", Type: "string", Required: true, Sensitive: true}}
 		}, nil, "required sensitive input password", true},
@@ -439,7 +447,7 @@ func TestKitRunnerUIExecutionReport(t *testing.T) {
 	f.v.ui = &verification.UI{Argv: []string{"sh", "-c", "sleep 30 & wait"}, Port: 8765}
 	f.v.uiRoot = f.v.root
 	environment := core.VerificationEnvironment{Target: "fixture", OS: "unknown", Architecture: "unknown", Runtime: "fixture", Deployment: "unknown", Attributes: map[string]string{}}
-	if err := f.v.launch(t.Context(), e, f.v.root, t.TempDir(), "run", "grant", f.snapshot.Attempts[0].Subject, environment, []string{"PATH=/usr/bin:/bin"}); err != nil {
+	if err := f.v.launch(t.Context(), e, f.v.root, t.TempDir(), "run", "grant", f.snapshot.Attempts[0].Subject, environment, nil); err != nil {
 		t.Fatal(err)
 	}
 	if len(f.snapshot.Evidence) != 2 {
@@ -458,7 +466,7 @@ func TestKitRunnerOfflineEvidenceRetentionAndRetry(t *testing.T) {
 	root := t.TempDir()
 	time.AfterFunc(200*time.Millisecond, func() { f.mu.Lock(); f.offline = true; f.mu.Unlock() })
 	environment := core.VerificationEnvironment{Target: "fixture", OS: "unknown", Architecture: "unknown", Runtime: "fixture", Deployment: "unknown", Attributes: map[string]string{}}
-	err := f.v.launch(t.Context(), e, f.v.root, root, "run", "grant", f.snapshot.Attempts[0].Subject, environment, []string{"PATH=/usr/bin:/bin"})
+	err := f.v.launch(t.Context(), e, f.v.root, root, "run", "grant", f.snapshot.Attempts[0].Subject, environment, nil)
 	if err == nil || !strings.Contains(err.Error(), "retained") {
 		t.Fatalf("offline output not retained: %v", err)
 	}
@@ -498,7 +506,7 @@ func TestKitRunnerRevocationAndExpiryDuringRequest(t *testing.T) {
 			}
 			environment := core.VerificationEnvironment{Target: "fixture", OS: "unknown", Architecture: "unknown", Runtime: "fixture", Deployment: "unknown", Attributes: map[string]string{}}
 			started := time.Now()
-			err := f.v.launch(t.Context(), e, f.v.root, t.TempDir(), "run", "grant", f.snapshot.Attempts[0].Subject, environment, []string{"PATH=/usr/bin:/bin"})
+			err := f.v.launch(t.Context(), e, f.v.root, t.TempDir(), "run", "grant", f.snapshot.Attempts[0].Subject, environment, nil)
 			if err == nil || time.Since(started) > 4*time.Second {
 				t.Fatalf("teardown %v after %s", err, time.Since(started))
 			}
@@ -524,7 +532,7 @@ func TestKitRunnerRetainsSanitizedOutput(t *testing.T) {
 	f := newKitExecutionFixture(t, e)
 	root := t.TempDir()
 	env := core.VerificationEnvironment{Target: "fixture", OS: "unknown", Architecture: "unknown", Runtime: "fixture", Deployment: "unknown", Attributes: map[string]string{}}
-	if err := f.v.launch(t.Context(), e, f.v.root, root, "run", "grant", f.snapshot.Attempts[0].Subject, env, []string{"PATH=/usr/bin:/bin", "KIT_VALUE=credential-secret-fixture"}); err != nil {
+	if err := f.v.launch(t.Context(), e, f.v.root, root, "run", "grant", f.snapshot.Attempts[0].Subject, env, []string{"KIT_VALUE=credential-secret-fixture"}); err != nil {
 		t.Fatal(err)
 	}
 	output, err := os.ReadFile(filepath.Join(root, "run", "output.json"))
@@ -553,7 +561,7 @@ func TestKitRunnerDigestAndMissingGrantAdmission(t *testing.T) {
 	}
 	// VK-13.1/VK-13.2: the runner names the grounded checkpoint call.
 	var guidance bytes.Buffer
-	if err = kitCheckpointGuidance(&guidance, "order-1", "context-1", []string{"Verification blocked for observe: " + admission.Error()}); err == nil {
+	if err = kitCheckpointGuidance(&guidance, "order-1", "context-1", []string{"Verification blocked for observe: " + admission.Error()}, []error{admission}); err == nil || !errors.As(err, &admission) {
 		t.Fatal("unadmitted subjects reported success")
 	}
 	for _, want := range []string{`context_id "context-1"`, `outcome "operator_action_required"`, "required_action", "recover verify order order-1", "no attempt ran", "report_verification_outcome"} {
@@ -584,7 +592,7 @@ func TestKitRunnerInteractiveCompletionUsesOperatorEvidence(t *testing.T) {
 	f.snapshot.Evidence = append(f.snapshot.Evidence, store.VerificationEvidenceRecord{Envelope: observation})
 	env := observation.Environment
 	env.Attributes = map[string]string{}
-	if err := f.v.launch(t.Context(), e, f.v.root, t.TempDir(), "run", "grant", subject, env, []string{"PATH=/usr/bin:/bin"}); err != nil {
+	if err := f.v.launch(t.Context(), e, f.v.root, t.TempDir(), "run", "grant", subject, env, nil); err != nil {
 		t.Fatal(err)
 	}
 	if f.outcome != "succeeded" {

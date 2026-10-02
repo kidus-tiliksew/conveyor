@@ -600,6 +600,7 @@ type UpdateReceipt struct {
 // it does not cross the workspace API boundary.
 type Config struct {
 	KitPermissions            []KitPermissionGrant         `yaml:"kit_permissions,omitempty" json:"-"`
+	VerificationToolchains    []VerificationToolchain      `yaml:"verification_toolchains,omitempty" json:"-"`
 	Workspace                 string                       `yaml:"workspace"`
 	PackDir                   string                       `yaml:"pack_dir,omitempty"`
 	packDirSet                bool                         `yaml:"-"`
@@ -1118,6 +1119,9 @@ func normalize(c *Config, path string) (*Config, error) {
 		if err := grant.Validate(); err != nil {
 			return nil, err
 		}
+	}
+	if err := validateVerificationToolchains(c.VerificationToolchains); err != nil {
+		return nil, err
 	}
 	setups := append([]ExecutionSetup(nil), c.Setups...)
 	defaultSetup := strings.TrimSpace(c.DefaultSetup)

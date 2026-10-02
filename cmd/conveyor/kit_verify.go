@@ -26,7 +26,10 @@ import (
 type kitVerifyOptions struct {
 	inputsPath, retryKey, replayAuthorization        string
 	configPath, contextID, coveragePath, attemptRoot string
-	withUI                                           bool
+	// configSource records how configPath was selected; only operator-selected
+	// sources may supply verification_toolchains records.
+	configSource string
+	withUI       bool
 }
 
 func kitVerifyCmd() *cobra.Command {
@@ -36,6 +39,11 @@ func kitVerifyCmd() *cobra.Command {
 		if err != nil {
 			return err
 		}
+		selected, err := resolveLocalExecutionConfigPath(cmd, o.configPath)
+		if err != nil {
+			return err
+		}
+		o.configPath, o.configSource = selected.Path, selected.Source
 		return verifyKits(cmd.Context(), kitRPC{newClient(), os.Getenv("CONVEYOR_WORK_ORDER_ID"), os.Getenv("CONVEYOR_SESSION_ID"), os.Getenv("CONVEYOR_CLIENT_TOKEN")}, root, args[0], o, cmd.OutOrStdout())
 	}}
 	c.Flags().StringVar(&o.inputsPath, "inputs", "", "JSON safe input maps keyed by kit:<id>:<exercise> or ordinary:<id>")
@@ -62,6 +70,10 @@ type kitVerifier struct {
 	task                          core.Task
 	snapshot                      store.VerificationSnapshot
 	config                        *config.Config
+	configPath                    string
+	toolchainRefusal              string
+	toolchain                     *kitToolchain
+	tools                         *kitToolResolution
 	coverage                      store.VerificationCoverage
 	output                        io.Writer
 	redactor                      *redact.Redactor
@@ -108,7 +120,7 @@ func verifyKits(ctx context.Context, rpc kitRPC, root, taskID string, o kitVerif
 	if err != nil {
 		return err
 	}
-	v.config = cfg
+	v.config, v.configPath = cfg, o.configPath
 	if o.contextID == "" {
 		err = rpc.call(ctx, "prepare_verification", workorder.VerificationPrepareRequest{RequestKey: "kit-" + v.order.AttemptID}, &v.snapshot)
 	} else {
@@ -176,6 +188,7 @@ func verifyKits(ctx context.Context, rpc kitRPC, root, taskID string, o kitVerif
 			return fmt.Errorf("attempt directory must be outside all checkout inputs")
 		}
 	}
+	v.toolchainRefusal = kitToolchainConfigRefusal(v.configPath, o.configSource, roots)
 	if err = os.MkdirAll(attemptRoot, 0700); err != nil {
 		return err
 	}
@@ -197,6 +210,7 @@ func verifyKits(ctx context.Context, rpc kitRPC, root, taskID string, o kitVerif
 		}
 	}
 	var refused []string
+	var causes []error
 	for _, subject := range subjects {
 		if err = v.run(ctx, subject, attemptRoot); err != nil {
 			message, _ := v.redactor.Redact("Verification blocked for " + subject.Contract.ID + ": " + err.Error())
@@ -213,10 +227,11 @@ func verifyKits(ctx context.Context, rpc kitRPC, root, taskID string, o kitVerif
 			// VK-13.2: admission refused before start creates no attempt; keep
 			// the subject for the grounded checkpoint and continue the others.
 			refused = append(refused, message)
+			causes = append(causes, err)
 		}
 	}
 	if len(refused) > 0 {
-		return kitCheckpointGuidance(output, v.order.ID, vc.ID, refused)
+		return kitCheckpointGuidance(output, v.order.ID, vc.ID, refused, causes)
 	}
 	_, err = fmt.Fprintf(output, "Verification exercises recorded for context %s. Submit coverage and the verification result through submit_verification.\n", vc.ID)
 	return err
@@ -237,13 +252,15 @@ func kitAdmission(format string, args ...any) error {
 
 // kitCheckpointGuidance prints the exact operator-checkpoint submission of
 // feature-verification-kit-execution VK-13.1 for subjects that never started.
-func kitCheckpointGuidance(output io.Writer, orderID, contextID string, refused []string) error {
+func kitCheckpointGuidance(output io.Writer, orderID, contextID string, refused []string, causes []error) error {
 	_, _ = fmt.Fprintf(output, "Subjects not admitted before start (no attempt ran; their evidence is missing):\n")
 	for _, message := range refused {
 		_, _ = fmt.Fprintf(output, "  - %s\n", message)
 	}
 	_, _ = fmt.Fprintf(output, "After the grant wait, record the operator checkpoint: call submit_verification with context_id %q, the registered coverage, outcome \"operator_action_required\", feedback stating the reason above and required_action stating the operator act. For a missing grant the act is: recover verify order %s, then grant the listed subjects against the next claim's context with `conveyor verification permissions inspect %s`. For a missing local binding, credential or prerequisite the act is: configure it on the verifier host, then recover verify order %[2]s. Do not submit blocked or waiting as the stage outcome; those are report_verification_outcome states.\n", contextID, orderID, orderID)
-	return fmt.Errorf("verification blocked: %d subject(s) not admitted before start", len(refused))
+	// The causes stay inspectable, so a toolchain preflight refusal keeps its
+	// typed diagnostic and remedy.
+	return errors.Join(append([]error{fmt.Errorf("verification blocked: %d subject(s) not admitted before start", len(refused))}, causes...)...)
 }
 
 func (v *kitVerifier) checkCheckout(ctx context.Context) error {
@@ -326,7 +343,7 @@ func (v *kitVerifier) run(ctx context.Context, subject store.VerificationSubject
 	}
 	vc := v.snapshot.Contexts[0]
 	kitRoot := v.root
-	v.ui = nil
+	v.ui, v.toolchain, v.tools = nil, nil, nil
 	if subject.Subject.Kind == "kit" {
 		pins := []verification.Pin{}
 		for _, p := range vc.GoverningPins {
@@ -427,6 +444,31 @@ func (v *kitVerifier) run(ctx context.Context, subject store.VerificationSubject
 			return fmt.Errorf("attempt %s already exists (%s); retained evidence retried without relaunch; reconcile or supply an authorized --retry-key", a.ID, a.State)
 		}
 	}
+	// Toolchain preflight runs before start_verification_attempt and operation
+	// registration. A predictable failure starts no attempt, registers no
+	// operation, launches no child and reports no execution
+	// (feature-verification-kit-execution VK-4.2; component-harness-execution
+	// VK-EXEC-3).
+	credentials := append(append(append([]string{}, secrets...), kitParentSecrets()...), kitApprovedSecrets()...)
+	credentials = append(credentials, v.rpc.client.token, v.rpc.claimToken)
+	toolchain, err := resolveKitToolchain(v.config, v.configPath, v.toolchainRefusal, v.rpc.client.base, v.rpc.client.workspace, v.task.Repo, credentials)
+	if err != nil {
+		return err
+	}
+	if err = toolchain.checkEnvironmentKeys(env); err != nil {
+		return err
+	}
+	tools, err := toolchain.preflight(core.VerificationOperationSubject(subject.Subject), e, cwd, v.ui, v.uiRoot, redact.New(credentials))
+	if err != nil {
+		// VK-13.2: an unavailable entrypoint, executable prerequisite or
+		// configured location starts no attempt and its remedy is an operator
+		// act on this host, so the subject joins the grounded checkpoint.
+		return kitAdmissionActions(&kitAdmissionError{err}, e)
+	}
+	for key, value := range toolchain.attributes(tools) {
+		environment.Attributes[key] = value
+	}
+	v.toolchain, v.tools = &toolchain, &tools
 	var receipt store.VerificationReceipt
 	if err = v.rpc.call(ctx, "start_verification_attempt", workorder.VerificationStartRequest{ContextID: vc.ID, StartKey: startKey, Subject: subject.Subject, LocalActions: local, GrantID: grant.ID, EffectiveActions: effective, EffectivePermissions: e.Permissions, SafeInputs: v.safeInputs, Environment: environment, Coverage: v.coverage, ReplayAuthorizationID: v.replayAuthorization}, &receipt); err != nil {
 		return err
