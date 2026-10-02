@@ -2,7 +2,6 @@ package httpapi
 
 import (
 	"context"
-	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -42,7 +41,7 @@ func mcpReadDefinitions() []mcpReadDefinition {
 		{"list_repositories", "List repository names and base branches in the selected workspace; excludes local paths and configuration.", nil, nil},
 		{"list_tasks", "Find active or terminal tasks. An empty work-order list is not evidence that tasks do not exist.", map[string]any{"state": enum("active", "terminal", "all"), "repository": str(), "query": str()}, nil},
 		{"get_task", "Read one task, including terminal tasks, without claiming or reconciling work.", map[string]any{"task_id": str()}, []string{"task_id"}},
-		{"list_task_events", "Read recorded task events in chronological order with event-ID tie-breaks; actor/source are not inferred. Payload fields are allowlisted.", map[string]any{"task_id": str(), "event_kind": str()}, []string{"task_id"}},
+		{"list_task_events", "Read recorded task events in chronological order with event-ID tie-breaks; actor/source are not inferred. Payload fields are allowlisted. Long histories arrive as bounded windows of at most 1000 events: total and offset page within one window, history_total counts the captured history, and next_cursor (never combined with snapshot or offset) opens the next window. Restart on 'restart read'.", map[string]any{"task_id": str(), "event_kind": str(), "cursor": map[string]any{"type": "string", "minLength": 32, "maxLength": 32}}, []string{"task_id"}},
 		{"get_task_context", "Read attached pins and all proposal states. Archived references remain labeled and readable; proposals confer no authority.", map[string]any{"task_id": str(), "proposal_state": enum("all", "proposed", "confirmed", "dismissed")}, []string{"task_id"}},
 		{"list_documents", "Discover confirmed requirement, design, or informative reference document identities. Archived history requires include_archived=true.", map[string]any{"kind": enum("requirement", "system_design", "reference"), "include_archived": boolean, "query": str()}, []string{"kind"}},
 		{"get_document", "Read current or explicit immutable document version. Explicit version can be proposed or historical; archive inclusion never makes it active authority.", map[string]any{"kind": enum("requirement", "system_design", "reference"), "document_id": str(), "version": map[string]any{"type": "integer", "minimum": 1, "maximum": 1000000}, "include_archived": boolean}, []string{"kind", "document_id"}},
@@ -84,10 +83,13 @@ type mcpReadSnapshot struct {
 	owner, workspace, query string
 	expires                 time.Time
 	items                   []json.RawMessage
+	// events is set only for list_task_events windows (MCP-READ-9).
+	events *mcpEventWindow
 }
 type mcpReadCache struct {
 	mu      sync.Mutex
 	entries map[string]mcpReadSnapshot
+	cursors map[string]mcpEventCursor
 }
 type mcpReadPage struct {
 	Items      []json.RawMessage `json:"items"`
@@ -98,6 +100,9 @@ type mcpReadPage struct {
 	Snapshot   string            `json:"snapshot"`
 	ExpiresAt  time.Time         `json:"expires_at"`
 	Evidence   string            `json:"evidence"`
+	// HistoryTotal and NextCursor are list_task_events window fields.
+	HistoryTotal *int   `json:"history_total,omitempty"`
+	NextCursor   string `json:"next_cursor,omitempty"`
 }
 
 func validateMCPRead(name string, args map[string]any) (int, int, string, error) {
@@ -140,10 +145,10 @@ func validateMCPRead(name string, args map[string]any) (int, int, string, error)
 					return 0, 0, "", fmt.Errorf("invalid %s", k)
 				}
 			}
-			if k == "snapshot" {
+			if k == "snapshot" || k == "cursor" {
 				b, e := hex.DecodeString(s)
 				if e != nil || len(b) != 16 {
-					return 0, 0, "", fmt.Errorf("invalid snapshot")
+					return 0, 0, "", fmt.Errorf("invalid %s", k)
 				}
 			}
 		case "boolean":
@@ -169,6 +174,9 @@ func validateMCPRead(name string, args map[string]any) (int, int, string, error)
 		_ = json.Unmarshal(b, &offset)
 	}
 	snapshot, _ := args["snapshot"].(string)
+	if _, cursor := args["cursor"]; cursor && (snapshot != "" || offset > 0) {
+		return 0, 0, "", fmt.Errorf("cursor cannot be combined with snapshot or offset")
+	}
 	if offset > 0 && snapshot == "" {
 		return 0, 0, "", fmt.Errorf("offset requires snapshot")
 	}
@@ -194,12 +202,15 @@ func (s *Server) callMCPRead(r *http.Request, name string, args map[string]any) 
 	ctx := store.WithWorkspace(r.Context(), workspace)
 	queryArgs := map[string]any{"tool": name}
 	for k, v := range args {
-		if k != "limit" && k != "offset" && k != "snapshot" {
+		if k != "limit" && k != "offset" && k != "snapshot" && k != "cursor" {
 			queryArgs[k] = v
 		}
 	}
 	queryBytes, _ := json.Marshal(queryArgs)
 	query := string(queryBytes)
+	if name == "list_task_events" {
+		return s.callMCPTaskEvents(ctx, credential.OwnerUserID, workspace, query, args, limit, offset, token)
+	}
 	now := time.Now().UTC()
 	cache := &s.mcpReads
 	cache.mu.Lock()
@@ -226,27 +237,13 @@ func (s *Server) callMCPRead(r *http.Request, name string, args map[string]any) 
 			return nil, fmt.Errorf("read exceeds 1000 items: narrow filters")
 		}
 		snapshot = mcpReadSnapshot{owner: credential.OwnerUserID, workspace: workspace, query: query, expires: now.Add(mcpReadSnapshotTTL), items: []json.RawMessage{}}
-		var secrets redact.SecretSource
-		if s.WorkOrders != nil {
-			secrets = s.WorkOrders.RedactionSecrets
-		}
-		redactor, redactionErr := redact.WithSecrets(ctx, secrets, nil)
+		redactor, redactionErr := s.mcpReadRedactor(ctx)
 		if redactionErr != nil {
-			return nil, fmt.Errorf("read redaction unavailable")
+			return nil, redactionErr
 		}
 		size := 0
 		for _, item := range items {
-			data, e := json.Marshal(item)
-			if e != nil {
-				return nil, e
-			}
-			var projection any
-			decoder := json.NewDecoder(strings.NewReader(string(data)))
-			decoder.UseNumber()
-			if e = decoder.Decode(&projection); e != nil {
-				return nil, e
-			}
-			data, e = json.Marshal(redactMCPReadText(projection, redactor))
+			data, e := renderMCPReadItem(item, redactor)
 			if e != nil {
 				return nil, e
 			}
@@ -256,11 +253,9 @@ func (s *Server) callMCPRead(r *http.Request, name string, args map[string]any) 
 			}
 			snapshot.items = append(snapshot.items, data)
 		}
-		var opaque [16]byte
-		if _, e = rand.Read(opaque[:]); e != nil {
+		if token, e = mcpReadToken(); e != nil {
 			return nil, e
 		}
-		token = hex.EncodeToString(opaque[:])
 	}
 	if name == "list_workspaces" && found {
 		for _, item := range snapshot.items {
@@ -372,20 +367,13 @@ func (s *Server) mcpReadItems(ctx context.Context, name string, a map[string]any
 				break
 			}
 		}
-	case "get_task", "get_task_context", "list_task_events":
+	case "get_task", "get_task_context":
 		task, e := s.Store.GetTask(ctx, readString(a, "task_id"))
 		if workspace, _ := store.WorkspaceFromContext(ctx); e != nil || task.Workspace != workspace {
 			return nil, store.ErrNotFound
 		}
 		if name == "get_task" {
 			return []any{taskRead(task, true)}, nil
-		}
-		if name == "list_task_events" {
-			events, e := s.Store.ListEvents(ctx, task.ID)
-			if e != nil {
-				return nil, e
-			}
-			return mcpReadEvents(events, readString(a, "event_kind")), nil
 		}
 		task.Context, e = store.TaskContextForTask(ctx, s.Store, task.ID)
 		if e != nil {
