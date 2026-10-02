@@ -46,8 +46,13 @@ func BindVerificationPermissionOrder(ctx context.Context, c *VerificationCommand
 		return nil
 	}
 	ws, ok := WorkspaceFromContext(ctx)
-	if !ok || !c.Authority.OperateGates || c.Access.UserID == "" || order.ID != c.Access.WorkOrderID || order.TaskID != task.ID || task.Workspace != ws || order.Stage != core.StageVerify || order.State != core.WorkOrderClaimed || !order.LeaseExpiresAt.After(now) || (!order.ExecutionDeadline.IsZero() && !order.ExecutionDeadline.After(now)) || order.HeadSHA != core.VerifyStageHead(task) {
+	if !ok || !c.Authority.OperateGates || c.Access.UserID == "" || order.ID != c.Access.WorkOrderID || order.TaskID != task.ID || task.Workspace != ws || order.Stage != core.StageVerify {
 		return ErrVerificationAccess
+	}
+	// The caller is an authorized operator of this order from here on, so
+	// state refusals carry a stable reason (VK-12.2; component-http-api VK-HTTP-8).
+	if reason := VerificationPermissionOrderState(task, order, now); reason != "" {
+		return verificationRefuse(ErrVerificationAccess, reason)
 	}
 	c.Access.WorkOrderAttemptID = order.AttemptID
 	return nil
@@ -59,16 +64,19 @@ func verificationPermissionMutation(c VerificationCommand, rows []VerificationRo
 	}
 	p := c.Permissions
 	if c.Kind == VerificationRevokePermissions {
+		if p.Reason == "" {
+			return ErrVerificationInvalid
+		}
 		row, ok := verificationFind(rows, "verification_permission_grants", p.RevokeGrantID)
-		if !ok || row.ContextID != vc.ID || p.Reason == "" {
-			return ErrVerificationAccess
+		if !ok || row.ContextID != vc.ID {
+			return verificationRefuse(ErrVerificationAccess, VerificationRefusalGrantUnknown)
 		}
 		v := VerificationPermissionRevocation{ID: vc.ID + ":" + c.Key, GrantID: row.ID, ContextID: vc.ID, Actor: actor, Reason: p.Reason, Key: c.Key}
 		if prior, ok := verificationFind(rows, "verification_permission_revocations", v.ID); ok {
 			old := verificationDecode[VerificationPermissionRevocation](prior)
 			old.CreatedAt = time.Time{}
 			if !verificationEqual(old, v) {
-				return ErrVerificationConflict
+				return verificationRefuse(ErrVerificationConflict, VerificationRefusalRequestConflict)
 			}
 			out.Receipt.ID = old.ID
 			return nil
@@ -103,7 +111,7 @@ func verificationPermissionMutation(c VerificationCommand, rows []VerificationRo
 	}
 	contract, err := verificationContract(rows, vc.ID, p.Subject)
 	if err != nil {
-		return err
+		return verificationRefuse(err, VerificationRefusalSubjectUnregistered)
 	}
 	actions, err := verification.NormalizeVerificationPermissions(p.Actions)
 	if err != nil {
@@ -115,7 +123,11 @@ func verificationPermissionMutation(c VerificationCommand, rows []VerificationRo
 		old := verificationDecode[VerificationPermissionGrant](prior)
 		old.CreatedAt = time.Time{}
 		if !verificationEqual(old, v) {
-			return ErrVerificationConflict
+			return verificationRefuse(ErrVerificationConflict, VerificationRefusalRequestConflict)
+		}
+		// A replayed key must not present a revoked grant as fresh authority.
+		if verificationGrantRevoked(rows, old.ID) {
+			return verificationRefuse(ErrVerificationState, VerificationRefusalGrantRevoked)
 		}
 		out.Receipt.ID = old.ID
 		return nil
@@ -139,10 +151,17 @@ func verificationLiveGrant(rows []VerificationRow, vc VerificationContext, id st
 	if g.WorkspaceID != vc.WorkspaceID || g.WorkOrderID != vc.WorkOrderID || g.WorkOrderAttemptID != vc.WorkOrderAttemptID || !verificationEqual(g.Revisions, vc.Revisions) || !verificationEqual(g.Subject, subject) || g.ContractDigest != verificationHash(verificationJSON(contract)) {
 		return g, ErrVerificationAccess
 	}
-	for _, r := range rows {
-		if r.Table == "verification_permission_revocations" && verificationDecode[VerificationPermissionRevocation](r).GrantID == id {
-			return g, fmt.Errorf("%w: permission grant revoked", ErrVerificationAccess)
-		}
+	if verificationGrantRevoked(rows, id) {
+		return g, fmt.Errorf("%w: permission grant revoked", ErrVerificationAccess)
 	}
 	return g, nil
+}
+
+func verificationGrantRevoked(rows []VerificationRow, id string) bool {
+	for _, r := range rows {
+		if r.Table == "verification_permission_revocations" && verificationDecode[VerificationPermissionRevocation](r).GrantID == id {
+			return true
+		}
+	}
+	return false
 }

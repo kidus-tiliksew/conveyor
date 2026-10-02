@@ -142,30 +142,62 @@ func RequireVerificationPermissions(requested, authorized, local []VerificationP
 	return r, nil
 }
 
+// ActionRequirement is one action slot of a frozen exercise contract. Binding
+// is empty where any binding name is accepted; Path is the kit-relative path of
+// a filesystem permission. Targets are machine-specific and never declared.
+type ActionRequirement struct {
+	Kind     string `json:"kind"`
+	Binding  string `json:"binding"`
+	Path     string `json:"path,omitempty"`
+	Required bool   `json:"required"`
+}
+
+// ActionRequirements lists the closed action slots ValidateRequestedActions
+// enforces, in declaration order. Operator grant surfaces present these slots
+// with unresolved targets (feature-verification-kit-execution VK-12.1).
+func ActionRequirements(e Exercise) []ActionRequirement {
+	var out []ActionRequirement
+	index := map[ActionRequirement]int{}
+	add := func(kind, binding, path string, required bool) {
+		key := ActionRequirement{Kind: kind, Binding: binding, Path: path}
+		if i, ok := index[key]; ok {
+			out[i].Required = required
+			return
+		}
+		index[key] = len(out)
+		key.Required = required
+		out = append(out, key)
+	}
+	for _, p := range e.Permissions {
+		add(p.Kind, p.TargetBinding, p.Path, true)
+	}
+	for _, p := range e.Prerequisites {
+		if p.Kind == "credential" {
+			add("credential", p.EnvironmentBinding, "", true)
+		}
+		if p.Kind == "operator_interaction" {
+			add("operator_interaction", "", "", true)
+		}
+	}
+	if e.Kind == "interactive" || e.Kind == "hybrid" {
+		add("operator_interaction", "", "", true)
+	}
+	for _, input := range e.Inputs {
+		if input.Sensitive {
+			add("credential", input.Name, "", input.Required)
+		}
+	}
+	return out
+}
+
 // ValidateRequestedActions checks the closed action kinds and bindings declared
 // by the frozen contract. The host resolves paths and bindings; the server
 // independently checks that those actions are covered by the exact grant.
 func ValidateRequestedActions(e Exercise, actions []VerificationPermission) error {
 	type identity struct{ kind, binding, path string }
 	required := map[identity]bool{}
-	for _, p := range e.Permissions {
-		required[identity{p.Kind, p.TargetBinding, p.Path}] = true
-	}
-	for _, p := range e.Prerequisites {
-		if p.Kind == "credential" {
-			required[identity{"credential", p.EnvironmentBinding, ""}] = true
-		}
-		if p.Kind == "operator_interaction" {
-			required[identity{"operator_interaction", "", ""}] = true
-		}
-	}
-	if e.Kind == "interactive" || e.Kind == "hybrid" {
-		required[identity{"operator_interaction", "", ""}] = true
-	}
-	for _, input := range e.Inputs {
-		if input.Sensitive {
-			required[identity{"credential", input.Name, ""}] = input.Required
-		}
+	for _, r := range ActionRequirements(e) {
+		required[identity{r.Kind, r.Binding, r.Path}] = r.Required
 	}
 	matches := func(key identity, a VerificationPermission) bool {
 		if a.Kind != key.kind || (key.binding != "" && a.Binding != key.binding) {

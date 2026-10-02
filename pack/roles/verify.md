@@ -24,7 +24,9 @@ exercise outcomes; it does not seal the stage. Keep output in its private
 attempt directory outside checkout inputs. Report any unsupported scope.
 
 Require both operator-issued work-order grants and matching local
-kit_permissions. Missing credentials, services, permission or interaction
+kit_permissions. When a selected subject lacks a grant, follow the playbook's
+grant wait: report the exact subjects and the operator inspect command, keep
+renewing, and release with blocked outcomes only when the wait bound passes. Missing credentials, services, permission or interaction
 requires a truthful blocked/waiting outcome and the needed operator action.
 Do not grant access. Permission admission does not sandbox arbitrary code.
 Use only an authorized environment that can enforce the required restrictions.

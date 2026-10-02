@@ -34,7 +34,8 @@ For this repository, the inventory begins with these concrete surfaces:
 | Build and static analysis | `make build`, `make vet`, `make fmt-check` | The Go binaries and dashboard build; Go vet; Go formatting. The dashboard build performs TypeScript checking and Vite compilation. |
 | Ordinary tests | `make test` | Compose-isolation validation, generated-dashboard freshness, release-install fixtures, Go tests with PostgreSQL disabled, Biome lint/format checks, and Playwright browser scenarios. |
 | Focused web checks | `make test-web` and `web/package.json` | Explicit TypeScript typechecking, Biome lint/format checking, and Playwright end-to-end tests. These checks do not establish PostgreSQL behavior. |
-| Local integration | `make test-integration` | The PostgreSQL suites in `cmd/conveyor`, `internal/store/postgres`, and `internal/dispatch` against an isolated per-worktree database that the target starts and removes. |
+| Local integration | `make test-integration` | The PostgreSQL suites in `cmd/conveyor`, `internal/store/postgres`, and `internal/dispatch` against a PostgreSQL container owned by one managed validation invocation, which the target creates, seals in a durable inventory, and removes by ID. |
+| Validation resources | `make test-validation`, `make test-validation-docker` | Owned process-group, container, network, database, and temporary-path lifecycles: concurrent isolation, cleanup on every exit class, explicit recovery after forced termination, and refusal of active or identity-mismatched resources. |
 | CI integration | `make test-integration-ci` | The same PostgreSQL suites against the database URL and PostgreSQL service supplied by CI; the target deliberately rejects a missing URL. |
 
 `.github/workflows/ci.yml` composes those into separate build/static,

@@ -32,7 +32,7 @@ func TestSanitizeCredentialShapedErrors(t *testing.T) {
 
 func TestProductionParentRefusedBeforeConnection(t *testing.T) {
 	for _, backend := range []string{"postgres", "singlestore"} {
-		for _, action := range []string{"create", "drop", "probe"} {
+		for _, action := range []string{"create", "drop", "incarnation", "probe"} {
 			o := options{backend: backend, action: action, database: "conveyor_owned_test"}
 			var err error
 			if backend == "postgres" {
@@ -44,5 +44,22 @@ func TestProductionParentRefusedBeforeConnection(t *testing.T) {
 				t.Fatalf("%s %s did not refuse before network access: %v", backend, action, err)
 			}
 		}
+	}
+}
+
+func TestIncarnationGuardScope(t *testing.T) {
+	t.Setenv("FIXTURE_DSN", "admin:secret@tcp(foreign.invalid:3306)/conveyor_test")
+	for _, o := range []options{
+		{backend: "singlestore", action: "drop", dsnEnv: "FIXTURE_DSN", database: "conveyor_owned_test", expectIncarnation: "1"},
+		{backend: "postgres", action: "create", dsnEnv: "FIXTURE_DSN", database: "conveyor_owned_test", expectIncarnation: "1"},
+	} {
+		if err := run(o); err == nil || !strings.Contains(err.Error(), "expect-incarnation applies only") {
+			t.Fatalf("%s %s accepted an incarnation guard: %v", o.backend, o.action, err)
+		}
+	}
+	err := singlestore(context.Background(), options{backend: "singlestore", action: "incarnation", database: "conveyor_owned_test"},
+		"admin:secret@tcp(127.0.0.1:1)/conveyor_test")
+	if err == nil || !strings.Contains(err.Error(), "no database incarnation") {
+		t.Fatalf("SingleStore incarnation must be refused: %v", err)
 	}
 }

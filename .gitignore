@@ -12,3 +12,4 @@ web/test-results/
 /.claude-*/
 /.grok-*/
 output/
+__pycache__/
