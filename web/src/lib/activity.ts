@@ -11,6 +11,7 @@ import type {
   TaskRelation,
   WorkOrder,
   WorkOrderVerificationCheckpointGround,
+  WorkOrderVerificationCheckpointPermission,
   WorkspaceMembership,
 } from './types'
 
@@ -1403,6 +1404,12 @@ const verificationGroundLabels: Record<WorkOrderVerificationCheckpointGround['ki
   missing_grant: 'Missing grant',
   admission_refused: 'Admission refused',
   operation_unresolved: 'Unresolved external operation',
+}
+
+// The grantable form of a declared permission: kind:binding and any path.
+export function verificationPermissionText(permission: WorkOrderVerificationCheckpointPermission): string {
+  const binding = permission.target_binding ? `:${permission.target_binding}` : ''
+  return `${permission.kind}${binding}${permission.path ? ` ${permission.path}` : ''}`
 }
 
 // One line per checkpoint ground. A ground without an attempt states that no

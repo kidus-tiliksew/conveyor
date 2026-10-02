@@ -15,12 +15,16 @@ type Ground = {
   kind: string
   subject: { kind: 'kit' | 'ordinary'; kit_id?: string; exercise_id?: string; obligation_id?: string }
   attempt_id?: string
+  explanation?: string
+  permissions?: { kind: string; target_binding?: string; path?: string }[]
+  evidence_ids?: string[]
   server_verified: boolean
 }
 
 const missingGrant: Ground = {
   kind: 'missing_grant',
   subject: { kind: 'ordinary', obligation_id: 'network-check' },
+  permissions: [{ kind: 'network', target_binding: 'api' }],
   server_verified: true,
 }
 const blockedAndWaiting: Ground[] = [
@@ -28,15 +32,59 @@ const blockedAndWaiting: Ground[] = [
     kind: 'attempt_blocked',
     subject: { kind: 'kit', kit_id: 'sample', exercise_id: 'login' },
     attempt_id: 'run-b',
+    explanation: 'Login page refused the fixture account',
+    evidence_ids: ['ev-b'],
     server_verified: true,
   },
   {
     kind: 'attempt_waiting',
     subject: { kind: 'kit', kit_id: 'sample', exercise_id: 'approve' },
     attempt_id: 'run-w',
+    evidence_ids: ['ev-w'],
     server_verified: true,
   },
 ]
+
+// The context's own bounded pages: the attempts and evidence the grounds link.
+const attemptItems = [
+  { id: 'run-b', exercise_id: 'login', outcome: 'blocked', explanation: 'Login page refused the fixture account' },
+  { id: 'run-w', exercise_id: 'approve', outcome: 'waiting', explanation: 'Operator approval required' },
+].map((a) => ({
+  id: a.id,
+  context_id: 'cp',
+  run_id: a.id,
+  state: a.outcome,
+  at,
+  metadata: {
+    kind: 'kit',
+    kit_id: 'sample',
+    exercise_id: a.exercise_id,
+    outcome: a.outcome,
+    required_action: a.explanation,
+  },
+}))
+const evidenceItems = ['run-b', 'run-w'].map((run) => ({
+  id: `ev-${run.slice(-1)}`,
+  context_id: 'cp',
+  run_id: run,
+  state: 'evidence',
+  at,
+  metadata: { type: 'state_observation', captured_at: at },
+}))
+
+function evidenceDetail(id: string) {
+  return {
+    Envelope: {
+      id,
+      type: 'state_observation',
+      captured_at: at,
+      submitted_by: 'worker:verifier',
+      captured_by: { identity: 'kit-runner', kind: 'tool', attribution: 'self_reported' },
+      payload: { target: 'fixture', method: 'read', value: `observed ${id}` },
+      artifacts: [],
+    },
+  }
+}
 
 function summary(grounds: Ground[]) {
   return grounds
@@ -48,7 +96,15 @@ function summary(grounds: Ground[]) {
 
 async function fixture(
   page: Page,
-  options: { role?: string; grounds?: Ground[]; operations?: string[]; claimed?: boolean; refuseFirst?: boolean } = {},
+  options: {
+    role?: string
+    grounds?: Ground[]
+    operations?: string[]
+    claimed?: boolean
+    refuseFirst?: boolean
+    attempts?: boolean
+    referenceContext?: string
+  } = {},
 ) {
   const grounds = options.grounds ?? [missingGrant]
   const recoveries: Record<string, unknown>[] = []
@@ -110,7 +166,7 @@ async function fixture(
         checkpoint: {
           decision_request: `${reason}\nRequired operator action: ${requiredAction}`,
           verification: {
-            context_id: 'cp',
+            context_id: options.referenceContext ?? 'cp',
             head_sha: sha,
             reason,
             required_action: requiredAction,
@@ -190,6 +246,12 @@ async function fixture(
           overview: {},
         },
       })
+    const evidence = path.match(/\/verification\/contexts\/cp\/evidence\/([^/]+)$/)
+    if (evidence) return route.fulfill({ json: evidenceDetail(decodeURIComponent(evidence[1])) })
+    if (options.attempts && path.endsWith('/verification/contexts/cp/attempts'))
+      return route.fulfill({ json: { items: attemptItems } })
+    if (options.attempts && path.endsWith('/verification/contexts/cp/evidence'))
+      return route.fulfill({ json: { items: evidenceItems } })
     if (path.includes('/verification/')) return route.fulfill({ json: { items: [] } })
     return route.fulfill({ json: [] })
   })
@@ -209,12 +271,15 @@ test('pre-execution missing-grant checkpoint names grounds and recovers to verif
   await expect(entry).toContainText('Verification checkpoint — waiting on you')
   await expect(entry).toContainText(reason)
   await expect(entry).toContainText(`Required action: ${requiredAction}`)
-  await expect(entry.getByRole('list', { name: 'Checkpoint grounds' })).toContainText(
-    'Missing grant: ordinary network-check — no attempt ran; evidence missing',
-  )
+  const entryGrounds = entry.getByRole('list', { name: 'Checkpoint grounds' })
+  await expect(entryGrounds).toContainText('Missing grant: ordinary network-check — no attempt ran; evidence missing')
+  await expect(entryGrounds).toContainText('Requires network:api')
+  await expect(entryGrounds.getByRole('link')).toHaveCount(0)
+  await expect(entryGrounds.getByRole('button', { name: /Open evidence/ })).toHaveCount(0)
   await expect(entry).toContainText('released by attempt-1')
   const card = page.getByRole('region', { name: 'Verification checkpoint', exact: true })
   await expect(card).toContainText(requiredAction)
+  await expect(card.getByRole('list', { name: 'Checkpoint grounds' })).toContainText('Requires network:api')
   await expect(card).toContainText(sha.slice(0, 12))
   await expect(card).toContainText('Automatic replay is suppressed until an operator recovers this order.')
   await expect(card.getByRole('link', { name: 'cp' })).toHaveAttribute('href', '#verification-cp')
@@ -230,13 +295,50 @@ test('pre-execution missing-grant checkpoint names grounds and recovers to verif
   expect((recoveries[1].body as Record<string, unknown> | null)?.direction).toBeUndefined()
 })
 
-test('blocked and waiting checkpoints link their attempts', async ({ page }) => {
-  await fixture(page, { grounds: blockedAndWaiting })
+test('blocked and waiting checkpoints link their attempts and evidence', async ({ page }) => {
+  await fixture(page, { grounds: blockedAndWaiting, attempts: true })
   await page.goto(`/tasks/${taskId}/full`)
-  const grounds = verifyEntry(page).getByRole('list', { name: 'Checkpoint grounds' })
+  const entry = verifyEntry(page)
+  const grounds = entry.getByRole('list', { name: 'Checkpoint grounds' })
   await expect(grounds).toContainText('Blocked attempt: kit sample/login — attempt run-b')
+  await expect(grounds).toContainText('Login page refused the fixture account')
   await expect(grounds).toContainText('Waiting attempt: kit sample/approve — attempt run-w')
   await expect(grounds).not.toContainText('evidence missing')
+  for (const run of ['run-b', 'run-w']) {
+    const link = grounds.getByRole('link', { name: `Attempt ${run}` })
+    await expect(link).toHaveAttribute('href', `#verification-cp-attempt-${run}`)
+    // The link target is the attempt's row in this context's assertion table.
+    await expect(entry.locator(`#verification-cp-attempt-${run}`)).toContainText('no assertions recorded')
+  }
+  await grounds.getByRole('button', { name: /Open evidence ev-b/ }).click()
+  await expect(grounds.getByRole('region', { name: 'Structured evidence' })).toContainText('observed ev-b')
+  // The recovery card links the same attempts and evidence.
+  const card = page.getByRole('region', { name: 'Verification checkpoint', exact: true })
+  await expect(card.getByRole('link', { name: 'Attempt run-w' })).toHaveAttribute(
+    'href',
+    '#verification-cp-attempt-run-w',
+  )
+  await card.getByRole('button', { name: /Open evidence ev-w/ }).click()
+  await expect(card.getByRole('region', { name: 'Structured evidence' })).toContainText('observed ev-w')
+})
+
+test('a historical checkpoint context links grounds from its own records', async ({ page }) => {
+  // The order's reference names a newer context, so this sealed context
+  // rebuilds its attempt grounds from its attempt and evidence pages.
+  await fixture(page, { grounds: blockedAndWaiting, attempts: true, referenceContext: 'cp-newer' })
+  await page.goto(`/tasks/${taskId}/full`)
+  const entry = verifyEntry(page)
+  const grounds = entry.getByRole('list', { name: 'Checkpoint grounds' })
+  await expect(grounds).toContainText('Blocked attempt: kit sample/login — attempt run-b')
+  await expect(grounds).toContainText('Waiting attempt: kit sample/approve — attempt run-w')
+  await expect(grounds.getByRole('link', { name: 'Attempt run-b' })).toHaveAttribute(
+    'href',
+    '#verification-cp-attempt-run-b',
+  )
+  await expect(entry.locator('#verification-cp-attempt-run-b')).toBeVisible()
+  await grounds.getByRole('button', { name: /Open evidence ev-w/ }).click()
+  await expect(grounds.getByRole('region', { name: 'Structured evidence' })).toContainText('observed ev-w')
+  await expect(entry).toContainText(`Grounds: ${summary(blockedAndWaiting)}`)
 })
 
 test('unresolved operations require a typed disposition instead of direction', async ({ page }) => {

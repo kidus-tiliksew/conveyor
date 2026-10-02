@@ -102,6 +102,14 @@ func runVerificationMissingGrantCheckpoint(t *testing.T, x Fixture) {
 	if order.Checkpoint == nil || order.Checkpoint.Verification == nil || order.Checkpoint.Verification.ContextID != v.contextID || order.Checkpoint.Verification.HeadSHA != order.HeadSHA || len(order.Checkpoint.Verification.Grounds) != 1 || order.Checkpoint.Verification.Grounds[0].Kind != store.VerificationGroundMissingGrant {
 		t.Fatalf("checkpoint reference = %+v", order.Checkpoint)
 	}
+	// VK-13.5: the authenticated reference names the declared permission an
+	// operator grants, and the summary carries it for historical contexts.
+	if ground := order.Checkpoint.Verification.Grounds[0]; !reflect.DeepEqual(ground.Permissions, []core.WorkOrderVerificationCheckpointPermission{{Kind: "network", TargetBinding: "fixture"}}) || len(ground.EvidenceIDs) != 0 || ground.AttemptID != "" || ground.Truncated {
+		t.Fatalf("missing-grant reference ground = %+v", ground)
+	}
+	if !strings.Contains(header["checkpoint_grounds"], "requires network:fixture") {
+		t.Fatalf("checkpoint summary lacks permission: %q", header["checkpoint_grounds"])
+	}
 	orders, err := x.Backend.ListTaskWorkOrders(v.ctx, v.access.TaskID)
 	requireOK(t, err)
 	for _, o := range orders {
@@ -229,6 +237,15 @@ func runVerificationWaitingCheckpoint(t *testing.T, x Fixture) {
 	cp := observer.snapshot(t).Contexts[0].Result.Checkpoint
 	if cp == nil || len(cp.Grounds) != 1 || cp.Grounds[0].Kind != store.VerificationGroundAttemptWaiting || cp.Grounds[0].AttemptID != v.runID || cp.Grounds[0].Explanation != "Operator interaction required" || len(cp.Grounds[0].EvidenceIDs) != 1 || len(cp.EvidenceIDs) != 1 || len(cp.MissingSubjects) != 0 {
 		t.Fatalf("waiting checkpoint = %+v", cp)
+	}
+	// VK-13.5: the reference links the waiting attempt and its retained evidence.
+	order, err := x.Backend.GetWorkOrder(v.ctx, v.access.WorkOrderID)
+	requireOK(t, err)
+	if order.Checkpoint == nil || order.Checkpoint.Verification == nil || len(order.Checkpoint.Verification.Grounds) != 1 {
+		t.Fatalf("waiting reference = %+v", order.Checkpoint)
+	}
+	if ground := order.Checkpoint.Verification.Grounds[0]; ground.AttemptID != v.runID || !reflect.DeepEqual(ground.EvidenceIDs, cp.Grounds[0].EvidenceIDs) || ground.Explanation != "Operator interaction required" || !ground.ServerVerified {
+		t.Fatalf("waiting reference ground = %+v", ground)
 	}
 }
 

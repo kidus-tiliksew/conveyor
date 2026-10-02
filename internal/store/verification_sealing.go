@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
@@ -339,12 +340,35 @@ func verificationCheckpointSummary(grounds []VerificationCheckpointGround) strin
 		default:
 			part += " (no attempt ran; evidence missing)"
 		}
+		if len(g.Permissions) > 0 {
+			part += " requires " + strings.Join(verificationPermissionNames(g.Permissions), ",")
+		}
+		if len(g.EvidenceIDs) > 0 {
+			part += fmt.Sprintf(" [%d evidence]", len(g.EvidenceIDs))
+		}
 		if !g.ServerVerified {
 			part += " [verifier-reported]"
 		}
 		parts = append(parts, part)
 	}
 	return strings.Join(parts, "; ")
+}
+
+// verificationPermissionNames renders declared permissions as kind:binding
+// with an optional path, the form operators grant against (VK-12.2).
+func verificationPermissionNames(permissions []verification.Permission) []string {
+	names := []string{}
+	for _, p := range permissions {
+		name := p.Kind
+		if p.TargetBinding != "" {
+			name += ":" + p.TargetBinding
+		}
+		if p.Path != "" {
+			name += " " + p.Path
+		}
+		names = append(names, name)
+	}
+	return names
 }
 
 // VerificationSealedCommand supplies the sanitized immutable submission to the

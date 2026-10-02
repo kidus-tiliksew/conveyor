@@ -8,10 +8,14 @@ import type {
   VerificationMetadata,
   WorkOrder,
 } from '../../lib/types'
-import { verificationGroundText } from '../../lib/activity'
 import { absoluteTime, cn, duration } from '../../lib/utils'
 import { Badge } from '../ui/badge'
 import { useTaskVerification, useVerificationPages } from './use-task-detail'
+import {
+  attemptGroundsOf,
+  VerificationCheckpointGrounds,
+  verificationAttemptAnchor,
+} from './verification-checkpoint-grounds'
 import {
   EvidenceImage,
   imageArtifactOf,
@@ -190,7 +194,15 @@ function ContextBody({
 
   return (
     <>
-      <ResultBanner context={context} outcome={outcome} passed={passed} total={assertionList.length} order={order} />
+      <ResultBanner
+        taskId={taskId}
+        context={context}
+        outcome={outcome}
+        passed={passed}
+        total={assertionList.length}
+        order={order}
+        attempts={attemptList}
+      />
       <div className="divide-y divide-border/60">
         {eligible.length > 0 && (
           <Row label="Kits">
@@ -293,24 +305,29 @@ function ContextBody({
 }
 
 function ResultBanner({
+  taskId,
   context,
   outcome,
   passed,
   total,
   order,
+  attempts,
 }: {
+  taskId: string
   context: VerificationMetadata
   outcome: Outcome
   passed: number
   total: number
   order?: WorkOrder
+  attempts: VerificationMetadata[]
 }) {
   if (outcome === 'running' || outcome === 'queued' || outcome === 'pending') return null
   const head = short(context.metadata.source_sha)
   const tally = total > 0 ? `${passed} of ${total} assertions passed` : undefined
   if (outcome === 'needs_operator') {
-    // Grounds come from the work-order reference when it names this context;
-    // the bounded read projection supplies the same summary otherwise.
+    // Grounds come from the work-order reference when it names this context.
+    // A historical context rebuilds attempt grounds from its own pages, and
+    // the sealed summary names unstarted subjects and their permissions.
     const reference =
       order?.checkpoint?.verification?.context_id === context.id ? order.checkpoint.verification : undefined
     const groundsSummary = context.metadata.checkpoint_grounds?.trim()
@@ -330,13 +347,12 @@ function ResultBanner({
             </p>
           )}
           {reference && reference.grounds.length > 0 ? (
-            <ul aria-label="Checkpoint grounds" className="space-y-0.5 text-xs font-normal text-foreground/85">
-              {reference.grounds.map((ground, index) => (
-                <li key={`${ground.kind}:${ground.attempt_id ?? ''}:${index}`}>{verificationGroundText(ground)}</li>
-              ))}
-            </ul>
+            <VerificationCheckpointGrounds taskId={taskId} contextId={context.id} grounds={reference.grounds} />
           ) : (
-            groundsSummary && <p className="text-xs font-normal text-foreground/85">Grounds: {groundsSummary}</p>
+            <>
+              <RecordedAttemptGrounds taskId={taskId} contextId={context.id} attempts={attempts} />
+              {groundsSummary && <p className="text-xs font-normal text-foreground/85">Grounds: {groundsSummary}</p>}
+            </>
           )}
           {checkpointHead && (
             <p className="font-mono text-[11px] font-normal text-muted">
@@ -523,6 +539,21 @@ function CaptureThumb({
   )
 }
 
+function RecordedAttemptGrounds({
+  taskId,
+  contextId,
+  attempts,
+}: {
+  taskId: string
+  contextId: string
+  attempts: VerificationMetadata[]
+}) {
+  const evidence = useVerificationPages(taskId, contextId, 'evidence', 50)
+  const grounds = attemptGroundsOf(attempts, items(evidence))
+  if (grounds.length === 0) return null
+  return <VerificationCheckpointGrounds taskId={taskId} contextId={contextId} grounds={grounds} />
+}
+
 function AssertionTable({
   taskId,
   contextId,
@@ -546,6 +577,13 @@ function AssertionTable({
   const rows = [...assertions].sort((a, b) =>
     (exerciseName(attemptByRun.get(a.run_id)) ?? '').localeCompare(exerciseName(attemptByRun.get(b.run_id)) ?? ''),
   )
+  // Checkpoint grounds link here: each attempt's first row carries its anchor.
+  const anchored = new Set<string>()
+  const anchorFor = (runId: string) => {
+    if (!runId || anchored.has(runId)) return undefined
+    anchored.add(runId)
+    return verificationAttemptAnchor(contextId, runId)
+  }
   return (
     <ul className="divide-y divide-border/60 text-sm">
       {rows.map((assertion) => (
@@ -555,10 +593,15 @@ function AssertionTable({
           contextId={contextId}
           assertion={assertion}
           exercise={exerciseName(attemptByRun.get(assertion.run_id))}
+          anchor={anchorFor(assertion.run_id)}
         />
       ))}
       {silent.map((attempt) => (
-        <li key={attempt.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-1.5 text-muted">
+        <li
+          key={attempt.id}
+          id={anchorFor(attempt.id)}
+          className="flex flex-wrap items-center gap-x-3 gap-y-1 py-1.5 text-muted"
+        >
           <span
             className={cn(
               'inline-flex size-4 shrink-0 items-center justify-center rounded-full',
@@ -569,7 +612,15 @@ function AssertionTable({
           </span>
           <span className="min-w-0 flex-1 break-words">
             {exerciseName(attempt) ?? attempt.id}
-            <span> · no assertions recorded{attempt.state === 'failed' ? ', attempt failed' : ''}</span>
+            <span>
+              {' '}
+              · no assertions recorded
+              {attempt.state === 'failed'
+                ? ', attempt failed'
+                : attemptStateNotes[attempt.metadata.outcome ?? attempt.state]
+                  ? `, attempt ${attemptStateNotes[attempt.metadata.outcome ?? attempt.state]}`
+                  : ''}
+            </span>
           </span>
         </li>
       ))}
@@ -577,22 +628,31 @@ function AssertionTable({
   )
 }
 
+const attemptStateNotes: Record<string, string> = {
+  blocked: 'blocked',
+  waiting: 'waiting on an operator',
+  timed_out: 'timed out',
+  cancelled: 'cancelled',
+}
+
 function AssertionRow({
   taskId,
   contextId,
   assertion,
   exercise,
+  anchor,
 }: {
   taskId: string
   contextId: string
   assertion: VerificationMetadata
   exercise?: string
+  anchor?: string
 }) {
   const [open, setOpen] = useState(false)
   const pass = assertion.metadata.outcome === 'pass'
   const evidenceId = assertion.metadata.evidence_id || assertion.id
   return (
-    <li className="py-1.5 first:pt-0 last:pb-0">
+    <li id={anchor} className="py-1.5 first:pt-0 last:pb-0">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
         <span
           className={cn(

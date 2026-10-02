@@ -94,7 +94,7 @@ func PrepareVerificationCompletion(ctx context.Context, task core.Task, order co
 		// verification_context_id stays empty, so review admission is impossible.
 		reference := &core.WorkOrderVerificationCheckpoint{ContextID: c.ContextID, HeadSHA: order.HeadSHA, Reason: c.SealedCheckpoint.Reason, RequiredAction: c.SealedCheckpoint.RequiredAction, Summary: c.SealedCheckpoint.Summary, Grounds: []core.WorkOrderVerificationCheckpointGround{}, OperationIDs: c.SealedCheckpoint.OperationIDs}
 		for _, g := range c.SealedCheckpoint.Grounds {
-			reference.Grounds = append(reference.Grounds, core.WorkOrderVerificationCheckpointGround{Kind: g.Kind, Subject: g.Subject, AttemptID: g.AttemptID, ServerVerified: g.ServerVerified})
+			reference.Grounds = append(reference.Grounds, verificationGroundReference(g))
 		}
 		order.Checkpoint = &core.WorkOrderCheckpoint{DecisionRequest: c.SealedCheckpoint.Reason + "\nRequired operator action: " + c.SealedCheckpoint.RequiredAction, Verification: reference}
 		clearActiveAttempt(&order)
@@ -142,4 +142,36 @@ func PrepareVerificationCompletion(ctx context.Context, task core.Task, order co
 	}
 	out.Task, out.Order, out.Job = task, order, job
 	return out, nil
+}
+
+// verificationGroundReference bounds one sealed ground for the work-order
+// reference (feature-verification-kit-execution VK-13.5). Identifiers and
+// declared permissions are copied from server records; explanation text is
+// already redacted at attempt termination and is truncated here.
+func verificationGroundReference(g VerificationCheckpointGround) core.WorkOrderVerificationCheckpointGround {
+	limit := core.WorkOrderVerificationGroundListLimit
+	out := core.WorkOrderVerificationCheckpointGround{Kind: g.Kind, Subject: g.Subject, AttemptID: g.AttemptID, ServerVerified: g.ServerVerified}
+	if explanation := []rune(g.Explanation); len(explanation) > core.WorkOrderVerificationGroundTextLimit {
+		out.Explanation, out.Truncated = string(explanation[:core.WorkOrderVerificationGroundTextLimit]), true
+	} else {
+		out.Explanation = g.Explanation
+	}
+	for i, p := range g.Permissions {
+		if i == limit {
+			out.Truncated = true
+			break
+		}
+		out.Permissions = append(out.Permissions, core.WorkOrderVerificationCheckpointPermission{Kind: p.Kind, TargetBinding: p.TargetBinding, Path: p.Path})
+	}
+	if len(g.EvidenceIDs) > limit {
+		out.EvidenceIDs, out.Truncated = append([]string{}, g.EvidenceIDs[:limit]...), true
+	} else {
+		out.EvidenceIDs = append([]string(nil), g.EvidenceIDs...)
+	}
+	if len(g.OperationIDs) > limit {
+		out.OperationIDs, out.Truncated = append([]string{}, g.OperationIDs[:limit]...), true
+	} else {
+		out.OperationIDs = append([]string(nil), g.OperationIDs...)
+	}
+	return out
 }

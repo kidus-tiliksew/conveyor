@@ -868,12 +868,33 @@ type WorkOrderVerificationCheckpoint struct {
 	OperationIDs   []string                                `json:"operation_ids,omitempty"`
 }
 
+// WorkOrderVerificationCheckpointGround is the bounded authenticated view of
+// one sealed ground (VK-13.5): declared permissions for an unstarted subject,
+// and the attempt, evidence and operation identifiers an operator opens.
+// Lists hold at most WorkOrderVerificationGroundListLimit entries; Truncated
+// reports any omission.
 type WorkOrderVerificationCheckpointGround struct {
-	Kind           string              `json:"kind"`
-	Subject        VerificationSubject `json:"subject"`
-	AttemptID      string              `json:"attempt_id,omitempty"`
-	ServerVerified bool                `json:"server_verified"`
+	Kind           string                                      `json:"kind"`
+	Subject        VerificationSubject                         `json:"subject"`
+	AttemptID      string                                      `json:"attempt_id,omitempty"`
+	Explanation    string                                      `json:"explanation,omitempty"`
+	Permissions    []WorkOrderVerificationCheckpointPermission `json:"permissions,omitempty"`
+	EvidenceIDs    []string                                    `json:"evidence_ids,omitempty"`
+	OperationIDs   []string                                    `json:"operation_ids,omitempty"`
+	Truncated      bool                                        `json:"truncated,omitempty"`
+	ServerVerified bool                                        `json:"server_verified"`
 }
+
+type WorkOrderVerificationCheckpointPermission struct {
+	Kind          string `json:"kind"`
+	TargetBinding string `json:"target_binding,omitempty"`
+	Path          string `json:"path,omitempty"`
+}
+
+const (
+	WorkOrderVerificationGroundListLimit = 20
+	WorkOrderVerificationGroundTextLimit = 512
+)
 
 type WorkOrderAuthorityConflictCitation struct {
 	DocumentID           string `json:"document_id"`

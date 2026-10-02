@@ -978,7 +978,18 @@ export interface WorkOrderVerificationCheckpointGround {
     | 'operation_unresolved'
   subject: VerificationSubjectRef
   attempt_id?: string
+  explanation?: string
+  permissions?: WorkOrderVerificationCheckpointPermission[]
+  evidence_ids?: string[]
+  operation_ids?: string[]
+  truncated?: boolean
   server_verified: boolean
+}
+
+export interface WorkOrderVerificationCheckpointPermission {
+  kind: string
+  target_binding?: string
+  path?: string
 }
 
 export interface WorkOrderCheckpointCitation {

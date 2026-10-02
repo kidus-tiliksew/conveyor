@@ -2,12 +2,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { Check, Clock3, FileText, Link2, RotateCcw, TriangleAlert } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
-import {
-  type CurrentExecutionState,
-  deriveCurrentExecutionState,
-  pendingPlanRevisionRequest,
-  verificationGroundText,
-} from '../../lib/activity'
+import { type CurrentExecutionState, deriveCurrentExecutionState, pendingPlanRevisionRequest } from '../../lib/activity'
 import { confirmRequirementVersion, confirmSystemDesignVersion, recoverWorkOrder } from '../../lib/api'
 import { errorMessage } from '../../lib/errors'
 import type { ActivityItem, WorkOrderCheckpointCitation, WorkOrderCheckpointPendingProposal } from '../../lib/types'
@@ -16,6 +11,7 @@ import { Badge } from '../ui/badge'
 import { Button } from '../ui/button'
 import { type Proposal, proposalIdentity } from './system-design-proposal-card'
 import { TaskContextAttachmentDialog } from './task-context-attachment-dialog'
+import { VerificationCheckpointGrounds } from './verification-checkpoint-grounds'
 
 export function hasWorkerRecovery(item: ActivityItem) {
   const state = deriveCurrentExecutionState(item)
@@ -236,11 +232,12 @@ function VerificationCheckpointRecovery({ item, state }: { item: ActivityItem; s
         <dd>{state.retry}</dd>
       </dl>
       {checkpoint.grounds.length > 0 && (
-        <ul aria-label="Checkpoint grounds" className="space-y-1 text-xs leading-5 text-foreground">
-          {checkpoint.grounds.map((ground, index) => (
-            <li key={`${ground.kind}:${ground.attempt_id ?? ''}:${index}`}>{verificationGroundText(ground)}</li>
-          ))}
-        </ul>
+        <VerificationCheckpointGrounds
+          taskId={item.task.id}
+          contextId={checkpoint.context_id}
+          grounds={checkpoint.grounds}
+          className="leading-5 text-foreground"
+        />
       )}
       {operations.length > 0 ? (
         <div className="space-y-1 rounded border border-attention/30 bg-surface/60 p-2 text-xs leading-5 text-muted">
