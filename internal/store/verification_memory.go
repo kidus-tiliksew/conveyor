@@ -63,6 +63,7 @@ func (m *volatileMemory) applyVerification(ctx context.Context, lease taskops.Ta
 	}
 	ws, _ := WorkspaceFromContext(ctx)
 	rows := m.verificationRowsLocked(ws, c.Access.TaskID)
+	c.SubmittedHeadSHA = m.workOrders[c.Access.WorkOrderID].HeadSHA
 	mutation, err := PrepareVerificationMutation(ctx, verificationSecrets(secrets), c, rows, now)
 	if err != nil {
 		return VerificationReceipt{}, err

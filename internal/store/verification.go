@@ -233,6 +233,10 @@ type VerificationCommand struct {
 	// SealedCheckpoint is copied from the sealed result for the lifecycle
 	// adapter (VK-13.3); it is never decoded from a request.
 	SealedCheckpoint *VerificationCheckpoint
+	// SubmittedHeadSHA is the locked work order's task-repository head, bound
+	// by the backend adapter inside its transaction (VK-13.3). It is never
+	// decoded from a request.
+	SubmittedHeadSHA string
 }
 
 const (

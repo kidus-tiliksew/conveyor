@@ -17,6 +17,7 @@ import (
 // AC-3.3, AC-3.4 and AC-4.3: grounded operator checkpoints on every backend.
 func runVerificationCheckpoints(t *testing.T, x Fixture) {
 	t.Run("MissingGrantBeforeExecution", func(t *testing.T) { runVerificationMissingGrantCheckpoint(t, x) })
+	t.Run("TaskRepositoryHead", func(t *testing.T) { runVerificationCheckpointTaskRepositoryHead(t, x) })
 	t.Run("WaitingAttempt", func(t *testing.T) { runVerificationWaitingCheckpoint(t, x) })
 	t.Run("UnsupportedOutcomeLeavesStateUnchanged", func(t *testing.T) { runVerificationUnsupportedOutcome(t, x) })
 }
@@ -25,7 +26,11 @@ func runVerificationCheckpoints(t *testing.T, x Fixture) {
 // the fixture helper's automatic grant, so no attempt can be admitted.
 func newUngrantedVerificationFixture(t *testing.T, x Fixture, permissions ...verification.Permission) verificationFixture {
 	t.Helper()
-	v := newVerificationFixture(t, x, true)
+	return registerUngrantedObligation(t, newVerificationFixture(t, x, true), permissions...)
+}
+
+func registerUngrantedObligation(t *testing.T, v verificationFixture, permissions ...verification.Permission) verificationFixture {
+	t.Helper()
 	obligation := store.VerificationObligation{ID: "ungranted-" + v.access.TaskID, Description: "Exercise needing operator permission", Sources: []store.VerificationCitation{{DocumentID: "req-fixture", Version: 1, SectionID: "AC-1.1"}}, Contract: verification.Exercise{ID: "ungranted", Kind: "script", Argv: []string{"fixture"}, TimeoutSeconds: 30, RequiredAssertions: []verification.Assertion{}, RetryPolicy: "safe_to_replay", SafetyBasis: "read-only observation", Permissions: permissions}}
 	r := v.apply(t, store.VerificationCommand{Kind: store.VerificationRegisterObligation, Obligation: &obligation})
 	v.subject = core.VerificationSubject{Kind: "ordinary", ObligationID: obligation.ID, ContractDigest: r.Digest}
@@ -174,6 +179,39 @@ func runVerificationMissingGrantCheckpoint(t *testing.T, x Fixture) {
 		if o.Stage == core.StageReview {
 			t.Fatal("recovery admitted review")
 		}
+	}
+}
+
+// runVerificationCheckpointTaskRepositoryHead retains the task repository's
+// submitted head when an additional repository sorts first in the scope
+// (VK-13.3; req-verification-kits REQ-5/AC-5.2).
+func runVerificationCheckpointTaskRepositoryHead(t *testing.T, x Fixture) {
+	primary := core.VerificationRevision{Repository: "zzz-primary", RemoteIdentity: "https://example.test/zzz-primary", SHA: strings.Repeat("a", 40)}
+	secondary := core.VerificationRevision{Repository: "aaa-secondary", RemoteIdentity: "https://example.test/aaa-secondary", SHA: strings.Repeat("b", 40)}
+	v := registerUngrantedObligation(t, newVerificationFixtureIn(t, x, []core.VerificationRevision{primary, secondary}, true))
+	if v.revisions[0] != secondary {
+		t.Fatalf("fixture scope order = %+v", v.revisions)
+	}
+	coverage := verificationFixtureCoverage(v.snapshot(t))
+	v.apply(t, store.VerificationCommand{Kind: store.VerificationSeal, Submission: verificationCheckpointSubmission(coverage)})
+	operator, owner := bootstrapOwner(t, x)
+	operator = store.WithActor(operator, store.Actor{ID: store.UserActorID(owner.ID), Role: core.ActorUser})
+	observer := v
+	observer.ctx, observer.access.UserID = operator, owner.ID
+	cp := observer.snapshot(t).Contexts[0].Result.Checkpoint
+	if cp == nil || cp.HeadSHA != primary.SHA {
+		t.Fatalf("checkpoint head = %+v, want %s", cp, primary.SHA)
+	}
+	page, err := x.Backend.(store.VerificationReader).ReadVerificationPage(operator, store.VerificationAccess{TaskID: v.access.TaskID, UserID: owner.ID}, store.VerificationPageRequest{Kind: "contexts", ContextID: v.contextID})
+	requireOK(t, err)
+	var header map[string]string
+	if len(page.Items) != 1 || json.Unmarshal(page.Items[0].Metadata, &header) != nil || header["checkpoint_head"] != primary.SHA {
+		t.Fatalf("checkpoint projection head = %+v", header)
+	}
+	order, err := x.Backend.GetWorkOrder(v.ctx, v.access.WorkOrderID)
+	requireOK(t, err)
+	if order.Checkpoint == nil || order.Checkpoint.Verification == nil || order.Checkpoint.Verification.HeadSHA != primary.SHA {
+		t.Fatalf("checkpoint reference = %+v", order.Checkpoint)
 	}
 }
 

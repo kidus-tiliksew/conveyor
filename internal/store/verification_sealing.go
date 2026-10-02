@@ -180,8 +180,18 @@ func ValidateVerificationSeal(c VerificationCommand, rows []VerificationRow, now
 	}
 	checkpoint := s.Outcome == "operator_action_required"
 	record := &VerificationCheckpoint{Reason: s.Feedback, RequiredAction: s.RequiredAction, Grounds: []VerificationCheckpointGround{}, Subjects: []VerificationCheckpointSubject{}, MissingSubjects: []core.VerificationSubject{}, OperationIDs: []string{}, EvidenceIDs: []string{}, SessionID: c.Access.Claim.SessionID, WorkOrderAttemptID: c.Access.WorkOrderAttemptID}
-	if len(vc.Revisions) > 0 {
-		record.HeadSHA = vc.Revisions[0].SHA
+	if checkpoint {
+		// VK-13.3: the checkpoint retains the task repository's submitted head
+		// from the locked order. Scope revisions are sorted by repository name,
+		// so an additional repository can precede the task's own revision.
+		for _, revision := range vc.Revisions {
+			if c.SubmittedHeadSHA != "" && revision.SHA == c.SubmittedHeadSHA {
+				record.HeadSHA = revision.SHA
+			}
+		}
+		if record.HeadSHA == "" {
+			return nil, ErrVerificationState
+		}
 	}
 	record.Claim = VerificationRetainedClaim{WorkerID: c.Access.Claim.WorkerID, ClaimantID: c.Access.Claim.ClaimantID, SessionID: c.Access.Claim.SessionID, WorkOrderAttemptID: c.Access.WorkOrderAttemptID, ClientTokenHash: verificationHash([]byte(c.Access.ClientToken))}
 	failed, blocked := false, false

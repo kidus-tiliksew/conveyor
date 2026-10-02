@@ -122,6 +122,7 @@ func (s *Store) applyVerification(ctx context.Context, lease taskops.TaskLease, 
 		if err != nil {
 			return err
 		}
+		c.SubmittedHeadSHA = order.HeadSHA
 		mutation, err := store.PrepareVerificationMutation(ctx, verificationSecretSnapshot(secrets), c, verificationRows(records), time.Now().UTC())
 		if err != nil {
 			return err
