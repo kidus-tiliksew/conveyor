@@ -61,6 +61,9 @@ type kitVerifier struct {
 	task                          core.Task
 	snapshot                      store.VerificationSnapshot
 	config                        *config.Config
+	configPath                    string
+	toolchain                     *kitToolchain
+	tools                         *kitToolResolution
 	coverage                      store.VerificationCoverage
 	output                        io.Writer
 	redactor                      *redact.Redactor
@@ -107,7 +110,7 @@ func verifyKits(ctx context.Context, rpc kitRPC, root, taskID string, o kitVerif
 	if err != nil {
 		return err
 	}
-	v.config = cfg
+	v.config, v.configPath = cfg, o.configPath
 	if o.contextID == "" {
 		err = rpc.call(ctx, "prepare_verification", workorder.VerificationPrepareRequest{RequestKey: "kit-" + v.order.AttemptID}, &v.snapshot)
 	} else {
@@ -291,7 +294,7 @@ func (v *kitVerifier) run(ctx context.Context, subject store.VerificationSubject
 	}
 	vc := v.snapshot.Contexts[0]
 	kitRoot := v.root
-	v.ui = nil
+	v.ui, v.toolchain, v.tools = nil, nil, nil
 	if subject.Subject.Kind == "kit" {
 		pins := []verification.Pin{}
 		for _, p := range vc.GoverningPins {
@@ -392,6 +395,28 @@ func (v *kitVerifier) run(ctx context.Context, subject store.VerificationSubject
 			return fmt.Errorf("attempt %s already exists (%s); retained evidence retried without relaunch; reconcile or supply an authorized --retry-key", a.ID, a.State)
 		}
 	}
+	// Toolchain preflight runs before start_verification_attempt and operation
+	// registration. A predictable failure starts no attempt, registers no
+	// operation, launches no child and reports no execution
+	// (feature-verification-kit-execution VK-4.2; component-harness-execution
+	// VK-EXEC-3).
+	credentials := append(append(append([]string{}, secrets...), kitParentSecrets()...), kitApprovedSecrets()...)
+	credentials = append(credentials, v.rpc.client.token, v.rpc.claimToken)
+	toolchain, err := resolveKitToolchain(v.config, v.configPath, v.rpc.client.base, v.rpc.client.workspace, v.task.Repo, credentials)
+	if err != nil {
+		return err
+	}
+	if err = toolchain.checkEnvironmentKeys(env); err != nil {
+		return err
+	}
+	tools, err := toolchain.preflight(core.VerificationOperationSubject(subject.Subject), e, cwd, v.ui, v.uiRoot, v.redactor)
+	if err != nil {
+		return err
+	}
+	for key, value := range toolchain.attributes(tools) {
+		environment.Attributes[key] = value
+	}
+	v.toolchain, v.tools = &toolchain, &tools
 	var receipt store.VerificationReceipt
 	if err = v.rpc.call(ctx, "start_verification_attempt", workorder.VerificationStartRequest{ContextID: vc.ID, StartKey: startKey, Subject: subject.Subject, LocalActions: local, GrantID: grant.ID, EffectiveActions: effective, EffectivePermissions: e.Permissions, SafeInputs: v.safeInputs, Environment: environment, Coverage: v.coverage, ReplayAuthorizationID: v.replayAuthorization}, &receipt); err != nil {
 		return err

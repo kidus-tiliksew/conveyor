@@ -504,6 +504,51 @@ func (f *fixture) prepareRunner() (string, string, string) {
 	return coveragePath, inputsPath, configPath
 }
 
+// unavailableToolchain covers feature-verification-kit-execution VK-4.2 and
+// component-verification-strategy VK-TEST-3: an entrypoint missing from the
+// default search path fails toolchain preflight without an attempt, evidence
+// or operation. A verification_toolchains record naming a directory with that
+// entrypoint lets the same claim run it.
+func (f *fixture) unavailableToolchain(coveragePath, inputsPath, configPath string) {
+	t := f.t
+	out, err := f.runner(coveragePath, inputsPath, configPath, false).CombinedOutput()
+	if err == nil || !bytes.Contains(out, []byte("toolchain preflight refused")) || !bytes.Contains(out, []byte("verification_toolchains")) {
+		t.Fatalf("missing entrypoint passed toolchain preflight: %v %s", err, out)
+	}
+	f.refresh()
+	if len(f.snapshot.Attempts) != 0 || len(f.snapshot.Evidence) != 0 || len(f.snapshot.Operations) != 0 {
+		t.Fatalf("toolchain preflight consumed work: %+v", f.snapshot.Attempts)
+	}
+	if err := f.rpc("submit_verification", workorder.VerificationSubmitRequest{ContextID: f.snapshot.Contexts[0].ID, Outcome: "succeeded", Coverage: f.coverage}, nil); err == nil {
+		t.Fatal("unstarted subject passed")
+	}
+	bin := t.TempDir()
+	must(t, os.WriteFile(filepath.Join(bin, "vk10-unavailable-integration"), []byte("#!/bin/sh\nexec sh .conveyor/kits/vk10-script/run.sh \"$@\"\n"), 0700))
+	search := []string{bin}
+	for _, dir := range []string{"/usr/local/bin", "/usr/bin", "/bin"} {
+		if info, err := os.Stat(dir); err == nil && info.IsDir() {
+			search = append(search, dir)
+		}
+	}
+	data, err := os.ReadFile(configPath)
+	must(t, err)
+	var document map[string]any
+	must(t, json.Unmarshal(data, &document))
+	document["verification_toolchains"] = []config.VerificationToolchain{{Server: f.api.URL, Workspace: f.ws, Repository: "conveyor", SearchPaths: search}}
+	write(t, configPath, core.JSONPayload(document))
+	_, err = config.Load(configPath)
+	must(t, err)
+	if out, err := f.runner(coveragePath, inputsPath, configPath, false).CombinedOutput(); err != nil {
+		t.Fatalf("configured toolchain CLI: %v: %s", err, out)
+	}
+	f.refresh()
+	if len(f.snapshot.Attempts) != 1 || f.snapshot.Attempts[0].State != "succeeded" || f.snapshot.Attempts[0].Environment.Attributes["toolchain_scope"] != "configured" {
+		t.Fatalf("configured toolchain attempt: %+v", f.snapshot.Attempts)
+	}
+	must(t, f.rpc("submit_verification", workorder.VerificationSubmitRequest{ContextID: f.snapshot.Contexts[0].ID, Outcome: "succeeded", Coverage: f.coverage}, nil))
+	f.review()
+}
+
 func (f *fixture) runner(coveragePath, inputsPath, configPath string, ui bool, extra ...string) *exec.Cmd {
 	args := []string{"--server", f.api.URL, "--workspace", f.ws, "kit", "verify", f.task.ID, "--config", configPath, "--coverage", coveragePath, "--inputs", inputsPath, "--context-id", f.snapshot.Contexts[0].ID, "--attempt-root", filepath.Join(f.t.TempDir(), "attempts")}
 	if ui {
@@ -964,18 +1009,19 @@ func Run(t *testing.T, factory func(*testing.T) store.Backend) {
 			f.fail = !f.unavailable && !f.skipped
 			f.mu.Unlock()
 			coverage, inputs, cfg := f.prepareRunner()
+			if f.unavailable {
+				f.unavailableToolchain(coverage, inputs, cfg)
+				return
+			}
 			out, err := f.runner(coverage, inputs, cfg, false).CombinedOutput()
 			if err == nil {
-				t.Fatalf("unavailable or failed exercise passed: %s", out)
+				t.Fatalf("skipped or failed exercise passed: %s", out)
 			}
 			f.refresh()
 			if len(f.snapshot.Attempts) != 1 {
 				t.Fatalf("expected one attempt: %+v", f.snapshot.Attempts)
 			}
 			oldRun := f.snapshot.Attempts[0]
-			if f.unavailable && len(f.snapshot.Evidence) != 0 {
-				t.Fatal("unavailable integration fabricated evidence")
-			}
 			if f.skipped {
 				for _, item := range f.snapshot.Evidence {
 					if item.Envelope.Type != "execution_report" {
@@ -985,11 +1031,8 @@ func Run(t *testing.T, factory func(*testing.T) store.Backend) {
 			}
 			outcome := "feedback"
 			expected := "failed"
-			if f.unavailable || f.skipped {
-				outcome = "operator_action_required"
-				expected = "blocked"
-			}
 			if f.skipped {
+				outcome = "operator_action_required"
 				expected = "waiting"
 			}
 			if oldRun.State != expected {
@@ -1001,7 +1044,7 @@ func Run(t *testing.T, factory func(*testing.T) store.Backend) {
 			must(t, f.rpc("submit_verification", workorder.VerificationSubmitRequest{ContextID: f.snapshot.Contexts[0].ID, Outcome: outcome, Coverage: f.coverage, Feedback: "Fixture exercise requires correction or restoration of its unavailable integration."}, nil))
 			task, err := f.b.GetTask(f.ctx, f.task.ID)
 			must(t, err)
-			if f.unavailable || f.skipped {
+			if f.skipped {
 				if task.NextStage != core.StageVerify {
 					t.Fatal("blocked exercise advanced")
 				}
@@ -1024,7 +1067,6 @@ func Run(t *testing.T, factory func(*testing.T) store.Backend) {
 				f.claim(core.StageImplement)
 				must(t, f.rpc("submit_for_review", map[string]string{"head_sha": f.head}, nil))
 			}
-			f.unavailable = false
 			f.skipped = false
 			f.mu.Lock()
 			f.fail = false

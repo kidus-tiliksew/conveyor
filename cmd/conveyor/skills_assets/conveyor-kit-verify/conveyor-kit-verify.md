@@ -182,6 +182,61 @@ the safe inputs file. Permission admission does not sandbox arbitrary code;
 execute only in an operator-authorized environment that enforces the required
 restrictions (VK-4).
 
+## Toolchain environment and preflight
+
+Verification children use the default toolchain unless the local execution
+configuration has a `verification_toolchains` record for the exact server,
+workspace and repository (VK-4.2). The default is
+`PATH=/usr/local/bin:/usr/bin:/bin`, `LANG=C.UTF-8`, and an attempt-private
+`HOME` and `TMPDIR`. Repository content, workspace or task policy, and the
+parent environment cannot select, create or widen a record.
+
+```yaml
+verification_toolchains:
+  - server: https://conveyor.example
+    workspace: demo
+    repository: funnelflux
+    search_paths: [/opt/homebrew/bin, /Users/operator/go/bin, /usr/local/bin, /usr/bin, /bin]
+    home: /Users/operator          # optional; omit to keep the private HOME
+    settings:                      # optional; only these keys are accepted
+      GOPATH: /Users/operator/go
+      GOMODCACHE: /Users/operator/go/pkg/mod
+      GOCACHE: /Users/operator/Library/Caches/go-build
+```
+
+A record replaces `PATH` with `search_paths` in order. The closed setting keys
+are `GOPATH`, `GOROOT`, `GOENV`, `GOCACHE`, `GOMODCACHE`, `XDG_CONFIG_HOME`,
+`XDG_CACHE_HOME` and `npm_config_cache`. The section holds at most 32 records;
+a record holds at most 32 search paths; each path is at most 4096 bytes.
+Values are literal absolute paths: `$` variables, a leading `~`, relative
+paths, empty `GOPATH` list elements, control characters and a `:` inside one
+search directory are refused at load. `GOENV` also accepts `off`. Two records
+for one scope are refused. Values equal to a parent factory, forge or session
+credential, or to an approved `CONVEYOR_KIT_SECRET_*` value, are refused
+without echoing the value. The runner never discovers package-manager
+prefixes, sources shell startup files, installs tools or copies user
+configuration. Only the operator edits this section; never add or widen a
+record on the operator's behalf.
+
+Before `start_verification_attempt` and before any operation registration,
+the runner preflights each subject. It resolves the entrypoint, every
+`executable` prerequisite and a requested UI entrypoint through the snapshot.
+For a configured record it also checks the search directories, `home`,
+`GOROOT`, the `GOENV` file and `XDG_CONFIG_HOME`, and each configured cache
+location that already exists. A failure prints `toolchain preflight refused`
+with the subject, the failed prerequisite or configuration field, the search
+path and the `verification_toolchains` remedy. It starts no attempt, registers
+no operation, launches no child and reports no execution. Report that
+diagnostic and the operator act it names. With a matching unrevoked grant, it
+is the runner's admission refusal for that subject (VK-13.2
+`admission_refused`). A tool that changes after preflight or during execution
+blocks the attempt through the existing outcome path.
+
+A configured `home` exposes operator-approved tool configuration and can make
+caches shared between runs. A configured directory is neither a filesystem or
+network grant nor a sandbox; the runner never creates or cleans shared `HOME`
+or cache directories.
+
 Run from the dedicated worktree, substituting the actual context and paths:
 
 ```sh
@@ -209,10 +264,16 @@ limitation rather than claim those repositories were executed.
 The runner executes selected kit exercises, then covered ordinary obligations.
 It checks HEAD and cleanliness before and during execution, supervises process
 groups, limits runtime by the exercise and claim deadlines, and stops on claim
-loss, cancellation or grant revocation. Children receive minimal environment,
-approved bindings, JSON `CONVEYOR_KIT_INPUTS`, and a private
-`CONVEYOR_KIT_ATTEMPT_DIR`. The runner records resolved executable hashes before
-and after; unavailable deployment/external state stays `unknown`.
+loss, cancellation or grant revocation. Children receive the resolved toolchain
+environment, approved bindings, JSON `CONVEYOR_KIT_INPUTS`, and a private
+`CONVEYOR_KIT_ATTEMPT_DIR`. Each child environment key is unique; a collision
+with a toolchain or runner key is refused. Evidence environment attributes
+record the toolchain scope and search path, the `HOME` mode, fingerprints of
+`home` and setting values, the child environment key names, and the resolved
+entrypoint, prerequisite and UI paths with SHA-256 digests. The runner checks
+those identities again after execution. No credential value or credential
+hash is recorded. Transitive dependencies and deployment/external state stay
+`unknown`.
 
 ## Evidence and success
 
