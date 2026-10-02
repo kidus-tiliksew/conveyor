@@ -30,6 +30,13 @@ Conveyor applies that answer to agent-written software:
   architecture: document confirmation, plan approval, merge approval, and
   the review contract that forces every delivery to be judged against
   pinned authority.
+- An optional documentation-closure gate extends inspection to durable docs.
+  A repository that declares `.conveyor/docs.yaml` makes a behavior-changing
+  task update the declared docs in its own pull request, or state an exact
+  `docs: none` reason, against a declaration pinned at task start from the
+  base branch so the delivery cannot weaken its own gate.
+  The offline `conveyor docs validate` command checks that declaration against
+  the repository's tracked files.
 - Deviation is detected, not prevented. Merges that touch governed code
   without engaging the design, deliveries that outlive the intent they
   served, changes made outside the pipeline entirely: each raises a

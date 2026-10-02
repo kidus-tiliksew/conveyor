@@ -4233,3 +4233,95 @@ func TestTriagePromptOverageSuppressesAgent(t *testing.T) {
 		t.Fatalf("budget rejection missing; calls=%d err=%v", agent.calls, err)
 	}
 }
+
+func TestValidateDocumentationAssessmentRequiresDisjointReasonedAssessment(t *testing.T) {
+	t.Parallel()
+	enabled := func() *core.DocumentationPolicy {
+		return &core.DocumentationPolicy{Enabled: true, BaseSHA: strings.Repeat("a", 40), ContentHash: "sha256:" + strings.Repeat("b", 64), Paths: []string{"docs/**"}, NoneStatement: "docs: none", ReasonRequired: true}
+	}
+	off := &core.DocumentationPolicy{OffReason: store.DocumentationOffAbsent}
+	withDocs := &core.DocumentationGateEvidence{HeadSHA: "head", MatchedPaths: []string{"docs/guide.md"}}
+	withNone := &core.DocumentationGateEvidence{HeadSHA: "head", NoneStatement: "docs: none", NoneReason: "behavior unchanged"}
+	empty := &core.DocumentationGateEvidence{HeadSHA: "head"}
+	tests := []struct {
+		name       string
+		policy     *core.DocumentationPolicy
+		evidence   *core.DocumentationGateEvidence
+		verdict    string
+		assessment *core.DocumentationAssessment
+		want       string
+		sentinel   bool
+	}{
+		{name: "pinned policy requires assessment", policy: enabled(), evidence: withDocs, verdict: "approve", want: "assessment is required"},
+		{name: "unpinned policy and no assessment accepted", verdict: "approve"},
+		{name: "off policy applicable false accepted", policy: off, verdict: "approve", assessment: &core.DocumentationAssessment{Applicable: false, Summary: "gate off", UpdatedPaths: []string{}, Unresolved: []string{}, Conflicts: []string{}}},
+		{name: "off policy applicable true rejected", policy: off, verdict: "approve", assessment: &core.DocumentationAssessment{Applicable: true, Summary: "wrong", UpdatedPaths: []string{}, Unresolved: []string{}, Conflicts: []string{}}, want: "does not match"},
+		{name: "applicability mismatch", policy: enabled(), evidence: withDocs, verdict: "approve", assessment: &core.DocumentationAssessment{Applicable: false, Summary: "wrong", UpdatedPaths: []string{"docs/guide.md"}}, want: "does not match"},
+		{name: "summary required", policy: enabled(), evidence: withDocs, verdict: "approve", assessment: &core.DocumentationAssessment{Applicable: true, UpdatedPaths: []string{"docs/guide.md"}, Unresolved: []string{}, Conflicts: []string{}}, want: "summary is required"},
+		{name: "empty finding rejected", policy: enabled(), evidence: withDocs, verdict: "approve", assessment: &core.DocumentationAssessment{Applicable: true, Summary: "checked", UpdatedPaths: []string{"docs/guide.md"}, Unresolved: []string{"  "}, Conflicts: []string{}}, want: "empty finding"},
+		{name: "disjoint lists", policy: enabled(), evidence: withDocs, verdict: "approve", assessment: &core.DocumentationAssessment{Applicable: true, Summary: "checked", UpdatedPaths: []string{"docs/guide.md"}, Unresolved: []string{"docs/guide.md"}, Conflicts: []string{"docs/guide.md"}}, want: "appears in both"},
+		{name: "updated paths mismatch", policy: enabled(), evidence: withDocs, verdict: "approve", assessment: &core.DocumentationAssessment{Applicable: true, Summary: "checked", UpdatedPaths: []string{"docs/other.md"}, Unresolved: []string{}, Conflicts: []string{}}, want: "updated_paths"},
+		{name: "approve unresolved blocks", policy: enabled(), evidence: withDocs, verdict: "approve", assessment: &core.DocumentationAssessment{Applicable: true, Summary: "checked", UpdatedPaths: []string{"docs/guide.md"}, Unresolved: []string{"behavior changed without a docs edit"}, Conflicts: []string{}}, want: "blocks approve: unresolved findings in unresolved", sentinel: true},
+		{name: "approve conflicts blocks", policy: enabled(), evidence: withDocs, verdict: "approve", assessment: &core.DocumentationAssessment{Applicable: true, Summary: "checked", UpdatedPaths: []string{"docs/guide.md"}, Unresolved: []string{}, Conflicts: []string{"path outside the policy globs"}}, want: "blocks approve: unresolved findings in conflicts", sentinel: true},
+		{name: "changes requested carries unresolved", policy: enabled(), evidence: withDocs, verdict: "changes_requested", assessment: &core.DocumentationAssessment{Applicable: true, Summary: "checked", UpdatedPaths: []string{"docs/guide.md"}, Unresolved: []string{"behavior changed without a docs edit"}, Conflicts: []string{}}},
+		{name: "approve with matched path accepted", policy: enabled(), evidence: withDocs, verdict: "approve", assessment: &core.DocumentationAssessment{Applicable: true, Summary: "checked", UpdatedPaths: []string{"docs/guide.md"}, Unresolved: []string{}, Conflicts: []string{}}},
+		{name: "approve with docs-none accepted", policy: enabled(), evidence: withNone, verdict: "approve", assessment: &core.DocumentationAssessment{Applicable: true, Summary: "no docs affected", UpdatedPaths: []string{}, Unresolved: []string{}, Conflicts: []string{}}},
+		{name: "approve without docs edit or statement rejected", policy: enabled(), evidence: empty, verdict: "approve", assessment: &core.DocumentationAssessment{Applicable: true, Summary: "nothing changed", UpdatedPaths: []string{}, Unresolved: []string{}, Conflicts: []string{}}, want: "no declared docs path changed and no docs-none statement in the pull request", sentinel: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := store.ValidateDocumentationAssessment(tt.policy, tt.evidence, tt.verdict, tt.assessment)
+			if tt.want == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error=%v want %q", err, tt.want)
+			}
+			if tt.sentinel && !errors.Is(err, store.ErrDocumentationUnresolved) {
+				t.Fatalf("error %v is not ErrDocumentationUnresolved", err)
+			}
+		})
+	}
+}
+
+func TestValidateDocumentationClosureReadsPinnedPolicyAndEvidence(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "docs-gate")
+	st := store.NewMemory()
+	policy := core.DocumentationPolicy{Enabled: true, BaseSHA: strings.Repeat("a", 40), ContentHash: "sha256:" + strings.Repeat("b", 64), Paths: []string{"docs/**"}, NoneStatement: "docs: none", ReasonRequired: true}
+	task := core.Task{ID: "docs-task", Workspace: "docs-gate", Repo: "app", State: core.TaskRunning, ReviewedHeadSHA: "head-1", CreatedAt: time.Now()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.PinTaskDocumentationPolicy(ctx, task.ID, policy); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.RecordDocumentationGateEvidence(ctx, core.DocumentationGateEvidence{TaskID: task.ID, HeadSHA: "head-1", MatchedPaths: []string{"docs/guide.md"}}); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := st.GetTask(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !loaded.DocumentationPolicy.Applicable() || loaded.ReviewedHeadSHA != "head-1" {
+		t.Fatalf("pinned context not attached: policy=%+v head=%q", loaded.DocumentationPolicy, loaded.ReviewedHeadSHA)
+	}
+	d := New(st, &config.Config{Workspace: "docs-gate", Repos: []config.Repo{{Name: "app"}}}, nil)
+
+	blocked := pipeline.Review{Verdict: "approve", DocumentationAssessment: &core.DocumentationAssessment{Applicable: true, Summary: "docs reviewed", UpdatedPaths: []string{"docs/guide.md"}, Unresolved: []string{"docs edit does not cover the change"}}}
+	if err := d.validateDocumentationClosure(ctx, loaded, blocked); err == nil || !errors.Is(err, store.ErrDocumentationUnresolved) || !strings.Contains(err.Error(), "blocks approve: unresolved findings in unresolved") {
+		t.Fatalf("approve error=%v", err)
+	}
+	correction := blocked
+	correction.Verdict = "changes_requested"
+	if err := d.validateDocumentationClosure(ctx, loaded, correction); err != nil {
+		t.Fatalf("changes requested error=%v", err)
+	}
+	mismatched := blocked
+	mismatched.DocumentationAssessment = &core.DocumentationAssessment{Applicable: true, Summary: "docs reviewed", UpdatedPaths: []string{"docs/absent.md"}}
+	if err := d.validateDocumentationClosure(ctx, loaded, mismatched); err == nil || !strings.Contains(err.Error(), "updated_paths") {
+		t.Fatalf("mismatch error=%v", err)
+	}
+}

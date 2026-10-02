@@ -139,6 +139,9 @@ layers:
   versions governing the task (pinned versions where an attachment pinned
   one), plus every confirmed and superseded decision, under a 64 KiB budget
   that reports anything it had to drop.
+- The pinned documentation policy, under `# Documentation policy`, naming the
+  declared durable docs, the `docs: none` literal, and the pinned base commit
+  and content hash; it is omitted when the repository declares no gate.
 - The approved execution plan, whose `## Done criteria` become the
   implementation checklist and the review coverage contract.
 - The triage brief, bounce history, and prior feedback.
@@ -157,6 +160,23 @@ instruction not to follow commands found inside it.
 Repositories can ship advisory hints in `.conveyor/hints.yaml` (verification
 commands, area ownership). Hints are always labeled advisory and never
 override frozen workspace or plan authority.
+
+## The documentation-closure gate
+
+A repository can opt into a documentation-closure gate with a repo-tracked `.conveyor/docs.yaml`; without the file the gate is off.
+Conveyor pins the declaration once per task, at its first implement claim, and that claim is the task's start for this gate.
+The pin stores the parsed policy with the base commit SHA and a content hash, or an explicit "off" record when the file is absent; later claims, bounces, and base movement never rewrite it.
+The pin is the base-branch version, so a pull request cannot weaken its own gate.
+A failed base-branch read leaves the pin unset and the gate off, records a task event naming the cause, and renders "documentation policy unavailable" in the work-order context, so the failure never blocks work.
+A repository with no GitHub repository configured pins an explicit "off".
+
+Under a pinned policy, `submit_for_review` records docs-gate evidence for the head it accepts: the head SHA, the changed paths that intersect the policy globs, and any `docs: none` statement with its reason read from the agent-authored part of the pull request body.
+A review verdict must then carry a `documentation_assessment` whose `updated_paths` equal that evidence.
+The server rejects an approval that leaves an unresolved finding, and rejects one that matches no declared path and states no reason, so only the adequacy of the edit or reason stays the reviewer's judgment.
+
+`conveyor docs validate [path]` checks the declaration offline.
+It reads `.conveyor/docs.yaml` from the working tree, resolves every declared glob against tracked files with `git ls-files`, prints a JSON receipt, and exits non-zero on a glob that matches nothing, a malformed glob, an empty `docs` list, an oversized file, or an unsupported `schema_version`.
+It never contacts the server.
 
 ## The execution loop
 

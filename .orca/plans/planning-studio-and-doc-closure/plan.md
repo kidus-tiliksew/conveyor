@@ -2,9 +2,9 @@
 
 ## Status
 
-Draft, 2026-10-02; committed on a review branch for core-developer review before any factory push.
+Implemented, 2026-10-02: tasks T1-T12 are built on branch `plan/planning-studio-and-doc-closure` and delivered in one pull request for core-developer review.
 Owner settled every tradeoff in this file on 2026-10-02; grill round 1 (2026-10-02) settled the implementation questions, recorded under "Grill decisions".
-After the core developer's review and the owner's approval, this package is pushed to the Conveyor factory (`https://conveyor.kidus.sh`, workspace `demo`, repo `conveyor`, base `main`); after that every change is a Conveyor revision.
+By the owner's direction the code was built directly, not through the Conveyor factory, so no corpus document, DEC proposal, baseline revision, or task described below has been pushed to `https://conveyor.kidus.sh`; the "Corpus changes" and "Task breakdown" sections now describe the corpus that would govern this work if it is recorded later.
 Source drafts being generalized: `flux-saas-runtime/docs/exec-plans/active/developer-tooling/plan-studio/plan.md` and `.../conveyor-knowledge-closure/plan.md` (D2, D7-D12, D16-D21).
 FunnelFlux survives here only as the pilot example; no FunnelFlux path or skill name is a Conveyor dependency.
 
@@ -450,3 +450,4 @@ Corrections found while verifying the draft: `CapabilityConfirmDocuments` is ope
 - 2026-10-02: Drafted from the owner's settled decisions and the two FunnelFlux source plans; verified every Conveyor citation against the checkout at `/home/orca/_dev/funnelflux-pro/conveyor`.
 - 2026-10-02: Grill round 1 answered; citations re-verified (two factual corrections), `demo` corpus read for design and requirement IDs; round 1 recorded in `DEC-P3`, `DEC-P8`, and `DEC-P10` to `DEC-P12`, with tasks re-split to T1-T12.
 - 2026-10-02: Grill round 2 answered and recorded; owner directed that the package go on a review branch and pull request for the core developer instead of staying uncommitted.
+- 2026-10-02: Owner directed a direct build on this branch instead of the factory route. Tasks T1-T12 implemented in parallel lanes and integrated; one independent review round applied. Checks: `make build`, `make vet`, `make fmt-check`, `go test ./...` (only `TestVK10Scenario` fails, and it fails identically on the unchanged base without the `make test-vk10` runtime), PostgreSQL conformance and documentation-closure integration tests on a disposable container, and a throwaway service-level proof of the gate from pin to evidence to verdict.

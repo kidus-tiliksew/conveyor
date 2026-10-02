@@ -93,3 +93,22 @@ served requirements are supplied, set `requirement_citations.applicable=true`
 and assess their stable REQ-n identifiers in `cited_ids`, `unknown_ids`,
 `unserved_ids`, and `conflicts`. When none are supplied, set `applicable=false`
 and leave all four lists empty.
+
+The documentation assessment is required whenever the work order carries a
+`# Documentation policy` section. Set `documentation_assessment.applicable`
+true when that pinned policy declares at least one path, and false when the
+policy is off; a supplied false assessment is accepted when no policy is
+pinned and rejected when one is on.
+Set `documentation_assessment.summary` to a short statement of how the change
+closed the gate.
+Set `updated_paths` to exactly the declared docs the pull request changed, in
+the same order and set the server recorded for the reviewed head; a mismatch is
+a validation error, not a judgment call.
+List in `unresolved` every documentation finding you judge: behavior changed
+but the declared docs edit does not cover it, or a `docs: none` reason does not
+hold.
+List in `conflicts` each disjoint classification conflict, such as a claimed
+path outside the policy globs.
+The server rejects an approval that carries any unresolved finding or conflict,
+so an `approve` verdict must leave both lists empty and must cite the recorded
+matched paths or a valid `docs: none` statement.

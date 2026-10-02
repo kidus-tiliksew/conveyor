@@ -176,6 +176,7 @@ func RunAll(t *testing.T, factory Factory) {
 		{"WorkspaceControl", true, runWorkspaceControl},
 		{"RepositoryInstall", true, runRepositoryInstall},
 		{"CommandRefusals", true, runCommandRefusals},
+		{"DocumentationClosure", true, runDocumentationClosure},
 		{"ApprovalRefresh", true, runApprovalRefresh},
 		{"PlanningReads", true, runPlanningReads},
 		{"TaskFilter", factory.Capabilities.Membership, runTaskFilter},

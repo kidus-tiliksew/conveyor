@@ -163,6 +163,16 @@ type WorkspaceControlStore interface {
 	CreateWorkspace(context.Context, string, string, *config.Config) (core.Workspace, error)
 }
 
+// DocumentationPolicyStore owns the set-once documentation-closure policy pin
+// and the per-head docs-gate evidence recorded at submission.
+type DocumentationPolicyStore interface {
+	// PinTaskDocumentationPolicy stores the policy only when the task has no
+	// pin yet. It returns whether this call created the pin.
+	PinTaskDocumentationPolicy(ctx context.Context, taskID string, policy core.DocumentationPolicy) (bool, error)
+	RecordDocumentationGateEvidence(ctx context.Context, evidence core.DocumentationGateEvidence) error
+	GetDocumentationGateEvidence(ctx context.Context, taskID, headSHA string) (core.DocumentationGateEvidence, bool, error)
+}
+
 // Store composes the existing aggregate contracts without changing callers.
 // DEC-38; component-persistence; component-verification-strategy.
 type Store interface {
@@ -172,6 +182,7 @@ type Store interface {
 	PlanningStore
 	LineageStore
 	ActivityStore
+	DocumentationPolicyStore
 	StoreMetadata
 }
 
@@ -628,6 +639,101 @@ func ValidateDoneCriteriaCoverage(coverage **core.DoneCriteriaAssessment, verdic
 		}
 	}
 	return nil
+}
+
+// ErrDocumentationUnresolved classifies a review verdict refused by the
+// documentation-closure gate: unresolved findings block an approval, and a
+// missing declared-doc edit with no docs-none statement fails the precondition.
+var ErrDocumentationUnresolved = errors.New("review documentation_assessment blocks approve")
+
+// ValidateDocumentationAssessment applies the documentation-closure verdict
+// rule. policy is the task's pinned policy (nil when none is pinned); evidence
+// is the recorded per-head docs-gate evidence for the reviewed head (nil when
+// none was recorded). It preserves assessment-shape diagnostics, rejects an
+// approval whose findings are unresolved, and requires a declared docs edit or
+// a docs-none statement before an approval. It never rewrites findings or the
+// verdict.
+func ValidateDocumentationAssessment(policy *core.DocumentationPolicy, evidence *core.DocumentationGateEvidence, verdict string, assessment *core.DocumentationAssessment) error {
+	applicable := policy.Applicable()
+	if applicable && assessment == nil {
+		return fmt.Errorf("review documentation_assessment is required when a documentation policy is pinned")
+	}
+	if assessment == nil {
+		return nil
+	}
+	if assessment.Applicable != applicable {
+		return fmt.Errorf("review documentation_assessment applicable=%t does not match documentation policy present=%t", assessment.Applicable, applicable)
+	}
+	if strings.TrimSpace(assessment.Summary) == "" {
+		return fmt.Errorf("review documentation_assessment summary is required")
+	}
+	lists := []struct {
+		name  string
+		items []string
+	}{{"updated_paths", assessment.UpdatedPaths}, {"unresolved", assessment.Unresolved}, {"conflicts", assessment.Conflicts}}
+	seen := map[string]string{}
+	for _, list := range lists {
+		for _, item := range list.items {
+			key := strings.TrimSpace(item)
+			if key == "" {
+				return fmt.Errorf("review documentation_assessment %s contains an empty finding", list.name)
+			}
+			if prior, exists := seen[key]; exists {
+				return fmt.Errorf("review documentation_assessment finding %q appears in both %s and %s; the finding lists are disjoint", key, prior, list.name)
+			}
+			seen[key] = list.name
+		}
+	}
+	matched := []string{}
+	if evidence != nil {
+		matched = normalizedDocumentationPaths(evidence.MatchedPaths)
+	}
+	if !slices.Equal(normalizedDocumentationPaths(assessment.UpdatedPaths), matched) {
+		return fmt.Errorf("review documentation_assessment updated_paths do not match the recorded documentation gate evidence")
+	}
+	if verdict == "approve" {
+		var blocking []string
+		for _, list := range lists[1:] {
+			if len(list.items) > 0 {
+				blocking = append(blocking, list.name)
+			}
+		}
+		if len(blocking) > 0 {
+			return fmt.Errorf("%w: unresolved findings in %s; correct the assessment or submit changes_requested", ErrDocumentationUnresolved, strings.Join(blocking, ", "))
+		}
+		if applicable && len(matched) == 0 && !documentationNoneStatementValid(policy, evidence) {
+			return fmt.Errorf("%w: no declared docs path changed and no docs-none statement in the pull request", ErrDocumentationUnresolved)
+		}
+	}
+	return nil
+}
+
+// normalizedDocumentationPaths trims, deduplicates, and sorts path entries so
+// the reviewer's updated_paths can be compared set-wise with the recorded
+// evidence. A nil evidence pointer contributes no paths.
+func normalizedDocumentationPaths(items []string) []string {
+	out := make([]string, 0, len(items))
+	seen := map[string]bool{}
+	for _, raw := range items {
+		item := strings.TrimSpace(raw)
+		if item == "" || seen[item] {
+			continue
+		}
+		seen[item] = true
+		out = append(out, item)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// documentationNoneStatementValid reports whether the recorded evidence carries
+// a usable docs-none statement: present, and with a non-empty reason when the
+// pinned policy requires one.
+func documentationNoneStatementValid(policy *core.DocumentationPolicy, evidence *core.DocumentationGateEvidence) bool {
+	if evidence == nil || strings.TrimSpace(evidence.NoneStatement) == "" {
+		return false
+	}
+	return policy == nil || !policy.ReasonRequired || strings.TrimSpace(evidence.NoneReason) != ""
 }
 
 // ApprovedExecutionDocument resolves the immutable approved document that
@@ -1460,6 +1566,8 @@ func NewMemoryWithConfig(cfg *config.Config) Store {
 		workOrderActivitySnapshots:  map[string]core.WorkOrderActivitySnapshot{},
 		workOrderTranscriptCaptures: map[string][]core.WorkOrderTranscriptCapture{},
 		publications:                map[string]core.ReviewPublication{},
+		documentationPolicies:       map[string]core.DocumentationPolicy{},
+		documentationEvidence:       map[memoryDocumentationEvidenceKey]core.DocumentationGateEvidence{},
 		github:                      map[string]core.GitHubLifecycle{},
 		features:                    map[string]core.Feature{},
 		requirements:                map[memoryScopedKey]core.Requirement{},
@@ -1548,6 +1656,8 @@ type memory struct {
 	workOrderTranscriptCaptures map[string][]core.WorkOrderTranscriptCapture
 	publications                map[string]core.ReviewPublication
 	pullRequestCloses           map[string]core.PullRequestClose
+	documentationPolicies       map[string]core.DocumentationPolicy
+	documentationEvidence       map[memoryDocumentationEvidenceKey]core.DocumentationGateEvidence
 	github                      map[string]core.GitHubLifecycle
 	features                    map[string]core.Feature
 	requirements                map[memoryScopedKey]core.Requirement
@@ -5476,6 +5586,7 @@ func (m *memory) hydrateTaskLocked(task core.Task) core.Task {
 		task.PullRequestClose = &p
 		task.PullRequestCloseState = p.State
 	}
+	task = m.attachDocumentationPolicyLocked(task)
 	task.Dependencies = nil
 	task.BlockingTaskIDs = nil
 	task.Children = nil

@@ -464,6 +464,15 @@ reclaim only a claimable current order with fresh credentials, then fetch its
 contract again. Do not keep working during a stale interval and do not treat a
 reclaim as an extension of the original execution deadline.
 
+## Close the documentation gate
+
+A repository may declare a documentation-closure gate in repo-tracked `.conveyor/docs.yaml`; a repository without that file has no gate.
+When the work order carries a `# Documentation policy` section, update every declared doc the change affects in the same pull request as the behavior change.
+When no declared doc is affected, put the policy's exact `docs: none` literal, with its required reason, at the start of a line in the pull request body.
+The policy is pinned from the base branch at the first implement claim and is never rewritten, so a pull request cannot weaken its own gate by editing the declaration.
+The reviewer records a `documentation_assessment` for the delivered head, and the server rejects an approval that leaves a finding unresolved.
+Run `conveyor docs validate` to check the declaration against tracked files before submitting.
+
 ## Finish through the factory
 
 End every claimed stage with its registered lifecycle tool or, when genuinely

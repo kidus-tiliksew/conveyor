@@ -507,3 +507,38 @@ func TestStageRolesEndAtSubmissionWithoutAwaitingReview(t *testing.T) {
 		}
 	}
 }
+
+func TestRolePromptsCarryDocumentationClosureContracts(t *testing.T) {
+	loader := Loader{Dir: filepath.Join("..", "..", "pack")}
+
+	implement, err := loader.Role(core.StageImplement)
+	if err != nil {
+		t.Fatal(err)
+	}
+	normalizedImplement := strings.Join(strings.Fields(implement), " ")
+	for _, required := range []string{
+		"`# Documentation policy` section",
+		"`docs: none` literal",
+		"same pull request",
+	} {
+		if !strings.Contains(normalizedImplement, required) {
+			t.Errorf("implement role is missing %q", required)
+		}
+	}
+
+	review, err := loader.Role(core.StageReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	normalizedReview := strings.Join(strings.Fields(review), " ")
+	for _, required := range []string{
+		"documentation_assessment",
+		"`updated_paths`",
+		"unresolved",
+		"validation error",
+	} {
+		if !strings.Contains(normalizedReview, required) {
+			t.Errorf("review role is missing %q", required)
+		}
+	}
+}

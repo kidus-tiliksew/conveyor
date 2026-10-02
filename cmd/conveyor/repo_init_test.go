@@ -112,6 +112,7 @@ func TestRepoInitSectionContract(t *testing.T) {
 		"Changes are filed as tasks through Conveyor.\n" +
 		"An agent edits only under a live claim in a task worktree resolved by `conveyor checkout <task-id>`, never on the base branch.\n" +
 		"Follow the `conveyor-plan` skill for planning, `conveyor-file-tasks` for filing tasks, and `conveyor-work` for task work.\n" +
+		"A repository may declare an optional documentation-closure gate in repo-tracked `.conveyor/docs.yaml`, checked with `conveyor docs validate`.\n" +
 		"This section and the project-scoped skills are versioned with the CLI. Re-run `conveyor repo init` after an upgrade to refresh both, or use `conveyor repo init --guidance-only` to preserve maintained source skill wrappers.\n" +
 		"<!-- /conveyor:repo-init -->\n"
 	if string(section) != want || strings.Count(string(section), "\n") >= 20 {
