@@ -384,8 +384,8 @@ func TestVerificationRecoveryStrictAndWorkerRefusal(t *testing.T) {
 	}
 }
 
-// feature-verification-kit-execution VK-13.1/VK-13.2 (proposed VK-HTTP-9 and
-// VK-MCP-5): one remedy over REST and MCP, then a pre-execution checkpoint.
+// feature-verification-kit-execution VK-13.1/VK-13.2 (component-http-api VK-HTTP-9
+// and component-mcp-protocol VK-MCP-5): one remedy over REST and MCP, then a pre-execution checkpoint.
 func TestVerificationCheckpointRemedyAndMissingGrant(t *testing.T) {
 	s, ctx, id := verificationHTTPFixture(t)
 	request := httptest.NewRequest(http.MethodPost, "/mcp", nil).WithContext(ctx)

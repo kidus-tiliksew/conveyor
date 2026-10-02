@@ -1,5 +1,5 @@
--- feature-verification-kit-execution VK-13 (proposed component-persistence VK-STORE-15
--- and component-http-api VK-HTTP-9); req-verification-kits REQ-3/AC-3.2, REQ-4/AC-4.3.
+-- feature-verification-kit-execution v9 VK-13 (component-persistence v25 VK-STORE-16
+-- and component-http-api v24 VK-HTTP-9); req-verification-kits REQ-3/AC-3.2, REQ-4/AC-4.3.
 -- Context headers expose the sealed checkpoint as bounded scalars: reason from the
 -- submission, required action and a server-composed ground summary from the
 -- checkpoint record. The view keeps its columns; no stored record changes.
