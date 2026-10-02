@@ -7,6 +7,7 @@ import type {
   VerificationEvidence,
   VerificationMetadata,
   WorkOrder,
+  WorkOrderVerificationCheckpoint,
 } from '../../lib/types'
 import { absoluteTime, cn, duration } from '../../lib/utils'
 import { Badge } from '../ui/badge'
@@ -171,11 +172,23 @@ function ContextBody({
   outcome: Outcome
   order?: WorkOrder
 }) {
-  const attempts = useVerificationPages(taskId, context.id, 'attempts')
+  // Checkpoint grounds link into the assertion table, so the banner and the
+  // table read one attempt list that pages on until every ground's attempt
+  // row is loaded.
+  const attempts = useVerificationPages(taskId, context.id, 'attempts', groundPageLimit)
   const assertions = useVerificationPages(taskId, context.id, 'assertions')
   const selections = useVerificationPages(taskId, context.id, 'selections')
   const publications = useVerificationPages(taskId, context.id, 'publications')
   const attemptList = items(attempts)
+  const reference =
+    order?.checkpoint?.verification?.context_id === context.id ? order.checkpoint.verification : undefined
+  const groundAttempts =
+    outcome !== 'needs_operator'
+      ? []
+      : reference && reference.grounds.length > 0
+        ? reference.grounds.flatMap((ground) => (ground.attempt_id ? [ground.attempt_id] : []))
+        : sealedAttemptGroundIds(context)
+  const groundSearch = useGroundAttemptPages(attempts, groundAttempts)
   const attemptByRun = new Map<string, VerificationMetadata>()
   for (const attempt of attemptList) {
     attemptByRun.set(attempt.id, attempt)
@@ -201,7 +214,9 @@ function ContextBody({
         outcome={outcome}
         passed={passed}
         total={assertionList.length}
-        order={order}
+        reference={reference}
+        attempts={attempts}
+        groundSearch={groundSearch}
       />
       <div className="divide-y divide-border/60">
         {eligible.length > 0 && (
@@ -310,14 +325,18 @@ function ResultBanner({
   outcome,
   passed,
   total,
-  order,
+  reference,
+  attempts,
+  groundSearch,
 }: {
   taskId: string
   context: VerificationMetadata
   outcome: Outcome
   passed: number
   total: number
-  order?: WorkOrder
+  reference?: WorkOrderVerificationCheckpoint
+  attempts: VerificationPages
+  groundSearch: GroundAttemptSearch
 }) {
   if (outcome === 'running' || outcome === 'queued' || outcome === 'pending') return null
   const head = short(context.metadata.source_sha)
@@ -326,8 +345,6 @@ function ResultBanner({
     // Grounds come from the work-order reference when it names this context.
     // A historical context links the attempt grounds its sealed record names,
     // and the sealed summary names unstarted subjects and their permissions.
-    const reference =
-      order?.checkpoint?.verification?.context_id === context.id ? order.checkpoint.verification : undefined
     const groundsSummary = context.metadata.checkpoint_grounds?.trim()
     const sealedAttempts = sealedAttemptGroundIds(context)
     const checkpointHead = context.metadata.checkpoint_head || context.metadata.source_sha
@@ -346,11 +363,25 @@ function ResultBanner({
             </p>
           )}
           {reference && reference.grounds.length > 0 ? (
-            <VerificationCheckpointGrounds taskId={taskId} contextId={context.id} grounds={reference.grounds} />
+            <>
+              <VerificationCheckpointGrounds
+                taskId={taskId}
+                contextId={context.id}
+                grounds={reference.grounds}
+                unloadedAttempts={groundSearch.searching ? undefined : groundSearch.unloaded}
+              />
+              <UnloadedGrounds search={groundSearch} />
+            </>
           ) : (
             <>
               {sealedAttempts.length > 0 && (
-                <RecordedAttemptGrounds taskId={taskId} contextId={context.id} attemptIds={sealedAttempts} />
+                <RecordedAttemptGrounds
+                  taskId={taskId}
+                  contextId={context.id}
+                  attemptIds={sealedAttempts}
+                  attempts={attempts}
+                  search={groundSearch}
+                />
               )}
               {groundsSummary && <p className="text-xs font-normal text-foreground/85">Grounds: {groundsSummary}</p>}
             </>
@@ -544,48 +575,65 @@ function CaptureThumb({
 const groundPageLimit = 50
 const groundPageCap = 20
 
+type VerificationPages = ReturnType<typeof useVerificationPages>
+type GroundAttemptSearch = { searching: boolean; unloaded: string[] }
+
+// A ground's attempt may sit beyond the first page; read on until every
+// named attempt resolves, so its row (the link target) is rendered and no
+// other attempt stands in for it.
+function useGroundAttemptPages(attempts: VerificationPages, attemptIds: string[]): GroundAttemptSearch {
+  const attemptList = items(attempts)
+  const unloaded = attemptIds.filter((id) => !attemptList.some((attempt) => attempt.id === id))
+  const pending = unloaded.length > 0
+  const pages = attempts.data?.pages.length ?? 0
+  const { hasNextPage, isFetchingNextPage, fetchNextPage } = attempts
+  useEffect(() => {
+    if (pending && hasNextPage && !isFetchingNextPage && pages < groundPageCap) void fetchNextPage()
+  }, [pending, hasNextPage, isFetchingNextPage, pages, fetchNextPage])
+  const searching = attempts.isPending || (pending && Boolean(hasNextPage) && pages < groundPageCap)
+  return { searching, unloaded }
+}
+
+function UnloadedGrounds({ search }: { search: GroundAttemptSearch }) {
+  if (search.searching || search.unloaded.length === 0) return null
+  return (
+    <p className="text-xs font-normal text-foreground/85">
+      Sealed attempt grounds outside the loaded attempt pages:{' '}
+      <span className="font-mono">{search.unloaded.join(', ')}</span>
+    </p>
+  )
+}
+
 function RecordedAttemptGrounds({
   taskId,
   contextId,
   attemptIds,
+  attempts,
+  search,
 }: {
   taskId: string
   contextId: string
   attemptIds: string[]
+  attempts: VerificationPages
+  search: GroundAttemptSearch
 }) {
-  const attempts = useVerificationPages(taskId, contextId, 'attempts', groundPageLimit)
   const evidence = useVerificationPages(taskId, contextId, 'evidence', groundPageLimit)
-  const attemptList = items(attempts)
-  // A named attempt may sit beyond the first page; read on until every
-  // sealed ground resolves, so no other attempt stands in for it.
-  const pending = attemptIds.some((id) => !attemptList.some((attempt) => attempt.id === id))
-  const attemptPages = attempts.data?.pages.length ?? 0
   const evidencePages = evidence.data?.pages.length ?? 0
-  const { hasNextPage: moreAttempts, isFetchingNextPage: fetchingAttempts, fetchNextPage: nextAttempts } = attempts
   const { hasNextPage: moreEvidence, isFetchingNextPage: fetchingEvidence, fetchNextPage: nextEvidence } = evidence
-  useEffect(() => {
-    if (pending && moreAttempts && !fetchingAttempts && attemptPages < groundPageCap) void nextAttempts()
-  }, [pending, moreAttempts, fetchingAttempts, attemptPages, nextAttempts])
   useEffect(() => {
     if (moreEvidence && !fetchingEvidence && evidencePages < groundPageCap) void nextEvidence()
   }, [moreEvidence, fetchingEvidence, evidencePages, nextEvidence])
   if (attempts.isPending) return null
-  const { grounds, unloaded } = sealedAttemptGrounds(
+  const { grounds } = sealedAttemptGrounds(
     attemptIds,
-    attemptList,
+    items(attempts),
     items(evidence),
     !evidence.isPending && !moreEvidence,
   )
-  const searching = pending && moreAttempts && attemptPages < groundPageCap
   return (
     <>
       {grounds.length > 0 && <VerificationCheckpointGrounds taskId={taskId} contextId={contextId} grounds={grounds} />}
-      {unloaded.length > 0 && !searching && (
-        <p className="text-xs font-normal text-foreground/85">
-          Sealed attempt grounds outside the loaded attempt pages:{' '}
-          <span className="font-mono">{unloaded.join(', ')}</span>
-        </p>
-      )}
+      <UnloadedGrounds search={search} />
     </>
   )
 }

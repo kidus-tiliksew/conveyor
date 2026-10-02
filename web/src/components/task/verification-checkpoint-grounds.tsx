@@ -60,11 +60,15 @@ export function VerificationCheckpointGrounds({
   taskId,
   contextId,
   grounds,
+  unloadedAttempts,
   className,
 }: {
   taskId: string
   contextId: string
   grounds: WorkOrderVerificationCheckpointGround[]
+  // Attempts whose rows could not be loaded: named, but not linked to a
+  // target that is absent from the page.
+  unloadedAttempts?: string[]
   className?: string
 }) {
   return (
@@ -81,7 +85,10 @@ export function VerificationCheckpointGrounds({
               </span>
             </p>
           )}
-          {ground.attempt_id && (
+          {ground.attempt_id && unloadedAttempts?.includes(ground.attempt_id) && (
+            <p className="font-mono">Attempt {ground.attempt_id}</p>
+          )}
+          {ground.attempt_id && !unloadedAttempts?.includes(ground.attempt_id) && (
             <a
               href={`#${verificationAttemptAnchor(contextId, ground.attempt_id)}`}
               className="font-mono text-primary hover:underline"

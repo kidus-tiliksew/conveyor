@@ -397,10 +397,16 @@ test('a historical checkpoint keeps a retried attempt out of its grounds', async
   await expect(grounds.getByRole('listitem')).toHaveCount(1)
   await expect(grounds).not.toContainText('login')
   await expect(grounds.getByRole('link')).toHaveCount(1)
-  await expect(grounds.getByRole('link', { name: 'Attempt run-w' })).toHaveAttribute(
-    'href',
-    '#verification-cp-attempt-run-w',
-  )
+  const link = grounds.getByRole('link', { name: 'Attempt run-w' })
+  await expect(link).toHaveAttribute('href', '#verification-cp-attempt-run-w')
+  // The link resolves without opening Details or paging by hand: the
+  // ground's attempt row is loaded with the ground.
+  await link.click()
+  await expect(page).toHaveURL(/#verification-cp-attempt-run-w$/)
+  const target = entry.locator('#verification-cp-attempt-run-w')
+  await expect(target).toBeAttached()
+  await expect(target).toContainText('approve')
+  await expect(target).toBeInViewport()
   await expect(grounds.getByRole('button', { name: /Open evidence/ })).toHaveCount(1)
   await grounds.getByRole('button', { name: /Open evidence ev-w/ }).click()
   await expect(grounds.getByRole('region', { name: 'Structured evidence' })).toContainText('observed ev-w')
@@ -420,6 +426,27 @@ test('a historical checkpoint keeps a retried attempt out of its grounds', async
   for (const run of ['run-login-blocked-old', 'run-login-ok']) {
     await expect(entry.locator(`#verification-cp-attempt-${run}`)).toBeAttached()
   }
+})
+
+test('paginated checkpoint ground links resolve to loaded attempt rows', async ({ page }) => {
+  // The order's reference names this context, and each attempt is on its own
+  // page: both the entry and the recovery card link rows that are present.
+  await fixture(page, {
+    grounds: blockedAndWaiting,
+    attempts: [{ id: 'run-other', exercise_id: 'logout', outcome: 'succeeded' }, ...blockedAndWaitingAttempts],
+    attemptPageSize: 1,
+  })
+  await page.goto(`/tasks/${taskId}/full`)
+  const entry = verifyEntry(page)
+  const grounds = entry.getByRole('list', { name: 'Checkpoint grounds' })
+  await grounds.getByRole('link', { name: 'Attempt run-w' }).click()
+  await expect(page).toHaveURL(/#verification-cp-attempt-run-w$/)
+  await expect(entry.locator('#verification-cp-attempt-run-w')).toBeInViewport()
+  await expect(entry).not.toContainText('outside the loaded attempt pages')
+  const card = page.getByRole('region', { name: 'Verification checkpoint', exact: true })
+  await card.getByRole('link', { name: 'Attempt run-b' }).click()
+  await expect(page).toHaveURL(/#verification-cp-attempt-run-b$/)
+  await expect(entry.locator('#verification-cp-attempt-run-b')).toBeInViewport()
 })
 
 test('unresolved operations require a typed disposition instead of direction', async ({ page }) => {
