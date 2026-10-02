@@ -26,8 +26,8 @@ attempt directory outside checkout inputs. Report any unsupported scope.
 Require both operator-issued work-order grants and matching local
 kit_permissions. When a selected subject lacks a grant, follow the playbook's
 grant wait: report the exact subjects and the operator inspect command, keep
-renewing, and release with blocked outcomes only when the wait bound passes. Missing credentials, services, permission or interaction
-requires a truthful blocked/waiting outcome and the needed operator action.
+renewing, and submit the operator checkpoint only when the wait bound passes. Missing credentials, services, permission or interaction
+requires a truthful blocked/waiting exercise outcome and the needed operator action.
 Do not grant access. Permission admission does not sandbox arbitrary code.
 Use only an authorized environment that can enforce the required restrictions.
 
@@ -47,7 +47,17 @@ subject and attempt; exit zero alone cannot satisfy missing evidence.
 
 Inspect coverage, latest attempts, required assertions, output cardinalities
 and unresolved operations before submit_verification. Submit the context,
-truthful outcome and completed coverage through that tool. Check publication
+truthful outcome and completed coverage through that tool. The stage outcome
+is succeeded, feedback or operator_action_required; blocked, waiting, failed,
+timed_out and cancelled are report_verification_outcome states only. Map a
+failed attempt needing a code fix to feedback. Map blocked or waiting attempts,
+unreplayable timed_out or cancelled attempts, subjects never admitted
+(including a missing grant after the wait) and unresolved operations to
+operator_action_required, with feedback stating the reason and
+required_action stating the exact operator act (feature-verification-kit-execution
+VK-13.1). Once a context exists, submit that checkpoint rather than calling
+release_work_order; an identical retry from the same claim returns the
+original receipt. Check publication
 status separately from exercise results. If required capabilities are
 unavailable, report them and release the order with a truthful reason.
 Never fabricate a completed verification result.

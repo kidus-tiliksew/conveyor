@@ -122,8 +122,11 @@ of releasing at once:
    30 seconds.
 3. Continue when every selected subject has a grant. Stop waiting when the
    remaining execution time falls below the longest declared timeout among the
-   ungranted subjects plus ten minutes. Then record blocked outcomes that name
-   each missing grant and release at the operator checkpoint.
+   ungranted subjects plus ten minutes. Then submit the operator checkpoint
+   described under "Stage outcome mapping": `feedback` names each missing
+   grant and `required_action` names the operator act. The server records each
+   ungranted subject as a `missing_grant` ground with no attempt, and releases
+   the order at the operator checkpoint.
 
 Never issue, request through MCP or simulate a grant yourself. No MCP tool or
 worker route grants or revokes; only an authenticated operator user with
@@ -315,6 +318,46 @@ and truthful `feedback` where needed. Complete success requires every selected
 subject and ordinary obligation to satisfy its contract. No-kit discovery
 still needs valid ordinary coverage. Sealing binds the result to the submitted
 head, scope and pins and closes the context to new attempts/evidence.
+
+### Stage outcome mapping
+
+`submit_verification.outcome` accepts only `succeeded`, `feedback` and
+`operator_action_required`. `blocked`, `waiting`, `failed`, `timed_out` and
+`cancelled` are exercise states for `report_verification_outcome.state`; never
+submit them as the stage outcome (feature-verification-kit-execution VK-13.1).
+
+| Verification state at submission | `submit_verification.outcome` |
+| --- | --- |
+| Every required subject's latest attempt succeeded, coverage is complete and no operation is unresolved | `succeeded` |
+| A required subject's latest attempt `failed` and needs a code correction, with no unresolved operation | `feedback`, naming the failure |
+| A required subject's latest attempt is `blocked` or `waiting` | `operator_action_required` |
+| A latest attempt is `timed_out` or `cancelled` and no replay is admitted within the remaining deadline | `operator_action_required` |
+| A subject never started because admission was refused, including a missing grant after the grant wait | `operator_action_required` |
+| An external operation is unresolved | `operator_action_required` |
+
+A checkpoint submission keeps the same `context_id` and completed `coverage`:
+
+```json
+{"context_id": "<context-id>", "coverage": {"...": "the registered coverage"},
+ "outcome": "operator_action_required",
+ "feedback": "<the reason, for example: no grant covers network:api after the grant wait>",
+ "required_action": "<the exact operator act, for example: recover verify order <id>, then grant network:api for the next claim's context>"}
+```
+
+`feedback` and `required_action` are both required and bounded to 4096
+characters. The server computes the checkpoint grounds from its own records
+and never from this prose: blocked, waiting, timed-out or cancelled attempts,
+`missing_grant` for an ungranted subject that never started,
+`admission_refused` (labelled verifier-reported) for a granted subject the
+runner could not admit, and unresolved operations. A checkpoint creates no
+attempt, grant or evidence, so absent evidence stays visibly absent. It
+releases the order with retry suppression, keeps the task on verify, and never
+admits review. If a lost response leaves the result unknown, repeat the
+identical call from the same claim; it returns the original receipt. Once a
+context exists, submit the checkpoint instead of calling `release_work_order`.
+Before any context exists, release with reason `operator checkpoint reached`
+and a decision request. An unsupported outcome returns
+`verification_outcome_unsupported` with this mapping and changes nothing.
 
 Report reproducible code failures separately from infrastructure failures and
 blocked/waiting operator actions; use the delivered failure/release lifecycle
