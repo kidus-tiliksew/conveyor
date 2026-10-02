@@ -41,7 +41,7 @@ func mcpReadDefinitions() []mcpReadDefinition {
 		{"list_repositories", "List repository names and base branches in the selected workspace; excludes local paths and configuration.", nil, nil},
 		{"list_tasks", "Find active or terminal tasks. An empty work-order list is not evidence that tasks do not exist.", map[string]any{"state": enum("active", "terminal", "all"), "repository": str(), "query": str()}, nil},
 		{"get_task", "Read one task, including terminal tasks, without claiming or reconciling work.", map[string]any{"task_id": str()}, []string{"task_id"}},
-		{"list_task_events", "Read recorded task events in chronological order with event-ID tie-breaks; actor/source are not inferred. Payload fields are allowlisted. Long histories arrive as bounded windows of at most 1000 events: total and offset page within one window, history_total counts the captured history, and next_cursor (never combined with snapshot or offset) opens the next window. Restart on 'restart read'.", map[string]any{"task_id": str(), "event_kind": str(), "cursor": map[string]any{"type": "string", "minLength": 32, "maxLength": 32}}, []string{"task_id"}},
+		{"list_task_events", "Read recorded task events in chronological order with event-ID tie-breaks; actor/source are not inferred. Payload fields are allowlisted. Long histories arrive as bounded windows of at most 1000 events: total and offset page within one window, history_total counts the captured history, and next_cursor (never combined with any snapshot or offset argument, including offset 0) opens the next window. Restart on 'restart read'.", map[string]any{"task_id": str(), "event_kind": str(), "cursor": map[string]any{"type": "string", "minLength": 32, "maxLength": 32}}, []string{"task_id"}},
 		{"get_task_context", "Read attached pins and all proposal states. Archived references remain labeled and readable; proposals confer no authority.", map[string]any{"task_id": str(), "proposal_state": enum("all", "proposed", "confirmed", "dismissed")}, []string{"task_id"}},
 		{"list_documents", "Discover confirmed requirement, design, or informative reference document identities. Archived history requires include_archived=true.", map[string]any{"kind": enum("requirement", "system_design", "reference"), "include_archived": boolean, "query": str()}, []string{"kind"}},
 		{"get_document", "Read current or explicit immutable document version. Explicit version can be proposed or historical; archive inclusion never makes it active authority.", map[string]any{"kind": enum("requirement", "system_design", "reference"), "document_id": str(), "version": map[string]any{"type": "integer", "minimum": 1, "maximum": 1000000}, "include_archived": boolean}, []string{"kind", "document_id"}},
@@ -174,7 +174,10 @@ func validateMCPRead(name string, args map[string]any) (int, int, string, error)
 		_ = json.Unmarshal(b, &offset)
 	}
 	snapshot, _ := args["snapshot"].(string)
-	if _, cursor := args["cursor"]; cursor && (snapshot != "" || offset > 0) {
+	_, cursor := args["cursor"]
+	_, snapshotArg := args["snapshot"]
+	_, offsetArg := args["offset"]
+	if cursor && (snapshotArg || offsetArg) {
 		return 0, 0, "", fmt.Errorf("cursor cannot be combined with snapshot or offset")
 	}
 	if offset > 0 && snapshot == "" {

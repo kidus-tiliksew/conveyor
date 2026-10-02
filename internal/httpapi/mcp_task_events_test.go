@@ -296,6 +296,7 @@ func TestMCPTaskEventsCursorRefusalsAndAuthorization(t *testing.T) {
 		"malformed":        {"reader", with("cursor", "not-a-cursor"), "invalid cursor"},
 		"with snapshot":    {"reader", with("snapshot", page.Snapshot), "cannot be combined"},
 		"with offset":      {"reader", with("offset", 1), "cannot be combined"},
+		"with offset 0":    {"reader", with("offset", 0), "cannot be combined"},
 		"changed filter":   {"reader", with("event_kind", "work_order.renewed"), "snapshot unavailable"},
 		"foreign task":     {"reader", with("task_id", "other"), "snapshot unavailable"},
 		"foreign owner":    {"other", base, "snapshot unavailable"},
@@ -384,6 +385,95 @@ func TestMCPTaskEventsCacheBoundsOverManyWindows(t *testing.T) {
 	}
 	if _, e := mcpReadCall(t, s, "reader", "list_task_events", map[string]any{"workspace_id": "demo", "task_id": "wide"}); !strings.Contains(e, "capacity") {
 		t.Fatalf("full cache allocated another traversal: %q", e)
+	}
+}
+
+// TestMCPTaskEventsFullCacheAdvancesExistingTraversals fills every snapshot
+// slot with active traversals whose windows are smaller than one page, then
+// advances each repeatedly. Replacement frees the predecessor's consumed cursor
+// before admission, so a full cache never refuses an existing traversal.
+func TestMCPTaskEventsFullCacheAdvancesExistingTraversals(t *testing.T) {
+	s, ctx, _, _ := newMCPWindowFixture(t)
+	if err := s.Store.CreateTask(ctx, core.Task{ID: "saturated", Workspace: "demo", State: core.TaskRunning}); err != nil {
+		t.Fatal(err)
+	}
+	// Omitted 64 KiB fields end each window at the source budget after about
+	// 16 events, well below one 25-item page.
+	for i := 0; i < 100; i++ {
+		if err := s.Store.AppendEvent(ctx, core.Event{TaskID: "saturated", Kind: "work_order.renewed", Payload: core.JSONPayload(map[string]any{"transcript": strings.Repeat("x", 64<<10)})}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	args := map[string]any{"workspace_id": "demo", "task_id": "saturated", "limit": 25}
+	type traversal struct {
+		expires         time.Time
+		cursor, retired string
+		ids             []int64
+	}
+	traversals := make([]traversal, mcpReadSnapshotCount)
+	for i := range traversals {
+		first := mustRead(t, s, "list_task_events", args)
+		if first.NextCursor == "" || first.NextOffset != nil || len(first.Items) >= 25 {
+			t.Fatalf("first window is not smaller than one page: %+v", first)
+		}
+		traversals[i] = traversal{expires: first.ExpiresAt, cursor: first.NextCursor, ids: eventIDs(t, first)}
+	}
+	cacheSize := func() (int, int) {
+		s.mcpReads.mu.Lock()
+		defer s.mcpReads.mu.Unlock()
+		return len(s.mcpReads.entries), len(s.mcpReads.cursors)
+	}
+	if _, e := mcpReadCall(t, s, "reader", "list_task_events", args); !strings.Contains(e, "capacity") {
+		t.Fatalf("full cache admitted another traversal: %q", e)
+	}
+	for round := 0; ; round++ {
+		active := 0
+		for i := range traversals {
+			tr := &traversals[i]
+			if tr.cursor == "" {
+				continue
+			}
+			active++
+			request := maps.Clone(args)
+			request["cursor"] = tr.cursor
+			page := mustRead(t, s, "list_task_events", request)
+			if retry := mustRead(t, s, "list_task_events", request); !reflect.DeepEqual(page, retry) {
+				t.Fatalf("round %d traversal %d: retry returned a different window", round, i)
+			}
+			if !page.ExpiresAt.Equal(tr.expires) {
+				t.Fatalf("round %d traversal %d extended expiry: %s != %s", round, i, page.ExpiresAt, tr.expires)
+			}
+			if page.NextOffset != nil {
+				t.Fatalf("round %d traversal %d window exceeded one page", round, i)
+			}
+			if tr.retired != "" {
+				retired := maps.Clone(args)
+				retired["cursor"] = tr.retired
+				if _, e := mcpReadCall(t, s, "reader", "list_task_events", retired); !strings.Contains(e, "snapshot unavailable") {
+					t.Fatalf("round %d traversal %d: retired cursor still readable: %q", round, i, e)
+				}
+			}
+			tr.ids = append(tr.ids, eventIDs(t, page)...)
+			tr.retired, tr.cursor = tr.cursor, page.NextCursor
+			if entries, cursors := cacheSize(); entries > mcpReadSnapshotCount || cursors > mcpReadCursorCount {
+				t.Fatalf("round %d cache holds %d snapshots and %d cursors", round, entries, cursors)
+			}
+		}
+		if active == 0 {
+			if round < 3 {
+				t.Fatalf("traversals completed after %d rounds", round)
+			}
+			break
+		}
+	}
+	want := ledgerIDs(t, s, ctx, "saturated", "")
+	for i, tr := range traversals {
+		if !reflect.DeepEqual(tr.ids, want) {
+			t.Fatalf("traversal %d returned %d ids, want %d", i, len(tr.ids), len(want))
+		}
+	}
+	if entries, _ := cacheSize(); entries != mcpReadSnapshotCount {
+		t.Fatalf("completed traversals hold %d snapshots, want one each", entries)
 	}
 }
 

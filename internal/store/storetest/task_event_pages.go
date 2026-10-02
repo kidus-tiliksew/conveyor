@@ -160,6 +160,22 @@ func runTaskEventWindows(t *testing.T, x Fixture) {
 		}
 	}
 
+	// Every variable-width column counts toward the source budget, not only
+	// the payload.
+	wide := newAggregateTask(t, x)
+	requireOK(t, st.AppendEvent(ctx, core.Event{TaskID: wide.ID, Kind: kind, ActorID: "fixture", ActorRole: core.ActorRole("system"), At: base}))
+	requireOK(t, st.AppendEvent(ctx, core.Event{TaskID: wide.ID, Kind: kind, ActorID: strings.Repeat("a", 20000), ActorRole: core.ActorRole("system"), At: base.Add(time.Second)}))
+	window, err = st.ReadTaskEventWindow(ctx, store.TaskEventWindowQuery{TaskID: wide.ID, Kind: kind, Limit: 1000, MaxBytes: budget})
+	requireOK(t, err)
+	if len(window.Events) != 1 || !window.More {
+		t.Fatalf("wide actor window=%d more=%v", len(window.Events), window.More)
+	}
+	tail = window.Events[0]
+	var tooLarge *store.TaskEventTooLargeError
+	if _, err = st.ReadTaskEventWindow(ctx, store.TaskEventWindowQuery{TaskID: wide.ID, Kind: kind, Boundary: &window.Boundary, After: &store.TaskEventPosition{At: tail.At, ID: tail.ID}, Limit: 1000, MaxBytes: budget}); !errors.As(err, &tooLarge) || tooLarge.Bytes <= 20000 {
+		t.Fatalf("oversized actor err=%v", err)
+	}
+
 	empty, err := st.ReadTaskEventWindow(ctx, store.TaskEventWindowQuery{TaskID: task.ID, Kind: "test.absent", Limit: 25, MaxBytes: store.TaskEventWindowMaxBytes})
 	requireOK(t, err)
 	if len(empty.Events) != 0 || empty.More || empty.Boundary.Count != 0 || empty.Boundary.MaxID == 0 {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -12,12 +13,14 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
-// taskEventWindowSelect seeks the (task_id, at, id) timeline index, then charges
-// stored source bytes in order. Payloads past the running budget stay in the
-// database; their rows only mark the window boundary (component-mcp-protocol
-// v14 MCP-READ-9).
+// taskEventWindowSelect seeks the (task_id, at, id) timeline index and charges
+// stored source bytes in order. Only candidates inside both the row limit and
+// the running byte budget return their variable-width columns; the lookahead
+// and every candidate past the budget return fixed-width boundary and size
+// metadata, so the driver never transfers them (component-mcp-protocol v14
+// MCP-READ-9).
 const taskEventWindowSelect = `WITH candidates AS (
-	SELECT e.id, e.task_id, COALESCE(e.job_id, '') AS job_id, e.kind, e.actor_id, e.actor_role, e.at, e.payload_json,
+	SELECT e.id, e.at,
 		octet_length(e.payload_json::text) + octet_length(e.kind) + octet_length(e.actor_id) + octet_length(e.actor_role)
 			+ octet_length(COALESCE(e.job_id, '')) + octet_length(e.task_id) + 64 AS source_bytes
 	FROM events e
@@ -25,11 +28,24 @@ const taskEventWindowSelect = `WITH candidates AS (
 	ORDER BY e.at, e.id
 	LIMIT $4
 ), budgeted AS (
-	SELECT c.*, sum(c.source_bytes) OVER (ORDER BY c.at, c.id ROWS UNBOUNDED PRECEDING) AS running FROM candidates c
+	SELECT c.id, c.at, c.source_bytes,
+		sum(c.source_bytes) OVER (ORDER BY c.at, c.id ROWS UNBOUNDED PRECEDING) <= $5 AS fits,
+		row_number() OVER (ORDER BY c.at, c.id) < $4 AS within_limit
+	FROM candidates c
 )
-SELECT id, task_id, job_id, kind, actor_id, actor_role, at, source_bytes, running <= $5,
-	CASE WHEN running <= $5 THEN payload_json END
-FROM budgeted ORDER BY at, id`
+SELECT b.id, b.at, b.source_bytes, b.fits,
+	CASE WHEN b.fits AND b.within_limit THEN e.task_id ELSE '' END,
+	CASE WHEN b.fits AND b.within_limit THEN COALESCE(e.job_id, '') ELSE '' END,
+	CASE WHEN b.fits AND b.within_limit THEN e.kind ELSE '' END,
+	CASE WHEN b.fits AND b.within_limit THEN e.actor_id ELSE '' END,
+	CASE WHEN b.fits AND b.within_limit THEN e.actor_role ELSE '' END,
+	CASE WHEN b.fits AND b.within_limit THEN e.payload_json END
+FROM budgeted b JOIN events e ON e.id = b.id
+ORDER BY b.at, b.id`
+
+// observeTaskEventWindowFetch, when set by a fixture, receives the
+// variable-width bytes the driver delivered for each scanned candidate.
+var observeTaskEventWindowFetch atomic.Pointer[func(eventID int64, variableBytes int)]
 
 func (s *Store) ReadTaskEventWindow(ctx context.Context, q store.TaskEventWindowQuery) (store.TaskEventWindow, error) {
 	if err := store.ValidateTaskEventWindowQuery(q); err != nil {
@@ -85,8 +101,11 @@ func (s *Store) ReadTaskEventWindow(ctx context.Context, q store.TaskEventWindow
 			fits    bool
 			payload []byte
 		)
-		if err := rows.Scan(&event.ID, &event.TaskID, &event.JobID, &event.Kind, &event.ActorID, &role, &at, &size, &fits, &payload); err != nil {
+		if err := rows.Scan(&event.ID, &at, &size, &fits, &event.TaskID, &event.JobID, &event.Kind, &event.ActorID, &role, &payload); err != nil {
 			return store.TaskEventWindow{}, err
+		}
+		if observe := observeTaskEventWindowFetch.Load(); observe != nil {
+			(*observe)(event.ID, len(event.TaskID)+len(event.JobID)+len(event.Kind)+len(event.ActorID)+len(role)+len(payload))
 		}
 		if len(window.Events) == q.Limit {
 			window.More = true

@@ -112,20 +112,26 @@ the ordinary `workspace_id`, `task_id`, optional exact `event_kind`, and
 - **Continuation.** When the requested page exhausts a window and captured
   matching events remain, the response carries `next_cursor`. Send the same
   `workspace_id`, `task_id`, `event_kind`, and `limit` with `cursor` set to
-  that value and no `snapshot` or positive `offset`; combining them is refused.
+  that value and no `snapshot` or `offset` argument at all; a cursor combined
+  with either, including `offset: 0`, is refused.
   The reply is the first page of the next window, with its own `snapshot`.
   Absence of both `next_offset` and `next_cursor` means the traversal is
   complete. Never treat the first window as the complete history.
 - **Bounds.** A window holds at most 1000 events and 1 MiB of rendered items.
-  The store fetches at most 1001 candidates per window and stops at a 1 MiB
-  source-byte budget before payloads are collected; a window that reaches a
-  byte budget ends early and the cursor continues from its last event. Every
+  The store fetches at most 1001 candidates per window and charges every
+  stored column against a 1 MiB source-byte budget. Only candidates inside
+  both the 1000-event limit and that budget transfer their variable-width
+  columns; the lookahead and every candidate past the budget return only
+  fixed-width ID, time, and size metadata. A window that reaches a byte
+  budget ends early and the cursor continues from its last event. Every
   response stays within 64 KiB of JSON text.
 - **Retries.** If a cursor response is lost, repeat the identical cursor
   request: it returns the same window until you use that window's `snapshot`
   or its `next_cursor`, after which the consumed cursor is retired. Opening a
   window retires its predecessor's snapshot, so one traversal occupies one of
   the process's 32 snapshot slots no matter how many windows it spans.
+  Capacity admission counts the cache after that replacement, so advancing an
+  existing traversal is never refused for the slot it frees.
 - **Errors and restarts.** `event <id> exceeds the 65536-byte output budget`
   and `event <id> exceeds the 1048576-byte event window budget` name an event
   that can never fit; the traversal does not advance past it, so narrow

@@ -236,7 +236,18 @@ func (s *Server) callMCPTaskEvents(ctx context.Context, owner, workspace, query 
 	if !replacing && len(cache.entries) >= mcpReadSnapshotCount {
 		return nil, fmt.Errorf("snapshot capacity reached: retry after expiry")
 	}
-	if next.window != "" && len(cache.cursors) >= mcpReadCursorCount {
+	// Admission counts the cursors after the transition: replacing a window
+	// retires the cursor that opened its predecessor.
+	cursors := len(cache.cursors)
+	if replacing && predecessor.events.consumed != "" {
+		if _, found := cache.cursors[predecessor.events.consumed]; found {
+			cursors--
+		}
+	}
+	if next.window != "" {
+		cursors++
+	}
+	if cursors > mcpReadCursorCount {
 		return nil, fmt.Errorf("snapshot capacity reached: retry after expiry")
 	}
 	if replacing {
