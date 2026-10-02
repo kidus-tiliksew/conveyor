@@ -484,6 +484,9 @@ type ActivityStore interface {
 	// ID-cursor readers retain ID order for pagination.
 	ListEvents(ctx context.Context, taskID string) ([]core.Event, error)
 	ListEventsAfter(ctx context.Context, taskID string, afterID int64) ([]core.Event, error)
+	// ReadTaskEventWindow returns one bounded window of a task-event traversal
+	// from a single consistent read view (component-mcp-protocol v14 MCP-READ-9).
+	ReadTaskEventWindow(ctx context.Context, query TaskEventWindowQuery) (TaskEventWindow, error)
 	CountEvents(ctx context.Context, taskID, kind string) (int, error)
 	// CountEventsSinceHumanIntervention counts task events of the given kind
 	// recorded after the latest human intervention on the task — the check-in

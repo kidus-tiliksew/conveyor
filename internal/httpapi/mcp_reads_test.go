@@ -492,8 +492,14 @@ type mcpReadEventStore struct {
 	events []core.Event
 }
 
-func (s mcpReadEventStore) ListEvents(context.Context, string) ([]core.Event, error) {
-	return append([]core.Event(nil), s.events...), nil
+func (s mcpReadEventStore) ReadTaskEventWindow(_ context.Context, q store.TaskEventWindowQuery) (store.TaskEventWindow, error) {
+	events := []core.Event{}
+	for _, event := range s.events {
+		if q.Kind == "" || event.Kind == q.Kind {
+			events = append(events, event)
+		}
+	}
+	return store.TaskEventWindow{Boundary: store.TaskEventBoundary{MaxID: s.events[len(s.events)-1].ID, Count: len(events)}, Events: events}, nil
 }
 func TestMCPReadChronologicalTieBreakAndUnknownActor(t *testing.T) {
 	at := time.Now()

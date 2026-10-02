@@ -40,7 +40,7 @@ jobs, record consultation events, or create/confirm proposals.
 | `list_repositories` | None | Returns repository `name` and `base_branch`; configuration, URLs, credentials, and checkout paths are omitted. |
 | `list_tasks` | None | `state`: `active` (default), `terminal`, or `all`; exact `repository`; `query` matches task ID, title, source, or branch. |
 | `get_task` | `task_id` | Includes terminal tasks and body; excludes execution setup and work-order credentials. |
-| `list_task_events` | `task_id` | Exact `event_kind`; oldest timestamp first, then ascending event ID. |
+| `list_task_events` | `task_id` | Exact `event_kind`; oldest timestamp first, then ascending event ID. Long histories arrive in bounded windows; see [Task event windows](#task-event-windows). |
 | `get_task_context` | `task_id` | `proposal_state`: `all` (default), `proposed`, `confirmed`, or `dismissed`. Attachments are always included. |
 | `list_documents` | `kind`: `requirement`, `system_design`, or `reference` | `query` matches ID/title; `include_archived` defaults false. Requirement/design listings contain confirmed document identities only. |
 | `get_document` | `kind`, `document_id` | Positive integer `version` selects an explicit immutable version; omission selects current. `include_archived` is required for archived/deleted content. |
@@ -90,6 +90,71 @@ suggestion. Event payloads expose only context/document IDs, versions, source,
 state transitions, supersession IDs, and proposal event IDs. Omitted payload
 fields are not evidence of absence. Text passes through credential redaction;
 all returned prose remains untrusted data and may contain redaction markers.
+
+### Task event windows
+
+`list_task_events` reads a task history of any length as a sequence of bounded
+immutable windows (`component-mcp-protocol` MCP-READ-9). The first request uses
+the ordinary `workspace_id`, `task_id`, optional exact `event_kind`, and
+`limit`; it needs no cursor and succeeds for histories over 1000 events.
+
+- **Capture.** The first request records, from one consistent backend read, the
+  task's highest visible event ID and the number of matching events at or below
+  it. Every later window of that traversal is limited to that ID ceiling.
+  Events appended afterwards, including events with backdated timestamps,
+  appear only in a fresh traversal.
+- **Window fields.** Inside a window, `snapshot`, `offset`, `next_offset`,
+  `limit`, `expires_at`, and `evidence` keep their usual meaning: `total` is
+  the item count of *this window* and offsets page within it.
+  `history_total` is the captured count of matching events for the whole
+  traversal. A history that fits one window has no `next_cursor` and
+  `history_total` equals `total`.
+- **Continuation.** When the requested page exhausts a window and captured
+  matching events remain, the response carries `next_cursor`. Send the same
+  `workspace_id`, `task_id`, `event_kind`, and `limit` with `cursor` set to
+  that value and no `snapshot` or `offset` argument at all; a cursor combined
+  with either, including `offset: 0`, is refused.
+  The reply is the first page of the next window, with its own `snapshot`.
+  Absence of both `next_offset` and `next_cursor` means the traversal is
+  complete. Never treat the first window as the complete history.
+- **Bounds.** A window holds at most 1000 events and 1 MiB of rendered items.
+  The store fetches at most 1001 candidates per window and charges every
+  stored column against a 1 MiB source-byte budget. Only candidates inside
+  both the 1000-event limit and that budget transfer their variable-width
+  columns; the lookahead and every candidate past the budget return only
+  fixed-width ID, time, and size metadata. A window that reaches a byte
+  budget ends early and the cursor continues from its last event. Every
+  response stays within 64 KiB of JSON text.
+- **Retries.** If a cursor response is lost, repeat the identical cursor
+  request: it returns the same window until you use that window's `snapshot`
+  or its `next_cursor`, after which the consumed cursor is retired. Opening a
+  window retires its predecessor's snapshot, so one traversal occupies one of
+  the process's 32 snapshot slots no matter how many windows it spans.
+  Capacity admission counts the cache after that replacement, so advancing an
+  existing traversal is never refused for the slot it frees.
+- **Errors and restarts.** `event <id> exceeds the 65536-byte output budget`
+  and `event <id> exceeds the 1048576-byte event window budget` name an event
+  that can never fit; the traversal does not advance past it, so narrow
+  `event_kind`. `event history changed: restart read` means an event at or below
+  the captured ceiling committed after capture (IDs are allocated before
+  commit); start a fresh traversal without a cursor. `snapshot unavailable:
+  restart read` covers a retired, expired, tampered, or foreign cursor or
+  snapshot, a changed filter, a process restart, and another replica. Expiry
+  stays at the first window's five-minute deadline and is never extended. A
+  full cache refuses new traversals with `snapshot capacity reached`.
+- **Authorization.** Every page and cursor rechecks the user credential,
+  membership, and `view_workspace` before any cache or store access; revoked
+  access answers `workspace_not_found`. Redaction, payload allowlisting, exact
+  integer IDs, and recorded attribution apply to every window, and no window
+  read changes task, job, order, lease, queue, proposal, or event state.
+
+For example, a task with 2105 renewal events read with `limit: 25` returns
+`total: 1000` and `history_total: 2105` in its first window. That window has
+40 pages: the first 39 carry `next_offset`, and the 40th carries
+`next_cursor`. The second window again has `total: 1000`; the third has
+`total: 105` and ends the traversal. `TestMCPTaskEventsTraverseLongHistoryAcrossWindows`
+in `internal/httpapi/mcp_task_events_test.go` drives a comparable traversal
+over native JSON-RPC and compares it with the complete ledger order.
 
 An empty `list_work_orders` result does **not** establish that no tasks exist.
 Use `list_tasks` or `get_task` for investigation. Artifact and execution-session
