@@ -952,6 +952,33 @@ export interface WorkOrderCheckpoint {
   decision_request?: string
   class?: 'authority_conflict' | string
   citations?: WorkOrderCheckpointCitation[]
+  verification?: WorkOrderVerificationCheckpoint
+}
+
+// feature-verification-kit-execution VK-13.3: the sealed verify checkpoint's
+// context reference. It never makes the order review-eligible.
+export interface WorkOrderVerificationCheckpoint {
+  context_id: string
+  head_sha: string
+  reason: string
+  required_action: string
+  summary?: string
+  grounds: WorkOrderVerificationCheckpointGround[]
+  operation_ids?: string[]
+}
+
+export interface WorkOrderVerificationCheckpointGround {
+  kind:
+    | 'attempt_blocked'
+    | 'attempt_waiting'
+    | 'attempt_timed_out'
+    | 'attempt_cancelled'
+    | 'missing_grant'
+    | 'admission_refused'
+    | 'operation_unresolved'
+  subject: VerificationSubjectRef
+  attempt_id?: string
+  server_verified: boolean
 }
 
 export interface WorkOrderCheckpointCitation {

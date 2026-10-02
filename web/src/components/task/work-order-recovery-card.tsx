@@ -2,7 +2,12 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { Check, Clock3, FileText, Link2, RotateCcw, TriangleAlert } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
-import { type CurrentExecutionState, deriveCurrentExecutionState, pendingPlanRevisionRequest } from '../../lib/activity'
+import {
+  type CurrentExecutionState,
+  deriveCurrentExecutionState,
+  pendingPlanRevisionRequest,
+  verificationGroundText,
+} from '../../lib/activity'
 import { confirmRequirementVersion, confirmSystemDesignVersion, recoverWorkOrder } from '../../lib/api'
 import { errorMessage } from '../../lib/errors'
 import type { ActivityItem, WorkOrderCheckpointCitation, WorkOrderCheckpointPendingProposal } from '../../lib/types'
@@ -179,6 +184,99 @@ function retryCountdown(at: string, now: number) {
 }
 
 function RecoveryState({ item, state }: { item: ActivityItem; state: CurrentExecutionState }) {
+  if (state.kind === 'verification_checkpoint') return <VerificationCheckpointRecovery item={item} state={state} />
+  return <WorkOrderRecoveryState item={item} state={state} />
+}
+
+// VK-WEB-6: the sealed verification checkpoint names its reason, required act,
+// submitted head and grounds. Recovery returns the order to verify at that head;
+// unresolved operations need the typed disposition, never free-text direction.
+function VerificationCheckpointRecovery({ item, state }: { item: ActivityItem; state: CurrentExecutionState }) {
+  const { order } = state
+  const checkpoint = order.checkpoint?.verification
+  const canOperateGates = useWorkspaceCapability('operate_gates')
+  const canRecoverWork = useWorkspaceCapability('recover_work')
+  const queryClient = useQueryClient()
+  const requestId = useRef(crypto.randomUUID())
+  const mutation = useMutation({
+    mutationFn: () => recoverWorkOrder(order.id, requestId.current),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['task', item.task.id] })
+      void queryClient.invalidateQueries({ queryKey: ['activity'] })
+    },
+  })
+  if (!checkpoint) return null
+  const operations = checkpoint.operation_ids ?? []
+  return (
+    <section
+      aria-label="Verification checkpoint"
+      className="space-y-3 rounded-lg border border-attention/50 bg-attention-soft px-3 py-3"
+    >
+      <div className="flex items-start gap-2">
+        <TriangleAlert className="mt-0.5 size-4 shrink-0 text-attention" aria-hidden />
+        <div className="min-w-0 space-y-1 leading-5">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-attention">{state.title}</p>
+          <p className="whitespace-pre-wrap break-words text-sm text-foreground">{checkpoint.reason}</p>
+        </div>
+      </div>
+      <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs leading-5">
+        <dt className="text-muted">Required action</dt>
+        <dd className="whitespace-pre-wrap break-words font-medium text-foreground">{checkpoint.required_action}</dd>
+        <dt className="text-muted">Submitted head</dt>
+        <dd className="break-all font-mono" title={checkpoint.head_sha}>
+          {checkpoint.head_sha.slice(0, 12)}
+        </dd>
+        <dt className="text-muted">Context</dt>
+        <dd className="break-all">
+          <a href={`#verification-${checkpoint.context_id}`} className="font-mono text-primary hover:underline">
+            {checkpoint.context_id}
+          </a>
+        </dd>
+        <dt className="text-muted">Replay</dt>
+        <dd>{state.retry}</dd>
+      </dl>
+      {checkpoint.grounds.length > 0 && (
+        <ul aria-label="Checkpoint grounds" className="space-y-1 text-xs leading-5 text-foreground">
+          {checkpoint.grounds.map((ground, index) => (
+            <li key={`${ground.kind}:${ground.attempt_id ?? ''}:${index}`}>{verificationGroundText(ground)}</li>
+          ))}
+        </ul>
+      )}
+      {operations.length > 0 ? (
+        <div className="space-y-1 rounded border border-attention/30 bg-surface/60 p-2 text-xs leading-5 text-muted">
+          <p className="font-medium text-foreground">Typed disposition required</p>
+          <p>
+            Recovery must record an applied, not applied or unknown disposition for{' '}
+            <span className="font-mono">{operations.join(', ')}</span> through the authenticated recovery route. A
+            free-text direction cannot authorize their replay.
+          </p>
+        </div>
+      ) : (
+        canOperateGates && (
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={!canRecoverWork || mutation.isPending}
+            onClick={() => mutation.mutate()}
+          >
+            <RotateCcw aria-hidden />
+            {mutation.isPending ? 'Recovering…' : 'Recover verification'}
+          </Button>
+        )
+      )}
+      {canOperateGates && !canRecoverWork && operations.length === 0 && (
+        <p className="text-xs text-muted">Work recovery capability is required.</p>
+      )}
+      {mutation.error != null && (
+        <p role="alert" className="text-xs text-failure">
+          {errorMessage(mutation.error, 'Could not recover the verification checkpoint.')}
+        </p>
+      )}
+    </section>
+  )
+}
+
+function WorkOrderRecoveryState({ item, state }: { item: ActivityItem; state: CurrentExecutionState }) {
   const { order } = state
   const canOperateGates = useWorkspaceCapability('operate_gates')
   const canRecoverWork = useWorkspaceCapability('recover_work')

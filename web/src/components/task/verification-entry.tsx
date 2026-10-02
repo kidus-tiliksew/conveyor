@@ -8,6 +8,7 @@ import type {
   VerificationMetadata,
   WorkOrder,
 } from '../../lib/types'
+import { verificationGroundText } from '../../lib/activity'
 import { absoluteTime, cn, duration } from '../../lib/utils'
 import { Badge } from '../ui/badge'
 import { useTaskVerification, useVerificationPages } from './use-task-detail'
@@ -35,6 +36,9 @@ function outcomeOf(context: VerificationMetadata | undefined, order: WorkOrder |
     if (outcome === 'succeeded' || outcome === 'pass' || outcome === 'passed') return 'passed'
     return 'failed'
   }
+  // A verify order released at its operator checkpoint waits on a person even
+  // before any context was sealed (feature-verification-kit-execution VK-13.5).
+  if (order?.state === 'queued' && order.last_failure_message === 'operator checkpoint reached') return 'needs_operator'
   if (job.state === 'running' || order?.state === 'claimed') return 'running'
   if (job.state === 'failed') return 'failed'
   if (order?.state === 'queued') return 'queued'
@@ -143,7 +147,7 @@ export function VerificationEntry({
               : 'No verification context was recorded for this run.'}
           </p>
         )}
-        {context && <ContextBody taskId={item.task.id} context={context} outcome={outcome} />}
+        {context && <ContextBody taskId={item.task.id} context={context} outcome={outcome} order={order} />}
         {order && <VerificationPermissions order={order} />}
         {footer}
       </article>
@@ -155,10 +159,12 @@ function ContextBody({
   taskId,
   context,
   outcome,
+  order,
 }: {
   taskId: string
   context: VerificationMetadata
   outcome: Outcome
+  order?: WorkOrder
 }) {
   const attempts = useVerificationPages(taskId, context.id, 'attempts')
   const assertions = useVerificationPages(taskId, context.id, 'assertions')
@@ -180,11 +186,11 @@ function ContextBody({
     [...publicationList].sort((a, b) => Number(b.metadata.generation ?? 0) - Number(a.metadata.generation ?? 0))[0]
   const earlierPublications = publicationList.filter((entry) => entry.id !== publication?.id).length
   const running = attemptList.filter((attempt) => ['running', 'pending'].includes(attempt.state))
-  const note = context.metadata.required_action?.trim()
+  const note = context.metadata.reason?.trim() || context.metadata.required_action?.trim()
 
   return (
     <>
-      <ResultBanner context={context} outcome={outcome} passed={passed} total={assertionList.length} />
+      <ResultBanner context={context} outcome={outcome} passed={passed} total={assertionList.length} order={order} />
       <div className="divide-y divide-border/60">
         {eligible.length > 0 && (
           <Row label="Kits">
@@ -291,29 +297,57 @@ function ResultBanner({
   outcome,
   passed,
   total,
+  order,
 }: {
   context: VerificationMetadata
   outcome: Outcome
   passed: number
   total: number
+  order?: WorkOrder
 }) {
   if (outcome === 'running' || outcome === 'queued' || outcome === 'pending') return null
   const head = short(context.metadata.source_sha)
   const tally = total > 0 ? `${passed} of ${total} assertions passed` : undefined
-  if (outcome === 'needs_operator')
+  if (outcome === 'needs_operator') {
+    // Grounds come from the work-order reference when it names this context;
+    // the bounded read projection supplies the same summary otherwise.
+    const reference =
+      order?.checkpoint?.verification?.context_id === context.id ? order.checkpoint.verification : undefined
+    const groundsSummary = context.metadata.checkpoint_grounds?.trim()
+    const checkpointHead = context.metadata.checkpoint_head || context.metadata.source_sha
     return (
       <div className="flex items-start gap-2 border-b border-border bg-attention-soft px-4 py-2.5 text-sm text-attention">
         <AlertTriangle className="mt-0.5 size-4 shrink-0" />
-        <div className="min-w-0">
-          <p className="font-medium">Verification is waiting on you</p>
+        <div className="min-w-0 space-y-1">
+          <p className="font-medium">Verification checkpoint — waiting on you</p>
+          {context.metadata.reason && (
+            <p className="whitespace-pre-wrap break-words font-normal text-foreground/85">{context.metadata.reason}</p>
+          )}
           {context.metadata.required_action && (
-            <p className="whitespace-pre-wrap break-words font-normal text-foreground/85">
+            <p className="whitespace-pre-wrap break-words font-normal text-foreground">
+              <span className="font-medium">Required action: </span>
               {context.metadata.required_action}
+            </p>
+          )}
+          {reference && reference.grounds.length > 0 ? (
+            <ul aria-label="Checkpoint grounds" className="space-y-0.5 text-xs font-normal text-foreground/85">
+              {reference.grounds.map((ground, index) => (
+                <li key={`${ground.kind}:${ground.attempt_id ?? ''}:${index}`}>{verificationGroundText(ground)}</li>
+              ))}
+            </ul>
+          ) : (
+            groundsSummary && <p className="text-xs font-normal text-foreground/85">Grounds: {groundsSummary}</p>
+          )}
+          {checkpointHead && (
+            <p className="font-mono text-[11px] font-normal text-muted">
+              at {short(checkpointHead)}
+              {context.metadata.checkpoint_attempt && ` · released by ${context.metadata.checkpoint_attempt}`}
             </p>
           )}
         </div>
       </div>
     )
+  }
   const ok = outcome === 'passed'
   return (
     <div

@@ -472,6 +472,15 @@ func TestVerificationCheckpointRemedyAndMissingGrant(t *testing.T) {
 	if receipt.NextStage != "verify" || len(receipt.Grounds) != 1 {
 		t.Fatalf("checkpoint receipt = %+v", receipt)
 	}
+	// VK-HTTP-9: the task activity projection keeps the context reference.
+	views, err := s.checkpointWorkOrderViews(ctx, []core.WorkOrder{order}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projected, _ := json.Marshal(views[0])
+	if !strings.Contains(string(projected), `"verification":{"context_id":"`+vc.ID+`"`) || !strings.Contains(string(projected), `"kind":"missing_grant"`) {
+		t.Fatalf("activity projection dropped the checkpoint reference: %s", projected)
+	}
 	// component-persistence VK-STORE-16: the retained claim replays after release.
 	events, err = s.Store.ListEvents(ctx, "verification-http")
 	if err != nil {

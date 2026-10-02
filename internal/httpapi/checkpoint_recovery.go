@@ -40,6 +40,9 @@ type checkpointActivityView struct {
 	DecisionRequest string                           `json:"decision_request,omitempty"`
 	Class           string                           `json:"class,omitempty"`
 	Citations       []checkpointCitationActivityView `json:"citations,omitempty"`
+	// Verification is the verify-checkpoint context reference of
+	// component-http-api VK-HTTP-9; it never confers review admission.
+	Verification *core.WorkOrderVerificationCheckpoint `json:"verification,omitempty"`
 }
 
 type checkpointCitationActivityView struct {
@@ -64,6 +67,7 @@ func (s *Server) checkpointWorkOrderViews(ctx context.Context, orders []core.Wor
 		checkpoint := &checkpointActivityView{
 			DecisionRequest: order.Checkpoint.DecisionRequest,
 			Class:           order.Checkpoint.Class,
+			Verification:    order.Checkpoint.Verification,
 		}
 		if len(order.Checkpoint.Citations) > 0 {
 			checkpoint.Citations = make([]checkpointCitationActivityView, 0, len(order.Checkpoint.Citations))
