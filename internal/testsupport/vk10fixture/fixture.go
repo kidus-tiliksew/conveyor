@@ -998,7 +998,12 @@ func Run(t *testing.T, factory func(*testing.T) store.Backend) {
 			if err := f.rpc("submit_verification", workorder.VerificationSubmitRequest{ContextID: f.snapshot.Contexts[0].ID, Outcome: "succeeded", Coverage: f.coverage}, nil); err == nil {
 				t.Fatal("missing or failed evidence passed")
 			}
-			must(t, f.rpc("submit_verification", workorder.VerificationSubmitRequest{ContextID: f.snapshot.Contexts[0].ID, Outcome: outcome, Coverage: f.coverage, Feedback: "Fixture exercise requires correction or restoration of its unavailable integration."}, nil))
+			submission := workorder.VerificationSubmitRequest{ContextID: f.snapshot.Contexts[0].ID, Outcome: outcome, Coverage: f.coverage, Feedback: "Fixture exercise requires correction or restoration of its unavailable integration."}
+			if outcome == "operator_action_required" {
+				// feature-verification-kit-execution VK-13.1: a checkpoint names the operator act.
+				submission.RequiredAction = "Restore the fixture integration, then recover the verify order."
+			}
+			must(t, f.rpc("submit_verification", submission, nil))
 			task, err := f.b.GetTask(f.ctx, f.task.ID)
 			must(t, err)
 			if f.unavailable || f.skipped {
