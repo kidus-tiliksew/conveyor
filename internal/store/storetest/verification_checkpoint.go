@@ -61,7 +61,7 @@ func runVerificationMissingGrantCheckpoint(t *testing.T, x Fixture) {
 	}
 	snapshot := v.snapshot(t)
 	receipt := v.apply(t, seal)
-	if receipt.ID != v.contextID || receipt.State != "operator_action_required" {
+	if receipt.ID != v.contextID || receipt.State != "operator_action_required" || receipt.NextStage != string(core.StageVerify) || len(receipt.Grounds) != 1 || receipt.Grounds[0].Kind != store.VerificationGroundMissingGrant {
 		t.Fatalf("checkpoint receipt = %+v", receipt)
 	}
 	operator, owner := bootstrapOwner(t, x)
@@ -84,7 +84,7 @@ func runVerificationMissingGrantCheckpoint(t *testing.T, x Fixture) {
 	page, err := reader.ReadVerificationPage(operator, store.VerificationAccess{TaskID: v.access.TaskID, UserID: owner.ID}, store.VerificationPageRequest{Kind: "contexts", ContextID: v.contextID})
 	requireOK(t, err)
 	var header map[string]string
-	if len(page.Items) != 1 || json.Unmarshal(page.Items[0].Metadata, &header) != nil || header["outcome"] != "operator_action_required" || header["reason"] != cp.Reason || header["required_action"] != cp.RequiredAction || !strings.Contains(header["checkpoint_grounds"], store.VerificationGroundMissingGrant) {
+	if len(page.Items) != 1 || json.Unmarshal(page.Items[0].Metadata, &header) != nil || header["outcome"] != "operator_action_required" || header["reason"] != cp.Reason || header["required_action"] != cp.RequiredAction || !strings.Contains(header["checkpoint_grounds"], store.VerificationGroundMissingGrant) || !strings.Contains(header["checkpoint_grounds"], "evidence missing") || header["checkpoint_head"] != v.revisions[0].SHA || header["checkpoint_attempt"] != v.access.WorkOrderAttemptID || strings.Contains(string(page.Items[0].Metadata), "client_token") {
 		t.Fatalf("checkpoint projection = %+v", header)
 	}
 	task, err := x.Backend.GetTask(v.ctx, v.access.TaskID)
@@ -104,13 +104,37 @@ func runVerificationMissingGrantCheckpoint(t *testing.T, x Fixture) {
 			t.Fatal("checkpoint admitted review")
 		}
 	}
-	// A stale replay from the released session changes nothing.
+	if cp.Claim.ClientTokenHash != "" || cp.Claim.SessionID != v.access.Claim.SessionID || cp.HeadSHA != v.revisions[0].SHA || cp.WorkOrderAttemptID != v.access.WorkOrderAttemptID {
+		t.Fatalf("retained claim exposed or incomplete: %+v", cp.Claim)
+	}
+	// VK-STORE-16: the exact retained claim replays the identical submission
+	// and receives the original receipt without another lifecycle event.
 	state := verificationPublicState(t, &observer)
-	if _, err = x.Backend.ApplyVerification(v.ctx, seal); err == nil {
-		t.Fatal("released session replayed the checkpoint")
+	replayed, err := x.Backend.ApplyVerification(v.ctx, seal)
+	requireOK(t, err)
+	if !reflect.DeepEqual(replayed, receipt) {
+		t.Fatalf("replay receipt = %+v, want %+v", replayed, receipt)
 	}
 	if !reflect.DeepEqual(state, verificationPublicState(t, &observer)) {
-		t.Fatal("stale replay changed the aggregate")
+		t.Fatal("identical replay changed the aggregate")
+	}
+	changed := seal
+	changedSubmission := *seal.Submission
+	changedSubmission.RequiredAction = "A different operator act"
+	changed.Submission = &changedSubmission
+	wrongToken := seal
+	wrongToken.Access.ClientToken = "not-the-claim-token"
+	staleSession := seal
+	staleSession.Access.Claim.SessionID = "stale-session"
+	success := seal
+	success.Submission = &store.VerificationSubmission{Outcome: "succeeded", Coverage: coverage}
+	for name, c := range map[string]store.VerificationCommand{"changed": changed, "wrong token": wrongToken, "stale session": staleSession, "success": success} {
+		if _, err = x.Backend.ApplyVerification(v.ctx, c); err == nil {
+			t.Fatalf("%s replay accepted", name)
+		}
+		if !reflect.DeepEqual(state, verificationPublicState(t, &observer)) {
+			t.Fatalf("%s replay changed the aggregate", name)
+		}
 	}
 	// Recovery without disposition returns to verify at the same head; the
 	// successor claim prepares a distinct context and the checkpoint stays.
@@ -119,9 +143,9 @@ func runVerificationMissingGrantCheckpoint(t *testing.T, x Fixture) {
 	if recovered.State != core.WorkOrderQueued || recovered.RetrySuppressed || recovered.HeadSHA != order.HeadSHA || recovered.Stage != core.StageVerify {
 		t.Fatalf("recovered order = %+v", recovered)
 	}
-	replayed, err := RecoverWorkOrder(operator, x.Backend, order.ID, "checkpoint-recovery", time.Hour)
+	recoveryReplay, err := RecoverWorkOrder(operator, x.Backend, order.ID, "checkpoint-recovery", time.Hour)
 	requireOK(t, err)
-	if replayed.State != recovered.State || replayed.RetrySuppressed {
+	if recoveryReplay.State != recovered.State || recoveryReplay.RetrySuppressed {
 		t.Fatal("recovery replay changed the order")
 	}
 	claim := core.WorkOrderClaim{WorkerID: "worker", ClaimantID: "worker", SessionID: "checkpoint-successor", ClientToken: "checkpoint-successor-token", Lease: time.Hour, ExecutionTimeout: time.Hour, Requirements: recovered.ServedRequirementSnapshot, Governance: recovered.GovernanceSnapshot}
@@ -136,6 +160,9 @@ func runVerificationMissingGrantCheckpoint(t *testing.T, x Fixture) {
 	next := v.apply(t, store.VerificationCommand{Kind: store.VerificationCreateContext, Key: "checkpoint-successor", Context: &store.VerificationContext{Revisions: v.revisions, GoverningPins: v.pins}})
 	if next.ID == "" || next.ID == oldContext {
 		t.Fatal("successor reused the checkpoint context")
+	}
+	if _, err = x.Backend.ApplyVerification(v.ctx, seal); err == nil {
+		t.Fatal("retained claim replayed after a successor claim")
 	}
 	history := observer.snapshotFor(t, oldContext)
 	if history.Contexts[0].Result == nil || history.Contexts[0].Result.Checkpoint == nil {

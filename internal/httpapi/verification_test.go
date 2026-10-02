@@ -469,4 +469,39 @@ func TestVerificationCheckpointRemedyAndMissingGrant(t *testing.T) {
 	if err != nil || task.NextStage != core.StageVerify {
 		t.Fatal("checkpoint left verify")
 	}
+	if receipt.NextStage != "verify" || len(receipt.Grounds) != 1 {
+		t.Fatalf("checkpoint receipt = %+v", receipt)
+	}
+	// component-persistence VK-STORE-16: the retained claim replays after release.
+	events, err = s.Store.ListEvents(ctx, "verification-http")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err = s.callMCPTool(request, "submit_verification", args)
+	if err != nil || !reflect.DeepEqual(out, receipt) {
+		t.Fatalf("MCP replay = %+v, %v", out, err)
+	}
+	if response = verificationRESTCall(s, ctx, id, "submit_verification", args); response.Code != http.StatusOK {
+		t.Fatalf("REST replay: %d %s", response.Code, response.Body)
+	}
+	for name, mutate := range map[string]func(map[string]any){
+		"changed":       func(a map[string]any) { a["required_action"] = "different act" },
+		"stale session": func(a map[string]any) { a["session_id"] = "stale" },
+		"wrong token":   func(a map[string]any) { a["client_token"] = "wrong" },
+		"unsupported":   func(a map[string]any) { a["outcome"] = "blocked" },
+	} {
+		changed := map[string]any{}
+		for k, v := range args {
+			changed[k] = v
+		}
+		mutate(changed)
+		response = verificationRESTCall(s, ctx, id, "submit_verification", changed)
+		if response.Code == http.StatusOK || strings.Contains(response.Body.String(), "verification_outcome_unsupported") {
+			t.Fatalf("%s replay: %d %s", name, response.Code, response.Body)
+		}
+	}
+	after, err = s.Store.ListEvents(ctx, "verification-http")
+	if err != nil || len(after) != len(events) {
+		t.Fatal("checkpoint replays wrote events")
+	}
 }

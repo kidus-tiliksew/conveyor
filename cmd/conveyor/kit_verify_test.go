@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -483,8 +484,20 @@ func TestKitRunnerDigestAndMissingGrantAdmission(t *testing.T) {
 		t.Fatalf("changed kit admitted: %v", err)
 	}
 	subject = store.VerificationSubjectContract{Subject: f.snapshot.Attempts[0].Subject, Contract: verification.Exercise{ID: "observe", Permissions: []verification.Permission{{Kind: "network", TargetBinding: "fixture"}}}}
-	if err := f.v.run(t.Context(), subject, t.TempDir()); err == nil || !strings.Contains(err.Error(), "network fixture") {
+	err := f.v.run(t.Context(), subject, t.TempDir())
+	var admission *kitAdmissionError
+	if err == nil || !strings.Contains(err.Error(), "network fixture") || !errors.As(err, &admission) {
 		t.Fatalf("missing action not named: %v", err)
+	}
+	// VK-13.1/VK-13.2: the runner names the grounded checkpoint call.
+	var guidance bytes.Buffer
+	if err = kitCheckpointGuidance(&guidance, "order-1", "context-1", []string{"Verification blocked for observe: " + admission.Error()}); err == nil {
+		t.Fatal("unadmitted subjects reported success")
+	}
+	for _, want := range []string{`context_id "context-1"`, `outcome "operator_action_required"`, "required_action", "recover verify order order-1", "no attempt ran", "report_verification_outcome"} {
+		if !strings.Contains(guidance.String(), want) {
+			t.Fatalf("guidance lacks %q: %s", want, guidance.String())
+		}
 	}
 	if f.starts != 0 || f.uploads != 0 {
 		t.Fatal("refused admission launched exercise")

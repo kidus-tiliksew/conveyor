@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"time"
@@ -73,6 +74,21 @@ type VerificationCheckpoint struct {
 	EvidenceIDs     []string                        `json:"evidence_ids"`
 	SessionID       string                          `json:"session_id"`
 	Summary         string                          `json:"summary"`
+	// HeadSHA is the submitted task-repository revision; WorkOrderAttemptID is
+	// the releasing claim attempt (component-http-api VK-HTTP-9).
+	HeadSHA            string `json:"head_sha"`
+	WorkOrderAttemptID string `json:"work_order_attempt_id"`
+	// Claim retains the exact releasing claim so an identical submission can be
+	// authenticated after release (VK-STORE-16). Reads never return its hash.
+	Claim VerificationRetainedClaim `json:"retained_claim"`
+}
+
+type VerificationRetainedClaim struct {
+	WorkerID           string `json:"worker_id"`
+	ClaimantID         string `json:"claimant_id"`
+	SessionID          string `json:"session_id"`
+	WorkOrderAttemptID string `json:"work_order_attempt_id"`
+	ClientTokenHash    string `json:"client_token_hash,omitempty"`
 }
 
 // ValidateVerificationSeal reuses the attempt evaluator inside the backend's
@@ -163,7 +179,11 @@ func ValidateVerificationSeal(c VerificationCommand, rows []VerificationRow, now
 		subjects = append(subjects, core.VerificationSubject{Kind: "ordinary", ObligationID: o.ID, ContractDigest: o.Digest})
 	}
 	checkpoint := s.Outcome == "operator_action_required"
-	record := &VerificationCheckpoint{Reason: s.Feedback, RequiredAction: s.RequiredAction, Grounds: []VerificationCheckpointGround{}, Subjects: []VerificationCheckpointSubject{}, MissingSubjects: []core.VerificationSubject{}, OperationIDs: []string{}, EvidenceIDs: []string{}, SessionID: c.Access.Claim.SessionID}
+	record := &VerificationCheckpoint{Reason: s.Feedback, RequiredAction: s.RequiredAction, Grounds: []VerificationCheckpointGround{}, Subjects: []VerificationCheckpointSubject{}, MissingSubjects: []core.VerificationSubject{}, OperationIDs: []string{}, EvidenceIDs: []string{}, SessionID: c.Access.Claim.SessionID, WorkOrderAttemptID: c.Access.WorkOrderAttemptID}
+	if len(vc.Revisions) > 0 {
+		record.HeadSHA = vc.Revisions[0].SHA
+	}
+	record.Claim = VerificationRetainedClaim{WorkerID: c.Access.Claim.WorkerID, ClaimantID: c.Access.Claim.ClaimantID, SessionID: c.Access.Claim.SessionID, WorkOrderAttemptID: c.Access.WorkOrderAttemptID, ClientTokenHash: verificationHash([]byte(c.Access.ClientToken))}
 	failed, blocked := false, false
 	for _, subject := range subjects {
 		var latest *VerificationAttempt
@@ -301,8 +321,16 @@ func verificationCheckpointSummary(grounds []VerificationCheckpointGround) strin
 			name = g.Subject.KitID + "/" + g.Subject.ExerciseID
 		}
 		part := g.Kind + " " + g.Subject.Kind + ":" + name
-		if g.AttemptID != "" {
-			part += " (" + g.AttemptID + ")"
+		switch {
+		case g.Kind == VerificationGroundOperationUnresolved:
+			part += " (operations " + strings.Join(g.OperationIDs, ",") + ")"
+		case g.AttemptID != "":
+			part += " (attempt " + g.AttemptID + ")"
+		default:
+			part += " (no attempt ran; evidence missing)"
+		}
+		if !g.ServerVerified {
+			part += " [verifier-reported]"
 		}
 		parts = append(parts, part)
 	}
@@ -322,4 +350,32 @@ func VerificationSealedCommand(c VerificationCommand, mutation VerificationMutat
 		}
 	}
 	return c
+}
+
+// VerifyVerificationCheckpointReplay authenticates a seal from the exact claim
+// retained by a checkpoint release (component-persistence VK-STORE-16). The
+// ordinary claim check runs against that retained identity in observing mode,
+// so token, actor, head and stage rules are unchanged. The sealed-context
+// branch of PrepareVerificationMutation then returns the original receipt for
+// an identical submission and refuses a changed one without writing.
+func VerifyVerificationCheckpointReplay(ctx context.Context, a VerificationAccess, task core.Task, o core.WorkOrder, rows []VerificationRow, contextID string, now time.Time) error {
+	if a.UserID != "" || o.Stage != core.StageVerify || o.Checkpoint == nil || o.Checkpoint.Verification == nil || o.Checkpoint.Verification.ContextID != contextID || o.State != core.WorkOrderQueued || o.SessionID != "" || o.LastAttemptID == "" || o.LastAttemptID != a.WorkOrderAttemptID {
+		return ErrVerificationAccess
+	}
+	r, ok := verificationFind(rows, "verification_contexts", contextID)
+	if !ok || r.TaskID != a.TaskID {
+		return ErrVerificationAccess
+	}
+	vc := verificationDecode[VerificationContext](r)
+	if vc.Result == nil || vc.Result.Checkpoint == nil || vc.WorkOrderID != o.ID || vc.WorkOrderAttemptID != a.WorkOrderAttemptID {
+		return ErrVerificationAccess
+	}
+	retained := vc.Result.Checkpoint.Claim
+	if retained.ClientTokenHash == "" || retained.WorkOrderAttemptID != o.LastAttemptID {
+		return ErrVerificationAccess
+	}
+	view := o
+	view.State, view.AttemptID, view.SessionID = core.WorkOrderCompleted, retained.WorkOrderAttemptID, retained.SessionID
+	view.WorkerID, view.ClaimantID, view.ClientTokenHash = retained.WorkerID, retained.ClaimantID, retained.ClientTokenHash
+	return VerifyVerificationClaim(ctx, a, task, view, false, now)
 }

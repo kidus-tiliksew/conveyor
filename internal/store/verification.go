@@ -200,6 +200,10 @@ type VerificationReceipt struct {
 	EvidenceIDs   []string
 	ArtifactIDs   []string
 	PublicationID string
+	// NextStage and Grounds are set only for an operator checkpoint seal
+	// (component-mcp-protocol VK-MCP-5).
+	NextStage string                         `json:"next_stage,omitempty"`
+	Grounds   []VerificationCheckpointGround `json:"grounds,omitempty"`
 }
 
 type VerificationCommand struct {

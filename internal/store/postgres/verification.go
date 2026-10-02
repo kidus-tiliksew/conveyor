@@ -89,6 +89,20 @@ func (s *Store) applyVerification(ctx context.Context, lease taskops.TaskLease, 
 	var result store.VerificationReceipt
 	err = s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
 		order, err := s.verificationScopeTx(ctx, tx, c.Access, c.Kind != store.VerificationSeal, c.Kind == store.VerificationReconcileClaimLoss)
+		if err != nil && c.Kind == store.VerificationSeal && order.ID != "" {
+			// VK-STORE-16: only the exact retained checkpoint claim may replay.
+			task, e := q.GetTask(ctx, db.GetTaskParams{ID: c.Access.TaskID, WorkspaceID: workspace(ctx)})
+			if e != nil {
+				return err
+			}
+			records, e := q.ListVerificationRecords(ctx, workspace(ctx), c.Access.TaskID)
+			if e != nil {
+				return err
+			}
+			if store.VerifyVerificationCheckpointReplay(ctx, c.Access, taskFromDB(task), order, verificationRows(records), c.ContextID, time.Now().UTC()) == nil {
+				err = nil
+			}
+		}
 		if err != nil {
 			return err
 		}
