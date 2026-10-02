@@ -37,7 +37,15 @@ func verificationMCPTools() []map[string]any {
 			required = append(required, "session_id", "client_token")
 		}
 		schema["required"] = required
-		result = append(result, map[string]any{"name": name, "description": "Claim-bound verification evidence. Results support independent review and never confer acceptance or operator approval.", "inputSchema": schema})
+		description := "Claim-bound verification evidence. Results support independent review and never confer acceptance or operator approval."
+		if name == "submit_verification" {
+			// feature-verification-kit-execution VK-13.1: one published mapping;
+			// outcome validation stays in the shared service after scope checks.
+			description += " " + store.VerificationOutcomeMapping
+			props["outcome"] = map[string]any{"type": "string", "description": store.VerificationOutcomeMapping}
+			props["required_action"] = map[string]any{"type": "string", "description": "Required with operator_action_required: the exact operator act that unblocks verification."}
+		}
+		result = append(result, map[string]any{"name": name, "description": description, "inputSchema": schema})
 	}
 	return result
 }
@@ -154,6 +162,12 @@ func (s *Server) verificationOrder(w http.ResponseWriter, r *http.Request) {
 	args["workspace_id"] = ws
 	result, err := s.callVerificationMCP(r, name, args)
 	if err != nil {
+		var remedy *store.VerificationRemedyError
+		if errors.As(err, &remedy) {
+			// The fixed remedy follows scope authentication and carries no record data.
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid verification request", "code": remedy.Code, "remedy": remedy.Remedy})
+			return
+		}
 		code := http.StatusBadRequest
 		if errors.Is(err, store.ErrVerificationAccess) {
 			code = http.StatusNotFound

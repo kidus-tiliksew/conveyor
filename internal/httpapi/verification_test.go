@@ -181,7 +181,17 @@ func TestVerificationToolSchemasMatchRequestTypes(t *testing.T) {
 		props := schema["properties"].(map[string]any)
 		expected := core.VerificationJSONSchema(reflect.TypeOf(workorder.VerificationRequestType(name)))["properties"].(map[string]any)
 		for field, shape := range expected {
-			if !reflect.DeepEqual(props[field], shape) {
+			published := props[field]
+			// Descriptions annotate the published mapping (VK-13.1); shape must match.
+			if annotated, ok := published.(map[string]any); ok {
+				published = map[string]any{}
+				for k, v := range annotated {
+					if k != "description" {
+						published.(map[string]any)[k] = v
+					}
+				}
+			}
+			if !reflect.DeepEqual(published, shape) {
 				t.Fatalf("%s field %s schema drift", name, field)
 			}
 		}
@@ -371,5 +381,136 @@ func TestVerificationRecoveryStrictAndWorkerRefusal(t *testing.T) {
 	}
 	if !reflect.DeepEqual(before, after) {
 		t.Fatal("refused recovery changed events")
+	}
+}
+
+// feature-verification-kit-execution VK-13.1/VK-13.2 (component-http-api VK-HTTP-9
+// and component-mcp-protocol VK-MCP-5): one remedy over REST and MCP, then a pre-execution checkpoint.
+func TestVerificationCheckpointRemedyAndMissingGrant(t *testing.T) {
+	s, ctx, id := verificationHTTPFixture(t)
+	request := httptest.NewRequest(http.MethodPost, "/mcp", nil).WithContext(ctx)
+	invoke := func(name string, input any) (any, map[string]any, error) {
+		args := map[string]any{}
+		if err := json.Unmarshal(core.JSONPayload(input), &args); err != nil {
+			t.Fatal(err)
+		}
+		args["workspace_id"], args["work_order_id"], args["session_id"], args["client_token"] = "demo", id, "session", "token"
+		out, err := s.callMCPTool(request, name, args)
+		return out, args, err
+	}
+	for _, tool := range verificationMCPTools() {
+		if tool["name"] != "submit_verification" {
+			continue
+		}
+		props := tool["inputSchema"].(map[string]any)["properties"].(map[string]any)
+		if !strings.Contains(tool["description"].(string), store.VerificationOutcomeMapping) || props["required_action"] == nil || props["outcome"].(map[string]any)["description"] != store.VerificationOutcomeMapping {
+			t.Fatal("submit_verification does not publish the outcome mapping")
+		}
+	}
+	order, err := s.Store.GetWorkOrder(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	access := store.VerificationAccess{TaskID: order.TaskID, WorkOrderID: id, WorkOrderAttemptID: order.AttemptID, ClientToken: "token", Claim: core.WorkOrderClaimIdentity{WorkerID: "fixture", ClaimantID: "fixture", SessionID: "session"}}
+	vc := store.VerificationContext{Revisions: []core.VerificationRevision{{Repository: "repo", RemoteIdentity: "https://github.com/org/repo", SHA: order.HeadSHA}}, GoverningPins: []core.VerificationPin{{Kind: "requirement", DocumentID: "req-fixture", Version: 1}}, Discovery: []json.RawMessage{core.JSONPayload(map[string]any{"repository": "repo", "revision": order.HeadSHA, "state": "no_manifest"})}}
+	selected := &store.VerificationSelection{Receipt: verification.SelectionReceipt{SchemaVersion: 1, Stage: "verify", ContextPins: []verification.Pin{{Kind: "requirement", DocumentID: "req-fixture", Version: 1}}, Kits: []verification.KitReceipt{}}, Subjects: []store.VerificationSubjectContract{}}
+	created, err := s.Store.(store.VerificationStore).ApplyVerification(ctx, store.VerificationCommand{Kind: store.VerificationCreateContext, Key: "checkpoint-surface", Access: access, Context: &vc, Selection: selected})
+	if err != nil {
+		t.Fatal(err)
+	}
+	vc.ID = created.ID
+	contract := verification.Exercise{ID: "network", Kind: "script", Argv: []string{"fixture"}, TimeoutSeconds: 30, RequiredAssertions: []verification.Assertion{}, RetryPolicy: "safe_to_replay", SafetyBasis: "read-only", Permissions: []verification.Permission{{Kind: "network", TargetBinding: "fixture"}}}
+	out, _, err := invoke("register_verification_obligation", workorder.VerificationObligationRequest{ContextID: vc.ID, ObligationID: "network", Description: "Needs network", Sources: []workorder.VerificationSource{{DocumentID: "req-fixture", Version: 1, SectionID: "REQ-1"}}, Contract: contract})
+	if err != nil {
+		t.Fatal(err)
+	}
+	subject := core.VerificationSubject{Kind: "ordinary", ObligationID: "network", ContractDigest: out.(store.VerificationReceipt).Digest}
+	coverage := store.VerificationCoverage{ObligationIDs: []string{"network"}, Justification: "Fixture source is covered", Sources: []store.VerificationCoverageSource{{Source: store.VerificationCoverageReference{DocumentID: "req-fixture", Version: 1, SectionID: "REQ-1"}, Disposition: "covered", Explanation: "Declared fixture check", Subjects: []core.VerificationSubject{subject}}}}
+	events, err := s.Store.ListEvents(ctx, "verification-http")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, outcome := range []string{"blocked", "waiting", "failed"} {
+		_, args, err := invoke("submit_verification", workorder.VerificationSubmitRequest{ContextID: vc.ID, Outcome: outcome, Coverage: coverage, Feedback: "missing grant", RequiredAction: "grant network"})
+		var remedy *store.VerificationRemedyError
+		if !errors.As(err, &remedy) || remedy.Code != "verification_outcome_unsupported" || !strings.Contains(err.Error(), "report_verification_outcome.state") {
+			t.Fatalf("MCP %s: %v", outcome, err)
+		}
+		response := verificationRESTCall(s, ctx, id, "submit_verification", args)
+		var body map[string]string
+		if response.Code != http.StatusBadRequest || json.Unmarshal(response.Body.Bytes(), &body) != nil || body["code"] != "verification_outcome_unsupported" || body["remedy"] != store.VerificationOutcomeRemedy || strings.Contains(response.Body.String(), vc.ID) {
+			t.Fatalf("REST %s: %d %s", outcome, response.Code, response.Body)
+		}
+		args["session_id"] = "foreign"
+		if response = verificationRESTCall(s, ctx, id, "submit_verification", args); response.Code != http.StatusNotFound || strings.Contains(response.Body.String(), "verification_outcome_unsupported") {
+			t.Fatalf("foreign scope received the remedy: %d %s", response.Code, response.Body)
+		}
+	}
+	_, args, err := invoke("submit_verification", workorder.VerificationSubmitRequest{ContextID: vc.ID, Outcome: "operator_action_required", Coverage: coverage, Feedback: "missing grant"})
+	var remedy *store.VerificationRemedyError
+	if !errors.As(err, &remedy) || remedy.Code != "verification_checkpoint_incomplete" {
+		t.Fatalf("incomplete checkpoint: %v", err)
+	}
+	after, err := s.Store.ListEvents(ctx, "verification-http")
+	if err != nil || len(after) != len(events) {
+		t.Fatal("refused outcomes wrote events")
+	}
+	args["required_action"] = "Recover the verify order, then grant network access for the next context."
+	response := verificationRESTCall(s, ctx, id, "submit_verification", args)
+	var receipt store.VerificationReceipt
+	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &receipt) != nil || receipt.State != "operator_action_required" {
+		t.Fatalf("REST checkpoint: %d %s", response.Code, response.Body)
+	}
+	order, err = s.Store.GetWorkOrder(ctx, id)
+	if err != nil || order.State != core.WorkOrderQueued || !order.RetrySuppressed || order.Checkpoint == nil || order.Checkpoint.Verification == nil || order.Checkpoint.Verification.ContextID != vc.ID || len(order.Checkpoint.Verification.Grounds) != 1 || order.Checkpoint.Verification.Grounds[0].Kind != store.VerificationGroundMissingGrant || order.VerificationContextID != "" {
+		t.Fatalf("checkpoint order = %+v", order)
+	}
+	task, err := s.Store.GetTask(ctx, order.TaskID)
+	if err != nil || task.NextStage != core.StageVerify {
+		t.Fatal("checkpoint left verify")
+	}
+	if receipt.NextStage != "verify" || len(receipt.Grounds) != 1 {
+		t.Fatalf("checkpoint receipt = %+v", receipt)
+	}
+	// VK-HTTP-9: the task activity projection keeps the context reference.
+	views, err := s.checkpointWorkOrderViews(ctx, []core.WorkOrder{order}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projected, _ := json.Marshal(views[0])
+	if !strings.Contains(string(projected), `"verification":{"context_id":"`+vc.ID+`"`) || !strings.Contains(string(projected), `"kind":"missing_grant"`) {
+		t.Fatalf("activity projection dropped the checkpoint reference: %s", projected)
+	}
+	// component-persistence VK-STORE-16: the retained claim replays after release.
+	events, err = s.Store.ListEvents(ctx, "verification-http")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err = s.callMCPTool(request, "submit_verification", args)
+	if err != nil || !reflect.DeepEqual(out, receipt) {
+		t.Fatalf("MCP replay = %+v, %v", out, err)
+	}
+	if response = verificationRESTCall(s, ctx, id, "submit_verification", args); response.Code != http.StatusOK {
+		t.Fatalf("REST replay: %d %s", response.Code, response.Body)
+	}
+	for name, mutate := range map[string]func(map[string]any){
+		"changed":       func(a map[string]any) { a["required_action"] = "different act" },
+		"stale session": func(a map[string]any) { a["session_id"] = "stale" },
+		"wrong token":   func(a map[string]any) { a["client_token"] = "wrong" },
+		"unsupported":   func(a map[string]any) { a["outcome"] = "blocked" },
+	} {
+		changed := map[string]any{}
+		for k, v := range args {
+			changed[k] = v
+		}
+		mutate(changed)
+		response = verificationRESTCall(s, ctx, id, "submit_verification", changed)
+		if response.Code == http.StatusOK || strings.Contains(response.Body.String(), "verification_outcome_unsupported") {
+			t.Fatalf("%s replay: %d %s", name, response.Code, response.Body)
+		}
+	}
+	after, err = s.Store.ListEvents(ctx, "verification-http")
+	if err != nil || len(after) != len(events) {
+		t.Fatal("checkpoint replays wrote events")
 	}
 }

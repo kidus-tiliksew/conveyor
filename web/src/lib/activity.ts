@@ -10,6 +10,8 @@ import type {
   TaskEvent,
   TaskRelation,
   WorkOrder,
+  WorkOrderVerificationCheckpointGround,
+  WorkOrderVerificationCheckpointPermission,
   WorkspaceMembership,
 } from './types'
 
@@ -347,6 +349,7 @@ export type CurrentExecutionKind =
   | 'checkout_blocked'
   | 'released'
   | 'expired'
+  | 'verification_checkpoint'
 
 export interface CurrentExecutionState {
   kind: CurrentExecutionKind
@@ -538,7 +541,14 @@ export function deriveCurrentExecutionState(item: ActivityItem): CurrentExecutio
     return undefined
   }
 
-  const stage = order.stage === 'spec' ? 'Plan' : order.stage === 'review' ? 'Review' : 'Implementation'
+  const stage =
+    order.stage === 'spec'
+      ? 'Plan'
+      : order.stage === 'review'
+        ? 'Review'
+        : order.stage === 'verify'
+          ? 'Verification'
+          : 'Implementation'
   if (order.state === 'claimed') {
     return {
       kind: 'running',
@@ -566,6 +576,22 @@ export function deriveCurrentExecutionState(item: ActivityItem): CurrentExecutio
       retry: 'Conveyor will retry automatically.',
       nextAction: 'No operator action is needed.',
       action: 'none',
+    }
+  }
+  // VK-WEB-6: a verify order released at its operator checkpoint names the
+  // sealed reason and required act; automatic replay stays suppressed.
+  const verificationCheckpoint = order.stage === 'verify' ? order.checkpoint?.verification : undefined
+  if (verificationCheckpoint && order.state === 'queued') {
+    return {
+      kind: 'verification_checkpoint',
+      status: 'paused',
+      order,
+      attemptId: order.last_attempt_id,
+      title: 'Verification checkpoint — operator action required',
+      blocker: verificationCheckpoint.reason,
+      retry: 'Automatic replay is suppressed until an operator recovers this order.',
+      nextAction: verificationCheckpoint.required_action,
+      action: 'recover',
     }
   }
   if (isDirtyPrimaryCheckout(order)) {
@@ -1368,4 +1394,34 @@ export function restartPullRequestOutcome(task: Task): string | undefined {
   const label = state ? labels[state] : undefined
   if (!label && !error) return undefined
   return [label, error].filter(Boolean).join(' ')
+}
+
+const verificationGroundLabels: Record<WorkOrderVerificationCheckpointGround['kind'], string> = {
+  attempt_blocked: 'Blocked attempt',
+  attempt_waiting: 'Waiting attempt',
+  attempt_timed_out: 'Timed-out attempt',
+  attempt_cancelled: 'Cancelled attempt',
+  missing_grant: 'Missing grant',
+  admission_refused: 'Admission refused',
+  operation_unresolved: 'Unresolved external operation',
+}
+
+// The grantable form of a declared permission: kind:binding and any path.
+export function verificationPermissionText(permission: WorkOrderVerificationCheckpointPermission): string {
+  const binding = permission.target_binding ? `:${permission.target_binding}` : ''
+  return `${permission.kind}${binding}${permission.path ? ` ${permission.path}` : ''}`
+}
+
+// One line per checkpoint ground. A ground without an attempt states that no
+// attempt ran, so absent evidence is never presented as observed (VK-13.5).
+export function verificationGroundText(ground: WorkOrderVerificationCheckpointGround): string {
+  const subject =
+    ground.subject?.kind === 'kit'
+      ? `kit ${ground.subject.kit_id ?? ''}/${ground.subject.exercise_id ?? ''}`
+      : ground.subject?.obligation_id
+        ? `ordinary ${ground.subject.obligation_id}`
+        : 'unattributed subject'
+  const attempt = ground.attempt_id ? `attempt ${ground.attempt_id}` : 'no attempt ran; evidence missing'
+  const source = ground.server_verified ? '' : ' (verifier-reported)'
+  return `${verificationGroundLabels[ground.kind] ?? ground.kind}: ${subject} — ${attempt}${source}`
 }

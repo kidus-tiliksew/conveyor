@@ -172,7 +172,16 @@ func VerificationSnapshotFromRows(rows []VerificationRow, contextID string) (Ver
 		case "verification_permission_revocations":
 			s.PermissionRevocations = append(s.PermissionRevocations, verificationDecode[VerificationPermissionRevocation](r))
 		case "verification_contexts":
-			s.Contexts = append(s.Contexts, verificationDecode[VerificationContext](r))
+			vc := verificationDecode[VerificationContext](r)
+			if vc.Result != nil && vc.Result.Checkpoint != nil {
+				// The retained token hash authenticates replay only; never read it back.
+				checkpoint := *vc.Result.Checkpoint
+				checkpoint.Claim.ClientTokenHash = ""
+				result := *vc.Result
+				result.Checkpoint = &checkpoint
+				vc.Result = &result
+			}
+			s.Contexts = append(s.Contexts, vc)
 		case "verification_selections":
 			s.Selections = append(s.Selections, verificationDecode[VerificationSelection](r))
 		case "verification_obligations":
@@ -327,7 +336,7 @@ func PrepareVerificationMutation(ctx context.Context, source redact.SecretSource
 		}
 		if vc.SealedAt != nil {
 			if c.Kind == VerificationSeal && vc.Result != nil && c.Submission != nil && verificationEqual(vc.Result.Submission, *c.Submission) {
-				out.Receipt = VerificationReceipt{ID: vc.ID, State: vc.Result.Submission.Outcome}
+				out.Receipt = verificationSealReceipt(vc)
 				return out, nil
 			}
 			if VerificationPermissionCommand(c) {
@@ -541,7 +550,7 @@ func PrepareVerificationMutation(ctx context.Context, source redact.SecretSource
 			vc.SealedAt, vc.Result = &now, result
 			r.State, r.Body = "sealed", verificationJSON(vc)
 			put(r)
-			out.Receipt.ID, out.Receipt.State = vc.ID, result.Submission.Outcome
+			out.Receipt = verificationSealReceipt(vc)
 
 		default:
 			return out, ErrVerificationInvalid
@@ -643,4 +652,15 @@ func verificationIdentifier(id string) bool {
 // VerificationSafeInputDigest uses the same canonical JSON as operation admission.
 func VerificationSafeInputDigest(inputs map[string]json.RawMessage) string {
 	return verificationHash(verificationJSON(inputs))
+}
+
+// verificationSealReceipt is identical for the first seal and every replay.
+// A checkpoint receipt names its grounds and the retained verify route.
+func verificationSealReceipt(vc VerificationContext) VerificationReceipt {
+	receipt := VerificationReceipt{ID: vc.ID, State: vc.Result.Submission.Outcome}
+	if vc.Result.Checkpoint != nil {
+		receipt.NextStage = string(core.StageVerify)
+		receipt.Grounds = vc.Result.Checkpoint.Grounds
+	}
+	return receipt
 }

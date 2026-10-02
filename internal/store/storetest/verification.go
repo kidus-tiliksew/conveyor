@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -30,8 +31,19 @@ type verificationFixture struct {
 
 func newVerificationFixture(t *testing.T, x Fixture, empty ...bool) verificationFixture {
 	t.Helper()
+	return newVerificationFixtureIn(t, x, []core.VerificationRevision{{Repository: "conveyor", RemoteIdentity: "https://example.test/conveyor", SHA: strings.Repeat("a", 40)}}, empty...)
+}
+
+// newVerificationFixtureIn prepares the context over the given scope. The
+// first revision is the task repository and its SHA is the submitted head.
+// Like the service, the context lists revisions sorted by repository name, so
+// an additional repository may precede the task's own revision.
+func newVerificationFixtureIn(t *testing.T, x Fixture, scope []core.VerificationRevision, empty ...bool) verificationFixture {
+	t.Helper()
+	revisions := append([]core.VerificationRevision{}, scope...)
+	sort.SliceStable(revisions, func(i, j int) bool { return revisions[i].Repository < revisions[j].Repository })
 	id := core.NewTaskID()
-	task := core.Task{ID: id, Workspace: x.Workspace, Repo: "conveyor", Title: id, BaseBranch: "main", Branch: "conveyor/task-" + id, State: core.TaskRunning, NextStage: core.StageVerify, ReviewedHeadSHA: strings.Repeat("a", 40), CreatedAt: time.Now().UTC()}
+	task := core.Task{ID: id, Workspace: x.Workspace, Repo: scope[0].Repository, Title: id, BaseBranch: "main", Branch: "conveyor/task-" + id, State: core.TaskRunning, NextStage: core.StageVerify, ReviewedHeadSHA: scope[0].SHA, CreatedAt: time.Now().UTC()}
 	task.SetupContract.VerifyStage = true
 	requireOK(t, x.Backend.CreateTask(x.Context, task))
 	job := core.Job{ID: id + "-verify-1", TaskID: id, Stage: core.StageVerify, State: core.JobPending}
@@ -42,8 +54,12 @@ func newVerificationFixture(t *testing.T, x Fixture, empty ...bool) verification
 	claim.Requirements = []core.ServedRequirementContext{{ID: "req-fixture", Version: 1, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Observe the state", AcceptanceCriteria: []core.AcceptanceCriterion{{ID: "AC-1.1", Statement: "Retain the observation"}}}}}}
 	o, err = ClaimWorkOrder(x.Context, x.Backend, o.ID, claim)
 	requireOK(t, err)
-	v := verificationFixture{x: x, ctx: store.WithActor(x.Context, store.Actor{ID: "worker:worker", Role: core.ActorWorker}), access: store.VerificationAccess{TaskID: o.TaskID, WorkOrderID: o.ID, WorkOrderAttemptID: o.AttemptID, ClientToken: claim.ClientToken, Claim: core.WorkOrderClaimIdentity{WorkerID: claim.WorkerID, ClaimantID: claim.ClaimantID, SessionID: claim.SessionID}}, revisions: []core.VerificationRevision{{Repository: "conveyor", RemoteIdentity: "https://example.test/conveyor", SHA: strings.Repeat("a", 40)}}, pins: []core.VerificationPin{{Kind: "requirement", DocumentID: "req-fixture", Version: 1}}}
-	c := store.VerificationCommand{Kind: store.VerificationCreateContext, Key: "prepare", Context: &store.VerificationContext{Revisions: v.revisions, GoverningPins: v.pins, Discovery: []json.RawMessage{core.JSONPayload(map[string]any{"repository": "conveyor", "revision": strings.Repeat("a", 40), "state": "no_manifest"})}}}
+	v := verificationFixture{x: x, ctx: store.WithActor(x.Context, store.Actor{ID: "worker:worker", Role: core.ActorWorker}), access: store.VerificationAccess{TaskID: o.TaskID, WorkOrderID: o.ID, WorkOrderAttemptID: o.AttemptID, ClientToken: claim.ClientToken, Claim: core.WorkOrderClaimIdentity{WorkerID: claim.WorkerID, ClaimantID: claim.ClaimantID, SessionID: claim.SessionID}}, revisions: append([]core.VerificationRevision{}, revisions...), pins: []core.VerificationPin{{Kind: "requirement", DocumentID: "req-fixture", Version: 1}}}
+	discovery := []json.RawMessage{}
+	for _, r := range revisions {
+		discovery = append(discovery, core.JSONPayload(map[string]any{"repository": r.Repository, "revision": r.SHA, "state": "no_manifest"}))
+	}
+	c := store.VerificationCommand{Kind: store.VerificationCreateContext, Key: "prepare", Context: &store.VerificationContext{Revisions: v.revisions, GoverningPins: v.pins, Discovery: discovery}}
 	result := v.apply(t, c)
 	v.contextID = result.ID
 	replay := v.apply(t, c)
@@ -51,7 +67,7 @@ func newVerificationFixture(t *testing.T, x Fixture, empty ...bool) verification
 		t.Fatal("context replay changed identity")
 	}
 
-	selection := store.VerificationSelection{Receipt: verification.SelectionReceipt{SchemaVersion: 1, ManifestRevision: strings.Repeat("a", 40), SourceRevision: strings.Repeat("a", 40), ContextPins: []verification.Pin{{Kind: "requirement", DocumentID: "req-fixture", Version: 1}}, Stage: "verify", Kits: []verification.KitReceipt{}, Diagnostics: []verification.Diagnostic{}}, Subjects: []store.VerificationSubjectContract{}}
+	selection := store.VerificationSelection{Receipt: verification.SelectionReceipt{SchemaVersion: 1, ManifestRevision: task.ReviewedHeadSHA, SourceRevision: task.ReviewedHeadSHA, ContextPins: []verification.Pin{{Kind: "requirement", DocumentID: "req-fixture", Version: 1}}, Stage: "verify", Kits: []verification.KitReceipt{}, Diagnostics: []verification.Diagnostic{}}, Subjects: []store.VerificationSubjectContract{}}
 	selected := v.apply(t, store.VerificationCommand{Kind: store.VerificationRecordSelection, Selection: &selection})
 	replayed := v.apply(t, store.VerificationCommand{Kind: store.VerificationRecordSelection, Selection: &selection})
 	if selected.ID != replayed.ID {

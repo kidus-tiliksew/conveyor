@@ -31,18 +31,18 @@ func kitInputValues(e verification.Exercise, provided map[string]json.RawMessage
 			for _, grant := range local {
 				if grant.Kind == "credential" && grant.Binding == input.Name {
 					if !strings.HasPrefix(grant.Target, "CONVEYOR_KIT_SECRET_") {
-						return nil, nil, nil, nil, fmt.Errorf("sensitive input %s requires a kit credential handle", input.Name)
+						return nil, nil, nil, nil, kitAdmission("sensitive input %s requires a kit credential handle", input.Name)
 					}
 					secret := os.Getenv(grant.Target)
 					if secret == "" {
 						continue
 					}
 					if present {
-						return nil, nil, nil, nil, fmt.Errorf("ambiguous sensitive input binding %s", input.Name)
+						return nil, nil, nil, nil, kitAdmission("ambiguous sensitive input binding %s", input.Name)
 					}
 					for _, parentSecret := range kitParentSecrets() {
 						if strings.Contains(secret, parentSecret) {
-							return nil, nil, nil, nil, fmt.Errorf("factory credential refused as input %s", input.Name)
+							return nil, nil, nil, nil, kitAdmission("factory credential refused as input %s", input.Name)
 						}
 					}
 					if input.Type == "string" {
@@ -57,6 +57,9 @@ func kitInputValues(e verification.Exercise, provided map[string]json.RawMessage
 			}
 		}
 		if !present {
+			if input.Required && input.Sensitive {
+				return nil, nil, nil, nil, kitAdmission("missing credential binding for required sensitive input %s", input.Name)
+			}
 			if input.Required {
 				return nil, nil, nil, nil, fmt.Errorf("missing required input %s", input.Name)
 			}

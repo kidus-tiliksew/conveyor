@@ -123,10 +123,11 @@ type VerificationReconcileRequest struct {
 }
 
 type VerificationSubmitRequest struct {
-	ContextID string                     `json:"context_id"`
-	Outcome   string                     `json:"outcome"`
-	Coverage  store.VerificationCoverage `json:"coverage"`
-	Feedback  string                     `json:"feedback,omitempty"`
+	ContextID      string                     `json:"context_id"`
+	Outcome        string                     `json:"outcome"`
+	Coverage       store.VerificationCoverage `json:"coverage"`
+	Feedback       string                     `json:"feedback,omitempty"`
+	RequiredAction string                     `json:"required_action,omitempty"`
 }
 
 // VerificationRequestType is the shared wire contract for REST, MCP and worker
@@ -198,6 +199,41 @@ func (s *Service) verificationAccess(ctx context.Context, id, session, token str
 	return backend, a, o, nil
 }
 
+// verificationCheckpointReplayAccess names the exact claim retained by a
+// checkpoint release (component-persistence VK-STORE-16). The immutable claim
+// event supplies its identity; the store authenticates token, actor and head.
+func (s *Service) verificationCheckpointReplayAccess(ctx context.Context, id, session, token string) (store.VerificationStore, store.VerificationAccess, core.WorkOrder, error) {
+	refuse := func() (store.VerificationStore, store.VerificationAccess, core.WorkOrder, error) {
+		return nil, store.VerificationAccess{}, core.WorkOrder{}, store.ErrVerificationAccess
+	}
+	backend, ok := s.Store.(store.VerificationStore)
+	ws, wsOK := store.WorkspaceFromContext(ctx)
+	if !ok || !wsOK || session == "" || token == "" {
+		return refuse()
+	}
+	o, err := s.Store.GetWorkOrder(ctx, id)
+	if err != nil || o.Stage != core.StageVerify || o.State != core.WorkOrderQueued || o.SessionID != "" || o.LastAttemptID == "" || o.Checkpoint == nil || o.Checkpoint.Verification == nil {
+		return refuse()
+	}
+	task, err := s.Store.GetTask(ctx, o.TaskID)
+	if err != nil || task.Workspace != ws {
+		return refuse()
+	}
+	events, err := s.Store.ListEvents(ctx, o.TaskID)
+	if err != nil {
+		return refuse()
+	}
+	for i := len(events) - 1; i >= 0; i-- {
+		var claimed core.WorkOrder
+		if events[i].Kind != "work_order.claimed" || events[i].JobID != o.JobID || json.Unmarshal(events[i].Payload, &claimed) != nil || claimed.ID != o.ID || claimed.AttemptID != o.LastAttemptID || claimed.SessionID != session {
+			continue
+		}
+		a := store.VerificationAccess{TaskID: task.ID, WorkOrderID: o.ID, WorkOrderAttemptID: o.LastAttemptID, ClientToken: token, Claim: core.WorkOrderClaimIdentity{WorkerID: claimed.WorkerID, ClaimantID: claimed.ClaimantID, SessionID: session}}
+		return backend, a, o, nil
+	}
+	return refuse()
+}
+
 // Verification runs no repository code and makes no acceptance decision (VK-8).
 func (s *Service) Verification(ctx context.Context, id, session, token, operation string, raw []byte) (any, error) {
 	request := VerificationRequestType(operation)
@@ -209,11 +245,17 @@ func (s *Service) Verification(ctx context.Context, id, session, token, operatio
 	}
 	write := operation != "get_verification_context" && operation != "get_verification_publication" && operation != "read_verification_evidence"
 	var backend store.VerificationStore
+	var replay bool
 	var a store.VerificationAccess
 	var o core.WorkOrder
 	var err error
 	if operation != "get_evidence_schemas" {
 		backend, a, o, err = s.verificationAccess(ctx, id, session, token, write && operation != "submit_verification")
+		if err != nil && operation == "submit_verification" {
+			if backend, a, o, err = s.verificationCheckpointReplayAccess(ctx, id, session, token); err == nil {
+				replay = true
+			}
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -248,7 +290,15 @@ func (s *Service) Verification(ctx context.Context, id, session, token, operatio
 		command.Observation = &store.VerificationOperationObservation{State: r.Outcome, Source: r.Source, CapturedAt: r.CapturedAt, ProviderReference: r.ProviderReference}
 	case *VerificationSubmitRequest:
 		command.Kind, command.ContextID = store.VerificationSeal, r.ContextID
-		command.Submission = &store.VerificationSubmission{Outcome: r.Outcome, Coverage: r.Coverage, Feedback: r.Feedback}
+		command.Submission = &store.VerificationSubmission{Outcome: r.Outcome, Coverage: r.Coverage, Feedback: r.Feedback, RequiredAction: r.RequiredAction}
+		// VK-13.1: scope is already authenticated; refuse before any staged write.
+		if err := store.ValidateVerificationOutcome(*command.Submission); err != nil {
+			if replay {
+				// A retained-claim replay is not yet authenticated: no remedy detail.
+				return nil, store.ErrVerificationAccess
+			}
+			return nil, err
+		}
 
 	case *VerificationPrepareRequest:
 		return s.prepareVerification(ctx, backend, a, o, *r)

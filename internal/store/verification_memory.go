@@ -48,7 +48,11 @@ func (m *volatileMemory) applyVerification(ctx context.Context, lease taskops.Ta
 		}
 	} else if c.Access.UserID == "" {
 		if err = VerifyVerificationClaim(ctx, c.Access, m.tasks[c.Access.TaskID], m.workOrders[c.Access.WorkOrderID], c.Kind != VerificationSeal, now); err != nil {
-			return VerificationReceipt{}, err
+			// VK-STORE-16: only the exact retained checkpoint claim may replay.
+			ws, _ := WorkspaceFromContext(ctx)
+			if c.Kind != VerificationSeal || VerifyVerificationCheckpointReplay(ctx, c.Access, m.tasks[c.Access.TaskID], m.workOrders[c.Access.WorkOrderID], m.verificationRowsLocked(ws, c.Access.TaskID), c.ContextID, now) != nil {
+				return VerificationReceipt{}, err
+			}
 		}
 	}
 	if err = BindVerificationPermissionOrder(ctx, &c, m.tasks[c.Access.TaskID], m.workOrders[c.Access.WorkOrderID], now); err != nil {
@@ -59,6 +63,7 @@ func (m *volatileMemory) applyVerification(ctx context.Context, lease taskops.Ta
 	}
 	ws, _ := WorkspaceFromContext(ctx)
 	rows := m.verificationRowsLocked(ws, c.Access.TaskID)
+	c.SubmittedHeadSHA = m.workOrders[c.Access.WorkOrderID].HeadSHA
 	mutation, err := PrepareVerificationMutation(ctx, verificationSecrets(secrets), c, rows, now)
 	if err != nil {
 		return VerificationReceipt{}, err

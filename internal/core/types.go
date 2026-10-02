@@ -853,7 +853,48 @@ type WorkOrderCheckpoint struct {
 	DecisionRequest string                               `json:"decision_request,omitempty"`
 	Class           string                               `json:"class,omitempty"`
 	Citations       []WorkOrderAuthorityConflictCitation `json:"citations,omitempty"`
+	Verification    *WorkOrderVerificationCheckpoint     `json:"verification,omitempty"`
 }
+
+// WorkOrderVerificationCheckpoint references the sealed operator checkpoint of
+// feature-verification-kit-execution VK-13.3. It never satisfies review admission.
+type WorkOrderVerificationCheckpoint struct {
+	ContextID      string                                  `json:"context_id"`
+	HeadSHA        string                                  `json:"head_sha"`
+	Reason         string                                  `json:"reason"`
+	RequiredAction string                                  `json:"required_action"`
+	Summary        string                                  `json:"summary,omitempty"`
+	Grounds        []WorkOrderVerificationCheckpointGround `json:"grounds"`
+	OperationIDs   []string                                `json:"operation_ids,omitempty"`
+}
+
+// WorkOrderVerificationCheckpointGround is the bounded authenticated view of
+// one sealed ground (VK-13.5): declared permissions for an unstarted subject,
+// and the attempt, evidence and operation identifiers an operator opens.
+// Lists hold at most WorkOrderVerificationGroundListLimit entries; Truncated
+// reports any omission.
+type WorkOrderVerificationCheckpointGround struct {
+	Kind           string                                      `json:"kind"`
+	Subject        VerificationSubject                         `json:"subject"`
+	AttemptID      string                                      `json:"attempt_id,omitempty"`
+	Explanation    string                                      `json:"explanation,omitempty"`
+	Permissions    []WorkOrderVerificationCheckpointPermission `json:"permissions,omitempty"`
+	EvidenceIDs    []string                                    `json:"evidence_ids,omitempty"`
+	OperationIDs   []string                                    `json:"operation_ids,omitempty"`
+	Truncated      bool                                        `json:"truncated,omitempty"`
+	ServerVerified bool                                        `json:"server_verified"`
+}
+
+type WorkOrderVerificationCheckpointPermission struct {
+	Kind          string `json:"kind"`
+	TargetBinding string `json:"target_binding,omitempty"`
+	Path          string `json:"path,omitempty"`
+}
+
+const (
+	WorkOrderVerificationGroundListLimit = 20
+	WorkOrderVerificationGroundTextLimit = 512
+)
 
 type WorkOrderAuthorityConflictCitation struct {
 	DocumentID           string `json:"document_id"`

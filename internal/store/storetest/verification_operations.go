@@ -40,6 +40,7 @@ func verificationPublicState(t *testing.T, v *verificationFixture) any {
 func runVerificationOperations(t *testing.T, x Fixture) {
 	t.Run("AppliedAndUnknownReconciliation", func(t *testing.T) { runVerificationReconciliation(t, x) })
 	t.Run("OperatorCheckpoint", func(t *testing.T) { runVerificationCheckpoint(t, x) })
+	t.Run("Checkpoints", func(t *testing.T) { runVerificationCheckpoints(t, x) })
 	t.Run("SealedReviewAcceptance", func(t *testing.T) { runSealedVerificationReview(t, x) })
 	t.Run("OperatorRecoveryBindsSuccessorAndConsumesAuthorization", func(t *testing.T) {
 		v := newVerificationFixture(t, x)
@@ -407,7 +408,7 @@ func runVerificationCheckpoint(t *testing.T, x Fixture) {
 	v.apply(t, store.VerificationCommand{Kind: store.VerificationPrepareOperation, Key: "checkpoint-" + v.runID, Operation: &store.VerificationOperation{StepID: "step", Target: "fixture", InputDigest: verificationSHA([]byte("{}"))}})
 	v.apply(t, store.VerificationCommand{Kind: store.VerificationTerminateAttempt, Attempt: &store.VerificationAttempt{State: "blocked", Explanation: "Provider acknowledgement is unknown; operator inspection required"}})
 	coverage := verificationFixtureCoverage(v.snapshot(t))
-	v.apply(t, store.VerificationCommand{Kind: store.VerificationSeal, Submission: &store.VerificationSubmission{Outcome: "operator_action_required", Coverage: coverage, Feedback: "Inspect provider and authorize disposition"}})
+	v.apply(t, store.VerificationCommand{Kind: store.VerificationSeal, Submission: &store.VerificationSubmission{Outcome: "operator_action_required", Coverage: coverage, Feedback: "Provider acknowledgement is unknown", RequiredAction: "Inspect provider and authorize disposition"}})
 	task, err := x.Backend.GetTask(v.ctx, v.access.TaskID)
 	requireOK(t, err)
 	order, err := x.Backend.GetWorkOrder(v.ctx, v.access.WorkOrderID)

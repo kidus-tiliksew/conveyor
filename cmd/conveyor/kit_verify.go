@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -208,6 +209,8 @@ func verifyKits(ctx context.Context, rpc kitRPC, root, taskID string, o kitVerif
 			}
 		}
 	}
+	var refused []string
+	var causes []error
 	for _, subject := range subjects {
 		if err = v.run(ctx, subject, attemptRoot); err != nil {
 			message, _ := v.redactor.Redact("Verification blocked for " + subject.Contract.ID + ": " + err.Error())
@@ -217,11 +220,47 @@ func verifyKits(ctx context.Context, rpc kitRPC, root, taskID string, o kitVerif
 			if !lost {
 				_ = rpc.call(ctx, "report_progress", map[string]string{"message": message}, nil)
 			}
-			return err
+			var admission *kitAdmissionError
+			if lost || !errors.As(err, &admission) {
+				return err
+			}
+			// VK-13.2: admission refused before start creates no attempt; keep
+			// the subject for the grounded checkpoint and continue the others.
+			refused = append(refused, message)
+			causes = append(causes, err)
 		}
+	}
+	if len(refused) > 0 {
+		return kitCheckpointGuidance(output, v.order.ID, vc.ID, refused, causes)
 	}
 	_, err = fmt.Fprintf(output, "Verification exercises recorded for context %s. Submit coverage and the verification result through submit_verification.\n", vc.ID)
 	return err
+}
+
+// kitAdmissionError marks a subject the runner refused before any attempt
+// started because an operator must act: a missing grant, local binding,
+// credential handle or value, or host prerequisite. Claim loss and invalid
+// contract declarations are never admission refusals.
+type kitAdmissionError struct{ err error }
+
+func (e *kitAdmissionError) Error() string { return e.err.Error() }
+func (e *kitAdmissionError) Unwrap() error { return e.err }
+
+func kitAdmission(format string, args ...any) error {
+	return &kitAdmissionError{fmt.Errorf(format, args...)}
+}
+
+// kitCheckpointGuidance prints the exact operator-checkpoint submission of
+// feature-verification-kit-execution VK-13.1 for subjects that never started.
+func kitCheckpointGuidance(output io.Writer, orderID, contextID string, refused []string, causes []error) error {
+	_, _ = fmt.Fprintf(output, "Subjects not admitted before start (no attempt ran; their evidence is missing):\n")
+	for _, message := range refused {
+		_, _ = fmt.Fprintf(output, "  - %s\n", message)
+	}
+	_, _ = fmt.Fprintf(output, "After the grant wait, record the operator checkpoint: call submit_verification with context_id %q, the registered coverage, outcome \"operator_action_required\", feedback stating the reason above and required_action stating the operator act. For a missing grant the act is: recover verify order %s, then grant the listed subjects against the next claim's context with `conveyor verification permissions inspect %s`. For a missing local binding, credential or prerequisite the act is: configure it on the verifier host, then recover verify order %[2]s. Do not submit blocked or waiting as the stage outcome; those are report_verification_outcome states.\n", contextID, orderID, orderID)
+	// The causes stay inspectable, so a toolchain preflight refusal keeps its
+	// typed diagnostic and remedy.
+	return errors.Join(append([]error{fmt.Errorf("verification blocked: %d subject(s) not admitted before start", len(refused))}, causes...)...)
 }
 
 func (v *kitVerifier) checkCheckout(ctx context.Context) error {
@@ -358,22 +397,22 @@ func (v *kitVerifier) run(ctx context.Context, subject store.VerificationSubject
 	}
 	if grant == nil {
 		// VK-12.2: name the exact operator act that opens the grant window.
-		return fmt.Errorf("blocked: missing work-order authorization for exercise %s; required actions: %s; an operator runs `conveyor verification permissions inspect %s` (context %s) and grants while this claim is live", e.ID, kitRequiredActions(e), v.order.ID, vc.ID)
+		return &kitAdmissionError{fmt.Errorf("blocked: missing work-order authorization for exercise %s; required actions: %s; an operator runs `conveyor verification permissions inspect %s` (context %s) and grants while this claim is live", e.ID, kitRequiredActions(e), v.order.ID, vc.ID)}
 	}
 	if err := v.live(ctx, grant.ID); err != nil {
 		return err
 	}
 	local, err := v.config.KitActions(v.rpc.client.base, v.rpc.client.workspace, v.task.Repo)
 	if err != nil {
-		return fmt.Errorf("%w; required actions: %s", err, kitRequiredActions(e))
+		return kitAdmissionActions(&kitAdmissionError{err}, e)
 	}
 	actions, env, secrets, err := kitExerciseActions(e, kitRoot, v.task.Repo, local)
 	if err != nil {
-		return err
+		return kitAdmissionActions(err, e)
 	}
 	safe, inputEnv, inputActions, inputSecrets, inputErr := kitInputValues(e, v.inputs[core.VerificationOperationSubject(subject.Subject)], local)
 	if inputErr != nil {
-		return inputErr
+		return kitAdmissionActions(inputErr, e)
 	}
 	v.safeInputs = safe
 	env = append(env, inputEnv...)
@@ -384,7 +423,7 @@ func (v *kitVerifier) run(ctx context.Context, subject store.VerificationSubject
 	}
 	effective, err := verification.RequireVerificationPermissions(actions, grant.Actions, local)
 	if err != nil {
-		return err
+		return &kitAdmissionError{err}
 	}
 	v.redactor = redact.New(append(append(secrets, kitParentSecrets()...), v.rpc.client.token, v.rpc.claimToken))
 
@@ -421,7 +460,10 @@ func (v *kitVerifier) run(ctx context.Context, subject store.VerificationSubject
 	}
 	tools, err := toolchain.preflight(core.VerificationOperationSubject(subject.Subject), e, cwd, v.ui, v.uiRoot, redact.New(credentials))
 	if err != nil {
-		return err
+		// VK-13.2: an unavailable entrypoint, executable prerequisite or
+		// configured location starts no attempt and its remedy is an operator
+		// act on this host, so the subject joins the grounded checkpoint.
+		return kitAdmissionActions(&kitAdmissionError{err}, e)
 	}
 	for key, value := range toolchain.attributes(tools) {
 		environment.Attributes[key] = value
@@ -438,6 +480,16 @@ func (v *kitVerifier) run(ctx context.Context, subject store.VerificationSubject
 		return v.observe(ctx, e, receipt.ID, grant.ID)
 	}
 	return v.launch(ctx, e, cwd, attemptRoot, receipt.ID, grant.ID, subject.Subject, environment, env)
+}
+
+// kitAdmissionActions names the exercise's required actions on an admission
+// refusal and returns any other refusal unchanged.
+func kitAdmissionActions(err error, e verification.Exercise) error {
+	var admission *kitAdmissionError
+	if !errors.As(err, &admission) {
+		return err
+	}
+	return &kitAdmissionError{fmt.Errorf("%w; required actions: %s", admission.err, kitRequiredActions(e))}
 }
 
 func kitRequiredActions(e verification.Exercise) string {

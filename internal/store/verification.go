@@ -27,7 +27,35 @@ var (
 	ErrVerificationConflict = errors.New("verification idempotency conflict")
 	ErrVerificationState    = errors.New("verification transition refused")
 	ErrVerificationInvalid  = errors.New("invalid verification record")
+
+	// feature-verification-kit-execution VK-13.1: the only explicit invalid-input
+	// detail. Remedies are fixed text and never carry context or evidence data.
+	ErrVerificationOutcomeUnsupported   = &VerificationRemedyError{Code: "verification_outcome_unsupported", Remedy: VerificationOutcomeRemedy}
+	ErrVerificationCheckpointIncomplete = &VerificationRemedyError{Code: "verification_checkpoint_incomplete", Remedy: VerificationOutcomeRemedy}
 )
+
+// VerificationCheckpointTextLimit bounds checkpoint reason and required action.
+const VerificationCheckpointTextLimit = 4096
+
+// VerificationOutcomeMapping is the canonical VK-13.1 mapping published by the
+// service, MCP schema, REST remedies, the verify role and the kit-verify skill.
+const VerificationOutcomeMapping = "submit_verification.outcome accepts succeeded, feedback or operator_action_required. " +
+	"Exercise attempt states (blocked, waiting, failed, timed_out, cancelled) belong to report_verification_outcome.state. " +
+	"Map them as follows: every required subject succeeded with complete coverage and no unresolved operation -> succeeded; " +
+	"a failed attempt that needs a code correction -> feedback naming the failure; " +
+	"a blocked or waiting attempt, a timed_out or cancelled attempt that cannot be replayed, a subject not admitted before start (including a missing grant after the grant wait), or an unresolved external operation -> operator_action_required " +
+	"with feedback stating the reason and required_action stating the exact operator act."
+
+const VerificationOutcomeRemedy = VerificationOutcomeMapping + " Replacement call: submit_verification with the same context_id and coverage, " +
+	`outcome "operator_action_required", feedback (the reason) and required_action (the operator act); for a failed attempt use outcome "feedback".`
+
+type VerificationRemedyError struct {
+	Code   string
+	Remedy string
+}
+
+func (e *VerificationRemedyError) Error() string { return e.Code + ": " + e.Remedy }
+func (e *VerificationRemedyError) Unwrap() error { return ErrVerificationInvalid }
 
 // Access is not a wire payload. Users require durable workspace membership;
 // executions require the exact claim identity, token and current attempt.
@@ -172,6 +200,10 @@ type VerificationReceipt struct {
 	EvidenceIDs   []string
 	ArtifactIDs   []string
 	PublicationID string
+	// NextStage and Grounds are set only for an operator checkpoint seal
+	// (component-mcp-protocol VK-MCP-5).
+	NextStage string                         `json:"next_stage,omitempty"`
+	Grounds   []VerificationCheckpointGround `json:"grounds,omitempty"`
 }
 
 type VerificationCommand struct {
@@ -198,6 +230,13 @@ type VerificationCommand struct {
 	Publication           *VerificationPublication
 	// Authority is derived by a trusted caller, never decoded from evidence.
 	Authority core.VerificationEvidenceAuthority
+	// SealedCheckpoint is copied from the sealed result for the lifecycle
+	// adapter (VK-13.3); it is never decoded from a request.
+	SealedCheckpoint *VerificationCheckpoint
+	// SubmittedHeadSHA is the locked work order's task-repository head, bound
+	// by the backend adapter inside its transaction (VK-13.3). It is never
+	// decoded from a request.
+	SubmittedHeadSHA string
 }
 
 const (
