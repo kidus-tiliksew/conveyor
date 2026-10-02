@@ -332,7 +332,7 @@ submit them as the stage outcome (feature-verification-kit-execution VK-13.1).
 | A required subject's latest attempt `failed` and needs a code correction, with no unresolved operation | `feedback`, naming the failure |
 | A required subject's latest attempt is `blocked` or `waiting` | `operator_action_required` |
 | A latest attempt is `timed_out` or `cancelled` and no replay is admitted within the remaining deadline | `operator_action_required` |
-| A subject never started because admission was refused, including a missing grant after the grant wait | `operator_action_required` |
+| A subject never started because admission was refused: a missing grant after the grant wait, or a missing local binding, credential handle or value, host prerequisite or sensitive input binding | `operator_action_required` |
 | An external operation is unresolved | `operator_action_required` |
 
 A checkpoint submission keeps the same `context_id` and completed `coverage`:
@@ -349,7 +349,9 @@ characters. The server computes the checkpoint grounds from its own records
 and never from this prose: blocked, waiting, timed-out or cancelled attempts,
 `missing_grant` for an ungranted subject that never started,
 `admission_refused` (labelled verifier-reported) for a granted subject the
-runner could not admit, and unresolved operations. A checkpoint creates no
+runner could not admit, and unresolved operations. `conveyor kit verify`
+prints this call for every subject it refused before start; an invalid
+contract declaration or claim loss is an ordinary refusal instead. A checkpoint creates no
 attempt, grant or evidence, so absent evidence stays visibly absent. It
 releases the order with retry suppression, keeps the task on verify, and never
 admits review. If a lost response leaves the result unknown, repeat the

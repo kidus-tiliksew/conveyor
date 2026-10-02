@@ -24,6 +24,10 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 )
 
+// kitExerciseActions resolves the exercise's local actions. Refusals that an
+// operator resolves on this host (local bindings, credential handles and
+// values, executable and service prerequisites) are admission refusals for the
+// VK-13.2 checkpoint; invalid contract declarations stay ordinary refusals.
 func kitExerciseActions(e verification.Exercise, root, repository string, local []verification.VerificationPermission) ([]verification.VerificationPermission, []string, []string, error) {
 	actions := []verification.VerificationPermission{}
 	env := []string{"PATH=/usr/local/bin:/usr/bin:/bin", "LANG=C.UTF-8"}
@@ -44,13 +48,13 @@ func kitExerciseActions(e verification.Exercise, root, repository string, local 
 			for _, g := range local {
 				if g.Kind == p.Kind && g.Binding == p.TargetBinding {
 					if a.Target != "" && a.Target != g.Target {
-						return nil, nil, nil, fmt.Errorf("network binding %s has ambiguous destinations", p.TargetBinding)
+						return nil, nil, nil, kitAdmission("network binding %s has ambiguous local destinations", p.TargetBinding)
 					}
 					a.Target = g.Target
 				}
 			}
 			if a.Target == "" {
-				return nil, nil, nil, fmt.Errorf("missing local grant for network binding %s", p.TargetBinding)
+				return nil, nil, nil, kitAdmission("missing local grant for network binding %s", p.TargetBinding)
 			}
 			env = append(env, "CONVEYOR_KIT_BINDING_"+strings.ToUpper(strings.ReplaceAll(p.TargetBinding, "-", "_"))+"="+a.Target)
 		case "operator_interaction":
@@ -66,21 +70,21 @@ func kitExerciseActions(e verification.Exercise, root, repository string, local 
 			for _, g := range local {
 				if g.Kind == "credential" && g.Binding == p.EnvironmentBinding {
 					if handle != "" && handle != g.Target {
-						return nil, nil, nil, fmt.Errorf("ambiguous credential binding %s", p.EnvironmentBinding)
+						return nil, nil, nil, kitAdmission("ambiguous credential binding %s", p.EnvironmentBinding)
 					}
 					handle = g.Target
 				}
 			}
 			if !strings.HasPrefix(handle, "CONVEYOR_KIT_SECRET_") {
-				return nil, nil, nil, fmt.Errorf("missing approved credential handle for %s (use CONVEYOR_KIT_SECRET_*)", p.EnvironmentBinding)
+				return nil, nil, nil, kitAdmission("missing approved credential handle for %s (use CONVEYOR_KIT_SECRET_*)", p.EnvironmentBinding)
 			}
 			value := os.Getenv(handle)
 			if value == "" {
-				return nil, nil, nil, fmt.Errorf("missing credential %s", p.EnvironmentBinding)
+				return nil, nil, nil, kitAdmission("missing credential %s", p.EnvironmentBinding)
 			}
 			for _, parentSecret := range kitParentSecrets() {
 				if strings.Contains(value, parentSecret) {
-					return nil, nil, nil, fmt.Errorf("factory or forge credential refused for %s", p.EnvironmentBinding)
+					return nil, nil, nil, kitAdmission("factory or forge credential refused for %s", p.EnvironmentBinding)
 				}
 			}
 			for _, arg := range e.Argv {
@@ -93,7 +97,7 @@ func kitExerciseActions(e verification.Exercise, root, repository string, local 
 			actions = append(actions, verification.VerificationPermission{Kind: "credential", Binding: p.EnvironmentBinding, Target: handle})
 		case "executable":
 			if _, err := kitExecutable(p.EnvironmentBinding, root); err != nil {
-				return nil, nil, nil, fmt.Errorf("missing executable prerequisite %s", p.ID)
+				return nil, nil, nil, kitAdmission("missing executable prerequisite %s", p.ID)
 			}
 		case "service":
 			found := false
@@ -103,7 +107,7 @@ func kitExerciseActions(e verification.Exercise, root, repository string, local 
 				}
 			}
 			if !found {
-				return nil, nil, nil, fmt.Errorf("missing service binding %s", p.EnvironmentBinding)
+				return nil, nil, nil, kitAdmission("missing service binding %s", p.EnvironmentBinding)
 			}
 		case "operator_interaction":
 			actions = append(actions, verification.VerificationPermission{Kind: "operator_interaction", Binding: repository})

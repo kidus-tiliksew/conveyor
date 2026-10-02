@@ -52,7 +52,8 @@ is succeeded, feedback or operator_action_required; blocked, waiting, failed,
 timed_out and cancelled are report_verification_outcome states only. Map a
 failed attempt needing a code fix to feedback. Map blocked or waiting attempts,
 unreplayable timed_out or cancelled attempts, subjects never admitted
-(including a missing grant after the wait) and unresolved operations to
+(a missing grant after the wait, or a missing local binding, credential or
+host prerequisite) and unresolved operations to
 operator_action_required, with feedback stating the reason and
 required_action stating the exact operator act (feature-verification-kit-execution
 VK-13.1). Once a context exists, submit that checkpoint rather than calling

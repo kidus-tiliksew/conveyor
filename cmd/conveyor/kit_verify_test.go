@@ -312,45 +312,8 @@ func TestKitVerifyOrdinaryObligationsAndReplay(t *testing.T) {
 				e.Argv = []string{"kit-unavailable-fixture"}
 			}
 			f := newKitExecutionFixture(t, e)
-			subject := f.snapshot.Attempts[0].Subject
-			f.snapshot.Attempts = nil
-			if strings.HasPrefix(discovery, "no_manifest") {
-				if _, err := localKitGit(t.Context(), f.v.root, "rm", ".conveyor/kits/manifest.yaml"); err != nil {
-					t.Fatal(err)
-				}
-				if _, err := localKitGit(t.Context(), f.v.root, "commit", "-qm", "no manifest"); err != nil {
-					t.Fatal(err)
-				}
-				head, err := localKitGit(t.Context(), f.v.root, "rev-parse", "HEAD")
-				if err != nil {
-					t.Fatal(err)
-				}
-				f.order.HeadSHA = strings.TrimSpace(string(head))
-				f.snapshot.Contexts[0].Revisions[0].SHA = f.order.HeadSHA
-			} else {
-				f.snapshot.Selections = []store.VerificationSelection{{Receipt: verification.SelectionReceipt{Kits: []verification.KitReceipt{{KitID: "sample", Eligibility: "ineligible", Reasons: []verification.SelectionReason{{Code: "pin_mismatch"}}}}}}}
-			}
-			f.snapshot.PermissionGrants = []store.VerificationPermissionGrant{{ID: "grant", Subject: subject, Actions: []core.VerificationPermission{}}}
-			cfg := config.Config{KitPermissions: []config.KitPermissionGrant{{Server: f.v.rpc.client.base, Workspace: "demo", Repository: "repo", Binding: "repo", Actions: []verification.VerificationPermission{}}}}
-			harness := config.HarnessTemplates()[0].Harness
-			document := localExecutionDocument("demo", newExecutionWizardState(healthyDetections(harness), nil).choices, []config.Harness{harness})
-			cfg.ExecutionSettings, cfg.Harnesses, cfg.Review = document.ExecutionSettings, document.Harnesses, document.Review
-			cfgBytes, err := yaml.Marshal(cfg)
-			if err != nil {
-				t.Fatal(err)
-			}
-			dir := t.TempDir()
-			cfgPath := filepath.Join(dir, "config.yaml")
-			if err := os.WriteFile(cfgPath, cfgBytes, 0600); err != nil {
-				t.Fatal(err)
-			}
-			coverage := store.VerificationCoverage{ObligationIDs: []string{"ordinary"}, Justification: "ordinary checks remain required", Sources: []store.VerificationCoverageSource{{Source: store.VerificationCoverageReference{DocumentID: "fixture", Version: 1, SectionID: "REQ-1"}, Disposition: "covered", Explanation: "ordinary command", Subjects: []core.VerificationSubject{subject}}}}
-			coveragePath := filepath.Join(dir, "coverage.json")
-			if err := os.WriteFile(coveragePath, core.JSONPayload(coverage), 0600); err != nil {
-				t.Fatal(err)
-			}
-			options := kitVerifyOptions{configPath: cfgPath, coveragePath: coveragePath, attemptRoot: filepath.Join(dir, "attempts")}
-			err = verifyKits(t.Context(), f.v.rpc, f.v.root, "task", options, &f.output)
+			options := ordinaryKitVerifyOptions(t, f, discovery)
+			err := verifyKits(t.Context(), f.v.rpc, f.v.root, "task", options, &f.output)
 			if (err != nil) != missing {
 				t.Fatalf("missing=%t: %v", missing, err)
 			}
@@ -366,6 +329,105 @@ func TestKitVerifyOrdinaryObligationsAndReplay(t *testing.T) {
 			}
 			if f.starts != 1 || f.uploads != wantUploads {
 				t.Fatal("replay mutated execution")
+			}
+		})
+	}
+}
+
+// ordinaryKitVerifyOptions prepares one granted ordinary obligation for a full
+// verifyKits run. local adds client-local kit_permissions bindings.
+func ordinaryKitVerifyOptions(t *testing.T, f *kitExecutionFixture, discovery string, local ...config.KitPermissionGrant) kitVerifyOptions {
+	t.Helper()
+	subject := f.snapshot.Attempts[0].Subject
+	f.snapshot.Attempts = nil
+	if strings.HasPrefix(discovery, "no_manifest") {
+		if _, err := localKitGit(t.Context(), f.v.root, "rm", ".conveyor/kits/manifest.yaml"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := localKitGit(t.Context(), f.v.root, "commit", "-qm", "no manifest"); err != nil {
+			t.Fatal(err)
+		}
+		head, err := localKitGit(t.Context(), f.v.root, "rev-parse", "HEAD")
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.order.HeadSHA = strings.TrimSpace(string(head))
+		f.snapshot.Contexts[0].Revisions[0].SHA = f.order.HeadSHA
+	} else {
+		f.snapshot.Selections = []store.VerificationSelection{{Receipt: verification.SelectionReceipt{Kits: []verification.KitReceipt{{KitID: "sample", Eligibility: "ineligible", Reasons: []verification.SelectionReason{{Code: "pin_mismatch"}}}}}}}
+	}
+	f.snapshot.PermissionGrants = []store.VerificationPermissionGrant{{ID: "grant", Subject: subject, Actions: []core.VerificationPermission{}}}
+	cfg := config.Config{KitPermissions: []config.KitPermissionGrant{{Server: f.v.rpc.client.base, Workspace: "demo", Repository: "repo", Binding: "repo", Actions: []verification.VerificationPermission{}}}}
+	for _, g := range local {
+		g.Server, g.Workspace, g.Repository = f.v.rpc.client.base, "demo", "repo"
+		cfg.KitPermissions = append(cfg.KitPermissions, g)
+	}
+	harness := config.HarnessTemplates()[0].Harness
+	document := localExecutionDocument("demo", newExecutionWizardState(healthyDetections(harness), nil).choices, []config.Harness{harness})
+	cfg.ExecutionSettings, cfg.Harnesses, cfg.Review = document.ExecutionSettings, document.Harnesses, document.Review
+	cfgBytes, err := yaml.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(cfgPath, cfgBytes, 0600); err != nil {
+		t.Fatal(err)
+	}
+	coverage := store.VerificationCoverage{ObligationIDs: []string{"ordinary"}, Justification: "ordinary checks remain required", Sources: []store.VerificationCoverageSource{{Source: store.VerificationCoverageReference{DocumentID: "fixture", Version: 1, SectionID: "REQ-1"}, Disposition: "covered", Explanation: "ordinary command", Subjects: []core.VerificationSubject{subject}}}}
+	coveragePath := filepath.Join(dir, "coverage.json")
+	if err := os.WriteFile(coveragePath, core.JSONPayload(coverage), 0600); err != nil {
+		t.Fatal(err)
+	}
+	return kitVerifyOptions{configPath: cfgPath, coveragePath: coveragePath, attemptRoot: filepath.Join(dir, "attempts")}
+}
+
+// TestKitVerifyPreStartRefusalsPrintCheckpoint covers VK-13.2: refusals an
+// operator resolves on the verifier host start no attempt and print the
+// canonical checkpoint call; invalid contracts stay ordinary refusals.
+func TestKitVerifyPreStartRefusalsPrintCheckpoint(t *testing.T) {
+	t.Setenv("CONVEYOR_KIT_SECRET_EMPTY", "")
+	for _, tc := range []struct {
+		name      string
+		exercise  func(*verification.Exercise)
+		local     []config.KitPermissionGrant
+		want      string
+		admission bool
+	}{
+		{"missing credential handle", func(e *verification.Exercise) {
+			e.Prerequisites = []verification.Prerequisite{{ID: "api", Kind: "credential", EnvironmentBinding: "api"}}
+		}, nil, "missing approved credential handle for api", true},
+		{"missing credential value", func(e *verification.Exercise) {
+			e.Prerequisites = []verification.Prerequisite{{ID: "api", Kind: "credential", EnvironmentBinding: "api"}}
+		}, []config.KitPermissionGrant{{Binding: "api", Actions: []verification.VerificationPermission{{Kind: "credential", Binding: "api", Target: "CONVEYOR_KIT_SECRET_EMPTY"}}}}, "missing credential api", true},
+		{"missing local network binding", func(e *verification.Exercise) {
+			e.Permissions = []verification.Permission{{Kind: "network", TargetBinding: "provider"}}
+		}, nil, "missing local grant for network binding provider", true},
+		{"missing executable prerequisite", func(e *verification.Exercise) {
+			e.Prerequisites = []verification.Prerequisite{{ID: "tool", Kind: "executable", EnvironmentBinding: "kit-unavailable-fixture"}}
+		}, nil, "missing executable prerequisite tool", true},
+		{"missing sensitive input binding", func(e *verification.Exercise) {
+			e.Inputs = []verification.Input{{Name: "password", Type: "string", Required: true, Sensitive: true}}
+		}, nil, "required sensitive input password", true},
+		{"invalid contract", func(e *verification.Exercise) {
+			e.Prerequisites = []verification.Prerequisite{{ID: "odd", Kind: "unknown-kind", EnvironmentBinding: "odd"}}
+		}, nil, "unknown prerequisite", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := verification.Exercise{ID: "ordinary", Kind: "script", Argv: []string{"true"}, Cwd: ".", TimeoutSeconds: 5, RequiredAssertions: []verification.Assertion{}, Operations: []verification.Operation{}}
+			tc.exercise(&e)
+			f := newKitExecutionFixture(t, e)
+			options := ordinaryKitVerifyOptions(t, f, "no_manifest", tc.local...)
+			err := verifyKits(t.Context(), f.v.rpc, f.v.root, "task", options, &f.output)
+			if err == nil || !strings.Contains(f.output.String()+err.Error(), tc.want) {
+				t.Fatalf("refusal not named: %v\n%s", err, f.output.String())
+			}
+			guided := strings.Contains(f.output.String(), `outcome "operator_action_required"`) && strings.Contains(f.output.String(), "no attempt ran")
+			if guided != tc.admission || strings.Contains(err.Error(), "not admitted before start") != tc.admission {
+				t.Fatalf("admission=%t guidance=%t: %v\n%s", tc.admission, guided, err, f.output.String())
+			}
+			if f.starts != 0 || f.uploads != 0 || f.outcome != "" {
+				t.Fatalf("pre-start refusal started an attempt: starts=%d uploads=%d state=%q", f.starts, f.uploads, f.outcome)
 			}
 		})
 	}
