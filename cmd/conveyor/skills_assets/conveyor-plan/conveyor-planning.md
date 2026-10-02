@@ -41,7 +41,8 @@ The operator's harness chooses the folder and keeps it out of git; Conveyor name
 | `push.json` | Server IDs minted for pushed items, so later layers resolve local citations and a re-run skips what was posted | Not pushed |
 
 Normative files use the tier formats in this playbook, so what the owner approves is exactly what is pushed.
-Readability lives in `notes.yml` and `brief.md`, which are never pushed.
+Readability lives in `notes.yml`, which is never pushed.
+`brief.md` is pushed with the requirements layer as an informative reference document.
 
 ## Grill
 
@@ -79,7 +80,8 @@ The command reads live confirmation state from the server and refuses a layer wh
 `--dry-run` prints the proposal payloads without posting.
 The push never confirms: `CapabilityConfirmDocuments` is operator-only, so the owner confirms each layer in the web UI (Requirements / System Design surfaces) before the next layer runs.
 Only `plan push` contacts the server; `plan check` stays offline.
-After the last layer the draft is deleted; every later change is a Conveyor revision.
+After the last layer is confirmed, the operator or their harness deletes or archives the draft; Conveyor never deletes it.
+Every later change is a Conveyor revision.
 
 ## Pre-push review hook
 

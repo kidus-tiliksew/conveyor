@@ -395,7 +395,7 @@ func pushPlanDecisions(ctx context.Context, stdout io.Writer, c *client, draft *
 	if err != nil {
 		return fmt.Errorf("plan push: read requirements: %w", err)
 	}
-	if err := checkPlanDecisionPrerequisites(draft, requirements); err != nil {
+	if err := checkPlanDecisionPrerequisites(draft, state, requirements); err != nil {
 		return err
 	}
 
@@ -571,12 +571,19 @@ func pushPlanTasks(ctx context.Context, stdout io.Writer, c *client, draft *plan
 
 // --- prerequisite checks ---
 
-func checkPlanDecisionPrerequisites(draft *planDraft, requirements map[string]bool) error {
+func checkPlanDecisionPrerequisites(draft *planDraft, state *planPushState, requirements map[string]int) error {
 	var missing []string
 	for _, decision := range draft.Raw.Decisions {
 		for _, cite := range decision.Cites {
-			if !requirements[planCitationDocument(cite)] {
+			document := planCitationDocument(cite)
+			confirmed := requirements[document]
+			switch {
+			case confirmed == 0:
 				missing = append(missing, fmt.Sprintf("%s cites unconfirmed requirement %s", decision.ID, cite))
+			default:
+				if problem := planPushedVersionProblem(document, confirmed, state); problem != "" {
+					missing = append(missing, fmt.Sprintf("%s cites requirement %s: %s", decision.ID, cite, problem))
+				}
 			}
 		}
 	}
@@ -605,20 +612,33 @@ func checkPlanDesignPrerequisites(draft *planDraft, state *planPushState, decisi
 	return nil
 }
 
-func checkPlanTaskPrerequisites(draft *planDraft, state *planPushState, requirements, designs map[string]bool) error {
+func checkPlanTaskPrerequisites(draft *planDraft, state *planPushState, requirements, designs map[string]int) error {
 	designIDs := planDesignIDs(draft)
 	var missing []string
 	for _, task := range draft.Raw.Tasks {
 		for _, governing := range task.Governing {
 			requirementDoc, designID := planGoverningReference(governing, designIDs)
 			if requirementDoc != "" {
-				if !requirements[requirementDoc] {
+				confirmed := requirements[requirementDoc]
+				switch {
+				case confirmed == 0:
 					missing = append(missing, fmt.Sprintf("%s is governed by unconfirmed requirement %s", task.ID, governing))
+				default:
+					if problem := planPushedVersionProblem(requirementDoc, confirmed, state); problem != "" {
+						missing = append(missing, fmt.Sprintf("%s is governed by requirement %s: %s", task.ID, governing, problem))
+					}
 				}
 				continue
 			}
-			if !designs[planResolveServerDesign(state, designID)] {
+			serverID := planResolveServerDesign(state, designID)
+			confirmed := designs[serverID]
+			switch {
+			case confirmed == 0:
 				missing = append(missing, fmt.Sprintf("%s is governed by unconfirmed design %s", task.ID, governing))
+			default:
+				if problem := planPushedVersionProblem(designID, confirmed, state); problem != "" {
+					missing = append(missing, fmt.Sprintf("%s is governed by design %s: %s", task.ID, governing, problem))
+				}
 			}
 		}
 	}
@@ -626,6 +646,23 @@ func checkPlanTaskPrerequisites(draft *planDraft, state *planPushState, requirem
 		return fmt.Errorf("plan push refused: tasks layer has unconfirmed prerequisites:\n  %s", strings.Join(missing, "\n  "))
 	}
 	return nil
+}
+
+// planPushedVersionProblem refuses a document whose server-confirmed version is
+// behind the version push.json recorded for it. A push can create version N
+// while the operator has confirmed only an earlier one; treating any
+// confirmation as enough would let a layer build on unconfirmed content. It
+// returns "" when push.json records no version or the confirmed version is at
+// least the pushed one.
+func planPushedVersionProblem(document string, confirmedVersion int, state *planPushState) string {
+	item, ok := state.Items[document]
+	if !ok || item.Version == 0 {
+		return ""
+	}
+	if confirmedVersion < item.Version {
+		return fmt.Sprintf("server confirms version %d but push.json recorded pushed version %d", confirmedVersion, item.Version)
+	}
+	return ""
 }
 
 // planCitationDocument returns the document ID a corpus citation names:
@@ -893,21 +930,20 @@ func (c *client) planPushReferenceDocument(ctx context.Context, payload planRefe
 	return json.NewDecoder(response.Body).Decode(out)
 }
 
-// planRequirementDocuments reads every living requirement document's existence
-// and confirmation state.
-func (c *client) planRequirementDocuments(ctx context.Context) (exists, confirmed map[string]bool, err error) {
+// planRequirementDocuments reads every requirement document's existence and
+// its confirmed version. A version of zero means the document exists but no
+// version is confirmed.
+func (c *client) planRequirementDocuments(ctx context.Context) (exists map[string]bool, confirmed map[string]int, err error) {
 	var summaries []struct {
 		Requirement core.Requirement `json:"requirement"`
 	}
 	if err := c.planPushDo(ctx, http.MethodGet, "/v1/requirements", nil, &summaries); err != nil {
 		return nil, nil, err
 	}
-	exists, confirmed = map[string]bool{}, map[string]bool{}
+	exists, confirmed = map[string]bool{}, map[string]int{}
 	for _, summary := range summaries {
 		exists[summary.Requirement.ID] = true
-		if summary.Requirement.CurrentVersion > 0 {
-			confirmed[summary.Requirement.ID] = true
-		}
+		confirmed[summary.Requirement.ID] = summary.Requirement.CurrentVersion
 	}
 	return exists, confirmed, nil
 }
@@ -928,20 +964,19 @@ func (c *client) planDecisionDocuments(ctx context.Context) (map[string]bool, er
 }
 
 // planSystemDesignDocuments reads every system design document's existence and
-// confirmation state.
-func (c *client) planSystemDesignDocuments(ctx context.Context) (exists, confirmed map[string]bool, err error) {
+// its confirmed version. A version of zero means the document exists but no
+// version is confirmed.
+func (c *client) planSystemDesignDocuments(ctx context.Context) (exists map[string]bool, confirmed map[string]int, err error) {
 	var summaries []struct {
 		Document core.SystemDesign `json:"document"`
 	}
 	if err := c.planPushDo(ctx, http.MethodGet, "/v1/system-designs", nil, &summaries); err != nil {
 		return nil, nil, err
 	}
-	exists, confirmed = map[string]bool{}, map[string]bool{}
+	exists, confirmed = map[string]bool{}, map[string]int{}
 	for _, summary := range summaries {
 		exists[summary.Document.ID] = true
-		if summary.Document.CurrentVersion > 0 {
-			confirmed[summary.Document.ID] = true
-		}
+		confirmed[summary.Document.ID] = summary.Document.CurrentVersion
 	}
 	return exists, confirmed, nil
 }

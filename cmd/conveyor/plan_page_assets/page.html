@@ -15,6 +15,7 @@
 
 {{if eq .Mode "review"}}
 <form method="post" action="/submit" id="plan-form">
+  <input type="hidden" name="token" value="{{.Token}}">
   <nav class="tabs">
     <button type="button" class="tab" data-tab="overview">Overview</button>
     {{range .Tabs}}
@@ -57,6 +58,7 @@
 </form>
 {{else}}
 <form method="post" action="/submit" id="plan-form">
+  <input type="hidden" name="token" value="{{.Token}}">
   <section class="panel">
     <p class="intro">{{.Intro}}</p>
     {{if .Error}}<p class="error">{{.Error}}</p>{{end}}

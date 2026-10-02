@@ -266,8 +266,8 @@ func TestLoadPlanDraftOrdersItemsAndAttachesNotes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load draft: %v", err)
 	}
-	wantKinds := []planItemKind{planItemRequirement, planItemDecision, planItemDesign, planItemTask}
-	wantIDs := []string{"req-alpha/REQ-1", "D1", "mechanism", "T1"}
+	wantKinds := []planItemKind{planItemRequirementDocument, planItemRequirement, planItemDecision, planItemDesign, planItemTask}
+	wantIDs := []string{"req-alpha", "req-alpha/REQ-1", "D1", "mechanism", "T1"}
 	if len(draft.Items) != len(wantIDs) {
 		t.Fatalf("items = %d want %d: %+v", len(draft.Items), len(wantIDs), draft.Items)
 	}
@@ -276,11 +276,11 @@ func TestLoadPlanDraftOrdersItemsAndAttachesNotes(t *testing.T) {
 			t.Fatalf("item %d = (%s,%s) want (%s,%s)", i, item.Kind, item.ID, wantKinds[i], wantIDs[i])
 		}
 	}
-	if draft.Items[0].Note == nil || draft.Items[0].Note.Headline != "Alpha" {
-		t.Fatalf("requirement note not attached: %+v", draft.Items[0].Note)
+	if draft.Items[1].Note == nil || draft.Items[1].Note.Headline != "Alpha" {
+		t.Fatalf("requirement note not attached: %+v", draft.Items[1].Note)
 	}
-	if len(draft.Items[3].Links) != 3 {
-		t.Fatalf("task links = %v", draft.Items[3].Links)
+	if len(draft.Items[4].Links) != 3 {
+		t.Fatalf("task links = %v", draft.Items[4].Links)
 	}
 	if len(draft.Raw.Requirements) != 1 || draft.Raw.Requirements[0].Title != "Alpha" {
 		t.Fatalf("requirement raw = %+v", draft.Raw.Requirements)
@@ -303,5 +303,133 @@ func TestPlanReviewRoundTrip(t *testing.T) {
 	}
 	if got.Round != 2 || len(got.Items) != 1 || got.Items[0].Verdict != "approve" {
 		t.Fatalf("round trip = %+v", got)
+	}
+}
+
+// planDraftItemHash returns the approval hash of one item, failing when the
+// draft holds no such item.
+func planDraftItemHash(t *testing.T, draft *planDraft, id string) string {
+	t.Helper()
+	for _, item := range draft.Items {
+		if item.ID == id {
+			return item.Hash()
+		}
+	}
+	t.Fatalf("draft has no item %q", id)
+	return ""
+}
+
+func TestPlanCheckRejectsEmptyAndDuplicateItemIDs(t *testing.T) {
+	design := "# T1\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - \"*.go\"\n```\n"
+	task := "- id: T1\n  title: One\n  body: One.\n  docs_paths: [docs/a.md]\n"
+	cases := []struct {
+		name  string
+		files map[string]string
+		want  []string
+	}{
+		{
+			name: "duplicate within a kind",
+			files: map[string]string{
+				"tasks.yml": "- id: T1\n  title: One\n  body: One.\n  docs_paths: [docs/a.md]\n" +
+					"- id: T1\n  title: Two\n  body: Two.\n  docs_paths: [docs/a.md]\n",
+			},
+			want: []string{`item ID "T1"`, "tasks.yml"},
+		},
+		{
+			name: "duplicate across kinds",
+			files: map[string]string{
+				"designs/T1.md": design,
+				"tasks.yml":     task,
+			},
+			want: []string{`item ID "T1"`, "designs/T1.md", "tasks.yml"},
+		},
+		{
+			name: "empty id",
+			files: map[string]string{
+				"tasks.yml": "- id: \"\"\n  title: One\n  body: One.\n  docs_paths: [docs/a.md]\n",
+			},
+			want: []string{"item ID is empty", "tasks.yml"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := planFixtureRepo(t, tc.files)
+			dir := filepath.Join(root, "draft")
+			out, err := runPlanCLI(t, "check", dir)
+			if err == nil {
+				t.Fatalf("check passed a draft with a bad item ID:\n%s", out)
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(out, want) {
+					t.Errorf("check output does not name %q:\n%s", want, out)
+				}
+			}
+			// review loads the draft through the same path, so it refuses the
+			// same draft instead of rendering ambiguous items.
+			if _, err := buildPlanReviewView(dir); err == nil {
+				t.Fatal("plan review accepted a draft with a bad item ID")
+			}
+		})
+	}
+}
+
+func TestPlanRequirementDocumentItemTracksTitleAndProse(t *testing.T) {
+	root := planFixtureRepo(t, planValidDraftFiles())
+	dir := filepath.Join(root, "draft")
+	path := filepath.Join(dir, "requirements/req-alpha.md")
+
+	base, err := loadPlanDraft(dir)
+	if err != nil {
+		t.Fatalf("load draft: %v", err)
+	}
+	documentBase := planDraftItemHash(t, base, "req-alpha")
+	statementBase := planDraftItemHash(t, base, "req-alpha/REQ-1")
+
+	original, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	planWriteFile(t, path, strings.Replace(string(original), "The alpha capability.", "The alpha capability, restated.", 1))
+	prose, err := loadPlanDraft(dir)
+	if err != nil {
+		t.Fatalf("load prose-edited draft: %v", err)
+	}
+	if planDraftItemHash(t, prose, "req-alpha") == documentBase {
+		t.Fatal("a prose edit outside the fence did not change the document item hash")
+	}
+	if planDraftItemHash(t, prose, "req-alpha/REQ-1") != statementBase {
+		t.Fatal("a prose edit reset a statement item")
+	}
+
+	restated, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	planWriteFile(t, path, strings.Replace(string(restated), "# Alpha\n", "# Alpha capabilities\n", 1))
+	titled, err := loadPlanDraft(dir)
+	if err != nil {
+		t.Fatalf("load title-edited draft: %v", err)
+	}
+	if planDraftItemHash(t, titled, "req-alpha") == planDraftItemHash(t, prose, "req-alpha") {
+		t.Fatal("a title edit did not change the document item hash")
+	}
+	if planDraftItemHash(t, titled, "req-alpha/REQ-1") != statementBase {
+		t.Fatal("a title edit reset a statement item")
+	}
+
+	titledData, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	planWriteFile(t, path, strings.Replace(string(titledData), "The system shall alpha.", "The system shall alpha now.", 1))
+	statement, err := loadPlanDraft(dir)
+	if err != nil {
+		t.Fatalf("load statement-edited draft: %v", err)
+	}
+	if planDraftItemHash(t, statement, "req-alpha") != planDraftItemHash(t, titled, "req-alpha") {
+		t.Fatal("a statement edit reset the document item")
+	}
+	if planDraftItemHash(t, statement, "req-alpha/REQ-1") == statementBase {
+		t.Fatal("a statement edit did not reset its statement item")
 	}
 }

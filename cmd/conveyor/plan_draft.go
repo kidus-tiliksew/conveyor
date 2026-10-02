@@ -22,10 +22,15 @@ import (
 type planItemKind string
 
 const (
-	planItemRequirement planItemKind = "requirement"
-	planItemDecision    planItemKind = "decision"
-	planItemDesign      planItemKind = "design"
-	planItemTask        planItemKind = "task"
+	// planItemRequirementDocument is the requirement file itself: its H1 title
+	// and the prose outside the conveyor fence. It is reviewed alongside the
+	// statement items so a prose or title edit resets only this item, and a
+	// statement edit resets only that statement's item.
+	planItemRequirementDocument planItemKind = "requirement_document"
+	planItemRequirement         planItemKind = "requirement"
+	planItemDecision            planItemKind = "decision"
+	planItemDesign              planItemKind = "design"
+	planItemTask                planItemKind = "task"
 )
 
 // planNote is the never-hashed plain-language wrapper for one item, read from
@@ -37,11 +42,12 @@ type planNote struct {
 }
 
 // planItem is one reviewable and pushable draft item. ID is the item's stable
-// identity: "<doc-id>/REQ-n" for a requirement, "D1" for a decision, the
-// design ID for a design, and the local task ID for a task. File is the
-// draft-relative path holding the item. Normative is the canonical text over
-// which Hash is computed — the item's normative fields only, never its note.
-// Links are the IDs this item cites.
+// identity: the document ID for a requirement document, "<doc-id>/REQ-n" for a
+// requirement statement, "D1" for a decision, the design ID for a design, and
+// the local task ID for a task. File is the draft-relative path holding the
+// item. Normative is the canonical text over which Hash is computed — the
+// item's normative fields only, never its note. Links are the IDs this item
+// cites.
 type planItem struct {
 	ID        string
 	Kind      planItemKind
@@ -177,6 +183,10 @@ var planDecisionReference = regexp.MustCompile(`\bD[1-9][0-9]*\b`)
 // draft is returned alongside the joined error, and `plan check` reports every
 // problem at once. An absent brief.md, decisions.yml, tasks.yml, or notes.yml
 // is an empty value, not an error.
+//
+// One problem is fatal: an item ID that is empty or used twice. Item identity
+// is what review, push, and check all key on, so no draft is returned and the
+// verbs refuse before acting rather than act on an ambiguous item.
 func loadPlanDraft(dir string) (*planDraft, error) {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
@@ -261,7 +271,33 @@ func loadPlanDraft(dir string) (*planDraft, error) {
 	notes := loadPlanNotes(abs, &problems)
 
 	draft.Items = buildPlanItems(draft.Raw, notes)
+	if idProblems := validatePlanItemIDs(draft.Items); len(idProblems) > 0 {
+		problems = append(problems, idProblems...)
+		return nil, errors.Join(problems...)
+	}
 	return draft, errors.Join(problems...)
+}
+
+// validatePlanItemIDs reports every empty item ID and every ID used more than
+// once. Item IDs are not namespaced by kind, so a design T1.md and a task T1
+// collide and are reported with both files. The empty-ID and duplicate checks
+// share this one function so review, push, and check all refuse the same
+// drafts.
+func validatePlanItemIDs(items []planItem) []error {
+	var problems []error
+	firstFile := make(map[string]string, len(items))
+	for _, item := range items {
+		if item.ID == "" {
+			problems = append(problems, fmt.Errorf("item ID is empty in %s", item.File))
+			continue
+		}
+		if file, ok := firstFile[item.ID]; ok {
+			problems = append(problems, fmt.Errorf("item ID %q appears in both %s and %s", item.ID, file, item.File))
+			continue
+		}
+		firstFile[item.ID] = item.File
+	}
+	return problems
 }
 
 // loadPlanNotes reads notes.yml: a top-level YAML list of
@@ -315,6 +351,12 @@ func readPlanYAML(absDir, name string, problems *[]error) ([]byte, bool) {
 func buildPlanItems(raw planDraftFiles, notes map[string]*planNote) []planItem {
 	var items []planItem
 	for _, requirement := range raw.Requirements {
+		items = append(items, planItem{
+			ID:        requirement.ID,
+			Kind:      planItemRequirementDocument,
+			File:      "requirements/" + requirement.ID + ".md",
+			Normative: requirementDocumentNormative(requirement),
+		})
 		for _, statement := range requirement.Statements {
 			items = append(items, planItem{
 				ID:        requirement.ID + "/" + statement.ID,
@@ -352,10 +394,11 @@ func buildPlanItems(raw planDraftFiles, notes map[string]*planNote) []planItem {
 		})
 	}
 	order := map[planItemKind]int{
-		planItemRequirement: 0,
-		planItemDecision:    1,
-		planItemDesign:      2,
-		planItemTask:        3,
+		planItemRequirementDocument: 0,
+		planItemRequirement:         1,
+		planItemDecision:            2,
+		planItemDesign:              3,
+		planItemTask:                4,
 	}
 	sort.SliceStable(items, func(i, j int) bool {
 		if order[items[i].Kind] != order[items[j].Kind] {
@@ -403,6 +446,32 @@ func requirementNormative(statement core.RequirementStatement) string {
 		b.WriteString("\n")
 	}
 	return normalizePlanText(b.String())
+}
+
+// requirementDocumentNormative canonicalizes the requirement document item:
+// its H1 title followed by the prose outside the conveyor:requirements fence.
+// The fence's statements are covered by their own items, so a statement edit
+// resets only those items and leaves this one approved.
+func requirementDocumentNormative(requirement draftRequirement) string {
+	return normalizePlanText(requirement.Title + "\n" + requirementProseOutsideFence(requirement.Body))
+}
+
+// requirementProseOutsideFence returns the document text with its
+// conveyor:requirements machine block removed. ParseRequirementDocument has
+// already guaranteed exactly one well-formed block, so the same exact opening
+// marker and closing fence bound the removal.
+func requirementProseOutsideFence(markdown string) string {
+	const marker = "```conveyor:requirements"
+	start := strings.Index(markdown, marker)
+	if start < 0 {
+		return markdown
+	}
+	rest := markdown[start+len(marker):]
+	end := strings.Index(rest, "```")
+	if end < 0 {
+		return markdown[:start]
+	}
+	return markdown[:start] + rest[end+len("```"):]
 }
 
 // decisionNormative canonicalizes a decision's statement, context, and

@@ -10,7 +10,10 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/subtle"
 	"embed"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"html/template"
@@ -19,6 +22,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -55,9 +59,12 @@ type planPageView struct {
 	Intro   string
 	Summary string
 	Error   string
-	Round   int
-	Tabs    []planPageTab
-	Matrix  *planTraceMatrix
+	// Token is the per-server anti-CSRF token every rendered form carries; the
+	// submit handler rejects a form without it.
+	Token  string
+	Round  int
+	Tabs   []planPageTab
+	Matrix *planTraceMatrix
 	// Questions is the ask shape: one card per grill question.
 	Questions []planPageCard
 }
@@ -120,11 +127,23 @@ type planTraceRow struct {
 
 // planPageServer is the one local HTTP server a plan page runs on.
 type planPageServer struct {
-	listener  net.Listener
-	http      *http.Server
-	url       string
-	done      chan struct{}
-	closeOnce func()
+	listener net.Listener
+	http     *http.Server
+	// addr is the listener's host:port; the printed URL, the CSRF Origin and
+	// Host checks, and the DNS-rebinding guard all compare against it.
+	addr string
+	// token gates the page and its submit: it is in the printed URL and in a
+	// hidden field of every rendered form.
+	token string
+	url   string
+	done  chan struct{}
+	// closeOnce makes finish safe to call from the submit handlers and the
+	// serveErr branch of runPlanPage at the same time.
+	closeOnce sync.Once
+	// submitMu serializes submits so one never reads an output file another
+	// is writing; submitted records that a submit was written.
+	submitMu  sync.Mutex
+	submitted bool
 }
 
 // newPlanPageServer binds 127.0.0.1:port; port 0 picks a free port. The
@@ -138,31 +157,83 @@ func newPlanPageServer(port int) (*planPageServer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("plan page: listen on 127.0.0.1:%d: %w", port, err)
 	}
+	token, err := newPlanPageToken()
+	if err != nil {
+		_ = listener.Close()
+		return nil, err
+	}
+	addr := listener.Addr().String()
 	server := &planPageServer{
 		listener: listener,
-		url:      "http://" + listener.Addr().String() + "/",
+		addr:     addr,
+		token:    token,
+		url:      "http://" + addr + "/?t=" + token,
 		done:     make(chan struct{}),
-	}
-	var closed bool
-	server.closeOnce = func() {
-		if !closed {
-			closed = true
-			close(server.done)
-		}
 	}
 	server.http = &http.Server{Handler: http.NotFoundHandler()}
 	return server, nil
 }
 
+// newPlanPageToken returns the random per-server token that gates the page.
+func newPlanPageToken() (string, error) {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", fmt.Errorf("plan page token: %w", err)
+	}
+	return hex.EncodeToString(raw[:]), nil
+}
+
 // URL is the page's address, valid once newPlanPageServer returns.
 func (s *planPageServer) URL() string { return s.url }
 
-// finish records that the page's work is done and the command may return.
-func (s *planPageServer) finish() { s.closeOnce() }
+// finish records that the page's work is done and the command may return. It
+// is safe to call concurrently.
+func (s *planPageServer) finish() { s.closeOnce.Do(func() { close(s.done) }) }
+
+// validToken reports whether presented equals the server's token, compared in
+// constant time.
+func (s *planPageServer) validToken(presented string) bool {
+	return subtle.ConstantTimeCompare([]byte(presented), []byte(s.token)) == 1
+}
+
+// beginSubmit serializes the page's submissions. It returns false once a
+// submit has been recorded; otherwise the caller holds the submit lock and
+// must call endSubmit, passing whether it wrote its output file. A failed
+// write leaves the page open for a retry.
+func (s *planPageServer) beginSubmit() bool {
+	s.submitMu.Lock()
+	if s.submitted {
+		s.submitMu.Unlock()
+		return false
+	}
+	return true
+}
+
+func (s *planPageServer) endSubmit(recorded bool) {
+	if recorded {
+		s.submitted = true
+	}
+	s.submitMu.Unlock()
+}
+
+// checkRequestOrigin rejects a request whose Host is not this server's address
+// (DNS rebinding) or whose Origin is present and is not this server's origin
+// (cross-site form posts).
+func (s *planPageServer) checkRequestOrigin(r *http.Request) error {
+	if r.Host != s.addr {
+		return fmt.Errorf("unexpected host %q", r.Host)
+	}
+	if origin := r.Header.Get("Origin"); origin != "" && origin != "http://"+s.addr {
+		return fmt.Errorf("unexpected origin %q", origin)
+	}
+	return nil
+}
 
 // registerPlanPageRoutes wires the index page, the submit handler, and the
-// embedded assets onto the server's mux.
-func registerPlanPageRoutes(mux *http.ServeMux, index, submit http.HandlerFunc) {
+// embedded assets onto the server's mux. Both the index and the submit require
+// the server's token; the index carries it in the query and a submit carries
+// it in the form.
+func registerPlanPageRoutes(mux *http.ServeMux, server *planPageServer, index, submit http.HandlerFunc) {
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)
@@ -173,12 +244,32 @@ func registerPlanPageRoutes(mux *http.ServeMux, index, submit http.HandlerFunc) 
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
+		if err := server.checkRequestOrigin(r); err != nil {
+			http.Error(w, "forbidden: "+err.Error(), http.StatusForbidden)
+			return
+		}
+		if !server.validToken(r.URL.Query().Get("t")) {
+			http.Error(w, "forbidden: missing or invalid token", http.StatusForbidden)
+			return
+		}
 		index(w, r)
 	})
 	mux.HandleFunc("/submit", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.Header().Set("Allow", http.MethodPost)
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if err := server.checkRequestOrigin(r); err != nil {
+			http.Error(w, "forbidden: "+err.Error(), http.StatusForbidden)
+			return
+		}
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "parse form: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		if !server.validToken(r.PostFormValue("token")) {
+			http.Error(w, "forbidden: missing or invalid token", http.StatusForbidden)
 			return
 		}
 		submit(w, r)

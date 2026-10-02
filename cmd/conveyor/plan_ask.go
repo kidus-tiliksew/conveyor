@@ -111,7 +111,7 @@ func runPlanAsk(ctx context.Context, dir string, port int, stdout io.Writer) err
 	}
 	page.server = server
 	mux := http.NewServeMux()
-	registerPlanPageRoutes(mux, page.handleIndex, page.handleSubmit)
+	registerPlanPageRoutes(mux, server, page.handleIndex, page.handleSubmit)
 	server.http.Handler = mux
 	return runPlanPage(ctx, server, stdout)
 }
@@ -122,7 +122,9 @@ func (p *planAskPage) handleIndex(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	renderPlanPage(w, buildPlanAskView(round, planAskPreviousAnswers(p.dir), ""))
+	view := buildPlanAskView(round, planAskPreviousAnswers(p.dir), "")
+	view.Token = p.server.token
+	renderPlanPage(w, view)
 }
 
 func (p *planAskPage) handleSubmit(w http.ResponseWriter, r *http.Request) {
@@ -130,6 +132,12 @@ func (p *planAskPage) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "parse form: "+err.Error(), http.StatusBadRequest)
 		return
 	}
+	if !p.server.beginSubmit() {
+		http.Error(w, "already submitted", http.StatusConflict)
+		return
+	}
+	recorded := false
+	defer func() { p.server.endSubmit(recorded) }()
 	round, err := loadPlanRound(p.dir)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -153,7 +161,9 @@ func (p *planAskPage) handleSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(missing) > 0 {
 		message := "answer every question first: " + strings.Join(missing, ", ")
-		renderPlanPageStatus(w, http.StatusBadRequest, buildPlanAskView(round, planAskPreviousAnswers(p.dir), message))
+		view := buildPlanAskView(round, planAskPreviousAnswers(p.dir), message)
+		view.Token = p.server.token
+		renderPlanPageStatus(w, http.StatusBadRequest, view)
 		return
 	}
 	file := planAnswersFile{Round: round.Round, Answers: answers}
@@ -161,6 +171,7 @@ func (p *planAskPage) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	recorded = true
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	fmt.Fprintf(w, "<!doctype html><html><body><h1>Answers sent (round %d)</h1><p>%d answer(s) written to %s. You can close this tab.</p></body></html>\n", file.Round, len(answers), planAskAnswersFile)
 	p.server.finish()

@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -22,6 +23,7 @@ func planReviewForm(t *testing.T, dir string, verdict, comment func(planItem) st
 	values := url.Values{}
 	for i, item := range draft.Items {
 		values.Set(fmt.Sprintf("item.%d.id", i), item.ID)
+		values.Set(fmt.Sprintf("item.%d.hash", i), item.Hash())
 		values.Set(fmt.Sprintf("item.%d.verdict", i), verdict(item))
 		values.Set(fmt.Sprintf("item.%d.comment", i), comment(item))
 	}
@@ -277,4 +279,71 @@ func TestPlanReviewInvalidPortFailsBeforeServing(t *testing.T) {
 	if err := runPlanReview(t.Context(), filepath.Join(root, "draft"), -1, io.Discard); err == nil {
 		t.Fatal("negative port must fail")
 	}
+}
+
+// planRenderedHashes parses each review card's data-id/data-hash attributes.
+var planRenderedHashes = regexp.MustCompile(`data-id="([^"]+)"[^>]*data-hash="([^"]+)"`)
+
+func planRenderedHash(t *testing.T, body, id string) string {
+	t.Helper()
+	for _, match := range planRenderedHashes.FindAllStringSubmatch(body, -1) {
+		if match[1] == id {
+			return match[2]
+		}
+	}
+	t.Fatalf("no rendered hash for %s", id)
+	return ""
+}
+
+func TestPlanReviewStaleHashRecordsPending(t *testing.T) {
+	root := planFixtureRepo(t, planValidDraftFiles())
+	dir := filepath.Join(root, "draft")
+
+	pageURL, wait := startPlanPageCommand(t, planReviewCmd(), dir, "--port", "0")
+	status, body := planGetPage(t, pageURL)
+	if status != http.StatusOK {
+		t.Fatalf("render status = %d", status)
+	}
+	staleHash := planRenderedHash(t, body, "T1")
+
+	// The draft changes after the page was rendered, so the hash the owner
+	// approved no longer matches the item on disk.
+	tasksPath := filepath.Join(dir, "tasks.yml")
+	data, err := os.ReadFile(tasksPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	planWriteFile(t, tasksPath, strings.Replace(string(data), "title: Implement alpha", "title: Implement alpha v2", 1))
+
+	values := planReviewForm(t, dir, planApproveAll, planNoComment)
+	draft, err := loadPlanDraft(dir)
+	if err != nil && draft == nil {
+		t.Fatalf("reload draft: %v", err)
+	}
+	for i, item := range draft.Items {
+		if item.ID == "T1" {
+			values.Set(fmt.Sprintf("item.%d.hash", i), staleHash)
+		}
+	}
+	if status, body := planPostForm(t, pageURL, values); status != http.StatusOK {
+		t.Fatalf("submit status = %d: %s", status, body)
+	}
+	if err := wait(); err != nil {
+		t.Fatalf("review command: %v", err)
+	}
+
+	review, err := readPlanReview(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range review.Items {
+		if entry.ID != "T1" {
+			continue
+		}
+		if entry.Verdict != "pending" {
+			t.Fatalf("stale-hash item T1 verdict = %q, want pending", entry.Verdict)
+		}
+		return
+	}
+	t.Fatal("no entry for T1")
 }

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -29,23 +30,23 @@ type planPushFake struct {
 	referenceCreates   int
 	taskBodies         []string
 
-	requirementExists    map[string]bool
-	requirementConfirmed map[string]bool
-	decisions            []core.Decision
-	designExists         map[string]bool
-	designConfirmed      map[string]bool
-	reposJSON            string
+	requirementExists   map[string]bool
+	requirementVersions map[string]int
+	decisions           []core.Decision
+	designExists        map[string]bool
+	designVersions      map[string]int
+	reposJSON           string
 }
 
 func newPlanPushFake(t *testing.T) *planPushFake {
 	t.Helper()
 	return &planPushFake{
-		t:                    t,
-		requirementExists:    map[string]bool{},
-		requirementConfirmed: map[string]bool{},
-		designExists:         map[string]bool{},
-		designConfirmed:      map[string]bool{},
-		reposJSON:            `[{"name":"conveyor","base":"main"}]`,
+		t:                   t,
+		requirementExists:   map[string]bool{},
+		requirementVersions: map[string]int{},
+		designExists:        map[string]bool{},
+		designVersions:      map[string]int{},
+		reposJSON:           `[{"name":"conveyor","base":"main"}]`,
 	}
 }
 
@@ -102,16 +103,16 @@ func (f *planPushFake) handler() http.HandlerFunc {
 func (f *planPushFake) requirementsJSON() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return planPushDocumentListJSON(f.requirementExists, f.requirementConfirmed, "requirement")
+	return planPushDocumentListJSON(f.requirementExists, f.requirementVersions, "requirement")
 }
 
 func (f *planPushFake) designsJSON() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return planPushDocumentListJSON(f.designExists, f.designConfirmed, "document")
+	return planPushDocumentListJSON(f.designExists, f.designVersions, "document")
 }
 
-func planPushDocumentListJSON(exists, confirmed map[string]bool, key string) string {
+func planPushDocumentListJSON(exists map[string]bool, versions map[string]int, key string) string {
 	ids := make([]string, 0, len(exists))
 	for id := range exists {
 		ids = append(ids, id)
@@ -119,11 +120,7 @@ func planPushDocumentListJSON(exists, confirmed map[string]bool, key string) str
 	sort.Strings(ids)
 	parts := make([]string, 0, len(ids))
 	for _, id := range ids {
-		version := 0
-		if confirmed[id] {
-			version = 1
-		}
-		parts = append(parts, fmt.Sprintf(`{%q:{"id":%q,"current_version":%d}}`, key, id, version))
+		parts = append(parts, fmt.Sprintf(`{%q:{"id":%q,"current_version":%d}}`, key, id, versions[id]))
 	}
 	return "[" + strings.Join(parts, ",") + "]"
 }
@@ -228,9 +225,9 @@ func TestPlanPushDryRunPrintsPayloadsInLayerOrder(t *testing.T) {
 
 	fake, _ := newPlanPushServer(t)
 	fake.requirementExists["req-alpha"] = true
-	fake.requirementConfirmed["req-alpha"] = true
+	fake.requirementVersions["req-alpha"] = 1
 	fake.designExists["mechanism"] = true
-	fake.designConfirmed["mechanism"] = true
+	fake.designVersions["mechanism"] = 1
 	fake.decisions = []core.Decision{{ID: "DEC-3", Status: core.DecisionConfirmed}}
 	// The decisions layer runs before designs; its mapping is what lets a
 	// design citation resolve.
@@ -312,7 +309,7 @@ func TestPlanPushRefusesLayerWithUnconfirmedDesign(t *testing.T) {
 
 	fake, _ := newPlanPushServer(t)
 	fake.requirementExists["req-alpha"] = true
-	fake.requirementConfirmed["req-alpha"] = true
+	fake.requirementVersions["req-alpha"] = 1
 	fake.designExists["mechanism"] = true // exists, current_version 0
 
 	out, err := planPushRun(t, draftDir, planPushOptions{Layer: planPushLayer(t, "tasks"), DryRun: true})
@@ -371,7 +368,7 @@ func TestPlanPushRefusesUnapprovedItem(t *testing.T) {
 
 			fake, _ := newPlanPushServer(t)
 			fake.requirementExists["req-alpha"] = true
-			fake.requirementConfirmed["req-alpha"] = true
+			fake.requirementVersions["req-alpha"] = 1
 
 			out, err := planPushRun(t, draftDir, planPushOptions{Layer: planPushLayer(t, "requirements")})
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
@@ -394,7 +391,7 @@ func TestPlanPushBlockingHookStopsRequirementsLayer(t *testing.T) {
 
 	fake, _ := newPlanPushServer(t)
 	fake.requirementExists["req-alpha"] = true
-	fake.requirementConfirmed["req-alpha"] = true
+	fake.requirementVersions["req-alpha"] = 1
 
 	out, err := planPushRun(t, draftDir, planPushOptions{Layer: planPushLayer(t, "requirements")})
 	if err == nil || !strings.Contains(err.Error(), "pre-push review hook") {
@@ -437,7 +434,7 @@ func TestPlanPushDecisionsPersistServerMapping(t *testing.T) {
 
 	fake, _ := newPlanPushServer(t)
 	fake.requirementExists["req-alpha"] = true
-	fake.requirementConfirmed["req-alpha"] = true
+	fake.requirementVersions["req-alpha"] = 1
 
 	if _, err := planPushRun(t, draftDir, planPushOptions{Layer: planPushLayer(t, "decisions")}); err != nil {
 		t.Fatalf("decisions push: %v", err)
@@ -476,9 +473,9 @@ func TestPlanPushTasksFileWithContextAndDependencies(t *testing.T) {
 
 	fake, _ := newPlanPushServer(t)
 	fake.requirementExists["req-alpha"] = true
-	fake.requirementConfirmed["req-alpha"] = true
+	fake.requirementVersions["req-alpha"] = 1
 	fake.designExists["mechanism"] = true
-	fake.designConfirmed["mechanism"] = true
+	fake.designVersions["mechanism"] = 1
 
 	if _, err := planPushRun(t, draftDir, planPushOptions{Layer: planPushLayer(t, "tasks")}); err != nil {
 		t.Fatalf("tasks push: %v", err)
@@ -507,5 +504,142 @@ func TestPlanPushTasksFileWithContextAndDependencies(t *testing.T) {
 	}
 	if fake.confirmSeen {
 		t.Fatal("a confirm endpoint was called")
+	}
+}
+
+func TestPlanPushRefusesDuplicateItemIDs(t *testing.T) {
+	root := planFixtureRepo(t, map[string]string{
+		"designs/T1.md": "# T1\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - \"*.go\"\n```\n",
+		"tasks.yml":     "- id: T1\n  title: One\n  body: One.\n  docs_paths: [docs/a.md]\n",
+	})
+
+	fake, _ := newPlanPushServer(t)
+	out, err := planPushRun(t, filepath.Join(root, "draft"), planPushOptions{Layer: planPushLayer(t, "tasks")})
+	if err == nil || !strings.Contains(err.Error(), `item ID "T1"`) {
+		t.Fatalf("expected the duplicate item ID to refuse the push, got err=%v out=%q", err, out)
+	}
+	if fake.posted("/v1/tasks") || fake.posted("/v1/requirements") {
+		t.Fatal("refused push contacted the server")
+	}
+}
+
+func TestPlanPushRefusesUnapprovedRequirementDocumentItem(t *testing.T) {
+	root := planFixtureRepo(t, planValidDraftFiles())
+	draftDir := filepath.Join(root, "draft")
+	draft, err := loadPlanDraft(draftDir)
+	if err != nil {
+		t.Fatalf("load draft: %v", err)
+	}
+	review := &planReviewFile{}
+	for _, item := range draft.Items {
+		if item.ID == "req-alpha" {
+			continue
+		}
+		review.Items = append(review.Items, planReviewEntry{ID: item.ID, Hash: item.Hash(), Verdict: "approve"})
+	}
+	if err := writePlanReview(draftDir, review); err != nil {
+		t.Fatal(err)
+	}
+
+	fake, _ := newPlanPushServer(t)
+	out, err := planPushRun(t, draftDir, planPushOptions{Layer: planPushLayer(t, "requirements")})
+	if err == nil || !strings.Contains(err.Error(), "req-alpha: no review verdict") {
+		t.Fatalf("expected the unapproved document item to refuse the push, got err=%v out=%q", err, out)
+	}
+	if fake.posted("/v1/requirements") {
+		t.Fatal("refused push still posted a requirement")
+	}
+}
+
+func TestPlanPushRefusesEditedRequirementProse(t *testing.T) {
+	root := planFixtureRepo(t, planValidDraftFiles())
+	draftDir := filepath.Join(root, "draft")
+	planApproveDraft(t, root)
+
+	path := filepath.Join(draftDir, "requirements/req-alpha.md")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	planWriteFile(t, path, strings.Replace(string(data), "The alpha capability.", "The alpha capability, restated.", 1))
+
+	fake, _ := newPlanPushServer(t)
+	out, err := planPushRun(t, draftDir, planPushOptions{Layer: planPushLayer(t, "requirements")})
+	if err == nil || !strings.Contains(err.Error(), "req-alpha: content changed since approval") {
+		t.Fatalf("expected a prose edit to reset the document approval, got err=%v out=%q", err, out)
+	}
+	if fake.posted("/v1/requirements") {
+		t.Fatal("refused push still posted a requirement")
+	}
+}
+
+func TestPlanPushRefusesDocumentBehindPushedVersion(t *testing.T) {
+	cases := []struct {
+		name      string
+		confirmed int
+		wantErr   bool
+	}{
+		{name: "confirmed v1 behind pushed v2", confirmed: 1, wantErr: true},
+		{name: "confirmed v2 satisfies pushed v2", confirmed: 2},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := planFixtureRepo(t, planValidDraftFiles())
+			draftDir := filepath.Join(root, "draft")
+			planApproveDraft(t, root)
+			if err := writePlanPushState(draftDir, &planPushState{Items: map[string]planPushStateItem{
+				"req-alpha": {Kind: "requirement", Hash: "sha256:x", ServerID: "req-alpha", Version: 2},
+			}}); err != nil {
+				t.Fatal(err)
+			}
+
+			fake, _ := newPlanPushServer(t)
+			fake.requirementExists["req-alpha"] = true
+			fake.requirementVersions["req-alpha"] = tc.confirmed
+
+			out, err := planPushRun(t, draftDir, planPushOptions{Layer: planPushLayer(t, "decisions")})
+			if tc.wantErr {
+				if err == nil || !strings.Contains(err.Error(), "req-alpha") ||
+					!strings.Contains(err.Error(), "version 1") || !strings.Contains(err.Error(), "version 2") {
+					t.Fatalf("expected a refusal naming req-alpha and both versions, got err=%v out=%q", err, out)
+				}
+				if fake.posted("/v1/decisions") {
+					t.Fatal("refused push still posted a decision")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("decisions push: %v\n%s", err, out)
+			}
+			if !fake.posted("/v1/decisions") {
+				t.Fatalf("expected the decisions layer to post, requests = %v", fake.paths())
+			}
+		})
+	}
+}
+
+func TestPlanPushRefusesDesignBehindPushedVersion(t *testing.T) {
+	root := planFixtureRepo(t, planValidDraftFiles())
+	draftDir := filepath.Join(root, "draft")
+	planApproveDraft(t, root)
+	if err := writePlanPushState(draftDir, &planPushState{Items: map[string]planPushStateItem{
+		"mechanism": {Kind: "design", Hash: "sha256:x", ServerID: "mechanism", Version: 2},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	fake, _ := newPlanPushServer(t)
+	fake.requirementExists["req-alpha"] = true
+	fake.requirementVersions["req-alpha"] = 1
+	fake.designExists["mechanism"] = true
+	fake.designVersions["mechanism"] = 1
+
+	out, err := planPushRun(t, draftDir, planPushOptions{Layer: planPushLayer(t, "tasks")})
+	if err == nil || !strings.Contains(err.Error(), "mechanism") ||
+		!strings.Contains(err.Error(), "version 1") || !strings.Contains(err.Error(), "version 2") {
+		t.Fatalf("expected a refusal naming mechanism and both versions, got err=%v out=%q", err, out)
+	}
+	if fake.posted("/v1/tasks") {
+		t.Fatal("refused push still posted a task")
 	}
 }

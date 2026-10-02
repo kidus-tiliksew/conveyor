@@ -23,14 +23,15 @@ import (
 
 // planItemTabLabel maps an item kind to its tab label.
 var planItemTabLabel = map[planItemKind]string{
-	planItemRequirement: "Requirements",
-	planItemDecision:    "Decisions",
-	planItemDesign:      "Designs",
-	planItemTask:        "Tasks",
+	planItemRequirementDocument: "Requirement documents",
+	planItemRequirement:         "Requirements",
+	planItemDecision:            "Decisions",
+	planItemDesign:              "Designs",
+	planItemTask:                "Tasks",
 }
 
 // planItemTabOrder is the fixed tab order; it matches the push order.
-var planItemTabOrder = []planItemKind{planItemRequirement, planItemDecision, planItemDesign, planItemTask}
+var planItemTabOrder = []planItemKind{planItemRequirementDocument, planItemRequirement, planItemDecision, planItemDesign, planItemTask}
 
 // planReviewCmd serves the local review page.
 func planReviewCmd() *cobra.Command {
@@ -70,7 +71,7 @@ func runPlanReview(ctx context.Context, dir string, port int, stdout io.Writer) 
 	}
 	page.server = server
 	mux := http.NewServeMux()
-	registerPlanPageRoutes(mux, page.handleIndex, page.handleSubmit)
+	registerPlanPageRoutes(mux, server, page.handleIndex, page.handleSubmit)
 	server.http.Handler = mux
 	return runPlanPage(ctx, server, stdout)
 }
@@ -92,6 +93,7 @@ func (p *planReviewPage) handleIndex(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	view.Token = p.server.token
 	renderPlanPage(w, view)
 }
 
@@ -100,6 +102,12 @@ func (p *planReviewPage) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "parse form: "+err.Error(), http.StatusBadRequest)
 		return
 	}
+	if !p.server.beginSubmit() {
+		http.Error(w, "already submitted", http.StatusConflict)
+		return
+	}
+	recorded := false
+	defer func() { p.server.endSubmit(recorded) }()
 	draft, err := loadPlanDraft(p.dir)
 	if draft == nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -110,7 +118,7 @@ func (p *planReviewPage) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	type submittedVerdict struct{ verdict, comment string }
+	type submittedVerdict struct{ hash, verdict, comment string }
 	submitted := make(map[string]submittedVerdict)
 	for i := 0; ; i++ {
 		id := r.PostFormValue(fmt.Sprintf("item.%d.id", i))
@@ -118,6 +126,7 @@ func (p *planReviewPage) handleSubmit(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		submitted[id] = submittedVerdict{
+			hash:    r.PostFormValue(fmt.Sprintf("item.%d.hash", i)),
 			verdict: r.PostFormValue(fmt.Sprintf("item.%d.verdict", i)),
 			comment: r.PostFormValue(fmt.Sprintf("item.%d.comment", i)),
 		}
@@ -125,6 +134,12 @@ func (p *planReviewPage) handleSubmit(w http.ResponseWriter, r *http.Request) {
 	entries := make([]planReviewEntry, 0, len(draft.Items))
 	for _, item := range draft.Items {
 		verdict := planReviewVerdict(submitted[item.ID].verdict)
+		// An approval binds to the hash the owner saw on the page. A missing
+		// posted hash, or one that no longer matches the item on disk, records
+		// pending so what the owner approves is exactly what is pushed.
+		if posted := submitted[item.ID].hash; posted == "" || posted != item.Hash() {
+			verdict = "pending"
+		}
 		entries = append(entries, planReviewEntry{
 			ID:        item.ID,
 			File:      item.File,
@@ -139,6 +154,7 @@ func (p *planReviewPage) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	recorded = true
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	fmt.Fprintf(w, "<!doctype html><html><body><h1>Review sent (round %d)</h1><p>%d item(s) written to review.json. You can close this tab.</p></body></html>\n", review.Round, len(entries))
 	p.server.finish()

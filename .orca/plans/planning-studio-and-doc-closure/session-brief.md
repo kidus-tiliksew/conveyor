@@ -34,6 +34,7 @@ Follow `docs/playbooks/conveyor-planning.md` for the push shape (requirement doc
 
 The draft ends with 6 implementation questions, each with a recommendation:
 where the pinned policy is stored; a separate `conveyor plan ask` page versus the review page; what the content hash covers; how changed docs are detected; empty-match policy diagnostics; and `docs: none` matching rules.
+These were settled on 2026-10-02 and recorded under "Grill decisions" in plan.md (policy storage in DEC-P8).
 Also challenge anything in the draft that looks unverified or marked `[INFERENCE]`, and verify file:line citations against the current `main` before relying on them.
 
 ## Source material (read-only, another repository)
