@@ -45,32 +45,54 @@ const blockedAndWaiting: Ground[] = [
   },
 ]
 
+type AttemptFixture = { id: string; exercise_id: string; outcome: string; explanation?: string }
+
+function attemptPage(attempts: AttemptFixture[]) {
+  return attempts.map((a) => ({
+    id: a.id,
+    context_id: 'cp',
+    run_id: a.id,
+    state: a.outcome,
+    at,
+    metadata: {
+      kind: 'kit',
+      kit_id: 'sample',
+      exercise_id: a.exercise_id,
+      outcome: a.outcome,
+      required_action: a.explanation ?? '',
+    },
+  }))
+}
+
+function evidencePage(runs: string[]) {
+  return runs.map((run) => ({
+    id: `ev-${run.slice(4)}`,
+    context_id: 'cp',
+    run_id: run,
+    state: 'evidence',
+    at,
+    metadata: { type: 'state_observation', captured_at: at },
+  }))
+}
+
 // The context's own bounded pages: the attempts and evidence the grounds link.
-const attemptItems = [
+const blockedAndWaitingAttempts: AttemptFixture[] = [
   { id: 'run-b', exercise_id: 'login', outcome: 'blocked', explanation: 'Login page refused the fixture account' },
   { id: 'run-w', exercise_id: 'approve', outcome: 'waiting', explanation: 'Operator approval required' },
-].map((a) => ({
-  id: a.id,
-  context_id: 'cp',
-  run_id: a.id,
-  state: a.outcome,
-  at,
-  metadata: {
-    kind: 'kit',
-    kit_id: 'sample',
-    exercise_id: a.exercise_id,
-    outcome: a.outcome,
-    required_action: a.explanation,
+]
+
+// A safe-to-replay login retried from blocked to succeeded; approve still
+// waits. The sealed checkpoint grounds only approve's latest attempt.
+const retriedAttempts: AttemptFixture[] = [
+  { id: 'run-w', exercise_id: 'approve', outcome: 'waiting', explanation: 'Operator approval required' },
+  { id: 'run-login-ok', exercise_id: 'login', outcome: 'succeeded' },
+  {
+    id: 'run-login-blocked-old',
+    exercise_id: 'login',
+    outcome: 'blocked',
+    explanation: 'Login page refused the fixture account',
   },
-}))
-const evidenceItems = ['run-b', 'run-w'].map((run) => ({
-  id: `ev-${run.slice(-1)}`,
-  context_id: 'cp',
-  run_id: run,
-  state: 'evidence',
-  at,
-  metadata: { type: 'state_observation', captured_at: at },
-}))
+]
 
 function evidenceDetail(id: string) {
   return {
@@ -102,7 +124,8 @@ async function fixture(
     operations?: string[]
     claimed?: boolean
     refuseFirst?: boolean
-    attempts?: boolean
+    attempts?: AttemptFixture[]
+    attemptPageSize?: number
     referenceContext?: string
   } = {},
 ) {
@@ -205,6 +228,10 @@ async function fixture(
       checkpoint_grounds: summary(grounds),
       checkpoint_head: sha,
       checkpoint_attempt: 'attempt-1',
+      checkpoint_attempt_grounds: grounds
+        .filter((g) => g.kind.startsWith('attempt_') && g.attempt_id)
+        .map((g) => g.attempt_id)
+        .join(','),
       attempt_count: String(grounds.filter((g) => g.attempt_id).length),
     },
   }
@@ -248,10 +275,17 @@ async function fixture(
       })
     const evidence = path.match(/\/verification\/contexts\/cp\/evidence\/([^/]+)$/)
     if (evidence) return route.fulfill({ json: evidenceDetail(decodeURIComponent(evidence[1])) })
-    if (options.attempts && path.endsWith('/verification/contexts/cp/attempts'))
-      return route.fulfill({ json: { items: attemptItems } })
+    if (options.attempts && path.endsWith('/verification/contexts/cp/attempts')) {
+      // Cursor N names the page offset; a small page size splits attempts.
+      const size = options.attemptPageSize ?? options.attempts.length
+      const offset = Number(url.searchParams.get('cursor') || 0)
+      const next = offset + size < options.attempts.length ? String(offset + size) : undefined
+      return route.fulfill({
+        json: { items: attemptPage(options.attempts.slice(offset, offset + size)), next_cursor: next },
+      })
+    }
     if (options.attempts && path.endsWith('/verification/contexts/cp/evidence'))
-      return route.fulfill({ json: { items: evidenceItems } })
+      return route.fulfill({ json: { items: evidencePage(options.attempts.map((a) => a.id)) } })
     if (path.includes('/verification/')) return route.fulfill({ json: { items: [] } })
     return route.fulfill({ json: [] })
   })
@@ -296,7 +330,7 @@ test('pre-execution missing-grant checkpoint names grounds and recovers to verif
 })
 
 test('blocked and waiting checkpoints link their attempts and evidence', async ({ page }) => {
-  await fixture(page, { grounds: blockedAndWaiting, attempts: true })
+  await fixture(page, { grounds: blockedAndWaiting, attempts: blockedAndWaitingAttempts })
   await page.goto(`/tasks/${taskId}/full`)
   const entry = verifyEntry(page)
   const grounds = entry.getByRole('list', { name: 'Checkpoint grounds' })
@@ -324,8 +358,12 @@ test('blocked and waiting checkpoints link their attempts and evidence', async (
 
 test('a historical checkpoint context links grounds from its own records', async ({ page }) => {
   // The order's reference names a newer context, so this sealed context
-  // rebuilds its attempt grounds from its attempt and evidence pages.
-  await fixture(page, { grounds: blockedAndWaiting, attempts: true, referenceContext: 'cp-newer' })
+  // links the attempt grounds its own record names.
+  await fixture(page, {
+    grounds: blockedAndWaiting,
+    attempts: blockedAndWaitingAttempts,
+    referenceContext: 'cp-newer',
+  })
   await page.goto(`/tasks/${taskId}/full`)
   const entry = verifyEntry(page)
   const grounds = entry.getByRole('list', { name: 'Checkpoint grounds' })
@@ -339,6 +377,49 @@ test('a historical checkpoint context links grounds from its own records', async
   await grounds.getByRole('button', { name: /Open evidence ev-w/ }).click()
   await expect(grounds.getByRole('region', { name: 'Structured evidence' })).toContainText('observed ev-w')
   await expect(entry).toContainText(`Grounds: ${summary(blockedAndWaiting)}`)
+})
+
+test('a historical checkpoint keeps a retried attempt out of its grounds', async ({ page }) => {
+  // VK-13.2/VK-13.5: login retried from blocked to succeeded, so only the
+  // waiting approve attempt is a sealed ground. The attempt pages hold one
+  // attempt each, and the ground's attempt is not on the first page, so a
+  // superseded attempt cannot stand in for the sealed one.
+  await fixture(page, {
+    grounds: [blockedAndWaiting[1]],
+    attempts: [...retriedAttempts].reverse(),
+    attemptPageSize: 1,
+    referenceContext: 'cp-newer',
+  })
+  await page.goto(`/tasks/${taskId}/full`)
+  const entry = verifyEntry(page)
+  const grounds = entry.getByRole('list', { name: 'Checkpoint grounds' })
+  await expect(grounds).toContainText('Waiting attempt: kit sample/approve — attempt run-w')
+  await expect(grounds.getByRole('listitem')).toHaveCount(1)
+  await expect(grounds).not.toContainText('login')
+  await expect(grounds.getByRole('link')).toHaveCount(1)
+  await expect(grounds.getByRole('link', { name: 'Attempt run-w' })).toHaveAttribute(
+    'href',
+    '#verification-cp-attempt-run-w',
+  )
+  await expect(grounds.getByRole('button', { name: /Open evidence/ })).toHaveCount(1)
+  await grounds.getByRole('button', { name: /Open evidence ev-w/ }).click()
+  await expect(grounds.getByRole('region', { name: 'Structured evidence' })).toContainText('observed ev-w')
+  await expect(entry).not.toContainText('outside the loaded attempt pages')
+  // Both login attempts remain inspectable as attempt history.
+  await entry.locator('summary', { hasText: /^Details$/ }).click()
+  // The innermost fold whose own summary is Attempts; Details also contains it.
+  const history = entry.locator('details', { has: page.locator('summary', { hasText: /^Attempts$/ }) }).last()
+  await history.locator('summary', { hasText: /^Attempts$/ }).click()
+  const more = history.getByRole('button', { name: 'Load more attempts' })
+  await more.click()
+  await more.click()
+  await expect(more).toHaveCount(0)
+  await expect(history).toContainText('login · blocked')
+  await expect(history).toContainText('login · succeeded')
+  await expect(history).toContainText('approve · waiting')
+  for (const run of ['run-login-blocked-old', 'run-login-ok']) {
+    await expect(entry.locator(`#verification-cp-attempt-${run}`)).toBeAttached()
+  }
 })
 
 test('unresolved operations require a typed disposition instead of direction', async ({ page }) => {

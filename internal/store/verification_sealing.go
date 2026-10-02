@@ -75,6 +75,11 @@ type VerificationCheckpoint struct {
 	EvidenceIDs     []string                        `json:"evidence_ids"`
 	SessionID       string                          `json:"session_id"`
 	Summary         string                          `json:"summary"`
+	// AttemptGrounds lists, in ground order, the attempt IDs of the
+	// attempt_* grounds: the latest attempt of each subject that stopped the
+	// verification. Historical reads link exactly these attempts instead of
+	// reclassifying superseded ones (component-web-dashboard VK-WEB-6).
+	AttemptGrounds string `json:"attempt_grounds"`
 	// HeadSHA is the submitted task-repository revision; WorkOrderAttemptID is
 	// the releasing claim attempt (component-http-api VK-HTTP-9).
 	HeadSHA            string `json:"head_sha"`
@@ -272,6 +277,7 @@ func ValidateVerificationSeal(c VerificationCommand, rows []VerificationRow, now
 			record.EvidenceIDs = append(record.EvidenceIDs, e.Envelope.ID)
 		}
 		record.Summary = verificationCheckpointSummary(record.Grounds)
+		record.AttemptGrounds = verificationCheckpointAttemptGrounds(record.Grounds)
 		result.Checkpoint = record
 	}
 	return result, nil
@@ -352,6 +358,16 @@ func verificationCheckpointSummary(grounds []VerificationCheckpointGround) strin
 		parts = append(parts, part)
 	}
 	return strings.Join(parts, "; ")
+}
+
+func verificationCheckpointAttemptGrounds(grounds []VerificationCheckpointGround) string {
+	ids := []string{}
+	for _, g := range grounds {
+		if strings.HasPrefix(g.Kind, "attempt_") && g.AttemptID != "" {
+			ids = append(ids, g.AttemptID)
+		}
+	}
+	return strings.Join(ids, ",")
 }
 
 // verificationPermissionNames renders declared permissions as kind:binding

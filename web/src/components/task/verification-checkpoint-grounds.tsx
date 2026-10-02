@@ -12,19 +12,34 @@ export function verificationAttemptAnchor(contextId: string, attemptId: string) 
   return `verification-${contextId}-attempt-${attemptId}`
 }
 
-const attemptGroundStates = new Set(['blocked', 'waiting', 'timed_out', 'cancelled'])
-
 // Historical contexts keep their grounds in the sealed record, not on the
-// order; their attempt grounds are rebuilt from the context's own bounded
-// attempt and evidence pages. Unstarted subjects stay in the sealed summary.
-export function attemptGroundsOf(
+// order. The record names its attempt grounds — the latest attempt of each
+// subject that stopped verification — and only those attempts are grounds;
+// a superseded attempt stays in the attempt history. Unstarted subjects and
+// unresolved operations stay in the sealed summary.
+export function sealedAttemptGroundIds(context: VerificationMetadata): string[] {
+  return (context.metadata.checkpoint_attempt_grounds ?? '')
+    .split(',')
+    .map((id) => id.trim())
+    .filter(Boolean)
+}
+
+export function sealedAttemptGrounds(
+  attemptIds: string[],
   attempts: VerificationMetadata[],
   evidence: VerificationMetadata[],
-): WorkOrderVerificationCheckpointGround[] {
-  return attempts
-    .filter((attempt) => attemptGroundStates.has(attempt.metadata.outcome ?? attempt.state))
-    .map((attempt) => ({
-      kind: `attempt_${attempt.metadata.outcome ?? attempt.state}` as WorkOrderVerificationCheckpointGround['kind'],
+  evidenceComplete: boolean,
+): { grounds: WorkOrderVerificationCheckpointGround[]; unloaded: string[] } {
+  const grounds: WorkOrderVerificationCheckpointGround[] = []
+  const unloaded: string[] = []
+  for (const id of attemptIds) {
+    const attempt = attempts.find((candidate) => candidate.id === id)
+    if (!attempt) {
+      unloaded.push(id)
+      continue
+    }
+    grounds.push({
+      kind: `attempt_${attempt.metadata.outcome || attempt.state}` as WorkOrderVerificationCheckpointGround['kind'],
       subject: {
         kind: attempt.metadata.kind === 'kit' ? 'kit' : 'ordinary',
         kit_id: attempt.metadata.kit_id,
@@ -34,8 +49,11 @@ export function attemptGroundsOf(
       attempt_id: attempt.id,
       explanation: attempt.metadata.required_action,
       evidence_ids: evidence.filter((item) => item.run_id === attempt.id).map((item) => item.id),
+      truncated: !evidenceComplete,
       server_verified: true,
-    }))
+    })
+  }
+  return { grounds, unloaded }
 }
 
 export function VerificationCheckpointGrounds({

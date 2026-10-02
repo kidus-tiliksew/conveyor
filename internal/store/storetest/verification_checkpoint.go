@@ -19,6 +19,7 @@ func runVerificationCheckpoints(t *testing.T, x Fixture) {
 	t.Run("MissingGrantBeforeExecution", func(t *testing.T) { runVerificationMissingGrantCheckpoint(t, x) })
 	t.Run("TaskRepositoryHead", func(t *testing.T) { runVerificationCheckpointTaskRepositoryHead(t, x) })
 	t.Run("WaitingAttempt", func(t *testing.T) { runVerificationWaitingCheckpoint(t, x) })
+	t.Run("RetriedAttemptIsNotAGround", func(t *testing.T) { runVerificationRetriedAttemptGround(t, x) })
 	t.Run("UnsupportedOutcomeLeavesStateUnchanged", func(t *testing.T) { runVerificationUnsupportedOutcome(t, x) })
 }
 
@@ -248,6 +249,66 @@ func runVerificationWaitingCheckpoint(t *testing.T, x Fixture) {
 	}
 	if ground := order.Checkpoint.Verification.Grounds[0]; ground.AttemptID != v.runID || !reflect.DeepEqual(ground.EvidenceIDs, cp.Grounds[0].EvidenceIDs) || ground.Explanation != "Operator interaction required" || !ground.ServerVerified {
 		t.Fatalf("waiting reference ground = %+v", ground)
+	}
+}
+
+// runVerificationRetriedAttemptGround seals a checkpoint after one subject's
+// blocked attempt was retried to success while another subject waits. Only
+// the waiting subject's latest attempt is a ground, the context header names
+// exactly that attempt, and both login attempts stay readable as history
+// (feature-verification-kit-execution VK-13.2/VK-13.5; component-web-dashboard
+// VK-WEB-6; req-verification-kits REQ-3/AC-3.4, REQ-5/AC-5.4).
+func runVerificationRetriedAttemptGround(t *testing.T, x Fixture) {
+	v := newVerificationFixture(t, x, true)
+	register := func(id string) core.VerificationSubject {
+		obligation := store.VerificationObligation{ID: id, Description: "Exercise " + id, Sources: []store.VerificationCitation{{DocumentID: "req-fixture", Version: 1, SectionID: "AC-1.1"}}, Contract: verification.Exercise{ID: id, Kind: "script", Argv: []string{"check"}, TimeoutSeconds: 30, RequiredAssertions: []verification.Assertion{}, RetryPolicy: "safe_to_replay", SafetyBasis: "read-only observation"}}
+		r := v.apply(t, store.VerificationCommand{Kind: store.VerificationRegisterObligation, Obligation: &obligation})
+		return core.VerificationSubject{Kind: "ordinary", ObligationID: id, ContractDigest: r.Digest}
+	}
+	login, approve := register("login"), register("approve")
+	v.subject = login
+	v.start(t, "login-blocked")
+	blocked := v.runID
+	v.apply(t, store.VerificationCommand{Kind: store.VerificationTerminateAttempt, Attempt: &store.VerificationAttempt{State: "blocked", Explanation: "Login refused the fixture account"}})
+	v.start(t, "login-retry")
+	succeeded := v.runID
+	zero, no := 0, false
+	at := time.Now().UTC().Format(time.RFC3339Nano)
+	report := v.envelope("login-report", "login-report", "")
+	report.Type = "execution_report"
+	report.Payload = core.JSONPayload(core.ExecutionReportPayload{Argv: []string{"check"}, Tool: "check", ToolVersion: "1", Runtime: "fixture", StartedAt: at, EndedAt: at, ExitCode: &zero, TimedOut: &no, Cancelled: &no, StdoutSHA256: strings.Repeat("a", 64), StderrSHA256: strings.Repeat("b", 64), StdoutTruncated: &no, StderrTruncated: &no})
+	v.apply(t, store.VerificationCommand{Kind: store.VerificationWriteEvidence, Key: report.SubmissionKey, Evidence: []json.RawMessage{verificationBytes(report)}})
+	v.apply(t, store.VerificationCommand{Kind: store.VerificationTerminateAttempt, Attempt: &store.VerificationAttempt{State: "succeeded", ExitCode: &zero}})
+	v.subject = approve
+	v.start(t, "approve-waiting")
+	waiting := v.runID
+	v.apply(t, store.VerificationCommand{Kind: store.VerificationTerminateAttempt, Attempt: &store.VerificationAttempt{State: "waiting", Explanation: "Operator approval required"}})
+	v.apply(t, store.VerificationCommand{Kind: store.VerificationSeal, Submission: verificationCheckpointSubmission(verificationFixtureCoverage(v.snapshot(t)))})
+
+	operator, owner := bootstrapOwner(t, x)
+	operator = store.WithActor(operator, store.Actor{ID: store.UserActorID(owner.ID), Role: core.ActorUser})
+	observer := v
+	observer.ctx, observer.access.UserID = operator, owner.ID
+	cp := observer.snapshot(t).Contexts[0].Result.Checkpoint
+	if cp == nil || len(cp.Grounds) != 1 || cp.Grounds[0].AttemptID != waiting || cp.Grounds[0].Kind != store.VerificationGroundAttemptWaiting || cp.AttemptGrounds != waiting {
+		t.Fatalf("retried checkpoint = %+v", cp)
+	}
+	reader := x.Backend.(store.VerificationReader)
+	read := store.VerificationAccess{TaskID: v.access.TaskID, UserID: owner.ID}
+	page, err := reader.ReadVerificationPage(operator, read, store.VerificationPageRequest{Kind: "contexts", ContextID: v.contextID})
+	requireOK(t, err)
+	var header map[string]string
+	if len(page.Items) != 1 || json.Unmarshal(page.Items[0].Metadata, &header) != nil || header["checkpoint_attempt_grounds"] != waiting || header["truncated"] != "false" {
+		t.Fatalf("checkpoint attempt grounds projection = %+v", header)
+	}
+	attempts, err := reader.ReadVerificationPage(operator, read, store.VerificationPageRequest{Kind: "attempts", ContextID: v.contextID, Limit: store.VerificationPageLimit})
+	requireOK(t, err)
+	states := map[string]string{}
+	for _, item := range attempts.Items {
+		states[item.ID] = item.State
+	}
+	if states[blocked] != "blocked" || states[succeeded] != "succeeded" || states[waiting] != "waiting" {
+		t.Fatalf("attempt history = %+v", states)
 	}
 }
 
