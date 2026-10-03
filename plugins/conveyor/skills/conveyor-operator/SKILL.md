@@ -77,10 +77,11 @@ parallel workflow.
    branch with upstream tracking, and verify the remote push succeeded.
 10. Run `conveyor submit <task-id>` from the task worktree. It pushes the head,
     opens or reuses the PR, and calls `submit_for_review` with the pushed SHA.
-    Report success and exit. Never poll `await_review` in a stage session.
-11. The launcher starts review bounces as fresh implementation sessions. Claim
-    the successor order before editing, reuse the dedicated task worktree, and
-    add commits to its existing branch. Never review your own implementation.
+11. What follows submission, including review bounces, depends on whether a
+    launcher or this session made the claim. Follow the `conveyor-work`
+    playbook (`docs/playbooks/conveyor-work.md`, installed with the
+    `conveyor-work` skill) for both session modes. Never review your own
+    implementation.
 
 ### Safe task-worktree setup
 

@@ -201,9 +201,9 @@ for how to turn the evidence into a separately authorized follow-up.
 | Tool | What it does |
 |---|---|
 | `submit_plan` | Submit a Markdown execution plan for a claimed plan-stage order. Requires the Approach, Files touched, Ordering, Risks, and Done criteria headings; decomposition must be empty. Validation failures leave the order claimed for correction. |
-| `submit_for_review` | End of implementation: opens or reuses the pushed branch's PR and dispatches the independent review round. A successful call ends the session. |
+| `submit_for_review` | End of implementation: opens or reuses the pushed branch's PR and dispatches the independent review round. A successful call ends the implementation claim. A launched session then exits; a self-claimed session continues the `conveyor-work` delivery loop. |
 | `submit_review_verdict` | Submit `approve` or `changes_requested` with a reason code, summary, feedback, requirement citations, done-criteria coverage, and a governance assessment, all validated against the pinned snapshot. |
-| `await_review` | Long-poll for the round's verdict. Reserved for the launcher that owns the warm implementer session; implementation sessions must not call it. |
+| `await_review` | Long-poll for the round's verdict on a submitted implementation order. A self-claimed implementation session calls it after submission; a session launched by `conveyor run` or a worker does not, because its launcher owns verdicts. |
 | `request_plan_revision` | The repository-reality escape hatch: the approved plan cannot be executed as written. Requires a rationale; the order returns to the queue behind an operator gate. |
 
 ## Proposing authority

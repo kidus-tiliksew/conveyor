@@ -235,7 +235,9 @@ func TestValidationEvidenceDocumentKeepsScratchDiscipline(t *testing.T) {
 	}
 }
 
-func TestConveyorWorkSkillShipsStageCheckoutAndExitDiscipline(t *testing.T) {
+// The installed execution-loop skill separates launched exit from the
+// self-claimed delivery loop (req-agent-skills REQ-2, REQ-3; DEC-44).
+func TestConveyorWorkSkillShipsStageCheckoutAndSessionModeDiscipline(t *testing.T) {
 	t.Parallel()
 	base := t.TempDir()
 	destinations := skillDestinations(base, supportedSkillTools, false)
@@ -243,22 +245,82 @@ func TestConveyorWorkSkillShipsStageCheckoutAndExitDiscipline(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	required := []string{
+	playbookRequired := []string{
 		"never run `conveyor checkout` for a spec order",
 		"implementation or review order, run `conveyor checkout <task-id>`",
-		"Never poll `await_review` from a stage session",
+		// AC-3.8: launched sessions keep exit-after-submission.
+		"A launched session reports the result and exits. It never polls `await_review`",
 		"changes-requested bounce always arrives as a new order in a fresh session",
+		"That ten-second cadence belongs to the launcher only",
+		// AC-2.2: self-claimed lease sizing and renewal.
+		"Claim with a `lease_seconds` that covers the longest expected step, up to the 3600-second maximum",
+		"Call `renew_work_order` at each progress milestone and before any step expected to outlast one third of the remaining lease",
+		// CLI environment for conveyor submit.
+		"`conveyor submit` refuses to run unless `CONVEYOR_WORK_ORDER_ID` and `CONVEYOR_SESSION_ID` are set",
+		"`conveyor submit` reads no client token",
+		// AC-3.1 and AC-3.2: separate verifier and reviewer agents.
+		"continues with the [self-claimed delivery loop](#self-claimed-delivery-loop) instead of exiting",
+		"Start one separate agent for each such order, including one per review seat",
+		"Do not fork the implementer's conversation, summarize its reasoning, or pass its session ID, client token, or plan notes",
+		"Each agent creates its own session ID and client token, claims its order",
+		// AC-3.4 through AC-3.6: review preference in agent memory.
+		"Start reviewers as the preference states",
+		"Ask the operator before starting a reviewer and record the answer in agent memory",
+		"start an isolated subagent of the session's own harness and report that default",
+		"Change a recorded preference only on the operator's direct instruction",
+		"name the harness and model used for each verifier and reviewer",
+		// Launch examples for every supported harness.
+		"`claude -p \"$LAUNCH_PROMPT\"",
+		"`codex exec \"$LAUNCH_PROMPT\"`",
+		"`opencode run \"$LAUNCH_PROMPT\"`",
+		"`cursor-agent -p \"$LAUNCH_PROMPT\"`",
+		"No example passes a token as an argument",
+		// Waiting, bounces, approval, and gates.
+		"Keep calling `await_review` until that deadline",
+		"Claim it under a fresh session ID and client token",
+		"It reuses the existing task worktree and branch",
+		"Refresh-review and merge-conflict orders are ordinary next orders",
+		"Report the outcome of the task's frozen merge policy and stop",
+		"report the pending gate with `report_progress` and stop",
+		"req-agent-skills REQ-2 (AC-2.1 through AC-2.3) and REQ-3 (AC-3.1 through AC-3.8)",
+	}
+	playbookForbidden := []string{
+		"req-260811-0ee057",
+		"Never poll `await_review` from a stage session",
+	}
+	wrapperRequired := []string{
+		"A session that `conveyor run` or a worker launched reports and exits, and never polls `await_review`",
+		"continues the playbook's self-claimed delivery loop after implementation submission",
+		"awaits the verdict with `await_review`",
 	}
 	for _, destination := range destinations {
-		content, err := os.ReadFile(filepath.Join(destination.root, "conveyor-work", "conveyor-work.md"))
+		playbook, err := os.ReadFile(filepath.Join(destination.root, "conveyor-work", "conveyor-work.md"))
 		if err != nil {
 			t.Fatal(err)
 		}
-		normalized := strings.Join(strings.Fields(string(content)), " ")
-		for _, fragment := range required {
+		normalized := strings.Join(strings.Fields(string(playbook)), " ")
+		for _, fragment := range playbookRequired {
 			if !strings.Contains(normalized, fragment) {
 				t.Errorf("%s installed conveyor-work playbook missing %q", destination.tool.name, fragment)
 			}
+		}
+		for _, fragment := range playbookForbidden {
+			if strings.Contains(normalized, fragment) {
+				t.Errorf("%s installed conveyor-work playbook still contains %q", destination.tool.name, fragment)
+			}
+		}
+		wrapper, err := os.ReadFile(filepath.Join(destination.root, "conveyor-work", "SKILL.md"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		normalized = strings.Join(strings.Fields(string(wrapper)), " ")
+		for _, fragment := range wrapperRequired {
+			if !strings.Contains(normalized, fragment) {
+				t.Errorf("%s installed conveyor-work wrapper missing %q", destination.tool.name, fragment)
+			}
+		}
+		if strings.Contains(normalized, "never poll `await_review` from a stage session") {
+			t.Errorf("%s installed conveyor-work wrapper keeps the unconditional await_review prohibition", destination.tool.name)
 		}
 	}
 }

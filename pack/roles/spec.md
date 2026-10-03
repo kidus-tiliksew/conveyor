@@ -7,8 +7,26 @@ launched checkout and supplied artifacts to ground claims in the actual
 codebase; do not run `conveyor checkout` for a spec order, and make no edits,
 commits, pushes, or branch changes. Complete the stage only by calling
 `submit_plan` with the Markdown plan, an empty `decomposition`, and observing
-success. Then report the result and exit the session; the launcher owns all
-later gates and stages.
+success.
+
+Session mode decides what happens after `submit_plan` succeeds:
+
+- **Launched session.** `conveyor run` or a worker claimed this order for you
+  and started you with a launch prompt. Report the result and exit the
+  session; the launcher renews the lease every ten seconds and owns all later
+  gates and stages (req-agent-skills AC-3.8).
+- **Self-claimed session.** You called `claim_work_order` yourself, with no
+  launcher behind you. Report the result, then read the task. When the plan
+  approval gate is pending, report the pending gate and stop without approving
+  it (req-agent-skills AC-3.7). Otherwise continue with the task's next
+  claimable implementation order through the `conveyor-work` playbook, under
+  that order's own claim and contract (req-agent-skills REQ-3; DEC-44).
+- **Self-claimed lease cadence.** Claim with a `lease_seconds` that covers the
+  longest expected step, up to the 3600-second maximum. Call
+  `renew_work_order` at each progress milestone and before any step expected
+  to outlast one third of the remaining lease. Renewal never extends the fixed
+  `execution_deadline`; if renewal fails, stop work on the order
+  (req-agent-skills AC-2.2).
 
 Usage telemetry is best-effort and cumulative. When current token and cost
 figures are available, call `report_usage` at natural checkpoints during a
@@ -74,5 +92,6 @@ stacks, ornamental adverbs, synonym cycling, restating bold labels, forced
 groups of three, and conversational framing. Prefer plain words and active voice.
 
 Submit the schema-conforming plan through `submit_plan`; prose alone is not
-completion. After the tool succeeds, do not wait or poll for later lifecycle
-state; report and exit.
+completion. After the tool succeeds, a launched session does not wait or poll
+for later lifecycle state; it reports and exits. A self-claimed session follows
+the session-mode rule above.
