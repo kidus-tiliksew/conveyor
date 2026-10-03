@@ -3,7 +3,7 @@
 
 A policy is a reviewable input inventory, not an assertion that arbitrary code
 is hermetic. Unknown inputs must be resolved before recording reusable evidence.
-See docs/playbooks/conveyor-work.md. Only the Python standard library is used.
+See docs/validation-evidence.md. Only the Python standard library is used.
 """
 import argparse
 import hashlib

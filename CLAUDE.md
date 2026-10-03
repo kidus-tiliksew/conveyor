@@ -32,6 +32,9 @@ and historical phase status lives in the "Roadmap" reference document.
   operator-enabled branch protection, which is unavailable on the current
   GitHub plan. Its PostgreSQL service uses the CI-only
   `make test-integration-ci` entrypoint.
+- Local validation evidence (task scratch space, `make validate`, retained
+  evidence bundles, and validation resource recovery) follows
+  [docs/validation-evidence.md](docs/validation-evidence.md).
 
 ## Worktrees and branches
 

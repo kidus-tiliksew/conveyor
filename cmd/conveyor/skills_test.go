@@ -108,12 +108,60 @@ func TestVerificationKitSkillsInstallWithSiblingPlaybooks(t *testing.T) {
 	}
 }
 
-func TestConveyorWorkSkillShipsScratchDiscipline(t *testing.T) {
+// The execution-loop skill ships a claim-lifecycle contract (req-agent-skills
+// REQ-2); this repository's validation procedure stays in its own guidance.
+func TestConveyorWorkSkillOmitsRepositoryValidationProcedure(t *testing.T) {
 	t.Parallel()
 	base := t.TempDir()
 	destinations := skillDestinations(base, supportedSkillTools, false)
 	if _, _, err := installEmbeddedSkillsForDestinations(base, destinations, "v1", false); err != nil {
 		t.Fatal(err)
+	}
+
+	forbidden := []string{
+		"make validate",
+		"validation_evidence.py",
+		"validation_resources.py",
+		"validation_fixtures.py",
+	}
+	required := []string{
+		"Run the validation the work-order contract names",
+		"`AGENTS.md` or `CLAUDE.md` guidance and any testing-strategy document",
+	}
+	for _, destination := range destinations {
+		content, err := os.ReadFile(filepath.Join(destination.root, "conveyor-work", "conveyor-work.md"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		normalized := strings.Join(strings.Fields(string(content)), " ")
+		for _, fragment := range forbidden {
+			if strings.Contains(normalized, fragment) {
+				t.Errorf("%s installed conveyor-work playbook ships repository-specific %q", destination.tool.name, fragment)
+			}
+		}
+		for _, fragment := range required {
+			if !strings.Contains(normalized, fragment) {
+				t.Errorf("%s installed conveyor-work playbook missing %q", destination.tool.name, fragment)
+			}
+		}
+	}
+}
+
+func TestValidationEvidenceDocumentKeepsScratchDiscipline(t *testing.T) {
+	t.Parallel()
+	_, currentFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("resolve test source path")
+	}
+	repositoryRoot := filepath.Clean(filepath.Join(filepath.Dir(currentFile), "..", ".."))
+	content, err := os.ReadFile(filepath.Join(repositoryRoot, "docs", "validation-evidence.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, asset := range embeddedSkillManifest {
+		if asset.sourcePath == "docs/validation-evidence.md" {
+			t.Fatal("repository-only validation evidence document is registered as an installed skill asset")
+		}
 	}
 
 	required := []string{
@@ -130,16 +178,10 @@ func TestConveyorWorkSkillShipsScratchDiscipline(t *testing.T) {
 		"git status --porcelain --untracked-files=normal",
 		"normal exit, command failure, and catchable interruption",
 	}
-	for _, destination := range destinations {
-		content, err := os.ReadFile(filepath.Join(destination.root, "conveyor-work", "conveyor-work.md"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		normalized := strings.Join(strings.Fields(string(content)), " ")
-		for _, fragment := range required {
-			if !strings.Contains(normalized, fragment) {
-				t.Errorf("%s installed conveyor-work playbook missing %q", destination.tool.name, fragment)
-			}
+	normalized := strings.Join(strings.Fields(string(content)), " ")
+	for _, fragment := range required {
+		if !strings.Contains(normalized, fragment) {
+			t.Errorf("docs/validation-evidence.md missing %q", fragment)
 		}
 	}
 }
