@@ -112,7 +112,8 @@ surfaced, exposing it or defining a reproducible fixture is work to be planned;
 the reviewer must not demand impossible evidence (REQ-7 and AC-7.1/AC-7.2).
 
 For local evidence equivalence, document the audited input boundary and use the
-record/check/bind workflow in [`conveyor-work.md`](conveyor-work.md). Distinguish
+repository's own record/check/bind evidence workflow, such as
+`docs/validation-evidence.md` in the Conveyor repository. Distinguish
 a fresh execution from a reused result bound to a pushed head. Require matching
 before/after and current inputs, complete tool/runtime and configuration
 inventories, durable logs, and a reason Git metadata is irrelevant before
@@ -140,5 +141,5 @@ confirmed decision, not inventive fields in a testing document.
 Use DEC-28's house style in this playbook and every document it produces:
 prefer narrow scope, citable and decidable claims, and a dense normative core.
 For creation, revision, proposal, and operator confirmation mechanics, follow
-[`conveyor-planning.md`](conveyor-planning.md). Do not duplicate its endpoints
-or bypass its propose-to-confirm authority boundary.
+the `conveyor-plan` skill's `conveyor-planning.md` playbook. Do not duplicate
+its endpoints or bypass its propose-to-confirm authority boundary.
