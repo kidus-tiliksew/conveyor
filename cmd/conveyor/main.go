@@ -67,6 +67,7 @@ func main() {
 		taskCmd(),
 		artifactCmd(),
 		kitCmd(),
+		planCmd(),
 		verificationCmd(),
 		configCmd(),
 		setupCmd(),
@@ -78,6 +79,7 @@ func main() {
 		submitCmd(),
 		lineageCmd(),
 		doneCmd(),
+		docsCmd(),
 	)
 	root.PersistentFlags().StringVar(&serverFlag, "server", "", "Conveyor server URL")
 	root.PersistentFlags().StringVar(&workspaceFlag, "workspace", "", "workspace id (required when the server has multiple workspaces)")

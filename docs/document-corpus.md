@@ -209,6 +209,28 @@ context. Review orders get a snapshot frozen at claim time, and reviewers
 must return structured assessments classifying their citations against
 exactly that authority. The mechanics live in [Tasks](tasks.md#what-a-work-order-carries).
 
+## Durable docs and the documentation-closure gate
+
+A repository can declare durable docs that must keep describing merged behavior.
+The declaration is repo-tracked `.conveyor/docs.yaml`, beside `.conveyor/kits/manifest.yaml`; an absent file means the gate is off.
+It lists one or more `{path, description}` entries with repo-relative globs in the `*`, `?`, `**` dialect, the exact `docs: none` literal a pull request uses to claim no docs are affected, whether that literal needs a reason, and the human-readable rule text.
+The declaration is not a corpus document: it carries no REQ-n, DEC-n, or System Design ID, is never confirmed or cited, and an empty `docs` list is invalid.
+Under the gate, a task that changes behavior updates the declared docs in the same pull request as the change, or states the `docs: none` literal with its reason at the start of a line in the pull request body.
+
+Conveyor pins the declaration once per task, at its first implement claim, from the repository base branch.
+The pin is the base-branch version, so a pull request cannot weaken its own gate, and later claims, review bounces, and base movement never rewrite it.
+A failed base-branch read leaves the pin unset and the gate off, records a task event naming the cause, and renders "documentation policy unavailable" in the work-order context, so work is not blocked.
+A repository with no GitHub repository configured pins an explicit "off".
+The pin is copied into every implement, review, and verify work order under a `# Documentation policy` section naming the declared paths, the `docs: none` literal, and the pinned base commit and content hash.
+
+The server decides whether the delivery changed a declared doc or stated a reason: it records docs-gate evidence for the reviewed head, and a reviewer's `documentation_assessment` must match that evidence.
+Only the adequacy of the edit or reason stays the reviewer's judgment.
+An approval carries no unresolved documentation finding; the server rejects one that does.
+
+`conveyor docs validate [path]` checks the declaration offline against the working tree.
+It reads `.conveyor/docs.yaml`, resolves each declared glob against tracked files with `git ls-files`, prints a JSON receipt, and exits non-zero on a glob that matches nothing, a malformed glob, an empty `docs` list, an oversized file, or an unsupported `schema_version`.
+The server never lists the tree when it pins, so an empty-match glob is caught here and in the repository's own CI.
+
 ## Planning from an agent session
 
 You author documents from an agent session in your project checkout,

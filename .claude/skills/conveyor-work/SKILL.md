@@ -23,5 +23,8 @@ executor's authority.
 For implementation delivery, commit after validation and run
 `conveyor submit <task-id>` in the dedicated worktree. It pushes the exact head,
 opens or reuses the pull request with the executing machine's credential, and
-submits `head_sha`. Direct `submit_for_review` requires that the PR already
+submits `head_sha`. When the work order carries a documentation policy, close it
+in the same pull request: update every declared doc the change affects, or put
+the policy's exact `docs: none` literal with its reason at the start of a line
+in the pull request body. Direct `submit_for_review` requires that the PR already
 exists and that the call names its pushed head SHA. Report success and exit.

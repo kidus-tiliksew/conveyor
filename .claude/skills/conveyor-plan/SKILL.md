@@ -9,10 +9,14 @@ Read and follow [docs/playbooks/conveyor-planning.md](../../../docs/playbooks/co
 — it is the canonical, tool-neutral playbook (fence formats, endpoints,
 ID discipline, promotion).
 
-Non-negotiables, restated: every push is a **proposal** — the operator
-confirms, in the UI or on their explicit word in this conversation, never
-you. No operator-only acts (gate approvals, drift resolution). No
-fabricated lineage or origins. The confirmed factory document corpus —
-requirements with REQ-n/AC-n.m statements, System Design documents, and DEC-n
-decisions — is the authority; do not direct new work to amend or cite a
-repository-resident specification.
+Non-negotiables, restated: draft first — build the draft folder, run
+`conveyor plan check`, and get every item approved on the
+`conveyor plan review` page before any push, and never confirm.
+Every push is a **proposal** — the operator confirms each layer in the
+web UI, never you.
+No operator-only acts (gate approvals, drift resolution).
+No fabricated lineage or origins.
+The confirmed factory document corpus — requirements with REQ-n/AC-n.m
+statements, System Design documents, and DEC-n decisions — is the
+authority; do not direct new work to amend or cite a repository-resident
+specification.

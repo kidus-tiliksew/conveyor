@@ -244,3 +244,29 @@ func TestRenderStructuredSpecRejectsDecompositionCycle(t *testing.T) {
 		t.Fatalf("cycle error=%v", err)
 	}
 }
+
+func TestParseReviewNormalizesDocumentationAssessment(t *testing.T) {
+	t.Parallel()
+	review, err := ParseReview("```conveyor:review\n" + `{"verdict":"changes_requested","reason_code":"docs","summary":"update the docs","feedback":"cover the new behavior","documentation_assessment":{"applicable":true,"summary":"  docs reviewed  ","updated_paths":["docs/b.md","docs/a.md","docs/a.md"],"unresolved":[],"conflicts":[]}}` + "\n```")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assessment := review.DocumentationAssessment
+	if assessment == nil || assessment.Summary != "docs reviewed" || assessment.UpdatedPaths == nil || assessment.Unresolved == nil || assessment.Conflicts == nil {
+		t.Fatalf("assessment was not normalized: %+v", assessment)
+	}
+	if len(assessment.UpdatedPaths) != 2 || assessment.UpdatedPaths[0] != "docs/a.md" || assessment.UpdatedPaths[1] != "docs/b.md" {
+		t.Fatalf("updated paths=%v", assessment.UpdatedPaths)
+	}
+	for name, assessment := range map[string]string{
+		"empty summary":     `{"applicable":false,"summary":"   ","updated_paths":[],"unresolved":[],"conflicts":[]}`,
+		"disjoint findings": `{"applicable":true,"summary":"checked","updated_paths":[],"unresolved":["same finding"],"conflicts":["same finding"]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			output := "```conveyor:review\n" + `{"verdict":"approve","reason_code":"approved","summary":"passes","feedback":"","documentation_assessment":` + assessment + `}` + "\n```"
+			if _, parseErr := ParseReview(output); parseErr == nil {
+				t.Fatal("invalid documentation assessment accepted")
+			}
+		})
+	}
+}

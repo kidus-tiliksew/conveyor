@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Title}}</title>
+<link rel="stylesheet" href="/assets/page.css">
+</head>
+<body data-mode="{{.Mode}}">
+<header class="page-head">
+  <h1>{{.Title}}</h1>
+  <p class="command">{{.Command}}</p>
+  {{if .Summary}}<p class="summary">{{.Summary}}</p>{{end}}
+</header>
+
+{{if eq .Mode "review"}}
+<form method="post" action="/submit" id="plan-form">
+  <input type="hidden" name="token" value="{{.Token}}">
+  <nav class="tabs">
+    <button type="button" class="tab" data-tab="overview">Overview</button>
+    {{range .Tabs}}
+    <button type="button" class="tab" data-tab="{{.ID}}">{{.Label}} ({{.Approved}}/{{.Total}})</button>
+    {{end}}
+    {{if .Matrix}}<button type="button" class="tab" data-tab="matrix">Traceability</button>{{end}}
+  </nav>
+
+  <section class="panel tab-panel" data-panel="overview">
+    <h2>Goal</h2>
+    <pre class="brief">{{.Goal}}</pre>
+    <p class="summary">{{.Summary}}</p>
+  </section>
+
+  {{range .Tabs}}
+  <section class="panel tab-panel" data-panel="{{.ID}}" hidden>
+    <div class="tab-actions">
+      <button type="button" class="approve-all" data-tab="{{.ID}}">Approve all unchanged</button>
+    </div>
+    {{range .Items}}{{template "reviewCard" .}}{{end}}
+  </section>
+  {{end}}
+
+  {{if .Matrix}}
+  <section class="panel tab-panel" data-panel="matrix" hidden>
+    <h2>Requirement by task</h2>
+    <table class="matrix">
+      <thead><tr><th>Requirement</th>{{range .Matrix.Columns}}<th>{{.}}</th>{{end}}</tr></thead>
+      <tbody>
+        {{range .Matrix.Rows}}
+        <tr><th scope="row">{{.Label}}</th>{{range .Cells}}<td>{{if .}}x{{end}}</td>{{end}}</tr>
+        {{end}}
+      </tbody>
+    </table>
+  </section>
+  {{end}}
+
+  {{if .Error}}<p class="error">{{.Error}}</p>{{end}}
+  <footer class="actions"><button type="submit">Send review</button></footer>
+</form>
+{{else}}
+<form method="post" action="/submit" id="plan-form">
+  <input type="hidden" name="token" value="{{.Token}}">
+  <section class="panel">
+    <p class="intro">{{.Intro}}</p>
+    {{if .Error}}<p class="error">{{.Error}}</p>{{end}}
+    {{range .Questions}}{{template "askCard" .}}{{end}}
+  </section>
+  <footer class="actions"><button type="submit">Send answers</button></footer>
+</form>
+{{end}}
+
+<script src="/assets/page.js"></script>
+</body>
+</html>
+
+{{define "reviewCard"}}
+<article class="card{{if .Changed}} changed{{end}}" data-id="{{.ID}}" data-file="{{.File}}" data-hash="{{.Hash}}" data-verdict="{{.Verdict}}" data-changed="{{if .Changed}}true{{else}}false{{end}}">
+  <header class="card-head">
+    <h3>{{.ID}}</h3>
+    <span class="badge verdict-{{.Verdict}}">{{.Verdict}}</span>
+    {{if .LinkedChanged}}<span class="badge linked">linked item changed</span>{{end}}
+    <span class="file">{{.File}}</span>
+  </header>
+  {{if .Headline}}<p class="headline">{{.Headline}}</p>{{end}}
+  {{if .Changed}}<details class="before-after" open><summary>Changed since the last verdict</summary><pre class="before">{{.Before}}</pre><pre class="after">{{.Normative}}</pre></details>
+  {{else}}<pre class="normative">{{.Normative}}</pre>{{end}}
+  {{if .Example}}<p class="example">{{.Example}}</p>{{end}}
+  {{if .Why}}<p class="why">{{.Why}}</p>{{end}}
+  {{if .Links}}<p class="links">Links: {{range .Links}}<code>{{.}}</code> {{end}}</p>{{end}}
+  <input type="hidden" name="item.{{.Index}}.id" value="{{.ID}}">
+  <input type="hidden" name="item.{{.Index}}.file" value="{{.File}}">
+  <input type="hidden" name="item.{{.Index}}.hash" value="{{.Hash}}">
+  <div class="controls">
+    <label><input type="radio" name="item.{{.Index}}.verdict" value="approve"{{if eq .Verdict "approve"}} checked{{end}}> Approve</label>
+    <label><input type="radio" name="item.{{.Index}}.verdict" value="request_change"{{if eq .Verdict "request_change"}} checked{{end}}> Request change</label>
+    <label><input type="radio" name="item.{{.Index}}.verdict" value="question"{{if eq .Verdict "question"}} checked{{end}}> Question</label>
+    <label><input type="radio" name="item.{{.Index}}.verdict" value="pending"{{if eq .Verdict "pending"}} checked{{end}}> Leave pending</label>
+  </div>
+  <textarea name="item.{{.Index}}.comment" rows="2" placeholder="comment">{{.Comment}}</textarea>
+</article>
+{{end}}
+
+{{define "askCard"}}
+<article class="card" data-id="{{.ID}}">
+  <header class="card-head"><h3>{{.ID}}</h3></header>
+  <p class="prompt">{{.Prompt}}</p>
+  <div class="options">
+    {{range .Options}}
+    <label class="option{{if .Recommended}} recommended{{end}}">
+      <input type="radio" name="answer.{{$.Index}}" value="{{.Text}}"{{if .Selected}} checked{{end}}>
+      <span>{{.Text}}</span>
+      {{if .Recommended}}<span class="badge recommended-badge">recommended</span>{{end}}
+    </label>
+    {{end}}
+  </div>
+  <input type="hidden" name="question.{{.Index}}.id" value="{{.ID}}">
+  <label class="other">Other: <input type="text" name="answer_free.{{.Index}}" value="{{.Answer}}"></label>
+</article>
+{{end}}

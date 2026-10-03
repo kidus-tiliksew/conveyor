@@ -285,6 +285,9 @@ func (s *Store) hydrateTaskRelations(ctx context.Context, t *core.Task) error {
 		t.PullRequestClose = &closeProjection
 		t.PullRequestCloseState = closeProjection.State
 	}
+	if err := s.hydrateDocumentationPolicy(ctx, t); err != nil {
+		return err
+	}
 	rows, err := documentRows(ctx, s.db, `SELECT d.id,d.title,d.state,d.origin_spec_version,d.origin_sub_id FROM task_dependencies e JOIN tasks d ON d.workspace_id=e.workspace_id AND d.id=e.depends_on_task_id WHERE e.workspace_id=? AND e.task_id=? ORDER BY d.id`, documentWorkspace(ctx), t.ID)
 	if err != nil {
 		return err

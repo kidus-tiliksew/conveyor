@@ -1345,6 +1345,9 @@ func (s *Store) hydrateGitHubLifecycle(ctx context.Context, task *core.Task) err
 		task.PullRequestClose = &closeProjection
 		task.PullRequestCloseState = closeProjection.State
 	}
+	if err := s.hydrateDocumentationPolicy(ctx, task); err != nil {
+		return err
+	}
 	if err := s.hydrateTaskAssignee(ctx, task); err != nil {
 		return err
 	}
@@ -1360,6 +1363,9 @@ func (s *Store) hydrateGitHubLifecycle(ctx context.Context, task *core.Task) err
 
 func (s *Store) hydrateGitHubLifecyclesBatch(ctx context.Context, tasks []core.Task) error {
 	if err := s.hydratePullRequestCloses(ctx, tasks); err != nil {
+		return err
+	}
+	if err := s.hydrateDocumentationPolicies(ctx, tasks); err != nil {
 		return err
 	}
 	if len(tasks) == 0 {

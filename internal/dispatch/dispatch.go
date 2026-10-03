@@ -1335,6 +1335,12 @@ func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task c
 		}
 		return err
 	}
+	if err := d.validateDocumentationClosure(ctx, task, result); err != nil {
+		if invalid != nil {
+			return invalid(err)
+		}
+		return err
+	}
 	if reviewWorkOrderID == "" {
 		reviewWorkOrderID = job.ID
 	}
@@ -1579,6 +1585,24 @@ func (d *Dispatcher) bounce(ctx context.Context, cfg *config.Config, taskID, job
 		return d.transition(ctx, taskID, core.TaskStageBounceLimit, "", core.StageImplement)
 	}
 	return d.transition(ctx, taskID, core.TaskStageBounce, core.StageImplement, "")
+}
+
+// validateDocumentationClosure resolves the task's pinned documentation policy
+// and the docs-gate evidence recorded for the reviewed head, then applies the
+// durable documentation-closure verdict rule. The head is the one the reviewed
+// submission recorded, so a resubmission at a new head reads fresh evidence.
+func (d *Dispatcher) validateDocumentationClosure(ctx context.Context, task core.Task, result pipeline.Review) error {
+	var evidence *core.DocumentationGateEvidence
+	if task.ReviewedHeadSHA != "" {
+		recorded, found, err := d.Store.GetDocumentationGateEvidence(ctx, task.ID, task.ReviewedHeadSHA)
+		if err != nil {
+			return err
+		}
+		if found {
+			evidence = &recorded
+		}
+	}
+	return store.ValidateDocumentationAssessment(task.DocumentationPolicy, evidence, result.Verdict, result.DocumentationAssessment)
 }
 
 // recordTriageContextProposals uses the unified advisory lifecycle. Validation

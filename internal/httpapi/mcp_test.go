@@ -2281,3 +2281,64 @@ func TestMCPApprovalCoverageGuardForUserWorkerAndRun(t *testing.T) {
 		})
 	}
 }
+
+func TestMCPDocumentationAssessmentBlocksApproval(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	policy := core.DocumentationPolicy{Enabled: true, BaseSHA: strings.Repeat("a", 40), ContentHash: "sha256:" + strings.Repeat("b", 64), Paths: []string{"docs/**"}, NoneStatement: "docs: none", ReasonRequired: true}
+	task := core.Task{ID: "docs-mcp", Workspace: "demo", Repo: "conveyor", State: core.TaskRunning, NextStage: core.StageReview, PolicyVersion: 1, MergeApproval: true, ReviewedHeadSHA: "reviewed-head", CreatedAt: time.Now()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.PinTaskDocumentationPolicy(ctx, task.ID, policy); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.RecordDocumentationGateEvidence(ctx, core.DocumentationGateEvidence{TaskID: task.ID, HeadSHA: "reviewed-head", MatchedPaths: []string{"docs/guide.md"}}); err != nil {
+		t.Fatal(err)
+	}
+	spec, err := st.CreateSpecVersion(ctx, core.SpecVersion{TaskID: task.ID, Content: storetest.ReviewDoneCriteriaPlan})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = st.ApproveSpecVersion(ctx, task.ID, spec.Version); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: task.ID + "-review-1", TaskID: task.ID, Stage: core.StageReview, State: core.JobRunning}
+	if err = st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err = storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageReview, ReviewRound: 1, ReviewSeat: 1, ServedRequirementSnapshot: []core.ServedRequirementContext{}, GovernanceSnapshot: &core.GovernanceSnapshot{}}); err != nil {
+		t.Fatal(err)
+	}
+	claim := core.WorkOrderClaim{SessionID: "docs-session", ClientToken: "token", ClaimantID: core.TaskRunClaimantID("owner"), Lease: time.Minute}
+	if _, err = storetest.For(st).ClaimWorkOrder(ctx, job.ID, claim); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{Workspace: "demo", MaxBounces: 2, Repos: []config.Repo{{Name: "conveyor"}}}
+	d := dispatch.New(st, cfg, nil)
+	d.DisableMemoryQueueForTest()
+	server := NewServer(st)
+	server.Workspace = "demo"
+	server.WorkOrders = &workorder.Service{Store: st, Dispatcher: d, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
+	request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	request = request.WithContext(store.WithCredential(request.Context(), core.AuthenticatedCredential{ID: "owner", OwnerUserID: "owner", Kind: core.CredentialUser}))
+	args := map[string]any{
+		"workspace_id": "demo", "work_order_id": job.ID, "session_id": claim.SessionID,
+		"verdict": "approve", "reason_code": "approved", "summary": "focused checks pass", "feedback": "",
+		"requirement_citations":    map[string]any{"applicable": false},
+		"governance_assessment":    map[string]any{"design_applicable": false, "decision_citable": false},
+		"done_criteria_coverage":   map[string]any{"applicable": true, "summary": "no outstanding criteria", "satisfied": []string{}, "unsatisfied": []string{}, "unverified": []string{}, "conflicts": []string{}},
+		"documentation_assessment": map[string]any{"applicable": true, "summary": "docs reviewed", "updated_paths": []string{"docs/guide.md"}, "unresolved": []string{"docs edit does not cover the behavior change"}, "conflicts": []string{}},
+	}
+	if _, err := server.callMCPTool(request, "submit_review_verdict", args); err == nil || !strings.Contains(err.Error(), "blocks approve: unresolved findings in unresolved") {
+		t.Fatalf("documentation block error=%v", err)
+	}
+	order, _ := st.GetWorkOrder(ctx, job.ID)
+	if order.State != core.WorkOrderClaimed {
+		t.Fatalf("refusal consumed claim: %+v", order)
+	}
+	args["verdict"], args["reason_code"], args["feedback"] = "changes_requested", "validation", "Update the declared docs"
+	if _, err := server.callMCPTool(request, "submit_review_verdict", args); err != nil {
+		t.Fatalf("corrected verdict: %v", err)
+	}
+}

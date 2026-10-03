@@ -1,0 +1,82 @@
+:root {
+  color-scheme: light dark;
+  --bg: #f7f7f5;
+  --fg: #1c1c1a;
+  --card: #ffffff;
+  --line: #d9d9d4;
+  --accent: #14532d;
+  --warn: #8a4b08;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #17171a;
+    --fg: #ececea;
+    --card: #212125;
+    --line: #3a3a40;
+    --accent: #7dd3a0;
+    --warn: #f0b56b;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  padding: 1.5rem;
+  background: var(--bg);
+  color: var(--fg);
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+.page-head h1 { margin: 0 0 0.25rem; }
+.command, .file, .summary { color: var(--warn); }
+.tabs { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 1rem 0; }
+.tab {
+  padding: 0.4rem 0.8rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--card);
+  color: inherit;
+  cursor: pointer;
+}
+.tab.active { border-color: var(--accent); font-weight: 600; }
+.panel { margin: 0 0 1.5rem; }
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 1rem;
+  margin: 0 0 1rem;
+}
+.card.changed { border-color: var(--warn); }
+.card-head { display: flex; align-items: baseline; gap: 0.6rem; flex-wrap: wrap; }
+.card-head h3 { margin: 0; font-size: 1rem; }
+.badge {
+  font-size: 0.75rem;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+}
+.verdict-approve { color: var(--accent); border-color: var(--accent); }
+.linked { color: var(--warn); border-color: var(--warn); }
+pre { white-space: pre-wrap; word-break: break-word; }
+.normative, .brief { background: transparent; margin: 0.5rem 0; }
+.before { color: var(--warn); }
+.controls { display: flex; gap: 1rem; flex-wrap: wrap; margin: 0.5rem 0; }
+.controls label { cursor: pointer; }
+textarea { width: 100%; }
+.actions { position: sticky; bottom: 0; padding: 0.75rem 0; background: var(--bg); }
+.actions button, .approve-all {
+  padding: 0.5rem 1rem;
+  border-radius: 8px;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: var(--bg);
+  font-weight: 600;
+  cursor: pointer;
+}
+.approve-all { background: var(--card); color: var(--fg); border-color: var(--line); font-weight: 500; }
+.options { display: flex; flex-direction: column; gap: 0.3rem; }
+.option { cursor: pointer; }
+.recommended-badge { color: var(--accent); border-color: var(--accent); }
+.error { color: #b00020; font-weight: 600; }
+.matrix { border-collapse: collapse; }
+.matrix th, .matrix td { border: 1px solid var(--line); padding: 0.3rem 0.6rem; text-align: center; }
+.matrix th[scope="row"] { text-align: left; }

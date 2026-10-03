@@ -223,7 +223,46 @@ type Task struct {
 	PullRequestClose      *PullRequestClose `json:"pull_request_close,omitempty"`
 	PullRequestCloseState string            `json:"pull_request_close_state,omitempty"`
 	GitHub                *GitHubLifecycle  `json:"github,omitempty"` // durable forge projection
-	CreatedAt             time.Time         `json:"created_at"`
+	// DocumentationPolicy is the set-once documentation-closure policy pinned
+	// from the base branch at the task's first implement claim. Nil means the
+	// pin has not been attempted or a read failure left it unset.
+	DocumentationPolicy *DocumentationPolicy `json:"documentation_policy,omitempty"`
+	CreatedAt           time.Time            `json:"created_at"`
+}
+
+// DocumentationPolicy is the durable, set-once documentation-closure policy
+// pinned to a task from the base branch at its first implement claim. A policy
+// with Enabled=false is the explicit "off" pin recorded when the repository
+// declares no .conveyor/docs.yaml or has no GitHub repository.
+type DocumentationPolicy struct {
+	Enabled        bool      `json:"enabled"`
+	OffReason      string    `json:"off_reason,omitempty"` // absent | no_github_repository
+	BaseSHA        string    `json:"base_sha,omitempty"`
+	ContentHash    string    `json:"content_hash,omitempty"`
+	Paths          []string  `json:"paths,omitempty"`
+	NoneStatement  string    `json:"none_statement,omitempty"`
+	ReasonRequired bool      `json:"reason_required,omitempty"`
+	RuleText       string    `json:"rule_text,omitempty"`
+	PinnedAt       time.Time `json:"pinned_at,omitempty"`
+}
+
+// Applicable reports whether the pinned policy declares at least one docs path
+// and therefore gates an approval. Nil, off, and empty-path pins do not.
+func (p *DocumentationPolicy) Applicable() bool {
+	return p != nil && p.Enabled && len(p.Paths) > 0
+}
+
+// DocumentationGateEvidence is the per-head evidence recorded at
+// submit_for_review under a pinned policy: the changed paths that matched a
+// declared glob and the docs-none statement found in the agent-authored pull
+// request body.
+type DocumentationGateEvidence struct {
+	TaskID        string    `json:"task_id"`
+	HeadSHA       string    `json:"head_sha"`
+	MatchedPaths  []string  `json:"matched_paths"`
+	NoneStatement string    `json:"none_statement,omitempty"`
+	NoneReason    string    `json:"none_reason,omitempty"`
+	RecordedAt    time.Time `json:"recorded_at"`
 }
 
 // TaskAssignee is the member-safe identity rendered on task and work-order

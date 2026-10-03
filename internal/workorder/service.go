@@ -41,12 +41,17 @@ type Service struct {
 	ReviewDiffBetween      func(context.Context, string, string, string) (string, error)
 	ReviewPRDescription    func(context.Context, string, string) (string, error)
 	SubmissionChangedPaths func(context.Context, *config.Config, core.Task) ([]string, error)
-	Logf                   func(string, ...any)
-	RedactionSecrets       redact.SecretSource
-	WorkspaceGitHubApps    store.WorkspaceGitHubAppStore
-	GitHubApps             *github.AppClient
-	consultedMu            sync.Mutex
-	consulted              map[string]struct{}
+	// ResolveBranchHead and DiscoverDocumentationPolicy are the narrow forge
+	// reads the documentation-closure pin uses at claim. They default to the
+	// workspace GitHub App; fixtures replace them to avoid a network read.
+	ResolveBranchHead           func(context.Context, string, string, string) (string, string)
+	DiscoverDocumentationPolicy func(context.Context, string, string, string) github.DocumentationPolicyDiscovery
+	Logf                        func(string, ...any)
+	RedactionSecrets            redact.SecretSource
+	WorkspaceGitHubApps         store.WorkspaceGitHubAppStore
+	GitHubApps                  *github.AppClient
+	consultedMu                 sync.Mutex
+	consulted                   map[string]struct{}
 }
 
 type Context struct {
@@ -80,6 +85,10 @@ type Context struct {
 	ReviewComparison       *dispatch.ReviewComparison `json:"review_comparison,omitempty"`
 	Diff                   string                     `json:"diff,omitempty"`
 	PullRequestDescription string                     `json:"pull_request_description"`
+	// DocumentationPolicy is the task's set-once documentation-closure pin,
+	// copied for implement, review, and verify orders. Nil means the read has
+	// not succeeded (and may not have been attempted).
+	DocumentationPolicy *core.DocumentationPolicy `json:"documentation_policy,omitempty"`
 }
 
 // PlanRevisionContext carries the durable request that caused a plan-stage
@@ -275,6 +284,9 @@ func (s *Service) Claim(ctx context.Context, id string, claim core.WorkOrderClai
 	if err != nil {
 		return core.WorkOrder{}, err
 	}
+	// Set-once documentation-closure pin at the first implement claim, retried
+	// while unset. It never blocks or fails the claim.
+	s.pinDocumentationPolicyForClaim(ctx, cfg, order)
 	return order, nil
 }
 
@@ -788,6 +800,10 @@ func (s *Service) contextForOrder(ctx context.Context, order core.WorkOrder) (Co
 		authoritySource = "pinned"
 	}
 	result := Context{Order: order, Task: task, AuthoritySource: authoritySource, RolePrompt: role, ServedRequirements: servedRequirements, GovernanceSnapshot: governance, PlanRevision: planRevision}
+	if order.Stage == core.StageImplement || order.Stage == core.StageReview || order.Stage == core.StageVerify {
+		result.DocumentationPolicy = task.DocumentationPolicy
+		result.RolePrompt += documentationPolicyContract(task.DocumentationPolicy, documentationPolicyUnavailableRecorded(events))
+	}
 	if order.Stage == core.StageImplement && order.State == core.WorkOrderClaimed && cfg != nil {
 		for _, repository := range cfg.Repos {
 			if repository.Name != task.Repo {
@@ -1533,6 +1549,7 @@ func (s *Service) submitForReviewLocked(ctx context.Context, id, session, headSH
 	if err != nil {
 		return nil, fmt.Errorf("resolve submission governance: %w", err)
 	}
+	var submissionChangedPaths []string
 	if len(governance) > 0 || repo.GitHub != "" {
 		changedPaths := s.SubmissionChangedPaths
 		if changedPaths == nil && s.Dispatcher != nil {
@@ -1545,6 +1562,7 @@ func (s *Service) submitForReviewLocked(ctx context.Context, id, session, headSH
 		if pathErr != nil {
 			return nil, fmt.Errorf("resolve submission diff changed paths: %w", pathErr)
 		}
+		submissionChangedPaths = paths
 		if repo.GitHub != "" {
 			diff, diffErr := s.reviewDiffBetween(ctx, repo.GitHub, comparisonTask.BaseBranch, headSHA)
 			if diffErr != nil {
@@ -1557,6 +1575,12 @@ func (s *Service) submitForReviewLocked(ctx context.Context, id, session, headSH
 		if _, err = s.Store.AttachSubmissionGovernance(ctx, task.ID, task.Repo, paths, store.SubmissionGovernanceAttribution{WorkOrderID: order.ID, SessionID: session}); err != nil {
 			return nil, fmt.Errorf("attach submission governance: %w", err)
 		}
+	}
+	// Under a pinned closure policy, record the per-head docs-gate evidence the
+	// verdict validator reads: changed paths that matched a declared glob and
+	// the docs-none statement found only in the agent-authored body region.
+	if err = s.recordDocumentationGateEvidence(ctx, task, headSHA, submissionChangedPaths, target.Body); err != nil {
+		return nil, err
 	}
 	prURL := target.URL
 	reviewedHead := headSHA

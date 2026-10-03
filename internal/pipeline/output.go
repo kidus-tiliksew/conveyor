@@ -38,14 +38,15 @@ type TriageBrief struct {
 }
 
 type Review struct {
-	VerificationAssessment *core.VerificationAssessment        `json:"verification_assessment,omitempty"`
-	Verdict                string                              `json:"verdict"`
-	ReasonCode             string                              `json:"reason_code"`
-	Summary                string                              `json:"summary"`
-	Feedback               string                              `json:"feedback"`
-	RequirementCitations   *core.RequirementCitationAssessment `json:"requirement_citations,omitempty"`
-	DoneCriteriaCoverage   *core.DoneCriteriaAssessment        `json:"done_criteria_coverage,omitempty"`
-	GovernanceAssessment   *core.GovernanceAssessment          `json:"governance_assessment,omitempty"`
+	VerificationAssessment  *core.VerificationAssessment        `json:"verification_assessment,omitempty"`
+	Verdict                 string                              `json:"verdict"`
+	ReasonCode              string                              `json:"reason_code"`
+	Summary                 string                              `json:"summary"`
+	Feedback                string                              `json:"feedback"`
+	RequirementCitations    *core.RequirementCitationAssessment `json:"requirement_citations,omitempty"`
+	DoneCriteriaCoverage    *core.DoneCriteriaAssessment        `json:"done_criteria_coverage,omitempty"`
+	GovernanceAssessment    *core.GovernanceAssessment          `json:"governance_assessment,omitempty"`
+	DocumentationAssessment *core.DocumentationAssessment       `json:"documentation_assessment,omitempty"`
 }
 
 type AcceptanceCriterion struct {
@@ -146,6 +147,14 @@ func ParseReview(output string) (Review, error) {
 	if value.GovernanceAssessment != nil {
 		if err := core.NormalizeGovernanceAssessment(value.GovernanceAssessment); err != nil {
 			return value, err
+		}
+	}
+	if value.DocumentationAssessment != nil {
+		if err := core.NormalizeDocumentationAssessment(value.DocumentationAssessment); err != nil {
+			return value, err
+		}
+		if strings.TrimSpace(value.DocumentationAssessment.Summary) == "" {
+			return value, fmt.Errorf("review documentation_assessment summary is required")
 		}
 	}
 	return value, nil

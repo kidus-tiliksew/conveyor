@@ -48,7 +48,16 @@ Working discipline:
   the completed item or step and files changed; before `submit_for_review`,
   list the validation commands run. Keep each message under a few sentences
   and continue automatically without waiting for confirmation.
-- If an approved criterion is an explicit operator checkpoint, stop ordinary
+- When the work-order context carries a `# Documentation policy` section, keep
+  the repository's declared durable docs true.
+  Update every declared doc the change affects in the same pull request as the
+  behavior change.
+  When no declared doc is affected, put the policy's exact `docs: none` literal,
+  with its required reason, at the start of a line in the pull request body.
+  The declaration is pinned from the repository base at your first implement
+  claim, so cite the pinned policy and never edit the declaration to weaken the
+  gate.
+- When an approved criterion is an explicit operator checkpoint, stop ordinary
   implementation when the checkpoint is reached. Call `report_progress` with
   a completion-shaped report identifying the checkpoint and the operator act
   still required. For a conflict between the approved plan and currently
