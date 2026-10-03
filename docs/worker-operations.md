@@ -200,4 +200,7 @@ missing or malformed file data and comparisons with 300 or more files are
 refused because completeness cannot be established. Direct MCP
 `submit_for_review` remains available for an already-open pull request and
 requires `head_sha` along with the work order and session. After submission
-succeeds, report the handoff and exit without polling `await_review`.
+succeeds, a session launched by `conveyor run` or a worker reports the handoff
+and exits without polling `await_review`. A session that claimed its order
+itself continues the self-claimed delivery loop in the `conveyor-work`
+playbook.

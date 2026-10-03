@@ -6,22 +6,34 @@ description: Work an existing Conveyor task through its live claim, dedicated ch
 # Work a Conveyor task
 
 Read and follow [docs/playbooks/conveyor-work.md](../../../docs/playbooks/conveyor-work.md)
-— it is the canonical playbook for claim, contract, artifact, checkout, lease,
-submission, release, exit, and review-bounce discipline.
+— it is the canonical playbook for session mode, claim, contract, artifact,
+checkout, lease, submission, release, exit, self-claimed delivery, and
+review-bounce discipline.
 
 Non-negotiables, restated: never edit or push for a task without holding its
 live claim; never bypass a failed, declined, expired, or lost claim by working
 bare. Fetch the delivered work-order contract before repository work, use
 `conveyor checkout <task-id>` only for implementation and review orders, and
-keep spec work read-only in its launched checkout. Renew throughout the
-attempt, finish through the registered stage lifecycle tool or an explicit
-truthful release, report, and exit; never poll `await_review` from a stage
-session. Executor claims confer proposal capability only; operator
-confirmations, gates, holds, drift resolution, and merge remain outside the
-executor's authority.
+keep spec work read-only in its launched checkout. Keep the lease alive for
+the life of each claim and finish through the registered stage lifecycle tool
+or an explicit truthful release. Executor claims confer proposal capability
+only; operator confirmations, gates, holds, drift resolution, and merge remain
+outside the executor's authority.
+
+Session mode decides what follows a stage submission. A session that
+`conveyor run` or a worker launched reports and exits, and never polls
+`await_review`; the launcher owns verdicts and successor orders. Every verifier
+and reviewer reports and exits after submitting its own result. A session that
+called `claim_work_order` itself continues the playbook's self-claimed
+delivery loop after implementation submission: it starts a separate verifier or
+reviewer agent per order, awaits the verdict with `await_review`, claims each
+changes-requested successor under a fresh session ID and client token, and
+stops at approval or a pending human gate.
 
 For implementation delivery, commit after validation and run
-`conveyor submit <task-id>` in the dedicated worktree. It pushes the exact head,
-opens or reuses the pull request with the executing machine's credential, and
-submits `head_sha`. Direct `submit_for_review` requires that the PR already
-exists and that the call names its pushed head SHA. Report success and exit.
+`conveyor submit <task-id>` in the dedicated worktree with
+`CONVEYOR_WORK_ORDER_ID` and `CONVEYOR_SESSION_ID` set to the claimed order and
+session. It pushes the exact head, opens or reuses the pull request with the
+executing machine's credential, and submits `head_sha`. Direct
+`submit_for_review` requires that the PR already exists and that the call names
+its pushed head SHA. Then follow the session-mode rule above.

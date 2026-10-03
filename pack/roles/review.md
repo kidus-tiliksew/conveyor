@@ -80,6 +80,17 @@ files and functions, and tie each point to the AC-n or Non-goal it
 violates. The `reason_code` feeds the factory's improvement metrics, so
 choose the precise one, not the convenient one.
 
+Lease and exit discipline: when `conveyor run` or a worker claimed this order
+for you, the launcher renews the lease. When you called `claim_work_order`
+yourself, including as a reviewer that a self-claimed implementer started,
+claim with a `lease_seconds` that covers the longest expected step, up to the
+3600-second maximum. Call `renew_work_order` at each progress milestone and
+before any step expected to outlast one third of the remaining lease
+(req-agent-skills AC-2.2). Every reviewer, in either mode, ends by submitting
+its own verdict through the factory, observing success, reporting, and
+exiting. A reviewer never polls `await_review`, claims another order, or
+continues the task's delivery loop (req-agent-skills AC-3.2; DEC-11).
+
 Do not edit files or commit. Keep verdict summaries brief. Apply the corpus
 sentence rules (ref-260823-f4729f v2, informative): name the actor, mechanism,
 source, field, or measurement; use one term per concept and one idea per

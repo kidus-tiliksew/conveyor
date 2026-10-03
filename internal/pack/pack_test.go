@@ -480,30 +480,72 @@ func TestReviewRoleCarriesDurableRequirementCitationGuidance(t *testing.T) {
 	}
 }
 
-func TestStageRolesEndAtSubmissionWithoutAwaitingReview(t *testing.T) {
-	spec, err := (Loader{Dir: filepath.Join("..", "..", "pack")}).Role(core.StageSpec)
-	if err != nil {
-		t.Fatal(err)
+// Launched sessions exit after their stage submission; a self-claimed session
+// continues the conveyor-work loop, and every reviewer and verifier exits after
+// its own result (req-agent-skills AC-2.2, AC-3.1, AC-3.2, AC-3.7, AC-3.8;
+// DEC-44).
+func TestStageRolesStateLaunchedAndSelfClaimedModes(t *testing.T) {
+	loader := Loader{Dir: filepath.Join("..", "..", "pack")}
+	normalizedRole := func(stage core.Stage) string {
+		t.Helper()
+		role, err := loader.Role(stage)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.Join(strings.Fields(role), " ")
 	}
-	normalizedSpec := strings.Join(strings.Fields(spec), " ")
-	for _, required := range []string{"materialized read-only repository checkout", "do not run `conveyor checkout` for a spec order", "report the result and exit the session"} {
-		if !strings.Contains(normalizedSpec, required) {
-			t.Errorf("spec role is missing %q", required)
+	requireAll := func(stage core.Stage, normalized string, required []string) {
+		t.Helper()
+		for _, fragment := range required {
+			if !strings.Contains(normalized, fragment) {
+				t.Errorf("%s role is missing %q", stage, fragment)
+			}
 		}
 	}
 
-	role, err := (Loader{Dir: filepath.Join("..", "..", "pack")}).Role(core.StageImplement)
-	if err != nil {
-		t.Fatal(err)
+	cadence := []string{
+		"`lease_seconds` that covers the longest expected step, up to the 3600-second maximum",
+		"renew_work_order` at each progress milestone and before any step expected to outlast one third of the remaining lease",
 	}
-	normalized := strings.Join(strings.Fields(role), " ")
-	for _, required := range []string{
-		"After `submit_for_review` succeeds, report the handoff and exit the session",
+	stages := map[core.Stage][]string{
+		core.StageSpec: {
+			"materialized read-only repository checkout",
+			"do not run `conveyor checkout` for a spec order",
+			"Report the result and exit the session; the launcher renews the lease every ten seconds and owns all later gates and stages",
+			"You called `claim_work_order` yourself",
+			"When the plan approval gate is pending, report the pending gate and stop without approving it",
+			"Otherwise continue with the task's next claimable implementation order through the `conveyor-work` playbook",
+		},
+		core.StageImplement: {
+			"A launched session reports the handoff and exits; it never polls `await_review`",
+			"successor as a new order in a fresh session",
+			"A self-claimed session reports the handoff and continues with the `conveyor-work` playbook's self-claimed delivery loop",
+			"awaits the verdict with `await_review`",
+			"claims any changes-requested successor under a fresh session identifier and client token",
+			"Setting CLI environment variables after that claim does not change the mode",
+		},
+		core.StageReview: {
+			"including as a reviewer that a self-claimed implementer started",
+			"Every reviewer, in either mode, ends by submitting its own verdict through the factory, observing success, reporting, and exiting",
+			"never polls `await_review`, claims another order, or continues the task's delivery loop",
+		},
+		core.StageVerify: {
+			"including as a verifier that a self-claimed implementer started",
+			"report the handoff and exit without polling await_review or claiming another order",
+		},
+	}
+	for stage, required := range stages {
+		normalized := normalizedRole(stage)
+		requireAll(stage, normalized, append(append([]string{}, required...), cadence...))
+	}
+
+	implement := normalizedRole(core.StageImplement)
+	for _, forbidden := range []string{
 		"Never poll `await_review` from an implementation stage session",
-		"successor as a new order in a fresh session",
+		"A successful `submit_for_review` is the end of this stage session",
 	} {
-		if !strings.Contains(normalized, required) {
-			t.Errorf("implement role is missing %q", required)
+		if strings.Contains(implement, forbidden) {
+			t.Errorf("implement role keeps the unconditional exit rule %q", forbidden)
 		}
 	}
 }

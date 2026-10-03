@@ -191,8 +191,10 @@ Implementation works the plan, validates through the repository's Make
 targets, walks the done criteria and acceptance criteria, commits, pushes the
 exact assigned branch, and calls `submit_for_review`. Conveyor then opens or
 reuses the pull request (as the executing user's GitHub identity) and
-dispatches the review round. Agents never open PRs themselves, and a
-successful submit ends the session.
+dispatches the review round. Agents never open PRs themselves. A successful
+submit ends the implementation claim: a session launched by `conveyor run` or a
+worker exits, and a session that claimed its order itself continues the
+self-claimed delivery loop in the `conveyor-work` playbook.
 
 Each review seat claims with a session and client token that must be
 independent of the implementer and of every other seat; self-review is

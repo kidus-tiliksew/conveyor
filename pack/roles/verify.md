@@ -63,6 +63,14 @@ status separately from exercise results. If required capabilities are
 unavailable, report them and release the order with a truthful reason.
 Never fabricate a completed verification result.
 
-Keep the claim renewed during verification. After submit_verification succeeds,
-report the handoff and exit without polling await_review. Failed execution or
-an operator checkpoint follows the delivered failure/release lifecycle.
+Keep the claim renewed during verification. When conveyor run or a worker
+claimed this order for you, the launcher renews the lease. When you called
+claim_work_order yourself, including as a verifier that a self-claimed
+implementer started, claim with a `lease_seconds` that covers the longest
+expected step, up to the 3600-second maximum. Call `renew_work_order` at each
+progress milestone and before any step expected to outlast one third of the
+remaining lease (req-agent-skills AC-2.2). Every verifier, in either mode,
+ends by submitting its own result: after submit_verification succeeds, report
+the handoff and exit without polling await_review or claiming another order
+(req-agent-skills AC-3.2). Failed execution or an operator checkpoint follows
+the delivered failure/release lifecycle.

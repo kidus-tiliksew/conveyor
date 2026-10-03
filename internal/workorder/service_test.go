@@ -971,6 +971,51 @@ func TestReviewWorkOrderContextUsesMCPCompletionContract(t *testing.T) {
 	}
 }
 
+// The delivered implement contract names both session modes and the
+// self-claimed lease cadence (req-agent-skills AC-2.2, AC-3.1, AC-3.8; DEC-44).
+func TestImplementWorkOrderContextStatesSessionModesAndLeaseCadence(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	task := core.Task{ID: "session-modes", Workspace: "demo", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: time.Now().UTC()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	order := core.WorkOrder{ID: "session-modes-implement-1", TaskID: task.ID, JobID: "session-modes-implement-1", Stage: core.StageImplement}
+	if err := st.CreateJob(ctx, core.Job{ID: order.JobID, TaskID: task.ID, Stage: order.Stage, State: core.JobPending}); err != nil {
+		t.Fatal(err)
+	}
+	if err := storetest.For(st).CreateWorkOrder(ctx, order); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storetest.For(st).ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{SessionID: "session-modes-session", ClientToken: "secret", Lease: time.Minute}); err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := pack.Load("../../pack")
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{Store: st, Pack: bundle, ConfigProvider: func(context.Context) (*config.Config, error) { return &config.Config{}, nil }}
+	got, err := service.Get(ctx, order.ID, "session-modes-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	normalized := strings.Join(strings.Fields(got.RolePrompt), " ")
+	for name, required := range map[string]string{
+		"launched exit":             "A launched session reports the handoff and exits; it never polls `await_review`",
+		"self-claimed continuation": "A self-claimed session reports the handoff and continues with the `conveyor-work` playbook's self-claimed delivery loop",
+		"self-claimed await":        "awaits the verdict with `await_review`",
+		"lease sizing":              "Claim with a `lease_seconds` that covers the longest expected step, up to the 3600-second maximum",
+		"milestone renewal":         "Call `renew_work_order` at each progress milestone and before any step expected to outlast one third of the remaining lease",
+	} {
+		if !strings.Contains(normalized, required) {
+			t.Errorf("delivered implement role is missing the %s rule %q", name, required)
+		}
+	}
+	if strings.Contains(normalized, "Never poll `await_review` from an implementation stage session") {
+		t.Errorf("delivered implement role still forbids await_review for every session: %s", got.RolePrompt)
+	}
+}
+
 func TestReviewWorkOrderContextIncludesPullRequestDescriptionBestEffort(t *testing.T) {
 	tests := []struct {
 		name        string
