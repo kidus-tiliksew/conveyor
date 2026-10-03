@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strings"
@@ -103,6 +104,54 @@ func TestVerificationKitSkillsInstallWithSiblingPlaybooks(t *testing.T) {
 			}
 			if _, owned := managedSkillVersion(playbook, "docs/playbooks/"+name+".md"); !owned {
 				t.Errorf("%s installed %s playbook has no ownership marker", destination.tool.name, name)
+			}
+		}
+	}
+}
+
+var markdownLinkTarget = regexp.MustCompile(`\]\(([^)\s]+)\)`)
+
+// Installed skills carry only their embedded files (req-agent-skills
+// AC-1.1), so every relative link they ship must resolve inside the installed
+// root rather than to a repository-only document such as
+// docs/validation-evidence.md.
+func TestInstalledSkillRelativeLinksResolve(t *testing.T) {
+	t.Parallel()
+	for _, project := range []bool{false, true} {
+		base := t.TempDir()
+		destinations := skillDestinations(base, supportedSkillTools, project)
+		if _, _, err := installEmbeddedSkillsForDestinations(base, destinations, "v1", false); err != nil {
+			t.Fatal(err)
+		}
+		for _, destination := range destinations {
+			for _, asset := range embeddedSkillManifest {
+				installed := filepath.Join(destination.root, filepath.FromSlash(asset.relative))
+				content, err := os.ReadFile(installed)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, match := range markdownLinkTarget.FindAllStringSubmatch(string(content), -1) {
+					target := match[1]
+					if strings.Contains(target, "://") || strings.HasPrefix(target, "#") || strings.HasPrefix(target, "mailto:") {
+						continue
+					}
+					target, _, _ = strings.Cut(target, "#")
+					resolved := filepath.Join(filepath.Dir(installed), filepath.FromSlash(target))
+					if !pathWithin(destination.root, resolved) {
+						t.Errorf("%s (project=%t) installed %s links outside its skill root: %s", destination.tool.name, project, asset.relative, match[1])
+						continue
+					}
+					if _, err := os.Stat(resolved); err != nil {
+						t.Errorf("%s (project=%t) installed %s has dangling link %s", destination.tool.name, project, asset.relative, match[1])
+					}
+				}
+			}
+			testingDoc, err := os.ReadFile(filepath.Join(destination.root, "conveyor-testing-doc", "conveyor-testing-doc.md"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Contains(testingDoc, []byte("`docs/validation-evidence.md` in the Conveyor repository")) {
+				t.Errorf("%s (project=%t) installed testing-doc playbook lost its illustrative evidence-workflow reference", destination.tool.name, project)
 			}
 		}
 	}
