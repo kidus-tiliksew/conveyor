@@ -880,18 +880,36 @@ function Fact({ label, value, startRow }: { label: React.ReactNode; value: React
   )
 }
 
-// The task-run command, inline rather than behind a disclosure: it stays
-// content-sized on roomy screens and wraps as one usable group when constrained.
+// The task-run command and an agent prompt for the conveyor-work skill
+// (req-agent-skills REQ-3), inline rather than behind a disclosure: each row
+// stays content-sized on roomy screens and wraps as one usable group when
+// constrained. The prompt carries only what an agent cannot infer: the task,
+// the selected workspace, and this dashboard's origin as the server.
 function Checkout({ item }: { item: ActivityItem }) {
+  const { workspace } = useWorkspaceSelection()
   if (item.checkout_available && item.checkout_command) {
+    const agentPrompt = `Use the conveyor-work skill to work Conveyor task ${item.task.id} in workspace \`${workspace}\` on ${window.location.origin}.`
     return (
-      <div className="inline-flex w-fit max-w-full flex-wrap items-center gap-x-2 gap-y-1 rounded-md border border-border bg-surface py-0.5 pl-2.5 pr-0.5">
-        <span className="inline-flex min-w-0 items-center gap-2">
-          <Terminal className="size-3.5 shrink-0 text-faint" aria-hidden="true" />
-          <span className="min-w-0 text-[11px] font-medium text-muted">Work on this locally</span>
-        </span>
-        <code className="min-w-0 break-all font-mono text-[11px] text-faint">{item.checkout_command}</code>
-        <CopyButton value={item.checkout_command} label="Copy task run command" />
+      <div className="inline-flex w-fit max-w-full flex-col items-start rounded-md border border-border bg-surface">
+        <div className="flex max-w-full flex-wrap items-center gap-x-2 gap-y-1 py-0.5 pl-2.5 pr-0.5">
+          <span className="inline-flex min-w-0 items-center gap-2">
+            <Terminal className="size-3.5 shrink-0 text-faint" aria-hidden="true" />
+            <span className="min-w-0 text-[11px] font-medium text-muted">Work on this locally</span>
+          </span>
+          <code className="min-w-0 break-all font-mono text-[11px] text-faint">{item.checkout_command}</code>
+          <CopyButton value={item.checkout_command} label="Copy task run command" />
+        </div>
+        {workspace && (
+          <div className="flex max-w-full flex-wrap items-center gap-x-2 gap-y-1 border-t border-border py-0.5 pl-2.5 pr-0.5">
+            <span className="inline-flex min-w-0 items-center gap-2">
+              {/* An icon-sized spacer aligns this label with the command row's. */}
+              <span className="size-3.5 shrink-0" aria-hidden="true" />
+              <span className="min-w-0 text-[11px] font-medium text-muted">Or ask your agent</span>
+            </span>
+            <code className="min-w-0 break-all font-mono text-[11px] text-faint">{agentPrompt}</code>
+            <CopyButton value={agentPrompt} label="Copy agent prompt" />
+          </div>
+        )}
       </div>
     )
   }

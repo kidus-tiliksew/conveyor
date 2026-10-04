@@ -2167,6 +2167,42 @@ test('Work on this shows, copies, and responsively wraps the task run command', 
   await expect.poll(() => panel.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true)
 })
 
+test('Work on this offers a copyable conveyor-work agent prompt beside the run command', async ({ page, context }) => {
+  const taskID = 'work-on-this-with-a-deliberately-long-responsive-identifier'
+  await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+
+  await page.goto(`/tasks/${taskID}/full`)
+  const origin = await page.evaluate(() => window.location.origin)
+  const expectedPrompt = `Use the conveyor-work skill to work Conveyor task ${taskID} in workspace \`demo\` on ${origin}.`
+  const command = page.getByText(`conveyor run ${taskID}`, { exact: true })
+  const prompt = page.getByText(expectedPrompt, { exact: true })
+  await expect(command).toBeVisible()
+  await expect(page.getByText('Or ask your agent', { exact: true })).toBeVisible()
+  await expect(prompt).toBeVisible()
+
+  // Both rows share one bordered group, the prompt row below the command row.
+  const group = command.locator('../..')
+  await expect(group.getByText(expectedPrompt, { exact: true })).toBeVisible()
+  const commandBox = await command.boundingBox()
+  const promptBox = await prompt.boundingBox()
+  expect(promptBox!.y).toBeGreaterThan(commandBox!.y)
+
+  await page.getByRole('button', { name: 'Copy agent prompt' }).click()
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(expectedPrompt)
+
+  await page.setViewportSize({ width: 390, height: 720 })
+  for (const element of [group, prompt.locator('..')]) {
+    await expect.poll(() => element.evaluate((node) => node.scrollWidth <= node.clientWidth)).toBe(true)
+  }
+})
+
+test('Work on this guidance omits the agent prompt row', async ({ page }) => {
+  await page.goto('/tasks/guidance-only/full')
+  await expect(page.getByText('Use the assigned worktree.')).toBeVisible()
+  await expect(page.getByText('Or ask your agent', { exact: true })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Copy agent prompt' })).toHaveCount(0)
+})
+
 test('task sheet adds bottom clearance without changing full-page task spacing', async ({ page }) => {
   await page.goto('/tasks/sheet-padding')
   const sheetContent = page.getByRole('dialog', { name: 'Task detail' }).locator('.overflow-y-auto')
