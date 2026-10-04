@@ -126,9 +126,16 @@ func TestPairingHeartbeatHealthAndWorkerClaimLifecycle(t *testing.T) {
 	}
 	deadline := claimed.ExecutionDeadline
 	now = now.Add(10 * time.Second)
+	renewStarted := time.Now()
 	renewed, err := service.Renew(workerCtx, worker, claimed.ID, "session-a")
+	renewFinished := time.Now()
 	if err != nil || !renewed.ExecutionDeadline.Equal(deadline) {
 		t.Fatalf("renewed=%+v err=%v", renewed, err)
+	}
+	// Worker renewal keeps the default lease; only non-worker MCP renewal
+	// selects a custom duration (req-agent-skills AC-2.2).
+	if renewed.LeaseExpiresAt.Before(renewStarted.Add(DefaultClaimLease)) || renewed.LeaseExpiresAt.After(renewFinished.Add(DefaultClaimLease)) {
+		t.Fatalf("worker renewal lease_expires_at=%s, want default %s after renewal", renewed.LeaseExpiresAt, DefaultClaimLease)
 	}
 	activity := strings.Repeat("x", ActivitySnapshotLimit+100) + " token=ghp_abcdefghijklmnopqrstuvwxyz123456"
 	if renewed, err = service.Renew(workerCtx, worker, claimed.ID, "session-a", &core.WorkOrderActivitySnapshotInput{Content: activity}); err != nil || !renewed.ExecutionDeadline.Equal(deadline) {
@@ -136,6 +143,22 @@ func TestPairingHeartbeatHealthAndWorkerClaimLifecycle(t *testing.T) {
 	}
 	if snapshot, exists, snapshotErr := st.GetWorkOrderActivitySnapshot(workerCtx, claimed.ID); snapshotErr != nil || !exists || len(snapshot.Content) > ActivitySnapshotLimit || strings.Contains(snapshot.Content, "ghp_") || snapshot.AttemptID != claimed.AttemptID {
 		t.Fatalf("snapshot=%+v exists=%v err=%v", snapshot, exists, snapshotErr)
+	}
+	claimIdentity := core.WorkOrderClaimIdentity{WorkerID: worker.ID, ClaimantID: worker.ID, SessionID: "session-a"}
+	renewStarted = time.Now()
+	renewed, err = service.RenewClaimWithLease(workerCtx, claimIdentity, claimed.ID, 30*time.Minute, &core.WorkOrderActivitySnapshotInput{Content: "lease-aware output"})
+	renewFinished = time.Now()
+	if err != nil || !renewed.ExecutionDeadline.Equal(deadline) || renewed.LeaseExpiresAt.Before(renewStarted.Add(30*time.Minute)) || renewed.LeaseExpiresAt.After(renewFinished.Add(30*time.Minute)) {
+		t.Fatalf("lease-aware renewal=%+v err=%v", renewed, err)
+	}
+	if snapshot, exists, snapshotErr := st.GetWorkOrderActivitySnapshot(workerCtx, claimed.ID); snapshotErr != nil || !exists || snapshot.Content != "lease-aware output" {
+		t.Fatalf("lease-aware snapshot=%+v exists=%v err=%v", snapshot, exists, snapshotErr)
+	}
+	renewStarted = time.Now()
+	renewed, err = service.RenewClaim(workerCtx, claimIdentity, claimed.ID)
+	renewFinished = time.Now()
+	if err != nil || renewed.LeaseExpiresAt.Before(renewStarted.Add(DefaultClaimLease)) || renewed.LeaseExpiresAt.After(renewFinished.Add(DefaultClaimLease)) {
+		t.Fatalf("default RenewClaim=%+v err=%v", renewed, err)
 	}
 	released, err := service.Release(workerCtx, worker, claimed.ID, core.WorkOrderRelease{SessionID: "session-a", Reason: core.WorkOrderReleaseReasonOperatorCheckpointReached, Checkpoint: &core.WorkOrderCheckpoint{DecisionRequest: "Choose whether to proceed."}, Cause: core.WorkOrderReleaseCauseOperatorAction, Outcome: core.WorkOrderOutcomeReleased})
 	if err != nil || released.State != core.WorkOrderQueued || !released.ExecutionDeadline.IsZero() || !released.ExecutionStartedAt.IsZero() || !released.RetrySuppressed {
