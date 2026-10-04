@@ -1538,6 +1538,172 @@ func TestMCPRunChildRenewsExactOwnClaimOnly(t *testing.T) {
 	}
 }
 
+// TestMCPRenewHonorsLeaseSeconds proves non-worker renewal applies the
+// session's lease_seconds within the claim bounds, falls back to the default
+// otherwise, and never moves the lease past the execution deadline, while
+// worker renewal keeps the default (req-agent-skills AC-2.2;
+// req-delegated-execution AC-1.1).
+func TestMCPRenewHonorsLeaseSeconds(t *testing.T) {
+	t.Parallel()
+	type fixture struct {
+		server   *Server
+		store    store.Store
+		orderID  string
+		deadline time.Time
+	}
+	setup := func(t *testing.T, claimant, workerID string, executionTimeout time.Duration) fixture {
+		t.Helper()
+		ctx := store.WithWorkspace(t.Context(), "demo")
+		st := store.NewMemory()
+		taskID, orderID := "lease-task", "lease-task-implement-1"
+		if err := st.CreateTask(ctx, core.Task{ID: taskID, Workspace: "demo", Repo: "conveyor", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: time.Now()}); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.CreateJob(ctx, core.Job{ID: orderID, TaskID: taskID, Stage: core.StageImplement, State: core.JobPending}); err != nil {
+			t.Fatal(err)
+		}
+		if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: orderID, TaskID: taskID, JobID: orderID, Stage: core.StageImplement, State: core.WorkOrderQueued}); err != nil {
+			t.Fatal(err)
+		}
+		claimed, err := storetest.For(st).ClaimWorkOrder(ctx, orderID, core.WorkOrderClaim{SessionID: "session-a", ClientToken: "secret-a", ClaimantID: claimant, WorkerID: workerID, Agent: "codex", Model: "model", Lease: time.Minute, ExecutionTimeout: executionTimeout})
+		if err != nil {
+			t.Fatal(err)
+		}
+		server := NewServer(st)
+		server.Workspace = "demo"
+		server.WorkOrders = &workorder.Service{Store: st}
+		server.Workers = &workerservice.Service{Store: st, WorkOrders: server.WorkOrders}
+		membership := &membershipFixture{
+			workspaces: []core.Workspace{{ID: "demo"}},
+			roles:      map[string]map[string]core.WorkspaceRole{"owner-a": {"demo": core.WorkspaceRoleExecutor}},
+		}
+		server.Workspaces, server.Memberships = membership, membership
+		return fixture{server: server, store: st, orderID: orderID, deadline: claimed.ExecutionDeadline}
+	}
+	requestFor := func(credential core.AuthenticatedCredential) *http.Request {
+		request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+		return request.WithContext(store.WithCredential(request.Context(), credential))
+	}
+	user := core.AuthenticatedCredential{ID: "pat_owner", OwnerUserID: "owner-a", Kind: core.CredentialUser, Scope: core.CredentialScopeUser}
+	renew := func(t *testing.T, f fixture, request *http.Request, leaseSeconds any) (core.WorkOrder, time.Time, time.Time) {
+		t.Helper()
+		args := map[string]any{"workspace_id": "demo", "work_order_id": f.orderID, "session_id": "session-a"}
+		if leaseSeconds != nil {
+			args["lease_seconds"] = leaseSeconds
+		}
+		before := time.Now()
+		result, err := f.server.callMCPTool(request, "renew_work_order", args)
+		after := time.Now()
+		if err != nil {
+			t.Fatalf("renew lease_seconds=%v: %v", leaseSeconds, err)
+		}
+		order, ok := result.(core.WorkOrder)
+		if !ok || order.State != core.WorkOrderClaimed || order.SessionID != "session-a" {
+			t.Fatalf("renewed=%+v", result)
+		}
+		if !order.ExecutionDeadline.Equal(f.deadline) {
+			t.Fatalf("execution deadline moved from %s to %s", f.deadline, order.ExecutionDeadline)
+		}
+		return order, before, after
+	}
+	assertLease := func(t *testing.T, order core.WorkOrder, before, after time.Time, want time.Duration) {
+		t.Helper()
+		if order.LeaseExpiresAt.Before(before.Add(want)) || order.LeaseExpiresAt.After(after.Add(want)) {
+			t.Fatalf("lease_expires_at=%s, want %s after renewal in [%s, %s]", order.LeaseExpiresAt, want, before, after)
+		}
+	}
+
+	for _, test := range []struct {
+		name         string
+		leaseSeconds any
+		want         time.Duration
+	}{
+		{name: "custom 1800", leaseSeconds: float64(1800), want: 30 * time.Minute},
+		{name: "omitted", want: core.DefaultWorkOrderClaimLease},
+		{name: "zero", leaseSeconds: float64(0), want: core.DefaultWorkOrderClaimLease},
+		{name: "negative", leaseSeconds: float64(-60), want: core.DefaultWorkOrderClaimLease},
+		{name: "over 3600", leaseSeconds: float64(3601), want: core.DefaultWorkOrderClaimLease},
+		{name: "lower bound 1", leaseSeconds: float64(1), want: time.Second},
+		{name: "upper bound 3600", leaseSeconds: float64(3600), want: time.Hour},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f := setup(t, core.TaskRunClaimantID("owner-a"), "", 4*time.Hour)
+			order, before, after := renew(t, f, requestFor(user), test.leaseSeconds)
+			assertLease(t, order, before, after, test.want)
+		})
+	}
+
+	t.Run("custom lease caps at execution deadline", func(t *testing.T) {
+		t.Parallel()
+		f := setup(t, core.TaskRunClaimantID("owner-a"), "", 10*time.Minute)
+		order, _, _ := renew(t, f, requestFor(user), float64(1800))
+		if !order.LeaseExpiresAt.Equal(f.deadline) {
+			t.Fatalf("lease_expires_at=%s, want execution deadline %s", order.LeaseExpiresAt, f.deadline)
+		}
+	})
+
+	t.Run("bound run child custom lease", func(t *testing.T) {
+		t.Parallel()
+		f := setup(t, core.TaskRunClaimantID("owner-a"), "", 4*time.Hour)
+		bound := core.AuthenticatedCredential{
+			ID: "run-agent", OwnerUserID: "owner-a", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser,
+			RunWorkspaceID: "demo", RunWorkOrderID: f.orderID, RunSessionID: "session-a",
+		}
+		order, before, after := renew(t, f, requestFor(bound), float64(1800))
+		assertLease(t, order, before, after, 30*time.Minute)
+	})
+
+	t.Run("foreign session refused", func(t *testing.T) {
+		t.Parallel()
+		f := setup(t, core.TaskRunClaimantID("owner-a"), "", 4*time.Hour)
+		args := map[string]any{"workspace_id": "demo", "work_order_id": f.orderID, "session_id": "session-b", "lease_seconds": float64(1800)}
+		if _, err := f.server.callMCPTool(requestFor(user), "renew_work_order", args); !errors.Is(err, store.ErrWorkOrderClaimLost) {
+			t.Fatalf("foreign-session renew error=%v", err)
+		}
+		order, err := f.store.GetWorkOrder(store.WithWorkspace(t.Context(), "demo"), f.orderID)
+		if err != nil || order.SessionID != "session-a" || order.LeaseExpiresAt.After(time.Now().Add(time.Minute)) {
+			t.Fatalf("foreign-session renewal changed order=%+v err=%v", order, err)
+		}
+	})
+
+	t.Run("worker renewal keeps default lease", func(t *testing.T) {
+		t.Parallel()
+		f := setup(t, "worker-a", "worker-a", 4*time.Hour)
+		request := requestFor(user)
+		request = request.WithContext(context.WithValue(request.Context(), workerContextKey{}, core.Worker{ID: "worker-a", Workspace: "demo", OwnerUserID: "owner-a"}))
+		order, before, after := renew(t, f, request, float64(1800))
+		assertLease(t, order, before, after, core.DefaultWorkOrderClaimLease)
+	})
+}
+
+func TestMCPRenewToolPublishesOptionalLeaseSeconds(t *testing.T) {
+	t.Parallel()
+	for _, tool := range mcpTools() {
+		if tool["name"] != "renew_work_order" {
+			continue
+		}
+		schema := tool["inputSchema"].(map[string]any)
+		properties := schema["properties"].(map[string]any)
+		if lease, ok := properties["lease_seconds"].(map[string]string); !ok || lease["type"] != "integer" || len(lease) != 1 {
+			t.Fatalf("renew_work_order lease_seconds schema=%#v", properties["lease_seconds"])
+		}
+		for _, field := range schema["required"].([]string) {
+			if field == "lease_seconds" {
+				t.Fatal("renew_work_order requires lease_seconds")
+			}
+		}
+		description, _ := tool["description"].(string)
+		for _, requiredText := range []string{"lease_seconds", "1-3600", "five-minute default", "Worker renewals", "execution deadline"} {
+			if !strings.Contains(description, requiredText) {
+				t.Fatalf("renew_work_order description lacks %q: %s", requiredText, description)
+			}
+		}
+		return
+	}
+	t.Fatal("renew_work_order is not registered")
+}
+
 func TestMCPWorkerDispatchedExecutorClaimGovernance(t *testing.T) {
 	t.Parallel()
 	setup := func(t *testing.T, ownLease time.Duration) (*Server, *http.Request, *membershipFixture, string, string, string) {

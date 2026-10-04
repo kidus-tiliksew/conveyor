@@ -130,10 +130,11 @@ fixed execution deadline (req-delegated-execution AC-1.1).
   belongs to the launcher only.
 - **Self-claimed session.** Claim with a `lease_seconds` that covers the
   longest expected step, up to the 3600-second maximum. Call
-  `renew_work_order` at each progress milestone and before any step expected
-  to outlast one third of the remaining lease, such as a long test run or a
-  wait for operator input. Update the local expiry from every successful
-  response (req-agent-skills AC-2.2).
+  `renew_work_order` with the same `lease_seconds` at each progress milestone
+  and before any step expected to outlast one third of the remaining lease,
+  such as a long test run or a wait for operator input; a renewal without it
+  renews for the five-minute default. Update the local expiry from every
+  successful response (req-agent-skills AC-2.2).
 
 If renewal fails or the server no longer reports the order claimed by this
 session, stop repository work immediately. Return to `list_work_orders` and

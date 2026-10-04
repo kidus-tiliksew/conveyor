@@ -267,9 +267,20 @@ func TestTaskRunHTTPIsExplicitlyTaskScopedAndUsesUserLeaseLifecycle(t *testing.T
 	if claimed.TaskID != "target" || claimed.WorkerID != "" || claimed.ClaimantID != "run:local-operator" || claimed.Agent != "local-codex" || claimed.Model != "local-model" {
 		t.Fatalf("claimed=%+v", claimed)
 	}
-	renew := taskRunHTTPCall(handler, http.MethodPost, "/v1/tasks/target/run-orders/"+target.ID+"/renew", `{"session_id":"run-session"}`)
+	// The run REST renewal keeps the default lease even when a body carries
+	// lease_seconds; only non-worker MCP renewal selects a custom duration.
+	renewStarted := time.Now()
+	renew := taskRunHTTPCall(handler, http.MethodPost, "/v1/tasks/target/run-orders/"+target.ID+"/renew", `{"session_id":"run-session","lease_seconds":1800}`)
+	renewFinished := time.Now()
 	if renew.Code != http.StatusOK {
 		t.Fatalf("renew status=%d body=%s", renew.Code, renew.Body.String())
+	}
+	var renewed core.WorkOrder
+	if err := json.Unmarshal(renew.Body.Bytes(), &renewed); err != nil {
+		t.Fatal(err)
+	}
+	if renewed.LeaseExpiresAt.Before(renewStarted.Add(core.DefaultWorkOrderClaimLease)) || renewed.LeaseExpiresAt.After(renewFinished.Add(core.DefaultWorkOrderClaimLease)) || !renewed.ExecutionDeadline.Equal(claimed.ExecutionDeadline) {
+		t.Fatalf("run REST renewal lease_expires_at=%s deadline=%s, want default %s and deadline %s", renewed.LeaseExpiresAt, renewed.ExecutionDeadline, core.DefaultWorkOrderClaimLease, claimed.ExecutionDeadline)
 	}
 	malformedSnapshot := taskRunHTTPCall(handler, http.MethodPost, "/v1/tasks/target/run-orders/"+target.ID+"/renew", `{"session_id":"run-session","activity_snapshot":"malformed"}`)
 	if malformedSnapshot.Code != http.StatusOK {

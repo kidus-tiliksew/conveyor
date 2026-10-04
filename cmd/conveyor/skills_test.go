@@ -254,7 +254,8 @@ func TestConveyorWorkSkillShipsStageCheckoutAndSessionModeDiscipline(t *testing.
 		"That ten-second cadence belongs to the launcher only",
 		// AC-2.2: self-claimed lease sizing and renewal.
 		"Claim with a `lease_seconds` that covers the longest expected step, up to the 3600-second maximum",
-		"Call `renew_work_order` at each progress milestone and before any step expected to outlast one third of the remaining lease",
+		"Call `renew_work_order` with the same `lease_seconds` at each progress milestone and before any step expected to outlast one third of the remaining lease",
+		"a renewal without it renews for the five-minute default",
 		// CLI environment for conveyor submit.
 		"`conveyor submit` refuses to run unless `CONVEYOR_WORK_ORDER_ID` and `CONVEYOR_SESSION_ID` are set",
 		"`conveyor submit` reads no client token",

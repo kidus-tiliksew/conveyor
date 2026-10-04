@@ -749,8 +749,16 @@ func (s *Service) Renew(ctx context.Context, worker core.Worker, id, sessionID s
 
 // RenewClaim renews or classifies the exact authenticated child claim. The
 // explicit identity remains available after a deliberate release clears the
-// active ownership columns (design-260805-973cd4).
+// active ownership columns (design-260805-973cd4). Worker and run renewals keep
+// the default lease through this entry point.
 func (s *Service) RenewClaim(ctx context.Context, claim core.WorkOrderClaimIdentity, id string, snapshots ...*core.WorkOrderActivitySnapshotInput) (core.WorkOrder, error) {
+	return s.RenewClaimWithLease(ctx, claim, id, DefaultClaimLease, snapshots...)
+}
+
+// RenewClaimWithLease renews the exact claim for the given lease duration. The
+// store caps the renewed expiry at the fixed execution deadline, so renewal
+// never extends it (req-delegated-execution AC-1.1; req-agent-skills AC-2.2).
+func (s *Service) RenewClaimWithLease(ctx context.Context, claim core.WorkOrderClaimIdentity, id string, lease time.Duration, snapshots ...*core.WorkOrderActivitySnapshotInput) (core.WorkOrder, error) {
 	sessionID := claim.SessionID
 	if strings.TrimSpace(sessionID) == "" {
 		return core.WorkOrder{}, fmt.Errorf("session_id is required")
@@ -760,7 +768,7 @@ func (s *Service) RenewClaim(ctx context.Context, claim core.WorkOrderClaimIdent
 		return core.WorkOrder{}, err
 	}
 	renewed, err := taskops.ExecuteWorkOrder(ctx, s.Store, order.TaskID, core.WorkOrderCmdRenew, func(taskLease taskops.TaskLease) (core.WorkOrder, error) {
-		return s.Store.RenewWorkerClaimCommand(ctx, taskLease, id, claim, DefaultClaimLease)
+		return s.Store.RenewWorkerClaimCommand(ctx, taskLease, id, claim, lease)
 	})
 	if err != nil {
 		return core.WorkOrder{}, err
