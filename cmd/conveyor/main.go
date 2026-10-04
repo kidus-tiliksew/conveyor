@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -83,6 +84,12 @@ func main() {
 	root.PersistentFlags().StringVar(&workspaceFlag, "workspace", "", "workspace id (required when the server has multiple workspaces)")
 
 	if err := root.Execute(); err != nil {
+		// conveyor task wait has already printed its timeout result; only the
+		// distinct exit status remains (req-agent-skills AC-4.3).
+		var timedOut *taskWaitTimeoutError
+		if errors.As(err, &timedOut) {
+			os.Exit(taskWaitTimeoutExitStatus)
+		}
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
@@ -389,6 +396,7 @@ func taskCmd() *cobra.Command {
 	}
 
 	cmd.AddCommand(newCmd, listCmd, showCmd,
+		taskWaitCmd(),
 		restartTaskCmd(),
 		closeTaskCmd(),
 		addTaskDependencyCmd(),

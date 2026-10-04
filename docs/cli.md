@@ -67,6 +67,7 @@ Create and inspect tasks. Titles are always generated from the body.
 | `conveyor task new` | Create a task. `--repo` (required), `-m/--message` for the body, `--base` (default `main`), `--depends-on <id>` (repeatable), `--hold`, `--setup <name>`, `--spec-approval` and `--merge-approval` (`default`, `on`, or `off`). |
 | `conveyor task list` | List tasks: ID, state, repo, source, title. |
 | `conveyor task show <id>` | Show a task and its jobs as JSON on stdout. Supersession links and successor operator reason/note also appear on stderr. |
+| `conveyor task wait <id>` | Block until the task's state, pending gate, next claimable order, or pending proposals change, the task is merged, closed, or parked, or the timeout elapses. `--timeout` (default `5m`, must be positive) and `--json`. See [task wait](#task-wait). |
 | `conveyor task restart <id>` | Start a non-terminal task over. Required `--reason <text>`; optional `--note <text>` or `--note-file <path>`, `--request-id <id>`, and `--yes`. Preview affected orders, proposals, and the open pull request, then require terminal confirmation. |
 | `conveyor task close <id>` | Cancel a non-terminal task. `--reason` is required. |
 | `conveyor task link <task> <dependency>` | Make an existing open task depend on another open task. `--reason` and `--request-id` are required; cycles are rejected. |
@@ -98,6 +99,53 @@ server's message and exit non-zero.
 Note the naming split: `conveyor task setup` changes a task's frozen
 workspace setup; `conveyor config init-execution` creates your local
 execution settings. They are different objects.
+
+### task wait
+
+```sh
+conveyor task wait <task-id> [--timeout 5m] [--json]
+```
+
+`task wait` lets an agent session or script wait for an operator decision
+without polling turn by turn. It never claims, approves, or changes the task.
+
+The command reads `GET /v1/tasks/{id}` and `GET /v1/tasks/{id}/run-order` with
+the ordinary server, workspace, and credential resolution. Each observation
+holds these fields:
+
+| Field | Meaning |
+|---|---|
+| `task_id` | The task ID. |
+| `state` | The task state from the run-order read. |
+| `pending_gate` | The pending human gate, or `null`. `kind` is `plan`, `merge`, `plan_revision`, or `human`; `plan_version` appears for plan and plan revision gates. |
+| `next_order` | The next claimable work order `id` and `stage`, or `null`. |
+| `pending_proposals` | Pending task-authored proposals as `kind`, `document_id`, and `version`, sorted; `[]` when none. |
+| `observed_at` | The time of the observation. It is not compared. |
+
+The first successful observation is the baseline. The command re-reads with
+the jittered backoff `conveyor run` uses, from 250ms to a 2s ceiling, and
+returns when any compared field differs from the baseline. Titles, labels,
+capability flags, and progress text are not compared. A merged, closed, or
+parked task returns at once, whether it is terminal at start or becomes
+terminal during the wait.
+
+Transport errors and server 5xx responses after the baseline are retried
+within the timeout and never replace the last successful observation.
+Authentication, authorization, not-found, and malformed responses end the wait
+at once. A failure before the baseline also ends it, because there is nothing
+to compare against.
+
+Output reports the observation, `reason` (`changed`, `terminal`, or
+`timeout`), and `timed_out`. `--json` prints the same fields as one JSON
+object. On timeout, the values are the last successful observation, and
+`last_read_error` names the most recent failed read when the final poll
+failed.
+
+| Exit status | Meaning |
+|---|---|
+| `0` | The observation changed, or the task is merged, closed, or parked. |
+| `2` | The timeout elapsed. The result is printed and nothing is written to stderr. |
+| `1` | Failure: invalid arguments or timeout, configuration, authentication, authorization, not found, malformed response, or a failed first observation. |
 
 ## run
 
