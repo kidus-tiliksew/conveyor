@@ -35,6 +35,7 @@ func newAggregateOrder(t *testing.T, x Fixture, stages ...core.Stage) core.WorkO
 func runWorkOrders(t *testing.T, x Fixture) {
 	t.Run("VerifyPolicy", func(t *testing.T) { runVerifyPolicy(t, x) })
 	t.Run("VerifyAdmission", func(t *testing.T) { runVerifyAdmission(t, x) })
+	t.Run("UsageTokenUpdates", func(t *testing.T) { runUsageTokenUpdates(t, x) })
 	st, ctx := x.Backend, x.Context
 	order := newAggregateOrder(t, x)
 	claim := core.WorkOrderClaim{WorkerID: "worker", ClaimantID: "worker", SessionID: "session", ClientToken: "fixture", Lease: time.Minute, ExecutionTimeout: time.Hour}
