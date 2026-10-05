@@ -17,6 +17,7 @@ import select
 import shutil
 import signal
 import stat
+import struct
 import subprocess
 import sys
 import time
@@ -768,15 +769,136 @@ def bind(root, p, output, remote, branch):
 DISPOSABLE_CACHE_CHILDREN = ("go-build", "go-tmp", "tmp", "playwright", "npm")
 
 
-def active_cache_users(path, proc=validation_resources.PROC, backend=None):
+# Slack subtracted from a filesystem birth time before it bounds process
+# start times: it absorbs timestamp precision, the sampling gap between the
+# wall clock and /proc/uptime, and ordinary clock slewing between the
+# directory's creation and cleanup.
+CREATION_BOUND_MARGIN_SECONDS = 60
+
+# statx(2) from <linux/stat.h>: struct statx is 256 bytes, its stx_mask is the
+# first __u32, and stx_btime (struct statx_timestamp: __s64 tv_sec,
+# __u32 tv_nsec) starts at byte 80.
+STATX_BTIME = 0x800
+STATX_SIZE = 256
+STATX_BTIME_OFFSET = 80
+AT_FDCWD = -100
+AT_SYMLINK_NOFOLLOW = 0x100
+
+
+def active_cache_users(path, proc=validation_resources.PROC, backend=None, uid=None, created_after=None):
     """Return live or ambiguously inspected processes that may use path."""
     try:
-        return validation_resources.active_cache_users(path, proc, backend=backend)
+        return validation_resources.active_cache_users(path, proc, uid=uid, created_after=created_after,
+                                                       backend=backend)
     except validation_resources.Refusal as exc:
         raise Refused(str(exc)) from exc
 
 
-def cleanup_cache(task, task_cache, references):
+def owner_only_ancestor(path, lstat=os.lstat):
+    """Return the nearest canonical directory at or above path that isolates it, or None.
+
+    A directory owned by the invoking user with neither group nor other
+    execute permission cannot be traversed by another unprivileged user, so
+    only the invoking user's processes can reach anything below it. Under
+    POSIX ACLs the group bits carry the ACL mask, so a named-user grant also
+    shows as group execute. Privileged processes are outside this
+    owner-isolation assumption (component-verification-strategy). Metadata
+    that cannot be read, a symlink, or a foreign owner never qualifies.
+    """
+    uid = os.getuid()
+    resolved = Path(path).resolve()
+    for directory in (resolved, *resolved.parents):
+        try:
+            info = lstat(directory)
+        except OSError:
+            continue
+        if (stat.S_ISDIR(info.st_mode) and info.st_uid == uid
+                and not info.st_mode & (stat.S_IXGRP | stat.S_IXOTH)):
+            return directory
+    return None
+
+
+def linux_birth_time(path):
+    """Return path's filesystem birth time from statx(2) in epoch seconds, or None.
+
+    CPython's os.stat omits st_birthtime on Linux. The kernel reports it
+    through statx when the filesystem records it (for example ext4, XFS, and
+    Btrfs); a reply without STATX_BTIME in stx_mask, a missing libc symbol,
+    or any call failure returns None.
+    """
+    if not sys.platform.startswith("linux"):
+        return None
+    try:
+        import ctypes
+        statx = ctypes.CDLL(None, use_errno=True).statx
+    except (ImportError, OSError, AttributeError):
+        return None
+    statx.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_uint, ctypes.c_void_p)
+    statx.restype = ctypes.c_int
+    buffer = ctypes.create_string_buffer(STATX_SIZE)
+    if statx(AT_FDCWD, os.fsencode(path), AT_SYMLINK_NOFOLLOW, STATX_BTIME, buffer) != 0:
+        return None
+    (mask,) = struct.unpack_from("=I", buffer.raw, 0)
+    if not mask & STATX_BTIME:
+        return None
+    seconds, nanoseconds = struct.unpack_from("=qI", buffer.raw, STATX_BTIME_OFFSET)
+    return seconds + nanoseconds / 1e9
+
+
+def creation_lower_bound(path, proc=validation_resources.PROC, backend=None, *,
+                         birth=None, now=None, uptime=None, hz=None):
+    """Return a conservative lower bound on path's creation in process start units, or None.
+
+    Only a filesystem birth time establishes creation: st_ctime records the
+    latest inode change and st_mtime the latest content change, so neither
+    bounds creation. CPython exposes st_birthtime on macOS and the BSDs; on
+    Linux the birth time comes from statx(2) (linux_birth_time). Without one
+    this returns None and cleanup relies on owner isolation alone. The bound
+    is the birth time less
+    CREATION_BOUND_MARGIN_SECONDS, rounded down. On macOS it is wall-clock
+    microseconds, the unit libproc reports for process start. With /proc it is
+    clock ticks since boot, mapped through the latest plausible boot instant
+    so sampling skew can only lower it. A future birth, a birth before boot,
+    or unreadable clock inputs return None rather than a guess.
+    """
+    if birth is None:
+        try:
+            birth = getattr(os.stat(path), "st_birthtime", None)
+        except OSError:
+            return None
+        if birth is None:
+            birth = linux_birth_time(path)
+    if not isinstance(birth, (int, float)) or birth <= 0:
+        return None
+    selected = validation_resources.process_backend(proc, backend)
+    wall = time.time() if now is None else now
+    if birth > wall:
+        return None
+    bound = birth - CREATION_BOUND_MARGIN_SECONDS
+    if bound <= 0:
+        return None
+    if selected == validation_resources.DARWIN_BACKEND:
+        return int(bound * 1_000_000)
+    if selected != validation_resources.PROC_BACKEND:
+        return None
+    if uptime is None:
+        try:
+            uptime = float((Path(proc) / "uptime").read_text().split()[0])
+        except (OSError, ValueError, IndexError):
+            return None
+        wall = time.time() if now is None else now  # sampled after uptime: the latest boot instant
+    if hz is None:
+        try:
+            hz = os.sysconf("SC_CLK_TCK")
+        except (OSError, ValueError):
+            return None
+    if uptime <= 0 or hz <= 0:
+        return None
+    ticks = int((bound - (wall - uptime)) * hz)
+    return ticks if ticks > 0 else None
+
+
+def cleanup_cache(task, task_cache, references, proc=validation_resources.PROC):
     require(Path(task).name == task and task not in ("", ".", ".."), "invalid task identity")
     cache_home = Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache")))
     require(cache_home.is_absolute(), "XDG_CACHE_HOME must be absolute")
@@ -797,7 +919,11 @@ def cleanup_cache(task, task_cache, references):
                 "disposable cache child ownership is missing or ambiguous: " + name)
         require(not any(ref == resolved or ref.is_relative_to(resolved) for ref in refs),
                 "referenced evidence is inside disposable cache child: " + name)
-        users = active_cache_users(resolved)
+        # Owner isolation limits inspection to the invoking user's processes;
+        # a provable creation time drops an uninspectable process that
+        # started before the child existed. Readable references always count.
+        uid = os.getuid() if owner_only_ancestor(resolved) is not None else None
+        users = active_cache_users(resolved, proc, uid=uid, created_after=creation_lower_bound(resolved, proc))
         detail = users[:20]
         if len(users) > len(detail):
             detail.append("... " + str(len(users) - len(detail)) + " more")

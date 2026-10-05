@@ -8,10 +8,12 @@ import os
 from pathlib import Path
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
 import time
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -964,6 +966,193 @@ while True:
                 self.policy["backend"]["probe"][-1] = 'print("{}")'
                 with self.assertRaises(evidence.Refused):
                     evidence.snapshot(self.root, self.policy, b"key")
+
+
+class CacheCleanupFilterTests(unittest.TestCase):
+    """Cleanup reuses the shared inspector's owner and creation filters over fixture /proc trees.
+
+    Only filesystem metadata is injected: process-entry owners, directory
+    modes, birth time, and clock inputs. The real inspector runs every case.
+    """
+
+    NOW, UPTIME, BIRTH, HZ = 10_000.0, 1_000.0, 9_500.0, 100
+    # (BIRTH - margin - (NOW - UPTIME)) * HZ, in clock ticks since boot.
+    BOUND = int((BIRTH - evidence.CREATION_BOUND_MARGIN_SECONDS - (NOW - UPTIME)) * HZ)
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.base = Path(self.tmp.name).resolve()
+        environment = patch.dict(os.environ, {"XDG_CACHE_HOME": str(self.base / "cache-home")})
+        environment.start()
+        self.addCleanup(environment.stop)
+        self.task_cache = self.base / "cache-home" / "conveyor" / "fixture-task"
+        self.child = self.task_cache / "go-build"
+        self.child.mkdir(parents=True)
+        self.proc = self.base / "proc"
+        self.proc.mkdir()
+
+    def process(self, pid, start=None, descriptor=None):
+        """Model a process entry: uninspectable unless descriptor names a readable target."""
+        entry = self.proc / str(pid)
+        entry.mkdir()
+        if start is not None:
+            (entry / "stat").write_text(f"{pid} (fixture) S 1 {pid} {pid} 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 {start}\n")
+        if descriptor is not None:
+            (entry / "fd").mkdir()
+            (entry / "fd" / "3").symlink_to(descriptor)
+            (entry / "cwd").symlink_to(self.base, target_is_directory=True)
+            (entry / "root").symlink_to(Path("/"), target_is_directory=True)
+            (entry / "environ").write_bytes(b"")
+        return entry
+
+    def foreign(self, *entries):
+        """Report the given process entries as owned by another user."""
+        real = Path.stat
+        foreign = set(entries)
+
+        def owner(path, *args, **kwargs):
+            info = real(path, *args, **kwargs)
+            if Path(path) in foreign:
+                values = list(info)
+                values[stat.ST_UID] = os.getuid() + 1
+                return os.stat_result(values)
+            return info
+        return patch.object(Path, "stat", owner)
+
+    def traversable(self):
+        """Give every directory group and other execute, so no ancestor isolates the cache."""
+        def lstat(directory):
+            values = list(os.lstat(directory))
+            values[stat.ST_MODE] |= stat.S_IXGRP | stat.S_IXOTH
+            return os.stat_result(values)
+        return patch.object(evidence, "owner_only_ancestor",
+                            functools.partial(evidence.owner_only_ancestor, lstat=lstat))
+
+    def provable_creation(self):
+        return patch.object(evidence, "creation_lower_bound",
+                            functools.partial(evidence.creation_lower_bound, birth=self.BIRTH, now=self.NOW,
+                                              uptime=self.UPTIME, hz=self.HZ))
+
+    def cleanup(self):
+        return evidence.cleanup_cache("fixture-task", self.task_cache, [], self.proc)
+
+    def test_owner_only_ancestor_disregards_foreign_uninspectable_process(self):
+        # TemporaryDirectory creates an owner-only (0700) directory.
+        self.assertEqual(evidence.owner_only_ancestor(self.child), self.base)
+        foreign = self.process(4242)
+        with self.foreign(foreign):
+            self.assertIn("4242:ambiguous:cwd", evidence.active_cache_users(self.child, self.proc))
+            self.assertEqual(self.cleanup(), ["go-build"])
+        self.assertFalse(self.child.exists())
+        self.assertTrue(self.task_cache.is_dir())
+
+    def test_traversable_chain_inspects_foreign_process_started_at_or_after_creation(self):
+        foreign = self.process(4242, start=self.BOUND)
+        with self.foreign(foreign), self.traversable():
+            self.assertIsNone(evidence.owner_only_ancestor(self.child))
+            with self.assertRaisesRegex(evidence.Refused, "4242:ambiguous"):
+                self.cleanup()
+            with self.provable_creation(), self.assertRaisesRegex(evidence.Refused, "4242:ambiguous"):
+                self.cleanup()
+        self.assertTrue(self.child.is_dir())
+
+    def test_creation_bound_drops_only_processes_started_before_the_child(self):
+        earlier = self.process(4242, start=self.BOUND - 1)
+        with self.foreign(earlier), self.traversable(), self.provable_creation():
+            self.assertEqual(self.cleanup(), ["go-build"])
+        self.child.mkdir()
+        unknown = self.process(4343)
+        with self.foreign(earlier, unknown), self.traversable(), self.provable_creation():
+            with self.assertRaisesRegex(evidence.Refused, "4343:ambiguous"):
+                self.cleanup()
+        self.assertTrue(self.child.is_dir())
+
+    def test_readable_reference_refuses_even_when_it_predates_creation(self):
+        (self.child / "object").write_text("cached")
+        self.process(4242, start=1, descriptor=self.child / "object")
+        with self.provable_creation():
+            with self.assertRaisesRegex(evidence.Refused, "4242:fd:3"):
+                self.cleanup()
+            with self.traversable(), self.assertRaisesRegex(evidence.Refused, "4242:fd:3"):
+                self.cleanup()
+        self.assertTrue((self.child / "object").is_file())
+
+    def test_missing_proc_refuses_with_owner_isolation(self):
+        with self.assertRaisesRegex(evidence.Refused, "requires /proc"):
+            evidence.active_cache_users(self.child, self.base / "absent-proc", uid=os.getuid())
+        with self.assertRaisesRegex(evidence.Refused, "requires /proc"):
+            evidence.cleanup_cache("fixture-task", self.task_cache, [], self.base / "absent-proc")
+        self.assertTrue(self.child.is_dir())
+
+    def test_owner_only_ancestor_requires_an_owned_untraversable_directory(self):
+        uid = os.getuid()
+        path = Path("/fixture/private/cache/child")
+
+        def metadata(modes):
+            def lstat(directory):
+                mode, owner = modes.get(str(directory), (stat.S_IFDIR | 0o755, uid))
+                if mode is None:
+                    raise PermissionError(directory)
+                return os.stat_result((mode, 0, 0, 0, owner, 0, 0, 0, 0, 0))
+            return lstat
+
+        with patch.object(Path, "resolve", lambda self, strict=False: self):
+            self.assertIsNone(evidence.owner_only_ancestor(path, metadata({})))
+            private = {"/fixture/private": (stat.S_IFDIR | 0o700, uid)}
+            self.assertEqual(evidence.owner_only_ancestor(path, metadata(private)), Path("/fixture/private"))
+            for mode, owner in ((stat.S_IFDIR | 0o700, uid + 1), (stat.S_IFDIR | 0o710, uid),
+                                (stat.S_IFDIR | 0o701, uid), (stat.S_IFLNK | 0o700, uid), (None, uid)):
+                rejected = {"/fixture/private": (mode, owner)}
+                self.assertIsNone(evidence.owner_only_ancestor(path, metadata(rejected)), (mode, owner))
+
+    def test_linux_birth_time_reads_statx_or_reports_none(self):
+        created = self.base / "created"
+        before = time.time()
+        created.mkdir()
+        birth = evidence.linux_birth_time(created)
+        if birth is None:
+            # Non-Linux hosts and filesystems without a recorded birth time.
+            self.assertIsNone(evidence.linux_birth_time(self.base / "absent"))
+            return
+        self.assertLessEqual(abs(birth - before), 5)
+        self.assertIsNone(evidence.linux_birth_time(self.base / "absent"))
+        with patch.object(evidence.sys, "platform", "darwin"):
+            self.assertIsNone(evidence.linux_birth_time(created))
+
+    def test_creation_lower_bound_requires_a_provable_birth_time(self):
+        bound = functools.partial(evidence.creation_lower_bound, self.child, self.proc)
+        self.assertEqual(bound(birth=self.BIRTH, now=self.NOW, uptime=self.UPTIME, hz=self.HZ), self.BOUND)
+        # Inode-change and content-change times never stand in for a birth time.
+        real_stat = os.stat
+        changed_only = SimpleNamespace(st_ctime=self.BIRTH, st_mtime=self.BIRTH)
+
+        def child_stat(path, *args, **kwargs):
+            return changed_only if Path(path) == self.child else real_stat(path, *args, **kwargs)
+        with patch.object(evidence.os, "stat", child_stat), \
+                patch.object(evidence, "linux_birth_time", return_value=None):
+            self.assertIsNone(bound(now=self.NOW, uptime=self.UPTIME, hz=self.HZ))
+        # Without st_birthtime, the statx birth time supplies the bound.
+        with patch.object(evidence.os, "stat", child_stat), \
+                patch.object(evidence, "linux_birth_time", return_value=self.BIRTH):
+            self.assertEqual(bound(now=self.NOW, uptime=self.UPTIME, hz=self.HZ), self.BOUND)
+        for birth in (self.NOW + 1, 0, -5.0, "9500"):
+            self.assertIsNone(bound(birth=birth, now=self.NOW, uptime=self.UPTIME, hz=self.HZ), birth)
+        # A birth no later than boot plus the margin cannot bound a start tick.
+        before_boot = self.NOW - self.UPTIME + evidence.CREATION_BOUND_MARGIN_SECONDS
+        self.assertIsNone(bound(birth=before_boot, now=self.NOW, uptime=self.UPTIME, hz=self.HZ))
+        # Unreadable or invalid clock inputs omit the filter.
+        self.assertIsNone(bound(birth=self.BIRTH, now=self.NOW, hz=self.HZ))
+        self.assertIsNone(bound(birth=self.BIRTH, now=self.NOW, uptime=0.0, hz=self.HZ))
+        self.assertIsNone(bound(birth=self.BIRTH, now=self.NOW, uptime=self.UPTIME, hz=0))
+        (self.proc / "uptime").write_text(f"{self.UPTIME} 0\n")
+        self.assertEqual(bound(birth=self.BIRTH, now=self.NOW, hz=self.HZ), self.BOUND)
+        # macOS reports process start in wall-clock microseconds.
+        darwin = evidence.creation_lower_bound(self.child, backend=validation_resources.DARWIN_BACKEND,
+                                               birth=self.BIRTH, now=self.NOW)
+        self.assertEqual(darwin, int((self.BIRTH - evidence.CREATION_BOUND_MARGIN_SECONDS) * 1_000_000))
+        self.assertIsNone(evidence.creation_lower_bound(self.child, backend=validation_resources.UNAVAILABLE,
+                                                        birth=self.BIRTH, now=self.NOW))
 
 
 class MakeGraphTests(unittest.TestCase):
