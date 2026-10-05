@@ -375,6 +375,78 @@ func TestConveyorWorkSkillShipsStageCheckoutAndSessionModeDiscipline(t *testing.
 	}
 }
 
+// Every claiming skill ships truthful claim identity and token-only usage
+// checkpoints (req-agent-skills AC-1.1, AC-3.2; req-usage-telemetry AC-2.1;
+// DEC-1).
+func TestClaimingSkillsShipClaimIdentityAndUsageReporting(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	destinations := skillDestinations(base, supportedSkillTools, false)
+	if _, _, err := installEmbeddedSkillsForDestinations(base, destinations, "v1", false); err != nil {
+		t.Fatal(err)
+	}
+
+	claimIdentity := []string{
+		"`agent` always names the harness running the session: `claude-code`, `codex`, `opencode`, `cursor`, or the harness's own name for itself",
+		"`model` is the concrete model ID when the session knows it from its own runtime",
+		"When the harness selects the model and does not expose it, as Cursor Auto does, `model` carries the harness's reported value verbatim, for example `auto`",
+		"The session never guesses a model ID",
+	}
+	required := map[string][]string{
+		"conveyor-work/conveyor-work.md": append([]string{
+			"Set `agent` and `model` as [Claim identity](#claim-identity) describes",
+			"This applies to spec, implement, verify, and review orders, and to each child planner, verifier, or reviewer that a self-claimed session starts",
+			"claims its order with its own `agent` and `model` as [Claim identity](#claim-identity) describes",
+			"claim exactly this work order with agent set to your harness name and model set to your runtime's model ID or its reported value such as auto",
+			"call `report_usage` with the order, its session, and the cumulative `tokens_in` and `tokens_out` for this work order",
+			"Report at each progress milestone and immediately before the stage's terminal lifecycle tool",
+			"Omit `cost_usd`",
+			"A session without figures skips the call and invents none",
+			"Missing usage never delays or blocks a lifecycle submission",
+			// Dependency 261005-5d2de8's cleanup wording stays intact.
+			"### Worktree cleanup",
+			"The session never runs `conveyor done` itself",
+		}, claimIdentity...),
+		"conveyor-work/SKILL.md": {
+			"Every claim names the harness in `agent` and the runtime's concrete model ID in `model`, or the harness's reported value such as `auto` verbatim when the harness does not expose one; never guess a model ID",
+		},
+		"conveyor-kit-verify/conveyor-kit-verify.md": append([]string{
+			"## Claim identity and usage",
+			"call `report_usage` with the cumulative `tokens_in` and `tokens_out` for the verify order at natural checkpoints and immediately before `submit_verification` or `release_work_order`",
+			"Omit `cost_usd`",
+			"A session without figures skips the call and invents none",
+			"Missing usage never delays or blocks a verification submission",
+		}, claimIdentity...),
+		"conveyor-kit-verify/SKILL.md": {
+			"A verifier's claim names the harness in `agent` and the runtime's concrete model ID in `model`, or the harness's reported value such as `auto` verbatim when the harness does not expose one; never guess a model ID",
+		},
+	}
+	forbidden := map[string][]string{
+		"conveyor-work/conveyor-work.md": {
+			"Usage reporting is observational and best-effort; it does not replace lifecycle completion",
+		},
+	}
+	for _, destination := range destinations {
+		for file, fragments := range required {
+			content, err := os.ReadFile(filepath.Join(destination.root, filepath.FromSlash(file)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			normalized := strings.Join(strings.Fields(string(content)), " ")
+			for _, fragment := range fragments {
+				if !strings.Contains(normalized, fragment) {
+					t.Errorf("%s installed %s missing %q", destination.tool.name, file, fragment)
+				}
+			}
+			for _, fragment := range forbidden[file] {
+				if strings.Contains(normalized, fragment) {
+					t.Errorf("%s installed %s still contains %q", destination.tool.name, file, fragment)
+				}
+			}
+		}
+	}
+}
+
 func TestQueueOversightSkillsShipFrozenPolicyAndExactHeadDiscipline(t *testing.T) {
 	t.Parallel()
 	base := t.TempDir()

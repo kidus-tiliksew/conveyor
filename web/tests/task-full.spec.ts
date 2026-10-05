@@ -4491,6 +4491,107 @@ test('review panel hides generated metadata while preserving reported zero usage
   await expect(panel.getByRole('tooltip').filter({ hasText: 'Usage unavailable' })).toHaveCount(0)
 })
 
+test('external Cursor Auto claims show the Cursor logo in the job footer and review seat without rewriting auto', async ({
+  page,
+}) => {
+  const iconPaths = (iconFile: string) =>
+    Array.from(
+      readFileSync(
+        new URL(`../node_modules/@lobehub/icons-static-svg/icons/${iconFile}.svg`, import.meta.url),
+        'utf8',
+      ).matchAll(/\sd="([^"]+)"/g),
+      (match) => match[1],
+    )
+  const logoPaths = (chip: Locator) =>
+    chip
+      .locator('span[aria-hidden="true"]')
+      .locator('path')
+      .evaluateAll((paths) => paths.map((path) => path.getAttribute('d')))
+
+  await page.route('**/v1/tasks/cursor-auto-implement/activity*', async (route) => {
+    const item = activity('stage-aware', false)
+    item.task.id = 'cursor-auto-implement'
+    item.jobs = [
+      {
+        id: 'cursor-auto-implement-implement-1',
+        task_id: 'cursor-auto-implement',
+        stage: 'implement',
+        harness: 'external-mcp',
+        model_tier: 'operator-owned',
+        runner: 'external',
+        confinement: 'none',
+        cost_usd: 0,
+        tokens_in: 0,
+        tokens_out: 0,
+        state: 'done',
+        started_at: createdAt,
+        ended_at: '2026-07-15T12:01:00Z',
+      },
+    ]
+    item.work_orders = [
+      {
+        ...item.work_orders[1],
+        id: 'cursor-auto-implement-implement-1',
+        task_id: 'cursor-auto-implement',
+        job_id: 'cursor-auto-implement-implement-1',
+        state: 'completed',
+        agent: 'cursor',
+        model: 'auto',
+        model_enforcement: 'self-reported',
+      },
+    ]
+    item.events = [
+      {
+        id: 1,
+        task_id: 'cursor-auto-implement',
+        job_id: 'cursor-auto-implement-implement-1',
+        kind: 'job.summary',
+        actor_id: 'agent',
+        actor_role: 'agent',
+        payload: { summary: 'Cursor implemented the change.' },
+        at: '2026-07-15T12:01:00Z',
+      },
+    ]
+    await route.fulfill({ json: item })
+  })
+
+  await page.goto('/tasks/cursor-auto-implement/full')
+  const footer = page.locator('article').filter({ hasText: 'Cursor implemented the change.' }).locator('footer')
+  const footerChip = footer.locator(':scope > span').last()
+  await expect(footerChip.getByText('auto', { exact: true })).toBeVisible()
+  await expect(footerChip.getByText('auto', { exact: true })).toHaveAttribute('title', 'auto')
+  expect(await logoPaths(footerChip)).toEqual(iconPaths('cursor'))
+  await expect(footerChip.locator('.lucide-cpu')).toHaveCount(0)
+  await expect(footerChip.getByRole('tooltip')).toContainText('via Cursor')
+
+  await page.route('**/v1/tasks/cursor-auto-review/activity*', async (route) => {
+    const item = activity('diagnostics', false)
+    item.task.id = 'cursor-auto-review'
+    item.jobs = item.jobs?.map((job) => ({ ...job, task_id: 'cursor-auto-review' }))
+    item.events = item.events.map((event) => ({ ...event, task_id: 'cursor-auto-review' }))
+    item.work_orders = item.work_orders?.map((order, index) => ({
+      ...order,
+      task_id: 'cursor-auto-review',
+      agent: 'cursor',
+      model: index === 0 ? 'auto' : undefined,
+    }))
+    await route.fulfill({ json: item })
+  })
+
+  await page.goto('/tasks/cursor-auto-review/full')
+  const panel = page.locator('article').filter({ hasText: 'Panel of 2 · unanimous to pass' })
+  const autoSeat = panel.locator('span.group\\/model').filter({ hasText: 'auto' })
+  await expect(autoSeat.getByText('auto', { exact: true })).toBeVisible()
+  expect(await logoPaths(autoSeat)).toEqual(iconPaths('cursor'))
+  await expect(autoSeat.locator('.lucide-cpu')).toHaveCount(0)
+  await expect(autoSeat.getByRole('tooltip')).toContainText('via Cursor')
+
+  // A provider-matched model keeps its provider logo whatever the harness.
+  const claudeSeat = panel.locator('span.group\\/model').filter({ hasText: 'claude-review' })
+  expect(await logoPaths(claudeSeat)).toEqual(iconPaths('claude-color'))
+  await expect(claudeSeat.getByText(/via /)).toHaveCount(0)
+})
+
 test('human gate renders as the event timeline tail and the page opens scrolled to it', async ({ page }) => {
   await page.goto('/tasks/gate/full')
 

@@ -1,7 +1,13 @@
 import claudeIcon from '@lobehub/icons-static-svg/icons/claude-color.svg?raw'
+import claudeCodeIcon from '@lobehub/icons-static-svg/icons/claudecode-color.svg?raw'
+import codexIcon from '@lobehub/icons-static-svg/icons/codex-color.svg?raw'
+import cursorIcon from '@lobehub/icons-static-svg/icons/cursor.svg?raw'
 import geminiIcon from '@lobehub/icons-static-svg/icons/gemini-color.svg?raw'
+import githubCopilotIcon from '@lobehub/icons-static-svg/icons/githubcopilot.svg?raw'
 import grokIcon from '@lobehub/icons-static-svg/icons/grok.svg?raw'
 import openaiIcon from '@lobehub/icons-static-svg/icons/openai.svg?raw'
+import opencodeIcon from '@lobehub/icons-static-svg/icons/opencode.svg?raw'
+import windsurfIcon from '@lobehub/icons-static-svg/icons/windsurf.svg?raw'
 import zhipuIcon from '@lobehub/icons-static-svg/icons/zhipu-color.svg?raw'
 import { Link } from '@tanstack/react-router'
 import {
@@ -33,6 +39,7 @@ import {
   planRevisionDecisionLabels,
   stageLabels,
 } from '../../lib/contracts'
+import { type HarnessLogo, type ProviderLogo, selectModelLogo } from '../../lib/model-logo'
 import { relatedTaskRoute, type TaskRouteVariant } from '../../lib/task-route'
 import type {
   ActivityItem,
@@ -1014,6 +1021,7 @@ function SeatRow({ seat, index, usageAvailable }: { seat: PanelSeat; index: numb
       <span className="min-w-0 flex-[1_1_7rem] font-mono text-[11px] tabular-nums text-muted">
         <ModelChip
           model={seat.model}
+          agent={seat.order.agent}
           tokensIn={seat.job?.tokens_in || seat.order.tokens_in}
           tokensOut={seat.job?.tokens_out || seat.order.tokens_out}
           note={seat.order.required_effort ? `effort ${seat.order.required_effort}` : undefined}
@@ -1186,8 +1194,9 @@ const placeholderSummaries = new Set([
 ])
 
 // The job footer keeps the operator-facing duration and model, while the model
-// chip retains usage and dispatch detail on hover. Harness, auth mode,
-// confinement, and actor plumbing stay in the API.
+// chip retains usage and dispatch detail on hover. The claim's harness shows
+// only as the chip's logo fallback; auth mode, confinement, and actor plumbing
+// stay in the API.
 function JobEntry({
   job,
   summary,
@@ -1270,8 +1279,9 @@ function JobEntry({
 }
 
 // The job footer keeps the operator-facing duration and model, while the model
-// chip retains usage and dispatch detail on hover. Harness, auth mode,
-// confinement, and actor plumbing stay in the API.
+// chip retains usage and dispatch detail on hover. The claim's harness shows
+// only as the chip's logo fallback; auth mode, confinement, and actor plumbing
+// stay in the API.
 function JobFooter({
   job,
   model,
@@ -1301,6 +1311,7 @@ function JobFooter({
       <span className="ml-auto min-w-0">
         <ModelChip
           model={model}
+          agent={order?.agent}
           tokensIn={job.tokens_in}
           tokensOut={job.tokens_out}
           note={note || undefined}
@@ -1318,20 +1329,25 @@ function JobFooter({
   )
 }
 
-// Provider logo keyed off the model name (bundled SVGs, no network fetch).
-function providerLogo(model: string): { svg: string; className?: string } | undefined {
-  const name = model.toLowerCase()
-  if (/^(gpt|o\d|codex|davinci)/.test(name) || name.includes('openai'))
-    return { svg: openaiIcon, className: 'text-foreground' }
-  if (/claude|fable|opus|sonnet|haiku|anthropic/.test(name)) return { svg: claudeIcon }
-  if (/gemini|google/.test(name)) return { svg: geminiIcon }
-  if (/grok|xai|x\.ai/.test(name)) return { svg: grokIcon, className: 'text-foreground' }
-  if (/(^|[/:])(?:chatglm|glm|zhipu)(?=$|[-/.:\d])/.test(name)) return { svg: zhipuIcon }
-  return undefined
+// Bundled logo SVGs (no network fetch). Monochrome icons inherit the
+// foreground color; selection order lives in lib/model-logo.
+const logoAssets: Record<ProviderLogo | HarnessLogo, { svg: string; className?: string }> = {
+  openai: { svg: openaiIcon, className: 'text-foreground' },
+  claude: { svg: claudeIcon },
+  gemini: { svg: geminiIcon },
+  grok: { svg: grokIcon, className: 'text-foreground' },
+  zhipu: { svg: zhipuIcon },
+  cursor: { svg: cursorIcon, className: 'text-foreground' },
+  'claude-code': { svg: claudeCodeIcon },
+  codex: { svg: codexIcon },
+  opencode: { svg: opencodeIcon, className: 'text-foreground' },
+  windsurf: { svg: windsurfIcon, className: 'text-foreground' },
+  'github-copilot': { svg: githubCopilotIcon, className: 'text-foreground' },
 }
 
 function ModelChip({
   model,
+  agent,
   tokensIn,
   tokensOut,
   note,
@@ -1340,6 +1356,7 @@ function ModelChip({
   showUnavailableUsage = true,
 }: {
   model: string
+  agent?: string
   tokensIn: number
   tokensOut: number
   note?: string
@@ -1347,7 +1364,8 @@ function ModelChip({
   usageProvenance?: string
   showUnavailableUsage?: boolean
 }) {
-  const logo = providerLogo(model)
+  const selected = selectModelLogo(model, agent)
+  const logo = selected ? logoAssets[selected.logo] : undefined
   const usage = [
     usageAvailable === false
       ? showUnavailableUsage
@@ -1358,6 +1376,7 @@ function ModelChip({
         : undefined,
     usageAvailable ? usageProvenance : undefined,
     note,
+    selected?.source === 'harness' ? `via ${selected.harness}` : undefined,
   ]
     .filter(Boolean)
     .join(' · ')

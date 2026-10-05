@@ -347,15 +347,17 @@ def run_lifecycle(config: dict, state: Path, command: list[str], *, task: str = 
             deadline = time.monotonic() + gate_timeout if gate_timeout else None
             outcome = None
             while outcome is None:
-                try:
-                    status = supervised.process.wait(timeout=0.1)
+                # The leader stays unreaped so stop() can still pin its group.
+                status = supervised.exit_status()
+                if status is not None:
                     outcome = "success" if status == 0 else "failure"
-                except subprocess.TimeoutExpired:
-                    if interrupted is not None:
-                        outcome = "interrupted"
-                    elif deadline is not None and time.monotonic() >= deadline:
-                        outcome = "timeout"
-                        status = 124
+                elif interrupted is not None:
+                    outcome = "interrupted"
+                elif deadline is not None and time.monotonic() >= deadline:
+                    outcome = "timeout"
+                    status = 124
+                else:
+                    time.sleep(0.1)
             stopped, detail = supervised.stop()
             if outcome in ("interrupted", "timeout") and supervised.process.returncode is not None:
                 status = status if outcome == "timeout" else supervised.process.returncode
