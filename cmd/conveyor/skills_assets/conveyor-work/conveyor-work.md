@@ -302,9 +302,9 @@ Follow the conveyor-kit-verify skill for a verification order, or the
 conveyor-work skill for a review order. Create your own session ID and client
 token, claim exactly this work order with agent set to your harness name and
 model set to your runtime's model ID or its reported value such as auto, call
-get_work_order, and judge the work independently from the delivered contract. Submit your result through the
-stage's registered tool, observe success, report, and exit. Do not claim any
-other order.
+get_work_order, and judge the work independently from the delivered contract.
+Submit your result through the stage's registered tool, observe success,
+report, and exit. Do not claim any other order.
 ```
 
 Repeat step 1 after each stage result: a verification success creates the
@@ -347,9 +347,9 @@ work order <order-id>. Use the Conveyor MCP registration for that server.
 Follow the conveyor-work skill for this plan order. Create your own session ID
 and client token, claim exactly this work order with agent set to your harness
 name and model set to your runtime's model ID or its reported value such as
-auto, call get_work_order, and plan from the delivered contract. Submit the plan through submit_plan, observe
-success, report, and exit. Do not claim any other order, and never record a
-gate or proposal decision.
+auto, call get_work_order, and plan from the delivered contract. Submit the
+plan through submit_plan, observe success, report, and exit. Do not claim any
+other order, and never record a gate or proposal decision.
 ```
 
 A subagent of the same harness is an operator-accepted independence level.
