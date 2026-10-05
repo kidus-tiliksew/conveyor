@@ -25,9 +25,10 @@ def run(root, *args, env=None):
     return subprocess.run(args, cwd=root, env=env, capture_output=True, text=True, check=True).stdout
 
 
-# Live cache-user detection reads Linux /proc; hosts without it refuse cleanup
-# instead (component-verification-strategy).
-HAS_PROC = Path("/proc").is_dir()
+# Live cache-user detection and group-member verification read Linux /proc or
+# macOS libproc; hosts with neither refuse instead (component-verification-strategy).
+HAS_BACKEND = validation_resources.process_backend() != validation_resources.UNAVAILABLE
+NO_BACKEND = "no process backend on this host (Linux /proc or macOS libproc)"
 
 
 def _child_pids(parent_pid):
@@ -48,7 +49,13 @@ def _pid_alive(pid):
         return False
     except PermissionError:
         return True
-    return True
+    # An exited, unreaped process is not alive.
+    if validation_resources.process_backend() == validation_resources.DARWIN_BACKEND:
+        return validation_resources.darwin().state(pid) != "zombie"
+    try:
+        return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0] != "Z"
+    except OSError:
+        return True
 
 
 class EvidenceTests(unittest.TestCase):
@@ -287,7 +294,7 @@ class EvidenceTests(unittest.TestCase):
 
         process = subprocess.Popen(["sleep", "30"], cwd=child)
         try:
-            expected = "disposable cache child is active: tmp" if HAS_PROC else "requires /proc"
+            expected = "disposable cache child is active: tmp" if HAS_BACKEND else "requires /proc"
             with self.assertRaisesRegex(evidence.Refused, expected):
                 evidence.cleanup_cache("fixture-task", task_cache, [])
         finally:
@@ -311,14 +318,14 @@ class EvidenceTests(unittest.TestCase):
         self.assertTrue(unknown.exists())
         self.assertTrue(guarded.exists())
 
-    @unittest.skipUnless(HAS_PROC, "live cache-user detection reads Linux /proc; cleanup refuses without it; "
-                                   "Ubuntu CI is the run of record")
+    @unittest.skipUnless(HAS_BACKEND, NO_BACKEND + "; cleanup refuses without it")
     def test_cleanup_refuses_environment_only_live_cache_user(self):
         os.environ["XDG_CACHE_HOME"] = str(self.base / "cache-home")
         task_cache = self.base / "cache-home" / "conveyor" / "fixture-task"
         child = task_cache / "go-build"
         child.mkdir(parents=True)
-        process = subprocess.Popen(["sleep", "30"], cwd=self.base,
+        # Python, not /bin/sleep: macOS withholds a platform binary's environment.
+        process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"], cwd=self.base,
                                    env=dict(os.environ, GOCACHE=str(child)))
         try:
             users = evidence.active_cache_users(child)
@@ -346,12 +353,15 @@ class EvidenceTests(unittest.TestCase):
         absent = self.base / "absent-proc"
         with self.assertRaisesRegex(evidence.Refused, "requires /proc"):
             evidence.active_cache_users(self.base / "cache", absent)
+        unavailable = validation_resources.UNAVAILABLE
+        with self.assertRaisesRegex(evidence.Refused, "requires /proc or macOS libproc"):
+            evidence.active_cache_users(self.base / "cache", backend=unavailable)
         os.environ["XDG_CACHE_HOME"] = str(self.base / "cache-home")
         task_cache = self.base / "cache-home" / "conveyor" / "fixture-task"
         child = task_cache / "tmp"
         child.mkdir(parents=True)
-        without_proc = functools.partial(evidence.active_cache_users, proc=absent)
-        with patch.object(evidence, "active_cache_users", without_proc):
+        without_backend = functools.partial(evidence.active_cache_users, backend=unavailable)
+        with patch.object(evidence, "active_cache_users", without_backend):
             with self.assertRaisesRegex(evidence.Refused, "requires /proc"):
                 evidence.cleanup_cache("fixture-task", task_cache, [])
         self.assertTrue(child.is_dir())
@@ -812,8 +822,7 @@ sys.exit({exit_code})
         self.assertTrue(pid_file.is_file(), "descendant was not launched")
         self.assertFalse(_pid_alive(int(pid_file.read_text())), "descendant holding the output survived")
 
-    @unittest.skipUnless(HAS_PROC, "surviving members are verified through Linux /proc; "
-                         "without it the supervisor refuses to signal them")
+    @unittest.skipUnless(HAS_BACKEND, NO_BACKEND + "; without it the supervisor refuses to signal survivors")
     def test_successful_command_reaps_descendant_holding_output_and_keeps_status(self):
         pid_file = self._descendant_holds_output(0)
         status, stdout, stderr, elapsed = self._run_bounded()
@@ -828,8 +837,7 @@ sys.exit({exit_code})
         self.assertIn("outcome=success", stdout)
         evidence.check(self.root, self.policy, self.output)
 
-    @unittest.skipUnless(HAS_PROC, "surviving members are verified through Linux /proc; "
-                         "without it the supervisor refuses to signal them")
+    @unittest.skipUnless(HAS_BACKEND, NO_BACKEND + "; without it the supervisor refuses to signal survivors")
     def test_failed_command_reaps_descendant_holding_output_and_keeps_status(self):
         pid_file = self._descendant_holds_output(3)
         status, stdout, stderr, elapsed = self._run_bounded()

@@ -14,16 +14,21 @@ Python standard library is used.
 from __future__ import annotations
 
 import argparse
+import errno
 import fcntl
+import functools
 import hashlib
 import json
 import os
 from pathlib import Path
+import platform
+import plistlib
 import re
 import secrets
 import shutil
 import signal
 import socket
+import struct
 import subprocess
 import sys
 import time
@@ -95,7 +100,37 @@ def sanitize_argv(argv) -> list[str]:
     return ["[redacted]" if SECRETISH.search(str(value)) else str(value) for value in argv]
 
 
+# ---------------------------------------------------------------------------
+# Process backends
+#
+# Linux process facts come from /proc. macOS facts come from libproc, sysctl,
+# and statfs through ctypes. A host with neither backend keeps the refusals
+# that protect process-group teardown and cache cleanup.
+
+PROC_BACKEND = "proc"
+DARWIN_BACKEND = "darwin"
+UNAVAILABLE = "unavailable"
+
+
+def process_backend(proc: Path = PROC, backend: str | None = None) -> str:
+    """Select the backend for process facts.
+
+    An explicit backend wins. A readable proc directory selects the /proc
+    parser, including test fixtures. macOS libproc serves only the host
+    default, so an injected proc path that does not exist stays unavailable.
+    """
+    if backend is not None:
+        return backend
+    if Path(proc).is_dir():
+        return PROC_BACKEND
+    if Path(proc) == PROC and darwin() is not None:
+        return DARWIN_BACKEND
+    return UNAVAILABLE
+
+
 def boot_id(proc: Path = PROC) -> str | None:
+    if process_backend(proc) == DARWIN_BACKEND:
+        return darwin().boot_id()
     try:
         return (proc / "sys" / "kernel" / "random" / "boot_id").read_text().strip() or None
     except OSError:
@@ -115,6 +150,8 @@ def _proc_stat(pid: int, proc: Path = PROC):
 
 
 def process_birth(pid: int, proc: Path = PROC) -> dict | None:
+    if process_backend(proc) == DARWIN_BACKEND:
+        return darwin().birth(pid)
     info = _proc_stat(pid, proc)
     if info is None:
         return None
@@ -122,12 +159,263 @@ def process_birth(pid: int, proc: Path = PROC) -> dict | None:
 
 
 def current_ticks(proc: Path = PROC) -> int | None:
-    """Clock ticks since boot, comparable with process start ticks."""
+    """Clock ticks since boot, comparable with process start ticks.
+
+    macOS records process start as wall-clock microseconds, so its current
+    value uses the same clock.
+    """
+    if process_backend(proc) == DARWIN_BACKEND:
+        return time.time_ns() // 1000
     try:
         uptime = float((proc / "uptime").read_text().split()[0])
     except (OSError, ValueError, IndexError):
         return None
     return int(uptime * os.sysconf("SC_CLK_TCK"))
+
+
+# macOS structure layouts from <sys/proc_info.h>, <sys/sysctl.h>, and
+# <sys/mount.h> (64-bit, little-endian). Every parser rejects a buffer of the
+# wrong size, so an ABI change reads as an unestablished fact rather than a
+# partial parse.
+BSDINFO_SIZE = 136  # struct proc_bsdinfo
+KINFO_PROC_SIZE = 648  # struct kinfo_proc
+VNODE_INFO_SIZE = 152  # struct vnode_info
+VNODE_INFO_PATH_SIZE = VNODE_INFO_SIZE + 1024  # struct vnode_info_path: vnode_info, char[MAXPATHLEN]
+VNODEPATHINFO_SIZE = 2 * VNODE_INFO_PATH_SIZE  # struct proc_vnodepathinfo: cdir, rdir
+PROC_FILEINFO_SIZE = 24  # struct proc_fileinfo
+FDVNODEPATH_SIZE = PROC_FILEINFO_SIZE + VNODE_INFO_PATH_SIZE  # struct vnode_fdinfowithpath
+STATFS_SIZE = 2168  # struct statfs with 64-bit inodes
+SZOMB = 5
+PROX_FDTYPE_VNODE = 1
+PROC_PIDLISTFDS = 1
+PROC_PIDTBSDINFO = 3
+PROC_PIDVNODEPATHINFO = 9
+PROC_PIDFDVNODEPATHINFO = 2
+CTL_KERN, KERN_PROC, KERN_PROCARGS2 = 1, 14, 49
+KERN_PROC_PID, KERN_PROC_PGRP, KERN_PROC_UID = 1, 2, 5
+DARWIN_DISK_FILESYSTEMS = {"apfs", "hfs"}
+HDIUTIL = "/usr/bin/hdiutil"
+
+
+def _cstring(raw: bytes) -> str:
+    return os.fsdecode(raw.split(b"\0", 1)[0])
+
+
+def parse_bsdinfo(raw: bytes) -> dict | None:
+    """Parse struct proc_bsdinfo. Start time is wall-clock microseconds."""
+    if len(raw) != BSDINFO_SIZE:
+        return None
+    status, _exit_status, pid, ppid, uid = struct.unpack_from("<5I", raw, 4)
+    (pgid,) = struct.unpack_from("<I", raw, 100)
+    seconds, microseconds = struct.unpack_from("<2Q", raw, 120)
+    return {"status": status, "pid": pid, "ppid": ppid, "uid": uid, "pgid": pgid,
+            "start": seconds * 1_000_000 + microseconds}
+
+
+def parse_kinfo_procs(raw: bytes) -> list[tuple[int, int]] | None:
+    """Parse a struct kinfo_proc array into (pid, p_stat) pairs."""
+    if len(raw) % KINFO_PROC_SIZE:
+        return None
+    # extern_proc places p_stat at offset 36 and p_pid at offset 40.
+    return [(struct.unpack_from("<i", raw, offset + 40)[0], raw[offset + 36])
+            for offset in range(0, len(raw), KINFO_PROC_SIZE)]
+
+
+def parse_procargs2(raw: bytes) -> tuple[list[str], list[bytes]] | None:
+    """Parse KERN_PROCARGS2: argc, the exec path, NUL padding, argv, then the environment.
+
+    The kernel withholds the environment of platform binaries such as /bin/sh;
+    it then parses as empty.
+    """
+    if len(raw) < 4:
+        return None
+    (argc,) = struct.unpack_from("<i", raw, 0)
+    position = raw.find(b"\0", 4)
+    if argc < 0 or position < 0:
+        return None
+    while position < len(raw) and raw[position] == 0:
+        position += 1
+    strings = raw[position:].split(b"\0")
+    if len(strings) < argc:
+        return None
+    environment = []
+    for entry in strings[argc:]:
+        if not entry:
+            break  # Apple strings follow the environment after an empty entry.
+        environment.append(entry)
+    return [os.fsdecode(value) for value in strings[:argc]], environment
+
+
+def parse_vnodepathinfo(raw: bytes) -> tuple[str, str] | None:
+    """Parse struct proc_vnodepathinfo into (cwd, root). Root is empty unless the process chrooted."""
+    if len(raw) != VNODEPATHINFO_SIZE:
+        return None
+    return (_cstring(raw[VNODE_INFO_SIZE:VNODE_INFO_PATH_SIZE]),
+            _cstring(raw[VNODE_INFO_PATH_SIZE + VNODE_INFO_SIZE:]))
+
+
+def parse_fdlist(raw: bytes) -> list[tuple[int, int]] | None:
+    """Parse a struct proc_fdinfo array into (fd, type) pairs."""
+    if len(raw) % 8:
+        return None
+    return [struct.unpack_from("<iI", raw, offset) for offset in range(0, len(raw), 8)]
+
+
+def parse_fd_vnodepath(raw: bytes) -> str | None:
+    """Parse struct vnode_fdinfowithpath into the descriptor's path."""
+    if len(raw) != FDVNODEPATH_SIZE:
+        return None
+    return _cstring(raw[PROC_FILEINFO_SIZE + VNODE_INFO_SIZE:])
+
+
+def parse_statfs(raw: bytes) -> dict | None:
+    if len(raw) != STATFS_SIZE:
+        return None
+    return {"fstype": _cstring(raw[72:88]), "mounted_on": _cstring(raw[88:1112]),
+            "mounted_from": _cstring(raw[1112:2136])}
+
+
+def ram_disk_entities(raw: bytes) -> set[str] | None:
+    """Device entries and mount points of attached ram:// images in `hdiutil info -plist` output."""
+    try:
+        info = plistlib.loads(raw)
+    except Exception:  # plistlib raises several parser types; any of them means unknown.
+        return None
+    if not isinstance(info, dict) or not isinstance(info.get("images", []), list):
+        return None
+    entities = set()
+    for image in info.get("images", []):
+        if not isinstance(image, dict) or not str(image.get("image-path", "")).startswith("ram://"):
+            continue
+        for entity in image.get("system-entities", []):
+            if isinstance(entity, dict):
+                entities.update(str(entity[key]) for key in ("dev-entry", "mount-point") if entity.get(key))
+    return entities
+
+
+class Darwin:
+    """macOS process and filesystem facts through libproc, sysctl, and statfs."""
+
+    def __init__(self, ctypes):
+        self._ctypes = ctypes
+        libc = ctypes.CDLL(None, use_errno=True)
+        libproc = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+        self._sysctl = libc.sysctl
+        self._sysctl.argtypes = [ctypes.POINTER(ctypes.c_int), ctypes.c_uint, ctypes.c_void_p,
+                                 ctypes.POINTER(ctypes.c_size_t), ctypes.c_void_p, ctypes.c_size_t]
+        self._sysctlbyname = libc.sysctlbyname
+        self._sysctlbyname.argtypes = [ctypes.c_char_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_size_t),
+                                       ctypes.c_void_p, ctypes.c_size_t]
+        # x86_64 keeps the 32-bit-inode statfs under the plain symbol name.
+        self._statfs = getattr(libc, "statfs$INODE64" if platform.machine() == "x86_64" else "statfs")
+        self._statfs.argtypes = [ctypes.c_char_p, ctypes.c_void_p]
+        self._pidinfo = libproc.proc_pidinfo
+        self._pidinfo.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_int]
+        self._pidfdinfo = libproc.proc_pidfdinfo
+        self._pidfdinfo.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_void_p, ctypes.c_int]
+
+    def _sysctl_bytes(self, mib) -> bytes | None:
+        ctypes = self._ctypes
+        name = (ctypes.c_int * len(mib))(*mib)
+        for _ in range(4):
+            size = ctypes.c_size_t(0)
+            if self._sysctl(name, len(mib), None, ctypes.byref(size), None, 0) != 0:
+                return None
+            if size.value == 0:
+                return b""
+            size = ctypes.c_size_t(size.value + size.value // 4 + 4096)  # Room for processes started meanwhile.
+            buffer = ctypes.create_string_buffer(size.value)
+            if self._sysctl(name, len(mib), buffer, ctypes.byref(size), None, 0) == 0:
+                return buffer.raw[:size.value]
+            if ctypes.get_errno() != errno.ENOMEM:
+                return None
+        return None
+
+    def boot_id(self) -> str | None:
+        ctypes = self._ctypes
+        buffer = ctypes.create_string_buffer(64)
+        size = ctypes.c_size_t(len(buffer))
+        if self._sysctlbyname(b"kern.bootsessionuuid", buffer, ctypes.byref(size), None, 0) != 0:
+            return None
+        return _cstring(buffer.raw[:size.value]) or None
+
+    def bsdinfo(self, pid: int) -> dict | None:
+        buffer = self._ctypes.create_string_buffer(BSDINFO_SIZE)
+        if self._pidinfo(pid, PROC_PIDTBSDINFO, 0, buffer, BSDINFO_SIZE) != BSDINFO_SIZE:
+            return None  # Gone, a zombie, or another user's process.
+        info = parse_bsdinfo(buffer.raw)
+        return info if info is not None and info["pid"] == pid else None
+
+    def birth(self, pid: int) -> dict | None:
+        info = self.bsdinfo(pid)
+        if info is None:
+            return None
+        return {"start_ticks": info["start"], "boot_id": self.boot_id()}
+
+    def processes(self, selector: int, value: int) -> list[tuple[int, int]] | None:
+        """(pid, p_stat) for KERN_PROC_PID, KERN_PROC_PGRP, or KERN_PROC_UID, including zombies."""
+        raw = self._sysctl_bytes([CTL_KERN, KERN_PROC, selector, value])
+        return None if raw is None else parse_kinfo_procs(raw)
+
+    def state(self, pid: int) -> str | None:
+        """Return "gone", "zombie", or "live"; None when the state cannot be established."""
+        processes = self.processes(KERN_PROC_PID, pid)
+        if processes is None or (processes and processes[0][0] != pid):
+            return None
+        if not processes:
+            return "gone"
+        return "zombie" if processes[0][1] == SZOMB else "live"
+
+    def procargs(self, pid: int) -> tuple[list[str], list[bytes]] | None:
+        raw = self._sysctl_bytes([CTL_KERN, KERN_PROCARGS2, pid])
+        return parse_procargs2(raw) if raw else None
+
+    def vnode_paths(self, pid: int) -> tuple[str, str] | None:
+        buffer = self._ctypes.create_string_buffer(VNODEPATHINFO_SIZE)
+        if self._pidinfo(pid, PROC_PIDVNODEPATHINFO, 0, buffer, VNODEPATHINFO_SIZE) != VNODEPATHINFO_SIZE:
+            return None
+        return parse_vnodepathinfo(buffer.raw)
+
+    def descriptors(self, pid: int) -> list[tuple[int, int]] | None:
+        ctypes = self._ctypes
+        ctypes.set_errno(0)
+        size = self._pidinfo(pid, PROC_PIDLISTFDS, 0, None, 0)
+        if size <= 0:
+            return [] if size == 0 and ctypes.get_errno() == 0 else None
+        size += 64 * 8  # Room for descriptors opened meanwhile.
+        buffer = ctypes.create_string_buffer(size)
+        ctypes.set_errno(0)
+        filled = self._pidinfo(pid, PROC_PIDLISTFDS, 0, buffer, size)
+        if filled <= 0:
+            return [] if filled == 0 and ctypes.get_errno() == 0 else None
+        return parse_fdlist(buffer.raw[:filled])
+
+    def descriptor_path(self, pid: int, fd: int) -> tuple[str | None, int]:
+        """Return (path, 0), or (None, errno) when the descriptor cannot be read."""
+        ctypes = self._ctypes
+        buffer = ctypes.create_string_buffer(FDVNODEPATH_SIZE)
+        ctypes.set_errno(0)
+        if self._pidfdinfo(pid, fd, PROC_PIDFDVNODEPATHINFO, buffer, FDVNODEPATH_SIZE) != FDVNODEPATH_SIZE:
+            return None, ctypes.get_errno()
+        return parse_fd_vnodepath(buffer.raw), 0
+
+    def statfs(self, path: Path) -> dict | None:
+        buffer = self._ctypes.create_string_buffer(STATFS_SIZE)
+        if self._statfs(os.fsencode(str(path)), buffer) != 0:
+            return None
+        return parse_statfs(buffer.raw)
+
+
+@functools.cache
+def darwin() -> Darwin | None:
+    """The macOS backend, or None on other hosts or when libproc cannot be loaded."""
+    if sys.platform != "darwin":
+        return None
+    try:
+        import ctypes
+        return Darwin(ctypes)
+    except (ImportError, OSError, AttributeError):
+        return None
 
 
 def host_identity() -> dict:
@@ -260,7 +548,18 @@ def _unescape_mount(value: str) -> str:
     return re.sub(r"\\([0-7]{3})", lambda match: chr(int(match.group(1), 8)), value)
 
 
-def backing_filesystem(path: Path, mountinfo: Path = PROC / "self" / "mountinfo") -> str | None:
+MOUNTINFO = PROC / "self" / "mountinfo"
+
+
+def _darwin_mounts(mountinfo: Path) -> bool:
+    """macOS statfs answers for the host default; an injected mount table is always parsed."""
+    return Path(mountinfo) == MOUNTINFO and not Path(mountinfo).exists() and darwin() is not None
+
+
+def backing_filesystem(path: Path, mountinfo: Path = MOUNTINFO) -> str | None:
+    if _darwin_mounts(mountinfo):
+        info = darwin().statfs(path)
+        return (info or {}).get("fstype") or None
     try:
         lines = Path(mountinfo).read_text().splitlines()
     except OSError:
@@ -279,7 +578,34 @@ def backing_filesystem(path: Path, mountinfo: Path = PROC / "self" / "mountinfo"
     return best[1] if best else None
 
 
-def resolve_tmp_root(task: str, checkout: Path, env=None, mountinfo: Path = PROC / "self" / "mountinfo") -> dict:
+def _darwin_image_backing(root: Path) -> str:
+    """An apfs or hfs root on an attached ram:// image is RAM-backed; anything unestablished is unknown."""
+    info = darwin().statfs(root)
+    if info is None:
+        return "unknown"
+    try:
+        result = subprocess.run([HDIUTIL, "info", "-plist"], capture_output=True, check=False, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return "unknown"
+    entities = ram_disk_entities(result.stdout) if result.returncode == 0 else None
+    if entities is None:
+        return "unknown"
+    return "ram" if {info["mounted_on"], info["mounted_from"]} & entities else "disk"
+
+
+def classify_backing(root: Path, filesystem: str | None, darwin_host: bool) -> str:
+    if filesystem is None:
+        return "unknown"
+    if filesystem in RAM_FILESYSTEMS:
+        return "ram"
+    if not darwin_host:
+        return "disk"
+    if filesystem not in DARWIN_DISK_FILESYSTEMS:
+        return "unknown"
+    return _darwin_image_backing(root)
+
+
+def resolve_tmp_root(task: str, checkout: Path, env=None, mountinfo: Path = MOUNTINFO) -> dict:
     env = os.environ if env is None else env
     cache_home = Path(env.get("XDG_CACHE_HOME") or Path(env.get("HOME") or Path.home()) / ".cache")
     configured = env.get(TMP_ROOT) or env.get("CONVEYOR_TASK_CACHE") or str(cache_home / "conveyor" / task)
@@ -295,7 +621,7 @@ def resolve_tmp_root(task: str, checkout: Path, env=None, mountinfo: Path = PROC
     if root == checkout or root.is_relative_to(checkout):
         raise Refusal(f"temporary root {root} is inside the checkout {checkout}")
     filesystem = backing_filesystem(root, mountinfo)
-    backing = "unknown" if filesystem is None else ("ram" if filesystem in RAM_FILESYSTEMS else "disk")
+    backing = classify_backing(root, filesystem, _darwin_mounts(mountinfo))
     decision = {"path": str(root), "filesystem": filesystem, "backing": backing, "override": False, "warning": None}
     if backing != "disk":
         reason = "RAM-backed" if backing == "ram" else "on a filesystem whose backing cannot be established"
@@ -335,7 +661,7 @@ def _inspection_failure(process, label):
     return process.name + ":ambiguous:" + label
 
 
-def active_cache_users(path, proc=PROC, uid=None, created_after=None, sessions=None):
+def active_cache_users(path, proc=PROC, uid=None, created_after=None, sessions=None, backend=None):
     """Return live or ambiguously inspected processes that may use path.
 
     With uid, only that user's processes are inspected. Callers pass it only
@@ -343,11 +669,21 @@ def active_cache_users(path, proc=PROC, uid=None, created_after=None, sessions=N
     enter. Every readable process is inspected in full. For an uninspectable
     (for example non-dumpable) process, created_after (start ticks) drops one
     that started before the path existed, and sessions drops one outside the
-    sessions that could have inherited the path.
+    sessions that could have inherited the path. The macOS backend inspects
+    only the invoking user's processes.
     """
     path = Path(path).resolve()
-    if not Path(proc).is_dir():
-        raise Refusal("active cache ownership inspection requires /proc")
+    selected = process_backend(proc, backend)
+    if selected == DARWIN_BACKEND:
+        def started(pid):
+            info = darwin().bsdinfo(int(pid))
+            try:
+                return None if info is None else (info["start"], os.getsid(int(pid)))
+            except OSError:
+                return None
+        return _without_unrelated(_darwin_cache_users(path, uid), started, created_after, sessions)
+    if selected == UNAVAILABLE or not Path(proc).is_dir():
+        raise Refusal("active cache ownership inspection requires /proc or macOS libproc")
     users = []
     try:
         processes = list(Path(proc).iterdir())
@@ -421,34 +757,122 @@ def active_cache_users(path, proc=PROC, uid=None, created_after=None, sessions=N
             if failure:
                 users.append(failure)
             continue
-        for entry in environment.split(b"\0"):
-            name, separator, value = entry.partition(b"=")
-            if not separator or os.fsdecode(name) not in CACHE_ENVIRONMENT or not value:
+        users += _environment_users(process.name, environment.split(b"\0"), process_cwd, path)
+
+    def started(pid):
+        info = _proc_stat(int(pid), Path(proc))
+        return None if info is None else (info["start"], info["session"])
+    return _without_unrelated(users, started, created_after, sessions)
+
+
+def _environment_users(name: str, entries, process_cwd, path: Path) -> list[str]:
+    users = []
+    for entry in entries:
+        key, separator, value = entry.partition(b"=")
+        if not separator or os.fsdecode(key) not in CACHE_ENVIRONMENT or not value:
+            continue
+        variable = os.fsdecode(key)
+        candidate = Path(os.fsdecode(value))
+        if not candidate.is_absolute():
+            if process_cwd is None:
+                users.append(name + ":ambiguous:env:" + variable)
                 continue
-            variable = os.fsdecode(name)
-            candidate = Path(os.fsdecode(value))
-            if not candidate.is_absolute():
-                if process_cwd is None:
-                    users.append(process.name + ":ambiguous:env:" + variable)
-                    continue
-                candidate = process_cwd / candidate
-            try:
-                target = candidate.resolve()
-            except OSError:
-                users.append(process.name + ":ambiguous:env:" + variable)
-                continue
-            if _inside(target, path):
-                users.append(process.name + ":env:" + variable)
+            candidate = process_cwd / candidate
+        try:
+            target = candidate.resolve()
+        except OSError:
+            users.append(name + ":ambiguous:env:" + variable)
+            continue
+        if _inside(target, path):
+            users.append(name + ":env:" + variable)
+    return users
+
+
+def _without_unrelated(users, started, created_after, sessions) -> list[str]:
+    """Drop ambiguity for a process that started before the path or outside its sessions.
+
+    started(pid) returns (start, session), or None when unknown; an unknown
+    process stays ambiguous.
+    """
     if created_after is not None or sessions is not None:
         def unrelated(pid):
-            info = _proc_stat(int(pid), Path(proc))
+            info = started(pid)
             if info is None:
                 return False
-            return ((created_after is not None and info["start"] < created_after)
-                    or (sessions is not None and info["session"] not in sessions))
+            start, session = info
+            return ((created_after is not None and start < created_after)
+                    or (sessions is not None and session not in sessions))
         users = [value for value in users
                  if ":ambiguous:" not in value or not unrelated(value.split(":", 1)[0])]
     return sorted(set(users), key=lambda value: (":ambiguous:" in value, value))
+
+
+def _darwin_cache_users(path: Path, uid) -> list[str]:
+    """macOS live-use inspection of the invoking user's processes.
+
+    The kernel lists the user's processes (KERN_PROC_UID). libproc reports
+    each one's cwd, root, and vnode descriptors, and KERN_PROCARGS2 its
+    environment. A failed read of a still-live process is ambiguous. An
+    environment the kernel withholds (platform binaries) parses as empty and
+    binds no cache variable, and a descriptor whose path the kernel refuses
+    (EPERM) names a protected vnode outside any user-removable directory.
+    Other users' processes cannot be inspected without privileges and are
+    outside this check.
+    """
+    host = darwin()
+    processes = host.processes(KERN_PROC_UID, os.getuid() if uid is None else uid)
+    if processes is None:
+        raise Refusal("active cache ownership inspection is ambiguous: process list")
+    users = []
+    for pid, status in processes:
+        if pid == os.getpid() or status == SZOMB:
+            continue  # An exited, unreaped process holds no cwd, root, or descriptors.
+        name = str(pid)
+
+        def failure(label):
+            if host.state(pid) in ("gone", "zombie"):
+                return []
+            return [name + ":ambiguous:" + label]
+
+        process_cwd = None
+        paths = host.vnode_paths(pid)
+        if paths is None:
+            users += failure("cwd")
+        else:
+            for label, value in zip(("cwd", "root"), paths):
+                if not value:
+                    continue  # rdir has no path unless the process chrooted.
+                target = Path(value).resolve()
+                if label == "cwd":
+                    process_cwd = target
+                if _inside(target, path):
+                    users.append(name + ":" + label)
+        descriptors = host.descriptors(pid)
+        if descriptors is None:
+            users += failure("fd")
+            descriptors = []
+        for fd, kind in descriptors:
+            if kind != PROX_FDTYPE_VNODE:
+                continue  # Sockets, pipes, and kqueues name no filesystem path.
+            value, error = host.descriptor_path(pid, fd)
+            if value is None:
+                # EBADF: the descriptor closed during inspection. EPERM for one
+                # descriptor of an inspectable process: the kernel protects that
+                # vnode (data vault or SIP), so it cannot lie under a directory
+                # this user created and may remove (operator direction 2026-10-05).
+                if error not in (errno.EBADF, errno.EPERM):
+                    users += failure("fd:" + str(fd))
+                continue
+            if not value:
+                continue  # An unlinked file has no path left to remove.
+            if _inside(Path(value).resolve(), path):
+                users.append(name + ":fd:" + str(fd))
+        arguments = host.procargs(pid)
+        if arguments is None:
+            users += failure("environ")
+            continue
+        users += _environment_users(name, arguments[1], process_cwd, path)
+    return users
 
 
 # ---------------------------------------------------------------------------
@@ -703,6 +1127,23 @@ class Supervised:
     def pid(self) -> int:
         return self.process.pid
 
+    def exit_status(self) -> int | None:
+        """Return the leader's exit status, or None while it runs, without reaping it.
+
+        An unreaped leader keeps its PID, and therefore its process group ID,
+        out of reuse until stop() has inspected and signaled the group.
+        """
+        if self.process.returncode is not None:
+            return self.process.returncode
+        try:
+            result = os.waitid(os.P_PID, self.process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+        except ChildProcessError:
+            return self.process.poll()
+        if result is None:
+            return None
+        # Popen reports a signal death as the negative signal number.
+        return result.si_status if result.si_code == os.CLD_EXITED else -result.si_status
+
     def stop(self, grace: float = 5.0) -> tuple[bool, str]:
         entry = self.invocation.resource(self.rid)
         if entry["state"] not in ("sealed", "cleanup-failed"):
@@ -780,13 +1221,102 @@ def _member_verified(pid: int, identity: dict, reference: str, proc: Path) -> bo
     return (BINDING + "=" + reference).encode() in environment.split(b"\0")
 
 
+def _darwin_group_members(pgid: int) -> list[int] | None:
+    """Live members of pgid from KERN_PROC_PGRP, or None when the kernel list is unavailable."""
+    processes = darwin().processes(KERN_PROC_PGRP, pgid)
+    if processes is None:
+        return None
+    return sorted(pid for pid, status in processes if status != SZOMB)
+
+
+def _leader_pinned(identity: dict, process) -> bool:
+    """Whether the sealed leader still holds its PID, so the group ID cannot be reused.
+
+    The caller's own unreaped leader holds it whether it runs or has exited;
+    waitid with WNOWAIT observes that without reaping. Otherwise only a live
+    leader whose birth matches the seal holds it.
+    """
+    leader = identity.get("leader")
+    if not isinstance(leader, int) or leader != identity.get("pgid"):
+        return False
+    if process is not None and process.pid == leader and process.returncode is None:
+        try:
+            os.waitid(os.P_PID, leader, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+            return True
+        except ChildProcessError:
+            pass
+    birth = identity.get("birth")
+    return bool(birth) and process_birth(leader) == birth
+
+
+def _darwin_member_verified(pid: int, identity: dict, reference: str, pinned: bool) -> bool:
+    """Verify one member: the leader by birth; any other by owner, group, session, and binding or pin.
+
+    macOS withholds the environment of platform binaries such as /bin/sh, so
+    their invocation binding is unreadable. While the leader pins the group
+    ID, every member of that group descends from the sealed session and needs
+    no binding; without the pin such a member stays unverified.
+    """
+    if pid == identity.get("leader"):
+        birth = identity.get("birth")
+        return bool(birth) and process_birth(pid) == birth
+    info = darwin().bsdinfo(pid)
+    if info is None or info["uid"] != identity.get("uid") or info["pgid"] != identity.get("pgid"):
+        return False
+    try:
+        if os.getsid(pid) != identity.get("pgid"):
+            return False
+    except OSError:
+        return False
+    if pinned:
+        return True
+    arguments = darwin().procargs(pid)
+    return arguments is not None and (BINDING + "=" + reference).encode() in arguments[1]
+
+
+def _stop_darwin_group(identity: dict, reference: str, pgid: int, process, grace: float,
+                       kill_wait: float) -> tuple[bool, str]:
+    for sig, wait in ((signal.SIGTERM, grace), (signal.SIGKILL, kill_wait)):
+        members = _darwin_group_members(pgid)
+        if members is None:
+            return False, f"refused to signal process group {pgid}: its members cannot be listed"
+        if not members:
+            return True, f"process group {pgid} has no remaining members"
+        pinned = _leader_pinned(identity, process)
+        unverified = [pid for pid in members if not _darwin_member_verified(pid, identity, reference, pinned)]
+        if unverified:
+            return False, (f"refused to signal process group {pgid}: members {unverified} "
+                           "do not match the sealed birth identity, invocation binding, or pinned group")
+        try:
+            os.killpg(pgid, sig)
+        except ProcessLookupError:
+            return True, f"process group {pgid} exited"
+        except PermissionError:
+            # macOS refuses a group signal once only an unreaped zombie leader remains.
+            if _darwin_group_members(pgid) == []:
+                return True, f"process group {pgid} exited"
+            return False, f"signal to process group {pgid} was refused"
+        deadline = time.monotonic() + wait
+        while time.monotonic() < deadline:
+            if _darwin_group_members(pgid) == []:
+                return True, f"process group {pgid} stopped by {signal.Signals(sig).name}"
+            time.sleep(0.05)
+    remaining = _darwin_group_members(pgid)
+    if remaining != []:
+        return False, f"process group {pgid} members {remaining} survived SIGKILL"
+    return True, f"process group {pgid} stopped by SIGKILL"
+
+
 def stop_group(identity: dict, reference: str, *, process=None, grace: float = 5.0,
-               kill_wait: float = 5.0, proc: Path = PROC) -> tuple[bool, str]:
+               kill_wait: float = 5.0, proc: Path = PROC, backend: str | None = None) -> tuple[bool, str]:
     """TERM, then KILL, a verified sealed process group with bounded waits."""
     pgid = identity.get("pgid")
     if not isinstance(pgid, int) or pgid <= 1:
         raise Refusal("process group identity is missing")
-    if not Path(proc).is_dir():
+    selected = process_backend(proc, backend)
+    if selected == DARWIN_BACKEND:
+        return _stop_darwin_group(identity, reference, pgid, process, grace, kill_wait)
+    if selected == UNAVAILABLE or not Path(proc).is_dir():
         return _stop_group_without_proc(pgid, process, grace, kill_wait)
     for sig, wait in ((signal.SIGTERM, grace), (signal.SIGKILL, kill_wait)):
         if process is not None:
@@ -1294,7 +1824,7 @@ def launch(args) -> int:
         parent = os.getppid()
         deadline = time.monotonic() + args.timeout if args.timeout else None
         while True:
-            returncode = supervised.process.poll()
+            returncode = supervised.exit_status()
             if returncode is not None:
                 status = returncode if returncode >= 0 else 128 - returncode
                 outcome = "success" if returncode == 0 else "failure"

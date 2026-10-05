@@ -6,12 +6,15 @@ DockerLifecycleTests use real Docker and PostgreSQL and run in
 (component-verification-strategy, "Validation resource ownership and recovery").
 """
 
+import errno
 import json
 import os
 from pathlib import Path
+import plistlib
 import secrets
 import signal
 import socket
+import struct
 import subprocess
 import sys
 import tempfile
@@ -25,6 +28,9 @@ HELPER = Path(resources.__file__).resolve()
 SCRIPTS = HELPER.parent
 ROOT = SCRIPTS.parent
 HAS_PROC = Path("/proc").is_dir()
+HAS_BACKEND = resources.process_backend() != resources.UNAVAILABLE
+NO_BACKEND = "no process backend on this host (Linux /proc or macOS libproc)"
+IS_DARWIN = resources.process_backend() == resources.DARWIN_BACKEND
 
 
 def alive(pid):
@@ -32,6 +38,8 @@ def alive(pid):
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
+    if resources.process_backend() == resources.DARWIN_BACKEND:
+        return resources.darwin().state(pid) != "zombie"
     stat = Path(f"/proc/{pid}/stat")
     try:
         return stat.read_text().rsplit(")", 1)[1].split()[0] != "Z"
@@ -116,14 +124,15 @@ class IsolatedState(unittest.TestCase):
 class ResourceTests(IsolatedState):
     def test_inventory_is_owner_only_sanitized_and_exclusive(self):
         first = resources.Invocation.create("resource-task", self.checkout,
-                                            ["make", "postgres://admin:private@db/x_test", "check"])
+                                            ["make", "postgres://admin:fixture-secret@db/x_test", "check"])
         second = resources.Invocation.create("resource-task", self.checkout, ["make"])
         self.addCleanup(second.finish)
         self.assertNotEqual(first.path, second.path)
         self.assertEqual(first.path.stat().st_mode & 0o777, 0o700)
         self.assertEqual((first.path / "inventory.json").stat().st_mode & 0o777, 0o600)
         text = (first.path / "inventory.json").read_text()
-        self.assertNotIn("private", text)
+        # macOS canonical temporary paths contain "/private/", so the secret is distinct.
+        self.assertNotIn("fixture-secret", text)
         inventory = json.loads(text)
         self.assertEqual(inventory["argv"][1], "[redacted]")
         self.assertEqual(inventory["owner"]["pid"], os.getpid())
@@ -560,6 +569,374 @@ class ResourceTests(IsolatedState):
             with self.assertRaisesRegex(resources.Refusal, "never removed"):
                 resources.remove_network(dict(identity, external=True), "mine")
         self.assertFalse([call for call in calls if call[:1] in (["rm"], ["network", "rm"]) or "rm" in call])
+
+
+def bsdinfo_bytes(*, status=2, pid=4242, ppid=1, uid=501, pgid=4242, start=(1_700_000_000, 123456)):
+    raw = bytearray(resources.BSDINFO_SIZE)
+    struct.pack_into("<5I", raw, 4, status, 0, pid, ppid, uid)
+    struct.pack_into("<I", raw, 100, pgid)
+    struct.pack_into("<2Q", raw, 120, *start)
+    return bytes(raw)
+
+
+def kinfo_bytes(*entries):
+    raw = bytearray(resources.KINFO_PROC_SIZE * len(entries))
+    for index, (pid, status) in enumerate(entries):
+        offset = index * resources.KINFO_PROC_SIZE
+        raw[offset + 36] = status
+        struct.pack_into("<i", raw, offset + 40, pid)
+    return bytes(raw)
+
+
+def procargs_bytes(argv, environment):
+    # argc, the exec path, alignment padding, argv, the environment, then Apple strings.
+    return (struct.pack("<i", len(argv)) + b"/usr/bin/tool\0\0\0\0" + b"".join(value + b"\0" for value in argv)
+            + b"".join(value + b"\0" for value in environment) + b"\0ptr_munge=\0")
+
+
+def vnodepath_bytes(cwd, root=b""):
+    raw = bytearray(resources.VNODEPATHINFO_SIZE)
+    raw[resources.VNODE_INFO_SIZE:resources.VNODE_INFO_SIZE + len(cwd)] = cwd
+    start = resources.VNODE_INFO_PATH_SIZE + resources.VNODE_INFO_SIZE
+    raw[start:start + len(root)] = root
+    return bytes(raw)
+
+
+def fdpath_bytes(path):
+    raw = bytearray(resources.FDVNODEPATH_SIZE)
+    start = resources.PROC_FILEINFO_SIZE + resources.VNODE_INFO_SIZE
+    raw[start:start + len(path)] = path
+    return bytes(raw)
+
+
+def statfs_bytes(fstype, mounted_on, mounted_from):
+    raw = bytearray(resources.STATFS_SIZE)
+    raw[72:72 + len(fstype)] = fstype
+    raw[88:88 + len(mounted_on)] = mounted_on
+    raw[1112:1112 + len(mounted_from)] = mounted_from
+    return bytes(raw)
+
+
+class FakeDarwin:
+    """Scripted macOS facts for exercising the Darwin logic on any host.
+
+    Each process maps to a dict with optional keys: status, uid, pgid, start,
+    gone (state only), cwd, root, vnode_error, fds ({fd: (type, path or errno)}),
+    environment (list of bytes, or None when KERN_PROCARGS2 fails).
+    """
+
+    def __init__(self, table, *, statfs=None):
+        self.table = table
+        self.statfs_result = statfs
+        self.selectors = []
+
+    def processes(self, selector, value):
+        self.selectors.append((selector, value))
+        rows = [(pid, entry.get("status", 2)) for pid, entry in self.table.items() if not entry.get("gone")]
+        if selector == resources.KERN_PROC_PGRP:
+            rows = [(pid, status) for pid, status in rows if self.table[pid].get("pgid") == value]
+        elif selector == resources.KERN_PROC_UID:
+            rows = [(pid, status) for pid, status in rows if self.table[pid].get("uid", value) == value]
+        return rows
+
+    def state(self, pid):
+        entry = self.table.get(pid)
+        if entry is None or entry.get("gone"):
+            return "gone"
+        return "zombie" if entry.get("status") == resources.SZOMB else "live"
+
+    def bsdinfo(self, pid):
+        entry = self.table.get(pid)
+        if entry is None or entry.get("gone") or entry.get("status") == resources.SZOMB:
+            return None
+        return {"status": entry.get("status", 2), "pid": pid, "ppid": 1, "uid": entry.get("uid", 501),
+                "pgid": entry.get("pgid", pid), "start": entry.get("start", 1)}
+
+    def birth(self, pid):
+        info = self.bsdinfo(pid)
+        return None if info is None else {"start_ticks": info["start"], "boot_id": "boot"}
+
+    def vnode_paths(self, pid):
+        entry = self.table[pid]
+        if entry.get("vnode_error"):
+            return None
+        return entry.get("cwd", "/"), entry.get("root", "")
+
+    def descriptors(self, pid):
+        return [(fd, kind) for fd, (kind, _value) in sorted(self.table[pid].get("fds", {}).items())]
+
+    def descriptor_path(self, pid, fd):
+        _kind, value = self.table[pid]["fds"][fd]
+        return (None, value) if isinstance(value, int) else (value, 0)
+
+    def procargs(self, pid):
+        environment = self.table[pid].get("environment", [])
+        return None if environment is None else (["tool"], environment)
+
+    def statfs(self, path):
+        return self.statfs_result
+
+
+class DarwinParserTests(unittest.TestCase):
+    """Portable fixtures for the macOS structure parsers; they run on every host."""
+
+    def test_process_structures_parse_fixed_layouts_and_reject_other_sizes(self):
+        info = resources.parse_bsdinfo(bsdinfo_bytes(status=3, pid=77, ppid=5, uid=501, pgid=70,
+                                                     start=(1_700_000_000, 42)))
+        self.assertEqual(info, {"status": 3, "pid": 77, "ppid": 5, "uid": 501, "pgid": 70,
+                                "start": 1_700_000_000_000_042})
+        self.assertIsNone(resources.parse_bsdinfo(bsdinfo_bytes()[:-1]))
+        self.assertEqual(resources.parse_kinfo_procs(kinfo_bytes((70, 2), (71, resources.SZOMB))),
+                         [(70, 2), (71, resources.SZOMB)])
+        self.assertEqual(resources.parse_kinfo_procs(b""), [])
+        self.assertIsNone(resources.parse_kinfo_procs(kinfo_bytes((70, 2)) + b"\0"))
+        self.assertEqual(resources.parse_fdlist(struct.pack("<iIiI", 0, 1, 7, 2)), [(0, 1), (7, 2)])
+        self.assertIsNone(resources.parse_fdlist(b"\0" * 7))
+
+    def test_procargs2_environment_parses_and_withheld_environment_is_empty(self):
+        binding = (resources.BINDING + "=/state/invocation").encode()
+        argv, environment = resources.parse_procargs2(procargs_bytes([b"make", b"check"], [binding, b"GOCACHE=/c"]))
+        self.assertEqual(argv, ["make", "check"])
+        self.assertEqual(environment, [binding, b"GOCACHE=/c"])
+        # macOS returns only argc, the exec path, and argv for a platform binary.
+        withheld = struct.pack("<i", 2) + b"/bin/sleep\0\0\0" + b"sleep\0" + b"30\0"
+        self.assertEqual(resources.parse_procargs2(withheld), (["sleep", "30"], []))
+        self.assertIsNone(resources.parse_procargs2(b"\1\0"))
+        self.assertIsNone(resources.parse_procargs2(struct.pack("<i", 3) + b"/bin/sleep\0" + b"sleep\0"))
+
+    def test_vnode_descriptor_and_statfs_paths(self):
+        self.assertEqual(resources.parse_vnodepathinfo(vnodepath_bytes(b"/private/tmp/work")), ("/private/tmp/work", ""))
+        self.assertEqual(resources.parse_vnodepathinfo(vnodepath_bytes(b"/a", b"/jail")), ("/a", "/jail"))
+        self.assertIsNone(resources.parse_vnodepathinfo(b"\0" * 10))
+        self.assertEqual(resources.parse_fd_vnodepath(fdpath_bytes(b"/Users/u/.cache/x")), "/Users/u/.cache/x")
+        self.assertIsNone(resources.parse_fd_vnodepath(b"\0" * 10))
+        self.assertEqual(resources.parse_statfs(statfs_bytes(b"apfs", b"/System/Volumes/Data", b"/dev/disk3s5")),
+                         {"fstype": "apfs", "mounted_on": "/System/Volumes/Data", "mounted_from": "/dev/disk3s5"})
+        self.assertIsNone(resources.parse_statfs(b"\0" * 100))
+
+    def test_ram_disk_images_and_backing_classification(self):
+        info = plistlib.dumps({"images": [
+            {"image-path": "ram://20480", "system-entities": [{"dev-entry": "/dev/disk6"},
+                                                              {"dev-entry": "/dev/disk7s1", "mount-point": "/Volumes/ram"}]},
+            {"image-path": "/Users/u/tool.dmg", "system-entities": [{"dev-entry": "/dev/disk4",
+                                                                     "mount-point": "/Volumes/Tool"}]},
+        ]})
+        self.assertEqual(resources.ram_disk_entities(info), {"/dev/disk6", "/dev/disk7s1", "/Volumes/ram"})
+        self.assertEqual(resources.ram_disk_entities(plistlib.dumps({})), set())
+        self.assertIsNone(resources.ram_disk_entities(b"not a property list"))
+        root = Path("/Volumes/ram/cache")
+        self.assertEqual(resources.classify_backing(root, None, True), "unknown")
+        self.assertEqual(resources.classify_backing(root, "tmpfs", True), "ram")
+        self.assertEqual(resources.classify_backing(root, "ext4", False), "disk")
+        self.assertEqual(resources.classify_backing(root, "smbfs", True), "unknown")
+        cases = {
+            "ram image": (statfs_bytes(b"apfs", b"/Volumes/ram", b"/dev/disk7s1"), (0, info), "ram"),
+            "disk image": (statfs_bytes(b"hfs", b"/Volumes/Tool", b"/dev/disk4"), (0, info), "disk"),
+            "internal": (statfs_bytes(b"apfs", b"/System/Volumes/Data", b"/dev/disk3s5"), (0, info), "disk"),
+            "hdiutil failed": (statfs_bytes(b"apfs", b"/System/Volumes/Data", b"/dev/disk3s5"), (1, b""), "unknown"),
+            "statfs failed": (None, (0, info), "unknown"),
+        }
+        for name, (raw, (status, output), expected) in cases.items():
+            with self.subTest(case=name):
+                fake = FakeDarwin({}, statfs=None if raw is None else resources.parse_statfs(raw))
+                completed = subprocess.CompletedProcess([resources.HDIUTIL], status, output, b"")
+                with patch.object(resources, "darwin", return_value=fake), \
+                     patch.object(resources.subprocess, "run", return_value=completed):
+                    self.assertEqual(resources.classify_backing(root, "apfs", True), expected)
+        fake = FakeDarwin({}, statfs=resources.parse_statfs(statfs_bytes(b"apfs", b"/", b"/dev/disk3s1")))
+        with patch.object(resources, "darwin", return_value=fake), \
+             patch.object(resources.subprocess, "run", side_effect=FileNotFoundError(resources.HDIUTIL)):
+            self.assertEqual(resources.classify_backing(root, "apfs", True), "unknown")
+
+
+class DarwinLogicTests(unittest.TestCase):
+    """The macOS cache-ownership and member-verification rules over scripted facts."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.cache = Path(self.tmp.name).resolve() / "cache"
+        self.cache.mkdir()
+
+    def test_cache_users_report_readable_users_and_ambiguous_live_failures(self):
+        cache = str(self.cache)
+        table = {
+            os.getpid(): {"cwd": cache},
+            101: {"cwd": cache + "/go-build"},
+            102: {"cwd": "/", "fds": {3: (resources.PROX_FDTYPE_VNODE, cache + "/x"),
+                                      4: (resources.PROX_FDTYPE_VNODE, errno.EPERM),
+                                      5: (resources.PROX_FDTYPE_VNODE, errno.EBADF),
+                                      6: (resources.PROX_FDTYPE_VNODE, errno.EIO),
+                                      7: (2, cache + "/socket"),
+                                      8: (resources.PROX_FDTYPE_VNODE, "")}},
+            103: {"cwd": cache, "environment": [b"GOCACHE=" + cache.encode() + b"/go", b"TMPDIR=t"]},
+            104: {"cwd": "/", "environment": []},
+            105: {"vnode_error": True, "environment": None},
+            106: {"cwd": "/", "environment": [b"TMPDIR=relative"], "vnode_error": True},
+            107: {"status": resources.SZOMB, "cwd": cache},
+            108: {"cwd": "/", "root": cache},
+        }
+        fake = FakeDarwin(table)
+        with patch.object(resources, "darwin", return_value=fake):
+            users = resources._darwin_cache_users(self.cache, None)
+            self.assertEqual(fake.selectors, [(resources.KERN_PROC_UID, os.getuid())])
+            self.assertEqual(sorted(users), sorted([
+                "101:cwd", "102:fd:3", "102:ambiguous:fd:6", "103:cwd", "103:env:GOCACHE", "103:env:TMPDIR",
+                "105:ambiguous:cwd", "105:ambiguous:environ", "106:ambiguous:cwd", "106:ambiguous:env:TMPDIR",
+                "108:root"]))
+            table[105]["gone"] = True
+            table[106]["gone"] = True
+            self.assertNotIn("105:ambiguous:cwd", resources._darwin_cache_users(self.cache, None))
+
+    def test_unrelated_filter_uses_darwin_start_and_session(self):
+        table = {201: {"vnode_error": True, "start": 10}, 202: {"vnode_error": True, "start": 30}}
+        sessions = {201: 7, 202: 9}
+        with patch.object(resources, "darwin", return_value=FakeDarwin(table)), \
+             patch.object(resources.os, "getsid", side_effect=lambda pid: sessions[pid]):
+            users = resources.active_cache_users(self.cache, created_after=20, sessions={9},
+                                                 backend=resources.DARWIN_BACKEND)
+        self.assertEqual(users, ["202:ambiguous:cwd"])
+
+    def test_member_verification_requires_birth_binding_or_pinned_group(self):
+        reference = "/state/conveyor/task/invocations/one"
+        binding = (resources.BINDING + "=" + reference).encode()
+        table = {
+            500: {"pgid": 500, "start": 5},
+            501: {"pgid": 500, "environment": [binding]},
+            502: {"pgid": 500, "environment": []},
+            503: {"pgid": 500, "uid": 0, "environment": [binding]},
+            504: {"pgid": 500, "environment": [binding]},
+            505: {"pgid": 600, "environment": [binding]},
+        }
+        identity = {"pgid": 500, "leader": 500, "birth": {"start_ticks": 5, "boot_id": "boot"}, "uid": 501}
+        sessions = {501: 500, 502: 500, 503: 500, 504: 999, 505: 500}
+        fake = FakeDarwin(table)
+        with patch.object(resources, "darwin", return_value=fake), \
+             patch.object(resources, "process_birth", side_effect=fake.birth), \
+             patch.object(resources.os, "getsid", side_effect=lambda pid: sessions[pid]):
+            verified = {pinned: [pid for pid in sorted(table)
+                                 if resources._darwin_member_verified(pid, identity, reference, pinned)]
+                        for pinned in (False, True)}
+            self.assertEqual(verified[False], [500, 501])
+            self.assertEqual(verified[True], [500, 501, 502])
+            changed = dict(identity, birth={"start_ticks": 6, "boot_id": "boot"})
+            self.assertFalse(resources._darwin_member_verified(500, changed, reference, True))
+
+    def test_stop_refuses_an_unlisted_group_and_an_unverified_member(self):
+        identity = {"pgid": 700, "leader": 700, "birth": {"start_ticks": 1, "boot_id": "boot"}, "uid": 501}
+        fake = FakeDarwin({701: {"pgid": 700, "environment": []}})
+        sessions = {701: 700}
+        with patch.object(resources, "darwin", return_value=fake), \
+             patch.object(resources, "process_birth", side_effect=fake.birth), \
+             patch.object(resources.os, "getsid", side_effect=lambda pid: sessions[pid]), \
+             patch.object(resources.os, "killpg") as killpg:
+            ok, detail = resources.stop_group(identity, "/ref", grace=0.1, kill_wait=0.1,
+                                              backend=resources.DARWIN_BACKEND)
+            self.assertFalse(ok)
+            self.assertIn("members [701]", detail)
+            with patch.object(fake, "processes", return_value=None):
+                ok, detail = resources.stop_group(identity, "/ref", backend=resources.DARWIN_BACKEND)
+            self.assertFalse(ok)
+            self.assertIn("cannot be listed", detail)
+            killpg.assert_not_called()
+
+    def test_unavailable_backend_keeps_the_refusals(self):
+        with self.assertRaisesRegex(resources.Refusal, "requires /proc or macOS libproc"):
+            resources.active_cache_users(self.cache, backend=resources.UNAVAILABLE)
+        identity = {"pgid": 4242, "leader": 4242}
+        with patch.object(resources.os, "killpg", side_effect=ProcessLookupError) as killpg:
+            ok, detail = resources.stop_group(identity, "/ref", backend=resources.UNAVAILABLE)
+        self.assertEqual((ok, detail), (True, "process group 4242 has no remaining members"))
+        killpg.assert_called_once_with(4242, 0)  # Existence probe only; no signal.
+
+
+class LeaderPinTests(unittest.TestCase):
+    def test_unreaped_leader_pins_its_group_until_reaped(self):
+        process = subprocess.Popen([sys.executable, "-c", "pass"], start_new_session=True)
+        self.addCleanup(lambda: process.returncode is None and process.wait())
+        identity = {"pgid": process.pid, "leader": process.pid, "birth": None}
+        self.assertTrue(resources._leader_pinned(identity, process))
+        self.assertTrue(wait_for(lambda: os.waitid(os.P_PID, process.pid,
+                                                   os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None, 10))
+        self.assertTrue(resources._leader_pinned(identity, process), "an exited, unreaped leader still pins")
+        process.wait()
+        self.assertFalse(resources._leader_pinned(identity, process))
+        self.assertFalse(resources._leader_pinned(dict(identity, leader=process.pid + 1), None))
+
+
+@unittest.skipUnless(HAS_BACKEND, NO_BACKEND)
+class HostBackendTests(IsolatedState):
+    """Real processes against the host backend: Linux /proc or macOS libproc."""
+
+    def test_birth_identity_is_stable_and_distinct_per_process(self):
+        first = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(5)"])
+        time.sleep(0.05)  # Linux start times advance in clock ticks (usually 10 ms).
+        second = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(5)"])
+        for process in (first, second):
+            self.addCleanup(process.wait)
+            self.addCleanup(process.kill)
+        birth = resources.process_birth(first.pid)
+        self.assertIsNotNone(birth)
+        self.assertIsNotNone(birth["boot_id"])
+        self.assertEqual(resources.process_birth(first.pid), birth)
+        self.assertNotEqual(resources.process_birth(second.pid), birth)
+        self.assertLessEqual(birth["start_ticks"], resources.current_ticks())
+
+    def survivor_group(self):
+        """A sealed group whose leader exits while a binding-free sleep survives in the group."""
+        invocation = resources.Invocation.create("resource-task", self.checkout, ["group"])
+        self.addCleanup(invocation.finish)
+        pid_file = self.base / "survivor.pid"
+        script = f"env -u {resources.BINDING} sleep 30 & echo $! > {pid_file}.tmp && mv {pid_file}.tmp {pid_file}"
+        supervised = resources.start_process(invocation, ["/bin/sh", "-c", script], env=os.environ,
+                                             cwd=self.base, role="gate")
+        survivor = self.read_pid(pid_file)
+        self.assertTrue(wait_for(lambda: supervised.exit_status() is not None, 10), "leader did not exit")
+        return invocation, supervised, survivor
+
+    @unittest.skipUnless(IS_DARWIN, "the pinned group is the macOS substitute for the invocation binding, which "
+                                    "macOS withholds for platform binaries; Linux verifies every member's binding")
+    def test_unreaped_leader_pins_group_so_environment_withheld_survivor_is_stopped(self):
+        _invocation, supervised, survivor = self.survivor_group()
+        ok, detail = supervised.stop(grace=0.3)
+        self.assertTrue(ok, detail)
+        self.assertTrue(wait_for(lambda: not alive(survivor), 5), "pinned survivor was not stopped")
+        self.assertIsNotNone(supervised.process.returncode, "stop() reaps the leader after teardown")
+
+    def test_survivor_without_binding_is_refused_after_the_leader_is_reaped(self):
+        invocation, supervised, survivor = self.survivor_group()
+        supervised.process.wait()
+        identity = invocation.resource(supervised.rid)["identity"]
+        ok, detail = resources.stop_group(identity, str(invocation.path), process=supervised.process, grace=0.3)
+        self.assertFalse(ok)
+        self.assertIn(f"members [{survivor}]", detail)
+        self.assertTrue(alive(survivor), "an unverified survivor was signaled")
+
+    def test_active_cache_users_report_cwd_descriptor_and_environment_users(self):
+        cache = self.base / "cache-child"
+        cache.mkdir()
+        sleeper = [sys.executable, "-c", "import time; time.sleep(30)"]
+        held = (cache / "held").open("w")
+        self.addCleanup(held.close)
+        processes = {
+            "cwd": subprocess.Popen(sleeper, cwd=cache),
+            "fd:1": subprocess.Popen(sleeper, cwd=self.base, stdout=held),
+            "env:GOCACHE": subprocess.Popen(sleeper, cwd=self.base, env=dict(os.environ, GOCACHE=str(cache))),
+        }
+        for process in processes.values():
+            self.addCleanup(process.wait)
+            self.addCleanup(process.kill)
+        expected = {f"{process.pid}:{label}" for label, process in processes.items()}
+        self.assertTrue(wait_for(lambda: expected <= set(resources.active_cache_users(cache)), 10),
+                        resources.active_cache_users(cache))
+
+    def test_host_temporary_root_backing_is_established(self):
+        filesystem = resources.backing_filesystem(self.base)
+        self.assertIsNotNone(filesystem)
+        backing = resources.classify_backing(self.base, filesystem, resources._darwin_mounts(resources.MOUNTINFO))
+        self.assertNotEqual(backing, "unknown")
+        if IS_DARWIN:
+            self.assertEqual(backing, "disk")
 
 
 @unittest.skipUnless(os.environ.get("CONVEYOR_VALIDATION_DOCKER") == "1",
