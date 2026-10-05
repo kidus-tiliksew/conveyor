@@ -2143,63 +2143,89 @@ test('task metadata presents stored spec versions as plan versions', async ({ pa
   await expect(page.getByText('retrying · spec v7')).toHaveCount(0)
 })
 
-test('Work on this shows, copies, and responsively wraps the task run command', async ({ page, context }) => {
+test('Work on this selects the Terminal tab and copies the task run command', async ({ page, context }) => {
   const taskID = 'work-on-this-with-a-deliberately-long-responsive-identifier'
   const expectedCommand = `conveyor run ${taskID}`
   await context.grantPermissions(['clipboard-read', 'clipboard-write'])
 
   await page.goto(`/tasks/${taskID}/full`)
-  const command = page.getByText(expectedCommand, { exact: true })
-  const panel = command.locator('..')
+  const tablist = page.getByRole('tablist', { name: 'Work on this locally' })
+  const terminal = tablist.getByRole('tab', { name: 'Terminal' })
+  const panel = page.getByRole('tabpanel')
+  const group = tablist.locator('../..')
+  await expect(terminal).toHaveAttribute('aria-selected', 'true')
+  await expect(terminal).toHaveAttribute('tabindex', '0')
+  await expect(panel).toHaveAttribute('aria-labelledby', (await terminal.getAttribute('id'))!)
+  await expect(terminal).toHaveAttribute('aria-controls', (await panel.getAttribute('id'))!)
+  const command = panel.getByText(expectedCommand, { exact: true })
   await expect(command).toBeVisible()
+  await expect(command).toHaveAttribute('title', expectedCommand)
 
-  const roomyPanel = await panel.boundingBox()
-  const roomyParent = await panel.locator('..').boundingBox()
-  expect(roomyPanel!.width).toBeLessThan(roomyParent!.width)
+  // The group stays bounded by its parent on roomy screens.
+  const roomyGroup = await group.boundingBox()
+  const roomyParent = await group.locator('..').boundingBox()
+  expect(roomyGroup!.width).toBeLessThan(roomyParent!.width)
 
   await page.getByRole('button', { name: 'Copy task run command' }).click()
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(expectedCommand)
 
+  // At phone width the selected text truncates on one line instead of overflowing.
   await page.setViewportSize({ width: 390, height: 720 })
   await expect(page.getByRole('button', { name: 'Copied' })).toBeVisible()
-  const narrowPanel = await panel.boundingBox()
-  expect(narrowPanel!.height).toBeGreaterThan(roomyPanel!.height)
-  await expect.poll(() => panel.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true)
+  for (const element of [group, panel, tablist.locator('..')]) {
+    await expect.poll(() => element.evaluate((node) => node.scrollWidth <= node.clientWidth)).toBe(true)
+  }
+  await expect(command).toHaveAttribute('title', expectedCommand)
 })
 
-test('Work on this offers a copyable conveyor-work agent prompt beside the run command', async ({ page, context }) => {
+test('Work on this switches to the agent prompt tab by click and arrow key', async ({ page, context }) => {
   const taskID = 'work-on-this-with-a-deliberately-long-responsive-identifier'
   await context.grantPermissions(['clipboard-read', 'clipboard-write'])
 
   await page.goto(`/tasks/${taskID}/full`)
   const origin = await page.evaluate(() => window.location.origin)
   const expectedPrompt = `Use the conveyor-work skill to work Conveyor task ${taskID} in workspace \`demo\` on ${origin}.`
-  const command = page.getByText(`conveyor run ${taskID}`, { exact: true })
-  const prompt = page.getByText(expectedPrompt, { exact: true })
-  await expect(command).toBeVisible()
-  await expect(page.getByText('Or ask your agent', { exact: true })).toBeVisible()
+  const tablist = page.getByRole('tablist', { name: 'Work on this locally' })
+  const terminal = tablist.getByRole('tab', { name: 'Terminal' })
+  const agent = tablist.getByRole('tab', { name: 'Your agent' })
+  const panel = page.getByRole('tabpanel')
+  await expect(agent).toHaveAttribute('aria-selected', 'false')
+  await expect(agent).toHaveAttribute('tabindex', '-1')
+  await expect(page.getByText(expectedPrompt, { exact: true })).toHaveCount(0)
+
+  await agent.click()
+  await expect(agent).toHaveAttribute('aria-selected', 'true')
+  await expect(terminal).toHaveAttribute('aria-selected', 'false')
+  await expect(panel).toHaveAttribute('aria-labelledby', (await agent.getAttribute('id'))!)
+  const prompt = panel.getByText(expectedPrompt, { exact: true })
   await expect(prompt).toBeVisible()
-
-  // Both rows share one bordered group, the prompt row below the command row.
-  const group = command.locator('../..')
-  await expect(group.getByText(expectedPrompt, { exact: true })).toBeVisible()
-  const commandBox = await command.boundingBox()
-  const promptBox = await prompt.boundingBox()
-  expect(promptBox!.y).toBeGreaterThan(commandBox!.y)
-
+  await expect(prompt).toHaveAttribute('title', expectedPrompt)
+  await expect(page.getByRole('button', { name: 'Copy task run command' })).toHaveCount(0)
   await page.getByRole('button', { name: 'Copy agent prompt' }).click()
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(expectedPrompt)
 
+  // Arrow keys move selection and focus between the two tabs.
+  await agent.focus()
+  await page.keyboard.press('ArrowLeft')
+  await expect(terminal).toBeFocused()
+  await expect(terminal).toHaveAttribute('aria-selected', 'true')
+  await expect(panel.getByText(`conveyor run ${taskID}`, { exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Copy task run command' })).toBeVisible()
+  await page.keyboard.press('ArrowRight')
+  await expect(agent).toBeFocused()
+  await expect(agent).toHaveAttribute('aria-selected', 'true')
+  await expect(prompt).toBeVisible()
+
   await page.setViewportSize({ width: 390, height: 720 })
-  for (const element of [group, prompt.locator('..')]) {
+  for (const element of [tablist.locator('../..'), panel]) {
     await expect.poll(() => element.evaluate((node) => node.scrollWidth <= node.clientWidth)).toBe(true)
   }
 })
 
-test('Work on this guidance omits the agent prompt row', async ({ page }) => {
+test('Work on this guidance omits the tab group and agent prompt', async ({ page }) => {
   await page.goto('/tasks/guidance-only/full')
   await expect(page.getByText('Use the assigned worktree.')).toBeVisible()
-  await expect(page.getByText('Or ask your agent', { exact: true })).toHaveCount(0)
+  await expect(page.getByRole('tablist', { name: 'Work on this locally' })).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Copy agent prompt' })).toHaveCount(0)
 })
 
