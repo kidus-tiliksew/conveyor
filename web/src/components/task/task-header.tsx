@@ -884,7 +884,9 @@ function Fact({ label, value, startRow }: { label: React.ReactNode; value: React
 // The excerpt is the body's first paragraph, a block separated by a blank line
 // with any leading heading lines dropped. A paragraph longer than the limit is
 // cut after its last complete sentence within the limit, or else at its last
-// word boundary, and marked with an ellipsis.
+// word boundary, and marked with an ellipsis. A sentence ends at `.`, `!`, or
+// `?` plus any closing quotes, brackets, or inline Markdown delimiters, which
+// the excerpt keeps.
 const promptExcerptLimit = 280
 
 function promptExcerpt(body: string): string {
@@ -901,7 +903,7 @@ function promptExcerpt(body: string): string {
     .find((text) => text !== '')
   if (!paragraph || paragraph.length <= promptExcerptLimit) return paragraph ?? ''
   let cut = 0
-  for (const match of paragraph.matchAll(/[.!?]["')\]]*(?=\s)/g)) {
+  for (const match of paragraph.matchAll(/[.!?]["'’”»)\]*_~`]*(?=\s)/g)) {
     const end = match.index + match[0].length
     if (end > promptExcerptLimit) break
     cut = end

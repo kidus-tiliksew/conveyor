@@ -2290,6 +2290,29 @@ for (const [index, { name, body, excerpt }] of promptExcerptCases.entries()) {
   })
 }
 
+// A sentence that ends inside closing Markdown delimiters or a typographic
+// quote is complete; the excerpt keeps the closers and drops the unfinished
+// sentence after it.
+const continuation = `${Array(70).fill('continuation').join(' ')}.`
+const closingSentenceCases = [
+  { name: 'closing Markdown delimiters', sentence: 'Keep **this sentence intact.**' },
+  { name: 'a typographic closing quote', sentence: 'Keep this sentence intact.”' },
+]
+
+for (const [index, { name, sentence }] of closingSentenceCases.entries()) {
+  test(`Work on this prompt excerpt ends a sentence after ${name}`, async ({ page, context }) => {
+    const taskID = `work-on-this-closing-${index}`
+    await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+    await routeCheckoutTask(page, taskID, { body: `${sentence} ${continuation}` })
+    await page.goto(`/tasks/${taskID}/full`)
+    const origin = await page.evaluate(() => window.location.origin)
+    await page.getByRole('button', { name: 'Copy agent prompt' }).click()
+    await expect
+      .poll(() => page.evaluate(() => navigator.clipboard.readText()))
+      .toBe(expectedAgentPrompt(origin, taskID, 'Short task', `${sentence}…`))
+  })
+}
+
 test('Work on this shows the agent prompt for an available checkout without a command', async ({ page }) => {
   const taskID = 'work-on-this-no-command'
   await routeCheckoutTask(page, taskID, { checkout_command: undefined })
