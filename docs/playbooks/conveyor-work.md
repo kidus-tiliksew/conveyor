@@ -378,6 +378,18 @@ automatic merge path handles the approved head; wait as
 and report the observed task state. A review approval never authorizes the
 session to merge.
 
+### Worktree cleanup
+
+When the session observes its task `merged` or `closed`, its final report
+tells the operator to run `conveyor done <task-id>` from the repository's
+primary checkout. That command removes the task worktree and keeps the branch.
+The session never runs `conveyor done` itself: the command must run in the
+primary checkout, which an executor never uses, and the session's own working
+directory is the worktree it would remove. When the task parks or the operator
+stops the wait before the task merges or closes, the report says cleanup
+becomes available once the task merges or closes. A launched session gives no
+reminder; its launcher removes the worktree after the task ends.
+
 ### Human gates
 
 A plan approval, merge approval, plan-revision decision, or pending proposal
