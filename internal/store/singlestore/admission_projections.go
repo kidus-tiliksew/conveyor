@@ -84,7 +84,7 @@ func (s *Store) AttachSubmissionGovernance(ctx context.Context, taskID, reposito
 			return err
 		}
 		_, active := store.ActiveTaskContextReferences(events)
-		rows, err := documentRows(ctx, tx, `SELECT d.id,d.title,d.category,v.version,v.content,v.governs FROM system_designs d JOIN system_design_versions v ON v.workspace_id=d.workspace_id AND v.document_id=d.id AND v.version=d.current_version WHERE d.workspace_id=? ORDER BY d.id`, documentWorkspace(ctx))
+		rows, err := documentRows(ctx, tx, `SELECT d.id,d.title,d.category,v.version,v.content,v.governs FROM system_designs d JOIN system_design_versions v ON v.workspace_id=d.workspace_id AND v.document_id=d.id AND v.version=d.current_version WHERE d.workspace_id=? AND d.archived_at IS NULL ORDER BY d.id`, documentWorkspace(ctx))
 		if err != nil {
 			return err
 		}

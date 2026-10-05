@@ -5386,7 +5386,7 @@ func (m *memory) AttachSubmissionGovernance(ctx context.Context, taskID, reposit
 	}
 	designs := make([]core.GovernanceDesignContext, 0)
 	for key, document := range m.systemDesigns {
-		if key.workspace != workspace || document.CurrentVersion < 1 {
+		if key.workspace != workspace || document.CurrentVersion < 1 || document.Archived {
 			continue
 		}
 		versions := m.systemDesignVersions[key]
