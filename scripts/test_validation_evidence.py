@@ -969,15 +969,11 @@ while True:
 
 
 class CacheCleanupFilterTests(unittest.TestCase):
-    """Cleanup reuses the shared inspector's owner and creation filters over fixture /proc trees.
+    """Cleanup reuses the shared inspector's owner filter over fixture /proc trees.
 
     Only filesystem metadata is injected: process-entry owners, directory
-    modes, birth time, and clock inputs. The real inspector runs every case.
+    modes, birth times, and clocks. The real inspector runs every case.
     """
-
-    NOW, UPTIME, BIRTH, HZ = 10_000.0, 1_000.0, 9_500.0, 100
-    # (BIRTH - margin - (NOW - UPTIME)) * HZ, in clock ticks since boot.
-    BOUND = int((BIRTH - evidence.CREATION_BOUND_MARGIN_SECONDS - (NOW - UPTIME)) * HZ)
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -991,6 +987,7 @@ class CacheCleanupFilterTests(unittest.TestCase):
         self.child.mkdir(parents=True)
         self.proc = self.base / "proc"
         self.proc.mkdir()
+        (self.proc / "uptime").write_text("1000.00 0\n")
 
     def process(self, pid, start=None, descriptor=None):
         """Model a process entry: uninspectable unless descriptor names a readable target."""
@@ -1029,11 +1026,6 @@ class CacheCleanupFilterTests(unittest.TestCase):
         return patch.object(evidence, "owner_only_ancestor",
                             functools.partial(evidence.owner_only_ancestor, lstat=lstat))
 
-    def provable_creation(self):
-        return patch.object(evidence, "creation_lower_bound",
-                            functools.partial(evidence.creation_lower_bound, birth=self.BIRTH, now=self.NOW,
-                                              uptime=self.UPTIME, hz=self.HZ))
-
     def cleanup(self):
         return evidence.cleanup_cache("fixture-task", self.task_cache, [], self.proc)
 
@@ -1047,35 +1039,55 @@ class CacheCleanupFilterTests(unittest.TestCase):
         self.assertFalse(self.child.exists())
         self.assertTrue(self.task_cache.is_dir())
 
-    def test_traversable_chain_inspects_foreign_process_started_at_or_after_creation(self):
-        foreign = self.process(4242, start=self.BOUND)
+    def test_traversable_chain_inspects_foreign_uninspectable_process(self):
+        foreign = self.process(4242, start=1)
         with self.foreign(foreign), self.traversable():
             self.assertIsNone(evidence.owner_only_ancestor(self.child))
             with self.assertRaisesRegex(evidence.Refused, "4242:ambiguous"):
                 self.cleanup()
-            with self.provable_creation(), self.assertRaisesRegex(evidence.Refused, "4242:ambiguous"):
-                self.cleanup()
         self.assertTrue(self.child.is_dir())
 
-    def test_creation_bound_drops_only_processes_started_before_the_child(self):
-        earlier = self.process(4242, start=self.BOUND - 1)
-        with self.foreign(earlier), self.traversable(), self.provable_creation():
-            self.assertEqual(self.cleanup(), ["go-build"])
-        self.child.mkdir()
-        unknown = self.process(4343)
-        with self.foreign(earlier, unknown), self.traversable(), self.provable_creation():
-            with self.assertRaisesRegex(evidence.Refused, "4343:ambiguous"):
-                self.cleanup()
+    def test_own_uninspectable_process_refuses_under_owner_isolation(self):
+        # A non-dumpable process of the invoking user (for example sshd-session)
+        # can enter an owner-only cache, so it stays a possible user.
+        self.process(4242, start=1)
+        with self.assertRaisesRegex(evidence.Refused, "4242:ambiguous"):
+            self.cleanup()
         self.assertTrue(self.child.is_dir())
 
-    def test_readable_reference_refuses_even_when_it_predates_creation(self):
+    def test_clock_changes_and_birth_times_never_disregard_an_uninspectable_process(self):
+        """No creation-time filter: wall-clock steps cannot map a birth time onto start ticks.
+
+        A process that started long before the child (start tick 1) still
+        blocks cleanup whatever the clocks or the child's birth time report.
+        """
+        foreign = self.process(4242, start=1)
+        own = self.process(4343, start=1)
+        real_stat = Path.stat
+        now = time.time()
+        for wall in (now, now - 300, now + 300, now - 86_400):
+            for birth in (None, now - 600, now + 600, float("nan"), float("inf"), -1.0, "malformed"):
+                def child_stat(path, *args, birth=birth, **kwargs):
+                    info = real_stat(path, *args, **kwargs)
+                    if Path(path) != self.child or birth is None:
+                        return info
+                    return SimpleNamespace(st_uid=info.st_uid, st_mode=info.st_mode, st_birthtime=birth)
+                with patch.object(evidence.time, "time", return_value=wall), \
+                        patch.object(Path, "stat", child_stat):
+                    with self.foreign(foreign), self.traversable(), \
+                            self.assertRaisesRegex(evidence.Refused, "4242:ambiguous"):
+                        self.cleanup()
+                    with self.assertRaisesRegex(evidence.Refused, "4343:ambiguous"):
+                        self.cleanup()
+        self.assertTrue(self.child.is_dir())
+
+    def test_readable_reference_refuses_under_owner_isolation(self):
         (self.child / "object").write_text("cached")
         self.process(4242, start=1, descriptor=self.child / "object")
-        with self.provable_creation():
-            with self.assertRaisesRegex(evidence.Refused, "4242:fd:3"):
-                self.cleanup()
-            with self.traversable(), self.assertRaisesRegex(evidence.Refused, "4242:fd:3"):
-                self.cleanup()
+        with self.assertRaisesRegex(evidence.Refused, "4242:fd:3"):
+            self.cleanup()
+        with self.traversable(), self.assertRaisesRegex(evidence.Refused, "4242:fd:3"):
+            self.cleanup()
         self.assertTrue((self.child / "object").is_file())
 
     def test_missing_proc_refuses_with_owner_isolation(self):
@@ -1105,54 +1117,6 @@ class CacheCleanupFilterTests(unittest.TestCase):
                                 (stat.S_IFDIR | 0o701, uid), (stat.S_IFLNK | 0o700, uid), (None, uid)):
                 rejected = {"/fixture/private": (mode, owner)}
                 self.assertIsNone(evidence.owner_only_ancestor(path, metadata(rejected)), (mode, owner))
-
-    def test_linux_birth_time_reads_statx_or_reports_none(self):
-        created = self.base / "created"
-        before = time.time()
-        created.mkdir()
-        birth = evidence.linux_birth_time(created)
-        if birth is None:
-            # Non-Linux hosts and filesystems without a recorded birth time.
-            self.assertIsNone(evidence.linux_birth_time(self.base / "absent"))
-            return
-        self.assertLessEqual(abs(birth - before), 5)
-        self.assertIsNone(evidence.linux_birth_time(self.base / "absent"))
-        with patch.object(evidence.sys, "platform", "darwin"):
-            self.assertIsNone(evidence.linux_birth_time(created))
-
-    def test_creation_lower_bound_requires_a_provable_birth_time(self):
-        bound = functools.partial(evidence.creation_lower_bound, self.child, self.proc)
-        self.assertEqual(bound(birth=self.BIRTH, now=self.NOW, uptime=self.UPTIME, hz=self.HZ), self.BOUND)
-        # Inode-change and content-change times never stand in for a birth time.
-        real_stat = os.stat
-        changed_only = SimpleNamespace(st_ctime=self.BIRTH, st_mtime=self.BIRTH)
-
-        def child_stat(path, *args, **kwargs):
-            return changed_only if Path(path) == self.child else real_stat(path, *args, **kwargs)
-        with patch.object(evidence.os, "stat", child_stat), \
-                patch.object(evidence, "linux_birth_time", return_value=None):
-            self.assertIsNone(bound(now=self.NOW, uptime=self.UPTIME, hz=self.HZ))
-        # Without st_birthtime, the statx birth time supplies the bound.
-        with patch.object(evidence.os, "stat", child_stat), \
-                patch.object(evidence, "linux_birth_time", return_value=self.BIRTH):
-            self.assertEqual(bound(now=self.NOW, uptime=self.UPTIME, hz=self.HZ), self.BOUND)
-        for birth in (self.NOW + 1, 0, -5.0, "9500"):
-            self.assertIsNone(bound(birth=birth, now=self.NOW, uptime=self.UPTIME, hz=self.HZ), birth)
-        # A birth no later than boot plus the margin cannot bound a start tick.
-        before_boot = self.NOW - self.UPTIME + evidence.CREATION_BOUND_MARGIN_SECONDS
-        self.assertIsNone(bound(birth=before_boot, now=self.NOW, uptime=self.UPTIME, hz=self.HZ))
-        # Unreadable or invalid clock inputs omit the filter.
-        self.assertIsNone(bound(birth=self.BIRTH, now=self.NOW, hz=self.HZ))
-        self.assertIsNone(bound(birth=self.BIRTH, now=self.NOW, uptime=0.0, hz=self.HZ))
-        self.assertIsNone(bound(birth=self.BIRTH, now=self.NOW, uptime=self.UPTIME, hz=0))
-        (self.proc / "uptime").write_text(f"{self.UPTIME} 0\n")
-        self.assertEqual(bound(birth=self.BIRTH, now=self.NOW, hz=self.HZ), self.BOUND)
-        # macOS reports process start in wall-clock microseconds.
-        darwin = evidence.creation_lower_bound(self.child, backend=validation_resources.DARWIN_BACKEND,
-                                               birth=self.BIRTH, now=self.NOW)
-        self.assertEqual(darwin, int((self.BIRTH - evidence.CREATION_BOUND_MARGIN_SECONDS) * 1_000_000))
-        self.assertIsNone(evidence.creation_lower_bound(self.child, backend=validation_resources.UNAVAILABLE,
-                                                        birth=self.BIRTH, now=self.NOW))
 
 
 class MakeGraphTests(unittest.TestCase):
