@@ -585,15 +585,3 @@ func TestWizardPathHasNoNetworkClient(t *testing.T) {
 		}
 	}
 }
-
-func writeProbeFixture(t *testing.T, directory, name, output string, healthy bool) {
-	t.Helper()
-	exit := "0"
-	if !healthy {
-		exit = "1"
-	}
-	contents := "#!/bin/sh\nprintf '%s\\n' '" + output + "'\nexit " + exit + "\n"
-	if err := os.WriteFile(filepath.Join(directory, name), []byte(contents), 0o700); err != nil {
-		t.Fatal(err)
-	}
-}
