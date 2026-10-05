@@ -21,6 +21,9 @@ only; operator confirmations, gates, holds, drift resolution, and merge remain
 outside the executor's authority. A self-claimed session records an operator's
 gate or proposal decision only on the operator's direct instruction in the same
 conversation, for its own task, with the operator's own credential (DEC-45).
+Every claim names the harness in `agent` and the runtime's concrete model ID in
+`model`, or the harness's reported value such as `auto` verbatim when the
+harness does not expose one; never guess a model ID.
 
 Session mode decides what follows a stage submission. A session that
 `conveyor run` or a worker launched reports and exits, and never polls
