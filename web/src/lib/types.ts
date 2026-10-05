@@ -919,7 +919,8 @@ export interface WorkOrder {
   operator_direction?: string
   checkpoint?: WorkOrderCheckpoint
   progress?: string
-  cost_usd: number
+  // Historical reported cost only; usage reports no longer carry cost.
+  cost_usd?: number
   tokens_in: number
   tokens_out: number
   usage_reported: boolean

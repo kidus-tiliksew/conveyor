@@ -717,7 +717,7 @@ type WorkOrder struct {
 	ContinuationLaunchEnvironment string               `json:"continuation_launch_environment,omitempty"`
 	ContinuationResumeEligible    bool                 `json:"continuation_resume_eligible"`
 	Progress                      string               `json:"progress,omitempty"`
-	CostUSD                       float64              `json:"cost_usd"`
+	CostUSD                       float64              `json:"cost_usd,omitempty"`
 	TokensIn                      int64                `json:"tokens_in"`
 	TokensOut                     int64                `json:"tokens_out"`
 	UsageReported                 bool                 `json:"usage_reported"`
@@ -785,6 +785,19 @@ func (w WorkOrder) MarshalJSON() ([]byte, error) {
 		wired.LastAgentActivityAt = &w.LastAgentActivityAt
 	}
 	return json.Marshal(wired)
+}
+
+// HistoricalCostUSD returns the order's retained historical reported cost for
+// its job, or nil when the order carries none. Usage reports no longer carry
+// cost, so a zero order cost is absent rather than measured: the wire omits it
+// and a completed job never gains an invented zero (req-usage-telemetry
+// AC-2.1; DEC-1).
+func (w WorkOrder) HistoricalCostUSD() *float64 {
+	if w.CostUSD == 0 {
+		return nil
+	}
+	cost := w.CostUSD
+	return &cost
 }
 
 // CanResumeContinuation derives advisory resume eligibility only from the

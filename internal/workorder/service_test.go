@@ -722,14 +722,14 @@ func TestSubmittedOwnerObservationAndTelemetryAreLeaseExempt(t *testing.T) {
 	if _, err = service.Progress(ctx, job.ID, "owner-session", "review pending"); err != nil {
 		t.Fatalf("report submitted progress: %v", err)
 	}
-	if _, err = service.Usage(ctx, job.ID, "owner-session", 100, 25, 0.5); err != nil {
+	if _, err = service.Usage(ctx, job.ID, "owner-session", 100, 25); err != nil {
 		t.Fatalf("report submitted usage: %v", err)
 	}
 	if _, err = service.UploadTranscript(ctx, job.ID, "owner-session", "submitted transcript"); err != nil {
 		t.Fatalf("upload submitted transcript: %v", err)
 	}
 	persisted, err := st.GetWorkOrder(ctx, job.ID)
-	if err != nil || persisted.State != core.WorkOrderSubmitted || persisted.Progress != "review pending" || persisted.TokensIn != 100 || persisted.TokensOut != 25 || persisted.CostUSD != 0.5 {
+	if err != nil || persisted.State != core.WorkOrderSubmitted || persisted.Progress != "review pending" || persisted.TokensIn != 100 || persisted.TokensOut != 25 || persisted.CostUSD != 0 {
 		t.Fatalf("persisted=%+v err=%v", persisted, err)
 	}
 
@@ -747,7 +747,7 @@ func TestSubmittedOwnerObservationAndTelemetryAreLeaseExempt(t *testing.T) {
 			return callErr
 		},
 		"usage": func() error {
-			_, callErr := service.Usage(ctx, job.ID, "other-session", 1, 1, 0)
+			_, callErr := service.Usage(ctx, job.ID, "other-session", 1, 1)
 			return callErr
 		},
 		"transcript": func() error {
@@ -1686,19 +1686,98 @@ func TestUsagePersistsHighReportWithoutGating(t *testing.T) {
 	if progressErr != nil || progressed.UsageReported || progressed.SelfReported {
 		t.Fatalf("progress changed usage provenance = %+v err=%v", progressed, progressErr)
 	}
-	reported, err := service.Usage(ctx, claimed.ID, "session", 100_000_000, 25_000_000, 20_000)
+	reported, err := service.Usage(ctx, claimed.ID, "session", 100_000_000, 25_000_000)
 	if err != nil {
 		t.Fatalf("usage error = %v", err)
 	}
-	if reported.CostUSD != 20_000 || !reported.UsageReported || !reported.SelfReported {
-		t.Fatalf("returned cost = %v", reported.CostUSD)
+	if reported.TokensIn != 100_000_000 || !reported.UsageReported || !reported.SelfReported {
+		t.Fatalf("returned usage = %+v", reported)
 	}
 	stored, getErr := st.GetWorkOrder(ctx, claimed.ID)
-	if getErr != nil || stored.CostUSD != 20_000 || stored.TokensIn != 100_000_000 || stored.TokensOut != 25_000_000 {
+	if getErr != nil || stored.CostUSD != 0 || stored.TokensIn != 100_000_000 || stored.TokensOut != 25_000_000 {
 		t.Fatalf("stored = %+v err=%v", stored, getErr)
 	}
 	if _, err = service.Progress(ctx, claimed.ID, "session", "continuing after high usage"); err != nil {
 		t.Fatalf("high usage gated progress: %v", err)
+	}
+}
+
+// Usage reports carry tokens only: a fresh order and job gain no cost, a
+// historical cost stays untouched, and new events omit cost
+// (req-usage-telemetry REQ-2, AC-2.1; DEC-1).
+func TestUsageStoresNoCostAndPreservesHistoricalCost(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		historical float64
+	}{
+		{name: "fresh", historical: 0},
+		{name: "historical", historical: 1.25},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctx, st, service, order := newLifecycleService(t, "usage-cost-"+tc.name)
+			if tc.historical != 0 {
+				job, ok, err := st.GetLatestJob(ctx, order.TaskID)
+				if err != nil || !ok {
+					t.Fatalf("job ok=%v err=%v", ok, err)
+				}
+				job.CostUSD = &tc.historical
+				if err = st.UpdateJob(ctx, job); err != nil {
+					t.Fatal(err)
+				}
+				order.CostUSD = tc.historical
+				if err = storetest.For(st).UpdateWorkOrder(ctx, order); err != nil {
+					t.Fatal(err)
+				}
+			}
+			claimed, err := service.Claim(ctx, order.ID, core.WorkOrderClaim{SessionID: "session", ClientToken: "token", ClaimantID: "run", Agent: "codex", Model: "gpt", Lease: time.Minute})
+			if err != nil {
+				t.Fatal(err)
+			}
+			reported, err := service.Usage(ctx, claimed.ID, "session", 40, 9)
+			if err != nil {
+				t.Fatal(err)
+			}
+			stored, err := st.GetWorkOrder(ctx, claimed.ID)
+			if err != nil || stored.CostUSD != tc.historical || reported.CostUSD != tc.historical || stored.TokensIn != 40 || stored.TokensOut != 9 || !stored.UsageReported {
+				t.Fatalf("stored=%+v reported=%+v err=%v", stored, reported, err)
+			}
+			job, ok, err := st.GetLatestJob(ctx, order.TaskID)
+			if err != nil || !ok || job.TokensIn != 40 || job.TokensOut != 9 {
+				t.Fatalf("job=%+v ok=%v err=%v", job, ok, err)
+			}
+			if tc.historical == 0 && job.CostUSD != nil {
+				t.Fatalf("fresh job gained invented cost %v", *job.CostUSD)
+			}
+			if tc.historical != 0 && (job.CostUSD == nil || *job.CostUSD != tc.historical) {
+				t.Fatalf("historical job cost changed: %v", job.CostUSD)
+			}
+			wire, err := json.Marshal(stored)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if hasCost := strings.Contains(string(wire), `"cost_usd"`); hasCost != (tc.historical != 0) {
+				t.Fatalf("work-order wire cost presence = %v: %s", hasCost, wire)
+			}
+			events, err := st.ListEvents(ctx, order.TaskID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			found := false
+			for _, event := range events {
+				if event.Kind != "work_order.usage_reported" {
+					continue
+				}
+				found = true
+				if strings.Contains(string(event.Payload), "cost_usd") {
+					t.Fatalf("usage event carries cost: %s", event.Payload)
+				}
+			}
+			if !found {
+				t.Fatal("usage event missing")
+			}
+		})
 	}
 }
 
@@ -1715,14 +1794,14 @@ func TestWorkerFallbackUsageAdmitsSameTerminalSessionAndMarksProvenance(t *testi
 	if err = storetest.For(st).UpdateWorkOrder(ctx, claimed, core.WorkOrderCmdSubmitForReview); err != nil {
 		t.Fatal(err)
 	}
-	reported, err := service.UsageFromWorkerFallback(ctx, claimed.ID, "worker-session", 144, 21, 0)
+	reported, err := service.UsageFromWorkerFallback(ctx, claimed.ID, "worker-session", 144, 21)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if reported.TokensIn != 144 || reported.TokensOut != 21 || !reported.UsageReported || reported.SelfReported {
 		t.Fatalf("reported fallback = %+v", reported)
 	}
-	if _, err = service.UsageFromWorkerFallback(ctx, claimed.ID, "other-session", 1, 1, 0); err == nil {
+	if _, err = service.UsageFromWorkerFallback(ctx, claimed.ID, "other-session", 1, 1); err == nil {
 		t.Fatal("fallback accepted another session")
 	}
 	events, err := st.ListEvents(ctx, order.TaskID)
@@ -1749,10 +1828,10 @@ func TestWorkerFallbackUsagePreservesExistingAgentReport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = service.Usage(ctx, claimed.ID, "worker-session", 0, 0, 0); err != nil {
+	if _, err = service.Usage(ctx, claimed.ID, "worker-session", 0, 0); err != nil {
 		t.Fatal(err)
 	}
-	reported, err := service.UsageFromWorkerFallback(ctx, claimed.ID, "worker-session", 144, 21, 0)
+	reported, err := service.UsageFromWorkerFallback(ctx, claimed.ID, "worker-session", 144, 21)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2401,7 +2480,7 @@ func TestSubmitForReviewReturnsSynchronousInProcessVerdict(t *testing.T) {
 			}
 			service := &Service{Store: st, Dispatcher: dispatcher, Pack: bundle, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
 
-			if _, err = service.Usage(ctx, claimed.ID, "implement-session", 100_000_000, 25_000_000, 20_000); err != nil {
+			if _, err = service.Usage(ctx, claimed.ID, "implement-session", 100_000_000, 25_000_000); err != nil {
 				t.Fatalf("high usage report failed: %v", err)
 			}
 			baseline, getErr := service.RefreshContext(ctx, claimed.ID, "implement-session", "")

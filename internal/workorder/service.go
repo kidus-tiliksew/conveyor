@@ -1256,8 +1256,8 @@ func (s *Service) Progress(ctx context.Context, id, session, message string) (co
 	return order, err
 }
 
-func (s *Service) Usage(ctx context.Context, id, session string, tokensIn, tokensOut int64, cost float64) (core.WorkOrder, error) {
-	return s.UsageWithRateLimit(ctx, id, session, tokensIn, tokensOut, cost, nil)
+func (s *Service) Usage(ctx context.Context, id, session string, tokensIn, tokensOut int64) (core.WorkOrder, error) {
+	return s.UsageWithRateLimit(ctx, id, session, tokensIn, tokensOut, nil)
 }
 
 // ReportContinuation replaces advisory harness-native continuation metadata for
@@ -1271,24 +1271,27 @@ func (s *Service) ReportContinuation(ctx context.Context, id string, claim core.
 	return s.Store.RecordWorkOrderContinuation(ctx, id, claim, continuation)
 }
 
-func (s *Service) UsageWithRateLimit(ctx context.Context, id, session string, tokensIn, tokensOut int64, cost float64, rateLimit *core.RateLimitStatus) (core.WorkOrder, error) {
-	return s.usageWithRateLimit(ctx, id, session, tokensIn, tokensOut, cost, rateLimit, true)
+func (s *Service) UsageWithRateLimit(ctx context.Context, id, session string, tokensIn, tokensOut int64, rateLimit *core.RateLimitStatus) (core.WorkOrder, error) {
+	return s.usageWithRateLimit(ctx, id, session, tokensIn, tokensOut, rateLimit, true)
 }
 
 // UsageFromWorkerFallback records a stable machine-readable harness total
 // without turning telemetry into lifecycle authority (DEC-1). The exact worker
 // session may finish its terminal handoff before Codex emits turn.completed, so
 // this narrow path admits that same session after submission or completion.
-func (s *Service) UsageFromWorkerFallback(ctx context.Context, id, session string, tokensIn, tokensOut int64, cost float64) (core.WorkOrder, error) {
-	return s.usageWithRateLimit(ctx, id, session, tokensIn, tokensOut, cost, nil, false)
+func (s *Service) UsageFromWorkerFallback(ctx context.Context, id, session string, tokensIn, tokensOut int64) (core.WorkOrder, error) {
+	return s.usageWithRateLimit(ctx, id, session, tokensIn, tokensOut, nil, false)
 }
 
-func (s *Service) usageWithRateLimit(ctx context.Context, id, session string, tokensIn, tokensOut int64, cost float64, rateLimit *core.RateLimitStatus, selfReported bool) (core.WorkOrder, error) {
+// usageWithRateLimit records cumulative token telemetry. Reports carry no
+// cost: the order and job keep any historical cost unchanged, and new events
+// omit it (req-usage-telemetry REQ-2; DEC-1).
+func (s *Service) usageWithRateLimit(ctx context.Context, id, session string, tokensIn, tokensOut int64, rateLimit *core.RateLimitStatus, selfReported bool) (core.WorkOrder, error) {
 	order, err := s.authorizedForUsage(ctx, id, session, !selfReported)
 	if err != nil {
 		return core.WorkOrder{}, err
 	}
-	if tokensIn < 0 || tokensOut < 0 || cost < 0 {
+	if tokensIn < 0 || tokensOut < 0 {
 		return core.WorkOrder{}, fmt.Errorf("usage values cannot be negative")
 	}
 	if !selfReported {
@@ -1305,7 +1308,6 @@ func (s *Service) usageWithRateLimit(ctx context.Context, id, session string, to
 	}
 	order.TokensIn = tokensIn
 	order.TokensOut = tokensOut
-	order.CostUSD = cost
 	// Usage is observational telemetry only and never lifecycle authority (DEC-1).
 	// Persist availability separately so an explicit zero remains distinguishable
 	// from a session that never reported usage.
@@ -1333,14 +1335,13 @@ func (s *Service) usageWithRateLimit(ctx context.Context, id, session string, to
 	if ok && job.ID == order.JobID {
 		job.TokensIn = tokensIn
 		job.TokensOut = tokensOut
-		job.CostUSD = &cost
 		_ = s.Store.UpdateJob(ctx, job)
 	}
 	if err = s.Store.AppendEvent(ctx, core.Event{
 		TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.usage_reported",
 		Payload: core.JSONPayload(map[string]any{
 			"work_order_id": order.ID, "tokens_in": tokensIn, "tokens_out": tokensOut,
-			"cost_usd": cost, "rate_limit": rateLimit, "self_reported": selfReported,
+			"rate_limit": rateLimit, "self_reported": selfReported,
 		}),
 	}); err != nil {
 		return core.WorkOrder{}, err
@@ -1764,7 +1765,9 @@ func (s *Service) submitStageDocument(ctx context.Context, id, session string, a
 	}
 	job.State = core.JobDone
 	job.EndedAt = time.Now().UTC()
-	job.CostUSD = &order.CostUSD
+	if cost := order.HistoricalCostUSD(); cost != nil {
+		job.CostUSD = cost
+	}
 	job.TokensIn = order.TokensIn
 	job.TokensOut = order.TokensOut
 	if err = s.Store.UpdateJob(ctx, job); err != nil {
