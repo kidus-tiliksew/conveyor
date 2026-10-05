@@ -72,5 +72,6 @@ progress milestone and before any step expected to outlast one third of the
 remaining lease (req-agent-skills AC-2.2). Every verifier, in either mode,
 ends by submitting its own result: after submit_verification succeeds, report
 the handoff and exit without polling await_review or claiming another order
-(req-agent-skills AC-3.2). Failed execution or an operator checkpoint follows
-the delivered failure/release lifecycle.
+(req-agent-skills AC-3.2). A delegated verifier never records gate or proposal
+decisions (req-agent-skills AC-3.10; DEC-45). Failed execution or an operator
+checkpoint follows the delivered failure/release lifecycle.
